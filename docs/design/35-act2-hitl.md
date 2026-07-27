@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 35. Echoes Act II — HITL 面（control protocol client + PromptCard）
 
 - **日付**: 2026-07-13（設計、実装前。決定 spike 実測済み）

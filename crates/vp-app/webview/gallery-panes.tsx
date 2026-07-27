@@ -227,7 +227,7 @@ const layoutMcp = {
 registerLayoutScope(SCOPE, layoutMcp);
 
 // ---------- fleet 配線（LE-19: 机上の 3 台 → gallery の場） ----------
-// 読み手: vp-app app.rs `fleet_dispatch_js`（world-device channel の control_event 転送）。
+// 読み手: vp-app app.rs `fleet_dispatch_js`（daemon-device channel の control_event 転送）。
 // mapping は fleet.ts（純 calculation）、ここは engine への action だけを持つ。
 // ROTO knob = share（VCA — 1 本上げると他が duck する）/ X-Touch fader 1 = t の hand driver /
 // LPD8 pad = Scene slot（tap = apply / 長押し = capture）。
@@ -334,7 +334,7 @@ function applyFleetOp(op: FleetOp): void {
 
 // ---------- フィードバック方向（場 → 機材、LE-19） ----------
 // 経路: engine.subscribe → throttle(50ms trailing) + diff → ipc "fleet:feedback"
-// → app.rs watch(latest-wins) → world-device 上り event → Bastet が各機材に投影。
+// → app.rs watch(latest-wins) → daemon-device 上り event → Devices が各機材に投影。
 // ROTO モーターが share を追い、X-Touch fader が t を示し、LPD8 RGB が Scene slot を灯す —
 // 「正規化の結合が物理で見える」（1 本上げると他のノブが下がる、§9）。
 

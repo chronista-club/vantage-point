@@ -2,7 +2,7 @@
  * fleet — 物理艦隊の入力を gallery layout engine への操作に写す mapping registry
  * （doc 49 LE-19: 機材 → 面の対応は consumer 供給）。
  *
- * 入力経路: Bastet 🧲 (World) → world-device channel → app.rs `fleet_dispatch_js`
+ * 入力経路: Devices 🧲 (Daemon) → daemon-device channel → app.rs `fleet_dispatch_js`
  * → `window.vpFleet.dispatch(payload)` → mapControl（本 module、純 calculation）
  * → gallery-panes.tsx の action 層が engine に適用する。
  *
@@ -44,7 +44,7 @@ export type FleetOp =
 
 export type FleetDevice = "roto" | "xtouch" | "lpd8";
 
-/** port 名 → 機材種別（Bastet の port pattern と同じ部分一致規約） */
+/** port 名 → 機材種別（Devices の port pattern と同じ部分一致規約） */
 export function deviceOf(portName: string): FleetDevice | null {
 	if (portName.includes("Roto")) return "roto";
 	if (portName.includes("X-Touch")) return "xtouch";

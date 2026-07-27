@@ -1,20 +1,20 @@
 //! roto_control — ROTO-CONTROL の双方向 control loop（CLI / daemon 共有）
 //!
-//! `vp midi roto control`（前景・secs 制限）と Bastet 常駐（持続・自動再接続）が
-//! **同一の control loop body を共有**するための module。doc 23 の Bastet（device 接続所有 @ World）
+//! `vp midi roto control`（前景・secs 制限）と DeviceRegistry 常駐（持続・自動再接続）が
+//! **同一の control loop body を共有**するための module。doc 23 の DeviceRegistry（device 接続所有 @ Daemon）
 //! に control loop を載せる際、loop を二重実装しないための注入境界を定義する。
 //!
 //! ## 構造
 //! - `LaneSource` / `SwitchSink`: loop が外界に触れる 2 点を trait で注入
-//!   - CLI: `QuicLaneSource`(world-process QUIC) + `QuicSwitchSink`(World process-proxy 経由)
-//!   - daemon: `InProcessLaneSource`(build_world_lanes 直読み) + `QuicSwitchSink`(World process-proxy)
-//!     ※ L0 portless: SP は listen しないので switch は CLI/daemon とも World :32000 経由で forward
+//!   - CLI: `QuicLaneSource`(daemon-repo QUIC) + `QuicSwitchSink`(daemon repo-proxy 経由)
+//!   - daemon: `InProcessLaneSource`(build_node_lanes 直読み) + `QuicSwitchSink`(daemon repo-proxy)
+//!     ※ L0 portless: repo は listen しないので switch は CLI/daemon とも Daemon :32000 経由で forward
 //! - `roto_control_loop`: keepalive(autorespond) + LCD projection + nav→switch を回す共有 body
 //! - `RotoSessionBracket`(nostos `AsyncBracket`) + `RotoHealDriver`(`AsyncDriver`):
 //!   enter=open+handshake / exit=control loop / disconnect→Reborn(自動再接続) を表現
 //!
-//! data / calculations / actions 分離: lane 並びの計算は `build_world_lanes`(daemon/server.rs) と
-//! `parse_world_lanes`(midi.rs) の純粋関数に委譲。本 module は配線（orchestration）に集中する。
+//! data / calculations / actions 分離: lane 並びの計算は `build_node_lanes`(daemon/server.rs) と
+//! `parse_node_lanes`(midi.rs) の純粋関数に委譲。本 module は配線（orchestration）に集中する。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,14 +29,14 @@ use nostos::{AsyncBracket, AsyncDriver, Outcome};
 
 use crate::capability::core::CapabilityEvent;
 use crate::capability::eventbus::EventBus;
-use crate::capability::{ProcessManagerCapability, RunningProcess};
+use crate::capability::{RepoManagerCapability, RunningRepo};
 use crate::device_input::{ControlEvent, DeviceInput, roto::RotoInput};
 use crate::device_profile::{DeviceProfile, Rgb, roto::RotoProfile};
-use crate::process::lanes_state::LaneInfo;
+use crate::repo::lanes_state::LaneInfo;
 
 use super::midi::{
-    LaneNav, RotoLane, page_slots, parse_world_lanes, roto_autorespond, roto_lane_nav,
-    roto_open_async, roto_project_slots, roto_project_slots_full,
+    LaneNav, RotoLane, page_slots, parse_node_lanes, roto_autorespond, roto_lane_nav,
+    roto_open_async, roto_repo_slots, roto_repo_slots_full,
 };
 
 // ─── data ──────────────────────────────────────────────────
@@ -44,11 +44,11 @@ use super::midi::{
 /// control loop の UI state。reconnect 時に `RotoDescriptor` に退避され、再接続後も
 /// 選択ページ・選択 lane が保たれる（抜き差し後の体験連続）。
 ///
-/// ⚠️ `activated` / `lcd_projected` も **意図的に reconnect 跨ぎで carry-over する**
+/// ⚠️ `activated` / `lcd_repoed` も **意図的に reconnect 跨ぎで carry-over する**
 /// （false へ reset しない）。一見すると物理セッション local な flag に見えるが、reset は
 /// 退行になる: reconnect 直後は loop 入場時に `poll.tick()` の初回が即時発火し、`lanes` は
 /// 空 Vec 始まりなので非空 poll 結果と `next != lanes` が必ず真 → `if view.activated` gate を
-/// 通って `roto_project_slots_full` で即再描画される（`activated=true` が必要）。逆に reset
+/// 通って `roto_repo_slots_full` で即再描画される（`activated=true` が必要）。逆に reset
 /// すると次の hello (≤1s) まで LCD 再描画が遅れる。`activated` は任意の SysEx（keepalive
 /// hello 含む）で立つ — daemon 側だけの再起動では session 継続中の ROTO が full handshake を
 /// 再送せず hello しか送らないため、hello を activation 信号に数えないと LCD が永久に沈黙する
@@ -62,7 +62,7 @@ pub(crate) struct RotoView {
     /// projection 可能か。reconnect で carry-over（poll 即描画のため、上記参照）。
     pub activated: bool,
     /// LCD projection 済みか。reconnect で carry-over（上記参照）。
-    pub lcd_projected: bool,
+    pub lcd_repoed: bool,
 }
 
 /// `roto_control_loop` の離脱理由。
@@ -94,11 +94,11 @@ pub(crate) trait LaneSource {
     async fn poll(&mut self) -> Result<Vec<RotoLane>>;
 }
 
-/// 選択 lane を対象 SP に switch_lane する。L0 portless: SP は listen しないので CLI/daemon とも
-/// World :32000 の process-proxy ask 経由で forward する（project_path で SP を逆引き）。
+/// 選択 lane を対象 repo に switch_lane する。L0 portless: repo は listen しないので CLI/daemon とも
+/// Daemon :32000 の repo-proxy ask 経由で forward する（repo_path で repo を逆引き）。
 #[allow(async_fn_in_trait)]
 pub(crate) trait SwitchSink {
-    async fn switch(&mut self, project_path: &str, token: &str) -> Result<()>;
+    async fn switch(&mut self, repo_path: &str, token: &str) -> Result<()>;
 }
 
 // ─── actions: 共有 control loop ────────────────────────────
@@ -128,9 +128,9 @@ async fn send_paced(conn_out: &mut midir::MidiOutputConnection, msgs: &[Vec<u8>]
 /// `shutdown` 発火で graceful 停止（Shutdown）。
 /// loop が消費しない入力（Knob / KnobTouch）を EventBus に流す口（doc 49 LE-19 fleet 配線）。
 ///
-/// ROTO は Bastet の汎用 input listener（`spawn_input_listener`）から除外され本 loop が
-/// input を独占所有するため、`bastet.control_event` への合流はここから行う。
-/// Button は lane-nav（Justice 経路）の意味を既に持つため流さない（二重配送の回避）。
+/// ROTO は DeviceRegistry の汎用 input listener（`spawn_input_listener`）から除外され本 loop が
+/// input を独占所有するため、`devices.control_event` への合流はここから行う。
+/// Button は lane-nav（Device I/O 経路）の意味を既に持つため流さない（二重配送の回避）。
 /// None = CLI 前景デバッグ（EventBus 不在）。
 pub(crate) struct ControlTap {
     pub event_bus: Arc<EventBus>,
@@ -148,7 +148,7 @@ pub(crate) async fn roto_control_loop(
     deadline: Option<Instant>,
     shutdown: CancellationToken,
     control_tap: Option<&ControlTap>,
-    // フィードバック方向（LE-19）: Bastet `apply_feedback` からの motor byte 列注入。
+    // フィードバック方向（LE-19）: DeviceRegistry `apply_feedback` からの motor byte 列注入。
     // conn_out を loop が独占所有するため、外からの書き込みはこの watch を通る
     // （latest-wins — 未消費の古い frame は新しい値で置き換わる）。
     // sender が閉じたら arm を止める（CLI 前景 = dummy channel で即閉）
@@ -193,13 +193,13 @@ pub(crate) async fn roto_control_loop(
                 // = projection 可能、なので activation 根拠として十分。
                 if !view.activated && bytes.first() == Some(&0xF0) {
                     view.activated = true;
-                    if !lanes.is_empty() && !view.lcd_projected {
+                    if !lanes.is_empty() && !view.lcd_repoed {
                         let slots = page_slots(&lanes, view.page, view.selected.as_deref());
-                        let msgs = roto_project_slots_full(profile, &slots, color_active, color_inactive);
+                        let msgs = roto_repo_slots_full(profile, &slots, color_active, color_inactive);
                         if !send_paced(conn_out, &msgs).await {
                             return Ok(LoopExit::Disconnected);
                         }
-                        view.lcd_projected = true;
+                        view.lcd_repoed = true;
                     }
                     tracing::info!("🧲 ROTO 接続成立 — {} lanes", lanes.len());
                 }
@@ -212,7 +212,7 @@ pub(crate) async fn roto_control_loop(
                 if let Some(tap) = control_tap
                     && matches!(event, ControlEvent::Knob { .. } | ControlEvent::KnobTouch { .. })
                 {
-                    let cap_event = CapabilityEvent::new("bastet.control_event", "bastet")
+                    let cap_event = CapabilityEvent::new("devices.control_event", "devices")
                         .with_payload(&serde_json::json!({
                             "port_name": tap.port_name,
                             "event": event,
@@ -236,36 +236,36 @@ pub(crate) async fn roto_control_loop(
                             LaneNav::PagePrev => (view.page + pages - 1) % pages,
                             _ => (view.page + 1) % pages,
                         };
-                        if view.lcd_projected {
+                        if view.lcd_repoed {
                             let slots = page_slots(&lanes, view.page, view.selected.as_deref());
-                            let msgs = roto_project_slots(profile, &slots, color_active, color_inactive);
+                            let msgs = roto_repo_slots(profile, &slots, color_active, color_inactive);
                             if !send_paced(conn_out, &msgs).await {
                                 return Ok(LoopExit::Disconnected);
                             }
                         }
                     }
-                    // 現ページ内の lane を選択 → 対象 SP へ switch_lane
+                    // 現ページ内の lane を選択 → 対象 repo へ switch_lane
                     LaneNav::Direct(slot) => {
                         let Some(lane) = lanes.get(view.page * 8 + slot).cloned() else {
                             continue; // 空 slot
                         };
                         view.selected = Some(lane.key.clone());
                         // LCD ハイライト更新
-                        if view.lcd_projected {
+                        if view.lcd_repoed {
                             let slots = page_slots(&lanes, view.page, view.selected.as_deref());
-                            let msgs = roto_project_slots(profile, &slots, color_active, color_inactive);
+                            let msgs = roto_repo_slots(profile, &slots, color_active, color_inactive);
                             if !send_paced(conn_out, &msgs).await {
                                 return Ok(LoopExit::Disconnected);
                             }
                         }
-                        // 対象 SP に switch_lane（失敗は warn のみ、loop は継続）
-                        if let Err(e) = switch.switch(&lane.project_path, &lane.token).await {
-                            tracing::warn!("switch_lane 失敗 (project {}): {}", lane.project_path, e);
+                        // 対象 repo に switch_lane（失敗は warn のみ、loop は継続）
+                        if let Err(e) = switch.switch(&lane.repo_path, &lane.token).await {
+                            tracing::warn!("switch_lane 失敗 (repo {}): {}", lane.repo_path, e);
                         }
                     }
                 }
             }
-            // フィードバック方向（LE-19）: Bastet からの motor byte 列を conn_out に流す。
+            // フィードバック方向（LE-19）: DeviceRegistry からの motor byte 列を conn_out に流す。
             // 送信失敗 = ROTO 切断（他の out 送信と同じ扱い）
             changed = feedback_rx.changed(), if feedback_alive => {
                 match changed {
@@ -284,7 +284,7 @@ pub(crate) async fn roto_control_loop(
             _ = shutdown.cancelled() => {
                 return Ok(LoopExit::Shutdown);
             }
-            // lane を poll → lanes 再構築（project / lane 増減を live 反映）
+            // lane を poll → lanes 再構築（repo / lane 増減を live 反映）
             _ = poll.tick() => {
                 match lane_source.poll().await {
                     Ok(next) => {
@@ -295,11 +295,11 @@ pub(crate) async fn roto_control_loop(
                             view.page = view.page.min(pages - 1);
                             if view.activated {
                                 let slots = page_slots(&lanes, view.page, view.selected.as_deref());
-                                let msgs = roto_project_slots_full(profile, &slots, color_active, color_inactive);
+                                let msgs = roto_repo_slots_full(profile, &slots, color_active, color_inactive);
                                 if !send_paced(conn_out, &msgs).await {
                                     return Ok(LoopExit::Disconnected);
                                 }
-                                view.lcd_projected = true;
+                                view.lcd_repoed = true;
                             }
                         }
                     }
@@ -323,51 +323,51 @@ pub(crate) async fn roto_control_loop(
 
 // ─── 注入実装 ──────────────────────────────────────────────
 
-/// CLI 版 lane source: world-process channel に `list_all_lanes` を QUIC request。
+/// CLI 版 lane source: daemon-repo channel に `list_all_lanes` を QUIC request。
 pub(crate) struct QuicLaneSource {
-    pub world_ch: unison::network::UnisonChannel,
+    pub daemon_ch: unison::network::UnisonChannel,
 }
 
 impl LaneSource for QuicLaneSource {
     async fn poll(&mut self) -> Result<Vec<RotoLane>> {
         let v = self
-            .world_ch
+            .daemon_ch
             .request::<serde_json::Value, serde_json::Value>(
                 "list_all_lanes",
                 &serde_json::json!({}),
             )
             .await
             .map_err(|e| anyhow::anyhow!("list_all_lanes: {}", e))?;
-        Ok(parse_world_lanes(&v))
+        Ok(parse_node_lanes(&v))
     }
 }
 
-/// daemon 版 lane source: `build_world_lanes` を in-process 直読み（QUIC self-loop なし）。
-/// `parse_world_lanes` を経由するので CLI（QUIC 経由）と lane 並びが完全一致する。
+/// daemon 版 lane source: `build_node_lanes` を in-process 直読み（QUIC self-loop なし）。
+/// `parse_node_lanes` を経由するので CLI（QUIC 経由）と lane 並びが完全一致する。
 #[allow(clippy::type_complexity)]
 pub(crate) struct InProcessLaneSource {
-    pub running_processes: Arc<RwLock<HashMap<String, RunningProcess>>>,
+    pub running_repos: Arc<RwLock<HashMap<String, RunningRepo>>>,
     pub lane_registry: Option<Arc<RwLock<HashMap<String, Vec<LaneInfo>>>>>,
-    pub world_cap: Option<Arc<RwLock<ProcessManagerCapability>>>,
+    pub daemon_cap: Option<Arc<RwLock<RepoManagerCapability>>>,
 }
 
 impl LaneSource for InProcessLaneSource {
     async fn poll(&mut self) -> Result<Vec<RotoLane>> {
-        let projects = crate::daemon::server::build_world_lanes(
-            &self.running_processes,
+        let repos = crate::daemon::server::build_node_lanes(
+            &self.running_repos,
             &self.lane_registry,
-            &self.world_cap,
+            &self.daemon_cap,
         )
         .await;
-        let v = serde_json::json!({ "projects": projects });
-        Ok(parse_world_lanes(&v))
+        let v = serde_json::json!({ "repos": repos });
+        Ok(parse_node_lanes(&v))
     }
 }
 
-/// CLI/daemon 共有の switch_lane sink: L0 portless で SP が listen しなくなったため、対象 SP の
-/// project_path を使い World :32000 の process-proxy ask 経由で `switch_lane` を forward する。
+/// CLI/daemon 共有の switch_lane sink: L0 portless で repo が listen しなくなったため、対象 repo の
+/// repo_path を使い Daemon :32000 の repo-proxy ask 経由で `switch_lane` を forward する。
 ///
-/// switch_lane は SP scope のまま（各 project の active lane は各 SP が保持）。daemon = World 本体
+/// switch_lane は repo scope のまま（各 repo の active lane は各 repo が保持）。daemon = Daemon 本体
 /// なので世界への self-loop QUIC になるが、switch はボタン押下時のみの低頻度なので loopback の
 /// connect+forward（数 ms）で keepalive を落とさない（lane poll の 2 秒周期とは違い cache 不要）。
 #[derive(Default)]
@@ -380,18 +380,18 @@ impl QuicSwitchSink {
 }
 
 impl SwitchSink for QuicSwitchSink {
-    async fn switch(&mut self, project_path: &str, token: &str) -> Result<()> {
-        // payload = ProcessMessage::SwitchLane の JSON 表現（`{"type":"switch_lane","lane":...}`）。
-        // World が project_path を path_key 逆引きして当該 SP の dispatch_process_method へ forward。
+    async fn switch(&mut self, repo_path: &str, token: &str) -> Result<()> {
+        // payload = RepoMessage::SwitchLane の JSON 表現（`{"type":"switch_lane","lane":...}`）。
+        // daemon が repo_path を path_key 逆引きして当該 repo の dispatch_repo_method へ forward。
         let payload = serde_json::json!({ "type": "switch_lane", "lane": token });
-        super::process_client::world_process_request(
-            crate::cli::world_port(),
-            project_path,
+        super::process_client::daemon_repo_request(
+            crate::cli::daemon_port(),
+            repo_path,
             "switch_lane",
             payload,
         )
         .await
-        .map_err(|e| anyhow::anyhow!("switch_lane (project {}): {}", project_path, e))?;
+        .map_err(|e| anyhow::anyhow!("switch_lane (repo {}): {}", repo_path, e))?;
         Ok(())
     }
 }
@@ -426,7 +426,7 @@ pub(crate) struct RotoSessionBracket<L: LaneSource, S: SwitchSink> {
     lane_source: Mutex<L>,
     switch_sink: Mutex<S>,
     shutdown: CancellationToken,
-    /// Some = daemon（Bastet）: knob 系入力を `bastet.control_event` に流す（fleet 配線）
+    /// Some = daemon（DeviceRegistry）: knob 系入力を `devices.control_event` に流す（fleet 配線）
     event_bus: Option<Arc<EventBus>>,
     /// フィードバック方向（LE-19）: motor byte 列の注入路。reconnect を跨いで再利用する
     feedback_rx: Mutex<tokio::sync::watch::Receiver<Option<Vec<Vec<u8>>>>>,

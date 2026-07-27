@@ -27,12 +27,12 @@ pub struct ProcessStop {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProcessDelete {
+pub struct RepoDelete {
     pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProcessAdd;
+pub struct RepoAdd;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaneSelect {
@@ -73,11 +73,11 @@ pub struct LaneAddPerformer {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stand: Option<String>,
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StandsFetch {
+pub struct AgentsFetch {
     pub path: String,
 }
 
@@ -88,7 +88,7 @@ pub struct StandSelect {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectClonePickFolder;
+pub struct RepoClonePickFolder;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilesList {
@@ -121,6 +121,54 @@ pub struct UpdateApply {
     pub version: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SidebarState {
+    pub state: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SidebarError {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerformerCreateResult {
+    pub repo_path: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentsResult {
+    pub repo_path: String,
+    pub agents: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilesListResult {
+    pub address: String,
+    pub entries: Vec<serde_json::Value>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireResult {
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClonePathPicked {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilePickerOpen {
+    pub address: String,
+}
+
 /// Envelope enum for channel "ipc" — a discriminated union over its
 /// requests, internally tagged by the "t" field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,10 +182,10 @@ pub enum IpcEnvelope {
     ProcessRestart(ProcessRestart),
     #[serde(rename = "process:stop")]
     ProcessStop(ProcessStop),
-    #[serde(rename = "process:delete")]
-    ProcessDelete(ProcessDelete),
-    #[serde(rename = "process:add")]
-    ProcessAdd,
+    #[serde(rename = "repo:delete")]
+    RepoDelete(RepoDelete),
+    #[serde(rename = "repo:add")]
+    RepoAdd,
     #[serde(rename = "lane:select")]
     LaneSelect(LaneSelect),
     #[serde(rename = "lane:delete")]
@@ -150,12 +198,12 @@ pub enum IpcEnvelope {
     LaneReorder(LaneReorder),
     #[serde(rename = "lane:add_performer")]
     LaneAddPerformer(LaneAddPerformer),
-    #[serde(rename = "stands:fetch")]
-    StandsFetch(StandsFetch),
+    #[serde(rename = "agents:fetch")]
+    AgentsFetch(AgentsFetch),
     #[serde(rename = "stand:select")]
     StandSelect(StandSelect),
-    #[serde(rename = "project:clone:pickFolder")]
-    ProjectClonePickFolder,
+    #[serde(rename = "repo:clone:pickFolder")]
+    RepoClonePickFolder,
     #[serde(rename = "files:list")]
     FilesList(FilesList),
     #[serde(rename = "files:open")]
@@ -166,4 +214,27 @@ pub enum IpcEnvelope {
     WireAck(WireAck),
     #[serde(rename = "update:apply")]
     UpdateApply(UpdateApply),
+}
+
+/// Envelope enum for channel "ipc" — a discriminated union over its
+/// events, internally tagged by the "t" field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "t")]
+pub enum IpcEventEnvelope {
+    #[serde(rename = "sidebar:state")]
+    SidebarState(SidebarState),
+    #[serde(rename = "sidebar:error")]
+    SidebarError(SidebarError),
+    #[serde(rename = "performer:create_result")]
+    PerformerCreateResult(PerformerCreateResult),
+    #[serde(rename = "agents:result")]
+    AgentsResult(AgentsResult),
+    #[serde(rename = "files:list_result")]
+    FilesListResult(FilesListResult),
+    #[serde(rename = "wire:result")]
+    WireResult(WireResult),
+    #[serde(rename = "clone:path_picked")]
+    ClonePathPicked(ClonePathPicked),
+    #[serde(rename = "file_picker:open")]
+    FilePickerOpen(FilePickerOpen),
 }

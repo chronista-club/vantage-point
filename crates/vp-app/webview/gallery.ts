@@ -85,7 +85,7 @@ const CONNECTOR_STORY: GalleryStory = {
 };
 
 /**
- * story registry。実 component（EchoesHeader / HistoryStrip 等）は mount-function 型で
+ * story registry。実 component（LaneHeader / HistoryStrip 等）は mount-function 型で
  * live 依存（VpConsole 等）を持つため、mock を整えた story から順に足す
  * （doc 48 §4「調整したい component から順に」。網羅主義にしない）。
  */

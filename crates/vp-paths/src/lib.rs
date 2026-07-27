@@ -12,7 +12,7 @@
 //!
 //! | zone   | 環境変数            | default                  | 用途 |
 //! |--------|---------------------|--------------------------|------|
-//! | config | `$XDG_CONFIG_HOME`  | `~/.config/vp/`          | 人が編集 (config.kdl / projects.kdl / addresses.toml) |
+//! | config | `$XDG_CONFIG_HOME`  | `~/.config/vp/`          | 人が編集 (config.kdl / repos.kdl / addresses.toml) |
 //! | data   | `$XDG_DATA_HOME`    | `~/.local/share/vp/`     | 永続 data store (db / discs) |
 //! | state  | `$XDG_STATE_HOME`   | `~/.local/state/vp/`     | runtime state + log (session.json / sessions/ / log/) |
 //!
@@ -32,11 +32,11 @@ pub mod spawn_env;
 /// - `Some("dev")` = **開発者** — dev binary (`~/.cargo/bin`) を brew cask と混在させても
 ///   state を完全分離するための namespace suffix。
 ///
-/// dev binary と brew cask は single-instance 前提で state (dir / world port / tmux socket) を
+/// dev binary と brew cask は single-instance 前提で state (dir / daemon port / tmux socket) を
 /// 共有するため、 両方走ると sp_LOCK 衝突・port 衝突・tmux adopt 混線を起こす (2026-07-01 実機事故)。
 /// この profile が dir / port / socket の 3 レバー全ての分岐点。
 ///
-/// env は継承で伝播する (dev shell → vp-app → daemon → SP → tmux)。 brew は LaunchAgent 起動で
+/// env は継承で伝播する (dev shell → vp-app → daemon → repo → tmux)。 brew は LaunchAgent 起動で
 /// env を持たないため自然に `None` = brew namespace になる。 値は起動時に 1 回だけ読む。
 pub fn vp_profile() -> Option<&'static str> {
     static PROFILE: OnceLock<Option<String>> = OnceLock::new();
@@ -85,26 +85,26 @@ pub fn app_user_model_id() -> &'static str {
 /// 文字列なのでコンパイラが黙ったまま予約名の解決が食い違う。同期をコメントの約束に
 /// 頼らず、定義を 1 つにして構造的に不可能にする。
 ///
-/// 置き場が path crate なのは、この名前が state file 名（`<project>__<lane>`）の一部として
+/// 置き場が path crate なのは、この名前が state file 名（`<repo>__<lane>`）の一部として
 /// path 生成に入るため。
 pub const ROOT_LANE_NAME: &str = "root";
 
 /// 旧 予約 lane 名（`conductor`）。**migration 専用**で、新規コードから参照しない。
 ///
 /// 2026-07-21 に `conductor` → `root` へ改名した（mako 決定）。「conductor（指揮者）」は
-/// *振る舞い*の名前なので階層ごとに意味がズレる（project の起点 lane / lane の中の代表）が、
+/// *振る舞い*の名前なので階層ごとに意味がズレる（repo の起点 lane / lane の中の代表）が、
 /// 「root（根）」は*位置*の名前なので、どの階層でも同じ関係を指せる。
 pub const LEGACY_ROOT_LANE_NAME: &str = "conductor";
 
 /// 旧予約名で書かれた lane-scoped state file を新予約名へ改名する one-shot migration。
 /// 戻り値は改名した file 数。
 ///
-/// state file は全 zone で `<project>__<lane>` 命名なので、dir を問わず lane 部を機械的に
+/// state file は全 zone で `<repo>__<lane>` 命名なので、dir を問わず lane 部を機械的に
 /// 付け替えられる。個別 dir を列挙しないのは、後から state 種別が増えても取りこぼさないため
 /// （「消えたか」でなく「残っていないか」を構造で担保する）。
 ///
 /// **lane 部は session label**（doc 38）なので対象は 4 形:
-/// `<project>__conductor` / `…​.<ext>` / `<project>__conductor#<n>` / `…#<n>.<ext>`。
+/// `<repo>__conductor` / `…​.<ext>` / `<repo>__conductor#<n>` / `…#<n>.<ext>`。
 ///
 /// 冪等: 改名後は該当 file が無いので 2 回目以降は 0。衝突（新名が既存）時は**触らない**
 /// — 上書きすると新側の会話 id / 安定 id を失う。
@@ -131,12 +131,12 @@ pub fn migrate_root_lane_state_files(base: &std::path::Path) -> usize {
             };
             // lane 部は素の lane 名とは限らず、**session label** `<lane>#<n>` も来る
             // （doc 38 `session_label`: key≥2 は `<lane>#<n>`）。したがって対象は
-            // `<project>__conductor` / `…​.json` / `<project>__conductor#2` / `…#2.jsonl` の 4 形。
+            // `<repo>__conductor` / `…​.json` / `<repo>__conductor#2` / `…#2.jsonl` の 4 形。
             //
             // ⚠️ 初版は `strip_suffix("__conductor")` だけを見ており、**`#n` 付きを取りこぼした**
             // （実機で `cc_sessions/fleetstage__conductor#2` が 1 件残った）。
             //
-            // `rsplit_once` なのは、project 名自体が `__conductor` で終わる場合
+            // `rsplit_once` なのは、repo 名自体が `__conductor` で終わる場合
             // （`x__conductor__conductor`）に lane 部だけを正しく切り出すため。
             let Some((prefix, rest)) = stem.rsplit_once(&legacy_suffix) else {
                 continue;
@@ -165,22 +165,22 @@ pub fn migrate_root_lane_state_files(base: &std::path::Path) -> usize {
     renamed
 }
 
-/// world port の base 値 (brew の TheWorld port)。
-pub const WORLD_PORT_BASE: u16 = 32000;
+/// daemon port の base 値 (brew の daemon port)。
+pub const DAEMON_PORT_BASE: u16 = 32000;
 
-/// profile に応じた TheWorld の world port。 brew=32000 / dev=32100。
+/// profile に応じた daemon の daemon port。 brew=32000 / dev=32100。
 ///
-/// SP は portless (33000 番台は bind しない論理 identity) なので、 実 listener は world 単一。
-/// この 1 本を profile でずらせば daemon bind / app connect / SP→world connect が芋づるで追随し、
+/// repo は portless (33000 番台は bind しない論理 identity) なので、 実 listener は daemon 単一。
+/// この 1 本を profile でずらせば daemon bind / app connect / repo→daemon connect が芋づるで追随し、
 /// dev daemon (32100) と brew daemon (32000) が衝突せず並列常駐できる。
 ///
 /// 未設定 = 32000 (brew、 従来値で不変)。 `Some(_)` = base + 100。
 /// 注: offset は現状「profile 有無」の 2 値 (dev=+100)。 複数 dev profile を同時常駐させる
 /// 要件は無いため、 `dev` 以外の任意 profile も同じ +100 に落ちる (dir 名は分離されるが port は共有)。
-pub fn default_world_port() -> u16 {
+pub fn default_daemon_port() -> u16 {
     match vp_profile() {
-        Some(_) => WORLD_PORT_BASE + 100,
-        None => WORLD_PORT_BASE,
+        Some(_) => DAEMON_PORT_BASE + 100,
+        None => DAEMON_PORT_BASE,
     }
 }
 
@@ -190,9 +190,9 @@ pub fn default_world_port() -> u16 {
 /// (未設定時は完全無音 = 常用・nightly を汚さない)。 間欠再現時に log を `termtrace` で grep し、
 /// 「どの hop で 1 keystroke が 2 回になるか」を特定する用途。
 ///
-/// hop 命名規約: `A:app-dispatch`(vp-app 上り dispatch) → `B:sp-recv`(SP handle_terminal_write 受信)。
-/// A=2 なら vp-app 内二重 / A=1・B=2 なら vp-app→World→SP 区間の二重 / 両方 1 なら SP 書込より下
-/// (tmux adopt / PTY 層)。 env は継承で全 process (vp-app / daemon / SP) に伝播する。
+/// hop 命名規約: `A:app-dispatch`(vp-app 上り dispatch) → `B:repo-recv`(repo handle_terminal_write 受信)。
+/// A=2 なら vp-app 内二重 / A=1・B=2 なら vp-app→Daemon→repo 区間の二重 / 両方 1 なら repo 書込より下
+/// (tmux adopt / PTY 層)。 env は継承で全 process (vp-app / daemon / repo) に伝播する。
 pub fn term_trace(hop: &str, lane: &str, data: &[u8]) {
     static ON: OnceLock<bool> = OnceLock::new();
     if !ON.get_or_init(|| std::env::var("VP_TERM_TRACE").is_ok()) {
@@ -208,7 +208,7 @@ pub fn term_trace(hop: &str, lane: &str, data: &[u8]) {
 
 /// VP の config zone (XDG `$XDG_CONFIG_HOME/vp/`、 default `~/.config/vp/`)。
 ///
-/// 人が編集する設定 (config.kdl / projects.kdl / addresses.toml) の置き場。
+/// 人が編集する設定 (config.kdl / repos.kdl / addresses.toml) の置き場。
 /// `XDG_CONFIG_HOME` 環境変数を優先、 未設定なら `$HOME/.config/vp/`。 macOS
 /// でも `~/Library/Application Support/` は使わない (= dotfile 一極集中方針)。
 pub fn vp_config_dir() -> PathBuf {
@@ -217,7 +217,7 @@ pub fn vp_config_dir() -> PathBuf {
 
 /// VP の data zone (XDG `$XDG_DATA_HOME/vp/`、 default `~/.local/share/vp/`)。
 ///
-/// 永続 data store (SurrealDB の `db/`、 Whitesnake `discs/`)。 失っても再生成
+/// 永続 data store (SurrealDB の `db/`、 `discs/`)。 失っても再生成
 /// される類の cache ではなく、 失えない user data を置く。
 pub fn vp_data_dir() -> PathBuf {
     xdg_base("XDG_DATA_HOME", ".local/share")
@@ -232,7 +232,7 @@ pub fn vp_state_dir() -> PathBuf {
     xdg_base("XDG_STATE_HOME", ".local/state")
 }
 
-/// log 出力先 (`vp_state_dir()/log/`)。 daemon / SP / vp-app の全 log を集約。
+/// log 出力先 (`vp_state_dir()/log/`)。 daemon / repo / vp-app の全 log を集約。
 pub fn vp_log_dir() -> PathBuf {
     vp_state_dir().join("log")
 }
@@ -303,8 +303,8 @@ pub fn migrate_legacy_paths() {
                 &new_config.join("config.kdl"),
             );
             move_file_if_exists(
-                &mac_app_support.join("projects.kdl"),
-                &new_config.join("projects.kdl"),
+                &mac_app_support.join("repos.kdl"),
+                &new_config.join("repos.kdl"),
             );
             move_file_if_exists(
                 &mac_app_support.join("addresses.toml"),
@@ -361,7 +361,7 @@ pub fn migrate_legacy_paths() {
                 &new_log.join("daemon.stdout.log"),
             );
             // 廃止 (rename 前の遺物)
-            for legacy in ["vp-app.kdl.log", "vp-app.stdout.log", "vp-world.kdl.log"] {
+            for legacy in ["vp-app.kdl.log", "vp-app.stdout.log", "vp-daemon.kdl.log"] {
                 delete_file_if_exists(&mac_log_dir.join(legacy));
             }
             delete_dir_if_empty(&mac_log_dir);
@@ -605,7 +605,7 @@ mod tests {
 
     /// 予約 lane 名の **値そのもの**を凍結する。
     ///
-    /// この文字列は state file 名（`<project>__<lane>`）・wire address（`agent@<project>`）・
+    /// この文字列は state file 名（`<repo>__<lane>`）・wire address（`agent@<repo>`）・
     /// DB descriptor に焼き付いていて、値を変えると on-disk migration が要る。
     /// 定義を 1 箇所に畳んだ結果「値を変える = ここ 1 行」になったので、
     /// **意図せず変わらないよう**テストで釘を打っておく（変える時は migration とセット）。
@@ -621,7 +621,7 @@ mod tests {
     fn migrate_root_lane_state_files_renames_both_forms_and_is_idempotent() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
-        let sessions = base.join("echoes_sessions");
+        let sessions = base.join("conversation_sessions");
         let cc = base.join("cc_sessions");
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::create_dir_all(&cc).unwrap();
@@ -651,7 +651,7 @@ mod tests {
         assert_eq!(migrate_root_lane_state_files(base), 0, "冪等");
     }
 
-    /// **session label 形** `<project>__conductor#<n>` も改名対象（初版の取りこぼし回帰）。
+    /// **session label 形** `<repo>__conductor#<n>` も改名対象（初版の取りこぼし回帰）。
     ///
     /// state file の lane 部は素の lane 名とは限らず、doc 38 の `session_label` により
     /// key≥2 は `<lane>#<n>` になる。初版は `strip_suffix("__conductor")` だけを見ていたため
@@ -663,7 +663,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
         let cc = base.join("cc_sessions");
-        let replay = base.join("echoes_replay");
+        let replay = base.join("conversation_replay");
         std::fs::create_dir_all(&cc).unwrap();
         std::fs::create_dir_all(&replay).unwrap();
 
@@ -673,7 +673,7 @@ mod tests {
         // ⚠️ 巻き込んではいけない: 予約名で「始まる」だけの別 lane / 数字でない suffix
         std::fs::write(cc.join("vp__conductor-old"), "別 lane").unwrap();
         std::fs::write(cc.join("vp__conductor#x"), "不正 key").unwrap();
-        // project 名自体が予約名で終わる edge（rsplit_once でないと切り出しを誤る）
+        // repo 名自体が予約名で終わる edge（rsplit_once でないと切り出しを誤る）
         std::fs::write(cc.join("x__conductor__conductor#3"), "nested").unwrap();
 
         assert_eq!(migrate_root_lane_state_files(base), 4);
@@ -683,7 +683,7 @@ mod tests {
         assert!(replay.join("vp__root#10.jsonl").exists(), "#n + 拡張子");
         assert!(
             cc.join("x__conductor__root#3").exists(),
-            "project 名が予約名で終わっても lane 部だけを切る"
+            "repo 名が予約名で終わっても lane 部だけを切る"
         );
 
         assert!(cc.join("vp__conductor-old").exists(), "別 lane は無傷");
@@ -709,10 +709,10 @@ mod tests {
     }
 
     #[test]
-    fn test_default_world_port_default_is_base() {
-        // VP_PROFILE 未設定なら world port は base (32000)
-        assert_eq!(default_world_port(), WORLD_PORT_BASE);
-        assert_eq!(default_world_port(), 32000);
+    fn test_default_daemon_port_default_is_base() {
+        // VP_PROFILE 未設定なら daemon port は base (32000)
+        assert_eq!(default_daemon_port(), DAEMON_PORT_BASE);
+        assert_eq!(default_daemon_port(), 32000);
     }
 
     #[test]

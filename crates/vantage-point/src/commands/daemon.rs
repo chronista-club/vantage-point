@@ -1,49 +1,49 @@
-//! `vp daemon` コマンド (alias `vp world`) — TheWorld（常駐プロセス管理）
+//! `vp daemon` コマンド (alias `vp daemon`) — daemon（常駐プロセス管理）
 //!
-//! - `vp daemon start` — TheWorld をフォアグラウンドで起動
-//! - `vp daemon stop` — TheWorld を停止 (idempotent)
-//! - `vp daemon status` — TheWorld の状態確認
-//! - `vp daemon restart` — TheWorld を ownership-agnostic に再起動
+//! - `vp daemon start` — daemon をフォアグラウンドで起動
+//! - `vp daemon stop` — daemon を停止 (idempotent)
+//! - `vp daemon status` — daemon の状態確認
+//! - `vp daemon restart` — daemon を ownership-agnostic に再起動
 //!
 //! restart は長らく意図的に提供しなかった（user 指示 2026-04-30「restart いらないかも」、
 //! 合成は `stop && start` で足りる想定）が、brew upgrade 後に daemon が旧 binary のまま残る
 //! 事象の根治（2026-07-14）で新設した。真因は「所有権分裂」— vp-app が直接 spawn した個体が
-//! world port を握ると、LaunchAgent(KeepAlive) の job は二重起動ガードで空回りし続け、
+//! daemon port を握ると、LaunchAgent(KeepAlive) の job は二重起動ガードで空回りし続け、
 //! cask postflight の `launchctl kickstart -k` は launchd job の個体しか叩けず実 holder に
 //! 届かない。`vp daemon restart` は pidfile や launchd の見立てではなく **実 port holder**
 //! （`/api/health`）を真実源に停止し、LaunchAgent 優先で立て直す（in-app update のエンジン兼務）。
 //!
-//! 注: `vp world ...` は後方互換 alias で同じ実装に dispatch される。
+//! 注: `vp daemon ...` は後方互換 alias で同じ実装に dispatch される。
 
 use anyhow::Result;
 use clap::Subcommand;
 
 use crate::daemon::process;
 
-/// TheWorld サブコマンド
+/// daemon サブコマンド
 ///
 /// サブコマンド省略時は `start` として扱う（後方互換: `vp daemon --port 32000`）
 #[derive(Subcommand)]
 pub enum DaemonCommands {
-    /// TheWorld を起動（foreground blocking、 backgrounding は呼出側で `&` / nohup）
+    /// daemon を起動（foreground blocking、 backgrounding は呼出側で `&` / nohup）
     Start {
         /// 待ち受けポート番号
-        #[arg(short, long, default_value_t = crate::cli::world_port())]
+        #[arg(short, long, default_value_t = crate::cli::daemon_port())]
         port: u16,
         // 旧 `--midi <arg>` flag は MidiCapability hosting 退役（fleet #877 系）で削除。
-        // device 管理は Bastet 🧲 が担い、単一 port の pick 指定は不要になった。
+        // device 管理は DeviceRegistry 🧲 が担い、単一 port の pick 指定は不要になった。
     },
-    /// TheWorld を停止 (idempotent)
+    /// daemon を停止 (idempotent)
     Stop,
-    /// TheWorld を再起動（ownership-agnostic: 実 port holder を停止 → LaunchAgent 優先で起動）
+    /// daemon を再起動（ownership-agnostic: 実 port holder を停止 → LaunchAgent 優先で起動）
     Restart {
         /// 稼働中の場合のみ再起動する（不在なら何もせず正常終了。brew cask postflight 用）
         #[arg(long)]
         if_running: bool,
     },
-    /// TheWorld の状態確認
+    /// daemon の状態確認
     Status,
-    /// VP-154 PR-2.5: world-process channel 経由で Process snapshot / lifecycle を観察
+    /// VP-154 PR-2.5: daemon-repo channel 経由で Process snapshot / lifecycle を観察
     ///
     /// `vp daemon processes` で list (= snapshot 1 回出力)、 `--watch` で subscribe stream
     /// に切り替えて register/unregister/disconnect を realtime に表示する。 dogfood debug 用。
@@ -52,14 +52,14 @@ pub enum DaemonCommands {
         #[arg(long)]
         watch: bool,
     },
-    /// chronista-hub registry に居る world 一覧を取得（federation discovery）
+    /// chronista-hub registry に居る daemon 一覧を取得（federation discovery）
     ///
     /// hub addr（env `CHRONISTA_HUB_ADDR` or config.kdl `hub-addr`）を設定した状態で
-    /// `vp daemon start` していると、World が起動時に自身を hub に register する。本コマンドは
-    /// TheWorld 経由で hub の `worlds.Discover` を叩き、同 hub に register した他 world を
+    /// `vp daemon start` していると、daemon が起動時に自身を hub に register する。本コマンドは
+    /// daemon 経由で hub の `nodes.Discover` を叩き、同 hub に register した他 daemon を
     /// 列挙する。env / config とも未設定なら federation 無効。
     Discover,
-    /// L1 lifecycle: TheWorld を LaunchAgent として常駐化（macOS、login always-on + crash 自動再起動）
+    /// L1 lifecycle: daemon を LaunchAgent として常駐化（macOS、login always-on + crash 自動再起動）
     ///
     /// `~/Library/LaunchAgents/club.chronista.vantage-point.daemon.plist` を配置し launchctl で
     /// 起動する。`RunAtLoad`（login 時自動起動）+ `KeepAlive`（crash 時自動再起動）。idempotent。
@@ -68,7 +68,7 @@ pub enum DaemonCommands {
     Uninstall,
 }
 
-/// `vp daemon` (= `vp world`) を実行
+/// `vp daemon` (= `vp daemon`) を実行
 pub fn execute(cmd: DaemonCommands) -> Result<()> {
     match cmd {
         DaemonCommands::Start { port } => start(port),
@@ -83,27 +83,27 @@ pub fn execute(cmd: DaemonCommands) -> Result<()> {
 }
 
 fn start(port: u16) -> Result<()> {
-    // 二重起動ガード: 既に TheWorld が稼働中なら讓って正常終了する。
-    // これが無いと LaunchAgent(KeepAlive) / vp-app auto-launch / 手動 `vp world` が
-    // 既存 daemon を確認せず run_world に突入し、SurrealDB world lock 衝突 → :port bind
+    // 二重起動ガード: 既に daemon が稼働中なら讓って正常終了する。
+    // これが無いと LaunchAgent(KeepAlive) / vp-app auto-launch / 手動 `vp daemon` が
+    // 既存 daemon を確認せず run_daemon に突入し、SurrealDB daemon lock 衝突 → :port bind
     // AddrInUse → 異常終了 → KeepAlive 再起動の無限ループに陥る (2026-07-09 二重起動事故)。
     // is_daemon_running() は pidfile + port ping の二段確認なので pidfile 不整合でも検出できる。
     if let Some(pid) = process::is_daemon_running() {
-        println!("👑 TheWorld は既に稼働中 (PID: {pid})。二重起動を避けて終了します。");
+        println!("👑 daemon は既に稼働中 (PID: {pid})。二重起動を避けて終了します。");
         return Ok(());
     }
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(crate::process::run_world(port))
+    rt.block_on(crate::repo::run_daemon(port))
 }
 
 fn stop() -> Result<()> {
     match process::is_daemon_running() {
         Some(pid) => {
             process::stop_daemon(pid)?;
-            println!("👑 TheWorld stopped (PID: {})", pid);
+            println!("👑 daemon stopped (PID: {})", pid);
         }
         None => {
-            println!("TheWorld is not running");
+            println!("daemon is not running");
         }
     }
     Ok(())
@@ -112,9 +112,9 @@ fn stop() -> Result<()> {
 /// restart: 起動確認 / 停止遷移の待ち上限（秒）。health 応答・pid 変化・停止完了の共通期限。
 const RESTART_HEALTH_TIMEOUT_SECS: u64 = 15;
 
-/// world port の実 holder に `/api/health` を問い合わせる（2s timeout、失敗 = 不在扱い）。
+/// daemon port の実 holder に `/api/health` を問い合わせる（2s timeout、失敗 = 不在扱い）。
 ///
-/// port は [`crate::cli::world_port`]（= `vp_paths::default_world_port()`、VP_PROFILE 準拠）
+/// port は [`crate::cli::daemon_port`]（= `vp_paths::default_daemon_port()`、VP_PROFILE 準拠）
 /// を caller が渡す。pidfile ではなく HTTP を真実源にするのは、所有権分裂（pidfile の指す
 /// 個体 ≠ 実 port holder）でも正しい相手を掴むため。
 fn fetch_health(port: u16) -> Option<crate::cli::HealthResponse> {
@@ -160,7 +160,7 @@ fn wait_stop_transition(port: u16, old_pid: u32) -> Result<StopTransition> {
                 // まだ old_pid が holder。停止完了 or respawn を待つ。
                 if std::time::Instant::now() >= deadline {
                     anyhow::bail!(
-                        "TheWorld (PID {old_pid}) が {RESTART_HEALTH_TIMEOUT_SECS}s 以内に停止しませんでした (port {port}、`vp daemon status` で確認してください)"
+                        "daemon (PID {old_pid}) が {RESTART_HEALTH_TIMEOUT_SECS}s 以内に停止しませんでした (port {port}、`vp daemon status` で確認してください)"
                     );
                 }
                 std::thread::sleep(std::time::Duration::from_millis(300));
@@ -179,9 +179,7 @@ fn wait_health(port: u16) -> Result<crate::cli::HealthResponse> {
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    anyhow::bail!(
-        "TheWorld が {RESTART_HEALTH_TIMEOUT_SECS}s 以内に応答しませんでした (port {port})"
-    )
+    anyhow::bail!("daemon が {RESTART_HEALTH_TIMEOUT_SECS}s 以内に応答しませんでした (port {port})")
 }
 
 /// macOS: LaunchAgent job が load 済みなら `launchctl kickstart`（-k なし）で起こす。
@@ -228,30 +226,30 @@ fn try_kickstart_launch_agent() -> bool {
     false
 }
 
-/// `vp daemon restart [--if-running]` — TheWorld を ownership-agnostic に再起動する。
+/// `vp daemon restart [--if-running]` — daemon を ownership-agnostic に再起動する。
 ///
 /// 1. 実 holder の稼働確認（`/api/health` — pidfile / launchctl の見立てではなく port holder が真実源）
 /// 2. 稼働中なら graceful stop（`vp daemon stop` と同一実装 = SIGTERM → SIGKILL fallback）。停止後は
 ///    「old_pid の消滅 or pid 変化」を待つ:
 ///      - pid 変化 = LaunchAgent(KeepAlive) が clean case で即 respawn 済 → kickstart 不要で
-///        その health を成功報告して終了（`vp world` binary は既に入れ替わり済み）
+///        その health を成功報告して終了（`vp daemon` binary は既に入れ替わり済み）
 ///      - health 応答なし = 後継未起動 → 手順3 で明示起動
 /// 3. macOS で LaunchAgent load 済みなら `launchctl kickstart`（-k なし）で即起こす / それ以外は
-///    detached spawn（`ensure_daemon_running` = SP auto-spawn と同じ既存経路）
+///    detached spawn（`ensure_daemon_running` = repo auto-spawn と同じ既存経路）
 /// 4. health ping で起動確認し、起動した daemon の version を表示
 pub(crate) fn restart(if_running: bool) -> Result<()> {
-    let port = crate::cli::world_port();
+    let port = crate::cli::daemon_port();
 
     let holder = fetch_health(port);
     if holder.is_none() && if_running {
-        println!("TheWorld は稼働していません（--if-running 指定のため何もしません）");
+        println!("daemon は稼働していません（--if-running 指定のため何もしません）");
         return Ok(());
     }
 
     if let Some(health) = &holder {
         let old_pid = health.pid;
         println!(
-            "⏹ TheWorld を停止中 (PID: {}, version: {})...",
+            "⏹ daemon を停止中 (PID: {}, version: {})...",
             old_pid, health.version
         );
         process::stop_daemon(old_pid)?;
@@ -260,7 +258,7 @@ pub(crate) fn restart(if_running: bool) -> Result<()> {
         if let StopTransition::Respawned(new_health) = wait_stop_transition(port, old_pid)? {
             // LaunchAgent が既に fresh を立て直した。kickstart せずそのまま成功。
             println!(
-                "👑 TheWorld restarted by LaunchAgent (PID: {}, version: {}, port: {})",
+                "👑 daemon restarted by LaunchAgent (PID: {}, version: {}, port: {})",
                 new_health.pid, new_health.version, port
             );
             return Ok(());
@@ -271,7 +269,7 @@ pub(crate) fn restart(if_running: bool) -> Result<()> {
     if kicked {
         println!("🚀 LaunchAgent kickstart で起動中...");
     } else {
-        println!("🚀 TheWorld を起動中 (detached spawn)...");
+        println!("🚀 daemon を起動中 (detached spawn)...");
         process::ensure_daemon_running(port)?;
     }
 
@@ -293,18 +291,18 @@ pub(crate) fn restart(if_running: bool) -> Result<()> {
         Err(e) => return Err(e),
     };
     println!(
-        "👑 TheWorld restarted (PID: {}, version: {}, port: {})",
+        "👑 daemon restarted (PID: {}, version: {}, port: {})",
         health.pid, health.version, port
     );
     Ok(())
 }
 
-/// `vp daemon install` — TheWorld を LaunchAgent 常駐化（macOS）。
+/// `vp daemon install` — daemon を LaunchAgent 常駐化（macOS）。
 #[cfg(target_os = "macos")]
 fn install() -> Result<()> {
     // plist の ProgramArguments に焼く binary = 今 install を呼んでいる vp 自身。
     let exe = std::env::current_exe()?;
-    let plist = process::install_launch_agent(&exe, crate::cli::world_port())?;
+    let plist = process::install_launch_agent(&exe, crate::cli::daemon_port())?;
     println!("👑 LaunchAgent を install しました: {}", plist.display());
     println!("   login 時に自動起動 + crash 時に自動再起動します（vp daemon uninstall で解除）。");
     // KeepAlive=true 常駐中は SIGTERM を送っても launchd が即再起動するので、
@@ -313,12 +311,12 @@ fn install() -> Result<()> {
     Ok(())
 }
 
-/// `vp daemon install` — TheWorld を Task Scheduler 常駐化（Windows）。
+/// `vp daemon install` — daemon を Task Scheduler 常駐化（Windows）。
 #[cfg(windows)]
 fn install() -> Result<()> {
     // task の action に焼く binary = 今 install を呼んでいる vp 自身。
     let exe = std::env::current_exe()?;
-    let task = process::install_scheduled_task(&exe, crate::cli::world_port())?;
+    let task = process::install_scheduled_task(&exe, crate::cli::daemon_port())?;
     println!("👑 Task Scheduler task を install しました: {task}");
     println!(
         "   ログオン時に自動起動 + crash 時に自動再起動します（vp daemon uninstall で解除）。"
@@ -379,7 +377,7 @@ fn uninstall() -> Result<()> {
 
 /// VP-154 PR-2.5: `vp daemon processes [--watch]` 実装。
 ///
-/// world-process Unison channel に接続して list (snapshot) を出力。 `--watch` 時は subscribe に
+/// daemon-repo Unison channel に接続して list (snapshot) を出力。 `--watch` 時は subscribe に
 /// 進んで `register/unregister/disconnect` の lifecycle event を Ctrl-C まで stream する。
 fn processes(watch: bool) -> Result<()> {
     use crate::daemon::client::DaemonClient;
@@ -387,25 +385,25 @@ fn processes(watch: bool) -> Result<()> {
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
-        let client = DaemonClient::connect(crate::cli::world_port(), 3)
+        let client = DaemonClient::connect(crate::cli::daemon_port(), 3)
             .await
             .map_err(|e| {
-                anyhow::anyhow!("TheWorld 接続失敗: {} (= `vp daemon start` で起動済か?)", e)
+                anyhow::anyhow!("daemon 接続失敗: {} (= `vp daemon start` で起動済か?)", e)
             })?;
 
         // snapshot を最初に出す (= list / watch 共通の冒頭)
-        let snapshot = client.world_processes_list().await?;
+        let snapshot = client.daemon_processes_list().await?;
         println!(
-            "📋 World 配下 Process snapshot ({} entries)",
+            "📋 Daemon 配下 Process snapshot ({} entries)",
             snapshot.len()
         );
         if snapshot.is_empty() {
-            println!("  (= まだ SP register なし)");
+            println!("  (= まだ repo register なし)");
         } else {
             for p in &snapshot {
                 println!(
                     "  • {} (port={}, pid={}, path={})",
-                    p.project_name, p.port, p.pid, p.project_path
+                    p.repo_name, p.port, p.pid, p.repo_path
                 );
             }
         }
@@ -415,22 +413,22 @@ fn processes(watch: bool) -> Result<()> {
         }
 
         println!("\n👁️  --watch: lifecycle event を Ctrl-C まで stream します");
-        let ch = client.world_processes_subscribe().await?;
+        let ch = client.daemon_processes_subscribe().await?;
         loop {
-            match DaemonClient::world_processes_recv_event(ch).await {
+            match DaemonClient::daemon_processes_recv_event(ch).await {
                 Ok(ProcessLifecycleEvent::Add {
-                    project_path,
-                    project_name,
+                    repo_path,
+                    repo_name,
                     port,
                     pid,
                 }) => {
                     println!(
                         "➕ Add: {} (port={}, pid={}, path={})",
-                        project_name, port, pid, project_path
+                        repo_name, port, pid, repo_path
                     );
                 }
-                Ok(ProcessLifecycleEvent::Remove { project_path }) => {
-                    println!("➖ Remove: {}", project_path);
+                Ok(ProcessLifecycleEvent::Remove { repo_path }) => {
+                    println!("➖ Remove: {}", repo_path);
                 }
                 Err(e) => {
                     eprintln!("⚠️  stream 終了: {}", e);
@@ -442,26 +440,26 @@ fn processes(watch: bool) -> Result<()> {
     })
 }
 
-/// `vp daemon discover` — chronista-hub registry の world 一覧を TheWorld 経由で取得する。
+/// `vp daemon discover` — chronista-hub registry の daemon 一覧を daemon 経由で取得する。
 ///
-/// SSOT: CLI は hub に直接接続せず、World daemon の `hub/discover` RPC を叩く。
+/// SSOT: CLI は hub に直接接続せず、daemon の `hub/discover` RPC を叩く。
 fn discover() -> Result<()> {
-    use crate::daemon::client::WorldControlClient;
+    use crate::daemon::client::DaemonControlClient;
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
-        let client = WorldControlClient::connect(crate::cli::world_port(), 3)
+        let client = DaemonControlClient::connect(crate::cli::daemon_port(), 3)
             .await
             .map_err(|e| {
-                anyhow::anyhow!("TheWorld 接続失敗: {} (= `vp daemon start` で起動済か?)", e)
+                anyhow::anyhow!("daemon 接続失敗: {} (= `vp daemon start` で起動済か?)", e)
             })?;
 
-        let worlds = client.hub_discover().await?;
-        if worlds.is_empty() {
-            println!("🌐 hub registry に world なし (hub 未到達 or 登録ゼロ)");
+        let nodes = client.hub_discover().await?;
+        if nodes.is_empty() {
+            println!("🌐 hub registry に daemon なし (hub 未到達 or 登録ゼロ)");
         } else {
-            println!("🌐 hub registry の world ({} 件):", worlds.len());
-            for w in &worlds {
+            println!("🌐 hub registry の daemon ({} 件):", nodes.len());
+            for w in &nodes {
                 let handle = w.get("handle").and_then(|v| v.as_str()).unwrap_or("?");
                 let name = w.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let at = w
@@ -489,18 +487,18 @@ fn discover() -> Result<()> {
 fn status() -> Result<()> {
     match process::is_daemon_running() {
         Some(pid) => {
-            println!("👑 TheWorld is running (PID: {})", pid);
+            println!("👑 daemon is running (PID: {})", pid);
             // ヘルスチェックで詳細情報を取得
             if let Ok(resp) = reqwest::blocking::get(format!(
                 "http://[::1]:{}/api/health",
-                crate::cli::world_port()
+                crate::cli::daemon_port()
             )) && let Ok(json) = resp.json::<serde_json::Value>()
             {
                 println!(
                     "  Version: {}",
                     json.get("version").and_then(|v| v.as_str()).unwrap_or("?")
                 );
-                println!("  Port: {}", crate::cli::world_port());
+                println!("  Port: {}", crate::cli::daemon_port());
                 // hub federation 状態 (disabled/connecting/connected/disconnected)。
                 // dogfood で「federation が本当に ON か」を CLI だけで確認できるようにする
                 // (config.kdl hub-addr 永続化とペア、旧 daemon の health に hub field は無いので if let)。
@@ -510,27 +508,21 @@ fn status() -> Result<()> {
             }
             // Process 一覧
             //
-            // doc 45 段 2: 旧 `GET /api/world/processes` から Unison `registry.list` に差し替え。
+            // doc 45 段 2: 旧 `GET /api/daemon/processes` から Unison `registry.list` に差し替え。
             // ⚠️ 旧経路はこの行を**一度も表示していなかった**: response は
             // `{"processes": [...]}` なのに `json.as_array()` で受けていて、常に None に
             // 落ちて丸ごと skip されていた（transport 移行のついでに直る類の取りこぼし）。
-            if let Some(processes) = crate::world_client::list_processes_blocking() {
+            if let Some(processes) = crate::daemon_client::list_processes_blocking() {
                 println!("  Processes: {}", processes.len());
                 for p in &processes {
-                    let name = p
-                        .get("project_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let path = p
-                        .get("project_path")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
+                    let name = p.get("repo_name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let path = p.get("repo_path").and_then(|v| v.as_str()).unwrap_or("?");
                     println!("    - {} ({})", name, path);
                 }
             }
         }
         None => {
-            println!("TheWorld is not running");
+            println!("daemon is not running");
             // script から `vp daemon status` の成否で分岐できるよう、停止中は非ゼロで返す
             // (launchctl list / systemctl status と同じ流儀。従来は稼働中/停止中どちらも
             //  exit 0 で判別不能だった)。表示は出し終えているので即 exit で問題ない。

@@ -33,8 +33,10 @@ import { layoutEngine } from "./layout-host";
 
 export const APP_SCOPE = "app";
 
-/** data-frame-id と 1:1 の pane id 群（main_area.rs の静的 DOM が SSOT） */
-export const APP_PANE_IDS = ["echoes", "pp", "ge", "bs", "preview", "empty"] as const;
+/** data-frame-id と 1:1 の pane id 群（main_area.rs の静的 DOM が SSOT）。
+ *  doc 52 §10 wave 0: pp（Board）は app pane を退役し、lane tiling の board pane
+ *  （#lane-board、lane-panes.ts）へ移った。lane pane（= lane workbench 全体）の中に board が並ぶ。 */
+export const APP_PANE_IDS = ["lane", "runner", "devices", "preview", "empty"] as const;
 export type AppPaneId = (typeof APP_PANE_IDS)[number];
 
 // ---------- data: preset Scene 群（旧 scenes.ts の後継） ----------
@@ -58,45 +60,17 @@ function focusLayout(id: AppPaneId): Layout {
 	return { structure: baseStructure(), attention: fieldOf({ [id]: 1 }) };
 }
 
-/**
- * pp-overlay の float は場が決めるサイズ（share = raw/(1+raw) ≈ 0.44 → 正方形の辺）。
- * 位置は ephemeral（moveFloat）— applyAppScene が毎回右上へ置き直す
- */
-const PP_OVERLAY_RAW = 0.8;
-const PP_OVERLAY_FLOAT_POS = { x: 0.98, y: 0.04 };
-
 export const APP_SCENES: readonly Scene[] = [
 	{
-		id: "lead-focus",
+		id: "lane-focus",
 		name: "Lead Focus",
-		description: "集中 coding — Echoes 独占、PP は場の外で待機",
-		layout: focusLayout("echoes"),
+		description: "集中 coding — lane workbench（Conversation）独占",
+		layout: focusLayout("lane"),
 	},
-	{
-		id: "side-review",
-		name: "Side Review",
-		description: "並列 review — 左で打鍵、右で参照",
-		layout: {
-			structure: baseStructure(),
-			attention: fieldOf({ echoes: 1, pp: 1 }),
-		},
-	},
-	{
-		id: "pp-overlay",
-		name: "PP Overlay",
-		description: "軽い参照 — PP が右上に浮かぶ（構造非所属 = floating）",
-		layout: {
-			// pp を構造から外す = popOut の形。attention > 0 なので浮く（LE-18）
-			structure: baseStructure("pp"),
-			attention: fieldOf({ echoes: 1, pp: PP_OVERLAY_RAW }),
-		},
-	},
-	{ id: "pp-focus", name: "PP Focus", description: "Canvas 集中", layout: focusLayout("pp") },
-	// kind → `${pane}-focus` bridge（entry.tsx）が使う単独 focus 群。
-	// bs-focus は旧体系からの欠落補充 — Bastet click が unknown kind → empty に
-	// 落ちて pane が見えなかった潜在バグの根治
-	{ id: "ge-focus", name: "GE Focus", description: "Gold Experience 単独", layout: focusLayout("ge") },
-	{ id: "bs-focus", name: "Bastet Focus", description: "Bastet 単独", layout: focusLayout("bs") },
+	// kind → `${pane}-focus` bridge（entry.tsx）が使う単独 focus 群。pp は退役（doc 52 §10
+	// wave 0 — board は lane workbench 内の pane に移り、app scene の関心事から外れた）。
+	{ id: "runner-focus", name: "runner Focus", description: "Runner 単独", layout: focusLayout("runner") },
+	{ id: "devices-focus", name: "Devices Focus", description: "Devices 単独", layout: focusLayout("devices") },
 	{
 		id: "preview-focus",
 		name: "Preview Focus",
@@ -113,8 +87,9 @@ export const APP_SCENES: readonly Scene[] = [
 
 const APP_SCENE_BY_ID = new Map(APP_SCENES.map((s) => [s.id, s]));
 
-/** Ctrl+Shift+]/[ で巡る preset（単独 focus 群と empty は巡回に入れない） */
-export const PRESET_CYCLE = ["lead-focus", "side-review", "pp-overlay", "pp-focus"] as const;
+/** Ctrl+Shift+]/[ で巡る preset（doc 52 §10 wave 0: pp scene 退役後は 4 つの agent focus を巡る。
+ *  empty は巡回に入れない）。lane-focus = lane workbench（board も console も chat もこの中の tiling）。 */
+export const PRESET_CYCLE = ["lane-focus", "runner-focus", "devices-focus", "preview-focus"] as const;
 
 // ---------- calculations ----------
 
@@ -146,34 +121,20 @@ export function currentAppSceneId(): string | null {
 	return currentSceneId;
 }
 
-/**
- * float 位置の再 pin。位置は ephemeral（Scene / Layout snapshot に直列化されない、
- * LE-18）で、pp が非 floating の形を経由すると engine 側で prune される — 適用の度に、
- * pp が浮いている形なら右上定位置へ置き直す（team-b review #2: recall 経由で中央寄せに
- * 戻っていた漏れの根治）。
- */
-function repinPpFloat(): void {
-	if (layoutEngine.resolved(APP_SCOPE).pp?.floating) {
-		layoutEngine.moveFloat(APP_SCOPE, "pp", PP_OVERLAY_FLOAT_POS);
-	}
-}
-
 /** scene 適用の共通経路（preset / lane recall 両方が通る）。 */
 function applySceneToEngine(scene: Scene): void {
 	layoutEngine.applyScene(APP_SCOPE, scene);
-	repinPpFloat();
 }
 
 /**
  * AI（MCP layout_set、doc 49 LE-P4 PR3）からの直接適用。jump — CSS transition が
  * 視覚を均す（scrub / driver は app scope 未導入、冒頭 doc）。author="ai" が settle
  * 監査に残る。preset 外の形になるので cycle の現在位置はリセットする。
- * AI の明示配置は stand 訪問を終える（訪問中の場を無関係な出発点で上書きしない —
+ * AI の明示配置は agent 訪問を終える（訪問中の場を無関係な出発点で上書きしない —
  * 未終了だと後続の ✕ / lane 切替が古い beforeVisit で AI の配置を握り潰す）。
  */
 export function applyAppLayoutFromAi(next: Layout): void {
 	layoutEngine.update(APP_SCOPE, () => cloneLayout(next));
-	repinPpFloat();
 	layoutEngine.settle(APP_SCOPE, "ai");
 	currentSceneId = null;
 	transientVisit = false;
@@ -182,7 +143,7 @@ export function applyAppLayoutFromAi(next: Layout): void {
 
 /** preset を適用する（author = "scene" で settle log に刻まれる）。未知 id は false */
 export function applyAppScene(id: string): boolean {
-	// 明示の scene 選択（hotkey / cycle / empty 等）は stand 訪問を終える
+	// 明示の scene 選択（hotkey / cycle / empty 等）は agent 訪問を終える
 	transientVisit = false;
 	const scene = APP_SCENE_BY_ID.get(id);
 	if (!scene) {
@@ -194,18 +155,18 @@ export function applyAppScene(id: string): boolean {
 	return true;
 }
 
-// ---------- stand pane の「訪問」（sidebar click の一時 view、2026-07-23 dogfood） ----------
-// sidebar から PP/GE/Bastet を開くのは「ちょっと見る」訪問であって workspace の形の
-// 選択ではない — 訪問を lane の配置記憶に焼き込むと、lane を行き来しても stand 画面が
-// 出っ放しになり console に戻る口が hotkey しかなくなる（Bastet 可視化で表面化した
+// ---------- agent pane の「訪問」（sidebar click の一時 view、2026-07-23 dogfood） ----------
+// sidebar から board/runner/Devices を開くのは「ちょっと見る」訪問であって workspace の形の
+// 選択ではない — 訪問を lane の配置記憶に焼き込むと、lane を行き来しても agent 画面が
+// 出っ放しになり console に戻る口が hotkey しかなくなる（Devices 可視化で表面化した
 // 新旧共通の UX ギャップ）。訪問は出発点を覚え、✕（close-pane）で戻る。
 
 let transientVisit = false;
 let beforeVisit: { layout: Layout; sceneId: string | null } | null = null;
 
 /**
- * stand pane を訪問する（bridge の kind≠terminal 経路用）。
- * 訪問の入れ子（Bastet → GE）は最初の出発点を保つ。
+ * agent pane を訪問する（bridge の kind≠terminal 経路用）。
+ * 訪問の入れ子（Devices → runner）は最初の出発点を保つ。
  */
 export function visitAppPane(paneId: string): boolean {
 	if (!transientVisit) {
@@ -219,7 +180,7 @@ export function visitAppPane(paneId: string): boolean {
 	return ok;
 }
 
-/** 訪問を閉じて出発点の配置へ戻る（✕ ボタン）。訪問中でなければ lead-focus に倒す */
+/** 訪問を閉じて出発点の配置へ戻る（✕ ボタン）。訪問中でなければ lane-focus に倒す */
 export function closeAppPaneVisit(): void {
 	if (transientVisit && beforeVisit) {
 		applySceneToEngine({
@@ -234,7 +195,7 @@ export function closeAppPaneVisit(): void {
 	}
 	transientVisit = false;
 	beforeVisit = null;
-	applyAppScene("lead-focus");
+	applyAppScene("lane-focus");
 }
 
 /** preset の cyclic 切替（direction = 1 で next、-1 で prev） */
@@ -249,7 +210,7 @@ export function appLayoutReady(): boolean {
 	return layoutEngine.history(APP_SCOPE).length > 0;
 }
 
-/** pane が今見えているか（面積 > 0）。canvas-handler の auto-open 判定用 */
+/** pane が今見えているか（面積 > 0）。board-handler の auto-open 判定用 */
 export function isAppPaneVisible(id: string): boolean {
 	const p = layoutEngine.resolved(APP_SCOPE)[id];
 	return !!p && p.rect.w > 0 && p.rect.h > 0;
@@ -263,7 +224,7 @@ const laneStates = new Map<string, { layout: Layout; sceneId: string | null }>()
 
 /** lane を離れる時に呼ぶ。「empty が主役」（何も選択していない）の形は覚えない */
 export function saveAppStateFor(lane: string): void {
-	// stand 訪問中は**出発点**の形を覚える — 一時 view を lane の記憶に焼き込まない
+	// agent 訪問中は**出発点**の形を覚える — 一時 view を lane の記憶に焼き込まない
 	if (transientVisit && beforeVisit) {
 		const primary = primaryAppPane(resolve(beforeVisit.layout));
 		if (primary === null || primary === "empty") return;
@@ -281,12 +242,12 @@ export function saveAppStateFor(lane: string): void {
 	});
 }
 
-/** lane に入る時に呼ぶ。初訪問は lead-focus（旧 default と同じ）。stand 訪問は終わる */
+/** lane に入る時に呼ぶ。初訪問は lane-focus（旧 default と同じ）。agent 訪問は終わる */
 export function restoreAppStateFor(lane: string): void {
 	transientVisit = false;
 	const saved = laneStates.get(lane);
 	if (!saved) {
-		applyAppScene("lead-focus");
+		applyAppScene("lane-focus");
 		return;
 	}
 	// 復元は Scene の total recall と同じ意味論（author = "scene" が監査に刻まれる）
@@ -330,6 +291,13 @@ function renderAppPanes(root: ParentNode, resolved: ResolvedMap): void {
 		el.style.height = visible ? `${p.rect.h * 100}%` : "100%";
 		el.style.opacity = visible ? "1" : "0";
 		el.style.pointerEvents = visible ? "auto" : "none";
+		// ⚠️ visibility は opacity と別に必須（2026-07-24 実測の根治）: opacity:0 +
+		// pointer-events:none でも、pane 内の iframe（#preview-frame / board の sandbox）は
+		// WebKit の **compositor 側 scroll hit-test に残り**、main area 上の wheel を
+		// 空の iframe に吸い込む（macOS 26.5 で顕在化 — click は main-thread 判定で
+		// 素通りするため「wheel だけ死ぬ」）。visibility:hidden は両スレッドの
+		// hit-test から外れ、layout は保たれるので xterm の fit も壊さない。
+		el.style.visibility = visible ? "visible" : "hidden";
 		el.style.zIndex = p.floating ? String(100 + Math.round(p.attention * 100)) : "0";
 		el.classList.toggle("active", id === primary);
 	});

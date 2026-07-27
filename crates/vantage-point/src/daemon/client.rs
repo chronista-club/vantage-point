@@ -1,6 +1,6 @@
 //! Daemon への Unison チャネルクライアント
 //!
-//! Daemon (TheWorld :32000) に QUIC 接続し、world-process / events channel を通じて
+//! Daemon (daemon :32000) に QUIC 接続し、daemon-repo / events channel を通じて
 //! Process lifecycle の取得・event log の emit/query を行う。
 //!
 //! 接続時に channel を best-effort open し、以降は各 channel の
@@ -12,29 +12,29 @@ use unison::{ProtocolClient, UnisonChannel};
 
 use super::protocol::*;
 
-/// TheWorld QUIC ポート（Daemon 統合: [::1]:32000）。
+/// daemon QUIC ポート（Daemon 統合: [::1]:32000）。
 ///
-/// VP_PROFILE 分離: brew=32000 / dev=32100。 world port と同一 (`vp_paths::default_world_port()`)。
+/// VP_PROFILE 分離: brew=32000 / dev=32100。 daemon port と同一 (`vp_paths::default_daemon_port()`)。
 pub fn daemon_quic_port() -> u16 {
-    crate::cli::world_port()
+    crate::cli::daemon_port()
 }
 
 /// Daemon への Unison チャネルクライアント
 ///
-/// world-process / events channel を保持し、用途別にリクエストをルーティングする:
-/// - world_process_ch: VP-154 PR-2 — Process lifecycle (list / subscribe)
+/// daemon-repo / events channel を保持し、用途別にリクエストをルーティングする:
+/// - daemon_repo_ch: VP-154 PR-2 — Process lifecycle (list / subscribe)
 /// - events_ch: L2 (doc 27 §5-3) — event log (emit / query)
 pub struct DaemonClient {
-    /// VP-154 PR-2: world-process チャネル（Process snapshot / lifecycle stream）
-    /// open 失敗時は None (= TheWorld が古い binary で channel 不在のとき silent fallback)。
-    world_process_ch: Option<UnisonChannel>,
+    /// VP-154 PR-2: daemon-repo チャネル（Process snapshot / lifecycle stream）
+    /// open 失敗時は None (= daemon が古い binary で channel 不在のとき silent fallback)。
+    daemon_repo_ch: Option<UnisonChannel>,
     /// L2 (doc 27 §5-3): events チャネル（event log の emit / query）。
     /// best-effort open、古い daemon で不在なら None（呼び出し時 error）。
     events_ch: Option<UnisonChannel>,
 }
 
 impl DaemonClient {
-    /// Daemon に接続し、world-process / events チャネルを best-effort open する（リトライ付き）
+    /// Daemon に接続し、daemon-repo / events チャネルを best-effort open する（リトライ付き）
     ///
     /// 最大 `retries` 回、200ms 間隔で接続を試みる。
     pub async fn connect(port: u16, retries: u32) -> Result<Self> {
@@ -51,13 +51,13 @@ impl DaemonClient {
                 Ok(_) => {
                     tracing::info!("Daemon に接続 ({})", addr);
 
-                    // VP-154 PR-2: world-process は best-effort オープン (= 古い daemon で
+                    // VP-154 PR-2: daemon-repo は best-effort オープン (= 古い daemon で
                     // channel 不在なら None で fallback、 list/subscribe 呼び出し時 error 化)。
-                    let world_process_ch = match client.open_channel("world-process").await {
+                    let daemon_repo_ch = match client.open_channel("daemon-repo").await {
                         Ok(ch) => Some(ch),
                         Err(e) => {
                             tracing::debug!(
-                                "world-process チャネル不在 (古い daemon バイナリ?): {}",
+                                "daemon-repo チャネル不在 (古い daemon バイナリ?): {}",
                                 e
                             );
                             None
@@ -74,7 +74,7 @@ impl DaemonClient {
                     };
 
                     return Ok(Self {
-                        world_process_ch,
+                        daemon_repo_ch,
                         events_ch,
                     });
                 }
@@ -102,23 +102,23 @@ impl DaemonClient {
     }
 
     // =========================================================================
-    // VP-154 PR-2: world-process 操作
+    // VP-154 PR-2: daemon-repo 操作
     // =========================================================================
 
-    /// world-process.list — 現在の Process snapshot を取得する。
+    /// daemon-repo.list — 現在の Process snapshot を取得する。
     ///
     /// 古い daemon バイナリで channel 不在なら error。 caller は `vp daemon stop && start`
-    /// でバイナリ更新を促すか、 `/api/health` の stands field に fallback する。
-    pub async fn world_processes_list(&self) -> Result<Vec<ProcessSnapshot>> {
-        let ch = self.world_process_ch.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("world-process チャネル不在 (= daemon バイナリが古い、 PR-2 未反映)")
+    /// でバイナリ更新を促すか、 `/api/health` の agents field に fallback する。
+    pub async fn daemon_processes_list(&self) -> Result<Vec<ProcessSnapshot>> {
+        let ch = self.daemon_repo_ch.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("daemon-repo チャネル不在 (= daemon バイナリが古い、 PR-2 未反映)")
         })?;
         let resp = ch
             .request::<serde_json::Value, serde_json::Value>("list", &serde_json::json!({}))
             .await
-            .map_err(|e| anyhow::anyhow!("world-process.list 失敗: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("daemon-repo.list 失敗: {}", e))?;
         let processes: Vec<ProcessSnapshot> = serde_json::from_value(resp["processes"].clone())
-            .context("world-process.list レスポンスの processes パースに失敗")?;
+            .context("daemon-repo.list レスポンスの processes パースに失敗")?;
         Ok(processes)
     }
 
@@ -160,19 +160,19 @@ impl DaemonClient {
             .context("events.query レスポンスの events パースに失敗")
     }
 
-    /// world-process.subscribe — 現在の subscriber stream を確立し、 lifecycle event を
+    /// daemon-repo.subscribe — 現在の subscriber stream を確立し、 lifecycle event を
     /// `recv()` で取り出すための reference を返す。
     ///
     /// caller は返された channel reference に対して `recv().await` を loop で呼んで
     /// `ProcessLifecycleEvent` を取得する。 channel 不在は error。
     /// subscribe ack は内部で 1 回 request() で確認、 失敗時は error。
-    pub async fn world_processes_subscribe(&self) -> Result<&UnisonChannel> {
-        let ch = self.world_process_ch.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("world-process チャネル不在 (= daemon バイナリが古い、 PR-2 未反映)")
+    pub async fn daemon_processes_subscribe(&self) -> Result<&UnisonChannel> {
+        let ch = self.daemon_repo_ch.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("daemon-repo チャネル不在 (= daemon バイナリが古い、 PR-2 未反映)")
         })?;
         ch.request::<serde_json::Value, serde_json::Value>("subscribe", &serde_json::json!({}))
             .await
-            .map_err(|e| anyhow::anyhow!("world-process.subscribe 失敗: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("daemon-repo.subscribe 失敗: {}", e))?;
         Ok(ch)
     }
 
@@ -181,18 +181,18 @@ impl DaemonClient {
     /// `recv()` は internal の Event queue から ProtocolMessage を取り出し、
     /// method = "event" で来た payload を `ProcessLifecycleEvent` に decode する。
     /// 想定外の method (= 別 event 種別) は warn + skip する design (= 将来 拡張可能性)。
-    pub async fn world_processes_recv_event(ch: &UnisonChannel) -> Result<ProcessLifecycleEvent> {
+    pub async fn daemon_processes_recv_event(ch: &UnisonChannel) -> Result<ProcessLifecycleEvent> {
         loop {
             let msg = ch
                 .recv()
                 .await
-                .map_err(|e| anyhow::anyhow!("world-process recv 失敗: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("daemon-repo recv 失敗: {}", e))?;
             if msg.msg_type != MessageType::Event {
-                tracing::debug!("world-process 想定外 msg_type を skip: {:?}", msg.msg_type);
+                tracing::debug!("daemon-repo 想定外 msg_type を skip: {:?}", msg.msg_type);
                 continue;
             }
             if msg.method != "event" {
-                tracing::warn!("world-process 想定外 event method を skip: {}", msg.method);
+                tracing::warn!("daemon-repo 想定外 event method を skip: {}", msg.method);
                 continue;
             }
             let payload = msg
@@ -205,14 +205,14 @@ impl DaemonClient {
     }
 }
 
-/// World daemon の "world-control" channel だけを open する軽量クライアント。
+/// daemon の "daemon-control" channel だけを open する軽量クライアント。
 ///
-/// control plane 一元化: projects は World 権威 (db/world) なので、 CLI は SP を経由せず
-/// World daemon に直接 Unison RPC する。 `DaemonClient` は world-process / events を open するが、
-/// one-shot CLI の projects 操作はそれらが不要なので world-control のみ open する。
-pub struct WorldControlClient {
+/// control plane 一元化: repos は daemon 権威 (db/machine) なので、 CLI は repo を経由せず
+/// daemon に直接 Unison RPC する。 `DaemonClient` は daemon-repo / events を open するが、
+/// one-shot CLI の repos 操作はそれらが不要なので daemon-control のみ open する。
+pub struct DaemonControlClient {
     ch: UnisonChannel,
-    /// 稼働 project の read-only 照会用（`registry.list`）。
+    /// 稼働 repo の read-only 照会用（`registry.list`）。
     ///
     /// 同一 QUIC connection 上の別 stream として open する（Unison の multiplex）。
     /// processes 一覧のために別接続を張らずに済ませるための同居で、古い daemon で
@@ -222,8 +222,8 @@ pub struct WorldControlClient {
     addr: String,
 }
 
-impl WorldControlClient {
-    /// World daemon に接続し world-control channel を open する（リトライ付き）。
+impl DaemonControlClient {
+    /// daemon に接続し daemon-control channel を open する（リトライ付き）。
     pub async fn connect(port: u16, retries: u32) -> Result<Self> {
         let addr = format!("[::1]:{}", port);
         let transport = unison::network::quic::QuicClient::builder()
@@ -235,8 +235,8 @@ impl WorldControlClient {
         for attempt in 0..retries {
             match client.connect(&addr).await {
                 Ok(_) => {
-                    let ch = client.open_channel("world-control").await.map_err(|e| {
-                        anyhow::anyhow!("world-control チャネルオープン失敗: {}", e)
+                    let ch = client.open_channel("daemon-control").await.map_err(|e| {
+                        anyhow::anyhow!("daemon-control チャネルオープン失敗: {}", e)
                     })?;
                     // registry は best-effort（古い daemon で不在なら None）。
                     let registry_ch = client.open_channel("registry").await.ok();
@@ -251,7 +251,7 @@ impl WorldControlClient {
                 }
                 Err(e) => {
                     return Err(anyhow::anyhow!(
-                        "World daemon 接続失敗 ({}回リトライ後): {} - {}",
+                        "daemon 接続失敗 ({}回リトライ後): {} - {}",
                         retries,
                         addr,
                         e
@@ -259,59 +259,59 @@ impl WorldControlClient {
                 }
             }
         }
-        anyhow::bail!("World daemon 接続失敗: {}", addr)
+        anyhow::bail!("daemon 接続失敗: {}", addr)
     }
 
-    /// world-control method を呼ぶ。 Unison の error 慣習 (VP-163) に従い、 success frame の
+    /// daemon-control method を呼ぶ。 Unison の error 慣習 (VP-163) に従い、 success frame の
     /// `{"error": ...}` を `Err` 化する (= Unison は専用 error frame を持たない)。
     async fn call(&self, method: &str, payload: serde_json::Value) -> Result<serde_json::Value> {
         let resp = self
             .ch
             .request::<serde_json::Value, serde_json::Value>(method, &payload)
             .await
-            .map_err(|e| anyhow::anyhow!("world-control.{} 失敗: {}", method, e))?;
+            .map_err(|e| anyhow::anyhow!("daemon-control.{} 失敗: {}", method, e))?;
         if let Some(err) = resp.get("error").and_then(|e| e.as_str()) {
             anyhow::bail!("{}", err);
         }
         Ok(resp)
     }
 
-    /// 登録 project 一覧 (ProjectInfo の JSON 配列、 ord = sidebar 並び順)。
-    pub async fn projects_list(&self) -> Result<Vec<serde_json::Value>> {
-        let resp = self.call("projects/list", serde_json::json!({})).await?;
-        serde_json::from_value(resp).context("projects/list レスポンスのパースに失敗")
+    /// 登録 repo 一覧 (RepoInfo の JSON 配列、 ord = sidebar 並び順)。
+    pub async fn repos_list(&self) -> Result<Vec<serde_json::Value>> {
+        let resp = self.call("repos/list", serde_json::json!({})).await?;
+        serde_json::from_value(resp).context("repos/list レスポンスのパースに失敗")
     }
 
-    /// project を追加 (追加された ProjectInfo の JSON を返す)。
-    pub async fn projects_add(&self, name: &str, path: &str) -> Result<serde_json::Value> {
+    /// repo を追加 (追加された RepoInfo の JSON を返す)。
+    pub async fn repos_add(&self, name: &str, path: &str) -> Result<serde_json::Value> {
         self.call(
-            "projects/add",
+            "repos/add",
             serde_json::json!({ "name": name, "path": path }),
         )
         .await
     }
 
-    /// project を削除 (path で特定)。
-    pub async fn projects_remove(&self, path: &str) -> Result<()> {
-        self.call("projects/remove", serde_json::json!({ "path": path }))
+    /// repo を削除 (path で特定)。
+    pub async fn repos_remove(&self, path: &str) -> Result<()> {
+        self.call("repos/remove", serde_json::json!({ "path": path }))
             .await?;
         Ok(())
     }
 
-    /// project 名を変更。
-    pub async fn projects_rename(&self, path: &str, name: &str) -> Result<()> {
+    /// repo 名を変更。
+    pub async fn repos_rename(&self, path: &str, name: &str) -> Result<()> {
         self.call(
-            "projects/rename",
+            "repos/rename",
             serde_json::json!({ "path": path, "name": name }),
         )
         .await?;
         Ok(())
     }
 
-    /// project の SP 自動起動 enabled を設定。
-    pub async fn projects_set_enabled(&self, path: &str, enabled: bool) -> Result<()> {
+    /// repo の repo 自動起動 enabled を設定。
+    pub async fn repos_set_enabled(&self, path: &str, enabled: bool) -> Result<()> {
         self.call(
-            "projects/set_enabled",
+            "repos/set_enabled",
             serde_json::json!({ "path": path, "enabled": enabled }),
         )
         .await?;
@@ -319,42 +319,42 @@ impl WorldControlClient {
     }
 
     /// 並び順を変更 (path を順に列挙)。
-    pub async fn projects_reorder(&self, paths: &[String]) -> Result<()> {
-        self.call("projects/reorder", serde_json::json!({ "paths": paths }))
+    pub async fn repos_reorder(&self, paths: &[String]) -> Result<()> {
+        self.call("repos/reorder", serde_json::json!({ "paths": paths }))
             .await?;
         Ok(())
     }
 
-    /// project を起動する (旧 `vp sp start` の後継)。
+    /// repo を起動する (旧 `vp sp start` の後継)。
     ///
-    /// doc 44 P1 (fold-in): project は World プロセス内の `Arc<AppState>` なので、
-    /// 「起動」は子プロセス spawn ではなく World の registry への登録を意味する。
-    /// 既に起動済みなら World 側で no-op になる (二重起動は map のキー一意性が防ぐ)。
-    pub async fn projects_start(&self, name: &str) -> Result<serde_json::Value> {
-        self.call("projects/start", serde_json::json!({ "name": name }))
+    /// doc 44 P1 (fold-in): repo は daemon プロセス内の `Arc<AppState>` なので、
+    /// 「起動」は子プロセス spawn ではなく daemon の registry への登録を意味する。
+    /// 既に起動済みなら daemon 側で no-op になる (二重起動は map のキー一意性が防ぐ)。
+    pub async fn repos_start(&self, name: &str) -> Result<serde_json::Value> {
+        self.call("repos/start", serde_json::json!({ "name": name }))
             .await
     }
 
-    /// project を停止する (旧 `vp sp stop` の後継)。
-    pub async fn projects_stop(&self, name: &str) -> Result<()> {
-        self.call("projects/stop", serde_json::json!({ "name": name }))
+    /// repo を停止する (旧 `vp sp stop` の後継)。
+    pub async fn repos_stop(&self, name: &str) -> Result<()> {
+        self.call("repos/stop", serde_json::json!({ "name": name }))
             .await?;
         Ok(())
     }
 
     // =====================================================================
-    // doc 45 段 1 — HTTP `/api/world/*` にしか無かった面の Unison client。
+    // doc 45 段 1 — HTTP `/api/daemon/*` にしか無かった面の Unison client。
     //
     // 旧 HTTP route は本 PR ではまだ残っている（撤去は doc 45 §5 の段 4）ので、
     // 一時的に同じ操作へ 2 経路がある。これは意図した中間状態で、
     // 「新面が動く → 旧面撤去」の順序（doc 44 で確立）を守るための構成。
     // =====================================================================
 
-    /// project を部分更新する（`name` / `enabled` の指定されたものだけ適用）。
+    /// repo を部分更新する（`name` / `enabled` の指定されたものだけ適用）。
     ///
-    /// 両方 None なら World 側が `No fields to update` を返す（= 何も指定しない update は
+    /// 両方 None なら daemon 側が `No fields to update` を返す（= 何も指定しない update は
     /// 呼び出し側のバグなので黙って成功にしない）。
-    pub async fn projects_update(
+    pub async fn repos_update(
         &self,
         path: &str,
         name: Option<&str>,
@@ -367,13 +367,13 @@ impl WorldControlClient {
         if let Some(enabled) = enabled {
             payload["enabled"] = serde_json::Value::Bool(enabled);
         }
-        self.call("projects/update", payload).await?;
+        self.call("repos/update", payload).await?;
         Ok(())
     }
 
-    /// ghost project（dir が実在しない登録）を除去し、除去した project 名を返す。
-    pub async fn projects_sync(&self) -> Result<Vec<String>> {
-        let resp = self.call("projects/sync", serde_json::json!({})).await?;
+    /// ghost repo（dir が実在しない登録）を除去し、除去した repo 名を返す。
+    pub async fn repos_sync(&self) -> Result<Vec<String>> {
+        let resp = self.call("repos/sync", serde_json::json!({})).await?;
         Ok(resp
             .get("removed")
             .and_then(|r| r.as_array())
@@ -385,47 +385,47 @@ impl WorldControlClient {
             .unwrap_or_default())
     }
 
-    /// projects.kdl を読み直して daemon の in-memory projects に反映させる。
-    pub async fn projects_reload(&self) -> Result<()> {
-        self.call("projects/reload", serde_json::json!({})).await?;
+    /// repos.kdl を読み直して daemon の in-memory repos に反映させる。
+    pub async fn repos_reload(&self) -> Result<()> {
+        self.call("repos/reload", serde_json::json!({})).await?;
         Ok(())
     }
 
-    /// project を再起動する（World 側で stop + start を繋ぐ）。
+    /// repo を再起動する（daemon 側で stop + start を繋ぐ）。
     ///
     /// 内部に grace sleep + 起動確認が入るため、他の RPC より応答が遅い（数秒オーダー）。
-    pub async fn projects_restart(&self, name: &str) -> Result<serde_json::Value> {
-        self.call("projects/restart", serde_json::json!({ "name": name }))
+    pub async fn repos_restart(&self, name: &str) -> Result<serde_json::Value> {
+        self.call("repos/restart", serde_json::json!({ "name": name }))
             .await
     }
 
-    /// project の PointView を開く（未起動なら World 側が起動してから開く）。
-    pub async fn projects_pointview(&self, name: &str) -> Result<()> {
-        self.call("projects/pointview", serde_json::json!({ "name": name }))
+    /// repo の PointView を開く（未起動なら daemon 側が起動してから開く）。
+    pub async fn repos_pointview(&self, name: &str) -> Result<()> {
+        self.call("repos/pointview", serde_json::json!({ "name": name }))
             .await?;
         Ok(())
     }
 
-    /// 全 project 横断の lane 一覧（`vp ps` の LANES / STATUS 列の source）。
+    /// 全 repo 横断の lane 一覧（`vp ps` の LANES / STATUS 列の source）。
     ///
-    /// 返るのは `LaneInfo` の JSON 配列。個別 lane の詳細操作は process-proxy 経由。
+    /// 返るのは `LaneInfo` の JSON 配列。個別 lane の詳細操作は repo-proxy 経由。
     pub async fn lanes_list(&self) -> Result<Vec<serde_json::Value>> {
         self.lanes_list_filtered(None, None, None).await
     }
 
-    /// filter 付きの lane 一覧（`project` / `lane` / `stand`、いずれも省略可 = 無フィルタ）。
+    /// filter 付きの lane 一覧（`repo` / `lane` / `agent`、いずれも省略可 = 無フィルタ）。
     ///
-    /// 並びは project 名昇順 → 同 project 内は開発起点 (root) 先 → created_at 昇順
-    /// （実装は `routes::world::collect_lanes`。doc 45 段 4 で旧 HTTP `GET /api/world/lanes` を
+    /// 並びは repo 名昇順 → 同 repo 内は開発起点 (root) 先 → created_at 昇順
+    /// （実装は `routes::daemon::collect_lanes`。doc 45 段 4 で旧 HTTP `GET /api/daemon/lanes` を
     /// 撤去し、この面が lane 一覧の唯一の入口になった）。
     pub async fn lanes_list_filtered(
         &self,
-        project: Option<&str>,
+        repo: Option<&str>,
         lane: Option<&str>,
-        stand: Option<&str>,
+        agent: Option<&str>,
     ) -> Result<Vec<serde_json::Value>> {
         let mut payload = serde_json::json!({});
-        for (key, value) in [("project", project), ("lane", lane), ("stand", stand)] {
+        for (key, value) in [("repo", repo), ("lane", lane), ("agent", agent)] {
             if let Some(value) = value {
                 payload[key] = serde_json::Value::String(value.to_string());
             }
@@ -440,17 +440,17 @@ impl WorldControlClient {
 
     /// performer lane を作成する（daemon-canonical な descriptor を作る）。
     ///
-    /// `branch` / `stand` 省略時は World 側で default を導出する
-    /// （branch = `<user>/<name>`、stand = config の `default_stand` → `echoes`）。
+    /// `branch` / `agent` 省略時は daemon 側で default を導出する
+    /// （branch = `<user>/<name>`、agent = config の `default_agent` → `claude`）。
     pub async fn lanes_create(
         &self,
         path: &str,
         name: &str,
         branch: Option<&str>,
-        stand: Option<&str>,
+        agent: Option<&str>,
     ) -> Result<serde_json::Value> {
         let mut payload = serde_json::json!({ "path": path, "name": name });
-        for (key, value) in [("branch", branch), ("stand", stand)] {
+        for (key, value) in [("branch", branch), ("agent", agent)] {
             if let Some(value) = value {
                 payload[key] = serde_json::Value::String(value.to_string());
             }
@@ -458,7 +458,7 @@ impl WorldControlClient {
         self.call("lanes/create", payload).await
     }
 
-    /// project の active lane (presence、Model Q) を設定する。
+    /// repo の active lane (presence、Model Q) を設定する。
     pub async fn lanes_set_active(&self, path: &str, address: &str) -> Result<()> {
         self.call(
             "lanes/set_active",
@@ -468,10 +468,10 @@ impl WorldControlClient {
         Ok(())
     }
 
-    /// 稼働中 project の snapshot（`registry.list`）。
+    /// 稼働中 repo の snapshot（`registry.list`）。
     ///
-    /// 各要素は `{project_name, port, pid, project_path}`。fold-in 後は port=0 /
-    /// pid=World 自身なので、意味を持つのは name と path（doc 44 §5.3）。
+    /// 各要素は `{repo_name, port, pid, repo_path}`。fold-in 後は port=0 /
+    /// pid=Daemon 自身なので、意味を持つのは name と path（doc 44 §5.3）。
     pub async fn processes_list(&self) -> Result<Vec<serde_json::Value>> {
         let ch = self
             .registry_ch
@@ -488,25 +488,25 @@ impl WorldControlClient {
             .unwrap_or_default())
     }
 
-    /// chronista-hub registry の world 一覧を取得する（TheWorld 経由で `worlds.Discover` を proxy）。
+    /// chronista-hub registry の daemon 一覧を取得する（daemon 経由で `nodes.Discover` を proxy）。
     ///
-    /// SSOT 原則: CLI は hub に直接接続せず、TheWorld の `hub/discover` RPC を叩く。
-    /// `CHRONISTA_HUB_ADDR` 未設定時は World 側が federation 無効エラーを返す。
-    /// 見送り判定を Project Host の帳簿に記録し、**反映後の滞留一覧**を受け取る
+    /// SSOT 原則: CLI は hub に直接接続せず、daemon の `hub/discover` RPC を叩く。
+    /// `CHRONISTA_HUB_ADDR` 未設定時は daemon 側が federation 無効エラーを返す。
+    /// 見送り判定を Repo Host の帳簿に記録し、**反映後の滞留一覧**を受け取る
     /// （doc 44 §7.5）。
     ///
-    /// 帳簿は db/world にあり World が専有するので CLI からは直接書けない（§8.4）。
+    /// 帳簿は db/machine にあり daemon が専有するので CLI からは直接書けない（§8.4）。
     /// 記録と読み出しを 1 往復にまとめてあるのは、`vp lane cleanup` が判定を表示する
     /// その場で「何回目 / 初回いつ」を添えるため（別 RPC にすると表示のたびに 2 往復になる）。
     pub async fn farewell_observe(
         &self,
-        project_path: &str,
+        repo_path: &str,
         observations: &[crate::host::ledger::FarewellObservation],
     ) -> Result<Vec<crate::host::ledger::FarewellEntry>> {
         let resp = self
             .call(
                 "host/farewell_observe",
-                serde_json::json!({ "path": project_path, "observations": observations }),
+                serde_json::json!({ "path": repo_path, "observations": observations }),
             )
             .await?;
         let pending = resp.get("pending").cloned().unwrap_or_default();
@@ -516,13 +516,13 @@ impl WorldControlClient {
     /// 実際に見送った lane を帳簿に記録する（終端 event、doc 44 §7.5）。返り値は記録件数。
     pub async fn farewell_reclaimed(
         &self,
-        project_path: &str,
+        repo_path: &str,
         lanes: &[crate::host::ledger::FarewellObservation],
     ) -> Result<usize> {
         let resp = self
             .call(
                 "host/farewell_reclaimed",
-                serde_json::json!({ "path": project_path, "lanes": lanes }),
+                serde_json::json!({ "path": repo_path, "lanes": lanes }),
             )
             .await?;
         Ok(resp.get("recorded").and_then(|r| r.as_u64()).unwrap_or(0) as usize)
@@ -531,13 +531,13 @@ impl WorldControlClient {
     /// 帳簿の見送り記録を新しい順に読む（`vp lane history`）。`limit` 0 = 無制限。
     pub async fn farewell_log(
         &self,
-        project_path: &str,
+        repo_path: &str,
         limit: usize,
     ) -> Result<Vec<crate::host::ledger::FarewellEntry>> {
         let resp = self
             .call(
                 "host/farewell_log",
-                serde_json::json!({ "path": project_path, "limit": limit }),
+                serde_json::json!({ "path": repo_path, "limit": limit }),
             )
             .await?;
         let entries = resp.get("entries").cloned().unwrap_or_default();
@@ -548,11 +548,11 @@ impl WorldControlClient {
         let resp = self.call("hub/discover", serde_json::json!({})).await?;
         // 新 daemon は `{ "worlds": [...] }` (channel 慣習 + vp-daemon.kdl の returns と一致)、
         // 旧 daemon は bare array を返す。binary 更新 ↔ daemon 再起動の skew を両対応で吸収。
-        let worlds = match resp.get("worlds") {
+        let nodes = match resp.get("worlds") {
             Some(w) => w.clone(),
             None => resp,
         };
-        serde_json::from_value(worlds).context("hub/discover レスポンスのパースに失敗")
+        serde_json::from_value(nodes).context("hub/discover レスポンスのパースに失敗")
     }
 }
 
@@ -564,7 +564,7 @@ mod tests {
     fn test_daemon_quic_port() {
         // profile 準拠 (brew=32000 / dev=32100)。 SSOT と一致することを検証する
         // (32000 固定 assert だと VP_PROFILE=dev 環境の cargo test で偽陽性に落ちる)。
-        assert_eq!(daemon_quic_port(), vp_paths::default_world_port());
+        assert_eq!(daemon_quic_port(), vp_paths::default_daemon_port());
     }
 
     #[test]

@@ -61,15 +61,15 @@ describe('"app" scope handler（本 module 所有 — 実 engine で検証）', 
 	it("set が場に適用され、settle log に author=ai の監査が刻まれる", () => {
 		const res = layoutHostMcp.set({
 			scope: "app",
-			notation: "echoes | pp",
-			attention: { echoes: 1, pp: 1 },
+			notation: "lane | board",
+			attention: { lane: 1, board: 1 },
 		}) as Record<string, unknown>;
 		expect(res.error).toBeUndefined();
 		expect(res.scope).toBe("app");
 
 		const resolved = layoutEngine.resolved("app");
-		expect(resolved.echoes?.rect.w).toBeCloseTo(0.5);
-		expect(resolved.pp?.rect.x).toBeCloseTo(0.5);
+		expect(resolved.lane?.rect.w).toBeCloseTo(0.5);
+		expect(resolved.board?.rect.x).toBeCloseTo(0.5);
 
 		const log = layoutEngine.history("app");
 		expect(log[log.length - 1]?.author).toBe("ai");

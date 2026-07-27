@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 34. wire × Echoes Act II — 構造化配送(channel E)と wire 可視化
 
 - **日付**: 2026-07-12(hearing 収束 = 同日の mako × conductor 対話、実装前)

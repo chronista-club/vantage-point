@@ -12,7 +12,7 @@
 //!   cargo test -p vantage-point --test hub_client_e2e -- --ignored --nocapture
 //! ```
 //!
-//! 検証内容: run_world が起動時に呼ぶのと同じ `HubClient::connect → register → discover`
+//! 検証内容: run_daemon が起動時に呼ぶのと同じ `HubClient::connect → register → discover`
 //! 経路を実 hub に対して実行し、自身の handle が discover 結果に現れることを確認する。
 
 use vantage_point::daemon::hub_client::{self, HubClient};
@@ -27,9 +27,9 @@ async fn register_then_discover_roundtrip() {
     let addr = hub_client::hub_addr()
         .expect("CHRONISTA_HUB_ADDR を設定して hub を起動した状態で実行すること");
 
-    // run_world と同じ handle 解決ロジック（ここでは固定 handle でテスト独立性を担保）。
-    let handle = "vp-e2e-world";
-    let name = "VP e2e World";
+    // run_daemon と同じ handle 解決ロジック（ここでは固定 handle でテスト独立性を担保）。
+    let handle = "vp-e2e-daemon";
+    let name = "VP e2e Daemon";
     // federation L2: 固定の wld_id + endpoint 候補を載せる（hub S2 未実装なら無視、register は非破壊）。
     let wld_id = "wld_e2e-test";
     let endpoints = vec!["[2001:db8::1]:32000".to_string()];
@@ -46,15 +46,15 @@ async fn register_then_discover_roundtrip() {
         "registered_at が空（hub が timestamp を返していない）"
     );
 
-    let worlds = client.discover().await.expect("discover 失敗");
+    let nodes = client.discover().await.expect("discover 失敗");
     assert!(
-        worlds.iter().any(|w| w.handle == handle),
-        "discover 結果に自身の handle が見つからない: {worlds:?}"
+        nodes.iter().any(|w| w.handle == handle),
+        "discover 結果に自身の handle が見つからない: {nodes:?}"
     );
 
     println!(
         "✅ e2e OK: handle={handle} registered_at={} discover={} 件",
         entry.registered_at,
-        worlds.len()
+        nodes.len()
     );
 }

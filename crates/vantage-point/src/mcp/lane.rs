@@ -9,9 +9,9 @@ use super::*;
 /// Parameters for the switch_lane tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SwitchLaneParams {
-    /// Lane token to activate within the current project
+    /// Lane token to activate within the current repo
     #[schemars(
-        description = "Lane token to activate in the current project's vp-app: 'root' (lead) or a performer name (e.g. 'feat-api')."
+        description = "Lane token to activate in the current repo's vp-app: 'root' (lead) or a performer name (e.g. 'feat-api')."
     )]
     pub lane: String,
 }
@@ -34,7 +34,7 @@ fn lane_name_of(lane: &serde_json::Value) -> String {
 /// MCP tool の `kind` param は client との契約なので語彙は据え置き、判定だけ名前ベースにした
 /// （開発起点は予約名 `conductor`、それ以外が旧 performer）。
 fn lane_kind_label(lane: &serde_json::Value) -> &'static str {
-    if lane_name_of(lane) == crate::process::lanes_state::ROOT_LANE_NAME {
+    if lane_name_of(lane) == crate::repo::lanes_state::ROOT_LANE_NAME {
         "root"
     } else {
         "performer"
@@ -44,9 +44,9 @@ fn lane_kind_label(lane: &serde_json::Value) -> &'static str {
 /// Parameters for the add_performer tool (R5: lane clone + Performer Lane spawn).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AddPerformerParams {
-    /// Performer name. Used as the `name` field of the Lane address (`<project>/performer/<name>`).
+    /// Performer name. Used as the `name` field of the Lane address (`<repo>/performer/<name>`).
     #[schemars(
-        description = "Performer name (人間可読の短い slug、 例: 'feat-api', 'sub'). Lane address の `<project>/performer/<name>` 部分になる。"
+        description = "Performer name (人間可読の短い slug、 例: 'feat-api', 'sub'). Lane address の `<repo>/performer/<name>` 部分になる。"
     )]
     pub name: String,
     /// Optional branch. If omitted, server auto-derives `<git-user>/<sanitized-name>`.
@@ -54,11 +54,11 @@ pub struct AddPerformerParams {
         description = "Lane clone する branch 名 (省略可)。 省略時は server が `git config user.name` から `<user>/<name>` を auto-derive。"
     )]
     pub branch: Option<String>,
-    /// Optional Lane Stand. Defaults to "echoes".
+    /// Optional Lane Agent. Defaults to "claude".
     #[schemars(
-        description = "Lane Stand 種類 (engine): 'echoes' (default、 claude) / 'codex' (OpenAI Codex CLI) / 'grok' (xAI Grok CLI) / 'opencode' (opencode、 model は opencode config) / 'shell'。"
+        description = "Lane Agent 種類 (engine): 'claude' (default、 claude) / 'codex' (OpenAI Codex CLI) / 'grok' (xAI Grok CLI) / 'opencode' (opencode、 model は opencode config) / 'shell'。"
     )]
-    pub stand: Option<String>,
+    pub agent: Option<String>,
     /// Optional base ref for the worktree fork point (co-evolution #2).
     #[schemars(
         description = "worktree の分岐元 ref (省略可)。未 push の local branch も可 (root の feature branch 上の未 merge 土台を wing に配れる)。省略時は performer-files.kdl の base-ref → origin/HEAD → main。"
@@ -66,7 +66,7 @@ pub struct AddPerformerParams {
     pub base: Option<String>,
     /// Optional claude model alias for this lane (co-evolution #1).
     #[schemars(
-        description = "この lane の claude model alias (省略可、例: 'opus' / 'sonnet' / 'haiku' / 'claude-fable-5')。task 難度に合わせて指定する (機械的作業=sonnet / 中核設計=opus 等)。Act I spawn・respawn・Act II engine が共有。省略時は config の default-lane-model (既定 Opus)。"
+        description = "この lane の claude model alias (省略可、例: 'opus' / 'sonnet' / 'haiku' / 'claude-fable-5')。task 難度に合わせて指定する (機械的作業=sonnet / 中核設計=opus 等)。tui spawn・respawn・gui engine が共有。省略時は config の default-lane-model (既定 Opus)。"
     )]
     pub model: Option<String>,
 }
@@ -76,13 +76,13 @@ pub struct AddPerformerParams {
 pub struct DeletePerformerParams {
     /// Performer name to delete.
     #[schemars(
-        description = "Performer name to delete (例: 'keystage', 'feat-api')。 Lane address の `<project>/performer/<name>` の `<name>` 部分。"
+        description = "Performer name to delete (例: 'keystage', 'feat-api')。 Lane address の `<repo>/performer/<name>` の `<name>` 部分。"
     )]
     pub name: String,
 
     /// Whether to also remove the lane workspace dir.
     #[schemars(
-        description = "Lane workspace dir も削除するか (default: true)。 false で SP pool + tmux session のみ kill、 dir 残置 (debug / forensic 用途)。"
+        description = "Lane workspace dir も削除するか (default: true)。 false で repo pool + tmux session のみ kill、 dir 残置 (debug / forensic 用途)。"
     )]
     #[serde(default)]
     pub cleanup: Option<bool>,
@@ -112,21 +112,21 @@ pub struct ListLanesParams {
 pub struct FlowHandoffParams {
     /// Performer name (新規作成する performer の slug)
     #[schemars(
-        description = "Performer name (例: 'feat-api', 'sub')。 Lane address の `<project>/performer/<name>` 部分。"
+        description = "Performer name (例: 'feat-api', 'sub')。 Lane address の `<repo>/performer/<name>` 部分。"
     )]
     pub name: String,
 
-    /// Optional branch (省略時は SP 側で `<git-user>/<sanitized-name>` を auto-derive)
-    #[schemars(description = "Lane clone する branch (省略時は SP が auto-derive)。")]
+    /// Optional branch (省略時は repo 側で `<git-user>/<sanitized-name>` を auto-derive)
+    #[schemars(description = "Lane clone する branch (省略時は repo が auto-derive)。")]
     #[serde(default)]
     pub branch: Option<String>,
 
-    /// Optional Lane Stand (default: "echoes")
+    /// Optional Lane Agent (default: "claude")
     #[schemars(
-        description = "Lane Stand (engine): 'echoes' (default、 claude) / 'codex' / 'grok' / 'opencode' / 'shell'。"
+        description = "Lane Agent (engine): 'claude' (default、 claude) / 'codex' / 'grok' / 'opencode' / 'shell'。"
     )]
     #[serde(default)]
-    pub stand: Option<String>,
+    pub agent: Option<String>,
 
     /// Optional base ref for the worktree fork point (co-evolution #2)
     #[schemars(
@@ -168,28 +168,28 @@ pub struct FlowHandoffParams {
 /// P5 (= list_lanes + wire_recv unread + tmux_capture を別々に叩く) を 1 view に。 read-only、 cache OK。
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct FlowProgressParams {
-    /// (現在未使用) 将来 multi-project 拡張時に使う slot
+    /// (現在未使用) 将来 multi-repo 拡張時に使う slot
     #[schemars(
-        description = "(reserved) 将来 multi-project view 拡張用。 現状省略可、 cwd の SP を見る。"
+        description = "(reserved) 将来 multi-repo view 拡張用。 現状省略可、 cwd の repo を見る。"
     )]
     #[serde(default)]
-    pub project: Option<String>,
+    pub repo: Option<String>,
 }
 
 #[tool_router(router = lane_router, vis = "pub(crate)")]
 impl VantageMcp {
-    /// vp-app の active Lane を切り替える（B1: Unison-native、per-project）。
+    /// vp-app の active Lane を切り替える（B1: Unison-native、per-repo）。
     #[tool(
-        description = "Switch the active lane shown in the vp-app PP Canvas of the CURRENT project. `lane` is a lane token: 'root' (lead) or a performer name. Routes over Unison (local SP → canvas channel → vp-app). Primarily for ROTO / CLI driven view control; avoid switching the human's view unsolicited."
+        description = "Switch the active lane shown in the vp-app board Canvas of the CURRENT repo. `lane` is a lane token: 'root' (lead) or a performer name. Routes over Unison (local repo → canvas channel → vp-app). Primarily for ROTO / CLI driven view control; avoid switching the human's view unsolicited."
     )]
     async fn switch_lane(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<SwitchLaneParams>,
     ) -> Result<CallToolResult, McpError> {
-        // QUIC で local SP に SwitchLane を送る → hub → canvas channel → vp-app。
-        // 旧: TheWorld(:32000) HTTP に global broadcast（project 切替意味論）。per-lane PP 後は
-        // local SP への per-project 経路に統一（lane-within-project の active 切替）。
-        let msg = ProcessMessage::SwitchLane {
+        // QUIC で local repo に SwitchLane を送る → hub → canvas channel → vp-app。
+        // 旧: daemon(:32000) HTTP に global broadcast（repo 切替意味論）。per-lane board 後は
+        // local repo への per-repo 経路に統一（lane-within-repo の active 切替）。
+        let msg = RepoMessage::SwitchLane {
             lane: params.lane.clone(),
         };
         self.process_call("switch_lane", &msg).await?;
@@ -198,13 +198,13 @@ impl VantageMcp {
         )]))
     }
 
-    /// R5: 現 project の SP に Performer Lane を新規作成 (lane clone + PtySlot spawn)。
+    /// R5: 現 repo の repo に Performer Lane を新規作成 (lane clone + PtySlot spawn)。
     ///
-    /// - cwd ベースで自動的に local SP を解決 (`self.process_url`)。
+    /// - cwd ベースで自動的に local repo を解決 (`self.process_url`)。
     /// - branch 省略時は server 側で `<git-user>/<sanitized-name>` を auto-derive。
     /// - 名前重複は HTTP 409 CONFLICT、 lane clone 失敗は 500 で返ってくる。
     #[tool(
-        description = "Create a new Performer Lane in the current project (lane clone + spawn). Resolves the local SP via cwd. If `branch` is omitted, the server auto-derives `<git-user>/<sanitized-name>`. Returns the Lane address `<project>/performer/<name>` on success. Use this to spawn isolated parallel work (e.g. feature branches, exploratory experiments)."
+        description = "Create a new Performer Lane in the current repo (lane clone + spawn). Resolves the local repo via cwd. If `branch` is omitted, the server auto-derives `<git-user>/<sanitized-name>`. Returns the Lane address `<repo>/performer/<name>` on success. Use this to spawn isolated parallel work (e.g. feature branches, exploratory experiments)."
     )]
     async fn add_performer(
         &self,
@@ -220,8 +220,8 @@ impl VantageMcp {
         if let Some(b) = params.branch.as_ref().filter(|s| !s.trim().is_empty()) {
             body["branch"] = serde_json::Value::String(b.clone());
         }
-        if let Some(s) = params.stand.as_ref().filter(|s| !s.trim().is_empty()) {
-            body["stand"] = serde_json::Value::String(s.clone());
+        if let Some(s) = params.agent.as_ref().filter(|s| !s.trim().is_empty()) {
+            body["agent"] = serde_json::Value::String(s.clone());
         }
         if let Some(b) = params.base.as_ref().filter(|s| !s.trim().is_empty()) {
             body["base"] = serde_json::Value::String(b.clone());
@@ -229,7 +229,7 @@ impl VantageMcp {
         if let Some(m) = params.model.as_ref().filter(|s| !s.trim().is_empty()) {
             body["model"] = serde_json::Value::String(m.clone());
         }
-        // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を World process-proxy ask
+        // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を daemon repo-proxy ask
         // `lane_create` に移管。 lane clone は 数 sec ~ 数 10 sec かかるので outer timeout 60s。
         // server Err (CONFLICT="already exists"/"既に存在" 等) は quic_call_with_timeout が
         // McpError に変換して返す (= 旧 HTTP の非 2xx → McpError 経路と等価)。
@@ -243,9 +243,9 @@ impl VantageMcp {
             .map(|s| s.to_string())
             .or_else(|| {
                 parsed.get("address").and_then(|a| {
-                    let proj = a.get("project")?.as_str()?;
+                    let proj = a.get("repo")?.as_str()?;
                     let nm = a.get("name")?.as_str()?;
-                    // doc 44 P2: address 表示形は `<project>/<name>`
+                    // doc 44 P2: address 表示形は `<repo>/<name>`
                     Some(format!("{}/{}", proj, nm))
                 })
             })
@@ -256,13 +256,13 @@ impl VantageMcp {
         )]))
     }
 
-    /// Delete a Performer Lane in the current project (VP-124 Phase 1).
+    /// Delete a Performer Lane in the current repo (VP-124 Phase 1).
     ///
-    /// 3-step orchestration を 1 call で完結: SP pool removal + child PTY kill + tmux session kill +
+    /// 3-step orchestration を 1 call で完結: repo pool removal + child PTY kill + tmux session kill +
     /// (optional) lane workspace dir cleanup。 server-side `delete_lane_orchestrated` への薄い HTTP
-    /// wrapper、 cwd ベースで自動的に local SP と project を解決。
+    /// wrapper、 cwd ベースで自動的に local repo と repo を解決。
     #[tool(
-        description = "Delete a Performer Lane in the current project. SP pool removal + child PTY kill + tmux session kill + lane workspace dir cleanup を 1 call で完結 (= 旧来の手動 3 step `vp lane rm` + `tmux kill-session` + `curl -X DELETE` を置換)。 cwd ベースで local SP を自動解決、 cleanup=false で dir 残置 (debug 用途)。 Conductor Lane は削除不可 (architecture rule、 SP shutdown が path)。"
+        description = "Delete a Performer Lane in the current repo. repo pool removal + child PTY kill + tmux session kill + lane workspace dir cleanup を 1 call で完結 (= 旧来の手動 3 step `vp lane rm` + `tmux kill-session` + `curl -X DELETE` を置換)。 cwd ベースで local repo を自動解決、 cleanup=false で dir 残置 (debug 用途)。 Conductor Lane は削除不可 (architecture rule、 repo shutdown が path)。"
     )]
     async fn delete_performer(
         &self,
@@ -275,23 +275,23 @@ impl VantageMcp {
             ));
         }
 
-        // F6②: 旧 SP 直結 (/api/health + DELETE /api/lanes reqwest) を World process-proxy ask
-        // (lane_delete) に移管。 project_name は self.project_path の basename から取得する
-        // (SP health round-trip 不要、 port reshuffle で揺れない stable identifier)。 add_performer と
-        // 異なり full address を渡す design (DELETE は SP 側で project 補完しない)。
-        let project_name = std::path::Path::new(self.project_path.as_str())
+        // F6②: 旧 SP 直結 (/api/health + DELETE /api/lanes reqwest) を daemon repo-proxy ask
+        // (lane_delete) に移管。 repo_name は self.repo_path の basename から取得する
+        // (repo health round-trip 不要、 port reshuffle で揺れない stable identifier)。 add_performer と
+        // 異なり full address を渡す design (DELETE は repo 側で repo 補完しない)。
+        let repo_name = std::path::Path::new(self.repo_path.as_str())
             .file_name()
             .and_then(|s| s.to_str())
             .ok_or_else(|| {
                 McpError::internal_error(
-                    format!("project_path basename 取得失敗: {}", self.project_path),
+                    format!("repo_path basename 取得失敗: {}", self.repo_path),
                     None,
                 )
             })?;
-        let address = format!("{}/performer/{}", project_name, params.name);
+        let address = format!("{}/performer/{}", repo_name, params.name);
         let cleanup = params.cleanup.unwrap_or(true);
 
-        // World process-proxy 経由で SP の lane_delete を ask (workspace cleanup 等 orchestration を
+        // daemon repo-proxy 経由で repo の lane_delete を ask (workspace cleanup 等 orchestration を
         // 含むため outer timeout 30s)。 server Err は quic_call_with_timeout が McpError に変換して返す。
         let payload = serde_json::json!({ "address": address, "cleanup": cleanup });
         match self
@@ -317,7 +317,7 @@ impl VantageMcp {
                 )]))
             }
             Err(e) => {
-                // 冪等性: 既に無い Performer の delete は SP が DeleteLaneError::LaneNotFound
+                // 冪等性: 既に無い Performer の delete は repo が DeleteLaneError::LaneNotFound
                 // ("Lane not found: ...") を返す → no-op 成功扱い。 真の異常と区別し、 AI agent が
                 // 「もう消えてる」 と判別できるようにする (旧 HTTP 404 idempotent path の置換)。
                 if e.to_string().contains("Lane not found") {
@@ -334,36 +334,34 @@ impl VantageMcp {
         }
     }
 
-    /// List Lanes in the current project with comprehensive routing info (VP-124 Phase 1).
+    /// List Lanes in the current repo with comprehensive routing info (VP-124 Phase 1).
     ///
-    /// Conductor Lane Echoes が「lane を operate するすべての座標」 を 1 call で取得するための tool。
-    /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Stands の wire address)、
-    /// top-level に project_addresses + world_addresses を synthesize。
+    /// Conductor Lane Conversation が「lane を operate するすべての座標」 を 1 call で取得するための tool。
+    /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Agents の wire address)、
+    /// top-level に repo_addresses + machine_addresses を synthesize。
     #[tool(
-        description = "List all Lanes (Conductor + Performers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, performer_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for root or `agent@vantage-point/chore` for performer 'chore') and `canvas` (= the lane's Canvas / Paisley Park inbox, e.g. `canvas@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `bastet@world`)。 Use this to discover Performers, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + manual lane inspection。"
+        description = "List all Lanes (Conductor + Performers) in the current repo with comprehensive routing info. Each Lane returns: address, kind, state, agent, pid, cwd, tmux session, performer_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for root or `agent@vantage-point/chore` for performer 'chore') and `board` (= the lane's board / Board inbox, e.g. `board@vantage-point/chore`)。 Top-level also returns repo_addresses (e.g. `runner@<repo>`) and machine_addresses (e.g. `devices@machine`)。 Use this to discover Performers, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + manual lane inspection。"
     )]
     async fn list_lanes(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ListLanesParams>,
     ) -> Result<CallToolResult, McpError> {
-        // lanes portless (doc 27 §3.4.5): project 名は self.project_path から導出 (旧 /api/health
-        // round-trip 撤去)。 config 登録名を SSOT とする (basename ではない)。 `vp projects rename`
+        // lanes portless (doc 27 §3.4.5): repo 名は self.repo_path から導出 (旧 /api/health
+        // round-trip 撤去)。 config 登録名を SSOT とする (basename ではない)。 `vp repos rename`
         // で name != basename になっても、wire store の識別子 (agent@<config名>) と list_lanes が
         // 返す mailbox address を一致させる。旧 basename 由来だと rename 時に永続 mismatch し、その
         // address 宛 command が誰の ack とも一致せず再 nudge する第2のバグ経路だった (identity SSOT)。
-        let project = match crate::config::Config::load() {
-            Ok(config) => {
-                crate::resolve::project_name_from_path(self.project_path.as_str(), &config)
-            }
+        let repo = match crate::config::Config::load() {
+            Ok(config) => crate::resolve::repo_name_from_path(self.repo_path.as_str(), &config),
             // config 読めない異常系のみ basename fallback (従来挙動)
-            Err(_) => std::path::Path::new(self.project_path.as_str())
+            Err(_) => std::path::Path::new(self.repo_path.as_str())
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string(),
         };
 
-        // 全 lane を World process-proxy ask `lanes_list` で取得 (旧 GET /api/lanes)。
+        // 全 lane を daemon repo-proxy ask `lanes_list` で取得 (旧 GET /api/lanes)。
         let resp = self.quic_call("lanes_list", serde_json::json!({})).await?;
 
         let lanes_in = resp
@@ -394,26 +392,26 @@ impl VantageMcp {
             // mailbox_addresses 計算 (= per-Lane の wire address。VP-166 設計 doc 16)。
             //
             // 各 Lane (conductor / performer) は 2 つの box を持つ:
-            //   - `agent#<lane>`  = その lane の Claude session 宛 (= coding-assistant inbox)
-            //   - `canvas#<lane>` = その lane の Canvas / PP 宛 (PR-5 で配線)
-            // actor 名は `stands.rs` の `id` 体系 (`ECHOES.id = "agent"` / `PAISLEY_PARK.id = "canvas"`)。
-            // JoJo 愛称 (`echoes` / `paisley_park`) は表示専用なので wire には出さない。
-            // wire syntax は `<stand-id>@<project>/<lane>` (conductor は `/lane` 省略可)。
-            // 旧実装の `<JoJo名>.<lane>@<project>` (`.` 区切り) は `parse_address` で弾かれる不正形だった。
+            //   - `agent#<lane>` = その lane の Claude session 宛 (= coding-assistant inbox)
+            //   - `board#<lane>` = その lane の board / board 宛
+            // actor 名は `stands.rs` の `id` 体系 (`ECHOES.id = "agent"` / `BOARD.id = "board"`)。
+            // 愛称 (`conversation` / `board`) は表示専用なので wire には出さない。
+            // wire syntax は `<agent-id>@<repo>/<lane>` (conductor は `/lane` 省略可)。
+            // 旧実装の `<愛称>.<lane>@<repo>` (`.` 区切り) は `parse_address` で弾かれる不正形だった。
             // doc 44 P2: lane 名は `address.name` が唯一の在処（旧 `kind` / 複製 `name` は撤去）。
             let lane_label = lane_name_of(&lane);
-            // conductor は `agent@<project>` (lane 省略 = conductor)、performer は `agent@<project>/<name>`
+            // conductor は `agent@<repo>` (lane 省略 = conductor)、performer は `agent@<repo>/<name>`
             let lane_suffix = if lane_label == "root" {
                 String::new()
             } else {
                 format!("/{}", lane_label)
             };
             let mailbox = serde_json::json!({
-                "agent": format!("agent@{}{}", project, lane_suffix),
-                "canvas": format!("canvas@{}{}", project, lane_suffix),
+                "agent": format!("agent@{}{}", repo, lane_suffix),
+                "board": format!("board@{}{}", repo, lane_suffix),
             });
             // VP-166 PR-4: この MCP プロセスの lane と一致する entry に `is_self` を付与
-            // (SP は caller を知らないので MCP 側で post-process)。agent は自分の entry を
+            // (repo は caller を知らないので MCP 側で post-process)。agent は自分の entry を
             // 見つけて mailbox_addresses["agent"] = 自分の正規アドレス、を読める。
             let is_self = lane_label == self.self_lane.lane_name;
 
@@ -424,15 +422,15 @@ impl VantageMcp {
             lanes_out.push(lane);
         }
 
-        // top-level に project / world Stand addresses を synthesize
+        // top-level に repo / daemon Agent addresses を synthesize
         let result = serde_json::json!({
-            "project": project,
+            "repo": repo,
             "lanes": lanes_out,
-            "project_addresses": {
-                "gold_experience": format!("gold_experience@{}", project),
+            "repo_addresses": {
+                "runner": format!("runner@{}", repo),
             },
-            "world_addresses": {
-                "bastet": "bastet@world",
+            "machine_addresses": {
+                "devices": "devices@machine",
             },
         });
 
@@ -476,7 +474,7 @@ impl VantageMcp {
         }
         let nudge = params.nudge.unwrap_or(true);
 
-        // ── Step 1: Performer 作成 (= add_performer と同型 path、 World process-proxy ask `lane_create`) ──
+        // ── Step 1: Performer 作成 (= add_performer と同型 path、 daemon repo-proxy ask `lane_create`) ──
         // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を撤去。 lane clone は
         // 数 sec ~ 数 10 sec かかるので outer timeout 60s。 server Err は quic_call_with_timeout が
         // McpError に変換 (= 旧 HTTP 非 2xx → McpError と等価)。
@@ -484,8 +482,8 @@ impl VantageMcp {
         if let Some(b) = params.branch.as_ref().filter(|s| !s.trim().is_empty()) {
             create_body["branch"] = serde_json::Value::String(b.clone());
         }
-        if let Some(s) = params.stand.as_ref().filter(|s| !s.trim().is_empty()) {
-            create_body["stand"] = serde_json::Value::String(s.clone());
+        if let Some(s) = params.agent.as_ref().filter(|s| !s.trim().is_empty()) {
+            create_body["agent"] = serde_json::Value::String(s.clone());
         }
         if let Some(b) = params.base.as_ref().filter(|s| !s.trim().is_empty()) {
             create_body["base"] = serde_json::Value::String(b.clone());
@@ -498,9 +496,9 @@ impl VantageMcp {
             .await?;
 
         // address は string 形式 (例: "vantage-point/performer/feat-api") を期待。
-        // 旧 add_performer と同型の fallback 経路で project / name から合成も可能。
-        let project_name = lane_info
-            .pointer("/address/project")
+        // 旧 add_performer と同型の fallback 経路で repo / name から合成も可能。
+        let repo_name = lane_info
+            .pointer("/address/repo")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let performer_name = lane_info
@@ -520,22 +518,22 @@ impl VantageMcp {
             .map(|s| s.to_string())
             .unwrap_or_default();
 
-        let project_name = match project_name {
+        let repo_name = match repo_name {
             Some(p) => p,
             None => {
-                // performer 作成は成功したが address.project が読めない → rollback
+                // performer 作成は成功したが address.repo が読めない → rollback
                 let _ = self
                     .flow_rollback_performer("<unknown>", &performer_name)
                     .await;
                 return Err(McpError::internal_error(
-                    "lane_create response に address.project がありません".to_string(),
+                    "lane_create response に address.repo がありません".to_string(),
                     None,
                 ));
             }
         };
 
-        let performer_address = format!("agent@{}/{}", project_name, performer_name);
-        let lane_address = format!("{}/performer/{}", project_name, performer_name);
+        let performer_address = format!("agent@{}/{}", repo_name, performer_name);
+        let lane_address = format!("{}/performer/{}", repo_name, performer_name);
 
         // ── Step 2: wire_send (initial task spec を root thread として送信) ──
         // body は { task_spec, mode, priority?, scope_outs? } 等の自由 schema。
@@ -559,7 +557,7 @@ impl VantageMcp {
             Err(e) => {
                 // rollback: performer を削除して dirty state を残さない
                 let _ = self
-                    .flow_rollback_performer(&project_name, &performer_name)
+                    .flow_rollback_performer(&repo_name, &performer_name)
                     .await;
                 return Err(McpError::internal_error(
                     format!(
@@ -578,7 +576,7 @@ impl VantageMcp {
 
         // ── Step 3: nudge — lane_nudge proxy で worker に wire_recv を促す ──
         // tmux decoupling PR1: 旧 resolve_pane + tmux_send_keys の置換。 lane address を
-        // 直接渡し、 SP 側 write_nudge が PtySlot に書く。 best-effort — nudge 失敗で handoff
+        // 直接渡し、 repo 側 write_nudge が PtySlot に書く。 best-effort — nudge 失敗で handoff
         // 全体は失敗扱いにしない (= wire は届いており worker は自走可、 nudge は immediacy 向上目的)。
         let mut nudge_status = if nudge { "skipped" } else { "off" }.to_string();
         if nudge {
@@ -614,30 +612,28 @@ impl VantageMcp {
 
     /// flow_progress: parallel work 集約 view (read-only)
     #[tool(
-        description = "Parallel work 集約 view: 現 project の全 Lane (root + performers) の performer_status (git ahead/behind/dirty/merged) と per-lane 未読 wire 数を 1 view で返す。 read-only (= cursor は触らない)、 cache OK。 dev-flow P5 (= 並列追跡) で list_lanes + wire_recv + tmux_capture を別々に叩く代替。"
+        description = "Parallel work 集約 view: 現 repo の全 Lane (root + performers) の performer_status (git ahead/behind/dirty/merged) と per-lane 未読 wire 数を 1 view で返す。 read-only (= cursor は触らない)、 cache OK。 dev-flow P5 (= 並列追跡) で list_lanes + wire_recv + tmux_capture を別々に叩く代替。"
     )]
     async fn flow_progress(
         &self,
         rmcp::handler::server::wrapper::Parameters(_params): rmcp::handler::server::wrapper::Parameters<FlowProgressParams>,
     ) -> Result<CallToolResult, McpError> {
-        // lanes portless (doc 27 §3.4.5): project 名は self.project_path から導出 (旧 /api/health
-        // round-trip 撤去)。 config 登録名を SSOT とする (basename ではない)。 `vp projects rename`
+        // lanes portless (doc 27 §3.4.5): repo 名は self.repo_path から導出 (旧 /api/health
+        // round-trip 撤去)。 config 登録名を SSOT とする (basename ではない)。 `vp repos rename`
         // で name != basename になっても、wire store の識別子 (agent@<config名>) と mailbox address を
         // 一致させる。旧 basename 由来だと rename 時に永続 mismatch し、 ack が一致せず再 nudge する
         // 第2のバグ経路だった (wiremsg identity SSOT 一本化)。 list_lanes と同型。
-        let project = match crate::config::Config::load() {
-            Ok(config) => {
-                crate::resolve::project_name_from_path(self.project_path.as_str(), &config)
-            }
+        let repo = match crate::config::Config::load() {
+            Ok(config) => crate::resolve::repo_name_from_path(self.repo_path.as_str(), &config),
             // config 読めない異常系のみ basename fallback (従来挙動)
-            Err(_) => std::path::Path::new(self.project_path.as_str())
+            Err(_) => std::path::Path::new(self.repo_path.as_str())
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string(),
         };
 
-        // 全 lane (conductor + performers) を World process-proxy ask `lanes_list` で取得
+        // 全 lane (conductor + performers) を daemon repo-proxy ask `lanes_list` で取得
         // (= performer_status 込み、 旧 GET /api/lanes)。
         let lanes_resp = self.quic_call("lanes_list", serde_json::json!({})).await?;
         let lanes_in = lanes_resp
@@ -654,9 +650,9 @@ impl VantageMcp {
             let lane_label = lane_name_of(&lane);
             let kind = lane_kind_label(&lane);
             let agent_addr = if kind == "root" {
-                format!("agent@{}", project)
+                format!("agent@{}", repo)
             } else {
-                format!("agent@{}/{}", project, lane_label)
+                format!("agent@{}/{}", repo, lane_label)
             };
 
             // wire unread count (cursor 不触り = read-only)
@@ -688,8 +684,8 @@ impl VantageMcp {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let stand = lane
-                .get("stand")
+            let agent = lane
+                .get("agent")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -734,9 +730,9 @@ impl VantageMcp {
 
             performers.push(serde_json::json!({
                 "name": lane_label,
-                "address": format!("agent@{}/{}", project, lane_label),
+                "address": format!("agent@{}/{}", repo, lane_label),
                 "state": state,
-                "stand": stand,
+                "agent": agent,
                 "cwd": cwd,
                 "performer_status": performer_status,
                 "unread_wire_count": unread_total,
@@ -749,9 +745,9 @@ impl VantageMcp {
         }
 
         let result = serde_json::json!({
-            "project": project,
+            "repo": repo,
             "root": {
-                "address": format!("agent@{}", project),
+                "address": format!("agent@{}", repo),
                 "unread_wire_count": conductor_unread,
                 "unread_by_thread": conductor_unread_by_thread,
             },

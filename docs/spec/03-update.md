@@ -9,7 +9,7 @@
 ## Overview
 
 VP エコシステム（`vp` CLI + VantagePoint.app）のオートアップデート機能。
-TheWorld が更新を検知し、ユーザー確認後に自動更新・再起動を行う。
+daemon が更新を検知し、ユーザー確認後に自動更新・再起動を行う。
 
 ---
 
@@ -24,7 +24,7 @@ TheWorld が更新を検知し、ユーザー確認後に自動更新・再起�
 | HTTP update routes (`/api/update/check` / `apply` / `rollback` / `restart` / `mac-check`) | ✅ 実装済 | `process/routes/update.rs` |
 | GitHub Releases 比較 (`CARGO_PKG_VERSION`) | ✅ 実装済 | `UpdateCapability::check_update` |
 | VantagePoint.app 更新ダイアログ (REQ-UPDATE-002) | ⏳ 未整理 | vp-app は wry 移行済、Sparkle 前提の REQ-UPDATE-004 は要再設計 |
-| TheWorld 起動時自動チェック (REQ-UPDATE-001) | ⏳ 未確認 | 起動フックの有無は要調査 |
+| daemon 起動時自動チェック (REQ-UPDATE-001) | ⏳ 未確認 | 起動フックの有無は要調査 |
 | graceful 再起動フロー (REQ-UPDATE-005) | ⏳ 未整理 | route は存在するが REQ の全項目の充足は未検証 |
 
 > **注意**: 下記 REQ-UPDATE-001〜006 は当初構想 (2025-12) のままで、checkbox は当時のもの。
@@ -37,7 +37,7 @@ TheWorld が更新を検知し、ユーザー確認後に自動更新・再起�
 
 ### REQ-UPDATE-001: 更新チェック
 
-TheWorld が起動時に GitHub Releases API で最新バージョンを確認。
+daemon が起動時に GitHub Releases API で最新バージョンを確認。
 
 - [ ] 起動時に自動チェック
 - [ ] `CARGO_PKG_VERSION` との比較
@@ -48,7 +48,7 @@ TheWorld が起動時に GitHub Releases API で最新バージョンを確認�
 VantagePoint.app にダイアログ表示。「今すぐ更新」「後で」「スキップ」。
 
 - [ ] 確認ダイアログ表示
-- [ ] 選択結果が TheWorld に送信される
+- [ ] 選択結果が daemon に送信される
 - [ ] スキップ時は次回起動まで非表示
 
 ### REQ-UPDATE-003: VP CLI 更新
@@ -69,10 +69,10 @@ Sparkle フレームワークまたはカスタム実装。
 
 ### REQ-UPDATE-005: 再起動フロー
 
-1. TheWorld に停止リクエスト
+1. daemon に停止リクエスト
 2. 稼働中 Process を graceful shutdown
 3. バイナリ更新
-4. TheWorld 再起動
+4. daemon 再起動
 5. VantagePoint.app 再起動
 
 - [ ] セッション状態の保持
@@ -82,7 +82,7 @@ Sparkle フレームワークまたはカスタム実装。
 ### REQ-UPDATE-006: vp app コマンド
 
 - [ ] `vp app` で VantagePoint.app 起動
-- [ ] TheWorld 未稼働時は自動起動
+- [ ] daemon 未稼働時は自動起動
 - [ ] 起動中はフォーカス移動
 
 ---
@@ -90,10 +90,10 @@ Sparkle フレームワークまたはカスタム実装。
 ## Architecture
 
 ```
-VantagePoint.app ◄───► TheWorld 👑 (vp world)
+VantagePoint.app ◄───► daemon ⚙️ (vp daemon)
        │                      │
        ▼                      ▼
-  GitHub Releases        Project Process
+  GitHub Releases        Repo Process
 ```
 
 ---

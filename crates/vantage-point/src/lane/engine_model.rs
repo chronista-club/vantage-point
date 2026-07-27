@@ -1,20 +1,20 @@
-//! lane ごとの model 永続化（Act I TUI console + Act II chat engine 共有）
+//! lane ごとの model 永続化（tui TUI console + gui chat engine 共有）
 //!
 //! lane 単位で claude の `--model` alias を永続する。**「この lane はこの model で走る」**
-//! という単一の真実源として、両 Act の claude 起動が同じ file を読む:
-//! - **Act I（TUI console / echoes stand）**: `build_stand_command` が spawn 時に読み、
+//! という単一の真実源として、両 Mode の claude 起動が同じ file を読む:
+//! - **tui（TUI console / conversation agent）**: `build_agent_command` が spawn 時に読み、
 //!   PtySlot にホストされる `claude … --model <alias>` の command line へ注入する
-//!   （SP 再起動後の respawn でも自動で維持される）。
-//! - **Act II（GUI chat engine / EchoesAgentHost）**: `ensure_chat_engine` が読む。
+//!   （repo 再起動後の respawn でも自動で維持される）。
+//! - **gui（GUI chat engine / ClaudeHost）**: `ensure_chat_engine` が読む。
 //!   切替は engine の drop → `--resume` 付き再 spawn で行うため、**会話コンテキストを
 //!   保ったままモデルだけ替わる**（セッション進行中の切替 = CC の `/model` の VP 版）。
 //!
 //! [`super::console_mode`] と同型の 1 lane 1 file 1 行 state file。
 //! - **書き手**: lane 作成時の `--model`（`create_performer_orchestrated` /
-//!   `new_performer` / `fork_performer`、co-evolution #1）+ Act II の
+//!   `new_performer` / `fork_performer`、co-evolution #1）+ gui の
 //!   `console_set_model` dispatch（切替時。default へ戻す = file 削除）
-//! - **読み手**: `build_stand_command`（Act I spawn）/ `ensure_chat_engine`（Act II spawn）
-//! - 置き場: `vp_state_dir()/engine_models/<project>__<lane>`
+//! - **読み手**: `build_agent_command`（tui spawn）/ `ensure_chat_engine`（gui spawn）
+//! - 置き場: `vp_state_dir()/engine_models/<repo>__<lane>`
 //! - **未記録 = None = claude default**（`--model` を渡さない）
 
 use std::path::{Path, PathBuf};
@@ -31,14 +31,18 @@ pub fn is_valid_model(s: &str) -> bool {
 }
 
 /// 明示 model（Some=優先）と既定（config knob）から、engine_model に記録する実効 model を返す。
-/// 空白 / 未指定は `fallback`（= `Config::default_lane_model_or_opus()`）へ落とす。
+///
+/// **None = 記録しない**（doc 54 §8-11、mako 2026-07-25「Opus のところはユーザ設定に任せる」）:
+/// 明示指定 > VP config `default-lane-model` > **無記録** — engine_model file が無ければ
+/// `--model` は注入されず、**engine 側の user 既定**（claude なら ~/.claude の設定）が効く。
+/// 旧実装は未設定時に Opus を強制 record しており、user の claude 既定を上書きしていた。
 /// performer 追加の全経路（mcp / cli / sidebar）が共有する解決規則。純粋 = テスト可能。
-pub fn resolve_default(explicit: Option<&str>, fallback: &str) -> String {
+pub fn resolve_default(explicit: Option<&str>, config_default: Option<&str>) -> Option<String> {
     explicit
         .map(str::trim)
         .filter(|m| !m.is_empty())
-        .unwrap_or(fallback)
-        .to_string()
+        .or(config_default)
+        .map(str::to_string)
 }
 
 /// file 名に使えない文字を潰す（console_mode / cc_session と同一規則）。
@@ -55,20 +59,20 @@ fn sanitize(part: &str) -> String {
 }
 
 /// state base dir 配下の model file path（純関数、テスト用に base 注入）。
-pub fn model_file_in(base: &Path, project: &str, lane: &str) -> PathBuf {
+pub fn model_file_in(base: &Path, repo: &str, lane: &str) -> PathBuf {
     base.join("engine_models")
-        .join(format!("{}__{}", sanitize(project), sanitize(lane)))
+        .join(format!("{}__{}", sanitize(repo), sanitize(lane)))
 }
 
 /// model を記録する（上書き、1 行）。形式外は Err（壊れた値を file に残さない）。
-pub fn record_in(base: &Path, project: &str, lane: &str, model: &str) -> std::io::Result<()> {
+pub fn record_in(base: &Path, repo: &str, lane: &str, model: &str) -> std::io::Result<()> {
     if !is_valid_model(model) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("model 名が不正: {model:?}"),
         ));
     }
-    let path = model_file_in(base, project, lane);
+    let path = model_file_in(base, repo, lane);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -76,33 +80,33 @@ pub fn record_in(base: &Path, project: &str, lane: &str, model: &str) -> std::io
 }
 
 /// 最後に記録された model を返す。無い / 形式外は None（= claude default で spawn）。
-pub fn last_in(base: &Path, project: &str, lane: &str) -> Option<String> {
-    let raw = std::fs::read_to_string(model_file_in(base, project, lane)).ok()?;
+pub fn last_in(base: &Path, repo: &str, lane: &str) -> Option<String> {
+    let raw = std::fs::read_to_string(model_file_in(base, repo, lane)).ok()?;
     let trimmed = raw.trim();
     is_valid_model(trimmed).then(|| trimmed.to_string())
 }
 
 /// 記録を消す（未記録なら no-op）。「default に戻す」と lane 削除 GC の両方で使う。
-pub fn clear_in(base: &Path, project: &str, lane: &str) -> std::io::Result<()> {
-    match std::fs::remove_file(model_file_in(base, project, lane)) {
+pub fn clear_in(base: &Path, repo: &str, lane: &str) -> std::io::Result<()> {
+    match std::fs::remove_file(model_file_in(base, repo, lane)) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         r => r,
     }
 }
 
 /// 本番 base（vp_state_dir）での record。
-pub fn record(project: &str, lane: &str, model: &str) -> std::io::Result<()> {
-    record_in(&crate::config::vp_state_dir(), project, lane, model)
+pub fn record(repo: &str, lane: &str, model: &str) -> std::io::Result<()> {
+    record_in(&crate::config::vp_state_dir(), repo, lane, model)
 }
 
 /// 本番 base（vp_state_dir）での clear（default へ戻す / lane 削除経路から呼ぶ）。
-pub fn clear(project: &str, lane: &str) -> std::io::Result<()> {
-    clear_in(&crate::config::vp_state_dir(), project, lane)
+pub fn clear(repo: &str, lane: &str) -> std::io::Result<()> {
+    clear_in(&crate::config::vp_state_dir(), repo, lane)
 }
 
 /// 本番 base（vp_state_dir）での last。
-pub fn last(project: &str, lane: &str) -> Option<String> {
-    last_in(&crate::config::vp_state_dir(), project, lane)
+pub fn last(repo: &str, lane: &str) -> Option<String> {
+    last_in(&crate::config::vp_state_dir(), repo, lane)
 }
 
 #[cfg(test)]
@@ -141,24 +145,31 @@ mod tests {
     fn resolve_default_prefers_explicit_then_falls_back() {
         // 明示指定が最優先
         assert_eq!(
-            resolve_default(Some("claude-sonnet-5"), "claude-opus-4-8"),
-            "claude-sonnet-5"
+            resolve_default(Some("claude-sonnet-5"), Some("claude-opus-4-8")),
+            Some("claude-sonnet-5".to_string())
         );
-        // 未指定は fallback（= config knob / opus）
-        assert_eq!(resolve_default(None, "claude-opus-4-8"), "claude-opus-4-8");
-        // 空白 / 空文字は fallback（picker の '' や whitespace を default 扱い）
+        // 未指定は config knob へ
         assert_eq!(
-            resolve_default(Some("   "), "claude-opus-4-8"),
-            "claude-opus-4-8"
+            resolve_default(None, Some("claude-opus-4-8")),
+            Some("claude-opus-4-8".to_string())
+        );
+        // doc 54 §8-11: 両方未指定は None = 記録しない（engine 側の user 既定に委ねる。
+        // 旧「Opus 強制」の再演をここで塞ぐ）
+        assert_eq!(resolve_default(None, None), None);
+        assert_eq!(resolve_default(Some("   "), None), None);
+        // 空白 / 空文字は config knob へ（picker の '' や whitespace を default 扱い）
+        assert_eq!(
+            resolve_default(Some("   "), Some("claude-opus-4-8")),
+            Some("claude-opus-4-8".to_string())
         );
         assert_eq!(
-            resolve_default(Some(""), "claude-opus-4-8"),
-            "claude-opus-4-8"
+            resolve_default(Some(""), Some("claude-opus-4-8")),
+            Some("claude-opus-4-8".to_string())
         );
         // 明示の前後空白は trim される
         assert_eq!(
-            resolve_default(Some(" claude-fable-5 "), "claude-opus-4-8"),
-            "claude-fable-5"
+            resolve_default(Some(" claude-fable-5 "), Some("claude-opus-4-8")),
+            Some("claude-fable-5".to_string())
         );
     }
 

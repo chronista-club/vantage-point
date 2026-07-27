@@ -1,4 +1,4 @@
-//! ActorRegistry — VP-159 Stand / Service actor の supervisor 受け皿 (PR-4a)
+//! ActorRegistry — VP-159 Agent / Service actor の supervisor 受け皿 (PR-4a)
 //!
 //! VP-159 spike v0.1 (creo-memories `mem_1CavCepJdf8XyQ82AAiSpv`) で確定した
 //! supervisor 統一 path の第一歩 (= 受け皿)。 既存 actor の spawn loop を集約せず、
@@ -26,9 +26,9 @@
 //!
 //! - parent epic: VP-156 (Mailbox routing 統一)、 VP-159 (H1 段)
 //! - spike v0.1: `mem_1CavCepJdf8XyQ82AAiSpv`
-//! - PR-1 受け皿 pattern 先例: `LaneStandHost` (PR-δ-1、 #288/VP-135)、 Stand/Service trait (PR-1、 #326)
-//! - PR-2 同型: agent / protocol を Stand impl (= #327)
-//! - PR-3 同型: notify / lane-spawn / bastet を Service impl (= #329)
+//! - PR-1 受け皿 pattern 先例: `LaneComponentHost` (PR-δ-1、 #288/VP-135)、 Agent/Service trait (PR-1、 #326)
+//! - PR-2 同型: agent / protocol を Agent impl (= #327)
+//! - PR-3 同型: notify / lane-spawn / devices を Service impl (= #329)
 //! - PR-4b 想定: Service trait sig 拡張 (`spawn_loop`) + 既存 3 Service の migration + caller 集約
 
 use std::collections::HashMap;
@@ -36,17 +36,17 @@ use std::collections::HashMap;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::stand_service::{LayerScope, Service, SpawnableService, Stand};
+use super::component_service::{Component, LayerScope, Service, SpawnableService};
 
-/// actor の種類 (= Stand か Service か)。
+/// actor の種類 (= Agent か Service か)。
 ///
 /// VP-159 PR-1 で定義した 2 trait に対応、 ActorRegistry が同 catalog で host する際の
 /// discriminator として機能する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ActorKind {
-    /// ECS entity bound actor (= agent / protocol / paisley_park 等)。 PR-2 で formalized。
-    Stand,
-    /// singleton infra actor (= notify / lane-spawn / bastet 等)。 PR-3 で formalized。
+    /// ECS entity bound actor (= agent / protocol / board 等)。 PR-2 で formalized。
+    Agent,
+    /// singleton infra actor (= notify / lane-spawn / devices 等)。 PR-3 で formalized。
     Service,
 }
 
@@ -57,9 +57,9 @@ pub enum ActorKind {
 pub struct ActorRegistryEntry {
     /// actor 名 (= mailbox address の actor 部分と一致、 例: `"notify"` / `"agent"`)
     pub name: String,
-    /// actor の lifecycle / address scope (= LSCM World / Project / Lane)
+    /// actor の lifecycle / address scope (= LSCM Daemon / Repo / Lane)
     pub scope: LayerScope,
-    /// actor の種類 (= Stand or Service)
+    /// actor の種類 (= Agent or Service)
     pub kind: ActorKind,
     /// background task の JoinHandle。
     ///
@@ -79,15 +79,15 @@ impl std::fmt::Debug for ActorRegistryEntry {
     }
 }
 
-/// Stand / Service actor の supervisor 受け皿 (PR-4a)。
+/// Agent / Service actor の supervisor 受け皿 (PR-4a)。
 ///
 /// PR-4a 段階では metadata catalog として機能、 既存 actor の caller は無変更で `register_*`
-/// メソッドを optional に呼ぶ form。 PR-4b で caller (= `server.rs` / `world_capabilities.rs`)
+/// メソッドを optional に呼ぶ form。 PR-4b で caller (= `server.rs` / `machine_capabilities.rs`)
 /// を ActorRegistry 経由に集約する path を開く。
 ///
 /// ## scope と kind の 2 軸 filter
 ///
-/// supervisor (PR-4b 想定) は scope (= World / Project / Lane) と kind (= Stand / Service) の
+/// supervisor (PR-4b 想定) は scope (= Daemon / Repo / Lane) と kind (= Agent / Service) の
 /// 2 軸で actor を dispatch / filter する。 `list_by_scope` / `list_by_kind` で各 axis の
 /// subset を取得可能。
 #[derive(Default)]
@@ -121,13 +121,13 @@ impl ActorRegistry {
         self.entries.insert(name, entry);
     }
 
-    /// `Stand` を registry に register する (= metadata only)。
-    pub fn register_stand<S: Stand>(&mut self, stand: &S) {
-        let name = stand.actor_name().to_string();
+    /// `Agent` を registry に register する (= metadata only)。
+    pub fn register_component<S: Component>(&mut self, agent: &S) {
+        let name = agent.actor_name().to_string();
         let entry = ActorRegistryEntry {
             name: name.clone(),
-            scope: stand.layer_scope(),
-            kind: ActorKind::Stand,
+            scope: agent.layer_scope(),
+            kind: ActorKind::Agent,
             task: None,
         };
         self.entries.insert(name, entry);
@@ -141,7 +141,7 @@ impl ActorRegistry {
     /// (= caller の責務で重複 spawn を回避)。
     ///
     /// `service` は consume される (= `spawn_loop` の `self` 引数)。 instance を後で query
-    /// する必要がある actor (= `MidiCapability` 等の hold pattern) は本 method ではなく
+    /// する必要がある actor (= `DeviceRegistry` 等の hold pattern) は本 method ではなく
     /// `register_service(&service)` で metadata only register する。
     pub fn spawn_service<S: SpawnableService>(&mut self, service: S, shutdown: CancellationToken) {
         let name = service.actor_name().to_string();
@@ -167,7 +167,7 @@ impl ActorRegistry {
         self.entries.values().filter(|e| e.scope == scope).collect()
     }
 
-    /// `ActorKind` で filter (= Stand or Service 別の subset 取得)。
+    /// `ActorKind` で filter (= Agent or Service 別の subset 取得)。
     pub fn list_by_kind(&self, kind: ActorKind) -> Vec<&ActorRegistryEntry> {
         self.entries.values().filter(|e| e.kind == kind).collect()
     }
@@ -193,13 +193,13 @@ mod tests {
     use super::*;
     use std::any::Any;
 
-    /// test fixture: minimal `Stand` impl
-    struct FixtureStand {
+    /// test fixture: minimal `Agent` impl
+    struct FixtureComponent {
         name: &'static str,
         scope: LayerScope,
     }
 
-    impl Stand for FixtureStand {
+    impl Component for FixtureComponent {
         fn actor_name(&self) -> &str {
             self.name
         }
@@ -247,13 +247,13 @@ mod tests {
         let mut r = ActorRegistry::new();
         let s = FixtureService {
             name: "notify",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         };
         r.register_service(&s);
         assert_eq!(r.len(), 1);
         let entry = r.get("notify").expect("notify entry exists");
         assert_eq!(entry.name, "notify");
-        assert_eq!(entry.scope, LayerScope::Project);
+        assert_eq!(entry.scope, LayerScope::Repo);
         assert_eq!(entry.kind, ActorKind::Service);
         assert!(entry.task.is_none(), "PR-4a では task は常に None");
     }
@@ -261,14 +261,14 @@ mod tests {
     #[test]
     fn register_stand_adds_entry() {
         let mut r = ActorRegistry::new();
-        let s = FixtureStand {
+        let s = FixtureComponent {
             name: "agent",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         };
-        r.register_stand(&s);
+        r.register_component(&s);
         assert_eq!(r.len(), 1);
         let entry = r.get("agent").expect("agent entry exists");
-        assert_eq!(entry.kind, ActorKind::Stand);
+        assert_eq!(entry.kind, ActorKind::Agent);
     }
 
     #[test]
@@ -277,17 +277,17 @@ mod tests {
         let mut r = ActorRegistry::new();
         r.register_service(&FixtureService {
             name: "notify",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         // 同 name で異 scope を register
         r.register_service(&FixtureService {
             name: "notify",
-            scope: LayerScope::World, // 異 scope
+            scope: LayerScope::Machine, // 異 scope
         });
         assert_eq!(r.len(), 1, "同 name は 1 entry");
         assert_eq!(
             r.get("notify").unwrap().scope,
-            LayerScope::World,
+            LayerScope::Machine,
             "上書き済"
         );
     }
@@ -297,97 +297,97 @@ mod tests {
         let mut r = ActorRegistry::new();
         r.register_service(&FixtureService {
             name: "notify",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.register_service(&FixtureService {
             name: "lane-spawn",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.register_service(&FixtureService {
-            name: "bastet",
-            scope: LayerScope::World,
+            name: "devices",
+            scope: LayerScope::Machine,
         });
 
-        let project_entries = r.list_by_scope(LayerScope::Project);
-        let world_entries = r.list_by_scope(LayerScope::World);
+        let repo_entries = r.list_by_scope(LayerScope::Repo);
+        let daemon_entries = r.list_by_scope(LayerScope::Machine);
         let lane_entries = r.list_by_scope(LayerScope::Lane);
-        assert_eq!(project_entries.len(), 2, "Project scope は 2 個");
-        assert_eq!(world_entries.len(), 1, "World scope は 1 個");
+        assert_eq!(repo_entries.len(), 2, "Repo scope は 2 個");
+        assert_eq!(daemon_entries.len(), 1, "machine scope は 1 個");
         assert_eq!(lane_entries.len(), 0, "Lane scope は 0 個");
     }
 
     #[test]
     fn list_by_kind_filters_correctly() {
         let mut r = ActorRegistry::new();
-        r.register_stand(&FixtureStand {
+        r.register_component(&FixtureComponent {
             name: "agent",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.register_service(&FixtureService {
             name: "notify",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
 
-        let stands = r.list_by_kind(ActorKind::Stand);
+        let agents = r.list_by_kind(ActorKind::Agent);
         let services = r.list_by_kind(ActorKind::Service);
-        assert_eq!(stands.len(), 1);
+        assert_eq!(agents.len(), 1);
         assert_eq!(services.len(), 1);
-        assert_eq!(stands[0].name, "agent");
+        assert_eq!(agents[0].name, "agent");
         assert_eq!(services[0].name, "notify");
     }
 
     #[test]
     fn coexist_5_actors_in_registry() {
-        // VP-159 PR-4a invariant (= PR-2 / PR-3 invariant の延長): 5 actor (2 Stand + 3 Service)
-        // が 1 registry に coexist できる事。 PR-4b で AgentCapability (Stand) + ProtocolCapability
-        // (Stand) + NotificationActor (Service) + LaneSpawnActor (Service) + MidiCapability
+        // VP-159 PR-4a invariant (= PR-2 / PR-3 invariant の延長): 5 actor (2 Agent + 3 Service)
+        // が 1 registry に coexist できる事。 PR-4b で AgentCapability (Agent) + ProtocolCapability
+        // (Agent) + NotificationActor (Service) + LaneSpawnActor (Service) + DeviceRegistry
         // (Service) を同 registry で host する path を fixture で代理検証。
         let mut r = ActorRegistry::new();
-        r.register_stand(&FixtureStand {
+        r.register_component(&FixtureComponent {
             name: "agent",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
-        r.register_stand(&FixtureStand {
+        r.register_component(&FixtureComponent {
             name: "protocol",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.register_service(&FixtureService {
             name: "notify",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.register_service(&FixtureService {
             name: "lane-spawn",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.register_service(&FixtureService {
-            name: "bastet",
-            scope: LayerScope::World,
+            name: "devices",
+            scope: LayerScope::Machine,
         });
 
         assert_eq!(r.len(), 5);
-        assert_eq!(r.list_by_kind(ActorKind::Stand).len(), 2);
+        assert_eq!(r.list_by_kind(ActorKind::Agent).len(), 2);
         assert_eq!(r.list_by_kind(ActorKind::Service).len(), 3);
-        assert_eq!(r.list_by_scope(LayerScope::Project).len(), 4);
-        assert_eq!(r.list_by_scope(LayerScope::World).len(), 1);
+        assert_eq!(r.list_by_scope(LayerScope::Repo).len(), 4);
+        assert_eq!(r.list_by_scope(LayerScope::Machine).len(), 1);
         assert_eq!(r.list_by_scope(LayerScope::Lane).len(), 0);
     }
 
     #[test]
     fn actor_kind_variants_are_distinct() {
         // 2 variant が PartialEq で区別される事 (supervisor が kind で dispatch する基盤)
-        assert_ne!(ActorKind::Stand, ActorKind::Service);
+        assert_ne!(ActorKind::Agent, ActorKind::Service);
     }
 
     #[test]
     fn entries_iter_returns_all() {
         let mut r = ActorRegistry::new();
-        r.register_stand(&FixtureStand {
+        r.register_component(&FixtureComponent {
             name: "agent",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.register_service(&FixtureService {
             name: "notify",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
 
         let all: Vec<&ActorRegistryEntry> = r.entries().collect();
@@ -428,7 +428,7 @@ mod tests {
         r.spawn_service(
             FixtureSpawnableService {
                 name: "notify",
-                scope: LayerScope::Project,
+                scope: LayerScope::Repo,
             },
             shutdown.clone(),
         );
@@ -445,25 +445,25 @@ mod tests {
 
     #[tokio::test]
     async fn spawned_service_and_registered_stand_coexist() {
-        // VP-159 PR-4b invariant: spawn_service (task あり) と register_stand (task なし) が
-        // 1 registry で coexist できる事 (= PR-4b で notify (spawned Service) + agent (Stand)
+        // VP-159 PR-4b invariant: spawn_service (task あり) と register_component (task なし) が
+        // 1 registry で coexist できる事 (= PR-4b で notify (spawned Service) + agent (Agent)
         // が同 registry で host される path を fixture で代理検証)。
         let mut r = ActorRegistry::new();
         let shutdown = CancellationToken::new();
-        r.register_stand(&FixtureStand {
+        r.register_component(&FixtureComponent {
             name: "agent",
-            scope: LayerScope::Project,
+            scope: LayerScope::Repo,
         });
         r.spawn_service(
             FixtureSpawnableService {
                 name: "notify",
-                scope: LayerScope::Project,
+                scope: LayerScope::Repo,
             },
             shutdown.clone(),
         );
         assert_eq!(r.len(), 2);
-        // Stand は task なし (= register_stand)、 spawned Service は task あり (= spawn_service)
-        assert!(r.get("agent").unwrap().task.is_none(), "Stand は task なし");
+        // Agent は task なし (= register_component)、 spawned Service は task あり (= spawn_service)
+        assert!(r.get("agent").unwrap().task.is_none(), "Agent は task なし");
         assert!(
             r.get("notify").unwrap().task.is_some(),
             "spawned Service は task あり"

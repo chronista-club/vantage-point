@@ -1,9 +1,9 @@
 /**
- * ChatView (doc 33 C2) — Echoes Act II の Console 面 GUI（SolidJS）。
+ * ChatView (doc 33 C2) — Conversation gui の Console 面 GUI（SolidJS）。
  *
- * World B。`window.vpConsole`（console.ts）が届ける [`EchoesEvent`] を per-lane store に
- * 畳み込み、active lane の会話を message stream として描画する。入力は IPC `echoes:submit`
- * で SP へ送る。marked で markdown、motion は CSS（prefers-reduced-motion 尊重）。
+ * World B。`window.vpConsole`（console.ts）が届ける [`ConversationEvent`] を per-lane store に
+ * 畳み込み、active lane の会話を message stream として描画する。入力は IPC `conversation:submit`
+ * で repo へ送る。marked で markdown、motion は CSS（prefers-reduced-motion 尊重）。
  *
  * 設計: 単一 ChatView が active lane の store を表示。store は lane ごとに永続（lane 切替で
  * 再 replay しない）。renderer は lane 初出時に一度だけ attach（console.ts が buffer を replay）。
@@ -21,26 +21,26 @@ import {
   Switch,
   Match,
   type Accessor,
+  type JSX,
 } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
+import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import { marked } from 'marked'
 import type {
-  BusRequestId,
-  EchoesEvent,
-  EchoesSession,
-  EchoesStandsDetail,
+  ConversationEvent,
+  ConversationSession,
   PlanEntry,
   QuestionSpec,
   VpConsole,
 } from './console'
 // doc 38 Phase 2: focused 判定 / 楽観的 focus 切替は console.ts の per-lane registry を共有する
-// （SP が真実源、ここは view）。session chip の prefix 規則は EchoesHeader を SSOT として再利用。
+// （repo が真実源、ここは view）。session chip の prefix 規則は LaneHeader を SSOT として再利用。
 // doc 47 §6: 共有 bus の相関 id（採番 + 照合）も console.ts が SSOT。
-import { focusedOf, isMyResponse, nextRequestId, noteFocus, syncHeaderSessionId } from './console'
-import { sessionChipPrefix } from './EchoesHeader'
+import { focusedOf, noteFocus, syncHeaderSessionId } from './console'
+import { sessionChipPrefix } from './LaneHeader'
 
 // ---------------------------------------------------------------------------
-// 会話モデル — flat item stream（EchoesEvent を UI 単位に畳む）
+// 会話モデル — flat item stream（ConversationEvent を UI 単位に畳む）
 // ---------------------------------------------------------------------------
 
 type ChatItem =
@@ -148,7 +148,7 @@ type ChatState = {
   plan: PlanEntry[]
   streaming: boolean
   cost: number | null
-  /** context ゲージ（Act I statusline の bar :context 相当）。turn_completed で更新。 */
+  /** context ゲージ（tui statusline の bar :context 相当）。turn_completed で更新。 */
   contextTokens: number | null
   contextWindow: number | null
   /** doc 35 PR3/PR4: engine の permission mode（session_init.permission_mode 由来）。per-lane。 */
@@ -162,6 +162,11 @@ type ChatState = {
   /** transcript replay（attach/reconnect 時の過去会話再送）進行中か。replay_start→true /
    *  replay_end→false。コーナーの再同期ローディングアニメ（resync-loader）の可視条件。 */
   replaying: boolean
+  /** now-line の契約供給（doc 51 §1 A3b — AI が自分の今を報告する口）。null = 契約報告なし
+   *  = deriveNowLine の機械導出（A3a の保険）が下支えする。turn_completed で消える（「今」は
+   *  turn より長生きしない）。書き手は A3b の `now_line` event（PR2 で配線 — 受け皿を先に置く
+   *  reader-first）。 */
+  nowLine: string | null
 }
 
 type LaneChat = {
@@ -169,56 +174,164 @@ type LaneChat = {
   set: SetStoreFunction<ChatState>
 }
 
+/**
+ * 会話 store は **(lane, session) 単位**（doc 50 §4.3 #1）。
+ *
+ * 旧実装は lane 単位で、focused 以外の session の event は `foldEvent` が捨てていた
+ * （= 1 lane に 1 つの会話しか持てない）。session ↔ Pane 1:1（doc 46 §1.5）では N 枚の
+ * chat Pane が同時に生きるので、Rust 側 P5 の `pty_slots` re-key と**同型の re-key** を
+ * JS 側にも入れる。
+ *
+ * key は `lane` と `session` を NUL で連結する。`#` や `:` は lane 名や engine session id に
+ * 現れうるので衝突源になる。NUL はどの経路の lane 名にも入らない。
+ * ⚠️ source では必ずエスケープ（`\u0000`）で書く — リテラルの不可視文字を置くと grep も diff も
+ * 読めなくなる（この commit で実際に踏んだ）。
+ */
 const laneChats = new Map<string, LaneChat>()
 const [activeLane, setActiveLane] = createSignal<string | null>(null)
 
-function laneChat(lane: string): LaneChat {
-  let lc = laneChats.get(lane)
+/** store の key（純関数 = テスト対象）。lane 名に何が入っても衝突しない区切りを使う。 */
+export function chatKey(lane: string, session: number): string {
+  return `${lane}\u0000${session}`
+}
+
+function laneChat(lane: string, session: number): LaneChat {
+  const k = chatKey(lane, session)
+  let lc = laneChats.get(k)
   if (!lc) {
     const [state, set] = createStore<ChatState>(emptyChatState())
     lc = { state, set }
-    laneChats.set(lane, lc)
+    laneChats.set(k, lc)
   }
   return lc
+}
+
+/**
+ * lane の **focused session** の store。
+ *
+ * ⚠️ 過渡的な helper。doc 50 P1 の残り（ChatView を (lane, session) の props で受け、session
+ * ごとに 1 枚ずつ mount する）が入ると呼び出し側は自分の session を知っているので不要になる。
+ * 今は「**store は session 別 / 描画はまだ focused の 1 枚**」の段階。
+ */
+function focusedChat(lane: string): LaneChat {
+  return laneChat(lane, focusedOf(lane))
+}
+
+// ---------------------------------------------------------------------------
+// session view registry（module-level — 全 SessionChatView と installChatView が共有）
+// repo（conversation_session_list）が真実源。ここは 'vp:conversation-sessions' bus を映すだけの view cache で
+// state を持たない。focused の真値は console.ts の registry（focusedOf）— ここは reactive 表示用の鏡。
+// ---------------------------------------------------------------------------
+
+export type LaneSessionsView = { focused: number; sessions: ConversationSession[] }
+const [sessionViews, setSessionViews] = createSignal<Record<string, LaneSessionsView>>({})
+
+/** lane の session 一覧 view（reactive）。 */
+function sessionsOf(lane: string): LaneSessionsView | null {
+  return sessionViews()[lane] ?? null
+}
+
+/** session に focus を移す（pane click / 旧 tab click の移植）。
+ *  楽観更新（noteFocus + local signal）+ IPC。authoritative は後続の conversation_session_list。 */
+export function focusChatSession(lane: string, session: number): void {
+  if (session === (sessionsOf(lane)?.focused ?? focusedOf(lane))) return
+  // doc 38 §4.3: focus 切替で再同期ローダーを必ず一度下ろす（旧 focused の replay_end を
+  // 取りこぼしていても固着させない）。直後の demand_start → ReplayStart が必要なら立て直す。
+  clearReplaying(lane)
+  noteFocus(lane, session)
+  // D1: 既存 session 間の切替でも名札の session chip を即追従させる（authoritative は
+  // conversation_session_list → handleSessionList 側の sync が上書き）。
+  if (syncHeaderSessionId(lane)) {
+    document.dispatchEvent(new CustomEvent('vp:lane-header', { detail: { lane } }))
+  }
+  setSessionViews((prev) => {
+    const cur = prev[lane] ?? { focused: session, sessions: [] }
+    return { ...prev, [lane]: { ...cur, focused: session } }
+  })
+  const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+  ipc?.postMessage(JSON.stringify({ t: 'conversation:session_focus', lane, session }))
+}
+
+/** session を閉じる（session ↔ Pane 1:1 なので pane ごと消える）。backend（conversation_session_remove）
+ *  が registry から除去 → 除去後の focus 先を返し、app.rs が list 再取得 + demand_start する。
+ *  最後の 1 本 / root は backend が Err で拒否（UI 側 canCloseSession と多重防御）。 */
+export function removeChatSession(lane: string, session: number): void {
+  const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+  ipc?.postMessage(JSON.stringify({ t: 'conversation:session_remove', lane, session }))
+}
+
+/** doc 50 §4.6 A6 ②: 名札 kind badge → session の Mode（見え方）切替を要求する。
+ *
+ * IPC を直接撃たず `vp:mode-switch-request` に流すのは、handoff overlay と二重切替 lock を
+ * entry.tsx が一元管理しているため（名札の実装と overlay の DOM / timer を絡ませない —
+ * doc 51 §2 で root picker から event 依頼にした規律をそのまま引き継ぐ）。
+ * 宛先 session は **引数で運ぶ**（focus に依存しない — 「focus してから送る」型の分割は
+ * 別 IPC なので順序保証が無く、別 session に届くレースを作る。doc 50 §4.3 の警告）。
+ * 応答は Rust の `SessionModeApplied` → `vpConsole.setSessionMode` → 'vp:session-mode' で返り、
+ * roster がその session の Pane kind を入れ替える。 */
+export function requestSessionMode(
+  lane: string,
+  session: number,
+  mode: 'tui' | 'gui',
+): void {
+  document.dispatchEvent(
+    new CustomEvent('vp:mode-switch-request', {
+      detail: { lane, session, target: mode },
+    }),
+  )
 }
 
 // ---------------------------------------------------------------------------
 // doc 38 §4.3 — 再同期ローダー（resync-loader）の固着防止
 //
 // `replaying` は replay_start→true / replay_end→false で駆動するが、replay_end が来ない経路
-// （Act I lane / error 中断 / engine 途絶）では立ちっぱなしになれる。表示を「focused session の
+// （tui lane / error 中断 / engine 途絶）では立ちっぱなしになれる。表示を「focused session の
 // attach 状態機械」に束縛する:
-//  ① lane/Act/tab 切替で必ず解除（clearReplaying を各遷移点で呼ぶ）
+//  ① lane/Mode/tab 切替で必ず解除（clearReplaying を各遷移点で呼ぶ）
 //  ② replay_start ごとに watchdog を張り、REPLAY_WATCHDOG_MS 無応答なら強制解除 + warn（安全網）
-//  ③ session filter との整合は foldEvent の `session !== focusedOf` で担保済（background session の
-//     replay は fold されない = replaying を立てない）。
+//  ③ watchdog は **(lane, session) 単位**（doc 50 §4.3 #2 で store を session 別にしたのに合わせる）。
+//     旧実装は lane 単位で、fold 側が background session を捨てていたので衝突しなかった。
+//     捨てるのをやめた今は lane 単位のままだと、別 session の replay_start が
+//     前の session の watchdog を解除してしまう（= 固着の検出を取りこぼす）。
 // ---------------------------------------------------------------------------
 
 /** replay_end が来ない時に replaying を強制解除するまでの猶予 ms（安全網）。 */
 const REPLAY_WATCHDOG_MS = 10_000
 const replayWatchdogs = new Map<string, ReturnType<typeof setTimeout>>()
 
+/**
+ * 入力欄の高さを内容に合わせる（既定 1 行 → 打った分だけ伸び、CSS の max-height で頭打ち）。
+ * `height:auto` で一度潰してから scrollHeight を測るのは、縮む方向にも追随させるため
+ *（先に潰さないと scrollHeight が前回の高さに引きずられて減らない）。
+ */
+function autosize(el: HTMLTextAreaElement): void {
+  el.style.height = 'auto'
+  el.style.height = `${el.scrollHeight}px`
+}
+
 /** 張ってある watchdog を取り消す（replay_end / error / 明示解除の時）。 */
-function clearReplayWatchdog(lane: string): void {
-  const t = replayWatchdogs.get(lane)
+function clearReplayWatchdog(lane: string, session: number): void {
+  const k = chatKey(lane, session)
+  const t = replayWatchdogs.get(k)
   if (t !== undefined) {
     clearTimeout(t)
-    replayWatchdogs.delete(lane)
+    replayWatchdogs.delete(k)
   }
 }
 
 /** replay_start を受けた時に watchdog を張り直す（REPLAY_WATCHDOG_MS 後に強制解除）。 */
-function armReplayWatchdog(lane: string): void {
-  clearReplayWatchdog(lane)
+function armReplayWatchdog(lane: string, session: number): void {
+  clearReplayWatchdog(lane, session)
+  const k = chatKey(lane, session)
   replayWatchdogs.set(
-    lane,
+    k,
     setTimeout(() => {
-      replayWatchdogs.delete(lane)
-      const lc = laneChats.get(lane)
+      replayWatchdogs.delete(k)
+      const lc = laneChats.get(k)
       if (lc && lc.state.replaying) {
         // replay_end 未達 = 固着。強制解除して warn（console IPC 経由で Rust log にも載る）。
         console.warn(
-          `[chatview] resync watchdog: replay_end 未達で再同期ローダーを強制解除 (lane=${lane})`,
+          `[chatview] resync watchdog: replay_end 未達で再同期ローダーを強制解除 (lane=${lane} session=${session})`,
         )
         lc.set('replaying', false)
       }
@@ -226,22 +339,29 @@ function armReplayWatchdog(lane: string): void {
   )
 }
 
-/** 指定 lane の再同期表示を明示的に下ろす（lane/Act/tab 切替で呼ぶ）。watchdog も取り消す。
- *  cache 未作成の lane は no-op（空 entry を作らない）。 */
+/** 指定 lane の**全 session** の再同期表示を明示的に下ろす（lane 切替で呼ぶ）。watchdog も取り消す。
+ *  cache 未作成の session は no-op（空 entry を作らない）。 */
 function clearReplaying(lane: string): void {
-  clearReplayWatchdog(lane)
-  const lc = laneChats.get(lane)
-  if (lc && lc.state.replaying) lc.set('replaying', false)
+  const prefix = `${lane}\u0000`
+  for (const [k, lc] of laneChats) {
+    if (!k.startsWith(prefix)) continue
+    const t = replayWatchdogs.get(k)
+    if (t !== undefined) {
+      clearTimeout(t)
+      replayWatchdogs.delete(k)
+    }
+    if (lc.state.replaying) lc.set('replaying', false)
+  }
 }
 
 /**
- * EchoesEvent を ChatState に畳み込む純粋 mutation（reducer 本体）。
+ * ConversationEvent を ChatState に畳み込む純粋 mutation（reducer 本体）。
  *
  * solid の `produce` draft でも plain object でも同じに動く（＝ store 非依存 = 単体テスト可能）。
  * 会話モデリングの肝: message_chunk / thought_chunk は末尾同種 item に append（accumulate）、
- * tool_call_update は id 一致で done 化。ここが Act II の描画正しさの中核。
+ * tool_call_update は id 一致で done 化。ここが gui の描画正しさの中核。
  */
-export function foldInto(s: ChatState, ev: EchoesEvent): void {
+export function foldInto(s: ChatState, ev: ConversationEvent): void {
   s.lastEvent = ev.kind // 拾える全イベント種別を status に同期（時刻は foldEvent が Date.now で付す）
   switch (ev.kind) {
     case 'replay_start':
@@ -298,6 +418,9 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
       break
     }
     case 'tool_call':
+      // tool 実行も active turn（text を挟まず tool に直行する turn がある — chunk だけを
+      // streaming の契機にすると、その間 status / 灯が「待機中」と嘘をつく。A2 の灯で顕在化）。
+      s.streaming = true
       s.items.push({
         kind: 'tool',
         id: ev.id,
@@ -345,12 +468,17 @@ export function foldInto(s: ChatState, ev: EchoesEvent): void {
     case 'plan':
       s.plan = ev.entries
       break
+    case 'now_line':
+      // AI の自己申告（doc 51 §1 A3b — `vp now` 発）。deriveNowLine が質問要旨の次に読む。
+      s.nowLine = ev.text
+      break
     case 'turn_completed':
       s.streaming = false
       s.cost = ev.cost_usd ?? s.cost
       // 欠落 turn（engine が値を運ばない版）では前値を保つ — ゲージが点滅しないように。
       s.contextTokens = ev.context_tokens ?? s.contextTokens
       s.contextWindow = ev.context_window ?? s.contextWindow
+      s.nowLine = null // 契約の「今」は turn より長生きしない（doc 51 §1 A3）
       sealLastAssistant(s) // 次 turn の chunk と融合させない（§5.1）
       break
     case 'error':
@@ -396,35 +524,39 @@ function sealLastAssistant(s: ChatState): void {
   if (last && last.kind === 'assistant') last.sealed = true
 }
 
-/** EchoesEvent を lane の store に畳み込む（console.ts の renderer 本体）。
- *  doc 38 Phase 2（本改修の要）: session が現在の focused でなければ fold しない — 背景 session の
- *  stream を focused の会話に混ぜない。session は console.ts で正規化済み（未指定 = focused = 1、
- *  旧 SP 互換）なので単純比較で足りる。focus 切替後の会話表示は demand_start → ReplayStart が
- *  filter を通って fold の clear→再構築で担う（切替時の明示クリアは不要）。 */
-function foldEvent(lane: string, ev: EchoesEvent, session: number): void {
-  if (session !== focusedOf(lane)) return
-  laneChat(lane).set(produce((s) => foldInto(s, ev)))
-  laneChat(lane).set('lastEventAt', Date.now()) // 全イベントで時刻を同期（hang 検出の時間軸）
+/** ConversationEvent を **その session の** store に畳み込む（console.ts の renderer 本体）。
+ *
+ *  doc 50 §4.3 #2: 旧実装は `session !== focusedOf(lane)` で背景 session の event を**捨てて**
+ *  いた（lane に会話が 1 本しか無い前提）。session ↔ Pane 1:1 では N 本が同時に生きるので、
+ *  捨てずに **session ごとの store へ振り分ける**。背景 session の stream が focused の会話に
+ *  混ざる心配は、store が別なので構造的に消える（旧 filter が担っていた役割は key が担う）。
+ *  session は console.ts で正規化済み（未指定 = focused = 1、旧 SP 互換）。 */
+function foldEvent(lane: string, ev: ConversationEvent, session: number): void {
+  const lc = laneChat(lane, session)
+  lc.set(produce((s) => foldInto(s, ev)))
+  lc.set('lastEventAt', Date.now()) // 全イベントで時刻を同期（hang 検出の時間軸）
   // doc 38 §4.3: replay window の watchdog を張り替える。replay_start で arm、replay_end / error で
   // 解除（foldInto は既に replaying を下ろしている — ここは timer の後始末）。10s 無応答なら強制解除。
-  if (ev.kind === 'replay_start') armReplayWatchdog(lane)
+  if (ev.kind === 'replay_start') armReplayWatchdog(lane, session)
   else if (ev.kind === 'replay_end' || ev.kind === 'error' || ev.kind === 'engine_exited')
-    clearReplayWatchdog(lane) // engine 途絶 = 続きの replay はもう来ない → watchdog を固着させない
+    clearReplayWatchdog(lane, session) // engine 途絶 = 続きの replay はもう来ない → watchdog を固着させない
   // doc 35 §5.1: turn が閉じた event を契機に pending を flush。派生状態 streaming===false は見ない
   //（replay_start / question / permission_request も false にするため — それらで流すと順序が壊れる）。
-  if (isTurnClosingEvent(ev.kind)) flushPending(lane)
+  if (isTurnClosingEvent(ev.kind)) flushPending(lane, session)
 }
 
 /** turn が閉じた（= pending flush を発火してよい）event か（doc 35 §5.1、vitest 対象）。
  *  engine_exited も含む（旧 error 相乗り時代の自己修復経路の継承）: pending の submit が
  *  engine respawn のトリガになる = 「メッセージ送信で再開」が type-ahead でも成立する。 */
-export function isTurnClosingEvent(kind: EchoesEvent['kind']): boolean {
+export function isTurnClosingEvent(kind: ConversationEvent['kind']): boolean {
   return kind === 'turn_completed' || kind === 'error' || kind === 'engine_exited'
 }
 
-/** doc 35 §5.1: buffer した type-ahead を engine に流す（対象は引数 lane = turn を閉じた lane）。 */
-function flushPending(lane: string): void {
-  const lc = laneChat(lane)
+/** doc 35 §5.1: buffer した type-ahead を engine に流す（対象 = turn を閉じた (lane, session)）。
+ *  doc 50 P2: `conversation:submit` が session を運ぶようになったので、background session の
+ *  pending もその session 自身へ安全に流せる（旧 focused guard は撤去）。 */
+function flushPending(lane: string, session: number): void {
+  const lc = laneChat(lane, session)
   const text = lc.state.pending
   if (!text) return
   lc.set(
@@ -434,7 +566,7 @@ function flushPending(lane: string): void {
     }),
   )
   const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-  ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
+  ipc?.postMessage(JSON.stringify({ t: 'conversation:submit', lane, session, prompt: text }))
 }
 
 /**
@@ -464,30 +596,22 @@ export function emptyChatState(): ChatState {
     lastEvent: null,
     lastEventAt: null,
     replaying: false,
+    nowLine: null,
   }
 }
 
-/** active lane が transcript replay（再同期）中か。resync-loader の可視条件（reactive）。 */
+/** active lane の **focused session** が transcript replay（再同期）中か。
+ *  resync-loader の可視条件（reactive）。ローダーは lane 全面に出る 1 枚なので、
+ *  代表として focused を見る（背景 session の replay で全面を覆わない）。 */
 export function activeLaneReplaying(): boolean {
   const l = activeLane()
-  return l ? laneChat(l).state.replaying : false
+  return l ? laneChat(l, focusedOf(l)).state.replaying : false
 }
 
 // ---------------------------------------------------------------------------
 // doc 38 Phase 3 — session tab strip の純粋ロジック（document 非依存 = vitest 対象）
 // ---------------------------------------------------------------------------
 
-/** 「+」menu / session tab の engine 選択肢（stands_list の 1 entry の view mirror）。 */
-export type StandOption = { name: string; description?: string; chat_capable?: boolean }
-
-/** doc 38 §4 / Phase 3: chat_capable な stand だけを「+」menu に残す（純粋 = テスト可能）。
- *  shell（chat host を持たない）は「作れるが submit がエラーになるだけの dead-end tab」に
- *  なるため除外する（bikeboy dogfood で実発生）。
- *  ⚠️ 後方互換: 旧 SP は chat_capable field を送らない → undefined は「表示する」側に倒す
- *  （chat_capable === false の時だけ隠す = 従来挙動を壊さない）。 */
-export function chatCapableStands(stands: StandOption[]): StandOption[] {
-  return stands.filter((s) => s.chat_capable !== false)
-}
 
 /** doc 38 Phase 3 → doc 39: session tab の × を出してよいか。純粋 = テスト可能。
  *  - 2 本以上でのみ close 可（1 本 = 素に戻すのは Reset lane の役目）
@@ -498,11 +622,37 @@ export function canCloseSession(sessionCount: number, isRoot?: boolean): boolean
   return sessionCount >= 2 && isRoot !== true
 }
 
+/** kind badge（doc 50 §4.6 A6 ②）で `target` の見え方に切り替えられるか。
+ *
+ * **能力表引きで判定し、engine 名の型分岐は書かない**（§4.6 ② — shell の chat が
+ * 「原理不可」ではなく「host 未実装」であるように、能力は engine 側の申告で変わる。
+ * 実装された日に client を触らず badge が生えるのが正しい形）。判定材料は server が
+ * session ごとに送る `chat_capable` 一本で、能力表の SSOT は server（`EngineKind`）。
+ *
+ * - **→chat**: その session が gui host を持つ engine か。未申告（旧 SP）は**不可**に倒す
+ *   — 押しても server に弾かれるだけの行き止まりを出さない（`newPaneChoices` と同じ規律）。
+ * - **→tui**: 常に可。tui は login shell に engine を流し込むだけなのでどの engine でも
+ *   成立する（doc 50 §4.0 帰結 1「login shell は劣化ケースではなく正規の投げる先」）。
+ */
+export function canSwitchTo(target: 'tui' | 'gui', chatCapable?: boolean): boolean {
+  return target === 'tui' ? true : chatCapable === true
+}
+
+/** 進行中の mode 切替（handoff）を (lane, session) で引くための key。
+ *
+ * doc 50 §4.6 A6: 切替は **pane 単位**になったので、lock も pane（= session）単位で持つ。
+ * 「どれか 1 つでも進行中なら全部弾く」にすると、**無関係な pane の click を無言で落とす**
+ * （A6 で全 pane が badge を持つため実際に起こる。team-b review 2026-07-25 score 85 —
+ * 解除側は (lane, session) を照合していたのに入口だけ素の存在チェックで非対称だった）。 */
+export function handoffKey(lane: string, session: number): string {
+  return `${lane}#${session}`
+}
+
 // ---------------------------------------------------------------------------
 // agent status 導出（doc 35 §5.1 診断用の常時可視化ブロック）— 純粋関数 = テスト可能
 // ---------------------------------------------------------------------------
 
-export type EchoesStatus = {
+export type ConversationStatus = {
   kind: 'idle' | 'streaming' | 'thinking' | 'tool' | 'awaiting' | 'error'
   label: string
   detail?: string
@@ -516,7 +666,7 @@ export type EchoesStatus = {
 const STALL_MS = 8000
 
 /** ChatState から現在の agent 状態を導く（純粋、nowMs は呼び手が渡す＝テスト可能）。 */
-export function deriveStatus(s: ChatState | null, nowMs = 0): EchoesStatus {
+export function deriveStatus(s: ChatState | null, nowMs = 0): ConversationStatus {
   if (!s) return { kind: 'idle', label: '—', pending: false, stalled: false }
   const pending = !!s.pending
   const lastEvent = s.lastEvent ?? undefined
@@ -544,20 +694,72 @@ export function deriveStatus(s: ChatState | null, nowMs = 0): EchoesStatus {
   return { ...base, kind: 'idle', label: '待機中', stalled: false }
 }
 
+/** 灯の 3 状態（doc 51 §1 A2 — 並行性を支える視点の視覚言語）。
+ *  動いている（run = 緑・脈動）/ 待っている（off = 無灯）/ あなたが要る（need = 赤・速い脈動）。 */
+export type SessionLamp = 'run' | 'off' | 'need'
+
+/** ConversationStatus → 灯（純関数）。細かい状態語（thinking / tool / 停滞…）は計器盤（status 行）の
+ *  領分で、灯は「横目で読む」ための 3 値に畳む:
+ *  - need = ボールが人にある（質問 / 承認）+ engine 異常（介入が要る点で同じ側）
+ *  - run  = engine が動いている（streaming / thinking / tool）。stalled は run のまま —
+ *    8s 無イベントは平常でも起きるので灯を赤にせず、嘘の告発は status 行の文字に任せる
+ *  - off  = 待っている（待機中 / 💤 休眠） */
+export function lampOf(status: ConversationStatus): SessionLamp {
+  if (status.kind === 'awaiting' || status.kind === 'error') return 'need'
+  if (status.kind === 'streaming' || status.kind === 'thinking' || status.kind === 'tool') return 'run'
+  return 'off'
+}
+
+/** now-line の 1 行を 1 行らしく整える（先頭行のみ + 長すぎは切る。純関数）。 */
+export function clampNowLine(text: string, maxLen = 60): string {
+  const line = text.split('\n', 1)[0].trim()
+  return line.length <= maxLen ? line : `${line.slice(0, maxLen - 1)}…`
+}
+
+/**
+ * now-line（doc 51 §1 A3 — 名札直下の「今なにを」動的一行。純関数）。
+ *
+ * 優先順（上ほど「今」が濃い）:
+ * 1. 質問 / 承認の要旨 — ボールが人にある時は、AI の自己報告（過去の turn 内作業）より濃い
+ * 2. **契約**（s.nowLine — A3b で AI が自分の今を報告する口。メイン供給）
+ * 3. 機械導出（A3a の保険 — 報告しない engine / turn でも行が死なない下支え）:
+ *    実行中の tool 名 → turn 中の頼まれごと（直近 user prompt の先頭）
+ * 4. null = 待っている pane に「今」は無い — 空なら描かない（doc 50 §2）
+ */
+export function deriveNowLine(s: ChatState | null): string | null {
+  if (!s) return null
+  const waiting = s.items.find((i) => i.kind === 'prompt' && !i.answered) as
+    | Extract<ChatItem, { kind: 'prompt' }>
+    | undefined
+  if (waiting) {
+    if (waiting.permission) return `承認待ち: ${waiting.permission.toolName}`
+    const q = waiting.questions[0]?.question
+    return q ? clampNowLine(q) : '質問待ち'
+  }
+  if (s.nowLine) return clampNowLine(s.nowLine)
+  if (!s.streaming) return null
+  const last = s.items[s.items.length - 1]
+  if (last?.kind === 'tool' && !last.done) return `${last.name} を実行中`
+  const lastUser = [...s.items].reverse().find((i) => i.kind === 'user') as
+    | Extract<ChatItem, { kind: 'user' }>
+    | undefined
+  return lastUser ? clampNowLine(lastUser.text) : null
+}
+
 // ---------------------------------------------------------------------------
 // 描画
 // ---------------------------------------------------------------------------
 
 function mdToHtml(text: string): string {
   // breaks: true で単一改行を <br> に変換する。marked 既定（CommonMark）は段落内の単一 \n を
-  // 空白に潰すため、engine が返す改行が Act II のチャット表示で消えていた。gfm は既定 true だが明示。
+  // 空白に潰すため、engine が返す改行が gui のチャット表示で消えていた。gfm は既定 true だが明示。
   return marked.parse(text, { breaks: true, gfm: true }) as string
 }
 
 /**
  * chat メッセージ内リンクを OS ブラウザで開くための `open-url` IPC ペイロード判定（純関数 = calc）。
  *
- * http(s) の href なら Act I の xterm と同じ `open-url` IPC の JSON 文字列を返し、それ以外
+ * http(s) の href なら tui の xterm と同じ `open-url` IPC の JSON 文字列を返し、それ以外
  * （相対 / `file:` / `javascript:` / 空）は null を返す。非 http(s) を絶対に通さない一次弾き —
  * webview に `file://` 等を開かせないための多層防御（scheme 検証の SSOT は Rust 側 terminal.rs、
  * ここは webview 内遷移を止めるための前段）。terminal.rs と揃えて小文字 scheme を前方一致で見る。
@@ -570,20 +772,20 @@ export function linkOpenPayload(href: string): string | null {
 function ThinkingBlock(props: { text: string; active: () => boolean }) {
   const [open, setOpen] = createSignal(false)
   return (
-    <div class="echoes-thinking">
+    <div class="conversation-thinking">
       <button
-        class="echoes-thinking-toggle"
+        class="conversation-thinking-toggle"
         classList={{ live: props.active() }}
         onClick={() => setOpen(!open())}
       >
-        <span class="echoes-thinking-caret" classList={{ open: open() }}>
+        <span class="conversation-thinking-caret" classList={{ open: open() }}>
           ▸
         </span>
         {/* active 中はラベルを shimmer で光らせる（考え中の質感）。 */}
-        <span class="echoes-thinking-label">thinking</span>
+        <span class="conversation-thinking-label">thinking</span>
       </button>
       <Show when={open()}>
-        <div class="echoes-thinking-body">{props.text}</div>
+        <div class="conversation-thinking-body">{props.text}</div>
       </Show>
     </div>
   )
@@ -634,11 +836,11 @@ export function clampToolDetail(
 function ToolDetail(props: { label: string; text: string }) {
   const clamped = createMemo(() => clampToolDetail(props.text))
   return (
-    <div class="echoes-tool-detail">
-      <div class="echoes-tool-detail-label">{props.label}</div>
-      <pre class="echoes-tool-detail-body">{clamped().text}</pre>
+    <div class="conversation-tool-detail">
+      <div class="conversation-tool-detail-label">{props.label}</div>
+      <pre class="conversation-tool-detail-body">{clamped().text}</pre>
       <Show when={clamped().omitted > 0}>
-        <div class="echoes-tool-detail-omitted">…{clamped().omitted} 文字省略</div>
+        <div class="conversation-tool-detail-omitted">…{clamped().omitted} 文字省略</div>
       </Show>
     </div>
   )
@@ -647,17 +849,17 @@ function ToolDetail(props: { label: string; text: string }) {
 /** subagent（Agent の子）の発話列。role ごとにラベルを付けて縦に積む。 */
 function SubagentBlock(props: { entries: SubagentEntry[] }) {
   return (
-    <div class="echoes-tool-detail">
-      <div class="echoes-tool-detail-label">subagent</div>
+    <div class="conversation-tool-detail">
+      <div class="conversation-tool-detail-label">subagent</div>
       <For each={props.entries}>
         {(e) => {
           const clamped = createMemo(() => clampToolDetail(e.text))
           return (
-            <div class="echoes-subagent-entry" classList={{ [e.role]: true }}>
-              <span class="echoes-subagent-role">{e.role}</span>
-              <pre class="echoes-tool-detail-body">{clamped().text}</pre>
+            <div class="conversation-subagent-entry" classList={{ [e.role]: true }}>
+              <span class="conversation-subagent-role">{e.role}</span>
+              <pre class="conversation-tool-detail-body">{clamped().text}</pre>
               <Show when={clamped().omitted > 0}>
-                <div class="echoes-tool-detail-omitted">…{clamped().omitted} 文字省略</div>
+                <div class="conversation-tool-detail-omitted">…{clamped().omitted} 文字省略</div>
               </Show>
             </div>
           )
@@ -690,26 +892,26 @@ function ToolRow(props: {
     () => inputText() !== null || resultText() !== null || subagent().length > 0,
   )
   return (
-    <div class="echoes-tool" classList={{ done: props.done, error: props.error }}>
+    <div class="conversation-tool" classList={{ done: props.done, error: props.error }}>
       <button
-        class="echoes-tool-head"
+        class="conversation-tool-head"
         classList={{ clickable: hasDetail() }}
         onClick={() => hasDetail() && setOpen(!open())}
       >
         <Show when={hasDetail()}>
-          <span class="echoes-thinking-caret" classList={{ open: open() }}>
+          <span class="conversation-thinking-caret" classList={{ open: open() }}>
             ▸
           </span>
         </Show>
-        <span class="echoes-tool-spinner" />
-        <span class="echoes-tool-icon">🔧</span>
-        <span class="echoes-tool-name">{props.name}</span>
-        <span class="echoes-tool-status">
+        <span class="conversation-tool-spinner" />
+        <span class="conversation-tool-icon">🔧</span>
+        <span class="conversation-tool-name">{props.name}</span>
+        <span class="conversation-tool-status">
           {props.error ? 'error' : props.done ? '✓' : '実行中…'}
         </span>
       </button>
       <Show when={open() && hasDetail()}>
-        <div class="echoes-tool-body">
+        <div class="conversation-tool-body">
           <Show when={inputText()}>{(t) => <ToolDetail label="input" text={t()} />}</Show>
           {/* subagent は Agent 行の中に入れ子で置く = 「誰の発話か」を構造で示す。 */}
           <Show when={subagent().length > 0}>
@@ -736,23 +938,23 @@ function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
   const anyError = () => props.tools().some((t) => t.error)
   return (
     <div
-      class="echoes-toolgroup"
+      class="conversation-toolgroup"
       classList={{ done: !status().running && !anyError(), error: !status().running && anyError() }}
     >
-      <button class="echoes-toolgroup-toggle" onClick={() => setOpen(!open())}>
-        <span class="echoes-thinking-caret" classList={{ open: open() }}>
+      <button class="conversation-toolgroup-toggle" onClick={() => setOpen(!open())}>
+        <span class="conversation-thinking-caret" classList={{ open: open() }}>
           ▸
         </span>
         <Show when={status().running}>
-          <span class="echoes-tool-spinner" />
+          <span class="conversation-tool-spinner" />
         </Show>
-        <span class="echoes-tool-icon">🔧</span>
-        <span class="echoes-tool-name">{props.name}</span>
-        <span class="echoes-toolgroup-count">×{count()}</span>
-        <span class="echoes-tool-status">{status().label}</span>
+        <span class="conversation-tool-icon">🔧</span>
+        <span class="conversation-tool-name">{props.name}</span>
+        <span class="conversation-toolgroup-count">×{count()}</span>
+        <span class="conversation-tool-status">{status().label}</span>
       </button>
       <Show when={open()}>
-        <div class="echoes-toolgroup-body">
+        <div class="conversation-toolgroup-body">
           <For each={props.tools()}>
             {(t) => (
               <ToolRow
@@ -774,13 +976,13 @@ function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
 function PlanWidget(props: { entries: Accessor<PlanEntry[]> }) {
   return (
     <Show when={props.entries().length > 0}>
-      <div class="echoes-plan">
-        <div class="echoes-plan-title">Plan</div>
+      <div class="conversation-plan">
+        <div class="conversation-plan-title">Plan</div>
         <For each={props.entries()}>
           {(e) => (
-            <div class="echoes-plan-item" classList={{ [e.status]: true }}>
-              <span class="echoes-plan-dot" />
-              <span class="echoes-plan-text">
+            <div class="conversation-plan-item" classList={{ [e.status]: true }}>
+              <span class="conversation-plan-dot" />
+              <span class="conversation-plan-text">
                 {e.status === 'in_progress' ? (e.active_form ?? e.content) : e.content}
               </span>
             </div>
@@ -796,7 +998,7 @@ function PlanWidget(props: { entries: Accessor<PlanEntry[]> }) {
  *
  * 各 question を見出し + 選択肢ボタンで描く。single-select は radio（クリックで置換）、
  * multiSelect は toggle（複数選択）。全質問に選択が付いたら「確定」で `answers` を組んで
- * onAnswer に渡す（親が echoes:respond を送り、カードを回答済み表示へ折りたたむ）。
+ * onAnswer に渡す（親が conversation:respond を送り、カードを回答済み表示へ折りたたむ）。
  */
 function PromptCard(props: {
   item: Extract<ChatItem, { kind: 'prompt' }>
@@ -836,16 +1038,16 @@ function PromptCard(props: {
   }
 
   return (
-    <div class="echoes-prompt" classList={{ answered: props.item.answered }}>
+    <div class="conversation-prompt" classList={{ answered: props.item.answered }}>
       <Show
         when={!props.item.answered}
         fallback={
-          <div class="echoes-prompt-answered">
+          <div class="conversation-prompt-answered">
             <For each={props.item.questions}>
               {(q) => (
-                <div class="echoes-prompt-arow">
-                  <span class="echoes-prompt-ahead">{q.header}</span>
-                  <span class="echoes-prompt-aval">{props.item.answers?.[q.question] ?? ''}</span>
+                <div class="conversation-prompt-arow">
+                  <span class="conversation-prompt-ahead">{q.header}</span>
+                  <span class="conversation-prompt-aval">{props.item.answers?.[q.question] ?? ''}</span>
                 </div>
               )}
             </For>
@@ -854,14 +1056,14 @@ function PromptCard(props: {
       >
         <For each={props.item.questions}>
           {(q) => (
-            <div class="echoes-prompt-q">
-              <div class="echoes-prompt-header">{q.header}</div>
-              <div class="echoes-prompt-question">{q.question}</div>
-              <div class="echoes-prompt-options">
+            <div class="conversation-prompt-q">
+              <div class="conversation-prompt-header">{q.header}</div>
+              <div class="conversation-prompt-question">{q.question}</div>
+              <div class="conversation-prompt-options">
                 <For each={q.options}>
                   {(opt) => (
                     <button
-                      class="echoes-prompt-opt"
+                      class="conversation-prompt-opt"
                       classList={{ selected: isSelected(q, opt.label) }}
                       onClick={() => toggle(q, opt.label)}
                       title={opt.description}
@@ -874,7 +1076,7 @@ function PromptCard(props: {
             </div>
           )}
         </For>
-        <button class="echoes-prompt-confirm" disabled={!canConfirm()} onClick={confirm}>
+        <button class="conversation-prompt-confirm" disabled={!canConfirm()} onClick={confirm}>
           確定
         </button>
       </Show>
@@ -897,32 +1099,32 @@ function PermissionCard(props: {
     }
   }
   return (
-    <div class="echoes-prompt" classList={{ answered: props.item.answered }}>
+    <div class="conversation-prompt" classList={{ answered: props.item.answered }}>
       <Show
         when={!props.item.answered}
         fallback={
-          <div class="echoes-prompt-answered">
-            <span class="echoes-prompt-ahead">{perm().toolName}</span>
-            <span class="echoes-prompt-aval">
+          <div class="conversation-prompt-answered">
+            <span class="conversation-prompt-ahead">{perm().toolName}</span>
+            <span class="conversation-prompt-aval">
               {props.item.decision === 'deny' ? '✗ 却下' : '✓ 許可'}
             </span>
           </div>
         }
       >
-        <div class="echoes-prompt-header">tool 承認</div>
-        <div class="echoes-prompt-question">
-          <code class="echoes-perm-tool">{perm().toolName}</code> の実行を許可しますか？
+        <div class="conversation-prompt-header">tool 承認</div>
+        <div class="conversation-prompt-question">
+          <code class="conversation-perm-tool">{perm().toolName}</code> の実行を許可しますか？
         </div>
-        <div class="echoes-perm-input">{inputSummary()}</div>
-        <div class="echoes-perm-actions">
+        <div class="conversation-perm-input">{inputSummary()}</div>
+        <div class="conversation-perm-actions">
           <button
-            class="echoes-perm-allow"
+            class="conversation-perm-allow"
             onClick={() => props.onDecide(props.item.requestId, 'allow')}
           >
             許可
           </button>
           <button
-            class="echoes-perm-deny"
+            class="conversation-perm-deny"
             onClick={() => props.onDecide(props.item.requestId, 'deny')}
           >
             却下
@@ -949,29 +1151,29 @@ function PlanCard(props: {
     }
   }
   return (
-    <div class="echoes-prompt echoes-plan-card" classList={{ answered: props.item.answered }}>
+    <div class="conversation-prompt conversation-plan-card" classList={{ answered: props.item.answered }}>
       <Show
         when={!props.item.answered}
         fallback={
-          <div class="echoes-prompt-answered">
-            <span class="echoes-prompt-ahead">plan</span>
-            <span class="echoes-prompt-aval">
+          <div class="conversation-prompt-answered">
+            <span class="conversation-prompt-ahead">plan</span>
+            <span class="conversation-prompt-aval">
               {props.item.decision === 'deny' ? '✗ 却下' : '✓ 承認'}
             </span>
           </div>
         }
       >
-        <div class="echoes-prompt-header">plan 承認</div>
-        <div class="echoes-plan-body" innerHTML={mdToHtml(planText())} />
-        <div class="echoes-perm-actions">
+        <div class="conversation-prompt-header">plan 承認</div>
+        <div class="conversation-plan-body" innerHTML={mdToHtml(planText())} />
+        <div class="conversation-perm-actions">
           <button
-            class="echoes-perm-allow"
+            class="conversation-perm-allow"
             onClick={() => props.onDecide(props.item.requestId, 'allow')}
           >
             承認して実行
           </button>
           <button
-            class="echoes-perm-deny"
+            class="conversation-perm-deny"
             onClick={() => props.onDecide(props.item.requestId, 'deny')}
           >
             却下
@@ -992,14 +1194,137 @@ const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
   ['claude-haiku-4-5-20251001', 'Haiku 4.5'],
 ]
 
-function ChatView() {
-  const current = (): LaneChat | null => {
-    const l = activeLane()
-    return l ? laneChat(l) : null
-  }
-  const state = (): ChatState | null => current()?.state ?? null
+/**
+ * session 名札（pane 上端） — **term / chat 共通**（doc 50 §4.6 A6 ②）。
+ *
+ * この pane が「何であるか」= session の素性を名乗る 1 行。全 pane が同じ顔で名乗ることで
+ * 「どれが root か」が一目で読める（3 pane 並ぶと名札が無い pane は識別不能になる —
+ * 2026-07-25 実機で mako が踏んだ）。
+ *
+ * 載せるもの（doc 50 §2「上段 = この pane が何であるか」）:
+ *  - 灯（slot 注入。**chat 固有** — term は ConversationEvent stream を持たないので出さない）
+ *  - session ラベル / root chip / 会話 id = 素性
+ *  - kind badge = 見え方（click で `session_set_mode` → in-place 変身）
+ *  - ✕ = この session を閉じる（root は不可）
+ *
+ * 供給は `sessionsOf(lane)`（`conversation_session_list` の cache）— term / chat どちらの pane でも
+ * 同じ 1 本の真実源から引く。
+ */
+export function SessionPlate(props: {
+  lane: string
+  session: number
+  /** この pane の見え方。badge の表示と切替先を決める。 */
+  mode: 'tui' | 'gui'
+  focused: boolean
+  /** 活動の灯（chat のみ。term は供給が無いので省略 = 描かない）。 */
+  lamp?: JSX.Element
+}) {
+  const info = (): ConversationSession | undefined =>
+    sessionsOf(props.lane)?.sessions.find((s) => s.key === props.session)
+  const label = (): string => `${sessionChipPrefix(info()?.agent)}#${props.session}`
+  /** badge を押した時の切替先（今の見え方の逆）。 */
+  const target = (): 'tui' | 'gui' => (props.mode === 'gui' ? 'tui' : 'gui')
+  /** badge を押せるか（= 切替先に行けるか）。 */
+  const canSwitchMode = (): boolean => canSwitchTo(target(), info()?.chat_capable)
 
-  // Act II モデル切替（spec: セッション進行中でも切替可能）。SP が engine を --resume +
+  return (
+    <div class="conversation-session-plate" classList={{ focused: props.focused }}>
+      {props.lamp}
+      <span class="conversation-session-plate-label">{label()}</span>
+      {/* root = lane の代表（mailbox / pid、doc 40 §4-1）。素性なので名札に出す —
+          これが無いと「なぜこの pane だけ × が無いのか」（root は close 不可）が読めない。 */}
+      <Show when={info()?.root}>
+        <span
+          class="conversation-session-plate-root"
+          title="root session（lane の代表 — 閉じられない。素に戻すのは sidebar の Reset Lane）"
+        >
+          <CreoIcon name="ph:anchor-simple" size={10} />
+          root
+        </span>
+      </Show>
+      <Show when={info()?.engine_session_id}>
+        {(sid) => <span class="conversation-session-plate-sid">{sid().slice(0, 8)}</span>}
+      </Show>
+      {/* focus は **chat の概念**（replay demand の宛先。送信はどの pane からも可）。
+          term pane は focus を World B が持たない（keyboard focus は xterm 側）ので、
+          この hint を出すと「押しても何も起きない」誤誘導になる — chat のときだけ出す。 */}
+      <Show when={props.mode === 'gui' && !props.focused}>
+        <span class="conversation-session-plate-hint">click で focus</span>
+      </Show>
+      <span class="conversation-session-plate-spacer" />
+      {/* kind badge（doc 50 §4.6 A6 ②）: この pane が「何であるか」の一部 = 見え方。
+          click で session_set_mode → repo が resume handoff → **同じ往復路**が別の面として
+          立ち上がる（位置と share は renamePane が保つ = in-place 変身）。
+          ⚠️ term 側にも必ず出すこと — chat pane が 0 枚になると gui へ戻る入口が消える
+          （2026-07-25 に実際に片道ドアを作った）。
+
+          切替できない session（shell 等、gui host を持たない engine）は **押せる見た目を
+          出さない** — 押しても server に弾かれるだけの行き止まりになる（2026-07-25 実機で
+          「押しても無言」を踏んだ）。可否の判定は server が送る `chat_capable` 一本で、
+          engine 名の型分岐は client に持たせない（§4.6 ② の能力表引き）。 */}
+      <Show
+        when={canSwitchMode()}
+        fallback={
+          <span
+            class="conversation-session-plate-kind static"
+            title={`${info()?.agent ?? 'この engine'} は Chat（gui）の受け口を持ちません`}
+          >
+            <CreoIcon name="ph:terminal-window" size={9} />
+            Console
+          </span>
+        }
+      >
+        <button
+          type="button"
+          class="conversation-session-plate-kind"
+          title={
+            target() === 'tui'
+              ? 'Console（tui）に切り替える — 会話はそのまま resume で続く'
+              : 'Chat（gui）に切り替える — 会話はそのまま resume で続く'
+          }
+          onClick={(e) => {
+            e.stopPropagation()
+            requestSessionMode(props.lane, props.session, target())
+          }}
+        >
+          <CreoIcon
+            name={props.mode === 'gui' ? 'ph:chat-circle' : 'ph:terminal-window'}
+            size={9}
+          />
+          {props.mode === 'gui' ? 'Chat' : 'Console'}
+        </button>
+      </Show>
+      <Show when={canCloseSession(sessionsOf(props.lane)?.sessions.length ?? 0, info()?.root)}>
+        <button
+          type="button"
+          class="conversation-session-plate-close"
+          title="この session を閉じる（pane ごと消える）"
+          onClick={(e) => {
+            e.stopPropagation()
+            removeChatSession(props.lane, props.session)
+          }}
+        >
+          <CreoIcon name="ph:x" size={9} />
+        </button>
+      </Show>
+    </div>
+  )
+}
+
+/** 1 枚 = 1 session の chat pane（doc 46 §1.5 session ↔ Pane 1:1）。(lane, session) は mount 時に
+ *  固定 — lane 切替は pane host ごと作り直す（lane-panes が dispose → mount）。
+ *  doc 50 P2: chat 動詞（submit / respond / perm / interrupt）は session を運ぶ = どの pane
+ *  からも打てる。例外は model 切替のみ — repo 側 console_set_model が root slot 単位（engine の
+ *  --resume 込み respawn）のため、focused でだけ有効にしている。 */
+function SessionChatView(props: { lane: string; session: number }) {
+  const lc = laneChat(props.lane, props.session)
+  const state = (): ChatState => lc.state
+  /** この pane が lane の focused session か（= chat 動詞の宛先か）。 */
+  const isFocused = (): boolean => (sessionsOf(props.lane)?.focused ?? 1) === props.session
+  // 名札まわり（label / root chip / 会話 id / badge / ✕）は `SessionPlate` に移管した
+  // （doc 50 §4.6 A6 — term pane と共有するため）。
+
+  // gui モデル切替（spec: セッション進行中でも切替可能）。repo が engine を --resume +
   // 新 --model で入れ替える = 会話コンテキスト継続でモデル交換。適用の視覚確認は
   // 新 engine の session_init が header.model を更新することで得る（picker は実測値に追従）。
   // streaming 中は disable — engine drop が進行中 turn を切るのを UI で抑止する。
@@ -1011,8 +1336,7 @@ function ChatView() {
       : MODEL_CHOICES
   }
   const setModel = (model: string) => {
-    const lane = activeLane()
-    if (!lane) return
+    const lane = props.lane
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(
       JSON.stringify({ t: 'console:set_model', lane, model: model || null }),
@@ -1025,22 +1349,19 @@ function ChatView() {
   // review #2: 旧実装はグローバル signal で lane 横断共有 + respawn の bypass reset を映さなかった。
   const currentPermMode = (): string => state()?.permissionMode ?? 'bypassPermissions'
   const setPermissionMode = (mode: string) => {
-    const lane = activeLane()
-    if (!lane) return
+    const lane = props.lane
     // optimistic: 当該 lane に即反映。engine は set_permission_mode を適用し、respawn 時は
     // session_init.permission_mode が真値（通常 bypassPermissions）で上書きする。
-    laneChat(lane).set(produce((s) => (s.permissionMode = mode)))
-    // Echoes 共通ヘッダの permission chip にも同期（engine は即時 event を返さないため）。
-    ;(
-      window as unknown as {
-        vpConsole?: { notePermissionMode?: (lane: string, mode: string) => void }
-      }
-    ).vpConsole?.notePermissionMode?.(lane, mode)
+    //（旧: notePermissionMode でヘッダ chip にも同期していたが、chip は doc 50 の名札純化で
+    //  撤去済み — 同期先ごと消えた）
+    lc.set(produce((s) => (s.permissionMode = mode)))
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:set_permission_mode', lane, mode }))
+    ipc?.postMessage(
+      JSON.stringify({ t: 'conversation:set_permission_mode', lane, session: props.session, mode }),
+    )
   }
 
-  // context ゲージ（Act I statusline の bar :context 相当）。分子分母が揃うまで非表示。
+  // context ゲージ（tui statusline の bar :context 相当）。分子分母が揃うまで非表示。
   // 閾値は cc-status の意味論を踏襲: >=60% warn / >=85% critical。
   const ctxPct = (): number | null => {
     const s = state()
@@ -1053,110 +1374,6 @@ function ChatView() {
     return `context ${s.contextTokens.toLocaleString()} / ${s.contextWindow.toLocaleString()} tokens`
   }
 
-  // --- doc 38 Phase 2: session tab strip（仮置き UI）--------------------------------------------
-  // SP（echoes_session_list）が真実源。ここは vp:echoes-sessions / vp:echoes-stands を描くだけの
-  // 薄い view で state を持たない（表示場所は dogfood で変わる前提）。focused の真値は console.ts の
-  // registry（focusedOf）で、tab click は楽観更新 + RPC round-trip 後に authoritative 値で上書きされる。
-  type LaneSessionsView = { focused: number; sessions: EchoesSession[] }
-  const [sessionViews, setSessionViews] = createSignal<Record<string, LaneSessionsView>>({})
-  // 「+」の engine 選択 menu（stands_list の結果）。開いている lane のみ表示。StandOption は
-  // module-level（doc 38 Phase 3: chat_capable filter を純関数化してテスト可能にした）。
-  const [standsMenu, setStandsMenu] = createSignal<{ lane: string; stands: StandOption[] } | null>(
-    null,
-  )
-  // doc 47 §6: 共有 bus `vp:echoes-stands` で「自分が出した要求」を識別する相関 id。
-  // 表示に使わない照合用の値なので signal ではなく素の let（再描画を誘発させない）。
-  let standsReq: BusRequestId | null = null
-
-  onMount(() => {
-    const onSessions = (e: Event): void => {
-      const d = (
-        e as CustomEvent<{ lane: string; focused: number; sessions: EchoesSession[] }>
-      ).detail
-      if (!d?.lane) return
-      setSessionViews((prev) => ({
-        ...prev,
-        [d.lane]: { focused: d.focused, sessions: d.sessions },
-      }))
-    }
-    const onStands = (e: Event): void => {
-      const d = (e as CustomEvent<EchoesStandsDetail<StandOption>>).detail
-      if (!d?.lane) return
-      // doc 47 §6: `vp:echoes-stands` は共有 bus なので、相関 id で応答を振り分ける。
-      // 自分が出した要求でなければ何もしない（Pane の「+ New」の応答でこちらの menu まで
-      // 開く混線 = #838 の根治。旧 `window.vpPaneNewPending` フラグはこれで撤去）。
-      if (!isMyResponse(standsReq, d.req)) return
-      standsReq = null
-      setStandsMenu({ lane: d.lane, stands: d.stands })
-    }
-    document.addEventListener('vp:echoes-sessions', onSessions)
-    document.addEventListener('vp:echoes-stands', onStands)
-    onCleanup(() => {
-      document.removeEventListener('vp:echoes-sessions', onSessions)
-      document.removeEventListener('vp:echoes-stands', onStands)
-    })
-  })
-
-  const currentSessions = (): LaneSessionsView | null => {
-    const l = activeLane()
-    return l ? (sessionViews()[l] ?? null) : null
-  }
-
-  const focusSession = (session: number): void => {
-    const lane = activeLane()
-    if (!lane) return
-    if (session === (currentSessions()?.focused ?? 1)) return // 既に focused なら no-op
-    // doc 38 §4.3: tab 切替で再同期ローダーを必ず一度下ろす（旧 focused の replay_end を取りこぼして
-    // いても固着させない）。直後の demand_start → ReplayStart が本当に必要なら立て直す。
-    clearReplaying(lane)
-    // 楽観的に local focused を更新: console.ts registry（filter が即切り替わる）+ tab 強調の両方。
-    // demand_start → ReplayStart が届いて fold が会話を clear→再構築する（明示クリア不要）。
-    noteFocus(lane, session)
-    // D1: 既存 session 間の tab 切替でも chip を即追従させる（authoritative は後続の
-    // echoes_session_list → handleSessionList 側の sync が上書き）。
-    if (syncHeaderSessionId(lane)) {
-      document.dispatchEvent(new CustomEvent('vp:echoes-header', { detail: { lane } }))
-    }
-    setSessionViews((prev) => {
-      const cur = prev[lane] ?? { focused: session, sessions: [] }
-      return { ...prev, [lane]: { ...cur, focused: session } }
-    })
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:session_focus', lane, session }))
-  }
-
-  // doc 38 Phase 3: session tab の × で session を閉じる。backend（echoes_session_remove）が
-  // registry から除去 → 除去後の focus 先を返し、app.rs が list 再取得 + demand_start で新 focused の
-  // 会話を replay する。最後の 1 本は backend が Err で拒否（× は 2 本以上でしか出さない = 多重防御）。
-  const removeSession = (session: number): void => {
-    const lane = activeLane()
-    if (!lane) return
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:session_remove', lane, session }))
-  }
-
-  const toggleAddMenu = (): void => {
-    const lane = activeLane()
-    if (!lane) return
-    if (standsMenu()?.lane === lane) {
-      setStandsMenu(null) // 開いていれば閉じる（トグル。開いている = 応答済 = standsReq は既に null）
-      return
-    }
-    // doc 47 §6: 要求元タグ = 相関 id。応答（handleStands → bus）まで往復する。
-    standsReq = nextRequestId('chat-add')
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:stands_fetch', lane, req: standsReq }))
-  }
-
-  const createSession = (stand: string): void => {
-    const lane = activeLane()
-    if (!lane) return
-    setStandsMenu(null)
-    // focus は送らない = backend 既定 true（作った session にそのまま話しかける UX、doc 38 §3）。
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:session_create', lane, stand }))
-  }
-
   const [draft, setDraft] = createSignal('')
   let inputRef: HTMLTextAreaElement | undefined // dequeue 後に composer へフォーカスを移すため
   // history 最下部の常時 status バー。全イベント同期 + 無反応(hang)検出のため 1s 毎に now を更新。
@@ -1166,30 +1383,34 @@ function ChatView() {
     onCleanup(() => clearInterval(id))
   })
   const statusLine = () => deriveStatus(state(), nowMs())
+  // 灯 3 状態（doc 51 §1 A2）: status の畳み込み。名札の dot が読む。
+  const lamp = () => lampOf(statusLine())
+  // now-line（doc 51 §1 A3）: 名札直下の「今なにを」。null = 行ごと描かない。
+  const nowLine = () => deriveNowLine(state())
   const submit = () => {
-    const lane = activeLane()
+    const lane = props.lane
     const text = draft().trim()
-    if (!lane || !text) return
+    if (!text) return
     setDraft('')
+    if (inputRef) autosize(inputRef) // 送信後は 1 行に畳み戻す
     // doc 35 §5.1: streaming 中は engine へ送らず pending に buffer（items[] を触らない = 順序を汚さない）。
     // 走行中の複数送信は改行で連結し、単一 draft = 1 turn として turn 閉時に flush する。
-    if (laneChat(lane).state.streaming) {
-      laneChat(lane).set('pending', (p) => (p ? `${p}\n${text}` : text))
+    if (lc.state.streaming) {
+      lc.set('pending', (p) => (p ? `${p}\n${text}` : text))
       return
     }
     // idle: 送信順 = 処理順なので optimistic に即描画して送る
-    laneChat(lane).set(produce((s) => s.items.push({ kind: 'user', text })))
+    lc.set(produce((s) => s.items.push({ kind: 'user', text })))
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:submit', lane, prompt: text }))
+    ipc?.postMessage(
+      JSON.stringify({ t: 'conversation:submit', lane, session: props.session, prompt: text }),
+    )
   }
 
   // 送信待ち type-ahead を入力欄へ戻して編集可能にする（dequeue-to-composer, todo 2026-07-14）。
   // composer が空のときだけ有効（下書きを潰さない）。戻した瞬間 pending は空 = 自動送信されない。
-  const canEditPending = () => canDequeuePending(draft(), state()?.pending ?? null)
+  const canEditPending = () => canDequeuePending(draft(), state().pending ?? null)
   const editPending = () => {
-    const lane = activeLane()
-    if (!lane) return
-    const lc = laneChat(lane)
     if (!canDequeuePending(draft(), lc.state.pending)) return
     const text = lc.state.pending as string
     lc.set('pending', null) // 先に空にする → 以降の turn_completed が flush しない（レース消滅）
@@ -1199,18 +1420,17 @@ function ChatView() {
 
   // doc 35 §5: 実行中 turn を中断する（停止ボタン / Esc）。engine は turn を止め、次の submit を受けられる。
   const interrupt = () => {
-    const lane = activeLane()
-    if (!lane) return
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:interrupt', lane }))
+    ipc?.postMessage(
+      JSON.stringify({ t: 'conversation:interrupt', lane: props.lane, session: props.session }),
+    )
   }
 
-  // doc 35 PR1: PromptCard 回答。カードを回答済み表示へ折りたたみ、echoes:respond で SP に戻す
+  // doc 35 PR1: PromptCard 回答。カードを回答済み表示へ折りたたみ、conversation:respond で repo に戻す
   //（host が control_response を stdin に書いて turn が継続する）。
   const answerPrompt = (requestId: string, answers: Record<string, string>) => {
-    const lane = activeLane()
-    if (!lane) return
-    laneChat(lane).set(
+    const lane = props.lane
+    lc.set(
       produce((s) => {
         const it = s.items.find((i) => i.kind === 'prompt' && i.requestId === requestId)
         if (it && it.kind === 'prompt') {
@@ -1220,14 +1440,17 @@ function ChatView() {
       }),
     )
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:respond', lane, request_id: requestId, answers }))
+    ipc?.postMessage(
+      JSON.stringify({
+        t: 'conversation:respond', lane, session: props.session, request_id: requestId, answers,
+      }),
+    )
   }
 
-  // doc 35 PR3: permission 承認/却下。カードを decision 表示へ折りたたみ、echoes:respond {behavior} で戻す。
+  // doc 35 PR3: permission 承認/却下。カードを decision 表示へ折りたたみ、conversation:respond {behavior} で戻す。
   const decidePrompt = (requestId: string, behavior: 'allow' | 'deny') => {
-    const lane = activeLane()
-    if (!lane) return
-    laneChat(lane).set(
+    const lane = props.lane
+    lc.set(
       produce((s) => {
         const it = s.items.find((i) => i.kind === 'prompt' && i.requestId === requestId)
         if (it && it.kind === 'prompt') {
@@ -1237,7 +1460,11 @@ function ChatView() {
       }),
     )
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'echoes:respond', lane, request_id: requestId, behavior }))
+    ipc?.postMessage(
+      JSON.stringify({
+        t: 'conversation:respond', lane, session: props.session, request_id: requestId, behavior,
+      }),
+    )
   }
 
   // doc 35 PR4: plan 承認/却下。承認 = ExitPlanMode を allow + mode を default へ戻す（plan mode を
@@ -1263,9 +1490,9 @@ function ChatView() {
     if (streamEl) stuckToBottom = isAtBottom(streamEl)
   }
 
-  // marked 描画済み HTML 内の <a> クリックを echoes-stream の 1 listener で捌く（イベント委譲 =
+  // marked 描画済み HTML 内の <a> クリックを conversation-stream の 1 listener で捌く（イベント委譲 =
   // メッセージ毎に listener を張らない）。default では webview 内遷移（SPA が localhost リンクで
-  // 飛ぶ事故）になるので preventDefault で止め、http(s) は Act I の xterm と同じ `open-url` IPC で
+  // 飛ぶ事故）になるので preventDefault で止め、http(s) は tui の xterm と同じ `open-url` IPC で
   // OS default browser を起動する（Rust: terminal::handle_ipc_message → webbrowser::open）。
   const onStreamLinkClick = (e: MouseEvent): void => {
     const anchor = (e.target as HTMLElement | null)?.closest?.('a') as HTMLAnchorElement | null
@@ -1311,14 +1538,14 @@ function ChatView() {
   //   - PageUp/PageDown: 常に history へ（小さな textarea では page 移動は無意味なので奪う）
   //   - Home/End: textarea に focus がある間は行内キャレット移動を尊重して奪わない。
   //     それ以外（history/pane に focus）では history 先頭/末尾へ。
-  // chat 非表示時（Act I 表示中 = streamEl が display:none 配下 → offsetParent=null）は
+  // chat 非表示時（tui 表示中 = streamEl が display:none 配下 → offsetParent=null）は
   // 一切介入せず、xterm 等にキーを渡す。
   const onDocKey = (e: KeyboardEvent): void => {
     if (!streamEl || streamEl.offsetParent === null) return // chat 非表示 → 素通し
     const key = e.key
     // doc 35 §5: Esc で走行中 turn を中断（作文中の textarea では抑制 = Home/End と同じ棲み分け）。
     if (key === 'Escape') {
-      const inTextarea = document.activeElement?.classList.contains('echoes-input-box') ?? false
+      const inTextarea = document.activeElement?.classList.contains('conversation-input-box') ?? false
       if (!inTextarea && state()?.streaming) {
         interrupt()
         e.preventDefault()
@@ -1326,7 +1553,7 @@ function ChatView() {
       return
     }
     if (key !== 'Home' && key !== 'End' && key !== 'PageUp' && key !== 'PageDown') return
-    const inTextarea = document.activeElement?.classList.contains('echoes-input-box') ?? false
+    const inTextarea = document.activeElement?.classList.contains('conversation-input-box') ?? false
     if ((key === 'Home' || key === 'End') && inTextarea) return // 作文中の caret 移動を尊重
     if (scrollByKey(key)) e.preventDefault()
   }
@@ -1351,9 +1578,8 @@ function ChatView() {
     }
   })
 
-  // lane 切替時は「その lane の最新（下端）」を見せる（履歴の途中で開かない）。
-  createEffect(() => {
-    activeLane() // dep
+  // mount 時は「この session の最新（下端）」を見せる（履歴の途中で開かない）。
+  onMount(() => {
     stuckToBottom = true
     requestAnimationFrame(() => {
       if (streamEl) streamEl.scrollTop = streamEl.scrollHeight
@@ -1361,155 +1587,67 @@ function ChatView() {
   })
 
   return (
-    <div class="echoes-chat">
-      <Show
-        when={state()}
-        fallback={<div class="echoes-empty">Console (Act II) — lane 未選択</div>}
-      >
-        {/* doc 38 Phase 2: session tab strip。1 本でも「+」の置き場として常時表示（仮置き UI）。 */}
-        <div class="echoes-tabs">
-          <For each={currentSessions()?.sessions ?? []}>
-            {(sess) => (
-              <button
-                type="button"
-                class="echoes-tab"
-                classList={{ active: sess.key === (currentSessions()?.focused ?? 1) }}
-                onClick={() => focusSession(sess.key)}
-                title={`${sessionChipPrefix(sess.stand)} session #${sess.key}${
-                  sess.engine_session_id ? ` · ${sess.engine_session_id.slice(0, 8)}` : ''
-                }`}
-              >
-                {/* live（engine が生きている session）だけ小さな dot を出す。 */}
-                <Show when={sess.live}>
-                  <span class="echoes-tab-dot" />
-                </Show>
-                <span class="echoes-tab-label">
-                  {sessionChipPrefix(sess.stand)}#{sess.key}
-                </span>
-                {/* doc 38 Phase 3 → doc 39: × で session close。root タブと 1 本きりの時は隠す
-                    （backend も root / 最後の 1 本の remove を Err で拒否 = 多重防御。素に戻すのは
-                    sidebar の Reset Lane）。tab は <button> なので × は span で描き、
-                    stopPropagation で focus click に伝播させない。 */}
-                <Show
-                  when={canCloseSession(
-                    currentSessions()?.sessions.length ?? 0,
-                    sess.root,
-                  )}
-                >
-                  <span
-                    class="echoes-tab-close"
-                    role="button"
-                    aria-label={`session #${sess.key} を閉じる`}
-                    title="この session を閉じる"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      removeSession(sess.key)
-                    }}
-                  >
-                    ×
-                  </span>
-                </Show>
-              </button>
-            )}
-          </For>
-          <div class="echoes-tab-add-wrap">
-            <button
-              type="button"
-              class="echoes-tab-add"
-              classList={{ open: standsMenu()?.lane === activeLane() }}
-              onClick={toggleAddMenu}
-              title="engine を選んで session を追加"
-            >
-              +
-            </button>
-            {/* stands_list の結果で埋める簡素な dropdown（doc 38: UI は state を持たない仮置き）。
-                doc 38 Phase 3: chat_capable な engine だけに絞る（shell の dead-end tab を出さない）。 */}
-            <Show when={standsMenu() && standsMenu()!.lane === activeLane()}>
-              <div class="echoes-tab-menu">
-                <For each={chatCapableStands(standsMenu()!.stands)}>
-                  {(st) => (
-                    <button
-                      type="button"
-                      class="echoes-tab-menuitem"
-                      onClick={() => createSession(st.name)}
-                      title={st.description}
-                    >
-                      {st.name}
-                    </button>
-                  )}
-                </For>
-                <Show when={chatCapableStands(standsMenu()!.stands).length === 0}>
-                  <div class="echoes-tab-menu-empty">engine なし</div>
-                </Show>
-              </div>
-            </Show>
+    <div
+      class="chat-view"
+      classList={{ focused: isFocused() }}
+      onClick={() => {
+        if (!isFocused()) focusChatSession(props.lane, props.session)
+      }}
+    >
+      {/* session 名札（pane 上端）: この pane = この session の素性。doc 46 §1.3 の帰結で
+          タブ strip は撤去 — session の識別は pane 自身が名乗り、切替は pane click が担う。
+          engine 選択付きの新規作成は LaneHeader（lane の名札）の「+ New」一本
+          （doc 46 P2 の canonical 入口。旧・下端の帯は doc 51 §1 A1 で退役）。
+          実体は term pane と共有する `SessionPlate`（doc 50 §4.6 A6 — 全 pane が同じ顔で
+          名乗る。灯だけは chat 固有なので slot で渡す）。 */}
+      <SessionPlate
+        lane={props.lane}
+        session={props.session}
+        mode="gui"
+        focused={isFocused()}
+        lamp={
+          /* 灯 3 状態（doc 51 §1 A2）: 動いている（緑脈動）/ 待っている（無灯）/ あなたが要る
+             （赤速脈動）。旧「live なら緑点」を置換 — presence でなく活動を灯す（lampOf）。
+             細かい状態語は下段の status 行が持つ（灯は横目の認知、文字は精読の認知）。
+             term pane はこの供給（ConversationEvent stream）を持たないので灯を出さない。 */
+          <span
+            class="conversation-lamp"
+            classList={{ run: lamp() === 'run', need: lamp() === 'need' }}
+            title={statusLine().label}
+          />
+        }
+      />
+      {/* now-line（doc 51 §1 A3）: 名札（素性・不変）と区別された「今」の帯。名札の直下。
+          供給 = 質問要旨 > 契約（A3b）> 機械導出（A3a 保険）。空なら描かない（doc 50 §2）。 */}
+      <Show when={nowLine()}>
+        {(line) => (
+          <div class="conversation-now-line" title={line()}>
+            {line()}
           </div>
-        </div>
-        <div class="echoes-header">
-          <span class="echoes-header-label">model</span>
-          <select
-            class="echoes-model-select"
-            disabled={state()!.streaming}
-            onChange={(e) => setModel(e.currentTarget.value)}
-          >
-            <For each={modelChoices()}>
-              {([v, label]) => (
-                <option value={v} selected={v === currentModel()}>
-                  {label}
-                </option>
-              )}
-            </For>
-          </select>
-          <span class="echoes-header-label">perm</span>
-          <select
-            class="echoes-model-select"
-            onChange={(e) => setPermissionMode(e.currentTarget.value)}
-          >
-            <option value="bypassPermissions" selected={currentPermMode() === 'bypassPermissions'}>
-              素通し
-            </option>
-            <option value="default" selected={currentPermMode() === 'default'}>
-              承認
-            </option>
-            <option value="plan" selected={currentPermMode() === 'plan'}>
-              計画
-            </option>
-          </select>
-          <Show when={ctxPct() !== null}>
-            <span
-              class="echoes-context"
-              classList={{ warn: ctxPct()! >= 60, crit: ctxPct()! >= 85 }}
-              title={ctxTitle()}
-            >
-              <span class="echoes-context-bar">
-                <span class="echoes-context-fill" style={{ width: `${ctxPct()}%` }} />
-              </span>
-              <span class="echoes-context-pct">{ctxPct()}%</span>
-            </span>
-          </Show>
-        </div>
-        <PlanWidget entries={() => state()!.plan} />
+        )}
+      </Show>
+              <PlanWidget entries={() => state().plan} />
         <div
-          class="echoes-stream"
+          class="conversation-stream"
           ref={streamEl}
           tabindex={0}
           onScroll={onStreamScroll}
           onClick={onStreamLinkClick}
         >
-          <For each={state()!.items}>
+          <For each={state().items}>
             {(item, index) => {
               if (item.kind === 'thinking')
                 return (
                   <ThinkingBlock
                     text={item.text}
                     // 末尾 thinking かつ turn 進行中 = 今まさに考え中 → shimmer。
-                    active={() => index() === state()!.items.length - 1 && state()!.streaming}
+                    active={() => index() === state().items.length - 1 && state().streaming}
                   />
                 )
               if (item.kind === 'tool') {
                 // 連続同名 tool run を畳む。head=accordion / member=非描画 / single=従来 1 行。
                 // items/index を reactive に読むので stream 追記で single→head へ昇格する。
-                const role = createMemo(() => classifyToolRun(state()!.items, index()))
+                const role = createMemo(() => classifyToolRun(state().items, index()))
                 return (
                   <Switch>
                     <Match when={role().role === 'member'}>{null}</Match>
@@ -1541,18 +1679,18 @@ function ChatView() {
                 )
               }
               return (
-                <div class="echoes-msg" classList={{ user: item.kind === 'user' }}>
-                  <div class="echoes-msg-body" innerHTML={mdToHtml(item.text)} />
+                <div class="conversation-msg" classList={{ user: item.kind === 'user' }}>
+                  <div class="conversation-msg-body" innerHTML={mdToHtml(item.text)} />
                 </div>
               )
             }}
           </For>
-          <Show when={state()!.streaming}>
-            <div class="echoes-cursor" />
+          <Show when={state().streaming}>
+            <div class="conversation-cursor" />
           </Show>
-          <Show when={state()!.pending}>
+          <Show when={state().pending}>
             <div
-              class="echoes-msg user pending"
+              class="conversation-msg user pending"
               classList={{ editable: canEditPending(), locked: !canEditPending() }}
               onClick={editPending}
               title={
@@ -1561,36 +1699,63 @@ function ChatView() {
                   : '編集するには入力欄を空にしてください'
               }
             >
-              <div class="echoes-msg-body" innerHTML={mdToHtml(state()!.pending!)} />
-              <span class="echoes-pending-badge">
+              <div class="conversation-msg-body" innerHTML={mdToHtml(state().pending!)} />
+              <span class="conversation-pending-badge">
                 {canEditPending() ? '送信待ち · クリックで編集' : '送信待ち · turn 完了後に送信'}
               </span>
             </div>
           </Show>
         </div>
-        <div class={`echoes-status s-${statusLine().kind}`} classList={{ stalled: statusLine().stalled }}>
-          <span class="echoes-status-dot" />
-          <span class="echoes-status-label">{statusLine().label}</span>
+        {/* status bar — **入力の上**（stream に隣接）。engine が今何をしているかの読み取り専用の
+            計器で、操作は持たない。context 残量も「読み取り」なのでここ。 */}
+        <div
+          class={`conversation-status s-${statusLine().kind}`}
+          classList={{ stalled: statusLine().stalled }}
+        >
+          <span class="conversation-status-dot" />
+          <span class="conversation-status-label">{statusLine().label}</span>
           <Show when={statusLine().detail}>
-            <span class="echoes-status-detail">{statusLine().detail}</span>
+            <span class="conversation-status-detail">{statusLine().detail}</span>
           </Show>
           <Show when={statusLine().stalled}>
-            <span class="echoes-status-stalled">反応無 {statusLine().idleSec}s</span>
+            <span class="conversation-status-stalled">反応無 {statusLine().idleSec}s</span>
           </Show>
           <Show when={statusLine().lastEvent}>
-            <span class="echoes-status-event">· {statusLine().lastEvent}</span>
+            <span class="conversation-status-event">· {statusLine().lastEvent}</span>
           </Show>
           <Show when={statusLine().pending}>
-            <span class="echoes-status-pending">✎ 送信待ち</span>
+            <span class="conversation-status-pending">
+              <CreoIcon name="ph:pencil-simple" size={11} /> 送信待ち
+            </span>
+          </Show>
+          <Show when={ctxPct() !== null}>
+            <span
+              class="conversation-context"
+              classList={{ warn: ctxPct()! >= 60, crit: ctxPct()! >= 85 }}
+              title={ctxTitle()}
+            >
+              <span class="conversation-context-bar">
+                <span class="conversation-context-fill" style={{ width: `${ctxPct()}%` }} />
+              </span>
+              <span class="conversation-context-pct">{ctxPct()}%</span>
+            </span>
           </Show>
         </div>
-        <div class="echoes-input">
+        {/* composer — 入力とその操作を 1 つの器にまとめる。上 = 打つ場所、下 = 操作。
+            model / permission も「送る前に決める操作」なのでここ（読み取りの status とは分ける）。 */}
+        <div class="conversation-composer">
+          {/* 既定は **1 行**。打った分だけ scrollHeight に合わせて伸び、max-height で頭打ち
+              （CSS だけでは textarea は内容に追随しないので、伸縮はここで行う）。 */}
           <textarea
             ref={inputRef}
-            class="echoes-input-box"
+            class="conversation-input-box"
+            rows={1}
             placeholder="メッセージを入力（⌘Enter で送信）"
             value={draft()}
-            onInput={(e) => setDraft(e.currentTarget.value)}
+            onInput={(e) => {
+              setDraft(e.currentTarget.value)
+              autosize(e.currentTarget)
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault()
@@ -1598,16 +1763,54 @@ function ChatView() {
               }
             }}
           />
-          <Show when={state()!.streaming}>
-            <button class="echoes-stop" onClick={interrupt} title="turn を中断 (Esc)">
-              停止
+          <div class="conversation-actions">
+            <select
+              class="conversation-model-select"
+              disabled={state().streaming || !isFocused()}
+              title={
+                isFocused()
+                  ? 'model'
+                  : 'model 切替は root slot 単位（focus してから）'
+              }
+              onChange={(e) => setModel(e.currentTarget.value)}
+            >
+              <For each={modelChoices()}>
+                {([v, label]) => (
+                  <option value={v} selected={v === currentModel()}>
+                    {label}
+                  </option>
+                )}
+              </For>
+            </select>
+            <select
+              class="conversation-model-select"
+              title="permission mode"
+              onChange={(e) => setPermissionMode(e.currentTarget.value)}
+            >
+              <option
+                value="bypassPermissions"
+                selected={currentPermMode() === 'bypassPermissions'}
+              >
+                素通し
+              </option>
+              <option value="default" selected={currentPermMode() === 'default'}>
+                承認
+              </option>
+              <option value="plan" selected={currentPermMode() === 'plan'}>
+                計画
+              </option>
+            </select>
+            <div class="conversation-actions-spacer" />
+            <Show when={state().streaming}>
+              <button class="conversation-stop" onClick={interrupt} title="turn を中断 (Esc)">
+                <CreoIcon name="ph:stop" size={11} /> 停止
+              </button>
+            </Show>
+            <button class="conversation-send" onClick={submit} disabled={!draft().trim()}>
+              <CreoIcon name="ph:paper-plane-right" size={12} /> 送信
             </button>
-          </Show>
-          <button class="echoes-send" onClick={submit} disabled={!draft().trim()}>
-            送信
-          </button>
+          </div>
         </div>
-      </Show>
     </div>
   )
 }
@@ -1616,261 +1819,317 @@ function ChatView() {
 // install — entry.tsx から呼ぶ
 // ---------------------------------------------------------------------------
 
-/** ChatView の scoped CSS。entry.tsx が `<style>` で注入する（pp.ts の style 注入と同型）。
+/** ChatView の scoped CSS。entry.tsx が `<style>` で注入する（board-render.ts の style 注入と同型）。
  *  色は creo-ui token（--color-* 系）に寄せ、無い環境でも読める fallback を持つ。 */
 export const CHATVIEW_CSS = `
-.echoes-chat { position:absolute; inset:0; display:flex; flex-direction:column;
+.chat-view { position:absolute; inset:0; display:flex; flex-direction:column;
   background: var(--color-bg, #0f1115); color: var(--color-text, #e6e9ef);
   font-family: var(--vp-font-sans),var(--typography-family-sans); overflow:hidden; }
-.echoes-empty { margin:auto; color: var(--color-text-tertiary, #616b80); font-size:13px; }
-.echoes-stream { flex:1; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:12px; }
+.conversation-empty { margin:auto; color: var(--color-text-tertiary, #616b80); font-size:13px; }
+.conversation-stream { flex:1; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:12px; }
+/* スクロールバー常時表示（mako 2026-07-24）: 既定の overlay scrollbar は「スクロール中だけ」
+   なので現在地が読めない。custom style を当てると常時表示になる（WebKit 仕様）。細く控えめに。 */
+.conversation-stream::-webkit-scrollbar { width:8px; }
+.conversation-stream::-webkit-scrollbar-track { background:transparent; }
+.conversation-stream::-webkit-scrollbar-thumb { background:var(--color-border,#2a3040); border-radius:4px; }
+.conversation-stream::-webkit-scrollbar-thumb:hover { background:var(--color-text-tertiary,#8b93a7); }
 /* history は tabindex=0 で focus 可能（Home/End/PgUp/PgDn 用）。領域全体を囲む outline は
    目障りなので抑制する（focus 合図は scrollbar 操作で十分伝わる）。 */
-.echoes-stream:focus, .echoes-stream:focus-visible { outline:none; }
-.echoes-msg { max-width:100%; animation: echoes-fade .18s ease-out; }
-.echoes-msg.user { align-self:flex-end; background: var(--color-accent-soft, #1c2333);
+.conversation-stream:focus, .conversation-stream:focus-visible { outline:none; }
+.conversation-msg { max-width:100%; animation: conversation-fade .18s ease-out; }
+.conversation-msg.user { align-self:flex-end; background: var(--color-accent-soft, #1c2333);
   border:1px solid var(--color-border, #2a3040); border-radius:12px 12px 3px 12px; padding:8px 13px; max-width:80%; }
 /* §5.1: 送信待ち type-ahead。半透明 + 破線で「まだ送っていない」を伝える。 */
-.echoes-msg.user.pending { opacity:.62; border-style:dashed; transition: opacity .12s ease, border-color .12s ease; }
+.conversation-msg.user.pending { opacity:.62; border-style:dashed; transition: opacity .12s ease, border-color .12s ease; }
 /* dequeue-to-composer: composer が空なら「クリックで入力欄に戻して編集」可（hover で明るく）。 */
-.echoes-msg.user.pending.editable { cursor:pointer; }
-.echoes-msg.user.pending.editable:hover { opacity:.9; border-color: var(--color-accent, #e2b96f); }
+.conversation-msg.user.pending.editable { cursor:pointer; }
+.conversation-msg.user.pending.editable:hover { opacity:.9; border-color: var(--color-accent, #e2b96f); }
 /* composer に打ちかけ下書きがある間は編集不可 = グレーアウト（下書きを潰さないための MVP ガード）。 */
-.echoes-msg.user.pending.locked { opacity:.38; cursor:not-allowed; }
-.echoes-pending-badge { display:block; margin-top:4px; font-size:10.5px; color: var(--color-text-tertiary, #8b93a7); }
-/* §5.1 診断: history 最下部の常時 status バー。状態を dot 色 + パルスで表す。 */
-.echoes-status { display:flex; align-items:center; gap:8px; padding:5px 14px; min-height:24px; font-size:11px;
+.conversation-msg.user.pending.locked { opacity:.38; cursor:not-allowed; }
+.conversation-pending-badge { display:block; margin-top:4px; font-size:10.5px; color: var(--color-text-tertiary, #8b93a7); }
+/* status bar（入力の上）: engine の現況の**読み取り専用**計器。操作は composer 側が持つ。 */
+.conversation-status { display:flex; align-items:center; gap:8px; padding:4px 14px; min-height:24px; font-size:11px;
   font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-text-tertiary,#8b93a7);
   border-top:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115); }
-.echoes-status-dot { width:7px; height:7px; border-radius:50%; flex:none; background: var(--color-text-tertiary,#616b80); }
-.echoes-status-label { letter-spacing:.03em; }
-.echoes-status-detail { color: var(--color-text-secondary,#a8b0c0); }
-.echoes-status-pending { margin-left:auto; color: var(--color-accent,#e2b96f); }
-.echoes-status.s-streaming .echoes-status-dot { background: var(--color-success,#6fe2a8); animation: echoes-status-pulse 1.2s ease-in-out infinite; }
-.echoes-status.s-thinking .echoes-status-dot { background:#8fb0ff; animation: echoes-status-pulse 1.2s ease-in-out infinite; }
-.echoes-status.s-tool .echoes-status-dot { background: var(--color-accent,#e2b96f); animation: echoes-status-pulse 1.2s ease-in-out infinite; }
-.echoes-status.s-awaiting .echoes-status-dot { background:#f0a3a3; animation: echoes-status-pulse .8s ease-in-out infinite; }
-.echoes-status.s-error .echoes-status-dot { background:#f0a3a3; }
-.echoes-status.stalled .echoes-status-dot { background:#f0a3a3 !important; animation: echoes-status-pulse .6s ease-in-out infinite; }
-.echoes-status-stalled { color:#f0a3a3; font-weight:600; }
-.echoes-status-event { color: var(--color-text-tertiary,#616b80); opacity:.65; }
-@keyframes echoes-status-pulse { 50% { opacity:.32; } }
-.echoes-msg-body { font-size:13.5px; line-height:1.6; word-break:break-word; }
+.conversation-status-dot { width:7px; height:7px; border-radius:50%; flex:none; background: var(--color-text-tertiary,#616b80); }
+.conversation-status-label { letter-spacing:.03em; }
+.conversation-status-detail { color: var(--color-text-secondary,#a8b0c0); }
+.conversation-status-pending { color: var(--color-accent,#e2b96f); }
+.conversation-status.s-streaming .conversation-status-dot { background: var(--color-success,#6fe2a8); animation: conversation-status-pulse 1.2s ease-in-out infinite; }
+.conversation-status.s-thinking .conversation-status-dot { background:#8fb0ff; animation: conversation-status-pulse 1.2s ease-in-out infinite; }
+.conversation-status.s-tool .conversation-status-dot { background: var(--color-accent,#e2b96f); animation: conversation-status-pulse 1.2s ease-in-out infinite; }
+.conversation-status.s-awaiting .conversation-status-dot { background:#f0a3a3; animation: conversation-status-pulse .8s ease-in-out infinite; }
+.conversation-status.s-error .conversation-status-dot { background:#f0a3a3; }
+.conversation-status.stalled .conversation-status-dot { background:#f0a3a3 !important; animation: conversation-status-pulse .6s ease-in-out infinite; }
+.conversation-status-stalled { color:#f0a3a3; font-weight:600; }
+.conversation-status-event { color: var(--color-text-tertiary,#616b80); opacity:.65; }
+@keyframes conversation-status-pulse { 50% { opacity:.32; } }
+.conversation-msg-body { font-size:13.5px; line-height:1.6; word-break:break-word; }
 /* 返信（assistant）の本文だけ拡大 = 15px（自分の入力バブルは 13.5px のまま）。
    line-height は unitless なので font-size に追従してスケールする。 */
-.echoes-msg:not(.user) .echoes-msg-body { font-size:15px; }
-.echoes-msg-body :first-child { margin-top:0; } .echoes-msg-body :last-child { margin-bottom:0; }
-.echoes-msg-body pre { background: var(--color-bg-elevated, #16191f); border:1px solid var(--color-border,#2a3040);
+.conversation-msg:not(.user) .conversation-msg-body { font-size:15px; }
+.conversation-msg-body :first-child { margin-top:0; } .conversation-msg-body :last-child { margin-bottom:0; }
+.conversation-msg-body pre { background: var(--color-bg-elevated, #16191f); border:1px solid var(--color-border,#2a3040);
   border-radius:8px; padding:10px 12px; overflow-x:auto; font-size:12px; }
-.echoes-msg-body code { font-family: var(--vp-font-mono),var(--typography-family-mono); }
-.echoes-thinking { align-self:flex-start; font-size:12px; }
-.echoes-thinking-toggle { background:none; border:none; color: var(--color-text-tertiary,#8b93a7);
+.conversation-msg-body code { font-family: var(--vp-font-mono),var(--typography-family-mono); }
+.conversation-thinking { align-self:flex-start; font-size:12px; }
+.conversation-thinking-toggle { background:none; border:none; color: var(--color-text-tertiary,#8b93a7);
   cursor:pointer; font-size:12px; padding:2px 0; display:flex; align-items:center; gap:5px; }
-.echoes-thinking-caret { transition: transform .15s ease; display:inline-block; }
-.echoes-thinking-caret.open { transform: rotate(90deg); }
-.echoes-thinking-label { display:inline-block; }
+.conversation-thinking-caret { transition: transform .15s ease; display:inline-block; }
+.conversation-thinking-caret.open { transform: rotate(90deg); }
+.conversation-thinking-label { display:inline-block; }
 /* active（末尾 thinking かつ turn 進行中）: 文字を gradient sweep で shimmer させ「考え中」を伝える。 */
-.echoes-thinking-toggle.live .echoes-thinking-label {
+.conversation-thinking-toggle.live .conversation-thinking-label {
   background: linear-gradient(100deg, var(--color-text-tertiary,#8b93a7) 30%,
     var(--color-text,#e6e9ef) 50%, var(--color-text-tertiary,#8b93a7) 70%);
   background-size: 220% 100%; -webkit-background-clip:text; background-clip:text;
   -webkit-text-fill-color:transparent; color:transparent;
-  animation: echoes-shimmer 1.5s linear infinite; }
-.echoes-thinking-body { margin:4px 0 0 16px; padding:8px 12px; border-left:2px solid var(--color-border,#2a3040);
+  animation: conversation-shimmer 1.5s linear infinite; }
+.conversation-thinking-body { margin:4px 0 0 16px; padding:8px 12px; border-left:2px solid var(--color-border,#2a3040);
   color: var(--color-text-secondary,#a8b0c0); white-space:pre-wrap; font-size:12px; line-height:1.55; }
 /* ToolRow: tool 1 件。container / head(pill 1 行) / body(詳細) の 3 層は toolgroup と同型。 */
-.echoes-tool { align-self:flex-start; font-size:12px; animation: echoes-fade .18s ease-out; }
-.echoes-tool-head { display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+.conversation-tool { align-self:flex-start; font-size:12px; animation: conversation-fade .18s ease-out; }
+.conversation-tool-head { display:flex; align-items:center; gap:8px; width:100%; text-align:left;
   font-family:inherit; font-size:12px;
   color: var(--color-text-secondary,#a8b0c0); background: var(--color-bg-elevated,#16191f);
   border:1px solid var(--color-border,#2a3040); border-radius:8px; padding:5px 11px; }
 /* 詳細を持つ tool だけ押せる（持たない行は見た目そのまま・無反応）。 */
-.echoes-tool-head.clickable { cursor:pointer; }
-.echoes-tool-spinner { width:9px; height:9px; border-radius:50%; border:1.5px solid var(--color-accent,#3b82f6);
-  border-top-color: transparent; animation: echoes-spin .7s linear infinite; }
-.echoes-tool.done .echoes-tool-spinner, .echoes-tool.error .echoes-tool-spinner { display:none; }
-.echoes-tool.done .echoes-tool-head { color: var(--color-text-tertiary,#616b80); }
-.echoes-tool.error .echoes-tool-head { color:#f0a3a3; }
-.echoes-tool-name { font-family: var(--vp-font-mono),var(--typography-family-mono); }
-.echoes-tool-status { margin-left:auto; font-size:11px; }
+.conversation-tool-head.clickable { cursor:pointer; }
+.conversation-tool-spinner { width:9px; height:9px; border-radius:50%; border:1.5px solid var(--color-accent,#3b82f6);
+  border-top-color: transparent; animation: conversation-spin .7s linear infinite; }
+.conversation-tool.done .conversation-tool-spinner, .conversation-tool.error .conversation-tool-spinner { display:none; }
+.conversation-tool.done .conversation-tool-head { color: var(--color-text-tertiary,#616b80); }
+.conversation-tool.error .conversation-tool-head { color:#f0a3a3; }
+.conversation-tool-name { font-family: var(--vp-font-mono),var(--typography-family-mono); }
+.conversation-tool-status { margin-left:auto; font-size:11px; }
 /* 展開部: thinking-body と同じ左罫線の入れ子表現で input / result を積む。 */
-.echoes-tool-body { display:flex; flex-direction:column; gap:6px; margin:5px 0 0 16px;
+.conversation-tool-body { display:flex; flex-direction:column; gap:6px; margin:5px 0 0 16px;
   padding-left:8px; border-left:2px solid var(--color-border,#2a3040); }
-.echoes-tool-detail-label { font-size:10px; letter-spacing:.06em; text-transform:uppercase;
+.conversation-tool-detail-label { font-size:10px; letter-spacing:.06em; text-transform:uppercase;
   color: var(--color-text-tertiary,#616b80); margin-bottom:2px; }
-.echoes-tool-detail-body { margin:0; max-height:260px; overflow:auto; white-space:pre-wrap;
+.conversation-tool-detail-body { margin:0; max-height:260px; overflow:auto; white-space:pre-wrap;
   word-break:break-word; font-family: var(--vp-font-mono),var(--typography-family-mono);
   font-size:11px; line-height:1.5; color: var(--color-text-secondary,#a8b0c0); }
-.echoes-tool-detail-omitted { font-size:10px; color: var(--color-text-tertiary,#616b80); margin-top:2px; }
+.conversation-tool-detail-omitted { font-size:10px; color: var(--color-text-tertiary,#616b80); margin-top:2px; }
 /* subagent の発話: role でラベル分け。thinking は親の thinking と同じ「控えめ」の質感に寄せる。 */
-.echoes-subagent-entry { margin-top:4px; }
-.echoes-subagent-role { font-size:9px; letter-spacing:.06em; text-transform:uppercase;
+.conversation-subagent-entry { margin-top:4px; }
+.conversation-subagent-role { font-size:9px; letter-spacing:.06em; text-transform:uppercase;
   color: var(--color-text-tertiary,#616b80); border:1px solid var(--color-border,#2a3040);
   border-radius:4px; padding:0 4px; }
-.echoes-subagent-entry.thinking .echoes-tool-detail-body { color: var(--color-text-tertiary,#616b80); font-style:italic; }
-.echoes-subagent-entry.prompt .echoes-tool-detail-body { color: var(--color-text-tertiary,#8b93a7); }
+.conversation-subagent-entry.thinking .conversation-tool-detail-body { color: var(--color-text-tertiary,#616b80); font-style:italic; }
+.conversation-subagent-entry.prompt .conversation-tool-detail-body { color: var(--color-text-tertiary,#8b93a7); }
 /* ToolGroupRow: 連続同名 tool（Agent ×N 等）を畳む accordion。畳んだ header は ToolRow と同じ枠で 1 行。 */
-.echoes-toolgroup { align-self:flex-start; font-size:12px; animation: echoes-fade .18s ease-out; }
-.echoes-toolgroup-toggle { display:flex; align-items:center; gap:8px; width:100%; cursor:pointer;
+.conversation-toolgroup { align-self:flex-start; font-size:12px; animation: conversation-fade .18s ease-out; }
+.conversation-toolgroup-toggle { display:flex; align-items:center; gap:8px; width:100%; cursor:pointer;
   font-size:12px; color: var(--color-text-secondary,#a8b0c0); background: var(--color-bg-elevated,#16191f);
   border:1px solid var(--color-border,#2a3040); border-radius:8px; padding:5px 11px; }
-.echoes-toolgroup.done .echoes-toolgroup-toggle { color: var(--color-text-tertiary,#616b80); }
-.echoes-toolgroup.error .echoes-toolgroup-toggle { color:#f0a3a3; }
-.echoes-toolgroup-count { font-family: var(--vp-font-mono),var(--typography-family-mono);
+.conversation-toolgroup.done .conversation-toolgroup-toggle { color: var(--color-text-tertiary,#616b80); }
+.conversation-toolgroup.error .conversation-toolgroup-toggle { color:#f0a3a3; }
+.conversation-toolgroup-count { font-family: var(--vp-font-mono),var(--typography-family-mono);
   color: var(--color-text-tertiary,#8b93a7); font-size:11px; }
 /* 展開部: 個別 ToolRow を段付きで縦に並べる（thinking-body と同じ左罫線の入れ子表現）。 */
-.echoes-toolgroup-body { display:flex; flex-direction:column; gap:5px; margin:5px 0 0 16px;
+.conversation-toolgroup-body { display:flex; flex-direction:column; gap:5px; margin:5px 0 0 16px;
   padding-left:8px; border-left:2px solid var(--color-border,#2a3040); }
-.echoes-cursor { width:7px; height:15px; background: var(--color-accent,#3b82f6); border-radius:1px;
-  animation: echoes-blink 1s step-start infinite; align-self:flex-start; }
+.conversation-cursor { width:7px; height:15px; background: var(--color-accent,#3b82f6); border-radius:1px;
+  animation: conversation-blink 1s step-start infinite; align-self:flex-start; }
 /* PromptCard（doc 35 §4）: HITL 質問。engine が人を待っている合図として左寄せカードで settle。 */
-.echoes-prompt { align-self:flex-start; max-width:88%; display:flex; flex-direction:column; gap:12px;
+.conversation-prompt { align-self:flex-start; max-width:88%; display:flex; flex-direction:column; gap:12px;
   padding:13px 15px; border-radius:12px; background: var(--color-bg-elevated,#16191f);
   border:1px solid var(--sb-conn-hitl,#FF4A2D); box-shadow:0 0 0 1px color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 78%);
-  animation: echoes-fade .18s ease-out; }
-.echoes-prompt.answered { border-color: var(--color-border,#2a3040); box-shadow:none; opacity:.9; }
-.echoes-prompt-q { display:flex; flex-direction:column; gap:7px; }
-.echoes-prompt-header { font-size:10px; text-transform:uppercase; letter-spacing:.08em;
+  animation: conversation-fade .18s ease-out; }
+.conversation-prompt.answered { border-color: var(--color-border,#2a3040); box-shadow:none; opacity:.9; }
+.conversation-prompt-q { display:flex; flex-direction:column; gap:7px; }
+.conversation-prompt-header { font-size:10px; text-transform:uppercase; letter-spacing:.08em;
   color: var(--sb-conn-hitl,#FF4A2D); }
-.echoes-prompt-question { font-size:14px; line-height:1.5; color: var(--color-text,#e6e9ef); }
-.echoes-prompt-options { display:flex; flex-wrap:wrap; gap:8px; }
-.echoes-prompt-opt { font-size:12.5px; padding:6px 13px; border-radius:8px; cursor:pointer;
+.conversation-prompt-question { font-size:14px; line-height:1.5; color: var(--color-text,#e6e9ef); }
+.conversation-prompt-options { display:flex; flex-wrap:wrap; gap:8px; }
+.conversation-prompt-opt { font-size:12.5px; padding:6px 13px; border-radius:8px; cursor:pointer;
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115);
   color: var(--color-text-secondary,#a8b0c0); transition: border-color .15s ease, background .15s ease, color .15s ease; }
-.echoes-prompt-opt:hover { border-color: var(--color-text-tertiary,#616b80); color: var(--color-text,#e6e9ef); }
-.echoes-prompt-opt.selected { border-color: var(--sb-conn-hitl,#FF4A2D); color: var(--color-text,#e6e9ef);
+.conversation-prompt-opt:hover { border-color: var(--color-text-tertiary,#616b80); color: var(--color-text,#e6e9ef); }
+.conversation-prompt-opt.selected { border-color: var(--sb-conn-hitl,#FF4A2D); color: var(--color-text,#e6e9ef);
   background: color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 86%); }
-.echoes-prompt-confirm { align-self:flex-end; padding:7px 16px; font-size:12.5px; border-radius:8px;
+.conversation-prompt-confirm { align-self:flex-end; padding:7px 16px; font-size:12.5px; border-radius:8px;
   border:none; cursor:pointer; background: var(--sb-conn-hitl,#FF4A2D); color:#fff; }
-.echoes-prompt-confirm:disabled { opacity:.4; cursor:default; }
+.conversation-prompt-confirm:disabled { opacity:.4; cursor:default; }
 /* 回答済み: 見出し + 選んだ値だけの静かな折りたたみ表示。 */
-.echoes-prompt-answered { display:flex; flex-direction:column; gap:5px; }
-.echoes-prompt-arow { display:flex; gap:9px; align-items:baseline; font-size:12.5px; }
-.echoes-prompt-ahead { font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+.conversation-prompt-answered { display:flex; flex-direction:column; gap:5px; }
+.conversation-prompt-arow { display:flex; gap:9px; align-items:baseline; font-size:12.5px; }
+.conversation-prompt-ahead { font-size:10px; text-transform:uppercase; letter-spacing:.06em;
   color: var(--color-text-tertiary,#616b80); min-width:0; }
-.echoes-prompt-aval { color: var(--color-text,#e6e9ef); font-weight:500; }
-.echoes-plan { border-bottom:1px solid var(--color-border,#2a3040); padding:10px 18px; background: var(--color-bg-elevated,#13161c); }
-.echoes-plan-title { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color: var(--color-text-tertiary,#616b80); margin-bottom:6px; }
-.echoes-plan-item { display:flex; align-items:center; gap:8px; font-size:12.5px; padding:2px 0; transition: color .2s ease; }
-.echoes-plan-dot { width:7px; height:7px; border-radius:50%; background: var(--color-text-tertiary,#616b80); transition: background .2s ease; }
-.echoes-plan-item.in_progress { color: var(--color-text,#e6e9ef); } .echoes-plan-item.in_progress .echoes-plan-dot { background: var(--color-accent,#e2b96f); }
-.echoes-plan-item.completed { color: var(--color-text-tertiary,#616b80); } .echoes-plan-item.completed .echoes-plan-dot { background: var(--color-success,#6fe2a8); }
-.echoes-plan-item.completed .echoes-plan-text { text-decoration: line-through; }
-.echoes-input { display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--color-border,#2a3040); }
-.echoes-input-box { flex:1; resize:none; min-height:38px; max-height:160px; padding:9px 12px; font-size:13px;
+.conversation-prompt-aval { color: var(--color-text,#e6e9ef); font-weight:500; }
+.conversation-plan { border-bottom:1px solid var(--color-border,#2a3040); padding:10px 18px; background: var(--color-bg-elevated,#13161c); }
+.conversation-plan-title { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color: var(--color-text-tertiary,#616b80); margin-bottom:6px; }
+.conversation-plan-item { display:flex; align-items:center; gap:8px; font-size:12.5px; padding:2px 0; transition: color .2s ease; }
+.conversation-plan-dot { width:7px; height:7px; border-radius:50%; background: var(--color-text-tertiary,#616b80); transition: background .2s ease; }
+.conversation-plan-item.in_progress { color: var(--color-text,#e6e9ef); } .conversation-plan-item.in_progress .conversation-plan-dot { background: var(--color-accent,#e2b96f); }
+.conversation-plan-item.completed { color: var(--color-text-tertiary,#616b80); } .conversation-plan-item.completed .conversation-plan-dot { background: var(--color-success,#6fe2a8); }
+.conversation-plan-item.completed .conversation-plan-text { text-decoration: line-through; }
+/* composer: 入力（上）と操作（下）を 1 つの器に。枠は器が持ち、textarea は枠なしで中に敷く。 */
+.conversation-composer { display:flex; flex-direction:column; margin:8px 14px 10px; border-radius:10px;
+  border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#161a20);
+  overflow:hidden; }
+.conversation-composer:focus-within { border-color: var(--color-accent,#3b82f6); }
+/* 操作の行（入力の下）: 左 = 送る前に決める設定、右 = 実行。 */
+.conversation-actions { display:flex; align-items:center; gap:6px; padding:4px 6px 5px 8px; }
+.conversation-actions-spacer { flex:1; }
+/* 既定 1 行（min-height は置かず、rows=1 + autosize が高さを決める）。伸びる上限だけ CSS が持つ。 */
+.conversation-input-box { flex:1; resize:none; max-height:160px; padding:8px 10px 4px; font-size:13px; line-height:1.5;
   font-family: var(--vp-font-sans),var(--typography-family-sans); color: var(--color-text,#e6e9ef);
-  background: var(--color-bg-elevated,#16191f); border:1px solid var(--color-border,#2a3040); border-radius:9px; outline:none; }
-.echoes-input-box:focus { border-color: var(--color-accent,#3b82f6); }
-.echoes-send { align-self:flex-end; padding:9px 16px; font-size:13px; border-radius:9px; border:none; cursor:pointer;
-  background: var(--color-accent,#3b82f6); color:#fff; }
-.echoes-send:disabled { opacity:.4; cursor:default; }
-.echoes-stop { align-self:flex-end; padding:9px 14px; font-size:13px; border-radius:9px; cursor:pointer;
-  border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f); color: var(--color-text-secondary,#a8b0c0); }
-.echoes-stop:hover { border-color:#f0a3a3; color:#f0a3a3; }
-.echoes-act-toggle { position:absolute; top:8px; right:12px; z-index:10; font-size:11px; padding:4px 11px;
-  border-radius:14px; border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
-  color: var(--color-text-secondary,#a8b0c0); cursor:pointer; opacity:.75; transition: opacity .15s ease; }
-.echoes-act-toggle:hover { opacity:1; }
-/* console 右上の操作群（New Session + Act toggle）。container が位置を持ち、子は並ぶだけ。 */
-.echoes-console-actions { position:absolute; top:8px; right:12px; z-index:10; display:flex; gap:8px; }
-.echoes-console-actions .echoes-act-toggle { position:static; }
-/* doc 38 Phase 2: session tab strip（仮置き）。header の直上・コンパクト・既存トーン準拠。 */
-.echoes-tabs { display:flex; align-items:center; gap:6px; padding:5px 12px 0; flex-wrap:wrap;
-  background: var(--color-bg-elevated,#13161c); }
-.echoes-tab { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; font-size:11px;
-  border-radius:8px 8px 0 0; cursor:pointer; border:1px solid var(--color-border,#2a3040);
-  border-bottom:none; background: var(--color-bg,#0f1115); color: var(--color-text-tertiary,#8b93a7);
-  font-family: var(--vp-font-mono),var(--typography-family-mono); }
-.echoes-tab:hover { color: var(--color-text-secondary,#a8b0c0); }
-.echoes-tab.active { background: var(--color-bg-elevated,#16191f); color: var(--color-text,#e6e9ef);
-  border-color: var(--color-accent,#3b82f6); }
-.echoes-tab-dot { width:6px; height:6px; border-radius:50%; flex:none; background: var(--color-success,#6fe2a8); }
-.echoes-tab-label { line-height:1.5; }
-/* doc 38 Phase 3: session tab の close（×）。既定は淡く、hover / tab active で目立たせる。 */
-.echoes-tab-close { flex:none; margin-left:2px; padding:0 3px; line-height:1; border-radius:4px;
-  font-size:13px; color: var(--color-text-tertiary,#616b80); opacity:.55; cursor:pointer; }
-.echoes-tab-close:hover { opacity:1; color: var(--color-text,#e6e9ef);
+  /* 枠と地色は composer(器) が持つ — textarea 自身は素で敷く（二重枠にしない）。 */
+  background:transparent; border:none; outline:none; }
+.conversation-send { display:inline-flex; align-items:center; gap:4px; padding:4px 11px; font-size:12px;
+  border-radius:7px; border:none; cursor:pointer; background: var(--color-accent,#3b82f6); color:#fff; }
+.conversation-send:disabled { opacity:.4; cursor:default; }
+.conversation-stop { display:inline-flex; align-items:center; gap:4px; padding:4px 10px; font-size:12px;
+  border-radius:7px; cursor:pointer;
+  border:1px solid var(--color-border,#2a3040); background:transparent; color: var(--color-text-secondary,#a8b0c0); }
+.conversation-stop:hover { border-color:#f0a3a3; color:#f0a3a3; }
+/* Mode 切替（見え方の乗り換え = 避難路）は LaneHeader の root picker「見え方」行へ
+   （doc 51 §2 — 旧 lane-level Mode toggle と下端の帯は doc 51 §1 A1 で退役）。 */
+/* session 名札（pane 上端）: この pane = この session の素性。tab strip（doc 38 仮置き）の
+   後継 — session ↔ Pane 1:1（doc 46 §1.5 / doc 50 P1）で pane 自身が名乗る。
+   Pane 共通の名札 token（--vp-nameplate-*）に乗せて、全 pane の上端と同じ見えにする。 */
+.conversation-session-plate { display:flex; align-items:center; gap:6px; flex:none;
+  height:calc(var(--vp-nameplate-h) - 4px); padding:0 var(--vp-nameplate-pad-x);
+  font-size:10.5px; font-family: var(--vp-font-mono),var(--typography-family-mono);
+  color: var(--color-text-tertiary,#8b93a7); background: var(--vp-nameplate-bg);
+  border-bottom: var(--vp-nameplate-border); user-select:none; }
+.conversation-session-plate.focused { color: var(--color-text-secondary,#a8b0c0); }
+.conversation-session-plate-label { font-weight:500; }
+.conversation-session-plate-root { display:inline-flex; align-items:center; gap:2px; padding:0 5px;
+  border-radius:9999px; border:1px solid var(--color-surface-border-subtle,#2a3040);
+  font-size:9.5px; opacity:.8; }
+.conversation-session-plate-sid { opacity:.65; }
+.conversation-session-plate-hint { opacity:.5; font-family: var(--vp-font-sans),var(--typography-family-sans); }
+.conversation-session-plate-spacer { flex:1; }
+/* 既定 opacity .55 は暗い名札上で沈んで「削除の動線が無い」ように見えた（2026-07-24 実機）。
+   常時視認できる濃さに上げ、hover で確定的に立てる。 */
+.conversation-session-plate-close { flex:none; display:inline-flex; align-items:center; padding:2px 4px;
+  line-height:1; border:none; border-radius:4px; background:transparent; cursor:pointer;
+  color: var(--color-text-secondary,#a8b0c0); opacity:.85; }
+.conversation-session-plate-close:hover { opacity:1; color: var(--color-text,#e6e9ef);
   background: var(--color-bg,#0f1115); }
-.echoes-tab.active .echoes-tab-close { opacity:.8; }
-.echoes-tab-add-wrap { position:relative; }
-.echoes-tab-add { padding:3px 9px; font-size:13px; line-height:1; cursor:pointer; border-radius:8px;
-  border:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115);
-  color: var(--color-text-tertiary,#8b93a7); }
-.echoes-tab-add:hover, .echoes-tab-add.open { color: var(--color-text,#e6e9ef); border-color: var(--color-accent,#3b82f6); }
-/* engine 選択 dropdown（簡素）。tab の下に浮かせる。 */
-.echoes-tab-menu { position:absolute; z-index:20; top:calc(100% + 4px); left:0; min-width:120px;
-  display:flex; flex-direction:column; padding:4px; border-radius:8px;
+/* kind badge（doc 50 §4.6 A6 ②）: この pane の見え方 = 素性の一部なので名札（上段）に住む。
+   §2.1 の規律で名札は静かに保ち、hover で操作可能だと分かる程度に立てる（root chip と
+   同じ pill 形。あちらは表示専用、こちらは押せる = hover の差で区別する）。 */
+.conversation-session-plate-kind { flex:none; display:inline-flex; align-items:center; gap:3px;
+  padding:1px 6px; border-radius:9999px; cursor:pointer;
+  border:1px solid var(--color-surface-border-subtle,#2a3040); background:transparent;
+  font-size:9.5px; font-family:inherit; color: var(--color-text-tertiary,#8b93a7); opacity:.8; }
+.conversation-session-plate-kind:hover { opacity:1; color: var(--color-text,#e6e9ef);
+  border-color: var(--color-accent,#3b82f6); background: var(--color-bg,#0f1115); }
+/* 切替できない session（gui host を持たない engine）の kind 表示。素性としては出すが
+   **押せる見た目を出さない**（cursor / hover を持たない = 行き止まりに誘わない、§4.6 ②）。 */
+.conversation-session-plate-kind.static { cursor:default; opacity:.55; }
+/* focus されていない pane は全体をわずかに沈める（どこに打てるかを一目で）。 */
+.chat-view:not(.focused) { opacity:.82; }
+/* 灯 3 状態（doc 51 §1 A2）: 動いている = 緑・脈動 / 待っている = 無灯（地の色の点）/
+   あなたが要る = 赤・速い脈動。脈動の速さが緊急度を運ぶ（mock workbench-v2 の視覚言語）。 */
+.conversation-lamp { width:7px; height:7px; border-radius:50%; flex:none;
+  background: var(--color-border,#2a3040); }
+.conversation-lamp.run { background: var(--color-success,#6fe2a8);
+  animation: conversation-lamp-pulse 1.2s ease-in-out infinite; }
+.conversation-lamp.need { background: var(--color-error,#f0a3a3);
+  animation: conversation-lamp-pulse .7s ease-in-out infinite; }
+@keyframes conversation-lamp-pulse { 50% { opacity:.3; } }
+@media (prefers-reduced-motion: reduce){ .conversation-lamp { animation: none !important; } }
+/* now-line（doc 51 §1 A3）: 名札直下の「今なにを」動的一行。名札（素性）より一段引いた地色で
+   「変わる情報」であることを見せる（mock workbench-v2 の now-line と同じ階調）。 */
+.conversation-now-line { flex:none; padding:2px 10px 2px 8px; font-size:10.5px;
+  color: var(--color-text-tertiary,#8b93a7);
+  font-family: var(--vp-font-sans),var(--typography-family-sans);
+  background: color-mix(in srgb, var(--vp-nameplate-bg,#141622) 55%, var(--color-bg,#0f1115));
+  border-bottom: 1px solid var(--color-border,#2a3040);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.conversation-now-line::before { content:"▸ "; color: var(--color-text-quaternary,#616b80); }
+/* 旧 .lane-header（model/perm の独立行）は計器盤へ畳んで撤去。select は下段の高さに収まる
+   よう一段小さくする（行が status と共用になったため）。 */
+.conversation-model-select { font-size:10.5px; padding:1px 5px; border-radius:6px; outline:none; cursor:pointer;
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
-  box-shadow:0 6px 18px rgba(0,0,0,.35); }
-.echoes-tab-menuitem { text-align:left; padding:6px 10px; font-size:12px; border:none; cursor:pointer;
-  border-radius:6px; background:transparent; color: var(--color-text-secondary,#a8b0c0);
-  font-family: var(--vp-font-mono),var(--typography-family-mono); }
-.echoes-tab-menuitem:hover { background: var(--color-bg,#0f1115); color: var(--color-text,#e6e9ef); }
-.echoes-tab-menu-empty { padding:6px 10px; font-size:11px; color: var(--color-text-tertiary,#616b80); }
-.echoes-header { display:flex; align-items:center; gap:8px; padding:7px 14px;
-  border-bottom:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#13161c); }
-.echoes-header-label { font-size:10px; text-transform:uppercase; letter-spacing:.08em;
-  color: var(--color-text-tertiary,#616b80); }
-.echoes-model-select { font-size:11px; padding:3px 7px; border-radius:7px; outline:none; cursor:pointer;
-  border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
-  color: var(--color-text-secondary,#a8b0c0); }
-.echoes-model-select:disabled { opacity:.45; cursor:default; }
+  color: var(--color-text-secondary,#a8b0c0); font-family:inherit; }
+.conversation-model-select:disabled { opacity:.45; cursor:default; }
 /* PR3: permission 承認カード（allow/deny）。question カードと同じ枠、action だけ差し替え。 */
-.echoes-perm-tool { font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-accent,#e2b96f); }
-.echoes-perm-input { font-family: var(--vp-font-mono),var(--typography-family-mono); font-size:11.5px;
+.conversation-perm-tool { font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-accent,#e2b96f); }
+.conversation-perm-input { font-family: var(--vp-font-mono),var(--typography-family-mono); font-size:11.5px;
   color: var(--color-text-tertiary,#8b93a7); background: var(--color-bg,#0f1115); border:1px solid var(--color-border,#2a3040);
   border-radius:6px; padding:6px 9px; margin:6px 0; overflow-x:auto; white-space:pre-wrap; word-break:break-all; }
-.echoes-perm-actions { display:flex; gap:8px; margin-top:8px; }
-.echoes-perm-allow, .echoes-perm-deny { font-size:12.5px; padding:6px 16px; border-radius:8px; cursor:pointer; border:1px solid var(--color-border,#2a3040); }
-.echoes-perm-allow { background: var(--color-success,#6fe2a8); color:#06231a; border-color: var(--color-success,#6fe2a8); }
-.echoes-perm-deny { background: var(--color-bg-elevated,#16191f); color:#f0a3a3; }
-.echoes-perm-deny:hover { border-color:#f0a3a3; }
+.conversation-perm-actions { display:flex; gap:8px; margin-top:8px; }
+.conversation-perm-allow, .conversation-perm-deny { font-size:12.5px; padding:6px 16px; border-radius:8px; cursor:pointer; border:1px solid var(--color-border,#2a3040); }
+.conversation-perm-allow { background: var(--color-success,#6fe2a8); color:#06231a; border-color: var(--color-success,#6fe2a8); }
+.conversation-perm-deny { background: var(--color-bg-elevated,#16191f); color:#f0a3a3; }
+.conversation-perm-deny:hover { border-color:#f0a3a3; }
 /* PR4: plan 承認カード。plan 本文は markdown で描き、accent 枠で「あなたの承認を待つ」を伝える。 */
-.echoes-plan-card { border-color: var(--color-accent,#e2b96f); }
-.echoes-plan-body { font-size:13px; line-height:1.6; max-height:280px; overflow-y:auto; margin:6px 0;
+.conversation-plan-card { border-color: var(--color-accent,#e2b96f); }
+.conversation-plan-body { font-size:13px; line-height:1.6; max-height:280px; overflow-y:auto; margin:6px 0;
   padding:8px 10px; background: var(--color-bg,#0f1115); border:1px solid var(--color-border,#2a3040); border-radius:6px; }
-.echoes-plan-body :first-child { margin-top:0; } .echoes-plan-body :last-child { margin-bottom:0; }
-/* context ゲージ（Act I statusline の bar :context 相当）。ヘッダー右端に寄せる。 */
-.echoes-context { margin-left:auto; display:flex; align-items:center; gap:6px; }
-.echoes-context-bar { width:52px; height:5px; border-radius:3px; overflow:hidden;
+.conversation-plan-body :first-child { margin-top:0; } .conversation-plan-body :last-child { margin-bottom:0; }
+/* context ゲージ（tui statusline の bar :context 相当）。ヘッダー右端に寄せる。 */
+/* status bar の右端へ寄せる（読み取り計器の並びの末尾）。 */
+.conversation-context { margin-left:auto; display:flex; align-items:center; gap:6px; }
+.conversation-context-bar { width:52px; height:5px; border-radius:3px; overflow:hidden;
   background: var(--color-bg,#0f1115); border:1px solid var(--color-border,#2a3040); }
-.echoes-context-fill { display:block; height:100%; border-radius:2px;
+.conversation-context-fill { display:block; height:100%; border-radius:2px;
   background: var(--color-success,#6fe2a8); transition: width .3s ease, background .3s ease; }
-.echoes-context-pct { font-size:10.5px; min-width:32px; text-align:right;
+.conversation-context-pct { font-size:10.5px; min-width:32px; text-align:right;
   font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-text-tertiary,#8b93a7); }
-.echoes-context.warn .echoes-context-fill { background: var(--color-accent,#e2b96f); }
-.echoes-context.crit .echoes-context-fill { background: #f0a3a3; }
-.echoes-context.crit .echoes-context-pct { color: #f0a3a3; }
-@keyframes echoes-fade { from { opacity:0; transform: translateY(4px); } to { opacity:1; transform:none; } }
-@keyframes echoes-spin { to { transform: rotate(360deg); } }
-@keyframes echoes-blink { 50% { opacity:0; } }
-@keyframes echoes-shimmer { from { background-position: 220% 0; } to { background-position: -120% 0; } }
+.conversation-context.warn .conversation-context-fill { background: var(--color-accent,#e2b96f); }
+.conversation-context.crit .conversation-context-fill { background: #f0a3a3; }
+.conversation-context.crit .conversation-context-pct { color: #f0a3a3; }
+@keyframes conversation-fade { from { opacity:0; transform: translateY(4px); } to { opacity:1; transform:none; } }
+@keyframes conversation-spin { to { transform: rotate(360deg); } }
+@keyframes conversation-blink { 50% { opacity:0; } }
+@keyframes conversation-shimmer { from { background-position: 220% 0; } to { background-position: -120% 0; } }
 @media (prefers-reduced-motion: reduce) {
-  .echoes-msg, .echoes-tool, .echoes-prompt { animation:none; }
-  .echoes-tool-spinner { animation-duration: 1.5s; } .echoes-cursor { animation:none; opacity:.6; }
+  .conversation-msg, .conversation-tool, .conversation-prompt { animation:none; }
+  .conversation-tool-spinner { animation-duration: 1.5s; } .conversation-cursor { animation:none; opacity:.6; }
   /* motion off: shimmer は止めるが text-fill:transparent のままだと消えるので色を戻す。 */
-  .echoes-thinking-toggle.live .echoes-thinking-label { animation:none; background:none;
+  .conversation-thinking-toggle.live .conversation-thinking-label { animation:none; background:none;
     -webkit-text-fill-color: currentColor; color: var(--color-text,#e6e9ef); }
 }
 `
 
 export type ChatViewApi = {
-  /** lane を active にして表示（初出なら vpConsole renderer を attach）。 */
+  /** lane を active にする（初出なら vpConsole renderer を attach + session 一覧を取得）。 */
   showLane(lane: string): void
-  /** doc 38 §4.3: 指定 lane の再同期ローダーを明示的に下ろす（Act I 切替時に entry.tsx が呼ぶ）。 */
+  /** doc 38 §4.3: 指定 lane の再同期ローダーを明示的に下ろす（tui 切替時に entry.tsx が呼ぶ）。 */
   clearReplaying(lane: string): void
+  /** chat session pane を host に mount する（lane-panes の動的 host 生成から呼ばれる）。
+   *  返り値 = dispose（lane 切替 / session close で host ごと破棄する時に呼ぶ）。 */
+  mountSession(host: HTMLElement, lane: string, session: number): () => void
+  /** doc 50 §4.6 A6 ②: term pane（xterm）の host に名札だけを差し込む。返り値 = dispose。 */
+  mountTermPlate(host: HTMLElement, lane: string, session: number): () => void
 }
 
-export function installChatView(mount: HTMLElement, vpConsole: VpConsole): ChatViewApi {
-  render(() => <ChatView />, mount)
+export function installChatView(vpConsole: VpConsole): ChatViewApi {
+  // session 一覧 bus → module signal（全 SessionChatView が共有）。install は起動時 1 回。
+  document.addEventListener('vp:conversation-sessions', (e) => {
+    const d = (
+      e as CustomEvent<{ lane: string; focused: number; sessions: ConversationSession[] }>
+    ).detail
+    if (!d?.lane) return
+    setSessionViews((prev) => ({
+      ...prev,
+      [d.lane]: { focused: d.focused, sessions: d.sessions ?? [] },
+    }))
+  })
   const attached = new Set<string>()
   return {
     showLane(lane: string) {
       if (!attached.has(lane)) {
         attached.add(lane)
-        laneChat(lane) // store を先に用意（replay が流し込む）
-        // doc 38 Phase 2: renderer は session も受け取り、foldEvent が focused 以外を弾く。
+        focusedChat(lane) // store を先に用意（replay が流し込む）
+        // doc 38 Phase 2 → doc 50: renderer は session も受け取り、foldEvent が session ごとの
+        // store に振り分ける（旧「focused 以外を弾く」は store の re-key で役目を終えた）。
         vpConsole.attachRenderer(lane, (ev, session) => foldEvent(lane, ev, session))
+        // replay の demand は**消費者が構えたここ**からも撃つ（2026-07-24 根治の第 2 弾）。
+        // Rust の subscribe 直後 demand（attach 時）だけだと、配送が bundle 読込前に届いた場合
+        // `window.vpConsole && …` guard で黙って捨てられる（Rust 側に buffer なし）— session id
+        // は request/response で復帰するのに会話だけ空、の非対称が起きる。renderer を張った
+        // 直後なら受け手が確実に居る。attached gate で page-load ごと lane 1 回 = 切替 spam なし。
+        // 二重 replay は ReplayStart の clear-prefix で収束（無害）。
+        const bootIpc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+        bootIpc?.postMessage(JSON.stringify({ t: 'conversation:demand_start', lane }))
       }
       // doc 38 §4.3: 離れる lane の再同期ローダーを掃除する（replay_end 取りこぼしで stuck した
       // まま戻って来ても固着させない）。新 lane が本当に再同期するなら attach / demand の
@@ -1878,10 +2137,41 @@ export function installChatView(mount: HTMLElement, vpConsole: VpConsole): ChatV
       const prev = activeLane()
       if (prev && prev !== lane) clearReplaying(prev)
       setActiveLane(lane)
-      // doc 38 Phase 2: attach 時に session 一覧を取得して tab strip を埋める（focused も確定）。
-      const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-      ipc?.postMessage(JSON.stringify({ t: 'echoes:sessions_fetch', lane }))
+      // doc 53 §11: roster（focused の確定 + pane の顔ぶれ）は lanes snapshot が運ぶ。
+      // lane-panes / chatview は lane ごとに roster を持ち続けるので、attach 時に取り直す
+      // 必要が無い（旧: ここで `echoes:sessions_fetch` を撃っていた = 供給路 2 本目の入口）。
     },
     clearReplaying,
+    mountSession(host, lane, session) {
+      laneChat(lane, session) // store を先に用意（mount 前に届く replay の取りこぼし防止）
+      return render(() => <SessionChatView lane={lane} session={session} />, host)
+    },
+    mountTermPlate(host, lane, session) {
+      // doc 50 §4.6 A6 ②: term pane の名札。host と中の xterm は World A の持ち物なので
+      // **名札用の div を足すだけ**（xterm container には触れない — doc 33 §8）。
+      // `.has-term-plate` を host に付けると World A 側の CSS が xterm を名札分下げる。
+      const mount = document.createElement('div')
+      mount.className = 'term-plate'
+      host.appendChild(mount)
+      host.classList.add('has-term-plate')
+      const dispose = render(
+        () => (
+          <SessionPlate
+            lane={lane}
+            session={session}
+            mode="tui"
+            // term pane は focus 状態を World B が持たない（keyboard focus は xterm 側）。
+            // 名札の focus 強調は chat の「打つ宛先」を示すものなので、term では常に false。
+            focused={false}
+          />
+        ),
+        mount,
+      )
+      return () => {
+        dispose()
+        mount.remove()
+        host.classList.remove('has-term-plate')
+      }
+    },
   }
 }

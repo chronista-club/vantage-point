@@ -1,16 +1,16 @@
 //! vp-app の session 状態永続化 ─ 起動を跨いで復元する UI state。
 //!
 //! `Settings` (vp-app.toml、 ユーザー preference) と分離。 こちらは
-//! 「直前の作業文脈」 を残したい ephemeral state ─ どの project が開いていたか、
+//! 「直前の作業文脈」 を残したい ephemeral state ─ どの repo が開いていたか、
 //! どの Lane が active だったか等。 file 形式は JSON (将来 field 追加に強い)。
 //!
 //! ## 責務の切り分け (重要)
 //!
-//! - **Process state** (SSOT): TheWorld daemon が保持 ─ running/dead/port、 SP 起動状態
+//! - **Process state** (SSOT): daemon が保持 ─ running/dead/port、 repo 起動状態
 //! - **UI state** (per-instance preference): この file ─ expanded / active selection / 表示順
-//! - **User preference**: `Settings` (vp-app.toml) ─ developer_mode、 default_project_root
+//! - **User preference**: `Settings` (vp-app.toml) ─ developer_mode、 default_repo_root
 //!
-//! TheWorld に UI state を載せると secondary vp-app instance (`VP_APP_INSTANCE != 0`) が
+//! daemon に UI state を載せると secondary vp-app instance (`VP_APP_INSTANCE != 0`) が
 //! 同 server に向かう時に「私はこの Lane を見る」 「私はあの Lane」 が両立できなくなる。
 //! UI state は client ごとに独立であるべき ─ なのでここに置く。
 //!
@@ -54,13 +54,13 @@ fn default_open() -> bool {
     true
 }
 
-/// Per-project UI state ─ project path がキー。
+/// Per-repo UI state ─ repo path がキー。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ProjectUiState {
+pub struct RepoUiState {
     /// sidebar accordion 開閉状態
     #[serde(default)]
     pub expanded: bool,
-    // 将来 field 候補: per-project の Performer form expanded、 lane custom order 等
+    // 将来 field 候補: per-repo の Performer form expanded、 lane custom order 等
 }
 
 /// 保存 geometry が valid 判定の閾値 (LogicalPixel)。 これ未満は無視して default に
@@ -132,15 +132,15 @@ impl WindowGeometry {
 /// 自分の file に書き戻す。 他 instance の file は触らない (= clobber free)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionState {
-    /// project path → UI state (sidebar accordion 等)
+    /// repo path → UI state (sidebar accordion 等)
     #[serde(default)]
-    pub projects: HashMap<String, ProjectUiState>,
-    /// 直前 active Lane の address (Display 形 `"<project>/root"` / `"<project>/performer/<name>"`)。
+    pub repos: HashMap<String, RepoUiState>,
+    /// 直前 active Lane の address (Display 形 `"<repo>/root"` / `"<repo>/performer/<name>"`)。
     /// 起動後の最初の LanesLoaded で実在 lane と照合して復元される (mismatch なら無視)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_lane_address: Option<String>,
-    /// Currents セクションの project 表示順 (path の order)。
-    /// `None` なら TheWorld の registration 順。 sidebar の DnD で書き込まれる。
+    /// Currents セクションの repo 表示順 (path の order)。
+    /// `None` なら daemon の registration 順。 sidebar の DnD で書き込まれる。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currents_order: Option<Vec<String>>,
     /// **この instance** の window 位置 / サイズ / monitor。
@@ -167,7 +167,7 @@ pub struct SessionState {
 impl Default for SessionState {
     fn default() -> Self {
         Self {
-            projects: HashMap::new(),
+            repos: HashMap::new(),
             active_lane_address: None,
             currents_order: None,
             window_geometry: None,
@@ -214,10 +214,10 @@ impl SessionState {
                     }
                     state.window_geometries.clear(); // 以後 save では出さない
                     tracing::info!(
-                        "SessionState 読込 [instance={}]: {} ({} projects, active_lane={:?}, open={})",
+                        "SessionState 読込 [instance={}]: {} ({} repos, active_lane={:?}, open={})",
                         instance_index,
                         p.display(),
-                        state.projects.len(),
+                        state.repos.len(),
                         state.active_lane_address,
                         state.open
                     );
@@ -273,14 +273,14 @@ impl SessionState {
         self.instance_index
     }
 
-    /// project の expanded 状態を取得 (未保存なら `None`)。
-    pub fn project_expanded(&self, path: &str) -> Option<bool> {
-        self.projects.get(path).map(|p| p.expanded)
+    /// repo の expanded 状態を取得 (未保存なら `None`)。
+    pub fn repo_expanded(&self, path: &str) -> Option<bool> {
+        self.repos.get(path).map(|p| p.expanded)
     }
 
-    /// project の expanded 状態を更新 (entry 無ければ作成)。
-    pub fn set_project_expanded(&mut self, path: impl Into<String>, expanded: bool) {
-        self.projects.entry(path.into()).or_default().expanded = expanded;
+    /// repo の expanded 状態を更新 (entry 無ければ作成)。
+    pub fn set_repo_expanded(&mut self, path: impl Into<String>, expanded: bool) {
+        self.repos.entry(path.into()).or_default().expanded = expanded;
     }
 
     /// この instance の window geometry を更新する。
@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn default_is_empty_and_open() {
         let s = SessionState::default();
-        assert!(s.projects.is_empty());
+        assert!(s.repos.is_empty());
         assert!(s.active_lane_address.is_none());
         assert!(s.currents_order.is_none());
         assert!(s.window_geometry.is_none());
@@ -406,12 +406,12 @@ mod tests {
     #[test]
     fn round_trip_json() {
         let mut s = SessionState::default();
-        s.set_project_expanded("/path/to/proj", true);
+        s.set_repo_expanded("/path/to/proj", true);
         s.active_lane_address = Some("proj/root".into());
         s.currents_order = Some(vec!["/proj-a".into(), "/proj-b".into()]);
         let json = serde_json::to_string(&s).unwrap();
         let parsed: SessionState = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.project_expanded("/path/to/proj"), Some(true));
+        assert_eq!(parsed.repo_expanded("/path/to/proj"), Some(true));
         assert_eq!(parsed.active_lane_address.as_deref(), Some("proj/root"));
         assert_eq!(
             parsed.currents_order.as_deref(),
@@ -424,7 +424,7 @@ mod tests {
         // forward-compat: 空 object でも crash しない (新 field 追加時の back-compat 兼)。
         // `open` は default_open() で true に埋まる。
         let parsed: SessionState = serde_json::from_str("{}").unwrap();
-        assert!(parsed.projects.is_empty());
+        assert!(parsed.repos.is_empty());
         assert!(parsed.active_lane_address.is_none());
         assert!(parsed.open);
     }
@@ -434,23 +434,23 @@ mod tests {
         // expanded などの一部 field 欠落でも default で埋まる
         let json = r#"{"active_lane_address":"foo/root"}"#;
         let parsed: SessionState = serde_json::from_str(json).unwrap();
-        assert!(parsed.projects.is_empty());
+        assert!(parsed.repos.is_empty());
         assert_eq!(parsed.active_lane_address.as_deref(), Some("foo/root"));
     }
 
     #[test]
-    fn set_project_expanded_creates_entry() {
+    fn set_repo_expanded_creates_entry() {
         let mut s = SessionState::default();
-        s.set_project_expanded("/x", true);
-        assert_eq!(s.project_expanded("/x"), Some(true));
-        s.set_project_expanded("/x", false);
-        assert_eq!(s.project_expanded("/x"), Some(false));
+        s.set_repo_expanded("/x", true);
+        assert_eq!(s.repo_expanded("/x"), Some(true));
+        s.set_repo_expanded("/x", false);
+        assert_eq!(s.repo_expanded("/x"), Some(false));
     }
 
     #[test]
-    fn project_expanded_unknown_returns_none() {
+    fn repo_expanded_unknown_returns_none() {
         let s = SessionState::default();
-        assert_eq!(s.project_expanded("/missing"), None);
+        assert_eq!(s.repo_expanded("/missing"), None);
     }
 
     #[test]

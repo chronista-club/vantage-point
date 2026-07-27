@@ -1,7 +1,7 @@
 /**
  * sidebar の Solid store — Rust 側 `SidebarState` の mirror。
  *
- * v1.0 柱 2 PR-1 足場。 Rust が `window.renderSidebarState(json)` で push してくる
+ * v1.0 柱 2 PR-1 足場。 Rust が push envelope `sidebar:state` で送ってくる
  * `SidebarState` を、 ここで定義する単一の Solid store に流し込む。 sidebar component は
  * この `sidebar` proxy を読むだけで、 Rust からの state 更新に細粒度で追従する。
  *
@@ -13,7 +13,7 @@ import type { SidebarState } from "../generated/SidebarState";
 /**
  * `SidebarState` の空 state。 Rust 側 `#[derive(Default)]` と等価。
  *
- * 必須 field (processes / widget / activity / lanes_by_project /
+ * 必須 field (processes / widget / activity / lanes_by_repo /
  * unread_notifications / awaiting_input) のみ埋め、 optional field は省略する。
  */
 export function emptyState(): SidebarState {
@@ -21,15 +21,15 @@ export function emptyState(): SidebarState {
 		processes: [],
 		widget: "activity",
 		activity: {
-			world_online: false,
-			project_count: 0,
-			running_process_count: 0,
+			node_online: false,
+			repo_count: 0,
+			running_repo_count: 0,
 			hub: "",
-			hub_worlds: [],
+			hub_nodes: [],
 			presence: {},
 			update_available: false,
 		},
-		lanes_by_project: {},
+		lanes_by_repo: {},
 		unread_notifications: {},
 		awaiting_input: {},
 		canvas_unread: {},

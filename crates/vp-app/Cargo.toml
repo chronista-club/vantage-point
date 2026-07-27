@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Vantage Point native app — Rust-native window/tray/menu over TheWorld daemon"
+description = "Vantage Point native app — Rust-native window/tray/menu over daemon"
 
 [[bin]]
 name = "vp-app"
@@ -31,10 +31,10 @@ tao = "0.35"
 muda = "0.19"
 tray-icon = "0.24"
 
-# HTTP client (TheWorld API)
+# HTTP client (daemon API)
 reqwest = { workspace = true }
 
-# pp-content-persist: URL encode for /api/pp/state query (lane / pane_id)
+# pp-content-persist(当時の epic 名): board state ask の query encode (lane / pane_id)
 urlencoding = "2"
 
 # Serialization
@@ -64,7 +64,7 @@ shell-words = "1.1"
 tokio-tungstenite = "0.29"
 futures-util = "0.3"
 
-# wiremsg Stage 1 consumer: SP の "lanes" Unison channel を QUIC 購読する。
+# wiremsg Stage 1 consumer: repo の "lanes" Unison channel を QUIC 購読する。
 # workspace 共有 (vantage-point server crate と同一版)。設計 mem_1CbA198fsHJsoKpu2jDUCv。
 unison = { workspace = true }
 
@@ -90,7 +90,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # rotate された世代を app.kdl.log.1.. に逃がす (日付名にしない = tail -F / 既存 reader を壊さない)。
 file-rotate = "0.8"
 
-# Native folder picker (project 追加用、cross-platform)
+# Native folder picker (repo 追加用、cross-platform)
 rfd = "0.17"
 
 # Sidebar File Explorer (overlay picker): lane workdir を walk して .gitignore を
@@ -107,8 +107,8 @@ webbrowser = "1"
 # png decode しかしないので default-features を切って軽量に保つ。
 image = { version = "0.25", default-features = false, features = ["png"] }
 
-# Phase 5-D fix: daemon_launcher で setsid(2) を呼ぶため (Unix で TheWorld を真の daemon 化、
-#  vp-app 死亡時に SIGHUP 巻き添えで TheWorld も死ぬ問題の修正)。
+# Phase 5-D fix: daemon_launcher で setsid(2) を呼ぶため (Unix で daemon を真の daemon 化、
+#  vp-app 死亡時に SIGHUP 巻き添えで daemon も死ぬ問題の修正)。
 # **重要**: target-specific section は file 末尾に置くこと。 途中に置くと TOML 仕様で
 # 後続の dep declaration が全部この target に吸い込まれる (Windows CI で chrono/rfd/
 # tracing-appender が Unix-only と解釈される bug を 2026-04-29 観測、 末尾移動で修正)。
@@ -119,8 +119,14 @@ libc = "0.2"
 # portal favicon を dock に当てる。 版は tao 0.35 が使う objc2 stack に合わせる (重複回避)。
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder"] }
+# NSBitmapImageRep = ink（対話面, doc 52 §3）の NSImage → PNG 変換。版は上記 objc2 0.6 stack に合わせる。
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder", "NSBitmapImageRep"] }
 objc2-foundation = { version = "0.3", features = ["NSData"] }
+# ink snapshot: WKWebView.takeSnapshot(rect) で board pane を PNG 化（ink_snapshot.rs）。
+# block2 = completion handler / objc2-core-foundation = CGRect / objc2-app-kit = NSImage 返り値。
+objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKSnapshotConfiguration", "block2", "objc2-core-foundation", "objc2-app-kit"] }
+objc2-core-foundation = { version = "0.3", features = ["CFCGTypes"] }
+block2 = "0.6"
 
 [dev-dependencies]
 tempfile = "3"
@@ -134,7 +140,7 @@ ts-rs = { version = "11", features = ["serde-compat"] }  # 12 で export_all() �
 # VP-208 Phase A: sidebar IPC を KDL protocol schema (schema/vp-sidebar.kdl) を
 # SSOT に Rust enum + TS union 生成。 package 名 `club-kdl-codegen` / lib 名 `kdl_codegen`。
 # 生成は `cargo test -p vp-app --test sidebar_ipc_codegen` 経由 (ts-rs と同じ慣習)。
-club-kdl-codegen = "0.11"
+club-kdl-codegen = "0.12"
 
 # AppUserModelID (taskbar identity) の設定に使う。 版は vantage-point と揃える (0.62)。
 [target.'cfg(windows)'.dependencies]

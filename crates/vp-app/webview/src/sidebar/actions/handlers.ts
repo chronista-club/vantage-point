@@ -22,17 +22,17 @@ import {
 // context lookup helpers
 // =============================================================================
 
-/** `sidebar.lanes_by_project` を逆引きして address → project_path を解決。 */
-export function resolveProjectPathFromAddress(
+/** `sidebar.lanes_by_repo` を逆引きして address → repo_path を解決。 */
+export function resolveRepoPathFromAddress(
 	address: string,
 ): string | undefined {
-	const map = sidebar.lanes_by_project ?? {};
-	for (const [projectPath, lanes] of Object.entries(map)) {
+	const map = sidebar.lanes_by_repo ?? {};
+	for (const [repoPath, lanes] of Object.entries(map)) {
 		if (
 			Array.isArray(lanes) &&
 			lanes.some((l) => laneAddressKey(l) === address)
 		) {
-			return projectPath;
+			return repoPath;
 		}
 	}
 	return undefined;
@@ -40,7 +40,7 @@ export function resolveProjectPathFromAddress(
 
 /** address に対応する LaneInfo を逆引き（= isPerformerLane 判定等で必要）。 */
 function findLaneByAddress(address: string) {
-	const map = sidebar.lanes_by_project ?? {};
+	const map = sidebar.lanes_by_repo ?? {};
 	for (const lanes of Object.values(map)) {
 		if (Array.isArray(lanes)) {
 			const lane = lanes.find((l) => laneAddressKey(l) === address);
@@ -50,13 +50,13 @@ function findLaneByAddress(address: string) {
 	return null;
 }
 
-/** active な context から project_path を 1 つ取り出す（directive `n` 等）。 */
-function activeProjectPath(): string | undefined {
+/** active な context から repo_path を 1 つ取り出す（directive `n` 等）。 */
+function activeRepoPath(): string | undefined {
 	if (sidebar.active_lane_address) {
-		return resolveProjectPathFromAddress(sidebar.active_lane_address);
+		return resolveRepoPathFromAddress(sidebar.active_lane_address);
 	}
-	if (sidebar.active_stand) {
-		return sidebar.active_stand.project_path;
+	if (sidebar.active_component) {
+		return sidebar.active_component.repo_path;
 	}
 	return undefined;
 }
@@ -68,7 +68,7 @@ const DELETE_CONFIRM_WINDOW_MS = 1000;
 
 type PendingDeleteTarget =
 	| { kind: "lane"; path: string; address: string }
-	| { kind: "project"; path: string };
+	| { kind: "repo"; path: string };
 
 let pendingDelete: { target: PendingDeleteTarget; expireAt: number } | null =
 	null;
@@ -108,21 +108,21 @@ interface VisibleLane {
 let laneSelectModeTimer: ReturnType<typeof setTimeout> | null = null;
 let laneSelectModeTargets: VisibleLane[] = [];
 
-/** expanded project の lane を上から flat list で収集（= 1-9 で indexing する候補）。 */
+/** expanded repo の lane を上から flat list で収集（= 1-9 で indexing する候補）。 */
 function collectVisibleLanes(): VisibleLane[] {
 	const out: VisibleLane[] = [];
-	const map = sidebar.lanes_by_project ?? {};
+	const map = sidebar.lanes_by_repo ?? {};
 	for (const proc of sidebar.processes) {
 		if (!proc.expanded) continue;
 		const lanes = map[proc.path] ?? [];
-		const projectName = proc.path.split("/").pop() ?? proc.path;
+		const repoName = proc.path.split("/").pop() ?? proc.path;
 		for (const lane of lanes) {
 			const addr = laneAddressKey(lane);
 			// doc 44 P2: lane の種別は消え、開発起点は予約名で表される。
 			const name = lane.address.name;
 			const label = isPerformerLane(lane)
-				? `${projectName} / ${name}`
-				: `${projectName} / Conductor`;
+				? `${repoName} / ${name}`
+				: `${repoName} / Conductor`;
 			out.push({ path: proc.path, address: addr, label });
 		}
 	}
@@ -210,7 +210,7 @@ export function runFileExplorer(): void {
 	window.vpFilePicker?.open(address);
 }
 
-/** `p` — send current/selected to PP。 */
+/** `p` — send current/selected to board。 */
 export function runSendToPP(): void {
 	if (window.vpFilePicker?.sendSelectedToPP) {
 		window.vpFilePicker.sendSelectedToPP();
@@ -219,33 +219,33 @@ export function runSendToPP(): void {
 	}
 }
 
-/** `r` — restart context polymorphic: active_lane → lane:restart、 active_stand → process:restart。 */
+/** `r` — restart context polymorphic: active_lane → lane:restart、 active_component → process:restart。 */
 export function runRestart(): void {
 	const addr = sidebar.active_lane_address;
 	if (addr) {
-		const path = resolveProjectPathFromAddress(addr);
+		const path = resolveRepoPathFromAddress(addr);
 		if (path) {
 			sendIpc({ t: "lane:restart", path, address: addr });
 		} else {
 			console.warn(
-				"[directive r] active lane address の project 不明、 skip:",
+				"[directive r] active lane address の repo 不明、 skip:",
 				addr,
 			);
 		}
 		return;
 	}
-	if (sidebar.active_stand) {
-		sendIpc({ t: "process:restart", path: sidebar.active_stand.project_path });
+	if (sidebar.active_component) {
+		sendIpc({ t: "process:restart", path: sidebar.active_component.repo_path });
 		return;
 	}
-	console.debug("[directive r] active lane / stand なし、 skip");
+	console.debug("[directive r] active lane / agent なし、 skip");
 }
 
-/** `n` — active project の AddPerformer form を keyboard で open。 */
+/** `n` — active repo の AddPerformer form を keyboard で open。 */
 export function runNewPerformer(): void {
-	const path = activeProjectPath();
+	const path = activeRepoPath();
 	if (!path) {
-		console.warn("[directive n] active project 不明、 form open skip");
+		console.warn("[directive n] active repo 不明、 form open skip");
 		return;
 	}
 	const opened = openAddPerformerFor(path);
@@ -260,17 +260,17 @@ export function runDelete(): void {
 	const addr = sidebar.active_lane_address;
 	if (addr) {
 		const lane = findLaneByAddress(addr);
-		const path = resolveProjectPathFromAddress(addr);
+		const path = resolveRepoPathFromAddress(addr);
 		if (lane && path && isPerformerLane(lane)) {
 			target = { kind: "lane", path, address: addr };
 		} else {
 			console.debug("[directive d] target が Performer でない or path 不明、 skip");
 			return;
 		}
-	} else if (sidebar.active_stand) {
-		target = { kind: "project", path: sidebar.active_stand.project_path };
+	} else if (sidebar.active_component) {
+		target = { kind: "repo", path: sidebar.active_component.repo_path };
 	} else {
-		console.debug("[directive d] active lane / stand なし、 skip");
+		console.debug("[directive d] active lane / agent なし、 skip");
 		return;
 	}
 
@@ -284,7 +284,7 @@ export function runDelete(): void {
 		if (t.kind === "lane") {
 			sendIpc({ t: "lane:delete", path: t.path, address: t.address });
 		} else {
-			sendIpc({ t: "process:delete", path: t.path });
+			sendIpc({ t: "repo:delete", path: t.path });
 		}
 		return;
 	}
@@ -294,13 +294,13 @@ export function runDelete(): void {
 	const label =
 		target.kind === "lane"
 			? `⌘d again to delete performer: ${target.address}`
-			: `⌘d again to delete project: ${target.path}`;
+			: `⌘d again to delete repo: ${target.path}`;
 	setDeleteHintLabel(label);
 	setDeleteHintVisible(true);
 	pendingDeleteTimer = setTimeout(clearPendingDelete, DELETE_CONFIRM_WINDOW_MS);
 }
 
-/** `s` — Lane / project switcher picker overlay。 */
+/** `s` — Lane / repo switcher picker overlay。 */
 export function runSwitcher(): void {
 	window.vpLanePicker?.open?.();
 }

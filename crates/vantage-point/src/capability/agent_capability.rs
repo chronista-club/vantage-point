@@ -9,12 +9,12 @@
 //! - REQ-PROTO-001: AG-UI準拠イベント生成
 
 use crate::agent::{AgentConfig, AgentEvent, ClaudeAgent};
+use crate::capability::component_service::{Component, LayerScope};
 use crate::capability::core::{
     Capability, CapabilityContext, CapabilityError, CapabilityEvent, CapabilityInfo,
     CapabilityResult, CapabilityState,
 };
 use crate::capability::eventbus::EventBus;
-use crate::capability::stand_service::{LayerScope, Stand};
 use async_trait::async_trait;
 use std::any::Any;
 use std::sync::Arc;
@@ -380,10 +380,10 @@ impl Capability for AgentCapability {
         self.state
     }
 
-    /// VP-83 Stand 自己診断 (2026-04-25) — Heaven's Door 📖 の実行時 snapshot
+    /// VP-83 Agent 自己診断 (2026-04-25) — Heaven's Door 📖 の実行時 snapshot
     ///
     /// Agent は Claude CLI の orchestrator、観測ポイント:
-    /// - working_dir (実行 project dir)
+    /// - working_dir (実行 repo dir)
     /// - event_bus 接続 flag (初期化完了の指標)
     /// - run_state の summary (running / idle / error)
     /// - current_task の active flag
@@ -393,13 +393,13 @@ impl Capability for AgentCapability {
         // VP-157: msgbox_recv_active は廃止 (= AgentCapability の専属 consumer 削除、
         // observer 化)。 VP-178 (Phase 4): agent box owner だった
         // `AppState.agent_msgbox_conductor` も撤去、 全 msg routing は `msgbox_store`
-        // (= WhitesnakeStore) 経由に統一済。
+        // (= 旧 msgbox store) 経由に統一済。
         let details = serde_json::json!({
             "working_dir": self.config.working_dir,
             "model": self.config.model,
             "has_event_bus": self.event_bus.is_some(),
             "has_current_task": self.current_task.is_some(),
-            "stand_metaphor": "Echoes",
+            "stand_metaphor": "Conversation",
         });
         crate::capability::DiagnosticReport::with_details(
             self.name(),
@@ -424,7 +424,7 @@ impl Capability for AgentCapability {
         // 旧: ctx.msgbox().recv() loop で agent#conductor の msg を消費 → EventBus emit
         // 中継: agent box の owner は AppState.agent_msgbox_conductor に移管
         // 新 (VP-178 Phase 4): mpsc Router 経路を全廃、 msg routing は `msgbox_store`
-        //     (= WhitesnakeStore.claim polling) に統一。 EventBus 経路が必要な場合は
+        //     (= 旧 store の claim polling) に統一。 EventBus 経路が必要な場合は
         //     別 trigger (= 他 capability の lifecycle event 等) で emit する設計に再構成
         //     (= VP-159 H1 framework で整理予定)。
 
@@ -465,23 +465,23 @@ impl Capability for AgentCapability {
 }
 
 // =============================================================================
-// VP-159 PR-2: Stand trait impl
+// VP-159 PR-2: component trait impl
 // =============================================================================
 
-/// `AgentCapability` を VP-159 `Stand` (= ECS entity bound actor) として登録する impl。
+/// `AgentCapability` を VP-159 `Agent` (= ECS entity bound actor) として登録する impl。
 ///
 /// VP-157 で agent box の **observer 化** が完了済 (= EventBus subscribe で notification 受信、
-/// 専属 mpsc consumer は持たない)。 本 impl は Stand trait の minimal marker (name / layer_scope
+/// 専属 mpsc consumer は持たない)。 本 impl は component trait の minimal marker (name / layer_scope
 /// / as_any) のみで、 observer / consumer pattern の差異は PR-4 supervisor 統一時に
 /// trait 拡張で形式化する段階的 path。
-impl Stand for AgentCapability {
+impl Component for AgentCapability {
     fn actor_name(&self) -> &str {
         "agent"
     }
 
     fn layer_scope(&self) -> LayerScope {
-        // SP-local (= 1 Process per project、 cross-machine forwarding は msgbox_remote 経由)
-        LayerScope::Project
+        // repo-local (= 1 Process per repo、 cross-machine forwarding は msgbox_remote 経由)
+        LayerScope::Repo
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -565,10 +565,10 @@ mod tests {
 
     #[test]
     fn agent_capability_implements_stand() {
-        // VP-159 PR-2: AgentCapability が Stand trait を満たす事を sig level で確認
+        // VP-159 PR-2: AgentCapability が component trait を満たす事を sig level で確認
         let cap = AgentCapability::new();
-        let stand: &dyn Stand = &cap;
-        assert_eq!(stand.actor_name(), "agent");
-        assert_eq!(stand.layer_scope(), LayerScope::Project);
+        let agent: &dyn Component = &cap;
+        assert_eq!(agent.actor_name(), "agent");
+        assert_eq!(agent.layer_scope(), LayerScope::Repo);
     }
 }

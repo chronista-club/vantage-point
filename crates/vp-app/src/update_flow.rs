@@ -9,13 +9,13 @@
 //!   4. 新しい .app を relaunch して自身を終了する
 //!
 //! ## 実行スレッド
-//! rfd の同期ダイアログと外部プロセスは blocking なので、`project_dialog.rs` と同じく
+//! rfd の同期ダイアログと外部プロセスは blocking なので、`repo_dialog.rs` と同じく
 //! 専用スレッドで回す（event loop = main thread を塞がない）。rfd の macOS 同期ダイアログは
 //! 別スレッドから呼んでも内部で main queue に marshal されるため、main の event loop が
-//! 回っていれば動く（`spawn_add_project_picker` と同型）。
+//! 回っていれば動く（`spawn_add_repo_picker` と同型）。
 //!
 //! ## 安全性
-//! 本フローは実 daemon / .app を差し替え、daemon restart で全 SP を rolling させる
+//! 本フローは実 daemon / .app を差し替え、daemon restart で全 repo を rolling させる
 //! 破壊的操作。実機での実行はユーザーの明示的なボタン click ＋ 確認ダイアログ OK が gate で、
 //! それ以外では一切走らない。純粋な判定・コマンド構築・文言は unit test で、実 apply（brew
 //! upgrade / daemon restart / relaunch）は log で観測する。
@@ -164,7 +164,7 @@ fn run_update_flow(version: String) {
     }
 
     // 3. daemon restart（ownership-agnostic、#763）。実 port holder ベースで
-    //    daemon を新 binary に入れ替える。SP は rolling、lane は --resume で復帰。
+    //    daemon を新 binary に入れ替える。repo は rolling、lane は --resume で復帰。
     if !run_step(
         "daemon-restart",
         &vp,

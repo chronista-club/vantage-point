@@ -38,16 +38,16 @@ pub fn execute(cmd: AppCommands) -> Result<()> {
 /// (`setsid` 相当) で child を新しい process group に分離 ── parent shell が
 /// SIGHUP / exit しても child は生存し続ける (D12: daemon lifecycle 独立性)。
 fn start() -> Result<()> {
-    // ghost project の除去のみ実行（cwd の自動登録はしない）。
-    // 以前は cwd を project として自動登録していたが、~/等の意図しないディレクトリが
+    // ghost repo の除去のみ実行（cwd の自動登録はしない）。
+    // 以前は cwd を repo として自動登録していたが、~/等の意図しないディレクトリが
     // 登録されてしまう問題があったため、sync は登録なし(None)で呼ぶ。
-    let outcome = match crate::world_client::notify_world_sync() {
+    let outcome = match crate::daemon_client::notify_daemon_sync() {
         Some(o) => Ok(o),
-        None => crate::projects_file::ProjectsFile::sync(),
+        None => crate::repos_file::ReposFile::sync(),
     };
     if let Ok(outcome) = outcome {
         for name in &outcome.removed {
-            println!("🧹 ghost project を除去: {name}");
+            println!("🧹 ghost repo を除去: {name}");
         }
     }
 

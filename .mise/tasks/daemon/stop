@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#MISE description="TheWorld daemon を停止 (= 全 project + lane も停止。旧 cascade nuke 相当)"
+#MISE description="daemon を停止 (= 全 project + lane も停止。旧 cascade nuke 相当)"
 #
 # 2026-05-30 daemon→world 改名。
 # tmux decoupling PR2: 旧 tmux session kill phase は退役 (lane は PtySlot の子)。
@@ -17,7 +17,7 @@ require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
 vp = VP.cargo_bin("vp")
 
-VP.log "#{VP.icon(:bomb)} TheWorld daemon 停止 (profile=#{ENV['VP_PROFILE'] || 'brew'}、 全 project + lane も停止)…"
+VP.log "#{VP.icon(:bomb)} daemon 停止 (profile=#{ENV['VP_PROFILE'] || 'brew'}、 全 project + lane も停止)…"
 
 if ENV["VP_LANE"]
   warn "   #{VP.icon(:warn)} VP の lane の中から実行しています — この停止で自分自身も落ちます"

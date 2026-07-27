@@ -62,6 +62,10 @@ history.txt
 # Vantage Point lane workspaces (project-local lane refactor)
 .vp/
 
+# Lane 間の handoff メモ / spike script / probe log 等の作業成果物。 per-run の
+# 一時物だが lane 削除時に保全する運用なので、 消さずに tracking だけ外す。
+/.vp-scratch/
+
 # JetBrains IDE 設定 (per-developer、 commit 対象外)
 .idea/
 rust_out

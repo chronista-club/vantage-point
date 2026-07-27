@@ -149,7 +149,7 @@ pub fn parse_midi_message(message: &[u8]) -> Option<MidiMessage> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum MidiAction {
-    /// Switch to a project by index (1-based, opens WebUI for that project)
+    /// Switch to a repo by index (1-based, opens WebUI for that repo)
     SwitchProject { index: usize },
     /// Open WebUI for current/specified instance
     OpenWebUI { port: Option<u16> },
@@ -187,12 +187,15 @@ pub struct MidiConfig {
 /// MIDI event handler that executes actions
 pub struct MidiHandler {
     config: MidiConfig,
-    world_port: u16,
+    daemon_port: u16,
 }
 
 impl MidiHandler {
-    pub fn new(config: MidiConfig, world_port: u16) -> Self {
-        Self { config, world_port }
+    pub fn new(config: MidiConfig, daemon_port: u16) -> Self {
+        Self {
+            config,
+            daemon_port,
+        }
     }
 
     /// Handle incoming MIDI event
@@ -228,11 +231,11 @@ impl MidiHandler {
     /// Execute a MIDI action
     async fn execute_action(&self, action: &MidiAction) {
         let client = reqwest::Client::new();
-        let base_url = format!("http://[::1]:{}", self.world_port);
+        let base_url = format!("http://[::1]:{}", self.daemon_port);
 
         match action {
             MidiAction::OpenWebUI { port } => {
-                let url = format!("http://[::1]:{}", port.unwrap_or(self.world_port));
+                let url = format!("http://[::1]:{}", port.unwrap_or(self.daemon_port));
                 if let Err(e) = open::that(&url) {
                     tracing::error!("Failed to open browser: {}", e);
                 }
@@ -243,12 +246,12 @@ impl MidiHandler {
                 tracing::info!("Sent shutdown to port {}", port);
             }
             MidiAction::CancelChat { port } => {
-                let target_port = port.unwrap_or(self.world_port);
+                let target_port = port.unwrap_or(self.daemon_port);
                 // TODO: Implement cancel via WebSocket or API
                 tracing::info!("Cancel chat on port {} (not yet implemented)", target_port);
             }
             MidiAction::ResetSession { port } => {
-                let target_port = port.unwrap_or(self.world_port);
+                let target_port = port.unwrap_or(self.daemon_port);
                 // TODO: Implement reset via WebSocket or API
                 tracing::info!(
                     "Reset session on port {} (not yet implemented)",
@@ -286,7 +289,7 @@ impl MidiHandler {
                 }
             }
             MidiAction::SwitchProject { index } => {
-                tracing::info!("Switch to project {} (requires restart)", index);
+                tracing::info!("Switch to repo {} (requires restart)", index);
             }
             MidiAction::SendChat { message } => {
                 tracing::info!("Send chat: {} (not yet implemented)", message);
@@ -299,7 +302,7 @@ impl MidiHandler {
 pub async fn run_midi(
     port_index: Option<usize>,
     config: MidiConfig,
-    world_port: u16,
+    daemon_port: u16,
 ) -> Result<()> {
     let midi_in = midir::MidiInput::new("vp-midi")?;
     let ports = midi_in.ports();
@@ -333,7 +336,7 @@ pub async fn run_midi(
     tracing::info!("Connecting to MIDI port: {}", port_name);
 
     let (tx, mut rx) = broadcast::channel::<MidiEvent>(100);
-    let handler = Arc::new(MidiHandler::new(config, world_port));
+    let handler = Arc::new(MidiHandler::new(config, daemon_port));
 
     // Spawn event handler task
     let handler_clone = handler.clone();
@@ -608,7 +611,7 @@ pub mod lpd8 {
                     toggle: PadToggle::Momentary,
                     pad_off_color: 0,
                     pad_on_color: match i {
-                        0..=3 => 1, // Projects: Green
+                        0..=3 => 1, // Repos: Green
                         4 => 3,     // Cancel: Red
                         5 => 2,     // Reset: Yellow/Orange
                         _ => 0,     // Unassigned: Off
@@ -778,7 +781,7 @@ pub fn print_output_ports() {
 pub async fn run_midi_interactive(
     port_index: Option<usize>,
     config: MidiConfig,
-    world_port: u16,
+    daemon_port: u16,
 ) -> Result<()> {
     let midi_in = midir::MidiInput::new("vp-midi")?;
     let ports = midi_in.ports();
@@ -812,12 +815,12 @@ pub async fn run_midi_interactive(
         .unwrap_or_else(|_| "Unknown".to_string());
 
     println!("Connecting to MIDI port: {}", port_name);
-    println!("World daemon port: {}", world_port);
+    println!("daemon port: {}", daemon_port);
     println!("Press Ctrl+C to stop.\n");
     println!("Waiting for MIDI events...");
 
     let (tx, mut rx) = broadcast::channel::<MidiEvent>(100);
-    let handler = Arc::new(MidiHandler::new(config, world_port));
+    let handler = Arc::new(MidiHandler::new(config, daemon_port));
 
     // Spawn event handler task
     let handler_clone = handler.clone();

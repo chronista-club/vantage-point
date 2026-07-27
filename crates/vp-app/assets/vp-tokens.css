@@ -2,7 +2,7 @@
  * Vantage Point ローカル token 拡張 layer。
  *
  * font zero-start (2026-07-11): 画面書体を principal 2 token に統一する。
- *   --vp-font-sans = 'Gen Interface JP'  (UI / 本文 / PP、 8 weight)
+ *   --vp-font-sans = 'Gen Interface JP'  (UI / 本文 / board、 8 weight)
  *   --vp-font-mono = 'UDEV Gothic NF'    (terminal / code / kbd、 Nerd Font glyph 込み)
  * bundle はせず local (OS install 済) font を名前参照するのみ。 fallback は **使用箇所** で
  * `var(--vp-font-sans), var(--typography-family-sans)` のように creo token と並べて

@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 15. SP auto-spawn triggers (= 自動復帰経路の audit)
 
 > **⚠️ Status: 大部分が historical（doc 44 P1 fold-in で前提が崩れた、2026-07-21）**

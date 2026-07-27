@@ -19,7 +19,7 @@ ID 体系: `VP-SPEC-NNN` / `VP-DESIGN-NNN` / `VP-GUIDE-NNN`
 | ID | ドキュメント | 内容 |
 |----|-------------|------|
 | VP-DESIGN-001 | [01-architecture.md](./design/01-architecture.md) | システムアーキテクチャ |
-| VP-DESIGN-002 | [02-capability-evolution.md](./design/02-capability-evolution.md) | Capability 進化システム |
+| VP-DESIGN-002 | [02-capability-evolution.md](./archive/02-capability-evolution.md) | 旧 Capability 進化システム（撤去済、 archive） |
 
 ### Guide — ガイド (Usage)
 
@@ -45,7 +45,7 @@ ID 体系: `VP-SPEC-NNN` / `VP-DESIGN-NNN` / `VP-GUIDE-NNN`
 | [20-spike-report.md](./archive/20-spike-report.md) | spike 完了・self-superseded |
 | [dogfooding-v0.13.0.md](./archive/dogfooding-v0.13.0.md) | 旧バージョンの dogfooding 記録 |
 
-## プロジェクト情報
+## repo情報
 
 - **バージョン**: 0.19.0
 - **ライセンス**: MIT OR Apache-2.0（dual）

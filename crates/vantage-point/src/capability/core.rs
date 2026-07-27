@@ -1,7 +1,7 @@
 //! Capability Core Trait (REQ-CAP-001)
 //!
 //! 全ての能力が実装する共通インターフェース。
-//! JoJoスタンドの「能力」を表現し、Process全体として協調動作する。
+//! 各能力を表現し、Process全体として協調動作する。
 //!
 //! ## 設計思想
 //!
@@ -10,7 +10,6 @@
 //! - **非同期**: 全ての操作はasyncで実行可能
 //! - **イベント駆動**: EventBusを通じて能力間で通信
 
-use crate::capability::params::CapabilityParams;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
@@ -65,23 +64,23 @@ pub enum CapabilityError {
 pub type CapabilityResult<T> = Result<T, CapabilityError>;
 
 // =============================================================================
-// DiagnosticReport — Stand 自己診断 (2026-04-25、user 提案)
+// DiagnosticReport — Agent 自己診断 (2026-04-25、user 提案)
 // =============================================================================
 
 /// Capability の実行時自己診断レポート
 ///
-/// - side-effect-free、いつ呼んでも Stand 動作に影響しない (pure read)
-/// - Stand 固有の詳細は `details` に JSON として埋め込む (peers, connections, uptime 等)
+/// - side-effect-free、いつ呼んでも Agent 動作に影響しない (pure read)
+/// - Agent 固有の詳細は `details` に JSON として埋め込む (peers, connections, uptime 等)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticReport {
-    /// Stand 名 (name)
+    /// agent 名 (name)
     pub name: String,
     /// Version
     pub version: String,
     /// 現在の state (Uninitialized / Running / Paused / 等)
     pub state: CapabilityState,
-    /// Stand 固有の診断情報 (msgbox address list, canvas subscribers, etc.)
-    /// default 実装では `null`、individual Stand が override で populate
+    /// Agent 固有の診断情報 (msgbox address list, canvas subscribers, etc.)
+    /// default 実装では `null`、individual component が override で populate
     pub details: serde_json::Value,
     /// 診断時刻 (ISO8601)
     pub timestamp: String,
@@ -176,8 +175,6 @@ pub struct CapabilityInfo {
     pub homepage: Option<String>,
     /// 能力タイプ（分類名）
     pub capability_type: String,
-    /// 能力パラメータ（6パラメータ）
-    pub params: CapabilityParams,
 }
 
 impl CapabilityInfo {
@@ -194,7 +191,6 @@ impl CapabilityInfo {
             author: None,
             homepage: None,
             capability_type: "general".to_string(),
-            params: CapabilityParams::balanced(),
         }
     }
 
@@ -213,12 +209,6 @@ impl CapabilityInfo {
     /// 能力タイプを設定
     pub fn with_type(mut self, capability_type: impl Into<String>) -> Self {
         self.capability_type = capability_type.into();
-        self
-    }
-
-    /// パラメータを設定
-    pub fn with_params(mut self, params: CapabilityParams) -> Self {
-        self.params = params;
         self
     }
 
@@ -504,10 +494,10 @@ pub trait Capability: Send + Sync {
     // 自己診断 (実行時 side-effect-free、user 提案 2026-04-25)
     // -------------------------------------------------------------------------
 
-    /// 実行時自己診断 — pure read、いつ呼んでも Stand 動作に影響しない
+    /// 実行時自己診断 — pure read、いつ呼んでも Agent 動作に影響しない
     ///
-    /// default 実装は name + version + state のみ。具体 Stand が
-    /// override して Stand 固有の詳細 (peers, connections, uptime 等) を
+    /// default 実装は name + version + state のみ。具体 component が
+    /// override して Agent 固有の詳細 (peers, connections, uptime 等) を
     /// `details` JSON に詰めて返す。
     fn diagnose(&self) -> DiagnosticReport {
         DiagnosticReport::minimal(self.name(), self.version(), self.state())

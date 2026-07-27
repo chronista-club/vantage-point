@@ -85,7 +85,7 @@ fn regenerates_agent_tools_bindings() {
     assert!(emitted.contains("self.wire_recv_impl(params).await"));
     assert!(emitted.contains("self.complete_impl(params).await"));
 
-    // method override（wire_inbox → SP method wire_unread_count）。
+    // method override（wire_inbox → repo method wire_unread_count）。
     assert!(emitted.contains("self.quic_call(\"wire_unread_count\", payload)"));
 
     // self_lane inject（from / agent / requester）。

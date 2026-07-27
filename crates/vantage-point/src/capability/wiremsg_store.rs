@@ -1,7 +1,7 @@
 //! wiremsg threaded inbox store (設計 memory `mem_1CbDLrECNZiNEZqjySLfSB`)
 //!
 //! agent 間メッセージング「wiremsg」の inbox 実体。 threading 対応 store。
-//! wiremsg R5-3 で旧 msgbox store (`WhitesnakeStore` / msgs table, claim-based Mailbox)
+//! wiremsg R5-3 で旧 msgbox store (msgs table, claim-based Mailbox)
 //! は撤去され、 msg messaging はこの store に一本化済。
 //!
 //! ## per-reader state = per-agent 単一 cursor (決定 III)
@@ -26,7 +26,7 @@
 //!   **ローカル accumulation の厳密単調 ingestion 順序** を持ち、 cursor 比較を
 //!   `local_seq > cursor` にする。 採番は [`WiremsgStore`] が持つ `Arc<AtomicU64>` の
 //!   `fetch_add(1)` (INSERT 毎)。 起動時に `math::max(local_seq)` で復元する
-//!   ([`WiremsgStore::new`])。 各 SP は自分の accumulation の唯一の writer なので厳密単調。
+//!   ([`WiremsgStore::new`])。 各 repo は自分の accumulation の唯一の writer なので厳密単調。
 //! - **`thread_id` 全廃** (決定 `mem_1CbDSnSTPkfQyJsfEcf5ea`) — `thread_id` は root id の
 //!   denormalize copy で `prev` から derive 可能。 全廃し、 thread 構造は `prev`
 //!   (parent-pointer forest) 一本にした。 「thread の識別子」が要る場面では root message
@@ -39,7 +39,7 @@
 //! ## 設計判断
 //!
 //! - **TopicRouter を使わない**: inbox = SurrealDB の message store。 `wire_recv` がその
-//!   store を直接 long-poll する (= 既存 `msg_recv` / `WhitesnakeStore.claim` と同型)。
+//!   store を直接 long-poll する (= 既存 `msg_recv` / 旧 store の claim と同型)。
 //! - **`prev` は record link でなく plain string** (= message の local id)。 既存 msgs
 //!   table の `id` / `reply_to` も plain string で同型、 record-link traversal は
 //!   migration 部分適用で壊れやすい (creo-memories の教訓)。
@@ -178,7 +178,7 @@ pub enum ParticipantStatus {
 /// `Surreal<Any>` を共有して持つ。 `wire_messages` / `agent_cursor` /
 /// `thread_participant` の 3 table を扱う。
 ///
-/// `seq` は accumulation の `local_seq` 採番器。 各 SP は自分の accumulation の唯一の
+/// `seq` は accumulation の `local_seq` 採番器。 各 repo は自分の accumulation の唯一の
 /// writer なので、 INSERT 毎の `fetch_add(1)` で厳密単調な ingestion 順序が得られる。
 /// 起動時に既存 `wire_messages` の `math::max(local_seq)` で復元する ([`WiremsgStore::new`])。
 #[derive(Clone)]
@@ -192,7 +192,7 @@ impl WiremsgStore {
     /// 既存 `Surreal<Any>` connection から store を構築
     ///
     /// 起動時に `wire_messages` の `math::max(local_seq)` を引き、 `local_seq` 採番器を
-    /// 復元する (空 table なら 0 起点)。 R1 で `local_seq` を導入したため、 SP プロセスの
+    /// 復元する (空 table なら 0 起点)。 R1 で `local_seq` を導入したため、 repo プロセスの
     /// 再起動を跨いでも accumulation の ingestion 順序が厳密単調に続く。
     pub async fn new(db: Arc<Surreal<Any>>) -> Result<Self> {
         let max = Self::query_max_local_seq(&db).await?;
@@ -887,14 +887,14 @@ impl WiremsgStore {
 }
 
 // =============================================================================
-// WireNotifier — wire_recv long-poll の SP 内 in-process 起床機構
+// WireNotifier — wire_recv long-poll の repo 内 in-process 起床機構
 // =============================================================================
 
 /// `wire_recv` の long-poll 待機を `wire_send` から起こすための notifier
 ///
 /// agent address ごとに [`tokio::sync::Notify`] を持つ。 `wire_recv` が未読 0 のとき
 /// その agent の `Notify` で待機し、 `wire_send` が宛先 agent の `Notify` を
-/// `notify_waiters` する。 TopicRouter は介さず、 SP プロセス内の純粋な in-process 機構。
+/// `notify_waiters` する。 TopicRouter は介さず、 repo プロセス内の純粋な in-process 機構。
 ///
 /// ## 取りこぼし防止プロトコル (重要)
 ///
@@ -1098,7 +1098,7 @@ mod tests {
 
     /// WiremsgStore::new は既存 wire_messages の local_seq 最大値から採番を復元する
     ///
-    /// R1: SP プロセス再起動を跨いでも accumulation の ingestion 順序が厳密単調に続く。
+    /// R1: repo プロセス再起動を跨いでも accumulation の ingestion 順序が厳密単調に続く。
     #[tokio::test]
     async fn new_store_restores_seq_from_max_local_seq() {
         let store = make_test_store().await;

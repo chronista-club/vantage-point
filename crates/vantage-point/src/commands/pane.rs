@@ -6,10 +6,10 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use crate::commands::process_client::{
-    resolve_project_path_from_target, world_process_request_blocking,
+    daemon_repo_request_blocking, resolve_repo_path_from_target,
 };
 use crate::config::Config;
-use crate::protocol::{Content, ProcessMessage, SplitDirection};
+use crate::protocol::{Content, RepoMessage, SplitDirection};
 
 /// Pane サブコマンド
 #[derive(Subcommand)]
@@ -30,7 +30,7 @@ pub enum PaneCommands {
         /// ペインタブのタイトル
         #[arg(long)]
         title: Option<String>,
-        /// 接続先プロジェクト名またはインデックス
+        /// 接続先repo名またはインデックス
         #[arg(long)]
         target: Option<String>,
     },
@@ -39,7 +39,7 @@ pub enum PaneCommands {
         /// クリアするペインID（デフォルト: main）
         #[arg(long)]
         pane_id: Option<String>,
-        /// 接続先プロジェクト名またはインデックス
+        /// 接続先repo名またはインデックス
         #[arg(long)]
         target: Option<String>,
     },
@@ -51,7 +51,7 @@ pub enum PaneCommands {
         /// 分割元のペインID（デフォルト: main）
         #[arg(long)]
         source: Option<String>,
-        /// 接続先プロジェクト名またはインデックス
+        /// 接続先repo名またはインデックス
         #[arg(long)]
         target: Option<String>,
     },
@@ -59,7 +59,7 @@ pub enum PaneCommands {
     Close {
         /// 閉じるペインID
         pane_id: String,
-        /// 接続先プロジェクト名またはインデックス
+        /// 接続先repo名またはインデックス
         #[arg(long)]
         target: Option<String>,
     },
@@ -70,7 +70,7 @@ pub enum PaneCommands {
         /// 明示的に表示/非表示を指定
         #[arg(long)]
         visible: Option<bool>,
-        /// 接続先プロジェクト名またはインデックス
+        /// 接続先repo名またはインデックス
         #[arg(long)]
         target: Option<String>,
     },
@@ -87,7 +87,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             title,
             target,
         } => {
-            let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
+            let repo_path = resolve_repo_path_from_target(target.as_deref(), config)?;
             let pane_id = pane_id.unwrap_or_else(|| "main".to_string());
 
             let content_enum = match format.as_str() {
@@ -97,18 +97,18 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 _ => Content::Markdown(content),
             };
 
-            let msg = ProcessMessage::Show {
+            let msg = RepoMessage::Show {
                 pane_id: pane_id.clone(),
                 content: content_enum,
                 append,
                 title,
-                // CLI 実行 cwd の Lane を stamp（performer lane dir からならその PP に届く）
+                // CLI 実行 cwd の Lane を stamp（performer lane dir からならその board に届く）
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
                 scope: None,
             };
-            world_process_request_blocking(
-                crate::cli::world_port(),
-                &project_path,
+            daemon_repo_request_blocking(
+                crate::cli::daemon_port(),
+                &repo_path,
                 "show",
                 serde_json::to_value(&msg)?,
             )?;
@@ -117,17 +117,17 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             Ok(())
         }
         PaneCommands::Clear { pane_id, target } => {
-            let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
+            let repo_path = resolve_repo_path_from_target(target.as_deref(), config)?;
             let pane_id = pane_id.unwrap_or_else(|| "main".to_string());
 
-            let msg = ProcessMessage::Clear {
+            let msg = RepoMessage::Clear {
                 pane_id: pane_id.clone(),
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
                 scope: None,
             };
-            world_process_request_blocking(
-                crate::cli::world_port(),
-                &project_path,
+            daemon_repo_request_blocking(
+                crate::cli::daemon_port(),
+                &repo_path,
                 "show",
                 serde_json::to_value(&msg)?,
             )?;
@@ -139,7 +139,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             source,
             target,
         } => {
-            let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
+            let repo_path = resolve_repo_path_from_target(target.as_deref(), config)?;
             let source_pane_id = source.unwrap_or_else(|| "main".to_string());
 
             let dir = match direction.to_lowercase().as_str() {
@@ -151,15 +151,15 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             let new_pane_id = new_pane_id.split('-').next().unwrap_or(&new_pane_id);
             let new_pane_id = format!("pane-{}", new_pane_id);
 
-            let msg = ProcessMessage::Split {
+            let msg = RepoMessage::Split {
                 pane_id: source_pane_id.clone(),
                 direction: dir,
                 new_pane_id: new_pane_id.clone(),
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
-            world_process_request_blocking(
-                crate::cli::world_port(),
-                &project_path,
+            daemon_repo_request_blocking(
+                crate::cli::daemon_port(),
+                &repo_path,
                 "split_pane",
                 serde_json::to_value(&msg)?,
             )?;
@@ -170,14 +170,14 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             Ok(())
         }
         PaneCommands::Close { pane_id, target } => {
-            let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
-            let msg = ProcessMessage::Close {
+            let repo_path = resolve_repo_path_from_target(target.as_deref(), config)?;
+            let msg = RepoMessage::Close {
                 pane_id: pane_id.clone(),
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
-            world_process_request_blocking(
-                crate::cli::world_port(),
-                &project_path,
+            daemon_repo_request_blocking(
+                crate::cli::daemon_port(),
+                &repo_path,
                 "close_pane",
                 serde_json::to_value(&msg)?,
             )?;
@@ -189,15 +189,15 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             visible,
             target,
         } => {
-            let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
-            let msg = ProcessMessage::TogglePane {
+            let repo_path = resolve_repo_path_from_target(target.as_deref(), config)?;
+            let msg = RepoMessage::TogglePane {
                 pane_id: pane_id.clone(),
                 visible,
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
             };
-            world_process_request_blocking(
-                crate::cli::world_port(),
-                &project_path,
+            daemon_repo_request_blocking(
+                crate::cli::daemon_port(),
+                &repo_path,
                 "toggle_pane",
                 serde_json::to_value(&msg)?,
             )?;

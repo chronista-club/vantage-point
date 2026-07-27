@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 33. Console 統合 — Act I/II 交通整理
 
 - **日付**: 2026-07-09（PR2a まで実装済みの時点での構造リデザイン）
@@ -56,8 +58,42 @@
 - **`window.vpEchoes` → `window.vpConsole` に改名**（PR2a の evaluate_script 1 行 + 新 TS）。理由: EchoesEvent 語彙は engine 非依存（doc 32 §4）であり、sink は**面（Console）**の名を持つべき。将来 Antigravity engine のイベントも同じ sink に流れる
   - data plane: `vpConsole.handleEvent(lane, event)`
   - control plane: `vpConsole.setMode(lane, mode)`（Rust push）
+  - ⚠️ **供給は 2026-07-26 に push envelope へ移した**（doc 53 §6.5.1.3）。Rust が
+    `window.vpConsole` を**名前で呼ぶことはもう無い**（wire 名 `console:event` /
+    `console:act_applied` / `console:session_list` / `console:stands`、SSOT =
+    `crates/vp-app/schema/vp-push.kdl`）。`window.vpConsole` は DevTools 検分用に残っている。
+    `setMode`（lane 単位 mode）自体も doc 50 §4.6 A6 で退役し、session 単位の
+    `setSessionAct` が後継
 - **World B に `webview/console/` module**: per-lane `ConsoleHost` が chat container の mount と mode 表示切替を所有。C1 時点では handleEvent は per-lane ring buffer に蓄積（C2 の ChatView mount 時に replay。devtools から `vpConsole.peek(lane)` で検分可能 = throwaway デバッグ pane を作らずに検証可能性を確保）
-- **World A（インライン xterm JS）は不可侵**: input-doubling 調査（VP_TERM_TRACE hop A/B）の診断ベースラインを壊さない。xterm の bundle 移管は input-doubling 決着後の専用 PR
+- ~~**World A（インライン xterm JS）は不可侵**: input-doubling 調査（VP_TERM_TRACE hop A/B）の診断ベースラインを壊さない。xterm の bundle 移管は input-doubling 決着後の専用 PR~~ **← 2026-07-26 に解除（下記）**
+
+> **⚠️ この凍結は 2026-07-26 に解除した**（doc 53 §6.5.1 が求めた再検証の結果）。
+> 解除の根拠は「input-doubling が決着したから」ではなく、**守ろうとしていた診断ベースラインが
+> そもそも World A を通っていなかった**から:
+>
+> | hop | 実装位置 | 層 |
+> |---|---|---|
+> | A | `crates/vp-app/src/app.rs:4626`（`term_trace("A:app-dispatch(b64)", …)`） | Rust |
+> | B | `crates/vantage-point/src/process/unison_server.rs:1093`（`term_trace("B:sp-recv", …)`） | Rust |
+> | 実装本体 | `crates/vp-paths/src/lib.rs:196`（`VP_TERM_TRACE`） | Rust |
+>
+> **inline JS 側の trace は 0 件**。計器は 2 点とも Rust にあり、xterm JS を一切通らないので、
+> World A をどう動かしても hop A/B の観測は変わらない。加えて「JS は無罪」の根拠だった
+> `ensureLane` の形は A6（session キー化）が既に書き換えており、**保護対象のベースライン自体が
+> もう存在しない**。
+>
+> input-doubling 調査そのものは未決着のまま（memory `vp-term-input-doubling` = step 2 で停止、
+> 再現待ち）。これは**凍結の解除とは独立**に続く。
+>
+> ⚠️ **解除は「観測可能性」についてであって「挙動不変」の保証ではない**。上の hop 表が言えるのは
+> 「World A を動かしても hop A/B で**観測し続けられる**」までで、「World A を動かしても
+> **二重化が起きない**」ではない。両者は別の命題で、混ぜると次段の担当者が「gate 済みだから
+> 気にせず進めてよい」と誤読する。射程は下記:
+>
+> | 段 | 内容 | 解除で足りるか |
+> |---|---|---|
+> | 第 1 段 | 依存供給路を vendored → npm（inline JS 無改変・xterm 同 version 6.0.0） | **足りる**（触っていないので挙動が変わる余地が無い） |
+> | 第 2 段 | inline JS 976 行を TS module へ移設 | **要追加確認** — `ensureLane` の `laneInstances` 重複登録 guard と `term.onData` の登録タイミングを書き換えるため、**二重配送を新たに作る側**の変更。rewrite 後の dogfood で `VP_TERM_TRACE=1` の hop A が 1 keystroke = 1 回であることを見るのが最小の確認（計測点は Rust 側のままなので、そのまま使える） |
 - **ビューとエンジンの分離（2026-07-09 user 要件）**: 排他なのは**エンジン**であって**ビューではない**。Lane 内で Act I pane（xterm）と Act II pane（chat）は**共存し得る**（split 表示等、後追加）。既定 UX は「エンジンに一致するビューを表示」だが、非アクティブ側ビューは履歴として表示可能（engine=chat 時の xterm scrollback / engine=tui 時の chat 履歴）。将来: TUI エンジンの会話を **session transcript（`~/.claude/projects/`）追尾 → 翻訳層 → EchoesEvent** で chat ビューに読み取り専用ミラーする道が開いている（エンジン排他を破らない cross-mode mirror、doc 05 §7 の実現路）
 - DOM 構造（既存 lane-host は触らない）:
 
@@ -76,7 +112,10 @@
 ## 6. 非目標（over-scope 防止、各理由付き）
 
 - `window.vpXxx` 全体の event-bus 統一 → Console 以外に波及する大手術。別 doc
-- xterm インライン JS の bundle 移管 → input-doubling 診断ベースライン保護（§4）
+- ~~xterm インライン JS の bundle 移管 → input-doubling 診断ベースライン保護（§4）~~
+  **← 2026-07-26 解除**（§4 の注記参照 — 計器は hop A/B とも Rust 側で、World A を通らない）。
+  本 doc の非目標であることは変わらない（この doc の Epic ではやらない）が、**理由は
+  「ベースライン保護」ではなく「別 Epic の仕事」**に変わった。実施は doc 53 §6.5 の系列。
 - `pane-terminal` 等の DOM id/kind rename → PR1.5（doc 31 語彙実装）で
 - vp-app 側 terminal_sessions / echoes_sessions map の統合 → transport は独立で害なし
 - ゲート型 permission / plan mode UI → doc 32 の非スコープ踏襲

@@ -1,11 +1,11 @@
-# VantagePointAgent — VP macOS menu bar agent (XcodeGen project 定義)。
+# VantagePointAgent — VP macOS menu bar agent (XcodeGen repo 定義)。
 #
 # doc 25 §4 / doc 26: Apple Platform Architecture の Model D。
-# World = Mac daemon (Rust + club-unison server)、 各 surface は Unison/QUIC で繋がる
+# daemon = Mac 常駐 (Rust + club-unison server)、 各 surface は Unison/QUIC で繋がる
 # native client。 この agent は「OS と握手する手」= Cocoa main run loop を保持して
 # CoreMIDI hot-plug を native 検出 → Unison wire で daemon に報告する (FFI 無し)。
 #
-# project.yml が SSOT。 .xcodeproj / Generated/ は `xcodegen generate` の生成物 (git ignore)。
+# repo.yml が SSOT。 .xcodeproj / Generated/ は `xcodegen generate` の生成物 (git ignore)。
 name: VantagePointAgent
 
 options:
@@ -35,7 +35,7 @@ targets:
     dependencies:
       - package: UnisonClient
         product: UnisonClient
-    # Info.plist は properties から生成する (project.yml に集約)。 生成先は git ignore。
+    # Info.plist は properties から生成する (repo.yml に集約)。 生成先は git ignore。
     info:
       path: Generated/Info.plist
       properties:

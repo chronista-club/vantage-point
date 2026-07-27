@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # VP ショートカット規約 (Shortcut Convention)
 
 > **status: draft v0.8** — 2026-06-15 curation。 WebView 統合 (#536/#537) で main-view directive bridge を撤去した際、 `e/g/h/w/i` が no-op 化したのを機に directive 群を棚卸し。 **盲目的に復活させず、 必要最小限の動詞に絞る**方針 (VP流 = 焦らず使用感ベース) を確定。

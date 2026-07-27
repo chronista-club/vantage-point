@@ -17,7 +17,7 @@ use super::*;
 pub struct LayoutGetParams {
     /// 対象 scope（省略 = "gallery"、後方互換）
     #[schemars(
-        description = "Layout scope: 'gallery' (default; the component gallery mode) or 'app' (the main workspace panes: echoes=console, pp=canvas board, ge, bs=devices, preview). Lane scopes are not exposed yet."
+        description = "Layout scope: 'gallery' (default; the component gallery mode) or 'app' (the main workspace panes: conversation=console, runner, devices, preview). Lane scopes are not exposed yet."
     )]
     pub scope: Option<String>,
 }
@@ -27,7 +27,7 @@ pub struct LayoutGetParams {
 pub struct LayoutSetParams {
     /// 対象 scope（省略 = "gallery"、後方互換）
     #[schemars(
-        description = "Layout scope: 'gallery' (default; the component gallery mode, applied with a spring transition) or 'app' (the main workspace panes: echoes=console, pp=canvas board, ge, bs=devices, preview; applied as a jump smoothed by CSS transition). Lane scopes are not exposed yet."
+        description = "Layout scope: 'gallery' (default; the component gallery mode, applied with a spring transition) or 'app' (the main workspace panes: conversation=console, runner, devices, preview; applied as a jump smoothed by CSS transition). Lane scopes are not exposed yet."
     )]
     pub scope: Option<String>,
 

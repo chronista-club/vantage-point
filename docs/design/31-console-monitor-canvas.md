@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 31. Console / Monitor / Canvas — VP 語彙システムのリファクタ
 
 - **日付**: 2026-07-09（hearing 収束 4 点: 面は非stand / author は Echoes 隣の capability / PP は Information Router (& Display) として再定義 / author stand = **Heaven's Door 📖 復活**）

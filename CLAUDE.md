@@ -1,10 +1,27 @@
 # CLAUDE.md
 
-## プロジェクト概要
+## repo 概要
 
 Vantage Point（`vp`）は Rust製の **AI ネイティブ開発環境**。
 Claude CLI をエンジンとして、TUI コンソール・Canvas（WebView）・外部コントロールを統合した開発体験を提供する。
-OSS（MIT/Apache-2.0 dual ライセンス）として公開。配布は `.dmg` 直配布（GitHub Releases）/ Homebrew tap（`chronista-club/tap`）/ `cargo install` の三本柱。Mac/Win/Linux 対応。
+OSS（MIT/Apache-2.0 dual ライセンス）として公開。配布は `.dmg` 直配布（GitHub Releases）/ Homebrew tap（`chronista-club/tap`）/ `cargo install` の三本柱。Mac 主軸 / Windows 追随 / Linux 未検証。
+
+### プラットフォーム方針（2026-07-26 確定）
+
+| OS | 位置づけ | 開発の場 |
+|---|---|---|
+| **macOS** | **主軸**。先行開発はここ | Mac |
+| **Windows** | 追随。`cfg(windows)` は 45 箇所あり生きている | **Windows 上でやる**（Mac セッションで作り込まない） |
+| **Linux** | **未検証**。CI で build も test も回っていない（ubuntu の 2 job は fmt と security audit ＝ プラットフォーム非依存）。固有コードは screenshot の stub 程度 | — |
+
+> ⚠️ **`cfg(unix)` は Linux の話ではない** — macOS も unix なので、この gate が守っているのは
+> **Windows ビルド**。外すと macOS 向けのコードが Windows で compile されて壊れる（2026-07-26 に
+> 実際に踏んだ: test を 1 つ挿入した際に隣の `#[cfg(unix)]` を奪い、**mac のローカル test でも
+> clippy でも cfg が真になるので不可視**のまま Windows を壊した）。
+>
+> CI の `Check (Windows)` は windows runner で `cargo check --all-targets` を回すだけで
+> **Mac 側の負担はゼロ**、required check でもない（merge は止めない）。Windows 整備フェーズに
+> 入るとき「どの変更から壊れているか」を辿るための記録として残してある。
 
 <!--
 配布方針メモ — Mac App Store ではなく直接配布（2026-04-18 OSS 化決定で App Store 配布を見送り）:
@@ -28,22 +45,26 @@ dogfooding を通じて体験を磨き、納得できる完成度でリリース
 ### コアコンセプト
 
 - **AI ネイティブ開発環境**: VP が主、Claude Code はそのエンジン
-- **プロジェクト起点**: プロジェクト選択 → TUI コンソール → Claude との対話が 1st ビュー
+- **repo 起点**: repo 選択 → TUI コンソール → Claude との対話が 1st ビュー
 - **Canvas + TUI**: TUI で操る、Canvas で視る。両者が並列に動く
 - **セッション永続化**: 前回の続きから再開できる開発環境
 
-### アーキテクチャ命名体系（JoJo メタファー）
+### アーキテクチャ命名体系
 
-外向けは普通の用語メイン + JoJo 名を小さく併記（機能イメージを伝える目的）。
-命名定義は `crates/vantage-point/src/stands.rs` に集約。
+**JoJo 由来命名は 2026-07-27 の命名エピック（PR #936〜#945）で機能名へ全面移行・完結**
+（台帳 = creo `mem_1CdQxvayZBB3E768g1mDbQ`）。旧 doc / memory は当時の名前のまま（凍結）。
 
 ```
-TheWorld 👑 (Process Manager / 常駐デーモン)
-  └── Star Platinum ⭐ (Project Core / TUI 統合ビュー + 各 Stand が同居する場)
-        ├── Echoes 💬 (Coding Assistant / Claude CLI オーケストレーター、 旧 Heaven's Door 📖)
-        ├── Paisley Park 🧭 (Information Navigator / Canvas・情報提供)
-        ├── Gold Experience 🌿 (Code Runner / 動的生命注入エンジン)
-        └── Hermit Purple 🍇 (External Control / MIDI・MCP)
+daemon ⚙️ (Process Manager / 常駐デーモン)
+  ├── repo 📦 (Repo Runtime / 各機能が同居する場)
+  │     ├── conversation 💬 (AI との会話層 — host / 翻訳 / transcript)
+  │     ├── board 🧭 (Information Navigator / 貼る台)
+  │     └── runner 🌿 (Code Runner)
+  ├── devices 🧲 (machine scope / device registry)
+  └── device_io 🌫️ (lane scope / device I/O)
+
+軸: agent（claude/codex/grok/opencode/shell）× mode（tui/gui）。GUI 容器 = Pane（app 専用語）。
+部品 = component（lane に host）/ 常駐 = service。総称「Stand」は廃止（義ごとに分解）。
 ```
 
 ## 技術スタック
@@ -56,12 +77,12 @@ TheWorld 👑 (Process Manager / 常駐デーモン)
 | Agent | Claude CLI + MCP |
 | MIDI | midir |
 
-> **Process**: プロジェクトの開発プロセスを表す本体。JoJo の Stand（能力）を保持し、ユーザーの開発を支援する。
+> **repo runtime**: repo の開発プロセスを表す本体。各機能（conversation / board / runner）を保持し、ユーザーの開発を支援する。
 
 ### 依存境界（runtime dependency 方針、2026-07-04 確定）
 
 **基準 = 「user のマシンで要求されるか」**。 brew cask を入れた user の環境で必要になるものだけが
-product の依存。 maintainer の repo にある道具は project の道具（各 lane の project が何を使うかも自由）。
+product の依存。 maintainer の repo にある道具は repo の道具（各 lane の repo が何を使うかも自由）。
 
 - **vp runtime は外部ツールに依存しない**: tmux / mise は不使用（tmux decoupling PR1-2 で撤去）。
   lane の依存は「user 自身の login shell」と「claude 本体」のみ。 DB も embedded surrealkv
@@ -69,7 +90,7 @@ product の依存。 maintainer の repo にある道具は project の道具（
 - **許容 ≠ 依存**: `spawn_env` が mise shims を PATH に足すのは「user が mise で claude を
   管理していても見つかる」ための許容。 mise 不在でも全機能が動く。
 - **repo の dev tooling**（`.mise/tasks` = release/build/daemon 系 + toolchain pin）は
-  maintainer 専用で product に同梱されない — この層の mise 使用は「1 project の task runner」
+  maintainer 専用で product に同梱されない — この層の mise 使用は「1 repo の task runner」
   として許容側。
 
 ### システム構成
@@ -77,20 +98,20 @@ product の依存。 maintainer の repo にある道具は project の道具（
 ```
 vp-app (GUI: wry+tao)   vp (CLI)
         └────────┬───────┘
-                 │ HTTP + QUIC（listener は TheWorld のみ）
-        TheWorld 👑 :32000          ← Process Manager (常駐 daemon)
-                 │ spawn ↓ ／ SP→World QUIC registry 自己登録 ↑（reconcile = Push 一本）
+                 │ HTTP + QUIC（listener は daemon のみ）
+        daemon ⚙️ :32000          ← Process Manager (常駐 daemon)
+                 │ spawn ↓ ／ repo→daemon QUIC registry 自己登録 ↑（reconcile = Push 一本）
      ┌───────────┼───────────┐
-   SP[33000]   SP[33001]  ...      ← Star Platinum ⭐ (project ごと、portless = outbound-only)
-     └ Stands: Echoes 💬 / Paisley Park 🧭 / Gold Experience 🌿 / Hermit Purple 🍇
+   repo[33000] repo[33001] ...     ← repo 📦 (repo ごと、portless = outbound-only)
+     └ 機能: conversation 💬 / board 🧭 / runner 🌿（machine scope に devices 🧲 / lane scope に device_io 🌫️）
 ```
 
-## プロジェクト構造
+## repo 構造
 
 ```
 vantage-point/
 ├── crates/
-│   ├── vantage-point/   # server lib (TheWorld + SP の HTTP/WS server)
+│   ├── vantage-point/   # server lib (daemon + repo の HTTP/WS server)
 │   ├── vp-paths/        # config/data/state path 解決 (XDG SSOT、 vantage-point + vp-app 共有)
 │   ├── vp-app/          # Rust GUI (wry + tao + xterm.js + creo-ui) — Mac 主軸 (2026-04-26 移行)
 │   ├── vp-cli/          # CLI binary (vp、 lane lib も内包)
@@ -106,25 +127,25 @@ vantage-point/
 
 ```bash
 # Core
-vp ps                  # 稼働中 project 一覧（PROJECT / LANES 数 / STATUS active|idle）。詳細は vp lane list
-vp config              # 設定と登録プロジェクト表示
-vp projects            # 登録 project 管理（add/remove/rename/enable/disable/reorder/list）
-vp sync                # projects.kdl を現実と同期（ghost project 除去）
+vp ps                  # 稼働中 repo 一覧（REPO / LANES 数 / STATUS active|idle）。詳細は vp lane list
+vp config              # 設定と登録 repo 表示
+vp repos               # 登録 repo 管理（add/remove/rename/enable/disable/reorder/list）
+vp sync                # repos.kdl を現実と同期（ghost repo 除去）
 vp mcp                 # MCPサーバーモード（stdio）
 vp update [--check]    # セルフアップデート
-vp restart-all         # TheWorld を再起動（= 全 project 再起動。fold-in 後は daemon restart と等価）
-                       # ⚠️ 復元されるのは「enabled な project」で「再起動前に動いていた project」ではない。
-                       #    停止を永続させたいなら vp projects disable（stop だけでは再起動で生き返る）。
+vp restart-all         # daemon を再起動（= 全 repo 再起動。fold-in 後は daemon restart と等価）
+                       # ⚠️ 復元されるのは「enabled な repo」で「再起動前に動いていた repo」ではない。
+                       #    停止を永続させたいなら vp repos disable（stop だけでは再起動で生き返る）。
 
-# TheWorld（Daemon）/ Project
-vp daemon start|stop|status  # TheWorld 管理（alias: vp world）
+# Daemon / Repo
+vp daemon start|stop|status  # daemon 管理
 vp daemon restart [--if-running]  # ownership-agnostic 再起動（実 port holder を停止 → LaunchAgent 優先で起動。--if-running = 不在なら no-op、brew cask postflight 用）
 vp daemon install|uninstall  # LaunchAgent 常駐化（macOS、login always-on + crash 自動再起動）
-vp projects start|stop <name>  # 単一 project の起動/停止（doc 44 P1 fold-in で `vp sp` から移設）
+vp repos start|stop <name>  # 単一 repo の起動/停止（doc 44 P1 fold-in で `vp sp` から移設）
 # ⚠️⚠️ doc 44 P1 (fold-in) で daemon 停止の意味論が変わった:
-#   project は World プロセス内の Arc<AppState> になったため、**daemon を止めると
-#   全 project が必ず一緒に落ちる**（= lane claude も全部落ちる）。旧「gentle（daemon だけ
-#   止めて SP は温存）」は SP が別プロセスだった時代の挙動で、fold-in 後は成立しない。
+#   repo は daemon プロセス内の Arc<AppState> になったため、**daemon を止めると
+#   全 repo が必ず一緒に落ちる**（= lane claude も全部落ちる）。旧「gentle（daemon だけ
+#   止めて repo は温存）」は repo が別プロセスだった時代の挙動で、fold-in 後は成立しない。
 #   → lane の中から daemon を再起動すると自分が死ぬ。実機検証は VP の外（kitty 等）で行うこと。
 #   会話は cc_session の `--resume` で次回 spawn 時に継がれる（「プロセスは死ぬがコンテキストは蘇る」）。
 
@@ -135,15 +156,20 @@ vp app stop            # vp-app を停止
 vp shot                # vp-app window の screenshot を PNG 保存
 
 # Lane / dev-flow / messaging
-vp lane                # performer Lane 管理（Stone Free 🧵）
+vp lane                # performer Lane 管理
 vp flow handoff|progress  # Conductor × Performer orchestration
-vp wire send|recv|inbox|thread|ack|watch|hook-check  # wire messaging（store は TheWorld :32000 に中央化。hook-check は claude hook 実体、R2-c）
+vp wire send|recv|inbox|thread|ack|watch|hook-check  # wire messaging（store は daemon :32000 に中央化。hook-check は claude hook 実体、R2-c）
 vp lane history [--limit N]  # 見送りの記録（いつ何を見送ったか / 判断待ちの滞留、doc 44 §7.5 の帳簿）
 vp lane capture <lane> [--session N]  # lane console の現在画面を読む（旧 vp tmux capture の後継、tmux 非依存）
 vp lane slots <lane>   # lane が持つ console slot 一覧（doc 46 P5 — slot は session ごと）
-vp lane slot-new <lane> [--stand <engine>]  # console をもう 1 枚立てる（新 session を採番。root は動かない）
+vp lane slot-new <lane> [--agent <agent>]  # console をもう 1 枚立てる（新 session を採番。root は動かない）
+vp lane slot-close <lane> --session N  # console を 1 枚閉じる（= GUI の名札 ✕。root は閉じられない）
 vp lane nudge <lane> <text> [--session N]  # lane の claude に text+Enter を注入（旧 vp tmux send-keys / directmsg の後継）
 # ⚠️ `--session` 省略は **root**（lane の代表 slot）。chat 系 API の session 省略が focused なのと既定が違う
+vp now "<一行>"        # session の「今なにを」を GUI の now-line に自己申告（doc 51 §1 A3b）。
+                       # **VP の lane で働く AI はサブタスクの切れ目ごとに打つこと**（例:
+                       # `vp now "panic 箇所を特定中 — pty_slot の lock 順を確認"`）。宛先は
+                       # env（VP_REPO/VP_LANE/VP_SESSION_KEY）から自動導出、日本語で書く
 
 # その他
 vp port                # deterministic port layout の計算・表示
@@ -156,8 +182,8 @@ vp midi xtouch demo|wave  # X-Touch (MCU) 実機 smoke / フェーダー wave
 vp midi roto demo|anim|probe  # ROTO-CONTROL 実機 smoke / BPM 同期アニメ / handshake 観察
 ```
 
-> ⚠️ `vp start` / `vp stop` / `vp open` / `vp tray` / `vp sp` は**存在しない**（旧体系。start/stop は `vp projects` / `vp daemon` / `vp app` に分散。`vp sp` は doc 44 P1 fold-in で退役 — project がプロセスでなくなったため）。UI は native vp-app（旧 localhost browser canvas は未使用のため撤去済）。
-> ⚠️ `vp hd` / `vp tmux` / `vp directmsg` も**存在しない**（tmux decoupling PR1-2 で退役。console の read/write は `vp lane capture` / `vp lane nudge`）。**VP は tmux に依存しない**（lane = SP の PtySlot が claude を直接ホスト、design doc `docs/design/tmux-decoupling.md`）。
+> ⚠️ `vp start` / `vp stop` / `vp open` / `vp tray` / `vp sp` は**存在しない**（旧体系。start/stop は `vp repos` / `vp daemon` / `vp app` に分散。`vp sp` は doc 44 P1 fold-in で退役 — repo がプロセスでなくなったため）。UI は native vp-app（旧 localhost browser canvas は未使用のため撤去済）。
+> ⚠️ `vp hd` / `vp tmux` / `vp directmsg` も**存在しない**（tmux decoupling PR1-2 で退役。console の read/write は `vp lane capture` / `vp lane nudge`）。**VP は tmux に依存しない**（lane = repo の PtySlot が claude を直接ホスト、design doc `docs/design/tmux-decoupling.md`）。
 
 ## 開発コマンド
 
@@ -176,8 +202,8 @@ VP_SWAP_RESTART_DAEMON=1 mise run app:swap # server (crates/vantage-point) も�
 mise run app:bundle                        # bun install --frozen-lockfile + bun run build（swap / release は内部で自動実行）
 ```
 
-> **`app:swap` を使う理由**: dev profile（`VP_PROFILE=dev`）は state を別 namespace に切るため daemon / SP / GUI を三点セットで立て直す要があり、素の `~/.cargo/bin/vp-app` は `.app` bundle でないので macOS の app として扱えない（screenshot 許可対象にすらならない）。`app:swap` は本番と同じ `.app` 形のまま notarize の待ち時間だけを落とす（quarantine xattr が付かない自前 build に notarization ticket は不要 — Developer ID 署名で足りる）。
-> ⚠️ **GUI と server で反映タイミングが違う**: `.app` 差し替えで入れ替わるのは GUI（vp-app）だけ。daemon / SP は既に memory 上の旧 binary で走っているので、`crates/vantage-point` を触ったなら `VP_SWAP_RESTART_DAEMON=1` が要る（= SP の子である lane の claude が全部落ちる。会話は `cc_session` の `--resume` で復帰）。
+> **`app:swap` を使う理由**: dev profile（`VP_PROFILE=dev`）は state を別 namespace に切るため daemon / repo / GUI を三点セットで立て直す要があり、素の `~/.cargo/bin/vp-app` は `.app` bundle でないので macOS の app として扱えない（screenshot 許可対象にすらならない）。`app:swap` は本番と同じ `.app` 形のまま notarize の待ち時間だけを落とす（quarantine xattr が付かない自前 build に notarization ticket は不要 — Developer ID 署名で足りる）。
+> ⚠️ **GUI と server で反映タイミングが違う**: `.app` 差し替えで入れ替わるのは GUI（vp-app）だけ。daemon / repo は既に memory 上の旧 binary で走っているので、`crates/vantage-point` を触ったなら `VP_SWAP_RESTART_DAEMON=1` が要る（= repo の子である lane の claude が全部落ちる。会話は `cc_session` の `--resume` で復帰）。
 > webview（tsx/ts）変更は swap が内部で `app:bundle` を回すので手動 `bun run build` / `touch main_area.rs` は不要（旧儀式は build.rs の rerun-if-changed で根治）。webview 依存は npm semver pin（`file:` sibling 依存と bundle commit は 2026-07-19 に廃止）。creoui / club-unison の同時開発は `bun link`（docs/guide/webview.md）。
 > ⚠️ **swap 後は brew と現実が乖離する**: `app:swap` は brew cask 管理下の `.app` を dev build で上書きするが、Caskroom のメタデータは触らない。しかも swap した dev build は作業ツリーの version をそのまま名乗るため、**`brew upgrade --cask vantage-point` は version 一致で no-op になり dev build が居座り続ける**（Caskroom が持つのは実体コピーではなく `/Applications` への symlink なので brew は中身の差分を検知できない）。公式 release に戻すのは **`brew reinstall --cask vantage-point`**（`upgrade` では戻らない）。今どちらが入っているかは `spctl -a -t exec -vvv /Applications/VantagePoint.app` で判別できる（`Notarized Developer ID` = 公式 release / `Developer ID` = swap 済の dev build）。
 
@@ -187,51 +213,52 @@ mise run app:bundle                        # bun install --frozen-lockfile + bun
 
   | zone | env | default | 用途 |
   |------|-----|---------|------|
-  | **config** (`vp_config_dir()`) | `$XDG_CONFIG_HOME` | `~/.config/vp/` | 人が編集（`config.kdl` / `projects.kdl` / `addresses.toml`） |
+  | **config** (`vp_config_dir()`) | `$XDG_CONFIG_HOME` | `~/.config/vp/` | 人が編集（`config.kdl` / `repos.kdl` / `addresses.toml`） |
   | **data** (`vp_data_dir()`) | `$XDG_DATA_HOME` | `~/.local/share/vp/` | 永続 data store（db / discs） |
   | **state** (`vp_state_dir()`) | `$XDG_STATE_HOME` | `~/.local/state/vp/` | runtime state + log（`session.json` / `sessions/` / `log/`） |
 
-  - 設定ファイルは **KDL**（`vp_config_dir()/config.kdl`、人が編集する read-only global 設定）。登録プロジェクトの SSOT は `projects.kdl`（VP-188、config.kdl には出さない）。
+  - 設定ファイルは **KDL**（`vp_config_dir()/config.kdl`、人が編集する read-only global 設定）。登録 repoの SSOT は `repos.kdl`（VP-188、config.kdl には出さない）。
   - federation opt-in は config.kdl の `hub-addr "hub.chronista.club:12879"`（常設 SSOT — launchd daemon は shell env を持たない）。env `CHRONISTA_HUB_ADDR` は dev override として優先される。未設定 = federation off（machine-local）。状態確認は `vp daemon status` の `Hub:` 行 or `/api/health` の `hub` field。
   - 起動時に旧パス（Application Support / Library/Logs / `dirs::config_dir()/vantage/` 等）から新 XDG zone へ冪等にデータ移行（`migrate_legacy_paths()`、旧データは残す）。
 - ポート割り当て:
-  - TheWorld: 32000 (HTTP + QUIC) — **唯一の listener**
-  - Project (SP): 33000〜（`PORT_RANGE` 33000-33024 の deterministic slot）— **portless**。SP は listen せず、この番号は registry 上の論理 identity（停止/特定に使う）
-  - SP → World の QUIC は **outbound のみ**（registry / canvas-ingest / control の自己登録接続）。SP 自身は per-process な QUIC listener を持たない
-- `vp ps` は TheWorld registry（:32000）に問い合わせて一覧化（ポートスキャンは廃止）
+  - daemon: 32000 (HTTP + QUIC) — **唯一の listener**
+  - Repo (repo): 33000〜（`PORT_RANGE` 33000-33024 の deterministic slot）— **portless**。repo は listen せず、この番号は registry 上の論理 identity（停止/特定に使う）
+  - repo → daemon の QUIC は **outbound のみ**（registry / canvas-ingest / control の自己登録接続）。repo 自身は per-process な QUIC listener を持たない
+- `vp ps` は daemon registry（:32000）に問い合わせて一覧化（ポートスキャンは廃止）
 
 ### VP_PROFILE — dev / brew の state 分離（#643）
 
-dev binary（`~/.cargo/bin/vp`、`cargo install` 由来）と release（brew cask / `.app`、`/opt/homebrew/bin/vp`）を混在させると **state を全共有して衝突**する（sp_LOCK 奪い合い / port 衝突）。`VP_PROFILE` 環境変数で state を完全 namespace 分離してこれを構造的に防ぐ。SSOT は `vp-paths`（`vp_profile()` / `app_dir_name()` / `default_world_port()`）。
+dev binary（`~/.cargo/bin/vp`、`cargo install` 由来）と release（brew cask / `.app`、`/opt/homebrew/bin/vp`）を混在させると **state を全共有して衝突**する（sp_LOCK 奪い合い / port 衝突）。`VP_PROFILE` 環境変数で state を完全 namespace 分離してこれを構造的に防ぐ。SSOT は `vp-paths`（`vp_profile()` / `app_dir_name()` / `default_daemon_port()`）。
 
 | レバー | 未設定 = **brew**（一般ユーザ・従来通り） | `VP_PROFILE=dev`（開発者） |
 |---|---|---|
 | config/data/state/db dir | `vp`（`~/.local/share/vp/` 等） | `vp-dev`（`~/.local/share/vp-dev/` 等） |
-| world port | 32000 | 32100 |
+| daemon port | 32000 | 32100 |
 | daemon pidfile | `$TMPDIR/vp/` | `$TMPDIR/vp-dev/` |
 
-> （旧レバー「tmux socket `-L vp` / `-L vp-dev`」は tmux decoupling PR2 で退役 — lane は SP の PtySlot 直ホストで tmux server を持たない）
+> （旧レバー「tmux socket `-L vp` / `-L vp-dev`」は tmux decoupling PR2 で退役 — lane は repo の PtySlot 直ホストで tmux server を持たない）
 
-- env は継承で伝播する（dev shell → daemon → SP → lane claude）ので **`export VP_PROFILE=dev` 一発**で以降の全 vp が dev namespace になる。`vp switch` command / 起動時 guard / LaunchAgent 処理は不要。brew は LaunchAgent 起動で env を持たないため自然に brew namespace。
+- env は継承で伝播する（dev shell → daemon → repo → lane claude）ので **`export VP_PROFILE=dev` 一発**で以降の全 vp が dev namespace になる。`vp switch` command / 起動時 guard / LaunchAgent 処理は不要。brew は LaunchAgent 起動で env を持たないため自然に brew namespace。
 - **dev 起動は専用 alias（`.zprofile`）**: `alias vpd='VP_PROFILE=dev ~/.cargo/bin/vp'`。素の `vp`（release）と混ざらないよう cargo dev binary を明示指定する。
   ```zsh
-  vpd daemon start   # → TheWorld :32100 / ~/.local/share/vp-dev
+  vpd daemon start   # → daemon :32100 / ~/.local/share/vp-dev
   vpd daemon status  # → Port: 32100 で確認 / vpd db path → .../vp-dev/db/...
   vpd app start      # dev GUI（要 `cargo install --path crates/vp-app` で dev vp-app）
   ```
+- ⚠️ **`~/.cargo/bin/vp` は既定で不在**（2026-07-23 に撤去）。cargo dev binary は PATH 上 `/opt/homebrew/bin` より先に来るため、置いたままにすると **alias が効かない経路（script / 非対話 shell / 他プロセスからの exec）が古い dev binary を掴む**。素の `vp` は PATH で `/opt/homebrew/bin/vp`（= `.app` 同梱 CLI への symlink）へ解決させるのが正。`vpd` を使うときだけ `cargo install --path crates/vp-cli --locked` で作り直す（作らない限り `vpd` は command not found のまま = それが安全側の既定）。
 - release（brew）は素の `vp`（= `.app` 同梱 CLI への symlink）/ GUI は `VantagePoint.app`。dev(32100) と release(32000) は完全並列で常駐でき、互いに衝突しない。
 - ⚠️ `VP_PROFILE` を honor するのは **#643 を含む binary のみ**。未対応 binary に `VP_PROFILE=dev` を渡しても無視され brew namespace(32000) に落ちる（混在再発）ので、dev alias は feature 込みで `cargo install` した `~/.cargo/bin/vp` を明示指定する。
 
 ### プロセス管理（Reconciliation）
 
-TheWorld が **QUIC registry（Push）** でプロセスを管理する。SP-portless 化に伴い旧 Pull（ポートスキャン）は撤去され、registry が**単一の真実源**になった（portless SP は listen しないためポートスキャンでは発見できない）。
+daemon が **QUIC registry（Push）** でプロセスを管理する。SP-portless 化に伴い旧 Pull（ポートスキャン）は撤去され、registry が**単一の真実源**になった（portless repo は listen しないためポートスキャンでは発見できない）。
 
 | パス | 仕組み | 用途 |
 |------|--------|------|
-| **Push (QUIC Registry)** | SP が TheWorld に QUIC 永続接続で自己登録（outbound）。heartbeat 15s + 再接続時の snapshot replace で reconcile。切断 = 即時除去 | リアルタイム検出 + 自律復帰 |
+| **Push (QUIC Registry)** | repo が daemon に QUIC 永続接続で自己登録（outbound）。heartbeat 15s + 再接続時の snapshot replace で reconcile。切断 = 即時除去 | リアルタイム検出 + 自律復帰 |
 
-- `running_processes` / `projects` の HashMap キーは正規化パス（`normalize_path_key()`）。`project_name` は表示用ラベル
-- `/api/health` レスポンスに `stands` フィールドを含む（各 Stand の状態をリアルタイムで返す）
+- `running_processes` / `repos` の HashMap キーは正規化パス（`normalize_path_key()`）。`repo_name` は表示用ラベル
+- `/api/health` レスポンスに `services` フィールドを含む（各機能の状態をリアルタイムで返す）
 
 ## Agent モジュール
 
@@ -242,7 +269,7 @@ Claude CLI統合の実装（`crates/vantage-point/src/agent.rs`）。2つの実�
 | **OneShot**（`ClaudeAgent`） | `claude -p "prompt"` | 単発プロンプト |
 | **Interactive**（`InteractiveClaudeAgent`、デフォルト） | `claude -p --input-format stream-json` | 持続プロセス、複数ターン |
 
-> 対話モードの claude（TUI）は Agent モジュールではなく、 **lane の PtySlot 直ホスト**（`stand_spawner::build_stand_command` が Act I slot（login shell）に `claude --resume … || claude` を type-ahead 注入）が担う（tmux decoupling PR2、design doc `docs/design/tmux-decoupling.md` §13）。
+> 対話モードの claude（TUI）は Agent モジュールではなく、 **lane の PtySlot 直ホスト**（`stand_spawner::build_stand_command` が tui slot（login shell）に `claude --resume … || claude` を type-ahead 注入）が担う（tmux decoupling PR2、design doc `docs/design/tmux-decoupling.md` §13）。
 
 ### Stream-JSON 入力フォーマット
 
@@ -287,7 +314,7 @@ Claude CLI統合の実装（`crates/vantage-point/src/agent.rs`）。2つの実�
 - `CGWindowListCopyWindowInfo`（`swift -e`）でウィンドウ ID を取得
 - プロセス名は `"Vantage Point"`（スペースあり）で照合
 
-## プロジェクト管理（creo-memories）
+## repo管理（creo-memories）
 
 task 管理は creo-memories に一本化（Linear は不使用、2026-05-19 確定）。GitHub Issues も使わない。
 
@@ -348,7 +375,7 @@ main    ───●──────────────────●─
 - **Homebrew tap**: `chronista-club/homebrew-tap`（`Casks/vantage-point.rb`）。release 時に `release:mac` → `release:cask`（mise）が version/sha256 を自動反映して push する。cask だけ手動更新するなら `mise run release:cask`。
 - App Store は CC 依存で sandbox 不可のため非対象（上部「配布方針メモ」参照）。
 
-## クロスプロジェクト協業（MARU x VP）
+## クロスrepo協業（MARU x VP）
 
 MARU（ESP32-S3物理コントローラ）との連携開発。設計・経緯は creo-memories に記録（`category: "cross-project"` + `from: "vp"`）。
 
@@ -356,11 +383,13 @@ MARU（ESP32-S3物理コントローラ）との連携開発。設計・経緯�
 
 > ⚠️ index 更新は **`bunx gitnexus analyze`** を使う（この repo / mako 環境の JS runtime は bun。 node・npm・npx は使わない）。
 > 下の `<!-- gitnexus:start -->` ブロックは `gitnexus analyze` が**毎回再生成**するため `node .gitnexus/run.cjs analyze` 表記に戻るが、 それは tool 自動生成なので無視してよい。 **正はこの行（`bunx gitnexus analyze`）**。 関連: memory `js-runtime-bun`。
+>
+> **symbol 数などの volatile な統計は `.gitnexusrc`（`analyze.stats: false`）で md から外してある**（gitnexus #1706 の正規機能。 コマンドに `--no-stats` を足す必要は無い）。 数字は index には正しく入るので MCP tools の精度は落ちない。 これが無いと analyze のたびに AGENTS.md / CLAUDE.md が書き換わり、 branch 間で無価値な diff / conflict を生む。 `.gitnexusrc` は **fail closed**（未知キー・型違いは即エラー）なので typo が silent no-op にならない。
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **vantage-point** (13299 symbols, 29761 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **vantage-point**. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

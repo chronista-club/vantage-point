@@ -2,7 +2,7 @@
  * Sidebar File Explorer overlay picker。
  *
  * Lane の workdir 配下のファイルを ephemeral picker で探索し、 選択ファイルを
- * Canvas (Paisley Park) に投げ込むワンショット UI。 picker は file 選択 / Esc /
+ * Canvas (Board) に投げ込むワンショット UI。 picker は file 選択 / Esc /
  * 背景クリックで dismiss する (常設 panel ではない)。
  *
  * ## UX
@@ -83,27 +83,27 @@ const [pinned, setPinned] = createSignal(false);
 const [pendingAutoExpand, setPendingAutoExpand] = createSignal(true);
 
 /**
- * address (= LaneAddressWire::key() 形式) を持つ Lane が属する project path を
- * `sidebar.lanes_by_project` から逆引きする。 見つからなければ `undefined`。
- * LaneRow からは projectPath が直接渡せるが、 Cmd+F handler は active_lane_address
+ * address (= LaneAddressWire::key() 形式) を持つ Lane が属する repo path を
+ * `sidebar.lanes_by_repo` から逆引きする。 見つからなければ `undefined`。
+ * LaneRow からは repoPath が直接渡せるが、 Cmd+F handler は active_lane_address
  * しか持っていないため逆引きが必要 (signatures を揃えるためここで吸収する)。
  */
-function resolveProjectPath(address: string): string | undefined {
-	const map = sidebar.lanes_by_project ?? {};
-	for (const [projectPath, lanes] of Object.entries(map)) {
+function resolveRepoPath(address: string): string | undefined {
+	const map = sidebar.lanes_by_repo ?? {};
+	for (const [repoPath, lanes] of Object.entries(map)) {
 		if (!Array.isArray(lanes)) continue;
 		if (lanes.some((l) => laneAddressKey(l) === address)) {
-			return projectPath;
+			return repoPath;
 		}
 	}
 	return undefined;
 }
 
 function open(address: string): void {
-	const projectPath = resolveProjectPath(address);
-	if (!projectPath) {
+	const repoPath = resolveRepoPath(address);
+	if (!repoPath) {
 		console.warn(
-			"[FileExplorer] address に対応する project が見つかりません:",
+			"[FileExplorer] address に対応する repo が見つかりません:",
 			address,
 		);
 		return;
@@ -118,7 +118,7 @@ function open(address: string): void {
 	setPinned(false); // 新規 open 時はピン留めを必ずリセット (前回の pin が持ち越されない)
 	setPendingAutoExpand(true); // 次回の handleListResult で root auto-expand を実施するよう arm
 	setVisible(true);
-	sendIpc({ t: "files:list", path: projectPath, address });
+	sendIpc({ t: "files:list", path: repoPath, address });
 }
 
 function dismiss(): void {
@@ -242,7 +242,7 @@ export function FileExplorer() {
 	let bodyRef: HTMLDivElement | undefined;
 
 	/**
-	 * Directive `p` (= "send current/selected to PP") の picker context 実装。
+	 * Directive `p` (= "send current/selected to board") の picker context 実装。
 	 * picker visible + selected が file の時に file を Canvas に投げる。 ピン留めの有無に
 	 * かかわらず picker は **dismiss しない** (= 規約 v0.3 §C.2 "連続選択を許す")。
 	 * 投擲後は input に focus を戻し、 user が次の選択 / 検索 input 操作にすぐ進めるようにする。
@@ -253,11 +253,11 @@ export function FileExplorer() {
 		const item = items[selectedIndex()];
 		if (!item || item.entry.kind !== "file") return;
 		const address = targetAddress();
-		const projectPath = resolveProjectPath(address);
-		if (!projectPath) return;
+		const repoPath = resolveRepoPath(address);
+		if (!repoPath) return;
 		sendIpc({
 			t: "files:open",
-			path: projectPath,
+			path: repoPath,
 			address,
 			rel_path: item.entry.rel_path,
 		});
@@ -303,15 +303,15 @@ export function FileExplorer() {
 		}
 		// file: open IPC を投げて optimistic dismiss。 Canvas 表示完了は待たない。
 		const address = targetAddress();
-		const projectPath = resolveProjectPath(address);
-		if (!projectPath) {
-			console.warn("[FileExplorer] open: project path 不明 for", address);
+		const repoPath = resolveRepoPath(address);
+		if (!repoPath) {
+			console.warn("[FileExplorer] open: repo path 不明 for", address);
 			dismiss();
 			return;
 		}
 		sendIpc({
 			t: "files:open",
-			path: projectPath,
+			path: repoPath,
 			address,
 			rel_path: entry.rel_path,
 		});

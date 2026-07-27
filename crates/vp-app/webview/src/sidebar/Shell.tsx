@@ -1,24 +1,24 @@
 /**
  * sidebar の shell layout component。
  *
- * v1.0 柱 2。 3 段 layout (header / scrollable list / World widget) の骨格と、
- * 全 Project を 1 リストで accordion + Lane ツリーとして描画する。
+ * v1.0 柱 2。 3 段 layout (header / scrollable list / Daemon widget) の骨格と、
+ * 全 Repo を 1 リストで accordion + Lane ツリーとして描画する。
  *
- * 旧「稼働中 / 一時停止中」 タブ分割は撤去した (2026-07-10)。 SP presence の再起動フラップで
- * project がタブ間を移動して見ているタブから消える体感バグを構造的に断つため、 全 project を
- * 常時 1 リストに出す。 停止中 project の起動 (▶) は ProjectAccordion が per-project で扱う。
+ * 旧「稼働中 / 一時停止中」 タブ分割は撤去した (2026-07-10)。 repo presence の再起動フラップで
+ * repo がタブ間を移動して見ているタブから消える体感バグを構造的に断つため、 全 repo を
+ * 常時 1 リストに出す。 停止中 repo の起動 (▶) は RepoAccordion が per-repo で扱う。
  *
  * - PR-1: shell layout + Solid store の最小可視化。
- * - PR-2: Project accordion + Lane ツリー
- *   (stand icon / status / awaiting dot / mailbox icon / performer git meta)。
+ * - PR-2: Repo accordion + Lane ツリー
+ *   (agent icon / status / awaiting dot / mailbox icon / performer git meta)。
  *   操作 (click 選択・context menu・restart/delete・Add Performer form・DnD) は PR-3。
- *   World widget 本体は後続 increment。
+ *   Daemon widget 本体は後続 increment。
  */
 import { For, Show, createEffect, createMemo } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
-import { resolveProjectOrder } from "./dnd";
+import { resolveRepoOrder } from "./dnd";
 import { ContextMenu } from "./ContextMenu";
 import {
 	deleteHintLabel,
@@ -30,11 +30,11 @@ import { FileExplorer, FILE_EXPLORER_CSS } from "./FileExplorer";
 import { WirePanel, WIRE_PANEL_CSS } from "./WirePanel";
 import { LanePicker, LANE_PICKER_CSS } from "./LanePicker";
 import { CommandPalette, COMMAND_PALETTE_CSS } from "./CommandPalette";
-import { ProjectAccordion } from "./ProjectAccordion";
-import { WorldWidget } from "./WorldWidget";
+import { RepoAccordion } from "./RepoAccordion";
+import { DaemonWidget } from "./DaemonWidget";
 
 /**
- * 指定 path の project accordion を view にスクロールして一瞬 flash させる。
+ * 指定 path の repo accordion を view にスクロールして一瞬 flash させる。
  * タブ切替後の DOM 反映を待つため requestAnimationFrame 越しに実行する。
  * path は slash や特殊文字を含むので querySelector 属性セレクタのエスケープを避け、
  * 全 `.vp-proj` を走査して `data-path` 一致で引く。
@@ -54,24 +54,24 @@ function flashProject(path: string): void {
 }
 
 export function Shell() {
-	// D&D 並べ替え順 (`currents_order`) を適用した全 Project を 1 リストで表示する。
+	// D&D 並べ替え順 (`currents_order`) を適用した全 Repo を 1 リストで表示する。
 	// `currents_order` は Rust が `process:reorder` で永続化する並び順 — これを読まないと
 	// 並べ替え結果が re-push で消えてしまう (#124)。
 	//
-	// 旧「稼働中 / 一時停止中」 タブ分割は撤去した (2026-07-10)。 SP presence は再起動で
-	// フラップするため、 project が running↔paused を行き来するたびタブ間を移動し、 見ている
-	// タブから消える (= 「サイドバーから project が消えた」 体感バグの一因)。 全 project を
-	// 常時 1 リストに出せば分類フラップが構造的に消える。 停止中 project の起動 affordance
-	// (▶) は ProjectAccordion が per-project の state で出し分けるので影響しない。
+	// 旧「稼働中 / 一時停止中」 タブ分割は撤去した (2026-07-10)。 repo presence は再起動で
+	// フラップするため、 repo が running↔paused を行き来するたびタブ間を移動し、 見ている
+	// タブから消える (= 「サイドバーから repo が消えた」 体感バグの一因)。 全 repo を
+	// 常時 1 リストに出せば分類フラップが構造的に消える。 停止中 repo の起動 affordance
+	// (▶) は RepoAccordion が per-repo の state で出し分けるので影響しない。
 	const ordered = createMemo(() =>
-		resolveProjectOrder(sidebar.processes, sidebar.currents_order),
+		resolveRepoOrder(sidebar.processes, sidebar.currents_order),
 	);
 
-	// 新規追加 project の discoverability: セッション途中で追加された project を flash して
+	// 新規追加 repo の discoverability: セッション途中で追加された repo を flash して
 	// 見失わせない (タブが無くなったので tab 切替は不要、 scroll + highlight だけ)。
 	//
 	// 初回 populate (= app 再起動時の一括ロード / 復元) は「追加」ではないので flash しない。
-	// prevPaths を跨いで持ち、 最初に project 群を受け取った push を初期ロードとして素通り
+	// prevPaths を跨いで持ち、 最初に repo 群を受け取った push を初期ロードとして素通り
 	// させ、 それ以降の push で現れた差分だけを「追加」と見なす。
 	let prevPaths = new Set<string>();
 	let sawProjects = false;
@@ -80,7 +80,7 @@ export function Shell() {
 		const cur = new Set(procs.map((p) => p.path));
 		if (!sawProjects) {
 			// 初回ロード確定は「非空の push を初めて受けた時」。 それまで (mount 直後の空 state
-			// や project 0 件) は prev を更新して待つ。
+			// や repo 0 件) は prev を更新して待つ。
 			if (cur.size > 0) sawProjects = true;
 			prevPaths = cur;
 			return;
@@ -96,11 +96,11 @@ export function Shell() {
 		<div class="vp-sidebar-shell">
 			<header class="vp-sidebar-header">
 				<span class="vp-sidebar-title">CURRENTs</span>
-				{/* project 追加: process:add IPC → Rust 側 native folder picker → 登録 (VP-203)。 */}
+				{/* repo 追加: repo:add IPC → Rust 側 native folder picker → 登録 (VP-203)。 */}
 				<button
 					class="vp-sidebar-add"
-					title="プロジェクトを追加"
-					onClick={() => sendIpc({ t: "process:add" })}
+					title="repo を追加"
+					onClick={() => sendIpc({ t: "repo:add" })}
 				>
 					<CreoIcon name="ph:plus" size={13} />
 				</button>
@@ -109,30 +109,30 @@ export function Shell() {
 			<div class="vp-sidebar-list">
 				<Show
 					when={sidebar.processes.length > 0}
-					fallback={<div class="vp-sidebar-empty">プロジェクトなし</div>}
+					fallback={<div class="vp-sidebar-empty">repo なし</div>}
 				>
 					<For each={ordered()}>
-						{(proc) => <ProjectAccordion proc={proc} />}
+						{(proc) => <RepoAccordion proc={proc} />}
 					</For>
 				</Show>
 			</div>
 
-			<WorldWidget />
+			<DaemonWidget />
 
-			{/* 右クリック context menu (Lane 行 / project ヘッダ 共通、 singleton、 VP-204 PR-1)。 */}
+			{/* 右クリック context menu (Lane 行 / repo ヘッダ 共通、 singleton、 VP-204 PR-1)。 */}
 			<ContextMenu />
 
 			{/* File Explorer overlay picker (singleton)。 LaneRow のフォルダボタン or Cmd+F で
           window.vpFilePicker.open(address) を呼ぶと、 lane workdir 全体を被せる overlay が
-          出現してファイルを選べる。 選択すると Canvas (PP) に投げて dismiss する ephemeral。 */}
+          出現してファイルを選べる。 選択すると Canvas (board) に投げて dismiss する ephemeral。 */}
 			<FileExplorer />
 
 			{/* Wire Inbox overlay panel (doc 34 §4 V1、 singleton)。 LaneRow の mailbox badge click で
           window.vpWire.open(address) が呼ばれ、 選択 lane の wire 履歴 (read-only) + ack を表示する。 */}
 			<WirePanel />
 
-			{/* PR 445 `s` directive: Lane / project switcher picker overlay (singleton)。
-          Cmd hold s で window.vpLanePicker.open() が呼ばれて出現、 lane / project を fuzzy 検索 + 選択。 */}
+			{/* PR 445 `s` directive: Lane / repo switcher picker overlay (singleton)。
+          Cmd hold s で window.vpLanePicker.open() が呼ばれて出現、 lane / repo を fuzzy 検索 + 選択。 */}
 			<LanePicker />
 
 			{/* GPUI 借用 #2: Command Palette (⌘K)。 全 Action (directive registry) を fuzzy 検索 + 実行。 */}
@@ -148,7 +148,7 @@ export function Shell() {
 			</Show>
 
 			{/* PR 447 `l` directive: lane number switcher mode hint bar。 mode 中だけ表示。
-          1-9 のキー押下で expanded project 内 lane を上から N 番目で lane:select。 5 秒 timeout。 */}
+          1-9 のキー押下で expanded repo 内 lane を上から N 番目で lane:select。 5 秒 timeout。 */}
 			<Show when={laneSelectHintVisible()}>
 				<div class="vp-lane-select-hint">
 					<span class="vp-lane-select-hint-icon">🔢</span>
@@ -207,7 +207,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   /* sidebar 内の font-size は全て --sb-text-* 4 token を参照する (glyph 一点物 9px/14px を
      除く)。 定義は上の :root ブロック (Editor Mode の書き込み先と揃えるため)。 */
   font-size:var(--sb-text-base,13px);line-height:1.45;}
-/* TRON grid ambience — sidebar 背景に 1 枚だけ (course-correction 2026-07-11: project
+/* TRON grid ambience — sidebar 背景に 1 枚だけ (course-correction 2026-07-11: repo
    カード上の grid は行を横切る scanline ノイズになるため撤去、 ambience はここに集約)。
    2 軸 grid + radial mask で上部中央から溶ける。 opacity 5% = 気配だけ。 */
 #sidebar-root::before{content:"";position:absolute;inset:0;pointer-events:none;
@@ -224,7 +224,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
    (+ Light Grid: ::before の ambience grid より上に content を置く役も担う) */
 .vp-sidebar-shell{position:relative;display:flex;flex-direction:column;height:100%;}
 /* 横線ゼロ方針 (mako 019f50fe): 画面に残ってよい横線は session tap だけ。
-   header 下線 / World・Bastet 上線 / detail 破線は全削除、 区切りは spacing で。 */
+   header 下線 / Daemon・Devices 上線 / detail 破線は全削除、 区切りは spacing で。 */
 .vp-sidebar-header{flex:0 0 auto;display:flex;align-items:center;gap:6px;
   padding:12px 12px 8px;font-size:var(--sb-text-micro,10px);letter-spacing:.14em;
   text-transform:uppercase;font-weight:var(--typography-weight-semibold,600);
@@ -239,7 +239,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--lg-mute,#5C7A85);
   font-size:var(--sb-text-meta,11px);}
 
-/* Project accordion — Light Grid: project = 地 (ground)。 発光させず void に沈む静かな地形。
+/* Repo accordion — Light Grid: repo = 地 (ground)。 発光させず void に沈む静かな地形。
    faint fill (#ffffff04) + inset hairline ring のみ (course-correction 2026-07-11:
    カード上の grid テクスチャは行が透明なため文字を横切る scanline ノイズになる → 撤去、
    ambience は #sidebar-root::before の 1 枚に集約)。
@@ -248,7 +248,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   background:#ffffff04;
   box-shadow:inset 0 0 0 1px #ffffff08;
   padding:2px 4px 6px;}
-/* project が所有する current-spine (= 縦ライン)。 Light Grid: session が地の上を走る
+/* repo が所有する current-spine (= 縦ライン)。 Light Grid: session が地の上を走る
    light-trail の幹。 cyan-dim → 暗 の gradient で下に減衰。 top:0 = summary 直下から、
    bottom = 最後の lane 中央で止める。 connector の tap (::before) がここから row へ分岐する。 */
 .vp-proj-content{position:relative;}
@@ -257,7 +257,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   background:linear-gradient(var(--lg-cyan-dim,#1C6C7C),#123039);
   pointer-events:none;}
 /* photon = 文字通りの「current」。 mako motion 方針 (019f50ff): 常時アニメ禁止 —
-   イベント駆動の one-shot のみ。 lane が working に遷移した瞬間に ProjectAccordion が
+   イベント駆動の one-shot のみ。 lane が working に遷移した瞬間に RepoAccordion が
    .photon-fire を 1 回付与 → spine を root→末端に 1 度だけ走って消える。 定常状態では
    描画しない (base opacity:0)。 glow は 1 層に抑制 (quiet pass 019f5100)。
    iteration は Live Token (--sb-photon-loop、 default 1) — REPL で infinite にも戻せる。 */
@@ -280,7 +280,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   /* one-shot 前提なので reduced-motion では単に走らせない (定常は元々無表示)。 */
   .vp-proj-content.photon-fire::after{animation:none;}}
 .vp-proj + .vp-proj{border-top:none;}
-/* project ラベル = 地の目印 (quiet ground marker)。 muted uppercase の小さい tab、 発光なし。
+/* repo ラベル = 地の目印 (quiet ground marker)。 muted uppercase の小さい tab、 発光なし。
    course-correction 2026-07-11: 「地なのに図として主張」しないようさらに小さく (10px)、
    tracking も .15em に詰める。 weight は明示 400 (body の 300 継承より一段だけ立てる)。 */
 .vp-proj-summary{list-style:none;display:flex;align-items:center;gap:7px;
@@ -293,13 +293,13 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-proj-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .vp-proj-hint{padding:6px 12px 6px 20px;font-size:var(--sb-text-meta,11px);
   color:var(--lg-mute,#5C7A85);font-style:italic;}
-/* 新規追加 project の reveal flash — auto tab-switch と併用して見失わせない
+/* 新規追加 repo の reveal flash — auto tab-switch と併用して見失わせない
    (Shell の createEffect が対象に .vp-proj-flash を付与)。summary 背景を一瞬 brand 色に。 */
 @keyframes vp-proj-flash{0%{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 92%);}
   100%{background:transparent;}}
 .vp-proj-flash > .vp-proj-summary{animation:vp-proj-flash 1.3s ease-out;}
 
-/* Project D&D 並べ替え (#124) — summary を掴んで他 Project の上下に落とす。
+/* Repo D&D 並べ替え (#124) — summary を掴んで他 Repo の上下に落とす。
    draggable は details 要素 (.vp-proj) に付く (WebKit の summary 活性化対策)。
    dragging = 掴み中を半透明、 drop-before/after = 挿入先を brand 色の線で示す。 */
 .vp-proj-summary{cursor:grab;}
@@ -386,15 +386,15 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* Conductor / Performer の indent 差は connector (縦棒 + 横枝) が担うため padding override 不要。 */
 .vp-lane-icon{display:inline-flex;width:18px;justify-content:center;flex:0 0 auto;}
 .vp-lane-row.inactive .vp-lane-icon{opacity:0.55;}
-/* 開発起点マーカー (doc 44 D4)。stand icon と title の間に置く「属性」の層。
+/* 開発起点マーカー (doc 44 D4)。agent icon と title の間に置く「属性」の層。
    mute 色 = git meta / cwd と同じ最も引っ込んだ階層で、光らせない
    (光 = needs-you の専有)。起点は常時真なので、目立たせると常に鳴る警告になる。 */
 .vp-lane-origin{display:inline-flex;flex:0 0 auto;margin-right:4px;
   color:var(--lg-mute,#5C7A85);}
 .vp-lane-row.inactive .vp-lane-origin{opacity:0.55;}
-/* Lane D&D 並べ替え (doc 44 §12) — project 側 (.vp-proj) と同じ語彙で揃える:
+/* Lane D&D 並べ替え (doc 44 §12) — repo 側 (.vp-proj) と同じ語彙で揃える:
    dragging = 掴み中を半透明、 drop-before/after = 挿入先を brand 色の線。
-   落とせるのは同じ project の lane 同士だけ (帳簿は project ごとに 1 本)。 */
+   落とせるのは同じ repo の lane 同士だけ (帳簿は repo ごとに 1 本)。 */
 .vp-lane-row.dragging{opacity:.4;}
 .vp-lane-row.drop-before{box-shadow:inset 0 2px 0 0 var(--sb-conn-auto,#FFF76B);}
 .vp-lane-row.drop-after{box-shadow:inset 0 -2px 0 0 var(--sb-conn-auto,#FFF76B);}
@@ -442,14 +442,14 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* awaiting dot — needs-you 言語 (magenta) に従属。 diamond node と同源の信号。 */
 .vp-lane-awaiting{width:6px;height:6px;border-radius:50%;
   background:var(--sb-conn-hitl,#FF4A2D);flex:0 0 auto;}
-/* canvas 着信 (D) — PP に絵が届いた info 信号。 needs-you(magenta glow)とは別語彙。
+/* canvas 着信 (D) — board に絵が届いた info 信号。 needs-you(magenta glow)とは別語彙。
    Light Grid「光=注意」に従い bright(--lg-hot)で目を引くが glow(pulse)は付けない
    (glow は needs-you 専用)。 easel icon は bundled subset 外で不可視だったため pure-CSS の
    小 square (canvas/frame メタファ) に。 awaiting の円 / mailbox の封筒と形で区別。 */
 .vp-lane-canvas{width:7px;height:7px;border-radius:2px;
   background:var(--lg-hot,#EAFBFF);flex:0 0 auto;}
 
-/* Add Performer「+」(active project) / Start「▶」(一時停止中 project) — summary 右端の
+/* Add Performer「+」(active repo) / Start「▶」(一時停止中 repo) — summary 右端の
    action ボタン。 レイアウトは共通、 Start は起動 affordance として常時 brand 色。 */
 .vp-proj-addperformer,.vp-proj-start{margin-left:auto;display:inline-flex;align-items:center;
   padding:2px;border:none;background:transparent;color:var(--lg-mute,#5C7A85);
@@ -466,7 +466,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   border-radius:var(--radius-sm,6px);font-family:inherit;font-size:var(--sb-text-meta,11px);
   box-sizing:border-box;}
 .vp-add-performer-input:focus{outline:none;border-color:var(--sb-conn-auto,#FFF76B);}
-.vp-add-performer-stand{cursor:pointer;appearance:none;-webkit-appearance:none;
+.vp-add-performer-agent{cursor:pointer;appearance:none;-webkit-appearance:none;
   background-image:linear-gradient(45deg,transparent 50%,var(--lg-hot,#EAFBFF) 50%),
     linear-gradient(135deg,var(--lg-hot,#EAFBFF) 50%,transparent 50%);
   background-position:calc(100% - 12px) center,calc(100% - 8px) center;
@@ -481,19 +481,19 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-add-performer-actions button.primary{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 92%);
   color:var(--sb-conn-auto,#FFF76B);border-color:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 82%);}
 
-/* World widget (sidebar 最下部) — Light Grid foot: mono 面、 muted、 dot は cyan-dim。
+/* Daemon widget (sidebar 最下部) — Light Grid foot: mono 面、 muted、 dot は cyan-dim。
    地の一部なので発光させない (online の緑 dot 廃止)。 offline だけ僅かに magenta。 */
-.vp-world{flex:0 0 auto;background:transparent;padding-top:4px;}
-.vp-world-summary{list-style:none;display:flex;align-items:center;gap:8px;
+.vp-daemon{flex:0 0 auto;background:transparent;padding-top:4px;}
+.vp-daemon-summary{list-style:none;display:flex;align-items:center;gap:8px;
   padding:8px var(--spacing-sm,10px);cursor:pointer;
   font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-size:var(--sb-text-meta,11px);color:var(--lg-mute-2,#38525b);user-select:none;}
-.vp-world-summary::-webkit-details-marker{display:none;}
-.vp-world-summary:hover{color:var(--lg-mute,#5C7A85);}
-.vp-world-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
+.vp-daemon-summary::-webkit-details-marker{display:none;}
+.vp-daemon-summary:hover{color:var(--lg-mute,#5C7A85);}
+.vp-daemon-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
   background:var(--lg-cyan-dim,#1C6C7C);}
-.vp-world-dot.offline{background:color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 40%);}
-/* L1 lifecycle: project 行の SP presence dot。 Light Grid では project = 地なので発光させない
+.vp-daemon-dot.offline{background:color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 40%);}
+/* L1 lifecycle: repo 行の repo presence dot。 Light Grid では repo = 地なので発光させない
    (「発光ドット無し」)。 semantics は残しつつ muted 表現に落とす: connected = mute-2 定常、
    connecting = mute pulse、 disconnected = magenta 60% (要注意だけが僅かに彩度を持つ)、
    unregistered = mute-2 40%。 */
@@ -505,55 +505,55 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-proj-presence-dot.disconnected{background:var(--sb-conn-hitl,#FF4A2D);opacity:.6;}
 .vp-proj-presence-dot.unregistered{background:var(--lg-mute-2,#38525b);opacity:.4;}
 @keyframes vp-presence-pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
-.vp-world-line{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+.vp-daemon-line{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-variant-numeric:tabular-nums;}
-.vp-world-detail{padding:2px var(--spacing-sm,8px) 6px;}
-.vp-world-stat{display:flex;justify-content:space-between;font-size:var(--sb-text-meta,11px);
+.vp-daemon-detail{padding:2px var(--spacing-sm,8px) 6px;}
+.vp-daemon-stat{display:flex;justify-content:space-between;font-size:var(--sb-text-meta,11px);
   font-family:var(--vp-font-mono),var(--typography-family-mono);padding:1px 0;}
-.vp-world-stat .k{color:var(--lg-mute-2,#38525b);}
-.vp-world-stat .v{color:var(--lg-mute,#5C7A85);font-weight:500;
+.vp-daemon-stat .k{color:var(--lg-mute-2,#38525b);}
+.vp-daemon-stat .v{color:var(--lg-mute,#5C7A85);font-weight:500;
   font-variant-numeric:tabular-nums;}
-/* Hub available worlds — Hub 行直下に常時リスト表示。地の一部なので発光なし、muted mono。
+/* Hub available nodes — Hub 行直下に常時リスト表示。地の一部なので発光なし、muted mono。
    左 11px + dot(5px) + gap(8px) = handle が 24px（Hub 行 label の直下）に揃い、dot は Hub 行の
-   dot 列に載る。per-world dot = hub v0.6.0 の connected liveness（presence dot と同じ muted 語彙:
+   dot 列に載る。per-daemon dot = hub v0.6.0 の connected liveness（presence dot と同じ muted 語彙:
    connected = mute-2 定常 / offline = magenta 60% — registry に居るが relay 不達の stale）。 */
-.vp-hub-worlds{padding:0 var(--spacing-sm,10px) 4px 11px;}
-.vp-hub-world{display:flex;align-items:center;gap:8px;
+.vp-hub-nodes{padding:0 var(--spacing-sm,10px) 4px 11px;}
+.vp-hub-daemon{display:flex;align-items:center;gap:8px;
   font-size:var(--sb-text-meta,11px);font-family:var(--vp-font-mono),var(--typography-family-mono);
   padding:1px 0;}
-.vp-hub-world-dot{width:5px;height:5px;border-radius:50%;flex:0 0 auto;
+.vp-hub-daemon-dot{width:5px;height:5px;border-radius:50%;flex:0 0 auto;
   background:var(--lg-mute-2,#38525b);}
-.vp-hub-world-dot.offline{background:var(--sb-conn-hitl,#FF4A2D);opacity:.6;}
-.vp-hub-world .k{flex:1 1 auto;color:var(--lg-mute,#5C7A85);overflow:hidden;text-overflow:ellipsis;
+.vp-hub-daemon-dot.offline{background:var(--sb-conn-hitl,#FF4A2D);opacity:.6;}
+.vp-hub-daemon .k{flex:1 1 auto;color:var(--lg-mute,#5C7A85);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;}
-.vp-hub-world .v{color:var(--lg-mute-2,#38525b);flex:0 0 auto;
+.vp-hub-daemon .v{color:var(--lg-mute-2,#38525b);flex:0 0 auto;
   font-variant-numeric:tabular-nums;}
-/* in-app update: 新しい release 検知時のみ World widget 直下に出る CTA 行。
+/* in-app update: 新しい release 検知時のみ Daemon widget 直下に出る CTA 行。
    地の muted 語彙から一段持ち上げて「押せる」ことを示す (cyan accent + hover)。 */
-.vp-world-update{display:flex;align-items:center;gap:8px;margin:2px var(--spacing-sm,10px) 6px;
+.vp-daemon-update{display:flex;align-items:center;gap:8px;margin:2px var(--spacing-sm,10px) 6px;
   padding:6px 10px;cursor:pointer;border-radius:6px;
   font-size:var(--sb-text-hint,12px);font-family:var(--vp-font-mono),var(--typography-family-mono);
   color:var(--sb-conn-auto,#FFF76B);
   background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 90%);
   border:1px solid color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 78%);
   user-select:none;}
-.vp-world-update:hover{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 82%);}
-.vp-world-update-label{flex:1 1 auto;font-weight:600;}
-.vp-world-update-ver{flex:0 0 auto;color:var(--lg-mute,#5C7A85);
+.vp-daemon-update:hover{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 82%);}
+.vp-daemon-update-label{flex:1 1 auto;font-weight:600;}
+.vp-daemon-update-ver{flex:0 0 auto;color:var(--lg-mute,#5C7A85);
   font-variant-numeric:tabular-nums;}
 
-/* Bastet 🧲 — World scope の Devices セクション (stand row + device count badge) */
+/* Devices 🧲 — machine scope の Devices セクション (agent row + device count badge) */
 .vp-devices{flex:0 0 auto;padding-bottom:4px;}
-.vp-stand-row{position:relative;display:flex;align-items:center;gap:6px;
+.vp-agent-row{position:relative;display:flex;align-items:center;gap:6px;
   padding:5px var(--spacing-sm,10px);cursor:pointer;font-size:var(--sb-text-hint,12px);
   color:var(--lg-mute,#5C7A85);}
-.vp-stand-row:hover{background:#ffffff06;}
-.vp-stand-row.active{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 94%);
+.vp-agent-row:hover{background:#ffffff06;}
+.vp-agent-row.active{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 94%);
   color:var(--sb-conn-auto,#FFF76B);}
-.vp-stand-icon{display:flex;align-items:center;flex:0 0 auto;}
-.vp-stand-title{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;
+.vp-agent-icon{display:flex;align-items:center;flex:0 0 auto;}
+.vp-agent-title{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;}
-.vp-stand-badge{flex:0 0 auto;font-size:var(--sb-text-micro,10px);padding:1px 6px;border-radius:8px;
+.vp-agent-badge{flex:0 0 auto;font-size:var(--sb-text-micro,10px);padding:1px 6px;border-radius:8px;
   background:#ffffff08;color:var(--lg-mute,#5C7A85);
   font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-variant-numeric:tabular-nums;}

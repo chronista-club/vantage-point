@@ -1,19 +1,19 @@
-//! 帳簿 — Project Host が project について持つ現在値と履歴（doc 44 D3 / §8）。
+//! 帳簿 — Repo Host が repo について持つ現在値と履歴（doc 44 D3 / §8）。
 //!
-//! 第一の住人は **開発起点ポインタ**（D4）。「この project の開発の起点はどの lane か」を
+//! 第一の住人は **開発起点ポインタ**（D4）。「この repo の開発の起点はどの lane か」を
 //! Host が 1 本だけ持つ。
 //!
 //! ## なぜ lane 自身に持たせないのか
 //!
 //! P2（フラット化）で `LaneKind` を撤去し、lane は全て対等になった。
-//! 「起点である」は lane の属性ではなく **project 側の指定** なので、帳簿が持つ。
+//! 「起点である」は lane の属性ではなく **repo 側の指定** なので、帳簿が持つ。
 //! こうすると起点の移動が「ポインタの書き換え 1 回」になり、lane は何も動かない（D5）。
 //!
 //! ## key が名前ではなく id な理由
 //!
 //! ポインタが指すのは lane **そのもの**であって「今その名前で呼ばれているもの」ではない。
 //! 名前は表示のための自然キーで、将来 rename できるようにすると動く。だから帳簿は
-//! [`crate::process::lanes_state::LaneId`]（UUID v7、doc 24 §7 の I1）を key にする。
+//! [`crate::repo::lanes_state::LaneId`]（UUID v7、doc 24 §7 の I1）を key にする。
 //!
 //! 名前 ↔ id の解決は **境界で 1 回だけ**行う: 人が打つのは名前、帳簿に入るのは id
 //! （[`resolve_origin_name`] が読み側、unison `lane_origin_set` が書き側）。
@@ -33,7 +33,7 @@
 //! （履歴は rename で動いてはいけない / 同名 lane の再作成と混ざってはいけない）。
 
 use crate::host::farewell::FarewellVerdict;
-use crate::process::lanes_state::ROOT_LANE_NAME;
+use crate::repo::lanes_state::ROOT_LANE_NAME;
 
 /// 起点の解決に要る lane の最小情報（id と表示名の対）。
 ///
@@ -151,7 +151,7 @@ pub fn apply_lane_order<T>(
 ///
 /// - `Reclaimed` = lane を消した。**消した後は survey で復元できない**
 /// - `Pending` = 人の判断待ちが**いつから何回続いているか**。今この瞬間が `AskHuman` かは
-///   `survey_project` が都度計算できるが、「いつから」「何回目」は観測の履歴なので計算できない
+///   `survey_repo` が都度計算できるが、「いつから」「何回目」は観測の履歴なので計算できない
 ///
 /// `Keep` と「判定だけの `Reclaim`」を書かないのは同じ理由 — どちらも次の survey で同じ答えが
 /// 出る（= 復元できる）。書けば行が増えるだけで新しい事実は増えない。
@@ -217,7 +217,7 @@ pub struct FarewellEntry {
     pub ongoing: bool,
 }
 
-/// 1 lane 分の見送り判定の観測（CLI → World の RPC payload でもある）。
+/// 1 lane 分の見送り判定の観測（CLI → daemon の RPC payload でもある）。
 ///
 /// `verdict` は [`FarewellVerdict`] をそのまま flatten するので、wire 上は
 /// `{"lane_id":..,"lane_name":..,"verdict":"ask_human","reason":".."}` になる
@@ -337,35 +337,35 @@ pub fn format_history_line(entry: &FarewellEntry) -> String {
 // actions — 帳簿の永続（DB）。判定は上の純関数が済ませている
 // =============================================================================
 
-/// 帳簿の row key を作る（**project path の正規化はここに畳む**）。
+/// 帳簿の row key を作る（**repo path の正規化はここに畳む**）。
 ///
 /// 呼び手によって渡ってくる path が違うため:
 ///
-/// - `AppState.project_dir` — `ProjectRuntimes::start` が受け取った**生のパス**
+/// - `AppState.repo_dir` — `RepoRuntimes::start` が受け取った**生のパス**
 /// - `path_key` — `normalize_path_key`（canonicalize 済、symlink 解決後）
 ///
-/// `ProjectRuntimes` は map key に正規化を使いつつ `CapabilityConfig` には生を渡すので、
+/// `RepoRuntimes` は map key に正規化を使いつつ `CapabilityConfig` には生を渡すので、
 /// 両者は一致するとは限らない（macOS の `/tmp` → `/private/tmp` 等）。ズレると
 /// **書き手と読み手が別の行を触り、起点を指定しても snapshot に載らない**。
 ///
 /// 慣習では call site 側で正規化するが、帳簿は経路が 4 本（publish 2 / get / set）あり、
 /// 1 つ忘れると無症状で行が割れる。**書き手が 1 module しか無い新設 table なので、
 /// 正規化をここに閉じて構造的に一致させる。**
-fn row_key(project_path: &str) -> String {
-    crate::capability::normalize_path_key(std::path::Path::new(project_path))
+fn row_key(repo_path: &str) -> String {
+    crate::capability::normalize_path_key(std::path::Path::new(repo_path))
 }
 
 /// 帳簿から起点を読む。
 ///
 /// DB が無い（`vpdb: None` の test fixture 等）/ 読めない場合は既定に落ちる —
-/// 起点が読めないだけで project が動かなくなる方が困るため（best-effort）。
+/// 起点が読めないだけで repo が動かなくなる方が困るため（best-effort）。
 pub async fn origin(
     vpdb: Option<&crate::db::SharedVpDb>,
-    project_path: &str,
+    repo_path: &str,
     lanes: &[LaneRef],
 ) -> Origin {
     let pointer = match vpdb {
-        Some(db) => match db.get_host_origin(&row_key(project_path)).await {
+        Some(db) => match db.get_host_origin(&row_key(repo_path)).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!("帳簿: 起点ポインタの読み出しに失敗（既定に落とす）: {}", e);
@@ -379,19 +379,19 @@ pub async fn origin(
 
 /// `LaneInfo` の並びから起点を解決する（snapshot publisher 用の薄い adapter）。
 ///
-/// `LanesSnapshot` を publish する経路が 2 本ある（project runtime の live push と、
-/// World が vp-app 接続時に配る retained snapshot）ので、両方が同じ解決を通るように
+/// `LanesSnapshot` を publish する経路が 2 本ある（repo runtime の live push と、
+/// daemon が vp-app 接続時に配る retained snapshot）ので、両方が同じ解決を通るように
 /// ここに畳む。**片方だけ解決すると受け手が起点の有無で flicker する。**
 pub async fn origin_name_for_lanes(
     vpdb: Option<&crate::db::SharedVpDb>,
-    project_path: &str,
-    lanes: &[crate::process::lanes_state::LaneInfo],
+    repo_path: &str,
+    lanes: &[crate::repo::lanes_state::LaneInfo],
 ) -> String {
     let refs: Vec<LaneRef> = lanes
         .iter()
         .map(|l| LaneRef::new(l.id.to_string(), l.address.name.clone()))
         .collect();
-    origin(vpdb, project_path, &refs).await.name
+    origin(vpdb, repo_path, &refs).await.name
 }
 
 /// 帳簿の並び順を lane 列に適用する（snapshot publisher / `lanes_list` 用）。
@@ -400,11 +400,11 @@ pub async fn origin_name_for_lanes(
 /// lane 一覧が出なくなる方が困る。
 pub async fn sort_lanes_by_ledger(
     vpdb: Option<&crate::db::SharedVpDb>,
-    project_path: &str,
-    lanes: &mut [crate::process::lanes_state::LaneInfo],
+    repo_path: &str,
+    lanes: &mut [crate::repo::lanes_state::LaneInfo],
 ) {
     let Some(db) = vpdb else { return };
-    let order = match db.list_lane_order(&row_key(project_path)).await {
+    let order = match db.list_lane_order(&row_key(repo_path)).await {
         Ok(o) => o,
         Err(e) => {
             tracing::warn!("帳簿: lane 並び順の読み出しに失敗（既定順で継続）: {}", e);
@@ -422,7 +422,7 @@ pub async fn sort_lanes_by_ledger(
 /// ただし 1 つも解決できなければ Err（呼び手の指定が丸ごと間違っている）。
 pub async fn set_lane_order(
     vpdb: Option<&crate::db::SharedVpDb>,
-    project_path: &str,
+    repo_path: &str,
     lane_names: &[String],
     lanes: &[LaneRef],
 ) -> Result<(), String> {
@@ -434,7 +434,7 @@ pub async fn set_lane_order(
     if ids.is_empty() {
         return Err("帳簿: 並び順に解決できる lane がありません".to_string());
     }
-    db.replace_lane_order(&row_key(project_path), &ids)
+    db.replace_lane_order(&row_key(repo_path), &ids)
         .await
         .map_err(|e| format!("帳簿: 並び順の永続に失敗: {e}"))
 }
@@ -444,7 +444,7 @@ pub async fn set_lane_order(
 /// 名前解決に失敗したら **書かない** — 存在しない lane を指すポインタを自ら作らない。
 pub async fn set_origin(
     vpdb: Option<&crate::db::SharedVpDb>,
-    project_path: &str,
+    repo_path: &str,
     lane_name: &str,
     lanes: &[LaneRef],
 ) -> Result<(), String> {
@@ -452,7 +452,7 @@ pub async fn set_origin(
     let id = lane_id_of(lane_name, lanes).ok_or_else(|| {
         format!("帳簿: lane '{lane_name}' が見つからない（または安定 id を持たない）")
     })?;
-    db.upsert_host_origin(&row_key(project_path), id)
+    db.upsert_host_origin(&row_key(repo_path), id)
         .await
         .map_err(|e| format!("帳簿: 起点の永続に失敗: {e}"))
 }
@@ -471,12 +471,12 @@ pub async fn set_origin(
 /// （保留は survey に進まない = 観測が 1 件も無い）。事実が無い状態を履歴に残さない。
 pub async fn record_farewell_observations(
     vpdb: Option<&crate::db::SharedVpDb>,
-    project_path: &str,
+    repo_path: &str,
     observations: &[FarewellObservation],
     now: &str,
 ) -> Vec<FarewellEntry> {
     let Some(db) = vpdb else { return Vec::new() };
-    let key = row_key(project_path);
+    let key = row_key(repo_path);
     for obs in observations {
         if obs.lane_id.is_empty() {
             tracing::warn!(
@@ -536,12 +536,12 @@ pub async fn record_farewell_observations(
 /// 復元できるが、消した lane は復元できない。戻り値は記録できた件数。
 pub async fn record_farewell_reclaimed(
     vpdb: Option<&crate::db::SharedVpDb>,
-    project_path: &str,
+    repo_path: &str,
     entries: &[FarewellObservation],
     now: &str,
 ) -> usize {
     let Some(db) = vpdb else { return 0 };
-    let key = row_key(project_path);
+    let key = row_key(repo_path);
     let mut written = 0usize;
     for obs in entries {
         if obs.lane_id.is_empty() {
@@ -576,14 +576,11 @@ pub async fn record_farewell_reclaimed(
 /// 帳簿の見送り記録を新しい順に読む（`vp lane history` の供給元）。
 pub async fn farewell_history(
     vpdb: Option<&crate::db::SharedVpDb>,
-    project_path: &str,
+    repo_path: &str,
     limit: usize,
 ) -> Vec<FarewellEntry> {
     let Some(db) = vpdb else { return Vec::new() };
-    match db
-        .list_farewell_entries(&row_key(project_path), limit)
-        .await
-    {
+    match db.list_farewell_entries(&row_key(repo_path), limit).await {
         Ok(list) => list,
         Err(e) => {
             tracing::warn!("帳簿: 見送り履歴の読み出しに失敗: {}", e);
@@ -619,7 +616,7 @@ mod tests {
     }
 
     /// ポインタが実在 lane を指せば、予約名でなくてもそれが起点になる。
-    /// これが D4 の本体 — 起点は lane の役割ではなく project の指定。
+    /// これが D4 の本体 — 起点は lane の役割ではなく repo の指定。
     #[test]
     fn pointer_moves_origin_to_any_lane() {
         let origin = resolve_origin_name(Some("id-foo"), &lanes());
@@ -663,13 +660,18 @@ mod tests {
 
     /// snapshot publisher が使う adapter が、DB 越しでも純関数と同じ答えを出すこと。
     ///
-    /// publish 経路は 2 本（project runtime の live push と World の retained snapshot）で、
+    /// publish 経路は 2 本（repo runtime の live push と daemon の retained snapshot）で、
     /// **両方が同じ解決を通らないと受け手が起点の有無で flicker する**。だから解決を
     /// [`origin_name_for_lanes`] 1 本に畳んでいる。ここではその 1 本を固定する。
     #[tokio::test]
     async fn origin_name_for_lanes_resolves_through_db() {
-        use crate::process::lanes_state::LanePool;
+        use crate::repo::lanes_state::LanePool;
 
+        // ⚠️ `with_root` は **実 PTY を spawn** し、その replay を `vp_state_dir()` に書く。
+        // 隔離しないと user の実 state（`~/.local/state/vp/terminal_replay/proj__root__1`）を
+        // 汚し、かつテストが hermetic でなくなる（実 state 依存で実行回数によって挙動が変わる
+        // — 過去に同型で CI だけ落ちた）。doc 50 §4.6 A6 の作業中に発見（2026-07-25）。
+        let _state = crate::test_env::state_dir_async().await;
         let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
         db.define_schema().await.unwrap();
 
@@ -677,8 +679,8 @@ mod tests {
         // **答えが分岐する形**で組む（1 本だけだと全ケース同じ答えになり判別力ゼロ）。
         let mut lanes = LanePool::with_root("proj", "/tmp/proj").list();
         let mut performer = lanes[0].clone();
-        performer.address = crate::process::lanes_state::LaneAddress::new("proj", "feat-x");
-        performer.id = crate::process::lanes_state::LaneId::generate();
+        performer.address = crate::repo::lanes_state::LaneAddress::new("proj", "feat-x");
+        performer.id = crate::repo::lanes_state::LaneId::generate();
         let performer_id = performer.id.to_string();
         lanes.push(performer);
 
@@ -715,8 +717,8 @@ mod tests {
     /// 回帰固定: **書き手と読み手が別の形の path を渡しても同じ行を触る**。
     ///
     /// 帳簿に触る経路は 4 本あり、渡ってくる path の形が揃っていない:
-    /// `AppState.project_dir`（`ProjectRuntimes::start` が受け取った生のパス）と
-    /// `path_key`（`normalize_path_key` = canonicalize 済）。`ProjectRuntimes` は map key に
+    /// `AppState.repo_dir`（`RepoRuntimes::start` が受け取った生のパス）と
+    /// `path_key`（`normalize_path_key` = canonicalize 済）。`RepoRuntimes` は map key に
     /// 正規化を使いつつ `CapabilityConfig` には生を渡すので、両者は一致するとは限らない。
     ///
     /// ズレると **起点を指定しても snapshot に載らない**（書いた行と読む行が違う）。
@@ -777,7 +779,7 @@ mod tests {
         assert_eq!(
             lanes,
             vec!["root", "b", "a"],
-            "未指定 project の並びは既定のまま"
+            "未指定 repo の並びは既定のまま"
         );
     }
 
@@ -879,7 +881,7 @@ mod tests {
         assert_eq!(json["source"]["lane_id"], "id-gone");
     }
 
-    /// 名前の重複が無い前提（1 project 内で lane 名は一意）で、id は往復する。
+    /// 名前の重複が無い前提（1 repo 内で lane 名は一意）で、id は往復する。
     #[test]
     fn name_and_id_round_trip() {
         let lanes = lanes();
@@ -1179,7 +1181,7 @@ mod tests {
         assert!(farewell_history(Some(&db), "/tmp/proj", 0).await.is_empty());
     }
 
-    /// 帳簿の行も `row_key` に乗る（書き手と読み手の path の形が違っても同じ project）。
+    /// 帳簿の行も `row_key` に乗る（書き手と読み手の path の形が違っても同じ repo）。
     ///
     /// 起点 / 並び順で固定したのと同じ回帰。ズレると `vp lane cleanup` が書いた滞留を
     /// `vp lane history` が読めない（症状は「記録が消えた」だけで error は出ない）。
@@ -1252,7 +1254,7 @@ mod tests {
     /// `FarewellObservation` は wire に載るので serde 形を固定する。
     ///
     /// `verdict` は flatten なので `{"verdict":"ask_human","reason":".."}` の形。
-    /// ここがズレると CLI の観測が World で `serde_json::from_value` に落ちて、
+    /// ここがズレると CLI の観測が daemon で `serde_json::from_value` に落ちて、
     /// **記録だけが黙って止まる**（cleanup 自体は動くので気付けない）。
     #[test]
     fn observation_serde_shape() {
@@ -1265,7 +1267,7 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<FarewellObservation>(json).unwrap(),
             obs,
-            "往復する（World 側で観測を読み戻せる）"
+            "往復する（daemon 側で観測を読み戻せる）"
         );
     }
 }

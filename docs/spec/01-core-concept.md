@@ -29,7 +29,7 @@ Claude Code をエンジンとして、TUI・Canvas（WebView）・外部入力�
 ### VP が提供する価値
 
 - **統合**: TUI + Canvas + 外部入力が一体となった開発環境
-- **永続性**: プロジェクト起点でセッションを再開できる
+- **永続性**: repo 起点でセッションを再開できる
 - **拡張性**: MIDI・tmux・MCP を通じて、開発環境の境界を広げる
 - **可視化**: AI の出力をリッチに表示し、開発者と AI の双方に最適な情報を届ける
 
@@ -46,7 +46,7 @@ Claude Code をエンジンとして、TUI・Canvas（WebView）・外部入力�
 | セッション管理 | 永続化・再開・一覧 |
 | 外部入力統合 | MIDI コントローラー、tmux、MCP |
 | コード実行 | ProcessRunner による動的実行 |
-| プロセス管理 | 複数プロジェクトのライフサイクル管理 |
+| プロセス管理 | 複数repoのライフサイクル管理 |
 | Mac アプリ | notarized `.dmg` 直配布（GitHub Releases）/ Homebrew cask / `cargo install` の三本柱 |
 
 ### Out of Scope
@@ -61,18 +61,18 @@ Claude Code をエンジンとして、TUI・Canvas（WebView）・外部入力�
 
 ## Requirements
 
-### R1: プロジェクト起点の開発体験
+### R1: repo 起点の開発体験
 
-VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
+VP の 1st ビューは「repo 選択 → TUI → AI 対話」。
 
 | ID | 要件 | 優先度 |
 |----|------|--------|
-| REQ1.1 | `vp sp start` でプロジェクトの Process を起動できる | Must |
+| REQ1.1 | `vp sp start` でrepoの Process を起動できる | Must |
 | REQ1.2 | TUI 起動時にセッション選択（前回続行 / 新規 / 過去一覧）ができる | Must |
-| REQ1.3 | 設定ファイル (`config.kdl` / `projects.kdl`) で複数プロジェクトを管理できる | Must |
+| REQ1.3 | 設定ファイル (`config.kdl` / `repos.kdl`) で複数repoを管理できる | Must |
 | REQ1.4 | `vp ps` で稼働中プロセスを一覧できる | Must |
 
-### R2: AI との対話（💬 Echoes — Coding Assistant、 旧 Heaven's Door 📖）
+### R2: AI との対話（💬 conversation）
 
 | ID | 要件 | 優先度 |
 |----|------|--------|
@@ -81,7 +81,7 @@ VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
 | REQ2.3 | 複数セッションを切り替えられる（Ctrl+N / Ctrl+←→） | Should |
 | REQ2.4 | MCP サーバー経由で外部ツールから AI にプロンプトを送れる | Must |
 
-### R3: 情報の可視化（🧭 Paisley Park — Information Navigator）
+### R3: 情報の可視化（🧭 board）
 
 | ID | 要件 | 優先度 |
 |----|------|--------|
@@ -91,7 +91,7 @@ VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
 | REQ3.4 | ファイル監視（watch_file）でログをリアルタイム表示できる | Should |
 | REQ3.5 | MCP ツール経由で AI が Canvas にコンテンツを表示できる | Must |
 
-### R4: コード実行（🌿 Gold Experience — Code Runner）
+### R4: コード実行（🌿 runner）
 
 | ID | 要件 | 優先度 |
 |----|------|--------|
@@ -99,7 +99,7 @@ VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
 | REQ4.2 | 実行中のスクリプトを停止できる | Must |
 | REQ4.3 | MCP ツール経由で AI がコード実行を指示できる | Must |
 
-### R5: 外部コントロール（🍇 Hermit Purple — External Control）
+### R5: 外部コントロール（🧲 devices / 🌫️ device_io）
 
 | ID | 要件 | 優先度 |
 |----|------|--------|
@@ -107,13 +107,13 @@ VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
 | REQ5.2 | tmux ペイン操作（分割・キャプチャ）を MCP 経由で提供する | Should |
 | REQ5.3 | MCP サーバーモード (`vp mcp`) で外部ツールと統合できる | Must |
 
-### R6: プロセス管理（👑 TheWorld — Process Manager）
+### R6: プロセス管理（👑 daemon — Process Manager）
 
 | ID | 要件 | 優先度 |
 |----|------|--------|
 | REQ6.1 | 常駐デーモンとして全 Process のライフサイクルを管理する | Must |
 | REQ6.2 | Process の起動・停止・再起動を API 経由で操作できる | Must |
-| REQ6.3 | ポート自動割当（slot ベース、`33000 + slot`）で複数プロジェクトが共存できる | Must |
+| REQ6.3 | ポート自動割当（slot ベース、`33000 + slot`）で複数repoが共存できる | Must |
 | REQ6.4 | プロセス発見はインメモリ管理（ファイルキャッシュ不使用） | Must |
 
 ### R7: Mac ネイティブ体験
@@ -131,7 +131,7 @@ VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
 1. **CLI-First** — GUI は CLI の上に構築する。CLI 単体で完結できること
 2. **AI が主、ツールは従** — VP は AI の能力を最大化する環境であり、AI の代替ではない
 3. **TUI で操る、Canvas で視る** — 操作と表示の関心を分離する
-4. **プロジェクト = コンテキスト** — 全ての体験はプロジェクトを起点とする
+4. **repo = コンテキスト** — 全ての体験はrepoを起点とする
 5. **dogfooding 駆動** — 自ら使い、体験から改善する。納得できる完成度でリリースする
 
 ---
@@ -139,17 +139,17 @@ VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
 ## Architecture Overview
 
 ```
-TheWorld 👑 (Process Manager / 常駐デーモン)
-  └── Star Platinum ⭐ (Project Core / TUI 統合ビュー)
-        ├── Echoes 💬 (Coding Assistant / Claude CLI、 旧 Heaven's Door 📖)
-        ├── Paisley Park 🧭 (Information Navigator / Canvas)
-        ├── Gold Experience 🌿 (Code Runner / 動的実行)
-        └── Hermit Purple 🍇 (External Control / MIDI・tmux・MCP)
+daemon ⚙️ (Process Manager / 常駐デーモン)
+  └── repo 📦 (Repo Core / TUI 統合ビュー)
+        ├── conversation 💬 (AI との会話層)
+        ├── board 🧭 (Information Navigator)
+        ├── runner 🌿 (Code Runner)
+        └── devices 🧲 / device_io 🌫️ (device 連携)
 ```
 
-- **Process**: プロジェクトの開発プロセス本体。Star Platinum が主人公として各 Stand を束ねる
+- **Process**: repoの開発プロセス本体。repo が主人公として各 Stand を束ねる
 - **Stand（能力）**: Process が保持する Capability の総称
-- **TheWorld**: 常駐デーモン。全 Process のライフサイクルを管理
+- **daemon**: 常駐デーモン。全 Process のライフサイクルを管理
 
 > 詳細な技術設計は `design/01-architecture.md` を参照。
 
@@ -159,10 +159,10 @@ TheWorld 👑 (Process Manager / 常駐デーモン)
 
 | 入力 | 状態 | Stand |
 |------|------|-------|
-| テキスト入力（TUI） | 実装済み | 💬 Echoes |
-| MIDI コントローラー | 実装済み（LPD8） | 🍇 Hermit Purple |
-| tmux 連携 | 実装済み | 🍇 Hermit Purple |
-| MCP サーバー | 実装済み | 🍇 Hermit Purple |
+| テキスト入力（TUI） | 実装済み | 💬 conversation |
+| MIDI コントローラー | 実装済み（LPD8） | 🧲 devices |
+| tmux 連携 | 退役（tmux decoupling） | — |
+| MCP サーバー | 実装済み | 🍇 devices |
 
 ---
 
@@ -182,7 +182,7 @@ Mac に向かう → MIDI パッド → TUI 起動 → AI と協働 → Canvas �
 
 - **ワンアクション起動**: LPD8 の Pad を叩く → TUI が前回セッションから再開
 - **AI + 可視化**: TUI で対話、Canvas に設計図・ログ・実行結果をリアルタイム表示
-- **マルチプロジェクト**: Pad 1〜4 で 4 プロジェクトを瞬時に切替、状態は独立保持
+- **マルチrepo**: Pad 1〜4 で 4 repoを瞬時に切替、状態は独立保持
 
 ---
 

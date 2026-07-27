@@ -23,15 +23,15 @@ use tao::event_loop::EventLoopProxy;
 /// Lane terminals は per-Lane の browser-native WebSocket で input/output を扱う。
 #[derive(Debug, Clone)]
 pub enum AppEvent {
-    /// TheWorld から Project list 取得成功 (= `fetch_projects_with_ports` 経由で runtime port 込み)。
-    ProjectsLoaded(Vec<crate::client::ProjectInfo>),
-    /// TheWorld への接続失敗 (= daemon 未起動 / network エラー)。
-    ProjectsError(String),
+    /// daemon から Repo list 取得成功 (= `fetch_repos_with_ports` 経由で runtime port 込み)。
+    ReposLoaded(Vec<crate::client::RepoInfo>),
+    /// daemon への接続失敗 (= daemon 未起動 / network エラー)。
+    ReposError(String),
     /// VP-95: Activity widget の定期更新 payload
     ActivityUpdate(crate::pane::ActivitySnapshot),
     /// VP-95: sidebar webview からの IPC メッセージ (JSON 文字列、main loop でパース)
     SidebarIpc(String),
-    /// doc 48 Phase 2 (editor bridge): World からの `EditorCommand` を webview で評価する。
+    /// doc 48 Phase 2 (editor bridge): daemon からの `EditorCommand` を webview で評価する。
     ///
     /// `js` を main webview で `evaluate_script_with_callback` し、結果 (wry が JSON
     /// 文字列化した評価値) を `resp` に 1 回送る。sender が mpsc なのは AppEvent の
@@ -53,27 +53,24 @@ pub enum AppEvent {
     },
     /// VP-100 follow-up: muda メニュー項目クリック (developer mode toggle / open devtools 等)
     MenuClicked(muda::MenuId),
-    /// Phase A4-3b: SP (= Runtime Process) の `/api/lanes` を fetch して Lane list を main thread に通知
+    /// Phase A4-3b: repo (= Runtime Process) の `/api/lanes` を fetch して Lane list を main thread に通知
     /// 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Process recursive)
     LanesLoaded {
-        process_path: String,
+        repo_path: String,
         lanes: Vec<crate::client::LaneInfo>,
-        /// doc 44 D4: この project の開発起点 lane 名（Host の帳簿が解決した値）。
+        /// doc 44 D4: この repo の開発起点 lane 名（Host の帳簿が解決した値）。
         ///
         /// `None` = snapshot に載っていなかった（旧 server / 解決不能）。受け手は
-        /// **前回値を保つ** — 既定値に落とすと、起点を指定済の project で ⭐ が明滅する。
+        /// **前回値を保つ** — 既定値に落とすと、起点を指定済の repo で ⭐ が明滅する。
         origin: Option<String>,
     },
-    /// Phase A4-3b: Lane fetch 失敗 (SP 未起動 / 接続失敗)
-    LanesError {
-        process_path: String,
-        message: String,
-    },
+    /// Phase A4-3b: Lane fetch 失敗 (repo 未起動 / 接続失敗)
+    LanesError { repo_path: String, message: String },
     /// オンデマンド respawn (maybe_respawn_dead_lane) の restart_lane が失敗した通知。
     /// event loop で lane_respawn_triggered から address を除去し、 次の Dead 検出で
     /// 再 respawn できるようにする (失敗が永続 suppression にならないための解除通知)。
     LaneRespawnFailed { address: String },
-    /// Wire inbox (doc 34 §4 V1): World "wire" channel への read-only fetch 結果。
+    /// Wire inbox (doc 34 §4 V1): Daemon "wire" channel への read-only fetch 結果。
     /// event loop が `window.vpWire.handleResult(payload)` で sidebar に push back する。
     /// payload = `{address, agent, history, unread}` (エラーは `{address, error}`)。
     WireHistoryResult {
@@ -83,7 +80,7 @@ pub enum AppEvent {
     /// Clone 先フォルダ picker で選択された path を sidebar JS に push (キャンセル時は None)
     ClonePathPicked(Option<String>),
     /// Phase 4-paste-fix: clipboard paste request の応答。 OS clipboard の内容を JS に届ける。
-    /// 空文字なら paste skip。 main_view の `window.deliverPaste(text)` で active Lane の xterm に inject。
+    /// 空文字なら paste skip。 `term:paste` の push で focus 中の xterm に inject。
     PasteText(String),
     /// Phase 5-D Sprint C P2.1: Lane HD notification 通知 (OSC 99 final-chunk + a=focus)。
     /// main_area xterm.js が capture → Rust が SidebarState の per-Lane unread count を加算 →
@@ -91,46 +88,57 @@ pub enum AppEvent {
     OscNotification { lane: String, code: u32 },
     /// R5 Performer create flow: Add Performer form が送信した `lane:add_performer` の結果を sidebar に
     /// push back する。 `error` Some の時 form 下に inline error 表示、 None の時 form を閉じる。
-    /// 例: 名前重複 (CONFLICT)、 lane clone 失敗、 SP 未起動 等。
+    /// 例: 名前重複 (CONFLICT)、 lane clone 失敗、 repo 未起動 等。
     PerformerCreateResult {
-        project_path: String,
+        repo_path: String,
         name: String,
         error: Option<String>,
     },
-    /// doc 11 PR-C / F6④: 利用可能 Stand 一覧を sidebar に push back する。
-    /// `+ Add Performer` form 開閉時に JS から `stands:fetch` が来て、 Rust 側で World
-    /// process-proxy ask (`stands_list`) を叩いた結果がここに乗る。 JS は `window.handleStandsResult`
+    /// doc 11 PR-C / F6④: 利用可能 Agent 一覧を sidebar に push back する。
+    /// `+ Add Performer` form 開閉時に JS から `agents:fetch` が来て、 Rust 側で Daemon
+    /// repo-proxy ask (`agents_list`) を叩いた結果がここに乗る。 JS は `window.handleAgentsResult`
     /// で受領し、 dropdown を populate する。 `error` Some なら fetch 失敗、 dropdown は
     /// disabled + error message 表示。
-    StandsResult {
-        project_path: String,
-        stands: Vec<crate::client::StandInfo>,
+    AgentsResult {
+        repo_path: String,
+        agents: Vec<crate::client::AgentInfo>,
         error: Option<String>,
     },
-    /// VP-140: main_area JS が DOMContentLoaded 後に送る lane catch-up 要求。
-    /// 起動初期の `evaluate_script` race (WebView HTML 未 load 時に Rust 側 ensureLane 発行が
-    /// silent drop される) の救済策として、 JS 側が ready になったタイミングで Rust に再発行を
-    /// 要求する。 Rust は `sidebar_state.lanes_by_project` 全 lane に対して ensureLane + 現在
-    /// active lane に showLane を再発行する (idempotent)。
-    LanesEnsureAll,
-    /// Bastet pane の device 一覧 catch-up 要求（`lanes:ensure-all` と同型の boot 窓救済）。
-    /// world-device の接続時 snapshot は bundle ロード前に届き、`renderDevices` の
-    /// `window.vpBastet &&` guard で黙って落ちる — 以後の再送は次の hot-plug まで無い。
-    /// JS 側が vpBastet を install した直後に送り、Rust は保持済み state から再 render する。
-    BastetDevicesFetch,
+    /// webview が受け口を全部生やした（`entry.tsx` の `t:"ready"`）。
+    ///
+    /// bundle 評価**前**に Rust が撃った押し込みは受け口が居ないので届かない。この合図を受けて
+    /// Rust は**現在の状態を丸ごと撃ち直す**（lane の xterm / roster / terminal replay demand /
+    /// active view / device 一覧 / board snapshot）。全部 idempotent か全量置き換えなので、
+    /// 二重に撃っても壊れない。
+    ///
+    /// ⚠️ 以前は同じことを feature ごとの pull 3 本（`lanes:ensure-all` / `bastet:devices_fetch`
+    /// / `board:demand`）でやっており、面を足すたびに tag が 1 本増えていた。「webview が
+    /// 生まれた」は 1 つの事実なので signal も 1 本。**新しい面の replay はここに足す**。
+    WebviewReady,
+    /// ink（対話面、doc 52 §3）: webview から board pane（#ink-stage）の snapshot 要求。
+    /// event loop が WKWebView.takeSnapshot で `rect` を撮って PNG を state_dir に書き、完了を
+    /// `InkSnapshotReady` で受けて push envelope `ink:snapshot` を webview に返す。
+    /// 送信文面・宛先（chat/tui）の決定は webview 側（ink.ts）が既存 IPC で行う（server 0 行）。
+    InkSnapshot { rect: crate::ink_snapshot::InkRect },
+    /// ink: takeSnapshot の completion handler（main thread）から event loop へ返す結果。
+    /// `path` Some = 成功（PNG の絶対パス）、`error` Some = 失敗（理由）。
+    InkSnapshotReady {
+        path: Option<String>,
+        error: Option<String>,
+    },
     /// VP-143: 全 lane の cc session display name (custom-title) を再 resolve する周期 tick。
     /// `tokio::spawn` で 5s 間隔の background task が proxy 経由で send。 main thread は
-    /// `sidebar_state.lanes_by_project` を walk して `session_title::resolve_title_for_cwd` を
+    /// `sidebar_state.lanes_by_repo` を walk して `session_title::resolve_title_for_cwd` を
     /// 呼び、 結果を `sidebar_state.session_titles` に diff/update + sidebar に push back する。
     ResolveSessionTitles,
     /// VP-147 PR-P2-3: 全 lane の mailbox inbox 状況を再 resolve する周期 tick。
     /// `spawn_lane_inbox_poller` (5s 間隔) が proxy 経由で send。 main thread は
-    /// `sidebar_state.lanes_by_project` を walk して各 lane の MessageState を build し、
+    /// `sidebar_state.lanes_by_repo` を walk して各 lane の MessageState を build し、
     /// `sidebar_state.lane_inboxes` に diff/update + sidebar に push back する。
     /// Phase 2 (icon visibility のみ) では active Lane に対して placeholder MessageState
     /// (= 0 件 default) を populate し、 sidebar UI で `.vp-message-icon` を表示するための
     /// signal として機能。 unread_count / has_persistent / last_msg_ts の actual 値は
-    /// 後続 PR で backend peek API + Whitesnake query を実装して populate。
+    /// 後続 PR で backend peek API + 永続 store query を実装して populate。
     ResolveLaneInboxes,
     /// Sidebar File Explorer: `files:list` の blocking walk 結果を sidebar webview に
     /// push back する。 `window.vpFiles.handleListResult({address,entries,truncated})` で
@@ -141,132 +149,175 @@ pub enum AppEvent {
         truncated: bool,
     },
     /// Sidebar File Explorer: `files:open` の blocking file 読み込み結果。
-    /// `content` は `canvas-handler.ts:22-28` の `ShowMessage::content` shape
+    /// `content` は `board-handler.ts` の `BoardItem::content` shape
     /// (`{markdown}` | `{log}` | `{html}` のいずれか)。 main_view に
-    /// `window.vpCanvas.handleMessage({type:'show',pane_id:'main',content,append:false})` で注入。
+    /// `window.vpBoard.handleMessage({type:'show',pane_id:'main',content,append:false})` で注入。
     FilesOpenResult { content: serde_json::Value },
-    /// wiremsg Stage 2: SP の "canvas" Unison channel から受信した Canvas (Paisley Park)
-    /// ProcessMessage 1 件。`message` は ProcessMessage の生 JSON (`{"type":"show",...}` 等)。
-    /// handler は active project の分のみ main_view WebView に転送する。
+    /// wiremsg Stage 2: repo の "canvas" Unison channel から受信した Canvas (Board)
+    /// RepoMessage 1 件。`message` は RepoMessage の生 JSON (`{"type":"show",...}` 等)。
+    /// handler は active repo の分のみ main_view WebView に転送する。
     CanvasMessage {
-        process_path: String,
+        repo_path: String,
         message: serde_json::Value,
     },
-    /// Bastet 🧲 device event (DeviceConnected / DeviceDisconnected / ControlEvent)。
-    /// daemon "world-device" Unison channel から受信した `DeviceEvent` の生 JSON。
-    /// Phase 1 handler は tracing で log。 Phase 2 で Bastet pane / sidebar に反映予定。
+    /// DeviceRegistry 🧲 device event (DeviceConnected / DeviceDisconnected / ControlEvent)。
+    /// daemon "daemon-device" Unison channel から受信した `DeviceEvent` の生 JSON。
+    /// Phase 1 handler は tracing で log。 Phase 2 で DeviceRegistry pane / sidebar に反映予定。
     DeviceEvent { payload: serde_json::Value },
     /// board モデル (2026-07-15): WebView からの board mutate（thumbnail ✕ / Clear ボタン）。
     /// `method` = "board_delete_item" | "board_clear"、 `body` は IPC payload の生 JSON
-    /// (scope / lane / item_id 等)。 active project の SP に World process-proxy ask で forward し、
-    /// SP が DB 更新 → BoardUpdated(retained) broadcast → canvas channel で webview に反映する。
-    /// board は SP が truth を持つため、 webview 側の save/load 経路（旧 PpState*）は撤去した。
+    /// (scope / lane / item_id 等)。 active repo の repo に daemon repo-proxy ask で forward し、
+    /// repo が DB 更新 → BoardUpdated(retained) broadcast → canvas channel で webview に反映する。
+    /// board は repo が truth を持つため、 webview 側の save/load 経路（旧 PpState*）は撤去した。
     BoardMutate {
         method: String,
         body: serde_json::Value,
     },
-    /// terminal S4 (doc 27 §4.1): per-lane terminal session が World canvas channel から受信した
+    /// terminal S4 (doc 27 §4.1): per-lane terminal session が daemon canvas channel から受信した
     /// PTY 出力 1 chunk。 `data` は base64 (LaneTerminalOutput.data)。 event loop が
-    /// `window.vpTerminal.handleOutput(lane, data)` で当該 lane の xterm に inject する。
-    TerminalOutput { lane: String, data: String },
+    /// `window.vpTerminal.handleOutput(lane, session, data)` で当該 (lane, session) の xterm に
+    /// inject する。
+    ///
+    /// doc 50 §4.6 A6: `session` = 発生元 session の VP 採番 key。topic は lane 単位で共有し、
+    /// session は `LaneTerminalOutput.session`（serde default=1）で運ぶ（`ConversationEvent` と対称、
+    /// doc 38 落とし穴① =「session を lane 名に埋めない」）。
+    TerminalOutput {
+        lane: String,
+        session: u32,
+        data: String,
+    },
     /// terminal S4: WebView (xterm onData) からの入力。 `data` は base64。 event loop が
-    /// 当該 lane の terminal session に渡し、 canvas channel 上り request `terminal_write` で SP へ。
-    TerminalWrite { lane: String, data: String },
+    /// 当該 lane の terminal session に渡し、 canvas channel 上り request `terminal_write` で repo へ。
+    /// doc 50 §4.6 A6: `session` = 宛先 slot（どの xterm から打たれたか。宛先は引数で運ぶ）。
+    TerminalWrite {
+        lane: String,
+        session: u32,
+        data: String,
+    },
     /// terminal S4: WebView からの resize。 event loop が当該 lane の terminal session に渡し、
-    /// canvas channel 上り request `terminal_resize` で SP へ。
-    TerminalResize { lane: String, cols: u16, rows: u16 },
-    /// Echoes Act II (doc 32): 当該 lane の echoes session が World canvas channel から受信した
-    /// 構造化イベント 1 件。 `event` は EchoesEvent の生 JSON (`{"kind":"message_chunk",...}`)。
-    /// event loop が `window.vpConsole.handleEvent(lane, event, session)` で当該 lane の Console pane に渡す。
+    /// canvas channel 上り request `terminal_resize` で repo へ。
+    /// doc 50 §4.6 A6: `session` = 宛先 slot（pane ごとに大きさが違う）。
+    TerminalResize {
+        lane: String,
+        session: u32,
+        cols: u16,
+        rows: u16,
+    },
+    /// Conversation gui (doc 32): 当該 lane の conversation session が daemon canvas channel から受信した
+    /// 構造化イベント 1 件。 `event` は ConversationEvent の生 JSON (`{"kind":"message_chunk",...}`)。
+    /// event loop が push envelope `console:event` で当該 lane の Console pane に渡す。
     /// doc 38 Phase 2: `session` = 発生元 session の VP 採番 key（1 Lane = N session）。topic の
-    /// `ProcessMessage::EchoesEvent::session`（serde default=1）由来。session は lane 名に埋めず
+    /// `RepoMessage::ConversationEvent::session`（serde default=1）由来。session は lane 名に埋めず
     /// 常に別 field で運ぶ（doc 38 落とし穴①）。
-    EchoesEvent {
+    ConversationEvent {
         lane: String,
         event: serde_json::Value,
         session: u32,
     },
-    /// Echoes Act II: WebView (EchoesChatPane) からのプロンプト投入。 event loop が当該 lane の
-    /// echoes session を lazy spawn し、 canvas channel 上り request `echoes_submit` で SP へ。
-    EchoesSubmit { lane: String, prompt: String },
-    /// Echoes Act II HITL (doc 35 PR1): PromptCard の回答。 event loop が当該 lane の echoes
-    /// session へ渡し、 canvas channel 上り request `echoes_respond` で SP へ。 `request_id` は
+    /// Conversation gui: WebView (ChatPane) からのプロンプト投入。 event loop が当該 lane の
+    /// conversation session を lazy spawn し、 canvas channel 上り request `conversation_submit` で repo へ。
+    ConversationSubmit {
+        lane: String,
+        prompt: String,
+        /// 宛先 session（doc 50 P2）。None = lane の focused（旧 SP / 旧 UI 互換）。
+        session: Option<u32>,
+    },
+    /// Conversation gui HITL (doc 35 PR1): PromptCard の回答。 event loop が当該 lane の conversation
+    /// session へ渡し、 canvas channel 上り request `conversation_respond` で repo へ。 `request_id` は
     /// Question event 由来の control_response マッチング用。 allow は `answers`、 deny は
     /// `behavior="deny"`+`message` を運ぶ（どちらか）。
-    EchoesRespond {
+    ConversationRespond {
         lane: String,
         request_id: String,
+        /// 宛先 session（doc 50 P2）。None = focused。
+        session: Option<u32>,
         answers: Option<serde_json::Value>,
         behavior: Option<String>,
         message: Option<String>,
     },
-    /// Echoes Act II HITL (doc 35 §5 / PR2): 実行中 turn の中断（stop ボタン / Esc）。
-    /// event loop が当該 lane の echoes session へ渡し、`echoes_interrupt` で SP へ。
-    EchoesInterrupt { lane: String },
-    /// Echoes Act II HITL (doc 35 §2.5 / PR3): permission mode 動的切替。event loop が当該 lane の
-    /// echoes session へ渡し、`echoes_set_permission_mode` で SP へ。`mode` = "default"|"bypassPermissions" 等。
-    EchoesSetPermissionMode { lane: String, mode: String },
-    /// doc 33 C2: Console のエンジンモード切替要求（Act toggle）。 event loop が World
-    /// process-proxy ask `console_set_mode` で SP に forward し、成功したら vpConsole.setMode で
-    /// WebView の表示を切替える。 `mode` は "tui" | "chat"。
-    ConsoleSetMode { lane: String, mode: String },
-    /// doc 33 C2: console_set_mode 成功後、WebView へ mode を反映する内部 event
-    /// (async task → main thread の evaluate_script 橋渡し)。
-    ConsoleModeApplied { lane: String, mode: String },
+    /// Conversation gui HITL (doc 35 §5 / PR2): 実行中 turn の中断（stop ボタン / Esc）。
+    /// event loop が当該 lane の conversation session へ渡し、`conversation_interrupt` で repo へ。
+    ConversationInterrupt {
+        lane: String,
+        /// 宛先 session（doc 50 P2）。None = focused。
+        session: Option<u32>,
+    },
+    /// Conversation gui HITL (doc 35 §2.5 / PR3): permission mode 動的切替。event loop が当該 lane の
+    /// conversation session へ渡し、`conversation_set_permission_mode` で repo へ。`mode` = "default"|"bypassPermissions" 等。
+    ConversationSetPermissionMode {
+        lane: String,
+        mode: String,
+        /// 宛先 session（doc 50 P2）。None = focused。
+        session: Option<u32>,
+    },
+    /// doc 50 §4.6 A6: session = Pane の Mode（見え方）切替要求。名札の kind badge が撃つ。
+    /// event loop が daemon repo-proxy ask `session_set_mode` で repo に forward し、成功したら
+    /// `SessionModeApplied` で WebView の roster を更新する。`mode` は "tui" | "gui"。
+    ///
+    /// ⚠️ 宛先は **引数で運ぶ**（session を明示）。「focus してから送る」型の分割はレース
+    /// （doc 50 §4.3 の警告）。
+    SessionSetMode {
+        lane: String,
+        session: u32,
+        mode: String,
+    },
+    /// `session_set_mode` 成功後、WebView へ mode を反映する内部 event
+    /// （`ConsoleModeApplied` と同じ async → main thread 橋渡し）。
+    SessionModeApplied {
+        lane: String,
+        session: u32,
+        mode: String,
+    },
     /// 新セッション開始要求（console の New Session ボタン）。 event loop が
-    /// `lane_restart` (fresh=true) で SP に forward — cc_session 破棄 = `/exit` → 手打ち
-    /// `claude` の置き換え。 Act I/II 両対応（restart_lane が mode で分岐）。
+    /// `lane_restart` (fresh=true) で repo に forward — cc_session 破棄 = `/exit` → 手打ち
+    /// `claude` の置き換え。 tui/gui 両対応（restart_lane が mode で分岐）。
     ConsoleNewSession {
         lane: String,
-        /// doc 46 P2 要件 4: どの engine で作るか（stand 名。`None` = 現 focused を継承）。
+        /// doc 46 P2 要件 4: どの engine で作るか（agent 名。`None` = 現 focused を継承）。
         engine: Option<String>,
-        /// doc 46 P2 要件 4: どの Act で作るか（`"tui"` / `"chat"`。`None` = lane の現 Act）。
+        /// doc 46 P2 要件 4: どの Mode で作るか（`"tui"` / `"gui"`。`None` = lane の現 Mode）。
         ///
-        /// doc 46 §1.4 の途中経過: Act は最終的に Pane の kind になるが、P2 時点では
+        /// doc 46 §1.4 の途中経過: Mode は最終的に Pane の kind になるが、P2 時点では
         /// まだ lane の mode が残っている。**明示指定を受け取れるようにする**のが
-        /// この field の役割で、指定が無ければ従来どおり lane の Act を継ぐ。
-        act: Option<String>,
+        /// この field の役割で、指定が無ければ従来どおり lane の Mode を継ぐ。
+        mode: Option<String>,
     },
-    /// lane_restart(fresh=true) 成功後、WebView の会話表示をクリアする内部 event
-    /// (ConsoleModeApplied と同じ async → main thread 橋渡し)。
-    ConsoleSessionRenewed { lane: String },
     /// doc 39 P3: Root 切替 picker（ヘッダ chip dropdown）からの root 向け替え要求。
-    /// event loop が `echoes_session_switch_root` で SP に forward（slot は対象 session の
+    /// event loop が `conversation_session_switch_root` で repo に forward（slot は対象 session の
     /// store で Resume respawn）→ session list 再取得 + demand_start で表示を追従させる。
     ConsoleSwitchRoot { lane: String, session: u64 },
-    /// Act II モデル切替要求（ChatView の model picker）。 event loop が
-    /// `console_set_model` で SP に forward。 `model` None = claude default に戻す。
+    /// gui モデル切替要求（ChatView の model picker）。 event loop が
+    /// `console_set_model` で repo に forward。 `model` None = claude default に戻す。
     ConsoleSetModel { lane: String, model: Option<String> },
-    /// doc 38 Phase 2: session tab strip の一覧取得要求（chat attach / 表示時）。
-    /// event loop が World process-proxy ask `echoes_session_list` → `EchoesSessionList` で push back。
-    EchoesSessionsFetch { lane: String },
-    /// doc 38 Phase 2: chat header「+」からの新 session 作成（`stand` 省略 = lane の stand）。
-    /// ask `echoes_session_create`（focus は送らない = backend 既定 true）→ 続けて一覧を再取得して
-    /// push back（作成と一覧更新を 1 task で直列に）。
-    EchoesSessionCreate { lane: String, stand: Option<String> },
-    /// doc 38 Phase 2: session tab click による focused 切替。ask `echoes_session_focus` →
-    /// 一覧再取得 → `echoes_demand_start`（新 focused の transcript replay を発火）。
-    EchoesSessionFocus { lane: String, session: u32 },
-    /// doc 38 Phase 3: session tab の × による close。ask `echoes_session_remove` →
-    /// 一覧再取得 → `echoes_demand_start`（除去後の新 focused の会話を replay）。最後の 1 本は
+    // doc 53 §11: 旧 `ConversationSessionsFetch`（session 一覧の ask 要求）は退役。roster の供給は
+    // lanes snapshot 1 本になった（fetch は GUI 自身の動詞でしか撃たれず、CLI / MCP 由来の
+    // session 変化が pane grid に出なかった）。
+    /// doc 38 Phase 2: chat header「+」からの新 session 作成（`agent` 省略 = lane の agent）。
+    /// ask `conversation_session_create`（focus は送らない = backend 既定 true）。roster の更新は
+    /// server の `emit_lane_update` → lanes snapshot が運ぶ（doc 53 §11）。
+    ConversationSessionCreate { lane: String, agent: Option<String> },
+    /// replay demand（2026-07-24）: webview の renderer 準備完了後に撃つ消費者主導 demand。
+    /// ask `conversation_demand_start` → repo が engine ensure + transcript replay を配送する。
+    ConversationDemandStart { lane: String },
+    /// doc 38 Phase 2: session tab click による focused 切替。ask `conversation_session_focus` →
+    /// 一覧再取得 → `conversation_demand_start`（新 focused の transcript replay を発火）。
+    ConversationSessionFocus { lane: String, session: u32 },
+    /// doc 38 Phase 3: session tab の × による close。ask `conversation_session_remove` →
+    /// 一覧再取得 → `conversation_demand_start`（除去後の新 focused の会話を replay）。最後の 1 本は
     /// backend が Err で拒否（GUI も × は 2 本以上でしか出さない）。session は lane 名に埋めず
     /// 常に別 field で運ぶ（doc 38 落とし穴①）。
-    EchoesSessionRemove { lane: String, session: u32 },
-    /// doc 38 Phase 2: 「+」menu の engine 選択肢を埋める stands 一覧取得。
-    /// ask `stands_list` → `EchoesStands` で push back。
-    /// doc 47 §6: `req` = webview が採番した相関 id。`vp:echoes-stands` は複数の「+」menu が
+    ConversationSessionRemove { lane: String, session: u32 },
+    /// doc 38 Phase 2: 「+」menu の engine 選択肢を埋める agents 一覧取得。
+    /// ask `agents_list` → `Agents` で push back。
+    /// doc 47 §6: `req` = webview が採番した相関 id。`vp:conversation-agents` は複数の「+」menu が
     /// 購読する共有 bus なので、要求元をそのまま往復させて応答側で振り分けさせる
     /// （Rust は中身を解釈しない不透明な札）。
-    EchoesStandsFetch { lane: String, req: Option<String> },
-    /// doc 38 Phase 2: `echoes_session_list` の結果を webview の tab strip へ push back する内部 event
-    /// （async task → main thread の evaluate_script 橋渡し。`ConsoleModeApplied` と同型）。
-    EchoesSessionList {
-        lane: String,
-        payload: serde_json::Value,
-    },
-    /// doc 38 Phase 2: `stands_list` の結果を「+」menu へ push back する内部 event。
-    /// doc 47 §6: `req` は `EchoesStandsFetch` から持ち回った相関 id（そのまま JS へ返す）。
-    EchoesStands {
+    AgentsFetch { lane: String, req: Option<String> },
+    // doc 53 §11: 旧 `ConversationSessionList`（ask 結果の push back）は退役。roster は LanesLoaded で
+    // snapshot から直接 webview へ渡す（`push_session_list`）。
+    /// doc 38 Phase 2: `agents_list` の結果を「+」menu へ push back する内部 event。
+    /// doc 47 §6: `req` は `AgentsFetch` から持ち回った相関 id（そのまま JS へ返す）。
+    Agents {
         lane: String,
         payload: serde_json::Value,
         req: Option<String>,
@@ -276,9 +327,19 @@ pub enum AppEvent {
 /// xterm.js から IPC で送られてきた JSON メッセージを処理
 ///
 /// Phase 2.x-d (per-Lane instance + browser native WS): `in` / `resize` は Lane WebSocket が
-/// browser native で SP に直接送信するので、 Rust 経路は使わない (silent no-op)。
+/// browser native で repo に直接送信するので、 Rust 経路は使わない (silent no-op)。
 /// `ready` も per-Lane instance ごとに発火するが、 Rust 側で flush するものは無い (no-op)。
 /// 残り `copy` / `debug` / `slot:rect` を処理する thin wrapper。
+/// chat 動詞の宛先 session を IPC payload から読む（doc 50 P2、additive）。
+/// 省略 / 型不正は None = lane の focused（repo 側 payload_session_key と同じ後方互換）。
+fn parse_session(parsed: &serde_json::Value) -> Option<u32> {
+    parsed
+        .get("session")
+        .and_then(|v| v.as_u64())
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| *n >= 1)
+}
+
 pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
     let parsed: serde_json::Value = match serde_json::from_str(msg) {
         Ok(v) => v,
@@ -290,16 +351,28 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
 
     match parsed.get("t").and_then(|v| v.as_str()) {
         Some("ready") => {
-            // per-Lane instance ごとに発火するが Rust 側で flush するものは無い (no-op)。
+            // webview の全 install が済んだ合図（`entry.tsx` が `openDispatch` →
+            // `installTerm` → `installSlotRect` の直後に 1 度だけ撃つ）。Rust は現在の状態を
+            // 丸ごと撃ち直す（`AppEvent::WebviewReady` の handler が SSOT）。
+            //
+            // ⚠️ 外から「GUI が使える状態になった」を待つ信号は **webview 側の
+            // `console.info("[vp-bundle] ready")`**（console bridge が `target="webview"` で
+            // 必ずログに出す）。ここで `tracing::info!` を足しても出ない — default filter が
+            // `vp_app::terminal=warn` で、PTY hot path の洪水を防ぐため意図的に絞ってある。
+            tracing::debug!("webview ready");
+            let _ = proxy.send_event(AppEvent::WebviewReady);
         }
         // terminal S4 (doc 27 §4.1): xterm onData / resize → per-lane terminal session →
-        // canvas channel 上り request で SP へ。 lane 必須、 data は base64 (write のみ)。
+        // canvas channel 上り request で repo へ。 lane 必須、 data は base64 (write のみ)。
         Some("term:write") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
             let data = parsed.get("data").and_then(|v| v.as_str());
             if let (Some(lane), Some(data)) = (lane, data) {
                 let _ = proxy.send_event(AppEvent::TerminalWrite {
                     lane: lane.to_string(),
+                    // doc 50 §4.6 A6: 打った xterm の session（省略 = root。slot 系の None は
+                    // root 解決 = `payload_session_key` の規律。0 を「未指定」の印に使う）。
+                    session: parse_session(&parsed).unwrap_or(0),
                     data: data.to_string(),
                 });
             }
@@ -311,31 +384,34 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             if let (Some(lane), Some(cols), Some(rows)) = (lane, cols, rows) {
                 let _ = proxy.send_event(AppEvent::TerminalResize {
                     lane: lane.to_string(),
+                    session: parse_session(&parsed).unwrap_or(0),
                     cols: cols as u16,
                     rows: rows as u16,
                 });
             }
         }
-        // Echoes Act II (doc 32): EchoesChatPane からのプロンプト投入。 lane + prompt 必須。
-        Some("echoes:submit") => {
+        // Conversation gui (doc 32): ChatPane からのプロンプト投入。 lane + prompt 必須。
+        Some("conversation:submit") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
             let prompt = parsed.get("prompt").and_then(|v| v.as_str());
             if let (Some(lane), Some(prompt)) = (lane, prompt) {
-                let _ = proxy.send_event(AppEvent::EchoesSubmit {
+                let _ = proxy.send_event(AppEvent::ConversationSubmit {
                     lane: lane.to_string(),
                     prompt: prompt.to_string(),
+                    session: parse_session(&parsed),
                 });
             }
         }
-        // Echoes Act II HITL (doc 35 PR1): PromptCard の回答。 lane + request_id 必須。
+        // Conversation gui HITL (doc 35 PR1): PromptCard の回答。 lane + request_id 必須。
         // answers（allow）or behavior+message（deny）を運ぶ。
-        Some("echoes:respond") => {
+        Some("conversation:respond") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
             let request_id = parsed.get("request_id").and_then(|v| v.as_str());
             if let (Some(lane), Some(request_id)) = (lane, request_id) {
-                let _ = proxy.send_event(AppEvent::EchoesRespond {
+                let _ = proxy.send_event(AppEvent::ConversationRespond {
                     lane: lane.to_string(),
                     request_id: request_id.to_string(),
+                    session: parse_session(&parsed),
                     answers: parsed.get("answers").cloned(),
                     behavior: parsed
                         .get("behavior")
@@ -348,41 +424,48 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 });
             }
         }
-        // Echoes Act II HITL (doc 35 §5 / PR2): 実行中 turn の中断。 lane 必須。
-        Some("echoes:interrupt") => {
+        // Conversation gui HITL (doc 35 §5 / PR2): 実行中 turn の中断。 lane 必須。
+        Some("conversation:interrupt") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
-                let _ = proxy.send_event(AppEvent::EchoesInterrupt {
+                let _ = proxy.send_event(AppEvent::ConversationInterrupt {
                     lane: lane.to_string(),
+                    session: parse_session(&parsed),
                 });
             }
         }
-        // Echoes Act II HITL (doc 35 §2.5 / PR3): permission mode 切替。 lane + mode 必須。
-        Some("echoes:set_permission_mode") => {
+        // Conversation gui HITL (doc 35 §2.5 / PR3): permission mode 切替。 lane + mode 必須。
+        Some("conversation:set_permission_mode") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
             let mode = parsed.get("mode").and_then(|v| v.as_str());
             if let (Some(lane), Some(mode)) = (lane, mode) {
-                let _ = proxy.send_event(AppEvent::EchoesSetPermissionMode {
+                let _ = proxy.send_event(AppEvent::ConversationSetPermissionMode {
                     lane: lane.to_string(),
                     mode: mode.to_string(),
+                    session: parse_session(&parsed),
                 });
             }
         }
-        // doc 33 C2: Act toggle。 console mode 切替要求を event loop へ。
-        Some("console:set_mode") => {
+        // doc 50 §4.6 A6: 名札 kind badge からの Mode 切替。lane / session / mode 必須
+        // （session は明示のみ — root 決め打ちにしない = 誤配送を黙って起こさない）。
+        Some("session:set_mode") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
+            let session = parsed.get("session").and_then(serde_json::Value::as_u64);
             let mode = parsed.get("mode").and_then(|v| v.as_str());
-            if let (Some(lane), Some(mode)) = (lane, mode) {
-                let _ = proxy.send_event(AppEvent::ConsoleSetMode {
+            if let (Some(lane), Some(session), Some(mode)) = (lane, session, mode) {
+                let _ = proxy.send_event(AppEvent::SessionSetMode {
                     lane: lane.to_string(),
+                    session: session as u32,
                     mode: mode.to_string(),
                 });
+            } else {
+                tracing::warn!("session:set_mode skip — lane / session / mode が揃っていない");
             }
         }
         // 新セッション開始（console の New Session ボタン）。 lane 必須。
         Some("console:new_session") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
-                // doc 46 P2 要件 4: engine / act は **任意**。省略時は従来の継承挙動
-                // （現 focused の engine / lane の Act）。空文字は未指定に畳む —
+                // doc 46 P2 要件 4: engine / mode は **任意**。省略時は従来の継承挙動
+                // （現 focused の engine / lane の Mode）。空文字は未指定に畳む —
                 // menu の「既定」項目が空文字を送っても継承にしたい。
                 let opt = |k: &str| {
                     parsed
@@ -395,7 +478,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 let _ = proxy.send_event(AppEvent::ConsoleNewSession {
                     lane: lane.to_string(),
                     engine: opt("engine"),
-                    act: opt("act"),
+                    mode: opt("mode"),
                 });
             }
         }
@@ -411,7 +494,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 });
             }
         }
-        // Act II モデル切替（ChatView の model picker）。 lane 必須、 model 省略/null = default。
+        // gui モデル切替（ChatView の model picker）。 lane 必須、 model 省略/null = default。
         Some("console:set_model") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
                 let model = parsed
@@ -426,71 +509,80 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             }
         }
         // doc 38 Phase 2: session tab strip。lane は常に別 field で運び、session を lane 名に
-        // 埋めない（doc 38 落とし穴①）。一覧取得 / 作成 / focused 切替 / stands 取得。
-        Some("echoes:sessions_fetch") => {
+        // 埋めない（doc 38 落とし穴①）。作成 / focused 切替 / agents 取得。
+        // 一覧取得（`echoes:sessions_fetch`）は doc 53 §11 で退役 — roster は snapshot が運ぶ。
+        Some("conversation:session_create") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
-                let _ = proxy.send_event(AppEvent::EchoesSessionsFetch {
-                    lane: lane.to_string(),
-                });
-            }
-        }
-        Some("echoes:session_create") => {
-            if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
-                // stand 省略 = lane の stand（backend 既定）。
-                let stand = parsed
-                    .get("stand")
+                // agent 省略 = lane の agent（backend 既定）。
+                let agent = parsed
+                    .get("agent")
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
-                let _ = proxy.send_event(AppEvent::EchoesSessionCreate {
+                let _ = proxy.send_event(AppEvent::ConversationSessionCreate {
                     lane: lane.to_string(),
-                    stand,
+                    agent,
                 });
             }
         }
-        Some("echoes:session_focus") => {
+        Some("conversation:session_focus") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
             let session = parsed.get("session").and_then(|v| v.as_u64());
             if let (Some(lane), Some(session)) = (lane, session) {
-                let _ = proxy.send_event(AppEvent::EchoesSessionFocus {
+                let _ = proxy.send_event(AppEvent::ConversationSessionFocus {
                     lane: lane.to_string(),
                     session: session as u32,
+                });
+            }
+        }
+        // replay demand（2026-07-24）: webview が renderer を張った直後に撃つ「消費者主導」の
+        // demand。Rust attach 時 demand の boot 窓取りこぼし（bundle 読込前配送 = silent drop）
+        // を埋める。⚠️ app.rs の is_main_ipc_tag allowlist と両方更新（片側だと sidebar IPC へ
+        // 流れて silent drop — 2026-07-16 の「+」無反応 regression と同じ罠）。
+        Some("conversation:demand_start") => {
+            if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
+                let _ = proxy.send_event(AppEvent::ConversationDemandStart {
+                    lane: lane.to_string(),
                 });
             }
         }
         // doc 38 Phase 3: session tab の × による close。lane + session 必須。
-        Some("echoes:session_remove") => {
+        Some("conversation:session_remove") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
             let session = parsed.get("session").and_then(|v| v.as_u64());
             if let (Some(lane), Some(session)) = (lane, session) {
-                let _ = proxy.send_event(AppEvent::EchoesSessionRemove {
+                let _ = proxy.send_event(AppEvent::ConversationSessionRemove {
                     lane: lane.to_string(),
                     session: session as u32,
                 });
             }
         }
-        Some("echoes:stands_fetch") => {
+        Some("conversation:agents_fetch") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
                 // doc 47 §6: 要求元の相関 id（省略可 = 応答を誰も拾わない）。
                 let req = parsed
                     .get("req")
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
-                let _ = proxy.send_event(AppEvent::EchoesStandsFetch {
+                let _ = proxy.send_event(AppEvent::AgentsFetch {
                     lane: lane.to_string(),
                     req,
                 });
             }
         }
-        Some("lanes:ensure-all") => {
-            // VP-140: JS 側が DOMContentLoaded 後に送る lane catch-up 要求。
-            // 起動 race で silent drop された ensureLane を再発行させるための signal。
-            tracing::info!("[ipc] lanes:ensure-all (JS DOMContentLoaded catch-up)");
-            let _ = proxy.send_event(AppEvent::LanesEnsureAll);
-        }
-        Some("bastet:devices_fetch") => {
-            // Bastet pane の catch-up（boot 窓で snapshot の render が落ちた分の再要求）。
-            tracing::info!("[ipc] bastet:devices_fetch (JS bundle-ready catch-up)");
-            let _ = proxy.send_event(AppEvent::BastetDevicesFetch);
+        Some("ink:snapshot") => {
+            // ink（対話面、doc 52 §3）: board pane（#ink-stage）の rect を WKWebView.takeSnapshot で
+            // 撮り PNG 化する要求。rect は webview 論理座標（getBoundingClientRect）= WKWebView の
+            // 座標系そのままなので Retina 換算不要。結果は app.rs が `ink:snapshot` で返す。
+            if let Some(r) = parsed.get("rect") {
+                let get = |k: &str| r.get(k).and_then(|v| v.as_f64());
+                if let (Some(x), Some(y), Some(w), Some(h)) =
+                    (get("x"), get("y"), get("w"), get("h"))
+                {
+                    let _ = proxy.send_event(AppEvent::InkSnapshot {
+                        rect: crate::ink_snapshot::InkRect { x, y, w, h },
+                    });
+                }
+            }
         }
         Some("copy") => {
             // navigator.clipboard が使えなかった時の fallback: arboard で OS clipboard 直書き
@@ -527,7 +619,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
         Some("paste:request") => {
             // Phase 4-paste-fix: navigator.clipboard.readText() が webview で permission denied する
             // ケースの fallback。 arboard で OS clipboard を読んで AppEvent::PasteText で main thread
-            // に届ける → event loop が main_view の window.deliverPaste(text) を evaluate_script。
+            // に届ける → event loop が `lane_js::deliver_paste` で `term:paste` を push。
             let text = match arboard::Clipboard::new() {
                 Ok(mut cb) => match cb.get_text() {
                     Ok(t) => {
@@ -589,16 +681,24 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             }
         }
         Some("board:delete") => {
-            // board モデル: thumbnail ✕。 SP の board_delete_item に forward（app.rs で World ask）。
+            // board モデル: thumbnail ✕。 repo の board_delete_item に forward（app.rs で Daemon ask）。
             let _ = proxy.send_event(AppEvent::BoardMutate {
                 method: "board_delete_item".to_string(),
                 body: parsed.clone(),
             });
         }
         Some("board:clear") => {
-            // board モデル: Clear ボタン。 SP の board_clear に forward。
+            // board モデル: Clear ボタン。 repo の board_clear に forward。
             let _ = proxy.send_event(AppEvent::BoardMutate {
                 method: "board_clear".to_string(),
+                body: parsed.clone(),
+            });
+        }
+        Some("board:cursor") => {
+            // cursor の server 昇格（doc 52 §5 計器盤）: thumbnail click / scrollback の注視を
+            // repo の board_set_cursor へ forward（app.rs で Daemon ask → BoardUpdated 再配信）。
+            let _ = proxy.send_event(AppEvent::BoardMutate {
+                method: "board_set_cursor".to_string(),
                 body: parsed.clone(),
             });
         }

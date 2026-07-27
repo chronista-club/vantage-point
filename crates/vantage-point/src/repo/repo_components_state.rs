@@ -1,0 +1,112 @@
+//! Board 🧭 の Lane Agent 実体（`BoardState` + `LaneComponentHost` wrapper）。
+//!
+//! ## Repo scope pool は消滅した（doc 44 P1 露払い、2026-07-20）
+//!
+//! 本 module は元々 Repo scope の Agent pool (`RepoStandsPool`) を提供していたが、
+//! Agent は順次 Lane scope へ移管され、最後まで残っていた runner 🌿 の skeleton
+//! (`RunnerState` 相当) も **一度も read されないまま**残置されていた。
+//! doc 44 P1 で `AppState.repo_stands` を除去した結果 pool は到達不能になったため、
+//! pool・runner skeleton とも削除した（PR-γ の「runner を Lane 移管したら pool が空になる」
+//! という見通しに、pool 側から先に到達した形）。
+//!
+//! 旧 External Control agent は PR-α で daemon 移管 + epic v3.1 で
+//! DeviceRegistry 🧲 (Daemon device registry) / Device I/O 🌫️ (Lane device I/O) に再編済。
+//!
+//! ## 現在ここが提供するもの
+//!
+//! - `BoardState` — Canvas content の data model (content + content_type)
+//! - `BoardComponent` — それを `LaneComponentHost` trait に適合させる wrapper。
+//!   `LaneCapabilities.registry` が Lane あたり 1 instance を host する (PR-δ-2 / VP-136)。
+//!
+//! 関連: doc 12 LSCM (VP-109) — Layer container は Daemon/Repo/Lane の 3 kind、
+//! 各機能の居住可能 Layer は doc 12 §9 catalog の「保持 layer pattern」列が定める。
+
+use std::any::Any;
+
+use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
+
+use super::lane_component::LaneComponentHost;
+
+/// board (Board) — Canvas content store (PR-β-2 (VP-120) で Lane あたり 1 instance に物理移管)
+///
+/// PR-β-2 で Lane 移管、 PR-δ-2 (VP-136) で `BoardComponent` wrapper 経由 host に進化。
+/// data model 自体は変わらず content + content_type の serde 直列化可能 struct。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BoardState {
+    /// Canvas 表示中の content (HTML/MD/markdown body)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// content の MIME (例: "text/html", "text/markdown")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+}
+
+/// BoardComponent — `BoardState` を `LaneComponentHost` trait に適合させる wrapper (PR-δ-2、 VP-136)。
+///
+/// PR-δ-1 (VP-135) で新設の `LaneComponentHost` trait の **最初の impl**。 internal mutability 用に
+/// `RwLock<BoardState>` を持ち、 caller は `state()` accessor 経由で Read/Write する。
+///
+/// `service_kind() = "board"` を ID として Registry の HashMap key に使われる。
+///
+/// ## 関連
+///
+/// - PR-δ-1 (#288 / VP-135) — `LaneComponentHost` trait + `LaneComponentRegistry` 受け皿
+/// - PR-δ-2 (本 PR / VP-136) — board impl + LaneCapabilities 統合
+/// - doc 13 §9 boundary invariant 「N component を host できる generic interface」 への path
+pub struct BoardComponent {
+    // 要確認（audit 2026-07-18、先行実装の可能性）: Phase A4-2b skeleton（module doc 参照）。
+    #[allow(dead_code)]
+    state: RwLock<BoardState>,
+}
+
+impl BoardComponent {
+    /// 新規構築 (state は default = content/content_type 共に None)。
+    pub fn new() -> Self {
+        Self {
+            state: RwLock::new(BoardState::default()),
+        }
+    }
+
+    /// internal `RwLock<BoardState>` への参照 (caller が Read/Write する)。
+    // 要確認（audit 2026-07-18、先行実装の可能性）: Phase A4-2b skeleton（module doc 参照）。
+    #[allow(dead_code)]
+    pub fn state(&self) -> &RwLock<BoardState> {
+        &self.state
+    }
+}
+
+impl Default for BoardComponent {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LaneComponentHost for BoardComponent {
+    fn service_kind(&self) -> &'static str {
+        "board"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn board_stand_reports_its_kind() {
+        let agent = BoardComponent::new();
+        assert_eq!(agent.service_kind(), "board");
+    }
+
+    #[test]
+    fn board_stand_starts_empty() {
+        let agent = BoardComponent::new();
+        let state = agent.state().blocking_read();
+        assert!(state.content.is_none());
+        assert!(state.content_type.is_none());
+    }
+}

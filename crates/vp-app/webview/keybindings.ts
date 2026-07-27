@@ -19,11 +19,14 @@ import { applyAppScene, cycleAppScene } from "./app-panes";
  * `event.code`（= 物理キー位置、layout 独立）で照合する。`event.key` は Shift 押下時に
  * "1" → "!", "3" → "#" 等の symbol に変わるため hotkey 判定に使えない（US/JIS 両方該当）。
  */
+// doc 52 §10 wave 0: pp scene（side-review / pp-overlay / pp-focus）退役後、Digit2-4 は残る
+// agent focus（runner / Devices / Preview）へ。Digit1 = lane workbench（board も console も chat も
+// この中の tiling）。
 const SCENE_HOTKEY_BY_CODE: Record<string, string> = {
-	Digit1: "lead-focus",
-	Digit2: "side-review",
-	Digit3: "pp-overlay",
-	Digit4: "pp-focus",
+	Digit1: "lane-focus",
+	Digit2: "runner-focus",
+	Digit3: "devices-focus",
+	Digit4: "preview-focus",
 };
 
 /**

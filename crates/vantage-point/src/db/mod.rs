@@ -9,13 +9,13 @@
 //! - テスト: `kv-mem` で in-memory embedded DB
 //!
 //! 単一プロセスが DB を保持する single-writer モデル。
-//! 複数 Process が同時に書くユースケースは現状ない (TheWorld が集約点)。
+//! 複数 Process が同時に書くユースケースは現状ない (daemon が集約点)。
 //!
 //! ## テーブル設計
 //!
 //! - `processes`: プロセス状態（QUIC Registry + HTTP polling 代替）
 //! - `pane_contents`: Canvas ペイン状態
-//! - `stand_status`: Stand ステータス
+//! - `service_status`: Agent ステータス
 //! - `prompts`: User Prompt
 //! - `notifications`: CC 通知
 
@@ -44,38 +44,41 @@ fn db_root() -> PathBuf {
     crate::config::vp_data_dir().join("db")
 }
 
-/// VP 唯一の DB ディレクトリ (`vp_data_dir()/db/world`)
+/// VP 唯一の DB ディレクトリ (`vp_data_dir()/db/machine`)
 ///
-/// doc 44 P1 PR4 (DB 統合): 旧構成では World (`db/world/`) と project (`db/sp_{slug}/`) が
+/// doc 44 P1 PR4 (DB 統合): 旧構成では Daemon (`db/machine/`) と repo (`db/sp_{slug}/`) が
 /// **別ディレクトリ**だった。理由は VP-182 — surrealkv は OS レベル排他ロック
-/// (`try_lock_exclusive`) を持つため、別プロセスの World と SP が同一ディレクトリを
+/// (`try_lock_exclusive`) を持つため、別プロセスの daemon と repo が同一ディレクトリを
 /// open すると LOCK 衝突で 2 番目が失敗する。
 ///
-/// fold-in で SP プロセスが消え、World が全 project を同一プロセス内に抱えるようになった
+/// fold-in で repo プロセスが消え、daemon が全 repo を同一プロセス内に抱えるようになった
 /// 時点でこの分離理由は消滅した（同一プロセスからの open は handle 共有で足りる）。
-/// project 次元は**ディレクトリではなく table の `project_path` 列**が持つ
-/// （SP 固有 table も元から全て `project_path` を持っており、クエリも全てそれで絞る）。
+/// repo 次元は**ディレクトリではなく table の `repo_path` 列**が持つ
+/// （repo 固有 table も元から全て `repo_path` を持っており、クエリも全てそれで絞る）。
 ///
-/// 名前が `world` のままなのは、既存の `db/world/` を移行なしでそのまま使い続けるため。
-pub fn db_data_dir_for_world() -> PathBuf {
-    db_root().join("world")
+/// dir 名は `machine`（machine に 1 つの単一 DB）。旧 `db/world/` からの rename は
+/// **意図的に migration なし**（命名エピック 4/9、mako 承認 2026-07-27 — doc 54 §8.1 の
+/// 「legacy データは初期化」policy。旧 dir は disk に残るが参照されない。doc 44 P1 の
+/// DB 統合と同型の割り切り）。
+pub fn db_data_dir_for_machine() -> PathBuf {
+    db_root().join("machine")
 }
 
-/// 旧 per-project DB ディレクトリ (`db/sp_{slug}/`) を回収する（doc 44 P1 の後始末）。
+/// 旧 per-repo DB ディレクトリ (`db/sp_{slug}/`) を回収する（doc 44 P1 の後始末）。
 /// 戻り値は削除した dir 数。
 ///
-/// fold-in（#823）で SP プロセスが消え、project 次元は table の `project_path` 列が持つように
+/// fold-in（#823）で repo プロセスが消え、repo 次元は table の `repo_path` 列が持つように
 /// なったため、`db/sp_*` は **1 バイトも読まれない残骸**になった。だが撤去されたのは
 /// 「開くコード」だけで、既に disk にある dir はそのまま残っていた（実機で 23 dir / 約 1.2 GB）。
 ///
-/// 捨ててよいことは doc 44 §5.2 で 2026-07-20 に検証済み。実害は旧 DB の PP board
+/// 捨ててよいことは doc 44 §5.2 で 2026-07-20 に検証済み。実害は旧 DB の board board
 /// (`pane_contents`) が引き継がれないことだけで、これは fold-in の破壊的変更として
 /// 既に出荷・周知されている（board は空から始まる）。
 ///
-/// - `world` は名前で除外する（prefix `sp_` の dir だけを対象にする）
+/// - `daemon` は名前で除外する（prefix `sp_` の dir だけを対象にする）
 /// - best-effort: 個々の削除失敗は warn して残置し、他は続行する
 /// - 冪等: 残骸が無ければ 0 を返すだけ
-pub fn reclaim_legacy_project_dbs_in(root: &std::path::Path) -> usize {
+pub fn reclaim_legacy_repo_dbs_in(root: &std::path::Path) -> usize {
     let Ok(entries) = std::fs::read_dir(root) else {
         return 0;
     };
@@ -94,16 +97,16 @@ pub fn reclaim_legacy_project_dbs_in(root: &std::path::Path) -> usize {
         match std::fs::remove_dir_all(&path) {
             Ok(()) => removed += 1,
             Err(err) => {
-                tracing::warn!("旧 project DB の回収に失敗（残置）: {} err={err}", name);
+                tracing::warn!("旧 repo DB の回収に失敗（残置）: {} err={err}", name);
             }
         }
     }
     removed
 }
 
-/// 本番 root での [`reclaim_legacy_project_dbs_in`]（World boot から 1 回）。
-pub fn reclaim_legacy_project_dbs() -> usize {
-    reclaim_legacy_project_dbs_in(&db_root())
+/// 本番 root での [`reclaim_legacy_repo_dbs_in`]（Daemon boot から 1 回）。
+pub fn reclaim_legacy_repo_dbs() -> usize {
+    reclaim_legacy_repo_dbs_in(&db_root())
 }
 
 /// VP のデータベースクライアント
@@ -191,9 +194,9 @@ impl VpDb {
         // ここまで来た = 全 attempt で LOCK 衝突が続き、 stale 判定 (clear_stale_lock) も
         // 毎回 false (= holder 生存 = 別プロセスの VP が同じ db を開いている)。
         //
-        // doc 44 P1 PR4 以前は、これを typed marker (`DbLockHeldByLiveHolder`) で返し SP 起動路が
+        // doc 44 P1 PR4 以前は、これを typed marker (`DbLockHeldByLiveHolder`) で返し repo 起動路が
         // downcast して「重複 spawn」と判定していた。db が単一化された今、この db を開くのは
-        // World だけで、World の単一性は :32000 の port bind (`bind_dual_stack` は SO_REUSEADDR
+        // Daemon だけで、daemon の単一性は :32000 の port bind (`bind_dual_stack` は SO_REUSEADDR
         // のみで SO_REUSEPORT を使わない = 二重 listen 不可) が bind 時点で保証する。
         // よって本エラーに到達したら異常事態であり、caller が分岐に使う marker は不要になった。
         // (`daemon.pid` は bind 成功後に書く bookkeeping で、起動排他には関与しない。)
@@ -272,7 +275,7 @@ impl VpDb {
 
     /// doc 44 P2: `lane` / `lane_lifecycle` の **address 文字列列**を新形へ正規化する（冪等）。
     ///
-    /// フラット化で address の表示形が `<project>/performer/<name>` → `<project>/<name>` に
+    /// フラット化で address の表示形が `<repo>/performer/<name>` → `<repo>/<name>` に
     /// 変わった。descriptor（object 列）は `LaneAddress` の serde default が吸収するが、
     /// **address を文字列 key として持つ列は吸収できない** — 旧形の行が残ると
     /// upsert（DELETE+CREATE の WHERE が新形で当たらない）が重複行を作り、
@@ -309,14 +312,14 @@ impl VpDb {
                 continue;
             };
             // parse_address は旧 3 分節形を受理して新形に正規化する。
-            let Some(new) = crate::process::lanes_state::LanePool::parse_address(old)
+            let Some(new) = crate::repo::lanes_state::LanePool::parse_address(old)
                 .map(|a| a.to_string())
                 .filter(|new| new != old)
             else {
                 continue;
             };
             // 1 行の失敗で他行を巻き込まない。典型的な失敗は
-            // `(project_path, address)` の UNIQUE 衝突（旧形と新形が同じ lane を指して
+            // `(repo_path, address)` の UNIQUE 衝突（旧形と新形が同じ lane を指して
             // 両方残っているケース）で、これは当該行だけの問題。`?` で抜けると同じ
             // SELECT に載った**残り全行**の正規化が飛び、次回起動でも衝突源が在る限り
             // 毎回巻き添えになる（= 恒久的に旧形が残る）。
@@ -355,55 +358,55 @@ impl VpDb {
     }
 
     // =========================================================================
-    // World identity (federation L2、 ADR-020 D2): home-World の位置独立 安定 id `wld_xxx`。
-    // db/world の singleton row (固定 record id world_identity:self)。daemon が初回起動で
+    // Daemon identity (federation L2、 ADR-020 D2): home-node の位置独立 安定 id `wld_xxx`。
+    // db/machine の singleton row (固定 record id node_identity:self)。daemon が初回起動で
     // 1 度だけ発行し永続、 以降の再起動は復元する。[`crate::lane::lane_id::load_or_create`] の
-    // db 版 — lane は (project,lane) ごと file 永続、 World は daemon に 1 つなので db singleton。
+    // db 版 — lane は (repo,lane) ごと file 永続、 daemon は daemon に 1 つなので db singleton。
     // =========================================================================
 
-    /// home-World の wld_id を取得する (無ければ生成して永続)。
+    /// home-node の wld_id を取得する (無ければ生成して永続)。
     ///
     /// - 既存 singleton row があり非空なら **それを復元** (= 再起動を越えて安定)。
     /// - 無い / 空なら **新規生成して永続** し、 その id を返す。
     ///
-    /// World daemon は single-writer (db comment 参照) かつ boot で 1 度だけ呼ぶため race は無い。
+    /// daemon は single-writer (db comment 参照) かつ boot で 1 度だけ呼ぶため race は無い。
     /// 書き込みは DELETE+CREATE を単一 query (= 1 transaction、 [`Self::upsert_lane`] と同方針) で
     /// atomic に行う (空 row が残っていた場合も確実に上書き)。
-    pub async fn load_or_create_world_id(&self) -> Result<crate::world::WorldId> {
+    pub async fn load_or_create_node_id(&self) -> Result<crate::node::NodeId> {
         // 既存 singleton row の wld_id を読む (存在しなければ空配列)。
         let mut result = self
             .db
-            .query("SELECT VALUE wld_id FROM world_identity:self")
+            .query("SELECT VALUE wld_id FROM node_identity:self")
             .await
-            .map_err(|e| anyhow::anyhow!("world_id 取得失敗: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("node_id 取得失敗: {}", e))?;
         let existing: Vec<String> = result.take(0)?;
         if let Some(id) = existing.into_iter().find(|s| !s.trim().is_empty()) {
-            return Ok(crate::world::WorldId::from(id));
+            return Ok(crate::node::NodeId::from(id));
         }
 
         // 無ければ新規発行して永続する。
-        let id = crate::world::WorldId::generate();
+        let id = crate::node::NodeId::generate();
         self.db
             .query(
-                "DELETE world_identity:self;
-                 CREATE world_identity:self CONTENT {
+                "DELETE node_identity:self;
+                 CREATE node_identity:self CONTENT {
                     wld_id: $wld_id,
                     created_at: time::now()
                  }",
             )
             .bind(("wld_id", id.as_str().to_string()))
             .await
-            .map_err(|e| anyhow::anyhow!("world_id 永続失敗: {}", e))?
+            .map_err(|e| anyhow::anyhow!("node_id 永続失敗: {}", e))?
             .check()
-            .map_err(|e| anyhow::anyhow!("world_id 永続エラー: {}", e))?;
-        tracing::info!("home-World identity 発行: wld_id={}", id);
+            .map_err(|e| anyhow::anyhow!("node_id 永続エラー: {}", e))?;
+        tracing::info!("home-node identity 発行: wld_id={}", id);
         Ok(id)
     }
 
-    // VP-188: Projects CRUD は撤去。 registered projects の SSOT は embedded DB から
-    // `~/.config/vp/projects.kdl` に移行 (= VP-182 の「DB dir 変更で projects 消失」
-    // regression を構造的に解消、 council 2026-05-16)。 projects 永続化は
-    // `crate::projects_file::ProjectsFile` が担う。
+    // VP-188: Repos CRUD は撤去。 registered repos の SSOT は embedded DB から
+    // `~/.config/vp/repos.kdl` に移行 (= VP-182 の「DB dir 変更で repos 消失」
+    // regression を構造的に解消、 council 2026-05-16)。 repos 永続化は
+    // `crate::repos_file::ReposFile` が担う。
 
     // =========================================================================
     // Processes CRUD
@@ -412,8 +415,8 @@ impl VpDb {
     /// 稼働中プロセスを登録（UPSERT）
     pub async fn upsert_process(
         &self,
-        project_path: &str,
-        project_name: &str,
+        repo_path: &str,
+        repo_name: &str,
         port: u16,
         pid: u32,
         status: &str,
@@ -421,20 +424,20 @@ impl VpDb {
         self.db
             .query(
                 "INSERT INTO processes {
-                    project_path: $project_path,
-                    project_name: $project_name,
+                    repo_path: $repo_path,
+                    repo_name: $repo_name,
                     port: $port,
                     pid: $pid,
                     status: $status,
                     started_at: time::now()
                 } ON DUPLICATE KEY UPDATE
-                    project_name = $input.project_name,
+                    repo_name = $input.repo_name,
                     port = $input.port,
                     pid = $input.pid,
                     status = $input.status",
             )
-            .bind(("project_path", project_path.to_string()))
-            .bind(("project_name", project_name.to_string()))
+            .bind(("repo_path", repo_path.to_string()))
+            .bind(("repo_name", repo_name.to_string()))
             .bind(("port", port as i64))
             .bind(("pid", pid as i64))
             .bind(("status", status.to_string()))
@@ -445,11 +448,11 @@ impl VpDb {
         Ok(())
     }
 
-    /// プロセスを登録解除（project_path で特定）
-    pub async fn delete_process(&self, project_path: &str) -> Result<()> {
+    /// プロセスを登録解除（repo_path で特定）
+    pub async fn delete_process(&self, repo_path: &str) -> Result<()> {
         self.db
-            .query("DELETE FROM processes WHERE project_path = $path")
-            .bind(("path", project_path.to_string()))
+            .query("DELETE FROM processes WHERE repo_path = $path")
+            .bind(("path", repo_path.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("process 削除失敗: {}", e))?
             .check()
@@ -469,22 +472,22 @@ impl VpDb {
     }
 
     // =========================================================================
-    // Active lane (presence、 Model Q): project ごとの選択中 lane を daemon-canonical に
+    // Active lane (presence、 Model Q): repo ごとの選択中 lane を daemon-canonical に
     // =========================================================================
 
-    /// active lane を upsert (project_path → lane_address)。
-    pub async fn upsert_active_lane(&self, project_path: &str, lane_address: &str) -> Result<()> {
+    /// active lane を upsert (repo_path → lane_address)。
+    pub async fn upsert_active_lane(&self, repo_path: &str, lane_address: &str) -> Result<()> {
         self.db
             .query(
                 "INSERT INTO active_lane {
-                    project_path: $project_path,
+                    repo_path: $repo_path,
                     lane_address: $lane_address,
                     updated_at: time::now()
                 } ON DUPLICATE KEY UPDATE
                     lane_address = $input.lane_address,
                     updated_at = time::now()",
             )
-            .bind(("project_path", project_path.to_string()))
+            .bind(("repo_path", repo_path.to_string()))
             .bind(("lane_address", lane_address.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("active_lane upsert 失敗: {}", e))?
@@ -493,30 +496,30 @@ impl VpDb {
         Ok(())
     }
 
-    /// 全 active lane を (project_path, lane_address) で返す (boot 時の load 用)。
+    /// 全 active lane を (repo_path, lane_address) で返す (boot 時の load 用)。
     pub async fn list_active_lanes(&self) -> Result<Vec<(String, String)>> {
         // list_processes と同じく serde_json::Value で受ける (surrealdb の SurrealValue 制約回避)。
         let mut result = self
             .db
-            .query("SELECT project_path, lane_address FROM active_lane")
+            .query("SELECT repo_path, lane_address FROM active_lane")
             .await
             .map_err(|e| anyhow::anyhow!("active_lane 取得失敗: {}", e))?;
         let rows: Vec<serde_json::Value> = result.take(0)?;
         Ok(rows
             .into_iter()
             .filter_map(|v| {
-                let path = v.get("project_path")?.as_str()?.to_string();
+                let path = v.get("repo_path")?.as_str()?.to_string();
                 let addr = v.get("lane_address")?.as_str()?.to_string();
                 Some((path, addr))
             })
             .collect())
     }
 
-    /// active lane を削除する (project remove 時の presence 回収、 §4.6 含有=所有=寿命)。
-    pub async fn delete_active_lane(&self, project_path: &str) -> Result<()> {
+    /// active lane を削除する (repo remove 時の presence 回収、 §4.6 含有=所有=寿命)。
+    pub async fn delete_active_lane(&self, repo_path: &str) -> Result<()> {
         self.db
-            .query("DELETE FROM active_lane WHERE project_path = $path")
-            .bind(("path", project_path.to_string()))
+            .query("DELETE FROM active_lane WHERE repo_path = $path")
+            .bind(("path", repo_path.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("active_lane 削除失敗: {}", e))?
             .check()
@@ -525,25 +528,25 @@ impl VpDb {
     }
 
     // =========================================================================
-    // Project Host 帳簿①: 開発起点ポインタ (doc 44 D4)。
+    // Repo Host 帳簿①: 開発起点ポインタ (doc 44 D4)。
     //
-    // active_lane (注視) と形は同じ 1-project-1-row だが意味が違う (D5 が分けた
+    // active_lane (注視) と形は同じ 1-repo-1-row だが意味が違う (D5 が分けた
     // 「注視の切替」と「起点の再指定」)。値が **lane_id** なのは rename 耐性のため。
     // =========================================================================
 
-    /// 開発起点ポインタを upsert する (project_path → lane_id)。
-    pub async fn upsert_host_origin(&self, project_path: &str, lane_id: &str) -> Result<()> {
+    /// 開発起点ポインタを upsert する (repo_path → lane_id)。
+    pub async fn upsert_host_origin(&self, repo_path: &str, lane_id: &str) -> Result<()> {
         self.db
             .query(
                 "INSERT INTO host_origin {
-                    project_path: $project_path,
+                    repo_path: $repo_path,
                     lane_id: $lane_id,
                     updated_at: time::now()
                 } ON DUPLICATE KEY UPDATE
                     lane_id = $input.lane_id,
                     updated_at = time::now()",
             )
-            .bind(("project_path", project_path.to_string()))
+            .bind(("repo_path", repo_path.to_string()))
             .bind(("lane_id", lane_id.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("host_origin upsert 失敗: {}", e))?
@@ -557,11 +560,11 @@ impl VpDb {
     /// `None` は「未指定」= 予約名フォールバック（[`crate::host::ledger::resolve_origin_name`]）。
     /// 指す lane が既に消えている場合も呼び出し側の解決で予約名に落ちるので、ここでは
     /// 実在検証をしない（DB は lane の生死を知らない）。
-    pub async fn get_host_origin(&self, project_path: &str) -> Result<Option<String>> {
+    pub async fn get_host_origin(&self, repo_path: &str) -> Result<Option<String>> {
         let mut result = self
             .db
-            .query("SELECT lane_id FROM host_origin WHERE project_path = $path")
-            .bind(("path", project_path.to_string()))
+            .query("SELECT lane_id FROM host_origin WHERE repo_path = $path")
+            .bind(("path", repo_path.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("host_origin 取得失敗: {}", e))?;
         let rows: Vec<serde_json::Value> = result.take(0)?;
@@ -572,14 +575,14 @@ impl VpDb {
             .map(|s| s.to_string()))
     }
 
-    /// lane の並び順を project 単位で**全置換**する（doc 44 D5）。
+    /// lane の並び順を repo 単位で**全置換**する（doc 44 D5）。
     ///
     /// 並び順は集合なので replace 型（`replace_lanes` と同じ考え方）。差分 upsert にすると
     /// 「並びから外れた lane の古い ord」が残り、次に現れた時に意図しない位置に挿さる。
-    pub async fn replace_lane_order(&self, project_path: &str, order: &[String]) -> Result<()> {
+    pub async fn replace_lane_order(&self, repo_path: &str, order: &[String]) -> Result<()> {
         self.db
-            .query("DELETE host_lane_order WHERE project_path = $p")
-            .bind(("p", project_path.to_string()))
+            .query("DELETE host_lane_order WHERE repo_path = $p")
+            .bind(("p", repo_path.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("lane 並び順の削除失敗: {}", e))?
             .check()
@@ -588,9 +591,9 @@ impl VpDb {
             self.db
                 .query(
                     "CREATE host_lane_order SET
-                        project_path = $p, lane_id = $id, ord = $ord, updated_at = time::now()",
+                        repo_path = $p, lane_id = $id, ord = $ord, updated_at = time::now()",
                 )
-                .bind(("p", project_path.to_string()))
+                .bind(("p", repo_path.to_string()))
                 .bind(("id", lane_id.clone()))
                 .bind(("ord", i as i64))
                 .await
@@ -601,15 +604,15 @@ impl VpDb {
         Ok(())
     }
 
-    /// lane の並び順を引く（`lane_id` → `ord`）。未指定 project は空。
+    /// lane の並び順を引く（`lane_id` → `ord`）。未指定 repo は空。
     pub async fn list_lane_order(
         &self,
-        project_path: &str,
+        repo_path: &str,
     ) -> Result<std::collections::HashMap<String, i64>> {
         let mut result = self
             .db
-            .query("SELECT lane_id, ord FROM host_lane_order WHERE project_path = $p")
-            .bind(("p", project_path.to_string()))
+            .query("SELECT lane_id, ord FROM host_lane_order WHERE repo_path = $p")
+            .bind(("p", repo_path.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("lane 並び順の取得失敗: {}", e))?;
         let rows: Vec<serde_json::Value> = result.take(0)?;
@@ -623,11 +626,11 @@ impl VpDb {
             .collect())
     }
 
-    /// lane の並び順を project ごと回収する（`delete_host_origin` と対、§4.6 含有=所有=寿命）。
-    pub async fn delete_lane_order_for_project(&self, project_path: &str) -> Result<()> {
+    /// lane の並び順を repo ごと回収する（`delete_host_origin` と対、§4.6 含有=所有=寿命）。
+    pub async fn delete_lane_order_for_repo(&self, repo_path: &str) -> Result<()> {
         self.db
-            .query("DELETE host_lane_order WHERE project_path = $p")
-            .bind(("p", project_path.to_string()))
+            .query("DELETE host_lane_order WHERE repo_path = $p")
+            .bind(("p", repo_path.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("lane 並び順の全削除失敗: {}", e))?
             .check()
@@ -636,7 +639,7 @@ impl VpDb {
     }
 
     // =========================================================================
-    // Project Host 帳簿③: 見送りの記録 (doc 44 §7.5 / §8.5)。
+    // Repo Host 帳簿③: 見送りの記録 (doc 44 §7.5 / §8.5)。
     //
     // 「いつ何を見送ったか」(= lane を消したので survey では復元できない) と
     // 「AskHuman がいつから何回続いているか」(= 観測の履歴なので計算できない) の 2 つ。
@@ -675,19 +678,19 @@ impl VpDb {
         })
     }
 
-    /// 継続中の滞留を引く (project × lane に高々 1 行)。
+    /// 継続中の滞留を引く (repo × lane に高々 1 行)。
     pub async fn get_open_farewell(
         &self,
-        project_path: &str,
+        repo_path: &str,
         lane_id: &str,
     ) -> Result<Option<crate::host::ledger::FarewellEntry>> {
         let mut result = self
             .db
             .query(
                 "SELECT * FROM host_farewell
-                 WHERE project_path = $p AND lane_id = $id AND ongoing = true LIMIT 1",
+                 WHERE repo_path = $p AND lane_id = $id AND ongoing = true LIMIT 1",
             )
-            .bind(("p", project_path.to_string()))
+            .bind(("p", repo_path.to_string()))
             .bind(("id", lane_id.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("host_farewell 取得失敗: {}", e))?;
@@ -698,17 +701,17 @@ impl VpDb {
     /// 帳簿に 1 行足す (滞留の起票 / 見送りの記録)。
     pub async fn create_farewell_entry(
         &self,
-        project_path: &str,
+        repo_path: &str,
         entry: &crate::host::ledger::FarewellEntry,
     ) -> Result<()> {
         self.db
             .query(
                 "CREATE host_farewell SET
-                    project_path = $p, lane_id = $id, lane_name = $name, kind = $kind,
+                    repo_path = $p, lane_id = $id, lane_name = $name, kind = $kind,
                     reason = $reason, streak = $streak,
                     first_seen_at = $first, last_seen_at = $last, ongoing = $ongoing",
             )
-            .bind(("p", project_path.to_string()))
+            .bind(("p", repo_path.to_string()))
             .bind(("id", entry.lane_id.clone()))
             .bind(("name", entry.lane_name.clone()))
             .bind(("kind", entry.kind.as_str().to_string()))
@@ -730,7 +733,7 @@ impl VpDb {
     /// (doc 44 §8.5)。`first_seen_at` も同じ理由で不変。
     pub async fn extend_open_farewell(
         &self,
-        project_path: &str,
+        repo_path: &str,
         lane_id: &str,
         streak: u32,
         reason: &str,
@@ -739,9 +742,9 @@ impl VpDb {
         self.db
             .query(
                 "UPDATE host_farewell SET streak = $streak, reason = $reason, last_seen_at = $last
-                 WHERE project_path = $p AND lane_id = $id AND ongoing = true",
+                 WHERE repo_path = $p AND lane_id = $id AND ongoing = true",
             )
-            .bind(("p", project_path.to_string()))
+            .bind(("p", repo_path.to_string()))
             .bind(("id", lane_id.to_string()))
             .bind(("streak", streak as i64))
             .bind(("reason", reason.to_string()))
@@ -756,13 +759,13 @@ impl VpDb {
     /// 継続中の滞留を閉じる (判定が判断待ちから外れた / lane を見送った)。
     ///
     /// 行は消さない — 「いつからいつまで判断待ちだったか」は履歴として残す。
-    pub async fn close_open_farewell(&self, project_path: &str, lane_id: &str) -> Result<()> {
+    pub async fn close_open_farewell(&self, repo_path: &str, lane_id: &str) -> Result<()> {
         self.db
             .query(
                 "UPDATE host_farewell SET ongoing = false
-                 WHERE project_path = $p AND lane_id = $id AND ongoing = true",
+                 WHERE repo_path = $p AND lane_id = $id AND ongoing = true",
             )
-            .bind(("p", project_path.to_string()))
+            .bind(("p", repo_path.to_string()))
             .bind(("id", lane_id.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("host_farewell 終端失敗: {}", e))?
@@ -771,15 +774,15 @@ impl VpDb {
         Ok(())
     }
 
-    /// 継続中の滞留を project 単位で列挙する (`vp lane cleanup` の滞留表示)。
+    /// 継続中の滞留を repo 単位で列挙する (`vp lane cleanup` の滞留表示)。
     pub async fn list_open_farewells(
         &self,
-        project_path: &str,
+        repo_path: &str,
     ) -> Result<Vec<crate::host::ledger::FarewellEntry>> {
         let mut result = self
             .db
-            .query("SELECT * FROM host_farewell WHERE project_path = $p AND ongoing = true")
-            .bind(("p", project_path.to_string()))
+            .query("SELECT * FROM host_farewell WHERE repo_path = $p AND ongoing = true")
+            .bind(("p", repo_path.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("host_farewell 滞留取得失敗: {}", e))?;
         let rows: Vec<serde_json::Value> = result.take(0)?;
@@ -789,13 +792,13 @@ impl VpDb {
     /// 帳簿を新しい順に読む (`vp lane history`)。`limit` 0 は無制限。
     pub async fn list_farewell_entries(
         &self,
-        project_path: &str,
+        repo_path: &str,
         limit: usize,
     ) -> Result<Vec<crate::host::ledger::FarewellEntry>> {
         let mut result = self
             .db
-            .query("SELECT * FROM host_farewell WHERE project_path = $p ORDER BY last_seen_at DESC")
-            .bind(("p", project_path.to_string()))
+            .query("SELECT * FROM host_farewell WHERE repo_path = $p ORDER BY last_seen_at DESC")
+            .bind(("p", repo_path.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("host_farewell 履歴取得失敗: {}", e))?;
         let rows: Vec<serde_json::Value> = result.take(0)?;
@@ -807,11 +810,11 @@ impl VpDb {
         Ok(entries)
     }
 
-    /// 見送りの記録を project ごと回収する (`delete_host_origin` と対、§4.6 含有=所有=寿命)。
-    pub async fn delete_farewell_entries_for_project(&self, project_path: &str) -> Result<()> {
+    /// 見送りの記録を repo ごと回収する (`delete_host_origin` と対、§4.6 含有=所有=寿命)。
+    pub async fn delete_farewell_entries_for_repo(&self, repo_path: &str) -> Result<()> {
         self.db
-            .query("DELETE host_farewell WHERE project_path = $p")
-            .bind(("p", project_path.to_string()))
+            .query("DELETE host_farewell WHERE repo_path = $p")
+            .bind(("p", repo_path.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("host_farewell 全削除失敗: {}", e))?
             .check()
@@ -819,11 +822,11 @@ impl VpDb {
         Ok(())
     }
 
-    /// 開発起点ポインタを削除する (project remove 時の回収、`delete_active_lane` と対)。
-    pub async fn delete_host_origin(&self, project_path: &str) -> Result<()> {
+    /// 開発起点ポインタを削除する (repo remove 時の回収、`delete_active_lane` と対)。
+    pub async fn delete_host_origin(&self, repo_path: &str) -> Result<()> {
         self.db
-            .query("DELETE FROM host_origin WHERE project_path = $path")
-            .bind(("path", project_path.to_string()))
+            .query("DELETE FROM host_origin WHERE repo_path = $path")
+            .bind(("path", repo_path.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("host_origin 削除失敗: {}", e))?
             .check()
@@ -832,35 +835,35 @@ impl VpDb {
     }
 
     // =========================================================================
-    // Lane descriptor (doc 24 §10 Phase 2: LanePool authority 反転 SP→daemon)。
-    // SP push の cache だった lane_registry を daemon-canonical な durable truth に。
-    // SP disconnect では drop せず、 daemon 再起動は db から re-animate する (§3.3 / §4.1)。
+    // Lane descriptor (doc 24 §10 Phase 2: LanePool authority 反転 repo→daemon)。
+    // repo push の cache だった lane_registry を daemon-canonical な durable truth に。
+    // repo disconnect では drop せず、 daemon 再起動は db から re-animate する (§3.3 / §4.1)。
     // =========================================================================
 
-    /// 1 lane descriptor を upsert する (SP の Diff::Add / Diff::Update 反映)。
+    /// 1 lane descriptor を upsert する (repo の Diff::Add / Diff::Update 反映)。
     ///
-    /// (project_path, address) 複合 key で一意。 ON DUPLICATE の composite 挙動に依存せず、
+    /// (repo_path, address) 複合 key で一意。 ON DUPLICATE の composite 挙動に依存せず、
     /// DELETE→CREATE を 1 query (= 中間状態を他読みに晒さない) で行う。 info は LaneInfo を
     /// 丸ごと JSON object 化して持つ (descriptor truth)。
     pub async fn upsert_lane(
         &self,
-        project_path: &str,
-        lane: &crate::process::lanes_state::LaneInfo,
+        repo_path: &str,
+        lane: &crate::repo::lanes_state::LaneInfo,
     ) -> Result<()> {
         let address = lane.address.to_string();
         let descriptor = serde_json::to_value(lane)
             .map_err(|e| anyhow::anyhow!("lane descriptor serialize 失敗: {}", e))?;
         self.db
             .query(
-                "DELETE lane WHERE project_path = $p AND address = $a;
+                "DELETE lane WHERE repo_path = $p AND address = $a;
                  CREATE lane CONTENT {
-                    project_path: $p,
+                    repo_path: $p,
                     address: $a,
                     descriptor: $descriptor,
                     updated_at: time::now()
                  }",
             )
-            .bind(("p", project_path.to_string()))
+            .bind(("p", repo_path.to_string()))
             .bind(("a", address))
             .bind(("descriptor", descriptor))
             .await
@@ -870,11 +873,11 @@ impl VpDb {
         Ok(())
     }
 
-    /// 1 lane descriptor を削除する (SP の Diff::Remove 反映 / 単一 lane の destroy)。
-    pub async fn delete_lane(&self, project_path: &str, address: &str) -> Result<()> {
+    /// 1 lane descriptor を削除する (repo の Diff::Remove 反映 / 単一 lane の destroy)。
+    pub async fn delete_lane(&self, repo_path: &str, address: &str) -> Result<()> {
         self.db
-            .query("DELETE lane WHERE project_path = $p AND address = $a")
-            .bind(("p", project_path.to_string()))
+            .query("DELETE lane WHERE repo_path = $p AND address = $a")
+            .bind(("p", repo_path.to_string()))
             .bind(("a", address.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("lane 削除失敗: {}", e))?
@@ -883,55 +886,54 @@ impl VpDb {
         Ok(())
     }
 
-    /// 1 project の lane descriptor を全削除する (project remove 時の回収、 §4.6 含有=所有=寿命)。
-    pub async fn delete_lanes_for_project(&self, project_path: &str) -> Result<()> {
+    /// 1 repo の lane descriptor を全削除する (repo remove 時の回収、 §4.6 含有=所有=寿命)。
+    pub async fn delete_lanes_for_repo(&self, repo_path: &str) -> Result<()> {
         self.db
-            .query("DELETE lane WHERE project_path = $p")
-            .bind(("p", project_path.to_string()))
+            .query("DELETE lane WHERE repo_path = $p")
+            .bind(("p", repo_path.to_string()))
             .await
-            .map_err(|e| anyhow::anyhow!("project lane 全削除失敗: {}", e))?
+            .map_err(|e| anyhow::anyhow!("repo lane 全削除失敗: {}", e))?
             .check()
-            .map_err(|e| anyhow::anyhow!("project lane 全削除エラー: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("repo lane 全削除エラー: {}", e))?;
         Ok(())
     }
 
-    /// 1 project の lane descriptor を snapshot で全置換する (SP register snapshot 反映)。
+    /// 1 repo の lane descriptor を snapshot で全置換する (repo register snapshot 反映)。
     ///
-    /// snapshot は「その時点の SP の全 lane」なので、 既存を消してから入れ直す project 単位
+    /// snapshot は「その時点の repo の全 lane」なので、 既存を消してから入れ直す repo 単位
     /// replace 型 (active_lane の高頻度 1 行 upsert と違い、 lane は集合なので全置換が自然)。
-    pub async fn replace_lanes_for_project(
+    pub async fn replace_lanes_for_repo(
         &self,
-        project_path: &str,
-        lanes: &[crate::process::lanes_state::LaneInfo],
+        repo_path: &str,
+        lanes: &[crate::repo::lanes_state::LaneInfo],
     ) -> Result<()> {
-        self.delete_lanes_for_project(project_path).await?;
+        self.delete_lanes_for_repo(repo_path).await?;
         for lane in lanes {
-            self.upsert_lane(project_path, lane).await?;
+            self.upsert_lane(repo_path, lane).await?;
         }
         Ok(())
     }
 
-    /// 全 lane descriptor を (project_path, LaneInfo) で返す (boot 時の load 用)。
+    /// 全 lane descriptor を (repo_path, LaneInfo) で返す (boot 時の load 用)。
     ///
     /// list_processes と同じく serde_json::Value で受け、 info object を LaneInfo に
     /// deserialize する。 壊れた行は warn して skip (boot を止めない、 §4.6 ゆるやか統治)。
-    pub async fn list_lanes(&self) -> Result<Vec<(String, crate::process::lanes_state::LaneInfo)>> {
+    pub async fn list_lanes(&self) -> Result<Vec<(String, crate::repo::lanes_state::LaneInfo)>> {
         let mut result = self
             .db
-            .query("SELECT project_path, descriptor FROM lane")
+            .query("SELECT repo_path, descriptor FROM lane")
             .await
             .map_err(|e| anyhow::anyhow!("lane 取得失敗: {}", e))?;
         let rows: Vec<serde_json::Value> = result.take(0)?;
         let mut out = Vec::with_capacity(rows.len());
         for v in rows {
-            let Some(path) = v.get("project_path").and_then(|x| x.as_str()) else {
+            let Some(path) = v.get("repo_path").and_then(|x| x.as_str()) else {
                 continue;
             };
             let Some(desc_val) = v.get("descriptor") else {
                 continue;
             };
-            match serde_json::from_value::<crate::process::lanes_state::LaneInfo>(desc_val.clone())
-            {
+            match serde_json::from_value::<crate::repo::lanes_state::LaneInfo>(desc_val.clone()) {
                 Ok(info) => out.push((path.to_string(), info)),
                 Err(e) => tracing::warn!("lane descriptor deserialize 失敗 (skip): {}", e),
             }
@@ -941,32 +943,32 @@ impl VpDb {
 
     // =========================================================================
     // Lane lifecycle (doc 24 §4.6: durable lifecycle state machine、 軽量 WAL)。
-    // descriptor (lane table) とは別 table — SP push に clobber されない daemon-internal。
+    // descriptor (lane table) とは別 table — repo push に clobber されない daemon-internal。
     // =========================================================================
 
     /// lane の lifecycle を upsert する (provisioning / ready / dead)。
     ///
     /// team-b #2: active_lane が `INSERT ON DUPLICATE KEY UPDATE` (単一 key) なのに対し、 lane 系は
-    /// **複合 key (project_path, address)** で ON DUPLICATE の発火が不確実なため DELETE+CREATE を使う
+    /// **複合 key (repo_path, address)** で ON DUPLICATE の発火が不確実なため DELETE+CREATE を使う
     /// (upsert_lane / lane table と同方針)。 2 statement は単一 `query()` = 1 transaction で
     /// atomic に走る (DELETE 後 CREATE 前に row が消える窓は無い)。
     pub async fn upsert_lane_lifecycle(
         &self,
-        project_path: &str,
+        repo_path: &str,
         address: &str,
         lifecycle: &str,
     ) -> Result<()> {
         self.db
             .query(
-                "DELETE lane_lifecycle WHERE project_path = $p AND address = $a;
+                "DELETE lane_lifecycle WHERE repo_path = $p AND address = $a;
                  CREATE lane_lifecycle CONTENT {
-                    project_path: $p,
+                    repo_path: $p,
                     address: $a,
                     lifecycle: $lc,
                     updated_at: time::now()
                  }",
             )
-            .bind(("p", project_path.to_string()))
+            .bind(("p", repo_path.to_string()))
             .bind(("a", address.to_string()))
             .bind(("lc", lifecycle.to_string()))
             .await
@@ -976,18 +978,18 @@ impl VpDb {
         Ok(())
     }
 
-    /// 全 lane lifecycle を (project_path, address, lifecycle) で返す (boot reconcile 用)。
+    /// 全 lane lifecycle を (repo_path, address, lifecycle) で返す (boot reconcile 用)。
     pub async fn list_lane_lifecycles(&self) -> Result<Vec<(String, String, String)>> {
         let mut result = self
             .db
-            .query("SELECT project_path, address, lifecycle FROM lane_lifecycle")
+            .query("SELECT repo_path, address, lifecycle FROM lane_lifecycle")
             .await
             .map_err(|e| anyhow::anyhow!("lane_lifecycle 取得失敗: {}", e))?;
         let rows: Vec<serde_json::Value> = result.take(0)?;
         Ok(rows
             .into_iter()
             .filter_map(|v| {
-                let p = v.get("project_path")?.as_str()?.to_string();
+                let p = v.get("repo_path")?.as_str()?.to_string();
                 let a = v.get("address")?.as_str()?.to_string();
                 let lc = v.get("lifecycle")?.as_str()?.to_string();
                 Some((p, a, lc))
@@ -996,10 +998,10 @@ impl VpDb {
     }
 
     /// 1 lane の lifecycle を削除 (lane destroy / lifecycle 回収)。
-    pub async fn delete_lane_lifecycle(&self, project_path: &str, address: &str) -> Result<()> {
+    pub async fn delete_lane_lifecycle(&self, repo_path: &str, address: &str) -> Result<()> {
         self.db
-            .query("DELETE lane_lifecycle WHERE project_path = $p AND address = $a")
-            .bind(("p", project_path.to_string()))
+            .query("DELETE lane_lifecycle WHERE repo_path = $p AND address = $a")
+            .bind(("p", repo_path.to_string()))
             .bind(("a", address.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("lane_lifecycle 削除失敗: {}", e))?
@@ -1008,19 +1010,19 @@ impl VpDb {
         Ok(())
     }
 
-    /// 1 project の lane lifecycle を全削除 (project remove 時の回収、 §4.6 含有=所有=寿命)。
-    pub async fn delete_lane_lifecycles_for_project(&self, project_path: &str) -> Result<()> {
+    /// 1 repo の lane lifecycle を全削除 (repo remove 時の回収、 §4.6 含有=所有=寿命)。
+    pub async fn delete_lane_lifecycles_for_repo(&self, repo_path: &str) -> Result<()> {
         self.db
-            .query("DELETE lane_lifecycle WHERE project_path = $p")
-            .bind(("p", project_path.to_string()))
+            .query("DELETE lane_lifecycle WHERE repo_path = $p")
+            .bind(("p", repo_path.to_string()))
             .await
-            .map_err(|e| anyhow::anyhow!("project lane_lifecycle 全削除失敗: {}", e))?
+            .map_err(|e| anyhow::anyhow!("repo lane_lifecycle 全削除失敗: {}", e))?
             .check()
-            .map_err(|e| anyhow::anyhow!("project lane_lifecycle 全削除エラー: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("repo lane_lifecycle 全削除エラー: {}", e))?;
         Ok(())
     }
 
-    /// 全プロセスを削除（TheWorld 再起動時のクリーンアップ用）
+    /// 全プロセスを削除（daemon 再起動時のクリーンアップ用）
     pub async fn clear_all_processes(&self) -> Result<()> {
         self.db
             .query("DELETE FROM processes")
@@ -1032,11 +1034,11 @@ impl VpDb {
     }
 
     // =========================================================================
-    // Projects CRUD（PoC: VP-188 revert、 db/world 真実源 + projects.kdl 一方向 export）
+    // Repos CRUD（PoC: VP-188 revert、 db/machine 真実源 + repos.kdl 一方向 export）
     // =========================================================================
 
-    /// 登録 project を UPSERT（path で一意）。 ord = sidebar 並び順。
-    pub async fn upsert_project(
+    /// 登録 repo を UPSERT（path で一意）。 ord = sidebar 並び順。
+    pub async fn upsert_repo(
         &self,
         path: &str,
         name: &str,
@@ -1046,7 +1048,7 @@ impl VpDb {
     ) -> Result<()> {
         self.db
             .query(
-                "INSERT INTO projects {
+                "INSERT INTO repos {
                     path: $path,
                     name: $name,
                     enabled: $enabled,
@@ -1064,41 +1066,41 @@ impl VpDb {
             .bind(("slot", slot.map(|s| s as i64)))
             .bind(("ord", ord))
             .await
-            .map_err(|e| anyhow::anyhow!("project upsert 失敗: {}", e))?
+            .map_err(|e| anyhow::anyhow!("repo upsert 失敗: {}", e))?
             .check()
-            .map_err(|e| anyhow::anyhow!("project upsert エラー: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("repo upsert エラー: {}", e))?;
         Ok(())
     }
 
-    /// 登録 project を削除（path で特定）。
-    pub async fn delete_project(&self, path: &str) -> Result<()> {
+    /// 登録 repo を削除（path で特定）。
+    pub async fn delete_repo(&self, path: &str) -> Result<()> {
         self.db
-            .query("DELETE FROM projects WHERE path = $path")
+            .query("DELETE FROM repos WHERE path = $path")
             .bind(("path", path.to_string()))
             .await
-            .map_err(|e| anyhow::anyhow!("project 削除失敗: {}", e))?
+            .map_err(|e| anyhow::anyhow!("repo 削除失敗: {}", e))?
             .check()
-            .map_err(|e| anyhow::anyhow!("project 削除エラー: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("repo 削除エラー: {}", e))?;
         Ok(())
     }
 
-    /// 登録 project 一覧を ord 昇順（= sidebar 並び順）で取得。
-    pub async fn list_projects(&self) -> Result<Vec<serde_json::Value>> {
+    /// 登録 repo 一覧を ord 昇順（= sidebar 並び順）で取得。
+    pub async fn list_repos(&self) -> Result<Vec<serde_json::Value>> {
         let mut result = self
             .db
-            .query("SELECT * FROM projects ORDER BY ord ASC")
+            .query("SELECT * FROM repos ORDER BY ord ASC")
             .await
-            .map_err(|e| anyhow::anyhow!("projects 取得失敗: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("repos 取得失敗: {}", e))?;
         let records: Vec<serde_json::Value> = result.take(0)?;
         Ok(records)
     }
 
-    /// DB の projects を ProjectEntry 列に export（ord 昇順、 PoC: 一方向 export）。
-    pub async fn export_projects(&self) -> Result<Vec<crate::projects_file::ProjectEntry>> {
-        let rows = self.list_projects().await?;
+    /// DB の repos を RepoEntry 列に export（ord 昇順、 PoC: 一方向 export）。
+    pub async fn export_repos(&self) -> Result<Vec<crate::repos_file::RepoEntry>> {
+        let rows = self.list_repos().await?;
         Ok(rows
             .iter()
-            .map(|v| crate::projects_file::ProjectEntry {
+            .map(|v| crate::repos_file::RepoEntry {
                 name: v
                     .get("name")
                     .and_then(|x| x.as_str())
@@ -1115,47 +1117,41 @@ impl VpDb {
             .collect())
     }
 
-    /// ProjectEntry 列を DB に import（出現順を ord に焼く、 PoC: 復旧用）。
-    pub async fn import_projects(
-        &self,
-        entries: &[crate::projects_file::ProjectEntry],
-    ) -> Result<()> {
+    /// RepoEntry 列を DB に import（出現順を ord に焼く、 PoC: 復旧用）。
+    pub async fn import_repos(&self, entries: &[crate::repos_file::RepoEntry]) -> Result<()> {
         for (i, e) in entries.iter().enumerate() {
-            self.upsert_project(&e.path, &e.name, e.enabled, e.slot, i as i64)
+            self.upsert_repo(&e.path, &e.name, e.enabled, e.slot, i as i64)
                 .await?;
         }
         Ok(())
     }
 
-    /// projects テーブルを `entries` で全置換する（DELETE → import、 ord = 出現順）。
+    /// repos テーブルを `entries` で全置換する（DELETE → import、 ord = 出現順）。
     ///
-    /// `persist_projects` の全置換セマンティクスを 1 メソッドに閉じる。 in-memory を真実源として
-    /// DB を上書きするため、 in-memory から消えた project は DB からも消える (= upsert のみでは
+    /// `persist_repos` の全置換セマンティクスを 1 メソッドに閉じる。 in-memory を真実源として
+    /// DB を上書きするため、 in-memory から消えた repo は DB からも消える (= upsert のみでは
     /// 残ってしまう削除分を確実に反映)。
     ///
-    /// DELETE と import の間に空を読む窓が理論上あるが、 World は単一プロセスで reload/persist を
+    /// DELETE と import の間に空を読む窓が理論上あるが、 daemon は単一プロセスで reload/persist を
     /// 直列実行するため実害なし。 完全な単一トランザクション化は follow-up (epic memory のリスク表)。
-    pub async fn replace_all_projects(
-        &self,
-        entries: &[crate::projects_file::ProjectEntry],
-    ) -> Result<()> {
+    pub async fn replace_all_repos(&self, entries: &[crate::repos_file::RepoEntry]) -> Result<()> {
         self.db
-            .query("DELETE FROM projects")
+            .query("DELETE FROM repos")
             .await
-            .map_err(|e| anyhow::anyhow!("projects 全削除失敗: {}", e))?
+            .map_err(|e| anyhow::anyhow!("repos 全削除失敗: {}", e))?
             .check()
-            .map_err(|e| anyhow::anyhow!("projects 全削除エラー: {}", e))?;
-        self.import_projects(entries).await
+            .map_err(|e| anyhow::anyhow!("repos 全削除エラー: {}", e))?;
+        self.import_repos(entries).await
     }
 
     // =========================================================================
     // Pane Contents CRUD（Canvas ペイン状態の永続化）
     // =========================================================================
 
-    /// ペイン状態を保存（UPSERT: project_path + pane_id で一意）
+    /// ペイン状態を保存（UPSERT: repo_path + pane_id で一意）
     pub async fn upsert_pane_content(
         &self,
-        project_path: &str,
+        repo_path: &str,
         pane_id: &str,
         content_type: &str,
         content: &str,
@@ -1163,11 +1159,11 @@ impl VpDb {
     ) -> Result<()> {
         // lane_name='' (= conductor sentinel) の row として upsert。 新 schema (lane_name/stack/ui_state) は
         // ON DUPLICATE KEY UPDATE 句で **触らない** — 旧 caller (= 純粋な content / title 更新)
-        // が PP Canvas Stack の stack / ui_state を巻き戻さないようにする。
+        // が board Canvas Stack の stack / ui_state を巻き戻さないようにする。
         self.db
             .query(
                 "INSERT INTO pane_contents {
-                    project_path: $project_path,
+                    repo_path: $repo_path,
                     pane_id: $pane_id,
                     lane_name: '',
                     content_type: $content_type,
@@ -1180,7 +1176,7 @@ impl VpDb {
                     title = $input.title,
                     updated_at = time::now()",
             )
-            .bind(("project_path", project_path.to_string()))
+            .bind(("repo_path", repo_path.to_string()))
             .bind(("pane_id", pane_id.to_string()))
             .bind(("content_type", content_type.to_string()))
             .bind(("content", content.to_string()))
@@ -1192,18 +1188,18 @@ impl VpDb {
         Ok(())
     }
 
-    /// PP Canvas Stack Model の lane scope な永続状態を upsert する (= doc 19 + pp-content-persist)。
+    /// board Canvas Stack Model の lane scope な永続状態を upsert する (= doc 19 + pp-content-persist)。
     ///
     /// - `lane_name`: None なら conductor (= 内部で `''` sentinel)、 Some(name) なら performer。 UNIQUE INDEX は
-    ///   (project_path, lane_name, pane_id) のため root/performer は別 record として独立。
+    ///   (repo_path, lane_name, pane_id) のため root/performer は別 record として独立。
     /// - `stack`: Canvas Stack (= items + cursor + capacity)。 None なら未保存。
     /// - `ui_state`: visibility/collapsed/サイズ等。 None なら未保存。
     /// - `content` / `content_type` / `title` は **現在 main pane で render 中の item の reflection**
     ///   (= 旧 caller 互換)。 stack が主、 content は seek 用 fallback。
     #[allow(clippy::too_many_arguments)] // pane_contents の field count に追従、 caller (route handler) も flat に展開する
-    pub async fn upsert_pp_state(
+    pub async fn upsert_board_state(
         &self,
-        project_path: &str,
+        repo_path: &str,
         lane_name: Option<&str>,
         pane_id: &str,
         content_type: &str,
@@ -1217,7 +1213,7 @@ impl VpDb {
         self.db
             .query(
                 "INSERT INTO pane_contents {
-                    project_path: $project_path,
+                    repo_path: $repo_path,
                     pane_id: $pane_id,
                     lane_name: $lane_name,
                     content_type: $content_type,
@@ -1234,7 +1230,7 @@ impl VpDb {
                     ui_state = $input.ui_state,
                     updated_at = time::now()",
             )
-            .bind(("project_path", project_path.to_string()))
+            .bind(("repo_path", repo_path.to_string()))
             .bind(("pane_id", pane_id.to_string()))
             .bind(("lane_name", lane_sentinel.to_string()))
             .bind(("content_type", content_type.to_string()))
@@ -1243,18 +1239,18 @@ impl VpDb {
             .bind(("stack", stack.cloned()))
             .bind(("ui_state", ui_state.cloned()))
             .await
-            .map_err(|e| anyhow::anyhow!("pp_state upsert 失敗: {}", e))?
+            .map_err(|e| anyhow::anyhow!("board_state upsert 失敗: {}", e))?
             .check()
-            .map_err(|e| anyhow::anyhow!("pp_state upsert エラー: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("board_state upsert エラー: {}", e))?;
         Ok(())
     }
 
-    /// 特定 (project_path, lane_name, pane_id) の PP state を 1 件取得。 不在なら Ok(None)。
+    /// 特定 (repo_path, lane_name, pane_id) の board state を 1 件取得。 不在なら Ok(None)。
     ///
     /// 旧 record (= lane_name field なし) は schema DEFAULT '' で self-heal され、 conductor として読める。
-    pub async fn load_pp_state(
+    pub async fn load_board_state(
         &self,
-        project_path: &str,
+        repo_path: &str,
         lane_name: Option<&str>,
         pane_id: &str,
     ) -> Result<Option<serde_json::Value>> {
@@ -1263,16 +1259,16 @@ impl VpDb {
             .db
             .query(
                 "SELECT * FROM pane_contents
-                 WHERE project_path = $path
+                 WHERE repo_path = $path
                    AND pane_id = $pane_id
                    AND lane_name = $lane
                  LIMIT 1",
             )
-            .bind(("path", project_path.to_string()))
+            .bind(("path", repo_path.to_string()))
             .bind(("pane_id", pane_id.to_string()))
             .bind(("lane", lane_sentinel.to_string()))
             .await
-            .map_err(|e| anyhow::anyhow!("pp_state load 失敗: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("board_state load 失敗: {}", e))?;
         let mut records: Vec<serde_json::Value> = result.take(0)?;
         Ok(records.pop())
     }
@@ -1280,10 +1276,10 @@ impl VpDb {
     // =========================================================================
     // board モデル (2026-07-15): scope 別 Canvas board の CRUD
     //
-    // board = PP Canvas に show した item の scope 別永続リスト（SP が唯一の truth を持つ）。
+    // board = board Canvas に show した item の scope 別永続リスト（repo が唯一の truth を持つ）。
     // stack = { items: [...新→古], cursor: <id|NONE> } を pane_contents.stack に保存する。
-    // キーは (project_path, scope, lane_name, pane_id)。 lane board は lane_name で lane ごとに
-    // 分離、 proj board は lane_name='' (project 共有)。
+    // キーは (repo_path, scope, lane_name, pane_id)。 lane board は lane_name で lane ごとに
+    // 分離、 proj board は lane_name='' (repo 共有)。
     // =========================================================================
 
     /// board に item を atomic に head-push する（= mcp__show 着信 1 件）。
@@ -1292,11 +1288,11 @@ impl VpDb {
     ///   cursor を新 item に更新する。
     /// - RMW を避け ON DUPLICATE KEY UPDATE 内の array 関数で atomic に行う
     ///   （人/agent が連続 show した際の read-modify-write race を排除）。
-    /// - `item` は webview の CanvasItem 形（camelCase: id/content/contentType/title/createdAt）。
+    /// - `item` は webview の BoardItem 形（camelCase: id/content/contentType/title/createdAt）。
     ///   top-level content/content_type/title は「現在 main で見せる item の reflection」(seek fallback)。
     pub async fn append_board_item(
         &self,
-        project_path: &str,
+        repo_path: &str,
         scope: &str,
         lane_name: &str,
         pane_id: &str,
@@ -1325,7 +1321,7 @@ impl VpDb {
         self.db
             .query(
                 "INSERT INTO pane_contents {
-                    project_path: $project_path,
+                    repo_path: $repo_path,
                     scope: $scope,
                     lane_name: $lane_name,
                     pane_id: $pane_id,
@@ -1337,14 +1333,21 @@ impl VpDb {
                 } ON DUPLICATE KEY UPDATE
                     stack = {
                         items: array::slice(array::prepend(stack.items ?? [], $item), 0, $cap),
-                        cursor: $item_id
+                        -- cursor 据え置き（scrollback）は 3 条件を全て満たすときだけ: (1) NONE でない
+                        -- (2) 旧 head でない（head を見ていたら follow）(3) capacity trim 後も生き残る。
+                        -- (3) が無いと、最古 item を pin した状態で show が来ると cursor が指す item が
+                        -- evict されて孤児化し主画面が無言で空白化する（team-b review, doc 52 §5「流されない」に反する）。
+                        cursor: IF stack.cursor IS NOT NONE
+                            AND stack.cursor != (stack.items ?? [])[0].id
+                            AND stack.cursor IN array::slice(array::prepend(stack.items ?? [], $item), 0, $cap).id
+                            THEN stack.cursor ELSE $item_id END
                     },
                     content_type = $input.content_type,
                     content = $input.content,
                     title = $input.title,
                     updated_at = time::now()",
             )
-            .bind(("project_path", project_path.to_string()))
+            .bind(("repo_path", repo_path.to_string()))
             .bind(("scope", scope.to_string()))
             .bind(("lane_name", lane_name.to_string()))
             .bind(("pane_id", pane_id.to_string()))
@@ -1365,7 +1368,7 @@ impl VpDb {
     /// 削除後の先頭（最新）に fallback、 空なら NONE。
     pub async fn delete_board_item(
         &self,
-        project_path: &str,
+        repo_path: &str,
         scope: &str,
         lane_name: &str,
         pane_id: &str,
@@ -1380,10 +1383,10 @@ impl VpDb {
                         ELSE stack.cursor END,
                     stack.items = array::filter(stack.items ?? [], |$it| $it.id != $item_id),
                     updated_at = time::now()
-                 WHERE project_path = $path AND scope = $scope
+                 WHERE repo_path = $path AND scope = $scope
                    AND lane_name = $lane AND pane_id = $pane_id",
             )
-            .bind(("path", project_path.to_string()))
+            .bind(("path", repo_path.to_string()))
             .bind(("scope", scope.to_string()))
             .bind(("lane", lane_name.to_string()))
             .bind(("pane_id", pane_id.to_string()))
@@ -1395,10 +1398,104 @@ impl VpDb {
         Ok(())
     }
 
+    /// board の item を id で **in-place 置換**する（= mcp__update、doc 52 §5）。
+    ///
+    /// stack 内の id 一致 item の content / contentType だけ差し替え、 id / title / createdAt は
+    /// 保つ（計器の更新 = 位置も生成時刻も動かさない。fresh 判定 createdAt<BOOT_TS のままなので
+    /// focus を奪わない）。cursor が対象を指していれば top-level reflection も更新する。
+    /// id 不一致は array::map が no-op（呼び出し側が事前に存在確認して loud error にする）。
+    // (repo_path, scope, lane_name, pane_id) の board-key 4 分割は sibling（append/delete）と
+    // 揃えているため、item_id + content + content_type を足すと 8 引数になる。bundle すると
+    // 兄弟と不整合になるので許容する。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_board_item(
+        &self,
+        repo_path: &str,
+        scope: &str,
+        lane_name: &str,
+        pane_id: &str,
+        item_id: &str,
+        content: &str,
+        content_type: &str,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "UPDATE pane_contents SET
+                    stack.items = array::map(stack.items ?? [], |$it|
+                        IF $it.id = $item_id
+                        THEN {
+                            id: $it.id,
+                            content: $content,
+                            contentType: $content_type,
+                            title: $it.title,
+                            createdAt: $it.createdAt,
+                            updatedAt: $updated_at
+                        }
+                        ELSE $it END),
+                    content = IF stack.cursor = $item_id THEN $content ELSE content END,
+                    content_type = IF stack.cursor = $item_id THEN $content_type ELSE content_type END,
+                    updated_at = time::now()
+                 WHERE repo_path = $path AND scope = $scope
+                   AND lane_name = $lane AND pane_id = $pane_id",
+            )
+            .bind(("path", repo_path.to_string()))
+            .bind(("scope", scope.to_string()))
+            .bind(("lane", lane_name.to_string()))
+            .bind(("pane_id", pane_id.to_string()))
+            .bind(("item_id", item_id.to_string()))
+            .bind(("content", content.to_string()))
+            .bind(("content_type", content_type.to_string()))
+            // updatedAt は RFC3339 文字列で stamp（show の createdAt と型を揃える = 額縁が
+            // 一様に parse できる。time::now() の datetime 型だと read 時に型がばらつく）。
+            .bind(("updated_at", chrono::Utc::now().to_rfc3339()))
+            .await
+            .map_err(|e| anyhow::anyhow!("board update 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("board update エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// board の cursor（= 注視 = main に出す item）を id で更新する（doc 52 §5 — cursor の
+    /// server 昇格。thumbnail click / scrollback で mako の注視を repo truth にする）。
+    ///
+    /// cursor が指す item の content / contentType を top-level reflection にも写す
+    /// （update_board_item の cursor 一致時と同じ扱い）。存在確認は呼び出し側が read-first で
+    /// 行う（無い id を渡すと WHERE の item 条件で no-op になり cursor は動かない = 安全側）。
+    pub async fn set_board_cursor(
+        &self,
+        repo_path: &str,
+        scope: &str,
+        lane_name: &str,
+        pane_id: &str,
+        item_id: &str,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "UPDATE pane_contents SET
+                    stack.cursor = $item_id,
+                    content = (array::filter(stack.items ?? [], |$it| $it.id = $item_id)[0].content) ?? content,
+                    content_type = (array::filter(stack.items ?? [], |$it| $it.id = $item_id)[0].contentType) ?? content_type,
+                    updated_at = time::now()
+                 WHERE repo_path = $path AND scope = $scope
+                   AND lane_name = $lane AND pane_id = $pane_id
+                   AND $item_id IN (stack.items ?? []).id",
+            )
+            .bind(("path", repo_path.to_string()))
+            .bind(("scope", scope.to_string()))
+            .bind(("lane", lane_name.to_string()))
+            .bind(("pane_id", pane_id.to_string()))
+            .bind(("item_id", item_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("board set_cursor 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("board set_cursor エラー: {}", e))?;
+        Ok(())
+    }
+
     /// board を空にする（= mcp__clear / Clear ボタン）。
     pub async fn clear_board(
         &self,
-        project_path: &str,
+        repo_path: &str,
         scope: &str,
         lane_name: &str,
         pane_id: &str,
@@ -1409,10 +1506,10 @@ impl VpDb {
                     stack = { items: [], cursor: NONE },
                     content = '', title = NONE,
                     updated_at = time::now()
-                 WHERE project_path = $path AND scope = $scope
+                 WHERE repo_path = $path AND scope = $scope
                    AND lane_name = $lane AND pane_id = $pane_id",
             )
-            .bind(("path", project_path.to_string()))
+            .bind(("path", repo_path.to_string()))
             .bind(("scope", scope.to_string()))
             .bind(("lane", lane_name.to_string()))
             .bind(("pane_id", pane_id.to_string()))
@@ -1423,10 +1520,10 @@ impl VpDb {
         Ok(())
     }
 
-    /// 特定 (project_path, scope, lane_name, pane_id) の board を 1 件取得。 不在なら Ok(None)。
+    /// 特定 (repo_path, scope, lane_name, pane_id) の board を 1 件取得。 不在なら Ok(None)。
     pub async fn load_board(
         &self,
-        project_path: &str,
+        repo_path: &str,
         scope: &str,
         lane_name: &str,
         pane_id: &str,
@@ -1435,11 +1532,11 @@ impl VpDb {
             .db
             .query(
                 "SELECT * FROM pane_contents
-                 WHERE project_path = $path AND scope = $scope
+                 WHERE repo_path = $path AND scope = $scope
                    AND lane_name = $lane AND pane_id = $pane_id
                  LIMIT 1",
             )
-            .bind(("path", project_path.to_string()))
+            .bind(("path", repo_path.to_string()))
             .bind(("scope", scope.to_string()))
             .bind(("lane", lane_name.to_string()))
             .bind(("pane_id", pane_id.to_string()))
@@ -1449,23 +1546,23 @@ impl VpDb {
         Ok(records.pop())
     }
 
-    /// プロジェクトの全ペイン状態を取得
-    pub async fn list_pane_contents(&self, project_path: &str) -> Result<Vec<serde_json::Value>> {
+    /// repoの全ペイン状態を取得
+    pub async fn list_pane_contents(&self, repo_path: &str) -> Result<Vec<serde_json::Value>> {
         let mut result = self
             .db
-            .query("SELECT * FROM pane_contents WHERE project_path = $path")
-            .bind(("path", project_path.to_string()))
+            .query("SELECT * FROM pane_contents WHERE repo_path = $path")
+            .bind(("path", repo_path.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("pane_contents 取得失敗: {}", e))?;
         let records: Vec<serde_json::Value> = result.take(0)?;
         Ok(records)
     }
 
-    /// プロジェクトの全ペイン状態を削除
-    pub async fn clear_pane_contents(&self, project_path: &str) -> Result<()> {
+    /// repoの全ペイン状態を削除
+    pub async fn clear_pane_contents(&self, repo_path: &str) -> Result<()> {
         self.db
-            .query("DELETE FROM pane_contents WHERE project_path = $path")
-            .bind(("path", project_path.to_string()))
+            .query("DELETE FROM pane_contents WHERE repo_path = $path")
+            .bind(("path", repo_path.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("pane_contents 削除失敗: {}", e))?
             .check()
@@ -1474,22 +1571,22 @@ impl VpDb {
     }
 
     // =========================================================================
-    // Stand Status CRUD
+    // Agent Status CRUD
     // =========================================================================
 
-    /// Stand ステータスを更新（UPSERT）
-    pub async fn upsert_stand_status(
+    /// Agent ステータスを更新（UPSERT）
+    pub async fn upsert_service_status(
         &self,
-        project_path: &str,
-        stand_key: &str,
+        repo_path: &str,
+        agent_key: &str,
         status: &str,
         detail: Option<&serde_json::Value>,
     ) -> Result<()> {
         self.db
             .query(
-                "INSERT INTO stand_status {
-                    project_path: $project_path,
-                    stand_key: $stand_key,
+                "INSERT INTO service_status {
+                    repo_path: $repo_path,
+                    agent_key: $agent_key,
                     status: $status,
                     detail: $detail,
                     updated_at: time::now()
@@ -1498,14 +1595,14 @@ impl VpDb {
                     detail = $input.detail,
                     updated_at = time::now()",
             )
-            .bind(("project_path", project_path.to_string()))
-            .bind(("stand_key", stand_key.to_string()))
+            .bind(("repo_path", repo_path.to_string()))
+            .bind(("agent_key", agent_key.to_string()))
             .bind(("status", status.to_string()))
             .bind(("detail", detail.cloned()))
             .await
-            .map_err(|e| anyhow::anyhow!("stand_status upsert 失敗: {}", e))?
+            .map_err(|e| anyhow::anyhow!("service_status upsert 失敗: {}", e))?
             .check()
-            .map_err(|e| anyhow::anyhow!("stand_status upsert エラー: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("service_status upsert エラー: {}", e))?;
         Ok(())
     }
 
@@ -1516,7 +1613,7 @@ impl VpDb {
     /// processes テーブルの LIVE SELECT を開始
     ///
     /// INSERT/UPDATE/DELETE のたびに `Notification<serde_json::Value>` を返すストリーム。
-    /// TheWorld が購読して DistributedNotification に変換する。
+    /// daemon が購読して DistributedNotification に変換する。
     ///
     /// 返り値は `'static` ライフタイム（`Surreal<Any>` は内部 Arc なので clone が軽量）。
     pub async fn live_processes(
@@ -1531,14 +1628,14 @@ impl VpDb {
         Ok(stream)
     }
 
-    /// プロジェクトの全 Stand ステータスを取得
-    pub async fn list_stand_status(&self, project_path: &str) -> Result<Vec<serde_json::Value>> {
+    /// repoの全 Agent ステータスを取得
+    pub async fn list_service_status(&self, repo_path: &str) -> Result<Vec<serde_json::Value>> {
         let mut result = self
             .db
-            .query("SELECT * FROM stand_status WHERE project_path = $path")
-            .bind(("path", project_path.to_string()))
+            .query("SELECT * FROM service_status WHERE repo_path = $path")
+            .bind(("path", repo_path.to_string()))
             .await
-            .map_err(|e| anyhow::anyhow!("stand_status 取得失敗: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("service_status 取得失敗: {}", e))?;
         let records: Vec<serde_json::Value> = result.take(0)?;
         Ok(records)
     }
@@ -1556,80 +1653,80 @@ const SCHEMA_SQL: &str = r#"
 
 -- プロセス状態（QUIC Registry + HTTP polling 代替）
 DEFINE TABLE IF NOT EXISTS processes SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS project_path ON processes TYPE string;
-DEFINE FIELD IF NOT EXISTS project_name ON processes TYPE string;
+DEFINE FIELD IF NOT EXISTS repo_path ON processes TYPE string;
+DEFINE FIELD IF NOT EXISTS repo_name ON processes TYPE string;
 DEFINE FIELD IF NOT EXISTS port ON processes TYPE int;
 DEFINE FIELD IF NOT EXISTS pid ON processes TYPE int;
 DEFINE FIELD IF NOT EXISTS status ON processes TYPE string;
 DEFINE FIELD IF NOT EXISTS started_at ON processes TYPE datetime;
-DEFINE FIELD IF NOT EXISTS stands ON processes TYPE option<object> FLEXIBLE;
-DEFINE INDEX IF NOT EXISTS idx_processes_path ON processes COLUMNS project_path UNIQUE;
+DEFINE FIELD IF NOT EXISTS agents ON processes TYPE option<object> FLEXIBLE;
+DEFINE INDEX IF NOT EXISTS idx_processes_path ON processes COLUMNS repo_path UNIQUE;
 
--- home-World identity (federation L2、 ADR-020 D2): 位置独立な安定 id `wld_xxx`。
--- daemon が初回起動で 1 度だけ発行し db/world に永続する singleton (固定 record id
--- world_identity:self、 index 不要)。machine/hostname/endpoint から独立で、 hub の routing
+-- home-node identity (federation L2、 ADR-020 D2): 位置独立な安定 id `wld_xxx`。
+-- daemon が初回起動で 1 度だけ発行し db/machine に永続する singleton (固定 record id
+-- node_identity:self、 index 不要)。machine/hostname/endpoint から独立で、 hub の routing
 -- key になる。書き手は daemon 起動路のみ (doc 44 P1 PR4 で db は単一化されたが、 本 table を
--- 触るのは World bootstrap だけなので daemon-canonical な truth であることは変わらない)。
-DEFINE TABLE IF NOT EXISTS world_identity SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS wld_id ON world_identity TYPE string;
-DEFINE FIELD IF NOT EXISTS created_at ON world_identity TYPE datetime DEFAULT time::now();
+-- 触るのは Daemon bootstrap だけなので daemon-canonical な truth であることは変わらない)。
+DEFINE TABLE IF NOT EXISTS node_identity SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS wld_id ON node_identity TYPE string;
+DEFINE FIELD IF NOT EXISTS created_at ON node_identity TYPE datetime DEFAULT time::now();
 
--- registered projects (PoC: VP-188 を revert し DB 真実源へ戻す)。
+-- registered repos (PoC: VP-188 を revert し DB 真実源へ戻す)。
 -- 当時 council (2026-05-16) が file に逃した理由は VP-182 (surrealkv の OS 排他
--- ロックで DB dir を分離 → DB dir 変更で projects 消失)。 本 PoC の仮説:
---   ① projects を **World 専用 DB (db/world) に限定** すれば SP は触らず LOCK 衝突なし
---   ② DB 消失耐性 + 人間可読性は projects.kdl への **一方向 export** で担保
--- ord = sidebar 並び順 (projects.kdl の node 出現順を保持)。
-DEFINE TABLE IF NOT EXISTS projects SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS path ON projects TYPE string;
-DEFINE FIELD IF NOT EXISTS name ON projects TYPE string;
-DEFINE FIELD IF NOT EXISTS enabled ON projects TYPE option<bool>;
-DEFINE FIELD IF NOT EXISTS slot ON projects TYPE option<int>;
-DEFINE FIELD IF NOT EXISTS ord ON projects TYPE int DEFAULT 0;
-DEFINE INDEX IF NOT EXISTS idx_projects_path ON projects COLUMNS path UNIQUE;
+-- ロックで DB dir を分離 → DB dir 変更で repos 消失)。 本 PoC の仮説:
+--   ① repos を **Daemon 専用 DB (db/machine) に限定** すれば repo は触らず LOCK 衝突なし
+--   ② DB 消失耐性 + 人間可読性は repos.kdl への **一方向 export** で担保
+-- ord = sidebar 並び順 (repos.kdl の node 出現順を保持)。
+DEFINE TABLE IF NOT EXISTS repos SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS path ON repos TYPE string;
+DEFINE FIELD IF NOT EXISTS name ON repos TYPE string;
+DEFINE FIELD IF NOT EXISTS enabled ON repos TYPE option<bool>;
+DEFINE FIELD IF NOT EXISTS slot ON repos TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS ord ON repos TYPE int DEFAULT 0;
+DEFINE INDEX IF NOT EXISTS idx_repos_path ON repos COLUMNS path UNIQUE;
 
--- active lane (presence、 Model Q): project ごとの選択中 lane。 daemon-canonical。
--- presence なので projects とは別テーブル (projects.kdl export に混ぜず、 click ごとの
+-- active lane (presence、 Model Q): repo ごとの選択中 lane。 daemon-canonical。
+-- presence なので repos とは別テーブル (repos.kdl export に混ぜず、 click ごとの
 -- 高頻度 upsert を 1 行に閉じる)。 §4.6 durability tier: presence は tail-loss 許容。
 DEFINE TABLE IF NOT EXISTS active_lane SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS project_path ON active_lane TYPE string;
+DEFINE FIELD IF NOT EXISTS repo_path ON active_lane TYPE string;
 DEFINE FIELD IF NOT EXISTS lane_address ON active_lane TYPE string;
 DEFINE FIELD IF NOT EXISTS updated_at ON active_lane TYPE datetime;
-DEFINE INDEX IF NOT EXISTS idx_active_lane_path ON active_lane COLUMNS project_path UNIQUE;
+DEFINE INDEX IF NOT EXISTS idx_active_lane_path ON active_lane COLUMNS repo_path UNIQUE;
 
--- lane descriptor (doc 24 §10 Phase 2: LanePool authority を SP→daemon に反転)。
--- 旧来 lane_registry は「SP push の in-memory cache、 SP disconnect で全 drop」だったが、
--- これを daemon-canonical な **durable truth** にする。 SP が落ちても descriptor は残り
+-- lane descriptor (doc 24 §10 Phase 2: LanePool authority を repo→daemon に反転)。
+-- 旧来 lane_registry は「repo push の in-memory cache、 repo disconnect で全 drop」だったが、
+-- これを daemon-canonical な **durable truth** にする。 repo が落ちても descriptor は残り
 -- (§4.1 app quit = 喪失ゼロ)、 daemon 再起動は db から re-animate する (§3.3)。
 --   descriptor = LaneInfo を丸ごと持つ FLEXIBLE object (descriptor truth、 pane_contents.stack 前例)。
 --     (列名 `info` は SurrealQL 予約語 `INFO` と衝突するため `descriptor` を使う)
---   key       = (project_path, address) 複合 UNIQUE (1 project 内で lane address は一意)。
+--   key       = (repo_path, address) 複合 UNIQUE (1 repo 内で lane address は一意)。
 -- §4.6 durability tier: descriptor は堅く durable / live 値 (pid/state) は projection なので
--- boot-load 値が stale でも SP reconnect の snapshot が上書きする (= 正直な tier 分け)。
+-- boot-load 値が stale でも repo reconnect の snapshot が上書きする (= 正直な tier 分け)。
 DEFINE TABLE IF NOT EXISTS lane SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS project_path ON lane TYPE string;
+DEFINE FIELD IF NOT EXISTS repo_path ON lane TYPE string;
 DEFINE FIELD IF NOT EXISTS address ON lane TYPE string;
 DEFINE FIELD IF NOT EXISTS descriptor ON lane TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS updated_at ON lane TYPE datetime;
-DEFINE INDEX IF NOT EXISTS idx_lane_addr ON lane COLUMNS project_path, address UNIQUE;
+DEFINE INDEX IF NOT EXISTS idx_lane_addr ON lane COLUMNS repo_path, address UNIQUE;
 
 -- lane lifecycle (doc 24 §4.6: daemon 堅牢化の durable lifecycle state machine = 軽量 WAL)。
 -- provisioning / ready / dead を **descriptor (lane table) とは別テーブル** に持つ。 分離理由:
--- descriptor は SP が push で round-trip するため、 SP snapshot (lifecycle 未知=default) が
+-- descriptor は repo が push で round-trip するため、 repo snapshot (lifecycle 未知=default) が
 -- daemon の `provisioning` intent を clobber してしまう。 lifecycle は daemon-internal な
 -- crash-recovery state なので、 active_lane (presence) と同じく独立 table にする。
 -- process liveness (LaneInfo.state) とも別軸 (= ground の lifecycle、 PtySlot の生死ではない)。
 -- intent-first bracket: create は descriptor+provisioning を先に書く → worktree provision →
 -- ready。 crash で provisioning が残れば boot reconcile が ground 存在で heal する。
 DEFINE TABLE IF NOT EXISTS lane_lifecycle SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS project_path ON lane_lifecycle TYPE string;
+DEFINE FIELD IF NOT EXISTS repo_path ON lane_lifecycle TYPE string;
 DEFINE FIELD IF NOT EXISTS address ON lane_lifecycle TYPE string;
 DEFINE FIELD IF NOT EXISTS lifecycle ON lane_lifecycle TYPE string;
 DEFINE FIELD IF NOT EXISTS updated_at ON lane_lifecycle TYPE datetime;
-DEFINE INDEX IF NOT EXISTS idx_lane_lifecycle_addr ON lane_lifecycle COLUMNS project_path, address UNIQUE;
+DEFINE INDEX IF NOT EXISTS idx_lane_lifecycle_addr ON lane_lifecycle COLUMNS repo_path, address UNIQUE;
 
--- Project Host の帳簿①: 開発起点ポインタ (doc 44 D4 / §8)。
--- 「この project の開発の起点はどの lane か」を Host が 1 本だけ持つ。
+-- Repo Host の帳簿①: 開発起点ポインタ (doc 44 D4 / §8)。
+-- 「この repo の開発の起点はどの lane か」を Host が 1 本だけ持つ。
 --
 -- ⚠️ active_lane (注視) とは別物 — D5 が明示的に分けている:
 --   active_lane = 今どの lane を見ているか (presence、click ごとに動く)
@@ -1640,14 +1737,14 @@ DEFINE INDEX IF NOT EXISTS idx_lane_lifecycle_addr ON lane_lifecycle COLUMNS pro
 -- なので surrogate key で持つ (doc 44 §8.2)。行が無い / 指す lane が実在しない場合は
 -- 予約名 `conductor` にフォールバックする (= 従来挙動、`ledger::resolve_origin_name`)。
 DEFINE TABLE IF NOT EXISTS host_origin SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS project_path ON host_origin TYPE string;
+DEFINE FIELD IF NOT EXISTS repo_path ON host_origin TYPE string;
 DEFINE FIELD IF NOT EXISTS lane_id ON host_origin TYPE string;
 DEFINE FIELD IF NOT EXISTS updated_at ON host_origin TYPE datetime;
-DEFINE INDEX IF NOT EXISTS idx_host_origin_path ON host_origin COLUMNS project_path UNIQUE;
+DEFINE INDEX IF NOT EXISTS idx_host_origin_path ON host_origin COLUMNS repo_path UNIQUE;
 
--- Project Host の帳簿②: lane の並び順 (doc 44 D5 / §12)。
+-- Repo Host の帳簿②: lane の並び順 (doc 44 D5 / §12)。
 --
--- ⚠️ `lane` table には置けない — `upsert_lane` が DELETE+CREATE なので、SP/project 由来の
+-- ⚠️ `lane` table には置けない — `upsert_lane` が DELETE+CREATE なので、repo/repo 由来の
 -- descriptor push が来るたびに ord が消える。`lane_lifecycle` を別 table にしたのと同じ理由で、
 -- 「Host の intent」と「lane が報告する state」は table を分ける。
 --
@@ -1655,13 +1752,13 @@ DEFINE INDEX IF NOT EXISTS idx_host_origin_path ON host_origin COLUMNS project_p
 -- 表示名が変わっても動いてはいけない (doc 44 §8.2)。
 -- 行が無い lane は「未指定」= 既定順 (開発起点が先頭 → created_at) の末尾に付く。
 DEFINE TABLE IF NOT EXISTS host_lane_order SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS project_path ON host_lane_order TYPE string;
+DEFINE FIELD IF NOT EXISTS repo_path ON host_lane_order TYPE string;
 DEFINE FIELD IF NOT EXISTS lane_id ON host_lane_order TYPE string;
 DEFINE FIELD IF NOT EXISTS ord ON host_lane_order TYPE int;
 DEFINE FIELD IF NOT EXISTS updated_at ON host_lane_order TYPE datetime;
-DEFINE INDEX IF NOT EXISTS idx_host_lane_order ON host_lane_order COLUMNS project_path, lane_id UNIQUE;
+DEFINE INDEX IF NOT EXISTS idx_host_lane_order ON host_lane_order COLUMNS repo_path, lane_id UNIQUE;
 
--- Project Host の帳簿③: 見送りの記録 (doc 44 §7.5 / §8.5)。
+-- Repo Host の帳簿③: 見送りの記録 (doc 44 §7.5 / §8.5)。
 --
 -- 帳簿に書くのは **計算で復元できない事実だけ** という規律で 2 種類に絞ってある:
 --   kind='reclaimed' = 実際に見送った (lane を消したので survey では二度と再現できない)
@@ -1682,7 +1779,7 @@ DEFINE INDEX IF NOT EXISTS idx_host_lane_order ON host_lane_order COLUMNS projec
 -- 固定する事実なので、DB 側の time::now() ではなく呼び出し側が渡す (UTC 表記なので
 -- 文字列の辞書順 = 時系列順)。
 DEFINE TABLE IF NOT EXISTS host_farewell SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS project_path ON host_farewell TYPE string;
+DEFINE FIELD IF NOT EXISTS repo_path ON host_farewell TYPE string;
 DEFINE FIELD IF NOT EXISTS lane_id ON host_farewell TYPE string;
 DEFINE FIELD IF NOT EXISTS lane_name ON host_farewell TYPE string;
 DEFINE FIELD IF NOT EXISTS kind ON host_farewell TYPE string;
@@ -1691,27 +1788,27 @@ DEFINE FIELD IF NOT EXISTS streak ON host_farewell TYPE int DEFAULT 1;
 DEFINE FIELD IF NOT EXISTS first_seen_at ON host_farewell TYPE string;
 DEFINE FIELD IF NOT EXISTS last_seen_at ON host_farewell TYPE string;
 DEFINE FIELD IF NOT EXISTS ongoing ON host_farewell TYPE bool DEFAULT false;
-DEFINE INDEX IF NOT EXISTS idx_host_farewell_lane ON host_farewell COLUMNS project_path, lane_id;
+DEFINE INDEX IF NOT EXISTS idx_host_farewell_lane ON host_farewell COLUMNS repo_path, lane_id;
 
 -- wiremsg R6: 旧 msgbox table (VP-169 以前の cross-process メッセージング) は撤去。
 -- agent 間通信は wiremsg (下記 wire_messages table) に一本化済。
 -- R5-3 で VP-169 msgs table、 R6 で本 table を撤去し msgbox 系が完全消滅した。
 
 -- =========================================================================
--- project 固有テーブル（project_path でフィルタ — D11 準拠）
+-- repo 固有テーブル（repo_path でフィルタ — D11 準拠）
 --
--- doc 44 P1 PR4 (DB 統合): 旧称「SP 固有テーブル」。SP プロセス時代は per-SP DB
--- (`db/sp_{slug}/`) に置かれ、1 DB = 1 project だったため project_path 列は事実上
--- 冗長だった。db 単一化で、この列が唯一の project 次元になる（= 全クエリが
--- `WHERE project_path = $path` で絞る前提。これを欠くと他 project の行を掴む）。
+-- doc 44 P1 PR4 (DB 統合): 旧称「repo 固有テーブル」。repo プロセス時代は per-repo DB
+-- (`db/sp_{slug}/`) に置かれ、1 DB = 1 repo だったため repo_path 列は事実上
+-- 冗長だった。db 単一化で、この列が唯一の repo 次元になる（= 全クエリが
+-- `WHERE repo_path = $path` で絞る前提。これを欠くと他 repo の行を掴む）。
 -- =========================================================================
 
--- Canvas ペイン状態（PP Canvas Stack Model 永続化、 doc 19）
+-- Canvas ペイン状態（board Canvas Stack Model 永続化、 doc 19）
 --
 -- 2026-05-28 [pp-content-persist]:
---   lane scope 対応 — 旧 idx_pane (project_path, pane_id) を
---   (project_path, lane_name, pane_id) UNIQUE に置換。 lane_name="" が conductor、
---   "<name>" が performer。 同一 project の conductor と performer は **独立した PP state** を持つ。
+--   lane scope 対応 — 旧 idx_pane (repo_path, pane_id) を
+--   (repo_path, lane_name, pane_id) UNIQUE に置換。 lane_name="" が conductor、
+--   "<name>" が performer。 同一 repo の conductor と performer は **独立した board state** を持つ。
 --   追加 field:
 --     - lane_name: string DEFAULT ''       — lane scope key (空文字=conductor / 非空=performer 名)
 --     - stack:     option<object> FLEXIBLE — Canvas Stack { items: [], cursor: id, capacity: 10 }
@@ -1722,38 +1819,38 @@ DEFINE INDEX IF NOT EXISTS idx_host_farewell_lane ON host_farewell COLUMNS proje
 --   旧 record (lane_name 不在) は schema DEFAULT '' で self-heal してそのまま conductor 扱いになる。
 REMOVE INDEX IF EXISTS idx_pane ON pane_contents;
 DEFINE TABLE IF NOT EXISTS pane_contents SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS project_path ON pane_contents TYPE string;
+DEFINE FIELD IF NOT EXISTS repo_path ON pane_contents TYPE string;
 DEFINE FIELD IF NOT EXISTS pane_id ON pane_contents TYPE string;
 DEFINE FIELD IF NOT EXISTS content_type ON pane_contents TYPE string;
 DEFINE FIELD IF NOT EXISTS content ON pane_contents TYPE string;
 DEFINE FIELD IF NOT EXISTS title ON pane_contents TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS lane_name ON pane_contents TYPE string DEFAULT '';
--- board モデル (2026-07-15): scope 軸を追加し (project_path, scope, lane_name, pane_id) で board を
---   分離する。 scope='lane' が lane board (lane_name で lane ごとに独立)、 'proj' が project 共有 board
+-- board モデル (2026-07-15): scope 軸を追加し (repo_path, scope, lane_name, pane_id) で board を
+--   分離する。 scope='lane' が lane board (lane_name で lane ごとに独立)、 'proj' が repo 共有 board
 --   (lane_name='')。 旧 record (scope 不在) は DEFAULT 'lane' で self-heal され、 既存 lane/root
 --   board を現挙動のまま保存する。 現状の scope は lane/proj の 2 つ。
 --   (doc 44 P1 PR4 まで「将来の 'vp'(全体 board) は別 DB 行き」と書かれていたが、 db 単一化で
---    その制約は消えた — 全体 board を足すなら project_path を跨ぐ scope 値を 1 つ増やすだけで済む。)
+--    その制約は消えた — 全体 board を足すなら repo_path を跨ぐ scope 値を 1 つ増やすだけで済む。)
 DEFINE FIELD IF NOT EXISTS scope ON pane_contents TYPE string DEFAULT 'lane';
 DEFINE FIELD IF NOT EXISTS stack ON pane_contents TYPE option<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS ui_state ON pane_contents TYPE option<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS updated_at ON pane_contents TYPE datetime DEFAULT time::now();
--- 旧 UNIQUE (project_path, lane_name, pane_id) を破棄し scope を含む新 index に置換。
+-- 旧 UNIQUE (repo_path, lane_name, pane_id) を破棄し scope を含む新 index に置換。
 REMOVE INDEX IF EXISTS idx_pane_lane ON pane_contents;
-DEFINE INDEX IF NOT EXISTS idx_pane_scope ON pane_contents COLUMNS project_path, scope, lane_name, pane_id UNIQUE;
+DEFINE INDEX IF NOT EXISTS idx_pane_scope ON pane_contents COLUMNS repo_path, scope, lane_name, pane_id UNIQUE;
 
--- Stand ステータス
-DEFINE TABLE IF NOT EXISTS stand_status SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS project_path ON stand_status TYPE string;
-DEFINE FIELD IF NOT EXISTS stand_key ON stand_status TYPE string;
-DEFINE FIELD IF NOT EXISTS status ON stand_status TYPE string;
-DEFINE FIELD IF NOT EXISTS detail ON stand_status TYPE option<object> FLEXIBLE;
-DEFINE FIELD IF NOT EXISTS updated_at ON stand_status TYPE datetime DEFAULT time::now();
-DEFINE INDEX IF NOT EXISTS idx_stand ON stand_status COLUMNS project_path, stand_key UNIQUE;
+-- Agent ステータス
+DEFINE TABLE IF NOT EXISTS service_status SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS repo_path ON service_status TYPE string;
+DEFINE FIELD IF NOT EXISTS agent_key ON service_status TYPE string;
+DEFINE FIELD IF NOT EXISTS status ON service_status TYPE string;
+DEFINE FIELD IF NOT EXISTS detail ON service_status TYPE option<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS updated_at ON service_status TYPE datetime DEFAULT time::now();
+DEFINE INDEX IF NOT EXISTS idx_stand ON service_status COLUMNS repo_path, agent_key UNIQUE;
 
 -- User Prompt（2秒ポーリング廃止）
 DEFINE TABLE IF NOT EXISTS prompts SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS project_path ON prompts TYPE string;
+DEFINE FIELD IF NOT EXISTS repo_path ON prompts TYPE string;
 DEFINE FIELD IF NOT EXISTS request_id ON prompts TYPE string;
 DEFINE FIELD IF NOT EXISTS prompt_type ON prompts TYPE string;
 DEFINE FIELD IF NOT EXISTS title ON prompts TYPE string;
@@ -1766,14 +1863,14 @@ DEFINE INDEX IF NOT EXISTS idx_request ON prompts COLUMNS request_id UNIQUE;
 
 -- CC 通知（DistributedNotification 代替）
 DEFINE TABLE IF NOT EXISTS notifications SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS project_path ON notifications TYPE string;
-DEFINE FIELD IF NOT EXISTS project_name ON notifications TYPE string;
+DEFINE FIELD IF NOT EXISTS repo_path ON notifications TYPE string;
+DEFINE FIELD IF NOT EXISTS repo_name ON notifications TYPE string;
 DEFINE FIELD IF NOT EXISTS message ON notifications TYPE string;
 DEFINE FIELD IF NOT EXISTS read ON notifications TYPE bool DEFAULT false;
 DEFINE FIELD IF NOT EXISTS created_at ON notifications TYPE datetime DEFAULT time::now();
 
 -- =========================================================================
--- wiremsg R5-3: 旧 VP-169 msgs table (Whitesnake-primary msgbox) は撤去。
+-- wiremsg R5-3: 旧 VP-169 msgs table (file-backed msgbox) は撤去。
 -- msg messaging は下記 wiremsg threaded inbox (messages table) に一本化済。
 -- =========================================================================
 
@@ -1795,7 +1892,7 @@ DEFINE FIELD IF NOT EXISTS created_at ON notifications TYPE datetime DEFAULT tim
 --   - `thread_id` field を全廃。 thread 構造は `prev` (parent-pointer forest) 一本。
 --     thread の識別子が要る場面では root message の id (`prev` を辿った先) を使う。
 --   - `local_seq` を追加。 ローカル accumulation の厳密単調 ingestion 順序 (number)。
---     各 SP は自分の accumulation の唯一の writer なので厳密単調。 cursor 比較は
+--     各 repo は自分の accumulation の唯一の writer なので厳密単調。 cursor 比較は
 --     この `local_seq` で行う (`created_at` は同一 ms 衝突や clock skew で取りこぼす)。
 -- 既存 DB の旧 schema 残骸を除去 (thread_id field / wire_thread_idx index)。
 -- wiremsg は Phase A 新設で deployed data はごく僅か。
@@ -1846,8 +1943,8 @@ DEFINE FIELD IF NOT EXISTS agent ON wire_acks TYPE string;
 DEFINE FIELD IF NOT EXISTS acked_at ON wire_acks TYPE number;
 DEFINE INDEX IF NOT EXISTS wire_acks_uniq ON wire_acks FIELDS message_id, agent UNIQUE;
 
--- agent 委譲 (delegation、 doc 28 §4 / §6): durable cross-agent future の World 中央 store。
--- wire と同じく TheWorld の SurrealDB に持つ (= SP 再起動を跨いで生存、 World reconcile の駆動源)。
+-- agent 委譲 (delegation、 doc 28 §4 / §6): durable cross-agent future の daemon 中央 store。
+-- wire と同じく daemon の SurrealDB に持つ (= repo 再起動を跨いで生存、 Daemon reconcile の駆動源)。
 -- requester / doer は論理 wire address。 state ∈ {pending, active, awaiting_response, done, failed}。
 -- outcome = {kind, result|reason|question} (= Outcome の serde 形)。 created_at/updated_at は ms
 -- (B reconcile の timeout 判定用)。 delivered = 直近 wake が target に届いたか (B/C の取りこぼし検出用)。
@@ -1873,13 +1970,13 @@ DEFINE INDEX IF NOT EXISTS delegations_state_idx ON delegations FIELDS state;
 mod tests {
     use super::*;
 
-    /// 旧 per-project DB の回収: `sp_*` だけを消し、`world` と無関係な dir / file は残す。
+    /// 旧 per-repo DB の回収: `sp_*` だけを消し、`daemon` と無関係な dir / file は残す。
     /// 冪等（2 回目は 0）。掃除は「消えたか」でなく「**残っていないか**」で検証する。
     #[test]
-    fn reclaim_legacy_project_dbs_removes_only_sp_dirs() {
+    fn reclaim_legacy_repo_dbs_removes_only_sp_dirs() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
-        for d in ["world", "sp_vp", "sp_nexus", "backups"] {
+        for d in ["machine", "sp_vp", "sp_nexus", "backups"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
         // 中身のある dir も丸ごと消える（remove_dir_all）
@@ -1887,9 +1984,9 @@ mod tests {
         // dir でない `sp_` 始まりの file は対象外
         std::fs::write(root.join("sp_not_a_dir"), b"x").unwrap();
 
-        assert_eq!(reclaim_legacy_project_dbs_in(root), 2);
+        assert_eq!(reclaim_legacy_repo_dbs_in(root), 2);
 
-        assert!(root.join("world").exists(), "world は残る");
+        assert!(root.join("machine").exists(), "machine は残る");
         assert!(root.join("backups").exists(), "無関係な dir は残る");
         assert!(root.join("sp_not_a_dir").exists(), "file は対象外");
         assert!(!root.join("sp_vp").exists(), "sp_ dir は中身ごと消える");
@@ -1902,7 +1999,7 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty(), "sp_ dir が残っていない");
 
-        assert_eq!(reclaim_legacy_project_dbs_in(root), 0, "冪等");
+        assert_eq!(reclaim_legacy_repo_dbs_in(root), 0, "冪等");
     }
 
     /// テスト用ヘルパー: kv-mem VpDb をスキーマ付きで作成
@@ -1912,7 +2009,7 @@ mod tests {
         db
     }
 
-    /// doc 44 P2: 旧形の address 文字列（`<project>/performer/<name>`）が起動時に新形へ
+    /// doc 44 P2: 旧形の address 文字列（`<repo>/performer/<name>`）が起動時に新形へ
     /// 正規化されること。
     ///
     /// これを怠ると実害が出る: `lane` は upsert（DELETE+CREATE）の WHERE が新形で当たらず
@@ -1928,11 +2025,11 @@ mod tests {
         db.inner()
             .query(
                 "CREATE lane_lifecycle CONTENT {
-                     project_path: '/repos/vp', address: 'vp/performer/foo',
+                     repo_path: '/repos/vp', address: 'vp/performer/foo',
                      lifecycle: 'ready', updated_at: time::now()
                  };
                  CREATE lane_lifecycle CONTENT {
-                     project_path: '/repos/vp', address: 'vp/root',
+                     repo_path: '/repos/vp', address: 'vp/root',
                      lifecycle: 'ready', updated_at: time::now()
                  };",
             )
@@ -1960,30 +2057,30 @@ mod tests {
         );
     }
 
-    /// doc 44 P1 PR4: DB ディレクトリは `vp_data_dir()/db/world` の**単一**であること。
+    /// doc 44 P1 PR4: DB ディレクトリは `vp_data_dir()/db/machine` の**単一**であること。
     ///
-    /// 旧テストは「World と SP の dir が分離されていること」を固定していた（VP-182 の
-    /// LOCK 衝突回避）。fold-in で project がプロセスでなくなり handle 共有になったため、
+    /// 旧テストは「daemon と repo の dir が分離されていること」を固定していた（VP-182 の
+    /// LOCK 衝突回避）。fold-in で repo がプロセスでなくなり handle 共有になったため、
     /// 固定すべき性質が「分離」から「単一」に反転した。
     #[test]
-    fn test_db_data_dir_is_single_world_dir() {
-        let world = db_data_dir_for_world();
+    fn test_db_data_dir_is_single_daemon_dir() {
+        let daemon = db_data_dir_for_machine();
 
         // VP-192: vp_data_dir()/db 配下
         assert!(
-            world.starts_with(crate::config::vp_data_dir()),
+            daemon.starts_with(crate::config::vp_data_dir()),
             "DB dir は vp_data_dir() 配下であるべき: {}",
-            world.display()
+            daemon.display()
         );
         assert!(
-            world.parent().is_some_and(|p| p.ends_with("db")),
+            daemon.parent().is_some_and(|p| p.ends_with("db")),
             "DB dir の親は 'db' であるべき: {}",
-            world.display()
+            daemon.display()
         );
         assert!(
-            world.ends_with("world"),
-            "DB dir は 'world' で終わるべき: {}",
-            world.display()
+            daemon.ends_with("machine"),
+            "DB dir は 'machine' で終わるべき: {}",
+            daemon.display()
         );
     }
 
@@ -2000,25 +2097,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_world_id_load_or_create_is_stable() {
+    async fn test_daemon_id_load_or_create_is_stable() {
         // federation L2: wld_id singleton の発行 → 復元 round-trip。
         let db = make_test_db().await;
 
         // 初回は生成して永続 (EntId 形式 wld_1.. )。
-        let first = db.load_or_create_world_id().await.unwrap();
+        let first = db.load_or_create_node_id().await.unwrap();
         assert!(
             first.as_str().starts_with("wld_1"),
             "EntId 形式 wld_1.. のはず: {first}"
         );
 
         // 2 回目以降は同じ id を復元する (= singleton、 再起動越え安定の核)。
-        let second = db.load_or_create_world_id().await.unwrap();
+        let second = db.load_or_create_node_id().await.unwrap();
         assert_eq!(first, second, "wld_id は singleton で安定して復元される");
     }
 
     /// doc 44 D4: 開発起点ポインタの round-trip（upsert → get → 上書き → 削除）。
     ///
-    /// **削除まで見る**のは、`remove_project` が project namespace を倒す時にこの行を
+    /// **削除まで見る**のは、`remove_repo` が repo namespace を倒す時にこの行を
     /// 回収する契約だから（§4.6 含有=所有=寿命）。残ると同 path で再登録した時に旧 lane の
     /// UUID を指す孤児ポインタが復活し、起点が `Dangling` に落ちる。
     #[tokio::test]
@@ -2036,14 +2133,14 @@ mod tests {
             Some("id-alpha")
         );
 
-        // project ごとに独立（1 project 1 ポインタ）
+        // repo ごとに独立（1 repo 1 ポインタ）
         db.upsert_host_origin("/repos/nexus", "id-beta")
             .await
             .unwrap();
         assert_eq!(
             db.get_host_origin("/repos/vp").await.unwrap().as_deref(),
             Some("id-alpha"),
-            "他 project の指定に引きずられない"
+            "他 repo の指定に引きずられない"
         );
 
         // 起点の移動は行の上書き（増えない）
@@ -2056,13 +2153,13 @@ mod tests {
             "UNIQUE index により上書きされる"
         );
 
-        // project 回収でポインタも消える
+        // repo 回収でポインタも消える
         db.delete_host_origin("/repos/vp").await.unwrap();
         assert!(db.get_host_origin("/repos/vp").await.unwrap().is_none());
         assert_eq!(
             db.get_host_origin("/repos/nexus").await.unwrap().as_deref(),
             Some("id-beta"),
-            "削除は project scope に閉じる"
+            "削除は repo scope に閉じる"
         );
     }
 
@@ -2074,7 +2171,7 @@ mod tests {
         // 初期は空
         assert!(db.list_active_lanes().await.unwrap().is_empty());
 
-        // project ごとに upsert
+        // repo ごとに upsert
         db.upsert_active_lane("/repos/vp", "vp/root").await.unwrap();
         db.upsert_active_lane("/repos/nexus", "nexus/performer/foo")
             .await
@@ -2093,27 +2190,27 @@ mod tests {
             ]
         );
 
-        // 同 project の upsert は置換 (UNIQUE index、 per-project に 1 つ)
+        // 同 repo の upsert は置換 (UNIQUE index、 per-repo に 1 つ)
         db.upsert_active_lane("/repos/vp", "vp/performer/bar")
             .await
             .unwrap();
         let rows = db.list_active_lanes().await.unwrap();
-        assert_eq!(rows.len(), 2, "同 project は置換、 件数は増えない");
+        assert_eq!(rows.len(), 2, "同 repo は置換、 件数は増えない");
         assert!(rows.contains(&("/repos/vp".to_string(), "vp/performer/bar".to_string())));
 
-        // §4.6 含有=所有=寿命: project remove 時の presence 回収 (delete_active_lane)。
+        // §4.6 含有=所有=寿命: repo remove 時の presence 回収 (delete_active_lane)。
         db.delete_active_lane("/repos/vp").await.unwrap();
         let rows = db.list_active_lanes().await.unwrap();
-        assert_eq!(rows.len(), 1, "削除した project の active_lane は消える");
-        assert_eq!(rows[0].0, "/repos/nexus", "他 project は残る");
-        // 不在 project の削除は no-op (冪等)
+        assert_eq!(rows.len(), 1, "削除した repo の active_lane は消える");
+        assert_eq!(rows[0].0, "/repos/nexus", "他 repo は残る");
+        // 不在 repo の削除は no-op (冪等)
         db.delete_active_lane("/repos/absent").await.unwrap();
         assert_eq!(db.list_active_lanes().await.unwrap().len(), 1);
     }
 
     #[tokio::test]
     async fn test_lane_upsert_list_and_delete() {
-        use crate::process::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
         // doc 24 §10 Phase 2: lane descriptor の daemon-canonical durable round-trip。
         let db = make_test_db().await;
 
@@ -2121,12 +2218,11 @@ mod tests {
         assert!(db.list_lanes().await.unwrap().is_empty());
 
         // テスト用 LaneInfo builder (live 値 pid は埋めるが、 検証は descriptor 中心)。
-        let mk = |project: &str, name: &str| LaneInfo {
-            console_mode: Default::default(),
+        let mk = |repo: &str, name: &str| LaneInfo {
             id: Default::default(),
-            address: LaneAddress::new(project, name),
+            address: LaneAddress::new(repo, name),
             state: LaneState::Running,
-            stand: "echoes".to_string(),
+            agent: "claude".to_string(),
             created_at: "2026-06-20T00:00:00Z".to_string(),
             pid: Some(1234),
             cwd: "/tmp".to_string(),
@@ -2134,11 +2230,11 @@ mod tests {
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
-            engine_stand: None,
+            agent_name: None,
             flow_state: None,
         };
 
-        // 2 project に lane を入れる
+        // 2 repo に lane を入れる
         db.upsert_lane("/repos/vp", &mk("vp", "root"))
             .await
             .unwrap();
@@ -2150,13 +2246,13 @@ mod tests {
         let rows = db.list_lanes().await.unwrap();
         assert_eq!(rows.len(), 3, "3 lane descriptor が round-trip する");
 
-        // descriptor が round-trip する (address / stand)
+        // descriptor が round-trip する (address / agent)
         let vp_conductor = rows
             .iter()
             .find(|(p, l)| p == "/repos/vp" && l.address.is_root())
             .expect("vp root が読める");
         assert_eq!(vp_conductor.1.address.to_string(), "vp/root");
-        assert_eq!(vp_conductor.1.stand, "echoes");
+        assert_eq!(vp_conductor.1.agent, "claude");
 
         // 同 address の upsert は置換 (複合 UNIQUE、 件数は増えない)
         db.upsert_lane("/repos/vp", &mk("vp", "root"))
@@ -2178,7 +2274,7 @@ mod tests {
         );
 
         // snapshot 全置換 (register snapshot): /repos/vp を performer 2 つに置換
-        db.replace_lanes_for_project("/repos/vp", &[mk("vp", "a"), mk("vp", "b")])
+        db.replace_lanes_for_repo("/repos/vp", &[mk("vp", "a"), mk("vp", "b")])
             .await
             .unwrap();
         let vp_lanes: Vec<_> = db
@@ -2198,11 +2294,11 @@ mod tests {
             "snapshot 後は root が消え performer のみ"
         );
 
-        // §4.6 含有=所有=寿命: project remove 時の回収 (delete_lanes_for_project)。
-        db.delete_lanes_for_project("/repos/vp").await.unwrap();
+        // §4.6 含有=所有=寿命: repo remove 時の回収 (delete_lanes_for_repo)。
+        db.delete_lanes_for_repo("/repos/vp").await.unwrap();
         let rows = db.list_lanes().await.unwrap();
-        assert_eq!(rows.len(), 1, "削除した project の lane は消える");
-        assert_eq!(rows[0].0, "/repos/nexus", "他 project は残る");
+        assert_eq!(rows.len(), 1, "削除した repo の lane は消える");
+        assert_eq!(rows[0].0, "/repos/nexus", "他 repo は残る");
     }
 
     #[tokio::test]
@@ -2222,7 +2318,7 @@ mod tests {
             .unwrap();
         assert_eq!(db.list_lane_lifecycles().await.unwrap().len(), 3);
 
-        // 同 (project, address) の upsert は置換 (複合 UNIQUE)。
+        // 同 (repo, address) の upsert は置換 (複合 UNIQUE)。
         db.upsert_lane_lifecycle("/repos/vp", "vp/foo", "ready")
             .await
             .unwrap();
@@ -2240,17 +2336,17 @@ mod tests {
             .unwrap();
         assert_eq!(db.list_lane_lifecycles().await.unwrap().len(), 2);
 
-        // project 単位削除 (§4.6 含有=所有=寿命)。
-        db.delete_lane_lifecycles_for_project("/repos/vp")
+        // repo 単位削除 (§4.6 含有=所有=寿命)。
+        db.delete_lane_lifecycles_for_repo("/repos/vp")
             .await
             .unwrap();
         let rows = db.list_lane_lifecycles().await.unwrap();
-        assert_eq!(rows.len(), 1, "削除した project の lifecycle は消える");
-        assert_eq!(rows[0].0, "/repos/nexus", "他 project は残る");
+        assert_eq!(rows.len(), 1, "削除した repo の lifecycle は消える");
+        assert_eq!(rows[0].0, "/repos/nexus", "他 repo は残る");
     }
 
-    // VP-188: Projects CRUD テストは撤去 (= projects は projects.kdl に移行、
-    // crate::projects_file 側の round-trip test でカバー)。
+    // VP-188: Repos CRUD テストは撤去 (= repos は repos.kdl に移行、
+    // crate::repos_file 側の round-trip test でカバー)。
 
     // =========================================================================
     // Processes CRUD テスト
@@ -2268,7 +2364,7 @@ mod tests {
         // 一覧
         let procs = db.list_processes().await.unwrap();
         assert_eq!(procs.len(), 1);
-        assert_eq!(procs[0]["project_name"], "vp");
+        assert_eq!(procs[0]["repo_name"], "vp");
         assert_eq!(procs[0]["port"], 33000);
 
         // 更新（同じ path で upsert）
@@ -2325,7 +2421,7 @@ mod tests {
     // Processes エッジケーステスト
     // =========================================================================
 
-    /// 存在しない project_path を delete_process してもエラーにならない
+    /// 存在しない repo_path を delete_process してもエラーにならない
     #[tokio::test]
     async fn test_processes_delete_nonexistent() {
         let db = make_test_db().await;
@@ -2366,7 +2462,7 @@ mod tests {
         assert_eq!(panes[0]["title"], "テストペイン");
     }
 
-    /// 同一 (project_path, pane_id) で再度 upsert → content が更新される（UPSERT 冪等性）
+    /// 同一 (repo_path, pane_id) で再度 upsert → content が更新される（UPSERT 冪等性）
     #[tokio::test]
     async fn test_pane_contents_upsert_updates_content() {
         let db = make_test_db().await;
@@ -2400,9 +2496,9 @@ mod tests {
         assert_eq!(panes[0]["title"], "更新後タイトル");
     }
 
-    /// 異なる project_path のペインは list_pane_contents で見えない（プロジェクト分離）
+    /// 異なる repo_path のペインは list_pane_contents で見えない（repo分離）
     #[tokio::test]
-    async fn test_pane_contents_project_isolation() {
+    async fn test_pane_contents_repo_isolation() {
         let db = make_test_db().await;
 
         db.upsert_pane_content(
@@ -2436,9 +2532,9 @@ mod tests {
         assert_eq!(creo_panes[0]["content"], r#"{"Markdown":"Creo の内容"}"#);
     }
 
-    /// clear_pane_contents は対象 project_path のみ削除（他プロジェクトに影響なし）
+    /// clear_pane_contents は対象 repo_path のみ削除（他repoに影響なし）
     #[tokio::test]
-    async fn test_pane_contents_clear_isolates_projects() {
+    async fn test_pane_contents_clear_isolates_repos() {
         let db = make_test_db().await;
 
         db.upsert_pane_content("/repos/vp", "pane-1", "log", r#"{"Log":[]}"#, None)
@@ -2459,12 +2555,12 @@ mod tests {
     }
 
     // =========================================================================
-    // PP Canvas Stack Model (lane scope) — pp-content-persist
+    // board Canvas Stack Model (lane scope) — pp-content-persist
     // =========================================================================
 
     /// 新 API: lane_name=None (conductor) と Some(name) (performer) が独立 record として共存できる
     #[tokio::test]
-    async fn test_pp_state_conductor_and_performer_independent() {
+    async fn test_board_state_conductor_and_performer_independent() {
         let db = make_test_db().await;
 
         let conductor_stack = serde_json::json!({
@@ -2480,10 +2576,10 @@ mod tests {
         let ui =
             serde_json::json!({"visible": true, "collapsed": false, "width": 480, "height": 720});
 
-        db.upsert_pp_state(
+        db.upsert_board_state(
             "/repos/vp",
             None,
-            "paisley-park",
+            "board",
             "markdown",
             "# root\n",
             None,
@@ -2492,10 +2588,10 @@ mod tests {
         )
         .await
         .unwrap();
-        db.upsert_pp_state(
+        db.upsert_board_state(
             "/repos/vp",
             Some("foo"),
-            "paisley-park",
+            "board",
             "markdown",
             "# performer\n",
             None,
@@ -2507,7 +2603,7 @@ mod tests {
 
         // conductor 読み込み
         let conductor = db
-            .load_pp_state("/repos/vp", None, "paisley-park")
+            .load_board_state("/repos/vp", None, "board")
             .await
             .unwrap()
             .expect("root record 不在");
@@ -2519,21 +2615,21 @@ mod tests {
 
         // performer 読み込み — conductor と独立した record
         let performer = db
-            .load_pp_state("/repos/vp", Some("foo"), "paisley-park")
+            .load_board_state("/repos/vp", Some("foo"), "board")
             .await
             .unwrap()
             .expect("performer record 不在");
         assert_eq!(performer["lane_name"], "foo");
         assert_eq!(performer["stack"]["cursor"], "i2");
 
-        // list_pane_contents は両方見える (project scope)
+        // list_pane_contents は両方見える (repo scope)
         let all = db.list_pane_contents("/repos/vp").await.unwrap();
         assert_eq!(all.len(), 2, "root + performer で 2 record");
     }
 
-    /// upsert_pp_state は同 (project_path, lane_name, pane_id) で stack を上書きする (= roundtrip)
+    /// upsert_board_state は同 (repo_path, lane_name, pane_id) で stack を上書きする (= roundtrip)
     #[tokio::test]
-    async fn test_pp_state_upsert_roundtrip() {
+    async fn test_board_state_upsert_roundtrip() {
         let db = make_test_db().await;
         let stack_v1 = serde_json::json!({"items": [], "cursor": null, "capacity": 10});
         let stack_v2 = serde_json::json!({
@@ -2542,10 +2638,10 @@ mod tests {
             "capacity": 10
         });
 
-        db.upsert_pp_state(
+        db.upsert_board_state(
             "/repos/vp",
             None,
-            "paisley-park",
+            "board",
             "markdown",
             "",
             None,
@@ -2554,10 +2650,10 @@ mod tests {
         )
         .await
         .unwrap();
-        db.upsert_pp_state(
+        db.upsert_board_state(
             "/repos/vp",
             None,
-            "paisley-park",
+            "board",
             "markdown",
             "x",
             None,
@@ -2568,7 +2664,7 @@ mod tests {
         .unwrap();
 
         let rec = db
-            .load_pp_state("/repos/vp", None, "paisley-park")
+            .load_board_state("/repos/vp", None, "board")
             .await
             .unwrap()
             .expect("record 不在");
@@ -2582,7 +2678,7 @@ mod tests {
 
     /// 旧 caller (upsert_pane_content) は lane_name=None で row を作る。 stack/ui_state を巻き戻さない。
     #[tokio::test]
-    async fn test_pp_state_legacy_upsert_keeps_stack() {
+    async fn test_board_state_legacy_upsert_keeps_stack() {
         let db = make_test_db().await;
         let stack = serde_json::json!({
             "items": [{"id":"keep","content":"keep","contentType":"markdown","createdAt":"2026-05-28T00:00:00Z"}],
@@ -2591,10 +2687,10 @@ mod tests {
         });
 
         // 新 API で stack を先に保存
-        db.upsert_pp_state(
+        db.upsert_board_state(
             "/repos/vp",
             None,
-            "paisley-park",
+            "board",
             "markdown",
             "keep",
             Some("t"),
@@ -2605,18 +2701,12 @@ mod tests {
         .unwrap();
 
         // 旧 API (content / title だけ更新)。 stack は触らないことを期待
-        db.upsert_pane_content(
-            "/repos/vp",
-            "paisley-park",
-            "markdown",
-            "updated",
-            Some("t2"),
-        )
-        .await
-        .unwrap();
+        db.upsert_pane_content("/repos/vp", "board", "markdown", "updated", Some("t2"))
+            .await
+            .unwrap();
 
         let rec = db
-            .load_pp_state("/repos/vp", None, "paisley-park")
+            .load_board_state("/repos/vp", None, "board")
             .await
             .unwrap()
             .expect("record 不在");
@@ -2628,12 +2718,12 @@ mod tests {
         );
     }
 
-    /// load_pp_state: 不在の (project_path, lane_name, pane_id) は Ok(None)
+    /// load_board_state: 不在の (repo_path, lane_name, pane_id) は Ok(None)
     #[tokio::test]
-    async fn test_pp_state_load_missing_returns_none() {
+    async fn test_board_state_load_missing_returns_none() {
         let db = make_test_db().await;
         let v = db
-            .load_pp_state("/repos/vp", None, "missing")
+            .load_board_state("/repos/vp", None, "missing")
             .await
             .unwrap();
         assert!(v.is_none());
@@ -2653,12 +2743,12 @@ mod tests {
     async fn test_board_append_head_push_cursor_and_cap() {
         let db = make_test_db().await;
         for id in ["a", "b", "c"] {
-            db.append_board_item("/repos/vp", "proj", "", "paisley-park", &mk_item(id), 2)
+            db.append_board_item("/repos/vp", "proj", "", "board", &mk_item(id), 2)
                 .await
                 .unwrap();
         }
         let rec = db
-            .load_board("/repos/vp", "proj", "", "paisley-park")
+            .load_board("/repos/vp", "proj", "", "board")
             .await
             .unwrap()
             .expect("board 不在");
@@ -2674,23 +2764,16 @@ mod tests {
     async fn test_board_delete_item_cursor_fallback() {
         let db = make_test_db().await;
         for id in ["a", "b", "c"] {
-            db.append_board_item(
-                "/repos/vp",
-                "lane",
-                "wing",
-                "paisley-park",
-                &mk_item(id),
-                10,
-            )
-            .await
-            .unwrap();
+            db.append_board_item("/repos/vp", "lane", "wing", "board", &mk_item(id), 10)
+                .await
+                .unwrap();
         }
         // items=[c,b,a], cursor=c。 c を削除 → items=[b,a], cursor=b（先頭 fallback）。
-        db.delete_board_item("/repos/vp", "lane", "wing", "paisley-park", "c")
+        db.delete_board_item("/repos/vp", "lane", "wing", "board", "c")
             .await
             .unwrap();
         let rec = db
-            .load_board("/repos/vp", "lane", "wing", "paisley-park")
+            .load_board("/repos/vp", "lane", "wing", "board")
             .await
             .unwrap()
             .unwrap();
@@ -2700,11 +2783,11 @@ mod tests {
         assert_eq!(rec["stack"]["cursor"], "b");
 
         // items=[b,a], cursor=b。 a（非 cursor）削除 → cursor=b 不変。
-        db.delete_board_item("/repos/vp", "lane", "wing", "paisley-park", "a")
+        db.delete_board_item("/repos/vp", "lane", "wing", "board", "a")
             .await
             .unwrap();
         let rec = db
-            .load_board("/repos/vp", "lane", "wing", "paisley-park")
+            .load_board("/repos/vp", "lane", "wing", "board")
             .await
             .unwrap()
             .unwrap();
@@ -2715,18 +2798,119 @@ mod tests {
         assert_eq!(rec["stack"]["items"].as_array().unwrap().len(), 1);
     }
 
+    /// scrollback で最古 item を pin した状態で show が来て、その item が capacity trim で
+    /// evict される場合、cursor は孤児化せず新 head に fallback する（team-b review、doc 52 §5
+    /// 「流されない」に反する孤児 cursor = 主画面が無言で空白化するのを防ぐ）。
+    #[tokio::test]
+    async fn test_board_cursor_survives_capacity_eviction() {
+        let db = make_test_db().await;
+        // capacity=2 で a, b を貼る → items=[b,a]、cursor は head 追従で b。
+        db.append_board_item("/repos/vp", "lane", "", "board", &mk_item("a"), 2)
+            .await
+            .unwrap();
+        db.append_board_item("/repos/vp", "lane", "", "board", &mk_item("b"), 2)
+            .await
+            .unwrap();
+        // 最古の a を pin（scrollback で遡って見ている状態）。
+        db.set_board_cursor("/repos/vp", "lane", "", "board", "a")
+            .await
+            .unwrap();
+        // c を貼る → items=[c,b]（a が evict）。cursor=a は消えるので新 head c に fallback。
+        db.append_board_item("/repos/vp", "lane", "", "board", &mk_item("c"), 2)
+            .await
+            .unwrap();
+        let rec = db
+            .load_board("/repos/vp", "lane", "", "board")
+            .await
+            .unwrap()
+            .unwrap();
+        let items = rec["stack"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert!(
+            !items.iter().any(|i| i["id"] == "a"),
+            "最古 a は capacity trim で evict される"
+        );
+        assert_eq!(
+            rec["stack"]["cursor"], "c",
+            "evict された cursor は孤児化せず新 head c に fallback（主画面が空白化しない）"
+        );
+    }
+
+    /// update は id 一致 item の content/contentType を in-place 置換し、id/createdAt/位置は保つ。
+    /// cursor が対象を指していれば top-level content も反映する（doc 52 §5）。
+    #[tokio::test]
+    async fn test_board_update_item_in_place() {
+        let db = make_test_db().await;
+        for id in ["a", "b", "c"] {
+            db.append_board_item("/repos/vp", "lane", "", "board", &mk_item(id), 10)
+                .await
+                .unwrap();
+        }
+        // items=[c,b,a], cursor=c。 非 cursor の b を html で更新。
+        db.update_board_item(
+            "/repos/vp",
+            "lane",
+            "",
+            "board",
+            "b",
+            "updated-body",
+            "html",
+        )
+        .await
+        .unwrap();
+        let rec = db
+            .load_board("/repos/vp", "lane", "", "board")
+            .await
+            .unwrap()
+            .unwrap();
+        let items = rec["stack"]["items"].as_array().unwrap();
+        // 位置不変（[c,b,a]）、b だけ content/contentType 差し替え、id/createdAt 保持。
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[1]["id"], "b");
+        assert_eq!(items[1]["content"], "updated-body");
+        assert_eq!(items[1]["contentType"], "html");
+        assert_eq!(items[1]["createdAt"], "2026-07-15T00:00:00Z");
+        // cursor(c) 非対象なので top-level reflection は不変。
+        assert_eq!(rec["stack"]["cursor"], "c");
+        // 他 item は無傷。
+        assert_eq!(items[0]["id"], "c");
+        assert_eq!(items[0]["content"], "c");
+
+        // cursor(c) を更新 → top-level content も反映。
+        db.update_board_item(
+            "/repos/vp",
+            "lane",
+            "",
+            "board",
+            "c",
+            "c-latest",
+            "markdown",
+        )
+        .await
+        .unwrap();
+        let rec = db
+            .load_board("/repos/vp", "lane", "", "board")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            rec["content"], "c-latest",
+            "cursor 対象の更新は top-level に反映"
+        );
+    }
+
     /// clear は board を空にする。
     #[tokio::test]
     async fn test_board_clear() {
         let db = make_test_db().await;
-        db.append_board_item("/repos/vp", "proj", "", "paisley-park", &mk_item("a"), 10)
+        db.append_board_item("/repos/vp", "proj", "", "board", &mk_item("a"), 10)
             .await
             .unwrap();
-        db.clear_board("/repos/vp", "proj", "", "paisley-park")
+        db.clear_board("/repos/vp", "proj", "", "board")
             .await
             .unwrap();
         let rec = db
-            .load_board("/repos/vp", "proj", "", "paisley-park")
+            .load_board("/repos/vp", "proj", "", "board")
             .await
             .unwrap()
             .unwrap();
@@ -2734,23 +2918,23 @@ mod tests {
         assert!(rec["stack"]["cursor"].is_null());
     }
 
-    /// lane board と proj board は同 project でも独立（scope 軸で分離）。
+    /// lane board と proj board は同 repo でも独立（scope 軸で分離）。
     #[tokio::test]
     async fn test_board_scope_isolation() {
         let db = make_test_db().await;
-        db.append_board_item("/repos/vp", "lane", "", "paisley-park", &mk_item("L"), 10)
+        db.append_board_item("/repos/vp", "lane", "", "board", &mk_item("L"), 10)
             .await
             .unwrap();
-        db.append_board_item("/repos/vp", "proj", "", "paisley-park", &mk_item("P"), 10)
+        db.append_board_item("/repos/vp", "proj", "", "board", &mk_item("P"), 10)
             .await
             .unwrap();
         let lane = db
-            .load_board("/repos/vp", "lane", "", "paisley-park")
+            .load_board("/repos/vp", "lane", "", "board")
             .await
             .unwrap()
             .unwrap();
         let proj = db
-            .load_board("/repos/vp", "proj", "", "paisley-park")
+            .load_board("/repos/vp", "proj", "", "board")
             .await
             .unwrap()
             .unwrap();
@@ -2785,7 +2969,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Stand Status CRUD テスト
+    // Agent Status CRUD テスト
     // =========================================================================
 
     /// 基本的な INSERT → SELECT フロー
@@ -2793,30 +2977,30 @@ mod tests {
     async fn test_stand_status_basic_crud() {
         let db = make_test_db().await;
 
-        db.upsert_stand_status("/repos/vp", "heaven-door", "running", None)
+        db.upsert_service_status("/repos/vp", "heaven-door", "running", None)
             .await
             .unwrap();
 
-        let statuses = db.list_stand_status("/repos/vp").await.unwrap();
+        let statuses = db.list_service_status("/repos/vp").await.unwrap();
         assert_eq!(statuses.len(), 1);
-        assert_eq!(statuses[0]["stand_key"], "heaven-door");
+        assert_eq!(statuses[0]["agent_key"], "heaven-door");
         assert_eq!(statuses[0]["status"], "running");
     }
 
-    /// 同一 (project_path, stand_key) で再度 upsert → status が更新される
+    /// 同一 (repo_path, agent_key) で再度 upsert → status が更新される
     #[tokio::test]
     async fn test_stand_status_upsert_updates_status() {
         let db = make_test_db().await;
 
-        db.upsert_stand_status("/repos/vp", "heaven-door", "running", None)
+        db.upsert_service_status("/repos/vp", "heaven-door", "running", None)
             .await
             .unwrap();
 
-        db.upsert_stand_status("/repos/vp", "heaven-door", "stopped", None)
+        db.upsert_service_status("/repos/vp", "heaven-door", "stopped", None)
             .await
             .unwrap();
 
-        let statuses = db.list_stand_status("/repos/vp").await.unwrap();
+        let statuses = db.list_service_status("/repos/vp").await.unwrap();
         // レコード数は1のまま（UPSERT）
         assert_eq!(statuses.len(), 1);
         assert_eq!(statuses[0]["status"], "stopped");
@@ -2827,11 +3011,11 @@ mod tests {
     async fn test_stand_status_detail_null() {
         let db = make_test_db().await;
 
-        db.upsert_stand_status("/repos/vp", "paisley-park", "idle", None)
+        db.upsert_service_status("/repos/vp", "board", "idle", None)
             .await
             .unwrap();
 
-        let statuses = db.list_stand_status("/repos/vp").await.unwrap();
+        let statuses = db.list_service_status("/repos/vp").await.unwrap();
         assert_eq!(statuses.len(), 1);
         assert!(
             statuses[0]["detail"].is_null(),
@@ -2850,33 +3034,33 @@ mod tests {
             "pane_count": 3
         });
 
-        db.upsert_stand_status("/repos/vp", "paisley-park", "running", Some(&detail))
+        db.upsert_service_status("/repos/vp", "board", "running", Some(&detail))
             .await
             .unwrap();
 
-        let statuses = db.list_stand_status("/repos/vp").await.unwrap();
+        let statuses = db.list_service_status("/repos/vp").await.unwrap();
         assert_eq!(statuses.len(), 1);
         assert_eq!(statuses[0]["detail"]["canvas_open"], true);
         assert_eq!(statuses[0]["detail"]["pane_count"], 3);
     }
 
-    /// 異なる project_path の stand_status は分離される
+    /// 異なる repo_path の service_status は分離される
     #[tokio::test]
-    async fn test_stand_status_project_isolation() {
+    async fn test_stand_status_repo_isolation() {
         let db = make_test_db().await;
 
-        db.upsert_stand_status("/repos/vp", "heaven-door", "running", None)
+        db.upsert_service_status("/repos/vp", "heaven-door", "running", None)
             .await
             .unwrap();
-        db.upsert_stand_status("/repos/creo", "heaven-door", "stopped", None)
+        db.upsert_service_status("/repos/creo", "heaven-door", "stopped", None)
             .await
             .unwrap();
 
-        let vp_statuses = db.list_stand_status("/repos/vp").await.unwrap();
+        let vp_statuses = db.list_service_status("/repos/vp").await.unwrap();
         assert_eq!(vp_statuses.len(), 1);
         assert_eq!(vp_statuses[0]["status"], "running");
 
-        let creo_statuses = db.list_stand_status("/repos/creo").await.unwrap();
+        let creo_statuses = db.list_service_status("/repos/creo").await.unwrap();
         assert_eq!(creo_statuses.len(), 1);
         assert_eq!(creo_statuses[0]["status"], "stopped");
     }

@@ -1,6 +1,6 @@
 //! federation direct dialer（ADR-020 §S6、HEv2 staggered race）の e2e。
 //!
-//! relay_e2e と違い **hub 不要** — target world 相当の QUIC server（`wire` channel）を
+//! relay_e2e と違い **hub 不要** — target daemon 相当の QUIC server（`wire` channel）を
 //! in-process に立て、dead decoy を混ぜた endpoints への direct race が生きている
 //! endpoint を掴んで wire envelope を配送することを実証する。
 //!
@@ -19,9 +19,9 @@ use unison::network::MessageType;
 use unison::network::channel::UnisonChannel;
 use unison::{ProtocolServer, ServerHandle};
 use vantage_point::daemon::dialer;
-use vantage_point::daemon::hub_client::WorldEntry;
+use vantage_point::daemon::hub_client::NodeEntry;
 
-/// target world 相当の QUIC server を `[::1]:0` に立てる。daemon の wire channel 慣習を
+/// target daemon 相当の QUIC server を `[::1]:0` に立てる。daemon の wire channel 慣習を
 /// ミラー: `wire/send` request の payload を `tx` へ流し、`{"ok": true}` を返す
 /// （エラー時は success frame に `{"error": ...}` — VP-163 慣習）。
 async fn start_wire_target(tx: mpsc::Sender<Value>) -> anyhow::Result<(ServerHandle, u16)> {
@@ -74,7 +74,7 @@ async fn direct_race_delivers_wire_envelope_despite_dead_decoy() -> anyhow::Resu
     let (rx_tx, mut rx) = mpsc::channel::<Value>(4);
     let (handle, port) = start_wire_target(rx_tx).await?;
 
-    let entry = WorldEntry {
+    let entry = NodeEntry {
         wld_id: "wld_direct-e2e".to_string(),
         // dead decoy 先頭 + live: race が decoy の失敗を待たずに live を掴むこと。
         endpoints: vec!["[::1]:1".to_string(), format!("[::1]:{port}")],
@@ -112,7 +112,7 @@ async fn direct_all_dead_fails_bounded() -> anyhow::Result<()> {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 
-    let entry = WorldEntry {
+    let entry = NodeEntry {
         wld_id: "wld_direct-dead".to_string(),
         endpoints: vec!["[::1]:1".to_string()],
         handle: "direct-dead".to_string(),

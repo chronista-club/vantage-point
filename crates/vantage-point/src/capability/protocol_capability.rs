@@ -7,12 +7,12 @@
 //! - REQ-PROTO-004: EventBus連携
 //! - REQ-PROTO-005: Transport抽象化
 
+use crate::capability::component_service::{Component, LayerScope};
 use crate::capability::core::{
     Capability, CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityResult,
     CapabilityState,
 };
 use crate::capability::eventbus::FilteredSubscription;
-use crate::capability::stand_service::{LayerScope, Stand};
 use crate::protocol::{ProtocolMessage, ToAcp, ToAgUi, VantageEvent};
 use async_trait::async_trait;
 use std::any::Any;
@@ -226,7 +226,7 @@ impl Capability for ProtocolCapability {
         self.state
     }
 
-    /// VP-83 Stand 自己診断 (2026-04-25) — Protocol layer の snapshot
+    /// VP-83 Agent 自己診断 (2026-04-25) — Protocol layer の snapshot
     /// 観測ポイント: subscriber 数、subscription_id、broadcast receiver count
     fn diagnose(&self) -> crate::capability::DiagnosticReport {
         let details = serde_json::json!({
@@ -308,24 +308,24 @@ impl ProtocolRouter {
 }
 
 // =============================================================================
-// VP-159 PR-2: Stand trait impl
+// VP-159 PR-2: component trait impl
 // =============================================================================
 
-/// `ProtocolCapability` を VP-159 `Stand` (= ECS entity bound actor) として登録する impl。
+/// `ProtocolCapability` を VP-159 `Agent` (= ECS entity bound actor) として登録する impl。
 ///
 /// 役割: AG-UI / ACP / Vantage transport bridge。 VP-178 (Phase 4) 以降、
 /// `register("protocol")` 経由の mailbox 所有は廃止 (= `initialize` の `_ctx` 未使用)、
-/// `AgentCapability` と同じく observer pattern として揃った。 Stand trait の minimal
+/// `AgentCapability` と同じく observer pattern として揃った。 component trait の minimal
 /// marker (name / layer_scope / as_any) のみ実装、 pattern 形式化は PR-4 supervisor
 /// 統一時に trait 拡張で行う。
-impl Stand for ProtocolCapability {
+impl Component for ProtocolCapability {
     fn actor_name(&self) -> &str {
         "protocol"
     }
 
     fn layer_scope(&self) -> LayerScope {
-        // SP-local (= 1 Process per project)
-        LayerScope::Project
+        // repo-local (= 1 Process per repo)
+        LayerScope::Repo
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -448,10 +448,10 @@ mod tests {
 
     #[test]
     fn protocol_capability_implements_stand() {
-        // VP-159 PR-2: ProtocolCapability が Stand trait を満たす事を sig level で確認
+        // VP-159 PR-2: ProtocolCapability が component trait を満たす事を sig level で確認
         let cap = ProtocolCapability::new();
-        let stand: &dyn Stand = &cap;
-        assert_eq!(stand.actor_name(), "protocol");
-        assert_eq!(stand.layer_scope(), LayerScope::Project);
+        let agent: &dyn Component = &cap;
+        assert_eq!(agent.actor_name(), "protocol");
+        assert_eq!(agent.layer_scope(), LayerScope::Repo);
     }
 }

@@ -1,8 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#MISE description="TheWorld daemon を background spawn (nohup detach、 task は即 exit、 log は logs task で tail)"
+#MISE description="daemon を background spawn (nohup detach、 task は即 exit、 log は logs task で tail)"
 #
-# TheWorld(vp) daemon を background spawn する daemon group の一員 (2026-06-09 world→daemon rename)。
+# vp daemon を background spawn する daemon group の一員 (2026-06-09 world→daemon rename)。
 # bash の `nohup "$VP" daemon start </dev/null >>log 2>&1 & disown` (controlling tty / parent process
 # group から切離して spawn) を Process.spawn(pgroup: true, redirect to log) + Process.detach で表現。
 # task は spawn 後すぐ exit (旧: foreground blocking で log tail まで持っていたのを 2026-05-07 に detach 化)。

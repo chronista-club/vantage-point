@@ -18,7 +18,7 @@ protocol "sidebar" version="1.0.0" {
     // channel "ipc": envelope="t" で全 request を束ねる discriminated union
     // (`IpcEnvelope`) を生成する。 transient = request ごとに完結 (response 無し)。
     channel "ipc" from="client" lifetime="transient" envelope="t" {
-        // Currents セクションの project accordion 開閉 (+ SP auto-spawn 連動)
+        // Currents セクションの repo accordion 開閉 (+ repo auto-spawn 連動)
         request "process:toggle" {
             field "path" type="string"
             field "expanded" type="bool"
@@ -31,18 +31,18 @@ protocol "sidebar" version="1.0.0" {
         request "process:restart" {
             field "path" type="string"
         }
-        // Process stop 要求 (SP を停止。 project は registered のまま →
-        // 一時停止中 tab へ移動。 enabled フラグは不変、 SP プロセスだけ落とす)
+        // Process stop 要求 (repo を停止。 repo は registered のまま →
+        // 一時停止中 tab へ移動。 enabled フラグは不変、 repo プロセスだけ落とす)
         request "process:stop" {
             field "path" type="string"
         }
-        // Project delete 要求 (SP 停止 + projects.kdl から unregister。
+        // Repo delete 要求 (repo 停止 + repos.kdl から unregister。
         // 破壊的なので UI 側で 2-click 確認済。 repo ディレクトリ自体は消さない)
-        request "process:delete" {
+        request "repo:delete" {
             field "path" type="string"
         }
-        // sidebar の project 追加ボタン (fieldless)
-        request "process:add" {}
+        // sidebar の repo 追加ボタン (fieldless)
+        request "repo:add" {}
         // Lane row click → main area に対応 pane を表示
         request "lane:select" {
             field "path" type="string"
@@ -53,7 +53,7 @@ protocol "sidebar" version="1.0.0" {
             field "path" type="string"
             field "address" type="string"
         }
-        // Lane Conductor Stand restart 要求
+        // Lane Conductor Agent restart 要求
         // fresh=true は resume/continue を回避し fresh な claude を起動する
         // (sidebar "New Conductor Session")。 省略時は従来通り --resume で会話を継ぐ。
         request "lane:restart" {
@@ -61,7 +61,7 @@ protocol "sidebar" version="1.0.0" {
             field "address" type="string"
             field "fresh" type="bool" optional=#true
         }
-        // doc 44 D4: この lane を project の開発起点にする (Host の帳簿のポインタ更新)。
+        // doc 44 D4: この lane を repo の開発起点にする (Host の帳簿のポインタ更新)。
         // D5 の通り **何も動かさない** — cwd も active lane も engine も変わらない。
         request "lane:set_origin" {
             field "path" type="string"
@@ -73,31 +73,31 @@ protocol "sidebar" version="1.0.0" {
             field "path" type="string"
             field "order" type="array<string>"
         }
-        // Performer Lane 作成要求 (branch / stand は optional)
+        // Performer Lane 作成要求 (branch / agent は optional)
         request "lane:add_performer" {
             field "path" type="string"
             field "name" type="string"
             field "branch" type="string" optional=#true
-            field "stand" type="string" optional=#true
+            field "agent" type="string" optional=#true
         }
-        // + Add Performer form の利用可能 Stand 一覧 fetch
-        request "stands:fetch" {
+        // + Add Performer form の利用可能 Agent 一覧 fetch
+        request "agents:fetch" {
             field "path" type="string"
         }
-        // Project-scope Stand row click → main area に対応 pane を表示
+        // Repo-scope Agent row click → main area に対応 pane を表示
         request "stand:select" {
             field "path" type="string"
             field "kind" type="string"
         }
         // Clone 用フォルダ picker を開く要求 (fieldless)
-        request "project:clone:pickFolder" {}
+        request "repo:clone:pickFolder" {}
         // File picker: lane workdir 配下を walk して entries を返却。
         // 結果は server → client へ window.vpFiles.handleListResult(...) で push (transient channel のため返信枠なし)。
         request "files:list" {
             field "path" type="string"
             field "address" type="string"
         }
-        // File picker: 選択されたファイルを Canvas (Paisley Park) に表示。
+        // File picker: 選択されたファイルを Canvas (Board) に表示。
         // Rust 側で拡張子に応じて Markdown/Log/Html を組み立て、 main_view へ Show を inject。
         request "files:open" {
             field "path" type="string"
@@ -105,7 +105,7 @@ protocol "sidebar" version="1.0.0" {
             field "rel_path" type="string"
         }
         // Wire inbox (doc 34 §4 V1): 選択 lane の wire 履歴を read-only で取得。
-        // Rust が World "wire" channel に wire/history + wire/unread-count を request し、
+        // Rust が Daemon "wire" channel に wire/history + wire/unread-count を request し、
         // 結果を window.vpWire.handleResult で push back する (cursor 不触り)。
         request "wire:fetch" {
             field "path" type="string"
@@ -124,6 +124,75 @@ protocol "sidebar" version="1.0.0" {
         // version = 適用予定の latest version (ダイアログ文言用)。
         request "update:apply" {
             field "version" type="string"
+        }
+
+        // ===================================================================
+        // server → client（Rust が sidebar bundle へ押し込む）
+        // ===================================================================
+        //
+        // channel は両方向を運ぶので、request（client → server）と同じ channel に置く。
+        // 生成される envelope は別名（`IpcEnvelope` / `IpcEventEnvelope`）。
+        //
+        // ⚠️ **なぜ main の `vp-push.kdl` に相乗りしないか** — webview は 1 document だが
+        // bundle は 2 本（`editor-host.bundle.js` / `sidebar.bundle.js`）で、module state を
+        // 共有できない。`dispatch.ts` の保留箱は main bundle の中にあるので、sidebar 側の
+        // 受け手をそこへ登録する術がない。**bundle が受け口の単位**なので、sidebar は
+        // 自分の受け口（`window.vpSidebarDispatch`）を持つ。
+        //
+        // ⚠️ 旧来はここも `window.renderSidebarState(...)` のように**名前で関数を呼ぶ**形で、
+        // ①型が無い ②bundle 未評価の間は `window.X &&` guard が黙って捨てる、の 2 つの負債が
+        // あった（doc 53 §6.5.1.3）。
+
+        // sidebar の全 state を push する唯一の経路。
+        // ⚠️ **`state` の形の持ち主は Rust の `SidebarState`**（ts-rs が
+        // `webview/src/generated/SidebarState.ts` を出す）。KDL にも書くと二重定義になるので
+        // ここでは `json` にし、受け側 1 箇所で `SidebarState` に落とす。
+        event "sidebar:state" {
+            field "state" type="json"
+        }
+
+        // daemon 接続失敗等の error 表示。
+        event "sidebar:error" {
+            field "message" type="string"
+        }
+
+        // + Add Performer の作成結果。`error` 省略 = 成功（form を閉じる）。
+        event "performer:create_result" {
+            field "repo_path" type="string"
+            field "name" type="string"
+            field "error" type="string" optional=#true
+        }
+
+        // + Add Performer の dropdown を populate する Agent 一覧（`agents:fetch` の戻り）。
+        // 要素の形の持ち主は Rust `client::AgentInfo`。
+        event "agents:result" {
+            field "repo_path" type="string"
+            field "agents" type="array<json>"
+            field "error" type="string" optional=#true
+        }
+
+        // File Explorer の walk 結果（`files:list` の戻り）。
+        event "files:list_result" {
+            field "address" type="string"
+            field "entries" type="array<json>"
+            field "truncated" type="bool"
+        }
+
+        // Wire inbox の履歴（`wire:fetch` / `wire:ack` の戻り）。
+        event "wire:result" {
+            field "payload" type="json"
+        }
+
+        // Clone 用フォルダ picker の選択結果（`repo:clone:pickFolder` の戻り）。
+        // ⚠️ **キャンセル時は撃たない**（既存の override を保持する = 既存挙動）。
+        event "clone:path_picked" {
+            field "path" type="string"
+        }
+
+        // Cmd+O（File menu accelerator）で File Explorer overlay を開かせる。
+        // これだけは request の戻りではなく、**menu 起点の一方向 push**。
+        event "file_picker:open" {
+            field "address" type="string"
         }
     }
 }

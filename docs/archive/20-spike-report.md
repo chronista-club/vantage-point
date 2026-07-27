@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # doc 20: VP-170 Phase 1 spike report — SurrealDB LIVE Query feasibility (Q1-Q3 結果)
 
 > **改訂 (2026-05-21)**: 本 spike が feasibility 検証した doc 19 の Whitesnake-primary msgbox は、 その後の **wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃**された。 本 doc は doc 19 epic の Phase 1 spike の historical reference として残置する。 SurrealDB LIVE Query の検証結果自体は技術 reference として有効だが、 `msgs` table / msgbox 実装への言及は撤去済。

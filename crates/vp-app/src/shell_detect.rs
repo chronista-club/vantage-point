@@ -13,7 +13,7 @@
 //! - **Linux**: `$SHELL` > `/bin/bash`。
 //!
 //! Mode 1 (`crate::terminal::spawn_shell` — local portable-pty) と
-//! Mode 2 (`crate::ws_terminal::connect_daemon_terminal` — TheWorld daemon WS 経由)
+//! Mode 2 (`crate::ws_terminal::connect_daemon_terminal` — daemon WS 経由)
 //! の両方から使える共通モジュール。
 
 // Phase review fix #1: detect_shell_args は OS-agnostic に basename 抽出するので Path 非依存。
@@ -53,7 +53,7 @@ pub fn detect_shell() -> String {
     #[cfg(windows)]
     {
         // 1. git-bash (標準 install path → PATH 上の bash.exe、 WSL stub 除外)。
-        //    検出ロジックは vp-paths に集約 (stand_spawner と共有、 WindowsApps stub も除外)。
+        //    検出ロジックは vp-paths に集約 (agent_spawner と共有、 WindowsApps stub も除外)。
         if let Some(p) = vp_paths::shell::find_git_bash() {
             return p.to_string_lossy().into_owned();
         }

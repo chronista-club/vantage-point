@@ -1,10 +1,10 @@
 /**
- * Lane / project switcher picker overlay (= 規約 v0.4 §C.3 `s` directive)。
+ * Lane / repo switcher picker overlay (= 規約 v0.4 §C.3 `s` directive)。
  *
- * `Cmd hold s` で発火、 sidebar 全面を覆う overlay に **全 lane + project header の flat list**
+ * `Cmd hold s` で発火、 sidebar 全面を覆う overlay に **全 lane + repo header の flat list**
  * を表示する。 fuzzy 検索 + ↑↓ で navigate、 Enter で:
  * - lane を選択 → `lane:select` IPC で main area を当該 Lane に切替
- * - project header を選択 → `process:toggle` IPC で accordion を expand
+ * - repo header を選択 → `process:toggle` IPC で accordion を expand
  *
  * FileExplorer.tsx の構造を base に reduce: tree expand なし、 単純 flat list + fuzzy。
  */
@@ -23,12 +23,12 @@ import { sendIpc } from "./ipc";
 import { laneAddressKey, laneLabel } from "./lane";
 
 interface PickerEntry {
-	kind: "lane" | "project";
-	/** lane なら `LaneAddressWire.key()` (例: `vantage-point/root`)、 project なら path */
+	kind: "lane" | "repo";
+	/** lane なら `LaneAddressWire.key()` (例: `vantage-point/root`)、 repo なら path */
 	id: string;
-	/** 表示 label (`project / Lane label` 等) */
+	/** 表示 label (`repo / Lane label` 等) */
 	label: string;
-	/** sendIpc 用 project path */
+	/** sendIpc 用 repo path */
 	path: string;
 	/** lane の時のみ存在 (= sendIpc address) */
 	address?: string;
@@ -48,13 +48,13 @@ const [selectedIndex, setSelectedIndex] = createSignal(0);
 
 function buildEntries(): PickerEntry[] {
 	const out: PickerEntry[] = [];
-	const map = sidebar.lanes_by_project ?? {};
+	const map = sidebar.lanes_by_repo ?? {};
 	for (const proc of sidebar.processes) {
-		const projectName = proc.path.split("/").pop() ?? proc.path;
+		const repoName = proc.path.split("/").pop() ?? proc.path;
 		out.push({
-			kind: "project",
+			kind: "repo",
 			id: proc.path,
-			label: `${projectName}`,
+			label: `${repoName}`,
 			path: proc.path,
 		});
 		const lanes = map[proc.path] ?? [];
@@ -63,7 +63,7 @@ function buildEntries(): PickerEntry[] {
 			out.push({
 				kind: "lane",
 				id: addr,
-				label: `${projectName} / ${laneLabel(lane)}`,
+				label: `${repoName} / ${laneLabel(lane)}`,
 				path: proc.path,
 				address: addr,
 			});
@@ -154,7 +154,7 @@ export function LanePicker() {
 		if (entry.kind === "lane" && entry.address) {
 			sendIpc({ t: "lane:select", path: entry.path, address: entry.address });
 		} else {
-			// project header → accordion expand (process:toggle で SP auto-spawn も連動)
+			// repo header → accordion expand (process:toggle で repo auto-spawn も連動)
 			sendIpc({ t: "process:toggle", path: entry.path, expanded: true });
 		}
 		dismiss();
@@ -191,7 +191,7 @@ export function LanePicker() {
 							ref={inputRef}
 							class="vp-lp-search"
 							type="text"
-							placeholder="Lane / project を検索..."
+							placeholder="Lane / repo を検索..."
 							value={query()}
 							onInput={(e) => {
 								setQuery(e.currentTarget.value);
@@ -220,7 +220,7 @@ export function LanePicker() {
 									classList={{
 										selected: idx() === selectedIndex(),
 										lane: entry.kind === "lane",
-										project: entry.kind === "project",
+										repo: entry.kind === "repo",
 									}}
 									onClick={() => {
 										setSelectedIndex(idx());
@@ -232,7 +232,7 @@ export function LanePicker() {
 									<span class="vp-lp-icon">
 										<CreoIcon
 											name={
-												entry.kind === "project" ? "ph:folder" : "ph:record"
+												entry.kind === "repo" ? "ph:folder" : "ph:record"
 											}
 											size={11}
 										/>
@@ -277,7 +277,7 @@ export const LANE_PICKER_CSS = `
 .vp-lp-row:hover{background:var(--color-surface-bg-emphasis);}
 .vp-lp-row.selected{background:var(--color-brand-primary-subtle);
   color:var(--color-brand-primary);}
-.vp-lp-row.project{font-weight:500;color:var(--color-text-secondary);}
+.vp-lp-row.repo{font-weight:500;color:var(--color-text-secondary);}
 .vp-lp-icon{display:inline-flex;width:14px;justify-content:center;align-items:center;
   flex:0 0 auto;color:var(--color-text-tertiary);}
 .vp-lp-row.selected .vp-lp-icon{color:var(--color-brand-primary);}

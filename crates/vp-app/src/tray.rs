@@ -1,6 +1,6 @@
 //! tray-icon — 常駐トレイアイコン
 //!
-//! Phase W3 で TheWorld 稼働状態の表示 + プロジェクト切替を追加予定。
+//! Phase W3 で daemon 稼働状態の表示 + repo 切替を追加予定。
 
 use tray_icon::{TrayIcon, TrayIconBuilder, menu::Menu as TrayMenu};
 

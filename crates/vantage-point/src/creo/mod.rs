@@ -9,7 +9,7 @@
 //! - [`CreoUI`] 見せ方 (Component 単位、2026-04-22 確定)
 //!
 //! Event パイプライン:
-//! - [`Event`] が全 Stand 間を流れる単位
+//! - [`Event`] が全 Agent 間を流れる単位
 //! - `payload: CreoContent` + 任意 `ui: CreoUI`
 
 pub mod content;

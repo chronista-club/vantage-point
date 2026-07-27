@@ -3,10 +3,10 @@
  *
  * 固めるのは 3 点（1 Lane = N session の要）:
  *  - handleEvent の session 既定（未指定 = 1 = focused = 旧 SP 互換）で renderer に渡す
- *  - handleSessionList の CustomEvent 中継（cache 取り込み + 'vp:echoes-sessions' 発火）
+ *  - handleSessionList の CustomEvent 中継（cache 取り込み + 'vp:conversation-sessions' 発火）
  *  - focusedOf の既定（未知 lane = 1）
  *
- * 加えて doc 47 §6（共有 bus の相関 id）: 'vp:echoes-stands' は複数の「+」menu が購読する
+ * 加えて doc 47 §6（共有 bus の相関 id）: 'vp:conversation-agents' は複数の「+」menu が購読する
  * broadcast なので、**別の要求元の応答では発火しない**ことを固定する。
  *
  *
@@ -22,12 +22,14 @@ import {
   normalizeSession,
   noteSessionList,
   noteFocus,
+  noteSessionMode,
+  sessionModeOf,
   focusedOf,
   syncHeaderSessionId,
   nextRequestId,
   isMyResponse,
   type BusRequestId,
-  type EchoesStandsDetail,
+  type AgentsDetail,
 } from './console'
 
 // --- 最小 DOM stub -----------------------------------------------------------------------------
@@ -87,14 +89,48 @@ describe('focusedOf / noteSessionList / noteFocus — per-lane focused registry'
   })
   it('noteSessionList が focused を反映する', () => {
     noteSessionList('proj/lane-b', 3, [
-      { key: 1, stand: 'echoes', engine_session_id: null, live: false, focused: false },
-      { key: 3, stand: 'codex', engine_session_id: 'abc', live: true, focused: true },
+      { key: 1, agent: 'claude', engine_session_id: null, live: false, focused: false },
+      { key: 3, agent: 'codex', engine_session_id: 'abc', live: true, focused: true },
     ])
     expect(focusedOf('proj/lane-b')).toBe(3)
   })
   it('noteFocus が楽観的に focused を切替える（cache 未作成でも作る）', () => {
     noteFocus('proj/lane-c', 2)
     expect(focusedOf('proj/lane-c')).toBe(2)
+  })
+})
+
+describe('sessionModeOf / noteSessionMode — mode の読み手 cache', () => {
+  it('未知 lane / 未知 session は tui に倒す（旧 SP wire 互換の既定）', () => {
+    expect(sessionModeOf('proj/unknown-mode-lane', 1)).toBe('tui')
+  })
+
+  it('**API の setSessionMode 経由で即座に読める**（full fetch を待たない）', () => {
+    // ⚠️ 検証は必ず **`setSessionMode`（実際の書き手）** を通す。helper（`noteSessionMode`）を
+    // 直接呼ぶ形だと、`setSessionMode` が helper を呼び忘れていても緑になる — 実際に最初は
+    // そう書いてしまい、fix を外しても落ちなかった（罠を検出しないテスト、4 回目）。
+    //
+    // 落ちるべき壊し方 = `setSessionMode` から cache 更新を外す。それを検出する。
+    // `laneSessions` は `conversation_session_list` の full fetch でしか埋まらないが、mode 切替は
+    // その fetch を伴わない — 更新漏れは `ink.ts` の誤配送（畳まれた PtySlot へ term:write が
+    // 飛んで黙って消える）になる（team-b 9 回目 2026-07-25 score 92）。
+    const con = installConsole()
+    noteSessionList('proj/mode-lane', 5, [
+      { key: 5, agent: 'claude', engine_session_id: null, live: false, focused: true, mode: 'tui' },
+    ])
+    expect(sessionModeOf('proj/mode-lane', 5)).toBe('tui')
+
+    con.setSessionMode('proj/mode-lane', 5, 'gui')
+    expect(sessionModeOf('proj/mode-lane', 5)).toBe('gui')
+
+    // 逆向きも（chat→tui の直後に ink を送ると conversation:submit が飛ぶ側）。
+    con.setSessionMode('proj/mode-lane', 5, 'tui')
+    expect(sessionModeOf('proj/mode-lane', 5)).toBe('tui')
+  })
+
+  it('一覧を知らない lane では no-op（次の full fetch が埋める）', () => {
+    noteSessionMode('proj/mode-unknown', 9, 'gui')
+    expect(sessionModeOf('proj/mode-unknown', 9)).toBe('tui')
   })
 })
 
@@ -115,19 +151,19 @@ describe('handleEvent — session 既定 1 で renderer に渡す', () => {
   })
 })
 
-describe('handleSessionList — cache 取り込み + vp:echoes-sessions 発火', () => {
+describe('handleSessionList — cache 取り込み + vp:conversation-sessions 発火', () => {
   it('focused を registry に反映し CustomEvent を detail 付きで発火する', () => {
     const con = installConsole()
     let detail: { lane?: string; focused?: number; sessions?: unknown[] } | null = null
-    document.addEventListener('vp:echoes-sessions', (e) => {
+    document.addEventListener('vp:conversation-sessions', (e) => {
       detail = (e as CustomEvent).detail
     })
     con.handleSessionList('proj/lane-f', {
       lane: 'proj/lane-f',
       focused: 2,
       sessions: [
-        { key: 1, stand: 'echoes', engine_session_id: null, live: false, focused: false },
-        { key: 2, stand: 'echoes', engine_session_id: null, live: true, focused: true },
+        { key: 1, agent: 'claude', engine_session_id: null, live: false, focused: false },
+        { key: 2, agent: 'claude', engine_session_id: null, live: true, focused: true },
       ],
     })
     expect(focusedOf('proj/lane-f')).toBe(2)
@@ -143,34 +179,34 @@ describe('handleSessionList — cache 取り込み + vp:echoes-sessions 発火',
   })
 })
 
-describe('handleStands — vp:echoes-stands で中継', () => {
-  it('stands を detail に載せて発火する', () => {
+describe('handleAgents — vp:conversation-agents で中継', () => {
+  it('agents を detail に載せて発火する', () => {
     const con = installConsole()
-    let detail: { lane?: string; stands?: unknown[] } | null = null
-    document.addEventListener('vp:echoes-stands', (e) => {
+    let detail: { lane?: string; agents?: unknown[] } | null = null
+    document.addEventListener('vp:conversation-agents', (e) => {
       detail = (e as CustomEvent).detail
     })
-    con.handleStands('proj/lane-h', { stands: [{ name: 'echoes' }, { name: 'codex' }] })
+    con.handleAgents('proj/lane-h', { agents: [{ name: 'claude' }, { name: 'codex' }] })
     expect(detail).not.toBeNull()
     expect(detail!.lane).toBe('proj/lane-h')
-    expect(detail!.stands).toHaveLength(2)
+    expect(detail!.agents).toHaveLength(2)
   })
   it('req を detail に載せる（要求元タグの往復）', () => {
     const con = installConsole()
-    let detail: EchoesStandsDetail | null = null
-    document.addEventListener('vp:echoes-stands', (e) => {
+    let detail: AgentsDetail | null = null
+    document.addEventListener('vp:conversation-agents', (e) => {
       detail = (e as CustomEvent).detail
     })
-    con.handleStands('proj/lane-h2', { stands: [] }, 'pane-new#7')
+    con.handleAgents('proj/lane-h2', { agents: [] }, 'pane-new#7')
     expect(detail!.req).toBe('pane-new#7')
   })
   it('req 省略時は null（要求外の発火 = 誰も拾わない）', () => {
     const con = installConsole()
-    let detail: EchoesStandsDetail | null = null
-    document.addEventListener('vp:echoes-stands', (e) => {
+    let detail: AgentsDetail | null = null
+    document.addEventListener('vp:conversation-agents', (e) => {
       detail = (e as CustomEvent).detail
     })
-    con.handleStands('proj/lane-h3', { stands: [] })
+    con.handleAgents('proj/lane-h3', { agents: [] })
     expect(detail!.req).toBeNull()
   })
 })
@@ -198,16 +234,16 @@ describe('nextRequestId / isMyResponse — 共有 bus の要求元タグ', () =>
   })
 })
 
-describe('vp:echoes-stands — 別の要求元の応答では発火しない（#838 の凌ぎの根治）', () => {
+describe('vp:conversation-agents — 別の要求元の応答では発火しない（#838 の凌ぎの根治）', () => {
   /** 「+」menu 相当の購読側。要求を出し、自分の応答でだけ open する。 */
   function subscriber(scope: string) {
     const opened: unknown[][] = []
     let pending: BusRequestId | null = null
-    document.addEventListener('vp:echoes-stands', (e) => {
-      const d = (e as CustomEvent<EchoesStandsDetail>).detail
+    document.addEventListener('vp:conversation-agents', (e) => {
+      const d = (e as CustomEvent<AgentsDetail>).detail
       if (!isMyResponse(pending, d?.req)) return
       pending = null
-      opened.push(d.stands)
+      opened.push(d.agents)
     })
     return {
       opened,
@@ -223,7 +259,7 @@ describe('vp:echoes-stands — 別の要求元の応答では発火しない（#
     const paneNew = subscriber('pane-new')
     const chatAdd = subscriber('chat-add')
     const req = paneNew.request() // 要求したのは Pane 側だけ
-    con.handleStands('proj/lane-req-a', { stands: [{ name: 'echoes' }] }, req)
+    con.handleAgents('proj/lane-req-a', { agents: [{ name: 'claude' }] }, req)
     expect(paneNew.opened).toHaveLength(1)
     expect(chatAdd.opened).toHaveLength(0)
   })
@@ -233,7 +269,7 @@ describe('vp:echoes-stands — 別の要求元の応答では発火しない（#
     const paneNew = subscriber('pane-new')
     const chatAdd = subscriber('chat-add')
     const req = chatAdd.request()
-    con.handleStands('proj/lane-req-b', { stands: [{ name: 'codex' }] }, req)
+    con.handleAgents('proj/lane-req-b', { agents: [{ name: 'codex' }] }, req)
     expect(chatAdd.opened).toHaveLength(1)
     expect(paneNew.opened).toHaveLength(0)
   })
@@ -244,7 +280,7 @@ describe('vp:echoes-stands — 別の要求元の応答では発火しない（#
     const chatAdd = subscriber('chat-add')
     paneNew.request()
     const chatReq = chatAdd.request()
-    con.handleStands('proj/lane-req-c', { stands: [] }, chatReq)
+    con.handleAgents('proj/lane-req-c', { agents: [] }, chatReq)
     expect(chatAdd.opened).toHaveLength(1)
     expect(paneNew.opened).toHaveLength(0) // 要求中でも他人の応答では開かない
   })
@@ -254,7 +290,7 @@ describe('vp:echoes-stands — 別の要求元の応答では発火しない（#
     const paneNew = subscriber('pane-new')
     const stale = paneNew.request()
     paneNew.request() // 2 回目の click で pending が更新される
-    con.handleStands('proj/lane-req-d', { stands: [] }, stale)
+    con.handleAgents('proj/lane-req-d', { agents: [] }, stale)
     expect(paneNew.opened).toHaveLength(0)
   })
 
@@ -262,7 +298,7 @@ describe('vp:echoes-stands — 別の要求元の応答では発火しない（#
     const con = installConsole()
     const paneNew = subscriber('pane-new')
     paneNew.request()
-    con.handleStands('proj/lane-req-e', { stands: [] })
+    con.handleAgents('proj/lane-req-e', { agents: [] })
     expect(paneNew.opened).toHaveLength(0)
   })
 })
@@ -279,8 +315,8 @@ describe('syncHeaderSessionId — chip は focused session の真値に追従（
     expect(con.headerState('proj/lane-sync-a').sessionId).toBe('old-id')
     // 新 draft (key 2, id なし) を focus した list が届く
     noteSessionList('proj/lane-sync-a', 2, [
-      { key: 1, stand: 'echoes', engine_session_id: 'old-id', live: true, focused: false },
-      { key: 2, stand: 'echoes', engine_session_id: null, live: false, focused: true },
+      { key: 1, agent: 'claude', engine_session_id: 'old-id', live: true, focused: false },
+      { key: 2, agent: 'claude', engine_session_id: null, live: false, focused: true },
     ])
     expect(syncHeaderSessionId('proj/lane-sync-a')).toBe(true)
     expect(con.headerState('proj/lane-sync-a').sessionId).toBeUndefined()
@@ -289,8 +325,8 @@ describe('syncHeaderSessionId — chip は focused session の真値に追従（
   it('id 持ち session への切替は chip がその id になる（変化なしなら false）', () => {
     const con = installConsole()
     noteSessionList('proj/lane-sync-b', 3, [
-      { key: 1, stand: 'echoes', engine_session_id: 'aaa', live: false, focused: false },
-      { key: 3, stand: 'codex', engine_session_id: 'ccc', live: true, focused: true },
+      { key: 1, agent: 'claude', engine_session_id: 'aaa', live: false, focused: false },
+      { key: 3, agent: 'codex', engine_session_id: 'ccc', live: true, focused: true },
     ])
     expect(syncHeaderSessionId('proj/lane-sync-b')).toBe(true)
     expect(con.headerState('proj/lane-sync-b').sessionId).toBe('ccc')
@@ -298,7 +334,7 @@ describe('syncHeaderSessionId — chip は focused session の真値に追従（
     expect(syncHeaderSessionId('proj/lane-sync-b')).toBe(false)
   })
 
-  it('handleSessionList 経由で自動同期され vp:echoes-header が飛ぶ', () => {
+  it('handleSessionList 経由で自動同期され vp:lane-header が飛ぶ', () => {
     const con = installConsole()
     con.handleEvent(
       'proj/lane-sync-c',
@@ -306,15 +342,15 @@ describe('syncHeaderSessionId — chip は focused session の真値に追従（
       1,
     )
     let headerFired = 0
-    document.addEventListener('vp:echoes-header', () => {
+    document.addEventListener('vp:lane-header', () => {
       headerFired += 1
     })
     con.handleSessionList('proj/lane-sync-c', {
       lane: 'proj/lane-sync-c',
       focused: 2,
       sessions: [
-        { key: 1, stand: 'echoes', engine_session_id: 'stale-id', live: true, focused: false },
-        { key: 2, stand: 'echoes', engine_session_id: null, live: false, focused: true },
+        { key: 1, agent: 'claude', engine_session_id: 'stale-id', live: true, focused: false },
+        { key: 2, agent: 'claude', engine_session_id: null, live: false, focused: true },
       ],
     })
     expect(con.headerState('proj/lane-sync-c').sessionId).toBeUndefined()

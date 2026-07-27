@@ -12,7 +12,14 @@
 import { render } from 'solid-js/web'
 import { Shell, SHELL_CSS } from './src/sidebar/Shell'
 import { installIpcBridge } from './src/sidebar/ipc'
+import { openSidebarDispatch } from './src/sidebar/dispatch'
 import { installSidebarKeybindings } from './src/sidebar/keybindings'
+
+// Rust → sidebar の押し込みの受け口を **module 評価の最初に**生やす（実処理の接続は下方
+// `installIpcBridge`）。ここに置くこと自体が保留箱の効き目を決める — `installIpcBridge` の
+// 直前に置くと保留窓が実質ゼロになり、bundle 評価中の押し込みは Rust 側の
+// `window.vpSidebarDispatch &&` guard に黙って捨てられる（doc 53 §6.5.1.3）。
+openSidebarDispatch()
 
 console.info('[vp-sidebar] booting (v1.0 柱2 PR-1 scaffold)')
 
@@ -31,8 +38,7 @@ function bootLog(msg: string): void {
 }
 
 try {
-  // IPC bridge は component mount より前に登録する。
-  // Rust は webview build 直後から window.renderSidebarState を呼びうるため。
+  // 押し込みの実処理は component mount より前に繋ぐ（受け口は上方で既に生えている）。
   installIpcBridge()
   // Sidebar 専用ショートカット (Cmd+F → File Explorer overlay) を登録。
   installSidebarKeybindings()

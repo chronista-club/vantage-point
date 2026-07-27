@@ -14,6 +14,52 @@ export type LanguageCode = string; // ISO 639-1 format
 // Channel: ipc (backend=stream)
 // ════════════════════════════════════════════════
 
+/** Event "sidebar:state" */
+export interface SidebarState {
+  state: any;
+}
+
+/** Event "sidebar:error" */
+export interface SidebarError {
+  message: string;
+}
+
+/** Event "performer:create_result" */
+export interface PerformerCreateResult {
+  repo_path: string;
+  name: string;
+  error?: string;
+}
+
+/** Event "agents:result" */
+export interface AgentsResult {
+  repo_path: string;
+  agents: any[];
+  error?: string;
+}
+
+/** Event "files:list_result" */
+export interface FilesListResult {
+  address: string;
+  entries: any[];
+  truncated: boolean;
+}
+
+/** Event "wire:result" */
+export interface WireResult {
+  payload: any;
+}
+
+/** Event "clone:path_picked" */
+export interface ClonePathPicked {
+  path: string;
+}
+
+/** Event "file_picker:open" */
+export interface FilePickerOpen {
+  address: string;
+}
+
 /** Request "process:toggle" */
 export interface ProcessToggle {
   path: string;
@@ -35,13 +81,13 @@ export interface ProcessStop {
   path: string;
 }
 
-/** Request "process:delete" */
-export interface ProcessDelete {
+/** Request "repo:delete" */
+export interface RepoDelete {
   path: string;
 }
 
-/** Request "process:add" — empty payload */
-export interface ProcessAdd {}
+/** Request "repo:add" — empty payload */
+export interface RepoAdd {}
 
 /** Request "lane:select" */
 export interface LaneSelect {
@@ -79,11 +125,11 @@ export interface LaneAddPerformer {
   path: string;
   name: string;
   branch?: string;
-  stand?: string;
+  agent?: string;
 }
 
-/** Request "stands:fetch" */
-export interface StandsFetch {
+/** Request "agents:fetch" */
+export interface AgentsFetch {
   path: string;
 }
 
@@ -93,8 +139,8 @@ export interface StandSelect {
   kind: string;
 }
 
-/** Request "project:clone:pickFolder" — empty payload */
-export interface ProjectClonePickFolder {}
+/** Request "repo:clone:pickFolder" — empty payload */
+export interface RepoClonePickFolder {}
 
 /** Request "files:list" */
 export interface FilesList {
@@ -128,7 +174,16 @@ export interface UpdateApply {
 }
 
 /** Event name → 生成 interface の map for "ipc" (= type-narrowing 用) */
-export type IpcChannelEventTypes = Record<string, never>;
+export type IpcChannelEventTypes = {
+  SidebarState: SidebarState;
+  SidebarError: SidebarError;
+  PerformerCreateResult: PerformerCreateResult;
+  AgentsResult: AgentsResult;
+  FilesListResult: FilesListResult;
+  WireResult: WireResult;
+  ClonePathPicked: ClonePathPicked;
+  FilePickerOpen: FilePickerOpen;
+};
 
 /** Request name → { request, response } 生成 interface の map for "ipc" */
 export type IpcChannelRequestTypes = {
@@ -136,17 +191,17 @@ export type IpcChannelRequestTypes = {
   ProcessReorder: { request: ProcessReorder; response: void };
   ProcessRestart: { request: ProcessRestart; response: void };
   ProcessStop: { request: ProcessStop; response: void };
-  ProcessDelete: { request: ProcessDelete; response: void };
-  ProcessAdd: { request: ProcessAdd; response: void };
+  RepoDelete: { request: RepoDelete; response: void };
+  RepoAdd: { request: RepoAdd; response: void };
   LaneSelect: { request: LaneSelect; response: void };
   LaneDelete: { request: LaneDelete; response: void };
   LaneRestart: { request: LaneRestart; response: void };
   LaneSetOrigin: { request: LaneSetOrigin; response: void };
   LaneReorder: { request: LaneReorder; response: void };
   LaneAddPerformer: { request: LaneAddPerformer; response: void };
-  StandsFetch: { request: StandsFetch; response: void };
+  AgentsFetch: { request: AgentsFetch; response: void };
   StandSelect: { request: StandSelect; response: void };
-  ProjectClonePickFolder: { request: ProjectClonePickFolder; response: void };
+  RepoClonePickFolder: { request: RepoClonePickFolder; response: void };
   FilesList: { request: FilesList; response: void };
   FilesOpen: { request: FilesOpen; response: void };
   WireFetch: { request: WireFetch; response: void };
@@ -160,23 +215,23 @@ export const IpcChannelMeta = {
   backend: "stream" as const,
   from: "client" as const,
   lifetime: "transient" as const,
-  events: [] as const,
+  events: ["sidebar:state", "sidebar:error", "performer:create_result", "agents:result", "files:list_result", "wire:result", "clone:path_picked", "file_picker:open"] as const,
   requests: {
     ProcessToggle: { request: "process:toggle" as const, response: "void" as const },
     ProcessReorder: { request: "process:reorder" as const, response: "void" as const },
     ProcessRestart: { request: "process:restart" as const, response: "void" as const },
     ProcessStop: { request: "process:stop" as const, response: "void" as const },
-    ProcessDelete: { request: "process:delete" as const, response: "void" as const },
-    ProcessAdd: { request: "process:add" as const, response: "void" as const },
+    RepoDelete: { request: "repo:delete" as const, response: "void" as const },
+    RepoAdd: { request: "repo:add" as const, response: "void" as const },
     LaneSelect: { request: "lane:select" as const, response: "void" as const },
     LaneDelete: { request: "lane:delete" as const, response: "void" as const },
     LaneRestart: { request: "lane:restart" as const, response: "void" as const },
     LaneSetOrigin: { request: "lane:set_origin" as const, response: "void" as const },
     LaneReorder: { request: "lane:reorder" as const, response: "void" as const },
     LaneAddPerformer: { request: "lane:add_performer" as const, response: "void" as const },
-    StandsFetch: { request: "stands:fetch" as const, response: "void" as const },
+    AgentsFetch: { request: "agents:fetch" as const, response: "void" as const },
     StandSelect: { request: "stand:select" as const, response: "void" as const },
-    ProjectClonePickFolder: { request: "project:clone:pickFolder" as const, response: "void" as const },
+    RepoClonePickFolder: { request: "repo:clone:pickFolder" as const, response: "void" as const },
     FilesList: { request: "files:list" as const, response: "void" as const },
     FilesOpen: { request: "files:open" as const, response: "void" as const },
     WireFetch: { request: "wire:fetch" as const, response: "void" as const },
@@ -192,21 +247,32 @@ export type IpcEnvelope =
   | ({ t: "process:reorder" } & ProcessReorder)
   | ({ t: "process:restart" } & ProcessRestart)
   | ({ t: "process:stop" } & ProcessStop)
-  | ({ t: "process:delete" } & ProcessDelete)
-  | ({ t: "process:add" } & ProcessAdd)
+  | ({ t: "repo:delete" } & RepoDelete)
+  | ({ t: "repo:add" } & RepoAdd)
   | ({ t: "lane:select" } & LaneSelect)
   | ({ t: "lane:delete" } & LaneDelete)
   | ({ t: "lane:restart" } & LaneRestart)
   | ({ t: "lane:set_origin" } & LaneSetOrigin)
   | ({ t: "lane:reorder" } & LaneReorder)
   | ({ t: "lane:add_performer" } & LaneAddPerformer)
-  | ({ t: "stands:fetch" } & StandsFetch)
+  | ({ t: "agents:fetch" } & AgentsFetch)
   | ({ t: "stand:select" } & StandSelect)
-  | ({ t: "project:clone:pickFolder" } & ProjectClonePickFolder)
+  | ({ t: "repo:clone:pickFolder" } & RepoClonePickFolder)
   | ({ t: "files:list" } & FilesList)
   | ({ t: "files:open" } & FilesOpen)
   | ({ t: "wire:fetch" } & WireFetch)
   | ({ t: "wire:ack" } & WireAck)
   | ({ t: "update:apply" } & UpdateApply);
+
+/** Envelope union for channel "ipc" — discriminated on "t". */
+export type IpcEventEnvelope =
+  | ({ t: "sidebar:state" } & SidebarState)
+  | ({ t: "sidebar:error" } & SidebarError)
+  | ({ t: "performer:create_result" } & PerformerCreateResult)
+  | ({ t: "agents:result" } & AgentsResult)
+  | ({ t: "files:list_result" } & FilesListResult)
+  | ({ t: "wire:result" } & WireResult)
+  | ({ t: "clone:path_picked" } & ClonePathPicked)
+  | ({ t: "file_picker:open" } & FilePickerOpen);
 
 

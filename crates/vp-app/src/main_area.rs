@@ -15,7 +15,7 @@
 //! ┌──────────────────────────────────────────┐
 //! │ pane-host (relative container)            │
 //! │ ┌──────────────────────────────────────┐ │
-//! │ │ pane-terminal (xterm.js, agent/shell) │ │
+//! │ │ pane-lane (xterm.js, agent/shell) │ │
 //! │ │ ────────────────────────────────────  │ │
 //! │ │ pane-preview  (iframe)                │ │
 //! │ │ ────────────────────────────────────  │ │
@@ -40,46 +40,46 @@ use serde::{Deserialize, Serialize};
 /// Rust から main area JS に渡す active pane の payload
 #[derive(Debug, Clone, Serialize)]
 pub struct ActivePaneInfo<'a> {
-    /// Pane kind ("terminal" | "preview" | "paisley_park" | "gold_experience" | "bastet" | "empty" | null)
+    /// Pane kind ("lane" | "preview" | "board" | "runner" | "devices" | "empty" | null)
     /// null = 何も active でない (空状態を表示)。
-    /// VP-142 cleanup (PR-ε-4): legacy "canvas" kind 削除 (PR-ε-3 で PP body が Smart Canvas surface 物理化)
+    /// VP-142 cleanup (PR-ε-4): legacy "canvas" kind 削除 (PR-ε-3 で board body が Smart Canvas surface 物理化)
     pub kind: Option<&'a str>,
     pub pane_id: Option<&'a str>,
     /// Preview kind の URL (preview kind 以外では None)
     pub preview_url: Option<&'a str>,
-    /// この Lane が Act II (console_mode="chat") か。terminal kind でのみ意味を持つ。
+    /// この Lane が gui (root mode="gui"、sessions 由来 — doc 53 R1) か。terminal kind でのみ意味を持つ。
     ///
     /// chat lane は engine-less (pid=None) が正常形で **xterm instance を持たない**ため、
     /// JS の `showLane` が「xterm が無い = 表示すべき内容が無い」と誤判定して
     /// `#lane-empty` placeholder を ChatView の上に被せてしまう。 本 flag で
     /// 「xterm は無いが ChatView が内容を持つ」を伝え、 placeholder を抑止する。
     pub chat: bool,
-    /// Echoes 共通ヘッダ (操縦席) の cwd chip 用: この lane の cwd (絶対 path)。
+    /// Conversation 共通ヘッダ (操縦席) の cwd chip 用: この lane の cwd (絶対 path)。
     /// header は `~` 短縮 + 中略で表示し、click で full path を clipboard copy する。
     /// terminal kind でのみ意味を持つ。None = lane 不明 / 非 lane pane (chip 非表示)。
     ///
     /// cwd は address (pane_id) から導出できない唯一の lane 情報なので、setActivePane に
     /// 相乗りさせて運ぶ (新しい配信チャネルは増やさない — 既存 lane 状態配信経路)。
     pub cwd: Option<&'a str>,
-    /// Echoes 共通ヘッダの branch chip 用: performer lane の git branch
+    /// Conversation 共通ヘッダの branch chip 用: performer lane の git branch
     /// (`performer_status.branch` 由来、「安価に取れる場合のみ」)。
     /// conductor / 取得不能時は None (chip 非表示)。
     pub branch: Option<&'a str>,
-    /// Echoes 共通ヘッダの lane 名 chip 用: `LaneInfo.name`（表示名）。
+    /// Conversation 共通ヘッダの lane 名 chip 用: `LaneInfo.name`（表示名）。
     /// 現状 server 側は常に None のため JS 側は addr 由来の短縮名に fallback するが、
     /// 将来 name が populate された時にヘッダだけ古い表示に取り残されないよう
     /// cwd / branch と同じ経路で供給しておく（JS 側 entry.tsx は受け取り済み）。
     pub lane_name: Option<&'a str>,
-    /// Echoes 共通ヘッダの session chip 用: active engine の session id
-    /// （`LaneInfo.engine_session_id` 由来）。Act I は EchoesEvent が流れないため
+    /// Conversation 共通ヘッダの session chip 用: active engine の session id
+    /// （`LaneInfo.engine_session_id` 由来）。tui は ConversationEvent が流れないため
     /// event 経路では供給されず、この setActivePane 相乗りが唯一の供給路になる
-    /// （Act II では event 由来の真値が上書きする — EchoesHeader 側で OR merge）。
+    /// （gui では event 由来の真値が上書きする — LaneHeader 側で OR merge）。
     pub session_id: Option<&'a str>,
-    /// Echoes 共通ヘッダの chip prefix 用: **root session の stand**（= slot に載る engine 種別、
-    /// "echoes" / "codex" / "grok" 等）。session chip の engine 別 prefix 導出に使う。doc 39 P4-C:
-    /// 供給値は `LaneInfo.engine_stand`（root の engine）優先で、無ければ lane 固定 `stand` に
+    /// Conversation 共通ヘッダの chip prefix 用: **root session の agent**（= slot に載る engine 種別、
+    /// "claude" / "codex" / "grok" 等）。session chip の engine 別 prefix 導出に使う。doc 39 P4-C:
+    /// 供給値は `LaneInfo.agent_name`（root の engine）優先で、無ければ lane 固定 `agent` に
     /// fallback（push_active_view が解決済み — cross-engine root で chip prefix が正しく点く）。
-    pub stand: Option<&'a str>,
+    pub agent: Option<&'a str>,
 }
 
 /// `window.setActivePane(info)` を呼ぶ JS スニペットを生成
@@ -137,6 +137,10 @@ pub const MAIN_AREA_HTML: &str = concat!(
 </style>
 <style>
 "#,
+    // xterm.css は生成物 — build.mjs が node_modules/@xterm/xterm から複写する
+    // (*.bundle.js と同じ扱い、build.rs が存在を guard)。bundle 側から head へ注入せず
+    // ここに焼くのは、直後に続く app 側の上書き規則 (.xterm-viewport::-webkit-scrollbar 等) が
+    // **同じ <style> の後ろ**に来る cascade 順を保つため。
     include_str!("../assets/xterm.css"),
     r#"
 html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
@@ -156,7 +160,17 @@ body{overflow:hidden;}
 :root{
   --frame-transition-ms:220ms;
   --frame-transition-easing:cubic-bezier(.2,.8,.2,1);
-  /* VP-143: Echoes terminal (xterm.js) の Live Token 群。 creo-ui-editor-host (Ctrl+Shift+E)
+  /* Pane の名札（上段）token。「上 = この pane が何であるか（居る間 変わらない素性）」を
+     載せる帯の見た目を、実装 2 本（静的 .pane-header と SolidJS の #lane-header）で共有する。
+     doc 29/30 の Edge Ring（上 = global / 下 = local）を pane スケールへ再適用した縦軸に基づく。
+     以前は 28px（.pane-header）と 30px（#lane-header）で高さが割れており、隣り合うと段差が
+     見えていた（2026-07-23 の実機比較）。値の SSOT はここ 1 箇所。 */
+  --vp-nameplate-h:28px;
+  --vp-nameplate-pad-x:10px;
+  --vp-nameplate-font-size:12px;
+  --vp-nameplate-bg:var(--color-surface-surface);
+  --vp-nameplate-border:1px solid var(--color-surface-border-subtle);
+  /* VP-143: Conversation terminal (xterm.js) の Live Token 群。 creo-ui-editor-host (Ctrl+Shift+E)
      で runtime 調整可能。 JS 側 createLaneInstance が値を読んで `new Terminal({...})` を構築、
      MutationObserver が documentElement style 変更を捕捉して全 terminal に setter +
      fitAddon.fit() + WS resize 通知で伝播 → 既存 lane terminal も即時反映。
@@ -164,7 +178,7 @@ body{overflow:hidden;}
   --terminal-font-size:16;
   --terminal-line-height:1.27;
   --terminal-letter-spacing:0;
-  /* font zero-start (2026-07-11): Echoes terminal は principal mono ('UDEV Gothic NF'、
+  /* font zero-start (2026-07-11): Conversation terminal は principal mono ('UDEV Gothic NF'、
      Nerd Font glyph 込み) のみ。 bundle はせず local (OS install 済) font を名前参照、
      未 install 環境は末尾 monospace に縮退するのでどの OS でも描画は壊れない。 */
   --terminal-font-family:'UDEV Gothic NF', monospace;
@@ -175,6 +189,10 @@ body{overflow:hidden;}
   left:0;top:0;width:100%;height:100%;
   opacity:0;
   pointer-events:none;
+  /* wheel 吸い込み根治（2026-07-24）: opacity:0 でも iframe が compositor の scroll
+     hit-test に残るため、投影前の boot 窓も含めて hit-test から外す（app-panes.ts の
+     投影が visible 時に inline visibility:visible で上書きする）。 */
+  visibility:hidden;
   transition:
     top var(--frame-transition-ms) var(--frame-transition-easing),
     left var(--frame-transition-ms) var(--frame-transition-easing),
@@ -185,29 +203,29 @@ body{overflow:hidden;}
 }
 .pane.active{pointer-events:auto;}
 .pane.terminal{padding:0;}
-/* Echoes 共通ヘッダ (操縦席、mem `vp-pane-common-header`): Act I(xterm)/Act II(chat) を跨いで
+/* Conversation 共通ヘッダ (操縦席、mem `vp-pane-common-header`): tui(xterm)/gui(chat) を跨いで
    載り続ける lane-local な情報 + 操作の strip。DOM の器だけを World A が用意し、中身は
-   editor-host bundle の EchoesHeader component が #echoes-header に mount する
-   (#console-chat-host と同じ mount 点パターン)。
+   editor-host bundle の LaneHeader component が #lane-header に mount する
+   (chat session host と同じ mount 点パターン)。
    高さ 0 が default = header 不在時は xterm/chat が全高 (既存挙動、regression なし)。
-   header が内容を持つ時だけ World B が #pane-terminal に .echoes-header-active を付け、
-   strip を開いて lane-host / console-chat-host / lane-empty をその分だけ押し下げる
+   header が内容を持つ時だけ World B が #pane-lane に .lane-header-active を付け、
+   strip を開いて session host 群 (#term-session-<n> / .chat-session-host) と lane-empty を
+   その分だけ押し下げる
    (= xterm 表示領域を header 分だけ譲る。押し下げ後の container 縮小を ResizeObserver が
    捕捉して fitAddon.fit() が再計算する — 「xterm を圧迫しない」検証点)。 */
-#pane-terminal{--echoes-header-h:0px;}
-#pane-terminal.echoes-header-active{--echoes-header-h:30px;}
-#echoes-header{position:absolute;top:0;left:0;right:0;height:var(--echoes-header-h);
+#pane-lane{--lane-header-h:0px;}
+#pane-lane.lane-header-active{--lane-header-h:var(--vp-nameplate-h);}
+#lane-header{position:absolute;top:0;left:0;right:0;height:var(--lane-header-h);
   overflow:hidden;z-index:2;}
 /* doc 49 LE-P4 PR2: lane 内 tiling は creo-ui-layout の lane scope が担い、JS
    (lane-panes.ts) が resolved rect を inline style (left/top/width/height %) で書く。
-   子 Pane (#lane-host / #console-chat-host) は中身を変えず位置づけだけ absolute。
+   子 Pane (.term-session-host / .chat-session-host) は中身を変えず位置づけだけ absolute。
    inset:0 は JS が走る前の既定 — inline の width/height が入れば over-constraint
    解決 (LTR) で right/bottom が無視され、inline の rect が勝つ。 */
-/* タブエリアは「+ New」を常に載せるので高さは固定。.pane-tabs-active は
-   「畳まれた Pane が 1 つ以上ある」= 区切り線を出すかどうかにだけ効く。 */
-#pane-terminal{--pane-tabs-h:26px;}
-#lane-panes{position:absolute;top:var(--echoes-header-h);left:0;right:0;
-  bottom:var(--pane-tabs-h);background:var(--color-border,#2a3040);}
+/* 下端の帯（#pane-tabs）は退役（doc 51 §1 A1）— pane chip は tiling 既定で存在理由が
+   消え、+ New / Mode 切替は LaneHeader（lane の名札）へ移設した。 */
+#lane-panes{position:absolute;top:var(--lane-header-h);left:0;right:0;
+  bottom:0;background:var(--color-border,#2a3040);}
 /* outline は隣接 Pane との区切り線 (旧 flex gap:1px の後継 — layout に影響しない描画のみの線)。 */
 #lane-panes > *{position:absolute;inset:0;background:var(--color-bg,#0f1115);
   outline:1px solid var(--color-border,#2a3040);outline-offset:-1px;}
@@ -216,36 +234,17 @@ body{overflow:hidden;}
 /* Phase 2.5: per-Lane instance container。各 .lane-pane が absolute で重なり active のみ表示。 */
 .lane-pane{position:absolute;inset:0;display:none;}
 .lane-pane.active{display:block;}
-/* doc 46 P1 要件 2: タブエリア。縮小された Pane の chip 置き場。
-   空なら高さ 0 (--pane-tabs-h) = 従来の見た目のまま。 */
-#pane-tabs{position:absolute;left:0;right:0;bottom:0;height:var(--pane-tabs-h);
-  display:flex;align-items:center;gap:4px;padding:0 6px;overflow-x:auto;overflow-y:hidden;
-  background:var(--color-bg,#0f1115);border-top:1px solid var(--color-border,#2a3040);}
-#pane-terminal:not(.pane-tabs-active) #pane-tabs{border-top:none;}
-/* 「+ New」は chip と区別する（畳まれた Pane ではなく作成の入口）。 */
-.pane-tab.pane-new{border-style:dashed;}
-/* Engine × Act の選択メニュー（doc 46 P2 要件 4）。タブエリアの上に出す。 */
-.pane-new-menu{position:fixed;z-index:9999;min-width:180px;padding:4px;
-  border:1px solid var(--color-border,#2a3040);border-radius:6px;
-  background:var(--color-bg-elevated,#161a22);box-shadow:0 6px 20px #0008;
-  display:flex;flex-direction:column;gap:1px;}
-.pane-new-item{appearance:none;border:none;background:transparent;text-align:left;
-  padding:5px 8px;border-radius:4px;cursor:pointer;font-size:12px;
-  font-family:var(--vp-font-sans),var(--typography-family-sans);
-  color:var(--color-text-secondary,#a8b0c0);white-space:nowrap;}
-.pane-new-item:hover{background:var(--color-bg-hover,#1e242e);color:var(--color-text,#e6e9ef);}
-.pane-new-empty{padding:5px 8px;font-size:12px;color:var(--color-text-tertiary,#6b7280);}
-.pane-tab{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;
-  height:18px;padding:0 8px;border-radius:9px;cursor:pointer;
-  border:1px solid var(--color-border,#2a3040);background:transparent;
-  color:var(--color-text-secondary,#a8b0c0);font-size:11px;
-  font-family:var(--vp-font-sans),var(--typography-family-sans);white-space:nowrap;}
-.pane-tab:hover{color:var(--color-text,#e6e9ef);border-color:var(--sb-conn-auto,#22E0FF);}
-/* docked = 今並んでいる Pane。click で畳む。畳まれた chip（枠だけ）と区別する。 */
-.pane-tab.docked{background:var(--color-bg-hover,#1e242e);color:var(--color-text,#e6e9ef);}
+/* doc 50 §4.6 A6 ②: term pane にも名札が載る。名札の DOM と中身は World B（SolidJS の
+   SessionPlate）が host に差し込むが、**xterm を下げる責務は World A 側**に置く —
+   `.lane-pane` は World A の持ち物なので、その位置決めも World A が持つ（World B は
+   host に `.has-term-plate` を付けるだけ = DOM 所有の境界を跨がない、doc 33 §8）。
+   名札は絶対配置で上端に載せ、xterm はその分だけ top を下げる。 */
+.has-term-plate > .lane-pane{top:var(--vp-nameplate-h);}
+.term-plate{position:absolute;top:0;left:0;right:0;height:var(--vp-nameplate-h);
+  z-index:1;overflow:hidden;}
 /* doc 33 §9: 切替 progress overlay。pane 全面 (header 下) を覆い、resume 確定まで表示 (= switch lock)。
    header は switch 中も lane identity を見せ続けたいので overlay の上に残す (top を header 分下げる)。 */
-#console-switching{position:absolute;top:var(--echoes-header-h);left:0;right:0;bottom:0;display:none;z-index:20;
+#console-switching{position:absolute;top:var(--lane-header-h);left:0;right:0;bottom:0;display:none;z-index:20;
   align-items:center;justify-content:center;
   background:color-mix(in srgb, var(--color-bg,#0f1115) 82%, transparent);backdrop-filter:blur(2px);}
 #console-switching.active{display:flex;}
@@ -260,29 +259,33 @@ body{overflow:hidden;}
 .lane-pane .lane-term{padding:0;height:100%;width:100%;box-sizing:border-box;}
 /* どの Lane も無い時の placeholder (active class で表示制御、 default は表示)。
    header 分 (var) 押し下げ — header 不在時は 0 なので従来通り全面。 */
-#lane-empty{position:absolute;top:var(--echoes-header-h);left:0;right:0;bottom:0;display:none;place-items:center;color:var(--color-text-tertiary);text-align:center;}
+#lane-empty{position:absolute;top:var(--lane-header-h);left:0;right:0;bottom:0;display:none;place-items:center;color:var(--color-text-tertiary);text-align:center;}
 #lane-empty.active{display:grid;}
 #lane-empty .lane-empty-icon{width:44px;height:44px;display:block;margin:0 auto .75rem;opacity:.55;}
 #lane-empty h1{font-weight:400;font-size:1.1rem;margin:0;}
 #lane-empty p{margin:.25rem 0 0;font-size:.85rem;}
 /* VP-141 (PR-ε-2): Pane header chrome — pane に「ヘッダ + body」 構造を持たせる共通 chrome。
-   icon + Stand 名 + breadcrumb + actions (Clear 等) を提供。 terminal pane (Echoes、 xterm.js
+   icon + agent 名 + breadcrumb + actions (Clear 等) を提供。 terminal pane (Conversation、 xterm.js
    full-bleed) は header なしで除外。 .pane-header と .pane-body は両方 position:absolute なので
-   .pane.stand/empty の display:grid context から opt-out される (centering は body 側の
+   .pane.agent/empty の display:grid context から opt-out される (centering は body 側の
    `.center` modifier で個別制御)。 */
 .pane-header{
   position:absolute;
-  top:0;left:0;right:0;height:28px;
+  top:0;left:0;right:0;height:var(--vp-nameplate-h);
   display:flex;
   align-items:center;
   gap:8px;
-  padding:0 10px;
-  font-size:12px;
-  background:var(--color-surface-surface);
-  border-bottom:1px solid var(--color-surface-border-subtle);
+  padding:0 var(--vp-nameplate-pad-x);
+  font-size:var(--vp-nameplate-font-size);
+  background:var(--vp-nameplate-bg);
+  border-bottom:var(--vp-nameplate-border);
   user-select:none;
   -webkit-app-region:drag;
   z-index:1;
+  /* 名札は 1 行きり。溢れは折り返さず省略する（board の "Board" が 2 行に割れて
+     隣の pane と高さが揃わなくなっていた実機バグ、2026-07-23）。 */
+  white-space:nowrap;
+  overflow:hidden;
 }
 .pane-header .pane-title{
   flex:1;
@@ -291,15 +294,28 @@ body{overflow:hidden;}
   gap:6px;
   color:var(--color-text-primary);
   min-width:0;
+  overflow:hidden;
 }
-.pane-header .pane-icon{flex-shrink:0;font-size:14px;}
-.pane-header .pane-name{font-weight:500;}
+/* glyph は Phosphor (iconify-icon)。sidebar は既に CreoIcon で統一済で、額縁だけ絵文字が
+   残っていたのを揃えた (2026-07-23)。iconify-icon の既定サイズは 1em なので、寸法は
+   font-size で決まる = 周囲の文字と自然に揃う。 */
+iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align:-0.125em;}
+.pane-header .pane-icon{flex-shrink:0;font-size:14px;display:inline-flex;align-items:center;}
+/* 名前は最優先で残し、breadcrumb（従属情報）から先に削る。 */
+.pane-header .pane-name{font-weight:500;flex-shrink:0;}
 .pane-header .pane-breadcrumb{color:var(--color-text-tertiary);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .pane-header .pane-actions{
   display:flex;
   gap:4px;
   -webkit-app-region:no-drag;
+  /* doc 50 §2: ツール（Clear / ×）は名札に常設しない — 縦軸に乗らない操作は hover で
+     召喚する（mako 決定 2026-07-23 の暫定形。恒久の home は右 edge 構想 = 棚上げ中）。
+     focus-within はキーボード到達性の保険（Tab で入れば見える）。 */
+  opacity:0;
+  transition:opacity .12s ease;
 }
+.pane-header:hover .pane-actions,
+.pane-header:focus-within .pane-actions{opacity:1;}
 .pane-header .pane-action-btn{
   cursor:pointer;
   padding:2px 8px;
@@ -313,59 +329,117 @@ body{overflow:hidden;}
 .pane-header .pane-action-btn:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
 .pane-body{
   position:absolute;
-  top:28px;left:0;right:0;bottom:0;
+  top:var(--vp-nameplate-h);left:0;right:0;bottom:0;
   overflow:auto;
 }
 .pane-body.center{display:grid;place-items:center;}
 .pane-body iframe{width:100%;height:100%;border:0;background:#fff;}
-/* PP overlay 可読性 (bug: canvas 可観測性 D): pane-body は背景透明のため、pp-overlay scene で
-   PP を浮かせると背後の console が透けて文字が重なり内容が読めない。PP 内容を solid surface に
-   載せて読めるようにする (side-review / pp-focus でも有効)。 */
-#pane-paisley-park .pane-body{background:var(--color-surface-bg-base);}
-/* Bastet 🧲 pane: device 一覧の行。名前と IN/OUT バッジが素の連結で「Roto-ControlIN · OUT」に
+/* board (board) pane — doc 52 §10 wave 0: lane tiling の 1 枚。#lane-panes > * の absolute inset を
+   受けた上で、中身を plate / content / history-strip の縦並びにする。solid surface で載せて
+   背後の xterm が透けないようにする（旧 pp-overlay の可読性対策の後継）。 */
+#lane-board{display:flex;flex-direction:column;background:var(--color-surface-bg-base);
+  font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
+/* board の名札 — 台の中で「これは Board の board」と読める最小 chrome + Clear。 */
+.board-plate{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;
+  gap:8px;padding:4px 10px;border-bottom:1px solid var(--color-surface-border,#1f2233);
+  background:var(--color-surface-bg-subtle);}
+.board-plate-name{display:inline-flex;align-items:center;gap:6px;font-size:12px;
+  color:var(--color-text-secondary);letter-spacing:.02em;}
+/* 鮮度（doc 52 §5 計器盤）: cursor item の最終更新時刻。name の右に寄せ、控えめに。 */
+.board-freshness{margin-left:auto;margin-right:10px;font-size:11px;
+  color:var(--color-text-tertiary,#8a8fa3);font-variant-numeric:tabular-nums;
+  font-family:var(--typography-family-mono);white-space:nowrap;}
+.board-clear-btn{border:1px solid var(--color-surface-border,#1f2233);background:transparent;
+  color:var(--color-text-tertiary);font-size:11px;padding:1px 8px;border-radius:4px;cursor:pointer;
+  font-family:inherit;transition:color .1s ease,border-color .1s ease,background .1s ease;}
+.board-clear-btn:hover{color:var(--color-text-primary);background:var(--color-surface-bg-emphasis);}
+/* Devices 🧲 pane: device 一覧の行。名前と IN/OUT バッジが素の連結で「Roto-ControlIN · OUT」に
    見えていた（2026-07-23 実機）— gap + バッジの弱色化で読めるように。 */
-.bastet-devices{display:flex;flex-direction:column;gap:2px;padding:10px 16px;}
-.bastet-device{display:flex;align-items:baseline;gap:10px;}
-.bastet-device-io{color:var(--color-text-tertiary,#8a8fa3);font-size:.78em;letter-spacing:.06em;}
-.bastet-empty{color:var(--color-text-tertiary,#8a8fa3);padding:10px 16px;margin:0;}
-/* PP markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target)。
+.device-list{display:flex;flex-direction:column;gap:2px;padding:10px 16px;}
+.devices-device{display:flex;align-items:baseline;gap:10px;}
+.devices-device-io{color:var(--color-text-tertiary,#8a8fa3);font-size:.78em;letter-spacing:.06em;}
+.devices-empty{color:var(--color-text-tertiary,#8a8fa3);padding:10px 16px;margin:0;}
+/* board markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target)。
    font zero-start (2026-07-11): 旧 Mizolet/みぞれ 直指定を principal token に置換 (2 書体統一)。 */
-.pp-content{padding:16px 20px;color:var(--color-text-primary);font-size:13px;line-height:1.6;
+/* ink stage（doc 52 §3）: #board-content を充填 + overlay / palette の位置決め基準。 */
+#ink-stage{position:relative;flex:1 1 auto;min-height:0;display:flex;flex-direction:column;}
+.board-content{flex:1 1 auto;min-height:0;overflow:auto;
+  padding:16px 20px;color:var(--color-text-primary);font-size:13px;line-height:1.6;
   font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
-/* PP pane 全体 (header / breadcrumb / button 等) も同 family。 pane の他 CSS は触らず
-   font-family のみ override。 */
-#pane-paisley-park,#pane-paisley-park .pane-header,#pane-paisley-park .pane-name,
-#pane-paisley-park .pane-breadcrumb,#pane-paisley-park .pane-action-btn{
-  font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
-.pp-content h1{font-size:1.6rem;font-weight:500;margin:0 0 .5rem;color:var(--color-text-primary);}
-.pp-content h2{font-size:1.3rem;font-weight:500;margin:1.2rem 0 .5rem;}
-.pp-content h3{font-size:1.1rem;font-weight:500;margin:1rem 0 .4rem;}
-.pp-content p{margin:.5rem 0;color:var(--color-text-secondary);}
-.pp-content code{background:var(--color-surface-surface);padding:1px 5px;border-radius:3px;font-family:var(--typography-family-mono);font-size:.9em;}
-.pp-content pre{background:var(--color-surface-surface);padding:12px;border-radius:6px;overflow-x:auto;}
-.pp-content pre code{background:transparent;padding:0;}
-.pp-content a{color:var(--color-brand-primary);}
-.pp-content ul,.pp-content ol{padding-left:1.5em;margin:.5rem 0;}
-.pp-content blockquote{border-left:3px solid var(--color-brand-primary-subtle);margin:.5rem 0;padding:0 1em;color:var(--color-text-tertiary);}
-.pp-content table{border-collapse:collapse;margin:.5rem 0;}
-.pp-content th,.pp-content td{border:1px solid var(--color-surface-border-subtle);padding:4px 8px;}
-.pp-content hr{border:0;border-top:1px solid var(--color-surface-border-subtle);margin:1rem 0;}
+/* ink 赤: shottr と同じ 1 色固定（意図的に単色 — 描くのは「場所と関係を指す指」）。 */
+#ink-stage{--vp-ink-color:#ff5b4d;}
+/* 透明レイヤー: 道具未選択（.ink-off）時は pointer-events:none で下の item を素通し
+   （text 選択 / Clear ボタンが生きる）。道具選択で auto に切り替え描画を捕まえる。
+   overlay は div（HTML box 全体を捕まえる）。空白部分を透過させないため svg には委ねない。 */
+#ink-overlay{position:absolute;inset:0;pointer-events:none;touch-action:none;z-index:4;
+  user-select:none;-webkit-user-select:none;}
+#ink-overlay:not(.ink-off){pointer-events:auto;cursor:crosshair;}
+/* 描画キャンバス: div いっぱいの svg。pointer は div が捕まえるので自身は none。 */
+#ink-canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;
+  overflow:visible;}
+#ink-canvas .ink-note{font:600 14px var(--vp-font-sans),var(--typography-family-sans);
+  fill:var(--vp-ink-color);paint-order:stroke;stroke:rgba(0,0,0,.55);stroke-width:3px;
+  stroke-linejoin:round;}
+/* text 注釈の入力ボックス（配置は ink.ts が left/top を絶対指定）。 */
+#ink-text{position:absolute;display:none;transform:translate(-2px,-50%);z-index:6;
+  background:rgba(12,14,22,.92);color:var(--vp-ink-color);border:1px dashed var(--vp-ink-color);
+  border-radius:4px;font:600 14px var(--vp-font-sans),var(--typography-family-sans);
+  padding:2px 6px;outline:none;min-width:120px;}
+/* 道具パレット: stage 下端中央に浮かす。撮影時は ink.ts が visibility:hidden にする。 */
+#ink-palette{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);z-index:8;
+  display:flex;align-items:center;gap:3px;padding:5px;
+  background:var(--color-surface-bg-subtle);border:1px solid var(--color-surface-border,#1f2233);
+  border-radius:10px;box-shadow:0 6px 22px rgba(0,0,0,.4);}
+#ink-palette button{background:none;border:1px solid transparent;border-radius:7px;
+  width:36px;height:32px;color:var(--color-text-tertiary);cursor:pointer;
+  display:grid;place-items:center;padding:0;font-family:inherit;transition:color .1s,border-color .1s,background .1s;}
+#ink-palette button:hover{color:var(--color-text-primary);background:var(--color-surface-bg-emphasis);}
+#ink-palette button.ink-active{color:var(--vp-ink-color);border-color:var(--vp-ink-color);
+  background:color-mix(in srgb,var(--vp-ink-color) 12%,transparent);}
+#ink-palette button:disabled{opacity:.35;cursor:default;}
+#ink-palette .ink-sep{width:1px;height:20px;background:var(--color-surface-border,#1f2233);margin:0 3px;}
+#ink-palette svg{display:block;pointer-events:none;}
+#ink-send{width:auto!important;padding:0 14px!important;font-weight:600;font-size:13px;
+  color:var(--color-surface-bg-base)!important;background:var(--vp-ink-color)!important;
+  border-color:var(--vp-ink-color)!important;}
+#ink-send:hover:not(:disabled){filter:brightness(1.08);}
+#ink-send:disabled{opacity:.4;background:var(--vp-ink-color)!important;}
+/* 送信結果の一時トースト（成功/失敗）。ink.ts が textContent + .show を付ける。 */
+#ink-toast{position:absolute;left:50%;bottom:54px;transform:translateX(-50%);z-index:9;
+  max-width:80%;padding:5px 12px;border-radius:6px;font-size:12px;pointer-events:none;
+  background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);
+  border:1px solid var(--color-surface-border,#1f2233);opacity:0;transition:opacity .15s;}
+#ink-toast.show{opacity:1;}
+#ink-toast.ink-error{color:var(--vp-ink-color);border-color:var(--vp-ink-color);}
+.board-content h1{font-size:1.6rem;font-weight:500;margin:0 0 .5rem;color:var(--color-text-primary);}
+.board-content h2{font-size:1.3rem;font-weight:500;margin:1.2rem 0 .5rem;}
+.board-content h3{font-size:1.1rem;font-weight:500;margin:1rem 0 .4rem;}
+.board-content p{margin:.5rem 0;color:var(--color-text-secondary);}
+.board-content code{background:var(--color-surface-surface);padding:1px 5px;border-radius:3px;font-family:var(--typography-family-mono);font-size:.9em;}
+.board-content pre{background:var(--color-surface-surface);padding:12px;border-radius:6px;overflow-x:auto;}
+.board-content pre code{background:transparent;padding:0;}
+.board-content a{color:var(--color-brand-primary);}
+.board-content ul,.board-content ol{padding-left:1.5em;margin:.5rem 0;}
+.board-content blockquote{border-left:3px solid var(--color-brand-primary-subtle);margin:.5rem 0;padding:0 1em;color:var(--color-text-tertiary);}
+.board-content table{border-collapse:collapse;margin:.5rem 0;}
+.board-content th,.board-content td{border:1px solid var(--color-surface-border-subtle);padding:4px 8px;}
+.board-content hr{border:0;border-top:1px solid var(--color-surface-border-subtle);margin:1rem 0;}
 .pp-placeholder{color:var(--color-text-tertiary);font-style:italic;}
-/* content_type=html: sandbox iframe を PP pane いっぱいに広げる。
-   renderPP が container に .pp-content-html を付与し full-bleed に切り替える。 */
-.pp-content.pp-content-html{padding:0;height:100%;}
-.pp-html-frame{width:100%;height:100%;border:0;display:block;background:#fff;}
+/* content_type=html: sandbox iframe を board pane いっぱいに広げる。
+   renderBoard が container に .board-content-html を付与し full-bleed に切り替える。 */
+.board-content.board-content-html{padding:0;height:100%;}
+.board-html-frame{width:100%;height:100%;border:0;display:block;background:#fff;}
 /* VP-140: display:none/active gate 廃止、 always display:grid。 visibility は opacity (Frame Engine) が司る. */
 /* VP-142 cleanup: .pane.canvas rules 削除 (pane-canvas HTML element 削除に伴い)。
-   PP body が Smart Canvas surface を物理化したため pane-canvas は vestigial。 */
+   board body が Smart Canvas surface を物理化したため pane-canvas は vestigial。 */
 .pane.preview iframe{width:100%;height:100%;border:0;background:#fff;}
-/* Phase 5-A: Project-scope Stand placeholder panes (PP/GE/HP) */
-.pane.stand{display:grid;place-items:center;}
-.pane.stand main{text-align:center;max-width:520px;padding:0 24px;}
-.pane.stand h1{font-weight:500;font-size:1.6rem;margin:0 0 .5rem;color:var(--color-text-primary);}
-.pane.stand p{color:var(--color-text-tertiary);margin:.25rem 0;font-size:.95rem;}
-.pane.stand .sub{font-size:.85rem;color:var(--color-text-tertiary);opacity:.85;margin-top:1rem;line-height:1.6;}
-.pane.stand .brand{color:var(--color-brand-primary);}
+/* Phase 5-A: Repo-scope Agent placeholder panes (board/runner ほか) */
+.pane.agent{display:grid;place-items:center;}
+.pane.agent main{text-align:center;max-width:520px;padding:0 24px;}
+.pane.agent h1{font-weight:500;font-size:1.6rem;margin:0 0 .5rem;color:var(--color-text-primary);}
+.pane.agent p{color:var(--color-text-tertiary);margin:.25rem 0;font-size:.95rem;}
+.pane.agent .sub{font-size:.85rem;color:var(--color-text-tertiary);opacity:.85;margin-top:1rem;line-height:1.6;}
+.pane.agent .brand{color:var(--color-brand-primary);}
 .pane.empty{display:grid;place-items:center;}
 .pane.empty main{text-align:center;color:var(--color-text-tertiary);}
 .pane.empty h1{font-weight:400;font-size:1.1rem;margin:0;}
@@ -407,40 +481,73 @@ body{overflow:hidden;}
 <div id="sidebar-root"></div>
 <div id="host">
   <!-- 各 .pane の attribute 規約 (VP-141 で 2 attribute に分離):
-       - data-kind="..."    : 静的 (HTML hardcode、 「terminal」「paisley_park」 等の kind classification)
-       - data-frame-id="..." : 静的 (HTML hardcode、 Frame Engine の Scene lookup key、 「echoes」「pp」 等)
+       - data-kind="..."    : 静的 (HTML hardcode、 「terminal」「board」 等の kind classification)
+       - data-frame-id="..." : 静的 (HTML hardcode、 Frame Engine の Scene lookup key、 「conversation」「pp」 等)
        - data-pane-id="..." : 動的 (active pane 切替時に main_area inline JS `setActiveImpl` が Lane address
                               等で setAttribute、 VP-100 γ-light native overlay sync 用 / Phase 4+ 同期 target)
        Frame Engine と legacy native overlay sync の attribute を分離しているのは、 Lane click で
        legacy 側 setAttribute が Frame Engine の static attribute を hijack して Scene lookup undefined
        → HIDDEN_TRANSFORM 適用 → pane が見えなくなる回帰を防ぐため (VP-141 fix)。
        VP-100 γ-light: ResizeObserver が slot rect を IPC で送る (Phase 4+ で native overlay 同期に使う)。 -->
-  <!-- Phase 2.5 (per-Lane instance): pane-terminal 内に lane-host を置き、
-       Lane ごとに xterm.js instance を mount。 active な 1 つだけ display:block。 -->
-  <!-- VP-140 fail-safe: pane-terminal は Frame Engine が apply される前から visible にしておく。
+  <!-- Phase 2.5 (per-Lane instance) → doc 50 §4.6 A6: pane-lane 内の #lane-panes に
+       (lane, session) ごとの xterm.js instance を mount。 active な instance だけ display:block。 -->
+  <!-- VP-140 fail-safe: pane-lane は Frame Engine が apply される前から visible にしておく。
        inline opacity:1 を CSS .pane{opacity:0} default より優先させ、 Frame Engine 不在 / 起動失敗時も
-       少なくとも Echoes terminal は見える状態を保つ (= echoes が default visible 約束)。
+       少なくとも Conversation terminal は見える状態を保つ (= conversation が default visible 約束)。
        Frame Engine 起動後は inline style.opacity を engine が上書きする (conductor-focus:1 / pp-focus:0)。 -->
-  <div class="pane terminal" id="pane-terminal" data-kind="terminal" data-frame-id="echoes" style="opacity:1;pointer-events:auto;">
-    <!-- Echoes 共通ヘッダ (操縦席) の mount 点。器だけ World A が置き、editor-host bundle の
-         EchoesHeader が中身を render する。lane 切替で内容だけ差し替わる (帰属は lane の Echoes、
-         Act I/II を跨いで同一 header が載り続ける)。default 高さ 0、内容がある時だけ開く。 -->
-    <div id="echoes-header"></div>
-    <!-- doc 46 P1 → doc 49 LE-P4 PR2: lane の表示領域を「Act I か Act II」の排他から
-         **N 枚の Pane を並べる tiling** に変える器。配置は creo-ui-layout の lane scope
-         (lane-panes.ts) が resolved rect を inline で書く。子 (#lane-host /
-         #console-chat-host) の中身は一切変えない。畳まれた Pane は #pane-tabs に chip。 -->
+  <div class="pane terminal" id="pane-lane" data-kind="lane" data-frame-id="lane" style="opacity:1;pointer-events:auto;visibility:visible;">
+    <!-- Conversation 共通ヘッダ (操縦席) の mount 点。器だけ World A が置き、editor-host bundle の
+         LaneHeader が中身を render する。lane 切替で内容だけ差し替わる (帰属は lane の Conversation、
+         tui/gui を跨いで同一 header が載り続ける)。default 高さ 0、内容がある時だけ開く。 -->
+    <div id="lane-header"></div>
+    <!-- doc 46 P1 → doc 49 LE-P4 PR2 → doc 50 P1: lane の表示領域 = N 枚の Pane を並べる
+         tiling の器。配置は creo-ui-layout の lane scope (lane-panes.ts) が resolved rect を
+         inline で書く。子は **session ごとの host 群**を動的に生やす:
+         `#term-session-<n>`（tui xterm、World A 所有・中身に触れない）と
+         `#chat-session-<n>`（World B の lane-panes が生やす）。どちらも 1 session = 1 Pane。
+         旧 #console-chat-host 固定 1 枚 / 静的 #lane-host（root 専用の term host）は退役 —
+         host の身元を role でなく session に紐づけた（doc 50 §4.6 A6、`ensureTermHost`）。
+         下端の帯 (#pane-tabs) は doc 51 §1 A1 で退役 — 表示は既定 tiling、
+         + New / Mode 切替は LaneHeader (lane の名札) へ移設。 -->
     <div id="lane-panes">
-      <div id="lane-host"></div>
-      <!-- doc 33 C2: Echoes Act II (Console GUI) の mount 点。World B (editor-host bundle) の
-           ChatView がここに render する。doc 46 P1 で lane-host との**排他をやめ**、
-           既定で左右に並ぶ (要件 1)。片方だけ見たい時は他方を minimize する。 -->
-      <div id="console-chat-host"></div>
+      <!-- board (board) pane — doc 52 §10 wave 0: app 層の #pane-board から lane tiling へ
+           引っ越した「貼る台」。**lane に 1 枚の静的 host**（board は lane-scoped、
+           表示 lane は常に 1 つ = xterm と同じ性質）。roster に載るのは board 非空のときだけで、
+           位置決めは lane-panes.ts が担う。中身の #board-content / #board-history-strip は移設のみで
+           id 不変 = board-render.ts / HistoryStrip / board-handler の render 先は変わらない。 -->
+      <div id="lane-board">
+        <div class="board-plate">
+          <span class="board-plate-name"><iconify-icon icon="ph:compass"></iconify-icon> Board</span>
+          <!-- 鮮度: cursor item の updatedAt を board-handler が「更新 HH:MM:SS」で書く（doc 52 §5 計器盤）。
+               出力元は repo の updatedAt 一箇所（content 手書きに依存しない）。 -->
+          <span id="board-freshness" class="board-freshness"></span>
+          <button class="board-clear-btn" data-action="clear" data-target="board" title="board を空にする">Clear</button>
+        </div>
+        <!-- ink（対話面、doc 52 §3）: #board-content の上に透明レイヤーを重ねて描く。renderBoard は
+             #board-content の innerHTML を差し替えるので overlay は sibling（stage 直下）に置く。
+             stage = 描画対象 = snapshot 矩形。overlay / palette / text input の挙動は ink.ts。 -->
+        <div id="ink-stage">
+          <div class="board-content" id="board-content"></div>
+          <!-- overlay は **div**（HTML box 全体で pointer を捕まえる）。中の svg で描く。
+               svg root を直に armed にすると、SVG の pointer-events 既定 visiblePainted の
+               ため空白部分が透過し pointerdown が下の文字に落ちて text 選択に吸われる。 -->
+          <div id="ink-overlay" class="ink-off" aria-label="対話面 描画レイヤー">
+            <svg id="ink-canvas">
+              <defs>
+                <marker id="ink-arrowhead" markerWidth="9" markerHeight="8" refX="7" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--vp-ink-color)"></path>
+                </marker>
+              </defs>
+            </svg>
+          </div>
+          <input id="ink-text" type="text" placeholder="文字を入力 → Enter" aria-label="ink text 注釈の入力" />
+          <div id="ink-palette" role="toolbar" aria-label="対話面 描画道具"></div>
+          <div id="ink-toast" role="status"></div>
+        </div>
+        <div class="board-history-strip" id="board-history-strip"></div>
+      </div>
     </div>
-    <!-- doc 46 P1 要件 2: 縮小された Pane の置き場 (タブエリア)。chip を 1 クリックで
-         Pane に戻す。空の時は高さ 0 = 従来の見た目を壊さない。 -->
-    <div id="pane-tabs"></div>
-    <!-- doc 33 §9: Act I⇄II 切替中の progress overlay (World B)。toggle 押下で .active、
+    <!-- doc 33 §9: tui⇄II 切替中の progress overlay (World B)。toggle 押下で .active、
          resume 確定 (session_init) / mode 適用で clear。切替を resume 確定まで見せる + lock。 -->
     <div id="console-switching">
       <div class="console-switching-card">
@@ -463,14 +570,14 @@ body{overflow:hidden;}
     </div>
   </div>
   <!-- VP-142 cleanup (PR-ε-4): legacy `pane-canvas` placeholder を削除済。
-       VP-42 era の「汎用 Canvas surface」 placeholder だったが、 PR-ε-3 で PP body
-       (`pane-paisley-park` 内 `<div id="pp-content">`) が Smart Canvas surface を物理化
+       VP-42 era の「汎用 Canvas surface」 placeholder だったが、 PR-ε-3 で board body
+       (`pane-board` 内 `<div id="board-content">`) が Smart Canvas surface を物理化
        したため vestigial。 doc 13 §10 Q-3 (= Smart Canvas 配置) も PR-ε-3 で確定済。 -->
 
   <div class="pane preview" id="pane-preview" data-kind="preview" data-frame-id="preview">
     <div class="pane-header">
       <div class="pane-title">
-        <span class="pane-icon">🔍</span>
+        <span class="pane-icon"><iconify-icon icon="ph:magnifying-glass"></iconify-icon></span>
         <span class="pane-name">Preview</span>
         <span class="pane-breadcrumb" id="preview-breadcrumb">about:blank</span>
       </div>
@@ -479,43 +586,17 @@ body{overflow:hidden;}
       <iframe id="preview-frame" src="about:blank" sandbox="allow-same-origin allow-scripts"></iframe>
     </div>
   </div>
-  <!-- Phase 5-A: Project-scope Stand placeholder panes (PP/GE/HP)。
-       click action は Phase 3-B で導入した sidebar の vp-project-stand-row から発火、
-       将来 (Phase 6+) で Canvas 実描画 / Ruby eval / MIDI 制御を bind する予定。 -->
-  <div class="pane stand" id="pane-paisley-park" data-kind="paisley_park" data-frame-id="pp">
+  <!-- doc 52 §10 wave 0: Board は app 層の pane を退役し、lane tiling の board pane
+       （#lane-board、上方 #lane-panes 内）へ引っ越した。runner / Devices / Preview は app pane のまま。 -->
+  <div class="pane agent" id="pane-runner" data-kind="runner" data-frame-id="runner">
     <div class="pane-header">
       <div class="pane-title">
-        <span class="pane-icon">🧭</span>
-        <span class="pane-name">Paisley Park</span>
-        <span class="pane-breadcrumb" id="pp-breadcrumb">Information Router</span>
-      </div>
-      <div class="pane-actions">
-        <button class="pane-action-btn" data-action="clear" data-target="pp" title="Clear PP body content">Clear</button>
-        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る">✕</button>
-      </div>
-    </div>
-    <div class="pane-body">
-      <!-- VP-141: PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target。
-           initial state は placeholder、 window.vpPP.renderPP(content) で innerHTML が差し替わる。 -->
-      <div class="pp-content" id="pp-content">
-        <p class="pp-placeholder">Information Router — markdown / HTML / 画像 を表示する surface (PR-ε-3 で mcp__show 経路から content が流れ込む)</p>
-      </div>
-      <!-- doc 19 PP Canvas Stack Model: bottom history strip。 SolidJS HistoryStrip component が
-           entry.tsx の mountHistoryStrip() で #pp-history-strip 内に render する。 mcp__show
-           投入ごとに canvas.items に push され、 strip 上に thumbnail (icon + 8-char title + ✕)
-           として並ぶ。 cursor が指す cell は brand color frame で強調。 -->
-      <div class="pp-history-strip" id="pp-history-strip"></div>
-    </div>
-  </div>
-  <div class="pane stand" id="pane-gold-experience" data-kind="gold_experience" data-frame-id="ge">
-    <div class="pane-header">
-      <div class="pane-title">
-        <span class="pane-icon">🌿</span>
-        <span class="pane-name">Gold Experience</span>
+        <span class="pane-icon"><iconify-icon icon="ph:plant"></iconify-icon></span>
+        <span class="pane-name">Runner</span>
         <span class="pane-breadcrumb">Code Runner</span>
       </div>
       <div class="pane-actions">
-        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る">✕</button>
+        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る"><iconify-icon icon="ph:x"></iconify-icon></button>
       </div>
     </div>
     <div class="pane-body center">
@@ -525,20 +606,20 @@ body{overflow:hidden;}
       </main>
     </div>
   </div>
-  <div class="pane stand" id="pane-bastet" data-kind="bastet" data-frame-id="bs">
+  <div class="pane agent" id="pane-devices" data-kind="devices" data-frame-id="devices">
     <div class="pane-header">
       <div class="pane-title">
-        <span class="pane-icon">🧲</span>
-        <span class="pane-name">Bastet</span>
+        <span class="pane-icon"><iconify-icon icon="ph:magnet"></iconify-icon></span>
+        <span class="pane-name">Devices</span>
         <span class="pane-breadcrumb">Device Registry</span>
       </div>
       <div class="pane-actions">
-        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る">✕</button>
+        <button class="pane-action-btn" data-action="close-pane" title="閉じる — 元の配置に戻る"><iconify-icon icon="ph:x"></iconify-icon></button>
       </div>
     </div>
     <div class="pane-body">
-      <div class="bastet-devices" id="bastet-devices">
-        <p class="bastet-empty">No devices connected</p>
+      <div class="device-list" id="device-list">
+        <p class="devices-empty">No devices connected</p>
       </div>
     </div>
   </div>
@@ -554,46 +635,6 @@ body{overflow:hidden;}
 <!-- VP-101 Phase A2: creo-ui-editor-host (SolidJS) の mount 先。
      Ctrl+Shift+E で activate される floating overlay (font / theme / token を runtime 編集)。 -->
 <div id="editor-root"></div>
-<script>
-"#,
-    include_str!("../assets/xterm.js"),
-    r#"
-</script>
-<script>
-"#,
-    include_str!("../assets/addon-fit.js"),
-    r#"
-</script>
-<script>
-"#,
-    include_str!("../assets/addon-webgl.js"),
-    r#"
-</script>
-<script>
-"#,
-    include_str!("../assets/addon-unicode11.js"),
-    r#"
-</script>
-<script>
-"#,
-    include_str!("../assets/addon-unicode-graphemes.js"),
-    r#"
-</script>
-<script>
-"#,
-    include_str!("../assets/addon-image.js"),
-    r#"
-</script>
-<script>
-"#,
-    include_str!("../assets/addon-progress.js"),
-    r#"
-</script>
-<script>
-"#,
-    include_str!("../assets/addon-web-links.js"),
-    r#"
-</script>
 <!-- VP-101 Phase A2: creo-ui-editor-host bundle (SolidJS + EditorLayer + tokens auto-discover).
      Ctrl+Shift+E で activate、font / theme / spacing 等を runtime 編集。
      Build: cd crates/vp-app/webview && bun install && bun run build。
@@ -604,876 +645,16 @@ body{overflow:hidden;}
 <script src="editor-host.bundle.js"></script>
 <!-- WebView 統合 (step 3a): sidebar bundle (SolidJS)。#sidebar-root に mount。 -->
 <script src="sidebar.bundle.js"></script>
-<script>
-// VP-140 inline diagnostic: bundle 失敗時でも script tag 自体は別なので、 こちらが先行 OR 並行 で動く。
-// window.vpBundleStatus に bundle 到達 stage を残す (DevTools console から runtime 検査用)。
-window.vpBundleStatus = window.vpBundleStatus || { booted: false, importsResolved: false, vpFrameSet: false };
-window.vpBundleProbe = function() {
-  return {
-    bundleStatus: window.vpBundleStatus,
-    vpAppLayoutDefined: typeof window.vpAppLayout !== 'undefined',
-    setActivePaneDefined: typeof window.setActivePane === 'function',
-    ensureLaneDefined: typeof window.ensureLane === 'function',
-    showLaneDefined: typeof window.showLane === 'function',
-    laneInstancesSize: window.__vpLanes ? window.__vpLanes.size : 'no __vpLanes',
-    paneCount: document.querySelectorAll('[data-frame-id]').length,
-    paneTerminalOpacity: getComputedStyle(document.querySelector('#pane-terminal')).opacity,
-  };
-};
-console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() in console)');
-(function() {
-  // Creo tokens から xterm.js theme を構築 (全 Lane instance で共有)。
-  // OKLCH 値は xterm.js の内部 color parser が直接解釈できないので、
-  // hidden probe で `color: var(...)` を browser に解決させて
-  // `getComputedStyle().color` から rgb(R,G,B) を取得 → hex に降ろす。
-  const probe = document.createElement('span');
-  probe.style.position = 'absolute';
-  probe.style.visibility = 'hidden';
-  document.body.appendChild(probe);
+<!-- 旧 World A（inline xterm JS 976 行）はここにあった。doc 53 §6.5 の畳み込みで
+     webview bundle へ移設（`webview/term.ts` = xterm 配線 / `webview/active-pane.ts` =
+     pane 切替 + slot rect）。install は `entry.tsx` の module body 末尾で、実行順は
+     inline 時と同じ（bundle は classic blocking script なので文書順で走る）。
+     Rust → JS の制御面は単一受け口 `window.vpDispatch` の envelope（SSOT = schema/vp-push.kdl、
+     型は codegen が両側に出す）。受け側は webview/dispatch.ts。
 
-  const resolveHex = (varName, fallback) => {
-    probe.style.color = `var(${varName}, ${fallback})`;
-    const rgb = getComputedStyle(probe).color;
-    const m = rgb.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-    if (!m) return fallback;
-    return '#' + [m[1], m[2], m[3]]
-      .map(n => Number(n).toString(16).padStart(2, '0'))
-      .join('');
-  };
-
-  const css = getComputedStyle(document.documentElement);
-  const theme = {
-    background: resolveHex('--color-surface-bg-base', '#0F1128'),
-    foreground: resolveHex('--color-text-primary', '#EDEEF4'),
-    cursor: resolveHex('--color-brand-primary', '#7D6BC2'),
-    cursorAccent: resolveHex('--color-surface-bg-base', '#0F1128'),
-    selectionBackground: resolveHex('--color-brand-primary-subtle', '#2C2843'),
-    black: resolveHex('--terminal-ansi-black', '#1E1E2E'),
-    red: resolveHex('--terminal-ansi-red', '#F38BA8'),
-    green: resolveHex('--terminal-ansi-green', '#A6E3A1'),
-    yellow: resolveHex('--terminal-ansi-yellow', '#F9E2AF'),
-    blue: resolveHex('--terminal-ansi-blue', '#89B4FA'),
-    magenta: resolveHex('--terminal-ansi-magenta', '#F5C2E7'),
-    cyan: resolveHex('--terminal-ansi-cyan', '#94E2D5'),
-    white: resolveHex('--terminal-ansi-white', '#BAC2DE'),
-    brightBlack: resolveHex('--terminal-ansi-bright-black', '#585B70'),
-    brightRed: resolveHex('--terminal-ansi-bright-red', '#F38BA8'),
-    brightGreen: resolveHex('--terminal-ansi-bright-green', '#A6E3A1'),
-    brightYellow: resolveHex('--terminal-ansi-bright-yellow', '#F9E2AF'),
-    brightBlue: resolveHex('--terminal-ansi-bright-blue', '#89B4FA'),
-    brightMagenta: resolveHex('--terminal-ansi-bright-magenta', '#F5C2E7'),
-    brightCyan: resolveHex('--terminal-ansi-bright-cyan', '#94E2D5'),
-    brightWhite: resolveHex('--terminal-ansi-bright-white', '#FFFFFF')
-  };
-  // VP "principal" token + creo fallback を 2 段 var() で probe に当て、 computed font-family を
-  // 完全 resolve させて xterm canvas に渡す stack を得る。 WKWebView は var() chain (declaration
-  // 内 var()) を invalidate するが、 use site で並べる形なら正しく resolve する。
-  probe.style.fontFamily = 'var(--vp-font-mono), var(--typography-family-mono)';
-  const monoFamily = (getComputedStyle(probe).fontFamily || '').trim()
-    || `'UDEV Gothic NF', monospace`;
-  probe.remove();
-
-  // ========= VP-143 Live Token 群 (terminal): default 値 + reader / validator =========
-  // CSS variable から読取、 不正値や未設定時は fallback (= 旧 hardcoded 値) に縮退。
-  // documentElement style の MutationObserver でも同 logic を再利用するため関数化。
-  const TERMINAL_FONT_SIZE_FALLBACK = 16;
-  const TERMINAL_LINE_HEIGHT_FALLBACK = 1.15;
-  const TERMINAL_LETTER_SPACING_FALLBACK = 0;
-  const TERMINAL_CURSOR_STYLE_FALLBACK = 'bar';
-  const TERMINAL_CURSOR_STYLES = new Set(['bar', 'block', 'underline']);
-  function readTerminalTokens() {
-    const cs = getComputedStyle(document.documentElement);
-    const fontSize = parseFloat(cs.getPropertyValue('--terminal-font-size'));
-    const lineHeight = parseFloat(cs.getPropertyValue('--terminal-line-height'));
-    const letterSpacing = parseFloat(cs.getPropertyValue('--terminal-letter-spacing'));
-    const fontFamilyRaw = (cs.getPropertyValue('--terminal-font-family') || '').trim();
-    const cursorRaw = (cs.getPropertyValue('--terminal-cursor-style') || '').trim().toLowerCase();
-    return {
-      fontSize: Number.isFinite(fontSize) && fontSize > 0 ? fontSize : TERMINAL_FONT_SIZE_FALLBACK,
-      lineHeight: Number.isFinite(lineHeight) && lineHeight > 0 ? lineHeight : TERMINAL_LINE_HEIGHT_FALLBACK,
-      letterSpacing: Number.isFinite(letterSpacing) ? letterSpacing : TERMINAL_LETTER_SPACING_FALLBACK,
-      fontFamily: fontFamilyRaw || monoFamily,
-      cursorStyle: TERMINAL_CURSOR_STYLES.has(cursorRaw) ? cursorRaw : TERMINAL_CURSOR_STYLE_FALLBACK,
-    };
-  }
-
-  // ========= Phase 2.5: per-Lane instance registry =========
-  // Lane address → {term, fitAddon, writeOutput, sendResize, container, ro, webglAddon, webglCleanup}
-  // Architecture v4: Lane = Session Process なので 1 Lane に 1 xterm.js。 transport は terminal S4 で
-  //  World "canvas" channel + Rust per-lane terminal session に移行 (socket は JS が持たない)。
-  // memory cost > switch reliability の trade-off で per-instance を選択 (user 決定)。
-  const laneInstances = new Map();
-
-  function dbg(msg) {
-    try { window.ipc.postMessage(JSON.stringify({t:'debug', msg: msg})); } catch (_) {}
-  }
-
-  // 右クリック context menu (macOS の text actions / AutoFill / Services 等) を全面 suppress。
-  //  per-Lane terminal container は別 listener で paste 動作に差替え済 (e.preventDefault + doPaste)、
-  //  capture phase の document listener は preventDefault のみ呼ぶので container listener の paste も生きる。
-  //  対象外: preview iframe (cross-context、 iframe 内に独立 listener が必要)。
-  document.addEventListener('contextmenu', (e) => { e.preventDefault(); }, { capture: true });
-
-  function createLaneInstance(address) {
-    const host = document.getElementById('lane-host');
-    if (!host) {
-      console.error('createLaneInstance: lane-host not found');
-      return null;
-    }
-    // container は Lane あたり 1 つ、 absolute で pane-terminal 全領域を埋める
-    const container = document.createElement('div');
-    container.className = 'lane-pane';
-    container.dataset.laneAddr = address;
-    const tdiv = document.createElement('div');
-    tdiv.className = 'lane-term';
-    container.appendChild(tdiv);
-    host.appendChild(container);
-
-    // VP-162 baseline (2026-05-10、 user request):
-    //   drift / ghost char 調査のため、 Terminal options + 全 addon を **完全 minimum** に reset。
-    //   この状態で「きちんと描画されるか」 を確認 → 1 つずつ active 化して drift 再現する要素を特定。
-    //   過去 PR #247 / Phase 5-D / mem_1CaVpvsBKR3ckieRXo1nwr の累積 fix が multi-factor で
-    //   原因特定不能になったため、 systematic isolation で再 derive する experimental approach。
-    const tokens = readTerminalTokens();
-    const term = new Terminal({
-      // terminal S4: 明示 80×24 init (狭幅復元bug対策)。 hidden 状態で fit すると container 幅≈0
-      //  → cols≈数個 に潰れ、 sendResize で PTY まで極狭化する。 init を 80×24 に固定し、 fit は
-      //  「container が可視 (clientWidth>0)」 のときだけ走らせて、 不可視時は 80×24 を保つ。
-      cols: 80,
-      rows: 24,
-      fontFamily: tokens.fontFamily,
-      fontSize: tokens.fontSize,
-      lineHeight: tokens.lineHeight,    // V4+ visual axis (default 1.27、 Live Token で 1.0-1.5 調整可)
-      cursorStyle: tokens.cursorStyle,  // V4+ visual axis (default 'bar'、 Live Token で bar/block/underline 切替可)
-      scrollSensitivity: 5,             // trackpad で適度 (5 確定 2026-05-11)、 mouse wheel は xterm.js 内部 limitation で 1 行扱い、 page scroll は Shift+PgUp/PgDn で代替
-      smoothScrollDuration: 0,          // discrete jump、 PR #247 ghost char 抑制 (= smooth 125ms + 高速 scroll で cell update skip → fragment 残骸)、 V4+ で再証明 (2026-05-11)
-      scrollback: 5000,                 // history buffer (drift 無罪確認 2026-05-11、 default 1000 でも drift 再現 → scrollback は origin ではない)
-      allowProposedApi: true,           // Unicode11Addon 等の proposed API 利用許可 (V8.2 復帰 2026-05-11、 V6 baseline reset で削除した silent regression を fix)
-      theme: theme,
-    });
-
-    // === FitAddon = 描画 prerequisite (baseline で確定 2026-05-10) ===
-    // xterm.js は term.open(tdiv) 時に container 現 size から cols/rows 計算、
-    // .lane-term は flex layout で size 確定が fitAddon.fit() 後 → これ無しだと
-    // canvas/DOM が 0 描画 = 「コンソール表示されない」 状態。 baseline 必須。
-    // line 624 ほか 6 箇所で fitAddon.fit() を参照、 ResizeObserver / Live Token 反映でも依存。
-    const fitAddon = new FitAddon.FitAddon();
-    term.loadAddon(fitAddon);
-
-    // === Unicode11Addon + UnicodeGraphemesAddon = Unicode 15 grapheme cluster + width 補正 ===
-    //  ⚠️ load 順序が critical: WebglAddon load の **前** に widthProvider を確定する必要がある。
-    //  理由: WebGL renderer は loadAddon 時に widthProvider を読んで glyph atlas を事前構築、
-    //  後から activeVersion を切替えても atlas は古い width のまま (= upstream design limitation)。
-    //  ⚠️ allowProposedApi: true (Terminal options) と pair 必須。 V6 baseline reset で proposed API
-    //  gate を閉じた時、 2 addon とも silent fail で drift + 1 cell 幅の同時症状発生 (= V7/V8.1/V8.2
-    //  経由で path 探索後、 V8.3 で `allowProposedApi: true` 復帰、 V9 で graphemes も再 enable)。
-    //
-    //  Unicode11Addon: width table 補正 (Unicode 11、 emoji / CJK 拡張 / box-drawing の cell width)
-    //  UnicodeGraphemesAddon: grapheme cluster 認識 (Unicode 15、 ZWJ + skin tone + variation selector)
-    //  activeVersion は graphemes が '15-graphemes' で u11 の '11' を上書き、 widthProvider を確定。
-    try {
-      const u11 = new Unicode11Addon.Unicode11Addon();
-      term.loadAddon(u11);
-      term.unicode.activeVersion = '11';
-    } catch (e) {
-      console.warn('[xterm:' + address + '] Unicode11Addon load failed:', e);
-    }
-    try {
-      const ug = new UnicodeGraphemesAddon.UnicodeGraphemesAddon();
-      term.loadAddon(ug);
-      term.unicode.activeVersion = '15-graphemes';
-    } catch (e) {
-      console.warn('[xterm:' + address + '] UnicodeGraphemesAddon load failed:', e);
-      // Fallback: Unicode 11 (= width table のみ、 grapheme 不対応)
-      try { term.unicode.activeVersion = '11'; } catch (_) {}
-    }
-
-    // === WebglAddon = baseline 高速 renderer (V4 確定 2026-05-10、 user 方針) ===
-    // user 方針「基本 WebGL 描画」 を反映、 V3 (= DOM renderer) で drift 不再現を観察した上で
-    // V4 で WebGL active 化。 過去 Phase 5-D (2026-05-02) で「WebGL 復活が正解」 と判断、 frame
-    // 毎 canvas 全描画で cell recycling 起因 ghost char が原理的に発生しない property が再評価対象。
-    // GPU context loss (Mac で別 app 切替時) は onContextLoss で dispose → DOM fallback。
-    let webglAddon = null;
-    let webglCleanup = null;
-    const VP_USE_WEBGL = true;
-    if (VP_USE_WEBGL) {
-      try {
-        webglAddon = new WebglAddon.WebglAddon();
-        term.loadAddon(webglAddon);
-        webglAddon.onContextLoss(() => {
-          console.warn('[xterm:' + address + '] WebGL context loss — DOM fallback');
-          webglAddon.dispose();
-        });
-        // glyph atlas 破損の自動復旧。 GPU context loss を伴わない silent な atlas
-        // corruption (= 文字化けが ge app まで治らない症状) を、 app が foreground
-        // に戻った時に clearTextureAtlas で atlas を作り直して wipe する。 corruption
-        // の trigger (GPU 切替 / sleep-wake / メモリ圧) は app の background 化と
-        // 相関するため、 visible 復帰時の再構築が実効的。 真の context loss は上の
-        // onContextLoss で dispose → DOM fallback されるため別経路。
-        const onVisible = () => {
-          if (document.visibilityState !== 'visible') return;
-          try { webglAddon.clearTextureAtlas(); } catch (_) {}
-        };
-        document.addEventListener('visibilitychange', onVisible);
-        webglCleanup = () => document.removeEventListener('visibilitychange', onVisible);
-      } catch (e) {
-        console.warn('[xterm:' + address + '] WebGL unavailable:', e);
-      }
-    }
-
-    // === DISABLED for baseline (drift 再現性確認後、 1 つずつ active 化) ===
-    //
-    // Terminal options (drift 観察後 必要なものを再追加):
-    //   letterSpacing: tokens.letterSpacing,     // Live Token (default 0)、 xterm.js default = 0 で同じ
-    //   cursorBlink: false,                      // PR #247 frame budget save、 xterm.js default = false で同じ
-    //   cursorWidth: 2,                          // bar cursor 太め、 default = 1 (= thin)
-    //   fontLigatures: false,                    // mem_1CaVpvsBKR3ckieRXo1nwr cell tracking 抑制、 xterm.js default = false で同じ
-    //
-    //   (allowProposedApi: true は V8.2 で Terminal options 本体に復帰、 Unicode11Addon と pair 必須)
-    //
-    // === ProgressAddon = OSC 9;4 ConEmu progress event capture (V4+ enhancer) ===
-    //  shell tool / build script (cargo, bun, npm) や Claude CLI が emit する progress 状態
-    //  (state: 0=remove/1=normal/2=error/3=indeterminate/4=warning、 value: 0-100) を event 化。
-    //  creo-ui の `.creo-progress[data-variant][data-indeterminate]` に state mapping が完全一致 →
-    //  CSS 既存資産で即視覚化可。 MVP: console.log で event を確認、 後続 PR で sidebar wire。
-    try {
-      const progressAddon = new ProgressAddon.ProgressAddon();
-      term.loadAddon(progressAddon);
-      progressAddon.onChange((p) => {
-        console.log('[osc9;4:' + address + '] state=' + p.state + ' value=' + p.value);
-      });
-    } catch (e) {
-      console.warn('[xterm:' + address + '] ProgressAddon load failed:', e);
-    }
-
-    // === WebLinksAddon = URL auto-link + cmd/ctrl+click で OS ブラウザ起動 ===
-    //  default handler の window.open は WebView 内遷移になり OS ブラウザに繋がらないため、
-    //  custom handler で `open-url` IPC を送り Rust (terminal::handle_ipc_message) が
-    //  webbrowser::open で OS default browser を起動する (native open 経路)。
-    //  cmd (Mac) / ctrl (win/linux) + click 限定 = iTerm/VSCode/Terminal.app と同じ端末慣習。
-    //  素の click は cursor 位置 / text 選択に残す (誤爆防止)。
-    try {
-      const webLinksAddon = new WebLinksAddon.WebLinksAddon((event, uri) => {
-        if (!event.metaKey && !event.ctrlKey) return;
-        try {
-          window.ipc.postMessage(JSON.stringify({ t: 'open-url', url: uri }));
-        } catch (e) {
-          console.warn('[xterm:' + address + '] open-url IPC failed:', e);
-        }
-      });
-      term.loadAddon(webLinksAddon);
-    } catch (e) {
-      console.warn('[xterm:' + address + '] WebLinksAddon load failed:', e);
-    }
-
-    // Addons (final state、 VP-162 V9 baseline 候補 2026-05-11、 dogfood 検証中):
-    //   ✅ FitAddon              — baseline 必須 (描画 prerequisite、 load 順序 1st)
-    //   ✅ Unicode11Addon        — width table 補正 (load 順序 2nd、 activeVersion '11')
-    //   ✅ UnicodeGraphemesAddon — grapheme cluster 認識 (load 順序 3rd、 activeVersion '15-graphemes')
-    //   ✅ WebglAddon            — 高速 GPU 描画 (load 順序 4th、 Unicode 15 widthProvider で atlas 構築)
-    //   ✅ ProgressAddon         — V4+ enhancer
-    //   ✅ WebLinksAddon         — V4+ enhancer
-    //   ❌ ImageAddon            — VP-162 で不要判定 (2026-05-11、 = archaeology trace below)
-    //
-    // === drift 真犯人 (= archaeology trace、 2026-05-11) ===
-    //   convertEol: true — drift origin 確定:
-    //     V4+++ で 4 件一括復帰した時 drift 再演、 1 件ずつ revert isolation で convertEol が真犯人と判明。
-    //     仮説では「単純な \n → \r\n 変換、 cell rendering 不介入」 だったが、 実際は xterm.js の
-    //     write buffer + cell index 計算と相互作用で drift 起こす (= 推測、 真因は upstream issue 候補)。
-    //     modern shell (zsh / bash) は \r\n standard で disable で問題なし、 legacy shell の
-    //     \n only output 対策が必要な時のみ revisit。
-    //
-    //   allowProposedApi: false (= V6 baseline reset の silent regression) — V7-V8.2 で発見遅延:
-    //     V6 で「Terminal options 1 件ずつ active 化」 で削除した allowProposedApi が、 Unicode11Addon
-    //     + UnicodeGraphemesAddon (= 両方 proposed API) を silent fail させていた。 V6 → V7 (graphemes
-    //     disable) → V8.1 (Unicode11 復帰 + activeVersion '11') → V8.2 (load 順序修正) でも emoji 1 cell
-    //     幅と drift が残存、 V8.3 で `allowProposedApi: true` 復帰して両症状を解消。 V7 で UnicodeGraphemes
-    //     を「wrap drift 主犯」 と判定したが、 真犯人は proposed API gate の方だった (= V9 で再 enable
-    //     して drift 不再現を検証)。 教訓: **proposed addon を使う時は allowProposedApi: true と必ず pair、
-    //     baseline reset で削除しない**。
-    //
-    // === 不要判定 (= archaeology trace、 2026-05-11) ===
-    //   ImageAddon — VP-162 で不要判定:
-    //     VP architecture は「Canvas (= PP) で視る、 TUI で操る」、 image 表示は PP body markdown
-    //     pipeline (doc 13 PR-ε で landed) が主路線、 terminal 内 inline (sixel/iTerm IIP/kitty
-    //     graphics) は副次的。 claude も markdown ![...](data:...) で emit が主、 protocol-level
-    //     emit は rare。 復帰 cost 低い (= try/catch 1 block) ので必要時のみ revisit。
-
-    term.open(tdiv);
-    // 実験: terminal textarea の autocomplete を **on** に。 browser の autofill が typed commands を
-    //  保存して提案する挙動を観察する。 dogfood で「過去 command の suggestion が出るか / UI の overlay が
-    //  邪魔にならないか / cross-lane suggestion 混在しないか」 を実測。 問題あれば off に戻す。
-    try { term.textarea && term.textarea.setAttribute('autocomplete', 'on'); } catch (_) {}
-    // 可視 (container clientWidth>0) のときだけ fit。 hidden で fit すると 0 cols 化するので、
-    //  不可視時は 80×24 init を保ち、 実 fit は showLane (active 化後) に委ねる。
-    if (container.clientWidth > 0) { try { fitAddon.fit(); } catch (_) {} }
-
-    // ===== OSC notification capture (Slice 1: capture-only、 UI は後続 PR) =====
-    // 3 codes 全部 cover ─ cc は terminal 検知して emit する code を切り替える可能性あり、
-    // defensive にすべて hook して dogfood 中に何が来るかを catalog 化する。
-    //
-    // - OSC 9  (iTerm2 / Windows Terminal style):
-    //     ESC ] 9 ; <message> BEL                ─ body only、 metadata 無し
-    //     ESC ] 9 ; <subcode> ; <args> BEL       ─ iTerm2 拡張 (9;2=notification 等)、 cwd reporting にも overload
-    // - OSC 99 (kitty notification protocol):
-    //     ESC ] 99 ; <metadata> ; <payload> ESC \\
-    //   metadata は colon-separated key=value (i=ID:d=0|1:p=title|body|close|...:a=focus|report:u=0|1|2 等)
-    //   multi-chunk: 同 i=ID で `d=0` (cont) / `d=1` (final) を使い分け、 final で commit。
-    // - OSC 777 (rxvt-unicode、 Ghostty / foot 等が踏襲):
-    //     ESC ] 777 ; notify ; <TITLE> ; <BODY> BEL
-    //
-    // observed (2026-04-29 dogfood): cc は vp-app に対して OSC 99 multi-chunk を emit している。
-    //   例: i=211:d=0:p=title;Claude Code → i=211:p=body;Claude is waiting for your input → i=211:d=1:a=focus;
-    //
-    // Phase S1 では capture が動くか確認するだけ ─ console.log + Rust tracing (`[xterm debug]` ログ) に流す。
-    // S2 で id-based accumulator + `d=1` で commit + IPC push、 S3 で sidebar tint UI。
-    //
-    // ----- structured parse helpers (dogfood 観察用、 S2 accumulator の前哨) -----
-    // raw payload は `[osc99:lane] i=211:d=0:p=title;Claude Code` の形式で、 colon が key delimiter、
-    //  semicolon が value 開始 ─ 人間が毎回頭で parse するのは認知負荷が高いので、
-    //  key=value 対を space-spread した一行サマリも併せて吐く:
-    //    `[osc99-keys:lane] {i=211 d=0 p=title} value="Claude Code"`
-    //
-    // dogfood で観察したい open question:
-    //   * cc が `t=` (semantic type tag) や `u=` (urgency 0/1/2) を emit するか
-    //   * permission prompt 時の `p=body` 文字列 (input 待ちと distinguish できるか)
-    //   * `p=close` / `p=icon` / `p=buttons` 等の non-title/body type が flow するか
-    //   * OSC 9 / 777 が cc 以外の emitter から来るか
-    function parseOsc99(payload) {
-      const semi = payload.indexOf(';');
-      const metaStr = semi >= 0 ? payload.substring(0, semi) : payload;
-      const value = semi >= 0 ? payload.substring(semi + 1) : '';
-      const m = {};
-      for (const kv of metaStr.split(':')) {
-        if (!kv) continue;
-        const eq = kv.indexOf('=');
-        if (eq > 0) m[kv.slice(0, eq)] = kv.slice(eq + 1);
-        else m[kv] = '';
-      }
-      return { m, value };
-    }
-    function fmtOsc99Keys(m) {
-      return Object.entries(m)
-        .map(([k, v]) => v === '' ? k : k + '=' + v)
-        .join(' ');
-    }
-    // OSC 9 = `9;<msg>` (無印 iTerm2 notify) or iTerm2 拡張 `9;<subcode>;<args>` (subcode 9=cwd reporting 等) の混在。
-    //  先頭 segment が pure 数字なら subcode 形式と判定する。
-    //  注意 (review F-233-1): `9;hello world` のような pure 数字始まり plain notify の case は
-    //  subcode="9" 扱い になる ambiguity がある。 これは dogfood log のみへの影響で、
-    //  cc は OSC 9 を emit していない (PR #221 / #233 dogfood で観測ゼロ) ため実害なし。
-    //  別 emitter が乗ってきた段階で iTerm2 既知 subcode (1 / 2 / 9 / 50 / 51 等) の whitelist
-    //  に絞るか、 観察 log にフラグ立てるかを再検討する。
-    //  もう一つの corner case: payload = "9" (semicolon なし、 単一文字) の場合は
-    //  semi < 0 経路で `{ subcode: null, rest: "9" }` を返す。 plain msg "9" として扱われ、
-    //  実害ゼロ (whitelist 化したら自然解消)。
-    function parseOsc9(payload) {
-      const semi = payload.indexOf(';');
-      if (semi < 0) return { subcode: null, rest: payload };
-      const head = payload.substring(0, semi);
-      if (/^\d+$/.test(head)) {
-        return { subcode: head, rest: payload.substring(semi + 1) };
-      }
-      return { subcode: null, rest: payload };
-    }
-    // OSC 777 = `notify;<title>;<body>` (urxvt / foot 流) — title/body を semicolon 区切りで取り出す。
-    function parseOsc777(payload) {
-      const parts = payload.split(';');
-      if (parts[0] === 'notify' && parts.length >= 2) {
-        return { title: parts[1] || '', body: parts.slice(2).join(';') };
-      }
-      return { title: null, body: payload };
-    }
-
-    try {
-      term.parser.registerOscHandler(9, (data) => {
-        const payload = String(data || '');
-        console.log('[OSC 9] lane=' + address + ' payload=' + JSON.stringify(payload));
-        dbg('[osc9:' + address + '] ' + payload);
-        try {
-          const p = parseOsc9(payload);
-          if (p.subcode != null) {
-            dbg('[osc9-keys:' + address + '] subcode=' + p.subcode + ' rest=' + JSON.stringify(p.rest));
-          } else {
-            dbg('[osc9-keys:' + address + '] (plain) msg=' + JSON.stringify(p.rest));
-          }
-        } catch (_) {}
-        return true;
-      });
-      term.parser.registerOscHandler(99, (data) => {
-        const payload = String(data || '');
-        console.log('[OSC 99] lane=' + address + ' payload=' + JSON.stringify(payload));
-        dbg('[osc99:' + address + '] ' + payload);
-        try {
-          const p = parseOsc99(payload);
-          dbg('[osc99-keys:' + address + '] {' + fmtOsc99Keys(p.m) + '} value=' + JSON.stringify(p.value));
-        } catch (_) {}
-        // Phase 5-D Sprint C P2.1: final-chunk + focus action のみ「user attention 要求」 と判定。
-        //  metadata は最初の ; までの key=value list。 d=1 (final) かつ a=focus を含む chunk が trigger。
-        //  Rust 側で unread count を加算 → sidebar に push back → badge 表示。
-        const semi = payload.indexOf(';');
-        const meta = semi >= 0 ? payload.substring(0, semi) : payload;
-        if (/\bd=1\b/.test(meta) && /\ba=focus\b/.test(meta)) {
-          try {
-            window.ipc.postMessage(JSON.stringify({ t: 'osc:notification', lane: address, code: 99 }));
-          } catch (_) {}
-        }
-        return true;
-      });
-      term.parser.registerOscHandler(777, (data) => {
-        const payload = String(data || '');
-        console.log('[OSC 777] lane=' + address + ' payload=' + JSON.stringify(payload));
-        dbg('[osc777:' + address + '] ' + payload);
-        try {
-          const p = parseOsc777(payload);
-          if (p.title !== null) {
-            dbg('[osc777-keys:' + address + '] title=' + JSON.stringify(p.title) + ' body=' + JSON.stringify(p.body));
-          } else {
-            dbg('[osc777-keys:' + address + '] (non-notify form) raw=' + JSON.stringify(p.body));
-          }
-        } catch (_) {}
-        return true;
-      });
-    } catch (e) {
-      console.warn('[xterm:' + address + '] OSC handler registration failed:', e);
-    }
-
-    // ===== window title (OSC 0 / 2) capture =====
-    // xterm.js は OSC 0 (icon + title) と OSC 2 (title) を内部で parse して onTitleChange event を fire する。
-    // dogfood 仮説: cc が `/rename` 後に session name を window title として emit していれば、
-    //  この listener で `osc-handler-debug-logging` 等の renamed value が拾える。
-    //  もし fire しなければ session JSONL file watch (~/.claude/projects/<encoded-cwd>/...) の fallback path 検討。
-    try {
-      term.onTitleChange((title) => {
-        console.log('[term-title] lane=' + address + ' title=' + JSON.stringify(title));
-        dbg('[term-title:' + address + '] ' + JSON.stringify(title));
-      });
-    } catch (e) {
-      console.warn('[xterm:' + address + '] onTitleChange listener registration failed:', e);
-    }
-
-    // ===== Transport: World "canvas" channel 経由 (terminal S4、 doc 27 §4.1) =====
-    // 旧 `/ws/terminal` browser-native WebSocket 直結を撤去し、 Rust 側 per-lane terminal session
-    // (app.rs `spawn_terminal_session`) に橋渡しする IPC 経路に直切替:
-    //   - 出力: Rust が World canvas channel から PTY bytes を受け、 `window.vpTerminal.handleOutput
-    //           (address, base64)` で inject (下記 coalescer で 1 frame 分まとめて term.write)。
-    //   - 入力: `term.onData` → IPC `{t:'term:write', lane, data:base64}` → Rust session → SP。
-    //   - resize: `sendResize` → IPC `{t:'term:resize', lane, cols, rows}` → Rust session → SP。
-    // 再接続は Rust session が担うので JS 側 retry/backoff/scrollback-replay は不要 (= 撤去)。
-
-    // 出力 coalescer: 1 frame 内に届いた複数 chunk を結合して 1 回 term.write する
-    //  (大量出力時の write 呼び出しオーバヘッド削減)。 64KiB 超で即 flush、 それ未満は rAF で束ねる。
-    const COALESCE_MAX_BYTES = 65536;
-    const outState = { queue: [], bytes: 0, scheduled: false };
-    function flushOutput() {
-      outState.scheduled = false;
-      if (outState.queue.length === 0) return;
-      const merged = new Uint8Array(outState.bytes);
-      let off = 0;
-      for (const chunk of outState.queue) { merged.set(chunk, off); off += chunk.length; }
-      outState.queue.length = 0;
-      outState.bytes = 0;
-      try { term.write(merged); } catch (_) {}
-    }
-    function writeOutput(bytes) {
-      outState.queue.push(bytes);
-      outState.bytes += bytes.length;
-      if (outState.bytes >= COALESCE_MAX_BYTES) {
-        flushOutput();
-      } else if (!outState.scheduled) {
-        outState.scheduled = true;
-        requestAnimationFrame(flushOutput);
-      }
-    }
-
-    function sendResize() {
-      try {
-        window.ipc.postMessage(JSON.stringify({ t: 'term:resize', lane: address, cols: term.cols, rows: term.rows }));
-      } catch (_) {}
-    }
-
-    // input → IPC (Rust session → SP)。 d は xterm の UTF-16 string、 UTF-8 bytes に直して base64 化。
-    term.onData((d) => {
-      try {
-        const bytes = new TextEncoder().encode(d);
-        let bin = '';
-        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-        window.ipc.postMessage(JSON.stringify({ t: 'term:write', lane: address, data: btoa(bin) }));
-      } catch (e) {
-        dbg('[lane:' + address + '] input send error: ' + e);
-      }
-    });
-
-    // OSC 52 (clipboard) intercept — Lane ごとに独立
-    term.parser.registerOscHandler(52, (data) => {
-      const idx = data.indexOf(';');
-      if (idx < 0) return true;
-      const pd = data.slice(idx + 1);
-      if (pd === '?' || pd.length === 0) return true;
-      try {
-        const binary = atob(pd);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        const text = new TextDecoder('utf-8').decode(bytes);
-        window.ipc.postMessage(JSON.stringify({t:'copy', d: text}));
-      } catch (_) {}
-      return true;
-    });
-
-    // Copy/Paste (per-Lane scope)
-    function doCopy() {
-      const sel = term.getSelection();
-      if (!sel) return false;
-      navigator.clipboard.writeText(sel).catch(() => {
-        window.ipc.postMessage(JSON.stringify({t:'copy', d: sel}));
-      });
-      return true;
-    }
-    function doPaste() {
-      // Phase 4-paste-fix: navigator.clipboard.readText() は webview の permission policy で
-      // silent fail することがあるので、 **常に IPC fallback を併用**。 Rust 側 arboard が
-      // OS clipboard を読んで `window.deliverPaste(text)` で戻してくる経路。
-      try {
-        navigator.clipboard.readText()
-          .then((text) => { if (text) term.paste(text); })
-          .catch(() => {
-            window.ipc.postMessage(JSON.stringify({t:'paste:request'}));
-          });
-      } catch (_) {
-        // navigator.clipboard 自体が undefined のケース (古い WebKit 等)
-        window.ipc.postMessage(JSON.stringify({t:'paste:request'}));
-      }
-    }
-    term.attachCustomKeyEventHandler((e) => {
-      if (e.type !== 'keydown') return true;
-      const key = (e.key || '').toLowerCase();
-      if ((e.ctrlKey && e.key === 'Insert' && !e.shiftKey) || (e.metaKey && key === 'c')) {
-        if (doCopy()) return false;
-      }
-      if ((e.shiftKey && e.key === 'Insert' && !e.ctrlKey) ||
-          (e.ctrlKey && e.shiftKey && key === 'v') ||
-          (e.metaKey && key === 'v')) {
-        doPaste();
-        return false;
-      }
-      if (e.ctrlKey && !e.shiftKey && !e.metaKey && key === 'c') {
-        if (term.hasSelection()) {
-          doCopy();
-          term.clearSelection();
-          return false;
-        }
-      }
-      return true;
-    });
-    container.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      doPaste();
-    });
-    container.addEventListener('mouseup', () => {
-      setTimeout(() => {
-        const sel = term.getSelection();
-        if (sel && sel.length > 0) doCopy();
-      }, 0);
-    });
-    container.addEventListener('click', () => { try { term.focus(); } catch (_) {} });
-
-    // ResizeObserver (per-container): active な間だけ fit + resize 通知
-    const ro = new ResizeObserver(() => {
-      if (!container.classList.contains('active') || container.clientWidth === 0) return;
-      try { fitAddon.fit(); sendResize(); } catch (_) {}
-    });
-    ro.observe(container);
-
-    // writeOutput / sendResize は global vpTerminal.handleOutput / showLane / resize 観測者から呼ぶ。
-    return { term, fitAddon, writeOutput, sendResize, container, ro, webglAddon, webglCleanup };
-  }
-
-  // terminal S4: Rust の per-lane terminal session が World canvas channel から受けた PTY 出力を
-  //  `window.vpTerminal.handleOutput(address, base64)` で注入してくる (canvas-handler.ts と同じ wry-IPC edge)。
-  window.vpTerminal = {
-    handleOutput(address, b64) {
-      const info = laneInstances.get(address);
-      if (!info) return;
-      let bytes;
-      try {
-        const bin = atob(b64);
-        bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      } catch (_) { return; }
-      info.writeOutput(bytes);
-    },
-  };
-
-  window.ensureLane = function(address) {
-    if (laneInstances.has(address)) return;
-    const inst = createLaneInstance(address);
-    if (inst) {
-      laneInstances.set(address, inst);
-      dbg('[lane:' + address + '] ensured');
-    }
-  };
-
-  window.showLane = function(address, isChat) {
-    // empty placeholder は「Lane が選ばれていない」時だけ出す。
-    //  Act I (tui): 内容 = xterm instance。 未 ensure (Dead lane 等) なら placeholder。
-    //  Act II (chat): 内容 = ChatView。 xterm instance を持たないのが正常形なので、
-    //   laneInstances 基準で判定すると placeholder が ChatView を覆い続ける
-    //   (#lane-empty は position:absolute; inset:0)。 isChat で抑止する。
-    const hasContent = !!address && (isChat === true || laneInstances.has(address));
-    const empty = document.getElementById('lane-empty');
-    if (empty) empty.classList.toggle('active', !hasContent);
-    for (const [addr, info] of laneInstances) {
-      info.container.classList.toggle('active', addr === address);
-    }
-    const active = laneInstances.get(address);
-    if (active) {
-      // active 化直後の hidden→visible 遷移で fit / resize / focus。
-      //  setTimeout(0) は display 切替の layout flush 前に走ることがあり、 fit が 0 幅で潰れる
-      //  (= 狭幅復元bug の intermittent 原因)。 rAF 2 段で layout 確定後に fit し、 container 幅が
-      //  まだ 0 なら fit を見送る (80×24 を保持、 次の ResizeObserver/resize で復帰)。
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        try {
-          if (active.container.clientWidth > 0) {
-            active.fitAddon.fit();
-            active.sendResize();
-          }
-          active.term.focus();
-        } catch (_) {}
-      }));
-    }
-  };
-
-  window.removeLane = function(address) {
-    const info = laneInstances.get(address);
-    if (!info) return;
-    try {
-      // terminal S4: socket は持たない (Rust session が transport)。 xterm + observer の dispose のみ。
-      //  session の停止は Rust 側 LanesLoaded reconcile が lane 消滅検知で行う (= map remove)。
-      info.ro.disconnect();
-      if (info.webglCleanup) { try { info.webglCleanup(); } catch (_) {} }
-      if (info.webglAddon) { try { info.webglAddon.dispose(); } catch (_) {} }
-      info.term.dispose();
-      info.container.remove();
-    } catch (e) {
-      console.error('removeLane error:', e);
-    }
-    laneInstances.delete(address);
-    dbg('[lane:' + address + '] removed');
-  };
-
-  // ========= VP-143: terminal Live Token 群の runtime 反映 (creo-ui-editor-host 連携) =========
-  // creo-ui-editor-host (Ctrl+Shift+E で activate) が token slider/input 等で document.documentElement
-  // の inline style を setProperty('--terminal-{font-size,line-height,letter-spacing,font-family,cursor-style}', ...)
-  // で書き換えると、 MutationObserver が style 属性変更を検知して 5 token を全 xterm instance に伝播:
-  //   - term.options setter で値反映 (xterm.js は init-time 受取 API だが setter も同等の runtime API)
-  //   - fitAddon.fit() で grid 再計算 (font size / line height 変更で cell 寸法が変わる)
-  //   - WS resize 通知で PTY 側にも cols/rows 伝達 (= SIGWINCH 相当)
-  // → user は editor で値変更すると即時に全 lane terminal が追従。 5 token のうち diff があるものだけ
-  // 反映する (= 不要な fitAddon.fit を避ける)。 cursorStyle は grid 寸法に影響しないので fit 不要だが、
-  // 残り 4 token のいずれかが変わったら fit 必要 ─ 簡素化のため diff があれば fit する pattern で良い。
-  let lastTokens = readTerminalTokens();
-  const tokenObserver = new MutationObserver(() => {
-    const current = readTerminalTokens();
-    const fontSizeChanged = current.fontSize !== lastTokens.fontSize;
-    const lineHeightChanged = current.lineHeight !== lastTokens.lineHeight;
-    const letterSpacingChanged = current.letterSpacing !== lastTokens.letterSpacing;
-    const fontFamilyChanged = current.fontFamily !== lastTokens.fontFamily;
-    const cursorStyleChanged = current.cursorStyle !== lastTokens.cursorStyle;
-    const anyChanged =
-      fontSizeChanged || lineHeightChanged || letterSpacingChanged || fontFamilyChanged || cursorStyleChanged;
-    if (!anyChanged) return;
-    lastTokens = current;
-    // grid 寸法に影響する 4 token のいずれか変更があれば fit 必要、 cursorStyle のみは fit 不要
-    const needsFit = fontSizeChanged || lineHeightChanged || letterSpacingChanged || fontFamilyChanged;
-    for (const [, info] of laneInstances) {
-      try {
-        if (fontSizeChanged) info.term.options.fontSize = current.fontSize;
-        if (lineHeightChanged) info.term.options.lineHeight = current.lineHeight;
-        if (letterSpacingChanged) info.term.options.letterSpacing = current.letterSpacing;
-        if (fontFamilyChanged) info.term.options.fontFamily = current.fontFamily;
-        if (cursorStyleChanged) info.term.options.cursorStyle = current.cursorStyle;
-        // 可視 lane のみ fit (hidden lane を fit すると 0 幅で潰れ PTY を狭める)。
-        if (needsFit && info.container.clientWidth > 0) {
-          info.fitAddon.fit();
-          info.sendResize();
-        }
-      } catch (_) { /* noop on individual lane failure */ }
-    }
-  });
-  tokenObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
-
-  // terminal S4: PTY 出力は Rust の per-lane terminal session → window.vpTerminal.handleOutput 経由。
-
-  // Phase 4-paste-fix: Rust 側 arboard で読み取った OS clipboard 内容を active Lane の xterm に inject。
-  // `terminal.rs::handle_ipc_message` の `paste:request` → `AppEvent::PasteText` → `app.rs` event loop
-  // で `main_view.evaluate_script("window.deliverPaste(text)")` の最終受け取り口。
-  window.deliverPaste = function(text) {
-    if (!text) return;
-    for (const [, info] of laneInstances) {
-      if (info.container.classList.contains('active')) {
-        try {
-          info.term.paste(text);
-        } catch (e) {
-          console.error('deliverPaste error:', e);
-        }
-        return;
-      }
-    }
-    // active Lane が無い場合は noop
-  };
-
-  window.addEventListener('resize', () => {
-    // active かつ可視 (clientWidth>0) な Lane だけ fit + resize 通知
-    for (const [, info] of laneInstances) {
-      if (info.container.classList.contains('active') && info.container.clientWidth > 0) {
-        try {
-          info.fitAddon.fit();
-          info.sendResize();
-        } catch (_) {}
-        break;
-      }
-    }
-  });
-
-  // ========= Architecture v4: Lane / Stand 切替 API =========
-  // Rust → JS で active Lane / Stand を切替。kind が null の場合は empty 状態を表示。
-  // payload: {kind: "terminal"|"preview"|"paisley_park"|"gold_experience"|"bastet"|null, pane_id, preview_url}
-  // Phase 5-A: Project-scope Stand (PP/GE/HP) を click 可能 pane として追加。
-  // VP-142 cleanup: legacy "canvas" kind 削除 (pane-canvas placeholder 廃止に伴い)。
-  const KIND_TO_PANE = {
-    terminal: 'pane-terminal',
-    preview: 'pane-preview',
-    paisley_park: 'pane-paisley-park',
-    gold_experience: 'pane-gold-experience',
-    bastet: 'pane-bastet',
-    empty: 'pane-empty',
-  };
-  // 現在 active な pane の info (slot:rect 送出時の pane_id 補完用)
-  let activePaneInfo = null;
-  function setActiveImpl(info) {
-    activePaneInfo = info || null;
-    const kind = info && info.kind ? info.kind : 'empty';
-    const targetId = KIND_TO_PANE[kind] || 'pane-empty';
-    document.querySelectorAll('.pane').forEach(el => {
-      const isActive = (el.id === targetId);
-      el.classList.toggle('active', isActive);
-      // 動的に data-pane-id を設定 (γ-light: native overlay が pane_id で照合する想定)。
-      // 注: Frame Engine の static `data-frame-id` (= "echoes" / "pp" 等の Scene lookup key) とは
-      // 別 attribute。 同名にすると Lane click でこの動的書き換えが Frame Engine の attribute を
-      // hijack して Scene lookup undefined → HIDDEN_TRANSFORM で pane が見えなくなる (VP-141 fix)。
-      if (isActive && info && info.pane_id) {
-        el.setAttribute('data-pane-id', info.pane_id);
-      } else if (isActive) {
-        el.removeAttribute('data-pane-id');
-      }
-    });
-    if (kind === 'preview') {
-      const frame = document.getElementById('preview-frame');
-      const url = (info && info.preview_url) || 'about:blank';
-      if (frame && frame.getAttribute('src') !== url) {
-        frame.setAttribute('src', url);
-      }
-    }
-    if (kind === 'terminal') {
-      // Phase 2.5: per-Lane instance を切替 (= showLane(address))。 pane_id は Lane address。
-      // showLane が空なら lane-empty placeholder を出す。 chat (Act II) lane は xterm を
-      // 持たない (ChatView が内容) ので、 その旨を渡して placeholder 抑止させる。
-      try {
-        window.showLane(info && info.pane_id, !!(info && info.chat));
-      } catch (_) {}
-    }
-    // active 切替直後に slot rect を一発送る (ResizeObserver 起動前 fail-safe)
-    sendSlotRect();
-  }
-  // DOM 未 ready の前に呼ばれた場合は buffer
-  let pendingPane = null;
-  let domReady = false;
-  window.setActivePane = function(info) {
-    if (!domReady) { pendingPane = info; return; }
-    setActiveImpl(info);
-  };
-
-  // ========= VP-100 γ-light: slot rect を Rust に push =========
-  // ResizeObserver が active pane container の rect 変化を捕捉。
-  // Phase 2 時点では Rust は受け取って store するだけ (Phase 4+ で native overlay 同期に使用)。
-  function sendSlotRect() {
-    const target = document.querySelector('.pane.active');
-    if (!target) return;
-    const r = target.getBoundingClientRect();
-    window.ipc.postMessage(JSON.stringify({
-      t: 'slot:rect',
-      pane_id: activePaneInfo ? (activePaneInfo.pane_id || null) : null,
-      kind: target.getAttribute('data-kind') || 'empty',
-      rect: { x: r.left, y: r.top, w: r.width, h: r.height },
-    }));
-  }
-  // ResizeObserver は host (= main area の root) に張る。中の pane も同サイズでリサイズされる。
-  // PH#4: rAF debounce — window resize 中の高頻度発火で event queue が詰まらないよう、
-  // 1 frame に最大 1 回 sendSlotRect を呼ぶように制限。
-  let rafScheduled = false;
-  function scheduleSendSlotRect() {
-    if (rafScheduled) return;
-    rafScheduled = true;
-    requestAnimationFrame(() => {
-      rafScheduled = false;
-      sendSlotRect();
-    });
-  }
-  if (typeof ResizeObserver !== 'undefined') {
-    const ro = new ResizeObserver(() => scheduleSendSlotRect());
-    ro.observe(document.getElementById('host'));
-  }
-
-  // 初期化完了を Rust に通知 (Phase 2.5: legacy `sendResize()` は撤去、 Lane 個別の WS が resize 通知する)
-  window.ipc.postMessage(JSON.stringify({t:'ready'}));
-
-  // VP-140: lane catch-up 要求 — 起動 race で WebView HTML load 完了前に Rust 側 ensureLane が
-  // silent drop された場合の救済。 ここは inline IIFE 内 (DOMContentLoaded 直後と等価のタイミング)
-  // で実行されるので、 JS 側 window.ensureLane が既に定義済 = Rust 側 evaluate_script が成功する。
-  // Rust 側は AppEvent::LanesEnsureAll を受けて全 project の lanes_by_project を walk + ensureLane 再発行。
-  // idempotent (laneInstances.has なら no-op) なので、 既に ensured 済の lane は影響なし。
-  window.ipc.postMessage(JSON.stringify({t:'lanes:ensure-all'}));
-
-  // DevTools console から laneInstances を手動検査できるよう露出
-  window.__vpLanes = laneInstances;
-
-  // 全体 Ctrl+Shift+C のフォールバック (active Lane の selection を copy)
-  // Lane 個別の handler では取り切れないケース (focus が container 外にある等) の保険。
-  window.addEventListener('keydown', (e) => {
-    if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
-      // active な Lane を探して selection 取得
-      for (const [, info] of laneInstances) {
-        if (info.container.classList.contains('active')) {
-          const sel = info.term.getSelection();
-          if (sel) {
-            e.preventDefault();
-            e.stopPropagation();
-            navigator.clipboard.writeText(sel).catch(() => {
-              window.ipc.postMessage(JSON.stringify({t:'copy', d: sel}));
-            });
-          }
-          break;
-        }
-      }
-    }
-  }, true);
-
-  // DOM ready 後に pending pane を flush
-  // VP-142 (PR-ε-3): flush は `window.setActivePane(pendingPane)` 経由で行う (= bridge を通す)。
-  // setActiveImpl 直叩きだと entry.tsx で wrap した setActivePane bridge を bypass し、
-  // setWantedLane (show-subscriber) や applyScene (Frame Engine) が fire しないため、 auto-select Lane の
-  // show-subscriber が永続的に未接続のままになる回帰を起こす。 domReady=true になっているので window.setActivePane
-  // 内の buffering 分岐は再 hit しない (= 無限再帰なし)。
-  window.addEventListener('DOMContentLoaded', () => {
-    domReady = true;
-    if (pendingPane !== null) {
-      const flush = pendingPane;
-      pendingPane = null;
-      window.setActivePane(flush);
-    }
-  });
-})();
-</script>
+     xterm.js + addon は npm 依存として term.ts が直 import する（#920 で vendored asset 8 本
+     ≈938KB の include_str! を撤去、window global 経由の橋渡しも本 PR で不要になった）。
+     CSS だけは cascade 順を保つため上の <style> に焼いたまま（build.mjs が node_modules から複写）。 -->
 </body>
 </html>"#
 );
@@ -1482,15 +663,15 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
 mod tests {
     use super::*;
 
-    /// doc 33: chat lane (Act II) は `chat: true` で JS に伝わる。
+    /// doc 33: chat lane (gui) は `chat: true` で JS に伝わる。
     ///
     /// これが落ちると `showLane` が「xterm instance 無し = 内容無し」と誤判定し、
     /// `#lane-empty` placeholder が ChatView を覆って「Lane が選択されていません」で
-    /// 固着する（Act II が選べない体感バグ）。
+    /// 固着する（gui が選べない体感バグ）。
     #[test]
-    fn active_pane_script_carries_chat_flag_for_act2_lane() {
+    fn active_pane_script_carries_chat_flag_for_gui_lane() {
         let script = build_set_active_pane_script(&ActivePaneInfo {
-            kind: Some("terminal"),
+            kind: Some("lane"),
             pane_id: Some("vp/root"),
             preview_url: None,
             chat: true,
@@ -1498,17 +679,17 @@ mod tests {
             branch: None,
             lane_name: None,
             session_id: None,
-            stand: None,
+            agent: None,
         });
         assert!(script.contains("\"chat\":true"), "script={script}");
         assert!(script.contains("\"pane_id\":\"vp/root\""));
     }
 
-    /// Act I (tui) lane と非 terminal kind は `chat: false`（従来の xterm 判定に従う）。
+    /// tui (tui) lane と非 terminal kind は `chat: false`（従来の xterm 判定に従う）。
     #[test]
     fn active_pane_script_chat_false_for_tui_and_stand() {
         let tui = build_set_active_pane_script(&ActivePaneInfo {
-            kind: Some("terminal"),
+            kind: Some("lane"),
             pane_id: Some("vp/performer/x"),
             preview_url: None,
             chat: false,
@@ -1516,7 +697,7 @@ mod tests {
             branch: Some("mako/x"),
             lane_name: Some("x"),
             session_id: Some("0196-abcd-ef01"),
-            stand: Some("echoes"),
+            agent: Some("claude"),
         });
         assert!(tui.contains("\"chat\":false"), "script={tui}");
         // cwd / branch chip の供給が setActivePane 経由で JS に届くこと（header の情報源）。
@@ -1525,17 +706,17 @@ mod tests {
             "script={tui}"
         );
         assert!(tui.contains("\"branch\":\"mako/x\""), "script={tui}");
-        // Act I の session chip 供給路（engine_session_id 相乗り + engine 種別）。
-        // Act I は EchoesEvent が流れないため、この経路が欠けると chip が出ない
+        // tui の session chip 供給路（engine_session_id 相乗り + engine 種別）。
+        // tui は ConversationEvent が流れないため、この経路が欠けると chip が出ない
         //（bug mem_1Cd3icsvKiGsQ8TtX8t1FR の再発防止）。
         assert!(
             tui.contains("\"session_id\":\"0196-abcd-ef01\""),
             "script={tui}"
         );
-        assert!(tui.contains("\"stand\":\"echoes\""), "script={tui}");
+        assert!(tui.contains("\"agent\":\"claude\""), "script={tui}");
 
-        let stand = build_set_active_pane_script(&ActivePaneInfo {
-            kind: Some("bastet"),
+        let agent = build_set_active_pane_script(&ActivePaneInfo {
+            kind: Some("devices"),
             pane_id: None,
             preview_url: None,
             chat: false,
@@ -1543,24 +724,23 @@ mod tests {
             branch: None,
             lane_name: None,
             session_id: None,
-            stand: None,
+            agent: None,
         });
-        assert!(stand.contains("\"chat\":false"), "script={stand}");
+        assert!(agent.contains("\"chat\":false"), "script={agent}");
         // 非 lane pane は cwd/branch を持たない（chip 非表示）。
-        assert!(stand.contains("\"cwd\":null"), "script={stand}");
+        assert!(agent.contains("\"cwd\":null"), "script={agent}");
     }
 
-    /// showLane は 2 引数 (address, isChat) で呼ばれる — JS 側 signature との contract。
-    /// 1 引数のままだと chat lane で placeholder が残る（isChat=undefined → falsy）。
-    #[test]
-    fn embedded_show_lane_takes_is_chat_arg() {
-        assert!(
-            MAIN_AREA_HTML.contains("window.showLane = function(address, isChat)"),
-            "showLane の signature が (address, isChat) でない"
-        );
-        assert!(
-            MAIN_AREA_HTML.contains("window.showLane(info && info.pane_id, !!(info && info.chat))"),
-            "setActiveImpl が chat flag を showLane に渡していない"
-        );
-    }
+    // ⚠️ 旧「HTML 文字列に対する assert」4 本（`embedded_show_lane_takes_is_chat_arg` /
+    // `embedded_terminal_api_is_session_keyed` / `term_host_is_keyed_by_session_and_never_static` /
+    // `xterm_globals_are_supplied_by_the_bundle`）は World A 畳み込みで撤去した。
+    // 対象の JS が HTML から消えたので assert が空振りするだけになったため。
+    //
+    // これらは doc 53 §6.5.1 が言う「**境界に型が無い**ので検証を HTML 文字列に対する assert で
+    // 代替している」状態そのものだった。
+    //
+    // Rust → JS の名前呼びも **制御面は型で塞いだ**（`schema/vp-push.kdl` を SSOT に codegen が
+    // 両側へ enum / union を出し、受け口は `window.vpDispatch` 1 本）。引数の数が食い違えば
+    // TS のコンパイルが落ちる。残るは高頻度 stream の `vpTerminal.handleOutput` だけで、
+    // これは buffer 方針を別に決める必要があるため移行は別 PR。
 }

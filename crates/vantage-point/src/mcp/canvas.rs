@@ -1,21 +1,20 @@
-//! MCP canvas family tools — show / clear / capture_canvas / list_canvas / read_pane。
+//! MCP board family tools — show / clear / capture_window。
 //!
 //! mcp.rs から family module に分割（手書きのまま、description / signature を逐語保持）。
-//! helper（process_call / fetch_canvas_panes / quic_call 等）と CanvasPane /
-//! parse_show_payload は親 mcp.rs に据え置き、子 module から呼ぶ（Rust privacy: 子は親の
-//! private item を参照可）。
+//! doc 52 §7: 死んだ読み手（list_canvas / read_pane と helper CanvasPane / parse_show_payload /
+//! fetch_canvas_panes）は撤去した。board を読む口（中継台）は doc 52 §4 で別途新設する。
 use super::*;
 
-/// board scope の検証（board モデル 2026-07-15）: None/"lane"→None(=lane 既定)、
-/// "proj"→Some("proj")、 "vp"/その他→fail-closed。 "vp"(全体 board) は cross-project 共有で
-/// World store が要り Phase 2 未実装のため、 silent に lane 降格せず明示エラーで弾く。
+/// board scope の検証: **'lane' のみ**（mako 決定 2026-07-23 — board は注視中 lane に一本化）。
+/// 旧 'proj'（repo 共有 board、2026-07-15〜）と 'vp'（全体 board）構想は撤去。
+/// silent に lane 降格せず明示エラーで弾く（書けたつもりで表示されない board を作らない —
+/// GUI 側は scope != 'lane' の BoardUpdated を無視するため、通すと writer-without-reader になる）。
 fn validate_board_scope(scope: Option<&str>) -> Result<Option<String>, McpError> {
     match scope {
         None | Some("lane") => Ok(None),
-        Some("proj") => Ok(Some("proj".to_string())),
         Some(other) => Err(McpError::invalid_params(
             format!(
-                "未対応の board scope: '{}'。 'lane'(既定) か 'proj' を指定してください（'vp' は未実装）",
+                "未対応の board scope: '{}'。board は 'lane'(既定) のみです（'proj' は 2026-07-23 に撤去）",
                 other
             ),
             None,
@@ -25,12 +24,8 @@ fn validate_board_scope(scope: Option<&str>) -> Result<Option<String>, McpError>
 
 /// Parameters for the show tool
 ///
-/// ## doc 19 PP Canvas Stack Model (2026-05-27)
-///
-/// `append` field は spec から omit。 mcp__show は **canvas に新 item を push** する
-/// semantic に統一されたため、 「既存に追記」 は新 item 化で表現する。
-/// 外部 MCP client が `append: true` を送ってきても serde が unknown field を silent
-/// ignore (= backward compat)、 stack model 上は無効。
+/// doc 52 §7: `pane_id` は撤去（board は per-lane の 1 枚 = board 固定で、pane_id は
+/// dead field だった）。`append` も omit のまま（show は board に新 item を push する semantic）。
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ShowParams {
     /// Content to display
@@ -43,21 +38,13 @@ pub struct ShowParams {
     )]
     pub content_type: Option<String>,
 
-    /// Pane ID
-    ///
-    /// doc 19 PP Canvas Stack Model: vp-app の canvas-handler は pane_id を無視して
-    /// 全 show を PP body の stack に集約する (= dead field、 backward compat のため
-    /// 残置)。 v2 で削除候補。
-    #[schemars(description = "Pane ID (currently ignored; reserved for future)")]
-    pub pane_id: Option<String>,
-
-    /// Pane title (for tab display)
-    #[schemars(description = "Title for the pane tab. If not provided, the pane_id is used.")]
+    /// Board item title
+    #[schemars(description = "Title for this board item (shown in the history strip).")]
     pub title: Option<String>,
 
     /// board scope（board モデル）: どの board に貼るか。
     #[schemars(
-        description = "Board to pin this content to: 'lane' (default; the current lane's board) or 'proj' (the project-wide board shared across all lanes)."
+        description = "Board to pin this content to. Only 'lane' (default; the current lane's board) is supported."
     )]
     pub scope: Option<String>,
 }
@@ -65,44 +52,51 @@ pub struct ShowParams {
 /// Parameters for the clear tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ClearParams {
-    /// Pane ID to clear
-    #[schemars(description = "Pane ID to clear (default: 'main')")]
-    pub pane_id: Option<String>,
-
     /// board scope to clear
-    #[schemars(
-        description = "Board to clear: 'lane' (default) or 'proj' (the project-wide board)."
-    )]
+    #[schemars(description = "Board to clear. Only 'lane' (default) is supported.")]
     pub scope: Option<String>,
 }
 
-/// Parameters for the capture_canvas tool
+/// Parameters for the update tool（doc 52 §5: id 指定 in-place 置換）
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct CaptureCanvasParams {
-    /// Save path
+pub struct UpdateParams {
+    /// Board item id（read_board で取得した現在の id）
     #[schemars(
-        description = "Save path for the PNG screenshot (default: /tmp/vp-canvas-{timestamp}.png)"
+        description = "The id of the board item to replace. Obtain it from read_board first."
     )]
-    pub path: Option<String>,
+    pub id: String,
 
-    /// Capture specific pane only
-    ///
-    /// ネイティブ window capture は GUI window 全体を撮るため、pane 単位の分離は
-    /// 未対応（現状は無視）。将来 region 解決で per-pane 対応の余地あり。
+    /// New content
+    #[schemars(description = "The new content (markdown, html, or plain text)")]
+    pub content: String,
+
+    /// Content type
     #[schemars(
-        description = "Currently ignored — capture is window-level (the whole Vantage Point GUI window). Reserved for future per-pane support."
+        description = "Content type: 'markdown', 'html', or 'log'. Omit to keep the item's current type (only pass this when you intend to change how the content is rendered)."
     )]
-    pub pane_id: Option<String>,
+    pub content_type: Option<String>,
+
+    /// board scope
+    #[schemars(description = "Board to update. Only 'lane' (default) is supported.")]
+    pub scope: Option<String>,
 }
 
-/// Parameters for the read_pane tool
+/// Parameters for the read_board tool（doc 52 §4 中継台 + §5 identity）
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct ReadPaneParams {
-    /// pane_id to read (省略時: pane が 1 つだけならそれを返す)
+pub struct ReadBoardParams {
+    /// board scope
+    #[schemars(description = "Board to read. Only 'lane' (default) is supported.")]
+    pub scope: Option<String>,
+}
+
+/// Parameters for the capture_window tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct CaptureWindowParams {
+    /// Save path
     #[schemars(
-        description = "The pane_id to read. If omitted and exactly one pane is on the Canvas, that pane is returned."
+        description = "Save path for the PNG screenshot (default: /tmp/vp-window-{timestamp}.png)"
     )]
-    pub pane_id: Option<String>,
+    pub path: Option<String>,
 }
 
 #[tool_router(router = canvas_router, vis = "pub(crate)")]
@@ -115,7 +109,6 @@ impl VantageMcp {
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ShowParams>,
     ) -> Result<CallToolResult, McpError> {
-        let pane_id = params.pane_id.unwrap_or_else(|| "main".to_string());
         let content_type = params
             .content_type
             .unwrap_or_else(|| "markdown".to_string());
@@ -128,17 +121,16 @@ impl VantageMcp {
             _ => crate::protocol::Content::Markdown(params.content),
         };
 
-        // doc 19 PP Canvas Stack Model: append は spec から omit。 protocol layer の
-        // ProcessMessage::Show.append は keep (= wire 互換)、 値は false 固定で送る。
-        // WebView 側 canvas-handler が stack model で新 item として push する。
+        // protocol layer の RepoMessage::Show.pane_id / append は wire 互換のため keep。
+        // doc 52 §7: MCP 面から pane_id を撤去したので内部固定 "main"（board は per-lane 1 枚）。
         // board scope: "vp" は Phase 2 未実装なので fail-closed（silent lane 降格を避ける）。
         let scope = validate_board_scope(params.scope.as_deref())?;
-        let msg = ProcessMessage::Show {
-            pane_id: pane_id.clone(),
+        let msg = RepoMessage::Show {
+            pane_id: "main".to_string(),
             content,
             append: false,
             title: params.title,
-            // per-lane PP: この MCP が属する Lane（cwd 由来、root/performer 語彙）を stamp。
+            // per-lane board: この MCP が属する Lane（cwd 由来、root/performer 語彙）を stamp。
             // topic の lane segment になり、retained を lane 別に分離する。
             lane: Some(SelfLane::detect().lane_name),
             scope,
@@ -147,7 +139,7 @@ impl VantageMcp {
         self.process_call("show", &msg).await?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!("Content displayed in pane '{}'", pane_id),
+            "Content pinned to the board.".to_string(),
         )]))
     }
 
@@ -157,17 +149,105 @@ impl VantageMcp {
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ClearParams>,
     ) -> Result<CallToolResult, McpError> {
-        let pane_id = params.pane_id.unwrap_or_else(|| "main".to_string());
-
         let scope = validate_board_scope(params.scope.as_deref())?;
-        let msg = ProcessMessage::Clear {
-            pane_id: pane_id.clone(),
+        let msg = RepoMessage::Clear {
+            pane_id: "main".to_string(),
             lane: Some(SelfLane::detect().lane_name),
             scope,
         };
         self.process_call("clear", &msg).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!("Pane '{}' cleared", pane_id),
+            "Board cleared.".to_string(),
+        )]))
+    }
+
+    /// board item を id 指定で in-place 置換する（doc 52 §5）。
+    #[tool(
+        description = "Update (replace in place) a board item by id, keeping its position and title. Obtain the id from read_board first — updating by an unknown id fails loudly on purpose, so you never silently create a duplicate. Use this to keep a pinned item current (a progress table, test results, a design's current form): read_board → recognize the item by its title/content → update it by id."
+    )]
+    async fn update(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<UpdateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let scope = validate_board_scope(params.scope.as_deref())?;
+        // content_type は既定を入れない（None → null）。省略時は server 側が既存 item の type を
+        // 保つ（markdown 直書きで html→markdown に silent 降格させない、doc 52 §5 / team-b review）。
+        let payload = serde_json::json!({
+            "id": params.id,
+            "content": params.content,
+            "content_type": params.content_type,
+            // per-lane board: 呼び出し元 Lane（cwd 由来）を stamp（show / clear と同じ）
+            "lane": SelfLane::detect().lane_name,
+            "scope": scope,
+        });
+        self.quic_call("board_update", payload).await?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!("Board item {} updated.", params.id),
+        )]))
+    }
+
+    /// 呼び出し元 Lane の board を id 付き全文で読む（doc 52 §4 中継台 + §5 identity）。
+    #[tool(
+        description = "Read the current lane's board — every item with its id, title, content_type, and full content (newest first). Use this to (a) get an item's id before calling update, or (b) pull an item's full content to save it elsewhere (e.g. mcp__creo-memories__remember). The id is the stable handle: recognize the item you mean by its title/content, then mode on it by id."
+    )]
+    async fn read_board(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ReadBoardParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let scope = validate_board_scope(params.scope.as_deref())?;
+        let payload = serde_json::json!({
+            "lane": SelfLane::detect().lane_name,
+            "scope": scope,
+        });
+        let resp = self.quic_call("read_board", payload).await?;
+        let items = resp
+            .get("items")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        // cursor = mako が今 main に出している item（doc 52 §5 注視可視化）。AI が「今どれを
+        // 見ているか」を知り、その item を優先して update / 中継できるようにマークする。
+        let cursor = resp.get("cursor").and_then(|v| v.as_str());
+        if items.is_empty() {
+            return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                "Board is empty.".to_string(),
+            )]));
+        }
+        let mut out = format!("Board ({} items, newest first):", items.len());
+        for it in &items {
+            let id = it.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+            let title = it
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(untitled)");
+            let ct = it
+                .get("contentType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let content = it.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            // updatedAt は wave 3 以降の item のみ持つ（旧 item は createdAt に fallback）。
+            let updated = it
+                .get("updatedAt")
+                .or_else(|| it.get("createdAt"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let viewing = if cursor == Some(id) {
+                " ★ 今表示中"
+            } else {
+                ""
+            };
+            let stamp = if updated.is_empty() {
+                String::new()
+            } else {
+                format!(" · 更新 {}", updated)
+            };
+            out.push_str(&format!(
+                "\n\n─── id={} [{}] {}{}{} ───\n{}",
+                id, ct, title, stamp, viewing, content
+            ));
+        }
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            out,
         )]))
     }
 
@@ -175,16 +255,16 @@ impl VantageMcp {
     ///
     /// ネイティブ screenshot backend（`vp shot` と同じ `screenshot::default_backend()`）で
     /// "Vantage Point" window を直接キャプチャする。旧設計（webview html2canvas を
-    /// World→WS 往復で回収）は往復の両端が移行時に撤去されて機能停止していたため、
+    /// Daemon→WS 往復で回収）は往復の両端が移行時に撤去されて機能停止していたため、
     /// 往復依存を排して `vp shot` と機構を統一した（bug: canvas 可観測性の複合故障 B）。
-    /// window 全体（sidebar + console + PP）を撮るので、PP が非表示なら「非表示のまま」が
+    /// window 全体（sidebar + console + board）を撮るので、board が非表示なら「非表示のまま」が
     /// 正直に写る（= GUI の実可視状態が ground truth になる）。保存ファイルは Read ツールで確認可能。
     #[tool(
-        description = "Capture the Vantage Point GUI window as a PNG screenshot (the whole window — sidebar, console, and Canvas as actually visible). The saved file can be viewed with the Read tool."
+        description = "Capture the Vantage Point GUI window as a PNG screenshot (the whole window — sidebar, console, and board as actually visible). The saved file can be viewed with the Read tool."
     )]
-    async fn capture_canvas(
+    async fn capture_window(
         &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<CaptureCanvasParams>,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<CaptureWindowParams>,
     ) -> Result<CallToolResult, McpError> {
         use crate::screenshot::{CaptureFilter, default_backend};
 
@@ -229,149 +309,34 @@ impl VantageMcp {
         )]))
     }
 
-    /// Paisley Park Canvas の pane 一覧 (= 表示中の各 pane の最新内容) を返す。
-    #[tool(
-        description = "List the panes currently on the Paisley Park Canvas (PP). Returns each pane_id with its latest content's title, content_type, and a short preview. Use read_pane to fetch a pane's full source content (e.g. to save it to memory). Reads the retained snapshot over the Unison canvas channel."
-    )]
-    async fn list_canvas(&self) -> Result<CallToolResult, McpError> {
-        let panes = self.fetch_canvas_panes().await?;
-        if panes.is_empty() {
-            return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-                "Canvas に表示中の pane はありません (retained snapshot が空)。".to_string(),
-            )]));
-        }
-        let mut lines = vec![format!("Canvas panes ({}):", panes.len())];
-        for p in &panes {
-            let preview: String = p
-                .content
-                .chars()
-                .take(80)
-                .collect::<String>()
-                .replace('\n', " ");
-            lines.push(format!(
-                "- pane_id={} [{}] title={} | {}",
-                p.pane_id,
-                p.content_type,
-                p.title.as_deref().unwrap_or("(none)"),
-                preview
-            ));
-        }
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            lines.join("\n"),
-        )]))
-    }
-
-    /// Canvas pane の全文を返す (= remember 等に渡せるソース内容)。
-    #[tool(
-        description = "Read the full source content of a Paisley Park Canvas pane by pane_id (markdown/html/log/url text), so it can be saved to creo-memories (mcp__creo-memories__remember) or otherwise processed. If pane_id is omitted and exactly one pane exists, that pane is returned. Reads over the Unison canvas channel."
-    )]
-    async fn read_pane(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ReadPaneParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let panes = self.fetch_canvas_panes().await?;
-        let target = match &params.pane_id {
-            Some(id) => panes.iter().find(|p| &p.pane_id == id),
-            None if panes.len() == 1 => panes.first(),
-            None => None,
-        };
-        let Some(p) = target else {
-            let ids: Vec<&str> = panes.iter().map(|p| p.pane_id.as_str()).collect();
-            let hint = if params.pane_id.is_some() {
-                format!("pane_id が見つかりません。 現在の pane: {:?}", ids)
-            } else if panes.is_empty() {
-                "Canvas に表示中の pane はありません (retained snapshot が空)。".to_string()
-            } else {
-                format!(
-                    "pane が複数あります。 pane_id を指定してください: {:?}",
-                    ids
-                )
-            };
-            return Err(McpError::invalid_params(hint, None));
-        };
-        let header = format!(
-            "pane_id: {}\ncontent_type: {}\ntitle: {}\n---\n",
-            p.pane_id,
-            p.content_type,
-            p.title.as_deref().unwrap_or("(none)")
-        );
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!("{}{}", header, p.content),
-        )]))
-    }
-}
-
-#[cfg(test)]
-mod canvas_read_tests {
-    use super::*;
-
-    #[test]
-    fn parse_show_extracts_pane() {
-        let v = serde_json::json!({
-            "type": "show", "pane_id": "main",
-            "content": {"markdown": "# Hello"}, "append": false, "title": "My Pane"
-        });
-        let p = parse_show_payload(&v).expect("show parse");
-        assert_eq!(p.pane_id, "main");
-        assert_eq!(p.content_type, "markdown");
-        assert_eq!(p.content, "# Hello");
-        assert_eq!(p.title.as_deref(), Some("My Pane"));
-    }
-
-    #[test]
-    fn parse_show_html_without_title() {
-        let v = serde_json::json!({
-            "type": "show", "pane_id": "side",
-            "content": {"html": "<b>x</b>"}, "append": false
-        });
-        let p = parse_show_payload(&v).expect("show parse");
-        assert_eq!(p.content_type, "html");
-        assert_eq!(p.title, None);
-    }
-
-    #[test]
-    fn parse_rejects_non_show_and_malformed() {
-        assert!(
-            parse_show_payload(&serde_json::json!({"type":"clear","pane_id":"main"})).is_none()
-        );
-        assert!(parse_show_payload(&serde_json::json!({"foo": 1})).is_none());
-    }
-
-    #[test]
-    fn parse_reads_append_flag() {
-        let base = serde_json::json!({
-            "type": "show", "pane_id": "main", "content": {"markdown": "a"}, "append": false
-        });
-        let app = serde_json::json!({
-            "type": "show", "pane_id": "main", "content": {"markdown": "b"}, "append": true
-        });
-        assert!(!parse_show_payload(&base).unwrap().append);
-        assert!(parse_show_payload(&app).unwrap().append);
-        // append 不在は false 扱い
-        let no_field = serde_json::json!({
-            "type": "show", "pane_id": "x", "content": {"markdown": "c"}
-        });
-        assert!(!parse_show_payload(&no_field).unwrap().append);
-    }
+    // doc 52 §7: list_canvas / read_pane は死んだ読み手として撤去（board モデル化で retained
+    // Show を読む経路ごと dead に。board を読む口 = 中継台は §4 で別途新設）。
 }
 
 #[cfg(test)]
 mod show_params_tests {
     use super::*;
 
-    // --- ShowParams serde (doc 19 regression guards) ---
+    // --- ShowParams serde (backward compat regression guards) ---
 
-    /// doc 19: `append` field は ShowParams から omit 済み。
-    /// 旧クライアントが `append: true` を送っても serde の unknown field として
-    /// silent ignore され、 deserialize が成功すること (= backward compat)。
+    /// `append` field は ShowParams から omit 済み。旧クライアントが `append: true` を送っても
+    /// serde の unknown field として silent ignore され、 deserialize が成功すること。
     #[test]
     fn show_params_silently_ignores_append_true() {
         let json = r#"{"content":"hello","append":true}"#;
         let params: ShowParams = serde_json::from_str(json).expect("deserialize 失敗");
         assert_eq!(params.content, "hello");
         assert!(params.content_type.is_none());
-        assert!(params.pane_id.is_none());
         assert!(params.title.is_none());
+    }
+
+    /// doc 52 §7: `pane_id` を撤去済み。旧クライアントが送ってきても unknown field として
+    /// silent ignore され deserialize が成功すること（= backward compat）。
+    #[test]
+    fn show_params_silently_ignores_removed_pane_id() {
+        let json = r#"{"content":"test","pane_id":"main","append":false}"#;
+        let params: ShowParams = serde_json::from_str(json).expect("deserialize 失敗");
+        assert_eq!(params.content, "test");
     }
 
     /// `append` が無くても (= 新クライアント形式) deserialize が成功すること。
@@ -382,15 +347,6 @@ mod show_params_tests {
         assert_eq!(params.content, "world");
         assert_eq!(params.content_type.as_deref(), Some("html"));
         assert_eq!(params.title.as_deref(), Some("My Page"));
-    }
-
-    /// `append: false` も silent ignore される (= 古い show handler の常時 false 送信経路)。
-    #[test]
-    fn show_params_silently_ignores_append_false() {
-        let json = r#"{"content":"test","append":false,"pane_id":"main"}"#;
-        let params: ShowParams = serde_json::from_str(json).expect("deserialize 失敗");
-        assert_eq!(params.content, "test");
-        assert_eq!(params.pane_id.as_deref(), Some("main"));
     }
 
     /// `content` フィールドが必須であることを確認 (= 省略時は deserialize error)。

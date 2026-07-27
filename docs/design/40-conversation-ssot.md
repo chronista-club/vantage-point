@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # doc 40 — 会話 id の SSOT 統合: session registry 一枚岩 + LaneInfo descriptor 完成
 
 > 2026-07-18、mako + Fable 5 conductor session。発端 = #800 出荷後の Act I New dogfood で
@@ -206,7 +208,7 @@ lane 子プロセスへ注入される 6 種（stand_spawner L316-345）:
 | `VP_CWD` | **退役済み（2026-07-19 PR-3）** | 同上（stand_spawner / delivery_actor の注入を撤去） |
 
 repo 全体では VP_* が 31 種。残りは各 component の config knob / dev override
-（VP_WORLD_URL / VP_OIDC_* / VP_SHELL / VP_TERM_TRACE 等）で本 doc の scope 外。
+（VP_DAEMON_URL / VP_OIDC_* / VP_SHELL / VP_TERM_TRACE 等）で本 doc の scope 外。
 
 ## 9. 既知の考慮点
 

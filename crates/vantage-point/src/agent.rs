@@ -6,7 +6,7 @@
 //!   ([`InteractiveClaudeAgent`]、デフォルト)
 //!
 //! 対話モードの claude (TUI) は本モジュールでなく lane の tmux/PTY 経路
-//! (`.mise/tasks/vp/stand/echoes`) が担う。
+//! (`.mise/tasks/vp/agent/conversation`) が担う。
 //!
 //! ## Stream-JSON 入力フォーマット (Interactiveモード用)
 //!
@@ -512,49 +512,42 @@ fn apply_cli_args(cmd: &mut Command, config: &AgentConfig) {
 // セッションID取得
 // =============================================================================
 
-/// ~/.claude.json からプロジェクトのセッションIDを取得
+/// ~/.claude.json からrepoのセッションIDを取得
 ///
-/// Claude CLIは各プロジェクトのセッションIDを ~/.claude.json に保存する。
-/// この関数はプロジェクトパスに対応するセッションIDを検索する。
+/// Claude CLIは各repoのセッションIDを ~/.claude.json に保存する。
+/// この関数はrepoパスに対応するセッションIDを検索する。
 ///
 /// # 戻り値
 /// - `Some(session_id)` - セッションが見つかった場合
 /// - `None` - セッションが見つからない、またはファイルが存在しない場合
-pub fn get_session_id_for_project(project_path: impl AsRef<Path>) -> Option<String> {
+pub fn get_session_id_for_repo(repo_path: impl AsRef<Path>) -> Option<String> {
     let claude_config_path = get_claude_config_path()?;
-    let project_path = project_path.as_ref();
+    let repo_path = repo_path.as_ref();
 
     // ~/.claude.json を読み込み
     let content = std::fs::read_to_string(&claude_config_path).ok()?;
     let config: serde_json::Value = serde_json::from_str(&content).ok()?;
 
-    // projects配列からプロジェクトパスに一致するエントリを検索
-    let projects = config.get("projects")?.as_array()?;
+    // projects配列からrepoパスに一致するエントリを検索
+    let repos = config.get("repos")?.as_array()?;
 
-    for project in projects {
-        let path = project.get("path")?.as_str()?;
+    for repo in repos {
+        let path = repo.get("path")?.as_str()?;
 
         // パスが一致するか確認（正規化して比較）
         let config_path = PathBuf::from(path);
-        if paths_match(&config_path, project_path) {
+        if paths_match(&config_path, repo_path) {
             // セッションIDを取得
-            if let Some(session_id) = project.get("sessionId").and_then(|s| s.as_str())
+            if let Some(session_id) = repo.get("sessionId").and_then(|s| s.as_str())
                 && !session_id.is_empty()
             {
-                tracing::debug!(
-                    "プロジェクト {:?} のセッションID発見: {}",
-                    project_path,
-                    session_id
-                );
+                tracing::debug!("repo {:?} のセッションID発見: {}", repo_path, session_id);
                 return Some(session_id.to_string());
             }
         }
     }
 
-    tracing::debug!(
-        "プロジェクト {:?} のセッションIDが見つかりません",
-        project_path
-    );
+    tracing::debug!("repo {:?} のセッションIDが見つかりません", repo_path);
     None
 }
 

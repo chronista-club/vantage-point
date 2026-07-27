@@ -1,10 +1,10 @@
 //! Event log — agent の episodic memory（rebuild Epic L2 / doc 27 §5-3）
 //!
 //! ## 役割
-//! World が build done / test fail / device plug / lane lifecycle 等の event を 1 本の
+//! daemon が build done / test fail / device plug / lane lifecycle 等の event を 1 本の
 //! monotonic な log に集約し、`vp events --since <cursor>` で配る。これにより agent（Claude）の
 //! **行動間 blind**（前回の action から今までに何が起きたか見えない）を解消する。
-//! doc 27 §5「agent = first-class World surface」の observation 経路の 1 つ。
+//! doc 27 §5「agent = first-class Daemon surface」の observation 経路の 1 つ。
 //!
 //! ## 設計（MVP）
 //! - **in-memory ring**: daemon が always-on（L1 LaunchAgent、#617）になったので、ring でも実質
@@ -12,7 +12,7 @@
 //!   durable 永続（SurrealDB）は follow-up。
 //! - **cursor = monotonic u64 `seq`**: `--since N` で `seq > N` を古い順に返す。agent は見た最大 seq を
 //!   記録して次回 `--since <それ>` で差分だけ取る。
-//! - **汎用 emit**: 誰でも（build task / claude hook / agent / World 内部 feed）`kind` + 任意 `data` で
+//! - **汎用 emit**: 誰でも（build task / claude hook / agent / Daemon 内部 feed）`kind` + 任意 `data` で
 //!   push できる substrate。typed payload を強制しない（log は free-form、意味付けは kind 文字列）。
 
 use std::collections::VecDeque;
@@ -36,7 +36,7 @@ pub struct LoggedEvent {
     pub ts: String,
     /// event 種別（dotted、例: `"process.up"` / `"process.down"` / `"build.done"` / `"test.fail"`）。
     pub kind: String,
-    /// 発生元（任意、例: `"echoes@vantage-point/root"` や `"world"`）。
+    /// 発生元（任意、例: `"claude@vantage-point/root"` や `"daemon"`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     /// 任意 payload（JSON、kind ごとに形は自由）。
@@ -44,7 +44,7 @@ pub struct LoggedEvent {
     pub data: serde_json::Value,
 }
 
-/// World が保持する event log 本体（in-memory ring + monotonic seq）。
+/// daemon が保持する event log 本体（in-memory ring + monotonic seq）。
 ///
 /// `DaemonState` と Arc 共有し、channel handler（emit/query）と auto-feed task が同じ実体を触る。
 #[derive(Clone, Default)]
@@ -170,13 +170,13 @@ mod tests {
         let log = EventLog::new();
         log.emit(
             "build.done",
-            Some("echoes@vp/root".to_string()),
+            Some("claude@vp/root".to_string()),
             json!({"exit": 0}),
         )
         .await;
         let e = &log.query(0, 0).await[0];
         assert_eq!(e.kind, "build.done");
-        assert_eq!(e.source.as_deref(), Some("echoes@vp/root"));
+        assert_eq!(e.source.as_deref(), Some("claude@vp/root"));
         assert_eq!(e.data["exit"], 0);
         assert!(!e.ts.is_empty());
     }

@@ -4,10 +4,10 @@
 
 use anyhow::Result;
 
-/// World daemon (:32000) の `/api/health` レスポンス parser。
+/// daemon (:32000) の `/api/health` レスポンス parser。
 ///
-/// L0 finale: SP は HTTP listener を撤去したが、 **World daemon は HTTP を保持**するため (daemon/process.rs
-/// が World 自身の health を読む)、 この struct は残す。 旧 SP /api/health 用の用途 (check_status /
+/// L0 finale: repo は HTTP listener を撤去したが、 **daemon は HTTP を保持**するため (daemon/process.rs
+/// が Daemon 自身の health を読む)、 この struct は残す。 旧 SP /api/health 用の用途 (check_status /
 /// scan_instances) は撤去済。
 #[derive(serde::Deserialize)]
 pub struct HealthResponse {
@@ -15,59 +15,59 @@ pub struct HealthResponse {
     pub version: String,
     pub pid: u32,
     #[serde(default)]
-    pub project_dir: Option<String>,
+    pub repo_dir: Option<String>,
 }
 
-/// TheWorld（Daemon 統合）のデフォルトポート。
+/// daemon（Daemon 統合）のデフォルトポート。
 ///
-/// VP_PROFILE 分離 (dev/brew 混在根治): brew=32000 / dev=32100。 SP portless なので実 listener は
-/// world 単一 → この 1 本を profile でずらせば daemon bind / app connect / SP→world connect が
-/// 芋づるで追随する。 定義は `vp_paths::default_world_port()` (全 crate 共有の SSOT)。
-pub fn world_port() -> u16 {
-    vp_paths::default_world_port()
+/// VP_PROFILE 分離 (dev/brew 混在根治): brew=32000 / dev=32100。 repo portless なので実 listener は
+/// daemon 単一 → この 1 本を profile でずらせば daemon bind / app connect / repo→daemon connect が
+/// 芋づるで追随する。 定義は `vp_paths::default_daemon_port()` (全 crate 共有の SSOT)。
+pub fn daemon_port() -> u16 {
+    vp_paths::default_daemon_port()
 }
 
-/// 稼働中 project を一覧表示する（`vp ps`）。
+/// 稼働中 repo を一覧表示する（`vp ps`）。
 ///
-/// 真実源は World registry（`discovery::list` = World :32000 が維持する稼働 project 一覧）。
+/// 真実源は Daemon registry（`discovery::list` = Daemon :32000 が維持する稼働 repo 一覧）。
 ///
 /// # 列の意味論（doc 44 §5.3）
 ///
-/// fold-in で **PORT / PID 列は情報量を失った** — project は World と同一プロセスなので
-/// pid は全行 World 自身、port は listen しないので常に 0 になる。どちらも
-/// 「project = プロセス」という前提の上にあった表示で、その前提を fold-in が消した。
+/// fold-in で **PORT / PID 列は情報量を失った** — repo は daemon と同一プロセスなので
+/// pid は全行 Daemon 自身、port は listen しないので常に 0 になる。どちらも
+/// 「repo = プロセス」という前提の上にあった表示で、その前提を fold-in が消した。
 ///
-/// 代わりに project 間の実体的な差である **LANES（何本のラインを抱えているか）** と
+/// 代わりに repo 間の実体的な差である **LANES（何本のラインを抱えているか）** と
 /// **STATUS（そのうち動いているものがあるか = active / idle）** を出す。
-/// lane 個別の詳細（kind / stand / pid / state）は `vp lane` が持つ。
+/// lane 個別の詳細（kind / agent / pid / state）は `vp lane` が持つ。
 pub fn list_instances(config: &crate::config::Config) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         // control plane は Unison に寄せる方針（KDL schema + drift テスト + MCP tool 合成が
         // 付いてくる）。processes / lanes とも 1 接続の別 stream で引く。
-        let client = crate::daemon::client::WorldControlClient::connect(world_port(), 3)
+        let client = crate::daemon::client::DaemonControlClient::connect(daemon_port(), 3)
             .await
             .map_err(|e| {
                 anyhow::anyhow!(
-                    "World daemon (port {}) に接続できません。 `vp daemon start` で起動してください: {}",
-                    world_port(),
+                    "daemon (port {}) に接続できません。 `vp daemon start` で起動してください: {}",
+                    daemon_port(),
                     e
                 )
             })?;
 
-        // processes 取得の失敗は「project ゼロ」と意味が違う（daemon 障害 / registry stream
-        // 不通）。握り潰すと 14 project 稼働中でも「project なし」と誤誘導するため、明示的に
+        // processes 取得の失敗は「repo ゼロ」と意味が違う（daemon 障害 / registry stream
+        // 不通）。握り潰すと 14 repo 稼働中でも「repo なし」と誤誘導するため、明示的に
         // エラーとして上げる。lanes は失敗しても LANES 列を `-` に degrade できる（下参照）。
         let processes = client.processes_list().await.map_err(|e| {
-            anyhow::anyhow!("稼働 project の取得に失敗しました（daemon に届いていない可能性）: {e}")
+            anyhow::anyhow!("稼働 repo の取得に失敗しました（daemon に届いていない可能性）: {e}")
         })?;
         if processes.is_empty() {
-            println!("No running projects found.");
+            println!("No running repos found.");
             return Ok(());
         }
-        // lanes は取れなくても project 一覧は出す。失敗時は空集計 → 各行 LANES=`-`。
+        // lanes は取れなくても repo 一覧は出す。失敗時は空集計 → 各行 LANES=`-`。
         let lane_counts = match client.lanes_list().await {
-            Ok(lanes) => crate::discovery::count_lanes_by_project_entries(&lanes),
+            Ok(lanes) => crate::discovery::count_lanes_by_repo_entries(&lanes),
             Err(e) => {
                 eprintln!("⚠ lane 一覧の取得に失敗（LANES は - で表示）: {e}");
                 Default::default()
@@ -76,7 +76,7 @@ pub fn list_instances(config: &crate::config::Config) -> Result<()> {
         let instances: Vec<String> = processes
             .iter()
             .filter_map(|p| {
-                p.get("project_path")
+                p.get("repo_path")
                     .and_then(|v| v.as_str())
                     .map(str::to_string)
             })
@@ -87,21 +87,21 @@ pub fn list_instances(config: &crate::config::Config) -> Result<()> {
             .and_then(|p| dunce::canonicalize(&p).ok())
             .map(|p| p.display().to_string());
 
-        // project 名は長さの幅が大きい（`claude-plugin-chronista-style` = 29 文字）ので、
+        // repo 名は長さの幅が大きい（`claude-plugin-chronista-style` = 29 文字）ので、
         // 固定幅だと溢れて LANES 列がずれる。実データから列幅を決める。
         let names: Vec<String> = instances
             .iter()
-            .map(|path| crate::resolve::project_name_from_path(path, config))
+            .map(|path| crate::resolve::repo_name_from_path(path, config))
             .collect();
         let w = names
             .iter()
             .map(|n| n.chars().count())
             .max()
             .unwrap_or(0)
-            .max("PROJECT".len());
+            .max("REPO".len());
 
         println!();
-        println!("  {:<w$} {:>5}  STATUS", "PROJECT", "LANES");
+        println!("  {:<w$} {:>5}  STATUS", "REPO", "LANES");
         println!("  {:<w$} {:>5}  ──────", "─".repeat(w), "─────");
 
         for (inst, name) in instances.iter().zip(&names) {
@@ -117,8 +117,8 @@ pub fn list_instances(config: &crate::config::Config) -> Result<()> {
                 false
             };
             let marker = if is_cwd { "  ← cwd" } else { "" };
-            // World に問い合わせできなかった場合は lane 数不明として `-` を出す
-            // （project 一覧そのものは出せるべきなので、lane 取得失敗で表を潰さない）。
+            // daemon に問い合わせできなかった場合は lane 数不明として `-` を出す
+            // （repo 一覧そのものは出せるべきなので、lane 取得失敗で表を潰さない）。
             let (lanes, status) = match lane_counts.get(name) {
                 Some(c) if c.running > 0 => (c.total.to_string(), "active"),
                 Some(c) => (c.total.to_string(), "idle"),
@@ -186,7 +186,7 @@ pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool) {
         // DebugMode::None (= 通常運転) は set しない — 後段の default EnvFilter
         // (vantage_point=info + 依存 crate の chatty log 抑制) に落とす。
         // 旧実装は None でも `vantage_point=warn` を焼き込んでいたため後段 default が
-        // 到達不能になり、daemon の INFO (Bastet/QUIC 起動等の運転記録) が全起動経路で
+        // 到達不能になり、daemon の INFO (DeviceRegistry/QUIC 起動等の運転記録) が全起動経路で
         // 恒久的に沈黙していた (log 出力先とは独立の第 2 の結線切れ)。
         match debug_mode {
             DebugMode::None => {}

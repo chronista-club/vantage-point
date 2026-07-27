@@ -81,10 +81,10 @@ fn regenerates_sidebar_ipc_bindings() {
     assert!(rust_file.contains("#[serde(tag = \"t\")]"));
     assert!(rust_file.contains("pub enum IpcEnvelope {"));
     // fieldless request → unit variant。
-    assert!(rust_file.contains("    ProcessAdd,\n"));
-    assert!(rust_file.contains("    ProjectClonePickFolder,\n"));
+    assert!(rust_file.contains("    RepoAdd,\n"));
+    assert!(rust_file.contains("    RepoClonePickFolder,\n"));
     // wire 名は serde rename で保持 (`:` 2 個の最難ケース含む)。
-    assert!(rust_file.contains("#[serde(rename = \"project:clone:pickFolder\")]"));
+    assert!(rust_file.contains("#[serde(rename = \"repo:clone:pickFolder\")]"));
 
     // --- TypeScript ---------------------------------------------------------
     let ts_emitted = TypeScriptEmitter::new().emit(&schema);
@@ -97,7 +97,7 @@ fn regenerates_sidebar_ipc_bindings() {
     write_if_changed(&root.join("webview/src/generated/SidebarIpc.ts"), &ts_file);
 
     assert!(ts_file.contains("export type IpcEnvelope ="));
-    assert!(ts_file.contains("({ t: \"project:clone:pickFolder\" } & ProjectClonePickFolder)"));
+    assert!(ts_file.contains("({ t: \"repo:clone:pickFolder\" } & RepoClonePickFolder)"));
 
     // schema の全 13 request の wire 名が Rust / TS 双方に出ていること。
     for wire in [
@@ -105,22 +105,36 @@ fn regenerates_sidebar_ipc_bindings() {
         "process:reorder",
         "process:restart",
         "process:stop",
-        "process:delete",
-        "process:add",
+        "repo:delete",
+        "repo:add",
         "lane:select",
         "lane:delete",
         "lane:restart",
         "lane:add_performer",
-        "stands:fetch",
+        "agents:fetch",
         "stand:select",
-        "project:clone:pickFolder",
+        "repo:clone:pickFolder",
         // in-app update: sidebar footer の「更新する」ボタン。schema 編集で codegen から
         // 落ちると button → Rust dispatch が silently 壊れるので regression net を張る。
         "update:apply",
+        // server → client（doc 53 §6.5.1.3）。同じ channel が両方向を運ぶ。
+        "sidebar:state",
+        "sidebar:error",
+        "performer:create_result",
+        "agents:result",
+        "files:list_result",
+        "wire:result",
+        "clone:path_picked",
+        "file_picker:open",
     ] {
         assert!(rust_file.contains(wire), "Rust に wire 名 {wire} が無い");
         assert!(ts_file.contains(wire), "TS に wire 名 {wire} が無い");
     }
+
+    // request / event で **別名の envelope** が出ること（club-kdl 0.12.0 / club-kdl#33）。
+    // 1 本に混ざると、client が送れないはずの event を送れてしまい型が意味を失う。
+    assert!(rust_file.contains("pub enum IpcEventEnvelope {"));
+    assert!(ts_file.contains("export type IpcEventEnvelope ="));
 }
 
 /// 内容が変わったときだけ書き込む (無変更なら git status / mtime を汚さない)。

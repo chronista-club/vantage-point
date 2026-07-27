@@ -1,11 +1,11 @@
-//! 委譲 (delegation) の World 中央 store — SurrealDB backing（doc 28 §4 / §6）。
+//! 委譲 (delegation) の daemon 中央 store — SurrealDB backing（doc 28 §4 / §6）。
 //!
-//! wire と同じく TheWorld の DB（`delegations` table）に delegation record を持つ。SP の
-//! `handle_delegate` / `handle_complete` / `handle_respond` は `world_wire::call("/api/delegation/*")`
-//! でここに proxy する（SP 再起動を跨いで生存 = durable、World reconcile loop の駆動源）。
+//! wire と同じく daemon の DB（`delegations` table）に delegation record を持つ。repo の
+//! `handle_delegate` / `handle_complete` / `handle_respond` は `daemon_wire::call("/api/delegation/*")`
+//! でここに proxy する（repo 再起動を跨いで生存 = durable、Daemon reconcile loop の駆動源）。
 //!
 //! 状態遷移ロジック（どの Outcome がどの state か）は本 store が持つ（single source of truth）。
-//! wake（誰をどの prompt で起こすか）は SP 側（`process/delegation.rs`）の責務 — store は
+//! wake（誰をどの prompt で起こすか）は repo 側（`process/delegation.rs`）の責務 — store は
 //! data + transition のみ、wake は actions として分離する。
 
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use anyhow::Result;
 use surrealdb::Surreal;
 use surrealdb::engine::any::Any;
 
-use crate::process::delegation::{Delegation, DelegationState, Outcome};
+use crate::repo::delegation::{Delegation, DelegationState, Outcome};
 
 /// 現在時刻（ms）。created_at / updated_at に使う（reconcile の timeout 判定の基準）。
 fn now_ms() -> i64 {
@@ -40,7 +40,7 @@ fn extract_record_local_id(id_value: &serde_json::Value, table: &str) -> String 
         .to_string()
 }
 
-/// 委譲の World 中央 store（`Arc<Surreal>` 1 本なので Clone は cheap = reconcile loop に渡せる）。
+/// 委譲の daemon 中央 store（`Arc<Surreal>` 1 本なので Clone は cheap = reconcile loop に渡せる）。
 #[derive(Clone)]
 pub(crate) struct DelegationStore {
     db: Arc<Surreal<Any>>,
@@ -54,7 +54,7 @@ impl DelegationStore {
 
     /// delegate: 新規 record を作成（state=active、delivered=false）。id は採番済を受ける。
     ///
-    /// Pending は wake 直前の transient（SP がすぐ wake する）なので永続せず active で起こす。
+    /// Pending は wake 直前の transient（repo がすぐ wake する）なので永続せず active で起こす。
     pub(crate) async fn create(
         &self,
         id: &str,
@@ -142,7 +142,7 @@ impl DelegationStore {
         self.get(id).await
     }
 
-    /// respond: NeedsInput を回答で消費し Active に戻す（answer は transient = SP の wake 専用）。
+    /// respond: NeedsInput を回答で消費し Active に戻す（answer は transient = repo の wake 専用）。
     /// 戻り値 = 更新後 record（未知 id は None）。
     pub(crate) async fn apply_respond(&self, id: &str) -> Result<Option<Delegation>> {
         // 存在チェック（UPDATE の upsert 回避、apply_complete と同じ理由）。
@@ -183,7 +183,7 @@ impl DelegationStore {
     }
 
     /// reconcile: 直近 wake が未配達（`delivered = false`）の record を全て引く。
-    /// World reconcile loop が再 nudge する候補（push 取りこぼし / timeout 直後の Failed 等）。
+    /// Daemon reconcile loop が再 nudge する候補（push 取りこぼし / timeout 直後の Failed 等）。
     pub(crate) async fn list_undelivered(&self) -> Result<Vec<Delegation>> {
         let mut res = self
             .db

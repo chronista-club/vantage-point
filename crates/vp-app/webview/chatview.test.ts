@@ -11,11 +11,14 @@ import {
   formatToolInput,
   formatToolResult,
   clampToolDetail,
-  chatCapableStands,
+  canSwitchTo,
   canCloseSession,
-  type StandOption,
+  chatKey,
+  lampOf,
+  deriveNowLine,
+  clampNowLine,
 } from './chatview'
-import type { EchoesEvent } from './console'
+import type { ConversationEvent } from './console'
 
 /** tool ChatItem を手軽に組む helper（classifyToolRun のテスト用）。 */
 let toolSeq = 0
@@ -23,14 +26,14 @@ function tool(name: string, done = true, error = false) {
   return { kind: 'tool' as const, id: `${name}-${toolSeq++}`, name, done, error }
 }
 
-/** EchoesEvent 列を空 state に順に畳んで結果を返す helper。 */
-function fold(events: EchoesEvent[]) {
+/** ConversationEvent 列を空 state に順に畳んで結果を返す helper。 */
+function fold(events: ConversationEvent[]) {
   const s = emptyChatState()
   for (const ev of events) foldInto(s, ev)
   return s
 }
 
-describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () => {
+describe('foldInto — ConversationEvent → ChatState 畳み込み (doc 33 C2)', () => {
   it('session_init が header を立てる', () => {
     const s = fold([
       { kind: 'session_init', session_id: 'sid-1', model: 'claude-haiku-4-5' },
@@ -181,6 +184,79 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
     expect(deriveStatus(dormant)).toMatchObject({ kind: 'idle', label: '💤 休眠' })
   })
 
+  it('lampOf: 灯 3 状態への畳み込み（doc 51 §1 A2 — 横目の視覚言語）', () => {
+    // 動いている = run（streaming / thinking / tool）
+    expect(lampOf(deriveStatus(fold([{ kind: 'message_chunk', text: 'hi' }])))).toBe('run')
+    expect(lampOf(deriveStatus(fold([{ kind: 'thought_chunk', text: '…' }])))).toBe('run')
+    // あなたが要る = need（HITL 質問/承認 + engine 異常 — 介入が要る側）
+    const asking = fold([
+      {
+        kind: 'question',
+        request_id: 'q1',
+        questions: [{ question: 'どっち?', header: 'Q', options: [] }],
+      },
+    ])
+    expect(lampOf(deriveStatus(asking))).toBe('need')
+    expect(lampOf(deriveStatus(fold([{ kind: 'error', message: 'x' }])))).toBe('need')
+    // 待っている = off（待機中 / 💤 休眠）— presence でなく活動の灯
+    expect(lampOf(deriveStatus(emptyChatState()))).toBe('off')
+    expect(lampOf(deriveStatus(fold([{ kind: 'engine_exited', message: '休眠' }])))).toBe('off')
+    // stalled は run のまま（8s 無イベントは平常でも起きる — 嘘の告発は status 行の文字の領分）
+    const stalled = fold([{ kind: 'message_chunk', text: 'hi' }])
+    stalled.lastEventAt = 1000
+    expect(lampOf(deriveStatus(stalled, 1000 + 9000))).toBe('run')
+  })
+
+  it('deriveNowLine: 質問要旨 > 契約 > 機械導出 > null（doc 51 §1 A3）', () => {
+    // 待っている pane に「今」は無い — 空なら描かない
+    expect(deriveNowLine(null)).toBeNull()
+    expect(deriveNowLine(emptyChatState())).toBeNull()
+    // turn 中の頼まれごと（機械導出の最終段 = user prompt 先頭）
+    const working = fold([
+      { kind: 'user_message', text: 'resize の設計を検討して\n詳細は…' },
+      { kind: 'message_chunk', text: '見ています' },
+    ])
+    expect(deriveNowLine(working)).toBe('resize の設計を検討して')
+    // 実行中 tool は頼まれごとより濃い
+    const tooling = fold([
+      { kind: 'user_message', text: '調査して' },
+      { kind: 'tool_call', id: 't1', name: 'Grep', input: {} },
+    ])
+    expect(deriveNowLine(tooling)).toBe('Grep を実行中')
+    // 契約（nowLine — A3b の口）は機械導出より濃い
+    tooling.nowLine = 'panic 箇所を特定中'
+    expect(deriveNowLine(tooling)).toBe('panic 箇所を特定中')
+    // 契約の書き手 = `vp now` 発の now_line event（fold 経路）
+    const reported = fold([
+      { kind: 'user_message', text: '調査して' },
+      { kind: 'message_chunk', text: 'x' },
+      { kind: 'now_line', text: 'pty_slot の lock 順を確認中' },
+    ])
+    expect(deriveNowLine(reported)).toBe('pty_slot の lock 順を確認中')
+    // 質問の要旨は契約より濃い（ボールが人にある）
+    const asking = fold([
+      {
+        kind: 'question',
+        request_id: 'q1',
+        questions: [{ question: 'resize はどちらで束ねますか？', header: 'Q', options: [] }],
+      },
+    ])
+    asking.nowLine = '古い自己報告'
+    expect(deriveNowLine(asking)).toBe('resize はどちらで束ねますか？')
+    // turn_completed で契約の「今」は消える
+    const done = fold([{ kind: 'message_chunk', text: 'x' }])
+    done.nowLine = '作業中'
+    foldInto(done, { kind: 'turn_completed', session_id: 's1' })
+    expect(done.nowLine).toBeNull()
+    expect(deriveNowLine(done)).toBeNull()
+  })
+
+  it('clampNowLine: 先頭行のみ + 長すぎは…で切る（1 行らしさの保証）', () => {
+    expect(clampNowLine('一行目\n二行目')).toBe('一行目')
+    expect(clampNowLine(`${'あ'.repeat(70)}`)).toHaveLength(60)
+    expect(clampNowLine(`${'あ'.repeat(70)}`).endsWith('…')).toBe(true)
+  })
+
   it('isTurnClosingEvent: pending flush の発火契機（doc 35 §5.1 + engine_exited の自己修復継承）', () => {
     // turn を閉じる 3 種 = flush してよい（engine_exited は pending 送信が respawn トリガを兼ねる）
     expect(isTurnClosingEvent('turn_completed')).toBe(true)
@@ -317,9 +393,9 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
   })
 })
 
-describe('transcript replay — Act II replay-on-attach', () => {
-  /** SP が attach 時に送る replay 列（ReplayStart + 過去会話）。 */
-  const replay: EchoesEvent[] = [
+describe('transcript replay — gui replay-on-attach', () => {
+  /** repo が attach 時に送る replay 列（ReplayStart + 過去会話）。 */
+  const replay: ConversationEvent[] = [
     { kind: 'replay_start' },
     { kind: 'user_message', text: '直して' },
     { kind: 'tool_call', id: 't1', name: 'Edit', input: {} },
@@ -386,10 +462,10 @@ describe('transcript replay — Act II replay-on-attach', () => {
  *
  * claude は message を完了時にしか transcript へ flush しない。assistant が生成している最中に
  * WS/QUIC が瞬断して demand が再発火すると、replay は「生成中 message の直前まで」しか
- * disk から復元できない。echoes topic は非 retained なので、瞬断前に届いていた delta は
+ * disk から復元できない。conversation topic は非 retained なので、瞬断前に届いていた delta は
  * どこにも残っていない。
  *
- * そこで backend（EchoesAgentHost）は未 commit の増分を in-flight tail として保持し、
+ * そこで backend（ClaudeHost）は未 commit の増分を in-flight tail として保持し、
  * replay 列を `transcript(commit 済み) ++ tail(未 commit)` として送る。以下はその契約を
  * frontend 側から固定するテスト。
  */
@@ -405,7 +481,7 @@ describe('replay が in-flight stream の途中に着地した場合', () => {
   }
 
   /** backend が瞬断後に送る replay 列。tail が生成中 message の現在までを運ぶ。 */
-  const replayWithTail: EchoesEvent[] = [
+  const replayWithTail: ConversationEvent[] = [
     { kind: 'replay_start' },
     // --- transcript（commit 済み） ---
     { kind: 'user_message', text: '直して' },
@@ -675,7 +751,7 @@ describe('tool 詳細の保持 — accordion の個別展開の表示源（reduc
 
 describe('subagent_message — Agent の子の発話を親と取り違えない（--forward-subagent-text）', () => {
   /** 親が Agent を呼び、子が thinking→text を返す最小の実 turn。 */
-  const withSubagent = (): EchoesEvent[] => [
+  const withSubagent = (): ConversationEvent[] => [
     { kind: 'message_chunk', text: '子に投げます' },
     { kind: 'tool_call', id: 'toolu_1', name: 'Agent', input: { prompt: '6x7 は?', subagent_type: 'general-purpose' } },
     { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'prompt', text: '6x7 は?' },
@@ -805,44 +881,6 @@ describe('clampToolDetail — 巨大 detail の honest clamp（黙って切ら�
   })
 })
 
-describe('chatCapableStands — 「+」menu の chat_capable filter（doc 38 Phase 3）', () => {
-  const stands = (xs: StandOption[]): StandOption[] => xs
-
-  it('chat_capable === true は表示する', () => {
-    const out = chatCapableStands(stands([{ name: 'echoes', chat_capable: true }]))
-    expect(out.map((s) => s.name)).toEqual(['echoes'])
-  })
-
-  it('chat_capable === false は隠す（shell の dead-end tab を出さない）', () => {
-    const out = chatCapableStands(
-      stands([
-        { name: 'echoes', chat_capable: true },
-        { name: 'codex', chat_capable: true },
-        { name: 'shell', chat_capable: false },
-      ]),
-    )
-    expect(out.map((s) => s.name)).toEqual(['echoes', 'codex'])
-  })
-
-  it('後方互換: chat_capable undefined（旧 SP は field を送らない）は表示する', () => {
-    const out = chatCapableStands(
-      stands([{ name: 'echoes' }, { name: 'codex', chat_capable: undefined }]),
-    )
-    expect(out.map((s) => s.name)).toEqual(['echoes', 'codex'])
-  })
-
-  it('false だけが除外され、true / undefined は残る（混在）', () => {
-    const out = chatCapableStands(
-      stands([
-        { name: 'a' }, // undefined → 表示
-        { name: 'b', chat_capable: true }, // 表示
-        { name: 'c', chat_capable: false }, // 隠す
-      ]),
-    )
-    expect(out.map((s) => s.name)).toEqual(['a', 'b'])
-  })
-})
-
 describe('canCloseSession — session tab の × 表示条件（doc 38 Phase 3 → doc 39）', () => {
   it('1 本以下では × を出さない（最後の 1 本は backend も Err で拒否）', () => {
     expect(canCloseSession(0)).toBe(false)
@@ -862,5 +900,72 @@ describe('canCloseSession — session tab の × 表示条件（doc 38 Phase 3 �
 
   it('旧 SP（root field なし = undefined）は従来挙動（本数のみ）に倒す', () => {
     expect(canCloseSession(2, undefined)).toBe(true)
+  })
+})
+
+describe('canSwitchTo — kind badge の gating（doc 50 §4.6 A6 ②）', () => {
+  it('→tui は常に可（tui は login shell に流し込むだけ = §4.0 帰結 1）', () => {
+    expect(canSwitchTo('tui', true)).toBe(true)
+    expect(canSwitchTo('tui', false)).toBe(true)
+    // 能力の申告が無くても tui へは戻せる（term は engine 非依存）。
+    expect(canSwitchTo('tui', undefined)).toBe(true)
+  })
+
+  it('→gui は server が chat_capable と申告した session のみ', () => {
+    expect(canSwitchTo('gui', true)).toBe(true)
+    expect(canSwitchTo('gui', false)).toBe(false)
+  })
+
+  it('未申告（旧 SP）は不可に倒す — 行き止まりを出さない', () => {
+    // 押しても server に弾かれるだけの badge を出さない（newPaneChoices と同じ規律）。
+    expect(canSwitchTo('gui', undefined)).toBe(false)
+  })
+
+  it('判定は server の申告 1 本で、engine 名の型分岐を持たない', () => {
+    // shell の chat host が実装された日、server が true を送るだけで badge が生える
+    // （client 側の gating を touch しない = 能力表の SSOT は server）。
+    expect(canSwitchTo('gui', true)).toBe(true)
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// chatKey — 会話 store の (lane, session) key（doc 50 §4.3 #1）
+// ---------------------------------------------------------------------------
+
+describe('chatKey — lane と session が衝突なく畳める', () => {
+  it('lane と session を NUL で連結する', () => {
+    expect(chatKey('vp/root', 1)).toBe(`vp/root\u00001`)
+  })
+
+  it('別 session は別 key', () => {
+    expect(chatKey('vp/root', 1)).not.toBe(chatKey('vp/root', 2))
+  })
+
+  it('別 lane は別 key', () => {
+    expect(chatKey('vp/root', 1)).not.toBe(chatKey('vp/performer/a', 1))
+  })
+
+  // key の分離が壊れる典型: 区切りが lane 名に現れうる文字だと、別の (lane, session) が
+  // 同じ key に潰れる。`#` や `:` を区切りに選ぶとこの組で衝突する。
+  it('lane 名に区切り候補（# : / 空白）が入っても衝突しない', () => {
+    const pairs: [string, number][] = [
+      ['vp/root#2', 1],
+      ['vp/root', 21],
+      ['vp:root', 1],
+      ['vp/root 2', 1],
+      ['vp/performer/a#1', 2],
+    ]
+    const keys = pairs.map(([l, s]) => chatKey(l, s))
+    expect(new Set(keys).size).toBe(pairs.length)
+  })
+
+  // prefix 走査（clearReplaying が lane の全 session を舐める経路）が、名前の前方一致で
+  // 隣の lane を巻き込まないこと。`vp/root` の prefix で `vp/root-2` を拾ってはいけない。
+  it('lane prefix 走査が名前の前方一致で隣の lane を巻き込まない', () => {
+    const prefix = `vp/root\u0000`
+    expect(chatKey('vp/root', 3).startsWith(prefix)).toBe(true)
+    expect(chatKey('vp/root-2', 3).startsWith(prefix)).toBe(false)
+    expect(chatKey('vp/rootlike', 1).startsWith(prefix)).toBe(false)
   })
 })

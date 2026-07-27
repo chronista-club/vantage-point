@@ -14,7 +14,7 @@
 | Node.js | 18+ | Claude Code に必要 |
 
 > ツール版の SSOT は `.mise.toml` の `[tools]`（`rust = "1.96"` / node / bun / ruby）。
-> `mise install` でプロジェクトに必要な toolchain が一括で揃う（基本 stable 追随、minor pin / patch float）。
+> `mise install` でrepoに必要な toolchain が一括で揃う（基本 stable 追随、minor pin / patch float）。
 
 ### 推奨（Rust 製 CLI ツール）
 
@@ -77,16 +77,16 @@ claude auth
 
 | zone | 環境変数 | default | 用途 |
 |------|----------|---------|------|
-| config | `$XDG_CONFIG_HOME` | `~/.config/vp/` | 人が編集（`config.kdl` / `projects.kdl`） |
+| config | `$XDG_CONFIG_HOME` | `~/.config/vp/` | 人が編集（`config.kdl` / `repos.kdl`） |
 | data | `$XDG_DATA_HOME` | `~/.local/share/vp/` | 永続 data store（db / discs） |
 | state | `$XDG_STATE_HOME` | `~/.local/state/vp/` | runtime state + log |
 
-登録プロジェクトの SSOT は `~/.config/vp/projects.kdl`:
+登録 repoの SSOT は `~/.config/vp/repos.kdl`:
 
 ```bash
 mkdir -p "$HOME/.config/vp"
-cat > "$HOME/.config/vp/projects.kdl" << 'EOF'
-project "vantage-point" path="/path/to/vantage-point" slot=0
+cat > "$HOME/.config/vp/repos.kdl" << 'EOF'
+repo "vantage-point" path="/path/to/vantage-point" slot=0
 EOF
 ```
 
@@ -105,7 +105,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 
 # 実行
-cargo run -p vp-cli -- start                # Process（SP）起動
+cargo run -p vp-cli -- start                # Process（repo）起動
 cargo run -p vp-cli -- start -d simple      # デバッグモード
 
 # インストール（バイナリ更新）

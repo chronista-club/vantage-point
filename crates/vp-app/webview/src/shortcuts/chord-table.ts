@@ -38,21 +38,21 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
   },
   p: {
     description:
-      'send current/selected to PP (file picker visible 中なら選択 file を Canvas に投擲、 picker は dismiss しない)',
+      'send current/selected to board (file picker visible 中なら選択 file を Canvas に投擲、 picker は dismiss しない)',
     semantic: 'panel-local',
   },
   // v0.5 (PR 445) で実装 — lane 操作系
   r: {
     description:
-      'restart context polymorphic: active_lane あり → lane:restart、 active_stand あり → process:restart',
+      'restart context polymorphic: active_lane あり → lane:restart、 active_component あり → process:restart',
     semantic: 'focus-preserving',
   },
   n: {
-    description: 'active project の AddPerformer form を keyboard で open',
+    description: 'active repo の AddPerformer form を keyboard で open',
     semantic: 'focus-transferring',
   },
   s: {
-    description: 'Lane / project switcher picker overlay (fuzzy + list)',
+    description: 'Lane / repo switcher picker overlay (fuzzy + list)',
     semantic: 'focus-transferring',
   },
   d: {
@@ -63,11 +63,11 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
   // v0.6 (PR 447) — lane number switcher mode (= v0.4 §C.3 で予約していた `l` (lane panel) を再定義)
   l: {
     description:
-      'lane number switcher mode: ⌘ hold l で mode 突入、 5 秒以内に 1-9 で expanded project 内 lane を上から N 番目で lane:select',
+      'lane number switcher mode: ⌘ hold l で mode 突入、 5 秒以内に 1-9 で expanded repo 内 lane を上から N 番目で lane:select',
     semantic: 'focus-transferring',
   },
   // v0.8 (curation) で撤去:
-  //   e/g/h (Stand focus) — Scene hotkey `Ctrl+Shift+1..4` と役割重複のため Scene 側に一本化。
-  //   w (TheWorld status)  — 将来の Unison WebView 直結 UI に status を委ねるため撤去。
+  //   e/g/h (Agent focus) — Scene hotkey `Ctrl+Shift+1..4` と役割重複のため Scene 側に一本化。
+  //   w (daemon status)  — 将来の Unison WebView 直結 UI に status を委ねるため撤去。
   //   i (cheatsheet)       — directive を最小動詞に絞る方針で不要。SSOT は docs/design/18。
 }

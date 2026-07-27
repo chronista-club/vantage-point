@@ -54,7 +54,7 @@ struct RawGroup {
 struct RawTool {
     #[kdl(argument)]
     name: String,
-    /// SP 側 method 名（省略時は tool 名）。
+    /// repo 側 method 名（省略時は tool 名）。
     #[kdl(property)]
     method: Option<String>,
     /// resp の pretty-print 失敗時の代替テキスト（省略時 "null"）。
@@ -111,13 +111,13 @@ pub struct ToolGroup {
 
 /// group の転送機構。
 pub enum Forward {
-    /// `self.quic_call(method, payload)` で SP "process" channel へ。
+    /// `self.quic_call(method, payload)` で repo "process" channel へ。
     QuicProcess,
 }
 
 pub struct Tool {
     pub name: String,
-    /// SP method 名（resolve 済み: 既定は tool 名）。
+    /// repo method 名（resolve 済み: 既定は tool 名）。
     pub method: String,
     /// pretty-print 失敗時の代替（resolve 済み: 既定 "null"）。
     pub fallback: String,

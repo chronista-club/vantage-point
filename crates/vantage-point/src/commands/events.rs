@@ -4,7 +4,7 @@
 //! - `vp events emit --kind K [--source S] [--data JSON]` — event を 1 件 push
 //!
 //! agent（Claude）は見た最大 seq を記録し、次回 `--since <それ>` で「前回の action から今までに
-//! 何が起きたか」だけを取る → 行動間 blind の解消。World :32000 の "events" channel に直結する。
+//! 何が起きたか」だけを取る → 行動間 blind の解消。Daemon :32000 の "events" channel に直結する。
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
@@ -35,7 +35,7 @@ pub enum EventsAction {
         /// 種別（dotted、例: `build.done` / `test.fail`）。
         #[arg(long)]
         kind: String,
-        /// 発生元（任意、例: `echoes@vantage-point/root`）。
+        /// 発生元（任意、例: `claude@vantage-point/root`）。
         #[arg(long)]
         source: Option<String>,
         /// payload JSON（省略時 null）。
@@ -46,11 +46,9 @@ pub enum EventsAction {
 
 /// `vp events` を実行する。
 pub async fn run(args: EventsArgs) -> Result<()> {
-    let client = DaemonClient::connect(crate::cli::world_port(), 3)
+    let client = DaemonClient::connect(crate::cli::daemon_port(), 3)
         .await
-        .map_err(|e| {
-            anyhow::anyhow!("TheWorld 接続失敗: {} (= `vp daemon start` で起動済か?)", e)
-        })?;
+        .map_err(|e| anyhow::anyhow!("daemon 接続失敗: {} (= `vp daemon start` で起動済か?)", e))?;
 
     match args.action {
         // emit: event を 1 件 push。

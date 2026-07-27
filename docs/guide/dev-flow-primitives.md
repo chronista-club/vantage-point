@@ -25,7 +25,7 @@ mcp__vantage-point__flow_handoff {
   "name": "feat-api",                 // 必須: performer slug
   "task_spec": "# mission\n...",      // 必須: worker への markdown 仕様
   "branch": "mako/feat-api",          // 省略時 `<git-user>/<slug>` を auto-derive
-  "stand": "echoes",                  // default "echoes" (= Claude CLI)
+  "agent": "claude",                  // default "claude" (= Claude CLI)
   "mode": "hitl",                     // "hitl" (default、 nudge 後応答期待) / "auto"
   "nudge": true                       // default true、 false で tmux send-keys を skip
 }
@@ -66,7 +66,7 @@ vp flow handoff feat-api --task-spec /tmp/task.md --mode auto
 
 ## 2. `flow_progress` — 並列追跡集約 view
 
-現 project の全 lane (conductor + performers) の **git status + 未読 wire 数 + 6-state FSM (= control surrender model)** を 1 view で。 read-only (= cursor 不触り)、 何度 call しても side-effect なし。
+現 repo の全 lane (conductor + performers) の **git status + 未読 wire 数 + 6-state FSM (= control surrender model)** を 1 view で。 read-only (= cursor 不触り)、 何度 call しても side-effect なし。
 
 ### MCP tool
 
@@ -74,7 +74,7 @@ vp flow handoff feat-api --task-spec /tmp/task.md --mode auto
 mcp__vantage-point__flow_progress {}
 // →
 {
-  "project": "vantage-point",
+  "repo": "vantage-point",
   "root": {
     "address": "agent@vantage-point",
     "unread_wire_count": 2,
@@ -83,8 +83,8 @@ mcp__vantage-point__flow_progress {}
   "performers": [{
     "name": "feat-api",
     "address": "agent@vantage-point/feat-api",
-    "state": "Running",                          // = SP の Lane state (生死)
-    "stand": "echoes",
+    "state": "Running",                          // = repo の Lane state (生死)
+    "agent": "claude",
     "cwd": "/.../.vp/lanes/feat-api",
     "performer_status": {
       "branch": "mako/feat-api",
@@ -120,7 +120,7 @@ vp flow progress --format table
 `--format table` の出力例:
 
 ```
-Project: vantage-point
+Repo: vantage-point
   Conductor unread wire: 2
 
 PERFORMER                STATE      MODE                 AHEAD  BEHIND   DIRTY  UNREAD BRANCH
@@ -202,9 +202,9 @@ performer が「conductor では捌けない、 **ユーザ本人**の意見が�
 
 ### sidebar への投影 (= LaneInfo.flow_state、 2026-07-11)
 
-TheWorld が vp-app へ lane snapshot を送る直前に、 performer の `LaneInfo` へ `flow_state` を
+daemon が vp-app へ lane snapshot を送る直前に、 performer の `LaneInfo` へ `flow_state` を
 enrich する (= `vp flow progress` と同一判定、 送信時 derive で registry / db には保存しない)。
-wire send/ack の成功が関与 project の snapshot 再 push をトリガするため、 flow_state の変化は
+wire send/ack の成功が関与 repo の snapshot 再 push をトリガするため、 flow_state の変化は
 polling 無しで sidebar に届く。 vp-app 側は `flow_state` を state 言語 (working / idle /
 needs-you) の一次 source とし、 field 欠落時 (旧 daemon) は pid heuristic に fallback する。
 
@@ -212,25 +212,25 @@ needs-you) の一次 source とし、 field 欠落時 (旧 daemon) は pid heuri
 
 ## 4. composition 図 (= 内部経路)
 
-L0 portless 完了後、 全 step は **World process-proxy dispatch** または **World "wire" channel** 経由（旧 SP HTTP 直叩きは撤去済）:
+L0 portless 完了後、 全 step は **daemon process-proxy dispatch** または **daemon "wire" channel** 経由（旧 SP HTTP 直叩きは撤去済）:
 
 ```
 flow_handoff:
   lane_create  ─────────────────────→ create_performer_orchestrated (= new_performer_in)
-  wire/send (World "wire" channel) ──→ WiremsgStore::send_root
+  wire/send (daemon "wire" channel) ──→ WiremsgStore::send_root
   tmux_resolve_pane + tmux_send_keys → nudge (best-effort)
    ↑ wire_send 失敗 → lane_delete (rollback)
 
 flow_progress:
-  project name (project_path から導出)          → 旧 GET /api/health は撤去
+  repo name (repo_path から導出)          → 旧 GET /api/health は撤去
   lanes_list                                    → 全 lane (performer_status 込み)
   wire/unread-count   (per lane × N)            → 未読 count (cursor 不触り)
   wire/latest-msg     (per performer × M)       → 最新 wmsg (FSM derive 入力)
 ```
 
-`flow_*` は既存 primitive (`add_performer` / `wire_send` / `tmux_send_keys` / `list_lanes`) の上に乗る薄い composition tool。 これら primitive は L0 portless で全て World process-proxy dispatch / World "wire" channel に移行済（旧 SP HTTP 直叩きは撤去）、 単発で叩く path も dispatch 経由で引き続き有効。
+`flow_*` は既存 primitive (`add_performer` / `wire_send` / `tmux_send_keys` / `list_lanes`) の上に乗る薄い composition tool。 これら primitive は L0 portless で全て daemon process-proxy dispatch / daemon "wire" channel に移行済（旧 SP HTTP 直叩きは撤去）、 単発で叩く path も dispatch 経由で引き続き有効。
 
-supporting method (= cursor 不触り、 read-only、 World "wire" channel):
+supporting method (= cursor 不触り、 read-only、 daemon "wire" channel):
 
 - `wire/unread-count` — `{agent}` → `{total, by_thread}`
 - `wire/latest-msg` — `{agent}` → `{message}` (= 最新 1 件 or null)

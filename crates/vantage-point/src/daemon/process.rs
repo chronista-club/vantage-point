@@ -31,9 +31,9 @@ pub fn is_daemon_running() -> Option<u32> {
         return Some(pid);
     }
 
-    // 2. フォールバック: ポート接続で TheWorld の生存を確認
+    // 2. フォールバック: ポート接続で daemon の生存を確認
     //    PIDファイルが壊れた・消えた場合でも制御可能にする
-    check_world_port()
+    check_daemon_port()
 }
 
 /// PIDファイルからデーモンの生存を確認
@@ -55,9 +55,9 @@ fn check_pid_file() -> Option<u32> {
     }
 }
 
-/// TheWorld ポートに接続して PID を取得（PIDファイル不在時のフォールバック）
-fn check_world_port() -> Option<u32> {
-    let url = format!("http://[::1]:{}/api/health", crate::cli::world_port());
+/// daemon ポートに接続して PID を取得（PIDファイル不在時のフォールバック）
+fn check_daemon_port() -> Option<u32> {
+    let url = format!("http://[::1]:{}/api/health", crate::cli::daemon_port());
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
         .build()
@@ -151,21 +151,21 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     Ok(())
 }
 
-/// TheWorld がまだ起動していなければバックグラウンドで自動起動する
+/// daemon がまだ起動していなければバックグラウンドで自動起動する
 ///
 /// `vp sp start` から呼ばれる。既に起動済みならそのPIDを返す。
 pub fn ensure_daemon_running(port: u16) -> Result<u32> {
     if let Some(pid) = is_daemon_running() {
-        tracing::info!("TheWorld は既に起動中 (PID: {})", pid);
+        tracing::info!("daemon は既に起動中 (PID: {})", pid);
         return Ok(pid);
     }
 
-    tracing::info!("TheWorld を自動起動します (port: {})", port);
+    tracing::info!("daemon を自動起動します (port: {})", port);
 
-    // 自分自身の実行ファイルを `vp world` として起動
+    // 自分自身の実行ファイルを `vp daemon` として起動
     let child = std::process::Command::new(std::env::current_exe()?)
-        .args(["world", "--port", &port.to_string()])
-        // GUI/launchd 起動の最小 PATH が daemon → SP へ伝播するのを spawn 最上流で断つ。
+        .args(["daemon", "--port", &port.to_string()])
+        // GUI/launchd 起動の最小 PATH が daemon → repo へ伝播するのを spawn 最上流で断つ。
         .env("PATH", crate::spawn_env::augmented_spawn_path())
         // LANG も PATH と対称に補強。 launchd の C ロケール伝播を daemon spawn 最上流で断ち、
         // 子 PtySlot の utf8_locale() がこの LANG を継承して UTF-8 に解決できるようにする。
@@ -176,7 +176,7 @@ pub fn ensure_daemon_running(port: u16) -> Result<u32> {
         .spawn()?;
 
     let pid = child.id();
-    tracing::info!("TheWorld 起動完了 (PID: {})", pid);
+    tracing::info!("daemon 起動完了 (PID: {})", pid);
     Ok(pid)
 }
 
@@ -184,7 +184,7 @@ pub fn ensure_daemon_running(port: u16) -> Result<u32> {
 ///
 /// Windows の `process_terminate` は `TerminateProcess` = hard kill で SIGTERM 相当が無く、
 /// DETACHED_PROCESS の daemon には console-ctrl も届かない。daemon が既に listen している
-/// `POST /api/shutdown`（`shutdown_token.cancel()`）を叩いて `run_world` を正常終了させ、
+/// `POST /api/shutdown`（`shutdown_token.cancel()`）を叩いて `run_daemon` を正常終了させ、
 /// embedded surrealkv を Drop で flush/close させる。Unix は `process_terminate` = SIGTERM が
 /// 既に graceful なので不要（この関数は呼ばない）。
 ///
@@ -192,7 +192,7 @@ pub fn ensure_daemon_running(port: u16) -> Result<u32> {
 /// surrealkv の stale LOCK は Windows では OS が自動解放するため、hard kill fallback でも安全。
 #[cfg(windows)]
 fn try_graceful_shutdown(pid: u32) -> bool {
-    let port = crate::cli::world_port();
+    let port = crate::cli::daemon_port();
     let url = format!("http://127.0.0.1:{port}/api/shutdown");
 
     let client = match reqwest::blocking::Client::builder()
@@ -211,7 +211,7 @@ fn try_graceful_shutdown(pid: u32) -> bool {
     }
     tracing::info!("graceful shutdown RPC 送信 (POST {url})、 clean exit を待機");
 
-    // clean exit を最大 5 秒待つ（surrealkv flush + run_world 終了）。
+    // clean exit を最大 5 秒待つ（surrealkv flush + run_daemon 終了）。
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(150));
@@ -252,7 +252,7 @@ pub fn stop_daemon(pid: u32) -> Result<()> {
 
     // PIDファイルはDaemon側のシャットダウン処理で削除される
     // ただし、Daemonが応答しなかった場合のフォールバック
-    // 注: ポートフォールバック（check_world_port）は使わない。
+    // 注: ポートフォールバック（check_daemon_port）は使わない。
     //      シャットダウン中はポートがまだ開いていることがあり、誤検出で SIGKILL を送ってしまうため。
     std::thread::sleep(std::time::Duration::from_millis(500));
     if check_pid_file().is_some_and(|running_pid| running_pid == pid) {
@@ -271,7 +271,7 @@ pub fn stop_daemon(pid: u32) -> Result<()> {
 //
 // `vp daemon start` は foreground blocking、`ensure_daemon_running` は bg auto-spawn のみで、
 // login 永続も crash 自動復帰も無い。LaunchAgent（10+ 年 stable な launchd 機構、SMAppService
-// = macOS 13+ は L3）で TheWorld を always-on にする。plist を `~/Library/LaunchAgents/` に
+// = macOS 13+ は L3）で daemon を always-on にする。plist を `~/Library/LaunchAgents/` に
 // 置くだけで次回 login から `RunAtLoad` が起こし、`KeepAlive=true` が crash を自動再起動する。
 
 /// LaunchAgent の Label（plist の Label key + launchctl の service 名）。
@@ -288,14 +288,14 @@ fn xml_escape(s: &str) -> String {
 
 /// LaunchAgent plist の中身を生成する（純関数: data → calculation、env/fs に触れない）。
 ///
-/// - `ProgramArguments` = `[<vp_binary>, world, --port, <port>]`（`ensure_daemon_running` と同形）
+/// - `ProgramArguments` = `[<vp_binary>, daemon, --port, <port>]`（`ensure_daemon_running` と同形）
 /// - `RunAtLoad=true`（login always-on）/ `KeepAlive=true`（crash 自動再起動）
 /// - `EnvironmentVariables.PATH` = `path_env`（GUI/launchd の痩せた PATH では mise/claude が
 ///   解決不能なので augmented を渡す。SSOT は [`crate::spawn_env::augmented_spawn_path`]）
 /// - `EnvironmentVariables.LANG` / `LC_CTYPE` = `lang`（launchd は LANG を剥がして C ロケールに
 ///   するため、配下の tmux client が utf8=0 → 日本語など CJK が `_` 化する。UTF-8 ロケールを
 ///   焼いて断つ。SSOT は [`crate::spawn_env::utf8_locale`]。PATH/TERM と同根の launchd env stripping）
-/// - `StandardOut/ErrPath` = `log_dir` 配下（daemon は `vp world` 経路で自前 file log を持たないため、
+/// - `StandardOut/ErrPath` = `log_dir` 配下（daemon は `vp daemon` 経路で自前 file log を持たないため、
 ///   crash-restart loop の調査用に launchd へ stdout/stderr を捕捉させる）
 pub fn generate_launch_agent_plist(
     vp_binary: &Path,
@@ -319,7 +319,7 @@ pub fn generate_launch_agent_plist(
     <key>ProgramArguments</key>
     <array>
         <string>{exec}</string>
-        <string>world</string>
+        <string>daemon</string>
         <string>--port</string>
         <string>{port}</string>
     </array>
@@ -432,7 +432,7 @@ pub fn uninstall_launch_agent() -> Result<()> {
 // ============================================================================
 //
 // macOS の LaunchAgent 対応物。schtasks で「ログオン時トリガ + 失敗時再起動」の task を
-// 登録する。`vp world --port N`（foreground daemon = plist の ProgramArguments と同形）を
+// 登録する。`vp daemon --port N`（foreground daemon = plist の ProgramArguments と同形）を
 // action に焼き、Task Scheduler が supervisor になる。run-as-user (InteractiveToken) 必須:
 // system/LocalSystem だと %USERPROFILE% / Creo credential / surrealkv data_dir を見失う。
 //
@@ -445,8 +445,8 @@ pub fn uninstall_launch_agent() -> Result<()> {
 #[cfg(windows)]
 pub fn scheduled_task_name() -> String {
     match vp_paths::vp_profile() {
-        Some(profile) => format!(r"VP\TheWorld-{profile}"),
-        None => r"VP\TheWorld".to_string(),
+        Some(profile) => format!(r"VP\daemon-{profile}"),
+        None => r"VP\daemon".to_string(),
     }
 }
 
@@ -462,7 +462,7 @@ fn current_user() -> String {
 
 /// Task Scheduler task 定義 XML を生成する（純関数: data → calculation、env/fs に触れない）。
 ///
-/// - `Actions.Exec` = `<vp_binary> world --port <port>`（plist の ProgramArguments と同形）
+/// - `Actions.Exec` = `<vp_binary> daemon --port <port>`（plist の ProgramArguments と同形）
 /// - `LogonTrigger`（logon always-on）/ `RestartOnFailure`（crash 自動再起動、KeepAlive 相当）
 /// - `Principal` = InteractiveToken + LeastPrivilege（run-as-user、admin 不要）
 /// - `ExecutionTimeLimit=PT0S`（daemon なので無制限）/ `Hidden`（コンソール窓なし）/
@@ -476,7 +476,7 @@ pub fn generate_task_xml(vp_binary: &Path, port: u16, user: &str, task_uri: &str
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Vantage Point TheWorld daemon (logon always-on + crash auto-restart)</Description>
+    <Description>Vantage Point daemon (logon always-on + crash auto-restart)</Description>
     <URI>{uri}</URI>
   </RegistrationInfo>
   <Triggers>
@@ -531,7 +531,7 @@ pub fn generate_task_xml(vp_binary: &Path, port: u16, user: &str, task_uri: &str
   <Actions Context="Author">
     <Exec>
       <Command>{command}</Command>
-      <Arguments>world --port {port}</Arguments>
+      <Arguments>daemon --port {port}</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -563,7 +563,7 @@ pub fn install_scheduled_task(vp_binary: &Path, port: u16) -> Result<String> {
     let user = current_user();
     let xml = generate_task_xml(vp_binary, port, &user, &task_uri);
 
-    let xml_path = std::env::temp_dir().join(format!("vp-theworld-task-{port}.xml"));
+    let xml_path = std::env::temp_dir().join(format!("vp-daemon-task-{port}.xml"));
     write_utf16le_bom(&xml_path, &xml)
         .with_context(|| format!("task XML 書き出し失敗: {}", xml_path.display()))?;
 
@@ -648,7 +648,7 @@ mod tests {
         // Label / 常駐 key / ProgramArguments / port / PATH / LANG / log path を含む。
         assert!(plist.contains("<string>club.chronista.vantage-point.daemon</string>"));
         assert!(plist.contains("<string>/usr/local/bin/vp</string>"));
-        assert!(plist.contains("<string>world</string>"));
+        assert!(plist.contains("<string>daemon</string>"));
         assert!(plist.contains("<string>32000</string>"));
         assert!(plist.contains("<key>RunAtLoad</key>"));
         assert!(plist.contains("<key>KeepAlive</key>"));
@@ -675,7 +675,7 @@ mod tests {
         assert!(!plist.contains("a&b/vp"), "生の & が残ってはいけない");
     }
 
-    /// Task Scheduler XML の要点（action = world --port / LogonTrigger / RestartOnFailure /
+    /// Task Scheduler XML の要点（action = daemon --port / LogonTrigger / RestartOnFailure /
     /// run-as-user / 無制限実行）と XML escape を固定する。
     #[cfg(windows)]
     #[test]
@@ -684,10 +684,10 @@ mod tests {
             Path::new(r"C:\Users\a&b\vp.exe"),
             32000,
             r"DOMAIN\user",
-            r"\VP\TheWorld",
+            r"\VP\daemon",
         );
-        // action = plist の ProgramArguments と同形（world --port N）
-        assert!(xml.contains("<Arguments>world --port 32000</Arguments>"));
+        // action = plist の ProgramArguments と同形（daemon --port N）
+        assert!(xml.contains("<Arguments>daemon --port 32000</Arguments>"));
         // keep-alive の主機構 = TimeTrigger + 無期限 Repetition + IgnoreNew（RestartOnFailure は
         // 外部 kill に発火が不安定なため補助）。 logon always-on / run-as-user / daemon 無制限。
         assert!(xml.contains("<TimeTrigger>"));
@@ -709,7 +709,7 @@ mod tests {
         // 存在しないPIDのPIDファイルが残っている場合、
         // check_pid_file は None を返し、ファイルを掃除するべき
         // 注: is_daemon_running() はポートフォールバックを含むため、
-        //      TheWorld 稼働中に誤検出する。PIDファイル単体のテストには check_pid_file を使う。
+        //      daemon 稼働中に誤検出する。PIDファイル単体のテストには check_pid_file を使う。
         let dir = daemon_dir();
         let _ = std::fs::create_dir_all(&dir);
         let path = pid_file();

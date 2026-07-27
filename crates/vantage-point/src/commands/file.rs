@@ -6,7 +6,7 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use crate::commands::process_client::{
-    resolve_project_path_from_target, world_process_request_blocking,
+    daemon_repo_request_blocking, resolve_repo_path_from_target,
 };
 use crate::config::Config;
 use crate::file_watcher::{WatchConfig, WatchFormat, WatchStyle};
@@ -29,7 +29,7 @@ pub enum FileCommands {
         /// ペインタブのタイトル
         #[arg(long)]
         title: Option<String>,
-        /// 接続先プロジェクト名またはインデックス
+        /// 接続先repo名またはインデックス
         #[arg(long)]
         target: Option<String>,
     },
@@ -37,7 +37,7 @@ pub enum FileCommands {
     Unwatch {
         /// 監視を停止するペインID
         pane_id: String,
-        /// 接続先プロジェクト名またはインデックス
+        /// 接続先repo名またはインデックス
         #[arg(long)]
         target: Option<String>,
     },
@@ -54,7 +54,7 @@ pub fn execute(cmd: FileCommands, config: &Config) -> Result<()> {
             title,
             target,
         } => {
-            let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
+            let repo_path = resolve_repo_path_from_target(target.as_deref(), config)?;
 
             let watch_format = match format.as_deref() {
                 Some("plain") => WatchFormat::Plain,
@@ -71,9 +71,9 @@ pub fn execute(cmd: FileCommands, config: &Config) -> Result<()> {
                 style: WatchStyle::Terminal,
             };
 
-            world_process_request_blocking(
-                crate::cli::world_port(),
-                &project_path,
+            daemon_repo_request_blocking(
+                crate::cli::daemon_port(),
+                &repo_path,
                 "watch_file",
                 serde_json::to_value(&watch_config)?,
             )?;
@@ -81,10 +81,10 @@ pub fn execute(cmd: FileCommands, config: &Config) -> Result<()> {
             Ok(())
         }
         FileCommands::Unwatch { pane_id, target } => {
-            let project_path = resolve_project_path_from_target(target.as_deref(), config)?;
-            world_process_request_blocking(
-                crate::cli::world_port(),
-                &project_path,
+            let repo_path = resolve_repo_path_from_target(target.as_deref(), config)?;
+            daemon_repo_request_blocking(
+                crate::cli::daemon_port(),
+                &repo_path,
                 "unwatch_file",
                 serde_json::json!({ "pane_id": pane_id }),
             )?;

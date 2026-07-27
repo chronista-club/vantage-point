@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 11: Stand init_script system (mise task 路線)
 
 > **Status**: completed (2026-05-03、 9 PR 連鎖で landed)。 PR-pre2 (VP-118) で `vp:stand:hd` → `vp:stand:echoes` rename、 本 doc 内 `hd` 表記は historical record として維持 (新 stand 名は `echoes`、 詳細は doc 12 §9 catalog 参照)。

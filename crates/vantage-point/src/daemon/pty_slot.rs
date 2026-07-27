@@ -7,20 +7,20 @@
 //! base64エンコードはしない（IPC層の責務）。
 //!
 //! terminal S4 (doc 27 §4.1): PTY 出力は broadcast → per-lane terminal pump →
-//! World "canvas" topic 空間に流れる。 旧 `/ws/terminal` attach 時の scrollback replay
+//! Daemon "canvas" topic 空間に流れる。 旧 `/ws/terminal` attach 時の scrollback replay
 //! (ring buffer) は consumer (ws_terminal) ごと撤去したが、 replay-on-attach で復活した:
 //! vp-app 再起動後の新 xterm は live stream だけでは空白のままになる (claude TUI は次の
 //! 出力まで沈黙する) ため、 PtySlot が直近出力の ring buffer を保持し、 attach 時に
 //! snapshot を先頭配送してから live に繋ぐ ([`PtySlot::attach_output`])。
 //!
-//! ## disk 永続 (SP 再起動をまたぐ復元)
+//! ## disk 永続 (repo 再起動をまたぐ復元)
 //!
-//! ring buffer は in-memory なので、 SP / daemon の再起動 (upgrade / crash / daemon 再起動) で
+//! ring buffer は in-memory なので、 repo / daemon の再起動 (upgrade / crash / daemon 再起動) で
 //! PtySlot が作り直されると消える → 新 PtySlot は空 buffer から始まり、 前画面が戻らない
-//! (in-memory replay だけでは「GUI のみ再起動・SP 生存」しかカバーできない)。 これを埋めるため
+//! (in-memory replay だけでは「GUI のみ再起動・repo 生存」しかカバーできない)。 これを埋めるため
 //! `replay_path` が Some のとき、 ring buffer を disk (`vp_state_dir()/terminal_replay/`) に
 //! **定期 flush** (crash 耐性) + **Drop 時 final flush** (graceful freshness) で落とし、 spawn 時に
-//! seed する。 これで app / SP / daemon いずれの再起動でも spawn 直後に前画面を replay できる
+//! seed する。 これで app / repo / daemon いずれの再起動でも spawn 直後に前画面を replay できる
 //! (その後 `claude --resume` の repaint が追随)。
 
 use std::collections::VecDeque;
@@ -61,30 +61,160 @@ fn sanitize_replay(part: &str) -> String {
 }
 
 /// state base dir 注入版の replay file path (純関数、 テスト / lane state GC 用)。
-pub fn replay_file_path_in(base: &Path, project: &str, lane: &str) -> PathBuf {
+pub fn replay_file_path_in(base: &Path, repo: &str, lane: &str) -> PathBuf {
     base.join("terminal_replay").join(format!(
         "{}__{}",
-        sanitize_replay(project),
+        sanitize_replay(repo),
         sanitize_replay(lane)
     ))
 }
 
-/// lane の replay 永続 file path。 `<project>__<lane>` (console_mode と同一命名規則)。
+/// lane の replay 永続 file path。 `<repo>__<lane>` (console_mode と同一命名規則)。
 ///
-/// `project` / `lane` は LaneAddress 由来 (`lane` は "root" / performer 名)。
-pub fn replay_file_path(project: &str, lane: &str) -> PathBuf {
-    replay_file_path_in(&crate::config::vp_state_dir(), project, lane)
+/// `repo` / `lane` は LaneAddress 由来 (`lane` は "root" / performer 名)。
+pub fn replay_file_path(repo: &str, lane: &str) -> PathBuf {
+    replay_file_path_in(&crate::config::vp_state_dir(), repo, lane)
+}
+
+/// session 別の replay 永続 file path（base 注入版、doc 50 §4.6 A6）。
+///
+/// **file の身元は session に紐づく**（`<repo>__<lane>__<session>`）。role（誰が root か）では
+/// なく identity で決めるのが要:
+///
+/// - 初版は root だけ旧名 `<repo>__<lane>` を継承していた（migration 不要という後方互換の
+///   都合）。しかしそれは file を **role** に縛る形で、root を付け替えると
+///   ①新 root が spawn 時に `is_root=true` になり旧名 file を seed する = **旧 root の画面が
+///   別 session の console に出る** ②旧 root の生存 slot は spawn 時に旧名を焼き込んでいるので、
+///   新旧 2 本の生きた slot が同じ file を 3s ごとに奪い合う（team-b 6 回目 2026-07-25）。
+/// - A6 が「非 root も term になれる / 旧 root は付け替え後もタブに残る」を正規にしたので、
+///   role ベースの命名は成立しない。旧名は [`migrate_legacy_replay_in`] で 1 回だけ移設する。
+pub fn replay_file_path_session_in(
+    base: &Path,
+    repo: &str,
+    lane: &str,
+    session: crate::lane::session_registry::SessionKey,
+) -> PathBuf {
+    base.join("terminal_replay").join(format!(
+        "{}__{}__{}",
+        sanitize_replay(repo),
+        sanitize_replay(lane),
+        session
+    ))
+}
+
+/// [`replay_file_path_session_in`] の実 state dir 版（slot spawn 経路が使う）。
+pub fn replay_file_path_session(
+    repo: &str,
+    lane: &str,
+    session: crate::lane::session_registry::SessionKey,
+) -> PathBuf {
+    replay_file_path_session_in(&crate::config::vp_state_dir(), repo, lane, session)
+}
+
+/// 旧名 `<repo>__<lane>` の replay file を **現 root の session file** へ 1 回だけ移設する。
+///
+/// A6 以前は root だけが replay を disk に持ち、file 名は lane 単位だった。identity ベースへ
+/// 移す際にこれを放置すると、upgrade 直後の root が「前回の画面」を失う（旧名を誰も読まなく
+/// なるため）。rename で身元を付け替えれば継続性を保ったまま role 依存を畳める。
+///
+/// 冪等: 旧名が無ければ no-op。移設先が既にあれば旧名を捨てる（**session 自身の file が正**
+/// — 旧名は「当時の root の画面」でしかなく、その session が自前 file を持っているなら
+/// そちらが新しい）。失敗は best-effort（replay は無くても console は live で動く）。
+pub fn migrate_legacy_replay_in(
+    base: &Path,
+    repo: &str,
+    lane: &str,
+    root: crate::lane::session_registry::SessionKey,
+) {
+    let legacy = replay_file_path_in(base, repo, lane);
+    if !legacy.exists() {
+        return;
+    }
+    let target = replay_file_path_session_in(base, repo, lane, root);
+    if target.exists() {
+        let _ = std::fs::remove_file(&legacy);
+        return;
+    }
+    if let Some(dir) = target.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = std::fs::rename(&legacy, &target) {
+        tracing::debug!("replay 旧名の移設に失敗（best-effort）: {legacy:?} → {target:?}: {e}");
+    }
+}
+
+/// [`migrate_legacy_replay_in`] の実 state dir 版。
+pub fn migrate_legacy_replay(
+    repo: &str,
+    lane: &str,
+    root: crate::lane::session_registry::SessionKey,
+) {
+    migrate_legacy_replay_in(&crate::config::vp_state_dir(), repo, lane, root)
+}
+
+/// **1 session** の replay file を消す（base 注入版、doc 50 §4.6 A6）。
+///
+/// session を閉じる（名札の ✕）ときに呼ぶ（R3c: `LanePool::discard_session_traces` 経由で、
+/// **reconcile が slot を畳んだ後**。順序が逆だと `PtySlot::drop` の flush が書き戻す）。A6 で非 root も replay を
+/// disk に持つようになったので、閉じても消さないと**孤児 file が溜まり続ける**。
+/// ghost replay には直結しない（`session_registry` の採番は単調増加で、key 再利用は `clear`
+/// = Reset のときだけ。Reset は prefix 掃きで全部消す）が、放っておくと純粋な disk leak になる
+/// （team-b 10 回目 2026-07-25）。不在は no-op、失敗は best-effort。
+pub fn clear_replay_session_in(
+    base: &Path,
+    repo: &str,
+    lane: &str,
+    session: crate::lane::session_registry::SessionKey,
+) {
+    let path = replay_file_path_session_in(base, repo, lane, session);
+    match std::fs::remove_file(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => tracing::debug!("session replay の削除に失敗（best-effort）: {path:?}: {e}"),
+        Ok(()) => {}
+    }
+}
+
+/// [`clear_replay_session_in`] の実 state dir 版。
+pub fn clear_replay_session(
+    repo: &str,
+    lane: &str,
+    session: crate::lane::session_registry::SessionKey,
+) {
+    clear_replay_session_in(&crate::config::vp_state_dir(), repo, lane, session)
 }
 
 /// lane 削除時に replay file を消す (不在は no-op、 best-effort)。base 注入版。
 ///
 /// lane-scoped state の一元 GC ([`crate::lane::commands::clear_lane_state_in`]) が呼ぶ。
 /// 残すと同名 lane 再作成時に旧画面の scrollback が seed されて蘇る (ghost replay)。
-pub fn clear_replay_in(base: &Path, project: &str, lane: &str) -> std::io::Result<()> {
-    match std::fs::remove_file(replay_file_path_in(base, project, lane)) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        r => r,
+///
+/// doc 50 §4.6 A6: root（`<repo>__<lane>`）に加え、全 session file
+/// (`<repo>__<lane>__<session>`) も消す。session file を残すと同名 lane 再作成時に
+/// 非 root pane が ghost replay する。session suffix は数字のみなので、別 lane
+/// (`<repo>__<lane>x`) を誤爆しない（prefix 一致 + 残りが全数字の 2 条件）。
+pub fn clear_replay_in(base: &Path, repo: &str, lane: &str) -> std::io::Result<()> {
+    // root（旧名）file。
+    match std::fs::remove_file(replay_file_path_in(base, repo, lane)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+        Ok(()) => {}
     }
+    // session file 群（`<repo>__<lane>__<digits>`）を read_dir で拾って消す（不在 dir = no-op）。
+    let dir = base.join("terminal_replay");
+    let session_prefix = format!("{}__{}__", sanitize_replay(repo), sanitize_replay(lane));
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if let Some(suffix) = name.strip_prefix(&session_prefix)
+                && !suffix.is_empty()
+                && suffix.chars().all(|c| c.is_ascii_digit())
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// replay buffer を atomic (`.tmp` → rename) に disk へ書く。 親 dir は都度 ensure。
@@ -184,7 +314,7 @@ impl PtySlot {
     /// 指定したシェルコマンドを PTY 上で起動し、
     /// 出力を broadcast channel に配信する reader task を開始する。
     /// `replay_path` が Some のとき、 spawn 時に disk seed を読み込み (前回画面) + 定期/Drop で
-    /// disk へ flush する (SP 再起動をまたぐ復元)。 None なら in-memory replay のみ (テスト等)。
+    /// disk へ flush する (repo 再起動をまたぐ復元)。 None なら in-memory replay のみ (テスト等)。
     pub fn spawn(
         cwd: &str,
         shell_cmd: &str,
@@ -210,17 +340,17 @@ impl PtySlot {
         for arg in args {
             cmd.arg(arg);
         }
-        // doc 11 (PR-B): 起動 command が要求する env（VP_PROJECT / VP_LANE 等）を子プロセスに渡す。
+        // doc 11 (PR-B): 起動 command が要求する env（VP_REPO / VP_LANE 等）を子プロセスに渡す。
         for (key, value) in env {
             cmd.env(key, value);
         }
         // PATH 補正: vp-app (.app) を GUI / launchd 経由で起動すると、 子プロセスの PATH が
         // `/usr/bin:/bin:/usr/sbin:/sbin` の最小集合になり、 user-installed tool (特に mise、
-        // conductor lane = `mise run vp:stand:echoes` の program) を見つけられず spawn が失敗 →
-        // lane が即 Dead 化 → Echoes コンソールが出ない、 という症状の根因になる。
+        // conductor lane = `mise run vp:agent:conversation` の program) を見つけられず spawn が失敗 →
+        // lane が即 Dead 化 → Conversation コンソールが出ない、 という症状の根因になる。
         // 既知の user tool location を base PATH の先頭に前置して解決する。
         // base は caller env の PATH (あれば) → なければ親プロセスの PATH。
-        // 補正ロジックの SSOT は `crate::spawn_env`。 本来は daemon / SP の spawn 最上流で
+        // 補正ロジックの SSOT は `crate::spawn_env`。 本来は daemon / repo の spawn 最上流で
         // 補強済みのはずだが (#498 再発の根治)、 末端でも二重保険として補強する。
         {
             let base_path = env
@@ -235,19 +365,19 @@ impl PtySlot {
         }
 
         // TERM 補正: vp-app を GUI / launchd 経由で起動 (= 再起動後の LaunchAgent 自動起動) すると、
-        // daemon プロセスは端末非接続で TERM を持たない。 echoes stand の `tmux new-session -A`
+        // daemon プロセスは端末非接続で TERM を持たない。 conversation agent の `tmux new-session -A`
         // (attach 付き) は terminfo 引きに TERM を要求するため、 TERM 不在だと
-        // "open terminal failed: terminal does not support clear" で即 exit → stand spawn が
-        // 800ms 以内に死に lane が即 Dead 化 → Echoes コンソールが出ない。 PATH 補正 (#498) と
+        // "open terminal failed: terminal does not support clear" で即 exit → agent spawn が
+        // 800ms 以内に死に lane が即 Dead 化 → Conversation コンソールが出ない。 PATH 補正 (#498) と
         // 同じ launchd-env-stripping の双子で、 plist EnvironmentVariables も PATH だけ焼いて
-        // TERM を取りこぼしていた。 この PTY の出力は vp-app の xterm.js が描画する (echoes script
+        // TERM を取りこぼしていた。 この PTY の出力は vp-app の xterm.js が描画する (conversation script
         // も `terminal-overrides ',xterm-256color:Tc'` を前提) ので、 TERM=xterm-256color を
         // 既定とする。 caller が env で明示注入した場合はそれを尊重する。
         if !env.iter().any(|(k, _)| k == "TERM") {
             cmd.env("TERM", "xterm-256color");
         }
 
-        // COLORTERM 補正 (tmux decoupling PR2): 旧 echoes stand は tmux の
+        // COLORTERM 補正 (tmux decoupling PR2): 旧 conversation agent は tmux の
         // `terminal-overrides ',xterm-256color:Tc'` で truecolor を交渉していた。 tmux 撤去で
         // その交渉主体が消えたため、 PtySlot が新たな端点として `COLORTERM=truecolor` を宣言する。
         // これが無いと claude は TERM=xterm-256color を見て 24-bit を諦め 256 色に退行する
@@ -257,9 +387,9 @@ impl PtySlot {
         }
 
         // LANG/LC_CTYPE 補正: PATH (#498) / TERM の双子で、 launchd / GUI 起動の daemon は
-        // C ロケール伝播で LANG 不在になり、 echoes stand の tmux client が utf8=0 で起動 →
+        // C ロケール伝播で LANG 不在になり、 conversation agent の tmux client が utf8=0 で起動 →
         // console の CJK (日本語) が `_` 化する (三つ子の三本目)。 plist EnvironmentVariables や
-        // echoes mise task の LANG guard は「①旧 plist が upgrade で再生成されない ②session 永続で
+        // conversation mise task の LANG guard は「①旧 plist が upgrade で再生成されない ②session 永続で
         // 2 回目以降は adopt 経路が LANG guard を通らない」で漏れるが、 全 spawn 経路 (mise task /
         // adopt) が必ずこの PtySlot を通るため、 末端で注入すれば daemon / plist の LANG 状態に
         // 非依存で確定的に UTF-8 を保証できる。 caller が env で明示した LANG / LC_CTYPE は尊重する。
@@ -347,6 +477,16 @@ impl PtySlot {
         Ok(())
     }
 
+    /// PTY の現在の winsize を `(cols, rows)` で返す。
+    ///
+    /// 「resize が本当に PTY まで届いたか」を**実体側から**確認するための観測点。
+    /// これが無いと `resize_lane` のテストは「呼んだ」ことしか言えず、
+    /// 適用を外しても緑のままになる（2026-07-26 に実際にそうなった）。
+    pub fn size(&self) -> Result<(u16, u16)> {
+        let s = self.pair.master.get_size()?;
+        Ok((s.cols, s.rows))
+    }
+
     /// 出力ストリームを購読（broadcast receiver）
     pub fn subscribe_output(&self) -> broadcast::Receiver<Vec<u8>> {
         self.output_tx.subscribe()
@@ -389,7 +529,7 @@ impl Drop for PtySlot {
     ///
     /// kill() で終了シグナルを送り、wait() で回収することで
     /// ゾンビプロセスの発生を防ぐ。 加えて replay を disk へ final flush する
-    /// (graceful な lane restart / SP 停止で最新画面を残す。 crash 経路は定期 flush が担保)。
+    /// (graceful な lane restart / repo 停止で最新画面を残す。 crash 経路は定期 flush が担保)。
     fn drop(&mut self) {
         // flush task を止めてから final flush (定期 flush と競合させない)。
         if let Some(h) = self.flush_handle.take() {
@@ -520,6 +660,71 @@ fn strip_byte_seq(data: &[u8], seq: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    /// doc 50 §4.6 A6: file の身元は **session**（role ではない）。
+    ///
+    /// role（`is_root`）で決めていた初版は、root を付け替えると新 root が旧名 file を掴んで
+    /// 旧 root の画面を seed し、かつ旧 root の生存 slot と同じ file を奪い合った
+    /// （team-b 6 回目 2026-07-25）。同じ session なら常に同じ file、違う session なら必ず
+    /// 別 file、が守る不変条件。
+    #[test]
+    fn replay_file_path_is_keyed_by_session_not_by_role() {
+        let base = Path::new("/tmp/vp-test-state");
+        let legacy = replay_file_path_in(base, "vp", "root");
+        // **session 1 も例外にしない**のが要点。「既定の root は 1 なので旧名でよい」と特例を
+        // 作った瞬間に role 依存が戻る（= 付け替えで身元が動く）。1 を含めて全数 suffix 付き。
+        for session in [1, 2, 16] {
+            let p = replay_file_path_session_in(base, "vp", "root", session);
+            assert_eq!(
+                p.file_name().unwrap(),
+                std::ffi::OsStr::new(&format!("vp__root__{session}")),
+                "session {session} の file は suffix 付き（旧名の特例を作らない）"
+            );
+            assert_ne!(
+                p, legacy,
+                "lane 単位の旧名は誰も使わない（session {session}）"
+            );
+        }
+        // 別 session は必ず別 file（同一 file の奪い合いが構造的に起きない）。
+        assert_ne!(
+            replay_file_path_session_in(base, "vp", "root", 16),
+            replay_file_path_session_in(base, "vp", "root", 17),
+        );
+    }
+
+    /// 旧名 file は現 root の session file へ 1 回だけ移設される（upgrade の継続性）。
+    #[test]
+    fn legacy_replay_migrates_to_the_current_root_session() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        let legacy = replay_file_path_in(base, "vp", "root");
+        std::fs::create_dir_all(legacy.parent().unwrap()).expect("mkdir");
+        std::fs::write(&legacy, b"pre-A6 screen").expect("write legacy");
+
+        // root=5（A6 以前に switch_root で動いていた lane でも身元を正しく引き継ぐ）。
+        migrate_legacy_replay_in(base, "vp", "root", 5);
+        assert!(!legacy.exists(), "旧名は移設後に残さない");
+        let target = replay_file_path_session_in(base, "vp", "root", 5);
+        assert_eq!(
+            std::fs::read(&target).expect("移設先"),
+            b"pre-A6 screen",
+            "内容ごと現 root の file へ移る（upgrade で前回画面を失わない）"
+        );
+
+        // 冪等: 2 度目は no-op（旧名が無い）。
+        migrate_legacy_replay_in(base, "vp", "root", 5);
+        assert_eq!(std::fs::read(&target).expect("移設先"), b"pre-A6 screen");
+
+        // 移設先が既にあれば旧名を捨てる（session 自身の file が正）。
+        std::fs::write(&legacy, b"stale legacy").expect("write legacy again");
+        migrate_legacy_replay_in(base, "vp", "root", 5);
+        assert!(!legacy.exists());
+        assert_eq!(
+            std::fs::read(&target).expect("移設先"),
+            b"pre-A6 screen",
+            "session 自身の file を旧名で上書きしない"
+        );
+    }
+
     /// テスト用のデフォルトシェルを返す。
     /// $SHELL があればそれを、無ければ OS 既定（Unix: /bin/sh、Windows: cmd.exe）を使う。
     /// Windows には /bin/sh が無いので OS 分岐が必須。
@@ -589,7 +794,7 @@ mod tests {
     }
 
     /// disk 永続 round-trip: 出力 → flush task が disk へ書く → その file を seed に新 PtySlot を
-    /// spawn すると、 前回出力が attach_output の snapshot に replay される (SP 再起動をまたぐ復元)。
+    /// spawn すると、 前回出力が attach_output の snapshot に replay される (repo 再起動をまたぐ復元)。
     #[tokio::test]
     async fn test_replay_persists_and_seeds_across_respawn() {
         let shell = default_test_shell();
@@ -647,7 +852,7 @@ mod tests {
         let (snapshot, _live) = slot2.attach_output();
         assert!(
             String::from_utf8_lossy(&snapshot).contains(marker),
-            "seed した前回画面が attach snapshot に replay される (SP 再起動復元)"
+            "seed した前回画面が attach snapshot に replay される (repo 再起動復元)"
         );
     }
 
@@ -700,9 +905,9 @@ mod tests {
 
     /// 回帰 (console-blackout root cause): PTY child は親プロセスの TERM 有無に依らず
     /// TERM=xterm-256color を受け取る。 launchd 自動起動の daemon は端末非接続で TERM を
-    /// 継承しないため、 TERM 不在だと echoes の `tmux new-session -A` が "open terminal
+    /// 継承しないため、 TERM 不在だと conversation の `tmux new-session -A` が "open terminal
     /// failed" で即死 → lane spawn 全滅 → console が出ない。 PtySlot が TERM 既定を注入する
-    /// ことで daemon の TERM 有無に依らず stand が描画可能になることを pin する。
+    /// ことで daemon の TERM 有無に依らず agent が描画可能になることを pin する。
     #[cfg(unix)]
     #[tokio::test]
     async fn test_pty_spawn_injects_term_default() {

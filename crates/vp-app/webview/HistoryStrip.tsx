@@ -1,7 +1,7 @@
 /**
- * History Strip — PP body の下行に直近 N=10 件の thumbnail を新→古 順で表示する component。
+ * History Strip — board body の下行に直近 N=10 件の thumbnail を新→古 順で表示する component。
  *
- * doc 19 PP Canvas Stack Model (2026-05-27) Phase 2。 canvas-handler.ts の `CanvasState`
+ * doc 19 board Canvas Stack Model (2026-05-27) Phase 2。 board-handler.ts の `CanvasState`
  * を購読し、 items × cursor を 1 row の thumbnail strip として render。
  *
  * 動作:
@@ -10,22 +10,21 @@
  *  - cursor が指す cell は brand color frame で強調
  *  - title は 8 chars truncate + ellipsis、 hover で HTML `title` attribute の OS tooltip で full
  *
- * mount target: main_area.rs HTML 側で `<div id="pp-history-strip">` を保証。
+ * mount target: main_area.rs HTML 側で `<div id="board-history-strip">` を保証。
  * 関連 doc: docs/design/19-canvas-stack-model.md
  */
 
-import { For, createSignal, onCleanup, onMount } from 'solid-js'
+import { For, Show, createSignal, onCleanup, onMount } from 'solid-js'
 import { render } from 'solid-js/web'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import type { IconName } from '@chronista-club/creo-ui-icons-web'
 import {
   deleteItem,
   getCanvasState,
-  setActiveBoard,
   setCursor,
   subscribeCanvasState,
-  type CanvasItem,
-} from './canvas-handler'
+  type BoardItem,
+} from './board-handler'
 
 /** content_type → Phosphor icon mapping (= doc 19 §5.1)。 */
 const CONTENT_TYPE_ICON: Record<string, IconName> = {
@@ -38,7 +37,7 @@ const CONTENT_TYPE_ICON: Record<string, IconName> = {
 const TITLE_MAX_CHARS = 8
 
 /** title 未指定時に content 先頭を fallback として返す。 */
-export function aliasOf(item: CanvasItem): string {
+export function aliasOf(item: BoardItem): string {
   if (item.title && item.title.trim().length > 0) {
     return item.title.trim()
   }
@@ -54,7 +53,7 @@ export function truncate(s: string, n: number): string {
 }
 
 function HistoryStrip() {
-  // canvas-handler の state を SolidJS signal に bridge。 listener で再 read して reactivity 化。
+  // board-handler の state を SolidJS signal に bridge。 listener で再 read して reactivity 化。
   const [state, setState] = createSignal(getCanvasState())
 
   onMount(() => {
@@ -63,41 +62,29 @@ function HistoryStrip() {
   })
 
   return (
-    <div class="pp-history-strip-inner">
-      {/* board 切替 segment（[Lane | Proj]）。 選んだ board の中身を右の thumbnail 列に出す。 */}
-      <div class="pp-board-seg" role="tablist" aria-label="board 切替">
-        <button
-          type="button"
-          class="pp-board-tab"
-          classList={{ active: state().activeScope === 'lane' }}
-          onClick={() => setActiveBoard('lane')}
-        >
-          Lane
-        </button>
-        <button
-          type="button"
-          class="pp-board-tab"
-          classList={{ active: state().activeScope === 'proj' }}
-          onClick={() => setActiveBoard('proj')}
-        >
-          Proj
-        </button>
-      </div>
+    <div class="board-history-strip-inner">
       <For each={state().items}>
         {(item) => {
           const alias = aliasOf(item)
           const isActive = () => state().cursor === item.id
+          // 未読 dot（doc 52 §5）: cursor に流されず届いた新着。click で消える。
+          const isUnread = () => state().unread.has(item.id)
           return (
             <div
-              class="pp-history-cell"
-              classList={{ active: isActive() }}
+              class="board-history-cell"
+              classList={{ active: isActive(), unread: isUnread() }}
               onClick={() => setCursor(item.id)}
               title={alias}
             >
+              {/* 未読 dot は inline（cell 内側）。絶対配置 + 負 offset は strip の overflow に
+                  クリップされて見えない（2026-07-24 実機 dogfood）— icon の前に置いて確実に出す。 */}
+              <Show when={isUnread()}>
+                <span class="board-history-dot" aria-label="未読" />
+              </Show>
               <CreoIcon name={CONTENT_TYPE_ICON[item.contentType] ?? 'ph:file'} size={12} />
-              <span class="pp-history-title">{truncate(alias, TITLE_MAX_CHARS)}</span>
+              <span class="board-history-title">{truncate(alias, TITLE_MAX_CHARS)}</span>
               <button
-                class="pp-history-close"
+                class="board-history-close"
                 type="button"
                 title="この item を削除"
                 onClick={(e) => {
@@ -116,14 +103,14 @@ function HistoryStrip() {
 }
 
 /**
- * `<div id="pp-history-strip">` (main_area.rs HTML 側で保証) に component を mount する。
+ * `<div id="board-history-strip">` (main_area.rs HTML 側で保証) に component を mount する。
  * entry.tsx の boot 経路から呼ばれる。 target が見つからない場合は warn して skip (= 旧
  * HTML で boot した時の防御、 v1 fully roll-out 後は不要)。
  */
 export function mountHistoryStrip(): void {
-  const target = document.getElementById('pp-history-strip')
+  const target = document.getElementById('board-history-strip')
   if (!target) {
-    console.warn('[history-strip] target #pp-history-strip not found, skip mount')
+    console.warn('[history-strip] target #board-history-strip not found, skip mount')
     return
   }
   render(() => <HistoryStrip />, target)
@@ -131,60 +118,53 @@ export function mountHistoryStrip(): void {
 
 /**
  * History strip の CSS。 entry.tsx で `<style>` 注入する。
- * creoui token (= var(--color-*)) は既存 PP body と同じく inline 済前提。
+ * creoui token (= var(--color-*)) は既存 board body と同じく inline 済前提。
  */
 export const HISTORY_STRIP_CSS = `
-/* doc 19 PP Canvas Stack Model: bottom history strip layout */
-.pp-history-strip{flex:0 0 auto;border-top:1px solid var(--color-surface-border,#1f2233);
+/* doc 19 board Canvas Stack Model: bottom history strip layout */
+.board-history-strip{flex:0 0 auto;border-top:1px solid var(--color-surface-border,#1f2233);
   background:var(--color-surface-bg-subtle);padding:6px 8px;overflow:hidden;}
-.pp-history-strip-inner{display:flex;gap:4px;overflow-x:auto;align-items:center;}
-.pp-history-strip-inner::-webkit-scrollbar{height:4px;}
-/* board 切替 segment（[Lane|Proj]）: strip 左端に固定、 thumbnail はその右にスクロール。 */
-.pp-board-seg{display:flex;gap:2px;flex:0 0 auto;margin-right:6px;padding-right:6px;
-  border-right:1px solid var(--color-surface-border,#1f2233);}
-.pp-board-tab{border:1px solid var(--color-surface-border,#1f2233);
-  background:var(--color-surface-bg-raised);color:var(--color-text-secondary);
-  font-size:11px;font-family:inherit;padding:3px 8px;border-radius:4px;cursor:pointer;
-  height:24px;transition:border-color .12s ease,background .12s ease,color .12s ease;}
-.pp-board-tab:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
-.pp-board-tab.active{border-color:var(--color-brand-primary);
-  background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);}
-.pp-history-strip-inner::-webkit-scrollbar-thumb{background:var(--color-surface-border,#1f2233);
+.board-history-strip-inner{display:flex;gap:4px;overflow-x:auto;align-items:center;}
+.board-history-strip-inner::-webkit-scrollbar{height:4px;}
+.board-history-strip-inner::-webkit-scrollbar-thumb{background:var(--color-surface-border,#1f2233);
   border-radius:2px;}
 
 /* 1 cell: icon + title + close */
-.pp-history-cell{display:flex;align-items:center;gap:5px;
+.board-history-cell{display:flex;align-items:center;gap:5px;
   padding:4px 6px;border:1px solid var(--color-surface-border,#1f2233);
   border-radius:4px;background:var(--color-surface-bg-raised);
   font-size:11px;cursor:pointer;flex:0 0 auto;
   max-width:140px;min-width:90px;height:24px;
   color:var(--color-text-secondary);
   transition:border-color .12s ease,background .12s ease,color .12s ease;}
-.pp-history-cell:hover{background:var(--color-surface-bg-emphasis);
+.board-history-cell:hover{background:var(--color-surface-bg-emphasis);
   color:var(--color-text-primary);}
-.pp-history-cell.active{border-color:var(--color-brand-primary);
+.board-history-cell.active{border-color:var(--color-brand-primary);
   background:var(--color-brand-primary-subtle);
   color:var(--color-brand-primary);}
-.pp-history-cell.active:hover{background:var(--color-brand-primary-subtle);}
+.board-history-cell.active:hover{background:var(--color-brand-primary-subtle);}
+/* 未読 dot（doc 52 §5 計器盤）: cursor に流されず届いた新着 = icon の前に灯す。click（= setCursor）で
+   消える。「知らせるが奪わない」— pane focus は寄せず、視界の主権は mako に残す。
+   inline 配置なのは strip の overflow に負 offset の絶対配置がクリップされるため（実機 dogfood）。 */
+.board-history-dot{flex:0 0 auto;width:6px;height:6px;border-radius:50%;
+  background:var(--color-brand-primary);}
 
-.pp-history-title{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+.board-history-title{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   color:inherit;font-family:inherit;}
 
-.pp-history-close{border:none;background:transparent;padding:1px;
+.board-history-close{border:none;background:transparent;padding:1px;
   display:inline-flex;align-items:center;cursor:pointer;
   color:var(--color-text-tertiary);opacity:.55;border-radius:2px;
   transition:opacity .1s ease,background .1s ease;}
-.pp-history-close:hover{opacity:1;background:var(--color-surface-bg-emphasis);
+.board-history-close:hover{opacity:1;background:var(--color-surface-bg-emphasis);
   color:var(--color-text-primary);}
-.pp-history-cell.active .pp-history-close{color:var(--color-brand-primary);}
+.board-history-cell.active .board-history-close{color:var(--color-brand-primary);}
 
-/* pane-body を flex column 化して main + strip を縦並びにする。
-   .pane-body は position:absolute (top:28px/bottom:0) で既に definite height を持つので
-   height:100% は付けない — top:28px オフセット + height:100% = コンテナを 28px はみ出し、
-   最下行の history-strip が window 下端で clip される (= タブ上端だけ見える原因)。
-   pp-content は flex:1 + min-height:0 で内部スクロール (flex item の default min-height:auto
-   だと長い content が縮まず strip を押し出すため、min-height:0 で縮小を許可する)。 */
-#pane-paisley-park .pane-body{display:flex;flex-direction:column;}
-#pane-paisley-park .pane-body .pp-content{flex:1;overflow-y:auto;min-height:0;}
-#pane-paisley-park .pane-body .pp-history-strip{flex:0 0 auto;}
+/* board pane（doc 52 §10 wave 0: #lane-board）の内部縦並び。#lane-board 自体が flex column
+   （main_area.rs 側で定義）なので、board-content を flex:1 + min-height:0 で内部スクロールさせ、
+   history-strip を下端に固定する（flex item の default min-height:auto だと長い content が
+   縮まず strip を押し出すため、min-height:0 で縮小を許可 = 長文 item が strip を window 外へ
+   追い出す旧症状の予防）。 */
+#lane-board .board-content{flex:1;overflow-y:auto;min-height:0;}
+#lane-board .board-history-strip{flex:0 0 auto;}
 `

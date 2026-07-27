@@ -3,7 +3,7 @@
 //! codex（OpenAI Codex CLI）の会話単位は **thread**（id は UUID）。会話 id の SSOT は
 //! doc 40 で [`super::session_registry`]（`SessionEntry.conversation`）に統合され、per-lane
 //! state file の store 役（record / last / clear）は doc 40 PR-2 で退役した（codex は RpcHost =
-//! [`crate::echoes::codex_host`] が `session_registry::set_conversation` で registry 直結に記録する）。
+//! [`crate::conversation::codex_host`] が `session_registry::set_conversation` で registry 直結に記録する）。
 //!
 //! 本 module に残るのは codex 固有部だけ:
 //! - [`is_valid_thread_id`]: `resume '<id>'` への injection 防壁（registry の write 側検証も使う）
@@ -21,7 +21,7 @@ pub(crate) fn is_valid_thread_id(id: &str) -> bool {
 
 /// codex の実行パスを解決する（launchd の細い PATH 対策、`session_store::resolve_cli` 委譲）。
 ///
-/// brew cask（`/opt/homebrew/bin/codex`）が主経路。Act II（[`crate::echoes::codex_host`]）の
+/// brew cask（`/opt/homebrew/bin/codex`）が主経路。gui（[`crate::conversation::codex_host`]）の
 /// turn spawn が使うため crate 内公開。
 pub(crate) fn codex_cli_path() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
