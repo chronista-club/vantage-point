@@ -379,7 +379,11 @@ impl VpDb {
             .query("SELECT VALUE node_id FROM node_identity:self")
             .await
             .map_err(|e| anyhow::anyhow!("node_id 取得失敗: {}", e))?;
-        let existing: Vec<String> = result.take(0)?;
+        // 旧 schema 行 (v0.56.0 以前 = `wld_id` field のみ) では node_id が NONE になり、
+        // Vec<String> への take は Err を返す。これは「未発行」と同義なので既定値 (空) に
+        // 潰して下の再発行経路へ落とす (ADR-021 P5 — field rename 自体が移行機構。 Err の
+        // まま返すと呼び出し側が degraded 継続し、 空 node_id で hub に register してしまう)。
+        let existing: Vec<String> = result.take(0).unwrap_or_default();
         if let Some(id) = existing.into_iter().find(|s| !s.trim().is_empty()) {
             return Ok(crate::node::NodeId::from(id));
         }
@@ -2111,6 +2115,35 @@ mod tests {
         // 2 回目以降は同じ id を復元する (= singleton、 再起動越え安定の核)。
         let second = db.load_or_create_node_id().await.unwrap();
         assert_eq!(first, second, "node_id は singleton で安定して復元される");
+    }
+
+    /// ADR-021 P5 の実マシン移行経路: v0.56.0 以前の行 (node_id field を持たない =
+    /// 旧 `wld_id` 行の形) の上でも nd_ id が再発行されること。実 live で mito-mba が
+    /// この path を踏み、 take の Err が呼び出し側の degraded 継続に化けて **空 node_id
+    /// で hub に register** した (2026-07-27) — その regression 固定。
+    #[tokio::test]
+    async fn test_node_id_reissues_over_legacy_row() {
+        let db = make_test_db().await;
+
+        // 旧行を模す: node_id field の無い singleton row (SELECT VALUE node_id → NONE)。
+        db.db
+            .query(
+                "DELETE node_identity:self;
+                 CREATE node_identity:self CONTENT { created_at: time::now() }",
+            )
+            .await
+            .unwrap();
+
+        // Err でも空でもなく、 nd_ を再発行して返す。
+        let id = db.load_or_create_node_id().await.unwrap();
+        assert!(
+            id.as_str().starts_with("nd_1"),
+            "旧行の上から nd_ を再発行するはず: {id}"
+        );
+
+        // 再発行後は通常の singleton 復元に合流する。
+        let again = db.load_or_create_node_id().await.unwrap();
+        assert_eq!(id, again, "再発行した id は以降安定して復元される");
     }
 
     /// doc 44 D4: 開発起点ポインタの round-trip（upsert → get → 上書き → 削除）。
