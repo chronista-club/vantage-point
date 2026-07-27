@@ -12,9 +12,9 @@ export type HubNode = {
  */
 handle: string, 
 /**
- * 位置独立 routing key `wld_xxx`（hub S2 前は空 = daemon 側が omit するため default で受ける）
+ * 位置独立 routing key `nd_xxx`（hub S2 前は空 = daemon 側が omit するため default で受ける）
  */
-wld_id: string, 
+node_id: string, 
 /**
  * direct 到達 endpoint 候補数（hub S2 前は 0）
  */
