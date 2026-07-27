@@ -106,12 +106,15 @@ impl EngineKind {
     pub fn model_choices(self) -> Vec<Choice> {
         match self {
             // value = `--model` に渡る id。空文字 = 「engine 既定」（`--model` を注入しない）。
+            // 各系列の最新のみを載せる（2026-07-27 に claude-api skill の model catalog と照合。
+            // Opus 4.8→5 は mako 裁定）。Haiku は date suffix 付き full id でなく **alias** —
+            // alias は系列の最新を指し続けるので catalog が古びにくい。
             Self::Claude => Choice::list(&[
                 ("", "Default"),
                 ("claude-fable-5", "Fable 5"),
-                ("claude-opus-4-8", "Opus 4.8"),
+                ("claude-opus-5", "Opus 5"),
                 ("claude-sonnet-5", "Sonnet 5"),
-                ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+                ("claude-haiku-4-5", "Haiku 4.5"),
             ]),
             Self::Codex | Self::Grok | Self::OpenCode => Vec::new(),
         }
