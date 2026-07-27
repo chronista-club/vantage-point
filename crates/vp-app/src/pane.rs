@@ -84,9 +84,9 @@ pub enum WidgetKind {
 pub struct HubNode {
     /// daemon の identity（hostname 由来、hub registry の一意キー相当）
     pub handle: String,
-    /// 位置独立 routing key `wld_xxx`（hub S2 前は空 = daemon 側が omit するため default で受ける）
+    /// 位置独立 routing key `nd_xxx`（hub S2 前は空 = daemon 側が omit するため default で受ける）
     #[serde(default)]
-    pub wld_id: String,
+    pub node_id: String,
     /// direct 到達 endpoint 候補数（hub S2 前は 0）
     #[serde(default)]
     pub endpoints_count: usize,

@@ -546,9 +546,9 @@ impl DaemonControlClient {
 
     pub async fn hub_discover(&self) -> Result<Vec<serde_json::Value>> {
         let resp = self.call("hub/discover", serde_json::json!({})).await?;
-        // 新 daemon は `{ "worlds": [...] }` (channel 慣習 + vp-daemon.kdl の returns と一致)、
+        // 新 daemon は `{ "nodes": [...] }` (channel 慣習 + vp-daemon.kdl の returns と一致)、
         // 旧 daemon は bare array を返す。binary 更新 ↔ daemon 再起動の skew を両対応で吸収。
-        let nodes = match resp.get("worlds") {
+        let nodes = match resp.get("nodes") {
             Some(w) => w.clone(),
             None => resp,
         };

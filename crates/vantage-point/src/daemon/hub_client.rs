@@ -16,18 +16,20 @@
 //!   VP のこの提示は非破壊で、hub が required に反転した後は未ログイン connection が gate される。
 //!   contract 確定の経緯は wire thread 019f28c9（hub↔VP coordination、2026-07-04）。
 //!
-//! ## hub 側の契約（chronista-hub v0.1.0, `hub_protocol.kdl`、変更不可）
+//! ## hub 側の契約（chronista-hub protocol 0.7.0, `hub_protocol.kdl`）
 //! - Unison surface addr: env `CHRONISTA_HUB_UNISON_ADDR`、default `[::1]:7879`（QUIC/UDP）
-//! - channel `worlds`:
-//!   - `Register {handle, name}` → `{handle, registered_at}`
-//!   - `Discover {}` → `{worlds: [{handle, name, registered_at}]}`
+//! - channel `nodes`:
+//!   - `Register {handle, name, node_id, endpoints, visibility}` → `{node_id, handle, registered_at, ...}`
+//!   - `Discover {}` → `{nodes: [{node_id, handle, name, endpoints[], registered_at, visibility, connected}]}`
+//! - **W2 一斉切替（ADR-021 hub 側、2026-07-27）**: 旧 wire（channel `worlds` / field `wld_id` /
+//!   reply key `worlds`）は hub protocol 0.7.0 で消滅。本 client は新語彙のみ話す — 0.6.0 以前の
+//!   hub とは通じない（互換層なし = flag day、hub deploy と同窓でこの版を全マシンへ）。
 //!
-//! ## federation L2 追従（ADR-020 D2/D3、wld_id namespace + endpoint）
-//! - VP は `Register` に `wld_id`（位置独立 routing key `wld_xxx`）と `endpoints`（direct 到達
-//!   候補 `["[GUA]:port"]`、IPv6 GUA 優先・tailnet 非依存・relay floor）を **additive** で載せる。
-//! - hub S2（registry endpoint field）未実装の現状 hub はこの 2 field を無視するが、 protocol は
-//!   additive なので非破壊。S2 landed 後に hub が `wld_id → endpoint(s)` を index し、 `Discover`
-//!   が両者を carry する（[`NodeEntry::wld_id`] / [`NodeEntry::endpoints`] が受け皿）。
+//! ## federation L2 追従（ADR-020 D2/D3、node_id namespace + endpoint）
+//! - VP は `Register` に `node_id`（位置独立 routing key `nd_xxx`）と `endpoints`（direct 到達
+//!   候補 `["[GUA]:port"]`、IPv6 GUA 優先・tailnet 非依存・relay floor）を載せる。
+//! - hub S2（registry endpoint field、2026-06-28 landed）が `node_id → endpoint(s)` を index し、
+//!   `Discover` が両者を carry する（[`NodeEntry::node_id`] / [`NodeEntry::endpoints`] が受け皿）。
 //!
 //! ## cert 検証（trust anchors、2026-06-28〜）
 //! - 公開 hub `hub.chronista.club:12879` は **実 CA cert（Let's Encrypt、ISRG Root chain）** で
@@ -159,11 +161,11 @@ pub const HUB_ADDR_ENV: &str = "CHRONISTA_HUB_ADDR";
 /// hub registry に登録された 1 daemon の entry（`nodes.Discover` の戻り要素）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NodeEntry {
-    /// home-node の位置独立 routing key `wld_xxx`（ADR-020 D2）。hub S2 (registry endpoint
+    /// home-node の位置独立 routing key `nd_xxx`（ADR-020 D2）。hub S2 (registry endpoint
     /// field) 未実装の現状は空文字で返り得るため `#[serde(default)]`。S2 landed 後は
-    /// Discover が `wld_id → endpoint` を carry する（前方互換のためここで先に受け皿を持つ）。
+    /// Discover が `node_id → endpoint` を carry する（前方互換のためここで先に受け皿を持つ）。
     #[serde(default)]
-    pub wld_id: String,
+    pub node_id: String,
     /// この daemon の direct 到達 endpoint 候補 (`["[GUA]:port", ..]`、ADR-020 D3-a)。dialer が
     /// 順に QUIC direct を試し、全滅で hub relay に落ちる。hub S2 未実装の現状は空配列で返り得る
     /// ため `#[serde(default)]`（Discover が endpoints を返すのは S2 landed 後）。
@@ -174,9 +176,9 @@ pub struct NodeEntry {
     pub name: String,
     #[serde(default)]
     pub registered_at: String,
-    /// この daemon の常駐接続が hub で今生きているか（hub protocol v0.6.0 の additive field、
-    /// relay registry snapshot 由来）。false = registry には居るが relay は offline を返す
-    /// （stale entry / 切断中）。旧 hub は field を返さないため `#[serde(default)]` で false。
+    /// この daemon の常駐接続が hub で今生きているか（hub protocol v0.6.0 で additive 追加、
+    /// v0.7.0 の node 語彙でも同形。relay registry snapshot 由来）。false = registry には居るが
+    /// relay は offline を返す（stale entry / 切断中）。field 欠落は `#[serde(default)]` で false。
     #[serde(default)]
     pub connected: bool,
 }
@@ -298,7 +300,7 @@ async fn hub_credential() -> Option<Vec<u8>> {
 ///
 /// FEDERATION_AUTH=required 下で credential なし（token 失効 / 未ログイン）の Register / Discover は
 /// **protocol error でなく通常 Response の payload** で `{"error": "authentication required (scope
-/// '...')"}` を返す。素朴な型変換だと「レスポンスのパースに失敗」に潰れて（Discover は "worlds"
+/// '...')"}` を返す。素朴な型変換だと「レスポンスのパースに失敗」に潰れて（Discover は "nodes"
 /// キー欠落で無言の空配列に潰れて）診断不能になるため、呼び出し側はこれを見て明示的な auth
 /// エラーへ浮かせる。
 fn hub_reply_error(resp: &Value) -> Option<&str> {
@@ -402,7 +404,7 @@ impl HubClient {
     /// **connect 前**に `relay` server-channel handler を登録してから接続する。direct 全滅で
     /// 別 node が hub 経由 relay を張ってきたとき、hub は `open_server_stream("relay")` で
     /// この node へ server-initiated reliable stream を push する。handler はその raw stream を
-    /// 直読し、先頭 frame = `open{from}`（送信元 wld_id）・以降 = forward された data frame として
+    /// 直読し、先頭 frame = `open{from}`（送信元 node_id）・以降 = forward された data frame として
     /// drain し、データフレーム毎に `on_msg` を呼ぶ。
     ///
     /// 返った [`HubClient`] を **保持し続ける限り**受信し続ける（drop = connection 断 = 受信停止）。
@@ -419,7 +421,7 @@ impl HubClient {
             .register_server_channel("relay", move |stream| {
                 let on_msg = on_msg.clone();
                 async move {
-                    // 先頭 frame = open{from}（送信元 wld_id）。欠落/早期切断なら受信終了。
+                    // 先頭 frame = open{from}（送信元 node_id）。欠落/早期切断なら受信終了。
                     let from = match stream.recv_frame().await {
                         Ok(m) => m
                             .payload_as_value()
@@ -446,21 +448,21 @@ impl HubClient {
         Ok(Self { client, ch })
     }
 
-    /// relay dialer（source）— hub 経由で `to_wld_id` への片方向 stream を確立する（ADR-020 §S4）。
+    /// relay dialer（source）— hub 経由で `to_node_id` への片方向 stream を確立する（ADR-020 §S4）。
     ///
-    /// `registry.lookup(wld_id).endpoints` への QUIC direct が全滅したときの **fallback floor**。
+    /// `registry.lookup(node_id).endpoints` への QUIC direct が全滅したときの **fallback floor**。
     /// `relay` channel を開いて宛先宣言 `{to, from}` を送り、hub の status を待つ:
     /// - `established` → [`RelayDial`] を返す（以降 [`RelayDial::send`] で data を片方向送信）。
     /// - `offline` → target 不在。Err（送り手 home-node の reconcile 対象 = D3-c）。
     /// - `error` / その他 → Err。
-    pub async fn dial_relay(&self, to_wld_id: &str, from_wld_id: &str) -> Result<RelayDial> {
+    pub async fn dial_relay(&self, to_node_id: &str, from_node_id: &str) -> Result<RelayDial> {
         let ch = self
             .client
             .open_channel("relay")
             .await
             .map_err(|e| anyhow::anyhow!("relay チャネル open 失敗: {}", e))?;
         // 宛先宣言 {to, from}。hub は payload だけ読む（method 名は無視するため任意ラベル）。
-        ch.send_event("open", &json!({ "to": to_wld_id, "from": from_wld_id }))
+        ch.send_event("open", &json!({ "to": to_node_id, "from": from_node_id }))
             .await
             .map_err(|e| anyhow::anyhow!("relay open 宣言の送信に失敗: {}", e))?;
         // hub の status frame（Event {status, detail}）を待つ。
@@ -475,31 +477,34 @@ impl HubClient {
         match v.get("status").and_then(Value::as_str) {
             Some("established") => Ok(RelayDial {
                 ch,
-                to: to_wld_id.to_string(),
+                to: to_node_id.to_string(),
             }),
             Some("offline") => {
-                anyhow::bail!("relay target offline（reconcile 対象 D3-c）: {}", to_wld_id)
+                anyhow::bail!(
+                    "relay target offline（reconcile 対象 D3-c）: {}",
+                    to_node_id
+                )
             }
             other => anyhow::bail!(
                 "relay 確立失敗: status={:?} detail={} to={}",
                 other,
                 detail,
-                to_wld_id
+                to_node_id
             ),
         }
     }
 
     /// この daemon を hub registry に register する（`nodes.Register`）。
     ///
-    /// - `wld_id` = home-node の位置独立 routing key（ADR-020 D2）。
+    /// - `node_id` = home-node の位置独立 routing key（ADR-020 D2）。
     /// - `endpoints` = direct 到達 endpoint 候補（`["[GUA]:port", ..]`、D3-a。空配列 = direct
     ///   候補なしで relay floor に委ねる）。
     ///
     /// hub は S2 (registry endpoint field) 未実装の現状この 2 field を無視するが、 additive
-    /// なので非破壊で先に送っておく（両側が揃った時点で hub が `wld_id → endpoint` を index する）。
+    /// なので非破壊で先に送っておく（両側が揃った時点で hub が `node_id → endpoint` を index する）。
     pub async fn register(
         &self,
-        wld_id: &str,
+        node_id: &str,
         endpoints: &[String],
         handle: &str,
         name: &str,
@@ -508,10 +513,10 @@ impl HubClient {
             .ch
             .request(
                 "Register",
-                &json!({ "wld_id": wld_id, "endpoints": endpoints, "handle": handle, "name": name }),
+                &json!({ "node_id": node_id, "endpoints": endpoints, "handle": handle, "name": name }),
             )
             .await
-            .map_err(|e| anyhow::anyhow!("worlds.Register 失敗: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("nodes.Register 失敗: {}", e))?;
         // hub は auth 拒否等の handler Err を通常 Response の `{"error": ...}` で返す（in-band）。
         // NodeEntry 化の前に判定し、FEDERATION_AUTH=required 下の失効/未ログインを「parse 失敗」で
         // 潰さず明示エラーに浮かせる（2026-07-11 の federation 途絶で診断を数手遠回りさせた元凶）。
@@ -531,8 +536,8 @@ impl HubClient {
             .ch
             .request("Discover", &json!({}))
             .await
-            .map_err(|e| anyhow::anyhow!("worlds.Discover 失敗: {}", e))?;
-        // Register と同様、in-band の `{"error": ...}` 拒否を判定する。Discover は "worlds" キー欠落を
+            .map_err(|e| anyhow::anyhow!("nodes.Discover 失敗: {}", e))?;
+        // Register と同様、in-band の `{"error": ...}` 拒否を判定する。Discover は "nodes" キー欠落を
         // 空配列に潰すため、判定しないと auth 拒否が「discover 0 件」に化けて無言で誤誘導する。
         if let Some(err) = hub_reply_error(&resp) {
             anyhow::bail!(
@@ -540,7 +545,7 @@ impl HubClient {
                  が主因 — `vp auth login` で再ログインを検討）: {err}"
             );
         }
-        let nodes = resp.get("worlds").cloned().unwrap_or_else(|| json!([]));
+        let nodes = resp.get("nodes").cloned().unwrap_or_else(|| json!([]));
         serde_json::from_value(nodes).context("Discover レスポンスのパースに失敗")
     }
 
@@ -607,9 +612,9 @@ async fn connect_and_open_nodes(
         match connected {
             Ok(_) => {
                 return client
-                    .open_channel("worlds")
+                    .open_channel("nodes")
                     .await
-                    .map_err(|e| anyhow::anyhow!("worlds チャネル open 失敗: {}", e));
+                    .map_err(|e| anyhow::anyhow!("nodes チャネル open 失敗: {}", e));
             }
             Err(e) => {
                 // credential 付き接続の失敗は**原因を問わず** credential なしに降格して以降の
@@ -646,10 +651,10 @@ async fn connect_and_open_nodes(
 /// relay で受信した 1 データフレーム（target inbound 側、[`HubClient::connect_with_inbound`]）。
 ///
 /// hub は payload を opaque に dumb forward する（中身を覗かない = D5）ので、`payload` の意味は
-/// 送り手 daemon と受け手 daemon のアプリ層が決める。`from` = 送信元 wld_id。
+/// 送り手 daemon と受け手 daemon のアプリ層が決める。`from` = 送信元 node_id。
 #[derive(Debug, Clone)]
 pub struct RelayInbound {
-    /// 送信元 home-node の wld_id（hub の `open{from}` 宣言由来）。
+    /// 送信元 home-node の node_id（hub の `open{from}` 宣言由来）。
     pub from: String,
     /// forward された data frame の payload（opaque JSON、欠落時は `Value::Null`）。
     pub payload: Value,
@@ -673,31 +678,31 @@ impl RelayDial {
             .map_err(|e| anyhow::anyhow!("relay data 送信に失敗 (to={}): {}", self.to, e))
     }
 
-    /// 宛先 wld_id。
+    /// 宛先 node_id。
     pub fn target(&self) -> &str {
         &self.to
     }
 }
 
-/// 既存接続 `client` で `target_wld` へ relay を張り envelope を 1 本送る（dial + send の共通単位）。
+/// 既存接続 `client` で `target_node` へ relay を張り envelope を 1 本送る（dial + send の共通単位）。
 async fn relay_send_on(
     client: &HubClient,
-    target_wld: &str,
+    target_node: &str,
     from_label: &str,
     envelope: &Value,
 ) -> Result<()> {
     let dial = client
-        .dial_relay(target_wld, from_label)
+        .dial_relay(target_node, from_label)
         .await
-        .with_context(|| format!("relay 確立に失敗（to={target_wld}）"))?;
+        .with_context(|| format!("relay 確立に失敗（to={target_node}）"))?;
     dial.send(envelope)
         .await
         .context("relay envelope 送信に失敗")?;
     Ok(())
 }
 
-/// `discover` で `handle` → 採用 entry を引く（不在 / wld_id 空はエラー）。曖昧性回避のため
-/// federation 宛先は handle 明示で受け、ここで routing key（wld_id）と direct 候補
+/// `discover` で `handle` → 採用 entry を引く（不在 / node_id 空はエラー）。曖昧性回避のため
+/// federation 宛先は handle 明示で受け、ここで routing key（node_id）と direct 候補
 /// （endpoints — §S6 dialer が消費）に解決する。
 async fn discover_entry_by_handle(client: &HubClient, handle: &str) -> Result<NodeEntry> {
     let nodes = client.discover().await.context("discover に失敗")?;
@@ -708,9 +713,9 @@ async fn discover_entry_by_handle(client: &HubClient, handle: &str) -> Result<No
             nodes.len()
         )
     })?;
-    if target.wld_id.is_empty() {
+    if target.node_id.is_empty() {
         anyhow::bail!(
-            "daemon '{}' の wld_id が空（hub が wld_id を index していない）",
+            "daemon '{}' の node_id が空（hub が node_id を index していない）",
             handle
         );
     }
@@ -719,8 +724,8 @@ async fn discover_entry_by_handle(client: &HubClient, handle: &str) -> Result<No
 
 /// handle 一致の daemon から採用する 1 件を選ぶ純関数 — **registered_at 最新を選ぶ**。
 ///
-/// registry には同一 handle の stale entry が残留し得る（daemon 再作成による wld_id 変化後の
-/// 再 register、hub 側 cleanup 前 等）。先頭一致だと stale（死んだ wld_id）を拾って relay が
+/// registry には同一 handle の stale entry が残留し得る（daemon 再作成による node_id 変化後の
+/// 再 register、hub 側 cleanup 前 等）。先頭一致だと stale（死んだ node_id）を拾って relay が
 /// offline で失敗する（2026-07-04 実害: 別 PC の discover が mito-mba.local の stale を掴んだ）。
 /// `registered_at` は ISO 8601（同一フォーマット）なので辞書順比較 = 時系列比較。
 fn pick_latest_by_handle<'a>(nodes: &'a [NodeEntry], handle: &str) -> Option<&'a NodeEntry> {
@@ -758,25 +763,25 @@ pub fn available_nodes(nodes: Vec<NodeEntry>, own_handle: &str) -> Vec<NodeEntry
     by_handle.into_values().collect()
 }
 
-/// 指定 wld_id へ短命接続で relay envelope を送る（handle 解決なし）。宛先 wld_id が既知のケース
+/// 指定 node_id へ短命接続で relay envelope を送る（handle 解決なし）。宛先 node_id が既知のケース
 /// （discovery の `lanes-reply` 返信等）で使う low-level send。
-pub async fn relay_send_to_wld(
+pub async fn relay_send_to_node(
     hub_addr: &str,
-    target_wld: &str,
+    target_node: &str,
     from_label: &str,
     envelope: &Value,
 ) -> Result<()> {
     let client = HubClient::connect(hub_addr, 3)
         .await
         .context("relay-send: hub 接続に失敗")?;
-    relay_send_on(&client, target_wld, from_label, envelope).await
+    relay_send_on(&client, target_node, from_label, envelope).await
 }
 
 /// 遠方 node の lane へ wire envelope を送る（flow ③ = federation 送信、daemon-side）。
 ///
 /// SSOT 原則（hub と話すのは daemon のみ）に従い、CLI ではなく **daemon の wire channel handler**
 /// （`handle_wire_channel` の `wire/federate` method）から呼ぶ。MVP は短命接続:
-/// connect → `discover` で `target_node_handle` → entry（wld_id + endpoints）解決 →
+/// connect → `discover` で `target_node_handle` → entry（node_id + endpoints）解決 →
 /// **direct 試行（§S6 HEv2 race）→ 全滅で relay floor（§S4）** — ADR-020 degrade ladder の
 /// consume 側。受信 node はどちらの経路でも `dispatch_wire("send")` でローカル配送する
 /// （direct = wire channel 直、relay = hub 経由 inbound handler、payload 形は同一）。
@@ -799,28 +804,28 @@ pub async fn federate_wire_send(
     if super::dialer::direct_enabled() && !entry.endpoints.is_empty() {
         match super::dialer::wire_send_direct(&entry, envelope).await {
             Ok(()) => {
-                tracing::info!(wld_id = %entry.wld_id, "federation send via=direct");
+                tracing::info!(node_id = %entry.node_id, "federation send via=direct");
                 return Ok(());
             }
             Err(e) => {
-                tracing::info!(wld_id = %entry.wld_id, "direct 全滅 → relay floor へ: {e:#}");
+                tracing::info!(node_id = %entry.node_id, "direct 全滅 → relay floor へ: {e:#}");
             }
         }
     }
-    relay_send_on(&client, &entry.wld_id, from_label, envelope)
+    relay_send_on(&client, &entry.node_id, from_label, envelope)
         .await
         .context("federate-send")?;
-    tracing::info!(wld_id = %entry.wld_id, "federation send via=relay");
+    tracing::info!(node_id = %entry.node_id, "federation send via=relay");
     Ok(())
 }
 
 /// 遠方 node の lane 一覧を問い合わせる（flow discovery = step 2、daemon-side）。
 ///
 /// 片方向 relay の上に request-response を作る（「双方向は片方向 relay × 2 で創発」）:
-/// 1. discovery 用の**一時 wld_id**（`wld_disco-<nonce>`）で別接続を temp-register（永続接続の
+/// 1. discovery 用の**一時 node_id**（`nd_disco-<nonce>`）で別接続を temp-register（永続接続の
 ///    registration を clobber しないため）。同接続の inbound handler に応答受け皿を仕込む。
-/// 2. `lanes-query`（`{request_id, reply_to: 一時 wld_id}`）を target に relay。
-/// 3. target が lane を集めて `lanes-reply` を一時 wld_id へ relay で返す。
+/// 2. `lanes-query`（`{request_id, reply_to: 一時 node_id}`）を target に relay。
+/// 3. target が lane を集めて `lanes-reply` を一時 node_id へ relay で返す。
 /// 4. 同接続の handler が `request_id` 一致で受けて oneshot を解決 → lane 配列を返す。
 ///
 /// 宛先を知らないときの「在庫確認」。返りは lane subset（address/kind/name/state）の配列。
@@ -829,7 +834,7 @@ pub async fn federate_discover_lanes(
     target_node_handle: &str,
 ) -> Result<Vec<Value>> {
     let request_id = uuid::Uuid::new_v4().to_string();
-    let temp_wld = format!("wld_disco-{}", uuid::Uuid::new_v4().simple());
+    let temp_node = format!("nd_disco-{}", uuid::Uuid::new_v4().simple());
 
     // 応答受け皿: 同接続の inbound handler が request_id 一致の lanes-reply で take + resolve。
     let (tx, rx) = tokio::sync::oneshot::channel::<Value>();
@@ -857,7 +862,7 @@ pub async fn federate_discover_lanes(
         .context("discover-lanes: hub 接続に失敗")?;
     client
         .register(
-            &temp_wld,
+            &temp_node,
             &[],
             TRANSIENT_DISCO_HANDLE,
             "VP discovery (transient)",
@@ -865,16 +870,16 @@ pub async fn federate_discover_lanes(
         .await
         .context("discover-lanes: 一時 register に失敗")?;
 
-    let target_wld = discover_entry_by_handle(&client, target_node_handle)
+    let target_node = discover_entry_by_handle(&client, target_node_handle)
         .await
         .context("discover-lanes")?
-        .wld_id;
+        .node_id;
     let query = json!({
         "kind": "lanes-query",
         "request_id": request_id,
-        "reply_to": temp_wld,
+        "reply_to": temp_node,
     });
-    relay_send_on(&client, &target_wld, &temp_wld, &query)
+    relay_send_on(&client, &target_node, &temp_node, &query)
         .await
         .context("discover-lanes: query 送信に失敗")?;
 
@@ -896,7 +901,7 @@ pub async fn federate_discover_lanes(
 /// stream を受ける accept loop が **connection 生存中だけ**動くため、接続を張りっぱなしにする
 /// 必要がある。この関数はその常駐ループ:
 /// 1. [`HubClient::connect_with_inbound`] で relay 受信 handler を仕込んで接続
-/// 2. [`HubClient::register`] で hub registry に存在告知（hub が `wld_id → ctx` を index する）
+/// 2. [`HubClient::register`] で hub registry に存在告知（hub が `node_id → ctx` を index する）
 /// 3. `Disconnected` を検知したら backoff して再接続（hub 再起動 / 回線瞬断からの自律復帰）
 ///
 /// 受信した relay frame は `on_relay`（caller 注入）に渡す。transport の lifecycle（接続 / 再接続 /
@@ -914,7 +919,7 @@ pub async fn federate_discover_lanes(
 #[allow(clippy::too_many_arguments)]
 pub async fn run_hub_federation<F, Fut>(
     addr: String,
-    wld_id: String,
+    node_id: String,
     endpoints: Vec<String>,
     handle: String,
     name: String,
@@ -944,12 +949,12 @@ pub async fn run_hub_federation<F, Fut>(
         // 再接続ごとに handler を再登録するため clone（connect_with_inbound は on_msg を move する）。
         match HubClient::connect_with_inbound(&addr, 5, on_relay.clone()).await {
             Ok(client) => {
-                match client.register(&wld_id, &endpoints, &handle, &name).await {
+                match client.register(&node_id, &endpoints, &handle, &name).await {
                     Ok(entry) => {
                         status.set(HubFederationState::Connected);
                         tracing::info!(
-                            "chronista-hub 常駐 register 成功: wld_id={} endpoints={:?} handle={} registered_at={}",
-                            wld_id,
+                            "chronista-hub 常駐 register 成功: node_id={} endpoints={:?} handle={} registered_at={}",
+                            node_id,
                             endpoints,
                             entry.handle,
                             entry.registered_at
@@ -1158,9 +1163,9 @@ mod tests {
     }
 
     /// テスト用 NodeEntry を最小構成で作る。
-    fn entry(handle: &str, wld_id: &str, registered_at: &str) -> NodeEntry {
+    fn entry(handle: &str, node_id: &str, registered_at: &str) -> NodeEntry {
         NodeEntry {
-            wld_id: wld_id.to_string(),
+            node_id: node_id.to_string(),
             endpoints: vec![],
             handle: handle.to_string(),
             name: String::new(),
@@ -1171,20 +1176,20 @@ mod tests {
 
     #[test]
     fn pick_latest_by_handle_prefers_newest_registration() {
-        // stale（旧 wld）が先頭でも registered_at 最新の現役 entry を選ぶ（2026-07-04 実害の再現形）。
+        // stale（旧 node）が先頭でも registered_at 最新の現役 entry を選ぶ（2026-07-04 実害の再現形）。
         let nodes = vec![
-            entry("mba.local", "wld_stale", "2026-07-03T10:38:33.760655172Z"),
-            entry("other.local", "wld_other", "2026-07-03T23:15:30.389430772Z"),
-            entry("mba.local", "wld_live", "2026-07-03T23:00:07.784137934Z"),
+            entry("mba.local", "nd_stale", "2026-07-03T10:38:33.760655172Z"),
+            entry("other.local", "nd_other", "2026-07-03T23:15:30.389430772Z"),
+            entry("mba.local", "nd_live", "2026-07-03T23:00:07.784137934Z"),
         ];
         assert_eq!(
-            pick_latest_by_handle(&nodes, "mba.local").map(|w| w.wld_id.as_str()),
-            Some("wld_live")
+            pick_latest_by_handle(&nodes, "mba.local").map(|w| w.node_id.as_str()),
+            Some("nd_live")
         );
         // 一致 1 件ならそれを返す
         assert_eq!(
-            pick_latest_by_handle(&nodes, "other.local").map(|w| w.wld_id.as_str()),
-            Some("wld_other")
+            pick_latest_by_handle(&nodes, "other.local").map(|w| w.node_id.as_str()),
+            Some("nd_other")
         );
         // 一致なしは None
         assert!(pick_latest_by_handle(&nodes, "nowhere.local").is_none());
@@ -1195,10 +1200,10 @@ mod tests {
         // 自 daemon・discovery 一時 register（vp-disco）・空 handle は「hub の向こうに誰が
         // いるか」の意味論から外れる表示ノイズ → 全て除外される。
         let nodes = vec![
-            entry("mito-mba.local", "wld_self", "2026-07-12T00:00:00Z"),
-            entry("other.local", "wld_other", "2026-07-12T00:00:01Z"),
-            entry(TRANSIENT_DISCO_HANDLE, "wld_disco", "2026-07-12T00:00:02Z"),
-            entry("", "wld_anon", "2026-07-12T00:00:03Z"),
+            entry("mito-mba.local", "nd_self", "2026-07-12T00:00:00Z"),
+            entry("other.local", "nd_other", "2026-07-12T00:00:01Z"),
+            entry(TRANSIENT_DISCO_HANDLE, "nd_disco", "2026-07-12T00:00:02Z"),
+            entry("", "nd_anon", "2026-07-12T00:00:03Z"),
         ];
         let avail = available_nodes(nodes, "mito-mba.local");
         assert_eq!(
@@ -1212,17 +1217,17 @@ mod tests {
         // 同一 handle の stale 残留（daemon 再作成後の再 register 等）は registered_at 最新の
         // 1 件に畳む（pick_latest_by_handle と同基準）。返り順は handle 昇順（表示安定化）。
         let nodes = vec![
-            entry("b.local", "wld_b_stale", "2026-07-10T00:00:00Z"),
-            entry("a.local", "wld_a", "2026-07-11T00:00:00Z"),
-            entry("b.local", "wld_b_live", "2026-07-12T00:00:00Z"),
+            entry("b.local", "nd_b_stale", "2026-07-10T00:00:00Z"),
+            entry("a.local", "nd_a", "2026-07-11T00:00:00Z"),
+            entry("b.local", "nd_b_live", "2026-07-12T00:00:00Z"),
         ];
         let avail = available_nodes(nodes, "self.local");
         assert_eq!(
             avail
                 .iter()
-                .map(|w| (w.handle.as_str(), w.wld_id.as_str()))
+                .map(|w| (w.handle.as_str(), w.node_id.as_str()))
                 .collect::<Vec<_>>(),
-            vec![("a.local", "wld_a"), ("b.local", "wld_b_live")]
+            vec![("a.local", "nd_a"), ("b.local", "nd_b_live")]
         );
     }
 
@@ -1231,7 +1236,7 @@ mod tests {
         // set → get で反映、clear で空へ（切断時に stale を「available」と見せない根拠）。
         let cache = HubNodesCache::new();
         assert!(cache.get().is_empty());
-        cache.set(vec![entry("a.local", "wld_a", "2026-07-12T00:00:00Z")]);
+        cache.set(vec![entry("a.local", "nd_a", "2026-07-12T00:00:00Z")]);
         assert_eq!(cache.get().len(), 1);
         cache.clear();
         assert!(cache.get().is_empty());
@@ -1290,7 +1295,7 @@ mod tests {
         let notify = std::sync::Arc::new(tokio::sync::Notify::new());
 
         // 受信 node: relay inbound → dispatch_wire("send") でローカル store に inject（run_daemon と同形）。
-        let target_wld = "wld_wire-target";
+        let target_node = "nd_wire-target";
         let on_relay = {
             let store = store.clone();
             let notifier = notifier.clone();
@@ -1315,13 +1320,13 @@ mod tests {
             .await
             .expect("receiver: connect_with_inbound");
         receiver
-            .register(target_wld, &[], "vp-wire-target", "VP wire target")
+            .register(target_node, &[], "vp-wire-target", "VP wire target")
             .await
             .expect("receiver: register");
 
         // 送信 daemon: relay を張って wire envelope（{from, to, body}）を送る。to は受信 node 内部の
         // logical address（agent@nostos/main）。送信側は相手の port/PID を知らない。
-        // production の federate_wire_send を直接叩く（connect → discover で handle→wld_id →
+        // production の federate_wire_send を直接叩く（connect → discover で handle→node_id →
         // dial_relay → send）。宛先 daemon は handle "vp-wire-target" で明示（曖昧性回避）。
         let envelope = json!({
             "from": "agent@vp-wire-source/proj/main",
@@ -1354,7 +1359,7 @@ mod tests {
         assert_eq!(recvd["count"], 1, "1 件配送されるはず: {recvd}");
 
         println!(
-            "✅ federate_wire_send e2e OK: vp-wire-source → relay → {target_wld}(vp-wire-target) の agent@nostos/main inbox に配送"
+            "✅ federate_wire_send e2e OK: vp-wire-source → relay → {target_node}(vp-wire-target) の agent@nostos/main inbox に配送"
         );
     }
 
@@ -1375,7 +1380,7 @@ mod tests {
 
         // target daemon: lanes-query を受けたら固定 lane 2 件を lanes-reply で返す（run_daemon の
         // on_relay と同形の routing。実機では lane_registry を flatten する）。
-        let target_wld = "wld_disco-target";
+        let target_node = "nd_disco-target";
         let addr_for_target = addr.clone();
         let on_query = move |inbound: RelayInbound| {
             let hub_addr = addr_for_target.clone();
@@ -1400,18 +1405,18 @@ mod tests {
                     ],
                 });
                 let from = resolve_handle(None);
-                let _ = relay_send_to_wld(&hub_addr, reply_to, &from, &reply).await;
+                let _ = relay_send_to_node(&hub_addr, reply_to, &from, &reply).await;
             }
         };
         let target = HubClient::connect_with_inbound(&addr, 5, on_query)
             .await
             .expect("target: connect_with_inbound");
         target
-            .register(target_wld, &[], "vp-disco-target", "VP discovery target")
+            .register(target_node, &[], "vp-disco-target", "VP discovery target")
             .await
             .expect("target: register");
 
-        // source: federate_discover_lanes（一時 wld_id で temp-register → query → 同接続で reply 受信）。
+        // source: federate_discover_lanes（一時 node_id で temp-register → query → 同接続で reply 受信）。
         let lanes = federate_discover_lanes(&addr, "vp-disco-target")
             .await
             .expect("federate_discover_lanes");

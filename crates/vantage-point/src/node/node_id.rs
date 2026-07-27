@@ -1,28 +1,28 @@
-//! home-node の位置独立な安定 id `wld_xxx` (federation L2、 ADR-020 D2)。
+//! home-node の位置独立な安定 id `nd_xxx` (federation L2、 ADR-020 D2)。
 //!
 //! home-node (= VP の daemon) の identity を machine / hostname / endpoint から
 //! 切り離す。daemon が別マシンへ移ろうと hostname が変わろうと、 この id は変わらない。
-//! federation の **routing key** であり、 hub が `wld_id → endpoint` を解決する (machine は
-//! 「今の居場所」、 wld_id は「不変の番地」、 handle は表示名 = ADR-002/008 idiom)。
+//! federation の **routing key** であり、 hub が `node_id → endpoint` を解決する (machine は
+//! 「今の居場所」、 node_id は「不変の番地」、 handle は表示名 = ADR-002/008 idiom)。
 //!
 //! ## [`crate::lane::lane_id::LaneId`] との違い
 //! - LaneId は (repo, lane) ごとに **多数**、 address で引く。
 //! - NodeId は home-node に **1 つ (singleton)**。daemon に 1 個なので address key を持たない。
 //!   発行・永続は db/machine の単一 row ([`crate::db::VpDb::load_or_create_node_id`])。
 //!
-//! ## format = EntId 形式 (`wld_` + base58(uuid_v7))
+//! ## format = EntId 形式 (`nd_` + base58(uuid_v7))
 //! chronista エコシステムの EntId (`mem_xxx` / `atl_xxx`) と **byte 単位で同一の符号**に揃える
 //! ([`encode_base58_uuid`] は creo `packages/entid` の `encodeBase58` を忠実 port、 golden test
 //! で固定)。本体は 128-bit UUID v7 を base58 し、 creo と同じく「先頭の 0 hex nibble の数だけ
 //! `1` を前置」する。UUID v7 は hex が `0..` 始まり (先頭 48bit ミリ秒タイムスタンプ) のため
-//! 結果は必ず `1..` で始まり、 時刻ソート可能 + 同時代の id は先頭数文字が揃う (`wld_1C..`)。
+//! 結果は必ず `1..` で始まり、 時刻ソート可能 + 同時代の id は先頭数文字が揃う (`nd_1C..`)。
 //! **format は opaque** — hub も呼び手も中身を decode しない (routing key として不透明に扱う)。
 //! serde は `transparent` で素の文字列として wire に乗る (人にも読める)。
 
 use uuid::Uuid;
 
-/// wld_id の prefix (EntId 形式の type tag)。
-pub const WORLD_ID_PREFIX: &str = "wld_";
+/// node_id の prefix (EntId 形式の type tag)。
+pub const NODE_ID_PREFIX: &str = "nd_";
 
 /// base58 alphabet (Bitcoin、 視認性のため `0 O I l` を除外)。
 /// creo `packages/entid/src/base58.ts` の `ALPHABET` と同一。
@@ -61,10 +61,10 @@ fn encode_base58_uuid(uuid: Uuid) -> String {
 pub struct NodeId(String);
 
 impl NodeId {
-    /// 新規 wld_id を生成する (`wld_` + creo 互換 base58(uuid_v7))。
+    /// 新規 node_id を生成する (`nd_` + creo 互換 base58(uuid_v7))。
     pub fn generate() -> Self {
         Self(format!(
-            "{WORLD_ID_PREFIX}{}",
+            "{NODE_ID_PREFIX}{}",
             encode_base58_uuid(Uuid::now_v7())
         ))
     }
@@ -99,17 +99,17 @@ mod tests {
     fn encode_matches_creo_entid() {
         // creo packages/entid (canonical) と **byte 一致** を pin する。golden は実 creo を
         // bun 実行した値: uuid 019bdc73-aace-766c-8064-f43e2a8cfcd5 → "1CXK2Q8WPAUUueD7jdRJCt"。
-        // これが通る = VP の wld_id 本体は creo EntId と同じ符号 (= `mem_`/`atl_` と同形)。
+        // これが通る = VP の node_id 本体は creo EntId と同じ符号 (= `mem_`/`atl_` と同形)。
         let uuid = Uuid::parse_str("019bdc73-aace-766c-8064-f43e2a8cfcd5").unwrap();
         assert_eq!(encode_base58_uuid(uuid), "1CXK2Q8WPAUUueD7jdRJCt");
     }
 
     #[test]
-    fn generate_has_wld_prefix() {
+    fn generate_has_nd_prefix() {
         let id = NodeId::generate();
         assert!(
-            id.as_str().starts_with(WORLD_ID_PREFIX),
-            "wld_ prefix が無い: {}",
+            id.as_str().starts_with(NODE_ID_PREFIX),
+            "nd_ prefix が無い: {}",
             id
         );
         assert!(!id.is_empty());
@@ -119,7 +119,7 @@ mod tests {
     fn generate_is_entid_shaped() {
         // EntId 形式: prefix の後ろは base58 本体で、 現状の UUID v7 era では `1` 始まり。
         let id = NodeId::generate();
-        let body = id.as_str().strip_prefix(WORLD_ID_PREFIX).expect("prefix");
+        let body = id.as_str().strip_prefix(NODE_ID_PREFIX).expect("prefix");
         assert!(
             body.starts_with('1'),
             "UUID v7 hex は `0..` 始まりなので本体は '1' 始まりのはず: {}",

@@ -14,7 +14,7 @@
 //!   direct はここで fast-fail → relay floor に落ちる（= 正しい degradation）**。mesh cert
 //!   （PR-3 InternalMeshKeypair）が入ると direct が勝ち始める。cert で挙動が変わるのは
 //!   dialer でなく trust の責務（S1 と同型）。
-//! - SNI = `wld_id`（位置独立 identity、ADR-020 D2）。将来の mesh cert は SAN=wld_id を
+//! - SNI = `node_id`（位置独立 identity、ADR-020 D2）。将来の mesh cert は SAN=node_id を
 //!   推奨 — 「どの機械に居るか」でなく「どの node か」を検証する（Skip 時は未使用）。
 
 use std::net::SocketAddr;
@@ -94,14 +94,14 @@ pub async fn dial_direct(entry: &NodeEntry) -> Result<unison::ProtocolClient> {
         .build()
         .context("QUIC client build 失敗")?;
     let client = unison::ProtocolClient::new(transport);
-    // SNI = wld_id（位置独立 identity）。SkipVerification 時は名前検証に使われない。
+    // SNI = node_id（位置独立 identity）。SkipVerification 時は名前検証に使われない。
     client
-        .connect_race(addrs, &entry.wld_id, federation_race_cfg())
+        .connect_race(addrs, &entry.node_id, federation_race_cfg())
         .await
         .with_context(|| {
             format!(
-                "direct 全滅（wld_id={}, endpoints={:?}）",
-                entry.wld_id, entry.endpoints
+                "direct 全滅（node_id={}, endpoints={:?}）",
+                entry.node_id, entry.endpoints
             )
         })?;
     Ok(client)
