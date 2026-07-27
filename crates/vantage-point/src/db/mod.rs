@@ -370,8 +370,9 @@ impl VpDb {
     /// - 無い / 空なら **新規生成して永続** し、 その id を返す。
     ///
     /// daemon は single-writer (db comment 参照) かつ boot で 1 度だけ呼ぶため race は無い。
-    /// 書き込みは DELETE+CREATE を単一 query (= 1 transaction、 [`Self::upsert_lane`] と同方針) で
-    /// atomic に行う (空 row が残っていた場合も確実に上書き)。
+    /// 書き込みは REMOVE FIELD (旧 catalog 掃除、 下記) + DELETE+CREATE を単一 query に
+    /// まとめて行う (空 row が残っていた場合も確実に上書き。 万一 DDL だけ効いて DML が
+    /// 失敗しても「制約が外れて row が無い」だけの状態なので、 次回 boot の再発行で自己修復する)。
     pub async fn load_or_create_node_id(&self) -> Result<crate::node::NodeId> {
         // 既存 singleton row の node_id を読む (存在しなければ空配列)。
         let mut result = self
@@ -388,11 +389,16 @@ impl VpDb {
             return Ok(crate::node::NodeId::from(id));
         }
 
-        // 無ければ新規発行して永続する。
+        // 無ければ新規発行して永続する。 先に旧 catalog の残存 field 定義を外す —
+        // v0.56.0 以前の DB は SCHEMAFULL に `wld_id: string` (必須) を定義しており、
+        // migration DDL (DEFINE IF NOT EXISTS) は既存定義に触らないため rename 後も残る。
+        // 残ったままだと node_id のみの新行 CREATE が必須違反で弾かれ、 再発行が Err →
+        // 呼び出し側の degraded 継続 = 空 node_id register に化ける (mito-mba 実 live 二段目)。
         let id = crate::node::NodeId::generate();
         self.db
             .query(
-                "DELETE node_identity:self;
+                "REMOVE FIELD IF EXISTS wld_id ON node_identity;
+                 DELETE node_identity:self;
                  CREATE node_identity:self CONTENT {
                     node_id: $node_id,
                     created_at: time::now()
@@ -2117,21 +2123,31 @@ mod tests {
         assert_eq!(first, second, "node_id は singleton で安定して復元される");
     }
 
-    /// ADR-021 P5 の実マシン移行経路: v0.56.0 以前の行 (node_id field を持たない =
-    /// 旧 `wld_id` 行の形) の上でも nd_ id が再発行されること。実 live で mito-mba が
-    /// この path を踏み、 take の Err が呼び出し側の degraded 継続に化けて **空 node_id
-    /// で hub に register** した (2026-07-27) — その regression 固定。
+    /// ADR-021 P5 の実マシン移行経路: v0.56.0 以前の DB の上でも nd_ id が再発行されること。
+    /// 実 live で mito-mba が二段構えで踏んだ regression の固定 (2026-07-27):
+    /// ① 旧行 (node_id field 無し) の SELECT で take が Err → degraded 継続に化けて
+    ///    **空 node_id で hub に register**。
+    /// ② ①を直しても、 旧 catalog の残存 field 定義 (SCHEMAFULL `wld_id: string` 必須。
+    ///    DEFINE IF NOT EXISTS は既存定義に触らないため rename 後も DB に残る) が
+    ///    再発行の CREATE (node_id のみの行) を必須違反で弾き、 結局 Err → 空 register。
+    /// fresh test db は旧「行」だけ模しても②を検出できない — 旧 **catalog** ごと模す。
     #[tokio::test]
     async fn test_node_id_reissues_over_legacy_row() {
         let db = make_test_db().await;
 
-        // 旧行を模す: node_id field の無い singleton row (SELECT VALUE node_id → NONE)。
+        // v0.56.0 の DB を模す: catalog を旧定義 (wld_id 必須・node_id 無し) に巻き戻して
+        // 旧行を作り、 その上に v0.57.0 boot の migration DDL (node_id 追加) を適用する。
         db.db
             .query(
-                "DELETE node_identity:self;
-                 CREATE node_identity:self CONTENT { created_at: time::now() }",
+                "REMOVE FIELD node_id ON node_identity;
+                 DEFINE FIELD wld_id ON node_identity TYPE string;
+                 DELETE node_identity:self;
+                 CREATE node_identity:self CONTENT { wld_id: 'wld_legacy', created_at: time::now() };
+                 DEFINE FIELD IF NOT EXISTS node_id ON node_identity TYPE string;",
             )
             .await
+            .unwrap()
+            .check()
             .unwrap();
 
         // Err でも空でもなく、 nd_ を再発行して返す。
