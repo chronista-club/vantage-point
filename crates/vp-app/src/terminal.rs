@@ -556,7 +556,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 });
             }
         }
-        Some("conversation:stands_fetch") => {
+        Some("conversation:agents_fetch") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
                 // doc 47 §6: 要求元の相関 id（省略可 = 応答を誰も拾わない）。
                 let req = parsed

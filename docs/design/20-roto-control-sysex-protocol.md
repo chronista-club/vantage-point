@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 20. ROTO-CONTROL SysEx protocol — Justice 🌫️ device profile の実装 SSOT
 
 > **Status**: protocol reverse-engineered（grammar 確定・実装前）。E0 de-risk 完了。

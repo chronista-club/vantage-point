@@ -5,21 +5,21 @@
 //! - `mem_1CaSsN7xj69aVQtLPQFJxQ` (repo-as-Repo-Master: 9 component minimum)
 //! - **2026-04-27 rule** (旧):「Lane scope に attach するのは conversation と shell のみ。board/runner/external-control は Repo scope」
 //!   → **doc 12 LSCM (VP-109、 2026-05-04) で明示的に supersede**。 LSCM では Layer container
-//!   (Daemon / Repo / Lane) が必要な Stand を抱える composition モデルで、 各 Stand の居住可能
+//!   (Daemon / Repo / Lane) が必要な 機能を抱える composition モデルで、 各機能の居住可能
 //!   Layer は doc 12 §9 catalog の「保持 layer pattern」 列が SSOT。
 //! - PR-pre2 (VP-118 / 2026-05-04): HD → Echoes rename。
 //! - PR-β-2 (VP-120 / 2026-05-04): board を Repo → Lane に物理移管 (`LaneCapabilities.board`)。
-//! - PR-δ-2 (VP-136 / 2026-05-06): board を `LaneStandRegistry` 経由 host へ rewire (`LaneCapabilities.registry`)。
+//! - PR-δ-2 (VP-136 / 2026-05-06): board を `LaneComponentRegistry` 経由 host へ rewire (`LaneCapabilities.registry`)。
 //!
 //! ## architecture (LSCM 確定 + PR-δ-2 後)
 //!
 //! Lane scope に host する Agent:
 //! - Conversation 💬 (旧 HD) — Lane mise task PtySlot で立つ (= LaneCapabilities では host しない)
 //! - shell — Lane mise task PtySlot で立つ (= 同上)
-//! - Board 🧭 — `LaneCapabilities.registry` 内 BoardStand (PR-δ-2 で trait-based host へ rewire、 Lane あたり 1 instance)
-//! - Runner 🌿 (planned PR-γ で Lane 移管予定、 LaneStand impl 追加)
+//! - Board 🧭 — `LaneCapabilities.registry` 内 BoardComponent (PR-δ-2 で trait-based host へ rewire、 Lane あたり 1 instance)
+//! - Runner 🌿 (planned PR-γ で Lane 移管予定、 LaneComponent impl 追加)
 //!
-//! Repo scope の Agent pool (`repo_stands_state.rs`) は runner / external-control のみ host していた (PR-β-2 後、現在は縮退済)。
+//! Repo scope の Agent pool (`repo_components_state.rs`) は runner / external-control のみ host していた (PR-β-2 後、現在は縮退済)。
 //! Lane は **Conductor/Performer の PTY セッション + Agent container** に集中:
 //! - Conductor 1 / repo (固定)、agent = "claude" / "shell" / "tmux"
 //! - Performer 0..n / repo (可変、lane clone)、agent 同上
@@ -86,7 +86,7 @@ impl fmt::Display for LaneId {
 // 旧 kind の唯一の実質は「conductor は repo に 1 本・worktree を持たない」だが、
 // それは **名前の一意性**（1 repo に同名 lane は 1 本）で既に表現されている。
 
-// `LaneStand` enum は doc 11 (PR-B) で削除。 agent 識別子は `String` に統一
+// `LaneComponent` enum は doc 11 (PR-B) で削除。 agent 識別子は `String` に統一
 // (例: "claude" / "shell")。 tmux decoupling PR2 で agent script 層 (mise task) も廃止され、
 // agent は `agent_spawner::build_agent_command` の Rust-native 分岐になった。
 //
@@ -252,7 +252,7 @@ impl fmt::Display for LaneAddress {
 /// ```
 ///
 /// QUIC channel は ordered (single connection) なので、 register snapshot → diff の順序保証あり。
-/// 将来 `Diff<PaneId, PaneInfo>` / `Diff<StandKind, AgentInfo>` 等の type alias で reuse 可能。
+/// 将来 `Diff<PaneId, PaneInfo>` / `Diff<ComponentKind, AgentInfo>` 等の type alias で reuse 可能。
 ///
 /// 関連 memory: Phase 1 完成 (mem_1Cac2YvnAhaVRCJemidtkx) の「残作業: Phase 2 Step E」に該当。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -306,7 +306,7 @@ pub enum SystemEvent {
     LanesProjectionChanged,
     // 将来 variant 追加候補:
     //   Pane(Diff<PaneId, PaneInfo>),       // Phase 7 (Pane Revival)
-    //   Stand(Diff<StandKind, AgentInfo>),  // 各 Stand の lifecycle
+    //   component(Diff<ComponentKind, AgentInfo>),  // 各機能 の lifecycle
     //   Process(Diff<ProcessKey, RunningRepo>),  // Process registry diff
 }
 
@@ -324,7 +324,7 @@ pub struct LaneInfo {
     // 真実源が 2 つある状態だった（`address.kind` / `address.name` と同値）。
     // kind は概念ごと消え、name は `address.name` が唯一の在処になる。
     pub state: LaneState,
-    /// Stand 名 (例: "hd" / "shell" / "tmux"、 doc 11 PR-B で String に変更)
+    /// agent 名 (例: "hd" / "shell" / "tmux"、 doc 11 PR-B で String に変更)
     pub agent: String,
     /// ISO 8601
     pub created_at: String,
@@ -1403,24 +1403,24 @@ impl LanePool {
     pub fn create_console_session(
         &self,
         addr: &LaneAddress,
-        stand_override: Option<&str>,
+        agent_override: Option<&str>,
     ) -> anyhow::Result<SessionKey> {
         let info = self
             .lanes
             .get(addr)
             .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
-        let lane_stand = info.agent.clone();
+        let lane_component = info.agent.clone();
         let lane_label = crate::repo::agent_spawner::lane_label(addr).to_string();
-        let reg = session_registry::load(&addr.repo, &lane_label, &lane_stand);
+        let reg = session_registry::load(&addr.repo, &lane_label, &lane_component);
         // engine: 明示指定 > 現 root の agent（doc 46 P2 要件 4 と同じ選び方）。
-        let agent = match stand_override.map(str::trim).filter(|s| !s.is_empty()) {
+        let agent = match agent_override.map(str::trim).filter(|s| !s.is_empty()) {
             Some(s) => s.to_string(),
             None => reg
                 .sessions
                 .iter()
                 .find(|s| s.key == reg.root)
                 .map(|s| s.agent.clone())
-                .unwrap_or_else(|| lane_stand.clone()),
+                .unwrap_or_else(|| lane_component.clone()),
         };
         // 未知 agent は入口で弾く。`build_agent_command` は未知名を shell 層へ graceful に
         // 落とすので、通すと「engine が起動しない console」が黙って生まれる（行き止まりの
@@ -1439,7 +1439,7 @@ impl LanePool {
         let key = session_registry::create(
             &addr.repo,
             &lane_label,
-            &lane_stand,
+            &lane_component,
             &agent,
             SessionMode::Tui,
             false,
@@ -1564,12 +1564,12 @@ impl LanePool {
     /// Tui。旧「必ず tui」は 2026-07-25 に撤回）。gui 内の「新しい会話」タブは従来どおり
     /// `create_chat_session`（新 Draft タブ）が担う — 「どこに出すか」の分岐は vp-app が行い、
     /// backend は各動詞の整合だけ守る。旧 lane 単位 mode の gate は A6 で撤去済み（下記）。
-    /// `stand_override` は doc 46 P2 要件 4（Engine を選んで新コンソールを作る）。
+    /// `agent_override` は doc 46 P2 要件 4（Engine を選んで新コンソールを作る）。
     /// `None` なら従来どおり**現 root の engine を引き継ぐ**（doc 39 §1）。
     pub fn create_root_session(
         &self,
         addr: &LaneAddress,
-        stand_override: Option<&str>,
+        agent_override: Option<&str>,
     ) -> anyhow::Result<SessionKey> {
         let info = self
             .lanes
@@ -1583,7 +1583,7 @@ impl LanePool {
         // 引き継ぎ」— lane の agent でなく root の agent。N=1 では両者は一致する）。
         let reg = session_registry::load(&addr.repo, lane_label, &info.agent);
         // doc 46 P2: 明示指定があればそれを使う。無い時だけ現 root を引き継ぐ。
-        let agent = match stand_override.map(str::trim).filter(|s| !s.is_empty()) {
+        let agent = match agent_override.map(str::trim).filter(|s| !s.is_empty()) {
             Some(s) => s.to_string(),
             None => reg
                 .sessions
@@ -1808,15 +1808,15 @@ impl LanePool {
         if entry.mode == mode {
             return Ok(());
         }
-        let session_stand = entry.agent.clone();
+        let session_agent = entry.agent.clone();
 
         // Chat（gui）は headless host を持つ engine のみ（能力表明は EngineKind に一元化）。
         // その session の agent で判定する（root 決め打ちにしない = 非 root は engine が違い得る）。
         if mode == SessionMode::Gui
-            && !EngineKind::from_agent(&session_stand).is_some_and(EngineKind::chat_capable)
+            && !EngineKind::from_agent(&session_agent).is_some_and(EngineKind::chat_capable)
         {
             anyhow::bail!(
-                "gui（chat）は gui host を持つ engine の session のみ（addr={addr}, session={session}, agent={session_stand}）"
+                "gui（chat）は gui host を持つ engine の session のみ（addr={addr}, session={session}, agent={session_agent}）"
             );
         }
 

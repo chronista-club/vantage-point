@@ -67,7 +67,7 @@ export function DaemonWidget() {
 	// Devices 🧲 — machine scope の物理 device。 device 一覧は main area の Devices pane が render、
 	// ここ (Daemon レベルの Devices) は pane を開く入口 + 接続 device 数 badge。
 	const devices = () => sidebar.devices ?? [];
-	const devicesActive = () => sidebar.active_stand?.kind === "devices";
+	const devicesActive = () => sidebar.active_component?.kind === "devices";
 
 	// in-app update: daemon の定期チェック (起動時 + 24h) が検知した新 release。
 	// update_available 時のみ Daemon widget 直下に「更新する」CTA を出す。latest_version は

@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # CreoUI schema draft (VP-73 R0) — 2026-04-21
 
 > **Status**: Draft (VP 側起案、creo-memories 側で review / finalize 予定)

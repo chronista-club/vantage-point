@@ -44,7 +44,7 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
   // v0.5 (PR 445) で実装 — lane 操作系
   r: {
     description:
-      'restart context polymorphic: active_lane あり → lane:restart、 active_stand あり → process:restart',
+      'restart context polymorphic: active_lane あり → lane:restart、 active_component あり → process:restart',
     semantic: 'focus-preserving',
   },
   n: {

@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # doc 39 — New / Root 切替 / Reset — Lane root agent の一級市民化
 
 > **status**: 設計ドラフト（2026-07-17 hearing、mako + Fable 5。mako レビュー待ち）

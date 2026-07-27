@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # doc 19: msgbox Whitesnake-primary refactor (mpsc 廃止 + audit moat 強化)
 
 > **改訂 (2026-05-21)**: 本 doc が実装した Whitesnake-primary msgbox (`MsgboxStore` / `WhitesnakeStore` / `msgs` table / cross-process forward / `MsgboxRegistry`) は、 その後の **wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃**された。 wiremsg は per-agent 単一 cursor の wire accumulation モデルで、 message は wire に追記され受信側が cursor を進めて未読を取得する (`wire_send` / `wire_recv` / `wire_thread`)。 `msgs` / `msgbox` table、 `msg_*` MCP tool、 `vp mailbox` CLI はいずれも撤去済。 本 doc は VP-169 時点の msgbox 実装の **historical reference** として残置する。 address モデル (`<actor>@<location>`) は wiremsg がそのまま継承 ([doc 14](14-wire-address-v3.md) 参照)。

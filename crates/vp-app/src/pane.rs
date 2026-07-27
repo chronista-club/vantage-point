@@ -180,7 +180,7 @@ pub struct SidebarState {
     /// `active_lane_address` と **mutually exclusive** ── どちらか一方が None。
     /// `stand:select` IPC で更新される。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_stand: Option<ActiveStand>,
+    pub active_component: Option<ActiveComponent>,
     /// Currents セクションの repo 表示順 (path の順)。
     ///
     /// `SessionState.currents_order` から push される。 sidebar JS は Currents
@@ -265,10 +265,10 @@ pub struct MessageState {
     pub last_msg_ts: Option<String>,
 }
 
-/// Phase 5-A: Repo-scope Stand の active selection (sidebar の row click で発火)
+/// Phase 5-A: Repo-scope component の active selection (sidebar の row click で発火)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
-pub struct ActiveStand {
+pub struct ActiveComponent {
     pub repo_path: String,
     /// `"board"` | `"runner"` | `"devices"`
     pub kind: String,

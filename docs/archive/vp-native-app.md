@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 > **ARCHIVED (2026-05-16)**: 本 doc の ratatui NSView Backend 自作案は採用されなかった。現 vp-app は wry + xterm.js + creo-ui 構成。本 doc は歴史的記録。
 
 # VP ネイティブアプリ化 設計書

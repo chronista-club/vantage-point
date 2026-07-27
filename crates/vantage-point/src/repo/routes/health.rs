@@ -9,10 +9,10 @@ use axum::{Json, extract::State, response::IntoResponse};
 
 use super::super::state::AppState;
 
-/// Stand（Capability）のステータス
+/// 機能（service）のステータス
 #[derive(serde::Serialize)]
-pub struct StandStatus {
-    /// Stand の状態: "active", "idle", "connected", "disabled"
+pub struct ServiceStatus {
+    /// service の状態: "active", "idle", "connected", "disabled"
     pub status: &'static str,
     /// Agent 固有の詳細情報
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,9 +46,9 @@ pub struct HealthResponse {
     pub terminal_token: Option<String>,
     /// プロセス起動時刻（ISO 8601）
     pub started_at: String,
-    /// 配下の Stand（Capability）ステータス
+    /// 配下の service ステータス
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stands: Option<std::collections::HashMap<String, StandStatus>>,
+    pub services: Option<std::collections::HashMap<String, ServiceStatus>>,
     /// chronista-hub federation の接続状態
     /// （`"disabled"` | `"connecting"` | `"connected"` | `"disconnected"`）。
     /// daemon mode のみ意味を持つ（repo mode は常に `"disabled"`）。vp-app が daemon status 横に表示。
@@ -86,7 +86,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
     };
 
     // Agent ステータスを収集（daemon モードでは省略）
-    let stands = if state.terminal_token != "DAEMON_DISABLED" {
+    let services = if state.terminal_token != "DAEMON_DISABLED" {
         let mut map = std::collections::HashMap::new();
 
         // 💬 Conversation (Coding Assistant) — interactive_agent の有無で判定
@@ -96,7 +96,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         };
         map.insert(
             "claude".to_string(),
-            StandStatus {
+            ServiceStatus {
                 status: conversation_status,
                 detail: None,
             },
@@ -106,7 +106,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         let canvas_clients = state.canvas_senders.lock().await.len();
         map.insert(
             "board".to_string(),
-            StandStatus {
+            ServiceStatus {
                 status: if canvas_clients > 0 {
                     "connected"
                 } else {
@@ -120,7 +120,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         let running_repos = state.process_registry.lock().await.list().len();
         map.insert(
             "runner".to_string(),
-            StandStatus {
+            ServiceStatus {
                 status: if running_repos > 0 { "active" } else { "idle" },
                 detail: Some(serde_json::json!({ "processes": running_repos })),
             },
@@ -153,7 +153,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         let (devices_status, devices_detail) = ("disabled", None);
         map.insert(
             "devices".to_string(),
-            StandStatus {
+            ServiceStatus {
                 status: devices_status,
                 detail: devices_detail,
             },
@@ -163,10 +163,10 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         if let Some(ref db) = state.vpdb {
             for (key, s) in &map {
                 if let Err(e) = db
-                    .upsert_stand_status(&state.repo_dir, key, s.status, s.detail.as_ref())
+                    .upsert_service_status(&state.repo_dir, key, s.status, s.detail.as_ref())
                     .await
                 {
-                    tracing::warn!("DB stand_status 書き込み失敗 ({}): {}", key, e);
+                    tracing::warn!("DB service_status 書き込み失敗 ({}): {}", key, e);
                 }
             }
         }
@@ -187,7 +187,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
                 let discovering = b.is_discovering();
                 map.insert(
                     "devices".to_string(),
-                    StandStatus {
+                    ServiceStatus {
                         status: if count > 0 { "active" } else { "idle" },
                         detail: Some(serde_json::json!({
                             "devices": count,
@@ -237,7 +237,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         repo_dir: state.repo_dir.clone(),
         terminal_token: token,
         started_at: state.started_at.clone(),
-        stands,
+        services,
         hub: state.hub_status.get().as_str(),
         hub_nodes,
         processes,
@@ -354,8 +354,8 @@ mod tests {
         // stands は test 用 AppState では terminal_token == "test" なので
         // "DAEMON_DISABLED" 分岐に入らず populate される
         assert!(
-            body.get("stands").is_some(),
-            "stands field 必須 (= Agent status map)"
+            body.get("services").is_some(),
+            "services field 必須 (= Agent status map)"
         );
         // hub federation 状態（test AppState は HubFederationStatus::new() = Disabled）。
         // field 名変更 / as_str() パス破壊の regression net。

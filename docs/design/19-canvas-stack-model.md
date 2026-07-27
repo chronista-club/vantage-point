@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # PP Canvas Stack Model
 
 > **status: draft v0.1** — 2026-05-27 起草。 mcp__show の UX redesign spec。 「show = pane 上書き render」 から「show = canvas に push、 cursor が新 item に切替、 旧 main は bottom strip に残る」 への mental model 移行を物理化する。

@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 13. Paisley Park 復活設計 — Information Router on LSCM
 
 > **改訂 note (2026-05-21)**: 本 doc 中の `msgbox_registry.rs` / `validate_actor` / `parse_address` への言及は、 2026-05 の **wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃**された旧 msgbox 実装。 現行 messaging は wiremsg (`wire_send` / `wire_recv`、 `wire_remote.rs`)。 wire address は slash 区切りの `<actor>@<project>[/<performer>]` ([doc 14](14-wire-address-v3.md))。 本 doc が「⚠ 実装 reality」 として注記する `.` 区切り wire format (`pp.conductor@vp`) の parse 不可問題は、 wiremsg の slash-based address (`canvas@vp/conductor` 等) で構造的に解消されている。

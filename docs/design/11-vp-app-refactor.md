@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 11: vp-app holistic architecture refactor — purple-haze proposal (2026-05-01)
 
 > **Status**: 未採用 proposal (2026-05-16、VP-191 棚卸し時点)

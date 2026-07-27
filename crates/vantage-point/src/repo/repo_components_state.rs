@@ -1,4 +1,4 @@
-//! Board 🧭 の Lane Agent 実体（`BoardState` + `LaneStandHost` wrapper）。
+//! Board 🧭 の Lane Agent 実体（`BoardState` + `LaneComponentHost` wrapper）。
 //!
 //! ## Repo scope pool は消滅した（doc 44 P1 露払い、2026-07-20）
 //!
@@ -15,22 +15,22 @@
 //! ## 現在ここが提供するもの
 //!
 //! - `BoardState` — Canvas content の data model (content + content_type)
-//! - `BoardStand` — それを `LaneStandHost` trait に適合させる wrapper。
+//! - `BoardComponent` — それを `LaneComponentHost` trait に適合させる wrapper。
 //!   `LaneCapabilities.registry` が Lane あたり 1 instance を host する (PR-δ-2 / VP-136)。
 //!
 //! 関連: doc 12 LSCM (VP-109) — Layer container は Daemon/Repo/Lane の 3 kind、
-//! 各 Stand の居住可能 Layer は doc 12 §9 catalog の「保持 layer pattern」列が定める。
+//! 各機能の居住可能 Layer は doc 12 §9 catalog の「保持 layer pattern」列が定める。
 
 use std::any::Any;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use super::lane_stand::LaneStandHost;
+use super::lane_component::LaneComponentHost;
 
 /// board (Board) — Canvas content store (PR-β-2 (VP-120) で Lane あたり 1 instance に物理移管)
 ///
-/// PR-β-2 で Lane 移管、 PR-δ-2 (VP-136) で `BoardStand` wrapper 経由 host に進化。
+/// PR-β-2 で Lane 移管、 PR-δ-2 (VP-136) で `BoardComponent` wrapper 経由 host に進化。
 /// data model 自体は変わらず content + content_type の serde 直列化可能 struct。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BoardState {
@@ -42,25 +42,25 @@ pub struct BoardState {
     pub content_type: Option<String>,
 }
 
-/// BoardStand — `BoardState` を `LaneStandHost` trait に適合させる wrapper (PR-δ-2、 VP-136)。
+/// BoardComponent — `BoardState` を `LaneComponentHost` trait に適合させる wrapper (PR-δ-2、 VP-136)。
 ///
-/// PR-δ-1 (VP-135) で新設の `LaneStandHost` trait の **最初の impl**。 internal mutability 用に
+/// PR-δ-1 (VP-135) で新設の `LaneComponentHost` trait の **最初の impl**。 internal mutability 用に
 /// `RwLock<BoardState>` を持ち、 caller は `state()` accessor 経由で Read/Write する。
 ///
 /// `service_kind() = "board"` を ID として Registry の HashMap key に使われる。
 ///
 /// ## 関連
 ///
-/// - PR-δ-1 (#288 / VP-135) — `LaneStandHost` trait + `LaneStandRegistry` 受け皿
+/// - PR-δ-1 (#288 / VP-135) — `LaneComponentHost` trait + `LaneComponentRegistry` 受け皿
 /// - PR-δ-2 (本 PR / VP-136) — board impl + LaneCapabilities 統合
-/// - doc 13 §9 boundary invariant 「N Stand を host できる generic interface」 への path
-pub struct BoardStand {
+/// - doc 13 §9 boundary invariant 「N component を host できる generic interface」 への path
+pub struct BoardComponent {
     // 要確認（audit 2026-07-18、先行実装の可能性）: Phase A4-2b skeleton（module doc 参照）。
     #[allow(dead_code)]
     state: RwLock<BoardState>,
 }
 
-impl BoardStand {
+impl BoardComponent {
     /// 新規構築 (state は default = content/content_type 共に None)。
     pub fn new() -> Self {
         Self {
@@ -76,13 +76,13 @@ impl BoardStand {
     }
 }
 
-impl Default for BoardStand {
+impl Default for BoardComponent {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl LaneStandHost for BoardStand {
+impl LaneComponentHost for BoardComponent {
     fn service_kind(&self) -> &'static str {
         "board"
     }
@@ -98,13 +98,13 @@ mod tests {
 
     #[test]
     fn board_stand_reports_its_kind() {
-        let agent = BoardStand::new();
+        let agent = BoardComponent::new();
         assert_eq!(agent.service_kind(), "board");
     }
 
     #[test]
     fn board_stand_starts_empty() {
-        let agent = BoardStand::new();
+        let agent = BoardComponent::new();
         let state = agent.state().blocking_read();
         assert!(state.content.is_none());
         assert!(state.content_type.is_none());

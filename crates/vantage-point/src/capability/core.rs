@@ -73,14 +73,14 @@ pub type CapabilityResult<T> = Result<T, CapabilityError>;
 /// - Agent 固有の詳細は `details` に JSON として埋め込む (peers, connections, uptime 等)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticReport {
-    /// Stand 名 (name)
+    /// agent 名 (name)
     pub name: String,
     /// Version
     pub version: String,
     /// 現在の state (Uninitialized / Running / Paused / 等)
     pub state: CapabilityState,
     /// Agent 固有の診断情報 (msgbox address list, canvas subscribers, etc.)
-    /// default 実装では `null`、individual Stand が override で populate
+    /// default 実装では `null`、individual component が override で populate
     pub details: serde_json::Value,
     /// 診断時刻 (ISO8601)
     pub timestamp: String,
@@ -496,7 +496,7 @@ pub trait Capability: Send + Sync {
 
     /// 実行時自己診断 — pure read、いつ呼んでも Agent 動作に影響しない
     ///
-    /// default 実装は name + version + state のみ。具体 Stand が
+    /// default 実装は name + version + state のみ。具体 component が
     /// override して Agent 固有の詳細 (peers, connections, uptime 等) を
     /// `details` JSON に詰めて返す。
     fn diagnose(&self) -> DiagnosticReport {

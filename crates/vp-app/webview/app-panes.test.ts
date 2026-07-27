@@ -190,7 +190,7 @@ describe("lane 別の配置記憶", () => {
 	});
 });
 
-describe("stand pane の訪問（sidebar click の一時 view — 2026-07-23 dogfood）", () => {
+describe("agent pane の訪問（sidebar click の一時 view — 2026-07-23 dogfood）", () => {
 	beforeEach(() => {
 		_resetForTest();
 		// 出発点 = 2 pane の share 調整済みの形（旧 side-review 相当）

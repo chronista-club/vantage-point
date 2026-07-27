@@ -4,8 +4,8 @@
 //!
 //! ## 構造 (memory rule)
 //!
-//! - **Conductor Lane** (Repo あたり 1 つ固定) ─ 中身は `LaneStand` (HD default | TH)
-//! - **Performer Lane** (Repo あたり n 個) ─ lane cloned worktree、中身は `LaneStand`
+//! - **Conductor Lane** (Repo あたり 1 つ固定) ─ 中身は `LaneComponent` (HD default | TH)
+//! - **Performer Lane** (Repo あたり n 個) ─ lane cloned worktree、中身は `LaneComponent`
 //!
 //! ## 表示形 (人間可読)
 //!
@@ -132,7 +132,7 @@ impl From<&LaneAddressWire> for LaneAddress {
     }
 }
 
-// `LaneStand` enum は doc 11 PR-B で削除。 agent 識別子は wire 経由で String として
+// `LaneComponent` enum は doc 11 PR-B で削除。 agent 識別子は wire 経由で String として
 // 受け取る (`crate::client::LaneInfo.agent: String`)、 vp-app 内では直接文字列で扱う。
 // 表示用 mapping (旧 Display impl の "HD" / "TH") は app.rs の agentDisplayName JS 関数に
 // 集約 (`hd` / `shell` / `tmux` / その他 fallback)。

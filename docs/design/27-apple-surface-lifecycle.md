@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 27 — Apple Surface Lifecycle ＋ L0 単一 endpoint 契約（SP-portless）
 
 > Status: **Draft / 設計契約**（2026-06-26）。bottom-up rebuild の L0 spec。

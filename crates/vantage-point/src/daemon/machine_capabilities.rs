@@ -2,7 +2,7 @@
 //!
 //! daemon (`run_daemon`、 port 32000) で 1 instance、 machine 全体で共有される
 //! machine 階層 Agent 群を host する。 LSCM (Layer-Agent Composition Model) における
-//! "Layer がそこに保持されるべき Stand を抱える" の machine layer 実体。
+//! "Layer がそこに保持されるべき 機能を抱える" の machine layer 実体。
 //!
 //! ## host する Agent
 //!

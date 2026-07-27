@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 21. X-Touch MCU protocol — DeviceProfile 第一号実装の byte 仕様 SSOT
 
 > **Status**: 実装済み（`crates/vantage-point/src/device_profile.rs` `mod xtouch`、E1）

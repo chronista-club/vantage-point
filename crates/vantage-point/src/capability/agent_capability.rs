@@ -9,12 +9,12 @@
 //! - REQ-PROTO-001: AG-UI準拠イベント生成
 
 use crate::agent::{AgentConfig, AgentEvent, ClaudeAgent};
+use crate::capability::component_service::{Component, LayerScope};
 use crate::capability::core::{
     Capability, CapabilityContext, CapabilityError, CapabilityEvent, CapabilityInfo,
     CapabilityResult, CapabilityState,
 };
 use crate::capability::eventbus::EventBus;
-use crate::capability::stand_service::{LayerScope, Stand};
 use async_trait::async_trait;
 use std::any::Any;
 use std::sync::Arc;
@@ -465,16 +465,16 @@ impl Capability for AgentCapability {
 }
 
 // =============================================================================
-// VP-159 PR-2: Stand trait impl
+// VP-159 PR-2: component trait impl
 // =============================================================================
 
 /// `AgentCapability` を VP-159 `Agent` (= ECS entity bound actor) として登録する impl。
 ///
 /// VP-157 で agent box の **observer 化** が完了済 (= EventBus subscribe で notification 受信、
-/// 専属 mpsc consumer は持たない)。 本 impl は Stand trait の minimal marker (name / layer_scope
+/// 専属 mpsc consumer は持たない)。 本 impl は component trait の minimal marker (name / layer_scope
 /// / as_any) のみで、 observer / consumer pattern の差異は PR-4 supervisor 統一時に
 /// trait 拡張で形式化する段階的 path。
-impl Stand for AgentCapability {
+impl Component for AgentCapability {
     fn actor_name(&self) -> &str {
         "agent"
     }
@@ -565,9 +565,9 @@ mod tests {
 
     #[test]
     fn agent_capability_implements_stand() {
-        // VP-159 PR-2: AgentCapability が Stand trait を満たす事を sig level で確認
+        // VP-159 PR-2: AgentCapability が component trait を満たす事を sig level で確認
         let cap = AgentCapability::new();
-        let agent: &dyn Stand = &cap;
+        let agent: &dyn Component = &cap;
         assert_eq!(agent.actor_name(), "agent");
         assert_eq!(agent.layer_scope(), LayerScope::Repo);
     }

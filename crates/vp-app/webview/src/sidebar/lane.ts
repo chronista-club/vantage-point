@@ -12,7 +12,7 @@ import type { LaneInfo } from "../generated/LaneInfo";
  * 旧 SIDEBAR_HTML `STAND_GLYPH` の port。 `-fill` を別 literal で持ち、
  * `IconName` 型に収まるようにする (文字列連結だと型が string に広がるため)。
  */
-const STAND_ICON: Record<string, { default: IconName; active: IconName }> = {
+const COMPONENT_ICON: Record<string, { default: IconName; active: IconName }> = {
 	claude: { default: "ph:chats-teardrop", active: "ph:chats-teardrop-fill" },
 	shell: { default: "ph:terminal-window", active: "ph:terminal-window-fill" },
 	tmux: { default: "ph:presentation", active: "ph:presentation-fill" },
@@ -23,12 +23,12 @@ const STAND_ICON: Record<string, { default: IconName; active: IconName }> = {
 
 /** Agent kind から icon 名を解決。 active 時は fill weight。 未知 agent は `null`。 */
 export function agentIcon(agent: string, active: boolean): IconName | null {
-	const set = STAND_ICON[agent];
+	const set = COMPONENT_ICON[agent];
 	if (!set) return null;
 	return active ? set.active : set.default;
 }
 
-/** Stand の表示名 (Architecture v4 metaphor)。 */
+/** component の表示名 (Architecture v4 metaphor)。 */
 export function agentDisplayName(agent: string): string {
 	switch (agent) {
 		case "claude":

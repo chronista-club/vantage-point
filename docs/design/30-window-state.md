@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 30 — vp-app Window State 永続化 ＋ Sidebar State（per-window UI state 契約）
 
 > Status: **Draft / 設計契約**（2026-07-08）。

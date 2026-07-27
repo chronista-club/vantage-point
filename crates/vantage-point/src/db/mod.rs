@@ -15,7 +15,7 @@
 //!
 //! - `processes`: プロセス状態（QUIC Registry + HTTP polling 代替）
 //! - `pane_contents`: Canvas ペイン状態
-//! - `stand_status`: Agent ステータス
+//! - `service_status`: Agent ステータス
 //! - `prompts`: User Prompt
 //! - `notifications`: CC 通知
 
@@ -1575,18 +1575,18 @@ impl VpDb {
     // =========================================================================
 
     /// Agent ステータスを更新（UPSERT）
-    pub async fn upsert_stand_status(
+    pub async fn upsert_service_status(
         &self,
         repo_path: &str,
-        stand_key: &str,
+        agent_key: &str,
         status: &str,
         detail: Option<&serde_json::Value>,
     ) -> Result<()> {
         self.db
             .query(
-                "INSERT INTO stand_status {
+                "INSERT INTO service_status {
                     repo_path: $repo_path,
-                    stand_key: $stand_key,
+                    agent_key: $agent_key,
                     status: $status,
                     detail: $detail,
                     updated_at: time::now()
@@ -1596,13 +1596,13 @@ impl VpDb {
                     updated_at = time::now()",
             )
             .bind(("repo_path", repo_path.to_string()))
-            .bind(("stand_key", stand_key.to_string()))
+            .bind(("agent_key", agent_key.to_string()))
             .bind(("status", status.to_string()))
             .bind(("detail", detail.cloned()))
             .await
-            .map_err(|e| anyhow::anyhow!("stand_status upsert 失敗: {}", e))?
+            .map_err(|e| anyhow::anyhow!("service_status upsert 失敗: {}", e))?
             .check()
-            .map_err(|e| anyhow::anyhow!("stand_status upsert エラー: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("service_status upsert エラー: {}", e))?;
         Ok(())
     }
 
@@ -1629,13 +1629,13 @@ impl VpDb {
     }
 
     /// repoの全 Agent ステータスを取得
-    pub async fn list_stand_status(&self, repo_path: &str) -> Result<Vec<serde_json::Value>> {
+    pub async fn list_service_status(&self, repo_path: &str) -> Result<Vec<serde_json::Value>> {
         let mut result = self
             .db
-            .query("SELECT * FROM stand_status WHERE repo_path = $path")
+            .query("SELECT * FROM service_status WHERE repo_path = $path")
             .bind(("path", repo_path.to_string()))
             .await
-            .map_err(|e| anyhow::anyhow!("stand_status 取得失敗: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("service_status 取得失敗: {}", e))?;
         let records: Vec<serde_json::Value> = result.take(0)?;
         Ok(records)
     }
@@ -1840,13 +1840,13 @@ REMOVE INDEX IF EXISTS idx_pane_lane ON pane_contents;
 DEFINE INDEX IF NOT EXISTS idx_pane_scope ON pane_contents COLUMNS repo_path, scope, lane_name, pane_id UNIQUE;
 
 -- Agent ステータス
-DEFINE TABLE IF NOT EXISTS stand_status SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS repo_path ON stand_status TYPE string;
-DEFINE FIELD IF NOT EXISTS stand_key ON stand_status TYPE string;
-DEFINE FIELD IF NOT EXISTS status ON stand_status TYPE string;
-DEFINE FIELD IF NOT EXISTS detail ON stand_status TYPE option<object> FLEXIBLE;
-DEFINE FIELD IF NOT EXISTS updated_at ON stand_status TYPE datetime DEFAULT time::now();
-DEFINE INDEX IF NOT EXISTS idx_stand ON stand_status COLUMNS repo_path, stand_key UNIQUE;
+DEFINE TABLE IF NOT EXISTS service_status SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS repo_path ON service_status TYPE string;
+DEFINE FIELD IF NOT EXISTS agent_key ON service_status TYPE string;
+DEFINE FIELD IF NOT EXISTS status ON service_status TYPE string;
+DEFINE FIELD IF NOT EXISTS detail ON service_status TYPE option<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS updated_at ON service_status TYPE datetime DEFAULT time::now();
+DEFINE INDEX IF NOT EXISTS idx_stand ON service_status COLUMNS repo_path, agent_key UNIQUE;
 
 -- User Prompt（2秒ポーリング廃止）
 DEFINE TABLE IF NOT EXISTS prompts SCHEMAFULL;
@@ -2977,30 +2977,30 @@ mod tests {
     async fn test_stand_status_basic_crud() {
         let db = make_test_db().await;
 
-        db.upsert_stand_status("/repos/vp", "heaven-door", "running", None)
+        db.upsert_service_status("/repos/vp", "heaven-door", "running", None)
             .await
             .unwrap();
 
-        let statuses = db.list_stand_status("/repos/vp").await.unwrap();
+        let statuses = db.list_service_status("/repos/vp").await.unwrap();
         assert_eq!(statuses.len(), 1);
-        assert_eq!(statuses[0]["stand_key"], "heaven-door");
+        assert_eq!(statuses[0]["agent_key"], "heaven-door");
         assert_eq!(statuses[0]["status"], "running");
     }
 
-    /// 同一 (repo_path, stand_key) で再度 upsert → status が更新される
+    /// 同一 (repo_path, agent_key) で再度 upsert → status が更新される
     #[tokio::test]
     async fn test_stand_status_upsert_updates_status() {
         let db = make_test_db().await;
 
-        db.upsert_stand_status("/repos/vp", "heaven-door", "running", None)
+        db.upsert_service_status("/repos/vp", "heaven-door", "running", None)
             .await
             .unwrap();
 
-        db.upsert_stand_status("/repos/vp", "heaven-door", "stopped", None)
+        db.upsert_service_status("/repos/vp", "heaven-door", "stopped", None)
             .await
             .unwrap();
 
-        let statuses = db.list_stand_status("/repos/vp").await.unwrap();
+        let statuses = db.list_service_status("/repos/vp").await.unwrap();
         // レコード数は1のまま（UPSERT）
         assert_eq!(statuses.len(), 1);
         assert_eq!(statuses[0]["status"], "stopped");
@@ -3011,11 +3011,11 @@ mod tests {
     async fn test_stand_status_detail_null() {
         let db = make_test_db().await;
 
-        db.upsert_stand_status("/repos/vp", "board", "idle", None)
+        db.upsert_service_status("/repos/vp", "board", "idle", None)
             .await
             .unwrap();
 
-        let statuses = db.list_stand_status("/repos/vp").await.unwrap();
+        let statuses = db.list_service_status("/repos/vp").await.unwrap();
         assert_eq!(statuses.len(), 1);
         assert!(
             statuses[0]["detail"].is_null(),
@@ -3034,33 +3034,33 @@ mod tests {
             "pane_count": 3
         });
 
-        db.upsert_stand_status("/repos/vp", "board", "running", Some(&detail))
+        db.upsert_service_status("/repos/vp", "board", "running", Some(&detail))
             .await
             .unwrap();
 
-        let statuses = db.list_stand_status("/repos/vp").await.unwrap();
+        let statuses = db.list_service_status("/repos/vp").await.unwrap();
         assert_eq!(statuses.len(), 1);
         assert_eq!(statuses[0]["detail"]["canvas_open"], true);
         assert_eq!(statuses[0]["detail"]["pane_count"], 3);
     }
 
-    /// 異なる repo_path の stand_status は分離される
+    /// 異なる repo_path の service_status は分離される
     #[tokio::test]
     async fn test_stand_status_repo_isolation() {
         let db = make_test_db().await;
 
-        db.upsert_stand_status("/repos/vp", "heaven-door", "running", None)
+        db.upsert_service_status("/repos/vp", "heaven-door", "running", None)
             .await
             .unwrap();
-        db.upsert_stand_status("/repos/creo", "heaven-door", "stopped", None)
+        db.upsert_service_status("/repos/creo", "heaven-door", "stopped", None)
             .await
             .unwrap();
 
-        let vp_statuses = db.list_stand_status("/repos/vp").await.unwrap();
+        let vp_statuses = db.list_service_status("/repos/vp").await.unwrap();
         assert_eq!(vp_statuses.len(), 1);
         assert_eq!(vp_statuses[0]["status"], "running");
 
-        let creo_statuses = db.list_stand_status("/repos/creo").await.unwrap();
+        let creo_statuses = db.list_service_status("/repos/creo").await.unwrap();
         assert_eq!(creo_statuses.len(), 1);
         assert_eq!(creo_statuses[0]["status"], "stopped");
     }

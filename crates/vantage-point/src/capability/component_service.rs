@@ -14,7 +14,7 @@
 //!
 //! | sub-PR | scope | status |
 //! |--------|-------|--------|
-//! | PR-1 | `Agent` / `Service` trait + `LayerScope` enum 受け皿 + `LaneStand` → `LaneStandHost` rename | 本 PR |
+//! | PR-1 | `Agent` / `Service` trait + `LayerScope` enum 受け皿 + `LaneComponent` → `LaneComponentHost` rename | 本 PR |
 //! | PR-2 | Agent migrate (`agent` + `protocol`、 observer/consumer pattern 形式化) | 未着手 |
 //! | PR-3 | Service migrate (`notify` + `lane-spawn` + `repo-bootstrap` + `devices`) | 未着手 |
 //! | PR-4 | supervisor 統一 (`ActorRegistry` / `SupervisorFactory` 集約) | 未着手 |
@@ -39,7 +39,7 @@
 //! - VP-157 (PR #325) — `mcp` 廃止 + agent observer 化 (= ECS 純度回復の第一歩)
 //! - PR-α-1 (#265、 VP-111) — 受け皿 pattern 先例 (`MachineCapabilities`)
 //! - PR-β-1 (#274、 VP-119) — 受け皿 pattern 直近先例 (`LaneCapabilities`)
-//! - PR-δ-1 (#288、 VP-135) — minimal marker pattern 先例 (`LaneStandHost`)
+//! - PR-δ-1 (#288、 VP-135) — minimal marker pattern 先例 (`LaneComponentHost`)
 
 use std::any::Any;
 
@@ -82,25 +82,25 @@ pub enum LayerScope {
 ///
 /// pub struct AgentCapability { /* ... */ }
 ///
-/// impl Stand for AgentCapability {
+/// impl Component for AgentCapability {
 ///     fn name(&self) -> &str { "agent" }
 ///     fn layer_scope(&self) -> LayerScope { LayerScope::Repo }
 ///     fn as_any(&self) -> &dyn std::any::Any { self }
 /// }
 /// ```
 ///
-/// ## `LaneStandHost` との違い
+/// ## `LaneComponentHost` との違い
 ///
-/// `process::lane_stand::LaneStandHost` は **Lane に host される受動的 marker** (= passive、
+/// `process::lane_component::LaneComponentHost` は **Lane に host される受動的 marker** (= passive、
 /// `board` 等)。 `Agent` は **ECS entity bound actor** (= active、 `agent` /
 /// `protocol`)。 同じ「Agent」 という言葉で 2 概念を区別する規約:
 ///
 /// - `Agent` (本 trait): ECS entity bound、 自律的に lifecycle / message を処理
-/// - `LaneStandHost` (PR-δ-1): Lane に hosted、 LaneStandRegistry で N 個 host する marker
+/// - `LaneComponentHost` (PR-δ-1): Lane に hosted、 LaneComponentRegistry で N 個 host する marker
 ///
-/// 将来的に `board` が `LaneStandHost` impl から `Agent` impl に進化する path も
+/// 将来的に `board` が `LaneComponentHost` impl から `Agent` impl に進化する path も
 /// 想定 (= PR-γ で Lane に migrate されたら entity bound 化)、 その際は両 trait impl も可能。
-pub trait Stand: Any + Send + Sync + 'static {
+pub trait Component: Any + Send + Sync + 'static {
     /// actor 名 (例: `"agent"` / `"protocol"`)。 mailbox address の actor 部分と一致する。
     ///
     /// `name` ではなく `actor_name` という命名は、 既存 `Capability::name()` (default method、
@@ -113,7 +113,7 @@ pub trait Stand: Any + Send + Sync + 'static {
 
     /// `&dyn Any` への型強制 (downcast 用)。
     ///
-    /// trait 自体に `Any` 制約があるが、 `&dyn Stand` から `&dyn Any` への自動 cast は
+    /// trait 自体に `Any` 制約があるが、 `&dyn Component` から `&dyn Any` への自動 cast は
     /// Rust の trait object 制約により不可、 explicit な変換 method が必要 (`Any` 慣用句)。
     fn as_any(&self) -> &dyn Any;
 }
@@ -173,12 +173,12 @@ mod tests {
     use super::*;
 
     /// test fixture: minimal `Agent` impl (= name / scope / Any のみ)
-    struct FixtureStand {
+    struct FixtureComponent {
         name: &'static str,
         scope: LayerScope,
     }
 
-    impl Stand for FixtureStand {
+    impl Component for FixtureComponent {
         fn actor_name(&self) -> &str {
             self.name
         }
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn stand_trait_can_be_implemented() {
-        let s = FixtureStand {
+        let s = FixtureComponent {
             name: "agent",
             scope: LayerScope::Repo,
         };
@@ -230,13 +230,13 @@ mod tests {
 
     #[test]
     fn stand_supports_downcast_via_any() {
-        // Box<dyn Stand> から `as_any()` 経由で specific 型に downcast できる事を確認
-        let boxed: Box<dyn Stand> = Box::new(FixtureStand {
+        // Box<dyn Component> から `as_any()` 経由で specific 型に downcast できる事を確認
+        let boxed: Box<dyn Component> = Box::new(FixtureComponent {
             name: "protocol",
             scope: LayerScope::Repo,
         });
-        let downcast = boxed.as_any().downcast_ref::<FixtureStand>();
-        assert!(downcast.is_some(), "FixtureStand への downcast は成立");
+        let downcast = boxed.as_any().downcast_ref::<FixtureComponent>();
+        assert!(downcast.is_some(), "FixtureComponent への downcast は成立");
         assert_eq!(downcast.unwrap().name, "protocol");
     }
 
@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn stand_and_service_can_coexist_for_same_layer() {
         // 同じ LayerScope::Repo に Agent (agent) と Service (notify) が共存できる事
-        let agent: Box<dyn Stand> = Box::new(FixtureStand {
+        let agent: Box<dyn Component> = Box::new(FixtureComponent {
             name: "agent",
             scope: LayerScope::Repo,
         });
@@ -285,19 +285,19 @@ mod tests {
     #[test]
     fn n_distinct_stands_coexist_in_collection() {
         // PR-2 invariant (PR-δ-3 同型): 異なる name / scope の N 個 Agent impl が同じ
-        // Vec<Box<dyn Stand>> で共存できる事 (= PR-4 supervisor 統一の foundation)。
+        // Vec<Box<dyn Component>> で共存できる事 (= PR-4 supervisor 統一の foundation)。
         // 実 impl (AgentCapability / ProtocolCapability) を fixture で代理、 actor_name と
         // layer_scope の組合わせで supervisor が dispatch / filter できる pattern を検証。
-        let agents: Vec<Box<dyn Stand>> = vec![
-            Box::new(FixtureStand {
+        let agents: Vec<Box<dyn Component>> = vec![
+            Box::new(FixtureComponent {
                 name: "agent",
                 scope: LayerScope::Repo,
             }),
-            Box::new(FixtureStand {
+            Box::new(FixtureComponent {
                 name: "protocol",
                 scope: LayerScope::Repo,
             }),
-            Box::new(FixtureStand {
+            Box::new(FixtureComponent {
                 name: "devices",
                 scope: LayerScope::Machine,
             }),

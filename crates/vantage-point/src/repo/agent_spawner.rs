@@ -310,7 +310,7 @@ fn opencode_command(resume_id: Option<&str>) -> String {
     }
 }
 
-/// Stand 名に応じた spawn command を構築する（tmux decoupling PR2: Rust-native、 script 層なし）。
+/// agent 名に応じた spawn command を構築する（tmux decoupling PR2: Rust-native、 script 層なし）。
 ///
 /// - `"claude"`（+ 旧名 `"hd"`）: slot + claude 注入（`fresh` / cc_session により resume 分岐）
 /// - `"codex"` / `"grok"` / `"opencode"`: slot + engine CLI 注入（`fresh` / registry の会話 id により resume 分岐）
@@ -417,12 +417,12 @@ pub fn build_agent_command_for_session(
     // 向けると、respawn する slot もその engine で立つ。spawn 全経路（boot / respawn / restart /
     // doc 46 P5 の producer）が この 1 箇所を通るため、engine 追従の修正点はここ一つで足りる。
     // entry 不在（registry 破損 / 指定 key が実在しない）は防御的に `agent_name` へ fallback。
-    let effective_stand = entry.map(|s| s.agent.as_str()).unwrap_or(agent_name);
+    let effective_agent = entry.map(|s| s.agent.as_str()).unwrap_or(agent_name);
 
     // agent 名 → engine の対応表は EngineKind が SSOT（stringly 比較をここに散らさない）。
-    // 選択鍵は effective_stand（= その session の engine、doc 39 P4-A）— lane 固定の agent_name
+    // 選択鍵は effective_agent（= その session の engine、doc 39 P4-A）— lane 固定の agent_name
     // でなく session の agent で arm を選ぶことが cross-engine root 解禁の核。
-    let initial_input = match crate::conversation::EngineKind::from_agent(effective_stand) {
+    let initial_input = match crate::conversation::EngineKind::from_agent(effective_agent) {
         Some(crate::conversation::EngineKind::Claude) => {
             // transcript_exists pre-flight（doc 33 C2 の gui と対称化）: 発話ゼロで
             // transcript を書かなかった「幻 id」を `--resume` に渡さない。None に倒せば
@@ -460,14 +460,14 @@ pub fn build_agent_command_for_session(
             // 元から素の `opencode` を返すので、呼び手の 1 bit は何も足していなかった。
             Some(format!("{}\r", opencode_command(conversation.as_deref())))
         }
-        None if effective_stand == "shell" => None,
+        None if effective_agent == "shell" => None,
         None => {
             // "tmux"（PR2 で退役）/ 撤去済み "cursor"・"agy"（sweep 6.5）/ 未知 agent の
-            // DB descriptor を shell 層で受ける（graceful degradation）。effective_stand は
+            // DB descriptor を shell 層で受ける（graceful degradation）。effective_agent は
             // root session の agent（cross-engine root で lane 固定 agent と食い違い得る）。
             tracing::warn!(
                 "unknown/legacy agent '{}' (lane agent '{}') — slot の login shell で起動します (addr={})",
-                effective_stand,
+                effective_agent,
                 agent_name,
                 addr
             );
@@ -936,7 +936,7 @@ mod tests {
 
     /// doc 39 P4-A: slot の engine は lane 固定 agent でなく **root session の agent** で決まる。
     /// lane agent=conversation でも root を codex session に向けたら slot は codex が立つ（cross-engine の
-    /// Root 切替後の respawn 追従）。effective_stand の解決が engine arm 選択に効くことを固定する。
+    /// Root 切替後の respawn 追従）。effective_agent の解決が engine arm 選択に効くことを固定する。
     #[test]
     fn build_stand_command_follows_root_session_engine() {
         let _state = crate::test_env::state_dir();

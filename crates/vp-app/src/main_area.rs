@@ -265,7 +265,7 @@ body{overflow:hidden;}
 #lane-empty h1{font-weight:400;font-size:1.1rem;margin:0;}
 #lane-empty p{margin:.25rem 0 0;font-size:.85rem;}
 /* VP-141 (PR-ε-2): Pane header chrome — pane に「ヘッダ + body」 構造を持たせる共通 chrome。
-   icon + Stand 名 + breadcrumb + actions (Clear 等) を提供。 terminal pane (Conversation、 xterm.js
+   icon + agent 名 + breadcrumb + actions (Clear 等) を提供。 terminal pane (Conversation、 xterm.js
    full-bleed) は header なしで除外。 .pane-header と .pane-body は両方 position:absolute なので
    .pane.agent/empty の display:grid context から opt-out される (centering は body 側の
    `.center` modifier で個別制御)。 */

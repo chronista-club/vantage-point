@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # doc 40 — 会話 id の SSOT 統合: session registry 一枚岩 + LaneInfo descriptor 完成
 
 > 2026-07-18、mako + Fable 5 conductor session。発端 = #800 出荷後の Act I New dogfood で

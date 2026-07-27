@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # Design 23: Bastet 🧲 / Justice 🌫️ — External Control の Stand 配線 (How)
 
 > **Status**: 設計 (実装前、Open Questions 全件解決済み §10)。epic v3.1 (`mem_1Cbwr1SBiuh9KgnpncbzMe`) の **E2 / E3 track** の How を規定する。

@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 26 — native Swift Unison Client SDK（ideal-caller-first design）
 
 > Status: **Draft / API contract 承認済み**（2026-06-25、ideal caller sketch を user 承認）。

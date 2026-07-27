@@ -47,7 +47,7 @@ import {
 // ⚠️ 循環 import（lane-panes → sessionChipPrefix / ここ → newPaneChoices）だが、双方とも
 // hoist される関数宣言を handler 内で遅延参照するだけなので ESM 的に安全。
 import { newPaneChoices } from './lane-panes'
-import { STAND_ICON } from './icons/stand'
+import { COMPONENT_ICON } from './icons/component'
 
 /** `vp:conversation-agents` bus が運ぶ agent entry（newPaneChoices の入力と同形）。 */
 type PaneStand = { name: string; label?: string; chat_capable?: boolean }
@@ -197,7 +197,7 @@ export function mountLaneHeader(mount: HTMLElement, vpConsole: VpConsole): LaneH
   const [sessions, setSessions] = createSignal<ConversationSession[]>([])
 
   // doc 51 §1 A1: + New（engine × Mode で新 session = 台に器械を足す）。旧・下端の帯から移設。
-  // null = 閉。agents は click → `conversation:stands_fetch` 要求 → 応答（相関 id 照合）で開く。
+  // null = 閉。agents は click → `conversation:agents_fetch` 要求 → 応答（相関 id 照合）で開く。
   const [newMenu, setNewMenu] = createSignal<PaneStand[] | null>(null)
   const [newMenuPos, setNewMenuPos] = createSignal<{ x: number; y: number }>({ x: 0, y: 0 })
   let newMenuReq: BusRequestId | null = null
@@ -220,7 +220,7 @@ export function mountLaneHeader(mount: HTMLElement, vpConsole: VpConsole): LaneH
     // 右端の button なので menu は右揃えで下に開く（x = 右端。CSS が translateX で寄せる）。
     setNewMenuPos({ x: rect.right, y: rect.bottom + 4 })
     newMenuReq = nextRequestId('pane-new')
-    sendIpc({ t: 'conversation:stands_fetch', lane, req: newMenuReq })
+    sendIpc({ t: 'conversation:agents_fetch', lane, req: newMenuReq })
   }
 
   /** menu 行 click: backend が新しい session id を採番し、lane の cwd から始める
@@ -297,7 +297,7 @@ export function mountLaneHeader(mount: HTMLElement, vpConsole: VpConsole): LaneH
         {(c) => (
           <>
             <span class="eh-chip eh-lane" title={c().addr}>
-              <CreoIcon name={STAND_ICON.claude.default} size={13} />
+              <CreoIcon name={COMPONENT_ICON.claude.default} size={13} />
               {c().name ?? laneShortName(c().addr)}
             </span>
             <Show when={c().cwd}>

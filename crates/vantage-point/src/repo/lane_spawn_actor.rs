@@ -83,7 +83,7 @@ use tokio::sync::{RwLock, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
+use crate::capability::component_service::{LayerScope, Service, SpawnableService};
 
 use super::lane_capabilities::LaneCapabilitiesPool;
 use super::lane_cmd::LaneCmd;

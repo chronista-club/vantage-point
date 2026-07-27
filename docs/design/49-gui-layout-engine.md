@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # doc 49 — GUI LayoutEngine と creo-ui 基盤化
 
 > **起点（mako × lead、2026-07-22）**: doc 47 §1 の決定（Epic の最後に GUI LayoutEngine を

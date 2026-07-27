@@ -50,7 +50,7 @@ function post(payload: unknown): void {
 }
 
 // ========= Architecture v4: Lane / Agent 切替 API =========
-// Rust → JS で active Lane / Stand を切替。kind が null の場合は empty 状態を表示。
+// Rust → JS で active Lane / component を切替。kind が null の場合は empty 状態を表示。
 // Phase 5-A: Repo-scope Agent (board/runner ほか) を click 可能 pane として追加。
 // VP-142 cleanup: legacy "canvas" kind 削除 (pane-canvas placeholder 廃止に伴い)。
 // doc 52 §10 wave 0: board は app pane を退役（board pane = lane tiling へ）。

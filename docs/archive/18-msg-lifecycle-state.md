@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # 18. msg lifecycle state — forwarded / consumed flag による cross-process 重複再配信遮断
 
 > **対象 Issue**: [VP-164](https://linear.app/chronista/issue/VP-164) — SP restart で永続 cross-process msg が（重複）再配信される（受信側 ack-back 欠如、 restore_pending 再 forward）

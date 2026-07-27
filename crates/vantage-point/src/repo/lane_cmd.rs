@@ -36,7 +36,7 @@
 
 use serde::{Deserialize, Serialize};
 
-// doc 11 PR-B: LaneStand enum 削除、 agent は String 化 (mise task 名 "claude" / "shell" 等、
+// doc 11 PR-B: LaneComponent enum 削除、 agent は String 化 (mise task 名 "claude" / "shell" 等、
 // PR-pre2 (VP-118) で "hd" → "claude" rename)。
 
 /// Lane に対する操作 Cmd。 [`LaneSpawnActor`](crate::repo::lane_spawn_actor) が
@@ -60,8 +60,8 @@ pub enum LaneCmd {
         name: String,
         /// 起動 cwd (典型: `vp_data_dir()/lanes/<repo>-<name>/`)
         cwd: String,
-        /// Stand 名 (`vp:agent:{name}` task の name 部分、 例: "claude" / "shell" / "tmux")。
-        /// doc 11 PR-B で String 化、 旧 LaneStand enum 廃止。
+        /// agent 名 (`vp:agent:{name}` task の name 部分、 例: "claude" / "shell" / "tmux")。
+        /// doc 11 PR-B で String 化、 旧 LaneComponent enum 廃止。
         /// PR-pre2 (VP-118) で "hd" → "claude" rename。
         agent: String,
     },

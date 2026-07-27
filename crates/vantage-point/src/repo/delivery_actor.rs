@@ -39,7 +39,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::capability::WiremsgStore;
-use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
+use crate::capability::component_service::{LayerScope, Service, SpawnableService};
 // tmux decoupling PR1: nudge の forward 先解決に使う repo control channel registry（SSOT は daemon）。
 use crate::daemon::server::ControlChannels;
 // channel E (doc 34): root session の mode (registry 直読) が forward method (lane_nudge / conversation_nudge) を分ける。

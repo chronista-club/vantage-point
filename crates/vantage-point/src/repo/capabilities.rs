@@ -19,7 +19,7 @@ use tokio::sync::RwLock;
 /// Process Capability Manager
 ///
 /// Process (= LSCM Repo Layer) で使用する Capability を管理する。 LSCM doc 12 §9 catalog の
-/// Repo 階層 Stand のみ host。 machine 階層 Agent (DeviceRegistry / Update / daemon) は
+/// Repo 階層 機能のみ host。 machine 階層 Agent (DeviceRegistry / Update / daemon) は
 /// `crate::daemon::machine_capabilities::MachineCapabilities` 側に移管 (PR-α-2 完了)。
 ///
 /// VP-179 (Phase 5): `msgbox_router` field 撤去。 wiremsg R5-3 で旧 msgbox store も

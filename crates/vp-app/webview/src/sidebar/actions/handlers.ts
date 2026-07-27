@@ -55,8 +55,8 @@ function activeRepoPath(): string | undefined {
 	if (sidebar.active_lane_address) {
 		return resolveRepoPathFromAddress(sidebar.active_lane_address);
 	}
-	if (sidebar.active_stand) {
-		return sidebar.active_stand.repo_path;
+	if (sidebar.active_component) {
+		return sidebar.active_component.repo_path;
 	}
 	return undefined;
 }
@@ -219,7 +219,7 @@ export function runSendToPP(): void {
 	}
 }
 
-/** `r` — restart context polymorphic: active_lane → lane:restart、 active_stand → process:restart。 */
+/** `r` — restart context polymorphic: active_lane → lane:restart、 active_component → process:restart。 */
 export function runRestart(): void {
 	const addr = sidebar.active_lane_address;
 	if (addr) {
@@ -234,8 +234,8 @@ export function runRestart(): void {
 		}
 		return;
 	}
-	if (sidebar.active_stand) {
-		sendIpc({ t: "process:restart", path: sidebar.active_stand.repo_path });
+	if (sidebar.active_component) {
+		sendIpc({ t: "process:restart", path: sidebar.active_component.repo_path });
 		return;
 	}
 	console.debug("[directive r] active lane / agent なし、 skip");
@@ -267,8 +267,8 @@ export function runDelete(): void {
 			console.debug("[directive d] target が Performer でない or path 不明、 skip");
 			return;
 		}
-	} else if (sidebar.active_stand) {
-		target = { kind: "repo", path: sidebar.active_stand.repo_path };
+	} else if (sidebar.active_component) {
+		target = { kind: "repo", path: sidebar.active_component.repo_path };
 	} else {
 		console.debug("[directive d] active lane / agent なし、 skip");
 		return;

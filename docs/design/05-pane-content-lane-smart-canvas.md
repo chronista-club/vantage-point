@@ -1,3 +1,5 @@
+> ⚠️ **旧命名の歴史文書**: 本 doc は 2026-07-27 の命名エピック以前の語彙（JoJo 愛称 ほか）で書かれている。現行の対応は CLAUDE.md「アーキテクチャ命名体系」参照。
+
 # Pane / Content / Lane / Smart Canvas 統合設計 (2026-04-21)
 
 VP の UI アーキテクチャを 4 層に分離、Smart Canvas (Paisley Park 🧭 の進化形) を中核 content type として確立。
