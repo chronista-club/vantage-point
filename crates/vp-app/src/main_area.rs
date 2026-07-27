@@ -15,7 +15,7 @@
 //! ┌──────────────────────────────────────────┐
 //! │ pane-host (relative container)            │
 //! │ ┌──────────────────────────────────────┐ │
-//! │ │ pane-terminal (xterm.js, agent/shell) │ │
+//! │ │ pane-lane (xterm.js, agent/shell) │ │
 //! │ │ ────────────────────────────────────  │ │
 //! │ │ pane-preview  (iframe)                │ │
 //! │ │ ────────────────────────────────────  │ │
@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 /// Rust から main area JS に渡す active pane の payload
 #[derive(Debug, Clone, Serialize)]
 pub struct ActivePaneInfo<'a> {
-    /// Pane kind ("terminal" | "preview" | "board" | "runner" | "devices" | "empty" | null)
+    /// Pane kind ("lane" | "preview" | "board" | "runner" | "devices" | "empty" | null)
     /// null = 何も active でない (空状態を表示)。
     /// VP-142 cleanup (PR-ε-4): legacy "canvas" kind 削除 (PR-ε-3 で board body が Smart Canvas surface 物理化)
     pub kind: Option<&'a str>,
@@ -54,28 +54,28 @@ pub struct ActivePaneInfo<'a> {
     /// `#lane-empty` placeholder を ChatView の上に被せてしまう。 本 flag で
     /// 「xterm は無いが ChatView が内容を持つ」を伝え、 placeholder を抑止する。
     pub chat: bool,
-    /// Echoes 共通ヘッダ (操縦席) の cwd chip 用: この lane の cwd (絶対 path)。
+    /// Conversation 共通ヘッダ (操縦席) の cwd chip 用: この lane の cwd (絶対 path)。
     /// header は `~` 短縮 + 中略で表示し、click で full path を clipboard copy する。
     /// terminal kind でのみ意味を持つ。None = lane 不明 / 非 lane pane (chip 非表示)。
     ///
     /// cwd は address (pane_id) から導出できない唯一の lane 情報なので、setActivePane に
     /// 相乗りさせて運ぶ (新しい配信チャネルは増やさない — 既存 lane 状態配信経路)。
     pub cwd: Option<&'a str>,
-    /// Echoes 共通ヘッダの branch chip 用: performer lane の git branch
+    /// Conversation 共通ヘッダの branch chip 用: performer lane の git branch
     /// (`performer_status.branch` 由来、「安価に取れる場合のみ」)。
     /// conductor / 取得不能時は None (chip 非表示)。
     pub branch: Option<&'a str>,
-    /// Echoes 共通ヘッダの lane 名 chip 用: `LaneInfo.name`（表示名）。
+    /// Conversation 共通ヘッダの lane 名 chip 用: `LaneInfo.name`（表示名）。
     /// 現状 server 側は常に None のため JS 側は addr 由来の短縮名に fallback するが、
     /// 将来 name が populate された時にヘッダだけ古い表示に取り残されないよう
     /// cwd / branch と同じ経路で供給しておく（JS 側 entry.tsx は受け取り済み）。
     pub lane_name: Option<&'a str>,
-    /// Echoes 共通ヘッダの session chip 用: active engine の session id
-    /// （`LaneInfo.engine_session_id` 由来）。tui は EchoesEvent が流れないため
+    /// Conversation 共通ヘッダの session chip 用: active engine の session id
+    /// （`LaneInfo.engine_session_id` 由来）。tui は ConversationEvent が流れないため
     /// event 経路では供給されず、この setActivePane 相乗りが唯一の供給路になる
-    /// （gui では event 由来の真値が上書きする — EchoesHeader 側で OR merge）。
+    /// （gui では event 由来の真値が上書きする — LaneHeader 側で OR merge）。
     pub session_id: Option<&'a str>,
-    /// Echoes 共通ヘッダの chip prefix 用: **root session の agent**（= slot に載る engine 種別、
+    /// Conversation 共通ヘッダの chip prefix 用: **root session の agent**（= slot に載る engine 種別、
     /// "claude" / "codex" / "grok" 等）。session chip の engine 別 prefix 導出に使う。doc 39 P4-C:
     /// 供給値は `LaneInfo.agent_name`（root の engine）優先で、無ければ lane 固定 `agent` に
     /// fallback（push_active_view が解決済み — cross-engine root で chip prefix が正しく点く）。
@@ -161,16 +161,16 @@ body{overflow:hidden;}
   --frame-transition-ms:220ms;
   --frame-transition-easing:cubic-bezier(.2,.8,.2,1);
   /* Pane の名札（上段）token。「上 = この pane が何であるか（居る間 変わらない素性）」を
-     載せる帯の見た目を、実装 2 本（静的 .pane-header と SolidJS の #echoes-header）で共有する。
+     載せる帯の見た目を、実装 2 本（静的 .pane-header と SolidJS の #lane-header）で共有する。
      doc 29/30 の Edge Ring（上 = global / 下 = local）を pane スケールへ再適用した縦軸に基づく。
-     以前は 28px（.pane-header）と 30px（#echoes-header）で高さが割れており、隣り合うと段差が
+     以前は 28px（.pane-header）と 30px（#lane-header）で高さが割れており、隣り合うと段差が
      見えていた（2026-07-23 の実機比較）。値の SSOT はここ 1 箇所。 */
   --vp-nameplate-h:28px;
   --vp-nameplate-pad-x:10px;
   --vp-nameplate-font-size:12px;
   --vp-nameplate-bg:var(--color-surface-surface);
   --vp-nameplate-border:1px solid var(--color-surface-border-subtle);
-  /* VP-143: Echoes terminal (xterm.js) の Live Token 群。 creo-ui-editor-host (Ctrl+Shift+E)
+  /* VP-143: Conversation terminal (xterm.js) の Live Token 群。 creo-ui-editor-host (Ctrl+Shift+E)
      で runtime 調整可能。 JS 側 createLaneInstance が値を読んで `new Terminal({...})` を構築、
      MutationObserver が documentElement style 変更を捕捉して全 terminal に setter +
      fitAddon.fit() + WS resize 通知で伝播 → 既存 lane terminal も即時反映。
@@ -178,7 +178,7 @@ body{overflow:hidden;}
   --terminal-font-size:16;
   --terminal-line-height:1.27;
   --terminal-letter-spacing:0;
-  /* font zero-start (2026-07-11): Echoes terminal は principal mono ('UDEV Gothic NF'、
+  /* font zero-start (2026-07-11): Conversation terminal は principal mono ('UDEV Gothic NF'、
      Nerd Font glyph 込み) のみ。 bundle はせず local (OS install 済) font を名前参照、
      未 install 環境は末尾 monospace に縮退するのでどの OS でも描画は壊れない。 */
   --terminal-font-family:'UDEV Gothic NF', monospace;
@@ -203,19 +203,19 @@ body{overflow:hidden;}
 }
 .pane.active{pointer-events:auto;}
 .pane.terminal{padding:0;}
-/* Echoes 共通ヘッダ (操縦席、mem `vp-pane-common-header`): tui(xterm)/gui(chat) を跨いで
+/* Conversation 共通ヘッダ (操縦席、mem `vp-pane-common-header`): tui(xterm)/gui(chat) を跨いで
    載り続ける lane-local な情報 + 操作の strip。DOM の器だけを World A が用意し、中身は
-   editor-host bundle の EchoesHeader component が #echoes-header に mount する
+   editor-host bundle の LaneHeader component が #lane-header に mount する
    (chat session host と同じ mount 点パターン)。
    高さ 0 が default = header 不在時は xterm/chat が全高 (既存挙動、regression なし)。
-   header が内容を持つ時だけ World B が #pane-terminal に .echoes-header-active を付け、
+   header が内容を持つ時だけ World B が #pane-lane に .lane-header-active を付け、
    strip を開いて session host 群 (#term-session-<n> / .chat-session-host) と lane-empty を
    その分だけ押し下げる
    (= xterm 表示領域を header 分だけ譲る。押し下げ後の container 縮小を ResizeObserver が
    捕捉して fitAddon.fit() が再計算する — 「xterm を圧迫しない」検証点)。 */
-#pane-terminal{--echoes-header-h:0px;}
-#pane-terminal.echoes-header-active{--echoes-header-h:var(--vp-nameplate-h);}
-#echoes-header{position:absolute;top:0;left:0;right:0;height:var(--echoes-header-h);
+#pane-lane{--lane-header-h:0px;}
+#pane-lane.lane-header-active{--lane-header-h:var(--vp-nameplate-h);}
+#lane-header{position:absolute;top:0;left:0;right:0;height:var(--lane-header-h);
   overflow:hidden;z-index:2;}
 /* doc 49 LE-P4 PR2: lane 内 tiling は creo-ui-layout の lane scope が担い、JS
    (lane-panes.ts) が resolved rect を inline style (left/top/width/height %) で書く。
@@ -223,8 +223,8 @@ body{overflow:hidden;}
    inset:0 は JS が走る前の既定 — inline の width/height が入れば over-constraint
    解決 (LTR) で right/bottom が無視され、inline の rect が勝つ。 */
 /* 下端の帯（#pane-tabs）は退役（doc 51 §1 A1）— pane chip は tiling 既定で存在理由が
-   消え、+ New / Mode 切替は EchoesHeader（lane の名札）へ移設した。 */
-#lane-panes{position:absolute;top:var(--echoes-header-h);left:0;right:0;
+   消え、+ New / Mode 切替は LaneHeader（lane の名札）へ移設した。 */
+#lane-panes{position:absolute;top:var(--lane-header-h);left:0;right:0;
   bottom:0;background:var(--color-border,#2a3040);}
 /* outline は隣接 Pane との区切り線 (旧 flex gap:1px の後継 — layout に影響しない描画のみの線)。 */
 #lane-panes > *{position:absolute;inset:0;background:var(--color-bg,#0f1115);
@@ -244,7 +244,7 @@ body{overflow:hidden;}
   z-index:1;overflow:hidden;}
 /* doc 33 §9: 切替 progress overlay。pane 全面 (header 下) を覆い、resume 確定まで表示 (= switch lock)。
    header は switch 中も lane identity を見せ続けたいので overlay の上に残す (top を header 分下げる)。 */
-#console-switching{position:absolute;top:var(--echoes-header-h);left:0;right:0;bottom:0;display:none;z-index:20;
+#console-switching{position:absolute;top:var(--lane-header-h);left:0;right:0;bottom:0;display:none;z-index:20;
   align-items:center;justify-content:center;
   background:color-mix(in srgb, var(--color-bg,#0f1115) 82%, transparent);backdrop-filter:blur(2px);}
 #console-switching.active{display:flex;}
@@ -259,13 +259,13 @@ body{overflow:hidden;}
 .lane-pane .lane-term{padding:0;height:100%;width:100%;box-sizing:border-box;}
 /* どの Lane も無い時の placeholder (active class で表示制御、 default は表示)。
    header 分 (var) 押し下げ — header 不在時は 0 なので従来通り全面。 */
-#lane-empty{position:absolute;top:var(--echoes-header-h);left:0;right:0;bottom:0;display:none;place-items:center;color:var(--color-text-tertiary);text-align:center;}
+#lane-empty{position:absolute;top:var(--lane-header-h);left:0;right:0;bottom:0;display:none;place-items:center;color:var(--color-text-tertiary);text-align:center;}
 #lane-empty.active{display:grid;}
 #lane-empty .lane-empty-icon{width:44px;height:44px;display:block;margin:0 auto .75rem;opacity:.55;}
 #lane-empty h1{font-weight:400;font-size:1.1rem;margin:0;}
 #lane-empty p{margin:.25rem 0 0;font-size:.85rem;}
 /* VP-141 (PR-ε-2): Pane header chrome — pane に「ヘッダ + body」 構造を持たせる共通 chrome。
-   icon + Stand 名 + breadcrumb + actions (Clear 等) を提供。 terminal pane (Echoes、 xterm.js
+   icon + Stand 名 + breadcrumb + actions (Clear 等) を提供。 terminal pane (Conversation、 xterm.js
    full-bleed) は header なしで除外。 .pane-header と .pane-body は両方 position:absolute なので
    .pane.agent/empty の display:grid context から opt-out される (centering は body 側の
    `.center` modifier で個別制御)。 */
@@ -482,24 +482,24 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 <div id="host">
   <!-- 各 .pane の attribute 規約 (VP-141 で 2 attribute に分離):
        - data-kind="..."    : 静的 (HTML hardcode、 「terminal」「board」 等の kind classification)
-       - data-frame-id="..." : 静的 (HTML hardcode、 Frame Engine の Scene lookup key、 「echoes」「pp」 等)
+       - data-frame-id="..." : 静的 (HTML hardcode、 Frame Engine の Scene lookup key、 「conversation」「pp」 等)
        - data-pane-id="..." : 動的 (active pane 切替時に main_area inline JS `setActiveImpl` が Lane address
                               等で setAttribute、 VP-100 γ-light native overlay sync 用 / Phase 4+ 同期 target)
        Frame Engine と legacy native overlay sync の attribute を分離しているのは、 Lane click で
        legacy 側 setAttribute が Frame Engine の static attribute を hijack して Scene lookup undefined
        → HIDDEN_TRANSFORM 適用 → pane が見えなくなる回帰を防ぐため (VP-141 fix)。
        VP-100 γ-light: ResizeObserver が slot rect を IPC で送る (Phase 4+ で native overlay 同期に使う)。 -->
-  <!-- Phase 2.5 (per-Lane instance) → doc 50 §4.6 A6: pane-terminal 内の #lane-panes に
+  <!-- Phase 2.5 (per-Lane instance) → doc 50 §4.6 A6: pane-lane 内の #lane-panes に
        (lane, session) ごとの xterm.js instance を mount。 active な instance だけ display:block。 -->
-  <!-- VP-140 fail-safe: pane-terminal は Frame Engine が apply される前から visible にしておく。
+  <!-- VP-140 fail-safe: pane-lane は Frame Engine が apply される前から visible にしておく。
        inline opacity:1 を CSS .pane{opacity:0} default より優先させ、 Frame Engine 不在 / 起動失敗時も
-       少なくとも Echoes terminal は見える状態を保つ (= echoes が default visible 約束)。
+       少なくとも Conversation terminal は見える状態を保つ (= conversation が default visible 約束)。
        Frame Engine 起動後は inline style.opacity を engine が上書きする (conductor-focus:1 / pp-focus:0)。 -->
-  <div class="pane terminal" id="pane-terminal" data-kind="terminal" data-frame-id="echoes" style="opacity:1;pointer-events:auto;visibility:visible;">
-    <!-- Echoes 共通ヘッダ (操縦席) の mount 点。器だけ World A が置き、editor-host bundle の
-         EchoesHeader が中身を render する。lane 切替で内容だけ差し替わる (帰属は lane の Echoes、
+  <div class="pane terminal" id="pane-lane" data-kind="lane" data-frame-id="lane" style="opacity:1;pointer-events:auto;visibility:visible;">
+    <!-- Conversation 共通ヘッダ (操縦席) の mount 点。器だけ World A が置き、editor-host bundle の
+         LaneHeader が中身を render する。lane 切替で内容だけ差し替わる (帰属は lane の Conversation、
          tui/gui を跨いで同一 header が載り続ける)。default 高さ 0、内容がある時だけ開く。 -->
-    <div id="echoes-header"></div>
+    <div id="lane-header"></div>
     <!-- doc 46 P1 → doc 49 LE-P4 PR2 → doc 50 P1: lane の表示領域 = N 枚の Pane を並べる
          tiling の器。配置は creo-ui-layout の lane scope (lane-panes.ts) が resolved rect を
          inline で書く。子は **session ごとの host 群**を動的に生やす:
@@ -508,7 +508,7 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
          旧 #console-chat-host 固定 1 枚 / 静的 #lane-host（root 専用の term host）は退役 —
          host の身元を role でなく session に紐づけた（doc 50 §4.6 A6、`ensureTermHost`）。
          下端の帯 (#pane-tabs) は doc 51 §1 A1 で退役 — 表示は既定 tiling、
-         + New / Mode 切替は EchoesHeader (lane の名札) へ移設。 -->
+         + New / Mode 切替は LaneHeader (lane の名札) へ移設。 -->
     <div id="lane-panes">
       <!-- board (board) pane — doc 52 §10 wave 0: app 層の #pane-board から lane tiling へ
            引っ越した「貼る台」。**lane に 1 枚の静的 host**（board は lane-scoped、
@@ -671,7 +671,7 @@ mod tests {
     #[test]
     fn active_pane_script_carries_chat_flag_for_gui_lane() {
         let script = build_set_active_pane_script(&ActivePaneInfo {
-            kind: Some("terminal"),
+            kind: Some("lane"),
             pane_id: Some("vp/root"),
             preview_url: None,
             chat: true,
@@ -689,7 +689,7 @@ mod tests {
     #[test]
     fn active_pane_script_chat_false_for_tui_and_stand() {
         let tui = build_set_active_pane_script(&ActivePaneInfo {
-            kind: Some("terminal"),
+            kind: Some("lane"),
             pane_id: Some("vp/performer/x"),
             preview_url: None,
             chat: false,
@@ -707,7 +707,7 @@ mod tests {
         );
         assert!(tui.contains("\"branch\":\"mako/x\""), "script={tui}");
         // tui の session chip 供給路（engine_session_id 相乗り + engine 種別）。
-        // tui は EchoesEvent が流れないため、この経路が欠けると chip が出ない
+        // tui は ConversationEvent が流れないため、この経路が欠けると chip が出ない
         //（bug mem_1Cd3icsvKiGsQ8TtX8t1FR の再発防止）。
         assert!(
             tui.contains("\"session_id\":\"0196-abcd-ef01\""),

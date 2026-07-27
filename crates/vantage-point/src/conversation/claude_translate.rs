@@ -1,7 +1,7 @@
-//! stream-json → [`EchoesEvent`] 翻訳層（claude engine 用、PR1 で凍結）
+//! stream-json → [`ConversationEvent`] 翻訳層（claude engine 用、PR1 で凍結）
 //!
 //! claude 2.1.197 の `--output-format stream-json --include-partial-messages`
-//! が吐く JSONL を、GUI 語彙 [`EchoesEvent`] の列へ変換する状態機械。
+//! が吐く JSONL を、GUI 語彙 [`ConversationEvent`] の列へ変換する状態機械。
 //! 実スキーマの根拠は design doc 32 §10（Step 0 スパイク）。
 //!
 //! ## 状態機械の要点
@@ -10,39 +10,39 @@
 //! - `content_block_delta` は `event.index` を持つ。`content_block_start` で
 //!   index → block 種別を記録し、delta を種別に応じて振り分ける。
 //! - tool の完全 input は `input_json_delta.partial_json` を index ごとに蓄積し、
-//!   `content_block_stop` で 1 度だけ parse して [`EchoesEvent::ToolCall`] を発火。
-//! - tool 結果は `user` message の `tool_result` から [`EchoesEvent::ToolCallUpdate`]。
-//! - `TodoWrite` の ToolCall は [`EchoesEvent::Plan`] へ導出する。
+//!   `content_block_stop` で 1 度だけ parse して [`ConversationEvent::ToolCall`] を発火。
+//! - tool 結果は `user` message の `tool_result` から [`ConversationEvent::ToolCallUpdate`]。
+//! - `TodoWrite` の ToolCall は [`ConversationEvent::Plan`] へ導出する。
 //!
 //! ## transcript commit 境界（[`Ingested::commits_transcript`]）
 //!
 //! claude は完成した message を disk の transcript(jsonl) に flush する。 その瞬間は stream 上でも
 //! 観測できる: **`assistant` 全文スナップショット行 / `user` message 行**が、transcript の 1 行と
 //! 1:1 で対応する（実測: transcript は content block ごとに 1 行、 stream の snapshot も block
-//! ごとに 1 本）。 [`EchoesTranslator`] はこれを `commits_transcript` として通知し、
-//! [`super::host::EchoesAgentHost`] が「まだ disk に無い streaming 中の tail」を切り出すのに使う
+//! ごとに 1 本）。 [`ClaudeTranslator`] はこれを `commits_transcript` として通知し、
+//! [`super::host::ClaudeHost`] が「まだ disk に無い streaming 中の tail」を切り出すのに使う
 //! （replay 時に transcript の後ろへ継ぐため）。
 //!
 //! ⚠️ snapshot 行は対応する `content_block_stop` の **前**に来る（実測）。 つまり本翻訳器が
-//! `content_block_stop` で発火する [`EchoesEvent::ToolCall`] は「commit 済み block の遅れた表現」
+//! `content_block_stop` で発火する [`ConversationEvent::ToolCall`] は「commit 済み block の遅れた表現」
 //! であり、 tail に含めてはならない（transcript replay と二重化する）。 tail に載せてよいのは
-//! commit 前にしか存在しない増分 = [`EchoesEvent::MessageChunk`] / [`EchoesEvent::ThoughtChunk`]。
+//! commit 前にしか存在しない増分 = [`ConversationEvent::MessageChunk`] / [`ConversationEvent::ThoughtChunk`]。
 
 use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use super::event::{EchoesEvent, PlanEntry, SubagentRole};
+use super::event::{ConversationEvent, PlanEntry, SubagentRole};
 
 /// 1 engine プロセスの stream を通す翻訳器（プロセスごとに 1 個、可変状態を持つ）。
 #[derive(Debug, Default)]
-pub struct EchoesTranslator {
+pub struct ClaudeTranslator {
     /// content block index → 進行中の block 状態。
     blocks: HashMap<u64, BlockState>,
     /// 最後に観測した assistant snapshot の usage 合算（= 現在の context 占有 tokens）。
     ///
     /// assistant 行は本文としては破棄する（delta の累積スナップショット）が、`message.usage`
-    /// はこの行にしか載らない一次情報なので、ここに退避して [`EchoesEvent::TurnCompleted`] の
+    /// はこの行にしか載らない一次情報なので、ここに退避して [`ConversationEvent::TurnCompleted`] の
     /// context ゲージに載せる。⚠️ `result.usage` は turn 内 iteration の**合算**で
     /// cache_read が重複計上されるため分子には使えない（Step 0 実測）。
     last_context_tokens: Option<u64>,
@@ -62,19 +62,19 @@ pub struct EchoesTranslator {
     saw_text_delta: bool,
 }
 
-/// [`EchoesTranslator::ingest`] の結果 — 「この行が生んだ event」と「この行が disk に commit したか」。
+/// [`ClaudeTranslator::ingest`] の結果 — 「この行が生んだ event」と「この行が disk に commit したか」。
 #[derive(Debug, Default, PartialEq)]
 pub struct Ingested {
     /// GUI へ流す event 列（0 個以上）。
-    pub events: Vec<EchoesEvent>,
+    pub events: Vec<ConversationEvent>,
     /// この行が transcript(jsonl) の 1 行に対応する = ここまでの内容は disk 側に存在する。
-    /// [`super::host::EchoesAgentHost`] が in-flight tail を切るのに使う（module doc 参照）。
+    /// [`super::host::ClaudeHost`] が in-flight tail を切るのに使う（module doc 参照）。
     pub commits_transcript: bool,
 }
 
 impl Ingested {
     /// event だけの結果（commit 境界ではない）。
-    fn events(events: Vec<EchoesEvent>) -> Self {
+    fn events(events: Vec<ConversationEvent>) -> Self {
         Self {
             events,
             commits_transcript: false,
@@ -98,12 +98,12 @@ enum BlockState {
     Other,
 }
 
-impl EchoesTranslator {
+impl ClaudeTranslator {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// stream-json の 1 行を食わせ、0 個以上の [`EchoesEvent`] と commit 境界フラグを得る。
+    /// stream-json の 1 行を食わせ、0 個以上の [`ConversationEvent`] と commit 境界フラグを得る。
     ///
     /// parse 不能な行・未知 type は握り潰して空を返す（stream を止めない）。
     pub fn ingest(&mut self, line: &str) -> Ingested {
@@ -114,7 +114,7 @@ impl EchoesTranslator {
         match serde_json::from_str::<RawLine>(line) {
             Ok(raw) => self.translate(raw),
             Err(e) => {
-                tracing::debug!("echoes: stream-json parse 失敗（無視）: {e} - line: {line}");
+                tracing::debug!("conversation: stream-json parse 失敗（無視）: {e} - line: {line}");
                 Ingested::default()
             }
         }
@@ -178,7 +178,7 @@ impl EchoesTranslator {
         }
     }
 
-    fn on_system(&mut self, sys: RawSystem) -> Vec<EchoesEvent> {
+    fn on_system(&mut self, sys: RawSystem) -> Vec<ConversationEvent> {
         // init 以外の system subtype（hook_started / status / thinking_tokens …）は破棄。
         if sys.subtype.as_deref() != Some("init") {
             return Vec::new();
@@ -194,7 +194,7 @@ impl EchoesTranslator {
             .into_iter()
             .map(|s| s.name)
             .collect();
-        vec![EchoesEvent::SessionInit {
+        vec![ConversationEvent::SessionInit {
             session_id,
             model: sys.model,
             permission_mode: sys.permission_mode,
@@ -205,7 +205,7 @@ impl EchoesTranslator {
         }]
     }
 
-    fn on_stream_event(&mut self, event: StreamEventBody) -> Vec<EchoesEvent> {
+    fn on_stream_event(&mut self, event: StreamEventBody) -> Vec<ConversationEvent> {
         match event {
             StreamEventBody::ContentBlockStart {
                 index,
@@ -231,15 +231,15 @@ impl EchoesTranslator {
         }
     }
 
-    fn on_delta(&mut self, index: u64, delta: RawDelta) -> Vec<EchoesEvent> {
+    fn on_delta(&mut self, index: u64, delta: RawDelta) -> Vec<ConversationEvent> {
         match delta {
             RawDelta::TextDelta { text } => {
                 // 本文が streaming で供給された = 後続の assistant snapshot は重複（[`Self::saw_text_delta`]）。
                 self.saw_text_delta = true;
-                vec![EchoesEvent::MessageChunk { text }]
+                vec![ConversationEvent::MessageChunk { text }]
             }
             RawDelta::ThinkingDelta { thinking } => {
-                vec![EchoesEvent::ThoughtChunk { text: thinking }]
+                vec![ConversationEvent::ThoughtChunk { text: thinking }]
             }
             RawDelta::InputJsonDelta { partial_json } => {
                 if let Some(BlockState::ToolUse { json_buf, .. }) = self.blocks.get_mut(&index) {
@@ -252,7 +252,7 @@ impl EchoesTranslator {
         }
     }
 
-    fn on_block_stop(&mut self, index: u64) -> Vec<EchoesEvent> {
+    fn on_block_stop(&mut self, index: u64) -> Vec<ConversationEvent> {
         // tool_use block の終端でだけ ToolCall / Plan を発火する。
         match self.blocks.remove(&index) {
             Some(BlockState::ToolUse { id, name, json_buf }) => {
@@ -260,7 +260,7 @@ impl EchoesTranslator {
                     serde_json::Value::Object(Default::default())
                 } else {
                     serde_json::from_str(&json_buf).unwrap_or_else(|e| {
-                        tracing::debug!("echoes: tool input JSON parse 失敗 {name}: {e}");
+                        tracing::debug!("conversation: tool input JSON parse 失敗 {name}: {e}");
                         serde_json::Value::Object(Default::default())
                     })
                 };
@@ -270,23 +270,23 @@ impl EchoesTranslator {
                 {
                     return vec![plan];
                 }
-                vec![EchoesEvent::ToolCall { id, name, input }]
+                vec![ConversationEvent::ToolCall { id, name, input }]
             }
             _ => Vec::new(),
         }
     }
 
-    fn on_result(&mut self, res: RawResult) -> EchoesEvent {
+    fn on_result(&mut self, res: RawResult) -> ConversationEvent {
         // turn 終端 — 次 turn のために delta 観測フラグを戻す（[`Self::saw_text_delta`]）。
         self.saw_text_delta = false;
         if res.is_error {
-            EchoesEvent::Error {
+            ConversationEvent::Error {
                 message: res
                     .result
                     .unwrap_or_else(|| "engine turn error".to_string()),
             }
         } else {
-            EchoesEvent::TurnCompleted {
+            ConversationEvent::TurnCompleted {
                 session_id: res.session_id,
                 cost_usd: res.total_cost_usd,
                 context_tokens: self.last_context_tokens,
@@ -327,24 +327,24 @@ impl EchoesTranslator {
 ///
 /// 親と違い delta が来ないので、このスナップショットが唯一の担い手（module doc の「本文は捨てる」
 /// は**親の行に限った話**）。`usage` も親の context ゲージではないので退避しない。
-/// assistant snapshot の content を本文 event に写す（delta 未観測 turn 専用 — [`EchoesTranslator::saw_text_delta`]）。
+/// assistant snapshot の content を本文 event に写す（delta 未観測 turn 専用 — [`ClaudeTranslator::saw_text_delta`]）。
 ///
 /// slash command 等の synthetic turn は delta を出さないため、この snapshot が本文の唯一の
 /// 一次情報になる。thinking block は gui で暗号化復元不可の前例（doc 39）と揃えて出さず、
-/// text だけを [`EchoesEvent::MessageChunk`] に写す（chatview は chunk を assistant バブルに畳む）。
-fn snapshot_text_events(content: Vec<RawAssistantContent>) -> Vec<EchoesEvent> {
+/// text だけを [`ConversationEvent::MessageChunk`] に写す（chatview は chunk を assistant バブルに畳む）。
+fn snapshot_text_events(content: Vec<RawAssistantContent>) -> Vec<ConversationEvent> {
     content
         .into_iter()
         .filter_map(|block| match block {
             RawAssistantContent::Text { text } if !text.is_empty() => {
-                Some(EchoesEvent::MessageChunk { text })
+                Some(ConversationEvent::MessageChunk { text })
             }
             _ => None,
         })
         .collect()
 }
 
-fn subagent_assistant_events(parent: &str, message: RawAssistantMessage) -> Vec<EchoesEvent> {
+fn subagent_assistant_events(parent: &str, message: RawAssistantMessage) -> Vec<ConversationEvent> {
     message
         .content
         .into_iter()
@@ -354,7 +354,7 @@ fn subagent_assistant_events(parent: &str, message: RawAssistantMessage) -> Vec<
                 RawAssistantContent::Thinking { thinking } => (SubagentRole::Thinking, thinking),
                 RawAssistantContent::Other => return None,
             };
-            (!text.is_empty()).then(|| EchoesEvent::SubagentMessage {
+            (!text.is_empty()).then(|| ConversationEvent::SubagentMessage {
                 parent_tool_use_id: parent.to_string(),
                 role,
                 text,
@@ -367,13 +367,13 @@ fn subagent_assistant_events(parent: &str, message: RawAssistantMessage) -> Vec<
 ///
 /// ⚠️ ここに来る `tool_result` は **subagent 自身が回した tool** のもので、親の tool 列には
 /// 結び先が無い。 親の [`on_user`] に流すと孤児 `ToolCallUpdate` を撃つので、text 以外は捨てる。
-fn subagent_user_events(parent: &str, message: RawUserMessage) -> Vec<EchoesEvent> {
+fn subagent_user_events(parent: &str, message: RawUserMessage) -> Vec<ConversationEvent> {
     message
         .content
         .into_iter()
         .filter_map(|block| match block {
             RawUserContent::Text { text } if !text.is_empty() => {
-                Some(EchoesEvent::SubagentMessage {
+                Some(ConversationEvent::SubagentMessage {
                     parent_tool_use_id: parent.to_string(),
                     role: SubagentRole::Prompt,
                     text,
@@ -384,7 +384,7 @@ fn subagent_user_events(parent: &str, message: RawUserMessage) -> Vec<EchoesEven
         .collect()
 }
 
-fn on_user(message: RawUserMessage) -> Vec<EchoesEvent> {
+fn on_user(message: RawUserMessage) -> Vec<ConversationEvent> {
     message
         .content
         .into_iter()
@@ -393,7 +393,7 @@ fn on_user(message: RawUserMessage) -> Vec<EchoesEvent> {
                 tool_use_id,
                 content,
                 is_error,
-            } => Some(EchoesEvent::ToolCallUpdate {
+            } => Some(ConversationEvent::ToolCallUpdate {
                 tool_use_id,
                 content: tool_result_text(&content),
                 is_error,
@@ -421,7 +421,7 @@ pub(super) fn tool_result_text(content: &serde_json::Value) -> String {
 
 /// TodoWrite の input（`{"todos":[{content,status,activeForm}]}`）を Plan へ。
 /// transcript replay（[`super::transcript`]）も同じ導出を使うため crate 内公開。
-pub(super) fn plan_from_todowrite(input: &serde_json::Value) -> Option<EchoesEvent> {
+pub(super) fn plan_from_todowrite(input: &serde_json::Value) -> Option<ConversationEvent> {
     let todos = input.get("todos")?.as_array()?;
     let entries = todos
         .iter()
@@ -440,7 +440,7 @@ pub(super) fn plan_from_todowrite(input: &serde_json::Value) -> Option<EchoesEve
             })
         })
         .collect();
-    Some(EchoesEvent::Plan { entries })
+    Some(ConversationEvent::Plan { entries })
 }
 
 // =============================================================================
@@ -658,12 +658,12 @@ mod tests {
     /// thinking の本文 field は `text` ではなく `thinking`。
     #[test]
     fn subagent_assistant_becomes_subagent_message() {
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         let think = r#"{"type":"assistant","parent_tool_use_id":"toolu_1","subagent_type":"general-purpose","message":{"role":"assistant","content":[{"type":"thinking","thinking":"掛け算する","signature":"x"}]}}"#;
         let text = r#"{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"role":"assistant","content":[{"type":"text","text":"42"}]}}"#;
         assert_eq!(
             t.ingest(think).events,
-            vec![EchoesEvent::SubagentMessage {
+            vec![ConversationEvent::SubagentMessage {
                 parent_tool_use_id: "toolu_1".into(),
                 role: SubagentRole::Thinking,
                 text: "掛け算する".into(),
@@ -671,7 +671,7 @@ mod tests {
         );
         assert_eq!(
             t.ingest(text).events,
-            vec![EchoesEvent::SubagentMessage {
+            vec![ConversationEvent::SubagentMessage {
                 parent_tool_use_id: "toolu_1".into(),
                 role: SubagentRole::Text,
                 text: "42".into(),
@@ -687,11 +687,11 @@ mod tests {
     /// （gui で slash を打って 30 分待っても何も出ない、の真因）。
     #[test]
     fn synthetic_turn_without_delta_surfaces_snapshot_text() {
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         let synth = r#"{"type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"Set model to Opus 4.8 for this session only"}]}}"#;
         assert_eq!(
             t.ingest(synth).events,
-            vec![EchoesEvent::MessageChunk {
+            vec![ConversationEvent::MessageChunk {
                 text: "Set model to Opus 4.8 for this session only".into(),
             }]
         );
@@ -703,11 +703,11 @@ mod tests {
     /// turn 終端（result）で観測フラグが戻り、次の synthetic turn は再び拾えることも併せて固める。
     #[test]
     fn streamed_turn_discards_snapshot_then_next_synthetic_turn_recovers() {
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         let delta = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"やあ"}}}"#;
         assert_eq!(
             t.ingest(delta).events,
-            vec![EchoesEvent::MessageChunk {
+            vec![ConversationEvent::MessageChunk {
                 text: "やあ".into()
             }]
         );
@@ -718,13 +718,13 @@ mod tests {
         let result = r#"{"type":"result","subtype":"success","is_error":false,"session_id":"s1"}"#;
         assert!(matches!(
             t.ingest(result).events.as_slice(),
-            [EchoesEvent::TurnCompleted { .. }]
+            [ConversationEvent::TurnCompleted { .. }]
         ));
         // 次 turn が synthetic なら再び snapshot を拾える。
         let synth = r#"{"type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"/context の結果"}]}}"#;
         assert_eq!(
             t.ingest(synth).events,
-            vec![EchoesEvent::MessageChunk {
+            vec![ConversationEvent::MessageChunk {
                 text: "/context の結果".into(),
             }]
         );
@@ -736,7 +736,7 @@ mod tests {
     /// 誤る（= 「応答中の永久居座り」と同じ層の事故）。 親の行だけが transcript の 1 行に対応する。
     #[test]
     fn subagent_line_does_not_commit_transcript() {
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         let sub = r#"{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"role":"assistant","content":[{"type":"text","text":"42"}]}}"#;
         assert!(!t.ingest(sub).commits_transcript);
         // 親の assistant 行は従来どおり commit 境界を立てる（退行していない）。
@@ -747,11 +747,11 @@ mod tests {
     /// subagent へ与えられた指示は Prompt として運ぶ（user 発話にはしない）。
     #[test]
     fn subagent_user_text_becomes_prompt() {
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         let line = r#"{"type":"user","parent_tool_use_id":"toolu_1","task_description":"calc","message":{"role":"user","content":[{"type":"text","text":"6x7 は?"}]}}"#;
         assert_eq!(
             t.ingest(line).events,
-            vec![EchoesEvent::SubagentMessage {
+            vec![ConversationEvent::SubagentMessage {
                 parent_tool_use_id: "toolu_1".into(),
                 role: SubagentRole::Prompt,
                 text: "6x7 は?".into(),
@@ -764,7 +764,7 @@ mod tests {
     /// 親の item 列には結び先が無いので、流すと孤児 update を撃つ（GUI が warning を出す経路）。
     #[test]
     fn subagent_tool_result_does_not_touch_parent_tools() {
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         let line = r#"{"type":"user","parent_tool_use_id":"toolu_1","message":{"role":"user","content":[{"tool_use_id":"child-tool","type":"tool_result","content":"ok","is_error":false}]}}"#;
         let got = t.ingest(line);
         assert!(
@@ -778,7 +778,7 @@ mod tests {
     /// 親の user(tool_result) は従来どおり ToolCallUpdate になる（退行していない）。
     #[test]
     fn parent_user_tool_result_still_updates() {
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         let line = r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tu-1","type":"tool_result","content":"ok","is_error":false}]}}"#;
         let got = t.ingest(line);
         assert_eq!(got.events.len(), 1);
@@ -789,11 +789,11 @@ mod tests {
     #[test]
     fn parses_session_init() {
         let line = r#"{"type":"system","subtype":"init","cwd":"/tmp/x","session_id":"sid-1","model":"claude-haiku-4-5","permissionMode":"acceptEdits","tools":["Bash","Edit"],"mcp_servers":[{"name":"vantage-point","status":"connected"}],"slash_commands":["a","b"]}"#;
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         let evs = t.ingest(line).events;
         assert_eq!(evs.len(), 1);
         match &evs[0] {
-            EchoesEvent::SessionInit {
+            ConversationEvent::SessionInit {
                 session_id,
                 model,
                 permission_mode,
@@ -816,12 +816,12 @@ mod tests {
     /// text_delta / thinking_delta が chunk に化ける。
     #[test]
     fn streams_text_and_thinking_deltas() {
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}}"#);
         let think = t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"考え"}}}"#).events;
         assert_eq!(
             think,
-            vec![EchoesEvent::ThoughtChunk {
+            vec![ConversationEvent::ThoughtChunk {
                 text: "考え".into()
             }]
         );
@@ -830,7 +830,7 @@ mod tests {
         let text = t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"hello"}}}"#).events;
         assert_eq!(
             text,
-            vec![EchoesEvent::MessageChunk {
+            vec![ConversationEvent::MessageChunk {
                 text: "hello".into()
             }]
         );
@@ -839,7 +839,7 @@ mod tests {
     /// tool_use は partial_json を蓄積し、stop で完全 input 付き ToolCall を出す。
     #[test]
     fn assembles_tool_call_from_partial_json() {
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu-1","name":"Bash","input":{}}}}"#);
         t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"echo "}}}"#);
         t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"hi\"}"}}}"#);
@@ -848,7 +848,7 @@ mod tests {
             .events;
         assert_eq!(evs.len(), 1);
         match &evs[0] {
-            EchoesEvent::ToolCall { id, name, input } => {
+            ConversationEvent::ToolCall { id, name, input } => {
                 assert_eq!(id, "tu-1");
                 assert_eq!(name, "Bash");
                 assert_eq!(input.get("command").unwrap(), "echo hi");
@@ -860,7 +860,7 @@ mod tests {
     /// TodoWrite は Plan に化ける。
     #[test]
     fn todowrite_becomes_plan() {
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu-2","name":"TodoWrite","input":{}}}}"#);
         t.ingest(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"todos\":[{\"content\":\"step1\",\"status\":\"in_progress\",\"activeForm\":\"doing step1\"}]}"}}}"#);
         let evs = t
@@ -868,7 +868,7 @@ mod tests {
             .events;
         assert_eq!(
             evs,
-            vec![EchoesEvent::Plan {
+            vec![ConversationEvent::Plan {
                 entries: vec![PlanEntry {
                     content: "step1".into(),
                     status: "in_progress".into(),
@@ -881,11 +881,11 @@ mod tests {
     /// user tool_result は ToolCallUpdate になる。
     #[test]
     fn user_tool_result_becomes_update() {
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         let evs = t.ingest(r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tu-1","type":"tool_result","content":"PERMISSION_TEST_OK","is_error":false}]}}"#).events;
         assert_eq!(
             evs,
-            vec![EchoesEvent::ToolCallUpdate {
+            vec![ConversationEvent::ToolCallUpdate {
                 tool_use_id: "tu-1".into(),
                 content: "PERMISSION_TEST_OK".into(),
                 is_error: false,
@@ -896,11 +896,11 @@ mod tests {
     /// result/success は TurnCompleted。usage を見ていない turn では context は None。
     #[test]
     fn result_becomes_turn_completed() {
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         let evs = t.ingest(r#"{"type":"result","subtype":"success","session_id":"sid-1","is_error":false,"total_cost_usd":0.012}"#).events;
         assert_eq!(
             evs,
-            vec![EchoesEvent::TurnCompleted {
+            vec![ConversationEvent::TurnCompleted {
                 session_id: "sid-1".into(),
                 cost_usd: Some(0.012),
                 context_tokens: None,
@@ -914,13 +914,13 @@ mod tests {
     /// ⚠️ result.usage（turn 合算、cache_read 重複計上）ではなく最終 assistant usage を使う。
     #[test]
     fn turn_completed_carries_context_gauge() {
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         t.ingest(r#"{"type":"assistant","message":{"role":"assistant","content":[],"usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":5,"output_tokens":1}}}"#);
         t.ingest(r#"{"type":"assistant","message":{"role":"assistant","content":[],"usage":{"input_tokens":8,"cache_read_input_tokens":200,"cache_creation_input_tokens":2,"output_tokens":1}}}"#);
         let evs = t.ingest(r#"{"type":"result","subtype":"success","session_id":"sid-1","is_error":false,"total_cost_usd":0.01,"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":18,"cacheReadInputTokens":300,"contextWindow":200000}}}"#);
         assert_eq!(
             evs.events,
-            vec![EchoesEvent::TurnCompleted {
+            vec![ConversationEvent::TurnCompleted {
                 session_id: "sid-1".into(),
                 cost_usd: Some(0.01),
                 context_tokens: Some(210), // 最後の assistant: 8 + 200 + 2
@@ -933,13 +933,13 @@ mod tests {
     /// init の model と前方一致する entry の contextWindow を選ぶ。
     #[test]
     fn context_window_prefers_session_model_entry() {
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         t.ingest(r#"{"type":"system","subtype":"init","session_id":"s","model":"claude-fable-5"}"#);
         t.ingest(r#"{"type":"assistant","message":{"role":"assistant","content":[],"usage":{"input_tokens":1,"cache_read_input_tokens":1,"cache_creation_input_tokens":1}}}"#);
         // subagent (haiku) の方が usage が大きくても、session model の entry が勝つ。
         let evs = t.ingest(r#"{"type":"result","subtype":"success","session_id":"s","is_error":false,"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":999,"cacheReadInputTokens":999999,"contextWindow":1000000},"claude-fable-5":{"inputTokens":10,"cacheReadInputTokens":100,"contextWindow":200000}}}"#);
         match &evs.events[..] {
-            [EchoesEvent::TurnCompleted { context_window, .. }] => {
+            [ConversationEvent::TurnCompleted { context_window, .. }] => {
                 assert_eq!(*context_window, Some(200000));
             }
             other => panic!("expected TurnCompleted, got {other:?}"),
@@ -949,7 +949,7 @@ mod tests {
     /// ノイズ行（hook / status / rate_limit / delta 済みの assistant スナップショット）は無視。
     #[test]
     fn ignores_noise_lines() {
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         // 本文を delta で供給済みにしておく — この文脈でのみ assistant snapshot は重複＝ノイズ。
         // delta 未観測の snapshot は本文の唯一の担い手なので拾う（synthetic turn、別テストで固める）。
         t.ingest(
@@ -971,7 +971,7 @@ mod tests {
     /// stream_event（delta 等）は disk に何も書かないので立てない。
     #[test]
     fn only_message_lines_commit_transcript() {
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         // 通常 turn の形を作る（本文は delta で供給済み）。この前提でのみ snapshot は重複＝破棄になる
         // — delta 未観測の synthetic turn では拾う（synthetic_turn_without_delta_surfaces_snapshot_text）。
         t.ingest(
@@ -1007,12 +1007,12 @@ mod tests {
     /// **assistant スナップショット（commit）が `content_block_stop`（ToolCall 発火）より先**に来る。
     ///
     /// つまり ToolCall は「既に disk にある block の遅れた表現」であり、
-    /// [`super::super::host::EchoesAgentHost`] の in-flight tail に載せてはならない。
+    /// [`super::super::host::ClaudeHost`] の in-flight tail に載せてはならない。
     /// この順序が逆転すると tail が ToolCall を掴んで replay が二重化する。
     #[test]
     fn tool_use_snapshot_commits_before_tool_call_fires() {
         let raw = include_str!("testdata/turn_read_edit.jsonl");
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         let mut commits = 0usize;
         let mut commits_at_first_tool_call = None;
 
@@ -1021,7 +1021,7 @@ mod tests {
             if out
                 .events
                 .iter()
-                .any(|e| matches!(e, EchoesEvent::ToolCall { .. }))
+                .any(|e| matches!(e, ConversationEvent::ToolCall { .. }))
             {
                 commits_at_first_tool_call = Some(commits);
                 break;
@@ -1044,7 +1044,7 @@ mod tests {
     #[test]
     fn golden_full_turn_read_edit() {
         let raw = include_str!("testdata/turn_read_edit.jsonl");
-        let mut t = EchoesTranslator::new();
+        let mut t = ClaudeTranslator::new();
         let mut evs = Vec::new();
         for line in raw.lines() {
             evs.extend(t.ingest(line).events);
@@ -1052,32 +1052,32 @@ mod tests {
 
         let session_inits = evs
             .iter()
-            .filter(|e| matches!(e, EchoesEvent::SessionInit { .. }))
+            .filter(|e| matches!(e, ConversationEvent::SessionInit { .. }))
             .count();
         let tool_calls: Vec<&str> = evs
             .iter()
             .filter_map(|e| match e {
-                EchoesEvent::ToolCall { name, .. } => Some(name.as_str()),
+                ConversationEvent::ToolCall { name, .. } => Some(name.as_str()),
                 _ => None,
             })
             .collect();
         let has_thought = evs
             .iter()
-            .any(|e| matches!(e, EchoesEvent::ThoughtChunk { .. }));
+            .any(|e| matches!(e, ConversationEvent::ThoughtChunk { .. }));
         let text: String = evs
             .iter()
             .filter_map(|e| match e {
-                EchoesEvent::MessageChunk { text } => Some(text.as_str()),
+                ConversationEvent::MessageChunk { text } => Some(text.as_str()),
                 _ => None,
             })
             .collect();
         let turn_completed = evs
             .iter()
-            .filter(|e| matches!(e, EchoesEvent::TurnCompleted { .. }))
+            .filter(|e| matches!(e, ConversationEvent::TurnCompleted { .. }))
             .count();
         let updates = evs
             .iter()
-            .filter(|e| matches!(e, EchoesEvent::ToolCallUpdate { .. }))
+            .filter(|e| matches!(e, ConversationEvent::ToolCallUpdate { .. }))
             .count();
 
         assert_eq!(session_inits, 1, "init は 1 回");
@@ -1097,7 +1097,7 @@ mod tests {
         // context ゲージが実測 turn から取れる（分子 = 最終 assistant usage 8+3932+34463、
         // 分母 = modelUsage.contextWindow）。result.usage の合算 106,945 ではないことが肝。
         let ctx = evs.iter().find_map(|e| match e {
-            EchoesEvent::TurnCompleted {
+            ConversationEvent::TurnCompleted {
                 context_tokens,
                 context_window,
                 ..
@@ -1108,7 +1108,7 @@ mod tests {
 
         // Edit tool_call の完全 input（PR3 diff 合成の素材）が取れている。
         let edit_input = evs.iter().find_map(|e| match e {
-            EchoesEvent::ToolCall { name, input, .. } if name == "Edit" => Some(input),
+            ConversationEvent::ToolCall { name, input, .. } if name == "Edit" => Some(input),
             _ => None,
         });
         let edit_input = edit_input.expect("Edit tool_call がある");

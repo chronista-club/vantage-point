@@ -42,7 +42,7 @@ use crate::capability::WiremsgStore;
 use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
 // tmux decoupling PR1: nudge の forward 先解決に使う repo control channel registry（SSOT は daemon）。
 use crate::daemon::server::ControlChannels;
-// channel E (doc 34): root session の mode (registry 直読) が forward method (lane_nudge / echoes_nudge) を分ける。
+// channel E (doc 34): root session の mode (registry 直読) が forward method (lane_nudge / conversation_nudge) を分ける。
 use crate::lane::session_registry::SessionMode;
 use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
 
@@ -146,11 +146,11 @@ pub(crate) struct NudgeTarget {
 /// doc 53 §8.3）。
 ///
 /// Chat lane は PtySlot を持たないため `lane_nudge` は構造的に失敗する（`write_to_lane` が
-/// `Err("Lane has no PtySlot")`）— engine 直接注入の `echoes_nudge` へ route する。
+/// `Err("Lane has no PtySlot")`）— engine 直接注入の `conversation_nudge` へ route する。
 /// payload は両 method とも `{lane, text}` で共通。
 pub(crate) fn nudge_method_for(root_mode: SessionMode) -> &'static str {
     match root_mode {
-        SessionMode::Gui => "echoes_nudge",
+        SessionMode::Gui => "conversation_nudge",
         SessionMode::Tui => "lane_nudge",
     }
 }
@@ -495,7 +495,7 @@ async fn pulse(
                     let count = ledger.get(&key).map(|r| r.count).unwrap_or(0);
                     let text = nudge_text(&msg.id, count);
                     // 所有 repo の control channel へ forward。method は root の mode で分岐
-                    // （Tui = lane_nudge → PtySlot 直書き / Chat = echoes_nudge → engine 注入、
+                    // （Tui = lane_nudge → PtySlot 直書き / Chat = conversation_nudge → engine 注入、
                     // doc 34 §3。payload は共通 {lane, text}）。
                     let resp = crate::daemon::server::forward_to_sp_control(
                         control_channels,
@@ -675,7 +675,7 @@ mod tests {
     }
 
     /// channel E (doc 34 §3): root session の mode が forward method を分ける。
-    /// Chat lane は PtySlot を持たないため lane_nudge は構造的に失敗する — echoes_nudge へ。
+    /// Chat lane は PtySlot を持たないため lane_nudge は構造的に失敗する — conversation_nudge へ。
     ///
     /// doc 53 R1: 判断は純関数 `nudge_method_for`（mode は呼び手が registry を直読して渡す）。
     /// 「打てる先の種類」は intent — 実体（slot の有無）で決めない（doc 53 §8.3: 実体だと
@@ -684,7 +684,7 @@ mod tests {
     fn nudge_method_follows_root_mode() {
         assert_eq!(
             nudge_method_for(SessionMode::Gui),
-            "echoes_nudge",
+            "conversation_nudge",
             "Chat は engine 直接注入"
         );
         assert_eq!(

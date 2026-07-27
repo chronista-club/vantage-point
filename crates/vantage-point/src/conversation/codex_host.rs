@@ -3,7 +3,7 @@
 //! 旧 turn-scoped（`codex exec` を turn ごと spawn する TurnHost）を、`codex app-server`
 //! 子プロセス 1 本 + JSONL JSON-RPC の常駐形に置き換えた（doc 39 §7「常駐型のみの一枚岩」の
 //! codex 実装、実測 de-risk = doc 41 §1 全 PASS）。プロセスモデルは **1 session = 1 app-server**
-//! （[`super::host::EchoesAgentHost`] と同型、doc 41 §2-1）。
+//! （[`super::host::ClaudeHost`] と同型、doc 41 §2-1）。
 //!
 //! ## protocol（doc 41 §1、codex-cli 0.144.5 実測）
 //!
@@ -24,8 +24,8 @@
 //!
 //! ## 途絶検知（常駐の規律）
 //!
-//! stdout close = app-server 途絶。意図的 stop 以外では [`EchoesEvent::Error`] を broadcast する
-//! （[`super::host::EchoesAgentHost`] の #692 と同じ — chatview に途絶が見える）。
+//! stdout close = app-server 途絶。意図的 stop 以外では [`ConversationEvent::Error`] を broadcast する
+//! （[`super::host::ClaudeHost`] の #692 と同じ — chatview に途絶が見える）。
 //!
 //! data / calculations / actions:
 //! - calculations: request/notification line の組み立て（`build_*`、純関数）+
@@ -42,7 +42,7 @@ use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use super::codex_rpc_translate::CodexRpcTranslator;
-use super::event::EchoesEvent;
+use super::event::ConversationEvent;
 use super::host::InFlight;
 
 /// CodexAgentHost の起動設定。
@@ -113,7 +113,7 @@ impl RpcState {
 
 /// reader task と host が共有する不変部 + 状態。
 struct RpcInner {
-    event_tx: broadcast::Sender<EchoesEvent>,
+    event_tx: broadcast::Sender<ConversationEvent>,
     repo: String,
     lane: String,
     cwd: String,
@@ -148,19 +148,19 @@ impl RpcInner {
         }
     }
 
-    fn emit(&self, event: EchoesEvent) {
+    fn emit(&self, event: ConversationEvent) {
         // in-flight fold（[`super::host::fold_in_flight`] と同規律のローカル版）:
         // 増分だけ tail に積み、会話が確定する event で世代を進めて捨てる。
         {
             let mut st = self.state.lock().expect("rpc state lock");
             match &event {
-                EchoesEvent::MessageChunk { .. } | EchoesEvent::ThoughtChunk { .. } => {
+                ConversationEvent::MessageChunk { .. } | ConversationEvent::ThoughtChunk { .. } => {
                     st.in_flight.tail.push(event.clone());
                 }
-                EchoesEvent::SessionInit { .. }
-                | EchoesEvent::TurnCompleted { .. }
-                | EchoesEvent::Error { .. }
-                | EchoesEvent::EngineExited { .. } => {
+                ConversationEvent::SessionInit { .. }
+                | ConversationEvent::TurnCompleted { .. }
+                | ConversationEvent::Error { .. }
+                | ConversationEvent::EngineExited { .. } => {
                     st.in_flight.tail.clear();
                     st.in_flight.seq = st.in_flight.seq.wrapping_add(1);
                 }
@@ -191,7 +191,7 @@ impl RpcInner {
                 self.lane
             );
         }
-        self.emit(EchoesEvent::SessionInit {
+        self.emit(ConversationEvent::SessionInit {
             session_id: thread_id.to_string(),
             model: None,
             permission_mode: None,
@@ -232,7 +232,7 @@ pub struct CodexAgentHost {
 impl CodexAgentHost {
     /// app-server 子プロセスを起動し、handshake（initialize → thread start/resume）を開始する。
     ///
-    /// [`super::host::EchoesAgentHost`] と同じく spawn は eager（ensure 時にプロセスが立つ）。
+    /// [`super::host::ClaudeHost`] と同じく spawn は eager（ensure 時にプロセスが立つ）。
     /// handshake は reader task 内で非同期に進み、完了前の submit は queue に積まれて
     /// thread 確定後に自動送出される。
     pub fn spawn(config: CodexRpcHostConfig) -> anyhow::Result<Self> {
@@ -259,7 +259,7 @@ impl CodexAgentHost {
         let stderr = child.stderr.take();
         let child_pid = child.id();
 
-        let (event_tx, _rx) = broadcast::channel::<EchoesEvent>(256);
+        let (event_tx, _rx) = broadcast::channel::<ConversationEvent>(256);
         let inner = Arc::new(RpcInner {
             event_tx,
             repo: config.repo,
@@ -315,7 +315,7 @@ impl CodexAgentHost {
         })
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<EchoesEvent> {
+    pub fn subscribe(&self) -> broadcast::Receiver<ConversationEvent> {
         self.inner.event_tx.subscribe()
     }
 
@@ -570,11 +570,11 @@ async fn run_reader(
                 // status=interrupted も「turn の完了」（意図的中断はエラーではない、doc 41 §2-3）。
                 // error field が載っていれば Error を併発して chatview に見せる。
                 if let Some(err) = params.pointer("/turn/error").filter(|v| !v.is_null()) {
-                    inner.emit(EchoesEvent::Error {
+                    inner.emit(ConversationEvent::Error {
                         message: format!("codex turn error: {}", error_message(err)),
                     });
                 }
-                inner.emit(EchoesEvent::TurnCompleted {
+                inner.emit(ConversationEvent::TurnCompleted {
                     session_id,
                     cost_usd: None,
                     context_tokens: None,
@@ -583,7 +583,7 @@ async fn run_reader(
                 inner.drain_queue().await;
             }
             "error" => {
-                inner.emit(EchoesEvent::Error {
+                inner.emit(ConversationEvent::Error {
                     message: format!("codex: {}", error_message(&params)),
                 });
             }
@@ -623,7 +623,7 @@ async fn run_reader(
         } else {
             format!("\n{stderr_tail}")
         };
-        inner.emit(EchoesEvent::EngineExited {
+        inner.emit(ConversationEvent::EngineExited {
             message: format!("codex app-server が休眠しました。次の送信で再開します。{detail}"),
         });
     }
@@ -646,7 +646,7 @@ async fn handle_response(
     match kind {
         ReqKind::Initialize => {
             if let Some(err) = error {
-                inner.emit(EchoesEvent::Error {
+                inner.emit(ConversationEvent::Error {
                     message: format!("codex app-server initialize 失敗: {}", error_message(err)),
                 });
                 return;
@@ -691,7 +691,7 @@ async fn handle_response(
         }
         ReqKind::ThreadStart => {
             if let Some(err) = error {
-                inner.emit(EchoesEvent::Error {
+                inner.emit(ConversationEvent::Error {
                     message: format!("codex thread/start 失敗: {}", error_message(err)),
                 });
                 return;
@@ -707,7 +707,7 @@ async fn handle_response(
                     st.turn_active = false;
                     st.turn_id = None;
                 }
-                inner.emit(EchoesEvent::Error {
+                inner.emit(ConversationEvent::Error {
                     message: format!("codex turn/start 失敗: {}", error_message(err)),
                 });
                 inner.drain_queue().await;
@@ -830,12 +830,12 @@ mod tests {
                 .expect("90s 以内に完了する")
                 .expect("recv");
             match ev {
-                EchoesEvent::SessionInit {
+                ConversationEvent::SessionInit {
                     session_id: sid, ..
                 } => session_id = sid,
-                EchoesEvent::MessageChunk { text: t } => text.push_str(&t),
-                EchoesEvent::TurnCompleted { .. } => break,
-                EchoesEvent::Error { message } => panic!("engine error: {message}"),
+                ConversationEvent::MessageChunk { text: t } => text.push_str(&t),
+                ConversationEvent::TurnCompleted { .. } => break,
+                ConversationEvent::Error { message } => panic!("engine error: {message}"),
                 _ => {}
             }
         }
@@ -862,8 +862,10 @@ mod tests {
                 .expect("60s 以内に turn が走り出す")
                 .expect("recv");
             match ev {
-                EchoesEvent::MessageChunk { .. } | EchoesEvent::ThoughtChunk { .. } => break,
-                EchoesEvent::Error { message } => panic!("engine error: {message}"),
+                ConversationEvent::MessageChunk { .. } | ConversationEvent::ThoughtChunk { .. } => {
+                    break;
+                }
+                ConversationEvent::Error { message } => panic!("engine error: {message}"),
                 _ => {}
             }
         }
@@ -874,7 +876,7 @@ mod tests {
                 .await
                 .expect("interrupt 後 30s 以内に turn/completed が来る（doc 41 §2-2）")
                 .expect("recv");
-            if matches!(ev, EchoesEvent::TurnCompleted { .. }) {
+            if matches!(ev, ConversationEvent::TurnCompleted { .. }) {
                 break;
             }
         }

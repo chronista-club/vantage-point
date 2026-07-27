@@ -373,7 +373,7 @@ pub(crate) async fn create_performer_orchestrated(
         .unwrap_or("unknown")
         .to_string();
     let addr = LaneAddress::performer(&repo_id, &req.name);
-    // doc 11 PR-B: agent 識別子 String 化。 wire format は新 agent 名 (echoes / shell / tmux 等)
+    // doc 11 PR-B: agent 識別子 String 化。 wire format は新 agent 名 (conversation / shell / tmux 等)
     // をそのまま受け取る。 未指定なら config の `default_agent` (未設定なら "claude" fallback、
     // PR-pre2 / VP-118 で "hd" → "claude" rename)。
     //
@@ -915,7 +915,7 @@ pub async fn delete_lane_orchestrated(
 
 /// VP-131: restart の透過 retry 設定。 tmux kill + spawn の race / transient failure を
 /// 吸収するため exponential backoff で 3 attempts まで自動 retry。 user click 1 回で
-/// 「auto retry」 が走り、 dogfood UX で「Restart したら確実に Echoes 復活する」 を担保。
+/// 「auto retry」 が走り、 dogfood UX で「Restart したら確実に Conversation 復活する」 を担保。
 const RESTART_MAX_ATTEMPTS: u32 = 3;
 const RESTART_BACKOFF_MS: [u64; 2] = [200, 500]; // attempt 0→1: 200ms、 attempt 1→2: 500ms
 

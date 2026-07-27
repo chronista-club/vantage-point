@@ -1,4 +1,4 @@
-//! ACP `session/update` → [`EchoesEvent`] 翻訳（doc 42 §3）
+//! ACP `session/update` → [`ConversationEvent`] 翻訳（doc 42 §3）
 //!
 //! [`super::acp_host::AcpAgentHost`]（grok / opencode の常駐 ACP host — ACP は engine 非依存な
 //! ので本翻訳器も両 engine 共有、doc 43）の update 層翻訳。lifecycle
@@ -7,7 +7,7 @@
 //!
 //! ## 方針（doc 42 §1 の実測 wire + ACP 標準形で固定）
 //!
-//! | update.sessionUpdate | EchoesEvent |
+//! | update.sessionUpdate | ConversationEvent |
 //! |----------------------|-------------|
 //! | `agent_message_chunk`（content.type=text） | `MessageChunk`（実測） |
 //! | `agent_thought_chunk` | `ThoughtChunk`（実測） |
@@ -18,7 +18,7 @@
 
 use std::collections::HashSet;
 
-use super::event::{EchoesEvent, PlanEntry};
+use super::event::{ConversationEvent, PlanEntry};
 
 /// content block（{type:"text", text}）から text を取り出す（それ以外の type は無視）。
 fn content_text(content: &serde_json::Value) -> Option<String> {
@@ -44,9 +44,9 @@ impl AcpTranslator {
         Self::default()
     }
 
-    /// `session/update` の params.update 1 件を食わせ、0 個以上の [`EchoesEvent`] を得る。
+    /// `session/update` の params.update 1 件を食わせ、0 個以上の [`ConversationEvent`] を得る。
     /// 未知 variant は無条件に空（寛容）。
-    pub fn ingest(&mut self, update: &serde_json::Value) -> Vec<EchoesEvent> {
+    pub fn ingest(&mut self, update: &serde_json::Value) -> Vec<ConversationEvent> {
         let kind = update
             .get("sessionUpdate")
             .and_then(|v| v.as_str())
@@ -55,12 +55,12 @@ impl AcpTranslator {
             "agent_message_chunk" => update
                 .get("content")
                 .and_then(content_text)
-                .map(|text| vec![EchoesEvent::MessageChunk { text }])
+                .map(|text| vec![ConversationEvent::MessageChunk { text }])
                 .unwrap_or_default(),
             "agent_thought_chunk" => update
                 .get("content")
                 .and_then(content_text)
-                .map(|text| vec![EchoesEvent::ThoughtChunk { text }])
+                .map(|text| vec![ConversationEvent::ThoughtChunk { text }])
                 .unwrap_or_default(),
             "tool_call" => {
                 let id = update
@@ -69,7 +69,7 @@ impl AcpTranslator {
                     .unwrap_or_default()
                     .to_string();
                 self.started_tools.insert(id.clone());
-                vec![EchoesEvent::ToolCall {
+                vec![ConversationEvent::ToolCall {
                     id,
                     name: update
                         .get("title")
@@ -92,7 +92,7 @@ impl AcpTranslator {
                 }
                 let mut out = Vec::new();
                 if !self.started_tools.remove(id) {
-                    out.push(EchoesEvent::ToolCall {
+                    out.push(ConversationEvent::ToolCall {
                         id: id.to_string(),
                         name: update
                             .get("title")
@@ -113,7 +113,7 @@ impl AcpTranslator {
                             .join("\n")
                     })
                     .unwrap_or_default();
-                out.push(EchoesEvent::ToolCallUpdate {
+                out.push(ConversationEvent::ToolCallUpdate {
                     tool_use_id: id.to_string(),
                     content: if content.is_empty() {
                         status.to_string()
@@ -148,7 +148,7 @@ impl AcpTranslator {
                 if entries.is_empty() {
                     Vec::new()
                 } else {
-                    vec![EchoesEvent::Plan { entries }]
+                    vec![ConversationEvent::Plan { entries }]
                 }
             }
             _ => Vec::new(),
@@ -170,7 +170,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             tr.ingest(&msg),
-            vec![EchoesEvent::MessageChunk { text: "gro".into() }]
+            vec![ConversationEvent::MessageChunk { text: "gro".into() }]
         );
         let thought: serde_json::Value = serde_json::from_str(
             r#"{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"考え中"}}"#,
@@ -178,7 +178,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             tr.ingest(&thought),
-            vec![EchoesEvent::ThoughtChunk {
+            vec![ConversationEvent::ThoughtChunk {
                 text: "考え中".into()
             }]
         );
@@ -194,7 +194,7 @@ mod tests {
         .unwrap();
         let ev = tr.ingest(&call);
         assert!(
-            matches!(&ev[0], EchoesEvent::ToolCall { id, name, .. } if id == "t1" && name == "shell")
+            matches!(&ev[0], ConversationEvent::ToolCall { id, name, .. } if id == "t1" && name == "shell")
         );
 
         // 中間 update は無視
@@ -210,7 +210,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             tr.ingest(&done),
-            vec![EchoesEvent::ToolCallUpdate {
+            vec![ConversationEvent::ToolCallUpdate {
                 tool_use_id: "t1".into(),
                 content: "file1".into(),
                 is_error: false,
@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(ev.len(), 2);
         assert!(matches!(
             &ev[1],
-            EchoesEvent::ToolCallUpdate { is_error: true, .. }
+            ConversationEvent::ToolCallUpdate { is_error: true, .. }
         ));
     }
 
@@ -239,7 +239,7 @@ mod tests {
         )
         .unwrap();
         let ev = tr.ingest(&plan);
-        assert!(matches!(&ev[0], EchoesEvent::Plan { entries } if entries.len() == 2));
+        assert!(matches!(&ev[0], ConversationEvent::Plan { entries } if entries.len() == 2));
 
         let cmds: serde_json::Value = serde_json::from_str(
             r#"{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"compact"}]}"#,

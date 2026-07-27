@@ -4,7 +4,7 @@
 //!
 //! performer の agent は従来 in-memory（LanePool の LaneInfo.agent）にしか無く、repo 再起動後の
 //! boot bootstrap（server.rs）は disk scan した全 performer を config の `default_agent`
-//! （= echoes）で spawn していた。「performer の agent は repo 再起動をまたいで永続しない」の
+//! （= conversation）で spawn していた。「performer の agent は repo 再起動をまたいで永続しない」の
 //! 既知制約の実体で、GUI「+ Add Performer」の agent 落ちと同根。
 //!
 //! ## 設計（console_mode / session_store と同じ per-lane state file パターン）
@@ -23,7 +23,7 @@ use std::path::Path;
 use super::session_store::SessionStore;
 
 /// agent 名の正規形（英数 + ハイフン + アンダースコア、非空）。
-/// 現行 agent（echoes/codex/grok/shell/hd）+ 撤去済み engine の legacy 文字列（cursor/agy 等）も
+/// 現行 agent（conversation/codex/grok/shell/hd）+ 撤去済み engine の legacy 文字列（cursor/agy 等）も
 /// 自由文字列として全て通る（EngineKind allowlist に縛られない）。壊れた file を spawn に渡さない防壁。
 fn is_valid_stand(agent: &str) -> bool {
     !agent.is_empty()

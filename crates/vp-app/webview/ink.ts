@@ -11,8 +11,8 @@
  *   `ink:snapshot_error`）で返す。`window.vpInk` は DevTools 検分用に残っているだけで、
  *   **Rust は名前で呼ばない**（doc 53 §6.5.1.3）
  * - 送信後 = **残らない**（送信 = 手放す。update との anchor drift を構造的に回避）
- * - 送信先 = focused session。mode で経路分岐（chat = `echoes:submit` / tui = PTY `term:write`）
- * - **server 0 行**: 既存 IPC（echoes:submit / term:write）を撃つだけ。永続も購読もしない
+ * - 送信先 = focused session。mode で経路分岐（chat = `conversation:submit` / tui = PTY `term:write`）
+ * - **server 0 行**: 既存 IPC（conversation:submit / term:write）を撃つだけ。永続も購読もしない
  *
  * ## 層の分離（CLAUDE.md: data / calculations / actions）
  *
@@ -119,10 +119,10 @@ function toBase64Utf8(s: string): string {
 	return btoa(bin);
 }
 
-/** InkRoute を実際の IPC に写す（chat = echoes:submit / tui = term:write）。 */
+/** InkRoute を実際の IPC に写す（chat = conversation:submit / tui = term:write）。 */
 function dispatchRoute(route: InkRoute): void {
 	if (route.kind === "gui") {
-		ipcSend({ t: "echoes:submit", lane: route.lane, session: route.session, prompt: route.prompt });
+		ipcSend({ t: "conversation:submit", lane: route.lane, session: route.session, prompt: route.prompt });
 	} else {
 		ipcSend({
 			t: "term:write",

@@ -374,7 +374,7 @@ pub(crate) async fn start_repo(
             for entry in &performers {
                 // per-lane agent 永続 (mem_1Cd4M7i5Enp3HHMLVYayRe): create 時に記録された agent で
                 // respawn する。記録不在 (旧 lane / 手動 `vp lane new`) は従来どおり default。
-                // これが無いと非 echoes performer (codex/grok) が repo 再起動で echoes に化ける
+                // これが無いと非 conversation performer (codex/grok) が repo 再起動で conversation に化ける
                 // (agent 非永続の既知バグの根治)。
                 let agent = crate::lane::agent_store::last(&performers_repo_id, &entry.name)
                     .unwrap_or_else(|| default_agent.clone());

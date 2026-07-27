@@ -41,7 +41,7 @@ protocol "vp-push" version="1.0.0" {
     // channel "push": envelope="t" で全 push を束ねる discriminated union（`PushEnvelope`）。
     // from="server" = Rust 側が開いて押し込む向き。lifetime="persistent" = webview の生存中ずっと。
     channel "push" from="server" lifetime="persistent" envelope="t" {
-        // ===== Echoes tui（xterm）の制御面 — 実装は webview/term.ts =====
+        // ===== Conversation tui（xterm）の制御面 — 実装は webview/term.ts =====
 
         // (lane, session) の xterm instance を用意する（既存なら no-op = 冪等）。
         // `is_root` は **host の選び方には使わない**（host の身元は session）。focus の優先だけ。
@@ -89,20 +89,20 @@ protocol "vp-push" version="1.0.0" {
             field "devices" type="array<json>"
         }
 
-        // ===== Echoes の Console 面（doc 33）— 実装は webview/console.ts =====
+        // ===== Conversation の Console 面（doc 33）— 実装は webview/console.ts =====
 
         // lane の session 一覧（roster）。**供給はこの 1 本**（doc 53 §11）で、呼び手は
-        // LanesLoaded の 1 箇所だけ。payload の形の持ち主は TS の `EchoesSessionListPayload`
+        // LanesLoaded の 1 箇所だけ。payload の形の持ち主は TS の `ConversationSessionListPayload`
         // （Rust 側は `session_list_payload()` が組む）。
         event "console:session_list" {
             field "lane" type="string"
             field "payload" type="json"
         }
 
-        // repo の EchoesAgentHost が吐く構造化イベント（gui の会話 stream）。
+        // repo の ClaudeHost が吐く構造化イベント（gui の会話 stream）。
         //
         // ⚠️ これは**制御面ではなく stream**。取りこぼしは受け側の replay 要求
-        // （`echoes:demand_start`）が埋めるので、**この channel の保留箱に頼らない**。
+        // （`conversation:demand_start`）が埋めるので、**この channel の保留箱に頼らない**。
         // 同じ channel に載せているのは窓口を増やさないため（保留窓は openDispatch →
         // installDispatch の間だけなので、stream が積み上がる余地は事実上ない）。
         event "console:event" {

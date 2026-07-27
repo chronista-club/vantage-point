@@ -282,7 +282,7 @@ enum LaneCommands {
         /// active 化する lane token ('conductor' or performer 名)
         name: String,
     },
-    /// この lane の最後の CC session id を表示 (R3-b、 echoes spawn の --resume 用)
+    /// この lane の最後の CC session id を表示 (R3-b、 conversation spawn の --resume 用)
     ///
     /// repo / lane は flag 優先、 無ければ VP_REPO / VP_LANE env から導出。
     /// 未記録 / env 不足なら何も出力せず exit 0 (caller は空文字で fallback 判定)。
@@ -332,13 +332,13 @@ enum LaneCommands {
     SlotNew {
         /// lane address ("<repo>/root" / "<repo>/performer/<name>")
         lane: String,
-        /// engine (agent 名: echoes / codex / grok / opencode / shell。省略時は現 root の engine)
+        /// engine (agent 名: conversation / codex / grok / opencode / shell。省略時は現 root の engine)
         #[arg(long)]
         agent: Option<String>,
     },
     /// lane の console (slot) を 1 枚閉じる ([`SlotNew`](LaneCommands::SlotNew) の対)
     ///
-    /// GUI の名札 ✕ と**同じ動詞** (`echoes_session_remove`)。session を registry から取り除き、
+    /// GUI の名札 ✕ と**同じ動詞** (`conversation_session_remove`)。session を registry から取り除き、
     /// 実体 (PtySlot / chat engine) は reconcile が畳む (doc 53 §12.4)。replay も破棄される。
     /// **root は閉じられない** (lane の代表 = mailbox の主。素に戻すのは `vp lane restart --fresh`)。
     SlotClose {

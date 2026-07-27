@@ -23,7 +23,7 @@ import { applyAppScene, cycleAppScene } from "./app-panes";
 // agent focus（runner / Devices / Preview）へ。Digit1 = lane workbench（board も console も chat も
 // この中の tiling）。
 const SCENE_HOTKEY_BY_CODE: Record<string, string> = {
-	Digit1: "lead-focus",
+	Digit1: "lane-focus",
 	Digit2: "runner-focus",
 	Digit3: "devices-focus",
 	Digit4: "preview-focus",

@@ -26,7 +26,7 @@ agent: string, created_at: string, pid: number | null, cwd: string,
 performer_status: PerformerStatusWire | null, 
 /**
  * doc 37: active engine の session id（claude=cc_session / codex=thread id / grok=ACP sessionId、
- * shell=None）。Echoes 共通ヘッダの session chip 用（表示専用）。旧 SP からは欠落 = None。
+ * shell=None）。Conversation 共通ヘッダの session chip 用（表示専用）。旧 SP からは欠落 = None。
  */
 engine_session_id: string | null, 
 /**

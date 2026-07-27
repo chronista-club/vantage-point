@@ -187,7 +187,7 @@ mod tests {
         let mut store = RetainedStore::new();
         store.set("repo/terminal/state/ready", RepoMessage::TerminalReady);
         store.set(
-            "repo/heavens-door/state/session-list",
+            "repo/conversation/state/session-list",
             RepoMessage::SessionList {
                 sessions: vec![],
                 active_id: None,

@@ -39,7 +39,7 @@ pub struct DaemonState {
     pub repos: Option<Arc<RwLock<HashMap<String, crate::capability::RepoInfo>>>>,
     /// Phase 1b: 各 Repo の Lane registry（RepoManagerCapability と共有）
     /// repo が register payload に lanes を載せて push、 disconnect で全 Lane drop。
-    /// agent (Echoes on Claude CLI) が `GET /api/lanes` で resolve するための cache。
+    /// agent (Conversation on Claude CLI) が `GET /api/lanes` で resolve するための cache。
     #[allow(clippy::type_complexity)]
     pub lane_registry:
         Option<Arc<RwLock<HashMap<String, Vec<crate::repo::lanes_state::LaneInfo>>>>>,
@@ -965,7 +965,7 @@ async fn canvas_router_for(
             path_key
         );
         register_terminal_demand(&live, control_channels.clone(), path_key.to_string());
-        register_echoes_demand(&live, control_channels.clone(), path_key.to_string());
+        register_conversation_demand(&live, control_channels.clone(), path_key.to_string());
         routers.insert(path_key.to_string(), live.clone());
         return live;
     }
@@ -984,7 +984,7 @@ async fn canvas_router_for(
     let router = Arc::new(crate::repo::topic_router::TopicRouter::new());
     register_terminal_demand(&router, control_channels.clone(), path_key.to_string());
     // gui: chat lane の transcript replay-on-attach（terminal と対称）。
-    register_echoes_demand(&router, control_channels.clone(), path_key.to_string());
+    register_conversation_demand(&router, control_channels.clone(), path_key.to_string());
     routers.insert(path_key.to_string(), router.clone());
     router
 }
@@ -1008,12 +1008,12 @@ fn register_terminal_demand(
     );
 }
 
-/// gui replay-on-attach: repo canvas router に echoes demand hook を登録する。
+/// gui replay-on-attach: repo canvas router に conversation demand hook を登録する。
 ///
-/// `repo/echoes/data/+/event` の購読者 0↔1 で `echoes_demand_start/stop {lane}` を撃つ。
-/// start を受けた repo は chat lane の transcript を `EchoesEvent` に起こして replay する
+/// `repo/conversation/data/+/event` の購読者 0↔1 で `conversation_demand_start/stop {lane}` を撃つ。
+/// start を受けた repo は chat lane の transcript を `ConversationEvent` に起こして replay する
 /// （非 retained topic なので、 これが無いと app 再起動後の ChatView が空になる）。
-fn register_echoes_demand(
+fn register_conversation_demand(
     router: &Arc<crate::repo::topic_router::TopicRouter>,
     control_channels: ControlChannels,
     path_key: String,
@@ -1022,13 +1022,13 @@ fn register_echoes_demand(
         router,
         control_channels,
         path_key,
-        "repo/echoes/data/+/event",
-        "echoes_demand_start",
-        "echoes_demand_stop",
+        "repo/conversation/data/+/event",
+        "conversation_demand_start",
+        "conversation_demand_stop",
     );
 }
 
-/// per-lane topic の demand hook を登録する共通実装（terminal / echoes で共有）。
+/// per-lane topic の demand hook を登録する共通実装（terminal / conversation で共有）。
 ///
 /// `pattern` は `repo/<x>/data/+/<y>` 形（lane key は segment 3）。 購読者の増減のたびに
 /// **その時点の level**（`demand_active`）を読んで `start_method` / `stop_method` を当該
@@ -1719,7 +1719,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     }
 
     // =========================================================================
-    // "gui" Channel（vp-app への配信バス — board / terminal / echoes / editor を一本で運ぶ）
+    // "gui" Channel（vp-app への配信バス — board / terminal / conversation / editor を一本で運ぶ）
     // =========================================================================
     // doc 52 §6: 旧名 "canvas" から改名（実態は board 専用でなく GUI への配信路の総称）。
     // vp-app は repo 直結ではなく Daemon :32000 の本 channel に集約する。 repo の TopicRouter を

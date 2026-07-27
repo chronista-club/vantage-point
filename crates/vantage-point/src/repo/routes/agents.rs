@@ -42,12 +42,12 @@ pub struct AgentInfo {
 
 /// built-in agent 一覧（engine 群 + shell）。
 ///
-/// engine 軸は [`crate::echoes::EngineKind`] が SSOT（doc 37）— **ここに engine を手書きで
+/// engine 軸は [`crate::conversation::EngineKind`] が SSOT（doc 37）— **ここに engine を手書きで
 /// 足さない**。新 engine は `EngineKind::ALL` に足せば dropdown に自動で載る（cursor 追加時に
 /// この静的 vec が取り残されて「GUI から作れない engine」が生まれた同型ミスの再発防止、
 /// moody 指摘 2026-07-15）。engine を持たない `"shell"`（shell のみ）だけをここで足す。
 pub fn list_agents() -> Vec<AgentInfo> {
-    let mut agents: Vec<AgentInfo> = crate::echoes::EngineKind::ALL
+    let mut agents: Vec<AgentInfo> = crate::conversation::EngineKind::ALL
         .iter()
         .map(|k| AgentInfo {
             name: k.agent_name().to_string(),

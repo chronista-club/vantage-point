@@ -2,10 +2,10 @@
 //!
 //! lane 単位で claude の `--model` alias を永続する。**「この lane はこの model で走る」**
 //! という単一の真実源として、両 Mode の claude 起動が同じ file を読む:
-//! - **tui（TUI console / echoes agent）**: `build_agent_command` が spawn 時に読み、
+//! - **tui（TUI console / conversation agent）**: `build_agent_command` が spawn 時に読み、
 //!   PtySlot にホストされる `claude … --model <alias>` の command line へ注入する
 //!   （repo 再起動後の respawn でも自動で維持される）。
-//! - **gui（GUI chat engine / EchoesAgentHost）**: `ensure_chat_engine` が読む。
+//! - **gui（GUI chat engine / ClaudeHost）**: `ensure_chat_engine` が読む。
 //!   切替は engine の drop → `--resume` 付き再 spawn で行うため、**会話コンテキストを
 //!   保ったままモデルだけ替わる**（セッション進行中の切替 = CC の `/model` の VP 版）。
 //!

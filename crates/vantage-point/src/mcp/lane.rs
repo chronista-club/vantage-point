@@ -336,7 +336,7 @@ impl VantageMcp {
 
     /// List Lanes in the current repo with comprehensive routing info (VP-124 Phase 1).
     ///
-    /// Conductor Lane Echoes が「lane を operate するすべての座標」 を 1 call で取得するための tool。
+    /// Conductor Lane Conversation が「lane を operate するすべての座標」 を 1 call で取得するための tool。
     /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Agents の wire address)、
     /// top-level に repo_addresses + machine_addresses を synthesize。
     #[tool(
@@ -395,7 +395,7 @@ impl VantageMcp {
             //   - `agent#<lane>` = その lane の Claude session 宛 (= coding-assistant inbox)
             //   - `board#<lane>` = その lane の board / board 宛
             // actor 名は `stands.rs` の `id` 体系 (`ECHOES.id = "agent"` / `BOARD.id = "board"`)。
-            // 愛称 (`echoes` / `board`) は表示専用なので wire には出さない。
+            // 愛称 (`conversation` / `board`) は表示専用なので wire には出さない。
             // wire syntax は `<agent-id>@<repo>/<lane>` (conductor は `/lane` 省略可)。
             // 旧実装の `<愛称>.<lane>@<repo>` (`.` 区切り) は `parse_address` で弾かれる不正形だった。
             // doc 44 P2: lane 名は `address.name` が唯一の在処（旧 `kind` / 複製 `name` は撤去）。

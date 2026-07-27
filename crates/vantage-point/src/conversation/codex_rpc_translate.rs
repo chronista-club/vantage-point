@@ -1,4 +1,4 @@
-//! codex app-server notification → [`EchoesEvent`] 翻訳（doc 41 §2-3）
+//! codex app-server notification → [`ConversationEvent`] 翻訳（doc 41 §2-3）
 //!
 //! [`super::codex_host::CodexAgentHost`]（常駐 RpcHost）の item 層翻訳。turn / thread の
 //! lifecycle（SessionInit / TurnCompleted / Error）は host 側が扱い、本 module は
@@ -6,7 +6,7 @@
 //!
 //! ## 方針（doc 41 §1 の実測 wire + `generate-json-schema` 0.144.5 で固定）
 //!
-//! | notification | EchoesEvent |
+//! | notification | ConversationEvent |
 //! |--------------|-------------|
 //! | `item/agentMessage/delta` | `MessageChunk`（主 stream） |
 //! | `item/reasoning/textDelta` / `summaryTextDelta` | `ThoughtChunk` |
@@ -17,7 +17,7 @@
 
 use std::collections::HashSet;
 
-use super::event::EchoesEvent;
+use super::event::ConversationEvent;
 
 /// tool 系 item の表示写像（exec 版 `codex_translate::tool_name` と同じ語彙に揃える —
 /// GUI の見た目が TurnHost 時代と変わらないこと）。None = tool として扱わない type。
@@ -115,22 +115,26 @@ impl CodexRpcTranslator {
         Self::default()
     }
 
-    /// notification 1 件を食わせ、0 個以上の [`EchoesEvent`] を得る（純翻訳）。
+    /// notification 1 件を食わせ、0 個以上の [`ConversationEvent`] を得る（純翻訳）。
     /// lifecycle 系（thread/turn/error）は host が先に刈るため、ここに来るのは item 系のみ
     /// という前提は**置かない** — 未知 method は無条件に空を返す（寛容）。
-    pub fn ingest(&mut self, method: &str, params: &serde_json::Value) -> Vec<EchoesEvent> {
+    pub fn ingest(&mut self, method: &str, params: &serde_json::Value) -> Vec<ConversationEvent> {
         match method {
             "item/agentMessage/delta" => {
                 self.mark_delta(params);
                 match params.get("delta").and_then(|v| v.as_str()) {
-                    Some(d) if !d.is_empty() => vec![EchoesEvent::MessageChunk { text: d.into() }],
+                    Some(d) if !d.is_empty() => {
+                        vec![ConversationEvent::MessageChunk { text: d.into() }]
+                    }
                     _ => Vec::new(),
                 }
             }
             "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
                 self.mark_delta(params);
                 match params.get("delta").and_then(|v| v.as_str()) {
-                    Some(d) if !d.is_empty() => vec![EchoesEvent::ThoughtChunk { text: d.into() }],
+                    Some(d) if !d.is_empty() => {
+                        vec![ConversationEvent::ThoughtChunk { text: d.into() }]
+                    }
                     _ => Vec::new(),
                 }
             }
@@ -156,7 +160,7 @@ impl CodexRpcTranslator {
         }
     }
 
-    fn tool_started(&mut self, item: &serde_json::Value) -> Vec<EchoesEvent> {
+    fn tool_started(&mut self, item: &serde_json::Value) -> Vec<ConversationEvent> {
         let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let Some(name) = tool_name(item_type) else {
             return Vec::new(); // agentMessage / reasoning / userMessage 等は started で何も出さない
@@ -167,14 +171,14 @@ impl CodexRpcTranslator {
             .unwrap_or_default()
             .to_string();
         self.started_tools.insert(id.clone());
-        vec![EchoesEvent::ToolCall {
+        vec![ConversationEvent::ToolCall {
             id,
             name: name.into(),
             input: tool_input(item),
         }]
     }
 
-    fn item_completed(&mut self, item: &serde_json::Value) -> Vec<EchoesEvent> {
+    fn item_completed(&mut self, item: &serde_json::Value) -> Vec<ConversationEvent> {
         let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let id = item.get("id").and_then(|v| v.as_str()).unwrap_or_default();
         match item_type {
@@ -183,7 +187,9 @@ impl CodexRpcTranslator {
                     return Vec::new(); // delta で全文流し済み
                 }
                 match item.get("text").and_then(|v| v.as_str()) {
-                    Some(t) if !t.is_empty() => vec![EchoesEvent::MessageChunk { text: t.into() }],
+                    Some(t) if !t.is_empty() => {
+                        vec![ConversationEvent::MessageChunk { text: t.into() }]
+                    }
                     _ => Vec::new(),
                 }
             }
@@ -195,7 +201,7 @@ impl CodexRpcTranslator {
                 if text.is_empty() {
                     Vec::new()
                 } else {
-                    vec![EchoesEvent::ThoughtChunk { text }]
+                    vec![ConversationEvent::ThoughtChunk { text }]
                 }
             }
             t => {
@@ -205,14 +211,14 @@ impl CodexRpcTranslator {
                 let mut out = Vec::new();
                 if !self.started_tools.remove(id) {
                     // started を観測していない completed は ToolCall を補完（行が浮かない）。
-                    out.push(EchoesEvent::ToolCall {
+                    out.push(ConversationEvent::ToolCall {
                         id: id.to_string(),
                         name: name.into(),
                         input: tool_input(item),
                     });
                 }
                 let (content, is_error) = tool_result(item);
-                out.push(EchoesEvent::ToolCallUpdate {
+                out.push(ConversationEvent::ToolCallUpdate {
                     tool_use_id: id.to_string(),
                     content,
                     is_error,
@@ -240,13 +246,13 @@ mod tests {
             serde_json::from_str(r#"{"itemId":"msg_04f764","delta":"-alpha"}"#).unwrap();
         assert_eq!(
             tr.ingest("item/agentMessage/delta", &d1),
-            vec![EchoesEvent::MessageChunk {
+            vec![ConversationEvent::MessageChunk {
                 text: "pong".into()
             }]
         );
         assert_eq!(
             tr.ingest("item/agentMessage/delta", &d2),
-            vec![EchoesEvent::MessageChunk {
+            vec![ConversationEvent::MessageChunk {
                 text: "-alpha".into()
             }]
         );
@@ -263,7 +269,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             tr.ingest("item/completed", &done2),
-            vec![EchoesEvent::MessageChunk {
+            vec![ConversationEvent::MessageChunk {
                 text: "full text".into()
             }]
         );
@@ -294,7 +300,7 @@ mod tests {
         assert_eq!(ev.len(), 1);
         assert!(matches!(
             &ev[0],
-            EchoesEvent::ToolCall { id, name, .. } if id == "c1" && name == "shell"
+            ConversationEvent::ToolCall { id, name, .. } if id == "c1" && name == "shell"
         ));
 
         let completed: serde_json::Value = serde_json::from_str(
@@ -304,7 +310,7 @@ mod tests {
         let ev = tr.ingest("item/completed", &completed);
         assert_eq!(
             ev,
-            vec![EchoesEvent::ToolCallUpdate {
+            vec![ConversationEvent::ToolCallUpdate {
                 tool_use_id: "c1".into(),
                 content: "file1\nfile2".into(),
                 is_error: false,
@@ -319,10 +325,10 @@ mod tests {
         .unwrap();
         let ev = tr.ingest("item/completed", &failed);
         assert_eq!(ev.len(), 2, "ToolCall 補完 + Update");
-        assert!(matches!(&ev[0], EchoesEvent::ToolCall { id, .. } if id == "c2"));
+        assert!(matches!(&ev[0], ConversationEvent::ToolCall { id, .. } if id == "c2"));
         assert!(matches!(
             &ev[1],
-            EchoesEvent::ToolCallUpdate { is_error: true, .. }
+            ConversationEvent::ToolCallUpdate { is_error: true, .. }
         ));
     }
 
@@ -334,7 +340,7 @@ mod tests {
             serde_json::from_str(r#"{"itemId":"r1","delta":"考え中"}"#).unwrap();
         assert_eq!(
             tr.ingest("item/reasoning/textDelta", &d),
-            vec![EchoesEvent::ThoughtChunk {
+            vec![ConversationEvent::ThoughtChunk {
                 text: "考え中".into()
             }]
         );
@@ -354,7 +360,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             tr.ingest("item/completed", &done2),
-            vec![EchoesEvent::ThoughtChunk {
+            vec![ConversationEvent::ThoughtChunk {
                 text: "要約 A\n要約 B".into()
             }]
         );
@@ -370,9 +376,9 @@ mod tests {
         .unwrap();
         let ev = tr.ingest("item/completed", &mcp);
         assert_eq!(ev.len(), 2);
-        assert!(matches!(&ev[0], EchoesEvent::ToolCall { name, .. } if name == "mcp"));
+        assert!(matches!(&ev[0], ConversationEvent::ToolCall { name, .. } if name == "mcp"));
         assert!(
-            matches!(&ev[1], EchoesEvent::ToolCallUpdate { content, is_error: false, .. } if content.contains("ok"))
+            matches!(&ev[1], ConversationEvent::ToolCallUpdate { content, is_error: false, .. } if content.contains("ok"))
         );
 
         let ws: serde_json::Value = serde_json::from_str(
@@ -380,7 +386,7 @@ mod tests {
         )
         .unwrap();
         let ev = tr.ingest("item/started", &ws);
-        assert!(matches!(&ev[0], EchoesEvent::ToolCall { name, .. } if name == "web_search"));
+        assert!(matches!(&ev[0], ConversationEvent::ToolCall { name, .. } if name == "web_search"));
 
         // 未知 method / 未知 item type は静かに無視（protocol drift 吸収）
         assert_eq!(

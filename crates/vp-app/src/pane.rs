@@ -10,7 +10,7 @@
 //!
 //! - Repo (= Runtime Process) accordion: `RepoPaneState`
 //! - Lane (= Session Process / Conductor/Performer): `SidebarState.lanes_by_repo` (repo fetch 結果)
-//! - Agent (= Agent process / Echoes/Shell/...): Lane の中身として並列 row
+//! - Agent (= Agent process / Conversation/Shell/...): Lane の中身として並列 row
 //!
 //! つまり Pane は廃止、 階層は **Repo → Lane → Agent** に統一。
 //!
@@ -220,7 +220,7 @@ pub struct SidebarState {
     /// Key: Lane address (Display 形 `"<repo>/root"`)、 Value: [`MessageState`]。
     /// `spawn_lane_inbox_poller` (5s 間隔) が `AppEvent::ResolveLaneInboxes` を発火、
     /// main thread が active Lane に対して MessageState を populate する。
-    /// JS 側は entry が存在する Lane に `.vp-message-icon` を render (Echoes icon の右隣)。
+    /// JS 側は entry が存在する Lane に `.vp-message-icon` を render (Conversation icon の右隣)。
     /// disk persist 不要、 skip_serializing で軽量化。
     /// Phase 2 PR-P2-3 では unread_count / has_persistent / last_msg_ts は default 値、
     /// icon visibility のみ用途。 actual peek 値は後続 PR で backend API 経由で populate。

@@ -1,7 +1,7 @@
-//! Lane echoes pump — gui 版の terminal_pump（doc 32 §3）。
+//! Lane conversation pump — gui 版の terminal_pump（doc 32 §3）。
 //!
-//! 1 つの Lane の [`EchoesAgentHost`] が broadcast する [`EchoesEvent`] を購読し、
-//! per-lane topic (`repo/echoes/data/{lane}/event`) に [`RepoMessage::EchoesEvent`]
+//! 1 つの Lane の [`ClaudeHost`] が broadcast する [`ConversationEvent`] を購読し、
+//! per-lane topic (`repo/conversation/data/{lane}/event`) に [`RepoMessage::ConversationEvent`]
 //! として route する。これにより gui の構造化イベントが単一 topic 空間に乗り、
 //! daemon 経由で vp-app へ届く（terminal_pump と完全に同型）。
 //!
@@ -15,28 +15,28 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use crate::echoes::EchoesEvent;
-use crate::echoes::replay_log::{self, ReplayLogTap};
+use crate::conversation::ConversationEvent;
+use crate::conversation::replay_log::{self, ReplayLogTap};
 use crate::protocol::RepoMessage;
 use crate::repo::topic_router::TopicRouter;
 
-/// 1 session の chat host output broadcast を購読し、`EchoesEvent` topic に流す pump を spawn。
+/// 1 session の chat host output broadcast を購読し、`ConversationEvent` topic に流す pump を spawn。
 ///
 /// - `lane`: LaneAddress の Display 形（`"vp/root"` 等）。topic key 化は `TopicRouter` が担う。
 ///   ⚠️ session key を lane 名に埋めない（doc 38 落とし穴① — topic は per-lane のまま、
 ///   session は message の別 field で運ぶ）。
 /// - `session`: 発生元 session の VP 採番 key（doc 38。N=1 特殊ケースは 1）。
-/// - `rx`: chat host の `subscribe()` で得た EchoesEvent の broadcast receiver。
+/// - `rx`: chat host の `subscribe()` で得た ConversationEvent の broadcast receiver。
 /// - `topic_router`: repo の topic_router。
 /// - `replay_log`: `Some` = 配信 event を disk に per-session 記録して replay 源にする。
 ///   **transcript を持たない engine（cursor/codex）にだけ渡す** — claude は transcript が SSOT
 ///   なので `None`（二重化しない）。記録は配送と独立（書き込み失敗は warn するだけ）。
 ///
 /// Host drop（broadcast Closed）で pump は自然終了する。lag 時は drop を warn して継続。
-pub fn spawn_lane_echoes_pump(
+pub fn spawn_lane_conversation_pump(
     lane: String,
     session: crate::lane::session_registry::SessionKey,
-    mut rx: broadcast::Receiver<EchoesEvent>,
+    mut rx: broadcast::Receiver<ConversationEvent>,
     topic_router: Arc<TopicRouter>,
     replay_log: Option<ReplayLogTap>,
 ) -> JoinHandle<()> {
@@ -51,7 +51,7 @@ pub fn spawn_lane_echoes_pump(
                         tap.on_event(&event);
                     }
                     topic_router
-                        .route(RepoMessage::EchoesEvent {
+                        .route(RepoMessage::ConversationEvent {
                             lane: lane.clone(),
                             session,
                             event,
@@ -60,7 +60,7 @@ pub fn spawn_lane_echoes_pump(
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!(
-                        "lane echoes pump lagged: {n} events dropped (lane={lane}#{session})"
+                        "lane conversation pump lagged: {n} events dropped (lane={lane}#{session})"
                     );
                 }
                 Err(broadcast::error::RecvError::Closed) => {
@@ -69,7 +69,9 @@ pub fn spawn_lane_echoes_pump(
                     if let Some(tap) = tap.as_mut() {
                         tap.flush();
                     }
-                    tracing::debug!("lane echoes pump 終了 (host dropped, lane={lane}#{session})");
+                    tracing::debug!(
+                        "lane conversation pump 終了 (host dropped, lane={lane}#{session})"
+                    );
                     break;
                 }
             }
@@ -80,7 +82,7 @@ pub fn spawn_lane_echoes_pump(
 /// pump の replay-log tap 状態。coalesce 用の pending buffer を持ち、配信 event を disk に写す。
 ///
 /// coalesce の狙い（`file を細切れにしない + 順序保存`）:
-/// - live の [`EchoesEvent::MessageChunk`] は 1 token 前後の高頻度 delta。1 行 1 delta で書くと
+/// - live の [`ConversationEvent::MessageChunk`] は 1 token 前後の高頻度 delta。1 行 1 delta で書くと
 ///   file が肥大 + 読みが遅い。tap 内で pending String に蓄積し、**記録対象の非 chunk event が
 ///   来る直前 / turn 完了 / pump 終了**で 1 本の MessageChunk として flush する
 struct ReplayTap {
@@ -100,7 +102,7 @@ impl ReplayTap {
         }
     }
 
-    fn on_event(&mut self, event: &EchoesEvent) {
+    fn on_event(&mut self, event: &ConversationEvent) {
         tap_event(&self.base, &self.tap, &mut self.pending, event);
     }
 
@@ -120,12 +122,12 @@ impl ReplayTap {
 /// - `ReplayStart` / `ReplayEnd`: replay 制御マーカー（記録すると入れ子で二重 clear）
 /// - `UserMessage`: pump には流れない（submit 成功後に unison_server が別途 append する）
 /// - `NowLine`: 揮発の自己申告（doc 51 §1 A3b）— 過去の「今」を再生すると嘘になる
-fn tap_event(base: &Path, tap: &ReplayLogTap, pending: &mut String, event: &EchoesEvent) {
+fn tap_event(base: &Path, tap: &ReplayLogTap, pending: &mut String, event: &ConversationEvent) {
     match event {
         // 高頻度 delta は貯めるだけ（ここでは書かない）。
-        EchoesEvent::MessageChunk { text } => pending.push_str(text),
+        ConversationEvent::MessageChunk { text } => pending.push_str(text),
         // turn 完了: 貯めた本文を flush → turn 完了を書く → サイズ制御（turn 境界のみ）。
-        EchoesEvent::TurnCompleted { .. } => {
+        ConversationEvent::TurnCompleted { .. } => {
             flush_pending(base, tap, pending);
             persist(base, tap, event);
             if let Err(e) = replay_log::truncate_if_needed_in(
@@ -135,15 +137,15 @@ fn tap_event(base: &Path, tap: &ReplayLogTap, pending: &mut String, event: &Echo
                 replay_log::MAX_BYTES,
             ) {
                 tracing::warn!(
-                    "echoes replay-log truncate に失敗（label={}）: {e}",
+                    "conversation replay-log truncate に失敗（label={}）: {e}",
                     tap.label
                 );
             }
         }
         // 記録対象の構造化 event: 順序保存のため pending を先に flush してから書く。
-        EchoesEvent::ToolCall { .. }
-        | EchoesEvent::ToolCallUpdate { .. }
-        | EchoesEvent::Plan { .. } => {
+        ConversationEvent::ToolCall { .. }
+        | ConversationEvent::ToolCallUpdate { .. }
+        | ConversationEvent::Plan { .. } => {
             flush_pending(base, tap, pending);
             persist(base, tap, event);
         }
@@ -157,16 +159,19 @@ fn flush_pending(base: &Path, tap: &ReplayLogTap, pending: &mut String) {
     if pending.is_empty() {
         return;
     }
-    let event = EchoesEvent::MessageChunk {
+    let event = ConversationEvent::MessageChunk {
         text: std::mem::take(pending),
     };
     persist(base, tap, &event);
 }
 
 /// 1 event を append（失敗は warn のみ = 配送を止めない）。
-fn persist(base: &Path, tap: &ReplayLogTap, event: &EchoesEvent) {
+fn persist(base: &Path, tap: &ReplayLogTap, event: &ConversationEvent) {
     if let Err(e) = replay_log::append_in(base, &tap.repo, &tap.label, event) {
-        tracing::warn!("echoes replay-log 追記に失敗（label={}）: {e}", tap.label);
+        tracing::warn!(
+            "conversation replay-log 追記に失敗（label={}）: {e}",
+            tap.label
+        );
     }
 }
 
@@ -176,19 +181,21 @@ mod tests {
 
     use super::*;
 
-    /// pump が EchoesEvent を per-lane topic に route し、subscriber が受け取れる。
+    /// pump が ConversationEvent を per-lane topic に route し、subscriber が受け取れる。
     #[tokio::test]
-    async fn test_pump_routes_echoes_event_to_per_lane_topic() {
+    async fn test_pump_routes_conversation_event_to_per_lane_topic() {
         let router = Arc::new(TopicRouter::new());
-        let (tx, rx) = broadcast::channel::<EchoesEvent>(16);
+        let (tx, rx) = broadcast::channel::<ConversationEvent>(16);
 
-        // echoes data は非 retained なので route 前に subscribe が要る。
-        let (_id, mut srx) = router.subscribe("repo/echoes/data/vp~root/event").await;
+        // conversation data は非 retained なので route 前に subscribe が要る。
+        let (_id, mut srx) = router
+            .subscribe("repo/conversation/data/vp~root/event")
+            .await;
 
         // claude 相当 = tap なし（transcript が SSOT）。
-        let _h = spawn_lane_echoes_pump("vp/root".to_string(), 2, rx, router.clone(), None);
+        let _h = spawn_lane_conversation_pump("vp/root".to_string(), 2, rx, router.clone(), None);
 
-        tx.send(EchoesEvent::MessageChunk {
+        tx.send(ConversationEvent::MessageChunk {
             text: "hello".to_string(),
         })
         .expect("send");
@@ -198,9 +205,9 @@ mod tests {
             .expect("timeout")
             .expect("recv");
         // doc 38 落とし穴①: session が topic key（lane 部分）に混入しないこと。
-        assert_eq!(topic, "repo/echoes/data/vp~root/event");
+        assert_eq!(topic, "repo/conversation/data/vp~root/event");
         match msg {
-            RepoMessage::EchoesEvent {
+            RepoMessage::ConversationEvent {
                 lane,
                 session,
                 event,
@@ -209,7 +216,7 @@ mod tests {
                 assert_eq!(session, 2, "session は message の別 field で運ぶ");
                 assert_eq!(
                     event,
-                    EchoesEvent::MessageChunk {
+                    ConversationEvent::MessageChunk {
                         text: "hello".into()
                     }
                 );
@@ -236,7 +243,7 @@ mod tests {
                 tmp.path(),
                 &tap,
                 &mut pending,
-                &EchoesEvent::MessageChunk {
+                &ConversationEvent::MessageChunk {
                     text: part.to_string(),
                 },
             );
@@ -251,7 +258,7 @@ mod tests {
             tmp.path(),
             &tap,
             &mut pending,
-            &EchoesEvent::ToolCall {
+            &ConversationEvent::ToolCall {
                 id: "t1".to_string(),
                 name: "Bash".to_string(),
                 input: serde_json::json!({"command": "ls"}),
@@ -262,7 +269,7 @@ mod tests {
             tmp.path(),
             &tap,
             &mut pending,
-            &EchoesEvent::TurnCompleted {
+            &ConversationEvent::TurnCompleted {
                 session_id: "s".to_string(),
                 cost_usd: None,
                 context_tokens: None,
@@ -274,15 +281,15 @@ mod tests {
         assert_eq!(
             events,
             vec![
-                EchoesEvent::MessageChunk {
+                ConversationEvent::MessageChunk {
                     text: "Hello, world".to_string()
                 },
-                EchoesEvent::ToolCall {
+                ConversationEvent::ToolCall {
                     id: "t1".to_string(),
                     name: "Bash".to_string(),
                     input: serde_json::json!({"command": "ls"}),
                 },
-                EchoesEvent::TurnCompleted {
+                ConversationEvent::TurnCompleted {
                     session_id: "s".to_string(),
                     cost_usd: None,
                     context_tokens: None,
@@ -308,7 +315,7 @@ mod tests {
             tmp.path(),
             &tap,
             &mut pending,
-            &EchoesEvent::MessageChunk {
+            &ConversationEvent::MessageChunk {
                 text: "keep".to_string(),
             },
         );
@@ -317,7 +324,7 @@ mod tests {
             tmp.path(),
             &tap,
             &mut pending,
-            &EchoesEvent::ThoughtChunk {
+            &ConversationEvent::ThoughtChunk {
                 text: "secret thinking".to_string(),
             },
         );
@@ -326,7 +333,7 @@ mod tests {
             tmp.path(),
             &tap,
             &mut pending,
-            &EchoesEvent::Error {
+            &ConversationEvent::Error {
                 message: "transient".to_string(),
             },
         );
@@ -339,7 +346,7 @@ mod tests {
         flush_pending(tmp.path(), &tap, &mut pending);
         assert_eq!(
             replay_log::load_in(tmp.path(), "vp", "root"),
-            vec![EchoesEvent::MessageChunk {
+            vec![ConversationEvent::MessageChunk {
                 text: "keep".to_string()
             }],
             "記録しない event は残さず、貯めた本文だけ flush される"

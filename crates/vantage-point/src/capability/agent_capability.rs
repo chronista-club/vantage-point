@@ -399,7 +399,7 @@ impl Capability for AgentCapability {
             "model": self.config.model,
             "has_event_bus": self.event_bus.is_some(),
             "has_current_task": self.current_task.is_some(),
-            "stand_metaphor": "Echoes",
+            "stand_metaphor": "Conversation",
         });
         crate::capability::DiagnosticReport::with_details(
             self.name(),

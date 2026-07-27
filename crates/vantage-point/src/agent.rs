@@ -6,7 +6,7 @@
 //!   ([`InteractiveClaudeAgent`]、デフォルト)
 //!
 //! 対話モードの claude (TUI) は本モジュールでなく lane の tmux/PTY 経路
-//! (`.mise/tasks/vp/agent/echoes`) が担う。
+//! (`.mise/tasks/vp/agent/conversation`) が担う。
 //!
 //! ## Stream-JSON 入力フォーマット (Interactiveモード用)
 //!

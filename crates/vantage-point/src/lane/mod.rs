@@ -29,7 +29,7 @@ pub mod engine_model;
 pub mod lane_id;
 /// resume 失敗の観測記録（`vp lane resume-failed` の実体、 `||` chain 中継）
 pub mod resume_failure;
-/// lane 単位の Echoes session registry 永続（doc 38 — 1 Lane = N session、key/agent/focused）
+/// lane 単位の Conversation session registry 永続（doc 38 — 1 Lane = N session、key/agent/focused）
 pub mod session_registry;
 /// engine session id 永続の共通機構（cc/cursor/codex_session の共通核、doc 37）
 pub(crate) mod session_store;

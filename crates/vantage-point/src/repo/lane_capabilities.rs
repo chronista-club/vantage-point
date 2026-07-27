@@ -5,7 +5,7 @@
 //!
 //! ## host する Agent (target、 doc 12 §9 catalog)
 //!
-//! - **Echoes 💬** = mise task 経由の PtySlot で立つ (LaneCapabilities では host しない、
+//! - **Conversation 💬** = mise task 経由の PtySlot で立つ (LaneCapabilities では host しない、
 //!   `LanePool` の各 Lane entry の PtySlot で扱う、 doc 13 §10 Q-7 暫定確定)
 //! - **Board 🧭** (`BoardStand`): PR-δ-2 (VP-136) で **`LaneStandRegistry` 経由 host** へ進化、
 //!   Lane あたり独立 instance (= 1 → N cardinality)
@@ -45,7 +45,7 @@ use crate::device_io::DeviceIoStand;
 /// Lane 階層 Agent container (Lane あたり 1 instance)。
 ///
 /// PR-δ-2 (VP-136) で **`registry: LaneStandRegistry` 経由 N Agent host** に統一。
-/// Echoes / shell は mise task PtySlot 経由なので本 struct には host しない
+/// Conversation / shell は mise task PtySlot 経由なので本 struct には host しない
 /// (`LanePool` の各 Lane entry の PtySlot で扱う、 doc 13 §10 Q-7 暫定確定)。
 // 要確認（audit 2026-07-18、先行実装の可能性）: PR-δ/PR-γ Agent-host skeleton。現状 field は未 read。
 #[allow(dead_code)]

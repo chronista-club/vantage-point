@@ -52,7 +52,7 @@ const REPLAY_CLEAR_PREFIX: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
 /// - `lane`: LaneAddress の Display 形 (`"vp/root"` / `"vp/performer/foo"`)。 vp-app が
 ///   `/ws/terminal?lane=` に渡していた値と一致させ、 topic key 化は `TopicRouter` が担う。
 /// - `session`: この pump が担う session の VP 採番 key（doc 50 §4.6 A6）。topic は lane 単位で
-///   共有し、 session は `LaneTerminalOutput.session` に stamp する（gui の `route_echoes` と
+///   共有し、 session は `LaneTerminalOutput.session` に stamp する（gui の `route_conversation` と
 ///   対称 — 同 lane の複数 session が同一 topic に流れ、 World A の xterm が session で振り分ける）。
 /// - `replay`: attach 時に先頭配送する直近出力 snapshot。 rx と原子的に取得したもの
 ///   (`LanePool::attach_output`) を渡せば byte 順序が保たれる (欠落・重複なし)。

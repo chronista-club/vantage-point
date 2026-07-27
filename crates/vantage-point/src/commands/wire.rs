@@ -130,7 +130,7 @@ pub enum WireCommands {
         agent: String,
     },
     /// claude hook 実体 (R2-c、 チャネル B): stdin の hook JSON を読み、 未読 wire が
-    /// あれば additionalContext を stdout に出す。 echoes spawn が --settings で注入する
+    /// あれば additionalContext を stdout に出す。 conversation spawn が --settings で注入する
     /// (決定 D2)。 あらゆる失敗は silent 成功 (fail-open、 会話を邪魔しない)。
     /// 注意: CC hook 専用 — stdin を pipe で繋いで使う (TTY 直接実行は即 return する)。
     HookCheck,
@@ -379,7 +379,7 @@ async fn thread(message_id: &str) -> Result<()> {
 /// VP_REPO / VP_LANE の値から自 wire address を導出する (純関数、 R2-c)
 ///
 /// conductor → `agent@<repo>`、 performer → `agent@<repo>/<name>`
-/// (echoes task の lane_label と一致: conductor / performer 名 / unnamed)。
+/// (conversation task の lane_label と一致: conductor / performer 名 / unnamed)。
 /// env 不足/空 = VP 外で起動された claude → None (hook は何もしない)。
 fn wire_address_from_env(repo: Option<&str>, lane: Option<&str>) -> Option<String> {
     let repo = repo.filter(|s| !s.is_empty())?;
@@ -608,7 +608,7 @@ async fn hook_check() -> Result<()> {
     if std::io::stdin().is_terminal() {
         eprintln!(
             "[vp wire hook-check] CC hook 専用コマンドです (stdin に hook JSON を pipe して使う)。\
-             echoes spawn が --settings で自動注入します。"
+             conversation spawn が --settings で自動注入します。"
         );
         return Ok(());
     }

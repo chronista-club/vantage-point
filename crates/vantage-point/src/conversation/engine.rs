@@ -1,19 +1,19 @@
 //! engine 軸の語彙（[`EngineKind`]）と gui chat engine の所有型（[`ChatHost`] / [`ChatEngineSlot`]）
 //!
-//! doc 37 §1: Echoes は **engine 軸 × Mode(surface) 軸**の直交格子で、engine = session に束縛される
+//! doc 37 §1（当時の名: Echoes）: **engine 軸 × Mode(surface) 軸**の直交格子で、engine = session に束縛される
 //! identity、Mode = 切替可能な view。本 module は engine 軸の SSOT — agent 名 ↔ engine の対応と
 //! 能力表明（chat 対応 / model 切替対応）をここに一元化し、`agent == "cursor"` のような
 //! stringly 比較の散在（旧 lanes_state / unison_server / agent_spawner の 4 箇所）を畳む。
 //!
 //! [`ChatHost`] / [`ChatEngineSlot`] は旧 `lanes_state.rs` から移設（doc 33 の chat engine 所有を
-//! echoes module に閉じ、chat スタック全体を他repo（GFP 等）へ切り出せる形にする）。
+//! conversation module に閉じ、chat スタック全体を他repo（GFP 等）へ切り出せる形にする）。
 
 use tokio::task::JoinHandle;
 
 use super::acp_host::AcpAgentHost;
 use super::codex_host::CodexAgentHost;
-use super::event::EchoesEvent;
-use super::host::{EchoesAgentHost, InFlight, PermissionDecision};
+use super::event::ConversationEvent;
+use super::host::{ClaudeHost, InFlight, PermissionDecision};
 
 /// engine 軸の語彙（どの頭脳か）。agent 名から導く。
 ///
@@ -71,7 +71,7 @@ impl EngineKind {
     /// GUI（sidebar `+ Add Performer` dropdown 等）向けの表示説明。
     pub fn description(self) -> &'static str {
         match self {
-            Self::Claude => "VP Agent: Echoes 💬 — tui slot（login shell）+ Claude CLI 自動起動",
+            Self::Claude => "VP Agent: claude 💬 — tui slot（login shell）+ Claude CLI 自動起動",
             Self::Codex => "VP Agent: Codex 🧮 — tui slot（login shell）+ codex (OpenAI) 自動起動",
             Self::Grok => "VP Agent: Grok ⚡ — tui slot（login shell）+ grok (xAI) 自動起動",
             Self::OpenCode => {
@@ -101,7 +101,7 @@ impl EngineKind {
     }
 }
 
-/// chat engine の 1 スロット（host と、その EchoesEvent を topic に流す pump）。
+/// chat engine の 1 スロット（host と、その ConversationEvent を topic に流す pump）。
 ///
 /// drop = engine 停止（host teardown + pump abort）。
 pub struct ChatEngineSlot {
@@ -126,18 +126,18 @@ impl Drop for ChatEngineSlot {
 /// - [`ChatHost::OpenCode`]: 常駐 ACP host（`opencode acp`、doc 43。grok と同じ AcpAgentHost で、
 ///   [`AcpEngine`] パラメタだけが違う）。
 ///
-/// GUI 語彙 [`EchoesEvent`] は全 engine 共通なので、pump / topic 配線・chatview は engine
-/// 非依存のまま。variant 名は engine 名（doc 37 の語彙: Echoes = namespace、claude = engine —
+/// GUI 語彙 [`ConversationEvent`] は全 engine 共通なので、pump / topic 配線・chatview は engine
+/// 非依存のまま。variant 名は engine 名（doc 37 当時の語彙: Echoes = namespace、claude = engine —
 /// 旧 `Echoes` variant の二重意味をここで清算）。
 pub enum ChatHost {
-    Claude(EchoesAgentHost),
+    Claude(ClaudeHost),
     Codex(CodexAgentHost),
     Grok(AcpAgentHost),
     OpenCode(AcpAgentHost),
 }
 
 impl ChatHost {
-    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<EchoesEvent> {
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<ConversationEvent> {
         match self {
             ChatHost::Claude(h) => h.subscribe(),
             ChatHost::Codex(h) => h.subscribe(),
@@ -189,7 +189,7 @@ impl ChatHost {
     /// claude は Child kill_on_drop に委ねる（host drop 時に停止）。
     pub fn stop(&mut self) {
         match self {
-            // EchoesAgentHost の Child は kill_on_drop(true) なので host drop で停止する。
+            // ClaudeHost の Child は kill_on_drop(true) なので host drop で停止する。
             ChatHost::Claude(_) => {}
             ChatHost::Codex(h) => h.stop(),
             ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.stop(),

@@ -35,8 +35,8 @@ export const APP_SCOPE = "app";
 
 /** data-frame-id と 1:1 の pane id 群（main_area.rs の静的 DOM が SSOT）。
  *  doc 52 §10 wave 0: pp（Board）は app pane を退役し、lane tiling の board pane
- *  （#lane-board、lane-panes.ts）へ移った。echoes（= lane workbench 全体）の中に board が並ぶ。 */
-export const APP_PANE_IDS = ["echoes", "runner", "devices", "preview", "empty"] as const;
+ *  （#lane-board、lane-panes.ts）へ移った。lane pane（= lane workbench 全体）の中に board が並ぶ。 */
+export const APP_PANE_IDS = ["lane", "runner", "devices", "preview", "empty"] as const;
 export type AppPaneId = (typeof APP_PANE_IDS)[number];
 
 // ---------- data: preset Scene 群（旧 scenes.ts の後継） ----------
@@ -62,10 +62,10 @@ function focusLayout(id: AppPaneId): Layout {
 
 export const APP_SCENES: readonly Scene[] = [
 	{
-		id: "lead-focus",
+		id: "lane-focus",
 		name: "Lead Focus",
-		description: "集中 coding — lane workbench（Echoes）独占",
-		layout: focusLayout("echoes"),
+		description: "集中 coding — lane workbench（Conversation）独占",
+		layout: focusLayout("lane"),
 	},
 	// kind → `${pane}-focus` bridge（entry.tsx）が使う単独 focus 群。pp は退役（doc 52 §10
 	// wave 0 — board は lane workbench 内の pane に移り、app scene の関心事から外れた）。
@@ -88,8 +88,8 @@ export const APP_SCENES: readonly Scene[] = [
 const APP_SCENE_BY_ID = new Map(APP_SCENES.map((s) => [s.id, s]));
 
 /** Ctrl+Shift+]/[ で巡る preset（doc 52 §10 wave 0: pp scene 退役後は 4 つの agent focus を巡る。
- *  empty は巡回に入れない）。lead-focus = lane workbench（board も console も chat もこの中の tiling）。 */
-export const PRESET_CYCLE = ["lead-focus", "runner-focus", "devices-focus", "preview-focus"] as const;
+ *  empty は巡回に入れない）。lane-focus = lane workbench（board も console も chat もこの中の tiling）。 */
+export const PRESET_CYCLE = ["lane-focus", "runner-focus", "devices-focus", "preview-focus"] as const;
 
 // ---------- calculations ----------
 
@@ -180,7 +180,7 @@ export function visitAppPane(paneId: string): boolean {
 	return ok;
 }
 
-/** 訪問を閉じて出発点の配置へ戻る（✕ ボタン）。訪問中でなければ lead-focus に倒す */
+/** 訪問を閉じて出発点の配置へ戻る（✕ ボタン）。訪問中でなければ lane-focus に倒す */
 export function closeAppPaneVisit(): void {
 	if (transientVisit && beforeVisit) {
 		applySceneToEngine({
@@ -195,7 +195,7 @@ export function closeAppPaneVisit(): void {
 	}
 	transientVisit = false;
 	beforeVisit = null;
-	applyAppScene("lead-focus");
+	applyAppScene("lane-focus");
 }
 
 /** preset の cyclic 切替（direction = 1 で next、-1 で prev） */
@@ -242,12 +242,12 @@ export function saveAppStateFor(lane: string): void {
 	});
 }
 
-/** lane に入る時に呼ぶ。初訪問は lead-focus（旧 default と同じ）。agent 訪問は終わる */
+/** lane に入る時に呼ぶ。初訪問は lane-focus（旧 default と同じ）。agent 訪問は終わる */
 export function restoreAppStateFor(lane: string): void {
 	transientVisit = false;
 	const saved = laneStates.get(lane);
 	if (!saved) {
-		applyAppScene("lead-focus");
+		applyAppScene("lane-focus");
 		return;
 	}
 	// 復元は Scene の total recall と同じ意味論（author = "scene" が監査に刻まれる）

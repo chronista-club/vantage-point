@@ -18,7 +18,7 @@ import {
   deriveNowLine,
   clampNowLine,
 } from './chatview'
-import type { EchoesEvent } from './console'
+import type { ConversationEvent } from './console'
 
 /** tool ChatItem を手軽に組む helper（classifyToolRun のテスト用）。 */
 let toolSeq = 0
@@ -26,14 +26,14 @@ function tool(name: string, done = true, error = false) {
   return { kind: 'tool' as const, id: `${name}-${toolSeq++}`, name, done, error }
 }
 
-/** EchoesEvent 列を空 state に順に畳んで結果を返す helper。 */
-function fold(events: EchoesEvent[]) {
+/** ConversationEvent 列を空 state に順に畳んで結果を返す helper。 */
+function fold(events: ConversationEvent[]) {
   const s = emptyChatState()
   for (const ev of events) foldInto(s, ev)
   return s
 }
 
-describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () => {
+describe('foldInto — ConversationEvent → ChatState 畳み込み (doc 33 C2)', () => {
   it('session_init が header を立てる', () => {
     const s = fold([
       { kind: 'session_init', session_id: 'sid-1', model: 'claude-haiku-4-5' },
@@ -395,7 +395,7 @@ describe('foldInto — EchoesEvent → ChatState 畳み込み (doc 33 C2)', () =
 
 describe('transcript replay — gui replay-on-attach', () => {
   /** repo が attach 時に送る replay 列（ReplayStart + 過去会話）。 */
-  const replay: EchoesEvent[] = [
+  const replay: ConversationEvent[] = [
     { kind: 'replay_start' },
     { kind: 'user_message', text: '直して' },
     { kind: 'tool_call', id: 't1', name: 'Edit', input: {} },
@@ -462,10 +462,10 @@ describe('transcript replay — gui replay-on-attach', () => {
  *
  * claude は message を完了時にしか transcript へ flush しない。assistant が生成している最中に
  * WS/QUIC が瞬断して demand が再発火すると、replay は「生成中 message の直前まで」しか
- * disk から復元できない。echoes topic は非 retained なので、瞬断前に届いていた delta は
+ * disk から復元できない。conversation topic は非 retained なので、瞬断前に届いていた delta は
  * どこにも残っていない。
  *
- * そこで backend（EchoesAgentHost）は未 commit の増分を in-flight tail として保持し、
+ * そこで backend（ClaudeHost）は未 commit の増分を in-flight tail として保持し、
  * replay 列を `transcript(commit 済み) ++ tail(未 commit)` として送る。以下はその契約を
  * frontend 側から固定するテスト。
  */
@@ -481,7 +481,7 @@ describe('replay が in-flight stream の途中に着地した場合', () => {
   }
 
   /** backend が瞬断後に送る replay 列。tail が生成中 message の現在までを運ぶ。 */
-  const replayWithTail: EchoesEvent[] = [
+  const replayWithTail: ConversationEvent[] = [
     { kind: 'replay_start' },
     // --- transcript（commit 済み） ---
     { kind: 'user_message', text: '直して' },
@@ -751,7 +751,7 @@ describe('tool 詳細の保持 — accordion の個別展開の表示源（reduc
 
 describe('subagent_message — Agent の子の発話を親と取り違えない（--forward-subagent-text）', () => {
   /** 親が Agent を呼び、子が thinking→text を返す最小の実 turn。 */
-  const withSubagent = (): EchoesEvent[] => [
+  const withSubagent = (): ConversationEvent[] => [
     { kind: 'message_chunk', text: '子に投げます' },
     { kind: 'tool_call', id: 'toolu_1', name: 'Agent', input: { prompt: '6x7 は?', subagent_type: 'general-purpose' } },
     { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'prompt', text: '6x7 は?' },

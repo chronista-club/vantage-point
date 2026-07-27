@@ -419,7 +419,7 @@ async fn reconcile_pulse(
             continue; // lane 不在 / 非 Running = まだ起こせない（次 tick で再試行、pending 保持）
         };
         // 所有 repo の control channel へ forward。method は root の mode で分岐（Tui = lane_nudge
-        // → PtySlot 直書き / Chat = echoes_nudge → engine 注入、doc 34 §3 channel E）。Chat lane
+        // → PtySlot 直書き / Chat = conversation_nudge → engine 注入、doc 34 §3 channel E）。Chat lane
         // に lane_nudge を送ると PtySlot 不在で必ず失敗し、delivered が立たず永久リトライになる。
         // doc 53 R1: mode は registry 直読（tick ごとに現在値 = 代表の mode 変更に追随）。
         let root_mode = super::delivery_actor::lane_identity_from_agent(&target)

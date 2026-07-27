@@ -33,7 +33,7 @@ export function agentDisplayName(agent: string): string {
 	switch (agent) {
 		case "claude":
 		case "hd": // legacy alias (旧 Heaven's Door)
-			return "Echoes";
+			return "Conversation";
 		case "shell":
 			return "Shell";
 		case "tmux":

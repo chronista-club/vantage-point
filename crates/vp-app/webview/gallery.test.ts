@@ -114,11 +114,11 @@ describe("layout bridge — applyLayoutSpec（LE-P2 PR2、純 calculation）", (
 	});
 
 	it("attention 0 の既存 member は overlay 省略で 0 のまま（蘇生させない — app scope 実弾の回帰）", () => {
-		// app scope の常態: 大半の pane が 0。{echoes:1, board:1} の overlay で他が mean に
+		// app scope の常態: 大半の pane が 0。{lane:1, board:1} の overlay で他が mean に
 		// 蘇生して 6 分割になった実バグ（2026-07-23、LE-P4 実機答え合わせ初弾）を固定する
-		const app = layoutOf("echoes | board | runner | devices", { echoes: 1, board: 0, runner: 0, devices: 0 });
+		const app = layoutOf("lane | board | runner | devices", { lane: 1, board: 0, runner: 0, devices: 0 });
 		const next = applyLayoutSpec(app, { attention: { board: 1 } });
-		expect(next.attention).toEqual({ echoes: 1, board: 1, runner: 0, devices: 0 });
+		expect(next.attention).toEqual({ lane: 1, board: 1, runner: 0, devices: 0 });
 	});
 
 	it("全零 guard: 全 pane 非表示になる spec / 空 notation は throw", () => {
