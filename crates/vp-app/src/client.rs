@@ -333,6 +333,28 @@ pub struct LaneSessionEntryWire {
     /// 名札の kind badge がこれで gate する。旧 server は送らない → false（不可に倒す）。
     #[serde(default)]
     pub chat_capable: bool,
+    /// この session の model 指定（registry の intent。None = engine 既定）。
+    #[serde(default)]
+    pub model: Option<String>,
+    /// model picker の選択肢（server 導出 catalog — client は並べるだけ）。
+    /// **空 = VP からの model 切替なし**（picker は read-only 表示 or 非表示に落ちる）。
+    /// 旧 server は送らない → 空（切替なしに倒す）。
+    #[serde(default)]
+    pub model_choices: Vec<ChoiceWire>,
+    /// permission picker の選択肢（同上）。空 = 対話承認の概念なし。
+    #[serde(default)]
+    pub permission_choices: Vec<ChoiceWire>,
+}
+
+/// picker の選択肢 1 件（server `conversation::engine::Choice` の鏡 — 能力は server が表明し
+/// client は並べるだけ、2026-07-27 mako 裁定）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct ChoiceWire {
+    /// engine に渡る値（model id / permission mode。model の空文字 = engine 既定）。
+    pub value: String,
+    /// 表示ラベル（permission は claude TUI と同一表記の英語）。
+    pub label: String,
 }
 
 /// root / focused の serde default（field 欠落 = 従来の「#1」）。

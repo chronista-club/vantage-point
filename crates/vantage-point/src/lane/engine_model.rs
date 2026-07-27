@@ -1,23 +1,15 @@
-//! lane ごとの model 永続化（tui TUI console + gui chat engine 共有）
+//! model 語彙の検証と既定解決（純関数のみ）
 //!
-//! lane 単位で claude の `--model` alias を永続する。**「この lane はこの model で走る」**
-//! という単一の真実源として、両 Mode の claude 起動が同じ file を読む:
-//! - **tui（TUI console / conversation agent）**: `build_agent_command` が spawn 時に読み、
-//!   PtySlot にホストされる `claude … --model <alias>` の command line へ注入する
-//!   （repo 再起動後の respawn でも自動で維持される）。
-//! - **gui（GUI chat engine / ClaudeHost）**: `ensure_chat_engine` が読む。
-//!   切替は engine の drop → `--resume` 付き再 spawn で行うため、**会話コンテキストを
-//!   保ったままモデルだけ替わる**（セッション進行中の切替 = CC の `/model` の VP 版）。
+//! ⚠️ **旧 per-lane file store（`engine_models/<repo>__<lane>`）は 2026-07-27 に退役** —
+//! model の SSOT は registry の [`super::session_registry::SessionEntry::model`]（session
+//! 紐づけ、mako 裁定。doc 50 session=Pane で 1 lane 多 session になり、lane 単位は旧前提に
+//! なった）。旧 file は migration せず初期化（doc 54 §8.1 — 読み手ゼロで自然消滅）。
 //!
-//! [`super::console_mode`] と同型の 1 lane 1 file 1 行 state file。
-//! - **書き手**: lane 作成時の `--model`（`create_performer_orchestrated` /
-//!   `new_performer` / `fork_performer`、co-evolution #1）+ gui の
-//!   `console_set_model` dispatch（切替時。default へ戻す = file 削除）
-//! - **読み手**: `build_agent_command`（tui spawn）/ `ensure_chat_engine`（gui spawn）
-//! - 置き場: `vp_state_dir()/engine_models/<repo>__<lane>`
-//! - **未記録 = None = claude default**（`--model` を渡さない）
-
-use std::path::{Path, PathBuf};
+//! 本 module に残るのは model **語彙**の共有部だけ:
+//! - [`is_valid_model`]: `--model '<alias>'` への injection 防壁（registry の write 側
+//!   [`super::session_registry::set_model_in`] と repo 入口の検証が共用）
+//! - [`resolve_default`]: 「明示 > config `default-lane-model` > 無記録」の既定規則
+//!   （lane 作成の全経路が共有）
 
 /// model 名として受理する形式（`--model` 引数に渡るため保守的に絞る）。
 /// claude の model id / alias は英数と `.-_` だけで構成される（例: `claude-opus-4-8`）。
@@ -30,10 +22,10 @@ pub fn is_valid_model(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_')
 }
 
-/// 明示 model（Some=優先）と既定（config knob）から、engine_model に記録する実効 model を返す。
+/// 明示 model（Some=優先）と既定（config knob）から、session に記録する実効 model を返す。
 ///
 /// **None = 記録しない**（doc 54 §8-11、mako 2026-07-25「Opus のところはユーザ設定に任せる」）:
-/// 明示指定 > VP config `default-lane-model` > **無記録** — engine_model file が無ければ
+/// 明示指定 > VP config `default-lane-model` > **無記録** — 記録が無ければ
 /// `--model` は注入されず、**engine 側の user 既定**（claude なら ~/.claude の設定）が効く。
 /// 旧実装は未設定時に Opus を強制 record しており、user の claude 既定を上書きしていた。
 /// performer 追加の全経路（mcp / cli / sidebar）が共有する解決規則。純粋 = テスト可能。
@@ -45,101 +37,9 @@ pub fn resolve_default(explicit: Option<&str>, config_default: Option<&str>) -> 
         .map(str::to_string)
 }
 
-/// file 名に使えない文字を潰す（console_mode / cc_session と同一規則）。
-fn sanitize(part: &str) -> String {
-    part.chars()
-        .map(|c| {
-            if c == '/' || c == '\\' || c == '.' {
-                '-'
-            } else {
-                c
-            }
-        })
-        .collect()
-}
-
-/// state base dir 配下の model file path（純関数、テスト用に base 注入）。
-pub fn model_file_in(base: &Path, repo: &str, lane: &str) -> PathBuf {
-    base.join("engine_models")
-        .join(format!("{}__{}", sanitize(repo), sanitize(lane)))
-}
-
-/// model を記録する（上書き、1 行）。形式外は Err（壊れた値を file に残さない）。
-pub fn record_in(base: &Path, repo: &str, lane: &str, model: &str) -> std::io::Result<()> {
-    if !is_valid_model(model) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("model 名が不正: {model:?}"),
-        ));
-    }
-    let path = model_file_in(base, repo, lane);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(path, model)
-}
-
-/// 最後に記録された model を返す。無い / 形式外は None（= claude default で spawn）。
-pub fn last_in(base: &Path, repo: &str, lane: &str) -> Option<String> {
-    let raw = std::fs::read_to_string(model_file_in(base, repo, lane)).ok()?;
-    let trimmed = raw.trim();
-    is_valid_model(trimmed).then(|| trimmed.to_string())
-}
-
-/// 記録を消す（未記録なら no-op）。「default に戻す」と lane 削除 GC の両方で使う。
-pub fn clear_in(base: &Path, repo: &str, lane: &str) -> std::io::Result<()> {
-    match std::fs::remove_file(model_file_in(base, repo, lane)) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        r => r,
-    }
-}
-
-/// 本番 base（vp_state_dir）での record。
-pub fn record(repo: &str, lane: &str, model: &str) -> std::io::Result<()> {
-    record_in(&crate::config::vp_state_dir(), repo, lane, model)
-}
-
-/// 本番 base（vp_state_dir）での clear（default へ戻す / lane 削除経路から呼ぶ）。
-pub fn clear(repo: &str, lane: &str) -> std::io::Result<()> {
-    clear_in(&crate::config::vp_state_dir(), repo, lane)
-}
-
-/// 本番 base（vp_state_dir）での last。
-pub fn last(repo: &str, lane: &str) -> Option<String> {
-    last_in(&crate::config::vp_state_dir(), repo, lane)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn record_and_last_roundtrip() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        // 未記録は None（= claude default）
-        assert_eq!(last_in(tmp.path(), "vp", "root"), None);
-        record_in(tmp.path(), "vp", "root", "claude-opus-4-8").expect("record");
-        assert_eq!(
-            last_in(tmp.path(), "vp", "root").as_deref(),
-            Some("claude-opus-4-8")
-        );
-        // 上書き（最新が勝つ）
-        record_in(tmp.path(), "vp", "root", "claude-fable-5").expect("record 2");
-        assert_eq!(
-            last_in(tmp.path(), "vp", "root").as_deref(),
-            Some("claude-fable-5")
-        );
-    }
-
-    #[test]
-    fn clear_returns_to_default_and_is_idempotent() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        record_in(tmp.path(), "vp", "root", "claude-sonnet-5").expect("record");
-        clear_in(tmp.path(), "vp", "root").expect("clear");
-        assert_eq!(last_in(tmp.path(), "vp", "root"), None);
-        // 未記録の clear は no-op
-        clear_in(tmp.path(), "vp", "root").expect("未記録の clear は Ok");
-    }
 
     #[test]
     fn resolve_default_prefers_explicit_then_falls_back() {
@@ -173,19 +73,16 @@ mod tests {
         );
     }
 
+    /// `--model` 引数への injection 防壁（registry write 側と repo 入口が共用する規則）。
     #[test]
     fn rejects_garbage() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        // 記録時に弾く（引数 injection 形は file に残さない）
-        assert!(record_in(tmp.path(), "vp", "root", "opus --dangerous").is_err());
-        assert!(record_in(tmp.path(), "vp", "root", "").is_err());
+        assert!(is_valid_model("claude-opus-4-8"));
+        assert!(is_valid_model("claude-haiku-4-5-20251001"));
+        assert!(!is_valid_model("opus --dangerous"));
+        assert!(!is_valid_model(""));
         // 先頭 `-` = `--model` の値が別 flag として解釈される余地
-        assert!(record_in(tmp.path(), "vp", "root", "--resume").is_err());
+        assert!(!is_valid_model("--resume"));
         assert!(!is_valid_model("-x"));
-        // file が直接壊されていても読み手が弾く
-        let dir = tmp.path().join("engine_models");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("vp__root"), "op us;rm -rf\n").unwrap();
-        assert_eq!(last_in(tmp.path(), "vp", "root"), None);
+        assert!(!is_valid_model("op us;rm -rf"));
     }
 }
