@@ -512,15 +512,15 @@ pub struct ConversationReport<'a> {
 /// 直書き（gui host の record-from-init）は [`set_conversation_in`]。こちらは policy を持たない
 /// authoritative な書き込みで、報告経路とは別物。
 ///
-/// `transcript_exists` は注入する（テストが実 `~/.claude` に依存しないため。本番 wrapper
-/// [`record_conversation`] が `cc_session::transcript_exists` を渡す）。
+/// `has_conversation` は注入する（テストが実 `~/.claude` に依存しないため。本番 wrapper
+/// [`record_conversation`] が `cc_session::transcript_has_conversation` を渡す）。
 pub fn record_conversation_in(
     base: &Path,
     repo: &str,
     lane: &str,
     default_agent: &str,
     report: ConversationReport<'_>,
-    transcript_exists: impl Fn(&str) -> bool,
+    has_conversation: impl Fn(&str) -> bool,
 ) -> std::io::Result<ConversationRecordOutcome> {
     let _guard = mutation_guard();
     let mut reg = load_in(base, repo, lane, default_agent);
@@ -546,10 +546,13 @@ pub fn record_conversation_in(
     }
     match &entry.conversation {
         Some(cur) if cur == session_id => Ok(ConversationRecordOutcome::Unchanged),
-        Some(cur) if report.trigger == ReportTrigger::Issued && transcript_exists(cur) => {
+        Some(cur) if report.trigger == ReportTrigger::Issued && has_conversation(cur) => {
             // resume 失敗 `|| claude` fallback の幻 session が、健在な旧会話への復帰路を
             // 上書きするのを防ぐ（F1 clobber / F2 幻ポインタの再演防止）。次の Spoken で
             // user が幻側に commit したら上書きされる（self-heal）。
+            // ⚠️ 「守るに値するか」の判定は transcript の**実在ではなく会話の成立**
+            // （`transcript_has_conversation`）— claude は発話ゼロでも meta-only transcript を
+            // 書くことがあり、実在判定だと幻を守って本物の復帰を弾く逆転が起きる（2026-07-27 実測）。
             Ok(ConversationRecordOutcome::KeptExisting)
         }
         _ => {
@@ -922,7 +925,8 @@ pub fn set_conversation(
 }
 
 /// 本番 base での record_conversation（repo の hook 報告 handler から呼ぶ）。
-/// F1/F2 guard の transcript 判定は claude の実 transcript（`cc_session::transcript_exists`）。
+/// F1/F2 guard の継続判定は claude の実 transcript の会話成立
+/// （`cc_session::transcript_has_conversation` — 実在では meta-only の幻を守ってしまう）。
 pub fn record_conversation(
     repo: &str,
     lane: &str,
@@ -935,7 +939,7 @@ pub fn record_conversation(
         lane,
         default_agent,
         report,
-        super::cc_session::transcript_exists,
+        super::cc_session::transcript_has_conversation,
     )
 }
 

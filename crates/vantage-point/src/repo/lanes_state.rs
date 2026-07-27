@@ -1946,12 +1946,14 @@ impl LanePool {
             }
             Some(EngineKind::Claude) => {
                 // claude: 常駐 stream-json host。resume は registry の会話 id（doc 40 §5）。
-                // doc 33 C2: transcript が実在する id だけ resume に渡す（stale/phantom id で
-                // "No conversation found" ハードエラーになるのを防ぐ = TUI の `|| claude` 相当）。
+                // doc 33 C2: 会話が成立した id だけ resume に渡す（stale/phantom id で
+                // "No conversation found" ハードエラーになるのを防ぐ = TUI の `|| claude` 相当。
+                // 判定は実在でなく会話成立 — meta-only の幻 transcript は resume しても
+                // 空会話が開くだけの stable-wrong になる、2026-07-27）。
                 let resume = resolved
                     .conversation
                     .clone()
-                    .filter(|id| crate::lane::cc_session::transcript_exists(id));
+                    .filter(|id| crate::lane::cc_session::transcript_has_conversation(id));
                 // gui モデル切替: lane に永続された model を `--model` に渡す（未記録 = claude default）。
                 // 切替（console_set_model）は record → engine 入替で行われ、resume と組むことで
                 // 会話コンテキストを保ったままモデルだけ替わる。model は lane 単位（session 間で

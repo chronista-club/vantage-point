@@ -424,12 +424,14 @@ pub fn build_agent_command_for_session(
     // でなく session の agent で arm を選ぶことが cross-engine root 解禁の核。
     let initial_input = match crate::conversation::EngineKind::from_agent(effective_agent) {
         Some(crate::conversation::EngineKind::Claude) => {
-            // transcript_exists pre-flight（doc 33 C2 の gui と対称化）: 発話ゼロで
-            // transcript を書かなかった「幻 id」を `--resume` に渡さない。None に倒せば
-            // 素の claude で立つ（doc 53 §12.1 で `--continue` fallback は退役）。
+            // 継続判定 pre-flight（doc 33 C2 の gui と対称化）: 会話が成立しなかった
+            // 「幻 id」を `--resume` に渡さない。None に倒せば素の claude で立つ
+            // （doc 53 §12.1 で `--continue` fallback は退役）。判定は transcript の実在でなく
+            // 会話成立（`transcript_has_conversation`）— 発話ゼロでも meta-only transcript は
+            // 書かれることがある（2026-07-27）。
             let resume_id = conversation
                 .clone()
-                .filter(|id| crate::lane::cc_session::transcript_exists(id));
+                .filter(|id| crate::lane::cc_session::transcript_has_conversation(id));
             // model は lane 単位の state file（`engine_model`、tui/gui 共有）を直読み。
             // 未記録 = None = claude default（co-evolution #1）。 respawn（repo restart）でも
             // ここで毎回読むため、 一度指定した model は再起動をまたいで維持される。
