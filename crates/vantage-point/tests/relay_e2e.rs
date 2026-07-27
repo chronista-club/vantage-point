@@ -13,9 +13,9 @@
 //! ```
 //!
 //! 検証内容: target daemon が `relay` server-channel を connect 前に登録して hub registry に
-//! register（hub が wld_id→ctx を index）→ source daemon が `dial_relay(target_wld_id)` で hub 経由
+//! register（hub が node_id→ctx を index）→ source daemon が `dial_relay(target_node_id)` で hub 経由
 //! の片方向 relay を確立 → data frame を 1 本送る → target の inbound handler が同じ payload を
-//! 送信元 wld_id 付きで受け取る、という relay 往復（source→hub→target）を実証する。
+//! 送信元 node_id 付きで受け取る、という relay 往復（source→hub→target）を実証する。
 
 use std::time::Duration;
 
@@ -33,11 +33,11 @@ async fn relay_source_to_target_roundtrip() {
     let addr = hub_client::hub_addr()
         .expect("CHRONISTA_HUB_ADDR を設定して hub を起動した状態で実行すること");
 
-    // 位置独立 routing key。test 固定値で独立性を担保（hub registry は wld_id keyed）。
-    let target_wld = "wld_relay-target";
-    let source_wld = "wld_relay-source";
+    // 位置独立 routing key。test 固定値で独立性を担保（hub registry は node_id keyed）。
+    let target_node = "nd_relay-target";
+    let source_node = "nd_relay-source";
 
-    // ── target daemon: relay inbound handler を登録 → register（hub が wld_id→ctx を index）。
+    // ── target daemon: relay inbound handler を登録 → register（hub が node_id→ctx を index）。
     let (tx, mut rx) = mpsc::unbounded_channel();
     let target = HubClient::connect_with_inbound(&addr, 5, move |inbound| {
         let tx = tx.clone();
@@ -49,25 +49,25 @@ async fn relay_source_to_target_roundtrip() {
     .await
     .expect("target: connect_with_inbound 失敗");
     target
-        .register(target_wld, &[], "vp-relay-target", "VP relay target")
+        .register(target_node, &[], "vp-relay-target", "VP relay target")
         .await
         .expect("target: register 失敗");
 
-    // ── source daemon: 接続して target へ relay を張る。register（hub が target_wld→ctx を
+    // ── source daemon: 接続して target へ relay を張る。register（hub が target_node→ctx を
     //    引けるよう、target の register が hub に反映されてから dial する＝この await 順序で担保）。
     let source = HubClient::connect(&addr, 5)
         .await
         .expect("source: connect 失敗");
     source
-        .register(source_wld, &[], "vp-relay-source", "VP relay source")
+        .register(source_node, &[], "vp-relay-source", "VP relay source")
         .await
         .expect("source: register 失敗");
 
     let dial = source
-        .dial_relay(target_wld, source_wld)
+        .dial_relay(target_node, source_node)
         .await
         .expect("source: dial_relay 失敗（target が registry に居て established を返すこと）");
-    assert_eq!(dial.target(), target_wld);
+    assert_eq!(dial.target(), target_node);
 
     // ── source → target に data frame を 1 本送る（hub が dumb forward）。
     let payload = json!({ "kind": "ping", "n": 42 });
@@ -75,18 +75,18 @@ async fn relay_source_to_target_roundtrip() {
         .await
         .expect("source: relay data 送信失敗");
 
-    // ── target の inbound handler が同じ payload を source の wld_id 付きで受け取る。
+    // ── target の inbound handler が同じ payload を source の node_id 付きで受け取る。
     let got = tokio::time::timeout(Duration::from_secs(5), rx.recv())
         .await
         .expect("target が relay data を受信しなかった（タイムアウト）")
         .expect("inbound channel が閉じた");
 
-    assert_eq!(got.from, source_wld, "送信元 wld_id が一致しない");
+    assert_eq!(got.from, source_node, "送信元 node_id が一致しない");
     assert_eq!(got.payload, payload, "forward された payload が一致しない");
 
     println!(
         "✅ relay e2e OK: {} → hub → {} （payload={}）",
-        source_wld, target_wld, got.payload
+        source_node, target_node, got.payload
     );
 }
 
@@ -94,7 +94,7 @@ async fn relay_source_to_target_roundtrip() {
 /// relay target inbound を「接続維持で」提供することを実証する。
 ///
 /// 検証の核: source の `dial_relay` が `established` を返すのは、target が **hub の relay registry
-/// (wld_id→ctx) に登録済み**のときだけ。これは常駐セッションが「接続 → register → 常駐」を
+/// (node_id→ctx) に登録済み**のときだけ。これは常駐セッションが「接続 → register → 常駐」を
 /// 成功させ、relay target として生きている証明になる（handler の中身を覗かずに assert できる）。
 #[tokio::test]
 #[ignore = "実 chronista-hub の起動が前提（CHRONISTA_HUB_ADDR で addr 指定）"]
@@ -104,7 +104,7 @@ async fn run_hub_federation_resident_relay_target() {
     let addr = hub_client::hub_addr()
         .expect("CHRONISTA_HUB_ADDR を設定して hub を起動した状態で実行すること");
 
-    let target_wld = "wld_resident-target";
+    let target_node = "nd_resident-target";
     let target_handle = "vp-resident-target";
 
     // 本番 daemon（process/server.rs）と同じ常駐セッションを起動。
@@ -114,7 +114,7 @@ async fn run_hub_federation_resident_relay_target() {
     // この test は register + relay target liveness を見るので、配送 handler は no-op で十分。
     let driver = tokio::spawn(hub_client::run_hub_federation(
         addr.clone(),
-        target_wld.to_string(),
+        target_node.to_string(),
         vec![],
         target_handle.to_string(),
         "VP resident target".to_string(),
@@ -125,12 +125,12 @@ async fn run_hub_federation_resident_relay_target() {
     ));
 
     // source: 接続して register。
-    let source_wld = "wld_resident-source";
+    let source_node = "nd_resident-source";
     let source = HubClient::connect(&addr, 5)
         .await
         .expect("source: connect 失敗");
     source
-        .register(source_wld, &[], "vp-resident-source", "VP resident source")
+        .register(source_node, &[], "vp-resident-source", "VP resident source")
         .await
         .expect("source: register 失敗");
 
@@ -169,10 +169,10 @@ async fn run_hub_federation_resident_relay_target() {
 
     // 常駐 target は relay registry にも居るはず → established を返せば relay target として live。
     let dial = source
-        .dial_relay(target_wld, source_wld)
+        .dial_relay(target_node, source_node)
         .await
         .expect("常駐 target への dial_relay が established を返さなかった");
-    assert_eq!(dial.target(), target_wld);
+    assert_eq!(dial.target(), target_node);
     dial.send(&json!({ "resident": true }))
         .await
         .expect("relay data 送信失敗");
