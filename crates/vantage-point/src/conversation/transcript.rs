@@ -9,7 +9,7 @@
 //!
 //! terminal（tui）は PtySlot の raw PTY bytes を replay して画面を復元するが、chat lane は
 //! PtySlot を持たないため同じ手は使えない。 代わりに **claude が disk に持つ transcript
-//! (`~/.claude/repos/*/<session_id>.jsonl`)** を唯一の履歴 SSOT として読み、`ConversationEvent` に
+//! (`~/.claude/projects/*/<session_id>.jsonl`)** を唯一の履歴 SSOT として読み、`ConversationEvent` に
 //! 翻訳して attach 時に replay する（= gui 版 replay-on-attach）。
 //!
 //! ## [`super::claude_translate`] との違い
