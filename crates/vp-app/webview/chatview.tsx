@@ -1204,7 +1204,7 @@ const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
  * 載せるもの（doc 50 §2「上段 = この pane が何であるか」）:
  *  - 灯（slot 注入。**chat 固有** — term は ConversationEvent stream を持たないので出さない）
  *  - session ラベル / root chip / 会話 id = 素性
- *  - kind badge = 見え方（click で `session_set_mode` → in-place 変身）
+ *  - kind badge = 切り替え先（click で `session_set_mode` → in-place 変身。表示は現在形でなく行き先）
  *  - ✕ = この session を閉じる（root は不可）
  *
  * 供給は `sessionsOf(lane)`（`conversation_session_list` の cache）— term / chat どちらの pane でも
@@ -1252,7 +1252,8 @@ export function SessionPlate(props: {
         <span class="conversation-session-plate-hint">click で focus</span>
       </Show>
       <span class="conversation-session-plate-spacer" />
-      {/* kind badge（doc 50 §4.6 A6 ②）: この pane が「何であるか」の一部 = 見え方。
+      {/* kind badge（doc 50 §4.6 A6 ②）: 押すと切り替わる**行き先**を見せる（Chat pane には
+          「Console」、Console pane には「Chat」— 現在形でなく目的地。mako 裁定 2026-07-27）。
           click で session_set_mode → repo が resume handoff → **同じ往復路**が別の面として
           立ち上がる（位置と share は renamePane が保つ = in-place 変身）。
           ⚠️ term 側にも必ず出すこと — chat pane が 0 枚になると gui へ戻る入口が消える
@@ -1288,10 +1289,10 @@ export function SessionPlate(props: {
           }}
         >
           <CreoIcon
-            name={props.mode === 'gui' ? 'ph:chat-circle' : 'ph:terminal-window'}
+            name={target() === 'gui' ? 'ph:chat-circle' : 'ph:terminal-window'}
             size={9}
           />
-          {props.mode === 'gui' ? 'Chat' : 'Console'}
+          {target() === 'gui' ? 'Chat' : 'Console'}
         </button>
       </Show>
       <Show when={canCloseSession(sessionsOf(props.lane)?.sessions.length ?? 0, info()?.root)}>
@@ -2010,9 +2011,10 @@ export const CHATVIEW_CSS = `
   color: var(--color-text-secondary,#a8b0c0); opacity:.85; }
 .conversation-session-plate-close:hover { opacity:1; color: var(--color-text,#e6e9ef);
   background: var(--color-bg,#0f1115); }
-/* kind badge（doc 50 §4.6 A6 ②）: この pane の見え方 = 素性の一部なので名札（上段）に住む。
-   §2.1 の規律で名札は静かに保ち、hover で操作可能だと分かる程度に立てる（root chip と
-   同じ pill 形。あちらは表示専用、こちらは押せる = hover の差で区別する）。 */
+/* kind badge（doc 50 §4.6 A6 ②）: 押すと切り替わる行き先を見せる乗り換えボタン。
+   pane の素性に関わる操作なので名札（上段）に住む。§2.1 の規律で名札は静かに保ち、
+   hover で操作可能だと分かる程度に立てる（root chip と同じ pill 形。あちらは表示専用、
+   こちらは押せる = hover の差で区別する）。 */
 .conversation-session-plate-kind { flex:none; display:inline-flex; align-items:center; gap:3px;
   padding:1px 6px; border-radius:9999px; cursor:pointer;
   border:1px solid var(--color-surface-border-subtle,#2a3040); background:transparent;
