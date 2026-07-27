@@ -36,7 +36,7 @@ pub struct LoggedEvent {
     pub ts: String,
     /// event 種別（dotted、例: `"process.up"` / `"process.down"` / `"build.done"` / `"test.fail"`）。
     pub kind: String,
-    /// 発生元（任意、例: `"echoes@vantage-point/root"` や `"daemon"`）。
+    /// 発生元（任意、例: `"claude@vantage-point/root"` や `"daemon"`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     /// 任意 payload（JSON、kind ごとに形は自由）。
@@ -170,13 +170,13 @@ mod tests {
         let log = EventLog::new();
         log.emit(
             "build.done",
-            Some("echoes@vp/root".to_string()),
+            Some("claude@vp/root".to_string()),
             json!({"exit": 0}),
         )
         .await;
         let e = &log.query(0, 0).await[0];
         assert_eq!(e.kind, "build.done");
-        assert_eq!(e.source.as_deref(), Some("echoes@vp/root"));
+        assert_eq!(e.source.as_deref(), Some("claude@vp/root"));
         assert_eq!(e.data["exit"], 0);
         assert!(!e.ts.is_empty());
     }

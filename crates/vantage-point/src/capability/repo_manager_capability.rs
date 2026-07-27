@@ -193,7 +193,7 @@ pub struct RepoManagerCapability {
     running_repos: Arc<RwLock<HashMap<String, RunningRepo>>>,
     /// Phase 1b: 各 Repo の Lane registry（キー: 正規化パス）—
     /// repo が register payload に lanes を載せて push、 disconnect で全 Lane drop。
-    /// agent (Echoes on Claude CLI) が `GET /api/lanes` で resolve するための cache。
+    /// agent (Conversation on Claude CLI) が `GET /api/lanes` で resolve するための cache。
     #[allow(clippy::type_complexity)]
     lane_registry: Arc<RwLock<HashMap<String, Vec<crate::repo::lanes_state::LaneInfo>>>>,
     /// 設定

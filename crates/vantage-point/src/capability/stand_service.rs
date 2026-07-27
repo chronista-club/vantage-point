@@ -68,7 +68,7 @@ pub enum LayerScope {
 /// ECS entity bound actor の **minimal marker trait** (PR-1 受け皿)。
 ///
 /// `Agent` は VP-24 original 設計意図 「Agent に component bolt-on で msgbox 使える」 の
-/// 形式化。 Echoes (Claude CLI) / Protocol / 将来 board / runner 等の **能力
+/// 形式化。 Conversation (Claude CLI) / Protocol / 将来 board / runner 等の **能力
 /// (= ECS entity)** を表現する。
 ///
 /// `Any` super-trait で downcast を支援 (caller が specific Agent state を取り出すため)。

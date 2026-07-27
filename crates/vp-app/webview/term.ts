@@ -1,5 +1,5 @@
 /**
- * Echoes tui（xterm）の配線 — 旧 World A。
+ * Conversation tui（xterm）の配線 — 旧 World A。
  *
  * doc 53 §6.5 の「もう半分」。2026-07-26 まで、この 976 行は `crates/vp-app/src/main_area.rs` の
  * inline `<script>` に Rust 文字列として埋め込まれていた（World A）。同じ webview の中に 2 つの

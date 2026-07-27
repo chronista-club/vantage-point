@@ -5,8 +5,8 @@
  * ここの method へ配る）。`window.vpConsole` は **DevTools 検分用に残してある**だけで、
  * Rust は名前で呼ばない（SSOT = `crates/vp-app/schema/vp-push.kdl`）。
  *
- * - data plane: `console:event` → [`VpConsole.handleEvent`] — repo の EchoesAgentHost が吐く
- *   EchoesEvent（engine 非依存語彙、doc 32 §4）を per-lane ring buffer に蓄積し、
+ * - data plane: `console:event` → [`VpConsole.handleEvent`] — repo の ClaudeHost が吐く
+ *   ConversationEvent（engine 非依存語彙、doc 32 §4）を per-lane ring buffer に蓄積し、
  *   mount 済みの ChatView renderer に届ける（renderer は C2 で登録）。
  * - control plane: `console:mode_applied` → [`VpConsole.setSessionMode`] — その session の
  *   Mode（見え方）が変わったことの通知（doc 50 §4.6 A6。旧 lane 単位 `setMode` の後継）。
@@ -20,7 +20,7 @@
  */
 
 // ---------------------------------------------------------------------------
-// EchoesEvent 型 — SSOT は Rust `crates/vantage-point/src/echoes/event.rs`（PR1 で凍結）。
+// ConversationEvent 型 — SSOT は Rust `crates/vantage-point/src/conversation/event.rs`（PR1 で凍結）。
 // vp-app Rust はこれを serde_json::Value で素通しするため ts-rs 経路が無く、手書きで mirror
 // する（変更時は event.rs と同時に更新すること）。
 // ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ export type QuestionSpec = {
   multi_select?: boolean
 }
 
-export type EchoesEvent =
+export type ConversationEvent =
   | {
       kind: 'session_init'
       session_id: string
@@ -99,27 +99,27 @@ export type EchoesEvent =
    *  GUI は「💤 休眠（送信で起動）」と穏当に出す。次の submit / reconnect demand で復活する。 */
   | { kind: 'engine_exited'; message: string }
   /** clarifying question（AskUserQuestion の can_use_tool 横取り、doc 35 PR1）。
-   *  GUI は PromptCard で選択肢を描き、回答を echoes:respond {request_id, answers} で戻す。 */
+   *  GUI は PromptCard で選択肢を描き、回答を conversation:respond {request_id, answers} で戻す。 */
   | { kind: 'question'; request_id: string; questions: QuestionSpec[] }
   /** tool 承認要求（permission-mode=default 時の can_use_tool、doc 35 PR3）。
-   *  GUI は PromptCard で allow/deny を描き、echoes:respond {request_id, behavior} で戻す。 */
+   *  GUI は PromptCard で allow/deny を描き、conversation:respond {request_id, behavior} で戻す。 */
   | { kind: 'permission_request'; request_id: string; tool_name: string; input: unknown }
 
 /** ChatView（C2）が lane ごとに登録する renderer。
- *  doc 38 Phase 2: 第 2 引数 session = EchoesEvent envelope 由来の VP 採番 key（1 Lane = N session）。
+ *  doc 38 Phase 2: 第 2 引数 session = ConversationEvent envelope 由来の VP 採番 key（1 Lane = N session）。
  *  renderer 側は `session !== focusedOf(lane)` を fold しないことで背景 session の混入を防ぐ。 */
-export type ConsoleRenderer = (event: EchoesEvent, session: number) => void
+export type ConsoleRenderer = (event: ConversationEvent, session: number) => void
 
 // ---------------------------------------------------------------------------
 // doc 38 Phase 2 — per-lane session registry（1 Lane = N session）
 //
-// repo（echoes_session_list）が唯一の真実源。ここはそれを描くための薄い view cache で、
+// repo（conversation_session_list）が唯一の真実源。ここはそれを描くための薄い view cache で、
 // tab strip の描画基準（focused）と chatview の event filter が参照する。純関数群は document
 // 非依存 = vitest でそのままテストできる（session routing の要）。
 // ---------------------------------------------------------------------------
 
-/** echoes_session_list の 1 要素（repo `ChatSessionInfo` の手書き mirror）。 */
-export type EchoesSession = {
+/** conversation_session_list の 1 要素（repo `ChatSessionInfo` の手書き mirror）。 */
+export type ConversationSession = {
   /** VP 採番のローカル key（<lane>#<n> の n）。 */
   key: number
   /** engine 種別（session chip / tab の prefix 導出用）。 */
@@ -143,21 +143,21 @@ export type EchoesSession = {
   chat_capable?: boolean
 }
 
-/** echoes_session_list の生 payload（Rust `handle_echoes_session_list` の返り値 mirror）。 */
-export type EchoesSessionListPayload = {
+/** conversation_session_list の生 payload（Rust `handle_conversation_session_list` の返り値 mirror）。 */
+export type ConversationSessionListPayload = {
   lane?: string
   /** focused session key。session が無い lane では null。 */
   focused?: number | null
-  sessions?: EchoesSession[]
+  sessions?: ConversationSession[]
 }
 
 /** agents_list の生 payload（`{agents:[{name, description}]}`）。 */
-export type EchoesStandsPayload = {
+export type AgentsPayload = {
   agents?: unknown[]
 }
 
 // --- doc 47 §6: 共有 bus の相関 id ---------------------------------------------------------------
-// `vp:echoes-agents` は broadcast なので、購読側が複数いると「誰の要求への応答か」が判らない
+// `vp:conversation-agents` は broadcast なので、購読側が複数いると「誰の要求への応答か」が判らない
 // （doc 46 P2 で「+ New」の要求に chat の「+」menu まで反応した混線 = #838）。
 // 要求時に採番した id を round-trip（webview → Rust IPC → agents_list → handleAgents）させ、
 // 購読側は **自分が出した要求の id と一致した時だけ** 反応する。
@@ -187,14 +187,14 @@ export function isMyResponse(
   return pending !== null && req === pending
 }
 
-/** `vp:echoes-agents` の detail。req は要求元の相関 id（要求外の発火は null）。 */
-export type EchoesStandsDetail<S = unknown> = {
+/** `vp:conversation-agents` の detail。req は要求元の相関 id（要求外の発火は null）。 */
+export type AgentsDetail<S = unknown> = {
   lane: string
   agents: S[]
   req: BusRequestId | null
 }
 
-type LaneSessions = { focused: number; sessions: EchoesSession[] }
+type LaneSessions = { focused: number; sessions: ConversationSession[] }
 
 const laneSessions = new Map<string, LaneSessions>()
 
@@ -204,13 +204,13 @@ export function normalizeSession(session?: number): number {
   return session ?? 1
 }
 
-/** repo の echoes_session_list payload を per-lane cache に取り込む（純粋 = document 非依存 = テスト可能）。 */
-export function noteSessionList(lane: string, focused: number, sessions: EchoesSession[]): void {
+/** repo の conversation_session_list payload を per-lane cache に取り込む（純粋 = document 非依存 = テスト可能）。 */
+export function noteSessionList(lane: string, focused: number, sessions: ConversationSession[]): void {
   laneSessions.set(lane, { focused, sessions })
 }
 
 /** tab click の楽観的 focus 切替（chatview の filter を round-trip を待たず即切り替える）。
- *  repo の echoes_session_list が後で authoritative 値で上書きする。純粋 = テスト可能。 */
+ *  repo の conversation_session_list が後で authoritative 値で上書きする。純粋 = テスト可能。 */
 export function noteFocus(lane: string, session: number): void {
   const cur = laneSessions.get(lane)
   if (cur) cur.focused = session
@@ -221,7 +221,7 @@ export function noteFocus(lane: string, session: number): void {
  * mode 切替の楽観的な local 反映（[`sessionModeOf`] の読み手 cache を即時更新する）。
  *
  * ⚠️ **これが無いと mode を読む消費者が旧値で分岐する**。`laneSessions` は
- * `echoes_session_list` の full fetch でしか更新されないが、**mode 切替はその fetch を伴わない**
+ * `conversation_session_list` の full fetch でしか更新されないが、**mode 切替はその fetch を伴わない**
  * （badge click の成功パスは `session_set_mode` → `SessionModeApplied` で完結する）。
  * 実害は `ink.ts` の送り先判定 — tui→chat の直後に board 注釈を送ると、畳まれた PtySlot へ
  * `term:write` が飛んで**黙って消える**（chat には届かない。エラーはゼロ）。
@@ -254,7 +254,7 @@ export function focusedOf(lane: string): number {
  *  走る（定期 snapshot で撃ち直さない）。そのため「lane を開いた」だけでは新しい event は
  *  来ない — 開いた側が cache を読む。旧実装はここで `echoes:sessions_fetch` を撃っていた
  *  （= 供給路 2 本目の入口そのもの）。 */
-export function sessionListOf(lane: string): EchoesSession[] {
+export function sessionListOf(lane: string): ConversationSession[] {
   return laneSessions.get(lane)?.sessions ?? []
 }
 
@@ -267,7 +267,7 @@ export function sessionModeOf(lane: string, session: number): 'tui' | 'gui' {
 }
 
 /** focused session の engine_session_id を共通ヘッダの chip に同期する（変化時 true —
- *  caller はその時だけ 'vp:echoes-header' を dispatch する）。
+ *  caller はその時だけ 'vp:lane-header' を dispatch する）。
  *
  *  D1（解剖 memory `cc-session-pointer-self-destruction` / F5）: chip は従来 session_init /
  *  turn_completed でしか動かず、新 Draft を focus しても旧 session の id が chip に残り続けた
@@ -284,12 +284,12 @@ export function syncHeaderSessionId(lane: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Echoes 共通ヘッダ用の per-lane summary（creo memo `vp-pane-common-header`）
+// Conversation 共通ヘッダ用の per-lane summary（creo memo `vp-pane-common-header`）
 // ---------------------------------------------------------------------------
 
 /**
- * EchoesHeader（pane 名札）が表示する lane の session summary。
- * EchoesEvent 既存流（session_init / turn_completed）だけから畳む — 新しい Rust→JS
+ * LaneHeader（pane 名札）が表示する lane の session summary。
+ * ConversationEvent 既存流（session_init / turn_completed）だけから畳む — 新しい Rust→JS
  * チャネルは作らない。presence-driven（無ければ chip 非表示）。
  *
  * doc 50: 名札に残るのは **素性だけ**になったので、summary も sessionId 1 本に縮約した。
@@ -297,17 +297,17 @@ export function syncHeaderSessionId(lane: string): boolean {
  * 読み手を失った — model / perm は composer の select、engine 異常は status 行の
  * `deriveStatus` が別経路で同じ event から導出しており、ここで畳む必要が無い。
  */
-export type EchoesHeaderState = {
+export type LaneHeaderState = {
   /** cc session id（Mode を跨いで同一 session が継続することの可視化）。 */
   sessionId?: string
 }
 
 /**
  * header summary への畳み込み（純関数、vitest 対象）。変化があれば true を返す —
- * caller はその時だけ 'vp:echoes-header' event を dispatch する（message_chunk 等の
+ * caller はその時だけ 'vp:lane-header' event を dispatch する（message_chunk 等の
  * 高頻度 event では飛ばない = ヘッダ再描画は低頻度に保たれる）。
  */
-export function foldHeaderState(h: EchoesHeaderState, event: EchoesEvent): boolean {
+export function foldHeaderState(h: LaneHeaderState, event: ConversationEvent): boolean {
   switch (event.kind) {
     case 'session_init':
     case 'turn_completed': {
@@ -330,14 +330,14 @@ const BUFFER_CAP = 1000
 
 /** ring buffer の 1 要素。doc 38 Phase 2: どの session の event かを envelope として保持し、
  *  attach 時の replay で renderer に session を渡せるようにする。 */
-type BufferedEvent = { event: EchoesEvent; session: number }
+type BufferedEvent = { event: ConversationEvent; session: number }
 
 type LaneConsole = {
   buffer: BufferedEvent[]
   mode: SessionMode
   renderer: ConsoleRenderer | null
-  /** Echoes 共通ヘッダ用 summary（session_init / turn_completed / error の畳み込み）。 */
-  header: EchoesHeaderState
+  /** Conversation 共通ヘッダ用 summary（session_init / turn_completed / error の畳み込み）。 */
+  header: LaneHeaderState
 }
 
 const lanes = new Map<string, LaneConsole>()
@@ -357,7 +357,7 @@ function laneOf(lane: string): LaneConsole {
 
 export type VpConsole = {
   /** doc 38 Phase 2: session = envelope 由来の VP 採番 key（未指定 = focused = 1、旧 SP 互換）。 */
-  handleEvent(lane: string, event: EchoesEvent, session?: number): void
+  handleEvent(lane: string, event: ConversationEvent, session?: number): void
   /** doc 50 §4.6 A6: session の Mode（見え方）が変わったことを通知する（'vp:session-mode'）。
    *  Rust の `SessionModeApplied` が呼ぶ口。roster と kind badge がこれで追従する。 */
   setSessionMode(lane: string, session: number, mode: SessionMode): void
@@ -365,16 +365,16 @@ export type VpConsole = {
   attachRenderer(lane: string, renderer: ConsoleRenderer): void
   detachRenderer(lane: string): void
   /** devtools 検分: 直近 n 件（default 20）。 */
-  peek(lane: string, n?: number): EchoesEvent[]
-  /** Echoes 共通ヘッダ用 summary の snapshot（copy を返す — caller の signal 更新用）。 */
-  headerState(lane: string): EchoesHeaderState
-  /** doc 38 Phase 2: repo の echoes_session_list を per-lane cache に取り込み、tab strip へ
-   *  'vp:echoes-sessions' CustomEvent を発火する（focused も併せて更新）。 */
-  handleSessionList(lane: string, payload: EchoesSessionListPayload): void
-  /** doc 38 Phase 2: agents_list を「+」menu へ 'vp:echoes-agents' CustomEvent で中継する。
+  peek(lane: string, n?: number): ConversationEvent[]
+  /** Conversation 共通ヘッダ用 summary の snapshot（copy を返す — caller の signal 更新用）。 */
+  headerState(lane: string): LaneHeaderState
+  /** doc 38 Phase 2: repo の conversation_session_list を per-lane cache に取り込み、tab strip へ
+   *  'vp:conversation-sessions' CustomEvent を発火する（focused も併せて更新）。 */
+  handleSessionList(lane: string, payload: ConversationSessionListPayload): void
+  /** doc 38 Phase 2: agents_list を「+」menu へ 'vp:conversation-agents' CustomEvent で中継する。
    *  doc 47 §6: req = 要求元の相関 id（IPC の `req` を Rust が往復させたもの）。購読側は
    *  自分の id と一致した時だけ反応する。 */
-  handleAgents(lane: string, payload: EchoesStandsPayload, req?: BusRequestId | null): void
+  handleAgents(lane: string, payload: AgentsPayload, req?: BusRequestId | null): void
   /** doc 38 Phase 2: lane の focused session key（未知 = 1）。chatview の event filter が参照。 */
   focusedOf(lane: string): number
 }
@@ -402,12 +402,12 @@ export function installConsole(): VpConsole {
           new CustomEvent('vp:console-ready', { detail: { lane } }),
         )
       }
-      // Echoes 共通ヘッダ summary。変化した時だけ通知（chunk 系では飛ばない）。
+      // Conversation 共通ヘッダ summary。変化した時だけ通知（chunk 系では飛ばない）。
       // NB(doc 38): header は lane 単位の presence-driven 表示で、session ごとの scoping は
       // Phase 3 以降の磨き。今は全 session を跨いで畳み、N=1 の既存挙動を保つ。
       if (foldHeaderState(entry.header, event)) {
         document.dispatchEvent(
-          new CustomEvent('vp:echoes-header', { detail: { lane } }),
+          new CustomEvent('vp:lane-header', { detail: { lane } }),
         )
       }
       if (entry.renderer) {
@@ -420,7 +420,7 @@ export function installConsole(): VpConsole {
     },
     setSessionMode(lane, session, mode) {
       // doc 50 §4.6 A6: 見え方は **session の属性**。roster（lane-panes）と名札の kind badge
-      // （EchoesHeader）がこの bus を購読して、その session の Pane kind を入れ替える。
+      // （LaneHeader）がこの bus を購読して、その session の Pane kind を入れ替える。
       // lane 単位の mode cache は触らない（root の追従は sidebar snapshot が持つ）。
       //
       // ⚠️ **自分の読み手 cache を先に更新する**（`sessionModeOf` の供給元）。bus の購読者は
@@ -464,19 +464,19 @@ export function installConsole(): VpConsole {
       //  syncHeaderSessionId の doc 参照）。list が authoritative な同期点。
       if (syncHeaderSessionId(lane)) {
         document.dispatchEvent(
-          new CustomEvent('vp:echoes-header', { detail: { lane } }),
+          new CustomEvent('vp:lane-header', { detail: { lane } }),
         )
       }
       // tab strip（chatview）へ。'vp:console-ready'（:201 相当）と同じ CustomEvent bus パターン。
       document.dispatchEvent(
-        new CustomEvent('vp:echoes-sessions', { detail: { lane, focused, sessions } }),
+        new CustomEvent('vp:conversation-sessions', { detail: { lane, focused, sessions } }),
       )
     },
     handleAgents(lane, payload, req) {
       const agents = Array.isArray(payload?.agents) ? payload!.agents! : []
       // doc 47 §6: req をそのまま detail に載せる（発火元は要求元が誰かを解釈しない）。
-      const detail: EchoesStandsDetail = { lane, agents, req: req ?? null }
-      document.dispatchEvent(new CustomEvent('vp:echoes-agents', { detail }))
+      const detail: AgentsDetail = { lane, agents, req: req ?? null }
+      document.dispatchEvent(new CustomEvent('vp:conversation-agents', { detail }))
     },
     // 純関数 focusedOf をそのまま公開（laneSessions cache を参照。property 名は method binding を
     // 作らないので module-level の focusedOf を指す — 自己再帰にはならない）。

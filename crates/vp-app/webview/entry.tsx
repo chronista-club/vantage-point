@@ -106,12 +106,12 @@ import { renderBoard, clearBoard, appendBoard } from "./board-render";
 import { installConsole, focusedOf, sessionModeOf } from "./console";
 import type {
 	SessionMode,
-	EchoesEvent,
-	EchoesSessionListPayload,
-	EchoesStandsPayload,
+	ConversationEvent,
+	ConversationSessionListPayload,
+	AgentsPayload,
 } from "./console";
 // doc 46 P1 → doc 49 LE-P4 PR2: lane 内 tiling（creo-ui-layout の lane scope）。
-// + New（engine × Mode で新 session）は EchoesHeader へ移設済み（doc 51 §1 A1 — 帯の退役）。
+// + New（engine × Mode で新 session）は LaneHeader へ移設済み（doc 51 §1 A1 — 帯の退役）。
 import {
 	chatHostId,
 	hostIdForMode,
@@ -120,10 +120,10 @@ import {
 } from "./lane-panes";
 import { installChatView, CHATVIEW_CSS, handoffKey } from "./chatview";
 import {
-	mountEchoesHeader,
-	ECHOES_HEADER_CSS,
-	type EchoesHeaderApi,
-} from "./EchoesHeader";
+	mountLaneHeader,
+	LANE_HEADER_CSS,
+	type LaneHeaderApi,
+} from "./LaneHeader";
 import { renderDevices as renderDeviceList } from "./devices";
 import {
 	handleMessage as handleBoardMessage,
@@ -168,7 +168,7 @@ openDispatch();
 // 集約され、ここは購読の install と `setActivePane`（下方 `applyActivePane`）だけを持つ。
 //
 // data-frame-id 規約 (main_area.rs HTML 側で付与):
-//   echoes  → pane-terminal      (Echoes Agent = lane workbench。console/chat/board の tiling を内包)
+//   conversation  → pane-lane      (Conversation Agent = lane workbench。console/chat/board の tiling を内包)
 //   runner  → pane-runner        (Runner 🌿)
 //   devices → pane-devices        (Devices 🧲 / device 一覧)
 //   preview → pane-preview        (iframe preview)
@@ -190,10 +190,10 @@ attachKeybindings(window);
 // 本体は下方の `applyActivePane`。
 //
 // ⚠️ この表は `active-pane.ts` の同名の表と**別の写像**で、統合してはいけない — こちらは
-// Frame Engine の `data-frame-id`（"echoes" 等 = 配置の座標系）、あちらは DOM element id
-// （"pane-terminal" 等 = 可視性の gate）。同じ kind から別の軸を引いている。
+// Frame Engine の `data-frame-id`（"lane" 等 = 配置の座標系）、あちらは DOM element id
+// （"pane-lane" 等 = 可視性の gate）。同じ kind から別の軸を引いている。
 const KIND_TO_PANE: Record<string, string> = {
-	terminal: "echoes",
+	terminal: "lane",
 	runner: "runner",
 	devices: "devices",
 	preview: "preview",
@@ -206,9 +206,9 @@ const KIND_TO_PANE: Record<string, string> = {
 /** 現 active Lane の address (Lane 跨ぎの save+restore base). null = まだ Lane click していない. */
 let activeLaneAddress: string | null = null;
 
-/** Echoes 共通ヘッダ（pane-host 上端 strip）。mount は vpConsole install 後（下方）、
+/** Conversation 共通ヘッダ（pane-host 上端 strip）。mount は vpConsole install 後（下方）、
  *  `applyActivePane` が lane 文脈を届ける。null = mount 点不在（graceful skip）。 */
-let echoesHeader: EchoesHeaderApi | null = null;
+let laneHeader: LaneHeaderApi | null = null;
 
 /**
  * LaneAddress::Display 形を board-handler が使う flat lane_name に翻訳する。
@@ -231,7 +231,7 @@ function laneNameFromAddress(addr: string | null): string | null {
 /**
  * Rust `push_active_view` の受け口（`window.setActivePane`）の本体。
  *
- * **1 本の関数**として ①DOM の可視性（active-pane.ts）→ ②配置・EchoesHeader・board の順に行う。
+ * **1 本の関数**として ①DOM の可視性（active-pane.ts）→ ②配置・LaneHeader・board の順に行う。
  * 旧構成は ①を active-pane.ts が `window.setActivePane` として定義し、ここが **wrap** して②を
  * 足す 2 段だった。あれは「DOM 切替は World A（inline JS）、layout は World B（bundle）」という
  * 世界の分断が理由の形で、World A が消えた（#921）時点で意味を失っていた。
@@ -242,7 +242,7 @@ function laneNameFromAddress(addr: string | null): string | null {
  *
  * per-Lane 配置の記憶 (VP-141 follow-up の後継):
  * - kind=terminal Lane 切替時に旧 Lane の配置 snapshot を save、新 Lane の保存済 snapshot
- *   (or default lead-focus) を restore する → user が Lane を跨いでも Side Review / board Overlay 等の
+ *   (or default lane-focus) を restore する → user が Lane を跨いでも Side Review / board Overlay 等の
  *   選択 + share 調整の形が記憶される（app-panes.ts 所有）
  * - kind != terminal (board/runner/Devices click 等) は Lane を跨がない fixed-Pane focus、記憶は更新しない
  */
@@ -256,12 +256,12 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 	// ② app-panes に配置を発火
 	if (!info || !info.kind || info.kind === "empty") {
 		applyAppScene("empty");
-		// lane 無し = Echoes 共通ヘッダも空へ（chips は presence-driven）。
-		echoesHeader?.setLane(null);
+		// lane 無し = Conversation 共通ヘッダも空へ（chips は presence-driven）。
+		laneHeader?.setLane(null);
 		return;
 	}
 	// kind=terminal: Lane 切替判定 + 保存済配置の restore + show-subscriber 付替
-	if (info.kind === "terminal" && info.pane_id) {
+	if (info.kind === "lane" && info.pane_id) {
 		const newLane = info.pane_id;
 		// ⚠️ restore は **lane が本当に変わった時だけ**。header refresh（engine_session_id /
 		// branch 変化等）は同一 lane に setActivePane を再送してくるため、無条件 restore だと
@@ -272,9 +272,9 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 			saveAppStateFor(activeLaneAddress);
 		}
 		activeLaneAddress = newLane;
-		// Echoes 共通ヘッダを当該 lane の文脈に更新（kind != terminal では触らない =
+		// Conversation 共通ヘッダを当該 lane の文脈に更新（kind != terminal では触らない =
 		// board 等を眺めている間も直前の lane 文脈が載り続ける）。
-		echoesHeader?.setLane({
+		laneHeader?.setLane({
 			addr: newLane,
 			name: info.lane_name ?? null,
 			cwd: info.cwd ?? null,
@@ -285,7 +285,7 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		});
 		// wiremsg Stage 2: canvas (board body) の供給は Rust 側 spawn_canvas_subscription が
 		// per-repo で担うため、Lane 切替時の JS 側 WS 付替は不要 (旧 setWantedLane を撤去)。
-		// 保存済配置を restore、 初訪問 Lane は lead-focus を default にする
+		// 保存済配置を restore、 初訪問 Lane は lane-focus を default にする
 		if (laneChanged) restoreAppStateFor(newLane);
 		// doc 50 §4.6 A6: lane の表示を開く（roster 同期 + focus）。旧実装は
 		// 'vp:console-mode'（lane 単位 mode の到着）が契機だったが、見え方が session の
@@ -386,12 +386,12 @@ document.head.appendChild(ppFontStyle);
 // （`window.setActivePane` の install は module 評価時に済んでいる — 旧 2 段 wrap 時代は
 //   被 wrap 側の定義を待つ必要があってここに居た）
 const applyDefaultScene = (): void => {
-	const ok = applyAppScene("lead-focus");
+	const ok = applyAppScene("lane-focus");
 	const paneCount = document.querySelectorAll("[data-frame-id]").length;
 	// 診断 log: 配置が apply された事実と、 data-frame-id 要素の存在を確認できるようにする。
 	// user 環境で 「画面が黒い」 等の issue 時に DevTools console で path を即時切り分けできるよう常時出力。
 	console.info(
-		`[app-panes] applied default scene = lead-focus (ok=${ok}); panes detected = ${paneCount}`,
+		`[app-panes] applied default scene = lane-focus (ok=${ok}); panes detected = ${paneCount}`,
 	);
 	// doc 19: board body 下の history strip を SolidJS で mount。
 	mountHistoryStrip();
@@ -460,8 +460,8 @@ console.info("[vp-bundle] vpAppLayout attached to window — bundle init complet
 	appendBoard,
 };
 
-// ===== Echoes gui (doc 33): Console facade + ChatView =====
-// EchoesEvent の per-lane ring buffer + ChatView renderer 接続点。
+// ===== Conversation gui (doc 33): Console facade + ChatView =====
+// ConversationEvent の per-lane ring buffer + ChatView renderer 接続点。
 // Rust からの供給は push envelope（下方 `installDispatch` の console* handler）で、
 // `window.vpConsole` は **DevTools 検分用**に生えている: window.vpConsole.peek("<repo>/root")
 const vpConsole = installConsole();
@@ -470,7 +470,7 @@ const vpConsole = installConsole();
 //   - getItemId    = 表示中 board item（board-handler の cursor）
 //   - getLaneAddress = 現 active lane の address（`applyActivePane` が更新する module 変数）
 //   - getFocusedSession / getSessionMode = console.ts の per-lane registry
-// server は触らない（既存 IPC echoes:submit / term:write を撃つだけ、doc 52 §3 = 状態ゼロの往復）。
+// server は触らない（既存 IPC conversation:submit / term:write を撃つだけ、doc 52 §3 = 状態ゼロの往復）。
 const inkHandlers = installInk({
 	getItemId: () => getCanvasState().cursor,
 	getLaneAddress: () => activeLaneAddress,
@@ -487,28 +487,28 @@ chatStyle.textContent = CHATVIEW_CSS;
 document.head.appendChild(chatStyle);
 const chatView = installChatView(vpConsole);
 
-// ===== Echoes 共通ヘッダ（creo memo `vp-pane-common-header`）=====
-// pane-host 上端の #echoes-header（main_area.rs が mount 点だけ提供）に strip を mount。
-// tui/gui のどちらを表示していても同一ヘッダが載り続ける（lane の Echoes に帰属）。
+// ===== Conversation 共通ヘッダ（creo memo `vp-pane-common-header`）=====
+// pane-host 上端の #lane-header（main_area.rs が mount 点だけ提供）に strip を mount。
+// tui/gui のどちらを表示していても同一ヘッダが載り続ける（lane の Conversation に帰属）。
 const headerStyle = document.createElement("style");
-headerStyle.textContent = ECHOES_HEADER_CSS;
+headerStyle.textContent = LANE_HEADER_CSS;
 document.head.appendChild(headerStyle);
-const echoesHeaderHost = document.getElementById("echoes-header");
-if (echoesHeaderHost) {
-	echoesHeader = mountEchoesHeader(echoesHeaderHost, vpConsole);
+const laneHeaderHost = document.getElementById("lane-header");
+if (laneHeaderHost) {
+	laneHeader = mountLaneHeader(laneHeaderHost, vpConsole);
 } else {
 	console.warn(
-		"[vp-bundle] #echoes-header が見つかりません — 共通ヘッダ mount をスキップ",
+		"[vp-bundle] #lane-header が見つかりません — 共通ヘッダ mount をスキップ",
 	);
 }
 
 // doc 46 P1 → doc 49 LE-P4 PR2 → doc 50 P1 → doc 51 §1 A1: lane 内 tiling は creo-ui-layout の
 // lane scope が担い、pane の顔ぶれは session 一覧 ×（各 session の mode）から動的に導く
 // （lane-panes.ts の lanePaneRefs が SSOT）。下端の帯（#pane-tabs）は退役 — pane chip は
-// tiling 既定で存在理由が消え、+ New は EchoesHeader（lane の名札）右端へ移設した。
+// tiling 既定で存在理由が消え、+ New は LaneHeader（lane の名札）右端へ移設した。
 // ⚠️ xterm（lane-host）の**中身**には触れず、host 要素の style / class だけを操る。
 // chat session host は lane-panes が生成し、中身は chatView.mountSession が入れる。
-const paneFrame = document.getElementById("pane-terminal");
+const paneFrame = document.getElementById("pane-lane");
 const lanePanesEl = document.getElementById("lane-panes");
 const lanePanes =
 	paneFrame && lanePanesEl
@@ -546,7 +546,7 @@ if (lanePanes && paneFrame) {
 // lane の表示を開く（doc 50 §4.6 A6 — 旧 `applyConsoleMode` の後継）。
 //
 // pane の顔ぶれ（roster）は lane-panes.ts が session 一覧 × 各 session の mode から導出する
-// （'vp:echoes-sessions' / 'vp:session-mode' 購読）。ここは lane 切替と focus だけを担う。
+// （'vp:conversation-sessions' / 'vp:session-mode' 購読）。ここは lane 切替と focus だけを担う。
 // 旧実装は lane 単位 mode を引数に取っていたが、見え方が session の属性になったので
 // 「lane を開く」操作から mode の概念が消えた。
 const applyLaneView = (lane: string): void => {
@@ -559,7 +559,7 @@ const applyLaneView = (lane: string): void => {
 	lanePanes?.setActiveLane(lane);
 	// focus 先 = focused session の pane（session ↔ Pane 1:1）。**その session の mode** で
 	// host が決まる（term なら xterm、chat なら ChatView）。focused は console.ts の
-	// registry が真値（echoes_session_list で同期済み。未知 lane は 1 = 旧 SP 互換）。
+	// registry が真値（conversation_session_list で同期済み。未知 lane は 1 = 旧 SP 互換）。
 	// pane がまだ生えていない boot 窓は lane-panes 側が pendingFocus で救済する。
 	//
 	// ⚠️ 旧実装は `chatHostId(...)` 決め打ちで、上のコメントが主張する mode 分岐を**していな
@@ -983,13 +983,13 @@ installDispatch({
 	// Console 面（console.ts）。`window.vpConsole` は DevTools 検分用に残っている
 	// （`window.vpConsole.peek("<repo>/root")`）が、Rust からはここ経由で届く。
 	consoleSessionList: (lane, payload) =>
-		vpConsole.handleSessionList(lane, payload as EchoesSessionListPayload),
+		vpConsole.handleSessionList(lane, payload as ConversationSessionListPayload),
 	consoleEvent: (lane, event, session) =>
-		vpConsole.handleEvent(lane, event as EchoesEvent, session),
+		vpConsole.handleEvent(lane, event as ConversationEvent, session),
 	consoleModeApplied: (lane, session, mode) =>
 		vpConsole.setSessionMode(lane, session, mode as SessionMode),
 	consoleStands: (lane, payload, req) =>
-		vpConsole.handleAgents(lane, payload as EchoesStandsPayload, req),
+		vpConsole.handleAgents(lane, payload as AgentsPayload, req),
 	// 対話面（ink）。mount target 不在なら `installInk` が null を返すので no-op で埋める
 	// （dispatch の表は常に全 arm 揃っている = 網羅性検査が効く形を崩さない）。
 	inkSnapshot: (path) => inkHandlers?.inkSnapshot(path),

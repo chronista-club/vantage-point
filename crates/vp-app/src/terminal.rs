@@ -179,7 +179,7 @@ pub enum AppEvent {
     /// inject する。
     ///
     /// doc 50 §4.6 A6: `session` = 発生元 session の VP 採番 key。topic は lane 単位で共有し、
-    /// session は `LaneTerminalOutput.session`（serde default=1）で運ぶ（`EchoesEvent` と対称、
+    /// session は `LaneTerminalOutput.session`（serde default=1）で運ぶ（`ConversationEvent` と対称、
     /// doc 38 落とし穴① =「session を lane 名に埋めない」）。
     TerminalOutput {
         lane: String,
@@ -203,30 +203,30 @@ pub enum AppEvent {
         cols: u16,
         rows: u16,
     },
-    /// Echoes gui (doc 32): 当該 lane の echoes session が daemon canvas channel から受信した
-    /// 構造化イベント 1 件。 `event` は EchoesEvent の生 JSON (`{"kind":"message_chunk",...}`)。
+    /// Conversation gui (doc 32): 当該 lane の conversation session が daemon canvas channel から受信した
+    /// 構造化イベント 1 件。 `event` は ConversationEvent の生 JSON (`{"kind":"message_chunk",...}`)。
     /// event loop が push envelope `console:event` で当該 lane の Console pane に渡す。
     /// doc 38 Phase 2: `session` = 発生元 session の VP 採番 key（1 Lane = N session）。topic の
-    /// `RepoMessage::EchoesEvent::session`（serde default=1）由来。session は lane 名に埋めず
+    /// `RepoMessage::ConversationEvent::session`（serde default=1）由来。session は lane 名に埋めず
     /// 常に別 field で運ぶ（doc 38 落とし穴①）。
-    EchoesEvent {
+    ConversationEvent {
         lane: String,
         event: serde_json::Value,
         session: u32,
     },
-    /// Echoes gui: WebView (EchoesChatPane) からのプロンプト投入。 event loop が当該 lane の
-    /// echoes session を lazy spawn し、 canvas channel 上り request `echoes_submit` で repo へ。
-    EchoesSubmit {
+    /// Conversation gui: WebView (ChatPane) からのプロンプト投入。 event loop が当該 lane の
+    /// conversation session を lazy spawn し、 canvas channel 上り request `conversation_submit` で repo へ。
+    ConversationSubmit {
         lane: String,
         prompt: String,
         /// 宛先 session（doc 50 P2）。None = lane の focused（旧 SP / 旧 UI 互換）。
         session: Option<u32>,
     },
-    /// Echoes gui HITL (doc 35 PR1): PromptCard の回答。 event loop が当該 lane の echoes
-    /// session へ渡し、 canvas channel 上り request `echoes_respond` で repo へ。 `request_id` は
+    /// Conversation gui HITL (doc 35 PR1): PromptCard の回答。 event loop が当該 lane の conversation
+    /// session へ渡し、 canvas channel 上り request `conversation_respond` で repo へ。 `request_id` は
     /// Question event 由来の control_response マッチング用。 allow は `answers`、 deny は
     /// `behavior="deny"`+`message` を運ぶ（どちらか）。
-    EchoesRespond {
+    ConversationRespond {
         lane: String,
         request_id: String,
         /// 宛先 session（doc 50 P2）。None = focused。
@@ -235,16 +235,16 @@ pub enum AppEvent {
         behavior: Option<String>,
         message: Option<String>,
     },
-    /// Echoes gui HITL (doc 35 §5 / PR2): 実行中 turn の中断（stop ボタン / Esc）。
-    /// event loop が当該 lane の echoes session へ渡し、`echoes_interrupt` で repo へ。
-    EchoesInterrupt {
+    /// Conversation gui HITL (doc 35 §5 / PR2): 実行中 turn の中断（stop ボタン / Esc）。
+    /// event loop が当該 lane の conversation session へ渡し、`conversation_interrupt` で repo へ。
+    ConversationInterrupt {
         lane: String,
         /// 宛先 session（doc 50 P2）。None = focused。
         session: Option<u32>,
     },
-    /// Echoes gui HITL (doc 35 §2.5 / PR3): permission mode 動的切替。event loop が当該 lane の
-    /// echoes session へ渡し、`echoes_set_permission_mode` で repo へ。`mode` = "default"|"bypassPermissions" 等。
-    EchoesSetPermissionMode {
+    /// Conversation gui HITL (doc 35 §2.5 / PR3): permission mode 動的切替。event loop が当該 lane の
+    /// conversation session へ渡し、`conversation_set_permission_mode` で repo へ。`mode` = "default"|"bypassPermissions" 等。
+    ConversationSetPermissionMode {
         lane: String,
         mode: String,
         /// 宛先 session（doc 50 P2）。None = focused。
@@ -283,41 +283,41 @@ pub enum AppEvent {
         mode: Option<String>,
     },
     /// doc 39 P3: Root 切替 picker（ヘッダ chip dropdown）からの root 向け替え要求。
-    /// event loop が `echoes_session_switch_root` で repo に forward（slot は対象 session の
+    /// event loop が `conversation_session_switch_root` で repo に forward（slot は対象 session の
     /// store で Resume respawn）→ session list 再取得 + demand_start で表示を追従させる。
     ConsoleSwitchRoot { lane: String, session: u64 },
     /// gui モデル切替要求（ChatView の model picker）。 event loop が
     /// `console_set_model` で repo に forward。 `model` None = claude default に戻す。
     ConsoleSetModel { lane: String, model: Option<String> },
-    // doc 53 §11: 旧 `EchoesSessionsFetch`（session 一覧の ask 要求）は退役。roster の供給は
+    // doc 53 §11: 旧 `ConversationSessionsFetch`（session 一覧の ask 要求）は退役。roster の供給は
     // lanes snapshot 1 本になった（fetch は GUI 自身の動詞でしか撃たれず、CLI / MCP 由来の
     // session 変化が pane grid に出なかった）。
     /// doc 38 Phase 2: chat header「+」からの新 session 作成（`agent` 省略 = lane の agent）。
-    /// ask `echoes_session_create`（focus は送らない = backend 既定 true）。roster の更新は
+    /// ask `conversation_session_create`（focus は送らない = backend 既定 true）。roster の更新は
     /// server の `emit_lane_update` → lanes snapshot が運ぶ（doc 53 §11）。
-    EchoesSessionCreate { lane: String, agent: Option<String> },
+    ConversationSessionCreate { lane: String, agent: Option<String> },
     /// replay demand（2026-07-24）: webview の renderer 準備完了後に撃つ消費者主導 demand。
-    /// ask `echoes_demand_start` → repo が engine ensure + transcript replay を配送する。
-    EchoesDemandStart { lane: String },
-    /// doc 38 Phase 2: session tab click による focused 切替。ask `echoes_session_focus` →
-    /// 一覧再取得 → `echoes_demand_start`（新 focused の transcript replay を発火）。
-    EchoesSessionFocus { lane: String, session: u32 },
-    /// doc 38 Phase 3: session tab の × による close。ask `echoes_session_remove` →
-    /// 一覧再取得 → `echoes_demand_start`（除去後の新 focused の会話を replay）。最後の 1 本は
+    /// ask `conversation_demand_start` → repo が engine ensure + transcript replay を配送する。
+    ConversationDemandStart { lane: String },
+    /// doc 38 Phase 2: session tab click による focused 切替。ask `conversation_session_focus` →
+    /// 一覧再取得 → `conversation_demand_start`（新 focused の transcript replay を発火）。
+    ConversationSessionFocus { lane: String, session: u32 },
+    /// doc 38 Phase 3: session tab の × による close。ask `conversation_session_remove` →
+    /// 一覧再取得 → `conversation_demand_start`（除去後の新 focused の会話を replay）。最後の 1 本は
     /// backend が Err で拒否（GUI も × は 2 本以上でしか出さない）。session は lane 名に埋めず
     /// 常に別 field で運ぶ（doc 38 落とし穴①）。
-    EchoesSessionRemove { lane: String, session: u32 },
+    ConversationSessionRemove { lane: String, session: u32 },
     /// doc 38 Phase 2: 「+」menu の engine 選択肢を埋める agents 一覧取得。
-    /// ask `agents_list` → `EchoesStands` で push back。
-    /// doc 47 §6: `req` = webview が採番した相関 id。`vp:echoes-agents` は複数の「+」menu が
+    /// ask `agents_list` → `Agents` で push back。
+    /// doc 47 §6: `req` = webview が採番した相関 id。`vp:conversation-agents` は複数の「+」menu が
     /// 購読する共有 bus なので、要求元をそのまま往復させて応答側で振り分けさせる
     /// （Rust は中身を解釈しない不透明な札）。
-    EchoesAgentsFetch { lane: String, req: Option<String> },
-    // doc 53 §11: 旧 `EchoesSessionList`（ask 結果の push back）は退役。roster は LanesLoaded で
+    AgentsFetch { lane: String, req: Option<String> },
+    // doc 53 §11: 旧 `ConversationSessionList`（ask 結果の push back）は退役。roster は LanesLoaded で
     // snapshot から直接 webview へ渡す（`push_session_list`）。
     /// doc 38 Phase 2: `agents_list` の結果を「+」menu へ push back する内部 event。
-    /// doc 47 §6: `req` は `EchoesAgentsFetch` から持ち回った相関 id（そのまま JS へ返す）。
-    EchoesStands {
+    /// doc 47 §6: `req` は `AgentsFetch` から持ち回った相関 id（そのまま JS へ返す）。
+    Agents {
         lane: String,
         payload: serde_json::Value,
         req: Option<String>,
@@ -390,25 +390,25 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 });
             }
         }
-        // Echoes gui (doc 32): EchoesChatPane からのプロンプト投入。 lane + prompt 必須。
-        Some("echoes:submit") => {
+        // Conversation gui (doc 32): ChatPane からのプロンプト投入。 lane + prompt 必須。
+        Some("conversation:submit") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
             let prompt = parsed.get("prompt").and_then(|v| v.as_str());
             if let (Some(lane), Some(prompt)) = (lane, prompt) {
-                let _ = proxy.send_event(AppEvent::EchoesSubmit {
+                let _ = proxy.send_event(AppEvent::ConversationSubmit {
                     lane: lane.to_string(),
                     prompt: prompt.to_string(),
                     session: parse_session(&parsed),
                 });
             }
         }
-        // Echoes gui HITL (doc 35 PR1): PromptCard の回答。 lane + request_id 必須。
+        // Conversation gui HITL (doc 35 PR1): PromptCard の回答。 lane + request_id 必須。
         // answers（allow）or behavior+message（deny）を運ぶ。
-        Some("echoes:respond") => {
+        Some("conversation:respond") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
             let request_id = parsed.get("request_id").and_then(|v| v.as_str());
             if let (Some(lane), Some(request_id)) = (lane, request_id) {
-                let _ = proxy.send_event(AppEvent::EchoesRespond {
+                let _ = proxy.send_event(AppEvent::ConversationRespond {
                     lane: lane.to_string(),
                     request_id: request_id.to_string(),
                     session: parse_session(&parsed),
@@ -424,21 +424,21 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 });
             }
         }
-        // Echoes gui HITL (doc 35 §5 / PR2): 実行中 turn の中断。 lane 必須。
-        Some("echoes:interrupt") => {
+        // Conversation gui HITL (doc 35 §5 / PR2): 実行中 turn の中断。 lane 必須。
+        Some("conversation:interrupt") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
-                let _ = proxy.send_event(AppEvent::EchoesInterrupt {
+                let _ = proxy.send_event(AppEvent::ConversationInterrupt {
                     lane: lane.to_string(),
                     session: parse_session(&parsed),
                 });
             }
         }
-        // Echoes gui HITL (doc 35 §2.5 / PR3): permission mode 切替。 lane + mode 必須。
-        Some("echoes:set_permission_mode") => {
+        // Conversation gui HITL (doc 35 §2.5 / PR3): permission mode 切替。 lane + mode 必須。
+        Some("conversation:set_permission_mode") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
             let mode = parsed.get("mode").and_then(|v| v.as_str());
             if let (Some(lane), Some(mode)) = (lane, mode) {
-                let _ = proxy.send_event(AppEvent::EchoesSetPermissionMode {
+                let _ = proxy.send_event(AppEvent::ConversationSetPermissionMode {
                     lane: lane.to_string(),
                     mode: mode.to_string(),
                     session: parse_session(&parsed),
@@ -511,24 +511,24 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
         // doc 38 Phase 2: session tab strip。lane は常に別 field で運び、session を lane 名に
         // 埋めない（doc 38 落とし穴①）。作成 / focused 切替 / agents 取得。
         // 一覧取得（`echoes:sessions_fetch`）は doc 53 §11 で退役 — roster は snapshot が運ぶ。
-        Some("echoes:session_create") => {
+        Some("conversation:session_create") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
                 // agent 省略 = lane の agent（backend 既定）。
                 let agent = parsed
                     .get("agent")
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
-                let _ = proxy.send_event(AppEvent::EchoesSessionCreate {
+                let _ = proxy.send_event(AppEvent::ConversationSessionCreate {
                     lane: lane.to_string(),
                     agent,
                 });
             }
         }
-        Some("echoes:session_focus") => {
+        Some("conversation:session_focus") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
             let session = parsed.get("session").and_then(|v| v.as_u64());
             if let (Some(lane), Some(session)) = (lane, session) {
-                let _ = proxy.send_event(AppEvent::EchoesSessionFocus {
+                let _ = proxy.send_event(AppEvent::ConversationSessionFocus {
                     lane: lane.to_string(),
                     session: session as u32,
                 });
@@ -538,32 +538,32 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
         // demand。Rust attach 時 demand の boot 窓取りこぼし（bundle 読込前配送 = silent drop）
         // を埋める。⚠️ app.rs の is_main_ipc_tag allowlist と両方更新（片側だと sidebar IPC へ
         // 流れて silent drop — 2026-07-16 の「+」無反応 regression と同じ罠）。
-        Some("echoes:demand_start") => {
+        Some("conversation:demand_start") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
-                let _ = proxy.send_event(AppEvent::EchoesDemandStart {
+                let _ = proxy.send_event(AppEvent::ConversationDemandStart {
                     lane: lane.to_string(),
                 });
             }
         }
         // doc 38 Phase 3: session tab の × による close。lane + session 必須。
-        Some("echoes:session_remove") => {
+        Some("conversation:session_remove") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
             let session = parsed.get("session").and_then(|v| v.as_u64());
             if let (Some(lane), Some(session)) = (lane, session) {
-                let _ = proxy.send_event(AppEvent::EchoesSessionRemove {
+                let _ = proxy.send_event(AppEvent::ConversationSessionRemove {
                     lane: lane.to_string(),
                     session: session as u32,
                 });
             }
         }
-        Some("echoes:stands_fetch") => {
+        Some("conversation:stands_fetch") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
                 // doc 47 §6: 要求元の相関 id（省略可 = 応答を誰も拾わない）。
                 let req = parsed
                     .get("req")
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
-                let _ = proxy.send_event(AppEvent::EchoesAgentsFetch {
+                let _ = proxy.send_event(AppEvent::AgentsFetch {
                     lane: lane.to_string(),
                     req,
                 });

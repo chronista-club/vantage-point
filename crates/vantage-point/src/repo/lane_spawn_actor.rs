@@ -530,7 +530,7 @@ mod tests {
     /// (pid=None + state=Running + PtySlot なし) で登録されること。
     ///
     /// これが「gui の performer lane を再起動しても chat のまま復活する」の中核。
-    /// 壊れると chat performer が boot で PTY を立て、 echoes_submit が 2 本目 engine を
+    /// 壊れると chat performer が boot で PTY を立て、 conversation_submit が 2 本目 engine を
     /// 呼んで 1 会話 2 エンジンになる (conductor `with_root` と同じ規律を performer に適用)。
     #[tokio::test]
     async fn chat_mode_performer_boots_engine_less() {

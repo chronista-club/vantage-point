@@ -44,7 +44,7 @@ import {
 } from "@chronista-club/creo-ui-layout";
 import { layoutEngine } from "./layout-host";
 import { focusedOf } from "./console";
-import { sessionChipPrefix } from "./EchoesHeader";
+import { sessionChipPrefix } from "./LaneHeader";
 
 /** lane に並ぶ Pane の 1 参照（id = host 要素の DOM id）。 */
 export type PaneRef = {
@@ -62,7 +62,7 @@ export type PaneRef = {
 	kind: "term" | "chat" | "board";
 };
 
-/** roster の入力になる session の最小形（'vp:echoes-sessions' bus の 1 要素）。
+/** roster の入力になる session の最小形（'vp:conversation-sessions' bus の 1 要素）。
  *  doc 50 §4.6 A6: `mode` がこの session の見え方（term / chat）を決める **唯一の入力**。
  *  欠落（旧 SP）は "tui" に倒す（従来の既定 = tui）。 */
 export type PaneSession = {
@@ -236,7 +236,7 @@ const RESTORE_SHARE = 0.5;
 
 /** 新 Pane の選択肢 1 つ（doc 46 P2 要件 4: Engine × Mode）。 */
 export type NewPaneChoice = {
-	/** agent 名（`echoes` / `codex` / `grok` …）。 */
+	/** agent 名（`conversation` / `codex` / `grok` …）。 */
 	engine: string;
 	/** 表示名（engine の人間可読名）。 */
 	engineLabel: string;
@@ -296,7 +296,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	let activeLane: string | null = null;
 	/** lane → focus を持つ pane id（LE-20: focus は場の外 = module 状態） */
 	const focusById = new Map<string, string>();
-	/** lane → session 一覧（'vp:echoes-sessions' の鏡。roster は各 session の mode から導出）。
+	/** lane → session 一覧（'vp:conversation-sessions' の鏡。roster は各 session の mode から導出）。
 	 *  doc 50 §4.6 A6: lane 単位 console_mode の鏡（旧 `modeByLane`）は退役 — 見え方は
 	 *  session の属性になったので、lane 単位の mode を持つ理由が無くなった。 */
 	const sessionsByLane = new Map<string, PaneSession[]>();
@@ -459,7 +459,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 
 	// session 一覧（repo truth の鏡、chatview.installChatView が dispatch）→ pane の顔ぶれを同期。
 	// doc 46 §1.5 の実装点: session が増減すると pane / layout 列が追従する。
-	document.addEventListener("vp:echoes-sessions", (e) => {
+	document.addEventListener("vp:conversation-sessions", (e) => {
 		const d = (
 			e as CustomEvent<{ lane: string; sessions?: PaneSession[] }>
 		).detail;

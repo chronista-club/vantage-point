@@ -82,7 +82,7 @@ export function LaneRow(props: {
 }) {
 	const addr = () => laneAddressKey(props.lane);
 	const isActive = () => sidebar.active_lane_address === addr();
-	// F.8 B Convergent: Pane (Echoes) 不在 = pid:null は Dead Lane (spawn 失敗)、 dim 表示。
+	// F.8 B Convergent: Pane (Conversation) 不在 = pid:null は Dead Lane (spawn 失敗)、 dim 表示。
 	const isInactive = () => !isLaneAlive(props.lane);
 	const isPerformer = () => isPerformerLane(props.lane);
 	const icon = () => agentIcon(props.lane.agent, isActive());

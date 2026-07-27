@@ -1,18 +1,18 @@
-//! transcript replay — claude の session transcript（jsonl）を [`EchoesEvent`] 列に起こす。
+//! transcript replay — claude の session transcript（jsonl）を [`ConversationEvent`] 列に起こす。
 //!
 //! ## なぜ要るか
 //!
-//! gui（chat mode）の会話は `EchoesEvent` stream で GUI に届くが、この topic は
-//! **非 retained**（`process/echoes/data/{lane}/event`、category=data）で、履歴は vp-app の
+//! gui（chat mode）の会話は `ConversationEvent` stream で GUI に届くが、この topic は
+//! **非 retained**（`process/conversation/data/{lane}/event`、category=data）で、履歴は vp-app の
 //! webview 内 in-memory ring buffer にしか無い。 つまり **app を再起動すると ChatView が空**
 //! になる（engine 側は `--resume` で会話を保持しているのに、描く履歴が無い）。
 //!
 //! terminal（tui）は PtySlot の raw PTY bytes を replay して画面を復元するが、chat lane は
 //! PtySlot を持たないため同じ手は使えない。 代わりに **claude が disk に持つ transcript
-//! (`~/.claude/repos/*/<session_id>.jsonl`)** を唯一の履歴 SSOT として読み、`EchoesEvent` に
+//! (`~/.claude/repos/*/<session_id>.jsonl`)** を唯一の履歴 SSOT として読み、`ConversationEvent` に
 //! 翻訳して attach 時に replay する（= gui 版 replay-on-attach）。
 //!
-//! ## [`super::translate`] との違い
+//! ## [`super::claude_translate`] との違い
 //!
 //! `translate` は **stream-json**（`stream_event` / `content_block_delta` の増分）を食う。
 //! transcript jsonl は **完成 message**（`message.content[]` の block 配列）なので構造が違い、
@@ -21,7 +21,7 @@
 //!
 //! ## 冪等性
 //!
-//! 先頭に [`EchoesEvent::ReplayStart`] を置く。 GUI はこれを見て会話表示をクリアしてから
+//! 先頭に [`ConversationEvent::ReplayStart`] を置く。 GUI はこれを見て会話表示をクリアしてから
 //! 後続を fold する。 backend は「新規 attach」と「reconnect / demand 再発火」を区別できない
 //! ため（terminal replay の clear-prefix と同型の問題）、単純追記だと再接続のたび会話が
 //! 二重化する。 reset してから描き直せば、どちらの経路でも同じ最終状態に収束する。
@@ -30,7 +30,7 @@
 //!
 //! claude は message を **完了時にしか** transcript へ flush しない。 よって replay が assistant の
 //! 生成中に着地すると、transcript だけでは「生成中 message の直前まで」しか復元できない。
-//! この欠けは [`super::host::EchoesAgentHost`] の **in-flight tail** が埋める（未 commit の
+//! この欠けは [`super::host::ClaudeHost`] の **in-flight tail** が埋める（未 commit の
 //! `MessageChunk` / `ThoughtChunk` を保持し、replay handler が本 module の出力の後ろへ継ぐ）。
 //! 「replay = transcript(commit 済み) ++ tail(未 commit)」で現在状態が厳密に再現される。
 //!
@@ -38,7 +38,7 @@
 //!
 //! - **thinking**: transcript の thinking block は `{"thinking":"","signature":"…"}` の形で
 //!   本文が空（signature は暗号化ペイロード）。 つまり **思考内容は disk に残っていない**ので
-//!   [`EchoesEvent::ThoughtChunk`] は replay できない。 live 経路（stream-json の
+//!   [`ConversationEvent::ThoughtChunk`] は replay できない。 live 経路（stream-json の
 //!   `thinking_delta`）でのみ流れる。 例外として、 **生成中の thinking** は in-flight tail 側に
 //!   居るので replay できる。
 //! - **image**: ChatView に描く語彙が無いため捨てる（MVP）。
@@ -49,8 +49,8 @@
 
 use serde_json::Value;
 
-use super::event::EchoesEvent;
-use super::translate::{plan_from_todowrite, tool_result_text};
+use super::claude_translate::{plan_from_todowrite, tool_result_text};
+use super::event::ConversationEvent;
 
 /// replay で GUI に送る event の上限。
 ///
@@ -58,12 +58,12 @@ use super::translate::{plan_from_todowrite, tool_result_text};
 /// 超過分は **古い方から捨てる**（直近の会話が最も価値が高い）。
 const REPLAY_EVENT_CAP: usize = 800;
 
-/// session の transcript を読み、replay 用 [`EchoesEvent`] 列を返す。
+/// session の transcript を読み、replay 用 [`ConversationEvent`] 列を返す。
 ///
-/// 先頭は必ず [`EchoesEvent::ReplayStart`]。 transcript 不在 / 読めない場合は
+/// 先頭は必ず [`ConversationEvent::ReplayStart`]。 transcript 不在 / 読めない場合は
 /// `ReplayStart` だけを返す（= GUI は「空の会話」に収束、live event を待つ）。
-pub fn replay_events(session_id: &str) -> Vec<EchoesEvent> {
-    let mut out = vec![EchoesEvent::ReplayStart];
+pub fn replay_events(session_id: &str) -> Vec<ConversationEvent> {
+    let mut out = vec![ConversationEvent::ReplayStart];
     let Some(path) = crate::lane::cc_session::transcript_path(session_id) else {
         return out;
     };
@@ -84,7 +84,7 @@ pub fn replay_events(session_id: &str) -> Vec<EchoesEvent> {
     out
 }
 
-/// 対応する [`EchoesEvent::ToolCall`] を持たない [`EchoesEvent::ToolCallUpdate`] を落とす（純関数）。
+/// 対応する [`ConversationEvent::ToolCall`] を持たない [`ConversationEvent::ToolCallUpdate`] を落とす（純関数）。
 ///
 /// GUI（`chatview.tsx` の `foldInto`）は update を `tool_use_id` で ToolCall に結びつけて done 化する。
 /// 結び先が無い update は黙って捨てられる（no-op）ので実害は無いが、 それを **backend 側の不変条件**
@@ -92,18 +92,18 @@ pub fn replay_events(session_id: &str) -> Vec<EchoesEvent> {
 /// 観測したらそれは配送順序のバグであって切り詰めの副作用ではない、 と切り分けられる。
 ///
 /// 孤児が生まれる唯一の決定的経路は [`REPLAY_EVENT_CAP`] の切り詰め（ToolCall だけが古くて落ちる）。
-fn drop_orphan_updates(events: &mut Vec<EchoesEvent>) {
+fn drop_orphan_updates(events: &mut Vec<ConversationEvent>) {
     let known: std::collections::HashSet<&str> = events
         .iter()
         .filter_map(|e| match e {
-            EchoesEvent::ToolCall { id, .. } => Some(id.as_str()),
+            ConversationEvent::ToolCall { id, .. } => Some(id.as_str()),
             _ => None,
         })
         .collect();
     let orphans: std::collections::HashSet<String> = events
         .iter()
         .filter_map(|e| match e {
-            EchoesEvent::ToolCallUpdate { tool_use_id, .. }
+            ConversationEvent::ToolCallUpdate { tool_use_id, .. }
                 if !known.contains(tool_use_id.as_str()) =>
             {
                 Some(tool_use_id.clone())
@@ -118,27 +118,27 @@ fn drop_orphan_updates(events: &mut Vec<EchoesEvent>) {
         "transcript replay: 孤児 tool_call_update を {} 件除去",
         orphans.len()
     );
-    events.retain(|e| !matches!(e, EchoesEvent::ToolCallUpdate { tool_use_id, .. } if orphans.contains(tool_use_id)));
+    events.retain(|e| !matches!(e, ConversationEvent::ToolCallUpdate { tool_use_id, .. } if orphans.contains(tool_use_id)));
 }
 
-/// transcript の全行を [`EchoesEvent`] 列へ翻訳する（純関数）。
+/// transcript の全行を [`ConversationEvent`] 列へ翻訳する（純関数）。
 ///
 /// `ReplayStart` は含まない（[`replay_events`] が付ける）。
-pub fn events_from_lines(raw: &str) -> Vec<EchoesEvent> {
+pub fn events_from_lines(raw: &str) -> Vec<ConversationEvent> {
     raw.lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .flat_map(|v| line_to_events(&v))
         .collect()
 }
 
-/// transcript の 1 行を [`EchoesEvent`] 列へ。 対象外の行は空 Vec。
+/// transcript の 1 行を [`ConversationEvent`] 列へ。 対象外の行は空 Vec。
 ///
 /// 除外するもの:
 /// - `isSidechain` — subagent の会話（親 lane の ChatView に混ぜない）
 /// - `isMeta` — hook 由来の内部注入
 /// - `type` が `user` / `assistant` 以外（`attachment` / `system` / `queue-operation` /
 ///   `last-prompt` / `pr-link` / `mode` / `custom-title` …）は表示対象でない
-fn line_to_events(v: &Value) -> Vec<EchoesEvent> {
+fn line_to_events(v: &Value) -> Vec<ConversationEvent> {
     if v.get("isSidechain").and_then(Value::as_bool) == Some(true)
         || v.get("isMeta").and_then(Value::as_bool) == Some(true)
     {
@@ -172,7 +172,7 @@ fn is_human_prompt(v: &Value) -> bool {
 }
 
 /// assistant message の content block 配列 → text / thinking / tool_use。
-fn assistant_events(content: &Value) -> Vec<EchoesEvent> {
+fn assistant_events(content: &Value) -> Vec<ConversationEvent> {
     let Some(blocks) = content.as_array() else {
         return Vec::new();
     };
@@ -183,7 +183,7 @@ fn assistant_events(content: &Value) -> Vec<EchoesEvent> {
                 if let Some(text) = b.get("text").and_then(Value::as_str)
                     && !text.is_empty()
                 {
-                    out.push(EchoesEvent::MessageChunk {
+                    out.push(ConversationEvent::MessageChunk {
                         text: text.to_string(),
                     });
                 }
@@ -192,7 +192,7 @@ fn assistant_events(content: &Value) -> Vec<EchoesEvent> {
                 if let Some(text) = b.get("thinking").and_then(Value::as_str)
                     && !text.is_empty()
                 {
-                    out.push(EchoesEvent::ThoughtChunk {
+                    out.push(ConversationEvent::ThoughtChunk {
                         text: text.to_string(),
                     });
                 }
@@ -211,7 +211,7 @@ fn assistant_events(content: &Value) -> Vec<EchoesEvent> {
                 {
                     out.push(plan);
                 }
-                out.push(EchoesEvent::ToolCall {
+                out.push(ConversationEvent::ToolCall {
                     id: id.to_string(),
                     name: name.to_string(),
                     input: input.clone(),
@@ -232,7 +232,7 @@ fn assistant_events(content: &Value) -> Vec<EchoesEvent> {
 /// `is_human` = [`is_human_prompt`] の判定。 false（= harness 注入）の行からは発話を作らない。
 /// tool_result は「engine の道具の結果」であって発話ではないため、この gate の対象外
 /// （tool_result 行は origin を持たないので、gate すると全部消えてしまう）。
-fn user_events(content: &Value, is_human: bool) -> Vec<EchoesEvent> {
+fn user_events(content: &Value, is_human: bool) -> Vec<ConversationEvent> {
     match content {
         Value::String(s) => {
             if is_human {
@@ -254,7 +254,7 @@ fn user_events(content: &Value, is_human: bool) -> Vec<EchoesEvent> {
                         let Some(tool_use_id) = b.get("tool_use_id").and_then(Value::as_str) else {
                             continue;
                         };
-                        out.push(EchoesEvent::ToolCallUpdate {
+                        out.push(ConversationEvent::ToolCallUpdate {
                             tool_use_id: tool_use_id.to_string(),
                             content: b.get("content").map(tool_result_text).unwrap_or_default(),
                             is_error: b.get("is_error").and_then(Value::as_bool).unwrap_or(false),
@@ -269,17 +269,17 @@ fn user_events(content: &Value, is_human: bool) -> Vec<EchoesEvent> {
     }
 }
 
-/// user 発話 text を [`EchoesEvent::UserMessage`] へ。 空 / 内部注入のみの行は捨てる。
+/// user 発話 text を [`ConversationEvent::UserMessage`] へ。 空 / 内部注入のみの行は捨てる。
 ///
 /// `<system-reminder>` や `<local-command-*>` は harness が注入する内部文で、user が打った
 /// 言葉ではない。 ChatView に出すと会話が汚れるので除去し、残りが空なら event を作らない。
-fn user_text_event(text: &str) -> Option<EchoesEvent> {
+fn user_text_event(text: &str) -> Option<ConversationEvent> {
     let cleaned = strip_injected_blocks(text);
     let trimmed = cleaned.trim();
     if trimmed.is_empty() {
         return None;
     }
-    Some(EchoesEvent::UserMessage {
+    Some(ConversationEvent::UserMessage {
         text: trimmed.to_string(),
     })
 }
@@ -329,13 +329,13 @@ mod tests {
         assert_eq!(
             ev,
             vec![
-                EchoesEvent::ThoughtChunk {
+                ConversationEvent::ThoughtChunk {
                     text: "考え中".into()
                 },
-                EchoesEvent::MessageChunk {
+                ConversationEvent::MessageChunk {
                     text: "やります".into()
                 },
-                EchoesEvent::ToolCall {
+                ConversationEvent::ToolCall {
                     id: "tu_1".into(),
                     name: "Bash".into(),
                     input: serde_json::json!({"command":"ls"}),
@@ -349,8 +349,8 @@ mod tests {
     fn todowrite_derives_plan_before_toolcall() {
         let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_2","name":"TodoWrite","input":{"todos":[{"content":"A","status":"completed","activeForm":"Aing"}]}}]}}"#;
         let ev = events_from_lines(line);
-        assert!(matches!(ev[0], EchoesEvent::Plan { .. }), "{ev:?}");
-        assert!(matches!(ev[1], EchoesEvent::ToolCall { .. }));
+        assert!(matches!(ev[0], ConversationEvent::Plan { .. }), "{ev:?}");
+        assert!(matches!(ev[1], ConversationEvent::ToolCall { .. }));
     }
 
     /// user の素の string は UserMessage、tool_result は ToolCallUpdate。
@@ -365,10 +365,10 @@ mod tests {
         assert_eq!(
             ev,
             vec![
-                EchoesEvent::UserMessage {
+                ConversationEvent::UserMessage {
                     text: "こんにちは".into()
                 },
-                EchoesEvent::ToolCallUpdate {
+                ConversationEvent::ToolCallUpdate {
                     tool_use_id: "tu_1".into(),
                     content: "ok".into(),
                     is_error: false,
@@ -403,7 +403,7 @@ mod tests {
         let mixed = r#"{"type":"user","message":{"role":"user","content":"<system-reminder>noise</system-reminder>本題です"}}"#;
         assert_eq!(
             events_from_lines(mixed),
-            vec![EchoesEvent::UserMessage {
+            vec![ConversationEvent::UserMessage {
                 text: "本題です".into()
             }]
         );
@@ -422,7 +422,7 @@ mod tests {
         let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{}},{"type":"text","text":"見て"}]}}"#;
         assert_eq!(
             events_from_lines(line),
-            vec![EchoesEvent::UserMessage {
+            vec![ConversationEvent::UserMessage {
                 text: "見て".into()
             }]
         );
@@ -437,7 +437,7 @@ mod tests {
         );
         assert_eq!(
             events_from_lines(lines),
-            vec![EchoesEvent::UserMessage {
+            vec![ConversationEvent::UserMessage {
                 text: "生きてる".into()
             }]
         );
@@ -483,7 +483,7 @@ mod tests {
 
         assert_eq!(
             events_from_lines(&lines),
-            vec![EchoesEvent::UserMessage {
+            vec![ConversationEvent::UserMessage {
                 text: "生きてる".into()
             }],
             "壊れた行は捨て、最後の正常な行だけが event になる"
@@ -513,7 +513,7 @@ mod tests {
         let human = r#"{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"やって"}}"#;
         assert_eq!(
             events_from_lines(human),
-            vec![EchoesEvent::UserMessage {
+            vec![ConversationEvent::UserMessage {
                 text: "やって".into()
             }]
         );
@@ -525,7 +525,7 @@ mod tests {
         let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_9","content":"out"}]}}"#;
         assert_eq!(
             events_from_lines(line),
-            vec![EchoesEvent::ToolCallUpdate {
+            vec![ConversationEvent::ToolCallUpdate {
                 tool_use_id: "tu_9".into(),
                 content: "out".into(),
                 is_error: false,
@@ -540,7 +540,7 @@ mod tests {
         let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"EooFCok"},{"type":"text","text":"本文"}]}}"#;
         assert_eq!(
             events_from_lines(line),
-            vec![EchoesEvent::MessageChunk {
+            vec![ConversationEvent::MessageChunk {
                 text: "本文".into()
             }]
         );
@@ -552,20 +552,20 @@ mod tests {
     fn orphan_tool_call_updates_are_dropped() {
         let mut events = vec![
             // t0 の ToolCall は切り詰めで既に消えた想定 → update が孤児。
-            EchoesEvent::ToolCallUpdate {
+            ConversationEvent::ToolCallUpdate {
                 tool_use_id: "t0".into(),
                 content: "old".into(),
                 is_error: false,
             },
-            EchoesEvent::MessageChunk {
+            ConversationEvent::MessageChunk {
                 text: "残る".into(),
             },
-            EchoesEvent::ToolCall {
+            ConversationEvent::ToolCall {
                 id: "t1".into(),
                 name: "Bash".into(),
                 input: serde_json::json!({}),
             },
-            EchoesEvent::ToolCallUpdate {
+            ConversationEvent::ToolCallUpdate {
                 tool_use_id: "t1".into(),
                 content: "ok".into(),
                 is_error: false,
@@ -575,15 +575,15 @@ mod tests {
         assert_eq!(
             events,
             vec![
-                EchoesEvent::MessageChunk {
+                ConversationEvent::MessageChunk {
                     text: "残る".into()
                 },
-                EchoesEvent::ToolCall {
+                ConversationEvent::ToolCall {
                     id: "t1".into(),
                     name: "Bash".into(),
                     input: serde_json::json!({}),
                 },
-                EchoesEvent::ToolCallUpdate {
+                ConversationEvent::ToolCallUpdate {
                     tool_use_id: "t1".into(),
                     content: "ok".into(),
                     is_error: false,
@@ -596,12 +596,12 @@ mod tests {
     #[test]
     fn drop_orphan_updates_is_noop_without_orphans() {
         let mut events = vec![
-            EchoesEvent::ToolCall {
+            ConversationEvent::ToolCall {
                 id: "t1".into(),
                 name: "Read".into(),
                 input: serde_json::json!({}),
             },
-            EchoesEvent::ToolCallUpdate {
+            ConversationEvent::ToolCallUpdate {
                 tool_use_id: "t1".into(),
                 content: "x".into(),
                 is_error: false,
@@ -617,6 +617,6 @@ mod tests {
     fn replay_events_without_transcript_returns_only_marker() {
         // 実在しない (だが形式は valid な) session id
         let ev = replay_events("00000000-0000-4000-8000-000000000000");
-        assert_eq!(ev, vec![EchoesEvent::ReplayStart]);
+        assert_eq!(ev, vec![ConversationEvent::ReplayStart]);
     }
 }

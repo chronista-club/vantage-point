@@ -43,7 +43,7 @@ export function AddPerformer(props: { repoPath: string; onClose: () => void }) {
       if (p.repo_path && p.repo_path !== props.repoPath) return
       const list = Array.isArray(p.agents) ? p.agents : []
       setAgents(list)
-      // 既定選択 = 先頭（= list_agents の並び: echoes が先頭）。未選択のままでも repo default に倒れる。
+      // 既定選択 = 先頭（= list_agents の並び: conversation が先頭）。未選択のままでも repo default に倒れる。
       if (list.length > 0 && !agent()) setAgent(list[0]!.name)
     }
     onCleanup(() => {
@@ -62,7 +62,7 @@ export function AddPerformer(props: { repoPath: string; onClose: () => void }) {
       path: props.repoPath,
       name: n,
       branch: b || undefined,
-      // 未 fetch / 未選択は undefined = repo-side default（echoes）に倒す。
+      // 未 fetch / 未選択は undefined = repo-side default（conversation）に倒す。
       agent: s || undefined,
     })
     props.onClose()

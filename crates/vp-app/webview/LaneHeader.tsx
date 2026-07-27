@@ -1,15 +1,15 @@
 /**
- * EchoesHeader — tui/gui 共通の lane-local context strip（creo memo `vp-pane-common-header`）。
+ * LaneHeader — tui/gui 共通の lane-local context strip（creo memo `vp-pane-common-header`）。
  *
- * pane-host 上端の `#echoes-header`（main_area.rs が mount 点だけ提供）に SolidJS で mount され、
- * どの PaneKind / Mode を表示していても「lane の Echoes」の情報が載り続ける
- * （帰属は PaneKind ではなく lane の Echoes —「Echoes は一つ、視え方が二つ」の UI 体現）。
+ * pane-host 上端の `#lane-header`（main_area.rs が mount 点だけ提供）に SolidJS で mount され、
+ * どの PaneKind / Mode を表示していても「lane の Conversation」の情報が載り続ける
+ * （帰属は PaneKind ではなく lane の Conversation —「Conversation は一つ、視え方が二つ」の UI 体現）。
  * chips は presence-driven — 値があるものだけ並ぶ。
  *
  * データ源（既存経路への相乗りのみ、新しい Rust→JS 配信チャネルは作らない）:
  * - lane 名 / cwd / branch / Mode 初期値: setActivePane payload（entry.tsx bridge が setLane で届ける）
  * - cc session id / permission mode / engine 途絶: vpConsole の header summary
- *   （session_init / turn_completed / error の畳み込み。'vp:echoes-header' event で追従）
+ *   （session_init / turn_completed / error の畳み込み。'vp:lane-header' event で追従）
  * - Mode（見え方）は載せない: doc 50 §4.6 A6 で session の属性になり、切替は各 pane の
  *   名札 kind badge が持つ（lane の名札は「この lane が何であるか」だけを載せる）
  *
@@ -23,7 +23,7 @@
  * session 単位の「今の文脈」（状態・model・permission・engine 異常）は各 pane の
  * **計器盤**（chatview の status 行 / composer）が持つ。かつては上段にも併置されていたが、
  * 同じ役割の二重実装だったので撤去した:
- * - `⏹ Stop` → 入力欄の「停止」（同じ `echoes:interrupt`）
+ * - `⏹ Stop` → 入力欄の「停止」（同じ `conversation:interrupt`）
  * - perm chip → status 行の perm select（表示だけの chip は操作器に含まれる）
  * - `⚠ engine` / `💤 休眠` → status 行（`deriveStatus` が同じ event を畳んでいる）
  *
@@ -39,17 +39,17 @@ import {
   nextRequestId,
   sessionListOf,
   type BusRequestId,
-  type EchoesStandsDetail,
+  type AgentsDetail,
   type VpConsole,
-  type EchoesHeaderState,
-  type EchoesSession,
+  type LaneHeaderState,
+  type ConversationSession,
 } from './console'
 // ⚠️ 循環 import（lane-panes → sessionChipPrefix / ここ → newPaneChoices）だが、双方とも
 // hoist される関数宣言を handler 内で遅延参照するだけなので ESM 的に安全。
 import { newPaneChoices } from './lane-panes'
 import { STAND_ICON } from './icons/stand'
 
-/** `vp:echoes-agents` bus が運ぶ agent entry（newPaneChoices の入力と同形）。 */
+/** `vp:conversation-agents` bus が運ぶ agent entry（newPaneChoices の入力と同形）。 */
 type PaneStand = { name: string; label?: string; chat_capable?: boolean }
 
 // ---------------------------------------------------------------------------
@@ -116,14 +116,14 @@ export type RootPickerItem = {
 }
 
 /**
- * echoes_session_list の sessions を picker の表示行へ畳む（doc 39 P3 → P4 — Root 切替 picker）。
+ * conversation_session_list の sessions を picker の表示行へ畳む（doc 39 P3 → P4 — Root 切替 picker）。
  * 並びは repo の登録順そのまま（key 昇順 = 生成順、tab strip と同じ秩序）。全 session を列挙する。
  * doc 39 P4: slot の respawn が root session の agent で engine を決めるようになった（P4-A）ため、
  * cross-engine の Root 切替が解禁された。disabled にするのは **engine が未知**（chip prefix が
  * `sid` = 撤去済み cursor/agy や legacy agent — shell 層に落ちて resume が効かない）行のみ。
  * backend の `prepare_switch_root_session`（未知 engine を Err）と二重防御。
  */
-export function rootPickerItems(sessions: EchoesSession[]): RootPickerItem[] {
+export function rootPickerItems(sessions: ConversationSession[]): RootPickerItem[] {
   return sessions.map((s) => ({
     key: s.key,
     label: `${sessionChipPrefix(s.agent)}:${s.engine_session_id ? s.engine_session_id.slice(0, 8) : '新品'}`,
@@ -147,7 +147,7 @@ export type HeaderLaneCtx = {
    *  以降は vp:console-mode event で追従） */
   chat: boolean
   /** active engine の session id（LaneInfo.engine_session_id 由来）。
-   *  tui は EchoesEvent が流れないため、この供給路が無いと chip が出ない
+   *  tui は ConversationEvent が流れないため、この供給路が無いと chip が出ない
    *  （bug mem_1Cd3icsvKiGsQ8TtX8t1FR）。gui では event 由来の真値が優先される。 */
   sessionId: string | null
   /** root session の agent（= slot に載る engine 種別）。session chip の prefix 導出用。
@@ -156,7 +156,7 @@ export type HeaderLaneCtx = {
   agent: string | null
 }
 
-export type EchoesHeaderApi = {
+export type LaneHeaderApi = {
   setLane(ctx: HeaderLaneCtx | null): void
 }
 
@@ -174,11 +174,11 @@ function copyText(text: string): void {
   }
 }
 
-export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): EchoesHeaderApi {
+export function mountLaneHeader(mount: HTMLElement, vpConsole: VpConsole): LaneHeaderApi {
   const [ctx, setCtx] = createSignal<HeaderLaneCtx | null>(null)
   // doc 50 §4.6 A6: lane 単位 mode の signal は退役（見え方は session の属性 = 各 pane の
   // 名札が持つ）。lane の名札は「この lane が何であるか」だけを載せる。
-  const [summary, setSummary] = createSignal<EchoesHeaderState>({})
+  const [summary, setSummary] = createSignal<LaneHeaderState>({})
   /** click copy の視覚 feedback（copied class を短時間付ける対象 chip の key）。 */
   const [copiedKey, setCopiedKey] = createSignal<string | null>(null)
   let copiedTimer: number | undefined
@@ -191,13 +191,13 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
   }
 
   // doc 39 P3: Root 切替 picker（session chip click で開く dropdown）。
-  // sessions は 'vp:echoes-sessions'（handleSessionList の既存 bus）から受ける — 新配信路は作らない。
+  // sessions は 'vp:conversation-sessions'（handleSessionList の既存 bus）から受ける — 新配信路は作らない。
   const [pickerOpen, setPickerOpen] = createSignal(false)
   const [pickerPos, setPickerPos] = createSignal<{ x: number; y: number }>({ x: 0, y: 0 })
-  const [sessions, setSessions] = createSignal<EchoesSession[]>([])
+  const [sessions, setSessions] = createSignal<ConversationSession[]>([])
 
   // doc 51 §1 A1: + New（engine × Mode で新 session = 台に器械を足す）。旧・下端の帯から移設。
-  // null = 閉。agents は click → `echoes:stands_fetch` 要求 → 応答（相関 id 照合）で開く。
+  // null = 閉。agents は click → `conversation:stands_fetch` 要求 → 応答（相関 id 照合）で開く。
   const [newMenu, setNewMenu] = createSignal<PaneStand[] | null>(null)
   const [newMenuPos, setNewMenuPos] = createSignal<{ x: number; y: number }>({ x: 0, y: 0 })
   let newMenuReq: BusRequestId | null = null
@@ -220,7 +220,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     // 右端の button なので menu は右揃えで下に開く（x = 右端。CSS が translateX で寄せる）。
     setNewMenuPos({ x: rect.right, y: rect.bottom + 4 })
     newMenuReq = nextRequestId('pane-new')
-    sendIpc({ t: 'echoes:stands_fetch', lane, req: newMenuReq })
+    sendIpc({ t: 'conversation:stands_fetch', lane, req: newMenuReq })
   }
 
   /** menu 行 click: backend が新しい session id を採番し、lane の cwd から始める
@@ -232,10 +232,10 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     sendIpc({ t: 'console:new_session', lane, engine, mode })
   }
 
-  // doc 47 §6: `vp:echoes-agents` は共有 bus。自分の要求（相関 id）への応答だけで menu を
+  // doc 47 §6: `vp:conversation-agents` は共有 bus。自分の要求（相関 id）への応答だけで menu を
   // 開く（chat composer の要求では開かない）。連打しても最新 id 以外の応答は捨てられる。
-  document.addEventListener('vp:echoes-agents', (e) => {
-    const d = (e as CustomEvent<EchoesStandsDetail<PaneStand>>).detail
+  document.addEventListener('vp:conversation-agents', (e) => {
+    const d = (e as CustomEvent<AgentsDetail<PaneStand>>).detail
     if (!isMyResponse(newMenuReq, d?.req)) return
     newMenuReq = null
     setNewMenu(d?.agents ?? [])
@@ -261,7 +261,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
     sendIpc({ t: 'console:switch_root', lane, session: key })
   }
 
-  // doc 50 §4.6 A6: 「✨ 新 ID から」（旧 `newRoot`）は picker から撤去した — Add（Echoes を
+  // doc 50 §4.6 A6: 「✨ 新 ID から」（旧 `newRoot`）は picker から撤去した — Add（Conversation を
   // 足す）と Reborn（その場で始め直す）の合成でしかなく、同じことをする口を 2 つ作らない。
 
   // doc 50 §4.6 A6: 見え方の乗り換えは **各 pane の名札 kind badge**（chatview の
@@ -281,12 +281,12 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
 
   // doc 50 §4.6 A6: 'vp:console-mode' 追従は退役（lane の名札は Mode を表示しない）。
   // session 一覧追従（handleSessionList の既存 bus。picker が閉じていても cache しておく）。
-  document.addEventListener('vp:echoes-sessions', (e) => {
-    const d = (e as CustomEvent<{ lane: string; sessions?: EchoesSession[] }>).detail
+  document.addEventListener('vp:conversation-sessions', (e) => {
+    const d = (e as CustomEvent<{ lane: string; sessions?: ConversationSession[] }>).detail
     if (d?.lane && d.lane === ctx()?.addr) setSessions(d.sessions ?? [])
   })
   // session summary 追従（console.ts の畳み込みが変化した時だけ飛ぶ低頻度 event）。
-  document.addEventListener('vp:echoes-header', (e) => {
+  document.addEventListener('vp:lane-header', (e) => {
     const d = (e as CustomEvent<{ lane: string }>).detail
     if (d?.lane && d.lane === ctx()?.addr) setSummary(vpConsole.headerState(d.lane))
   })
@@ -322,7 +322,7 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                 tab strip は doc 50 P1 の session = Pane で退役 — 担い手が消えたので両 Mode で
                 出す。picker は root の名札 menu（Root 切替 + 見え方の乗り換え = 避難路）。
                 供給路は setActivePane 相乗りの engine_session_id（ctx）— tui は
-                EchoesEvent が流れないため summary は空になりうる（OR merge で両対応）。
+                ConversationEvent が流れないため summary は空になりうる（OR merge で両対応）。
                 prefix は engine 別（cc/cdx/grok/oc、doc 37: chip が engine indicator を兼ねる）。 */}
             <Show when={summary().sessionId ?? c().sessionId}>
               {(sid) => (
@@ -384,11 +384,11 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
                 </For>
                 {/* doc 50 §4.6 A6: 「✨ 新 ID から」は撤去した。
                     「新しい session を作る」は 2 つの操作に分かれ、この行はその合成でしかない:
-                    ① lane の名札の **Add**（Echoes を足す = pane が増える）
+                    ① lane の名札の **Add**（Conversation を足す = pane が増える）
                     ② その pane の **Reborn**（同じ場所で新しく始める = pane 数は不変）
                     root を新しい session にしたいなら「root pane で Reborn」で到達できる
                     （A6 で switch_root の tui 限定 gate も外れたので、どの session でも代表にできる）。
-                    picker は **既存の Echoes から代表を選ぶ**ことに専念する。 */}
+                    picker は **既存の Conversation から代表を選ぶ**ことに専念する。 */}
                 <div class="eh-rp-divider" />
                 <Show when={summary().sessionId ?? c().sessionId}>
                   {(sid) => (
@@ -470,12 +470,12 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
       setNewMenu(null)
       setSessions(next ? sessionListOf(next.addr) : [])
       // strip の開閉（World A の DOM に触れる唯一の接点）: lane 文脈がある時だけ
-      // #pane-terminal に .echoes-header-active を付け、main_area.rs の --echoes-header-h を
+      // #pane-lane に .lane-header-active を付け、main_area.rs の --lane-header-h を
       // 0→30px にして strip を開く。無い時は高さ 0 = xterm/chat が全面（regression なし）。
-      // これが無いと strip は #echoes-header の overflow:hidden で永遠に高さ 0 = 不可視になる。
+      // これが無いと strip は #lane-header の overflow:hidden で永遠に高さ 0 = 不可視になる。
       document
-        .getElementById('pane-terminal')
-        ?.classList.toggle('echoes-header-active', !!next)
+        .getElementById('pane-lane')
+        ?.classList.toggle('lane-header-active', !!next)
     },
   }
 }
@@ -484,50 +484,50 @@ export function mountEchoesHeader(mount: HTMLElement, vpConsole: VpConsole): Ech
 // CSS（entry.tsx が <style> で注入 — CHATVIEW_CSS と同 pattern）
 // ---------------------------------------------------------------------------
 
-export const ECHOES_HEADER_CSS = `
-/* Echoes の名札（pane 上段）。素性だけを載せる 1 行 — 高さ・地色・境界は Pane 共通の
+export const LANE_HEADER_CSS = `
+/* Conversation の名札（pane 上段）。素性だけを載せる 1 行 — 高さ・地色・境界は Pane 共通の
    名札 token（main_area.rs の --vp-nameplate-*）を参照し、.pane-header と同一の見えにする。
    strip 自体は window drag 面、chip / button は no-drag（.pane-header と同じ規約）。 */
-#echoes-header .eh-root{ display:flex; align-items:center; gap:6px;
+#lane-header .eh-root{ display:flex; align-items:center; gap:6px;
   height:var(--vp-nameplate-h); padding:0 var(--vp-nameplate-pad-x);
   font-size:var(--vp-nameplate-font-size); background:var(--vp-nameplate-bg);
   border-bottom:var(--vp-nameplate-border);
   color:var(--color-text-secondary);
   font-family:var(--vp-font-sans),var(--typography-family-sans); font-weight:300;
   user-select:none; -webkit-app-region:drag; overflow:hidden; white-space:nowrap; }
-#echoes-header .eh-chip{ -webkit-app-region:no-drag; display:inline-flex; align-items:center; gap:4px;
+#lane-header .eh-chip{ -webkit-app-region:no-drag; display:inline-flex; align-items:center; gap:4px;
   flex:none; padding:1px 8px; border-radius:9999px; background:transparent;
   border:1px solid var(--color-surface-border-subtle); color:var(--color-text-secondary);
   font:inherit; line-height:1.6; max-width:36ch; overflow:hidden; text-overflow:ellipsis; }
-#echoes-header button.eh-chip{ cursor:pointer; }
-#echoes-header button.eh-chip:hover{ background:var(--color-surface-bg-emphasis); color:var(--color-text-primary); }
-#echoes-header .eh-chip.copied{ border-color:var(--color-brand-primary); color:var(--color-text-primary); }
-#echoes-header .eh-lane{ color:var(--color-text-primary); border-color:transparent; padding-left:0; font-weight:500; }
-#echoes-header .eh-cwd, #echoes-header .eh-session{
+#lane-header button.eh-chip{ cursor:pointer; }
+#lane-header button.eh-chip:hover{ background:var(--color-surface-bg-emphasis); color:var(--color-text-primary); }
+#lane-header .eh-chip.copied{ border-color:var(--color-brand-primary); color:var(--color-text-primary); }
+#lane-header .eh-lane{ color:var(--color-text-primary); border-color:transparent; padding-left:0; font-weight:500; }
+#lane-header .eh-cwd, #lane-header .eh-session{
   font-family:var(--vp-font-mono),var(--typography-family-mono); font-size:10.5px; }
 /* doc 39 P3: Root 切替 picker。strip の overflow:hidden を position:fixed で脱出する。 */
-#echoes-header .eh-session-caret{ opacity:.6; margin-left:2px; }
-#echoes-header .eh-root-picker{ position:fixed; z-index:1000; min-width:230px; padding:4px;
+#lane-header .eh-session-caret{ opacity:.6; margin-left:2px; }
+#lane-header .eh-root-picker{ position:fixed; z-index:1000; min-width:230px; padding:4px;
   background:var(--color-surface-surface); border:1px solid var(--color-surface-border-subtle);
   border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.35); -webkit-app-region:no-drag;
   font-family:var(--vp-font-sans),var(--typography-family-sans); }
-#echoes-header .eh-rp-title{ padding:4px 8px 2px; color:var(--color-text-secondary); font-size:10.5px; }
-#echoes-header .eh-rp-row{ display:flex; align-items:center; gap:6px; width:100%; text-align:left;
+#lane-header .eh-rp-title{ padding:4px 8px 2px; color:var(--color-text-secondary); font-size:10.5px; }
+#lane-header .eh-rp-row{ display:flex; align-items:center; gap:6px; width:100%; text-align:left;
   padding:5px 8px; border:0; border-radius:6px; background:transparent; cursor:pointer;
   color:var(--color-text-primary);
   font-family:var(--vp-font-mono),var(--typography-family-mono); font-size:10.5px; line-height:1.6; }
-#echoes-header .eh-rp-row:hover{ background:var(--color-surface-bg-emphasis); }
-#echoes-header .eh-rp-key{ color:var(--color-text-secondary); }
-#echoes-header .eh-rp-row.eh-rp-root{ color:var(--color-brand-primary); }
-#echoes-header .eh-rp-row.eh-rp-disabled{ opacity:.45; cursor:default; }
-#echoes-header .eh-rp-row.eh-rp-disabled:hover{ background:transparent; }
-#echoes-header .eh-rp-now{ margin-left:auto; color:var(--color-text-secondary); font-size:10px; }
-#echoes-header .eh-rp-divider{ height:1px; margin:4px 6px; background:var(--color-surface-border-subtle); }
-#echoes-header .eh-rp-empty{ padding:6px 8px; color:var(--color-text-secondary); font-size:10.5px; }
+#lane-header .eh-rp-row:hover{ background:var(--color-surface-bg-emphasis); }
+#lane-header .eh-rp-key{ color:var(--color-text-secondary); }
+#lane-header .eh-rp-row.eh-rp-root{ color:var(--color-brand-primary); }
+#lane-header .eh-rp-row.eh-rp-disabled{ opacity:.45; cursor:default; }
+#lane-header .eh-rp-row.eh-rp-disabled:hover{ background:transparent; }
+#lane-header .eh-rp-now{ margin-left:auto; color:var(--color-text-secondary); font-size:10px; }
+#lane-header .eh-rp-divider{ height:1px; margin:4px 6px; background:var(--color-surface-border-subtle); }
+#lane-header .eh-rp-empty{ padding:6px 8px; color:var(--color-text-secondary); font-size:10.5px; }
 /* doc 51 §1 A1: + New（台に器械を足す）。名札の右端 = margin-left:auto、作成の入口なので
    chip とは破線で区別（旧・帯の .pane-new と同じ記号論）。 */
-#echoes-header .eh-new{ margin-left:auto; border-style:dashed; }
+#lane-header .eh-new{ margin-left:auto; border-style:dashed; }
 /* + New の menu。器は root picker と同じ（.eh-root-picker を継承）。右端の button から
    開くので、fixed の基準点 x = button 右端 → translateX で右揃えにする。 */
-#echoes-header .eh-new-menu{ transform:translateX(-100%); }
+#lane-header .eh-new-menu{ transform:translateX(-100%); }
 `

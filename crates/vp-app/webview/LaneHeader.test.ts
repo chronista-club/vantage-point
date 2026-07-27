@@ -1,7 +1,7 @@
 /**
- * EchoesHeader — 共通ヘッダの純関数 + console.ts の header summary 畳み込みのテスト。
+ * LaneHeader — 共通ヘッダの純関数 + console.ts の header summary 畳み込みのテスト。
  *
- * component 本体（mountEchoesHeader）は solid-js/web の render を呼ぶため vitest(node) では
+ * component 本体（mountLaneHeader）は solid-js/web の render を呼ぶため vitest(node) では
  * 対象外。ここは presence-driven / copy 表示 / 途絶検知の判定を支える純関数だけを固める。
  */
 import { describe, it, expect } from 'vitest'
@@ -11,9 +11,9 @@ import {
   laneShortName,
   sessionChipPrefix,
   rootPickerItems,
-} from './EchoesHeader'
-import { foldHeaderState, type EchoesHeaderState } from './console'
-import type { EchoesEvent } from './console'
+} from './LaneHeader'
+import { foldHeaderState, type LaneHeaderState } from './console'
+import type { ConversationEvent } from './console'
 
 describe('tildify — $HOME prefix を ~ に畳む', () => {
   it('Mac の /Users/<u> を ~ にする', () => {
@@ -35,7 +35,7 @@ describe('middleEllipsis — 長い path を頭残し末尾厚めで中略', () 
     expect(middleEllipsis('~/repos/vp', 42)).toBe('~/repos/vp')
   })
   it('超過時は … を含み maxLen を超えない', () => {
-    const long = '~/repos/vantage-point/.vp/lanes/echoes-header/crates/vp-app'
+    const long = '~/repos/vantage-point/.vp/lanes/lane-header/crates/vp-app'
     const out = middleEllipsis(long, 30)
     expect(out.length).toBeLessThanOrEqual(30)
     expect(out).toContain('…')
@@ -49,7 +49,7 @@ describe('laneShortName — address から表示短名', () => {
     expect(laneShortName('vantage-point/root')).toBe('conductor')
   })
   it('performer は name 部分', () => {
-    expect(laneShortName('vantage-point/performer/echoes-header')).toBe('echoes-header')
+    expect(laneShortName('vantage-point/performer/lane-header')).toBe('lane-header')
   })
   it('legacy lead / wing も受理', () => {
     expect(laneShortName('vp/lead')).toBe('conductor')
@@ -60,26 +60,26 @@ describe('laneShortName — address から表示短名', () => {
 describe('foldHeaderState — session summary の畳み込み（変化検知）', () => {
   // doc 50: 名札の縮約で summary は sessionId 1 本になった。model / perm は composer、
   // engine 異常は status 行（deriveStatus）が別経路で担うので、ここでは畳まない。
-  const sessionInit = (over: Partial<Extract<EchoesEvent, { kind: 'session_init' }>> = {}): EchoesEvent => ({
+  const sessionInit = (over: Partial<Extract<ConversationEvent, { kind: 'session_init' }>> = {}): ConversationEvent => ({
     kind: 'session_init',
     session_id: 'sid-1',
     ...over,
   })
 
   it('session_init は sessionId を畳み、変化ありで true', () => {
-    const h: EchoesHeaderState = {}
+    const h: LaneHeaderState = {}
     expect(foldHeaderState(h, sessionInit())).toBe(true)
     expect(h.sessionId).toBe('sid-1')
   })
 
   it('同値 session_init は冪等 = false（無駄な再描画を出さない）', () => {
-    const h: EchoesHeaderState = {}
+    const h: LaneHeaderState = {}
     foldHeaderState(h, sessionInit())
     expect(foldHeaderState(h, sessionInit())).toBe(false)
   })
 
   it('turn_completed も sessionId を追従する（resume で id が変わる経路）', () => {
-    const h: EchoesHeaderState = { sessionId: 'sid-1' }
+    const h: LaneHeaderState = { sessionId: 'sid-1' }
     expect(foldHeaderState(h, { kind: 'turn_completed', session_id: 'sid-2' })).toBe(true)
     expect(h.sessionId).toBe('sid-2')
     // 同値なら冪等
@@ -87,15 +87,15 @@ describe('foldHeaderState — session summary の畳み込み（変化検知）'
   })
 
   it('高頻度 event（message_chunk）は summary を変えず false（ヘッダ再描画を出さない）', () => {
-    const h: EchoesHeaderState = { sessionId: 'sid-1' }
-    const chunk: EchoesEvent = { kind: 'message_chunk', text: 'hi' }
+    const h: LaneHeaderState = { sessionId: 'sid-1' }
+    const chunk: ConversationEvent = { kind: 'message_chunk', text: 'hi' }
     expect(foldHeaderState(h, chunk)).toBe(false)
     expect(h.sessionId).toBe('sid-1')
   })
 })
 
 describe('sessionChipPrefix — session chip の engine 別 prefix（doc 37）', () => {
-  it('claude（echoes / 旧名 hd）は歴史的な cc を維持する', () => {
+  it('claude（conversation / 旧名 hd）は歴史的な cc を維持する', () => {
     expect(sessionChipPrefix('claude')).toBe('cc')
     expect(sessionChipPrefix('hd')).toBe('cc')
   })

@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_category() {
-        let path = TopicPath::parse("repo/heavens-door/event/chat-message");
+        let path = TopicPath::parse("repo/conversation/event/chat-message");
         assert_eq!(path.category(), Some("event"));
     }
 
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn test_is_not_retained_event() {
-        let path = TopicPath::parse("repo/heavens-door/event/chat-message");
+        let path = TopicPath::parse("repo/conversation/event/chat-message");
         assert!(!path.is_retained());
     }
 
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn test_match_combined_wildcards() {
         // `+` と `#` の組み合わせ
-        let topic = TopicPath::parse("repo/heavens-door/state/session-list");
+        let topic = TopicPath::parse("repo/conversation/state/session-list");
         let pattern = TopicPattern::parse("repo/+/state/#");
         assert!(topic.matches(&pattern));
     }
@@ -376,8 +376,8 @@ mod tests {
     fn test_match_all_events() {
         let pattern = TopicPattern::parse("repo/+/event/#");
 
-        let chat = TopicPath::parse("repo/heavens-door/event/chat-message");
-        let session = TopicPath::parse("repo/heavens-door/event/session-created");
+        let chat = TopicPath::parse("repo/conversation/event/chat-message");
+        let session = TopicPath::parse("repo/conversation/event/session-created");
         let command = TopicPath::parse("repo/board/command/show");
 
         assert!(chat.matches(&pattern));

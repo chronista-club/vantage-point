@@ -120,7 +120,7 @@ impl TopicRouter {
     ///
     /// 命名規則: `{scope}/{capability}/{category}/{detail}`
     /// - scope: "process"
-    /// - capability: board, heavens-door（#8 再訪）, terminal, debug, runtime
+    /// - capability: board, conversation（#8 再訪）, terminal, debug, runtime
     /// - category: command, event, state, data, log, trace
     fn message_to_topic(msg: &RepoMessage) -> String {
         match msg {
@@ -178,23 +178,23 @@ impl TopicRouter {
                 format!("repo/board/event/editor/{}", request_id)
             }
             // === Heaven's Door（AI Agent 能力）===
-            RepoMessage::ChatChunk { .. } => "repo/heavens-door/event/text-chunk".to_string(),
-            RepoMessage::ChatMessage { .. } => "repo/heavens-door/event/chat-message".to_string(),
-            RepoMessage::ChatComponent { .. } => "repo/heavens-door/event/component".to_string(),
+            RepoMessage::ChatChunk { .. } => "repo/conversation/event/text-chunk".to_string(),
+            RepoMessage::ChatMessage { .. } => "repo/conversation/event/chat-message".to_string(),
+            RepoMessage::ChatComponent { .. } => "repo/conversation/event/component".to_string(),
             RepoMessage::ComponentDismissed { .. } => {
-                "repo/heavens-door/event/component-dismissed".to_string()
+                "repo/conversation/event/component-dismissed".to_string()
             }
-            RepoMessage::AgUi { .. } => "repo/heavens-door/event/ag-ui".to_string(),
-            RepoMessage::SessionList { .. } => "repo/heavens-door/state/session-list".to_string(),
-            RepoMessage::SessionSwitched { .. } => "repo/heavens-door/state/session".to_string(),
+            RepoMessage::AgUi { .. } => "repo/conversation/event/ag-ui".to_string(),
+            RepoMessage::SessionList { .. } => "repo/conversation/state/session-list".to_string(),
+            RepoMessage::SessionSwitched { .. } => "repo/conversation/state/session".to_string(),
             RepoMessage::SessionCreated { .. } => {
-                "repo/heavens-door/event/session-created".to_string()
+                "repo/conversation/event/session-created".to_string()
             }
             RepoMessage::SessionClosed { .. } => {
-                "repo/heavens-door/event/session-closed".to_string()
+                "repo/conversation/event/session-closed".to_string()
             }
             RepoMessage::SessionHistory { .. } => {
-                "repo/heavens-door/event/session-history".to_string()
+                "repo/conversation/event/session-history".to_string()
             }
 
             // === Terminal（PTY 出力）===
@@ -206,11 +206,14 @@ impl TopicRouter {
             RepoMessage::LaneTerminalOutput { lane, .. } => {
                 format!("repo/terminal/data/{}/out", Self::terminal_lane_key(lane))
             }
-            // === Echoes gui（構造化会話 GUI）===
+            // === Conversation gui（構造化会話 GUI）===
             // doc 32: per-lane の構造化イベント stream。category(seg2)=data → 非 retained。
             // lane address ('/' 含む) は seg3 で 1 token 化（terminal と同じ規則）。
-            RepoMessage::EchoesEvent { lane, .. } => {
-                format!("repo/echoes/data/{}/event", Self::terminal_lane_key(lane))
+            RepoMessage::ConversationEvent { lane, .. } => {
+                format!(
+                    "repo/conversation/data/{}/event",
+                    Self::terminal_lane_key(lane)
+                )
             }
 
             // === repo（Process 管理）===
@@ -528,7 +531,7 @@ mod tests {
             done: false,
         };
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "repo/heavens-door/event/text-chunk");
+        assert_eq!(topic, "repo/conversation/event/text-chunk");
     }
 
     #[test]
@@ -538,7 +541,7 @@ mod tests {
             active_id: None,
         };
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "repo/heavens-door/state/session-list");
+        assert_eq!(topic, "repo/conversation/state/session-list");
     }
 
     #[test]
@@ -596,19 +599,19 @@ mod tests {
     }
 
     #[test]
-    fn test_message_to_topic_echoes_event() {
-        // doc 32: Echoes gui の per-lane 構造化イベント。lane の '/' は '~' に encode、
+    fn test_message_to_topic_conversation_event() {
+        // doc 32: Conversation gui の per-lane 構造化イベント。lane の '/' は '~' に encode、
         // category(seg2)=data なので 非 retained（ephemeral stream、terminal と同じ規則）。
-        let msg = RepoMessage::EchoesEvent {
+        let msg = RepoMessage::ConversationEvent {
             lane: "vp/performer/foo".to_string(),
             session: 2,
-            event: crate::echoes::EchoesEvent::MessageChunk {
+            event: crate::conversation::ConversationEvent::MessageChunk {
                 text: "hi".to_string(),
             },
         };
         let topic = TopicRouter::message_to_topic(&msg);
         // doc 38 落とし穴①: session は topic key に混入しない（per-lane topic のまま）。
-        assert_eq!(topic, "repo/echoes/data/vp~performer~foo/event");
+        assert_eq!(topic, "repo/conversation/data/vp~performer~foo/event");
         assert!(!TopicPath::parse(&topic).is_retained());
     }
 
@@ -718,7 +721,7 @@ mod tests {
         let router = TopicRouter::new();
 
         // 先に subscribe
-        let (_id, mut rx) = router.subscribe("repo/heavens-door/event/#").await;
+        let (_id, mut rx) = router.subscribe("repo/conversation/event/#").await;
 
         // route でメッセージ配信
         let msg = RepoMessage::ChatChunk {
@@ -728,7 +731,7 @@ mod tests {
         router.route(msg).await;
 
         let (topic, received) = rx.try_recv().expect("メッセージを受信できるはず");
-        assert_eq!(topic, "repo/heavens-door/event/text-chunk");
+        assert_eq!(topic, "repo/conversation/event/text-chunk");
         assert!(matches!(received, RepoMessage::ChatChunk { .. }));
     }
 
@@ -797,7 +800,7 @@ mod tests {
         assert_eq!(t1, "repo/terminal/state/ready");
 
         let (t2, _) = rx.try_recv().expect("SessionList を受信");
-        assert_eq!(t2, "repo/heavens-door/state/session-list");
+        assert_eq!(t2, "repo/conversation/state/session-list");
 
         // 3つ目はないはず
         assert!(rx.try_recv().is_err());

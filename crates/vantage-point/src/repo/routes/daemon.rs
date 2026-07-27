@@ -86,7 +86,7 @@ pub(crate) fn resolve_create_lane_args(
 // fold-in で無意味化したため（pid が全 repo 共通の Daemon 自身）。
 
 // =============================================================================
-// Lane Registry — Phase 1c: agent (Echoes on Claude CLI) が lane console を引く
+// Lane Registry — Phase 1c: agent (Conversation on Claude CLI) が lane console を引く
 // =============================================================================
 
 /// Phase 1c: Lane filter query

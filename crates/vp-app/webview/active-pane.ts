@@ -1,12 +1,12 @@
 /**
- * app pane（Echoes / Preview / runner / Devices / empty）の **DOM 切替**と slot rect の push。
+ * app pane（Conversation / Preview / runner / Devices / empty）の **DOM 切替**と slot rect の push。
  *
  * doc 53 §6.5 の World A 畳み込みで `main_area.rs` の inline `<script>` から移設した。
  *
  * ## この module が持つもの / 持たないもの
  *
  * 持つのは「kind → どの DOM pane を active にするか」と「その rect を Rust に push する」まで。
- * **`window.setActivePane` は持たない** — 配置（app-panes）・EchoesHeader・board を含む
+ * **`window.setActivePane` は持たない** — 配置（app-panes）・LaneHeader・board を含む
  * 完全な切替は `entry.tsx` が 1 本の関数として組み立て、window に載せる。
  *
  * 旧構成では ここが `window.setActivePane` を定義し、`entry.tsx` が **wrap** して layout を
@@ -19,7 +19,7 @@
  * Rust `push_active_view` が運ぶ payload。
  *
  * `kind` / `pane_id` / `preview_url` / `chat` は本 module（DOM 切替）が読み、残りは
- * `entry.tsx` 側（EchoesHeader の lane 文脈）が読む。1 つの payload を 2 つの関心が
+ * `entry.tsx` 側（LaneHeader の lane 文脈）が読む。1 つの payload を 2 つの関心が
  * 分けて読む形なので、型はここに 1 つ置いて両方から参照する。
  */
 export interface ActivePaneInfo {
@@ -28,7 +28,7 @@ export interface ActivePaneInfo {
 	preview_url?: string | null;
 	/** doc 33: chat lane (gui) フラグ。xterm を持たない lane の placeholder 抑止に使う。 */
 	chat?: boolean;
-	// ↓ Echoes 共通ヘッダ用 lane 文脈（setActivePane 相乗り、creo memo `vp-pane-common-header`）
+	// ↓ Conversation 共通ヘッダ用 lane 文脈（setActivePane 相乗り、creo memo `vp-pane-common-header`）
 	lane_name?: string | null;
 	cwd?: string | null;
 	branch?: string | null;
@@ -56,10 +56,10 @@ function post(payload: unknown): void {
 // doc 52 §10 wave 0: board は app pane を退役（board pane = lane tiling へ）。
 //
 // ⚠️ entry.tsx にも同じ kind を引く表があるが**別の写像**で、統合してはいけない —
-// あちらは Frame Engine の `data-frame-id`（"echoes" 等 = 配置の座標系）、こちらは DOM
-// element id（"pane-terminal" 等 = 可視性の gate）。同じ kind から**別の軸**を引いている。
+// あちらは Frame Engine の `data-frame-id`（"lane" 等 = 配置の座標系）、こちらは DOM
+// element id（"pane-lane" 等 = 可視性の gate）。同じ kind から**別の軸**を引いている。
 const KIND_TO_PANE: Record<string, string> = {
-	terminal: "pane-terminal",
+	lane: "pane-lane",
 	preview: "pane-preview",
 	runner: "pane-runner",
 	devices: "pane-devices",
@@ -86,7 +86,7 @@ function sendSlotRect(): void {
  * kind に対応する DOM pane を active にし、preview iframe / showLane / slot rect を追随させる。
  *
  * `entry.tsx` が組み立てる `window.setActivePane` の **前半**（DOM の可視性）。後半（配置・
- * EchoesHeader・board）は entry.tsx 側が続けて行う。
+ * LaneHeader・board）は entry.tsx 側が続けて行う。
  */
 export function applyPaneSwitch(info: ActivePaneInfo | null): void {
 	activePaneInfo = info || null;
@@ -96,7 +96,7 @@ export function applyPaneSwitch(info: ActivePaneInfo | null): void {
 		const isActive = el.id === targetId;
 		el.classList.toggle("active", isActive);
 		// 動的に data-pane-id を設定 (γ-light: native overlay が pane_id で照合する想定)。
-		// 注: Frame Engine の static `data-frame-id` (= "echoes" / "runner" 等の Scene lookup key) とは
+		// 注: Frame Engine の static `data-frame-id` (= "lane" / "runner" 等の Scene lookup key) とは
 		// 別 attribute。 同名にすると Lane click でこの動的書き換えが Frame Engine の attribute を
 		// hijack して Scene lookup undefined → HIDDEN_TRANSFORM で pane が見えなくなる (VP-141 fix)。
 		if (isActive && info?.pane_id) {
@@ -112,7 +112,7 @@ export function applyPaneSwitch(info: ActivePaneInfo | null): void {
 			frame.setAttribute("src", url);
 		}
 	}
-	if (kind === "terminal") {
+	if (kind === "lane") {
 		// per-(lane, session) instance を切替 (= showLane(address))。 pane_id は Lane address。
 		// showLane が空なら lane-empty placeholder を出す。 chat (gui) lane は xterm を
 		// 持たない (ChatView が内容) ので、 その旨を渡して placeholder 抑止させる。
@@ -157,7 +157,7 @@ export function installSlotRect(): void {
 export function installBundleProbe(): void {
 	(window as unknown as { vpBundleProbe: () => unknown }).vpBundleProbe = () => {
 		const w = window as unknown as Record<string, unknown>;
-		const paneTerminal = document.querySelector("#pane-terminal");
+		const paneTerminal = document.querySelector("#pane-lane");
 		return {
 			bundleStatus: w.vpBundleStatus,
 			vpAppLayoutDefined: typeof w.vpAppLayout !== "undefined",

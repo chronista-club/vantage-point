@@ -206,18 +206,18 @@ pub enum RepoMessage {
     LaneTerminalOutput {
         lane: String,
         /// doc 50 §4.6 A6: 発生元 session の VP 採番 key（1 Lane = N term session）。
-        /// `EchoesEvent.session` と対称の additive field — topic key は lane のまま、session は
+        /// `ConversationEvent.session` と対称の additive field — topic key は lane のまま、session は
         /// 本 field で運び、World A の xterm が session 別に振り分ける（doc 38 落とし穴① =
         /// 「session を lane 名に埋めない」を tui 側でも踏襲）。旧 sender 由来は default の 1。
         #[serde(default = "default_session_key")]
         session: u32,
         data: String,
     },
-    /// Echoes gui（構造化会話 GUI）の翻訳済みイベント（per-lane）。doc 32。
-    /// `EchoesAgentHost` が headless claude の stream-json を [`crate::echoes::EchoesEvent`]
-    /// へ翻訳し、`process/echoes/data/{lane}/event` topic に乗せて vp-app へ届ける。
+    /// Conversation gui（構造化会話 GUI）の翻訳済みイベント（per-lane）。doc 32。
+    /// `ClaudeHost` が headless claude の stream-json を [`crate::conversation::ConversationEvent`]
+    /// へ翻訳し、`process/conversation/data/{lane}/event` topic に乗せて vp-app へ届ける。
     /// LaneTerminalOutput（tui の生 PTY）とは別系統の per-lane ephemeral stream。
-    EchoesEvent {
+    ConversationEvent {
         lane: String,
         /// doc 38: 発生元 session の VP 採番 key（1 Lane = N session）。additive field —
         /// 旧 sender 由来の message は default の 1（= N=1 特殊ケースの唯一 session）に解決。
@@ -225,7 +225,7 @@ pub enum RepoMessage {
         /// session は本 field で運ぶ）。
         #[serde(default = "default_session_key")]
         session: u32,
-        event: crate::echoes::EchoesEvent,
+        event: crate::conversation::ConversationEvent,
     },
     /// Canvas Lane 切り替え指示
     SwitchLane {
@@ -254,7 +254,7 @@ pub enum RepoMessage {
     },
 }
 
-/// [`RepoMessage::EchoesEvent::session`] の serde default（doc 38 の N=1 特殊ケース =
+/// [`RepoMessage::ConversationEvent::session`] の serde default（doc 38 の N=1 特殊ケース =
 /// 唯一 session の key 1。session field を持たない旧 sender との後方互換）。
 fn default_session_key() -> u32 {
     1

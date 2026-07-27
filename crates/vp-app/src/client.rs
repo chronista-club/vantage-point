@@ -74,7 +74,7 @@ pub enum ProcessKind {
     Runtime,
     /// PTY session を持つ stream-based process (= Lane: Conductor / Performer)
     Session,
-    /// 機能 service を提供する Agent process (= Echoes / Shell / board / runner ほか)
+    /// 機能 service を提供する Agent process (= Conversation / Shell / board / runner ほか)
     Agent,
 }
 
@@ -265,7 +265,7 @@ pub struct LaneInfo {
     #[serde(default)]
     pub performer_status: Option<PerformerStatusWire>,
     /// doc 37: active engine の session id（claude=cc_session / codex=thread id / grok=ACP sessionId、
-    /// shell=None）。Echoes 共通ヘッダの session chip 用（表示専用）。旧 SP からは欠落 = None。
+    /// shell=None）。Conversation 共通ヘッダの session chip 用（表示専用）。旧 SP からは欠落 = None。
     #[serde(default)]
     pub engine_session_id: Option<String>,
     /// doc 39 P4: root session の agent（= slot に載る engine 種別）。tui の session chip prefix は
@@ -298,7 +298,7 @@ fn default_mode() -> String {
 ///
 /// doc 50 §4.6 A6: 「どの session が root か」「各 session の mode（tui/chat）」を boot 経路が
 /// 読み、xterm を (lane, session) 単位で ensure するのに使う。
-/// **doc 53 §11: GUI の roster 供給はこれ 1 本**（旧 `echoes_session_list` の fetch は
+/// **doc 53 §11: GUI の roster 供給はこれ 1 本**（旧 `conversation_session_list` の fetch は
 /// client から退役 — GUI 自身の動詞でしか撃たれず、CLI / MCP 由来の変化が pane に
 /// 出なかった）。webview の tab strip / pane grid もここから流す。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -621,7 +621,7 @@ mod tests {
     fn migrate_root_lane_state_files_renames_both_forms_and_is_idempotent() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
-        let sessions = base.join("echoes_sessions");
+        let sessions = base.join("conversation_sessions");
         let cc = base.join("cc_sessions");
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::create_dir_all(&cc).unwrap();
@@ -663,7 +663,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
         let cc = base.join("cc_sessions");
-        let replay = base.join("echoes_replay");
+        let replay = base.join("conversation_replay");
         std::fs::create_dir_all(&cc).unwrap();
         std::fs::create_dir_all(&replay).unwrap();
 

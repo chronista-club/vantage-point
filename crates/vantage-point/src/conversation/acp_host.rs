@@ -32,7 +32,7 @@ use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use super::acp_translate::AcpTranslator;
-use super::event::EchoesEvent;
+use super::event::ConversationEvent;
 use super::host::InFlight;
 
 /// AcpAgentHost が駆動する ACP engine の種別（spawn command + 名乗りの差分だけを持つ）。
@@ -152,7 +152,7 @@ impl AcpState {
 
 struct AcpInner {
     engine: AcpEngine,
-    event_tx: broadcast::Sender<EchoesEvent>,
+    event_tx: broadcast::Sender<ConversationEvent>,
     repo: String,
     lane: String,
     cwd: String,
@@ -187,17 +187,17 @@ impl AcpInner {
         }
     }
 
-    fn emit(&self, event: EchoesEvent) {
+    fn emit(&self, event: ConversationEvent) {
         {
             let mut st = self.state.lock().expect("acp state lock");
             match &event {
-                EchoesEvent::MessageChunk { .. } | EchoesEvent::ThoughtChunk { .. } => {
+                ConversationEvent::MessageChunk { .. } | ConversationEvent::ThoughtChunk { .. } => {
                     st.in_flight.tail.push(event.clone());
                 }
-                EchoesEvent::SessionInit { .. }
-                | EchoesEvent::TurnCompleted { .. }
-                | EchoesEvent::Error { .. }
-                | EchoesEvent::EngineExited { .. } => {
+                ConversationEvent::SessionInit { .. }
+                | ConversationEvent::TurnCompleted { .. }
+                | ConversationEvent::Error { .. }
+                | ConversationEvent::EngineExited { .. } => {
                     st.in_flight.tail.clear();
                     st.in_flight.seq = st.in_flight.seq.wrapping_add(1);
                 }
@@ -230,7 +230,7 @@ impl AcpInner {
                 self.lane
             );
         }
-        self.emit(EchoesEvent::SessionInit {
+        self.emit(ConversationEvent::SessionInit {
             session_id: session_id.to_string(),
             model: None,
             permission_mode: None,
@@ -299,7 +299,7 @@ impl AcpAgentHost {
         let stderr = child.stderr.take();
         let child_pid = child.id();
 
-        let (event_tx, _rx) = broadcast::channel::<EchoesEvent>(256);
+        let (event_tx, _rx) = broadcast::channel::<ConversationEvent>(256);
         let inner = Arc::new(AcpInner {
             engine,
             event_tx,
@@ -355,7 +355,7 @@ impl AcpAgentHost {
         })
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<EchoesEvent> {
+    pub fn subscribe(&self) -> broadcast::Receiver<ConversationEvent> {
         self.inner.event_tx.subscribe()
     }
 
@@ -634,7 +634,7 @@ async fn run_reader(
         } else {
             format!("\n{stderr_tail}")
         };
-        inner.emit(EchoesEvent::EngineExited {
+        inner.emit(ConversationEvent::EngineExited {
             message: format!(
                 "{} が休眠しました。次の送信で再開します。{detail}",
                 inner.engine.name()
@@ -660,7 +660,7 @@ async fn handle_response(
     match kind {
         ReqKind::Initialize => {
             if let Some(err) = error {
-                inner.emit(EchoesEvent::Error {
+                inner.emit(ConversationEvent::Error {
                     message: format!(
                         "{} initialize 失敗: {}",
                         inner.engine.name(),
@@ -711,7 +711,7 @@ async fn handle_response(
         }
         ReqKind::SessionNew => {
             if let Some(err) = error {
-                inner.emit(EchoesEvent::Error {
+                inner.emit(ConversationEvent::Error {
                     message: format!(
                         "{} session/new 失敗: {}",
                         inner.engine.name(),
@@ -732,11 +732,11 @@ async fn handle_response(
                 st.session_id.clone().unwrap_or_default()
             };
             if let Some(err) = error {
-                inner.emit(EchoesEvent::Error {
+                inner.emit(ConversationEvent::Error {
                     message: format!("{} turn 失敗: {}", inner.engine.name(), error_message(err)),
                 });
             }
-            inner.emit(EchoesEvent::TurnCompleted {
+            inner.emit(ConversationEvent::TurnCompleted {
                 session_id,
                 cost_usd: None,
                 context_tokens: None,
@@ -889,12 +889,12 @@ mod tests {
                 .expect("120s 以内に完了する")
                 .expect("recv");
             match ev {
-                EchoesEvent::SessionInit {
+                ConversationEvent::SessionInit {
                     session_id: sid, ..
                 } => session_id = sid,
-                EchoesEvent::MessageChunk { text: t } => text.push_str(&t),
-                EchoesEvent::TurnCompleted { .. } => break,
-                EchoesEvent::Error { message } => panic!("engine error: {message}"),
+                ConversationEvent::MessageChunk { text: t } => text.push_str(&t),
+                ConversationEvent::TurnCompleted { .. } => break,
+                ConversationEvent::Error { message } => panic!("engine error: {message}"),
                 _ => {}
             }
         }

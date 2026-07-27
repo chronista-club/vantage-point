@@ -6,7 +6,7 @@
 //! `/usr/bin:/bin:/usr/sbin:/sbin` の最小集合になる。 この痩せた PATH は spawn chain
 //! (vp-app → daemon → repo → PtySlot → login shell → claude) を伝播し、 user-installed tool
 //! (claude、 Windows は `claude.exe`) を見つけられず spawn が失敗 → lane が即 Dead 化 →
-//! Echoes コンソールが出ない、 という症状の根因になる。
+//! Conversation コンソールが出ない、 という症状の根因になる。
 //!
 //! note: mise shims を PATH に足すのは「user が mise で claude を管理していても見つかる」
 //! **許容**であり、 vp が mise に依存するわけではない (tmux decoupling PR2 で vp runtime は

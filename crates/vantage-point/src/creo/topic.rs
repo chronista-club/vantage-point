@@ -27,10 +27,10 @@ pub fn default_aliases() -> HashMap<String, String> {
         ("sc.item.added", "repo/sc/state/item-added"),
         ("sc.item.updated", "repo/sc/state/item-updated"),
         // PR-pre2 (VP-118): hd → echoes rename (Heaven's Door → Echoes)
-        ("echoes.message", "repo/echoes/notify/message"),
+        ("conversation.message", "repo/conversation/notify/message"),
         (
-            "echoes.session.started",
-            "repo/echoes/lifecycle/session-started",
+            "conversation.session.started",
+            "repo/conversation/lifecycle/session-started",
         ),
         ("user.click", "user/user/command/click"),
         ("user.focus", "user/user/state/focus-changed"),
@@ -63,8 +63,8 @@ mod tests {
             Some("repo/sc/state/item-added")
         );
         assert_eq!(
-            a.get("echoes.session.started").map(String::as_str),
-            Some("repo/echoes/lifecycle/session-started")
+            a.get("conversation.session.started").map(String::as_str),
+            Some("repo/conversation/lifecycle/session-started")
         );
     }
 

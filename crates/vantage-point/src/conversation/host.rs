@@ -1,16 +1,16 @@
-//! EchoesAgentHost — headless claude を lane 単位で常駐駆動する（gui engine host）
+//! ClaudeHost — headless claude を lane 単位で常駐駆動する（gui engine host）
 //!
 //! doc 32 §3。`claude -p --input-format stream-json --output-format stream-json` を
-//! piped stdio で spawn し、stdout を [`EchoesTranslator`] に通して [`EchoesEvent`] を
+//! piped stdio で spawn し、stdout を [`ClaudeTranslator`] に通して [`ConversationEvent`] を
 //! `broadcast::Sender` に流す。tui（PtySlot + TUI）とは別系統の「headless engine」。
 //!
 //! PtySlot ⇄ terminal_pump と同型: host が producer（broadcast tx を持つ）、
-//! `echoes_pump` が consumer（TopicRouter へ route）。engine プロセスは会話を保持するため
+//! `conversation_pump` が consumer（TopicRouter へ route）。engine プロセスは会話を保持するため
 //! lane が gui の間は常駐する（demand-driven ではない）。
 //!
 //! ## in-flight tail（replay の冪等性を「生成中」まで広げる）
 //!
-//! claude は message を **完了時にしか** transcript(jsonl) へ flush しない。 一方 echoes topic は
+//! claude は message を **完了時にしか** transcript(jsonl) へ flush しない。 一方 conversation topic は
 //! 非 retained（`TopicRouter::route` はその時点の subscriber にだけ配る）。 よって assistant が
 //! 生成中に WS/QUIC が瞬断すると、 demand 再発火で走る transcript replay は「生成中 message の
 //! 直前まで」しか復元できず、 瞬断前に届いていた delta は永久に失われる。 GUI は `ReplayStart` で
@@ -18,12 +18,12 @@
 //! を立ててしまう（旧 #699 の既知ギャップ）。
 //!
 //! そこで host は「まだ disk に無い増分」= **in-flight tail** を保持する。 transcript commit 境界
-//! （`assistant` / `user` 行、[`super::translate::Ingested::commits_transcript`]）で tail を捨て、
-//! それ以降の [`EchoesEvent::MessageChunk`] / [`EchoesEvent::ThoughtChunk`] だけを積む。
+//! （`assistant` / `user` 行、[`super::claude_translate::Ingested::commits_transcript`]）で tail を捨て、
+//! それ以降の [`ConversationEvent::MessageChunk`] / [`ConversationEvent::ThoughtChunk`] だけを積む。
 //! replay 時に transcript の後ろへ tail を継げば、 生成の真っ最中に着地しても現在状態が厳密に
 //! 再現される（= 冪等性が turn 境界に縛られなくなる）。
 //!
-//! ⚠️ tail に [`EchoesEvent::ToolCall`] を積んではならない。 translator は ToolCall を
+//! ⚠️ tail に [`ConversationEvent::ToolCall`] を積んではならない。 translator は ToolCall を
 //! `content_block_stop` で発火するが、 その block の commit（snapshot 行）は **1 行前に来ている**
 //! ため、 ToolCall は既に transcript 側に存在する（`translate` の module doc / golden test 参照）。
 //!
@@ -34,11 +34,11 @@
 //! ## control protocol client（doc 35 PR1、HITL 面の質問レール）
 //!
 //! spawn に `--permission-prompt-tool stdio` を足すと、engine は逆方向の `can_use_tool`
-//! control_request を **stdout**（EchoesEvent と同じ stream）に流す。stdout pump は translator の
-//! **手前**でこれを検出し、`AskUserQuestion` を [`EchoesEvent::Question`] へ写して broadcast する。
-//! GUI の回答は [`EchoesAgentHost::respond_permission`] が `control_response` として stdin へ書き戻す
+//! control_request を **stdout**（ConversationEvent と同じ stream）に流す。stdout pump は translator の
+//! **手前**でこれを検出し、`AskUserQuestion` を [`ConversationEvent::Question`] へ写して broadcast する。
+//! GUI の回答は [`ClaudeHost::respond_permission`] が `control_response` として stdin へ書き戻す
 //! （既存 stdin Mutex を submit と共有 = 混線しない、doc §2.3）。制御面を translator に流さないのは
-//! EchoesEvent 語彙（会話の言葉）を engine 制御で汚さないため（責務分離、doc §2.4）。
+//! ConversationEvent 語彙（会話の言葉）を engine 制御で汚さないため（責務分離、doc §2.4）。
 //!
 //! data / calculations / actions:
 //! - calculations: stdin メッセージ JSON 生成（[`user_message_json`]）/ control frame の判定
@@ -55,8 +55,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::broadcast;
 
-use super::event::{EchoesEvent, QuestionOption, QuestionSpec};
-use super::translate::EchoesTranslator;
+use super::claude_translate::ClaudeTranslator;
+use super::event::{ConversationEvent, QuestionOption, QuestionSpec};
 
 /// 我々が spawn 直後に送る initialize control_request の request_id（応答照合用の固定値）。
 const INIT_REQUEST_ID: &str = "vp-init-1";
@@ -67,8 +67,8 @@ pub struct InFlight {
     /// commit 世代。 transcript に 1 行 flush されるたび +1。 transcript を読む側は
     /// 「読む前」と「読んだ後」で同値なら tail が transcript と整合すると判定できる。
     pub seq: u64,
-    /// 直近 commit 以降の [`EchoesEvent::MessageChunk`] / [`EchoesEvent::ThoughtChunk`]。
-    pub tail: Vec<EchoesEvent>,
+    /// 直近 commit 以降の [`ConversationEvent::MessageChunk`] / [`ConversationEvent::ThoughtChunk`]。
+    pub tail: Vec<ConversationEvent>,
 }
 
 impl InFlight {
@@ -83,10 +83,10 @@ impl InFlight {
 /// tail に積んでよい event か（= commit 前にしか存在しない増分）。
 ///
 /// ToolCall / ToolCallUpdate / Plan は commit 済み block 由来なので積まない（module doc の ⚠️）。
-fn is_uncommitted_chunk(event: &EchoesEvent) -> bool {
+fn is_uncommitted_chunk(event: &ConversationEvent) -> bool {
     matches!(
         event,
-        EchoesEvent::MessageChunk { .. } | EchoesEvent::ThoughtChunk { .. }
+        ConversationEvent::MessageChunk { .. } | ConversationEvent::ThoughtChunk { .. }
     )
 }
 
@@ -95,25 +95,25 @@ fn is_uncommitted_chunk(event: &EchoesEvent) -> bool {
 /// - commit 境界（`assistant` / `user` 行）: tail を捨てて世代 +1。
 /// - SessionInit（新 engine の起点）/ TurnCompleted / Error: 会話が確定するので同じく捨てる。
 /// - それ以外の増分（MessageChunk / ThoughtChunk）だけを積む。
-fn fold_in_flight(f: &mut InFlight, out: &super::translate::Ingested) {
+fn fold_in_flight(f: &mut InFlight, out: &super::claude_translate::Ingested) {
     if out.commits_transcript {
         f.reset();
     }
     for event in &out.events {
         match event {
-            EchoesEvent::SessionInit { .. }
-            | EchoesEvent::TurnCompleted { .. }
-            | EchoesEvent::Error { .. }
-            | EchoesEvent::EngineExited { .. } => f.reset(),
+            ConversationEvent::SessionInit { .. }
+            | ConversationEvent::TurnCompleted { .. }
+            | ConversationEvent::Error { .. }
+            | ConversationEvent::EngineExited { .. } => f.reset(),
             e if is_uncommitted_chunk(e) => f.tail.push(e.clone()),
             _ => {}
         }
     }
 }
 
-/// EchoesAgentHost の起動設定。
+/// ClaudeHost の起動設定。
 #[derive(Debug, Clone)]
-pub struct EchoesHostConfig {
+pub struct ClaudeHostConfig {
     /// engine の作業ディレクトリ（lane の repo dir）。
     pub cwd: String,
     /// cc_session 記録キー（repo 名）。
@@ -153,10 +153,10 @@ pub enum PermissionDecision {
 /// stdin は `Arc` 共有: host（submit / respond_permission）と stdout pump（handshake / 想定外
 /// can_use_tool の自動 allow）の両方が書くため。各 write は 1 JSON 行 + flush で完結し Mutex が
 /// 直列化するので、user message と control frame が混線しない（doc §2.3）。
-pub struct EchoesAgentHost {
+pub struct ClaudeHost {
     child: Child,
     stdin: Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
-    event_tx: broadcast::Sender<EchoesEvent>,
+    event_tx: broadcast::Sender<ConversationEvent>,
     pid: Option<u32>,
     /// stdout ポンプが更新する in-flight tail（module doc）。 await を跨がないので std Mutex。
     in_flight: Arc<Mutex<InFlight>>,
@@ -240,12 +240,12 @@ fn probe_forward_subagent_text(claude_path: &str) -> bool {
     !stderr.contains("unknown option")
 }
 
-impl EchoesAgentHost {
+impl ClaudeHost {
     /// headless claude を spawn し、stdout ポンプを起動する。
     ///
-    /// stdout の各行は [`EchoesTranslator`] を通り、[`EchoesEvent`] として broadcast される。
+    /// stdout の各行は [`ClaudeTranslator`] を通り、[`ConversationEvent`] として broadcast される。
     /// `SessionInit` を観測したら session id を cc_session に記録する（resume の SSOT）。
-    pub fn spawn(config: EchoesHostConfig) -> anyhow::Result<Self> {
+    pub fn spawn(config: ClaudeHostConfig) -> anyhow::Result<Self> {
         let claude_path = crate::agent::get_claude_cli_path(config.claude_cli_path.as_deref());
         let mut cmd = Command::new(&claude_path);
         // 親（repo）の env を継承 — spawn_env 済みの PATH 等を引き継ぐ。
@@ -276,7 +276,7 @@ impl EchoesAgentHost {
         // 出てくる形（実測 2026-07-17、claude 2.1.212）:
         //   - 行 top-level に `parent_tool_use_id` が付き、値は親の `Agent` tool_use の id と一致
         //   - 担い手は **assistant スナップショット行のみ**（parent 付きの `stream_event` は 0 本 =
-        //     delta では来ない）→ 翻訳は EchoesTranslator 側で snapshot から取り出す
+        //     delta では来ない）→ 翻訳は ClaudeTranslator 側で snapshot から取り出す
         // 翻訳器が parent 付き行を親から隔離する前提の flag（孤児 ToolCallUpdate / 誤 commit 境界 /
         // 親の発話への混入を防ぐ）。 translate.rs の RawLine 分岐と対で読むこと。
         // ⚠️ 2.1.211 未満は unknown option で spawn 即死するため、受理可否を probe して出し分ける
@@ -313,7 +313,7 @@ impl EchoesAgentHost {
         cmd.kill_on_drop(true);
 
         tracing::info!(
-            "EchoesAgentHost spawn (repo={}, lane={}, resume={:?})",
+            "ClaudeHost spawn (repo={}, lane={}, resume={:?})",
             config.repo,
             config.lane,
             config.resume_session_id.as_deref().unwrap_or("new")
@@ -336,8 +336,8 @@ impl EchoesAgentHost {
             .take()
             .ok_or_else(|| anyhow::anyhow!("stderr のキャプチャに失敗"))?;
 
-        // broadcast: 複数 consumer（echoes_pump / 将来の tui mirror）に配れる。
-        let (event_tx, _rx) = broadcast::channel::<EchoesEvent>(256);
+        // broadcast: 複数 consumer（conversation_pump / 将来の tui mirror）に配れる。
+        let (event_tx, _rx) = broadcast::channel::<ConversationEvent>(256);
 
         let in_flight = Arc::new(Mutex::new(InFlight::default()));
         // stdin を Arc 共有（host + pump が書く、doc §2.3）。
@@ -351,7 +351,7 @@ impl EchoesAgentHost {
         tokio::spawn(async move {
             let frame = initialize_handshake_json();
             if let Err(e) = write_json_line(&handshake_stdin, &frame).await {
-                tracing::warn!("echoes: initialize handshake 送信失敗: {e}");
+                tracing::warn!("conversation: initialize handshake 送信失敗: {e}");
             }
         });
 
@@ -363,11 +363,11 @@ impl EchoesAgentHost {
         let pump_in_flight = in_flight.clone();
         let pump_pending = pending_permissions.clone();
         tokio::spawn(async move {
-            let mut translator = EchoesTranslator::new();
+            let mut translator = ClaudeTranslator::new();
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                // 制御面は translator の手前で抜く（EchoesEvent 語彙を engine 制御で汚さない）。
+                // 制御面は translator の手前で抜く（ConversationEvent 語彙を engine 制御で汚さない）。
                 if let Some(frame) = classify_control_frame(&line) {
                     handle_control_frame(frame, &tx, &pump_pending);
                     continue;
@@ -377,14 +377,14 @@ impl EchoesAgentHost {
                 // 増分を取りこぼさない順序（tail ⊇ 配信済み未 commit 分 を保つ）。
                 fold_in_flight(&mut pump_in_flight.lock().expect("in_flight lock"), &out);
                 for event in out.events {
-                    if let EchoesEvent::SessionInit { session_id, .. } = &event {
+                    if let ConversationEvent::SessionInit { session_id, .. } = &event {
                         record_session(&repo, &lane, session_id);
                     }
                     // 受信者不在（Closed）は無視 — engine は購読者に依存せず動く。
                     let _ = tx.send(event);
                 }
             }
-            tracing::debug!("EchoesAgentHost stdout ポンプ終了（repo={repo}, lane={lane}）");
+            tracing::debug!("ClaudeHost stdout ポンプ終了（repo={repo}, lane={lane}）");
             // stream 途絶（engine crash / stop）を GUI に可視化する。stdout close =
             // engine プロセス終了だが、従来は debug log に落ちるだけで購読者（chatview）に
             // 届かず「止まった?」が見えなかった（tui は PTY 切断が xterm に即見える）。
@@ -393,7 +393,7 @@ impl EchoesAgentHost {
             // engine が死んだ = tail の続きも pending 質問への応答先ももう無い。 掃除する。
             pump_in_flight.lock().expect("in_flight lock").reset();
             pump_pending.lock().expect("pending lock").clear();
-            let _ = tx.send(EchoesEvent::EngineExited {
+            let _ = tx.send(ConversationEvent::EngineExited {
                 message: "エンジンが休眠しました（メッセージ送信で再開します）".to_string(),
             });
         });
@@ -419,8 +419,8 @@ impl EchoesAgentHost {
         })
     }
 
-    /// EchoesEvent の broadcast receiver を得る（echoes_pump などが購読）。
-    pub fn subscribe(&self) -> broadcast::Receiver<EchoesEvent> {
+    /// ConversationEvent の broadcast receiver を得る（conversation_pump などが購読）。
+    pub fn subscribe(&self) -> broadcast::Receiver<ConversationEvent> {
         self.event_tx.subscribe()
     }
 
@@ -454,7 +454,7 @@ impl EchoesAgentHost {
         Ok(())
     }
 
-    /// 逆方向 `can_use_tool`（[`EchoesEvent::Question`]）への回答を stdin へ書き戻す（doc §2.3）。
+    /// 逆方向 `can_use_tool`（[`ConversationEvent::Question`]）への回答を stdin へ書き戻す（doc §2.3）。
     ///
     /// `request_id` は Question event 経由で GUI から戻る。pending から原 input（questions を含む）を
     /// 引き、`decision` に応じて `control_response{behavior, updatedInput|message}` を組み立てて 1 行書く。
@@ -708,13 +708,13 @@ fn build_permission_response(
 /// 書かない（回答は GUI → respond_permission が担う）。
 ///
 /// - AskUserQuestion → 原 input を pending へ退避（回答時に questions を verbatim echo）+
-///   [`EchoesEvent::Question`] を broadcast。
+///   [`ConversationEvent::Question`] を broadcast。
 /// - その他の can_use_tool（permission-mode=default 時の tool 承認）→ 同じく pending 退避 +
-///   [`EchoesEvent::PermissionRequest`] を broadcast（PR3）。
+///   [`ConversationEvent::PermissionRequest`] を broadcast（PR3）。
 /// - control_response（我々の能動 control への応答）→ init のみ log、他は無視（GUI に出さない）。
 fn handle_control_frame(
     frame: ControlFrame,
-    tx: &broadcast::Sender<EchoesEvent>,
+    tx: &broadcast::Sender<ConversationEvent>,
     pending: &Arc<Mutex<HashMap<String, serde_json::Value>>>,
 ) {
     match frame {
@@ -729,7 +729,7 @@ fn handle_control_frame(
                     .lock()
                     .expect("pending lock")
                     .insert(request_id.clone(), input);
-                let _ = tx.send(EchoesEvent::Question {
+                let _ = tx.send(ConversationEvent::Question {
                     request_id,
                     questions,
                 });
@@ -741,7 +741,7 @@ fn handle_control_frame(
                     .lock()
                     .expect("pending lock")
                     .insert(request_id.clone(), input.clone());
-                let _ = tx.send(EchoesEvent::PermissionRequest {
+                let _ = tx.send(ConversationEvent::PermissionRequest {
                     request_id,
                     tool_name,
                     input,
@@ -752,7 +752,7 @@ fn handle_control_frame(
             // PR1 の能動 control は initialize のみ。応答を request_id で確認する（doc §2.2）。
             if request_id.as_deref() == Some(INIT_REQUEST_ID) {
                 tracing::debug!(
-                    "echoes: initialize handshake 確認（request_id={INIT_REQUEST_ID}）"
+                    "conversation: initialize handshake 確認（request_id={INIT_REQUEST_ID}）"
                 );
             }
             // interrupt / set_permission_mode の応答（PR2+）はまだ送らないので無視。
@@ -767,7 +767,7 @@ mod tests {
     /// stream-json の行列を translator + fold_in_flight に通し、最終 tail を得る helper。
     /// 実 engine の stdout ポンプと同じ順序で畳む。
     fn tail_after(lines: &[&str]) -> InFlight {
-        let mut translator = EchoesTranslator::new();
+        let mut translator = ClaudeTranslator::new();
         let mut f = InFlight::default();
         for line in lines {
             fold_in_flight(&mut f, &translator.ingest(line));
@@ -791,10 +791,10 @@ mod tests {
         assert_eq!(
             f.tail,
             vec![
-                EchoesEvent::MessageChunk {
+                ConversationEvent::MessageChunk {
                     text: "こん".into()
                 },
-                EchoesEvent::MessageChunk {
+                ConversationEvent::MessageChunk {
                     text: "にちは".into()
                 },
             ]
@@ -822,7 +822,7 @@ mod tests {
         ]);
         assert_eq!(
             f.tail,
-            vec![EchoesEvent::MessageChunk { text: "後".into() }]
+            vec![ConversationEvent::MessageChunk { text: "後".into() }]
         );
     }
 
@@ -915,7 +915,7 @@ mod tests {
     /// PR3: 非 AskUserQuestion の can_use_tool は PermissionRequest として broadcast + pending 退避。
     #[test]
     fn handle_control_frame_non_question_emits_permission_request() {
-        let (tx, mut rx) = broadcast::channel::<EchoesEvent>(4);
+        let (tx, mut rx) = broadcast::channel::<ConversationEvent>(4);
         let pending: Arc<Mutex<HashMap<String, serde_json::Value>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let frame = ControlFrame::CanUseTool {
@@ -929,7 +929,7 @@ mod tests {
             "原 input が pending に退避される"
         );
         match rx.try_recv().expect("event") {
-            EchoesEvent::PermissionRequest {
+            ConversationEvent::PermissionRequest {
                 request_id,
                 tool_name,
                 ..
@@ -1059,7 +1059,7 @@ mod tests {
 
     /// answers=None（tool 承認 = PR3 の形）: updatedInput = 原 input そのまま。
     #[test]
-    fn build_allow_response_without_answers_echoes_original() {
+    fn build_allow_response_without_answers_conversation_original() {
         let original = serde_json::json!({ "command": "ls" });
         let frame = build_permission_response(
             "req-3",
@@ -1082,16 +1082,16 @@ mod tests {
         assert!(f["request"]["hooks"].is_null());
     }
 
-    /// 実機統合: headless claude を spawn → submit → EchoesEvent 列を受け取り、
+    /// 実機統合: headless claude を spawn → submit → ConversationEvent 列を受け取り、
     /// SessionInit / MessageChunk(PONG) / TurnCompleted が揃うことを確認する。
-    /// `cargo test -p vantage-point --ignored echoes_host_roundtrip` で実行（要 claude CLI）。
+    /// `cargo test -p vantage-point --ignored conversation_host_roundtrip` で実行（要 claude CLI）。
     #[tokio::test]
     #[ignore = "requires claude CLI + subscription"]
-    async fn echoes_host_roundtrip() {
+    async fn conversation_host_roundtrip() {
         use std::time::Duration;
 
         let tmp = tempfile::tempdir().expect("tempdir");
-        let mut host = EchoesAgentHost::spawn(EchoesHostConfig {
+        let mut host = ClaudeHost::spawn(ClaudeHostConfig {
             cwd: tmp.path().to_string_lossy().to_string(),
             repo: "vp-test".to_string(),
             lane: "spike".to_string(),
@@ -1115,16 +1115,16 @@ mod tests {
         while tokio::time::Instant::now() < deadline {
             match tokio::time::timeout(Duration::from_secs(90), rx.recv()).await {
                 Ok(Ok(ev)) => match ev {
-                    EchoesEvent::SessionInit { session_id, .. } => {
+                    ConversationEvent::SessionInit { session_id, .. } => {
                         assert!(!session_id.is_empty());
                         got_init = true;
                     }
-                    EchoesEvent::MessageChunk { text: t } => text.push_str(&t),
-                    EchoesEvent::TurnCompleted { .. } => {
+                    ConversationEvent::MessageChunk { text: t } => text.push_str(&t),
+                    ConversationEvent::TurnCompleted { .. } => {
                         got_done = true;
                         break;
                     }
-                    EchoesEvent::Error { message } => panic!("engine error: {message}"),
+                    ConversationEvent::Error { message } => panic!("engine error: {message}"),
                     _ => {}
                 },
                 _ => break,
@@ -1141,16 +1141,16 @@ mod tests {
     }
 
     /// 実機統合（HITL 質問レール、doc 35 PR1）: AskUserQuestion を誘発する prompt を投入し、
-    /// 逆方向 can_use_tool → [`EchoesEvent::Question`] を受信 → [`EchoesAgentHost::respond_permission`]
+    /// 逆方向 can_use_tool → [`ConversationEvent::Question`] を受信 → [`ClaudeHost::respond_permission`]
     /// で回答 → turn が継続して TurnCompleted に到達することを確認する。
-    /// `cargo test -p vantage-point --ignored echoes_host_question_roundtrip`（要 claude CLI）。
+    /// `cargo test -p vantage-point --ignored conversation_host_question_roundtrip`（要 claude CLI）。
     #[tokio::test]
     #[ignore = "requires claude CLI + subscription"]
-    async fn echoes_host_question_roundtrip() {
+    async fn conversation_host_question_roundtrip() {
         use std::time::Duration;
 
         let tmp = tempfile::tempdir().expect("tempdir");
-        let host = EchoesAgentHost::spawn(EchoesHostConfig {
+        let host = ClaudeHost::spawn(ClaudeHostConfig {
             cwd: tmp.path().to_string_lossy().to_string(),
             repo: "vp-test".to_string(),
             lane: "spike-q".to_string(),
@@ -1177,7 +1177,7 @@ mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         while tokio::time::Instant::now() < deadline {
             match tokio::time::timeout(Duration::from_secs(90), rx.recv()).await {
-                Ok(Ok(EchoesEvent::Question {
+                Ok(Ok(ConversationEvent::Question {
                     request_id,
                     questions,
                 })) => {
@@ -1198,11 +1198,11 @@ mod tests {
                     .await
                     .expect("respond_permission");
                 }
-                Ok(Ok(EchoesEvent::TurnCompleted { .. })) => {
+                Ok(Ok(ConversationEvent::TurnCompleted { .. })) => {
                     got_done = true;
                     break;
                 }
-                Ok(Ok(EchoesEvent::Error { message })) => panic!("engine error: {message}"),
+                Ok(Ok(ConversationEvent::Error { message })) => panic!("engine error: {message}"),
                 Ok(Ok(_)) => {}
                 _ => break,
             }

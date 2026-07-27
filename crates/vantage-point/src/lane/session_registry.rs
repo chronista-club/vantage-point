@@ -1,4 +1,4 @@
-//! lane ごとの Echoes session registry 永続（doc 38 — 1 Lane = N session / doc 40 — 会話 id SSOT）
+//! lane ごとの Conversation session registry 永続（doc 38 — 1 Lane = N session / doc 40 — 会話 id SSOT）
 //!
 //! doc 38 §1 の 3 層分離の「session 層」を担う:
 //!
@@ -10,7 +10,7 @@
 //!
 //! - **disk = 唯一の真実源**（doc 38 §5 原則「供給を 1 系統に」）。in-memory cache は持たない。
 //!   registry の読み書きは全て本 module 経由（`LanePool` も RPC もここを読む）
-//! - 置き場: `vp_state_dir()/echoes_sessions/<repo>__<lane>.json`（1 lane 1 file）
+//! - 置き場: `vp_state_dir()/conversation_sessions/<repo>__<lane>.json`（1 lane 1 file）
 //! - **file 不在 = N=1 の特殊ケース**: 「lane の agent で session #1 のみ・focused=1・root=1」
 //!   に解決される。既存 install は registry file を持たないが従来どおり動く（既存動作不変の要）
 //! - **会話 id は本 registry が SSOT**（doc 40 §2。旧 engine 別 session_store のラベル鍵は
@@ -57,7 +57,7 @@ pub enum SessionMode {
     /// tui: PtySlot + engine の TUI（ANSI → xterm）。既定。
     #[default]
     Tui,
-    /// gui: headless engine host → EchoesEvent → ChatView（構造化 GUI）。
+    /// gui: headless engine host → ConversationEvent → ChatView（構造化 GUI）。
     Gui,
 }
 
@@ -171,7 +171,7 @@ pub fn session_label(lane_label: &str, key: SessionKey) -> String {
 
 /// state base dir 配下の registry file path（純関数、テスト用に base 注入）。
 fn registry_file_in(base: &Path, repo: &str, lane: &str) -> PathBuf {
-    base.join("echoes_sessions")
+    base.join("conversation_sessions")
         .join(format!("{}__{}.json", sanitize(repo), sanitize(lane)))
 }
 
@@ -203,7 +203,7 @@ pub fn parse_session_label(label: &str) -> (&str, SessionKey) {
 /// 会話 id の engine 別検証（doc 40 §4 — write 側 dispatch）。`--resume '<id>'` への
 /// injection 防壁を旧 store の書き込み検証から引き継ぐ（spawn 側の再検証と二段 = 深層防御）。
 fn is_valid_conversation(agent: &str, id: &str) -> bool {
-    use crate::echoes::EngineKind;
+    use crate::conversation::EngineKind;
     match EngineKind::from_agent(agent) {
         Some(EngineKind::Claude) => super::cc_session::is_valid_session_id(id),
         Some(EngineKind::Codex) => super::codex_session::is_valid_thread_id(id),
@@ -232,7 +232,7 @@ fn is_valid_conversation(agent: &str, id: &str) -> bool {
 /// ⚠️ これは**生成の既定**であって欠損の解釈ではない（doc 54 §3.1 の 2 つの既定の分離）。
 /// registry 不在 / 旧 wire の読み fallback は従来どおり Tui（歴史的事実 — 昔の lane は tui）。
 pub fn default_mode_for_agent(agent: &str) -> SessionMode {
-    match crate::echoes::EngineKind::from_agent(agent) {
+    match crate::conversation::EngineKind::from_agent(agent) {
         Some(k) if k.chat_capable() => SessionMode::Gui,
         _ => SessionMode::Tui,
     }
@@ -536,8 +536,8 @@ pub fn record_conversation_in(
         return Ok(ConversationRecordOutcome::UnknownSession);
     };
     if !matches!(
-        crate::echoes::EngineKind::from_agent(&entry.agent),
-        Some(crate::echoes::EngineKind::Claude)
+        crate::conversation::EngineKind::from_agent(&entry.agent),
+        Some(crate::conversation::EngineKind::Claude)
     ) {
         return Ok(ConversationRecordOutcome::IgnoredNonClaude);
     }
@@ -972,7 +972,7 @@ mod tests {
     #[test]
     fn registry_without_root_field_reads_as_root_1() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let dir = tmp.path().join("echoes_sessions");
+        let dir = tmp.path().join("conversation_sessions");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("vp__root.json"),
@@ -1048,7 +1048,7 @@ mod tests {
     #[test]
     fn corrupt_or_invalid_file_falls_back_to_default() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let dir = tmp.path().join("echoes_sessions");
+        let dir = tmp.path().join("conversation_sessions");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("vp__root.json");
 
@@ -1638,10 +1638,13 @@ mod tests {
         let p = registry_file_in(Path::new("/base"), "creo.memories", "root");
         assert_eq!(
             p,
-            Path::new("/base/echoes_sessions/creo-memories__root.json")
+            Path::new("/base/conversation_sessions/creo-memories__root.json")
         );
         let p = registry_file_in(Path::new("/base"), "a/b", "../evil");
-        assert_eq!(p, Path::new("/base/echoes_sessions/a-b__---evil.json"));
+        assert_eq!(
+            p,
+            Path::new("/base/conversation_sessions/a-b__---evil.json")
+        );
     }
 
     // ---- doc 47 §4: Mode の lane → session 移設 ----

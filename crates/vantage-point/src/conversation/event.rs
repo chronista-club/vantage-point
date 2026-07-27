@@ -1,7 +1,7 @@
-//! EchoesEvent — Echoes gui GUI が話す唯一の言葉（PR1 で凍結）
+//! ConversationEvent — Conversation gui GUI が話す唯一の言葉（PR1 で凍結）
 //!
 //! vp-app（GUI）はこの語彙だけを描画する。engine（現状 claude）ごとの
-//! stream 形式は repo 側の翻訳層（[`super::translate`]）で吸収し、engine を
+//! stream 形式は repo 側の翻訳層（[`super::claude_translate`]）で吸収し、engine を
 //! 足すときは翻訳層を 1 個追加するだけで GUI は無改修 — これが多 engine 方針の支え。
 //!
 //! 語彙は ACP `session/update` の実績あるサブセットを借用。
@@ -9,13 +9,13 @@
 
 use serde::{Deserialize, Serialize};
 
-/// GUI へ配信する構造化イベント（1 engine turn = 複数 EchoesEvent の列）。
+/// GUI へ配信する構造化イベント（1 engine turn = 複数 ConversationEvent の列）。
 ///
 /// serde 表現は `{"kind":"message_chunk","text":"..."}` の形（`tag = "kind"`）。
 /// vp-app 側はこの `kind` で分岐して描画する。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum EchoesEvent {
+pub enum ConversationEvent {
     /// セッション初期化。engine プロセス起動直後に 1 回。
     /// session_id は cc_session への記録に使う（tui ⇄ gui の resume 共有）。
     SessionInit {
@@ -75,7 +75,7 @@ pub enum EchoesEvent {
         input: serde_json::Value,
     },
 
-    /// tool の実行結果（`tool_use_id` で [`EchoesEvent::ToolCall`] と対応）。
+    /// tool の実行結果（`tool_use_id` で [`ConversationEvent::ToolCall`] と対応）。
     ToolCallUpdate {
         tool_use_id: String,
         /// 結果本文（text 化。大きい場合は翻訳層で切り詰め得る）。
@@ -87,7 +87,7 @@ pub enum EchoesEvent {
     /// subagent（`Agent` tool が回した子）の発話。engine に `--forward-subagent-text` を
     /// 付けた時だけ流れる。
     ///
-    /// `parent_tool_use_id` は親の [`EchoesEvent::ToolCall`] の `id` と一致する（実測: 値は
+    /// `parent_tool_use_id` は親の [`ConversationEvent::ToolCall`] の `id` と一致する（実測: 値は
     /// `Agent` tool_use の id）ので、GUI は該当 tool 行の中に入れ子で描ける = 「誰の発話か」を
     /// 取り違えない。
     ///
@@ -96,7 +96,7 @@ pub enum EchoesEvent {
     /// 1 個ぶんの完成テキスト」を運ぶ。`*Chunk` を名乗らないのはそのため（増分ではない = 到着時に
     /// 一括で現れる。engine の挙動を名前で偽らない）。
     SubagentMessage {
-        /// 親の [`EchoesEvent::ToolCall`] の `id`。
+        /// 親の [`ConversationEvent::ToolCall`] の `id`。
         parent_tool_use_id: String,
         /// 発話の種別。
         role: SubagentRole,
@@ -130,7 +130,7 @@ pub enum EchoesEvent {
     /// method が該当 session の topic に注入する）。GUI は名札直下の now-line に出し、
     /// `TurnCompleted` で消す —「今」は turn より長生きしない。
     /// replay log には記録しない（揮発の自己申告 — 過去の「今」を再生すると嘘になる。
-    /// [`crate::repo::echoes_pump`] の記録対象リスト参照）。
+    /// [`crate::repo::conversation_pump`] の記録対象リスト参照）。
     /// 凍結語彙への additive variant（`EngineExited` / context gauge と同じ前例）。
     NowLine { text: String },
 
@@ -175,7 +175,7 @@ pub enum EchoesEvent {
     },
 }
 
-/// [`EchoesEvent::SubagentMessage`] の発話種別。
+/// [`ConversationEvent::SubagentMessage`] の発話種別。
 ///
 /// engine の 1 本の stream に親子が混在するため、GUI が「誰が何を言ったか」を復元するのに要る。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

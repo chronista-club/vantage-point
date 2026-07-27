@@ -9,7 +9,7 @@
 //! ┌─── tao ネイティブウィンドウ (native chrome, menu, tray) ──┐
 //! │ ┌──────────┬───────────────────────────────────────┐ │
 //! │ │ sidebar  │   main area (単一 wry WebView)          │ │
-//! │ │ (Creo)   │   ┌─ pane-terminal (xterm.js)─────┐   │ │
+//! │ │ (Creo)   │   ┌─ pane-lane (xterm.js)─────┐   │ │
 //! │ │ repo  │   ├─ pane-canvas (placeholder)─────┤   │ │
 //! │ │ + Activ. │   ├─ pane-preview (iframe)─────────┤   │ │
 //! │ │ widget   │   └─ pane-empty   (no selection)───┘   │ │
@@ -166,23 +166,23 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "board:cursor"
                 | "console"
                 | "open-url"
-                | "echoes:submit"
-                | "echoes:respond"
-                | "echoes:interrupt"
-                | "echoes:set_permission_mode"
+                | "conversation:submit"
+                | "conversation:respond"
+                | "conversation:interrupt"
+                | "conversation:set_permission_mode"
                 // doc 38 Phase 2: session tab strip の tag。terminal.rs に match arm を
                 // 足すだけでは届かない — この allowlist に無い tag は sidebar IPC に流れて
                 // 「unknown variant」で捨てられる（2026-07-16 dogfood で「+」無反応の根因）。
                 // 旧 `echoes:sessions_fetch` は doc 53 §11 で退役（roster は snapshot が運ぶ）。
-                | "echoes:session_create"
-                | "echoes:session_focus"
+                | "conversation:session_create"
+                | "conversation:session_focus"
                 // doc 38 Phase 3: session tab の × による close（allowlist 漏れは sidebar IPC へ
                 // 流れて silent drop = 「×無反応」regression。tests でも固定）。
-                | "echoes:session_remove"
-                | "echoes:stands_fetch"
+                | "conversation:session_remove"
+                | "conversation:stands_fetch"
                 // replay demand（2026-07-24）: 消費者主導 demand。allowlist 漏れは sidebar IPC へ
                 // 流れて silent drop = 「chat が空のまま」regression（terminal.rs の arm と対）
-                | "echoes:demand_start"
+                | "conversation:demand_start"
                 // doc 50 §4.6 A6: 名札 kind badge の Mode 切替（session 明示）。漏れると
                 // sidebar IPC へ流れて silent drop = 「badge を押しても変身しない」regression。
                 // 旧 lane 単位 `console:set_mode` は同 A6 で退役（見え方は session の属性）。
@@ -206,16 +206,16 @@ mod ipc_tag_tests {
     /// doc 38 Phase 2/3 の session tab tag が main webview IPC として dispatch されること。
     /// terminal.rs の match arm と本 allowlist は**両方**更新が要る（片側更新だと
     /// sidebar IPC に落ちて silent drop — 2026-07-16 の「+」無反応 regression の固定。
-    /// Phase 3 の `echoes:session_remove` も同じ理由で allowlist に載せた）。
+    /// Phase 3 の `conversation:session_remove` も同じ理由で allowlist に載せた）。
     #[test]
     fn session_tab_tags_route_to_main_ipc() {
         for t in [
-            "echoes:session_create",
-            "echoes:session_focus",
-            "echoes:session_remove",
-            "echoes:stands_fetch",
+            "conversation:session_create",
+            "conversation:session_focus",
+            "conversation:session_remove",
+            "conversation:stands_fetch",
             // 消費者主導 replay demand（2026-07-24 — 漏れは「chat が空のまま」）
-            "echoes:demand_start",
+            "conversation:demand_start",
             // doc 39 P3: Root 切替 picker（ヘッダ chip dropdown）
             "console:switch_root",
             // webview の誕生合図。Rust の replay 一式がここに畳んである（旧 catch-up pull
@@ -256,7 +256,7 @@ mod session_derivation_tests {
 
     /// doc 53 §11: snapshot の roster が **webview 契約の形**に写ること。
     ///
-    /// 旧実装ではこの payload は `echoes_session_list` の ask 結果そのものだった。供給を
+    /// 旧実装ではこの payload は `conversation_session_list` の ask 結果そのものだった。供給を
     /// snapshot に 1 本化した今、変換はこの純関数 1 箇所 — 形がずれると tab strip / pane grid /
     /// 名札が同時に壊れるので、**client が読む field を名指しで**固定する。
     ///
@@ -403,7 +403,7 @@ mod session_derivation_tests {
     fn chat_gate_looks_at_any_session_not_just_root() {
         use crate::pane::SidebarState;
 
-        // root=tui + 非 root=chat: echoes 購読を張らないと その chat pane が無言になる。
+        // root=tui + 非 root=chat: conversation 購読を張らないと その chat pane が無言になる。
         let lane = lane_with(16, serde_json::json!([s(16, "tui"), s(19, "gui")]));
         let addr = lane.address.key();
         let mut state = SidebarState::default();
@@ -968,7 +968,7 @@ async fn run_canvas_session(
     use unison::network::MessageType;
 
     // F1b: 共有 connection 上に "gui" stream を開く (旧: session ごと別 connect)。
-    // doc 52 §6: channel 名は "canvas" → "gui"（board / terminal / echoes / editor の配信バス）。
+    // doc 52 §6: channel 名は "canvas" → "gui"（board / terminal / conversation / editor の配信バス）。
     let channel = client
         .open_channel("gui")
         .await
@@ -1463,23 +1463,23 @@ async fn run_terminal_session(
 }
 
 // =============================================================================
-// Echoes gui (doc 32): per-lane echoes session — 構造化イベント購読 + prompt 投入
+// Conversation gui (doc 32): per-lane conversation session — 構造化イベント購読 + prompt 投入
 // =============================================================================
 //
 // terminal session と同型だが **demand-driven**: lane reconcile には結合させず、
-// EchoesChatPane を開いた lane で初回 submit された時に lazy spawn する (repo 側 host の
+// ChatPane を開いた lane で初回 submit された時に lazy spawn する (repo 側 host の
 // lazy モデルと一致)。subscribe → submit の順で走るため取りこぼしなし。
 
-/// Echoes session への command (WebView → repo)。
+/// Conversation session への command (WebView → repo)。
 #[derive(Debug)]
-enum EchoesCmd {
-    /// プロンプト投入。 canvas channel 上り request `echoes_submit` で repo に送る。
+enum ConversationCmd {
+    /// プロンプト投入。 canvas channel 上り request `conversation_submit` で repo に送る。
     /// session（doc 50 P2）: None = focused（repo 側 payload_session_key の後方互換）。
     Submit {
         prompt: String,
         session: Option<u32>,
     },
-    /// doc 35 PR1: PromptCard 回答。 canvas channel 上り request `echoes_respond` で repo に送る。
+    /// doc 35 PR1: PromptCard 回答。 canvas channel 上り request `conversation_respond` で repo に送る。
     Respond {
         request_id: String,
         answers: Option<serde_json::Value>,
@@ -1487,85 +1487,88 @@ enum EchoesCmd {
         message: Option<String>,
         session: Option<u32>,
     },
-    /// doc 35 §5 / PR2: 実行中 turn の中断。 canvas channel 上り request `echoes_interrupt` で repo へ。
+    /// doc 35 §5 / PR2: 実行中 turn の中断。 canvas channel 上り request `conversation_interrupt` で repo へ。
     Interrupt { session: Option<u32> },
-    /// doc 35 §2.5 / PR3: permission mode 切替。 canvas channel 上り request `echoes_set_permission_mode` で repo へ。
+    /// doc 35 §2.5 / PR3: permission mode 切替。 canvas channel 上り request `conversation_set_permission_mode` で repo へ。
     SetPermissionMode { mode: String, session: Option<u32> },
 }
 
-/// 1 lane の echoes session handle (event loop が保持)。map から remove で cmd_tx drop → 停止。
-struct LaneEchoes {
-    cmd_tx: tokio::sync::mpsc::UnboundedSender<EchoesCmd>,
+/// 1 lane の conversation session handle (event loop が保持)。map から remove で cmd_tx drop → 停止。
+struct LaneConversation {
+    cmd_tx: tokio::sync::mpsc::UnboundedSender<ConversationCmd>,
 }
 
-/// lane の echoes を Daemon "canvas" channel に乗せる per-lane session を spawn。
+/// lane の conversation を Daemon "canvas" channel に乗せる per-lane session を spawn。
 ///
-/// `repo/echoes/data/{lane_key}/event` を subscribe → repo host が emit する EchoesEvent を
-/// `AppEvent::EchoesEvent` で event loop に流し、 cmd (submit) は同 channel の上り request
-/// `echoes_submit` で repo に forward する (terminal session の gui 対応)。
-fn spawn_echoes_session(
+/// `repo/conversation/data/{lane_key}/event` を subscribe → repo host が emit する ConversationEvent を
+/// `AppEvent::ConversationEvent` で event loop に流し、 cmd (submit) は同 channel の上り request
+/// `conversation_submit` で repo に forward する (terminal session の gui 対応)。
+fn spawn_conversation_session(
     rt_handle: &tokio::runtime::Handle,
     proxy: EventLoopProxy<AppEvent>,
     conn: SharedDaemonConn,
     repo_path: String,
     lane_key: String,
-) -> LaneEchoes {
+) -> LaneConversation {
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-    rt_handle.spawn(echoes_session_loop(
+    rt_handle.spawn(conversation_session_loop(
         proxy, conn, repo_path, lane_key, cmd_rx,
     ));
-    LaneEchoes { cmd_tx }
+    LaneConversation { cmd_tx }
 }
 
-/// echoes session の購読 → 再購読を司る long-lived ループ (terminal_session_loop と同型)。
-async fn echoes_session_loop(
+/// conversation session の購読 → 再購読を司る long-lived ループ (terminal_session_loop と同型)。
+async fn conversation_session_loop(
     proxy: EventLoopProxy<AppEvent>,
     mut conn: SharedDaemonConn,
     repo_path: String,
     lane_key: String,
-    mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<EchoesCmd>,
+    mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<ConversationCmd>,
 ) {
     loop {
         let client = match conn.wait_client().await {
             Some(c) => c,
             None => return, // app 終了
         };
-        match run_echoes_session(&proxy, &repo_path, &lane_key, &client, &mut cmd_rx).await {
+        match run_conversation_session(&proxy, &repo_path, &lane_key, &client, &mut cmd_rx).await {
             Ok(SubscriptionOutcome::AppClosing) => return,
             Ok(SubscriptionOutcome::Disconnected) => {}
             Err(e) => {
-                tracing::warn!("echoes session error: lane={}: {}", lane_key, e);
+                tracing::warn!("conversation session error: lane={}: {}", lane_key, e);
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
     }
 }
 
-/// 1 回の echoes session: connect → `open_channel("canvas")` → subscribe(echoes pattern) →
-/// recv (EchoesEvent) / cmd (submit) の select ループ (run_terminal_session と同型)。
-async fn run_echoes_session(
+/// 1 回の conversation session: connect → `open_channel("canvas")` → subscribe(conversation pattern) →
+/// recv (ConversationEvent) / cmd (submit) の select ループ (run_terminal_session と同型)。
+async fn run_conversation_session(
     proxy: &EventLoopProxy<AppEvent>,
     repo_path: &str,
     lane_key: &str,
     client: &unison::ProtocolClient,
-    cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<EchoesCmd>,
+    cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<ConversationCmd>,
 ) -> Result<SubscriptionOutcome, String> {
     use unison::network::MessageType;
 
     let channel = client
         .open_channel("gui")
         .await
-        .map_err(|e| format!("open gui channel (echoes): {}", e))?;
-    let topic = format!("repo/echoes/data/{}/event", lane_key.replace('/', "~"));
+        .map_err(|e| format!("open gui channel (conversation): {}", e))?;
+    let topic = format!(
+        "repo/conversation/data/{}/event",
+        lane_key.replace('/', "~")
+    );
     channel
         .request::<serde_json::Value, serde_json::Value>(
             "subscribe",
             &serde_json::json!({ "repo_path": repo_path, "pattern": topic }),
         )
         .await
-        .map_err(|e| format!("echoes subscribe handshake: {}", e))?;
+        .map_err(|e| format!("conversation subscribe handshake: {}", e))?;
     tracing::info!(
-        "echoes session connected: lane={} topic={}",
+        "conversation session connected: lane={} topic={}",
         lane_key,
         topic
     );
@@ -1573,7 +1576,7 @@ async fn run_echoes_session(
     // subscribe 直後に engine 復活 + replay の demand を**毎回**明示的に撃つ。
     //
     // 背景: gui engine は demand-driven。本来は購読 0→1 を daemon の TopicRouter demand hook が
-    // 検知して repo に echoes_demand_start を reverse-route し ensure_chat_engine で復活させる経路が
+    // 検知して repo に conversation_demand_start を reverse-route し ensure_chat_engine で復活させる経路が
     // あるが、この edge は 2 つのレースで取りこぼされる:
     // (a) full restart 直後の「Daemon 復帰 / repo 再登録 / surface 再購読 / router 生成」の多者間レース
     //     （refire_active_demands の救済も順序に脆い）→ submit まで engine 不在（⚠/💤 固着）
@@ -1587,13 +1590,13 @@ async fn run_echoes_session(
     // (b) は初回 attach でこそ起きるため撃ち分けをやめた。
     if let Err(e) = channel
         .request::<serde_json::Value, serde_json::Value>(
-            "echoes_demand_start",
+            "conversation_demand_start",
             &serde_json::json!({ "lane": lane_key }),
         )
         .await
     {
         tracing::warn!(
-            "echoes attach demand_start 失敗（次 submit の self-heal に委ねる, lane={}）: {}",
+            "conversation attach demand_start 失敗（次 submit の self-heal に委ねる, lane={}）: {}",
             lane_key,
             e
         );
@@ -1613,7 +1616,7 @@ async fn run_echoes_session(
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                // RepoMessage::EchoesEvent { lane, session, event } の生 JSON。 event と
+                // RepoMessage::ConversationEvent { lane, session, event } の生 JSON。 event と
                 // session を抜いて lane_key 付きで JS に渡す (lane は subscription で確定済)。
                 // doc 38 Phase 2: session を落とさず通す（旧 sender / N=1 では default 1）。
                 if let Some(event) = payload.get("event") {
@@ -1622,7 +1625,7 @@ async fn run_echoes_session(
                         .and_then(|v| v.as_u64())
                         .unwrap_or(1) as u32;
                     if proxy
-                        .send_event(AppEvent::EchoesEvent {
+                        .send_event(AppEvent::ConversationEvent {
                             lane: lane_key.to_string(),
                             event: event.clone(),
                             session,
@@ -1635,19 +1638,19 @@ async fn run_echoes_session(
             }
             cmd = cmd_rx.recv() => {
                 match cmd {
-                    Some(EchoesCmd::Submit { prompt, session }) => {
+                    Some(ConversationCmd::Submit { prompt, session }) => {
                         // session: None は JSON null になり、repo 側 payload_session_key が
                         // focused に解決する（旧 UI / 旧 SP との後方互換）。
                         let _ = channel
                             .request::<serde_json::Value, serde_json::Value>(
-                                "echoes_submit",
+                                "conversation_submit",
                                 &serde_json::json!({
                                     "lane": lane_key, "prompt": prompt, "session": session,
                                 }),
                             )
                             .await;
                     }
-                    Some(EchoesCmd::Respond { request_id, answers, behavior, message, session }) => {
+                    Some(ConversationCmd::Respond { request_id, answers, behavior, message, session }) => {
                         // allow/deny のどちらの形も同 request に載せる（repo 側が behavior で分岐）。
                         let mut req = serde_json::json!({
                             "lane": lane_key, "request_id": request_id, "session": session,
@@ -1662,21 +1665,21 @@ async fn run_echoes_session(
                             req["message"] = serde_json::Value::String(m);
                         }
                         let _ = channel
-                            .request::<serde_json::Value, serde_json::Value>("echoes_respond", &req)
+                            .request::<serde_json::Value, serde_json::Value>("conversation_respond", &req)
                             .await;
                     }
-                    Some(EchoesCmd::Interrupt { session }) => {
+                    Some(ConversationCmd::Interrupt { session }) => {
                         let _ = channel
                             .request::<serde_json::Value, serde_json::Value>(
-                                "echoes_interrupt",
+                                "conversation_interrupt",
                                 &serde_json::json!({ "lane": lane_key, "session": session }),
                             )
                             .await;
                     }
-                    Some(EchoesCmd::SetPermissionMode { mode, session }) => {
+                    Some(ConversationCmd::SetPermissionMode { mode, session }) => {
                         let _ = channel
                             .request::<serde_json::Value, serde_json::Value>(
-                                "echoes_set_permission_mode",
+                                "conversation_set_permission_mode",
                                 &serde_json::json!({
                                     "lane": lane_key, "mode": mode, "session": session,
                                 }),
@@ -1912,7 +1915,7 @@ fn forget_roster_push(last: &mut std::collections::HashMap<String, String>, addr
     last.remove(addr);
 }
 
-/// roster を webview へ渡す（push envelope `console:session_list` → `vp:echoes-sessions`）。
+/// roster を webview へ渡す（push envelope `console:session_list` → `vp:conversation-sessions`）。
 ///
 /// doc 53 §11: 呼び手は LanesLoaded の 1 箇所だけ（旧実装は動詞ごとの再取得 7 箇所から
 /// 撃っていた — 供給路が 2 本ある構造そのものだった）。
@@ -1922,12 +1925,12 @@ fn push_session_list(webview: &wry::WebView, lane: &str, payload: &serde_json::V
 
 /// doc 53 §11: lane snapshot の roster を webview の session 一覧 payload に写す（純関数）。
 ///
-/// **roster の供給はこの 1 本**。旧実装は `echoes_session_list` の ask 結果を流していたが、
+/// **roster の供給はこの 1 本**。旧実装は `conversation_session_list` の ask 結果を流していたが、
 /// その fetch は「lane を開いた時 / GUI 自身が動詞を撃った後 / boot 窓の再送」でしか走らず、
 /// **CLI・MCP 由来の session 変化が pane grid に出なかった**（doc 53 §11.1）。snapshot は
 /// server が動詞の末尾で push する（`emit_lane_update`）ので、誰が起こした変化でも届く。
 ///
-/// payload の形は webview 契約（`console.ts` の `EchoesSessionListPayload`）そのまま — 供給路を差し替える
+/// payload の形は webview 契約（`console.ts` の `ConversationSessionListPayload`）そのまま — 供給路を差し替える
 /// だけで消費側（tab strip / pane grid / 名札）は無改造。`root` / `focused` は entry の
 /// bool に展開する（webview は entry ごとの flag で読む）。
 fn session_list_payload(
@@ -2117,7 +2120,7 @@ mod lane_js {
     /// Console 面へ gui の構造化イベントを渡す。
     ///
     /// ⚠️ これは制御面ではなく **stream**。取りこぼしは受け側の replay 要求
-    /// （`echoes:demand_start`）が埋める設計で、押し込みの保留箱には頼らない。
+    /// （`conversation:demand_start`）が埋める設計で、押し込みの保留箱には頼らない。
     pub fn console_event(main_view: &WebView, lane: &str, event: serde_json::Value, session: u32) {
         push(
             main_view,
@@ -2391,7 +2394,7 @@ async fn collect_activity(
 /// Phase 5-A 拡張: Lane と Stand が **mutually exclusive** な active 軸として扱われる。
 /// 優先順位:
 ///   1. `active_stand` Some → kind = "board" / "runner" / "devices"
-///   2. `active_lane_address` Some → kind = "terminal"、 pane_id = Lane address
+///   2. `active_lane_address` Some → kind = "lane"、 pane_id = Lane address
 ///   3. 両方 None → kind=None で empty placeholder
 ///
 /// Lane address ごとの terminal 接続は per-Lane xterm.js (Phase 2.5) が JS-side で管理。
@@ -2427,7 +2430,7 @@ fn lane_is_chat(state: &SidebarState, address: &str) -> bool {
 /// lane に **chat session（mode=chat）が 1 つでもある**か（doc 50 §4.6 A6）。
 ///
 /// [`lane_is_chat`]（= root の mode）との違いが効くのは「root は tui のまま、非 root だけ
-/// chat」の構成。echoes topic の購読は **lane 単位**（session は message field で運ぶ）なので、
+/// chat」の構成。conversation topic の購読は **lane 単位**（session は message field で運ぶ）なので、
 /// 購読を張るかどうかは root の mode ではなく「chat の住人が居るか」で決めないと、その
 /// session の event が誰にも届かない（pane は並ぶのに無言、の形）。
 ///
@@ -2447,7 +2450,7 @@ fn lane_has_chat_session(state: &SidebarState, address: &str) -> bool {
     }
 }
 
-/// doc 38 §4.2: `echoes_session_list` payload（`{focused, sessions:[{key, agent, focused, ...}]}`）
+/// doc 38 §4.2: `conversation_session_list` payload（`{focused, sessions:[{key, agent, focused, ...}]}`）
 /// から focused session の agent を引く。New Session の chat 分岐で「現 focused と同じ engine の
 /// 新 Draft を作る」ために使う。`focused` フラグ優先 → `focused` key 一致 → 先頭 の順で解決し、
 /// 取れなければ None（backend が lane 既定 agent を使うため送らなくてよい）。純粋 = テスト可能。
@@ -2607,17 +2610,17 @@ mod focused_session_stand_tests {
     }
 }
 
-/// gui: active になった chat lane を echoes topic に attach する（`terminal_sessions` の対）。
+/// gui: active になった chat lane を conversation topic に attach する（`terminal_sessions` の対）。
 ///
 /// 購読 0→1 が daemon の demand hook を撃ち、repo が **transcript replay**（過去会話）を返す。
-/// これが無いと echoes topic は非 retained なので「submit するまで ChatView が空」になる
+/// これが無いと conversation topic は非 retained なので「submit するまで ChatView が空」になる
 /// （app 再起動で会話が消えたように見える）。 idempotent — 既に session があれば no-op。
 ///
 /// tui lane では何もしない（tui の履歴は PtySlot の terminal replay が担う）。
-fn ensure_echoes_attach(
+fn ensure_conversation_attach(
     address: &str,
     sidebar_state: &SidebarState,
-    echoes_sessions: &mut std::collections::HashMap<String, LaneEchoes>,
+    conversation_sessions: &mut std::collections::HashMap<String, LaneConversation>,
     rt_handle: &tokio::runtime::Handle,
     proxy: &EventLoopProxy<AppEvent>,
     daemon_conn: &SharedDaemonConn,
@@ -2625,21 +2628,22 @@ fn ensure_echoes_attach(
     // doc 50 §4.6 A6: gate は「lane に chat session が居るか」（root の mode ではない）。
     // 購読は lane 単位で全 session の event を運ぶので、root=tui + 非 root=chat の構成でも
     // 張る必要がある（張らないと その chat pane が無言になる = xterm 側と同型の穴）。
-    if !lane_has_chat_session(sidebar_state, address) || echoes_sessions.contains_key(address) {
+    if !lane_has_chat_session(sidebar_state, address) || conversation_sessions.contains_key(address)
+    {
         return;
     }
     let Some(repo_path) = resolve_repo_path_for_lane(sidebar_state, address) else {
         return; // repo 未解決 (LanesLoaded 未着) — 後続の LanesLoaded で再評価される
     };
-    tracing::info!("echoes attach (chat lane): {}", address);
-    let session = spawn_echoes_session(
+    tracing::info!("conversation attach (chat lane): {}", address);
+    let session = spawn_conversation_session(
         rt_handle,
         proxy.clone(),
         daemon_conn.clone(),
         repo_path,
         address.to_string(),
     );
-    echoes_sessions.insert(address.to_string(), session);
+    conversation_sessions.insert(address.to_string(), session);
 }
 
 fn push_active_view(main_view: &WebView, state: &SidebarState) {
@@ -2649,7 +2653,7 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             pane_id: None,
             preview_url: None,
             chat: false,
-            // 非 lane pane (Agent) は Echoes ヘッダの lane 情報を持たない。
+            // 非 lane pane (Agent) は Conversation ヘッダの lane 情報を持たない。
             cwd: None,
             branch: None,
             lane_name: None,
@@ -2657,7 +2661,7 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             agent: None,
         }
     } else if let Some(addr) = state.active_lane_address.as_deref() {
-        // Echoes 共通ヘッダ用: active lane の LaneInfo から cwd / branch を引く。cwd は
+        // Conversation 共通ヘッダ用: active lane の LaneInfo から cwd / branch を引く。cwd は
         // address (pane_id) から導出できない唯一の lane 情報なので、setActivePane に相乗り
         // させて運ぶ (新しい配信チャネルは増やさない)。branch は performer のみ (安価に取れる時)。
         let lane = state
@@ -2666,7 +2670,7 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             .flatten()
             .find(|l| l.address.key() == addr);
         ActivePaneInfo {
-            kind: Some("terminal"),
+            kind: Some("lane"),
             pane_id: Some(addr),
             preview_url: None,
             // doc 33: chat lane は xterm を持たない (ChatView が内容)。 これを JS に伝えないと
@@ -2707,7 +2711,7 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
     }
 }
 
-/// LanesLoaded の snapshot 差し替えで、active lane の Echoes ヘッダに載る field が変わったか。
+/// LanesLoaded の snapshot 差し替えで、active lane の Conversation ヘッダに載る field が変わったか。
 ///
 /// `push_active_view` 再発行の gate（供給 push 根治）。LanesLoaded は loop event で頻発する
 /// ため毎回撃つと setActivePane が noise になる — header が実際に読む field（session chip /
@@ -2808,10 +2812,10 @@ fn activate_lane(
 }
 
 /// オンデマンド respawn: active にしようとする lane が Dead (pid:null) なら repo に restart_lane を
-/// 発火して蘇らせる。 lane (conductor / performer) の Echoes プロセスが死ぬと repo の lifecycle monitor は
+/// 発火して蘇らせる。 lane (conductor / performer) の Conversation プロセスが死ぬと repo の lifecycle monitor は
 /// Dead を検知するだけで auto-respawn しない (server.rs の設計判断) ため、 user が lane を
 /// 開いた時点でオンデマンドに復活させる。 これが無いと「一度死んだ lane は手動 restart するまで
-/// Echoes が出ない」状態になる (= 全 repo で console 非表示の真因)。
+/// Conversation が出ない」状態になる (= 全 repo で console 非表示の真因)。
 ///
 /// dedup: `triggered` set で同一 lane の連打を防ぐ (LanesLoaded は loop event で頻発するため必須)。
 /// 解除タイミングは 2 つ: (a) lane が Running に戻った時 caller が `triggered.remove` する、
@@ -3091,7 +3095,7 @@ fn push_sidebar_state(sidebar: &WebView, state: &SidebarState) {
 /// active lane（今まさに見ている lane）は即読扱いで skip する（見ている lane に dot を出さない）。
 /// これは通知の**単一 sink** で、2 つのソースがここに合流する。tui は OSC 99/9/777
 /// notification（`AppEvent::OscNotification`、xterm が parse）。gui は
-/// `EchoesEvent::turn_completed`（headless stream-json は Notification hook を発火しないため、
+/// `ConversationEvent::turn_completed`（headless stream-json は Notification hook を発火しないため、
 /// stream `result` 由来の turn_completed が「Claude が返し終えた＝入力待ち」の唯一のシグナル。
 /// memory echoes-act2-notification-signal 参照）。
 /// `source` はログ用ラベル（`"osc:notification"` / `"gui:turn_completed"` 等）。
@@ -3918,9 +3922,9 @@ pub fn run() -> anyhow::Result<()> {
     // LanesLoaded で live lane に対し start、 消えた lane / app 終了で stop (= map から remove)。
     let mut terminal_sessions: std::collections::HashMap<String, LaneTerminal> =
         std::collections::HashMap::new();
-    // Echoes gui (doc 32): per-lane echoes session registry (lane key → LaneEchoes)。
-    // terminal と違い demand-driven: EchoesSubmit の初回で lazy spawn (reconcile 非結合)。
-    let mut echoes_sessions: std::collections::HashMap<String, LaneEchoes> =
+    // Conversation gui (doc 32): per-lane conversation session registry (lane key → LaneConversation)。
+    // terminal と違い demand-driven: ConversationSubmit の初回で lazy spawn (reconcile 非結合)。
+    let mut conversation_sessions: std::collections::HashMap<String, LaneConversation> =
         std::collections::HashMap::new();
     // doc 53 §11: lane ごとに **最後に webview へ渡した roster** の指紋。定期 snapshot で
     // 同じ roster を撃ち直して pane を作り直さないための変化検知（`header_lane_fields_changed`
@@ -4393,9 +4397,9 @@ pub fn run() -> anyhow::Result<()> {
                     // terminal S4: 消えた lane の terminal session を停止 (= map から remove で
                     // cmd_tx drop → canvas channel close → Daemon demand stop → repo pump stop)。
                     terminal_sessions.remove(addr);
-                    // echoes session も対で停止（terminal_sessions と同寿命）。remove が無いと
+                    // conversation session も対で停止（terminal_sessions と同寿命）。remove が無いと
                     // 削除済 lane の購読 task が demand を立てたまま永久残留する。
-                    echoes_sessions.remove(addr);
+                    conversation_sessions.remove(addr);
                     // VP-147 PR-P2-3 Moody Blues fix #1: lane delete 検出時に lane_inboxes
                     // も即時 cleanup (= 5s polling tick 待たずに stale state 解消)。
                     sidebar_state.lane_inboxes.remove(addr);
@@ -4403,7 +4407,7 @@ pub fn run() -> anyhow::Result<()> {
                 // 供給 push 根治（session chip 凍結、2026-07-17）: この snapshot で active lane の
                 // header 相当 field（engine_session_id 等）が変わったかを差し替え前に判定して
                 // おく。従来は cache 更新のみで setActivePane を撃ち直さず、lane を選び直すまで
-                // Echoes ヘッダが旧値で凍結した。LanesLoaded は高頻度 loop event なので、
+                // Conversation ヘッダが旧値で凍結した。LanesLoaded は高頻度 loop event なので、
                 // 変化時のみ（下の push）に絞る。
                 let active_header_refresh = sidebar_state
                     .active_lane_address
@@ -4481,24 +4485,24 @@ pub fn run() -> anyhow::Result<()> {
                     push_sidebar_state(&webview, &sidebar_state);
                 }
                 // 供給 push 根治: active lane の header field が変わった snapshot でだけ
-                // setActivePane を再発行（webview の EchoesHeader ctx 層が新値に追従する）。
+                // setActivePane を再発行（webview の LaneHeader ctx 層が新値に追従する）。
                 if active_header_refresh {
                     push_active_view(&webview, &sidebar_state);
                 }
-                // gui: active chat lane を echoes topic に attach（→ demand → transcript replay）。
+                // gui: active chat lane を conversation topic に attach（→ demand → transcript replay）。
                 // LanesLoaded は lane snapshot 到着のたび走るので、 起動直後の session 復元
                 // (activate は LanesLoaded 前に済んでいる場合がある) もここで確実に拾える。
                 if let Some(addr) = sidebar_state.active_lane_address.clone() {
-                    ensure_echoes_attach(
+                    ensure_conversation_attach(
                         &addr,
                         &sidebar_state,
-                        &mut echoes_sessions,
+                        &mut conversation_sessions,
                         &rt_handle,
                         &async_action_proxy,
                         &daemon_conn,
                     );
                 }
-                // doc 53 §11: **roster の供給点はここ 1 本**（旧 `echoes_session_list` fetch は
+                // doc 53 §11: **roster の供給点はここ 1 本**（旧 `conversation_session_list` fetch は
                 // 退役）。snapshot は server が動詞の末尾で push する（`emit_lane_update`）ので、
                 // GUI 自身が起こした変化も CLI / MCP 由来の変化も同じ道で届く。
                 //
@@ -4800,11 +4804,11 @@ pub fn run() -> anyhow::Result<()> {
                                 &rt_handle,
                                 &respawn_proxy,
                             );
-                            // gui: chat lane なら echoes topic に attach（→ transcript replay）。
-                            ensure_echoes_attach(
+                            // gui: chat lane なら conversation topic に attach（→ transcript replay）。
+                            ensure_conversation_attach(
                                 &address,
                                 &sidebar_state,
-                                &mut echoes_sessions,
+                                &mut conversation_sessions,
                                 &rt_handle,
                                 &async_action_proxy,
                                 &daemon_conn,
@@ -4889,8 +4893,8 @@ pub fn run() -> anyhow::Result<()> {
                     let _ = term.cmd_tx.send(TermCmd::Resize(session, cols, rows));
                 }
             }
-            // Echoes gui (doc 32): repo から受信した構造化イベントを当該 lane の Console pane に渡す。
-            Event::UserEvent(AppEvent::EchoesEvent {
+            // Conversation gui (doc 32): repo から受信した構造化イベントを当該 lane の Console pane に渡す。
+            Event::UserEvent(AppEvent::ConversationEvent {
                 lane,
                 event,
                 session,
@@ -4919,14 +4923,14 @@ pub fn run() -> anyhow::Result<()> {
                     );
                 }
             }
-            // Echoes gui: EchoesChatPane の submit → 当該 lane の echoes session に渡す。
+            // Conversation gui: ChatPane の submit → 当該 lane の conversation session に渡す。
             // demand-driven: 未起動なら lazy spawn (subscribe → submit の順で取りこぼしなし)。
-            Event::UserEvent(AppEvent::EchoesSubmit { lane, prompt, session: chat_session }) => {
-                let session = echoes_sessions.entry(lane.clone()).or_insert_with(|| {
-                    // repo_path は active repo から解決 (echoes pane = active lane 前提)。
+            Event::UserEvent(AppEvent::ConversationSubmit { lane, prompt, session: chat_session }) => {
+                let session = conversation_sessions.entry(lane.clone()).or_insert_with(|| {
+                    // repo_path は active repo から解決 (conversation pane = active lane 前提)。
                     let repo_path =
                         resolve_active_repo_path(&sidebar_state).unwrap_or_default();
-                    spawn_echoes_session(
+                    spawn_conversation_session(
                         &rt_handle,
                         async_action_proxy.clone(),
                         daemon_conn.clone(),
@@ -4936,11 +4940,11 @@ pub fn run() -> anyhow::Result<()> {
                 });
                 let _ = session
                     .cmd_tx
-                    .send(EchoesCmd::Submit { prompt, session: chat_session });
+                    .send(ConversationCmd::Submit { prompt, session: chat_session });
             }
-            // Echoes gui HITL (doc 35 PR1): PromptCard の回答 → 当該 lane の echoes session へ。
+            // Conversation gui HITL (doc 35 PR1): PromptCard の回答 → 当該 lane の conversation session へ。
             // 質問は submit 済み engine 由来なので session は既存のはずだが、防御的に lazy spawn。
-            Event::UserEvent(AppEvent::EchoesRespond {
+            Event::UserEvent(AppEvent::ConversationRespond {
                 lane,
                 request_id,
                 answers,
@@ -4948,10 +4952,10 @@ pub fn run() -> anyhow::Result<()> {
                 message,
                 session: chat_session,
             }) => {
-                let session = echoes_sessions.entry(lane.clone()).or_insert_with(|| {
+                let session = conversation_sessions.entry(lane.clone()).or_insert_with(|| {
                     let repo_path =
                         resolve_active_repo_path(&sidebar_state).unwrap_or_default();
-                    spawn_echoes_session(
+                    spawn_conversation_session(
                         &rt_handle,
                         async_action_proxy.clone(),
                         daemon_conn.clone(),
@@ -4959,7 +4963,7 @@ pub fn run() -> anyhow::Result<()> {
                         lane.clone(),
                     )
                 });
-                let _ = session.cmd_tx.send(EchoesCmd::Respond {
+                let _ = session.cmd_tx.send(ConversationCmd::Respond {
                     request_id,
                     answers,
                     behavior,
@@ -4967,29 +4971,29 @@ pub fn run() -> anyhow::Result<()> {
                     session: chat_session,
                 });
             }
-            // doc 35 §5 / PR2: 実行中 turn の中断を当該 lane の echoes session に渡す。
+            // doc 35 §5 / PR2: 実行中 turn の中断を当該 lane の conversation session に渡す。
             // interrupt は走行中 turn 前提なので session が居るはず（lazy spawn しない）。
-            Event::UserEvent(AppEvent::EchoesInterrupt { lane, session: chat_session }) => {
-                if let Some(session) = echoes_sessions.get(&lane) {
+            Event::UserEvent(AppEvent::ConversationInterrupt { lane, session: chat_session }) => {
+                if let Some(session) = conversation_sessions.get(&lane) {
                     let _ = session
                         .cmd_tx
-                        .send(EchoesCmd::Interrupt { session: chat_session });
+                        .send(ConversationCmd::Interrupt { session: chat_session });
                 } else {
-                    tracing::warn!("echoes:interrupt skip — session 未起動 (lane={lane})");
+                    tracing::warn!("conversation:interrupt skip — session 未起動 (lane={lane})");
                 }
             }
-            // doc 35 §2.5 / PR3: permission mode 切替を当該 lane の echoes session に渡す。
-            Event::UserEvent(AppEvent::EchoesSetPermissionMode {
+            // doc 35 §2.5 / PR3: permission mode 切替を当該 lane の conversation session に渡す。
+            Event::UserEvent(AppEvent::ConversationSetPermissionMode {
                 lane,
                 mode,
                 session: chat_session,
             }) => {
-                if let Some(session) = echoes_sessions.get(&lane) {
+                if let Some(session) = conversation_sessions.get(&lane) {
                     let _ = session
                         .cmd_tx
-                        .send(EchoesCmd::SetPermissionMode { mode, session: chat_session });
+                        .send(ConversationCmd::SetPermissionMode { mode, session: chat_session });
                 } else {
-                    tracing::warn!("echoes:set_permission_mode skip — session 未起動 (lane={lane})");
+                    tracing::warn!("conversation:set_permission_mode skip — session 未起動 (lane={lane})");
                 }
             }
             // doc 50 §4.6 A6: 名札 kind badge からの Mode 切替（session 明示）。repo の
@@ -5088,12 +5092,12 @@ pub fn run() -> anyhow::Result<()> {
                 } else {
                     // →chat: その session の xterm を畳む（PtySlot は repo 側で drop 済）。
                     lane_js::remove_lane_session(&webview, &lane, session);
-                    // tui→II の対称: echoes topic への購読を確保する（初回 chat 化で張られる）。
+                    // tui→II の対称: conversation topic への購読を確保する（初回 chat 化で張られる）。
                     // 上の手元 snapshot 反映が先に要る（attach の gate が mode を読む）。
-                    ensure_echoes_attach(
+                    ensure_conversation_attach(
                         &lane,
                         &sidebar_state,
-                        &mut echoes_sessions,
+                        &mut conversation_sessions,
                         &rt_handle,
                         &async_action_proxy,
                         &daemon_conn,
@@ -5101,15 +5105,15 @@ pub fn run() -> anyhow::Result<()> {
                     // **Reborn ⊃ replay の実体**（doc 50 §4.6 ① / §4.7 逸脱②）: 切替のたび
                     // transcript を読み直す。
                     //
-                    // ⚠️ `ensure_echoes_attach` に任せてはいけない — あれは購読ハンドル
-                    // （`echoes_sessions`、**lane 単位**）が既にあれば no-op で、購読は lane 削除まで
+                    // ⚠️ `ensure_conversation_attach` に任せてはいけない — あれは購読ハンドル
+                    // （`conversation_sessions`、**lane 単位**）が既にあれば no-op で、購読は lane 削除まで
                     // 残る。つまり chat→tui→chat の 2 回目以降は attach が発火せず、**tui で
                     // 進めた分が chat に出ない**（A6 が根治すると宣言した当の症状が別の理由で再現する。
                     // team-b review 2026-07-25 の指摘で発覚）。購読を落として張り直す案は採らない —
                     // 購読は lane 単位で**他の chat session の live stream も運んでいる**ため、
                     // 落とすと巻き添えになる。gate を経由しない明示 demand が正しい形。
                     //
-                    // demand は session を明示する（replay は session 単位 — `echoes_demand_start`
+                    // demand は session を明示する（replay は session 単位 — `conversation_demand_start`
                     // の None は focused に解決されるので、非 focused な pane を切り替えた時に
                     // 別会話を読んでしまう）。
                     if let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) {
@@ -5119,13 +5123,13 @@ pub fn run() -> anyhow::Result<()> {
                             if let Err(e) = daemon_repo_request(
                                 crate::client::default_daemon_port(),
                                 &path,
-                                "echoes_demand_start",
+                                "conversation_demand_start",
                                 serde_json::json!({ "lane": lane_for_log, "session": session }),
                             )
                             .await
                             {
                                 tracing::warn!(
-                                    "echoes_demand_start（mode 切替後）失敗 (session={session}): {e}"
+                                    "conversation_demand_start（mode 切替後）失敗 (session={session}): {e}"
                                 );
                             }
                             let _ = &proxy; // 応答は topic 経由で届く（ここでは event を投げない）
@@ -5137,7 +5141,7 @@ pub fn run() -> anyhow::Result<()> {
             // 新セッション開始（✨ New ボタン）。doc 39 §4「New は今いる Mode に出す」で分岐する:
             //  - chat lane（gui）: 「新 Draft session を作って focus」。旧会話はタブに残る
             //    （タブモデルの自然形 = 前回状態キープの延長）。
-            //  - tui lane（tui）: echoes_session_new_root = 新 session を作って root を向け、slot を
+            //  - tui lane（tui）: conversation_session_new_root = 新 session を作って root を向け、slot を
             //    素の engine で張り替える（非破壊 — 旧 root の会話はタブに残存）。旧 fresh restart
             //    （全 session 破棄）は sidebar の Reset lane に退避した。
             Event::UserEvent(AppEvent::ConsoleNewSession { lane, engine, mode }) => {
@@ -5167,7 +5171,7 @@ pub fn run() -> anyhow::Result<()> {
                             None => match daemon_repo_request(
                                 port,
                                 &path,
-                                "echoes_session_list",
+                                "conversation_session_list",
                                 serde_json::json!({ "lane": &lane }),
                             )
                             .await
@@ -5175,7 +5179,7 @@ pub fn run() -> anyhow::Result<()> {
                                 Ok(payload) => focused_session_stand(&payload),
                                 Err(e) => {
                                     tracing::warn!(
-                                        "echoes_session_list（new_session 前）失敗 (lane={lane}): {e}"
+                                        "conversation_session_list（new_session 前）失敗 (lane={lane}): {e}"
                                     );
                                     None
                                 }
@@ -5187,7 +5191,7 @@ pub fn run() -> anyhow::Result<()> {
                             create["agent"] = serde_json::Value::String(s.clone());
                         }
                         if let Err(e) =
-                            daemon_repo_request(port, &path, "echoes_session_create", create).await
+                            daemon_repo_request(port, &path, "conversation_session_create", create).await
                         {
                             tracing::warn!("console:new_session（chat）session_create 失敗 (lane={lane}): {e}");
                             return;
@@ -5207,19 +5211,19 @@ pub fn run() -> anyhow::Result<()> {
                         if let Err(e) = daemon_repo_request(
                             port,
                             &path,
-                            "echoes_demand_start",
+                            "conversation_demand_start",
                             serde_json::json!({ "lane": &lane }),
                         )
                         .await
                         {
-                            tracing::warn!("echoes_demand_start（new_session 後）失敗 (lane={lane}): {e}");
+                            tracing::warn!("conversation_demand_start（new_session 後）失敗 (lane={lane}): {e}");
                         }
                     });
                 } else {
                     // tui（tui）: doc 50 §4.6 A6 ③ — chat 分岐と**対称**に「新 session を作って
                     // 台に並べる」だけ。新 term pane が tiling に入場し、既存 pane は無傷。
                     //
-                    // ⚠️ 旧実装は `echoes_session_new_root`（新 session + **root 張り替え** + slot
+                    // ⚠️ 旧実装は `conversation_session_new_root`（新 session + **root 張り替え** + slot
                     // bare respawn）だった。あれは「xterm が lane に 1 枚」制約下では正しい適応
                     // （新しい console を見せる唯一の方法が root の付け替えだった）が、A6 で制約が
                     // 外れた今は「勝手に root を動かす副作用」に意味が反転する。root の付け替えは
@@ -5245,9 +5249,9 @@ pub fn run() -> anyhow::Result<()> {
                 }
             }
             // doc 39 P3: Root 切替 picker — 既存 session へ root を向け替え（slot = Resume respawn）。
-            // 後続は new_root（ConsoleSessionRenewed = clear）と違い echoes_demand_start:
+            // 後続は new_root（ConsoleSessionRenewed = clear）と違い conversation_demand_start:
             // 対象 session には既存の会話があるため、clear でなく transcript replay で追従させる
-            //（echoes_session_focus chain と同じ規律）。
+            //（conversation_session_focus chain と同じ規律）。
             Event::UserEvent(AppEvent::ConsoleSwitchRoot { lane, session }) => {
                 let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
                     tracing::warn!(
@@ -5258,7 +5262,7 @@ pub fn run() -> anyhow::Result<()> {
                 let port = crate::client::default_daemon_port();
                 rt_handle.spawn(async move {
                     let payload = serde_json::json!({ "lane": &lane, "session": session });
-                    match daemon_repo_request(port, &path, "echoes_session_switch_root", payload)
+                    match daemon_repo_request(port, &path, "conversation_session_switch_root", payload)
                         .await
                     {
                         Ok(_) => {
@@ -5272,13 +5276,13 @@ pub fn run() -> anyhow::Result<()> {
                             if let Err(e) = daemon_repo_request(
                                 port,
                                 &path,
-                                "echoes_demand_start",
+                                "conversation_demand_start",
                                 serde_json::json!({ "lane": &lane }),
                             )
                             .await
                             {
                                 tracing::warn!(
-                                    "echoes_demand_start（switch_root 後）失敗 (lane={lane}): {e}"
+                                    "conversation_demand_start（switch_root 後）失敗 (lane={lane}): {e}"
                                 );
                             }
                         }
@@ -5310,15 +5314,15 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 });
             }
-            // doc 53 §11: 旧 `EchoesSessionsFetch`（webview → ask `echoes_session_list`）は退役。
+            // doc 53 §11: 旧 `ConversationSessionsFetch`（webview → ask `conversation_session_list`）は退役。
             // roster の供給は lanes snapshot 1 本（LanesLoaded の push）— fetch は GUI 自身の
             // 動詞でしか撃たれず、CLI / MCP 由来の session 変化が pane に出なかった。
             //
             // doc 38 Phase 2: 「+」からの新 session 作成。focus は送らない = backend 既定 true。
             // 作成後に一覧を取り直して tab strip に新 session を即反映（1 task で直列）。
-            Event::UserEvent(AppEvent::EchoesSessionCreate { lane, agent }) => {
+            Event::UserEvent(AppEvent::ConversationSessionCreate { lane, agent }) => {
                 let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
-                    tracing::warn!("echoes:session_create skip — lane の repo 解決失敗 (lane={lane})");
+                    tracing::warn!("conversation:session_create skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 rt_handle.spawn(async move {
@@ -5331,79 +5335,79 @@ pub fn run() -> anyhow::Result<()> {
                     if let Err(e) = daemon_repo_request(
                         crate::client::default_daemon_port(),
                         &path,
-                        "echoes_session_create",
+                        "conversation_session_create",
                         create,
                     )
                     .await
                     {
-                        tracing::warn!("echoes_session_create 失敗 (lane={lane}): {e}");
+                        tracing::warn!("conversation_session_create 失敗 (lane={lane}): {e}");
                     }
                 });
             }
             // doc 38 Phase 2: session tab click による focused 切替。focus → 一覧再取得 →
             // demand_start（新 focused の transcript replay 発火）の順で直列に。
-            Event::UserEvent(AppEvent::EchoesDemandStart { lane }) => {
+            Event::UserEvent(AppEvent::ConversationDemandStart { lane }) => {
                 // 消費者主導の replay demand（2026-07-24）: webview が renderer を張った直後に
-                // 届く。attach 時 demand（run_echoes_session）の boot 窓取りこぼしを埋める第 2 弾
+                // 届く。attach 時 demand（run_conversation_session）の boot 窓取りこぼしを埋める第 2 弾
                 //（冪等 — ensure_chat_engine は既起動 no-op / replay は clear-prefix で収束）。
                 let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
-                    tracing::warn!("echoes:demand_start skip — lane の repo 解決失敗 (lane={lane})");
+                    tracing::warn!("conversation:demand_start skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 rt_handle.spawn(async move {
                     if let Err(e) = daemon_repo_request(
                         crate::client::default_daemon_port(),
                         &path,
-                        "echoes_demand_start",
+                        "conversation_demand_start",
                         serde_json::json!({ "lane": &lane }),
                     )
                     .await
                     {
-                        tracing::warn!("echoes_demand_start（webview 発）失敗 (lane={lane}): {e}");
+                        tracing::warn!("conversation_demand_start（webview 発）失敗 (lane={lane}): {e}");
                     }
                 });
             }
-            Event::UserEvent(AppEvent::EchoesSessionFocus { lane, session }) => {
+            Event::UserEvent(AppEvent::ConversationSessionFocus { lane, session }) => {
                 let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
-                    tracing::warn!("echoes:session_focus skip — lane の repo 解決失敗 (lane={lane})");
+                    tracing::warn!("conversation:session_focus skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 rt_handle.spawn(async move {
                     if let Err(e) = daemon_repo_request(
                         crate::client::default_daemon_port(),
                         &path,
-                        "echoes_session_focus",
+                        "conversation_session_focus",
                         serde_json::json!({ "lane": &lane, "session": session }),
                     )
                     .await
                     {
                         tracing::warn!(
-                            "echoes_session_focus 失敗 (lane={lane} session={session}): {e}"
+                            "conversation_session_focus 失敗 (lane={lane} session={session}): {e}"
                         );
                         return;
                     }
                     // tab strip の focused 確定は snapshot が運ぶ（doc 53 §11 — server の
-                    // `echoes_session_focus` が末尾で `emit_lane_update` を撃つ）。
+                    // `conversation_session_focus` が末尾で `emit_lane_update` を撃つ）。
                     // 新 focused の transcript replay を発火（session 省略 = focused に解決）。
                     // 応答は使わない（replay は topic 経由で ReplayStart として届く）。エラーは warn のみ。
                     if let Err(e) = daemon_repo_request(
                         crate::client::default_daemon_port(),
                         &path,
-                        "echoes_demand_start",
+                        "conversation_demand_start",
                         serde_json::json!({ "lane": &lane }),
                     )
                     .await
                     {
-                        tracing::warn!("echoes_demand_start（focus 後）失敗 (lane={lane}): {e}");
+                        tracing::warn!("conversation_demand_start（focus 後）失敗 (lane={lane}): {e}");
                     }
                 });
             }
             // doc 38 Phase 3: session tab の × による close。remove → 一覧再取得 →
             // demand_start（除去後の新 focused の会話を replay）の順で直列に（focus 切替と同型）。
             // 最後の 1 本は backend が Err で拒否する（GUI も × は 2 本以上でしか出さない = 多重防御）。
-            Event::UserEvent(AppEvent::EchoesSessionRemove { lane, session }) => {
+            Event::UserEvent(AppEvent::ConversationSessionRemove { lane, session }) => {
                 let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
-                    tracing::warn!("echoes:session_remove skip — lane の repo 解決失敗 (lane={lane})");
+                    tracing::warn!("conversation:session_remove skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 let port = crate::client::default_daemon_port();
@@ -5411,14 +5415,14 @@ pub fn run() -> anyhow::Result<()> {
                     if let Err(e) = daemon_repo_request(
                         port,
                         &path,
-                        "echoes_session_remove",
+                        "conversation_session_remove",
                         serde_json::json!({ "lane": &lane, "session": session }),
                     )
                     .await
                     {
                         // 最後の 1 本の拒否含む（Err）— 一覧はそのまま（GUI は変化なし）。
                         tracing::warn!(
-                            "echoes_session_remove 失敗 (lane={lane} session={session}): {e}"
+                            "conversation_session_remove 失敗 (lane={lane} session={session}): {e}"
                         );
                         return;
                     }
@@ -5427,20 +5431,20 @@ pub fn run() -> anyhow::Result<()> {
                     if let Err(e) = daemon_repo_request(
                         port,
                         &path,
-                        "echoes_demand_start",
+                        "conversation_demand_start",
                         serde_json::json!({ "lane": &lane }),
                     )
                     .await
                     {
-                        tracing::warn!("echoes_demand_start（remove 後）失敗 (lane={lane}): {e}");
+                        tracing::warn!("conversation_demand_start（remove 後）失敗 (lane={lane}): {e}");
                     }
                 });
             }
             // doc 38 Phase 2: 「+」menu の engine 選択肢を埋める agents 一覧取得。
             // 既存 + Add Performer と同じ agents_list を再利用（doc 38 §3 の作成 UX）。
-            Event::UserEvent(AppEvent::EchoesAgentsFetch { lane, req }) => {
+            Event::UserEvent(AppEvent::AgentsFetch { lane, req }) => {
                 let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
-                    tracing::warn!("echoes:stands_fetch skip — lane の repo 解決失敗 (lane={lane})");
+                    tracing::warn!("conversation:stands_fetch skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 let proxy = async_action_proxy.clone();
@@ -5456,17 +5460,17 @@ pub fn run() -> anyhow::Result<()> {
                         Ok(payload) => {
                             // doc 47 §6: 要求元の相関 id をそのまま応答へ載せ替える。
                             let _ =
-                                proxy.send_event(AppEvent::EchoesStands { lane, payload, req });
+                                proxy.send_event(AppEvent::Agents { lane, payload, req });
                         }
                         Err(e) => {
-                            tracing::warn!("echoes:stands_fetch の agents_list 失敗 (lane={lane}): {e}")
+                            tracing::warn!("conversation:stands_fetch の agents_list 失敗 (lane={lane}): {e}")
                         }
                     }
                 });
             }
             // doc 38 Phase 2: agents_list の結果を「+」menu へ push back。
             // doc 47 §6: 第 3 引数 = 要求元の相関 id。共有 bus の購読側はこれで振り分ける。
-            Event::UserEvent(AppEvent::EchoesStands { lane, payload, req }) => {
+            Event::UserEvent(AppEvent::Agents { lane, payload, req }) => {
                 lane_js::console_stands(&webview, &lane, payload, req);
             }
             Event::UserEvent(AppEvent::BoardMutate { method, body }) => {
@@ -5619,11 +5623,11 @@ pub fn run() -> anyhow::Result<()> {
                         &rt_handle,
                         &respawn_proxy,
                     );
-                    // gui: chat lane なら echoes topic に attach（→ transcript replay）。
-                    ensure_echoes_attach(
+                    // gui: chat lane なら conversation topic に attach（→ transcript replay）。
+                    ensure_conversation_attach(
                         &addr,
                         &sidebar_state,
-                        &mut echoes_sessions,
+                        &mut conversation_sessions,
                         &rt_handle,
                         &async_action_proxy,
                         &daemon_conn,

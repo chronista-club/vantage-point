@@ -20,10 +20,10 @@ pub mod devices;
 pub use midistage_profiles::device_input;
 #[cfg(feature = "midi")]
 pub use midistage_profiles::device_profile;
+pub mod conversation;
 #[cfg(feature = "midi")]
 pub mod device_io;
 pub mod discovery;
-pub mod echoes;
 pub mod file_watcher;
 pub mod flow;
 /// Repo Host — repo の面倒を見る決定的サービス（doc 44 D3 / §7）

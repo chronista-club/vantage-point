@@ -1,4 +1,4 @@
-//! per-session の EchoesEvent 追記ログ（disk 永続、engine 非依存の replay 源）
+//! per-session の ConversationEvent 追記ログ（disk 永続、engine 非依存の replay 源）
 //!
 //! ## なぜ要るか（dogfood で発見した穴）
 //!
@@ -9,25 +9,25 @@
 //! demand_start の no_session path で `ReplayStart` の冪等 clear だけが走り、**復元材料が無い**
 //! （lane 切替で会話が消える）。
 //!
-//! そこで **repo が配信した EchoesEvent を per-session に disk 記録**し、transcript を持たない
+//! そこで **repo が配信した ConversationEvent を per-session に disk 記録**し、transcript を持たない
 //! engine の replay 源にする。最初から disk 永続（in-memory では repo 再起動 / lane 切替で失われる）。
 //!
 //! ## 設計原則（session_store / session_registry と同系統）
 //!
-//! - 置き場: `vp_state_dir()/echoes_replay/<sanitize(repo)>__<sanitize(label)>.jsonl`。
+//! - 置き場: `vp_state_dir()/conversation_replay/<sanitize(repo)>__<sanitize(label)>.jsonl`。
 //!   `label` は [`crate::lane::session_registry::session_label`]（#1 = 素の lane 名、#2 以降
-//!   `<lane>#<n>`）で、他 store（cc_sessions / echoes_sessions）と file 名規約が揃う
-//! - **1 行 1 event の JSONL**（[`EchoesEvent`] を serde でそのまま）。壊れた行は読み時に skip
+//!   `<lane>#<n>`）で、他 store（cc_sessions / conversation_sessions）と file 名規約が揃う
+//! - **1 行 1 event の JSONL**（[`ConversationEvent`] を serde でそのまま）。壊れた行は読み時に skip
 //!   （session_store の「壊れた値を渡さない」原則。partial 末尾行 = クラッシュ時の書きかけも黙って落とす）
 //! - **claude は書かない**: transcript が SSOT なので二重化しない（tap は codex/grok/opencode のみ Some）
 //! - 上限は turn 境界でのみ制御（[`truncate_if_needed_in`]、末尾側の完全な行を残して先頭から捨てる）
-//! - 書き手 = `process::echoes_pump` の tap / user 発話は `process::unison_server` の submit 成功後。
+//! - 書き手 = `process::conversation_pump` の tap / user 発話は `process::unison_server` の submit 成功後。
 //!   破棄は fresh restart / session remove で他 store と同じ場所に配線（`process::lanes_state`）
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::event::EchoesEvent;
+use super::event::ConversationEvent;
 use crate::lane::session_store::sanitize;
 
 /// 1 session あたりのログ上限の目安（本番）。turn 境界の [`truncate_if_needed_in`] で
@@ -47,7 +47,7 @@ pub struct ReplayLogTap {
 
 /// state base dir 配下の replay log file path（純関数、テスト用に base 注入）。
 fn log_file_in(base: &Path, repo: &str, label: &str) -> PathBuf {
-    base.join("echoes_replay")
+    base.join("conversation_replay")
         .join(format!("{}__{}.jsonl", sanitize(repo), sanitize(label)))
 }
 
@@ -55,7 +55,12 @@ fn log_file_in(base: &Path, repo: &str, label: &str) -> PathBuf {
 ///
 /// serialize 失敗（想定外）は `io::Error::other` に畳んで返す。呼び手（pump tap）は失敗を
 /// warn するだけで配送は止めない（replay 記録は配送と独立）。
-pub fn append_in(base: &Path, repo: &str, label: &str, event: &EchoesEvent) -> std::io::Result<()> {
+pub fn append_in(
+    base: &Path,
+    repo: &str,
+    label: &str,
+    event: &ConversationEvent,
+) -> std::io::Result<()> {
     let path = log_file_in(base, repo, label);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -69,20 +74,20 @@ pub fn append_in(base: &Path, repo: &str, label: &str, event: &EchoesEvent) -> s
     file.write_all(line.as_bytes())
 }
 
-/// 全行を読んで [`EchoesEvent`] 列に戻す。file 不在 / 全体が非 UTF-8 は空。
+/// 全行を読んで [`ConversationEvent`] 列に戻す。file 不在 / 全体が非 UTF-8 は空。
 ///
 /// **壊れた行は skip**（JSON parse 不能 / 末尾の書きかけ partial 行）。replay 源が部分破損して
 /// いても、読める分だけで会話を復元する方が「読めないから全滅」より復旧可能性が高い。
 /// `read_to_string` + `str::lines()` は行 iterator の Err を挟まないので、1 行の破損で読みが
 /// 止まらず（`Lines<BufReader>` の flatten 罠を回避）、partial 末尾行も 1 セグメントとして
 /// filter_map で黙って落ちる。
-pub fn load_in(base: &Path, repo: &str, label: &str) -> Vec<EchoesEvent> {
+pub fn load_in(base: &Path, repo: &str, label: &str) -> Vec<ConversationEvent> {
     let Ok(content) = std::fs::read_to_string(log_file_in(base, repo, label)) else {
         return Vec::new();
     };
     content
         .lines()
-        .filter_map(|line| serde_json::from_str::<EchoesEvent>(line).ok())
+        .filter_map(|line| serde_json::from_str::<ConversationEvent>(line).ok())
         .collect()
 }
 
@@ -96,7 +101,7 @@ pub fn clear_in(base: &Path, repo: &str, label: &str) -> std::io::Result<()> {
 
 /// file が `max_bytes` を超えていたら、**末尾側の完全な行だけ**を残して先頭から捨てる（rewrite）。
 ///
-/// - 呼び出しは **turn 境界のみ**（[`EchoesEvent::TurnCompleted`] 書き込み後）。サイズ制御コストを
+/// - 呼び出しは **turn 境界のみ**（[`ConversationEvent::TurnCompleted`] 書き込み後）。サイズ制御コストを
 ///   turn 頻度に抑える（append の度に走らせない）
 /// - 切り口は必ず行境界（`\n` の直後）= 半端な JSON 断片を残さない
 /// - 単一行が `max_bytes` を超える極端ケースでも、最低 1 行（最新の完全な行）は残す
@@ -141,12 +146,12 @@ pub fn truncate_if_needed_in(
 // ---- 本番 base（vp_state_dir）での wrapper（session_store と同じ構え）----
 
 /// 本番 base での append（pump tap / user 発話記録から呼ぶ）。
-pub fn append(repo: &str, label: &str, event: &EchoesEvent) -> std::io::Result<()> {
+pub fn append(repo: &str, label: &str, event: &ConversationEvent) -> std::io::Result<()> {
     append_in(&crate::config::vp_state_dir(), repo, label, event)
 }
 
 /// 本番 base での load（demand_start の replay 源読みから呼ぶ）。
-pub fn load(repo: &str, label: &str) -> Vec<EchoesEvent> {
+pub fn load(repo: &str, label: &str) -> Vec<ConversationEvent> {
     load_in(&crate::config::vp_state_dir(), repo, label)
 }
 
@@ -162,14 +167,14 @@ pub fn clear(repo: &str, label: &str) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    fn chunk(text: &str) -> EchoesEvent {
-        EchoesEvent::MessageChunk {
+    fn chunk(text: &str) -> ConversationEvent {
+        ConversationEvent::MessageChunk {
             text: text.to_string(),
         }
     }
 
-    fn turn() -> EchoesEvent {
-        EchoesEvent::TurnCompleted {
+    fn turn() -> ConversationEvent {
+        ConversationEvent::TurnCompleted {
             session_id: "s".to_string(),
             cost_usd: None,
             context_tokens: None,
@@ -275,13 +280,13 @@ mod tests {
 
     /// file 名は repo / label を sanitize（`.` `/` → `-`、`#` は保持）した規約。
     #[test]
-    fn file_name_sanitizes_and_lives_under_echoes_replay() {
+    fn file_name_sanitizes_and_lives_under_conversation_replay() {
         let p = log_file_in(Path::new("/base"), "creo.memories", "root#2");
         assert_eq!(
             p,
-            Path::new("/base/echoes_replay/creo-memories__root#2.jsonl")
+            Path::new("/base/conversation_replay/creo-memories__root#2.jsonl")
         );
         let p = log_file_in(Path::new("/base"), "a/b", "../evil");
-        assert_eq!(p, Path::new("/base/echoes_replay/a-b__---evil.jsonl"));
+        assert_eq!(p, Path::new("/base/conversation_replay/a-b__---evil.jsonl"));
     }
 }

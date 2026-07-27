@@ -613,12 +613,12 @@ pub(crate) fn clear_lane_state(repo: &str, lane: &str) {
 ///
 /// 破棄対象 = 同名 lane 再作成で蘇ってはならない全 lane-scoped state (計 6 種):
 /// session_registry (会話 id と Mode の SSOT) / engine_model / agent (engine 種別) /
-/// echoes_replay (session label 単位) / terminal_replay (slot の scrollback) / lane_id (安定 id)。
+/// conversation_replay (session label 単位) / terminal_replay (slot の scrollback) / lane_id (安定 id)。
 ///
 /// best-effort: 個々の失敗は warn して残置し、他の破棄は続行する (1 file の fs error で
 /// 残り 5 種の GC を落とさない)。冪等 = 未記録 / 二重呼び出しは全て no-op。
 fn clear_lane_state_in(base: &Path, repo: &str, lane: &str) {
-    // ① echoes_replay は **session label 単位** (`<lane>` + `<lane>#<n>`)。registry を消す前に
+    // ① conversation_replay は **session label 単位** (`<lane>` + `<lane>#<n>`)。registry を消す前に
     //    全 session を列挙して各 label の replay log を消す (残すと transcript を持たない engine の
     //    replay 源が同名 lane に蘇る)。default_agent は registry file 不在時の N=1 既定形にしか
     //    効かず、 その唯一 session の label は素の lane 名 (下の console / terminal_replay と同鍵)
@@ -626,7 +626,7 @@ fn clear_lane_state_in(base: &Path, repo: &str, lane: &str) {
     let reg = super::session_registry::load_in(base, repo, lane, "claude");
     for s in &reg.sessions {
         let label = super::session_registry::session_label(lane, s.key);
-        if let Err(e) = crate::echoes::replay_log::clear_in(base, repo, &label) {
+        if let Err(e) = crate::conversation::replay_log::clear_in(base, repo, &label) {
             tracing::warn!(
                 "lane state GC: replay log の破棄に失敗 (残置): lane={lane} session={} err={e}",
                 s.key
@@ -1977,8 +1977,8 @@ mod tests {
     /// 破棄対象が 7 種から 6 種に減ったのは leak が増えたのではなく、state が 1 つ畳まれたため。
     #[test]
     fn clear_lane_state_removes_all_six_state_files_and_is_scoped() {
+        use crate::conversation::{ConversationEvent, replay_log};
         use crate::daemon::pty_slot;
-        use crate::echoes::{EchoesEvent, replay_log};
         use crate::lane::{agent_store, engine_model, lane_id, session_registry};
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -2011,8 +2011,8 @@ mod tests {
             engine_model::record_in(base, "vp", lane, "sonnet").expect("engine_model");
             // ③ agent
             agent_store::record_in(base, "vp", lane, "codex").expect("agent");
-            // ④ echoes_replay: #1 (素の lane 名) と #2 (`<lane>#2`) の両 label に 1 行ずつ
-            let ev = EchoesEvent::MessageChunk {
+            // ④ conversation_replay: #1 (素の lane 名) と #2 (`<lane>#2`) の両 label に 1 行ずつ
+            let ev = ConversationEvent::MessageChunk {
                 text: "hi".to_string(),
             };
             replay_log::append_in(base, "vp", lane, &ev).expect("replay #1");

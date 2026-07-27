@@ -148,7 +148,7 @@ pub fn slot_new(lane: &str, agent: Option<&str>, config: &Config) -> Result<()> 
 
 /// console（slot）を 1 枚閉じる（[`slot_new`] の対）。
 ///
-/// GUI の名札 ✕ と**同じ動詞**（`echoes_session_remove`）を叩く。session を registry から
+/// GUI の名札 ✕ と**同じ動詞**（`conversation_session_remove`）を叩く。session を registry から
 /// 取り除けば、実体（PtySlot / chat engine）は reconcile が畳む（doc 53 §12.4）。
 /// root は registry 側が拒否する（lane の代表を消す = 素に戻すのは `--fresh` restart の役目）。
 pub fn slot_close(lane: &str, session: u32, config: &Config) -> Result<()> {
@@ -156,7 +156,7 @@ pub fn slot_close(lane: &str, session: u32, config: &Config) -> Result<()> {
     let resp = daemon_repo_request_blocking(
         crate::cli::daemon_port(),
         &path,
-        "echoes_session_remove",
+        "conversation_session_remove",
         serde_json::json!({ "lane": lane, "session": session }),
     )?;
     let focused = resp
