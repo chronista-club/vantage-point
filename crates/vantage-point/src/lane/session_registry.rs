@@ -98,6 +98,15 @@ pub struct SessionEntry {
     /// file/wire 後方互換（conversation 無し = 旧 file はそのまま読める）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
+    /// VP からの model 指定（spawn 時 `--model` 注入の intent。**None = engine 既定に委譲**
+    /// = `--model` を注入しない — doc 54 §8-11「user 設定委譲」）。
+    ///
+    /// 2026-07-27 に per-lane の `engine_model` file store から session 紐づけへ移行
+    /// （mako 裁定 — doc 50 session=Pane で 1 lane 多 session になり、lane 単位は旧前提に
+    /// なった）。旧 file は migration せず初期化（doc 54 §8.1）。serde default + skip で
+    /// file/wire 後方互換（model 無し = 旧 file はそのまま読める）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// lane の session 一覧 + focused + root（disk に JSON でそのまま永続される形）。
@@ -135,6 +144,7 @@ impl SessionRegistry {
                 agent: default_agent.to_string(),
                 mode: SessionMode::Tui,
                 conversation: None,
+                model: None,
             }],
         }
     }
@@ -314,6 +324,7 @@ pub fn create_in(
         agent: agent.to_string(),
         mode,
         conversation: None,
+        model: None,
     });
     if focus {
         reg.focused = key;
@@ -343,6 +354,7 @@ pub fn create_root_in(
         agent: agent.to_string(),
         mode,
         conversation: None,
+        model: None,
     });
     reg.focused = key;
     reg.root = key;
@@ -512,15 +524,15 @@ pub struct ConversationReport<'a> {
 /// 直書き（gui host の record-from-init）は [`set_conversation_in`]。こちらは policy を持たない
 /// authoritative な書き込みで、報告経路とは別物。
 ///
-/// `transcript_exists` は注入する（テストが実 `~/.claude` に依存しないため。本番 wrapper
-/// [`record_conversation`] が `cc_session::transcript_exists` を渡す）。
+/// `has_conversation` は注入する（テストが実 `~/.claude` に依存しないため。本番 wrapper
+/// [`record_conversation`] が `cc_session::transcript_has_conversation` を渡す）。
 pub fn record_conversation_in(
     base: &Path,
     repo: &str,
     lane: &str,
     default_agent: &str,
     report: ConversationReport<'_>,
-    transcript_exists: impl Fn(&str) -> bool,
+    has_conversation: impl Fn(&str) -> bool,
 ) -> std::io::Result<ConversationRecordOutcome> {
     let _guard = mutation_guard();
     let mut reg = load_in(base, repo, lane, default_agent);
@@ -546,10 +558,13 @@ pub fn record_conversation_in(
     }
     match &entry.conversation {
         Some(cur) if cur == session_id => Ok(ConversationRecordOutcome::Unchanged),
-        Some(cur) if report.trigger == ReportTrigger::Issued && transcript_exists(cur) => {
+        Some(cur) if report.trigger == ReportTrigger::Issued && has_conversation(cur) => {
             // resume 失敗 `|| claude` fallback の幻 session が、健在な旧会話への復帰路を
             // 上書きするのを防ぐ（F1 clobber / F2 幻ポインタの再演防止）。次の Spoken で
             // user が幻側に commit したら上書きされる（self-heal）。
+            // ⚠️ 「守るに値するか」の判定は transcript の**実在ではなく会話の成立**
+            // （`transcript_has_conversation`）— claude は発話ゼロでも meta-only transcript を
+            // 書くことがあり、実在判定だと幻を守って本物の復帰を弾く逆転が起きる（2026-07-27 実測）。
             Ok(ConversationRecordOutcome::KeptExisting)
         }
         _ => {
@@ -600,6 +615,64 @@ pub fn set_conversation_in(
     entry.conversation = new;
     save_in(base, repo, lane, &reg)?;
     Ok(true)
+}
+
+/// session の model 指定を書く（picker の `conversation_set_model` / lane 作成時の初期指定の
+/// 書き込み口。[`set_conversation_in`] と同じ規律）。
+///
+/// - 実在しない key は Err（黙って捨てると「切り替えたつもり」の幻 model になる）
+/// - 形式外 model は**書かずに** Ok(false)（`--model` 引数への injection 防壁）
+/// - 変化なしは save しない。戻り値 = 「disk が変わったか」
+/// - `None` = engine 既定へ戻す（entry.model を None に落とす）
+pub fn set_model_in(
+    base: &Path,
+    repo: &str,
+    lane: &str,
+    default_agent: &str,
+    key: SessionKey,
+    model: Option<&str>,
+) -> std::io::Result<bool> {
+    let _guard = mutation_guard();
+    let mut reg = load_in(base, repo, lane, default_agent);
+    let Some(entry) = reg.sessions.iter_mut().find(|s| s.key == key) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("session が存在しません（repo={repo}, lane={lane}, session={key}）"),
+        ));
+    };
+    if let Some(m) = model
+        && !crate::lane::engine_model::is_valid_model(m)
+    {
+        tracing::warn!(
+            "model 名が形式外のため書かず（repo={repo}, lane={lane}, session={key}, model={m:?}）"
+        );
+        return Ok(false);
+    }
+    let new = model.map(str::to_string);
+    if entry.model == new {
+        return Ok(false);
+    }
+    entry.model = new;
+    save_in(base, repo, lane, &reg)?;
+    Ok(true)
+}
+
+/// 本番 base での [`set_model_in`]。
+pub fn set_model(
+    repo: &str,
+    lane: &str,
+    default_agent: &str,
+    key: SessionKey,
+    model: Option<&str>,
+) -> std::io::Result<bool> {
+    set_model_in(
+        &crate::config::vp_state_dir(),
+        repo,
+        lane,
+        default_agent,
+        key,
+        model,
+    )
 }
 
 /// focused key だけを軽量に読む（file 不在 / 破損は 1 = N=1 特殊ケース）。
@@ -922,7 +995,8 @@ pub fn set_conversation(
 }
 
 /// 本番 base での record_conversation（repo の hook 報告 handler から呼ぶ）。
-/// F1/F2 guard の transcript 判定は claude の実 transcript（`cc_session::transcript_exists`）。
+/// F1/F2 guard の継続判定は claude の実 transcript の会話成立
+/// （`cc_session::transcript_has_conversation` — 実在では meta-only の幻を守ってしまう）。
 pub fn record_conversation(
     repo: &str,
     lane: &str,
@@ -935,7 +1009,7 @@ pub fn record_conversation(
         lane,
         default_agent,
         report,
-        super::cc_session::transcript_exists,
+        super::cc_session::transcript_has_conversation,
     )
 }
 
@@ -960,6 +1034,7 @@ mod tests {
                     agent: "claude".to_string(),
                     mode: SessionMode::Tui,
                     conversation: None,
+                    model: None,
                 }],
             }
         );
@@ -1275,6 +1350,95 @@ mod tests {
         );
         assert!(
             set_conversation_in(tmp.path(), "vp", "root", "claude", 99, Some("id-x")).is_err(),
+            "不在 key は Err"
+        );
+    }
+
+    /// set_model は set_conversation と同じ規律（session 紐づけ、2026-07-27 — 旧 per-lane
+    /// `engine_model` file の後継）: 往復 / 同値 no-op / 形式外は書かず既存保護 / 不在 key Err /
+    /// None = engine 既定へ戻す。
+    #[test]
+    fn set_model_roundtrips_validates_and_rejects_unknown_key() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        create_in(
+            tmp.path(),
+            "vp",
+            "root",
+            "claude",
+            "claude",
+            SessionMode::Gui,
+            true,
+        )
+        .expect("create #2");
+
+        assert!(
+            set_model_in(
+                tmp.path(),
+                "vp",
+                "root",
+                "claude",
+                2,
+                Some("claude-sonnet-5")
+            )
+            .expect("set"),
+            "初回 set は disk 変化あり"
+        );
+        let reg = load_in(tmp.path(), "vp", "root", "claude");
+        assert_eq!(reg.sessions[1].model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(
+            reg.sessions[0].model, None,
+            "他 session は無傷（per-session）"
+        );
+
+        assert!(
+            !set_model_in(
+                tmp.path(),
+                "vp",
+                "root",
+                "claude",
+                2,
+                Some("claude-sonnet-5")
+            )
+            .expect("same"),
+            "同値 set は no-op"
+        );
+        assert!(
+            !set_model_in(
+                tmp.path(),
+                "vp",
+                "root",
+                "claude",
+                2,
+                Some("opus --dangerous")
+            )
+            .expect("invalid"),
+            "形式外 model は書かずに Ok(false)（--model injection 防壁）"
+        );
+        assert_eq!(
+            load_in(tmp.path(), "vp", "root", "claude").sessions[1]
+                .model
+                .as_deref(),
+            Some("claude-sonnet-5"),
+            "形式外 set 後も既存値が守られる"
+        );
+        assert!(
+            set_model_in(tmp.path(), "vp", "root", "claude", 2, None).expect("clear"),
+            "None = engine 既定へ戻す（disk 変化あり）"
+        );
+        assert_eq!(
+            load_in(tmp.path(), "vp", "root", "claude").sessions[1].model,
+            None
+        );
+        assert!(
+            set_model_in(
+                tmp.path(),
+                "vp",
+                "root",
+                "claude",
+                99,
+                Some("claude-sonnet-5")
+            )
+            .is_err(),
             "不在 key は Err"
         );
     }

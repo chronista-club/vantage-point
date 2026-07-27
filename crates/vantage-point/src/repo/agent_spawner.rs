@@ -266,7 +266,7 @@ fn claude_command(resume_id: Option<&str>, model: Option<&str>) -> String {
 /// - `None`: `codex`（新規会話）
 ///
 /// wire hook / model 注入はしない（hook 機構は claude 専用。model は codex 側で選択 —
-/// `EngineKind::model_switchable` 参照）。
+/// `EngineKind::model_choices` が空 = VP からの切替なし、の能力表明に対応）。
 fn codex_command(resume_id: Option<&str>) -> String {
     match resume_id.filter(|id| crate::lane::codex_session::is_valid_thread_id(id)) {
         Some(id) => format!("codex resume '{}' || codex", id),
@@ -396,7 +396,7 @@ pub fn build_agent_command_for_session(
     // doc 39 P1 → doc 40: resume id / 会話 id は **session registry の entry**（SSOT、doc 40 §5）。
     // 既定（`session=None`）で化身するのは root session（lane の人格）で、doc 46 P5 の producer
     // だけが非 root を名指しする。registry file 不在 = root=1 の N=1 特殊ケースで従来互換。
-    // engine_model は lane 単位（tui/gui 共有）のまま。
+    // model も同じ entry の `SessionEntry.model`（session 単位、2026-07-27 に per-lane file から移行）。
     let reg = crate::lane::session_registry::load(&addr.repo, lane_label(addr), agent_name);
     // A6 の後始末: 旧名 replay file（lane 単位）を現 root の session file へ 1 回だけ移設する。
     // slot の replay_path を決める経路はここ 1 本なので、移設もここに置けば取りこぼさない
@@ -424,16 +424,19 @@ pub fn build_agent_command_for_session(
     // でなく session の agent で arm を選ぶことが cross-engine root 解禁の核。
     let initial_input = match crate::conversation::EngineKind::from_agent(effective_agent) {
         Some(crate::conversation::EngineKind::Claude) => {
-            // transcript_exists pre-flight（doc 33 C2 の gui と対称化）: 発話ゼロで
-            // transcript を書かなかった「幻 id」を `--resume` に渡さない。None に倒せば
-            // 素の claude で立つ（doc 53 §12.1 で `--continue` fallback は退役）。
+            // 継続判定 pre-flight（doc 33 C2 の gui と対称化）: 会話が成立しなかった
+            // 「幻 id」を `--resume` に渡さない。None に倒せば素の claude で立つ
+            // （doc 53 §12.1 で `--continue` fallback は退役）。判定は transcript の実在でなく
+            // 会話成立（`transcript_has_conversation`）— 発話ゼロでも meta-only transcript は
+            // 書かれることがある（2026-07-27）。
             let resume_id = conversation
                 .clone()
-                .filter(|id| crate::lane::cc_session::transcript_exists(id));
-            // model は lane 単位の state file（`engine_model`、tui/gui 共有）を直読み。
-            // 未記録 = None = claude default（co-evolution #1）。 respawn（repo restart）でも
-            // ここで毎回読むため、 一度指定した model は再起動をまたいで維持される。
-            let model = crate::lane::engine_model::last(&addr.repo, lane_label(addr));
+                .filter(|id| crate::lane::cc_session::transcript_has_conversation(id));
+            // model は **session の** registry entry を読む（tui/gui 共有の intent。None =
+            // engine 既定 = 注入しない）。respawn（repo restart）でもここで毎回読むため、
+            // 一度指定した model は再起動をまたいで維持される（2026-07-27 に per-lane
+            // `engine_model` file から session 紐づけへ移行 — mako 裁定、doc 50 session=Pane）。
+            let model = entry.and_then(|s| s.model.clone());
             // doc 53 §12.1: 「素で立てるか」は **registry の会話 id の有無だけ**で決まる。
             // 旧実装は `fresh || (key >= 2 && resume_id.is_none())` で、`--continue` 分岐が
             // 起点 lane × id 無しに存在したため「Reset 直後（id を捨てた）」と「初回（まだ

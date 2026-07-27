@@ -24,9 +24,9 @@ pub struct ServiceStatus {
 pub struct HubNodeInfo {
     /// daemon の identity（hostname 由来、hub registry の一意キー相当）
     pub handle: String,
-    /// 位置独立 routing key `wld_xxx`（ADR-020 D2）。hub S2 前は空になり得るため空なら omit。
+    /// 位置独立 routing key `nd_xxx`（ADR-020 D2）。hub S2 前は空になり得るため空なら omit。
     #[serde(skip_serializing_if = "String::is_empty")]
-    pub wld_id: String,
+    pub node_id: String,
     /// direct 到達 endpoint 候補数（hub S2 前は 0）
     pub endpoints_count: usize,
     /// hub との常駐接続が今生きているか（hub protocol v0.6.0 の relay registry snapshot 由来）。
@@ -218,7 +218,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         .into_iter()
         .map(|w| HubNodeInfo {
             handle: w.handle,
-            wld_id: w.wld_id,
+            node_id: w.node_id,
             endpoints_count: w.endpoints.len(),
             connected: w.connected,
         })

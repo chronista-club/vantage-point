@@ -213,7 +213,7 @@ binding）だけが動的。A6 が replay を session（= 席）に鍵付けし�
 | **trigger** | 入力 tap（CR のみ検知。**内容は読まない** = keylog 性が構造的にゼロ） | 検査の合図（edge — 落としてよい） | 不要 |
 | **inspect** | 席のプロセス木 + argv（VP は shell の pid を持つ。同 uid で sysctl 可） | 誰が座ったか / `--resume` id | 不要 |
 | **watch** | kqueue NOTE_EXIT | 退席の event-driven 検知 | 不要 |
-| **enrich** | **fs 痕跡観測**（claude: `~/.claude/repos/<slug>/*.jsonl` / codex: rollout の filename — 中身の深 parse は不要） | fresh 起動の会話 id | **不要 — 規約知識のみ** |
+| **enrich** | **fs 痕跡観測**（claude: `~/.claude/projects/<slug>/*.jsonl` / codex: rollout の filename — 中身の深 parse は不要） | fresh 起動の会話 id | **不要 — 規約知識のみ** |
 
 - **生の入力 parse は採らない**: 補完（`cla<TAB>`）・履歴（`↑↑`）・Ctrl-R では、コマンド本文が
   入力 stream に**存在しない**。入力は合図（edge）、真実はプロセス木（level）— doc 53 §2.3 の

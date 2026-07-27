@@ -8,6 +8,7 @@
 //! [`ChatHost`] / [`ChatEngineSlot`] は旧 `lanes_state.rs` から移設（doc 33 の chat engine 所有を
 //! conversation module に閉じ、chat スタック全体を他repo（GFP 等）へ切り出せる形にする）。
 
+use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 
 use super::acp_host::AcpAgentHost;
@@ -91,13 +92,76 @@ impl EngineKind {
         )
     }
 
-    /// VP からの model 切替（`engine_model` 永続 + `--model` 注入）を受けるか。
+    /// VP の model picker に出す選択肢（engine ごとの catalog — server が SSOT、client は
+    /// 並べるだけ。mako 裁定 2026-07-27: model は成長し続け多 engine で頻度も増えるため、
+    /// client の hardcode を廃してここに一元化）。
     ///
-    /// codex は CLI 側に model 選択があるため VP からは切替えない（`-m` を持つが v1 スコープ外
-    /// — doc 37 §7）。grok も同様。opencode は model / provider を opencode config が管理するため
-    /// VP からは注入しない（doc 43 §3 — 二重管理で SSOT が割れるのを避ける）。
-    pub fn model_switchable(self) -> bool {
-        matches!(self, Self::Claude)
+    /// **空 = VP からの model 切替なし**（client は picker を出さず、実測 model があれば
+    /// read-only 表示に落とす）。切替可否の述語は別に持たない — この catalog の空/非空が
+    /// 唯一の真実（旧 `model_switchable` は撤去）。
+    ///
+    /// codex は CLI 側に model 選択があるため v1 は空（`-m` 解禁 = catalog を足すだけ、PR-2）。
+    /// grok も同様。opencode は model / provider を opencode config が管理するため注入しない
+    /// （doc 43 §3 — 二重管理で SSOT が割れるのを避ける）。
+    pub fn model_choices(self) -> Vec<Choice> {
+        match self {
+            // value = `--model` に渡る id。空文字 = 「engine 既定」（`--model` を注入しない）。
+            // 各系列の最新のみを載せる（2026-07-27 に claude-api skill の model catalog と照合。
+            // Opus 4.8→5 は mako 裁定）。Haiku は date suffix 付き full id でなく **alias** —
+            // alias は系列の最新を指し続けるので catalog が古びにくい。
+            Self::Claude => Choice::list(&[
+                ("", "Default"),
+                ("claude-fable-5", "Fable 5"),
+                ("claude-opus-5", "Opus 5"),
+                ("claude-sonnet-5", "Sonnet 5"),
+                ("claude-haiku-4-5", "Haiku 4.5"),
+            ]),
+            Self::Codex | Self::Grok | Self::OpenCode => Vec::new(),
+        }
+    }
+
+    /// permission picker の選択肢（表記は claude TUI と同一の英語 — mako 裁定 2026-07-27）。
+    ///
+    /// **空 = 対話承認の概念なし**（[`ChatHost::set_permission_mode`] が bail する engine。
+    /// client は picker を出さない）。codex の approval_policy / sandbox のような別語彙の
+    /// 承認体系を将来 VP から触る場合も、その engine の catalog を足すだけで受かる。
+    ///
+    /// claude の集合と表記は TUI の shift+tab cycle 準拠（CC v2.1.200 で `default` の表示名は
+    /// `manual` へ改名 — wire 値は `default` のまま両受理なので互換側を送る。順序も cycle と
+    /// 同じ manual → accept edits → plan）。cycle 外の `dontAsk` と account 条件付きの `auto` は
+    /// 出さない（押しても効かない選択肢を並べない — 解禁は catalog に足すだけ）。
+    pub fn permission_choices(self) -> Vec<Choice> {
+        match self {
+            Self::Claude => Choice::list(&[
+                ("default", "manual"),
+                ("acceptEdits", "accept edits"),
+                ("plan", "plan mode"),
+                ("bypassPermissions", "bypass permissions"),
+            ]),
+            Self::Codex | Self::Grok | Self::OpenCode => Vec::new(),
+        }
+    }
+}
+
+/// picker の選択肢 1 件（server が能力として表明する wire 型 — client は並べるだけ）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Choice {
+    /// engine に渡る値（model id / permission mode。model の空文字 = engine 既定）。
+    pub value: String,
+    /// 表示ラベル。
+    pub label: String,
+}
+
+impl Choice {
+    /// (value, label) の静的表から catalog を組む。
+    fn list(pairs: &[(&str, &str)]) -> Vec<Choice> {
+        pairs
+            .iter()
+            .map(|(v, l)| Choice {
+                value: (*v).to_string(),
+                label: (*l).to_string(),
+            })
+            .collect()
     }
 }
 
@@ -267,7 +331,8 @@ mod tests {
         assert_eq!(EngineKind::from_agent("agy"), None, "agy は撤去済み");
     }
 
-    /// 能力表: 全 engine が chat 対応、model 切替 = claude のみ。
+    /// 能力表: 全 engine が chat 対応。model / permission の catalog は claude のみ非空
+    /// （空/非空が切替可否の唯一の真実 — 旧 `model_switchable` 述語は catalog に畳んだ）。
     #[test]
     fn capability_table() {
         assert!(EngineKind::Claude.chat_capable());
@@ -275,10 +340,29 @@ mod tests {
         assert!(EngineKind::Grok.chat_capable());
         assert!(EngineKind::OpenCode.chat_capable());
 
-        assert!(EngineKind::Claude.model_switchable());
-        assert!(!EngineKind::Grok.model_switchable());
-        assert!(!EngineKind::Codex.model_switchable());
+        assert!(!EngineKind::Claude.model_choices().is_empty());
+        assert!(EngineKind::Grok.model_choices().is_empty());
+        assert!(EngineKind::Codex.model_choices().is_empty());
         // opencode の model は opencode config が SSOT（VP は注入しない、doc 43 §3）。
-        assert!(!EngineKind::OpenCode.model_switchable());
+        assert!(EngineKind::OpenCode.model_choices().is_empty());
+
+        // permission mode は claude のみ（他 engine は ChatHost::set_permission_mode が bail）。
+        // 表記は TUI と同一（v2.1.200 の manual 改名を反映）、wire 値は互換の "default"。
+        let perms = EngineKind::Claude.permission_choices();
+        assert_eq!(
+            perms
+                .iter()
+                .map(|c| (c.value.as_str(), c.label.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("default", "manual"),
+                ("acceptEdits", "accept edits"),
+                ("plan", "plan mode"),
+                ("bypassPermissions", "bypass permissions"),
+            ],
+        );
+        assert!(EngineKind::Codex.permission_choices().is_empty());
+        assert!(EngineKind::Grok.permission_choices().is_empty());
+        assert!(EngineKind::OpenCode.permission_choices().is_empty());
     }
 }

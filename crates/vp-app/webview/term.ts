@@ -1046,7 +1046,7 @@ function installOscHandlers(term: Terminal, address: string): void {
 	// xterm.js は OSC 0 (icon + title) と OSC 2 (title) を内部で parse して onTitleChange event を fire する。
 	// dogfood 仮説: cc が `/rename` 後に session name を window title として emit していれば、
 	//  この listener で renamed value が拾える。もし fire しなければ session JSONL file watch
-	//  (~/.claude/repos/<encoded-cwd>/...) の fallback path 検討。
+	//  (~/.claude/projects/<encoded-cwd>/...) の fallback path 検討。
 	try {
 		term.onTitleChange((title) => {
 			console.log(`[term-title] lane=${address} title=${JSON.stringify(title)}`);

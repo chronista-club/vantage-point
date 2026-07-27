@@ -84,9 +84,9 @@ pub enum WidgetKind {
 pub struct HubNode {
     /// daemon の identity（hostname 由来、hub registry の一意キー相当）
     pub handle: String,
-    /// 位置独立 routing key `wld_xxx`（hub S2 前は空 = daemon 側が omit するため default で受ける）
+    /// 位置独立 routing key `nd_xxx`（hub S2 前は空 = daemon 側が omit するため default で受ける）
     #[serde(default)]
-    pub wld_id: String,
+    pub node_id: String,
     /// direct 到達 endpoint 候補数（hub S2 前は 0）
     #[serde(default)]
     pub endpoints_count: usize,
@@ -210,7 +210,7 @@ pub struct SidebarState {
     pub canvas_unread: std::collections::HashMap<String, u32>,
     /// VP-143: per-Lane の cc session display name (`/rename` で設定された custom-title)。
     /// Key: Lane address、 Value: title 文字列。
-    /// `~/.claude/repos/<encoded-cwd>/<latest>.jsonl` の `custom-title` entry を polling
+    /// `~/.claude/projects/<encoded-cwd>/<latest>.jsonl` の `custom-title` entry を polling
     /// で抽出して populate (`session_title` module + `session_title_poller`)。
     /// `/rename` 未実行 lane は entry なし → JS 側で branch 名 fallback。
     /// disk persist 不要 (起動時に再 resolve)、 skip_serializing で軽量化。

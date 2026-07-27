@@ -636,7 +636,7 @@ pub(crate) async fn handle_daemon_control(
             let nodes = client.discover().await.map_err(|e| e.to_string())?;
             // channel 慣習 (registry.list={processes} / events.query={events}) に合わせ
             // object で包む。unison-mcp synthesized tool の returns 記述 (vp-daemon.kdl) と一致。
-            Ok(serde_json::json!({ "worlds": nodes }))
+            Ok(serde_json::json!({ "nodes": nodes }))
         }
         // F1b heartbeat: surface (vp-app) の共有 connection liveness probe。 client→server の
         // 一方向で、 server は応答するだけ (世界状態に触れない no-op)。 vp-app の

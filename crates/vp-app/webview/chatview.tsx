@@ -29,6 +29,7 @@ import { marked } from 'marked'
 import type {
   ConversationEvent,
   ConversationSession,
+  PickerChoice,
   PlanEntry,
   QuestionSpec,
   VpConsole,
@@ -1184,15 +1185,10 @@ function PlanCard(props: {
   )
 }
 
-/** model picker の選択肢（value = `--model` に渡る id、'' = claude default）。
- *  session_init が返す実測 model が一覧に無い場合は動的に option を足して真実を見せる。 */
-const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
-  ['', 'Default'],
-  ['claude-fable-5', 'Fable 5'],
-  ['claude-opus-4-8', 'Opus 4.8'],
-  ['claude-sonnet-5', 'Sonnet 5'],
-  ['claude-haiku-4-5-20251001', 'Haiku 4.5'],
-]
+// model / permission picker の選択肢は **server の catalog**（LaneSessionEntryWire →
+// session list の model_choices / permission_choices）から並べる。client にリストを
+// hardcode しない（mako 裁定 2026-07-27 — engine ごとに catalog を持ち、model の成長 /
+// 多 engine 化に client 改修なしで追従する。chat_capable と同じ server 能力表明の一般化）。
 
 /**
  * session 名札（pane 上端） — **term / chat 共通**（doc 50 §4.6 A6 ②）。
@@ -1204,7 +1200,7 @@ const MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
  * 載せるもの（doc 50 §2「上段 = この pane が何であるか」）:
  *  - 灯（slot 注入。**chat 固有** — term は ConversationEvent stream を持たないので出さない）
  *  - session ラベル / root chip / 会話 id = 素性
- *  - kind badge = 見え方（click で `session_set_mode` → in-place 変身）
+ *  - kind badge = 切り替え先（click で `session_set_mode` → in-place 変身。表示は現在形でなく行き先）
  *  - ✕ = この session を閉じる（root は不可）
  *
  * 供給は `sessionsOf(lane)`（`conversation_session_list` の cache）— term / chat どちらの pane でも
@@ -1252,7 +1248,8 @@ export function SessionPlate(props: {
         <span class="conversation-session-plate-hint">click で focus</span>
       </Show>
       <span class="conversation-session-plate-spacer" />
-      {/* kind badge（doc 50 §4.6 A6 ②）: この pane が「何であるか」の一部 = 見え方。
+      {/* kind badge（doc 50 §4.6 A6 ②）: 押すと切り替わる**行き先**を見せる（Chat pane には
+          「Console」、Console pane には「Chat」— 現在形でなく目的地。mako 裁定 2026-07-27）。
           click で session_set_mode → repo が resume handoff → **同じ往復路**が別の面として
           立ち上がる（位置と share は renamePane が保つ = in-place 変身）。
           ⚠️ term 側にも必ず出すこと — chat pane が 0 枚になると gui へ戻る入口が消える
@@ -1288,10 +1285,10 @@ export function SessionPlate(props: {
           }}
         >
           <CreoIcon
-            name={props.mode === 'gui' ? 'ph:chat-circle' : 'ph:terminal-window'}
+            name={target() === 'gui' ? 'ph:chat-circle' : 'ph:terminal-window'}
             size={9}
           />
-          {props.mode === 'gui' ? 'Chat' : 'Console'}
+          {target() === 'gui' ? 'Chat' : 'Console'}
         </button>
       </Show>
       <Show when={canCloseSession(sessionsOf(props.lane)?.sessions.length ?? 0, info()?.root)}>
@@ -1313,9 +1310,9 @@ export function SessionPlate(props: {
 
 /** 1 枚 = 1 session の chat pane（doc 46 §1.5 session ↔ Pane 1:1）。(lane, session) は mount 時に
  *  固定 — lane 切替は pane host ごと作り直す（lane-panes が dispose → mount）。
- *  doc 50 P2: chat 動詞（submit / respond / perm / interrupt）は session を運ぶ = どの pane
- *  からも打てる。例外は model 切替のみ — repo 側 console_set_model が root slot 単位（engine の
- *  --resume 込み respawn）のため、focused でだけ有効にしている。 */
+ *  doc 50 P2: chat 動詞（submit / respond / perm / interrupt / model）は session を運ぶ =
+ *  どの pane からも打てる（model の旧 focused 制限は conversation_set_model の session 化で
+ *  撤去 — 2026-07-27、mako 裁定「model も permission も session に紐づく」）。 */
 function SessionChatView(props: { lane: string; session: number }) {
   const lc = laneChat(props.lane, props.session)
   const state = (): ChatState => lc.state
@@ -1329,17 +1326,32 @@ function SessionChatView(props: { lane: string; session: number }) {
   // 新 engine の session_init が header.model を更新することで得る（picker は実測値に追従）。
   // streaming 中は disable — engine drop が進行中 turn を切るのを UI で抑止する。
   const currentModel = (): string => state()?.header?.model ?? ''
-  const modelChoices = (): ReadonlyArray<readonly [string, string]> => {
+  /** この session の roster entry（picker の catalog / intent の供給源 = server 能力表明）。 */
+  const rosterEntry = (): ConversationSession | undefined =>
+    sessionsOf(props.lane)?.sessions.find((s) => s.key === props.session)
+  /** server catalog + 実測 model の動的追加（一覧に無い実測値は option を足して真実を見せる）。
+   *  catalog 空 = この engine は VP から切替不可（picker を出さず read-only 表示に落とす）。 */
+  const modelChoices = (): ReadonlyArray<PickerChoice> => {
+    const catalog = rosterEntry()?.model_choices ?? []
     const m = currentModel()
-    return m && !MODEL_CHOICES.some(([v]) => v === m)
-      ? [...MODEL_CHOICES, [m, m] as const]
-      : MODEL_CHOICES
+    return m && catalog.length > 0 && !catalog.some((c) => c.value === m)
+      ? [...catalog, { value: m, label: m }]
+      : catalog
   }
+  const permissionChoices = (): ReadonlyArray<PickerChoice> =>
+    rosterEntry()?.permission_choices ?? []
   const setModel = (model: string) => {
     const lane = props.lane
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    // session 明示（doc 50 session=Pane — model は session 単位、2026-07-27 に root/lane
+    // 単位から移行。focused 制限も同時に消えた = どの pane も自分の session を切替できる）。
     ipc?.postMessage(
-      JSON.stringify({ t: 'console:set_model', lane, model: model || null }),
+      JSON.stringify({
+        t: 'conversation:set_model',
+        lane,
+        session: props.session,
+        model: model || null,
+      }),
     )
   }
 
@@ -1764,42 +1776,54 @@ function SessionChatView(props: { lane: string; session: number }) {
             }}
           />
           <div class="conversation-actions">
-            <select
-              class="conversation-model-select"
-              disabled={state().streaming || !isFocused()}
-              title={
-                isFocused()
-                  ? 'model'
-                  : 'model 切替は root slot 単位（focus してから）'
+            {/* model picker: catalog（server 能力表明）が非空の engine だけ出す。
+                空 + 実測 model あり = read-only 表示（「今どの model か」の情報は保ちつつ、
+                押しても server に弾かれる行き止まりを作らない）。 */}
+            <Show
+              when={modelChoices().length > 0}
+              fallback={
+                <Show when={currentModel()}>
+                  <span
+                    class="conversation-model-readonly"
+                    title="model は engine 側で選択します（VP からは切替不可）"
+                  >
+                    {currentModel()}
+                  </span>
+                </Show>
               }
-              onChange={(e) => setModel(e.currentTarget.value)}
             >
-              <For each={modelChoices()}>
-                {([v, label]) => (
-                  <option value={v} selected={v === currentModel()}>
-                    {label}
-                  </option>
-                )}
-              </For>
-            </select>
-            <select
-              class="conversation-model-select"
-              title="permission mode"
-              onChange={(e) => setPermissionMode(e.currentTarget.value)}
-            >
-              <option
-                value="bypassPermissions"
-                selected={currentPermMode() === 'bypassPermissions'}
+              <select
+                class="conversation-model-select"
+                disabled={state().streaming}
+                title="model（この session に適用 — 会話は resume で継続したまま入れ替わる）"
+                onChange={(e) => setModel(e.currentTarget.value)}
               >
-                素通し
-              </option>
-              <option value="default" selected={currentPermMode() === 'default'}>
-                承認
-              </option>
-              <option value="plan" selected={currentPermMode() === 'plan'}>
-                計画
-              </option>
-            </select>
+                <For each={modelChoices()}>
+                  {(c) => (
+                    <option value={c.value} selected={c.value === currentModel()}>
+                      {c.label}
+                    </option>
+                  )}
+                </For>
+              </select>
+            </Show>
+            {/* permission picker: 同じく catalog 駆動（claude は TUI と同一表記の英語 4 mode）。
+                空 = 対話承認の概念なし → 出さない。 */}
+            <Show when={permissionChoices().length > 0}>
+              <select
+                class="conversation-model-select"
+                title="permission mode（この session に適用。表記は TUI と同一）"
+                onChange={(e) => setPermissionMode(e.currentTarget.value)}
+              >
+                <For each={permissionChoices()}>
+                  {(c) => (
+                    <option value={c.value} selected={currentPermMode() === c.value}>
+                      {c.label}
+                    </option>
+                  )}
+                </For>
+              </select>
+            </Show>
             <div class="conversation-actions-spacer" />
             <Show when={state().streaming}>
               <button class="conversation-stop" onClick={interrupt} title="turn を中断 (Esc)">
@@ -2010,9 +2034,10 @@ export const CHATVIEW_CSS = `
   color: var(--color-text-secondary,#a8b0c0); opacity:.85; }
 .conversation-session-plate-close:hover { opacity:1; color: var(--color-text,#e6e9ef);
   background: var(--color-bg,#0f1115); }
-/* kind badge（doc 50 §4.6 A6 ②）: この pane の見え方 = 素性の一部なので名札（上段）に住む。
-   §2.1 の規律で名札は静かに保ち、hover で操作可能だと分かる程度に立てる（root chip と
-   同じ pill 形。あちらは表示専用、こちらは押せる = hover の差で区別する）。 */
+/* kind badge（doc 50 §4.6 A6 ②）: 押すと切り替わる行き先を見せる乗り換えボタン。
+   pane の素性に関わる操作なので名札（上段）に住む。§2.1 の規律で名札は静かに保ち、
+   hover で操作可能だと分かる程度に立てる（root chip と同じ pill 形。あちらは表示専用、
+   こちらは押せる = hover の差で区別する）。 */
 .conversation-session-plate-kind { flex:none; display:inline-flex; align-items:center; gap:3px;
   padding:1px 6px; border-radius:9999px; cursor:pointer;
   border:1px solid var(--color-surface-border-subtle,#2a3040); background:transparent;
@@ -2049,6 +2074,9 @@ export const CHATVIEW_CSS = `
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
   color: var(--color-text-secondary,#a8b0c0); font-family:inherit; }
 .conversation-model-select:disabled { opacity:.45; cursor:default; }
+/* catalog 空 engine の read-only model 表示（select と同じ枠感、押せない見た目 = cursor/border なし）。 */
+.conversation-model-readonly { font-size:10.5px; padding:1px 5px; border-radius:6px;
+  color: var(--color-text-secondary,#a8b0c0); opacity:.7; }
 /* PR3: permission 承認カード（allow/deny）。question カードと同じ枠、action だけ差し替え。 */
 .conversation-perm-tool { font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-accent,#e2b96f); }
 .conversation-perm-input { font-family: var(--vp-font-mono),var(--typography-family-mono); font-size:11.5px;

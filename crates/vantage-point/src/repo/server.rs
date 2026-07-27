@@ -217,6 +217,7 @@ pub(crate) async fn start_repo(
     let actor_registry = crate::capability::ActorRegistry::new();
 
     let state = Arc::new(AppState {
+        replay_flights: crate::repo::state::ReplayFlights::default(),
         hub,
         shutdown_token: shutdown_token.clone(),
         // Phase A4-2b: lane_pool init で同 var を後続参照するため clone
@@ -651,7 +652,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         }
     }
 
-    // federation L2 (ADR-020 D2): home-node の位置独立 routing key `wld_id` を db/machine から
+    // federation L2 (ADR-020 D2): home-node の位置独立 routing key `node_id` を db/machine から
     // load_or_create する。daemon が初回起動で 1 度発行し、 以降の再起動は復元する (machine /
     // hostname / endpoint から独立な不変番地)。db 不在 (degraded) なら None — その場合は
     // federation の routing key を名乗れないが machine-local 動作は継続する (= hub down 時と同 degrade)。
@@ -660,7 +661,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
             Ok(id) => Some(id),
             Err(e) => {
                 tracing::warn!(
-                    "wld_id 発行/復元に失敗 (federation routing なしで継続): {}",
+                    "node_id 発行/復元に失敗 (federation routing なしで継続): {}",
                     e
                 );
                 None
@@ -744,6 +745,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
 
     // Create minimal state for daemon mode
     let state = Arc::new(AppState {
+        replay_flights: crate::repo::state::ReplayFlights::default(),
         hub,
         shutdown_token: shutdown_token.clone(),
         hub_status: hub_status.clone(),
@@ -987,9 +989,9 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         // handle = この machine の identity（OS hostname → "vp-node" fallback）。
         let handle = crate::daemon::hub_client::resolve_handle(None);
         let name = format!("VP Daemon ({handle})");
-        // wld_id = federation の位置独立 routing key (ADR-020 D2)。db 不在で None なら空文字を
+        // node_id = federation の位置独立 routing key (ADR-020 D2)。db 不在で None なら空文字を
         // 送る (= 現状 hub は S2 未実装で無視するため非破壊、 handle ベース discover は維持)。
-        let wld_id = node_id
+        let node_id = node_id
             .as_ref()
             .map(|w| w.as_str().to_string())
             .unwrap_or_default();
@@ -1021,7 +1023,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
                     .and_then(|k| k.as_str())
                     .unwrap_or("wire");
                 if kind == "lanes-query" {
-                    // discovery: 自分の lane を集めて reply_to（送信元の一時 wld_id）へ lanes-reply を
+                    // discovery: 自分の lane を集めて reply_to（送信元の一時 node_id）へ lanes-reply を
                     // relay で返す（片方向 relay × 2 で request-response を創発）。
                     let Some(reply_to) = inbound.payload.get("reply_to").and_then(|v| v.as_str())
                     else {
@@ -1060,7 +1062,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
                         "lanes": lanes,
                     });
                     let from_label = crate::daemon::hub_client::resolve_handle(None);
-                    match crate::daemon::hub_client::relay_send_to_wld(
+                    match crate::daemon::hub_client::relay_send_to_node(
                         &hub_addr,
                         reply_to,
                         &from_label,
@@ -1106,7 +1108,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         // hub_status / hub_nodes は AppState と共有（run_hub_federation が更新、/api/health が読む）。
         tokio::spawn(crate::daemon::hub_client::run_hub_federation(
             hub_addr,
-            wld_id,
+            node_id,
             endpoints,
             handle,
             name,

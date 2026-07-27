@@ -3,7 +3,7 @@
 // Agent 概念翻訳辞書も兼ねる: 各 agent kind → Phosphor icon の対応。
 // state-driven: default = regular, active = fill, disabled = thin weight。
 //
-// 参考 memory: ~/.claude/repos/.../memory/feedback_creo_ui_icon_dual_axis.md
+// 参考 memory: ~/.claude/projects/.../memory/feedback_creo_ui_icon_dual_axis.md
 
 import type { IconName } from '@chronista-club/creo-ui-icons-web'
 

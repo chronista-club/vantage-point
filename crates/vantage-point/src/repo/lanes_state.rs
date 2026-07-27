@@ -413,6 +413,20 @@ pub struct LaneSessionView {
     /// 名札の kind badge がこれで gate する（押しても弾かれる行き止まりを作らない）。
     #[serde(default)]
     pub chat_capable: bool,
+    /// この session の model 指定（registry の intent。None = engine 既定に委譲）。
+    /// picker の「現在値」は engine 実測（session_init の header.model）が正で、
+    /// こちらは「VP が spawn 時に何を注入するか」の側。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// model picker の選択肢（`EngineKind` catalog、server 導出 — client は並べるだけ）。
+    /// **空 = VP からの model 切替なし**（client は read-only 表示 or 非表示に落とす —
+    /// chat_capable と同じく「押しても弾かれる行き止まり」を server 表明で根絶する）。
+    #[serde(default)]
+    pub model_choices: Vec<crate::conversation::engine::Choice>,
+    /// permission picker の選択肢（同上）。空 = 対話承認の概念なし（`set_permission_mode`
+    /// が bail する engine — codex の approval_policy 等の別語彙は将来 catalog を足すだけ）。
+    #[serde(default)]
+    pub permission_choices: Vec<crate::conversation::engine::Choice>,
 }
 
 impl LaneSessionsView {
@@ -424,13 +438,21 @@ impl LaneSessionsView {
             sessions: reg
                 .sessions
                 .iter()
-                .map(|s| LaneSessionView {
-                    key: s.key,
-                    agent: s.agent.clone(),
-                    mode: s.mode,
-                    conversation: s.conversation.clone(),
-                    chat_capable: EngineKind::from_agent(&s.agent)
-                        .is_some_and(EngineKind::chat_capable),
+                .map(|s| {
+                    // 導出値は engine 判定 1 回に畳む（能力表 = EngineKind が SSOT）。
+                    let kind = EngineKind::from_agent(&s.agent);
+                    LaneSessionView {
+                        key: s.key,
+                        agent: s.agent.clone(),
+                        mode: s.mode,
+                        conversation: s.conversation.clone(),
+                        chat_capable: kind.is_some_and(EngineKind::chat_capable),
+                        model: s.model.clone(),
+                        model_choices: kind.map(EngineKind::model_choices).unwrap_or_default(),
+                        permission_choices: kind
+                            .map(EngineKind::permission_choices)
+                            .unwrap_or_default(),
+                    }
                 })
                 .collect(),
         }
@@ -595,6 +617,10 @@ pub struct ResolvedSession {
     /// chat 経路の gate は root の mode ではなく**当該 session の mode** で判定する必要がある
     /// （root で gate すると非 root の chat に replay が届かない。team-b review 2026-07-25）。
     pub mode: SessionMode,
+    /// session の model 指定（registry が SSOT — resolve 時の registry load から同梱。
+    /// host 構築の `--model` 解決が別 store を読み直さないための持ち回り。
+    /// 2026-07-27 に per-lane `engine_model` file から session 紐づけへ移行）。
+    pub model: Option<String>,
 }
 
 /// [`LanePool::list_chat_sessions`] の 1 要素 — registry（永続）+ runtime（engine 生死）+
@@ -1479,6 +1505,7 @@ impl LanePool {
             conversation: entry.conversation.clone(),
             // doc 50 §4.6 A6: chat 経路の gate はこの値で行う（root cache では非 root を弾く）。
             mode: entry.mode,
+            model: entry.model.clone(),
         })
     }
 
@@ -1946,17 +1973,20 @@ impl LanePool {
             }
             Some(EngineKind::Claude) => {
                 // claude: 常駐 stream-json host。resume は registry の会話 id（doc 40 §5）。
-                // doc 33 C2: transcript が実在する id だけ resume に渡す（stale/phantom id で
-                // "No conversation found" ハードエラーになるのを防ぐ = TUI の `|| claude` 相当）。
+                // doc 33 C2: 会話が成立した id だけ resume に渡す（stale/phantom id で
+                // "No conversation found" ハードエラーになるのを防ぐ = TUI の `|| claude` 相当。
+                // 判定は実在でなく会話成立 — meta-only の幻 transcript は resume しても
+                // 空会話が開くだけの stable-wrong になる、2026-07-27）。
                 let resume = resolved
                     .conversation
                     .clone()
-                    .filter(|id| crate::lane::cc_session::transcript_exists(id));
-                // gui モデル切替: lane に永続された model を `--model` に渡す（未記録 = claude default）。
-                // 切替（console_set_model）は record → engine 入替で行われ、resume と組むことで
-                // 会話コンテキストを保ったままモデルだけ替わる。model は lane 単位（session 間で
-                // 共有 — per-session 化は dogfood 後に判断）。
-                let model = crate::lane::engine_model::last(&addr.repo, &lane_label);
+                    .filter(|id| crate::lane::cc_session::transcript_has_conversation(id));
+                // gui モデル切替: session に永続された model を `--model` に渡す（None = engine
+                // 既定 = 注入しない）。切替（conversation_set_model）は registry 書込 → engine
+                // 入替で行われ、resume と組むことで会話コンテキストを保ったままモデルだけ替わる。
+                // model は session 単位（mako 裁定 2026-07-27 — doc 50 session=Pane で 1 lane
+                // 多 session になり、旧 per-lane `engine_model` file は退役）。
+                let model = resolved.model.clone();
                 ChatHost::Claude(crate::conversation::ClaudeHost::spawn(
                     crate::conversation::ClaudeHostConfig {
                         cwd: info.cwd.clone(),

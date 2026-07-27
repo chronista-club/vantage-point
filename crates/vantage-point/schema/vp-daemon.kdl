@@ -26,7 +26,7 @@
 //   repo-proxy は subscribe handshake 前提（unison-mcp 未対応）＋要 repo 起動のため follow-up
 //   （creo mem_1CcuR73WSNFkyAgzVJvWyF ＝ unison-mcp の handshake 対応 or daemon auto-subscribe が要る）。
 // 2026-07-12 拡張: daemon-control の read-safe subset（hub/discover）を追加 — hub registry の
-//   nodes 一覧 + connected liveness（hub protocol v0.6.0）を MCP から照会可能にする。
+//   nodes 一覧 + connected liveness（hub protocol v0.7.0）を MCP から照会可能にする。
 //   repos/* mutation は手で叩くと repos.kdl 状態を壊すため記述しない（registry と同じ方針）。
 
 protocol "vp-daemon" version="0.2.0" {
@@ -61,7 +61,7 @@ protocol "vp-daemon" version="0.2.0" {
     channel "daemon-control" from="client" lifetime="persistent" {
         request "hub/discover" description="chronista-hub registry に登録された daemon 一覧を返す federation discovery。daemon が credential 付きで hub の nodes.Discover を叩く（SSOT: hub と話すのは daemon のみ）。各 entry の connected (bool) は hub との常駐接続が今生きているかの liveness — false は registry に居るが relay は offline を返す (stale / 切断中)。hub addr 未設定（env CHRONISTA_HUB_ADDR / config.kdl hub-addr）ならエラーを返す。引数なし。" {
             returns "DaemonList" {
-                field "worlds" type="json" required=#true description="daemon の配列。各要素は { wld_id, handle, name, endpoints[], registered_at, connected }。connected=true は relay 到達可、false は offline (stale entry / 切断中)。"
+                field "nodes" type="json" required=#true description="daemon の配列。各要素は { node_id, handle, name, endpoints[], registered_at, connected }。connected=true は relay 到達可、false は offline (stale entry / 切断中)。"
             }
         }
         request "lanes/list" description="全 repo 横断の lane 一覧を返す read-only 照会。各 lane は repo / name (開発起点は予約名 root) / agent / state (spawning|running|exiting|dead) を持つ。`vp ps` の LANES / STATUS 列や外部 agent の俯瞰に使う。repo 単位の詳細操作は repo-proxy 経由。全ての引数は省略可で、省略 = 絞り込みなし。並びは repo 名昇順 → 同 repo 内は開発起点 (root) が先 → 作成順。" {

@@ -75,7 +75,7 @@ async fn direct_race_delivers_wire_envelope_despite_dead_decoy() -> anyhow::Resu
     let (handle, port) = start_wire_target(rx_tx).await?;
 
     let entry = NodeEntry {
-        wld_id: "wld_direct-e2e".to_string(),
+        node_id: "nd_direct-e2e".to_string(),
         // dead decoy 先頭 + live: race が decoy の失敗を待たずに live を掴むこと。
         endpoints: vec!["[::1]:1".to_string(), format!("[::1]:{port}")],
         handle: "direct-e2e".to_string(),
@@ -113,7 +113,7 @@ async fn direct_all_dead_fails_bounded() -> anyhow::Result<()> {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 
     let entry = NodeEntry {
-        wld_id: "wld_direct-dead".to_string(),
+        node_id: "nd_direct-dead".to_string(),
         endpoints: vec!["[::1]:1".to_string()],
         handle: "direct-dead".to_string(),
         name: "dead target".to_string(),
