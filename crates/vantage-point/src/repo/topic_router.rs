@@ -236,7 +236,13 @@ impl TopicRouter {
     pub async fn subscribe(&self, pattern: &str) -> (u64, mpsc::Receiver<(String, RepoMessage)>) {
         let pattern_str = pattern.to_string();
         let pattern = TopicPattern::parse(pattern);
-        let (tx, rx) = mpsc::channel(256);
+        // 1024: conversation transcript replay 1 本（上限 = REPLAY_EVENT_CAP 800 + 前後 marker）を
+        // まるごと buffer できる容量（webview 側 ring buffer 1000 とも整合）。route() は
+        // try_send（溢れ = 無音 drop）なので、容量 < replay 長だと attach 直後の一括配送が
+        // 尻切れて ReplayEnd 欠落 → chat が会話の前半だけで復元される（2026-07-27 fleetstage
+        // で実測 — 旧 256 は 3 重 demand の並行 burst で溢れていた。並行 route 自体は
+        // ReplayFlights の single-flight 化で根治済みで、ここは単発長尺 replay への備え）。
+        let (tx, rx) = mpsc::channel(1024);
 
         // Retained メッセージの初期配信
         {
