@@ -24,10 +24,10 @@ README は work in progress、詳細は `docs/` 配下。
 - **Port Management** — `33000 + slot × 100 + lane × 10 + role` で
   Lane × role port が透過的固定、bookmark 可能
 
-内部 codename は JoJo's Bizarre Adventure のスタンド:
-TheWorld 👑 (Process Manager / 常駐デーモン) / Star Platinum ⭐ (Project Core / TUI 統合ビュー) /
-Echoes 💬 (Coding Assistant、 旧 Heaven's Door 📖) / Paisley Park 🧭 (Information Navigator) /
-Gold Experience 🌿 (Code Runner) / Hermit Purple 🍇 (External Control) 等。
+アーキテクチャは機能名で構成:
+daemon ⚙️ (Process Manager / 常駐デーモン) / repo 📦 (Repo Runtime) /
+conversation 💬 (AI との会話層) / board 🧭 (Information Navigator) /
+runner 🌿 (Code Runner) / devices 🧲 + device_io 🌫️ (device 連携) 等。
 命名定義は `crates/vantage-point/src/stands.rs` に集約。
 
 ## インストール
@@ -128,8 +128,8 @@ vp config             # 設定と登録プロジェクトを表示
 vp update             # 最新版に更新
 vp mcp                # MCP サーバーとして起動（Claude Code 用）
 
-# TheWorld（常駐デーモン）
-vp daemon             # TheWorld 起動（alias: vp world）
+# daemon（常駐デーモン）
+vp daemon             # daemon 起動
 vp daemon start|stop|status
 
 # App（vp-app GUI）
@@ -174,10 +174,10 @@ SolidJS + creo-ui）。notarized `.dmg` でインストールする（上記「�
 vp-app (GUI: wry+tao)   vp (CLI)
         └────────┬───────┘
                  │ HTTP + QUIC
-        TheWorld 👑 :32000          ← Process Manager (常駐 daemon)
+        daemon ⚙️ :32000          ← Process Manager (常駐 daemon)
                  │ spawn + reconcile
      ┌───────────┼───────────┐
-   SP :33000   SP :33001   ...      ← Star Platinum ⭐ (project ごと)
+   repo :33000 repo :33001 ...     ← repo 📦 (repo ごと)
 ```
 
 ---
@@ -187,7 +187,7 @@ vp-app (GUI: wry+tao)   vp (CLI)
 ```
 vantage-point/
 ├── crates/
-│   ├── vantage-point/   # server lib (TheWorld + SP の HTTP/WS server)
+│   ├── vantage-point/   # server lib (daemon + repo の HTTP/WS server)
 │   ├── vp-paths/        # config/data/state path 解決 (XDG SSOT、 vantage-point + vp-app 共有)
 │   ├── vp-app/          # Rust GUI (wry + tao + xterm.js + creo-ui) — Mac 主軸
 │   │   └── webview/  # SolidJS フロントエンド（vp-app に同梱）

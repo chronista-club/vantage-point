@@ -70,7 +70,7 @@ client 側まで含めると、「lane の session 一覧 × 各 act」は **10 
 | 4 | `sidebar_state.lanes_by_repo` | 3 の写し（vp-app Rust） |
 | 5 | `console.ts` `laneSessions` | **別 RPC**（`echoes_session_list`） |
 | 6 | `lane-panes.ts` `sessionsByLane` | event bus |
-| 7 | `EchoesHeader.tsx` `sessions` signal | 同じ event bus |
+| 7 | `LaneHeader.tsx` `sessions` signal | 同じ event bus |
 | 8 | World A `laneInstances` + `isRootHost` | 命令（`ensureLane`） |
 | 9 | `terminal_pumps` | slot の存在から |
 | 10 | `pty_slots` / `chat_engines` | **実体** |
@@ -444,7 +444,7 @@ boot 復元後（`lane_spawn_actor` の restore 末尾 + `server.rs` run() の c
 | | before | after |
 |---|---|---|
 | IPC tag | 3（+ `ready`） | `ready` のみ |
-| `AppEvent` | `LanesEnsureAll` / `BastetDevicesFetch` / `BoardDemand` | `WebviewReady` |
+| `AppEvent` | `LanesEnsureAll` / `DevicesFetch`（旧 Bastet* 名）/ `BoardDemand` | `WebviewReady` |
 
 **新しい面を足しても JS 側に行は増えない** — Rust の handler に replay を 1 行足すだけ。
 
@@ -559,7 +559,7 @@ GUI に出ない」を直した結果 pane が出るようになり、**その�
 機構（reconcile）より上の層で、**この機会に一緒に見直す**もの。答えを先に書かず論点として置く。
 
 **① `act` の定義軸は「見え方」か「今どの資源で往復しているか」か。**
-doc 50 §4.0 は Echoes を「往復そのもの。違いは**見え方** × **投げる先**」と定義した。実装では
+doc 50 §4.0 は conversation（当時の名: Echoes）を「往復そのもの。違いは**見え方** × **投げる先**」と定義した。実装では
 act = tui/chat が「PTY-hosted TUI か headless stream-json か」= **資源の種類**と 1:1 に対応する。
 定義（見え方）と実装（資源）が一致しているのは幸運か、それとも**見え方が資源に縛られている**
 のか。後者なら「同じ会話を chat で見ながら別 pane で TUI」も原理上ありうる話になる（今は
@@ -725,12 +725,12 @@ presence（lane の働き手 = mailbox の主）の 3 概念が「session」1 �
 
 ```
 Lane（場所）
-└── Echoes（presence）— VP 発行 ID、生成時に確定、不変。agent@<lane> の解決先（= 旧 root）
+└── conversation presence — VP 発行 ID、生成時に確定、不変。agent@<lane> の解決先（= 旧 root）
     ├── active: ConvId（lane 宛 mail に誰が答えるか。旧 root/focused の非対称はここに畳まれる）
     └── conversations: [ConvId]
 Conversation — VP 発行 ID。engine: EngineKind / engine_ref: Option<String>（cc_session 等、
     私有・後着・交換可）/ act: レンズ
-Pane — view（ConvId に紐づく）。shell pane は conversation を持たない pane = Echoes の外
+Pane — view（ConvId に紐づく）。shell pane は conversation を持たない pane = conversation の外
 ```
 
 **原則: engine の id は「値」として流れてよいが「鍵」になってはならない**（`--resume` の
@@ -751,7 +751,7 @@ Pane — view（ConvId に紐づく）。shell pane は conversation を持た�
 - **本 doc の本丸（intent/実体の reconcile）は消えない** — R2/R3 はそのまま必要。World A/B も無関係
 - mapping invariant（VP id → engine_ref が腐ると silent fresh resume）が registry に集中
   （[[ssot-concentrates-existing-weakness]]）
-- **[[writer-without-reader]] の前例 = `LaneId`（2 年間読み手ゼロ）**。Echoes ID は読み手
+- **[[writer-without-reader]] の前例 = `LaneId`（2 年間読み手ゼロ）**。conversation ID は読み手
   （mailbox 解決 / chat 動詞の既定宛先）と同じ PR で入れること
 - 移行は forward-only（§6.5.2 の教訓 — 過去会話の migration は書かない）
 

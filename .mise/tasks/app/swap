@@ -72,14 +72,14 @@ end
 # (profile 分離: dev/brew を別 task に)。 ずれると disable し損ねて install が hang する。
 def win_task_name
   profile = ENV["VP_PROFILE"]
-  profile.nil? || profile.empty? ? 'VP\TheWorld' : "VP\\TheWorld-#{profile}"
+  profile.nil? || profile.empty? ? 'VP\Daemon' : "VP\\Daemon-#{profile}"
 end
 
 def win_task_installed?(task)
   VP.try("schtasks", "/query", "/tn", task, out: File::NULL, err: File::NULL)
 end
 
-# TheWorld の listen port。 vp_paths::default_world_port() と同形 (profile 分離)。
+# daemon の listen port。 vp_paths::default_daemon_port() と同形 (profile 分離)。
 def world_port
   profile = ENV["VP_PROFILE"]
   profile.nil? || profile.empty? ? 32_000 : 32_100

@@ -22,7 +22,7 @@ Phase 2: プロトコル型（完了）— 能力間 / agent 間通信を wirems
 Phase 3: プラグイン型（将来）— WASM で能力を動的ロード
 ```
 
-> **Phase 2 補足**: agent 間メッセージング基盤は数次の再設計を経ている。 当初は in-memory `TopicRouter` ベース → VP-169（doc 19）で `WhitesnakeStore`（SurrealDB embedded primary）→ 最終的に 2026-05 の **wiremsg 再設計（R1〜R6、 PR #406〜#420）** で per-agent cursor の wire accumulation モデルに統一された。 旧 msgbox 実装（`MsgboxStore` / `WhitesnakeStore` / `msgs` table / `MsgboxRegistry`）は全廃済。 現行の能力間 / agent 間メッセージングは wiremsg（`wire_send` / `wire_recv` / `wire_thread`）。 `TopicRouter` 自体は Canvas / pane content の broadcast 配信用途で引き続き存在する（`process/topic_router.rs`）。
+> **Phase 2 補足**: agent 間メッセージング基盤は数次の再設計を経ている。 当初は in-memory `TopicRouter` ベース → VP-169（doc 19）で `旧永続化レイヤーStore`（SurrealDB embedded primary）→ 最終的に 2026-05 の **wiremsg 再設計（R1〜R6、 PR #406〜#420）** で per-agent cursor の wire accumulation モデルに統一された。 旧 msgbox 実装（`MsgboxStore` / `旧永続化レイヤーStore` / `msgs` table / `MsgboxRegistry`）は全廃済。 現行の能力間 / agent 間メッセージングは wiremsg（`wire_send` / `wire_recv` / `wire_thread`）。 `TopicRouter` 自体は Canvas / pane content の broadcast 配信用途で引き続き存在する（`process/topic_router.rs`）。
 
 ### REQ-CAP-001: Capability トレイト
 
@@ -52,7 +52,7 @@ Phase 3: プラグイン型（将来）— WASM で能力を動的ロード
 
 **実装**: `crates/vantage-point/src/capability/wiremsg_store.rs`（store、 daemon 上で稼働）+ `process/routes/wire.rs`（daemon handlers）+ `process/world_wire.rs`（repo→daemon client）、 CLI は `commands/wire.rs`
 
-> **改訂 (2026-05-21)**: 本要件はもともと「msgbox v2（WhitesnakeStore）」 として VP-169 epic（doc 19）の `MsgboxStore` / `WhitesnakeStore` / `msgs` table を指していたが、 2026-05 の **wiremsg 再設計（R1〜R6、 PR #406〜#420）** で msgbox substrate が全廃され、 per-agent cursor の **wire accumulation** モデルに置き換わった。 旧 msgbox 実装（`MsgboxStore` / `WhitesnakeStore` / `msgs` / `msgbox` table / `MsgboxRegistry` / `vp mailbox`）は撤去済。 doc 19 / doc 16-18 は msgbox 設計の historical reference。
+> **改訂 (2026-05-21)**: 本要件はもともと「msgbox v2（旧永続化レイヤーStore）」 として VP-169 epic（doc 19）の `MsgboxStore` / `旧永続化レイヤーStore` / `msgs` table を指していたが、 2026-05 の **wiremsg 再設計（R1〜R6、 PR #406〜#420）** で msgbox substrate が全廃され、 per-agent cursor の **wire accumulation** モデルに置き換わった。 旧 msgbox 実装（`MsgboxStore` / `旧永続化レイヤーStore` / `msgs` / `msgbox` table / `MsgboxRegistry` / `vp mailbox`）は撤去済。 doc 19 / doc 16-18 は msgbox 設計の historical reference。
 >
 > **改訂 (2026-06-11、 R2-a)**: wire store を **daemon（`db/daemon/`）に中央化**（設計 memory `mem_1CbvcJj4ppU3QKH9d7xMpT`）。 daemon が唯一の writer となり、 repo の wire ハンドラは「アドレス正規化 → daemon へ HTTP relay」の proxy に。 これに伴い per-repo store と cross-process forward（`wire_remote`、 旧 R3）は概念ごと撤去（B1/B2 バグの根治）。 local_seq は daemon 採番でマシン大域単調。
 
@@ -76,8 +76,8 @@ wiremsg は agent 間メッセージングの substrate。 message は中央 sto
 
 > **改訂 (2026-07-27)**: 旧 `MidiCapability`（REQ-CAP-010）と LPD8 単体定義（REQ-CAP-011）は
 > 撤去済 — single-device monitor は消費者不在のまま enumeration 先頭 device を無条件 grab する
-> 害だけが残っていた（fleet dogfood で発覚）。現行の device 連携は **Bastet 🧲（machine scope の
-> multi-device registry）+ Justice 🌫️（Lane scope の双方向 I/O）**。設計 SSOT =
+> 害だけが残っていた（fleet dogfood で発覚）。現行の device 連携は **devices 🧲（machine scope の
+> multi-device registry）+ device_io 🌫️（Lane scope の双方向 I/O）**。設計 SSOT =
 > `design/23-bastet-justice-stand-wiring.md`、実装 = `crates/vantage-point/src/bastet.rs` /
 > `justice.rs`。CLI は `vp midi lpd8 write|switch` / `vp midi monitor|ports`。
 
@@ -100,5 +100,5 @@ wiremsg は agent 間メッセージングの substrate。 message は中央 sto
 
 - `archive/02-capability-evolution.md` (VP-DESIGN-002) — 旧進化システム設計（ACT 進化系は 2026-07-27 撤去、 historical reference）
 - `design/14-wire-address-v3.md` — wire address モデル（Phase 2 プロトコル型 = wiremsg の address 仕様）
-- `design/19-msgbox-whitesnake-primary.md` (VP-169) — 旧 msgbox v2 / WhitesnakeStore 設計（wiremsg 再設計で全廃、 historical reference）
+- `design/19-msgbox-whitesnake-primary.md` (VP-169) — 旧 msgbox v2 / 旧永続化レイヤーStore 設計（wiremsg 再設計で全廃、 historical reference）
 - `crates/vantage-point/src/capability/` — 実装

@@ -72,7 +72,7 @@ VP の 1st ビューは「repo 選択 → TUI → AI 対話」。
 | REQ1.3 | 設定ファイル (`config.kdl` / `repos.kdl`) で複数repoを管理できる | Must |
 | REQ1.4 | `vp ps` で稼働中プロセスを一覧できる | Must |
 
-### R2: AI との対話（💬 Echoes — Coding Assistant、 旧 Heaven's Door 📖）
+### R2: AI との対話（💬 conversation）
 
 | ID | 要件 | 優先度 |
 |----|------|--------|
@@ -81,7 +81,7 @@ VP の 1st ビューは「repo 選択 → TUI → AI 対話」。
 | REQ2.3 | 複数セッションを切り替えられる（Ctrl+N / Ctrl+←→） | Should |
 | REQ2.4 | MCP サーバー経由で外部ツールから AI にプロンプトを送れる | Must |
 
-### R3: 情報の可視化（🧭 Paisley Park — Information Navigator）
+### R3: 情報の可視化（🧭 board）
 
 | ID | 要件 | 優先度 |
 |----|------|--------|
@@ -91,7 +91,7 @@ VP の 1st ビューは「repo 選択 → TUI → AI 対話」。
 | REQ3.4 | ファイル監視（watch_file）でログをリアルタイム表示できる | Should |
 | REQ3.5 | MCP ツール経由で AI が Canvas にコンテンツを表示できる | Must |
 
-### R4: コード実行（🌿 Gold Experience — Code Runner）
+### R4: コード実行（🌿 runner）
 
 | ID | 要件 | 優先度 |
 |----|------|--------|
@@ -99,7 +99,7 @@ VP の 1st ビューは「repo 選択 → TUI → AI 対話」。
 | REQ4.2 | 実行中のスクリプトを停止できる | Must |
 | REQ4.3 | MCP ツール経由で AI がコード実行を指示できる | Must |
 
-### R5: 外部コントロール（🍇 Hermit Purple — External Control）
+### R5: 外部コントロール（🧲 devices / 🌫️ device_io）
 
 | ID | 要件 | 優先度 |
 |----|------|--------|
@@ -141,10 +141,10 @@ VP の 1st ビューは「repo 選択 → TUI → AI 対話」。
 ```
 daemon ⚙️ (Process Manager / 常駐デーモン)
   └── repo 📦 (Repo Core / TUI 統合ビュー)
-        ├── Echoes 💬 (Coding Assistant / Claude CLI、 旧 Heaven's Door 📖)
-        ├── Paisley Park 🧭 (Information Navigator / Canvas)
-        ├── Gold Experience 🌿 (Code Runner / 動的実行)
-        └── Hermit Purple 🍇 (External Control / MIDI・tmux・MCP)
+        ├── conversation 💬 (AI との会話層)
+        ├── board 🧭 (Information Navigator)
+        ├── runner 🌿 (Code Runner)
+        └── devices 🧲 / device_io 🌫️ (device 連携)
 ```
 
 - **Process**: repoの開発プロセス本体。repo が主人公として各 Stand を束ねる
@@ -159,10 +159,10 @@ daemon ⚙️ (Process Manager / 常駐デーモン)
 
 | 入力 | 状態 | Stand |
 |------|------|-------|
-| テキスト入力（TUI） | 実装済み | 💬 Echoes |
-| MIDI コントローラー | 実装済み（LPD8） | 🍇 Hermit Purple |
-| tmux 連携 | 実装済み | 🍇 Hermit Purple |
-| MCP サーバー | 実装済み | 🍇 Hermit Purple |
+| テキスト入力（TUI） | 実装済み | 💬 conversation |
+| MIDI コントローラー | 実装済み（LPD8） | 🧲 devices |
+| tmux 連携 | 退役（tmux decoupling） | — |
+| MCP サーバー | 実装済み | 🍇 devices |
 
 ---
 

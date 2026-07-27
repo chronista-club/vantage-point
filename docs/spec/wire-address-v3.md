@@ -2,7 +2,7 @@
 
 > **改訂 (2026-05-21)**: 旧 msgbox 実装は 2026-05 の wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃された。
 > 本 doc が定義する **address モデル (`<actor>@<location>` syntax / identity model / reserved names) は wiremsg がそのまま継承**しており現行有効。
-> 一方、 撤去された実装 (`msg_*` MCP tool / `vp mailbox` CLI / `MsgboxRouter` / `WhitesnakeStore`) への言及は wiremsg の代替 (`wire_send` / `wire_recv` / `wire_thread` / `vp wire`) に読み替えること。
+> 一方、 撤去された実装 (`msg_*` MCP tool / `vp mailbox` CLI / `MsgboxRouter` / `旧永続化レイヤーStore`) への言及は wiremsg の代替 (`wire_send` / `wire_recv` / `wire_thread` / `vp wire`) に読み替えること。
 > federated 拡張の一部は既に実装が先行している: **hub relay 経由の cross-PC federation (register / discover / direct→relay 配送) は実装済**（現行挙動は [`../guide/messaging.md`](../guide/messaging.md) §3 が正）。 mDNS 等その他は将来計画。 本 spec は address モデル (identity / syntax) の設計意図を記録するもので、 配送の現状は messaging.md を参照。
 
 > **Status**: address モデルは現行有効 (wiremsg が継承)。 旧称 "Msgbox address v3.1" (VP-144 Epic、 Phase 0 SDG)。
@@ -182,7 +182,7 @@ macbook.local              → mDNS local (LAN)
 |-------|------|-----------|
 | **Phase 0** (本 doc) | SDG 3 file 整備 | `VP-145` |
 | **Phase 1** | Parser 拡張 + actor optional | `VP-146` |
-| **Phase 2** | per-lane wire inbox + sidebar Echoes 横 icon | `VP-147` |
+| **Phase 2** | per-lane wire inbox + sidebar conversation 横 icon | `VP-147` |
 | **Phase 3** | mDNS resolver — LAN MVP 完成 | `VP-148` |
 | Phase 4 | hub MVP (chronista.club) | (placeholder) |
 | Phase 5 | Ruby DSL / CLI / sidebar UI 全面 v3 対応 | (placeholder) |

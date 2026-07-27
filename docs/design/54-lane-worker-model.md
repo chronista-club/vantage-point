@@ -77,7 +77,7 @@ GUI 側: **注視（focused）は client 所有**。server の pointer は代表
     **新しい働き手を隣に雇う**。engine_ref（cc_session 等の外部会話 id）は**内部属性** —
     resume の spawn 引数として「値」で流れるのは正、wire field / state file 名 / 配送判断の
     「鍵」になるのは誤
-  - **shell** — 人間が駆る席。The Hand ✋（stands.rs が語彙を先取りしていた）。
+  - **shell** — 人間が駆る席（旧愛称 The Hand ✋ — 愛称レイヤーはエピック 9/9 で撤去済み）。
     **wire の市民権は席に付く**: 席の env（`VP_REPO` / `VP_LANE` / `VP_SESSION_KEY`）が
     身分証で、`vp wire inbox` / `vp now` / board がフルに使える。
     **欠けているのは AI だけで、席の能力は 1 つも欠けない**
