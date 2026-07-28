@@ -122,6 +122,12 @@ pub struct UpdateApply {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthLogin;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthLogout;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidebarState {
     pub state: serde_json::Value,
 }
@@ -214,6 +220,10 @@ pub enum IpcEnvelope {
     WireAck(WireAck),
     #[serde(rename = "update:apply")]
     UpdateApply(UpdateApply),
+    #[serde(rename = "auth:login")]
+    AuthLogin,
+    #[serde(rename = "auth:logout")]
+    AuthLogout,
 }
 
 /// Envelope enum for channel "ipc" — a discriminated union over its

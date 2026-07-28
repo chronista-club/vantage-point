@@ -111,6 +111,7 @@ async fn run_hub_federation_resident_relay_target() {
     let shutdown = CancellationToken::new();
     let status = hub_client::HubFederationStatus::new();
     let daemons_cache = hub_client::HubNodesCache::new();
+    let auth = hub_client::HubAuthStatus::new();
     // この test は register + relay target liveness を見るので、配送 handler は no-op で十分。
     let driver = tokio::spawn(hub_client::run_hub_federation(
         addr.clone(),
@@ -120,6 +121,7 @@ async fn run_hub_federation_resident_relay_target() {
         "VP resident target".to_string(),
         status.clone(),
         daemons_cache.clone(),
+        auth,
         shutdown.clone(),
         |_inbound| async {},
     ));

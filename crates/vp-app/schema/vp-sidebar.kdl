@@ -125,6 +125,12 @@ protocol "sidebar" version="1.0.0" {
         request "update:apply" {
             field "version" type="string"
         }
+        // Hub 行の Login ボタン: `vp auth login` (browser OAuth) を spawn し、 成功後に
+        // daemon-control.hub/reconnect で hub 接続へ即反映する (auth_flow.rs)。
+        request "auth:login" {}
+        // Hub 行の Logout ボタン: macOS ネイティブ確認ダイアログ (rfd) → `vp auth logout` →
+        // hub/reconnect。 hub 接続は匿名に落ちる (permissive hub なら接続自体は維持される)。
+        request "auth:logout" {}
 
         // ===================================================================
         // server → client（Rust が sidebar bundle へ押し込む）

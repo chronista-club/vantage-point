@@ -157,6 +157,12 @@ pub(crate) struct AppState {
     /// 接続直後 + 定期 discover で更新する（自 daemon 除外・handle dedup 済、切断で clear）。
     /// repo / test mode では常に空。
     pub hub_nodes: crate::daemon::hub_client::HubNodesCache,
+    /// hub 接続の credential 提示結果（`/api/health` の `hub_auth` field）。
+    ///
+    /// daemon mode では [`run_hub_federation`](crate::daemon::hub_client::run_hub_federation) が
+    /// 接続確立 / 切断ごとに更新する（credentialed / anonymous / unknown）。vp-app sidebar の
+    /// Hub 行が Login / Logout ボタンの切替に使う。repo / test mode では `Unknown` のまま。
+    pub hub_auth: crate::daemon::hub_client::HubAuthStatus,
     /// Interactive Claude agent (stream-json mode for structured communication)
     pub interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
     /// Processの待ち受けポート番号
@@ -446,6 +452,7 @@ pub(crate) async fn build_test_app_state_with(
         update: None,
         hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
         hub_nodes: crate::daemon::hub_client::HubNodesCache::new(),
+        hub_auth: crate::daemon::hub_client::HubAuthStatus::new(),
         interactive_agent: Arc::new(RwLock::new(None)),
         port: 0,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),

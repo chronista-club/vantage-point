@@ -58,6 +58,10 @@ export function DaemonWidget() {
 		}
 	};
 	const showHub = () => online() && hub() !== "" && hub() !== "disabled";
+	// hub 接続の auth 状態（`/api/health` の `hub_auth`）: "credentialed" / "anonymous" / 空。
+	// 表示の SSOT は file でなく「接続がどう成立したか」— login 済み file があっても接続が
+	// 匿名なら Login を出す（再ログイン + 再接続が正しい復旧手順のため）。
+	const hubCredentialed = () => (a().hub_auth ?? "") === "credentialed";
 
 	// uptime 表示を 30s 周期で tick させる (started_at は不変なので時計側を signal 化)。
 	const [now, setNow] = createSignal(Date.now());
@@ -129,6 +133,25 @@ export function DaemonWidget() {
 				>
 					<span class="vp-daemon-dot" classList={{ offline: !hubConnected() }} />
 					<span class="vp-daemon-line">{hubLabel()}</span>
+					<button
+						type="button"
+						class="vp-hub-auth-btn"
+						title={
+							hubCredentialed()
+								? "Creo ID からログアウトする（hub 接続は匿名に落ちる）"
+								: "Creo ID にログインする（browser で認証 → hub 接続に即反映）"
+						}
+						onClick={(e) => {
+							e.stopPropagation();
+							if (hubCredentialed()) {
+								sendIpc({ t: "auth:logout" });
+							} else {
+								sendIpc({ t: "auth:login" });
+							}
+						}}
+					>
+						{hubCredentialed() ? "Logout" : "Login"}
+					</button>
 				</div>
 				<Show when={hubConnected() && hubDaemons().length > 0}>
 					<div class="vp-hub-nodes">

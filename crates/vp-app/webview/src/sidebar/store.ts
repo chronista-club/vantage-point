@@ -26,6 +26,7 @@ export function emptyState(): SidebarState {
 			running_repo_count: 0,
 			hub: "",
 			hub_nodes: [],
+			hub_auth: "",
 			presence: {},
 			update_available: false,
 		},

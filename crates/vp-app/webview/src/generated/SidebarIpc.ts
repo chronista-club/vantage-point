@@ -173,6 +173,12 @@ export interface UpdateApply {
   version: string;
 }
 
+/** Request "auth:login" — empty payload */
+export interface AuthLogin {}
+
+/** Request "auth:logout" — empty payload */
+export interface AuthLogout {}
+
 /** Event name → 生成 interface の map for "ipc" (= type-narrowing 用) */
 export type IpcChannelEventTypes = {
   SidebarState: SidebarState;
@@ -207,6 +213,8 @@ export type IpcChannelRequestTypes = {
   WireFetch: { request: WireFetch; response: void };
   WireAck: { request: WireAck; response: void };
   UpdateApply: { request: UpdateApply; response: void };
+  AuthLogin: { request: AuthLogin; response: void };
+  AuthLogout: { request: AuthLogout; response: void };
 };
 
 /** Channel metadata for "ipc" (= Phase 2 runtime SDK 用 type-narrowing 入力) */
@@ -237,6 +245,8 @@ export const IpcChannelMeta = {
     WireFetch: { request: "wire:fetch" as const, response: "void" as const },
     WireAck: { request: "wire:ack" as const, response: "void" as const },
     UpdateApply: { request: "update:apply" as const, response: "void" as const },
+    AuthLogin: { request: "auth:login" as const, response: "void" as const },
+    AuthLogout: { request: "auth:logout" as const, response: "void" as const },
   } as const,
   __types: undefined as unknown as { events: IpcChannelEventTypes; requests: IpcChannelRequestTypes },
 } as const;
@@ -262,7 +272,9 @@ export type IpcEnvelope =
   | ({ t: "files:open" } & FilesOpen)
   | ({ t: "wire:fetch" } & WireFetch)
   | ({ t: "wire:ack" } & WireAck)
-  | ({ t: "update:apply" } & UpdateApply);
+  | ({ t: "update:apply" } & UpdateApply)
+  | ({ t: "auth:login" } & AuthLogin)
+  | ({ t: "auth:logout" } & AuthLogout);
 
 /** Envelope union for channel "ipc" — discriminated on "t". */
 export type IpcEventEnvelope =

@@ -153,6 +153,15 @@ impl DaemonControl {
         Ok(())
     }
 
+    /// hub federation 接続の即時張り直しを要求する (auth login/logout 後の credential 反映)。
+    ///
+    /// daemon 側は常駐ループへ Notify を積むだけの fire-and-forget — 数秒後の `/api/health`
+    /// に新しい `hub_auth` が現れる。hub 未設定 daemon でも成功が返る (no-op)。
+    pub async fn hub_reconnect(&self) -> Result<()> {
+        self.control("hub/reconnect", serde_json::json!({})).await?;
+        Ok(())
+    }
+
     /// repo を登録解除する (旧 `POST /api/daemon/repos/remove`)。
     ///
     /// daemon の `remove_repo` は稼働中だとエラーを返すので、caller は先に

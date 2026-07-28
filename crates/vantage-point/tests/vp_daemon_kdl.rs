@@ -166,6 +166,9 @@ const DAEMON_CONTROL_OMITTED_BY_DESIGN: &[&str] = &[
     // read-safe なので KDL に記述済み。
     "host/farewell_observe",
     "host/farewell_reclaimed",
+    // hub 接続の張り直しトリガ（auth login/logout 後の credential 即反映、vp-app 専用）。
+    // mutation 側なので read-safe subset の方針に従い agent には露出しない。
+    "hub/reconnect",
     // liveness probe（surface の共有 connection 用、観測面ではない）
     "ping",
 ];
