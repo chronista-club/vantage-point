@@ -55,6 +55,12 @@ pub struct LaneRestart {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaneNewRoot {
+    pub path: String,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaneSetOrigin {
     pub path: String,
     pub address: String,
@@ -198,6 +204,8 @@ pub enum IpcEnvelope {
     LaneDelete(LaneDelete),
     #[serde(rename = "lane:restart")]
     LaneRestart(LaneRestart),
+    #[serde(rename = "lane:new_root")]
+    LaneNewRoot(LaneNewRoot),
     #[serde(rename = "lane:set_origin")]
     LaneSetOrigin(LaneSetOrigin),
     #[serde(rename = "lane:reorder")]
