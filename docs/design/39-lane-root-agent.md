@@ -262,3 +262,61 @@ root 切替を許すと「選んだ会話と別 engine の新品」が無言で�
 | **B** | **OpenCode**（anomalyco/opencode、活発）を AcpHost に挿す — `opencode acp`（stdio ACP）+ LM Studio/Ollama/llama.cpp の公式 provider 対応。grok 統合の副産物として新 binary 追加のみで local 常駐 engine が増える | AcpHost 完成後ほぼゼロ |
 | C | VP 純正 engine（SP 内 agent loop、tool runtime が本体）。α: tool 無し chat → β: read-only tool → γ: 編集系。provider の口を modality 非依存に切る（音系/姿勢推定の種 = creo mem_1Cd7rpDkgeNDTW5nX1qcu6） | 大（長期候補） |
 | — | **Bionic**（LM Studio 純正 agent GUI、2026-07-16 preview）は API/CLI/ACP surface 未公開で現状口なし — server surface が生えたら再評価の watch | — |
+
+## 8. 追補 — 動詞語彙の棚卸しと混乱の診断（2026-07-30）
+
+> 発端: mako「このセッションを新しいセッションに置き換える経路ってあるんだっけ？」→「**新しい root を始める**。という観点」。
+> 調査の結論: **動線は既に存在する**（root pane の Reborn）。ただし探した本人（mako + AI セッション）が
+> どちらも最初に見つけられなかった — 問題は機能の欠落ではなく**語彙と所在**にある。
+> mako 裁定「ここの語彙からの混乱をまずは整理だなー。でも context menu からの動線を最初にやるのは悪くないと思ってる」
+> → 本節は整理（SSOT）。実装は裁定待ち（§8.4）。
+
+### 8.1 現行 4 動詞の全量（実装から採録、2026-07-30 時点）
+
+| 動詞 | 置き場所 | IPC | 実体（プロセス） | intent（registry / 会話 id） | pane 数 |
+|---|---|---|---|---|---|
+| **Add**（✨ + New） | lane ヘッダ | `console:new_session` | 追加 spawn | 新 session を**採番して増やす** | **+1** |
+| **Reborn** | **各 pane の名札** | （pane 単位） | 立て直す | その session を**新しい会話で始め直す** | 不変 |
+| **Restart / Respawn** | lane context menu | `lane:restart`（fresh なし） | 殺して立て直す | **1 bit も動かない** → resume で会話**継続** | 不変 |
+| **Reset Lane** 🔴 | lane context menu（2-click 確認） | `lane:restart` + `fresh:true` | 全破棄 | **root 1 本に戻す** + 全 replay log 破棄 | 1 に戻る |
+
+- Restart と Respawn は**同一 IPC**。lane の生死でラベルを出し分けているだけ（生 = Restart / 死 = Respawn）。
+- 「新しい root を始める（他の session は残す）」= **root pane で Reborn**。doc 50 §4.6 A6 が
+  旧「✨ 新 ID から」を Add（足す）× Reborn（始め直す）に直交分解した帰結で、意味論は正しい。
+
+### 8.2 2 軸で見る（実体 × intent）
+
+動詞の本質は「**実体**（生きているプロセス）をどうするか」×「**intent**（registry の会話 id）をどうするか」の 2 軸:
+
+| | intent を保つ | intent を捨てる | intent を増やす |
+|---|---|---|---|
+| **実体を殺す** | Restart / Respawn | Reset Lane（lane 全体）・Reborn（session 単位） | — |
+| **実体はそのまま** | — | — | Add |
+
+doc 53 §12.3 の原則（restart = 動詞が実体を捨てて reconcile が戻す / intent は不変）はこの左上のマスの話。
+混乱の根は、**実体側の動詞と intent 側の動詞が同じ語彙空間に並んでいて、名前からどちらの軸の操作か読めない**こと。
+
+### 8.3 混乱の診断（3 点）
+
+1. **同じ動作に 2 ラベル** — Restart / Respawn は同一動作。ユーザーには別動詞に見える。
+2. **Restart の語感が逆** — 「再スタート」と読めるが実際は resume で**同じ会話に戻る**。
+   「新しく始まりそうな語」が並ぶ中で、唯一「戻る」動詞なのに名前で区別できない。
+3. **動詞の所在が 3 面に散在** — lane ヘッダ（Add）/ pane 名札（Reborn）/ lane context menu
+   （Restart・Reset）。「lane を右クリックすれば全部ある」という期待が裏切られ、Reborn だけが
+   別の面に居る。今回の「動線が無い」という体感はこれが原因。
+
+### 8.4 方針（提案 — 実装は mako 裁定待ち）
+
+- **新しい動詞は足さない**。「新しい root を始める」の意味論は Reborn が既に持つ。A6 の
+  「同じことをする口を 2 つ作らない」は**合成動詞の禁止**であり、既存動詞への**別導線**の追加は
+  原則違反ではない、と整理する（裁定対象）。
+- 提案 1: **Restart / Respawn のラベル統一** + 挙動が読めるラベルへ（例:「Restart Session（会話は継続）」
+  一本化。生死での言い分けはラベルでなく icon / 状態表示で）。
+- 提案 2: **lane context menu に root の Reborn 導線を置く**（mako「context menu からの動線を最初に
+  やるのは悪くない」に沿う）。例:「New Root Conversation（他の session は残る）」。Reset Lane の
+  隣に置くことで「素に戻す」との強弱が並びで読める。
+- 提案 3: **CLI / MCP の面の非対称**は未決のまま記録 — restart / reset / reborn いずれも CLI・MCP に
+  無い。特に「AI が自分の会話を刷新して続きを始める」動線は AI セッション側から不可能（slot-new で
+  隣に足すことしかできない）。必要性が実感された時に設計する（YAGNI）。
+
+関連: doc 50 §4.6 A6（Add × Reborn 分解）/ doc 53 §12.3（restart = 実体のみ）/ doc 46 §1.5（session ↔ Pane 1:1）。
