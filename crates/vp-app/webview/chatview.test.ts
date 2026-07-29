@@ -19,6 +19,7 @@ import {
   clampNowLine,
   resolveAnswer,
   OTHER_LABEL,
+  isImeConfirmEnter,
 } from './chatview'
 import type { ConversationEvent } from './console'
 
@@ -1003,5 +1004,26 @@ describe('resolveAnswer — 選択状態 → engine に送る回答文字列（O
 
   it('未選択は空文字（= 未回答）', () => {
     expect(resolveAnswer([], '何か書いてあっても', false)).toBe('')
+  })
+})
+
+describe('isImeConfirmEnter — 変換確定 Enter と送信 Enter の判別（engine 別二段ガード）', () => {
+  it('素の Enter は false（= 送信してよい）', () => {
+    expect(isImeConfirmEnter({ isComposing: false, keyCode: 13 })).toBe(false)
+  })
+
+  it('Blink/Gecko: 確定 keydown は isComposing=true で弾く', () => {
+    expect(isImeConfirmEnter({ isComposing: true, keyCode: 13 })).toBe(true)
+  })
+
+  // WKWebView（wry）はこちら。compositionend が先に走り isComposing は既に false —
+  // keyCode 229 だけが確定 Enter の痕跡。この経路の取りこぼしが #963 初版の退行
+  // （日本語変換の確定でそのまま送信）の原因だった。
+  it('WebKit: isComposing=false でも keyCode 229 なら弾く', () => {
+    expect(isImeConfirmEnter({ isComposing: false, keyCode: 229 })).toBe(true)
+  })
+
+  it('フィールド欠落（合成イベント等）は false = 送信側に倒す', () => {
+    expect(isImeConfirmEnter({})).toBe(false)
   })
 })
