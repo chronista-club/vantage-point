@@ -638,6 +638,14 @@ pub(crate) async fn handle_daemon_control(
             // object で包む。unison-mcp synthesized tool の returns 記述 (vp-daemon.kdl) と一致。
             Ok(serde_json::json!({ "nodes": nodes }))
         }
+        // hub federation の即時再接続要求 (vp-app の auth:login/logout 後の credential 反映)。
+        // 常駐ループ ([`run_hub_federation`]) へ Notify を積むだけの fire-and-forget — 次の
+        // connect で `~/.vp/credentials.json` が読み直され、新しい auth 状態が `/api/health` の
+        // `hub_auth` に現れる。hub 未設定 (常駐ループ不在) でも成功を返す (permit が積まれるだけ)。
+        "hub/reconnect" => {
+            crate::daemon::hub_client::request_hub_reconnect();
+            Ok(serde_json::json!({ "ok": true }))
+        }
         // F1b heartbeat: surface (vp-app) の共有 connection liveness probe。 client→server の
         // 一方向で、 server は応答するだけ (世界状態に触れない no-op)。 vp-app の
         // `spawn_daemon_conn_manager` が 15s ごとに送り、 応答が来なければ connection 死と判断して

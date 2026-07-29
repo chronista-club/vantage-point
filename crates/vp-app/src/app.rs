@@ -2368,9 +2368,11 @@ async fn collect_activity(
         if !h.started_at.is_empty() {
             snap.daemon_started_at = Some(h.started_at);
         }
-        // hub federation 接続状態（Daemon 横の Hub インジケータ用）+ available nodes リスト。
+        // hub federation 接続状態（Daemon 横の Hub インジケータ用）+ available nodes リスト
+        // + 接続の auth 状態（Hub 行の Login / Logout ボタン切替用）。
         snap.hub = h.hub;
         snap.hub_nodes = h.hub_nodes;
+        snap.hub_auth = h.hub_auth;
         // in-app update: daemon の定期チェック結果（「更新する」ボタンの表示 gate + label）。
         snap.update_available = h.update_available;
         snap.latest_version = h.latest_version;
@@ -3219,6 +3221,14 @@ struct SidebarIpcOutcome {
     /// caller (event loop) が `update_flow::spawn_update_flow` を呼び、native 確認ダイアログ →
     /// self-update → `vp daemon restart` → GUI relaunch を専用スレッドで実行する。
     update_apply_request: Option<String>,
+    /// Hub 行の Login ボタン click 要求。caller (event loop) が blocking pool で
+    /// `auth_flow::run_login_blocking` (`vp auth login` spawn) を実行し、成功後に
+    /// `daemon-control.hub/reconnect` で hub 接続へ即反映する。
+    auth_login_request: bool,
+    /// Hub 行の Logout ボタン click 要求。caller (event loop) が blocking pool で
+    /// `auth_flow::run_logout_blocking` (確認ダイアログ → `vp auth logout`) を実行し、
+    /// 成功後に `daemon-control.hub/reconnect` で hub 接続へ即反映する。
+    auth_logout_request: bool,
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
@@ -3481,6 +3491,15 @@ fn handle_sidebar_ipc(
             if !m.version.is_empty() {
                 out.update_apply_request = Some(m.version);
             }
+        }
+        IpcEnvelope::AuthLogin => {
+            // Hub 行の Login ボタン。caller が `vp auth login` (browser OAuth) を blocking pool
+            // で実行し、成功後に hub/reconnect で接続へ即反映する。
+            out.auth_login_request = true;
+        }
+        IpcEnvelope::AuthLogout => {
+            // Hub 行の Logout ボタン。caller が確認ダイアログ → `vp auth logout` → hub/reconnect。
+            out.auth_logout_request = true;
         }
     }
     out
@@ -6203,6 +6222,42 @@ pub fn run() -> anyhow::Result<()> {
                 // 専用スレッドで起動する（event loop = main thread は塞がない）。
                 if let Some(version) = outcome.update_apply_request {
                     crate::update_flow::spawn_update_flow(version);
+                }
+                // Hub 行の Login / Logout ボタン click 要求。blocking フロー（browser OAuth
+                // 待ち / 確認ダイアログ / CLI spawn）を blocking pool で実行し、成功したら
+                // `daemon-control.hub/reconnect` で daemon の hub 接続に credential 変化を
+                // 即反映する（= 押した結果が数秒後の health poll で Hub 行に現れる）。
+                if outcome.auth_login_request || outcome.auth_logout_request {
+                    let login = outcome.auth_login_request;
+                    let conn = daemon_conn.clone();
+                    let rt = rt_handle.clone();
+                    rt_handle.spawn(async move {
+                        let flow = rt.spawn_blocking(move || {
+                            if login {
+                                crate::auth_flow::run_login_blocking()
+                            } else {
+                                crate::auth_flow::run_logout_blocking()
+                            }
+                        });
+                        // false = キャンセル / 失敗 / 二重起動 → credentials 不変なので反映不要。
+                        if !matches!(flow.await, Ok(true)) {
+                            return;
+                        }
+                        match conn.control().await {
+                            Ok(control) => {
+                                if let Err(e) = control.hub_reconnect().await {
+                                    tracing::warn!(
+                                        "auth flow: hub/reconnect 要求に失敗（次の自然な再接続で反映される）: {}",
+                                        e
+                                    );
+                                }
+                            }
+                            Err(e) => tracing::warn!(
+                                "auth flow: daemon 接続に失敗（hub/reconnect 未送信）: {}",
+                                e
+                            ),
+                        }
+                    });
                 }
             }
             // VP-100 γ-light: ResizeObserver からの slot 矩形通知を蓄積。

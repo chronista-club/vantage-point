@@ -528,6 +528,14 @@ html,body{margin:0;height:100%;overflow:hidden;}
   white-space:nowrap;}
 .vp-hub-daemon .v{color:var(--lg-mute-2,#38525b);flex:0 0 auto;
   font-variant-numeric:tabular-nums;}
+/* Hub 行右端の Login / Logout ボタン。地の muted 語彙のまま置き、hover でだけ持ち上げる
+   (頻度の低い操作なので常時アクセントは付けない)。 */
+.vp-hub-auth-btn{flex:0 0 auto;padding:1px 8px;border-radius:4px;cursor:pointer;
+  font-size:var(--sb-text-meta,11px);font-family:var(--vp-font-mono),var(--typography-family-mono);
+  color:var(--lg-mute,#5C7A85);background:transparent;
+  border:1px solid color-mix(in srgb,var(--lg-mute-2,#38525b),transparent 50%);}
+.vp-hub-auth-btn:hover{color:var(--lg-mute,#5C7A85);border-color:var(--lg-cyan-dim,#1C6C7C);
+  background:color-mix(in srgb,var(--lg-cyan-dim,#1C6C7C),transparent 88%);}
 /* in-app update: 新しい release 検知時のみ Daemon widget 直下に出る CTA 行。
    地の muted 語彙から一段持ち上げて「押せる」ことを示す (cyan accent + hover)。 */
 .vp-daemon-update{display:flex;align-items:center;gap:8px;margin:2px var(--spacing-sm,10px) 6px;

@@ -190,6 +190,10 @@ pub struct DaemonHealthInfo {
     /// daemon 側と同形なので `crate::pane::HubNode` をそのまま deserialize に使う。
     #[serde(default)]
     pub hub_nodes: Vec<crate::pane::HubNode>,
+    /// hub 接続の credential 提示結果（`"credentialed"` | `"anonymous"`、未接続 / 旧 daemon は空）。
+    /// sidebar Hub 行の Login / Logout ボタン切替に使う。
+    #[serde(default)]
+    pub hub_auth: String,
     /// L1 lifecycle: Daemon 配下 repo の presence 一覧（daemon-canonical、sidebar の ●◐○ 用）。
     /// 旧 daemon は field 不在 → 空。`path` で repo 行に join する。
     #[serde(default)]

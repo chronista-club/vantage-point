@@ -995,18 +995,62 @@ function PlanWidget(props: { entries: Accessor<PlanEntry[]> }) {
 }
 
 /**
+ * 「Other」= 自由記述の擬似選択肢を表す内部 label（Claude Code 本体の UI と同じ振る舞い）。
+ *
+ * ⚠️ **engine には決して送らない**。送るのは入力欄の中身そのもの（`answers` は
+ * `{question → 任意文字列}` で、host が verbatim で `updatedInput` にマージするため、
+ * 選択肢に無い文字列も素通しできる）。選択状態を持つためだけの sentinel。
+ *
+ * 値は実選択肢と衝突しないよう内部専用の prefix 付きにしてある（`label` は AI が書く
+ * 表示文字列なので、素の "Other" だと AI が同名の選択肢を出したとき誤爆する）。
+ */
+export const OTHER_LABEL = '__vp_other__'
+
+/**
+ * 選択状態 → engine に送る回答文字列（純関数、calculation）。
+ *
+ * - `OTHER_LABEL` は sentinel なので `otherText` の中身へ置換する（前後の空白は落とす）。
+ * - 空になった要素は捨てる（Other を選んだだけで未入力のとき、空文字を混ぜない）。
+ * - multiSelect は `", "` 結合の単一 string（回答 wire 形は doc §8 で未決のため保守的な形）。
+ *
+ * 戻り値が空文字 = **未回答**。呼び手はこれで確定可否を判定する（Other を選んだだけの
+ * 状態を「答えた」と見なすと、AI には空欄が回答として届いてしまう）。
+ */
+export function resolveAnswer(
+  labels: string[],
+  otherText: string,
+  multiSelect: boolean,
+): string {
+  const kept = labels
+    .map((l) => (l === OTHER_LABEL ? otherText.trim() : l))
+    .filter((l) => l !== '')
+  return multiSelect ? kept.join(', ') : (kept[0] ?? '')
+}
+
+/**
  * PromptCard（doc 35 §4）— HITL 質問（AskUserQuestion 横取り）の選択肢 UI。
  *
  * 各 question を見出し + 選択肢ボタンで描く。single-select は radio（クリックで置換）、
  * multiSelect は toggle（複数選択）。全質問に選択が付いたら「確定」で `answers` を組んで
  * onAnswer に渡す（親が conversation:respond を送り、カードを回答済み表示へ折りたたむ）。
+ *
+ * 選択肢の `description` は**可視要素として描く**（旧実装は `title` = tooltip のみで、
+ * 選択の判断材料が hover しないと読めなかった。型は Rust `QuestionOption.description` から
+ * 既に運ばれていたので、描画だけの欠落だった）。
+ *
+ * 末尾には「Other」を足し、選ぶと自由記述欄が開く（cc 本体と同じ）。加えて「キャンセル」で
+ * 質問自体を取り下げられる（`behavior:"deny"` レール = PR3 で tool 承認用に敷かれた既存経路を
+ * 質問側へ引き戻したもの）。
  */
 function PromptCard(props: {
   item: Extract<ChatItem, { kind: 'prompt' }>
   onAnswer: (requestId: string, answers: Record<string, string>) => void
+  onCancel: (requestId: string) => void
 }) {
   // 各質問の選択（label 配列）。single は 1 要素、multi は複数。
   const [sel, setSel] = createSignal<Record<string, string[]>>({})
+  // Other を選んだ質問の自由記述（question → text）。
+  const [other, setOther] = createSignal<Record<string, string>>({})
 
   const toggle = (q: QuestionSpec, label: string) => {
     setSel((prev) => {
@@ -1023,17 +1067,20 @@ function PromptCard(props: {
   const isSelected = (q: QuestionSpec, label: string): boolean =>
     (sel()[q.question] ?? []).includes(label)
 
-  // 全質問が 1 つ以上選択済みなら確定可。
+  /** その質問の回答文字列（組み立ては純関数 [`resolveAnswer`] に委譲）。 */
+  const answerOf = (q: QuestionSpec): string =>
+    resolveAnswer(sel()[q.question] ?? [], other()[q.question] ?? '', !!q.multi_select)
+
+  // 全質問が回答済みなら確定可。Other 選択時は**入力が空だと未回答扱い**
+  // （選んだだけで空文字を送ると、AI には「答えた」と見えてしまうため）。
   const canConfirm = (): boolean =>
-    props.item.questions.every((q) => (sel()[q.question] ?? []).length > 0)
+    props.item.questions.every((q) => answerOf(q) !== '')
 
   const confirm = () => {
     if (!canConfirm()) return
     const answers: Record<string, string> = {}
     for (const q of props.item.questions) {
-      const labels = sel()[q.question] ?? []
-      // multiSelect の回答 wire 形は未確定（doc §8 未決点）。保守的に ", " 結合の単一 string。
-      answers[q.question] = q.multi_select ? labels.join(', ') : labels[0]
+      answers[q.question] = answerOf(q)
     }
     props.onAnswer(props.item.requestId, answers)
   }
@@ -1044,14 +1091,20 @@ function PromptCard(props: {
         when={!props.item.answered}
         fallback={
           <div class="conversation-prompt-answered">
-            <For each={props.item.questions}>
-              {(q) => (
-                <div class="conversation-prompt-arow">
-                  <span class="conversation-prompt-ahead">{q.header}</span>
-                  <span class="conversation-prompt-aval">{props.item.answers?.[q.question] ?? ''}</span>
-                </div>
-              )}
-            </For>
+            {/* キャンセル済みは回答行を出さない（答えていないので空欄が並ぶだけになる）。 */}
+            <Show
+              when={props.item.decision !== 'deny'}
+              fallback={<div class="conversation-prompt-cancelled">キャンセルしました</div>}
+            >
+              <For each={props.item.questions}>
+                {(q) => (
+                  <div class="conversation-prompt-arow">
+                    <span class="conversation-prompt-ahead">{q.header}</span>
+                    <span class="conversation-prompt-aval">{props.item.answers?.[q.question] ?? ''}</span>
+                  </div>
+                )}
+              </For>
+            </Show>
           </div>
         }
       >
@@ -1067,19 +1120,58 @@ function PromptCard(props: {
                       class="conversation-prompt-opt"
                       classList={{ selected: isSelected(q, opt.label) }}
                       onClick={() => toggle(q, opt.label)}
-                      title={opt.description}
                     >
-                      {opt.label}
+                      <span class="conversation-prompt-opt-label">{opt.label}</span>
+                      {/* description は選択の判断材料なので可視で描く（tooltip では読まれない）。 */}
+                      <Show when={opt.description}>
+                        <span class="conversation-prompt-opt-desc">{opt.description}</span>
+                      </Show>
                     </button>
                   )}
                 </For>
+                {/* Other = 自由記述（cc 本体と同じ末尾配置）。選ぶと下に入力欄が開く。 */}
+                <button
+                  class="conversation-prompt-opt other"
+                  classList={{ selected: isSelected(q, OTHER_LABEL) }}
+                  onClick={() => toggle(q, OTHER_LABEL)}
+                >
+                  <span class="conversation-prompt-opt-label">Other</span>
+                  <span class="conversation-prompt-opt-desc">自分で書く</span>
+                </button>
               </div>
+              <Show when={isSelected(q, OTHER_LABEL)}>
+                <input
+                  class="conversation-prompt-other-input"
+                  type="text"
+                  placeholder="回答を入力…"
+                  value={other()[q.question] ?? ''}
+                  onInput={(e) =>
+                    setOther((prev) => ({ ...prev, [q.question]: e.currentTarget.value }))
+                  }
+                  // Enter で確定（全質問が埋まっている時のみ。IME 変換確定の Enter は拾わない）。
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.isComposing && canConfirm()) {
+                      e.preventDefault()
+                      confirm()
+                    }
+                  }}
+                />
+              </Show>
             </div>
           )}
         </For>
-        <button class="conversation-prompt-confirm" disabled={!canConfirm()} onClick={confirm}>
-          確定
-        </button>
+        <div class="conversation-prompt-actions">
+          <button class="conversation-prompt-confirm" disabled={!canConfirm()} onClick={confirm}>
+            確定
+          </button>
+          {/* 質問自体の取り下げ。engine には deny + 理由が返り、AI は別の進め方を探れる。 */}
+          <button
+            class="conversation-prompt-cancel"
+            onClick={() => props.onCancel(props.item.requestId)}
+          >
+            キャンセル
+          </button>
+        </div>
       </Show>
     </div>
   )
@@ -1459,6 +1551,30 @@ function SessionChatView(props: { lane: string; session: number }) {
     )
   }
 
+  // 質問自体の取り下げ。PR3 で tool 承認用に敷かれた `behavior:"deny"` レールをそのまま使う
+  //（repo 側 `handle_conversation_respond` は deny を種別non-依存で受けるので Rust 変更は不要）。
+  // message は engine に渡り、AI は「聞くのをやめた」ことを踏まえて別の進め方を選べる。
+  const cancelPrompt = (requestId: string) => {
+    const lane = props.lane
+    lc.set(
+      produce((s) => {
+        const it = s.items.find((i) => i.kind === 'prompt' && i.requestId === requestId)
+        if (it && it.kind === 'prompt') {
+          it.answered = true
+          it.decision = 'deny'
+        }
+      }),
+    )
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    ipc?.postMessage(
+      JSON.stringify({
+        t: 'conversation:respond', lane, session: props.session, request_id: requestId,
+        behavior: 'deny',
+        message: 'ユーザーが質問をキャンセルしました（回答なしで進めてください）',
+      }),
+    )
+  }
+
   // doc 35 PR3: permission 承認/却下。カードを decision 表示へ折りたたみ、conversation:respond {behavior} で戻す。
   const decidePrompt = (requestId: string, behavior: 'allow' | 'deny') => {
     const lane = props.lane
@@ -1683,7 +1799,8 @@ function SessionChatView(props: { lane: string; session: number }) {
                 )
               }
               if (item.kind === 'prompt') {
-                if (!item.permission) return <PromptCard item={item} onAnswer={answerPrompt} />
+                if (!item.permission)
+                  return <PromptCard item={item} onAnswer={answerPrompt} onCancel={cancelPrompt} />
                 return item.permission.toolName === 'ExitPlanMode' ? (
                   <PlanCard item={item} onDecide={decidePlan} />
                 ) : (
@@ -1966,16 +2083,34 @@ export const CHATVIEW_CSS = `
 .conversation-prompt-header { font-size:10px; text-transform:uppercase; letter-spacing:.08em;
   color: var(--sb-conn-hitl,#FF4A2D); }
 .conversation-prompt-question { font-size:14px; line-height:1.5; color: var(--color-text,#e6e9ef); }
-.conversation-prompt-options { display:flex; flex-wrap:wrap; gap:8px; }
-.conversation-prompt-opt { font-size:12.5px; padding:6px 13px; border-radius:8px; cursor:pointer;
+/* description を可視で描くため、選択肢は横並びの pill から縦積みカードへ。
+   1 行に詰めると説明文が読めず、結局 tooltip と同じ（= 読まれない）になる。 */
+.conversation-prompt-options { display:flex; flex-direction:column; gap:6px; }
+.conversation-prompt-opt { display:flex; flex-direction:column; gap:3px; text-align:left; width:100%;
+  font-size:12.5px; padding:8px 13px; border-radius:8px; cursor:pointer;
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115);
   color: var(--color-text-secondary,#a8b0c0); transition: border-color .15s ease, background .15s ease, color .15s ease; }
 .conversation-prompt-opt:hover { border-color: var(--color-text-tertiary,#616b80); color: var(--color-text,#e6e9ef); }
 .conversation-prompt-opt.selected { border-color: var(--sb-conn-hitl,#FF4A2D); color: var(--color-text,#e6e9ef);
   background: color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 86%); }
-.conversation-prompt-confirm { align-self:flex-end; padding:7px 16px; font-size:12.5px; border-radius:8px;
+.conversation-prompt-opt-label { font-weight:500; }
+.conversation-prompt-opt-desc { font-size:11.5px; line-height:1.45; color: var(--color-text-tertiary,#616b80); }
+.conversation-prompt-opt.selected .conversation-prompt-opt-desc { color: var(--color-text-secondary,#a8b0c0); }
+/* Other = 自由記述。選択肢ではなく「逃げ道」なので破線で地味に置く。 */
+.conversation-prompt-opt.other { border-style:dashed; }
+.conversation-prompt-other-input { width:100%; box-sizing:border-box; padding:7px 11px; font-size:12.5px;
+  border-radius:8px; border:1px solid var(--sb-conn-hitl,#FF4A2D); background: var(--color-bg,#0f1115);
+  color: var(--color-text,#e6e9ef); font-family:inherit; }
+.conversation-prompt-other-input:focus { outline:none; box-shadow:0 0 0 2px color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 80%); }
+.conversation-prompt-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; }
+.conversation-prompt-confirm { padding:7px 16px; font-size:12.5px; border-radius:8px;
   border:none; cursor:pointer; background: var(--sb-conn-hitl,#FF4A2D); color:#fff; }
 .conversation-prompt-confirm:disabled { opacity:.4; cursor:default; }
+/* キャンセルは destructive ではなく「答えずに進む」なので、確定より一段弱い見た目に。 */
+.conversation-prompt-cancel { padding:7px 14px; font-size:12.5px; border-radius:8px; cursor:pointer;
+  border:1px solid var(--color-border,#2a3040); background:transparent; color: var(--color-text-tertiary,#616b80); }
+.conversation-prompt-cancel:hover { color: var(--color-text-secondary,#a8b0c0); border-color: var(--color-text-tertiary,#616b80); }
+.conversation-prompt-cancelled { font-size:12.5px; color: var(--color-text-tertiary,#616b80); }
 /* 回答済み: 見出し + 選んだ値だけの静かな折りたたみ表示。 */
 .conversation-prompt-answered { display:flex; flex-direction:column; gap:5px; }
 .conversation-prompt-arow { display:flex; gap:9px; align-items:baseline; font-size:12.5px; }

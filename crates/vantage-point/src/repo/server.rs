@@ -229,9 +229,10 @@ pub(crate) async fn start_repo(
         actor_registry: Arc::new(RwLock::new(actor_registry)),
         daemon: None,
         update: None,
-        // repo mode は hub federation を持たない（daemon のみ）→ Disabled / 空のまま。
+        // repo mode は hub federation を持たない（daemon のみ）→ Disabled / 空 / Unknown のまま。
         hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
         hub_nodes: crate::daemon::hub_client::HubNodesCache::new(),
+        hub_auth: crate::daemon::hub_client::HubAuthStatus::new(),
         interactive_agent: Arc::new(RwLock::new(None)),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
@@ -742,6 +743,9 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // hub registry の available nodes cache も同 pattern で共有（writer = run_hub_federation の
     // 定期 discover、reader = /api/health の `hub_nodes` field。初期 = 空）。
     let hub_nodes = crate::daemon::hub_client::HubNodesCache::new();
+    // hub 接続の auth 状態（credentialed / anonymous）も同 pattern で共有
+    //（writer = run_hub_federation、reader = /api/health の `hub_auth` field。初期 = Unknown）。
+    let hub_auth = crate::daemon::hub_client::HubAuthStatus::new();
 
     // Create minimal state for daemon mode
     let state = Arc::new(AppState {
@@ -750,6 +754,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         shutdown_token: shutdown_token.clone(),
         hub_status: hub_status.clone(),
         hub_nodes: hub_nodes.clone(),
+        hub_auth: hub_auth.clone(),
         repo_dir: String::new(),
         // R3: daemon mode は cross-process forward の対象外 (= 自 repo を持たない)
         repo_name: String::new(),
@@ -1114,6 +1119,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
             name,
             hub_status,
             hub_nodes,
+            hub_auth,
             shutdown_token.clone(),
             on_relay,
         ));

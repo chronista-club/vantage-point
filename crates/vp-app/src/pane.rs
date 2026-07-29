@@ -123,6 +123,11 @@ pub struct ActivitySnapshot {
     /// Hub 行の下に常時リスト表示する。未接続 / 旧 daemon は空。
     #[serde(default)]
     pub hub_nodes: Vec<HubNode>,
+    /// hub 接続の credential 提示結果（`/api/health` の `hub_auth`）。
+    /// `"credentialed"` / `"anonymous"`、未接続 / 旧 daemon は空文字。
+    /// Hub 行の Login / Logout ボタン切替に使う（file でなく接続の真実）。
+    #[serde(default)]
+    pub hub_auth: String,
     /// L1 lifecycle: repo presence map（repo path → `"connected"`|`"unregistered"`
     /// |`"unregistered"`、`/api/health` の `processes[]` 由来）。sidebar の repo 行が `proc.path`
     /// で引いて ●◐○ dot を描く。daemon-canonical（doc 27 §3.2 / Model Q）。

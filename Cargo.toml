@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.57.0"
+version = "0.58.0"
 edition = "2024"
 rust-version = "1.96" # = .mise.toml [tools].rust (基本 stable 追随、 minor pin)
 authors = ["Chronista Club"]
@@ -60,11 +60,13 @@ tokio-stream = "0.1"
 # 1.6.0 (federation §S6 dialer で bump): connect_race (Happy Eyeballs v2 staggered race、
 # RFC 8305) + `network::dial` engine。 VP の direct dialer (daemon/dialer.rs、 discover→direct
 # race→relay floor) が依存。 既存 API 非破壊 (additive)。
-# 2026-07-13 一時 git 依存: QUIC accept loop の handshake-await 片肺死 wedge 根治 (PR #90、
-# accept loop 内の `connecting.await?` を spawn task 内へ移動)。VP daemon の QUIC 面 wedge →
-# self-heal ループ (mem_1CcvYA5TRF4EcFafbyKqPg) の真因。API 非破壊なので version 変更なしで
-# nightly の fix を引く。crates.io v1.6.1 公開後に version 指定へ戻す。
-unison = { package = "club-unison", git = "https://github.com/chronista-club/club-unison.git", branch = "nightly" }
+# 1.7.0: QUIC accept loop の handshake-await 片肺死 wedge 根治 (PR #90、accept loop 内の
+# `connecting.await?` を per-connection spawn task 内へ移動)。VP daemon の QUIC 面 wedge →
+# self-heal ループ (mem_1CcvYA5TRF4EcFafbyKqPg) の真因。2026-07-13〜一時 git (branch=nightly)
+# 依存で先行反映していたが、1.7.0 で crates.io 出荷されたため version 指定へ復帰
+# (nightly HEAD 追従の移動標的を解消)。
+# 1.8.0: KDL request safety hint 属性 (#95) + unison-mcp rmcp 2 系 live bridge (#93)。
+unison = { package = "club-unison", version = "1.8.0" }
 
 # Lifecycle / Outcome / drive primitives。 crates.io package = `club-nostos`、 Rust 識別子は
 # `nostos` に alias (unison と同じ package rename 方針)。 doc 24 §4.6 lifecycle co-evolution:
