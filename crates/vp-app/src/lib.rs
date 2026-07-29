@@ -24,6 +24,8 @@
 #![deny(clippy::disallowed_methods)]
 
 pub mod app;
+/// sidebar Hub 行の Login / Logout フロー (`vp auth login|logout` spawn + hub/reconnect)。
+pub mod auth_flow;
 pub mod client;
 /// daemon control plane クライアント (Unison `daemon-control` / `registry`)。 doc 45 段 3。
 pub mod daemon_control;

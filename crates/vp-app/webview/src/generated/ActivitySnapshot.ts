@@ -39,6 +39,12 @@ hub: string,
  */
 hub_nodes: Array<HubNode>, 
 /**
+ * hub 接続の credential 提示結果（`/api/health` の `hub_auth`）。
+ * `"credentialed"` / `"anonymous"`、未接続 / 旧 daemon は空文字。
+ * Hub 行の Login / Logout ボタン切替に使う（file でなく接続の真実）。
+ */
+hub_auth: string, 
+/**
  * L1 lifecycle: repo presence map（repo path → `"connected"`|`"unregistered"`
  * |`"unregistered"`、`/api/health` の `processes[]` 由来）。sidebar の repo 行が `proc.path`
  * で引いて ●◐○ dot を描く。daemon-canonical（doc 27 §3.2 / Model Q）。

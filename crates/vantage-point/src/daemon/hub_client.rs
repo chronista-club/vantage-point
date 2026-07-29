@@ -122,6 +122,90 @@ impl HubFederationStatus {
     }
 }
 
+/// hub 接続の credential 提示結果（`/api/health` の `hub_auth` field の SSOT）。
+///
+/// **file（`~/.vp/credentials.json`）でなく「今の接続がどう成立したか」というプロセスの真実**を
+/// 出す。file と稼働プロセスの提示 token が乖離して診断を迷わせた実績
+/// （mem_1CdSR9Mve1oNZDieF7HvLX の handoff）への構造的対策で、vp-app sidebar の Hub 行が
+/// Login / Logout ボタンの切替に使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HubAuthState {
+    /// 未接続 / 判定前（`/api/health` では field ごと omit）。
+    Unknown,
+    /// credential（Creo ID user-jwt）提示で接続確立。
+    Credentialed,
+    /// credential なし（未ログイン、または提示失敗で降格）で接続確立。
+    Anonymous,
+}
+
+impl HubAuthState {
+    /// `/api/health` の `hub_auth` フィールド値（空 = omit、vp-app が描画に使う）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "",
+            Self::Credentialed => "credentialed",
+            Self::Anonymous => "anonymous",
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Credentialed,
+            2 => Self::Anonymous,
+            _ => Self::Unknown,
+        }
+    }
+
+    fn to_u8(self) -> u8 {
+        match self {
+            Self::Unknown => 0,
+            Self::Credentialed => 1,
+            Self::Anonymous => 2,
+        }
+    }
+}
+
+/// [`HubAuthState`] の共有ハンドル（[`HubFederationStatus`] と同型の AtomicU8 パターン）。
+/// writer = [`run_hub_federation`]（接続確立 / 切断ごと）、reader = `/api/health` handler。
+#[derive(Clone, Default)]
+pub struct HubAuthStatus(Arc<AtomicU8>);
+
+impl HubAuthStatus {
+    /// 初期状態 = `Unknown`（未接続相当）。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 状態を更新する（writer = `run_hub_federation`）。
+    pub fn set(&self, state: HubAuthState) {
+        self.0.store(state.to_u8(), Ordering::Relaxed);
+    }
+
+    /// 現在の状態を読む（reader = `/api/health` handler）。
+    pub fn get(&self) -> HubAuthState {
+        HubAuthState::from_u8(self.0.load(Ordering::Relaxed))
+    }
+}
+
+/// hub 常駐ループへの「今すぐ再接続」要求（`daemon-control.hub/reconnect` の受け口）。
+///
+/// login / logout 直後に credential の変化を接続へ即反映するための契機。[`run_hub_federation`]
+/// の select が待ち受け、planned reconnect（backoff なし）で張り直す — 次の connect で
+/// [`hub_credential`] が file を読み直すため、新しい auth 状態が数秒で `hub_auth` に現れる。
+///
+/// process-global static なのは、書き手（`handle_daemon_control`）が AppState を持たない
+/// dispatch 関数で、読み手（常駐ループ）が daemon プロセスに 1 本だけだから。`notify_one` は
+/// 待ち手不在でも permit を 1 つ積むので、ループが connect 処理中でも要求は失われない。
+static HUB_RECONNECT_REQUEST: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// hub 再接続を要求する（`daemon-control.hub/reconnect` の実体）。
+///
+/// hub 未設定（常駐ループ不在）なら permit が積まれるだけで実害なし。連打しても permit は
+/// 1 つに潰れるので再接続が多重に走ることはない。
+pub fn request_hub_reconnect() {
+    HUB_RECONNECT_REQUEST.notify_one();
+}
+
 /// hub registry に居る available nodes の cache（`/api/health` の `hub_nodes` field の SSOT）。
 ///
 /// writer = [`run_hub_federation`]（接続直後 + 定期 discover で更新、切断で clear）、
@@ -382,6 +466,9 @@ fn hub_trust_anchors(addr: &str) -> unison::network::TrustAnchors {
 pub struct HubClient {
     client: ProtocolClient,
     ch: UnisonChannel,
+    /// この接続が credential（Creo ID user-jwt）提示で成立したか（false = 未ログイン or 降格）。
+    /// [`run_hub_federation`] が [`HubAuthStatus`] へ転写して `/api/health` に出す。
+    credentialed: bool,
 }
 
 impl HubClient {
@@ -395,8 +482,12 @@ impl HubClient {
     /// （server-initiated stream の handler を connect 前に登録する必要があるため）。
     pub async fn connect(addr: &str, retries: u32) -> Result<Self> {
         let client = build_hub_client(addr)?;
-        let ch = connect_and_open_nodes(&client, addr, retries).await?;
-        Ok(Self { client, ch })
+        let (ch, credentialed) = connect_and_open_nodes(&client, addr, retries).await?;
+        Ok(Self {
+            client,
+            ch,
+            credentialed,
+        })
     }
 
     /// relay target inbound（受信）対応で接続する（ADR-020 §S4 = universal floor）。
@@ -444,8 +535,21 @@ impl HubClient {
             })
             .await;
 
-        let ch = connect_and_open_nodes(&client, addr, retries).await?;
-        Ok(Self { client, ch })
+        let (ch, credentialed) = connect_and_open_nodes(&client, addr, retries).await?;
+        Ok(Self {
+            client,
+            ch,
+            credentialed,
+        })
+    }
+
+    /// この接続の auth 状態（[`HubAuthStatus`] への転写用、writer = [`run_hub_federation`]）。
+    pub fn auth_state(&self) -> HubAuthState {
+        if self.credentialed {
+            HubAuthState::Credentialed
+        } else {
+            HubAuthState::Anonymous
+        }
     }
 
     /// relay dialer（source）— hub 経由で `to_node_id` への片方向 stream を確立する（ADR-020 §S4）。
@@ -599,7 +703,7 @@ async fn connect_and_open_nodes(
     client: &ProtocolClient,
     addr: &str,
     retries: u32,
-) -> Result<UnisonChannel> {
+) -> Result<(UnisonChannel, bool)> {
     let mut credential = hub_credential().await;
     let attempts = retries.max(1);
     let mut last_err: Option<String> = None;
@@ -611,9 +715,11 @@ async fn connect_and_open_nodes(
         };
         match connected {
             Ok(_) => {
+                // 第 2 要素 = この接続が credential 提示で成立したか（降格後の成功は false）。
                 return client
                     .open_channel("nodes")
                     .await
+                    .map(|ch| (ch, credential.is_some()))
                     .map_err(|e| anyhow::anyhow!("nodes チャネル open 失敗: {}", e));
             }
             Err(e) => {
@@ -925,6 +1031,7 @@ pub async fn run_hub_federation<F, Fut>(
     name: String,
     status: HubFederationStatus,
     nodes: HubNodesCache,
+    auth: HubAuthStatus,
     shutdown: CancellationToken,
     on_relay: F,
 ) where
@@ -946,9 +1053,12 @@ pub async fn run_hub_federation<F, Fut>(
         // backoff を飛ばして即再接続する（下記）。
         let mut planned_reconnect = false;
         status.set(HubFederationState::Connecting);
+        auth.set(HubAuthState::Unknown);
         // 再接続ごとに handler を再登録するため clone（connect_with_inbound は on_msg を move する）。
         match HubClient::connect_with_inbound(&addr, 5, on_relay.clone()).await {
             Ok(client) => {
+                // 接続がどう成立したか（credentialed / anonymous）を health に転写する。
+                auth.set(client.auth_state());
                 match client.register(&node_id, &endpoints, &handle, &name).await {
                     Ok(entry) => {
                         status.set(HubFederationState::Connected);
@@ -1005,6 +1115,13 @@ pub async fn run_hub_federation<F, Fut>(
                             planned_reconnect = true;
                             break;
                         }
+                        _ = HUB_RECONNECT_REQUEST.notified() => {
+                            tracing::info!(
+                                "hub 再接続要求（daemon-control.hub/reconnect）— credential を読み直して張り直す"
+                            );
+                            planned_reconnect = true;
+                            break;
+                        }
                         _ = discover_tick.tick() => {
                             match tokio::time::timeout(DISCOVER_TIMEOUT, client.discover()).await {
                                 Ok(Ok(list)) => {
@@ -1033,8 +1150,10 @@ pub async fn run_hub_federation<F, Fut>(
                 }
                 // 切断検知 → Disconnected を反映（次 iteration 冒頭で Connecting に戻る）。
                 // available nodes も clear（未接続の間 stale list を「available」と見せない）。
+                // auth も Unknown へ（stale な credentialed/anonymous を見せない）。
                 status.set(HubFederationState::Disconnected);
                 nodes.clear();
+                auth.set(HubAuthState::Unknown);
                 // client drop → connection close。
             }
             Err(e) => tracing::warn!(
@@ -1047,10 +1166,13 @@ pub async fn run_hub_federation<F, Fut>(
 
         // backoff（shutdown で即中断可能）。planned な再接続（proactive な token 巻き直し）は hub
         // 健全が前提なので backoff を挟まず即再接続し、relay 受信 gap を最小化する。
+        // 再接続要求（hub/reconnect）も backoff を打ち切る — login 直後の credential 反映を
+        // 最大 RECONNECT_BACKOFF 秒待たせない。
         if !planned_reconnect {
             tokio::select! {
                 _ = shutdown.cancelled() => return,
                 _ = tokio::time::sleep(RECONNECT_BACKOFF) => {}
+                _ = HUB_RECONNECT_REQUEST.notified() => {}
             }
         }
     }
@@ -1059,6 +1181,23 @@ pub async fn run_hub_federation<F, Fut>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hub_auth_status_roundtrips_all_states() {
+        let auth = HubAuthStatus::new();
+        // 初期 = Unknown（health では omit される空文字）。
+        assert_eq!(auth.get(), HubAuthState::Unknown);
+        assert_eq!(auth.get().as_str(), "");
+        for (state, s) in [
+            (HubAuthState::Credentialed, "credentialed"),
+            (HubAuthState::Anonymous, "anonymous"),
+            (HubAuthState::Unknown, ""),
+        ] {
+            auth.set(state);
+            assert_eq!(auth.get(), state);
+            assert_eq!(auth.get().as_str(), s);
+        }
+    }
 
     #[test]
     fn proactive_reconnect_delay_arms_only_with_future_headroom() {

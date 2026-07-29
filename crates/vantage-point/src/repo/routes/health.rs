@@ -57,6 +57,11 @@ pub struct HealthResponse {
     /// daemon mode + hub connected の間だけ非空（repo mode / 未接続は空配列）。既存 `hub` field
     /// （string）は不変のまま additive に足す — 旧 client は本 field を無視するだけで壊れない。
     pub hub_nodes: Vec<HubNodeInfo>,
+    /// hub 接続の credential 提示結果（`"credentialed"` | `"anonymous"`、未接続 / 判定前は omit）。
+    /// **file でなく現在の接続がどう成立したか**（プロセスの真実）。vp-app sidebar の Hub 行が
+    /// Login / Logout ボタンの切替に使う。additive field — 旧 client は無視するだけで壊れない。
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub hub_auth: &'static str,
     /// L1 lifecycle (Phase C): Daemon 配下の repo presence 一覧（vp-app sidebar の ●◐○ 表示用）。
     /// daemon-canonical（doc 27 §3.2 / Model Q）。daemon mode のみ Some、repo mode では None。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -240,6 +245,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         services,
         hub: state.hub_status.get().as_str(),
         hub_nodes,
+        hub_auth: state.hub_auth.get().as_str(),
         processes,
         update_available,
         latest_version,
