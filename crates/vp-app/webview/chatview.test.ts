@@ -17,6 +17,8 @@ import {
   lampOf,
   deriveNowLine,
   clampNowLine,
+  resolveAnswer,
+  OTHER_LABEL,
 } from './chatview'
 import type { ConversationEvent } from './console'
 
@@ -967,5 +969,39 @@ describe('chatKey — lane と session が衝突なく畳める', () => {
     expect(chatKey('vp/root', 3).startsWith(prefix)).toBe(true)
     expect(chatKey('vp/root-2', 3).startsWith(prefix)).toBe(false)
     expect(chatKey('vp/rootlike', 1).startsWith(prefix)).toBe(false)
+  })
+})
+
+describe('resolveAnswer — 選択状態 → engine に送る回答文字列（Other / 空欄の扱い）', () => {
+  it('通常の単一選択は label をそのまま返す', () => {
+    expect(resolveAnswer(['はい'], '', false)).toBe('はい')
+  })
+
+  // Other は sentinel。engine には**入力欄の中身**が行く（sentinel が漏れると AI が
+  // 意味不明な文字列を回答として受け取る）。
+  it('Other は sentinel でなく入力値に置換される', () => {
+    expect(resolveAnswer([OTHER_LABEL], '自分で書いた答え', false)).toBe('自分で書いた答え')
+    expect(resolveAnswer([OTHER_LABEL], '  前後に空白  ', false)).toBe('前後に空白')
+  })
+
+  // 「Other を選んだだけ」で確定できると、AI には空欄が回答として届く。
+  // 空文字 = 未回答の signal として呼び手（canConfirm）が確定を止める契約。
+  it('Other を選んで未入力なら空文字（= 未回答）を返す', () => {
+    expect(resolveAnswer([OTHER_LABEL], '', false)).toBe('')
+    expect(resolveAnswer([OTHER_LABEL], '   ', false)).toBe('')
+  })
+
+  it('multiSelect は ", " 結合、Other は入力値として混ざる', () => {
+    expect(resolveAnswer(['A', 'B'], '', true)).toBe('A, B')
+    expect(resolveAnswer(['A', OTHER_LABEL], 'C', true)).toBe('A, C')
+  })
+
+  // multi で Other 未入力のとき、空要素が混じって "A, " のような壊れた回答にならないこと。
+  it('multiSelect で Other 未入力なら空要素を落とす', () => {
+    expect(resolveAnswer(['A', OTHER_LABEL], '', true)).toBe('A')
+  })
+
+  it('未選択は空文字（= 未回答）', () => {
+    expect(resolveAnswer([], '何か書いてあっても', false)).toBe('')
   })
 })
