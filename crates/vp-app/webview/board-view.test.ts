@@ -119,4 +119,20 @@ describe("moveRect / resizeRect（doc 55 §7.1 — 移動・リサイズ）", ()
 		expect(r.w).toBe(560);
 		expect(r.h).toBe(840);
 	});
+
+	it("右辺（e）は左端 anchor + workbench 右端で止まる（いつもの挙動）", () => {
+		const wider = resizeRect(base, "e", 5000, 0, WB);
+		expect(wider.x).toBe(base.x);
+		expect(wider.x + wider.w).toBeLessThanOrEqual(WB.w);
+		const narrower = resizeRect(base, "e", -450, 0, WB);
+		expect(narrower.x).toBe(base.x);
+		expect(narrower.w).toBe(FLOAT_MIN_W);
+	});
+
+	it("右下角（se）は縦横が同時に効く（標準 UX の本命）", () => {
+		const r = resizeRect(base, "se", -60, 40, WB);
+		expect(r.x).toBe(base.x);
+		expect(r.w).toBe(440);
+		expect(r.h).toBe(840);
+	});
 });

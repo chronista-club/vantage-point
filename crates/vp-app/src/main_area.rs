@@ -362,12 +362,16 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 #lane-board.board-floating.board-interacting .board-plate{cursor:grabbing;}
 /* drag / resize 中は下の iframe に pointer を食わせない (doc 55 実装留意 — setPointerCapture の保険)。 */
 #lane-board.board-interacting iframe{pointer-events:none;}
-/* resize の取っ手 (float 時のみ出す)。float は右寄せ想定なので左辺 / 下辺 / 左下角。 */
+/* resize の取っ手 (float 時のみ出す)。左右の縁 + 下辺 + 両下角。「いつもの挙動」の
+   本命は右下 (se) — 実機 dogfood (2026-07-30) で右系の不在が「横は動かせない」に見えた。
+   overflow:hidden で外側は切れるため、当たりは内側に広めに取る。 */
 #lane-board .board-rs{display:none;position:absolute;z-index:6;}
 #lane-board.board-floating .board-rs{display:block;}
-.board-rs-w{left:-3px;top:0;bottom:0;width:7px;cursor:ew-resize;}
-.board-rs-s{left:0;right:0;bottom:-3px;height:7px;cursor:ns-resize;}
-.board-rs-sw{left:-4px;bottom:-4px;width:14px;height:14px;cursor:nesw-resize;}
+.board-rs-w{left:-3px;top:0;bottom:0;width:10px;cursor:ew-resize;}
+.board-rs-e{right:-3px;top:0;bottom:0;width:10px;cursor:ew-resize;}
+.board-rs-s{left:0;right:0;bottom:-3px;height:10px;cursor:ns-resize;}
+.board-rs-sw{left:-4px;bottom:-4px;width:18px;height:18px;cursor:nesw-resize;}
+.board-rs-se{right:-4px;bottom:-4px;width:18px;height:18px;cursor:nwse-resize;}
 /* doc 55: board の取っ手 — pane-lane 右端の常設タブ。開閉の入口 + 新着 badge。 */
 #board-handle{position:absolute;right:0;top:50%;transform:translateY(-50%);z-index:25;
   display:flex;align-items:center;justify-content:center;width:26px;height:44px;padding:0;

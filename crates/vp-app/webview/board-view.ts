@@ -104,10 +104,13 @@ export function moveRect(
 	return clampRect({ ...r, x: r.x + dx, y: r.y + dy }, wb);
 }
 
-/** リサイズの取っ手（float は右寄せ想定なので左辺・下辺・左下角）。 */
-export type ResizeDir = "w" | "s" | "sw";
+/** リサイズの取っ手。当初は右寄せ想定で左系（w/s/sw）だけだったが、実機 dogfood
+ *  （mako 2026-07-30）で「いつもの挙動 = 右下ドラッグで縦横」が求められ右系（e/se）を追加。
+ *  上辺は名札 = 移動の取っ手なので n 系は作らない。 */
+export type ResizeDir = "w" | "s" | "e" | "sw" | "se";
 
-/** リサイズ（縁/角 drag）。w = 左辺（右端 anchor）、s = 下辺（上端 anchor）。 */
+/** リサイズ（縁/角 drag）。w = 左辺（右端 anchor）、e = 右辺（左端 anchor）、
+ *  s = 下辺（上端 anchor）。角は両軸の合成。 */
 export function resizeRect(
 	r: FloatRect,
 	dir: ResizeDir,
@@ -120,6 +123,8 @@ export function resizeRect(
 		const right = x + w;
 		w = clampN(w - dx, FLOAT_MIN_W, right);
 		x = right - w;
+	} else if (dir.includes("e")) {
+		w = clampN(w + dx, FLOAT_MIN_W, wb.w - x);
 	}
 	if (dir.includes("s")) {
 		h = clampN(h + dy, FLOAT_MIN_H, wb.h - y);
@@ -303,7 +308,7 @@ export function installBoardView(deps: BoardViewDeps): BoardViewController {
 	}
 
 	// リサイズ: 縁/角の取っ手（float 時のみ CSS が表示）
-	for (const dir of ["w", "s", "sw"] as const) {
+	for (const dir of ["w", "s", "e", "sw", "se"] as const) {
 		const rs = document.createElement("div");
 		rs.className = `board-rs board-rs-${dir}`;
 		deps.board.appendChild(rs);
