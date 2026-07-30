@@ -12,6 +12,7 @@
  */
 
 import { applyAppScene, cycleAppScene } from "./app-panes";
+import { toggleBoardForm, toggleBoardOpen } from "./board-view";
 
 /**
  * Ctrl+Shift+N → Scene id mapping。
@@ -44,6 +45,20 @@ export function attachKeybindings(target: EventTarget = window): () => void {
 		if (sceneId) {
 			e.preventDefault();
 			applyAppScene(sceneId);
+			return;
+		}
+
+		// doc 55 §7: board の 2 動詞。B = 開閉（前回の form のまま）/ N = form 切替
+		// （float ⇄ dock。閉時は「切替先の form で開く」）。B・N は QWERTY 横並び
+		// （mako 裁定 2026-07-30 — ワンショートカットで確実に目的の状態へ、3 状態巡回は不採用）。
+		if (e.code === "KeyB") {
+			e.preventDefault();
+			toggleBoardOpen();
+			return;
+		}
+		if (e.code === "KeyN") {
+			e.preventDefault();
+			toggleBoardForm();
 			return;
 		}
 
