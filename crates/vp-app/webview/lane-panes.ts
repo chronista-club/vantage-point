@@ -104,7 +104,8 @@ export function hostIdForMode(
 
 /** board（board）の pane。lane-host と同じく **lane に 1 枚の静的 host**（board は lane-scoped で
  *  1 lane 1 枚、表示 lane は常に 1 つ = xterm と同じ性質。動的生成は不要、位置決めだけ動く）。
- *  roster に載るのは board が非空のときだけ（doc 52 §10 wave 0 — board 非空で自動）。 */
+ *  roster（tiling）に載るのは **user が開いて docked のときだけ**（doc 55 §5.1 — presence
+ *  駆動は item 永続化で退役。float 投影のときは tiling の外で board-view.ts が rect を書く）。 */
 export const BOARD_PANE_REF: PaneRef = {
 	id: "lane-board",
 	label: "Board",
@@ -141,19 +142,19 @@ export function boardLaneKeyOf(address: string): string {
  *  原理的に無い（1 往復路 = Active な化身 高々 1）ので、旧実装の「mode で排他にする」規則は
  *  不要になった（あれは「term になれるのは root だけ」という物理制約の投影だった）。
  *
- *  board pane は engine session と直交する lane-level の面なので、mode を問わず board が
- *  非空なら**末尾に**足す（doc 52 §2 — board は掲示板/計器盤/中継台/対話面の役割を持つ
- *  lane の道具で、どの Mode で作業していても同じ台に並ぶ）。 */
+ *  board pane は engine session と直交する lane-level の面なので、mode を問わず
+ *  **user が開いて docked のとき**末尾に足す（doc 55 §5.1 — 旧「非空なら自動」は item
+ *  永続化で退役。開いていても float 投影なら tiling には入らない = board-view.ts の領分）。 */
 export function lanePaneRefs(
 	sessions: readonly PaneSession[],
-	boardPresent = false,
+	boardInTiling = false,
 ): PaneRef[] {
 	const sessionPanes = sessions.map((v): PaneRef => {
 		const label = `${sessionChipPrefix(v.agent)}#${v.key}`;
 		const kind = v.mode === "gui" ? "chat" : "term";
 		return { id: hostIdForMode(v.key, v.mode), label, session: v.key, kind };
 	});
-	return boardPresent ? [...sessionPanes, BOARD_PANE_REF] : sessionPanes;
+	return boardInTiling ? [...sessionPanes, BOARD_PANE_REF] : sessionPanes;
 }
 
 /** 入場 share = 可視 pane の raw 平均（creo-ui-layout `admit` の既定と同じ規則。
@@ -300,10 +301,14 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	 *  doc 50 §4.6 A6: lane 単位 console_mode の鏡（旧 `modeByLane`）は退役 — 見え方は
 	 *  session の属性になったので、lane 単位の mode を持つ理由が無くなった。 */
 	const sessionsByLane = new Map<string, PaneSession[]>();
-	/** board flat key（'conductor' / performer 名）→ board が非空か（'vp:board-presence' の鏡。
-	 *  board-handler は flat key で presence を飛ばすので、address 空間の他の Map とは別 key 系。
-	 *  lookup は boardLaneKeyOf(address) で写して引く）。 */
-	const boardByLane = new Map<string, boolean>();
+	/** board flat key（'conductor' / performer 名）→ view 状態（'vp:board-view' の鏡、doc 55）。
+	 *  board-view.ts が user 操作（開閉 / form 切替）で dispatch する。roster に入るのは
+	 *  open && docked のときだけ。float は tiling の外（rect は board-view が書く）。
+	 *  flat key 系なので lookup は boardLaneKeyOf(address) で写して引く。 */
+	const boardViewByLane = new Map<
+		string,
+		{ open: boolean; form: "float" | "docked" }
+	>();
 	/** 表示中 lane の動的 host の dispose（host id → SessionChatView の unmount） */
 	const dynDisposers = new Map<string, () => void>();
 	/** focusPane が「まだ生えていない pane」を指した時の保留先（boot 窓: applyConsoleMode は
@@ -314,11 +319,20 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	const paneExists = (scope: string, id: string): boolean =>
 		layoutEngine.current(scope).structure.columns.some((c) => c.panes.includes(id));
 
-	const refsOf = (lane: string): PaneRef[] =>
-		lanePaneRefs(
+	const refsOf = (lane: string): PaneRef[] => {
+		const v = boardViewByLane.get(boardLaneKeyOf(lane));
+		return lanePaneRefs(
 			sessionsByLane.get(lane) ?? [],
-			boardByLane.get(boardLaneKeyOf(lane)) ?? false,
+			!!v && v.open && v.form === "docked",
 		);
+	};
+
+	/** 表示中 lane の board が float 投影中か（stray 掃除の除外判定に使う）。 */
+	const boardFloating = (): boolean => {
+		if (!activeLane) return false;
+		const v = boardViewByLane.get(boardLaneKeyOf(activeLane));
+		return !!v && v.open && v.form === "float";
+	};
 
 	// boot 既定の同期描画（旧 PaneShell.dock() 相当）は退役 — A6 で host が session 単位に
 	// なり、boot 時点に描く相手（静的 host）が存在しなくなった。host は World A が
@@ -439,8 +453,15 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		// A6 で term host が session 単位（動的）になったので、**静的 id 1 つでは足りない**
 		// （旧 `#lane-host` だけ見ていた）。DOM に居る term host を全数走査して roster 外を畳む。
 		const strays: HTMLElement[] = [];
+		// board: roster 外でも **float 投影中は隠さない**（doc 55 — display / rect は
+		// board-view.ts が所有。ここで display:none を書くと二重書き手の競合になる）。
 		const board = deps.hostOf(BOARD_PANE_REF.id);
-		if (board && !refs.some((p) => p.id === BOARD_PANE_REF.id)) strays.push(board);
+		if (
+			board &&
+			!refs.some((p) => p.id === BOARD_PANE_REF.id) &&
+			!boardFloating()
+		)
+			strays.push(board);
 		for (const el of deps.container.querySelectorAll<HTMLElement>(
 			`.${TERM_HOST_CLASS}`,
 		)) {
@@ -519,22 +540,33 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		render();
 	});
 
-	// board 非空 → roster に board pane を出す（board-handler が BoardUpdated 受信で dispatch。
-	// doc 52 §10 wave 0）。fresh = live 新着なら board pane に focus を寄せる（旧 maybeAutoOpenPP =
-	// pp-overlay app scene の後継。「配送されたのに見えない」を防ぐ）。畳んだ pane も新着で復元される
-	// のは focusPane（消えていた pane を指すと RESTORE_SHARE で戻す）が担う。
+	// board の view 状態（open / form）の変化 → roster を同期（doc 55 §5.1）。
+	// board-view.ts が user 操作（Ctrl+Shift+B/N・取っ手・名札ボタン）で dispatch する。
+	// dock 入場は enterShare、dock 退場は列除去 — reflow が起きるのはこの user 操作のときだけ
+	// （doc 55 の reflow 規律）。
+	document.addEventListener("vp:board-view", (e) => {
+		const d = (
+			e as CustomEvent<{ lane: string; open: boolean; form: "float" | "docked" }>
+		).detail;
+		if (!d?.lane) return;
+		boardViewByLane.set(d.lane, { open: d.open, form: d.form });
+		if (!activeLane || boardLaneKeyOf(activeLane) !== d.lane) return;
+		syncRoster(activeLane);
+		render();
+	});
+
+	// fresh（live 新着）の純化（doc 55 §5.2）: 表示は起こさない。docked で開いている
+	// （= roster に居る）ときだけ現行の focus 寄せを継承する。float は常に最前面で focus の
+	// 概念が無く、閉は取っ手 badge（board-view.ts）が知らせる。presence（非空）が roster を
+	// 動かしていた旧経路は item 永続化で退役（doc 55 §5 — この event は通知 signal に転生）。
 	document.addEventListener("vp:board-presence", (e) => {
 		const d = (
 			e as CustomEvent<{ lane: string; present: boolean; fresh?: boolean }>
 		).detail;
-		if (!d?.lane) return;
-		// d.lane は board-handler の flat key（'conductor' / performer 名）。boardByLane も flat
-		// key で持つ。active 判定は activeLane（address）を flat に写して突合する。
-		boardByLane.set(d.lane, d.present);
+		if (!d?.lane || !d.fresh) return;
 		if (!activeLane || boardLaneKeyOf(activeLane) !== d.lane) return;
-		syncRoster(activeLane);
-		render();
-		if (d.present && d.fresh) controller.focusPane(BOARD_PANE_REF.id);
+		if (refsOf(activeLane).some((p) => p.id === BOARD_PANE_REF.id))
+			controller.focusPane(BOARD_PANE_REF.id);
 	});
 
 	const controller: LanePanesController = {

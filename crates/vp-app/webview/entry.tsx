@@ -102,6 +102,8 @@ import {
 import { layoutEngine } from "./layout-host";
 import { installGallery } from "./gallery-panes";
 import { attachKeybindings } from "./keybindings";
+import { installBoardView } from "./board-view";
+import { mountEdgeRail, EDGE_RAIL_CSS } from "./EdgeRail";
 import { renderBoard, clearBoard, appendBoard } from "./board-render";
 import { installConsole, focusedOf, sessionModeOf } from "./console";
 import type {
@@ -113,6 +115,7 @@ import type {
 // doc 46 P1 → doc 49 LE-P4 PR2: lane 内 tiling（creo-ui-layout の lane scope）。
 // + New（engine × Mode で新 session）は LaneHeader へ移設済み（doc 51 §1 A1 — 帯の退役）。
 import {
+	boardLaneKeyOf,
 	chatHostId,
 	hostIdForMode,
 	installLanePanes,
@@ -258,6 +261,11 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		applyAppScene("empty");
 		// lane 無し = Conversation 共通ヘッダも空へ（chips は presence-driven）。
 		laneHeader?.setLane(null);
+		// doc 55: board の view 層も lane 不在に追従（取っ手ごと消える）。laneHeader と対称に —
+		// 現状は app-panes の scene マスクで偶然隠れているが、偶然に依存しない（moody #3）。
+		boardView?.setActiveLane(null);
+		// doc 56 prototype: rail は lane 級動詞の家 — lane が無ければ帯ごと消える。
+		edgeRail?.setLane(null);
 		return;
 	}
 	// kind=terminal: Lane 切替判定 + 保存済配置の restore + show-subscriber 付替
@@ -296,6 +304,13 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		// LaneAddress::Display 形 (`<repo>/lead` or `<repo>/wing/<name>`) を flat lane_name に翻訳。
 		const laneName = laneNameFromAddress(newLane);
 		setActiveLaneName(laneName);
+		// doc 55: board の view 層（open / form / floatRect）も lane に追従する。
+		// ⚠️ laneName（null = conductor の流儀）ではなく boardLaneKeyOf（'conductor' 文字列の
+		// 流儀）を渡す — board-view / lane-panes の Map は文字列 key 系で、null を渡すと
+		// 「lane 不在」扱いになり取っ手ごと消える（root lane で実機再現、2026-07-30）。
+		boardView?.setActiveLane(boardLaneKeyOf(newLane));
+		// doc 56 prototype: rail の + New は lane address（agents_fetch / new_session の宛先）で追従。
+		edgeRail?.setLane(newLane);
 		return;
 	}
 	// kind != terminal (board/runner/Devices/preview click 等): agent pane の**訪問**（一時 view）。
@@ -493,6 +508,16 @@ const chatView = installChatView(vpConsole);
 const headerStyle = document.createElement("style");
 headerStyle.textContent = LANE_HEADER_CSS;
 document.head.appendChild(headerStyle);
+// ===== edge rail（doc 56 prototype）— lane 級動詞の家。+ New は LaneHeader から移設 =====
+const railStyle = document.createElement("style");
+railStyle.textContent = EDGE_RAIL_CSS;
+document.head.appendChild(railStyle);
+const edgeRail = (() => {
+	const root = document.getElementById("edge-rail");
+	const host = document.getElementById("edge-rail-new-host");
+	return root && host ? mountEdgeRail(root, host) : null;
+})();
+
 const laneHeaderHost = document.getElementById("lane-header");
 if (laneHeaderHost) {
 	laneHeader = mountLaneHeader(laneHeaderHost, vpConsole);
@@ -522,6 +547,17 @@ const lanePanes =
 					chatView.mountTermPlate(host, lane, session),
 			})
 		: null;
+// doc 55: board の view 層（open / form / floatRect = user 専有、in-memory）。取っ手 /
+// form ボタン / float 投影 / 移動・リサイズを配線する。roster への反映は lane-panes が
+// 'vp:board-view' を購読して行う（tiling に入るのは open && docked のときだけ）。
+const boardView = (() => {
+	const board = document.getElementById("lane-board");
+	const handle = document.getElementById("board-handle");
+	const formBtn = document.getElementById("board-form-btn");
+	if (!board || !lanePanesEl || !handle || !formBtn) return null;
+	return installBoardView({ board, workbench: lanePanesEl, handle, formBtn });
+})();
+
 if (lanePanes && paneFrame) {
 	// 要件 3: click で focus が移る。Pane の中身の click は素通しさせたいので capture で拾う。
 	paneFrame.addEventListener(

@@ -86,7 +86,7 @@ describe("lanePaneRefs（roster = session 一覧 × 各 mode、doc 50 §4.6 A6�
 		expect(lanePaneRefs([]).map((p) => p.id)).toEqual([]);
 	});
 
-	it("board 非空: mode を問わず末尾に board pane が並ぶ（doc 52 §10 wave 0）", () => {
+	it("board が open × docked: mode を問わず末尾に board pane が並ぶ（doc 55 §5.1）", () => {
 		expect(
 			lanePaneRefs([{ key: 1, agent: "claude", root: true, mode: "tui" }], true).map(
 				(p) => p.id,
@@ -99,7 +99,7 @@ describe("lanePaneRefs（roster = session 一覧 × 各 mode、doc 50 §4.6 A6�
 		).toEqual(["chat-session-1", "lane-board"]);
 	});
 
-	it("board 空（既定）は board pane を出さない", () => {
+	it("board が閉 or float（既定）は tiling に board pane を出さない（doc 55 §5.1）", () => {
 		const s = [{ key: 1, agent: "claude", root: true, mode: "tui" as const }];
 		expect(lanePaneRefs(s, false).map((p) => p.id)).toEqual([TERM]);
 		expect(lanePaneRefs(s).map((p) => p.id)).toEqual([TERM]);

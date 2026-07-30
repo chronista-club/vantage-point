@@ -108,6 +108,12 @@ export interface LaneRestart {
   fresh?: boolean;
 }
 
+/** Request "lane:new_root" */
+export interface LaneNewRoot {
+  path: string;
+  address: string;
+}
+
 /** Request "lane:set_origin" */
 export interface LaneSetOrigin {
   path: string;
@@ -202,6 +208,7 @@ export type IpcChannelRequestTypes = {
   LaneSelect: { request: LaneSelect; response: void };
   LaneDelete: { request: LaneDelete; response: void };
   LaneRestart: { request: LaneRestart; response: void };
+  LaneNewRoot: { request: LaneNewRoot; response: void };
   LaneSetOrigin: { request: LaneSetOrigin; response: void };
   LaneReorder: { request: LaneReorder; response: void };
   LaneAddPerformer: { request: LaneAddPerformer; response: void };
@@ -234,6 +241,7 @@ export const IpcChannelMeta = {
     LaneSelect: { request: "lane:select" as const, response: "void" as const },
     LaneDelete: { request: "lane:delete" as const, response: "void" as const },
     LaneRestart: { request: "lane:restart" as const, response: "void" as const },
+    LaneNewRoot: { request: "lane:new_root" as const, response: "void" as const },
     LaneSetOrigin: { request: "lane:set_origin" as const, response: "void" as const },
     LaneReorder: { request: "lane:reorder" as const, response: "void" as const },
     LaneAddPerformer: { request: "lane:add_performer" as const, response: "void" as const },
@@ -262,6 +270,7 @@ export type IpcEnvelope =
   | ({ t: "lane:select" } & LaneSelect)
   | ({ t: "lane:delete" } & LaneDelete)
   | ({ t: "lane:restart" } & LaneRestart)
+  | ({ t: "lane:new_root" } & LaneNewRoot)
   | ({ t: "lane:set_origin" } & LaneSetOrigin)
   | ({ t: "lane:reorder" } & LaneReorder)
   | ({ t: "lane:add_performer" } & LaneAddPerformer)

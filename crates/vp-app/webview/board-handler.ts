@@ -10,8 +10,9 @@
  *  - thumbnail ✕ / Clear は `board:delete` / `board:clear` IPC で repo に依頼し、 repo が DB 更新 →
  *    `BoardUpdated` で反映する（optimistic 更新はせず repo truth に一本化）。
  *  - cursor（main に出す item）だけは view local。
- *  - doc 52 §10 wave 0: presence（非空か）を 'vp:board-presence' で lane-panes へ通知し、
- *    board pane を roster に出す（旧 pp-overlay app scene の auto-open はここに移った）。
+ *  - 'vp:board-presence' は**通知 signal**（doc 55 §5.2 で転生 — 旧「presence が roster を
+ *    駆動する」は item 永続化で退役）。閉時 = 取っ手 badge（board-view.ts）/ docked 開時 =
+ *    focus 寄せ（lane-panes.ts）。roster への出入りは 'vp:board-view'（open && docked）が担う。
  *
  * scope: **'lane' のみ**（mako 決定 2026-07-23 — board は注視中 lane に一本化。旧 'proj' は
  * 撤去、'vp'（全体）構想も同決定で消滅）。gui channel は repo 単位で全 lane の
@@ -169,13 +170,14 @@ function renderCurrentMain(): void {
 }
 
 /**
- * board の presence（非空か）を lane-panes に知らせる（doc 52 §10 wave 0 — board pane 化）。
- * lane-panes は present で roster に board pane を出し、fresh（live 新着）なら focus を寄せる
- * （旧 maybeAutoOpenPP = pp-overlay app scene の後継。「配送されたのに見えない」を防ぐ）。
+ * board の新着 signal を放送する（doc 55 §5.2 — 旧「presence が roster を駆動」は item
+ * 永続化で退役し、この event は**通知に純化**した）。購読側の解釈:
+ * - board-view.ts: 閉時の fresh → 取っ手 badge 点灯
+ * - lane-panes.ts: docked で開いている（= roster に居る）ときの fresh → focus 寄せ（現行継承）
+ * fresh は active view のときだけ立てる — 裏 lane の新着で表 lane の focus を奪わない。
  *
- * 全 lane 分 dispatch する（非 active lane の board も boardByLane に記録され、lane 切替時に
- * roster が正しく再構成される）。fresh は active view のときだけ立てる — 裏 lane の新着で
- * 表 lane の focus を奪わない。
+ * ⚠️ `present` field は現在**読み手ゼロ**（informational only — 両購読者とも fresh しか
+ * 見ない）。互換のため残しているが、roster 判定に使ってはいけない（それは 'vp:board-view'）。
  */
 function notifyBoardPresence(lane: string | null | undefined, present: boolean, fresh: boolean): void {
   // sendIpc と同じ規律: DOM 不在環境（単体テスト等）では silent skip（prod の webview では

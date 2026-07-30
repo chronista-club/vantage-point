@@ -215,7 +215,7 @@ body{overflow:hidden;}
    捕捉して fitAddon.fit() が再計算する — 「xterm を圧迫しない」検証点)。 */
 #pane-lane{--lane-header-h:0px;}
 #pane-lane.lane-header-active{--lane-header-h:var(--vp-nameplate-h);}
-#lane-header{position:absolute;top:0;left:0;right:0;height:var(--lane-header-h);
+#lane-header{position:absolute;top:0;left:0;right:36px;height:var(--lane-header-h);
   overflow:hidden;z-index:2;}
 /* doc 49 LE-P4 PR2: lane 内 tiling は creo-ui-layout の lane scope が担い、JS
    (lane-panes.ts) が resolved rect を inline style (left/top/width/height %) で書く。
@@ -224,7 +224,8 @@ body{overflow:hidden;}
    解決 (LTR) で right/bottom が無視され、inline の rect が勝つ。 */
 /* 下端の帯（#pane-tabs）は退役（doc 51 §1 A1）— pane chip は tiling 既定で存在理由が
    消え、+ New / Mode 切替は LaneHeader（lane の名札）へ移設した。 */
-#lane-panes{position:absolute;top:var(--lane-header-h);left:0;right:0;
+/* right:36px = edge rail の静的退避（doc 56 prototype）。rail は常設なので reflow は起きない。 */
+#lane-panes{position:absolute;top:var(--lane-header-h);left:0;right:36px;
   bottom:0;background:var(--color-border,#2a3040);}
 /* outline は隣接 Pane との区切り線 (旧 flex gap:1px の後継 — layout に影響しない描画のみの線)。 */
 #lane-panes > *{position:absolute;inset:0;background:var(--color-bg,#0f1115);
@@ -353,6 +354,57 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
   color:var(--color-text-tertiary);font-size:11px;padding:1px 8px;border-radius:4px;cursor:pointer;
   font-family:inherit;transition:color .1s ease,border-color .1s ease,background .1s ease;}
 .board-clear-btn:hover{color:var(--color-text-primary);background:var(--color-surface-bg-emphasis);}
+/* doc 55: board float 投影 — 右側余白に浮かぶ層。rect (px) は board-view.ts が inline で書く
+   (#lane-panes > * の inset:0 / outline を specificity で上書き)。他 pane は 1px も動かない。 */
+#lane-board.board-floating{inset:auto;z-index:30;outline:none;
+  border:1px solid var(--color-surface-border,#1f2233);border-radius:10px;
+  box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden;}
+#lane-board.board-floating .board-plate{cursor:grab;user-select:none;}
+#lane-board.board-floating.board-interacting .board-plate{cursor:grabbing;}
+/* drag / resize 中は下の iframe に pointer を食わせない (doc 55 実装留意 — setPointerCapture の保険)。 */
+#lane-board.board-interacting iframe{pointer-events:none;}
+/* resize の取っ手 (float 時のみ出す)。左右の縁 + 下辺 + 両下角。「いつもの挙動」の
+   本命は右下 (se) — 実機 dogfood (2026-07-30) で右系の不在が「横は動かせない」に見えた。
+   overflow:hidden で外側は切れるため、当たりは内側に広めに取る。 */
+#lane-board .board-rs{display:none;position:absolute;z-index:6;}
+#lane-board.board-floating .board-rs{display:block;}
+.board-rs-w{left:-3px;top:0;bottom:0;width:10px;cursor:ew-resize;}
+.board-rs-e{right:-3px;top:0;bottom:0;width:10px;cursor:ew-resize;}
+.board-rs-s{left:0;right:0;bottom:-3px;height:10px;cursor:ns-resize;}
+.board-rs-sw{left:-4px;bottom:-4px;width:18px;height:18px;cursor:nesw-resize;}
+.board-rs-se{right:-4px;bottom:-4px;width:18px;height:18px;cursor:nwse-resize;}
+/* edge rail（doc 56 prototype）: 右端の帯 = lane 級動詞の家。B 形（帯）が既定 —
+   「lane に対して何ができるか」を初見にも見せ切る（mako 2026-07-30）。占有は静的
+   （#lane-panes / #lane-header が 36px 退避）なので reflow イベントは発生しない。 */
+#edge-rail{position:absolute;right:0;top:0;bottom:0;width:36px;z-index:25;
+  display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 0;
+  background:var(--color-surface-bg-subtle);
+  border-left:1px solid var(--color-surface-border,#1f2233);}
+#edge-rail-new-host{display:contents;}
+/* rail の住人の共通の見た目（New / board 取っ手 / 将来の lane 級動詞） */
+.rail-btn{position:relative;display:flex;align-items:center;justify-content:center;
+  width:28px;height:28px;padding:0;border:1px solid transparent;border-radius:8px;
+  background:transparent;color:var(--color-text-tertiary);cursor:pointer;font-size:15px;}
+.rail-btn:hover{color:var(--color-text-primary);background:var(--color-surface-bg-emphasis);
+  border-color:var(--color-surface-border,#1f2233);}
+/* hover label: 帯の左に滑り出す（発見性 — 初見が「何ができるか」を読める） */
+.rail-btn::after{content:attr(data-label);position:absolute;right:calc(100% + 10px);top:50%;
+  transform:translateY(-50%) translateX(4px);white-space:nowrap;padding:3px 10px;
+  border-radius:6px;background:var(--color-surface-bg-emphasis);
+  border:1px solid var(--color-surface-border,#1f2233);color:var(--color-text-secondary);
+  font-size:11px;opacity:0;pointer-events:none;transition:opacity .12s ease,transform .12s ease;}
+.rail-btn:hover::after{opacity:1;transform:translateY(-50%) translateX(0);}
+/* board 取っ手の新着 badge（doc 55） */
+#board-handle-badge{display:none;position:absolute;top:2px;right:2px;width:7px;height:7px;
+  border-radius:50%;background:var(--color-brand-primary,#3b82f6);}
+#board-handle.has-badge #board-handle-badge{display:block;animation:board-badge-pulse 1.6s ease-in-out infinite;}
+/* 新着点灯中は取っ手自体も持ち上げる (dogfood 発見 2026-07-30: 暗色 on 暗色の取っ手は
+   存在を知らないと気づけない)。常時は控えめのまま、知らせたい瞬間だけ光る。 */
+#board-handle.has-badge{color:var(--color-text-primary);
+  border-color:var(--color-brand-primary,#3b82f6);
+  box-shadow:0 0 10px color-mix(in srgb, var(--color-brand-primary,#3b82f6) 55%, transparent);}
+@keyframes board-badge-pulse{50%{opacity:.35;}}
+@media (prefers-reduced-motion:reduce){#board-handle.has-badge #board-handle-badge{animation:none;}}
 /* Devices 🧲 pane: device 一覧の行。名前と IN/OUT バッジが素の連結で「Roto-ControlIN · OUT」に
    見えていた（2026-07-23 実機）— gap + バッジの弱色化で読めるように。 */
 .device-list{display:flex;flex-direction:column;gap:2px;padding:10px 16px;}
@@ -521,6 +573,8 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
           <!-- 鮮度: cursor item の updatedAt を board-handler が「更新 HH:MM:SS」で書く（doc 52 §5 計器盤）。
                出力元は repo の updatedAt 一箇所（content 手書きに依存しない）。 -->
           <span id="board-freshness" class="board-freshness"></span>
+          <!-- doc 55 §7: form 切替（float ⇄ dock）。文言は「これから行ける先」を board-view.ts が書く。 -->
+          <button class="board-clear-btn" id="board-form-btn" title="float ⇄ dock (Ctrl+Shift+N)">Float</button>
           <button class="board-clear-btn" data-action="clear" data-target="board" title="board を空にする">Clear</button>
         </div>
         <!-- ink（対話面、doc 52 §3）: #board-content の上に透明レイヤーを重ねて描く。renderBoard は
@@ -546,6 +600,20 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
         </div>
         <div class="board-history-strip" id="board-history-strip"></div>
       </div>
+    </div>
+    <!-- edge rail（doc 56 prototype、2026-07-30）: lane 級動詞の家 = 右端の帯。原理は
+         「動詞の級 = 住所」— New（生成）が上、board 取っ手が続く。pane 級は各 pane の名札、
+         app 級（⚙ 設定）はサイドバー下部でここには置かない。B 形（帯）が既定、A 形（浮遊）は
+         将来の設定トグル。lane 不在時は EdgeRail.setLane(null) が帯ごと隠す。 -->
+    <div id="edge-rail" style="display:none">
+      <!-- + New（EdgeRail.tsx が render。machinery は LaneHeader から移設 — 動線一本化） -->
+      <div id="edge-rail-new-host"></div>
+      <!-- board の取っ手（doc 55）— 開閉の入口 + 新着 badge。表示状態は user 専有で
+           board-view.ts が持つ（AI は書けない）。lane 不在時は board-view も個別に隠す。 -->
+      <button id="board-handle" class="rail-btn" data-label="Board (Ctrl+Shift+B)" title="Board を開く / 閉じる (Ctrl+Shift+B)" style="display:none">
+        <iconify-icon icon="ph:compass"></iconify-icon>
+        <span id="board-handle-badge"></span>
+      </button>
     </div>
     <!-- doc 33 §9: tui⇄II 切替中の progress overlay (World B)。toggle 押下で .active、
          resume 確定 (session_init) / mode 適用で clear。切替を resume 確定まで見せる + lock。 -->
