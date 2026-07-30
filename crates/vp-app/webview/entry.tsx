@@ -260,6 +260,9 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		applyAppScene("empty");
 		// lane 無し = Conversation 共通ヘッダも空へ（chips は presence-driven）。
 		laneHeader?.setLane(null);
+		// doc 55: board の view 層も lane 不在に追従（取っ手ごと消える）。laneHeader と対称に —
+		// 現状は app-panes の scene マスクで偶然隠れているが、偶然に依存しない（moody #3）。
+		boardView?.setActiveLane(null);
 		return;
 	}
 	// kind=terminal: Lane 切替判定 + 保存済配置の restore + show-subscriber 付替

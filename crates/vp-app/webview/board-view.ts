@@ -276,7 +276,16 @@ export function installBoardView(deps: BoardViewDeps): BoardViewController {
 			const sy = e.clientY;
 			el.setPointerCapture(e.pointerId);
 			deps.board.classList.add("board-interacting");
+			/** drag 開始時の文脈がまだ生きているか。drag 中に外部要因（Ctrl+Shift+N /
+			 *  MCP switch_lane 等）で lane・form が変わったら、以降の書き込みを捨てる —
+			 *  誤った lane への rect 上書きと、docked へ遷移後の px 直書き（lane-panes render
+			 *  との二重書き手化）を防ぐ（moody-blues finding #2、2026-07-30）。 */
+			const dragAlive = (): boolean => {
+				const cur = stateOf(flat);
+				return activeFlat === flat && cur.open && cur.form === "float";
+			};
 			const onMove = (ev: PointerEvent): void => {
+				if (!dragAlive()) return;
 				liveRect = apply(start, ev.clientX - sx, ev.clientY - sy);
 				writeRect(liveRect);
 			};
@@ -285,11 +294,11 @@ export function installBoardView(deps: BoardViewDeps): BoardViewController {
 				el.removeEventListener("pointerup", onUp);
 				el.removeEventListener("pointercancel", onUp);
 				deps.board.classList.remove("board-interacting");
-				if (liveRect) {
-					// 確定 = 記憶（lane ごと）。roster は動かないので dispatch 不要
+				// 確定 = 記憶（lane ごと）。文脈が死んでいたら捨てる（上記 guard と同じ理由）
+				if (liveRect && dragAlive()) {
 					states.set(flat, { ...stateOf(flat), rect: liveRect });
-					liveRect = null;
 				}
+				liveRect = null;
 			};
 			el.addEventListener("pointermove", onMove);
 			el.addEventListener("pointerup", onUp);
