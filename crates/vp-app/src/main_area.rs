@@ -377,7 +377,14 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 #board-handle:hover{color:var(--color-text-primary);background:var(--color-surface-bg-emphasis);}
 #board-handle-badge{display:none;position:absolute;top:5px;right:5px;width:7px;height:7px;
   border-radius:50%;background:var(--color-brand-primary,#3b82f6);}
-#board-handle.has-badge #board-handle-badge{display:block;}
+#board-handle.has-badge #board-handle-badge{display:block;animation:board-badge-pulse 1.6s ease-in-out infinite;}
+/* 新着点灯中は取っ手自体も持ち上げる (dogfood 発見 2026-07-30: 暗色 on 暗色の取っ手は
+   存在を知らないと気づけない)。常時は控えめのまま、知らせたい瞬間だけ光る。 */
+#board-handle.has-badge{color:var(--color-text-primary);
+  border-color:var(--color-brand-primary,#3b82f6);
+  box-shadow:0 0 10px color-mix(in srgb, var(--color-brand-primary,#3b82f6) 55%, transparent);}
+@keyframes board-badge-pulse{50%{opacity:.35;}}
+@media (prefers-reduced-motion:reduce){#board-handle.has-badge #board-handle-badge{animation:none;}}
 /* Devices 🧲 pane: device 一覧の行。名前と IN/OUT バッジが素の連結で「Roto-ControlIN · OUT」に
    見えていた（2026-07-23 実機）— gap + バッジの弱色化で読めるように。 */
 .device-list{display:flex;flex-direction:column;gap:2px;padding:10px 16px;}
