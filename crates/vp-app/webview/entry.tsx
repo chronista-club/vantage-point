@@ -102,6 +102,7 @@ import {
 import { layoutEngine } from "./layout-host";
 import { installGallery } from "./gallery-panes";
 import { attachKeybindings } from "./keybindings";
+import { installBoardView } from "./board-view";
 import { renderBoard, clearBoard, appendBoard } from "./board-render";
 import { installConsole, focusedOf, sessionModeOf } from "./console";
 import type {
@@ -296,6 +297,9 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		// LaneAddress::Display 形 (`<repo>/lead` or `<repo>/wing/<name>`) を flat lane_name に翻訳。
 		const laneName = laneNameFromAddress(newLane);
 		setActiveLaneName(laneName);
+		// doc 55: board の view 層（open / form / floatRect）も lane に追従する。flat key 系は
+		// board-handler と同じ（'conductor' / performer 名）。
+		boardView?.setActiveLane(laneName);
 		return;
 	}
 	// kind != terminal (board/runner/Devices/preview click 等): agent pane の**訪問**（一時 view）。
@@ -522,6 +526,17 @@ const lanePanes =
 					chatView.mountTermPlate(host, lane, session),
 			})
 		: null;
+// doc 55: board の view 層（open / form / floatRect = user 専有、in-memory）。取っ手 /
+// form ボタン / float 投影 / 移動・リサイズを配線する。roster への反映は lane-panes が
+// 'vp:board-view' を購読して行う（tiling に入るのは open && docked のときだけ）。
+const boardView = (() => {
+	const board = document.getElementById("lane-board");
+	const handle = document.getElementById("board-handle");
+	const formBtn = document.getElementById("board-form-btn");
+	if (!board || !lanePanesEl || !handle || !formBtn) return null;
+	return installBoardView({ board, workbench: lanePanesEl, handle, formBtn });
+})();
+
 if (lanePanes && paneFrame) {
 	// 要件 3: click で focus が移る。Pane の中身の click は素通しさせたいので capture で拾う。
 	paneFrame.addEventListener(

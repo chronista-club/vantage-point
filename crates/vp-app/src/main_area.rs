@@ -353,6 +353,31 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
   color:var(--color-text-tertiary);font-size:11px;padding:1px 8px;border-radius:4px;cursor:pointer;
   font-family:inherit;transition:color .1s ease,border-color .1s ease,background .1s ease;}
 .board-clear-btn:hover{color:var(--color-text-primary);background:var(--color-surface-bg-emphasis);}
+/* doc 55: board float 投影 — 右側余白に浮かぶ層。rect (px) は board-view.ts が inline で書く
+   (#lane-panes > * の inset:0 / outline を specificity で上書き)。他 pane は 1px も動かない。 */
+#lane-board.board-floating{inset:auto;z-index:30;outline:none;
+  border:1px solid var(--color-surface-border,#1f2233);border-radius:10px;
+  box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden;}
+#lane-board.board-floating .board-plate{cursor:grab;user-select:none;}
+#lane-board.board-floating.board-interacting .board-plate{cursor:grabbing;}
+/* drag / resize 中は下の iframe に pointer を食わせない (doc 55 実装留意 — setPointerCapture の保険)。 */
+#lane-board.board-interacting iframe{pointer-events:none;}
+/* resize の取っ手 (float 時のみ出す)。float は右寄せ想定なので左辺 / 下辺 / 左下角。 */
+#lane-board .board-rs{display:none;position:absolute;z-index:6;}
+#lane-board.board-floating .board-rs{display:block;}
+.board-rs-w{left:-3px;top:0;bottom:0;width:7px;cursor:ew-resize;}
+.board-rs-s{left:0;right:0;bottom:-3px;height:7px;cursor:ns-resize;}
+.board-rs-sw{left:-4px;bottom:-4px;width:14px;height:14px;cursor:nesw-resize;}
+/* doc 55: board の取っ手 — pane-lane 右端の常設タブ。開閉の入口 + 新着 badge。 */
+#board-handle{position:absolute;right:0;top:50%;transform:translateY(-50%);z-index:25;
+  display:flex;align-items:center;justify-content:center;width:26px;height:44px;padding:0;
+  border:1px solid var(--color-surface-border,#1f2233);border-right:none;
+  border-radius:8px 0 0 8px;background:var(--color-surface-bg-subtle);
+  color:var(--color-text-tertiary);cursor:pointer;font-size:14px;}
+#board-handle:hover{color:var(--color-text-primary);background:var(--color-surface-bg-emphasis);}
+#board-handle-badge{display:none;position:absolute;top:5px;right:5px;width:7px;height:7px;
+  border-radius:50%;background:var(--color-brand-primary,#3b82f6);}
+#board-handle.has-badge #board-handle-badge{display:block;}
 /* Devices 🧲 pane: device 一覧の行。名前と IN/OUT バッジが素の連結で「Roto-ControlIN · OUT」に
    見えていた（2026-07-23 実機）— gap + バッジの弱色化で読めるように。 */
 .device-list{display:flex;flex-direction:column;gap:2px;padding:10px 16px;}
@@ -521,6 +546,8 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
           <!-- 鮮度: cursor item の updatedAt を board-handler が「更新 HH:MM:SS」で書く（doc 52 §5 計器盤）。
                出力元は repo の updatedAt 一箇所（content 手書きに依存しない）。 -->
           <span id="board-freshness" class="board-freshness"></span>
+          <!-- doc 55 §7: form 切替（float ⇄ dock）。文言は「これから行ける先」を board-view.ts が書く。 -->
+          <button class="board-clear-btn" id="board-form-btn" title="float ⇄ dock (Ctrl+Shift+N)">Float</button>
           <button class="board-clear-btn" data-action="clear" data-target="board" title="board を空にする">Clear</button>
         </div>
         <!-- ink（対話面、doc 52 §3）: #board-content の上に透明レイヤーを重ねて描く。renderBoard は
@@ -547,6 +574,12 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
         <div class="board-history-strip" id="board-history-strip"></div>
       </div>
     </div>
+    <!-- doc 55: board の取っ手 — 開閉の入口 + 新着 badge。表示状態（open / form / floatRect）は
+         user 専有で board-view.ts が持つ（AI は書けない）。lane 不在時は board-view が隠す。 -->
+    <button id="board-handle" title="Board を開く / 閉じる (Ctrl+Shift+B)" style="display:none">
+      <iconify-icon icon="ph:compass"></iconify-icon>
+      <span id="board-handle-badge"></span>
+    </button>
     <!-- doc 33 §9: tui⇄II 切替中の progress overlay (World B)。toggle 押下で .active、
          resume 確定 (session_init) / mode 適用で clear。切替を resume 確定まで見せる + lock。 -->
     <div id="console-switching">
