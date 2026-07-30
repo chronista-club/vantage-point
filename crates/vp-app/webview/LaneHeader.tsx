@@ -35,22 +35,14 @@ import { render } from 'solid-js/web'
 import { createSignal, For, Show } from 'solid-js'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import {
-  isMyResponse,
-  nextRequestId,
   sessionListOf,
-  type BusRequestId,
-  type AgentsDetail,
   type VpConsole,
   type LaneHeaderState,
   type ConversationSession,
 } from './console'
-// ⚠️ 循環 import（lane-panes → sessionChipPrefix / ここ → newPaneChoices）だが、双方とも
-// hoist される関数宣言を handler 内で遅延参照するだけなので ESM 的に安全。
-import { newPaneChoices } from './lane-panes'
+// （+ New の machinery — newPaneChoices / 相関 id / PaneStand 型 — は EdgeRail.tsx へ移設済み。
+//  旧・循環 import の注記もあちらへ持って行った）
 import { COMPONENT_ICON } from './icons/component'
-
-/** `vp:conversation-agents` bus が運ぶ agent entry（newPaneChoices の入力と同形）。 */
-type PaneStand = { name: string; label?: string; chat_capable?: boolean }
 
 // ---------------------------------------------------------------------------
 // 純関数（vitest 対象）
@@ -196,50 +188,13 @@ export function mountLaneHeader(mount: HTMLElement, vpConsole: VpConsole): LaneH
   const [pickerPos, setPickerPos] = createSignal<{ x: number; y: number }>({ x: 0, y: 0 })
   const [sessions, setSessions] = createSignal<ConversationSession[]>([])
 
-  // doc 51 §1 A1: + New（engine × Mode で新 session = 台に器械を足す）。旧・下端の帯から移設。
-  // null = 閉。agents は click → `conversation:agents_fetch` 要求 → 応答（相関 id 照合）で開く。
-  const [newMenu, setNewMenu] = createSignal<PaneStand[] | null>(null)
-  const [newMenuPos, setNewMenuPos] = createSignal<{ x: number; y: number }>({ x: 0, y: 0 })
-  let newMenuReq: BusRequestId | null = null
+  // + New（engine × Mode で新 session）は edge rail へ移設（doc 56 prototype、2026-07-30 —
+  // 「二つ動線は混乱する」）。machinery（agents_fetch / 相関 id / menu）ごと EdgeRail.tsx に住む。
 
   const sendIpc = (payload: Record<string, unknown>): void => {
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(JSON.stringify(payload))
   }
-
-  /** + New click: menu が開いていれば閉じ、閉じていれば agents を取り直して開く
-   *  （開くたび authoritative — picker の openPicker と同じ流儀）。 */
-  const toggleNewMenu = (btn: HTMLElement): void => {
-    if (newMenu()) {
-      setNewMenu(null)
-      return
-    }
-    const lane = ctx()?.addr
-    if (!lane) return
-    const rect = btn.getBoundingClientRect()
-    // 右端の button なので menu は右揃えで下に開く（x = 右端。CSS が translateX で寄せる）。
-    setNewMenuPos({ x: rect.right, y: rect.bottom + 4 })
-    newMenuReq = nextRequestId('pane-new')
-    sendIpc({ t: 'conversation:agents_fetch', lane, req: newMenuReq })
-  }
-
-  /** menu 行 click: backend が新しい session id を採番し、lane の cwd から始める
-   *  （doc 46 P2 要件 5）。tiling 既定なので新 pane はそのまま台に並ぶ。 */
-  const createPane = (engine: string, mode: 'tui' | 'gui'): void => {
-    const lane = ctx()?.addr
-    setNewMenu(null)
-    if (!lane) return
-    sendIpc({ t: 'console:new_session', lane, engine, mode })
-  }
-
-  // doc 47 §6: `vp:conversation-agents` は共有 bus。自分の要求（相関 id）への応答だけで menu を
-  // 開く（chat composer の要求では開かない）。連打しても最新 id 以外の応答は捨てられる。
-  document.addEventListener('vp:conversation-agents', (e) => {
-    const d = (e as CustomEvent<AgentsDetail<PaneStand>>).detail
-    if (!isMyResponse(newMenuReq, d?.req)) return
-    newMenuReq = null
-    setNewMenu(d?.agents ?? [])
-  })
 
   /** chip click（tui）: picker を開き、一覧を repo から取り直す（開くたび authoritative）。 */
   const openPicker = (chip: HTMLElement): void => {
@@ -273,9 +228,6 @@ export function mountLaneHeader(mount: HTMLElement, vpConsole: VpConsole): LaneH
     const target = ev.target as HTMLElement | null
     if (pickerOpen() && !target?.closest('.eh-root-picker, .eh-session')) {
       setPickerOpen(false)
-    }
-    if (newMenu() && !target?.closest('.eh-new-menu, .eh-new')) {
-      setNewMenu(null)
     }
   })
 
@@ -411,46 +363,8 @@ export function mountLaneHeader(mount: HTMLElement, vpConsole: VpConsole): LaneH
                     root の付け替え（lane の代表を誰にするか）に専念する。 */}
               </div>
             </Show>
-            {/* + New: 台に器械を足す（場所への操作 = 場所の名札の右端、mako 2026-07-24）。
-                click で agents を取り直し（相関 id）、応答で menu が開く — 同期では開かない
-                ので stopPropagation は不要（#836/#837: document click を無条件に止めない）。 */}
-            <button
-              type="button"
-              class="eh-chip eh-new"
-              title="Engine と Mode を選んで、この台に新しいコンソールを作る"
-              onClick={(ev) => toggleNewMenu(ev.currentTarget as HTMLElement)}
-            >
-              <CreoIcon name="ph:plus" size={11} />
-              New
-            </button>
-            <Show when={newMenu()}>
-              {(agents) => (
-                <div
-                  class="eh-root-picker eh-new-menu"
-                  style={{ left: `${newMenuPos().x}px`, top: `${newMenuPos().y}px` }}
-                >
-                  <For
-                    each={newPaneChoices(agents())}
-                    fallback={<div class="eh-rp-empty">engine なし</div>}
-                  >
-                    {(nc) => (
-                      <button
-                        type="button"
-                        class="eh-rp-row"
-                        onClick={() => createPane(nc.engine, nc.mode)}
-                      >
-                        {/* Mode は「Console（tui）」「Chat（gui）」で見せる — 内部語（tui/chat）は出さない */}
-                        <CreoIcon
-                          name={nc.mode === 'gui' ? 'ph:chat-circle' : 'ph:terminal-window'}
-                          size={11}
-                        />
-                        {nc.engineLabel} · {nc.mode === 'gui' ? 'Chat' : 'Console'}
-                      </button>
-                    )}
-                  </For>
-                </div>
-              )}
-            </Show>
+            {/* + New は edge rail（右端の帯）へ移設した（doc 56 prototype、mako 2026-07-30
+                「二つ動線は混乱する」— 動線一本化。lane 級動詞の家は rail、名札は読む帯へ純化）。 */}
           </>
         )}
       </Show>
@@ -463,11 +377,10 @@ export function mountLaneHeader(mount: HTMLElement, vpConsole: VpConsole): LaneH
     setLane(next) {
       setCtx(next)
       setSummary(next ? vpConsole.headerState(next.addr) : {})
-      // lane が替わったら picker / + New menu は閉じ、一覧は **新 lane の cache** に張り替える
+      // lane が替わったら picker は閉じ、一覧は **新 lane の cache** に張り替える
       //（別 lane の session を誤表示しない / doc 53 §11: push は roster 変化時だけなので
-      // 「開いた時」は自分で cache を読む）。
+      // 「開いた時」は自分で cache を読む）。+ New menu の同処理は EdgeRail.setLane が担う。
       setPickerOpen(false)
-      setNewMenu(null)
       setSessions(next ? sessionListOf(next.addr) : [])
       // strip の開閉（World A の DOM に触れる唯一の接点）: lane 文脈がある時だけ
       // #pane-lane に .lane-header-active を付け、main_area.rs の --lane-header-h を
@@ -524,10 +437,6 @@ export const LANE_HEADER_CSS = `
 #lane-header .eh-rp-now{ margin-left:auto; color:var(--color-text-secondary); font-size:10px; }
 #lane-header .eh-rp-divider{ height:1px; margin:4px 6px; background:var(--color-surface-border-subtle); }
 #lane-header .eh-rp-empty{ padding:6px 8px; color:var(--color-text-secondary); font-size:10.5px; }
-/* doc 51 §1 A1: + New（台に器械を足す）。名札の右端 = margin-left:auto、作成の入口なので
-   chip とは破線で区別（旧・帯の .pane-new と同じ記号論）。 */
-#lane-header .eh-new{ margin-left:auto; border-style:dashed; }
-/* + New の menu。器は root picker と同じ（.eh-root-picker を継承）。右端の button から
-   開くので、fixed の基準点 x = button 右端 → translateX で右揃えにする。 */
-#lane-header .eh-new-menu{ transform:translateX(-100%); }
+/* + New の CSS（.eh-new / .eh-new-menu）は edge rail への移設に伴い撤去（EdgeRail.tsx の
+   EDGE_RAIL_CSS が後継、doc 56 prototype 2026-07-30）。 */
 `
