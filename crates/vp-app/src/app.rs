@@ -3175,6 +3175,9 @@ struct SidebarIpcOutcome {
     /// caller が repo port を解決して `client.restart_lane` を呼ぶ。
     /// fresh=true は "New Conductor Session" (resume/continue 回避の fresh 起動)。
     restart_lane_request: Option<(String, String, bool)>,
+    /// doc 39 §8.4 提案 2: 「New Root Conversation」要求 `(repo_path, lane_address)`。
+    /// caller が repo の `conversation_session_new_root` を呼ぶ（非破壊 — 旧 root の会話は残る）。
+    new_root_request: Option<(String, String)>,
     /// doc 44 D4: 開発起点の再指定要求 (repo_path, lane address)。
     /// 実体は Host の帳簿のポインタ更新だけで、lane は何も動かない (D5)。
     set_origin_request: Option<(String, String)>,
@@ -3308,6 +3311,14 @@ fn handle_sidebar_ipc(
             // WS が onclose → reconnect で新 PtySlot に attach し直す (PR #218)。
             if !m.path.is_empty() && !m.address.is_empty() {
                 out.restart_lane_request = Some((m.path, m.address, m.fresh.unwrap_or(false)));
+            }
+        }
+        IpcEnvelope::LaneNewRoot(m) => {
+            // doc 39 §8.4 提案 2: 新しい root conversation を始める（非破壊）。caller (event loop)
+            // が repo の `conversation_session_new_root` を撃つ — 新 session を採番して root に
+            // 向け、旧 root の会話は session として残る（Reset Lane との対比が要点）。
+            if !m.path.is_empty() && !m.address.is_empty() {
+                out.new_root_request = Some((m.path, m.address));
             }
         }
         IpcEnvelope::LaneSetOrigin(m) => {
@@ -5163,9 +5174,10 @@ pub fn run() -> anyhow::Result<()> {
             // 新セッション開始（✨ New ボタン）。doc 39 §4「New は今いる Mode に出す」で分岐する:
             //  - chat lane（gui）: 「新 Draft session を作って focus」。旧会話はタブに残る
             //    （タブモデルの自然形 = 前回状態キープの延長）。
-            //  - tui lane（tui）: conversation_session_new_root = 新 session を作って root を向け、slot を
-            //    素の engine で張り替える（非破壊 — 旧 root の会話はタブに残存）。旧 fresh restart
-            //    （全 session 破棄）は sidebar の Reset lane に退避した。
+            //  - tui lane（tui）: lane_slot_new = slot を**足す**だけ（root 不変、A6 ③）。
+            //    ⚠️ 旧実装の conversation_session_new_root（root 張り替え）は A6 で撤去 — root を
+            //    動かすのは chip picker（console:switch_root）と「New Root Conversation」
+            //    （sidebar context menu、doc 39 §8.4）の明示操作のみ。
             Event::UserEvent(AppEvent::ConsoleNewSession { lane, engine, mode }) => {
                 // repo は対象 lane 自身から逆引き（#705 のレース教訓 — repo 応答待ちの間に
                 // active lane が変わり得るため resolve_active_repo_path は使わない）。
@@ -5940,6 +5952,33 @@ pub fn run() -> anyhow::Result<()> {
                                     e
                                 );
                             }
+                        }
+                    });
+                }
+                // doc 39 §8.4 提案 2: 新しい root conversation（sidebar lane 行の context menu）。
+                // backend が新 session を採番して root に向ける。旧 root の pane / 会話は残る
+                //（= Reset Lane との違い）。反映は lanes snapshot / session list が運ぶので
+                // 楽観更新しない。
+                if let Some((repo_path, address)) = outcome.new_root_request {
+                    rt_handle.spawn(async move {
+                        match daemon_repo_request(
+                            crate::client::default_daemon_port(),
+                            &repo_path,
+                            "conversation_session_new_root",
+                            serde_json::json!({ "lane": &address }),
+                        )
+                        .await
+                        {
+                            Ok(res) => {
+                                let session =
+                                    res.get("session").and_then(serde_json::Value::as_u64);
+                                tracing::info!(
+                                    "new root conversation: repo={repo_path} lane={address} session={session:?}"
+                                );
+                            }
+                            Err(e) => tracing::warn!(
+                                "conversation_session_new_root failed: repo={repo_path} lane={address}: {e}"
+                            ),
                         }
                     });
                 }

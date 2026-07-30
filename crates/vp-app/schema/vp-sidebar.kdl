@@ -61,6 +61,13 @@ protocol "sidebar" version="1.0.0" {
             field "address" type="string"
             field "fresh" type="bool" optional=#true
         }
+        // doc 39 §8.4 提案 2: 新しい root conversation を始める (非破壊)。
+        // Rust 側が repo の `conversation_session_new_root` を呼ぶ — 新 session を採番して
+        // root に向け、旧 root の会話は session として残る (Reset Lane との対比が要点)。
+        request "lane:new_root" {
+            field "path" type="string"
+            field "address" type="string"
+        }
         // doc 44 D4: この lane を repo の開発起点にする (Host の帳簿のポインタ更新)。
         // D5 の通り **何も動かさない** — cwd も active lane も engine も変わらない。
         request "lane:set_origin" {

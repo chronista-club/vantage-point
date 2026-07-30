@@ -196,21 +196,37 @@ export function LaneRow(props: {
 		// dim 表示 (isInactive) と同じ述語を使う — 生死判定を 2 箇所に散らさない。
 		const active = isLaneAlive(lane);
 		const items: ContextMenuItem[] = [];
+		// doc 39 §8.4 提案 1: Restart / Respawn は同一動作（lane:restart、fresh なし = 実体を
+		// 立て直して会話は resume で継続）なのに生死でラベルが割れていた。1 語に統一し、
+		// 「Restart = 新しく始まる」と誤読される語感を（会話は継続）で打ち消す。
+		items.push({
+			label: "Restart Session（会話は継続）",
+			icon: "ph:arrow-clockwise",
+			onSelect: () =>
+				sendIpc({
+					t: "lane:restart",
+					path: props.repoPath,
+					address: addr(),
+				}),
+		});
+		// doc 39 §8.4 提案 2: 新しい root conversation を始める（非破壊）。backend の
+		// conversation_session_new_root（呼び手ゼロで残存していた verb）への唯一の口。
+		// 旧 root の会話は session として残る — 直下の Reset Lane（全部消す）との強弱が
+		// 並びで読めるのが配置の要点。
+		items.push({
+			label: "New Root Conversation（既存の会話は残る）",
+			icon: "ph:sparkle",
+			onSelect: () =>
+				sendIpc({
+					t: "lane:new_root",
+					path: props.repoPath,
+					address: addr(),
+				}),
+		});
 		if (active) {
-			items.push({
-				label: `Restart ${performer ? "Performer" : "Conductor"} Session`,
-				icon: "ph:arrow-clockwise",
-				onSelect: () =>
-					sendIpc({
-						t: "lane:restart",
-						path: props.repoPath,
-						address: addr(),
-					}),
-			});
 			// doc 39 §1: Reset Lane (fresh=true) — 全 session store + registry 破棄の破壊的動詞。
-			// 旧 "New Conductor Session"。日常の「新しい会話を始める」はヘッダの ✨ New（非破壊 =
-			// tui は root 張り替え / gui は新 Draft タブ）に移り、こちらは「lane を素に戻す」
-			// 最終手段として sidebar の奥 + 2-click 確認に退避した。
+			// 旧 "New Conductor Session"。日常の「新しい会話を始める」は ✨ New / New Root
+			//（非破壊）に移り、こちらは「lane を素に戻す」最終手段として 2-click 確認に退避した。
 			items.push({
 				label: "Reset Lane",
 				icon: "ph:trash",
@@ -222,19 +238,6 @@ export function LaneRow(props: {
 						path: props.repoPath,
 						address: addr(),
 						fresh: true,
-					}),
-			});
-		} else {
-			// Dead Lane (pid:null): 明示 respawn。 左 click の on-demand respawn と同じ lane:restart を
-			// menu からも撃てるようにする (会話を継ぐ = fresh 無し)。
-			items.push({
-				label: `Respawn ${performer ? "Performer" : "Conductor"} Session`,
-				icon: "ph:arrow-clockwise",
-				onSelect: () =>
-					sendIpc({
-						t: "lane:restart",
-						path: props.repoPath,
-						address: addr(),
 					}),
 			});
 		}
