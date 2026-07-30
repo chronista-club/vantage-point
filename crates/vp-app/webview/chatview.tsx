@@ -1986,6 +1986,12 @@ function SessionChatView(props: { lane: string; session: number }) {
 /** ChatView の scoped CSS。entry.tsx が `<style>` で注入する（board-render.ts の style 注入と同型）。
  *  色は creo-ui token（--color-* 系）に寄せ、無い環境でも読める fallback を持つ。 */
 export const CHATVIEW_CSS = `
+/* chat Live Token (--chat-text-*) の定義は :root に置く。適用 (use site) は .chat-view 以下に
+   閉じているので他 pane を汚染しない。:root 定義にする理由 = creo-ui Editor Mode
+   (entry.tsx ChatTokenBinds) の slider が documentElement.style.setProperty で書くため、
+   より近い祖先に定義があると「近い祖先の定義が勝つ」で書き込みがマスクされる
+   (sidebar Shell.tsx の --sb-text-* と同型)。 */
+:root{--chat-text-body:15px;--chat-text-user:13.5px;--chat-text-tool:12px;--chat-text-meta:11px;--chat-text-micro:10px;}
 .chat-view { position:absolute; inset:0; display:flex; flex-direction:column;
   background: var(--color-bg, #0f1115); color: var(--color-text, #e6e9ef);
   font-family: var(--vp-font-sans),var(--typography-family-sans); overflow:hidden; }
@@ -2012,7 +2018,7 @@ export const CHATVIEW_CSS = `
 .conversation-msg.user.pending.locked { opacity:.38; cursor:not-allowed; }
 .conversation-pending-badge { display:block; margin-top:4px; font-size:10.5px; color: var(--color-text-tertiary, #8b93a7); }
 /* status bar（入力の上）: engine の現況の**読み取り専用**計器。操作は composer 側が持つ。 */
-.conversation-status { display:flex; align-items:center; gap:8px; padding:4px 14px; min-height:24px; font-size:11px;
+.conversation-status { display:flex; align-items:center; gap:8px; padding:4px 14px; min-height:24px; font-size:var(--chat-text-meta,11px);
   font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-text-tertiary,#8b93a7);
   border-top:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115); }
 .conversation-status-dot { width:7px; height:7px; border-radius:50%; flex:none; background: var(--color-text-tertiary,#616b80); }
@@ -2028,17 +2034,17 @@ export const CHATVIEW_CSS = `
 .conversation-status-stalled { color:#f0a3a3; font-weight:600; }
 .conversation-status-event { color: var(--color-text-tertiary,#616b80); opacity:.65; }
 @keyframes conversation-status-pulse { 50% { opacity:.32; } }
-.conversation-msg-body { font-size:13.5px; line-height:1.6; word-break:break-word; }
-/* 返信（assistant）の本文だけ拡大 = 15px（自分の入力バブルは 13.5px のまま）。
+.conversation-msg-body { font-size:var(--chat-text-user,13.5px); line-height:1.6; word-break:break-word; }
+/* 返信（assistant）の本文だけ拡大 = --chat-text-body（自分の入力バブルは --chat-text-user のまま）。
    line-height は unitless なので font-size に追従してスケールする。 */
-.conversation-msg:not(.user) .conversation-msg-body { font-size:15px; }
+.conversation-msg:not(.user) .conversation-msg-body { font-size:var(--chat-text-body,15px); }
 .conversation-msg-body :first-child { margin-top:0; } .conversation-msg-body :last-child { margin-bottom:0; }
 .conversation-msg-body pre { background: var(--color-bg-elevated, #16191f); border:1px solid var(--color-border,#2a3040);
-  border-radius:8px; padding:10px 12px; overflow-x:auto; font-size:12px; }
+  border-radius:8px; padding:10px 12px; overflow-x:auto; font-size:var(--chat-text-tool,12px); }
 .conversation-msg-body code { font-family: var(--vp-font-mono),var(--typography-family-mono); }
-.conversation-thinking { align-self:flex-start; font-size:12px; }
+.conversation-thinking { align-self:flex-start; font-size:var(--chat-text-tool,12px); }
 .conversation-thinking-toggle { background:none; border:none; color: var(--color-text-tertiary,#8b93a7);
-  cursor:pointer; font-size:12px; padding:2px 0; display:flex; align-items:center; gap:5px; }
+  cursor:pointer; font-size:var(--chat-text-tool,12px); padding:2px 0; display:flex; align-items:center; gap:5px; }
 .conversation-thinking-caret { transition: transform .15s ease; display:inline-block; }
 .conversation-thinking-caret.open { transform: rotate(90deg); }
 .conversation-thinking-label { display:inline-block; }
@@ -2050,11 +2056,11 @@ export const CHATVIEW_CSS = `
   -webkit-text-fill-color:transparent; color:transparent;
   animation: conversation-shimmer 1.5s linear infinite; }
 .conversation-thinking-body { margin:4px 0 0 16px; padding:8px 12px; border-left:2px solid var(--color-border,#2a3040);
-  color: var(--color-text-secondary,#a8b0c0); white-space:pre-wrap; font-size:12px; line-height:1.55; }
+  color: var(--color-text-secondary,#a8b0c0); white-space:pre-wrap; font-size:var(--chat-text-tool,12px); line-height:1.55; }
 /* ToolRow: tool 1 件。container / head(pill 1 行) / body(詳細) の 3 層は toolgroup と同型。 */
-.conversation-tool { align-self:flex-start; font-size:12px; animation: conversation-fade .18s ease-out; }
+.conversation-tool { align-self:flex-start; font-size:var(--chat-text-tool,12px); animation: conversation-fade .18s ease-out; }
 .conversation-tool-head { display:flex; align-items:center; gap:8px; width:100%; text-align:left;
-  font-family:inherit; font-size:12px;
+  font-family:inherit; font-size:var(--chat-text-tool,12px);
   color: var(--color-text-secondary,#a8b0c0); background: var(--color-bg-elevated,#16191f);
   border:1px solid var(--color-border,#2a3040); border-radius:8px; padding:5px 11px; }
 /* 詳細を持つ tool だけ押せる（持たない行は見た目そのまま・無反応）。 */
@@ -2065,16 +2071,16 @@ export const CHATVIEW_CSS = `
 .conversation-tool.done .conversation-tool-head { color: var(--color-text-tertiary,#616b80); }
 .conversation-tool.error .conversation-tool-head { color:#f0a3a3; }
 .conversation-tool-name { font-family: var(--vp-font-mono),var(--typography-family-mono); }
-.conversation-tool-status { margin-left:auto; font-size:11px; }
+.conversation-tool-status { margin-left:auto; font-size:var(--chat-text-meta,11px); }
 /* 展開部: thinking-body と同じ左罫線の入れ子表現で input / result を積む。 */
 .conversation-tool-body { display:flex; flex-direction:column; gap:6px; margin:5px 0 0 16px;
   padding-left:8px; border-left:2px solid var(--color-border,#2a3040); }
-.conversation-tool-detail-label { font-size:10px; letter-spacing:.06em; text-transform:uppercase;
+.conversation-tool-detail-label { font-size:var(--chat-text-micro,10px); letter-spacing:.06em; text-transform:uppercase;
   color: var(--color-text-tertiary,#616b80); margin-bottom:2px; }
 .conversation-tool-detail-body { margin:0; max-height:260px; overflow:auto; white-space:pre-wrap;
   word-break:break-word; font-family: var(--vp-font-mono),var(--typography-family-mono);
-  font-size:11px; line-height:1.5; color: var(--color-text-secondary,#a8b0c0); }
-.conversation-tool-detail-omitted { font-size:10px; color: var(--color-text-tertiary,#616b80); margin-top:2px; }
+  font-size:var(--chat-text-meta,11px); line-height:1.5; color: var(--color-text-secondary,#a8b0c0); }
+.conversation-tool-detail-omitted { font-size:var(--chat-text-micro,10px); color: var(--color-text-tertiary,#616b80); margin-top:2px; }
 /* subagent の発話: role でラベル分け。thinking は親の thinking と同じ「控えめ」の質感に寄せる。 */
 .conversation-subagent-entry { margin-top:4px; }
 .conversation-subagent-role { font-size:9px; letter-spacing:.06em; text-transform:uppercase;
@@ -2083,14 +2089,14 @@ export const CHATVIEW_CSS = `
 .conversation-subagent-entry.thinking .conversation-tool-detail-body { color: var(--color-text-tertiary,#616b80); font-style:italic; }
 .conversation-subagent-entry.prompt .conversation-tool-detail-body { color: var(--color-text-tertiary,#8b93a7); }
 /* ToolGroupRow: 連続同名 tool（Agent ×N 等）を畳む accordion。畳んだ header は ToolRow と同じ枠で 1 行。 */
-.conversation-toolgroup { align-self:flex-start; font-size:12px; animation: conversation-fade .18s ease-out; }
+.conversation-toolgroup { align-self:flex-start; font-size:var(--chat-text-tool,12px); animation: conversation-fade .18s ease-out; }
 .conversation-toolgroup-toggle { display:flex; align-items:center; gap:8px; width:100%; cursor:pointer;
-  font-size:12px; color: var(--color-text-secondary,#a8b0c0); background: var(--color-bg-elevated,#16191f);
+  font-size:var(--chat-text-tool,12px); color: var(--color-text-secondary,#a8b0c0); background: var(--color-bg-elevated,#16191f);
   border:1px solid var(--color-border,#2a3040); border-radius:8px; padding:5px 11px; }
 .conversation-toolgroup.done .conversation-toolgroup-toggle { color: var(--color-text-tertiary,#616b80); }
 .conversation-toolgroup.error .conversation-toolgroup-toggle { color:#f0a3a3; }
 .conversation-toolgroup-count { font-family: var(--vp-font-mono),var(--typography-family-mono);
-  color: var(--color-text-tertiary,#8b93a7); font-size:11px; }
+  color: var(--color-text-tertiary,#8b93a7); font-size:var(--chat-text-meta,11px); }
 /* 展開部: 個別 ToolRow を段付きで縦に並べる（thinking-body と同じ左罫線の入れ子表現）。 */
 .conversation-toolgroup-body { display:flex; flex-direction:column; gap:5px; margin:5px 0 0 16px;
   padding-left:8px; border-left:2px solid var(--color-border,#2a3040); }
