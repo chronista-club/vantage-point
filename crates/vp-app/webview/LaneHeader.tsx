@@ -17,8 +17,8 @@
  *
  * これは **lane の名札**（doc 51 §1 の lane-plate）。「この lane が何であるか」= 居る間
  * 変わらない素性（lane 名 / cwd / branch = 台上の全員が共有するもの）と、root session の
- * 表示器 = 操作器（session chip → picker）、そして **+ New**（台に器械を足す = 場所への
- * 操作なので場所の名札に住む — mako 2026-07-24「一旦 Lane のヘッダ右側に」）を載せる。
+ * 表示器 = 操作器（session chip → picker）を載せる。**+ New は edge rail へ移設した**
+ * （doc 56、2026-07-30 — lane 級動詞の家は右端の帯。名札は「読む帯」へ純化が進む）。
  *
  * session 単位の「今の文脈」（状態・model・permission・engine 異常）は各 pane の
  * **計器盤**（chatview の status 行 / composer）が持つ。かつては上段にも併置されていたが、
@@ -28,7 +28,7 @@
  * - `⚠ engine` / `💤 休眠` → status 行（`deriveStatus` が同じ event を畳んでいる）
  *
  * 旧・下端の帯（`#pane-tabs`）は doc 51 §1 A1 で退役 — pane chip は tiling 既定で存在理由が
- * 消え、+ New はここへ、Mode 切替（避難路、doc 51 §2）は root picker の「見え方」行へ移設。
+ * 消えた。+ New は一時ここに住んだ後、doc 56 で edge rail へ移設（動線一本化）。
  */
 
 import { render } from 'solid-js/web'
@@ -41,7 +41,8 @@ import {
   type ConversationSession,
 } from './console'
 // （+ New の machinery — newPaneChoices / 相関 id / PaneStand 型 — は EdgeRail.tsx へ移設済み。
-//  旧・循環 import の注記もあちらへ持って行った）
+//  副産物: 旧 lane-panes ↔ LaneHeader の循環 import は newPaneChoices の移動で解消し、
+//  依存は lane-panes → LaneHeader の片方向になった）
 import { COMPONENT_ICON } from './icons/component'
 
 // ---------------------------------------------------------------------------
