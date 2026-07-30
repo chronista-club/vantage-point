@@ -114,6 +114,7 @@ import type {
 // doc 46 P1 → doc 49 LE-P4 PR2: lane 内 tiling（creo-ui-layout の lane scope）。
 // + New（engine × Mode で新 session）は LaneHeader へ移設済み（doc 51 §1 A1 — 帯の退役）。
 import {
+	boardLaneKeyOf,
 	chatHostId,
 	hostIdForMode,
 	installLanePanes,
@@ -297,9 +298,11 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		// LaneAddress::Display 形 (`<repo>/lead` or `<repo>/wing/<name>`) を flat lane_name に翻訳。
 		const laneName = laneNameFromAddress(newLane);
 		setActiveLaneName(laneName);
-		// doc 55: board の view 層（open / form / floatRect）も lane に追従する。flat key 系は
-		// board-handler と同じ（'conductor' / performer 名）。
-		boardView?.setActiveLane(laneName);
+		// doc 55: board の view 層（open / form / floatRect）も lane に追従する。
+		// ⚠️ laneName（null = conductor の流儀）ではなく boardLaneKeyOf（'conductor' 文字列の
+		// 流儀）を渡す — board-view / lane-panes の Map は文字列 key 系で、null を渡すと
+		// 「lane 不在」扱いになり取っ手ごと消える（root lane で実機再現、2026-07-30）。
+		boardView?.setActiveLane(boardLaneKeyOf(newLane));
 		return;
 	}
 	// kind != terminal (board/runner/Devices/preview click 等): agent pane の**訪問**（一時 view）。
