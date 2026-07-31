@@ -128,14 +128,17 @@ impl EngineKind {
     ///
     /// claude の集合と表記は TUI の shift+tab cycle 準拠（CC v2.1.200 で `default` の表示名は
     /// `manual` へ改名 — wire 値は `default` のまま両受理なので互換側を送る。順序も cycle と
-    /// 同じ manual → accept edits → plan）。cycle 外の `dontAsk` と account 条件付きの `auto` は
-    /// 出さない（押しても効かない選択肢を並べない — 解禁は catalog に足すだけ）。
+    /// 同じ manual → accept edits → plan）。`auto` は account 条件付きだが解禁（mako 裁定
+    /// 2026-07-31、lane の自走優先 — 未解禁 account では選んでも効かない可能性は承知の上。
+    /// 位置は自律度の昇順で bypass の手前）。cycle 外の `dontAsk` は引き続き出さない
+    /// （押しても効かない選択肢を並べない）。
     pub fn permission_choices(self) -> Vec<Choice> {
         match self {
             Self::Claude => Choice::list(&[
                 ("default", "manual"),
                 ("acceptEdits", "accept edits"),
                 ("plan", "plan mode"),
+                ("auto", "auto"),
                 ("bypassPermissions", "bypass permissions"),
             ]),
             Self::Codex | Self::Grok | Self::OpenCode => Vec::new(),
@@ -348,6 +351,7 @@ mod tests {
 
         // permission mode は claude のみ（他 engine は ChatHost::set_permission_mode が bail）。
         // 表記は TUI と同一（v2.1.200 の manual 改名を反映）、wire 値は互換の "default"。
+        // auto は 2026-07-31 解禁（mako 裁定 — lane 自走優先）。
         let perms = EngineKind::Claude.permission_choices();
         assert_eq!(
             perms
@@ -358,6 +362,7 @@ mod tests {
                 ("default", "manual"),
                 ("acceptEdits", "accept edits"),
                 ("plan", "plan mode"),
+                ("auto", "auto"),
                 ("bypassPermissions", "bypass permissions"),
             ],
         );
