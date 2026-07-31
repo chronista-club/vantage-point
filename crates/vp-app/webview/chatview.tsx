@@ -2092,8 +2092,11 @@ export const CHATVIEW_CSS = `
    目障りなので抑制する（focus 合図は scrollbar 操作で十分伝わる）。 */
 .conversation-stream:focus, .conversation-stream:focus-visible { outline:none; }
 .conversation-msg { max-width:100%; animation: conversation-fade .18s ease-out; }
-.conversation-msg.user { align-self:flex-end; background: var(--color-accent-soft, #1c2333);
-  border:1px solid var(--color-border, #2a3040); border-radius:12px 12px 3px 12px; padding:8px 13px; max-width:80%; }
+/* user bubble も左寄せ（mako 裁定 2026-07-31: 横幅方向に表示物を動かさない —
+   全要素が左端に揃い、視線が左右にジャンプしない）。しっぽは左下へ。
+   assistant との見分けは背景色・枠・幅 80% が担う */
+.conversation-msg.user { align-self:flex-start; background: var(--color-accent-soft, #1c2333);
+  border:1px solid var(--color-border, #2a3040); border-radius:12px 12px 12px 3px; padding:8px 13px; max-width:80%; }
 /* §5.1: 送信待ち type-ahead。半透明 + 破線で「まだ送っていない」を伝える。 */
 .conversation-msg.user.pending { opacity:.62; border-style:dashed; transition: opacity .12s ease, border-color .12s ease; }
 /* dequeue-to-composer: composer が空なら「クリックで入力欄に戻して編集」可（hover で明るく）。 */
