@@ -12,6 +12,10 @@ import {
   formatToolResult,
   shortenPath,
   toolOneLiner,
+  headLine,
+  classifyActivityRun,
+  activityRunStatus,
+  fmtElapsed,
   clampToolDetail,
   canSwitchTo,
   canCloseSession,
@@ -67,7 +71,8 @@ describe('foldInto — ConversationEvent → ChatState 畳み込み (doc 33 C2)'
       { kind: 'message_chunk', text: '答え' },
     ])
     expect(s.items).toEqual([
-      { kind: 'thinking', text: '考え中' },
+      // at = live 受信時刻（doc 57 §4.2）。replay でなければ刻まれる。
+      { kind: 'thinking', text: '考え中', at: expect.any(Number) },
       { kind: 'assistant', text: '答え' },
     ])
   })
@@ -102,6 +107,9 @@ describe('foldInto — ConversationEvent → ChatState 畳み込み (doc 33 C2)'
         error: false,
         input: { command: 'ls' },
         result: 'file.txt',
+        // live 受信/settle 時刻（doc 57 §4.2 経過時間の材料）。
+        at: expect.any(Number),
+        doneAt: expect.any(Number),
       },
     ])
   })
@@ -127,6 +135,7 @@ describe('foldInto — ConversationEvent → ChatState 畳み込み (doc 33 C2)'
       done: false,
       error: false,
       input: {},
+      at: expect.any(Number), // 孤児 update は doneAt を刻まない（done 化していない）
     })
   })
 
@@ -499,7 +508,14 @@ describe('replay が in-flight stream の途中に着地した場合', () => {
   it('tail が生成中の assistant バブルを復元する（瞬断前と同じ state に収束）', () => {
     const before = liveStateBeforeBlip()
     const restored = fold(replayWithTail)
-    expect(restored.items).toEqual(before.items)
+    // 時刻（at/doneAt）は意図した非対称: live は刻み、replay は刻まない（doc 57 §4.2 —
+    // 実時間を再現できないものに時刻を偽装しない）。収束の主張は構造なので時刻を除いて比較。
+    const strip = (items: unknown[]) =>
+      items.map((i) => {
+        const { at: _a, doneAt: _d, ...rest } = i as { at?: number; doneAt?: number }
+        return rest
+      })
+    expect(strip(restored.items)).toEqual(strip(before.items))
   })
 
   it('復帰後の message_chunk は既存バブルに繋がる（文の途中で新バブルを立てない）', () => {
@@ -1092,5 +1108,115 @@ describe('toolOneLiner — tool ピルの 1 ライナー (doc 57 §4.4)', () => 
   })
   it('string input は先頭行に正規化', () => {
     expect(toolOneLiner('anything', '1 行目\n2 行目')).toBe('1 行目')
+  })
+})
+
+describe('headLine — 先頭の意味ある 1 行 (doc 57 §6-3)', () => {
+  it('空行を飛ばして最初の非空行を拾う', () => {
+    expect(headLine('\n  \n設計を検討\n詳細')).toBe('設計を検討')
+    expect(headLine('  ')).toBe(null)
+  })
+})
+
+describe('classifyActivityRun — tool/thinking の連続塊 (doc 57 §4.1)', () => {
+  const text = { kind: 'user' as const, text: 'x' }
+  const think = (t = '思考') => ({ kind: 'thinking' as const, text: t })
+  it('異名 tool + thinking の連鎖が 1 つの run になる（head/member）', () => {
+    const items = [text, tool('Write'), think(), tool('Bash'), text] as never[]
+    const head = classifyActivityRun(items, 1)
+    expect(head.role).toBe('head')
+    if (head.role === 'head') expect(head.run.length).toBe(3)
+    expect(classifyActivityRun(items, 2).role).toBe('member')
+    expect(classifyActivityRun(items, 3).role).toBe('member')
+    expect(classifyActivityRun(items, 0).role).toBe('plain')
+  })
+  it('単発 tool / thinking のみの塊は root を作らない（plain = 従来描画）', () => {
+    expect(classifyActivityRun([text, tool('Bash'), text] as never[], 1).role).toBe('plain')
+    expect(classifyActivityRun([text, think(), think(), text] as never[], 1).role).toBe('plain')
+  })
+  it('prompt（HITL）は区切り = 塊に吸われない', () => {
+    const prompt = { kind: 'prompt', requestId: 'r', questions: [], answered: false }
+    const items = [tool('A'), prompt, tool('B')] as never[]
+    expect(classifyActivityRun(items, 0).role).toBe('plain')
+    expect(classifyActivityRun(items, 2).role).toBe('plain')
+  })
+})
+
+describe('activityRunStatus — live root の集約 (doc 57 §4.2)', () => {
+  it('未 done が居る間は running + 現在（未 done の最新）の 1 ライナー', () => {
+    const run = [
+      { kind: 'tool', id: 'a', name: 'Write', done: true, error: false, input: { file_path: '/x/y/a.rs' } },
+      { kind: 'tool', id: 'b', name: 'Bash', done: false, error: false, input: { description: 'テスト実行' } },
+    ] as never[]
+    const st = activityRunStatus(run)
+    expect(st.running).toBe(true)
+    expect(st.liner).toBe('テスト実行')
+    expect(st.doneTools).toBe(1)
+    expect(st.totalTools).toBe(2)
+  })
+  it('全 tool done でも tailStreaming 中は running 維持（途中 ✓ の嘘なし）+ 末尾 thinking 冒頭', () => {
+    const run = [
+      { kind: 'tool', id: 'a', name: 'Bash', done: true, error: false },
+      { kind: 'thinking', text: '次の一手を検討\n詳細' },
+    ] as never[]
+    const st = activityRunStatus(run, true)
+    expect(st.running).toBe(true)
+    expect(st.liner).toBe('次の一手を検討')
+  })
+  it('完了時は liner=null、agent 数と error を集約', () => {
+    const run = [
+      { kind: 'tool', id: 'a', name: 'Agent', done: true, error: false },
+      { kind: 'tool', id: 'b', name: 'Bash', done: true, error: true },
+    ] as never[]
+    const st = activityRunStatus(run)
+    expect(st.running).toBe(false)
+    expect(st.liner).toBe(null)
+    expect(st.agents).toBe(1)
+    expect(st.anyError).toBe(true)
+  })
+  it('経過時間は時刻が揃った完了塊のみ（replay 混じり = null）', () => {
+    const full = [
+      { kind: 'tool', id: 'a', name: 'A', done: true, error: false, at: 1000, doneAt: 4000 },
+      { kind: 'tool', id: 'b', name: 'B', done: true, error: false, at: 4000, doneAt: 9000 },
+    ] as never[]
+    expect(activityRunStatus(full).elapsedMs).toBe(8000)
+    const partial = [
+      { kind: 'tool', id: 'a', name: 'A', done: true, error: false }, // replay 由来 = 時刻なし
+      { kind: 'tool', id: 'b', name: 'B', done: true, error: false, at: 4000, doneAt: 9000 },
+    ] as never[]
+    expect(activityRunStatus(partial).elapsedMs).toBe(null)
+  })
+})
+
+describe('fmtElapsed — 完了 root の経過時間 (doc 57 §6-2)', () => {
+  it('s / m / h の 3 段表示', () => {
+    expect(fmtElapsed(45_000)).toBe('45s')
+    expect(fmtElapsed(192_000)).toBe('3m12s')
+    expect(fmtElapsed(3_720_000)).toBe('1h02m')
+  })
+})
+
+describe('foldInto — 受信時刻の刻印 (doc 57 §4.2)', () => {
+  it('live の tool_call / update は at / doneAt を刻む', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 't1', name: 'Bash', input: {} },
+      { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok' },
+    ] as ConversationEvent[])
+    const t = s.items[0] as { at?: number; doneAt?: number }
+    expect(typeof t.at).toBe('number')
+    expect(typeof t.doneAt).toBe('number')
+  })
+  it('replay 中の畳み込みは刻まない（実時間を偽らない）', () => {
+    const s = fold([
+      { kind: 'replay_start' },
+      { kind: 'tool_call', id: 't1', name: 'Bash', input: {} },
+      { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok' },
+      { kind: 'thought_chunk', text: '考え' },
+    ] as ConversationEvent[])
+    const t = s.items.find((i) => i.kind === 'tool') as { at?: number; doneAt?: number }
+    expect(t.at).toBe(undefined)
+    expect(t.doneAt).toBe(undefined)
+    const th = s.items.find((i) => i.kind === 'thinking') as { at?: number }
+    expect(th.at).toBe(undefined)
   })
 })
