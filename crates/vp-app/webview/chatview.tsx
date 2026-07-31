@@ -25,7 +25,7 @@ import {
 } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
-import { marked } from 'marked'
+import { Marked } from 'marked'
 import type {
   ConversationEvent,
   ConversationSession,
@@ -47,7 +47,7 @@ import { sessionChipPrefix } from './LaneHeader'
 type ChatItem =
   | { kind: 'user'; text: string }
   | { kind: 'assistant'; text: string; sealed?: boolean } // append 先。sealed=turn 境界（§5.1、次 turn は新バブル）
-  | { kind: 'thinking'; text: string } // thought_chunk を末尾 thinking に append
+  | { kind: 'thinking'; text: string; at?: number } // thought_chunk を末尾 thinking に append。at = live 受信時刻（doc 57 §4.2、replay では刻まない）
   // tool。input/result は詳細展開の表示源。backend は最初から ToolCall{input} /
   // ToolCallUpdate{content} を送っているので、view が保持するだけで詳細が開ける。
   // subagent は Agent tool が回した子の発話（--forward-subagent-text 有効時のみ）。
@@ -60,6 +60,9 @@ type ChatItem =
       input?: unknown
       result?: string
       subagent?: SubagentEntry[]
+      /** live 受信/settle 時刻（doc 57 §4.2 経過時間の材料）。replay では刻まない = 偽らない。 */
+      at?: number
+      doneAt?: number
     }
   // doc 35 PR1/PR3: HITL PromptCard。question（選択肢）or permission（allow/deny）。answered で折りたたむ。
   | {
@@ -98,7 +101,7 @@ export type ToolRunRole =
 /**
  * items[idx]（tool 前提）が属する「連続同名 tool run」での役割を返す純粋関数。
  *
- * ねらい: Agent 等が連続で回ったとき N 行を占有せず「🔧 Agent ×N」の 1 行に畳む。
+ * ねらい: Agent 等が連続で回ったとき N 行を占有せず「wrench + Agent ×N」の 1 行に畳む。
  * reducer（foldInto）は一切触らず描画時のみ集約するので、transcript replay や孤児
  * tool_call_update 処理の不変条件（§C2「描画正しさの中核」）に影響しない。
  *
@@ -415,7 +418,12 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       s.streaming = true
       const last = s.items[s.items.length - 1]
       if (last && last.kind === 'thinking') last.text += ev.text
-      else s.items.push({ kind: 'thinking', text: ev.text })
+      else
+        s.items.push({
+          kind: 'thinking',
+          text: ev.text,
+          at: s.replaying ? undefined : Date.now(),
+        })
       break
     }
     case 'tool_call':
@@ -429,6 +437,7 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
         done: false,
         error: false,
         input: ev.input,
+        at: s.replaying ? undefined : Date.now(),
       })
       break
     case 'tool_call_update': {
@@ -440,6 +449,8 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
         t.error = ev.is_error ?? false
         // 結果本文を保持。in-place 変異なので、開いたままの詳細にライブで流れ込む。
         t.result = ev.content
+        // 経過時間の材料（doc 57 §4.2）。replay では実時間を偽れないので刻まない。
+        if (!s.replaying) t.doneAt = Date.now()
       } else {
         // 結び先の無い update。backend 側で「replay 列に孤児は現れない」を不変条件にした
         // （transcript の切り詰めが ToolCall/Update のペアを割らない、in-flight tail は
@@ -751,10 +762,56 @@ export function deriveNowLine(s: ChatState | null): string | null {
 // 描画
 // ---------------------------------------------------------------------------
 
-function mdToHtml(text: string): string {
+/** [[slug]] → creo の memory slug 直 URL（mako 2026-07-31 — wiki-link 記法を chat で踏める）。
+ *  /m/{slug} は creo B-2 Phase 5「slug の表面化」で実機検証済みの恒久 route。存在しない
+ *  slug は creo 側の not-found に落ちる（wiki の dangling link と同じ扱いで許容）。 */
+const CREO_MEMORY_BASE = 'https://app.creo-memories.in/m/'
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/** [[name]] の描画 HTML（純関数、テスト対象）。表示は記法そのまま = 出自が一目で分かる。 */
+export function creoLinkHtml(name: string): string {
+  return `<a class="conversation-creo-link" href="${CREO_MEMORY_BASE}${encodeURIComponent(name)}">[[${escapeHtml(name)}]]</a>`
+}
+
+// [[name]] を inline token として登録する。生テキストの事前置換だと code span / fence 内まで
+// 誤爆するが、marked の拡張なら code の tokenize が先に勝つので構造的に安全。
+// name に [ ] 改行は許さない（memory slug の実態に合わせた保守的な受理）。
+// ⚠️ chat 専用の Marked instance に閉じる: `marked.use()`（singleton）だと同 bundle の
+// board-render.ts の描画にまで拡張が波及する（board は <a> click の open-url 配線を
+// 持たないので、リンク化すると webview ごと遷移しうる — review 指摘 2026-07-31）。
+const chatMarked = new Marked()
+chatMarked.use({
+  extensions: [
+    {
+      name: 'creoLink',
+      level: 'inline',
+      start(src: string) {
+        return src.indexOf('[[')
+      },
+      tokenizer(src: string) {
+        const m = /^\[\[([^[\]\n]+)\]\]/.exec(src)
+        if (!m) return undefined
+        return { type: 'creoLink', raw: m[0], name: m[1].trim() }
+      },
+      renderer(token) {
+        return creoLinkHtml((token as unknown as { name: string }).name)
+      },
+    },
+  ],
+})
+
+/** ChatView 本文の markdown → HTML（[[name]] は上の拡張で creo リンク化される）。 */
+export function mdToHtml(text: string): string {
   // breaks: true で単一改行を <br> に変換する。marked 既定（CommonMark）は段落内の単一 \n を
   // 空白に潰すため、engine が返す改行が gui のチャット表示で消えていた。gfm は既定 true だが明示。
-  return marked.parse(text, { breaks: true, gfm: true }) as string
+  return chatMarked.parse(text, { breaks: true, gfm: true }) as string
 }
 
 /**
@@ -770,7 +827,7 @@ export function linkOpenPayload(href: string): string | null {
   return JSON.stringify({ t: 'open-url', url: href })
 }
 
-function ThinkingBlock(props: { text: string; active: () => boolean }) {
+function ThinkingBlock(props: { text: string; active: () => boolean; liner?: boolean }) {
   const [open, setOpen] = createSignal(false)
   return (
     <div class="conversation-thinking">
@@ -784,6 +841,10 @@ function ThinkingBlock(props: { text: string; active: () => boolean }) {
         </span>
         {/* active 中はラベルを shimmer で光らせる（考え中の質感）。 */}
         <span class="conversation-thinking-label">thinking</span>
+        {/* 木の中では冒頭 1 行を添える（doc 57 §6-3 — 畳んだまま思考の流れが読める）。 */}
+        <Show when={props.liner && headLine(props.text)}>
+          {(t) => <span class="conversation-tool-oneliner">{t()}</span>}
+        </Show>
       </button>
       <Show when={open()}>
         <div class="conversation-thinking-body">{props.text}</div>
@@ -819,6 +880,175 @@ export function formatToolInput(input: unknown): string | null {
 export function formatToolResult(result: string | undefined): string | null {
   if (result === undefined || result === null) return null
   return result.length > 0 ? result : null
+}
+
+/** 複数行 text の先頭の意味ある 1 行（1 ライナーの正規化 / thinking 節の冒頭、doc 57 §6-3）。 */
+export function headLine(s: string): string | null {
+  const t = s.split('\n').find((l) => l.trim().length > 0)
+  return t ? t.trim() : null
+}
+
+/**
+ * path を「親 1 段 + basename」へ短縮する純関数（doc 57 §6-1）。
+ * 末尾（ファイル名）が情報の主役で幅は有限 — full path は展開した input 詳細が持つ。
+ * 区切りは `/` と `\` の両対応（Windows path が来ても basename 側を残す。ellipsis は
+ * 末尾を削るので、無短縮だと肝心のファイル名から欠ける）。
+ */
+export function shortenPath(p: string): string {
+  const seg = p.split(/[\\/]/).filter((s) => s.length > 0)
+  return seg.length <= 2 ? seg.join('/') : seg.slice(-2).join('/')
+}
+
+/**
+ * tool の 1 ライナーを input から導く純関数（doc 57 §4.4 の表駆動）。
+ *
+ * ピルの情報密度の源: tool 名だけでは「Bash ✓」の壁になる（doc 57 §1）。null = 出せる
+ * 情報がない → 呼び出し側は従来どおり名前のみ表示。長さの clamp は CSS ellipsis に任せ、
+ * ここでは複数行入力を先頭の意味ある 1 行（headLine — 空行はスキップ）に正規化する。
+ */
+export function toolOneLiner(name: string, input: unknown): string | null {
+  const firstLine = headLine
+  if (typeof input === 'string') return firstLine(input)
+  if (input === null || typeof input !== 'object') return null
+  const rec = input as Record<string, unknown>
+  const str = (k: string): string | null => {
+    const v = rec[k]
+    return typeof v === 'string' && v.trim().length > 0 ? v.trim() : null
+  }
+  switch (name) {
+    case 'Bash': {
+      // description は CC が送る人間向け説明（日本語）。無ければ command の先頭行。
+      const s = str('description') ?? str('command')
+      return s ? firstLine(s) : null
+    }
+    case 'Edit':
+    case 'Write':
+    case 'Read': {
+      const p = str('file_path')
+      return p ? shortenPath(p) : null
+    }
+    case 'NotebookEdit': {
+      const p = str('notebook_path') ?? str('file_path')
+      return p ? shortenPath(p) : null
+    }
+    case 'Grep':
+    case 'Glob':
+      return str('pattern')
+    case 'Agent': {
+      const s = str('description') ?? str('prompt')
+      return s ? firstLine(s) : null
+    }
+    case 'Skill':
+      return str('skill')
+    case 'WebFetch':
+      return str('url')
+    case 'WebSearch':
+      return str('query')
+    default: {
+      // mcp__* / その他: 最初の意味ある string field（表に無い tool の best-effort）。
+      // ⚠️「最初」= JSON の serialize 順。server の serde_json は BTreeMap（preserve_order
+      // 無効）なので現状 alphabetical — 呼び出し時の引数順ではない。将来 preserve_order が
+      // feature unification で有効化されると無音で挿入順に変わる（表示だけの best-effort
+      // なので許容だが、選ばれる field が変わったらまずここを疑う）。
+      for (const v of Object.values(rec)) {
+        if (typeof v === 'string' && v.trim().length > 0) return firstLine(v)
+      }
+      return null
+    }
+  }
+}
+
+/** activity item（塊 = 木の対象、doc 57 §4.1）。text / prompt（HITL）は区切り側 = 幹に残る。 */
+function isActivityItem(it: ChatItem): boolean {
+  return it.kind === 'tool' || it.kind === 'thinking'
+}
+
+/** activity run（tool/thinking の連続塊）における位置の役割（doc 57 §4.1）。 */
+export type ActivityRunRole =
+  | { role: 'plain' } // run 化しない → 従来描画（単発 tool / thinking のみの塊 / 非対象 kind）
+  | { role: 'head'; run: ChatItem[] } // run 先頭 → 塊全体を ActivityTree 1 本で描く
+  | { role: 'member' } // head に吸収（非描画）
+
+/**
+ * items[idx] が属する activity run での役割を返す純粋関数（doc 57 §4.1）。
+ *
+ * classifyToolRun の一般化。同じく**描画時のみ**の集約で reducer は触らない（§C2 不変）。
+ * root 化は「長さ ≥2 かつ tool を 1 つ以上含む」run のみ:
+ * - 単発 tool に root を被せると行が増えるだけ（従来の ToolRow のまま）
+ * - thinking だけの塊は作業でなく思考の流れ → 従来の ThinkingBlock のまま
+ */
+export function classifyActivityRun(items: ChatItem[], idx: number): ActivityRunRole {
+  const it = items[idx]
+  if (!it || !isActivityItem(it)) return { role: 'plain' }
+  let start = idx
+  while (start - 1 >= 0 && isActivityItem(items[start - 1])) start--
+  let end = idx
+  while (end + 1 < items.length && isActivityItem(items[end + 1])) end++
+  const run = items.slice(start, end + 1)
+  if (run.length < 2 || !run.some((r) => r.kind === 'tool')) return { role: 'plain' }
+  return idx === start ? { role: 'head', run } : { role: 'member' }
+}
+
+/** ms → `45s` / `3m12s` / `1h02m`（完了 root の経過時間表示、doc 57 §4.2 / §6-2）。 */
+export function fmtElapsed(ms: number): string {
+  const sec = Math.max(0, Math.round(ms / 1000))
+  if (sec < 60) return `${sec}s`
+  const m = Math.floor(sec / 60)
+  if (m < 60) return `${m}m${String(sec % 60).padStart(2, '0')}s`
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`
+}
+
+/** 塊の root 行に出す集約 status（doc 57 §4.2）。 */
+export type ActivityStatus = {
+  running: boolean
+  doneTools: number
+  totalTools: number
+  agents: number
+  anyError: boolean
+  /** 走行中の「現在」の 1 行 = 未 done の最新 tool（無ければ末尾 item）。完了時は null。 */
+  liner: string | null
+  /** 完了時のみ。live で時刻が揃った塊だけ（replay 混じりは null = 測っていない時間を出さない）。 */
+  elapsedMs: number | null
+}
+
+/**
+ * activity run の root 行の集約を導く純粋関数（doc 57 §4.2）。
+ *
+ * toolGroupStatus と同じ「エンジン状態を偽らない」規律: 1 件でも未 done なら running。
+ * tailStreaming = 塊が items 末尾かつ turn 進行中 — tool 間の thinking 中も「作業中」を
+ * 維持し、途中で ✓ に落として嘘をつかない。
+ */
+export function activityRunStatus(run: ChatItem[], tailStreaming = false): ActivityStatus {
+  const tools = run.filter((r): r is ToolItem => r.kind === 'tool')
+  const doneTools = tools.filter((t) => t.done).length
+  const running = doneTools < tools.length || tailStreaming
+  const agents = tools.filter((t) => t.name === 'Agent').length
+  const anyError = tools.some((t) => t.error)
+  let liner: string | null = null
+  if (running) {
+    const current = [...tools].reverse().find((t) => !t.done)
+    if (current) liner = toolOneLiner(current.name, current.input) ?? current.name
+    else {
+      const last = run[run.length - 1]
+      if (last)
+        liner =
+          last.kind === 'thinking'
+            ? headLine(last.text)
+            : last.kind === 'tool'
+              ? (toolOneLiner(last.name, last.input) ?? last.name)
+              : null
+    }
+  }
+  let elapsedMs: number | null = null
+  if (!running && run.length > 0) {
+    const first = run[0]
+    const t0 = first.kind === 'tool' || first.kind === 'thinking' ? first.at : undefined
+    const ends = tools.map((t) => t.doneAt)
+    if (t0 !== undefined && ends.length > 0 && ends.every((e) => e !== undefined)) {
+      elapsedMs = Math.max(...(ends as number[]), t0) - t0
+    }
+  }
+  return { running, doneTools, totalTools: tools.length, agents, anyError, liner, elapsedMs }
 }
 
 /**
@@ -889,6 +1119,7 @@ function ToolRow(props: {
   const inputText = createMemo(() => formatToolInput(props.input))
   const resultText = createMemo(() => formatToolResult(props.result))
   const subagent = createMemo(() => props.subagent ?? [])
+  const oneLiner = createMemo(() => toolOneLiner(props.name, props.input))
   const hasDetail = createMemo(
     () => inputText() !== null || resultText() !== null || subagent().length > 0,
   )
@@ -905,8 +1136,13 @@ function ToolRow(props: {
           </span>
         </Show>
         <span class="conversation-tool-spinner" />
-        <span class="conversation-tool-icon">🔧</span>
+        <span class="conversation-tool-icon">
+          <CreoIcon name="ph:wrench" size={11} />
+        </span>
         <span class="conversation-tool-name">{props.name}</span>
+        <Show when={oneLiner()}>
+          {(t) => <span class="conversation-tool-oneliner">{t()}</span>}
+        </Show>
         <span class="conversation-tool-status">
           {props.error ? 'error' : props.done ? '✓' : '実行中…'}
         </span>
@@ -927,7 +1163,7 @@ function ToolRow(props: {
 
 /**
  * 連続同名 tool run（Agent ×N 等）を 1 行に畳む accordion。ThinkingBlock と同じ開閉 UI。
- * 既定は畳んだ状態: header が「🔧 {name} ×{count} {status}」で進捗を要約する。in-flight 中は
+ * 既定は畳んだ状態: header が「wrench + {name} ×{count} {status}」で進捗を要約する。in-flight 中は
  * spinner + 完了数「{done}/{count}」を出し（畳んだままでも何本終わったかが分かる）、全 tool が
  * 終わると ✓（1 件でも error なら error）に変わる。展開で個別 ToolRow を並べる。
  * props.tools は reactive accessor（run は末尾に伸び、各 tool の done/error も後から変異する）。
@@ -937,6 +1173,11 @@ function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
   const count = () => props.tools().length
   const status = () => toolGroupStatus(props.tools())
   const anyError = () => props.tools().some((t) => t.error)
+  // 代表 = 先頭の 1 ライナー（doc 57 §4.4）。run は同名なので先頭が種類を代表できる。
+  const headLiner = createMemo(() => {
+    const first = props.tools()[0]
+    return first ? toolOneLiner(first.name, first.input) : null
+  })
   return (
     <div
       class="conversation-toolgroup"
@@ -949,9 +1190,14 @@ function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
         <Show when={status().running}>
           <span class="conversation-tool-spinner" />
         </Show>
-        <span class="conversation-tool-icon">🔧</span>
+        <span class="conversation-tool-icon">
+          <CreoIcon name="ph:wrench" size={11} />
+        </span>
         <span class="conversation-tool-name">{props.name}</span>
         <span class="conversation-toolgroup-count">×{count()}</span>
+        <Show when={headLiner()}>
+          {(t) => <span class="conversation-tool-oneliner">{t()} ほか</span>}
+        </Show>
         <span class="conversation-tool-status">{status().label}</span>
       </button>
       <Show when={open()}>
@@ -967,6 +1213,102 @@ function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
                 subagent={t.subagent}
               />
             )}
+          </For>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
+/** 塊（activity run）の開閉の記憶。key = 先頭 tool の id — component 再生成や replay の
+ *  再畳み込みを跨いで user の選択を保つ（doc 57 §4.5 表示所有権）。 */
+const activityOpen = new Map<string, boolean>()
+
+/**
+ * activity run（tool/thinking の連続塊）を 1 root の木に畳む（doc 57 §4.2-4.3、P2 本丸）。
+ *
+ * 走行中は畳んだまま root が「現在の 1 ライナー + {done}/{total}」を生更新し、完了で
+ * 「✓ N tools · M agent · 経過」に収束する。既定 = 畳み。user が開いたら stream 追記でも
+ * turn 完了でも閉じない（表示所有権は user、システムは初期値だけ — doc 55 継承）。
+ * 中身は既存部品の再利用: 同名連続 = ToolGroupRow / 単発 = ToolRow / thinking = ThinkingBlock。
+ */
+function ActivityTree(props: { run: Accessor<ChatItem[]>; tailStreaming: () => boolean }) {
+  // 先頭 tool は run の存在条件（classifyActivityRun）なので必ず居る。
+  const key = (props.run().find((i) => i.kind === 'tool') as ToolItem | undefined)?.id ?? ''
+  const [open, setOpenRaw] = createSignal(activityOpen.get(key) ?? false)
+  const setOpen = (v: boolean) => {
+    activityOpen.set(key, v)
+    setOpenRaw(v)
+  }
+  const st = createMemo(() => activityRunStatus(props.run(), props.tailStreaming()))
+  const doneLabel = () => {
+    const s = st()
+    const parts = [`${s.totalTools} tools`]
+    if (s.agents > 0) parts.push(`${s.agents} agent`)
+    if (s.elapsedMs !== null) parts.push(fmtElapsed(s.elapsedMs))
+    return `${s.anyError ? '✗' : '✓'} ${parts.join(' · ')}`
+  }
+  return (
+    <div
+      class="conversation-activity"
+      classList={{
+        done: !st().running && !st().anyError,
+        error: !st().running && st().anyError,
+      }}
+    >
+      <button class="conversation-activity-head" onClick={() => setOpen(!open())}>
+        <span class="conversation-thinking-caret" classList={{ open: open() }}>
+          ▸
+        </span>
+        <Show
+          when={st().running}
+          fallback={<span class="conversation-activity-summary">{doneLabel()}</span>}
+        >
+          <span class="conversation-tool-spinner" />
+          <span class="conversation-tool-oneliner">{st().liner ?? '作業中'}</span>
+          <span class="conversation-activity-count">
+            ({st().doneTools}/{st().totalTools}
+            {st().agents > 0 ? ` · agent ${st().agents}` : ''})
+          </span>
+        </Show>
+      </button>
+      <Show when={open()}>
+        <div class="conversation-activity-body">
+          <For each={props.run()}>
+            {(item, i) => {
+              if (item.kind === 'thinking')
+                return (
+                  <ThinkingBlock
+                    text={item.text}
+                    liner
+                    active={() => props.tailStreaming() && i() === props.run().length - 1}
+                  />
+                )
+              if (item.kind !== 'tool') return null // run は tool/thinking のみ（型の防御）
+              // 塊の中でも同名連続は従来どおり ×N に畳む（doc 57 §4.3、孫 = 個別 ToolRow）。
+              const role = createMemo(() => classifyToolRun(props.run(), i()))
+              return (
+                <Switch>
+                  <Match when={role().role === 'member'}>{null}</Match>
+                  <Match when={role().role === 'head'}>
+                    <ToolGroupRow
+                      name={item.name}
+                      tools={() => (role() as { role: 'head'; run: ToolItem[] }).run}
+                    />
+                  </Match>
+                  <Match when={true}>
+                    <ToolRow
+                      name={item.name}
+                      done={item.done}
+                      error={item.error}
+                      input={item.input}
+                      result={item.result}
+                      subagent={item.subagent}
+                    />
+                  </Match>
+                </Switch>
+              )
+            }}
           </For>
         </div>
       </Show>
@@ -1781,36 +2123,53 @@ function SessionChatView(props: { lane: string; session: number }) {
         >
           <For each={state().items}>
             {(item, index) => {
-              if (item.kind === 'thinking')
-                return (
-                  <ThinkingBlock
-                    text={item.text}
-                    // 末尾 thinking かつ turn 進行中 = 今まさに考え中 → shimmer。
-                    active={() => index() === state().items.length - 1 && state().streaming}
-                  />
-                )
-              if (item.kind === 'tool') {
-                // 連続同名 tool run を畳む。head=accordion / member=非描画 / single=従来 1 行。
-                // items/index を reactive に読むので stream 追記で single→head へ昇格する。
-                const role = createMemo(() => classifyToolRun(state().items, index()))
+              if (item.kind === 'thinking' || item.kind === 'tool') {
+                // doc 57 P2: tool/thinking の連続塊は ActivityTree 1 本に畳む。plain（単発 tool /
+                // thinking のみの塊）は従来描画。items/index を reactive に読むので stream 追記で
+                // plain→head へ昇格する（classifyToolRun と同じ手筋）。
+                const arole = createMemo(() => classifyActivityRun(state().items, index()))
+                // 塊が items 末尾かつ turn 進行中 = tool 間の thinking 中も「作業中」を維持。
+                const tailStreaming = () => {
+                  const r = arole()
+                  return (
+                    r.role === 'head' &&
+                    r.run[r.run.length - 1] === state().items[state().items.length - 1] &&
+                    state().streaming
+                  )
+                }
                 return (
                   <Switch>
-                    <Match when={role().role === 'member'}>{null}</Match>
-                    <Match when={role().role === 'head'}>
-                      <ToolGroupRow
-                        name={item.name}
-                        tools={() => (role() as { role: 'head'; run: ToolItem[] }).run}
+                    <Match when={arole().role === 'member'}>{null}</Match>
+                    <Match when={arole().role === 'head'}>
+                      <ActivityTree
+                        run={() => (arole() as { role: 'head'; run: ChatItem[] }).run}
+                        tailStreaming={tailStreaming}
                       />
                     </Match>
                     <Match when={true}>
-                      <ToolRow
-                        name={item.name}
-                        done={item.done}
-                        error={item.error}
-                        input={item.input}
-                        result={item.result}
-                        subagent={item.subagent}
-                      />
+                      {(() => {
+                        if (item.kind === 'thinking')
+                          return (
+                            <ThinkingBlock
+                              text={item.text}
+                              // 末尾 thinking かつ turn 進行中 = 今まさに考え中 → shimmer。
+                              active={() =>
+                                index() === state().items.length - 1 && state().streaming
+                              }
+                            />
+                          )
+                        // 塊にならなかった tool は常に単発（連続 2 本以上は必ず run になる）。
+                        return (
+                          <ToolRow
+                            name={item.name}
+                            done={item.done}
+                            error={item.error}
+                            input={item.input}
+                            result={item.result}
+                            subagent={item.subagent}
+                          />
+                        )
+                      })()}
                     </Match>
                   </Switch>
                 )
@@ -1986,6 +2345,12 @@ function SessionChatView(props: { lane: string; session: number }) {
 /** ChatView の scoped CSS。entry.tsx が `<style>` で注入する（board-render.ts の style 注入と同型）。
  *  色は creo-ui token（--color-* 系）に寄せ、無い環境でも読める fallback を持つ。 */
 export const CHATVIEW_CSS = `
+/* chat Live Token (--chat-text-*) の定義は :root に置く。適用 (use site) は .chat-view 以下に
+   閉じているので他 pane を汚染しない。:root 定義にする理由 = creo-ui Editor Mode
+   (entry.tsx ChatTokenBinds) の slider が documentElement.style.setProperty で書くため、
+   より近い祖先に定義があると「近い祖先の定義が勝つ」で書き込みがマスクされる
+   (sidebar Shell.tsx の --sb-text-* と同型)。 */
+:root{--chat-text-body:15px;--chat-text-user:13.5px;--chat-text-tool:12px;--chat-text-meta:11px;--chat-text-micro:10px;}
 .chat-view { position:absolute; inset:0; display:flex; flex-direction:column;
   background: var(--color-bg, #0f1115); color: var(--color-text, #e6e9ef);
   font-family: var(--vp-font-sans),var(--typography-family-sans); overflow:hidden; }
@@ -2001,8 +2366,11 @@ export const CHATVIEW_CSS = `
    目障りなので抑制する（focus 合図は scrollbar 操作で十分伝わる）。 */
 .conversation-stream:focus, .conversation-stream:focus-visible { outline:none; }
 .conversation-msg { max-width:100%; animation: conversation-fade .18s ease-out; }
-.conversation-msg.user { align-self:flex-end; background: var(--color-accent-soft, #1c2333);
-  border:1px solid var(--color-border, #2a3040); border-radius:12px 12px 3px 12px; padding:8px 13px; max-width:80%; }
+/* user bubble も左寄せ（mako 裁定 2026-07-31: 横幅方向に表示物を動かさない —
+   全要素が左端に揃い、視線が左右にジャンプしない）。しっぽは左下へ。
+   assistant との見分けは背景色・枠・幅 80% が担う */
+.conversation-msg.user { align-self:flex-start; background: var(--color-accent-soft, #1c2333);
+  border:1px solid var(--color-border, #2a3040); border-radius:12px 12px 12px 3px; padding:8px 13px; max-width:80%; }
 /* §5.1: 送信待ち type-ahead。半透明 + 破線で「まだ送っていない」を伝える。 */
 .conversation-msg.user.pending { opacity:.62; border-style:dashed; transition: opacity .12s ease, border-color .12s ease; }
 /* dequeue-to-composer: composer が空なら「クリックで入力欄に戻して編集」可（hover で明るく）。 */
@@ -2012,7 +2380,7 @@ export const CHATVIEW_CSS = `
 .conversation-msg.user.pending.locked { opacity:.38; cursor:not-allowed; }
 .conversation-pending-badge { display:block; margin-top:4px; font-size:10.5px; color: var(--color-text-tertiary, #8b93a7); }
 /* status bar（入力の上）: engine の現況の**読み取り専用**計器。操作は composer 側が持つ。 */
-.conversation-status { display:flex; align-items:center; gap:8px; padding:4px 14px; min-height:24px; font-size:11px;
+.conversation-status { display:flex; align-items:center; gap:8px; padding:4px 14px; min-height:24px; font-size:var(--chat-text-meta,11px);
   font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-text-tertiary,#8b93a7);
   border-top:1px solid var(--color-border,#2a3040); background: var(--color-bg,#0f1115); }
 .conversation-status-dot { width:7px; height:7px; border-radius:50%; flex:none; background: var(--color-text-tertiary,#616b80); }
@@ -2028,17 +2396,21 @@ export const CHATVIEW_CSS = `
 .conversation-status-stalled { color:#f0a3a3; font-weight:600; }
 .conversation-status-event { color: var(--color-text-tertiary,#616b80); opacity:.65; }
 @keyframes conversation-status-pulse { 50% { opacity:.32; } }
-.conversation-msg-body { font-size:13.5px; line-height:1.6; word-break:break-word; }
-/* 返信（assistant）の本文だけ拡大 = 15px（自分の入力バブルは 13.5px のまま）。
+.conversation-msg-body { font-size:var(--chat-text-user,13.5px); line-height:1.6; word-break:break-word; }
+/* 返信（assistant）の本文だけ拡大 = --chat-text-body（自分の入力バブルは --chat-text-user のまま）。
    line-height は unitless なので font-size に追従してスケールする。 */
-.conversation-msg:not(.user) .conversation-msg-body { font-size:15px; }
+.conversation-msg:not(.user) .conversation-msg-body { font-size:var(--chat-text-body,15px); }
 .conversation-msg-body :first-child { margin-top:0; } .conversation-msg-body :last-child { margin-bottom:0; }
+/* [[name]] creo リンク: wiki 記法をそのまま見せつつ踏める（破線下線 = 記法由来のリンクの合図）。 */
+.conversation-creo-link { color: var(--color-accent,#3b82f6); text-decoration:none;
+  border-bottom:1px dashed color-mix(in srgb, var(--color-accent,#3b82f6), transparent 40%); }
+.conversation-creo-link:hover { border-bottom-style:solid; }
 .conversation-msg-body pre { background: var(--color-bg-elevated, #16191f); border:1px solid var(--color-border,#2a3040);
-  border-radius:8px; padding:10px 12px; overflow-x:auto; font-size:12px; }
+  border-radius:8px; padding:10px 12px; overflow-x:auto; font-size:var(--chat-text-tool,12px); }
 .conversation-msg-body code { font-family: var(--vp-font-mono),var(--typography-family-mono); }
-.conversation-thinking { align-self:flex-start; font-size:12px; }
+.conversation-thinking { align-self:flex-start; font-size:var(--chat-text-tool,12px); }
 .conversation-thinking-toggle { background:none; border:none; color: var(--color-text-tertiary,#8b93a7);
-  cursor:pointer; font-size:12px; padding:2px 0; display:flex; align-items:center; gap:5px; }
+  cursor:pointer; font-size:var(--chat-text-tool,12px); padding:2px 0; display:flex; align-items:center; gap:5px; }
 .conversation-thinking-caret { transition: transform .15s ease; display:inline-block; }
 .conversation-thinking-caret.open { transform: rotate(90deg); }
 .conversation-thinking-label { display:inline-block; }
@@ -2050,13 +2422,16 @@ export const CHATVIEW_CSS = `
   -webkit-text-fill-color:transparent; color:transparent;
   animation: conversation-shimmer 1.5s linear infinite; }
 .conversation-thinking-body { margin:4px 0 0 16px; padding:8px 12px; border-left:2px solid var(--color-border,#2a3040);
-  color: var(--color-text-secondary,#a8b0c0); white-space:pre-wrap; font-size:12px; line-height:1.55; }
+  color: var(--color-text-secondary,#a8b0c0); white-space:pre-wrap; font-size:var(--chat-text-tool,12px); line-height:1.55; }
 /* ToolRow: tool 1 件。container / head(pill 1 行) / body(詳細) の 3 層は toolgroup と同型。 */
-.conversation-tool { align-self:flex-start; font-size:12px; animation: conversation-fade .18s ease-out; }
+.conversation-tool { align-self:flex-start; font-size:var(--chat-text-tool,12px); animation: conversation-fade .18s ease-out; }
 .conversation-tool-head { display:flex; align-items:center; gap:8px; width:100%; text-align:left;
-  font-family:inherit; font-size:12px;
+  font-family:inherit; font-size:var(--chat-text-tool,12px);
   color: var(--color-text-secondary,#a8b0c0); background: var(--color-bg-elevated,#16191f);
   border:1px solid var(--color-border,#2a3040); border-radius:8px; padding:5px 11px; }
+/* tool 種の印: Phosphor wrench（旧 🔧 絵文字 — SVG は currentColor 継承で done/error の
+   色変化に追従し、絵文字のようにプラットフォーム差の出る字形にならない）。 */
+.conversation-tool-icon { display:inline-flex; align-items:center; flex:none; }
 /* 詳細を持つ tool だけ押せる（持たない行は見た目そのまま・無反応）。 */
 .conversation-tool-head.clickable { cursor:pointer; }
 .conversation-tool-spinner { width:9px; height:9px; border-radius:50%; border:1.5px solid var(--color-accent,#3b82f6);
@@ -2064,17 +2439,20 @@ export const CHATVIEW_CSS = `
 .conversation-tool.done .conversation-tool-spinner, .conversation-tool.error .conversation-tool-spinner { display:none; }
 .conversation-tool.done .conversation-tool-head { color: var(--color-text-tertiary,#616b80); }
 .conversation-tool.error .conversation-tool-head { color:#f0a3a3; }
-.conversation-tool-name { font-family: var(--vp-font-mono),var(--typography-family-mono); }
-.conversation-tool-status { margin-left:auto; font-size:11px; }
+.conversation-tool-name { font-family: var(--vp-font-mono),var(--typography-family-mono); flex:none; }
+/* 1 ライナー（doc 57 §4.4）: 情報密度の源。幅が尽きたら ellipsis（clamp は CSS の仕事）。 */
+.conversation-tool-oneliner { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color: var(--color-text-tertiary,#8b93a7); }
+.conversation-tool-status { margin-left:auto; flex:none; font-size:var(--chat-text-meta,11px); }
 /* 展開部: thinking-body と同じ左罫線の入れ子表現で input / result を積む。 */
 .conversation-tool-body { display:flex; flex-direction:column; gap:6px; margin:5px 0 0 16px;
   padding-left:8px; border-left:2px solid var(--color-border,#2a3040); }
-.conversation-tool-detail-label { font-size:10px; letter-spacing:.06em; text-transform:uppercase;
+.conversation-tool-detail-label { font-size:var(--chat-text-micro,10px); letter-spacing:.06em; text-transform:uppercase;
   color: var(--color-text-tertiary,#616b80); margin-bottom:2px; }
 .conversation-tool-detail-body { margin:0; max-height:260px; overflow:auto; white-space:pre-wrap;
   word-break:break-word; font-family: var(--vp-font-mono),var(--typography-family-mono);
-  font-size:11px; line-height:1.5; color: var(--color-text-secondary,#a8b0c0); }
-.conversation-tool-detail-omitted { font-size:10px; color: var(--color-text-tertiary,#616b80); margin-top:2px; }
+  font-size:var(--chat-text-meta,11px); line-height:1.5; color: var(--color-text-secondary,#a8b0c0); }
+.conversation-tool-detail-omitted { font-size:var(--chat-text-micro,10px); color: var(--color-text-tertiary,#616b80); margin-top:2px; }
 /* subagent の発話: role でラベル分け。thinking は親の thinking と同じ「控えめ」の質感に寄せる。 */
 .conversation-subagent-entry { margin-top:4px; }
 .conversation-subagent-role { font-size:9px; letter-spacing:.06em; text-transform:uppercase;
@@ -2082,15 +2460,31 @@ export const CHATVIEW_CSS = `
   border-radius:4px; padding:0 4px; }
 .conversation-subagent-entry.thinking .conversation-tool-detail-body { color: var(--color-text-tertiary,#616b80); font-style:italic; }
 .conversation-subagent-entry.prompt .conversation-tool-detail-body { color: var(--color-text-tertiary,#8b93a7); }
+/* ActivityTree（doc 57 P2）: 塊の root + 展開 body。root は tool 行と同じ質感の 1 行。 */
+.conversation-activity { align-self:flex-start; max-width:100%; font-size:var(--chat-text-tool,12px);
+  animation: conversation-fade .18s ease-out; }
+.conversation-activity-head { display:flex; align-items:center; gap:8px; max-width:100%; text-align:left;
+  cursor:pointer; font-family:inherit; font-size:var(--chat-text-tool,12px);
+  color: var(--color-text-secondary,#a8b0c0); background: var(--color-bg-elevated,#16191f);
+  border:1px solid var(--color-border,#2a3040); border-radius:8px; padding:5px 11px; }
+/* 走行中の root の 1 ライナーは主役なので secondary（子行の tertiary より一段立てる）。 */
+.conversation-activity-head .conversation-tool-oneliner { color: var(--color-text-secondary,#a8b0c0); }
+.conversation-activity.done .conversation-activity-head { color: var(--color-text-tertiary,#616b80); }
+.conversation-activity.error .conversation-activity-head { color:#f0a3a3; }
+.conversation-activity-count { flex:none; font-size:var(--chat-text-meta,11px);
+  font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-text-tertiary,#8b93a7); }
+/* 展開 body: thinking-body / tool-body と同じ左罫線の入れ子表現。 */
+.conversation-activity-body { display:flex; flex-direction:column; gap:6px; margin:5px 0 0 16px;
+  padding-left:8px; border-left:2px solid var(--color-border,#2a3040); }
 /* ToolGroupRow: 連続同名 tool（Agent ×N 等）を畳む accordion。畳んだ header は ToolRow と同じ枠で 1 行。 */
-.conversation-toolgroup { align-self:flex-start; font-size:12px; animation: conversation-fade .18s ease-out; }
+.conversation-toolgroup { align-self:flex-start; font-size:var(--chat-text-tool,12px); animation: conversation-fade .18s ease-out; }
 .conversation-toolgroup-toggle { display:flex; align-items:center; gap:8px; width:100%; cursor:pointer;
-  font-size:12px; color: var(--color-text-secondary,#a8b0c0); background: var(--color-bg-elevated,#16191f);
+  font-size:var(--chat-text-tool,12px); color: var(--color-text-secondary,#a8b0c0); background: var(--color-bg-elevated,#16191f);
   border:1px solid var(--color-border,#2a3040); border-radius:8px; padding:5px 11px; }
 .conversation-toolgroup.done .conversation-toolgroup-toggle { color: var(--color-text-tertiary,#616b80); }
 .conversation-toolgroup.error .conversation-toolgroup-toggle { color:#f0a3a3; }
 .conversation-toolgroup-count { font-family: var(--vp-font-mono),var(--typography-family-mono);
-  color: var(--color-text-tertiary,#8b93a7); font-size:11px; }
+  color: var(--color-text-tertiary,#8b93a7); font-size:var(--chat-text-meta,11px); }
 /* 展開部: 個別 ToolRow を段付きで縦に並べる（thinking-body と同じ左罫線の入れ子表現）。 */
 .conversation-toolgroup-body { display:flex; flex-direction:column; gap:5px; margin:5px 0 0 16px;
   padding-left:8px; border-left:2px solid var(--color-border,#2a3040); }

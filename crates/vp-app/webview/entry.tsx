@@ -964,6 +964,78 @@ function SidebarTokenBinds() {
 	return null;
 }
 
+// ===== chat Live Token の恒久 bind =====
+// chatview.tsx CHATVIEW_CSS の :root 定義 (--chat-text-* 5 token) を Editor Mode に登録する。
+// scope 制約 (:root 定義でないと slider 書き込みがマスクされる) は SidebarTokenBinds と同型。
+function ChatTokenBinds() {
+	// text scale 5 段。 body = assistant 本文 (読む面の主役) / user = 自分の入力バブル /
+	// tool = tool・thinking 行 / meta = status・count / micro = detail label。
+	// range は現値 ±数 px の演奏域 (heuristic 任せにしない)。
+	const tokens: Array<{
+		id: string;
+		cssVar: string;
+		value: number;
+		min: number;
+		max: number;
+	}> = [
+		{
+			id: "chat.text.body",
+			cssVar: "--chat-text-body",
+			value: 15,
+			min: 12,
+			max: 22,
+		},
+		{
+			id: "chat.text.user",
+			cssVar: "--chat-text-user",
+			value: 13.5,
+			min: 10,
+			max: 20,
+		},
+		{
+			id: "chat.text.tool",
+			cssVar: "--chat-text-tool",
+			value: 12,
+			min: 9,
+			max: 17,
+		},
+		{
+			id: "chat.text.meta",
+			cssVar: "--chat-text-meta",
+			value: 11,
+			min: 8,
+			max: 15,
+		},
+		{
+			id: "chat.text.micro",
+			cssVar: "--chat-text-micro",
+			value: 10,
+			min: 7,
+			max: 14,
+		},
+	];
+	tokens.forEach((t, i) => {
+		bind<number>({
+			target: cssVarNumberTarget(t.id, t.cssVar, t.value, "px"),
+			control: number({
+				min: t.min,
+				max: t.max,
+				step: 0.5,
+				unit: "px",
+				variant: "slider",
+			}),
+			placement: {
+				label: t.id,
+				semantic: "tool",
+				group: "chat",
+				order: 200 + i,
+				role: "dev",
+			},
+		});
+	});
+	return null;
+}
+
 // doc 48 Phase 2 (editor bridge): MCP → vp-app が評価する JS が provider の外から
 // host に触るための明示 expose。creoEditor console API は localhost hostname heuristic で
 // expose されるため vp-asset:// origin では当てにできない — bridge はこの global 一本に依存する。
@@ -978,6 +1050,7 @@ function App() {
 	return (
 		<EditorHostProvider>
 			<SidebarTokenBinds />
+			<ChatTokenBinds />
 			<ExposeEditorHostForBridge />
 			<EditorLayer />
 		</EditorHostProvider>
