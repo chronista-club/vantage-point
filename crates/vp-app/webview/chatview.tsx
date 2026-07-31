@@ -25,7 +25,7 @@ import {
 } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
-import { marked } from 'marked'
+import { Marked } from 'marked'
 import type {
   ConversationEvent,
   ConversationSession,
@@ -762,10 +762,56 @@ export function deriveNowLine(s: ChatState | null): string | null {
 // 描画
 // ---------------------------------------------------------------------------
 
-function mdToHtml(text: string): string {
+/** [[slug]] → creo の memory slug 直 URL（mako 2026-07-31 — wiki-link 記法を chat で踏める）。
+ *  /m/{slug} は creo B-2 Phase 5「slug の表面化」で実機検証済みの恒久 route。存在しない
+ *  slug は creo 側の not-found に落ちる（wiki の dangling link と同じ扱いで許容）。 */
+const CREO_MEMORY_BASE = 'https://app.creo-memories.in/m/'
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/** [[name]] の描画 HTML（純関数、テスト対象）。表示は記法そのまま = 出自が一目で分かる。 */
+export function creoLinkHtml(name: string): string {
+  return `<a class="conversation-creo-link" href="${CREO_MEMORY_BASE}${encodeURIComponent(name)}">[[${escapeHtml(name)}]]</a>`
+}
+
+// [[name]] を inline token として登録する。生テキストの事前置換だと code span / fence 内まで
+// 誤爆するが、marked の拡張なら code の tokenize が先に勝つので構造的に安全。
+// name に [ ] 改行は許さない（memory slug の実態に合わせた保守的な受理）。
+// ⚠️ chat 専用の Marked instance に閉じる: `marked.use()`（singleton）だと同 bundle の
+// board-render.ts の描画にまで拡張が波及する（board は <a> click の open-url 配線を
+// 持たないので、リンク化すると webview ごと遷移しうる — review 指摘 2026-07-31）。
+const chatMarked = new Marked()
+chatMarked.use({
+  extensions: [
+    {
+      name: 'creoLink',
+      level: 'inline',
+      start(src: string) {
+        return src.indexOf('[[')
+      },
+      tokenizer(src: string) {
+        const m = /^\[\[([^[\]\n]+)\]\]/.exec(src)
+        if (!m) return undefined
+        return { type: 'creoLink', raw: m[0], name: m[1].trim() }
+      },
+      renderer(token) {
+        return creoLinkHtml((token as unknown as { name: string }).name)
+      },
+    },
+  ],
+})
+
+/** ChatView 本文の markdown → HTML（[[name]] は上の拡張で creo リンク化される）。 */
+export function mdToHtml(text: string): string {
   // breaks: true で単一改行を <br> に変換する。marked 既定（CommonMark）は段落内の単一 \n を
   // 空白に潰すため、engine が返す改行が gui のチャット表示で消えていた。gfm は既定 true だが明示。
-  return marked.parse(text, { breaks: true, gfm: true }) as string
+  return chatMarked.parse(text, { breaks: true, gfm: true }) as string
 }
 
 /**
@@ -2351,6 +2397,10 @@ export const CHATVIEW_CSS = `
    line-height は unitless なので font-size に追従してスケールする。 */
 .conversation-msg:not(.user) .conversation-msg-body { font-size:var(--chat-text-body,15px); }
 .conversation-msg-body :first-child { margin-top:0; } .conversation-msg-body :last-child { margin-bottom:0; }
+/* [[name]] creo リンク: wiki 記法をそのまま見せつつ踏める（破線下線 = 記法由来のリンクの合図）。 */
+.conversation-creo-link { color: var(--color-accent,#3b82f6); text-decoration:none;
+  border-bottom:1px dashed color-mix(in srgb, var(--color-accent,#3b82f6), transparent 40%); }
+.conversation-creo-link:hover { border-bottom-style:solid; }
 .conversation-msg-body pre { background: var(--color-bg-elevated, #16191f); border:1px solid var(--color-border,#2a3040);
   border-radius:8px; padding:10px 12px; overflow-x:auto; font-size:var(--chat-text-tool,12px); }
 .conversation-msg-body code { font-family: var(--vp-font-mono),var(--typography-family-mono); }
