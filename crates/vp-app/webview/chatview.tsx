@@ -101,7 +101,7 @@ export type ToolRunRole =
 /**
  * items[idx]（tool 前提）が属する「連続同名 tool run」での役割を返す純粋関数。
  *
- * ねらい: Agent 等が連続で回ったとき N 行を占有せず「🔧 Agent ×N」の 1 行に畳む。
+ * ねらい: Agent 等が連続で回ったとき N 行を占有せず「wrench + Agent ×N」の 1 行に畳む。
  * reducer（foldInto）は一切触らず描画時のみ集約するので、transcript replay や孤児
  * tool_call_update 処理の不変条件（§C2「描画正しさの中核」）に影響しない。
  *
@@ -1136,7 +1136,9 @@ function ToolRow(props: {
           </span>
         </Show>
         <span class="conversation-tool-spinner" />
-        <span class="conversation-tool-icon">🔧</span>
+        <span class="conversation-tool-icon">
+          <CreoIcon name="ph:wrench" size={11} />
+        </span>
         <span class="conversation-tool-name">{props.name}</span>
         <Show when={oneLiner()}>
           {(t) => <span class="conversation-tool-oneliner">{t()}</span>}
@@ -1161,7 +1163,7 @@ function ToolRow(props: {
 
 /**
  * 連続同名 tool run（Agent ×N 等）を 1 行に畳む accordion。ThinkingBlock と同じ開閉 UI。
- * 既定は畳んだ状態: header が「🔧 {name} ×{count} {status}」で進捗を要約する。in-flight 中は
+ * 既定は畳んだ状態: header が「wrench + {name} ×{count} {status}」で進捗を要約する。in-flight 中は
  * spinner + 完了数「{done}/{count}」を出し（畳んだままでも何本終わったかが分かる）、全 tool が
  * 終わると ✓（1 件でも error なら error）に変わる。展開で個別 ToolRow を並べる。
  * props.tools は reactive accessor（run は末尾に伸び、各 tool の done/error も後から変異する）。
@@ -1188,7 +1190,9 @@ function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
         <Show when={status().running}>
           <span class="conversation-tool-spinner" />
         </Show>
-        <span class="conversation-tool-icon">🔧</span>
+        <span class="conversation-tool-icon">
+          <CreoIcon name="ph:wrench" size={11} />
+        </span>
         <span class="conversation-tool-name">{props.name}</span>
         <span class="conversation-toolgroup-count">×{count()}</span>
         <Show when={headLiner()}>
@@ -2425,6 +2429,9 @@ export const CHATVIEW_CSS = `
   font-family:inherit; font-size:var(--chat-text-tool,12px);
   color: var(--color-text-secondary,#a8b0c0); background: var(--color-bg-elevated,#16191f);
   border:1px solid var(--color-border,#2a3040); border-radius:8px; padding:5px 11px; }
+/* tool 種の印: Phosphor wrench（旧 🔧 絵文字 — SVG は currentColor 継承で done/error の
+   色変化に追従し、絵文字のようにプラットフォーム差の出る字形にならない）。 */
+.conversation-tool-icon { display:inline-flex; align-items:center; flex:none; }
 /* 詳細を持つ tool だけ押せる（持たない行は見た目そのまま・無反応）。 */
 .conversation-tool-head.clickable { cursor:pointer; }
 .conversation-tool-spinner { width:9px; height:9px; border-radius:50%; border:1.5px solid var(--color-accent,#3b82f6);
