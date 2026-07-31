@@ -226,6 +226,53 @@ fn try_kickstart_launch_agent() -> bool {
     false
 }
 
+/// LaunchAgent plist を現 binary で焼き直して即時 reload する（self-heal、macOS のみ）。
+///
+/// plist の ProgramArguments は install 時点の CLI 語彙を焼き固めた「化石」で、subcommand の
+/// rename / 削除で黙って即死ループ化する（実例: `vp world`、2026-07-30）。`install_launch_agent`
+/// は idempotent（plist 書き出し + bootout → bootstrap、RunAtLoad で即起動）なので、現 binary の
+/// 語彙で焼き直せば修復できる。戻り値 = 修復を実施したか。
+///
+/// dev profile では触らない: LaunchAgent は profile 非分離で、焼き直すと release(:32000) の
+/// plist を dev binary で上書きしてしまう（`try_kickstart_launch_agent` の skip と同じ理由）。
+#[cfg(target_os = "macos")]
+fn repair_launch_agent(port: u16) -> bool {
+    if vp_paths::vp_profile().is_some() {
+        return false;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    match process::install_launch_agent(&exe, port) {
+        Ok(plist) => {
+            println!("🔧 LaunchAgent を焼き直しました: {}", plist.display());
+            true
+        }
+        Err(e) => {
+            eprintln!("⚠️ LaunchAgent 焼き直し失敗: {e}");
+            false
+        }
+    }
+}
+
+/// 非 macOS: LaunchAgent が無いので修復も無い。
+#[cfg(not(target_os = "macos"))]
+fn repair_launch_agent(_port: u16) -> bool {
+    false
+}
+
+/// 最終救済: detached spawn で起動する。
+///
+/// launchd 外の個体が port を握る = 所有権分裂が残る（次回 restart も kickstart 空振りになる）
+/// ため、可用性は確保しつつ恒久化の導線を表示する。
+fn rescue_detached_spawn(port: u16) -> Result<crate::cli::HealthResponse> {
+    eprintln!(
+        "⚠️ 最終救済: detached spawn で起動します（launchd 所有ではないため、恒久化は `vp daemon install` の再実行を推奨）"
+    );
+    process::ensure_daemon_running(port)?;
+    wait_health(port)
+}
+
 /// `vp daemon restart [--if-running]` — daemon を ownership-agnostic に再起動する。
 ///
 /// 1. 実 holder の稼働確認（`/api/health` — pidfile / launchctl の見立てではなく port holder が真実源）
@@ -236,7 +283,8 @@ fn try_kickstart_launch_agent() -> bool {
 ///      - health 応答なし = 後継未起動 → 手順3 で明示起動
 /// 3. macOS で LaunchAgent load 済みなら `launchctl kickstart`（-k なし）で即起こす / それ以外は
 ///    detached spawn（`ensure_daemon_running` = repo auto-spawn と同じ既存経路）
-/// 4. health ping で起動確認し、起動した daemon の version を表示
+/// 4. health ping で起動確認。kickstart したのに up しない場合は plist を現 binary で焼き直して
+///    再試行（self-heal、[`repair_launch_agent`]）→ それでも駄目なら detached spawn を最終救済に
 pub(crate) fn restart(if_running: bool) -> Result<()> {
     let port = crate::cli::daemon_port();
 
@@ -273,20 +321,31 @@ pub(crate) fn restart(if_running: bool) -> Result<()> {
         process::ensure_daemon_running(port)?;
     }
 
-    // 起動確認。kickstart に委譲したのに up しない場合 = plist 破損の疑い（ProgramArguments[0]
-    // の binary が古い/不在。この repo には「plist に dev binary を焼いた」事故の前例あり。恢復は
-    // `vp daemon install` の再実行）。job が load 済なら try_kickstart は true を返すが launchd は
-    // 起動に失敗するため、旧経路（常に spawn）の後退を防ぐべく detached spawn を最後の救済として
-    // 一段試す。遅延 kickstart と detached spawn が競合しても #687 の二重起動ガード + bind
-    // AddrInUse で片方が譲り自己解決する。
+    // 起動確認。kickstart に委譲したのに up しない場合 = plist 陳腐化の疑い。実例（2026-07-30
+    // 実機）: 旧 install が焼いた `vp world` が subcommand 削除後 exit 2 の即死ループになり、
+    // 「job load 済み = kickstart 成功」なのに daemon は永遠に上がらなかった。他に
+    // ProgramArguments[0] の binary が古い/不在のケース（dev binary を焼いた事故の前例）。
+    //
+    // 従来はここで即 detached spawn に落としていたが、それは launchd 外の個体が port を握る
+    // 「所有権分裂」（#763 が潰した敵）の再生産で、以後の restart も kickstart 空振り →
+    // wait_health 全焼を繰り返す。まず plist を現 binary で焼き直して launchd 所有のまま
+    // 立て直し（self-heal）、それでも駄目な時だけ detached spawn を最終救済にする。
+    // 遅延 kickstart と detached spawn が競合しても #687 の二重起動ガード + bind AddrInUse で
+    // 片方が譲り自己解決する。
     let health = match wait_health(port) {
         Ok(health) => health,
         Err(_) if kicked => {
             eprintln!(
-                "⚠️ LaunchAgent kickstart 後も up せず — detached spawn で救済を試みます（plist 破損の疑い、恢復は `vp daemon install` 再実行）"
+                "⚠️ LaunchAgent kickstart 後も up せず — plist を現 binary で焼き直して再試行します（plist 陳腐化の疑い）"
             );
-            process::ensure_daemon_running(port)?;
-            wait_health(port)?
+            if repair_launch_agent(port) {
+                match wait_health(port) {
+                    Ok(health) => health,
+                    Err(_) => rescue_detached_spawn(port)?,
+                }
+            } else {
+                rescue_detached_spawn(port)?
+            }
         }
         Err(e) => return Err(e),
     };
