@@ -37,6 +37,8 @@ function recordingHandlers(): { calls: string[]; handlers: PushHandlers } {
 				calls.push(`agents:${lane}:${req}`),
 			inkSnapshot: (path) => calls.push(`ink:${path}`),
 			inkSnapshotError: (message) => calls.push(`inkErr:${message}`),
+			debugLogLines: (source, reset, lines) =>
+				calls.push(`debuglog:${source}:${reset}:${lines.length}`),
 		},
 	};
 }

@@ -195,6 +195,10 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // ink（対話面, doc 52 §3）: 送信の snapshot 要求。漏れると sidebar IPC へ流れて
                 // 「unknown variant ink:snapshot」で silent drop = 送信しても画像が飛ばない
                 | "ink:snapshot"
+                // R sidebar の debug log（sidebar view modes, 2026-08-01）: tail の購読開始/停止。
+                // 漏れると sidebar IPC へ流れて silent drop = 「開いても永久に空」regression
+                | "debuglog:watch"
+                | "debuglog:unwatch"
         )
     )
 }
@@ -227,6 +231,9 @@ mod ipc_tag_tests {
             "board:cursor",
             // doc 50 §4.6 A6: 名札 kind badge の Mode 切替（漏れは「押しても変身しない」）
             "session:set_mode",
+            // R sidebar の debug log（漏れは「開いても永久に空」）
+            "debuglog:watch",
+            "debuglog:unwatch",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/root"}}"#);
             assert!(
@@ -1976,8 +1983,8 @@ mod lane_js {
 
     use crate::generated::push::{
         BoardMessage, ConsoleAgents, ConsoleEvent, ConsoleModeApplied, ConsoleSessionList,
-        DevicesRender, InkSnapshot, InkSnapshotError, PushEventEnvelope, TermEnsureLane, TermPaste,
-        TermRemoveLane, TermRemoveSession, TermShowLane,
+        DebuglogLines, DevicesRender, InkSnapshot, InkSnapshotError, PushEventEnvelope,
+        TermEnsureLane, TermPaste, TermRemoveLane, TermRemoveSession, TermShowLane,
     };
 
     /// 生成 envelope を webview の単一受け口 `window.vpDispatch` へ押し込む。
@@ -2188,6 +2195,21 @@ mod lane_js {
         push(
             main_view,
             &PushEventEnvelope::BoardMessage(BoardMessage { message }),
+        );
+    }
+
+    /// R sidebar の debug log viewer へ tail の行群を渡す（sidebar view modes、2026-08-01）。
+    ///
+    /// ⚠️ stream（`console_event` と同類）— 取りこぼしは次の `debuglog:watch` が
+    /// backlog 込みで埋めるので、保留箱には頼らない。
+    pub fn debuglog_lines(main_view: &WebView, source: &str, reset: bool, lines: Vec<String>) {
+        push(
+            main_view,
+            &PushEventEnvelope::DebuglogLines(DebuglogLines {
+                source: source.to_string(),
+                reset,
+                lines,
+            }),
         );
     }
 }
@@ -3937,6 +3959,11 @@ pub fn run() -> anyhow::Result<()> {
     // maybe_respawn_dead_lane の async restart_lane が失敗した時に event loop へ
     // 通知を返し lane_respawn_triggered を解除するための proxy (永続 suppression 回避)。
     let respawn_proxy = event_loop.create_proxy();
+    // R sidebar の debug log tail の世代カウンタ（sidebar view modes、2026-08-01）。
+    // watch / unwatch のたびに進め、旧世代の tail thread は次の poll で自然に退場する
+    // （= 最後の watch が勝つ単一 tail。join も channel 後始末も不要 — debug_log.rs 参照）。
+    let debuglog_watch_gen: std::sync::Arc<std::sync::atomic::AtomicU64> =
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     // wiremsg Stage 1: per-repo の "lanes" Unison 購読を 1 本だけ張るための guard。
     // path をキーにする。F1b: 購読は共有 connection に追従して give-up しないので、 一度
     // spawn したら app 終了まで張りっぱなし (= guard から除去されない)。
@@ -4741,6 +4768,43 @@ pub fn run() -> anyhow::Result<()> {
                 match path {
                     Some(p) => lane_js::ink_snapshot(&webview, p),
                     None => lane_js::ink_snapshot_error(&webview, error.unwrap_or_default()),
+                }
+            }
+            Event::UserEvent(AppEvent::DebugLogWatch { source }) => {
+                // R sidebar の debug log（sidebar view modes）: 世代を進めて旧 tail を退場させ、
+                // 新しい tail thread を起こす（最後の watch が勝つ = 単一 tail）。
+                use std::sync::atomic::Ordering;
+                let generation = debuglog_watch_gen.fetch_add(1, Ordering::Relaxed) + 1;
+                match crate::debug_log::log_path(&source) {
+                    Some(path) => {
+                        crate::debug_log::spawn_tail(
+                            source,
+                            path,
+                            generation,
+                            debuglog_watch_gen.clone(),
+                            proxy.clone(),
+                        );
+                    }
+                    None => tracing::warn!("debuglog:watch の未知 source: {source}"),
+                }
+            }
+            Event::UserEvent(AppEvent::DebugLogUnwatch) => {
+                // 世代を進めるだけで tail は次の poll で止まる（見ていない log は読まない）。
+                use std::sync::atomic::Ordering;
+                debuglog_watch_gen.fetch_add(1, Ordering::Relaxed);
+            }
+            Event::UserEvent(AppEvent::DebugLogChunk {
+                source,
+                reset,
+                lines,
+                generation,
+            }) => {
+                // tail thread からの行群を R sidebar へ。退場直前の旧世代 thread が送った
+                // 残 chunk はここで棄てる（新 backlog の後に旧行が 1 回混ざる race の封じ）。
+                // stream なので replay は持たない（次の watch が毎回 backlog から始まる）。
+                use std::sync::atomic::Ordering;
+                if generation == debuglog_watch_gen.load(Ordering::Relaxed) {
+                    lane_js::debuglog_lines(&webview, &source, reset, lines);
                 }
             }
             Event::UserEvent(AppEvent::DeviceEvent { payload }) => {

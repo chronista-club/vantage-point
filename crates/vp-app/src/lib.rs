@@ -30,6 +30,7 @@ pub mod client;
 /// daemon control plane クライアント (Unison `daemon-control` / `registry`)。 doc 45 段 3。
 pub mod daemon_control;
 pub mod daemon_launcher;
+pub mod debug_log;
 /// Sidebar File Explorer (overlay picker) — lane workdir walk + ファイル open。
 /// files:list / files:open IPC (`schema/vp-sidebar.kdl`) の Rust 側実装。
 pub mod file_explorer;

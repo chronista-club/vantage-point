@@ -104,6 +104,7 @@ import { installGallery } from "./gallery-panes";
 import { attachKeybindings } from "./keybindings";
 import { installBoardView } from "./board-view";
 import { mountEdgeRail, EDGE_RAIL_CSS } from "./EdgeRail";
+import { installRightSidebar } from "./right-sidebar";
 import { renderBoard, clearBoard, appendBoard } from "./board-render";
 import { installConsole, focusedOf, sessionModeOf } from "./console";
 import type {
@@ -516,6 +517,17 @@ const edgeRail = (() => {
 	const root = document.getElementById("edge-rail");
 	const host = document.getElementById("edge-rail-new-host");
 	return root && host ? mountEdgeRail(root, host) : null;
+})();
+
+// ===== R sidebar（sidebar view modes、2026-08-01）— rail のフル幅形 = debug log =====
+// `Cmd+]`（sidebar bundle の `]` directive → 共有 bus）で rail ⇄ R sidebar を行き来。
+// 行の供給は push envelope `debuglog:lines`（下方 installDispatch で接続）。
+const rightSidebar = (() => {
+	const log = document.getElementById("rsb-log");
+	const tabs = Array.from(
+		document.querySelectorAll<HTMLElement>("#right-sidebar .rsb-tab"),
+	);
+	return log ? installRightSidebar({ log, tabs }) : null;
 })();
 
 const laneHeaderHost = document.getElementById("lane-header");
@@ -1103,6 +1115,9 @@ installDispatch({
 	// （dispatch の表は常に全 arm 揃っている = 網羅性検査が効く形を崩さない）。
 	inkSnapshot: (path) => inkHandlers?.inkSnapshot(path),
 	inkSnapshotError: (message) => inkHandlers?.inkSnapshotError(message),
+	// R sidebar の debug log（right-sidebar.ts）。mount target 不在なら no-op（ink と同じ流儀）。
+	debugLogLines: (source, reset, lines) =>
+		rightSidebar?.handleLines(source, reset, lines),
 });
 installSlotRect();
 const bootIpc = (window as unknown as { ipc?: { postMessage(m: string): void } })

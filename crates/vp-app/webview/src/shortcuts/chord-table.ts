@@ -66,6 +66,18 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
       'lane number switcher mode: ⌘ hold l で mode 突入、 5 秒以内に 1-9 で expanded repo 内 lane を上から N 番目で lane:select',
     semantic: 'focus-transferring',
   },
+  // v0.9 (2026-08-01) — sidebar view modes。symbol キー directive の初例 (規約 v0.3 から
+  //   path は keep されていた)。semantic は layout — 「layout 系 = Ctrl+Shift」の Layer B
+  //   規則の例外として mako 指定で Cmd 修飾に置く (doc 18 Layer B v1.1)。
+  //   `[` = 左 / `]` = 右、キーの物理位置と対象の側が一致する。
+  '[': {
+    description: '左 sidebar をフル ⇄ スリム帯に変身',
+    semantic: 'layout',
+  },
+  ']': {
+    description: '右を edge rail ⇄ R sidebar (debug log) に変身',
+    semantic: 'layout',
+  },
   // v0.8 (curation) で撤去:
   //   e/g/h (Agent focus) — Scene hotkey `Ctrl+Shift+1..4` と役割重複のため Scene 側に一本化。
   //   w (daemon status)  — 将来の Unison WebView 直結 UI に status を委ねるため撤去。

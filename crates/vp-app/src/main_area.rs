@@ -148,8 +148,29 @@ body{overflow:hidden;}
 /* WebView 統合 (step 3a): sidebar + main を 1 DOM に CSS flex で同居。
    app-shell が [sidebar-root | host] を横並び、editor-root は別 (floating overlay)。 */
 #app-shell{display:flex;width:100%;height:100%;}
-#sidebar-root{width:280px;flex:none;height:100%;overflow:hidden;}
+#sidebar-root{width:280px;flex:none;height:100%;overflow:hidden;transition:width .15s ease;}
+/* sidebar view modes (2026-08-01): 左 sidebar のスリム帯 (`Cmd+[`)。class は sidebar bundle
+   (form.ts) が書き、中身の描画も同 bundle (SlimRail)。ここは幅だけ司る。 */
+#sidebar-root.slim{width:44px;}
 #host{position:relative;flex:1;height:100%;min-width:0;}
+/* R sidebar (`Cmd+]`): 右の帯 (edge rail) のフル幅形 = debug log viewer。既定は閉 (rail 形)。
+   開閉 class (body.rsb-open) は right-sidebar.ts が書く。flex 列なので開くと #host が縮む —
+   doc 55 の reflow 規律どおり user 操作起点の reflow のみ。 */
+#right-sidebar{display:none;flex:none;width:420px;height:100%;box-sizing:border-box;
+  flex-direction:column;background:var(--color-surface-bg-subtle);
+  border-left:1px solid var(--color-surface-border,#1f2233);}
+body.rsb-open #right-sidebar{display:flex;}
+.rsb-head{display:flex;align-items:center;gap:8px;padding:8px 12px;flex:none;
+  border-bottom:1px solid var(--color-surface-border,#1f2233);-webkit-app-region:no-drag;}
+.rsb-title{font-size:11px;letter-spacing:.08em;color:var(--color-text-secondary);text-transform:uppercase;}
+.rsb-tabs{display:flex;gap:4px;margin-left:auto;}
+.rsb-tab{padding:2px 10px;border:1px solid var(--color-surface-border-subtle);border-radius:6px;
+  background:transparent;color:var(--color-text-tertiary);cursor:pointer;font-size:10.5px;
+  font-family:var(--vp-font-mono),var(--typography-family-mono);}
+.rsb-tab.active{color:var(--color-text-primary);background:var(--color-surface-bg-emphasis);}
+#rsb-log{flex:1;margin:0;padding:8px 10px;overflow:auto;white-space:pre-wrap;word-break:break-all;
+  font-family:var(--vp-font-mono),var(--typography-family-mono);font-size:10.5px;line-height:1.5;
+  color:var(--color-text-secondary);user-select:text;}
 /* VP-140 (PR-ε-1): 3D Frame Layout Engine 化。 旧 `.pane{display:none} + .pane.active{display:block}`
    による visibility gating を廃止、 left/top/width/height/opacity を JS (Frame Engine renderer.ts) で
    制御する形に inversion。 Pane は分割で生まれるのではなく、 frame 全体に対する transform を持つ
@@ -380,6 +401,9 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
   display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 0;
   background:var(--color-surface-bg-subtle);
   border-left:1px solid var(--color-surface-border,#1f2233);}
+/* R sidebar 展開中は rail を隠す — rail ⇄ R sidebar は同じ「右」の 2 態 (sidebar view modes)。
+   EdgeRail.setLane が inline display を書くため !important でのみ上書きできる。 */
+body.rsb-open #edge-rail{display:none !important;}
 #edge-rail-new-host{display:contents;}
 /* rail の住人の共通の見た目（New / board 取っ手 / 将来の lane 級動詞） */
 .rail-btn{position:relative;display:flex;align-items:center;justify-content:center;
@@ -698,6 +722,19 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
       <p>sidebar から pane を選択してください</p>
     </main>
   </div>
+</div>
+<!-- sidebar view modes (2026-08-01): R sidebar = 右の帯 (edge rail) のフル幅形。中身は
+     debug log viewer (app.kdl.log / daemon.kdl.log の tail)。開閉 (`Cmd+]`) と tail 購読は
+     right-sidebar.ts、行の供給は push envelope `debuglog:lines`。 -->
+<div id="right-sidebar" aria-label="Debug Log">
+  <div class="rsb-head">
+    <span class="rsb-title">Debug Log</span>
+    <div class="rsb-tabs">
+      <button class="rsb-tab active" data-src="app" title="vp-app のログ (app.kdl.log)">App</button>
+      <button class="rsb-tab" data-src="daemon" title="daemon のログ (daemon.kdl.log)">Daemon</button>
+    </div>
+  </div>
+  <pre id="rsb-log"></pre>
 </div>
 </div><!-- /#app-shell (WebView 統合 step 3a) -->
 <!-- VP-101 Phase A2: creo-ui-editor-host (SolidJS) の mount 先。
