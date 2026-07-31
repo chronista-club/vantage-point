@@ -16,6 +16,8 @@ import {
   classifyActivityRun,
   activityRunStatus,
   fmtElapsed,
+  mdToHtml,
+  creoLinkHtml,
   clampToolDetail,
   canSwitchTo,
   canCloseSession,
@@ -28,6 +30,7 @@ import {
   isImeConfirmEnter,
 } from './chatview'
 import type { ConversationEvent } from './console'
+import { marked as markedSingleton } from 'marked'
 
 /** tool ChatItem を手軽に組む helper（classifyToolRun のテスト用）。 */
 let toolSeq = 0
@@ -1193,6 +1196,34 @@ describe('fmtElapsed — 完了 root の経過時間 (doc 57 §6-2)', () => {
     expect(fmtElapsed(45_000)).toBe('45s')
     expect(fmtElapsed(192_000)).toBe('3m12s')
     expect(fmtElapsed(3_720_000)).toBe('1h02m')
+  })
+})
+
+describe('creo link — [[name]] を検索リンク化 (mako 2026-07-31)', () => {
+  it('[[slug]] が creo の memory slug URL（/m/{slug}）になる（表示は記法そのまま）', () => {
+    const html = mdToHtml('関連: [[feedback_observability_first]] を参照')
+    expect(html).toContain('href="https://app.creo-memories.in/m/feedback_observability_first"')
+    expect(html).toContain('[[feedback_observability_first]]')
+    expect(html).toContain('conversation-creo-link')
+  })
+  it('name は URL encode され、表示は HTML escape される', () => {
+    expect(creoLinkHtml('記憶 名')).toContain(`/m/${encodeURIComponent('記憶 名')}`)
+    expect(creoLinkHtml('a<b>&"c')).toContain('[[a&lt;b&gt;&amp;&quot;c]]')
+  })
+  it('code span / fence の中は誤爆しない（tokenizer 拡張の存在理由）', () => {
+    expect(mdToHtml('`[[x]]`')).not.toContain('conversation-creo-link')
+    expect(mdToHtml('```\n[[x]]\n```')).not.toContain('conversation-creo-link')
+  })
+  it('不正形（空・ネスト・改行跨ぎ）はリンク化しない', () => {
+    expect(mdToHtml('[[]]')).not.toContain('conversation-creo-link')
+    expect(mdToHtml('[[a\nb]]')).not.toContain('conversation-creo-link')
+    expect(mdToHtml('[[a]b]]')).not.toContain('conversation-creo-link')
+  })
+  it('拡張は chat 専用 instance に閉じる — グローバル marked（board-render 側）を汚染しない', () => {
+    // marked.use()（singleton）に戻すと board の描画へ波及し、click 配線の無い board で
+    // webview ごと遷移しうる（review 指摘 2026-07-31）。この赤で退行を検出する。
+    expect(mdToHtml('[[x]]')).toContain('conversation-creo-link')
+    expect(markedSingleton.parse('[[x]]') as string).not.toContain('conversation-creo-link')
   })
 })
 
