@@ -77,6 +77,8 @@ export function DaemonWidget() {
 	// update_available 時のみ Daemon widget 直下に「更新する」CTA を出す。latest_version は
 	// ボタン label + `update:apply` IPC の payload (Rust 側の native ダイアログ文言に使う)。
 	const updateAvailable = () => a().update_available;
+	// 適用フロー実行中 (AppEvent::UpdateFlowPhase 由来の GUI local 状態、health 由来ではない)。
+	const updateApplying = () => a().update_applying;
 	const latestVersion = () => a().latest_version ?? undefined;
 
 	return (
@@ -112,15 +114,24 @@ export function DaemonWidget() {
 			<Show when={online() && updateAvailable()}>
 				<div
 					class="vp-daemon-update"
-					title={`v${latestVersion() ?? "?"} が利用可能です。クリックで更新します`}
+					classList={{ applying: updateApplying() }}
+					title={
+						updateApplying()
+							? "更新を適用しています…"
+							: `v${latestVersion() ?? "?"} が利用可能です。クリックで更新します`
+					}
 					onClick={() => {
+						// 適用中は再送しない (Rust 側 UPDATE_IN_FLIGHT と二重のガード)。
+						if (updateApplying()) return;
 						const v = latestVersion();
 						// version が無い場合は IPC を送らない (Rust arm も空 version を無視)。
 						if (v) sendIpc({ t: "update:apply", version: v });
 					}}
 				>
 					<CreoIcon name="ph:arrow-circle-up" size={14} />
-					<span class="vp-daemon-update-label">更新する</span>
+					<span class="vp-daemon-update-label">
+						{updateApplying() ? "更新中…" : "更新する"}
+					</span>
 					<Show when={latestVersion()}>
 						<span class="vp-daemon-update-ver">v{latestVersion()}</span>
 					</Show>

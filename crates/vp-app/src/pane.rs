@@ -140,6 +140,10 @@ pub struct ActivitySnapshot {
     /// 最新 release version（ボタン label「更新する ⤴ vX.Y.Z」用、未取得は None）。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub latest_version: Option<String>,
+    /// in-app update: 適用フロー実行中か。health 由来ではなく GUI local 状態
+    /// （`AppEvent::UpdateFlowPhase`）で、「更新する」ボタンを「更新中…」表示に切り替える。
+    #[serde(default)]
+    pub update_applying: bool,
 }
 
 /// Sidebar 全体の state (sidebar webview に渡す)
