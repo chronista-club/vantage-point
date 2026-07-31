@@ -60,6 +60,8 @@ engine が人を待っている合図（doc 35）が死ぬ。
   `single / head / member` に分類。**描画時のみ・reducer 不変**の原則をそのまま継承
 - **run 長 1（tool 単発）は root を作らない** — 従来の 1 行表示（+ §4.4 の 1 ライナー）。
   単発に root を被せると行が増えるだけで本末転倒
+- **thinking だけの塊も root を作らない**（P2 実装時に確定した細則、2026-07-31）— 作業で
+  なく思考の流れなので従来の ThinkingBlock のまま。root 化の条件 = **長さ ≥2 かつ tool ≥1**
 
 ### 4.2 root 行（live root）
 
@@ -78,6 +80,9 @@ error:   ▸ ✗ 15 tools · 1 agent · 3m12s（error 色。1 件でも error �
 - **経過時間** = 塊の先頭 item の受信時刻 〜 最後の tool settle。受信時刻は `foldInto` の
   append 時に item へ刻む（§4.6 の注記）。**transcript replay では出さない** — 実時間は
   再現できないので、測っていないものを表示しない（偽らない規律の適用）
+  - 既知の edge（P2 レビュー所見、未再現の理論値）: replay watchdog（10s）が replay 途中で
+    強制発火すると以降の replay item に実時刻が刻まれうる。塊の一部でも時刻が欠ければ
+    elapsed は null に落ちるので、嘘の経過が出るのは「watchdog 後に丸ごと流れた塊」のみ
 
 ### 4.3 木の中身（展開時）
 

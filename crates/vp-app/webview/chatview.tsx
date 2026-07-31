@@ -47,7 +47,7 @@ import { sessionChipPrefix } from './LaneHeader'
 type ChatItem =
   | { kind: 'user'; text: string }
   | { kind: 'assistant'; text: string; sealed?: boolean } // append 先。sealed=turn 境界（§5.1、次 turn は新バブル）
-  | { kind: 'thinking'; text: string } // thought_chunk を末尾 thinking に append
+  | { kind: 'thinking'; text: string; at?: number } // thought_chunk を末尾 thinking に append。at = live 受信時刻（doc 57 §4.2、replay では刻まない）
   // tool。input/result は詳細展開の表示源。backend は最初から ToolCall{input} /
   // ToolCallUpdate{content} を送っているので、view が保持するだけで詳細が開ける。
   // subagent は Agent tool が回した子の発話（--forward-subagent-text 有効時のみ）。
@@ -60,6 +60,9 @@ type ChatItem =
       input?: unknown
       result?: string
       subagent?: SubagentEntry[]
+      /** live 受信/settle 時刻（doc 57 §4.2 経過時間の材料）。replay では刻まない = 偽らない。 */
+      at?: number
+      doneAt?: number
     }
   // doc 35 PR1/PR3: HITL PromptCard。question（選択肢）or permission（allow/deny）。answered で折りたたむ。
   | {
@@ -415,7 +418,12 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       s.streaming = true
       const last = s.items[s.items.length - 1]
       if (last && last.kind === 'thinking') last.text += ev.text
-      else s.items.push({ kind: 'thinking', text: ev.text })
+      else
+        s.items.push({
+          kind: 'thinking',
+          text: ev.text,
+          at: s.replaying ? undefined : Date.now(),
+        })
       break
     }
     case 'tool_call':
@@ -429,6 +437,7 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
         done: false,
         error: false,
         input: ev.input,
+        at: s.replaying ? undefined : Date.now(),
       })
       break
     case 'tool_call_update': {
@@ -440,6 +449,8 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
         t.error = ev.is_error ?? false
         // 結果本文を保持。in-place 変異なので、開いたままの詳細にライブで流れ込む。
         t.result = ev.content
+        // 経過時間の材料（doc 57 §4.2）。replay では実時間を偽れないので刻まない。
+        if (!s.replaying) t.doneAt = Date.now()
       } else {
         // 結び先の無い update。backend 側で「replay 列に孤児は現れない」を不変条件にした
         // （transcript の切り詰めが ToolCall/Update のペアを割らない、in-flight tail は
@@ -770,7 +781,7 @@ export function linkOpenPayload(href: string): string | null {
   return JSON.stringify({ t: 'open-url', url: href })
 }
 
-function ThinkingBlock(props: { text: string; active: () => boolean }) {
+function ThinkingBlock(props: { text: string; active: () => boolean; liner?: boolean }) {
   const [open, setOpen] = createSignal(false)
   return (
     <div class="conversation-thinking">
@@ -784,6 +795,10 @@ function ThinkingBlock(props: { text: string; active: () => boolean }) {
         </span>
         {/* active 中はラベルを shimmer で光らせる（考え中の質感）。 */}
         <span class="conversation-thinking-label">thinking</span>
+        {/* 木の中では冒頭 1 行を添える（doc 57 §6-3 — 畳んだまま思考の流れが読める）。 */}
+        <Show when={props.liner && headLine(props.text)}>
+          {(t) => <span class="conversation-tool-oneliner">{t()}</span>}
+        </Show>
       </button>
       <Show when={open()}>
         <div class="conversation-thinking-body">{props.text}</div>
@@ -821,6 +836,12 @@ export function formatToolResult(result: string | undefined): string | null {
   return result.length > 0 ? result : null
 }
 
+/** 複数行 text の先頭の意味ある 1 行（1 ライナーの正規化 / thinking 節の冒頭、doc 57 §6-3）。 */
+export function headLine(s: string): string | null {
+  const t = s.split('\n').find((l) => l.trim().length > 0)
+  return t ? t.trim() : null
+}
+
 /**
  * path を「親 1 段 + basename」へ短縮する純関数（doc 57 §6-1）。
  * 末尾（ファイル名）が情報の主役で幅は有限 — full path は展開した input 詳細が持つ。
@@ -837,13 +858,10 @@ export function shortenPath(p: string): string {
  *
  * ピルの情報密度の源: tool 名だけでは「Bash ✓」の壁になる（doc 57 §1）。null = 出せる
  * 情報がない → 呼び出し側は従来どおり名前のみ表示。長さの clamp は CSS ellipsis に任せ、
- * ここでは複数行入力の先頭行だけに正規化する。
+ * ここでは複数行入力を先頭の意味ある 1 行（headLine — 空行はスキップ）に正規化する。
  */
 export function toolOneLiner(name: string, input: unknown): string | null {
-  const firstLine = (s: string): string | null => {
-    const t = s.split('\n', 1)[0].trim()
-    return t.length > 0 ? t : null
-  }
+  const firstLine = headLine
   if (typeof input === 'string') return firstLine(input)
   if (input === null || typeof input !== 'object') return null
   const rec = input as Record<string, unknown>
@@ -892,6 +910,99 @@ export function toolOneLiner(name: string, input: unknown): string | null {
       return null
     }
   }
+}
+
+/** activity item（塊 = 木の対象、doc 57 §4.1）。text / prompt（HITL）は区切り側 = 幹に残る。 */
+function isActivityItem(it: ChatItem): boolean {
+  return it.kind === 'tool' || it.kind === 'thinking'
+}
+
+/** activity run（tool/thinking の連続塊）における位置の役割（doc 57 §4.1）。 */
+export type ActivityRunRole =
+  | { role: 'plain' } // run 化しない → 従来描画（単発 tool / thinking のみの塊 / 非対象 kind）
+  | { role: 'head'; run: ChatItem[] } // run 先頭 → 塊全体を ActivityTree 1 本で描く
+  | { role: 'member' } // head に吸収（非描画）
+
+/**
+ * items[idx] が属する activity run での役割を返す純粋関数（doc 57 §4.1）。
+ *
+ * classifyToolRun の一般化。同じく**描画時のみ**の集約で reducer は触らない（§C2 不変）。
+ * root 化は「長さ ≥2 かつ tool を 1 つ以上含む」run のみ:
+ * - 単発 tool に root を被せると行が増えるだけ（従来の ToolRow のまま）
+ * - thinking だけの塊は作業でなく思考の流れ → 従来の ThinkingBlock のまま
+ */
+export function classifyActivityRun(items: ChatItem[], idx: number): ActivityRunRole {
+  const it = items[idx]
+  if (!it || !isActivityItem(it)) return { role: 'plain' }
+  let start = idx
+  while (start - 1 >= 0 && isActivityItem(items[start - 1])) start--
+  let end = idx
+  while (end + 1 < items.length && isActivityItem(items[end + 1])) end++
+  const run = items.slice(start, end + 1)
+  if (run.length < 2 || !run.some((r) => r.kind === 'tool')) return { role: 'plain' }
+  return idx === start ? { role: 'head', run } : { role: 'member' }
+}
+
+/** ms → `45s` / `3m12s` / `1h02m`（完了 root の経過時間表示、doc 57 §4.2 / §6-2）。 */
+export function fmtElapsed(ms: number): string {
+  const sec = Math.max(0, Math.round(ms / 1000))
+  if (sec < 60) return `${sec}s`
+  const m = Math.floor(sec / 60)
+  if (m < 60) return `${m}m${String(sec % 60).padStart(2, '0')}s`
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`
+}
+
+/** 塊の root 行に出す集約 status（doc 57 §4.2）。 */
+export type ActivityStatus = {
+  running: boolean
+  doneTools: number
+  totalTools: number
+  agents: number
+  anyError: boolean
+  /** 走行中の「現在」の 1 行 = 未 done の最新 tool（無ければ末尾 item）。完了時は null。 */
+  liner: string | null
+  /** 完了時のみ。live で時刻が揃った塊だけ（replay 混じりは null = 測っていない時間を出さない）。 */
+  elapsedMs: number | null
+}
+
+/**
+ * activity run の root 行の集約を導く純粋関数（doc 57 §4.2）。
+ *
+ * toolGroupStatus と同じ「エンジン状態を偽らない」規律: 1 件でも未 done なら running。
+ * tailStreaming = 塊が items 末尾かつ turn 進行中 — tool 間の thinking 中も「作業中」を
+ * 維持し、途中で ✓ に落として嘘をつかない。
+ */
+export function activityRunStatus(run: ChatItem[], tailStreaming = false): ActivityStatus {
+  const tools = run.filter((r): r is ToolItem => r.kind === 'tool')
+  const doneTools = tools.filter((t) => t.done).length
+  const running = doneTools < tools.length || tailStreaming
+  const agents = tools.filter((t) => t.name === 'Agent').length
+  const anyError = tools.some((t) => t.error)
+  let liner: string | null = null
+  if (running) {
+    const current = [...tools].reverse().find((t) => !t.done)
+    if (current) liner = toolOneLiner(current.name, current.input) ?? current.name
+    else {
+      const last = run[run.length - 1]
+      if (last)
+        liner =
+          last.kind === 'thinking'
+            ? headLine(last.text)
+            : last.kind === 'tool'
+              ? (toolOneLiner(last.name, last.input) ?? last.name)
+              : null
+    }
+  }
+  let elapsedMs: number | null = null
+  if (!running && run.length > 0) {
+    const first = run[0]
+    const t0 = first.kind === 'tool' || first.kind === 'thinking' ? first.at : undefined
+    const ends = tools.map((t) => t.doneAt)
+    if (t0 !== undefined && ends.length > 0 && ends.every((e) => e !== undefined)) {
+      elapsedMs = Math.max(...(ends as number[]), t0) - t0
+    }
+  }
+  return { running, doneTools, totalTools: tools.length, agents, anyError, liner, elapsedMs }
 }
 
 /**
@@ -1052,6 +1163,102 @@ function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
                 subagent={t.subagent}
               />
             )}
+          </For>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
+/** 塊（activity run）の開閉の記憶。key = 先頭 tool の id — component 再生成や replay の
+ *  再畳み込みを跨いで user の選択を保つ（doc 57 §4.5 表示所有権）。 */
+const activityOpen = new Map<string, boolean>()
+
+/**
+ * activity run（tool/thinking の連続塊）を 1 root の木に畳む（doc 57 §4.2-4.3、P2 本丸）。
+ *
+ * 走行中は畳んだまま root が「現在の 1 ライナー + {done}/{total}」を生更新し、完了で
+ * 「✓ N tools · M agent · 経過」に収束する。既定 = 畳み。user が開いたら stream 追記でも
+ * turn 完了でも閉じない（表示所有権は user、システムは初期値だけ — doc 55 継承）。
+ * 中身は既存部品の再利用: 同名連続 = ToolGroupRow / 単発 = ToolRow / thinking = ThinkingBlock。
+ */
+function ActivityTree(props: { run: Accessor<ChatItem[]>; tailStreaming: () => boolean }) {
+  // 先頭 tool は run の存在条件（classifyActivityRun）なので必ず居る。
+  const key = (props.run().find((i) => i.kind === 'tool') as ToolItem | undefined)?.id ?? ''
+  const [open, setOpenRaw] = createSignal(activityOpen.get(key) ?? false)
+  const setOpen = (v: boolean) => {
+    activityOpen.set(key, v)
+    setOpenRaw(v)
+  }
+  const st = createMemo(() => activityRunStatus(props.run(), props.tailStreaming()))
+  const doneLabel = () => {
+    const s = st()
+    const parts = [`${s.totalTools} tools`]
+    if (s.agents > 0) parts.push(`${s.agents} agent`)
+    if (s.elapsedMs !== null) parts.push(fmtElapsed(s.elapsedMs))
+    return `${s.anyError ? '✗' : '✓'} ${parts.join(' · ')}`
+  }
+  return (
+    <div
+      class="conversation-activity"
+      classList={{
+        done: !st().running && !st().anyError,
+        error: !st().running && st().anyError,
+      }}
+    >
+      <button class="conversation-activity-head" onClick={() => setOpen(!open())}>
+        <span class="conversation-thinking-caret" classList={{ open: open() }}>
+          ▸
+        </span>
+        <Show
+          when={st().running}
+          fallback={<span class="conversation-activity-summary">{doneLabel()}</span>}
+        >
+          <span class="conversation-tool-spinner" />
+          <span class="conversation-tool-oneliner">{st().liner ?? '作業中'}</span>
+          <span class="conversation-activity-count">
+            ({st().doneTools}/{st().totalTools}
+            {st().agents > 0 ? ` · agent ${st().agents}` : ''})
+          </span>
+        </Show>
+      </button>
+      <Show when={open()}>
+        <div class="conversation-activity-body">
+          <For each={props.run()}>
+            {(item, i) => {
+              if (item.kind === 'thinking')
+                return (
+                  <ThinkingBlock
+                    text={item.text}
+                    liner
+                    active={() => props.tailStreaming() && i() === props.run().length - 1}
+                  />
+                )
+              if (item.kind !== 'tool') return null // run は tool/thinking のみ（型の防御）
+              // 塊の中でも同名連続は従来どおり ×N に畳む（doc 57 §4.3、孫 = 個別 ToolRow）。
+              const role = createMemo(() => classifyToolRun(props.run(), i()))
+              return (
+                <Switch>
+                  <Match when={role().role === 'member'}>{null}</Match>
+                  <Match when={role().role === 'head'}>
+                    <ToolGroupRow
+                      name={item.name}
+                      tools={() => (role() as { role: 'head'; run: ToolItem[] }).run}
+                    />
+                  </Match>
+                  <Match when={true}>
+                    <ToolRow
+                      name={item.name}
+                      done={item.done}
+                      error={item.error}
+                      input={item.input}
+                      result={item.result}
+                      subagent={item.subagent}
+                    />
+                  </Match>
+                </Switch>
+              )
+            }}
           </For>
         </div>
       </Show>
@@ -1866,36 +2073,53 @@ function SessionChatView(props: { lane: string; session: number }) {
         >
           <For each={state().items}>
             {(item, index) => {
-              if (item.kind === 'thinking')
-                return (
-                  <ThinkingBlock
-                    text={item.text}
-                    // 末尾 thinking かつ turn 進行中 = 今まさに考え中 → shimmer。
-                    active={() => index() === state().items.length - 1 && state().streaming}
-                  />
-                )
-              if (item.kind === 'tool') {
-                // 連続同名 tool run を畳む。head=accordion / member=非描画 / single=従来 1 行。
-                // items/index を reactive に読むので stream 追記で single→head へ昇格する。
-                const role = createMemo(() => classifyToolRun(state().items, index()))
+              if (item.kind === 'thinking' || item.kind === 'tool') {
+                // doc 57 P2: tool/thinking の連続塊は ActivityTree 1 本に畳む。plain（単発 tool /
+                // thinking のみの塊）は従来描画。items/index を reactive に読むので stream 追記で
+                // plain→head へ昇格する（classifyToolRun と同じ手筋）。
+                const arole = createMemo(() => classifyActivityRun(state().items, index()))
+                // 塊が items 末尾かつ turn 進行中 = tool 間の thinking 中も「作業中」を維持。
+                const tailStreaming = () => {
+                  const r = arole()
+                  return (
+                    r.role === 'head' &&
+                    r.run[r.run.length - 1] === state().items[state().items.length - 1] &&
+                    state().streaming
+                  )
+                }
                 return (
                   <Switch>
-                    <Match when={role().role === 'member'}>{null}</Match>
-                    <Match when={role().role === 'head'}>
-                      <ToolGroupRow
-                        name={item.name}
-                        tools={() => (role() as { role: 'head'; run: ToolItem[] }).run}
+                    <Match when={arole().role === 'member'}>{null}</Match>
+                    <Match when={arole().role === 'head'}>
+                      <ActivityTree
+                        run={() => (arole() as { role: 'head'; run: ChatItem[] }).run}
+                        tailStreaming={tailStreaming}
                       />
                     </Match>
                     <Match when={true}>
-                      <ToolRow
-                        name={item.name}
-                        done={item.done}
-                        error={item.error}
-                        input={item.input}
-                        result={item.result}
-                        subagent={item.subagent}
-                      />
+                      {(() => {
+                        if (item.kind === 'thinking')
+                          return (
+                            <ThinkingBlock
+                              text={item.text}
+                              // 末尾 thinking かつ turn 進行中 = 今まさに考え中 → shimmer。
+                              active={() =>
+                                index() === state().items.length - 1 && state().streaming
+                              }
+                            />
+                          )
+                        // 塊にならなかった tool は常に単発（連続 2 本以上は必ず run になる）。
+                        return (
+                          <ToolRow
+                            name={item.name}
+                            done={item.done}
+                            error={item.error}
+                            input={item.input}
+                            result={item.result}
+                            subagent={item.subagent}
+                          />
+                        )
+                      })()}
                     </Match>
                   </Switch>
                 )
@@ -2179,6 +2403,22 @@ export const CHATVIEW_CSS = `
   border-radius:4px; padding:0 4px; }
 .conversation-subagent-entry.thinking .conversation-tool-detail-body { color: var(--color-text-tertiary,#616b80); font-style:italic; }
 .conversation-subagent-entry.prompt .conversation-tool-detail-body { color: var(--color-text-tertiary,#8b93a7); }
+/* ActivityTree（doc 57 P2）: 塊の root + 展開 body。root は tool 行と同じ質感の 1 行。 */
+.conversation-activity { align-self:flex-start; max-width:100%; font-size:var(--chat-text-tool,12px);
+  animation: conversation-fade .18s ease-out; }
+.conversation-activity-head { display:flex; align-items:center; gap:8px; max-width:100%; text-align:left;
+  cursor:pointer; font-family:inherit; font-size:var(--chat-text-tool,12px);
+  color: var(--color-text-secondary,#a8b0c0); background: var(--color-bg-elevated,#16191f);
+  border:1px solid var(--color-border,#2a3040); border-radius:8px; padding:5px 11px; }
+/* 走行中の root の 1 ライナーは主役なので secondary（子行の tertiary より一段立てる）。 */
+.conversation-activity-head .conversation-tool-oneliner { color: var(--color-text-secondary,#a8b0c0); }
+.conversation-activity.done .conversation-activity-head { color: var(--color-text-tertiary,#616b80); }
+.conversation-activity.error .conversation-activity-head { color:#f0a3a3; }
+.conversation-activity-count { flex:none; font-size:var(--chat-text-meta,11px);
+  font-family: var(--vp-font-mono),var(--typography-family-mono); color: var(--color-text-tertiary,#8b93a7); }
+/* 展開 body: thinking-body / tool-body と同じ左罫線の入れ子表現。 */
+.conversation-activity-body { display:flex; flex-direction:column; gap:6px; margin:5px 0 0 16px;
+  padding-left:8px; border-left:2px solid var(--color-border,#2a3040); }
 /* ToolGroupRow: 連続同名 tool（Agent ×N 等）を畳む accordion。畳んだ header は ToolRow と同じ枠で 1 行。 */
 .conversation-toolgroup { align-self:flex-start; font-size:var(--chat-text-tool,12px); animation: conversation-fade .18s ease-out; }
 .conversation-toolgroup-toggle { display:flex; align-items:center; gap:8px; width:100%; cursor:pointer;
