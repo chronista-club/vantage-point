@@ -126,6 +126,12 @@ user 概念 (前 turn で提示):
 > (`chord-table.ts` の `'['` / `']'`、 semantic: layout) — 規約 v0.3 で keep していた
 > symbol-key path の初利用。⚠️ `Ctrl+Shift+[ / ]` (Scene cyclic) とは修飾違いの隣人 —
 > 混同が dogfood で痛くなったら B.3 flow で再配置する。
+>
+> ⚠️ **非 Mac では「Cmd hold」が Ctrl に折り畳まれる**（`chord.ts` の
+> `mod = isMac ? metaKey : ctrlKey`）ため、「修飾違いだから別物」は Mac だけの前提。
+> 衝突は dispatcher 側の **shift 全キー reject** で封じてある（shift 併用は
+> DIRECTIVE_TABLE のキーとは別入力 — `directiveKeyOf` + chord.test.ts で固定）。
+> 将来 shift+symbol directive を足すときは table に shift 込み表現を導入して gate ごと再設計。
 
 ### B.2 directive 実装の特徴
 

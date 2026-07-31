@@ -84,8 +84,11 @@ fn tail_loop(
             0
         }
     };
-    // 追記読みで行末（\n）に達していない断片の持ち越し
-    let mut partial = String::new();
+    // 追記読みで行末（\n）に達していない断片の持ち越し。
+    // ⚠️ **生バイト**で持つ — poll 境界は multi-byte UTF-8 文字の途中に落ちうるので、
+    // chunk 単位で decode すると 1 文字が 2 つの U+FFFD に壊れる（moody-blues 指摘 #1）。
+    // 行境界（\n = ASCII）はバイトのまま安全に探せる（UTF-8 継続バイトは 0x80-0xBF）。
+    let mut partial: Vec<u8> = Vec::new();
 
     loop {
         std::thread::sleep(POLL_INTERVAL);
@@ -112,16 +115,26 @@ fn tail_loop(
             continue;
         };
         offset = len;
-        partial.push_str(&chunk);
-        // 完全な行だけ切り出す（最後の \n 以降は次 chunk へ持ち越し）
-        if let Some(idx) = partial.rfind('\n') {
-            let complete: String = partial.drain(..=idx).collect();
-            let lines: Vec<String> = complete.lines().map(str::to_string).collect();
-            if !lines.is_empty() {
-                send(proxy, source, false, lines, generation);
-            }
+        partial.extend_from_slice(&chunk);
+        let lines = drain_complete_lines(&mut partial);
+        if !lines.is_empty() {
+            send(proxy, source, false, lines, generation);
         }
     }
+}
+
+/// buffer から**完成した行**（最後の `\n` まで）だけを取り出して decode する。
+/// 行末未満の断片（multi-byte 文字の途中を含みうる）は buffer に生バイトのまま残る —
+/// decode は常に行境界でのみ行うので、poll 境界が文字を割ることはない。
+fn drain_complete_lines(buf: &mut Vec<u8>) -> Vec<String> {
+    let Some(idx) = buf.iter().rposition(|&b| b == b'\n') else {
+        return Vec::new();
+    };
+    let complete: Vec<u8> = buf.drain(..=idx).collect();
+    String::from_utf8_lossy(&complete)
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 /// `DebugLogChunk` を event loop へ返す。送れない = event loop 消滅なので以後の送信も無意味
@@ -159,13 +172,15 @@ fn read_backlog(path: &Path) -> std::io::Result<(Vec<String>, u64)> {
     Ok((lines, len))
 }
 
-/// `from..to` の byte range を lossy 文字列で読む。失敗は None（次の poll でやり直す）。
-fn read_range(path: &Path, from: u64, to: u64) -> Option<String> {
+/// `from..to` の byte range を**生バイト**で読む。失敗は None（次の poll でやり直す）。
+/// decode は呼び手が行境界で行う（`drain_complete_lines`）— ここでやると chunk 境界が
+/// multi-byte 文字を割る。
+fn read_range(path: &Path, from: u64, to: u64) -> Option<Vec<u8>> {
     let mut f = std::fs::File::open(path).ok()?;
     f.seek(SeekFrom::Start(from)).ok()?;
     let mut buf = vec![0u8; usize::try_from(to - from).ok()?];
     f.read_exact(&mut buf).ok()?;
-    Some(String::from_utf8_lossy(&buf).into_owned())
+    Some(buf)
 }
 
 #[cfg(test)]
@@ -192,5 +207,23 @@ mod tests {
         assert_eq!(lines, vec!["one", "two", "three"]);
         assert_eq!(end, 14);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// chunk 境界が multi-byte UTF-8 文字（ここでは「ロ」= 3 byte）の途中を割っても、
+    /// 行境界まで生バイトで持ち越すので文字が壊れない（moody-blues 指摘 #1 の固定）。
+    #[test]
+    fn drain_complete_lines_survives_multibyte_split() {
+        let full = "ログ一行目\n途中".as_bytes();
+        let split = 4; // 「ロ」(3B) + 「グ」の 1 byte 目 = multi-byte の真ん中で切る
+        let mut buf: Vec<u8> = Vec::new();
+
+        buf.extend_from_slice(&full[..split]);
+        // 1 chunk 目: \n が無いので行は出ず、断片はバイトのまま残る
+        assert!(drain_complete_lines(&mut buf).is_empty());
+
+        buf.extend_from_slice(&full[split..]);
+        // 2 chunk 目: 完成行だけが無傷で出て、行末未満（「途中」）は残る
+        assert_eq!(drain_complete_lines(&mut buf), vec!["ログ一行目"]);
+        assert_eq!(buf, "途中".as_bytes());
     }
 }

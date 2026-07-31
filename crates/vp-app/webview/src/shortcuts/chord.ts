@@ -18,6 +18,45 @@ export interface DirectiveContext {
   exec(key: string): void
 }
 
+/** `directiveKeyOf` が読む keydown event の判定材料（KeyboardEvent の部分集合、テスト可能形）。 */
+export interface DirectiveKeyInput {
+  metaKey: boolean
+  ctrlKey: boolean
+  altKey: boolean
+  shiftKey: boolean
+  key: string
+}
+
+/**
+ * keydown event が registered directive なら key を、そうでなければ null を返す（純関数）。
+ *
+ * Shift 修飾の扱い（v0.9 で全キー reject に統一）:
+ * - `Ctrl+Shift + <key>` は layout / visual 系（Scene 切替 / Scene cyclic）の領域。
+ *   **非 Mac では「Cmd hold」が Ctrl に折り畳まれる**ため、shift を通すと既存の
+ *   `Ctrl+Shift+[ / ]`（Scene cyclic）が `[` `]` directive と二重発火する
+ *   （moody-blues 指摘 #2 — symbol directive が空だった間は不可視だった衝突）。
+ * - DIRECTIVE_TABLE のキーは shift 無しの表記しか持たないので、「shift 併用 = table の
+ *   キーとは別の入力」として一律 reject が正。将来 shift+symbol directive を足すときは
+ *   table 側に shift 込みの表現を導入してこの gate ごと再設計する。
+ */
+export function directiveKeyOf(
+  e: DirectiveKeyInput,
+  isMac: boolean,
+): string | null {
+  const mod = isMac ? e.metaKey : e.ctrlKey
+  if (!mod) return null
+  // Alt 修飾は terminal の Opt+letter 入力 (π 等) と被るので reject。
+  if (e.altKey) return null
+  // Modifier 自身の keydown (Meta / Control) は skip
+  if (e.key === 'Meta' || e.key === 'Control') return null
+
+  if (e.key.length !== 1) return null // 1 文字キーのみ directive 対象
+  if (e.shiftKey) return null
+  const key = e.key.toLowerCase()
+
+  return DIRECTIVE_TABLE[key] ? key : null
+}
+
 /**
  * window に keydown listener (capture phase) を install する。
  * 戻り値: uninstall 関数。
@@ -29,32 +68,14 @@ export function installDirectiveHandler(ctx: DirectiveContext): () => void {
   const handler = (event: Event): void => {
     const e = event as KeyboardEvent
     const isMac = navigator.platform.toUpperCase().includes('MAC')
-    const mod = isMac ? e.metaKey : e.ctrlKey
+    const key = directiveKeyOf(e, isMac)
+    if (key === null) return
 
-    if (!mod) return
-    // Alt 修飾は terminal の Opt+letter 入力 (π 等) と被るので reject。
-    if (e.altKey) return
-    // Modifier 自身の keydown (Meta / Control) は skip
-    if (e.key === 'Meta' || e.key === 'Control') return
-
-    const rawKey = e.key
-    if (rawKey.length !== 1) return // 1 文字キーのみ directive 対象
-    const key = rawKey.toLowerCase()
-
-    // Shift 修飾の扱い:
-    // - shift + alphanumeric letter (例: ⌘+Shift+F) は **layout / visual 系** の領域 (Ctrl+Shift+digit
-    //   と類比) なので directive としては reject (= 別 handler に通す)
-    // - shift + symbol (例: ⌘+Shift+/) は directive 候補として通す。 現状 symbol-key directive は
-    //   無い (v0.8 で `?`/`i` cheatsheet は撤去) が、 将来 shift+symbol 系を足す余地として path は keep。
-    if (e.shiftKey && /^[a-z0-9]$/.test(key)) return
-
-    if (DIRECTIVE_TABLE[key]) {
-      e.preventDefault()
-      try {
-        ctx.exec(key)
-      } catch (err) {
-        console.warn('[directive] exec failed:', key, err)
-      }
+    e.preventDefault()
+    try {
+      ctx.exec(key)
+    } catch (err) {
+      console.warn('[directive] exec failed:', key, err)
     }
   }
 
