@@ -3512,6 +3512,26 @@ mod tests {
         .await
         .expect("demand_start");
         // 初回 replay を吸い切る（ここまでは両 session に流れて正常）。
+        //
+        // ⚠️ 時間だけで待ってはいけない: login shell は rc 読み込みの分だけ起動が遅れ、root の
+        // 初回出力が後段の観測窓へ漏れる。すると「触っていない root にも流れた」と誤検出して
+        // 間欠的に落ちる（v0.60.0 の release ゲートで顕在化。product は正しく、測り方の race
+        // だった）。まず **両 session の実出力を見る = readiness を待ち**、その後で無音まで
+        // drain する。
+        let mut warmed: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let warm_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while warmed.len() < 2 && tokio::time::Instant::now() < warm_deadline {
+            if let Ok(Some((_t, RepoMessage::LaneTerminalOutput { session, .. }))) =
+                tokio::time::timeout(Duration::from_millis(500), srx.recv()).await
+            {
+                warmed.insert(session);
+            }
+        }
+        assert_eq!(
+            warmed.len(),
+            2,
+            "両 session の初回出力が揃ってから観測に入る (warmed={warmed:?})"
+        );
         while tokio::time::timeout(Duration::from_millis(400), srx.recv())
             .await
             .is_ok()
