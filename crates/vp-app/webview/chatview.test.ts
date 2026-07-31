@@ -10,6 +10,8 @@ import {
   toolGroupStatus,
   formatToolInput,
   formatToolResult,
+  shortenPath,
+  toolOneLiner,
   clampToolDetail,
   canSwitchTo,
   canCloseSession,
@@ -1025,5 +1027,70 @@ describe('isImeConfirmEnter — 変換確定 Enter と送信 Enter の判別（e
 
   it('フィールド欠落（合成イベント等）は false = 送信側に倒す', () => {
     expect(isImeConfirmEnter({})).toBe(false)
+  })
+})
+
+describe('shortenPath — 親 1 段 + basename (doc 57 §6-1)', () => {
+  it('深い path は末尾 2 段に短縮する', () => {
+    expect(shortenPath('/Users/x/repos/vp/crates/vp-app/webview/chatview.tsx')).toBe(
+      'webview/chatview.tsx',
+    )
+    expect(shortenPath('crates/vantage-point/src/conversation/engine.rs')).toBe(
+      'conversation/engine.rs',
+    )
+  })
+  it('2 段以下はそのまま（先頭 / だけ落ちる）', () => {
+    expect(shortenPath('src/main.rs')).toBe('src/main.rs')
+    expect(shortenPath('/Cargo.toml')).toBe('Cargo.toml')
+    expect(shortenPath('README.md')).toBe('README.md')
+  })
+  it('Windows 区切り（\\）も短縮できる — 無短縮だと ellipsis で basename 側から欠ける', () => {
+    expect(shortenPath('C:\\Users\\mako\\repos\\vp\\src\\model.rs')).toBe('src/model.rs')
+  })
+})
+
+describe('toolOneLiner — tool ピルの 1 ライナー (doc 57 §4.4)', () => {
+  it('Bash は description を優先し、無ければ command の先頭行', () => {
+    expect(toolOneLiner('Bash', { command: 'cargo test', description: 'テスト実行' })).toBe(
+      'テスト実行',
+    )
+    expect(toolOneLiner('Bash', { command: 'cargo test -p vp\n# 続き' })).toBe(
+      'cargo test -p vp',
+    )
+  })
+  it('file 系は file_path を親 1 段 + basename に短縮', () => {
+    expect(toolOneLiner('Edit', { file_path: '/a/b/c/model.rs', old_string: 'x' })).toBe(
+      'c/model.rs',
+    )
+    expect(toolOneLiner('Read', { file_path: '/tmp/shot.png' })).toBe('tmp/shot.png')
+    expect(toolOneLiner('NotebookEdit', { notebook_path: '/a/nb/x.ipynb' })).toBe('nb/x.ipynb')
+  })
+  it('Grep/Glob は pattern、Agent は description、Skill は skill', () => {
+    expect(toolOneLiner('Grep', { pattern: 'permission_choices', path: '/x' })).toBe(
+      'permission_choices',
+    )
+    expect(toolOneLiner('Glob', { pattern: '**/*.rs' })).toBe('**/*.rs')
+    expect(toolOneLiner('Agent', { description: 'diff レビュー', prompt: '長文…' })).toBe(
+      'diff レビュー',
+    )
+    expect(toolOneLiner('Agent', { prompt: '1 行目\n2 行目' })).toBe('1 行目')
+    expect(toolOneLiner('Skill', { skill: 'release' })).toBe('release')
+  })
+  it('未知 tool（mcp__* 等）は最初の意味ある string field へ fallback', () => {
+    expect(toolOneLiner('mcp__vantage-point__show', { content: 'md 本文', kind: 'markdown' })).toBe(
+      'md 本文',
+    )
+    expect(toolOneLiner('TaskUpdate', { taskId: '3', status: 'completed' })).toBe('3')
+  })
+  it('出せる情報が無ければ null = 従来どおり名前のみ', () => {
+    expect(toolOneLiner('Bash', {})).toBe(null)
+    expect(toolOneLiner('Edit', { old_string: 1 })).toBe(null)
+    expect(toolOneLiner('mcp__x', { n: 42, b: true })).toBe(null)
+    expect(toolOneLiner('Bash', undefined)).toBe(null)
+    expect(toolOneLiner('Bash', null)).toBe(null)
+    expect(toolOneLiner('Bash', '  \n')).toBe(null)
+  })
+  it('string input は先頭行に正規化', () => {
+    expect(toolOneLiner('anything', '1 行目\n2 行目')).toBe('1 行目')
   })
 })

@@ -822,6 +822,79 @@ export function formatToolResult(result: string | undefined): string | null {
 }
 
 /**
+ * path を「親 1 段 + basename」へ短縮する純関数（doc 57 §6-1）。
+ * 末尾（ファイル名）が情報の主役で幅は有限 — full path は展開した input 詳細が持つ。
+ * 区切りは `/` と `\` の両対応（Windows path が来ても basename 側を残す。ellipsis は
+ * 末尾を削るので、無短縮だと肝心のファイル名から欠ける）。
+ */
+export function shortenPath(p: string): string {
+  const seg = p.split(/[\\/]/).filter((s) => s.length > 0)
+  return seg.length <= 2 ? seg.join('/') : seg.slice(-2).join('/')
+}
+
+/**
+ * tool の 1 ライナーを input から導く純関数（doc 57 §4.4 の表駆動）。
+ *
+ * ピルの情報密度の源: tool 名だけでは「Bash ✓」の壁になる（doc 57 §1）。null = 出せる
+ * 情報がない → 呼び出し側は従来どおり名前のみ表示。長さの clamp は CSS ellipsis に任せ、
+ * ここでは複数行入力の先頭行だけに正規化する。
+ */
+export function toolOneLiner(name: string, input: unknown): string | null {
+  const firstLine = (s: string): string | null => {
+    const t = s.split('\n', 1)[0].trim()
+    return t.length > 0 ? t : null
+  }
+  if (typeof input === 'string') return firstLine(input)
+  if (input === null || typeof input !== 'object') return null
+  const rec = input as Record<string, unknown>
+  const str = (k: string): string | null => {
+    const v = rec[k]
+    return typeof v === 'string' && v.trim().length > 0 ? v.trim() : null
+  }
+  switch (name) {
+    case 'Bash': {
+      // description は CC が送る人間向け説明（日本語）。無ければ command の先頭行。
+      const s = str('description') ?? str('command')
+      return s ? firstLine(s) : null
+    }
+    case 'Edit':
+    case 'Write':
+    case 'Read': {
+      const p = str('file_path')
+      return p ? shortenPath(p) : null
+    }
+    case 'NotebookEdit': {
+      const p = str('notebook_path') ?? str('file_path')
+      return p ? shortenPath(p) : null
+    }
+    case 'Grep':
+    case 'Glob':
+      return str('pattern')
+    case 'Agent': {
+      const s = str('description') ?? str('prompt')
+      return s ? firstLine(s) : null
+    }
+    case 'Skill':
+      return str('skill')
+    case 'WebFetch':
+      return str('url')
+    case 'WebSearch':
+      return str('query')
+    default: {
+      // mcp__* / その他: 最初の意味ある string field（表に無い tool の best-effort）。
+      // ⚠️「最初」= JSON の serialize 順。server の serde_json は BTreeMap（preserve_order
+      // 無効）なので現状 alphabetical — 呼び出し時の引数順ではない。将来 preserve_order が
+      // feature unification で有効化されると無音で挿入順に変わる（表示だけの best-effort
+      // なので許容だが、選ばれる field が変わったらまずここを疑う）。
+      for (const v of Object.values(rec)) {
+        if (typeof v === 'string' && v.trim().length > 0) return firstLine(v)
+      }
+      return null
+    }
+  }
+}
+
+/**
  * 巨大 detail の clamp（純関数）。省略した文字数を返すので、UI は「黙って切った」ように
  * 見せずに済む（no silent truncation — 切ったなら切ったと言う）。
  */
@@ -889,6 +962,7 @@ function ToolRow(props: {
   const inputText = createMemo(() => formatToolInput(props.input))
   const resultText = createMemo(() => formatToolResult(props.result))
   const subagent = createMemo(() => props.subagent ?? [])
+  const oneLiner = createMemo(() => toolOneLiner(props.name, props.input))
   const hasDetail = createMemo(
     () => inputText() !== null || resultText() !== null || subagent().length > 0,
   )
@@ -907,6 +981,9 @@ function ToolRow(props: {
         <span class="conversation-tool-spinner" />
         <span class="conversation-tool-icon">🔧</span>
         <span class="conversation-tool-name">{props.name}</span>
+        <Show when={oneLiner()}>
+          {(t) => <span class="conversation-tool-oneliner">{t()}</span>}
+        </Show>
         <span class="conversation-tool-status">
           {props.error ? 'error' : props.done ? '✓' : '実行中…'}
         </span>
@@ -937,6 +1014,11 @@ function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
   const count = () => props.tools().length
   const status = () => toolGroupStatus(props.tools())
   const anyError = () => props.tools().some((t) => t.error)
+  // 代表 = 先頭の 1 ライナー（doc 57 §4.4）。run は同名なので先頭が種類を代表できる。
+  const headLiner = createMemo(() => {
+    const first = props.tools()[0]
+    return first ? toolOneLiner(first.name, first.input) : null
+  })
   return (
     <div
       class="conversation-toolgroup"
@@ -952,6 +1034,9 @@ function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
         <span class="conversation-tool-icon">🔧</span>
         <span class="conversation-tool-name">{props.name}</span>
         <span class="conversation-toolgroup-count">×{count()}</span>
+        <Show when={headLiner()}>
+          {(t) => <span class="conversation-tool-oneliner">{t()} ほか</span>}
+        </Show>
         <span class="conversation-tool-status">{status().label}</span>
       </button>
       <Show when={open()}>
@@ -2070,8 +2155,11 @@ export const CHATVIEW_CSS = `
 .conversation-tool.done .conversation-tool-spinner, .conversation-tool.error .conversation-tool-spinner { display:none; }
 .conversation-tool.done .conversation-tool-head { color: var(--color-text-tertiary,#616b80); }
 .conversation-tool.error .conversation-tool-head { color:#f0a3a3; }
-.conversation-tool-name { font-family: var(--vp-font-mono),var(--typography-family-mono); }
-.conversation-tool-status { margin-left:auto; font-size:var(--chat-text-meta,11px); }
+.conversation-tool-name { font-family: var(--vp-font-mono),var(--typography-family-mono); flex:none; }
+/* 1 ライナー（doc 57 §4.4）: 情報密度の源。幅が尽きたら ellipsis（clamp は CSS の仕事）。 */
+.conversation-tool-oneliner { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color: var(--color-text-tertiary,#8b93a7); }
+.conversation-tool-status { margin-left:auto; flex:none; font-size:var(--chat-text-meta,11px); }
 /* 展開部: thinking-body と同じ左罫線の入れ子表現で input / result を積む。 */
 .conversation-tool-body { display:flex; flex-direction:column; gap:6px; margin:5px 0 0 16px;
   padding-left:8px; border-left:2px solid var(--color-border,#2a3040); }
