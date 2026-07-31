@@ -90,6 +90,13 @@ export interface BoardMessage {
   message: any;
 }
 
+/** Event "debuglog:lines" */
+export interface DebuglogLines {
+  source: string;
+  reset: boolean;
+  lines: string[];
+}
+
 /** Event name → 生成 interface の map for "push" (= type-narrowing 用) */
 export type PushChannelEventTypes = {
   TermEnsureLane: TermEnsureLane;
@@ -105,6 +112,7 @@ export type PushChannelEventTypes = {
   InkSnapshot: InkSnapshot;
   InkSnapshotError: InkSnapshotError;
   BoardMessage: BoardMessage;
+  DebuglogLines: DebuglogLines;
 };
 
 /** Request name → { request, response } 生成 interface の map for "push" */
@@ -116,7 +124,7 @@ export const PushChannelMeta = {
   backend: "stream" as const,
   from: "server" as const,
   lifetime: "persistent" as const,
-  events: ["term:ensure_lane", "term:show_lane", "term:remove_lane", "term:remove_session", "term:paste", "devices:render", "console:session_list", "console:event", "console:mode_applied", "console:agents", "ink:snapshot", "ink:snapshot_error", "board:message"] as const,
+  events: ["term:ensure_lane", "term:show_lane", "term:remove_lane", "term:remove_session", "term:paste", "devices:render", "console:session_list", "console:event", "console:mode_applied", "console:agents", "ink:snapshot", "ink:snapshot_error", "board:message", "debuglog:lines"] as const,
   requests: {} as const,
   __types: undefined as unknown as { events: PushChannelEventTypes; requests: PushChannelRequestTypes },
 } as const;
@@ -135,6 +143,7 @@ export type PushEventEnvelope =
   | ({ t: "console:agents" } & ConsoleAgents)
   | ({ t: "ink:snapshot" } & InkSnapshot)
   | ({ t: "ink:snapshot_error" } & InkSnapshotError)
-  | ({ t: "board:message" } & BoardMessage);
+  | ({ t: "board:message" } & BoardMessage)
+  | ({ t: "debuglog:lines" } & DebuglogLines);
 
 

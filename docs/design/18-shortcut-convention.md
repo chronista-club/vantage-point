@@ -111,13 +111,27 @@ user 概念 (前 turn で提示):
 
 > **mutable section**: dogfood で更新される。 update の際は本 doc を patch + creo-memories に decision memory (atlasId: `vantage-point`、 `category: decision`、 `tags: shortcut, layer-b`)。
 
-### B.1 binding 規則 (v1.0、 2026-05-26 時点)
+### B.1 binding 規則 (v1.1、 2026-08-01 時点)
 
 | pattern | semantic 主体 | 例 |
 |---------|---------------|-----|
 | **`Cmd hold + <directive>`** | 動詞発火 (= Layer A の主要 modifier path) | `Cmd hold f`, `Cmd hold p` |
 | `Ctrl+Shift + <key>` | layout / visual 系 (既存実装) | `Ctrl+Shift+1..4` (Scene), `Ctrl+Shift+] / [` (cyclic) |
 | OS 標準 (muda predefined) | system | `Cmd+C/V/X/Z/A`, `Cmd+W`, `Cmd+Q` |
+| **`Cmd + [ / ]`** (v1.1) | sidebar view modes (layout だが例外的に Cmd 修飾) | `Cmd+[` = 左 sidebar フル⇄スリム, `Cmd+]` = 右 rail⇄R sidebar (debug log) |
+
+> v1.1 の例外について: sidebar の view mode 変身は semantic としては layout 系だが、
+> mako 指定 (2026-08-01) で `Cmd+[ / ]` に置く。キーの物理位置 (`[` = 左 / `]` = 右) が
+> 対象の側と一致することを優先した。実装上は directive registry の symbol キー
+> (`chord-table.ts` の `'['` / `']'`、 semantic: layout) — 規約 v0.3 で keep していた
+> symbol-key path の初利用。⚠️ `Ctrl+Shift+[ / ]` (Scene cyclic) とは修飾違いの隣人 —
+> 混同が dogfood で痛くなったら B.3 flow で再配置する。
+>
+> ⚠️ **非 Mac では「Cmd hold」が Ctrl に折り畳まれる**（`chord.ts` の
+> `mod = isMac ? metaKey : ctrlKey`）ため、「修飾違いだから別物」は Mac だけの前提。
+> 衝突は dispatcher 側の **shift 全キー reject** で封じてある（shift 併用は
+> DIRECTIVE_TABLE のキーとは別入力 — `directiveKeyOf` + chord.test.ts で固定）。
+> 将来 shift+symbol directive を足すときは table に shift 込み表現を導入して gate ごと再設計。
 
 ### B.2 directive 実装の特徴
 
@@ -134,7 +148,10 @@ user 概念 (前 turn で提示):
 
 ### B.4 過去 binding history
 
-(該当なし、 v1.0 が初版)
+| version | 日付 | 変更 |
+|---------|------|------|
+| v1.0 | 2026-05-26 | 初版 |
+| v1.1 | 2026-08-01 | `Cmd+[ / ]` (sidebar view modes) を追加 — layout 系だが Cmd 修飾の例外 (mako 指定、キー位置 = 対象の側) |
 
 ---
 
@@ -188,6 +205,8 @@ user 概念 (前 turn で提示):
 | `Cmd hold s` | `s` (switch) | focus-transferring | Lane / project switcher picker overlay を open (LanePicker.tsx、 fuzzy 検索 + flat list)。 lane 選択で `lane:select`、 project 選択で `process:toggle` (= accordion expand) | PR 445 |
 | `Cmd hold d` | `d` (delete) | context polymorphic | 2-click confirm 内蔵: 1 回目で pending state + sidebar 下端 hint bar 表示、 1 秒以内 2 回目で execute (active_lane の Performer → `lane:delete`、 active_stand → `process:delete`)、 timeout で abort | PR 445 |
 | `Cmd hold l` | `l` (lane number switcher mode) | focus-transferring (mode) | **mode-based directive**: ⌘ hold l で mode 突入 (= sidebar 下端に hint bar)、 **5 秒以内に modifier なし 1-9 単発キー** で `collectVisibleLanes()` (= expanded project の中の lane を上から flat list) の N 番目を `lane:select`。 Esc / 他キー / timeout で abort。 input フォーカス時は数字入力を妨げない (= mode abort) | PR 447 |
+| `Cmd+[` | `[` (sidebar form) | layout | 左 sidebar をフル (280px) ⇄ スリム帯 (44px、 repo badge 列 + daemon dot) に変身。 スリム中の badge click = フルへ戻って該当 repo を flash。 symbol キー directive の初例 (§B.1 v1.1) | 2026-08-01 |
+| `Cmd+]` | `]` (R sidebar) | layout | 右を edge rail ⇄ R sidebar (= rail のフル幅形、 debug log viewer: `app.kdl.log` / `daemon.kdl.log` の tail) に変身。 実体は main bundle の right-sidebar.ts (sidebar bundle から共有 bus `vp:right-sidebar-toggle` で依頼) | 2026-08-01 |
 
 > **v0.8 で撤去**: `e` / `g` / `h` (Stand focus、 旧 PR #444) は Scene hotkey `Ctrl+Shift+1..4` (§C.4) と重複のため撤去。 `w` (TheWorld status、 旧 PR #444) は将来の Unison WebView 直結 UI に委ねるため撤去。 `?`→`i` (meta cheatsheet、 旧 PR 447/454) は directive を最小動詞に絞る方針で撤去 (cheatsheet の SSOT は本 doc)。 いずれも #536/#537 で main-view bridge が撤去され no-op 化していたものを、 復活させず正式に削除した。
 

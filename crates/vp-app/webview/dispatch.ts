@@ -51,6 +51,7 @@ export interface PushHandlers {
 	consoleAgents(lane: string, payload: unknown, req: string | null): void;
 	inkSnapshot(path: string): void;
 	inkSnapshotError(message: string): void;
+	debugLogLines(source: string, reset: boolean, lines: string[]): void;
 }
 
 /** `ink.ts` が持ち分として返す arm（mount target 不在なら null を返す = 受け手不在）。 */
@@ -122,6 +123,9 @@ function apply(msg: PushEventEnvelope): void {
 		case "console:agents":
 			// `req` は schema で optional — 「応答を誰も拾わない」が型に載る。
 			handlers.consoleAgents(msg.lane, msg.payload, msg.req ?? null);
+			break;
+		case "debuglog:lines":
+			handlers.debugLogLines(msg.source, msg.reset, msg.lines);
 			break;
 		default: {
 			// 網羅していれば `never`。Rust 側が新しい event を撃ってきた（= 版ズレ）ときだけ来る。

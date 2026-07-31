@@ -9,6 +9,7 @@
  */
 import { sidebar } from "../store";
 import { sendIpc } from "../ipc";
+import { toggleSidebarForm } from "../form";
 import { isPerformerLane, laneAddressKey } from "../lane";
 import {
 	openAddPerformerFor,
@@ -308,4 +309,16 @@ export function runSwitcher(): void {
 /** `l` — Lane number switcher mode に突入。 */
 export function runLaneSelectMode(): void {
 	enterLaneSelectMode();
+}
+
+/** `[` — 左 sidebar をフル ⇄ スリム帯に変身（sidebar view modes）。 */
+export function runSidebarForm(): void {
+	toggleSidebarForm();
+}
+
+/** `]` — 右を edge rail ⇄ R sidebar（debug log）に変身。
+ *  実体（DOM / 開閉 state / tail 購読）は main bundle の right-sidebar.ts が持つので、
+ *  共有 bus（doc 47 §6、統合 WebView の同一 document）で依頼だけ投げる。 */
+export function runRightSidebarToggle(): void {
+	document.dispatchEvent(new CustomEvent("vp:right-sidebar-toggle"));
 }

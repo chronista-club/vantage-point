@@ -56,6 +56,13 @@ VP の動詞は「何に効くか」で級が分かれ、**級がそのまま UI
 - form が user preference になるのは doc 55 の board form（float/docked）と同じ手筋 —
   「同じ実体の見え方を属性で切り替える」語彙の再利用
 
+> **追記（2026-08-01、sidebar view modes）**: rail に第 3 の形が加わった —
+> **R sidebar（rail のフル幅形、420px）= debug log viewer**。`Cmd+]` で
+> rail ⇄ R sidebar を行き来する（展開中は帯を隠す排他表示）。左 sidebar も対で
+> `Cmd+[` によりフル（280px）⇄ スリム帯（44px）を持つ。binding の経緯は
+> doc 18 §B.1 v1.1、実装は right-sidebar.ts / sidebar bundle の form.ts。
+> A 形（浮遊）の設定トグルはこの追記後も未実装のまま（§2 の位置づけ不変）。
+
 ---
 
 ## 3. 住人（2026-07-30 時点、上から）
