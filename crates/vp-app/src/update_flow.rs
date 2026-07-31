@@ -119,8 +119,9 @@ fn app_bundle_of(exe: &Path) -> Option<PathBuf> {
 
 /// 「更新する」ボタン → 確認 → 適用フローを専用スレッドで起動する。
 ///
-/// `version` は検知済みの latest version（ダイアログ文言用）。
-pub fn spawn_update_flow(version: String) {
+/// `version` は検知済みの latest version（ダイアログ文言用）。`on_phase` は進行状態の通知
+/// （true = 適用中 / false = キャンセル・失敗で通常に戻す）。sidebar の「更新中…」表示に使う。
+pub fn spawn_update_flow(version: String, on_phase: impl Fn(bool) + Send + 'static) {
     // 二重起動ガード: 既にフローが走っていれば無視（CTA 連打 / ダイアログ表示中の再 click 対策）。
     if UPDATE_IN_FLIGHT.swap(true, Ordering::SeqCst) {
         tracing::info!("in-app update: 既に更新フロー実行中のため click を無視");
@@ -129,9 +130,13 @@ pub fn spawn_update_flow(version: String) {
     let spawned = thread::Builder::new()
         .name("update-flow".into())
         .spawn(move || {
+            // ダイアログ表示中も含めフロー全体を「適用中」として見せる
+            // （= UPDATE_IN_FLIGHT ガードで click が無視される区間と一致させる）。
+            on_phase(true);
             run_update_flow(version);
             // フローが return した = キャンセル / 失敗。再度更新可能にする
-            // （成功時は relaunch_and_exit がプロセスごと終了するのでここには来ない）。
+            // （成功時は helper へ委譲後プロセスごと終了するのでここには来ない）。
+            on_phase(false);
             UPDATE_IN_FLIGHT.store(false, Ordering::SeqCst);
         });
     if let Err(e) = spawned {
