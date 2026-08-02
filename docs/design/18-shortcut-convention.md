@@ -205,6 +205,7 @@ user 概念 (前 turn で提示):
 | `Cmd hold s` | `s` (switch) | focus-transferring | Lane / project switcher picker overlay を open (LanePicker.tsx、 fuzzy 検索 + flat list)。 lane 選択で `lane:select`、 project 選択で `process:toggle` (= accordion expand) | PR 445 |
 | `Cmd hold d` | `d` (delete) | context polymorphic | 2-click confirm 内蔵: 1 回目で pending state + sidebar 下端 hint bar 表示、 1 秒以内 2 回目で execute (active_lane の Performer → `lane:delete`、 active_stand → `process:delete`)、 timeout で abort | PR 445 |
 | `Cmd hold l` | `l` (lane number switcher mode) | focus-transferring (mode) | **mode-based directive**: ⌘ hold l で mode 突入 (= sidebar 下端に hint bar)、 **5 秒以内に modifier なし 1-9 単発キー** で `collectVisibleLanes()` (= expanded project の中の lane を上から flat list) の N 番目を `lane:select`。 Esc / 他キー / timeout で abort。 input フォーカス時は数字入力を妨げない (= mode abort) | PR 447 |
+| `Cmd hold b` | `b` (buffer) | focus-transferring (mode) | **mode-based directive**（`l` と同型）: ⌘ hold b で ACTIONS capture mode に突入 (= sidebar 下端に hint bar)、**5 秒以内に 1-5** で区画 (NEXTs/WAITs/IDEAs/EVENTs/TODOs) を選ぶと空の Action が 1 行足って focus。 Esc / 他キー / timeout で abort。 doc 57 §0 の「差し込みの緩衝」の**本命の入口** — マウスを伸ばした時点で中断なので打鍵だけで完結させる。 ⚠️ 文字が `a` でないのは **⌘A が Select All (§C.4)** だから (capture phase の preventDefault が chat 入力の全選択を奪う)。 `Ctrl+Shift+B` (board 開閉) とは修飾違いで衝突しない | 2026-08-02 |
 | `Cmd+[` | `[` (sidebar form) | layout | 左 sidebar をフル (280px) ⇄ スリム帯 (44px、 repo badge 列 + daemon dot) に変身。 スリム中の badge click = フルへ戻って該当 repo を flash。 symbol キー directive の初例 (§B.1 v1.1) | 2026-08-01 |
 | `Cmd+]` | `]` (R sidebar) | layout | 右を edge rail ⇄ R sidebar (= rail のフル幅形、 debug log viewer: `app.kdl.log` / `daemon.kdl.log` の tail) に変身。 実体は main bundle の right-sidebar.ts (sidebar bundle から共有 bus `vp:right-sidebar-toggle` で依頼) | 2026-08-01 |
 
@@ -216,7 +217,7 @@ user 概念 (前 turn で提示):
 |---------|-----------|----------|------|
 | `Cmd hold t` | `t` | focus-preserving | active lane の cc session の rename (= `/rename` 等価) |
 | `Cmd hold m` | `m` | focus-transferring | mailbox 経由 messaging picker |
-| `Cmd hold a` | `a` | focus-preserving | stopped project の SP を auto-spawn 起動 |
+| ~~`Cmd hold a`~~ | ~~`a`~~ | — | ~~stopped project の SP を auto-spawn 起動~~ **予約撤回 (2026-08-02)**。 SP は doc 44 P1 fold-in で退役し動作自体が消滅した。 加えて **`a` は今後も採ってはいけない** — ⌘A = Select All (§C.4) で、directive は capture phase で preventDefault するため chat / terminal の全選択を奪う |
 | `Cmd hold o` | `o` | focus-transferring | generic open picker (URL / lane / external doc 等) |
 
 ### C.4 既存単発 shortcut (規約 v0.4 と整合)
