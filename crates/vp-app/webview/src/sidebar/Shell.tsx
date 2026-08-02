@@ -34,6 +34,7 @@ import { LanePicker, LANE_PICKER_CSS } from "./LanePicker";
 import { CommandPalette, COMMAND_PALETTE_CSS } from "./CommandPalette";
 import { RepoAccordion } from "./RepoAccordion";
 import { DaemonWidget } from "./DaemonWidget";
+import { BucketList, ACTIONS_CSS } from "./actions-panel/BucketList";
 import type { RepoPaneState } from "../generated/RepoPaneState";
 
 /**
@@ -127,6 +128,11 @@ export function Shell() {
 						</For>
 					</Show>
 				</div>
+
+				{/* ACTIONS（doc 57）— app 級の家。doc 56 §7 が「サイドバー下部・daemon status の上」
+				    として予約していた住所。CURRENTs を描かないのは、そこが上の repo 一覧
+				    そのものだから（合流は Phase 5）。 */}
+				<BucketList />
 
 				<DaemonWidget />
 			</Show>
@@ -293,7 +299,9 @@ html,body{margin:0;height:100%;overflow:hidden;}
   border-radius:3px;flex:0 0 auto;transition:background .12s ease,color .12s ease;}
 .vp-sidebar-add:hover{background:#ffffff08;
   color:var(--sb-conn-auto,#FFF76B);}
-.vp-sidebar-list{flex:1;overflow-y:auto;padding:0 0 10px;}
+/* min-height は ACTIONS（doc 57）が伸びたときの床。scroll container の自動最小サイズは 0 なので、
+   これが無いと下の区画が repo list を高さ 0 まで潰せる。 */
+.vp-sidebar-list{flex:1;min-height:96px;overflow-y:auto;padding:0 0 10px;}
 .vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--lg-mute,#5C7A85);
   font-size:var(--sb-text-meta,11px);}
 
@@ -678,4 +686,5 @@ ${FILE_EXPLORER_CSS}
 ${WIRE_PANEL_CSS}
 ${LANE_PICKER_CSS}
 ${COMMAND_PALETTE_CSS}
+${ACTIONS_CSS}
 `;
