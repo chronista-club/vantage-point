@@ -72,3 +72,18 @@ export const [deleteHintLabel, setDeleteHintLabel] = createSignal('')
 export const [laneSelectHintVisible, setLaneSelectHintVisible] = createSignal(false)
 /** lane number mode hint bar に表示する候補 lane の一覧 (= "1. repo/root  2. repo/performer/foo  ...")。 */
 export const [laneSelectHintLabel, setLaneSelectHintLabel] = createSignal('')
+
+// =============================================================================
+// `a` directive — ACTIONS capture mode (doc 57 §0、2026-08-02)
+// =============================================================================
+//
+// `Cmd hold a` で捕捉 mode に突入: 5 秒以内に 1-6 を打つと、その区画に空の Action を 1 行足して
+// focus が移る。**作業を止めずに置ける**ことが ACTIONS の存在理由なので、マウスを伸ばさずに
+// 完結する経路が要る（doc 57 §0 ①）。
+//
+// 骨格は上の `l`（lane number mode）と同型 — mode 突入 → hint bar → 数字 → 実行 → 退出。
+
+/** capture mode hint bar の visible state。 Shell.tsx で render。 */
+export const [captureHintVisible, setCaptureHintVisible] = createSignal(false)
+/** capture mode hint bar に出す区画の一覧 (= "1. NEXTs  2. WAITs  ...")。 */
+export const [captureHintLabel, setCaptureHintLabel] = createSignal('')

@@ -18,8 +18,9 @@
  *
  * 行そのものは `<Index>`（位置キーイング）で描くので、item が差し替わっても DOM は保たれる。
  */
-import { Show, createEffect } from "solid-js";
+import { Show, createEffect, createSignal } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
+import { copyText } from "../../../clipboard";
 import {
 	type ActionItem,
 	actKeyIntent,
@@ -110,6 +111,19 @@ export function ActionRow(props: ActionRowProps) {
 
 	const remaining = () => remainingOf(props.item);
 
+	// 出口①（doc 57 §0）: 整えた文章を OS clipboard へ。差し込み回避の本体 —
+	// 思いついた瞬間に頼まず、区切りがついてから貼る。
+	const [copied, setCopied] = createSignal(false);
+	let copiedTimer: number | undefined;
+	const copy = () => {
+		const text = props.item.text.trim();
+		if (text === "") return;
+		copyText(text);
+		setCopied(true);
+		if (copiedTimer) clearTimeout(copiedTimer);
+		copiedTimer = window.setTimeout(() => setCopied(false), 900);
+	};
+
 	return (
 		<div
 			class="vp-act-row"
@@ -151,6 +165,17 @@ export function ActionRow(props: ActionRowProps) {
 					{remaining()}
 				</span>
 			</Show>
+
+			{/* 出口①: pasteboard（doc 57 §0）。行 hover で現れる。 */}
+			<button
+				type="button"
+				class="vp-act-copy"
+				classList={{ copied: copied() }}
+				title="コピー — 区切りがついたら貼る"
+				onClick={copy}
+			>
+				<CreoIcon name={copied() ? "ph:check" : "ph:copy"} size={9} />
+			</button>
 
 			<button
 				type="button"

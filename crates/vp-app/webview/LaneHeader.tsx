@@ -44,6 +44,7 @@ import {
 //  副産物: 旧 lane-panes ↔ LaneHeader の循環 import は newPaneChoices の移動で解消し、
 //  依存は lane-panes → LaneHeader の片方向になった）
 import { COMPONENT_ICON } from './icons/component'
+import { copyText } from './clipboard'
 
 // ---------------------------------------------------------------------------
 // 純関数（vitest 対象）
@@ -151,20 +152,6 @@ export type HeaderLaneCtx = {
 
 export type LaneHeaderApi = {
   setLane(ctx: HeaderLaneCtx | null): void
-}
-
-function copyText(text: string): void {
-  const fallback = () => {
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(JSON.stringify({ t: 'copy', d: text }))
-  }
-  try {
-    // webview の permission policy で silent fail することがあるため IPC fallback 併用
-    //（main_area.rs doCopy と同じ二段構え）。
-    navigator.clipboard.writeText(text).catch(fallback)
-  } catch {
-    fallback()
-  }
 }
 
 export function mountLaneHeader(mount: HTMLElement, vpConsole: VpConsole): LaneHeaderApi {

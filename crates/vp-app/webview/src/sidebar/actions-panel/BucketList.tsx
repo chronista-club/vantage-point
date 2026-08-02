@@ -170,10 +170,14 @@ export const ACTIONS_CSS = `
 .vp-act-text::placeholder{color:var(--lg-mute-2,#38525b);}
 .vp-act-remain{flex:0 0 auto;font-size:var(--sb-text-micro,10px);
   color:var(--lg-mute-2,#38525b);font-variant-numeric:tabular-nums;}
-.vp-act-del{flex:0 0 auto;display:inline-flex;align-items:center;padding:1px 2px;
+/* 行の道具（コピー / 削除）は hover で現れる。常時出すと 280px の行が道具で埋まる。 */
+.vp-act-copy,.vp-act-del{flex:0 0 auto;display:inline-flex;align-items:center;padding:1px 2px;
   border:none;background:transparent;color:var(--lg-mute-2,#38525b);cursor:pointer;
   border-radius:3px;opacity:0;transition:opacity .12s ease,color .12s ease;}
-.vp-act-row:hover .vp-act-del{opacity:1;}
+.vp-act-row:hover .vp-act-copy,.vp-act-row:hover .vp-act-del{opacity:1;}
+.vp-act-copy:hover{color:var(--lg-hot,#EAFBFF);}
+/* コピー済みの一瞬だけ点く（hover していなくても見える = 押した手応え）。 */
+.vp-act-copy.copied{opacity:1;color:var(--lg-cyan-dim,#1C6C7C);}
 .vp-act-del:hover{color:var(--sb-conn-hitl,#FF4A2D);}
 
 .vp-act-empty{padding:3px 8px;font-size:var(--sb-text-meta,11px);

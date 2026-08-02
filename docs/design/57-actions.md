@@ -14,6 +14,54 @@ doc 56 §7 が「app 級の家 = サイドバー下部・daemon status の上」
 
 ---
 
+## 0. 解いている問題 — 差し込みの緩衝
+
+> mako「私が結構セッション中に、ふわっと思いついたことを、そのタスクの実行中に、よく
+> 差し込みで入れてしまうから、**まず ACTIONS というバッファで**、CURRENTs とか一層目選んで、
+> 二層目に、そのアイデアをメモっておく。**Creo 同期は裏で走ってる**。で、メモったものの
+> 文章を整えたりして、**OS の pasteboard にコピー**したり、**url コピー**したりできて、
+> そこから **Lane 作成**もできる」
+
+ACTIONS は保管庫ではなく **緩衝材**。解いているのは「今やっている作業を止めて別件をセッションへ
+投げ込んでしまう」衝動に、**会話以外の着地点**を与えること。ここから 3 つが決まる:
+
+**① 捕捉はキーボードだけで完結する。** サイドバーへマウスを伸ばした時点で既に「中断」しており、
+差し込みの代替になっていない。`Cmd hold b`（§6 Phase 1c）は後追いの飾りではなく **本命の入口**。
+
+**② 出口が最初から要る。** 出せないバッファはゴミ溜めになる。3 つの出口は実装コストが違う:
+
+| 出口 | 要るもの | Phase |
+|---|---|---|
+| **pasteboard コピー** | 既存の `copy` IPC（→ `arboard`）だけ。統合 WebView なのでサイドバーからも撃てる | **1** |
+| **URL コピー** | creo の memory id（`https://app.creo-memories.in/m/{id}`。chatview の `CREO_MEMORY_BASE` と同じ） | 4 |
+| **Lane 作成** | `mako/{slug}` で lane を立てる配管 | 5 |
+
+pasteboard が最初に来るのが効く — 「**今すぐ頼まずに、区切りがついたら貼る**」という
+差し込み回避の本体がそれで完成する。
+
+**③ creo 同期は「裏」。** user から見た主役ではない。表の主役は **捕まえる → 整える → 出す**。
+§3 の写像は裏方の契約であって、UI の中心ではない。
+
+### 一生（差し込みから出口まで）
+
+```mermaid
+flowchart LR
+    idea["セッション中に<br/>ふわっと思いつく"]
+    cap["⌘b で捕まえる<br/>区画を選んで 1 行"]
+    edit["整える<br/>タイトル + 内容"]
+    paste["pasteboard<br/>区切りがついたら貼る"]
+    url["URL コピー"]
+    lane["Lane 作成<br/>mako/{slug}"]
+
+    idea --> cap --> edit
+    edit --> paste
+    edit --> url
+    edit --> lane
+    cap -. "裏で同期" .-> creo[("creo-memories")]
+```
+
+---
+
 ## 1. 原理: lane = 実体化した Action
 
 **VP の規約はすでにこの同一性を前提にしていた。** 別々の場所に書かれた 2 つの決まりを並べると
@@ -190,8 +238,15 @@ done トグルも自然に入る（`CUOutliner` を直しても拡張点は `ren
 > あり、`crypto.randomUUID` が無いと**モジュール連番に縮退**する。連番は app 再起動でリセット
 > されるので**永続 id と衝突する**。
 
-上流には issue を 2 本投げる（`<For>` → `<Index>` + uncontrolled input / `renderLead` slot）が、
-**VP はブロックされない**。
+上流には issue を 2 本投げた（2026-08-02）が、**VP はブロックされない**:
+
+- [creo-ui#124](https://github.com/chronista-club/creo-ui/issues/124) — 入力の度に全行を作り直す
+  （`<For>` → `<Index>` + uncontrolled input の 2 段構え。片方だけでは IME が救えない）
+- [creo-ui#125](https://github.com/chronista-club/creo-ui/issues/125) — done を切り替える UI が無い
+  （`renderLead` slot か `checkable` prop）
+
+この 2 本が入れば `CUOutliner` 本体に戻せる（VP 側は `ActionRow.tsx` の差し替えで済み、
+data の形は `OutlinerNode` と同型なので永続層は無傷）。
 
 ---
 
@@ -202,14 +257,22 @@ done トグルも自然に入る（`CUOutliner` を直しても拡張点は `ren
 
 | Phase | 内容 | 依存 |
 |---|---|---|
-| **0** | creo-ui に issue 2 本 | — |
-| **1** | 器と触感（webview のみ、creo に繋がない） | — |
-| 1b | Action を開いて内容を編集 | 1 |
+| **0** | creo-ui に issue 2 本（[#124](https://github.com/chronista-club/creo-ui/issues/124) / [#125](https://github.com/chronista-club/creo-ui/issues/125)） | — |
+| **1** | 器と触感 + **pasteboard コピー**（webview のみ、creo に繋がない） | — |
+| **1b** | Action を開いて内容を整える（タイトル + 内容の編集面） | 1 |
+| **1c** | **`Cmd hold b` で捕まえる** — 作業を止めない入口（§0 ①） | 1 |
 | **2** | Creo ID を creo audience でも取れるように（credentials を audience ごとに） | — |
 | **3** | 読み（daemon → sidebar） | 2 |
-| **4** | 書き（sidebar → creo） | 3 |
+| **4** | 書き（sidebar → creo）+ **URL コピー** | 3 |
 | **5** | 着手の動線（Action → lane、CURRENTs の合流） | 4 |
-| 6 | バックログ picker / `Cmd hold a` / スリム帯の未完 dot | 5 |
+| 6 | バックログ picker / スリム帯の未完 dot / Logbook | 5 |
+
+> **1c を Phase 6 から前倒しした**（2026-08-02、§0 の usage が判明して）。差し込みの緩衝は
+> 「マウスを伸ばさずに置ける」ことが本体で、そこが無いと器だけあっても使われない。
+>
+> 実装は既存の `Cmd hold l`（lane を番号で選ぶ mode、`handlers.ts:178-198`）が**そのまま雛形**:
+> mode に入る → hint bar に区画が `1..6` で出る → 数字を押すとその区画に 1 行足って focus。
+> ⚠️ `a` ではない — ⌘A = Select All（doc 18 §C.4）を奪うため。`b` = mako の言う「バッファ」。
 
 ### Phase 2 の未確定（着手前に確かめる）
 

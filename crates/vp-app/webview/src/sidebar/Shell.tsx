@@ -28,6 +28,7 @@ import {
 	laneSelectHintLabel,
 	laneSelectHintVisible,
 } from "./keybindings";
+import { captureHintLabel, captureHintVisible } from "./directive-state";
 import { FileExplorer, FILE_EXPLORER_CSS } from "./FileExplorer";
 import { WirePanel, WIRE_PANEL_CSS } from "./WirePanel";
 import { LanePicker, LANE_PICKER_CSS } from "./LanePicker";
@@ -171,6 +172,17 @@ export function Shell() {
 				<div class="vp-lane-select-hint">
 					<span class="vp-lane-select-hint-icon">🔢</span>
 					<span class="vp-lane-select-hint-label">{laneSelectHintLabel()}</span>
+					<span class="vp-lane-select-hint-help">Esc to cancel</span>
+				</div>
+			</Show>
+
+			{/* doc 57 §0 `a` directive: ACTIONS capture mode。数字で区画を選ぶと 1 行足って focus。
+          lane number mode と同じ帯（.vp-lane-select-hint）に相乗りする — 同時に立つことはなく、
+          見た目を 2 種類に増やす理由が無い。 */}
+			<Show when={captureHintVisible()}>
+				<div class="vp-lane-select-hint">
+					<span class="vp-lane-select-hint-icon">📝</span>
+					<span class="vp-lane-select-hint-label">{captureHintLabel()}</span>
 					<span class="vp-lane-select-hint-help">Esc to cancel</span>
 				</div>
 			</Show>

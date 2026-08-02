@@ -7,6 +7,7 @@
  */
 import { DIRECTIVE_TABLE } from "../../shortcuts/chord-table";
 import {
+	runCaptureMode,
 	runDelete,
 	runFileExplorer,
 	runLaneSelectMode,
@@ -31,6 +32,7 @@ const DIRECTIVE_TITLES: Record<string, string> = {
 	s: "Lane / Repo 切替",
 	d: "Delete（2-click 確認）",
 	l: "Lane を番号で切替",
+	b: "ACTIONS に思いつきを置く（バッファ）",
 	"[": "左 sidebar をフル ⇄ スリム",
 	"]": "右を rail ⇄ debug log に変身",
 };
@@ -47,6 +49,7 @@ const DIRECTIVE_RUN: Record<string, () => void> = {
 	d: runDelete,
 	s: runSwitcher,
 	l: runLaneSelectMode,
+	b: runCaptureMode,
 	"[": runSidebarForm,
 	"]": runRightSidebarToggle,
 };
