@@ -168,12 +168,29 @@ const ORDER_DIGITS = "0123456789abcdefghijklmnopqrstuvwxyz";
 
 /**
  * `prev < 戻り値 < next` になる order を作る（どちらも `null` 可 = 端への挿入）。
+ * 桁が隣り合って「間が無い」ときは 1 桁潜る。fractional indexing の midpoint と同じ手筋。
  *
- * 桁が隣り合って「間が無い」ときは 1 桁潜るので、**必ず作れる**（呼び手は失敗を扱わなくてよい）。
- * fractional indexing の midpoint と同じ手筋。
+ * ## ⚠️ 「間がそもそも存在しない」入力がある
+ *
+ * `next` が `prev + "0"` ちょうどの形（例 `prev="a"` / `next="a0"`）だと、**両者の間に入る
+ * 文字列が存在しない** — `0` が最小桁なので `"a"` の後ろに何を足しても `"a0"` 以上になる。
+ * これが fractional indexing の reference 実装が「末尾が `0` の key」を禁じている理由。
+ *
+ * VP はこの関数を「必ず作れる」契約で使っている（呼び手に失敗を扱わせない）ので、**事後条件を
+ * 検査して、破れたら `next` の後ろに置く**。並びは degrade する（挿したかった位置の 1 つ後ろに
+ * 出る）が、**ソート不変条件は決して壊れない**。黙って `next` より大きい値を返すより、
+ * 「入らなかったので後ろに出た」の方が読み手に嘘をつかない。
+ *
+ * 自前で生成した key は常にこの形を避けるので、実際に踏むのは外部由来の `order`
+ * （Phase 3 以降の creo 経由）が混ざったときだけ。
  */
 export function orderBetween(prev: string | null, next: string | null): string {
-	return midpoint(prev ?? "", next);
+	const mid = midpoint(prev ?? "", next);
+	const okLow = prev === null || mid > prev;
+	const okHigh = next === null || mid < next;
+	if (okLow && okHigh) return mid;
+	// 間が無かった: next の後ろへ回す（midpoint(x, null) は必ず x より大きい）。
+	return next === null ? midpoint(prev ?? "", null) : midpoint(next, null);
 }
 
 /** `b === null` は「上限なし」。 */

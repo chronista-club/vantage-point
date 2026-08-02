@@ -186,6 +186,23 @@ describe("orderBetween", () => {
 		expect(orderBetween(null, null)).not.toBe("");
 	});
 
+	it("⚠️ 間が存在しない入力（next = prev+\"0\"）でも不変条件を壊さない", () => {
+		// `0` が最小桁なので "a" と "a0" の間に入る文字列は存在しない
+		// （reference 実装が末尾 0 の key を禁じている理由）。VP は「必ず作れる」契約なので、
+		// 事後条件が破れたら next の後ろへ回す — 並びは degrade するがソートは壊れない。
+		for (const [lo, hi] of [
+			["a", "a0"],
+			["ab", "ab0"],
+			["i", "i0"],
+			["0", "00"],
+		]) {
+			const mid = orderBetween(lo, hi);
+			expect(mid > lo, `${lo} < ${mid} が破れた`).toBe(true);
+			// hi の後ろに出るのは許容（間が無いので）。ただし hi 未満を騙って返してはいけない。
+			expect(mid !== hi, `${mid} が hi と同値`).toBe(true);
+		}
+	});
+
 	it("先頭に 50 回挿し続けても順序が保たれる（上の鏡像）", () => {
 		let hi = "n";
 		const made: string[] = [];

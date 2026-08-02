@@ -47,6 +47,18 @@ function Bucket(props: { def: BucketDef }) {
 		if (commitActions(removeAction(id)) && fallback) focusActionRow(fallback.id);
 	};
 
+	/**
+	 * 並べ替え。**必ず focus を張り直す**のが肝。
+	 *
+	 * `<Index>` は位置キーイングなので、行が動いても DOM スロットは居座り、そこへ隣の Action の
+	 * 中身が流れ込む。focus は DOM 側に残ったままなので、張り直さないと**気づかず別の Action を
+	 * 編集する**。id は移動しても変わらないので、同じ id で引き直せば正しい行に戻る。
+	 * （`onInsert` / `onRemove` が focus を扱っているのと同じ責務。ここだけ抜けていた）
+	 */
+	const moveAndFocus = (id: string, dir: -1 | 1) => {
+		if (commitActions(moveAction(id, dir))) focusActionRow(id);
+	};
+
 	return (
 		<details
 			class="vp-act-bucket"
@@ -83,7 +95,7 @@ function Bucket(props: { def: BucketDef }) {
 									focusActionRow(appendAction(props.def.id, row().id))
 								}
 								onRemove={() => removeAndFocus(row().id)}
-								onMove={(dir) => commitActions(moveAction(row().id, dir))}
+								onMove={(dir) => moveAndFocus(row().id, dir)}
 								onFocusSibling={(dir) => focusSibling(row().id, dir)}
 							/>
 						)}
@@ -122,7 +134,13 @@ export function BucketList() {
 export const ACTIONS_CSS = `
 /* ACTIONS（doc 57）— app 級の家。repo が「地」、lane が「図」なのに対しここは「棚」。
    面を持たず、sidebar header と同じ muted 見出しで section として立つだけにする。 */
-.vp-act-buckets{flex:0 0 auto;padding:2px 0 4px;
+/* ⚠️ flex:0 1 auto + min-height:0 + overflow が daemon widget の生命線。
+   shell（.vp-sidebar-shell）自体は overflow を持たないので、ここが縮まないと
+   区画を複数開いたときに合計高さが窓を超え、下の daemon status が画面外へ押し出されて
+   スクロールで戻る手段が無くなる。repo list は min-height:96px で床が入っているので、
+   溢れた分はこの帯が引き受けて内部スクロールに畳む。 */
+.vp-act-buckets{flex:0 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;
+  padding:2px 0 4px;
   border-top:1px solid var(--lg-hairline,#12222b);}
 .vp-act-bucket{flex:0 0 auto;}
 .vp-act-summary{list-style:none;display:flex;align-items:center;gap:6px;
