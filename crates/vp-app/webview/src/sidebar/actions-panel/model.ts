@@ -267,14 +267,13 @@ export function normalizeActions(
  * 机上で押さえられる。
  */
 export type ActIntent =
-	| "insert" // 同じ区画に新しい行
+	| "newline" // 同じ Action の中で改行（内容を書き足す）
 	| "move-up" // 行ごと入れ替え
 	| "move-down"
 	| "focus-prev" // 行間の focus 移動
 	| "focus-next"
-	| "toggle-done"
 	| "remove" // 空行を削って上へ
-	| "blur";
+	| "commit"; // 入力を確定して抜ける
 
 export interface ActKeyInput {
 	key: string;
@@ -284,31 +283,48 @@ export interface ActKeyInput {
 	shiftKey: boolean;
 	/** 入力欄が空か（Backspace の判定に要る）。 */
 	empty: boolean;
-	/** caret が先頭にあるか（同上）。 */
+	/** caret が先頭にあるか。 */
 	atStart: boolean;
-	/** IME 変換中か。**変換確定の Enter を「新しい行」と誤読しないための gate**。 */
+	/** caret が末尾にあるか。 */
+	atEnd: boolean;
+	/** IME 変換中か。**変換確定の Enter を「確定」と誤読しないための gate**。 */
 	composing: boolean;
 }
 
+/**
+ * 行で押されたキーの意図（DOM 非依存）。
+ *
+ * ## Enter / ⌘Enter は VP のチャット入力と同じ体系（mako 指定 2026-08-03）
+ *
+ * VP の会話入力は「Enter で送信 / Shift+Enter で改行」。ACTIONS も同じ族に揃える —
+ * **Enter = 入力を確定して抜ける / ⌘Enter = 改行**。差し込みを捕まえる面では
+ * 「書いたら元の作業へ戻る」が支配的な動作なので、Enter がそこに就くのが自然。
+ *
+ * ⚠️ この結果、**キーボードから「次の行を足す」経路は無くなった**。行の追加は
+ * `⌘ hold b`（捕捉 mode）か「追加」ボタン。捕捉 mode こそが設計上の入口なので損失は小さい。
+ */
 export function actKeyIntent(e: ActKeyInput, isMac: boolean): ActIntent | null {
-	// ⚠️ 変換中はどのキーも IME のもの。ここを通すと変換確定の Enter で行が増える。
+	// ⚠️ 変換中はどのキーも IME のもの。ここを通すと変換確定の Enter で入力が終わる。
 	if (e.composing) return null;
 	const mod = isMac ? e.metaKey : e.ctrlKey;
 
 	switch (e.key) {
 		case "Enter":
-			// ⌘Enter = done。⌘D は `d` directive（delete）と衝突するので使わない。
-			return mod ? "toggle-done" : "insert";
+			return mod ? "newline" : "commit";
 		case "ArrowUp":
 			// ⌥↑ で入れ替え。⌘↑ は行頭移動として OS に残す（creo は alt||meta だが VP は alt のみ）。
-			return e.altKey ? "move-up" : "focus-prev";
+			if (e.altKey) return "move-up";
+			// 複数行を持てるので、**先頭に居るときだけ**上の行へ移る。
+			// そうしないと内容の 2 行目から 1 行目へ caret を戻せない。
+			return e.atStart ? "focus-prev" : null;
 		case "ArrowDown":
-			return e.altKey ? "move-down" : "focus-next";
+			if (e.altKey) return "move-down";
+			return e.atEnd ? "focus-next" : null;
 		case "Backspace":
 			// 文字が残っている / caret が先頭でない間は通常の削除に任せる。
 			return e.empty && e.atStart ? "remove" : null;
 		case "Escape":
-			return "blur";
+			return "commit";
 		default:
 			return null;
 	}

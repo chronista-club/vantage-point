@@ -293,35 +293,52 @@ describe("actKeyIntent", () => {
 		shiftKey: false,
 		empty: false,
 		atStart: false,
+		atEnd: false,
 		composing: false,
 		...over,
 	});
 
-	it("Enter で新しい行、⌘Enter で done", () => {
-		expect(actKeyIntent(ev({ key: "Enter" }), true)).toBe("insert");
-		expect(actKeyIntent(ev({ key: "Enter", metaKey: true }), true)).toBe("toggle-done");
+	it("Enter で確定、⌘Enter で改行（VP のチャット入力と同じ体系）", () => {
+		// 「Enter で送信 / Shift+Enter で改行」と同じ族。差し込みを捕まえる面では
+		// 「書いたら元の作業へ戻る」が支配的なので Enter がそこに就く。
+		expect(actKeyIntent(ev({ key: "Enter" }), true)).toBe("commit");
+		expect(actKeyIntent(ev({ key: "Enter", metaKey: true }), true)).toBe("newline");
 	});
 
-	it("⚠️ IME 変換中はどのキーも拾わない（変換確定の Enter で行が増えない）", () => {
-		// この gate が無いと日本語入力で 1 文字確定するたびに行が増える。
+	it("⚠️ IME 変換中はどのキーも拾わない（変換確定の Enter で入力が終わらない）", () => {
+		// この gate が無いと日本語入力で 1 文字確定するたびに focus が抜ける。
 		expect(actKeyIntent(ev({ key: "Enter", composing: true }), true)).toBeNull();
-		expect(actKeyIntent(ev({ key: "ArrowUp", composing: true }), true)).toBeNull();
+		expect(actKeyIntent(ev({ key: "ArrowUp", atStart: true, composing: true }), true)).toBeNull();
 		expect(
 			actKeyIntent(ev({ key: "Backspace", empty: true, atStart: true, composing: true }), true),
 		).toBeNull();
 	});
 
-	it("⌥↑↓ で入れ替え、素の ↑↓ は focus 移動", () => {
+	it("⌥↑↓ で入れ替え（caret の位置に依らない）", () => {
 		expect(actKeyIntent(ev({ key: "ArrowUp", altKey: true }), true)).toBe("move-up");
 		expect(actKeyIntent(ev({ key: "ArrowDown", altKey: true }), true)).toBe("move-down");
-		expect(actKeyIntent(ev({ key: "ArrowUp" }), true)).toBe("focus-prev");
-		expect(actKeyIntent(ev({ key: "ArrowDown" }), true)).toBe("focus-next");
+		// 途中に caret があっても入れ替えは効く
+		expect(
+			actKeyIntent(ev({ key: "ArrowUp", altKey: true, atStart: false }), true),
+		).toBe("move-up");
+	});
+
+	it("素の ↑↓ は **端に居るときだけ** 行を移る（複数行の中を動けるように）", () => {
+		expect(actKeyIntent(ev({ key: "ArrowUp", atStart: true }), true)).toBe("focus-prev");
+		expect(actKeyIntent(ev({ key: "ArrowDown", atEnd: true }), true)).toBe("focus-next");
+		// 内容の途中では caret 移動を邪魔しない（2 行目から 1 行目へ戻れる）
+		expect(actKeyIntent(ev({ key: "ArrowUp", atStart: false }), true)).toBeNull();
+		expect(actKeyIntent(ev({ key: "ArrowDown", atEnd: false }), true)).toBeNull();
 	});
 
 	it("⌘↑↓ は入れ替えにしない（行頭 / 行末移動として OS に残す）", () => {
 		// creo-ui は altKey || metaKey で拾うが、VP は altKey のみ。
-		expect(actKeyIntent(ev({ key: "ArrowUp", metaKey: true }), true)).toBe("focus-prev");
-		expect(actKeyIntent(ev({ key: "ArrowDown", metaKey: true }), true)).toBe("focus-next");
+		expect(actKeyIntent(ev({ key: "ArrowUp", metaKey: true, atStart: true }), true)).toBe(
+			"focus-prev",
+		);
+		expect(actKeyIntent(ev({ key: "ArrowDown", metaKey: true, atEnd: true }), true)).toBe(
+			"focus-next",
+		);
 	});
 
 	it("Backspace は「空 かつ caret 先頭」のときだけ削除", () => {
@@ -330,14 +347,14 @@ describe("actKeyIntent", () => {
 		expect(actKeyIntent(ev({ key: "Backspace", empty: true, atStart: false }), true)).toBeNull();
 	});
 
-	it("Esc で blur、無関係キーは null", () => {
-		expect(actKeyIntent(ev({ key: "Escape" }), true)).toBe("blur");
+	it("Esc も確定、無関係キーは null", () => {
+		expect(actKeyIntent(ev({ key: "Escape" }), true)).toBe("commit");
 		expect(actKeyIntent(ev({ key: "a" }), true)).toBeNull();
 		expect(actKeyIntent(ev({ key: "Tab" }), true)).toBeNull(); // 深さは区画が決めるので使わない
 	});
 
 	it("非 Mac では Ctrl が修飾（Cmd hold の折り畳み）", () => {
-		expect(actKeyIntent(ev({ key: "Enter", ctrlKey: true }), false)).toBe("toggle-done");
-		expect(actKeyIntent(ev({ key: "Enter", metaKey: true }), false)).toBe("insert");
+		expect(actKeyIntent(ev({ key: "Enter", ctrlKey: true }), false)).toBe("newline");
+		expect(actKeyIntent(ev({ key: "Enter", metaKey: true }), false)).toBe("commit");
 	});
 });
