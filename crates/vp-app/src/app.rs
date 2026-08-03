@@ -3936,6 +3936,9 @@ pub fn run() -> anyhow::Result<()> {
     // WS から bytes を受けるので、 Rust 側で buffer / flush 同期する必要が無い。
     // VP-95: sidebar 全体 state (repos + widget + activity)
     let mut sidebar_state = SidebarState::default();
+    // in-app update: 適用フロー実行中フラグ（GUI local）。ActivitySnapshot は health poll で
+    // 定期上書きされるため、event loop 側で保持して毎回 snapshot に再適用する。
+    let mut update_applying = false;
     // session_state は WindowBuilder 上で既に load 済 (= window geometry を先に必要)。
     // 直前 active Lane を初回 LanesLoaded で復元するための pending 値。
     // 1 度復元したら None にして、 後続 LanesLoaded で再復元しないように。
@@ -5659,6 +5662,13 @@ pub fn run() -> anyhow::Result<()> {
             }
             Event::UserEvent(AppEvent::ActivityUpdate(snap)) => {
                 sidebar_state.activity = snap;
+                // 適用中フラグは GUI local（health 由来ではない）ので poll 上書きから守る。
+                sidebar_state.activity.update_applying = update_applying;
+                push_sidebar_state(&webview, &sidebar_state);
+            }
+            Event::UserEvent(AppEvent::UpdateFlowPhase(applying)) => {
+                update_applying = applying;
+                sidebar_state.activity.update_applying = applying;
                 push_sidebar_state(&webview, &sidebar_state);
             }
             Event::UserEvent(AppEvent::ClonePathPicked(path)) => {
@@ -6323,8 +6333,12 @@ pub fn run() -> anyhow::Result<()> {
                 // in-app update: sidebar footer の「更新する」ボタン click 要求。
                 // native 確認ダイアログ → self-update → daemon restart → relaunch を
                 // 専用スレッドで起動する（event loop = main thread は塞がない）。
+                // on_phase は AppEvent 経由で event loop に戻し、「更新中…」表示に使う。
                 if let Some(version) = outcome.update_apply_request {
-                    crate::update_flow::spawn_update_flow(version);
+                    let phase_proxy = proxy.clone();
+                    crate::update_flow::spawn_update_flow(version, move |applying| {
+                        let _ = phase_proxy.send_event(AppEvent::UpdateFlowPhase(applying));
+                    });
                 }
                 // Hub 行の Login / Logout ボタン click 要求。blocking フロー（browser OAuth
                 // 待ち / 確認ダイアログ / CLI spawn）を blocking pool で実行し、成功したら

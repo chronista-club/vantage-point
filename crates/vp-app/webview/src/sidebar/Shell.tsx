@@ -624,6 +624,10 @@ html,body{margin:0;height:100%;overflow:hidden;}
   border:1px solid color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 78%);
   user-select:none;}
 .vp-daemon-update:hover{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 82%);}
+/* 適用中: 押せない見た目に落とし、ゆっくり明滅で「進行中」を示す (2 beat ≈ 1.45s @ BPM82.7)。 */
+.vp-daemon-update.applying{cursor:default;animation:vp-daemon-update-pulse 1.45s ease-in-out infinite;}
+.vp-daemon-update.applying:hover{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 90%);}
+@keyframes vp-daemon-update-pulse{0%,100%{opacity:1;}50%{opacity:.55;}}
 .vp-daemon-update-label{flex:1 1 auto;font-weight:600;}
 .vp-daemon-update-ver{flex:0 0 auto;color:var(--lg-mute,#5C7A85);
   font-variant-numeric:tabular-nums;}

@@ -70,6 +70,10 @@ pub enum AppEvent {
     /// event loop で lane_respawn_triggered から address を除去し、 次の Dead 検出で
     /// 再 respawn できるようにする (失敗が永続 suppression にならないための解除通知)。
     LaneRespawnFailed { address: String },
+    /// in-app update: 適用フローの進行状態（true = 適用中）。sidebar の「更新する」ボタンを
+    /// 「更新中…」表示に切り替える。false = キャンセル / 失敗で通常表示へ戻す
+    /// （成功時はプロセスごと終了するので戻し event は来ない）。
+    UpdateFlowPhase(bool),
     /// Wire inbox (doc 34 §4 V1): Daemon "wire" channel への read-only fetch 結果。
     /// event loop が `window.vpWire.handleResult(payload)` で sidebar に push back する。
     /// payload = `{address, agent, history, unread}` (エラーは `{address, error}`)。

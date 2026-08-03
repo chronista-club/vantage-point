@@ -58,4 +58,9 @@ update_available: boolean,
 /**
  * 最新 release version（ボタン label「更新する ⤴ vX.Y.Z」用、未取得は None）。
  */
-latest_version?: string | null, };
+latest_version?: string | null, 
+/**
+ * in-app update: 適用フロー実行中か。health 由来ではなく GUI local 状態
+ * （`AppEvent::UpdateFlowPhase`）で、「更新する」ボタンを「更新中…」表示に切り替える。
+ */
+update_applying: boolean, };
