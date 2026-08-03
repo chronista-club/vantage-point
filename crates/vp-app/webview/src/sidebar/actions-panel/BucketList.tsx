@@ -59,6 +59,29 @@ function Bucket(props: { def: BucketDef }) {
 		if (commitActions(moveAction(id, dir))) focusActionRow(id);
 	};
 
+	/**
+	 * 何も書かずに抜けた行を捨てる。**焦点の転送が終わってから**消すのが肝。
+	 *
+	 * `blur` は `focusActionRow` の `el.focus()` が同期的に撃つので、その場で木を書き換えると
+	 * `<Index>`（位置キーイング）の中身が 1 つずれ、**転送先の箱に別の Action が流れ込んだ状態で
+	 * 焦点が着く**（転送先が最後の行なら箱ごと消えて焦点が落ちる）。空行は `atStart` と `atEnd` が
+	 * 同時に真なので矢印が必ず行移動になり、この経路は普通に踏む。
+	 *
+	 * そこで microtask 1 つ待って転送の完了を見届け、**着地した行の id を DOM から読んでから**
+	 * 消し、同じ id で焦点を張り直す。`moveAndFocus` / `removeAndFocus` と同じ
+	 * 「書き換えたら張り直す」契約に揃えた形。
+	 */
+	const abandonIfEmpty = (id: string) => {
+		queueMicrotask(() => {
+			const landed = (document.activeElement as HTMLElement | null)
+				?.closest?.("[data-vp-act-row]")
+				?.getAttribute("data-vp-act-row");
+			// まだ自分に焦点がある = 転送ではなく一時的な blur。消さない。
+			if (landed === id) return;
+			if (commitActions(removeAction(id)) && landed) focusActionRow(landed);
+		});
+	};
+
 	return (
 		<details
 			class="vp-act-bucket"
@@ -91,10 +114,8 @@ function Bucket(props: { def: BucketDef }) {
 								onToggleDone={() =>
 									commitActions(setActionDone(row().id, !row().done))
 								}
-								onInsert={() =>
-									focusActionRow(appendAction(props.def.id, row().id))
-								}
 								onRemove={() => removeAndFocus(row().id)}
+								onAbandon={() => abandonIfEmpty(row().id)}
 								onMove={(dir) => moveAndFocus(row().id, dir)}
 								onFocusSibling={(dir) => focusSibling(row().id, dir)}
 							/>
@@ -164,7 +185,9 @@ export const ACTIONS_CSS = `
 .vp-act-list{max-height:min(30vh,220px);overflow-y:auto;overscroll-behavior:contain;
   padding:0 6px 2px;}
 
-.vp-act-row{display:flex;align-items:center;gap:5px;border-radius:6px;padding:2px 6px;
+/* align-items:flex-start = 複数行に開いたとき、チェックと道具が 1 行目に揃うようにする
+   （center だと縦中央に浮いて、どの行に効くのか読めなくなる）。 */
+.vp-act-row{display:flex;align-items:flex-start;gap:5px;border-radius:6px;padding:2px 6px;
   font-size:var(--sb-text-hint,12px);
   color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 25%);}
 .vp-act-row:hover{background:#ffffff06;}
@@ -183,9 +206,20 @@ export const ACTIONS_CSS = `
   border-color:var(--lg-cyan-dim,#1C6C7C);}
 .vp-act-row[data-done] .vp-act-text{color:var(--lg-mute-2,#38525b);text-decoration:line-through;}
 
+/* textarea（⌘Enter で改行を書けるように）。既定の height は 1 行 = 畳んだ姿で、
+   focus 中だけ ActionRow の autoSize が inline height を書いて全文に開く。
+   overflow:hidden + resize:none で「入力欄らしさ」を消し、行として振る舞わせる。 */
 .vp-act-text{flex:1 1 auto;min-width:0;padding:0;border:none;background:transparent;
-  color:inherit;font:inherit;line-height:1.5;outline:none;}
+  color:inherit;font:inherit;line-height:1.5;outline:none;
+  resize:none;overflow:hidden;height:1.5em;display:block;
+  /* 既定 = 畳んだ姿。textarea の UA 既定 pre-wrap のままだと長いタイトルが折り返して
+     height:1.5em にタテ方向でクリップされる（サイドバーの他の 1 行表現と同じ nowrap に揃える）。
+     focus 中は ActionRow の autoSize が inline で pre-wrap に戻す。 */
+  white-space:nowrap;}
 .vp-act-text::placeholder{color:var(--lg-mute-2,#38525b);}
+/* チェックと道具は 1 行目の高さに揃える（flex-start の相方）。 */
+.vp-act-check{margin-top:3px;}
+.vp-act-copy,.vp-act-del{margin-top:1px;}
 .vp-act-remain{flex:0 0 auto;font-size:var(--sb-text-micro,10px);
   color:var(--lg-mute-2,#38525b);font-variant-numeric:tabular-nums;}
 /* 行の道具（コピー / 削除）は hover で現れる。常時出すと 280px の行が道具で埋まる。 */

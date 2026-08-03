@@ -31,7 +31,7 @@ import {
 /** 行に focus を移す。描画の後に走らせる要があるので `queueMicrotask` 越し。 */
 export function focusActionRow(id: string): void {
 	queueMicrotask(() => {
-		const el = document.querySelector<HTMLInputElement>(
+		const el = document.querySelector<HTMLTextAreaElement>(
 			`[data-vp-act-row="${CSS.escape(id)}"] .vp-act-text`,
 		);
 		if (!el) return;
@@ -41,18 +41,42 @@ export function focusActionRow(id: string): void {
 	});
 }
 
+/**
+ * textarea の高さを中身に合わせる。`null` を渡すと 1 行に畳む（= 未 focus の見え方）。
+ *
+ * 行は**畳んだ状態が既定**（doc 57 §2）— 一覧ではタイトルだけが見え、focus した行だけが
+ * 全文に開く。`height:auto` を挟むのは、縮む方向にも追従させるため（scrollHeight は
+ * 現在の height を下回らない）。
+ */
+function autoSize(el: HTMLTextAreaElement, open: boolean): void {
+	// ⚠️ `white-space` の出し分けが要る。textarea の UA 既定は `pre-wrap` なので、畳んだ姿
+	// （`height:1.5em`）のままだと長いタイトルが**折り返してタテ方向にクリップ**され、
+	// 語の途中で切れた見た目になる。サイドバーの他の 1 行表現（`.vp-proj-name` 等）は
+	// 例外なく nowrap なので、畳んだときはそれに揃える。
+	el.style.whiteSpace = open ? "pre-wrap" : "nowrap";
+	if (!open) {
+		el.style.height = "";
+		// nowrap だと横スクロールが残る。畳むときは先頭へ戻さないとタイトルが読めない。
+		el.scrollLeft = 0;
+		return;
+	}
+	el.style.height = "auto";
+	el.style.height = `${el.scrollHeight}px`;
+}
+
 export interface ActionRowProps {
 	item: ActionItem;
 	onText(text: string): void;
 	onToggleDone(): void;
-	onInsert(): void;
 	onRemove(): void;
+	/** 何も書かずに抜けた行を捨てる（focus は動かさない）。 */
+	onAbandon(): void;
 	onMove(dir: -1 | 1): void;
 	onFocusSibling(dir: -1 | 1): void;
 }
 
 export function ActionRow(props: ActionRowProps) {
-	let el!: HTMLInputElement;
+	let el!: HTMLTextAreaElement;
 	let composing = false;
 
 	// model → DOM の一方向同期。**自分の打鍵で起きた変化は既に一致している**ので書かない
@@ -60,11 +84,26 @@ export function ActionRow(props: ActionRowProps) {
 	// 実際に書き込まれるのは、行の入替や外からの push で item が差し替わったときだけ。
 	createEffect(() => {
 		const text = props.item.text;
-		if (!composing && el.value !== text) el.value = text;
+		if (!composing && el.value !== text) {
+			el.value = text;
+			autoSize(el, document.activeElement === el);
+		}
 	});
 
-	const onKeyDown = (e: KeyboardEvent & { currentTarget: HTMLInputElement }) => {
-		const input = e.currentTarget;
+	/** caret 位置に改行を差し込む（⌘Enter）。textarea の既定動作が無いので手で入れる。 */
+	const insertNewline = (t: HTMLTextAreaElement) => {
+		const at = t.selectionStart ?? t.value.length;
+		const end = t.selectionEnd ?? at;
+		t.value = `${t.value.slice(0, at)}\n${t.value.slice(end)}`;
+		t.setSelectionRange(at + 1, at + 1);
+		autoSize(t, true);
+		props.onText(t.value);
+	};
+
+	const onKeyDown = (
+		e: KeyboardEvent & { currentTarget: HTMLTextAreaElement },
+	) => {
+		const t = e.currentTarget;
 		const isMac = navigator.platform.toUpperCase().includes("MAC");
 		const intent = actKeyIntent(
 			{
@@ -73,8 +112,9 @@ export function ActionRow(props: ActionRowProps) {
 				ctrlKey: e.ctrlKey,
 				altKey: e.altKey,
 				shiftKey: e.shiftKey,
-				empty: input.value === "",
-				atStart: input.selectionStart === 0,
+				empty: t.value === "",
+				atStart: t.selectionStart === 0,
+				atEnd: t.selectionStart === t.value.length,
 				composing,
 			},
 			isMac,
@@ -82,11 +122,8 @@ export function ActionRow(props: ActionRowProps) {
 		if (intent === null) return;
 		e.preventDefault();
 		switch (intent) {
-			case "insert":
-				props.onInsert();
-				break;
-			case "toggle-done":
-				props.onToggleDone();
+			case "newline":
+				insertNewline(t);
 				break;
 			case "remove":
 				props.onRemove();
@@ -103,8 +140,9 @@ export function ActionRow(props: ActionRowProps) {
 			case "focus-next":
 				props.onFocusSibling(1);
 				break;
-			case "blur":
-				input.blur();
+			case "commit":
+				// 「書き終えた」= 元の作業へ戻る。行は畳まれてタイトルだけになる。
+				t.blur();
 				break;
 		}
 	};
@@ -141,19 +179,33 @@ export function ActionRow(props: ActionRowProps) {
 				onClick={() => props.onToggleDone()}
 			/>
 
-			{/* ⚠️ value= を渡さない（uncontrolled）。初期値は上の createEffect が入れる。 */}
-			<input
+			{/* ⚠️ value= を渡さない（uncontrolled）。初期値は上の createEffect が入れる。
+			    textarea なのは ⌘Enter で改行を書けるようにするため（内容 = 2 行目以降）。
+			    未 focus では 1 行に畳んでタイトルだけ見せる（doc 57 §2）。 */}
+			<textarea
 				ref={el}
 				class="vp-act-text"
+				rows={1}
 				placeholder="やること"
 				title={titleOf(props.item) || undefined}
-				onInput={(e) => props.onText(e.currentTarget.value)}
+				onInput={(e) => {
+					autoSize(e.currentTarget, true);
+					props.onText(e.currentTarget.value);
+				}}
+				onFocus={(e) => autoSize(e.currentTarget, true)}
+				onBlur={(e) => {
+					autoSize(e.currentTarget, false);
+					// 何も書かずに抜けた行は残さない。⌘b で開いて「やっぱりやめた」が
+					// 空行として溜まると、捕捉バッファがすぐゴミで埋まる。
+					if (e.currentTarget.value.trim() === "") props.onAbandon();
+				}}
 				onCompositionStart={() => {
 					composing = true;
 				}}
 				onCompositionEnd={(e) => {
 					composing = false;
 					// 変換確定分は onInput が来ないブラウザがあるので、ここで拾い直す。
+					autoSize(e.currentTarget, true);
 					props.onText(e.currentTarget.value);
 				}}
 				onKeyDown={onKeyDown}

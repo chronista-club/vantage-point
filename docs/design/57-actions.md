@@ -118,6 +118,10 @@ flowchart TD
 - 行は**畳んだ状態が既定** — タイトル + 未完チェック数の badge だけ。開くと内容が出る
 - **自由な indent / outdent は無い**。深さは区画が決める
 - 区画内の並べ替えはある（⌥↑↓）
+- **入力は VP のチャット入力と同じ体系** — `Enter` = 確定して抜ける / `⌘Enter` = 改行。
+  会話入力の「Enter で送信 / Shift+Enter で改行」と同じ族に揃えた（mako 指定 2026-08-03）。
+  差し込みを捕まえる面では「書いたら元の作業へ戻る」が支配的なので `Enter` がそこに就く。
+  ⚠️ この結果 **キーボードから「次の行を足す」経路は無くなった** — 追加は `⌘ hold b` か「追加」ボタン
 
 ### なぜ 2 段固定が効くか
 
@@ -274,15 +278,46 @@ data の形は `OutlinerNode` と同型なので永続層は無傷）。
 > mode に入る → hint bar に区画が `1..6` で出る → 数字を押すとその区画に 1 行足って focus。
 > ⚠️ `a` ではない — ⌘A = Select All（doc 18 §C.4）を奪うため。`b` = mako の言う「バッファ」。
 
+### ✅ audience 判明（2026-08-03）
+
+`GET https://app.creo-memories.in/api/config` が**認証不要**で live の実値を返す:
+
+```json
+{"auth0":{"domain":"id.creo-memories.in",
+          "clientId":"dnJIpEqJiMNpjpnSgvkVzmRO7VLhuvaR",
+          "audience":"https://id.anycreative.tech",
+          "enterpriseConnection":"entra-creo"},
+ "unison":{"url":"https://creo-memories.in:12455","certHash":"58da1d7f…"}}
+```
+
+- **audience = `https://id.anycreative.tech`**。⚠️ 歴史記録（creo doc 08）の
+  `https://app.creo-memories.in` は**誤り**。推測で書かず、この endpoint で確かめること
+- `clientId` は **creo-web（SPA）のもの**で VP の Native app client とは別。VP は自分の
+  client_id のまま audience だけこの値を要求する
+- **Unison が live で公開されている**（`creo-memories.in:12455` + certHash）。調査時点では
+  「未公開の可能性が高い」と見ていたが実際は上がっている → §6 Phase 6 の「creo からの変更通知」は
+  polling でなく `live` channel で組める見込み（Rust client は `club-unison`、
+  `app.rs` の `spawn_canvas_subscription` が骨格の手本）
+
 ### Phase 2 の未確定（着手前に確かめる）
 
-1. creo-app-server の `AUTH0_AUDIENCE` 実値（`.env.live.*` 側にあり repo に無い。
-   歴史記録は `https://app.creo-memories.in`）
-2. Auth0 の Native app client（`KF9BRED9ZVWEI7YDqbncNQ0LhX9QoUYm`）にその API の grant があるか
+Auth0 の Native app client（`KF9BRED9ZVWEI7YDqbncNQ0LhX9QoUYm`）に
+`https://id.anycreative.tech` の grant があるか。無ければ authorize が `access_denied` で
+返るので Auth0 側の設定が先。
+
+### なぜ hub の token を流用できないか
 
 現在の `vp auth login` の token は `aud=https://hub.chronista.club` 固定
-（`commands/auth.rs:65`）で creo-app-server には通らない。`credentials.json` は**単一 token**
-なので audience を変えると **hub federation の token を潰す**。
+（`commands/auth.rs:65`）。`aud` claim は「この token がどの API 向けか」の宣言なので、
+**別の API に出せば拒否されるのが仕様どおり**（転用できたら audience の意味が無い）。
+`auth.rs:60-63` が同じことを既に踏んでいる — 「この token は nexus では拒否される。
+**1 login = 1 audience が Auth0 の制約**」。
+
+加えて `credentials.json` は**単一 token** しか持てないので、`VP_OIDC_AUDIENCE` で creo 向けに
+切り替えると **hub federation の token を潰す**。だから「audience ごとに持つ形」への拡張が要る。
+
+> 救い: identity は 1 つ（Creo ID）で Auth0 のセッション cookie を共有するので、**2 本目の
+> authorize はパスワード入力なしで素通りする**見込み。体感は「Login を押すとブラウザが一瞬開いて閉じる」。
 
 ---
 
