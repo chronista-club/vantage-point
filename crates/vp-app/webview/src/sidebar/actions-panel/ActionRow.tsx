@@ -49,8 +49,15 @@ export function focusActionRow(id: string): void {
  * 現在の height を下回らない）。
  */
 function autoSize(el: HTMLTextAreaElement, open: boolean): void {
+	// ⚠️ `white-space` の出し分けが要る。textarea の UA 既定は `pre-wrap` なので、畳んだ姿
+	// （`height:1.5em`）のままだと長いタイトルが**折り返してタテ方向にクリップ**され、
+	// 語の途中で切れた見た目になる。サイドバーの他の 1 行表現（`.vp-proj-name` 等）は
+	// 例外なく nowrap なので、畳んだときはそれに揃える。
+	el.style.whiteSpace = open ? "pre-wrap" : "nowrap";
 	if (!open) {
 		el.style.height = "";
+		// nowrap だと横スクロールが残る。畳むときは先頭へ戻さないとタイトルが読めない。
+		el.scrollLeft = 0;
 		return;
 	}
 	el.style.height = "auto";

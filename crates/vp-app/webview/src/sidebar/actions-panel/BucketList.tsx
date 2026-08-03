@@ -59,6 +59,29 @@ function Bucket(props: { def: BucketDef }) {
 		if (commitActions(moveAction(id, dir))) focusActionRow(id);
 	};
 
+	/**
+	 * 何も書かずに抜けた行を捨てる。**焦点の転送が終わってから**消すのが肝。
+	 *
+	 * `blur` は `focusActionRow` の `el.focus()` が同期的に撃つので、その場で木を書き換えると
+	 * `<Index>`（位置キーイング）の中身が 1 つずれ、**転送先の箱に別の Action が流れ込んだ状態で
+	 * 焦点が着く**（転送先が最後の行なら箱ごと消えて焦点が落ちる）。空行は `atStart` と `atEnd` が
+	 * 同時に真なので矢印が必ず行移動になり、この経路は普通に踏む。
+	 *
+	 * そこで microtask 1 つ待って転送の完了を見届け、**着地した行の id を DOM から読んでから**
+	 * 消し、同じ id で焦点を張り直す。`moveAndFocus` / `removeAndFocus` と同じ
+	 * 「書き換えたら張り直す」契約に揃えた形。
+	 */
+	const abandonIfEmpty = (id: string) => {
+		queueMicrotask(() => {
+			const landed = (document.activeElement as HTMLElement | null)
+				?.closest?.("[data-vp-act-row]")
+				?.getAttribute("data-vp-act-row");
+			// まだ自分に焦点がある = 転送ではなく一時的な blur。消さない。
+			if (landed === id) return;
+			if (commitActions(removeAction(id)) && landed) focusActionRow(landed);
+		});
+	};
+
 	return (
 		<details
 			class="vp-act-bucket"
@@ -92,7 +115,7 @@ function Bucket(props: { def: BucketDef }) {
 									commitActions(setActionDone(row().id, !row().done))
 								}
 								onRemove={() => removeAndFocus(row().id)}
-								onAbandon={() => commitActions(removeAction(row().id))}
+								onAbandon={() => abandonIfEmpty(row().id)}
 								onMove={(dir) => moveAndFocus(row().id, dir)}
 								onFocusSibling={(dir) => focusSibling(row().id, dir)}
 							/>
@@ -188,7 +211,11 @@ export const ACTIONS_CSS = `
    overflow:hidden + resize:none で「入力欄らしさ」を消し、行として振る舞わせる。 */
 .vp-act-text{flex:1 1 auto;min-width:0;padding:0;border:none;background:transparent;
   color:inherit;font:inherit;line-height:1.5;outline:none;
-  resize:none;overflow:hidden;height:1.5em;display:block;}
+  resize:none;overflow:hidden;height:1.5em;display:block;
+  /* 既定 = 畳んだ姿。textarea の UA 既定 pre-wrap のままだと長いタイトルが折り返して
+     height:1.5em にタテ方向でクリップされる（サイドバーの他の 1 行表現と同じ nowrap に揃える）。
+     focus 中は ActionRow の autoSize が inline で pre-wrap に戻す。 */
+  white-space:nowrap;}
 .vp-act-text::placeholder{color:var(--lg-mute-2,#38525b);}
 /* チェックと道具は 1 行目の高さに揃える（flex-start の相方）。 */
 .vp-act-check{margin-top:3px;}
