@@ -194,6 +194,10 @@ pub struct DaemonHealthInfo {
     /// sidebar Hub 行の Login / Logout ボタン切替に使う。
     #[serde(default)]
     pub hub_auth: String,
+    /// 宛先ごとの credential 状態（"hub" / "creo" → "valid" | "expired" | "none"）。
+    /// ⚠️ `hub_auth`（hub 接続の副産物）とは別物で、**hub を切っていても読める** local 判定。
+    #[serde(default)]
+    pub auth_targets: std::collections::BTreeMap<String, String>,
     /// L1 lifecycle: Daemon 配下 repo の presence 一覧（daemon-canonical、sidebar の ●◐○ 用）。
     /// 旧 daemon は field 不在 → 空。`path` で repo 行に join する。
     #[serde(default)]

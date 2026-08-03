@@ -128,6 +128,13 @@ pub struct ActivitySnapshot {
     /// Hub 行の Login / Logout ボタン切替に使う（file でなく接続の真実）。
     #[serde(default)]
     pub hub_auth: String,
+    /// 宛先ごとの credential 状態（`"hub"` / `"creo"` → `"valid"` | `"expired"` | `"none"`）。
+    ///
+    /// ⚠️ `hub_auth` と混同しないこと。あちらは **hub 接続がどう成立したか**なので hub を
+    /// 切っていると何も分からない。こちらは local file の判定なので、**hub と無関係に
+    /// 「creo にログイン済みか」が言える**（doc 57 Phase 2 の Creo ID 行が独立する根拠）。
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub auth_targets: std::collections::BTreeMap<String, String>,
     /// L1 lifecycle: repo presence map（repo path → `"connected"`|`"unregistered"`
     /// |`"unregistered"`、`/api/health` の `processes[]` 由来）。sidebar の repo 行が `proc.path`
     /// で引いて ●◐○ dot を描く。daemon-canonical（doc 27 §3.2 / Model Q）。

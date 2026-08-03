@@ -29,6 +29,7 @@ export function emptyState(): SidebarState {
 			hub_auth: "",
 			presence: {},
 			update_available: false,
+			update_applying: false,
 		},
 		lanes_by_repo: {},
 		unread_notifications: {},

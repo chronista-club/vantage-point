@@ -2395,6 +2395,7 @@ async fn collect_activity(
         snap.hub = h.hub;
         snap.hub_nodes = h.hub_nodes;
         snap.hub_auth = h.hub_auth;
+        snap.auth_targets = h.auth_targets;
         // in-app update: daemon の定期チェック結果（「更新する」ボタンの表示 gate + label）。
         snap.update_available = h.update_available;
         snap.latest_version = h.latest_version;
@@ -3246,14 +3247,17 @@ struct SidebarIpcOutcome {
     /// caller (event loop) が `update_flow::spawn_update_flow` を呼び、native 確認ダイアログ →
     /// self-update → `vp daemon restart` → GUI relaunch を専用スレッドで実行する。
     update_apply_request: Option<String>,
-    /// Hub 行の Login ボタン click 要求。caller (event loop) が blocking pool で
-    /// `auth_flow::run_login_blocking` (`vp auth login` spawn) を実行し、成功後に
-    /// `daemon-control.hub/reconnect` で hub 接続へ即反映する。
-    auth_login_request: bool,
-    /// Hub 行の Logout ボタン click 要求。caller (event loop) が blocking pool で
-    /// `auth_flow::run_logout_blocking` (確認ダイアログ → `vp auth logout`) を実行し、
-    /// 成功後に `daemon-control.hub/reconnect` で hub 接続へ即反映する。
-    auth_logout_request: bool,
+    /// Login ボタン click 要求。値 = token の宛先（"hub" | "creo"）。caller (event loop) が
+    /// blocking pool で `auth_flow::run_login_blocking` (`vp auth login --for <target>` spawn) を
+    /// 実行し、成功後に `daemon-control.hub/reconnect` で hub 接続へ即反映する。
+    ///
+    /// ⚠️ **identity は 1 つでも token は宛先ごと**（Auth0 の aud claim）。bool ではなく宛先を
+    /// 運ぶのはそのため — 「ログインした」だけでは、どの API に対して有効かが決まらない。
+    auth_login_request: Option<String>,
+    /// Logout ボタン click 要求。値 = 宛先（`None` は「要求なし」、`Some("")` = 全宛先を捨てる）。
+    /// caller が blocking pool で `auth_flow::run_logout_blocking` (確認ダイアログ →
+    /// `vp auth logout [--for <target>]`) を実行し、成功後に `hub/reconnect` で即反映する。
+    auth_logout_request: Option<String>,
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
@@ -3525,14 +3529,16 @@ fn handle_sidebar_ipc(
                 out.update_apply_request = Some(m.version);
             }
         }
-        IpcEnvelope::AuthLogin => {
-            // Hub 行の Login ボタン。caller が `vp auth login` (browser OAuth) を blocking pool
-            // で実行し、成功後に hub/reconnect で接続へ即反映する。
-            out.auth_login_request = true;
+        IpcEnvelope::AuthLogin(m) => {
+            // Login ボタン。caller が `vp auth login --for <target>` (browser OAuth) を blocking
+            // pool で実行し、成功後に hub/reconnect で接続へ即反映する。
+            // 省略 = "hub"（従来の Hub 行の挙動）。
+            out.auth_login_request = Some(m.target.unwrap_or_else(|| "hub".to_string()));
         }
-        IpcEnvelope::AuthLogout => {
-            // Hub 行の Logout ボタン。caller が確認ダイアログ → `vp auth logout` → hub/reconnect。
-            out.auth_logout_request = true;
+        IpcEnvelope::AuthLogout(m) => {
+            // Logout ボタン。caller が確認ダイアログ → `vp auth logout [--for …]` → hub/reconnect。
+            // 空文字 = 宛先指定なし = 全部捨てる（CLI の `--for` 省略と同じ意味）。
+            out.auth_logout_request = Some(m.target.unwrap_or_default());
         }
     }
     out
@@ -6344,17 +6350,17 @@ pub fn run() -> anyhow::Result<()> {
                 // 待ち / 確認ダイアログ / CLI spawn）を blocking pool で実行し、成功したら
                 // `daemon-control.hub/reconnect` で daemon の hub 接続に credential 変化を
                 // 即反映する（= 押した結果が数秒後の health poll で Hub 行に現れる）。
-                if outcome.auth_login_request || outcome.auth_logout_request {
-                    let login = outcome.auth_login_request;
+                if outcome.auth_login_request.is_some() || outcome.auth_logout_request.is_some() {
+                    let login_target = outcome.auth_login_request.clone();
+                    let logout_target = outcome.auth_logout_request.clone();
                     let conn = daemon_conn.clone();
                     let rt = rt_handle.clone();
                     rt_handle.spawn(async move {
-                        let flow = rt.spawn_blocking(move || {
-                            if login {
-                                crate::auth_flow::run_login_blocking()
-                            } else {
-                                crate::auth_flow::run_logout_blocking()
-                            }
+                        let flow = rt.spawn_blocking(move || match login_target {
+                            Some(t) => crate::auth_flow::run_login_blocking(&t),
+                            None => crate::auth_flow::run_logout_blocking(
+                                logout_target.as_deref().unwrap_or(""),
+                            ),
                         });
                         // false = キャンセル / 失敗 / 二重起動 → credentials 不変なので反映不要。
                         if !matches!(flow.await, Ok(true)) {

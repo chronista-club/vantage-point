@@ -62,6 +62,17 @@ pub struct HealthResponse {
     /// Login / Logout ボタンの切替に使う。additive field — 旧 client は無視するだけで壊れない。
     #[serde(skip_serializing_if = "str::is_empty")]
     pub hub_auth: &'static str,
+    /// **宛先ごとの credential 状態**（`"hub"` / `"creo"` → `"valid"` | `"expired"` | `"none"`）。
+    ///
+    /// ⚠️ `hub_auth` とは別物。あちらは「hub 接続がどう成立したか」= 接続の副産物で、
+    /// **hub に繋いでいないと何も分からない**。こちらは `~/.vp/credentials.json` を読むだけの
+    /// local 判定なので、hub federation を切っていても「creo にログイン済みか」が言える
+    /// （doc 57 Phase 2 の Creo ID 行が hub から独立するのに要る）。
+    ///
+    /// 「local に有効な token を持っている」までしか主張しない — 実際に通るかは相手が決める。
+    /// additive field、旧 client は無視するだけ。
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub auth_targets: std::collections::BTreeMap<String, String>,
     /// L1 lifecycle (Phase C): Daemon 配下の repo presence 一覧（vp-app sidebar の ●◐○ 表示用）。
     /// daemon-canonical（doc 27 §3.2 / Model Q）。daemon mode のみ Some、repo mode では None。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -246,10 +257,40 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         hub: state.hub_status.get().as_str(),
         hub_nodes,
         hub_auth: state.hub_auth.get().as_str(),
+        auth_targets: auth_target_states(),
         processes,
         update_available,
         latest_version,
     })
+}
+
+/// 宛先ごとの credential 状態を local file から判定する（network を叩かない純粋な読み取り）。
+///
+/// 値は `"valid"` / `"expired"` / `"none"` の 3 値。**「持っているか」までしか言わない** —
+/// 実際にその token が通るかは相手の API が決めるので、ここで「認証済み」とは主張しない。
+/// file が壊れている / 読めない場合も `"none"`（= 使えない）に倒す（fail-closed）。
+fn auth_target_states() -> std::collections::BTreeMap<String, String> {
+    use crate::commands::auth::AuthTarget;
+    let store = crate::commands::auth::read_store().unwrap_or_default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    [AuthTarget::Hub, AuthTarget::Creo]
+        .into_iter()
+        .map(|t| {
+            let state = match store.get(&t.audience()) {
+                None => "none",
+                // expires_at 不明は valid 扱い（`Credentials::is_expired` と同じ規律 —
+                // 分からないものを期限切れと決めつけない）。
+                Some(c) => match c.expires_at {
+                    Some(exp) if exp <= now => "expired",
+                    _ => "valid",
+                },
+            };
+            (t.label().to_string(), state.to_string())
+        })
+        .collect()
 }
 
 // L0 portless Group B: pane HTTP handler (show/toggle/split/close) は CLI を repo-proxy ask

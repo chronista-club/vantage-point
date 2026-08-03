@@ -179,11 +179,15 @@ export interface UpdateApply {
   version: string;
 }
 
-/** Request "auth:login" — empty payload */
-export interface AuthLogin {}
+/** Request "auth:login" */
+export interface AuthLogin {
+  target?: string;
+}
 
-/** Request "auth:logout" — empty payload */
-export interface AuthLogout {}
+/** Request "auth:logout" */
+export interface AuthLogout {
+  target?: string;
+}
 
 /** Event name → 生成 interface の map for "ipc" (= type-narrowing 用) */
 export type IpcChannelEventTypes = {

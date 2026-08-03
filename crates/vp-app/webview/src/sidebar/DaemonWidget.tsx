@@ -63,6 +63,14 @@ export function DaemonWidget() {
 	// 匿名なら Login を出す（再ログイン + 再接続が正しい復旧手順のため）。
 	const hubCredentialed = () => (a().hub_auth ?? "") === "credentialed";
 
+	// 宛先ごとの credential 状態（`/api/health` の `auth_targets`、local file の判定）。
+	// ⚠️ `hub_auth` とは別物 — あちらは hub 接続の副産物なので **hub を切ると読めない**。
+	// こちらは hub と無関係に「creo にログイン済みか」が言えるので、Creo ID 行の根拠になる。
+	const authState = (target: string) => a().auth_targets?.[target] ?? "none";
+	const creoValid = () => authState("creo") === "valid";
+	/** どれか 1 つでも token を持っていれば Creo ID にはログイン済み（identity は共通）。 */
+	const signedIn = () => authState("hub") !== "none" || authState("creo") !== "none";
+
 	// uptime 表示を 30s 周期で tick させる (started_at は不変なので時計側を signal 化)。
 	const [now, setNow] = createSignal(Date.now());
 	const timer = setInterval(() => setNow(Date.now()), 30_000);
@@ -137,6 +145,45 @@ export function DaemonWidget() {
 					</Show>
 				</div>
 			</Show>
+			{/* Creo ID 行（doc 57 Phase 2）— **identity の席**。hub とは独立に出す。
+			    旧実装は Login/Logout が Hub 行の中にあり、`showHub()` に人質を取られていた
+			    （hub federation を切ると Creo ID にログインする手段が GUI から消える）。
+			    identity は 1 つ、token は宛先ごと、service はそれを使う側、という分解に直した。 */}
+			<Show when={online()}>
+				<div
+					class="vp-daemon-summary"
+					title="Creo ID — VP の identity。token は宛先ごとに 1 本ずつ持つ"
+				>
+					<span
+						class="vp-daemon-dot"
+						classList={{ offline: !signedIn() }}
+						title={`hub: ${authState("hub")} / creo: ${authState("creo")}`}
+					/>
+					<span class="vp-daemon-line">
+						Creo ID{signedIn() ? "" : " — signed out"}
+					</span>
+					{/* creo（ACTIONS の同期先）の席。hub と独立に張り替えられる。 */}
+					<button
+						type="button"
+						class="vp-hub-auth-btn"
+						title={
+							creoValid()
+								? "creo-memories の認証を解除する（ACTIONS の同期が止まる）"
+								: "creo-memories にログインする（Creo ID の session があれば素通りする）"
+						}
+						onClick={(e) => {
+							e.stopPropagation();
+							sendIpc(
+								creoValid()
+									? { t: "auth:logout", target: "creo" }
+									: { t: "auth:login", target: "creo" },
+							);
+						}}
+					>
+						{creoValid() ? "creo ✓" : "creo"}
+					</button>
+				</div>
+			</Show>
 			<Show when={showHub()}>
 				<div
 					class="vp-daemon-summary"
@@ -154,10 +201,12 @@ export function DaemonWidget() {
 						}
 						onClick={(e) => {
 							e.stopPropagation();
+							// 宛先を明示する。省略でも hub に落ちるが、Creo ID 行が別に
+							// 立った今は「どの席の話か」をコード上でも曖昧にしない。
 							if (hubCredentialed()) {
-								sendIpc({ t: "auth:logout" });
+								sendIpc({ t: "auth:logout", target: "hub" });
 							} else {
-								sendIpc({ t: "auth:login" });
+								sendIpc({ t: "auth:login", target: "hub" });
 							}
 						}}
 					>
