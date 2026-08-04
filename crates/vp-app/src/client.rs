@@ -194,6 +194,10 @@ pub struct DaemonHealthInfo {
     /// sidebar Hub 行の Login / Logout ボタン切替に使う。
     #[serde(default)]
     pub hub_auth: String,
+    /// 宛先ごとの credential 状態（"hub" / "creo" → "valid" | "expired" | "none"）。
+    /// ⚠️ `hub_auth`（hub 接続の副産物）とは別物で、**hub を切っていても読める** local 判定。
+    #[serde(default)]
+    pub auth_targets: std::collections::BTreeMap<String, String>,
     /// L1 lifecycle: Daemon 配下 repo の presence 一覧（daemon-canonical、sidebar の ●◐○ 用）。
     /// 旧 daemon は field 不在 → 空。`path` で repo 行に join する。
     #[serde(default)]
@@ -205,6 +209,14 @@ pub struct DaemonHealthInfo {
     /// 最新 release version（`update_available` 時のボタン label 用、未取得は None）。
     #[serde(default)]
     pub latest_version: Option<String>,
+    /// ACTIONS（doc 57 Phase 3）— daemon の 30s poller が creo から温めた一覧。
+    /// daemon 側 `CreoAction` と同形なので `crate::pane::ActionItem` をそのまま使う。
+    /// 旧 daemon は field 不在 → 空。
+    #[serde(default)]
+    pub actions: Vec<crate::pane::ActionItem>,
+    /// ACTIONS の版（内容が変わった時だけ上がる）。旧 daemon / 未取得は 0 = **当てない**印。
+    #[serde(default)]
+    pub actions_rev: u32,
 }
 
 /// repo の接続 presence 1 件（`/api/health` の `processes[]` 要素の lite subset）。

@@ -29,6 +29,11 @@ export function emptyState(): SidebarState {
 			hub_auth: "",
 			presence: {},
 			update_available: false,
+			update_applying: false,
+			// ACTIONS は `actions-panel/store.ts` の signal が持つ。ここは Rust mirror の
+			// 空値で、`actions_rev: 0` = 未取得 = **取り込まない**印（doc 57 Phase 3）。
+			actions: [],
+			actions_rev: 0,
 		},
 		lanes_by_repo: {},
 		unread_notifications: {},

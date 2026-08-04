@@ -332,7 +332,9 @@ fn unix_now() -> u64 {
 /// [`proactive_reconnect_delay`] が `None` を返し、proactive は**再武装されない** — 以降の
 /// refresh 機会は次の自然な切断 / 再接続（reactive 経路）に委ねられる。
 fn hub_credential_expires_at() -> Option<u64> {
-    crate::commands::auth::read_credentials()
+    // credential は audience ごと。hub の席だけを見る（creo の token の期限で
+    // hub の再接続を早めても意味が無い）。
+    crate::commands::auth::read_credentials_for(crate::commands::auth::DEFAULT_AUDIENCE)
         .ok()
         .flatten()
         .and_then(|c| c.expires_at)
@@ -364,7 +366,12 @@ async fn sleep_until_optional(deadline: Option<tokio::time::Instant>) {
 /// 参照。24h token が required hub 接続中に切れて federation が止まるのを防ぐ（利便性改善）。skew は
 /// [`HUB_REFRESH_SKEW_SECS`]（proactive 再接続と共有 = 「再接続 → その connect で refresh」を噛み合わせる）。
 async fn hub_credential() -> Option<Vec<u8>> {
-    match crate::commands::auth::credentials_refreshed_if_needed(HUB_REFRESH_SKEW_SECS).await {
+    match crate::commands::auth::credentials_refreshed_if_needed(
+        crate::commands::auth::DEFAULT_AUDIENCE,
+        HUB_REFRESH_SKEW_SECS,
+    )
+    .await
+    {
         Ok(creds) => credential_from_creds(creds),
         // file 読み込み / refresh 構築失敗（壊れた file 等）は credential なし扱い。federation を
         // 止めるより observe/permissive で繋ぐ方が degrade として穏当。

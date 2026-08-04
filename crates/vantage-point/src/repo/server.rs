@@ -233,6 +233,8 @@ pub(crate) async fn start_repo(
         hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
         hub_nodes: crate::daemon::hub_client::HubNodesCache::new(),
         hub_auth: crate::daemon::hub_client::HubAuthStatus::new(),
+        // ACTIONS の poller も daemon のみ（repo mode は空 + rev 0 = 未取得のまま）。
+        creo_actions: crate::creo::client::CreoActionsCache::new(),
         interactive_agent: Arc::new(RwLock::new(None)),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
@@ -746,6 +748,9 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // hub 接続の auth 状態（credentialed / anonymous）も同 pattern で共有
     //（writer = run_hub_federation、reader = /api/health の `hub_auth` field。初期 = Unknown）。
     let hub_auth = crate::daemon::hub_client::HubAuthStatus::new();
+    // ACTIONS の cache も同 pattern で共有（writer = 下の 30s poller、reader = `/api/health` の
+    // `actions` / `actions_rev` field。初期 = 空 + rev 0 = 未取得、doc 57 Phase 3）。
+    let creo_actions = crate::creo::client::CreoActionsCache::new();
 
     // Create minimal state for daemon mode
     let state = Arc::new(AppState {
@@ -755,6 +760,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         hub_status: hub_status.clone(),
         hub_nodes: hub_nodes.clone(),
         hub_auth: hub_auth.clone(),
+        creo_actions: creo_actions.clone(),
         repo_dir: String::new(),
         // R3: daemon mode は cross-process forward の対象外 (= 自 repo を持たない)
         repo_name: String::new(),
@@ -827,6 +833,33 @@ pub async fn run_daemon(port: u16) -> Result<()> {
                                 "update check: 最新です"
                             ),
                             Err(e) => tracing::debug!("update check 失敗（無視して次回再試行）: {}", e),
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // doc 57 Phase 3: ACTIONS を creo-memories から 30s ごとに引いて cache を温める。
+    // `/api/health` がこの cache を読んで vp-app に流す（handler 側は network なし）。
+    //
+    // 周期が activity poller（5s）より遅いのは**外部ネットワークだから** — sidebar への反映は
+    // 5s 周期の push に乗るので、user から見た遅延は「creo で書いてから最大 30s」に留まる。
+    {
+        let cache = creo_actions.clone();
+        let shutdown = shutdown_token.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    // 初回 tick は即時発火 = 起動時取得を兼ねる
+                    _ = tick.tick() => {
+                        // 失敗しても cache は据え置き（直前まで正しかった一覧を消さない）。
+                        // ⚠️ 401 もここに来る = 「ログインしているのに弾かれている」は
+                        // 黙って空にせず log に残す。
+                        if let Err(e) = cache.refresh().await {
+                            tracing::debug!("ACTIONS 取得失敗（cache 据え置き、次 tick で再試行）: {e}");
                         }
                     }
                 }
@@ -942,7 +975,10 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         .with_canvas_routers(canvas_routers.clone())
         // doc 44 §11: repo 側の publish が撃つのと**同一の** channel を daemon の
         // push loop に購読させる（別々に作ると生産者ゼロで永久沈黙する）。
-        .with_lane_change_tx(lane_change_tx.clone());
+        .with_lane_change_tx(lane_change_tx.clone())
+        // doc 57 Phase 4: ACTIONS の cache を AppState と共有する。読み（30s poller →
+        // `/api/health`）と書き（`daemon-control.actions/save`）が同じ実体を触るために要る。
+        .with_creo_actions(creo_actions.clone());
     // doc 24 §10 Phase 2: lane descriptor の durable 永続先 (capability boot load と同一 db)。
     if let Some(ref db) = vpdb {
         daemon_state_builder = daemon_state_builder.with_vpdb(db.clone());

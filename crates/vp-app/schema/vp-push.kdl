@@ -155,5 +155,19 @@ protocol "vp-push" version="1.0.0" {
         event "board:message" {
             field "message" type="json"
         }
+
+        // ===== R sidebar の debug log（sidebar view modes, 2026-08-01）— 実装は webview/right-sidebar.ts =====
+        //
+        // ⚠️ これは**制御面ではなく stream**（`console:event` と同じ扱い）。取りこぼしは
+        // 受け側の watch 再要求（`debuglog:watch` = 毎回 backlog 込みで始まる）が埋めるので、
+        // 保留箱に頼らない。同じ channel に載せるのは窓口を増やさないため。
+
+        // tail の 1 chunk。`reset` #true = 「表示を捨ててこの行群から始めよ」
+        // （watch 開始の backlog / rotate 検出時）。#false = 末尾への追記。
+        event "debuglog:lines" {
+            field "source" type="string"
+            field "reset" type="bool"
+            field "lines" type="array<string>"
+        }
     }
 }

@@ -66,6 +66,31 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
       'lane number switcher mode: ⌘ hold l で mode 突入、 5 秒以内に 1-9 で expanded repo 内 lane を上から N 番目で lane:select',
     semantic: 'focus-transferring',
   },
+  // v0.10 (2026-08-02) — ACTIONS の捕捉（doc 57 §0）。**作業を止めずに置ける**ことが
+  //   ACTIONS の存在理由なので、マウスを伸ばさずに完結する入口を用意する。
+  //   骨格は `l`（lane number mode）と同型: mode 突入 → 1-5 で区画を選ぶ → 1 行足って focus。
+  //
+  //   ⚠️ 文字は **b（buffer）**。mako の言う「まず ACTIONS というバッファ」から採った。
+  //   `a` を使ってはいけない — **⌘A は Select All**（§C.4 で system として keep）で、
+  //   directive は capture phase で preventDefault するため chat 入力の全選択を奪う。
+  //   `Ctrl+Shift+B`（board 開閉、keybindings.ts:54）とは修飾が違うので衝突しない。
+  b: {
+    description:
+      'ACTIONS capture mode: ⌘ hold b で mode 突入、5 秒以内に 1-5 で区画を選ぶと空の Action が 1 行足って focus',
+    semantic: 'focus-transferring',
+  },
+  // v0.9 (2026-08-01) — sidebar view modes。symbol キー directive の初例 (規約 v0.3 から
+  //   path は keep されていた)。semantic は layout — 「layout 系 = Ctrl+Shift」の Layer B
+  //   規則の例外として mako 指定で Cmd 修飾に置く (doc 18 Layer B v1.1)。
+  //   `[` = 左 / `]` = 右、キーの物理位置と対象の側が一致する。
+  '[': {
+    description: '左 sidebar をフル ⇄ スリム帯に変身',
+    semantic: 'layout',
+  },
+  ']': {
+    description: '右を edge rail ⇄ R sidebar (debug log) に変身',
+    semantic: 'layout',
+  },
   // v0.8 (curation) で撤去:
   //   e/g/h (Agent focus) — Scene hotkey `Ctrl+Shift+1..4` と役割重複のため Scene 側に一本化。
   //   w (daemon status)  — 将来の Unison WebView 直結 UI に status を委ねるため撤去。

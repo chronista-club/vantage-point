@@ -18,6 +18,8 @@ import { For, Show, createEffect, createMemo } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
+import { expandSidebar, sidebarForm } from "./form";
+import { laneAddressKey } from "./lane";
 import { resolveRepoOrder } from "./dnd";
 import { ContextMenu } from "./ContextMenu";
 import {
@@ -26,12 +28,15 @@ import {
 	laneSelectHintLabel,
 	laneSelectHintVisible,
 } from "./keybindings";
+import { captureHintLabel, captureHintVisible } from "./directive-state";
 import { FileExplorer, FILE_EXPLORER_CSS } from "./FileExplorer";
 import { WirePanel, WIRE_PANEL_CSS } from "./WirePanel";
 import { LanePicker, LANE_PICKER_CSS } from "./LanePicker";
 import { CommandPalette, COMMAND_PALETTE_CSS } from "./CommandPalette";
 import { RepoAccordion } from "./RepoAccordion";
 import { DaemonWidget } from "./DaemonWidget";
+import { BucketList, ACTIONS_CSS } from "./actions-panel/BucketList";
+import type { RepoPaneState } from "../generated/RepoPaneState";
 
 /**
  * 指定 path の repo accordion を view にスクロールして一瞬 flash させる。
@@ -94,30 +99,44 @@ export function Shell() {
 
 	return (
 		<div class="vp-sidebar-shell">
-			<header class="vp-sidebar-header">
-				<span class="vp-sidebar-title">CURRENTs</span>
-				{/* repo 追加: repo:add IPC → Rust 側 native folder picker → 登録 (VP-203)。 */}
-				<button
-					class="vp-sidebar-add"
-					title="repo を追加"
-					onClick={() => sendIpc({ t: "repo:add" })}
-				>
-					<CreoIcon name="ph:plus" size={13} />
-				</button>
-			</header>
+			{/* sidebar view modes (2026-08-01): フル形 3 段 (header / list / daemon) と
+			    スリム帯 (SlimRail) の 2 態を `[` directive で行き来する。overlay 群
+			    (ContextMenu / FileExplorer / ⌘K 等) は形に依らず常時 mount — 形は
+			    「一覧の見せ方」であって機能の有効/無効ではない。 */}
+			<Show
+				when={sidebarForm() === "full"}
+				fallback={<SlimRail ordered={ordered()} />}
+			>
+				<header class="vp-sidebar-header">
+					<span class="vp-sidebar-title">CURRENTs</span>
+					{/* repo 追加: repo:add IPC → Rust 側 native folder picker → 登録 (VP-203)。 */}
+					<button
+						class="vp-sidebar-add"
+						title="repo を追加"
+						onClick={() => sendIpc({ t: "repo:add" })}
+					>
+						<CreoIcon name="ph:plus" size={13} />
+					</button>
+				</header>
 
-			<div class="vp-sidebar-list">
-				<Show
-					when={sidebar.processes.length > 0}
-					fallback={<div class="vp-sidebar-empty">repo なし</div>}
-				>
-					<For each={ordered()}>
-						{(proc) => <RepoAccordion proc={proc} />}
-					</For>
-				</Show>
-			</div>
+				<div class="vp-sidebar-list">
+					<Show
+						when={sidebar.processes.length > 0}
+						fallback={<div class="vp-sidebar-empty">repo なし</div>}
+					>
+						<For each={ordered()}>
+							{(proc) => <RepoAccordion proc={proc} />}
+						</For>
+					</Show>
+				</div>
 
-			<DaemonWidget />
+				{/* ACTIONS（doc 57）— app 級の家。doc 56 §7 が「サイドバー下部・daemon status の上」
+				    として予約していた住所。CURRENTs を描かないのは、そこが上の repo 一覧
+				    そのものだから（合流は Phase 5）。 */}
+				<BucketList />
+
+				<DaemonWidget />
+			</Show>
 
 			{/* 右クリック context menu (Lane 行 / repo ヘッダ 共通、 singleton、 VP-204 PR-1)。 */}
 			<ContextMenu />
@@ -156,6 +175,63 @@ export function Shell() {
 					<span class="vp-lane-select-hint-help">Esc to cancel</span>
 				</div>
 			</Show>
+
+			{/* doc 57 §0 `a` directive: ACTIONS capture mode。数字で区画を選ぶと 1 行足って focus。
+          lane number mode と同じ帯（.vp-lane-select-hint）に相乗りする — 同時に立つことはなく、
+          見た目を 2 種類に増やす理由が無い。 */}
+			<Show when={captureHintVisible()}>
+				<div class="vp-lane-select-hint">
+					<span class="vp-lane-select-hint-icon">📝</span>
+					<span class="vp-lane-select-hint-label">{captureHintLabel()}</span>
+					<span class="vp-lane-select-hint-help">Esc to cancel</span>
+				</div>
+			</Show>
+		</div>
+	);
+}
+
+/**
+ * スリム帯（sidebar view modes、`[` directive）— icon 幅の repo badge 列。
+ *
+ * 情報は「repo の存在 / presence / 用事（awaiting）」の 3 点に圧縮する。操作は
+ * 「badge click = フルに戻って該当 repo を flash」の 1 動詞だけ — スリムは監視の形で、
+ * 操作を続けたくなったらフルに帰るのが正（右の edge rail が「lane 級動詞の家」なのと
+ * 対照的に、この帯は動詞を持たない）。
+ */
+function SlimRail(props: { ordered: RepoPaneState[] }) {
+	// repo 内のどれかの lane が input 待ち（フル形の黄 dot と同じ源 = awaiting_input）。
+	const awaiting = (path: string): boolean => {
+		const lanes = sidebar.lanes_by_repo[path] ?? [];
+		return lanes.some((l) => sidebar.awaiting_input[laneAddressKey(l)]);
+	};
+	return (
+		<div class="vp-slim-rail">
+			<For each={props.ordered}>
+				{(proc) => (
+					<button
+						class="vp-slim-badge"
+						classList={{
+							connected:
+								(sidebar.activity.presence?.[proc.path] ?? "unregistered") ===
+								"connected",
+							awaiting: awaiting(proc.path),
+						}}
+						title={proc.name}
+						onClick={() => {
+							expandSidebar();
+							flashProject(proc.path);
+						}}
+					>
+						{/* 頭 1 文字。spread は surrogate pair (絵文字名の repo) を割らないため。 */}
+						{([...proc.name.trim()][0] ?? "?").toUpperCase()}
+					</button>
+				)}
+			</For>
+			<div
+				class="vp-slim-foot"
+				classList={{ online: sidebar.activity.node_online }}
+				title={`daemon: ${sidebar.activity.node_online ? "online" : "offline"}`}
+			/>
 		</div>
 	);
 }
@@ -235,7 +311,9 @@ html,body{margin:0;height:100%;overflow:hidden;}
   border-radius:3px;flex:0 0 auto;transition:background .12s ease,color .12s ease;}
 .vp-sidebar-add:hover{background:#ffffff08;
   color:var(--sb-conn-auto,#FFF76B);}
-.vp-sidebar-list{flex:1;overflow-y:auto;padding:0 0 10px;}
+/* min-height は ACTIONS（doc 57）が伸びたときの床。scroll container の自動最小サイズは 0 なので、
+   これが無いと下の区画が repo list を高さ 0 まで潰せる。 */
+.vp-sidebar-list{flex:1;min-height:96px;overflow-y:auto;padding:0 0 10px;}
 .vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--lg-mute,#5C7A85);
   font-size:var(--sb-text-meta,11px);}
 
@@ -546,6 +624,10 @@ html,body{margin:0;height:100%;overflow:hidden;}
   border:1px solid color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 78%);
   user-select:none;}
 .vp-daemon-update:hover{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 82%);}
+/* 適用中: 押せない見た目に落とし、ゆっくり明滅で「進行中」を示す (2 beat ≈ 1.45s @ BPM82.7)。 */
+.vp-daemon-update.applying{cursor:default;animation:vp-daemon-update-pulse 1.45s ease-in-out infinite;}
+.vp-daemon-update.applying:hover{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 90%);}
+@keyframes vp-daemon-update-pulse{0%,100%{opacity:1;}50%{opacity:.55;}}
 .vp-daemon-update-label{flex:1 1 auto;font-weight:600;}
 .vp-daemon-update-ver{flex:0 0 auto;color:var(--lg-mute,#5C7A85);
   font-variant-numeric:tabular-nums;}
@@ -565,6 +647,11 @@ html,body{margin:0;height:100%;overflow:hidden;}
   background:#ffffff08;color:var(--lg-mute,#5C7A85);
   font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-variant-numeric:tabular-nums;}
+/* 艦隊スイッチ OFF（vp midi off）— 機材を他アプリへ譲っている状態。
+   ⚠️ 警告色（赤）にはしない。**壊れていない、user が意図して貸している**ので、
+   「今そうなっている」が読めれば十分（黄 = 人が関与している状態の既存語彙）。 */
+.vp-agent-badge.released{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 88%);
+  color:var(--sb-conn-auto,#FFF76B);font-family:inherit;letter-spacing:.04em;}
 
 /* Lane 行 右クリック context menu (VP-204 PR-1、 singleton popup) */
 .vp-ctx-backdrop{position:fixed;inset:0;z-index:9998;}
@@ -598,8 +685,27 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-row:hover .vp-lane-files-btn{opacity:1;}
 .vp-lane-files-btn:hover{background:#ffffff08;
   color:var(--sb-conn-auto,#FFF76B);}
+
+/* sidebar view modes (2026-08-01): スリム帯。幅 (280px⇄44px) は main_area.rs の
+   #sidebar-root / #sidebar-root.slim が司り、ここは帯の中身だけ定義する。 */
+.vp-slim-rail{display:flex;flex-direction:column;align-items:center;gap:6px;
+  padding:10px 0;height:100%;box-sizing:border-box;overflow-y:auto;overflow-x:hidden;}
+.vp-slim-badge{position:relative;width:28px;height:28px;flex:none;border-radius:8px;
+  border:1px solid var(--lg-hairline,#12222b);background:var(--lg-panel,#0A0E15);
+  color:var(--lg-mute,#5C7A85);cursor:pointer;
+  font-size:var(--sb-text-hint,12px);font-weight:600;line-height:1;
+  transition:color .12s ease,border-color .12s ease;}
+.vp-slim-badge:hover{color:var(--lg-hot,#EAFBFF);border-color:var(--lg-cyan-dim,#1C6C7C);}
+.vp-slim-badge.connected{color:var(--lg-hot,#EAFBFF);border-color:var(--lg-cyan-dim,#1C6C7C);}
+/* 用事 dot: フル形の awaiting 黄 dot (--sb-conn-hitl) と同じ語彙で「repo 内に input 待ちの lane」。 */
+.vp-slim-badge.awaiting::after{content:"";position:absolute;top:-2px;right:-2px;
+  width:7px;height:7px;border-radius:50%;background:var(--sb-conn-hitl,#FF4A2D);}
+.vp-slim-foot{margin-top:auto;width:8px;height:8px;flex:none;border-radius:50%;
+  background:var(--lg-mute-2,#38525b);}
+.vp-slim-foot.online{background:var(--lg-cyan-dim,#1C6C7C);}
 ${FILE_EXPLORER_CSS}
 ${WIRE_PANEL_CSS}
 ${LANE_PICKER_CSS}
 ${COMMAND_PALETTE_CSS}
+${ACTIONS_CSS}
 `;

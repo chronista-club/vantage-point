@@ -70,6 +70,10 @@ pub enum AppEvent {
     /// event loop で lane_respawn_triggered から address を除去し、 次の Dead 検出で
     /// 再 respawn できるようにする (失敗が永続 suppression にならないための解除通知)。
     LaneRespawnFailed { address: String },
+    /// in-app update: 適用フローの進行状態（true = 適用中）。sidebar の「更新する」ボタンを
+    /// 「更新中…」表示に切り替える。false = キャンセル / 失敗で通常表示へ戻す
+    /// （成功時はプロセスごと終了するので戻し event は来ない）。
+    UpdateFlowPhase(bool),
     /// Wire inbox (doc 34 §4 V1): Daemon "wire" channel への read-only fetch 結果。
     /// event loop が `window.vpWire.handleResult(payload)` で sidebar に push back する。
     /// payload = `{address, agent, history, unread}` (エラーは `{address, error}`)。
@@ -327,6 +331,22 @@ pub enum AppEvent {
         lane: String,
         payload: serde_json::Value,
         req: Option<String>,
+    },
+    /// R sidebar の debug log（sidebar view modes、2026-08-01）: webview からの tail 購読要求。
+    /// `source` = "app" | "daemon"（file への解決は `debug_log::log_path`）。
+    /// 最後の watch が勝つ = 単一 tail（source 切替も watch の送り直し）。
+    DebugLogWatch { source: String },
+    /// tail 購読の停止（R sidebar を閉じた）。見ていない log は読み続けない。
+    DebugLogUnwatch,
+    /// tail thread からの 1 chunk。event loop が push envelope `debuglog:lines` で webview へ流す。
+    /// `reset` = 表示を捨てて置き換え（watch 開始の backlog / rotate 検出）。
+    /// `generation` = 発生元 tail の世代。event loop が現世代と照合し、退場直前の旧 thread が
+    /// 送った残 chunk を棄てる（旧行が新表示へ 1 回混ざる race の封じ）。
+    DebugLogChunk {
+        source: String,
+        reset: bool,
+        lines: Vec<String>,
+        generation: u64,
     },
 }
 
@@ -595,6 +615,18 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                     });
                 }
             }
+        }
+        // R sidebar の debug log（sidebar view modes、2026-08-01）: tail の購読開始 / 停止。
+        // watch は source 必須（"app" | "daemon"）。file への解決と thread 管理は app.rs 側。
+        Some("debuglog:watch") => {
+            if let Some(source) = parsed.get("source").and_then(|v| v.as_str()) {
+                let _ = proxy.send_event(AppEvent::DebugLogWatch {
+                    source: source.to_string(),
+                });
+            }
+        }
+        Some("debuglog:unwatch") => {
+            let _ = proxy.send_event(AppEvent::DebugLogUnwatch);
         }
         Some("copy") => {
             // navigator.clipboard が使えなかった時の fallback: arboard で OS clipboard 直書き

@@ -9,9 +9,15 @@
  */
 import { sidebar } from "../store";
 import { sendIpc } from "../ipc";
+import { expandSidebar, toggleSidebarForm } from "../form";
 import { isPerformerLane, laneAddressKey } from "../lane";
+import { PANEL_BUCKETS } from "../actions-panel/model";
+import { appendAction, openBuckets, toggleBucket } from "../actions-panel/store";
+import { focusActionRow } from "../actions-panel/ActionRow";
 import {
 	openAddPerformerFor,
+	setCaptureHintLabel,
+	setCaptureHintVisible,
 	setDeleteHintLabel,
 	setDeleteHintVisible,
 	setLaneSelectHintLabel,
@@ -308,4 +314,92 @@ export function runSwitcher(): void {
 /** `l` — Lane number switcher mode に突入。 */
 export function runLaneSelectMode(): void {
 	enterLaneSelectMode();
+}
+
+/** `[` — 左 sidebar をフル ⇄ スリム帯に変身（sidebar view modes）。 */
+export function runSidebarForm(): void {
+	toggleSidebarForm();
+}
+
+// =============================================================================
+// `b` directive — ACTIONS capture mode（doc 57 §0）
+// =============================================================================
+//
+// ⚠️ ここが ACTIONS の**本命の入口**。サイドバーへマウスを伸ばした時点で既に「中断」して
+// いるので、差し込みの緩衝には「打鍵だけで置ける」経路が要る。骨格は上の lane number mode と同型。
+//
+// 文字が `b`（buffer）で `a` でないのは、**⌘A = Select All**（doc 18 §C.4 で system として keep）
+// を奪わないため — directive は capture phase で preventDefault する。
+
+const CAPTURE_MODE_MS = 5000;
+
+let captureModeTimer: ReturnType<typeof setTimeout> | null = null;
+
+function exitCaptureMode(): void {
+	setCaptureHintVisible(false);
+	setCaptureHintLabel("");
+	if (captureModeTimer !== null) {
+		clearTimeout(captureModeTimer);
+		captureModeTimer = null;
+	}
+	window.removeEventListener("keydown", captureNumberHandler, true);
+}
+
+function captureNumberHandler(e: KeyboardEvent): void {
+	const target = e.target as HTMLElement | null;
+	if (target) {
+		const tag = target.tagName;
+		// 入力中なら数字入力を妨げない（mode を黙って抜ける）。
+		if (tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable) {
+			exitCaptureMode();
+			return;
+		}
+	}
+	if (e.key === "Escape") {
+		e.preventDefault();
+		exitCaptureMode();
+		return;
+	}
+	const n = Number.parseInt(e.key, 10);
+	if (Number.isInteger(n) && n >= 1 && n <= PANEL_BUCKETS.length) {
+		e.preventDefault();
+		const bucket = PANEL_BUCKETS[n - 1];
+		exitCaptureMode();
+		// 区画を開いてから足す — 閉じたままだと行が DOM に出ず focus が当たらない。
+		if (!openBuckets().has(bucket.id)) toggleBucket(bucket.id);
+		focusActionRow(appendAction(bucket.id));
+		return;
+	}
+	if (
+		e.key === "Meta" ||
+		e.key === "Control" ||
+		e.key === "Shift" ||
+		e.key === "Alt"
+	) {
+		return;
+	}
+	exitCaptureMode();
+}
+
+/** `b` — ACTIONS の捕捉 mode に突入（1-5 で区画を選ぶ）。 */
+export function runCaptureMode(): void {
+	// スリム帯だと行が描画されないので、フルに戻してから開く。
+	expandSidebar();
+	setCaptureHintLabel(
+		PANEL_BUCKETS.map((b, i) => `${i + 1}. ${b.label}`).join("   "),
+	);
+	setCaptureHintVisible(true);
+
+	if (captureModeTimer !== null) clearTimeout(captureModeTimer);
+	window.removeEventListener("keydown", captureNumberHandler, true);
+
+	window.addEventListener("keydown", captureNumberHandler, true);
+	captureModeTimer = setTimeout(exitCaptureMode, CAPTURE_MODE_MS);
+}
+
+/** `]` — 右を edge rail ⇄ R sidebar（debug log）に変身。
+ *  実体（DOM / 開閉 state / tail 購読）は main bundle の right-sidebar.ts が持つので、
+ *  共有 bus（doc 47 §6、統合 WebView の同一 document）で依頼だけ投げる。 */
+export function runRightSidebarToggle(): void {
+	document.dispatchEvent(new CustomEvent("vp:right-sidebar-toggle"));
 }

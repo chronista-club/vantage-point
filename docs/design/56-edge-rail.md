@@ -56,6 +56,13 @@ VP の動詞は「何に効くか」で級が分かれ、**級がそのまま UI
 - form が user preference になるのは doc 55 の board form（float/docked）と同じ手筋 —
   「同じ実体の見え方を属性で切り替える」語彙の再利用
 
+> **追記（2026-08-01、sidebar view modes）**: rail に第 3 の形が加わった —
+> **R sidebar（rail のフル幅形、420px）= debug log viewer**。`Cmd+]` で
+> rail ⇄ R sidebar を行き来する（展開中は帯を隠す排他表示）。左 sidebar も対で
+> `Cmd+[` によりフル（280px）⇄ スリム帯（44px）を持つ。binding の経緯は
+> doc 18 §B.1 v1.1、実装は right-sidebar.ts / sidebar bundle の form.ts。
+> A 形（浮遊）の設定トグルはこの追記後も未実装のまま（§2 の位置づけ不変）。
+
 ---
 
 ## 3. 住人（2026-07-30 時点、上から）
@@ -109,6 +116,9 @@ VP の動詞は「何に効くか」で級が分かれ、**級がそのまま UI
 - **設定画面**（app 級・サイドバー下部・daemon status の上）= 別糸
   （creo `mem_1CdXtkPWmtmikXwygbed5B`）。最初の設定項目 = rail の形態トグル（B ⇄ A）。
   A 形の実装は設定画面と同時で良い（トグルの読み手が居ない間は B 一本）
+  - **この住所は先に [57-actions.md](./57-actions.md) が使う**（2026-08-02）— app 級の家に
+    最初に入るのは設定ではなく ACTIONS（`root → 区画 → Action` の 2 段）だった。設定画面は
+    その下（daemon status の直上）に並ぶ形で残る
 - **pane 級の恒久の家**（doc 50 §2 の宿題）は本 doc のスコープ外のまま — 名札 hover 召喚を
   継続。rail に持ち込む場合は対象解決（focused pane への暗黙適用）の設計が先
 - 住人が増えたらゾーン分け（生成系 / 面系 / 通知系）を §3 に追記していく

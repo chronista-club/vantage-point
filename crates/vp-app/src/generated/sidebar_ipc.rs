@@ -128,10 +128,22 @@ pub struct UpdateApply {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuthLogin;
+pub struct AuthLogin {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuthLogout;
+pub struct AuthLogout {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionsPersist {
+    pub items: Vec<serde_json::Value>,
+    pub removed: Vec<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidebarState {
@@ -229,9 +241,11 @@ pub enum IpcEnvelope {
     #[serde(rename = "update:apply")]
     UpdateApply(UpdateApply),
     #[serde(rename = "auth:login")]
-    AuthLogin,
+    AuthLogin(AuthLogin),
     #[serde(rename = "auth:logout")]
-    AuthLogout,
+    AuthLogout(AuthLogout),
+    #[serde(rename = "actions:persist")]
+    ActionsPersist(ActionsPersist),
 }
 
 /// Envelope enum for channel "ipc" — a discriminated union over its

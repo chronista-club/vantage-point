@@ -111,6 +111,17 @@ pub enum DeviceEvent {
         port_name: String,
         has_input: bool,
         has_output: bool,
+        /// VP が今この port を**掴んでいるか**（Devices pane の計器表示）。
+        ///
+        /// ⚠️ typed enum を通る delta 経路でも落とさないために field を持つ。持たないと
+        /// 「初期 snapshot には出るが hot-plug 後に消える」という半端な状態になる。
+        /// 旧 daemon は field 不在 → `false`（= 掴んでいない扱い、安全側）。
+        #[serde(default)]
+        held: bool,
+        /// 掴んでいない理由（`"released"` = 譲渡中 / `"unsupported"` = 対応外 / `"idle"`）。
+        /// **user への説明が変わる**ので bool に潰さない（`DeviceRegistry::hold_state` 参照）。
+        #[serde(default)]
+        hold_reason: String,
     },
     /// 物理 MIDI device が切断された
     DeviceDisconnected {
@@ -143,6 +154,15 @@ impl DeviceEvent {
                     .get("has_output")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
+                held: payload
+                    .get("held")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                hold_reason: payload
+                    .get("hold_reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
             }),
             "devices.device_disconnected" => Some(DeviceEvent::DeviceDisconnected {
                 port_name: payload.get("port_name")?.as_str()?.to_string(),
@@ -310,6 +330,9 @@ mod tests {
                 port_name: "ROTO-CONTROL".into(),
                 has_input: true,
                 has_output: true,
+                // 旧 daemon（field 不在）の payload は「掴んでいない」に倒す — 安全側
+                held: false,
+                hold_reason: String::new(),
             })
         );
         // device_disconnected: port_name のみ

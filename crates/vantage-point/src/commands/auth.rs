@@ -64,6 +64,25 @@ pub const DEFAULT_CLIENT_ID: &str = "KF9BRED9ZVWEI7YDqbncNQ0LhX9QoUYm";
 /// （空文字を設定すると audience なし = 従来の JWE 発行に倒せる escape hatch）。
 pub const DEFAULT_AUDIENCE: &str = "https://hub.chronista.club";
 
+/// creo-memories（creo-app-server）の API audience。
+///
+/// **実値の SSOT は creo の `GET https://app.creo-memories.in/api/config`（認証不要）**で、
+/// `auth0.audience` に出る。2026-08-03 の実測がこの値。
+/// ⚠️ creo の設計 doc 08 には `https://app.creo-memories.in` と書かれているが**誤り**。
+/// 推測で書き換えず、疑ったら上の endpoint を叩いて確かめること。
+///
+/// env `VP_CREO_AUDIENCE` で上書き可（別 tenant / staging を試す用）。
+pub const DEFAULT_CREO_AUDIENCE: &str = "https://id.anycreative.tech";
+
+/// creo audience を解決する（env 上書き > default）。
+pub fn creo_audience() -> String {
+    std::env::var("VP_CREO_AUDIENCE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_CREO_AUDIENCE.to_string())
+}
+
 /// PKCE verifier の長さ (= RFC 7636 で 43-128、 64 を採用)。
 const VERIFIER_LEN: usize = 64;
 
@@ -72,6 +91,36 @@ const STATE_LEN: usize = 32;
 
 /// callback 待ち全体の timeout (= 5 分、 user 操作完了猶予)。
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// token の宛先（= Auth0 の API audience）。
+///
+/// identity は 1 つ（Creo ID）だが、access_token は `aud` claim で宛先が固定されるので
+/// **宛先ごとに 1 本ずつ持つ**。`--for` で選ぶ。
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AuthTarget {
+    /// chronista-hub federation（既定）
+    #[default]
+    Hub,
+    /// creo-memories（ACTIONS の同期先）
+    Creo,
+}
+
+impl AuthTarget {
+    /// 実際の audience 文字列へ。
+    pub fn audience(self) -> String {
+        match self {
+            Self::Hub => DEFAULT_AUDIENCE.to_string(),
+            Self::Creo => creo_audience(),
+        }
+    }
+    /// 人に見せる短い名前。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hub => "hub",
+            Self::Creo => "creo",
+        }
+    }
+}
 
 /// `vp auth` subcommand 一覧。 A2c/d で AuthCommands を更に拡張予定 (= Logout 追加)。
 #[derive(Subcommand, Debug)]
@@ -84,17 +133,28 @@ pub enum AuthCommands {
         /// browser を spawn せず authorize URL を print のみ (= headless / debug 用)
         #[arg(long)]
         no_browser: bool,
+
+        /// token の宛先。identity は共通なので、2 本目以降は Auth0 の session で素通りする
+        #[arg(long = "for", value_enum, default_value_t = AuthTarget::Hub)]
+        target: AuthTarget,
     },
 
     /// 認証情報を削除して logout (= nexus に best-effort 通知後 local credentials 削除)
-    Logout,
+    Logout {
+        /// 宛先を指定するとその token だけ捨てる。省略時は**全部**捨てる（= 完全 logout）
+        #[arg(long = "for", value_enum)]
+        target: Option<AuthTarget>,
+    },
+
+    /// 宛先ごとの login 状態を一覧（token の有無と期限）。network を叩かない
+    Status,
 }
 
 /// `~/.vp/credentials.json` で保存される credentials の serde shape。
 ///
 /// access_token 以外は optional (= 最小 token のみでも parse OK)。
 /// A2b で OAuth token response 全体を保存する (= refresh_token / expires_at 等)。
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Credentials {
     pub access_token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -220,17 +280,71 @@ pub fn credentials_path() -> Result<PathBuf> {
     Ok(home.join(".vp").join("credentials.json"))
 }
 
-/// credentials を file から読む。 file 不在なら `Ok(None)` を返し、 上位で usage 表示。
-pub fn read_credentials() -> Result<Option<Credentials>> {
+/// audience ごとの credential を束ねた store（`~/.vp/credentials.json` の中身）。
+///
+/// ## なぜ audience ごとに持つか
+///
+/// Auth0 の access_token は **`aud` claim で宛先 API が固定**される。hub 向けに発行した token を
+/// creo-app-server に出しても拒否されるのが仕様どおりの動作で、転用はできない
+/// （`DEFAULT_AUDIENCE` の注記 = 「1 login = 1 audience が Auth0 の制約」）。
+///
+/// 一方 **identity（Creo ID）は 1 つ**なので、2 本目の authorize は Auth0 の session cookie で
+/// 素通りする。つまり「ログインし直す」のではなく「**同じ人の証明書を宛先ごとに持つ**」形。
+///
+/// ⚠️ 旧形式（flat な `Credentials` が 1 つ）は **hub の entry として読む**（後方互換 1 段）。
+/// これが無いと、更新した瞬間に既存 user の hub federation が無言で落ちる。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CredentialStore {
+    /// audience → credential。key は authorize 時に要求した audience 文字列そのもの。
+    #[serde(default)]
+    pub by_audience: std::collections::BTreeMap<String, Credentials>,
+}
+
+impl CredentialStore {
+    pub fn get(&self, audience: &str) -> Option<&Credentials> {
+        self.by_audience.get(audience)
+    }
+    pub fn set(&mut self, audience: &str, creds: Credentials) {
+        self.by_audience.insert(audience.to_string(), creds);
+    }
+    /// 1 つでも credential を持っているか（= Creo ID にログイン済みか）。
+    pub fn is_empty(&self) -> bool {
+        self.by_audience.is_empty()
+    }
+}
+
+/// store を file から読む。file 不在なら**空の store**（未ログイン）。
+///
+/// 旧形式（flat）も受け付け、hub の entry として扱う。
+pub fn read_store() -> Result<CredentialStore> {
     let path = credentials_path()?;
     if !path.exists() {
-        return Ok(None);
+        return Ok(CredentialStore::default());
     }
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let creds: Credentials = serde_json::from_str(&content)
-        .with_context(|| format!("failed to parse {}", path.display()))?;
-    Ok(Some(creds))
+    parse_store(&content).with_context(|| format!("failed to parse {}", path.display()))
+}
+
+/// 文字列 → store の純粋変換（新旧どちらの形式も受ける）。テストしやすいよう切り出す。
+fn parse_store(content: &str) -> Result<CredentialStore> {
+    // 新形式を先に試す。旧形式には `by_audience` が無いので空 store としてしか読めず、
+    // その場合は flat として読み直す（順序を逆にすると新形式が flat parse で落ちて紛らわしい）。
+    if let Ok(store) = serde_json::from_str::<CredentialStore>(content)
+        && !store.is_empty()
+    {
+        return Ok(store);
+    }
+    // 旧形式: flat な Credentials 1 つ = hub 向けだった。
+    let legacy: Credentials = serde_json::from_str(content)?;
+    let mut store = CredentialStore::default();
+    store.set(DEFAULT_AUDIENCE, legacy);
+    Ok(store)
+}
+
+/// 指定 audience の credential を読む。無ければ `Ok(None)`。
+pub fn read_credentials_for(audience: &str) -> Result<Option<Credentials>> {
+    Ok(read_store()?.get(audience).cloned())
 }
 
 /// credentials を file に保存。
@@ -243,7 +357,16 @@ pub fn read_credentials() -> Result<Option<Credentials>> {
 /// ## permissions
 ///
 /// unix: file は `0o600` (= owner read/write only)、 parent dir も `0o700` (= owner only)。
-pub fn save_credentials(creds: &Credentials) -> Result<()> {
+pub fn save_credentials_for(audience: &str, creds: &Credentials) -> Result<()> {
+    // ⚠️ 読んでから足して書く。丸ごと上書きすると**他の audience の token を消す**
+    // （hub にログイン済みの状態で creo にログインすると federation が落ちる、が起きる）。
+    let mut store = read_store().unwrap_or_default();
+    store.set(audience, creds.clone());
+    save_store(&store)
+}
+
+/// store 全体を書く（atomic + 0600）。
+pub fn save_store(store: &CredentialStore) -> Result<()> {
     let path = credentials_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -257,7 +380,7 @@ pub fn save_credentials(creds: &Credentials) -> Result<()> {
                 .with_context(|| format!("failed to chmod 700 {}", parent.display()))?;
         }
     }
-    let json = serde_json::to_string_pretty(creds).context("failed to serialize credentials")?;
+    let json = serde_json::to_string_pretty(store).context("failed to serialize credentials")?;
 
     // atomic write: tmp file → rename
     let tmp_path = path.with_extension("json.tmp");
@@ -480,8 +603,11 @@ async fn refresh_tokens(config: &OidcConfig, refresh_token: &str) -> Result<Toke
 ///
 /// `skew_secs` = 期限までこの秒数を切ったら「切れそう」とみなす slack（clock 誤差 + refresh
 /// 往復の余裕）。
-pub async fn credentials_refreshed_if_needed(skew_secs: u64) -> Result<Option<Credentials>> {
-    let Some(creds) = read_credentials()? else {
+pub async fn credentials_refreshed_if_needed(
+    audience: &str,
+    skew_secs: u64,
+) -> Result<Option<Credentials>> {
+    let Some(creds) = read_credentials_for(audience)? else {
         return Ok(None);
     };
     // まだ十分に有効なら触らない（大多数のケース、HTTP を撃たない）。
@@ -496,7 +622,9 @@ pub async fn credentials_refreshed_if_needed(skew_secs: u64) -> Result<Option<Cr
     match refresh_tokens(&config, refresh).await {
         Ok(new_tokens) => {
             let new_creds = new_tokens.into_credentials();
-            save_credentials(&new_creds)?;
+            // ⚠️ 巻き直した token は **元の audience の席へ**戻す。ここを取り違えると
+            // hub の refresh が creo の token を上書きする（identity は同じでも宛先が違う）。
+            save_credentials_for(audience, &new_creds)?;
             Ok(Some(new_creds))
         }
         // refresh 失敗（network / IdP 側）でも既存 token を返す。まだ有効な可能性があり、
@@ -513,9 +641,47 @@ pub async fn credentials_refreshed_if_needed(skew_secs: u64) -> Result<Option<Cr
 pub async fn execute(cmd: AuthCommands) -> Result<()> {
     match cmd {
         AuthCommands::Me => me().await,
-        AuthCommands::Login { no_browser } => login(no_browser).await,
-        AuthCommands::Logout => logout().await,
+        AuthCommands::Login { no_browser, target } => login(no_browser, target).await,
+        AuthCommands::Logout { target } => logout(target).await,
+        AuthCommands::Status => status(),
     }
+}
+
+/// `vp auth status` — 宛先ごとの login 状態。**network を叩かない**（local file だけを見る）。
+///
+/// 「有効な token を持っているか」は local に持っている事実で言い切れる範囲に留める
+/// （実際に通るかは相手が決めるので、ここで断言しない）。
+fn status() -> Result<()> {
+    let store = read_store()?;
+    if store.is_empty() {
+        println!("not logged in (= run `vp auth login`)");
+        return Ok(());
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    for target in [AuthTarget::Hub, AuthTarget::Creo] {
+        let aud = target.audience();
+        match store.get(&aud) {
+            None => println!("{:<6} —        (no token)  {aud}", target.label()),
+            Some(c) => {
+                let state = match c.expires_at {
+                    None => "valid   (expiry unknown)".to_string(),
+                    Some(exp) if exp <= now => "EXPIRED".to_string(),
+                    Some(exp) => format!("valid   ({}m left)", (exp - now) / 60),
+                };
+                println!("{:<6} {state}  {aud}", target.label());
+            }
+        }
+    }
+    // 表に出ない audience（env で別 tenant を試した残骸など）も隠さず出す。
+    for aud in store.by_audience.keys() {
+        if aud != &AuthTarget::Hub.audience() && aud != &AuthTarget::Creo.audience() {
+            println!("{:<6} valid   (other)  {aud}", "-");
+        }
+    }
+    Ok(())
 }
 
 /// `vp auth logout` — credentials を削除 + nexus に best-effort 通知。
@@ -532,13 +698,27 @@ pub async fn execute(cmd: AuthCommands) -> Result<()> {
 /// nexus が落ちている / network 断 でも local credentials は確実に削除。
 /// 「logout したつもりが token が残る」 の方が UX 最悪。 nexus side は idempotent
 /// stub (= A1d で実装済)、 重複 call も OK。
-async fn logout() -> Result<()> {
-    let creds = match read_credentials()? {
-        Some(c) => c,
-        None => {
-            println!("already logged out (= no credentials to delete)");
-            return Ok(());
-        }
+async fn logout(target: Option<AuthTarget>) -> Result<()> {
+    let mut store = read_store()?;
+    if store.is_empty() {
+        println!("already logged out (= no credentials to delete)");
+        return Ok(());
+    }
+    // nexus への notify には**どれか 1 本**の token があればよい（identity は共通）。
+    // 宛先指定があればその席の token を、無ければ hub → 先頭の順で拾う。
+    let creds = match target {
+        Some(t) => match store.get(&t.audience()) {
+            Some(c) => c.clone(),
+            None => {
+                println!("already logged out for {} (= no token)", t.label());
+                return Ok(());
+            }
+        },
+        None => store
+            .get(DEFAULT_AUDIENCE)
+            .or_else(|| store.by_audience.values().next())
+            .cloned()
+            .expect("store が空でないので必ず 1 本ある"),
     };
 
     // nexus に best-effort で notify (= 失敗しても warn のみで続行)
@@ -572,15 +752,34 @@ async fn logout() -> Result<()> {
     }
 
     // local 削除は必ず実行
-    delete_credentials()?;
     let path = credentials_path()?;
-    println!("✓ Logged out. Credentials removed from {}", path.display());
+    match target {
+        // 宛先指定 = その席だけ捨てる（hub を残して creo だけ切る等）。
+        Some(t) => {
+            store.by_audience.remove(&t.audience());
+            if store.is_empty() {
+                delete_credentials()?;
+            } else {
+                save_store(&store)?;
+            }
+            println!("✓ Logged out for {} ({})", t.label(), t.audience());
+        }
+        // 省略 = 全部捨てる（= 完全 logout）。
+        None => {
+            delete_credentials()?;
+            println!("✓ Logged out. Credentials removed from {}", path.display());
+        }
+    }
     Ok(())
 }
 
 /// `vp auth login` — loopback OAuth Native App + PKCE flow を実行、 token を保存。
-async fn login(no_browser: bool) -> Result<()> {
-    let config = OidcConfig::from_env()?;
+async fn login(no_browser: bool, target: AuthTarget) -> Result<()> {
+    let mut config = OidcConfig::from_env()?;
+    // ⚠️ `--for` は env（`VP_OIDC_AUDIENCE`）より**強い**。宛先を明示して呼んでいるので、
+    // env の既定に引きずられて別の席へ保存すると事故になる。
+    // env の escape hatch（空文字 = audience なし）は `--for` 未指定のときだけ効く。
+    config.audience = Some(target.audience());
     let (verifier, challenge) = pkce_pair();
     let state = random_state();
 
@@ -645,7 +844,8 @@ async fn login(no_browser: bool) -> Result<()> {
     let callback = wait_for_callback(&listener, &state).await?;
     let tokens = exchange_token(&config, &callback.code, &verifier, &redirect_uri).await?;
     let creds = tokens.into_credentials();
-    save_credentials(&creds)?;
+    // 宛先の席へ保存（他の audience の token は触らない = save_credentials_for が read-modify-write）。
+    save_credentials_for(&target.audience(), &creds)?;
 
     let path = credentials_path()?;
     println!("✓ Logged in. Credentials saved to {}", path.display());
@@ -686,7 +886,9 @@ fn print_me(body: &serde_json::Value) {
 
 /// `vp auth me` — refresh-aware。 401 検出 → refresh 試行 → 失敗で re-login message。
 async fn me() -> Result<()> {
-    let creds = match read_credentials()? {
+    // nexus の /v1/auth/me は identity を返すだけなので、宛先は hub の席を使う
+    // （identity は audience を跨いで同じ。宛先ごとの状態は `vp auth status`）。
+    let creds = match read_credentials_for(DEFAULT_AUDIENCE)? {
         Some(c) => c,
         None => {
             eprintln!("error: not logged in (= ~/.vp/credentials.json なし)");
@@ -708,7 +910,7 @@ async fn me() -> Result<()> {
             match refresh_tokens(&config, refresh).await {
                 Ok(new_tokens) => {
                     let new_creds = new_tokens.into_credentials();
-                    save_credentials(&new_creds)?;
+                    save_credentials_for(DEFAULT_AUDIENCE, &new_creds)?;
                     if let Some(body) = try_me(&new_creds.access_token).await? {
                         print_me(&body);
                         return Ok(());
@@ -730,6 +932,97 @@ async fn me() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn creds(token: &str) -> Credentials {
+        Credentials {
+            access_token: token.to_string(),
+            token_type: Some("Bearer".to_string()),
+            expires_at: Some(2_000_000_000),
+            refresh_token: Some(format!("{token}-refresh")),
+            scope: None,
+        }
+    }
+
+    /// ⚠️ **旧形式（flat）は hub の席として読む**。この後方互換が無いと、更新した瞬間に
+    /// 既存 user の hub federation が無言で落ちる（token を持っているのに「未ログイン」になる）。
+    #[test]
+    fn legacy_flat_credentials_load_as_hub() {
+        let legacy = r#"{"access_token":"old-token","refresh_token":"old-r"}"#;
+        let store = parse_store(legacy).expect("legacy parse");
+        let hub = store.get(DEFAULT_AUDIENCE).expect("hub entry");
+        assert_eq!(hub.access_token, "old-token");
+        assert_eq!(hub.refresh_token.as_deref(), Some("old-r"));
+        // 旧形式には creo の席は無い
+        assert!(store.get(DEFAULT_CREO_AUDIENCE).is_none());
+    }
+
+    /// 新形式はそのまま読める（旧形式の fallback に落ちない）。
+    #[test]
+    fn new_store_round_trips() {
+        let mut store = CredentialStore::default();
+        store.set(DEFAULT_AUDIENCE, creds("hub-token"));
+        store.set(DEFAULT_CREO_AUDIENCE, creds("creo-token"));
+        let json = serde_json::to_string(&store).expect("ser");
+        let back = parse_store(&json).expect("de");
+        assert_eq!(
+            back.get(DEFAULT_AUDIENCE).unwrap().access_token,
+            "hub-token"
+        );
+        assert_eq!(
+            back.get(DEFAULT_CREO_AUDIENCE).unwrap().access_token,
+            "creo-token"
+        );
+    }
+
+    /// ⚠️ **片方の保存が他方を消さない**。これが崩れると「creo にログインしたら hub の
+    /// federation が落ちた」になる（save が read-modify-write である理由）。
+    #[test]
+    fn saving_one_audience_keeps_the_other() {
+        let _g = env_guard();
+        let dir = std::env::temp_dir().join("vp-auth-multi-aud-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("credentials.json");
+        let _ = std::fs::remove_file(&path);
+        unsafe {
+            std::env::set_var("VP_CREDENTIALS_PATH", path.to_string_lossy().to_string());
+        }
+
+        save_credentials_for(DEFAULT_AUDIENCE, &creds("hub-token")).expect("save hub");
+        save_credentials_for(DEFAULT_CREO_AUDIENCE, &creds("creo-token")).expect("save creo");
+
+        let store = read_store().expect("read");
+        assert_eq!(
+            store.get(DEFAULT_AUDIENCE).unwrap().access_token,
+            "hub-token"
+        );
+        assert_eq!(
+            store.get(DEFAULT_CREO_AUDIENCE).unwrap().access_token,
+            "creo-token"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        unsafe {
+            std::env::remove_var("VP_CREDENTIALS_PATH");
+        }
+    }
+
+    /// `--for` の宛先が audience 文字列に正しく写る（creo は env で上書きできる）。
+    #[test]
+    fn auth_target_resolves_audience() {
+        let _g = env_guard();
+        unsafe {
+            std::env::remove_var("VP_CREO_AUDIENCE");
+        }
+        assert_eq!(AuthTarget::Hub.audience(), DEFAULT_AUDIENCE);
+        assert_eq!(AuthTarget::Creo.audience(), DEFAULT_CREO_AUDIENCE);
+        unsafe {
+            std::env::set_var("VP_CREO_AUDIENCE", "https://staging.example");
+        }
+        assert_eq!(AuthTarget::Creo.audience(), "https://staging.example");
+        unsafe {
+            std::env::remove_var("VP_CREO_AUDIENCE");
+        }
+    }
 
     /// process-global な env var (`VP_CREDENTIALS_PATH` / `VP_NEXUS_URL` / `VP_OIDC_*`) を
     /// 触る test を直列化する共有ロック。 parallel runner だと別 test の `set_var`/`remove_var`
@@ -995,7 +1288,11 @@ mod tests {
         }
 
         // Phase 1: read で None (= 不在)
-        assert!(read_credentials().expect("read").is_none());
+        assert!(
+            read_credentials_for(DEFAULT_AUDIENCE)
+                .expect("read")
+                .is_none()
+        );
 
         // Phase 2: save → read で同 credentials が返る
         let orig = Credentials {
@@ -1005,8 +1302,10 @@ mod tests {
             refresh_token: Some("r-token".to_string()),
             scope: Some("openid".to_string()),
         };
-        save_credentials(&orig).expect("save");
-        let loaded = read_credentials().expect("read").expect("some");
+        save_credentials_for(DEFAULT_AUDIENCE, &orig).expect("save");
+        let loaded = read_credentials_for(DEFAULT_AUDIENCE)
+            .expect("read")
+            .expect("some");
         assert_eq!(loaded.access_token, orig.access_token);
         assert_eq!(loaded.refresh_token.as_deref(), Some("r-token"));
 
@@ -1037,7 +1336,11 @@ mod tests {
 
         // Phase 5: delete → read で None に戻る
         delete_credentials().expect("delete");
-        assert!(read_credentials().expect("read").is_none());
+        assert!(
+            read_credentials_for(DEFAULT_AUDIENCE)
+                .expect("read")
+                .is_none()
+        );
 
         // Phase 6: re-delete は idempotent (= 不在でも Ok)
         delete_credentials().expect("delete idempotent");
@@ -1145,7 +1448,9 @@ mod tests {
             std::env::set_var("VP_CREDENTIALS_PATH", &missing);
         }
         // file 不在 → None（credential なし接続に degrade）。HTTP は撃たない。
-        let got = credentials_refreshed_if_needed(300).await.expect("ok");
+        let got = credentials_refreshed_if_needed(DEFAULT_AUDIENCE, 300)
+            .await
+            .expect("ok");
         assert!(got.is_none());
         unsafe {
             std::env::remove_var("VP_CREDENTIALS_PATH");
@@ -1169,7 +1474,9 @@ mod tests {
         unsafe {
             std::env::set_var("VP_CREDENTIALS_PATH", &path);
         }
-        let got = credentials_refreshed_if_needed(300).await.expect("ok");
+        let got = credentials_refreshed_if_needed(DEFAULT_AUDIENCE, 300)
+            .await
+            .expect("ok");
         assert_eq!(got.expect("some").access_token, "still-valid");
         unsafe {
             std::env::remove_var("VP_CREDENTIALS_PATH");
@@ -1194,7 +1501,9 @@ mod tests {
         unsafe {
             std::env::set_var("VP_CREDENTIALS_PATH", &path);
         }
-        let got = credentials_refreshed_if_needed(300).await.expect("ok");
+        let got = credentials_refreshed_if_needed(DEFAULT_AUDIENCE, 300)
+            .await
+            .expect("ok");
         assert_eq!(got.expect("some").access_token, "expiring-no-refresh");
         unsafe {
             std::env::remove_var("VP_CREDENTIALS_PATH");

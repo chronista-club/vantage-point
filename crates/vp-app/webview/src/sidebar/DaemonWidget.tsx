@@ -63,6 +63,14 @@ export function DaemonWidget() {
 	// 匿名なら Login を出す（再ログイン + 再接続が正しい復旧手順のため）。
 	const hubCredentialed = () => (a().hub_auth ?? "") === "credentialed";
 
+	// 宛先ごとの credential 状態（`/api/health` の `auth_targets`、local file の判定）。
+	// ⚠️ `hub_auth` とは別物 — あちらは hub 接続の副産物なので **hub を切ると読めない**。
+	// こちらは hub と無関係に「creo にログイン済みか」が言えるので、Creo ID 行の根拠になる。
+	const authState = (target: string) => a().auth_targets?.[target] ?? "none";
+	const creoValid = () => authState("creo") === "valid";
+	/** どれか 1 つでも token を持っていれば Creo ID にはログイン済み（identity は共通）。 */
+	const signedIn = () => authState("hub") !== "none" || authState("creo") !== "none";
+
 	// uptime 表示を 30s 周期で tick させる (started_at は不変なので時計側を signal 化)。
 	const [now, setNow] = createSignal(Date.now());
 	const timer = setInterval(() => setNow(Date.now()), 30_000);
@@ -72,11 +80,22 @@ export function DaemonWidget() {
 	// ここ (Daemon レベルの Devices) は pane を開く入口 + 接続 device 数 badge。
 	const devices = () => sidebar.devices ?? [];
 	const devicesActive = () => sidebar.active_component?.kind === "devices";
+	// 艦隊スイッチ（`vp midi off`）で機材を他アプリへ譲っているか。
+	//
+	// ⚠️ `/api/health` の `services` ではなく **device 一覧そのもの**から導く。sidebar は
+	// `services` を一切読んでいないので、そちらに出しても読み手ゼロになる。device 一覧は
+	// daemon-device channel で既にリアルタイムに来ているので、新しい配管が要らない。
+	const released = () => devices().some((d) => d.hold_reason === "released");
+	// VP が実際に掴んでいる台数。「7 台見えているが掴んでいるのは 2 台」を言い分ける
+	// （残りは parser 対応外 = 最初から他アプリと取り合っていない）。
+	const heldCount = () => devices().filter((d) => d.held).length;
 
 	// in-app update: daemon の定期チェック (起動時 + 24h) が検知した新 release。
 	// update_available 時のみ Daemon widget 直下に「更新する」CTA を出す。latest_version は
 	// ボタン label + `update:apply` IPC の payload (Rust 側の native ダイアログ文言に使う)。
 	const updateAvailable = () => a().update_available;
+	// 適用フロー実行中 (AppEvent::UpdateFlowPhase 由来の GUI local 状態、health 由来ではない)。
+	const updateApplying = () => a().update_applying;
 	const latestVersion = () => a().latest_version ?? undefined;
 
 	return (
@@ -112,18 +131,66 @@ export function DaemonWidget() {
 			<Show when={online() && updateAvailable()}>
 				<div
 					class="vp-daemon-update"
-					title={`v${latestVersion() ?? "?"} が利用可能です。クリックで更新します`}
+					classList={{ applying: updateApplying() }}
+					title={
+						updateApplying()
+							? "更新を適用しています…"
+							: `v${latestVersion() ?? "?"} が利用可能です。クリックで更新します`
+					}
 					onClick={() => {
+						// 適用中は再送しない (Rust 側 UPDATE_IN_FLIGHT と二重のガード)。
+						if (updateApplying()) return;
 						const v = latestVersion();
 						// version が無い場合は IPC を送らない (Rust arm も空 version を無視)。
 						if (v) sendIpc({ t: "update:apply", version: v });
 					}}
 				>
 					<CreoIcon name="ph:arrow-circle-up" size={14} />
-					<span class="vp-daemon-update-label">更新する</span>
+					<span class="vp-daemon-update-label">
+						{updateApplying() ? "更新中…" : "更新する"}
+					</span>
 					<Show when={latestVersion()}>
 						<span class="vp-daemon-update-ver">v{latestVersion()}</span>
 					</Show>
+				</div>
+			</Show>
+			{/* Creo ID 行（doc 57 Phase 2）— **identity の席**。hub とは独立に出す。
+			    旧実装は Login/Logout が Hub 行の中にあり、`showHub()` に人質を取られていた
+			    （hub federation を切ると Creo ID にログインする手段が GUI から消える）。
+			    identity は 1 つ、token は宛先ごと、service はそれを使う側、という分解に直した。 */}
+			<Show when={online()}>
+				<div
+					class="vp-daemon-summary"
+					title="Creo ID — VP の identity。token は宛先ごとに 1 本ずつ持つ"
+				>
+					<span
+						class="vp-daemon-dot"
+						classList={{ offline: !signedIn() }}
+						title={`hub: ${authState("hub")} / creo: ${authState("creo")}`}
+					/>
+					<span class="vp-daemon-line">
+						Creo ID{signedIn() ? "" : " — signed out"}
+					</span>
+					{/* creo（ACTIONS の同期先）の席。hub と独立に張り替えられる。 */}
+					<button
+						type="button"
+						class="vp-hub-auth-btn"
+						title={
+							creoValid()
+								? "creo-memories の認証を解除する（ACTIONS の同期が止まる）"
+								: "creo-memories にログインする（Creo ID の session があれば素通りする）"
+						}
+						onClick={(e) => {
+							e.stopPropagation();
+							sendIpc(
+								creoValid()
+									? { t: "auth:logout", target: "creo" }
+									: { t: "auth:login", target: "creo" },
+							);
+						}}
+					>
+						{creoValid() ? "creo ✓" : "creo"}
+					</button>
 				</div>
 			</Show>
 			<Show when={showHub()}>
@@ -143,10 +210,12 @@ export function DaemonWidget() {
 						}
 						onClick={(e) => {
 							e.stopPropagation();
+							// 宛先を明示する。省略でも hub に落ちるが、Creo ID 行が別に
+							// 立った今は「どの席の話か」をコード上でも曖昧にしない。
 							if (hubCredentialed()) {
-								sendIpc({ t: "auth:logout" });
+								sendIpc({ t: "auth:logout", target: "hub" });
 							} else {
-								sendIpc({ t: "auth:login" });
+								sendIpc({ t: "auth:login", target: "hub" });
 							}
 						}}
 					>
@@ -190,8 +259,22 @@ export function DaemonWidget() {
 						/>
 					</span>
 					<span class="vp-agent-title">{agentDisplayName("devices")}</span>
+					{/* 譲渡中は数字より先に言う — 「効いているか」が一目で要る状態なので。 */}
+					<Show when={released()}>
+						<span
+							class="vp-agent-badge released"
+							title="vp midi off で機材を他アプリへ譲っています（`vp midi on` で戻す）"
+						>
+							譲渡中
+						</span>
+					</Show>
 					<Show when={devices().length > 0}>
-						<span class="vp-agent-badge">{devices().length}</span>
+						<span
+							class="vp-agent-badge"
+							title={`${heldCount()} 台を掴んでいます（見えている ${devices().length} 台のうち）`}
+						>
+							{heldCount()}/{devices().length}
+						</span>
 					</Show>
 				</div>
 			</div>

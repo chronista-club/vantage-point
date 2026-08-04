@@ -195,6 +195,10 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // ink（対話面, doc 52 §3）: 送信の snapshot 要求。漏れると sidebar IPC へ流れて
                 // 「unknown variant ink:snapshot」で silent drop = 送信しても画像が飛ばない
                 | "ink:snapshot"
+                // R sidebar の debug log（sidebar view modes, 2026-08-01）: tail の購読開始/停止。
+                // 漏れると sidebar IPC へ流れて silent drop = 「開いても永久に空」regression
+                | "debuglog:watch"
+                | "debuglog:unwatch"
         )
     )
 }
@@ -227,6 +231,9 @@ mod ipc_tag_tests {
             "board:cursor",
             // doc 50 §4.6 A6: 名札 kind badge の Mode 切替（漏れは「押しても変身しない」）
             "session:set_mode",
+            // R sidebar の debug log（漏れは「開いても永久に空」）
+            "debuglog:watch",
+            "debuglog:unwatch",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/root"}}"#);
             assert!(
@@ -1976,8 +1983,8 @@ mod lane_js {
 
     use crate::generated::push::{
         BoardMessage, ConsoleAgents, ConsoleEvent, ConsoleModeApplied, ConsoleSessionList,
-        DevicesRender, InkSnapshot, InkSnapshotError, PushEventEnvelope, TermEnsureLane, TermPaste,
-        TermRemoveLane, TermRemoveSession, TermShowLane,
+        DebuglogLines, DevicesRender, InkSnapshot, InkSnapshotError, PushEventEnvelope,
+        TermEnsureLane, TermPaste, TermRemoveLane, TermRemoveSession, TermShowLane,
     };
 
     /// 生成 envelope を webview の単一受け口 `window.vpDispatch` へ押し込む。
@@ -2190,6 +2197,21 @@ mod lane_js {
             &PushEventEnvelope::BoardMessage(BoardMessage { message }),
         );
     }
+
+    /// R sidebar の debug log viewer へ tail の行群を渡す（sidebar view modes、2026-08-01）。
+    ///
+    /// ⚠️ stream（`console_event` と同類）— 取りこぼしは次の `debuglog:watch` が
+    /// backlog 込みで埋めるので、保留箱には頼らない。
+    pub fn debuglog_lines(main_view: &WebView, source: &str, reset: bool, lines: Vec<String>) {
+        push(
+            main_view,
+            &PushEventEnvelope::DebuglogLines(DebuglogLines {
+                source: source.to_string(),
+                reset,
+                lines,
+            }),
+        );
+    }
 }
 
 /// 「Current repo が dead 状態」 のとき daemon に repo spawn を要求する fire-and-forget task。
@@ -2302,6 +2324,59 @@ fn spawn_activity_poller(
     });
 }
 
+/// ACTIONS の永続化 1 回分（doc 57 Phase 4）。
+///
+/// `items` = 現在の一覧全件 / `removed` = user が明示的に消した id。
+///
+/// ⚠️ 名前が `generated::sidebar_ipc::ActionsPersist`（wire の request 型）と紛らわしいが
+/// **別物** — あちらは受信 envelope、こちらは coalesce channel を流れる値。
+#[derive(Debug, Clone)]
+pub struct ActionsPersistPayload {
+    pub items: Vec<serde_json::Value>,
+    pub removed: Vec<String>,
+}
+
+/// ACTIONS の書きを **400ms coalesce** して daemon に流す task（doc 57 Phase 4）。
+///
+/// ## なぜ束ねるか
+///
+/// sidebar の書き換え口（`commitActions`）は**打鍵のたびに**呼ばれる。素通しすると 1 文字ごとに
+/// creo へ HTTP が飛ぶ。`watch` は latest-wins なので、静まってから最後の 1 回だけを撃てば、
+/// 「打ち終えた形」がちょうど 1 回書かれる。
+///
+/// ⚠️ **`removed` を落とさないのは webview 側の役目**。watch は途中の値を捨てるので、
+/// webview は「daemon の snapshot が届くまで削除 id を持ち続けて毎回まるごと載せる」
+/// （`actions-panel/store.ts` の `pendingRemovals`）。ここで蓄積すると、書きが失敗した時に
+/// 消えた id の行方が 2 箇所に分かれる。
+fn spawn_actions_persist_writer(
+    rt_handle: &tokio::runtime::Handle,
+    mut rx: tokio::sync::watch::Receiver<Option<ActionsPersistPayload>>,
+    conn: SharedDaemonConn,
+) {
+    rt_handle.spawn(async move {
+        loop {
+            // 値が変わるまで眠る（初期値 None は読み飛ばす）。
+            if rx.changed().await.is_err() {
+                break; // 送り手（event loop）が落ちた
+            }
+            // 静まるまで待つ。待っている間に来た更新は watch が畳んでくれる。
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            let Some(payload) = rx.borrow_and_update().clone() else {
+                continue;
+            };
+            match conn.control().await {
+                Ok(control) => {
+                    if let Err(e) = control.save_actions(payload.items, payload.removed).await {
+                        // 失敗しても手元の表示は消さない（次の編集 / 次の poll で再試行される）。
+                        tracing::warn!("ACTIONS の永続化に失敗: {}", e);
+                    }
+                }
+                Err(e) => tracing::warn!("ACTIONS の永続化: daemon 接続に失敗: {}", e),
+            }
+        }
+    });
+}
+
 /// VP-143: 5s 間隔で `AppEvent::ResolveSessionTitles` を fire する background poller。
 ///
 /// task 自体は state を持たず、 ただ tick を main thread に届ける役割。 main thread の
@@ -2373,9 +2448,14 @@ async fn collect_activity(
         snap.hub = h.hub;
         snap.hub_nodes = h.hub_nodes;
         snap.hub_auth = h.hub_auth;
+        snap.auth_targets = h.auth_targets;
         // in-app update: daemon の定期チェック結果（「更新する」ボタンの表示 gate + label）。
         snap.update_available = h.update_available;
         snap.latest_version = h.latest_version;
+        // ACTIONS（doc 57 Phase 3）: daemon が creo から温めた一覧 + その版。
+        // 版は sidebar 側が「当てるかどうか」を決めるのに使う（同じ版 = 撃ち返さない）。
+        snap.actions = h.actions;
+        snap.actions_rev = h.actions_rev;
         // L1 lifecycle: repo presence map（repo 行の ●◐○ dot 用、path → presence）。
         snap.presence = h
             .processes
@@ -3224,14 +3304,22 @@ struct SidebarIpcOutcome {
     /// caller (event loop) が `update_flow::spawn_update_flow` を呼び、native 確認ダイアログ →
     /// self-update → `vp daemon restart` → GUI relaunch を専用スレッドで実行する。
     update_apply_request: Option<String>,
-    /// Hub 行の Login ボタン click 要求。caller (event loop) が blocking pool で
-    /// `auth_flow::run_login_blocking` (`vp auth login` spawn) を実行し、成功後に
-    /// `daemon-control.hub/reconnect` で hub 接続へ即反映する。
-    auth_login_request: bool,
-    /// Hub 行の Logout ボタン click 要求。caller (event loop) が blocking pool で
-    /// `auth_flow::run_logout_blocking` (確認ダイアログ → `vp auth logout`) を実行し、
-    /// 成功後に `daemon-control.hub/reconnect` で hub 接続へ即反映する。
-    auth_logout_request: bool,
+    /// Login ボタン click 要求。値 = token の宛先（"hub" | "creo"）。caller (event loop) が
+    /// blocking pool で `auth_flow::run_login_blocking` (`vp auth login --for <target>` spawn) を
+    /// 実行し、成功後に `daemon-control.hub/reconnect` で hub 接続へ即反映する。
+    ///
+    /// ⚠️ **identity は 1 つでも token は宛先ごと**（Auth0 の aud claim）。bool ではなく宛先を
+    /// 運ぶのはそのため — 「ログインした」だけでは、どの API に対して有効かが決まらない。
+    /// ACTIONS の永続化要求（doc 57 Phase 4）。caller が coalesce channel へ流す。
+    /// ⚠️ この arm は **`changed` を立てない** — DOM は既に user 入力で最新なので、
+    /// 撃ち返すと編集中の行に古い値が入って caret が揺れる
+    /// （`process:toggle` / `process:reorder` と同じ規律）。
+    actions_persist_request: Option<ActionsPersistPayload>,
+    auth_login_request: Option<String>,
+    /// Logout ボタン click 要求。値 = 宛先（`None` は「要求なし」、`Some("")` = 全宛先を捨てる）。
+    /// caller が blocking pool で `auth_flow::run_logout_blocking` (確認ダイアログ →
+    /// `vp auth logout [--for <target>]`) を実行し、成功後に `hub/reconnect` で即反映する。
+    auth_logout_request: Option<String>,
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
@@ -3503,14 +3591,24 @@ fn handle_sidebar_ipc(
                 out.update_apply_request = Some(m.version);
             }
         }
-        IpcEnvelope::AuthLogin => {
-            // Hub 行の Login ボタン。caller が `vp auth login` (browser OAuth) を blocking pool
-            // で実行し、成功後に hub/reconnect で接続へ即反映する。
-            out.auth_login_request = true;
+        IpcEnvelope::AuthLogin(m) => {
+            // Login ボタン。caller が `vp auth login --for <target>` (browser OAuth) を blocking
+            // pool で実行し、成功後に hub/reconnect で接続へ即反映する。
+            // 省略 = "hub"（従来の Hub 行の挙動）。
+            out.auth_login_request = Some(m.target.unwrap_or_else(|| "hub".to_string()));
         }
-        IpcEnvelope::AuthLogout => {
-            // Hub 行の Logout ボタン。caller が確認ダイアログ → `vp auth logout` → hub/reconnect。
-            out.auth_logout_request = true;
+        IpcEnvelope::AuthLogout(m) => {
+            // Logout ボタン。caller が確認ダイアログ → `vp auth logout [--for …]` → hub/reconnect。
+            // 空文字 = 宛先指定なし = 全部捨てる（CLI の `--for` 省略と同じ意味）。
+            out.auth_logout_request = Some(m.target.unwrap_or_default());
+        }
+        IpcEnvelope::ActionsPersist(m) => {
+            // ACTIONS の編集を creo へ。caller が 400ms coalesce channel に流す。
+            // ⚠️ **`out.changed` を立てない**（上の field の注記どおり）。
+            out.actions_persist_request = Some(ActionsPersistPayload {
+                items: m.items,
+                removed: m.removed,
+            });
         }
     }
     out
@@ -3692,6 +3790,12 @@ pub fn run() -> anyhow::Result<()> {
     // 送り手 = ipc_handler の "fleet:feedback" 分岐 / 受け手 = device session の sender task。
     let (fleet_feedback_tx, fleet_feedback_rx) =
         tokio::sync::watch::channel(serde_json::Value::Null);
+
+    // ACTIONS の永続化 (doc 57 Phase 4)。同じく watch = latest-wins。
+    // 送り手 = `handle_sidebar_ipc` の `actions:persist` 分岐 / 受け手 = 下の debounce task。
+    let (actions_persist_tx, actions_persist_rx) =
+        tokio::sync::watch::channel::<Option<ActionsPersistPayload>>(None);
+    spawn_actions_persist_writer(&rt_handle, actions_persist_rx, daemon_conn.clone());
 
     // DeviceRegistry 🧲 device event を daemon (daemon-device channel) から購読する (daemon に 1 本)。
     // canvas/lanes は per-repo だが device は machine scope (= daemon singleton) なので起動時 1 回。
@@ -3914,6 +4018,9 @@ pub fn run() -> anyhow::Result<()> {
     // WS から bytes を受けるので、 Rust 側で buffer / flush 同期する必要が無い。
     // VP-95: sidebar 全体 state (repos + widget + activity)
     let mut sidebar_state = SidebarState::default();
+    // in-app update: 適用フロー実行中フラグ（GUI local）。ActivitySnapshot は health poll で
+    // 定期上書きされるため、event loop 側で保持して毎回 snapshot に再適用する。
+    let mut update_applying = false;
     // session_state は WindowBuilder 上で既に load 済 (= window geometry を先に必要)。
     // 直前 active Lane を初回 LanesLoaded で復元するための pending 値。
     // 1 度復元したら None にして、 後続 LanesLoaded で再復元しないように。
@@ -3937,6 +4044,11 @@ pub fn run() -> anyhow::Result<()> {
     // maybe_respawn_dead_lane の async restart_lane が失敗した時に event loop へ
     // 通知を返し lane_respawn_triggered を解除するための proxy (永続 suppression 回避)。
     let respawn_proxy = event_loop.create_proxy();
+    // R sidebar の debug log tail の世代カウンタ（sidebar view modes、2026-08-01）。
+    // watch / unwatch のたびに進め、旧世代の tail thread は次の poll で自然に退場する
+    // （= 最後の watch が勝つ単一 tail。join も channel 後始末も不要 — debug_log.rs 参照）。
+    let debuglog_watch_gen: std::sync::Arc<std::sync::atomic::AtomicU64> =
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     // wiremsg Stage 1: per-repo の "lanes" Unison 購読を 1 本だけ張るための guard。
     // path をキーにする。F1b: 購読は共有 connection に追従して give-up しないので、 一度
     // spawn したら app 終了まで張りっぱなし (= guard から除去されない)。
@@ -4741,6 +4853,43 @@ pub fn run() -> anyhow::Result<()> {
                 match path {
                     Some(p) => lane_js::ink_snapshot(&webview, p),
                     None => lane_js::ink_snapshot_error(&webview, error.unwrap_or_default()),
+                }
+            }
+            Event::UserEvent(AppEvent::DebugLogWatch { source }) => {
+                // R sidebar の debug log（sidebar view modes）: 世代を進めて旧 tail を退場させ、
+                // 新しい tail thread を起こす（最後の watch が勝つ = 単一 tail）。
+                use std::sync::atomic::Ordering;
+                let generation = debuglog_watch_gen.fetch_add(1, Ordering::Relaxed) + 1;
+                match crate::debug_log::log_path(&source) {
+                    Some(path) => {
+                        crate::debug_log::spawn_tail(
+                            source,
+                            path,
+                            generation,
+                            debuglog_watch_gen.clone(),
+                            proxy.clone(),
+                        );
+                    }
+                    None => tracing::warn!("debuglog:watch の未知 source: {source}"),
+                }
+            }
+            Event::UserEvent(AppEvent::DebugLogUnwatch) => {
+                // 世代を進めるだけで tail は次の poll で止まる（見ていない log は読まない）。
+                use std::sync::atomic::Ordering;
+                debuglog_watch_gen.fetch_add(1, Ordering::Relaxed);
+            }
+            Event::UserEvent(AppEvent::DebugLogChunk {
+                source,
+                reset,
+                lines,
+                generation,
+            }) => {
+                // tail thread からの行群を R sidebar へ。退場直前の旧世代 thread が送った
+                // 残 chunk はここで棄てる（新 backlog の後に旧行が 1 回混ざる race の封じ）。
+                // stream なので replay は持たない（次の watch が毎回 backlog から始まる）。
+                use std::sync::atomic::Ordering;
+                if generation == debuglog_watch_gen.load(Ordering::Relaxed) {
+                    lane_js::debuglog_lines(&webview, &source, reset, lines);
                 }
             }
             Event::UserEvent(AppEvent::DeviceEvent { payload }) => {
@@ -5595,6 +5744,13 @@ pub fn run() -> anyhow::Result<()> {
             }
             Event::UserEvent(AppEvent::ActivityUpdate(snap)) => {
                 sidebar_state.activity = snap;
+                // 適用中フラグは GUI local（health 由来ではない）ので poll 上書きから守る。
+                sidebar_state.activity.update_applying = update_applying;
+                push_sidebar_state(&webview, &sidebar_state);
+            }
+            Event::UserEvent(AppEvent::UpdateFlowPhase(applying)) => {
+                update_applying = applying;
+                sidebar_state.activity.update_applying = applying;
                 push_sidebar_state(&webview, &sidebar_state);
             }
             Event::UserEvent(AppEvent::ClonePathPicked(path)) => {
@@ -6259,24 +6415,33 @@ pub fn run() -> anyhow::Result<()> {
                 // in-app update: sidebar footer の「更新する」ボタン click 要求。
                 // native 確認ダイアログ → self-update → daemon restart → relaunch を
                 // 専用スレッドで起動する（event loop = main thread は塞がない）。
+                // on_phase は AppEvent 経由で event loop に戻し、「更新中…」表示に使う。
                 if let Some(version) = outcome.update_apply_request {
-                    crate::update_flow::spawn_update_flow(version);
+                    let phase_proxy = proxy.clone();
+                    crate::update_flow::spawn_update_flow(version, move |applying| {
+                        let _ = phase_proxy.send_event(AppEvent::UpdateFlowPhase(applying));
+                    });
                 }
                 // Hub 行の Login / Logout ボタン click 要求。blocking フロー（browser OAuth
                 // 待ち / 確認ダイアログ / CLI spawn）を blocking pool で実行し、成功したら
                 // `daemon-control.hub/reconnect` で daemon の hub 接続に credential 変化を
                 // 即反映する（= 押した結果が数秒後の health poll で Hub 行に現れる）。
-                if outcome.auth_login_request || outcome.auth_logout_request {
-                    let login = outcome.auth_login_request;
+                // ACTIONS の永続化要求（doc 57 Phase 4）。watch は latest-wins なので、
+                // 打鍵ごとに来ても debounce task が静まった 1 回だけを daemon へ撃つ。
+                if let Some(payload) = outcome.actions_persist_request {
+                    let _ = actions_persist_tx.send(Some(payload));
+                }
+                if outcome.auth_login_request.is_some() || outcome.auth_logout_request.is_some() {
+                    let login_target = outcome.auth_login_request.clone();
+                    let logout_target = outcome.auth_logout_request.clone();
                     let conn = daemon_conn.clone();
                     let rt = rt_handle.clone();
                     rt_handle.spawn(async move {
-                        let flow = rt.spawn_blocking(move || {
-                            if login {
-                                crate::auth_flow::run_login_blocking()
-                            } else {
-                                crate::auth_flow::run_logout_blocking()
-                            }
+                        let flow = rt.spawn_blocking(move || match login_target {
+                            Some(t) => crate::auth_flow::run_login_blocking(&t),
+                            None => crate::auth_flow::run_logout_blocking(
+                                logout_target.as_deref().unwrap_or(""),
+                            ),
                         });
                         // false = キャンセル / 失敗 / 二重起動 → credentials 不変なので反映不要。
                         if !matches!(flow.await, Ok(true)) {

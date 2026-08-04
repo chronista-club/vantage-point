@@ -139,6 +139,11 @@ pub struct DaemonState {
     /// L2 (doc 27 §5-3): event log（agent の episodic memory）。always-on daemon が in-memory ring で
     /// 保持し、"events" channel の emit/query と auto-feed task（process lifecycle → event）が共有する。
     pub event_log: super::event_log::EventLog,
+    /// ACTIONS の cache（doc 57）— `AppState.creo_actions` と**同一 Arc**。
+    ///
+    /// 読み（30s poller）と書き（`daemon-control.actions/save`）が同じ実体を触るために plumb する。
+    /// 別々に作ると「書いたのに `/api/health` に出ない」= 入口ごとに別の真実になる。
+    pub creo_actions: crate::creo::client::CreoActionsCache,
 }
 
 impl Default for DaemonState {
@@ -165,6 +170,7 @@ impl Default for DaemonState {
             delivery_notify: None,
             delegation_store: None,
             event_log: super::event_log::EventLog::new(),
+            creo_actions: crate::creo::client::CreoActionsCache::new(),
         }
     }
 }
@@ -188,6 +194,16 @@ impl DaemonState {
         self.repos = Some(repos);
         self.lane_registry = Some(lane_registry);
         self.process_presence = Some(process_presence);
+        self
+    }
+
+    /// ACTIONS の cache を daemon process の `AppState` と共有する（doc 57 Phase 4）。
+    ///
+    /// 読み（30s poller → `/api/health`）と書き（`daemon-control.actions/save`）が
+    /// **同じ実体**を触るために要る。渡し忘れると書きが空の cache に書き込んで、
+    /// sidebar には poller の結果だけが出る（= 書いたのに戻る）。
+    pub fn with_creo_actions(mut self, cache: crate::creo::client::CreoActionsCache) -> Self {
+        self.creo_actions = cache;
         self
     }
 
@@ -332,8 +348,20 @@ pub(crate) async fn registry_process_snapshot(
 ///
 /// `pub(crate)` なのは同 crate のテストから直接叩くため（Unison 経路を実際に張らずに
 /// dispatch の振る舞いを固定する）。
+/// `handle_daemon_control` に渡す DeviceRegistry handle。
+///
+/// ⚠️ **cfg を呼び手へ漏らさないための alias**。`midi` feature 無しの build でも同じ arity で
+/// 呼べるようにしてある（呼び手が `#[cfg]` で分岐すると、test helper まで二重化する）。
+#[cfg(feature = "midi")]
+pub(crate) type MidiDevices = Option<Arc<RwLock<crate::devices::DeviceRegistry>>>;
+/// midi 無し build では中身を持たない（常に `None`）。
+#[cfg(not(feature = "midi"))]
+pub(crate) type MidiDevices = Option<()>;
+
 pub(crate) async fn handle_daemon_control(
     daemon_cap: &Arc<RwLock<crate::capability::RepoManagerCapability>>,
+    creo_actions: &crate::creo::client::CreoActionsCache,
+    machine_devices: &MidiDevices,
     method: &str,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -645,6 +673,49 @@ pub(crate) async fn handle_daemon_control(
         "hub/reconnect" => {
             crate::daemon::hub_client::request_hub_reconnect();
             Ok(serde_json::json!({ "ok": true }))
+        }
+        // 艦隊スイッチ（MIDI hold switch）— VP が機材を握るか、他アプリへ譲るか。
+        //
+        // CoreMIDI の物理 port は単一 owner なので、daemon が握っている間は ladyland 等が
+        // 同じ機材を開けない。`enabled` 省略 = 現状の読み取りだけ（status）。
+        //
+        // ⚠️ registry（device 一覧）は OFF でも保つ。**握らなくなるだけで、見えなくならない**。
+        "devices/midi" => {
+            #[cfg(feature = "midi")]
+            {
+                let Some(devices) = machine_devices.as_ref() else {
+                    return Err("devices/midi: DeviceRegistry 不在（daemon mode のみ）".to_string());
+                };
+                if let Some(enabled) = payload.get("enabled").and_then(|v| v.as_bool()) {
+                    devices.write().await.set_midi_enabled(enabled).await;
+                }
+                let reg = devices.read().await;
+                Ok(serde_json::json!({
+                    "enabled": reg.midi_enabled(),
+                    "devices": reg.device_count().await,
+                }))
+            }
+            #[cfg(not(feature = "midi"))]
+            {
+                let _ = payload;
+                // midi 抜きの build は最初から握っていない = 常に「譲っている」と等価。
+                Ok(serde_json::json!({ "enabled": false, "devices": 0, "feature": false }))
+            }
+        }
+        // ACTIONS の永続化（doc 57 Phase 4）。sidebar の編集を creo-memories へ書く。
+        //
+        // **書き手が cache の持ち主である**ことが要点 — vp-app が creo を直に叩くと、daemon の
+        // cache が最大 30s 古いまま push を続けて「書いたのに戻る」が起きる。ここで書けば
+        // write-through で cache も同時に進む。
+        //
+        // ⚠️ `removed` に**明示された id だけ**が消える。`items` の不在からは決して削除しない
+        // （webview の一覧は push 到着前に短く見えることがあり、推論すると全消しになる）。
+        "actions/save" => {
+            let write: crate::creo::client::ActionsWrite = serde_json::from_value(payload)
+                .map_err(|e| format!("actions/save の payload: {e}"))?;
+            let saved = creo_actions.save(&write).await.map_err(|e| e.to_string())?;
+            // `saved: false` = creo 未ログイン。error ではない（sidebar は local のまま動く）。
+            Ok(serde_json::json!({ "ok": true, "saved": saved }))
         }
         // F1b heartbeat: surface (vp-app) の共有 connection liveness probe。 client→server の
         // 一方向で、 server は応答するだけ (世界状態に触れない no-op)。 vp-app の
@@ -1915,22 +1986,29 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                 let b = devices.read().await;
                                 std::sync::Arc::clone(b.devices())
                             };
-                            let snapshot: Vec<crate::daemon::protocol::DeviceEvent> = {
+                            let entries: Vec<(String, bool, bool)> = {
                                 let devs = devices_arc.read().await;
                                 devs.values()
-                                    .map(|d| {
-                                        crate::daemon::protocol::DeviceEvent::DeviceConnected {
-                                            port_name: d.port_name.clone(),
-                                            has_input: d.has_input,
-                                            has_output: d.has_output,
-                                        }
-                                    })
+                                    .map(|d| (d.port_name.clone(), d.has_input, d.has_output))
                                     .collect()
                             };
-                            for device_event in snapshot {
-                                let Ok(payload) = serde_json::to_value(&device_event) else {
-                                    continue;
-                                };
+                            // ⚠️ hold 状態を**この snapshot にも載せる**。載せないと、GUI を開き直した
+                            // 直後だけ計器が空になり、次の hot-plug まで「掴んでいるか」が出ない
+                            // （delta 側にだけ足すと再接続の窓で必ず抜ける）。
+                            let mut snapshot: Vec<serde_json::Value> = Vec::new();
+                            for (port_name, has_input, has_output) in entries {
+                                let (held, reason) =
+                                    devices.read().await.hold_state(&port_name).await;
+                                snapshot.push(serde_json::json!({
+                                    "kind": "device_connected",
+                                    "port_name": port_name,
+                                    "has_input": has_input,
+                                    "has_output": has_output,
+                                    "held": held,
+                                    "hold_reason": reason,
+                                }));
+                            }
+                            for payload in snapshot {
                                 if channel.send_event("event", &payload).await.is_err() {
                                     return Ok(()); // client 切断
                                 }
@@ -2227,10 +2305,19 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // 別 channel にする。 daemon_cap 不在 (= 非 daemon mode) なら登録しない。
     if let Some(ref daemon_cap) = state.daemon_cap {
         let daemon_cap = daemon_cap.clone();
+        // ACTIONS の cache は AppState と同一 Arc（`with_creo_actions` で plumb 済）。
+        let creo_actions = state.creo_actions.clone();
+        // 艦隊スイッチ（`devices/midi`）の宛先。midi 無し build では常に None。
+        #[cfg(feature = "midi")]
+        let machine_devices: MidiDevices = state.devices.clone();
+        #[cfg(not(feature = "midi"))]
+        let machine_devices: MidiDevices = None;
         server
             .register_channel("daemon-control", {
                 move |_ctx, stream| {
                     let daemon_cap = daemon_cap.clone();
+                    let creo_actions = creo_actions.clone();
+                    let machine_devices = machine_devices.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
                         loop {
@@ -2246,11 +2333,18 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                             let request_id = msg.id;
                             // 成功時 result JSON、 失敗時は success frame に {"error": ...}
                             // を詰める (= Unison は専用 error frame を持たない、 VP-163 慣習)。
-                            let response =
-                                match handle_daemon_control(&daemon_cap, &method, payload).await {
-                                    Ok(v) => v,
-                                    Err(e) => serde_json::json!({ "error": e }),
-                                };
+                            let response = match handle_daemon_control(
+                                &daemon_cap,
+                                &creo_actions,
+                                &machine_devices,
+                                &method,
+                                payload,
+                            )
+                            .await
+                            {
+                                Ok(v) => v,
+                                Err(e) => serde_json::json!({ "error": e }),
+                            };
                             if channel
                                 .send_response(request_id, &method, &response)
                                 .await
@@ -2464,6 +2558,24 @@ mod tests {
         Arc::new(RwLock::new(crate::capability::RepoManagerCapability::new()))
     }
 
+    /// dispatch の薄い wrapper。ここの test は repos / lanes の面だけを見るので、
+    /// ACTIONS の cache は毎回まっさらな物を渡す（`actions/save` の検証は
+    /// `creo::client` 側の unit test が持つ）。
+    async fn control(
+        cap: &Arc<RwLock<crate::capability::RepoManagerCapability>>,
+        method: &str,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        handle_daemon_control(
+            cap,
+            &crate::creo::client::CreoActionsCache::new(),
+            &None,
+            method,
+            payload,
+        )
+        .await
+    }
+
     // =====================================================================
     // QUIC liveness watchdog — probe の故障検知方向 (safety-critical)
     //
@@ -2501,7 +2613,7 @@ mod tests {
         let path = std::env::temp_dir().to_string_lossy().to_string();
 
         // add → 追加された RepoInfo が返る
-        let added = handle_daemon_control(
+        let added = control(
             &cap,
             "repos/add",
             serde_json::json!({"name": "wc-test", "path": path}),
@@ -2511,7 +2623,7 @@ mod tests {
         assert_eq!(added["name"], "wc-test");
 
         // list に反映される
-        let list = handle_daemon_control(&cap, "repos/list", serde_json::json!({}))
+        let list = control(&cap, "repos/list", serde_json::json!({}))
             .await
             .expect("list ok");
         let arr = list.as_array().expect("list is array");
@@ -2521,10 +2633,10 @@ mod tests {
         );
 
         // remove (add と同じ path → 同じ正規化キーで削除)
-        handle_daemon_control(&cap, "repos/remove", serde_json::json!({"path": path}))
+        control(&cap, "repos/remove", serde_json::json!({"path": path}))
             .await
             .expect("remove ok");
-        let list2 = handle_daemon_control(&cap, "repos/list", serde_json::json!({}))
+        let list2 = control(&cap, "repos/list", serde_json::json!({}))
             .await
             .expect("list ok");
         assert!(list2.as_array().unwrap().is_empty(), "remove 後は空になる");
@@ -2533,7 +2645,7 @@ mod tests {
     #[tokio::test]
     async fn daemon_control_unknown_method_errors() {
         let cap = new_daemon_cap();
-        let r = handle_daemon_control(&cap, "repos/bogus", serde_json::json!({})).await;
+        let r = control(&cap, "repos/bogus", serde_json::json!({})).await;
         assert!(r.is_err(), "未知 method は Err");
     }
 
@@ -2556,7 +2668,7 @@ mod tests {
     async fn daemon_control_repos_update_applies_rename_and_enabled() {
         let path = std::env::temp_dir().to_string_lossy().to_string();
         let cap = new_daemon_cap();
-        handle_daemon_control(
+        control(
             &cap,
             "repos/add",
             serde_json::json!({"name": "update-target", "path": path}),
@@ -2564,7 +2676,7 @@ mod tests {
         .await
         .expect("add ok");
 
-        handle_daemon_control(
+        control(
             &cap,
             "repos/update",
             serde_json::json!({"path": path, "name": "renamed", "enabled": false}),
@@ -2572,15 +2684,14 @@ mod tests {
         .await
         .expect("update ok");
 
-        let after = handle_daemon_control(&cap, "repos/list", serde_json::json!({}))
+        let after = control(&cap, "repos/list", serde_json::json!({}))
             .await
             .expect("list ok");
         assert_eq!(after[0]["name"], "renamed", "rename が効いている");
         assert_eq!(after[0]["enabled"], false, "disable が効いている");
 
         // 「何も指定しない update」は Err（黙って成功にしない）。旧 HTTP の 400 と同じ意味論。
-        let empty =
-            handle_daemon_control(&cap, "repos/update", serde_json::json!({"path": path})).await;
+        let empty = control(&cap, "repos/update", serde_json::json!({"path": path})).await;
         assert_eq!(
             empty.unwrap_err(),
             "No fields to update",
@@ -2653,7 +2764,7 @@ mod tests {
         ];
 
         for (payload, expected) in cases {
-            let resp = handle_daemon_control(&cap, "lanes/list", payload.clone())
+            let resp = control(&cap, "lanes/list", payload.clone())
                 .await
                 .expect("lanes/list ok");
             let names: Vec<&str> = resp["lanes"]
@@ -2675,7 +2786,7 @@ mod tests {
     #[tokio::test]
     async fn daemon_control_repos_sync_returns_removed_list() {
         let cap = new_daemon_cap();
-        let resp = handle_daemon_control(&cap, "repos/sync", serde_json::json!({}))
+        let resp = control(&cap, "repos/sync", serde_json::json!({}))
             .await
             .expect("sync ok");
         assert_eq!(resp["removed"], serde_json::json!([]), "ghost 無しなら空");
@@ -2727,7 +2838,7 @@ mod tests {
 
         let cap = new_daemon_cap();
         for (name, path) in [("alpha", &first), ("beta", &second)] {
-            handle_daemon_control(
+            control(
                 &cap,
                 "repos/add",
                 serde_json::json!({"name": name, "path": path}),
@@ -2737,7 +2848,7 @@ mod tests {
         }
 
         // 逆順に並べ替える。
-        handle_daemon_control(
+        control(
             &cap,
             "repos/reorder",
             serde_json::json!({ "paths": [second, first] }),
@@ -2745,7 +2856,7 @@ mod tests {
         .await
         .expect("reorder ok");
 
-        let list = handle_daemon_control(&cap, "repos/list", serde_json::json!({}))
+        let list = control(&cap, "repos/list", serde_json::json!({}))
             .await
             .expect("list ok");
         let names: Vec<&str> = list
@@ -2769,7 +2880,7 @@ mod tests {
             ("lanes/set_active", serde_json::json!({"path": "/tmp"})),
         ] {
             assert!(
-                handle_daemon_control(&cap, method, payload).await.is_err(),
+                control(&cap, method, payload).await.is_err(),
                 "{method} は必須 field 欠落を Err にする"
             );
         }
@@ -2802,7 +2913,7 @@ mod tests {
     async fn daemon_control_add_missing_field_errors() {
         let cap = new_daemon_cap();
         // name 欠落 → Err
-        let r = handle_daemon_control(&cap, "repos/add", serde_json::json!({"path": "/tmp"})).await;
+        let r = control(&cap, "repos/add", serde_json::json!({"path": "/tmp"})).await;
         assert!(r.is_err(), "name 欠落は Err");
     }
 

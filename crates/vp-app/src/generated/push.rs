@@ -83,6 +83,13 @@ pub struct BoardMessage {
     pub message: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DebuglogLines {
+    pub source: String,
+    pub reset: bool,
+    pub lines: Vec<String>,
+}
+
 /// Envelope enum for channel "push" — a discriminated union over its
 /// events, internally tagged by the "t" field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,4 +121,6 @@ pub enum PushEventEnvelope {
     InkSnapshotError(InkSnapshotError),
     #[serde(rename = "board:message")]
     BoardMessage(BoardMessage),
+    #[serde(rename = "debuglog:lines")]
+    DebuglogLines(DebuglogLines),
 }
