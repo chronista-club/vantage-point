@@ -19,6 +19,7 @@
  *   （PR-2 / PR-3 で実描画に繋ぐ予定が据え置き）。Rust 側は撃っているので、繋げば出る。
  */
 import { applySidebarState } from './store'
+import { applyActionsFromDaemon, setActionPersist } from './actions-panel/store'
 import type { SidebarState } from '../generated/SidebarState'
 import type { IpcEnvelope } from '../generated/SidebarIpc'
 import { installSidebarDispatch } from './dispatch'
@@ -80,10 +81,30 @@ export function installIpcBridge(): void {
     console.debug('[vp-sidebar] handleAgentsResult (stub):', msg)
   window.setClonePath ??= (path) => console.debug('[vp-sidebar] setClonePath (stub):', path)
 
+  // ACTIONS の永続の実体を差す（doc 57 Phase 4）。ここまで `actions-panel/store.ts` は
+  // 永続先を知らずに動いていた（Phase 1 は seam が null = リロードで消える）。
+  // Rust 側が 400ms coalesce するので、打鍵ごとに撃って構わない。
+  setActionPersist((payload) =>
+    sendIpc({
+      t: 'actions:persist',
+      // `readonly` は wire に無い概念なので複製して渡す（schema 生成型は可変配列）。
+      items: payload.items.map((i) => ({ ...i })),
+      removed: [...payload.removed],
+    }),
+  )
+
   installSidebarDispatch({
     // state の形の持ち主は Rust の `SidebarState`（ts-rs 生成）。envelope は「どの窓口へ
     // 届けるか」だけを型にしているので、中身はここでその 1 つの定義に落とす。
-    state: (state) => applySidebarState(state as SidebarState),
+    state: (state) => {
+      const next = state as SidebarState
+      applySidebarState(next)
+      // ACTIONS だけは sidebar store の外（`actions-panel/store.ts` の signal）に住む —
+      // 木の書き換えを user 入力が直に行う面なので、Rust の mirror に混ぜると
+      // `reconcile` が編集中の行ごと差し戻す。**版が変わった時だけ**取り込む
+      // （doc 57 Phase 3、判断は `applyActionsFromDaemon` に閉じている）。
+      applyActionsFromDaemon(next.activity?.actions, next.activity?.actions_rev)
+    },
     error: (message) => window.renderError?.(message),
     performerCreateResult: (repo_path, name, error) =>
       window.handleAddPerformerResult?.({ repo_path, name, error }),

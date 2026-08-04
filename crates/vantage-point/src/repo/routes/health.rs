@@ -62,6 +62,17 @@ pub struct HealthResponse {
     /// Login / Logout ボタンの切替に使う。additive field — 旧 client は無視するだけで壊れない。
     #[serde(skip_serializing_if = "str::is_empty")]
     pub hub_auth: &'static str,
+    /// **宛先ごとの credential 状態**（`"hub"` / `"creo"` → `"valid"` | `"expired"` | `"none"`）。
+    ///
+    /// ⚠️ `hub_auth` とは別物。あちらは「hub 接続がどう成立したか」= 接続の副産物で、
+    /// **hub に繋いでいないと何も分からない**。こちらは `~/.vp/credentials.json` を読むだけの
+    /// local 判定なので、hub federation を切っていても「creo にログイン済みか」が言える
+    /// （doc 57 Phase 2 の Creo ID 行が hub から独立するのに要る）。
+    ///
+    /// 「local に有効な token を持っている」までしか主張しない — 実際に通るかは相手が決める。
+    /// additive field、旧 client は無視するだけ。
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub auth_targets: std::collections::BTreeMap<String, String>,
     /// L1 lifecycle (Phase C): Daemon 配下の repo presence 一覧（vp-app sidebar の ●◐○ 表示用）。
     /// daemon-canonical（doc 27 §3.2 / Model Q）。daemon mode のみ Some、repo mode では None。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -73,6 +84,14 @@ pub struct HealthResponse {
     /// 最新 release version（cache 未取得なら omit）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_version: Option<String>,
+    /// ACTIONS（doc 57 Phase 3）— daemon の 30s poller が creo-memories から温めた cache 由来で、
+    /// 本 handler は network を発行しない。repo mode / 未取得は空配列。
+    pub actions: Vec<crate::creo::client::CreoAction>,
+    /// ACTIONS の版。**内容が変わった時だけ**上がる。`0` = 一度も取得していない。
+    ///
+    /// vp-app 側はこの値が変わった時だけ sidebar に当てる。5s ごとに同じ一覧を当て直すと、
+    /// **編集中の行を書き戻して caret が飛ぶ**（`<Index>` は位置キーイングなので値だけ差し戻る）。
+    pub actions_rev: u32,
 }
 
 // L0 portless B-4 (wire-unison): repo `/api/wire/*` HTTP proxy handler (wire_send/recv/unread-count/
@@ -140,11 +159,19 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
                     let b = devices.read().await;
                     let count = b.device_count().await;
                     let discovering = b.is_discovering();
+                    // 艦隊スイッチ: OFF は「device が居ない」ではなく「**握っていない**」。
+                    // 一覧は保つので count は落とさず、status で区別する（他アプリへ譲っている状態）。
+                    let enabled = b.midi_enabled();
                     (
-                        if count > 0 { "active" } else { "idle" },
+                        match (enabled, count > 0) {
+                            (false, _) => "released",
+                            (true, true) => "active",
+                            (true, false) => "idle",
+                        },
                         Some(serde_json::json!({
                             "devices": count,
                             "discovering": discovering,
+                            "midi_enabled": enabled,
                         })),
                     )
                 } else {
@@ -190,13 +217,20 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
                 let b = devices.read().await;
                 let count = b.device_count().await;
                 let discovering = b.is_discovering();
+                // 艦隊スイッチ（repo mode 側と同じ規律 — OFF は「握っていない」）。
+                let enabled = b.midi_enabled();
                 map.insert(
                     "devices".to_string(),
                     ServiceStatus {
-                        status: if count > 0 { "active" } else { "idle" },
+                        status: match (enabled, count > 0) {
+                            (false, _) => "released",
+                            (true, true) => "active",
+                            (true, false) => "idle",
+                        },
                         detail: Some(serde_json::json!({
                             "devices": count,
                             "discovering": discovering,
+                            "midi_enabled": enabled,
                         })),
                     },
                 );
@@ -235,6 +269,9 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         None => (false, None),
     };
 
+    // ACTIONS: 30s poller が温めた cache を読むだけ（network なし）。
+    let actions_snapshot = state.creo_actions.get();
+
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
@@ -246,10 +283,42 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         hub: state.hub_status.get().as_str(),
         hub_nodes,
         hub_auth: state.hub_auth.get().as_str(),
+        auth_targets: auth_target_states(),
         processes,
         update_available,
         latest_version,
+        actions: actions_snapshot.items,
+        actions_rev: actions_snapshot.rev,
     })
+}
+
+/// 宛先ごとの credential 状態を local file から判定する（network を叩かない純粋な読み取り）。
+///
+/// 値は `"valid"` / `"expired"` / `"none"` の 3 値。**「持っているか」までしか言わない** —
+/// 実際にその token が通るかは相手の API が決めるので、ここで「認証済み」とは主張しない。
+/// file が壊れている / 読めない場合も `"none"`（= 使えない）に倒す（fail-closed）。
+fn auth_target_states() -> std::collections::BTreeMap<String, String> {
+    use crate::commands::auth::AuthTarget;
+    let store = crate::commands::auth::read_store().unwrap_or_default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    [AuthTarget::Hub, AuthTarget::Creo]
+        .into_iter()
+        .map(|t| {
+            let state = match store.get(&t.audience()) {
+                None => "none",
+                // expires_at 不明は valid 扱い（`Credentials::is_expired` と同じ規律 —
+                // 分からないものを期限切れと決めつけない）。
+                Some(c) => match c.expires_at {
+                    Some(exp) if exp <= now => "expired",
+                    _ => "valid",
+                },
+            };
+            (t.label().to_string(), state.to_string())
+        })
+        .collect()
 }
 
 // L0 portless Group B: pane HTTP handler (show/toggle/split/close) は CLI を repo-proxy ask
@@ -388,6 +457,19 @@ mod tests {
         assert!(
             body.get("latest_version").is_none(),
             "latest_version は cache 未取得時 omit"
+        );
+        // ACTIONS（doc 57 Phase 3）: test/repo mode は poller を持たないので空 + rev 0。
+        // **常時 serialize** を固定する — omit すると vp-app 側で「未取得」と「0 件」の
+        // 区別が付かなくなる（rev 0 が「当てない」の印そのもの）。
+        assert_eq!(
+            body.get("actions").and_then(|v| v.as_array()).map(Vec::len),
+            Some(0),
+            "actions field 必須 (repo/test mode は空配列)"
+        );
+        assert_eq!(
+            body.get("actions_rev").and_then(|v| v.as_u64()),
+            Some(0),
+            "actions_rev field 必須 (未取得 = 0)"
         );
     }
 }

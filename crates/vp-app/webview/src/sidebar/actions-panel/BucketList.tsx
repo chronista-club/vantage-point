@@ -219,15 +219,15 @@ export const ACTIONS_CSS = `
 .vp-act-text::placeholder{color:var(--lg-mute-2,#38525b);}
 /* チェックと道具は 1 行目の高さに揃える（flex-start の相方）。 */
 .vp-act-check{margin-top:3px;}
-.vp-act-copy,.vp-act-del{margin-top:1px;}
+.vp-act-copy,.vp-act-link,.vp-act-del{margin-top:1px;}
 .vp-act-remain{flex:0 0 auto;font-size:var(--sb-text-micro,10px);
   color:var(--lg-mute-2,#38525b);font-variant-numeric:tabular-nums;}
 /* 行の道具（コピー / 削除）は hover で現れる。常時出すと 280px の行が道具で埋まる。 */
-.vp-act-copy,.vp-act-del{flex:0 0 auto;display:inline-flex;align-items:center;padding:1px 2px;
+.vp-act-copy,.vp-act-link,.vp-act-del{flex:0 0 auto;display:inline-flex;align-items:center;padding:1px 2px;
   border:none;background:transparent;color:var(--lg-mute-2,#38525b);cursor:pointer;
   border-radius:3px;opacity:0;transition:opacity .12s ease,color .12s ease;}
-.vp-act-row:hover .vp-act-copy,.vp-act-row:hover .vp-act-del{opacity:1;}
-.vp-act-copy:hover{color:var(--lg-hot,#EAFBFF);}
+.vp-act-row:hover .vp-act-copy,.vp-act-row:hover .vp-act-link,.vp-act-row:hover .vp-act-del{opacity:1;}
+.vp-act-copy:hover,.vp-act-link:hover{color:var(--lg-hot,#EAFBFF);}
 /* コピー済みの一瞬だけ点く（hover していなくても見える = 押した手応え）。 */
 .vp-act-copy.copied{opacity:1;color:var(--lg-cyan-dim,#1C6C7C);}
 .vp-act-del:hover{color:var(--sb-conn-hitl,#FF4A2D);}
@@ -241,5 +241,5 @@ export const ACTIONS_CSS = `
 .vp-act-add:hover{background:#ffffff06;color:var(--lg-mute,#5C7A85);}
 
 @media (prefers-reduced-motion:reduce){
-  .vp-act-caret,.vp-act-check,.vp-act-add,.vp-act-del{transition:none;}}
+  .vp-act-caret,.vp-act-check,.vp-act-add,.vp-act-link,.vp-act-del{transition:none;}}
 `;

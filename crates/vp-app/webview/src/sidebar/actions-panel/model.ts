@@ -87,6 +87,18 @@ export interface ActionItem extends OutlinerNode {
 	order: string;
 }
 
+/**
+ * VP が採番した id か（= creo にまだ上がっていない）。
+ *
+ * ⚠️ **Rust の `creo::client::is_local_id` と対の述語**。片方だけ直すと、`act-` 付きの行が
+ * 「既存」と読まれて PUT が 404 になる（軽症）か、creo の id が「新規」と読まれて
+ * **同じ Action の memory が書くたびに増える**（重症）。増える側に倒さないため、
+ * **両側とも「`act-` で始まるものだけを local と見る」**で揃えてある。
+ */
+export function isLocalId(id: string): boolean {
+	return id.startsWith("act-");
+}
+
 /** 1 行目 = タイトル。空なら空文字（placeholder は描画側が出す）。 */
 export function titleOf(item: Pick<ActionItem, "text">): string {
 	const nl = item.text.indexOf("\n");

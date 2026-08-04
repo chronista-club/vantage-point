@@ -24,9 +24,19 @@ import { copyText } from "../../../clipboard";
 import {
 	type ActionItem,
 	actKeyIntent,
+	isLocalId,
 	remainingOf,
 	titleOf,
 } from "./model";
+import { beginEditing, endEditing } from "./store";
+
+/**
+ * creo の memory permalink の base（出口②、doc 57 §0）。
+ *
+ * `chatview.tsx` の `CREO_MEMORY_BASE` と同じ値を持つ。daemon 側の `VP_CREO_URL`
+ * （API の宛先を dev で差し替える env）とは**別物** — こちらは人が開く公開 URL。
+ */
+const CREO_MEMORY_BASE = "https://app.creo-memories.in/m/";
 
 /** 行に focus を移す。描画の後に走らせる要があるので `queueMicrotask` 越し。 */
 export function focusActionRow(id: string): void {
@@ -157,10 +167,25 @@ export function ActionRow(props: ActionRowProps) {
 		const text = props.item.text.trim();
 		if (text === "") return;
 		copyText(text);
+		flashCopied();
+	};
+
+	// 出口②（doc 57 §0 / Phase 4）: creo の permalink をコピーする。
+	// **creo に上がった行にだけ出す** — local id の行はまだ URL を持たない
+	//（blur すれば上がるので、その次の push でボタンが現れる）。
+	const permalink = () => (isLocalId(props.item.id) ? null : `${CREO_MEMORY_BASE}${props.item.id}`);
+	const copyUrl = () => {
+		const url = permalink();
+		if (!url) return;
+		copyText(url);
+		flashCopied();
+	};
+
+	function flashCopied(): void {
 		setCopied(true);
 		if (copiedTimer) clearTimeout(copiedTimer);
 		copiedTimer = window.setTimeout(() => setCopied(false), 900);
-	};
+	}
 
 	return (
 		<div
@@ -192,12 +217,19 @@ export function ActionRow(props: ActionRowProps) {
 					autoSize(e.currentTarget, true);
 					props.onText(e.currentTarget.value);
 				}}
-				onFocus={(e) => autoSize(e.currentTarget, true)}
+				onFocus={(e) => {
+					autoSize(e.currentTarget, true);
+					// 編集中の行は daemon push から守る（往復前の古い値で上書きさせない）。
+					beginEditing(props.item.id);
+				}}
 				onBlur={(e) => {
 					autoSize(e.currentTarget, false);
 					// 何も書かずに抜けた行は残さない。⌘b で開いて「やっぱりやめた」が
 					// 空行として溜まると、捕捉バッファがすぐゴミで埋まる。
 					if (e.currentTarget.value.trim() === "") props.onAbandon();
+					// 「書き終えた」の合図。**書きかけの新規行はここで初めて creo へ上がる**
+					//（編集中は id が差し替わらないよう payload から外してある）。
+					endEditing(props.item.id);
 				}}
 				onCompositionStart={() => {
 					composing = true;
@@ -229,10 +261,23 @@ export function ActionRow(props: ActionRowProps) {
 				<CreoIcon name={copied() ? "ph:check" : "ph:copy"} size={9} />
 			</button>
 
+			{/* 出口②: creo の permalink。creo に上がっている行だけに出る。 */}
+			<Show when={permalink() !== null}>
+				<button
+					type="button"
+					class="vp-act-link"
+					title="URL をコピー — creo の memory を指す"
+					onClick={copyUrl}
+				>
+					<CreoIcon name="ph:link" size={9} />
+				</button>
+			</Show>
+
+			{/* ⚠️ creo の memory ごと消える（mako 裁定 2026-08-04）。取り消せない。 */}
 			<button
 				type="button"
 				class="vp-act-del"
-				title="削除"
+				title="削除 — creo の memory ごと消える"
 				onClick={() => props.onRemove()}
 			>
 				<CreoIcon name="ph:x" size={9} />

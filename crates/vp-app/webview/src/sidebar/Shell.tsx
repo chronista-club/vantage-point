@@ -647,6 +647,11 @@ html,body{margin:0;height:100%;overflow:hidden;}
   background:#ffffff08;color:var(--lg-mute,#5C7A85);
   font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-variant-numeric:tabular-nums;}
+/* 艦隊スイッチ OFF（vp midi off）— 機材を他アプリへ譲っている状態。
+   ⚠️ 警告色（赤）にはしない。**壊れていない、user が意図して貸している**ので、
+   「今そうなっている」が読めれば十分（黄 = 人が関与している状態の既存語彙）。 */
+.vp-agent-badge.released{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 88%);
+  color:var(--sb-conn-auto,#FFF76B);font-family:inherit;letter-spacing:.04em;}
 
 /* Lane 行 右クリック context menu (VP-204 PR-1、 singleton popup) */
 .vp-ctx-backdrop{position:fixed;inset:0;z-index:9998;}

@@ -8,4 +8,25 @@ export type DeviceSnapshot = {
 /**
  * CoreMIDI port の displayName (registry の一意キー)
  */
-port_name: string, has_input: boolean, has_output: boolean, };
+port_name: string, has_input: boolean, has_output: boolean, 
+/**
+ * VP が今この port を**掴んでいるか**（艦隊スイッチ / parser 対応 / ROTO 常駐の合成）。
+ * 旧 daemon は field 不在 → false（安全側 = 掴んでいない扱い）。
+ */
+held: boolean, 
+/**
+ * 掴んでいない理由。`"released"`（`vp midi off` で譲渡中）/ `"unsupported"`（VP に parser が
+ * 無い = 最初から取り合っていない）/ `"idle"`。
+ *
+ * ⚠️ **bool に潰さない** — 「VP が邪魔している」と「元々関与していない」は user の次の
+ * 一手が正反対になる（前者は `vp midi on`、後者は何もしなくていい）。
+ */
+hold_reason: string, 
+/**
+ * 最後にこの機材が**触られた**時刻（ISO 8601、秒精度）。`None` = 観測していない。
+ *
+ * ⚠️ **掴んでいない間は原理的に分からない**（listener が無い = 入力が届かない）。
+ * 譲渡中に「触られていない」と表示すると嘘になるので、`held == false` の間は
+ * 更新されないまま古い値が残る — 描画側はそれを「—（見ていない）」として扱う。
+ */
+last_input_at?: string | null, };

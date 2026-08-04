@@ -177,6 +177,13 @@ vp db init|path|status # embedded SurrealDB 管理
 vp auth me|login|logout  # Creo ID 認証
 vp pane / vp file      # ペイン操作 / ファイル監視
 vp midi monitor|ports  # MIDI（feature = "midi" ビルドのみ）
+vp midi off|on|status  # 艦隊スイッチ — VP が MIDI 機材を握るか、他アプリ（ladyland 等）へ譲るか。
+                       # CoreMIDI の物理 port は**単一 owner**なので、daemon が握っている間は
+                       # 他アプリが同じ機材を開けない。off で input listener / output 接続 /
+                       # ROTO 常駐を全部離す。⚠️ **状態は daemon 再起動をまたいで保つ**
+                       # （state zone の `midi-switch.json`）— 開発中に `app:swap` しても
+                       # port を奪い返さないため。現状は `/api/health` の
+                       # `services.devices`（status = "released" / `midi_enabled`）にも出る
 vp midi lpd8 write|switch|ports|demo  # demo = mk2 フル RGB pad 投影
 vp midi xtouch demo|wave  # X-Touch (MCU) 実機 smoke / フェーダー wave
 vp midi roto demo|anim|probe  # ROTO-CONTROL 実機 smoke / BPM 同期アニメ / handshake 観察

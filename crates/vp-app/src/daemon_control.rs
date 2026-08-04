@@ -162,6 +162,27 @@ impl DaemonControl {
         Ok(())
     }
 
+    /// ACTIONS を creo-memories へ永続化する (doc 57 Phase 4)。
+    ///
+    /// **書くのは daemon** — cache の持ち主が書かないと、書いた直後の `/api/health` が
+    /// 最大 30s 古い一覧を返して「編集が戻る」ように見える。daemon 側は write-through で
+    /// cache も同時に進めるので、次の push には書いた結果が乗る。
+    ///
+    /// ⚠️ `removed` に**明示された id だけ**が消える。`items` に無いことを削除と読まない
+    /// (webview の一覧は push 到着前に短く見えることがある)。
+    pub async fn save_actions(
+        &self,
+        items: Vec<serde_json::Value>,
+        removed: Vec<String>,
+    ) -> Result<()> {
+        self.control(
+            "actions/save",
+            serde_json::json!({ "items": items, "removed": removed }),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// repo を登録解除する (旧 `POST /api/daemon/repos/remove`)。
     ///
     /// daemon の `remove_repo` は稼働中だとエラーを返すので、caller は先に

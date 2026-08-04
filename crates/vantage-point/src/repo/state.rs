@@ -163,6 +163,12 @@ pub(crate) struct AppState {
     /// 接続確立 / 切断ごとに更新する（credentialed / anonymous / unknown）。vp-app sidebar の
     /// Hub 行が Login / Logout ボタンの切替に使う。repo / test mode では `Unknown` のまま。
     pub hub_auth: crate::daemon::hub_client::HubAuthStatus,
+    /// ACTIONS の cache（`/api/health` の `actions` / `actions_rev` field、doc 57 Phase 3）。
+    ///
+    /// daemon mode では [`run_daemon`](crate::repo::server::run_daemon) が spawn する 30s poller が
+    /// creo-memories から引いて温める。repo / test mode では常に空 + `rev: 0`（= 未取得）で、
+    /// vp-app 側はそれを見て**何もしない** — sidebar は Phase 1 の local 挙動のまま残る。
+    pub creo_actions: crate::creo::client::CreoActionsCache,
     /// Interactive Claude agent (stream-json mode for structured communication)
     pub interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
     /// Processの待ち受けポート番号
@@ -453,6 +459,7 @@ pub(crate) async fn build_test_app_state_with(
         hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
         hub_nodes: crate::daemon::hub_client::HubNodesCache::new(),
         hub_auth: crate::daemon::hub_client::HubAuthStatus::new(),
+        creo_actions: crate::creo::client::CreoActionsCache::new(),
         interactive_agent: Arc::new(RwLock::new(None)),
         port: 0,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),

@@ -434,6 +434,19 @@ body.rsb-open #edge-rail{display:none !important;}
 .device-list{display:flex;flex-direction:column;gap:2px;padding:10px 16px;}
 .devices-device{display:flex;align-items:baseline;gap:10px;}
 .devices-device-io{color:var(--color-text-tertiary,#8a8fa3);font-size:.78em;letter-spacing:.06em;}
+/* 計器: 掴んでいるか（● 掴んでいる / ◌ 譲渡中 / ○ 対応外）と、最後に触られた時刻。
+   name を伸ばして状態は右寄せにする — 一覧を縦に走査したとき dot が縦一列に揃う。 */
+.devices-device-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.devices-device-hold{flex:0 0 auto;display:inline-flex;align-items:baseline;gap:4px;
+  font-size:.78em;color:var(--color-text-tertiary,#8a8fa3);}
+.devices-device-dot{font-size:.9em;line-height:1;}
+.devices-device-touch{flex:0 0 auto;min-width:5.5em;text-align:right;
+  font-size:.78em;color:var(--color-text-tertiary,#8a8fa3);font-variant-numeric:tabular-nums;}
+/* 掴んでいる = 生きている色。譲渡中は「user が意図してそうした」ので警告色にはしない
+   （壊れていない — 貸しているだけ）。対応外は最も静かに置く。 */
+.devices-device[data-hold="held"] .devices-device-hold{color:var(--lg-cyan-dim,#1C6C7C);}
+.devices-device[data-hold="released"] .devices-device-hold{color:var(--sb-conn-auto,#FFF76B);}
+.devices-device[data-hold="unsupported"] .devices-device-hold{opacity:.55;}
 .devices-empty{color:var(--color-text-tertiary,#8a8fa3);padding:10px 16px;margin:0;}
 /* board markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target)。
    font zero-start (2026-07-11): 旧 Mizolet/みぞれ 直指定を principal token に置換 (2 書体統一)。 */

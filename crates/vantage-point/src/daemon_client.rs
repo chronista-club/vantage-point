@@ -127,3 +127,43 @@ pub fn farewell_log_blocking(
     let path = repo_path.to_string();
     daemon_control_blocking(move |client| async move { client.farewell_log(&path, limit).await })
 }
+
+/// 艦隊スイッチ（`devices/midi`）の呼び出し結果。
+///
+/// ⚠️ **3 値に分ける**。[`daemon_control_blocking`] は「daemon 不在」と「daemon は居るが
+/// 応じない（method 未知 = 版ズレ）」をどちらも `None` に潰すが、user に言うべきことは
+/// 正反対になる（前者は「今は誰も握っていない」/ 後者は「**まだ握られている**」）。
+/// 潰したまま「daemon 停止中」と表示すると、古い daemon に対して嘘をつく。
+pub enum MidiSwitchCall {
+    /// daemon が応じた（実際に握り直し / 解放まで済んでいる）
+    Applied(serde_json::Value),
+    /// daemon に繋がらない（= 今は誰も MIDI を握っていない）
+    DaemonAbsent,
+    /// daemon は居るが応じない（版ズレ / feature 無し build）。**まだ握られている**
+    DaemonRefused(String),
+}
+
+/// 艦隊スイッチ（`devices/midi`）を daemon に依頼する。`enabled = None` は読むだけ（status）。
+pub fn midi_switch_blocking(enabled: Option<bool>) -> MidiSwitchCall {
+    let joined = std::thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => return MidiSwitchCall::DaemonRefused(format!("runtime 構築に失敗: {e}")),
+        };
+        rt.block_on(async move {
+            // connect 失敗だけが「daemon 不在」。RPC 側の失敗と混ぜない。
+            let Ok(client) = DaemonControlClient::connect(daemon_port(), 1).await else {
+                return MidiSwitchCall::DaemonAbsent;
+            };
+            match client.devices_midi(enabled).await {
+                Ok(v) => MidiSwitchCall::Applied(v),
+                Err(e) => MidiSwitchCall::DaemonRefused(e.to_string()),
+            }
+        })
+    })
+    .join();
+    joined.unwrap_or_else(|_| MidiSwitchCall::DaemonRefused("呼び出しが panic しました".into()))
+}

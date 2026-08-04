@@ -48,18 +48,21 @@ impl Drop for FlightGuard {
 ///
 /// `vp auth login` は default browser で authorize URL を開き、localhost callback で
 /// token を受けて `~/.vp/credentials.json` に保存して exit する。
-pub fn run_login_blocking() -> bool {
+pub fn run_login_blocking(target: &str) -> bool {
     let Some(_guard) = FlightGuard::acquire() else {
         tracing::info!("auth login: 既にフロー実行中のため click を無視");
         return false;
     };
     let vp = locate_vp_binary();
     tracing::info!(
-        "auth login: `vp auth login` を起動 (browser OAuth): {}",
+        "auth login: `vp auth login --for {}` を起動 (browser OAuth): {}",
+        target,
         vp.display()
     );
+    // ⚠️ 宛先を必ず渡す。省略すると env `VP_OIDC_AUDIENCE` の既定に落ちて**別の席**へ
+    // 保存され、「creo に Login したのに creo の token が増えない」になる。
     let child = Command::new(&vp)
-        .args(["auth", "login"])
+        .args(["auth", "login", "--for", target])
         .stdin(Stdio::null())
         .spawn();
     let mut child = match child {
@@ -89,17 +92,27 @@ pub fn run_login_blocking() -> bool {
 }
 
 /// Logout フロー本体（blocking）。確認ダイアログ → `vp auth logout`。成功 = true。
-pub fn run_logout_blocking() -> bool {
+pub fn run_logout_blocking(target: &str) -> bool {
     let Some(_guard) = FlightGuard::acquire() else {
         tracing::info!("auth logout: 既にフロー実行中のため click を無視");
         return false;
     };
+    // 宛先ごとに何が起きるかを文面で正直に言い分ける（「全部消える」と「1 つ切れる」は別物）。
+    let description = match target {
+        "hub" => {
+            "hub 向けの認証情報を削除します。hub federation は匿名接続に落ちます。よろしいですか？"
+        }
+        "creo" => {
+            "creo-memories 向けの認証情報を削除します。ACTIONS の同期が止まります。よろしいですか？"
+        }
+        _ => {
+            "保存済みの認証情報を**すべて**削除します。hub federation は匿名接続に落ち、ACTIONS の同期も止まります。よろしいですか？"
+        }
+    };
     let result = rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Info)
         .set_title("Creo ID からログアウト")
-        .set_description(
-            "保存済みの認証情報を削除します。hub federation は匿名接続に落ちます。よろしいですか？",
-        )
+        .set_description(description)
         .set_buttons(rfd::MessageButtons::OkCancel)
         .show();
     if !matches!(result, rfd::MessageDialogResult::Ok) {
@@ -107,7 +120,13 @@ pub fn run_logout_blocking() -> bool {
         return false;
     }
     let vp = locate_vp_binary();
-    match Command::new(&vp).args(["auth", "logout"]).status() {
+    // 空文字 = 宛先指定なし = 全部捨てる（CLI の `--for` 省略と同じ意味）。
+    let mut args: Vec<&str> = vec!["auth", "logout"];
+    if !target.is_empty() {
+        args.push("--for");
+        args.push(target);
+    }
+    match Command::new(&vp).args(&args).status() {
         Ok(s) if s.success() => {
             tracing::info!("auth logout: 完了 (credentials 削除済み)");
             true

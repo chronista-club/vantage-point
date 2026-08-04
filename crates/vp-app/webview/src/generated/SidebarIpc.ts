@@ -179,11 +179,21 @@ export interface UpdateApply {
   version: string;
 }
 
-/** Request "auth:login" — empty payload */
-export interface AuthLogin {}
+/** Request "auth:login" */
+export interface AuthLogin {
+  target?: string;
+}
 
-/** Request "auth:logout" — empty payload */
-export interface AuthLogout {}
+/** Request "auth:logout" */
+export interface AuthLogout {
+  target?: string;
+}
+
+/** Request "actions:persist" */
+export interface ActionsPersist {
+  items: any[];
+  removed: string[];
+}
 
 /** Event name → 生成 interface の map for "ipc" (= type-narrowing 用) */
 export type IpcChannelEventTypes = {
@@ -222,6 +232,7 @@ export type IpcChannelRequestTypes = {
   UpdateApply: { request: UpdateApply; response: void };
   AuthLogin: { request: AuthLogin; response: void };
   AuthLogout: { request: AuthLogout; response: void };
+  ActionsPersist: { request: ActionsPersist; response: void };
 };
 
 /** Channel metadata for "ipc" (= Phase 2 runtime SDK 用 type-narrowing 入力) */
@@ -255,6 +266,7 @@ export const IpcChannelMeta = {
     UpdateApply: { request: "update:apply" as const, response: "void" as const },
     AuthLogin: { request: "auth:login" as const, response: "void" as const },
     AuthLogout: { request: "auth:logout" as const, response: "void" as const },
+    ActionsPersist: { request: "actions:persist" as const, response: "void" as const },
   } as const,
   __types: undefined as unknown as { events: IpcChannelEventTypes; requests: IpcChannelRequestTypes },
 } as const;
@@ -283,7 +295,8 @@ export type IpcEnvelope =
   | ({ t: "wire:ack" } & WireAck)
   | ({ t: "update:apply" } & UpdateApply)
   | ({ t: "auth:login" } & AuthLogin)
-  | ({ t: "auth:logout" } & AuthLogout);
+  | ({ t: "auth:logout" } & AuthLogout)
+  | ({ t: "actions:persist" } & ActionsPersist);
 
 /** Envelope union for channel "ipc" — discriminated on "t". */
 export type IpcEventEnvelope =

@@ -20,6 +20,16 @@ pub enum MidiCommands {
     },
     /// 利用可能なMIDI入力ポート一覧
     Ports,
+    /// VP が MIDI 機材を握るのをやめ、他アプリ（ladyland 等）へ譲る
+    ///
+    /// CoreMIDI の物理 port は単一 owner なので、daemon が握っている間は他アプリが同じ
+    /// 機材を開けない。**この状態は daemon 再起動をまたいで保つ**（開発中に `app:swap` で
+    /// daemon を入れ替えても port を奪い返さない）。戻すのは `vp midi on`。
+    Off,
+    /// VP が MIDI 機材を握り直す（`vp midi off` の対）
+    On,
+    /// 艦隊スイッチの状態を表示する（VP が握っているか / device 数）
+    Status,
     /// LPD8コントローラー設定
     #[command(subcommand)]
     Lpd8(Lpd8Commands),
@@ -163,9 +173,76 @@ pub fn execute(cmd: MidiCommands) -> Result<()> {
             crate::midi::print_ports();
             Ok(())
         }
+        MidiCommands::Off => set_midi_switch(Some(false)),
+        MidiCommands::On => set_midi_switch(Some(true)),
+        MidiCommands::Status => set_midi_switch(None),
         MidiCommands::Lpd8(lpd8_cmd) => execute_lpd8(lpd8_cmd),
         MidiCommands::Xtouch(xtouch_cmd) => execute_xtouch(xtouch_cmd),
         MidiCommands::Roto(roto_cmd) => execute_roto(roto_cmd),
+    }
+}
+
+/// 艦隊スイッチ（`vp midi off|on|status`）— VP が MIDI 機材を握るか、他アプリへ譲るか。
+///
+/// `enabled = None` は読むだけ（status）。
+///
+/// ## daemon 不在のときも「効く」
+///
+/// port を実際に離せるのは daemon だけだが、**スイッチの永続値は file が持つ**ので、
+/// daemon が止まっていても書ける（次に起動した daemon がそれを見て握らない）。
+/// 「daemon が居ないから設定できません」は user から見て理不尽なので、その場合も
+/// 保存だけは通し、**何が起きたかを言葉で分ける**（握っているものは無い、と伝える）。
+fn set_midi_switch(enabled: Option<bool>) -> Result<()> {
+    use crate::daemon_client::MidiSwitchCall;
+    match (enabled, crate::daemon_client::midi_switch_blocking(enabled)) {
+        // daemon が応じた = 実際に port の握り直し / 解放まで済んでいる
+        (_, MidiSwitchCall::Applied(resp)) => {
+            let on = resp
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let devices = resp.get("devices").and_then(|v| v.as_u64()).unwrap_or(0);
+            let state = if on {
+                "ON  (VP が握っている)"
+            } else {
+                "OFF (他アプリへ譲っている)"
+            };
+            println!("MIDI  {state}   device {devices} 台");
+            if !on {
+                println!("      戻すには `vp midi on`");
+            }
+            Ok(())
+        }
+        // daemon 不在で status → 保存値だけが言えること。**推測で「握っている」と言わない**
+        (None, MidiSwitchCall::DaemonAbsent) => {
+            let saved = crate::devices::load_midi_enabled();
+            let state = if saved { "ON" } else { "OFF" };
+            println!("MIDI  {state} (保存値)   daemon 停止中 — 今は誰も握っていません");
+            Ok(())
+        }
+        // daemon 不在で切替 → file だけ書く（次の daemon 起動から効く）
+        (Some(v), MidiSwitchCall::DaemonAbsent) => {
+            crate::devices::save_midi_enabled(v);
+            let state = if v { "ON" } else { "OFF" };
+            println!("MIDI  {state} を保存しました（daemon 停止中 — 次の起動から効きます）");
+            Ok(())
+        }
+        // ⚠️ daemon は居るが応じない（版ズレ = このスイッチを知らない daemon / midi 無し build）。
+        // **まだ握られている**ので「離れました」と読める言い方をしない。保存はして次回に備える。
+        (v, MidiSwitchCall::DaemonRefused(err)) => {
+            if let Some(v) = v {
+                crate::devices::save_midi_enabled(v);
+            }
+            eprintln!("daemon がこのスイッチに応じませんでした: {err}");
+            eprintln!("  → 稼働中の daemon はまだ MIDI を握っています。");
+            eprintln!(
+                "     daemon がこの版より古い可能性があります（`vp daemon restart` で入れ替わります）。"
+            );
+            if v.is_some() {
+                eprintln!("  → 設定自体は保存したので、次に起動した daemon から効きます。");
+            }
+            Ok(())
+        }
     }
 }
 
