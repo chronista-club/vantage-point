@@ -80,6 +80,15 @@ export function DaemonWidget() {
 	// ここ (Daemon レベルの Devices) は pane を開く入口 + 接続 device 数 badge。
 	const devices = () => sidebar.devices ?? [];
 	const devicesActive = () => sidebar.active_component?.kind === "devices";
+	// 艦隊スイッチ（`vp midi off`）で機材を他アプリへ譲っているか。
+	//
+	// ⚠️ `/api/health` の `services` ではなく **device 一覧そのもの**から導く。sidebar は
+	// `services` を一切読んでいないので、そちらに出しても読み手ゼロになる。device 一覧は
+	// daemon-device channel で既にリアルタイムに来ているので、新しい配管が要らない。
+	const released = () => devices().some((d) => d.hold_reason === "released");
+	// VP が実際に掴んでいる台数。「7 台見えているが掴んでいるのは 2 台」を言い分ける
+	// （残りは parser 対応外 = 最初から他アプリと取り合っていない）。
+	const heldCount = () => devices().filter((d) => d.held).length;
 
 	// in-app update: daemon の定期チェック (起動時 + 24h) が検知した新 release。
 	// update_available 時のみ Daemon widget 直下に「更新する」CTA を出す。latest_version は
@@ -250,8 +259,22 @@ export function DaemonWidget() {
 						/>
 					</span>
 					<span class="vp-agent-title">{agentDisplayName("devices")}</span>
+					{/* 譲渡中は数字より先に言う — 「効いているか」が一目で要る状態なので。 */}
+					<Show when={released()}>
+						<span
+							class="vp-agent-badge released"
+							title="vp midi off で機材を他アプリへ譲っています（`vp midi on` で戻す）"
+						>
+							譲渡中
+						</span>
+					</Show>
 					<Show when={devices().length > 0}>
-						<span class="vp-agent-badge">{devices().length}</span>
+						<span
+							class="vp-agent-badge"
+							title={`${heldCount()} 台を掴んでいます（見えている ${devices().length} 台のうち）`}
+						>
+							{heldCount()}/{devices().length}
+						</span>
 					</Show>
 				</div>
 			</div>

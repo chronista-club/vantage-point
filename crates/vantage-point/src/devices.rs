@@ -14,6 +14,7 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::{RwLock, mpsc};
@@ -158,8 +159,61 @@ pub(crate) type MotorFrames = Vec<Vec<u8>>;
 /// 意味論が逆になる — team-b review。vp-app 側の feedback 経路と同型に揃える）
 type RotoFeedbackTx = Arc<RwLock<Option<tokio::sync::watch::Sender<Option<MotorFrames>>>>>;
 
+// ============================================================================
+// 艦隊スイッチ — VP が MIDI 機材を握るか、他アプリへ譲るか
+// ============================================================================
+//
+// CoreMIDI の物理 port は**単一 owner**なので、daemon が握っている間は他アプリ
+// （ladyland 等）が同じ機材を開けない（`start_roto_control` の ⚠️ も同じ事実）。
+// user が「今は ladyland で使う」と言えるスイッチを持たせる。
+//
+// ⚠️ OFF は「**握らない**」であって「**見えなくなる**」ではない。registry（device 一覧）は
+// そのまま保ち、hardware を掴む側だけを止める。`attach_fleet_inputs` /
+// `report_device_connected` は「registry に載せる」と「listener を張る」の 2 仕事を
+// 1 本の辺でやっているので、**gate は hardware を掴む側だけに置く**（辺ごと止めると
+// GUI の device 一覧が空になり「機材が消えた」に見える）。
+
+/// 艦隊 ON/OFF の永続先。state zone なので `VP_PROFILE` で dev / brew が自然に分かれる。
+fn midi_switch_path() -> std::path::PathBuf {
+    vp_paths::vp_state_dir().join("midi-switch.json")
+}
+
+/// 保存された艦隊スイッチを読む。**既定は ON**（file 不在 = 従来どおり握る）。
+///
+/// 壊れた file も ON に倒す — 「読めないから機材を握らない」より「読めないから従来どおり」
+/// の方が驚きが小さい（OFF は user が明示した時だけの状態）。
+pub fn load_midi_enabled() -> bool {
+    let Ok(text) = std::fs::read_to_string(midi_switch_path()) else {
+        return true;
+    };
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("enabled").and_then(|b| b.as_bool()))
+        .unwrap_or(true)
+}
+
+/// 艦隊スイッチを保存する（daemon 再起動をまたいで保つ）。
+///
+/// 失敗は warn 止まり — 保存できなくても**今の daemon では効いている**ので、
+/// ここで止めると「離せたのに離せなかったことにする」になる。
+pub fn save_midi_enabled(enabled: bool) {
+    let path = midi_switch_path();
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!("midi switch の保存先を作れません: {e}");
+        return;
+    }
+    let body = serde_json::json!({ "enabled": enabled }).to_string();
+    if let Err(e) = std::fs::write(&path, body) {
+        tracing::warn!("midi switch の保存に失敗（今の daemon では効いています）: {e}");
+    }
+}
+
 /// parser 対応 device の input listener を冪等に張る。
 ///
+/// - **艦隊 OFF の間は張らない**（user が機材を他アプリへ譲っている）。ここが gate の要 —
+///   agent の hot-plug 報告も discovery もこの 1 本を通るので、抜き差しで握り直さない
 /// - ROTO は専用 loop（`start_roto_control`）が input を独占所有するため対象外
 /// - 生存中の listener が既に居れば no-op（二重接続の防止）
 /// - parser 対応 device なのに接続に失敗したら warn（無音の取り残しを作らない）
@@ -167,7 +221,11 @@ async fn ensure_input_listener(
     listeners: &InputListeners,
     event_bus: &Arc<EventBus>,
     port_name: &str,
+    midi_enabled: &AtomicBool,
 ) {
+    if !midi_enabled.load(Ordering::Relaxed) {
+        return;
+    }
     if port_name.contains("Roto") || create_device_input(port_name).is_none() {
         return;
     }
@@ -278,6 +336,16 @@ pub struct DeviceRegistry {
     roto_feedback_tx: RotoFeedbackTx,
     /// 前回 apply した feedback（section 単位の dedupe — 変わらない sysex を機材に投げない）
     last_feedback: Arc<tokio::sync::Mutex<crate::daemon::protocol::FleetFeedback>>,
+    /// 艦隊を握るか（`false` = user が `vp midi off` で機材を他アプリへ譲っている）。
+    ///
+    /// spawn 済みの discovery task からも読むので `Arc<AtomicBool>`。**hardware を掴む 3 つの
+    /// 入口**（input listener / output 接続 / ROTO セッション）が全部この 1 つを見る。
+    midi_enabled: Arc<AtomicBool>,
+    /// ROTO を**再取得**するための持ち物（`start_roto_control` の引数を初回に控える）。
+    ///
+    /// OFF → ON で ROTO を張り直すのに要る。これが無いと、一度 off にした ROTO は
+    /// daemon を再起動するまで戻らない（= スイッチが片道になる）。
+    roto_deps: Option<(Arc<RwLock<RepoManagerCapability>>, CancellationToken)>,
 }
 
 impl DeviceRegistry {
@@ -296,6 +364,9 @@ impl DeviceRegistry {
             lpd8_profile: Arc::new(tokio::sync::Mutex::new(Default::default())),
             roto_feedback_tx: Arc::new(RwLock::new(None)),
             last_feedback: Arc::new(tokio::sync::Mutex::new(Default::default())),
+            // 保存済みスイッチを初期値にする（daemon 再起動をまたいで OFF を保つ）。
+            midi_enabled: Arc::new(AtomicBool::new(load_midi_enabled())),
+            roto_deps: None,
         }
     }
 
@@ -305,6 +376,11 @@ impl DeviceRegistry {
     /// （knob だけ動いた frame で pad の RGB 一括 sysex を再送しない）。
     /// 出力接続は必要時に開き、send 失敗で捨てて次回再接続（hot-unplug 耐性）。
     pub async fn apply_feedback(&self, fb: &crate::daemon::protocol::FleetFeedback) {
+        // 艦隊 OFF の間は出力側も握らない。ここを抜かすと、場の状態が動いた瞬間に
+        // `send_output` が output port を開き直して他アプリから機材を奪う。
+        if !self.midi_enabled.load(Ordering::Relaxed) {
+            return;
+        }
         let mut last = self.last_feedback.lock().await;
 
         // ROTO motor: knob byte 列を専用 loop に注入（conn_out は loop が独占所有）。
@@ -413,6 +489,148 @@ impl DeviceRegistry {
         );
     }
 
+    // ─── 艦隊スイッチ（VP が機材を握るか、他アプリへ譲るか）──────
+
+    /// VP が艦隊を握っているか。`false` = user が `vp midi off` で譲っている。
+    pub fn midi_enabled(&self) -> bool {
+        self.midi_enabled.load(Ordering::Relaxed)
+    }
+
+    /// この port を VP が今**掴んでいるか**と、その理由（Devices pane の計器表示用）。
+    ///
+    /// ⚠️ **「掴んでいない」には性質の違う 3 つがある**。1 つの bool に潰すと、pane を見た人が
+    /// 「ROTO が反応しない」の原因を取り違える:
+    ///
+    /// | reason | 意味 | user がすべきこと |
+    /// |---|---|---|
+    /// | `"listener"` / `"roto"` | 掴んでいる | — |
+    /// | `"released"` | user が `vp midi off` で譲っている | `vp midi on` |
+    /// | `"unsupported"` | VP に parser が無い機材（最初から掴んでいない） | 何もない（取り合っていない） |
+    ///
+    /// 特に `unsupported` は「VP が邪魔している」と誤読されやすいので明示的に分ける
+    /// （実測: 登録 7 台のうち 4 台がここに落ちる = 元々競合していない）。
+    pub async fn hold_state(&self, port_name: &str) -> (bool, &'static str) {
+        // 対応 parser が無い機材は、スイッチに関わらず最初から掴んでいない。
+        // ⚠️ 判定を先にやる — 譲渡中でも「元々掴んでいない」の方が user にとって正しい説明。
+        if create_device_input(port_name).is_none() {
+            return (false, "unsupported");
+        }
+        if !self.midi_enabled.load(Ordering::Relaxed) {
+            return (false, "released");
+        }
+        // ROTO は listener ではなく専用 loop が in+out を独占所有する。
+        if port_name.contains("Roto") {
+            let live = self.roto_task.as_ref().is_some_and(|t| !t.is_finished());
+            return if live {
+                (true, "roto")
+            } else {
+                (false, "idle")
+            };
+        }
+        let held = self
+            .input_listeners
+            .read()
+            .await
+            .get(port_name)
+            .is_some_and(|h| !h.is_finished());
+        if held {
+            (true, "listener")
+        } else {
+            (false, "idle")
+        }
+    }
+
+    /// 登録中の全 device について `device_connected` を**現在の hold 状態つきで**撃ち直す。
+    ///
+    /// スイッチを切り替えた瞬間に Devices pane を追随させるための再配信。event は port_name で
+    /// 冪等に畳まれる（daemon-device bridge の snapshot と同じ性質）ので、重複しても害はない。
+    async fn republish_hold_state(&self) {
+        let entries: Vec<(String, bool, bool)> = {
+            let devs = self.devices.read().await;
+            devs.values()
+                .map(|d| (d.port_name.clone(), d.has_input, d.has_output))
+                .collect()
+        };
+        for (port_name, has_input, has_output) in entries {
+            let (held, reason) = self.hold_state(&port_name).await;
+            let event = CapabilityEvent::new("devices.device_connected", "devices").with_payload(
+                &serde_json::json!({
+                    "port_name": port_name,
+                    "has_input": has_input,
+                    "has_output": has_output,
+                    "held": held,
+                    "hold_reason": reason,
+                }),
+            );
+            self.event_bus.emit(event).await;
+        }
+    }
+
+    /// 艦隊スイッチを切り替える。**状態が変わったときだけ `true`**（冪等）。
+    ///
+    /// - `false` へ: 握っている port を全部離す（input listener / output 接続 / ROTO）
+    /// - `true` へ: 起動時と同じ手順で握り直す（enumeration + ROTO 再開）
+    ///
+    /// 切替は永続する（daemon 再起動をまたぐ）。ladyland 等の開発中に daemon を再起動
+    /// （`app:swap` 等）しても port を奪い返さないため。
+    pub async fn set_midi_enabled(&mut self, enabled: bool) -> bool {
+        if self.midi_enabled.load(Ordering::Relaxed) == enabled {
+            return false;
+        }
+        // ⚠️ 先に flag を倒してから release する。逆にすると、release 中に届いた
+        // agent の hot-plug 報告が「まだ ON」を見て listener を張り直す。
+        self.midi_enabled.store(enabled, Ordering::Relaxed);
+        save_midi_enabled(enabled);
+        if enabled {
+            self.acquire_fleet().await;
+        } else {
+            self.release_fleet().await;
+        }
+        // Devices pane を即追随させる（掴んだ / 譲った が次の hot-plug を待たずに出る）。
+        self.republish_hold_state().await;
+        true
+    }
+
+    /// 握っている MIDI port を全部離す（艦隊 OFF の実体）。
+    ///
+    /// registry（device 一覧）は**触らない** — 見えなくなるのではなく、握らなくなるだけ。
+    async fn release_fleet(&mut self) {
+        // ① input listener（device ごとに 1 本の CoreMIDI input 接続）
+        let aborted = {
+            let mut map = self.input_listeners.write().await;
+            let n = map.len();
+            for (_, handle) in map.drain() {
+                handle.abort();
+            }
+            n
+        };
+        // ② ROTO の in+out（専用 loop が独占所有している）
+        self.stop_roto_control().await;
+        // ③ feedback で開いた output 接続（drop = port を離す）
+        let outputs = {
+            let mut map = self.outputs.lock().await;
+            let n = map.len();
+            map.clear();
+            n
+        };
+        tracing::info!(
+            "🧲 艦隊 OFF — MIDI を他アプリへ譲りました（input {} / output {} / ROTO 停止）",
+            aborted,
+            outputs
+        );
+    }
+
+    /// 艦隊を握り直す（OFF → ON）。起動時と同じ 2 段（input 張り直し + ROTO 再開）。
+    async fn acquire_fleet(&mut self) {
+        self.attach_fleet_inputs().await;
+        // ROTO は起動時に控えた持ち物で張り直す。控えが無い = このプロセスで一度も
+        // 起動していない（feature 無し / repo mode）ので何もしない。
+        if let Some((daemon_cap, shutdown)) = self.roto_deps.clone() {
+            self.start_roto_control(daemon_cap, shutdown).await;
+        }
+        tracing::info!("🧲 艦隊 ON — MIDI を握り直しました");
+    }
+
     /// 接続中 device 数
     pub async fn device_count(&self) -> usize {
         self.devices.read().await.len()
@@ -449,6 +667,8 @@ impl DeviceRegistry {
         let devices = Arc::clone(&self.devices);
         let event_bus = Arc::clone(&self.event_bus);
         let input_listeners = Arc::clone(&self.input_listeners);
+        // 艦隊 OFF の間は listener を張らない（task 側でも同じ 1 つの flag を見る）
+        let midi_enabled = Arc::clone(&self.midi_enabled);
         let (cancel_tx, mut cancel_rx) = mpsc::channel::<()>(1);
         self.cancel_tx = Some(cancel_tx);
 
@@ -491,7 +711,8 @@ impl DeviceRegistry {
                     // input port がある device は共有 map 経由で listener を冪等 ensure
                     // （ROTO 除外 / parser 判定 / 二重接続防止は ensure_input_listener が担う）
                     if *has_in {
-                        ensure_input_listener(&input_listeners, &event_bus, name).await;
+                        ensure_input_listener(&input_listeners, &event_bus, name, &midi_enabled)
+                            .await;
                     }
                 }
 
@@ -558,6 +779,14 @@ impl DeviceRegistry {
     ) {
         // 二重起動防止（既に走っていれば no-op）
         if self.roto_task.as_ref().is_some_and(|t| !t.is_finished()) {
+            return;
+        }
+        // ⚠️ 持ち物は **gate より前**に控える。OFF 状態で daemon が起動した回でも控えておかないと、
+        // その後 `vp midi on` しても ROTO だけ戻せない（片道スイッチになる）。
+        self.roto_deps = Some((daemon_cap.clone(), shutdown.clone()));
+        // 艦隊 OFF の間は ROTO の in+out も握らない（ladyland 等に譲っている）。
+        if !self.midi_enabled.load(Ordering::Relaxed) {
+            tracing::info!("🧲 艦隊 OFF のため ROTO 常駐を見送りました（`vp midi on` で開始）");
             return;
         }
         let child = shutdown.child_token();
@@ -654,21 +883,33 @@ impl DeviceRegistry {
             );
             is_new
         };
+        // input listener は is_new と独立に冪等 ensure（再報告 = 再接続の機会。
+        // registry 更新だけで listener を張り忘れる取り残しの再発防止）
+        //
+        // ⚠️ **emit より先に張る**。逆順にすると `hold_state` が listener を見つけられず、
+        // 初回配信の計器が必ず「掴んでいない」になる（次の hot-plug まで直らない）。
+        if has_input {
+            ensure_input_listener(
+                &self.input_listeners,
+                &self.event_bus,
+                port_name,
+                &self.midi_enabled,
+            )
+            .await;
+        }
         if is_new {
             tracing::info!("🧲 device connected (agent report): {}", port_name);
+            let (held, reason) = self.hold_state(port_name).await;
             let event = CapabilityEvent::new("devices.device_connected", "devices").with_payload(
                 &serde_json::json!({
                     "port_name": port_name,
                     "has_input": has_input,
                     "has_output": has_output,
+                    "held": held,
+                    "hold_reason": reason,
                 }),
             );
             self.event_bus.emit(event).await;
-        }
-        // input listener は is_new と独立に冪等 ensure（再報告 = 再接続の機会。
-        // registry 更新だけで listener を張り忘れる取り残しの再発防止）
-        if has_input {
-            ensure_input_listener(&self.input_listeners, &self.event_bus, port_name).await;
         }
     }
 
@@ -886,9 +1127,10 @@ mod tests {
     async fn ensure_skips_non_fleet_and_roto() {
         let bus = Arc::new(EventBus::new());
         let listeners: InputListeners = Arc::new(RwLock::new(HashMap::new()));
+        let on = AtomicBool::new(true);
         // parser 対象外 device と ROTO（専用 loop 所有）は map に入らない
-        ensure_input_listener(&listeners, &bus, "Unknown Device").await;
-        ensure_input_listener(&listeners, &bus, "Roto-Control").await;
+        ensure_input_listener(&listeners, &bus, "Unknown Device", &on).await;
+        ensure_input_listener(&listeners, &bus, "Roto-Control", &on).await;
         assert!(listeners.read().await.is_empty());
     }
 
@@ -896,8 +1138,9 @@ mod tests {
     async fn ensure_is_graceful_without_real_port() {
         let bus = Arc::new(EventBus::new());
         let listeners: InputListeners = Arc::new(RwLock::new(HashMap::new()));
+        let on = AtomicBool::new(true);
         // parser 対応 device でも実 port が無ければ warn して no-op（CI = MIDI 無し環境）
-        ensure_input_listener(&listeners, &bus, "LPD8 mk2 (absent)").await;
+        ensure_input_listener(&listeners, &bus, "LPD8 mk2 (absent)", &on).await;
         assert!(listeners.read().await.is_empty());
     }
 
@@ -914,6 +1157,63 @@ mod tests {
         assert_eq!(devices.device_count().await, 0);
         // 起動時 attach も同様（CI では対象 port が無い前提で走るだけ）
         devices.attach_fleet_inputs().await;
+    }
+
+    // ─── 艦隊スイッチ（MIDI を握る / 譲る）──────────────
+    //
+    // ⚠️ ここの test は `midi-switch.json` を読まずに済むよう、構築後に flag を直接倒す。
+    // 永続の往復（file）は state zone を汚すので単体では触らない。
+
+    /// ⚠️ **OFF は「握らない」であって「device が消える」ではない**。
+    /// registry を空にしてしまうと GUI の一覧から機材が消え、「壊れた」に見える。
+    #[tokio::test]
+    async fn switch_off_keeps_registry_but_stops_acquiring() {
+        let bus = Arc::new(EventBus::new());
+        let devices = DeviceRegistry::new(bus);
+        devices.midi_enabled.store(false, Ordering::Relaxed);
+
+        // OFF でも agent 報告は registry に載る（見えることは保つ）
+        devices
+            .report_device_connected("LPD8 mk2", true, false)
+            .await;
+        assert_eq!(devices.device_count().await, 1, "一覧からは消さない");
+        // hardware は掴まない（listener は 1 本も張らない）
+        assert!(
+            devices.input_listeners.read().await.is_empty(),
+            "OFF の間は input を握らない"
+        );
+    }
+
+    /// ⚠️ **片道スイッチにしない**。ROTO の持ち物（daemon_cap / shutdown）を控えていないと、
+    /// 一度 off にした ROTO は daemon 再起動まで戻らない。
+    #[tokio::test]
+    async fn switch_records_roto_deps_even_when_off() {
+        use crate::capability::RepoManagerCapability;
+        let bus = Arc::new(EventBus::new());
+        let mut devices = DeviceRegistry::new(bus);
+        devices.midi_enabled.store(false, Ordering::Relaxed);
+
+        let cap = Arc::new(RwLock::new(RepoManagerCapability::new()));
+        let token = CancellationToken::new();
+        // OFF 状態で daemon が起動した回でも、持ち物は控える（gate より前で控えるため）
+        devices.start_roto_control(cap, token).await;
+        assert!(
+            devices.roto_deps.is_some(),
+            "OFF 起動でも ROTO の持ち物を控える（そうしないと ON に戻せない）"
+        );
+        assert!(
+            devices.roto_task.is_none(),
+            "OFF の間は ROTO セッションを張らない"
+        );
+    }
+
+    /// 同じ値への切替は no-op（冪等）。`vp midi off` を 2 回打っても離し直さない。
+    #[tokio::test]
+    async fn switch_is_idempotent() {
+        let bus = Arc::new(EventBus::new());
+        let mut devices = DeviceRegistry::new(bus);
+        let start = devices.midi_enabled();
+        assert!(!devices.set_midi_enabled(start).await, "同値は変化なし");
     }
 
     // ─── discovery lifecycle ───────────────────────────

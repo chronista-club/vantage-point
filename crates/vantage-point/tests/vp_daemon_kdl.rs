@@ -171,6 +171,16 @@ const DAEMON_CONTROL_OMITTED_BY_DESIGN: &[&str] = &[
     "hub/reconnect",
     // liveness probe（surface の共有 connection 用、観測面ではない）
     "ping",
+    // 艦隊スイッチ（MIDI hold switch）。**agent には露出しない** — mako の機材を session の
+    // 途中で取り上げる / 返す動詞なので、人が明示的に打つ（`vp midi off|on`）ものに留める。
+    // 読み側は read-safe な `/api/health` の `services.devices`（status = "released" / enabled）
+    // に出ているので、agent が「今 VP が握っているか」を知る手段は塞いでいない。
+    "devices/midi",
+    // ACTIONS の永続化（doc 57 Phase 4、vp-app sidebar 専用）。**agent には露出しない** —
+    // 一覧まるごとの書き込み + `removed` の明示削除を持つので、形の違う 1 回の呼び出しが
+    // user の memory を消しうる。agent が Action を足したいなら creo の MCP（`remember` 等）で
+    // 正面から書き、tag `vp-actions` を付ければ同じ面に出る（ゲートは tag なので手で付けられる）。
+    "actions/save",
 ];
 
 /// 5. daemon-control の全 method は「KDL に記述」か「[`DAEMON_CONTROL_OMITTED_BY_DESIGN`]」の

@@ -323,7 +323,7 @@ pub fn read_store() -> Result<CredentialStore> {
     }
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    Ok(parse_store(&content).with_context(|| format!("failed to parse {}", path.display()))?)
+    parse_store(&content).with_context(|| format!("failed to parse {}", path.display()))
 }
 
 /// 文字列 → store の純粋変換（新旧どちらの形式も受ける）。テストしやすいよう切り出す。

@@ -276,6 +276,18 @@ impl DaemonControlClient {
         Ok(resp)
     }
 
+    /// 艦隊スイッチ（`devices/midi`）— VP が MIDI 機材を握るか、他アプリへ譲るか。
+    ///
+    /// `enabled` が `None` なら**読むだけ**（status）。戻りは `{enabled, devices}`。
+    /// CoreMIDI の物理 port は単一 owner なので、OFF の間 ladyland 等が機材を開ける。
+    pub async fn devices_midi(&self, enabled: Option<bool>) -> Result<serde_json::Value> {
+        let payload = match enabled {
+            Some(v) => serde_json::json!({ "enabled": v }),
+            None => serde_json::json!({}),
+        };
+        self.call("devices/midi", payload).await
+    }
+
     /// 登録 repo 一覧 (RepoInfo の JSON 配列、 ord = sidebar 並び順)。
     pub async fn repos_list(&self) -> Result<Vec<serde_json::Value>> {
         let resp = self.call("repos/list", serde_json::json!({})).await?;

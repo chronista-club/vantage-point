@@ -209,6 +209,14 @@ pub struct DaemonHealthInfo {
     /// 最新 release version（`update_available` 時のボタン label 用、未取得は None）。
     #[serde(default)]
     pub latest_version: Option<String>,
+    /// ACTIONS（doc 57 Phase 3）— daemon の 30s poller が creo から温めた一覧。
+    /// daemon 側 `CreoAction` と同形なので `crate::pane::ActionItem` をそのまま使う。
+    /// 旧 daemon は field 不在 → 空。
+    #[serde(default)]
+    pub actions: Vec<crate::pane::ActionItem>,
+    /// ACTIONS の版（内容が変わった時だけ上がる）。旧 daemon / 未取得は 0 = **当てない**印。
+    #[serde(default)]
+    pub actions_rev: u32,
 }
 
 /// repo の接続 presence 1 件（`/api/health` の `processes[]` 要素の lite subset）。

@@ -149,6 +149,19 @@ protocol "sidebar" version="1.0.0" {
         request "auth:logout" {
             field "target" type="string" optional=#true
         }
+        // ACTIONS の永続化 (doc 57 Phase 4)。sidebar の編集を daemon 経由で creo-memories へ。
+        //
+        // Rust 側は 400ms coalesce してから `daemon-control.actions/save` を撃つ (打鍵ごとに
+        // 外部 HTTP を出さない)。**daemon が書く**のは、cache の持ち主が書かないと
+        // 「書いたのに次の push で戻る」が起きるから (doc 57 §4)。
+        //
+        // - `items` = 現在の一覧 **全件**。要素の形の持ち主は Rust `creo::client::CreoAction`
+        // - `removed` = user が明示的に消した id。⚠️ **`items` の不在からは決して削除しない**
+        //   (webview の一覧は push 到着前に短く見えることがあり、推論すると全消しになる)
+        request "actions:persist" {
+            field "items" type="array<json>"
+            field "removed" type="array<string>"
+        }
 
         // ===================================================================
         // server → client（Rust が sidebar bundle へ押し込む）

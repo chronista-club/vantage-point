@@ -96,6 +96,33 @@ pub struct HubNode {
     pub connected: bool,
 }
 
+/// ACTIONS の 1 件（`/api/health` の `actions[]` 要素、doc 57 Phase 3）。
+///
+/// daemon 側 `CreoAction` と同形。deserialize（`/api/health` 受け）と serialize
+/// （sidebar への push）の両面で使うため中間 mapping を持たない（[`HubNode`] と同じ流儀）。
+///
+/// ⚠️ `bucket` / `order` を enum や必須にしないのは、**creo の言い分をそのまま運ぶ**ため。
+/// 空文字（creo の UI から手で tag を付けた memory 等）は webview の `normalizeActions` が
+/// TODOs 末尾へ丸める — 正す場所を 1 箇所に閉じる。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct ActionItem {
+    /// creo の memory id（`mem_xxx`）。Action の同一性はこれ 1 本。
+    pub id: String,
+    /// タイトル + 内容。1 行目がタイトル、2 行目以降が内容。
+    #[serde(default)]
+    pub text: String,
+    /// 完了（creo の `status == "done"`）。
+    #[serde(default)]
+    pub done: bool,
+    /// 区画（`metadata.vp.bucket`）。未設定は空文字。
+    #[serde(default)]
+    pub bucket: String,
+    /// 区画内の並び（`metadata.vp.order`）。未設定は空文字。
+    #[serde(default)]
+    pub order: String,
+}
+
 /// Activity widget の payload
 ///
 /// 5-10 秒間隔で Rust 側が `/api/health` (HTTP) + `repos/list` +
@@ -151,6 +178,17 @@ pub struct ActivitySnapshot {
     /// （`AppEvent::UpdateFlowPhase`）で、「更新する」ボタンを「更新中…」表示に切り替える。
     #[serde(default)]
     pub update_applying: bool,
+    /// ACTIONS（doc 57 Phase 3）— daemon が creo-memories から 30s poll で温めた一覧。
+    /// sidebar 下部の ACTIONS 区画に出る。repo mode / 未取得 / 旧 daemon は空。
+    #[serde(default)]
+    pub actions: Vec<ActionItem>,
+    /// ACTIONS の版。**内容が変わった時だけ**上がる。`0` = 未取得（旧 daemon もここに落ちる）。
+    ///
+    /// ⚠️ webview はこの値が**変わった時だけ**当てる。5s ごとの push で毎回当て直すと、
+    /// 編集中の行が書き戻されて caret が飛ぶ。`u64` にしないのは ts-rs が `bigint` を吐いて
+    /// JSON の number と噛み合わなくなるため。
+    #[serde(default)]
+    pub actions_rev: u32,
 }
 
 /// Sidebar 全体の state (sidebar webview に渡す)
@@ -299,6 +337,24 @@ pub struct DeviceSnapshot {
     pub port_name: String,
     pub has_input: bool,
     pub has_output: bool,
+    /// VP が今この port を**掴んでいるか**（艦隊スイッチ / parser 対応 / ROTO 常駐の合成）。
+    /// 旧 daemon は field 不在 → false（安全側 = 掴んでいない扱い）。
+    #[serde(default)]
+    pub held: bool,
+    /// 掴んでいない理由。`"released"`（`vp midi off` で譲渡中）/ `"unsupported"`（VP に parser が
+    /// 無い = 最初から取り合っていない）/ `"idle"`。
+    ///
+    /// ⚠️ **bool に潰さない** — 「VP が邪魔している」と「元々関与していない」は user の次の
+    /// 一手が正反対になる（前者は `vp midi on`、後者は何もしなくていい）。
+    #[serde(default)]
+    pub hold_reason: String,
+    /// 最後にこの機材が**触られた**時刻（ISO 8601、秒精度）。`None` = 観測していない。
+    ///
+    /// ⚠️ **掴んでいない間は原理的に分からない**（listener が無い = 入力が届かない）。
+    /// 譲渡中に「触られていない」と表示すると嘘になるので、`held == false` の間は
+    /// 更新されないまま古い値が残る — 描画側はそれを「—（見ていない）」として扱う。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_input_at: Option<String>,
 }
 
 /// device event payload (wire `DeviceEvent` の生 JSON、 tag="kind") を device 一覧に適用する
@@ -313,6 +369,13 @@ pub fn apply_device_event(devices: &mut Vec<DeviceSnapshot>, payload: &serde_jso
             let Some(port_name) = payload.get("port_name").and_then(|v| v.as_str()) else {
                 return false;
             };
+            // ⚠️ 置換の前に「触られた時刻」を拾っておく。retain-then-push は snapshot 全体を
+            // 作り直すので、持ち越さないと **hold 状態が変わるたびに操作履歴が消える**
+            // （スイッチを 1 回叩くだけで全機材の「最後に触った」が飛ぶ）。
+            let carried = devices
+                .iter()
+                .find(|d| d.port_name == port_name)
+                .and_then(|d| d.last_input_at.clone());
             devices.retain(|d| d.port_name != port_name);
             devices.push(DeviceSnapshot {
                 port_name: port_name.to_string(),
@@ -324,7 +387,33 @@ pub fn apply_device_event(devices: &mut Vec<DeviceSnapshot>, payload: &serde_jso
                     .get("has_output")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
+                held: payload
+                    .get("held")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                hold_reason: payload
+                    .get("hold_reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                last_input_at: carried,
             });
+            true
+        }
+        // 機材が触られた（knob / pad / fader）。**秒精度で刻み、同じ秒なら push しない** —
+        // ROTO の knob は連続 CC なので、素通しすると 1 操作で数十回 SidebarState を撃つ。
+        Some("control_event") => {
+            let Some(port_name) = payload.get("port_name").and_then(|v| v.as_str()) else {
+                return false;
+            };
+            let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+            let Some(dev) = devices.iter_mut().find(|d| d.port_name == port_name) else {
+                return false;
+            };
+            if dev.last_input_at.as_deref() == Some(now.as_str()) {
+                return false; // 同じ秒 = 既に出ている情報。撃たない
+            }
+            dev.last_input_at = Some(now);
             true
         }
         Some("device_disconnected") => {
@@ -433,14 +522,58 @@ mod tests {
             &mut devs,
             &json!({"kind":"device_disconnected","port_name":"NOPE"})
         ));
-        // control_event / port_name 欠落 → 無視 (false)
-        assert!(!apply_device_event(
+        // control_event → 「最後に触られた」を刻む（旧: 無視）。
+        assert!(apply_device_event(
             &mut devs,
             &json!({"kind":"control_event","port_name":"LPD8","event":{}})
         ));
+        assert!(devs[0].last_input_at.is_some(), "触られた時刻が入る");
+        // ⚠️ **同じ秒では撃たない**。ROTO の knob は連続 CC なので、素通しすると
+        // 1 操作で SidebarState を数十回 push することになる。
+        assert!(
+            !apply_device_event(
+                &mut devs,
+                &json!({"kind":"control_event","port_name":"LPD8","event":{}})
+            ),
+            "同一秒の再入力は変化として扱わない"
+        );
+        // 未知 port の control_event は無視（一覧に居ないものは刻めない）
+        assert!(!apply_device_event(
+            &mut devs,
+            &json!({"kind":"control_event","port_name":"NOPE","event":{}})
+        ));
+        // port_name 欠落 → 無視 (false)
         assert!(!apply_device_event(
             &mut devs,
             &json!({"kind":"device_connected"})
         ));
+    }
+
+    /// ⚠️ **hold 状態の更新で「最後に触られた」を消さない**。
+    /// `device_connected` は retain-then-push で entry を作り直すので、持ち越しを忘れると
+    /// スイッチを 1 回叩くだけで全機材の操作履歴が飛ぶ。
+    #[test]
+    fn hold_state_update_keeps_last_input() {
+        use serde_json::json;
+        let mut devs = vec![];
+        assert!(apply_device_event(
+            &mut devs,
+            &json!({"kind":"device_connected","port_name":"LPD8","has_input":true,"has_output":true,"held":true,"hold_reason":"listener"})
+        ));
+        assert!(apply_device_event(
+            &mut devs,
+            &json!({"kind":"control_event","port_name":"LPD8","event":{}})
+        ));
+        let touched = devs[0].last_input_at.clone();
+        assert!(touched.is_some());
+
+        // `vp midi off` → hold 状態だけが変わる再配信
+        assert!(apply_device_event(
+            &mut devs,
+            &json!({"kind":"device_connected","port_name":"LPD8","has_input":true,"has_output":true,"held":false,"hold_reason":"released"})
+        ));
+        assert_eq!(devs[0].hold_reason, "released");
+        assert!(!devs[0].held);
+        assert_eq!(devs[0].last_input_at, touched, "操作履歴は持ち越す");
     }
 }

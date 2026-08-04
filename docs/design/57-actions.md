@@ -149,10 +149,10 @@ CURRENTs は既存どおり伸縮する中段（`flex:1` + scroll）。残り 5 
 {
   "content": "doc 56 設定画面\n\n- [x] A 形トグルの設計\n- [ ] 設定の永続先を決める",
   "status": "active",
+  "tags": ["vp-actions"],      // ← 表示のゲート（server-side で絞れる唯一の印、下記）
   "metadata": {
     "priority": "medium",      // creo 既存 — 触らない
     "vp": {                    // ← VP の名前空間
-      "board": "actions",      // この印がある memory だけ ACTIONS に出る（表示のゲート）
       "bucket": "nexts",       // 区画
       "order": "0|hzzzzz:",    // 区画内の並び（LexoRank 形式。挿入で後続を再採番しない）
       "lane": "vantage-point/mako-doc56"   // 実体化した lane（Phase 5）
@@ -168,10 +168,37 @@ CURRENTs は既存どおり伸縮する中段（`flex:1` + scroll）。残り 5 
 | 内容 | `content` の 2 行目以降（markdown） |
 | 区画 | `metadata.vp.bucket` |
 | 区画内の並び | `metadata.vp.order` |
-| 表示のゲート | `metadata.vp.board == "actions"` |
+| **表示のゲート** | **tag `vp-actions`** |
 | 実体化した lane | `metadata.vp.lane` |
 
 タイトルに `display_name` を使わないのは、creo 側の一覧表示と食い違わせないため。
+
+### ⚠️ ゲートが tag なのは「metadata で絞れない」から（2026-08-04 実測で訂正）
+
+**当初この doc はゲートを `metadata.vp.board == "actions"` に置いていたが、それは
+creo の API で実行できない述語だった。** 一次資料（`creo-memories` の
+`packages/creo-memories/src/services/memory-list.ts` の WHERE builder）で確認したところ、
+`GET /api/memories` が server-side で絞れるのは
+
+> category / categoryIds / labelIds / conceptIds / **tags** / keyword / atlasId / status /
+> from・to・updatedFrom / includeSuperseded
+
+だけで、**`metadata` を見る条件は 1 つも無い**。client 側で絞ると
+**2726 件（実測）÷ limit 上限 100 = 30s ごとに 28 往復**になる。
+
+そこで **tag `vp-actions` を唯一のゲート**にした（mako 裁定 2026-08-04）。
+
+- **ゲートを 2 本持たない** — tag と `metadata.vp.board` を併記しない。同じ 1 つの事実を指す
+  signal が 2 本あると必ず片方だけ書かれる日が来て、「creo には在るのに VP に出ない」が
+  無言で起きる
+- **副次的な利点**: tag は creo の UI から人が付けられる = **既存 memory を手で ACTIONS へ
+  引き取れる**（`metadata.vp.board` は人の目に見えないので原理的にできなかった）。
+  区画未設定の引き取りは `normalizeActions` が TODOs 末尾へ丸める
+- `status` をゲートに使えないのは、**IDEAs / EVENTs に status を付けない**という下の線引きと
+  真正面から衝突するから（思いつきがゲートを通れなくなる）
+
+> ⚠️ 「VP が印を付けたものだけ」という §3 の原理は変わっていない。**印の置き場所だけが
+> metadata → tag に移った**（相手のサーバが実行できる述語に置き直した）。
 
 ### 区画 → status の写像（他人の道具を汚さない線引き）
 
@@ -186,8 +213,9 @@ CURRENTs は既存どおり伸縮する中段（`flex:1` + scroll）。残り 5 
 実測（2026-08-02）で creo の `status:'active'` は **10 atlas に散った 94 件**
 （vantage-point 42 / Personal 19 / creo-memories 11 …）、うち **63% は priority すら無い**。
 これは「今日やること」ではなく積み上がったバックログで、280px には入らない。
+（2026-08-04 の再測では **249 件**。放っておくと増える側の数字だという傍証。）
 
-**`vp.board` のゲートがあるので、94 件が流れ込むことは構造的に起きない。**
+**tag `vp-actions` のゲートがあるので、この 249 件が流れ込むことは構造的に起きない。**
 バックログから引っ張る picker は将来の別糸。
 
 ---
@@ -214,6 +242,48 @@ webview から外部 HTTP を叩く**前例はゼロ**、CORS は相手次第、
 書き込みは `PUT /api/memories/:id` 1 本で `content` / `metadata` / `status` / `tags` すべて書ける
 （`creo-memories` の `routes/memories.ts:334-342` で確認済）。新規だけ `POST /api/memories`
 （status を受け付けない）→ `PUT` の 2 段。
+
+### 書きの規律（Phase 4、2026-08-04 実装）
+
+**書くのは daemon**。vp-app から creo を直に叩くと daemon の cache が最大 30s 古いまま push を
+続け、「書いたのに次の push で戻る」が起きる。**cache の持ち主が書く**（write-through）。
+
+```
+sidebar ──"actions:persist"──▶ vp-app ──400ms coalesce──▶ daemon-control."actions/save"
+                                                              │ create / update / delete
+                                                              ▼ cache も同時に進む（rev++）
+```
+
+| 決め事 | 理由 |
+|---|---|
+| **`removed` に明示された id だけ消す** | webview の一覧は push 到着前に短く見える（⌘b で 1 件捕まえた直後など）。**不在から削除を推論すると一瞬で全消しになる** |
+| **✕ = memory ごと消す**（mako 裁定 2026-08-04） | 捕捉バッファなのでゴミは残さない。⚠️ **取り消せない** |
+| **書きかけの新規行は送らない** | 上げると id が `act-…` → `mem_…` に変わる。編集中に起きると行の同一性が飛ぶ。blur（`endEditing`）で初めて上げる |
+| **編集中の行は push で上書きしない** | 5s の push が往復前の古い text を書き戻すと caret が飛ぶ |
+| **`tags` は update で送らない** | creo の update は tags を**配列ごと置換**する。送ると user が creo 側で付けた tag を消す |
+| **creo に無い local id は poll で消さない** | 作成が失敗した捕捉が 30s 後に無言で消えると、緩衝材が受け止めたものを捨てることになる |
+
+#### 実機で確かめた HTTP 契約（2026-08-04、test memory を作って消して確認）
+
+| 動詞 | 実測 |
+|---|---|
+| `POST /api/memories` | **201** / 応答は `{"memory": {...}}` / `status` は付かない（→ PUT で立て直す 2 段が要る） |
+| `GET ?tags=vp-actions&limit=100` | tag で絞れる。**1 往復**で足りる |
+| `PUT /api/memories/:id` | **200**。`tags` を送らなければ**タグは無傷**（= ゲートが消えない）。`metadata` は top-level merge で `metadata.tags` も残る |
+| `DELETE /api/memories/:id` | **400** — ⚠️ **`?confirm=true` が必須**（`deleteQuerySchema` が `z.literal('true')`）。付けないと**何も消えずに 400 が返るだけ** |
+| `DELETE …?confirm=true`（2 回目） | **404** — 冪等に扱ってよい（既に消えている = 望んだ状態） |
+
+> creo 自身が「削除は明示的な意図を要求する」設計になっている（`confirm=true`）。VP 側も
+> 「`removed` に明示された id だけ」で揃えてあるので、**2 段とも意図が明示されている**。
+
+⚠️ **API の制約 2 つ**（どちらも一次資料で確認、回避策なし）:
+
+1. **一度付いた `status` は外せない** — PUT の `status` は `active | done` の enum で、
+   省略 = 変更なし。NEXTs → IDEAs と**移した** Action は `active` を持ったまま残る
+   （新規の IDEAs は綺麗なので、`list_todos` が汚れるのは「移した時」だけ）
+2. **`metadata.vp` は丸ごと置き換わる** — creo が merge するのは metadata の top-level だけ
+   （`services/memory.ts` の `mergedMetadata`）。Phase 5 で `lane` を足す時は
+   **書き込み時に必ず載せる**こと（載せ忘れると書くたびに消える）
 
 ---
 
@@ -266,8 +336,8 @@ data の形は `OutlinerNode` と同型なので永続層は無傷）。
 | **1b** | Action を開いて内容を整える（タイトル + 内容の編集面） | 1 |
 | **1c** | **`Cmd hold b` で捕まえる** — 作業を止めない入口（§0 ①） | 1 |
 | **2** | Creo ID を creo audience でも取れるように（credentials を audience ごとに） | — |
-| **3** | 読み（daemon → sidebar） | 2 |
-| **4** | 書き（sidebar → creo）+ **URL コピー** | 3 |
+| **3** | 読み（daemon → sidebar）— **2026-08-04 実装** | 2 |
+| **4** | 書き（sidebar → creo）+ **URL コピー** — **2026-08-04 実装**（§4 の「書きの規律」） | 3 |
 | **5** | 着手の動線（Action → lane、CURRENTs の合流） | 4 |
 | 6 | バックログ picker / スリム帯の未完 dot / Logbook | 5 |
 
