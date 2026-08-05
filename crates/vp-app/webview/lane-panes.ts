@@ -42,6 +42,7 @@ import {
 	resolve,
 	setShare,
 } from "@chronista-club/creo-ui-layout";
+import { boardKey } from "./board-handler";
 import { layoutEngine } from "./layout-host";
 import { focusedOf } from "./console";
 import { sessionChipPrefix } from "./LaneHeader";
@@ -124,15 +125,23 @@ export function sessionOfHostId(id: string): number | null {
 	return m ? Number(m[1]) : null;
 }
 
-/** lane address（`<repo>/root` | `<repo>/performer/<name>`）→ board の flat lane key
- *  （root/lead = `conductor` / performer = `<name>`）。board-handler は BoardUpdated.lane を
- *  flat name（None→'conductor'）で扱うが、lane-panes は address で lane を追う。'vp:board-presence'
- *  は board-handler の flat key で飛んでくるので、突合のためここで address → flat を写す。
- *  entry.tsx の laneNameFromAddress と同型（あちらは null=conductor、こちらは 'conductor' 文字列）。 */
-export function boardLaneKeyOf(address: string): string {
-	if (address.endsWith("/root") || address.endsWith("/lead")) return "conductor";
+/** lane address（`<repo>/root` | `<repo>/performer/<name>`）→ board のキー。
+ *
+ *  ⚠️ **キーの合成は `boardKey` 1 本に畳んである**。ここは「address という別の入力形」から
+ *  同じキー空間へ写す薄い adapter でしかない。合成を 2 箇所に持つと、board の中身（board-handler）
+ *  と view 状態（board-view / 本 module）が**無音で別々の箱**を使い始める（`board_key_round_trip`
+ *  の test がこの一致を固定している）。
+ *
+ *  ⚠️ **repo 次元を落とさない**（2026-08-04 の board 混線と同じ穴）。全 repo の root lane は
+ *  同じ `'conductor'` を名乗るので、lane 名だけで持つと「repo A で board を開いたまま B へ移ると
+ *  B でも開いていて、位置まで共有される」になる。 */
+export function boardKeyOf(address: string): string {
+	const repo = address.split("/")[0] ?? "";
+	if (address.endsWith("/root") || address.endsWith("/lead")) {
+		return boardKey(repo, null);
+	}
 	const m = address.match(/\/(?:performer|wing)\/(.+)$/);
-	return m ? (m[1] ?? "conductor") : "conductor";
+	return boardKey(repo, m ? (m[1] ?? null) : null);
 }
 
 /** lane の pane の顔ぶれ（純関数、doc 50 §4.6 A6）。
@@ -304,7 +313,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	/** board flat key（'conductor' / performer 名）→ view 状態（'vp:board-view' の鏡、doc 55）。
 	 *  board-view.ts が user 操作（開閉 / form 切替）で dispatch する。roster に入るのは
 	 *  open && docked のときだけ。float は tiling の外（rect は board-view が書く）。
-	 *  flat key 系なので lookup は boardLaneKeyOf(address) で写して引く。 */
+	 *  キーは `(repo, lane)` の合成なので、lookup は boardKeyOf(address) で写して引く。 */
 	const boardViewByLane = new Map<
 		string,
 		{ open: boolean; form: "float" | "docked" }
@@ -320,7 +329,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		layoutEngine.current(scope).structure.columns.some((c) => c.panes.includes(id));
 
 	const refsOf = (lane: string): PaneRef[] => {
-		const v = boardViewByLane.get(boardLaneKeyOf(lane));
+		const v = boardViewByLane.get(boardKeyOf(lane));
 		return lanePaneRefs(
 			sessionsByLane.get(lane) ?? [],
 			!!v && v.open && v.form === "docked",
@@ -330,7 +339,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	/** 表示中 lane の board が float 投影中か（stray 掃除の除外判定に使う）。 */
 	const boardFloating = (): boolean => {
 		if (!activeLane) return false;
-		const v = boardViewByLane.get(boardLaneKeyOf(activeLane));
+		const v = boardViewByLane.get(boardKeyOf(activeLane));
 		return !!v && v.open && v.form === "float";
 	};
 
@@ -550,7 +559,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		).detail;
 		if (!d?.lane) return;
 		boardViewByLane.set(d.lane, { open: d.open, form: d.form });
-		if (!activeLane || boardLaneKeyOf(activeLane) !== d.lane) return;
+		if (!activeLane || boardKeyOf(activeLane) !== d.lane) return;
 		syncRoster(activeLane);
 		render();
 	});
@@ -564,7 +573,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 			e as CustomEvent<{ lane: string; present: boolean; fresh?: boolean }>
 		).detail;
 		if (!d?.lane || !d.fresh) return;
-		if (!activeLane || boardLaneKeyOf(activeLane) !== d.lane) return;
+		if (!activeLane || boardKeyOf(activeLane) !== d.lane) return;
 		if (refsOf(activeLane).some((p) => p.id === BOARD_PANE_REF.id))
 			controller.focusPane(BOARD_PANE_REF.id);
 	});

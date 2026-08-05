@@ -15,7 +15,10 @@
  *
  * ## 層の分離（CLAUDE.md: data / calculations / actions）
  *
- * - **data**: module-local `states`（lane flat key → BoardViewState）+ `badges`（新着未読）
+ * - **data**: module-local `states`（board キー → BoardViewState）+ `badges`（新着未読）。
+ *   ⚠️ キーは **`(repo, lane)` の対**（`lane-panes.boardKeyOf` = `board-handler.boardKey`）。
+ *   全 repo の root lane は同じ `'conductor'` を名乗るので、lane 名だけで持つと
+ *   「repo A で board を開いたまま B へ移ると B でも開いていて、float 位置まで共有される」
  * - **calculations**: `toggleOpen` / `toggleForm` / `initialFloatRect` / `clampRect` /
  *   `moveRect` / `resizeRect` — 純関数（vitest で固定）
  * - **actions**: `installBoardView`（取っ手 / form ボタン / drag / resize の配線 + float 投影 +
@@ -136,13 +139,13 @@ export function resizeRect(
 // data（module-local。in-memory — A7 到着で layout 永続へ乗せ替え）
 // ============================================================================
 
-/** lane flat key（'conductor' / performer 名 — board-handler と同じ key 系）→ view 状態。 */
+/** board キー（`(repo, lane)` の対 — `boardKeyOf` / `boardKey` と同じ key 系）→ view 状態。 */
 const states = new Map<string, BoardViewState>();
 /** 閉時に fresh（新着）が来た lane（doc 55 §5.2 — 取っ手 badge の点灯元）。開くと消える。 */
 const badges = new Set<string>();
 
-function stateOf(flat: string): BoardViewState {
-	return states.get(flat) ?? DEFAULT_BOARD_VIEW;
+function stateOf(key: string): BoardViewState {
+	return states.get(key) ?? DEFAULT_BOARD_VIEW;
 }
 
 // ============================================================================
@@ -161,7 +164,7 @@ export interface BoardViewDeps {
 }
 
 interface BoardViewController {
-	setActiveLane(flat: string | null): void;
+	setActiveLane(key: string | null): void;
 	toggleOpen(): void;
 	toggleForm(): void;
 }
@@ -180,7 +183,7 @@ export function toggleBoardForm(): void {
 }
 
 export function installBoardView(deps: BoardViewDeps): BoardViewController {
-	let activeFlat: string | null = null;
+	let activeKey: string | null = null;
 	/** drag / resize 中の一時 rect（確定は pointerup で states へ）。 */
 	let liveRect: FloatRect | null = null;
 
@@ -203,11 +206,11 @@ export function installBoardView(deps: BoardViewDeps): BoardViewController {
 	};
 
 	/** roster への出入りを lane-panes へ知らせる（docked の tiling 反映は向こうの仕事）。 */
-	const dispatchView = (flat: string): void => {
-		const s = stateOf(flat);
+	const dispatchView = (key: string): void => {
+		const s = stateOf(key);
 		document.dispatchEvent(
 			new CustomEvent("vp:board-view", {
-				detail: { lane: flat, open: s.open, form: s.form },
+				detail: { lane: key, open: s.open, form: s.form },
 			}),
 		);
 	};
@@ -215,11 +218,11 @@ export function installBoardView(deps: BoardViewDeps): BoardViewController {
 	/** view 状態 → DOM への投影。float は本 module が rect を書き、docked / 閉は
 	 *  lane-panes（roster / stray）が display を決める。 */
 	const project = (): void => {
-		const flat = activeFlat;
+		const key = activeKey;
 		// lane 不在: 取っ手ごと消す（#lane-empty の世界）
-		deps.handle.style.display = flat ? "" : "none";
-		if (!flat) return;
-		const s = stateOf(flat);
+		deps.handle.style.display = key ? "" : "none";
+		if (!key) return;
+		const s = stateOf(key);
 		const floating = s.open && s.form === "float";
 		deps.board.classList.toggle("board-floating", floating);
 		if (floating) {
@@ -237,21 +240,21 @@ export function installBoardView(deps: BoardViewDeps): BoardViewController {
 			deps.board.style.height = "";
 		}
 		// 取っ手: badge / 状態 tooltip
-		deps.handle.classList.toggle("has-badge", badges.has(flat));
+		deps.handle.classList.toggle("has-badge", badges.has(key));
 		// form ボタン: 表示はこれから行ける先（docked 中は Float、float 中は Dock）
 		deps.formBtn.textContent = s.form === "float" ? "Dock" : "Float";
 	};
 
 	const mutate = (
-		flat: string,
+		key: string,
 		fn: (s: BoardViewState) => BoardViewState,
 	): void => {
-		const next = fn(stateOf(flat));
-		states.set(flat, next);
-		if (next.open) badges.delete(flat); // 開いた = 見た（badge 消灯）
+		const next = fn(stateOf(key));
+		states.set(key, next);
+		if (next.open) badges.delete(key); // 開いた = 見た（badge 消灯）
 		liveRect = null;
 		project();
-		dispatchView(flat);
+		dispatchView(key);
 	};
 
 	// ---- drag（移動: 名札）と resize（縁/角） ----------------------------------
@@ -265,9 +268,9 @@ export function installBoardView(deps: BoardViewDeps): BoardViewController {
 		guard?: (e: PointerEvent) => boolean,
 	): void => {
 		el.addEventListener("pointerdown", (e) => {
-			const flat = activeFlat;
-			if (!flat) return;
-			const s = stateOf(flat);
+			const key = activeKey;
+			if (!key) return;
+			const s = stateOf(key);
 			if (!(s.open && s.form === "float")) return;
 			if (guard && !guard(e)) return;
 			e.preventDefault();
@@ -281,8 +284,8 @@ export function installBoardView(deps: BoardViewDeps): BoardViewController {
 			 *  誤った lane への rect 上書きと、docked へ遷移後の px 直書き（lane-panes render
 			 *  との二重書き手化）を防ぐ（moody-blues finding #2、2026-07-30）。 */
 			const dragAlive = (): boolean => {
-				const cur = stateOf(flat);
-				return activeFlat === flat && cur.open && cur.form === "float";
+				const cur = stateOf(key);
+				return activeKey === key && cur.open && cur.form === "float";
 			};
 			const onMove = (ev: PointerEvent): void => {
 				if (!dragAlive()) return;
@@ -296,7 +299,7 @@ export function installBoardView(deps: BoardViewDeps): BoardViewController {
 				deps.board.classList.remove("board-interacting");
 				// 確定 = 記憶（lane ごと）。文脈が死んでいたら捨てる（上記 guard と同じ理由）
 				if (liveRect && dragAlive()) {
-					states.set(flat, { ...stateOf(flat), rect: liveRect });
+					states.set(key, { ...stateOf(key), rect: liveRect });
 				}
 				liveRect = null;
 			};
@@ -327,10 +330,10 @@ export function installBoardView(deps: BoardViewDeps): BoardViewController {
 	// ---- 取っ手 / form ボタン ---------------------------------------------------
 
 	deps.handle.addEventListener("click", () => {
-		if (activeFlat) mutate(activeFlat, toggleOpen);
+		if (activeKey) mutate(activeKey, toggleOpen);
 	});
 	deps.formBtn.addEventListener("click", () => {
-		if (activeFlat) mutate(activeFlat, toggleForm);
+		if (activeKey) mutate(activeKey, toggleForm);
 	});
 
 	// ---- 新着 badge（doc 55 §5.2 — fresh は表示を起こさず、閉時は取っ手で知らせる） ----
@@ -342,31 +345,31 @@ export function installBoardView(deps: BoardViewDeps): BoardViewController {
 		if (!d?.lane || !d.fresh) return;
 		if (stateOf(d.lane).open) return; // 開いていれば見えている（focus 寄せは lane-panes）
 		badges.add(d.lane);
-		if (d.lane === activeFlat) project();
+		if (d.lane === activeKey) project();
 	});
 
 	// ---- workbench resize: clamp を当て直す（記憶 rect は壊さない、doc 55 §7.1） ----
 
 	new ResizeObserver(() => {
-		const flat = activeFlat;
-		if (!flat) return;
-		const s = stateOf(flat);
+		const key = activeKey;
+		if (!key) return;
+		const s = stateOf(key);
 		if (s.open && s.form === "float" && !liveRect) writeRect(viewRect(s));
 	}).observe(deps.workbench);
 
 	const ctl: BoardViewController = {
-		setActiveLane(flat) {
-			if (activeFlat === flat) return;
-			activeFlat = flat;
+		setActiveLane(key) {
+			if (activeKey === key) return;
+			activeKey = key;
 			liveRect = null;
 			project();
-			if (flat) dispatchView(flat); // 新 lane の roster を向こうにも同期させる
+			if (key) dispatchView(key); // 新 lane の roster を向こうにも同期させる
 		},
 		toggleOpen() {
-			if (activeFlat) mutate(activeFlat, toggleOpen);
+			if (activeKey) mutate(activeKey, toggleOpen);
 		},
 		toggleForm() {
-			if (activeFlat) mutate(activeFlat, toggleForm);
+			if (activeKey) mutate(activeKey, toggleForm);
 		},
 	};
 	controller = ctl;

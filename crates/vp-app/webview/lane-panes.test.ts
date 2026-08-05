@@ -11,7 +11,7 @@
 import { resolve, visibleIds } from "@chronista-club/creo-ui-layout";
 import { describe, expect, it } from "vitest";
 import {
-	boardLaneKeyOf,
+	boardKeyOf,
 	chatHostId,
 	enterShare,
 	initialLaneLayout,
@@ -24,6 +24,7 @@ import {
 	syncPaneColumns,
 	termHostId,
 } from "./lane-panes";
+import { boardKey } from "./board-handler";
 import { layoutEngine } from "./layout-host";
 
 /** A6: term host も session 単位（旧 `lane-host` = root 専用の静的 host は退役）。 */
@@ -167,17 +168,30 @@ describe("renamePane（in-place 変身 — doc 50 §4.6 A6 ②）", () => {
 	});
 });
 
-describe("boardLaneKeyOf（address → board flat key の写像。'vp:board-presence' 突合の seam）", () => {
-	it("root / lead は 'conductor'（board-handler の None→'conductor' と一致）", () => {
-		expect(boardLaneKeyOf("vantage-point/root")).toBe("conductor");
-		expect(boardLaneKeyOf("vantage-point/lead")).toBe("conductor");
+describe("boardKeyOf（address → board キーの写像。'vp:board-view' / 'vp:board-presence' 突合の seam）", () => {
+	it("⚠️ board-handler の boardKey と同じ文字列を作る（対の写像を往復で固定）", () => {
+		// キーの合成は `boardKey` 1 本。ここは「address という別の入力形」からの adapter で、
+		// **両者が一致しなくなると board の中身と view 状態が無音で別々の箱を使い始める**。
+		expect(boardKeyOf("vantage-point/root")).toBe(boardKey("vantage-point", null));
+		expect(boardKeyOf("vantage-point/lead")).toBe(boardKey("vantage-point", null));
+		expect(boardKeyOf("vantage-point/performer/foo")).toBe(
+			boardKey("vantage-point", "foo"),
+		);
+		expect(boardKeyOf("vantage-point/wing/bar")).toBe(boardKey("vantage-point", "bar"));
 	});
-	it("performer は名前を返す", () => {
-		expect(boardLaneKeyOf("vantage-point/performer/foo")).toBe("foo");
-		expect(boardLaneKeyOf("vantage-point/wing/bar")).toBe("bar");
+	it("⚠️ repo が違えば別のキー（root lane は全 repo が 'conductor' を名乗る）", () => {
+		expect(boardKeyOf("vantage-point/root")).not.toBe(boardKeyOf("nexus/root"));
+		// 同名の Sub lane も repo をまたげば別物
+		expect(boardKeyOf("repo-a/performer/stack-land")).not.toBe(
+			boardKeyOf("repo-b/performer/stack-land"),
+		);
 	});
-	it("未知形は 'conductor' に倒す（board は最悪 conductor board に出す側）", () => {
-		expect(boardLaneKeyOf("weird")).toBe("conductor");
+	it("同じ repo の同じ lane は同じキー（address の綴り違いを吸収する）", () => {
+		expect(boardKeyOf("vp/root")).toBe(boardKeyOf("vp/lead"));
+		expect(boardKeyOf("vp/performer/x")).toBe(boardKeyOf("vp/wing/x"));
+	});
+	it("未知形は その repo の conductor に倒す（board は最悪 conductor board に出す側）", () => {
+		expect(boardKeyOf("weird")).toBe(boardKey("weird", null));
 	});
 });
 
