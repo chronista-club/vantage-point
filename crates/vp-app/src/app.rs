@@ -4775,14 +4775,14 @@ pub fn run() -> anyhow::Result<()> {
                 // 実機で確認）。保持済み state から全量で撃ち直す。
                 lane_js::render_devices(&webview, &sidebar_state.devices);
                 // 掲示板: retained BoardUpdated も同じ窓で落ちる（doc 52 §10 wave 0）。
-                // active repo の保持分を全 lane 撃ち直す（落ちたままだと reopen で board pane
-                // が出ず、次の live show まで空のまま）。
-                if let Some(proj) = sidebar_state
-                    .active_lane_address
-                    .as_deref()
-                    .and_then(|addr| addr.split('/').next())
-                    && let Some(boards) = board_snapshots.get(proj)
-                {
+                // 保持分を撃ち直す（落ちたままだと reopen で board pane が出ず、次の live show
+                // まで空のまま）。
+                //
+                // ⚠️ **全 repo 分を撃つ**。active repo だけに絞っていた旧実装は、bundle 再評価後に
+                // 別 repo へ切り替えると board が空のままだった（webview は `(repo, lane)` で
+                // 箱を持つので、届いていない repo の箱は作られない）。message には repo が
+                // stamp 済なので、まとめて配っても混ざらない。
+                for boards in board_snapshots.values() {
                     for message in boards.values() {
                         lane_js::board_message(&webview, message.clone());
                     }
@@ -4923,7 +4923,8 @@ pub fn run() -> anyhow::Result<()> {
                 message,
             }) => {
                 // wiremsg Stage 2: repo の "canvas" channel から受信した RepoMessage。
-                // active repo の分のみ main area の Board body に転送する。
+                // active repo の分のみ main area の Board body に転送する
+                // （**board_updated だけは例外** — 下記）。
                 // active 判定: active_lane_address の repo segment == repo_path の basename。
                 let active_repo = sidebar_state
                     .active_lane_address
@@ -4932,6 +4933,24 @@ pub fn run() -> anyhow::Result<()> {
                 let msg_repo = std::path::Path::new(&repo_path)
                     .file_name()
                     .and_then(|s| s.to_str());
+                // ⚠️ **board_updated には送信元 repo を stamp する**（repo 側の BoardUpdated は
+                // 持っていない）。board の同一性は `(repo, lane)` の対で、全 repo の root lane が
+                // 同じ `'conductor'` を名乗る。repo を落として webview に渡していた旧実装は
+                // 13 repo が 1 つの箱を奪い合い、「board 行を持たない repo に切り替えると前の
+                // repo の board が出たまま」になっていた（2026-08-04 根治）。
+                let mut message = message;
+                let is_board_update = message.get("type").and_then(|t| t.as_str())
+                    == Some("board_updated")
+                    && message.get("scope").and_then(|s| s.as_str()) == Some("lane");
+                if is_board_update
+                    && let Some(proj) = msg_repo
+                    && let Some(obj) = message.as_object_mut()
+                {
+                    obj.insert(
+                        "repo".to_string(),
+                        serde_json::Value::String(proj.to_string()),
+                    );
+                }
                 // board pane の boot 窓救済（doc 52 §10 wave 0）: BoardUpdated を repo × lane で
                 // 保持する。`AppEvent::WebviewReady` の replay で再配信し、retained が bundle 評価前に
                 // 落ちた分を埋める。lane 欠落 = conductor（board-handler の flat key と一致）。
@@ -4942,8 +4961,7 @@ pub fn run() -> anyhow::Result<()> {
                 //   broadcast_lane=None → lane_key="conductor" に衝突する。scope guard が無いと、行順
                 //   次第で proj 孤児が本物の lane board を上書きし、replay が「JS が捨てる死んだ
                 //   message」を配って boot 窓 regression が再発する（team-b review 2026-07-24）。
-                if message.get("type").and_then(|t| t.as_str()) == Some("board_updated")
-                    && message.get("scope").and_then(|s| s.as_str()) == Some("lane")
+                if is_board_update
                     && let Some(proj) = msg_repo
                 {
                     let lane_key = message
@@ -5002,8 +5020,13 @@ pub fn run() -> anyhow::Result<()> {
                             );
                         }
                     }
-                } else if active_repo.is_some() && active_repo == msg_repo {
-                    // board content (非 switch_lane) は active repo の分のみ main area に転送する。
+                } else if is_board_update || (active_repo.is_some() && active_repo == msg_repo) {
+                    // ⚠️ **board_updated は active repo でなくても流す**。webview が `(repo, lane)` で
+                    // 箱を分けるようになったので、全 repo 分を持たせておけば repo 切替が
+                    // 「キーを差し替えるだけ」で済む（撃ち直しの経路が要らない）。
+                    // active repo に絞っていた旧実装は、切替先の board を **一度も届けない**まま
+                    // 前の repo の箱を見せていた（bug の後半）。
+                    // board 以外（switch_lane を除く content）は従来どおり active repo のみ。
                     match serde_json::to_value(&message) {
                         Ok(json) => lane_js::board_message(&webview, json),
                         Err(e) => {

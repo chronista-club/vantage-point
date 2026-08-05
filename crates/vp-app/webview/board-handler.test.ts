@@ -28,7 +28,7 @@ import {
   getCanvasState,
   handleMessage,
   hasFreshArrival,
-  setActiveLaneName,
+  setActiveBoard,
   setCursor,
   subscribeCanvasState,
   type BoardItem,
@@ -46,10 +46,18 @@ function boardUpdated(
     createdAt?: string
   }>,
   cursor: string | null = items[0]?.id ?? null,
+  /**
+   * 送信元 repo（vp-app が stamp する）。board の同一性は `(repo, lane)` の対。
+   *
+   * 既定は空 = 初期 active と同じ箱。**repo 次元を問わない test はこれで従来どおり**書け、
+   * repo をまたぐ挙動を見る test だけが明示的に渡す（下の「repo 次元」describe）。
+   */
+  repo = '',
 ) {
   return {
     type: 'board_updated' as const,
     scope,
+    repo,
     lane,
     items: items.map((i) => ({
       id: i.id,
@@ -119,11 +127,56 @@ describe('lane board の lane 別保持', () => {
     // active=conductor
     expect(getCanvasState().items[0].id).toBe('cond')
     // performer に切替
-    setActiveLaneName('feat-api')
+    setActiveBoard('', 'feat-api')
     expect(getCanvasState().items[0].id).toBe('perf')
     // conductor に戻すと board が残っている（retained を捨てない）
-    setActiveLaneName(null)
+    setActiveBoard('', null)
     expect(getCanvasState().items[0].id).toBe('cond')
+  })
+})
+
+// ============================================================================
+// repo 次元（2026-08-04 根治）
+// ============================================================================
+
+describe('board の同一性は (repo, lane) の対', () => {
+  it('⚠️ board を持たない repo に切り替えたら空になる（前の repo の board が残らない）', () => {
+    // 全 repo の root lane は同じ 'conductor' を名乗る。repo 次元を落とすと 13 repo が
+    // 1 つの箱を奪い合い、**board 行を持たない repo で前の repo の board が出続けた**。
+    handleMessage(boardUpdated('lane', null, [{ id: 'vp-item' }], null, 'vantage-point'))
+    setActiveBoard('vantage-point', null)
+    expect(getCanvasState().items[0].id).toBe('vp-item')
+
+    // board を一度も使っていない repo の root lane へ
+    setActiveBoard('nexus', null)
+    expect(getCanvasState().items).toEqual([])
+  })
+
+  it('別 repo の同名 lane が互いを上書きしない', () => {
+    handleMessage(boardUpdated('lane', null, [{ id: 'a' }], null, 'repo-a'))
+    handleMessage(boardUpdated('lane', null, [{ id: 'b' }], null, 'repo-b'))
+    setActiveBoard('repo-a', null)
+    expect(getCanvasState().items[0].id).toBe('a')
+    setActiveBoard('repo-b', null)
+    expect(getCanvasState().items[0].id).toBe('b')
+  })
+
+  it('同名の Sub lane も repo をまたいで混ざらない', () => {
+    handleMessage(boardUpdated('lane', 'stack-land', [{ id: 'in-a' }], null, 'repo-a'))
+    handleMessage(boardUpdated('lane', 'stack-land', [{ id: 'in-b' }], null, 'repo-b'))
+    setActiveBoard('repo-a', 'stack-land')
+    expect(getCanvasState().items[0].id).toBe('in-a')
+    setActiveBoard('repo-b', 'stack-land')
+    expect(getCanvasState().items[0].id).toBe('in-b')
+  })
+
+  it('戻れば元の board が残っている（切替は捨てない）', () => {
+    handleMessage(boardUpdated('lane', null, [{ id: 'a' }], null, 'repo-a'))
+    setActiveBoard('repo-a', null)
+    setActiveBoard('repo-b', null)
+    expect(getCanvasState().items).toEqual([])
+    setActiveBoard('repo-a', null)
+    expect(getCanvasState().items[0].id).toBe('a')
   })
 })
 
@@ -155,7 +208,7 @@ describe('setCursor（view local）', () => {
 describe('delete / clear は repo に IPC 依頼', () => {
   it('deleteItem は board:delete を active scope/lane で送る', () => {
     handleMessage(boardUpdated('lane', 'feat-api', [{ id: 'x' }]))
-    setActiveLaneName('feat-api')
+    setActiveBoard('', 'feat-api')
     deleteItem('x')
     expect(ipcSpy).toHaveBeenCalledTimes(1)
     const payload = JSON.parse(ipcSpy.mock.calls[0][0] as string)

@@ -131,7 +131,7 @@ import {
 import { renderDevices as renderDeviceList } from "./devices";
 import {
 	handleMessage as handleBoardMessage,
-	setActiveLaneName,
+	setActiveBoard,
 	clearActiveBoard,
 	getCanvasState,
 } from "./board-handler";
@@ -300,11 +300,15 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		// 'vp:console-mode'（lane 単位 mode の到着）が契機だったが、見え方が session の
 		// 属性になったので lane 切替そのものが契機になる。
 		if (laneChanged) applyLaneView(newLane);
-		// board モデル: lane 切替時に active lane を更新する。 lane board は canvas channel で既に
-		// retained 受信済みなので、 setActiveLaneName で表示 board を切り替えるだけでよい（別 load 不要）。
+		// board モデル: lane 切替時に表示 board を切り替える。board は canvas channel で既に
+		// 全 repo 分 retained 受信済みなので、キーを差し替えるだけでよい（別 load 不要）。
 		// LaneAddress::Display 形 (`<repo>/lead` or `<repo>/wing/<name>`) を flat lane_name に翻訳。
+		//
+		// ⚠️ **repo も渡す**。board の同一性は `(repo, lane)` の対で、全 repo の root lane が
+		// 同じ `'conductor'` を名乗る。lane 名だけで切り替えていた旧実装は、board 行を持たない
+		// repo へ移ったときに前の repo の board を出し続けていた（2026-08-04 根治）。
 		const laneName = laneNameFromAddress(newLane);
-		setActiveLaneName(laneName);
+		setActiveBoard(newLane.split("/")[0] ?? null, laneName);
 		// doc 55: board の view 層（open / form / floatRect）も lane に追従する。
 		// ⚠️ laneName（null = conductor の流儀）ではなく boardLaneKeyOf（'conductor' 文字列の
 		// 流儀）を渡す — board-view / lane-panes の Map は文字列 key 系で、null を渡すと
