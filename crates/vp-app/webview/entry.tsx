@@ -116,7 +116,7 @@ import type {
 // doc 46 P1 → doc 49 LE-P4 PR2: lane 内 tiling（creo-ui-layout の lane scope）。
 // + New（engine × Mode で新 session）は LaneHeader へ移設済み（doc 51 §1 A1 — 帯の退役）。
 import {
-	boardLaneKeyOf,
+	boardKeyOf,
 	chatHostId,
 	hostIdForMode,
 	installLanePanes,
@@ -310,10 +310,12 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		const laneName = laneNameFromAddress(newLane);
 		setActiveBoard(newLane.split("/")[0] ?? null, laneName);
 		// doc 55: board の view 層（open / form / floatRect）も lane に追従する。
-		// ⚠️ laneName（null = conductor の流儀）ではなく boardLaneKeyOf（'conductor' 文字列の
-		// 流儀）を渡す — board-view / lane-panes の Map は文字列 key 系で、null を渡すと
+		// ⚠️ laneName（null = conductor の流儀）ではなく boardKeyOf（`(repo, lane)` の合成キー）
+		// を渡す — board-view / lane-panes の Map は文字列 key 系で、null を渡すと
 		// 「lane 不在」扱いになり取っ手ごと消える（root lane で実機再現、2026-07-30）。
-		boardView?.setActiveLane(boardLaneKeyOf(newLane));
+		// **repo を含むのが要点**: 含めないと repo A で docked にした board が B の roster に
+		// 載ったまま tiling の場所を取る（「出っ放し」、2026-08-05 実機で確認）。
+		boardView?.setActiveLane(boardKeyOf(newLane));
 		// doc 56 prototype: rail の + New は lane address（agents_fetch / new_session の宛先）で追従。
 		edgeRail?.setLane(newLane);
 		return;

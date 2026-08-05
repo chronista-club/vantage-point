@@ -208,14 +208,21 @@ function renderCurrentMain(): void {
  * ⚠️ `present` field は現在**読み手ゼロ**（informational only — 両購読者とも fresh しか
  * 見ない）。互換のため残しているが、roster 判定に使ってはいけない（それは 'vp:board-view'）。
  */
-function notifyBoardPresence(lane: string | null | undefined, present: boolean, fresh: boolean): void {
+function notifyBoardPresence(
+  repo: string | null | undefined,
+  lane: string | null | undefined,
+  present: boolean,
+  fresh: boolean,
+): void {
   // sendIpc と同じ規律: DOM 不在環境（単体テスト等）では silent skip（prod の webview では
   // document / CustomEvent は必ず存在）。event 配線は「薄い action 層」= 単体テスト対象外で、
   // 判定ロジック（hasFreshArrival / present = items.length>0）は純関数として直接検証する。
   if (typeof document === 'undefined' || typeof CustomEvent === 'undefined') return
   document.dispatchEvent(
     new CustomEvent('vp:board-presence', {
-      detail: { lane: lane ?? 'conductor', present, fresh },
+      // ⚠️ **合成キーで飛ばす**（購読側 lane-panes は `boardKeyOf` = 同じ `boardKey` で引く）。
+      // flat lane 名のままだと、repo をまたいだ瞬間に購読側の lookup と噛み合わなくなる。
+      detail: { lane: boardKey(repo, lane), present, fresh },
     }),
   )
 }
@@ -350,7 +357,7 @@ function applyBoardUpdated(msg: BoardUpdatedMessage): void {
   // 古い item を見ていて cursor 据え置きなら、新着は dot で灯すが focus は奪わない。裏 lane も対象外。
   const cursorFollowed = cursor !== null && freshIds.includes(cursor)
   const fresh = isActiveView(msg.repo, msg.lane) && cursorFollowed
-  notifyBoardPresence(msg.lane, board.items.length > 0, fresh)
+  notifyBoardPresence(msg.repo, msg.lane, board.items.length > 0, fresh)
   // 表示中の board が更新されたときだけ main を再描画。
   if (isActiveView(msg.repo, msg.lane)) {
     renderCurrentMain()
