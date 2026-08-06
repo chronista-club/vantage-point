@@ -517,7 +517,11 @@ body.rsb-open #edge-rail{display:none !important;}
 /* content_type=html: sandbox iframe を board pane いっぱいに広げる。
    renderBoard が container に .board-content-html を付与し full-bleed に切り替える。 */
 .board-content.board-content-html{padding:0;height:100%;}
-.board-html-frame{width:100%;height:100%;border:0;display:block;background:#fff;}
+/* html item の iframe。⚠️ 背景を白で塗らない — 土台（board-render の boardHtmlPrelude）が
+   body に --color-surface-bg-base を敷くので、白を残すと素の HTML が読み込まれるまでの
+   一瞬だけ白く光る。全部入りで書かれた既存 item は自分で背景を塗るので影響しない。 */
+.board-html-frame{width:100%;height:100%;border:0;display:block;
+  background:var(--color-surface-bg-base);}
 /* VP-140: display:none/active gate 廃止、 always display:grid。 visibility は opacity (Frame Engine) が司る. */
 /* VP-142 cleanup: .pane.canvas rules 削除 (pane-canvas HTML element 削除に伴い)。
    board body が Smart Canvas surface を物理化したため pane-canvas は vestigial。 */

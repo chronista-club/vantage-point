@@ -92,6 +92,92 @@ async function runMermaidPostProcess(container: HTMLElement): Promise<void> {
 }
 
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// html item の土台（doc: board の HTML を「素の semantic HTML」で書けるようにする）
+// ----------------------------------------------------------------------------
+//
+// ## 何のためか
+//
+// html item は sandbox iframe に隔離されるので、親の creo token も `.board-content` の
+// CSS も**一切継承しない**。そのため AI は毎回 `<!DOCTYPE html>` + 全部入りの `<style>` を
+// 書く羽目になっていた。土台を srcdoc 側に注ぐと、**AI は素の semantic HTML だけ**を
+// 書けばよくなる:
+//
+// | 目的 | 効き方 |
+// |---|---|
+// | **検索しやすさ** | class を使わず要素セレクタで飾るので、`<h2>` / `<table>` が構造として残る |
+// | **生成コスト** | `<style>` を書かない分、生成も creo に保存される content も軽い |
+// | **見た目の制御** | VP 側の 1 箇所。token を変えれば**過去の item も追従**する |
+//
+// ## ⚠️ token は実行時に親から読む（ハードコピーを作らない）
+//
+// 値をここに書き写すと creo-tokens.css と二重管理になり、片方だけ変わった日に無音で
+// ずれる。`getComputedStyle` で live な値を引いて `:root` に流し込むので、**theme を
+// 変えた瞬間に既存 item まで追従**する（rebuild も再 show も要らない）。
+
+/** 土台が使う token。`.board-content`（markdown 側）が参照しているものと同じ集合に揃える。 */
+const BASE_TOKENS = [
+  '--color-text-primary',
+  '--color-text-secondary',
+  '--color-text-tertiary',
+  '--color-surface-bg-base',
+  '--color-surface-surface',
+  '--color-surface-border-subtle',
+  '--color-brand-primary',
+  '--color-brand-primary-subtle',
+  '--typography-family-sans',
+  '--typography-family-mono',
+  '--vp-font-sans',
+] as const
+
+/** 親 document から token の live 値を読んで `:root{...}` を組む。 */
+function tokenBlock(): string {
+  // 単体テスト等 DOM 不在環境では空（土台なしでも HTML 自体は出る）。
+  if (typeof document === 'undefined' || typeof getComputedStyle !== 'function') return ''
+  const cs = getComputedStyle(document.documentElement)
+  const decls = BASE_TOKENS.map((t) => `${t}:${cs.getPropertyValue(t).trim()}`)
+    .filter((d) => !d.endsWith(':'))
+    .join(';')
+  return decls ? `:root{${decls}}` : ''
+}
+
+/**
+ * 素の semantic HTML を board の見た目にする土台。
+ *
+ * ⚠️ セレクタは**要素だけ**（class を作らない）。class を配ると AI がそれを使い始め、
+ * 「検索しやすい素の HTML」という目的と逆に働く。
+ *
+ * ⚠️ 作者の `<style>` は**この後ろ**に来るので、全部入りで書かれた既存 item は
+ * 今までどおり自分の見た目で出る（土台は壊さない）。
+ */
+const BASE_STYLE = `
+html,body{margin:0;padding:16px 20px;background:var(--color-surface-bg-base);
+  color:var(--color-text-primary);font-size:13px;line-height:1.6;
+  font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
+h1{font-size:1.6rem;font-weight:500;margin:0 0 .5rem;color:var(--color-text-primary);}
+h2{font-size:1.3rem;font-weight:500;margin:1.2rem 0 .5rem;}
+h3{font-size:1.1rem;font-weight:500;margin:1rem 0 .4rem;}
+p{margin:.5rem 0;color:var(--color-text-secondary);}
+code{background:var(--color-surface-surface);padding:1px 5px;border-radius:3px;
+  font-family:var(--typography-family-mono);font-size:.9em;}
+pre{background:var(--color-surface-surface);padding:12px;border-radius:6px;overflow-x:auto;}
+pre code{background:transparent;padding:0;}
+a{color:var(--color-brand-primary);}
+ul,ol{padding-left:1.5em;margin:.5rem 0;}
+blockquote{border-left:3px solid var(--color-brand-primary-subtle);margin:.5rem 0;padding:0 1em;
+  color:var(--color-text-tertiary);}
+table{border-collapse:collapse;margin:.5rem 0;}
+th,td{border:1px solid var(--color-surface-border-subtle);padding:4px 8px;}
+th{font-weight:500;color:var(--color-text-primary);}
+hr{border:0;border-top:1px solid var(--color-surface-border-subtle);margin:1rem 0;}
+img{max-width:100%;}
+`
+
+/** srcdoc に注ぐ土台（token + 要素の既定）。純関数 = test 対象。 */
+export function boardHtmlPrelude(): string {
+  return `<style>${tokenBlock()}${BASE_STYLE}</style>`
+}
+
 // markdown / html / text の dispatch
 // ----------------------------------------------------------------------------
 
@@ -103,7 +189,11 @@ function toHtml(content: string, contentType: ContentType): string {
   if (contentType === 'html') {
     // raw HTML は sandbox iframe (srcdoc) に隔離。 srcdoc 属性値に埋めるので & と " を
     // エスケープ — & を先に処理する (逆順だと " 由来の &quot; の & が二重エスケープ)。
-    const escaped = content.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    // 土台を先に、作者の HTML を後に。順序が逆だと作者の `<style>` を土台が上書きして、
+    // 全部入りで書かれた既存 item の見た目を壊す。
+    const escaped = (boardHtmlPrelude() + content)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
     return `<iframe class="board-html-frame" sandbox="allow-scripts" srcdoc="${escaped}"></iframe>`
   }
   // text: HTML escape して span で出す
