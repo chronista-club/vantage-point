@@ -336,6 +336,17 @@ pub enum AppEvent {
     /// `source` = "app" | "daemon"（file への解決は `debug_log::log_path`）。
     /// 最後の watch が勝つ = 単一 tail（source 切替も watch の送り直し）。
     DebugLogWatch { source: String },
+    /// shell (L sidebar | main | R sidebar) の形が確定した（drag 終了 / form 切替 / R 開閉）。
+    ///
+    /// ⚠️ **確定時のみ**送られる。pointermove ごとに撃つと window resize と同じ頻度で
+    /// session.json を書くことになる（webview 側で pointerup まで抑えている）。
+    ShellLayout {
+        sidebar_width: f64,
+        right_sidebar_width: f64,
+        /// `"full"` | `"slim"`。未知値は Rust 側で `full` に倒す。
+        sidebar_form: String,
+        right_sidebar_open: bool,
+    },
     /// tail 購読の停止（R sidebar を閉じた）。見ていない log は読み続けない。
     DebugLogUnwatch,
     /// tail thread からの 1 chunk。event loop が push envelope `debuglog:lines` で webview へ流す。
@@ -622,6 +633,28 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             if let Some(source) = parsed.get("source").and_then(|v| v.as_str()) {
                 let _ = proxy.send_event(AppEvent::DebugLogWatch {
                     source: source.to_string(),
+                });
+            }
+        }
+        // shell layout（L sidebar | main | R sidebar の形）の確定通知。
+        // 値の検証（範囲外の clamp）は session_state 側の setter が持つ — ここは運ぶだけ。
+        Some("shell:layout") => {
+            let num = |k: &str| parsed.get(k).and_then(|v| v.as_f64());
+            if let (Some(sidebar_width), Some(right_sidebar_width)) =
+                (num("sidebar_width"), num("right_sidebar_width"))
+            {
+                let _ = proxy.send_event(AppEvent::ShellLayout {
+                    sidebar_width,
+                    right_sidebar_width,
+                    sidebar_form: parsed
+                        .get("sidebar_form")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("full")
+                        .to_string(),
+                    right_sidebar_open: parsed
+                        .get("right_sidebar_open")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
                 });
             }
         }

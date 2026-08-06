@@ -44,6 +44,13 @@ export interface PushHandlers {
 	removeLaneSession(lane: string, session: number): void;
 	deliverPaste(text: string): void;
 	renderDevices(devices: unknown[]): void;
+	/** shell (L|main|R) の形の復元（boot の replay で 1 回だけ来る）。 */
+	applyShellLayout(layout: {
+		sidebar_width: number;
+		right_sidebar_width: number;
+		sidebar_form: string;
+		right_sidebar_open: boolean;
+	}): void;
 	handleBoardMessage(message: unknown): void;
 	consoleSessionList(lane: string, payload: unknown): void;
 	consoleEvent(lane: string, event: unknown, session: number): void;
@@ -101,6 +108,9 @@ function apply(msg: PushEventEnvelope): void {
 			break;
 		case "devices:render":
 			handlers.renderDevices(msg.devices);
+			break;
+		case "shell:layout":
+			handlers.applyShellLayout(msg);
 			break;
 		case "board:message":
 			handlers.handleBoardMessage(msg.message);

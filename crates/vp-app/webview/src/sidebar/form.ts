@@ -26,6 +26,20 @@ function applyForm(next: SidebarForm): void {
 	document
 		.getElementById("sidebar-root")
 		?.classList.toggle("slim", next === "slim");
+	// shell layout（main bundle の shell-layout.ts）へ「形が変わった」を伝える。
+	// あちらが取っ手の出し入れ（slim では掴めない）と永続化を持つ。bundle が別なので
+	// import ではなく document の CustomEvent bus を使う（`vp:board-view` と同じ流儀）。
+	document.dispatchEvent(
+		new CustomEvent("vp:sidebar-form", { detail: { form: next } }),
+	);
+}
+
+/** 復元（shell-layout.ts の `vp:shell-restore`）を受けて形を戻す。boot で 1 回。 */
+export function installSidebarFormRestore(): void {
+	document.addEventListener("vp:shell-restore", (e) => {
+		const d = (e as CustomEvent<{ form?: string }>).detail;
+		if (d?.form === "slim" || d?.form === "full") applyForm(d.form);
+	});
 }
 
 /** `[` directive — フル ⇄ スリムを toggle。 */

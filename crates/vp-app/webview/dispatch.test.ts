@@ -39,6 +39,10 @@ function recordingHandlers(): { calls: string[]; handlers: PushHandlers } {
 			inkSnapshotError: (message) => calls.push(`inkErr:${message}`),
 			debugLogLines: (source, reset, lines) =>
 				calls.push(`debuglog:${source}:${reset}:${lines.length}`),
+			applyShellLayout: (l) =>
+				calls.push(
+					`shell:${l.sidebar_width}:${l.right_sidebar_width}:${l.sidebar_form}:${l.right_sidebar_open}`,
+				),
 		},
 	};
 }

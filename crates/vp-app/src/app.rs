@@ -199,6 +199,10 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // 漏れると sidebar IPC へ流れて silent drop = 「開いても永久に空」regression
                 | "debuglog:watch"
                 | "debuglog:unwatch"
+                // shell layout（L sidebar | main | R sidebar の形）: drag / form 切替 / R 開閉の
+                // 確定時に webview が送る。漏れると sidebar IPC へ流れて silent drop =
+                // 「ドラッグしても次回起動で戻る」regression（他の tag と同じ罠）
+                | "shell:layout"
         )
     )
 }
@@ -234,6 +238,8 @@ mod ipc_tag_tests {
             // R sidebar の debug log（漏れは「開いても永久に空」）
             "debuglog:watch",
             "debuglog:unwatch",
+            // shell layout（漏れは「ドラッグしても次回起動で戻る」）
+            "shell:layout",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/root"}}"#);
             assert!(
@@ -1984,7 +1990,7 @@ mod lane_js {
     use crate::generated::push::{
         BoardMessage, ConsoleAgents, ConsoleEvent, ConsoleModeApplied, ConsoleSessionList,
         DebuglogLines, DevicesRender, InkSnapshot, InkSnapshotError, PushEventEnvelope,
-        TermEnsureLane, TermPaste, TermRemoveLane, TermRemoveSession, TermShowLane,
+        ShellLayout, TermEnsureLane, TermPaste, TermRemoveLane, TermRemoveSession, TermShowLane,
     };
 
     /// 生成 envelope を webview の単一受け口 `window.vpDispatch` へ押し込む。
@@ -2111,6 +2117,26 @@ mod lane_js {
         push(
             main_view,
             &PushEventEnvelope::DevicesRender(DevicesRender { devices }),
+        );
+    }
+
+    /// shell (L sidebar | main | R sidebar) の形を復元する。
+    ///
+    /// ⚠️ **保存が無ければ呼ばない**（caller 側の `if let Some`）。撃たなければ webview の
+    /// 既定値がそのまま残る = 既定を Rust と webview の 2 箇所に書かずに済む。
+    pub fn shell_layout(main_view: &WebView, l: &crate::session_state::ShellLayout) {
+        use crate::session_state::SidebarForm;
+        push(
+            main_view,
+            &PushEventEnvelope::ShellLayout(ShellLayout {
+                sidebar_width: l.sidebar_width as i64,
+                right_sidebar_width: l.right_sidebar_width as i64,
+                sidebar_form: match l.sidebar_form {
+                    SidebarForm::Slim => "slim".to_string(),
+                    SidebarForm::Full => "full".to_string(),
+                },
+                right_sidebar_open: l.right_sidebar_open,
+            }),
         );
     }
 
@@ -4774,6 +4800,11 @@ pub fn run() -> anyhow::Result<()> {
                 // （sidebar の Devices badge は state 再 push で生きるが pane だけ空、2026-07-23
                 // 実機で確認）。保持済み state から全量で撃ち直す。
                 lane_js::render_devices(&webview, &sidebar_state.devices);
+                // shell (L|main|R) の形: 保存があれば復元する。無ければ撃たない
+                // （webview の既定値が残る = 既定を 2 箇所に書かない）。
+                if let Some(layout) = session_state.shell_layout().cloned() {
+                    lane_js::shell_layout(&webview, &layout);
+                }
                 // 掲示板: retained BoardUpdated も同じ窓で落ちる（doc 52 §10 wave 0）。
                 // 保持分を撃ち直す（落ちたままだと reopen で board pane が出ず、次の live show
                 // まで空のまま）。
@@ -4854,6 +4885,29 @@ pub fn run() -> anyhow::Result<()> {
                     Some(p) => lane_js::ink_snapshot(&webview, p),
                     None => lane_js::ink_snapshot_error(&webview, error.unwrap_or_default()),
                 }
+            }
+            Event::UserEvent(AppEvent::ShellLayout {
+                sidebar_width,
+                right_sidebar_width,
+                sidebar_form,
+                right_sidebar_open,
+            }) => {
+                // shell の形（幅 / full-slim / R 開閉）を **この instance の** session file に保存。
+                // 「window をどう開いていたか」なので window_geometry と同じ箱に入れる。
+                // ⚠️ 値の検証は `set_shell_layout` の clamp が持つ（webview の値を信用しない）。
+                use crate::session_state::{ShellLayout, SidebarForm};
+                session_state.set_shell_layout(ShellLayout {
+                    sidebar_width,
+                    right_sidebar_width,
+                    // 未知の形は full に倒す（版ズレで「開けない sidebar」を作らない）
+                    sidebar_form: if sidebar_form == "slim" {
+                        SidebarForm::Slim
+                    } else {
+                        SidebarForm::Full
+                    },
+                    right_sidebar_open,
+                });
+                session_state.save();
             }
             Event::UserEvent(AppEvent::DebugLogWatch { source }) => {
                 // R sidebar の debug log（sidebar view modes）: 世代を進めて旧 tail を退場させ、
