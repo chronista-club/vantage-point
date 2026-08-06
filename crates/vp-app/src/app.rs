@@ -4802,8 +4802,15 @@ pub fn run() -> anyhow::Result<()> {
                 lane_js::render_devices(&webview, &sidebar_state.devices);
                 // shell (L|main|R) の形: 保存があれば復元する。無ければ撃たない
                 // （webview の既定値が残る = 既定を 2 箇所に書かない）。
-                if let Some(layout) = session_state.shell_layout().cloned() {
-                    lane_js::shell_layout(&webview, &layout);
+                // ⚠️ 撃った/撃たなかったを**両方**残す。「行が無い」は「保存が無かった」とも
+                // 「ここに来ていない」とも読めてしまい、実機の切り分けで 1 往復損する
+                // （2026-08-06 に実際に損した）。
+                match session_state.shell_layout().cloned() {
+                    Some(layout) => {
+                        tracing::info!("shell layout 復元: {layout:?}");
+                        lane_js::shell_layout(&webview, &layout);
+                    }
+                    None => tracing::info!("shell layout 復元: 保存なし（既定のまま）"),
                 }
                 // 掲示板: retained BoardUpdated も同じ窓で落ちる（doc 52 §10 wave 0）。
                 // 保持分を撃ち直す（落ちたままだと reopen で board pane が出ず、次の live show

@@ -9,7 +9,8 @@
  *   幅 class を常に同時に書く — 片方だけ動く状態を作らない）
  *
  * 幅そのもの（280px / 44px）は main_area.rs の `#sidebar-root` CSS が司る。
- * 形は in-memory（app 再起動でフルに戻る）— layout 永続は doc 50 P5 の領分。
+ * 形の**永続**は `shell-layout.ts`（main bundle）が持つ — ここは形を変えたことを
+ * `vp:sidebar-form` で伝え、復元は `vp:shell-restore` / 保留箱で受け取る側。
  */
 import { createSignal } from "solid-js";
 
@@ -34,12 +35,32 @@ function applyForm(next: SidebarForm): void {
 	);
 }
 
-/** 復元（shell-layout.ts の `vp:shell-restore`）を受けて形を戻す。boot で 1 回。 */
+/** 復元 detail を形へ。未知の値は無視（既定のまま）。 */
+function adoptRestore(d: { form?: string } | null | undefined): void {
+	if (d?.form === "slim" || d?.form === "full") applyForm(d.form);
+}
+
+/**
+ * 復元（shell-layout.ts の `vp:shell-restore`）を受けて形を戻す。boot で 1 回。
+ *
+ * ⚠️ **event だけに頼らない**。この module は sidebar bundle に居て、復元を撃つ
+ * shell-layout.ts は main bundle — **あちらが先に評価される**ので、`addEventListener` が
+ * 生える前に撃たれる窓が実在する（2026-08-06 実機で確認: 幅は戻るのに slim だけ戻らない）。
+ * CustomEvent は保持されないため、その窓に落ちた復元は二度と来ない。
+ *
+ * そこで shell-layout.ts は撃つと同時に `window.__vpShellRestore` に**保持**する。
+ * ここでは「listener を張る」と「既に置かれていたら引き取る」の**両方**をやる。
+ * 順序がどちらでも 1 回だけ当たる（同じ値なので二重適用も無害）。
+ */
 export function installSidebarFormRestore(): void {
 	document.addEventListener("vp:shell-restore", (e) => {
-		const d = (e as CustomEvent<{ form?: string }>).detail;
-		if (d?.form === "slim" || d?.form === "full") applyForm(d.form);
+		adoptRestore((e as CustomEvent<{ form?: string }>).detail);
 	});
+	// 取りこぼし回収 — install より前に撃たれていた場合はここで当たる。
+	adoptRestore(
+		(globalThis as unknown as { __vpShellRestore?: { form?: string } })
+			.__vpShellRestore,
+	);
 }
 
 /** `[` directive — フル ⇄ スリムを toggle。 */

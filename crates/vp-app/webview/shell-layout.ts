@@ -135,11 +135,39 @@ export function applyShellLayout(l: {
 	applyWidths();
 	// 形と開閉は持ち主（form.ts / right-sidebar.ts）に反映させる。復元は**こちらから**
 	// 伝える向き（起動時は向こうが既定値で立ち上がっているので、黙っていると食い違う）。
-	document.dispatchEvent(
-		new CustomEvent("vp:shell-restore", {
-			detail: { form: state.sidebarForm, rightOpen: state.rightSidebarOpen },
-		}),
-	);
+	publishRestore();
+}
+
+/**
+ * 復元を持ち主へ配る。**撃つだけでなく保持する**。
+ *
+ * ⚠️ `form.ts` は **sidebar bundle**（`sidebar.bundle.js`）に居て、main bundle より後に
+ * 評価される。復元 push は main bundle の `ready` を契機に来るので、**受け口が生える前に
+ * 撃つ窓**が実在する（2026-08-06 実測: 復元 09:24:00.321 に対し sidebar boot 09:24:00.264 と
+ * 僅差で、実機では class が当たらなかった）。CustomEvent は保持されないので、1 回撃って
+ * 終わりだと二度と来ない — これは VP が既に 3 回踏んだ型（devices snapshot / terminal
+ * replay / retained board、`app.rs` の各コメント）で、対策も同じ **保留箱**。
+ *
+ * 遅れて来た受け口は install 時に [`retainedShellRestore`] を引く。
+ */
+function publishRestore(): void {
+	const detail = { form: state.sidebarForm, rightOpen: state.rightSidebarOpen };
+	(globalThis as unknown as { __vpShellRestore?: unknown }).__vpShellRestore =
+		detail;
+	document.dispatchEvent(new CustomEvent("vp:shell-restore", { detail }));
+}
+
+/** 保留箱の読み口。復元がまだ来ていなければ `null`。 */
+export function retainedShellRestore(): {
+	form: string;
+	rightOpen: boolean;
+} | null {
+	const v = (
+		globalThis as unknown as {
+			__vpShellRestore?: { form: string; rightOpen: boolean };
+		}
+	).__vpShellRestore;
+	return v ?? null;
 }
 
 /** 現在の形（テスト用の読み口）。 */

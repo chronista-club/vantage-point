@@ -21,6 +21,7 @@ import {
 	SIDEBAR_MIN,
 	clampWidth,
 	nextWidth,
+	retainedShellRestore,
 } from "./shell-layout";
 
 describe("clampWidth", () => {
@@ -97,4 +98,40 @@ describe("shell の CustomEvent bus（送り手と受け口の対）", async () 
 			expect(all, `${ev} の受け口が無い`).toContain(`addEventListener("${ev}"`);
 		});
 	}
+
+	/**
+	 * ⚠️ **復元は event だけでは届かない**（2026-08-06 実機で確定）。
+	 *
+	 *   09:24:00.258  Rust → shell layout 復元 push
+	 *   09:24:00.264  sidebar bundle boot（= form.ts の受け口が生える）
+	 *   09:24:00.321  shell-layout が `vp:shell-restore` を撃つ
+	 *
+	 * 順序としては間に合っているように見えて、実機では slim が当たらなかった。main bundle が
+	 * 先に評価される構造上この窓は常にあり、CustomEvent は**保持されない**ので落ちたら二度と
+	 * 来ない。そこで撃つ側は `__vpShellRestore` に保持し、受け側は install 時にも引く。
+	 * この対も型では繋がらないので source で固定する。
+	 */
+	it("復元は保留箱 `__vpShellRestore` にも残り、受け側が install 時に引く", () => {
+		expect(sources["./shell-layout.ts"], "撃つ側が保持していない").toContain(
+			"__vpShellRestore =",
+		);
+		expect(sources["./src/sidebar/form.ts"], "受け側が引いていない").toContain(
+			"__vpShellRestore",
+		);
+	});
+});
+
+describe("retainedShellRestore（保留箱の読み口）", () => {
+	it("何も置かれていなければ null（起動直後 = 復元なし）", () => {
+		delete (globalThis as unknown as { __vpShellRestore?: unknown })
+			.__vpShellRestore;
+		expect(retainedShellRestore()).toBeNull();
+	});
+
+	it("置かれていればそのまま返す（遅れて生えた受け口が引く値）", () => {
+		(
+			globalThis as unknown as { __vpShellRestore?: unknown }
+		).__vpShellRestore = { form: "slim", rightOpen: true };
+		expect(retainedShellRestore()).toEqual({ form: "slim", rightOpen: true });
+	});
 });
