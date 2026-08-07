@@ -105,6 +105,7 @@ import { attachKeybindings } from "./keybindings";
 import { installBoardView } from "./board-view";
 import { mountEdgeRail, EDGE_RAIL_CSS } from "./EdgeRail";
 import { installRightSidebar } from "./right-sidebar";
+import { applyShellLayout, installShellLayout } from "./shell-layout";
 import { renderBoard, clearBoard, appendBoard } from "./board-render";
 import { installConsole, focusedOf, sessionModeOf } from "./console";
 import type {
@@ -982,6 +983,71 @@ function SidebarTokenBinds() {
 	return null;
 }
 
+// ===== shell 取っ手の明滅 Live Token の恒久 bind =====
+// main_area.rs の :root 定義（--vp-resizer-breathe-*）を Editor Mode に登録する。
+//
+// ⚠️ **Editor は `:root` を自動走査しない** — ここで `bind()` した token だけが field になる。
+// token 化しただけでは Ctrl+Shift+E に出てこない（2026-08-06 に踏んだ）。
+//
+// 明滅の目的は「①いま動かせる状態だと把握しやすい ②ドラッグで動くことを暗に伝える」。
+// 速度と沈み込みは体感で決めるものなので、**掴みながら演奏して決められる**ようにする。
+function ResizerBreatheTokenBinds() {
+	const tokens: Array<{
+		id: string;
+		cssVar: string;
+		value: number;
+		min: number;
+		max: number;
+		step: number;
+		unit: string;
+	}> = [
+		// 周期。既定 1694ms ≒ 35 BPM（実機で掴みながら決めた値、mako 2026-08-06）。
+		// ⚠️ この初期値は main_area.rs の `--vp-resizer-breathe-ms` と**必ず一致させる** —
+		// 食い違うと「Editor を開いた瞬間に見た目が変わる」二重管理になる。
+		// 下限 300ms は「点滅」に見え始める境、上限 2000ms は「止まって見える」境。
+		{
+			id: "shell.resizer.breathe.ms",
+			cssVar: "--vp-resizer-breathe-ms",
+			value: 1694,
+			min: 300,
+			max: 2000,
+			step: 1,
+			unit: "ms",
+		},
+		// 沈み込み（1 → この値）。1.0 = 明滅なし、0.2 = かなり強い。
+		// 既定 0.775（実機で決定）。⚠️ こちらも main_area.rs の `--vp-resizer-breathe-dip` と一致必須。
+		{
+			id: "shell.resizer.breathe.dip",
+			cssVar: "--vp-resizer-breathe-dip",
+			value: 0.775,
+			min: 0.2,
+			max: 1,
+			step: 0.025,
+			unit: "",
+		},
+	];
+	tokens.forEach((t, i) => {
+		bind<number>({
+			target: cssVarNumberTarget(t.id, t.cssVar, t.value, t.unit),
+			control: number({
+				min: t.min,
+				max: t.max,
+				step: t.step,
+				unit: t.unit,
+				variant: "slider",
+			}),
+			placement: {
+				label: t.id,
+				semantic: "tool",
+				group: "shell",
+				order: 300 + i,
+				role: "dev",
+			},
+		});
+	});
+	return null;
+}
+
 // ===== chat Live Token の恒久 bind =====
 // chatview.tsx CHATVIEW_CSS の :root 定義 (--chat-text-* 5 token) を Editor Mode に登録する。
 // scope 制約 (:root 定義でないと slider 書き込みがマスクされる) は SidebarTokenBinds と同型。
@@ -1069,6 +1135,7 @@ function App() {
 		<EditorHostProvider>
 			<SidebarTokenBinds />
 			<ChatTokenBinds />
+			<ResizerBreatheTokenBinds />
 			<ExposeEditorHostForBridge />
 			<EditorLayer />
 		</EditorHostProvider>
@@ -1102,10 +1169,15 @@ installGallery();
 //
 // ⚠️ `window.setActivePane` と `openDispatch()` はここではなく **module 評価の先頭**（上方）に
 // 載る。どちらも「受け口だけ先に生やす」もので、早いほど取りこぼす窓が狭い。
+// shell layout（L sidebar | main | R sidebar の形）: 境界の取っ手を配線する。
+// 復元 push（`shell:layout`）は下の installDispatch 経由で来るので、受け口より先に配線する。
+installShellLayout();
 installBundleProbe();
 installDispatch({
 	...installTerm(),
 	renderDevices: renderDeviceList,
+	// shell (L|main|R) の形の復元。保存が無ければ Rust は撃たないので、既定値のまま残る。
+	applyShellLayout,
 	handleBoardMessage,
 	// Console 面（console.ts）。`window.vpConsole` は DevTools 検分用に残っている
 	// （`window.vpConsole.peek("<repo>/root")`）が、Rust からはここ経由で届く。

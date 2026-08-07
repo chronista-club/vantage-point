@@ -14,6 +14,7 @@ import { Shell, SHELL_CSS } from './src/sidebar/Shell'
 import { installIpcBridge } from './src/sidebar/ipc'
 import { openSidebarDispatch } from './src/sidebar/dispatch'
 import { installSidebarKeybindings } from './src/sidebar/keybindings'
+import { installSidebarFormRestore } from './src/sidebar/form'
 
 // Rust → sidebar の押し込みの受け口を **module 評価の最初に**生やす（実処理の接続は下方
 // `installIpcBridge`）。ここに置くこと自体が保留箱の効き目を決める — `installIpcBridge` の
@@ -42,6 +43,8 @@ try {
   installIpcBridge()
   // Sidebar 専用ショートカット (Cmd+F → File Explorer overlay) を登録。
   installSidebarKeybindings()
+  // shell layout の復元（main bundle が `vp:shell-restore` で形を伝えてくる）。
+  installSidebarFormRestore()
 
   // native WebView の context menu (Reload / Inspect / AutoFill) を抑制する。
   // sidebar の右クリックは独自 ContextMenu に一本化する (VP-204 PR-1)。

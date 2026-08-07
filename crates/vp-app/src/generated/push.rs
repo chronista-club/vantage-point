@@ -41,6 +41,14 @@ pub struct DevicesRender {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellLayout {
+    pub sidebar_width: i64,
+    pub right_sidebar_width: i64,
+    pub sidebar_form: String,
+    pub right_sidebar_open: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConsoleSessionList {
     pub lane: String,
     pub payload: serde_json::Value,
@@ -107,6 +115,8 @@ pub enum PushEventEnvelope {
     TermPaste(TermPaste),
     #[serde(rename = "devices:render")]
     DevicesRender(DevicesRender),
+    #[serde(rename = "shell:layout")]
+    ShellLayout(ShellLayout),
     #[serde(rename = "console:session_list")]
     ConsoleSessionList(ConsoleSessionList),
     #[serde(rename = "console:event")]

@@ -89,6 +89,18 @@ protocol "vp-push" version="1.0.0" {
             field "devices" type="array<json>"
         }
 
+        // shell (L sidebar | main | R sidebar) の形の復元。boot の `ready` replay で 1 回だけ
+        // 撃つ。保存が無ければ**撃たない**（webview 側の既定値がそのまま残る = 二重定義しない）。
+        //
+        // ⚠️ 値は Rust 側で clamp 済（`SessionState::set_shell_layout`）。webview は
+        // そのまま当てる。
+        event "shell:layout" {
+            field "sidebar_width" type="int"
+            field "right_sidebar_width" type="int"
+            field "sidebar_form" type="string"
+            field "right_sidebar_open" type="bool"
+        }
+
         // ===== Conversation の Console 面（doc 33）— 実装は webview/console.ts =====
 
         // lane の session 一覧（roster）。**供給はこの 1 本**（doc 53 §11）で、呼び手は
