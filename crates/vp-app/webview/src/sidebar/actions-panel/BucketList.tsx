@@ -12,7 +12,14 @@
  */
 import { For, Index, Show } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
-import { PANEL_BUCKETS, type BucketDef, countUndone, itemsIn } from "./model";
+import {
+	PANEL_BUCKETS,
+	type BucketDef,
+	actionsFetchState,
+	countUndone,
+	itemsIn,
+} from "./model";
+import { sidebar } from "../store";
 import {
 	actions,
 	appendAction,
@@ -25,6 +32,18 @@ import {
 	toggleBucket,
 } from "./store";
 import { ActionRow, focusActionRow } from "./ActionRow";
+
+/**
+ * ACTIONS の取得状態。`/api/health` の 2 値から導く（新しい配管は無い）。
+ *
+ * ⚠️ `services` ではなく既に sidebar へ届いている値を読む — 読み手のいない場所に
+ * 出しても意味が無い（`DaemonWidget` の艦隊スイッチ表示と同じ判断）。
+ */
+const fetchState = () =>
+	actionsFetchState(
+		sidebar.activity.actions_rev ?? 0,
+		sidebar.activity.auth_targets?.creo,
+	);
 
 function Bucket(props: { def: BucketDef }) {
 	const items = () => itemsIn(actions(), props.def.id);
@@ -122,8 +141,12 @@ function Bucket(props: { def: BucketDef }) {
 						)}
 					</Index>
 
+					{/* ⚠️ 未取得のときに「まだ何もない」と言わない — 空と未取得は同じ姿なので、
+					    ここで言い分けないと user は「本当に空」と読む（2026-08-07 の実害）。 */}
 					<Show when={items().length === 0}>
-						<div class="vp-act-empty">まだ何もない</div>
+						<div class="vp-act-empty">
+							{fetchState() === "ready" ? "まだ何もない" : "—"}
+						</div>
 					</Show>
 
 					<button
@@ -143,6 +166,21 @@ function Bucket(props: { def: BucketDef }) {
 export function BucketList() {
 	return (
 		<div class="vp-act-buckets">
+			{/* ⚠️ **区画を開かなくても見える**位置に置く。区画は既定で閉じているので、
+			    中に出しても「空に見える」ままで気づけない。ready のときは何も出さない
+			    （正常時に増える表示はゼロ = それとなく、の条件）。 */}
+			<Show when={fetchState() !== "ready"}>
+				<div
+					class="vp-act-status"
+					title={
+						fetchState() === "disconnected"
+							? "Creo ID に未接続 — 下の Creo ID 行からログインすると同期される"
+							: "creo から最初の取得を待っている"
+					}
+				>
+					{fetchState() === "disconnected" ? "未接続" : "取得中…"}
+				</div>
+			</Show>
 			<For each={PANEL_BUCKETS}>{(def) => <Bucket def={def} />}</For>
 		</div>
 	);
@@ -234,6 +272,11 @@ export const ACTIONS_CSS = `
 
 .vp-act-empty{padding:3px 8px;font-size:var(--sb-text-meta,11px);
   color:var(--lg-mute-2,#38525b);font-style:italic;}
+/* 取得できていないことの「それとなく」の表明。⚠️ 警告色は使わない — 復旧は
+   Creo ID 行の Login 1 つで、user を急かす種類の異常ではない。区画ラベルより
+   一段沈めて、目に入るが読み飛ばせる濃度に置く。 */
+.vp-act-status{padding:2px 8px 4px;font-size:var(--sb-text-meta,11px);
+  color:var(--lg-mute-2,#38525b);font-style:italic;letter-spacing:.02em;}
 .vp-act-add{display:flex;align-items:center;gap:5px;width:100%;
   padding:3px 6px;border:none;background:transparent;cursor:pointer;text-align:left;
   color:var(--lg-mute-2,#38525b);font:inherit;font-size:var(--sb-text-meta,11px);

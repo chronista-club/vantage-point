@@ -163,8 +163,14 @@ impl CreoActionsCache {
                 Ok(())
             }
             Ok(None) => {
+                // ⚠️ `warn!` なのは**復旧に user の操作が要る**から（`vp auth login`）。
+                // `set` が変化を返したときだけ通る = edge-triggered なので 30s ごとには鳴らない。
+                // debug のままだと既定の log level では見えず、2026-08-07 は「ACTIONS が空」の
+                // 原因を掴むのに `/api/health` の curl が要った。
                 if self.set(Vec::new()) {
-                    tracing::debug!("creo 未ログイン — ACTIONS を空にしました");
+                    tracing::warn!(
+                        "creo 未ログイン / token 失効 — ACTIONS を空にしました（`vp auth login` で復帰）"
+                    );
                 }
                 Ok(())
             }
