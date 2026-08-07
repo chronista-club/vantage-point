@@ -9,7 +9,14 @@
  */
 import { sidebar } from "../store";
 import { sendIpc } from "../ipc";
-import { expandSidebar, toggleSidebarForm } from "../form";
+import {
+	collapseSidebar,
+	expandSidebar,
+	formToRestoreOnExit,
+	sidebarForm,
+	toggleSidebarForm,
+} from "../form";
+import type { SidebarForm } from "../form";
 import { isPerformerLane, laneAddressKey } from "../lane";
 import { PANEL_BUCKETS } from "../actions-panel/model";
 import { appendAction, openBuckets, toggleBucket } from "../actions-panel/store";
@@ -335,7 +342,22 @@ const CAPTURE_MODE_MS = 5000;
 
 let captureModeTimer: ReturnType<typeof setTimeout> | null = null;
 
-function exitCaptureMode(): void {
+/**
+ * 一時展開する前の形。`null` = 展開していない。
+ *
+ * ⚠️ mode に**入るときだけ**書き、抜けるときに必ず `null` へ戻す。`b` を連打しても
+ * 上書きしない（2 回目に「展開後の full」を覚えると slim を失う）。
+ */
+let formBeforeCapture: SidebarForm | null = null;
+
+/**
+ * capture mode を抜ける。**離脱経路 5 本（Escape / 数字選択 / 無関係キー / 5 秒 timeout /
+ * 入力欄への focus）がすべてここを通る**ので、一時展開の後始末もここ 1 箇所で足りる。
+ *
+ * @param selected 区画を選んで抜けたか。**選んだときは畳まない** — 新しい行に focus が
+ *   当たっていて user はこれから打ち込む（`captureNumberHandler` の数字枝）
+ */
+function exitCaptureMode(selected = false): void {
 	setCaptureHintVisible(false);
 	setCaptureHintLabel("");
 	if (captureModeTimer !== null) {
@@ -343,6 +365,10 @@ function exitCaptureMode(): void {
 		captureModeTimer = null;
 	}
 	window.removeEventListener("keydown", captureNumberHandler, true);
+	// 一時展開の後始末。⚠️ 記録を**先に**消す（畳む側が何かの拍子に再入しても二度走らない）。
+	const next = formToRestoreOnExit(formBeforeCapture, selected);
+	formBeforeCapture = null;
+	if (next === "slim") collapseSidebar();
 }
 
 function captureNumberHandler(e: KeyboardEvent): void {
@@ -364,7 +390,8 @@ function captureNumberHandler(e: KeyboardEvent): void {
 	if (Number.isInteger(n) && n >= 1 && n <= PANEL_BUCKETS.length) {
 		e.preventDefault();
 		const bucket = PANEL_BUCKETS[n - 1];
-		exitCaptureMode();
+		// ⚠️ ここだけ `selected` — 下で行に focus を当てるので、畳むと編集中に潰れる。
+		exitCaptureMode(true);
 		// 区画を開いてから足す — 閉じたままだと行が DOM に出ず focus が当たらない。
 		if (!openBuckets().has(bucket.id)) toggleBucket(bucket.id);
 		focusActionRow(appendAction(bucket.id));
@@ -383,7 +410,10 @@ function captureNumberHandler(e: KeyboardEvent): void {
 
 /** `b` — ACTIONS の捕捉 mode に突入（1-5 で区画を選ぶ）。 */
 export function runCaptureMode(): void {
-	// スリム帯だと行が描画されないので、フルに戻してから開く。
+	// スリム帯だと行が描画されないので、**一時的に**フルへ広げる。取り消して抜けたら
+	// `exitCaptureMode` が畳んで戻す（形の変更は永続化されるので、戻さないと slim が消える）。
+	// ⚠️ 連打で上書きしない — 2 回目に「展開後の full」を覚えると戻す先を失う。
+	if (formBeforeCapture === null) formBeforeCapture = sidebarForm();
 	expandSidebar();
 	setCaptureHintLabel(
 		PANEL_BUCKETS.map((b, i) => `${i + 1}. ${b.label}`).join("   "),
@@ -394,7 +424,9 @@ export function runCaptureMode(): void {
 	window.removeEventListener("keydown", captureNumberHandler, true);
 
 	window.addEventListener("keydown", captureNumberHandler, true);
-	captureModeTimer = setTimeout(exitCaptureMode, CAPTURE_MODE_MS);
+	// ⚠️ 関数を直接渡さない — timer は callback に引数を足せるので、`selected` が
+	// 意図せず真になる形に将来変わりうる。取り消し扱いであることを明示する。
+	captureModeTimer = setTimeout(() => exitCaptureMode(), CAPTURE_MODE_MS);
 }
 
 /** `]` — 右を edge rail ⇄ R sidebar（debug log）に変身。

@@ -5,8 +5,9 @@
  * icon 幅の帯（repo badge 列 + daemon ドット、描画は Shell.tsx の SlimRail）。
  *
  * - **data**: `sidebarForm` signal（この module が SSOT）
- * - **actions**: `toggleSidebarForm` / `expandSidebar`（signal と `#sidebar-root` の
- *   幅 class を常に同時に書く — 片方だけ動く状態を作らない）
+ * - **calculations**: `formToRestoreOnExit`（一時展開を戻すか — 純関数）
+ * - **actions**: `toggleSidebarForm` / `expandSidebar` / `collapseSidebar`（signal と
+ *   `#sidebar-root` の幅 class を常に同時に書く — 片方だけ動く状態を作らない）
  *
  * 幅そのもの（280px / 44px）は main_area.rs の `#sidebar-root` CSS が司る。
  * 形の**永続**は `shell-layout.ts`（main bundle）が持つ — ここは形を変えたことを
@@ -71,4 +72,29 @@ export function toggleSidebarForm(): void {
 /** スリム中の badge click 等「フルに戻って続きを操作する」動線。フル中は no-op。 */
 export function expandSidebar(): void {
 	if (sidebarForm() === "slim") applyForm("full");
+}
+
+/** [`expandSidebar`] の逆 — 一時展開を畳んで戻す。スリム中は no-op。 */
+export function collapseSidebar(): void {
+	if (sidebarForm() === "full") applyForm("slim");
+}
+
+/**
+ * 一時展開（`b` の ACTIONS 捕捉 mode）を抜けるとき、形を戻す先。戻さないなら `null`。
+ *
+ * ⚠️ **形の変更は必ず永続化される**（`applyForm` → `vp:sidebar-form` → shell-layout）。
+ * これは「画面と保存が食い違わない」ための性質なので崩さない。代わりに、一時的に
+ * 変えたものは**戻す**。戻し忘れると slim が二度と復活しない（2026-08-06 の実害）。
+ *
+ * @param before 展開する前の形。`null` = 展開していない（記録が無い）
+ * @param selected 区画を選んだか。**選んだ場合は畳まない** — 新しい行に focus が
+ *   当たっていて user はこれから打ち込むので、ここで潰すと編集が壊れる
+ */
+export function formToRestoreOnExit(
+	before: SidebarForm | null,
+	selected: boolean,
+): SidebarForm | null {
+	if (before !== "slim") return null; // 元が full / 未記録 = 戻す先が無い
+	if (selected) return null;
+	return "slim";
 }
