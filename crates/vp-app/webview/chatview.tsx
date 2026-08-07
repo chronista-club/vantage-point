@@ -39,6 +39,7 @@ import type {
 // doc 47 §6: 共有 bus の相関 id（採番 + 照合）も console.ts が SSOT。
 import { focusedOf, noteFocus, syncHeaderSessionId } from './console'
 import { sessionChipPrefix } from './LaneHeader'
+import { isImeKeystroke } from './ime'
 
 // ---------------------------------------------------------------------------
 // 会話モデル — flat item stream（ConversationEvent を UI 単位に畳む）
@@ -1370,22 +1371,6 @@ export function resolveAnswer(
 }
 
 /**
- * IME の変換確定 Enter か（送信の Enter と判別する純関数）。
- *
- * エンジンごとに確定 Enter の痕跡が違うため二段ガードにする（片方だけでは必ず漏れる）:
- * - Blink / Gecko: 確定 keydown は compositionend より**前**に来て `isComposing: true`
- * - WebKit（wry = WKWebView は**こちら**）: compositionend の**後**に来て `isComposing` は
- *   既に false。ただし `keyCode === 229`（"IME processing" の遺産値）が立つ
- *
- * `keyCode` は deprecated だが、WebKit の確定 Enter を見分ける現実的な唯一の信号なので
- * 意図的に使う。`!e.isComposing` 単独ガード（#963 の初版）は WKWebView で素通りし、
- * 日本語変換の確定がそのまま送信になる退行を実際に起こした。
- */
-export function isImeConfirmEnter(e: { isComposing?: boolean; keyCode?: number }): boolean {
-  return e.isComposing === true || e.keyCode === 229
-}
-
-/**
  * PromptCard（doc 35 §4）— HITL 質問（AskUserQuestion 横取り）の選択肢 UI。
  *
  * 各 question を見出し + 選択肢ボタンで描く。single-select は radio（クリックで置換）、
@@ -1507,9 +1492,9 @@ function PromptCard(props: {
                     setOther((prev) => ({ ...prev, [q.question]: e.currentTarget.value }))
                   }
                   // Enter で確定（全質問が埋まっている時のみ。IME 変換確定の Enter は
-                  // isImeConfirmEnter で判別 — WKWebView は keyCode 229 で来る）。
+                  // isImeKeystroke で判別 — WKWebView は keyCode 229 で来る）。
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !isImeConfirmEnter(e) && canConfirm()) {
+                    if (e.key === 'Enter' && !isImeKeystroke(e) && canConfirm()) {
                       e.preventDefault()
                       confirm()
                     }
@@ -2265,8 +2250,8 @@ function SessionChatView(props: { lane: string; session: number }) {
               // Enter = 送信（Claude Desktop と同じ既定。mako 裁定 2026-07-30 — ⌘Enter 送信は
               // 「送信するつもりで空行が入る」誤操作が多かった）。
               if (e.key !== 'Enter') return
-              // 日本語変換の確定 Enter は送信しない（isImeConfirmEnter の二段ガード）。
-              if (isImeConfirmEnter(e)) return
+              // 日本語変換の確定 Enter は送信しない（isImeKeystroke の二段ガード）。
+              if (isImeKeystroke(e)) return
               // Shift+Enter = 改行（textarea の既定挙動に任せる）。
               if (e.shiftKey) return
               // 素の Enter / ⌘Enter / Ctrl+Enter = 送信（⌘Enter は旧来の筋肉記憶を残す）。

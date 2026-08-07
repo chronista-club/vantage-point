@@ -21,6 +21,7 @@
 import { Show, createEffect, createSignal } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { copyText } from "../../../clipboard";
+import { isImeKeystroke } from "../../../ime";
 import {
 	type ActionItem,
 	actKeyIntent,
@@ -125,7 +126,11 @@ export function ActionRow(props: ActionRowProps) {
 				empty: t.value === "",
 				atStart: t.selectionStart === 0,
 				atEnd: t.selectionStart === t.value.length,
-				composing,
+				// ⚠️ 自前の `composing` フラグ**だけ**では WKWebView で素通りする —
+				// あちらは compositionend が keydown より先に走るので、変換確定の Enter が
+				// 来た時点で既に false。engine 別の痕跡は共有の `isImeKeystroke` が持つ
+				// （chat 入力 #963 で同じ罠を踏んで確立した判別）。
+				composing: composing || isImeKeystroke(e),
 			},
 			isMac,
 		);
