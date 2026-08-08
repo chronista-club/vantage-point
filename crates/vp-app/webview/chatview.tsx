@@ -167,6 +167,13 @@ type ChatState = {
    * ⚠️ `/` は付いていない素の名前で来る（`chronista-style:codeflow` のような形も混じる）。
    */
   slashCommands: string[]
+  /**
+   * slash command の説明（`session_init.command_docs` 由来）。
+   *
+   * ⚠️ **候補の源ではない**。一覧の正は `slashCommands` で、こちらは引ければ添えるだけ。
+   * 実測で 160 個中 86 個しか埋まらない = **説明の無い候補が普通に混ざる**。
+   */
+  commandDocs: Record<string, string>
   /** doc 35 §5.1: streaming 中に送られた type-ahead。turn 閉で flush（表示順=処理順の不変条件）。 */
   pending: string | null
   /** status 同期: 最後に畳んだイベント種別（foldInto で全イベント更新）。 */
@@ -417,6 +424,7 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       // この session で打てる slash command。⚠️ CLI 側で「対話端末なしで動くもの」に
       // **絞り込み済み**なので、VP 側で除外リストを持たない（公式 agent-sdk/slash-commands）。
       if (ev.slash_commands) s.slashCommands = ev.slash_commands
+      if (ev.command_docs) s.commandDocs = ev.command_docs
       break
     case 'message_chunk': {
       s.streaming = true
@@ -618,6 +626,7 @@ export function emptyChatState(): ChatState {
     contextWindow: null,
     permissionMode: undefined,
     slashCommands: [],
+    commandDocs: {},
     pending: null,
     lastEvent: null,
     lastEventAt: null,
@@ -2274,7 +2283,7 @@ function SessionChatView(props: { lane: string; session: number }) {
               一覧そのもの — CLI 側で「この経路で打てるもの」に絞り込み済み。 */}
           <Show when={slashOpen()}>
             <div class="conversation-slash">
-              <For each={slashHits().slice(0, 8)}>
+              <For each={slashHits().slice(0, 12)}>
                 {(name, i) => (
                   <button
                     type="button"
@@ -2287,12 +2296,19 @@ function SessionChatView(props: { lane: string; session: number }) {
                       acceptSlash(name)
                     }}
                   >
-                    /{name}
+                    <span class="conversation-slash-name">/{name}</span>
+                    {/* ⚠️ 説明は**引けた候補にだけ**付く（160 中 86）。無い側が欠けて
+                        見えないよう、名前と同じ行に流し込み、幅は内容任せにする。 */}
+                    <Show when={state()?.commandDocs?.[name]}>
+                      <span class="conversation-slash-desc">
+                        {state()?.commandDocs?.[name]}
+                      </span>
+                    </Show>
                   </button>
                 )}
               </For>
-              <Show when={slashHits().length > 8}>
-                <span class="conversation-slash-more">ほか {slashHits().length - 8} 件</span>
+              <Show when={slashHits().length > 12}>
+                <span class="conversation-slash-more">ほか {slashHits().length - 12} 件</span>
               </Show>
             </div>
           </Show>
@@ -2618,10 +2634,23 @@ export const CHATVIEW_CSS = `
 /* composer: 入力（上）と操作（下）を 1 つの器に。枠は器が持ち、textarea は枠なしで中に敷く。 */
 /* slash command の候補列。⚠️ 会話本文より前に出る唯一の overlay なので、
    composer の器の中に収めて「入力の一部」に見せる（別の面に見せない）。 */
-.conversation-slash { display:flex; flex-wrap:wrap; gap:4px; padding:6px 8px 2px; }
-.conversation-slash-item { padding:2px 8px; border:none; border-radius:6px; cursor:pointer;
-  background:#ffffff08; color:var(--lg-mute,#5C7A85); font:inherit; font-size:12px;
-  font-family:var(--font-mono,ui-monospace,monospace); transition:background .1s ease,color .1s ease; }
+/* ⚠️ 説明が付いた時点で横並びは破綻する（1 件が長くなり折り返しが荒れる）ので**縦積み**。
+   説明の無い候補が混ざっても、名前だけの行として自然に見える。 */
+/* ⚠️ **flex:none が要る**。composer は flex-direction:column + overflow:hidden で、
+   overflow-y を持つ子は flex の既定（min-height:auto が効かない）で 0 高さまで潰れ、
+   そのまま親の hidden に飲まれて**何も出なくなる**（2026-08-09 に実際に踏んだ）。
+   横並びだった頃は flex-wrap が高さを内容に従わせていたので露見しなかった。
+   ⚠️ この CSS は template literal の中なので、コメントに backtick を書くと文字列が閉じる。 */
+.conversation-slash { flex:none; display:flex; flex-direction:column; gap:1px;
+  padding:6px 6px 2px; max-height:180px; overflow-y:auto; }
+.conversation-slash-item { display:flex; align-items:baseline; gap:8px; width:100%;
+  padding:3px 8px; border:none; border-radius:6px; cursor:pointer; text-align:left;
+  background:transparent; color:var(--lg-mute,#5C7A85); font:inherit; font-size:12px;
+  transition:background .1s ease,color .1s ease; }
+.conversation-slash-name { font-family:var(--font-mono,ui-monospace,monospace); flex:none; }
+/* 説明は一段沈める。長い時は 1 行で切る（候補行の高さを揃えて走査しやすくする）。 */
+.conversation-slash-desc { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; font-size:11px; color:var(--lg-mute-2,#38525b); }
 .conversation-slash-item:hover { background:#ffffff12; color:var(--lg-hot,#EAFBFF); }
 /* 選択中。keyboard で動かしている位置を hover と別に示す（両方同時に見えてよい）。 */
 .conversation-slash-item.at { background:var(--lg-cyan-dim,#1C6C7C); color:var(--lg-hot,#EAFBFF); }

@@ -202,6 +202,8 @@ impl ClaudeTranslator {
             tools: sys.tools.unwrap_or_default(),
             mcp_servers,
             slash_commands: sys.slash_commands.unwrap_or_default(),
+            // 説明は pump が filesystem から注ぐ（この層は CLI の行を写すだけ）。
+            command_docs: Default::default(),
         }]
     }
 

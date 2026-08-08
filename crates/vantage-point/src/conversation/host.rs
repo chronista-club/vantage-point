@@ -374,6 +374,8 @@ impl ClaudeHost {
         let pump_session_init = session_init.clone();
         tokio::spawn(async move {
             let mut translator = ClaudeTranslator::new();
+            // 補完の説明（engine 起動あたり 1 回だけ filesystem を舐める）。
+            let mut docs_memo: Option<std::collections::HashMap<String, String>> = None;
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -386,9 +388,30 @@ impl ClaudeHost {
                 // tail 更新は broadcast より先。 replay handler が「配信済みだが tail に無い」
                 // 増分を取りこぼさない順序（tail ⊇ 配信済み未 commit 分 を保つ）。
                 fold_in_flight(&mut pump_in_flight.lock().expect("in_flight lock"), &out);
-                for event in out.events {
-                    if let ConversationEvent::SessionInit { session_id, .. } = &event {
+                for mut event in out.events {
+                    if let ConversationEvent::SessionInit {
+                        session_id,
+                        command_docs,
+                        ..
+                    } = &mut event
+                    {
                         record_session(&repo, &lane, session_id);
+                        // 補完候補に添える説明を filesystem から注ぐ。⚠️ **数百 file の同期 I/O**
+                        // なので tokio worker を塞がないよう隔離し、engine あたり 1 回に memo する
+                        // （SessionInit は原則 1 回だが、将来 CLI が撃ち直しても走り直さない）。
+                        if docs_memo.is_none() {
+                            let dir = std::path::PathBuf::from(&repo);
+                            docs_memo = Some(
+                                tokio::task::spawn_blocking(move || {
+                                    crate::conversation::skill_docs::skill_descriptions(&dir)
+                                })
+                                .await
+                                .unwrap_or_default(),
+                            );
+                        }
+                        if let Some(docs) = &docs_memo {
+                            command_docs.clone_from(docs);
+                        }
                         // replay で配り直すため保持する（この event は一度きりで transcript にも
                         // 載らない = 保持しないと GUI 再起動で永久に失われる）。
                         *pump_session_init.lock().expect("session_init lock") = Some(event.clone());

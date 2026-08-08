@@ -39,6 +39,7 @@ pub mod engine;
 pub mod event;
 pub mod host;
 pub mod replay_log;
+pub mod skill_docs;
 pub mod transcript;
 
 pub use acp_host::{AcpAgentHost, AcpEngine, AcpHostConfig};
