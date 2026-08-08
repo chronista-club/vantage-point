@@ -199,6 +199,7 @@ impl RpcInner {
             tools: Vec::new(),
             mcp_servers: Vec::new(),
             slash_commands: Vec::new(),
+            command_docs: Default::default(),
         });
         self.drain_queue().await;
     }

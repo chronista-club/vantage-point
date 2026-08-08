@@ -2664,6 +2664,7 @@ mod tests {
             tools: vec![],
             mcp_servers: vec![],
             slash_commands: vec!["compact".into()],
+            command_docs: Default::default(),
         }
     }
 

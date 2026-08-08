@@ -57,6 +57,8 @@ export type ConversationEvent =
       tools?: string[]
       mcp_servers?: string[]
       slash_commands?: string[]
+      /** slash command 名 → 短い説明。⚠️ **候補の源ではない**（引けたものだけ添える装飾）。 */
+      command_docs?: Record<string, string>
     }
   /** transcript replay の開始マーカー。受信側は会話表示 + buffer をクリアしてから後続を畳む
    *  （replay を冪等にする = reconnect / demand 再発火で会話が二重化しない）。 */
