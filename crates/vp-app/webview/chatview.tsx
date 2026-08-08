@@ -40,6 +40,7 @@ import type {
 import { focusedOf, noteFocus, syncHeaderSessionId } from './console'
 import { sessionChipPrefix } from './LaneHeader'
 import { isImeKeystroke } from './ime'
+import { applyCompletion, filterSlashCommands, moveSelection, slashQuery } from './slash'
 
 // ---------------------------------------------------------------------------
 // 会話モデル — flat item stream（ConversationEvent を UI 単位に畳む）
@@ -158,6 +159,14 @@ type ChatState = {
   contextWindow: number | null
   /** doc 35 PR3/PR4: engine の permission mode（session_init.permission_mode 由来）。per-lane。 */
   permissionMode?: string
+  /**
+   * この session で打てる slash command（`session_init.slash_commands` 由来）。
+   *
+   * ⚠️ **per-session で持つ**。skill / plugin / MCP の読み込みで session ごとに増減するので、
+   * lane 横断で 1 つ持つと嘘になる（doc 32 が「非同期ロードでブレる noise」と実測している）。
+   * ⚠️ `/` は付いていない素の名前で来る（`chronista-style:codeflow` のような形も混じる）。
+   */
+  slashCommands: string[]
   /** doc 35 §5.1: streaming 中に送られた type-ahead。turn 閉で flush（表示順=処理順の不変条件）。 */
   pending: string | null
   /** status 同期: 最後に畳んだイベント種別（foldInto で全イベント更新）。 */
@@ -405,6 +414,9 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       // review #2: permission mode の真値を per-lane に反映（engine は respawn 時 bypassPermissions
       // で立ち上がるので、select が実態とズレないよう session_init の値で上書きする）。
       s.permissionMode = ev.permission_mode
+      // この session で打てる slash command。⚠️ CLI 側で「対話端末なしで動くもの」に
+      // **絞り込み済み**なので、VP 側で除外リストを持たない（公式 agent-sdk/slash-commands）。
+      if (ev.slash_commands) s.slashCommands = ev.slash_commands
       break
     case 'message_chunk': {
       s.streaming = true
@@ -605,6 +617,7 @@ export function emptyChatState(): ChatState {
     contextTokens: null,
     contextWindow: null,
     permissionMode: undefined,
+    slashCommands: [],
     pending: null,
     lastEvent: null,
     lastEventAt: null,
@@ -1824,6 +1837,28 @@ function SessionChatView(props: { lane: string; session: number }) {
 
   const [draft, setDraft] = createSignal('')
   let inputRef: HTMLTextAreaElement | undefined // dequeue 後に composer へフォーカスを移すため
+
+  // ---- slash command 補完（判断は slash.ts、ここは配線だけ）-------------------
+  /** 候補一覧。空 = palette を出さない（行頭が `/` でない / 引数を打ち始めた / 一致なし）。 */
+  const slashHits = () => {
+    const q = slashQuery(draft())
+    if (q === null) return []
+    return filterSlashCommands(state()?.slashCommands ?? [], q)
+  }
+  const [slashAt, setSlashAt] = createSignal(0)
+  const slashOpen = () => slashHits().length > 0
+  /** 候補を入力欄へ入れる。⚠️ 送信はしない — 引数を続けて打てるようにする。 */
+  const acceptSlash = (name: string) => {
+    setDraft(applyCompletion(name))
+    setSlashAt(0)
+    queueMicrotask(() => {
+      if (!inputRef) return
+      inputRef.focus()
+      const end = inputRef.value.length
+      inputRef.setSelectionRange(end, end)
+      autosize(inputRef)
+    })
+  }
   // history 最下部の常時 status バー。全イベント同期 + 無反応(hang)検出のため 1s 毎に now を更新。
   const [nowMs, setNowMs] = createSignal(Date.now())
   onMount(() => {
@@ -2234,6 +2269,33 @@ function SessionChatView(props: { lane: string; session: number }) {
         {/* composer — 入力とその操作を 1 つの器にまとめる。上 = 打つ場所、下 = 操作。
             model / permission も「送る前に決める操作」なのでここ（読み取りの status とは分ける）。 */}
         <div class="conversation-composer">
+          {/* slash command の候補。⚠️ **入力欄の上**に出す（下は model / permission の操作列で、
+              そこに被せると押そうとした物が入れ替わる）。source は session_init が広告した
+              一覧そのもの — CLI 側で「この経路で打てるもの」に絞り込み済み。 */}
+          <Show when={slashOpen()}>
+            <div class="conversation-slash">
+              <For each={slashHits().slice(0, 8)}>
+                {(name, i) => (
+                  <button
+                    type="button"
+                    class="conversation-slash-item"
+                    classList={{ at: i() === Math.min(slashAt(), slashHits().length - 1) }}
+                    // ⚠️ mousedown で拾う。click だと先に textarea の blur が走り、
+                    // 選ぶ前に palette が閉じて空振りする。
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      acceptSlash(name)
+                    }}
+                  >
+                    /{name}
+                  </button>
+                )}
+              </For>
+              <Show when={slashHits().length > 8}>
+                <span class="conversation-slash-more">ほか {slashHits().length - 8} 件</span>
+              </Show>
+            </div>
+          </Show>
           {/* 既定は **1 行**。打った分だけ scrollHeight に合わせて伸び、max-height で頭打ち
               （CSS だけでは textarea は内容に追随しないので、伸縮はここで行う）。 */}
           <textarea
@@ -2247,11 +2309,38 @@ function SessionChatView(props: { lane: string; session: number }) {
               autosize(e.currentTarget)
             }}
             onKeyDown={(e) => {
+              // ⚠️ **IME の判定を最初に**置く。palette も送信も、変換中の打鍵に反応しては
+              // いけない（変換中の ↑↓ は候補選択、Enter は確定）。
+              if (isImeKeystroke(e)) return
+
+              // slash palette が開いている間は、移動 / 確定 / 中断を先に食う。
+              // ⚠️ 開いていない時は**素通り**させる — 下の送信規約を変えない。
+              if (slashOpen()) {
+                const hits = slashHits()
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  e.preventDefault()
+                  setSlashAt(moveSelection(slashAt(), e.key === 'ArrowDown' ? 1 : -1, hits.length))
+                  return
+                }
+                // Tab / Enter で確定。⚠️ Shift+Enter は改行のままにする（下の規約と揃える）。
+                if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+                  e.preventDefault()
+                  const pick = hits[Math.min(slashAt(), hits.length - 1)]
+                  if (pick) acceptSlash(pick)
+                  return
+                }
+                if (e.key === 'Escape') {
+                  // 候補を畳むだけ（入力は消さない）。`/` を消して閉じるより手数が少ない。
+                  e.preventDefault()
+                  setSlashAt(0)
+                  setDraft(`${draft()} `)
+                  return
+                }
+              }
+
               // Enter = 送信（Claude Desktop と同じ既定。mako 裁定 2026-07-30 — ⌘Enter 送信は
               // 「送信するつもりで空行が入る」誤操作が多かった）。
               if (e.key !== 'Enter') return
-              // 日本語変換の確定 Enter は送信しない（isImeKeystroke の二段ガード）。
-              if (isImeKeystroke(e)) return
               // Shift+Enter = 改行（textarea の既定挙動に任せる）。
               if (e.shiftKey) return
               // 素の Enter / ⌘Enter / Ctrl+Enter = 送信（⌘Enter は旧来の筋肉記憶を残す）。
@@ -2527,6 +2616,16 @@ export const CHATVIEW_CSS = `
 .conversation-plan-item.completed { color: var(--color-text-tertiary,#616b80); } .conversation-plan-item.completed .conversation-plan-dot { background: var(--color-success,#6fe2a8); }
 .conversation-plan-item.completed .conversation-plan-text { text-decoration: line-through; }
 /* composer: 入力（上）と操作（下）を 1 つの器に。枠は器が持ち、textarea は枠なしで中に敷く。 */
+/* slash command の候補列。⚠️ 会話本文より前に出る唯一の overlay なので、
+   composer の器の中に収めて「入力の一部」に見せる（別の面に見せない）。 */
+.conversation-slash { display:flex; flex-wrap:wrap; gap:4px; padding:6px 8px 2px; }
+.conversation-slash-item { padding:2px 8px; border:none; border-radius:6px; cursor:pointer;
+  background:#ffffff08; color:var(--lg-mute,#5C7A85); font:inherit; font-size:12px;
+  font-family:var(--font-mono,ui-monospace,monospace); transition:background .1s ease,color .1s ease; }
+.conversation-slash-item:hover { background:#ffffff12; color:var(--lg-hot,#EAFBFF); }
+/* 選択中。keyboard で動かしている位置を hover と別に示す（両方同時に見えてよい）。 */
+.conversation-slash-item.at { background:var(--lg-cyan-dim,#1C6C7C); color:var(--lg-hot,#EAFBFF); }
+.conversation-slash-more { align-self:center; font-size:11px; color:var(--lg-mute-2,#38525b); }
 .conversation-composer { display:flex; flex-direction:column; margin:8px 14px 10px; border-radius:10px;
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#161a20);
   overflow:hidden; }

@@ -220,6 +220,18 @@ impl ChatHost {
         }
     }
 
+    /// 最後に観測した `SessionInit`（replay で配り直す用）。
+    ///
+    /// ⚠️ **ACP 系（codex / grok / opencode）は `None`**。あちらの `SessionInit` は
+    /// `slash_commands` を空で出すので配り直す中身が無く、header/model の復元は今も
+    /// 効いていない（= 退行にはならない）。要るようになったら claude 側と同じ保持を足す。
+    pub fn session_init(&self) -> Option<ConversationEvent> {
+        match self {
+            ChatHost::Claude(h) => h.session_init(),
+            ChatHost::Codex(_) | ChatHost::Grok(_) | ChatHost::OpenCode(_) => None,
+        }
+    }
+
     pub fn commit_seq(&self) -> u64 {
         match self {
             ChatHost::Claude(h) => h.commit_seq(),
