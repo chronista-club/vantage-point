@@ -2636,8 +2636,13 @@ export const CHATVIEW_CSS = `
    composer の器の中に収めて「入力の一部」に見せる（別の面に見せない）。 */
 /* ⚠️ 説明が付いた時点で横並びは破綻する（1 件が長くなり折り返しが荒れる）ので**縦積み**。
    説明の無い候補が混ざっても、名前だけの行として自然に見える。 */
-.conversation-slash { display:flex; flex-direction:column; gap:1px; padding:6px 6px 2px;
-  max-height:180px; overflow-y:auto; }
+/* ⚠️ **flex:none が要る**。composer は flex-direction:column + overflow:hidden で、
+   overflow-y を持つ子は flex の既定（min-height:auto が効かない）で 0 高さまで潰れ、
+   そのまま親の hidden に飲まれて**何も出なくなる**（2026-08-09 に実際に踏んだ）。
+   横並びだった頃は flex-wrap が高さを内容に従わせていたので露見しなかった。
+   ⚠️ この CSS は template literal の中なので、コメントに backtick を書くと文字列が閉じる。 */
+.conversation-slash { flex:none; display:flex; flex-direction:column; gap:1px;
+  padding:6px 6px 2px; max-height:180px; overflow-y:auto; }
 .conversation-slash-item { display:flex; align-items:baseline; gap:8px; width:100%;
   padding:3px 8px; border:none; border-radius:6px; cursor:pointer; text-align:left;
   background:transparent; color:var(--lg-mute,#5C7A85); font:inherit; font-size:12px;
