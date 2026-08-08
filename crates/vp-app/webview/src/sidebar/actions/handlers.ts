@@ -8,6 +8,7 @@
  * import 方向: handlers(leaf) ← registry ← keybindings(installer) で循環なし。
  */
 import { sidebar } from "../store";
+import { resolveRepoOrder } from "../dnd";
 import { sendIpc } from "../ipc";
 import {
 	collapseSidebar,
@@ -17,7 +18,7 @@ import {
 	toggleSidebarForm,
 } from "../form";
 import type { SidebarForm } from "../form";
-import { isPerformerLane, laneAddressKey } from "../lane";
+import { isPerformerLane, laneAddressKey, laneShortcutNumber } from "../lane";
 import { PANEL_BUCKETS } from "../actions-panel/model";
 import { appendAction, openBuckets, toggleBucket } from "../actions-panel/store";
 import { focusActionRow } from "../actions-panel/ActionRow";
@@ -116,29 +117,44 @@ interface VisibleLane {
 	path: string;
 	address: string;
 	label: string;
+	/** 打つ番号（[`laneShortcutNumber`] 由来 = **repo の位置**）。配列 index とは限らない。 */
+	number: number;
 }
 
 let laneSelectModeTimer: ReturnType<typeof setTimeout> | null = null;
 let laneSelectModeTargets: VisibleLane[] = [];
 
-/** expanded repo の lane を上から flat list で収集（= 1-9 で indexing する候補）。 */
+/**
+ * ショートカットの宛先＝**各 repo の root lane**を repo の並び順で収集（1〜9）。
+ *
+ * ⚠️ **畳んでいる repo も含める**。番号は repo の位置（[`laneShortcutNumber`]）なので、
+ * 展開状態で動かない＝筋肉記憶が付く。畳んだ先を選んだ場合は選択が展開を促す。
+ *
+ * ⚠️ **performer lane は対象外**（mako 2026-08-09「root lane だけがショートカットを持つ」）。
+ * 旧実装は展開中 repo の全 lane を上から数えており、repo を畳むだけで番号が総入れ替えになった。
+ */
 function collectVisibleLanes(): VisibleLane[] {
 	const out: VisibleLane[] = [];
 	const map = sidebar.lanes_by_repo ?? {};
-	for (const proc of sidebar.processes) {
-		if (!proc.expanded) continue;
-		const lanes = map[proc.path] ?? [];
-		const repoName = proc.path.split("/").pop() ?? proc.path;
-		for (const lane of lanes) {
-			const addr = laneAddressKey(lane);
-			// doc 44 P2: lane の種別は消え、開発起点は予約名で表される。
-			const name = lane.address.name;
-			const label = isPerformerLane(lane)
-				? `${repoName} / ${name}`
-				: `${repoName} / Conductor`;
-			out.push({ path: proc.path, address: addr, label });
-		}
-	}
+	// ⚠️ 番号は **repo の位置**から出す（積んだ数ではない）。root がまだ立っていない repo を
+	// 飛ばすときに `out.length` で数えると、そこから先が 1 つずつ手前にずれ、sidebar の
+	// `#N` badge（同じ位置から出す）と宛先が食い違う。
+	// ⚠️ **表示順で数える**。`sidebar.processes` の生順ではなく、user が drag で並べ替えた
+	// 順（`resolveRepoOrder`）が画面の順 = badge の番号。ここを揃えないと飛び先がずれる。
+	resolveRepoOrder(sidebar.processes, sidebar.currents_order).forEach(
+		(proc, repoIndex) => {
+		const number = laneShortcutNumber(repoIndex);
+		if (number === null) return; // 10 個目以降は番号を持たない
+		const root = (map[proc.path] ?? []).find((l) => !isPerformerLane(l));
+		if (!root) return; // root 不在 = その番号は空席のまま（後続を繰り上げない）
+		out.push({
+			path: proc.path,
+			address: laneAddressKey(root),
+			label: proc.path.split("/").pop() ?? proc.path,
+			number,
+		});
+		},
+	);
 	return out;
 }
 
@@ -169,8 +185,10 @@ function laneNumberHandler(e: KeyboardEvent): void {
 	}
 	if (e.key >= "1" && e.key <= "9") {
 		e.preventDefault();
-		const n = parseInt(e.key, 10) - 1;
-		const sel = laneSelectModeTargets[n];
+		// ⚠️ 配列 index ではなく **number で引く**。root 不在の repo は空席なので、
+		// `targets[2]` が `#3` とは限らない。
+		const n = parseInt(e.key, 10);
+		const sel = laneSelectModeTargets.find((t) => t.number === n);
 		if (sel) {
 			sendIpc({ t: "lane:select", path: sel.path, address: sel.address });
 		}
@@ -188,6 +206,24 @@ function laneNumberHandler(e: KeyboardEvent): void {
 	exitLaneSelectMode();
 }
 
+/**
+ * `Cmd + N` — sidebar の `#N` badge が指す root lane へ**直接**飛ぶ。
+ *
+ * ⚠️ 宛先は `⌘ hold l` と**同じ `collectVisibleLanes`** から引く。番号の解決を 2 箇所に
+ * 持つと、badge・二段操作・直接 chord の三者がずれる余地が生まれる。
+ *
+ * 空席（root がまだ立っていない repo の番号）は**何もしない** — 近くの lane に飛ぶと
+ * 「押した番号と違う所へ行く」になり、番号を覚える意味が消える。
+ */
+export function selectLaneByNumber(n: number): void {
+	const sel = collectVisibleLanes().find((t) => t.number === n);
+	if (!sel) {
+		console.debug(`[lane #${n}] 該当なし（空席 or 範囲外）`);
+		return;
+	}
+	sendIpc({ t: "lane:select", path: sel.path, address: sel.address });
+}
+
 function enterLaneSelectMode(): void {
 	const targets = collectVisibleLanes();
 	if (targets.length === 0) {
@@ -195,10 +231,8 @@ function enterLaneSelectMode(): void {
 		return;
 	}
 	laneSelectModeTargets = targets;
-	const label = targets
-		.slice(0, 9)
-		.map((t, i) => `${i + 1}. ${t.label}`)
-		.join("   ");
+	// ⚠️ ヒントも **`t.number`** で書く。`i + 1` に戻すと空席のある並びでずれる。
+	const label = targets.map((t) => `${t.number}. ${t.label}`).join("   ");
 	setLaneSelectHintLabel(label);
 	setLaneSelectHintVisible(true);
 

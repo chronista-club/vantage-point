@@ -500,6 +500,14 @@ html,body{margin:0;height:100%;overflow:hidden;}
   color:var(--lg-mute-2,#38525b);font-variant-numeric:tabular-nums;white-space:nowrap;}
 .vp-lane-connector.conn-hitl ~ .vp-lane-right .vp-lane-state{
   color:var(--sb-conn-hitl,#FF4A2D);}
+/* Index badge — root lane だけが持つショートカット番号（⌘ hold l で打つ）。
+   state 文字と同じ mono micro の語彙に揃え、番号であることを tabular-nums で示す。
+   ⚠️ 常時出す小さな部品なので彩度は上げない — 目印であって通知ではない。 */
+.vp-lane-shortcut{flex:0 0 auto;font-family:var(--vp-font-mono),var(--typography-family-mono);
+  font-size:var(--sb-text-micro,10px);color:var(--lg-mute-2,#38525b);
+  font-variant-numeric:tabular-nums;white-space:nowrap;opacity:.75;}
+.vp-lane-row:hover .vp-lane-shortcut,.vp-lane-row.active .vp-lane-shortcut{
+  color:var(--lg-mute,#5C7A85);opacity:1;}
 /* 右端 block: meta / awaiting / files / mailbox を右寄せで横並び。 */
 .vp-lane-right{display:flex;align-items:center;gap:5px;flex:0 0 auto;margin-left:auto;}
 /* files / mailbox は hover 時のみ表示 (= noise 減)。 ただし mailbox unread と
