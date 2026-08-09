@@ -13,6 +13,7 @@ import type { LaneInfo } from "../generated/LaneInfo";
 import type { PerformerStatusWire } from "../generated/PerformerStatusWire";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
+import { resolveRepoOrder } from "./dnd";
 import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
 import {
 	clearLaneDrag,
@@ -26,6 +27,7 @@ import {
 import {
 	isLaneAlive,
 	isPerformerLane,
+	shortcutNumberOf,
 	laneAddressKey,
 	laneCwdLabel,
 	laneLabel,
@@ -85,6 +87,21 @@ export function LaneRow(props: {
 	// F.8 B Convergent: Pane (Conversation) 不在 = pid:null は Dead Lane (spawn 失敗)、 dim 表示。
 	const isInactive = () => !isLaneAlive(props.lane);
 	const isPerformer = () => isPerformerLane(props.lane);
+	/**
+	 * `⌘ hold l` で打つ番号（root lane だけが持つ）。
+	 *
+	 * ⚠️ **`handlers.ts` と同じ `shortcutNumberOf` を通す**。番号の出どころを 2 箇所に持つと、
+	 * 見えている `#N` と飛び先がずれる。並びは user が drag で決めた表示順（`resolveRepoOrder`）。
+	 */
+	const shortcut = () =>
+		isPerformer()
+			? null
+			: shortcutNumberOf(
+					resolveRepoOrder(sidebar.processes, sidebar.currents_order).map(
+						(p) => p.path,
+					),
+					props.repoPath,
+				);
 	const icon = () => agentIcon(props.lane.agent, isActive());
 	// mailbox inbox: entry がある Lane のみ icon 表示 (mailbox infra が active)。
 	const inbox = () => sidebar.lane_inboxes?.[addr()];
@@ -330,6 +347,13 @@ export function LaneRow(props: {
 			</span>
 			{/* 右端ブロック: ⑦ state 文字 → ⑤ git meta (dirty/↑↓ のみ) → ⑥ awaiting dot → ② files → ③ mailbox */}
 			<span class="vp-lane-right">
+				{/* Index: `⌘ hold l` で打つ番号。root lane だけが持つ（mako 2026-08-09）。
+				    ⚠️ 番号の出どころは `shortcutNumberOf` 一本 — handlers.ts の宛先と同じ関数。 */}
+				<Show when={shortcut()}>
+					<span class="vp-lane-shortcut" title={`⌘ hold l → ${shortcut()}`}>
+						#{shortcut()}
+					</span>
+				</Show>
 				{/* Light Grid state 言語の文字面 (working / idle / needs you)。 FSM の SSOT は
 				    connectorClass (laneConnector 導出) — 二重導出しない。 root (conductor) は出さない。 */}
 				<Show when={stateLabel(props.connectorClass)}>

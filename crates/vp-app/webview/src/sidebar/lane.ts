@@ -134,6 +134,40 @@ export function laneAddressKey(lane: LaneInfo): string {
 	return `${a.repo}/${a.name}`;
 }
 
+/** ショートカット番号の上限。1 打で選べる範囲＝ 1〜9（0 は使わない）。 */
+export const LANE_SHORTCUT_MAX = 9;
+
+/**
+ * repo の並び順 → root lane のショートカット番号（1〜9）。範囲外は `null`。
+ *
+ * ## ⚠️ 番号は **repo の位置そのもの**
+ *
+ * 「root lane だけがショートカットを持つ」（mako 2026-08-09）＝ repo と 1:1 なので、lane を
+ * 数える必要が無い。旧実装は「**展開中** repo の全 lane を上から数える」形で、repo を畳むと
+ * 番号が動いた＝筋肉記憶が付かなかった。位置に固定すると、畳んでも並びを変えない限り不変。
+ *
+ * 表示（sidebar の `#N` badge）と `⌘ hold l` の宛先が**この 1 つの関数**から出るので、
+ * 「見えている番号と飛び先が違う」が構造的に起きない。
+ */
+export function laneShortcutNumber(repoIndex: number): number | null {
+	if (!Number.isInteger(repoIndex) || repoIndex < 0) return null;
+	return repoIndex < LANE_SHORTCUT_MAX ? repoIndex + 1 : null;
+}
+
+/**
+ * repo path → ショートカット番号。**表示順で数える**（`sidebar.processes` の生順ではない）。
+ *
+ * ⚠️ 画面は `resolveRepoOrder(processes, currents_order)` の順で描かれる（user が drag で
+ * 並べ替えた順）。生順で数えると **`#N` badge と `⌘ hold l` の飛び先が食い違う**。
+ * badge と宛先が同じ 1 本から出るよう、両者ともこの関数を通す。
+ */
+export function shortcutNumberOf(
+	orderedRepoPaths: readonly string[],
+	repoPath: string,
+): number | null {
+	return laneShortcutNumber(orderedRepoPaths.indexOf(repoPath));
+}
+
 /**
  * Lane の tree connector の状態 class を導出する (Light Grid state 言語の FSM 投影、 純関数)。
  *

@@ -10,6 +10,7 @@
  */
 import { installDirectiveHandler } from "../shortcuts/chord";
 import { actionByKey } from "./actions/registry";
+import { selectLaneByNumber } from "./actions/handlers";
 import {
 	deleteHintLabel,
 	deleteHintVisible,
@@ -39,5 +40,9 @@ export function dispatchDirective(key: string): void {
 }
 
 export function installSidebarKeybindings(): void {
-	installDirectiveHandler({ exec: dispatchDirective });
+	installDirectiveHandler({
+		exec: dispatchDirective,
+		// Cmd + 1〜9 — sidebar の `#N` badge が指す root lane へ直接飛ぶ。
+		selectLane: selectLaneByNumber,
+	});
 }
