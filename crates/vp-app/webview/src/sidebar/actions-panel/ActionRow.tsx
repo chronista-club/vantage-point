@@ -39,13 +39,26 @@ import { beginEditing, endEditing } from "./store";
  */
 const CREO_MEMORY_BASE = "https://app.creo-memories.in/m/";
 
-/** 行に focus を移す。描画の後に走らせる要があるので `queueMicrotask` 越し。 */
+/**
+ * 行に focus を移す。描画の後に走らせる要があるので `queueMicrotask` 越し。
+ *
+ * ⚠️ **見つからなかったことを黙らせない**。`⌘ hold b` → 数字で「行は出るが focus が
+ * 当たらない」を追ったとき（2026-08-07〜09）、ここが `if (!el) return;` で無音だったため、
+ * 「DOM が無い」のか「focus が奪われた」のかを実機ログ無しには切り分けられなかった。
+ *
+ * 実測（2026-08-09）では `el=true / applied=true / afterFrame=true` で当たっていた。当時の
+ * 症状は daemon 側で**空の新規行が cache から落ちていた**（`5466eeef` で修正）ため、focus を
+ * 当てる先が消えていたのが実体だったとみられる。再発時はここが喋る。
+ */
 export function focusActionRow(id: string): void {
 	queueMicrotask(() => {
 		const el = document.querySelector<HTMLTextAreaElement>(
 			`[data-vp-act-row="${CSS.escape(id)}"] .vp-act-text`,
 		);
-		if (!el) return;
+		if (!el) {
+			console.warn(`[actions] focus 先の行が見つからない: ${id}`);
+			return;
+		}
 		el.focus();
 		const pos = el.value.length;
 		el.setSelectionRange(pos, pos);
