@@ -1780,6 +1780,22 @@ impl LanePool {
             .map(|slot| slot.host.in_flight())
     }
 
+    /// chat engine が最後に観測した `SessionInit`（replay で配り直す用）。`session=None` は focused。
+    ///
+    /// ⚠️ engine 未起動（chat-idle / tui）は None = 配り直すものが無い。
+    pub fn chat_session_init(
+        &self,
+        addr: &LaneAddress,
+        session: Option<SessionKey>,
+    ) -> Option<crate::conversation::ConversationEvent> {
+        let resolved = self.resolve_chat_session(addr, session).ok()?;
+        self.chat_engines
+            .get(addr)?
+            .get(&resolved.key)?
+            .host
+            .session_init()
+    }
+
     /// chat engine の commit 世代のみ（transcript 読み後の検算用）。`session=None` は focused。
     pub fn chat_commit_seq(&self, addr: &LaneAddress, session: Option<SessionKey>) -> Option<u64> {
         let resolved = self.resolve_chat_session(addr, session).ok()?;

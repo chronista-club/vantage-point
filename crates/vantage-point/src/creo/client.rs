@@ -163,8 +163,14 @@ impl CreoActionsCache {
                 Ok(())
             }
             Ok(None) => {
+                // ⚠️ `warn!` なのは**復旧に user の操作が要る**から（`vp auth login`）。
+                // `set` が変化を返したときだけ通る = edge-triggered なので 30s ごとには鳴らない。
+                // debug のままだと既定の log level では見えず、2026-08-07 は「ACTIONS が空」の
+                // 原因を掴むのに `/api/health` の curl が要った。
                 if self.set(Vec::new()) {
-                    tracing::debug!("creo 未ログイン — ACTIONS を空にしました");
+                    tracing::warn!(
+                        "creo 未ログイン / token 失効 — ACTIONS を空にしました（`vp auth login` で復帰）"
+                    );
                 }
                 Ok(())
             }
@@ -370,6 +376,40 @@ fn status_for(item: &CreoAction) -> Option<&'static str> {
     }
 }
 
+/// 1 件をどう書くか。
+///
+/// ⚠️ **どの枝も `out` に 1 件残す**（= 書き方の分類であって、残すかの分類ではない）。
+/// 「creo に上げない」を `continue` で表していた頃、空の新規行が `out` から落ちて
+/// **cache ごと消え、足したばかりの行が画面から消滅**した（`⌘ hard b` → 数字で行が出ない、
+/// 2026-08-07）。分類を型にして `match` を網羅にすることで、push し忘れを構造的に塞ぐ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WritePlan {
+    /// 空の新規行 — creo には上げない（空の memory をゴミとして作らない）が local には残す。
+    KeepLocal,
+    /// 新規 — POST する。
+    Create,
+    /// 既存で変化なし — 撃たない（5s ごとの push で無駄な PUT を出さない）。
+    Unchanged,
+    /// 既存で変化あり — PUT する。
+    Update,
+}
+
+/// [`WritePlan`] の判定（純関数 — network を触らないのでここだけ test できる）。
+fn plan_write(item: &CreoAction, prev: Option<&CreoAction>) -> WritePlan {
+    if is_local_id(&item.id) {
+        return if item.text.trim().is_empty() {
+            WritePlan::KeepLocal
+        } else {
+            WritePlan::Create
+        };
+    }
+    if prev.is_some_and(|p| p == item) {
+        WritePlan::Unchanged
+    } else {
+        WritePlan::Update
+    }
+}
+
 /// creo に書く（create / update / delete）。**cache の持ち主だけが呼ぶ**。
 ///
 /// 戻り値は**書いた後の一覧**（新規は creo の id に差し替わる）。`None` = 未ログイン。
@@ -399,30 +439,24 @@ pub async fn save_actions(
 
     let mut out = Vec::with_capacity(write.items.len());
     for item in &write.items {
-        if is_local_id(&item.id) {
-            // 新規 — 空の行は creo に上げない（⌘b で開いてやめた行がゴミにならない）。
-            if item.text.trim().is_empty() {
-                continue;
-            }
-            match create_action(&client, &base, token, item).await {
+        match plan_write(item, prev_by_id.get(item.id.as_str()).copied()) {
+            // 上げない枝。**local のまま残す**ので、次に user が書いた時点で Create に移る。
+            WritePlan::KeepLocal | WritePlan::Unchanged => out.push(item.clone()),
+            WritePlan::Create => match create_action(&client, &base, token, item).await {
                 Ok(created) => out.push(created),
                 Err(e) => {
                     // local id のまま残す = cache に生き残り、次の機会に再試行される。
                     tracing::warn!("ACTIONS の作成に失敗（次の機会に再試行）: {e}");
                     out.push(item.clone());
                 }
+            },
+            WritePlan::Update => {
+                if let Err(e) = update_action(&client, &base, token, item).await {
+                    tracing::warn!(id = %item.id, "ACTIONS の更新に失敗: {e}");
+                }
+                out.push(item.clone());
             }
-            continue;
         }
-        // 既存 — 変わっていないなら撃たない（5s ごとの push で無駄な PUT を出さない）。
-        if prev_by_id.get(item.id.as_str()).is_some_and(|p| *p == item) {
-            out.push(item.clone());
-            continue;
-        }
-        if let Err(e) = update_action(&client, &base, token, item).await {
-            tracing::warn!(id = %item.id, "ACTIONS の更新に失敗: {e}");
-        }
-        out.push(item.clone());
     }
 
     // 削除は**明示された id だけ**。local id は creo に無いので撃たない。
@@ -769,6 +803,52 @@ mod tests {
             merged.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
             vec!["mem_1", "act-new"]
         );
+    }
+
+    /// ⚠️ **「creo に上げない」は「消す」ではない**。
+    ///
+    /// `⌘ hard b` → 数字は空の行を 1 本足して focus する動線。この空行を `out` から
+    /// 落としていたため cache ごと消え、その snapshot が webview に返って
+    /// **行が画面から消滅**した（2026-08-07 の実害）。`KeepLocal` は「POST しない」だけで、
+    /// 呼び手は必ず 1 件 `out` に残す。
+    #[test]
+    fn empty_new_row_is_kept_local_not_dropped() {
+        let empty = CreoAction {
+            id: "act-new".into(),
+            text: "   ".into(), // 空白だけも「未記入」
+            done: false,
+            bucket: "nexts".into(),
+            order: "0|h:".into(),
+        };
+        assert_eq!(plan_write(&empty, None), WritePlan::KeepLocal);
+
+        // 書き始めたら creo に上がる。
+        let typed = CreoAction {
+            text: "捕まえた".into(),
+            ..empty.clone()
+        };
+        assert_eq!(plan_write(&typed, None), WritePlan::Create);
+    }
+
+    /// 既存行は「変わっていなければ撃たない」。5s ごとの push で無駄な PUT を出さないため。
+    #[test]
+    fn unchanged_remote_item_is_not_written() {
+        let item = CreoAction {
+            id: "mem_1".into(),
+            text: "既存".into(),
+            done: false,
+            bucket: "todos".into(),
+            order: "0|h:".into(),
+        };
+        assert_eq!(plan_write(&item, Some(&item)), WritePlan::Unchanged);
+
+        let edited = CreoAction {
+            text: "書き換えた".into(),
+            ..item.clone()
+        };
+        assert_eq!(plan_write(&edited, Some(&item)), WritePlan::Update);
+        // 手元に prev が無い（daemon 再起動直後など）なら、撃って合わせに行く。
+        assert_eq!(plan_write(&item, None), WritePlan::Update);
     }
 
     /// ⚠️ **creo の応答が metadata を落としても、区画 / 並びは手元の値が残る**。

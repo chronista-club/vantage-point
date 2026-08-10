@@ -60,6 +60,12 @@ export function installRightSidebar(deps: RightSidebarDeps): RightSidebarApi {
 	/** 開閉の反映: body class（CSS が rail と排他表示）+ tail の購読開始/停止。 */
 	const applyOpen = (): void => {
 		document.body.classList.toggle("rsb-open", open);
+		// shell layout（shell-layout.ts）へ「開閉が変わった」を伝える。あちらが取っ手の
+		// 出し入れと永続化を持つ。⚠️ **この dispatch が無いと取っ手が出ない**（開いたことを
+		// 知らないので display:none のまま = R を掴めない）。
+		document.dispatchEvent(
+			new CustomEvent("vp:right-sidebar-state", { detail: { open } }),
+		);
 		if (open) {
 			sendIpc({ t: "debuglog:watch", source });
 		} else {
@@ -71,6 +77,15 @@ export function installRightSidebar(deps: RightSidebarDeps): RightSidebarApi {
 	// 同一 document なので共有 bus（doc 47 §6）がそのまま届く。
 	document.addEventListener("vp:right-sidebar-toggle", () => {
 		open = !open;
+		applyOpen();
+	});
+
+	// 復元（shell-layout.ts の `vp:shell-restore`）。boot で 1 回だけ来る。
+	// ⚠️ 既に同じ状態なら `applyOpen` を呼ばない — 呼ぶと `debuglog:watch` を無駄撃ちする。
+	document.addEventListener("vp:shell-restore", (e) => {
+		const d = (e as CustomEvent<{ rightOpen?: boolean }>).detail;
+		if (typeof d?.rightOpen !== "boolean" || d.rightOpen === open) return;
+		open = d.rightOpen;
 		applyOpen();
 	});
 

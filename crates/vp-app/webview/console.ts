@@ -57,6 +57,8 @@ export type ConversationEvent =
       tools?: string[]
       mcp_servers?: string[]
       slash_commands?: string[]
+      /** slash command 名 → 短い説明。⚠️ **候補の源ではない**（引けたものだけ添える装飾）。 */
+      command_docs?: Record<string, string>
     }
   /** transcript replay の開始マーカー。受信側は会話表示 + buffer をクリアしてから後続を畳む
    *  （replay を冪等にする = reconnect / demand 再発火で会話が二重化しない）。 */
@@ -390,6 +392,9 @@ export type VpConsole = {
   focusedOf(lane: string): number
 }
 
+/** replay 中の (lane, session)。NUL 区切り。replay 由来の session_init を live と区別する。 */
+const replayingSessions = new Set<string>()
+
 export function installConsole(): VpConsole {
   const api: VpConsole = {
     handleEvent(lane, event, session) {
@@ -401,14 +406,19 @@ export function installConsole(): VpConsole {
       // 全消去と等価（旧挙動）。
       if (event.kind === 'replay_start') {
         entry.buffer = entry.buffer.filter((b) => b.session !== s)
+        // ⚠️ replay 中の印。この間に届く session_init は「engine が resume を確定した」ではなく
+        // **保持していた値の配り直し**なので、下の `vp:console-ready` を撃ってはいけない
+        // （切替の progress を消す signal — 別の事実に同じ signal を使うと嘘になる）。
+        replayingSessions.add(`${lane}\u0000${s}`)
       }
+      if (event.kind === 'replay_end') replayingSessions.delete(`${lane}\u0000${s}`)
       entry.buffer.push({ event, session: s })
       if (entry.buffer.length > BUFFER_CAP) {
         entry.buffer.splice(0, entry.buffer.length - BUFFER_CAP)
       }
       // doc 33 §9: session_init = engine が resume を確定した瞬間。切替の progress を
       // ここで clear する（「resume してから切替完了」= 安全なハンドオフ）。
-      if (event.kind === 'session_init') {
+      if (event.kind === 'session_init' && !replayingSessions.has(`${lane}\u0000${s}`)) {
         document.dispatchEvent(
           new CustomEvent('vp:console-ready', { detail: { lane } }),
         )

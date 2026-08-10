@@ -69,6 +69,78 @@ pub struct RepoUiState {
 pub const GEOMETRY_MIN_WIDTH: f64 = 720.0;
 pub const GEOMETRY_MIN_HEIGHT: f64 = 480.0;
 
+/// L / R sidebar の幅の許容範囲 (LogicalPixel)。破損 file や暴走 drag で
+/// 「幅 0 で二度と掴めない」「画面全部が sidebar」を構造的に防ぐ。
+pub const SIDEBAR_MIN_WIDTH: f64 = 180.0;
+pub const SIDEBAR_MAX_WIDTH: f64 = 640.0;
+pub const RIGHT_SIDEBAR_MIN_WIDTH: f64 = 240.0;
+pub const RIGHT_SIDEBAR_MAX_WIDTH: f64 = 900.0;
+
+/// L sidebar の形 (doc 56 / sidebar view modes)。`full` = 一覧、`slim` = icon 幅の帯。
+///
+/// ⚠️ **slim の幅 (44px) は [`ShellLayout::sidebar_width`] に含めない**。含めると
+/// 「slim のまま終了 → 次回 full に戻したら 44px」になる。drag が決めるのは **full の幅**だけで、
+/// slim は CSS 側 (`#sidebar-root.slim`) の固定値が司る。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SidebarForm {
+    /// 一覧を出すフル形 (既定)
+    #[default]
+    Full,
+    /// icon 幅のスリム帯
+    Slim,
+}
+
+/// shell (L sidebar | main | R sidebar) の形。**この instance の window の形**なので
+/// [`WindowGeometry`] の隣に置く (= session.json、instance ごと)。
+///
+/// 「window をどう開いていたか」を丸ごと再現するため、幅だけでなく **形 (full/slim) と
+/// R の開閉**も持つ。旧実装は毎回 full × R 閉で始まっていた。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellLayout {
+    /// L sidebar の **full 時の**幅 (LogicalPixel)。slim は CSS 固定値なので含めない。
+    pub sidebar_width: f64,
+    /// R sidebar の幅 (LogicalPixel)。閉じていても最後の幅を覚えておく
+    /// (次に開いたとき前回の幅で出る — 開くたびに既定幅へ戻らない)。
+    pub right_sidebar_width: f64,
+    /// L sidebar の形 (full / slim)。
+    #[serde(default)]
+    pub sidebar_form: SidebarForm,
+    /// R sidebar を開いていたか。
+    #[serde(default)]
+    pub right_sidebar_open: bool,
+}
+
+impl ShellLayout {
+    /// 保存値が valid か (= 破損ガード)。invalid なら caller が `None` 扱いにして既定へ倒す。
+    /// [`WindowGeometry::is_valid`] と同じ規律 — **読めない値で画面を壊さない**。
+    pub fn is_valid(&self) -> bool {
+        self.sidebar_width.is_finite()
+            && self.right_sidebar_width.is_finite()
+            && (SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH).contains(&self.sidebar_width)
+            && (RIGHT_SIDEBAR_MIN_WIDTH..=RIGHT_SIDEBAR_MAX_WIDTH)
+                .contains(&self.right_sidebar_width)
+    }
+
+    /// 範囲外を端に丸める。webview から届いた値は **信用せず必ず通す**
+    /// (drag の暴走や版ズレで極端な値が来ても、次回起動で掴めなくならないように)。
+    pub fn clamped(mut self) -> Self {
+        if !self.sidebar_width.is_finite() {
+            self.sidebar_width = SIDEBAR_MIN_WIDTH;
+        }
+        if !self.right_sidebar_width.is_finite() {
+            self.right_sidebar_width = RIGHT_SIDEBAR_MIN_WIDTH;
+        }
+        self.sidebar_width = self
+            .sidebar_width
+            .clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
+        self.right_sidebar_width = self
+            .right_sidebar_width
+            .clamp(RIGHT_SIDEBAR_MIN_WIDTH, RIGHT_SIDEBAR_MAX_WIDTH);
+        self
+    }
+}
+
 /// Window の表示モード (= 通常ウィンドウ / 全画面)。 起動を跨いで復元する対象 (doc 30 §6.1)。
 /// serde default = `Windowed` ── 旧 session file (`display_mode` 不在) は通常ウィンドウ扱い。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -147,6 +219,10 @@ pub struct SessionState {
     /// `CloseRequested` / resize / move で自分の file に save、 起動時に復元。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_geometry: Option<WindowGeometry>,
+    /// shell (L sidebar | main | R sidebar) の形。**この instance** の window の形なので
+    /// `window_geometry` の隣。drag / form 切替 / R 開閉のたびに save、起動時に復元。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_layout: Option<ShellLayout>,
     /// この instance window が「開いている / 開くべき」 か。 primary が起動時に
     /// `open==true` の secondary file を auto-spawn する signal。 clean close で false。
     #[serde(default = "default_open")]
@@ -171,6 +247,7 @@ impl Default for SessionState {
             active_lane_address: None,
             currents_order: None,
             window_geometry: None,
+            shell_layout: None,
             open: true,
             window_geometries: Vec::new(),
             instance_index: 0,
@@ -286,6 +363,18 @@ impl SessionState {
     /// この instance の window geometry を更新する。
     pub fn set_window_geometry(&mut self, geom: WindowGeometry) {
         self.window_geometry = Some(geom);
+    }
+
+    /// 復元用の shell layout。**壊れた値は `None`** に倒す（`window_geometry` と同じ規律 —
+    /// 読めない値で画面を壊すより既定で開く方がまし）。
+    pub fn shell_layout(&self) -> Option<&ShellLayout> {
+        self.shell_layout.as_ref().filter(|l| l.is_valid())
+    }
+
+    /// shell layout を更新する。**必ず clamp を通す** — webview から届く値なので、
+    /// drag の暴走や版ズレで極端な値が来ても次回起動で掴めなくならないように。
+    pub fn set_shell_layout(&mut self, layout: ShellLayout) {
+        self.shell_layout = Some(layout.clamped());
     }
 
     /// この instance の表示モードのみ更新する (windowed 座標は保持)。
@@ -493,6 +582,69 @@ mod tests {
         let g = state.window_geometry().expect("slot 1 が移植される");
         assert_eq!(g.width, 1400.0);
         assert_eq!(g.height, 900.0);
+    }
+
+    /// ⚠️ **drag の暴走や壊れた file で「掴めない幅」を作らない**。
+    /// webview から届く値なので、setter は必ず clamp を通す。
+    #[test]
+    fn shell_layout_is_clamped_on_set() {
+        let mut s = SessionState::default();
+        s.set_shell_layout(ShellLayout {
+            sidebar_width: 0.0,          // 潰した
+            right_sidebar_width: 9999.0, // 画面を覆った
+            sidebar_form: SidebarForm::Slim,
+            right_sidebar_open: true,
+        });
+        let l = s.shell_layout().expect("clamp 後は valid");
+        assert_eq!(l.sidebar_width, SIDEBAR_MIN_WIDTH);
+        assert_eq!(l.right_sidebar_width, RIGHT_SIDEBAR_MAX_WIDTH);
+        // 形と開閉は幅と独立に保たれる
+        assert_eq!(l.sidebar_form, SidebarForm::Slim);
+        assert!(l.right_sidebar_open);
+    }
+
+    /// NaN / 無限大でも掴める値に倒す（f64 の clamp は NaN を素通しするので明示的に潰す）。
+    #[test]
+    fn shell_layout_survives_non_finite() {
+        let mut s = SessionState::default();
+        s.set_shell_layout(ShellLayout {
+            sidebar_width: f64::NAN,
+            right_sidebar_width: f64::INFINITY,
+            sidebar_form: SidebarForm::Full,
+            right_sidebar_open: false,
+        });
+        assert!(s.shell_layout().is_some(), "NaN でも既定へ倒して valid に");
+    }
+
+    /// ⚠️ **slim の 44px を幅として保存しない**ことの根拠 — 形と幅は別 field。
+    /// 同じ field に畳むと「slim で終了 → 次回 full に戻したら 44px」になる。
+    #[test]
+    fn shell_layout_keeps_full_width_while_slim() {
+        let mut s = SessionState::default();
+        s.set_shell_layout(ShellLayout {
+            sidebar_width: 320.0,
+            right_sidebar_width: 420.0,
+            sidebar_form: SidebarForm::Slim,
+            right_sidebar_open: false,
+        });
+        let l = s.shell_layout().expect("valid");
+        assert_eq!(l.sidebar_width, 320.0, "slim 中でも full の幅を覚えている");
+    }
+
+    /// 壊れた file（範囲外のまま serde で読まれた値）は `None` に倒れ、既定で開く。
+    #[test]
+    fn shell_layout_invalid_is_filtered() {
+        // setter（clamp）を通さず直に入れる = 破損 file から deserialize した状態を再現する。
+        let s = SessionState {
+            shell_layout: Some(ShellLayout {
+                sidebar_width: 5.0,
+                right_sidebar_width: 5.0,
+                sidebar_form: SidebarForm::Full,
+                right_sidebar_open: false,
+            }),
+            ..SessionState::default()
+        };
+        assert!(s.shell_layout().is_none());
     }
 
     #[test]

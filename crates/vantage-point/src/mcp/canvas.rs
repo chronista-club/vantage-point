@@ -34,7 +34,7 @@ pub struct ShowParams {
 
     /// Content type (markdown, html, log, url)
     #[schemars(
-        description = "Content type: 'markdown' (default), 'html', 'log', or 'url' (display a web page in an iframe)"
+        description = "Content type: 'markdown' (default), 'html', 'log', or 'url' (display a web page in an iframe). For 'html', write PLAIN SEMANTIC HTML — no <!DOCTYPE>, no <html>/<head>/<body>, and NO <style>. Vantage Point injects the board's stylesheet, so bare <h1>/<h2>/<p>/<ul>/<table>/<code>/<pre>/<blockquote>/<a>/<hr> already match the app's look. Use semantic elements (<article>, <section>, <table>) rather than <div class=...>: it keeps the saved content small and searchable. Only hand-write <style> when you genuinely need a layout the defaults cannot express (it overrides the base)."
     )]
     pub content_type: Option<String>,
 
@@ -72,7 +72,7 @@ pub struct UpdateParams {
 
     /// Content type
     #[schemars(
-        description = "Content type: 'markdown', 'html', or 'log'. Omit to keep the item's current type (only pass this when you intend to change how the content is rendered)."
+        description = "Content type: 'markdown', 'html', or 'log'. Omit to keep the item's current type (only pass this when you intend to change how the content is rendered). For 'html', write plain semantic HTML with no <style> — the board's stylesheet is injected for you."
     )]
     pub content_type: Option<String>,
 
@@ -103,7 +103,7 @@ pub struct CaptureWindowParams {
 impl VantageMcp {
     /// Show content in the browser viewer
     #[tool(
-        description = "Display content in the Vantage Point browser viewer. Supports markdown, html, log, and url formats. Use content_type='url' to embed a web page in an iframe."
+        description = "Pin content to the current lane's board. Prefer 'markdown' for prose and 'html' when you need tables, layout, or richer structure — for html write PLAIN SEMANTIC HTML with no <style> block (Vantage Point supplies the styling). Use content_type='url' to embed a web page in an iframe."
     )]
     async fn show(
         &self,

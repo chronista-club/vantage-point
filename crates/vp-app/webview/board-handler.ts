@@ -16,9 +16,13 @@
  *
  * scope: **'lane' のみ**（mako 決定 2026-07-23 — board は注視中 lane に一本化。旧 'proj' は
  * 撤去、'vp'（全体）構想も同決定で消滅）。gui channel は repo 単位で全 lane の
- * `BoardUpdated`(retained) を配信するので、 lane board は lane ごとに保持（`laneBoards`）し、
- * active lane のものを表示する（lane 切替後も board が残る）。旧 proj board の retained topic /
+ * `BoardUpdated`(retained) を配信するので、board は **`(repo, lane)` ごと**に保持（`boards`）し、
+ * active のものを表示する（切替後も board が残る）。旧 proj board の retained topic /
  * DB 行は repo 側に残りうるが、client は scope !== 'lane' を無視するので表示に混ざらない。
+ *
+ * ⚠️ **キーから repo を落とさない**（2026-08-04 根治）。全 repo の root lane が同じ
+ * `'conductor'` を名乗るので、lane 名だけで持つと 13 repo が 1 つの箱を奪い合い、
+ * 「board 行を持たない repo に切り替えると前の repo の board が出たまま」になる。
  */
 
 import { renderBoard, clearBoard, type ContentType } from './board-render'
@@ -47,6 +51,14 @@ interface BoardUpdatedMessage {
   type: 'board_updated'
   /** repo 側の board scope。client が扱うのは 'lane' のみ（他は applyBoardUpdated が無視）。 */
   scope: string
+  /**
+   * 送信元 repo（basename）。**vp-app が stamp する**（repo 側の BoardUpdated は持たない）。
+   *
+   * ⚠️ **board の同一性は `(repo, lane)` の対**であって lane 単独ではない。全 repo の
+   * root lane が同じ `'conductor'` を名乗るので、repo 次元を落とすと「board 行を持たない
+   * repo に切り替えたとき、前の repo の board がそのまま出る」が起きる（2026-08-04 に根治）。
+   */
+  repo?: string | null
   lane?: string | null
   items: BoardItem[]
   cursor?: string | null
@@ -58,23 +70,39 @@ function emptyBoard(): Board {
   return { items: [], cursor: null, unread: new Set() }
 }
 
+/**
+ * board の同一性キー。**`(repo, lane)` の対**（lane 単独ではない）。
+ *
+ * 全 repo の root lane は同じ `'conductor'` を名乗るので、repo を落とすと 13 repo が 1 つの
+ * 箱を奪い合う。`\u0000` 区切りなのは、repo 名にも lane 名にも現れない文字だから
+ * （`/` は lane address に出る）。
+ */
+export function boardKey(repo: string | null | undefined, lane: string | null | undefined): string {
+  return `${repo ?? ''}\u0000${lane ?? 'conductor'}`
+}
+
 /** module-local state。 repo truth のミラー（view）。 bundle reload で reset、 再購読で retained 復元。 */
 const canvasState: {
-  activeLane: string // lane board のキー。 'conductor' = lead。
-  laneBoards: Record<string, Board>
+  /** 表示中の board のキー（`boardKey(repo, lane)`）。 */
+  activeKey: string
+  /** 表示中の lane 名（`'conductor'` = lead）。mutate IPC の宛先に要る。 */
+  activeLane: string
+  /** `boardKey()` → board。**全 repo 分**を持ち、表示は active だけ。 */
+  boards: Record<string, Board>
 } = {
+  activeKey: boardKey(null, null),
   activeLane: 'conductor',
-  laneBoards: {},
+  boards: {},
 }
 
-/** active board（表示対象）を返す。 lane board は active lane のもの。 */
+/** active board（表示対象）を返す。 */
 function activeBoard(): Board {
-  return canvasState.laneBoards[canvasState.activeLane] ?? emptyBoard()
+  return canvasState.boards[canvasState.activeKey] ?? emptyBoard()
 }
 
-/** 指定 lane が現在の表示 view と一致するか（描画/auto-open の判定用）。 */
-function isActiveView(lane: string | null | undefined): boolean {
-  return (lane ?? 'conductor') === canvasState.activeLane
+/** 指定 board が現在の表示 view と一致するか（描画/auto-open の判定用）。 */
+function isActiveView(repo: string | null | undefined, lane: string | null | undefined): boolean {
+  return boardKey(repo, lane) === canvasState.activeKey
 }
 
 type StateListener = () => void
@@ -118,16 +146,17 @@ function boardLaneKey(): string | null {
 // active lane / board 切替
 // ============================================================================
 
-/** active lane を更新する（entry.tsx の lane 切替 bridge から呼ぶ）。 lane board のキーになる。 */
-export function setActiveLaneName(lane: string | null): void {
+/**
+ * 表示する board を切り替える（entry.tsx の lane 切替 bridge から呼ぶ）。
+ *
+ * ⚠️ **repo も渡すこと**。lane 名だけで切り替えていた旧実装は、board を持たない repo へ
+ * 移ったときに前の repo の board を出し続けていた（`boardKey` の doc 参照）。
+ */
+export function setActiveBoard(repo: string | null, lane: string | null): void {
+  canvasState.activeKey = boardKey(repo, lane)
   canvasState.activeLane = lane ?? 'conductor'
   renderCurrentMain()
   notifyStateChange()
-}
-
-/** 現在の active lane name（'conductor' は null に正規化して返す）。 */
-export function getActiveLaneName(): string | null {
-  return canvasState.activeLane === 'conductor' ? null : canvasState.activeLane
 }
 
 // ============================================================================
@@ -179,14 +208,21 @@ function renderCurrentMain(): void {
  * ⚠️ `present` field は現在**読み手ゼロ**（informational only — 両購読者とも fresh しか
  * 見ない）。互換のため残しているが、roster 判定に使ってはいけない（それは 'vp:board-view'）。
  */
-function notifyBoardPresence(lane: string | null | undefined, present: boolean, fresh: boolean): void {
+function notifyBoardPresence(
+  repo: string | null | undefined,
+  lane: string | null | undefined,
+  present: boolean,
+  fresh: boolean,
+): void {
   // sendIpc と同じ規律: DOM 不在環境（単体テスト等）では silent skip（prod の webview では
   // document / CustomEvent は必ず存在）。event 配線は「薄い action 層」= 単体テスト対象外で、
   // 判定ロジック（hasFreshArrival / present = items.length>0）は純関数として直接検証する。
   if (typeof document === 'undefined' || typeof CustomEvent === 'undefined') return
   document.dispatchEvent(
     new CustomEvent('vp:board-presence', {
-      detail: { lane: lane ?? 'conductor', present, fresh },
+      // ⚠️ **合成キーで飛ばす**（購読側 lane-panes は `boardKeyOf` = 同じ `boardKey` で引く）。
+      // flat lane 名のままだと、repo をまたいだ瞬間に購読側の lookup と噛み合わなくなる。
+      detail: { lane: boardKey(repo, lane), present, fresh },
     }),
   )
 }
@@ -298,8 +334,8 @@ function applyBoardUpdated(msg: BoardUpdatedMessage): void {
   // proj scope 撤去後も、repo の retained topic には旧 proj board の再配信が残りうる。
   // 未知 scope（将来の追加も含む）ごと無視する = 表示は lane board だけ（fail-quiet）。
   if (msg.scope !== 'lane') return
-  const laneKey = msg.lane ?? 'conductor'
-  const prev = canvasState.laneBoards[laneKey]
+  const key = boardKey(msg.repo, msg.lane)
+  const prev = canvasState.boards[key]
   const prevIds = new Set((prev?.items ?? []).map((i) => i.id))
   const items = Array.isArray(msg.items) ? msg.items : []
   const cursor = msg.cursor ?? null
@@ -314,16 +350,16 @@ function applyBoardUpdated(msg: BoardUpdatedMessage): void {
       cursor,
     ),
   }
-  canvasState.laneBoards[laneKey] = board
+  canvasState.boards[key] = board
   // board pane 化（doc 52 §10 wave 0）: presence を lane-panes に知らせる。全 lane 分 dispatch
   // し、非 active lane の board も lane 切替時に roster へ正しく載る。
   // focus 寄せ（fresh）は **cursor が新着に follow したときだけ**（doc 52 §5 = 奪わない）: mako が
   // 古い item を見ていて cursor 据え置きなら、新着は dot で灯すが focus は奪わない。裏 lane も対象外。
   const cursorFollowed = cursor !== null && freshIds.includes(cursor)
-  const fresh = isActiveView(msg.lane) && cursorFollowed
-  notifyBoardPresence(msg.lane, board.items.length > 0, fresh)
+  const fresh = isActiveView(msg.repo, msg.lane) && cursorFollowed
+  notifyBoardPresence(msg.repo, msg.lane, board.items.length > 0, fresh)
   // 表示中の board が更新されたときだけ main を再描画。
-  if (isActiveView(msg.lane)) {
+  if (isActiveView(msg.repo, msg.lane)) {
     renderCurrentMain()
   }
   notifyStateChange()
@@ -346,7 +382,8 @@ export function handleMessage(msg: AnyMessage): void {
 
 /** module-local state をリセットする（**テスト専用**）。 */
 export function _resetForTest(): void {
+  canvasState.activeKey = boardKey(null, null)
   canvasState.activeLane = 'conductor'
-  canvasState.laneBoards = {}
+  canvasState.boards = {}
   stateListeners.clear()
 }

@@ -48,6 +48,14 @@ export interface DevicesRender {
   devices: any[];
 }
 
+/** Event "shell:layout" */
+export interface ShellLayout {
+  sidebar_width: number;
+  right_sidebar_width: number;
+  sidebar_form: string;
+  right_sidebar_open: boolean;
+}
+
 /** Event "console:session_list" */
 export interface ConsoleSessionList {
   lane: string;
@@ -105,6 +113,7 @@ export type PushChannelEventTypes = {
   TermRemoveSession: TermRemoveSession;
   TermPaste: TermPaste;
   DevicesRender: DevicesRender;
+  ShellLayout: ShellLayout;
   ConsoleSessionList: ConsoleSessionList;
   ConsoleEvent: ConsoleEvent;
   ConsoleModeApplied: ConsoleModeApplied;
@@ -124,7 +133,7 @@ export const PushChannelMeta = {
   backend: "stream" as const,
   from: "server" as const,
   lifetime: "persistent" as const,
-  events: ["term:ensure_lane", "term:show_lane", "term:remove_lane", "term:remove_session", "term:paste", "devices:render", "console:session_list", "console:event", "console:mode_applied", "console:agents", "ink:snapshot", "ink:snapshot_error", "board:message", "debuglog:lines"] as const,
+  events: ["term:ensure_lane", "term:show_lane", "term:remove_lane", "term:remove_session", "term:paste", "devices:render", "shell:layout", "console:session_list", "console:event", "console:mode_applied", "console:agents", "ink:snapshot", "ink:snapshot_error", "board:message", "debuglog:lines"] as const,
   requests: {} as const,
   __types: undefined as unknown as { events: PushChannelEventTypes; requests: PushChannelRequestTypes },
 } as const;
@@ -137,6 +146,7 @@ export type PushEventEnvelope =
   | ({ t: "term:remove_session" } & TermRemoveSession)
   | ({ t: "term:paste" } & TermPaste)
   | ({ t: "devices:render" } & DevicesRender)
+  | ({ t: "shell:layout" } & ShellLayout)
   | ({ t: "console:session_list" } & ConsoleSessionList)
   | ({ t: "console:event" } & ConsoleEvent)
   | ({ t: "console:mode_applied" } & ConsoleModeApplied)

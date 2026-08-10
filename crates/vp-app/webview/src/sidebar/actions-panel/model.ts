@@ -62,6 +62,42 @@ export const PANEL_BUCKETS: readonly BucketDef[] = BUCKETS.filter(
 	(b) => b.id !== "currents",
 );
 
+/**
+ * ACTIONS の取得状態 — **「空」が 2 通りに読めるのを言い分ける**。
+ *
+ * ⚠️ 「1 件も無い」と「まだ取れていない」は画面上まったく同じ姿になる。2026-08-07 に
+ * creo の token が失効し、sidebar は黙って空を出し続けた（`fetch_actions` は未ログインで
+ * `Ok(None)` を返して cache を据え置く = 正しい設計）。UI にもログにも何も出ないので、
+ * 原因の特定に `/api/health` の curl が要った。
+ */
+export type ActionsFetchState =
+	/** 一度でも取れている = 空なら**本当に空** */
+	| "ready"
+	/** creo にはログイン済みだが、まだ最初の取得が返っていない（起動直後） */
+	| "loading"
+	/** Creo ID 未接続 / token 失効 — 取りに行っても弾かれる */
+	| "disconnected";
+
+/**
+ * [`ActionsFetchState`] の判定。**既にある 2 つの値だけ**から導く（新しい state を増やさない）。
+ *
+ * @param rev `/api/health` の `actions_rev`。**0 = 未取得**（「空だった」ではない）
+ * @param creoAuth `/api/health` の `auth_targets.creo`（`"valid"` / `"expired"` / `"none"`）
+ */
+export function actionsFetchState(
+	rev: number,
+	creoAuth: string | undefined,
+): ActionsFetchState {
+	// ⚠️ **auth を先に見る**。rev から先に判定してはいけない — daemon の `refresh()` は
+	// 未ログインを検出すると cache を**空にして rev を上げる**ので、使用中に token が切れると
+	// 「rev は高い / 中身は空」になる。rev 優先だと、そこを「本当に空」と誤答する。
+	if (creoAuth !== "valid") return "disconnected";
+	// ここから先はログイン済み。まだ版が 0 = 最初の取得が返っていない。
+	// ⚠️ daemon 再起動で rev は 1 に戻る（cache は memory 上）が、`> 0` なので壊れない。
+	// 「前回より大きいか」で見ると再起動後に永久に未取得扱いになる。
+	return rev > 0 ? "ready" : "loading";
+}
+
 /** 未知の区画 id を既定へ丸める（creo 側の手編集や版ズレへの防波堤）。 */
 export function bucketOf(raw: unknown): BucketId {
 	return BUCKETS.some((b) => b.id === raw) ? (raw as BucketId) : "todos";

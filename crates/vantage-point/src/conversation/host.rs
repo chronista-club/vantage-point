@@ -163,6 +163,14 @@ pub struct ClaudeHost {
     /// 逆方向 `can_use_tool` の pending 質問（request_id → 原 input）。回答時に原 questions を
     /// verbatim で `updatedInput` へ echo するため保持する（doc §8 の wire 契約）。await を跨がない。
     pending_permissions: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    /// 最後に観測した [`ConversationEvent::SessionInit`]。**replay で配り直すために保持する**。
+    ///
+    /// ⚠️ `SessionInit` は engine が起動 / resume した**一度きり**しか流れず、transcript replay にも
+    /// 載らない。GUI を開き直すと webview の state は作り直されるので、保持していないと
+    /// model / permission mode / slash_commands が**二度と復元されない**（2026-08-07 に
+    /// slash command palette が空のままになって発覚。header/ゲージ側は「replay で消さない」
+    /// という回避で凌いでいたが、それは state が生き残っている場合しか効かない）。
+    session_init: Arc<Mutex<Option<ConversationEvent>>>,
 }
 
 /// claude CLI が `--forward-subagent-text`（2.1.211+）を受理するか。
@@ -342,6 +350,7 @@ impl ClaudeHost {
         let in_flight = Arc::new(Mutex::new(InFlight::default()));
         // stdin を Arc 共有（host + pump が書く、doc §2.3）。
         let stdin = Arc::new(tokio::sync::Mutex::new(stdin));
+        let session_init: Arc<Mutex<Option<ConversationEvent>>> = Arc::new(Mutex::new(None));
         let pending_permissions: Arc<Mutex<HashMap<String, serde_json::Value>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
@@ -362,8 +371,11 @@ impl ClaudeHost {
         let lane = config.lane.clone();
         let pump_in_flight = in_flight.clone();
         let pump_pending = pending_permissions.clone();
+        let pump_session_init = session_init.clone();
         tokio::spawn(async move {
             let mut translator = ClaudeTranslator::new();
+            // 補完の説明（engine 起動あたり 1 回だけ filesystem を舐める）。
+            let mut docs_memo: Option<std::collections::HashMap<String, String>> = None;
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -376,9 +388,33 @@ impl ClaudeHost {
                 // tail 更新は broadcast より先。 replay handler が「配信済みだが tail に無い」
                 // 増分を取りこぼさない順序（tail ⊇ 配信済み未 commit 分 を保つ）。
                 fold_in_flight(&mut pump_in_flight.lock().expect("in_flight lock"), &out);
-                for event in out.events {
-                    if let ConversationEvent::SessionInit { session_id, .. } = &event {
+                for mut event in out.events {
+                    if let ConversationEvent::SessionInit {
+                        session_id,
+                        command_docs,
+                        ..
+                    } = &mut event
+                    {
                         record_session(&repo, &lane, session_id);
+                        // 補完候補に添える説明を filesystem から注ぐ。⚠️ **数百 file の同期 I/O**
+                        // なので tokio worker を塞がないよう隔離し、engine あたり 1 回に memo する
+                        // （SessionInit は原則 1 回だが、将来 CLI が撃ち直しても走り直さない）。
+                        if docs_memo.is_none() {
+                            let dir = std::path::PathBuf::from(&repo);
+                            docs_memo = Some(
+                                tokio::task::spawn_blocking(move || {
+                                    crate::conversation::skill_docs::skill_descriptions(&dir)
+                                })
+                                .await
+                                .unwrap_or_default(),
+                            );
+                        }
+                        if let Some(docs) = &docs_memo {
+                            command_docs.clone_from(docs);
+                        }
+                        // replay で配り直すため保持する（この event は一度きりで transcript にも
+                        // 載らない = 保持しないと GUI 再起動で永久に失われる）。
+                        *pump_session_init.lock().expect("session_init lock") = Some(event.clone());
                     }
                     // 受信者不在（Closed）は無視 — engine は購読者に依存せず動く。
                     let _ = tx.send(event);
@@ -416,6 +452,7 @@ impl ClaudeHost {
             pid,
             in_flight,
             pending_permissions,
+            session_init,
         })
     }
 
@@ -430,6 +467,14 @@ impl ClaudeHost {
     /// [`InFlight::seq`] が変わっていなければ、 tail と transcript は重複も欠落もしない。
     pub fn in_flight(&self) -> InFlight {
         self.in_flight.lock().expect("in_flight lock").clone()
+    }
+
+    /// 最後に観測した `SessionInit`（replay で配り直す用）。engine 起動直後は `None`。
+    ///
+    /// ⚠️ **replay handler はこれを ReplayStart の直後に置く**。model / permission mode /
+    /// slash_commands は engine 由来の session 状態で、transcript には無い。
+    pub fn session_init(&self) -> Option<ConversationEvent> {
+        self.session_init.lock().expect("session_init lock").clone()
     }
 
     /// 現在の commit 世代のみ（transcript 読み後の検算用）。

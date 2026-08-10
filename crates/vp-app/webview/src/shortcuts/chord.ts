@@ -16,6 +16,8 @@ import { DIRECTIVE_TABLE } from './chord-table'
 export interface DirectiveContext {
   /** registered directive (= `DIRECTIVE_TABLE[key]` 有り) の発火時に呼ばれる handler。 */
   exec(key: string): void
+  /** `Cmd + 1〜9` — sidebar の `#N` badge が指す lane へ直接飛ぶ。 */
+  selectLane?(n: number): void
 }
 
 /** `directiveKeyOf` が読む keydown event の判定材料（KeyboardEvent の部分集合、テスト可能形）。 */
@@ -58,6 +60,27 @@ export function directiveKeyOf(
 }
 
 /**
+ * `Cmd + 1〜9`（非 Mac は `Ctrl + 1〜9`）なら番号を返す（純関数）。
+ *
+ * ## ⚠️ なぜ DIRECTIVE_TABLE に入れないか
+ *
+ * あの表は **Command Palette の出典**でもあるので、数字 9 個を足すと「Lane 1」〜「Lane 9」が
+ * 並んでノイズになる。数字は「動詞」ではなく**宛先の指定**なので、語彙としても別物。
+ * 発見可能性は sidebar の `#N` badge が担う（そこに番号が見えているのが入口）。
+ *
+ * ⚠️ Alt / Shift は reject。Alt は terminal の Opt 入力と、Shift は記号（`!` `@` …）と被る。
+ */
+export function laneShortcutKeyOf(
+	e: DirectiveKeyInput,
+	isMac: boolean,
+): number | null {
+	const mod = isMac ? e.metaKey : e.ctrlKey;
+	if (!mod || e.altKey || e.shiftKey) return null;
+	if (e.key.length !== 1 || e.key < "1" || e.key > "9") return null;
+	return Number.parseInt(e.key, 10);
+}
+
+/**
  * window に keydown listener (capture phase) を install する。
  * 戻り値: uninstall 関数。
  *
@@ -68,6 +91,21 @@ export function installDirectiveHandler(ctx: DirectiveContext): () => void {
   const handler = (event: Event): void => {
     const e = event as KeyboardEvent
     const isMac = navigator.platform.toUpperCase().includes('MAC')
+
+    // ⚠️ 数字を先に見る。directive は 1 文字キーを全部候補にするので、後に置くと
+    // 将来 table に数字が入った瞬間に取り合いになる（先に確定させて曖昧さを残さない）。
+    const lane = laneShortcutKeyOf(e, isMac)
+    if (lane !== null) {
+      if (!ctx.selectLane) return // 受け手が居ない面（main view 等）は素通り
+      e.preventDefault()
+      try {
+        ctx.selectLane(lane)
+      } catch (err) {
+        console.warn('[directive] selectLane failed:', lane, err)
+      }
+      return
+    }
+
     const key = directiveKeyOf(e, isMac)
     if (key === null) return
 

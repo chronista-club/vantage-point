@@ -961,6 +961,14 @@ async fn replay_once(
         events.push(crate::conversation::ConversationEvent::ReplayStart);
         events.extend(buffered);
         events.push(crate::conversation::ConversationEvent::ReplayEnd { in_flight: false });
+        splice_session_init(
+            &mut events,
+            state
+                .lane_pool
+                .read()
+                .await
+                .chat_session_init(addr, Some(resolved.key)),
+        );
         route_conversation(state, lane, resolved.key, events).await;
         tracing::info!(
             "conversation replay-log: {count} events を配送 (lane={lane}, session={})",
@@ -980,6 +988,14 @@ async fn replay_once(
     events.push(crate::conversation::ConversationEvent::ReplayEnd {
         in_flight: tail_len > 0,
     });
+    splice_session_init(
+        &mut events,
+        state
+            .lane_pool
+            .read()
+            .await
+            .chat_session_init(addr, Some(resolved.key)),
+    );
 
     let count = events.len();
     route_conversation(state, lane, resolved.key, events).await;
@@ -991,6 +1007,26 @@ async fn replay_once(
         "status": "replayed", "lane": lane, "session": resolved.key,
         "events": count, "in_flight": tail_len
     }))
+}
+
+/// 保持していた `SessionInit` を **`ReplayStart` の直後**へ差し込む。
+///
+/// ⚠️ `SessionInit` は engine の起動 / resume で**一度きり**流れ、transcript にも載らない。
+/// GUI を開き直すと webview の state は作り直されるので、配り直さないと model / permission mode /
+/// slash_commands が二度と復元されない（2026-08-07: slash command palette が空のままで発覚）。
+///
+/// `ReplayStart` の**後**に置くのは、GUI があれを見て会話表示をクリアするから — 前に置くと
+/// 直後に消される。先頭が `ReplayStart` でない形（将来の変更）でも壊れないよう位置は実測で決める。
+fn splice_session_init(
+    events: &mut Vec<crate::conversation::ConversationEvent>,
+    init: Option<crate::conversation::ConversationEvent>,
+) {
+    let Some(init) = init else { return };
+    let at = usize::from(matches!(
+        events.first(),
+        Some(crate::conversation::ConversationEvent::ReplayStart)
+    ));
+    events.insert(at, init);
 }
 
 /// transcript 読み + in-flight tail の結合を、 commit 世代 `seq` で検算しながら行う。
@@ -2616,6 +2652,50 @@ pub(crate) async fn handle_wire_ack(
 
 #[cfg(test)]
 mod tests {
+
+    use crate::conversation::ConversationEvent;
+
+    fn init_ev() -> ConversationEvent {
+        ConversationEvent::SessionInit {
+            session_id: "sid".into(),
+            model: None,
+            permission_mode: None,
+            cwd: None,
+            tools: vec![],
+            mcp_servers: vec![],
+            slash_commands: vec!["compact".into()],
+            command_docs: Default::default(),
+        }
+    }
+
+    /// ⚠️ **`ReplayStart` の後**に置く。GUI はあれを見て会話表示をクリアするので、
+    /// 前に置くと配り直した session 状態が直後に消える。
+    #[test]
+    fn session_init_goes_after_replay_start() {
+        let mut ev = vec![
+            ConversationEvent::ReplayStart,
+            ConversationEvent::ReplayEnd { in_flight: false },
+        ];
+        super::splice_session_init(&mut ev, Some(init_ev()));
+        assert!(matches!(ev[0], ConversationEvent::ReplayStart));
+        assert!(matches!(ev[1], ConversationEvent::SessionInit { .. }));
+    }
+
+    /// engine 未起動（chat-idle / tui）は配り直すものが無い = 列を触らない。
+    #[test]
+    fn no_retained_init_leaves_events_untouched() {
+        let mut ev = vec![ConversationEvent::ReplayStart];
+        super::splice_session_init(&mut ev, None);
+        assert_eq!(ev.len(), 1);
+    }
+
+    /// 先頭が `ReplayStart` でない形（将来の変更）でも落とさず先頭に置く。
+    #[test]
+    fn without_replay_start_it_goes_first() {
+        let mut ev = vec![ConversationEvent::ReplayEnd { in_flight: false }];
+        super::splice_session_init(&mut ev, Some(init_ev()));
+        assert!(matches!(ev[0], ConversationEvent::SessionInit { .. }));
+    }
     use super::normalize_agent_addr;
 
     /// doc 48 Phase 2: editor bridge の相関 — command が pending を作り broadcast、

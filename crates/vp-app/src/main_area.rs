@@ -156,6 +156,31 @@ body{overflow:hidden;}
 /* R sidebar (`Cmd+]`): 右の帯 (edge rail) のフル幅形 = debug log viewer。既定は閉 (rail 形)。
    開閉 class (body.rsb-open) は right-sidebar.ts が書く。flex 列なので開くと #host が縮む —
    doc 55 の reflow 規律どおり user 操作起点の reflow のみ。 */
+/* shell layout の取っ手（L|main と main|R の境界、shell-layout.ts が配線）。
+   幅 5px の帯。VS Code / Finder と同じく「境界そのものを掴む」作法にした（専用グリップを
+   常時出すと、装飾が 1 つ増えるわりに学習の助けにならない）。 */
+.shell-resizer{flex:none;width:5px;height:100%;cursor:col-resize;
+  background:transparent;transition:background .12s ease;
+  /* 掴みやすさのため見た目より広く当たる。負 margin で隣の pane に食い込ませる。 */
+  margin:0 -2px;z-index:5;position:relative;}
+.shell-resizer:hover{background:color-mix(in srgb,var(--color-brand-primary),transparent 70%);}
+/* ⚠️ 掴んでいる間は **ゆっくり明滅**する（周期・沈み込みは下の :root token）。
+   目的は 2 つ — ①いま動かせる状態だと把握しやすい ②明滅そのものが「ドラッグで動く」
+   ことを暗に伝える。速い点滅は警告の語彙になるので、脈拍より遅いところまで落としてある。 */
+.shell-resizer.dragging{background:var(--color-brand-primary);
+  animation:shell-resizer-breathe var(--vp-resizer-breathe-ms)
+    var(--vp-resizer-breathe-easing) infinite;}
+@keyframes shell-resizer-breathe{
+  0%,100%{opacity:1;}
+  50%{opacity:var(--vp-resizer-breathe-dip);}}
+/* drag 中は iframe（board の html item / preview）に pointer を奪わせない。
+   奪われると drag が途中で死ぬ（透明 iframe が wheel を吸った #899 と同じ性質）。 */
+body.shell-resizing iframe{pointer-events:none;}
+body.shell-resizing{cursor:col-resize;user-select:none;}
+@media (prefers-reduced-motion:reduce){
+  .shell-resizer{transition:none;}
+  .shell-resizer.dragging{animation:none;}}
+
 #right-sidebar{display:none;flex:none;width:420px;height:100%;box-sizing:border-box;
   flex-direction:column;background:var(--color-surface-bg-subtle);
   border-left:1px solid var(--color-surface-border,#1f2233);}
@@ -181,6 +206,16 @@ body.rsb-open #right-sidebar{display:flex;}
 :root{
   --frame-transition-ms:220ms;
   --frame-transition-easing:cubic-bezier(.2,.8,.2,1);
+  /* shell の取っ手（L|main / main|R の境界）を掴んでいる間の明滅。
+     ⚠️ **直値で keyframes に埋めない** — `Ctrl+Shift+E`（creo-ui-editor-host）で
+     runtime 編集できるよう token にする（`--frame-transition-ms` と同じ流儀）。
+     ⚠️ 値は **実機で掴みながら Editor で決めたもの**（mako 2026-08-06）。机上で置いた
+     初期値（789ms / dip 0.675 = 76 BPM 相当）は実際に触ると速く・強すぎた。
+     - 周期 1694ms ≒ 35 BPM。脈拍より更に遅く、「呼吸」に近い
+     - 底の不透明度 0.775（振れ幅 0.225）。存在は判るが視線を引っ張らない */
+  --vp-resizer-breathe-ms:1694ms;
+  --vp-resizer-breathe-dip:0.775;
+  --vp-resizer-breathe-easing:ease-in-out;
   /* Pane の名札（上段）token。「上 = この pane が何であるか（居る間 変わらない素性）」を
      載せる帯の見た目を、実装 2 本（静的 .pane-header と SolidJS の #lane-header）で共有する。
      doc 29/30 の Edge Ring（上 = global / 下 = local）を pane スケールへ再適用した縦軸に基づく。
@@ -517,7 +552,11 @@ body.rsb-open #edge-rail{display:none !important;}
 /* content_type=html: sandbox iframe を board pane いっぱいに広げる。
    renderBoard が container に .board-content-html を付与し full-bleed に切り替える。 */
 .board-content.board-content-html{padding:0;height:100%;}
-.board-html-frame{width:100%;height:100%;border:0;display:block;background:#fff;}
+/* html item の iframe。⚠️ 背景を白で塗らない — 土台（board-render の boardHtmlPrelude）が
+   body に --color-surface-bg-base を敷くので、白を残すと素の HTML が読み込まれるまでの
+   一瞬だけ白く光る。全部入りで書かれた既存 item は自分で背景を塗るので影響しない。 */
+.board-html-frame{width:100%;height:100%;border:0;display:block;
+  background:var(--color-surface-bg-base);}
 /* VP-140: display:none/active gate 廃止、 always display:grid。 visibility は opacity (Frame Engine) が司る. */
 /* VP-142 cleanup: .pane.canvas rules 削除 (pane-canvas HTML element 削除に伴い)。
    board body が Smart Canvas surface を物理化したため pane-canvas は vestigial。 */
@@ -568,6 +607,10 @@ body.rsb-open #edge-rail{display:none !important;}
 <!-- WebView 統合 (step 3a): sidebar bundle (SolidJS) の mount 先。bundle は外部 script
      (sidebar.bundle.js、doc 48 Phase 1 で inline → 外部化) が mount する。 -->
 <div id="sidebar-root"></div>
+<!-- shell layout: L sidebar と main の境界。掴んで幅を変える（shell-layout.ts が配線）。
+     slim のときは shell-layout.ts が display:none にする（掴めないものに取っ手を見せない）。 -->
+<div id="shell-resizer-left" class="shell-resizer" role="separator" aria-orientation="vertical"
+     aria-label="サイドバーの幅"></div>
 <div id="host">
   <!-- 各 .pane の attribute 規約 (VP-141 で 2 attribute に分離):
        - data-kind="..."    : 静的 (HTML hardcode、 「terminal」「board」 等の kind classification)
@@ -739,6 +782,9 @@ body.rsb-open #edge-rail{display:none !important;}
 <!-- sidebar view modes (2026-08-01): R sidebar = 右の帯 (edge rail) のフル幅形。中身は
      debug log viewer (app.kdl.log / daemon.kdl.log の tail)。開閉 (`Cmd+]`) と tail 購読は
      right-sidebar.ts、行の供給は push envelope `debuglog:lines`。 -->
+<!-- shell layout: main と R sidebar の境界。R が閉じている間は shell-layout.ts が隠す。 -->
+<div id="shell-resizer-right" class="shell-resizer" role="separator" aria-orientation="vertical"
+     aria-label="デバッグログの幅"></div>
 <div id="right-sidebar" aria-label="Debug Log">
   <div class="rsb-head">
     <span class="rsb-title">Debug Log</span>

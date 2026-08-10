@@ -40,6 +40,16 @@ ignore = [
     "RUSTSEC-2026-0194", # quick-xml NsReader memory-exhaustion DoS
     "RUSTSEC-2026-0195", # quick-xml 重複属性チェックの quadratic time
 
+    # === rkyv OOB read (semver 互換の upgrade 経路なし + macOS では未コンパイル、2026-08-05) ===
+    # 0.7.46 ← rust_decimal 1.42.1 ← revision/surrealdb-core (embedded DB)。修正版は >=0.8.17 だが
+    # rust_decimal 1.x は rkyv 0.7 系に固定で、`cargo update -p rust_decimal` は 0 packages
+    # (= semver 互換の上げ先が無い)。さらに **host target の依存木に rkyv は現れない**
+    # (`cargo tree -i rkyv --target aarch64-apple-darwin` が空 = feature 未有効でビルドに入らない)。
+    # cargo audit は build graph ではなく Cargo.lock を走査するため当たっているだけ。
+    # 顕在化は advisory DB 更新のタイミング (v0.61.0 の run は緑、その 17h 後に赤)。
+    # rust_decimal が rkyv 0.8 に上がったら cargo update して本エントリを削除する。
+    "RUSTSEC-2026-0235", # rkyv Rc/Arc archive の out-of-bounds read
+
     # === unmaintained な transitive 依存 (VP から直接制御不可) ===
     "RUSTSEC-2023-0089", # atomic-polyfill (transitive、portable-atomic へ未移行)
     "RUSTSEC-2024-0320", # yaml-rust ← syntect ← tui-markdown

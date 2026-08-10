@@ -7,7 +7,9 @@
  */
 import { describe, expect, it } from "vitest";
 import type { LaneInfo } from "../generated/LaneInfo";
-import { isLaneAlive, laneConnector, laneCwdLabel } from "./lane";
+import {
+	laneShortcutNumber,
+	shortcutNumberOf, isLaneAlive, laneConnector, laneCwdLabel } from "./lane";
 
 /** 最小の LaneInfo。 テストが着目する field だけ上書きする。 */
 function lane(over: Partial<LaneInfo> = {}): LaneInfo {
@@ -161,5 +163,38 @@ describe("laneCwdLabel — 絶対 path は repo が持ち、 lane は差分だ�
 
 	it("cwd が空なら空 (防御)", () => {
 		expect(laneCwdLabel("", proj)).toBe("");
+	});
+});
+
+/**
+ * ⚠️ **番号の出どころは 1 本**（sidebar の `#N` badge と `⌘ hold l` の宛先）。
+ *
+ * 2 箇所で数えると「見えている番号と飛び先が違う」になる。特に並びは user が drag で
+ * 決めた表示順（`resolveRepoOrder`）で、`sidebar.processes` の生順ではない。
+ */
+describe("laneShortcutNumber / shortcutNumberOf（root lane の Index）", () => {
+	it("1 始まり。9 個目まで", () => {
+		expect(laneShortcutNumber(0)).toBe(1);
+		expect(laneShortcutNumber(8)).toBe(9);
+	});
+
+	it("⚠️ 10 個目以降は番号を持たない（1 打で選べない）", () => {
+		expect(laneShortcutNumber(9)).toBeNull();
+		expect(laneShortcutNumber(100)).toBeNull();
+	});
+
+	it("不正な位置は null（-1 = 並びに居ない repo）", () => {
+		expect(laneShortcutNumber(-1)).toBeNull();
+		expect(laneShortcutNumber(1.5)).toBeNull();
+	});
+
+	it("表示順の位置で引く", () => {
+		const order = ["/a", "/b", "/c"];
+		expect(shortcutNumberOf(order, "/a")).toBe(1);
+		expect(shortcutNumberOf(order, "/c")).toBe(3);
+	});
+
+	it("⚠️ 並びに無い repo は null（生順で数えると番号がずれる側）", () => {
+		expect(shortcutNumberOf(["/a", "/b"], "/zzz")).toBeNull();
 	});
 });

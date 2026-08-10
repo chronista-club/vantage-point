@@ -39,6 +39,8 @@ import type {
 // doc 47 §6: 共有 bus の相関 id（採番 + 照合）も console.ts が SSOT。
 import { focusedOf, noteFocus, syncHeaderSessionId } from './console'
 import { sessionChipPrefix } from './LaneHeader'
+import { isImeKeystroke } from './ime'
+import { applyCompletion, filterSlashCommands, moveSelection, slashQuery } from './slash'
 
 // ---------------------------------------------------------------------------
 // 会話モデル — flat item stream（ConversationEvent を UI 単位に畳む）
@@ -157,6 +159,21 @@ type ChatState = {
   contextWindow: number | null
   /** doc 35 PR3/PR4: engine の permission mode（session_init.permission_mode 由来）。per-lane。 */
   permissionMode?: string
+  /**
+   * この session で打てる slash command（`session_init.slash_commands` 由来）。
+   *
+   * ⚠️ **per-session で持つ**。skill / plugin / MCP の読み込みで session ごとに増減するので、
+   * lane 横断で 1 つ持つと嘘になる（doc 32 が「非同期ロードでブレる noise」と実測している）。
+   * ⚠️ `/` は付いていない素の名前で来る（`chronista-style:codeflow` のような形も混じる）。
+   */
+  slashCommands: string[]
+  /**
+   * slash command の説明（`session_init.command_docs` 由来）。
+   *
+   * ⚠️ **候補の源ではない**。一覧の正は `slashCommands` で、こちらは引ければ添えるだけ。
+   * 実測で 160 個中 86 個しか埋まらない = **説明の無い候補が普通に混ざる**。
+   */
+  commandDocs: Record<string, string>
   /** doc 35 §5.1: streaming 中に送られた type-ahead。turn 閉で flush（表示順=処理順の不変条件）。 */
   pending: string | null
   /** status 同期: 最後に畳んだイベント種別（foldInto で全イベント更新）。 */
@@ -404,6 +421,10 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       // review #2: permission mode の真値を per-lane に反映（engine は respawn 時 bypassPermissions
       // で立ち上がるので、select が実態とズレないよう session_init の値で上書きする）。
       s.permissionMode = ev.permission_mode
+      // この session で打てる slash command。⚠️ CLI 側で「対話端末なしで動くもの」に
+      // **絞り込み済み**なので、VP 側で除外リストを持たない（公式 agent-sdk/slash-commands）。
+      if (ev.slash_commands) s.slashCommands = ev.slash_commands
+      if (ev.command_docs) s.commandDocs = ev.command_docs
       break
     case 'message_chunk': {
       s.streaming = true
@@ -604,6 +625,8 @@ export function emptyChatState(): ChatState {
     contextTokens: null,
     contextWindow: null,
     permissionMode: undefined,
+    slashCommands: [],
+    commandDocs: {},
     pending: null,
     lastEvent: null,
     lastEventAt: null,
@@ -1370,22 +1393,6 @@ export function resolveAnswer(
 }
 
 /**
- * IME の変換確定 Enter か（送信の Enter と判別する純関数）。
- *
- * エンジンごとに確定 Enter の痕跡が違うため二段ガードにする（片方だけでは必ず漏れる）:
- * - Blink / Gecko: 確定 keydown は compositionend より**前**に来て `isComposing: true`
- * - WebKit（wry = WKWebView は**こちら**）: compositionend の**後**に来て `isComposing` は
- *   既に false。ただし `keyCode === 229`（"IME processing" の遺産値）が立つ
- *
- * `keyCode` は deprecated だが、WebKit の確定 Enter を見分ける現実的な唯一の信号なので
- * 意図的に使う。`!e.isComposing` 単独ガード（#963 の初版）は WKWebView で素通りし、
- * 日本語変換の確定がそのまま送信になる退行を実際に起こした。
- */
-export function isImeConfirmEnter(e: { isComposing?: boolean; keyCode?: number }): boolean {
-  return e.isComposing === true || e.keyCode === 229
-}
-
-/**
  * PromptCard（doc 35 §4）— HITL 質問（AskUserQuestion 横取り）の選択肢 UI。
  *
  * 各 question を見出し + 選択肢ボタンで描く。single-select は radio（クリックで置換）、
@@ -1507,9 +1514,9 @@ function PromptCard(props: {
                     setOther((prev) => ({ ...prev, [q.question]: e.currentTarget.value }))
                   }
                   // Enter で確定（全質問が埋まっている時のみ。IME 変換確定の Enter は
-                  // isImeConfirmEnter で判別 — WKWebView は keyCode 229 で来る）。
+                  // isImeKeystroke で判別 — WKWebView は keyCode 229 で来る）。
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !isImeConfirmEnter(e) && canConfirm()) {
+                    if (e.key === 'Enter' && !isImeKeystroke(e) && canConfirm()) {
                       e.preventDefault()
                       confirm()
                     }
@@ -1839,6 +1846,28 @@ function SessionChatView(props: { lane: string; session: number }) {
 
   const [draft, setDraft] = createSignal('')
   let inputRef: HTMLTextAreaElement | undefined // dequeue 後に composer へフォーカスを移すため
+
+  // ---- slash command 補完（判断は slash.ts、ここは配線だけ）-------------------
+  /** 候補一覧。空 = palette を出さない（行頭が `/` でない / 引数を打ち始めた / 一致なし）。 */
+  const slashHits = () => {
+    const q = slashQuery(draft())
+    if (q === null) return []
+    return filterSlashCommands(state()?.slashCommands ?? [], q)
+  }
+  const [slashAt, setSlashAt] = createSignal(0)
+  const slashOpen = () => slashHits().length > 0
+  /** 候補を入力欄へ入れる。⚠️ 送信はしない — 引数を続けて打てるようにする。 */
+  const acceptSlash = (name: string) => {
+    setDraft(applyCompletion(name))
+    setSlashAt(0)
+    queueMicrotask(() => {
+      if (!inputRef) return
+      inputRef.focus()
+      const end = inputRef.value.length
+      inputRef.setSelectionRange(end, end)
+      autosize(inputRef)
+    })
+  }
   // history 最下部の常時 status バー。全イベント同期 + 無反応(hang)検出のため 1s 毎に now を更新。
   const [nowMs, setNowMs] = createSignal(Date.now())
   onMount(() => {
@@ -2249,6 +2278,40 @@ function SessionChatView(props: { lane: string; session: number }) {
         {/* composer — 入力とその操作を 1 つの器にまとめる。上 = 打つ場所、下 = 操作。
             model / permission も「送る前に決める操作」なのでここ（読み取りの status とは分ける）。 */}
         <div class="conversation-composer">
+          {/* slash command の候補。⚠️ **入力欄の上**に出す（下は model / permission の操作列で、
+              そこに被せると押そうとした物が入れ替わる）。source は session_init が広告した
+              一覧そのもの — CLI 側で「この経路で打てるもの」に絞り込み済み。 */}
+          <Show when={slashOpen()}>
+            <div class="conversation-slash">
+              <For each={slashHits().slice(0, 12)}>
+                {(name, i) => (
+                  <button
+                    type="button"
+                    class="conversation-slash-item"
+                    classList={{ at: i() === Math.min(slashAt(), slashHits().length - 1) }}
+                    // ⚠️ mousedown で拾う。click だと先に textarea の blur が走り、
+                    // 選ぶ前に palette が閉じて空振りする。
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      acceptSlash(name)
+                    }}
+                  >
+                    <span class="conversation-slash-name">/{name}</span>
+                    {/* ⚠️ 説明は**引けた候補にだけ**付く（160 中 86）。無い側が欠けて
+                        見えないよう、名前と同じ行に流し込み、幅は内容任せにする。 */}
+                    <Show when={state()?.commandDocs?.[name]}>
+                      <span class="conversation-slash-desc">
+                        {state()?.commandDocs?.[name]}
+                      </span>
+                    </Show>
+                  </button>
+                )}
+              </For>
+              <Show when={slashHits().length > 12}>
+                <span class="conversation-slash-more">ほか {slashHits().length - 12} 件</span>
+              </Show>
+            </div>
+          </Show>
           {/* 既定は **1 行**。打った分だけ scrollHeight に合わせて伸び、max-height で頭打ち
               （CSS だけでは textarea は内容に追随しないので、伸縮はここで行う）。 */}
           <textarea
@@ -2262,11 +2325,38 @@ function SessionChatView(props: { lane: string; session: number }) {
               autosize(e.currentTarget)
             }}
             onKeyDown={(e) => {
+              // ⚠️ **IME の判定を最初に**置く。palette も送信も、変換中の打鍵に反応しては
+              // いけない（変換中の ↑↓ は候補選択、Enter は確定）。
+              if (isImeKeystroke(e)) return
+
+              // slash palette が開いている間は、移動 / 確定 / 中断を先に食う。
+              // ⚠️ 開いていない時は**素通り**させる — 下の送信規約を変えない。
+              if (slashOpen()) {
+                const hits = slashHits()
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  e.preventDefault()
+                  setSlashAt(moveSelection(slashAt(), e.key === 'ArrowDown' ? 1 : -1, hits.length))
+                  return
+                }
+                // Tab / Enter で確定。⚠️ Shift+Enter は改行のままにする（下の規約と揃える）。
+                if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+                  e.preventDefault()
+                  const pick = hits[Math.min(slashAt(), hits.length - 1)]
+                  if (pick) acceptSlash(pick)
+                  return
+                }
+                if (e.key === 'Escape') {
+                  // 候補を畳むだけ（入力は消さない）。`/` を消して閉じるより手数が少ない。
+                  e.preventDefault()
+                  setSlashAt(0)
+                  setDraft(`${draft()} `)
+                  return
+                }
+              }
+
               // Enter = 送信（Claude Desktop と同じ既定。mako 裁定 2026-07-30 — ⌘Enter 送信は
               // 「送信するつもりで空行が入る」誤操作が多かった）。
               if (e.key !== 'Enter') return
-              // 日本語変換の確定 Enter は送信しない（isImeConfirmEnter の二段ガード）。
-              if (isImeConfirmEnter(e)) return
               // Shift+Enter = 改行（textarea の既定挙動に任せる）。
               if (e.shiftKey) return
               // 素の Enter / ⌘Enter / Ctrl+Enter = 送信（⌘Enter は旧来の筋肉記憶を残す）。
@@ -2542,6 +2632,29 @@ export const CHATVIEW_CSS = `
 .conversation-plan-item.completed { color: var(--color-text-tertiary,#616b80); } .conversation-plan-item.completed .conversation-plan-dot { background: var(--color-success,#6fe2a8); }
 .conversation-plan-item.completed .conversation-plan-text { text-decoration: line-through; }
 /* composer: 入力（上）と操作（下）を 1 つの器に。枠は器が持ち、textarea は枠なしで中に敷く。 */
+/* slash command の候補列。⚠️ 会話本文より前に出る唯一の overlay なので、
+   composer の器の中に収めて「入力の一部」に見せる（別の面に見せない）。 */
+/* ⚠️ 説明が付いた時点で横並びは破綻する（1 件が長くなり折り返しが荒れる）ので**縦積み**。
+   説明の無い候補が混ざっても、名前だけの行として自然に見える。 */
+/* ⚠️ **flex:none が要る**。composer は flex-direction:column + overflow:hidden で、
+   overflow-y を持つ子は flex の既定（min-height:auto が効かない）で 0 高さまで潰れ、
+   そのまま親の hidden に飲まれて**何も出なくなる**（2026-08-09 に実際に踏んだ）。
+   横並びだった頃は flex-wrap が高さを内容に従わせていたので露見しなかった。
+   ⚠️ この CSS は template literal の中なので、コメントに backtick を書くと文字列が閉じる。 */
+.conversation-slash { flex:none; display:flex; flex-direction:column; gap:1px;
+  padding:6px 6px 2px; max-height:180px; overflow-y:auto; }
+.conversation-slash-item { display:flex; align-items:baseline; gap:8px; width:100%;
+  padding:3px 8px; border:none; border-radius:6px; cursor:pointer; text-align:left;
+  background:transparent; color:var(--lg-mute,#5C7A85); font:inherit; font-size:12px;
+  transition:background .1s ease,color .1s ease; }
+.conversation-slash-name { font-family:var(--font-mono,ui-monospace,monospace); flex:none; }
+/* 説明は一段沈める。長い時は 1 行で切る（候補行の高さを揃えて走査しやすくする）。 */
+.conversation-slash-desc { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; font-size:11px; color:var(--lg-mute-2,#38525b); }
+.conversation-slash-item:hover { background:#ffffff12; color:var(--lg-hot,#EAFBFF); }
+/* 選択中。keyboard で動かしている位置を hover と別に示す（両方同時に見えてよい）。 */
+.conversation-slash-item.at { background:var(--lg-cyan-dim,#1C6C7C); color:var(--lg-hot,#EAFBFF); }
+.conversation-slash-more { align-self:center; font-size:11px; color:var(--lg-mute-2,#38525b); }
 .conversation-composer { display:flex; flex-direction:column; margin:8px 14px 10px; border-radius:10px;
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#161a20);
   overflow:hidden; }

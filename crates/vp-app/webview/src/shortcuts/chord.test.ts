@@ -7,7 +7,7 @@
  * Mac のローカル検証では不可視の経路なので、ここで机上固定する。
  */
 import { describe, expect, it } from "vitest";
-import { directiveKeyOf, type DirectiveKeyInput } from "./chord";
+import { laneShortcutKeyOf,directiveKeyOf, type DirectiveKeyInput } from "./chord";
 
 function ev(partial: Partial<DirectiveKeyInput> & { key: string }): DirectiveKeyInput {
 	return {
@@ -59,3 +59,43 @@ describe("directiveKeyOf", () => {
 		expect(directiveKeyOf(ev({ key: "f", ctrlKey: true }), true)).toBeNull();
 	});
 });
+
+/**
+ * `Cmd + 1〜9` — sidebar の `#N` badge が指す lane へ直接飛ぶ chord。
+ *
+ * ⚠️ **DIRECTIVE_TABLE には入れない**（あの表は Command Palette の出典で、数字 9 個は
+ * ノイズになる）。数字は「動詞」ではなく宛先の指定なので語彙としても別物。
+ */
+describe('laneShortcutKeyOf（Cmd + 数字）', () => {
+  const ev = (o: Partial<DirectiveKeyInput>): DirectiveKeyInput => ({
+    metaKey: false,
+    ctrlKey: false,
+    altKey: false,
+    shiftKey: false,
+    key: '1',
+    ...o,
+  })
+
+  it('Mac は Cmd、非 Mac は Ctrl', () => {
+    expect(laneShortcutKeyOf(ev({ metaKey: true, key: '3' }), true)).toBe(3)
+    expect(laneShortcutKeyOf(ev({ ctrlKey: true, key: '3' }), false)).toBe(3)
+  })
+
+  it('修飾なしの数字は拾わない（普通の入力）', () => {
+    expect(laneShortcutKeyOf(ev({ key: '1' }), true)).toBeNull()
+  })
+
+  it('⚠️ Alt / Shift は reject（terminal の Opt 入力 / 記号と被る）', () => {
+    expect(laneShortcutKeyOf(ev({ metaKey: true, altKey: true }), true)).toBeNull()
+    expect(laneShortcutKeyOf(ev({ metaKey: true, shiftKey: true }), true)).toBeNull()
+  })
+
+  it('0 と 範囲外は対象外（1〜9 だけ）', () => {
+    expect(laneShortcutKeyOf(ev({ metaKey: true, key: '0' }), true)).toBeNull()
+    expect(laneShortcutKeyOf(ev({ metaKey: true, key: 'a' }), true)).toBeNull()
+  })
+
+  it('⚠️ directive の文字キーは奪わない（Cmd+f 等はそのまま）', () => {
+    expect(laneShortcutKeyOf(ev({ metaKey: true, key: 'f' }), true)).toBeNull()
+  })
+})

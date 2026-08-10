@@ -32,6 +32,13 @@ pub enum ConversationEvent {
         mcp_servers: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         slash_commands: Vec<String>,
+        /// slash command 名 → 短い説明（`skill_docs` が SKILL.md から拾う）。
+        ///
+        /// ⚠️ **候補の源ではない**。一覧の正は `slash_commands`（CLI が絞り込み済み）で、
+        /// こちらは引ければ添えるだけの装飾。実測（2026-08-08）で 160 個中 86 個しか
+        /// 引けない = **説明の無い候補が普通に混ざる**前提で UI を組むこと。
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        command_docs: std::collections::HashMap<String, String>,
     },
 
     /// transcript replay の開始マーカー（attach 時に 1 回、以降の event 列が過去会話）。

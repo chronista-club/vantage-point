@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+	actionsFetchState,
 	BUCKETS,
 	PANEL_BUCKETS,
 	type ActKeyInput,
@@ -356,5 +357,43 @@ describe("actKeyIntent", () => {
 	it("非 Mac では Ctrl が修飾（Cmd hold の折り畳み）", () => {
 		expect(actKeyIntent(ev({ key: "Enter", ctrlKey: true }), false)).toBe("newline");
 		expect(actKeyIntent(ev({ key: "Enter", metaKey: true }), false)).toBe("commit");
+	});
+});
+
+/**
+ * ⚠️ **「1 件も無い」と「まだ取れていない」は画面上まったく同じ姿になる。**
+ *
+ * 2026-08-07 に creo の token が失効し、sidebar は黙って空を出し続けた。`fetch_actions` は
+ * 未ログインで `Ok(None)` を返して cache を据え置く（正しい設計）ので、UI にもログにも
+ * 何も出ず、原因の特定に `/api/health` の curl が要った。ここはその言い分けを固定する。
+ */
+describe("actionsFetchState（空 と 未取得 の言い分け）", () => {
+	it("一度でも取れていれば ready（以後の空は本当に空）", () => {
+		expect(actionsFetchState(1, "valid")).toBe("ready");
+		expect(actionsFetchState(42, "valid")).toBe("ready");
+	});
+
+	it("⚠️ daemon 再起動で rev は 1 に戻るが、それでも ready のまま", () => {
+		// cache は memory 上なので、再起動後の版は 7 → 1 と**下がる**。`>` で前回と
+		// 比べる判定にすると、ここで永久に未取得扱いになる（webview の取り込みが
+		// `!==` で比較しているのと同じ制約）。
+		expect(actionsFetchState(1, "valid")).toBe("ready");
+	});
+
+	it("rev 0 かつ creo が valid = 起動直後の取得待ち", () => {
+		expect(actionsFetchState(0, "valid")).toBe("loading");
+	});
+
+	it("⚠️ rev 0 で token が無い / 失効 = 未接続（取りに行っても弾かれる）", () => {
+		expect(actionsFetchState(0, "expired")).toBe("disconnected");
+		expect(actionsFetchState(0, "none")).toBe("disconnected");
+		expect(actionsFetchState(0, undefined)).toBe("disconnected");
+	});
+
+	it("⚠️ 使用中に失効した場合 — rev は高いが中身は空、これも未接続", () => {
+		// daemon の `refresh()` は未ログインを検出すると cache を**空にして rev を上げる**。
+		// rev から先に判定すると、この状態を「本当に空」と誤答して「まだ何もない」と嘘をつく。
+		expect(actionsFetchState(7, "expired")).toBe("disconnected");
+		expect(actionsFetchState(7, "none")).toBe("disconnected");
 	});
 });
