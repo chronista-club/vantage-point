@@ -80,8 +80,8 @@ describe("isLaneAlive", () => {
 	});
 });
 
-/** performer の最小 LaneInfo (laneConnector 用)。 */
-function performer(over: Partial<LaneInfo> = {}): LaneInfo {
+/** sub の最小 LaneInfo (laneConnector 用)。 */
+function sub(over: Partial<LaneInfo> = {}): LaneInfo {
 	return lane({
 		address: { repo: "vp", name: "feat" },
 		...over,
@@ -96,16 +96,16 @@ describe("laneConnector (FSM 投影)", () => {
 	it("flow_state が一次 source: プロンプト待ちの TUI claude (pid あり + idle) は消える", () => {
 		// 偽 WORKING の根治対象: dep symlink lane 等、 wire 活動が無いのに pid が生きている lane。
 		expect(
-			laneConnector(performer({ pid: 1234, flow_state: "idle" }), false),
+			laneConnector(sub({ pid: 1234, flow_state: "idle" }), false),
 		).toBe("conn-dead");
 		expect(
-			laneConnector(performer({ pid: 1234, flow_state: "completed" }), false),
+			laneConnector(sub({ pid: 1234, flow_state: "completed" }), false),
 		).toBe("conn-dead");
 	});
 
 	it("working / hitl_pending / stuck = flow が動いている (cyan)", () => {
 		for (const fs of ["working", "hitl_pending", "stuck"]) {
-			expect(laneConnector(performer({ flow_state: fs }), false)).toBe(
+			expect(laneConnector(sub({ flow_state: fs }), false)).toBe(
 				"conn-auto",
 			);
 		}
@@ -115,24 +115,24 @@ describe("laneConnector (FSM 投影)", () => {
 		// pid や他の signal に関係なく magenta diamond。
 		expect(
 			laneConnector(
-				performer({ flow_state: "awaiting_user", pid: null }),
+				sub({ flow_state: "awaiting_user", pid: null }),
 				false,
 			),
 		).toBe("conn-hitl");
 	});
 
 	it("OSC awaiting_input も needs-you (console HITL の別軸 signal)", () => {
-		expect(laneConnector(performer({ flow_state: "working" }), true)).toBe(
+		expect(laneConnector(sub({ flow_state: "working" }), true)).toBe(
 			"conn-hitl",
 		);
 	});
 
 	it("flow_state 欠落 (旧 daemon) は pid heuristic に fallback", () => {
 		expect(
-			laneConnector(performer({ flow_state: null, pid: 1234 }), false),
+			laneConnector(sub({ flow_state: null, pid: 1234 }), false),
 		).toBe("conn-auto");
 		expect(
-			laneConnector(performer({ flow_state: null, pid: null }), false),
+			laneConnector(sub({ flow_state: null, pid: null }), false),
 		).toBe("conn-dead");
 	});
 });
@@ -144,7 +144,7 @@ describe("laneCwdLabel — 絶対 path は repo が持ち、 lane は差分だ�
 		expect(laneCwdLabel(proj, proj)).toBe("");
 	});
 
-	it("performer は repo root 起点の相対 path", () => {
+	it("sub は repo root 起点の相対 path", () => {
 		expect(laneCwdLabel(`${proj}/.vp/lanes/act2`, proj)).toBe(".vp/lanes/act2");
 	});
 

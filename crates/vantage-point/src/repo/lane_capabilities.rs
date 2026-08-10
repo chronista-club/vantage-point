@@ -1,6 +1,6 @@
 //! Lane 階層 Agent container (LSCM、 doc 12 §3 / §9 / doc 13 §3 参照)
 //!
-//! Lane (Conductor/Performer) あたり 1 instance、 repo per Repo で host。 LSCM (Layer-Agent
+//! Lane (Main/Sub) あたり 1 instance、 repo per Repo で host。 LSCM (Layer-Agent
 //! Composition Model) の **Lane Layer 実体** = "Lane が必要な 機能を抱える" の物理表現。
 //!
 //! ## host する Agent (target、 doc 12 §9 catalog)
@@ -50,7 +50,7 @@ use crate::device_io::DeviceIoComponent;
 // 要確認（audit 2026-07-18、先行実装の可能性）: PR-δ/PR-γ Agent-host skeleton。現状 field は未 read。
 #[allow(dead_code)]
 pub struct LaneCapabilities {
-    /// Lane の identity (Conductor / Performer、 repo 名 + name)
+    /// Lane の identity (Main / Sub、 repo 名 + name)
     pub address: LaneAddress,
 
     /// mise task 名 (例: `"claude"` / `"shell"` / `"tmux"`、 PR-pre2 で `"hd"` → `"claude"` rename)。
@@ -91,7 +91,7 @@ impl LaneCapabilities {
 /// Lane scope Agent pool — repo per Repo で 1 instance、 各 Lane の `LaneCapabilities` を集約。
 ///
 /// PR-β-1 (VP-119) で空 HashMap 受け皿として新設、 PR-β-2 (VP-120) で `LanePool::with_root`
-/// と `lane_spawn_actor` (Performer spawn 経路) から populate される lifecycle と sync。
+/// と `lane_spawn_actor` (Sub spawn 経路) から populate される lifecycle と sync。
 /// 既存 `LanePool` (`lanes_state.rs`) とは並立、 PR-δ-4 cleanup PR で整合性 review 予定。
 #[derive(Default)]
 pub struct LaneCapabilitiesPool {
@@ -112,7 +112,7 @@ impl LaneCapabilitiesPool {
 
     /// PR-β-2 (VP-120): Lane spawn 時に LaneCapabilities entry を populate。
     ///
-    /// `LanePool::with_root` / `lane_spawn_actor` (Performer spawn) から呼ばれて、 Lane あたり
+    /// `LanePool::with_root` / `lane_spawn_actor` (Sub spawn) から呼ばれて、 Lane あたり
     /// 独立 BoardState を持つ entry を HashMap に挿入する。 同じ address で重複 insert
     /// した場合は overwrite (= idempotent、 restart / respawn 経路で安全)。
     pub fn populate_lane(&mut self, address: LaneAddress, agent: impl Into<String>) {
@@ -189,44 +189,44 @@ mod tests {
     }
 
     #[test]
-    fn lane_capabilities_with_performer_address() {
-        // Performer Lane でも独立 BoardComponent で構築
-        let addr = LaneAddress::performer("vp", "feat-test");
+    fn lane_capabilities_with_sub_address() {
+        // Sub Lane でも独立 BoardComponent で構築
+        let addr = LaneAddress::sub("vp", "feat-test");
         let lc = LaneCapabilities::new(addr.clone(), "shell");
 
         assert_eq!(lc.address, addr);
         assert_eq!(lc.agent, "shell");
         assert!(
             lc.registry.get_typed::<BoardComponent>("board").is_some(),
-            "Performer Lane も独立 BoardComponent を持つ"
+            "Sub Lane も独立 BoardComponent を持つ"
         );
     }
 
     #[tokio::test]
     async fn lane_capabilities_board_instances_are_independent() {
         // PR-β-2 (VP-120) cardinality 1 → N invariant、 PR-δ-2 (VP-136) registry 経由でも維持
-        let conductor = LaneCapabilities::new(LaneAddress::root("vp"), "claude");
-        let performer = LaneCapabilities::new(LaneAddress::performer("vp", "sub"), "claude");
+        let main = LaneCapabilities::new(LaneAddress::root("vp"), "claude");
+        let sub = LaneCapabilities::new(LaneAddress::sub("vp", "sub"), "claude");
 
-        let conductor_board = conductor
+        let main_board = main
             .registry
             .get_typed::<BoardComponent>("board")
-            .expect("Conductor board");
-        let performer_board = performer
+            .expect("Main board");
+        let sub_board = sub
             .registry
             .get_typed::<BoardComponent>("board")
-            .expect("Performer board");
+            .expect("Sub board");
 
-        // Conductor に content set しても Performer に伝播しないこと
-        conductor_board.state().write().await.content = Some("root-canvas".to_string());
+        // Main に content set しても Sub に伝播しないこと
+        main_board.state().write().await.content = Some("root-canvas".to_string());
 
         assert_eq!(
-            conductor_board.state().read().await.content.as_deref(),
+            main_board.state().read().await.content.as_deref(),
             Some("root-canvas")
         );
         assert!(
-            performer_board.state().read().await.content.is_none(),
-            "Performer board は Conductor board と独立 (cross-Lane state share なし、 doc 12 A6)"
+            sub_board.state().read().await.content.is_none(),
+            "Sub board は Main board と独立 (cross-Lane state share なし、 doc 12 A6)"
         );
     }
 
@@ -258,7 +258,7 @@ mod tests {
         pool.populate_lane(addr.clone(), "claude");
 
         assert_eq!(pool.count(), 1);
-        let lc = pool.entries.get(&addr).expect("Conductor entry 不在");
+        let lc = pool.entries.get(&addr).expect("Main entry 不在");
         assert_eq!(lc.agent, "claude");
         assert!(
             lc.registry.get_typed::<BoardComponent>("board").is_some(),
@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn lane_capabilities_mock_b_independent_per_lane() {
         let mut lane_a = LaneCapabilities::new(LaneAddress::root("vp"), "claude");
-        let mut lane_b = LaneCapabilities::new(LaneAddress::performer("vp", "sub"), "claude");
+        let mut lane_b = LaneCapabilities::new(LaneAddress::sub("vp", "sub"), "claude");
 
         lane_a.registry.insert(Arc::new(MockComponentB::new()));
         lane_b.registry.insert(Arc::new(MockComponentB::new()));

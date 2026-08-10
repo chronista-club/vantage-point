@@ -49,7 +49,7 @@ const REPLAY_CLEAR_PREFIX: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
 /// 1 Lane の 1 session の PtySlot output broadcast を購読し、 `LaneTerminalOutput` topic に
 /// 流す pump を spawn。
 ///
-/// - `lane`: LaneAddress の Display 形 (`"vp/root"` / `"vp/performer/foo"`)。 vp-app が
+/// - `lane`: LaneAddress の Display 形 (`"vp/root"` / `"vp/sub/foo"`)。 vp-app が
 ///   `/ws/terminal?lane=` に渡していた値と一致させ、 topic key 化は `TopicRouter` が担う。
 /// - `session`: この pump が担う session の VP 採番 key（doc 50 §4.6 A6）。topic は lane 単位で
 ///   共有し、 session は `LaneTerminalOutput.session` に stamp する（gui の `route_conversation` と

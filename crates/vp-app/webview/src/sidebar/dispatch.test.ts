@@ -20,7 +20,7 @@ function recordingHandlers(): { calls: string[]; handlers: SidebarPushHandlers }
     handlers: {
       state: (s) => calls.push(`state:${(s as { version?: number }).version}`),
       error: (m) => calls.push(`error:${m}`),
-      performerCreateResult: (p, n, e) => calls.push(`performer:${p}/${n}:${e}`),
+      subCreateResult: (p, n, e) => calls.push(`sub:${p}/${n}:${e}`),
       agentsResult: (p, s, e) => calls.push(`agents:${p}:${s.length}:${e}`),
       filesListResult: (a, entries, t) => calls.push(`files:${a}:${entries.length}:${t}`),
       wireResult: (p) => calls.push(`wire:${(p as { total?: number }).total}`),
@@ -89,11 +89,11 @@ describe('sidebar dispatch', () => {
     const { calls, handlers } = recordingHandlers()
     mod.installSidebarDispatch(handlers)
 
-    dispatch({ t: 'performer:create_result', repo_path: '/p', name: 'w1' })
-    dispatch({ t: 'performer:create_result', repo_path: '/p', name: 'w2', error: 'ng' })
+    dispatch({ t: 'sub:create_result', repo_path: '/p', name: 'w1' })
+    dispatch({ t: 'sub:create_result', repo_path: '/p', name: 'w2', error: 'ng' })
     dispatch({ t: 'agents:result', repo_path: '/p', agents: [{}, {}] })
 
-    expect(calls).toEqual(['performer:/p/w1:null', 'performer:/p/w2:ng', 'agents:/p:2:null'])
+    expect(calls).toEqual(['sub:/p/w1:null', 'sub:/p/w2:ng', 'agents:/p:2:null'])
   })
 
   it('オブジェクトを分解した面が元の形で受け手に届く', async () => {

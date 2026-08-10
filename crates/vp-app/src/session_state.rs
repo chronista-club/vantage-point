@@ -60,7 +60,7 @@ pub struct RepoUiState {
     /// sidebar accordion 開閉状態
     #[serde(default)]
     pub expanded: bool,
-    // 将来 field 候補: per-repo の Performer form expanded、 lane custom order 等
+    // 将来 field 候補: per-repo の Sub form expanded、 lane custom order 等
 }
 
 /// 保存 geometry が valid 判定の閾値 (LogicalPixel)。 これ未満は無視して default に
@@ -207,7 +207,7 @@ pub struct SessionState {
     /// repo path → UI state (sidebar accordion 等)
     #[serde(default)]
     pub repos: HashMap<String, RepoUiState>,
-    /// 直前 active Lane の address (Display 形 `"<repo>/root"` / `"<repo>/performer/<name>"`)。
+    /// 直前 active Lane の address (Display 形 `"<repo>/root"` / `"<repo>/sub/<name>"`)。
     /// 起動後の最初の LanesLoaded で実在 lane と照合して復元される (mismatch なら無視)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_lane_address: Option<String>,

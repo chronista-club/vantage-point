@@ -180,7 +180,7 @@ fn config_repos_to_entries(config: &Config) -> Vec<crate::repos_file::RepoEntry>
         .collect()
 }
 
-/// Conductor Capability
+/// Main Capability
 #[derive(Clone)]
 pub struct RepoManagerCapability {
     /// 現在の状態
@@ -844,32 +844,32 @@ impl RepoManagerCapability {
         }
 
         // doc 24 §5.3 / B-destroy: ground を provision/reclaim する唯一の主体は daemon。
-        // namespace (repo) を倒したら performer の worktree (ground) も daemon が reclaim する。
+        // namespace (repo) を倒したら sub の worktree (ground) も daemon が reclaim する。
         // A では descriptor だけ畳んで worktree が disk に orphan で残る中間状態だった — その穴を閉じる。
-        // conductor は cwd = repo root (= user の repo そのもの) なので **絶対に消さない**、 performer のみ。
-        let performer_names: Vec<String> = removed_lanes
+        // main は cwd = repo root (= user の repo そのもの) なので **絶対に消さない**、 sub のみ。
+        let sub_names: Vec<String> = removed_lanes
             .iter()
             .filter(|l| !l.address.is_root())
             .map(|l| l.address.name.clone())
             .collect();
-        if !performer_names.is_empty() {
+        if !sub_names.is_empty() {
             // repo_root は key (= normalize_path_key の出力) から再構築する。 add_repo 時と
             // 同じ normalize を経るので通常は実 repo root と一致する。 万一ズレ / explicit cwd
-            // (`<repo>/.vp/lanes/<name>` 外) の時は find_performer_dir が None → 下の warn で
+            // (`<repo>/.vp/lanes/<name>` 外) の時は find_sub_dir が None → 下の warn で
             // skip され orphan が残るだけ (= 誤削除は起きない、 best-effort、 team-b review #1)。
             let repo_root = PathBuf::from(&key);
             // git worktree remove は blocking subprocess なので spawn_blocking で executor を塞がない。
             let _ = tokio::task::spawn_blocking(move || {
-                for name in performer_names {
+                for name in sub_names {
                     // best-effort (§4.6 ゆるやか統治): 既に手動 rm 済 / explicit cwd 外などは warn で流す。
-                    match crate::lane::commands::remove_performer_in(&repo_root, &name) {
+                    match crate::lane::commands::remove_sub_in(&repo_root, &name) {
                         Ok(()) => tracing::info!(
-                            "performer worktree reclaim: name={} repo={}",
+                            "sub worktree reclaim: name={} repo={}",
                             name,
                             repo_root.display()
                         ),
                         Err(e) => tracing::warn!(
-                            "performer worktree reclaim 失敗 (best-effort、 skip): name={} err={}",
+                            "sub worktree reclaim 失敗 (best-effort、 skip): name={} err={}",
                             name,
                             e
                         ),
@@ -885,7 +885,7 @@ impl RepoManagerCapability {
         Ok(())
     }
 
-    /// Daemon 入口（Unison `daemon-control.lanes/create`）から performer lane を作る。
+    /// Daemon 入口（Unison `daemon-control.lanes/create`）から sub lane を作る。
     ///
     /// ## doc 44 §9.4: 実装は持たない（統合後）
     ///
@@ -893,8 +893,8 @@ impl RepoManagerCapability {
     /// 永続だけを行い、PtySlot spawn は lane watcher が `lane_create` を loopback 発火して
     /// repo 側に任せる）。doc 24 §5.3 の「ground を provision する唯一の主体は daemon」を
     /// 根拠にした分割だったが、doc 44 P1 の fold-in で **daemon と repo が同一プロセスに
-    /// なった時点でその根拠は消えていた**（repo 側 `create_performer_orchestrated` も
-    /// 同じ `new_performer_in` で ground を作る）。
+    /// なった時点でその根拠は消えていた**（repo 側 `create_sub_orchestrated` も
+    /// 同じ `new_sub_in` で ground を作る）。
     ///
     /// 残っていたのは「同じ動詞に実装が 2 本」という状態そのもので、実際に
     /// **経路ごとに振る舞いが違った**（`base` / `model` 指定が効かない、agent を descriptor
@@ -903,7 +903,7 @@ impl RepoManagerCapability {
     ///
     /// ## 名前の gate をここにも置く理由
     ///
-    /// core 側にも同じ `validate_performer_name` があるが、**拒否は永続や runtime 解決の
+    /// core 側にも同じ `validate_sub_name` があるが、**拒否は永続や runtime 解決の
     /// 手前で完結させる**（doc 44 §9.2）。加えて repo 未起動時に「予約名です」ではなく
     /// 「repo 未起動」が返ると理由がすり替わる。呼ぶのは同じ関数 1 本なので実装は増えない。
     ///
@@ -917,7 +917,7 @@ impl RepoManagerCapability {
         agent: &str,
     ) -> CapabilityResult<crate::repo::lanes_state::LaneInfo> {
         let name = name.trim();
-        crate::lane::config::validate_performer_name(name).map_err(CapabilityError::Other)?;
+        crate::lane::config::validate_sub_name(name).map_err(CapabilityError::Other)?;
 
         let key = normalize_path_key(&PathBuf::from(repo_path));
         let runtimes = self.repo_runtimes.as_ref().ok_or_else(|| {
@@ -925,7 +925,7 @@ impl RepoManagerCapability {
                 "repo runtimes 未設定 — daemon mode 以外では lane を作れない".to_string(),
             )
         })?;
-        // 停止中 repo に lane は作れない。GUI 側も「+ Add Performer」を稼働中限定にして
+        // 停止中 repo に lane は作れない。GUI 側も「+ Add Sub」を稼働中限定にして
         // いる (停止中は「▶ Start repo」だけ) ので、これは UI の契約と一致する。
         // 未起動を黙って provision だけして返すと、PtySlot の無い descriptor が残り
         // 「作ったのに動かない lane」になる (旧実装が watcher の到達に賭けていた形)。
@@ -936,7 +936,7 @@ impl RepoManagerCapability {
         })?;
 
         let req = crate::repo::routes::lanes::build_create_lane_req(name, branch, agent);
-        crate::repo::routes::lanes::create_performer_orchestrated(&state, req)
+        crate::repo::routes::lanes::create_sub_orchestrated(&state, req)
             .await
             .map_err(CapabilityError::Other)
     }
@@ -1461,9 +1461,9 @@ impl RepoManagerCapability {
         }
     }
 
-    /// VP-129: lane root を watch して performer dir 削除を repo DELETE に bridge する FSEvents watcher。
+    /// VP-129: lane root を watch して sub dir 削除を repo DELETE に bridge する FSEvents watcher。
     ///
-    /// **「folder = Lane 空間」 axiom の物理実装**。 user が Finder / `rm -rf` で performer dir を
+    /// **「folder = Lane 空間」 axiom の物理実装**。 user が Finder / `rm -rf` で sub dir を
     /// 削除した時、 OS の file system event (Mac → FSEvents、 Linux → inotify) → notify crate
     /// → 本 watcher が path → repo 解決 → repo `DELETE /api/lanes` 自動発火、 sidebar /
     /// tmux / PtySlot が cascade で同期 cleanup される。
@@ -1646,8 +1646,7 @@ impl RepoManagerCapability {
         event: &notify::Event,
     ) {
         for path in &event.paths {
-            let Some((repo_name, repo_path, performer_name)) = resolve_lane_event(path, path_map)
-            else {
+            let Some((repo_name, repo_path, sub_name)) = resolve_lane_event(path, path_map) else {
                 continue;
             };
 
@@ -1661,9 +1660,9 @@ impl RepoManagerCapability {
             };
             let Some(port) = port else {
                 tracing::debug!(
-                    "lane watcher: repo not running for repo={} (skip) performer={}",
+                    "lane watcher: repo not running for repo={} (skip) sub={}",
                     repo_name,
-                    performer_name
+                    sub_name
                 );
                 continue;
             };
@@ -1672,12 +1671,12 @@ impl RepoManagerCapability {
             // `lane_delete` に移管 (Daemon 内 loopback、 surface 群と uniform な transport)。 cleanup=false
             // で dir は既に gone。 self-loop case (= repo 経由削除で dir 消滅 → watcher が Remove 検知 →
             // 本 lane_delete 発火) は server が "Lane not found" を Err で返すので no-op 扱い。
-            let address = format!("{}/performer/{}", repo_name, performer_name);
+            let address = format!("{}/sub/{}", repo_name, sub_name);
             let payload = serde_json::json!({ "address": address, "cleanup": false });
             tracing::info!(
-                "lane watcher: dir removed → lane_delete 発火 (repo={}, performer={}, repo_port={})",
+                "lane watcher: dir removed → lane_delete 発火 (repo={}, sub={}, repo_port={})",
                 repo_name,
-                performer_name,
+                sub_name,
                 port
             );
             match crate::commands::process_client::daemon_repo_request(
@@ -1709,8 +1708,8 @@ impl RepoManagerCapability {
         }
     }
 
-    /// F.8 B Convergent: lane Create event を 1 path 処理。 path → repo + performer_name 解決 →
-    /// repo POST /api/lanes (kind=performer, name=<performer>, cwd=<existing_dir>) で auto-spawn を依頼する。
+    /// F.8 B Convergent: lane Create event を 1 path 処理。 path → repo + sub_name 解決 →
+    /// repo POST /api/lanes (kind=sub, name=<sub>, cwd=<existing_dir>) で auto-spawn を依頼する。
     ///
     /// `run_lane_watcher` の inner、 sibling は `handle_lane_remove_event` (Remove 時の repo DELETE)。
     /// 設計対称性: Remove → DELETE / Create → POST で「dir 状態と LanePool 状態を一致させる」
@@ -1719,7 +1718,7 @@ impl RepoManagerCapability {
     /// 競合 case:
     /// - sidebar `+` で作成中に Create event fired → repo 側 LanePool 重複チェックで CONFLICT
     ///   が返り、 watcher 側はそれを debug log で受ける (= silent OK)
-    /// - repo 起動時 bootstrap で既に同 performer が SpawnLane Cmd 投入済 → 上記同様 CONFLICT で no-op
+    /// - repo 起動時 bootstrap で既に同 sub が SpawnLane Cmd 投入済 → 上記同様 CONFLICT で no-op
     async fn handle_lane_create_event(
         daemon: &Arc<RwLock<Self>>,
         path_map: &std::collections::HashMap<std::path::PathBuf, (String, String)>,
@@ -1730,8 +1729,7 @@ impl RepoManagerCapability {
             if !path.is_dir() {
                 continue;
             }
-            let Some((repo_name, repo_path, performer_name)) = resolve_lane_event(path, path_map)
-            else {
+            let Some((repo_name, repo_path, sub_name)) = resolve_lane_event(path, path_map) else {
                 continue;
             };
 
@@ -1744,16 +1742,16 @@ impl RepoManagerCapability {
             };
             let Some(port) = port else {
                 tracing::debug!(
-                    "lane watcher: repo not running for repo={} (skip create) performer={}",
+                    "lane watcher: repo not running for repo={} (skip create) sub={}",
                     repo_name,
-                    performer_name
+                    sub_name
                 );
                 continue;
             };
 
             // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を daemon repo-proxy ask
             // `lane_create` に移管 (Daemon 内 loopback、 surface 群と uniform な transport)。 payload は
-            // CreateLaneReq (routes/lanes.rs) 互換。 cwd 明示で既存 dir を再利用 (new_performer_in skip)。
+            // CreateLaneReq (routes/lanes.rs) 互換。 cwd 明示で既存 dir を再利用 (new_sub_in skip)。
             // doc 44 P2: `kind` は撤去（lane に種別が無くなり、指定する余地が消えた）。
             //
             // agent は payload に積まない = 受け手の default に委ねる。
@@ -1765,13 +1763,13 @@ impl RepoManagerCapability {
             // 手動 `vp lane new` 等で dir だけ生えた lane で、それは元々 descriptor を持たない
             // （= 旧実装でも None に落ちていた経路）。
             let payload = serde_json::json!({
-                "name": performer_name,
+                "name": sub_name,
                 "cwd": path.to_string_lossy(),
             });
             tracing::info!(
-                "lane watcher: dir created → lane_create 発火 (repo={}, performer={}, repo_port={})",
+                "lane watcher: dir created → lane_create 発火 (repo={}, sub={}, repo_port={})",
                 repo_name,
-                performer_name,
+                sub_name,
                 port
             );
             match crate::commands::process_client::daemon_repo_request(
@@ -1784,25 +1782,25 @@ impl RepoManagerCapability {
             {
                 Ok(_) => {
                     tracing::info!(
-                        "lane watcher: lane_create 成功 (repo={}, performer={})",
+                        "lane watcher: lane_create 成功 (repo={}, sub={})",
                         repo_name,
-                        performer_name
+                        sub_name
                     );
                 }
                 // 競合: sidebar `+` or bootstrap で既に Lane 作成済。 server は "already exists" を
                 // Err で返すので silent OK (= 旧 HTTP CONFLICT 経路と等価)。
                 Err(e) if e.to_string().contains("already exists") => {
                     tracing::debug!(
-                        "lane watcher: lane_create 競合 (= 既に Lane あり、 silent OK) repo={} performer={}",
+                        "lane watcher: lane_create 競合 (= 既に Lane あり、 silent OK) repo={} sub={}",
                         repo_name,
-                        performer_name
+                        sub_name
                     );
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "lane watcher: lane_create 失敗 (repo={}, performer={}): {}",
+                        "lane watcher: lane_create 失敗 (repo={}, sub={}): {}",
                         repo_name,
-                        performer_name,
+                        sub_name,
                         e
                     );
                 }
@@ -1812,11 +1810,11 @@ impl RepoManagerCapability {
 }
 
 /// lane Remove event 1 path を解決する純粋関数。 `path_map` (= `<.vp/lanes path>` → `(repo_name,
-/// repo_path)`) から parent match で repo を逆引きし、 path の file_name を performer 名として
+/// repo_path)`) から parent match で repo を逆引きし、 path の file_name を sub 名として
 /// 返す。
 ///
-/// 戻り値: `Some((repo_name, repo_path, performer_name))` if 完全 match。 そうでなければ `None`。
-/// - dotfile / 空 performer 名は skip (= `.git` 内ファイル等の伝播除外)
+/// 戻り値: `Some((repo_name, repo_path, sub_name))` if 完全 match。 そうでなければ `None`。
+/// - dotfile / 空 sub 名は skip (= `.git` 内ファイル等の伝播除外)
 /// - path_map に登録されてない repo 配下の path は skip
 /// - I/O なしの pure fn (= test しやすい、 mock 不要)
 fn resolve_lane_event(
@@ -1825,11 +1823,11 @@ fn resolve_lane_event(
 ) -> Option<(String, String, String)> {
     let parent = path.parent()?;
     let (repo_name, repo_path) = path_map.get(parent)?;
-    let performer_name = path.file_name()?.to_str()?.to_string();
-    if performer_name.is_empty() || performer_name.starts_with('.') {
+    let sub_name = path.file_name()?.to_str()?.to_string();
+    if sub_name.is_empty() || sub_name.starts_with('.') {
         return None;
     }
-    Some((repo_name.clone(), repo_path.clone(), performer_name))
+    Some((repo_name.clone(), repo_path.clone(), sub_name))
 }
 
 /// lane watcher hot-reload の純粋 diff 計算。 `current` (= 現在 arm 済 path 集合) と
@@ -2006,7 +2004,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_lane_event_skips_dotfile_performer_name() {
+    fn resolve_lane_event_skips_dotfile_sub_name() {
         // `.git` や `.DS_Store` の Remove event (lane dir 内部からの伝播) を skip。
         // NonRecursive watch で arrive する可能性は低いが防御で。
         let map = make_path_map(&[("/repo/.vp/lanes", "repo", "/repo")]);
@@ -2028,14 +2026,14 @@ mod tests {
             ("/repo-a/.vp/lanes", "repo-a", "/repo-a"),
             ("/repo-b/.vp/lanes", "repo-b", "/repo-b"),
         ]);
-        let path_b = std::path::Path::new("/repo-b/.vp/lanes/performer-x");
+        let path_b = std::path::Path::new("/repo-b/.vp/lanes/sub-x");
         let resolved = resolve_lane_event(path_b, &map);
         assert_eq!(
             resolved,
             Some((
                 "repo-b".to_string(),
                 "/repo-b".to_string(),
-                "performer-x".to_string()
+                "sub-x".to_string()
             ))
         );
     }
@@ -2398,10 +2396,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_remove_repo_reclaims_performer_ground_not_conductor() {
-        // doc 24 §5.3 / B-destroy: repo remove で performer worktree(ground) は daemon が
-        // reclaim、 conductor(=repo root = user の repo) は絶対に消さない、 を検証する。
-        // git なしの plain dir で実行 (remove_performer_workspace は .git 無しなら fs 削除に落ちる)。
+    async fn test_remove_repo_reclaims_sub_ground_not_main() {
+        // doc 24 §5.3 / B-destroy: repo remove で sub worktree(ground) は daemon が
+        // reclaim、 main(=repo root = user の repo) は絶対に消さない、 を検証する。
+        // git なしの plain dir で実行 (remove_sub_workspace は .git 無しなら fs 削除に落ちる)。
         use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
 
         let cap = make_test_cap();
@@ -2414,12 +2412,12 @@ mod tests {
         let repo_path = tmp.to_string_lossy().to_string();
         cap.add_repo("bdestroy", &repo_path).await.unwrap();
 
-        // performer の ground を物理作成 (<repo>/.vp/lanes/foo、 plain dir = fs 削除経路)。
-        let performer_dir = tmp.join(".vp").join("lanes").join("foo");
-        std::fs::create_dir_all(&performer_dir).unwrap();
-        assert!(performer_dir.exists());
+        // sub の ground を物理作成 (<repo>/.vp/lanes/foo、 plain dir = fs 削除経路)。
+        let sub_dir = tmp.join(".vp").join("lanes").join("foo");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        assert!(sub_dir.exists());
 
-        // lane_registry に conductor + performer descriptor を投入 (daemon-canonical truth)。
+        // lane_registry に main + sub descriptor を投入 (daemon-canonical truth)。
         let key = normalize_path_key(&PathBuf::from(&repo_path));
         let mk = |addr: LaneAddress, cwd: &str| LaneInfo {
             id: Default::default(),
@@ -2429,30 +2427,30 @@ mod tests {
             created_at: "2026-06-20T00:00:00Z".to_string(),
             pid: None,
             cwd: cwd.to_string(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
             agent_name: None,
             flow_state: None,
         };
-        let conductor = mk(LaneAddress::root("bdestroy"), &repo_path);
-        let performer = mk(
-            LaneAddress::performer("bdestroy", "foo"),
-            &performer_dir.to_string_lossy(),
+        let main = mk(LaneAddress::root("bdestroy"), &repo_path);
+        let sub = mk(
+            LaneAddress::sub("bdestroy", "foo"),
+            &sub_dir.to_string_lossy(),
         );
         cap.lane_registry_ref()
             .write()
             .await
-            .insert(key.clone(), vec![conductor, performer]);
+            .insert(key.clone(), vec![main, sub]);
 
         // 実行: repo を倒す。
         cap.remove_repo(&repo_path).await.unwrap();
 
-        // 検証: performer ground は reclaim、 conductor=repo root は無傷。
+        // 検証: sub ground は reclaim、 main=repo root は無傷。
         assert!(
-            !performer_dir.exists(),
-            "performer ground (worktree) は daemon が reclaim する"
+            !sub_dir.exists(),
+            "sub ground (worktree) は daemon が reclaim する"
         );
         assert!(
             tmp.exists(),
@@ -2468,10 +2466,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sync_does_not_revive_repo_that_had_performer() {
-        // lead #2: 実バグ条件に近い robustness 回帰。 performer を抱えた repo を削除した後、
+    async fn test_sync_does_not_revive_repo_that_had_sub() {
+        // lead #2: 実バグ条件に近い robustness 回帰。 sub を抱えた repo を削除した後、
         // sync (= `vp sp start` が起動時に撃つ) を回しても復活しないことを焼き付ける。 旧挙動では
-        // sync_repos(Some(dir)) が起点 dir を無条件再登録し、 生きた performer で repo が
+        // sync_repos(Some(dir)) が起点 dir を無条件再登録し、 生きた sub で repo が
         // 死にきれず後で repo start → 復活する経路があった (mem_1CcuRsC9pF3fiZptwmdgTS)。
         use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
 
@@ -2482,18 +2480,18 @@ mod tests {
         let repo_path = tmp.to_string_lossy().to_string();
         cap.add_repo("hasperf", &repo_path).await.unwrap();
 
-        // performer descriptor を lane_registry に投入 (repo に performer 子がぶら下がる
+        // sub descriptor を lane_registry に投入 (repo に sub 子がぶら下がる
         // 状態を模す。 plain dir なので worktree reclaim は fs 削除に落ちる = git 非依存)。
         let key = normalize_path_key(&PathBuf::from(&repo_path));
-        let performer = LaneInfo {
+        let sub = LaneInfo {
             id: Default::default(),
-            address: LaneAddress::performer("hasperf", "foo"),
+            address: LaneAddress::sub("hasperf", "foo"),
             state: LaneState::Running,
             agent: "claude".to_string(),
             created_at: "2026-07-11T00:00:00Z".to_string(),
             pid: None,
             cwd: tmp.join(".vp/lanes/foo").to_string_lossy().to_string(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -2503,9 +2501,9 @@ mod tests {
         cap.lane_registry_ref()
             .write()
             .await
-            .insert(key.clone(), vec![performer]);
+            .insert(key.clone(), vec![sub]);
 
-        // 削除 → repo も performer descriptor も畳まれる。
+        // 削除 → repo も sub descriptor も畳まれる。
         cap.remove_repo(&repo_path).await.unwrap();
         assert!(cap.list_repos().await.is_empty(), "削除で repo は消える");
 
@@ -2514,7 +2512,7 @@ mod tests {
         assert!(outcome.removed.is_empty());
         assert!(
             cap.list_repos().await.is_empty(),
-            "performer を抱えていた repo も sync で復活しない (resurrection 回帰)"
+            "sub を抱えていた repo も sync で復活しない (resurrection 回帰)"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -2524,7 +2522,7 @@ mod tests {
     /// 「repo 未起動」で止まり、worktree も db 行も作らない。
     ///
     /// 旧実装（本関数がここで worktree を provision して descriptor を所有していた）の
-    /// end-to-end 検証は、実装ごと `create_performer_orchestrated` に移った。
+    /// end-to-end 検証は、実装ごと `create_sub_orchestrated` に移った。
     /// ここで押さえるのは統合後に残った境界の振る舞い —
     /// **「動いていない repo に半分だけの lane を作らない」**こと。
     /// 旧実装はここで provision だけして PtySlot を watcher の到達に賭けており、repo が
@@ -2568,7 +2566,7 @@ mod tests {
 
     /// doc 44 §9.4 の統合の正しさ = **残った 1 本が、消えた側と同じ答えを出す**。
     ///
-    /// 名前の gate は両入口とも `validate_performer_name` 1 本（doc 44 §9.3）だが、
+    /// 名前の gate は両入口とも `validate_sub_name` 1 本（doc 44 §9.3）だが、
     /// 「同じ関数を呼んでいる」は片方の呼び出しが消えても静かに真でなくなる。
     /// Daemon 入口と core に同じ名前を投げて **同一の error 文字列**が返ることで固定する。
     #[tokio::test]
@@ -2587,7 +2585,7 @@ mod tests {
                 .await
                 .expect_err("Daemon 入口は拒否する")
                 .to_string();
-            let core_err = crate::repo::routes::lanes::create_performer_orchestrated(
+            let core_err = crate::repo::routes::lanes::create_sub_orchestrated(
                 &state,
                 crate::repo::routes::lanes::build_create_lane_req(bad, "test/x", "claude"),
             )
@@ -2604,7 +2602,7 @@ mod tests {
 
     /// 回帰固定（doc 44 §9）: **拒否される名前の create は db の lane 行に一切触れない**。
     ///
-    /// 旧実装は入口で空文字しか見ておらず、予約名は奥の `new_performer_in` が clone 段階で
+    /// 旧実装は入口で空文字しか見ておらず、予約名は奥の `new_sub_in` が clone 段階で
     /// 初めて弾いていた。だが intent-first bracket は provision より **前に** descriptor を
     /// 永続するので、拒否されるべき入力が `<repo>/root` 行を上書き（①）し、
     /// rollback がそれを削除（③）する — **本物の開発起点 descriptor が消える**。
@@ -2631,15 +2629,10 @@ mod tests {
         let key = normalize_path_key(&PathBuf::from(&repo_path));
 
         // 本物の開発起点 descriptor を db に置く（= 破壊対象）。
-        let conductor =
-            crate::repo::lanes_state::LanePool::with_root("reserved", repo_path.clone());
-        let conductor_info = conductor
-            .list()
-            .into_iter()
-            .next()
-            .expect("root descriptor");
-        db.upsert_lane(&key, &conductor_info).await.unwrap();
-        let addr_str = conductor_info.address.to_string();
+        let main = crate::repo::lanes_state::LanePool::with_root("reserved", repo_path.clone());
+        let main_info = main.list().into_iter().next().expect("root descriptor");
+        db.upsert_lane(&key, &main_info).await.unwrap();
+        let addr_str = main_info.address.to_string();
         assert_eq!(addr_str, "reserved/root");
 
         // dup check の masking は効かない状況（lane_registry は空）。
@@ -2689,13 +2682,13 @@ mod tests {
         let key = "/test/proj";
         let mk = |name: &str, cwd: &std::path::Path| LaneInfo {
             id: Default::default(),
-            address: LaneAddress::performer("proj", name),
+            address: LaneAddress::sub("proj", name),
             state: LaneState::Spawning,
             agent: "claude".to_string(),
             created_at: "2026-06-20T00:00:00Z".to_string(),
             pid: None,
             cwd: cwd.to_string_lossy().into_owned(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,

@@ -25,7 +25,7 @@ pub struct ActorRef {
 
 impl ActorRef {
     /// `claude@vantage-point/root` 形式の v3.1 federated address 文字列を返す。
-    /// VP-146 で旧 sub-suffix 形式 (`conversation.conductor@vantage-point`) から移行。
+    /// VP-146 で旧 sub-suffix 形式 (`conversation.main@vantage-point`) から移行。
     pub fn canonical(&self) -> String {
         format!("{}@{}/{}", self.agent, self.repo, self.lane)
     }

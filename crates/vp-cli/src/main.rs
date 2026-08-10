@@ -23,7 +23,7 @@ use vantage_point::mcp;
 
 use commands::file::FileCommands;
 
-// Phase 2.x-e: 旧 performer Lane crate を vp-cli の lib に統合。
+// Phase 2.x-e: 旧 Sub Lane crate を vp-cli の lib に統合。
 // `vp` binary が `vp lane` サブコマンド経由で `vp_cli::lane` lib を使う。
 #[cfg(feature = "midi")]
 use commands::midi::MidiCommands;
@@ -81,7 +81,7 @@ enum Commands {
 
     /// daemon 管理 — 全 Process を統括する常駐プロセス
     ///
-    /// 旧 `vp conductor` alias は撤去 (conductor は lane 役割名に確定、語の衝突回避)。
+    /// 旧 `vp main` alias は撤去 (main は lane 役割名に確定、語の衝突回避)。
     Daemon {
         /// 待ち受けポート番号（サブコマンド省略時に使用）
         #[arg(short, long, default_value_t = cli::daemon_port())]
@@ -102,10 +102,10 @@ enum Commands {
     /// build/test/lane lifecycle 等を agent の行動間に配り blind を解消する。
     Events(commands::events::EventsArgs),
 
-    /// dev-flow primitives — Conductor × Performer × Memory orchestration の core 操作
+    /// dev-flow primitives — Main × Sub × Memory orchestration の core 操作
     ///
-    /// `vp flow handoff <name> --task-spec <file or ->` で performer 作成 + wire_send + nudge を atomic に。
-    /// `vp flow progress` で並列 performer の git status + 未読 wire を 1 view で表示。
+    /// `vp flow handoff <name> --task-spec <file or ->` で sub 作成 + wire_send + nudge を atomic に。
+    /// `vp flow progress` で並列 sub の git status + 未読 wire を 1 view で表示。
     /// MCP tool (`mcp__vantage-point__flow_handoff` / `flow_progress`) と同 semantics。
     #[command(subcommand)]
     Flow(commands::flow::FlowCommands),
@@ -119,7 +119,7 @@ enum Commands {
     #[command(subcommand)]
     Db(commands::db::DbCommands),
 
-    /// performer Lane 管理（旧 vp ws、Phase 1 で統合）
+    /// Sub Lane 管理（旧 vp ws、Phase 1 で統合）
     #[command(subcommand, alias = "ws", alias = "workspace")]
     Lane(LaneCommands),
 
@@ -181,23 +181,23 @@ enum Commands {
     },
 }
 
-/// performer Lane コマンド（lane library への薄い wrapper）
+/// Sub Lane コマンド（lane library への薄い wrapper）
 #[derive(Subcommand)]
 enum LaneCommands {
-    /// 新しい performer 環境を作成（worktree add + symlink + setup）
+    /// 新しい Sub Lane を作成（worktree add + symlink + setup）
     New {
-        /// Performer 名
+        /// Sub 名
         name: String,
         /// 作成するブランチ名
         branch: String,
-        /// 既存 performer を上書き
+        /// 既存 sub を上書き
         #[arg(long, short)]
         force: bool,
-        /// 隔離方式: worktree (default、 conductor の .git 共有) / clone (独立 .git、 escape hatch)
+        /// 隔離方式: worktree (default、 main の .git 共有) / clone (独立 .git、 escape hatch)
         #[arg(long, value_enum, default_value = "worktree")]
         isolation: lane::commands::Isolation,
         /// worktree の分岐元 ref（未 push の local branch も可）。省略時は
-        /// performer-files.kdl の base-ref → origin/HEAD → main
+        /// sub-files.kdl の base-ref → origin/HEAD → main
         #[arg(long)]
         base: Option<String>,
         /// lane の claude model alias（例: 'opus' / 'sonnet' / 'haiku'）。次回 spawn 時に
@@ -205,20 +205,20 @@ enum LaneCommands {
         #[arg(long)]
         model: Option<String>,
     },
-    /// 現在の dirty state を新しい performer 環境に fork
+    /// 現在の dirty state を新しい Sub Lane に fork
     Fork {
-        /// Performer 名
+        /// Sub 名
         name: String,
         /// 作成するブランチ名
         branch: String,
-        /// 既存 performer を上書き
+        /// 既存 sub を上書き
         #[arg(long, short)]
         force: bool,
         /// 隔離方式: worktree (default) / clone (独立 .git、 escape hatch)
         #[arg(long, value_enum, default_value = "worktree")]
         isolation: lane::commands::Isolation,
         /// worktree の分岐元 ref（未 push の local branch も可）。省略時は
-        /// performer-files.kdl の base-ref → origin/HEAD → main
+        /// sub-files.kdl の base-ref → origin/HEAD → main
         #[arg(long)]
         base: Option<String>,
         /// lane の claude model alias（例: 'opus' / 'sonnet' / 'haiku'）。次回 spawn 時に
@@ -226,36 +226,36 @@ enum LaneCommands {
         #[arg(long)]
         model: Option<String>,
     },
-    /// performer 環境一覧
+    /// Sub Lane 一覧
     ///
     /// default は `<name>\t<branch>\t<path>` の tab-separated 簡易出力 (= fs scan、 repo 不要)。
     /// `--detail` で repo `/api/lanes` を query して MCP `list_lanes` 同等の JSON (= state /
-    /// agent / pid / cwd / performer_status / mailbox_addresses 付き) を出力する (= repo 稼働中のみ)。
+    /// agent / pid / cwd / sub_status / mailbox_addresses 付き) を出力する (= repo 稼働中のみ)。
     #[command(alias = "list")]
     Ls {
         /// repo `/api/lanes` から MCP list_lanes 同等の詳細 JSON を取得して出力
         #[arg(long)]
         detail: bool,
     },
-    /// performer 環境のパスを表示
+    /// Sub Lane のパスを表示
     Path {
-        /// Performer 名
+        /// Sub 名
         name: String,
     },
-    /// performer 環境を削除
+    /// Sub Lane を削除
     Rm {
-        /// 削除する Performer 名（--all 指定時は不要）
+        /// 削除する Sub 名（--all 指定時は不要）
         name: Option<String>,
-        /// 全 performer を削除
+        /// 全 Sub Lane を削除
         #[arg(long)]
         all: bool,
         /// 確認なしで強制削除
         #[arg(long, short)]
         force: bool,
     },
-    /// 全 performer の状態表示
+    /// 全 Sub Lane の状態表示
     Status,
-    /// branch が default branch (origin/HEAD) に merge 済の performer を削除（squash merge も検出）
+    /// branch が default branch (origin/HEAD) に merge 済の Sub Lane を削除（squash merge も検出）
     ///
     /// 判定は Repo Host（`host::farewell`）が 3 値（削除可能 / 保持 / 要判断）で出す。
     /// 要判断が続いている lane には「何回連続・初回いつ」が付く (doc 44 §7.5 の帳簿)。
@@ -275,11 +275,11 @@ enum LaneCommands {
     },
     /// 現 repo の vp-app の active Lane を切り替える (= mcp__switch_lane の CLI pair、Unison-native)
     ///
-    /// `name` は lane token: 'conductor' (lead) or performer 名 (例: 'feat-api')。現 repo の
+    /// `name` は lane token: 'main' (lead) or sub 名 (例: 'feat-api')。現 repo の
     /// local repo に `SwitchLane` を投げ、canvas channel 経由で vp-app がその lane を active 化する。
     /// 該当 repo の repo が稼働している必要あり。unknown lane は vp-app 受信側で no-op。
     Switch {
-        /// active 化する lane token ('conductor' or performer 名)
+        /// active 化する lane token ('main' or sub 名)
         name: String,
     },
     /// この lane の最後の CC session id を表示 (R3-b、 conversation spawn の --resume 用)
@@ -291,7 +291,7 @@ enum LaneCommands {
         /// repo 名 (省略時 VP_REPO env)
         #[arg(long)]
         repo: Option<String>,
-        /// lane label: conductor / performer 名 (省略時 VP_LANE env)
+        /// lane label: main / sub 名 (省略時 VP_LANE env)
         #[arg(long)]
         lane: Option<String>,
     },
@@ -310,7 +310,7 @@ enum LaneCommands {
     /// doc 46 P5: slot は lane に 1 枚ではなく session ごと。`--session` で同居する別の
     /// console を読む (省略時は root = lane の代表)。枚数は `vp lane slots` で判る。
     Capture {
-        /// lane address ("<repo>/root" / "<repo>/performer/<name>")
+        /// lane address ("<repo>/root" / "<repo>/sub/<name>")
         lane: String,
         /// 読む slot の session key (省略時 root)
         #[arg(long)]
@@ -321,7 +321,7 @@ enum LaneCommands {
     /// repo の in-memory な slot 実体を読む (session key / pid / 生死 / root か)。
     /// 「今この lane に端末が何枚あるか」を UI を通さずに確認する口。
     Slots {
-        /// lane address ("<repo>/root" / "<repo>/performer/<name>")
+        /// lane address ("<repo>/root" / "<repo>/sub/<name>")
         lane: String,
     },
     /// lane に console (slot) をもう 1 枚立てる (doc 46 P5 — 非 root session の producer)
@@ -330,7 +330,7 @@ enum LaneCommands {
     /// session id で始まる」= session ↔ Pane は 1:1)。root (lane の代表 / mailbox の主) は
     /// 動かないので、既存の console はそのまま生き続ける。読むのは `vp lane capture --session`。
     SlotNew {
-        /// lane address ("<repo>/root" / "<repo>/performer/<name>")
+        /// lane address ("<repo>/root" / "<repo>/sub/<name>")
         lane: String,
         /// engine (agent 名: conversation / codex / grok / opencode / shell。省略時は現 root の engine)
         #[arg(long)]
@@ -342,7 +342,7 @@ enum LaneCommands {
     /// 実体 (PtySlot / chat engine) は reconcile が畳む (doc 53 §12.4)。replay も破棄される。
     /// **root は閉じられない** (lane の代表 = mailbox の主。素に戻すのは `vp lane restart --fresh`)。
     SlotClose {
-        /// lane address ("<repo>/root" / "<repo>/performer/<name>")
+        /// lane address ("<repo>/root" / "<repo>/sub/<name>")
         lane: String,
         /// 閉じる session (`vp lane slots` の SESSION 列)
         #[arg(long)]
@@ -352,14 +352,14 @@ enum LaneCommands {
     ///
     /// 引数なしで現在の起点を表示。lane 名を渡すとその lane を起点に指定する。
     /// 指定は **帳簿のポインタ書き換えだけ** — cwd も active lane も engine も動かない (D5)。
-    /// 未指定なら予約名 `conductor` が起点（従来挙動）。daemon (Daemon) 稼働が前提。
+    /// 未指定なら予約名 `main` が起点（従来挙動）。daemon (Daemon) 稼働が前提。
     Origin {
         /// 起点にする lane 名 (省略時は現在の起点を表示)
         name: Option<String>,
     },
     /// lane の claude / shell に text + Enter を注入 (旧 `vp tmux send-keys` / `vp directmsg` の後継)
     Nudge {
-        /// lane address ("<repo>/root" / "<repo>/performer/<name>")
+        /// lane address ("<repo>/root" / "<repo>/sub/<name>")
         lane: String,
         /// 注入するテキスト (Enter は自動付与、submit 意味論は repo 側 deliver_nudge)
         text: String,
@@ -721,10 +721,10 @@ fn execute_shot(
     Ok(())
 }
 
-/// performer Lane 操作を lane library に委譲
+/// Sub Lane 操作を lane library に委譲
 ///
-/// wiremsg R5-4: 旧 msgbox の registry サブシステム (performer 作成/削除時の
-/// `performer-{name}@{repo}` actor register/unregister) は撤去済。
+/// wiremsg R5-4: 旧 msgbox の registry サブシステム (sub 作成/削除時の
+/// `sub-{name}@{repo}` actor register/unregister) は撤去済。
 fn execute_lane(cmd: LaneCommands) -> Result<()> {
     use lane::commands as ws;
 
@@ -737,7 +737,7 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             base,
             model,
         } => {
-            ws::new_performer(
+            ws::new_sub(
                 &name,
                 &branch,
                 force,
@@ -756,7 +756,7 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             base,
             model,
         } => {
-            ws::fork_performer(
+            ws::fork_sub(
                 &name,
                 &branch,
                 force,
@@ -769,30 +769,28 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
         }
         LaneCommands::Ls { detail } => {
             if detail {
-                list_performers_detail()
+                list_subs_detail()
             } else {
-                ws::list_performers().map_err(|e| anyhow::anyhow!(e))
+                ws::list_subs().map_err(|e| anyhow::anyhow!(e))
             }
         }
-        LaneCommands::Path { name } => ws::performer_path(&name).map_err(|e| anyhow::anyhow!(e)),
+        LaneCommands::Path { name } => ws::sub_path(&name).map_err(|e| anyhow::anyhow!(e)),
         LaneCommands::Rm { name, all, force } => {
             // VP-124: repo-aware delete を試みる (orchestration: PTY kill + tmux kill +
             // lane workspace rm + SystemEvent broadcast を 1 HTTP call で完結)。
             // --all は filesystem-only fallback (一括削除は repo 経由する意味なし、 個別 Lane
-            // address が必要なため)。 repo 不在 / failure なら現挙動 (ws::remove_performer fs-only)
+            // address が必要なため)。 repo 不在 / failure なら現挙動 (ws::remove_sub fs-only)
             // に fallback して compat 維持。
-            if let Some(ref performer_name) = name
+            if let Some(ref sub_name) = name
                 && !all
-                && try_sp_delete_performer(performer_name)
+                && try_sp_delete_sub(sub_name)
             {
                 return Ok(());
             }
-            ws::remove_performer(name.as_deref(), all, force).map_err(|e| anyhow::anyhow!(e))
+            ws::remove_sub(name.as_deref(), all, force).map_err(|e| anyhow::anyhow!(e))
         }
-        LaneCommands::Status => ws::status_performers().map_err(|e| anyhow::anyhow!(e)),
-        LaneCommands::Cleanup { force } => {
-            ws::cleanup_performers(force).map_err(|e| anyhow::anyhow!(e))
-        }
+        LaneCommands::Status => ws::status_subs().map_err(|e| anyhow::anyhow!(e)),
+        LaneCommands::Cleanup { force } => ws::cleanup_subs(force).map_err(|e| anyhow::anyhow!(e)),
         LaneCommands::History { limit } => {
             ws::show_farewell_history(limit).map_err(|e| anyhow::anyhow!(e))
         }
@@ -859,13 +857,13 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
 /// `vp lane ls --detail` 実装: daemon repo-proxy ask `lanes_list` を query して pretty JSON で出力。
 ///
 /// lanes portless (doc 27 §3.4.5): 旧 SP `/api/lanes` 直叩きを撤去し Daemon :32000 の repo-proxy に
-/// 一本化 (`try_sp_delete_performer` と同型、 repo port 解決不要)。 repo 不在 (= daemon に未登録 /
+/// 一本化 (`try_sp_delete_sub` と同型、 repo port 解決不要)。 repo 不在 (= daemon に未登録 /
 /// cwd が repo 外 / repo 未起動) なら daemon が control channel 逆引き失敗で error を返す。 `--detail` を
 /// 要求した時点で repo 稼働を前提とする (= fs-only fallback はせず、 明示的に user に repo 未起動を伝える)。
 ///
 /// MCP `list_lanes` の mailbox_addresses 計算 / repo_addresses synthesis までは実装せず、
 /// dispatch `lanes_list` の生 JSON (`{lanes:[...]}`) を pretty print する (mailbox は SKILL.md doc 案内)。
-fn list_performers_detail() -> Result<()> {
+fn list_subs_detail() -> Result<()> {
     // repo_root = repo_path (Daemon handshake の stable identifier)。 repo port は repo-proxy で不要。
     let repo_root = lane::config::find_repo_root()
         .map_err(|e| anyhow::anyhow!("repo root 解決失敗 (--detail は repo 内が前提): {}", e))?;
@@ -898,7 +896,7 @@ fn list_performers_detail() -> Result<()> {
 /// その lane を active 化する（lane-within-repo の per-repo 切替）。
 /// MCP 側も `process_call("switch_lane", …)`（mcp.rs、repo-proxy 経由）で同 dispatch に着地。
 fn switch_lane_via_quic(name: &str) -> Result<()> {
-    // lane token = "root" (lead) or performer 名。server / vp-app 側で実在 lane と照合
+    // lane token = "root" (lead) or sub 名。server / vp-app 側で実在 lane と照合
     // （unknown lane は vp-app 受信側で no-op）。
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -985,17 +983,17 @@ fn lane_origin(name: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// VP-124 Phase 1: repo-aware Performer Lane delete を試みる helper。
+/// VP-124 Phase 1: repo-aware Sub Lane delete を試みる helper。
 ///
 /// `vp lane rm <name>` (= 個別削除) で呼ばれ、 parent repo が稼働中なら daemon repo-proxy ask
 /// (`lane_delete`) 経由で `delete_lane_orchestrated` を発火 (= PTY kill + tmux kill + lane rm +
 /// SystemEvent broadcast を repo 側で atomically 実行)。 repo 不在 / failure なら false 返して
-/// filesystem-only fallback (= 現挙動の `ws::remove_performer`) に委譲。
+/// filesystem-only fallback (= 現挙動の `ws::remove_sub`) に委譲。
 ///
 /// F6② (doc 27 §3.4.5/§6): 旧 SP 直結 (`DELETE /api/lanes` reqwest) を撤去し Daemon :32000 の
 /// repo-proxy に一本化 (repo port 解決不要、 L1 portless 前進)。 best-effort: 全 failure
 /// (repo 不在 / lane not found / network) は warn print して false → fs-only に委譲。
-fn try_sp_delete_performer(performer_name: &str) -> bool {
+fn try_sp_delete_sub(sub_name: &str) -> bool {
     // repo_root = repo_path (Daemon handshake の stable identifier)。 repo port は repo-proxy で不要。
     let repo_root = match lane::config::find_repo_root() {
         Ok(r) => r,
@@ -1012,8 +1010,8 @@ fn try_sp_delete_performer(performer_name: &str) -> bool {
         return false;
     };
 
-    // address 構築: `<repo>/performer/<name>` (repo 側 parse_address が逆変換)。
-    let address = format!("{repo_name}/performer/{performer_name}");
+    // address 構築: `<repo>/sub/<name>` (repo 側 parse_address が逆変換)。
+    let address = format!("{repo_name}/sub/{sub_name}");
     let payload = serde_json::json!({ "address": address, "cleanup": true });
 
     match vantage_point::commands::process_client::daemon_repo_request_blocking(

@@ -1,7 +1,7 @@
 //! `vp lane capture` / `vp lane nudge` — lane console の read/write CLI（tmux decoupling PR2）
 //!
 //! 旧 `vp tmux capture` / `vp tmux send-keys` / `vp directmsg` の native 後継。
-//! lane address（`<repo>/root` / `<repo>/performer/<name>`）を唯一の宛先語彙とし、
+//! lane address（`<repo>/root` / `<repo>/sub/<name>`）を唯一の宛先語彙とし、
 //! daemon repo-proxy ask（`lane_capture` / `lane_nudge`）経由で repo の PtySlot に到達する
 //! （tmux session 名 / pane id の第 2 名前空間は廃止）。
 //!
@@ -10,7 +10,7 @@
 //! vp lane capture vantage-point/root --session 2  # 同居する 2 枚目の console を読む
 //! vp lane slots vantage-point/root            # この lane の slot 一覧（枚数 / pid / root か）
 //! vp lane slot-new vantage-point/root         # console をもう 1 枚立てる（新 session）
-//! vp lane nudge vantage-point/performer/sub "続けて"  # text + Enter を注入
+//! vp lane nudge vantage-point/sub/sub "続けて"  # text + Enter を注入
 //! ```
 //!
 //! ## doc 46 P5 — slot は lane に 1 枚ではなく session ごと
@@ -36,7 +36,7 @@ pub(crate) fn repo_path_for_lane(lane: &str, config: &Config) -> Result<String> 
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "lane address が不正: '{}' — '<repo>/root' か '<repo>/performer/<name>' を指定",
+                "lane address が不正: '{}' — '<repo>/root' か '<repo>/sub/<name>' を指定",
                 lane
             )
         })?;

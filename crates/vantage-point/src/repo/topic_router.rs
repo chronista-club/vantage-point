@@ -102,14 +102,14 @@ impl TopicRouter {
         }
     }
 
-    /// lane segment の正規化: `None` = conductor（lead）。
-    /// per-lane board topic の lane 部に使う（root/performer 語彙）。
+    /// lane segment の正規化: `None` = main（lead）。
+    /// per-lane board topic の lane 部に使う（root/sub 語彙）。
     fn lane_seg(lane: &Option<String>) -> &str {
         lane.as_deref()
             .unwrap_or(crate::repo::lanes_state::ROOT_LANE_NAME)
     }
 
-    /// lane address（`vp/performer/foo` 等、 `/` を含む）を topic segment 安全な 1 token に
+    /// lane address（`vp/sub/foo` 等、 `/` を含む）を topic segment 安全な 1 token に
     /// 変換する（`/` → `~`）。 doc 27 §4.1 の per-lane terminal topic 用。 message には full
     /// address を載せ、 topic key だけ encode する（subscriber も同じ変換で subscribe する）。
     fn terminal_lane_key(lane: &str) -> String {
@@ -127,8 +127,8 @@ impl TopicRouter {
             // === Board（Canvas 表示能力）===
             // lane segment を verb の後に挿入: `.../command/{verb}/{lane}/{pane_id}`。
             // category(seg2)=command は不変なので is_retained は維持され、retained store は
-            // lane 別に分離される（root/main と performer-foo/main が別 topic）。
-            // lane=None は conductor（lead）に正規化。
+            // lane 別に分離される（root/main と sub-foo/main が別 topic）。
+            // lane=None は main（lead）に正規化。
             RepoMessage::Show { pane_id, lane, .. } => {
                 format!(
                     "repo/board/command/show/{}/{}",
@@ -167,7 +167,7 @@ impl TopicRouter {
             // board モデル (2026-07-15): scope 別 board の snapshot。 category=state(seg2) で
             // retained され、 再接続/board 切替時の初期配信を兼ねる。 topic は
             // `.../state/board/{scope}/{lane}` で scope×lane ごとに retained を分離する
-            // (lane board は lane で分離、 proj board は lane=conductor に正規化)。
+            // (lane board は lane で分離、 proj board は lane=main に正規化)。
             RepoMessage::BoardUpdated { scope, lane, .. } => {
                 format!("repo/board/state/board/{}/{}", scope, Self::lane_seg(lane))
             }
@@ -494,15 +494,15 @@ mod tests {
 
     #[test]
     fn test_message_to_topic_show() {
-        // lane=None は conductor に正規化され lane segment に入る
+        // lane=None は main に正規化され lane segment に入る
         let msg = make_show("main", "# Hello");
         let topic = TopicRouter::message_to_topic(&msg);
         assert_eq!(topic, "repo/board/command/show/root/main");
     }
 
     #[test]
-    fn test_message_to_topic_show_performer_lane() {
-        // performer lane は lane segment にその名が入り、conductor と別 topic になる
+    fn test_message_to_topic_show_sub_lane() {
+        // sub lane は lane segment にその名が入り、main と別 topic になる
         let msg = make_show_lane("main", "# Hi", "feat-api");
         let topic = TopicRouter::message_to_topic(&msg);
         assert_eq!(topic, "repo/board/command/show/feat-api/main");
@@ -511,12 +511,12 @@ mod tests {
     #[test]
     fn test_per_lane_topic_separation() {
         // 同 pane_id でも lane が違えば別 topic（retained 後勝ち上書きが起きない）
-        let conductor = TopicRouter::message_to_topic(&make_show("main", "a"));
-        let performer = TopicRouter::message_to_topic(&make_show_lane("main", "b", "feat-api"));
-        assert_ne!(conductor, performer);
+        let main = TopicRouter::message_to_topic(&make_show("main", "a"));
+        let sub = TopicRouter::message_to_topic(&make_show_lane("main", "b", "feat-api"));
+        assert_ne!(main, sub);
         // category(seg2)=command は不変 → 両方 retained 対象
-        assert!(TopicPath::parse(&conductor).is_retained());
-        assert!(TopicPath::parse(&performer).is_retained());
+        assert!(TopicPath::parse(&main).is_retained());
+        assert!(TopicPath::parse(&sub).is_retained());
     }
 
     #[test]
@@ -561,12 +561,12 @@ mod tests {
         // doc 27 §4.1: per-lane terminal 出力。 lane address の '/' は seg3 で '~' に encode、
         // category(seg2)=data なので 非 retained（ephemeral stream）。
         let msg = RepoMessage::LaneTerminalOutput {
-            lane: "vp/performer/foo".to_string(),
+            lane: "vp/sub/foo".to_string(),
             session: 1,
             data: "aGVsbG8=".to_string(),
         };
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "repo/terminal/data/vp~performer~foo/out");
+        assert_eq!(topic, "repo/terminal/data/vp~sub~foo/out");
         assert!(!TopicPath::parse(&topic).is_retained());
     }
 
@@ -579,7 +579,7 @@ mod tests {
             data: String::new(),
         });
         let b = TopicRouter::message_to_topic(&RepoMessage::LaneTerminalOutput {
-            lane: "vp/performer/foo".to_string(),
+            lane: "vp/sub/foo".to_string(),
             session: 1,
             data: String::new(),
         });
@@ -609,7 +609,7 @@ mod tests {
         // doc 32: Conversation gui の per-lane 構造化イベント。lane の '/' は '~' に encode、
         // category(seg2)=data なので 非 retained（ephemeral stream、terminal と同じ規則）。
         let msg = RepoMessage::ConversationEvent {
-            lane: "vp/performer/foo".to_string(),
+            lane: "vp/sub/foo".to_string(),
             session: 2,
             event: crate::conversation::ConversationEvent::MessageChunk {
                 text: "hi".to_string(),
@@ -617,7 +617,7 @@ mod tests {
         };
         let topic = TopicRouter::message_to_topic(&msg);
         // doc 38 落とし穴①: session は topic key に混入しない（per-lane topic のまま）。
-        assert_eq!(topic, "repo/conversation/data/vp~performer~foo/event");
+        assert_eq!(topic, "repo/conversation/data/vp~sub~foo/event");
         assert!(!TopicPath::parse(&topic).is_retained());
     }
 
@@ -973,14 +973,12 @@ mod tests {
         }
 
         let (_a, _ra) = router.subscribe("repo/terminal/data/vp~root/out").await;
-        let (_b, _rb) = router
-            .subscribe("repo/terminal/data/vp~performer~foo/out")
-            .await;
+        let (_b, _rb) = router.subscribe("repo/terminal/data/vp~sub~foo/out").await;
 
         let log = started.lock().unwrap();
         assert_eq!(log.len(), 2, "lane ごとに独立して start");
         assert!(log.contains(&"repo/terminal/data/vp~root/out".to_string()));
-        assert!(log.contains(&"repo/terminal/data/vp~performer~foo/out".to_string()));
+        assert!(log.contains(&"repo/terminal/data/vp~sub~foo/out".to_string()));
     }
 
     #[tokio::test]

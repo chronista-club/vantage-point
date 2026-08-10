@@ -90,16 +90,16 @@ pub enum AppEvent {
     /// main_area xterm.js が capture → Rust が SidebarState の per-Lane unread count を加算 →
     /// sidebar に push back → badge UI 表示。 active lane への switch で 0 reset。
     OscNotification { lane: String, code: u32 },
-    /// R5 Performer create flow: Add Performer form が送信した `lane:add_performer` の結果を sidebar に
+    /// R5 Sub create flow: Add Sub form が送信した `lane:add_sub` の結果を sidebar に
     /// push back する。 `error` Some の時 form 下に inline error 表示、 None の時 form を閉じる。
     /// 例: 名前重複 (CONFLICT)、 lane clone 失敗、 repo 未起動 等。
-    PerformerCreateResult {
+    SubCreateResult {
         repo_path: String,
         name: String,
         error: Option<String>,
     },
     /// doc 11 PR-C / F6④: 利用可能 Agent 一覧を sidebar に push back する。
-    /// `+ Add Performer` form 開閉時に JS から `agents:fetch` が来て、 Rust 側で Daemon
+    /// `+ Add Sub` form 開閉時に JS から `agents:fetch` が来て、 Rust 側で Daemon
     /// repo-proxy ask (`agents_list`) を叩いた結果がここに乗る。 JS は `window.handleAgentsResult`
     /// で受領し、 dropdown を populate する。 `error` Some なら fetch 失敗、 dropdown は
     /// disabled + error message 表示。

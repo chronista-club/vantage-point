@@ -453,7 +453,7 @@ fn spawn_menu_event_pump(rt_handle: &tokio::runtime::Handle, proxy: EventLoopPro
 
 /// F6 (doc 27 §3.4): active_lane_address から対応する repo_path を引く。
 ///
-/// active_lane_address (`<repo>/root` or `<repo>/performer/<name>`) から、 対応する
+/// active_lane_address (`<repo>/root` or `<repo>/sub/<name>`) から、 対応する
 /// repo_path を引く。 daemon repo-proxy は repo port 不問・repo_path を path_key に正規化して
 /// routing するので、 ask 系 (board mutate / lane ops) は port でなく path で引く。 解決失敗
 /// (lane 未選択 / repo 未起動) なら `None`。 caller: `BoardMutate`（board_delete_item / board_clear）の
@@ -490,7 +490,7 @@ pub(crate) fn merge_ports_from_running(
 /// `list_repos()` を直接呼んでそのまま `ReposLoaded` に乗せると、 config に port を
 /// 書いていない repo (= 大多数) の port が `None` で来てしまい、 sidebar_state.processes
 /// の port を全潰しする。 これが起きると以降の `LanesLoaded` で `ensureLane` が skip され
-/// terminal が表示されなくなる (= restart / stop / delete 後の conductor console 消失 bug)。
+/// terminal が表示されなくなる (= restart / stop / delete 後の main console 消失 bug)。
 /// **全 fetch 経路はこのヘルパ 1 本に集約**して同じ join をかける。
 ///
 /// `list_processes` 側のみエラーなら空 map 扱い (= port は config 値のまま) で degrade、
@@ -2667,7 +2667,7 @@ mod lane_key_wire_agent_tests {
         assert_eq!(lane_key_to_wire_agent("vp/"), None); // name 空
         assert_eq!(lane_key_to_wire_agent("vp/<unnamed>"), None); // spawning placeholder
         // 旧 3 分節形は新形では不正（正規化は server 側 parse_address の担当）
-        assert_eq!(lane_key_to_wire_agent("vp/performer/foo"), None);
+        assert_eq!(lane_key_to_wire_agent("vp/sub/foo"), None);
     }
 }
 
@@ -2774,7 +2774,7 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
     } else if let Some(addr) = state.active_lane_address.as_deref() {
         // Conversation 共通ヘッダ用: active lane の LaneInfo から cwd / branch を引く。cwd は
         // address (pane_id) から導出できない唯一の lane 情報なので、setActivePane に相乗り
-        // させて運ぶ (新しい配信チャネルは増やさない)。branch は performer のみ (安価に取れる時)。
+        // させて運ぶ (新しい配信チャネルは増やさない)。branch は sub のみ (安価に取れる時)。
         let lane = state
             .lanes_by_repo
             .values()
@@ -2789,7 +2789,7 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
             chat: lane_is_chat(state, addr),
             cwd: lane.map(|l| l.cwd.as_str()).filter(|c| !c.is_empty()),
             branch: lane
-                .and_then(|l| l.performer_status.as_ref())
+                .and_then(|l| l.sub_status.as_ref())
                 .and_then(|p| p.branch.as_deref()),
             // doc 44 P2: 旧 `LaneInfo.name` は複製 field で **常に None** だった（JS は addr
             // 短縮名に fallback していた）。フラット化で `address.name` が唯一の在処になり、
@@ -2841,11 +2841,11 @@ fn header_lane_fields_changed(
         // doc 53 R1: root mode の変化（mode 切替 / root 付け替え）は sessions から導出して比較。
         || root_mode_of(prev) != root_mode_of(next)
         || prev
-            .performer_status
+            .sub_status
             .as_ref()
             .and_then(|p| p.branch.as_deref())
             != next
-                .performer_status
+                .sub_status
                 .as_ref()
                 .and_then(|p| p.branch.as_deref())
 }
@@ -2923,7 +2923,7 @@ fn activate_lane(
 }
 
 /// オンデマンド respawn: active にしようとする lane が Dead (pid:null) なら repo に restart_lane を
-/// 発火して蘇らせる。 lane (conductor / performer) の Conversation プロセスが死ぬと repo の lifecycle monitor は
+/// 発火して蘇らせる。 lane (main / sub) の Conversation プロセスが死ぬと repo の lifecycle monitor は
 /// Dead を検知するだけで auto-respawn しない (server.rs の設計判断) ため、 user が lane を
 /// 開いた時点でオンデマンドに復活させる。 これが無いと「一度死んだ lane は手動 restart するまで
 /// Conversation が出ない」状態になる (= 全 repo で console 非表示の真因)。
@@ -3094,8 +3094,8 @@ mod sidebar_js {
         );
     }
 
-    /// + Add Performer の作成結果。`error` None = 成功（form を閉じる）。
-    pub fn performer_create_result(
+    /// + Add Sub の作成結果。`error` None = 成功（form を閉じる）。
+    pub fn sub_create_result(
         sidebar: &WebView,
         repo_path: String,
         name: String,
@@ -3103,17 +3103,15 @@ mod sidebar_js {
     ) {
         push(
             sidebar,
-            &IpcEventEnvelope::PerformerCreateResult(
-                crate::generated::sidebar_ipc::PerformerCreateResult {
-                    repo_path,
-                    name,
-                    error,
-                },
-            ),
+            &IpcEventEnvelope::SubCreateResult(crate::generated::sidebar_ipc::SubCreateResult {
+                repo_path,
+                name,
+                error,
+            }),
         );
     }
 
-    /// + Add Performer の dropdown を populate する Agent 一覧。
+    /// + Add Sub の dropdown を populate する Agent 一覧。
     pub fn stands_result(
         sidebar: &WebView,
         repo_path: String,
@@ -3266,20 +3264,20 @@ struct SidebarIpcOutcome {
     /// `(name, path)` を返し、 caller が `spawn_sp_start` を呼ぶ。
     /// dedup は caller の `repo_spawn_triggered: HashSet<String>` (path key) で行う。
     repo_spawn_request: Option<(String, String)>,
-    /// Phase 3-A: Performer Lane 作成要求 `(repo_path, name, branch, agent)`。
-    /// doc 24 §10 B-create: caller が daemon (:32000) の `create_performer_lane`
+    /// Phase 3-A: Sub Lane 作成要求 `(repo_path, name, branch, agent)`。
+    /// doc 24 §10 B-create: caller が daemon (:32000) の `create_sub_lane`
     /// (Unison `daemon-control.lanes/create`) を呼ぶ (repo port 解決は不要)。
     /// `agent` は doc 11 PR-C で追加 (None なら daemon-side default)。
-    add_performer_request: Option<(String, String, Option<String>, Option<String>)>,
+    add_sub_request: Option<(String, String, Option<String>, Option<String>)>,
     /// doc 11 PR-C / F6④: 利用可能 Agent 一覧 fetch 要求 `(repo_path)`。
     /// caller が daemon repo-proxy ask (`agents_list`) を呼ぶ → `AppEvent::AgentsResult` で push back。
     list_stands_request: Option<String>,
-    /// Phase 4-A: Performer Lane 削除要求 `(repo_path, address)`。
+    /// Phase 4-A: Sub Lane 削除要求 `(repo_path, address)`。
     /// caller が repo port を解決して `client.delete_lane` を呼ぶ。
     delete_lane_request: Option<(String, String)>,
-    /// Lane Conductor Agent restart 要求 `(repo_path, address, fresh)`。
+    /// Lane Main Agent restart 要求 `(repo_path, address, fresh)`。
     /// caller が repo port を解決して `client.restart_lane` を呼ぶ。
-    /// fresh=true は "New Conductor Session" (resume/continue 回避の fresh 起動)。
+    /// fresh=true は "New Main Session" (resume/continue 回避の fresh 起動)。
     restart_lane_request: Option<(String, String, bool)>,
     /// doc 39 §8.4 提案 2: 「New Root Conversation」要求 `(repo_path, lane_address)`。
     /// caller が repo の `conversation_session_new_root` を呼ぶ（非破壊 — 旧 root の会話は残る）。
@@ -3407,7 +3405,7 @@ fn handle_sidebar_ipc(
             }
         }
         IpcEnvelope::LaneDelete(m) => {
-            // Phase 4-A: Performer Lane 削除要求。 caller (event loop) で repo port を解決して
+            // Phase 4-A: Sub Lane 削除要求。 caller (event loop) で repo port を解決して
             // client.delete_lane を呼ぶ。 active Lane を消した場合は active_lane_address を unset。
             if !m.path.is_empty() && !m.address.is_empty() {
                 // active だった Lane が消えるなら preemptively clear (UI 反映を待たず)
@@ -3452,19 +3450,19 @@ fn handle_sidebar_ipc(
                 out.reorder_lanes_request = Some((m.path, m.order));
             }
         }
-        IpcEnvelope::LaneAddPerformer(m) => {
-            // Phase 3-A: sidebar から Performer Lane 作成要求。 doc 24 §10 B-create:
-            // caller (event loop) が daemon (:32000) の create_performer_lane を呼ぶ。
+        IpcEnvelope::LaneAddSub(m) => {
+            // Phase 3-A: sidebar から Sub Lane 作成要求。 doc 24 §10 B-create:
+            // caller (event loop) が daemon (:32000) の create_sub_lane を呼ぶ。
             // doc 11 PR-C: branch / agent は optional。 空文字は None に畳んで
             // daemon-side default にフォールバックさせる。
             let branch = m.branch.filter(|s| !s.is_empty());
             let agent = m.agent.filter(|s| !s.is_empty());
             if !m.path.is_empty() && !m.name.is_empty() {
-                out.add_performer_request = Some((m.path, m.name, branch, agent));
+                out.add_sub_request = Some((m.path, m.name, branch, agent));
             }
         }
         IpcEnvelope::AgentsFetch(m) => {
-            // doc 11 PR-C: sidebar の + Add Performer form 開閉時に利用可能 Agent 一覧を取得。
+            // doc 11 PR-C: sidebar の + Add Sub form 開閉時に利用可能 Agent 一覧を取得。
             // caller (event loop) で daemon repo-proxy ask (`agents_list`) → window.handleAgentsResult で push back。
             if !m.path.is_empty() {
                 out.list_stands_request = Some(m.path);
@@ -3645,8 +3643,8 @@ fn handle_sidebar_ipc(
 /// `LaneAddressWire::key()` の逆写像 (delivery_actor の `wire_agent_to_lane_display` と対)。
 ///
 /// doc 44 P2: フラット化で key が 2 分節 (`<repo>/<name>`) になった。旧実装は
-/// `<repo>/performer/<name>` の 3 分節を前提に `split_once` していたため、新形では
-/// 常に `None` に落ちて **performer lane の wire inbox が GUI から開けなくなる**
+/// `<repo>/sub/<name>` の 3 分節を前提に `split_once` していたため、新形では
+/// 常に `None` に落ちて **sub lane の wire inbox が GUI から開けなくなる**
 /// （§6.4 と同型の「型を経由しない文字列」の取り残し。しかも対になる
 /// `wire_agent_to_lane_display` の**逆方向**なので、片方だけ直すと非対称に壊れる）。
 fn lane_key_to_wire_agent(address: &str) -> Option<String> {
@@ -4383,7 +4381,7 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::ReposLoaded(repos)) => {
                 // 既存 SidebarState とマージ:
                 //  - 同じ path があれば既存 state を維持 (expanded / panes / active 保持)
-                //  - 新規は RepoPaneState::new (Conductor Agent 1 つ)
+                //  - 新規は RepoPaneState::new (Main Agent 1 つ)
                 //  - サーバから消えた repo は除外
                 //
                 // VP-101 follow-up: register 後の auto-expand。
@@ -4512,7 +4510,7 @@ pub fn run() -> anyhow::Result<()> {
                 }
                 // ループする event なので log omit (= LanesLoaded push と pair で noise 源)。
                 // Architecture v4: active_lane_address が未設定なら最初の Lane を auto-select。
-                // 「初回起動 → Conductor Lane が main area に出る」UX を Lane SSOT で保つ。
+                // 「初回起動 → Main Lane が main area に出る」UX を Lane SSOT で保つ。
                 //
                 // 例外: secondary instance (Cmd+N で spawn = `instance_index != 0`) の場合は
                 // auto-select を skip。 元 vp-app が既に同 lane の terminal WS を持ってる事が多く、
@@ -4863,7 +4861,7 @@ pub fn run() -> anyhow::Result<()> {
                     .active_lane_address
                     .as_deref()
                     .map(crate::ink_snapshot::lane_key_from_address)
-                    .unwrap_or_else(|| "conductor".to_string());
+                    .unwrap_or_else(|| "main".to_string());
                 match crate::ink_snapshot::snapshot_path(&lane_key) {
                     Ok(out_path) => {
                         let ready_proxy = proxy.clone();
@@ -4996,7 +4994,7 @@ pub fn run() -> anyhow::Result<()> {
                     .and_then(|s| s.to_str());
                 // ⚠️ **board_updated には送信元 repo を stamp する**（repo 側の BoardUpdated は
                 // 持っていない）。board の同一性は `(repo, lane)` の対で、全 repo の root lane が
-                // 同じ `'conductor'` を名乗る。repo を落として webview に渡していた旧実装は
+                // 同じ `'main'` を名乗る。repo を落として webview に渡していた旧実装は
                 // 13 repo が 1 つの箱を奪い合い、「board 行を持たない repo に切り替えると前の
                 // repo の board が出たまま」になっていた（2026-08-04 根治）。
                 let mut message = message;
@@ -5014,12 +5012,12 @@ pub fn run() -> anyhow::Result<()> {
                 }
                 // board pane の boot 窓救済（doc 52 §10 wave 0）: BoardUpdated を repo × lane で
                 // 保持する。`AppEvent::WebviewReady` の replay で再配信し、retained が bundle 評価前に
-                // 落ちた分を埋める。lane 欠落 = conductor（board-handler の flat key と一致）。
+                // 落ちた分を埋める。lane 欠落 = main（board-handler の flat key と一致）。
                 //
                 // ⚠️ scope=="lane" のみ buffer する（消費側 board-handler.ts `applyBoardUpdated` の
                 //   `if (msg.scope !== 'lane') return` と対称にする）。退役済み scope="proj" の孤児行も
-                //   seed_boards が無条件 broadcast し、board_key() で proj も conductor lane も
-                //   broadcast_lane=None → lane_key="conductor" に衝突する。scope guard が無いと、行順
+                //   seed_boards が無条件 broadcast し、board_key() で proj も main lane も
+                //   broadcast_lane=None → lane_key="main" に衝突する。scope guard が無いと、行順
                 //   次第で proj 孤児が本物の lane board を上書きし、replay が「JS が捨てる死んだ
                 //   message」を配って boot 窓 regression が再発する（team-b review 2026-07-24）。
                 if is_board_update
@@ -5028,7 +5026,7 @@ pub fn run() -> anyhow::Result<()> {
                     let lane_key = message
                         .get("lane")
                         .and_then(|l| l.as_str())
-                        .unwrap_or("conductor")
+                        .unwrap_or("main")
                         .to_string();
                     board_snapshots
                         .entry(proj.to_string())
@@ -5044,13 +5042,13 @@ pub fn run() -> anyhow::Result<()> {
                         msg_repo,
                         message.get("lane").and_then(|l| l.as_str()),
                     ) {
-                        // token → lane address (`<repo>/<予約名>` or `<repo>/performer/<name>`)
+                        // token → lane address (`<repo>/<予約名>` or `<repo>/sub/<name>`)
                         let address = if token.is_empty()
                             || token == crate::lane::ROOT_LANE_NAME
                         {
                             format!("{}/{}", repo, crate::lane::ROOT_LANE_NAME)
                         } else {
-                            format!("{}/performer/{}", repo, token)
+                            format!("{}/sub/{}", repo, token)
                         };
                         // Model B (focus = 操舵ポインタ): switch_lane は全 instance に broadcast される
                         // が、適用するのは **focused instance だけ**。非 focus の window はこの event を
@@ -5111,7 +5109,7 @@ pub fn run() -> anyhow::Result<()> {
                     let address = if token.is_empty() || token == crate::lane::ROOT_LANE_NAME {
                         format!("{}/{}", repo, crate::lane::ROOT_LANE_NAME)
                     } else {
-                        format!("{}/performer/{}", repo, token)
+                        format!("{}/sub/{}", repo, token)
                     };
                     if sidebar_state.active_lane_address.as_deref() != Some(address.as_str()) {
                         mark_lane_canvas_unread(&address, &mut sidebar_state, &webview);
@@ -5720,7 +5718,7 @@ pub fn run() -> anyhow::Result<()> {
                 });
             }
             // doc 38 Phase 2: 「+」menu の engine 選択肢を埋める agents 一覧取得。
-            // 既存 + Add Performer と同じ agents_list を再利用（doc 38 §3 の作成 UX）。
+            // 既存 + Add Sub と同じ agents_list を再利用（doc 38 §3 の作成 UX）。
             Event::UserEvent(AppEvent::AgentsFetch { lane, req }) => {
                 let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
                     tracing::warn!("conversation:agents_fetch skip — lane の repo 解決失敗 (lane={lane})");
@@ -5779,22 +5777,22 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::ReposError(msg)) => {
                 sidebar_js::error(&webview, &msg);
             }
-            // R5 Performer create flow: spawn_blocking thread からの結果を sidebar に push back。
-            // success → form を閉じる + addPerformerOpen から削除。
+            // R5 Sub create flow: spawn_blocking thread からの結果を sidebar に push back。
+            // success → form を閉じる + addSubOpen から削除。
             // error → form 下に inline error 表示 + form は開いたまま (再 submit 可能)。
-            Event::UserEvent(AppEvent::PerformerCreateResult {
+            Event::UserEvent(AppEvent::SubCreateResult {
                 repo_path,
                 name,
                 error,
             }) => {
-                sidebar_js::performer_create_result(&webview, repo_path, name, error);
+                sidebar_js::sub_create_result(&webview, repo_path, name, error);
             }
             Event::UserEvent(AppEvent::AgentsResult {
                 repo_path,
                 agents,
                 error,
             }) => {
-                // doc 11 PR-C: + Add Performer form の dropdown を populate するための push back。
+                // doc 11 PR-C: + Add Sub form の dropdown を populate するための push back。
                 sidebar_js::stands_result(&webview, repo_path, &agents, error);
             }
             // Sidebar File Explorer: walk 結果を sidebar bundle へ push back。
@@ -5982,7 +5980,7 @@ pub fn run() -> anyhow::Result<()> {
                                 // 必ず `fetch_repos_with_ports` 経由 (= runtime port merge)
                                 // で送る。 list_repos() だけだと restart 直後に全 repo の
                                 // port が None で潰れ、 後続 LanesLoaded で ensureLane が
-                                // 全件 skip され conductor terminal が消失する。
+                                // 全件 skip され main terminal が消失する。
                                 if let Ok(repos) = fetch_repos_with_ports(&control).await {
                                     let _ =
                                         proxy.send_event(AppEvent::ReposLoaded(repos));
@@ -6126,7 +6124,7 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     });
                 }
-                // Phase 4-A: Performer Lane 削除要求 (sidebar の × button から)
+                // Phase 4-A: Sub Lane 削除要求 (sidebar の × button から)
                 if let Some((repo_path, address)) = outcome.delete_lane_request {
                     // F6②: 旧 DaemonRpcClient.delete_lane (repo 直結 reqwest) を daemon repo-proxy
                     // ask (lane_delete) に移管。 repo port 解決は不要になり repo_path を handshake で渡す。
@@ -6161,7 +6159,7 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     });
                 }
-                // Lane Conductor Agent restart 要求 (sidebar の restart icon → confirm dialog から)
+                // Lane Main Agent restart 要求 (sidebar の restart icon → confirm dialog から)
                 if let Some((repo_path, address, fresh)) = outcome.restart_lane_request {
                     // F6③: 旧 DaemonRpcClient.restart_lane (repo 直結 reqwest) を daemon repo-proxy
                     // ask (lane_restart) に移管。 repo port 解決は不要、 repo_path を handshake で渡す。
@@ -6294,7 +6292,7 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     });
                 }
-                // Phase 3-A: Performer Lane 作成要求 (sidebar の + Add Performer から)
+                // Phase 3-A: Sub Lane 作成要求 (sidebar の + Add Sub から)
                 // 投げ先は Daemon (:32000) の `daemon-control.lanes/create` 1 本 (repo port 解決は不要、
                 // set_active_lane / reorder と同じ daemon-command パターン)。
                 // doc 44 §9.4: daemon 側はそこで自前の provision をせず repo runtime の
@@ -6302,7 +6300,7 @@ pub fn run() -> anyhow::Result<()> {
                 // 旧構成は descriptor だけ作って PtySlot を lane_watcher の到達に賭けており、
                 // 「+ で作った lane だけ engine 指定が別経路で伝わる」等の経路差が生じていた。
                 // doc 11 PR-C: agent 指定 を tuple 4 番目に保持 (None なら daemon-side default)。
-                if let Some((repo_path, name, branch, agent)) = outcome.add_performer_request {
+                if let Some((repo_path, name, branch, agent)) = outcome.add_sub_request {
                     let proxy = async_action_proxy.clone();
                     let name_clone = name.clone();
                     let branch_clone = branch.clone();
@@ -6314,8 +6312,8 @@ pub fn run() -> anyhow::Result<()> {
                             Ok(c) => c,
                             Err(e) => {
                                 let msg = e.to_string();
-                                tracing::warn!("create_performer_lane: {}", msg);
-                                let _ = proxy.send_event(AppEvent::PerformerCreateResult {
+                                tracing::warn!("create_sub_lane: {}", msg);
+                                let _ = proxy.send_event(AppEvent::SubCreateResult {
                                     repo_path: path_clone,
                                     name: name_clone,
                                     error: Some(msg),
@@ -6324,7 +6322,7 @@ pub fn run() -> anyhow::Result<()> {
                             }
                         };
                         match control
-                            .create_performer_lane(
+                            .create_sub_lane(
                                 &path_clone,
                                 &name_clone,
                                 branch_clone.as_deref(),
@@ -6334,7 +6332,7 @@ pub fn run() -> anyhow::Result<()> {
                         {
                             Ok(()) => {
                                 tracing::info!(
-                                    "Performer Lane created (daemon): repo={} name={} branch={:?}",
+                                    "Sub Lane created (daemon): repo={} name={} branch={:?}",
                                     path_clone,
                                     name_clone,
                                     branch_clone
@@ -6343,7 +6341,7 @@ pub fn run() -> anyhow::Result<()> {
                                 // sidebar への反映は "lanes" topic snapshot の push を待つ
                                 // （楽観更新しない = 真実源は 1 つ、doc 44 §10.3 と同じ規律）。
                                 // R5: 成功通知を sidebar に push back (form を閉じる)
-                                let _ = proxy.send_event(AppEvent::PerformerCreateResult {
+                                let _ = proxy.send_event(AppEvent::SubCreateResult {
                                     repo_path: path_clone,
                                     name: name_clone,
                                     error: None,
@@ -6356,12 +6354,12 @@ pub fn run() -> anyhow::Result<()> {
                                 // (旧 HTTP の "... HTTP 500: {json}" より読める)。 そのまま流す。
                                 let msg = format!("{}", e);
                                 tracing::warn!(
-                                    "create_performer_lane failed: repo={} name={}: {}",
+                                    "create_sub_lane failed: repo={} name={}: {}",
                                     path_clone,
                                     name_clone,
                                     msg
                                 );
-                                let _ = proxy.send_event(AppEvent::PerformerCreateResult {
+                                let _ = proxy.send_event(AppEvent::SubCreateResult {
                                     repo_path: path_clone,
                                     name: name_clone,
                                     error: Some(msg),
@@ -6371,7 +6369,7 @@ pub fn run() -> anyhow::Result<()> {
                     });
                 }
 
-                // doc 11 PR-C / F6④: 利用可能 Agent 一覧 fetch 要求 (sidebar の + Add Performer 開閉から)。
+                // doc 11 PR-C / F6④: 利用可能 Agent 一覧 fetch 要求 (sidebar の + Add Sub 開閉から)。
                 // 旧 SP 直結 (client.list_agents) を撤去し daemon repo-proxy ask (`agents_list`) に移管。
                 // repo port 解決が消滅し、 surface は Daemon :32000 だけを知れば済む (L1 portless 前進)。
                 if let Some(repo_path) = outcome.list_stands_request {

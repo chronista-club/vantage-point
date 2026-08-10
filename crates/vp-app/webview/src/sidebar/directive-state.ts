@@ -3,33 +3,33 @@
  *
  * sidebar 内に **component scope を跨ぐ state / helper** を集約する module。 既存の sidebar store
  * (= Rust から push される SidebarState) とは別の **directive 専用の小さな state** を保持する場所。
- * 例: `n` directive が RepoAccordion 内 local signal の addPerformerOpen を mutate するための registry、
+ * 例: `n` directive が RepoAccordion 内 local signal の addSubOpen を mutate するための registry、
  * `d` directive の 2-click confirm pending state + visual hint signal、 など。
  */
 import { createSignal } from 'solid-js'
 
 // =============================================================================
-// `n` directive — AddPerformer form open registry
+// `n` directive — AddSub form open registry
 // =============================================================================
 //
-// AddPerformer form の open 状態は RepoAccordion 内 local signal (`addPerformerOpen`) で管理されている。
+// AddSub form の open 状態は RepoAccordion 内 local signal (`addSubOpen`) で管理されている。
 // `n` directive (= keyboard で active repo の form を open) を実装するために、
 // 各 RepoAccordion が mount 時に「repo_path → setter」 を本 registry に register し、
 // directive 発火時に該当 setter を呼ぶ。
 
-const addPerformerOpenRegistry = new Map<string, (open: boolean) => void>()
+const addSubOpenRegistry = new Map<string, (open: boolean) => void>()
 
 /**
  * RepoAccordion が mount 時に呼ぶ。 戻り値の unregister を onCleanup で呼ぶこと。
  */
-export function registerAddPerformerOpenSetter(
+export function registerAddSubOpenSetter(
   repoPath: string,
   setter: (open: boolean) => void,
 ): () => void {
-  addPerformerOpenRegistry.set(repoPath, setter)
+  addSubOpenRegistry.set(repoPath, setter)
   return () => {
-    if (addPerformerOpenRegistry.get(repoPath) === setter) {
-      addPerformerOpenRegistry.delete(repoPath)
+    if (addSubOpenRegistry.get(repoPath) === setter) {
+      addSubOpenRegistry.delete(repoPath)
     }
   }
 }
@@ -38,8 +38,8 @@ export function registerAddPerformerOpenSetter(
  * directive `n` の発火経路。 該当 repo の form を open する。
  * 戻り値: setter が登録されていたら true、 されていなければ false。
  */
-export function openAddPerformerFor(repoPath: string): boolean {
-  const setter = addPerformerOpenRegistry.get(repoPath)
+export function openAddSubFor(repoPath: string): boolean {
+  const setter = addSubOpenRegistry.get(repoPath)
   if (!setter) return false
   setter(true)
   return true
@@ -55,7 +55,7 @@ export function openAddPerformerFor(repoPath: string): boolean {
 
 /** hint bar 表示の visible state。 Shell.tsx で `<Show when={deleteHintVisible()}>` で render。 */
 export const [deleteHintVisible, setDeleteHintVisible] = createSignal(false)
-/** hint bar に表示する label (= "delete performer: foo/performer/bar" 等)。 */
+/** hint bar に表示する label (= "delete sub: foo/sub/bar" 等)。 */
 export const [deleteHintLabel, setDeleteHintLabel] = createSignal('')
 
 // =============================================================================
@@ -70,7 +70,7 @@ export const [deleteHintLabel, setDeleteHintLabel] = createSignal('')
 
 /** lane number mode hint bar の visible state。 Shell.tsx で render。 */
 export const [laneSelectHintVisible, setLaneSelectHintVisible] = createSignal(false)
-/** lane number mode hint bar に表示する候補 lane の一覧 (= "1. repo/root  2. repo/performer/foo  ...")。 */
+/** lane number mode hint bar に表示する候補 lane の一覧 (= "1. repo/root  2. repo/sub/foo  ...")。 */
 export const [laneSelectHintLabel, setLaneSelectHintLabel] = createSignal('')
 
 // =============================================================================

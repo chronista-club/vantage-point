@@ -1,4 +1,4 @@
-//! Lane state types — repo が持つ Lane (Conductor/Performer) の data model
+//! Lane state types — repo が持つ Lane (Main/Sub) の data model
 //!
 //! 関連 memory:
 //! - `mem_1CaSrCxysdGaaSsN4Dvxth` (VP Architecture: 3 段 Agent scope + Lane semantic)
@@ -20,14 +20,14 @@
 //! - Runner 🌿 (planned PR-γ で Lane 移管予定、 LaneComponent impl 追加)
 //!
 //! Repo scope の Agent pool (`repo_components_state.rs`) は runner / external-control のみ host していた (PR-β-2 後、現在は縮退済)。
-//! Lane は **Conductor/Performer の PTY セッション + Agent container** に集中:
-//! - Conductor 1 / repo (固定)、agent = "claude" / "shell" / "tmux"
-//! - Performer 0..n / repo (可変、lane clone)、agent 同上
+//! Lane は **Main/Sub の PTY セッション + Agent container** に集中:
+//! - Main 1 / repo (固定)、agent = "claude" / "shell" / "tmux"
+//! - Sub 0..n / repo (可変、lane clone)、agent 同上
 //!
 //! ## Phase A4-2b スコープ
 //!
-//! `LanePool::with_root` で Conductor Lane 1 つ pre-populate。
-//! Performer create / destroy / Agent 切替は A4-4 / A5 で実装。
+//! `LanePool::with_root` で Main Lane 1 つ pre-populate。
+//! Sub create / destroy / Agent 切替は A4-4 / A5 で実装。
 
 use std::collections::HashMap;
 use std::fmt;
@@ -79,11 +79,11 @@ impl fmt::Display for LaneId {
     }
 }
 
-// doc 44 P2: `LaneKind`（Conductor / Performer）は撤去。
+// doc 44 P2: `LaneKind`（Main / Sub）は撤去。
 //
 // D4「lane 自身は役割状態を持たない」— lane は全て対等になり、開発起点は
 // [`ROOT_LANE_NAME`] の予約名（将来は Host が持つポインタ）で表される。
-// 旧 kind の唯一の実質は「conductor は repo に 1 本・worktree を持たない」だが、
+// 旧 kind の唯一の実質は「main は repo に 1 本・worktree を持たない」だが、
 // それは **名前の一意性**（1 repo に同名 lane は 1 本）で既に表現されている。
 
 // `LaneComponent` enum は doc 11 (PR-B) で削除。 agent 識別子は `String` に統一
@@ -152,11 +152,11 @@ impl LaneLifecycle {
 
 /// 開発起点 lane の予約名（doc 44 D4）。
 ///
-/// 旧 `LaneKind::Conductor` の後継だが、**役割ではなく名前**である点が違う。
-/// lane 側に「自分は conductor だ」という状態はなく、この名前を持つ lane が
+/// 旧 `LaneKind::Main` の後継だが、**役割ではなく名前**である点が違う。
+/// lane 側に「自分は main だ」という状態はなく、この名前を持つ lane が
 /// たまたま開発起点である、という関係に退化した（P3 で Host のポインタに移る）。
 ///
-/// この名前は `LaneAddress` の Display 形が旧 conductor と一致する（`<repo>/root`）
+/// この名前は `LaneAddress` の Display 形が旧 main と一致する（`<repo>/root`）
 /// ように選んである — 既存の永続 address / wire を無傷で引き継ぐため。
 ///
 /// **定義は `vp-paths` が唯一**（2026-07-21）。vp-app が同名定数を独自に持っていて
@@ -169,21 +169,21 @@ pub use vp_paths::ROOT_LANE_NAME;
 /// 表示形 (`Display` 実装): `"<repo>/<name>"`  例: `"vp/root"` / `"vp/foo"`
 ///
 /// doc 44 P2（フラット化）: 旧 `{ repo, kind, name: Option<String> }` の 3-tuple から
-/// **`{ repo, name }` の 2-tuple** になった。旧構造は conductor だけ `name: None` という
+/// **`{ repo, name }` の 2-tuple** になった。旧構造は main だけ `name: None` という
 /// 非対称を抱えており、それが「lane が役割を自意識する」構造の物理形だった（D4）。
 ///
-/// ⚠️ performer の表示形が `<repo>/performer/<name>` → `<repo>/<name>` に変わる。
+/// ⚠️ sub の表示形が `<repo>/sub/<name>` → `<repo>/<name>` に変わる。
 /// DB / session.json に残る旧形は [`LanePool::parse_address`] が受理して新形に正規化する
-/// （lead/wing → root/performer の rename 時と同じ手当て）。
+/// （lead/wing → root/sub の rename 時と同じ手当て）。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct LaneAddress {
     pub repo: String,
     /// lane 名（人間可読、例: "foo"）。開発起点は [`ROOT_LANE_NAME`]。
     ///
     /// `default` は P2 以前に永続した descriptor を読むための互換。旧 `LaneAddress` は
-    /// conductor だけ `name` を持たず（`skip_serializing_if` で省略）、DB の `lane.descriptor`
-    /// にその形で入っている。既定値を予約名にすると、旧 conductor レコードは name 欠落 →
-    /// `"root"`、旧 performer は `name: "foo"` がそのまま読める（余分な `kind` は
+    /// main だけ `name` を持たず（`skip_serializing_if` で省略）、DB の `lane.descriptor`
+    /// にその形で入っている。既定値を予約名にすると、旧 main レコードは name 欠落 →
+    /// `"root"`、旧 sub は `name: "foo"` がそのまま読める（余分な `kind` は
     /// unknown field として無視される）ので、**custom Deserialize なしで旧形が全部読める**。
     #[serde(default = "default_lane_name")]
     pub name: String,
@@ -208,11 +208,11 @@ impl LaneAddress {
         Self::new(repo, ROOT_LANE_NAME)
     }
 
-    /// 名前付き lane を構築する（旧 performer）。
+    /// 名前付き lane を構築する（旧 sub）。
     ///
     /// 旧 API 名を残しているのは呼び出し 100 箇所超の互換のため。フラット化後は
-    /// [`Self::new`] と完全に同義で、「performer という種別」はもう存在しない。
-    pub fn performer(repo: impl Into<String>, name: impl Into<String>) -> Self {
+    /// [`Self::new`] と完全に同義で、「sub という種別」はもう存在しない。
+    pub fn sub(repo: impl Into<String>, name: impl Into<String>) -> Self {
         Self::new(repo, name)
     }
 
@@ -331,15 +331,15 @@ pub struct LaneInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     pub cwd: String,
-    /// Phase 5-D: Performer のみ embed (Conductor は git workspace を持たない設計)。
-    /// `cwd` から `lane::commands::performer_status()` を呼んで populate。
+    /// Phase 5-D: Sub のみ embed (Main は git workspace を持たない設計)。
+    /// `cwd` から `lane::commands::sub_status()` を呼んで populate。
     /// `/api/lanes` 応答時に lazy 取得 (registry には保存しない、 git 状態は volatile)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub performer_status: Option<crate::lane::commands::PerformerStatus>,
+    pub sub_status: Option<crate::lane::commands::SubStatus>,
     /// R3-b → doc 39 §3-1: この lane の **root session** の CC session id（wire 配送は常に
     /// root = lane の人格に解決する）。 registry には保存せず `/api/lanes` 応答時に root
     /// session の state file (`lane::cc_session`、 書き手は SessionStart/UserPromptSubmit hook)
-    /// を lazy read する (`performer_status` と同じ前例)。 conversation の `--resume` 再利用と
+    /// を lazy read する (`sub_status` と同じ前例)。 conversation の `--resume` 再利用と
     /// R3-c の `--bg` session 管理の土台。
     ///
     /// ⚠️ **claude 専用の契約**: delivery_actor（channel D）が `claude -p --resume <id>` に
@@ -377,7 +377,7 @@ pub struct LaneInfo {
     /// FSM 投影 (2026-07-11): dev-flow FSM (`flow::derive_flow_state`) の現在 state。
     /// **daemon が vp-app への snapshot 送信時に enrich する derive 値** — repo / lane_registry /
     /// db では常に `None` (derive できるものは store しない原則)。 source は wire store
-    /// (latest msg + 未 ack needs_user) + performer_status で、 `vp flow progress` と同一判定。
+    /// (latest msg + 未 ack needs_user) + sub_status で、 `vp flow progress` と同一判定。
     /// serde default + skip で旧 SP / 旧 client と wire 完全互換。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flow_state: Option<crate::flow::FlowState>,
@@ -501,7 +501,7 @@ impl LaneInfo {
     }
 }
 
-/// Lane Pool — Conductor/Performer registry
+/// Lane Pool — Main/Sub registry
 ///
 /// memory rule: Lane scope は HD/TH 専用。Repo scope の Agent は別 module。
 ///
@@ -696,7 +696,7 @@ impl LanePool {
         Self::default()
     }
 
-    /// Repo 起動時に Conductor Lane を 1 つ pre-populate (Conversation default)
+    /// Repo 起動時に Main Lane を 1 つ pre-populate (Conversation default)
     ///
     /// **A5-2**: agent_spawner で command 構築 → PtySlot::spawn で実 process 起動。
     /// spawn 失敗時は graceful degrade (state=Dead、 pty_slots に entry なし) で
@@ -712,14 +712,14 @@ impl LanePool {
         // PR-pre2 (VP-118): "hd" → "claude" rename。 mise task `vp:agent:echoes` (旧 hd)。
         let agent_name = "claude";
 
-        // doc 54 §8-11: conductor の**初回作成**（registry file 不在 = 一度も仕込みを持って
+        // doc 54 §8-11: main の**初回作成**（registry file 不在 = 一度も仕込みを持って
         // いない）は既定レンズを書く。with_root は毎 boot 呼ばれるので、file 不在を生成契機と
         // みなす — 以降の boot は既存 file を honor（= user の mode 切替が boot で戻らない）。
         if !session_registry::exists(&repo_id, "root") {
             let mode = session_registry::default_mode_for_agent(agent_name);
             if let Err(e) = session_registry::set_root_mode(&repo_id, "root", agent_name, mode) {
                 tracing::warn!(
-                    "conductor 既定レンズの永続失敗（Tui 相当で継続）: repo={repo_id} err={e}"
+                    "main 既定レンズの永続失敗（Tui 相当で継続）: repo={repo_id} err={e}"
                 );
             }
         }
@@ -731,7 +731,7 @@ impl LanePool {
         // server.rs 自身が「restructure したいが不可」とコメントを残していた場所でもある。
         // 立てる仕事を reconcile に渡すと、その制約ごと消える。
         let info = LaneInfo {
-            // I1: conductor の安定 id を address (repo, "root") で load_or_create
+            // I1: main の安定 id を address (repo, "root") で load_or_create
             id: crate::lane::lane_id::load_or_create(&repo_id, "root"),
             address: addr.clone(),
             // 代表値は reconcile が実体から導出して上書きする（doc 53 §3.3）。
@@ -740,8 +740,8 @@ impl LanePool {
             created_at: chrono::Utc::now().to_rfc3339(),
             pid: None,
             cwd,
-            // Conductor は git workspace 持たない (= repo root が cwd)、 performer_status は None
-            performer_status: None,
+            // Main は git workspace 持たない (= repo root が cwd)、 sub_status は None
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -752,10 +752,10 @@ impl LanePool {
         pool
     }
 
-    /// Lane 一覧を **Conductor 先頭、 続いて Performer を生成順 (created_at 昇順)** で返す。
+    /// Lane 一覧を **Main 先頭、 続いて Sub を生成順 (created_at 昇順)** で返す。
     ///
     /// 内部 `lanes` は `HashMap` のため iter 順は non-deterministic (process ごとに異なる
-    /// hash seed)。 sidebar の表示要件 「Root/Conductor が一番上、 その下は生成時順」 を満たす
+    /// hash seed)。 sidebar の表示要件 「Root/Main が一番上、 その下は生成時順」 を満たす
     /// ため、 list() で sort して contract に order を含める。
     ///
     /// `created_at` は ISO 8601 文字列 (UTC fixed) なので String::cmp で時刻順が取れる
@@ -822,7 +822,7 @@ impl LanePool {
 
     /// Phase 3-A: 既に spawn 済の PtySlot を (lane, session) 紐付けで insert。
     ///
-    /// `session=None` は root（[`Self::slot_session`]）。boot / restart / performer spawn の
+    /// `session=None` は root（[`Self::slot_session`]）。boot / restart / sub spawn の
     /// 既存経路はすべて lane の代表 slot を立てるので `None` を渡す。
     ///
     /// ⚠️ **ここは配線であって門番ではない**（法の check は持たない — 既存 entry があれば
@@ -1037,7 +1037,7 @@ impl LanePool {
         transitioned
     }
 
-    /// Lane の Conductor Agent (= PtySlot の child process) を kill + 再 spawn する。
+    /// Lane の Main Agent (= PtySlot の child process) を kill + 再 spawn する。
     ///
     /// 同 Lane の cwd / agent を維持したまま child process だけ作り直す。
     /// (例: HD Lane なら shell を立て直し → `claude --continue || claude` を再 inject)
@@ -1169,21 +1169,21 @@ impl LanePool {
         Ok(())
     }
 
-    /// Display 形 (`"<repo>/root"` / `"<repo>/performer/<name>"`) をパースして LaneAddress を作る。
+    /// Display 形 (`"<repo>/root"` / `"<repo>/sub/<name>"`) をパースして LaneAddress を作る。
     /// vp-app の sidebar から `lane:select` IPC の address (= `lane_address_key`) を逆変換するために使う。
     pub fn parse_address(s: &str) -> Option<LaneAddress> {
         let parts: Vec<&str> = s.splitn(3, '/').collect();
         match parts.as_slice() {
-            // 旧 "lead" は開発起点の旧名 (conductor rename 前の session.json / wire address 互換)。
+            // 旧 "lead" は開発起点の旧名 (main rename 前の session.json / wire address 互換)。
             [repo, "lead"] if !repo.is_empty() => Some(LaneAddress::root(*repo)),
             // canonical: "<repo>/<name>" (doc 44 P2 フラット化後)
             [repo, name] if !repo.is_empty() && !name.is_empty() => {
                 Some(LaneAddress::new(*repo, *name))
             }
-            // 旧 3 分節形 "<repo>/performer/<name>" (P2 以前の永続 address / wire) を
-            // 新形に正規化して受理する。lead/wing → root/performer の rename 時と同じ手当て
+            // 旧 3 分節形 "<repo>/sub/<name>" (P2 以前の永続 address / wire) を
+            // 新形に正規化して受理する。lead/wing → root/sub の rename 時と同じ手当て
             // で、DB (`lane` / `lane_lifecycle` の address 列) と session.json を無傷で引き継ぐ。
-            [repo, "performer" | "wing", name] if !repo.is_empty() && !name.is_empty() => {
+            [repo, "sub" | "wing", name] if !repo.is_empty() && !name.is_empty() => {
                 Some(LaneAddress::new(*repo, *name))
             }
             _ => None,
@@ -2217,7 +2217,7 @@ impl LanePool {
             .lock()
             .map_err(|_| anyhow::anyhow!("PtySlot mutex poisoned: {} (session={})", addr, key))?;
         slot.resize(cols, rows)?;
-        // attach 不在 (= spawn 失敗 / 未配線 Performer 経路) は静かに skip
+        // attach 不在 (= spawn 失敗 / 未配線 Sub 経路) は静かに skip
         if let Some(term_attach) = self.term_attaches.get(addr).and_then(|m| m.get(&key)) {
             term_attach.resize(cols, rows);
         }
@@ -2296,7 +2296,7 @@ mod tests {
             created_at: "2026-07-10T00:00:00Z".to_string(),
             pid: None,
             cwd: "/tmp".to_string(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -2323,7 +2323,7 @@ mod tests {
         crate::repo::lane_reconcile::reconcile_lane(pool, &pumps, &router, addr).await
     }
 
-    /// doc 54 §8-11: conductor の初回作成（registry 不在）は既定レンズ（Chat）で立ち、
+    /// doc 54 §8-11: main の初回作成（registry 不在）は既定レンズ（Chat）で立ち、
     /// PTY を立てない（engine-less / Running = chat-idle の正常形）。2 回目以降の boot は
     /// 既存 registry を honor する — 生成の既定であって毎 boot の強制ではない（壊し方②:
     /// これが「不在なら書く」の gate 無しだと、user の mode 切替が boot のたびに Chat へ戻る）。
@@ -2339,7 +2339,7 @@ mod tests {
             SessionMode::Gui,
             "初回作成は既定レンズ Chat（われわれの ChatView）"
         );
-        let info = pool.get(&addr).expect("conductor 登録");
+        let info = pool.get(&addr).expect("main 登録");
         assert_eq!(info.pid, None, "chat boot は engine-less（PTY を立てない）");
         assert_eq!(info.state, LaneState::Running, "chat-idle は正常形");
         drop(pool);
@@ -2959,7 +2959,7 @@ mod tests {
         // root は「誰が lane の代表か」で mode（見え方）とは直交する — root=chat のまま
         // 別 session を代表にしたいのは正当な要求（当初 tui 限定にしたのは「最初は tui しか
         // 安定していなかったから」= mako 2026-07-25）。残る制限は engine の有無だけ。
-        let chat = LaneAddress::performer("vp", "chatty");
+        let chat = LaneAddress::sub("vp", "chatty");
         insert_chat_lane(&mut pool, &chat);
         session_registry::create("vp", "chatty", "claude", "claude", SessionMode::Gui, false)
             .expect("chatty に #2 を作る");
@@ -2983,7 +2983,7 @@ mod tests {
     #[test]
     fn moving_root_updates_the_restart_predicate() {
         let _state = crate::test_env::state_dir();
-        let addr = LaneAddress::performer("vp", "proj");
+        let addr = LaneAddress::sub("vp", "proj");
         let mut pool = LanePool::new();
 
         // root=chat の lane に、engine 持ちの非 root tui session を足す。
@@ -3036,7 +3036,7 @@ mod tests {
     fn lane_address_display_is_flat() {
         // doc 44 P2: 表示形は `<repo>/<name>` 一本。開発起点は予約名なので旧形と一致する。
         assert_eq!(LaneAddress::root("vp").to_string(), "vp/root");
-        assert_eq!(LaneAddress::performer("vp", "foo").to_string(), "vp/foo");
+        assert_eq!(LaneAddress::sub("vp", "foo").to_string(), "vp/foo");
     }
 
     // deliver_nudge の並行 interleave 防止 (#674 race) の要は「同一 lane が同じ lock を共有し、
@@ -3087,7 +3087,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lane_pool_with_conductor_pre_populates_one_lane() {
+    async fn lane_pool_with_main_pre_populates_one_lane() {
         // ⚠️ **guard 必須**: `with_root` は registry file が無ければ既定レンズ（Chat）を書く。
         // guard 無しだと **開発機の実 state（`~/.local/state/vp/`）に repo "vp" の registry を
         // 書き込み**、同時に走る他 test（同じ repo 名を使う）の intent を Chat に化けさせる
@@ -3108,35 +3108,34 @@ mod tests {
     /// 代わりに固定すべきは「**P2 以前に永続した descriptor が読めること**」になった。
     #[test]
     fn legacy_lane_address_deserializes() {
-        // 旧 conductor: name 省略 + kind field あり → 予約名に落ちる
-        let conductor: LaneAddress =
-            serde_json::from_str(r#"{"repo":"vp","kind":"root"}"#).unwrap();
-        assert_eq!(conductor, LaneAddress::root("vp"));
-        assert!(conductor.is_root());
+        // 旧 main: name 省略 + kind field あり → 予約名に落ちる
+        let main: LaneAddress = serde_json::from_str(r#"{"repo":"vp","kind":"root"}"#).unwrap();
+        assert_eq!(main, LaneAddress::root("vp"));
+        assert!(main.is_root());
 
-        // 旧 performer: name あり + kind field は unknown として無視される
-        let performer: LaneAddress =
-            serde_json::from_str(r#"{"repo":"vp","kind":"performer","name":"foo"}"#).unwrap();
-        assert_eq!(performer, LaneAddress::new("vp", "foo"));
-        assert!(!performer.is_root());
+        // 旧 sub: name あり + kind field は unknown として無視される
+        let sub: LaneAddress =
+            serde_json::from_str(r#"{"repo":"vp","kind":"sub","name":"foo"}"#).unwrap();
+        assert_eq!(sub, LaneAddress::new("vp", "foo"));
+        assert!(!sub.is_root());
 
         // 新形（kind なし）
         let flat: LaneAddress = serde_json::from_str(r#"{"repo":"vp","name":"bar"}"#).unwrap();
         assert_eq!(flat, LaneAddress::new("vp", "bar"));
     }
 
-    /// 旧 3 分節 address 文字列（`<repo>/performer/<name>`）が新形に正規化されること。
+    /// 旧 3 分節 address 文字列（`<repo>/sub/<name>`）が新形に正規化されること。
     #[test]
     fn legacy_address_string_normalizes() {
         assert_eq!(
-            LanePool::parse_address("vp/performer/foo").unwrap(),
+            LanePool::parse_address("vp/sub/foo").unwrap(),
             LaneAddress::new("vp", "foo")
         );
         assert_eq!(
             LanePool::parse_address("vp/wing/foo").unwrap(),
             LaneAddress::new("vp", "foo")
         );
-        // 旧 conductor 名 "lead" も予約名に寄る
+        // 旧 main 名 "lead" も予約名に寄る
         assert_eq!(
             LanePool::parse_address("vp/lead").unwrap(),
             LaneAddress::root("vp")
@@ -3151,12 +3150,12 @@ mod tests {
     #[test]
     fn lane_info_worker_status_alias_rejected() {
         // `worker_status` serde alias 削除の回帰ガード。
-        // 旧 SP が `worker_status` キーで送ってきても、 新 repo は performer_status: None として扱う
+        // 旧 SP が `worker_status` キーで送ってきても、 新 repo は sub_status: None として扱う
         // (= 情報損失は許容、 crash やパース失敗より優先)。
         // `#[serde(default)]` が残っているので unknown field は無視され None になる。
         let json = r#"{
-            "address": {"repo": "vp", "kind": "performer", "name": "foo"},
-            "kind": "performer",
+            "address": {"repo": "vp", "kind": "sub", "name": "foo"},
+            "kind": "sub",
             "name": "foo",
             "state": "running",
             "agent": "claude",
@@ -3166,22 +3165,22 @@ mod tests {
         }"#;
         let info: LaneInfo = serde_json::from_str(json).expect("パース自体は成功する");
         assert!(
-            info.performer_status.is_none(),
-            "worker_status キーは performer_status に流れ込まない (alias 削除済)"
+            info.sub_status.is_none(),
+            "worker_status キーは sub_status に流れ込まない (alias 削除済)"
         );
     }
 
     #[test]
-    fn parse_address_conductor_and_performer() {
-        let conductor = LanePool::parse_address("vp/root").unwrap();
-        assert_eq!(conductor, LaneAddress::root("vp"));
+    fn parse_address_main_and_sub() {
+        let main = LanePool::parse_address("vp/root").unwrap();
+        assert_eq!(main, LaneAddress::root("vp"));
 
-        let performer = LanePool::parse_address("vp/performer/foo").unwrap();
-        assert_eq!(performer, LaneAddress::performer("vp", "foo"));
+        let sub = LanePool::parse_address("vp/sub/foo").unwrap();
+        assert_eq!(sub, LaneAddress::sub("vp", "foo"));
 
         // CJK / kebab-case repo name も通る
-        let conductor2 = LanePool::parse_address("vantage-point/root").unwrap();
-        assert_eq!(conductor2, LaneAddress::root("vantage-point"));
+        let main2 = LanePool::parse_address("vantage-point/root").unwrap();
+        assert_eq!(main2, LaneAddress::root("vantage-point"));
 
         // doc 44 P2: `vp/foo` は「未知 kind」ではなく **name が foo の lane** になった。
         assert_eq!(
@@ -3193,11 +3192,11 @@ mod tests {
         assert!(LanePool::parse_address("vp").is_none()); // / 無し
         assert!(LanePool::parse_address("/root").is_none()); // repo 空
         assert!(LanePool::parse_address("vp/").is_none()); // name 空
-        assert!(LanePool::parse_address("vp/performer/").is_none()); // 旧形の name 空
-        // 旧 "worker" token は受理しない（3 分節の互換は performer/wing のみ）
+        assert!(LanePool::parse_address("vp/sub/").is_none()); // 旧形の name 空
+        // 旧 "worker" token は受理しない（3 分節の互換は sub/wing のみ）
         assert!(LanePool::parse_address("vp/worker/foo").is_none());
 
-        // 後方互換: root/performer rename 前の "lead"/"wing" address も受理する
+        // 後方互換: root/sub rename 前の "lead"/"wing" address も受理する
         // (既存 session.json の active lane / 既存 wire address を orphan にしないため)
         assert_eq!(
             LanePool::parse_address("vp/lead").unwrap(),
@@ -3205,7 +3204,7 @@ mod tests {
         );
         assert_eq!(
             LanePool::parse_address("vp/wing/bar").unwrap(),
-            LaneAddress::performer("vp", "bar")
+            LaneAddress::sub("vp", "bar")
         );
     }
 
@@ -3235,13 +3234,13 @@ mod tests {
         // Diff::Add { payload: LaneInfo } の wire 形式 + decode
         let info = LaneInfo {
             id: Default::default(),
-            address: LaneAddress::performer("vp", "sub"),
+            address: LaneAddress::sub("vp", "sub"),
             state: LaneState::Running,
             agent: "hd".to_string(),
             created_at: "2026-05-01T00:00:00Z".to_string(),
             pid: Some(12345),
             cwd: "/tmp".to_string(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -3267,7 +3266,7 @@ mod tests {
     #[test]
     fn lane_diff_remove_serde_round_trip() {
         // Diff::Remove { id: LaneAddress } で id のみ送る wire 形式
-        let addr = LaneAddress::performer("vp", "osc");
+        let addr = LaneAddress::sub("vp", "osc");
         let diff: LaneDiff = Diff::Remove { id: addr.clone() };
         let json = serde_json::to_string(&diff).unwrap();
         assert!(json.contains("\"kind\":\"remove\""), "got: {}", json);
@@ -3293,7 +3292,7 @@ mod tests {
             created_at: "2026-05-01T00:00:00Z".to_string(),
             pid: None,
             cwd: "/tmp".to_string(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,

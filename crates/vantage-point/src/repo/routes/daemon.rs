@@ -97,7 +97,7 @@ pub(crate) fn resolve_create_lane_args(
 pub struct LanesQuery {
     /// Repo name filter (LaneAddress.repo)
     pub repo: Option<String>,
-    /// Lane name filter — Conductor は "root"、 Performer は name (例: "sub")
+    /// Lane name filter — Main は "root"、 Sub は name (例: "sub")
     pub lane: Option<String>,
     /// Agent kind filter — "claude" or "shell"
     pub agent: Option<String>,
@@ -105,7 +105,7 @@ pub struct LanesQuery {
 
 /// lane registry を filter + sort して返す — Unison `lanes/list` の実体。
 ///
-/// 順序: repo 名昇順 → 同 repo 内は開発起点 (root) 先 → 続いて Performer (created_at 昇順)。
+/// 順序: repo 名昇順 → 同 repo 内は開発起点 (root) 先 → 続いて Sub (created_at 昇順)。
 ///
 /// 全 repo の Lane を flatten して返すので、`vp ps` / sidebar が見る一覧はここが源。
 /// disconnect した repo の Lane は registry から消えるので、応答 = Currents 限定。
@@ -122,7 +122,7 @@ pub(crate) async fn collect_lanes(
         .flatten()
         .filter(|l| query.repo.as_deref().is_none_or(|p| l.address.repo == p))
         .filter(|l| {
-            // doc 44 P2: 旧 kind 分岐（conductor は "root"、performer は name と照合）は
+            // doc 44 P2: 旧 kind 分岐（main は "root"、sub は name と照合）は
             // フラット化で name 一本の比較に畳まれた（開発起点の name が予約名 "root"）。
             query.lane.as_deref().is_none_or(|n| l.address.name == n)
         })

@@ -198,7 +198,7 @@ mod tests {
     fn counts_lanes_per_repo_by_state() {
         let lanes = vec![
             serde_json::json!({"address": {"repo": "alpha", "kind": "root"}, "state": "running"}),
-            serde_json::json!({"address": {"repo": "alpha", "kind": "performer"}, "state": "dead"}),
+            serde_json::json!({"address": {"repo": "alpha", "kind": "sub"}, "state": "dead"}),
             serde_json::json!({"address": {"repo": "beta",  "kind": "root"}, "state": "running"}),
         ];
         let counts = count_lanes_by_repo_entries(&lanes);

@@ -40,10 +40,10 @@ wire messaging 全体の見取り図（store / category / ack 台帳 / federatio
 `docs/guide/messaging.md`。wire message の `body.kind` は dev-flow FSM の入力になる（taxonomy と
 FSM の詳細 = `docs/guide/dev-flow-primitives.md` §3）。特に:
 
-- **`needs_user`**: 「conductor では捌けない、**ユーザ本人**の意見が要る」相談を投げる時は
-  `body.kind = "needs_user"` + `body.category = "command"` で conductor 宛に送る。
-  受信側は**ユーザの回答を relay してから** `wire_ack` する — 未 ack の間、その performer は
-  `awaiting_user`（sidebar の needs-you 表示）のまま。conductor が自分で判断できる相談は
+- **`needs_user`**: 「main では捌けない、**ユーザ本人**の意見が要る」相談を投げる時は
+  `body.kind = "needs_user"` + `body.category = "command"` で main 宛に送る。
+  受信側は**ユーザの回答を relay してから** `wire_ack` する — 未 ack の間、その sub は
+  `awaiting_user`（sidebar の needs-you 表示）のまま。main が自分で判断できる相談は
   `question` を使い、needs_user は乱発しない（needs-you signal の希少性を守る）。
 
 ### GitNexus との読み替え

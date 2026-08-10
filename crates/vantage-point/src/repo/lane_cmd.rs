@@ -6,7 +6,7 @@
 //! `lane-spawn@<repo>` 経由は repo 再起動時の幽霊消費のため撤去、 詳細は
 //! [`crate::repo::lane_spawn_actor`] module doc)。
 //! 各 Cmd の処理は actor 内の `tokio::sync::Semaphore::new(N)` で gate された
-//! worker pool で並列実行 (= 内部 tokio worker pool、 Lane の performer とは別概念)。
+//! worker pool で並列実行 (= 内部 tokio worker pool、 Lane の sub とは別概念)。
 //!
 //! ## 関連
 //!
@@ -48,15 +48,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LaneCmd {
-    /// Performer Lane を spawn (= agent_spawner で PtySlot 起動 + LanePool insert)。
+    /// Sub Lane を spawn (= agent_spawner で PtySlot 起動 + LanePool insert)。
     ///
-    /// **1 Performer = 1 SpawnLane Cmd** に分解して actor の channel に流し、 actor が Semaphore で
+    /// **1 Sub = 1 SpawnLane Cmd** に分解して actor の channel に流し、 actor が Semaphore で
     /// gate しつつ並列処理する design。
     SpawnLane {
         /// LaneAddress.repo の値 (= lane repo prefix と一致する repo_id、
         /// `routes/lanes.rs::create_handler` の derivation と整合)
         repo_id: String,
-        /// Performer name (LaneAddress.name に入る)
+        /// Sub name (LaneAddress.name に入る)
         name: String,
         /// 起動 cwd (典型: `vp_data_dir()/lanes/<repo>-<name>/`)
         cwd: String,

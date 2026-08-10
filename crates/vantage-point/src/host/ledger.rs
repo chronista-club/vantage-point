@@ -20,8 +20,8 @@
 //!
 //! ## フォールバックの設計
 //!
-//! ポインタが無い / 指す lane が実在しない場合は予約名 `conductor` に落ちる。
-//! これは「推測」ではなく D4 が定めた既定値（conductor は残る）なので、Host の
+//! ポインタが無い / 指す lane が実在しない場合は予約名 `main` に落ちる。
+//! これは「推測」ではなく D4 が定めた既定値（main は残る）なので、Host の
 //! 「推測しない」原則には反しない。ただし **dangling は隠さず事実として返す**
 //! （[`OriginSource::Dangling`]）— 黙って既定に戻ると、指定したはずの起点が
 //! いつの間にか動いていたことに気付けない。
@@ -675,14 +675,14 @@ mod tests {
         let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
         db.define_schema().await.unwrap();
 
-        // conductor + performer の 2 本。performer を起点にできることが D4 の本体なので、
+        // main + sub の 2 本。sub を起点にできることが D4 の本体なので、
         // **答えが分岐する形**で組む（1 本だけだと全ケース同じ答えになり判別力ゼロ）。
         let mut lanes = LanePool::with_root("proj", "/tmp/proj").list();
-        let mut performer = lanes[0].clone();
-        performer.address = crate::repo::lanes_state::LaneAddress::new("proj", "feat-x");
-        performer.id = crate::repo::lanes_state::LaneId::generate();
-        let performer_id = performer.id.to_string();
-        lanes.push(performer);
+        let mut sub = lanes[0].clone();
+        sub.address = crate::repo::lanes_state::LaneAddress::new("proj", "feat-x");
+        sub.id = crate::repo::lanes_state::LaneId::generate();
+        let sub_id = sub.id.to_string();
+        lanes.push(sub);
 
         // 未設定 = 予約名（既定）
         assert_eq!(
@@ -690,10 +690,8 @@ mod tests {
             ROOT_LANE_NAME
         );
 
-        // 帳簿が performer を指せば起点が動く（= 予約名ではなくなる）
-        db.upsert_host_origin("/tmp/proj", &performer_id)
-            .await
-            .unwrap();
+        // 帳簿が sub を指せば起点が動く（= 予約名ではなくなる）
+        db.upsert_host_origin("/tmp/proj", &sub_id).await.unwrap();
         assert_eq!(
             origin_name_for_lanes(Some(&db), "/tmp/proj", &lanes).await,
             "feat-x",

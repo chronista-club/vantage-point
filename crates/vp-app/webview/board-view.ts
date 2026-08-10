@@ -17,7 +17,7 @@
  *
  * - **data**: module-local `states`（board キー → BoardViewState）+ `badges`（新着未読）。
  *   ⚠️ キーは **`(repo, lane)` の対**（`lane-panes.boardKeyOf` = `board-handler.boardKey`）。
- *   全 repo の root lane は同じ `'conductor'` を名乗るので、lane 名だけで持つと
+ *   全 repo の root lane は同じ `'main'` を名乗るので、lane 名だけで持つと
  *   「repo A で board を開いたまま B へ移ると B でも開いていて、float 位置まで共有される」
  * - **calculations**: `toggleOpen` / `toggleForm` / `initialFloatRect` / `clampRect` /
  *   `moveRect` / `resizeRect` — 純関数（vitest で固定）

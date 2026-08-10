@@ -18,12 +18,12 @@ import {
 	toggleSidebarForm,
 } from "../form";
 import type { SidebarForm } from "../form";
-import { isPerformerLane, laneAddressKey, laneShortcutNumber } from "../lane";
+import { isSubLane, laneAddressKey, laneShortcutNumber } from "../lane";
 import { PANEL_BUCKETS } from "../actions-panel/model";
 import { appendAction, openBuckets, toggleBucket } from "../actions-panel/store";
 import { focusActionRow } from "../actions-panel/ActionRow";
 import {
-	openAddPerformerFor,
+	openAddSubFor,
 	setCaptureHintLabel,
 	setCaptureHintVisible,
 	setDeleteHintLabel,
@@ -52,7 +52,7 @@ export function resolveRepoPathFromAddress(
 	return undefined;
 }
 
-/** address に対応する LaneInfo を逆引き（= isPerformerLane 判定等で必要）。 */
+/** address に対応する LaneInfo を逆引き（= isSubLane 判定等で必要）。 */
 function findLaneByAddress(address: string) {
 	const map = sidebar.lanes_by_repo ?? {};
 	for (const lanes of Object.values(map)) {
@@ -130,7 +130,7 @@ let laneSelectModeTargets: VisibleLane[] = [];
  * ⚠️ **畳んでいる repo も含める**。番号は repo の位置（[`laneShortcutNumber`]）なので、
  * 展開状態で動かない＝筋肉記憶が付く。畳んだ先を選んだ場合は選択が展開を促す。
  *
- * ⚠️ **performer lane は対象外**（mako 2026-08-09「root lane だけがショートカットを持つ」）。
+ * ⚠️ **sub lane は対象外**（mako 2026-08-09「root lane だけがショートカットを持つ」）。
  * 旧実装は展開中 repo の全 lane を上から数えており、repo を畳むだけで番号が総入れ替えになった。
  */
 function collectVisibleLanes(): VisibleLane[] {
@@ -145,7 +145,7 @@ function collectVisibleLanes(): VisibleLane[] {
 		(proc, repoIndex) => {
 		const number = laneShortcutNumber(repoIndex);
 		if (number === null) return; // 10 個目以降は番号を持たない
-		const root = (map[proc.path] ?? []).find((l) => !isPerformerLane(l));
+		const root = (map[proc.path] ?? []).find((l) => !isSubLane(l));
 		if (!root) return; // root 不在 = その番号は空席のまま（後続を繰り上げない）
 		out.push({
 			path: proc.path,
@@ -288,16 +288,16 @@ export function runRestart(): void {
 	console.debug("[directive r] active lane / agent なし、 skip");
 }
 
-/** `n` — active repo の AddPerformer form を keyboard で open。 */
-export function runNewPerformer(): void {
+/** `n` — active repo の AddSub form を keyboard で open。 */
+export function runNewSub(): void {
 	const path = activeRepoPath();
 	if (!path) {
 		console.warn("[directive n] active repo 不明、 form open skip");
 		return;
 	}
-	const opened = openAddPerformerFor(path);
+	const opened = openAddSubFor(path);
 	if (!opened) {
-		console.warn("[directive n] AddPerformer setter not registered for", path);
+		console.warn("[directive n] AddSub setter not registered for", path);
 	}
 }
 
@@ -308,10 +308,10 @@ export function runDelete(): void {
 	if (addr) {
 		const lane = findLaneByAddress(addr);
 		const path = resolveRepoPathFromAddress(addr);
-		if (lane && path && isPerformerLane(lane)) {
+		if (lane && path && isSubLane(lane)) {
 			target = { kind: "lane", path, address: addr };
 		} else {
-			console.debug("[directive d] target が Performer でない or path 不明、 skip");
+			console.debug("[directive d] target が Sub でない or path 不明、 skip");
 			return;
 		}
 	} else if (sidebar.active_component) {
@@ -340,7 +340,7 @@ export function runDelete(): void {
 	pendingDelete = { target, expireAt: Date.now() + DELETE_CONFIRM_WINDOW_MS };
 	const label =
 		target.kind === "lane"
-			? `⌘d again to delete performer: ${target.address}`
+			? `⌘d again to delete sub: ${target.address}`
 			: `⌘d again to delete repo: ${target.path}`;
 	setDeleteHintLabel(label);
 	setDeleteHintVisible(true);

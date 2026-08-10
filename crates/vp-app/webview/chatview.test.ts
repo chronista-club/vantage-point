@@ -966,7 +966,7 @@ describe('chatKey — lane と session が衝突なく畳める', () => {
   })
 
   it('別 lane は別 key', () => {
-    expect(chatKey('vp/root', 1)).not.toBe(chatKey('vp/performer/a', 1))
+    expect(chatKey('vp/root', 1)).not.toBe(chatKey('vp/sub/a', 1))
   })
 
   // key の分離が壊れる典型: 区切りが lane 名に現れうる文字だと、別の (lane, session) が
@@ -977,7 +977,7 @@ describe('chatKey — lane と session が衝突なく畳める', () => {
       ['vp/root', 21],
       ['vp:root', 1],
       ['vp/root 2', 1],
-      ['vp/performer/a#1', 2],
+      ['vp/sub/a#1', 2],
     ]
     const keys = pairs.map(([l, s]) => chatKey(l, s))
     expect(new Set(keys).size).toBe(pairs.length)

@@ -6,7 +6,7 @@
  * Rust 側 state に永続化する。 展開時の内容は repo state に応じた hint、 または Lane 行。
  *
  * PR-3: active repo (= 現在 active な Lane を含む repo) の summary 右上に
- * 「+」アイコンを出し、 click で Add Performer フォームを開閉する。
+ * 「+」アイコンを出し、 click で Add Sub フォームを開閉する。
  */
 import {
 	For,
@@ -25,8 +25,8 @@ import { isRunningProcess } from "./classify";
 import { laneAddressKey, laneConnector } from "./lane";
 import type { LaneInfo } from "../generated/LaneInfo";
 import { LaneRow } from "./LaneRow";
-import { AddPerformer } from "./AddPerformer";
-import { registerAddPerformerOpenSetter } from "./directive-state";
+import { AddSub } from "./AddSub";
+import { registerAddSubOpenSetter } from "./directive-state";
 import {
 	clearDrag,
 	commitRepoReorder,
@@ -91,7 +91,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 	// entry 不在（旧 daemon / 未取得）は "unregistered" 扱いで ○（dim）。
 	const presence = () =>
 		sidebar.activity.presence?.[props.proc.path] ?? "unregistered";
-	// active repo = 現在 active な Lane を含む repo。 Add Performer の「+」はこの時だけ出す。
+	// active repo = 現在 active な Lane を含む repo。 Add Sub の「+」はこの時だけ出す。
 	const isActiveRepo = () => {
 		const a = sidebar.active_lane_address;
 		return a != null && lanes().some((l) => laneAddressKey(l) === a);
@@ -115,13 +115,13 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 		prevWorking = working;
 	});
 
-	const [addPerformerOpen, setAddPerformerOpen] = createSignal(false);
-	// PR 445 `n` directive: keyboard で AddPerformer form を open するため、 RepoAccordion 内 local
+	const [addSubOpen, setAddSubOpen] = createSignal(false);
+	// PR 445 `n` directive: keyboard で AddSub form を open するため、 RepoAccordion 内 local
 	// signal を **module-scope registry** に export する。 directive 発火時に registry から
-	// setter を引いて open する経路 (= directive-state.ts::openAddPerformerFor)。
+	// setter を引いて open する経路 (= directive-state.ts::openAddSubFor)。
 	onMount(() => {
-		const unreg = registerAddPerformerOpenSetter(props.proc.path, (open) =>
-			setAddPerformerOpen(open),
+		const unreg = registerAddSubOpenSetter(props.proc.path, (open) =>
+			setAddSubOpen(open),
 		);
 		onCleanup(unreg);
 	});
@@ -139,11 +139,11 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 	// context menu の出し分けに使う (タブ分割は撤去済、 repo は 1 リストに留まる)。
 	const isPaused = () => !isRunningProcess(props.proc);
 
-	// Add Performer「+」を出す条件。 isActiveRepo だけだと、 一度 active にした repo を
+	// Add Sub「+」を出す条件。 isActiveRepo だけだと、 一度 active にした repo を
 	// Stop した後も active_lane_address / lanes_by_repo が残る (repo 停止で自動クリア
 	// されない) ため、 停止中でも true になりうる。 稼働中であることを明示的に AND して、
-	// 停止中 repo に「+」と Start「▶」が同居する / 失敗する Add Performer を開けるのを防ぐ。
-	const showAddPerformer = () => isActiveRepo() && !isPaused();
+	// 停止中 repo に「+」と Start「▶」が同居する / 失敗する Add Sub を開けるのを防ぐ。
+	const showAddSub = () => isActiveRepo() && !isPaused();
 
 	// 📁 repo ヘッダの右クリック → repo context menu。
 	//   - 一時停止中: Start repo (restart_process は dead な repo も起こす)
@@ -289,22 +289,22 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 					size={11}
 				/>
 				<span class="vp-proj-name">{props.proc.name}</span>
-				<Show when={showAddPerformer()}>
+				<Show when={showAddSub()}>
 					<button
-						class="vp-proj-addperformer"
-						classList={{ open: addPerformerOpen() }}
-						title="Add Performer"
+						class="vp-proj-addsub"
+						classList={{ open: addSubOpen() }}
+						title="Add Sub"
 						onClick={(e) => {
 							// summary click は <details> を toggle するので止める。
 							e.preventDefault();
 							e.stopPropagation();
-							setAddPerformerOpen((v) => !v);
+							setAddSubOpen((v) => !v);
 						}}
 					>
 						<CreoIcon name="ph:plus" size={12} />
 					</button>
 				</Show>
-				{/* 停止中 repo の起動 affordance。 「+」(showAddPerformer) は稼働中限定
+				{/* 停止中 repo の起動 affordance。 「+」(showAddSub) は稼働中限定
             なので、 停止中のこの「▶」とは同居しない。 */}
 				<Show when={isPaused()}>
 					<button
@@ -343,10 +343,10 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 									/>
 								)}
 							</For>
-							<Show when={addPerformerOpen()}>
-								<AddPerformer
+							<Show when={addSubOpen()}>
+								<AddSub
 									repoPath={props.proc.path}
-									onClose={() => setAddPerformerOpen(false)}
+									onClose={() => setAddSubOpen(false)}
 								/>
 							</Show>
 						</>

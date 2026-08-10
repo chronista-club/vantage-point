@@ -60,7 +60,7 @@ lane-segment  = [a-zA-Z0-9_-]+
 ### 4 階層 (= location 内 + actor)
 
 ```
-agent @ mako.chronista.club / vantage-point / performer / objrec
+agent @ mako.chronista.club / vantage-point / sub / objrec
   ^         ^                      ^             ^
   actor    daemon identity         repo       lane (multi-segment 可)
         (host = machine / user / hub)
@@ -71,19 +71,19 @@ agent @ mako.chronista.club / vantage-point / performer / objrec
 | **actor** | 受信 inbox の役割 (= "誰が読むか"、 default = `agent`) |
 | **daemon** | identity namespace (= machine / user / hub、 host segment) |
 | **repo** | VP repo (= self daemon に register された repo name、 reserved: `daemon`) |
-| **lane** | lane within repo (= multi-level、 `performer/objrec` 等) |
+| **lane** | lane within repo (= multi-level、 `sub/objrec` 等) |
 
 ### 4 layer matrix
 
 | address | layer | meaning | resolve |
 |---------|-------|---------|---------|
 | `agent` | self process | inbox-local | direct dispatch |
-| `vantage-point/root` | same machine | self daemon、 conductor lane の agent inbox | daemon registry (port lookup) |
+| `vantage-point/root` | same machine | self daemon、 main lane の agent inbox | daemon registry (port lookup) |
 | `notify@vantage-point/root` | same machine | OS notification trigger | local routing |
 | `mako/vantage-point/root` | Internet via hub | mako daemon、 hub-resolved | `hub.chronista.club` query (Phase 4+) |
 | `mako.chronista.club/vantage-point/root` | Internet (explicit hub URL) | full FQDN | hub URL inline |
 | `macbook.local/vantage-point/root` | LAN | mDNS resolve | `_vp._tcp.local` (Phase 3) |
-| `*@vantage-point/root` | broadcast | conductor lane 全 actor | local fanout |
+| `*@vantage-point/root` | broadcast | main lane 全 actor | local fanout |
 | `hermit_purple@machine` | self daemon (system) | daemon の actor | (reserved repo `daemon`) |
 | `hermit_purple@mako/daemon` | Internet | mako daemon's daemon | hub query |
 

@@ -174,23 +174,23 @@ describe("boardKeyOf（address → board キーの写像。'vp:board-view' / 'vp
 		// **両者が一致しなくなると board の中身と view 状態が無音で別々の箱を使い始める**。
 		expect(boardKeyOf("vantage-point/root")).toBe(boardKey("vantage-point", null));
 		expect(boardKeyOf("vantage-point/lead")).toBe(boardKey("vantage-point", null));
-		expect(boardKeyOf("vantage-point/performer/foo")).toBe(
+		expect(boardKeyOf("vantage-point/sub/foo")).toBe(
 			boardKey("vantage-point", "foo"),
 		);
 		expect(boardKeyOf("vantage-point/wing/bar")).toBe(boardKey("vantage-point", "bar"));
 	});
-	it("⚠️ repo が違えば別のキー（root lane は全 repo が 'conductor' を名乗る）", () => {
+	it("⚠️ repo が違えば別のキー（root lane は全 repo が 'main' を名乗る）", () => {
 		expect(boardKeyOf("vantage-point/root")).not.toBe(boardKeyOf("nexus/root"));
 		// 同名の Sub lane も repo をまたげば別物
-		expect(boardKeyOf("repo-a/performer/stack-land")).not.toBe(
-			boardKeyOf("repo-b/performer/stack-land"),
+		expect(boardKeyOf("repo-a/sub/stack-land")).not.toBe(
+			boardKeyOf("repo-b/sub/stack-land"),
 		);
 	});
 	it("同じ repo の同じ lane は同じキー（address の綴り違いを吸収する）", () => {
 		expect(boardKeyOf("vp/root")).toBe(boardKeyOf("vp/lead"));
-		expect(boardKeyOf("vp/performer/x")).toBe(boardKeyOf("vp/wing/x"));
+		expect(boardKeyOf("vp/sub/x")).toBe(boardKeyOf("vp/wing/x"));
 	});
-	it("未知形は その repo の conductor に倒す（board は最悪 conductor board に出す側）", () => {
+	it("未知形は その repo の main に倒す（board は最悪 main board に出す側）", () => {
 		expect(boardKeyOf("weird")).toBe(boardKey("weird", null));
 	});
 });
@@ -277,7 +277,7 @@ describe("enterShare（入場 share = 可視 raw 平均、creo-ui-layout admit �
 describe("lane scope（doc 47 §3: 構成は lane ごと）", () => {
 	it("scope key は lane ごとに分かれ、配置は独立に動く", () => {
 		const a = laneScope("proj/root");
-		const b = laneScope("proj/performer/w1");
+		const b = laneScope("proj/sub/w1");
 		expect(a).not.toBe(b);
 
 		layoutEngine.update(a, () => syncPaneColumns(initialLaneLayout(), [TERM, CHAT]));

@@ -55,7 +55,7 @@ C/D は CI に載せにくい。代わりに **agent 追加 PR の必須チェ�
 
 ### 起動
 
-- [ ] `add_performer(agent="<name>")` または GUI「+」で lane が立つ
+- [ ] `add_sub(agent="<name>")` または GUI「+」で lane が立つ
 - [ ] sidebar に正しい agent 名 / icon が出る
 - [ ] tui console に prompt / TUI が出る（login 待ちならその旨が分かる）
 - [ ] 未知 agent / CLI 不在時に **shell だけ残って死なない**（fail-open）
@@ -121,7 +121,7 @@ agent 内の agent に次を投げ、結果を下表に転記する（コピペ�
 | 3 | Write | OK | |
 | 4 | Delete | **NG** | `File deletion rejected`。Write 可・Delete 不可の非対称 |
 | 5 | GetMcpTools(vp) | OK | `serverStatus: ready` |
-| 6 | CallMcpTool vp/* | **NG** | 全て `User rejected MCP: vp-<tool>`（show / list_lanes / wire_inbox / flow_progress / add_performer / capture_canvas） |
+| 6 | CallMcpTool vp/* | **NG** | 全て `User rejected MCP: vp-<tool>`（show / list_lanes / wire_inbox / flow_progress / add_sub / capture_canvas） |
 | 7 | GetMcpTools と Call の乖離 | **バグ候補** | ready なのに call 全拒否 → 状態表示が嘘になる |
 | 8 | FetchMcpResource(vp) | **NG** | `-32601 resources/read`（未実装なら仕様として明記したい） |
 | 9 | Task（subagent） | OK | `probe-ok` |
@@ -211,6 +211,6 @@ server 一括のみ）ため、claude の can_use_tool（doc 35）と同型の b
 
 ## 自動化の次の一歩（まだやらない / やりたい）
 
-- [ ] 層 D を agent 内 agent が JSON で吐き、conductor が集約する smoke harness
+- [ ] 層 D を agent 内 agent が JSON で吐き、main が集約する smoke harness
 - [ ] CI では層 A のみ必須。層 C/D は release / dogfood checklist
 - [ ] `User rejected` と auto-block をエラー種別で分離（観測 6・仮説 1）

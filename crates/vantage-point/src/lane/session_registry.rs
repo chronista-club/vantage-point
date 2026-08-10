@@ -250,7 +250,7 @@ pub fn default_mode_for_agent(agent: &str) -> SessionMode {
 
 /// registry file が存在するか（= この lane が一度でも仕込みを持ったか）。
 ///
-/// doc 54 §8-11: conductor の「初回作成」検出に使う — with_root は毎 boot 呼ばれるため、
+/// doc 54 §8-11: main の「初回作成」検出に使う — with_root は毎 boot 呼ばれるため、
 /// 「file 不在 = 初回」を生成契機とみなして既定レンズを書く（以降の boot は既存 file を honor）。
 pub fn exists_in(base: &Path, repo: &str, lane: &str) -> bool {
     registry_file_in(base, repo, lane).exists()

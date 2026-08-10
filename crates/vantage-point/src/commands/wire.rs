@@ -378,8 +378,8 @@ async fn thread(message_id: &str) -> Result<()> {
 
 /// VP_REPO / VP_LANE の値から自 wire address を導出する (純関数、 R2-c)
 ///
-/// conductor → `agent@<repo>`、 performer → `agent@<repo>/<name>`
-/// (conversation task の lane_label と一致: conductor / performer 名 / unnamed)。
+/// main → `agent@<repo>`、 sub → `agent@<repo>/<name>`
+/// (conversation task の lane_label と一致: main / sub 名 / unnamed)。
 /// env 不足/空 = VP 外で起動された claude → None (hook は何もしない)。
 fn wire_address_from_env(repo: Option<&str>, lane: Option<&str>) -> Option<String> {
     let repo = repo.filter(|s| !s.is_empty())?;

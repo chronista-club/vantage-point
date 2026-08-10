@@ -98,7 +98,7 @@ pub struct AcpHostConfig {
     pub cwd: String,
     /// registry 書き込みキー（repo 名）。
     pub repo: String,
-    /// registry 書き込みキー（session label: `conductor` / `conductor#2` …）。
+    /// registry 書き込みキー（session label: `main` / `main#2` …）。
     /// ⚠️ env の `VP_LANE` には使わない — そちらは [`Self::lane_label`]（素の label）。
     pub lane: String,
     /// identity env（`VP_LANE`）用の素の lane label（doc 51 §1 A3b — tui と同じ契約）。
