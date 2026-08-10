@@ -66,7 +66,7 @@ impl Liveness {
 /// # なぜ `spawning` を含めないか
 ///
 /// `spawning` は主に **disk 由来の placeholder** で、`build_lanes_snapshot` が LanePool に
-/// 居ない intended performer を `Spawning(pid=null)` で merge した結果（#683 の手当て）。
+/// 居ない intended sub を `Spawning(pid=null)` で merge した結果（#683 の手当て）。
 /// これを稼働中に数えると、daemon が上がっている限り **disk 上の全 lane が稼働中**になり、
 /// 見送りが恒久的に無効化される（守り過ぎて機能が死ぬ = これも無音の失敗）。
 ///
@@ -171,7 +171,7 @@ mod tests {
 
     /// 回帰固定: **`spawning` を稼働中に数えない**。
     ///
-    /// `build_lanes_snapshot` は LanePool に居ない intended performer を `Spawning(pid=null)` で
+    /// `build_lanes_snapshot` は LanePool に居ない intended sub を `Spawning(pid=null)` で
     /// snapshot に merge する（#683）。これを稼働中に含めると、daemon が上がっている限り
     /// disk 上の全 lane が保護対象になり `vp lane cleanup` が恒久的に何もしなくなる。
     #[test]

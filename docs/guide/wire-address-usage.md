@@ -20,14 +20,14 @@ LAN MVP (Phase 0-3) 完成までは、 一部 example は **Phase X 実装後に
 ```
             host (DNS-like、 . で qualify)
             ↓
-agent  @  mako.chronista.club  /  vantage-point  /  performer  /  objrec
+agent  @  mako.chronista.club  /  vantage-point  /  sub  /  objrec
   ↑                                ↑                  ↑
 actor                            repo           lane (multi-segment 可)
 (default: agent)
 ```
 
 **最 minimal**: `vantage-point/root` (= `agent@vantage-point/root`)
-**最 verbose**: `agent@mako.chronista.club/vantage-point/performer/objrec`
+**最 verbose**: `agent@mako.chronista.club/vantage-point/sub/objrec`
 
 `@` 1 個 + `/` 階層 + `.` host DNS、 三役直交。 sidebar の lane label をそのまま address として使える。
 
@@ -40,10 +40,10 @@ actor                            repo           lane (multi-segment 可)
 ### 2.1 基本: send / watch
 
 ```bash
-# 同 machine、 vantage-point の conductor lane に送信 (default actor = agent)
+# 同 machine、 vantage-point の main lane に送信 (default actor = agent)
 vp wire send --to vantage-point/root --body "hello"
 
-# 同 machine、 vantage-point の conductor lane の agent inbox を watch
+# 同 machine、 vantage-point の main lane の agent inbox を watch
 # (受信 message を 1 行 JSON で stdout に出力、 Claude Code Monitor の subscription source 想定)
 vp wire watch --agent agent@vantage-point/root
 
@@ -60,7 +60,7 @@ vp wire send --to '*@vantage-point/root' --body "全員へ通知"
 # self daemon 内 cross-process (= 別 repo process、 wire R3 の best-effort forward)
 vp wire send --to creo-memories/root --body "hello from vantage-point"
 
-# v1 syntax (互換、 default lane = conductor)
+# v1 syntax (互換、 default lane = main)
 vp wire send --to agent@creo-memories --body "v1 形式 (互換動作)"
 ```
 
@@ -125,7 +125,7 @@ Vp.send_to("agent@mako/vantage-point/root", { msg: "via hub" })
 # daemon / repo context を fix して address 短縮
 Vp.with_daemon("mako.chronista.club") do |w|
   w.send_to("agent/vantage-point/root", payload1)
-  w.send_to("agent/vantage-point/performer/objrec", payload2)
+  w.send_to("agent/vantage-point/sub/objrec", payload2)
   # 同 hub への 2 件、 connection 1 個で済ます
 end
 ```
@@ -213,11 +213,11 @@ vp daemon trust remove <alias>
 
 | v1 で使っていた form | v3.1 でも valid? | 推奨 v3.1 form |
 |---------------------|------------------|----------------|
-| `agent@vantage-point` | ✅ そのまま valid (default lane = conductor) | `vantage-point/root` (lane 明示) または同左 |
+| `agent@vantage-point` | ✅ そのまま valid (default lane = main) | `vantage-point/root` (lane 明示) または同左 |
 | `*@vantage-point` | ✅ valid | `*@vantage-point/root` (lane 明示) |
 | `notify@vantage-point` | ✅ valid (default lane) | `notify@vantage-point/root` |
 | (なかった) | — | `vantage-point/root` (= actor 省略、 v3.1 新) |
-| (なかった) | — | `vantage-point/performer/objrec` (= per-lane、 v3.1 新) |
+| (なかった) | — | `vantage-point/sub/objrec` (= per-lane、 v3.1 新) |
 | (なかった) | — | `mako/vantage-point/root` (= cross-daemon、 v3.1 新) |
 
 **v1 user は何も変更不要**、 v3.1 features は opt-in。
@@ -273,7 +273,7 @@ $ vp wire send --to vantage-point/root --body "hello"
 
 ```
 ┌─────────────────────────┐
-│ 💬 Conductor 📨           ●  │  ← 📨 icon = 未読 message あり
+│ 💬 Main 📨           ●  │  ← 📨 icon = 未読 message あり
 │   sidebar-session-title │     ● = OSC 99 awaiting input (VP-142)
 └─────────────────────────┘
 ```
@@ -326,7 +326,7 @@ $ vp wire watch --agent agent@vantage-point/root
 macbook-b の vp-app sidebar:
 ```
 vantage-point
-├── 💬 Conductor 📨    ← 📨 (= 未読 1)
+├── 💬 Main 📨    ← 📨 (= 未読 1)
 └── (...)
 ```
 
@@ -338,35 +338,35 @@ vantage-point
 
 ### scenario
 
-performer lane で実装中の Claude が「conductor lane の Claude に lint result を投げる」 シナリオ。
+sub lane で実装中の Claude が「main lane の Claude に lint result を投げる」 シナリオ。
 
-### macbook-a の vantage-point/performer/code-1 lane で
+### macbook-a の vantage-point/sub/code-1 lane で
 
 ```bash
-# performer Claude が実行
+# sub Claude が実行
 $ cargo clippy --workspace 2>&1 | tee /tmp/clippy.txt
 $ vp wire send --to agent@vantage-point/root --body "$(cat /tmp/clippy.txt)"
 ```
 
-> MCP 経由なら performer Claude は `wire_send` tool を直接呼ぶ (CLI 不要)。
+> MCP 経由なら sub Claude は `wire_send` tool を直接呼ぶ (CLI 不要)。
 
 ### 同 machine の vantage-point/root lane で
 
-- vp-app sidebar の Conductor row に 📨 icon 表示
-- click → tooltip で「from agent@vantage-point/performer/code-1、 2 min ago、 lint result preview」
-- conductor Claude が `wire_recv` (MCP tool) で取得、 内容に応じて指示
+- vp-app sidebar の Main row に 📨 icon 表示
+- click → tooltip で「from agent@vantage-point/sub/code-1、 2 min ago、 lint result preview」
+- main Claude が `wire_recv` (MCP tool) で取得、 内容に応じて指示
 
 ### Ruby DSL 版 (Phase 5)
 
 ```ruby
-# performer
+# sub
 Vp.send_to("agent@vantage-point/root", {
   type: "lint_result",
   output: File.read("/tmp/clippy.txt"),
   ts: Time.now,
 })
 
-# conductor 側
+# main 側
 Vp.subscribe("agent@vantage-point/root") do |msg|
   next unless msg.payload[:type] == "lint_result"
   # ... handle lint result ...

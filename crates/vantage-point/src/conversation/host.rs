@@ -559,7 +559,7 @@ fn user_message_json(text: &str) -> String {
 }
 
 /// SessionInit で観測した session id を session registry に記録する（doc 40 §4 — 会話 id の
-/// SSOT は registry）。`lane` は host config の session label（`conductor` / `conductor#2`）
+/// SSOT は registry）。`lane` は host config の session label（`main` / `main#2`）
 /// なので registry の (lane, key) へ逆引きして書く。headless spawn に `|| claude` fallback は
 /// 無い（doc 33 C2 pre-flight 済み）ため guard 不要の無条件 authoritative 書き込み。
 fn record_session(repo: &str, lane: &str, session_id: &str) {

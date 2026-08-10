@@ -15,7 +15,7 @@
 //! 2. 配下の `.jsonl` から **最新 modified** を選択 (= 1 lane / 1 cwd 仮定)
 //! 3. file 内の **最後** の `{"type":"custom-title","customTitle":"..."}` entry を抽出
 //!
-//! 同 cwd に conductor + 同所の performer 等で複数 lane が並ぶ場合は collision risk あり、
+//! 同 cwd に main + 同所の sub 等で複数 lane が並ぶ場合は collision risk あり、
 //! Stage 2 (`--session-id <uuid>` 強制 inject) で解消予定。
 //!
 //! ## 参考

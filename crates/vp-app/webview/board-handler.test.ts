@@ -85,7 +85,7 @@ beforeEach(() => {
 // ============================================================================
 
 describe('BoardUpdated 受信', () => {
-  it('lane board（active=conductor）を受けて items/cursor が反映される', () => {
+  it('lane board（active=main）を受けて items/cursor が反映される', () => {
     handleMessage(boardUpdated('lane', null, [{ id: 'a', title: 'A' }]))
     const { items, cursor } = getCanvasState()
     expect(items).toHaveLength(1)
@@ -122,14 +122,14 @@ describe('lane 以外の scope は無視される（proj 撤去 2026-07-23）', 
 
 describe('lane board の lane 別保持', () => {
   it('複数 lane の board を保持し、 active lane のものを表示する（切替後も残る）', () => {
-    handleMessage(boardUpdated('lane', null, [{ id: 'cond' }])) // conductor
-    handleMessage(boardUpdated('lane', 'feat-api', [{ id: 'perf' }])) // performer
-    // active=conductor
+    handleMessage(boardUpdated('lane', null, [{ id: 'cond' }])) // main
+    handleMessage(boardUpdated('lane', 'feat-api', [{ id: 'perf' }])) // sub
+    // active=main
     expect(getCanvasState().items[0].id).toBe('cond')
-    // performer に切替
+    // sub に切替
     setActiveBoard('', 'feat-api')
     expect(getCanvasState().items[0].id).toBe('perf')
-    // conductor に戻すと board が残っている（retained を捨てない）
+    // main に戻すと board が残っている（retained を捨てない）
     setActiveBoard('', null)
     expect(getCanvasState().items[0].id).toBe('cond')
   })
@@ -141,7 +141,7 @@ describe('lane board の lane 別保持', () => {
 
 describe('board の同一性は (repo, lane) の対', () => {
   it('⚠️ board を持たない repo に切り替えたら空になる（前の repo の board が残らない）', () => {
-    // 全 repo の root lane は同じ 'conductor' を名乗る。repo 次元を落とすと 13 repo が
+    // 全 repo の root lane は同じ 'main' を名乗る。repo 次元を落とすと 13 repo が
     // 1 つの箱を奪い合い、**board 行を持たない repo で前の repo の board が出続けた**。
     handleMessage(boardUpdated('lane', null, [{ id: 'vp-item' }], null, 'vantage-point'))
     setActiveBoard('vantage-point', null)
@@ -220,7 +220,7 @@ describe('delete / clear は repo に IPC 依頼', () => {
     })
   })
 
-  it('conductor lane の delete は lane=null', () => {
+  it('main lane の delete は lane=null', () => {
     handleMessage(boardUpdated('lane', null, [{ id: 'x' }]))
     deleteItem('x')
     const payload = JSON.parse(ipcSpy.mock.calls[0][0] as string)

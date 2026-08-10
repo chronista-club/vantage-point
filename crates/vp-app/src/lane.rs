@@ -4,13 +4,13 @@
 //!
 //! ## 構造 (memory rule)
 //!
-//! - **Conductor Lane** (Repo あたり 1 つ固定) ─ 中身は `LaneComponent` (HD default | TH)
-//! - **Performer Lane** (Repo あたり n 個) ─ lane cloned worktree、中身は `LaneComponent`
+//! - **Main Lane** (Repo あたり 1 つ固定) ─ 中身は `LaneComponent` (HD default | TH)
+//! - **Sub Lane** (Repo あたり n 個) ─ lane cloned worktree、中身は `LaneComponent`
 //!
 //! ## 表示形 (人間可読)
 //!
-//! - Conductor: `"vantage-point/root"`
-//! - Performer: `"vantage-point/performer/foo"`
+//! - Main: `"vantage-point/root"`
+//! - Sub: `"vantage-point/sub/foo"`
 
 use std::fmt;
 
@@ -18,7 +18,7 @@ use std::fmt;
 #[cfg(test)]
 use ts_rs::TS;
 
-// doc 44 P2: `LaneKind`（Conductor / Performer）は撤去。server 側 `LaneKind` と対の型で、
+// doc 44 P2: `LaneKind`（Main / Sub）は撤去。server 側 `LaneKind` と対の型で、
 // 同じ理由で消える（D4「lane 自身は役割状態を持たない」）。
 
 /// 開発起点 lane の予約名（doc 44 D4）。
@@ -52,8 +52,8 @@ impl LaneAddress {
         Self::new(repo, ROOT_LANE_NAME)
     }
 
-    /// 名前付き Lane を構築（旧 performer）
-    pub fn performer(repo: impl Into<String>, name: impl Into<String>) -> Self {
+    /// 名前付き Lane を構築（旧 sub）
+    pub fn sub(repo: impl Into<String>, name: impl Into<String>) -> Self {
         Self::new(repo, name)
     }
 
@@ -73,7 +73,7 @@ impl fmt::Display for LaneAddress {
 ///
 /// `LaneAddress` (domain enum-based) と区別する役割:
 /// - **`LaneAddressWire`** = JSON 入口、 `kind` を String のまま保持 (vantage-point 側の
-///   "root"/"performer"/将来の任意値 をそのまま deserialize 受け)
+///   "root"/"sub"/将来の任意値 をそのまま deserialize 受け)
 /// - **`LaneAddress`** = domain 型、 `LaneKind` enum で型安全な分岐
 ///
 /// 比較・Display には:
@@ -93,7 +93,7 @@ pub struct LaneAddressWire {
     /// lane 名。開発起点は [`ROOT_LANE_NAME`]。
     ///
     /// doc 44 P2: `kind` を廃し `name` 必須に。`default` は P2 以前の payload / 永続 state
-    /// 互換で、旧 conductor は `name` を持たないため予約名に落ちる（server 側 `LaneAddress`
+    /// 互換で、旧 main は `name` を持たないため予約名に落ちる（server 側 `LaneAddress`
     /// の serde default と同じ手当て）。
     #[serde(default = "default_lane_name")]
     pub name: String,
@@ -111,7 +111,7 @@ impl LaneAddressWire {
     /// (active 比較に使うため、 byte-for-byte 同一が要件)。
     ///
     /// doc 44 P2 以前は kind に応じて 2 形（`<repo>/root` と
-    /// `<repo>/performer/<name>`）を出し分けており、`LaneAddress::Display` との
+    /// `<repo>/sub/<name>`）を出し分けており、`LaneAddress::Display` との
     /// 微妙な差（unknown kind の扱い）も抱えていた。フラット化で両者は同一の 1 形に畳まれ、
     /// この method と `LaneAddress::from(&wire).to_string()` は常に同じ文字列を返す。
     pub fn key(&self) -> String {
@@ -122,7 +122,7 @@ impl LaneAddressWire {
 /// Wire (JSON) 形から domain 形への変換。
 ///
 /// doc 44 P2: kind が消えたため、変換は純粋な field コピーになった（旧実装が抱えていた
-/// 「unknown kind は Conductor に collapse = 情報損失」も同時に消滅）。
+/// 「unknown kind は Main に collapse = 情報損失」も同時に消滅）。
 impl From<&LaneAddressWire> for LaneAddress {
     fn from(wire: &LaneAddressWire) -> Self {
         Self {
@@ -143,24 +143,24 @@ mod tests {
 
     #[test]
     fn lane_address_display() {
-        let conductor = LaneAddress::root("vantage-point");
-        assert_eq!(conductor.to_string(), "vantage-point/root");
-        assert!(conductor.is_root());
+        let main = LaneAddress::root("vantage-point");
+        assert_eq!(main.to_string(), "vantage-point/root");
+        assert!(main.is_root());
 
-        let performer = LaneAddress::performer("vantage-point", "foo");
+        let sub = LaneAddress::sub("vantage-point", "foo");
         // doc 44 P2: フラット化後の表示形は `<repo>/<name>`
-        assert_eq!(performer.to_string(), "vantage-point/foo");
-        assert!(!performer.is_root());
+        assert_eq!(sub.to_string(), "vantage-point/foo");
+        assert!(!sub.is_root());
     }
 
     #[test]
     fn lane_address_eq_hash() {
         // 同じ repo/name なら同一視 (HashMap key として使えること)
-        let a = LaneAddress::performer("vp", "foo");
-        let b = LaneAddress::performer("vp", "foo");
+        let a = LaneAddress::sub("vp", "foo");
+        let b = LaneAddress::sub("vp", "foo");
         assert_eq!(a, b);
 
-        let c = LaneAddress::performer("vp", "bar");
+        let c = LaneAddress::sub("vp", "bar");
         assert_ne!(a, c);
     }
 
@@ -168,11 +168,11 @@ mod tests {
     /// byte-for-byte 同一でなければならない (active 比較で使うため)。
     #[test]
     fn lane_address_wire_key_is_flat() {
-        let conductor = LaneAddressWire {
+        let main = LaneAddressWire {
             repo: "vantage-point".into(),
             name: "root".into(),
         };
-        assert_eq!(conductor.key(), "vantage-point/root");
+        assert_eq!(main.key(), "vantage-point/root");
 
         let named = LaneAddressWire {
             repo: "vp".into(),
@@ -184,7 +184,7 @@ mod tests {
     /// doc 44 P2: `key()` と `LaneAddress::from(&wire).to_string()` が一致すること。
     ///
     /// 旧実装では両者が微妙に食い違っていた（`key()` は kind 文字列を素通し、
-    /// `Display` は unknown kind を Conductor に collapse）。フラット化でこの差は消えた。
+    /// `Display` は unknown kind を Main に collapse）。フラット化でこの差は消えた。
     #[test]
     fn wire_key_and_domain_display_agree() {
         for name in ["root", "foo", "feat-x"] {
@@ -208,16 +208,16 @@ mod tests {
         assert!(!addr.is_root());
     }
 
-    /// P2 以前の payload（`name` を持たない conductor）が予約名に落ちること。
+    /// P2 以前の payload（`name` を持たない main）が予約名に落ちること。
     #[test]
-    fn legacy_wire_without_name_defaults_to_conductor() {
+    fn legacy_wire_without_name_defaults_to_main() {
         let w: LaneAddressWire = serde_json::from_str(r#"{"repo":"vp","kind":"root"}"#).unwrap();
         assert_eq!(w.name, ROOT_LANE_NAME);
         assert_eq!(w.key(), "vp/root");
 
-        // 旧 performer payload は name をそのまま引き継ぐ（`kind` は unknown field として無視）
+        // 旧 sub payload は name をそのまま引き継ぐ（`kind` は unknown field として無視）
         let p: LaneAddressWire =
-            serde_json::from_str(r#"{"repo":"vp","kind":"performer","name":"foo"}"#).unwrap();
+            serde_json::from_str(r#"{"repo":"vp","kind":"sub","name":"foo"}"#).unwrap();
         assert_eq!(p.key(), "vp/foo");
     }
 }

@@ -15,7 +15,7 @@
 //! - **calculations**: [`judge_farewell`] — 純関数。I/O ゼロなのでテストで全分岐を固定できる
 //! - **actions**: [`collect_facts`] — git subprocess で事実を集めるだけ。判定は一切しない
 //!
-//! 既存の `lane::commands::classify_performer_for_cleanup` はこの 3 つが 1 関数に混ざっており、
+//! 既存の `lane::commands::classify_sub_for_cleanup` はこの 3 つが 1 関数に混ざっており、
 //! `run_git_in(fetch)` を内部で呼ぶためテストできなかった。本 module はそれを解く。
 //!
 //! ## Host は推測しない（D3 のアーキテクチャ原則）
@@ -59,7 +59,7 @@ pub struct LaneFacts {
     pub name: String,
     /// 開発起点 lane か（doc 44 D4 — Host の帳簿が持つポインタが指す lane）。
     ///
-    /// P3 初版は「予約名 `conductor` か」で判定していた。D4 で起点が **repo の指定**に
+    /// P3 初版は「予約名 `main` か」で判定していた。D4 で起点が **repo の指定**に
     /// なり任意の lane へ移せるようになったため、判定材料は名前ではなく
     /// [`crate::host::ledger`] が解決した起点名との一致になる。
     pub is_origin: bool,
@@ -216,7 +216,7 @@ fn integration_label(facts: &LaneFacts) -> String {
 
 /// 1 lane 分の事実を集める（Host の層 1 に渡す入力を作るだけ）。
 ///
-/// 判定を混ぜないのが要点。旧 `classify_performer_for_cleanup` は収集と判定と分類を
+/// 判定を混ぜないのが要点。旧 `classify_sub_for_cleanup` は収集と判定と分類を
 /// 1 関数でやっていたため、git が要る = テストできない状態だった。ここで境界を引くことで
 /// [`judge_farewell`] 側は I/O ゼロの純関数として全分岐をテストできる。
 ///
@@ -303,7 +303,7 @@ pub fn survey_repo(
     let default_branch = crate::lane::commands::resolve_default_branch(repo_root)
         .unwrap_or_else(|| "main".to_string());
 
-    crate::lane::commands::list_performers_for_repo(repo_root)
+    crate::lane::commands::list_subs_for_repo(repo_root)
         .into_iter()
         .map(|entry| {
             let facts = collect_facts(
@@ -402,7 +402,7 @@ mod tests {
 
     /// 回帰固定: **dirty は merged より先に見る**。
     ///
-    /// 旧 `classify_performer_for_cleanup` は merged なら `count_changes` を見ずに削除候補へ
+    /// 旧 `classify_sub_for_cleanup` は merged なら `count_changes` を見ずに削除候補へ
     /// 入れており、取り込み済み branch 上に残った未コミット作業を黙って捨てうる形だった。
     /// D3「Host は推測しない」に反するので、ここは人間へ回す。
     #[test]
@@ -468,10 +468,10 @@ mod tests {
     /// 開発起点は見送り条件を全て満たしていても消さない。
     ///
     /// D4 で起点は予約名から**帳簿のポインタ**になったので、この分岐が守るのは
-    /// 「`conductor` という名前の lane」ではなく「今起点に指定されている lane」。
+    /// 「`main` という名前の lane」ではなく「今起点に指定されている lane」。
     #[test]
     fn origin_lane_is_never_reclaimed() {
-        let conductor = LaneFacts {
+        let main = LaneFacts {
             is_origin: true,
             // 見送り条件を全て満たしていても消さない
             merged: MergedState::Ancestry,
@@ -479,7 +479,7 @@ mod tests {
             ..reclaimable()
         };
         assert!(matches!(
-            judge_farewell(&conductor),
+            judge_farewell(&main),
             FarewellVerdict::Keep { .. }
         ));
     }
@@ -626,7 +626,7 @@ mod tests {
 
     /// 回帰固定: **起点が worktree lane に移っていたら見送らない**（doc 44 D4）。
     ///
-    /// P3 初版の `survey_repo` は予約名 `conductor` を直接見ていた。起点が動かせない
+    /// P3 初版の `survey_repo` は予約名 `main` を直接見ていた。起点が動かせない
     /// 前提に依存しており、D4 でポインタが入ると **移動済みの起点を掃除対象に入れうる**。
     ///
     /// ここで固定するのは「`origin` 引数が判定まで届くこと」— 純関数側のテスト
@@ -661,7 +661,7 @@ mod tests {
                 .expect("w1 が一覧に出る")
         };
 
-        // 起点が別 lane（予約名）なら、w1 はただの performer として判定される
+        // 起点が別 lane（予約名）なら、w1 はただの sub として判定される
         let as_normal = find(survey_repo(
             &root,
             &[],

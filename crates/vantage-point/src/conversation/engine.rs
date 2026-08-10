@@ -69,7 +69,7 @@ impl EngineKind {
         }
     }
 
-    /// GUI（sidebar `+ Add Performer` dropdown 等）向けの表示説明。
+    /// GUI（sidebar `+ Add Sub` dropdown 等）向けの表示説明。
     pub fn description(self) -> &'static str {
         match self {
             Self::Claude => "VP Agent: claude 💬 — tui slot（login shell）+ Claude CLI 自動起動",

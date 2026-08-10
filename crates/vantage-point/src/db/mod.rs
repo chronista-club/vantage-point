@@ -275,7 +275,7 @@ impl VpDb {
 
     /// doc 44 P2: `lane` / `lane_lifecycle` の **address 文字列列**を新形へ正規化する（冪等）。
     ///
-    /// フラット化で address の表示形が `<repo>/performer/<name>` → `<repo>/<name>` に
+    /// フラット化で address の表示形が `<repo>/sub/<name>` → `<repo>/<name>` に
     /// 変わった。descriptor（object 列）は `LaneAddress` の serde default が吸収するが、
     /// **address を文字列 key として持つ列は吸収できない** — 旧形の行が残ると
     /// upsert（DELETE+CREATE の WHERE が新形で当たらない）が重複行を作り、
@@ -1167,7 +1167,7 @@ impl VpDb {
         content: &str,
         title: Option<&str>,
     ) -> Result<()> {
-        // lane_name='' (= conductor sentinel) の row として upsert。 新 schema (lane_name/stack/ui_state) は
+        // lane_name='' (= main sentinel) の row として upsert。 新 schema (lane_name/stack/ui_state) は
         // ON DUPLICATE KEY UPDATE 句で **触らない** — 旧 caller (= 純粋な content / title 更新)
         // が board Canvas Stack の stack / ui_state を巻き戻さないようにする。
         self.db
@@ -1200,8 +1200,8 @@ impl VpDb {
 
     /// board Canvas Stack Model の lane scope な永続状態を upsert する (= doc 19 + pp-content-persist)。
     ///
-    /// - `lane_name`: None なら conductor (= 内部で `''` sentinel)、 Some(name) なら performer。 UNIQUE INDEX は
-    ///   (repo_path, lane_name, pane_id) のため root/performer は別 record として独立。
+    /// - `lane_name`: None なら main (= 内部で `''` sentinel)、 Some(name) なら sub。 UNIQUE INDEX は
+    ///   (repo_path, lane_name, pane_id) のため root/sub は別 record として独立。
     /// - `stack`: Canvas Stack (= items + cursor + capacity)。 None なら未保存。
     /// - `ui_state`: visibility/collapsed/サイズ等。 None なら未保存。
     /// - `content` / `content_type` / `title` は **現在 main pane で render 中の item の reflection**
@@ -1257,7 +1257,7 @@ impl VpDb {
 
     /// 特定 (repo_path, lane_name, pane_id) の board state を 1 件取得。 不在なら Ok(None)。
     ///
-    /// 旧 record (= lane_name field なし) は schema DEFAULT '' で self-heal され、 conductor として読める。
+    /// 旧 record (= lane_name field なし) は schema DEFAULT '' で self-heal され、 main として読める。
     pub async fn load_board_state(
         &self,
         repo_path: &str,
@@ -1745,7 +1745,7 @@ DEFINE INDEX IF NOT EXISTS idx_lane_lifecycle_addr ON lane_lifecycle COLUMNS rep
 -- key が address 文字列ではなく **lane_id (UUID)** なのは、将来 lane 名を変えられるように
 -- するため。名前は表示のための自然キーで、rename で動く。ポインタが指すのは lane そのもの
 -- なので surrogate key で持つ (doc 44 §8.2)。行が無い / 指す lane が実在しない場合は
--- 予約名 `conductor` にフォールバックする (= 従来挙動、`ledger::resolve_origin_name`)。
+-- 予約名 `main` にフォールバックする (= 従来挙動、`ledger::resolve_origin_name`)。
 DEFINE TABLE IF NOT EXISTS host_origin SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS repo_path ON host_origin TYPE string;
 DEFINE FIELD IF NOT EXISTS lane_id ON host_origin TYPE string;
@@ -1817,16 +1817,16 @@ DEFINE INDEX IF NOT EXISTS idx_host_farewell_lane ON host_farewell COLUMNS repo_
 --
 -- 2026-05-28 [pp-content-persist]:
 --   lane scope 対応 — 旧 idx_pane (repo_path, pane_id) を
---   (repo_path, lane_name, pane_id) UNIQUE に置換。 lane_name="" が conductor、
---   "<name>" が performer。 同一 repo の conductor と performer は **独立した board state** を持つ。
+--   (repo_path, lane_name, pane_id) UNIQUE に置換。 lane_name="" が main、
+--   "<name>" が sub。 同一 repo の main と sub は **独立した board state** を持つ。
 --   追加 field:
---     - lane_name: string DEFAULT ''       — lane scope key (空文字=conductor / 非空=performer 名)
+--     - lane_name: string DEFAULT ''       — lane scope key (空文字=main / 非空=sub 名)
 --     - stack:     option<object> FLEXIBLE — Canvas Stack { items: [], cursor: id, capacity: 10 }
 --     - ui_state:  option<object> FLEXIBLE — { visible, collapsed, width, height }
 --   注: lane_name を **option ではなく DEFAULT 空文字** にしたのは、 SurrealDB の UNIQUE INDEX が
 --   NULL 同士を不一致扱いし、 (path, NONE, pane_id) の UNIQUE 制約が成立せず ON DUPLICATE が
 --   発火しないため。 IPC contract 上は lane: string|null を保ち、 Rust 側で null↔'' を変換。
---   旧 record (lane_name 不在) は schema DEFAULT '' で self-heal してそのまま conductor 扱いになる。
+--   旧 record (lane_name 不在) は schema DEFAULT '' で self-heal してそのまま main 扱いになる。
 REMOVE INDEX IF EXISTS idx_pane ON pane_contents;
 DEFINE TABLE IF NOT EXISTS pane_contents SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS repo_path ON pane_contents TYPE string;
@@ -2019,7 +2019,7 @@ mod tests {
         db
     }
 
-    /// doc 44 P2: 旧形の address 文字列（`<repo>/performer/<name>`）が起動時に新形へ
+    /// doc 44 P2: 旧形の address 文字列（`<repo>/sub/<name>`）が起動時に新形へ
     /// 正規化されること。
     ///
     /// これを怠ると実害が出る: `lane` は upsert（DELETE+CREATE）の WHERE が新形で当たらず
@@ -2035,7 +2035,7 @@ mod tests {
         db.inner()
             .query(
                 "CREATE lane_lifecycle CONTENT {
-                     repo_path: '/repos/vp', address: 'vp/performer/foo',
+                     repo_path: '/repos/vp', address: 'vp/sub/foo',
                      lifecycle: 'ready', updated_at: time::now()
                  };
                  CREATE lane_lifecycle CONTENT {
@@ -2055,10 +2055,10 @@ mod tests {
         let addrs: Vec<&str> = rows.iter().map(|(_, a, _)| a.as_str()).collect();
         assert!(
             addrs.contains(&"vp/foo"),
-            "旧形 vp/performer/foo は vp/foo に正規化されるべき: {addrs:?}"
+            "旧形 vp/sub/foo は vp/foo に正規化されるべき: {addrs:?}"
         );
         assert!(
-            !addrs.contains(&"vp/performer/foo"),
+            !addrs.contains(&"vp/sub/foo"),
             "旧形が残ってはならない（孤児化する）: {addrs:?}"
         );
         assert!(
@@ -2222,7 +2222,7 @@ mod tests {
 
         // repo ごとに upsert
         db.upsert_active_lane("/repos/vp", "vp/root").await.unwrap();
-        db.upsert_active_lane("/repos/nexus", "nexus/performer/foo")
+        db.upsert_active_lane("/repos/nexus", "nexus/sub/foo")
             .await
             .unwrap();
 
@@ -2231,21 +2231,18 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                (
-                    "/repos/nexus".to_string(),
-                    "nexus/performer/foo".to_string()
-                ),
+                ("/repos/nexus".to_string(), "nexus/sub/foo".to_string()),
                 ("/repos/vp".to_string(), "vp/root".to_string()),
             ]
         );
 
         // 同 repo の upsert は置換 (UNIQUE index、 per-repo に 1 つ)
-        db.upsert_active_lane("/repos/vp", "vp/performer/bar")
+        db.upsert_active_lane("/repos/vp", "vp/sub/bar")
             .await
             .unwrap();
         let rows = db.list_active_lanes().await.unwrap();
         assert_eq!(rows.len(), 2, "同 repo は置換、 件数は増えない");
-        assert!(rows.contains(&("/repos/vp".to_string(), "vp/performer/bar".to_string())));
+        assert!(rows.contains(&("/repos/vp".to_string(), "vp/sub/bar".to_string())));
 
         // §4.6 含有=所有=寿命: repo remove 時の presence 回収 (delete_active_lane)。
         db.delete_active_lane("/repos/vp").await.unwrap();
@@ -2275,7 +2272,7 @@ mod tests {
             created_at: "2026-06-20T00:00:00Z".to_string(),
             pid: Some(1234),
             cwd: "/tmp".to_string(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -2296,12 +2293,12 @@ mod tests {
         assert_eq!(rows.len(), 3, "3 lane descriptor が round-trip する");
 
         // descriptor が round-trip する (address / agent)
-        let vp_conductor = rows
+        let vp_main = rows
             .iter()
             .find(|(p, l)| p == "/repos/vp" && l.address.is_root())
             .expect("vp root が読める");
-        assert_eq!(vp_conductor.1.address.to_string(), "vp/root");
-        assert_eq!(vp_conductor.1.agent, "claude");
+        assert_eq!(vp_main.1.address.to_string(), "vp/root");
+        assert_eq!(vp_main.1.agent, "claude");
 
         // 同 address の upsert は置換 (複合 UNIQUE、 件数は増えない)
         db.upsert_lane("/repos/vp", &mk("vp", "root"))
@@ -2322,7 +2319,7 @@ mod tests {
             "削除した lane は消える"
         );
 
-        // snapshot 全置換 (register snapshot): /repos/vp を performer 2 つに置換
+        // snapshot 全置換 (register snapshot): /repos/vp を sub 2 つに置換
         db.replace_lanes_for_repo("/repos/vp", &[mk("vp", "a"), mk("vp", "b")])
             .await
             .unwrap();
@@ -2340,7 +2337,7 @@ mod tests {
         );
         assert!(
             vp_lanes.iter().all(|(_, l)| !l.address.is_root()),
-            "snapshot 後は root が消え performer のみ"
+            "snapshot 後は root が消え sub のみ"
         );
 
         // §4.6 含有=所有=寿命: repo remove 時の回収 (delete_lanes_for_repo)。
@@ -2359,10 +2356,10 @@ mod tests {
         db.upsert_lane_lifecycle("/repos/vp", "vp/foo", "provisioning")
             .await
             .unwrap();
-        db.upsert_lane_lifecycle("/repos/vp", "vp/performer/bar", "ready")
+        db.upsert_lane_lifecycle("/repos/vp", "vp/sub/bar", "ready")
             .await
             .unwrap();
-        db.upsert_lane_lifecycle("/repos/nexus", "nexus/performer/x", "ready")
+        db.upsert_lane_lifecycle("/repos/nexus", "nexus/sub/x", "ready")
             .await
             .unwrap();
         assert_eq!(db.list_lane_lifecycles().await.unwrap().len(), 3);
@@ -2607,18 +2604,18 @@ mod tests {
     // board Canvas Stack Model (lane scope) — pp-content-persist
     // =========================================================================
 
-    /// 新 API: lane_name=None (conductor) と Some(name) (performer) が独立 record として共存できる
+    /// 新 API: lane_name=None (main) と Some(name) (sub) が独立 record として共存できる
     #[tokio::test]
-    async fn test_board_state_conductor_and_performer_independent() {
+    async fn test_board_state_main_and_sub_independent() {
         let db = make_test_db().await;
 
-        let conductor_stack = serde_json::json!({
+        let main_stack = serde_json::json!({
             "items": [{"id":"i1","content":"# root\n","contentType":"markdown","createdAt":"2026-05-28T00:00:00Z"}],
             "cursor": "i1",
             "capacity": 10
         });
-        let performer_stack = serde_json::json!({
-            "items": [{"id":"i2","content":"# performer\n","contentType":"markdown","createdAt":"2026-05-28T00:00:01Z"}],
+        let sub_stack = serde_json::json!({
+            "items": [{"id":"i2","content":"# sub\n","contentType":"markdown","createdAt":"2026-05-28T00:00:01Z"}],
             "cursor": "i2",
             "capacity": 10
         });
@@ -2632,7 +2629,7 @@ mod tests {
             "markdown",
             "# root\n",
             None,
-            Some(&conductor_stack),
+            Some(&main_stack),
             Some(&ui),
         )
         .await
@@ -2642,38 +2639,38 @@ mod tests {
             Some("foo"),
             "board",
             "markdown",
-            "# performer\n",
+            "# sub\n",
             None,
-            Some(&performer_stack),
+            Some(&sub_stack),
             Some(&ui),
         )
         .await
         .unwrap();
 
-        // conductor 読み込み
-        let conductor = db
+        // main 読み込み
+        let main = db
             .load_board_state("/repos/vp", None, "board")
             .await
             .unwrap()
             .expect("root record 不在");
         assert_eq!(
-            conductor["lane_name"], "",
+            main["lane_name"], "",
             "root は lane_name='' sentinel (= None)"
         );
-        assert_eq!(conductor["stack"]["cursor"], "i1");
+        assert_eq!(main["stack"]["cursor"], "i1");
 
-        // performer 読み込み — conductor と独立した record
-        let performer = db
+        // sub 読み込み — main と独立した record
+        let sub = db
             .load_board_state("/repos/vp", Some("foo"), "board")
             .await
             .unwrap()
-            .expect("performer record 不在");
-        assert_eq!(performer["lane_name"], "foo");
-        assert_eq!(performer["stack"]["cursor"], "i2");
+            .expect("sub record 不在");
+        assert_eq!(sub["lane_name"], "foo");
+        assert_eq!(sub["stack"]["cursor"], "i2");
 
         // list_pane_contents は両方見える (repo scope)
         let all = db.list_pane_contents("/repos/vp").await.unwrap();
-        assert_eq!(all.len(), 2, "root + performer で 2 record");
+        assert_eq!(all.len(), 2, "root + sub で 2 record");
     }
 
     /// upsert_board_state は同 (repo_path, lane_name, pane_id) で stack を上書きする (= roundtrip)

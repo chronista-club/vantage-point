@@ -29,7 +29,7 @@ pub struct InkRect {
 }
 
 /// PNG 保存先 `state_dir/ink/<lane_key>/<unix_millis>.png` を組み、親 dir を作って返す。
-/// lane_key は board の flat key（'conductor' / performer 名）。念のため path 安全化する。
+/// lane_key は board の flat key（'main' / sub 名）。念のため path 安全化する。
 pub fn snapshot_path(lane_key: &str) -> std::io::Result<PathBuf> {
     let dir = ink_root().join(sanitize(lane_key));
     std::fs::create_dir_all(&dir)?;
@@ -45,14 +45,14 @@ fn ink_root() -> PathBuf {
     vp_paths::vp_state_dir().join("ink")
 }
 
-/// lane address（`<repo>/root` | `<repo>/performer/<name>`）→ 保存 dir 用の flat key。
-/// board の `boardLaneKeyOf`（lane-panes.ts）と同じ写像: root/lead → `conductor` / performer → 名前。
-/// snapshot を lane ごとに分けるためだけの folder 名なので、未知形は `conductor` に倒す。
+/// lane address（`<repo>/root` | `<repo>/sub/<name>`）→ 保存 dir 用の flat key。
+/// board の `boardLaneKeyOf`（lane-panes.ts）と同じ写像: root/lead → `main` / sub → 名前。
+/// snapshot を lane ごとに分けるためだけの folder 名なので、未知形は `main` に倒す。
 pub fn lane_key_from_address(addr: &str) -> String {
     if addr.ends_with("/root") || addr.ends_with("/lead") {
-        return "conductor".to_string();
+        return "main".to_string();
     }
-    for sep in ["/performer/", "/wing/"] {
+    for sep in ["/sub/", "/wing/"] {
         if let Some(idx) = addr.find(sep) {
             let name = &addr[idx + sep.len()..];
             if !name.is_empty() {
@@ -60,7 +60,7 @@ pub fn lane_key_from_address(addr: &str) -> String {
             }
         }
     }
-    "conductor".to_string()
+    "main".to_string()
 }
 
 /// path segment 安全化（区切り・危険文字を `_` に）。flat key は通常安全だが fail-safe に。
@@ -76,7 +76,7 @@ fn sanitize(s: &str) -> String {
         })
         .collect();
     if cleaned.is_empty() {
-        "conductor".to_string()
+        "main".to_string()
     } else {
         cleaned
     }

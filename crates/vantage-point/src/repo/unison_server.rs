@@ -157,7 +157,7 @@ const BOARD_CAPACITY: usize = 50;
 
 /// board のキーを決める。 返り値 = (board_scope, lane_name, broadcast_lane)。
 /// - proj board: lane を無視して repo 共有（lane_name=''、 broadcast_lane=None）。
-/// - lane board: lane を conductor(空)/performer(名) に正規化。
+/// - lane board: lane を main(空)/sub(名) に正規化。
 fn board_key(scope: Option<&str>, lane: Option<&str>) -> (String, String, Option<String>) {
     if scope == Some("proj") {
         return ("proj".to_string(), String::new(), None);
@@ -1975,7 +1975,7 @@ async fn handle_lane_slot_new(
 
 /// tmux decoupling: lane console capture。 lane の Term grid（TermAttach）を text で返す。
 ///
-/// 旧 `tmux capture-pane`（`handle_tmux_capture`）の native 代替 — conductor が performer の
+/// 旧 `tmux capture-pane`（`handle_tmux_capture`）の native 代替 — main が sub の
 /// console を読む dev-flow 用途。 CLI `vp lane capture` / 将来の MCP がこの method を ask する。
 async fn handle_lane_capture(
     state: &AppState,
@@ -2195,7 +2195,7 @@ async fn handle_lane_session_changed(
 }
 
 /// lanes portless (doc 27 §3.4.5): Lane create。 旧 SP HTTP `POST /api/lanes` を repo-proxy ask に
-/// 移管。 core の `create_performer_orchestrated` (lane clone + PtySlot spawn) を呼ぶ薄い adapter。
+/// 移管。 core の `create_sub_orchestrated` (lane clone + PtySlot spawn) を呼ぶ薄い adapter。
 /// payload は `CreateLaneReq` 互換 JSON (kind/name/agent?/cwd?/branch?/base?)。 成功は LaneInfo JSON、
 /// 失敗は core が返す String error (旧 HTTP の CONFLICT="already exists" 等を保持)。
 async fn handle_lane_create(
@@ -2204,7 +2204,7 @@ async fn handle_lane_create(
 ) -> Result<serde_json::Value, String> {
     let req: super::routes::lanes::CreateLaneReq = serde_json::from_value(payload)
         .map_err(|e| format!("lane_create: invalid payload: {}", e))?;
-    let info = super::routes::lanes::create_performer_orchestrated(state, req).await?;
+    let info = super::routes::lanes::create_sub_orchestrated(state, req).await?;
     serde_json::to_value(&info).map_err(|e| format!("lane_create: LaneInfo serialize 失敗: {}", e))
 }
 
@@ -2474,7 +2474,7 @@ pub(crate) async fn dispatch_repo_method(
 ///
 /// bare `"agent"` を qualified (`agent@<repo>`) に正規化する。
 ///
-/// 現行 MCP (`SelfLane::from_address`) は conductor も canonical `agent@<repo>` を
+/// 現行 MCP (`SelfLane::from_address`) は main も canonical `agent@<repo>` を
 /// 自前で送るため、本関数は実質 **冪等な素通し + 後方互換 (旧 client / bare 送信者) 用の
 /// 防御層**。bare を残す理由: 旧 bare 送信が来ても store 識別子を qualified 一本に揃え、
 /// cross-process 返信 (`agent@<repo>` 宛 forward) が bare query と完全一致せず届かない
@@ -2482,7 +2482,7 @@ pub(crate) async fn dispatch_repo_method(
 /// bare 以外 (qualified / board@... / runner@... 等) はそのまま返す。
 ///
 /// ⚠️ 正規化先 `self_repo` は「繋いだ repo の repo」なので、bare のままだと誤 repo 接続で
-/// identity が化ける (= 旧 conductor バグの根)。だから identity の SSOT は MCP 側 canonical
+/// identity が化ける (= 旧 main バグの根)。だから identity の SSOT は MCP 側 canonical
 /// 送出に移した。本関数は qualified を受けたら何もしない (= repo 非依存) のが正常運用。
 fn normalize_agent_addr(addr: &str, self_repo: &str) -> String {
     if addr == "agent" {
@@ -2914,7 +2914,7 @@ mod tests {
         let db = Arc::new(VpDb::connect_mem().await.unwrap());
         let state = build_test_app_state_with("/repos/vp", Some(db), None).await;
 
-        // show で 1 件貼る（lane/scope 省略 = conductor lane / scope=lane）。
+        // show で 1 件貼る（lane/scope 省略 = main lane / scope=lane）。
         let show = serde_json::json!({
             "type": "show", "pane_id": "main",
             "content": { "markdown": "original" }, "append": false, "title": "t"
@@ -3225,16 +3225,16 @@ mod tests {
         assert_eq!(res["rows"], 40);
     }
 
-    /// replay-on-attach を **performer lane** で end-to-end 検証する。
+    /// replay-on-attach を **sub lane** で end-to-end 検証する。
     ///
     /// 「vp-app 再起動 → 新 xterm が後発 subscribe → 前回画面が replay で戻る」を再現:
     /// PTY 出力を先に発生させ (= replay buffer に溜める)、 その **後で** topic を新規購読し、
     /// demand_start (= reconcile_terminal_pumps → attach_output) を撃つ。 購読が出力より後でも
-    /// replay snapshot 経由でマーカーが届けば、 performer でも画面復元が効くことの証明になる。
-    /// performer は conductor と別 topic key (`vp~performer~<name>`) に載るため、 conductor
+    /// replay snapshot 経由でマーカーが届けば、 sub でも画面復元が効くことの証明になる。
+    /// sub は main と別 topic key (`vp~sub~<name>`) に載るため、 main
     /// テストとは別に経路を固める価値がある。
     #[tokio::test]
-    async fn replay_on_attach_restores_screen_for_performer_lane() {
+    async fn replay_on_attach_restores_screen_for_sub_lane() {
         use super::dispatch_repo_method;
         use crate::daemon::pty_slot::PtySlot;
         use crate::protocol::RepoMessage;
@@ -3246,12 +3246,12 @@ mod tests {
         let state = build_test_app_state(None).await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
-        // performer lane (conductor とは別 topic key になる)
-        let addr = LaneAddress::performer("vp", "feat-replay");
+        // sub lane (main とは別 topic key になる)
+        let addr = LaneAddress::sub("vp", "feat-replay");
         let lane = addr.to_string();
         assert_eq!(lane, "vp/feat-replay"); // doc 44 P2: フラット化後の表示形
 
-        // 実 PtySlot を performer address で登録
+        // 実 PtySlot を sub address で登録
         {
             let (slot, rx) =
                 PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("PTY spawn");
@@ -3265,7 +3265,7 @@ mod tests {
         // マーカーを PTY に出力させる (echo)。 この出力は「過去」= replay buffer に溜まる。
         // 改行は OS 依存 (S3 test と同方針)。 ConPTY の DSR gating は reader task が起動時に
         // 自己応答する (pty_slot の Windows 分岐) ため、 ここでは端末役の応答は不要。
-        let marker = "VP_PERFORMER_REPLAY_MARKER";
+        let marker = "VP_SUB_REPLAY_MARKER";
         let echo_cmd: Vec<u8> = if cfg!(windows) {
             format!("echo {marker}\r").into_bytes()
         } else {
@@ -3293,7 +3293,7 @@ mod tests {
         .await
         .expect("demand_start");
         assert_eq!(res["status"], "reconciled");
-        assert_eq!(res["attached"], 1, "performer lane に pump が張れるはず");
+        assert_eq!(res["attached"], 1, "sub lane に pump が張れるはず");
 
         // 後発購読でも replay 経由でマーカーが届く (= 画面復元)。
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -3327,7 +3327,7 @@ mod tests {
         }
         assert!(
             found,
-            "performer lane の後発 attach で replay されず画面が復元しない (seen={seen:?})"
+            "sub lane の後発 attach で replay されず画面が復元しない (seen={seen:?})"
         );
     }
 
@@ -3347,7 +3347,7 @@ mod tests {
         let state = build_test_app_state(None).await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
-        let addr = LaneAddress::performer("vp", "feat-multi");
+        let addr = LaneAddress::sub("vp", "feat-multi");
         let lane = addr.to_string();
 
         // root（None）と 2 枚目の session（Some(2)）を立てる。
@@ -3475,7 +3475,7 @@ mod tests {
         let state = build_test_app_state(None).await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
-        let addr = LaneAddress::performer("vp", "feat-reconnect");
+        let addr = LaneAddress::sub("vp", "feat-reconnect");
         let lane = addr.to_string();
         let topic = format!("repo/terminal/data/{}/out", lane.replace('/', "~"));
 
@@ -3562,7 +3562,7 @@ mod tests {
         let state = build_test_app_state(None).await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
-        let addr = LaneAddress::performer("vp", "feat-scoped");
+        let addr = LaneAddress::sub("vp", "feat-scoped");
         let lane = addr.to_string();
 
         // root + 2 枚目。どちらも出力を持たせて replay buffer を非空にする。
@@ -3694,7 +3694,7 @@ mod tests {
         let state = build_test_app_state(None).await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
-        let addr = LaneAddress::performer("vp", "feat-late");
+        let addr = LaneAddress::sub("vp", "feat-late");
         let lane = addr.to_string();
 
         // boot 途中の姿: root slot だけが立った時点で GUI が購読 → demand edge が先に立つ。
@@ -4016,7 +4016,7 @@ mod tests {
         // pool に実在して root mode==Chat の lane = 「chat mode の lane に console はありません」。
         // chat lane は term_attach を持たないので capture_lane は None だが、これは正常状態。
         // mode は registry（SSOT）に書く — 案内分岐の読み手（root_mode 直読）と同じ経路を通す。
-        let addr = LaneAddress::performer("vp", "chat-x");
+        let addr = LaneAddress::sub("vp", "chat-x");
         crate::lane::session_registry::set_root_mode(
             "vp",
             "chat-x",
@@ -4034,7 +4034,7 @@ mod tests {
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 pid: None,
                 cwd: std::env::temp_dir().to_string_lossy().to_string(),
-                performer_status: None,
+                sub_status: None,
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
@@ -4094,7 +4094,7 @@ mod tests {
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 pid: None,
                 cwd: cwd.clone(),
-                performer_status: None,
+                sub_status: None,
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
@@ -4197,7 +4197,7 @@ mod tests {
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 pid: None,
                 cwd: cwd.clone(),
-                performer_status: None,
+                sub_status: None,
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
@@ -4285,7 +4285,7 @@ mod tests {
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 pid: None,
                 cwd: cwd.clone(),
-                performer_status: None,
+                sub_status: None,
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
@@ -4439,17 +4439,17 @@ mod tests {
         let _state_dir = crate::test_env::state_dir_async().await;
         let state = build_test_app_state(None).await;
 
-        // performer LaneInfo を組む（chat engine 不在なので drop→ensure の engine 入替は
+        // sub LaneInfo を組む（chat engine 不在なので drop→ensure の engine 入替は
         // no-op — drop_chat_engine が false を返し ensure は走らない）。
         let build = |name: &str, agent: &str| LaneInfo {
             id: Default::default(),
-            address: LaneAddress::performer("vp", name),
+            address: LaneAddress::sub("vp", name),
             state: LaneState::Running,
             agent: agent.to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
             pid: None,
             cwd: std::env::temp_dir().to_string_lossy().to_string(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -4471,7 +4471,7 @@ mod tests {
             .write()
             .await
             .insert(build("mixed", "codex"));
-        let lane = LaneAddress::performer("vp", "mixed").to_string();
+        let lane = LaneAddress::sub("vp", "mixed").to_string();
 
         // claude session（key=2）は catalog 非空 → 成功。永続先は **当該 session** の registry entry。
         dispatch_repo_method(
@@ -4523,11 +4523,11 @@ mod tests {
         assert!(err.contains("session"), "{err}");
     }
 
-    /// F6②: lane_delete dispatch e2e — performer lane を pool に作り、 lane_delete で除去できる。
+    /// F6②: lane_delete dispatch e2e — sub lane を pool に作り、 lane_delete で除去できる。
     /// 二度目の delete は LaneNotFound で Err (= idempotent re-call の契約)。 Err message が
     /// "Lane not found" を含むことも固定する (MCP/CLI の idempotent 判定がこの文字列に依存)。
     #[tokio::test]
-    async fn lane_delete_removes_performer_and_idempotent() {
+    async fn lane_delete_removes_sub_and_idempotent() {
         use super::dispatch_repo_method;
         use crate::daemon::pty_slot::PtySlot;
         use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
@@ -4536,7 +4536,7 @@ mod tests {
         let state = build_test_app_state(None).await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
-        let addr = LaneAddress::performer("vp", "chore");
+        let addr = LaneAddress::sub("vp", "chore");
         let address = addr.to_string();
 
         {
@@ -4552,7 +4552,7 @@ mod tests {
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 pid: None,
                 cwd: cwd.clone(),
-                performer_status: None,
+                sub_status: None,
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
@@ -4597,24 +4597,24 @@ mod tests {
         );
     }
 
-    /// F6②: Conductor lane は lane_delete で拒否される (architecture rule: repo lifetime 紐付き)。
+    /// F6②: Main lane は lane_delete で拒否される (architecture rule: repo lifetime 紐付き)。
     #[tokio::test]
-    async fn lane_delete_rejects_conductor() {
+    async fn lane_delete_rejects_main() {
         use super::dispatch_repo_method;
         use crate::repo::state::build_test_app_state;
 
         let state = build_test_app_state(None).await;
-        // delete_lane_orchestrated は LanePool の有無に関係なく kind=Conductor を最初に弾く。
+        // delete_lane_orchestrated は LanePool の有無に関係なく kind=Main を最初に弾く。
         let err = dispatch_repo_method(
             &state,
             "lane_delete",
             serde_json::json!({ "address": "vp/root" }),
         )
         .await
-        .expect_err("Conductor の delete は Err");
+        .expect_err("Main の delete は Err");
         assert!(
-            err.contains("Conductor"),
-            "Conductor delete は ConductorCannotBeDeleted: {err}"
+            err.contains("Main"),
+            "Main delete は MainCannotBeDeleted: {err}"
         );
     }
 
@@ -4629,7 +4629,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "lane_restart",
-            serde_json::json!({ "address": "vp/performer/ghost" }),
+            serde_json::json!({ "address": "vp/sub/ghost" }),
         )
         .await;
         assert!(res.is_err(), "存在しない lane の restart は Err");
@@ -4645,7 +4645,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "lane_session_changed",
-            serde_json::json!({ "lane": "vp/performer/ghost" }),
+            serde_json::json!({ "lane": "vp/sub/ghost" }),
         )
         .await;
         assert!(res.is_err(), "存在しない lane の session 変化通知は Err");
@@ -4671,7 +4671,7 @@ mod tests {
             created_at: "2026-07-17T00:00:00Z".to_string(),
             pid: Some(1),
             cwd: state_dir.path().to_string_lossy().to_string(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -4729,7 +4729,7 @@ mod tests {
             created_at: "2026-07-18T00:00:00Z".to_string(),
             pid: Some(1),
             cwd: state_dir.path().to_string_lossy().to_string(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -4803,7 +4803,7 @@ mod tests {
             created_at: "2026-07-22T00:00:00Z".to_string(),
             pid: Some(1),
             cwd: state_dir.path().to_string_lossy().to_string(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -4913,9 +4913,9 @@ mod tests {
     }
 
     /// lanes portless: `lane_create` dispatch arm が validation error を unison error frame
-    /// (= Err) として返す (core の `create_performer_orchestrated` に到達している証)。
+    /// (= Err) として返す (core の `create_sub_orchestrated` に到達している証)。
     ///
-    /// doc 44 P2: 旧版は `kind != "performer"` を叩いていたが、`kind` は撤去された
+    /// doc 44 P2: 旧版は `kind != "sub"` を叩いていたが、`kind` は撤去された
     /// （lane に種別が無くなり指定の余地が消えた）。後継の validation = 開発起点の予約名拒否。
     #[tokio::test]
     async fn lane_create_rejects_reserved_name() {
@@ -4930,7 +4930,7 @@ mod tests {
         )
         .await
         .expect_err("予約名は Err");
-        // doc 44 §9: 判定は `validate_performer_name` に一本化された（両経路で同じ gate）。
+        // doc 44 §9: 判定は `validate_sub_name` に一本化された（両経路で同じ gate）。
         // message は同関数のものになるので、予約名を名指ししていることだけを見る。
         assert!(
             err.contains(crate::repo::lanes_state::ROOT_LANE_NAME) && err.contains("reserved"),
@@ -4942,7 +4942,7 @@ mod tests {
         let err = dispatch_repo_method(
             &state,
             "lane_create",
-            serde_json::json!({ "kind": "performer", "name": "  " }),
+            serde_json::json!({ "kind": "sub", "name": "  " }),
         )
         .await
         .expect_err("空 name は Err");
@@ -5005,7 +5005,7 @@ mod tests {
         );
     }
 
-    /// C1 test 用の chat-mode conductor LaneInfo を pool に登録する（claude 不要）。
+    /// C1 test 用の chat-mode main LaneInfo を pool に登録する（claude 不要）。
     async fn insert_test_lane(
         state: &crate::repo::state::AppState,
         repo: &str,
@@ -5025,7 +5025,7 @@ mod tests {
             created_at: chrono::Utc::now().to_rfc3339(),
             pid: None,
             cwd: std::env::temp_dir().to_string_lossy().to_string(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -5354,7 +5354,7 @@ mod tests {
         let state = build_test_app_state(None).await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
-        let addr = LaneAddress::performer("vp", "feat-slotpump");
+        let addr = LaneAddress::sub("vp", "feat-slotpump");
         let lane = addr.to_string();
 
         // lane を登録（agent=shell = console に engine を注入しない）+ root slot を立てる。
@@ -5368,7 +5368,7 @@ mod tests {
                 created_at: "2026-01-01T00:00:00Z".to_string(),
                 pid: None,
                 cwd: cwd.clone(),
-                performer_status: None,
+                sub_status: None,
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,

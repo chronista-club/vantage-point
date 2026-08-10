@@ -23,14 +23,14 @@ use crate::commands::process_client::daemon_repo_request_blocking;
 use crate::config::Config;
 
 /// env（VP_REPO / VP_LANE）から lane address（Display 形）を導く。
-/// agent_spawner の注入と対の読み手（値の形は `<repo>/root` / `<repo>/performer/<name>`）。
+/// agent_spawner の注入と対の読み手（値の形は `<repo>/root` / `<repo>/sub/<name>`）。
 fn lane_addr_from_env() -> Option<String> {
     let repo = std::env::var("VP_REPO").ok().filter(|s| !s.is_empty())?;
     let label = std::env::var("VP_LANE").ok().filter(|s| !s.is_empty())?;
     if label == crate::repo::lanes_state::ROOT_LANE_NAME {
         Some(format!("{repo}/{label}"))
     } else {
-        Some(format!("{repo}/performer/{label}"))
+        Some(format!("{repo}/sub/{label}"))
     }
 }
 

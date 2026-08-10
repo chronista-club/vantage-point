@@ -217,19 +217,19 @@ let laneHeader: LaneHeaderApi | null = null;
 
 /**
  * LaneAddress::Display 形を board-handler が使う flat lane_name に翻訳する。
- * `null` = conductor（lead）、`string` = performer 名。
+ * `null` = main（lead）、`string` = sub 名。
  *
- * D2 統一: 語彙は root/performer。rename 途上のため legacy `lead`/`wing` も受理する:
+ * D2 統一: 語彙は root/sub。rename 途上のため legacy `lead`/`wing` も受理する:
  * - `<repo>/root` / `<repo>/lead` → `null`（root/lead）
- * - `<repo>/performer/<name>` / `<repo>/wing/<name>` → `<name>`（performer）
+ * - `<repo>/sub/<name>` / `<repo>/wing/<name>` → `<name>`（sub）
  *
  * この値は (a) board-content-persist の SurrealDB record key、(b) per-lane board の
- * canvas filter token（`null`→`conductor` に正規化して producer の lane と突合）に使う。
+ * canvas filter token（`null`→`main` に正規化して producer の lane と突合）に使う。
  */
 function laneNameFromAddress(addr: string | null): string | null {
 	if (!addr) return null;
 	if (addr.endsWith("/root") || addr.endsWith("/lead")) return null;
-	const m = addr.match(/\/(?:performer|wing)\/(.+)$/);
+	const m = addr.match(/\/(?:sub|wing)\/(.+)$/);
 	if (m) return m[1] ?? null;
 	return null;
 }
@@ -306,12 +306,12 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		// LaneAddress::Display 形 (`<repo>/lead` or `<repo>/wing/<name>`) を flat lane_name に翻訳。
 		//
 		// ⚠️ **repo も渡す**。board の同一性は `(repo, lane)` の対で、全 repo の root lane が
-		// 同じ `'conductor'` を名乗る。lane 名だけで切り替えていた旧実装は、board 行を持たない
+		// 同じ `'main'` を名乗る。lane 名だけで切り替えていた旧実装は、board 行を持たない
 		// repo へ移ったときに前の repo の board を出し続けていた（2026-08-04 根治）。
 		const laneName = laneNameFromAddress(newLane);
 		setActiveBoard(newLane.split("/")[0] ?? null, laneName);
 		// doc 55: board の view 層（open / form / floatRect）も lane に追従する。
-		// ⚠️ laneName（null = conductor の流儀）ではなく boardKeyOf（`(repo, lane)` の合成キー）
+		// ⚠️ laneName（null = main の流儀）ではなく boardKeyOf（`(repo, lane)` の合成キー）
 		// を渡す — board-view / lane-panes の Map は文字列 key 系で、null を渡すと
 		// 「lane 不在」扱いになり取っ手ごと消える（root lane で実機再現、2026-07-30）。
 		// **repo を含むのが要点**: 含めないと repo A で docked にした board が B の roster に

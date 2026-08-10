@@ -24,8 +24,8 @@ export interface SidebarError {
   message: string;
 }
 
-/** Event "performer:create_result" */
-export interface PerformerCreateResult {
+/** Event "sub:create_result" */
+export interface SubCreateResult {
   repo_path: string;
   name: string;
   error?: string;
@@ -126,8 +126,8 @@ export interface LaneReorder {
   order: string[];
 }
 
-/** Request "lane:add_performer" */
-export interface LaneAddPerformer {
+/** Request "lane:add_sub" */
+export interface LaneAddSub {
   path: string;
   name: string;
   branch?: string;
@@ -199,7 +199,7 @@ export interface ActionsPersist {
 export type IpcChannelEventTypes = {
   SidebarState: SidebarState;
   SidebarError: SidebarError;
-  PerformerCreateResult: PerformerCreateResult;
+  SubCreateResult: SubCreateResult;
   AgentsResult: AgentsResult;
   FilesListResult: FilesListResult;
   WireResult: WireResult;
@@ -221,7 +221,7 @@ export type IpcChannelRequestTypes = {
   LaneNewRoot: { request: LaneNewRoot; response: void };
   LaneSetOrigin: { request: LaneSetOrigin; response: void };
   LaneReorder: { request: LaneReorder; response: void };
-  LaneAddPerformer: { request: LaneAddPerformer; response: void };
+  LaneAddSub: { request: LaneAddSub; response: void };
   AgentsFetch: { request: AgentsFetch; response: void };
   StandSelect: { request: StandSelect; response: void };
   RepoClonePickFolder: { request: RepoClonePickFolder; response: void };
@@ -241,7 +241,7 @@ export const IpcChannelMeta = {
   backend: "stream" as const,
   from: "client" as const,
   lifetime: "transient" as const,
-  events: ["sidebar:state", "sidebar:error", "performer:create_result", "agents:result", "files:list_result", "wire:result", "clone:path_picked", "file_picker:open"] as const,
+  events: ["sidebar:state", "sidebar:error", "sub:create_result", "agents:result", "files:list_result", "wire:result", "clone:path_picked", "file_picker:open"] as const,
   requests: {
     ProcessToggle: { request: "process:toggle" as const, response: "void" as const },
     ProcessReorder: { request: "process:reorder" as const, response: "void" as const },
@@ -255,7 +255,7 @@ export const IpcChannelMeta = {
     LaneNewRoot: { request: "lane:new_root" as const, response: "void" as const },
     LaneSetOrigin: { request: "lane:set_origin" as const, response: "void" as const },
     LaneReorder: { request: "lane:reorder" as const, response: "void" as const },
-    LaneAddPerformer: { request: "lane:add_performer" as const, response: "void" as const },
+    LaneAddSub: { request: "lane:add_sub" as const, response: "void" as const },
     AgentsFetch: { request: "agents:fetch" as const, response: "void" as const },
     StandSelect: { request: "stand:select" as const, response: "void" as const },
     RepoClonePickFolder: { request: "repo:clone:pickFolder" as const, response: "void" as const },
@@ -285,7 +285,7 @@ export type IpcEnvelope =
   | ({ t: "lane:new_root" } & LaneNewRoot)
   | ({ t: "lane:set_origin" } & LaneSetOrigin)
   | ({ t: "lane:reorder" } & LaneReorder)
-  | ({ t: "lane:add_performer" } & LaneAddPerformer)
+  | ({ t: "lane:add_sub" } & LaneAddSub)
   | ({ t: "agents:fetch" } & AgentsFetch)
   | ({ t: "stand:select" } & StandSelect)
   | ({ t: "repo:clone:pickFolder" } & RepoClonePickFolder)
@@ -302,7 +302,7 @@ export type IpcEnvelope =
 export type IpcEventEnvelope =
   | ({ t: "sidebar:state" } & SidebarState)
   | ({ t: "sidebar:error" } & SidebarError)
-  | ({ t: "performer:create_result" } & PerformerCreateResult)
+  | ({ t: "sub:create_result" } & SubCreateResult)
   | ({ t: "agents:result" } & AgentsResult)
   | ({ t: "files:list_result" } & FilesListResult)
   | ({ t: "wire:result" } & WireResult)

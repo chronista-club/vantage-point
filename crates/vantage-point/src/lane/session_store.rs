@@ -164,11 +164,11 @@ mod tests {
             .expect("未記録の clear は Ok");
         // 他 lane の記録は巻き添えにしない。
         STORE
-            .record_in(tmp.path(), "vp", "performer-a", "keep-id")
+            .record_in(tmp.path(), "vp", "sub-a", "keep-id")
             .expect("record");
         STORE.clear_in(tmp.path(), "vp", "root").expect("clear");
         assert_eq!(
-            STORE.last_in(tmp.path(), "vp", "performer-a").as_deref(),
+            STORE.last_in(tmp.path(), "vp", "sub-a").as_deref(),
             Some("keep-id")
         );
     }

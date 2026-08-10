@@ -72,7 +72,7 @@ pub enum ProcessKind {
     /// Runtime (= Repo Process) 扱い (serde default)。
     #[default]
     Runtime,
-    /// PTY session を持つ stream-based process (= Lane: Conductor / Performer)
+    /// PTY session を持つ stream-based process (= Lane: Main / Sub)
     Session,
     /// 機能 service を提供する Agent process (= Conversation / Shell / board / runner ほか)
     Agent,
@@ -277,9 +277,9 @@ pub struct LaneInfo {
     pub pid: Option<u32>,
     #[serde(default)]
     pub cwd: String,
-    /// Phase 5-D: Performer Lane のみ有効、 git workspace の状態 snapshot。
+    /// Phase 5-D: Sub Lane のみ有効、 git workspace の状態 snapshot。
     #[serde(default)]
-    pub performer_status: Option<PerformerStatusWire>,
+    pub sub_status: Option<SubStatusWire>,
     /// doc 37: active engine の session id（claude=cc_session / codex=thread id / grok=ACP sessionId、
     /// shell=None）。Conversation 共通ヘッダの session chip 用（表示専用）。旧 SP からは欠落 = None。
     #[serde(default)]
@@ -298,7 +298,7 @@ pub struct LaneInfo {
     /// FSM 投影 (2026-07-11): dev-flow FSM の現在 state。 "idle" | "working" | "hitl_pending" |
     /// "awaiting_user" | "completed" | "stuck"。 daemon が snapshot 送信時に enrich する
     /// (source = `vp flow progress` と同一判定)。 欠落 (旧 daemon) = None → sidebar は
-    /// pid heuristic に fallback。 conductor lane は常に None (dev-flow FSM の対象外)。
+    /// pid heuristic に fallback。 main lane は常に None (dev-flow FSM の対象外)。
     #[serde(default)]
     pub flow_state: Option<String>,
 }
@@ -378,11 +378,11 @@ fn default_root_session() -> u32 {
     1
 }
 
-/// Phase 5-D: vantage-point 側 `lane::commands::PerformerStatus` の wire shape。
-/// sidebar Performer row に branch / dirty / ahead / behind / merge 状態を表示。
+/// Phase 5-D: vantage-point 側 `lane::commands::SubStatus` の wire shape。
+/// sidebar Sub row に branch / dirty / ahead / behind / merge 状態を表示。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
-pub struct PerformerStatusWire {
+pub struct SubStatusWire {
     #[serde(default)]
     pub branch: Option<String>,
     #[serde(default)]

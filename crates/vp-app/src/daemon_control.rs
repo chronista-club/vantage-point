@@ -215,11 +215,11 @@ impl DaemonControl {
         Ok(())
     }
 
-    /// performer lane を作る (旧 `POST /api/daemon/lanes`、doc 24 §10 Phase 2 B-create)。
+    /// sub lane を作る (旧 `POST /api/daemon/lanes`、doc 24 §10 Phase 2 B-create)。
     ///
     /// `branch` / `agent` を省くと daemon 側が default を導出する
     /// (HTTP route と同じ `resolve_create_lane_args` を共有)。
-    pub async fn create_performer_lane(
+    pub async fn create_sub_lane(
         &self,
         repo_path: &str,
         name: &str,
@@ -297,7 +297,7 @@ mod tests {
                 "name": "vp",
                 "path": "/repos/vp",
                 "process_status": "running",
-                "active_lane": "vp:lane:conductor",
+                "active_lane": "vp:lane:main",
             },
             { "name": "nexus", "path": "/repos/nexus" },
         ])

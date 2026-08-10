@@ -40,7 +40,7 @@ pub async fn daemon_repo_request(
 
 /// [`daemon_repo_request`] の outer timeout を呼び出し側が指定する版。
 ///
-/// `lane_create` は repo 側で git worktree clone (`new_performer_in`、 spawn_blocking) を含み
+/// `lane_create` は repo 側で git worktree clone (`new_sub_in`、 spawn_blocking) を含み
 /// 数 10 sec かかり得るため、 MCP `quic_call_with_timeout("lane_create", .., 60s)` と揃えて 60s を
 /// 渡す。 CLI 35s / MCP 60s の非対称だと、 大規模 repo で CLI だけ先に timeout → rollback 発火 →
 /// repo が clone 完走 → orphan lane、 という race が起きる (moody-blues review #1)。 timeout を

@@ -9,7 +9,7 @@
 //! の土台 — 後続 increment で徐々に id へ寄せる。
 //!
 //! - **書き手 / 読み手**: lane spawn 経路 (`LanePool::with_root` / `lane_spawn_actor` /
-//!   `routes::lanes` の performer create) が [`load_or_create`] を呼ぶ。初回は生成 + 永続、
+//!   `routes::lanes` の sub create) が [`load_or_create`] を呼ぶ。初回は生成 + 永続、
 //!   2 回目以降 (= 再起動後の同 lane re-spawn) は disk から復元 → **再起動を越えて安定**。
 //! - 置き場: `vp_state_dir()/lane_ids/<repo>__<lane>` (1 lane 1 file 1 行)。
 //!   cc_session (`<repo>__<lane>`) と同じ命名規則。
@@ -111,7 +111,7 @@ mod tests {
     fn load_or_create_distinct_lanes_differ() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let a = load_or_create_in(tmp.path(), "vp", "root");
-        let b = load_or_create_in(tmp.path(), "vp", "performer-foo");
+        let b = load_or_create_in(tmp.path(), "vp", "sub-foo");
         assert_ne!(a, b, "別 lane は別 id");
     }
 

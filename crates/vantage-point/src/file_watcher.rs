@@ -369,7 +369,7 @@ async fn watch_file_task(config: WatchConfig, hub: Hub) {
         content: Content::Html(css_preamble()),
         append: false,
         title: config.title.clone(),
-        // file watch 出力は conductor（lead）Canvas 向け
+        // file watch 出力は main（lead）Canvas 向け
         lane: None,
         scope: None,
     });

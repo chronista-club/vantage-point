@@ -102,7 +102,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 content: content_enum,
                 append,
                 title,
-                // CLI 実行 cwd の Lane を stamp（performer lane dir からならその board に届く）
+                // CLI 実行 cwd の Lane を stamp（sub lane dir からならその board に届く）
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
                 scope: None,
             };

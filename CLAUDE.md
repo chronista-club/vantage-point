@@ -156,8 +156,8 @@ vp app stop            # vp-app を停止
 vp shot                # vp-app window の screenshot を PNG 保存
 
 # Lane / dev-flow / messaging
-vp lane                # performer Lane 管理
-vp flow handoff|progress  # Conductor × Performer orchestration
+vp lane                # sub Lane 管理
+vp flow handoff|progress  # Main × Sub orchestration
 vp wire send|recv|inbox|thread|ack|watch|hook-check  # wire messaging（store は daemon :32000 に中央化。hook-check は claude hook 実体、R2-c）
 vp lane history [--limit N]  # 見送りの記録（いつ何を見送ったか / 判断待ちの滞留、doc 44 §7.5 の帳簿）
 vp lane capture <lane> [--session N]  # lane console の現在画面を読む（旧 vp tmux capture の後継、tmux 非依存）
@@ -343,7 +343,7 @@ task 管理は creo-memories に一本化（Linear は不使用、2026-05-19 確
 |---|---|---|---|---|
 | **nightly** | **dev trunk**（day-to-day 積み上げ・lane base・**PR base**） | 可（force / deletion 禁止） | 任意 | lane → PR or 直 push |
 | **main** | **GitHub default**（公開の顔）+ 公開 release の単位（= 「ここを参照すれば最新安定」） | **禁止** | 必須（force / deletion 禁止） | nightly → release PR → tag cut |
-| **lane / performer** | 単一タスク隔離 | 自由 | 必須 | from nightly |
+| **lane / sub** | 単一タスク隔離 | 自由 | 必須 | from nightly |
 
 #### lane 作業フロー（lead session = メインセッション向け）
 

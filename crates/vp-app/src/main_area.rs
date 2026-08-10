@@ -61,9 +61,9 @@ pub struct ActivePaneInfo<'a> {
     /// cwd は address (pane_id) から導出できない唯一の lane 情報なので、setActivePane に
     /// 相乗りさせて運ぶ (新しい配信チャネルは増やさない — 既存 lane 状態配信経路)。
     pub cwd: Option<&'a str>,
-    /// Conversation 共通ヘッダの branch chip 用: performer lane の git branch
-    /// (`performer_status.branch` 由来、「安価に取れる場合のみ」)。
-    /// conductor / 取得不能時は None (chip 非表示)。
+    /// Conversation 共通ヘッダの branch chip 用: sub lane の git branch
+    /// (`sub_status.branch` 由来、「安価に取れる場合のみ」)。
+    /// main / 取得不能時は None (chip 非表示)。
     pub branch: Option<&'a str>,
     /// Conversation 共通ヘッダの lane 名 chip 用: `LaneInfo.name`（表示名）。
     /// 現状 server 側は常に None のため JS 側は addr 由来の短縮名に fallback するが、
@@ -581,7 +581,7 @@ body.rsb-open #edge-rail{display:none !important;}
    いつもの色空間メソッド (OKLCH) で hue rotation して role に合った色を synthesize。
    chroma は brand と同等 (~0.16)、L=0.65 (normal) / 0.78 (bright) で
    背景 (L=0.16) との contrast を WCAG AA 以上確保。
-   関連: mem_1CaSmvKgsX2AQxRYFYgNM3 (Conductor pane shell), creo-ui contrast-dark theme. */
+   関連: mem_1CaSmvKgsX2AQxRYFYgNM3 (Main pane shell), creo-ui contrast-dark theme. */
 :root[data-theme="contrast-dark"]{
   --terminal-ansi-black:oklch(0.20 0.02 280);
   --terminal-ansi-red:oklch(0.65 0.18 25);
@@ -626,7 +626,7 @@ body.rsb-open #edge-rail{display:none !important;}
   <!-- VP-140 fail-safe: pane-lane は Frame Engine が apply される前から visible にしておく。
        inline opacity:1 を CSS .pane{opacity:0} default より優先させ、 Frame Engine 不在 / 起動失敗時も
        少なくとも Conversation terminal は見える状態を保つ (= conversation が default visible 約束)。
-       Frame Engine 起動後は inline style.opacity を engine が上書きする (conductor-focus:1 / pp-focus:0)。 -->
+       Frame Engine 起動後は inline style.opacity を engine が上書きする (main-focus:1 / pp-focus:0)。 -->
   <div class="pane terminal" id="pane-lane" data-kind="lane" data-frame-id="lane" style="opacity:1;pointer-events:auto;visibility:visible;">
     <!-- Conversation 共通ヘッダ (操縦席) の mount 点。器だけ World A が置き、editor-host bundle の
          LaneHeader が中身を render する。lane 切替で内容だけ差し替わる (帰属は lane の Conversation、
@@ -707,7 +707,7 @@ body.rsb-open #edge-rail{display:none !important;}
     <div id="lane-empty" class="lane-empty active">
       <main>
         <!-- Lane を象徴する Codicon "git-merge" (user 指定、vscode-codicons より)。
-             Lane (特に Performer) は git branch ベースの隔離環境なので branch graph
+             Lane (特に Sub) は git branch ベースの隔離環境なので branch graph
              アイコンが概念に合う。main_view は vp-asset:// 未登録で Nerd Font を
              load できないため、font glyph ではなく自己完結 inline SVG を使う。
              currentColor で text-tertiary に追従。 -->
@@ -854,7 +854,7 @@ mod tests {
     fn active_pane_script_chat_false_for_tui_and_stand() {
         let tui = build_set_active_pane_script(&ActivePaneInfo {
             kind: Some("lane"),
-            pane_id: Some("vp/performer/x"),
+            pane_id: Some("vp/sub/x"),
             preview_url: None,
             chat: false,
             cwd: Some("/Users/mako/repos/vp/.vp/lanes/x"),

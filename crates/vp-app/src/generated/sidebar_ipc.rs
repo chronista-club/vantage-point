@@ -73,7 +73,7 @@ pub struct LaneReorder {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LaneAddPerformer {
+pub struct LaneAddSub {
     pub path: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,7 +156,7 @@ pub struct SidebarError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PerformerCreateResult {
+pub struct SubCreateResult {
     pub repo_path: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -222,8 +222,8 @@ pub enum IpcEnvelope {
     LaneSetOrigin(LaneSetOrigin),
     #[serde(rename = "lane:reorder")]
     LaneReorder(LaneReorder),
-    #[serde(rename = "lane:add_performer")]
-    LaneAddPerformer(LaneAddPerformer),
+    #[serde(rename = "lane:add_sub")]
+    LaneAddSub(LaneAddSub),
     #[serde(rename = "agents:fetch")]
     AgentsFetch(AgentsFetch),
     #[serde(rename = "stand:select")]
@@ -257,8 +257,8 @@ pub enum IpcEventEnvelope {
     SidebarState(SidebarState),
     #[serde(rename = "sidebar:error")]
     SidebarError(SidebarError),
-    #[serde(rename = "performer:create_result")]
-    PerformerCreateResult(PerformerCreateResult),
+    #[serde(rename = "sub:create_result")]
+    SubCreateResult(SubCreateResult),
     #[serde(rename = "agents:result")]
     AgentsResult(AgentsResult),
     #[serde(rename = "files:list_result")]

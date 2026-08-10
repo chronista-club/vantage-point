@@ -2,7 +2,7 @@
 //!
 //! ## 役割
 //!
-//! sidebar の `+ Add Performer` で agent dropdown 表示するための data source。
+//! sidebar の `+ Add Sub` で agent dropdown 表示するための data source。
 //! entry point は daemon repo-proxy ask `agents_list`
 //! （`unison_server::handle_stands_list` → `list_agents`）。
 //!
@@ -36,7 +36,7 @@ pub struct AgentInfo {
     /// gui（chat GUI）の host を持つか（doc 38 Phase 3、additive field）。
     /// chat 系 UI（session tab の「+」menu）はこれで shell（engine なし）を除外する —
     /// dogfood で「作れるが submit がエラーになるだけの dead-end tab」が実発生したため。
-    /// sidebar の Add Performer（lane 作成）は全 agent が正当なので filter しない。
+    /// sidebar の Add Sub（lane 作成）は全 agent が正当なので filter しない。
     pub chat_capable: bool,
 }
 

@@ -89,31 +89,31 @@ pub(crate) enum Outcome {
 }
 
 /// 論理 wire address（`agent@...`）を、[`AppState::resolve_lane_address`](crate::repo::state::AppState::resolve_lane_address)
-/// が解する lane address query（`<repo>/root` / `<repo>/performer/<name>`）に翻訳する。
+/// が解する lane address query（`<repo>/root` / `<repo>/sub/<name>`）に翻訳する。
 ///
 /// これが resolution の **local 分岐**（= federation 不変条件の swappable 層）。後で
 /// `daemon-handle:` 接頭を見て remote daemon に振る分岐を足すだけで federation 化できる。
 /// `delivery_actor::lane_identity_from_agent` と同じ wire→lane 分解則:
 /// - `agent@<repo>`        → `<repo>/root`
-/// - `agent@<repo>/<name>` → `<repo>/performer/<name>`
+/// - `agent@<repo>/<name>` → `<repo>/sub/<name>`
 ///
 /// 既に bare lane form で渡された場合（`<repo>/root` 等）は素通しする
 /// （probe や test が lane address を直接撃てるように、tolerant に受ける）。
 pub(crate) fn lane_query_for(addr: &str) -> String {
     let rest = addr.strip_prefix("agent@").unwrap_or(addr);
     match rest.split_once('/') {
-        // 既に lane form（conductor / performer/... / 旧 lead / wing）なら素通し。
+        // 既に lane form（main / sub/... / 旧 lead / wing）なら素通し。
         Some((_, tail))
             if tail == crate::repo::lanes_state::ROOT_LANE_NAME
                 || tail == "lead"
-                || tail.starts_with("performer/")
+                || tail.starts_with("sub/")
                 || tail.starts_with("wing/") =>
         {
             rest.to_string()
         }
-        // `agent@<repo>/<name>` → performer lane。
-        Some((repo, name)) => format!("{repo}/performer/{name}"),
-        // `agent@<repo>` → conductor lane。
+        // `agent@<repo>/<name>` → sub lane。
+        Some((repo, name)) => format!("{repo}/sub/{name}"),
+        // `agent@<repo>` → main lane。
         None => format!("{rest}/root"),
     }
 }
@@ -449,20 +449,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lane_query_wire_conductor_to_lane() {
+    fn lane_query_wire_main_to_lane() {
         assert_eq!(lane_query_for("agent@vp"), "vp/root");
     }
 
     #[test]
-    fn lane_query_wire_performer_to_lane() {
-        assert_eq!(lane_query_for("agent@vp/feat-api"), "vp/performer/feat-api");
+    fn lane_query_wire_sub_to_lane() {
+        assert_eq!(lane_query_for("agent@vp/feat-api"), "vp/sub/feat-api");
     }
 
     #[test]
     fn lane_query_bare_lane_form_passthrough() {
         // 既に lane form のものは翻訳せず素通し（probe / test が直接撃てる）。
         assert_eq!(lane_query_for("vp/root"), "vp/root");
-        assert_eq!(lane_query_for("vp/performer/x"), "vp/performer/x");
+        assert_eq!(lane_query_for("vp/sub/x"), "vp/sub/x");
         // 旧 lead / wing も resolve 側が受理するので素通し。
         assert_eq!(lane_query_for("vp/lead"), "vp/lead");
         assert_eq!(lane_query_for("vp/wing/x"), "vp/wing/x");

@@ -178,7 +178,7 @@ pub fn repo_name_from_path(repo_dir: &str, config: &Config) -> String {
 /// (wire identity SSOT)。完全一致 → longest-prefix サブディレクトリ一致 → `None`。
 ///
 /// `resolve_from_cwd` の config 経路だけを抜き出した純 config lookup。discovery / daemon を
-/// 引かないので、自 repo の repo が落ちていても conductor の canonical address
+/// 引かないので、自 repo の repo が落ちていても main の canonical address
 /// (`agent@<repo>`) を確定できる。I/O なし (cwd は呼び出し側で正規化して渡す) で単体 test 可能。
 ///
 /// 戻り値は登録 repo の `name` (= [`repo_name_from_path`] が登録 path に返すのと同じ値、
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn match_repo_longest_prefix_subdir() {
-        // conductor は subdir から動く → longest-prefix で親 repo を引く
+        // main は subdir から動く → longest-prefix で親 repo を引く
         let cfg = cfg_with(&[("club-unison", "/Users/x/repos/club-unison")]);
         assert_eq!(
             match_repo_name_for_path("/Users/x/repos/club-unison/clients/typescript", &cfg)
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn match_repo_unregistered_is_none() {
-        // 未登録 cwd → None (= conductor fail-closed)。sibling 名前共有 (basename 衝突) でも誤マッチしない
+        // 未登録 cwd → None (= main fail-closed)。sibling 名前共有 (basename 衝突) でも誤マッチしない
         let cfg = cfg_with(&[("vp", "/Users/x/repos/vp")]);
         assert_eq!(match_repo_name_for_path("/Users/x/repos/other", &cfg), None);
         // basename だけ一致する別 root は prefix マッチしない (basename fallback しない証明)

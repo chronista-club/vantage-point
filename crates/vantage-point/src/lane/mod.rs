@@ -1,19 +1,19 @@
-//! lane — Git worktree-based performer workspace manager
+//! lane — Git worktree-based sub workspace manager
 //!
-//! lane = `<repo>/.vp/lanes/<name>` の git worktree (conductor の `.git` を共有)。
+//! lane = `<repo>/.vp/lanes/<name>` の git worktree (main の `.git` を共有)。
 //! `--isolation clone` で旧来の独立 clone も選べる (escape hatch)。
 //! 操作は `vp lane` サブコマンド (vp-cli) に一本化。
 //!
 //! ## Library API
 //!
-//! `commands` モジュールが performer 操作の高レベル API を提供:
-//! - `new_performer(name, branch, force, isolation, base, model)`
-//! - `fork_performer(name, branch, force, isolation, base, model)`
-//! - `list_performers()`
-//! - `performer_path(name)`
-//! - `remove_performer(name, all, force)`
-//! - `status_performers()`
-//! - `cleanup_performers(force)`
+//! `commands` モジュールが sub 操作の高レベル API を提供:
+//! - `new_sub(name, branch, force, isolation, base, model)`
+//! - `fork_sub(name, branch, force, isolation, base, model)`
+//! - `list_subs()`
+//! - `sub_path(name)`
+//! - `remove_sub(name, all, force)`
+//! - `status_subs()`
+//! - `cleanup_subs(force)`
 
 /// lane 単位の agent（engine 種別）永続（repo 再起動またぎ、mem_1Cd4M7i5Enp3HHMLVYayRe）
 pub mod agent_store;
