@@ -124,14 +124,24 @@ export function laneCwdLabel(cwd: string, repoPath: string): string {
 }
 
 /**
- * Lane address を Display 形 (`<repo>/root` / `<repo>/sub/<name>`) に変換。
- * Rust `LaneAddressWire::key()` と完全一致させる (active selection 比較に使うため)。
+ * lane の address 文字列（active selection の比較 key）。
+ *
+ * ## ⚠️ **組み立てない** — daemon が発行した値をそのまま返す
+ *
+ * 旧実装は `${repo}/${name}` を自分で組み、doc に「Rust `LaneAddressWire::key()` と
+ * **byte-for-byte 一致させる**」と書いていた = **手で同期を保つ契約**。同じ写像が
+ * Rust 2 実装 + TS 2 実装の計 4 箇所にあり、Rust 内ですら食い違った記録がある
+ * （`vp-app/src/lane.rs` の `key_matches_display`）。
+ *
+ * 形式（`<repo>/lane/<name>`）を知るのは daemon の `LaneAddress::canonical` だけ。
+ * ここが組み立てを持たない限り、**形式が変わっても webview は無改修**で追随する。
+ *
+ * ⚠️ `key` が空 = 旧 daemon の payload。その場合だけ旧 2 分節へ縮退する
+ * （読み側の `parse_address` が救済する形なので、新形を組み直さない）。
  */
 export function laneAddressKey(lane: LaneInfo): string {
-	// doc 44 P2: フラット化で `<repo>/<name>` の 1 形になった
-	// (Rust 側 `LaneAddressWire::key()` / `LaneAddress::Display` と byte-for-byte 一致)。
 	const a = lane.address;
-	return `${a.repo}/${a.name}`;
+	return a.key !== "" ? a.key : `${a.repo}/${a.name}`;
 }
 
 /** ショートカット番号の上限。1 打で選べる範囲＝ 1〜9（0 は使わない）。 */

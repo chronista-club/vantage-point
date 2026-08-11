@@ -2648,6 +2648,7 @@ mod lane_key_wire_agent_tests {
             let wire = LaneAddressWire {
                 repo: "vp".into(),
                 name: name.into(),
+                key: format!("vp/lane/{name}"),
             };
             assert_eq!(
                 lane_key_to_wire_agent(&wire.key()).as_deref(),
@@ -2666,8 +2667,31 @@ mod lane_key_wire_agent_tests {
         assert_eq!(lane_key_to_wire_agent("/root"), None); // repo 空
         assert_eq!(lane_key_to_wire_agent("vp/"), None); // name 空
         assert_eq!(lane_key_to_wire_agent("vp/<unnamed>"), None); // spawning placeholder
-        // 旧 3 分節形は新形では不正（正規化は server 側 parse_address の担当）
-        assert_eq!(lane_key_to_wire_agent("vp/sub/foo"), None);
+        assert_eq!(lane_key_to_wire_agent("vp/lane/<unnamed>"), None); // canonical 形でも同じ
+    }
+
+    /// ⚠️ **旧形の address からも宛先が引ける**こと。
+    ///
+    /// 永続 state（DB / session.json）には旧 2 分節・旧 3 分節が残る。ここで弾くと
+    /// **wire が無音で届かなくなる**ので、lane 名を最後の分節から取って受け入れる。
+    /// 旧実装は `name.contains('/')` で 3 分節を弾いており、canonical 化で
+    /// **全 lane の宛先が引けなくなる**ところだった。
+    #[test]
+    fn accepts_every_address_generation() {
+        for addr in ["vp/lane/foo", "vp/sub/foo", "vp/wing/foo", "vp/foo"] {
+            assert_eq!(
+                lane_key_to_wire_agent(addr).as_deref(),
+                Some("agent@vp/foo"),
+                "{addr} から宛先が引けない"
+            );
+        }
+        for addr in ["vp/lane/root", "vp/root"] {
+            assert_eq!(
+                lane_key_to_wire_agent(addr).as_deref(),
+                Some("agent@vp"),
+                "{addr}: 開発起点は lane 部を省く"
+            );
+        }
     }
 }
 
@@ -3648,8 +3672,15 @@ fn handle_sidebar_ipc(
 /// （§6.4 と同型の「型を経由しない文字列」の取り残し。しかも対になる
 /// `wire_agent_to_lane_display` の**逆方向**なので、片方だけ直すと非対称に壊れる）。
 fn lane_key_to_wire_agent(address: &str) -> Option<String> {
-    let (repo, name) = address.split_once('/')?;
-    if repo.is_empty() || name.is_empty() || name.contains('/') {
+    // ⚠️ lane address は `<repo>/lane/<name>`（旧 `<repo>/<name>` / `<repo>/sub/<name>` も
+    // 永続に残る）。**wire address（`agent@<repo>/<name>`）は別体系**で `lane` 分節を持たない
+    // ので、ここで lane 名だけを取り出して組み直す。
+    //
+    // ⚠️ 旧実装は `split_once('/')` の後ろを lane 名と見なし `name.contains('/')` で弾いて
+    // いたため、canonical が来ると **None = 宛先が引けない**（wire が無音で届かなくなる）。
+    let (repo, rest) = address.split_once('/')?;
+    let name = rest.rsplit('/').next()?;
+    if repo.is_empty() || name.is_empty() {
         return None;
     }
     if name == crate::lane::ROOT_LANE_NAME {
@@ -5042,14 +5073,8 @@ pub fn run() -> anyhow::Result<()> {
                         msg_repo,
                         message.get("lane").and_then(|l| l.as_str()),
                     ) {
-                        // token → lane address (`<repo>/<予約名>` or `<repo>/sub/<name>`)
-                        let address = if token.is_empty()
-                            || token == crate::lane::ROOT_LANE_NAME
-                        {
-                            format!("{}/{}", repo, crate::lane::ROOT_LANE_NAME)
-                        } else {
-                            format!("{}/sub/{}", repo, token)
-                        };
+                        // token → lane address（形式は `address_from_lane_token` の 1 箇所）
+                        let address = crate::lane::address_from_lane_token(repo, token);
                         // Model B (focus = 操舵ポインタ): switch_lane は全 instance に broadcast される
                         // が、適用するのは **focused instance だけ**。非 focus の window はこの event を
                         // 無視し、自分の lane に park されたまま (= 2 window が別々の lane を同時に見られる)。
@@ -5105,12 +5130,8 @@ pub fn run() -> anyhow::Result<()> {
                         .get("lane")
                         .and_then(|l| l.as_str())
                         .unwrap_or(crate::lane::ROOT_LANE_NAME);
-                    // token → lane address（switch_lane と同じ変換）。
-                    let address = if token.is_empty() || token == crate::lane::ROOT_LANE_NAME {
-                        format!("{}/{}", repo, crate::lane::ROOT_LANE_NAME)
-                    } else {
-                        format!("{}/sub/{}", repo, token)
-                    };
+                    // token → lane address（switch_lane と同じ helper を通す）。
+                    let address = crate::lane::address_from_lane_token(repo, token);
                     if sidebar_state.active_lane_address.as_deref() != Some(address.as_str()) {
                         mark_lane_canvas_unread(&address, &mut sidebar_state, &webview);
                     }

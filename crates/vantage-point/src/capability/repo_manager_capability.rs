@@ -1671,7 +1671,9 @@ impl RepoManagerCapability {
             // `lane_delete` に移管 (Daemon 内 loopback、 surface 群と uniform な transport)。 cleanup=false
             // で dir は既に gone。 self-loop case (= repo 経由削除で dir 消滅 → watcher が Remove 検知 →
             // 本 lane_delete 発火) は server が "Lane not found" を Err で返すので no-op 扱い。
-            let address = format!("{}/sub/{}", repo_name, sub_name);
+            let address =
+                crate::repo::lanes_state::LaneAddress::new(repo_name.as_str(), sub_name.as_str())
+                    .canonical();
             let payload = serde_json::json!({ "address": address, "cleanup": false });
             tracing::info!(
                 "lane watcher: dir removed → lane_delete 発火 (repo={}, sub={}, repo_port={})",
@@ -2633,7 +2635,7 @@ mod tests {
         let main_info = main.list().into_iter().next().expect("root descriptor");
         db.upsert_lane(&key, &main_info).await.unwrap();
         let addr_str = main_info.address.to_string();
-        assert_eq!(addr_str, "reserved/root");
+        assert_eq!(addr_str, "reserved/lane/root");
 
         // dup check の masking は効かない状況（lane_registry は空）。
         let err = cap
@@ -2700,10 +2702,10 @@ mod tests {
             vec![mk("alive", &alive_dir), mk("gone", &gone_dir)],
         );
         // alive=provisioning (ground 在り→ready 期待)、 gone=ready (ground 無→dead 期待)。
-        db.upsert_lane_lifecycle(key, "proj/alive", "provisioning")
+        db.upsert_lane_lifecycle(key, "proj/lane/alive", "provisioning")
             .await
             .unwrap();
-        db.upsert_lane_lifecycle(key, "proj/gone", "ready")
+        db.upsert_lane_lifecycle(key, "proj/lane/gone", "ready")
             .await
             .unwrap();
 
@@ -2716,12 +2718,12 @@ mod tests {
                 .map(|(_, _, lc)| lc.clone())
         };
         assert_eq!(
-            get("proj/alive").as_deref(),
+            get("proj/lane/alive").as_deref(),
             Some("ready"),
             "provisioning + ground 在り → ready (provision 完了)"
         );
         assert_eq!(
-            get("proj/gone").as_deref(),
+            get("proj/lane/gone").as_deref(),
             Some("dead"),
             "ready + ground 外部削除 → dead (user の rm 尊重)"
         );

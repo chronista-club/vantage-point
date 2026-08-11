@@ -3249,7 +3249,7 @@ mod tests {
         // sub lane (main とは別 topic key になる)
         let addr = LaneAddress::sub("vp", "feat-replay");
         let lane = addr.to_string();
-        assert_eq!(lane, "vp/feat-replay"); // doc 44 P2: フラット化後の表示形
+        assert_eq!(lane, "vp/lane/feat-replay"); // canonical（名前空間つき）
 
         // 実 PtySlot を sub address で登録
         {

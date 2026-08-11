@@ -27,11 +27,8 @@ use crate::config::Config;
 fn lane_addr_from_env() -> Option<String> {
     let repo = std::env::var("VP_REPO").ok().filter(|s| !s.is_empty())?;
     let label = std::env::var("VP_LANE").ok().filter(|s| !s.is_empty())?;
-    if label == crate::repo::lanes_state::ROOT_LANE_NAME {
-        Some(format!("{repo}/{label}"))
-    } else {
-        Some(format!("{repo}/sub/{label}"))
-    }
+    // ⚠️ 形式は `LaneAddress::canonical` の 1 箇所。root/sub の分岐は要らない。
+    Some(crate::repo::lanes_state::LaneAddress::new(repo, label).canonical())
 }
 
 /// 「今なにを」1 行を daemon へ送る（`session_now` method）。
