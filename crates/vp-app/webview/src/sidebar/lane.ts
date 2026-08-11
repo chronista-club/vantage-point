@@ -50,10 +50,14 @@ export function agentDisplayName(agent: string): string {
 }
 
 /**
- * 開発起点 lane の予約名 (doc 44 D4)。
+ * Main lane の予約名（doc 44 D4）。Rust 側 `vp_paths::ROOT_LANE_NAME` と同値。
  *
- * Rust 側 `ROOT_LANE_NAME` と同値でなければ address が食い違う
- * (`laneAddressKey()` は byte-for-byte 一致が要件)。
+ * ⚠️ **address には関与しない**。旧 doc は「同値でないと address が食い違う」と警告して
+ * いたが、`laneAddressKey` が daemon 発行の `key` を返すようになったのでその懸念は消えた。
+ * 今の用途は [`isSubLane`]（Main かどうかの表示分岐）**だけ**。
+ *
+ * ⚠️ とはいえ daemon が予約名として使う値なので、**同値である必要は残る**。次に変えるときは
+ * ここも対で直す。
  */
 const ROOT_LANE_NAME = "root";
 

@@ -80,6 +80,7 @@ window.addEventListener("unhandledrejection", (e) => {
 	console.error("[vp-bundle] unhandledrejection", e.reason);
 });
 
+import { subNameOfAddress } from "./lane-address";
 import { render } from "solid-js/web";
 import {
 	EditorHostProvider,
@@ -227,11 +228,8 @@ let laneHeader: LaneHeaderApi | null = null;
  * canvas filter token（`null`→`main` に正規化して producer の lane と突合）に使う。
  */
 function laneNameFromAddress(addr: string | null): string | null {
-	if (!addr) return null;
-	if (addr.endsWith("/root") || addr.endsWith("/lead")) return null;
-	const m = addr.match(/\/(?:sub|wing)\/(.+)$/);
-	if (m) return m[1] ?? null;
-	return null;
+	// ⚠️ 分解は `lane-address.ts` の 1 箇所（Main は null の流儀を維持）。
+	return addr ? subNameOfAddress(addr) : null;
 }
 /**
  * Rust `push_active_view` の受け口（`window.setActivePane`）の本体。

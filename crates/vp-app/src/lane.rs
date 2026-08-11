@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn lane_address_display() {
         let main = LaneAddress::root("vantage-point");
-        assert_eq!(main.to_string(), "vantage-point/lane/root");
+        assert_eq!(main.to_string(), "vantage-point/lane/main");
         assert!(main.is_root());
 
         let sub = LaneAddress::sub("vantage-point", "foo");
@@ -218,9 +218,9 @@ mod tests {
         let main = LaneAddressWire {
             repo: "vantage-point".into(),
             name: "root".into(),
-            key: "vantage-point/lane/root".into(),
+            key: "vantage-point/lane/main".into(),
         };
-        assert_eq!(main.key(), "vantage-point/lane/root");
+        assert_eq!(main.key(), "vantage-point/lane/main");
 
         // key が空 = 旧 payload。旧 2 分節へ縮退する（読み側の parse_address が救済）。
         let legacy = LaneAddressWire {
@@ -265,7 +265,7 @@ mod tests {
     fn legacy_wire_without_name_defaults_to_main() {
         let w: LaneAddressWire = serde_json::from_str(r#"{"repo":"vp","kind":"root"}"#).unwrap();
         assert_eq!(w.name, ROOT_LANE_NAME);
-        assert_eq!(w.key(), "vp/root");
+        assert_eq!(w.key(), "vp/main");
 
         // 旧 sub payload は name をそのまま引き継ぐ（`kind` は unknown field として無視）
         let p: LaneAddressWire =

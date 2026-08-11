@@ -16,7 +16,7 @@ import {
 function lane(over: Partial<LaneInfo> = {}): LaneInfo {
 	return {
 		id: "",
-		address: { repo: "vp", name: "root" },
+		address: { repo: "vp", name: "root", key: "vp/lane/root" },
 		state: "running",
 		agent: "claude",
 		created_at: "2026-07-10T00:00:00Z",

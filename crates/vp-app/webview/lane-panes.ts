@@ -37,6 +37,7 @@
  * > 制約と lane 単位 mode の概念は消えた。
  */
 
+import { repoOfAddress, subNameOfAddress } from "./lane-address";
 import {
 	type Layout,
 	resolve,
@@ -136,12 +137,9 @@ export function sessionOfHostId(id: string): number | null {
  *  同じ `'main'` を名乗るので、lane 名だけで持つと「repo A で board を開いたまま B へ移ると
  *  B でも開いていて、位置まで共有される」になる。 */
 export function boardKeyOf(address: string): string {
-	const repo = address.split("/")[0] ?? "";
-	if (address.endsWith("/root") || address.endsWith("/lead")) {
-		return boardKey(repo, null);
-	}
-	const m = address.match(/\/(?:sub|wing)\/(.+)$/);
-	return boardKey(repo, m ? (m[1] ?? null) : null);
+	// ⚠️ 分解は `lane-address.ts` の 1 箇所（旧実装は `/sub/` を探す形で、canonical では
+	// 全 lane が Main のキーに集約されていた）。
+	return boardKey(repoOfAddress(address), subNameOfAddress(address));
 }
 
 /** lane の pane の顔ぶれ（純関数、doc 50 §4.6 A6）。

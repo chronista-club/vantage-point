@@ -3683,7 +3683,9 @@ fn lane_key_to_wire_agent(address: &str) -> Option<String> {
     if repo.is_empty() || name.is_empty() {
         return None;
     }
-    if name == crate::lane::ROOT_LANE_NAME {
+    // ⚠️ **読む側は旧予約名（`lead`）も Main とみなす**。永続 state に残っており、ここで
+    // 弾くとその lane の wire 宛先が引けない（無音で届かなくなる）。
+    if name == crate::lane::ROOT_LANE_NAME || name == "lead" {
         // 開発起点は lane 部分を省略した形が canonical（`agent@<repo>`）。
         return Some(format!("agent@{repo}"));
     }
