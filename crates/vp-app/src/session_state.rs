@@ -304,7 +304,7 @@ impl SessionState {
                         && !addr.contains("/lane/")
                     {
                         tracing::info!(
-                            "active lane が旧形の address ({addr}) — daemon の発行形と一致しないため                              選択なしで起動します（lane を選び直せば新形で保存されます）"
+                            "active lane が旧形の address ({addr}) — daemon の発行形と一致しないため選択なしで起動します（lane を選び直せば新形で保存されます）"
                         );
                     }
                     tracing::info!(

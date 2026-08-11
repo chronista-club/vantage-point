@@ -189,7 +189,8 @@ mod tests {
     #[test]
     fn lane_address_display() {
         let main = LaneAddress::root("vantage-point");
-        assert_eq!(main.to_string(), "vantage-point/lane/main");
+        // ⚠️ 予約名は `root` のまま（表示語が `main` になっても識別子は別物）。
+        assert_eq!(main.to_string(), "vantage-point/lane/root");
         assert!(main.is_root());
 
         let sub = LaneAddress::sub("vantage-point", "foo");
@@ -215,12 +216,17 @@ mod tests {
     #[test]
     fn lane_address_wire_key_is_flat() {
         // ⚠️ daemon が発行した key をそのまま返す（client は組み立てない）。
+        //
+        // ⚠️ **key をわざと `name` と食い違わせている**のが検出器の本体。client が
+        // `repo` + `name` から組み立て直していたら `vantage-point/lane/root` が返り、
+        // この assert が落ちる。一致させると「返しただけ」と「組み立て直した」が
+        // 同じ答えになり、**判別できなくなる**。
         let main = LaneAddressWire {
             repo: "vantage-point".into(),
             name: "root".into(),
-            key: "vantage-point/lane/main".into(),
+            key: "vantage-point/lane/ISSUED-BY-DAEMON".into(),
         };
-        assert_eq!(main.key(), "vantage-point/lane/main");
+        assert_eq!(main.key(), "vantage-point/lane/ISSUED-BY-DAEMON");
 
         // key が空 = 旧 payload。旧 2 分節へ縮退する（読み側の parse_address が救済）。
         let legacy = LaneAddressWire {
@@ -260,12 +266,14 @@ mod tests {
         assert!(!addr.is_root());
     }
 
-    /// P2 以前の payload（`name` を持たない main）が予約名に落ちること。
+    /// P2 以前の payload（`name` を持たない Main lane）が予約名に落ちること。
     #[test]
     fn legacy_wire_without_name_defaults_to_main() {
         let w: LaneAddressWire = serde_json::from_str(r#"{"repo":"vp","kind":"root"}"#).unwrap();
         assert_eq!(w.name, ROOT_LANE_NAME);
-        assert_eq!(w.key(), "vp/main");
+        // ⚠️ **直書きのまま**にする。ここは wire の contract なので、予約名を変えたら
+        // このテストが落ちて気づけるのが正しい（記号にすると黙って追随してしまう）。
+        assert_eq!(w.key(), "vp/root");
 
         // 旧 sub payload は name をそのまま引き継ぐ（`kind` は unknown field として無視）
         let p: LaneAddressWire =
