@@ -1,0 +1,114 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#MISE description="target/ の stale build artifact を GC (cargo は自動 GC しないので放置すると無制限に膨らむ)"
+#
+# なぜ要るか (2026-08-12 実測):
+#   target/ が **804 GB** まで育っていた。内訳は
+#     target/debug/deps         444 GB  (832,079 files)
+#     target/debug/incremental  303 GB
+#   これは「掃除を忘れた」ではなく **cargo の設計上の欠落**。cargo は build artifact を
+#   一切 GC しない — 依存 / feature / rustc version が変わるたびに **新しい hash 名の
+#   artifact が増え、古い物は永久に残る**。VP のように 1 日に何度も app:swap / cargo test
+#   を回す dogfood ループでは、これが青天井で積み上がる。
+#
+#   ⚠️ 症状が出るのは disk が埋まった時で、しかも出方が **release の途中の ENOSPC**
+#   (docs/guide/release.md の罠リストにある通り 2026-07-14 に実際に踏んだ)。
+#   「気づいた時には手遅れ」型なので、定期的に回す道具として置く。
+#
+#   ⚠️ **増える速度**も測ってある: `cargo clippy --workspace --all-targets` +
+#   `cargo test --workspace` を **1 回**回すと incremental が **+100 GB**。804 GB は
+#   「何ヶ月も放置」ではなく、この速度なら **数日で到達する**規模。
+#
+#   初回実行の実績 (2026-08-12): **803.6 GB → 98.7 GB (704.9 GB 回収)**。
+#   残る ~100 GB が「直近 14 日の working set」で、これが定常。
+#
+# ⚠️ `--maxsize` を使うな (単位の罠):
+#   size で縛る方が罠の形 (青天井の増加) に合うように見えるが、cargo-sweep の
+#   `--maxsize` は **単位の既定が MB**。`--maxsize 50` は「50 GB まで」ではなく
+#   **「50 MB まで削れ」** の意味で、dry-run で 658 GiB (= ほぼ全消し) を返した。
+#   書くなら `--maxsize 50GB` と単位を明示する事。⚠️ 間違えても **エラーは出ない** —
+#   消えるのは cache なので「なぜか毎回 full rebuild で遅い」としてしか現れない。
+#
+# 何を消すか — 2 層に分かれる:
+#   1. incremental/ = **純粋な cache**。消しても次の build が作り直すだけで、無条件に安全。
+#   2. deps/        = 現行 build に要る物と stale が **同じ dir に混在**する。選別には
+#                     cargo-sweep (mtime ベースで N 日触られていない物だけ除去) が要る。
+#                     ⚠️ ここを rm -rf すると次の build が全部 full rebuild になる。
+#
+# 使い方:
+#   mise run dev:gc                 # incremental 全消し + cargo-sweep (既定 14 日)
+#   VP_GC_DAYS=30 mise run dev:gc   # sweep の窓を広げる (直近 30 日は残す)
+#   VP_GC_DRY=1 mise run dev:gc     # 消さずに何がどれだけ消えるかだけ見る
+require "fileutils"
+require "shellwords"
+require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
+
+DAYS = Integer(ENV.fetch("VP_GC_DAYS", "14"))
+DRY = ENV["VP_GC_DRY"] == "1"
+
+# ── calculations ────────────────────────────────────────────
+
+# dir の実サイズ (KB)。存在しなければ 0。
+def dir_size_kb(path)
+  return 0 unless Dir.exist?(path)
+
+  `du -sk #{Shellwords.escape(path)} 2>/dev/null`.split.first.to_i
+end
+
+# KB を人が読む単位に。
+def human(kb)
+  return format("%.1f GB", kb / 1024.0 / 1024.0) if kb >= 1024 * 1024
+
+  format("%d MB", kb / 1024)
+end
+
+# 消す対象の incremental dir 一覧。
+#
+# ⚠️ `**` で掘らない。deps/ に 80 万 file ある状態では glob だけで分単位かかる。
+# incremental の在り処は `target/<profile>/` と `target/<triple>/<profile>/` の 2 形だけなので、
+# 深さを決め打ちする。
+def incremental_dirs(target)
+  Dir.glob(File.join(target, "*", "incremental")) +
+    Dir.glob(File.join(target, "*", "*", "incremental"))
+end
+
+# ── actions ─────────────────────────────────────────────────
+
+target = File.join(VP.root, "target")
+VP.die("target/ が無い — まだ build していない?") unless Dir.exist?(target)
+
+# ⚠️ build 中に消すと **走っている cargo から artifact を奪う**。cargo は target/ を lock
+# するが、lock は cargo 同士の排他であって外部の rm は止められない。ここで弾く。
+if !DRY && VP.try("pgrep", "-x", "rustc", out: File::NULL, err: File::NULL)
+  VP.die("rustc が走っている — build / test の完了を待ってから実行すること (VP_GC_DRY=1 なら見るだけ可)")
+end
+
+before = dir_size_kb(target)
+VP.log "#{VP.icon(:info)} target/ = #{human(before)}#{DRY ? '  (DRY — 消さない)' : ''}"
+
+# 1. incremental — 純粋 cache なので無条件。
+incremental_dirs(target).each do |dir|
+  size = dir_size_kb(dir)
+  next if size.zero?
+
+  VP.log "#{VP.icon(:bomb)} #{dir.sub("#{target}/", 'target/')} (#{human(size)})"
+  FileUtils.rm_rf(dir) unless DRY
+end
+
+# 2. deps — 選別が要るので cargo-sweep に任せる。
+#
+# ⚠️ 未導入でも **die しない**。incremental だけでも大半が回収できる事が多く、ここで
+# 止めると「道具が無いから 1 バイトも減らない」になる。導線だけ出して続行する。
+if VP.try("sh", "-c", "command -v cargo-sweep", out: File::NULL, err: File::NULL)
+  VP.sh("cargo sweep --time #{DAYS}#{DRY ? ' --dry-run' : ''}")
+else
+  VP.log "#{VP.icon(:warn)} cargo-sweep 未導入 — deps/ は手つかず (incremental のみ回収)"
+  warn "    cargo install cargo-sweep     # 導入後もう一度回すと deps/ も GC される"
+end
+
+after = DRY ? before : dir_size_kb(target)
+if DRY
+  VP.log "#{VP.icon(:info)} DRY — 実行すると上記が消える"
+else
+  VP.log "#{VP.icon(:ok)} target/ #{human(before)} → #{human(after)} (#{human(before - after)} 回収)"
+end
