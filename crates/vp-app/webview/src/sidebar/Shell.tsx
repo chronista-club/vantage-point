@@ -10,8 +10,8 @@
  *
  * - PR-1: shell layout + Solid store の最小可視化。
  * - PR-2: Repo accordion + Lane ツリー
- *   (agent icon / status / awaiting dot / mailbox icon / performer git meta)。
- *   操作 (click 選択・context menu・restart/delete・Add Performer form・DnD) は PR-3。
+ *   (agent icon / status / awaiting dot / mailbox icon / sub git meta)。
+ *   操作 (click 選択・context menu・restart/delete・Add Sub form・DnD) は PR-3。
  *   Daemon widget 本体は後続 increment。
  */
 import { For, Show, createEffect, createMemo } from "solid-js";
@@ -390,14 +390,14 @@ html,body{margin:0;height:100%;overflow:hidden;}
 
 /* Lane 行 */
 /* ミニマム 1 行 (2026-05-30): icon + session title + 右端 block (meta/awaiting/files/mailbox)。
-   2 段目 / "—" placeholder / Conductor ラベルは廃止、 nowrap で 1 行固定。 */
+   2 段目 / "—" placeholder / Main ラベルは廃止、 nowrap で 1 行固定。 */
 /* tree connector — Light Grid (Step 7): 「tap + node」言語。 spine (proj 所有の縦線) から
    row へ分岐する横 tap (::before) と、 行の結節点 node (::after) で状態を語る。
    「線種/形 = control surrender FSM」の意味論は glyph 時代 (2026-05-30) から連続:
    - working (conn-auto): solid cyan tap + cyan node (glow)
    - idle (conn-dead): dim 破線 tap + 中空 node (縁 dim)
    - needs-you (conn-hitl): magenta tap + diamond node が downbeat (725ms) で pulse
-   - root (conn-conductor): spine の頭 = cyan diamond head (tap なし)
+   - root (conn-main): spine の頭 = cyan diamond head (tap なし)
    tap 起点 x=2.5px は spine (10.5px) と同座標 (row padding-left 8px + 2.5px)。 */
 .vp-lane-connector{position:relative;flex:0 0 var(--sb-conn-slot,22px);align-self:stretch;
   user-select:none;}
@@ -438,10 +438,10 @@ html,body{margin:0;height:100%;overflow:hidden;}
     color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 67%);}}
 @media (prefers-reduced-motion:reduce){
   .vp-lane-connector.conn-hitl::after{animation:none;}}
-/* root (conductor) = spine の頭。 tap は描かず diamond を頭石として置く。 quiet pass:
+/* root (main) = spine の頭。 tap は描かず diamond を頭石として置く。 quiet pass:
    cyan は working 専用なので頭石は cyan-dim のベタ塗り (glow なし)。 */
-.vp-lane-connector.conn-conductor::before{display:none;}
-.vp-lane-connector.conn-conductor::after{width:9px;height:9px;margin-top:-4.5px;
+.vp-lane-connector.conn-main::before{display:none;}
+.vp-lane-connector.conn-main::after{width:9px;height:9px;margin-top:-4.5px;
   left:6.5px;right:auto;border-radius:2px;transform:rotate(45deg);
   background:var(--lg-cyan-dim,#1C6C7C);}
 /* flex-wrap:wrap = cwd (地) を 2 行目へ折り返すため。 multi-line flex では align-items /
@@ -458,10 +458,10 @@ html,body{margin:0;height:100%;overflow:hidden;}
    光り物は増やさない。 「光る」 のは state (photon / node) の仕事。 */
 .vp-lane-row.active{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 92%);}
 .vp-lane-row.inactive{color:var(--lg-mute,#5C7A85);cursor:default;}
-/* root session (= conductor、 spine の頭)。 quiet pass (019f5100): cyan wash / glyph glow は
+/* root session (= main、 spine の頭)。 quiet pass (019f5100): cyan wash / glyph glow は
    撤去、 weight 600 だけで静かに立たせる (行 tint と glyph 彩色は光の総量を増やすため落とす)。 */
-.vp-lane-row:not(.performer){font-weight:600;letter-spacing:-.01em;margin-top:2px;}
-/* Conductor / Performer の indent 差は connector (縦棒 + 横枝) が担うため padding override 不要。 */
+.vp-lane-row:not(.sub){font-weight:600;letter-spacing:-.01em;margin-top:2px;}
+/* Main / Sub の indent 差は connector (縦棒 + 横枝) が担うため padding override 不要。 */
 .vp-lane-icon{display:inline-flex;width:18px;justify-content:center;flex:0 0 auto;}
 .vp-lane-row.inactive .vp-lane-icon{opacity:0.55;}
 /* 開発起点マーカー (doc 44 D4)。agent icon と title の間に置く「属性」の層。
@@ -479,7 +479,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* session title (= icon の右、 flex:1 で伸びて右端 block を押し出す)。 */
 .vp-lane-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 18%);}
-/* fallback (= session title 未設定で proj 名 / performer 名を出す時) は dimmed で控えめに。 */
+/* fallback (= session title 未設定で proj 名 / sub 名を出す時) は dimmed で控えめに。 */
 .vp-lane-title.is-fallback{color:var(--lg-mute,#5C7A85);}
 .vp-lane-row.inactive .vp-lane-title{color:var(--lg-mute,#5C7A85);}
 .vp-lane-row.active .vp-lane-title{color:var(--lg-hot,#EAFBFF);}
@@ -535,36 +535,36 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-canvas{width:7px;height:7px;border-radius:2px;
   background:var(--lg-hot,#EAFBFF);flex:0 0 auto;}
 
-/* Add Performer「+」(active repo) / Start「▶」(一時停止中 repo) — summary 右端の
+/* Add Sub「+」(active repo) / Start「▶」(一時停止中 repo) — summary 右端の
    action ボタン。 レイアウトは共通、 Start は起動 affordance として常時 brand 色。 */
-.vp-proj-addperformer,.vp-proj-start{margin-left:auto;display:inline-flex;align-items:center;
+.vp-proj-addsub,.vp-proj-start{margin-left:auto;display:inline-flex;align-items:center;
   padding:2px;border:none;background:transparent;color:var(--lg-mute,#5C7A85);
   cursor:pointer;border-radius:3px;flex:0 0 auto;
   transition:background .12s ease,color .12s ease;}
-.vp-proj-addperformer:hover,.vp-proj-addperformer.open,.vp-proj-start:hover{
+.vp-proj-addsub:hover,.vp-proj-addsub.open,.vp-proj-start:hover{
   background:#ffffff08;color:var(--sb-conn-auto,#FFF76B);}
 /* Start ▶ も quiet: 定常は muted、 hover 時のみ cyan (interaction feedback)。 */
 .vp-proj-start{color:var(--lg-mute,#5C7A85);}
-.vp-add-performer-form{display:flex;flex-direction:column;gap:5px;
+.vp-add-sub-form{display:flex;flex-direction:column;gap:5px;
   padding:4px var(--spacing-sm,8px) 6px 14px;}
-.vp-add-performer-input{padding:5px 8px;border:1px solid var(--lg-hairline,#12222b);
+.vp-add-sub-input{padding:5px 8px;border:1px solid var(--lg-hairline,#12222b);
   background:var(--lg-panel,#0A0E15);color:var(--lg-hot,#EAFBFF);
   border-radius:var(--radius-sm,6px);font-family:inherit;font-size:var(--sb-text-meta,11px);
   box-sizing:border-box;}
-.vp-add-performer-input:focus{outline:none;border-color:var(--sb-conn-auto,#FFF76B);}
-.vp-add-performer-agent{cursor:pointer;appearance:none;-webkit-appearance:none;
+.vp-add-sub-input:focus{outline:none;border-color:var(--sb-conn-auto,#FFF76B);}
+.vp-add-sub-agent{cursor:pointer;appearance:none;-webkit-appearance:none;
   background-image:linear-gradient(45deg,transparent 50%,var(--lg-hot,#EAFBFF) 50%),
     linear-gradient(135deg,var(--lg-hot,#EAFBFF) 50%,transparent 50%);
   background-position:calc(100% - 12px) center,calc(100% - 8px) center;
   background-size:4px 4px,4px 4px;background-repeat:no-repeat;padding-right:22px;}
-.vp-add-performer-actions{display:flex;justify-content:flex-end;gap:6px;}
-.vp-add-performer-actions button{padding:3px 10px;
+.vp-add-sub-actions{display:flex;justify-content:flex-end;gap:6px;}
+.vp-add-sub-actions button{padding:3px 10px;
   border:1px solid var(--lg-hairline,#12222b);background:transparent;
   color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 25%);border-radius:var(--radius-sm,6px);cursor:pointer;
   font-size:var(--sb-text-micro,10px);font-family:inherit;transition:background .12s ease,color .12s ease;}
-.vp-add-performer-actions button:hover{background:#ffffff08;
+.vp-add-sub-actions button:hover{background:#ffffff08;
   color:var(--lg-hot,#EAFBFF);}
-.vp-add-performer-actions button.primary{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 92%);
+.vp-add-sub-actions button.primary{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 92%);
   color:var(--sb-conn-auto,#FFF76B);border-color:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 82%);}
 
 /* Daemon widget (sidebar 最下部) — Light Grid foot: mono 面、 muted、 dot は cyan-dim。

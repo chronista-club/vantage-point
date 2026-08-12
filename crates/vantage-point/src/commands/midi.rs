@@ -791,7 +791,7 @@ pub(crate) struct RotoLane {
     /// switch_lane 送信先 repo path（daemon repo-proxy handshake の stable identifier）。
     /// L0 portless: repo port 直結は撤去、daemon が path_key に正規化して当該 repo へ forward する。
     pub(crate) repo_path: String,
-    /// switch_lane payload の lane token（"root" or performer 名）
+    /// switch_lane payload の lane token（"root" or sub 名）
     pub(crate) token: String,
     /// LCD 表示用の compact ラベル（≤13 文字、repo + lane）
     pub(crate) label: String,
@@ -811,7 +811,7 @@ fn compact_lane_label(repo: &str, token: &str) -> String {
 /// flat な `Vec<RotoLane>` に変換。
 ///
 /// **順序は server が決める** — server は repo_order (= sidebar 順) で repos を、
-/// 各 repo 内は lane_registry 順 (= conductor 先頭 + performer 作成順) で lanes を送る。
+/// 各 repo 内は lane_registry 順 (= main 先頭 + sub 作成順) で lanes を送る。
 /// client は再ソートせず、その順序をそのまま保つ（物理 controller の位置 = sidebar の位置）。
 pub(crate) fn parse_node_lanes(v: &serde_json::Value) -> Vec<RotoLane> {
     let Some(repos) = v.get("repos").and_then(|p| p.as_array()) else {
@@ -1292,7 +1292,7 @@ mod tests {
             created_at: "2026-07-22T00:00:00Z".to_string(),
             pid: None,
             cwd: "/repos/vp".to_string(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,

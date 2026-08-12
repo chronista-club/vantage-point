@@ -8,6 +8,7 @@
 import { describe, expect, it } from "vitest";
 import type { LaneInfo } from "../generated/LaneInfo";
 import {
+	laneAddressKey,
 	laneShortcutNumber,
 	shortcutNumberOf, isLaneAlive, laneConnector, laneCwdLabel } from "./lane";
 
@@ -15,7 +16,7 @@ import {
 function lane(over: Partial<LaneInfo> = {}): LaneInfo {
 	return {
 		id: "",
-		address: { repo: "vp", name: "root" },
+		address: { repo: "vp", name: "root", key: "vp/lane/root" },
 		state: "running",
 		agent: "claude",
 		created_at: "2026-07-10T00:00:00Z",
@@ -80,8 +81,8 @@ describe("isLaneAlive", () => {
 	});
 });
 
-/** performer の最小 LaneInfo (laneConnector 用)。 */
-function performer(over: Partial<LaneInfo> = {}): LaneInfo {
+/** sub の最小 LaneInfo (laneConnector 用)。 */
+function sub(over: Partial<LaneInfo> = {}): LaneInfo {
 	return lane({
 		address: { repo: "vp", name: "feat" },
 		...over,
@@ -96,16 +97,16 @@ describe("laneConnector (FSM 投影)", () => {
 	it("flow_state が一次 source: プロンプト待ちの TUI claude (pid あり + idle) は消える", () => {
 		// 偽 WORKING の根治対象: dep symlink lane 等、 wire 活動が無いのに pid が生きている lane。
 		expect(
-			laneConnector(performer({ pid: 1234, flow_state: "idle" }), false),
+			laneConnector(sub({ pid: 1234, flow_state: "idle" }), false),
 		).toBe("conn-dead");
 		expect(
-			laneConnector(performer({ pid: 1234, flow_state: "completed" }), false),
+			laneConnector(sub({ pid: 1234, flow_state: "completed" }), false),
 		).toBe("conn-dead");
 	});
 
 	it("working / hitl_pending / stuck = flow が動いている (cyan)", () => {
 		for (const fs of ["working", "hitl_pending", "stuck"]) {
-			expect(laneConnector(performer({ flow_state: fs }), false)).toBe(
+			expect(laneConnector(sub({ flow_state: fs }), false)).toBe(
 				"conn-auto",
 			);
 		}
@@ -115,24 +116,24 @@ describe("laneConnector (FSM 投影)", () => {
 		// pid や他の signal に関係なく magenta diamond。
 		expect(
 			laneConnector(
-				performer({ flow_state: "awaiting_user", pid: null }),
+				sub({ flow_state: "awaiting_user", pid: null }),
 				false,
 			),
 		).toBe("conn-hitl");
 	});
 
 	it("OSC awaiting_input も needs-you (console HITL の別軸 signal)", () => {
-		expect(laneConnector(performer({ flow_state: "working" }), true)).toBe(
+		expect(laneConnector(sub({ flow_state: "working" }), true)).toBe(
 			"conn-hitl",
 		);
 	});
 
 	it("flow_state 欠落 (旧 daemon) は pid heuristic に fallback", () => {
 		expect(
-			laneConnector(performer({ flow_state: null, pid: 1234 }), false),
+			laneConnector(sub({ flow_state: null, pid: 1234 }), false),
 		).toBe("conn-auto");
 		expect(
-			laneConnector(performer({ flow_state: null, pid: null }), false),
+			laneConnector(sub({ flow_state: null, pid: null }), false),
 		).toBe("conn-dead");
 	});
 });
@@ -144,7 +145,7 @@ describe("laneCwdLabel — 絶対 path は repo が持ち、 lane は差分だ�
 		expect(laneCwdLabel(proj, proj)).toBe("");
 	});
 
-	it("performer は repo root 起点の相対 path", () => {
+	it("sub は repo root 起点の相対 path", () => {
 		expect(laneCwdLabel(`${proj}/.vp/lanes/act2`, proj)).toBe(".vp/lanes/act2");
 	});
 
@@ -196,5 +197,39 @@ describe("laneShortcutNumber / shortcutNumberOf（root lane の Index）", () =>
 
 	it("⚠️ 並びに無い repo は null（生順で数えると番号がずれる側）", () => {
 		expect(shortcutNumberOf(["/a", "/b"], "/zzz")).toBeNull();
+	});
+});
+
+/**
+ * ⚠️ **address は daemon が発行する。client は組み立てない。**
+ *
+ * 旧実装は `${repo}/${name}` を自分で組み、doc に「Rust の `key()` と byte-for-byte
+ * 一致させる」と書く**手動の契約**だった。同じ写像が Rust 2 + TS 2 の計 4 箇所にあり、
+ * Rust 内ですら食い違った記録がある。ここが組み立てに戻ると、daemon が形式を変えた日に
+ * **active lane の強調が無音で消える**（比較は byte 一致なので）。
+ */
+describe("laneAddressKey（daemon 発行の key を運ぶ）", () => {
+	it("daemon が発行した key をそのまま返す", () => {
+		const l = lane({
+			address: { repo: "vp", name: "foo", key: "vp/lane/foo" },
+		} as Partial<LaneInfo>);
+		expect(laneAddressKey(l)).toBe("vp/lane/foo");
+	});
+
+	it("⚠️ 組み立て直さない — repo/name と食い違う key でも key が勝つ", () => {
+		// 組み立てに戻ると、この test が「vp/name」を返して落ちる。
+		const l = lane({
+			address: { repo: "vp", name: "name", key: "daemon/lane/issued" },
+		} as Partial<LaneInfo>);
+		expect(laneAddressKey(l)).toBe("daemon/lane/issued");
+	});
+
+	it("key が空 = 旧 daemon の payload。旧 2 分節へ縮退する", () => {
+		// ⚠️ ここで新形を組み直さないのが要点 — 形式の知識を client に持たせない。
+		// 旧形なので読み側の `parse_address` が救済する。
+		const l = lane({
+			address: { repo: "vp", name: "foo", key: "" },
+		} as Partial<LaneInfo>);
+		expect(laneAddressKey(l)).toBe("vp/foo");
 	});
 });

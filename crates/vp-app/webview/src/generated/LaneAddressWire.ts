@@ -5,7 +5,7 @@
  *
  * `LaneAddress` (domain enum-based) と区別する役割:
  * - **`LaneAddressWire`** = JSON 入口、 `kind` を String のまま保持 (vantage-point 側の
- *   "root"/"performer"/将来の任意値 をそのまま deserialize 受け)
+ *   "root"/"sub"/将来の任意値 をそのまま deserialize 受け)
  * - **`LaneAddress`** = domain 型、 `LaneKind` enum で型安全な分岐
  *
  * 比較・Display には:
@@ -23,7 +23,19 @@ export type LaneAddressWire = { repo: string,
  * lane 名。開発起点は [`ROOT_LANE_NAME`]。
  *
  * doc 44 P2: `kind` を廃し `name` 必須に。`default` は P2 以前の payload / 永続 state
- * 互換で、旧 conductor は `name` を持たないため予約名に落ちる（server 側 `LaneAddress`
+ * 互換で、旧 main は `name` を持たないため予約名に落ちる（server 側 `LaneAddress`
  * の serde default と同じ手当て）。
  */
-name: string, };
+name: string, 
+/**
+ * **daemon が発行した address 文字列**（`<repo>/lane/<name>`）。
+ *
+ * ⚠️ **client は組み立てない**。以前は Rust の `key()` と TS の `laneAddressKey()` が
+ * 同じ写像を各々持ち、doc に「byte-for-byte 一致させる」と書く運用だった
+ * （`key_matches_display` は**実際に食い違った**記録）。形式を知るのは daemon の
+ * [`LaneAddress::canonical`] 1 箇所にして、ここは運ぶだけにする。
+ *
+ * `default` は旧 payload 互換。空で来た場合は [`Self::key`] が `{repo}/{name}` へ
+ * 縮退する（旧形なので `parse_address` が救済できる）。
+ */
+key: string, };

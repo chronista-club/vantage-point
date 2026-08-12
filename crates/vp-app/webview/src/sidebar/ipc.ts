@@ -11,11 +11,11 @@
  *   （doc 53 §6.5.1.3 で移行）。`window.*` の面は**残っている**が、役目が変わった —
  *   「Rust が呼ぶ入口」ではなく「**受け手の置き場**」。overlay 系は component の
  *   mount / unmount に合わせて出入りする（`FileExplorer.tsx` / `WirePanel.tsx` /
- *   `AddPerformer.tsx`）ので、下の handler は **呼ぶ時に引く**（install 時に capture
+ *   `AddSub.tsx`）ので、下の handler は **呼ぶ時に引く**（install 時に capture
  *   しない）。受け手が居なければ落ちるが、それは「消費者が居ない」であって取りこぼしでは
  *   ない — bundle 未評価の窓（そちらは `./dispatch` の保留箱が預かる）とは別の話。
  *
- * ⚠️ `renderError` / `handleAddPerformerResult` / `setClonePath` は **今も stub のまま**
+ * ⚠️ `renderError` / `handleAddSubResult` / `setClonePath` は **今も stub のまま**
  *   （PR-2 / PR-3 で実描画に繋ぐ予定が据え置き）。Rust 側は撃っているので、繋げば出る。
  */
 import { applySidebarState } from './store'
@@ -35,8 +35,8 @@ declare global {
     /** ⚠️ **実装なし**（下の stub 止まり。PR-2 で実描画に繋ぐ予定のまま）。 */
     renderError?: (msg: string) => void
     /** ⚠️ **実装なし**（stub 止まり。PR-3 で実描画に繋ぐ予定のまま）。 */
-    handleAddPerformerResult?: (msg: unknown) => void
-    /** `AddPerformer.tsx` が form 表示中だけ**差し替える**受け手（外すと前の値に戻す）。 */
+    handleAddSubResult?: (msg: unknown) => void
+    /** `AddSub.tsx` が form 表示中だけ**差し替える**受け手（外すと前の値に戻す）。 */
     handleAgentsResult?: (msg: unknown) => void
     /** ⚠️ **実装なし**（stub 止まり。PR-3 で実描画に繋ぐ予定のまま）。 */
     setClonePath?: (path: string) => void
@@ -68,15 +68,15 @@ export function sendIpc(msg: IpcEnvelope): void {
  * 評価中に届いた押し込みを保留箱が預かれるようにするため。
  *
  * ⚠️ 各 handler が `window.*` を **呼ぶ時に引く**のは意図的。overlay 系（File Explorer /
- * Wire / Add Performer）の受け手は component の mount / unmount で出入りするので、install 時に
+ * Wire / Add Sub）の受け手は component の mount / unmount で出入りするので、install 時に
  * capture すると unmount 後の古い closure を掴む。**受け手が居ない = 消費者が居ない**ので
  * 落として正しい（bundle 未評価の窓とは別の話で、そちらは保留箱が預かる）。
  */
 export function installIpcBridge(): void {
   // 未 mount の窓で `ReferenceError` を出さないための受け皿 stub。
   window.renderError ??= (msg) => console.warn('[vp-sidebar] renderError (stub):', msg)
-  window.handleAddPerformerResult ??= (msg) =>
-    console.debug('[vp-sidebar] handleAddPerformerResult (stub):', msg)
+  window.handleAddSubResult ??= (msg) =>
+    console.debug('[vp-sidebar] handleAddSubResult (stub):', msg)
   window.handleAgentsResult ??= (msg) =>
     console.debug('[vp-sidebar] handleAgentsResult (stub):', msg)
   window.setClonePath ??= (path) => console.debug('[vp-sidebar] setClonePath (stub):', path)
@@ -106,8 +106,8 @@ export function installIpcBridge(): void {
       applyActionsFromDaemon(next.activity?.actions, next.activity?.actions_rev)
     },
     error: (message) => window.renderError?.(message),
-    performerCreateResult: (repo_path, name, error) =>
-      window.handleAddPerformerResult?.({ repo_path, name, error }),
+    subCreateResult: (repo_path, name, error) =>
+      window.handleAddSubResult?.({ repo_path, name, error }),
     agentsResult: (repo_path, agents, error) =>
       window.handleAgentsResult?.({ repo_path, agents, error }),
     filesListResult: (address, entries, truncated) =>

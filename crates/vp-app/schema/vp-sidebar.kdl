@@ -48,14 +48,14 @@ protocol "sidebar" version="1.0.0" {
             field "path" type="string"
             field "address" type="string"
         }
-        // Performer Lane 削除要求
+        // Sub Lane 削除要求
         request "lane:delete" {
             field "path" type="string"
             field "address" type="string"
         }
-        // Lane Conductor Agent restart 要求
+        // Lane Main Agent restart 要求
         // fresh=true は resume/continue を回避し fresh な claude を起動する
-        // (sidebar "New Conductor Session")。 省略時は従来通り --resume で会話を継ぐ。
+        // (sidebar "New Main Session")。 省略時は従来通り --resume で会話を継ぐ。
         request "lane:restart" {
             field "path" type="string"
             field "address" type="string"
@@ -80,14 +80,14 @@ protocol "sidebar" version="1.0.0" {
             field "path" type="string"
             field "order" type="array<string>"
         }
-        // Performer Lane 作成要求 (branch / agent は optional)
-        request "lane:add_performer" {
+        // Sub Lane 作成要求 (branch / agent は optional)
+        request "lane:add_sub" {
             field "path" type="string"
             field "name" type="string"
             field "branch" type="string" optional=#true
             field "agent" type="string" optional=#true
         }
-        // + Add Performer form の利用可能 Agent 一覧 fetch
+        // + Add Sub form の利用可能 Agent 一覧 fetch
         request "agents:fetch" {
             field "path" type="string"
         }
@@ -193,14 +193,14 @@ protocol "sidebar" version="1.0.0" {
             field "message" type="string"
         }
 
-        // + Add Performer の作成結果。`error` 省略 = 成功（form を閉じる）。
-        event "performer:create_result" {
+        // + Add Sub の作成結果。`error` 省略 = 成功（form を閉じる）。
+        event "sub:create_result" {
             field "repo_path" type="string"
             field "name" type="string"
             field "error" type="string" optional=#true
         }
 
-        // + Add Performer の dropdown を populate する Agent 一覧（`agents:fetch` の戻り）。
+        // + Add Sub の dropdown を populate する Agent 一覧（`agents:fetch` の戻り）。
         // 要素の形の持ち主は Rust `client::AgentInfo`。
         event "agents:result" {
             field "repo_path" type="string"

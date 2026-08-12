@@ -15,7 +15,7 @@
 //! - [`build_lanes_snapshot`] — `lanes_list` + QUIC `LanesSnapshot` publish 経路で共有する list
 //!   (`LanePool` 由来のみ、 F.8 B Convergent で disk-scan merge 撤去。 disk-only Lane は lane
 //!   watcher / repo bootstrap の auto-spawn 経由で active 化)
-//! - [`create_performer_orchestrated`] — `lane_create` core (Phase 3-A: lane clone + PtySlot spawn、
+//! - [`create_sub_orchestrated`] — `lane_create` core (Phase 3-A: lane clone + PtySlot spawn、
 //!   F.8 B Convergent で spawn 失敗時の disk dir rollback ポリシー)
 //! - [`delete_lane_orchestrated`] / [`restart_lane_orchestrated`] — `lane_delete` / `lane_restart` core
 //!   (F6②③、 PtySlot kill + tmux kill + SystemEvent broadcast)
@@ -36,10 +36,10 @@ use super::super::state::AppState;
 // doc 11 §3.7 の `migrate_legacy_stand` shim は 2026-05-03 削除済。 PR #257 の
 // agent 識別子 String 化と同タイミングで導入した旧 agent 名 → 現行名の変換 (PR-pre2 で hd → echoes)
 // migration shim を 1 release 期間 deprecation warn 付きで accept していたが、
-// VP は user 1 人 + lane performer のみで vp-app + daemon が常に同 binary で deploy される
+// VP は user 1 人 + lane sub のみで vp-app + daemon が常に同 binary で deploy される
 // 構成のため、 外部 client が旧 wire format で来る window が実質ゼロと判断、 即削除。
 
-/// disk-only performer（pool 未登録）の `created_at` を **決定的に**求める。
+/// disk-only sub（pool 未登録）の `created_at` を **決定的に**求める。
 ///
 /// 旧実装は `chrono::Utc::now()` を焼いていた。表示上はほぼ無害だが、
 /// [`super::super::server::publish_lanes`] の指紋（doc 44 §11.3）が呼ぶたびに変わり、
@@ -50,7 +50,7 @@ use super::super::state::AppState;
 /// 「その lane がいつ作られたか」という意味にも合う。
 ///
 /// 残余リスク: birthtime 非対応 FS では mtime に落ちるため、dir 直下のファイル増減で
-/// 値が動きうる。その場合の劣化は「未 spawn performer が居る repo で push が増える」
+/// 値が動きうる。その場合の劣化は「未 spawn sub が居る repo で push が増える」
 /// = 本修正**前**の挙動に戻るだけで、それ以上悪くはならない。
 fn ground_created_at(path: &str) -> String {
     let Ok(meta) = std::fs::metadata(path) else {
@@ -70,7 +70,7 @@ fn ground_created_at(path: &str) -> String {
 ///
 /// ## F.8 B Convergent (2026-05-26): disk-only Lane の表示廃止
 ///
-/// 旧版は LanePool に居ない performer dir を disk-scan で `pid: None, state: Running` として
+/// 旧版は LanePool に居ない sub dir を disk-scan で `pid: None, state: Running` として
 /// merge し sidebar に italic dim で表示していた。これは **中間状態 (= disk dir はあるが
 /// LanePool に居ない)** を可視化する設計だったが、 click 不可 / Activate 経路なしで
 /// 「死に体」 として user 体験を悪化させていた。
@@ -86,22 +86,22 @@ fn ground_created_at(path: &str) -> String {
 /// lane watcher が即座に POST /api/lanes を発火して spawn → LanePool entry が即追加
 /// される (= convergence、 user 視点では遅延 ms 単位)。
 ///
-/// Phase 5-D: Performer Lane に対しては `cwd` から git 状態 (`PerformerStatus`) を populate。
-/// registry には保存せず、 build 時に都度 `performer_status()` を呼ぶ (volatile + 5-7 git subprocess)。
+/// Phase 5-D: Sub Lane に対しては `cwd` から git 状態 (`SubStatus`) を populate。
+/// registry には保存せず、 build 時に都度 `sub_status()` を呼ぶ (volatile + 5-7 git subprocess)。
 pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
     let pool = state.lane_pool.read().await;
     let mut lanes = pool.list();
-    drop(pool); // git subprocess 中の lock を保たない (performer_status は数 100ms かかる事あり)
+    drop(pool); // git subprocess 中の lock を保たない (sub_status は数 100ms かかる事あり)
 
-    // 起動窓 self-heal: disk 上の intended performer で LanePool にまだ入っていない
+    // 起動窓 self-heal: disk 上の intended sub で LanePool にまだ入っていない
     // (= repo 再起動直後、bootstrap の SpawnLane がまだ処理されず pool に入る前) ものを
     // Spawning(pid=null) で snapshot に merge する。
     //
     // 背景: F.8 B Convergent で disk-scan merge を撤去した結果、repo 再起動直後の初回 snapshot が
-    // conductor-only になり、vp-app の LanesLoaded reconcile が performer を「消えた」と誤判定して
-    // console を teardown する regression が発生していた。snapshot に常に intended performer を
+    // main-only になり、vp-app の LanesLoaded reconcile が sub を「消えた」と誤判定して
+    // console を teardown する regression が発生していた。snapshot に常に intended sub を
     // 含めることで根治する。pid=null なので vp-app は ensureLane せず(xterm を描画しない)、spawn
-    // 完了で pid が付いた次 snapshot で ensure される。steady-state では全 performer が pool 由来で
+    // 完了で pid が付いた次 snapshot で ensure される。steady-state では全 sub が pool 由来で
     // 既に snapshot に居るため address key で dedup し無加算。
     let repo = std::path::Path::new(&state.repo_dir)
         .file_name()
@@ -117,11 +117,8 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
     // ⚠️ この placeholder の field は **publish ごとに変わってはいけない**（doc 44 §11.3）。
     // `publish_lanes` は snapshot の指紋で「変わった時だけ vp-app を起こす」ので、ここに
     // 呼ぶたび変わる値を焼くと 5s tick がそのまま push 源に戻り、修正が無効化される。
-    for entry in
-        crate::lane::commands::list_performers_for_repo(std::path::Path::new(&state.repo_dir))
-    {
-        let address =
-            crate::repo::lanes_state::LaneAddress::performer(repo.clone(), entry.name.clone());
+    for entry in crate::lane::commands::list_subs_for_repo(std::path::Path::new(&state.repo_dir)) {
+        let address = crate::repo::lanes_state::LaneAddress::sub(repo.clone(), entry.name.clone());
         if present.contains(&address.to_string()) {
             continue; // 既に pool 由来 (spawn 済 or Dead) で snapshot に居る
         }
@@ -136,7 +133,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             created_at: ground_created_at(&entry.path),
             pid: None,
             cwd: entry.path,
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -145,16 +142,16 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
         });
     }
 
-    // 既存 Performer の git status を populate
+    // 既存 Sub の git status を populate
     for lane in lanes.iter_mut() {
         if !lane.address.is_root() {
             let path = std::path::Path::new(&lane.cwd);
             if path.exists() && path.join(".git").exists() {
-                lane.performer_status = Some(crate::lane::commands::performer_status(path));
+                lane.sub_status = Some(crate::lane::commands::sub_status(path));
             }
         }
         // doc 40 §5: chip（engine_session_id）/ channel D（cc_session_id）/ sessions を
-        // registry 1 read で enrich する（LaneInfo 側メソッドに一本化 — 旧「conductor 限定の
+        // registry 1 read で enrich する（LaneInfo 側メソッドに一本化 — 旧「main 限定の
         // cc_session 個別 enrich」は本 method に畳んだ。uplink の agent_card / LaneDiff push と
         // 同一実装になり、供給点ごとの実装差（#683 地形）が消えた）。
         // QUIC 5s tick 経路で lane 数 × registry 1 file read の同期 I/O。通常運用（〜十数 lane）
@@ -172,7 +169,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
     lanes
 }
 
-/// Performer Lane create の request body (Phase 3-A: Performer Lane create + lane clone)。
+/// Sub Lane create の request body (Phase 3-A: Sub Lane create + lane clone)。
 ///
 /// lanes portless: 旧 `POST /api/lanes` body。 daemon repo-proxy ask `lane_create` の payload
 /// として `dispatch_repo_method` が serde で deserialize する。
@@ -180,7 +177,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
 pub struct CreateLaneReq {
     // doc 44 P2: `kind` を撤去。lane に種別は無く、作成できるのは名前付き lane だけ
     // （開発起点は repo 起動時に予約名で自動生成される）ため、指定する余地が無い。
-    // 旧 client が `kind: "performer"` を送っても unknown field として無視される。
+    // 旧 client が `kind: "sub"` を送っても unknown field として無視される。
     /// lane 名 (人間可読、 `LaneAddress.name` に入る)
     pub name: String,
     /// LaneComponent: "claude" (default) or "shell"
@@ -190,11 +187,11 @@ pub struct CreateLaneReq {
     #[serde(default)]
     pub cwd: Option<String>,
     /// Phase 3-A: lane clone する branch 名。 cwd が None で branch が Some の時、
-    /// `vp lane new <name> <branch>` を repo 内で実行して performer dir を作成、 そこに Lane を spawn する。
+    /// `vp lane new <name> <branch>` を repo 内で実行して sub dir を作成、 そこに Lane を spawn する。
     #[serde(default)]
     pub branch: Option<String>,
     /// worktree の分岐元 ref の override (co-evolution #2)。未 push の local branch も可。
-    /// 省略時は performer-files.kdl の base-ref → origin/HEAD → main。
+    /// 省略時は sub-files.kdl の base-ref → origin/HEAD → main。
     #[serde(default)]
     pub base: Option<String>,
     /// lane の claude model alias (co-evolution #1、例: 'opus' / 'sonnet' / 'claude-fable-5')。
@@ -207,7 +204,7 @@ pub struct CreateLaneReq {
 /// Daemon 入口（Unison `daemon-control.lanes/create`）の引数を [`CreateLaneReq`] に写す (= calc)。
 ///
 /// doc 44 §9.4 の統合で、daemon 側の `RepoManagerCapability::create_lane` は
-/// **自前の実装を持たず**本 module の [`create_performer_orchestrated`] を呼ぶ薄い adapter に
+/// **自前の実装を持たず**本 module の [`create_sub_orchestrated`] を呼ぶ薄い adapter に
 /// なった。その境界で唯一発生するのが「(name, branch, agent) → `CreateLaneReq`」の写像で、
 /// ここが黙ってズレると **GUI から作った lane だけ branch / agent が効かない**という
 /// 経路差が復活する。純関数に切り出して往復を test で固定する。
@@ -316,10 +313,10 @@ async fn abort_lane_creation(state: &Arc<AppState>, key: &str, addr: &LaneAddres
     discard_lane_rows(state, key, addr).await;
 }
 
-/// Performer Lane create core orchestration (Phase 3-A: lane clone + PtySlot spawn)。
+/// Sub Lane create core orchestration (Phase 3-A: lane clone + PtySlot spawn)。
 ///
 /// lanes portless (doc 27 §3.4.5): 旧 `POST /api/lanes` の core を抽出し、 全 trigger
-/// (MCP `add_performer`/`flow_handoff` / CLI `vp flow handoff` / lane watcher) が Daemon
+/// (MCP `add_sub`/`flow_handoff` / CLI `vp flow handoff` / lane watcher) が Daemon
 /// repo-proxy ask `lane_create` 経由で共有する core logic に。 `delete_lane_orchestrated` /
 /// `restart_lane_orchestrated` と対称 (repo HTTP route + axum handler は撤去)。
 ///
@@ -331,11 +328,11 @@ async fn abort_lane_creation(state: &Arc<AppState>, key: &str, addr: &LaneAddres
 /// 分かれている理由が消えていた。
 ///
 /// 流れ:
-/// 1. 入力 validation (name の gate = `validate_performer_name` / model 名)
+/// 1. 入力 validation (name の gate = `validate_sub_name` / model 名)
 /// 2. reserve (LanePool の Spawning placeholder) + **intent-first の descriptor 永続**
 /// 3. cwd 決定:
 ///    - `req.cwd` Some → そのまま使う
-///    - `req.branch` Some → `vp lane new <name> <branch>` subprocess で performer dir 作成
+///    - `req.branch` Some → `vp lane new <name> <branch>` subprocess で sub dir 作成
 ///    - 両方 None → `<git-user>/<sanitized-name>` を auto-derive して lane clone
 /// 4. PtySlot::spawn で実 PTY 起動 (LaneComponent 別 command builder 経由)
 /// 5. LanePool に insert (state=Running、 pid 付き) + descriptor 確定 / `lifecycle=Ready`
@@ -344,19 +341,19 @@ async fn abort_lane_creation(state: &Arc<AppState>, key: &str, addr: &LaneAddres
 /// を保持。 unison error frame `{"error":..}` 経由で caller に Err 化される）。
 ///
 /// 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane = Session Process + lane clone 連動)
-pub(crate) async fn create_performer_orchestrated(
+pub(crate) async fn create_sub_orchestrated(
     state: &Arc<AppState>,
     req: CreateLaneReq,
 ) -> Result<LaneInfo, String> {
     // 入力 validation。
     //
-    // doc 44 §9: 名前の gate は **`validate_performer_name` 1 本**（空文字 / 文字 allowlist /
+    // doc 44 §9: 名前の gate は **`validate_sub_name` 1 本**（空文字 / 文字 allowlist /
     // 先頭文字 / 予約名）。P2 はここに予約名チェックを直書きで足したが、同じ意図の判定が
-    // 奥の `new_performer_in` にもあり、**経路ごとに効く範囲が違う**状態だった（§6.5）。
+    // 奥の `new_sub_in` にもあり、**経路ごとに効く範囲が違う**状態だった（§6.5）。
     //
     // 入口で全部弾くと、reserve も disk dir も db 行も作らずに済む（下の model 検証を
     // reserve より前に置いているのと同じ理由 — bad input で副作用を残さない）。
-    crate::lane::config::validate_performer_name(req.name.trim())?;
+    crate::lane::config::validate_sub_name(req.name.trim())?;
     // model 名の検証は reserve / clone より**前**に置く (bad input で reservation も disk dir も
     // 作らない = orphan worktree / placeholder leak を構造的に防ぐ)。永続
     // (session_registry::set_model) は addr が要るので clone 後まで遅らせる。
@@ -372,7 +369,7 @@ pub(crate) async fn create_performer_orchestrated(
         .and_then(|s| s.to_str())
         .unwrap_or("unknown")
         .to_string();
-    let addr = LaneAddress::performer(&repo_id, &req.name);
+    let addr = LaneAddress::sub(&repo_id, &req.name);
     // doc 11 PR-B: agent 識別子 String 化。 wire format は新 agent 名 (conversation / shell / tmux 等)
     // をそのまま受け取る。 未指定なら config の `default_agent` (未設定なら "claude" fallback、
     // PR-pre2 / VP-118 で "hd" → "claude" rename)。
@@ -400,8 +397,8 @@ pub(crate) async fn create_performer_orchestrated(
     // 根治: チェックと同じ write lock 内で Spawning placeholder を即 insert して addr を claim する。
     // 2 個目の ask はこの placeholder を見て "already exists" で弾かれる (watcher 側は既存の
     // "already exists" substring 判定で silent に飲み込む)。placeholder は build_lanes_snapshot が
-    // intended performer に使う Spawning(pid=None) と同型 = presence を足す方向で、console teardown
-    // 教訓 (mem: performer console snapshot teardown) の安全側。末尾で実 state に置換する。
+    // intended sub に使う Spawning(pid=None) と同型 = presence を足す方向で、console teardown
+    // 教訓 (mem: sub console snapshot teardown) の安全側。末尾で実 state に置換する。
     //
     // ⚠️ reservation lifecycle: reserve 後〜末尾の実 insert 前に return する**全経路**で reservation
     // を除去しないと placeholder が leak し、その addr の lane が二度と作れなくなる (別種の regression)。
@@ -422,7 +419,7 @@ pub(crate) async fn create_performer_orchestrated(
             created_at: chrono::Utc::now().to_rfc3339(),
             pid: None,
             cwd: String::new(), // clone 前で未確定。末尾の実 insert で確定 cwd に置換される
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -458,7 +455,7 @@ pub(crate) async fn create_performer_orchestrated(
             created_at: chrono::Utc::now().to_rfc3339(),
             pid: None,
             cwd: intended_cwd,
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -470,9 +467,9 @@ pub(crate) async fn create_performer_orchestrated(
 
     // Phase 4-X / R5: cwd 決定 ── 優先順位 explicit cwd > lane clone (branch 明示 or auto-derive)。
     //
-    // 旧 fallback (`else { state.repo_dir }` で Conductor と同 worktree を share) は撤廃。
-    // 理由: UI から name="sub" だけ入力した場合、 silent に Conductor と同 dir を共有してしまい、
-    // 「Performer = 隔離 worktree」の mental model が崩れていた (race condition の温床)。
+    // 旧 fallback (`else { state.repo_dir }` で Main と同 worktree を share) は撤廃。
+    // 理由: UI から name="sub" だけ入力した場合、 silent に Main と同 dir を共有してしまい、
+    // 「Sub = 隔離 worktree」の mental model が崩れていた (race condition の温床)。
     //
     // 新規約: branch が None の時は `git config user.name` から prefix を取り、
     // `<user>/<sanitized-name>` 形式の branch を auto-derive して必ず lane clone を実行する。
@@ -495,7 +492,7 @@ pub(crate) async fn create_performer_orchestrated(
         let branch_for_log = branch.clone();
         let base = req.base.clone().filter(|s| !s.trim().is_empty());
         let join = tokio::task::spawn_blocking(move || {
-            crate::lane::commands::new_performer_in(
+            crate::lane::commands::new_sub_in(
                 std::path::Path::new(&repo_dir),
                 &name,
                 &branch,
@@ -513,13 +510,13 @@ pub(crate) async fn create_performer_orchestrated(
                 return Err(format!("lane task join: {}", e));
             }
         };
-        // lane::commands::new_performer_in は performer dir 既存 + force=false の時に
+        // lane::commands::new_sub_in は sub dir 既存 + force=false の時に
         // 「パフォーマー '<name>' は既に存在します」を返す。 error message をそのまま流し、
-        // caller (MCP add_performer 等) が "既に存在"/"already exists" を substring 判定可能にする。
+        // caller (MCP add_sub 等) が "既に存在"/"already exists" を substring 判定可能にする。
         let path_buf = match result {
             Ok(p) => p,
             Err(e) => {
-                // 後始末 (clone 失敗で早期 return)。disk dir は new_performer_in が
+                // 後始末 (clone 失敗で早期 return)。disk dir は new_sub_in が
                 // 作れなかった or 途中失敗なので、ここで残るのは pool の placeholder と
                 // db の intent だけ = [`abort_lane_creation`] が両方落とす。
                 abort_lane_creation(state, &db_key, &addr).await;
@@ -530,7 +527,7 @@ pub(crate) async fn create_performer_orchestrated(
             }
         };
         tracing::info!(
-            "Performer Lane clone: name={} branch={} dir={}",
+            "Sub Lane clone: name={} branch={} dir={}",
             req.name,
             branch_for_log,
             path_buf.display()
@@ -590,7 +587,7 @@ pub(crate) async fn create_performer_orchestrated(
     // = lane_spawn_actor と同じ形）。
     let (lane_state, pid) = if root_mode == crate::lane::session_registry::SessionMode::Gui {
         tracing::info!(
-            "Performer Lane created as chat (PTY skip): addr={} agent={} cwd={}",
+            "Sub Lane created as chat (PTY skip): addr={} agent={} cwd={}",
             addr,
             agent,
             cwd
@@ -621,11 +618,11 @@ pub(crate) async fn create_performer_orchestrated(
             Ok((slot, term_rx)) => {
                 let pid = slot.pid();
                 let mut pool = state.lane_pool.write().await;
-                // Stage 1 (ADR-0001): TermAttach も同時 spawn (race フリー、 Conductor 経路と統一)
-                // session=None = root（performer の boot slot も lane の代表、doc 46 P5）。
+                // Stage 1 (ADR-0001): TermAttach も同時 spawn (race フリー、 Main 経路と統一)
+                // session=None = root（sub の boot slot も lane の代表、doc 46 P5）。
                 pool.insert_pty_slot(addr.clone(), None, slot, term_rx);
                 tracing::info!(
-                    "Performer Lane spawned: addr={} agent={} cwd={} pid={}",
+                    "Sub Lane spawned: addr={} agent={} cwd={} pid={}",
                     addr,
                     agent,
                     cwd,
@@ -641,7 +638,7 @@ pub(crate) async fn create_performer_orchestrated(
                 //   Dead state で LanePool に record (= sidebar に失敗が見える、 後で手動 retry 可能)
                 if was_lane_cloned {
                     tracing::warn!(
-                        "Performer Lane spawn failed → rollback (lane clone で作った disk dir を削除): addr={} cwd={}: {}",
+                        "Sub Lane spawn failed → rollback (lane clone で作った disk dir を削除): addr={} cwd={}: {}",
                         addr,
                         cwd,
                         e
@@ -664,13 +661,10 @@ pub(crate) async fn create_performer_orchestrated(
                     // 後始末 (spawn 失敗 + disk rollback で早期 return)。disk dir を消したので
                     // descriptor / lifecycle も残してはいけない (= 存在しない ground を指す行)。
                     abort_lane_creation(state, &db_key, &addr).await;
-                    return Err(format!(
-                        "Performer Lane spawn failed (rollback executed): {}",
-                        e
-                    ));
+                    return Err(format!("Sub Lane spawn failed (rollback executed): {}", e));
                 }
                 tracing::warn!(
-                    "Performer Lane spawn failed (explicit cwd、 Dead で record): addr={} cwd={}: {}",
+                    "Sub Lane spawn failed (explicit cwd、 Dead で record): addr={} cwd={}: {}",
                     addr,
                     cwd,
                     e
@@ -680,7 +674,7 @@ pub(crate) async fn create_performer_orchestrated(
         }
     };
 
-    // I1: performer の安定 id は reserve 時に load_or_create 済 (address = repo + name で決まる
+    // I1: sub の安定 id は reserve 時に load_or_create 済 (address = repo + name で決まる
     // 決定的な値なので、reservation・intent・確定 descriptor の 3 者で同じものを使う)。
     let info = LaneInfo {
         id: lane_id,
@@ -690,8 +684,8 @@ pub(crate) async fn create_performer_orchestrated(
         created_at: chrono::Utc::now().to_rfc3339(),
         pid,
         cwd,
-        // create 時点では git 状態は registry に保存しない、 GET 時に都度 performer_status() で取得
-        performer_status: None,
+        // create 時点では git 状態は registry に保存しない、 GET 時に都度 sub_status() で取得
+        sub_status: None,
         cc_session_id: None,
         sessions: None,
         engine_session_id: None,
@@ -711,7 +705,7 @@ pub(crate) async fn create_performer_orchestrated(
     persist_lane_ready(state, &db_key, &info).await;
 
     // per-lane agent 永続（mem_1Cd4M7i5Enp3HHMLVYayRe）: repo 再起動後の boot bootstrap が
-    // この記録を読んで同じ agent で respawn する（従来は全 performer が default_agent に
+    // この記録を読んで同じ agent で respawn する（従来は全 sub が default_agent に
     // 倒れていた）。全 create 入口（GUI watcher / MCP / CLI）が本関数を通る choke point。
     // ⚠️ 位置は**実 insert 確定後**（moody 指摘）: dedup reject / clone・spawn 失敗の rollback
     // 経路で record すると、既存 lane の永続 agent を「作れなかった create」が上書きし得る +
@@ -744,7 +738,7 @@ pub(crate) async fn create_performer_orchestrated(
     // これを購読する producer (server.rs) が LanePool 全 snapshot を retained topic
     // (`repo/runtime/state/lanes`) に republish し、vp-app の "lanes" 購読へ
     // push される。delete 経路 (delete_lane_orchestrated) は Diff::Remove を発火済だが、
-    // create 経路はこれが欠けており add_performer 後に sidebar が追従しなかった (Stage 1
+    // create 経路はこれが欠けており add_sub 後に sidebar が追従しなかった (Stage 1
     // consumer dogfood で発覚)。
     if let Err(e) = state.system_event_tx.send(SystemEvent::Lane(Diff::Add {
         payload: info.clone(),
@@ -761,10 +755,10 @@ pub(crate) async fn create_performer_orchestrated(
 
 /// VP-124 Phase 1: Lane delete orchestration の戻り値。
 ///
-/// 全 trigger (HTTP DELETE / MCP `delete_performer` / `vp lane rm` CLI) が共有する成功 payload。
+/// 全 trigger (HTTP DELETE / MCP `delete_sub` / `vp lane rm` CLI) が共有する成功 payload。
 #[derive(Debug, Serialize)]
 pub struct DeletedLaneInfo {
-    /// Display 形 ("<repo>/performer/<name>")
+    /// Display 形 ("<repo>/sub/<name>")
     pub address: String,
     /// PtySlot drop 直前の child pid (= killed)
     pub pid: Option<u32>,
@@ -777,9 +771,9 @@ pub struct DeletedLaneInfo {
 /// HTTP handler はこれを 4xx ステータスに mapping。 MCP / CLI も同じ enum を消費。
 #[derive(Debug, thiserror::Error)]
 pub enum DeleteLaneError {
-    /// architecture rule: Conductor Lane は repo lifetime 紐付きのため削除不可。
-    #[error("Conductor Lane is fixed per repo and cannot be deleted (use repo shutdown instead)")]
-    ConductorCannotBeDeleted,
+    /// architecture rule: Main Lane は repo lifetime 紐付きのため削除不可。
+    #[error("Main Lane is fixed per repo and cannot be deleted (use repo shutdown instead)")]
+    MainCannotBeDeleted,
     /// LanePool に該当 address の entry なし (idempotent re-call で発生)。
     #[error("Lane not found: {0}")]
     LaneNotFound(LaneAddress),
@@ -787,18 +781,18 @@ pub enum DeleteLaneError {
 
 /// VP-124 Phase 1: Lane delete の 3-step orchestration を関数化。
 ///
-/// 全 trigger (HTTP DELETE / MCP `delete_performer` / `vp lane rm` CLI / future Phase 3 FSEvents
+/// 全 trigger (HTTP DELETE / MCP `delete_sub` / `vp lane rm` CLI / future Phase 3 FSEvents
 /// watcher) が共有する core logic。 既存 `delete_handler` から extract、 同時に **欠落していた
 /// tmux session kill + SystemEvent broadcast を補完** (= bug fix 兼 refactor)。
 ///
 /// ## 動作
 ///
-/// 1. **architecture rule check**: Conductor は削除拒否 (`DeleteLaneError::ConductorCannotBeDeleted`)
+/// 1. **architecture rule check**: Main は削除拒否 (`DeleteLaneError::MainCannotBeDeleted`)
 /// 2. **Phase 1 (in-memory authoritative mutation)**: `LanePool::remove` で LaneInfo + PtySlot を
 ///    drop (PtySlot::Drop で child kill + wait)
 /// 3. **Phase 2a (state file GC)**: `console_mode::clear` + `session_registry::clear` で lane 単位
 ///    state file を削除 (best-effort。 残すと同名 lane 再作成時に旧 mode / 旧 session が蘇る)
-/// 4. **Phase 2b (filesystem cleanup)**: `cleanup=true` なら `lane::remove_performer_in` で workspace
+/// 4. **Phase 2b (filesystem cleanup)**: `cleanup=true` なら `lane::remove_sub_in` で workspace
 ///    dir 削除 (best-effort、 既存挙動踏襲)
 /// 5. **Phase 3 (broadcast)**: `SystemEvent::Lane(Diff::Remove)` を broadcast → sidebar 即時反映
 ///    (既存挙動では欠落していた → sidebar refresh 不全の根本原因)
@@ -807,7 +801,7 @@ pub enum DeleteLaneError {
 ///
 /// - **idempotent**: 二度呼ばれても 2 回目は `LaneNotFound` を返す、 sidebar 状態に矛盾なし
 /// - **best-effort cleanup**: tmux / lane 失敗は warn log のみ、 LanePool 削除は authoritative success
-/// - **失敗時**: Phase 1 で fail (Conductor / NotFound) なら early return、 Phase 2 以降の partial failure
+/// - **失敗時**: Phase 1 で fail (Main / NotFound) なら early return、 Phase 2 以降の partial failure
 ///   は `DeletedLaneInfo` の field で結果を伝える
 ///
 /// 関連: VP-124 (PR-Phase 1 設計)、 mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane lifecycle)
@@ -818,7 +812,7 @@ pub async fn delete_lane_orchestrated(
 ) -> Result<DeletedLaneInfo, DeleteLaneError> {
     // architecture rule: 開発起点 lane は repo lifetime 紐付きのため削除不可
     if addr.is_root() {
-        return Err(DeleteLaneError::ConductorCannotBeDeleted);
+        return Err(DeleteLaneError::MainCannotBeDeleted);
     }
 
     // Phase 1: in-memory authoritative state mutation。
@@ -848,7 +842,7 @@ pub async fn delete_lane_orchestrated(
     // Phase 2a: lane-scoped state file の一元 GC (best-effort)。lane 削除後に file が残ると、
     // 同名 lane を作り直した時に旧 mode / 旧 session（会話 id）/ 旧 replay 等が蘇る
     // (ghost file の state leak)。cleanup flag には従わない — workspace dir と違い state file は
-    // lane が消えた時点で意味を失う (残す価値がない)。破棄リストは CLI 側 (`remove_performer`)
+    // lane が消えた時点で意味を失う (残す価値がない)。破棄リストは CLI 側 (`remove_sub`)
     // と共有する `clear_lane_state` に一元化 (2 経路が別リストを持って片方に漏れる ghost leak を
     // 構造的に断つ — replay_log / terminal_replay / lane_id はここが従来欠落していた)。
     let lane_label = crate::repo::agent_spawner::lane_label(&addr).to_string();
@@ -864,18 +858,18 @@ pub async fn delete_lane_orchestrated(
     discard_lane_rows(state, &lane_db_key(state), &addr).await;
 
     // Phase 2b: lane workspace dir cleanup (best-effort、 cleanup=true 時のみ)。
-    // 既存挙動踏襲、 直 lib call (`crate::lane::commands::remove_performer_in`)。
+    // 既存挙動踏襲、 直 lib call (`crate::lane::commands::remove_sub_in`)。
     // 注意: `spawn_blocking` closure は `repo_name` / `name` のみ move、 `addr` は capture
     // されないので後続 match arm の `tracing` で参照可能 (= compile time 保証)。
     // doc 44 P2: 旧 `if let Some(name) = info.address.name` は name が Option だった時代の形。
     // フラット化で常に在るため、開発起点でないこと（= 上で弾き済）だけが条件になった。
     let cleanup_status = if cleanup {
         let name = info.address.name.clone();
-        // repo-local lane refactor PR 1: remove_performer_in は repo_root: &Path を受け取る。
+        // repo-local lane refactor PR 1: remove_sub_in は repo_root: &Path を受け取る。
         // sidebar delete trigger は dual-read で repo-local + legacy global 両 path 対応。
         let repo_root = std::path::PathBuf::from(&state.repo_dir);
         let result = tokio::task::spawn_blocking(move || {
-            crate::lane::commands::remove_performer_in(&repo_root, &name)
+            crate::lane::commands::remove_sub_in(&repo_root, &name)
         })
         .await;
         match result {
@@ -1082,12 +1076,12 @@ async fn converge_lane(
     Err(last_err.unwrap_or_else(|| "unknown restart failure".to_string()))
 }
 
-/// Performer name から default branch を auto-derive する。
+/// Sub name から default branch を auto-derive する。
 ///
 /// 形式: `<git-user>/<sanitized-name>`。
 ///
 /// - `git-user` は `git config user.name` (repo local > global の標準解決) を lowercase + sanitize したもの。
-///   取得失敗・空・sanitize 後 empty なら fallback `performer` prefix を使う。
+///   取得失敗・空・sanitize 後 empty なら fallback `sub` prefix を使う。
 /// - `sanitized-name` は `sanitize_for_branch` で git ref 制約に合わせる。
 ///
 /// 例: user="Mako", name="sub" → `mako/sub`
@@ -1106,7 +1100,7 @@ pub(crate) fn derive_default_branch(repo_root: &std::path::Path, name: &str) -> 
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| sanitize_for_branch(&s))
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "performer".to_string());
+        .unwrap_or_else(|| "sub".to_string());
     format!("{}/{}", prefix, sanitize_for_branch(name))
 }
 
@@ -1180,7 +1174,7 @@ mod core_tests {
     //! VP-13 sub-scope E: lanes.rs core 関数 smoke test。
     //!
     //! lanes portless (doc 27 §3.4.5): 旧 Axum oneshot route test は HTTP route 撤去に伴い
-    //! `create_performer_orchestrated` / `build_lanes_snapshot` の直 call test に転換。
+    //! `create_sub_orchestrated` / `build_lanes_snapshot` の直 call test に転換。
     //! 既存 `mod tests` (= helpers / sanitize_for_branch test 等) とは別 mod で配線。
 
     use super::*;
@@ -1197,31 +1191,31 @@ mod core_tests {
         }
     }
 
-    /// boot-window merge 後: `build_lanes_snapshot` は LanePool 由来 + `list_performers_for_repo`
-    /// の disk performer (pool 未登録分) を Spawning(pid=null) で merge する。ただし merge は
-    /// **実在する intended performer 限定** (`<repo_dir>/.vp/lanes/*`) なので、
-    /// repo_dir に performer worktree が無ければ (build_test_app_state は repo_dir="" →
-    /// list_performers_for_repo 空) LanePool が空 → snapshot も空。
-    /// (performer 有りの merge 検証は repo_dir を差せる fixture が要るため follow-up)
+    /// boot-window merge 後: `build_lanes_snapshot` は LanePool 由来 + `list_subs_for_repo`
+    /// の disk sub (pool 未登録分) を Spawning(pid=null) で merge する。ただし merge は
+    /// **実在する intended sub 限定** (`<repo_dir>/.vp/lanes/*`) なので、
+    /// repo_dir に sub worktree が無ければ (build_test_app_state は repo_dir="" →
+    /// list_subs_for_repo 空) LanePool が空 → snapshot も空。
+    /// (sub 有りの merge 検証は repo_dir を差せる fixture が要るため follow-up)
     #[tokio::test]
     async fn build_lanes_snapshot_empty_when_pool_and_disk_empty() {
         let state = crate::repo::state::build_test_app_state(None).await;
-        // LanePool 空 (LanePool::new()) + repo_dir="" (performer 不在) → 0 件
+        // LanePool 空 (LanePool::new()) + repo_dir="" (sub 不在) → 0 件
         let lanes = build_lanes_snapshot(&state).await;
         assert!(
             lanes.is_empty(),
-            "LanePool 空 + performer worktree 不在なら snapshot は空 (merge は intended performer 限定)"
+            "LanePool 空 + sub worktree 不在なら snapshot は空 (merge は intended sub 限定)"
         );
     }
 
-    /// 回帰固定（doc 44 §11.3）: **disk-only performer の `created_at` は呼ぶたびに変わらない**。
+    /// 回帰固定（doc 44 §11.3）: **disk-only sub の `created_at` は呼ぶたびに変わらない**。
     ///
     /// 旧実装は `chrono::Utc::now()` を焼いており、`publish_lanes` の指紋が毎回変わって
     /// 「変わった時だけ vp-app を起こす」が無効化されていた（= その repo では 5s tick が
     /// そのまま push 源に戻り、修正の意味が消える）。
     ///
     /// 統合経路（`build_lanes_snapshot` 越し）で固定できないのは `build_test_app_state` が
-    /// `repo_dir` を空で固定しており performer merge に到達しないため（既存 test の
+    /// `repo_dir` を空で固定しており sub merge に到達しないため（既存 test の
     /// コメントも同じ制約を挙げている）。非決定性の実体はこの関数なので、ここで直接押さえる。
     #[test]
     fn ground_created_at_is_stable_across_calls() {
@@ -1244,18 +1238,18 @@ mod core_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// doc 44 P2: 開発起点の予約名 `conductor` では lane を作れない。
+    /// doc 44 P2: 開発起点の予約名 `main` では lane を作れない。
     ///
-    /// 旧 `kind != "performer"` ガードの後継。明示的に弾かないと既存 conductor lane との
+    /// 旧 `kind != "sub"` ガードの後継。明示的に弾かないと既存 main lane との
     /// address 重複として「already exists」で拒否され、理由がミスリードになる
     /// （結果は安全なので "たまたま安全" に頼らないための固定）。
     ///
-    /// doc 44 §9: 判定は `validate_performer_name` に一本化された（両経路で同じ gate）。
+    /// doc 44 §9: 判定は `validate_sub_name` に一本化された（両経路で同じ gate）。
     /// message は同関数のものになるので、**予約名を名指ししていること**だけを見る。
     #[tokio::test]
-    async fn create_rejects_reserved_conductor_name() {
+    async fn create_rejects_reserved_main_name() {
         let state = crate::repo::state::build_test_app_state(None).await;
-        let err = create_performer_orchestrated(&state, req("root"))
+        let err = create_sub_orchestrated(&state, req("root"))
             .await
             .expect_err("予約名は Err");
         assert!(
@@ -1265,11 +1259,11 @@ mod core_tests {
         );
     }
 
-    /// `create_performer_orchestrated`: name が空白のみの場合は早期 Err を返す。
+    /// `create_sub_orchestrated`: name が空白のみの場合は早期 Err を返す。
     #[tokio::test]
     async fn create_rejects_empty_name() {
         let state = crate::repo::state::build_test_app_state(None).await;
-        let err = create_performer_orchestrated(&state, req("   "))
+        let err = create_sub_orchestrated(&state, req("   "))
             .await
             .expect_err("name 空白のみは Err");
         assert!(
@@ -1282,17 +1276,17 @@ mod core_tests {
     /// doc 44 §9: 入口の gate は予約名だけでなく **文字 allowlist** も見る。
     ///
     /// 旧実装はここで空文字と予約名しか見ておらず、`../` や `;` は奥の
-    /// `new_performer_in` が clone 段階で初めて弾いていた（= 経路によって効く範囲が違う、§6.5）。
+    /// `new_sub_in` が clone 段階で初めて弾いていた（= 経路によって効く範囲が違う、§6.5）。
     /// 入口に寄せたので、reserve も disk dir も作らずに拒否される。
     #[tokio::test]
     async fn create_rejects_unsafe_name_at_the_door() {
         let state = crate::repo::state::build_test_app_state(None).await;
         for bad in ["../etc/passwd", "foo bar", "foo;rm", ".hidden", "-leading"] {
-            let err = create_performer_orchestrated(&state, req(bad))
+            let err = create_sub_orchestrated(&state, req(bad))
                 .await
                 .expect_err("不正な名前は Err");
             assert!(
-                err.contains("invalid performer name"),
+                err.contains("invalid sub name"),
                 "入口の gate が弾く ({bad}): {err}"
             );
         }
@@ -1309,7 +1303,7 @@ mod core_tests {
     async fn create_rejects_second_when_reservation_present() {
         let state = crate::repo::state::build_test_app_state(None).await;
         // repo_dir="" → repo_id="unknown"。1 個目が claim した想定の Spawning placeholder。
-        let addr = LaneAddress::performer("unknown", "dup");
+        let addr = LaneAddress::sub("unknown", "dup");
         {
             let mut pool = state.lane_pool.write().await;
             pool.insert(LaneInfo {
@@ -1320,7 +1314,7 @@ mod core_tests {
                 created_at: "2026-07-13T00:00:00Z".to_string(),
                 pid: None,
                 cwd: String::new(),
-                performer_status: None,
+                sub_status: None,
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
@@ -1328,7 +1322,7 @@ mod core_tests {
                 flow_state: None,
             });
         }
-        let err = create_performer_orchestrated(&state, req("dup"))
+        let err = create_sub_orchestrated(&state, req("dup"))
             .await
             .expect_err("Spawning reservation 中の同 addr create は Err");
         assert!(
@@ -1384,7 +1378,7 @@ mod core_tests {
         let state =
             crate::repo::state::build_test_app_state_with(&repo_dir, Some(db.clone()), None).await;
 
-        let res = create_performer_orchestrated(&state, req("ghost")).await;
+        let res = create_sub_orchestrated(&state, req("ghost")).await;
         assert!(
             res.is_err(),
             "git repo でない repo の clone は失敗する: {res:?}"
@@ -1430,7 +1424,7 @@ mod core_tests {
     /// なっていても緑のままになる（消えたのではなく最初から無い、= 掃除の検証で主対象の
     /// 消滅だけを見る罠）。ここで enter → exit の意味論を直接押さえる。
     ///
-    /// ⚠️ `create_performer_orchestrated` の**成功系**を通した end-to-end は書けない —
+    /// ⚠️ `create_sub_orchestrated` の**成功系**を通した end-to-end は書けない —
     /// 成功は PtySlot spawn = user の login shell を実際に起こすことを意味する
     /// (既存の core test が全て失敗系なのも同じ理由)。書く側の call site 検証は、
     /// spawn を経ない [`delete_lane_orchestrated`] 側の test（下）が担う。
@@ -1442,7 +1436,7 @@ mod core_tests {
             crate::repo::state::build_test_app_state_with("/tmp/vp-intent", Some(db.clone()), None)
                 .await;
         let key = lane_db_key(&state);
-        let addr = LaneAddress::performer("vp-intent", "sub");
+        let addr = LaneAddress::sub("vp-intent", "sub");
 
         let mut info = LaneInfo {
             id: Default::default(),
@@ -1452,7 +1446,7 @@ mod core_tests {
             created_at: "2026-07-22T00:00:00Z".to_string(),
             pid: None,
             cwd: "/tmp/vp-intent/.vp/lanes/sub".to_string(), // clone 前の予測値
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -1513,7 +1507,7 @@ mod core_tests {
         let state =
             crate::repo::state::build_test_app_state_with("/tmp/vp-delete", Some(db.clone()), None)
                 .await;
-        let addr = LaneAddress::performer("vp-delete", "sub");
+        let addr = LaneAddress::sub("vp-delete", "sub");
         let info = LaneInfo {
             id: Default::default(),
             address: addr.clone(),
@@ -1522,7 +1516,7 @@ mod core_tests {
             created_at: "2026-07-22T00:00:00Z".to_string(),
             pid: None,
             cwd: "/tmp/vp-delete/.vp/lanes/sub".to_string(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -1551,13 +1545,13 @@ mod core_tests {
     /// 確実に除去され、同 addr が再作成可能な状態に戻ることを確認する (placeholder leak しない)。
     ///
     /// build_test_app_state は repo_dir="" なので、cwd=None の create は clone 経路に入り
-    /// new_performer_in(Path::new("")) が失敗する → clone 失敗 cleanup を通る。失敗が panic でも
+    /// new_sub_in(Path::new("")) が失敗する → clone 失敗 cleanup を通る。失敗が panic でも
     /// (JoinError cleanup 経路) reservation 除去は同じく走るので、どちらでも placeholder は残らない。
     #[tokio::test]
     async fn reservation_removed_after_failed_create() {
         let state = crate::repo::state::build_test_app_state(None).await;
-        let addr = LaneAddress::performer("unknown", "fail");
-        let res = create_performer_orchestrated(&state, req("fail")).await;
+        let addr = LaneAddress::sub("unknown", "fail");
+        let res = create_sub_orchestrated(&state, req("fail")).await;
         assert!(res.is_err(), "repo_dir 不在での clone は失敗する: {res:?}");
         // 失敗経路で reservation が除去済み = placeholder leak なし = 再作成可能。
         let pool = state.lane_pool.read().await;

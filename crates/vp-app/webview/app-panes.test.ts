@@ -168,7 +168,7 @@ describe("lane 別の配置記憶", () => {
 
 	it("初訪問 lane は lane-focus", () => {
 		applyAppScene("devices-focus");
-		restoreAppStateFor("proj/performer/new");
+		restoreAppStateFor("proj/sub/new");
 		expect(currentAppSceneId()).toBe("lane-focus");
 		expect(isAppPaneVisible("lane")).toBe(true);
 	});

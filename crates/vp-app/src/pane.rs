@@ -9,7 +9,7 @@
 //! ## sidebar 描画
 //!
 //! - Repo (= Runtime Process) accordion: `RepoPaneState`
-//! - Lane (= Session Process / Conductor/Performer): `SidebarState.lanes_by_repo` (repo fetch 結果)
+//! - Lane (= Session Process / Main/Sub): `SidebarState.lanes_by_repo` (repo fetch 結果)
 //! - Agent (= Agent process / Conversation/Shell/...): Lane の中身として並列 row
 //!
 //! つまり Pane は廃止、 階層は **Repo → Lane → Agent** に統一。
@@ -17,7 +17,7 @@
 //! ## active selection
 //!
 //! `SidebarState.active_lane_address` で 1 つだけ active な Lane を持つ。
-//! 形式は Lane address の Display 表現 (`"<repo>/root"` / `"<repo>/performer/<name>"`)。
+//! 形式は Lane address の Display 表現 (`"<repo>/root"` / `"<repo>/sub/<name>"`)。
 
 use serde::{Deserialize, Serialize};
 

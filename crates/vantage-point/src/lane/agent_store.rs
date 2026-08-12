@@ -1,16 +1,16 @@
-//! lane 単位の agent（engine 種別）永続 — performer の agent を repo 再起動をまたいで保つ
+//! lane 単位の agent（engine 種別）永続 — sub の agent を repo 再起動をまたいで保つ
 //!
 //! ## 背景（bug mem_1Cd4M7i5Enp3HHMLVYayRe、2026-07-16）
 //!
-//! performer の agent は従来 in-memory（LanePool の LaneInfo.agent）にしか無く、repo 再起動後の
-//! boot bootstrap（server.rs）は disk scan した全 performer を config の `default_agent`
-//! （= conversation）で spawn していた。「performer の agent は repo 再起動をまたいで永続しない」の
-//! 既知制約の実体で、GUI「+ Add Performer」の agent 落ちと同根。
+//! sub の agent は従来 in-memory（LanePool の LaneInfo.agent）にしか無く、repo 再起動後の
+//! boot bootstrap（server.rs）は disk scan した全 sub を config の `default_agent`
+//! （= conversation）で spawn していた。「sub の agent は repo 再起動をまたいで永続しない」の
+//! 既知制約の実体で、GUI「+ Add Sub」の agent 落ちと同根。
 //!
 //! ## 設計（console_mode / session_store と同じ per-lane state file パターン）
 //!
-//! - **書き手**: `create_performer_orchestrated`（routes/lanes.rs）が agent 解決直後に record。
-//!   全 create 入口（GUI watcher / MCP add_performer / CLI flow handoff）がここを通る choke point
+//! - **書き手**: `create_sub_orchestrated`（routes/lanes.rs）が agent 解決直後に record。
+//!   全 create 入口（GUI watcher / MCP add_sub / CLI flow handoff）がここを通る choke point
 //! - **読み手**: repo boot bootstrap（server.rs）が SpawnLane Cmd の agent に使う
 //!   （記録不在 = 旧 lane / 手動 `vp lane new` は従来どおり config default に fallback）
 //! - 置き場: `vp_state_dir()/lane_stands/<repo>__<lane>`（1 lane 1 file 1 行 = agent 名）
@@ -49,7 +49,7 @@ pub fn clear_in(base: &Path, repo: &str, lane: &str) -> std::io::Result<()> {
     STORE.clear_in(base, repo, lane)
 }
 
-/// 本番 base（vp_state_dir）での record（create_performer_orchestrated から呼ぶ）。
+/// 本番 base（vp_state_dir）での record（create_sub_orchestrated から呼ぶ）。
 pub fn record(repo: &str, lane: &str, agent: &str) -> std::io::Result<()> {
     record_in(&crate::config::vp_state_dir(), repo, lane, agent)
 }

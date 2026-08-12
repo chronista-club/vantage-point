@@ -1,9 +1,9 @@
 /**
- * Performer Lane 作成フォーム。
+ * Sub Lane 作成フォーム。
  *
  * v1.0 柱 2 PR-3。 開閉 state は RepoAccordion が持ち、 Repo summary 右上の
  * 「+」アイコンボタンで toggle する。 name + optional branch + **engine(agent) dropdown**
- * → 作成で `lane:add_performer` IPC を送る。
+ * → 作成で `lane:add_sub` IPC を送る。
  *
  * agent dropdown（doc 37）: mount 時に `agents:fetch` を撃ち、 Daemon `agents_list`
  * （SSOT = `EngineKind::ALL` + shell）の結果を `window.handleAgentsResult` で受けて populate
@@ -23,14 +23,14 @@ type AgentsResultPayload = {
   error?: string | null
 }
 
-export function AddPerformer(props: { repoPath: string; onClose: () => void }) {
+export function AddSub(props: { repoPath: string; onClose: () => void }) {
   const [name, setName] = createSignal('')
   const [branch, setBranch] = createSignal('')
   const [agents, setAgents] = createSignal<AgentInfo[]>([])
   const [agent, setAgent] = createSignal<string>('')
 
   // mount 時に当該 repo の利用可能 agent を fetch し、 結果 callback を差し込む。
-  // handleAgentsResult は global singleton だが、 Add Performer form は同時に 1 つしか開かない
+  // handleAgentsResult は global singleton だが、 Add Sub form は同時に 1 つしか開かない
   // （repo accordion ごとの toggle）ので、 mount で奪い cleanup で stub へ戻す。
   onMount(() => {
     const w = window as unknown as {
@@ -58,7 +58,7 @@ export function AddPerformer(props: { repoPath: string; onClose: () => void }) {
     const b = branch().trim()
     const s = agent().trim()
     sendIpc({
-      t: 'lane:add_performer',
+      t: 'lane:add_sub',
       path: props.repoPath,
       name: n,
       branch: b || undefined,
@@ -74,16 +74,16 @@ export function AddPerformer(props: { repoPath: string; onClose: () => void }) {
   }
 
   return (
-    <div class="vp-add-performer-form">
+    <div class="vp-add-sub-form">
       <input
-        class="vp-add-performer-input"
-        placeholder="performer name"
+        class="vp-add-sub-input"
+        placeholder="sub name"
         ref={(el) => queueMicrotask(() => el.focus())}
         onInput={(e) => setName(e.currentTarget.value)}
         onKeyDown={onKey}
       />
       <input
-        class="vp-add-performer-input"
+        class="vp-add-sub-input"
         placeholder="branch (optional)"
         onInput={(e) => setBranch(e.currentTarget.value)}
         onKeyDown={onKey}
@@ -91,7 +91,7 @@ export function AddPerformer(props: { repoPath: string; onClose: () => void }) {
       {/* engine(agent) 選択。 fetch 済みで 2 件以上ある時だけ出す（1 件 = 選択の余地なし）。 */}
       <Show when={agents().length > 1}>
         <select
-          class="vp-add-performer-input vp-add-performer-agent"
+          class="vp-add-sub-input vp-add-sub-agent"
           value={agent()}
           onChange={(e) => setAgent(e.currentTarget.value)}
           onKeyDown={onKey}
@@ -105,7 +105,7 @@ export function AddPerformer(props: { repoPath: string; onClose: () => void }) {
           </For>
         </select>
       </Show>
-      <div class="vp-add-performer-actions">
+      <div class="vp-add-sub-actions">
         <button onClick={props.onClose}>キャンセル</button>
         <button class="primary" onClick={submit}>
           作成

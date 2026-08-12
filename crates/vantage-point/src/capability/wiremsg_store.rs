@@ -399,7 +399,7 @@ impl WiremsgStore {
     /// 指定 agent が関与する **最新** wire message を返す (read-only、 cursor 不触り)
     ///
     /// 「関与」 = `from_addr == agent` OR `to_addrs CONTAINS agent`。 `flow_progress` の
-    /// 5-state FSM derive (= performer の現状態 = 最新 wmsg の `from` / `body.kind` から推論) で使う。
+    /// 5-state FSM derive (= sub の現状態 = 最新 wmsg の `from` / `body.kind` から推論) で使う。
     /// 1 件も無ければ `None`。 local_seq DESC LIMIT 1 で取得する。
     pub async fn latest_msg_for_agent(&self, agent: &str) -> Result<Option<WireMessage>> {
         let mut res = self
@@ -1974,12 +1974,12 @@ mod tests {
     #[tokio::test]
     async fn pending_needs_user_returns_latest_and_clears_on_ack() {
         let store = make_test_store().await;
-        let performer = "agent@vp/feat";
+        let sub = "agent@vp/feat";
 
         // needs_user 以外の kind は対象外
         store
             .send_root(
-                performer,
+                sub,
                 &["agent@vp".to_string()],
                 serde_json::json!({"kind": "question", "category": "command", "text": "相談"}),
             )
@@ -1987,7 +1987,7 @@ mod tests {
             .expect("question send");
         assert!(
             store
-                .pending_needs_user(performer)
+                .pending_needs_user(sub)
                 .await
                 .expect("pending 0")
                 .is_none(),
@@ -1997,7 +1997,7 @@ mod tests {
         // needs_user を 2 通 (古い方 → 新しい方)
         let old = store
             .send_root(
-                performer,
+                sub,
                 &["agent@vp".to_string()],
                 serde_json::json!({"kind": "needs_user", "category": "command", "text": "A or B?"}),
             )
@@ -2005,7 +2005,7 @@ mod tests {
             .expect("needs_user send 1");
         let newer = store
             .send_root(
-                performer,
+                sub,
                 &["agent@vp".to_string()],
                 serde_json::json!({"kind": "needs_user", "category": "command", "text": "C も?"}),
             )
@@ -2013,7 +2013,7 @@ mod tests {
             .expect("needs_user send 2");
 
         let pending = store
-            .pending_needs_user(performer)
+            .pending_needs_user(sub)
             .await
             .expect("pending 1")
             .expect("Some");
@@ -2022,7 +2022,7 @@ mod tests {
         // 最新を ack → 古い方が浮上 (どちらも未回答なら古い相談が残っている)
         store.ack(&newer.id, "agent@vp").await.expect("ack newer");
         let pending = store
-            .pending_needs_user(performer)
+            .pending_needs_user(sub)
             .await
             .expect("pending 2")
             .expect("Some");
@@ -2032,14 +2032,14 @@ mod tests {
         store.ack(&old.id, "agent@vp").await.expect("ack old");
         assert!(
             store
-                .pending_needs_user(performer)
+                .pending_needs_user(sub)
                 .await
                 .expect("pending 3")
                 .is_none()
         );
     }
 
-    /// pending_needs_user: from が別 agent の needs_user は対象外 (per-performer 判定)
+    /// pending_needs_user: from が別 agent の needs_user は対象外 (per-sub 判定)
     #[tokio::test]
     async fn pending_needs_user_scopes_by_sender() {
         let store = make_test_store().await;
@@ -2057,7 +2057,7 @@ mod tests {
                 .await
                 .expect("pending")
                 .is_none(),
-            "他 performer の needs_user は載らない"
+            "他 sub の needs_user は載らない"
         );
     }
 }

@@ -97,7 +97,7 @@ async fn version_endpoint_returns_build_info() {
     assert_eq!(body["name"], "nexus");
     assert_eq!(body["version"], vp_nexus::VERSION);
 
-    // git_sha / built_at は build.rs で埋め込まれる。 performer 内 build なら "unknown"
+    // git_sha / built_at は build.rs で埋め込まれる。 sub 内 build なら "unknown"
     // 以外になるはず (= git CLI 利用可能、 .git も上位 dir に存在)。 ただし
     // source tarball build / CI cache 等で "unknown" になる可能性も許容するため、
     // 空でないこと + string であることだけ assert する (= regulation な assertion)。

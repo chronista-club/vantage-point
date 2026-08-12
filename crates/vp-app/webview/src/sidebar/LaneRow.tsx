@@ -1,8 +1,8 @@
 /**
- * Lane (Conductor / Performer) 1 行の描画 component。
+ * Lane (Main / Sub) 1 行の描画 component。
  *
  * v1.0 柱 2。 旧 SIDEBAR_HTML の `.vp-lane-row` 構築ロジックを SolidJS に port。
- * 描画 (PR-2): agent icon / label / performer git meta / awaiting dot / mailbox icon /
+ * 描画 (PR-2): agent icon / label / sub git meta / awaiting dot / mailbox icon /
  * session title (2 行目)。 click 選択 (PR-3): row click → `lane:select` IPC で
  * main area を当該 Lane に切り替え。 右クリック操作 (restart / delete) は
  * ContextMenu に集約 (VP-204 PR-1)。
@@ -10,7 +10,7 @@
 import { Show } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import type { LaneInfo } from "../generated/LaneInfo";
-import type { PerformerStatusWire } from "../generated/PerformerStatusWire";
+import type { SubStatusWire } from "../generated/SubStatusWire";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
 import { resolveRepoOrder } from "./dnd";
@@ -26,7 +26,7 @@ import {
 } from "./dnd";
 import {
 	isLaneAlive,
-	isPerformerLane,
+	isSubLane,
 	shortcutNumberOf,
 	laneAddressKey,
 	laneCwdLabel,
@@ -35,9 +35,9 @@ import {
 	agentIcon,
 } from "./lane";
 
-/** Performer Lane の git 状態を右端に小さく表示 (= dirty / ahead-behind の signal のみ、
+/** Sub Lane の git 状態を右端に小さく表示 (= dirty / ahead-behind の signal のみ、
  *  branch 名 / merged ラベルは noise なので omit)。 ミニマム表示 (2026-05-30)。 */
-function PerformerMeta(props: { ws: PerformerStatusWire }) {
+function SubMeta(props: { ws: SubStatusWire }) {
 	const ahead = () => props.ws.ahead | 0;
 	const behind = () => props.ws.behind | 0;
 	const dirty = () => props.ws.dirty_count | 0;
@@ -60,7 +60,7 @@ function PerformerMeta(props: { ws: PerformerStatusWire }) {
  * connector class (= control surrender FSM の投影) から state 文字を導出する。
  * conn-auto/run = working、 conn-hitl = needs you。
  * idle (conn-dead) は quiet pass (mako 019f5100) で文字を出さない — 「idle はほぼ消える」。
- * conn-conductor (root) も state を持たない (spine の頭) ので null。
+ * conn-main (root) も state を持たない (spine の頭) ので null。
  */
 function stateLabel(connectorClass: string | undefined): string | null {
 	switch (connectorClass) {
@@ -86,7 +86,7 @@ export function LaneRow(props: {
 	const isActive = () => sidebar.active_lane_address === addr();
 	// F.8 B Convergent: Pane (Conversation) 不在 = pid:null は Dead Lane (spawn 失敗)、 dim 表示。
 	const isInactive = () => !isLaneAlive(props.lane);
-	const isPerformer = () => isPerformerLane(props.lane);
+	const isSub = () => isSubLane(props.lane);
 	/**
 	 * `⌘ hold l` で打つ番号（root lane だけが持つ）。
 	 *
@@ -94,7 +94,7 @@ export function LaneRow(props: {
 	 * 見えている `#N` と飛び先がずれる。並びは user が drag で決めた表示順（`resolveRepoOrder`）。
 	 */
 	const shortcut = () =>
-		isPerformer()
+		isSub()
 			? null
 			: shortcutNumberOf(
 					resolveRepoOrder(sidebar.processes, sidebar.currents_order).map(
@@ -118,7 +118,7 @@ export function LaneRow(props: {
 	// cc `/rename` の custom-title (2 行目)。 未設定 lane は dimmed "—"。
 	const sessionTitle = () => sidebar.session_titles?.[addr()];
 	// 地 (ground): cwd を repo root 起点の差分に畳む。 絶対 path は repo が持つので
-	// lane は offset だけを名乗る。 conductor は差分ゼロ = "" → 行ごと出さない。
+	// lane は offset だけを名乗る。 main は差分ゼロ = "" → 行ごと出さない。
 	const cwdLabel = () => laneCwdLabel(props.lane.cwd, props.repoPath);
 	// doc 44 D4: 開発起点 lane か。真実源は Repo Host の帳簿で、lanes snapshot の
 	// `origin` として届く (= lane 自身は役割を持たない、P2 のフラット化)。
@@ -205,11 +205,11 @@ export function LaneRow(props: {
 	};
 
 	// 右クリック → context menu。 Lane 操作は ContextMenu に一本化 (VP-204 PR-1 で
-	// inline hover ボタンを撤去)。 操作対象が無い Lane (inactive Conductor — repo 削除は
+	// inline hover ボタンを撤去)。 操作対象が無い Lane (inactive Main — repo 削除は
 	// PR-2) は items 空 → openContextMenu が no-op。
 	const onContextMenu = (e: MouseEvent) => {
 		const lane = props.lane;
-		const performer = isPerformerLane(lane);
+		const sub = isSubLane(lane);
 		// dim 表示 (isInactive) と同じ述語を使う — 生死判定を 2 箇所に散らさない。
 		const active = isLaneAlive(lane);
 		const items: ContextMenuItem[] = [];
@@ -242,7 +242,7 @@ export function LaneRow(props: {
 		});
 		if (active) {
 			// doc 39 §1: Reset Lane (fresh=true) — 全 session store + registry 破棄の破壊的動詞。
-			// 旧 "New Conductor Session"。日常の「新しい会話を始める」は ✨ New / New Root
+			// 旧 "New Main Session"。日常の「新しい会話を始める」は ✨ New / New Root
 			//（非破壊）に移り、こちらは「lane を素に戻す」最終手段として 2-click 確認に退避した。
 			items.push({
 				label: "Reset Lane",
@@ -273,10 +273,10 @@ export function LaneRow(props: {
 					}),
 			});
 		}
-		if (performer) {
+		if (sub) {
 			// delete は破壊的 (PTY kill + tmux kill + workspace dir 削除) なので 2-click 確認。
 			items.push({
-				label: "Delete Performer",
+				label: "Delete Sub",
 				icon: "ph:trash",
 				danger: true,
 				confirm: { label: "もう一度クリックで削除", icon: "ph:check" },
@@ -297,7 +297,7 @@ export function LaneRow(props: {
 			classList={{
 				active: isActive(),
 				inactive: isInactive(),
-				performer: isPerformer(),
+				sub: isSub(),
 				dragging: isDragging(),
 				"drop-before": dropBefore(),
 				"drop-after": dropAfter(),
@@ -334,8 +334,8 @@ export function LaneRow(props: {
 				</span>
 			</Show>
 			{/* session title を agent icon の右へ (= 旧 2 段目を 1 行目に昇格)。
-			    label (④) は tree 段下げで performer 視認可なので omit。
-			    fallback: session title 未設定なら performer は name、 conductor は repo 名を
+			    label (④) は tree 段下げで sub 視認可なので omit。
+			    fallback: session title 未設定なら sub は name、 main は repo 名を
 			    dimmed で出す (= 旧 "—" placeholder の代替、 空行回避)。 */}
 			<span
 				class="vp-lane-title"
@@ -343,7 +343,7 @@ export function LaneRow(props: {
 				title={sessionTitle() ?? laneLabel(props.lane)}
 			>
 				{sessionTitle() ??
-					(isPerformer() ? laneLabel(props.lane) : props.lane.address.repo)}
+					(isSub() ? laneLabel(props.lane) : props.lane.address.repo)}
 			</span>
 			{/* 右端ブロック: ⑦ state 文字 → ⑤ git meta (dirty/↑↓ のみ) → ⑥ awaiting dot → ② files → ③ mailbox */}
 			<span class="vp-lane-right">
@@ -355,12 +355,12 @@ export function LaneRow(props: {
 					</span>
 				</Show>
 				{/* Light Grid state 言語の文字面 (working / idle / needs you)。 FSM の SSOT は
-				    connectorClass (laneConnector 導出) — 二重導出しない。 root (conductor) は出さない。 */}
+				    connectorClass (laneConnector 導出) — 二重導出しない。 root (main) は出さない。 */}
 				<Show when={stateLabel(props.connectorClass)}>
 					<span class="vp-lane-state">{stateLabel(props.connectorClass)}</span>
 				</Show>
-				<Show when={isPerformer() && props.lane.performer_status}>
-					<PerformerMeta ws={props.lane.performer_status!} />
+				<Show when={isSub() && props.lane.sub_status}>
+					<SubMeta ws={props.lane.sub_status!} />
 				</Show>
 				<Show when={isAwaiting()}>
 					<span class="vp-lane-awaiting" title="Claude is waiting for input" />
@@ -407,7 +407,7 @@ export function LaneRow(props: {
 			{/* ⑧ 地 (ground): repo root 起点の cwd 差分。 1 行目が図 (title / state / git meta)、
 			    ここが地。 mute-2 / micro / mono = git meta と同じ最も引っ込んだ層に置き、 光らせない
 			    (光 = 注意は needs-you の専有)。 CSS の flex:0 0 100% で 2 行目へ折り返す。
-			    差分ゼロ (conductor = repo root) は **行ごと出さない** — 語ることが無い行は黙る。
+			    差分ゼロ (main = repo root) は **行ごと出さない** — 語ることが無い行は黙る。
 			    tooltip には常に完全な絶対 path を出すので情報は落ちない。 */}
 			<Show when={cwdLabel()}>
 				<span class="vp-lane-cwd" title={props.lane.cwd}>

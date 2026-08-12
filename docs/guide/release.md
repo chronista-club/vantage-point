@@ -27,7 +27,7 @@ v{major}.{minor}.{patch}[-prerelease]
 |--------|------|--------|----|--------|
 | **nightly** | 開発の最新版（day-to-day 積み上げ） | 可（force / deletion 禁止） | 任意 | lane → PR or 直 push |
 | **main** | 公開 release の単位 | **禁止** | 必須（force / deletion 禁止） | nightly → release PR → tag cut |
-| **lane / performer** | 単一タスク隔離 | 自由 | 必須 | from nightly |
+| **lane / sub** | 単一タスク隔離 | 自由 | 必須 | from nightly |
 
 ```
 nightly  ───────────────────────────────────►

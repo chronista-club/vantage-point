@@ -37,6 +37,7 @@
  * > 制約と lane 単位 mode の概念は消えた。
  */
 
+import { repoOfAddress, subNameOfAddress } from "./lane-address";
 import {
 	type Layout,
 	resolve,
@@ -125,7 +126,7 @@ export function sessionOfHostId(id: string): number | null {
 	return m ? Number(m[1]) : null;
 }
 
-/** lane address（`<repo>/root` | `<repo>/performer/<name>`）→ board のキー。
+/** lane address（`<repo>/root` | `<repo>/sub/<name>`）→ board のキー。
  *
  *  ⚠️ **キーの合成は `boardKey` 1 本に畳んである**。ここは「address という別の入力形」から
  *  同じキー空間へ写す薄い adapter でしかない。合成を 2 箇所に持つと、board の中身（board-handler）
@@ -133,15 +134,12 @@ export function sessionOfHostId(id: string): number | null {
  *  の test がこの一致を固定している）。
  *
  *  ⚠️ **repo 次元を落とさない**（2026-08-04 の board 混線と同じ穴）。全 repo の root lane は
- *  同じ `'conductor'` を名乗るので、lane 名だけで持つと「repo A で board を開いたまま B へ移ると
+ *  同じ `'main'` を名乗るので、lane 名だけで持つと「repo A で board を開いたまま B へ移ると
  *  B でも開いていて、位置まで共有される」になる。 */
 export function boardKeyOf(address: string): string {
-	const repo = address.split("/")[0] ?? "";
-	if (address.endsWith("/root") || address.endsWith("/lead")) {
-		return boardKey(repo, null);
-	}
-	const m = address.match(/\/(?:performer|wing)\/(.+)$/);
-	return boardKey(repo, m ? (m[1] ?? null) : null);
+	// ⚠️ 分解は `lane-address.ts` の 1 箇所（旧実装は `/sub/` を探す形で、canonical では
+	// 全 lane が Main のキーに集約されていた）。
+	return boardKey(repoOfAddress(address), subNameOfAddress(address));
 }
 
 /** lane の pane の顔ぶれ（純関数、doc 50 §4.6 A6）。
@@ -310,7 +308,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	 *  doc 50 §4.6 A6: lane 単位 console_mode の鏡（旧 `modeByLane`）は退役 — 見え方は
 	 *  session の属性になったので、lane 単位の mode を持つ理由が無くなった。 */
 	const sessionsByLane = new Map<string, PaneSession[]>();
-	/** board flat key（'conductor' / performer 名）→ view 状態（'vp:board-view' の鏡、doc 55）。
+	/** board flat key（'main' / sub 名）→ view 状態（'vp:board-view' の鏡、doc 55）。
 	 *  board-view.ts が user 操作（開閉 / form 切替）で dispatch する。roster に入るのは
 	 *  open && docked のときだけ。float は tiling の外（rect は board-view が書く）。
 	 *  キーは `(repo, lane)` の合成なので、lookup は boardKeyOf(address) で写して引く。 */

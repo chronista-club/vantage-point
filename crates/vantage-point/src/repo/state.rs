@@ -203,7 +203,7 @@ pub(crate) struct AppState {
     /// R2-b: wire delivery loop の即時 wake (command 着信時に notify)。
     /// daemon mode でのみ DeliveryActor が待ち受ける。 repo では未使用 (proxy が daemon に送るだけ)。
     pub delivery_notify: Arc<tokio::sync::Notify>,
-    /// Lane Pool (Conductor/Performer registry) — Lane scope の Agent container
+    /// Lane Pool (Main/Sub registry) — Lane scope の Agent container
     /// 関連 memory: mem_1CaSsN7xj69aVQtLPQFJxQ (repo-as-Repo-Master 9 component #4)
     pub lane_pool: Arc<RwLock<super::lanes_state::LanePool>>,
     /// Phase 2 (Step E): repo の system 系 lifecycle event を 1 つの broadcast bus で配信。
@@ -261,7 +261,7 @@ impl AppState {
     // (TmuxActor 遅延初期化 + LaneAddress ⇄ tmux session 名の翻訳層) は退役。
     // lane の解決は `resolve_lane_address`、 console I/O は PtySlot (deliver_nudge / lane_capture)。
 
-    /// lane address 文字列（`<repo>/root` / `<repo>/performer/<name>`）を、
+    /// lane address 文字列（`<repo>/root` / `<repo>/sub/<name>`）を、
     /// Running な lane の [`LaneAddress`](super::lanes_state::LaneAddress) に解決する。
     ///
     /// nudge の宛先を `LaneAddress` で返し、
@@ -328,7 +328,7 @@ impl AppState {
     /// 旧 DISC 層退役 → canonical な pane_contents を直接読む。 webview 自身は
     /// board state ask（repo-proxy 経由、旧 `/api/pp/state`）で state を読むが、 retained `show` topic を購読する経路 (MCP show 等)
     /// のため boot で RetainedStore も埋める (旧挙動保存)。 旧 DISC restore と同じく
-    /// **conductor scope のみ**復元する (performer は webview が lane 切替時に board state ask で読む)。
+    /// **main scope のみ**復元する (sub は webview が lane 切替時に board state ask で読む)。
     /// reserved な canvas-layout row は pane ではないので除外。
     pub async fn restore_pane_contents(&self) {
         let Some(vpdb) = self.vpdb.as_ref() else {
@@ -349,7 +349,7 @@ impl AppState {
         let mut count = 0;
         for row in &rows {
             let pane_id = row.get("pane_id").and_then(|v| v.as_str()).unwrap_or("");
-            // lane_name '' sentinel = conductor。 conductor のみ復元 (旧挙動)。
+            // lane_name '' sentinel = main。 main のみ復元 (旧挙動)。
             let lane_name = row.get("lane_name").and_then(|v| v.as_str()).unwrap_or("");
             if pane_id.is_empty() || pane_id == CANVAS_LAYOUT_PANE_ID || !lane_name.is_empty() {
                 continue;
@@ -499,7 +499,7 @@ mod lane_resolve_tests {
             created_at: "2026-06-16T00:00:00Z".to_string(),
             pid: Some(1234),
             cwd: "/tmp/work".to_string(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -508,7 +508,7 @@ mod lane_resolve_tests {
         }
     }
 
-    /// Running な lane は LaneAddress に解決される（conductor / performer 両方）。
+    /// Running な lane は LaneAddress に解決される（main / sub 両方）。
     #[tokio::test]
     async fn resolve_lane_address_returns_running_lane() {
         let state = build_test_app_state(None).await;
@@ -516,7 +516,7 @@ mod lane_resolve_tests {
             let mut pool = state.lane_pool.write().await;
             pool.insert(running_lane(LaneAddress::root("vantage-point"), "claude"));
             pool.insert(running_lane(
-                LaneAddress::performer("vantage-point", "hub-unison-client"),
+                LaneAddress::sub("vantage-point", "hub-unison-client"),
                 "claude",
             ));
         }
@@ -527,9 +527,9 @@ mod lane_resolve_tests {
         );
         assert_eq!(
             state
-                .resolve_lane_address("vantage-point/performer/hub-unison-client")
+                .resolve_lane_address("vantage-point/sub/hub-unison-client")
                 .await,
-            Some(LaneAddress::performer("vantage-point", "hub-unison-client"))
+            Some(LaneAddress::sub("vantage-point", "hub-unison-client"))
         );
     }
 

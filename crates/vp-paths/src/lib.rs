@@ -89,9 +89,9 @@ pub fn app_user_model_id() -> &'static str {
 /// path 生成に入るため。
 pub const ROOT_LANE_NAME: &str = "root";
 
-/// 旧 予約 lane 名（`conductor`）。**migration 専用**で、新規コードから参照しない。
+/// 旧 予約 lane 名（`main`）。**migration 専用**で、新規コードから参照しない。
 ///
-/// 2026-07-21 に `conductor` → `root` へ改名した（mako 決定）。「conductor（指揮者）」は
+/// 2026-07-21 に `main` → `root` へ改名した（mako 決定）。「main（指揮者）」は
 /// *振る舞い*の名前なので階層ごとに意味がズレる（repo の起点 lane / lane の中の代表）が、
 /// 「root（根）」は*位置*の名前なので、どの階層でも同じ関係を指せる。
 pub const LEGACY_ROOT_LANE_NAME: &str = "conductor";
@@ -610,7 +610,7 @@ mod tests {
     /// 定義を 1 箇所に畳んだ結果「値を変える = ここ 1 行」になったので、
     /// **意図せず変わらないよう**テストで釘を打っておく（変える時は migration とセット）。
     #[test]
-    fn conductor_lane_name_value_is_frozen() {
+    fn main_lane_name_value_is_frozen() {
         assert_eq!(ROOT_LANE_NAME, "root");
         assert_eq!(LEGACY_ROOT_LANE_NAME, "conductor");
     }

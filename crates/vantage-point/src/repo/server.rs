@@ -252,12 +252,12 @@ pub(crate) async fn start_repo(
         // delivery loop wake)。 repo では未使用だが AppState 共有 field のため空で満たす
         wire_notifier: crate::capability::WireNotifier::new(),
         delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-        // Phase A4-2b: Lane scope の Agent pool — Conductor Lane 1 つ pre-populate
+        // Phase A4-2b: Lane scope の Agent pool — Main Lane 1 つ pre-populate
         // memory rule: 多 scope architecture (App/Repo/Lane/Pane)、HD/TH は Lane scope。
-        // Performer Lane の動的 create は A4-4、Agent spawn 連動は A5 で実装。
+        // Sub Lane の動的 create は A4-4、Agent spawn 連動は A5 で実装。
         //
-        // (I-b、 2026-04-30): Performer auto-spawn は AppState 構築後に Mailbox actor 経由で実施。
-        // lane performers を `LaneCmd::SpawnLane` Cmd 化して `lane-spawn` mailbox に投入する
+        // (I-b、 2026-04-30): Sub auto-spawn は AppState 構築後に Mailbox actor 経由で実施。
+        // lane subs を `LaneCmd::SpawnLane` Cmd 化して `lane-spawn` mailbox に投入する
         // (= concurrency 制御を `Arc<Semaphore::new(N)>` で表現、 N=config.startup.max_concurrent_lane_spawn)。
         // 詳細は run() 内 lane_spawn_actor wiring 参照。
         lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::with_root(
@@ -294,11 +294,11 @@ pub(crate) async fn start_repo(
     // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
     state.restore_pane_contents().await;
 
-    // PR-β-2 (VP-120): Conductor Lane の LaneCapabilities entry を populate (LanePool::with_root と同期)。
-    // PR-β-1 で空 HashMap だった lane_capabilities pool に、 Conductor Lane の独立 BoardState を host。
+    // PR-β-2 (VP-120): Main Lane の LaneCapabilities entry を populate (LanePool::with_root と同期)。
+    // PR-β-1 で空 HashMap だった lane_capabilities pool に、 Main Lane の独立 BoardState を host。
     // doc 13 §6 自動 spawn rule = Lane 起動時に board 同時 spawn (default) を default で実現。
     if let Some(lc_pool) = state.lane_capabilities.as_ref() {
-        let conductor_addr = super::lanes_state::LaneAddress::root(&repo_name_for_remote);
+        let main_addr = super::lanes_state::LaneAddress::root(&repo_name_for_remote);
         let default_agent = crate::config::Config::load()
             .unwrap_or_default()
             .default_agent_or_claude()
@@ -306,24 +306,24 @@ pub(crate) async fn start_repo(
         lc_pool
             .write()
             .await
-            .populate_lane(conductor_addr, default_agent);
+            .populate_lane(main_addr, default_agent);
         tracing::info!(
-            "PR-β-2: LaneCapabilities pool に Conductor Lane populate (repo={}, board host 化)",
+            "PR-β-2: LaneCapabilities pool に Main Lane populate (repo={}, board host 化)",
             repo_name_for_remote
         );
     }
 
-    // (I-b、 2026-04-30) Lane spawn actor を起動し、 既存 lane performers を Cmd 化して投入。
+    // (I-b、 2026-04-30) Lane spawn actor を起動し、 既存 lane subs を Cmd 化して投入。
     // in-process channel + Semaphore で並列 spawn を gate する設計。
     // - actor は `cmd_rx` (unbounded channel) を recv し、 `Arc<Semaphore::new(N)>` で gate しつつ並列実行
-    // - bootstrap は lane performers をスキャンして `LaneCmd::SpawnLane` を投入 (= 1 回限りの seed)。
+    // - bootstrap は lane subs をスキャンして `LaneCmd::SpawnLane` を投入 (= 1 回限りの seed)。
     //   block 終端で Sender drop → actor は buffered Cmd を全 drain 後に正常終了する
     // - N=config.startup.max_concurrent_lane_spawn (default 1、 dogfood で計測 log を集計して tweak)
-    // PR-β-2 (VP-120): lane_capabilities pool clone も渡し、 Performer spawn 時に populate_lane する。
+    // PR-β-2 (VP-120): lane_capabilities pool clone も渡し、 Sub spawn 時に populate_lane する。
     //
     // in-process 直結 (2026-07-09): 旧 wiremsg R2-a 経路 (daemon 中央 wire store の
     // `lane-spawn@<repo>` mailbox 往復) を撤去。 producer は本 bootstrap のみで、 at-most-once
-    // 配送 + repo 再起動時の幽霊 long-poll 消費で Cmd が失われ performer が永久 Spawning になる
+    // 配送 + repo 再起動時の幽霊 long-poll 消費で Cmd が失われ sub が永久 Spawning になる
     // 障害があった (詳細は lane_spawn_actor.rs module doc)。 channel は process-local なので
     // この failure mode が構造的に消滅し、 daemon 不達 retry も不要 (standalone repo でも spawn 可)。
     {
@@ -340,7 +340,7 @@ pub(crate) async fn start_repo(
         state.actor_registry.write().await.spawn_service(
             super::lane_spawn_actor::LaneSpawnActor::new(
                 state.lane_pool.clone(),
-                state.lane_capabilities.clone(), // PR-β-2 (VP-120): Performer spawn 時に populate_lane する
+                state.lane_capabilities.clone(), // PR-β-2 (VP-120): Sub spawn 時に populate_lane する
                 state.system_event_tx.clone(),   // Phase 2 (Step E): system event central bus
                 state.terminal_pumps.clone(),    // doc 53 R2: 復元後 pump reconcile 用
                 state.topic_router.clone(),
@@ -350,20 +350,19 @@ pub(crate) async fn start_repo(
             shutdown_token.clone(),
         );
 
-        let performers_repo_id = std::path::Path::new(&state.repo_dir)
+        let subs_repo_id = std::path::Path::new(&state.repo_dir)
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
-        // repo-local lane refactor PR 1: list_performers_for_repo は repo_root: &Path を受け取る。
-        let performers =
-            crate::lane::commands::list_performers_for_repo(std::path::Path::new(&state.repo_dir));
-        let total = performers.len();
+        // repo-local lane refactor PR 1: list_subs_for_repo は repo_root: &Path を受け取る。
+        let subs = crate::lane::commands::list_subs_for_repo(std::path::Path::new(&state.repo_dir));
+        let total = subs.len();
         if total > 0 {
             tracing::info!(
-                "repo startup bootstrap: {} 本の Performer SpawnLane Cmd を投入 (repo_id={}, max_concurrent={})",
+                "repo startup bootstrap: {} 本の Sub SpawnLane Cmd を投入 (repo_id={}, max_concurrent={})",
                 total,
-                performers_repo_id,
+                subs_repo_id,
                 max_concurrent
             );
             // doc 11 PR-B: agent は String 化、 default は config の `default_agent`
@@ -375,15 +374,15 @@ pub(crate) async fn start_repo(
             // in-process 直結: 型付き LaneCmd を channel に同期 send (serialize / retry 不要)。
             // send が Err を返すのは receiver drop 後のみ (= actor task 終了後。 startup 時点では
             // 起き得ないが防御的に warn)。 投入順序は Semaphore gate が並列度を制御するため保証不要。
-            for entry in &performers {
+            for entry in &subs {
                 // per-lane agent 永続 (mem_1Cd4M7i5Enp3HHMLVYayRe): create 時に記録された agent で
                 // respawn する。記録不在 (旧 lane / 手動 `vp lane new`) は従来どおり default。
-                // これが無いと非 conversation performer (codex/grok) が repo 再起動で conversation に化ける
+                // これが無いと非 conversation sub (codex/grok) が repo 再起動で conversation に化ける
                 // (agent 非永続の既知バグの根治)。
-                let agent = crate::lane::agent_store::last(&performers_repo_id, &entry.name)
+                let agent = crate::lane::agent_store::last(&subs_repo_id, &entry.name)
                     .unwrap_or_else(|| default_agent.clone());
                 let cmd = super::lane_cmd::LaneCmd::SpawnLane {
-                    repo_id: performers_repo_id.clone(),
+                    repo_id: subs_repo_id.clone(),
                     name: entry.name.clone(),
                     cwd: entry.path.clone(),
                     agent,
@@ -397,12 +396,12 @@ pub(crate) async fn start_repo(
             }
         } else {
             tracing::info!(
-                "repo startup bootstrap: lane performers なし (repo_id={})",
-                performers_repo_id
+                "repo startup bootstrap: lane subs なし (repo_id={})",
+                subs_repo_id
             );
         }
 
-        // doc 53 §12: **conductor lane の実体はここで立つ**（`with_root` は登録だけ）。
+        // doc 53 §12: **main lane の実体はここで立つ**（`with_root` は登録だけ）。
         //
         // reconcile が registry に従って mode=Tui の全 session に slot を立て、末尾で pump も
         // 合わせる（R2）。旧実装は ①`with_root` が root を spawn ②`restore_term_slots` が
@@ -411,16 +410,16 @@ pub(crate) async fn start_repo(
         //
         // pump 側の事情も引き続き満たす: router を養子縁組した場合（repo 起動前から GUI が
         // 購読 = demand count ごと引き継ぎ）は 0→1 edge が来ないので、level 読みの reconcile が
-        // 要る。demand 不在なら no-op。（performer 側の同じ契機は lane_spawn_actor の末尾）
+        // 要る。demand 不在なら no-op。（sub 側の同じ契機は lane_spawn_actor の末尾）
         //
         // address の repo 名は with_root と同じ解決済の名（`state.repo_name`）を使う —
-        // `performers_repo_id`（dir 名）は登録名と異なり得る。
-        let conductor_addr = super::lanes_state::LaneAddress::root(&state.repo_name);
+        // `subs_repo_id`（dir 名）は登録名と異なり得る。
+        let main_addr = super::lanes_state::LaneAddress::root(&state.repo_name);
         super::lane_reconcile::reconcile_lane(
             &state.lane_pool,
             &state.terminal_pumps,
             &state.topic_router,
-            &conductor_addr,
+            &main_addr,
         )
         .await;
     }
@@ -455,8 +454,8 @@ pub(crate) async fn start_repo(
         // 「別の供給点が publish した直後は起こさない」等の取りこぼしが出る）。
         let mut notifier = LaneChangeNotifier::new(lane_change_tx);
         // 起動直後の現 snapshot を 1 度 publish して retained を seed する
-        // （Conductor Lane は既に pre-populate 済）。
-        // repo-local lane refactor PR 1: build_lanes_snapshot で disk-scan Inactive Performer
+        // （Main Lane は既に pre-populate 済）。
+        // repo-local lane refactor PR 1: build_lanes_snapshot で disk-scan Inactive Sub
         // も含める (= HTTP /api/lanes と同一 logic、 sidebar QUIC 経路でも Inactive 表示)。
         publish_lanes(
             &state_for_pub,
@@ -474,7 +473,7 @@ pub(crate) async fn start_repo(
             use super::lanes_state::SystemEvent;
             use tokio::sync::broadcast::error::RecvError;
             // repo-local lane refactor PR 1: CLI `vp lane new` は SystemEvent::Lane を
-            // fire しない (= 直 fs op、 repo 経由しない)。 disk-only performer を sidebar に届ける
+            // fire しない (= 直 fs op、 repo 経由しない)。 disk-only sub を sidebar に届ける
             // safety net として 5s periodic tick で snapshot 再 publish する。
             // (FSEvents-based lane watcher の repo-local 拡張は後 PR の範囲)
             let mut periodic = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -512,7 +511,7 @@ pub(crate) async fn start_repo(
     //   - 5s 間隔で全 Lane の is_alive() を check
     //   - Dead 検出 → state 更新 + pty_slots remove (zombie reap)
     //   - sidebar が /api/lanes を polling するので Dead 状態が UI に伝播
-    //   関連: 2026-04-28 unison-kdl で post-spawn zombie 観測 → 検知機構が無く Conductor コンソール
+    //   関連: 2026-04-28 unison-kdl で post-spawn zombie 観測 → 検知機構が無く Main コンソール
     //         が壊れたまま user が気付かない問題の解消。
     spawn_lane_lifecycle_monitor(state.lane_pool.clone(), shutdown_token.clone());
 
@@ -1079,7 +1078,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
                     // lane_registry（repo_path → Vec<LaneInfo>）を flatten。discovery は未認証の
                     // 相手にも返り得る（federation auth は当面 permissive）ため、**allow-list で
                     // {address, kind, name, state} だけ**に絞る。LaneInfo の cwd（FS パス）/
-                    // performer_status（git 状態）/ pid 等の sensitive field は漏らさない（露出最小化）。
+                    // sub_status（git 状態）/ pid 等の sensitive field は漏らさない（露出最小化）。
                     // 本丸の「誰が discover できるか」の gate は S3 auth（Creo ID）で別途。
                     let lanes: Vec<serde_json::Value> = {
                         let reg = lane_registry.read().await;
@@ -1178,7 +1177,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         daemon_cap.clone(),
     ));
 
-    // VP-129 MVP: lane root FSEvents watcher 起動。 user の Finder / `rm -rf` で performer dir
+    // VP-129 MVP: lane root FSEvents watcher 起動。 user の Finder / `rm -rf` で sub dir
     // を削除した時、 OS file system event → repo `DELETE /api/lanes` 自動発火 (= D10 Reconciliation
     // の 3rd path 拡張、 Push QUIC + Pull port scan + FSEvents の 3-trigger model 完成)。
     let _lane_watcher = tokio::spawn(RepoManagerCapability::run_lane_watcher(
@@ -1373,7 +1372,7 @@ async fn bind_dual_stack(port: u16) -> Result<tokio::net::TcpListener> {
 /// `spawn_with_fallback` の 800ms early-exit window では `claude --continue` が後で
 /// (= spawn 後 1 秒以上経ってから) exit するパターンを捕まえられない。
 /// 2026-04-28 dogfooding で unison-kdl が zombie 化、 sidebar には running 表示、
-/// PTY write が `Input/output error (os error 5)` で失敗、 Conductor コンソールが壊れた状態
+/// PTY write が `Input/output error (os error 5)` で失敗、 Main コンソールが壊れた状態
 /// で user が気付かないという問題があった。
 ///
 /// ## 動作
@@ -1501,7 +1500,7 @@ mod tests {
 
     /// 5s tick が**そのまま 5s ごとの全 snapshot push にならない**こと。
     ///
-    /// 供給点の 1 つは 5s periodic tick（disk-only performer の safety net）で、
+    /// 供給点の 1 つは 5s periodic tick（disk-only sub の safety net）で、
     /// 内容が変わっていなくても回る。ここで毎回起こすと repo 数ぶんの全 snapshot が
     /// 定期的に流れる。指紋で「変わった時だけ」に絞る。
     #[tokio::test]

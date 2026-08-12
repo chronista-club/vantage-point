@@ -105,8 +105,8 @@ fn decide_nudge(
 /// 照合する（間に `parse_address` を挟まない唯一の経路）。したがって
 /// [`LaneAddress`](crate::repo::lanes_state::LaneAddress) の Display 形と
 /// **byte-for-byte 同じ形を組み立てる責任がここにある**。
-/// doc 44 P2 のフラット化ではこの直書きが取り残され、performer 宛 nudge が恒久的に
-/// 不一致になる回帰を生んだ（conductor は形が変わらないため無症状で気付きにくい）。
+/// doc 44 P2 のフラット化ではこの直書きが取り残され、sub 宛 nudge が恒久的に
+/// 不一致になる回帰を生んだ（main は形が変わらないため無症状で気付きにくい）。
 pub(crate) fn wire_agent_to_lane_display(addr: &str) -> Option<String> {
     let rest = addr.strip_prefix("agent@")?;
     if rest.is_empty() {
@@ -231,7 +231,7 @@ fn nudge_text(message_id: &str, renudge_count: u32) -> String {
 ///
 /// spawn する claude に lane と同じ identity env を渡すための導出。
 /// - `agent@<repo>` → (repo, "root")
-/// - `agent@<repo>/<name>` → (repo, name)  ※ VP_LANE は performer 名
+/// - `agent@<repo>/<name>` → (repo, name)  ※ VP_LANE は sub 名
 /// - それ以外 → None
 pub(crate) fn lane_identity_from_agent(addr: &str) -> Option<(String, String)> {
     let rest = addr.strip_prefix("agent@")?;
@@ -405,7 +405,7 @@ async fn pulse(
 
     for (msg, agents) in &pending {
         for agent in agents {
-            // nudge 可能な address (conductor / performer) のみ。 他は対象外
+            // nudge 可能な address (main / sub) のみ。 他は対象外
             let Some(lane_display) = wire_agent_to_lane_display(agent) else {
                 continue;
             };
@@ -431,7 +431,7 @@ async fn pulse(
             // engine は lazy spawn（Offline が無い）かつ turn 実行中の submit を自前 queue する
             // （Busy が無い、doc 34 Step 0 spike ①実測）ため常時 deliverable — PTY / CC-activity
             // の意味論は Tui 専用。channel D を踏ませないこと自体が、同一 session 二重 --resume
-            // （conductor）/ fresh headless 文脈喪失（performer）の構造的排除でもある（doc 34 §2-3）。
+            // （main）/ fresh headless 文脈喪失（sub）の構造的排除でもある（doc 34 §2-3）。
             if root_mode == SessionMode::Tui {
                 match recipient_readiness(true, act_view) {
                     Readiness::Ready => {}
@@ -644,7 +644,7 @@ mod tests {
             created_at: "2026-06-11T00:00:00Z".to_string(),
             pid: None,
             cwd: String::new(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             engine_session_id: None,
             agent_name: None,
@@ -662,12 +662,12 @@ mod tests {
     #[test]
     fn pick_running_lane_returns_target() {
         let lanes = registry(test_lane(LaneState::Running));
-        let t = pick_nudge_target(&lanes, "vp/root").expect("nudge 可能");
+        let t = pick_nudge_target(&lanes, "vp/lane/root").expect("nudge 可能");
         assert_eq!(
             t.path_key, "/repo/vp",
             "forward 先 repo の control channel key"
         );
-        assert_eq!(t.lane_display, "vp/root", "lane_nudge の宛先");
+        assert_eq!(t.lane_display, "vp/lane/root", "lane_nudge の宛先");
         assert_eq!(t.cwd, "", "test_lane の cwd (CC activity 照合に使う)");
         assert_eq!(t.cc_session_id, None, "test_lane は cc_session_id 未設定");
         // 別 lane 宛は None (offline 扱い = pending 保持)
@@ -705,10 +705,10 @@ mod tests {
     fn pick_nudges_running_regardless_of_tmux_and_skips_dead() {
         // tmux entry 無し (旧 PtySlotFallback 相当) でも Running なら nudge 可能
         let running = registry(test_lane(LaneState::Running));
-        assert!(pick_nudge_target(&running, "vp/root").is_some());
+        assert!(pick_nudge_target(&running, "vp/lane/root").is_some());
 
         let dead = registry(test_lane(LaneState::Dead));
-        assert_eq!(pick_nudge_target(&dead, "vp/root"), None);
+        assert_eq!(pick_nudge_target(&dead, "vp/lane/root"), None);
     }
 
     /// R3-a: activity 供給ありの policy table — idle/waiting → Ready、busy → Busy、不在 → Offline
@@ -748,12 +748,12 @@ mod tests {
     fn agent_address_maps_to_lane_display() {
         assert_eq!(
             wire_agent_to_lane_display("agent@vp").as_deref(),
-            Some("vp/root")
+            Some("vp/lane/root")
         );
         // doc 44 P2: フラット化で `<repo>/<name>` になった
         assert_eq!(
             wire_agent_to_lane_display("agent@vp/w1").as_deref(),
-            Some("vp/w1")
+            Some("vp/lane/w1")
         );
         assert_eq!(wire_agent_to_lane_display("notify@vp"), None);
         assert_eq!(wire_agent_to_lane_display("vp-cli"), None);
@@ -761,32 +761,32 @@ mod tests {
         assert_eq!(wire_agent_to_lane_display("agent@vp/"), None);
     }
 
-    /// 回帰固定: **wire agent address → nudge 先 lane** の解決が performer でも成立すること。
+    /// 回帰固定: **wire agent address → nudge 先 lane** の解決が sub でも成立すること。
     ///
     /// `wire_agent_to_lane_display` は lane address を**文字列で組み立てる**唯一の経路で、
     /// その結果を `pick_nudge_target` が `LaneAddress::to_string()` と**生の完全一致**で
     /// 照合する（間に `parse_address` を挟まない）。doc 44 P2 のフラット化で前者が旧形
-    /// （`<repo>/performer/<name>`）のまま取り残され、performer 宛 wire nudge が恒久的に
+    /// （`<repo>/sub/<name>`）のまま取り残され、sub 宛 wire nudge が恒久的に
     /// 「lane 不在」となって永久リトライに落ちる回帰を出した。
     ///
     /// このテストが無かったのは、2 関数を**個別には**テストしていた一方で、
-    /// `pick_nudge_target` 側の fixture が conductor lane 固定だったため
-    /// （conductor は形が変わらないので回帰が無症状になる）。両者を繋いで検証する。
+    /// `pick_nudge_target` 側の fixture が main lane 固定だったため
+    /// （main は形が変わらないので回帰が無症状になる）。両者を繋いで検証する。
     #[test]
-    fn agent_address_resolves_to_performer_nudge_target() {
-        let performer = LaneInfo {
-            address: LaneAddress::performer("vp", "w1"),
+    fn agent_address_resolves_to_sub_nudge_target() {
+        let sub = LaneInfo {
+            address: LaneAddress::sub("vp", "w1"),
             pid: Some(4242),
             ..test_lane(LaneState::Running)
         };
-        let lanes = vec![("/repos/vp".to_string(), performer)];
+        let lanes = vec![("/repos/vp".to_string(), sub)];
 
         let display =
             wire_agent_to_lane_display("agent@vp/w1").expect("agent アドレスは解決される");
         let target = pick_nudge_target(&lanes, &display)
-            .expect("performer lane が nudge 先として見つかること（回帰: 旧形との不一致で None）");
+            .expect("sub lane が nudge 先として見つかること（回帰: 旧形との不一致で None）");
         assert_eq!(target.path_key, "/repos/vp");
-        assert_eq!(target.lane_display, "vp/w1");
+        assert_eq!(target.lane_display, "vp/lane/w1");
     }
 
     /// R3-c: agent address → headless dispatch 用の (VP_REPO, VP_LANE)

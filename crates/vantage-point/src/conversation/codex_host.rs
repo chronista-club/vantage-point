@@ -52,7 +52,7 @@ pub struct CodexRpcHostConfig {
     pub cwd: String,
     /// registry 書き込みキー（repo 名）。
     pub repo: String,
-    /// registry 書き込みキー（session label: `conductor` / `conductor#2` …）。
+    /// registry 書き込みキー（session label: `main` / `main#2` …）。
     /// ⚠️ env の `VP_LANE` には使わない — そちらは [`Self::lane_label`]（素の label）。
     pub lane: String,
     /// identity env（`VP_LANE`）用の素の lane label（doc 51 §1 A3b — tui と同じ契約）。
@@ -843,7 +843,7 @@ mod tests {
         assert!(!session_id.is_empty(), "SessionInit（thread id）を観測");
         assert!(text.contains("pong-rpc"), "answer: {text}");
         // registry 直結の書き戻し（doc 40 §4）も実機で確認
-        let reg = crate::lane::session_registry::load("vptest-rpc", "root", "codex");
+        let reg = crate::lane::session_registry::load("vptest-rpc", "main", "codex");
         assert_eq!(
             reg.sessions[0].conversation.as_deref(),
             Some(session_id.as_str()),

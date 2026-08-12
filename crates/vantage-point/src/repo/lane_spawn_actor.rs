@@ -3,7 +3,7 @@
 //!
 //! ## 背景 (I-b、 2026-04-30)
 //!
-//! 従来 repo 起動時に Performer N 本を **直列 sync ループ** で spawn していた。 内部の
+//! 従来 repo 起動時に Sub N 本を **直列 sync ループ** で spawn していた。 内部の
 //! `spawn_with_fallback` が `EARLY_EXIT_CHECK_MS = 800ms` の `std::thread::sleep` で
 //! executor を block するため、 N 本で `800ms × N` の累積待ち → repo の axum listen
 //! ready が遅延する設計上の問題があった。
@@ -29,7 +29,7 @@
 //! cursor 前進の破壊的読み出し) のため、 repo 再起動シーケンスで Cmd が失われる:
 //! 旧 SP の actor が張った long-poll が daemon 側に残存 (≤30s 窓) → 新 repo bootstrap の
 //! Cmd を fetch → cursor 前進 → 応答は死んだ接続へ → 新 actor には何も届かない
-//! → performer 永久 Spawning (2026-07-09 障害)。
+//! → sub 永久 Spawning (2026-07-09 障害)。
 //!
 //! 本修正で bootstrap → actor を `tokio::sync::mpsc` unbounded channel に直結。
 //! channel は process-local なので旧 SP の consumer が新 repo の Cmd を消費する経路が
@@ -95,7 +95,7 @@ use super::lanes_state::{Diff, LaneAddress, LaneInfo, LanePool, LaneState, Syste
 /// repo-local Service (= 1 Repo per Process)、 channel receiver + dependencies を保持し、
 /// `spawn_loop(shutdown)` で background recv loop を `tokio::spawn` 起動する。
 ///
-/// PR-β-2 (VP-120): `lane_capabilities_pool: Option<...>` で Performer spawn 成功時に
+/// PR-β-2 (VP-120): `lane_capabilities_pool: Option<...>` で Sub spawn 成功時に
 /// `populate_lane` を呼び、 Lane あたり独立 BoardState を host する。
 pub struct LaneSpawnActor {
     lane_pool: Arc<RwLock<LanePool>>,
@@ -229,7 +229,7 @@ impl SpawnableService for LaneSpawnActor {
 /// 単一 `LaneCmd` を処理。 Semaphore permit を acquire してから heavy spawn を実行。
 ///
 /// PR-β-2 (VP-120): `lane_capabilities_pool` 引数 (Option) を追加、 spawn 成功時に
-/// `populate_lane` を呼んで Performer Lane あたり独立 BoardState を host する。
+/// `populate_lane` を呼んで Sub Lane あたり独立 BoardState を host する。
 async fn handle_cmd(
     cmd: LaneCmd,
     pool: Arc<RwLock<LanePool>>,
@@ -246,7 +246,7 @@ async fn handle_cmd(
         agent,
     } = cmd;
 
-    let addr = LaneAddress::performer(&repo_id, &name);
+    let addr = LaneAddress::sub(&repo_id, &name);
 
     // 早期 skip: permit 待つ前に既存 entry を check (= 手動 create と被った時の無駄 acquire 削減)
     {
@@ -308,7 +308,7 @@ async fn handle_cmd(
         pid: None,
         cwd,
         // 起動時点では git 状態取得しない (list_handler 側で必要時に enrich)。
-        performer_status: None,
+        sub_status: None,
         cc_session_id: None,
         sessions: None,
         engine_session_id: None,
@@ -339,7 +339,7 @@ async fn handle_cmd(
         started.elapsed().as_millis() as u64
     );
 
-    // Performer Lane spawn 完了 → LaneCapabilities pool に entry 追加
+    // Sub Lane spawn 完了 → LaneCapabilities pool に entry 追加
     // (Lane あたり独立 BoardState を host、 doc 13 §6 自動 spawn rule = default)。
     // None は daemon mode (Lane scope なし) で発生、 repo mode では常に Some。
     //
@@ -349,13 +349,13 @@ async fn handle_cmd(
     if let Some(lc_pool) = lane_capabilities_pool.as_ref() {
         lc_pool.write().await.populate_lane(addr.clone(), &agent);
         tracing::debug!(
-            "LaneCapabilities pool に Performer Lane populate (addr={}, agent={})",
+            "LaneCapabilities pool に Sub Lane populate (addr={}, agent={})",
             addr,
             agent
         );
     }
 
-    // Phase 2 (Step E): Performer spawn 完了を SystemEvent::Lane(Diff::Add) で daemon に push。
+    // Phase 2 (Step E): Sub spawn 完了を SystemEvent::Lane(Diff::Add) で daemon に push。
     // QUIC registry channel 経由で realtime sync。 失敗は warn のみ (best-effort、
     // repo lane_pool が SSOT、 reconnect 時に register snapshot で必ず再構築される)。
     if let Err(e) = system_event_tx.send(SystemEvent::Lane(Diff::Add { payload: info })) {
@@ -475,7 +475,7 @@ mod tests {
         let shutdown = CancellationToken::new();
 
         // race guard を意図的に踏ませる: 同 addr を事前に pool へ insert しておく
-        let addr = LaneAddress::performer("proj", "already-there");
+        let addr = LaneAddress::sub("proj", "already-there");
         pool.write().await.insert(LaneInfo {
             id: Default::default(),
             address: addr,
@@ -484,7 +484,7 @@ mod tests {
             created_at: chrono::Utc::now().to_rfc3339(),
             pid: None,
             cwd: "/nonexistent".to_string(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -526,20 +526,20 @@ mod tests {
         assert_eq!(pool.read().await.count(), 1);
     }
 
-    /// **performer** の永続 console_mode=chat が boot spawn で honor され、 engine-less
+    /// **sub** の永続 console_mode=chat が boot spawn で honor され、 engine-less
     /// (pid=None + state=Running + PtySlot なし) で登録されること。
     ///
-    /// これが「gui の performer lane を再起動しても chat のまま復活する」の中核。
-    /// 壊れると chat performer が boot で PTY を立て、 conversation_submit が 2 本目 engine を
-    /// 呼んで 1 会話 2 エンジンになる (conductor `with_root` と同じ規律を performer に適用)。
+    /// これが「gui の sub lane を再起動しても chat のまま復活する」の中核。
+    /// 壊れると chat sub が boot で PTY を立て、 conversation_submit が 2 本目 engine を
+    /// 呼んで 1 会話 2 エンジンになる (main `with_root` と同じ規律を sub に適用)。
     #[tokio::test]
-    async fn chat_mode_performer_boots_engine_less() {
+    async fn chat_mode_sub_boots_engine_less() {
         use crate::lane::session_registry::SessionMode;
         // session_registry / lane_id は vp_state_dir() = $XDG_STATE_HOME/vp を読む。
         // crate 唯一のロック下で tempdir に向け、 guard の drop で復元する。
         let state = crate::test_env::state_dir_async().await;
 
-        // performer "proj"/"chat-perf" の **root session の mode** を Chat で永続化（doc 47 §4）
+        // sub "proj"/"chat-perf" の **root session の mode** を Chat で永続化（doc 47 §4）
         crate::lane::session_registry::set_root_mode(
             "proj",
             "chat-perf",
@@ -580,11 +580,9 @@ mod tests {
         // detach spawn task の完了待ち
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-        let addr = LaneAddress::performer("proj", "chat-perf");
+        let addr = LaneAddress::sub("proj", "chat-perf");
         let pool_read = pool.read().await;
-        let info = pool_read
-            .get(&addr)
-            .expect("chat performer が登録されるはず");
+        let info = pool_read.get(&addr).expect("chat sub が登録されるはず");
         // doc 53 R1: 投影 field は退役 — honor の証明は挙動（下の pid/PtySlot assert）と
         // 読み手経路（root_mode 直読）で行う。
         assert_eq!(

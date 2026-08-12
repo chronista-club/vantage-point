@@ -97,9 +97,9 @@ pub enum RepoMessage {
         /// ペインのタイトル（タブ表示用）
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
-        /// このメッセージが属する Lane（per-lane board scope、root/performer 語彙）。
-        /// `None` = conductor（lead）。topic の lane segment になり、retained を lane 別に分離する。
-        /// wire 後方互換のため `skip_serializing_if`（旧 consumer は field 欠落を conductor 扱い）。
+        /// このメッセージが属する Lane（per-lane board scope、root/sub 語彙）。
+        /// `None` = main（lead）。topic の lane segment になり、retained を lane 別に分離する。
+        /// wire 後方互換のため `skip_serializing_if`（旧 consumer は field 欠落を main 扱い）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lane: Option<String>,
         /// board scope: `"lane"` のみ（'proj' は 2026-07-23 撤去。wire 上は文字列のまま = 旧値との互換）。
@@ -110,7 +110,7 @@ pub enum RepoMessage {
     /// Clear a pane
     Clear {
         pane_id: String,
-        /// 属する Lane（`None` = conductor）。[`RepoMessage::Show`] の lane と同義。
+        /// 属する Lane（`None` = main）。[`RepoMessage::Show`] の lane と同義。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lane: Option<String>,
         /// clear 対象の board scope（`None` = lane）。[`RepoMessage::Show`] の scope と同義。
@@ -125,7 +125,7 @@ pub enum RepoMessage {
     BoardUpdated {
         /// board scope: `"lane"` のみ（'proj' は 2026-07-23 撤去）。
         scope: String,
-        /// lane board のときの lane（root/performer）。 proj board は `None`。
+        /// lane board のときの lane（root/sub）。 proj board は `None`。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lane: Option<String>,
         /// items（新→古）。
@@ -139,14 +139,14 @@ pub enum RepoMessage {
         pane_id: String,
         direction: SplitDirection,
         new_pane_id: String,
-        /// 属する Lane（`None` = conductor）。
+        /// 属する Lane（`None` = main）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lane: Option<String>,
     },
     /// Close a pane
     Close {
         pane_id: String,
-        /// 属する Lane（`None` = conductor）。
+        /// 属する Lane（`None` = main）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lane: Option<String>,
     },
@@ -156,7 +156,7 @@ pub enum RepoMessage {
         /// Optional explicit state: true = show, false = hide, None = toggle
         #[serde(default)]
         visible: Option<bool>,
-        /// 属する Lane（`None` = conductor）。
+        /// 属する Lane（`None` = main）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lane: Option<String>,
     },
@@ -229,7 +229,7 @@ pub enum RepoMessage {
     },
     /// Canvas Lane 切り替え指示
     SwitchLane {
-        /// active 化する lane token: "root"（lead）or performer 名（例: "feat-api"）。
+        /// active 化する lane token: "root"（lead）or sub 名（例: "feat-api"）。
         /// 現 repo 内の lane-within-repo 切替（B1 で repo 切替意味論から変更）。
         lane: String,
     },

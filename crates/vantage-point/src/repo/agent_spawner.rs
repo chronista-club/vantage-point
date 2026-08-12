@@ -29,7 +29,7 @@
 //! ## VP_* 環境変数
 //!
 //! - `VP_REPO`     : `addr.repo`
-//! - `VP_LANE`        : lane label（`conductor` / performer 名 / `unnamed`）
+//! - `VP_LANE`        : lane label（`main` / sub 名 / `unnamed`）
 //! - `VP_SESSION_KEY` : この slot が化身する session の key（doc 40 §4 — hook が「自分が
 //!                      どの session か」を名乗るための identity。旧 `VP_SESSION`
 //!                      （= lane display 形、doc 40 PR-3 で退役）とは**別物**なので名前も分けた）
@@ -152,8 +152,8 @@ fn drain_pty_tail(rx: &mut broadcast::Receiver<Vec<u8>>) -> String {
 /// LaneAddress の lane label を導出する。
 ///
 /// doc 44 P2（フラット化）で `name` が全 lane 必須になったため、そのまま返すだけになった。
-/// 旧実装は kind で 3 分岐していた（Conductor → "root" / Performer(name) → name /
-/// Performer(None) → "unnamed"）— 最後の枝は型が許した表現不能な状態の穴埋めで、
+/// 旧実装は kind で 3 分岐していた（Main → "root" / Sub(name) → name /
+/// Sub(None) → "unnamed"）— 最後の枝は型が許した表現不能な状態の穴埋めで、
 /// フラット化で**表現できなくなった**（`name: String` は常に在る）。
 pub(crate) fn lane_label(addr: &LaneAddress) -> &str {
     &addr.name
@@ -217,7 +217,7 @@ fn is_safe_session_id(id: &str) -> bool {
 ///   失敗を記録してから fresh に fallback — 無音 fallback がポインタ自壊の証拠を消していた F4 対策）
 /// - id なし: 素の claude（fresh）
 ///
-/// ⚠️ **旧「conductor + id なし → `--continue`」は退役した**（mako 判断）。`--continue` は
+/// ⚠️ **旧「main + id なし → `--continue`」は退役した**（mako 判断）。`--continue` は
 /// 「cwd の最新会話」= **VP の帳簿の外**へ手を伸ばす推測で、registry が会話 id の SSOT に
 /// なった今は「VP が見せている会話」と「実際に繋がる会話」が乖離しうる（doc 54 の
 /// 「隠れた変換」の一種。同 §3.7 の `|| claude` fallback 退役と同じ判断）。
@@ -242,7 +242,7 @@ fn claude_command(resume_id: Option<&str>, model: Option<&str>) -> String {
     // vp が PATH に無くても command-not-found = 非ゼロで chain は進む（fail-open）。
     //
     // doc 53 §12.1: 旧 `is_root` 分岐（起点 lane だけ `--continue`）は退役。理由は上の doc —
-    // 「cwd の最新」は VP の帳簿の外で、performer 側では既に dashboard 罠として使っていな
+    // 「cwd の最新」は VP の帳簿の外で、sub 側では既に dashboard 罠として使っていな
     // かった（= 同じ罠を起点 lane にだけ許していた非対称でもあった）。
     match resume_id.filter(|id| is_safe_session_id(id)) {
         Some(id) => format!(
@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn build_stand_command_floor_is_login_shell_at_repo_dir() {
         // build_agent_command は registry を読む（doc 39 P4-A: slot の engine は root session の
-        // agent に追従）。実 vp_state_dir の conductor registry を拾わないよう tempdir に隔離する
+        // agent に追従）。実 vp_state_dir の main registry を拾わないよう tempdir に隔離する
         // （sibling の build_agent_command テスト群と同じ規律 — 未隔離だと実 registry の root=conversation を
         // 拾い「shell なのに claude を注入」になって間欠 fail する）。
         let _state = crate::test_env::state_dir();
@@ -531,7 +531,7 @@ mod tests {
     fn build_stand_command_injects_vp_env() {
         // build_agent_command は registry を読む — 実 vp_state_dir を拾わないよう隔離（sibling 規律）。
         let _state = crate::test_env::state_dir();
-        let addr = LaneAddress::performer("vantage-point", "sub");
+        let addr = LaneAddress::sub("vantage-point", "sub");
         let cmd = build_agent_command("claude", &addr, Path::new("/work/vp"));
 
         let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
@@ -689,7 +689,7 @@ mod tests {
     }
 
     /// doc 39 P2: 未発話の非 #1 root（VP が作った新品 session）は `--continue` に落とさない。
-    /// conductor + id なしの `--continue` fallback は session #1 専用の互換層 — 非 #1 root で
+    /// main + id なしの `--continue` fallback は session #1 専用の互換層 — 非 #1 root で
     /// 踏むと cwd 最新拾いが旧 root の会話を新 root に混入させる（moody 指摘の Bare 失敗後
     /// Resume 復帰経路）。bare 起動に倒すことを固定する。
     #[test]
@@ -719,7 +719,7 @@ mod tests {
     /// conversation は claude を initial_input で注入（wire hook 同梱）。
     #[test]
     fn conversation_injects_claude_via_initial_input() {
-        let addr = LaneAddress::performer("vp", "w1");
+        let addr = LaneAddress::sub("vp", "w1");
         let cmd = build_agent_command("claude", &addr, Path::new("/tmp"));
         let input = cmd
             .initial_input
@@ -733,7 +733,7 @@ mod tests {
     #[test]
     fn legacy_and_unknown_stands_fall_back_to_floor() {
         // build_agent_command は registry を読む（doc 39 P4-A: slot の engine は root agent 追従）。
-        // 実 vp_state_dir の conductor registry（root=conversation）を拾うと未知 agent でも claude 注入に
+        // 実 vp_state_dir の main registry（root=conversation）を拾うと未知 agent でも claude 注入に
         // なるため、tempdir に隔離して「未知 agent → shell のみ」の意図を検証する（sibling 規律）。
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
@@ -920,7 +920,7 @@ mod tests {
     /// 受ける（engine 注入なし = `initial_input` は None、warn ログのみ）。
     #[test]
     fn removed_stand_falls_back_to_bare_floor() {
-        // build_agent_command は registry を読む — 実 conductor registry を拾わないよう隔離（sibling 規律）。
+        // build_agent_command は registry を読む — 実 main registry を拾わないよう隔離（sibling 規律）。
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
         let cmd = build_agent_command("cursor", &addr, Path::new("/tmp"));

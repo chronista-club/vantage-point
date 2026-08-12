@@ -1,7 +1,7 @@
 //! chronista-hub への Unison client — VP の実 daemon を hub registry に register / discover する。
 //!
 //! ## 責務分担（prior art: mem_1CaVeTysipdgVHoxwxUcPj / mem_1Cc1dA79VZu586fjqafiBS）
-//! - **SSOT**: hub への register は **daemon 経由のみ**。個別 repo / performer は hub と直接話さない。
+//! - **SSOT**: hub への register は **daemon 経由のみ**。個別 repo / sub は hub と直接話さない。
 //! - **opt-in**: hub addr（env `CHRONISTA_HUB_ADDR` > config.kdl `hub-addr`、[`hub_addr()`] が解決）
 //!   未設定なら全 skip（= machine-local 動作）。常設運用は config.kdl 側（launchd daemon は env を持たない）。
 //! - **degradation**: hub down でも daemon は machine-local で動き続ける（federation 機能だけ失う）。
@@ -1547,7 +1547,7 @@ mod tests {
                     "request_id": request_id,
                     "lanes": [
                         { "address": "agent@nostos", "kind": "root", "state": "running" },
-                        { "address": "agent@nostos/wing-a", "kind": "performer", "state": "running" },
+                        { "address": "agent@nostos/wing-a", "kind": "sub", "state": "running" },
                     ],
                 });
                 let from = resolve_handle(None);

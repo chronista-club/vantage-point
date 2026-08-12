@@ -2,12 +2,12 @@
 //!
 //! ## 概要
 //!
-//! Conductor × Performer × Memory orchestration の core 操作を CLI から呼ぶための薄い wrapper。
+//! Main × Sub × Memory orchestration の core 操作を CLI から呼ぶための薄い wrapper。
 //! lanes portless (doc 27 §3.4.5): 全 operation は Daemon :32000 の repo-proxy ask 経由で repo を
 //! 操作する (旧 SP HTTP 直結 `/api/lanes` `/api/tmux/*` `/api/health` を撤去)。 cwd から parent
 //! repo path を auto-resolve し、 Daemon handshake の identifier に使う。
 //!
-//! `vp flow handoff <name> --task-spec <file or '-'>` で新規 performer への atomic 手渡し、
+//! `vp flow handoff <name> --task-spec <file or '-'>` で新規 sub への atomic 手渡し、
 //! `vp flow progress` で parallel work 集約 view を表示。
 //!
 //! MCP tool (`mcp__vantage-point__flow_handoff` / `flow_progress`) と同じ semantics、
@@ -23,12 +23,12 @@ use crate::commands::process_client::{
 
 #[derive(Subcommand, Debug)]
 pub enum FlowCommands {
-    /// Performer 新規作成 + 初手 wire_send + tmux nudge を atomic に実行
+    /// Sub 新規作成 + 初手 wire_send + tmux nudge を atomic に実行
     ///
-    /// 失敗時は performer を rollback。 既存 3 step (`vp lane new` + `vp wire send` + `tmux send-keys`)
+    /// 失敗時は sub を rollback。 既存 3 step (`vp lane new` + `vp wire send` + `tmux send-keys`)
     /// を 1 call に圧縮。
     Handoff {
-        /// Performer name (= slug、 例: 'feat-api')
+        /// Sub name (= slug、 例: 'feat-api')
         name: String,
         /// Task spec の入力元: ファイルパス、 もしくは '-' で stdin
         #[arg(long, short)]
@@ -40,7 +40,7 @@ pub enum FlowCommands {
         #[arg(long, short)]
         agent: Option<String>,
         /// worktree の分岐元 ref（未 push の local branch も可）。省略時は
-        /// performer-files.kdl の base-ref → origin/HEAD → main
+        /// sub-files.kdl の base-ref → origin/HEAD → main
         #[arg(long)]
         base: Option<String>,
         /// worker の claude model alias（例: 'opus' / 'sonnet' / 'haiku'）。task 難度に
@@ -54,7 +54,7 @@ pub enum FlowCommands {
         #[arg(long)]
         no_nudge: bool,
     },
-    /// 現 repo の parallel work 集約 view (= 各 performer の git status + 未読 wire 数)
+    /// 現 repo の parallel work 集約 view (= 各 sub の git status + 未読 wire 数)
     Progress {
         /// 出力フォーマット: 'json' (default) / 'table'
         #[arg(long, default_value = "json")]
@@ -117,7 +117,7 @@ fn read_task_spec(arg: &str) -> Result<String> {
     }
 }
 
-/// handoff orchestration: repo 経由で performer 作成 → wire_send → nudge を atomic に
+/// handoff orchestration: repo 経由で sub 作成 → wire_send → nudge を atomic に
 ///
 /// 引数は `vp flow handoff` の CLI flag をそのまま流す薄い passthrough（構造体に束ねる
 /// メリットが薄く、 呼び出しは `run` の 1 箇所のみ）。
@@ -145,9 +145,9 @@ async fn handoff(
 
     let (repo_path, _config) = resolve_repo().await?;
 
-    // Step 1: Performer 作成 (daemon repo-proxy ask `lane_create`)
+    // Step 1: Sub 作成 (daemon repo-proxy ask `lane_create`)
     let mut create_body = serde_json::json!({
-        "kind": "performer",
+        "kind": "sub",
         "name": name,
     });
     if let Some(ref b) = branch.as_ref().filter(|s| !s.trim().is_empty()) {
@@ -163,7 +163,7 @@ async fn handoff(
         create_body["model"] = serde_json::Value::String(m.to_string());
     }
     // lane_create は repo 側で git clone を含み数 10 sec かかり得るので outer timeout 60s
-    // (MCP add_performer/flow_handoff の quic_call_with_timeout と揃える、 orphan lane race 回避)。
+    // (MCP add_sub/flow_handoff の quic_call_with_timeout と揃える、 orphan lane race 回避)。
     let lane_info = daemon_repo_request_with_timeout(
         crate::cli::daemon_port(),
         &repo_path,
@@ -172,13 +172,13 @@ async fn handoff(
         std::time::Duration::from_secs(60),
     )
     .await
-    .context("Performer 作成失敗 (lane_create)")?;
+    .context("Sub 作成失敗 (lane_create)")?;
     let repo_name = lane_info
         .pointer("/address/repo")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("lane_create response に address.repo がありません"))?
         .to_string();
-    let performer_name = lane_info
+    let sub_name = lane_info
         .pointer("/address/name")
         .and_then(|v| v.as_str())
         .unwrap_or(name)
@@ -195,17 +195,19 @@ async fn handoff(
         .unwrap_or("")
         .to_string();
 
-    let performer_address = format!("agent@{}/{}", repo_name, performer_name);
-    let lane_address = format!("{}/performer/{}", repo_name, performer_name);
+    let sub_address = format!("agent@{}/{}", repo_name, sub_name);
+    let lane_address =
+        crate::repo::lanes_state::LaneAddress::new(repo_name.as_str(), sub_name.as_str())
+            .canonical();
 
-    // Step 2: wire_send (Daemon "wire" channel 直結、 L0 portless B-4)。 失敗時は performer rollback。
-    // `from` は conductor 相当 (= CLI から起動 = conductor context として送信、 qualified address)。
+    // Step 2: wire_send (Daemon "wire" channel 直結、 L0 portless B-4)。 失敗時は sub rollback。
+    // `from` は main 相当 (= CLI から起動 = main context として送信、 qualified address)。
     // `daemon_wire::call` が transport 失敗 / server error frame の両方を Err にするので、 旧 HTTP の
     // 3 分岐 (send / parse / server error) は 1 つに畳まれる (atomic + rollback の意味論は不変)。
     let from = format!("agent@{}", repo_name);
     let send_payload = serde_json::json!({
         "from": from,
-        "to": [performer_address.clone()],
+        "to": [sub_address.clone()],
         "body": {
             "kind": "task",
             "task_spec": task_spec,
@@ -216,8 +218,8 @@ async fn handoff(
     let send_json = match crate::repo::daemon_wire::call("/api/wire/send", send_payload).await {
         Ok(j) => j,
         Err(e) => {
-            rollback_performer(&repo_path, &repo_name, &performer_name).await;
-            anyhow::bail!("wire_send 失敗 (performer rollback 済): {}", e);
+            rollback_sub(&repo_path, &repo_name, &sub_name).await;
+            anyhow::bail!("wire_send 失敗 (sub rollback 済): {}", e);
         }
     };
     let wire_msg_id = send_json
@@ -235,10 +237,10 @@ async fn handoff(
 
     // 結果を 1 行 JSON で出力 (機械処理しやすく)
     let result = serde_json::json!({
-        "performer_address": performer_address,
+        "sub_address": sub_address,
         "lane_address": lane_address,
         "wire_msg_id": wire_msg_id,
-        "performer_dir": cwd,
+        "sub_dir": cwd,
         "branch": derived_branch,
         "mode": mode,
         "nudge": nudge_status,
@@ -247,7 +249,7 @@ async fn handoff(
     Ok(())
 }
 
-/// nudge — lane_nudge proxy で performer の Claude session に wire_recv を促す (best-effort)。
+/// nudge — lane_nudge proxy で sub の Claude session に wire_recv を促す (best-effort)。
 ///
 /// tmux decoupling PR1: 旧 2 段 (`tmux_resolve_pane` で pane 解決 → `tmux_send_keys` で送信) を
 /// daemon repo-proxy ask `lane_nudge` の 1 発に置換。 lane address を直接渡し、 repo 側の
@@ -267,12 +269,12 @@ async fn try_nudge(repo_path: &str, lane_address: &str) -> String {
     }
 }
 
-/// Rollback: performer 削除 (best-effort、 失敗は stderr に log)。
+/// Rollback: sub 削除 (best-effort、 失敗は stderr に log)。
 ///
 /// lanes portless: 旧 SP HTTP (`DELETE /api/lanes`) を daemon repo-proxy ask (`lane_delete`) に
-/// 移管。 `lane_delete` は不在 performer に "Lane not found" を Err で返すので idempotent no-op 扱い。
-async fn rollback_performer(repo_path: &str, repo_name: &str, performer_name: &str) {
-    let address = format!("{}/performer/{}", repo_name, performer_name);
+/// 移管。 `lane_delete` は不在 sub に "Lane not found" を Err で返すので idempotent no-op 扱い。
+async fn rollback_sub(repo_path: &str, repo_name: &str, sub_name: &str) {
+    let address = crate::repo::lanes_state::LaneAddress::new(repo_name, sub_name).canonical();
     match daemon_repo_request(
         crate::cli::daemon_port(),
         repo_path,
@@ -281,16 +283,16 @@ async fn rollback_performer(repo_path: &str, repo_name: &str, performer_name: &s
     )
     .await
     {
-        Ok(_) => eprintln!("[flow handoff] rollback: performer {} 削除済", address),
+        Ok(_) => eprintln!("[flow handoff] rollback: sub {} 削除済", address),
         Err(e) if e.to_string().contains("Lane not found") => {
             eprintln!(
-                "[flow handoff] rollback: performer {} は既に gone (no-op)",
+                "[flow handoff] rollback: sub {} は既に gone (no-op)",
                 address
             );
         }
         Err(e) => {
             eprintln!(
-                "[flow handoff] rollback 失敗: performer {} は残置されています ({})",
+                "[flow handoff] rollback 失敗: sub {} は残置されています ({})",
                 address, e
             );
         }
@@ -308,7 +310,7 @@ async fn progress(format: &str) -> Result<()> {
     // flow_progress / list_lanes と同型 (repo_name_from_path)。
     let repo = crate::resolve::repo_name_from_path(&repo_path, &config);
 
-    // lanes (performer_status 込み) を取得 (daemon repo-proxy ask `lanes_list`)
+    // lanes (sub_status 込み) を取得 (daemon repo-proxy ask `lanes_list`)
     let lanes_resp = daemon_repo_request(
         crate::cli::daemon_port(),
         &repo_path,
@@ -323,8 +325,8 @@ async fn progress(format: &str) -> Result<()> {
         .cloned()
         .unwrap_or_default();
 
-    let mut performers: Vec<serde_json::Value> = Vec::new();
-    let mut conductor_unread: u64 = 0;
+    let mut subs: Vec<serde_json::Value> = Vec::new();
+    let mut main_unread: u64 = 0;
     for lane in lanes_in {
         let kind = lane
             .get("kind")
@@ -357,7 +359,7 @@ async fn progress(format: &str) -> Result<()> {
         };
 
         if kind == "root" {
-            conductor_unread = unread_total;
+            main_unread = unread_total;
             continue;
         }
 
@@ -367,14 +369,14 @@ async fn progress(format: &str) -> Result<()> {
             .unwrap_or("")
             .to_string();
         let cwd = lane.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
-        let performer_status = lane
-            .get("performer_status")
+        let sub_status = lane
+            .get("sub_status")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
 
-        // 5-state FSM derive (= conductor 説示 control surrender model)。
-        // wire_latest_msg + performer_status から flow_state / control_surrender / state_reason を推論。
-        // Daemon "wire" channel 直結 (best-effort: 失敗は None → FSM は performer_status のみで derive)。
+        // 5-state FSM derive (= main 説示 control surrender model)。
+        // wire_latest_msg + sub_status から flow_state / control_surrender / state_reason を推論。
+        // Daemon "wire" channel 直結 (best-effort: 失敗は None → FSM は sub_status のみで derive)。
         let latest_view = match crate::repo::daemon_wire::call(
             "/api/wire/latest-msg",
             serde_json::json!({ "agent": agent_addr }),
@@ -386,7 +388,7 @@ async fn progress(format: &str) -> Result<()> {
                 .and_then(crate::flow::LatestMsgView::from_json),
             Err(_) => None,
         };
-        let performer_status_view = crate::flow::PerformerStatusView::from_json(&performer_status);
+        let sub_status_view = crate::flow::SubStatusView::from_json(&sub_status);
         // AwaitingUser 判定: 未 ack needs_user (best-effort、 失敗は None = 判定 off で degrade)
         let needs_user_view = match crate::repo::daemon_wire::call(
             "/api/wire/needs-user-pending",
@@ -401,17 +403,17 @@ async fn progress(format: &str) -> Result<()> {
         };
         let fsm = crate::flow::derive_flow_state(
             latest_view.as_ref(),
-            performer_status_view,
+            sub_status_view,
             &agent_addr,
             needs_user_view.as_ref(),
         );
 
-        performers.push(serde_json::json!({
+        subs.push(serde_json::json!({
             "name": label,
             "address": agent_addr,
             "state": state,
             "cwd": cwd,
-            "performer_status": performer_status,
+            "sub_status": sub_status,
             "unread_wire_count": unread_total,
             "flow_state": fsm.state,
             "control_surrender": fsm.control_surrender,
@@ -424,9 +426,9 @@ async fn progress(format: &str) -> Result<()> {
         "repo": repo,
         "root": {
             "address": format!("agent@{}", repo),
-            "unread_wire_count": conductor_unread,
+            "unread_wire_count": main_unread,
         },
-        "performers": performers,
+        "subs": subs,
     });
 
     if format == "json" {
@@ -440,41 +442,37 @@ async fn progress(format: &str) -> Result<()> {
 /// `--format table` の簡易テーブル出力 (機械処理向けじゃない、 human 用)
 fn print_table(view: &serde_json::Value) {
     let repo = view.get("repo").and_then(|v| v.as_str()).unwrap_or("?");
-    let conductor_unread = view
+    let main_unread = view
         .pointer("/root/unread_wire_count")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     println!("Repo: {}", repo);
-    println!("  Conductor unread wire: {}", conductor_unread);
-    let mut performers = view
-        .get("performers")
+    println!("  Main unread wire: {}", main_unread);
+    let mut subs = view
+        .get("subs")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    if performers.is_empty() {
-        println!("  (no performers)");
+    if subs.is_empty() {
+        println!("  (no subs)");
         return;
     }
     // needs-you (awaiting_user) を先頭に浮かせる (= ユーザが見るべき行を最初に。 stable sort
     // なので残りの順序は不変)
-    performers
-        .sort_by_key(|w| w.get("flow_state").and_then(|v| v.as_str()) != Some("awaiting_user"));
-    let needs_you = performers
+    subs.sort_by_key(|w| w.get("flow_state").and_then(|v| v.as_str()) != Some("awaiting_user"));
+    let needs_you = subs
         .iter()
         .filter(|w| w.get("flow_state").and_then(|v| v.as_str()) == Some("awaiting_user"))
         .count();
     if needs_you > 0 {
-        println!(
-            "  🙋 needs-you: {} performer(s) がユーザの回答待ち",
-            needs_you
-        );
+        println!("  🙋 needs-you: {} sub(s) がユーザの回答待ち", needs_you);
     }
     println!();
     println!(
         "{:<24} {:<10} {:<18} {:>7} {:>7} {:>7} {:>7} BRANCH",
-        "PERFORMER", "STATE", "MODE", "AHEAD", "BEHIND", "DIRTY", "UNREAD"
+        "SUB", "STATE", "MODE", "AHEAD", "BEHIND", "DIRTY", "UNREAD"
     );
-    for w in performers {
+    for w in subs {
         let name = w.get("name").and_then(|v| v.as_str()).unwrap_or("?");
         let state = w.get("state").and_then(|v| v.as_str()).unwrap_or("?");
         let unread = w
@@ -482,19 +480,19 @@ fn print_table(view: &serde_json::Value) {
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         let ahead = w
-            .pointer("/performer_status/ahead")
+            .pointer("/sub_status/ahead")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         let behind = w
-            .pointer("/performer_status/behind")
+            .pointer("/sub_status/behind")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         let dirty = w
-            .pointer("/performer_status/dirty_count")
+            .pointer("/sub_status/dirty_count")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         let branch = w
-            .pointer("/performer_status/branch")
+            .pointer("/sub_status/branch")
             .and_then(|v| v.as_str())
             .unwrap_or("-");
         // flow_state を emoji label に変換 (serde 経由で FlowState に戻す — 手書き match は
@@ -536,19 +534,19 @@ mod tests {
         assert!(err.to_string().contains("task_spec ファイル読み込み失敗"));
     }
 
-    /// table 出力は repo + performers の最低限を含む (= flow_state MODE column 込み)
+    /// table 出力は repo + subs の最低限を含む (= flow_state MODE column 込み)
     #[test]
     fn print_table_smoke() {
         // smoke: panic しないことだけ確認 (stdout は捕捉しない、 simple coverage)
         let v = serde_json::json!({
             "repo": "demo",
             "root": { "address": "agent@demo", "unread_wire_count": 0 },
-            "performers": [{
+            "subs": [{
                 "name": "feat-a",
                 "address": "agent@demo/feat-a",
                 "state": "Running",
-                "cwd": "/tmp/performer",
-                "performer_status": {
+                "cwd": "/tmp/sub",
+                "sub_status": {
                     "branch": "mako/feat-a",
                     "ahead": 1,
                     "behind": 0,
@@ -560,19 +558,19 @@ mod tests {
                 "unread_wire_count": 3,
                 "flow_state": "hitl_pending",
                 "control_surrender": false,
-                "state_reason": "performer posted question, awaiting root reply",
+                "state_reason": "sub posted question, awaiting root reply",
                 "last_state_transition_at": 1_000_000_000_000_i64,
             }, {
                 // awaiting_user: serde 経由の label 変換 + needs-you 先頭 sort の経路を踏む
                 "name": "feat-b",
                 "address": "agent@demo/feat-b",
                 "state": "Running",
-                "cwd": "/tmp/performer-b",
-                "performer_status": null,
+                "cwd": "/tmp/sub-b",
+                "sub_status": null,
                 "unread_wire_count": 0,
                 "flow_state": "awaiting_user",
                 "control_surrender": false,
-                "state_reason": "performer posted needs_user, awaiting the user's answer (unacked)",
+                "state_reason": "sub posted needs_user, awaiting the user's answer (unacked)",
                 "last_state_transition_at": 1_000_000_000_001_i64,
             }]
         });

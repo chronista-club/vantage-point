@@ -3,7 +3,7 @@
 //! ## VP-189: config.toml → config.kdl 統一
 //!
 //! VP の設定ファイルは元々 TOML だったが、 repos.kdl (VP-188) / lane の
-//! performer-files.kdl 等、 周辺の設定は既に KDL に揃っていた。 config 本体だけ
+//! sub-files.kdl 等、 周辺の設定は既に KDL に揃っていた。 config 本体だけ
 //! TOML で取り残されていたのを KDL に統一し、 club-kdl 資産を一本化する。
 //!
 //! - config.kdl は **人間が編集する read-only な global 設定**。 VP 自身は
@@ -108,11 +108,11 @@ pub struct Config {
     #[kdl(child, name = "default-agent", unwrap_arg)]
     pub default_agent: Option<String>,
 
-    /// performer lane 追加時の既定 claude model alias（`--model` 未指定時に engine_model へ記録）。
+    /// sub lane 追加時の既定 claude model alias（`--model` 未指定時に engine_model へ記録）。
     ///
     /// **未設定なら記録しない = engine 側の user 既定に委ねる**（doc 54 §8-11、mako 2026-07-25
     /// 「Opus のところはユーザ設定に任せる」。旧: Opus を強制 record して claude の user 既定を
-    /// 上書きしていた）。mcp / cli / sidebar(GUI) の全 performer 追加経路が共有し、
+    /// 上書きしていた）。mcp / cli / sidebar(GUI) の全 sub 追加経路が共有し、
     /// tui(TUI console) / gui(chat engine) 両方に効く（model は per-lane 1 file の
     /// 単一真実源、[`crate::lane::engine_model`]）。
     /// 例: config.kdl に `default-lane-model "claude-sonnet-5"` で VP 側の既定を固定可。
@@ -148,7 +148,7 @@ pub struct Config {
     #[kdl(skip)]
     pub ports: Option<PortLayoutOverrides>,
 
-    /// repo startup behavior — Performer spawn の concurrency 制限等 (I-b、 2026-04-30)
+    /// repo startup behavior — Sub spawn の concurrency 制限等 (I-b、 2026-04-30)
     #[serde(default)]
     #[kdl(child, default)]
     pub startup: StartupConfig,
@@ -156,7 +156,7 @@ pub struct Config {
 
 /// repo startup behavior config (I-b、 2026-04-30)。
 ///
-/// [`LaneSpawnActor`](crate::repo::lane_spawn_actor) が Performer spawn を Cmd 化
+/// [`LaneSpawnActor`](crate::repo::lane_spawn_actor) が Sub spawn を Cmd 化
 /// (in-process channel) した上で、 内部 Semaphore で同時実行数を gate する。 `max_concurrent_lane_spawn` で
 /// 制限値を tweak、 default は **1** (= 完全 sequential、 dogfood の視覚 pop 体験 +
 /// Claude CLI rate-limit 安全)。 計測 log (`Lane spawn completed: ... elapsed=`) を
@@ -326,7 +326,7 @@ impl Config {
         self.default_agent.as_deref().unwrap_or("claude")
     }
 
-    /// performer 追加時の既定 model alias（config 未指定 or 形式外なら **None = 記録しない**）。
+    /// sub 追加時の既定 model alias（config 未指定 or 形式外なら **None = 記録しない**）。
     ///
     /// None のとき engine_model file は書かれず `--model` も注入されない = engine 側の
     /// user 既定（claude なら ~/.claude 設定）が効く（doc 54 §8-11）。形式外の値は record 時に

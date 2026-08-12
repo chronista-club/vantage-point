@@ -10,6 +10,7 @@
  * どこへ落とそうとしているか) と、 並び順を解決する pure function を提供する。
  * `RepoAccordion` が drag イベントを、 `Shell` が並び替え描画を、 それぞれ参照する。
  */
+import { laneAddressKey } from "./lane"
 import { createSignal } from 'solid-js'
 import type { RepoPaneState } from '../generated/RepoPaneState'
 import { sidebar, setCurrentsOrder } from './store'
@@ -128,7 +129,8 @@ export function commitLaneReorder(
 ): void {
   const lanes = sidebar.lanes_by_repo?.[repoPath]
   if (!lanes || lanes.length === 0) return
-  const current = lanes.map((l) => `${l.address.repo}/${l.address.name}`)
+  // ⚠️ 手組みしない — daemon 発行の key を返す `laneAddressKey` を通す。
+  const current = lanes.map(laneAddressKey)
   const order = moveInOrder(current, dragged, target, pos)
   sendIpc({ t: 'lane:reorder', path: repoPath, order })
 }

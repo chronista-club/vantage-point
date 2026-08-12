@@ -46,7 +46,7 @@ world_wire::call  ── QUIC "wire" channel ──▶  daemon :32000
 要点は 3 つ:
 
 1. **wire store は daemon（:32000）に中央化**されている。repo も CLI も MCP も、`world_wire::call` の QUIC "wire" channel 経由で中央 store を読み書きする（`world_wire.rs` module doc）。**daemon 停止 = wire 停止**（設計決定 D1-c で許容済）。
-2. **flow_state は store しない**。performer の状態は wire 活動から毎回 derive され、daemon が vp-app へ snapshot を送る直前にだけ付与される。
+2. **flow_state は store しない**。sub の状態は wire 活動から毎回 derive され、daemon が vp-app へ snapshot を送る直前にだけ付与される。
 3. **federation（cross-PC）は direct → relay の 2 段**。到達できれば direct（QUIC connect race）、届かなければ hub relay という「常に生きている最下段」に降格する。
 
 ---
@@ -97,16 +97,16 @@ store が扱う table:
 
 | kind | direction | 意味 |
 |---|---|---|
-| `task` | conductor → performer | 初手 handoff spec |
-| `question` | performer → conductor | 質問 / decision 依頼（conductor が捌ける相談） |
-| `needs_user` | performer → conductor | **ユーザ本人**の意見が要る相談（ack まで `awaiting_user`） |
-| `ack` | performer → conductor | 受領 / progress |
-| `decision` | performer → conductor | 自己判断表明 |
-| `approve` / `modify` / `clarify` | conductor → performer | reply |
-| `complete` | performer → conductor | 完了報告 |
-| `request` | performer → conductor | action 依頼（dogfood 等） |
+| `task` | main → sub | 初手 handoff spec |
+| `question` | sub → main | 質問 / decision 依頼（main が捌ける相談） |
+| `needs_user` | sub → main | **ユーザ本人**の意見が要る相談（ack まで `awaiting_user`） |
+| `ack` | sub → main | 受領 / progress |
+| `decision` | sub → main | 自己判断表明 |
+| `approve` / `modify` / `clarify` | main → sub | reply |
+| `complete` | sub → main | 完了報告 |
+| `request` | sub → main | action 依頼（dogfood 等） |
 
-実装が実際に `body.kind` をセットするのは今のところ `flow_handoff`（`kind:"task"` を注入、`mcp/lane.rs:526`）くらいで、`needs_user` 等は performer 側の CC が body を手で組む前提（category と違い注入ロジックは無い）。
+実装が実際に `body.kind` をセットするのは今のところ `flow_handoff`（`kind:"task"` を注入、`mcp/lane.rs:526`）くらいで、`needs_user` 等は sub 側の CC が body を手で組む前提（category と違い注入ロジックは無い）。
 
 ### 1.6 ack 台帳と read cursor の独立性
 
@@ -139,20 +139,20 @@ store が扱う table:
 
 ### 2.1 FlowState 6 variant と derive 規則
 
-各 performer の `flow_state` は **store されない**。3 つの input から毎回 derive される pure function `derive_flow_state`（`flow.rs:185`）の出力:
+各 sub の `flow_state` は **store されない**。3 つの input から毎回 derive される pure function `derive_flow_state`（`flow.rs:185`）の出力:
 
 1. 最新 wire activity（`latest_msg_for_agent` の direction + `body.kind`）
-2. performer_status（`dirty_count` / `last_commit` → `dirty` / `has_commit`）
+2. sub_status（`dirty_count` / `last_commit` → `dirty` / `has_commit`）
 3. 未 ack の `needs_user` wire（`pending_needs_user`、ack 台帳ベースの述語）
 
 | FlowState | 契機 |
 |---|---|
-| `Idle` | wire activity 一切なし（新規 performer） |
-| `Working` | conductor が task 送出 / performer が ack・decision で自走中（control surrender 中） |
-| `HitlPending` | performer が `question` を投げ conductor reply 待ち |
-| `AwaitingUser` | performer が `needs_user` を投げ **ユーザ本人**の回答待ち（未 ack） |
-| `Completed` | performer が `complete` 報告済 |
-| `Stuck` | conductor 指示後 dirty 残り commit 無し |
+| `Idle` | wire activity 一切なし（新規 sub） |
+| `Working` | main が task 送出 / sub が ack・decision で自走中（control surrender 中） |
+| `HitlPending` | sub が `question` を投げ main reply 待ち |
+| `AwaitingUser` | sub が `needs_user` を投げ **ユーザ本人**の回答待ち（未 ack） |
+| `Completed` | sub が `complete` 報告済 |
+| `Stuck` | main 指示後 dirty 残り commit 無し |
 
 cascade（`flow.rs:185` の実装そのまま）:
 
@@ -160,24 +160,24 @@ cascade（`flow.rs:185` の実装そのまま）:
 if pending_needs_user => AwaitingUser   // 未 ack needs_user は cascade より優先（ack 台帳が SSOT）
 match (latest_msg, dirty, has_commit) {
     (None, _, _)                                            => Idle,
-    Some(m) if m.from==conductor && kind=="task"            => Working,
-    Some(m) if m.from==performer && kind=="question"        => HitlPending,
-    Some(m) if m.from==performer && kind=="complete"        => Completed,
-    Some(m) if m.from==conductor && dirty && !has_commit    => Stuck,
-    Some(m) if m.from==performer && kind∈{ack,decision,request}      => Working,
-    Some(m) if m.from==conductor && kind∈{approve,modify,clarify}    => Working,
+    Some(m) if m.from==main && kind=="task"            => Working,
+    Some(m) if m.from==sub && kind=="question"        => HitlPending,
+    Some(m) if m.from==sub && kind=="complete"        => Completed,
+    Some(m) if m.from==main && dirty && !has_commit    => Stuck,
+    Some(m) if m.from==sub && kind∈{ack,decision,request}      => Working,
+    Some(m) if m.from==main && kind∈{approve,modify,clarify}    => Working,
     _                                                       => Working,   // fallback
 }
 ```
 
-**`AwaitingUser` が cascade より優先される**のがこの世代（2026-07-11）の要。needs_user 送信後に performer が別 wire（ack / decision）を送って latest が変わっても、**未 ack の needs_user が残る限り AwaitingUser のまま**。ユーザ待ちである事実は会話の続きでは消えず、conductor が **ユーザの回答を relay してから `wire_ack` した瞬間に**解消される（ack 台帳が SSOT）。使い分けは `AGENTS.md` の wire 規約に従い、`needs_user` を乱発しない（needs-you signal の希少性を守る）。
+**`AwaitingUser` が cascade より優先される**のがこの世代（2026-07-11）の要。needs_user 送信後に sub が別 wire（ack / decision）を送って latest が変わっても、**未 ack の needs_user が残る限り AwaitingUser のまま**。ユーザ待ちである事実は会話の続きでは消えず、main が **ユーザの回答を relay してから `wire_ack` した瞬間に**解消される（ack 台帳が SSOT）。使い分けは `AGENTS.md` の wire 規約に従い、`needs_user` を乱発しない（needs-you signal の希少性を守る）。
 
-`control_surrender`（conductor が control を手放して performer 自走中か）は `state ∈ {Working, Completed} && (last_msg.from == performer || last_msg is None)` で `true`。
+`control_surrender`（main が control を手放して sub 自走中か）は `state ∈ {Working, Completed} && (last_msg.from == sub || last_msg is None)` で `true`。
 
 ### 2.2 `LaneInfo.flow_state` 投影経路（repo → daemon → vp-app）
 
 ```
-performer の wire 活動
+sub の wire 活動
   → WiremsgStore（daemon in-process）
   → [repo]   build_lanes_snapshot（flow_state = None のまま）
              discovery "registry" channel: register / lanes/add|remove|update（heartbeat 15s）
@@ -191,7 +191,7 @@ performer の wire 活動
 投影の実装事実:
 
 - **`LaneInfo.flow_state`（`lanes_state.rs:324`）は `Option<FlowState>`**。repo / lane_registry / db では**常に `None`**（「derive できるものは store しない」原則）。付与するのは daemon だけ。
-- **付与点 = `enrich_lanes_flow_state`（`daemon/server.rs:557`）**。`send_lanes_snapshot`（`:515`）が snapshot を送る直前に呼ぶ。Performer のみ対象（conductor は None のまま）、`agent<repo>/<name>` を組み、`latest_msg_for_agent` + `pending_needs_user` を **hop なしの in-process store から**引いて `derive_flow_state` する。`vp flow progress` と同一判定。store 未接続時は enrich を skip（field 欠落）。
+- **付与点 = `enrich_lanes_flow_state`（`daemon/server.rs:557`）**。`send_lanes_snapshot`（`:515`）が snapshot を送る直前に呼ぶ。Sub のみ対象（main は None のまま）、`agent<repo>/<name>` を組み、`latest_msg_for_agent` + `pending_needs_user` を **hop なしの in-process store から**引いて `derive_flow_state` する。`vp flow progress` と同一判定。store 未接続時は enrich を skip（field 欠落）。
 - **"lanes" channel は unison/QUIC channel**（`register_channel("lanes")`、`daemon/server.rs:1218`）。WebSocket でも SSE でもない。vp-app は **repo ではなく daemon :32000 の集約 channel** に繋ぐ（`vp-app/src/app.rs` の lanes subscription、stall timeout 12s）。
 - **再 push は wire 活動が撃つ**（polling 無し）: `wire/send` と `wire/ack` の dispatch 前に関与 repo を集め（`collect_wire_projects`、`daemon/server.rs:618`）、dispatch 成功後に `notify_lane_change_for_projects` が `lane_change_tx`（broadcast）へ path_key を送る（`:644`）。"lanes" channel handler がこれを subscribe していて、当該 repo の snapshot を**再 enrich して再送**する。つまり wire を送る/ack するだけで flow_state の変化が sidebar に届く。
 - **sidebar 描画**（`vp-app/webview/src/sidebar/lane.ts` `laneConnector`）: `awaiting_user` → `conn-hitl`（needs-you = magenta diamond）、`working|hitl_pending|stuck` → `conn-auto`（solid cyan）、`idle|completed` → `conn-dead`。**`flow_state` 欠落（旧 daemon）は pid heuristic に fallback**。FlowState の serde は snake_case（`flow.rs:43`、TS 側との契約）。
@@ -309,13 +309,13 @@ FSM derive を支える read-only method（`flow_progress` / enrich が使う。
 
 | 操作 | MCP tool | CLI | 備考 |
 |---|---|---|---|
-| handoff | `flow_handoff` | `vp flow handoff` | performer 作成 + 初手 wire_send + nudge を atomic に（[dev-flow-primitives.md](./dev-flow-primitives.md)） |
+| handoff | `flow_handoff` | `vp flow handoff` | sub 作成 + 初手 wire_send + nudge を atomic に（[dev-flow-primitives.md](./dev-flow-primitives.md)） |
 | progress | `flow_progress` | `vp flow progress` | 全 lane の status + FSM を 1 view（read-only） |
 | 委譲 | `delegate` / `respond` / `complete` | —（観測系のみ: `deleg-thread`） | delegation record 系統（wire とは別、[design/28](../design/28-agent-delegation.md)） |
 
 ### MCP と CLI の差（重要）
 
-- **MCP は repo "process" channel を 1 段挟む**: `SelfLane`（conductor = `agent<repo>`、performer = `agent@<parent>/<name>`）から `from` / `agent` を注入し、`normalize_agent_addr` で防御する。repo 未解決の conductor は fail-closed。
+- **MCP は repo "process" channel を 1 段挟む**: `SelfLane`（main = `agent<repo>`、sub = `agent@<parent>/<name>`）から `from` / `agent` を注入し、`normalize_agent_addr` で防御する。repo 未解決の main は fail-closed。
 - **CLI は daemon 直結**（`world_wire::call`）で、address は qualified 前提（`from` の default は `"vp-cli"`）。
 - **category default の非対称**（§1.4）: MCP `wire_send` は `command` を注入、CLI `vp wire send` は注入しない。
 - 共通下層: writer = `WiremsgStore`（daemon、local_seq を AtomicU64 採番）、transport 集約点 = `world_wire::call`、dispatch 分岐 = `handle_wire_channel`（`wire/` vs `delegation/`）。
@@ -327,7 +327,7 @@ FSM derive を支える read-only method（`flow_progress` / enrich が使う。
 本 doc は messaging の見取り図として新設した。既存 doc へは重複記述せず、上記の相互リンクで繋ぐ。sweep で以下の drift を発見した:
 
 1. **`dev-flow-primitives.md` の `5-state` 表記残存**（status 行 / §2 見出し / §2 コメント）。`AwaitingUser` 追加で **6-state** が正。→ 記述の事実誤りとして最小修正（本 lane で対応）。
-2. **`spec/wire-address-v3.md` + `wire-address-usage.md` が federation を「Phase 3+ 将来計画」と記述**。実際は cross-PC round-trip まで実装済（v0.42 世代で実弾確認）。→ 大きい矛盾のため spec 全書き換えはせず、本 doc §3 を現状の正とし、spec 側にリンク注記を足す + conductor へ wire 報告する方針。
+2. **`spec/wire-address-v3.md` + `wire-address-usage.md` が federation を「Phase 3+ 将来計画」と記述**。実際は cross-PC round-trip まで実装済（v0.42 世代で実弾確認）。→ 大きい矛盾のため spec 全書き換えはせず、本 doc §3 を現状の正とし、spec 側にリンク注記を足す + main へ wire 報告する方針。
 
 ---
 

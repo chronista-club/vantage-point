@@ -60,7 +60,7 @@ pub struct RepoUiState {
     /// sidebar accordion 開閉状態
     #[serde(default)]
     pub expanded: bool,
-    // 将来 field 候補: per-repo の Performer form expanded、 lane custom order 等
+    // 将来 field 候補: per-repo の Sub form expanded、 lane custom order 等
 }
 
 /// 保存 geometry が valid 判定の閾値 (LogicalPixel)。 これ未満は無視して default に
@@ -207,7 +207,7 @@ pub struct SessionState {
     /// repo path → UI state (sidebar accordion 等)
     #[serde(default)]
     pub repos: HashMap<String, RepoUiState>,
-    /// 直前 active Lane の address (Display 形 `"<repo>/root"` / `"<repo>/performer/<name>"`)。
+    /// 直前 active Lane の address (Display 形 `"<repo>/root"` / `"<repo>/sub/<name>"`)。
     /// 起動後の最初の LanesLoaded で実在 lane と照合して復元される (mismatch なら無視)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_lane_address: Option<String>,
@@ -290,6 +290,23 @@ impl SessionState {
                         state.window_geometry = Some(g.clone());
                     }
                     state.window_geometries.clear(); // 以後 save では出さない
+                    // ⚠️ **旧形の address は正規化しない**（mako 2026-08-10）。この値は daemon が
+                    // 発行する key と**比較するだけ**で、一致しなければ「選択なし」で起動し、
+                    // user が選び直した瞬間に新形が入る = 実害は初回 1 回。
+                    //
+                    // ⚠️ ここで直すと **client 側に「address の形式を知るコード」が再び生まれる**
+                    // — 形式を daemon の 1 箇所に閉じるという今回の設計と逆行する
+                    // （memory「migration コードは既定でない」）。
+                    //
+                    // ただし**黙って外れるのは避ける**。理由が見えないと bug に見えるので、
+                    // 旧形を検出したら 1 行残す（復旧は lane を選び直すだけ）。
+                    if let Some(addr) = &state.active_lane_address
+                        && !addr.contains("/lane/")
+                    {
+                        tracing::info!(
+                            "active lane が旧形の address ({addr}) — daemon の発行形と一致しないため選択なしで起動します（lane を選び直せば新形で保存されます）"
+                        );
+                    }
                     tracing::info!(
                         "SessionState 読込 [instance={}]: {} ({} repos, active_lane={:?}, open={})",
                         instance_index,

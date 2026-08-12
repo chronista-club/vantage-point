@@ -50,26 +50,26 @@ pub struct RestartParams {
 ///
 /// この `vp mcp` プロセスが属する Lane (VP-166 PR-4)。
 ///
-/// cwd から判定する: cwd が `<repo>/.vp/lanes/<name>` 以下なら performer `<name>`、
-/// それ以外（= repo path）なら conductor。`wire_send` / `wire_recv` の `from` 導出 /
+/// cwd から判定する: cwd が `<repo>/.vp/lanes/<name>` 以下なら sub `<name>`、
+/// それ以外（= repo path）なら main。`wire_send` / `wire_recv` の `from` 導出 /
 /// `list_lanes` の `is_self` 付与に使う。
 ///
-/// repo-local lane refactor PR 2: 旧 `<performers_dir>/<parent>-<name>`
-/// (global path + repo prefix) detection は撤去。 PR 1 で performer 配置が
+/// repo-local lane refactor PR 2: 旧 `<subs_dir>/<parent>-<name>`
+/// (global path + repo prefix) detection は撤去。 PR 1 で sub 配置が
 /// `<repo>/.vp/lanes/<name>` に移行し、 legacy global path は user の mv 後
 /// empty。 PR 4 で legacy 関連 code 全削除予定なので、 ここも先行して
 /// repo-local 一本に揃える。
 #[derive(Debug, Clone)]
 pub struct SelfLane {
-    /// `"root"` or `"<performer-name>"`（flat 名）
+    /// `"root"` or `"<sub-name>"`（flat 名）
     pub lane_name: String,
-    /// performer context のとき `Some(parent repo 名)`、conductor context のとき `None`
-    pub performer_parent: Option<String>,
-    /// conductor context のとき、cwd から config-only で解決した自 repo 名
+    /// sub context のとき `Some(parent repo 名)`、main context のとき `None`
+    pub sub_parent: Option<String>,
+    /// main context のとき、cwd から config-only で解決した自 repo 名
     /// (`Some` = `agent@<repo>` の canonical identity / `None` = 未登録 cwd で解決不能
-    /// = wire op を fail-closed)。performer のときは `performer_parent` が identity を持つので
+    /// = wire op を fail-closed)。sub のときは `sub_parent` が identity を持つので
     /// 未使用 (`None`)。wiremsg identity を「繋いだ repo」依存から「自分」へ移す SSOT
-    /// (旧: conductor は bare `"agent"` を送り repo 正規化に依存していた)。
+    /// (旧: main は bare `"agent"` を送り repo 正規化に依存していた)。
     pub root_repo: Option<String>,
 }
 
@@ -77,43 +77,43 @@ impl SelfLane {
     /// cwd から SelfLane を判定。
     ///
     /// 1. cwd ancestors を walk して `.vp/lanes/<name>` pattern を探す
-    ///    (= [`detect_repo_local_performer`] の純粋関数で test 可能)
-    /// 2. 見つかり repo_root が config 登録済なら performer (parent = config 名)
-    /// 3. それ以外は conductor。自 repo 名を `registered_repo_name_for_cwd`
+    ///    (= [`detect_repo_local_sub`] の純粋関数で test 可能)
+    /// 2. 見つかり repo_root が config 登録済なら sub (parent = config 名)
+    /// 3. それ以外は main。自 repo 名を `registered_repo_name_for_cwd`
     ///    (config-only / repo 非依存) で解決。登録 repo なら `Some(name)` = canonical
     ///    identity、未登録 cwd なら `None` = wire op fail-closed (誤 identity を送らない)。
     /// 4. cwd / config 取得失敗 → root_repo=None (fail-closed)
     pub fn detect() -> Self {
-        // identity 解決不能な conductor (cwd/config 取得失敗) → None で fail-closed
-        let conductor_unresolved = || SelfLane {
+        // identity 解決不能な main (cwd/config 取得失敗) → None で fail-closed
+        let main_unresolved = || SelfLane {
             lane_name: crate::repo::lanes_state::ROOT_LANE_NAME.to_string(),
-            performer_parent: None,
+            sub_parent: None,
             root_repo: None,
         };
         let Ok(cwd) = std::env::current_dir() else {
-            return conductor_unresolved();
+            return main_unresolved();
         };
         let Ok(config) = crate::config::Config::load() else {
-            return conductor_unresolved();
+            return main_unresolved();
         };
-        // performer 判定: cwd が <repo>/.vp/lanes/<name> 配下、かつ repo が config 登録済
-        if let Some((performer_name, repo_root)) = detect_repo_local_performer(&cwd)
+        // sub 判定: cwd が <repo>/.vp/lanes/<name> 配下、かつ repo が config 登録済
+        if let Some((sub_name, repo_root)) = detect_repo_local_sub(&cwd)
             && let Some(p) = config
                 .repos
                 .iter()
                 .find(|p| std::path::Path::new(&p.path) == repo_root.as_path())
         {
             return SelfLane {
-                lane_name: performer_name,
-                performer_parent: Some(p.name.clone()),
-                root_repo: None, // identity は performer_parent が持つ
+                lane_name: sub_name,
+                sub_parent: Some(p.name.clone()),
+                root_repo: None, // identity は sub_parent が持つ
             };
         }
-        // conductor: 自 repo 名を config-only で解決 (未登録 cwd は None = fail-closed)。
+        // main: 自 repo 名を config-only で解決 (未登録 cwd は None = fail-closed)。
         // cwd は上で取得済みのものを正規化して渡す (二重取得を避ける)。
         SelfLane {
             lane_name: crate::repo::lanes_state::ROOT_LANE_NAME.to_string(),
-            performer_parent: None,
+            sub_parent: None,
             root_repo: crate::resolve::match_repo_name_for_path(
                 &crate::config::Config::normalize_path(&cwd),
                 &config,
@@ -124,18 +124,18 @@ impl SelfLane {
     /// `wire_send` / `wire_recv` / `wire_ack` / `wire_inbox` / `flow_handoff` の `from`/`agent`
     /// 値 = この MCP プロセスの canonical wire address。
     ///
-    /// - performer → `"agent@<parent>/<name>"` (parent は config 名、常に解決可)
-    /// - conductor → `"agent@<repo>"` (起動時 `detect()` が cwd→config で解決した自 repo)
-    /// - conductor で repo 未解決 (未登録 cwd) → `Err` = **fail-closed**
+    /// - sub → `"agent@<parent>/<name>"` (parent は config 名、常に解決可)
+    /// - main → `"agent@<repo>"` (起動時 `detect()` が cwd→config で解決した自 repo)
+    /// - main で repo 未解決 (未登録 cwd) → `Err` = **fail-closed**
     ///
     /// identity を「繋いだ repo の正規化」依存から「自分 (MCP)」へ移した SSOT。
-    /// 旧実装は conductor が bare `"agent"` を送り、接続先 repo の repo で正規化していたため、
+    /// 旧実装は main が bare `"agent"` を送り、接続先 repo の repo で正規化していたため、
     /// 誤 repo 接続 (`resolve_process_port` の 33000 fallback 等) で identity が化け、ack が宛先と
     /// mismatch して command 再 nudge が止まらないバグの根だった。中央 store が SSOT なので
     /// canonical を送れば接続先 repo は無関係になる (`normalize_agent_addr` は `agent@x` を
     /// 冪等で素通しするので後方互換も保たれる)。
     pub fn from_address(&self) -> Result<String, McpError> {
-        match &self.performer_parent {
+        match &self.sub_parent {
             Some(parent) => Ok(format!("agent@{}/{}", parent, self.lane_name)),
             None => match &self.root_repo {
                 Some(repo) => Ok(format!("agent@{}", repo)),
@@ -150,24 +150,24 @@ impl SelfLane {
 
 /// cwd ancestors を walk して `<repo>/.vp/lanes/<name>` pattern を探す純粋関数。
 ///
-/// 戻り値: `Some((performer_name, repo_root))` if 見つかれば、 そうでなければ `None`。
-/// - performer dir 直下 / 任意の子孫 cwd 両対応 (= ancestor 走査)
-/// - 最初に match した ancestor (= 最も深い performer) を採用
+/// 戻り値: `Some((sub_name, repo_root))` if 見つかれば、 そうでなければ `None`。
+/// - sub dir 直下 / 任意の子孫 cwd 両対応 (= ancestor 走査)
+/// - 最初に match した ancestor (= 最も深い sub) を採用
 /// - I/O なしの pure fn (test しやすい、 mock cwd 不要)
-fn detect_repo_local_performer(cwd: &std::path::Path) -> Option<(String, std::path::PathBuf)> {
+fn detect_repo_local_sub(cwd: &std::path::Path) -> Option<(String, std::path::PathBuf)> {
     for ancestor in cwd.ancestors() {
         let parent = ancestor.parent()?;
         let grandparent = parent.parent()?;
         if parent.file_name().and_then(|n| n.to_str()) == Some("lanes")
             && grandparent.file_name().and_then(|n| n.to_str()) == Some(".vp")
         {
-            let performer_name = ancestor.file_name()?.to_str()?.to_string();
-            // performer 名は `validate_performer_name` 通過済が前提。 但し `.` 等 dotfile は除外。
-            if performer_name.starts_with('.') || performer_name.is_empty() {
+            let sub_name = ancestor.file_name()?.to_str()?.to_string();
+            // sub 名は `validate_sub_name` 通過済が前提。 但し `.` 等 dotfile は除外。
+            if sub_name.starts_with('.') || sub_name.is_empty() {
                 return None;
             }
             let repo_root = grandparent.parent()?.to_path_buf();
-            return Some((performer_name, repo_root));
+            return Some((sub_name, repo_root));
         }
     }
     None
@@ -439,27 +439,23 @@ impl VantageMcp {
     }
 
     // =========================================================================
-    // dev-flow primitives (= Conductor × Performer × Memory orchestration の core 操作)
+    // dev-flow primitives (= Main × Sub × Memory orchestration の core 操作)
     //
-    // `flow_handoff`: P4 (add_performer + wire_send + nudge) を atomic 1 step。
+    // `flow_handoff`: P4 (add_sub + wire_send + nudge) を atomic 1 step。
     // `flow_progress`: P5 (list_lanes + per-lane unread count + git status) を集約 1 view。
     //
-    // 既存 primitives (add_performer / wire_send / tmux_agent_send / list_lanes) はそのまま、
+    // 既存 primitives (add_sub / wire_send / tmux_agent_send / list_lanes) はそのまま、
     // flow_* は composition tool (= 順番に呼んで意味のある orchestration を 1 call 化)。
     // =========================================================================
 
-    /// flow_handoff の rollback path: performer 削除 (best-effort、 失敗は log only)
+    /// flow_handoff の rollback path: sub 削除 (best-effort、 失敗は log only)
     ///
-    /// wire_send 失敗時など、 performer 作成は成功したが orchestration の続きが失敗した時に呼ぶ。
+    /// wire_send 失敗時など、 sub 作成は成功したが orchestration の続きが失敗した時に呼ぶ。
     /// lanes portless (doc 27 §3.4.5): 旧 SP HTTP DELETE /api/lanes を daemon repo-proxy ask
-    /// `lane_delete` に移管。 不在 performer は "Lane not found" を Err で返すので idempotent
+    /// `lane_delete` に移管。 不在 sub は "Lane not found" を Err で返すので idempotent
     /// no-op として吸収する (= 旧 HTTP 404 NOT_FOUND を許容していた挙動と等価)。
-    async fn flow_rollback_performer(
-        &self,
-        repo_name: &str,
-        performer_name: &str,
-    ) -> Result<(), String> {
-        let address = format!("{}/performer/{}", repo_name, performer_name);
+    async fn flow_rollback_sub(&self, repo_name: &str, sub_name: &str) -> Result<(), String> {
+        let address = crate::repo::lanes_state::LaneAddress::new(repo_name, sub_name).canonical();
         let payload = serde_json::json!({ "address": address, "cleanup": true });
         match self
             .quic_call_with_timeout("lane_delete", payload, Duration::from_secs(30))
@@ -646,11 +642,11 @@ impl rmcp::ServerHandler for VantageMcp {
     }
 }
 
-/// performer context のとき parent repo の path を config から引く（VP-165 (A)）。
+/// sub context のとき parent repo の path を config から引く（VP-165 (A)）。
 ///
-/// conductor context（`performer_parent = None`）or parent が config に無い なら `None`。
-fn performer_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -> Option<String> {
-    let parent_name = self_lane.performer_parent.as_ref()?;
+/// main context（`sub_parent = None`）or parent が config に無い なら `None`。
+fn sub_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -> Option<String> {
+    let parent_name = self_lane.sub_parent.as_ref()?;
     config
         .repos
         .iter()
@@ -667,10 +663,10 @@ fn performer_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -
 /// 優先度:
 /// 1. 明示的なポート引数（Some で指定された場合）
 /// 2. discovery:
-///    - performer context（cwd = `vp_data_dir()/lanes/<parent>-<name>`）→ parent repo の path を
-///      config から引いて `find_by_repo`。performer の cwd は登録 repo path 配下でないので
+///    - sub context（cwd = `vp_data_dir()/lanes/<parent>-<name>`）→ parent repo の path を
+///      config から引いて `find_by_repo`。sub の cwd は登録 repo path 配下でないので
 ///      `find_for_cwd` は効かない
-///    - conductor context → `find_for_cwd`（cwd 一致 or 配下の running repo）
+///    - main context → `find_for_cwd`（cwd 一致 or 配下の running repo）
 /// 3. デフォルトポート 33000
 async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
     // 1. 明示的なポート指定
@@ -680,20 +676,20 @@ async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
 
     // 2. discovery で live port を引く
     let self_lane = SelfLane::detect();
-    match &self_lane.performer_parent {
+    match &self_lane.sub_parent {
         Some(_) => {
-            // performer: parent repo の repo を discovery で解決
+            // sub: parent repo の repo を discovery で解決
             if let Some(parent_path) = crate::config::Config::load()
                 .ok()
                 .as_ref()
-                .and_then(|c| performer_parent_path(&self_lane, c))
+                .and_then(|c| sub_parent_path(&self_lane, c))
                 && let Some(info) = crate::discovery::find_by_repo(&parent_path).await
             {
                 return info.port;
             }
         }
         None => {
-            // conductor: cwd 一致（or 配下）の running repo
+            // main: cwd 一致（or 配下）の running repo
             if let Some(info) = crate::discovery::find_for_cwd().await {
                 return info.port;
             }
@@ -706,16 +702,16 @@ async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
 
 /// L0 SP-portless: Daemon "repo-proxy" の addressing 用に、 この MCP が属する repo の
 /// path（正規化済 path_key と同形）を解決する。 `resolve_process_port` と同じ discovery 経路
-/// (performer→parent / conductor→cwd) で running repo の `repo_dir` を引く。 repo 未起動などで
+/// (sub→parent / main→cwd) で running repo の `repo_dir` を引く。 repo 未起動などで
 /// 引けない場合は cwd の正規化 path に fallback（daemon 側で normalize_path_key 再正規化される）。
 async fn resolve_repo_path() -> String {
     let self_lane = SelfLane::detect();
-    let info = match &self_lane.performer_parent {
+    let info = match &self_lane.sub_parent {
         Some(_) => {
             if let Some(parent_path) = crate::config::Config::load()
                 .ok()
                 .as_ref()
-                .and_then(|c| performer_parent_path(&self_lane, c))
+                .and_then(|c| sub_parent_path(&self_lane, c))
             {
                 crate::discovery::find_by_repo(&parent_path).await
             } else {
@@ -775,7 +771,7 @@ pub async fn run_mcp_server(process_port: Option<u16>) -> anyhow::Result<()> {
     // L0 SP-portless: QUIC 経路は Daemon "repo-proxy" を repo_path で addressing する。
     let repo_path = resolve_repo_path().await;
 
-    // wiremsg R5-4: 旧 msgbox の registry サブシステム (Performer self-register) は撤去済。
+    // wiremsg R5-4: 旧 msgbox の registry サブシステム (Sub self-register) は撤去済。
     // wire の cross-process delivery は daemon の repo registry を使う別経路。
 
     // Note: In MCP mode, we should not use tracing to stdout
@@ -860,29 +856,26 @@ mod tests {
 
     #[test]
     fn test_self_lane_from_address() {
-        // wiremsg identity SSOT: conductor は解決済 repo で "agent@<repo>"、
-        // performer は "agent@<parent>/<name>"。repo 未解決の conductor は fail-closed (Err)。
-        let conductor = SelfLane {
+        // wiremsg identity SSOT: main は解決済 repo で "agent@<repo>"、
+        // sub は "agent@<parent>/<name>"。repo 未解決の main は fail-closed (Err)。
+        let main = SelfLane {
             lane_name: crate::repo::lanes_state::ROOT_LANE_NAME.to_string(),
-            performer_parent: None,
+            sub_parent: None,
             root_repo: Some("vantage-point".to_string()),
         };
-        assert_eq!(conductor.from_address().unwrap(), "agent@vantage-point");
+        assert_eq!(main.from_address().unwrap(), "agent@vantage-point");
 
-        let performer = SelfLane {
+        let sub = SelfLane {
             lane_name: "chore".to_string(),
-            performer_parent: Some("vantage-point".to_string()),
+            sub_parent: Some("vantage-point".to_string()),
             root_repo: None,
         };
-        assert_eq!(
-            performer.from_address().unwrap(),
-            "agent@vantage-point/chore"
-        );
+        assert_eq!(sub.from_address().unwrap(), "agent@vantage-point/chore");
 
-        // 未登録 cwd の conductor (repo 未解決) → fail-closed
+        // 未登録 cwd の main (repo 未解決) → fail-closed
         let unresolved = SelfLane {
             lane_name: crate::repo::lanes_state::ROOT_LANE_NAME.to_string(),
-            performer_parent: None,
+            sub_parent: None,
             root_repo: None,
         };
         assert!(
@@ -891,13 +884,13 @@ mod tests {
         );
     }
 
-    // --- detect_repo_local_performer (repo-local lane refactor PR 2) ---
+    // --- detect_repo_local_sub (repo-local lane refactor PR 2) ---
 
     #[test]
-    fn detect_pl_performer_finds_performer_dir_itself() {
+    fn detect_pl_sub_finds_sub_dir_itself() {
         use std::path::{Path, PathBuf};
         let cwd = Path::new("/Users/makoto/repos/creo-memories/.vp/lanes/or-integration");
-        let result = detect_repo_local_performer(cwd);
+        let result = detect_repo_local_sub(cwd);
         assert_eq!(
             result,
             Some((
@@ -908,12 +901,12 @@ mod tests {
     }
 
     #[test]
-    fn detect_pl_performer_finds_performer_from_nested_subdir() {
+    fn detect_pl_sub_finds_sub_from_nested_subdir() {
         use std::path::{Path, PathBuf};
-        // performer 配下の任意の階層から呼んでも親 performer が見つかる
+        // sub 配下の任意の階層から呼んでも親 sub が見つかる
         let cwd =
             Path::new("/Users/makoto/repos/creo-memories/.vp/lanes/or-integration/apps/server/src");
-        let result = detect_repo_local_performer(cwd);
+        let result = detect_repo_local_sub(cwd);
         assert_eq!(
             result,
             Some((
@@ -924,39 +917,39 @@ mod tests {
     }
 
     #[test]
-    fn detect_pl_performer_returns_none_for_plain_repo_cwd() {
-        // 通常の repo cwd (= conductor context) は detect されない
+    fn detect_pl_sub_returns_none_for_plain_repo_cwd() {
+        // 通常の repo cwd (= main context) は detect されない
         let cwd = std::path::Path::new("/Users/makoto/repos/creo-memories");
-        assert_eq!(detect_repo_local_performer(cwd), None);
+        assert_eq!(detect_repo_local_sub(cwd), None);
     }
 
     #[test]
-    fn detect_pl_performer_returns_none_for_random_path() {
+    fn detect_pl_sub_returns_none_for_random_path() {
         let cwd = std::path::Path::new("/tmp/random/dir");
-        assert_eq!(detect_repo_local_performer(cwd), None);
+        assert_eq!(detect_repo_local_sub(cwd), None);
     }
 
     #[test]
-    fn detect_pl_performer_ignores_lanes_without_vp_grandparent() {
+    fn detect_pl_sub_ignores_lanes_without_vp_grandparent() {
         // `/foo/lanes/bar` だけだと `.vp` 親が無いので match しない
         let cwd = std::path::Path::new("/foo/lanes/bar");
-        assert_eq!(detect_repo_local_performer(cwd), None);
+        assert_eq!(detect_repo_local_sub(cwd), None);
     }
 
     #[test]
-    fn detect_pl_performer_ignores_dotfile_performer_names() {
-        // `.vp/lanes/.hidden` のような dot 始まり performer 名は除外 (= validate_performer_name 同等)
+    fn detect_pl_sub_ignores_dotfile_sub_names() {
+        // `.vp/lanes/.hidden` のような dot 始まり sub 名は除外 (= validate_sub_name 同等)
         let cwd = std::path::Path::new("/repo/.vp/lanes/.hidden");
-        assert_eq!(detect_repo_local_performer(cwd), None);
+        assert_eq!(detect_repo_local_sub(cwd), None);
     }
 
     #[test]
-    fn detect_pl_performer_innermost_wins_for_nested_vp_lanes() {
-        // 病的 case: performer 配下にさらに `.vp/lanes/<inner>` がある (= nested vp 構成)
-        // ancestor は cwd から root へ走るので、 最も深い (= innermost) performer が選ばれる
+    fn detect_pl_sub_innermost_wins_for_nested_vp_lanes() {
+        // 病的 case: sub 配下にさらに `.vp/lanes/<inner>` がある (= nested vp 構成)
+        // ancestor は cwd から root へ走るので、 最も深い (= innermost) sub が選ばれる
         use std::path::{Path, PathBuf};
         let cwd = Path::new("/outer/.vp/lanes/A/.vp/lanes/B");
-        let result = detect_repo_local_performer(cwd);
+        let result = detect_repo_local_sub(cwd);
         assert_eq!(
             result,
             Some(("B".to_string(), PathBuf::from("/outer/.vp/lanes/A")))
@@ -971,7 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn test_performer_parent_path_resolution() {
+    fn test_sub_parent_path_resolution() {
         use crate::config::{Config, RepoConfig};
         let mut cfg = Config::default();
         cfg.repos.push(RepoConfig {
@@ -982,32 +975,32 @@ mod tests {
             slot: None,
         });
 
-        // performer → parent の path
-        let performer = SelfLane {
+        // sub → parent の path
+        let sub = SelfLane {
             lane_name: "chore".to_string(),
-            performer_parent: Some("vantage-point".to_string()),
+            sub_parent: Some("vantage-point".to_string()),
             root_repo: None,
         };
         assert_eq!(
-            performer_parent_path(&performer, &cfg).as_deref(),
+            sub_parent_path(&sub, &cfg).as_deref(),
             Some("/Users/x/repos/vantage-point")
         );
 
-        // conductor context → None（performer_parent が無い）
-        let conductor = SelfLane {
+        // main context → None（sub_parent が無い）
+        let main = SelfLane {
             lane_name: crate::repo::lanes_state::ROOT_LANE_NAME.to_string(),
-            performer_parent: None,
+            sub_parent: None,
             root_repo: None,
         };
-        assert_eq!(performer_parent_path(&conductor, &cfg), None);
+        assert_eq!(sub_parent_path(&main, &cfg), None);
 
         // config に無い parent → None
         let unknown = SelfLane {
             lane_name: "x".to_string(),
-            performer_parent: Some("not-in-config".to_string()),
+            sub_parent: Some("not-in-config".to_string()),
             root_repo: None,
         };
-        assert_eq!(performer_parent_path(&unknown, &cfg), None);
+        assert_eq!(sub_parent_path(&unknown, &cfg), None);
     }
 
     #[test]

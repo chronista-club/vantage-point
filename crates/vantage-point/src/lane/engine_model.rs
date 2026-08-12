@@ -28,7 +28,7 @@ pub fn is_valid_model(s: &str) -> bool {
 /// 明示指定 > VP config `default-lane-model` > **無記録** — 記録が無ければ
 /// `--model` は注入されず、**engine 側の user 既定**（claude なら ~/.claude の設定）が効く。
 /// 旧実装は未設定時に Opus を強制 record しており、user の claude 既定を上書きしていた。
-/// performer 追加の全経路（mcp / cli / sidebar）が共有する解決規則。純粋 = テスト可能。
+/// sub 追加の全経路（mcp / cli / sidebar）が共有する解決規則。純粋 = テスト可能。
 pub fn resolve_default(explicit: Option<&str>, config_default: Option<&str>) -> Option<String> {
     explicit
         .map(str::trim)

@@ -29,7 +29,7 @@ pub struct InkRect {
 }
 
 /// PNG 保存先 `state_dir/ink/<lane_key>/<unix_millis>.png` を組み、親 dir を作って返す。
-/// lane_key は board の flat key（'conductor' / performer 名）。念のため path 安全化する。
+/// lane_key は board の flat key（'main' / sub 名）。念のため path 安全化する。
 pub fn snapshot_path(lane_key: &str) -> std::io::Result<PathBuf> {
     let dir = ink_root().join(sanitize(lane_key));
     std::fs::create_dir_all(&dir)?;
@@ -45,22 +45,20 @@ fn ink_root() -> PathBuf {
     vp_paths::vp_state_dir().join("ink")
 }
 
-/// lane address（`<repo>/root` | `<repo>/performer/<name>`）→ 保存 dir 用の flat key。
-/// board の `boardLaneKeyOf`（lane-panes.ts）と同じ写像: root/lead → `conductor` / performer → 名前。
-/// snapshot を lane ごとに分けるためだけの folder 名なので、未知形は `conductor` に倒す。
+/// lane address → 保存 dir 用の flat key。root/lead → `main` / それ以外 → lane 名。
+///
+/// ⚠️ **最後の分節が lane 名**（`<repo>/lane/<name>` / 旧 `<repo>/sub/<name>` /
+/// 旧 `<repo>/<name>` のいずれでも成り立つ）。旧実装は `/sub/` `/wing/` を**探して**おり、
+/// canonical（`/lane/`）が来ると 1 つも当たらず**全 sub が `main` に倒れて**互いの
+/// snapshot を上書きし合う状態になっていた。`ends_with("/root")` は偶然通るので、
+/// **root だけ動いて sub が壊れる**という気づきにくい形だった。
+///
+/// snapshot を lane ごとに分けるためだけの folder 名なので、取れない形は `main` に倒す。
 pub fn lane_key_from_address(addr: &str) -> String {
-    if addr.ends_with("/root") || addr.ends_with("/lead") {
-        return "conductor".to_string();
+    match addr.rsplit('/').next() {
+        Some("root" | "lead" | "") | None => "main".to_string(),
+        Some(name) => name.to_string(),
     }
-    for sep in ["/performer/", "/wing/"] {
-        if let Some(idx) = addr.find(sep) {
-            let name = &addr[idx + sep.len()..];
-            if !name.is_empty() {
-                return name.to_string();
-            }
-        }
-    }
-    "conductor".to_string()
 }
 
 /// path segment 安全化（区切り・危険文字を `_` に）。flat key は通常安全だが fail-safe に。
@@ -76,7 +74,7 @@ fn sanitize(s: &str) -> String {
         })
         .collect();
     if cleaned.is_empty() {
-        "conductor".to_string()
+        "main".to_string()
     } else {
         cleaned
     }
@@ -215,5 +213,38 @@ where
     {
         let _ = (webview, rect, out_path);
         done(None, Some("ink snapshot は macOS のみ対応".into()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ⚠️ **canonical でも旧形でも「最後の分節が lane 名」**。
+    ///
+    /// 旧実装は `/sub/` `/wing/` を探す形で、canonical（`/lane/`）が来ると 1 つも当たらず
+    /// **全 sub が `main` に倒れて snapshot を上書きし合う**状態になっていた。
+    /// `ends_with("/root")` は偶然通るため **root だけ動いて sub が壊れる**という
+    /// 気づきにくい壊れ方で、これがその検出器。
+    #[test]
+    fn lane_key_takes_last_segment_in_every_form() {
+        // canonical
+        assert_eq!(lane_key_from_address("vp/lane/root"), "main");
+        assert_eq!(lane_key_from_address("vp/lane/foo"), "foo");
+        // 旧 3 分節
+        assert_eq!(lane_key_from_address("vp/sub/foo"), "foo");
+        assert_eq!(lane_key_from_address("vp/wing/foo"), "foo");
+        // 旧 2 分節
+        assert_eq!(lane_key_from_address("vp/root"), "main");
+        assert_eq!(lane_key_from_address("vp/foo"), "foo");
+        // 旧予約名
+        assert_eq!(lane_key_from_address("vp/lead"), "main");
+    }
+
+    /// 取れない形は `main` に倒す（folder 名なので落とさない）。
+    #[test]
+    fn lane_key_falls_back_to_main() {
+        assert_eq!(lane_key_from_address(""), "main");
+        assert_eq!(lane_key_from_address("vp/"), "main");
     }
 }

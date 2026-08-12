@@ -61,7 +61,7 @@ pub struct DaemonState {
     /// vp-app に再 push する経路 (= repo "lanes" channel 直結の Daemon 集約版)。
     ///
     /// `process_lifecycle_tx` (process Add/Remove) と相補: あちらは repo の up/down、 こちらは
-    /// repo 内 lane (Performer 等) の add/remove/update を realtime 配信する。 capacity 64 は
+    /// repo 内 lane (Sub 等) の add/remove/update を realtime 配信する。 capacity 64 は
     /// 同上 (短時間に lane diff が集中しても drop しない buffer)。
     pub lane_change_tx: tokio::sync::broadcast::Sender<String>,
     /// L0 SP-portless (canvas slice): repo ごとの Canvas (Board) TopicRouter。
@@ -556,7 +556,7 @@ pub(crate) async fn handle_daemon_control(
             Ok(serde_json::json!({ "count": lanes.len(), "lanes": lanes }))
         }
         // doc 45 段 1: HTTP `POST /api/daemon/lanes` の Unison 版（doc 24 §10 Phase 2 B-create）。
-        // doc 44 §9.4: 実体は repo runtime の lane 作成 core（`create_performer_orchestrated`）
+        // doc 44 §9.4: 実体は repo runtime の lane 作成 core（`create_sub_orchestrated`）
         // 1 本で、`create_lane` はそこへの adapter。ここに残るのは「省略時 default の導出」だけ
         // （data/calc は route の責務 = `resolve_create_lane_args` を CLI/GUI と共有）。
         "lanes/create" => {
@@ -854,7 +854,7 @@ pub(crate) async fn build_node_lanes(
 /// 送る。 これにより vp-app の consumer (`run_lanes_session`) は接続先が repo→daemon に変わっても無改造。
 /// 登録が無い repo は空 Vec を送る (repo 未登録/lane 無しを「空」として正しく表現)。
 ///
-/// FSM 投影 (2026-07-11): 送信直前に performer LaneInfo へ `flow_state` を enrich する
+/// FSM 投影 (2026-07-11): 送信直前に sub LaneInfo へ `flow_state` を enrich する
 /// ([`enrich_lanes_flow_state`])。 送信時 derive であり `lane_registry` / db には書き戻さない。
 #[allow(clippy::type_complexity)]
 async fn send_lanes_snapshot(
@@ -896,12 +896,12 @@ async fn send_lanes_snapshot(
     channel.send_event("snapshot", &json).await
 }
 
-/// FSM 投影 (2026-07-11): performer LaneInfo へ dev-flow FSM の現在 state を enrich する。
+/// FSM 投影 (2026-07-11): sub LaneInfo へ dev-flow FSM の現在 state を enrich する。
 ///
 /// source は `vp flow progress` / MCP `flow_progress` と同一判定 (`flow::derive_flow_state`):
-/// wire store の latest msg + 未 ack needs_user + `LaneInfo.performer_status`。 daemon は
+/// wire store の latest msg + 未 ack needs_user + `LaneInfo.sub_status`。 daemon は
 /// wire store を in-process に持つため hop なしで derive できる (= 計算点を daemon に置く理由)。
-/// conductor は dev-flow FSM の対象外 (spine の頭) で `None` のまま。 store クエリ失敗は
+/// main は dev-flow FSM の対象外 (spine の頭) で `None` のまま。 store クエリ失敗は
 /// 当該 lane を `None` に留めて degrade (client 側は pid heuristic に fallback)。
 async fn enrich_lanes_flow_state(
     lanes: &mut [crate::repo::lanes_state::LaneInfo],
@@ -921,12 +921,12 @@ async fn enrich_lanes_flow_state(
             .pending_needs_user(&agent_addr)
             .await
             .unwrap_or_default();
-        // performer_status は repo push の LaneInfo に埋まっている typed 値をそのまま view 化
-        // (PerformerStatusView::from_json と同じ判定規則)。
+        // sub_status は repo push の LaneInfo に埋まっている typed 値をそのまま view 化
+        // (SubStatusView::from_json と同じ判定規則)。
         let ps_view = lane
-            .performer_status
+            .sub_status
             .as_ref()
-            .map(|ps| crate::flow::PerformerStatusView {
+            .map(|ps| crate::flow::SubStatusView {
                 dirty: ps.dirty_count > 0,
                 has_commit: !ps.last_commit.is_empty() && ps.last_commit != "-",
             })
@@ -1276,12 +1276,11 @@ async fn handle_wire_channel(
                 .map(|(k, _)| k.clone())
         }
         .ok_or_else(|| format!("lane/session-changed: repo '{repo}' の repo が registry に無い"))?;
-        // hook env の VP_LANE は label（"root" / performer 名）。repo method は表示形を取る。
-        let display = if label == "root" || label == "lead" {
-            format!("{repo}/root")
-        } else {
-            format!("{repo}/performer/{label}")
-        };
+        // hook env の VP_LANE は label（"root" / sub 名）。repo method は address を取る。
+        // ⚠️ 分岐は要らない — canonical は root を「名前の 1 つ」として扱う。旧 `lead` だけ
+        // 予約名へ寄せる（P2 以前の env が残っている場合の互換）。
+        let label = if label == "lead" { "root" } else { label };
+        let display = crate::repo::lanes_state::LaneAddress::new(repo, label).canonical();
         // doc 40 §4: hook の会話報告（session_id + event + 報告者が名乗る session）を repo へ
         // 透過する。無い場合は従来の「変化通知のみ」（re-enrich + push）として振る舞う =
         // 新旧 binary 混在に安全。`session` 不在も同様で、repo 側が root 宛の後方互換に倒す
@@ -1405,7 +1404,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
         tracing::info!("旧 repo DB を回収: {reclaimed} dir（doc 44 §5.2 で破棄と確認済み）");
     }
 
-    // 予約 lane 名の改名（`conductor` → `root`、2026-07-21）に伴う state file の付け替え。
+    // 予約 lane 名の改名（`main` → `root`、2026-07-21）に伴う state file の付け替え。
     // lane を spawn する前に済ませる — 先に boot すると新名で空の state を作ってしまい、
     // 旧名の会話 id / 安定 id が「衝突時は上書きしない」規則で永久に取り残される。
     let renamed = vp_paths::migrate_root_lane_state_files(&crate::config::vp_state_dir());
@@ -2720,7 +2719,7 @@ mod tests {
             created_at: created_at.to_string(),
             pid: Some(4321),
             cwd: "/tmp".to_string(),
-            performer_status: None,
+            sub_status: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,

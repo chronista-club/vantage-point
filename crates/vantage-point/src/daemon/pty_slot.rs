@@ -71,7 +71,7 @@ pub fn replay_file_path_in(base: &Path, repo: &str, lane: &str) -> PathBuf {
 
 /// lane の replay 永続 file path。 `<repo>__<lane>` (console_mode と同一命名規則)。
 ///
-/// `repo` / `lane` は LaneAddress 由来 (`lane` は "root" / performer 名)。
+/// `repo` / `lane` は LaneAddress 由来 (`lane` は "root" / sub 名)。
 pub fn replay_file_path(repo: &str, lane: &str) -> PathBuf {
     replay_file_path_in(&crate::config::vp_state_dir(), repo, lane)
 }
@@ -346,7 +346,7 @@ impl PtySlot {
         }
         // PATH 補正: vp-app (.app) を GUI / launchd 経由で起動すると、 子プロセスの PATH が
         // `/usr/bin:/bin:/usr/sbin:/sbin` の最小集合になり、 user-installed tool (特に mise、
-        // conductor lane = `mise run vp:agent:conversation` の program) を見つけられず spawn が失敗 →
+        // main lane = `mise run vp:agent:conversation` の program) を見つけられず spawn が失敗 →
         // lane が即 Dead 化 → Conversation コンソールが出ない、 という症状の根因になる。
         // 既知の user tool location を base PATH の先頭に前置して解決する。
         // base は caller env の PATH (あれば) → なければ親プロセスの PATH。

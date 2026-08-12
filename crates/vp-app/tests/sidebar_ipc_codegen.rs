@@ -110,7 +110,7 @@ fn regenerates_sidebar_ipc_bindings() {
         "lane:select",
         "lane:delete",
         "lane:restart",
-        "lane:add_performer",
+        "lane:add_sub",
         "agents:fetch",
         "stand:select",
         "repo:clone:pickFolder",
@@ -120,7 +120,7 @@ fn regenerates_sidebar_ipc_bindings() {
         // server → client（doc 53 §6.5.1.3）。同じ channel が両方向を運ぶ。
         "sidebar:state",
         "sidebar:error",
-        "performer:create_result",
+        "sub:create_result",
         "agents:result",
         "files:list_result",
         "wire:result",
