@@ -455,7 +455,7 @@ impl VantageMcp {
     /// `lane_delete` に移管。 不在 sub は "Lane not found" を Err で返すので idempotent
     /// no-op として吸収する (= 旧 HTTP 404 NOT_FOUND を許容していた挙動と等価)。
     async fn flow_rollback_sub(&self, repo_name: &str, sub_name: &str) -> Result<(), String> {
-        let address = format!("{}/sub/{}", repo_name, sub_name);
+        let address = crate::repo::lanes_state::LaneAddress::new(repo_name, sub_name).canonical();
         let payload = serde_json::json!({ "address": address, "cleanup": true });
         match self
             .quic_call_with_timeout("lane_delete", payload, Duration::from_secs(30))

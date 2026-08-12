@@ -8,6 +8,7 @@
 import { describe, expect, it } from "vitest";
 import type { LaneInfo } from "../generated/LaneInfo";
 import {
+	laneAddressKey,
 	laneShortcutNumber,
 	shortcutNumberOf, isLaneAlive, laneConnector, laneCwdLabel } from "./lane";
 
@@ -15,7 +16,7 @@ import {
 function lane(over: Partial<LaneInfo> = {}): LaneInfo {
 	return {
 		id: "",
-		address: { repo: "vp", name: "root" },
+		address: { repo: "vp", name: "root", key: "vp/lane/root" },
 		state: "running",
 		agent: "claude",
 		created_at: "2026-07-10T00:00:00Z",
@@ -196,5 +197,39 @@ describe("laneShortcutNumber / shortcutNumberOf（root lane の Index）", () =>
 
 	it("⚠️ 並びに無い repo は null（生順で数えると番号がずれる側）", () => {
 		expect(shortcutNumberOf(["/a", "/b"], "/zzz")).toBeNull();
+	});
+});
+
+/**
+ * ⚠️ **address は daemon が発行する。client は組み立てない。**
+ *
+ * 旧実装は `${repo}/${name}` を自分で組み、doc に「Rust の `key()` と byte-for-byte
+ * 一致させる」と書く**手動の契約**だった。同じ写像が Rust 2 + TS 2 の計 4 箇所にあり、
+ * Rust 内ですら食い違った記録がある。ここが組み立てに戻ると、daemon が形式を変えた日に
+ * **active lane の強調が無音で消える**（比較は byte 一致なので）。
+ */
+describe("laneAddressKey（daemon 発行の key を運ぶ）", () => {
+	it("daemon が発行した key をそのまま返す", () => {
+		const l = lane({
+			address: { repo: "vp", name: "foo", key: "vp/lane/foo" },
+		} as Partial<LaneInfo>);
+		expect(laneAddressKey(l)).toBe("vp/lane/foo");
+	});
+
+	it("⚠️ 組み立て直さない — repo/name と食い違う key でも key が勝つ", () => {
+		// 組み立てに戻ると、この test が「vp/name」を返して落ちる。
+		const l = lane({
+			address: { repo: "vp", name: "name", key: "daemon/lane/issued" },
+		} as Partial<LaneInfo>);
+		expect(laneAddressKey(l)).toBe("daemon/lane/issued");
+	});
+
+	it("key が空 = 旧 daemon の payload。旧 2 分節へ縮退する", () => {
+		// ⚠️ ここで新形を組み直さないのが要点 — 形式の知識を client に持たせない。
+		// 旧形なので読み側の `parse_address` が救済する。
+		const l = lane({
+			address: { repo: "vp", name: "foo", key: "" },
+		} as Partial<LaneInfo>);
+		expect(laneAddressKey(l)).toBe("vp/foo");
 	});
 });

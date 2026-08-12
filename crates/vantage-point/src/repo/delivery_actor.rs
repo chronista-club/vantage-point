@@ -662,12 +662,12 @@ mod tests {
     #[test]
     fn pick_running_lane_returns_target() {
         let lanes = registry(test_lane(LaneState::Running));
-        let t = pick_nudge_target(&lanes, "vp/root").expect("nudge 可能");
+        let t = pick_nudge_target(&lanes, "vp/lane/root").expect("nudge 可能");
         assert_eq!(
             t.path_key, "/repo/vp",
             "forward 先 repo の control channel key"
         );
-        assert_eq!(t.lane_display, "vp/root", "lane_nudge の宛先");
+        assert_eq!(t.lane_display, "vp/lane/root", "lane_nudge の宛先");
         assert_eq!(t.cwd, "", "test_lane の cwd (CC activity 照合に使う)");
         assert_eq!(t.cc_session_id, None, "test_lane は cc_session_id 未設定");
         // 別 lane 宛は None (offline 扱い = pending 保持)
@@ -705,10 +705,10 @@ mod tests {
     fn pick_nudges_running_regardless_of_tmux_and_skips_dead() {
         // tmux entry 無し (旧 PtySlotFallback 相当) でも Running なら nudge 可能
         let running = registry(test_lane(LaneState::Running));
-        assert!(pick_nudge_target(&running, "vp/root").is_some());
+        assert!(pick_nudge_target(&running, "vp/lane/root").is_some());
 
         let dead = registry(test_lane(LaneState::Dead));
-        assert_eq!(pick_nudge_target(&dead, "vp/root"), None);
+        assert_eq!(pick_nudge_target(&dead, "vp/lane/root"), None);
     }
 
     /// R3-a: activity 供給ありの policy table — idle/waiting → Ready、busy → Busy、不在 → Offline
@@ -748,12 +748,12 @@ mod tests {
     fn agent_address_maps_to_lane_display() {
         assert_eq!(
             wire_agent_to_lane_display("agent@vp").as_deref(),
-            Some("vp/root")
+            Some("vp/lane/root")
         );
         // doc 44 P2: フラット化で `<repo>/<name>` になった
         assert_eq!(
             wire_agent_to_lane_display("agent@vp/w1").as_deref(),
-            Some("vp/w1")
+            Some("vp/lane/w1")
         );
         assert_eq!(wire_agent_to_lane_display("notify@vp"), None);
         assert_eq!(wire_agent_to_lane_display("vp-cli"), None);
@@ -786,7 +786,7 @@ mod tests {
         let target = pick_nudge_target(&lanes, &display)
             .expect("sub lane が nudge 先として見つかること（回帰: 旧形との不一致で None）");
         assert_eq!(target.path_key, "/repos/vp");
-        assert_eq!(target.lane_display, "vp/w1");
+        assert_eq!(target.lane_display, "vp/lane/w1");
     }
 
     /// R3-c: agent address → headless dispatch 用の (VP_REPO, VP_LANE)

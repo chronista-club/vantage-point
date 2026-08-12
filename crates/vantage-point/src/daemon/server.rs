@@ -1276,12 +1276,11 @@ async fn handle_wire_channel(
                 .map(|(k, _)| k.clone())
         }
         .ok_or_else(|| format!("lane/session-changed: repo '{repo}' の repo が registry に無い"))?;
-        // hook env の VP_LANE は label（"root" / sub 名）。repo method は表示形を取る。
-        let display = if label == "root" || label == "lead" {
-            format!("{repo}/root")
-        } else {
-            format!("{repo}/sub/{label}")
-        };
+        // hook env の VP_LANE は label（"root" / sub 名）。repo method は address を取る。
+        // ⚠️ 分岐は要らない — canonical は root を「名前の 1 つ」として扱う。旧 `lead` だけ
+        // 予約名へ寄せる（P2 以前の env が残っている場合の互換）。
+        let label = if label == "lead" { "root" } else { label };
+        let display = crate::repo::lanes_state::LaneAddress::new(repo, label).canonical();
         // doc 40 §4: hook の会話報告（session_id + event + 報告者が名乗る session）を repo へ
         // 透過する。無い場合は従来の「変化通知のみ」（re-enrich + push）として振る舞う =
         // 新旧 binary 混在に安全。`session` 不在も同様で、repo 側が root 宛の後方互換に倒す

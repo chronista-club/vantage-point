@@ -284,8 +284,15 @@ impl VpDb {
     /// 失敗しても起動は続ける（best-effort）。正規化できなかった行は旧形のまま残るだけで、
     /// 次回起動で再試行される。
     async fn normalize_legacy_lane_addresses(&self) {
-        for table in ["lane", "lane_lifecycle"] {
-            match self.normalize_lane_addresses_in(table).await {
+        // ⚠️ **列名が table ごとに違う**。`active_lane` は `lane_address` なので、table 名だけの
+        // 列挙では網から漏れる（doc 44 P2 の時点で実際に漏れており、旧形が残っていた）。
+        // 「消えたか」でなく「address を持つ列が他に無いか」で数えること。
+        for (table, column) in [
+            ("lane", "address"),
+            ("lane_lifecycle", "address"),
+            ("active_lane", "lane_address"),
+        ] {
+            match self.normalize_lane_addresses_in(table, column).await {
                 Ok(0) => {}
                 Ok(n) => tracing::info!("doc 44 P2: {} の旧形 address を {} 件正規化", table, n),
                 Err(e) => {
@@ -296,10 +303,12 @@ impl VpDb {
     }
 
     /// 1 テーブル分の address 正規化。戻り値は書き換えた行数。
-    async fn normalize_lane_addresses_in(&self, table: &str) -> Result<usize> {
+    async fn normalize_lane_addresses_in(&self, table: &str, column: &str) -> Result<usize> {
         let mut result = self
             .db
-            .query(format!("SELECT meta::id(id) AS rid, address FROM {table}"))
+            .query(format!(
+                "SELECT meta::id(id) AS rid, {column} AS address FROM {table}"
+            ))
             .await?;
         let rows: Vec<serde_json::Value> = result.take(0)?;
 
@@ -326,7 +335,7 @@ impl VpDb {
             let updated = self
                 .db
                 .query(format!(
-                    "UPDATE type::record('{table}', $rid) SET address = $addr"
+                    "UPDATE type::record('{table}', $rid) SET {column} = $addr"
                 ))
                 .bind(("rid", rid.to_string()))
                 .bind(("addr", new.clone()))
@@ -2053,17 +2062,49 @@ mod tests {
 
         let rows = db.list_lane_lifecycles().await.unwrap();
         let addrs: Vec<&str> = rows.iter().map(|(_, a, _)| a.as_str()).collect();
+        // ⚠️ canonical は `<repo>/lane/<name>`。旧 3 分節（sub）も旧 2 分節（フラット）も
+        // ここへ寄せる — 2 世代ぶんの旧形が永続に残っているため。
         assert!(
-            addrs.contains(&"vp/foo"),
-            "旧形 vp/sub/foo は vp/foo に正規化されるべき: {addrs:?}"
+            addrs.contains(&"vp/lane/foo"),
+            "旧形 vp/sub/foo は canonical へ正規化されるべき: {addrs:?}"
         );
         assert!(
-            !addrs.contains(&"vp/sub/foo"),
+            !addrs.contains(&"vp/sub/foo") && !addrs.contains(&"vp/foo"),
             "旧形が残ってはならない（孤児化する）: {addrs:?}"
         );
         assert!(
-            addrs.contains(&"vp/root"),
-            "元から新形と一致する行は触られない: {addrs:?}"
+            addrs.contains(&"vp/lane/root"),
+            "旧 2 分節 vp/root も canonical へ寄る: {addrs:?}"
+        );
+    }
+
+    /// ⚠️ **`active_lane` も正規化の対象**（列名が `lane_address` で違う）。
+    ///
+    /// doc 44 P2 の migration は `for table in ["lane", "lane_lifecycle"]` で列名 `address`
+    /// 固定だったため、この table だけ**網から漏れて旧形が残っていた**。table を足すときは
+    /// 「address を持つ列が他に無いか」で数えること。
+    #[tokio::test]
+    async fn active_lane_address_is_normalized_too() {
+        let db = VpDb::connect_mem().await.unwrap();
+        db.define_schema().await.unwrap();
+        db.inner()
+            .query(
+                "CREATE active_lane CONTENT {
+                     repo_path: '/repos/vp', lane_address: 'vp/sub/foo', updated_at: time::now()
+                 };",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        db.define_schema().await.unwrap();
+
+        let rows = db.list_active_lanes().await.unwrap();
+        let addrs: Vec<&str> = rows.iter().map(|(_, a)| a.as_str()).collect();
+        assert!(
+            addrs.contains(&"vp/lane/foo"),
+            "active_lane の旧形が canonical へ正規化されるべき: {addrs:?}"
         );
     }
 
@@ -2297,7 +2338,7 @@ mod tests {
             .iter()
             .find(|(p, l)| p == "/repos/vp" && l.address.is_root())
             .expect("vp root が読める");
-        assert_eq!(vp_main.1.address.to_string(), "vp/root");
+        assert_eq!(vp_main.1.address.to_string(), "vp/lane/root");
         assert_eq!(vp_main.1.agent, "claude");
 
         // 同 address の upsert は置換 (複合 UNIQUE、 件数は増えない)
@@ -2311,11 +2352,13 @@ mod tests {
         );
 
         // 単一 lane の削除 (Diff::Remove)
-        db.delete_lane("/repos/vp", "vp/foo").await.unwrap();
+        db.delete_lane("/repos/vp", "vp/lane/foo").await.unwrap();
         let rows = db.list_lanes().await.unwrap();
         assert_eq!(rows.len(), 2);
         assert!(
-            !rows.iter().any(|(_, l)| l.address.to_string() == "vp/foo"),
+            !rows
+                .iter()
+                .any(|(_, l)| l.address.to_string() == "vp/lane/foo"),
             "削除した lane は消える"
         );
 

@@ -901,7 +901,7 @@ mod tests {
         }
         assert!(!session_id.is_empty(), "SessionInit（ACP sessionId）を観測");
         assert!(text.contains("pong-acp"), "answer: {text}");
-        let reg = crate::lane::session_registry::load("vptest-acp", "root", "grok");
+        let reg = crate::lane::session_registry::load("vptest-acp", "main", "grok");
         assert_eq!(
             reg.sessions[0].conversation.as_deref(),
             Some(session_id.as_str()),

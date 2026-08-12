@@ -288,7 +288,8 @@ impl VantageMcp {
                     None,
                 )
             })?;
-        let address = format!("{}/sub/{}", repo_name, params.name);
+        let address =
+            crate::repo::lanes_state::LaneAddress::new(repo_name, params.name).canonical();
         let cleanup = params.cleanup.unwrap_or(true);
 
         // daemon repo-proxy 経由で repo の lane_delete を ask (workspace cleanup 等 orchestration を
@@ -528,7 +529,9 @@ impl VantageMcp {
         };
 
         let sub_address = format!("agent@{}/{}", repo_name, sub_name);
-        let lane_address = format!("{}/sub/{}", repo_name, sub_name);
+        let lane_address =
+            crate::repo::lanes_state::LaneAddress::new(repo_name.clone(), sub_name.clone())
+                .canonical();
 
         // ── Step 2: wire_send (initial task spec を root thread として送信) ──
         // body は { task_spec, mode, priority?, scope_outs? } 等の自由 schema。

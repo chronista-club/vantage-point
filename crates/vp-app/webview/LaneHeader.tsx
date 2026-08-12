@@ -31,6 +31,7 @@
  * 消えた。+ New は一時ここに住んだ後、doc 56 で edge rail へ移設（動線一本化）。
  */
 
+import { MAIN_DISPLAY_NAME, subNameOfAddress } from './lane-address'
 import { render } from 'solid-js/web'
 import { createSignal, For, Show } from 'solid-js'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
@@ -64,14 +65,13 @@ export function middleEllipsis(s: string, maxLen = 42): string {
 }
 
 /**
- * LaneAddress::Display 形から表示用短名を導く。
- * `<repo>/root` → "root"、`<repo>/sub/<name>` → name。
- * legacy `lead` / `wing` も受理（entry.tsx laneNameFromAddress と同じ語彙）。
+ * address から表示用の短名を導く。Main は `main`、Sub は lane 名。
+ *
+ * ⚠️ 分解は `lane-address.ts` の 1 箇所に畳んである（旧実装は `/sub/` を**探す**形で、
+ * address が `<repo>/lane/<name>` になると一致せず**address 全体をヘッダに出して**いた）。
  */
 export function laneShortName(addr: string): string {
-  if (addr.endsWith('/root') || addr.endsWith('/lead')) return 'main'
-  const m = addr.match(/\/(?:sub|wing)\/(.+)$/)
-  return m?.[1] ?? addr
+  return subNameOfAddress(addr) ?? MAIN_DISPLAY_NAME
 }
 
 /**

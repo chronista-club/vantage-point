@@ -196,7 +196,9 @@ async fn handoff(
         .to_string();
 
     let sub_address = format!("agent@{}/{}", repo_name, sub_name);
-    let lane_address = format!("{}/sub/{}", repo_name, sub_name);
+    let lane_address =
+        crate::repo::lanes_state::LaneAddress::new(repo_name.as_str(), sub_name.as_str())
+            .canonical();
 
     // Step 2: wire_send (Daemon "wire" channel 直結、 L0 portless B-4)。 失敗時は sub rollback。
     // `from` は main 相当 (= CLI から起動 = main context として送信、 qualified address)。
@@ -272,7 +274,7 @@ async fn try_nudge(repo_path: &str, lane_address: &str) -> String {
 /// lanes portless: 旧 SP HTTP (`DELETE /api/lanes`) を daemon repo-proxy ask (`lane_delete`) に
 /// 移管。 `lane_delete` は不在 sub に "Lane not found" を Err で返すので idempotent no-op 扱い。
 async fn rollback_sub(repo_path: &str, repo_name: &str, sub_name: &str) {
-    let address = format!("{}/sub/{}", repo_name, sub_name);
+    let address = crate::repo::lanes_state::LaneAddress::new(repo_name, sub_name).canonical();
     match daemon_repo_request(
         crate::cli::daemon_port(),
         repo_path,

@@ -175,7 +175,7 @@ pub use vp_paths::ROOT_LANE_NAME;
 /// ⚠️ sub の表示形が `<repo>/sub/<name>` → `<repo>/<name>` に変わる。
 /// DB / session.json に残る旧形は [`LanePool::parse_address`] が受理して新形に正規化する
 /// （lead/wing → root/sub の rename 時と同じ手当て）。
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 pub struct LaneAddress {
     pub repo: String,
     /// lane 名（人間可読、例: "foo"）。開発起点は [`ROOT_LANE_NAME`]。
@@ -221,14 +221,59 @@ impl LaneAddress {
         self.name == ROOT_LANE_NAME
     }
 
+    /// **address 文字列の SSOT**（`<repo>/lane/<name>`）。
+    ///
+    /// ## ⚠️ なぜ `Display` ではなくこの名前なのか
+    ///
+    /// `Display` は**人間に見せる**ための trait で、永続化・wire の鍵に使うと 1 つの impl が
+    /// 2 仕事を持つ（log を読みやすくしただけで**永続形が黙って変わる**）。形式は契約なので
+    /// 명示的な名前で持つ。`Display` はここへ委譲するだけ。
+    ///
+    /// ⚠️ **client は自分で組み立てない**。この値は daemon が発行して `LaneAddressWire::key`
+    /// に載せ、vp-app / webview はそのまま運ぶ。以前は Rust 2 実装 + TS 2 実装が同じ写像を
+    /// 持ち、doc に「手で一致させる」と書く運用だった（`vp-app/src/lane.rs` の
+    /// `key_matches_display` は**実際に食い違った**記録）。
+    ///
+    /// ⚠️ 分節は 3 つ。読み側 [`LanePool::parse_address`] は旧形（`<repo>/<name>` /
+    /// `<repo>/sub/<name>` / `<repo>/wing/<name>` / `<repo>/lead`）も受理して救済する。
+    pub fn canonical(&self) -> String {
+        format!("{}/{}/{}", self.repo, LANE_SEGMENT, self.name)
+    }
+
     // `tmux_session_name` / `tmux_session_prefix` (Phase 1a の deterministic tmux 名導出) は
-    // tmux decoupling PR2 で退役。 lane の identity は Display 形 (`<repo>/<name>`)
-    // ただ一つ (design doc §13.2 — sanitize 形は tmux の「`/` 禁止」制約由来だった)。
+    // tmux decoupling PR2 で退役。 lane の identity は [`Self::canonical`] ただ一つ
+    // (design doc §13.2 — sanitize 形は tmux の「`/` 禁止」制約由来だった)。
 }
+
+/// ⚠️ **`key` を必ず添えて送る**（daemon が address を発行する側）。
+///
+/// derive をやめて手で書いているのは、`{repo, name}` に加えて [`Self::canonical`] の
+/// 結果を wire に載せるため。これで client（vp-app / webview）は**組み立てを持たない** —
+/// 以前は Rust と TS が同じ写像を各々実装し、doc に「byte-for-byte 一致させる」と書く
+/// 運用だった。
+///
+/// ⚠️ 読み側（`Deserialize`）は `key` を**見ない**。unknown field として無視され、
+/// domain 型は `{repo, name}` から再構築される = 鍵の二重管理にならない。
+impl Serialize for LaneAddress {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = ser.serialize_struct("LaneAddress", 3)?;
+        st.serialize_field("repo", &self.repo)?;
+        st.serialize_field("name", &self.name)?;
+        st.serialize_field("key", &self.canonical())?;
+        st.end()
+    }
+}
+
+/// address の名前空間分節。`<repo>/lane/<name>` の `lane`。
+///
+/// ⚠️ 分節を明示するのは、将来 `<repo>/board/…` のような別種を足したときに衝突させないため。
+pub const LANE_SEGMENT: &str = "lane";
 
 impl fmt::Display for LaneAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}/{}", self.repo, self.name)
+        // ⚠️ 形式の定義は [`LaneAddress::canonical`] 一箇所。ここは委譲するだけ。
+        f.write_str(&self.canonical())
     }
 }
 
@@ -1176,13 +1221,18 @@ impl LanePool {
         match parts.as_slice() {
             // 旧 "lead" は開発起点の旧名 (main rename 前の session.json / wire address 互換)。
             [repo, "lead"] if !repo.is_empty() => Some(LaneAddress::root(*repo)),
-            // canonical: "<repo>/<name>" (doc 44 P2 フラット化後)
+            // 旧 2 分節形 "<repo>/<name>" (doc 44 P2 のフラット化形)。canonical が
+            // `<repo>/lane/<name>` になった後も、永続 state / wire に残る旧形として受理する。
             [repo, name] if !repo.is_empty() && !name.is_empty() => {
                 Some(LaneAddress::new(*repo, *name))
             }
             // 旧 3 分節形 "<repo>/sub/<name>" (P2 以前の永続 address / wire) を
             // 新形に正規化して受理する。lead/wing → root/sub の rename 時と同じ手当て
             // で、DB (`lane` / `lane_lifecycle` の address 列) と session.json を無傷で引き継ぐ。
+            // canonical: "<repo>/lane/<name>"。名前空間を明示した現行形。
+            [repo, LANE_SEGMENT, name] if !repo.is_empty() && !name.is_empty() => {
+                Some(LaneAddress::new(*repo, *name))
+            }
             [repo, "sub" | "wing", name] if !repo.is_empty() && !name.is_empty() => {
                 Some(LaneAddress::new(*repo, *name))
             }
@@ -3033,10 +3083,65 @@ mod tests {
     }
 
     #[test]
-    fn lane_address_display_is_flat() {
-        // doc 44 P2: 表示形は `<repo>/<name>` 一本。開発起点は予約名なので旧形と一致する。
-        assert_eq!(LaneAddress::root("vp").to_string(), "vp/root");
-        assert_eq!(LaneAddress::sub("vp", "foo").to_string(), "vp/foo");
+    fn lane_address_canonical_has_lane_segment() {
+        // address の形式は `<repo>/lane/<name>`。⚠️ 定義は `canonical()` の 1 箇所で、
+        // Display はそこへ委譲するだけ（人間向け trait を永続形の SSOT にしない）。
+        assert_eq!(LaneAddress::root("vp").canonical(), "vp/lane/root");
+        assert_eq!(LaneAddress::sub("vp", "foo").canonical(), "vp/lane/foo");
+        // Display が委譲しているか（片方だけ変わると永続と表示がずれる）。
+        assert_eq!(LaneAddress::root("vp").to_string(), "vp/lane/root");
+    }
+
+    /// ⚠️ **wire に `key` が載る**（daemon が発行する側）。載らないと client が
+    /// `{repo}/{name}` へ縮退し、無音で旧形に戻る。
+    #[test]
+    fn wire_carries_daemon_issued_key() {
+        let json = serde_json::to_value(LaneAddress::sub("vp", "foo")).expect("serialize");
+        assert_eq!(json["key"], "vp/lane/foo", "key が載っていない: {json}");
+        assert_eq!(json["repo"], "vp", "描画用の部品も残す");
+        assert_eq!(json["name"], "foo");
+    }
+
+    /// ⚠️ **読み側は `key` を見ない**。見ると鍵が二重管理になり、送られた key と
+    /// `{repo,name}` から再構築した値が食い違う状態を表現できてしまう。
+    #[test]
+    fn deserialize_ignores_key_and_rebuilds_from_parts() {
+        // 意図的に矛盾した key を混ぜる。無視されて {repo,name} が勝つのが正。
+        let v = serde_json::json!({ "repo": "vp", "name": "foo", "key": "うそ/lane/うそ" });
+        let addr: LaneAddress = serde_json::from_value(v).expect("deserialize");
+        assert_eq!(addr, LaneAddress::sub("vp", "foo"));
+        assert_eq!(addr.canonical(), "vp/lane/foo");
+    }
+
+    /// ⚠️ **canonical → parse → 同一**（往復）。形式を変えたとき読み側が追随しているかは
+    /// これでしか担保できない（片方だけ直すと「書けるが読めない」address が生まれる）。
+    #[test]
+    fn canonical_round_trips_through_parse() {
+        for addr in [LaneAddress::root("vp"), LaneAddress::sub("vp", "foo")] {
+            let parsed = LanePool::parse_address(&addr.canonical()).expect("canonical は読める");
+            assert_eq!(parsed, addr, "往復で同一に戻る");
+        }
+    }
+
+    /// ⚠️ 旧形は**すべて**受理する。永続 state / wire に残っているため、落とすと過去が読めない。
+    ///
+    /// `LANE_SEGMENT` を pattern に置いたとき Rust が定数照合ではなく**束縛**と解釈すると、
+    /// 3 分節が全部 `lane` の枝に吸われて `sub` / `wing` が死ぬ。ここがその検出器。
+    #[test]
+    fn legacy_address_forms_are_still_accepted() {
+        let expected = LaneAddress::sub("vp", "foo");
+        for old in ["vp/foo", "vp/sub/foo", "vp/wing/foo"] {
+            assert_eq!(
+                LanePool::parse_address(old),
+                Some(expected.clone()),
+                "旧形 {old} が読めない"
+            );
+        }
+        assert_eq!(
+            LanePool::parse_address("vp/lead"),
+            Some(LaneAddress::root("vp")),
+            "旧 lead は開発起点へ"
+        );
     }
 
     // deliver_nudge の並行 interleave 防止 (#674 race) の要は「同一 lane が同じ lock を共有し、

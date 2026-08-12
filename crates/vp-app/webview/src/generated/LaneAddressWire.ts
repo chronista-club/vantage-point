@@ -26,4 +26,16 @@ export type LaneAddressWire = { repo: string,
  * 互換で、旧 main は `name` を持たないため予約名に落ちる（server 側 `LaneAddress`
  * の serde default と同じ手当て）。
  */
-name: string, };
+name: string, 
+/**
+ * **daemon が発行した address 文字列**（`<repo>/lane/<name>`）。
+ *
+ * ⚠️ **client は組み立てない**。以前は Rust の `key()` と TS の `laneAddressKey()` が
+ * 同じ写像を各々持ち、doc に「byte-for-byte 一致させる」と書く運用だった
+ * （`key_matches_display` は**実際に食い違った**記録）。形式を知るのは daemon の
+ * [`LaneAddress::canonical`] 1 箇所にして、ここは運ぶだけにする。
+ *
+ * `default` は旧 payload 互換。空で来た場合は [`Self::key`] が `{repo}/{name}` へ
+ * 縮退する（旧形なので `parse_address` が救済できる）。
+ */
+key: string, };
