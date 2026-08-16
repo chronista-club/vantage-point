@@ -384,7 +384,13 @@ async fn thread(message_id: &str) -> Result<()> {
 fn wire_address_from_env(repo: Option<&str>, lane: Option<&str>) -> Option<String> {
     let repo = repo.filter(|s| !s.is_empty())?;
     let lane = lane.filter(|s| !s.is_empty())?;
-    if lane == crate::repo::lanes_state::ROOT_LANE_NAME {
+    // ⚠️ 旧世代の予約名（`root` / `conductor`）も Main とみなす。env は spawn 時に焼かれる
+    // ため、daemon を更新しても**既に生きている agent の VP_LANE は旧名のまま**。ここで
+    // 弾くと更新を跨いだ hook の名乗りが `agent@<repo>/root`（実在しない Sub）になり、
+    // 報告が誰にも届かなくなる（session_now と同じ世代混在の入口）。
+    if lane == crate::repo::lanes_state::ROOT_LANE_NAME
+        || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&lane)
+    {
         Some(format!("agent@{repo}"))
     } else {
         Some(format!("agent@{repo}/{lane}"))
@@ -943,7 +949,16 @@ mod tests {
     #[test]
     fn hook_address_from_env_values() {
         assert_eq!(
+            wire_address_from_env(Some("vp"), Some("main")).as_deref(),
+            Some("agent@vp")
+        );
+        // ⚠️ 旧世代 env（daemon 更新前に spawn した agent の VP_LANE）も Main を名乗れること。
+        assert_eq!(
             wire_address_from_env(Some("vp"), Some("root")).as_deref(),
+            Some("agent@vp")
+        );
+        assert_eq!(
+            wire_address_from_env(Some("vp"), Some("conductor")).as_deref(),
             Some("agent@vp")
         );
         assert_eq!(

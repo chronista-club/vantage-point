@@ -2733,13 +2733,13 @@ mod tests {
                 "/repos/zeta".to_string(),
                 vec![
                     mk("zeta", "later", "2026-07-02T00:00:00Z", "shell"),
-                    mk("zeta", "root", "2026-07-03T00:00:00Z", "claude"),
+                    mk("zeta", "main", "2026-07-03T00:00:00Z", "claude"),
                     mk("zeta", "earlier", "2026-07-01T00:00:00Z", "claude"),
                 ],
             );
             registry.insert(
                 "/repos/alpha".to_string(),
-                vec![mk("alpha", "root", "2026-07-01T00:00:00Z", "claude")],
+                vec![mk("alpha", "main", "2026-07-01T00:00:00Z", "claude")],
             );
         }
 
@@ -2747,18 +2747,18 @@ mod tests {
         let cases: [(serde_json::Value, Vec<&str>); 5] = [
             (
                 serde_json::json!({}),
-                // alpha/root → zeta/root（開発起点先）→ earlier → later（created_at 昇順）
-                vec!["root", "root", "earlier", "later"],
+                // alpha/main → zeta/main（開発起点先）→ earlier → later（created_at 昇順）
+                vec!["main", "main", "earlier", "later"],
             ),
             (
                 serde_json::json!({"repo": "zeta"}),
-                vec!["root", "earlier", "later"],
+                vec!["main", "earlier", "later"],
             ),
             (
                 serde_json::json!({"agent": "claude"}),
-                vec!["root", "root", "earlier"],
+                vec!["main", "main", "earlier"],
             ),
-            (serde_json::json!({"lane": "root"}), vec!["root", "root"]),
+            (serde_json::json!({"lane": "main"}), vec!["main", "main"]),
             (serde_json::json!({"repo": "nonexistent"}), vec![]),
         ];
 

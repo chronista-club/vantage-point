@@ -1311,10 +1311,10 @@ mod tests {
         let lanes = parse_node_lanes(&v);
         assert_eq!(
             lanes.iter().map(|l| l.token.as_str()).collect::<Vec<_>>(),
-            vec!["root", "feat-x"],
+            vec!["main", "feat-x"],
             "実 LaneInfo の形から token を引けている（空に落ちない）"
         );
-        assert_eq!(lanes[0].key, "/repos/vp:root");
+        assert_eq!(lanes[0].key, "/repos/vp:main");
     }
 
     /// repos 不在 / 空でも panic せず空 Vec。

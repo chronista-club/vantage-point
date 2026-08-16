@@ -2635,11 +2635,11 @@ mod tests {
         let main_info = main.list().into_iter().next().expect("root descriptor");
         db.upsert_lane(&key, &main_info).await.unwrap();
         let addr_str = main_info.address.to_string();
-        assert_eq!(addr_str, "reserved/lane/root");
+        assert_eq!(addr_str, "reserved/lane/main");
 
         // dup check の masking は効かない状況（lane_registry は空）。
         let err = cap
-            .create_lane(&repo_path, "root", "test/x", "claude")
+            .create_lane(&repo_path, "main", "test/x", "claude")
             .await
             .expect_err("予約名は Err");
         assert!(

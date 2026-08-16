@@ -662,12 +662,12 @@ mod tests {
     #[test]
     fn pick_running_lane_returns_target() {
         let lanes = registry(test_lane(LaneState::Running));
-        let t = pick_nudge_target(&lanes, "vp/lane/root").expect("nudge 可能");
+        let t = pick_nudge_target(&lanes, "vp/lane/main").expect("nudge 可能");
         assert_eq!(
             t.path_key, "/repo/vp",
             "forward 先 repo の control channel key"
         );
-        assert_eq!(t.lane_display, "vp/lane/root", "lane_nudge の宛先");
+        assert_eq!(t.lane_display, "vp/lane/main", "lane_nudge の宛先");
         assert_eq!(t.cwd, "", "test_lane の cwd (CC activity 照合に使う)");
         assert_eq!(t.cc_session_id, None, "test_lane は cc_session_id 未設定");
         // 別 lane 宛は None (offline 扱い = pending 保持)
@@ -705,10 +705,10 @@ mod tests {
     fn pick_nudges_running_regardless_of_tmux_and_skips_dead() {
         // tmux entry 無し (旧 PtySlotFallback 相当) でも Running なら nudge 可能
         let running = registry(test_lane(LaneState::Running));
-        assert!(pick_nudge_target(&running, "vp/lane/root").is_some());
+        assert!(pick_nudge_target(&running, "vp/lane/main").is_some());
 
         let dead = registry(test_lane(LaneState::Dead));
-        assert_eq!(pick_nudge_target(&dead, "vp/lane/root"), None);
+        assert_eq!(pick_nudge_target(&dead, "vp/lane/main"), None);
     }
 
     /// R3-a: activity 供給ありの policy table — idle/waiting → Ready、busy → Busy、不在 → Offline
@@ -748,7 +748,7 @@ mod tests {
     fn agent_address_maps_to_lane_display() {
         assert_eq!(
             wire_agent_to_lane_display("agent@vp").as_deref(),
-            Some("vp/lane/root")
+            Some("vp/lane/main")
         );
         // doc 44 P2: フラット化で `<repo>/<name>` になった
         assert_eq!(
@@ -794,7 +794,7 @@ mod tests {
     fn lane_identity_maps_repo_and_lane() {
         assert_eq!(
             lane_identity_from_agent("agent@vp"),
-            Some(("vp".to_string(), "root".to_string()))
+            Some(("vp".to_string(), "main".to_string()))
         );
         assert_eq!(
             lane_identity_from_agent("agent@vp/w1"),
