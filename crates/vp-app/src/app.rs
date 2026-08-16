@@ -204,10 +204,9 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // 「ドラッグしても次回起動で戻る」regression（他の tag と同じ罠）
                 | "shell:layout"
                 // code pane（コードブラウザ P1、CodePane.tsx 発）。漏れると sidebar IPC へ
-                // 流れて silent drop = 「tree が永久に空 / file 無反応 / 投擲不達」regression
+                // 流れて silent drop = 「tree が永久に空 / file 無反応」regression
                 | "code:list"
                 | "code:read"
-                | "code:board"
         )
     )
 }
@@ -246,10 +245,9 @@ mod ipc_tag_tests {
             // shell layout（漏れは「ドラッグしても次回起動で戻る」）
             "shell:layout",
             // code pane（コードブラウザ）: 漏れは「pane を開いても tree が永久に空」/
-            // 「file を押しても何も出ない」/「投擲しても board に届かない」
+            // 「file を押しても何も出ない」
             "code:list",
             "code:read",
-            "code:board",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/root"}}"#);
             assert!(
@@ -5820,7 +5818,7 @@ pub fn run() -> anyhow::Result<()> {
                 sidebar_js::stands_result(&webview, repo_path, &agents, error);
             }
             // ===== code pane（コードブラウザ P1）=====
-            // demand（CodeList / CodeRead / CodeSendBoard）は blocking I/O を spawn_blocking に
+            // demand（CodeList / CodeRead）は blocking I/O を spawn_blocking に
             // 逃し、結果 event で main thread に戻して push する（旧 File Explorer と同型）。
             Event::UserEvent(AppEvent::CodeList { lane }) => {
                 match lookup_lane_cwd_by_address(&sidebar_state, &lane) {
@@ -5858,20 +5856,6 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
             }
-            Event::UserEvent(AppEvent::CodeSendBoard { lane, rel_path }) => {
-                match lookup_lane_cwd_by_address(&sidebar_state, &lane) {
-                    Some(cwd) => {
-                        let proxy = async_action_proxy.clone();
-                        rt_handle.spawn_blocking(move || {
-                            let content = crate::file_explorer::open_file(&cwd, &rel_path);
-                            let _ = proxy.send_event(AppEvent::CodeBoardResult { content });
-                        });
-                    }
-                    None => {
-                        tracing::warn!("code:board: lane cwd unknown for address={lane} (skip)");
-                    }
-                }
-            }
             Event::UserEvent(AppEvent::CodeEntriesResult {
                 lane,
                 entries,
@@ -5890,21 +5874,6 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::WireHistoryResult { address, payload }) => {
                 tracing::debug!("wire history 受領 (address={address})");
                 sidebar_js::wire_result(&webview, payload);
-            }
-            // code pane の投擲: file 読み込み結果を Canvas (board) に inject。
-            // 既存 MCP `show` ルートを QUIC を経由せず WebView 直注入 (= ephemeral / local-only) で
-            // 再現するため、 `RepoMessage::Show` 相当の JSON を main_view にそのまま渡す。
-            Event::UserEvent(AppEvent::CodeBoardResult { content }) => {
-                // doc 19 board Canvas Stack Model: append field は omit (= stack push に
-                // 統一)。 pane_id は dead field だが backward compat で keep。
-                lane_js::board_message(
-                    &webview,
-                    serde_json::json!({
-                        "type": "show",
-                        "pane_id": "main",
-                        "content": content,
-                    }),
-                );
             }
             Event::UserEvent(AppEvent::ActivityUpdate(snap)) => {
                 sidebar_state.activity = snap;

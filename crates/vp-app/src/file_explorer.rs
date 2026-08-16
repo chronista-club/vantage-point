@@ -2,32 +2,25 @@
 //!
 //! ## 役割
 //!
-//! `code:list` / `code:read` / `code:board` IPC（`schema/vp-push.kdl` の応答 event と対、
+//! `code:list` / `code:read` IPC（`schema/vp-push.kdl` の応答 event と対、
 //! 要求は main webview の CodePane.tsx 発）の Rust 側実装。
 //! - `list_entries`: lane workdir 配下のファイルツリーを `.gitignore` 尊重で列挙
 //! - `read_file`: pane 内表示用の raw text（`{"text"} | {"error"}` の 2 択）
-//! - `open_file`: 投擲（`code:board`）用に Canvas (Board) 向けの JSON content
-//!   shape（`board-handler.ts` の `ShowMessage::content` と一致）へ変換
 //!
 //! （旧 Sidebar File Explorer overlay picker の Rust 側が前身。picker は code pane 化で
-//! 退役したが、walk / open の実装はそのまま code pane の供給源になった。）
+//! 退役し、board への投擲もオミットされた — 旧投擲経路（"show" の WebView 直注入）は
+//! board 化 #771 で受け手が消えて既に死んでいた。walk の実装はそのまま供給源として残る。）
 //!
 //! ## 設計判断
 //!
 //! - **walk は同期実行を caller が thread に逃す**: I/O blocking のため
 //!   wry/tao の main thread からは呼ばず、 caller (event loop) で
 //!   `thread::Builder::spawn` してから呼ぶ。 結果は `AppEvent` で push back。
-//! - **画像は `Content::Html` ルート**: `protocol/messages.rs` の `ImageBase64` variant は
-//!   既存 `board-handler.ts:40-60` で skip されているため、 base64 化した `<img>` を
-//!   sandbox iframe (board `html` mode) で表示する path を採る。 handler 改修不要。
-//! - **path traversal 防御**: `open_file` は `rel_path` を `Component::Normal` のみで
-//!   構成されていることを確認し、 `..` / 絶対パスを弾く。
-//! - **巨大ファイル**: text 1 MiB / image 8 MiB を超えたら `> Unsupported` プレースホルダ
-//!   markdown に降格。 walk は 20,000 件で truncate して `truncated: true` flag。
-//! - **vp-app crate から vantage-point crate に依存させない**: `Content` enum を直接
-//!   使わず、 caller が読める JSON object (`{"markdown":...}` 等) を組み立てて返す。
+//! - **path traversal 防御**: `read_file` は `rel_path` を `Component::Normal` のみで
+//!   構成されていることを確認し、 `..` / 絶対パス / hidden を弾く。
+//! - **巨大ファイル**: text 1 MiB 超は `{"error"}` に降格。 walk は 20,000 件で
+//!   truncate して `truncated: true` flag。
 
-use base64::Engine;
 use ignore::WalkBuilder;
 use serde::Serialize;
 use std::path::{Component, Path, PathBuf};
@@ -36,8 +29,6 @@ use std::path::{Component, Path, PathBuf};
 pub const DEFAULT_LIST_LIMIT: usize = 20_000;
 /// text / code として開ける単一ファイルの最大サイズ。
 const MAX_TEXT_BYTES: u64 = 1024 * 1024;
-/// 画像として base64 化して載せる最大サイズ。 JSON が 1.33x 膨らむのを考慮。
-const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 /// hidden / .gitignore 経由で除外されない、 ノイズの大きい dir を hardcoded で潰す。
 const BLOCKED_DIRS: &[&str] = &["target", "node_modules", "dist", "build", ".vp"];
 
@@ -133,90 +124,18 @@ pub fn list_entries_with_limit(workdir: &Path, limit: usize) -> (Vec<Entry>, boo
     (entries, truncated)
 }
 
-/// 指定ファイルを開いて Canvas (board) 向け JSON content を返す。
-///
-/// 戻り値 shape は `board-handler.ts:22-28` の `ShowMessage::content` と同じ:
-/// `{ markdown }` | `{ log }` | `{ html }` のいずれかを 1 つ含む object。
-pub fn open_file(workdir: &Path, rel_path: &str) -> serde_json::Value {
-    let safe_rel = match safe_rel_path(rel_path) {
-        Some(p) => p,
-        None => return placeholder("invalid path (traversal or absolute)", rel_path),
-    };
-    let full = workdir.join(&safe_rel);
-
-    let meta = match std::fs::metadata(&full) {
-        Ok(m) if m.is_file() => m,
-        Ok(_) => return placeholder("not a regular file", rel_path),
-        Err(e) => return placeholder(&format!("metadata error: {e}"), rel_path),
-    };
-
-    let kind = classify_extension(rel_path);
-    let cap = if matches!(kind, FileKind::Image) {
-        MAX_IMAGE_BYTES
-    } else {
-        MAX_TEXT_BYTES
-    };
-    if meta.len() > cap {
-        return placeholder(
-            &format!("file too large ({} bytes, max {})", meta.len(), cap),
-            rel_path,
-        );
-    }
-
-    let bytes = match std::fs::read(&full) {
-        Ok(b) => b,
-        Err(e) => return placeholder(&format!("read failed: {e}"), rel_path),
-    };
-
-    match kind {
-        FileKind::Markdown => match std::str::from_utf8(&bytes) {
-            Ok(s) => json_markdown(s),
-            Err(_) => placeholder("non-utf8 markdown", rel_path),
-        },
-        FileKind::Text => {
-            if has_nul_in_prefix(&bytes) {
-                placeholder("binary content (NUL byte detected)", rel_path)
-            } else {
-                let text = String::from_utf8_lossy(&bytes).into_owned();
-                json_log(&text)
-            }
-        }
-        FileKind::Image => {
-            // SVG を含む全画像を **`<img src="data:...;base64,...">` でラップ** して
-            // `Content::Html` に流す。 raw SVG を `Content::Html` に直接渡すと
-            // `board-render.ts:33-51` の sandbox iframe (`sandbox="allow-scripts"`) 経由で
-            // SVG 内 `<script>` が実行可能になるため。 `<img>` タグの data URI 経由 SVG では
-            // ブラウザ仕様により script 実行されないので、 この経路なら XSS 経路を閉じられる。
-            let mime = image_mime_for(rel_path);
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            let title = html_escape_minimal(rel_path);
-            let html = format!(
-                "<!doctype html><html><head><title>{title}</title></head>\
-                <body style=\"margin:0;display:flex;align-items:center;justify-content:center;\
-                background:#0a0a0a;min-height:100vh\">\
-                <img src=\"data:{mime};base64,{b64}\" \
-                style=\"max-width:100%;max-height:100vh;object-fit:contain\" />\
-                </body></html>"
-            );
-            json_html(&html)
-        }
-        FileKind::Unsupported(reason) => placeholder(&reason, rel_path),
-    }
-}
-
 /// code pane（コードブラウザ P1）の内容表示用にファイルを読む。
 ///
-/// `open_file` が board 向けの **render 済み content**（markdown / html / log）を返すのに
-/// 対し、こちらは **raw source** を返す。markdown も render しない — pane はコードブラウザ
-/// なので、`.md` は「描画結果」でなく「ソース」を見せるのが役割。表示側（CodePane.tsx）は
+/// **raw source** を返す。markdown も render しない — pane はコードブラウザなので、
+/// `.md` は「描画結果」でなく「ソース」を見せるのが役割。表示側（CodePane.tsx）は
 /// Solid の text 挿入（自動 escape）+ `<pre>` で描く。
 ///
 /// 返り値は `{"text": string} | {"error": string}` の 2 択。1 object に両方 optional で
 /// 載せると「どちらでもない」が型に載る（vp-push.kdl の ink:snapshot 2 分割と同じ判断だが、
 /// ここは受け手が同一 view で本文/理由を出し分けるだけなので 1 event 2 択で閉じる）。
 ///
-/// 画像は error に倒す — pane の text 面では見えないが、投擲（`code:board` → `open_file`
-/// 経路）すれば board で見える、という導線を error 文言で案内する。
+/// 画像は error に倒す（text 面では表示できない。board への投擲は用途が見えるまで
+/// オミット — mako 2026-08-16）。
 pub fn read_file(workdir: &Path, rel_path: &str) -> serde_json::Value {
     let safe_rel = match safe_rel_path(rel_path) {
         Some(p) => p,
@@ -247,7 +166,7 @@ pub fn read_file(workdir: &Path, rel_path: &str) -> serde_json::Value {
             }
             serde_json::json!({ "text": String::from_utf8_lossy(&bytes).into_owned() })
         }
-        FileKind::Image => json_error("image — → Board で投擲すれば board に表示されます"),
+        FileKind::Image => json_error("image（テキスト表示不可）"),
         FileKind::Unsupported(reason) => json_error(&reason),
     }
 }
@@ -300,47 +219,14 @@ fn classify_extension(rel_path: &str) -> FileKind {
     }
 }
 
-/// 画像拡張子 → MIME。 **`classify_extension` の `FileKind::Image` arm に登録した
-/// 拡張子と完全に同期させること**: 片方にだけ追加すると `image_mime_for` の fallback
-/// (`application/octet-stream`) に落ちて `<img>` 描画が silent 失敗する。 将来 `avif`
-/// 等を追加する際は両関数で必ず両対応する。
-fn image_mime_for(rel_path: &str) -> &'static str {
-    let lower = rel_path.to_ascii_lowercase();
-    if lower.ends_with(".png") {
-        "image/png"
-    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-        "image/jpeg"
-    } else if lower.ends_with(".gif") {
-        "image/gif"
-    } else if lower.ends_with(".webp") {
-        "image/webp"
-    } else if lower.ends_with(".svg") {
-        "image/svg+xml"
-    } else if lower.ends_with(".bmp") {
-        "image/bmp"
-    } else if lower.ends_with(".ico") {
-        "image/x-icon"
-    } else {
-        "application/octet-stream"
-    }
-}
-
 fn has_nul_in_prefix(bytes: &[u8]) -> bool {
     bytes.iter().take(4096).any(|&b| b == 0)
-}
-
-/// 文字列を HTML attr / title 用に最小エスケープ (data URL 内に持ち込まない用途のみ)。
-fn html_escape_minimal(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 /// `rel_path` が workdir 配下に閉じている (= traversal / 絶対パス / hidden file 無し) ことを確認。
 ///
 /// hidden file (`.foo` / `.env` 等) は `list_entries` が `WalkBuilder.hidden(true)` で
-/// 除外するのと **同じ policy** を `open_file` 側でも適用する。 list policy と open policy
+/// 除外するのと **同じ policy** を `read_file` 側でも適用する。 list policy と open policy
 /// が乖離していると IPC 直叩きで `.env` 等を読めてしまうため (moody-blues レビュー指摘)、
 /// component 単位で先頭 `.` を含むものを reject する。 `.gitignore` 等を将来 user 操作で
 /// 開けるようにする場合は、 ここで明示的 allow-list を作るのが筋。
@@ -362,27 +248,6 @@ fn safe_rel_path(rel: &str) -> Option<PathBuf> {
         return None;
     }
     Some(path.to_path_buf())
-}
-
-fn json_markdown(text: &str) -> serde_json::Value {
-    serde_json::json!({ "markdown": text })
-}
-
-fn json_log(text: &str) -> serde_json::Value {
-    serde_json::json!({ "log": text })
-}
-
-fn json_html(html: &str) -> serde_json::Value {
-    serde_json::json!({ "html": html })
-}
-
-fn placeholder(reason: &str, rel_path: &str) -> serde_json::Value {
-    // ` をエスケープして markdown code-span から抜けにくくする
-    let safe_path = rel_path.replace('`', "'");
-    let body = format!(
-        "> **Unsupported**: `{safe_path}`\n>\n> Reason: {reason}\n>\n> v1 では preview しません。"
-    );
-    json_markdown(&body)
 }
 
 // =============================================================================
@@ -494,114 +359,6 @@ mod tests {
     }
 
     #[test]
-    fn open_markdown_returns_markdown_variant() {
-        let tmp = tempfile::tempdir().unwrap();
-        touch(tmp.path(), "doc.md", b"# Title\n\nbody");
-        let v = open_file(tmp.path(), "doc.md");
-        assert_eq!(v["markdown"], serde_json::json!("# Title\n\nbody"));
-        assert!(v.get("log").is_none());
-        assert!(v.get("html").is_none());
-    }
-
-    #[test]
-    fn open_rust_returns_log_variant() {
-        let tmp = tempfile::tempdir().unwrap();
-        touch(tmp.path(), "src/main.rs", b"fn main() {}");
-        let v = open_file(tmp.path(), "src/main.rs");
-        assert_eq!(v["log"], serde_json::json!("fn main() {}"));
-    }
-
-    #[test]
-    fn open_image_returns_html_with_data_url() {
-        let tmp = tempfile::tempdir().unwrap();
-        // 最小 1x1 PNG (8-byte signature + IHDR + IDAT + IEND の simplified bytes)
-        let png_bytes: &[u8] = &[
-            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, // PNG signature
-        ];
-        touch(tmp.path(), "pic.png", png_bytes);
-        let v = open_file(tmp.path(), "pic.png");
-        let html = v["html"].as_str().expect("html field");
-        assert!(html.contains("data:image/png;base64,"));
-        assert!(html.contains("<img"));
-    }
-
-    #[test]
-    fn open_pdf_returns_unsupported_markdown() {
-        let tmp = tempfile::tempdir().unwrap();
-        touch(tmp.path(), "spec.pdf", b"%PDF-1.4");
-        let v = open_file(tmp.path(), "spec.pdf");
-        let md = v["markdown"].as_str().expect("markdown field");
-        assert!(md.contains("Unsupported"));
-        assert!(md.contains("pdf"));
-    }
-
-    #[test]
-    fn open_rejects_path_traversal() {
-        let tmp = tempfile::tempdir().unwrap();
-        touch(tmp.path(), "ok.txt", b"x");
-        let v = open_file(tmp.path(), "../etc/passwd");
-        let md = v["markdown"].as_str().expect("markdown field");
-        assert!(
-            md.contains("Unsupported"),
-            "traversal を unsupported に降格していない"
-        );
-    }
-
-    #[test]
-    fn open_rejects_hidden_file_by_direct_path() {
-        // moody-blues レビュー Issue 2: list は hidden(true) で除外するのに open が
-        // 素通りしていた問題の回帰防止。 IPC 直叩きで `.env` 等を読めないこと。
-        let tmp = tempfile::tempdir().unwrap();
-        touch(tmp.path(), ".env", b"SECRET=top");
-        let v = open_file(tmp.path(), ".env");
-        let md = v["markdown"].as_str().expect("markdown field");
-        assert!(
-            md.contains("Unsupported"),
-            "hidden file が path 直指定で読めてしまった"
-        );
-        // hidden dir 配下も同様
-        touch(tmp.path(), ".secrets/key", b"abc");
-        let v = open_file(tmp.path(), ".secrets/key");
-        let md = v["markdown"].as_str().expect("markdown field");
-        assert!(
-            md.contains("Unsupported"),
-            "hidden dir 配下が読めてしまった"
-        );
-    }
-
-    #[test]
-    fn open_rejects_absolute_path() {
-        let tmp = tempfile::tempdir().unwrap();
-        let v = open_file(tmp.path(), "/etc/passwd");
-        let md = v["markdown"].as_str().expect("markdown field");
-        assert!(md.contains("Unsupported"));
-    }
-
-    #[test]
-    fn open_binary_with_text_extension_falls_back_to_placeholder() {
-        let tmp = tempfile::tempdir().unwrap();
-        // .txt 拡張子だが先頭に NUL byte (binary)
-        let mut bytes = vec![0x00, 0x01, 0x02, 0x03];
-        bytes.extend_from_slice(b"text after nul");
-        touch(tmp.path(), "binary.txt", &bytes);
-        let v = open_file(tmp.path(), "binary.txt");
-        let md = v["markdown"].as_str().expect("markdown field");
-        assert!(md.contains("Unsupported"));
-        assert!(md.contains("binary") || md.contains("NUL"));
-    }
-
-    #[test]
-    fn open_text_too_large_falls_back_to_placeholder() {
-        let tmp = tempfile::tempdir().unwrap();
-        // 1 MiB + 1 byte
-        let big = vec![b'a'; (MAX_TEXT_BYTES as usize) + 1];
-        touch(tmp.path(), "big.txt", &big);
-        let v = open_file(tmp.path(), "big.txt");
-        let md = v["markdown"].as_str().expect("markdown field");
-        assert!(md.contains("too large"));
-    }
-
-    #[test]
     fn classify_handles_dotfiles_and_unknowns() {
         assert!(matches!(classify_extension(".gitignore"), FileKind::Text));
         assert!(matches!(classify_extension("Dockerfile"), FileKind::Text));
@@ -644,12 +401,12 @@ mod tests {
     }
 
     #[test]
-    fn read_image_returns_error_pointing_to_board() {
+    fn read_image_returns_error() {
         let tmp = tempfile::tempdir().unwrap();
         touch(tmp.path(), "logo.png", b"\x89PNG");
         let v = read_file(tmp.path(), "logo.png");
         assert!(v.get("text").is_none());
-        assert!(v["error"].as_str().unwrap().contains("Board"));
+        assert!(v["error"].as_str().unwrap().contains("image"));
     }
 
     #[test]

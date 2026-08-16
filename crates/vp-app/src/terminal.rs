@@ -149,8 +149,6 @@ pub enum AppEvent {
     CodeList { lane: String },
     /// `code:read` 要求。pane 内表示用の raw text 読み（`file_explorer::read_file`）。
     CodeRead { lane: String, rel_path: String },
-    /// `code:board` 要求。選択 file を board へ投擲（`file_explorer::open_file` 経路）。
-    CodeSendBoard { lane: String, rel_path: String },
     /// `code:list` の walk 結果 → `lane_js::code_entries` で main webview へ push。
     CodeEntriesResult {
         lane: String,
@@ -164,11 +162,6 @@ pub enum AppEvent {
         rel_path: String,
         payload: serde_json::Value,
     },
-    /// code pane の投擲（`code:board`）の blocking file 読み込み結果。
-    /// `content` は `board-handler.ts` の `BoardItem::content` shape
-    /// (`{markdown}` | `{log}` | `{html}` のいずれか)。 main_view に
-    /// `window.vpBoard.handleMessage({type:'show',pane_id:'main',content,append:false})` で注入。
-    CodeBoardResult { content: serde_json::Value },
     /// wiremsg Stage 2: repo の "canvas" Unison channel から受信した Canvas (Board)
     /// RepoMessage 1 件。`message` は RepoMessage の生 JSON (`{"type":"show",...}` 等)。
     /// handler は active repo の分のみ main_view WebView に転送する。
@@ -806,17 +799,6 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 parsed.get("rel_path").and_then(|v| v.as_str()),
             ) {
                 let _ = proxy.send_event(AppEvent::CodeRead {
-                    lane: lane.to_string(),
-                    rel_path: rel_path.to_string(),
-                });
-            }
-        }
-        Some("code:board") => {
-            if let (Some(lane), Some(rel_path)) = (
-                parsed.get("lane").and_then(|v| v.as_str()),
-                parsed.get("rel_path").and_then(|v| v.as_str()),
-            ) {
-                let _ = proxy.send_event(AppEvent::CodeSendBoard {
                     lane: lane.to_string(),
                     rel_path: rel_path.to_string(),
                 });

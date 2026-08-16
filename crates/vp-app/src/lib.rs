@@ -32,7 +32,7 @@ pub mod daemon_control;
 pub mod daemon_launcher;
 pub mod debug_log;
 /// code pane（コードブラウザ）の file 供給 — lane workdir walk + ファイル読み。
-/// code:list / code:read / code:board IPC の Rust 側実装。
+/// code:list / code:read IPC の Rust 側実装。
 pub mod file_explorer;
 /// club-kdl-codegen 生成物 (KDL protocol schema → Rust 型)。 VP-208 Phase A。
 pub mod generated;

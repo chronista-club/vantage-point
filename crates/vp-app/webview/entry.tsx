@@ -600,7 +600,6 @@ document.head.appendChild(codeStyle);
 window.vpCodePane = {
 	toggle: toggleCodeOpen,
 	openFor: (address: string) => codeView.openFor(address),
-	sendSelectedToBoard: () => codePane?.sendSelectedToBoard(),
 };
 
 if (lanePanes && paneFrame) {

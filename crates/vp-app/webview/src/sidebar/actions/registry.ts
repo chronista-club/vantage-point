@@ -14,7 +14,6 @@ import {
 	runNewSub,
 	runRestart,
 	runRightSidebarToggle,
-	runSendToBoard,
 	runSidebarForm,
 	runSwitcher,
 } from "./handlers";
@@ -43,7 +42,6 @@ const DIRECTIVE_TITLES: Record<string, string> = {
  */
 const DIRECTIVE_RUN: Record<string, () => void> = {
 	f: runCodePane,
-	p: runSendToBoard,
 	r: runRestart,
 	n: runNewSub,
 	d: runDelete,

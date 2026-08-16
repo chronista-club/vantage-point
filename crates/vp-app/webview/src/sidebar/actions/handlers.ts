@@ -260,14 +260,6 @@ export function runCodePane(): void {
 	}
 }
 
-/** `p` — code pane の選択 file を board へ投擲。 */
-export function runSendToBoard(): void {
-	if (window.vpCodePane) {
-		window.vpCodePane.sendSelectedToBoard();
-	} else {
-		console.debug("[directive p] vpCodePane 未到着（bundle 評価前）、 send skip");
-	}
-}
 
 /** `r` — restart context polymorphic: active_lane → lane:restart、 active_component → process:restart。 */
 export function runRestart(): void {

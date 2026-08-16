@@ -15,7 +15,5 @@ interface Window {
     toggle(): void
     /** 指定 lane の pane を開く（LaneRow フォルダ — lane 切替と併用する片方向）。 */
     openFor(address: string): void
-    /** 選択中（または開いている）file を board へ投擲。 */
-    sendSelectedToBoard(): void
   }
 }
