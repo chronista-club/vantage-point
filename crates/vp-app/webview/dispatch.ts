@@ -52,6 +52,10 @@ export interface PushHandlers {
 		right_sidebar_open: boolean;
 	}): void;
 	handleBoardMessage(message: unknown): void;
+	/** code pane（コードブラウザ P1）: `code:list` / `code:read` の応答と menu 起点 toggle。 */
+	codeEntries(lane: string, entries: unknown[], truncated: boolean): void;
+	codeFile(lane: string, relPath: string, payload: unknown): void;
+	codeToggle(): void;
 	consoleSessionList(lane: string, payload: unknown): void;
 	consoleEvent(lane: string, event: unknown, session: number): void;
 	consoleModeApplied(lane: string, session: number, mode: string): void;
@@ -114,6 +118,15 @@ function apply(msg: PushEventEnvelope): void {
 			break;
 		case "board:message":
 			handlers.handleBoardMessage(msg.message);
+			break;
+		case "code:entries":
+			handlers.codeEntries(msg.lane, msg.entries, msg.truncated);
+			break;
+		case "code:file":
+			handlers.codeFile(msg.lane, msg.rel_path, msg.payload);
+			break;
+		case "code:toggle":
+			handlers.codeToggle();
 			break;
 		case "ink:snapshot":
 			handlers.inkSnapshot(msg.path);

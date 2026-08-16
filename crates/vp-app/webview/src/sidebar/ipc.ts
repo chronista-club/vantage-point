@@ -110,19 +110,10 @@ export function installIpcBridge(): void {
       window.handleAddSubResult?.({ repo_path, name, error }),
     agentsResult: (repo_path, agents, error) =>
       window.handleAgentsResult?.({ repo_path, agents, error }),
-    filesListResult: (address, entries, truncated) =>
-      window.vpFiles?.handleListResult({
-        address,
-        entries: entries as Parameters<
-          NonNullable<Window['vpFiles']>['handleListResult']
-        >[0]['entries'],
-        truncated,
-      }),
     wireResult: (payload) =>
       window.vpWire?.handleResult(
         payload as Parameters<NonNullable<Window['vpWire']>['handleResult']>[0],
       ),
     clonePathPicked: (path) => window.setClonePath?.(path),
-    filePickerOpen: (address) => window.vpFilePicker?.open(address),
   })
 }

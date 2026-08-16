@@ -9,12 +9,11 @@ import { DIRECTIVE_TABLE } from "../../shortcuts/chord-table";
 import {
 	runCaptureMode,
 	runDelete,
-	runFileExplorer,
+	runCodePane,
 	runLaneSelectMode,
 	runNewSub,
 	runRestart,
 	runRightSidebarToggle,
-	runSendToPP,
 	runSidebarForm,
 	runSwitcher,
 } from "./handlers";
@@ -42,8 +41,7 @@ const DIRECTIVE_TITLES: Record<string, string> = {
  * DIRECTIVE_TABLE の全 key がここに実体を持つ（v0.8 curation で main-view fallback を撤去）。
  */
 const DIRECTIVE_RUN: Record<string, () => void> = {
-	f: runFileExplorer,
-	p: runSendToPP,
+	f: runCodePane,
 	r: runRestart,
 	n: runNewSub,
 	d: runDelete,

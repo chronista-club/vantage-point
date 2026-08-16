@@ -106,6 +106,22 @@ describe("lanePaneRefs（roster = session 一覧 × 各 mode、doc 50 §4.6 A6�
 		expect(lanePaneRefs(s).map((p) => p.id)).toEqual([TERM]);
 	});
 
+	it("code pane は session 群の後・board の前（コードブラウザ P1）", () => {
+		const s = [{ key: 1, agent: "claude", root: true, mode: "tui" as const }];
+		expect(lanePaneRefs(s, true, true).map((p) => p.id)).toEqual([
+			TERM,
+			"lane-code",
+			"lane-board",
+		]);
+		// code だけ開いている（board 閉）
+		expect(lanePaneRefs(s, false, true).map((p) => p.id)).toEqual([
+			TERM,
+			"lane-code",
+		]);
+		// 既定（両方閉）は従来どおり
+		expect(lanePaneRefs(s).map((p) => p.id)).toEqual([TERM]);
+	});
+
 	it("kind が pane の種類を運ぶ（session の有無では判別できない）", () => {
 		// ⚠️ A6 以前は「session を持つ = chat pane」で判別できたが、term も session を持つ
 		// ようになったので壊れた。kind は「host を誰が作るか」（term = World A / chat =

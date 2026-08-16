@@ -159,6 +159,39 @@ protocol "vp-push" version="1.0.0" {
             field "message" type="string"
         }
 
+        // ===== code pane（コードブラウザ P1）— 実装は webview/CodePane.tsx =====
+        //
+        // demand 駆動: webview が pane open 時に `code:list`、file 選択で `code:read` を
+        // 送り、これらはその応答。⚠️ `WebviewReady` の replay 一式には**足さない**
+        // （reload で pane が閉に戻るのは board と同じ許容 — 開いた時にまた demand する）。
+
+        // lane workdir の file 一覧（`.gitignore` 尊重・20k 件 truncate）。
+        // `entries` の要素の形は Rust `file_explorer::Entry` が持ち主
+        // （`board:message` と同じ理由で `json` — KDL に書くと二重定義になる）。
+        // ⚠️ P2（tree-sitter symbol）は entries の `kind` が増える方向で拡張する。
+        // TS 側は kind の switch + 未知 kind skip で受けること。
+        event "code:entries" {
+            field "lane" type="string"
+            field "entries" type="array<json>"
+            field "truncated" type="bool"
+        }
+
+        // file 内容（pane 内表示用）。payload は `{"text": string} | {"error": string}` の
+        // 2 択（ink:snapshot の 2 event 分割と同じ判断で optional を積まない。ここで 2 event に
+        // しないのは、受け手が同一 view で「本文 or 理由」を出し分けるだけで分岐が閉じるため）。
+        // ⚠️ P2 の symbol outline は**別 event** で足す。
+        event "code:file" {
+            field "lane" type="string"
+            field "rel_path" type="string"
+            field "payload" type="json"
+        }
+
+        // File menu「Code Browser」からの toggle（旧 file_picker:open の後継）。
+        // menu accelerator は OS-level 発火なので Rust 経由で webview に届ける一方向 push。
+        // active lane 判定は webview 側（lane 不在なら no-op）に委譲する。
+        event "code:toggle" {
+        }
+
         // ===== 掲示板（board, doc 52 §1）の制御面 — 実装は webview/board-handler.ts =====
 
         // repo の canvas channel から来た `RepoMessage` をそのまま board へ渡す。

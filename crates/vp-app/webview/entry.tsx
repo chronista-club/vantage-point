@@ -104,6 +104,9 @@ import { layoutEngine } from "./layout-host";
 import { installGallery } from "./gallery-panes";
 import { attachKeybindings } from "./keybindings";
 import { installBoardView } from "./board-view";
+import { installCodeView, toggleCodeOpen } from "./code-view";
+import { CODE_PANE_CSS, type FilePayload, mountCodePane } from "./CodePane";
+import type { Entry as CodeEntry } from "./CodePane";
 import { mountEdgeRail, EDGE_RAIL_CSS } from "./EdgeRail";
 import { installRightSidebar } from "./right-sidebar";
 import { applyShellLayout, installShellLayout } from "./shell-layout";
@@ -264,6 +267,9 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		// doc 55: board の view 層も lane 不在に追従（取っ手ごと消える）。laneHeader と対称に —
 		// 現状は app-panes の scene マスクで偶然隠れているが、偶然に依存しない（moody #3）。
 		boardView?.setActiveLane(null);
+		// code pane も lane 不在に追従（Cmd+F は no-op になる）。
+		codeView.setActiveLane(null);
+		codePane?.setLane(null);
 		// doc 56 prototype: rail は lane 級動詞の家 — lane が無ければ帯ごと消える。
 		edgeRail?.setLane(null);
 		return;
@@ -315,6 +321,11 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		// **repo を含むのが要点**: 含めないと repo A で docked にした board が B の roster に
 		// 載ったまま tiling の場所を取る（「出っ放し」、2026-08-05 実機で確認）。
 		boardView?.setActiveLane(boardKeyOf(newLane));
+		// code pane: view 層は key（内部で写す）、中身は address（IPC の宛先）で追従。
+		// setActiveLane が新 lane の open 状態を vp:code-view で再通知 → 開いたままの lane へ
+		// 戻った時は CodePane が demand し直す（表示 cache は setLane が張り替え済）。
+		codePane?.setLane(newLane);
+		codeView.setActiveLane(newLane);
 		// doc 56 prototype: rail の + New は lane address（agents_fetch / new_session の宛先）で追従。
 		edgeRail?.setLane(newLane);
 		return;
@@ -574,6 +585,22 @@ const boardView = (() => {
 	if (!board || !lanePanesEl || !handle || !formBtn) return null;
 	return installBoardView({ board, workbench: lanePanesEl, handle, formBtn });
 })();
+// code pane（コードブラウザ P1）: view 層（open = user 専有、in-memory）+ 中身の mount。
+// roster への反映は lane-panes が 'vp:code-view' を購読して行う（board と同型、float 無し）。
+const codeView = installCodeView();
+const codePane = (() => {
+	const host = document.getElementById("lane-code");
+	return host ? mountCodePane(host) : null;
+})();
+const codeStyle = document.createElement("style");
+codeStyle.textContent = CODE_PANE_CSS;
+document.head.appendChild(codeStyle);
+// sidebar bundle（directive f / p、LaneRow フォルダ）から触る橋。⚠️ ここで expose する
+// ことで「受け手不在の窓」は bundle 評価前だけになる（sidebar 側は optional chain）。
+window.vpCodePane = {
+	toggle: toggleCodeOpen,
+	openFor: (address: string) => codeView.openFor(address),
+};
 
 if (lanePanes && paneFrame) {
 	// 要件 3: click で focus が移る。Pane の中身の click は素通しさせたいので capture で拾う。
@@ -1194,6 +1221,13 @@ installDispatch({
 	// R sidebar の debug log（right-sidebar.ts）。mount target 不在なら no-op（ink と同じ流儀）。
 	debugLogLines: (source, reset, lines) =>
 		rightSidebar?.handleLines(source, reset, lines),
+	// code pane（コードブラウザ P1）。mount target 不在なら no-op（ink と同じ流儀）。
+	// entries の要素の形は Rust `file_explorer::Entry`（未知 kind の skip は CodePane 側）。
+	codeEntries: (lane, entries, truncated) =>
+		codePane?.handleEntries(lane, entries as CodeEntry[], truncated),
+	codeFile: (lane, relPath, payload) =>
+		codePane?.handleFile(lane, relPath, payload as FilePayload),
+	codeToggle: () => toggleCodeOpen(),
 });
 installSlotRect();
 const bootIpc = (window as unknown as { ipc?: { postMessage(m: string): void } })
