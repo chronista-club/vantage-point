@@ -220,12 +220,13 @@ let activeLaneAddress: string | null = null;
 let laneHeader: LaneHeaderApi | null = null;
 
 /**
- * LaneAddress::Display 形を board-handler が使う flat lane_name に翻訳する。
- * `null` = main（lead）、`string` = sub 名。
+ * lane address（daemon 発行の canonical `<repo>/lane/<name>`）を board-handler が使う
+ * flat lane_name に翻訳する。`null` = Main lane、`string` = Sub 名。
  *
- * D2 統一: 語彙は root/sub。rename 途上のため legacy `lead`/`wing` も受理する:
- * - `<repo>/root` / `<repo>/lead` → `null`（root/lead）
- * - `<repo>/sub/<name>` / `<repo>/wing/<name>` → `<name>`（sub）
+ * 語彙は Main/Sub（識別子の予約名は `root`）。永続 state に旧世代の address が残るため
+ * legacy 形も受理する（受理の実体は lane-address.ts）:
+ * - `<repo>/lane/root` / 旧 `<repo>/root` / 旧 `<repo>/lead` → `null`（Main）
+ * - `<repo>/lane/<name>` / 旧 `<repo>/sub/<name>` / 旧 `<repo>/wing/<name>` → `<name>`（Sub）
  *
  * この値は (a) board-content-persist の SurrealDB record key、(b) per-lane board の
  * canvas filter token（`null`→`main` に正規化して producer の lane と突合）に使う。
@@ -307,7 +308,7 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		if (laneChanged) applyLaneView(newLane);
 		// board モデル: lane 切替時に表示 board を切り替える。board は canvas channel で既に
 		// 全 repo 分 retained 受信済みなので、キーを差し替えるだけでよい（別 load 不要）。
-		// LaneAddress::Display 形 (`<repo>/lead` or `<repo>/wing/<name>`) を flat lane_name に翻訳。
+		// lane address（canonical `<repo>/lane/<name>`、旧形も受理）を flat lane_name に翻訳。
 		//
 		// ⚠️ **repo も渡す**。board の同一性は `(repo, lane)` の対で、全 repo の root lane が
 		// 同じ `'main'` を名乗る。lane 名だけで切り替えていた旧実装は、board 行を持たない
@@ -895,7 +896,7 @@ function SidebarTokenBinds() {
 		});
 	});
 
-	// connector 演奏 knob (2026-07-11 lead 指示 + Step 7 Light Grid): mako の Editor Mode
+	// connector 演奏 knob (2026-07-11 mako 指示 + Step 7 Light Grid): mako の Editor Mode
 	// 探索がそのまま connector / photon 設計になるよう slider 化。 default は Light Grid
 	// 視覚仕様 (artifact c203944c) の値。 unit が px / s / ms で混在するため各 entry に持たせる。
 	const connNumbers: Array<{

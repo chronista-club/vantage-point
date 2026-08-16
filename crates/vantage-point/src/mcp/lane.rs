@@ -11,7 +11,7 @@ use super::*;
 pub struct SwitchLaneParams {
     /// Lane token to activate within the current repo
     #[schemars(
-        description = "Lane token to activate in the current repo's vp-app: 'root' (lead) or a sub name (e.g. 'feat-api')."
+        description = "Lane token to activate in the current repo's vp-app: 'root' (the Main lane) or a sub name (e.g. 'feat-api')."
     )]
     pub lane: String,
 }
@@ -180,7 +180,7 @@ pub struct FlowProgressParams {
 impl VantageMcp {
     /// vp-app の active Lane を切り替える（B1: Unison-native、per-repo）。
     #[tool(
-        description = "Switch the active lane shown in the vp-app board Canvas of the CURRENT repo. `lane` is a lane token: 'root' (lead) or a sub name. Routes over Unison (local repo → canvas channel → vp-app). Primarily for ROTO / CLI driven view control; avoid switching the human's view unsolicited."
+        description = "Switch the active lane shown in the vp-app board Canvas of the CURRENT repo. `lane` is a lane token: 'root' (the Main lane) or a sub name. Routes over Unison (local repo → canvas channel → vp-app). Primarily for ROTO / CLI driven view control; avoid switching the human's view unsolicited."
     )]
     async fn switch_lane(
         &self,

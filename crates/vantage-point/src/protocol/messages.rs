@@ -98,7 +98,7 @@ pub enum RepoMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
         /// このメッセージが属する Lane（per-lane board scope、root/sub 語彙）。
-        /// `None` = main（lead）。topic の lane segment になり、retained を lane 別に分離する。
+        /// `None` = Main lane。topic の lane segment になり、retained を lane 別に分離する。
         /// wire 後方互換のため `skip_serializing_if`（旧 consumer は field 欠落を main 扱い）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lane: Option<String>,
@@ -229,7 +229,7 @@ pub enum RepoMessage {
     },
     /// Canvas Lane 切り替え指示
     SwitchLane {
-        /// active 化する lane token: "root"（lead）or sub 名（例: "feat-api"）。
+        /// active 化する lane token: "root"（Main lane の予約名）or Sub 名（例: "feat-api"）。
         /// 現 repo 内の lane-within-repo 切替（B1 で repo 切替意味論から変更）。
         lane: String,
     },
