@@ -6,7 +6,7 @@
       "name": "vp-app-web-bundle",
       "dependencies": {
         "@chronista-club/creo-ui": "^0.30.0",
-        "@chronista-club/creo-ui-editor-host": "^0.8.0",
+        "@chronista-club/creo-ui-editor-host": "^0.8.1",
         "@chronista-club/creo-ui-icons-web": "^0.0.1",
         "@chronista-club/creo-ui-layout": "^0.3.0",
         "@chronista-club/unison-client": "^1.2.0",
@@ -100,7 +100,7 @@
 
     "@chronista-club/creo-ui": ["@chronista-club/creo-ui@0.30.0", "", { "peerDependencies": { "solid-js": "^1.9.0" } }, "sha512-EkbvfUhMx+KnoqjZP/UVqCpL5/simKTkreSMLJZFvGowT2sMbx66M5tUf4OrAFS9teYuyVrAmg5GWMX9OfUQhg=="],
 
-    "@chronista-club/creo-ui-editor-host": ["@chronista-club/creo-ui-editor-host@0.8.0", "", { "peerDependencies": { "solid-js": "^1.9.0" } }, "sha512-b5lZKM5UO8QtmhMjjeAwN7b8FpTRtbCugns1UpPo4jSWjgsPWiaTP4bHSpPoLxa3lre5hHBPOh4ipGVDhFaKFg=="],
+    "@chronista-club/creo-ui-editor-host": ["@chronista-club/creo-ui-editor-host@0.8.1", "", { "peerDependencies": { "solid-js": "^1.9.0" } }, "sha512-UK8QvaVqtEju6QFbHt8bynMpQm4+YcOJjMsL2tMj3QkZrryKteV01oKtZCqXyfM0o0TIs10Nsaezs266RyQzIQ=="],
 
     "@chronista-club/creo-ui-icons-web": ["@chronista-club/creo-ui-icons-web@0.0.1", "", { "peerDependencies": { "iconify-icon": "^3.0.0", "solid-js": "^1.9.0" } }, "sha512-lJ/907gsKsKuzldYFWkq0iN0HQtjDqqMps+zOaNznpmHy7Rk03hE+vIs5WNs2iKn6SS2WN/cEgqKYyEJ2QiC0g=="],
 

@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@chronista-club/creo-ui": "^0.30.0",
-    "@chronista-club/creo-ui-editor-host": "^0.8.0",
+    "@chronista-club/creo-ui-editor-host": "^0.8.1",
     "@chronista-club/creo-ui-icons-web": "^0.0.1",
     "@chronista-club/creo-ui-layout": "^0.3.0",
     "@chronista-club/unison-client": "^1.2.0",
