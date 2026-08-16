@@ -33,12 +33,12 @@ export interface DirectiveEntry {
 export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
   // v0.3 (PR #441) で実装
   f: {
-    description: 'File Explorer overlay (sidebar) を open + focus 移動',
+    description: 'Code pane（コードブラウザ）の toggle + 検索 focus',
     semantic: 'focus-transferring',
   },
   p: {
     description:
-      'send current/selected to board (file picker visible 中なら選択 file を Canvas に投擲、 picker は dismiss しない)',
+      'code pane の選択 file を Board に投擲（pane は閉じない = 連続投擲できる）',
     semantic: 'panel-local',
   },
   // v0.5 (PR 445) で実装 — lane 操作系

@@ -98,19 +98,6 @@ protocol "sidebar" version="1.0.0" {
         }
         // Clone 用フォルダ picker を開く要求 (fieldless)
         request "repo:clone:pickFolder" {}
-        // File picker: lane workdir 配下を walk して entries を返却。
-        // 結果は server → client へ window.vpFiles.handleListResult(...) で push (transient channel のため返信枠なし)。
-        request "files:list" {
-            field "path" type="string"
-            field "address" type="string"
-        }
-        // File picker: 選択されたファイルを Canvas (Board) に表示。
-        // Rust 側で拡張子に応じて Markdown/Log/Html を組み立て、 main_view へ Show を inject。
-        request "files:open" {
-            field "path" type="string"
-            field "address" type="string"
-            field "rel_path" type="string"
-        }
         // Wire inbox (doc 34 §4 V1): 選択 lane の wire 履歴を read-only で取得。
         // Rust が Daemon "wire" channel に wire/history + wire/unread-count を request し、
         // 結果を window.vpWire.handleResult で push back する (cursor 不触り)。
@@ -208,13 +195,6 @@ protocol "sidebar" version="1.0.0" {
             field "error" type="string" optional=#true
         }
 
-        // File Explorer の walk 結果（`files:list` の戻り）。
-        event "files:list_result" {
-            field "address" type="string"
-            field "entries" type="array<json>"
-            field "truncated" type="bool"
-        }
-
         // Wire inbox の履歴（`wire:fetch` / `wire:ack` の戻り）。
         event "wire:result" {
             field "payload" type="json"
@@ -224,12 +204,6 @@ protocol "sidebar" version="1.0.0" {
         // ⚠️ **キャンセル時は撃たない**（既存の override を保持する = 既存挙動）。
         event "clone:path_picked" {
             field "path" type="string"
-        }
-
-        // Cmd+O（File menu accelerator）で File Explorer overlay を開かせる。
-        // これだけは request の戻りではなく、**menu 起点の一方向 push**。
-        event "file_picker:open" {
-            field "address" type="string"
         }
     }
 }

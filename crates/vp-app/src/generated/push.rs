@@ -87,6 +87,23 @@ pub struct InkSnapshotError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeEntries {
+    pub lane: String,
+    pub entries: Vec<serde_json::Value>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeFile {
+    pub lane: String,
+    pub rel_path: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeToggle;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoardMessage {
     pub message: serde_json::Value,
 }
@@ -129,6 +146,12 @@ pub enum PushEventEnvelope {
     InkSnapshot(InkSnapshot),
     #[serde(rename = "ink:snapshot_error")]
     InkSnapshotError(InkSnapshotError),
+    #[serde(rename = "code:entries")]
+    CodeEntries(CodeEntries),
+    #[serde(rename = "code:file")]
+    CodeFile(CodeFile),
+    #[serde(rename = "code:toggle")]
+    CodeToggle,
     #[serde(rename = "board:message")]
     BoardMessage(BoardMessage),
     #[serde(rename = "debuglog:lines")]

@@ -38,13 +38,6 @@ export interface AgentsResult {
   error?: string;
 }
 
-/** Event "files:list_result" */
-export interface FilesListResult {
-  address: string;
-  entries: any[];
-  truncated: boolean;
-}
-
 /** Event "wire:result" */
 export interface WireResult {
   payload: any;
@@ -53,11 +46,6 @@ export interface WireResult {
 /** Event "clone:path_picked" */
 export interface ClonePathPicked {
   path: string;
-}
-
-/** Event "file_picker:open" */
-export interface FilePickerOpen {
-  address: string;
 }
 
 /** Request "process:toggle" */
@@ -148,19 +136,6 @@ export interface StandSelect {
 /** Request "repo:clone:pickFolder" — empty payload */
 export interface RepoClonePickFolder {}
 
-/** Request "files:list" */
-export interface FilesList {
-  path: string;
-  address: string;
-}
-
-/** Request "files:open" */
-export interface FilesOpen {
-  path: string;
-  address: string;
-  rel_path: string;
-}
-
 /** Request "wire:fetch" */
 export interface WireFetch {
   path: string;
@@ -201,10 +176,8 @@ export type IpcChannelEventTypes = {
   SidebarError: SidebarError;
   SubCreateResult: SubCreateResult;
   AgentsResult: AgentsResult;
-  FilesListResult: FilesListResult;
   WireResult: WireResult;
   ClonePathPicked: ClonePathPicked;
-  FilePickerOpen: FilePickerOpen;
 };
 
 /** Request name → { request, response } 生成 interface の map for "ipc" */
@@ -225,8 +198,6 @@ export type IpcChannelRequestTypes = {
   AgentsFetch: { request: AgentsFetch; response: void };
   StandSelect: { request: StandSelect; response: void };
   RepoClonePickFolder: { request: RepoClonePickFolder; response: void };
-  FilesList: { request: FilesList; response: void };
-  FilesOpen: { request: FilesOpen; response: void };
   WireFetch: { request: WireFetch; response: void };
   WireAck: { request: WireAck; response: void };
   UpdateApply: { request: UpdateApply; response: void };
@@ -241,7 +212,7 @@ export const IpcChannelMeta = {
   backend: "stream" as const,
   from: "client" as const,
   lifetime: "transient" as const,
-  events: ["sidebar:state", "sidebar:error", "sub:create_result", "agents:result", "files:list_result", "wire:result", "clone:path_picked", "file_picker:open"] as const,
+  events: ["sidebar:state", "sidebar:error", "sub:create_result", "agents:result", "wire:result", "clone:path_picked"] as const,
   requests: {
     ProcessToggle: { request: "process:toggle" as const, response: "void" as const },
     ProcessReorder: { request: "process:reorder" as const, response: "void" as const },
@@ -259,8 +230,6 @@ export const IpcChannelMeta = {
     AgentsFetch: { request: "agents:fetch" as const, response: "void" as const },
     StandSelect: { request: "stand:select" as const, response: "void" as const },
     RepoClonePickFolder: { request: "repo:clone:pickFolder" as const, response: "void" as const },
-    FilesList: { request: "files:list" as const, response: "void" as const },
-    FilesOpen: { request: "files:open" as const, response: "void" as const },
     WireFetch: { request: "wire:fetch" as const, response: "void" as const },
     WireAck: { request: "wire:ack" as const, response: "void" as const },
     UpdateApply: { request: "update:apply" as const, response: "void" as const },
@@ -289,8 +258,6 @@ export type IpcEnvelope =
   | ({ t: "agents:fetch" } & AgentsFetch)
   | ({ t: "stand:select" } & StandSelect)
   | ({ t: "repo:clone:pickFolder" } & RepoClonePickFolder)
-  | ({ t: "files:list" } & FilesList)
-  | ({ t: "files:open" } & FilesOpen)
   | ({ t: "wire:fetch" } & WireFetch)
   | ({ t: "wire:ack" } & WireAck)
   | ({ t: "update:apply" } & UpdateApply)
@@ -304,9 +271,7 @@ export type IpcEventEnvelope =
   | ({ t: "sidebar:error" } & SidebarError)
   | ({ t: "sub:create_result" } & SubCreateResult)
   | ({ t: "agents:result" } & AgentsResult)
-  | ({ t: "files:list_result" } & FilesListResult)
   | ({ t: "wire:result" } & WireResult)
-  | ({ t: "clone:path_picked" } & ClonePathPicked)
-  | ({ t: "file_picker:open" } & FilePickerOpen);
+  | ({ t: "clone:path_picked" } & ClonePathPicked);
 
 

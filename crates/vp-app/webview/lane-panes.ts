@@ -60,8 +60,10 @@ export type PaneRef = {
 	/** この pane の種類（doc 50 §4.6 A6）。host を誰が作るか / 何を mount するかが変わる:
 	 *  - `term`: host は World A（xterm）が所有。SolidJS は名札だけを差し込む
 	 *  - `chat`: host も中身も SolidJS が作る
-	 *  - `board`: lane に 1 枚の静的 host（session と直交） */
-	kind: "term" | "chat" | "board";
+	 *  - `board`: lane に 1 枚の静的 host（session と直交）
+	 *  - `code`: コードブラウザ（P1）。board と同族の lane に 1 枚・session 直交の静的 host。
+	 *    中身は SolidJS（CodePane.tsx）、開閉 SSOT は code-view.ts */
+	kind: "term" | "chat" | "board" | "code";
 };
 
 /** roster の入力になる session の最小形（'vp:conversation-sessions' bus の 1 要素）。
@@ -114,6 +116,14 @@ export const BOARD_PANE_REF: PaneRef = {
 	kind: "board",
 };
 
+/** code pane（コードブラウザ P1）。board と同じく **lane に 1 枚の静的 host**・session 直交。
+ *  roster 参加は「user が開いているとき」（float form は無いので board より単純 — open 1 bit）。 */
+export const CODE_PANE_REF: PaneRef = {
+	id: "lane-code",
+	label: "Code",
+	kind: "code",
+};
+
 /** chat session pane の host DOM id。表示中 lane の host にだけ使う（lane 切替で作り直すため
  *  lane を id に含めない — DOM には常に 1 lane 分しか存在しない） */
 export function chatHostId(session: number): string {
@@ -155,13 +165,20 @@ export function boardKeyOf(address: string): string {
 export function lanePaneRefs(
 	sessions: readonly PaneSession[],
 	boardInTiling = false,
+	codeInTiling = false,
 ): PaneRef[] {
 	const sessionPanes = sessions.map((v): PaneRef => {
 		const label = `${sessionChipPrefix(v.agent)}#${v.key}`;
 		const kind = v.mode === "gui" ? "chat" : "term";
 		return { id: hostIdForMode(v.key, v.mode), label, session: v.key, kind };
 	});
-	return boardInTiling ? [...sessionPanes, BOARD_PANE_REF] : sessionPanes;
+	// 並び = sessions → code → board。code（コードブラウザ）は作業対象に近いので
+	// session 群の直後、board（掲示板）は従来どおり末尾。
+	return [
+		...sessionPanes,
+		...(codeInTiling ? [CODE_PANE_REF] : []),
+		...(boardInTiling ? [BOARD_PANE_REF] : []),
+	];
 }
 
 /** 入場 share = 可視 pane の raw 平均（creo-ui-layout `admit` の既定と同じ規則。
@@ -316,6 +333,9 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		string,
 		{ open: boolean; form: "float" | "docked" }
 	>();
+	/** code pane（コードブラウザ）の view 状態。SSOT は code-view.ts、ここは roster 判定用の
+	 *  写し（`vp:code-view` 購読で追随）。キーは board と同じ `(repo, lane)` 合成。 */
+	const codeViewByLane = new Map<string, { open: boolean }>();
 	/** 表示中 lane の動的 host の dispose（host id → SessionChatView の unmount） */
 	const dynDisposers = new Map<string, () => void>();
 	/** focusPane が「まだ生えていない pane」を指した時の保留先（boot 窓: applyConsoleMode は
@@ -327,10 +347,13 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		layoutEngine.current(scope).structure.columns.some((c) => c.panes.includes(id));
 
 	const refsOf = (lane: string): PaneRef[] => {
-		const v = boardViewByLane.get(boardKeyOf(lane));
+		const key = boardKeyOf(lane);
+		const v = boardViewByLane.get(key);
+		const c = codeViewByLane.get(key);
 		return lanePaneRefs(
 			sessionsByLane.get(lane) ?? [],
 			!!v && v.open && v.form === "docked",
+			!!c && c.open,
 		);
 	};
 
@@ -469,6 +492,10 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 			!boardFloating()
 		)
 			strays.push(board);
+		// code pane: roster 外なら無条件で畳む（board と違い float が無いので例外なし）。
+		// ⚠️ 漏れると roster 外の透明 viewport が hit-test に残り wheel を奪う（#899 と同型）。
+		const code = deps.hostOf(CODE_PANE_REF.id);
+		if (code && !refs.some((p) => p.id === CODE_PANE_REF.id)) strays.push(code);
 		for (const el of deps.container.querySelectorAll<HTMLElement>(
 			`.${TERM_HOST_CLASS}`,
 		)) {
@@ -557,6 +584,17 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		).detail;
 		if (!d?.lane) return;
 		boardViewByLane.set(d.lane, { open: d.open, form: d.form });
+		if (!activeLane || boardKeyOf(activeLane) !== d.lane) return;
+		syncRoster(activeLane);
+		render();
+	});
+
+	// code pane（コードブラウザ）: code-view.ts の open 変化を roster に反映する
+	// （vp:board-view の購読と同型。form が無いぶん detail は open だけ）。
+	document.addEventListener("vp:code-view", (e) => {
+		const d = (e as CustomEvent<{ lane: string; open: boolean }>).detail;
+		if (!d?.lane) return;
+		codeViewByLane.set(d.lane, { open: d.open });
 		if (!activeLane || boardKeyOf(activeLane) !== d.lane) return;
 		syncRoster(activeLane);
 		render();

@@ -122,10 +122,11 @@ fn regenerates_sidebar_ipc_bindings() {
         "sidebar:error",
         "sub:create_result",
         "agents:result",
-        "files:list_result",
         "wire:result",
         "clone:path_picked",
-        "file_picker:open",
+        // （旧 `files:list_result` / `file_picker:open` は code pane 化で退役 —
+        //   File Explorer overlay picker の sidebar channel ごと撤去。後継は
+        //   main webview 側の `code:entries` / `code:toggle`、vp-push.kdl の網羅）
     ] {
         assert!(rust_file.contains(wire), "Rust に wire 名 {wire} が無い");
         assert!(ts_file.contains(wire), "TS に wire 名 {wire} が無い");

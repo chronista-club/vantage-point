@@ -187,7 +187,7 @@ export function BucketList() {
 }
 
 /**
- * 区画の CSS。`Shell.tsx` の `SHELL_CSS` 末尾に連結する（FILE_EXPLORER_CSS 等と同じ流儀）。
+ * 区画の CSS。`Shell.tsx` の `SHELL_CSS` 末尾に連結する（WIRE_PANEL_CSS 等と同じ流儀）。
  * 色は Light Grid（`--lg-*`）、字は 4 段（`--sb-text-*`）だけを使う。
  */
 export const ACTIONS_CSS = `

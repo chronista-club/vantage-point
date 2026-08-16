@@ -65,12 +65,12 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
         true,
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyN)),
     );
-    // - "Open File..." (chord ⌘ hold f, p): active lane の workdir を File Explorer overlay
-    //   picker で開く。 規約 v1.0 (docs/design/18-shortcut-convention.md) で chord 主導線を
+    // - "Code Browser" (chord ⌘ hold f): active lane の code pane（コードブラウザ）を
+    //   toggle する。 規約 v1.0 (docs/design/18-shortcut-convention.md) で chord 主導線を
     //   採用したため、 menu accelerator (Cmd+O 単発) は持たない。 ただし menu item 自体は
-    //   discoverability のため keep し、 click すれば picker が開く (mouse 派 user 救済)。
+    //   discoverability のため keep し、 click すれば pane が開く (mouse 派 user 救済)。
     //   title に chord 文字列を併記して keyboard user にも learning hint を提供する。
-    let open_file_item = MenuItem::new("Open File...  (⌘ hold f, p)", true, None);
+    let open_file_item = MenuItem::new("Code Browser  (⌘ hold f)", true, None);
     let file_menu = Submenu::with_items(
         "File",
         true,

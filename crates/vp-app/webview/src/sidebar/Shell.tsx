@@ -29,7 +29,6 @@ import {
 	laneSelectHintVisible,
 } from "./keybindings";
 import { captureHintLabel, captureHintVisible } from "./directive-state";
-import { FileExplorer, FILE_EXPLORER_CSS } from "./FileExplorer";
 import { WirePanel, WIRE_PANEL_CSS } from "./WirePanel";
 import { LanePicker, LANE_PICKER_CSS } from "./LanePicker";
 import { CommandPalette, COMMAND_PALETTE_CSS } from "./CommandPalette";
@@ -101,7 +100,7 @@ export function Shell() {
 		<div class="vp-sidebar-shell">
 			{/* sidebar view modes (2026-08-01): フル形 3 段 (header / list / daemon) と
 			    スリム帯 (SlimRail) の 2 態を `[` directive で行き来する。overlay 群
-			    (ContextMenu / FileExplorer / ⌘K 等) は形に依らず常時 mount — 形は
+			    (ContextMenu / ⌘K 等) は形に依らず常時 mount — 形は
 			    「一覧の見せ方」であって機能の有効/無効ではない。 */}
 			<Show
 				when={sidebarForm() === "full"}
@@ -141,10 +140,6 @@ export function Shell() {
 			{/* 右クリック context menu (Lane 行 / repo ヘッダ 共通、 singleton、 VP-204 PR-1)。 */}
 			<ContextMenu />
 
-			{/* File Explorer overlay picker (singleton)。 LaneRow のフォルダボタン or Cmd+F で
-          window.vpFilePicker.open(address) を呼ぶと、 lane workdir 全体を被せる overlay が
-          出現してファイルを選べる。 選択すると Canvas (board) に投げて dismiss する ephemeral。 */}
-			<FileExplorer />
 
 			{/* Wire Inbox overlay panel (doc 34 §4 V1、 singleton)。 LaneRow の mailbox badge click で
           window.vpWire.open(address) が呼ばれ、 選択 lane の wire 履歴 (read-only) + ack を表示する。 */}
@@ -294,9 +289,9 @@ html,body{margin:0;height:100%;overflow:hidden;}
   -webkit-mask-image:radial-gradient(340px 480px at 50% 16%,#000 0%,transparent 76%);
   mask-image:radial-gradient(340px 480px at 50% 16%,#000 0%,transparent 76%);
   opacity:.05;}
-/* position:relative は FileExplorer overlay の inset:0 を sidebar 領域に閉じるために必要。
-   無いと overlay が viewport 基準になり、 sidebar 外の領域 (= ContextMenu と重なる場所) に
-   描画されて検索 input が見えなくなる (PR #439 dogfood feedback)。
+/* position:relative は overlay 系 (WirePanel / LanePicker 等) の inset:0 を sidebar 領域に
+   閉じるために必要。 無いと overlay が viewport 基準になり sidebar 外に描画される
+   (PR #439 dogfood feedback — 当時は FileExplorer で踏んだ。 picker は code pane 化で退役)。
    (+ Light Grid: ::before の ambience grid より上に content を置く役も担う) */
 .vp-sidebar-shell{position:relative;display:flex;flex-direction:column;height:100%;}
 /* 横線ゼロ方針 (mako 019f50fe): 画面に残ってよい横線は session tap だけ。
@@ -681,11 +676,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-ctx-item.danger.confirming{background:var(--color-status-error,#d4444c);
   color:#fff;}
 
-/* FileExplorer overlay の z-index は ContextMenu (.vp-ctx-backdrop=9998 / .vp-ctx-menu=9999)
-   より上に置く。 ContextMenu は position:fixed で WebView 全体を起点とするため、 overlay の
-   z-index が低いと picker 上に context menu が突き抜けて描画される
-   (moody-blues PR #439 final review Issue 1、 dogfood で実機目撃済)。 */
-/* Lane row のフォルダピッカー起動ボタン (FileExplorer overlay を開く trigger) */
+/* Lane row のコードブラウザ起動ボタン (lane 切替 + code pane を開く trigger) */
 .vp-lane-files-btn{display:inline-flex;align-items:center;padding:1px 3px;
   border:none;background:transparent;color:var(--lg-mute,#5C7A85);
   cursor:pointer;border-radius:3px;flex:0 0 auto;opacity:0;
@@ -711,7 +702,6 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-slim-foot{margin-top:auto;width:8px;height:8px;flex:none;border-radius:50%;
   background:var(--lg-mute-2,#38525b);}
 .vp-slim-foot.online{background:var(--lg-cyan-dim,#1C6C7C);}
-${FILE_EXPLORER_CSS}
 ${WIRE_PANEL_CSS}
 ${LANE_PICKER_CSS}
 ${COMMAND_PALETTE_CSS}

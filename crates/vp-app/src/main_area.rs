@@ -396,6 +396,10 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
    背後の xterm が透けないようにする（旧 pp-overlay の可読性対策の後継）。 */
 #lane-board{display:flex;flex-direction:column;background:var(--color-surface-bg-base);
   font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
+/* code pane（コードブラウザ P1）— positioning は board の鏡写し（solid surface で背後の
+   xterm を透けさせない）。中身の見た目は CodePane.tsx の CODE_PANE_CSS 側。 */
+#lane-code{display:flex;flex-direction:column;background:var(--color-surface-bg-base);
+  font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
 /* board の名札 — 台の中で「これは Board の board」と読める最小 chrome + Clear。 */
 .board-plate{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;
   gap:8px;padding:4px 10px;border-bottom:1px solid var(--color-surface-border,#1f2233);
@@ -680,6 +684,12 @@ body.rsb-open #edge-rail{display:none !important;}
         </div>
         <div class="board-history-strip" id="board-history-strip"></div>
       </div>
+      <!-- code pane（コードブラウザ P1）: board と同族の **lane に 1 枚の静的 host**・session
+           直交。中身は CodePane.tsx（SolidJS mount）、開閉 SSOT は code-view.ts、display を
+           書くのは lane-panes（roster render + stray 掃除）**一本**。初期 display:none は
+           boot〜初 render の窓で lane-panes 以外の書き手を作らないための初期値（board は
+           board-view が display を所有するため不要だが、code に float は無い）。 -->
+      <div id="lane-code" style="display:none"></div>
     </div>
     <!-- edge rail（doc 56 prototype、2026-07-30）: lane 級動詞の家 = 右端の帯。原理は
          「動詞の級 = 住所」— New（生成）が上、board 取っ手が続く。pane 級は各 pane の名札、

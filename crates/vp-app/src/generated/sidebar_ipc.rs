@@ -97,19 +97,6 @@ pub struct StandSelect {
 pub struct RepoClonePickFolder;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FilesList {
-    pub path: String,
-    pub address: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FilesOpen {
-    pub path: String,
-    pub address: String,
-    pub rel_path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireFetch {
     pub path: String,
     pub address: String,
@@ -172,13 +159,6 @@ pub struct AgentsResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FilesListResult {
-    pub address: String,
-    pub entries: Vec<serde_json::Value>,
-    pub truncated: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireResult {
     pub payload: serde_json::Value,
 }
@@ -186,11 +166,6 @@ pub struct WireResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClonePathPicked {
     pub path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FilePickerOpen {
-    pub address: String,
 }
 
 /// Envelope enum for channel "ipc" — a discriminated union over its
@@ -230,10 +205,6 @@ pub enum IpcEnvelope {
     StandSelect(StandSelect),
     #[serde(rename = "repo:clone:pickFolder")]
     RepoClonePickFolder,
-    #[serde(rename = "files:list")]
-    FilesList(FilesList),
-    #[serde(rename = "files:open")]
-    FilesOpen(FilesOpen),
     #[serde(rename = "wire:fetch")]
     WireFetch(WireFetch),
     #[serde(rename = "wire:ack")]
@@ -261,12 +232,8 @@ pub enum IpcEventEnvelope {
     SubCreateResult(SubCreateResult),
     #[serde(rename = "agents:result")]
     AgentsResult(AgentsResult),
-    #[serde(rename = "files:list_result")]
-    FilesListResult(FilesListResult),
     #[serde(rename = "wire:result")]
     WireResult(WireResult),
     #[serde(rename = "clone:path_picked")]
     ClonePathPicked(ClonePathPicked),
-    #[serde(rename = "file_picker:open")]
-    FilePickerOpen(FilePickerOpen),
 }

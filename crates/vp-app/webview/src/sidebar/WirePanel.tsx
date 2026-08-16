@@ -304,7 +304,7 @@ export function WirePanel() {
 	);
 }
 
-/** Shell.tsx の <style> に連結する CSS (FILE_EXPLORER_CSS と同じ流儀)。 */
+/** Shell.tsx の <style> に連結する CSS (LANE_PICKER_CSS と同じ流儀)。 */
 export const WIRE_PANEL_CSS = `
 /* LaneRow の mailbox badge は WirePanel の起動ボタンを兼ねる */
 .vp-lane-msg{cursor:pointer;}

@@ -247,22 +247,25 @@ function enterLaneSelectMode(): void {
 // handlers（= 旧 dispatchDirective の if-block。 registry.ts の Action.run が呼ぶ）
 // =============================================================================
 
-/** `f` — File Explorer overlay を open + sidebar focus 移動。 */
-export function runFileExplorer(): void {
-	const address = sidebar.active_lane_address;
-	if (!address) {
-		console.debug("[directive f] active lane なし、 picker open skip");
-		return;
+/** `f` — code pane（コードブラウザ）の toggle。
+ *
+ *  実体は main bundle（code-view.ts）。active lane の判定も向こうに委譲する
+ *  （sidebar で二重判定すると片方だけ古くなる）。受け手不在（bundle 未評価の窓）は
+ *  optional chain の no-op = 押しても何も起きないだけで壊れない。 */
+export function runCodePane(): void {
+	if (window.vpCodePane) {
+		window.vpCodePane.toggle();
+	} else {
+		console.debug("[directive f] vpCodePane 未到着（bundle 評価前）、 toggle skip");
 	}
-	window.vpFilePicker?.open(address);
 }
 
-/** `p` — send current/selected to board。 */
-export function runSendToPP(): void {
-	if (window.vpFilePicker?.sendSelectedToPP) {
-		window.vpFilePicker.sendSelectedToPP();
+/** `p` — code pane の選択 file を board へ投擲。 */
+export function runSendToBoard(): void {
+	if (window.vpCodePane) {
+		window.vpCodePane.sendSelectedToBoard();
 	} else {
-		console.debug("[directive p] no current selection (picker not visible)");
+		console.debug("[directive p] vpCodePane 未到着（bundle 評価前）、 send skip");
 	}
 }
 

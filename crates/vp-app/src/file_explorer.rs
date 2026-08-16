@@ -1,11 +1,16 @@
-//! Sidebar File Explorer (overlay picker) — lane workdir walk + ファイル open
+//! code pane（コードブラウザ）の file 供給 — lane workdir walk + ファイル読み
 //!
 //! ## 役割
 //!
-//! `files:list` / `files:open` IPC (`schema/vp-sidebar.kdl` 参照) の Rust 側実装。
-//! `list_entries` で lane workdir 配下のファイルツリーを `.gitignore` を尊重して
-//! 列挙し、 `open_file` で選択ファイルを Canvas (Board) 向けの JSON content
-//! shape (`board-handler.ts` の `ShowMessage::content` と一致) に変換する。
+//! `code:list` / `code:read` / `code:board` IPC（`schema/vp-push.kdl` の応答 event と対、
+//! 要求は main webview の CodePane.tsx 発）の Rust 側実装。
+//! - `list_entries`: lane workdir 配下のファイルツリーを `.gitignore` 尊重で列挙
+//! - `read_file`: pane 内表示用の raw text（`{"text"} | {"error"}` の 2 択）
+//! - `open_file`: 投擲（`code:board`）用に Canvas (Board) 向けの JSON content
+//!   shape（`board-handler.ts` の `ShowMessage::content` と一致）へ変換
+//!
+//! （旧 Sidebar File Explorer overlay picker の Rust 側が前身。picker は code pane 化で
+//! 退役したが、walk / open の実装はそのまま code pane の供給源になった。）
 //!
 //! ## 設計判断
 //!
@@ -199,9 +204,61 @@ pub fn open_file(workdir: &Path, rel_path: &str) -> serde_json::Value {
     }
 }
 
+/// code pane（コードブラウザ P1）の内容表示用にファイルを読む。
+///
+/// `open_file` が board 向けの **render 済み content**（markdown / html / log）を返すのに
+/// 対し、こちらは **raw source** を返す。markdown も render しない — pane はコードブラウザ
+/// なので、`.md` は「描画結果」でなく「ソース」を見せるのが役割。表示側（CodePane.tsx）は
+/// Solid の text 挿入（自動 escape）+ `<pre>` で描く。
+///
+/// 返り値は `{"text": string} | {"error": string}` の 2 択。1 object に両方 optional で
+/// 載せると「どちらでもない」が型に載る（vp-push.kdl の ink:snapshot 2 分割と同じ判断だが、
+/// ここは受け手が同一 view で本文/理由を出し分けるだけなので 1 event 2 択で閉じる）。
+///
+/// 画像は error に倒す — pane の text 面では見えないが、投擲（`code:board` → `open_file`
+/// 経路）すれば board で見える、という導線を error 文言で案内する。
+pub fn read_file(workdir: &Path, rel_path: &str) -> serde_json::Value {
+    let safe_rel = match safe_rel_path(rel_path) {
+        Some(p) => p,
+        None => return json_error("invalid path (traversal or absolute)"),
+    };
+    let full = workdir.join(&safe_rel);
+
+    let meta = match std::fs::metadata(&full) {
+        Ok(m) if m.is_file() => m,
+        Ok(_) => return json_error("not a regular file"),
+        Err(e) => return json_error(&format!("metadata error: {e}")),
+    };
+
+    match classify_extension(rel_path) {
+        FileKind::Markdown | FileKind::Text => {
+            if meta.len() > MAX_TEXT_BYTES {
+                return json_error(&format!(
+                    "file too large ({} bytes, max {MAX_TEXT_BYTES})",
+                    meta.len()
+                ));
+            }
+            let bytes = match std::fs::read(&full) {
+                Ok(b) => b,
+                Err(e) => return json_error(&format!("read failed: {e}")),
+            };
+            if has_nul_in_prefix(&bytes) {
+                return json_error("binary content (NUL byte detected)");
+            }
+            serde_json::json!({ "text": String::from_utf8_lossy(&bytes).into_owned() })
+        }
+        FileKind::Image => json_error("image — → Board で投擲すれば board に表示されます"),
+        FileKind::Unsupported(reason) => json_error(&reason),
+    }
+}
+
 // =============================================================================
 // internals
 // =============================================================================
+
+fn json_error(reason: &str) -> serde_json::Value {
+    serde_json::json!({ "error": reason })
+}
 
 enum FileKind {
     Markdown,
@@ -560,5 +617,66 @@ mod tests {
             classify_extension("noext"),
             FileKind::Unsupported(_)
         ));
+    }
+
+    // ===== read_file（code pane の内容表示）=====
+    //
+    // ⚠️ open_file（board 向け render 済み content）との違いが仕様:
+    // markdown も **raw source** で返す。error は `{"error"}` 1 形。
+
+    #[test]
+    fn read_markdown_returns_raw_text_not_rendered() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), "doc.md", b"# Title\n\nbody");
+        let v = read_file(tmp.path(), "doc.md");
+        // render せずソースのまま（open_file は `markdown` variant にするのと対比）
+        assert_eq!(v["text"], serde_json::json!("# Title\n\nbody"));
+        assert!(v.get("markdown").is_none());
+        assert!(v.get("error").is_none());
+    }
+
+    #[test]
+    fn read_rust_returns_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), "src/main.rs", b"fn main() {}\n");
+        let v = read_file(tmp.path(), "src/main.rs");
+        assert_eq!(v["text"], serde_json::json!("fn main() {}\n"));
+    }
+
+    #[test]
+    fn read_image_returns_error_pointing_to_board() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), "logo.png", b"\x89PNG");
+        let v = read_file(tmp.path(), "logo.png");
+        assert!(v.get("text").is_none());
+        assert!(v["error"].as_str().unwrap().contains("Board"));
+    }
+
+    #[test]
+    fn read_rejects_traversal_and_hidden() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), "ok.txt", b"x");
+        touch(tmp.path(), ".env", b"SECRET=1");
+        assert!(read_file(tmp.path(), "../ok.txt").get("error").is_some());
+        assert!(read_file(tmp.path(), "/etc/passwd").get("error").is_some());
+        // hidden は list に出ないが、rel_path 直叩き（IPC 偽造）でも読めないこと
+        assert!(read_file(tmp.path(), ".env").get("error").is_some());
+    }
+
+    #[test]
+    fn read_too_large_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let big = vec![b'a'; (MAX_TEXT_BYTES + 1) as usize];
+        touch(tmp.path(), "big.txt", &big);
+        let v = read_file(tmp.path(), "big.txt");
+        assert!(v["error"].as_str().unwrap().contains("too large"));
+    }
+
+    #[test]
+    fn read_binary_with_text_extension_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), "fake.txt", b"\x00\x01\x02");
+        let v = read_file(tmp.path(), "fake.txt");
+        assert!(v["error"].as_str().unwrap().contains("NUL"));
     }
 }

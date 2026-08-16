@@ -93,6 +93,23 @@ export interface InkSnapshotError {
   message: string;
 }
 
+/** Event "code:entries" */
+export interface CodeEntries {
+  lane: string;
+  entries: any[];
+  truncated: boolean;
+}
+
+/** Event "code:file" */
+export interface CodeFile {
+  lane: string;
+  rel_path: string;
+  payload: any;
+}
+
+/** Event "code:toggle" — empty payload */
+export interface CodeToggle {}
+
 /** Event "board:message" */
 export interface BoardMessage {
   message: any;
@@ -120,6 +137,9 @@ export type PushChannelEventTypes = {
   ConsoleAgents: ConsoleAgents;
   InkSnapshot: InkSnapshot;
   InkSnapshotError: InkSnapshotError;
+  CodeEntries: CodeEntries;
+  CodeFile: CodeFile;
+  CodeToggle: CodeToggle;
   BoardMessage: BoardMessage;
   DebuglogLines: DebuglogLines;
 };
@@ -133,7 +153,7 @@ export const PushChannelMeta = {
   backend: "stream" as const,
   from: "server" as const,
   lifetime: "persistent" as const,
-  events: ["term:ensure_lane", "term:show_lane", "term:remove_lane", "term:remove_session", "term:paste", "devices:render", "shell:layout", "console:session_list", "console:event", "console:mode_applied", "console:agents", "ink:snapshot", "ink:snapshot_error", "board:message", "debuglog:lines"] as const,
+  events: ["term:ensure_lane", "term:show_lane", "term:remove_lane", "term:remove_session", "term:paste", "devices:render", "shell:layout", "console:session_list", "console:event", "console:mode_applied", "console:agents", "ink:snapshot", "ink:snapshot_error", "code:entries", "code:file", "code:toggle", "board:message", "debuglog:lines"] as const,
   requests: {} as const,
   __types: undefined as unknown as { events: PushChannelEventTypes; requests: PushChannelRequestTypes },
 } as const;
@@ -153,6 +173,9 @@ export type PushEventEnvelope =
   | ({ t: "console:agents" } & ConsoleAgents)
   | ({ t: "ink:snapshot" } & InkSnapshot)
   | ({ t: "ink:snapshot_error" } & InkSnapshotError)
+  | ({ t: "code:entries" } & CodeEntries)
+  | ({ t: "code:file" } & CodeFile)
+  | ({ t: "code:toggle" } & CodeToggle)
   | ({ t: "board:message" } & BoardMessage)
   | ({ t: "debuglog:lines" } & DebuglogLines);
 

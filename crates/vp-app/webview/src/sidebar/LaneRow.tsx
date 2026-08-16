@@ -374,10 +374,14 @@ export function LaneRow(props: {
 				<button
 					class="vp-lane-files-btn"
 					type="button"
-					title="ファイルを開く (Cmd+F)"
+					title="コードブラウザを開く (Cmd+F)"
 					onClick={(e) => {
 						e.stopPropagation();
-						window.vpFilePicker?.open(addr());
+						// 非 active lane の行から押した場合: lane を切り替えつつ、その lane の
+						// code pane を開く（openFor は open flag を立てるだけ — 表示は lane 切替
+						// 後の roster が行う）。
+						sendIpc({ t: "lane:select", path: props.repoPath, address: addr() });
+						window.vpCodePane?.openFor(addr());
 					}}
 				>
 					<CreoIcon name="ph:folder-open" size={12} />
