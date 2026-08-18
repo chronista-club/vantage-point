@@ -1409,7 +1409,10 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // 旧名の会話 id / 安定 id が「衝突時は上書きしない」規則で永久に取り残される。
     let renamed = vp_paths::migrate_root_lane_state_files(&crate::config::vp_state_dir());
     if renamed > 0 {
-        tracing::info!("予約 lane 名 migration: state file {renamed} 件を root へ改名");
+        tracing::info!(
+            "予約 lane 名 migration: state file {renamed} 件を {} へ改名",
+            vp_paths::ROOT_LANE_NAME
+        );
     }
 
     // [::]: dual-stack (IPv6 + IPv4) bind on all interfaces (WSL2/LAN 経由アクセス対応)
