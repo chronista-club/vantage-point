@@ -53,7 +53,7 @@ enum Commands {
     Now {
         /// 「今なにを」の 1 行（例: "panic 箇所を特定中"）
         text: String,
-        /// lane address 明示（env 不在の手動実行用: "<repo>/root" 等）
+        /// lane address 明示（env 不在の手動実行用: "<repo>/main" 等）
         #[arg(long)]
         lane: Option<String>,
         /// session key 明示（省略時 VP_SESSION_KEY → それも無ければ root）

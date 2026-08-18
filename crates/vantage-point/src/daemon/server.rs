@@ -1409,7 +1409,10 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // 旧名の会話 id / 安定 id が「衝突時は上書きしない」規則で永久に取り残される。
     let renamed = vp_paths::migrate_root_lane_state_files(&crate::config::vp_state_dir());
     if renamed > 0 {
-        tracing::info!("予約 lane 名 migration: state file {renamed} 件を root へ改名");
+        tracing::info!(
+            "予約 lane 名 migration: state file {renamed} 件を {} へ改名",
+            vp_paths::ROOT_LANE_NAME
+        );
     }
 
     // [::]: dual-stack (IPv6 + IPv4) bind on all interfaces (WSL2/LAN 経由アクセス対応)
@@ -2733,13 +2736,13 @@ mod tests {
                 "/repos/zeta".to_string(),
                 vec![
                     mk("zeta", "later", "2026-07-02T00:00:00Z", "shell"),
-                    mk("zeta", "root", "2026-07-03T00:00:00Z", "claude"),
+                    mk("zeta", "main", "2026-07-03T00:00:00Z", "claude"),
                     mk("zeta", "earlier", "2026-07-01T00:00:00Z", "claude"),
                 ],
             );
             registry.insert(
                 "/repos/alpha".to_string(),
-                vec![mk("alpha", "root", "2026-07-01T00:00:00Z", "claude")],
+                vec![mk("alpha", "main", "2026-07-01T00:00:00Z", "claude")],
             );
         }
 
@@ -2747,18 +2750,18 @@ mod tests {
         let cases: [(serde_json::Value, Vec<&str>); 5] = [
             (
                 serde_json::json!({}),
-                // alpha/root → zeta/root（開発起点先）→ earlier → later（created_at 昇順）
-                vec!["root", "root", "earlier", "later"],
+                // alpha/main → zeta/main（開発起点先）→ earlier → later（created_at 昇順）
+                vec!["main", "main", "earlier", "later"],
             ),
             (
                 serde_json::json!({"repo": "zeta"}),
-                vec!["root", "earlier", "later"],
+                vec!["main", "earlier", "later"],
             ),
             (
                 serde_json::json!({"agent": "claude"}),
-                vec!["root", "root", "earlier"],
+                vec!["main", "main", "earlier"],
             ),
-            (serde_json::json!({"lane": "root"}), vec!["root", "root"]),
+            (serde_json::json!({"lane": "main"}), vec!["main", "main"]),
             (serde_json::json!({"repo": "nonexistent"}), vec![]),
         ];
 

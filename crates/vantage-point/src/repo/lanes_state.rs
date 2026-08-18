@@ -760,9 +760,12 @@ impl LanePool {
         // doc 54 §8-11: main の**初回作成**（registry file 不在 = 一度も仕込みを持って
         // いない）は既定レンズを書く。with_root は毎 boot 呼ばれるので、file 不在を生成契機と
         // みなす — 以降の boot は既存 file を honor（= user の mode 切替が boot で戻らない）。
-        if !session_registry::exists(&repo_id, "root") {
+        // ⚠️ label は address から導く（`"root"` 直書きは 2026-08-16 の予約名 rename まで
+        // 残っていた取り残し — 文字列直書きは rustc が検知できない。§6.4 の同型）。
+        let label = addr.name.as_str();
+        if !session_registry::exists(&repo_id, label) {
             let mode = session_registry::default_mode_for_agent(agent_name);
-            if let Err(e) = session_registry::set_root_mode(&repo_id, "root", agent_name, mode) {
+            if let Err(e) = session_registry::set_root_mode(&repo_id, label, agent_name, mode) {
                 tracing::warn!(
                     "main 既定レンズの永続失敗（Tui 相当で継続）: repo={repo_id} err={e}"
                 );
@@ -776,8 +779,8 @@ impl LanePool {
         // server.rs 自身が「restructure したいが不可」とコメントを残していた場所でもある。
         // 立てる仕事を reconcile に渡すと、その制約ごと消える。
         let info = LaneInfo {
-            // I1: main の安定 id を address (repo, "root") で load_or_create
-            id: crate::lane::lane_id::load_or_create(&repo_id, "root"),
+            // I1: main の安定 id を address（repo × 予約名）で load_or_create
+            id: crate::lane::lane_id::load_or_create(&repo_id, label),
             address: addr.clone(),
             // 代表値は reconcile が実体から導出して上書きする（doc 53 §3.3）。
             state: LaneState::Running,
@@ -1217,24 +1220,38 @@ impl LanePool {
     /// Display 形 (`"<repo>/root"` / `"<repo>/sub/<name>"`) をパースして LaneAddress を作る。
     /// vp-app の sidebar から `lane:select` IPC の address (= `lane_address_key`) を逆変換するために使う。
     pub fn parse_address(s: &str) -> Option<LaneAddress> {
+        // 旧世代の**予約名**を現行の予約名へ写す（形の救済と直交する、名前の救済）。
+        //
+        // 予約名は `conductor` → `root` → `main` と 2 度改名されており、DB / session.json の
+        // address 文字列に旧名のまま残る。ここで寄せておくと、起動時の
+        // `normalize_legacy_lane_addresses`（parse → to_string の差分検知）が**既存行を
+        // 自動で新名へ書き換える** = 名前の migration を別途書かなくてよい。
+        //
+        // ⚠️ 旧予約名の Sub は存在しえない（`validate_sub_name` が当時から予約名を拒否）
+        // ので、この写しが実在の Sub を誤って Main に化けさせることはない。
+        fn name_or_root(repo: &str, name: &str) -> LaneAddress {
+            if vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&name) {
+                LaneAddress::root(repo)
+            } else {
+                LaneAddress::new(repo, name)
+            }
+        }
         let parts: Vec<&str> = s.splitn(3, '/').collect();
         match parts.as_slice() {
             // 旧 "lead" は開発起点の旧名 (main rename 前の session.json / wire address 互換)。
             [repo, "lead"] if !repo.is_empty() => Some(LaneAddress::root(*repo)),
             // 旧 2 分節形 "<repo>/<name>" (doc 44 P2 のフラット化形)。canonical が
             // `<repo>/lane/<name>` になった後も、永続 state / wire に残る旧形として受理する。
-            [repo, name] if !repo.is_empty() && !name.is_empty() => {
-                Some(LaneAddress::new(*repo, *name))
-            }
+            [repo, name] if !repo.is_empty() && !name.is_empty() => Some(name_or_root(repo, name)),
             // 旧 3 分節形 "<repo>/sub/<name>" (P2 以前の永続 address / wire) を
             // 新形に正規化して受理する。lead/wing → root/sub の rename 時と同じ手当て
             // で、DB (`lane` / `lane_lifecycle` の address 列) と session.json を無傷で引き継ぐ。
             // canonical: "<repo>/lane/<name>"。名前空間を明示した現行形。
             [repo, LANE_SEGMENT, name] if !repo.is_empty() && !name.is_empty() => {
-                Some(LaneAddress::new(*repo, *name))
+                Some(name_or_root(repo, name))
             }
             [repo, "sub" | "wing", name] if !repo.is_empty() && !name.is_empty() => {
-                Some(LaneAddress::new(*repo, *name))
+                Some(name_or_root(repo, name))
             }
             _ => None,
         }
@@ -2398,7 +2415,7 @@ mod tests {
         // with_root が書き換えないこと — 「不在なら書く」の gate の証明。
         session_registry::create(
             "vptest-chatdefault",
-            "root",
+            "main",
             "claude",
             "claude",
             SessionMode::Tui,
@@ -2407,7 +2424,7 @@ mod tests {
         .expect("user が session #2 を追加");
         let pool = LanePool::with_root("vptest-chatdefault", "/tmp");
         assert_eq!(
-            session_registry::load("vptest-chatdefault", "root", "claude")
+            session_registry::load("vptest-chatdefault", "main", "claude")
                 .sessions
                 .len(),
             2,
@@ -2439,7 +2456,7 @@ mod tests {
 
         // root(#1) の会話 id を記録（doc 40: SSOT は registry）。
         let root_conv = || {
-            crate::lane::session_registry::load("vp", "root", "claude")
+            crate::lane::session_registry::load("vp", "main", "claude")
                 .sessions
                 .iter()
                 .find(|s| s.key == 1)
@@ -2447,7 +2464,7 @@ mod tests {
         };
         crate::lane::session_registry::set_conversation(
             "vp",
-            "root",
+            "main",
             "claude",
             1,
             Some("old-session-id"),
@@ -2496,11 +2513,11 @@ mod tests {
     fn fresh_clear_wipes_stores_regardless_of_console_mode() {
         let _state = crate::test_env::state_dir();
         let addr = LaneAddress::root("vp");
-        crate::lane::session_registry::set_conversation("vp", "root", "claude", 1, Some("old-id"))
+        crate::lane::session_registry::set_conversation("vp", "main", "claude", 1, Some("old-id"))
             .expect("record conversation");
         LanePool::clear_fresh_lane_state(&addr, "claude", SessionMode::Tui).expect("clear");
         assert_eq!(
-            crate::lane::session_registry::load("vp", "root", "claude").sessions[0].conversation,
+            crate::lane::session_registry::load("vp", "main", "claude").sessions[0].conversation,
             None,
             "mode に依らず fresh 破棄で会話 id（registry）が消える"
         );
@@ -2521,11 +2538,11 @@ mod tests {
             .create_chat_session(&addr, Some("codex"), false)
             .expect("create session");
         assert_eq!(k2, 2);
-        crate::lane::session_registry::set_conversation("vp", "root", "claude", 1, Some("cc-id-1"))
+        crate::lane::session_registry::set_conversation("vp", "main", "claude", 1, Some("cc-id-1"))
             .expect("record #1");
         crate::lane::session_registry::set_conversation(
             "vp",
-            "root",
+            "main",
             "claude",
             2,
             Some("0199-codex-id"),
@@ -2534,7 +2551,7 @@ mod tests {
         // 副 session（codex）の replay 源にも会話を仕込む — fresh はこれも捨てるべき。
         crate::conversation::replay_log::append(
             "vp",
-            "root#2",
+            "main#2",
             &crate::conversation::ConversationEvent::MessageChunk {
                 text: "old codex reply".to_string(),
             },
@@ -2544,11 +2561,11 @@ mod tests {
         pool.reset_lane(&addr).expect("reset");
 
         assert!(
-            crate::conversation::replay_log::load("vp", "root#2").is_empty(),
+            crate::conversation::replay_log::load("vp", "main#2").is_empty(),
             "副 session (#2) の replay 源も消える（残すと New Session なのに前会話が replay される）"
         );
         // registry ごと既定形（N=1）へ戻る = 全 session の会話 id が道連れに消える（doc 40 SSOT）。
-        let reg = crate::lane::session_registry::load("vp", "root", "claude");
+        let reg = crate::lane::session_registry::load("vp", "main", "claude");
         assert_eq!(reg.sessions.len(), 1, "registry は既定形（N=1）へ戻る");
         assert_eq!(reg.focused, 1);
         assert_eq!(reg.sessions[0].conversation, None, "#1 の会話 id も消える");
@@ -2579,7 +2596,7 @@ mod tests {
             }
         }
         // 非 root の term session（A6 で replay を持つようになった側）を registry に足す。
-        session_registry::create("vp", "root", "shell", "shell", SessionMode::Tui, false)
+        session_registry::create("vp", "main", "shell", "shell", SessionMode::Tui, false)
             .expect("非 root term session");
 
         let file_of = |session: SessionKey| {
@@ -2656,14 +2673,14 @@ mod tests {
         };
 
         // engine 持ちの非 root session を足し、root=1 時点の両者の path を覚える。
-        session_registry::create("vp", "root", "claude", "claude", SessionMode::Tui, false)
+        session_registry::create("vp", "main", "claude", "claude", SessionMode::Tui, false)
             .expect("非 root session");
         let (p1_before, p2_before) = (path_of(1), path_of(2));
         assert_ne!(p1_before, p2_before, "session ごとに別 file");
 
         // root を #2 へ付け替える。
         pool.switch_root_session(&addr, 2).expect("root 付け替え");
-        assert_eq!(session_registry::root("vp", "root"), 2, "root が動いた");
+        assert_eq!(session_registry::root("vp", "main"), 2, "root が動いた");
 
         // **どちらの file も動かない** = 内容の混入も奪い合いも起きない。
         assert_eq!(
@@ -2779,11 +2796,11 @@ mod tests {
         let k2 = pool
             .create_chat_session(&addr, Some("codex"), true)
             .expect("create #2");
-        crate::lane::session_registry::set_conversation("vp", "root", "claude", 1, Some("cc-id-1"))
+        crate::lane::session_registry::set_conversation("vp", "main", "claude", 1, Some("cc-id-1"))
             .expect("record #1");
         crate::lane::session_registry::set_conversation(
             "vp",
-            "root",
+            "main",
             "claude",
             2,
             Some("0199-codex-id"),
@@ -2792,14 +2809,14 @@ mod tests {
         // #2（codex）の replay 源にも会話を仕込む — close で消えるべき。
         crate::conversation::replay_log::append(
             "vp",
-            "root#2",
+            "main#2",
             &crate::conversation::ConversationEvent::MessageChunk {
                 text: "codex reply".to_string(),
             },
         )
         .expect("replay log append #2");
         // term 側の replay（PTY 画面）も置いておく — A6 で非 root も持つようになった側。
-        let term_replay = crate::daemon::pty_slot::replay_file_path_session(&addr.repo, "root", 2);
+        let term_replay = crate::daemon::pty_slot::replay_file_path_session(&addr.repo, "main", 2);
         std::fs::create_dir_all(term_replay.parent().expect("parent")).expect("mkdir");
         std::fs::write(&term_replay, b"old screen").expect("write term replay");
 
@@ -2808,7 +2825,7 @@ mod tests {
         let focused = pool.remove_session(&addr, k2).expect("remove #2");
         pool.discard_session_traces(&addr, k2);
         assert_eq!(focused, 1);
-        let reg = crate::lane::session_registry::load("vp", "root", "claude");
+        let reg = crate::lane::session_registry::load("vp", "main", "claude");
         assert!(
             reg.sessions.iter().all(|s| s.key != 2),
             "閉じた session (#2) は registry から消える = 会話 id も道連れ（doc 40 SSOT）"
@@ -2819,7 +2836,7 @@ mod tests {
              team-b 10 回目 2026-07-25）: {term_replay:?}"
         );
         assert!(
-            crate::conversation::replay_log::load("vp", "root#2").is_empty(),
+            crate::conversation::replay_log::load("vp", "main#2").is_empty(),
             "閉じた session の replay 源も破棄される（slot で会話が蘇る嘘を防ぐ）"
         );
         assert_eq!(
@@ -2948,7 +2965,7 @@ mod tests {
 
         pool.create_chat_session(&addr, Some("codex"), false)
             .expect("create");
-        crate::lane::session_registry::set_conversation("vp", "root", "claude", 1, Some("cc-id-1"))
+        crate::lane::session_registry::set_conversation("vp", "main", "claude", 1, Some("cc-id-1"))
             .expect("record");
 
         let sessions = pool.list_chat_sessions(&addr).expect("list");
@@ -2977,25 +2994,25 @@ mod tests {
         insert_lane(&mut pool, &addr, SessionMode::Tui);
 
         // 同 engine（claude）の #2 → 切替 OK、root/focused が動く
-        session_registry::create("vp", "root", "claude", "claude", SessionMode::Gui, false)
+        session_registry::create("vp", "main", "claude", "claude", SessionMode::Gui, false)
             .expect("create #2");
         pool.switch_root_session(&addr, 2)
             .expect("同 engine への切替は通る");
-        let reg = session_registry::load("vp", "root", "claude");
+        let reg = session_registry::load("vp", "main", "claude");
         assert_eq!(reg.root, 2);
         assert_eq!(reg.focused, 2);
 
         // cross-engine（codex）の #3 → P4 で解禁（通る、root/focused が動く）
-        session_registry::create("vp", "root", "claude", "codex", SessionMode::Gui, false)
+        session_registry::create("vp", "main", "claude", "codex", SessionMode::Gui, false)
             .expect("create #3");
         pool.switch_root_session(&addr, 3)
             .expect("cross-engine（codex）への切替は P4 で通る");
-        let reg = session_registry::load("vp", "root", "claude");
+        let reg = session_registry::load("vp", "main", "claude");
         assert_eq!(reg.root, 3, "root は codex session #3 へ");
         assert_eq!(reg.focused, 3);
 
         // 未知 / 撤去済み agent（cursor）の #4 → Err（shell 層に落ちるため拒否のまま）
-        session_registry::create("vp", "root", "claude", "cursor", SessionMode::Gui, false)
+        session_registry::create("vp", "main", "claude", "cursor", SessionMode::Gui, false)
             .expect("create #4");
         let err = pool
             .switch_root_session(&addr, 4)
@@ -3086,10 +3103,10 @@ mod tests {
     fn lane_address_canonical_has_lane_segment() {
         // address の形式は `<repo>/lane/<name>`。⚠️ 定義は `canonical()` の 1 箇所で、
         // Display はそこへ委譲するだけ（人間向け trait を永続形の SSOT にしない）。
-        assert_eq!(LaneAddress::root("vp").canonical(), "vp/lane/root");
+        assert_eq!(LaneAddress::root("vp").canonical(), "vp/lane/main");
         assert_eq!(LaneAddress::sub("vp", "foo").canonical(), "vp/lane/foo");
         // Display が委譲しているか（片方だけ変わると永続と表示がずれる）。
-        assert_eq!(LaneAddress::root("vp").to_string(), "vp/lane/root");
+        assert_eq!(LaneAddress::root("vp").to_string(), "vp/lane/main");
     }
 
     /// ⚠️ **wire に `key` が載る**（daemon が発行する側）。載らないと client が
@@ -3141,6 +3158,36 @@ mod tests {
             LanePool::parse_address("vp/lead"),
             Some(LaneAddress::root("vp")),
             "旧 lead は開発起点へ"
+        );
+    }
+
+    /// 旧世代の**予約名**（conductor → root → main の 2 世代）が Main に写ること。
+    ///
+    /// ⚠️ これが無いと DB / session.json の `<repo>/lane/root` 等が「root という名の Sub」
+    /// として読まれ、起動時 normalizer も差分を検知せず**旧名の行が永久に残る**
+    /// （= 該当 lane の照合が新 canonical と一致せず、注視復元・upsert が無音で外れる）。
+    #[test]
+    fn parse_address_normalizes_legacy_reserved_names_to_main() {
+        let main = LaneAddress::root("vp");
+        for old in [
+            "vp/main",
+            "vp/lane/main",
+            "vp/sub/main",
+            "vp/conductor",
+            "vp/lane/conductor",
+        ] {
+            assert_eq!(
+                LanePool::parse_address(old),
+                Some(main.clone()),
+                "{old} が Main に正規化されない"
+            );
+        }
+        // 正規化後の canonical は現行予約名
+        assert_eq!(main.canonical(), "vp/lane/main");
+        // ⚠️ 紛らわしいが**別 lane** の名前は写さない（`root-old` は legacy 名ではない）
+        assert_eq!(
+            LanePool::parse_address("vp/lane/root-old"),
+            Some(LaneAddress::new("vp", "root-old"))
         );
     }
 
@@ -3214,7 +3261,7 @@ mod tests {
     #[test]
     fn legacy_lane_address_deserializes() {
         // 旧 main: name 省略 + kind field あり → 予約名に落ちる
-        let main: LaneAddress = serde_json::from_str(r#"{"repo":"vp","kind":"root"}"#).unwrap();
+        let main: LaneAddress = serde_json::from_str(r#"{"repo":"vp","kind":"main"}"#).unwrap();
         assert_eq!(main, LaneAddress::root("vp"));
         assert!(main.is_root());
 
@@ -3277,14 +3324,14 @@ mod tests {
 
     #[test]
     fn parse_address_main_and_sub() {
-        let main = LanePool::parse_address("vp/root").unwrap();
+        let main = LanePool::parse_address("vp/main").unwrap();
         assert_eq!(main, LaneAddress::root("vp"));
 
         let sub = LanePool::parse_address("vp/sub/foo").unwrap();
         assert_eq!(sub, LaneAddress::sub("vp", "foo"));
 
         // CJK / kebab-case repo name も通る
-        let main2 = LanePool::parse_address("vantage-point/root").unwrap();
+        let main2 = LanePool::parse_address("vantage-point/main").unwrap();
         assert_eq!(main2, LaneAddress::root("vantage-point"));
 
         // doc 44 P2: `vp/foo` は「未知 kind」ではなく **name が foo の lane** になった。
@@ -3295,7 +3342,7 @@ mod tests {
 
         // 不正
         assert!(LanePool::parse_address("vp").is_none()); // / 無し
-        assert!(LanePool::parse_address("/root").is_none()); // repo 空
+        assert!(LanePool::parse_address("/main").is_none()); // repo 空
         assert!(LanePool::parse_address("vp/").is_none()); // name 空
         assert!(LanePool::parse_address("vp/sub/").is_none()); // 旧形の name 空
         // 旧 "worker" token は受理しない（3 分節の互換は sub/wing のみ）
@@ -3318,8 +3365,8 @@ mod tests {
     #[test]
     fn lane_info_decodes_legacy_payload_with_tmux_field() {
         let legacy = r#"{
-            "address": {"repo": "vp", "kind": "root"},
-            "kind": "root",
+            "address": {"repo": "vp", "kind": "main"},
+            "kind": "main",
             "state": "running",
             "agent": "claude",
             "created_at": "2026-05-01T00:00:00Z",
@@ -3808,7 +3855,7 @@ mod tests {
                 info.agent = "shell".to_string(); // engine を注入しない slot（login shell のみ）
             }
             // #2 も registry 上の住人にする（reconcile は registry に居ない slot を畳むため）。
-            session_registry::create("vp", "root", "shell", "shell", SessionMode::Tui, false)
+            session_registry::create("vp", "main", "shell", "shell", SessionMode::Tui, false)
                 .expect("同居人 #2");
             for key in [1, 2] {
                 let (slot, rx) = spawn_test_slot("cat");
@@ -3937,7 +3984,7 @@ mod tests {
         );
 
         // registry: 新 session は Mode=Tui の同居人。root / focused は動かない。
-        let reg = session_registry::load("vp", "root", "claude");
+        let reg = session_registry::load("vp", "main", "claude");
         assert_eq!(reg.root, 1, "root は動かない（mailbox の主は root のまま）");
         assert_eq!(
             reg.focused, 1,
@@ -3980,7 +4027,7 @@ mod tests {
             let mut w = pool.write().await;
             insert_lane(&mut w, &addr, SessionMode::Tui);
             let k2 =
-                session_registry::create("vp", "root", "claude", "shell", SessionMode::Tui, false)
+                session_registry::create("vp", "main", "claude", "shell", SessionMode::Tui, false)
                     .expect("create #2");
             insert_fake_chat_engine(&mut w, &addr, k2);
             // root(#1) には既に console がある（reconcile が張り替えないことも併せて見る）。
@@ -4007,7 +4054,7 @@ mod tests {
         let k3 = {
             let mut w = pool.write().await;
             let k3 =
-                session_registry::create("vp", "root", "claude", "claude", SessionMode::Gui, false)
+                session_registry::create("vp", "main", "claude", "claude", SessionMode::Gui, false)
                     .expect("create #3");
             let (slot, rx) = spawn_test_slot("cat");
             w.insert_pty_slot(addr.clone(), Some(k3), slot, rx);
@@ -4053,7 +4100,7 @@ mod tests {
             "行き止まりの console を作らない: {err}"
         );
         assert_eq!(
-            session_registry::load("vp", "root", "claude")
+            session_registry::load("vp", "main", "claude")
                 .sessions
                 .len(),
             1,
@@ -4074,7 +4121,7 @@ mod tests {
             );
         }
         assert!(
-            session_registry::load("vp", "root", "claude")
+            session_registry::load("vp", "main", "claude")
                 .sessions
                 .iter()
                 .any(|s| s.key == key),
@@ -4110,16 +4157,16 @@ mod tests {
             let mut pool = LanePool::new();
             insert_lane(&mut pool, &addr, mode);
             // 会話 id を持たせる（Reset が intent ごと捨てることも併せて見る）。
-            session_registry::set_conversation("vp", "root", "claude", 1, Some("old-id"))
+            session_registry::set_conversation("vp", "main", "claude", 1, Some("old-id"))
                 .expect("record conversation");
 
             pool.reset_lane(&addr).expect("reset");
 
             assert!(
-                session_registry::exists("vp", "root"),
+                session_registry::exists("vp", "main"),
                 "Reset の後 registry file が存在する（不在だと観測者によって型が変わる）: mode={mode:?}"
             );
-            let reg = session_registry::load("vp", "root", "claude");
+            let reg = session_registry::load("vp", "main", "claude");
             assert_eq!(reg.sessions.len(), 1, "既定形（N=1）へ: mode={mode:?}");
             assert_eq!(
                 reg.sessions[0].mode, mode,
@@ -4130,7 +4177,7 @@ mod tests {
                 "会話は捨てる: mode={mode:?}"
             );
             // 次の lane のために片付ける（同じ repo/lane 名を使い回すため）。
-            session_registry::clear("vp", "root").expect("cleanup");
+            session_registry::clear("vp", "main").expect("cleanup");
         }
     }
 
@@ -4155,7 +4202,7 @@ mod tests {
             let mut w = pool.write().await;
             insert_lane(&mut w, &addr, SessionMode::Tui);
             // #2 = 別 engine の console（cross-engine root 切替の対象）。
-            session_registry::create("vp", "root", "claude", "codex", SessionMode::Tui, false)
+            session_registry::create("vp", "main", "claude", "codex", SessionMode::Tui, false)
                 .expect("create #2");
             for key in [1, 2] {
                 let (slot, rx) = spawn_test_slot("cat");
@@ -4183,7 +4230,7 @@ mod tests {
             "どの pane の pid も動かない"
         );
         assert_eq!(
-            session_registry::load("vp", "root", "claude").root,
+            session_registry::load("vp", "main", "claude").root,
             2,
             "代表だけが動く"
         );
@@ -4221,7 +4268,7 @@ mod tests {
         {
             let mut w = pool.write().await;
             insert_chat_lane(&mut w, &addr);
-            session_registry::create("vp", "root", "claude", "codex", SessionMode::Gui, false)
+            session_registry::create("vp", "main", "claude", "codex", SessionMode::Gui, false)
                 .expect("create #2");
             for key in [1, 2] {
                 let (slot, rx) = spawn_test_slot("cat");
@@ -4240,7 +4287,7 @@ mod tests {
         );
         assert!(!pool_r.term_attaches.contains_key(&addr), "双子も残らない");
         assert_eq!(
-            session_registry::load("vp", "root", "claude")
+            session_registry::load("vp", "main", "claude")
                 .sessions
                 .len(),
             1,

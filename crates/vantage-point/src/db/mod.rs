@@ -2073,8 +2073,8 @@ mod tests {
             "旧形が残ってはならない（孤児化する）: {addrs:?}"
         );
         assert!(
-            addrs.contains(&"vp/lane/root"),
-            "旧 2 分節 vp/root も canonical へ寄る: {addrs:?}"
+            addrs.contains(&"vp/lane/main"),
+            "旧 2 分節 vp/root は canonical + 新予約名（main）へ寄る: {addrs:?}"
         );
     }
 
@@ -2322,11 +2322,11 @@ mod tests {
         };
 
         // 2 repo に lane を入れる
-        db.upsert_lane("/repos/vp", &mk("vp", "root"))
+        db.upsert_lane("/repos/vp", &mk("vp", "main"))
             .await
             .unwrap();
         db.upsert_lane("/repos/vp", &mk("vp", "foo")).await.unwrap();
-        db.upsert_lane("/repos/nexus", &mk("nexus", "root"))
+        db.upsert_lane("/repos/nexus", &mk("nexus", "main"))
             .await
             .unwrap();
 
@@ -2338,11 +2338,11 @@ mod tests {
             .iter()
             .find(|(p, l)| p == "/repos/vp" && l.address.is_root())
             .expect("vp root が読める");
-        assert_eq!(vp_main.1.address.to_string(), "vp/lane/root");
+        assert_eq!(vp_main.1.address.to_string(), "vp/lane/main");
         assert_eq!(vp_main.1.agent, "claude");
 
         // 同 address の upsert は置換 (複合 UNIQUE、 件数は増えない)
-        db.upsert_lane("/repos/vp", &mk("vp", "root"))
+        db.upsert_lane("/repos/vp", &mk("vp", "main"))
             .await
             .unwrap();
         assert_eq!(

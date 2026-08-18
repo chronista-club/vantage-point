@@ -26,19 +26,19 @@
  *
  * ⚠️ **表示名とは別物**。address / disk / env に出るのはこちらで、UI に出す語は
  * [`MAIN_DISPLAY_NAME`]。混ぜると「識別子を変えたら表示も変わる / その逆」になる。
+ * 2026-08-16 の root → main rename で**値は偶然一致した**が、概念は別のまま —
+ * 次に識別子を変える時（migration が要る）も表示（語彙の問題）は独立に決められる。
  */
-export const MAIN_LANE_NAME = "root";
+export const MAIN_LANE_NAME = "main";
 
 /**
  * Main lane の**表示名**（Main/Sub の語彙）。
- *
- * ⚠️ 予約名が `root` のまま UI だけ `main` と呼ぶ、という**意図的な非対称**。識別子を
- * 変えるには migration が要るが、表示は語彙の問題なので独立に決められる。
  */
 export const MAIN_DISPLAY_NAME = "main";
 
-/** 旧世代の予約名。address / env に残るので受理する。 */
-const LEGACY_MAIN_NAMES = ["lead", "conductor"];
+/** 旧世代の予約名（conductor → root → main の 2 世代 + lead 形）。
+ *  address / env / 永続 state に残るので受理する。 */
+const LEGACY_MAIN_NAMES = ["lead", "conductor", "root"];
 
 /** address の repo 部（先頭分節）。取れなければ空文字。 */
 export function repoOfAddress(address: string): string {

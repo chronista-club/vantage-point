@@ -316,10 +316,14 @@ pub fn validate_sub_name(name: &str) -> Result<(), String> {
     //
     // doc 44 P2 以降、予約名の真実源は `ROOT_LANE_NAME` 定数。文字列直書きだと
     // 予約名を変えた時にここだけ古い値で残る (§6.4「型を経由しない文字列」の同型)。
-    if name == crate::repo::lanes_state::ROOT_LANE_NAME {
+    // ⚠️ **旧世代の予約名も禁止**。予約名は 2 度改名されており（`conductor` → `root` → `main`）、
+    // 旧名で Sub を作れると `<repo>__root` のような**旧 state と衝突**する
+    // （migration は「衝突時は触らない」ので、その lane の会話が永久に取り残される）。
+    if name == crate::repo::lanes_state::ROOT_LANE_NAME
+        || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&name)
+    {
         return Err(format!(
-            "invalid sub name: '{}' is reserved for the origin lane (repo ごとに自動生成されるため create 不可). Pick another name.",
-            crate::repo::lanes_state::ROOT_LANE_NAME
+            "invalid sub name: '{name}' is reserved for the origin lane (repo ごとに自動生成されるため create 不可). Pick another name."
         ));
     }
     Ok(())

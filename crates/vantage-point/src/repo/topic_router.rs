@@ -497,7 +497,7 @@ mod tests {
         // lane=None は main に正規化され lane segment に入る
         let msg = make_show("main", "# Hello");
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "repo/board/command/show/root/main");
+        assert_eq!(topic, "repo/board/command/show/main/main");
     }
 
     #[test]
@@ -527,7 +527,7 @@ mod tests {
             scope: None,
         };
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "repo/board/command/clear/root/side");
+        assert_eq!(topic, "repo/board/command/clear/main/side");
     }
 
     #[test]
@@ -676,7 +676,7 @@ mod tests {
         router.route(show).await;
 
         let retained = router.retained.read().await;
-        let msg = retained.get("repo/board/command/show/root/main");
+        let msg = retained.get("repo/board/command/show/main/main");
         assert!(msg.is_some());
     }
 
