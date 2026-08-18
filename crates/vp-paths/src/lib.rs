@@ -155,12 +155,19 @@ fn migrate_one_legacy_lane_name(base: &std::path::Path, legacy: &str) -> usize {
             let Some((prefix, rest)) = stem.rsplit_once(&legacy_suffix) else {
                 continue;
             };
-            // 残りは「空（root session）」か「`#<数字>`（非 root session）」のみ許す。
+            // 残りは「空（root session）」/「`#<数字>`」/「`__<数字>`」（非 root session）のみ許す。
             // これが無いと `__conductor-old` のような**別 lane** を巻き込む。
-            let is_session_suffix = rest.len() > 1
-                && rest.starts_with('#')
-                && rest[1..].bytes().all(|b| b.is_ascii_digit());
-            if !(rest.is_empty() || is_session_suffix) {
+            //
+            // ⚠️ session の区切りは zone で 2 流儀ある: cc_sessions / conversation_sessions は
+            // `#<n>`（doc 38 `session_label`）、terminal_replay（pty_slot）は `__<n>`。
+            // 初版は `#` 形しか見ておらず、**terminal_replay の非 root session が取り残されて
+            // いた**（root→main rename の実機前検証で発見。旧 conductor 世代から続く穴）。
+            let digits_after = |mark: &str| {
+                rest.len() > mark.len()
+                    && rest.starts_with(mark)
+                    && rest[mark.len()..].bytes().all(|b| b.is_ascii_digit())
+            };
+            if !(rest.is_empty() || digits_after("#") || digits_after("__")) {
                 continue;
             }
             let new_name = match ext {
@@ -643,13 +650,35 @@ mod tests {
         for f in ["a__conductor", "b__root", "c__root#2", "d__root-old"] {
             std::fs::write(cc.join(f), "x").unwrap();
         }
+        // terminal_replay 流儀の session 区切り（`__<n>`、pty_slot が書く形）。⚠️ 初版の
+        // migration は `#n` しか見ておらず、この形が取り残されていた。
+        let tr = base.join("terminal_replay");
+        std::fs::create_dir_all(&tr).unwrap();
+        for f in ["e__root", "e__root__13", "f__root__x"] {
+            std::fs::write(tr.join(f), "x").unwrap();
+        }
 
         let n = migrate_root_lane_state_files(base);
-        assert_eq!(n, 3, "2 世代 + #n 付きの 3 件が移る");
+        assert_eq!(
+            n, 5,
+            "cc 3 件 + terminal_replay 2 件（`__x` は数字でないので対象外）"
+        );
         assert!(cc.join("a__main").exists(), "conductor 世代も main へ");
         assert!(cc.join("b__main").exists(), "root 世代も main へ");
         assert!(cc.join("c__main#2").exists(), "#n 付きも移る");
         assert!(cc.join("d__root-old").exists(), "別 lane は無傷");
+        assert!(
+            tr.join("e__main").exists(),
+            "terminal_replay の root session も移る"
+        );
+        assert!(
+            tr.join("e__main__13").exists(),
+            "terminal_replay の `__<n>` session も移る"
+        );
+        assert!(
+            tr.join("f__root__x").exists(),
+            "`__x`（非数字）は session ではない = 別 lane 扱いで無傷"
+        );
     }
 
     /// state file の改名 migration: 拡張子あり/なしの両形を付け替え、他 lane は巻き添えにせず、
