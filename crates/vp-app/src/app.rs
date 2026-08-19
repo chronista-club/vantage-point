@@ -270,8 +270,8 @@ mod ipc_tag_tests {
 #[cfg(test)]
 mod session_derivation_tests {
     use super::{
-        forget_roster_push, remember_roster_push, roster_push_needed,
-        session_list_payload, term_sessions_of,
+        forget_roster_push, remember_roster_push, roster_push_needed, session_list_payload,
+        term_sessions_of,
     };
     use crate::client::LaneInfo;
 
@@ -419,7 +419,6 @@ mod session_derivation_tests {
         .expect("LaneInfo deserialize");
         assert_eq!(term_sessions_of(&lane), vec![(1, true)]);
     }
-
 }
 
 /// muda の `MenuEvent::receiver()` channel を polling して `AppEvent::MenuClicked` に

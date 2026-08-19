@@ -25,7 +25,7 @@ import {
 } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
-import { isTurnClosingKind } from './session-now-bridge'
+import { isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
 import { Marked } from 'marked'
 import type {
   ConversationEvent,
@@ -317,8 +317,7 @@ export function requestSessionMode(
 //     前の session の watchdog を解除してしまう（= 固着の検出を取りこぼす）。
 // ---------------------------------------------------------------------------
 
-/** replay_end が来ない時に replaying を強制解除するまでの猶予 ms（安全網）。 */
-const REPLAY_WATCHDOG_MS = 10_000
+// REPLAY_WATCHDOG_MS の定義は session-now-bridge（console.ts の now-line watchdog と共有）。
 const replayWatchdogs = new Map<string, ReturnType<typeof setTimeout>>()
 
 /**

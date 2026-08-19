@@ -4,8 +4,11 @@
  * ## 経路（doc 58 ②-a）
  *
  * `vp now` → daemon `session_now` → `NowLine` conversation event → `console:event` push
- * → chatview の `foldInto` が session の `ChatState.nowLine` に畳む（ここまで既存）
- * → **chatview が本 module で tee** → sidebar 名簿の 2 行目（進行の本体）。
+ * → **console.ts の `handleEvent`（全 event が必ず通る唯一の tap 点）が本 module で tee**
+ * → sidebar 名簿の 2 行目（進行の本体）。
+ *
+ * ⚠️ tee は chatview（fold 後）では**ない** — renderer は showLane で開いた lane にしか
+ * 居らず、背景 lane で無音になる（2026-08-19 実測、初版の設計ミス）。
  *
  * ## ⚠️ なぜ CustomEvent か / なぜこの 1 枚に固めるか
  *
@@ -37,7 +40,7 @@ export function sessionNowKey(lane: string, session: number): string {
 	return `${lane}#${session}`;
 }
 
-/** editor-host 側（chatview）が呼ぶ送り口。 */
+/** editor-host 側（console.ts の handleEvent）が呼ぶ送り口。 */
 export function emitSessionNow(detail: SessionNowDetail): void {
 	window.dispatchEvent(new CustomEvent(SESSION_NOW_EVENT, { detail }));
 }
@@ -50,6 +53,14 @@ export function emitSessionNow(detail: SessionNowDetail): void {
  * chatview 側に置けないため、両者が依存できる本 bridge に置く。
  */
 export const TURN_CLOSING_KINDS = ["turn_completed", "error", "engine_exited"] as const;
+
+/**
+ * replay_end が来ない時に replay 追跡を強制解除するまでの猶予 ms（安全網）。
+ *
+ * ⚠️ SSOT はここ 1 箇所 — chatview の resync-loader watchdog と console.ts の
+ * now-line watchdog が同じ値を使う（同じ「replay_end 不着」という故障の 2 つの読み手）。
+ */
+export const REPLAY_WATCHDOG_MS = 10_000;
 
 /** kind が turn 閉鎖か（`TURN_CLOSING_KINDS` の判定形）。 */
 export function isTurnClosingKind(kind: string): boolean {

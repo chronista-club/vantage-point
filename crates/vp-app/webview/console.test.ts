@@ -16,7 +16,7 @@
  * NB: module-level cache（laneSessions / lanes buffer）はテスト間で持続するので、各 it は
  * 一意な lane 名を使って相互汚染を避ける。
  */
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   installConsole,
   normalizeSession,
@@ -428,5 +428,29 @@ describe('now-line tee（doc 58 ②-a）— handleEvent が sidebar 名簿へ流
     con.handleEvent('tee-s/lane/main', { kind: 'now_line', text: 'root の今' } as never, 1)
     con.handleEvent('tee-s/lane/main', { kind: 'now_line', text: 'slot 2 の今' } as never, 2)
     expect(got.map((g) => [g.session, g.text])).toEqual([[1, 'root の今'], [2, 'slot 2 の今']])
+  })
+})
+
+describe('now-line replay watchdog（replay_end 不着の安全網）', () => {
+  it('REPLAY_WATCHDOG_MS 経過で追跡値を強制 flush + 以降の now_line は通常配送に復帰', () => {
+    vi.useFakeTimers()
+    try {
+      const con = installConsole()
+      const got: Array<{ session: number; text: string | null }> = []
+      ;(globalThis as unknown as { window: { addEventListener(t: string, cb: (e: unknown) => void): void } }).window.addEventListener(
+        'vp:session-now',
+        (e) => got.push((e as { detail: { session: number; text: string | null } }).detail),
+      )
+      con.handleEvent('tee-wd/lane/main', { kind: 'replay_start' } as never, 1)
+      con.handleEvent('tee-wd/lane/main', { kind: 'now_line', text: '中断前の今' } as never, 1)
+      expect(got).toEqual([]) // replay 中は飲み込む
+      vi.advanceTimersByTime(10_000) // replay_end は来ない
+      expect(got).toEqual([{ lane: 'tee-wd/lane/main', session: 1, text: '中断前の今' }]) // 強制 flush
+      // 飲み込みの根 (replayingSessions) も消えている = 以降は通常配送
+      con.handleEvent('tee-wd/lane/main', { kind: 'now_line', text: '復帰後の今' } as never, 1)
+      expect(got[1]).toEqual({ lane: 'tee-wd/lane/main', session: 1, text: '復帰後の今' })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
