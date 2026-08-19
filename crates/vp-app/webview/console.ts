@@ -19,6 +19,8 @@
  * World A（main_area.rs インライン xterm JS）には触れない — 境界規律（doc 33 §8）。
  */
 
+import { emitSessionNow, isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
+
 // ---------------------------------------------------------------------------
 // ConversationEvent 型 — SSOT は Rust `crates/vantage-point/src/conversation/event.rs`（PR1 で凍結）。
 // vp-app Rust はこれを serde_json::Value で素通しするため ts-rs 経路が無く、手書きで mirror
@@ -395,6 +397,30 @@ export type VpConsole = {
 /** replay 中の (lane, session)。NUL 区切り。replay 由来の session_init を live と区別する。 */
 const replayingSessions = new Set<string>()
 
+/** doc 58 ②-a: replay 中に観測した「今」の最終値（replay_end で一度だけ flush する）。
+ *  鍵は replayingSessions と同じ `lane\u0000session`。 */
+const replayNowTrack = new Map<string, string | null>()
+
+/** replay_end 不着（error 中断 / engine 途絶）で now-line が凍る事故の安全網（moody-blues
+ *  指摘 2026-08-19）。chatview の resync-loader watchdog と同型・同定数（bridge が SSOT）。
+ *  timeout で追跡値を強制 flush + 両 map から掃除する — 「replay 中」を理由に飲み込み
+ *  続ける状態を REPLAY_WATCHDOG_MS で必ず打ち切る。 */
+const replayNowWatchdogs = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** replay 追跡の後始末 + 必要なら flush（replay_end / watchdog timeout の共通経路）。 */
+function settleReplayNow(lane: string, session: number, nk: string): void {
+  const t = replayNowWatchdogs.get(nk)
+  if (t !== undefined) {
+    clearTimeout(t)
+    replayNowWatchdogs.delete(nk)
+  }
+  if (replayNowTrack.has(nk)) {
+    const v = replayNowTrack.get(nk) ?? null
+    replayNowTrack.delete(nk)
+    emitSessionNow({ lane, session, text: v })
+  }
+}
+
 export function installConsole(): VpConsole {
   const api: VpConsole = {
     handleEvent(lane, event, session) {
@@ -430,6 +456,40 @@ export function installConsole(): VpConsole {
         document.dispatchEvent(
           new CustomEvent('vp:lane-header', { detail: { lane } }),
         )
+      }
+      // doc 58 ②-a: 「今なにを」を sidebar 名簿へ tee する。
+      // ⚠️ renderer（ChatView）経由にしない — renderer は showLane で開いた lane にしか
+      // 居らず、名簿は**背景 lane** の now も見せる。全 event が必ず通るここが唯一の tap 点
+      // （chat lane 限定で fold 後に tee した初版は背景 lane で無音だった、2026-08-19 実測）。
+      // replay 中は流さず最終値だけ追跡し、replay_end で一度 flush（過去の今を偽らない）。
+      // 「now_line が set / turn 閉鎖が clear」の 2 規則 = doc 51 §1 A3 の契約そのもの。
+      {
+        const nk = `${lane}\u0000${s}`
+        if (event.kind === 'replay_start') {
+          // watchdog を張り直す（replay_end 不着でも REPLAY_WATCHDOG_MS で必ず打ち切る）。
+          const prev = replayNowWatchdogs.get(nk)
+          if (prev !== undefined) clearTimeout(prev)
+          replayNowWatchdogs.set(
+            nk,
+            setTimeout(() => {
+              console.warn('[vpConsole] now-line replay watchdog 発火（replay_end 不着）', lane, s)
+              replayingSessions.delete(nk) // 飲み込みの根 — これを消さないと以降も溜まり続ける
+              settleReplayNow(lane, s, nk)
+            }, REPLAY_WATCHDOG_MS),
+          )
+        }
+        const nowValue =
+          event.kind === 'now_line'
+            ? ((event as { text?: string }).text ?? null)
+            : isTurnClosingKind(event.kind)
+              ? null
+              : undefined // この event は「今」に関与しない
+        if (nowValue !== undefined) {
+          if (replayingSessions.has(nk)) replayNowTrack.set(nk, nowValue)
+          else emitSessionNow({ lane, session: s, text: nowValue })
+        } else if (event.kind === 'replay_end') {
+          settleReplayNow(lane, s, nk)
+        }
       }
       if (entry.renderer) {
         try {

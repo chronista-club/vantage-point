@@ -12,6 +12,8 @@ import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import type { LaneInfo } from "../generated/LaneInfo";
 import type { SubStatusWire } from "../generated/SubStatusWire";
 import { sidebar } from "./store";
+import { sessionNow } from "./session-now";
+import { sessionNowKey } from "../../session-now-bridge";
 import { sendIpc } from "./ipc";
 import { resolveRepoOrder } from "./dnd";
 import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
@@ -118,6 +120,12 @@ export function LaneRow(props: {
 	// 地 (ground): cwd を repo root 起点の差分に畳む。 絶対 path は repo が持つので
 	// lane は offset だけを名乗る。 main は差分ゼロ = "" → 行ごと出さない。
 	const cwdLabel = () => laneCwdLabel(props.lane.cwd, props.repoPath);
+	// 「今なにを」(doc 58 ②-a): 行 = lane の間は **root session の分**を出す
+	// （代表 = 役職、doc 54。②-b で行 = session に割れたら session ごとになる）。
+	const nowText = () => {
+		const reg = props.lane.sessions;
+		return reg ? sessionNow[sessionNowKey(addr(), reg.root)] : undefined;
+	};
 	// doc 44 D4: 開発起点 lane か。真実源は Repo Host の帳簿で、lanes snapshot の
 	// `origin` として届く (= lane 自身は役割を持たない、P2 のフラット化)。
 	// 未着 (起動直後 / 旧 server) は undefined → star を出さない。憶測で既定を描かない。
@@ -390,6 +398,13 @@ export function LaneRow(props: {
 			    (光 = 注意は needs-you の専有)。 CSS の flex:0 0 100% で 2 行目へ折り返す。
 			    差分ゼロ (main = repo root) は **行ごと出さない** — 語ることが無い行は黙る。
 			    tooltip には常に完全な絶対 path を出すので情報は落ちない。 */}
+			{/* 「今なにを」= 進行の本体 (doc 58 §2)。地 (cwd) より 1 段読める色。
+			    無ければ黙る (語ることが無い行は黙る、cwd と同じ流儀)。 */}
+			<Show when={nowText()}>
+				<span class="vp-lane-now" title={nowText()}>
+					{nowText()}
+				</span>
+			</Show>
 			<Show when={cwdLabel()}>
 				<span class="vp-lane-cwd" title={props.lane.cwd}>
 					{cwdLabel()}

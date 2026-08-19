@@ -25,6 +25,7 @@ import {
 } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
+import { isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
 import { Marked } from 'marked'
 import type {
   ConversationEvent,
@@ -316,8 +317,7 @@ export function requestSessionMode(
 //     前の session の watchdog を解除してしまう（= 固着の検出を取りこぼす）。
 // ---------------------------------------------------------------------------
 
-/** replay_end が来ない時に replaying を強制解除するまでの猶予 ms（安全網）。 */
-const REPLAY_WATCHDOG_MS = 10_000
+// REPLAY_WATCHDOG_MS の定義は session-now-bridge（console.ts の now-line watchdog と共有）。
 const replayWatchdogs = new Map<string, ReturnType<typeof setTimeout>>()
 
 /**
@@ -582,7 +582,8 @@ function foldEvent(lane: string, ev: ConversationEvent, session: number): void {
  *  engine_exited も含む（旧 error 相乗り時代の自己修復経路の継承）: pending の submit が
  *  engine respawn のトリガになる = 「メッセージ送信で再開」が type-ahead でも成立する。 */
 export function isTurnClosingEvent(kind: ConversationEvent['kind']): boolean {
-  return kind === 'turn_completed' || kind === 'error' || kind === 'engine_exited'
+  // 定義の SSOT は session-now-bridge の TURN_CLOSING_KINDS（now-line tee と共有）。
+  return isTurnClosingKind(kind)
 }
 
 /** doc 35 §5.1: buffer した type-ahead を engine に流す（対象 = turn を閉じた (lane, session)）。

@@ -270,8 +270,8 @@ mod ipc_tag_tests {
 #[cfg(test)]
 mod session_derivation_tests {
     use super::{
-        forget_roster_push, lane_has_chat_session, remember_roster_push, roster_push_needed,
-        session_list_payload, term_sessions_of,
+        forget_roster_push, remember_roster_push, roster_push_needed, session_list_payload,
+        term_sessions_of,
     };
     use crate::client::LaneInfo;
 
@@ -418,27 +418,6 @@ mod session_derivation_tests {
         }))
         .expect("LaneInfo deserialize");
         assert_eq!(term_sessions_of(&lane), vec![(1, true)]);
-    }
-
-    #[test]
-    fn chat_gate_looks_at_any_session_not_just_root() {
-        use crate::pane::SidebarState;
-
-        // root=tui + 非 root=chat: conversation 購読を張らないと その chat pane が無言になる。
-        let lane = lane_with(16, serde_json::json!([s(16, "tui"), s(19, "gui")]));
-        let addr = lane.address.key();
-        let mut state = SidebarState::default();
-        state.lanes_by_repo.insert("p".to_string(), vec![lane]);
-        assert!(
-            lane_has_chat_session(&state, &addr),
-            "非 root だけ chat の構成でも購読を張る"
-        );
-
-        // 全部 tui なら購読不要。
-        let lane = lane_with(16, serde_json::json!([s(16, "tui")]));
-        let mut state2 = SidebarState::default();
-        state2.lanes_by_repo.insert("p".to_string(), vec![lane]);
-        assert!(!lane_has_chat_session(&state2, &addr));
     }
 }
 
@@ -2598,29 +2577,6 @@ fn lane_is_chat(state: &SidebarState, address: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// lane に **chat session（mode=chat）が 1 つでもある**か（doc 50 §4.6 A6）。
-///
-/// [`lane_is_chat`]（= root の mode）との違いが効くのは「root は tui のまま、非 root だけ
-/// chat」の構成。conversation topic の購読は **lane 単位**（session は message field で運ぶ）なので、
-/// 購読を張るかどうかは root の mode ではなく「chat の住人が居るか」で決めないと、その
-/// session の event が誰にも届かない（pane は並ぶのに無言、の形）。
-///
-/// registry snapshot 欠落（boot 窓の placeholder 等）は root mode 導出（= "tui"）に倒す。
-fn lane_has_chat_session(state: &SidebarState, address: &str) -> bool {
-    let Some(lane) = state
-        .lanes_by_repo
-        .values()
-        .flatten()
-        .find(|l| l.address.key() == address)
-    else {
-        return false;
-    };
-    match &lane.sessions {
-        Some(reg) if !reg.sessions.is_empty() => reg.sessions.iter().any(|s| s.mode == "gui"),
-        _ => root_mode_of(lane) == "gui",
-    }
-}
-
 /// doc 38 §4.2: `conversation_session_list` payload（`{focused, sessions:[{key, agent, focused, ...}]}`）
 /// から focused session の agent を引く。New Session の chat 分岐で「現 focused と同じ engine の
 /// 新 Draft を作る」ために使う。`focused` フラグ優先 → `focused` key 一致 → 先頭 の順で解決し、
@@ -2805,13 +2761,18 @@ mod focused_session_stand_tests {
     }
 }
 
-/// gui: active になった chat lane を conversation topic に attach する（`terminal_sessions` の対）。
+/// lane を conversation topic に attach する（`terminal_sessions` の対）。
 ///
-/// 購読 0→1 が daemon の demand hook を撃ち、repo が **transcript replay**（過去会話）を返す。
-/// これが無いと conversation topic は非 retained なので「submit するまで ChatView が空」になる
-/// （app 再起動で会話が消えたように見える）。 idempotent — 既に session があれば no-op。
+/// 購読 0→1 が daemon の demand hook を撃ち、chat session を持つ lane では repo が
+/// **transcript replay**（過去会話）を返す。これが無いと conversation topic は非 retained
+/// なので「submit するまで ChatView が空」になる（app 再起動で会話が消えたように見える）。
+/// idempotent — 既に session があれば no-op。
 ///
-/// tui lane では何もしない（tui の履歴は PtySlot の terminal replay が担う）。
+/// doc 58 ②-a: 旧実装は「chat session を持つ lane だけ」に張っていたが、名簿の
+/// now-line（`vp now` → NowLine event）は **TUI lane からも** conversation topic に
+/// 流れてくるため、gate を外して全 lane に張る。chat 専用の副作用（transcript replay /
+/// eager engine spawn）は repo 側 `handle_conversation_demand_start` の session-mode gate
+/// が守る — TUI session の demand は `not_chat` で graceful no-op（ReplayStart も出ない）。
 fn ensure_conversation_attach(
     address: &str,
     sidebar_state: &SidebarState,
@@ -2820,11 +2781,9 @@ fn ensure_conversation_attach(
     proxy: &EventLoopProxy<AppEvent>,
     daemon_conn: &SharedDaemonConn,
 ) {
-    // doc 50 §4.6 A6: gate は「lane に chat session が居るか」（root の mode ではない）。
-    // 購読は lane 単位で全 session の event を運ぶので、root=tui + 非 root=chat の構成でも
-    // 張る必要がある（張らないと その chat pane が無言になる = xterm 側と同型の穴）。
-    if !lane_has_chat_session(sidebar_state, address) || conversation_sessions.contains_key(address)
-    {
+    // 購読は lane 単位で全 session の event を運ぶ（doc 50 §4.6 A6 — root=tui + 非 root=chat
+    // の構成も 1 本で拾う）。mode による撃ち分けは repo 側 gate に委譲済み（上記 doc）。
+    if conversation_sessions.contains_key(address) {
         return;
     }
     let Some(repo_path) = resolve_repo_path_for_lane(sidebar_state, address) else {
@@ -4694,10 +4653,17 @@ pub fn run() -> anyhow::Result<()> {
                 if active_header_refresh {
                     push_active_view(&webview, &sidebar_state);
                 }
-                // gui: active chat lane を conversation topic に attach（→ demand → transcript replay）。
-                // LanesLoaded は lane snapshot 到着のたび走るので、 起動直後の session 復元
-                // (activate は LanesLoaded 前に済んでいる場合がある) もここで確実に拾える。
-                if let Some(addr) = sidebar_state.active_lane_address.clone() {
+                // conversation topic への attach（chat は → demand → transcript replay、TUI は
+                // now-line のみ流れる軽い購読）。doc 58 ②-a で active 限定 → **全 lane** に拡大 —
+                // 名簿は背景 lane の「今なにを」も見せるため。LanesLoaded は lane snapshot 到着の
+                // たび走るので、新 lane / 起動直後の session 復元もここで確実に拾える（冪等）。
+                let all_addrs: Vec<String> = sidebar_state
+                    .lanes_by_repo
+                    .values()
+                    .flatten()
+                    .map(|l| l.address.key().to_string())
+                    .collect();
+                for addr in all_addrs {
                     ensure_conversation_attach(
                         &addr,
                         &sidebar_state,
