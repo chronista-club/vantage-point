@@ -100,9 +100,36 @@ pub fn extract_custom_title(jsonl: &Path) -> Option<String> {
 
 /// 完全フロー: `cwd` → 最新 jsonl → custom-title 抽出。
 /// title 未設定 / file 不在時は `None`。
+///
+/// ⚠️ **最新 mtime = その session という推定**（1 lane / 1 cwd 仮定）。相部屋
+/// （同 cwd に複数 session）では他人の title を拾いうる — conversation id が分かる
+/// session は [`resolve_title_for_conversation`] を使う（doc 58 ②-c、旧 doc の
+/// Stage 2 が予定していた解消形）。この関数は conversation 不明時の fallback として残る。
 pub fn resolve_title_for_cwd(cwd: &Path) -> Option<String> {
     let dir = jsonl_dir_for_cwd(cwd)?;
     let jsonl = latest_jsonl(&dir)?;
+    extract_custom_title(&jsonl)
+}
+
+/// session の会話 id で jsonl を**直接特定**して custom-title を抽出（doc 58 ②-c）。
+///
+/// cc の transcript は `<conversation-uuid>.jsonl` で置かれる（`cc_session.rs` の
+/// `transcript_path` と同じ外部 contract）ので、mtime 推定なしで **その session の**
+/// title が取れる — 相部屋で他人の title を拾わない。
+pub fn resolve_title_for_conversation(cwd: &Path, conversation: &str) -> Option<String> {
+    // path 断片としての安全性: uuid 以外（`/` や `..`）が来ても join で外へ出ないよう弾く。
+    if conversation.is_empty()
+        || !conversation
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return None;
+    }
+    let dir = jsonl_dir_for_cwd(cwd)?;
+    let jsonl = dir.join(format!("{conversation}.jsonl"));
+    if !jsonl.is_file() {
+        return None;
+    }
     extract_custom_title(&jsonl)
 }
 
@@ -178,6 +205,33 @@ mod tests {
         drop(f);
 
         assert!(extract_custom_title(&jsonl).is_none());
+    }
+
+    /// doc 58 ②-c: conversation id 直指定の解決 — 相部屋で他人の title を拾わない。
+    #[test]
+    fn resolve_title_for_conversation_targets_exact_file() {
+        let dir = std::env::temp_dir().join(format!("vp-title-conv-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        // 2 つの会話: mtime では b が最新だが、a を指名すれば a の title が返る
+        let mut fa = fs::File::create(dir.join("aaaa-1111.jsonl")).unwrap();
+        writeln!(fa, r#"{{"type":"custom-title","customTitle":"会話A"}}"#).unwrap();
+        let mut fb = fs::File::create(dir.join("bbbb-2222.jsonl")).unwrap();
+        writeln!(fb, r#"{{"type":"custom-title","customTitle":"会話B"}}"#).unwrap();
+        // jsonl_dir_for_cwd を経由しない直接検証（外部 contract の dir 構造は上のテストが担保）
+        assert_eq!(
+            extract_custom_title(&dir.join("aaaa-1111.jsonl")).as_deref(),
+            Some("会話A")
+        );
+        // 危険な conversation 文字列は弾く（path traversal を join に渡さない）
+        assert_eq!(
+            resolve_title_for_conversation(std::path::Path::new("/tmp/x"), "../evil"),
+            None
+        );
+        assert_eq!(
+            resolve_title_for_conversation(std::path::Path::new("/tmp/x"), ""),
+            None
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

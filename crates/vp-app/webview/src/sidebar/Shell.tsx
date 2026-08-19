@@ -464,6 +464,11 @@ html,body{margin:0;height:100%;overflow:hidden;}
   padding-left:calc(var(--sb-conn-slot,22px) + 18px + 8px);
   font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-size:var(--sb-text-micro,10px);color:var(--lg-mute-2,#38525b);}
+/* 相部屋の非 root session 行 (doc 58 ②-b) — 場所ラベル省略、root 行より 1 段静か。
+   dot slot は空 span が indent だけ揃える (state データが無いものを描かない)。 */
+.vp-session-row{font-weight:300;}
+.vp-session-row .vp-lane-title.is-session{color:rgba(234,251,255,.72);}
+
 /* 「今なにを」(doc 58 ②-a) — 進行の本体なので地 (cwd = mute-2) より 1 段読める mute。 */
 .vp-lane-now{flex:0 0 100%;box-sizing:border-box;min-width:0;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap;
