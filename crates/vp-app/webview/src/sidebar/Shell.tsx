@@ -33,7 +33,7 @@ import { WirePanel, WIRE_PANEL_CSS } from "./WirePanel";
 import { LanePicker, LANE_PICKER_CSS } from "./LanePicker";
 import { CommandPalette, COMMAND_PALETTE_CSS } from "./CommandPalette";
 import { RepoAccordion } from "./RepoAccordion";
-import { DaemonWidget } from "./DaemonWidget";
+import { CreoIdRow, MachineStrip } from "./DaemonWidget";
 import { BucketList, ACTIONS_CSS } from "./actions-panel/BucketList";
 import type { RepoPaneState } from "../generated/RepoPaneState";
 
@@ -129,12 +129,18 @@ export function Shell() {
 					</Show>
 				</div>
 
-				{/* ACTIONS（doc 57）— app 級の家。doc 56 §7 が「サイドバー下部・daemon status の上」
-				    として予約していた住所。CURRENTs を描かないのは、そこが上の repo 一覧
-				    そのものだから（合流は Phase 5）。 */}
-				<BucketList />
+				{/* creo 段（doc 58 ③ — cloud scope）: ACTIONS（doc 57）+ Creo ID。
+				    分け方はアーキテクチャの scope 境界（mako 2026-08-19「daemon と hub と
+				    device / creo(actions)」）。creo 依存はこの段に名札付きで閉じ込める —
+				    offline で dim するのは段 1 つだけで、名簿と machine 帯は常に local。 */}
+				<div class="vp-creo-zone">
+					<BucketList />
+					<CreoIdRow />
+				</div>
 
-				<DaemonWidget />
+				{/* machine 帯（doc 58 ③ — machine scope）: daemon ⚙️ + hub + devices 🧲。
+				    健康なら 1 行、詳細は click で展開。 */}
+				<MachineStrip />
 			</Show>
 
 			{/* 右クリック context menu (Lane 行 / repo ヘッダ 共通、 singleton、 VP-204 PR-1)。 */}
@@ -464,6 +470,15 @@ html,body{margin:0;height:100%;overflow:hidden;}
   padding-left:calc(var(--sb-conn-slot,22px) + 18px + 8px);
   font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-size:var(--sb-text-micro,10px);color:var(--lg-mute-2,#38525b);}
+/* ── 下部 2 段 (doc 58 ③) ──
+   creo 段 = cloud scope の器。上辺の hairline で名簿と区切る。 */
+.vp-creo-zone{border-top:1px solid #12222b;}
+/* machine 帯のサマリ行に出す非健康 signal (畳んでいても見える) */
+.vp-machine-flag{flex:0 0 auto;font-family:var(--vp-font-mono),var(--typography-family-mono);
+  font-size:var(--sb-text-micro,10px);letter-spacing:.04em;text-transform:uppercase;
+  color:var(--sb-conn-hitl,#FF4A2D);}
+.vp-machine-flag.update{color:var(--sb-conn-auto,#FFF76B);display:inline-flex;align-items:center;}
+
 /* 相部屋の非 root session 行 (doc 58 ②-b) — 場所ラベル省略、root 行より 1 段静か。
    dot slot は空 span が indent だけ揃える (state データが無いものを描かない)。 */
 .vp-session-row{font-weight:300;}
