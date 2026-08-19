@@ -472,7 +472,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   font-size:var(--sb-text-micro,10px);color:var(--lg-mute-2,#38525b);}
 /* ── 下部 2 段 (doc 58 ③) ──
    creo 段 = cloud scope の器。上辺の hairline で名簿と区切る。 */
-.vp-creo-zone{border-top:1px solid #12222b;}
+.vp-creo-zone{border-top:1px solid var(--lg-hairline,#12222b);}
 /* machine 帯のサマリ行に出す非健康 signal (畳んでいても見える) */
 .vp-machine-flag{flex:0 0 auto;font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-size:var(--sb-text-micro,10px);letter-spacing:.04em;text-transform:uppercase;

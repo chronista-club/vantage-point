@@ -78,10 +78,6 @@ function useActivity() {
 	/** どれか 1 つでも token を持っていれば Creo ID にはログイン済み（identity は共通）。 */
 	const signedIn = () => authState("hub") !== "none" || authState("creo") !== "none";
 
-	// uptime 表示を 30s 周期で tick させる (started_at は不変なので時計側を signal 化)。
-	const [now, setNow] = createSignal(Date.now());
-	const timer = setInterval(() => setNow(Date.now()), 30_000);
-	onCleanup(() => clearInterval(timer));
 
 	// Devices 🧲 — machine scope の物理 device。 device 一覧は main area の Devices pane が render、
 	// ここ (Daemon レベルの Devices) は pane を開く入口 + 接続 device 数 badge。
@@ -118,7 +114,6 @@ function useActivity() {
 		authState,
 		creoValid,
 		signedIn,
-		now,
 		devices,
 		devicesActive,
 		released,
@@ -179,6 +174,12 @@ export function CreoIdRow() {
  */
 export function MachineStrip() {
 	const v = useActivity();
+	// uptime 表示を 30s 周期で tick させる (started_at は不変なので時計側を signal 化)。
+	// ⚠️ useActivity ではなくここに置く — now() の読み手は本 component の uptime 行だけで、
+	// CreoIdRow にまで timer を張るのは無駄 (review 2026-08-19)。
+	const [now, setNow] = createSignal(Date.now());
+	const timer = setInterval(() => setNow(Date.now()), 30_000);
+	onCleanup(() => clearInterval(timer));
 	return (
 		<details class="vp-daemon vp-machine-strip">
 			<summary class="vp-daemon-summary">
@@ -207,7 +208,7 @@ export function MachineStrip() {
 					<span class="k">uptime</span>
 					<span class="v">
 						<Show when={v.online()} fallback="—">
-							{formatUptime(v.a().daemon_started_at, v.now())}
+							{formatUptime(v.a().daemon_started_at, now())}
 						</Show>
 					</span>
 				</div>
