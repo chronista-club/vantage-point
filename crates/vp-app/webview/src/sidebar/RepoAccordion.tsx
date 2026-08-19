@@ -23,7 +23,7 @@ import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { isRunningProcess } from "./classify";
 import { laneAddressKey, laneConnector } from "./lane";
 import type { LaneInfo } from "../generated/LaneInfo";
-import { LaneRow } from "./LaneRow";
+import { LaneRow, SessionRow } from "./LaneRow";
 import { AddSub } from "./AddSub";
 import { registerAddSubOpenSetter } from "./directive-state";
 import {
@@ -44,6 +44,16 @@ import {
  */
 function connectorFor(lane: LaneInfo): string {
 	return laneConnector(lane, !!sidebar.awaiting_input[laneAddressKey(lane)]);
+}
+
+/**
+ * 相部屋の非 root session（doc 58 ②-b — 行 = session の展開元、純関数的導出）。
+ * registry 欠落（旧 wire / boot 窓）= 空 = root 1 行のみ（従来と同じ見え方）。
+ */
+function extraSessionsOf(lane: LaneInfo) {
+	const reg = lane.sessions;
+	if (!reg) return [];
+	return reg.sessions.filter((s) => s.key !== reg.root);
 }
 
 /**
@@ -313,11 +323,24 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 						<>
 							<For each={lanes()}>
 								{(lane) => (
-									<LaneRow
-										lane={lane}
-										repoPath={props.proc.path}
-										connectorClass={connectorFor(lane)}
-									/>
+									<>
+										<LaneRow
+											lane={lane}
+											repoPath={props.proc.path}
+											connectorClass={connectorFor(lane)}
+										/>
+										{/* doc 58 ②-b: 相部屋（非 root session）は場所ラベル省略の
+										    session 行として root 行の直下に並ぶ。 */}
+										<For each={extraSessionsOf(lane)}>
+											{(sess) => (
+												<SessionRow
+													lane={lane}
+													repoPath={props.proc.path}
+													session={sess}
+												/>
+											)}
+										</For>
+									</>
 								)}
 							</For>
 							<Show when={addSubOpen()}>

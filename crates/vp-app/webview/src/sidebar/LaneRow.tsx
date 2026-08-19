@@ -11,6 +11,7 @@ import { Show } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import type { LaneInfo } from "../generated/LaneInfo";
 import type { SubStatusWire } from "../generated/SubStatusWire";
+import type { LaneSessionEntryWire } from "../generated/LaneSessionEntryWire";
 import { sidebar } from "./store";
 import { sessionNow } from "./session-now";
 import { sessionNowKey } from "../../session-now-bridge";
@@ -55,6 +56,59 @@ function SubMeta(props: { ws: SubStatusWire }) {
 				<span class="dirty">{dirty()}M</span>
 			</Show>
 		</span>
+	);
+}
+
+/**
+ * 相部屋の非 root session 行（doc 58 ②-b — 行 = session）。
+ *
+ * 場所ラベル（lane 名）は**出さない** — 直前の root 行と同じ場所であることを省略が
+ * 語る（同じ場所 = 並列、を型で示す。doc 58 §2）。出すのは働き手の identity
+ * （agent icon + title / #key）と進行（now-line）だけ。
+ *
+ * state dot は描かない: session 単位の flow_state は wire に無く、憶測で既定を
+ * 描かない（LaneRow の isOrigin と同じ流儀）。データが載ったら足す。
+ */
+export function SessionRow(props: {
+	lane: LaneInfo;
+	repoPath: string;
+	session: LaneSessionEntryWire;
+}) {
+	const addr = () => laneAddressKey(props.lane);
+	const title = () =>
+		sidebar.session_titles?.[sessionNowKey(addr(), props.session.key)];
+	const nowText = () => sessionNow[sessionNowKey(addr(), props.session.key)];
+	const icon = () => agentIcon(props.session.agent, false);
+	// click は lane ごと select（session 単位の Pane focus は main area 側 roster が担う —
+	// lane を出せば当該 session の Pane も並ぶ、doc 50 session=Pane）。
+	const onSelect = () => {
+		sendIpc({ t: "lane:select", path: props.repoPath, address: addr() });
+	};
+	return (
+		<div
+			class="vp-lane-row vp-session-row creo-sidenav-link"
+			onClick={onSelect}
+		>
+			{/* dot slot 分の空 indent — root 行と縦を揃える（dot は描かない、doc 上記） */}
+			<span class="vp-lane-dot" />
+			<Show when={icon()}>
+				<span class="vp-lane-icon" title={agentDisplayName(props.session.agent)}>
+					<CreoIcon name={icon()!} size={14} />
+				</span>
+			</Show>
+			{/* fallback は agent 表示名 — 右端の #key と重複させない（実機 2026-08-19）。 */}
+			<span class="vp-lane-title is-session" title={title() ?? undefined}>
+				{title() ?? agentDisplayName(props.session.agent)}
+			</span>
+			<span class="vp-lane-right">
+				<span class="vp-lane-shortcut">#{props.session.key}</span>
+			</span>
+			<Show when={nowText()}>
+				<span class="vp-lane-now" title={nowText()}>
+					{nowText()}
+				</span>
+			</Show>
+		</div>
 	);
 }
 
@@ -115,17 +169,19 @@ export function LaneRow(props: {
 	// (dead lane に届いた content も気付かせる。awaiting=入力待ちが alive 前提なのとは意味論が違う)。
 	const canvasUnread = () =>
 		!isActive() && (sidebar.canvas_unread?.[addr()] ?? 0) > 0;
-	// cc `/rename` の custom-title (2 行目)。 未設定 lane は dimmed "—"。
-	const sessionTitle = () => sidebar.session_titles?.[addr()];
+	// この lane の root session key（registry 欠落 = 旧 wire / boot 窓は 1 に倒す —
+	// Rust 側 ResolveSessionTitles の fallback と同じ既定）。
+	const rootKey = () => props.lane.sessions?.root ?? 1;
+	// cc `/rename` の custom-title。doc 58 ②-c で鍵が session 単位（`{address}#{session}`、
+	// now-line と同じ sessionNowKey 形）になった。lane 行は root session の分を出す。
+	const sessionTitle = () =>
+		sidebar.session_titles?.[sessionNowKey(addr(), rootKey())];
 	// 地 (ground): cwd を repo root 起点の差分に畳む。 絶対 path は repo が持つので
 	// lane は offset だけを名乗る。 main は差分ゼロ = "" → 行ごと出さない。
 	const cwdLabel = () => laneCwdLabel(props.lane.cwd, props.repoPath);
 	// 「今なにを」(doc 58 ②-a): 行 = lane の間は **root session の分**を出す
 	// （代表 = 役職、doc 54。②-b で行 = session に割れたら session ごとになる）。
-	const nowText = () => {
-		const reg = props.lane.sessions;
-		return reg ? sessionNow[sessionNowKey(addr(), reg.root)] : undefined;
-	};
+	const nowText = () => sessionNow[sessionNowKey(addr(), rootKey())];
 	// doc 44 D4: 開発起点 lane か。真実源は Repo Host の帳簿で、lanes snapshot の
 	// `origin` として届く (= lane 自身は役割を持たない、P2 のフラット化)。
 	// 未着 (起動直後 / 旧 server) は undefined → star を出さない。憶測で既定を描かない。

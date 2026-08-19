@@ -4287,30 +4287,56 @@ pub fn run() -> anyhow::Result<()> {
                 mark_lane_awaiting_input(&lane, "osc:notification", &mut sidebar_state, &webview);
             }
             Event::UserEvent(AppEvent::ResolveSessionTitles) => {
-                // VP-143: 全 lane の cwd を walk → cc custom-title resolve → diff → sidebar に push。
-                //  poller (`spawn_session_title_poller`) が 5s 間隔で tick を送ってここに来る。
-                //  resolve は read-only file I/O (ディレクトリ列挙 + 末尾 grep) なので
-                //  数 lane × 数 ms 程度、 main thread blocking は無視できる範囲。
+                // VP-143 → doc 58 ②-c: 全 lane の **session ごと**に cc custom-title を resolve
+                // → diff → sidebar に push。poller (`spawn_session_title_poller`) が 5s 間隔で
+                // tick を送ってここに来る。resolve は read-only file I/O なので main thread
+                // blocking は無視できる範囲。
+                //
+                // 鍵は `{address}#{session}`（webview 側 `sessionNowKey` と同形 — now-line と
+                // 同じ語彙で session を指す）。conversation id を持つ session は jsonl を直接
+                // 特定（相部屋で他人の title を拾わない）、持たない session（Draft / TUI の
+                // 旧 wire）は root に限り従来の cwd 推定に fallback する（新規に嘘を増やさない
+                // — 非 root の cwd 推定は「最新 mtime = root の会話」とぶつかりやすい）。
                 let mut changed = false;
                 let mut current_keys: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
                 for lanes in sidebar_state.lanes_by_repo.values() {
                     for lane in lanes {
                         let address = lane.address.key();
-                        current_keys.insert(address.clone());
                         let cwd = std::path::Path::new(&lane.cwd);
-                        let resolved = crate::session_title::resolve_title_for_cwd(cwd);
-                        let prev = sidebar_state.session_titles.get(&address).cloned();
-                        match (resolved, prev) {
-                            (Some(new_title), Some(old)) if old == new_title => {}
-                            (None, None) => {}
-                            (Some(new_title), _) => {
-                                sidebar_state.session_titles.insert(address, new_title);
-                                changed = true;
-                            }
-                            (None, Some(_)) => {
-                                sidebar_state.session_titles.remove(&address);
-                                changed = true;
+                        // sessions registry 欠落（旧 wire / boot 窓）は root=1 の 1 session とみなす
+                        let entries: Vec<(u32, Option<String>, bool)> = match &lane.sessions {
+                            Some(reg) if !reg.sessions.is_empty() => reg
+                                .sessions
+                                .iter()
+                                .map(|e| (e.key, e.conversation.clone(), e.key == reg.root))
+                                .collect(),
+                            _ => vec![(1, None, true)],
+                        };
+                        for (key, conversation, is_root) in entries {
+                            let map_key = format!("{address}#{key}");
+                            current_keys.insert(map_key.clone());
+                            let resolved = match conversation.as_deref() {
+                                Some(conv) => {
+                                    crate::session_title::resolve_title_for_conversation(cwd, conv)
+                                }
+                                None if is_root => {
+                                    crate::session_title::resolve_title_for_cwd(cwd)
+                                }
+                                None => None,
+                            };
+                            let prev = sidebar_state.session_titles.get(&map_key).cloned();
+                            match (resolved, prev) {
+                                (Some(new_title), Some(old)) if old == new_title => {}
+                                (None, None) => {}
+                                (Some(new_title), _) => {
+                                    sidebar_state.session_titles.insert(map_key, new_title);
+                                    changed = true;
+                                }
+                                (None, Some(_)) => {
+                                    sidebar_state.session_titles.remove(&map_key);
+                                    changed = true;
+                                }
                             }
                         }
                     }
