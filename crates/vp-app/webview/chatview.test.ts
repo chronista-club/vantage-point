@@ -26,8 +26,7 @@ import {
   deriveNowLine,
   clampNowLine,
   resolveAnswer,
-  OTHER_LABEL,
-  shouldTeeNow } from './chatview'
+  OTHER_LABEL } from './chatview'
 import type { ConversationEvent } from './console'
 import { marked as markedSingleton } from 'marked'
 
@@ -1228,23 +1227,4 @@ describe('foldInto — 受信時刻の刻印 (doc 57 §4.2)', () => {
     const th = s.items.find((i) => i.kind === 'thinking') as { at?: number }
     expect(th.at).toBe(undefined)
   })
-})
-
-describe('shouldTeeNow (doc 58 ②-a — now-line の sidebar tee 述語)', () => {
-	it('now_line は流す / replay 中は流さない（過去の今を偽らない）', () => {
-		expect(shouldTeeNow('now_line', false)).toBe(true)
-		expect(shouldTeeNow('now_line', true)).toBe(false)
-	})
-	it('turn を閉じる event は null 消去のため流す（isTurnClosingEvent と同居）', () => {
-		expect(shouldTeeNow('turn_completed', false)).toBe(true)
-		expect(shouldTeeNow('error', false)).toBe(true)
-		expect(shouldTeeNow('engine_exited', false)).toBe(true)
-	})
-	it('replay_end は復元された「今」を一度だけ流す', () => {
-		expect(shouldTeeNow('replay_end', false)).toBe(true)
-	})
-	it('stream の地の event（text_chunk 等）は流さない', () => {
-		expect(shouldTeeNow('text_chunk', false)).toBe(false)
-		expect(shouldTeeNow('replay_start', false)).toBe(false)
-	})
 })

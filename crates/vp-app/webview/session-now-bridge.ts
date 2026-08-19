@@ -42,6 +42,20 @@ export function emitSessionNow(detail: SessionNowDetail): void {
 	window.dispatchEvent(new CustomEvent(SESSION_NOW_EVENT, { detail }));
 }
 
+/**
+ * turn を閉じる event 種（= 「今」を消す契機）。
+ *
+ * ⚠️ 定義の SSOT はここ 1 箇所 — chatview の `isTurnClosingEvent` も console.ts の tee も
+ * これを参照する。chatview ↔ console の import 向き（chatview → console）の制約で
+ * chatview 側に置けないため、両者が依存できる本 bridge に置く。
+ */
+export const TURN_CLOSING_KINDS = ["turn_completed", "error", "engine_exited"] as const;
+
+/** kind が turn 閉鎖か（`TURN_CLOSING_KINDS` の判定形）。 */
+export function isTurnClosingKind(kind: string): boolean {
+	return (TURN_CLOSING_KINDS as readonly string[]).includes(kind);
+}
+
 /** sidebar 側が呼ぶ受け口。戻り値 = 解除関数（今は使い手なし、対称性のため）。 */
 export function onSessionNow(fn: (d: SessionNowDetail) => void): () => void {
 	const handler = (e: Event) => fn((e as CustomEvent<SessionNowDetail>).detail);

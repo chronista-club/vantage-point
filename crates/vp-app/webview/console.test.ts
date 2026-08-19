@@ -66,7 +66,24 @@ function installDomStub(): void {
     document: unknown
     CustomEvent: unknown
   }
-  g.window = g.window ?? {}
+  // window 側にも同じ listener 実装を据える（doc 58 ②-a: now-line tee は
+  // window event で bundle 間を渡るため。既存テストへは純増）。
+  const winListeners = new Map<string, Listener[]>()
+  g.window = {
+    addEventListener(type: string, cb: Listener) {
+      const a = winListeners.get(type) ?? []
+      a.push(cb)
+      winListeners.set(type, a)
+    },
+    removeEventListener(type: string, cb: Listener) {
+      const a = winListeners.get(type)
+      if (a) winListeners.set(type, a.filter((f) => f !== cb))
+    },
+    dispatchEvent(e: { type: string }) {
+      for (const cb of winListeners.get(e.type) ?? []) cb(e as { type: string; detail?: unknown })
+      return true
+    },
+  }
   g.document = doc
   g.CustomEvent = FakeCustomEvent
 }
@@ -359,5 +376,57 @@ describe('syncHeaderSessionId — chip は focused session の真値に追従（
 
   it('未知 lane は no-op（false）', () => {
     expect(syncHeaderSessionId('proj/lane-sync-unknown')).toBe(false)
+  })
+})
+
+describe('now-line tee（doc 58 ②-a）— handleEvent が sidebar 名簿へ流す', () => {
+  const catchNow = () => {
+    const got: Array<{ lane: string; session: number; text: string | null }> = []
+    ;(globalThis as unknown as { window: { addEventListener(t: string, cb: (e: unknown) => void): void } }).window.addEventListener(
+      'vp:session-now',
+      (e) => got.push((e as { detail: { lane: string; session: number; text: string | null } }).detail),
+    )
+    return got
+  }
+
+  it('renderer 不在（背景 lane）でも now_line は即 emit / turn_completed は null', () => {
+    const con = installConsole()
+    const got = catchNow()
+    // renderer を張らない = showLane していない背景 lane（初版が無音だった形）
+    con.handleEvent('tee-bg/lane/main', { kind: 'now_line', text: '実機検証中' } as never, 13)
+    expect(got).toEqual([{ lane: 'tee-bg/lane/main', session: 13, text: '実機検証中' }])
+    con.handleEvent('tee-bg/lane/main', { kind: 'turn_completed' } as never, 13)
+    expect(got[1]).toEqual({ lane: 'tee-bg/lane/main', session: 13, text: null })
+  })
+
+  it('replay 中は溜めて replay_end で最終値を一度だけ flush（過去の今を偽らない）', () => {
+    const con = installConsole()
+    const got = catchNow()
+    con.handleEvent('tee-rp/lane/main', { kind: 'replay_start' } as never, 1)
+    con.handleEvent('tee-rp/lane/main', { kind: 'now_line', text: '古い今' } as never, 1)
+    con.handleEvent('tee-rp/lane/main', { kind: 'now_line', text: '新しい今' } as never, 1)
+    expect(got).toEqual([]) // replay 中は無音
+    con.handleEvent('tee-rp/lane/main', { kind: 'replay_end' } as never, 1)
+    expect(got).toEqual([{ lane: 'tee-rp/lane/main', session: 1, text: '新しい今' }])
+  })
+
+  it('replay 内で turn が閉じていれば flush は null（turn より長生きしない）', () => {
+    const con = installConsole()
+    const got = catchNow()
+    con.handleEvent('tee-cl/lane/main', { kind: 'replay_start' } as never, 1)
+    con.handleEvent('tee-cl/lane/main', { kind: 'now_line', text: '途中の今' } as never, 1)
+    con.handleEvent('tee-cl/lane/main', { kind: 'turn_completed' } as never, 1)
+    con.handleEvent('tee-cl/lane/main', { kind: 'replay_end' } as never, 1)
+    expect(got).toEqual([{ lane: 'tee-cl/lane/main', session: 1, text: null }])
+  })
+
+  it('session が違えば別の「今」/ 関与しない event は無音', () => {
+    const con = installConsole()
+    const got = catchNow()
+    con.handleEvent('tee-s/lane/main', { kind: 'text_chunk', text: 'x' } as never, 1)
+    expect(got).toEqual([])
+    con.handleEvent('tee-s/lane/main', { kind: 'now_line', text: 'root の今' } as never, 1)
+    con.handleEvent('tee-s/lane/main', { kind: 'now_line', text: 'slot 2 の今' } as never, 2)
+    expect(got.map((g) => [g.session, g.text])).toEqual([[1, 'root の今'], [2, 'slot 2 の今']])
   })
 })
