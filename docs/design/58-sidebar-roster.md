@@ -97,7 +97,7 @@ bikeboy-ladyland
 | `#N`（⌘ hold l） | 残す | 操作 affordance、対象外 |
 | git meta（dirty / ↑↓） | 残す | 場所の進行 |
 | awaiting / canvas unread / mailbox | 残す | 「今どうなっているか」層。3 つで打ち止め |
-| 📁 files-btn | 消す | Cmd+F と context menu で足りる |
+| 📁 files-btn | 消す | Cmd+F で足りる（非 active lane は行 click → Cmd+F の 2 手。1-click 動線が欲しくなったら context menu に足す） |
 | now-line（`vp now`、session 鍵） | **2 行目に新設** | 進行の本体。無ければ session title を薄く |
 | header `+` / ▶ start repo / AddSub | **New へ**（edge rail、doc 56） | 産める元 ≠ 名簿 |
 | 停止中 repo の行 | **New へ** | 同上 |
