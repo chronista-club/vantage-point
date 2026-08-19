@@ -464,6 +464,12 @@ html,body{margin:0;height:100%;overflow:hidden;}
   padding-left:calc(var(--sb-conn-slot,22px) + 18px + 8px);
   font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-size:var(--sb-text-micro,10px);color:var(--lg-mute-2,#38525b);}
+/* 「今なにを」(doc 58 ②-a) — 進行の本体なので地 (cwd = mute-2) より 1 段読める mute。 */
+.vp-lane-now{flex:0 0 100%;box-sizing:border-box;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;
+  padding-left:calc(var(--sb-conn-slot,22px) + 18px + 8px);
+  font-family:var(--vp-font-mono),var(--typography-family-mono);
+  font-size:var(--sb-text-micro,10px);color:var(--lg-mute,#5C7A85);}
 /* active 行だけ僅かに持ち上げる (可読性)。 glow は足さない — 地は地のまま。 */
 .vp-lane-row.active .vp-lane-cwd{color:var(--lg-mute,#5C7A85);}
 /* state 文字 (working / needs you) — 右端、 mono micro uppercase。 quiet pass (019f5100):

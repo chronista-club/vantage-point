@@ -25,6 +25,7 @@ import {
 } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
+import { emitSessionNow } from './session-now-bridge'
 import { Marked } from 'marked'
 import type {
   ConversationEvent,
@@ -576,6 +577,11 @@ function foldEvent(lane: string, ev: ConversationEvent, session: number): void {
   // doc 35 §5.1: turn が閉じた event を契機に pending を flush。派生状態 streaming===false は見ない
   //（replay_start / question / permission_request も false にするため — それらで流すと順序が壊れる）。
   if (isTurnClosingEvent(ev.kind)) flushPending(lane, session)
+  // doc 58 ②-a: 「今なにを」を sidebar 名簿へ tee。状態の SSOT は foldInto が畳んだ
+  // s.nowLine — ここは fold 後の値を読んで運ぶだけ（二重導出しない）。
+  if (shouldTeeNow(ev.kind, lc.state.replaying)) {
+    emitSessionNow({ lane, session, text: lc.state.nowLine ?? null })
+  }
 }
 
 /** turn が閉じた（= pending flush を発火してよい）event か（doc 35 §5.1、vitest 対象）。
@@ -583,6 +589,16 @@ function foldEvent(lane: string, ev: ConversationEvent, session: number): void {
  *  engine respawn のトリガになる = 「メッセージ送信で再開」が type-ahead でも成立する。 */
 export function isTurnClosingEvent(kind: ConversationEvent['kind']): boolean {
   return kind === 'turn_completed' || kind === 'error' || kind === 'engine_exited'
+}
+
+/** doc 58 ②-a: この event を sidebar 名簿へ tee すべきか（純関数、vitest 対象）。
+ *  - now_line = 「今」の更新 / turn を閉じる event = null で消す（isTurnClosingEvent と同居 —
+ *    turn 閉鎖の定義を 2 箇所に持たない）/ replay_end = 復元された「今」を一度だけ流す。
+ *  - **replay 中は流さない**: 過去の now_line は「過去の今」— 偽らない（doc 57 §4.2 の
+ *    thinking `at` と同じ流儀）。 */
+export function shouldTeeNow(kind: ConversationEvent['kind'], replaying: boolean): boolean {
+  if (replaying) return false
+  return kind === 'now_line' || kind === 'replay_end' || isTurnClosingEvent(kind)
 }
 
 /** doc 35 §5.1: buffer した type-ahead を engine に流す（対象 = turn を閉じた (lane, session)）。
