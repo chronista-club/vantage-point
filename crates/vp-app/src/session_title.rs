@@ -207,17 +207,22 @@ mod tests {
         assert!(extract_custom_title(&jsonl).is_none());
     }
 
-    /// doc 58 ②-c: conversation id 直指定の解決 — 相部屋で他人の title を拾わない。
+    /// doc 58 ②-c: `resolve_title_for_conversation` の**部品と防御**の検証。
+    ///
+    /// ⚠️ 関数本体の e2e（cwd → dir → 指名 file）は書いていない — `jsonl_dir_for_cwd` が
+    /// 実 `$HOME` に依存し、`set_var("HOME")` はプロセス共有でテスト並列実行と衝突する
+    /// （Rust 2024 で unsafe になった理由そのもの）。dir 解決は
+    /// `jsonl_dir_points_at_claude_projects`、抽出は本テストが file 直指定で担保し、
+    /// 残る本体は「join + is_file」のみ（review 2026-08-19: 主張と検証範囲を一致させる）。
     #[test]
-    fn resolve_title_for_conversation_targets_exact_file() {
+    fn conversation_title_parts_and_input_guard() {
         let dir = std::env::temp_dir().join(format!("vp-title-conv-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        // 2 つの会話: mtime では b が最新だが、a を指名すれば a の title が返る
+        // 2 つの会話を並べ、file 直指定の抽出が mtime に依らないことを見る
         let mut fa = fs::File::create(dir.join("aaaa-1111.jsonl")).unwrap();
         writeln!(fa, r#"{{"type":"custom-title","customTitle":"会話A"}}"#).unwrap();
         let mut fb = fs::File::create(dir.join("bbbb-2222.jsonl")).unwrap();
         writeln!(fb, r#"{{"type":"custom-title","customTitle":"会話B"}}"#).unwrap();
-        // jsonl_dir_for_cwd を経由しない直接検証（外部 contract の dir 構造は上のテストが担保）
         assert_eq!(
             extract_custom_title(&dir.join("aaaa-1111.jsonl")).as_deref(),
             Some("会話A")
