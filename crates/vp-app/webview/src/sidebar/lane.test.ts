@@ -16,7 +16,7 @@ import {
 function lane(over: Partial<LaneInfo> = {}): LaneInfo {
 	return {
 		id: "",
-		address: { repo: "vp", name: "root", key: "vp/lane/root" },
+		address: { repo: "vp", name: "main", key: "vp/lane/main" },
 		state: "running",
 		agent: "claude",
 		created_at: "2026-07-10T00:00:00Z",
@@ -90,8 +90,20 @@ function sub(over: Partial<LaneInfo> = {}): LaneInfo {
 }
 
 describe("laneConnector (FSM 投影)", () => {
-	it("root は spine の頭 (state を持たない)", () => {
+	it("root は幹 (state を持たない)", () => {
 		expect(laneConnector(lane(), false)).toBe("conn-root");
+	});
+
+	// ⚠️ 壊れ方を固定する: #1004 (root → main) で sidebar だけ独自定数 "root" を
+	// 持っていたため、daemon が main を発行した瞬間に全 main lane が Sub 誤判定された
+	// (2026-08-19 実機)。現行 main + 全旧世代の予約名が Main と判定されることを世代網羅で固定。
+	it("予約名は現行 main も旧世代 (root/conductor/lead) も Main = conn-root", () => {
+		for (const name of ["main", "root", "conductor", "lead"]) {
+			const l = lane({
+				address: { repo: "vp", name, key: `vp/lane/${name}` },
+			} as Partial<LaneInfo>);
+			expect(laneConnector(l, false), `name=${name}`).toBe("conn-root");
+		}
 	});
 
 	it("flow_state が一次 source: プロンプト待ちの TUI claude (pid あり + idle) は消える", () => {
