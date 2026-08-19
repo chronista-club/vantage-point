@@ -185,7 +185,7 @@ export function shortcutNumberOf(
 /**
  * Lane の tree connector の状態 class を導出する (Light Grid state 言語の FSM 投影、 純関数)。
  *
- * 描画は Shell.tsx の `.vp-lane-connector` (CSS pseudo-element) が担い、 ここは意味論だけを
+ * 描画は Shell.tsx の `.vp-lane-dot` (CSS pseudo-element) が担い、 ここは意味論だけを
  * class で返す。 `awaitingInput` は OSC 99 由来の console 入力待ち (caller が
  * `sidebar.awaiting_input[addr]` を渡す — store 依存を外に出して testable に保つ)。
  *

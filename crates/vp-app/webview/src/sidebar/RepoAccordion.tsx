@@ -11,7 +11,6 @@
 import {
 	For,
 	Show,
-	createEffect,
 	createSignal,
 	onCleanup,
 	onMount,
@@ -97,24 +96,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 		return a != null && lanes().some((l) => laneAddressKey(l) === a);
 	};
 
-	// photon one-shot fire (mako motion 方針 019f50ff: 常時アニメ禁止、 イベント駆動のみ)。
-	// working (conn-auto) の lane 数を監視し、 増えた瞬間 = どこかの lane が working に
-	// 遷移した時だけ .photon-fire を付与 → CSS animation が spine を 1 回走る。
-	// 終了検知は animationend (pseudo-element の animation も host で拾える) で class を外す。
-	const [photonFire, setPhotonFire] = createSignal(false);
-	let prevWorking = 0;
-	createEffect(() => {
-		const working = lanes().filter(
-			(l) => connectorFor(l) === "conn-auto",
-		).length;
-		if (working > prevWorking) {
-			// 連続遷移でも再発火するよう一度 false に落としてから次 frame で立てる。
-			setPhotonFire(false);
-			requestAnimationFrame(() => setPhotonFire(true));
-		}
-		prevWorking = working;
-	});
-
+	// photon one-shot（spine を走る光）は doc 58 台帳で spine ごと撤去。
 	const [addSubOpen, setAddSubOpen] = createSignal(false);
 	// PR 445 `n` directive: keyboard で AddSub form を open するため、 RepoAccordion 内 local
 	// signal を **module-scope registry** に export する。 directive 発火時に registry から
@@ -321,25 +303,17 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 					</button>
 				</Show>
 			</summary>
-			<div
-				class="vp-proj-content"
-				classList={{ "photon-fire": photonFire() }}
-				onAnimationEnd={(e) => {
-					// ::after (photon) の one-shot 終了で class を回収。 他 animation は無視。
-					if (e.animationName === "lg-photon") setPhotonFire(false);
-				}}
-			>
+			<div class="vp-proj-content">
 				<Show
 					when={hint()}
 					fallback={
 						<>
 							<For each={lanes()}>
-								{(lane, i) => (
+								{(lane) => (
 									<LaneRow
 										lane={lane}
 										repoPath={props.proc.path}
 										connectorClass={connectorFor(lane)}
-										connectorLast={i() === lanes().length - 1}
 									/>
 								)}
 							</For>

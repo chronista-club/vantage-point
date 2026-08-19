@@ -57,10 +57,10 @@ function SubMeta(props: { ws: SubStatusWire }) {
 }
 
 /**
- * connector class (= control surrender FSM の投影) から state 文字を導出する。
+ * state class (= control surrender FSM の投影) から state 文字を導出する。
  * conn-auto/run = working、 conn-hitl = needs you。
  * idle (conn-dead) は quiet pass (mako 019f5100) で文字を出さない — 「idle はほぼ消える」。
- * conn-main (root) も state を持たない (spine の頭) ので null。
+ * conn-root (main) も state を持たない (幹) ので null。
  */
 function stateLabel(connectorClass: string | undefined): string | null {
 	switch (connectorClass) {
@@ -77,10 +77,8 @@ function stateLabel(connectorClass: string | undefined): string | null {
 export function LaneRow(props: {
 	lane: LaneInfo;
 	repoPath: string;
-	/** connector の線種 class (conn-*)。 未指定なら connector 自体を描かない。 */
+	/** state dot の状態 class (conn-*)。 未指定なら dot 自体を描かない。 */
 	connectorClass?: string;
-	/** lane list 内の最終行 (= tree corner を └ 相当にする)。 */
-	connectorLast?: boolean;
 }) {
 	const addr = () => laneAddressKey(props.lane);
 	const isActive = () => sidebar.active_lane_address === addr();
@@ -310,13 +308,11 @@ export function LaneRow(props: {
 			onDrop={onDrop}
 			onDragEnd={clearLaneDrag}
 		>
-			{/* ⓪ tree connector (CSS 描画、 線種で control surrender FSM を表現。
-			    脱 TUI hybrid 2026-07: glyph → pseudo-element、 描画は SHELL_CSS 参照) */}
+			{/* ⓪ state dot (CSS 描画、 形と色で control surrender FSM を表現。
+			    doc 58 台帳: tree 演出 (spine/tap/photon) は撤去、 node = 行頭 dot だけが残る。
+			    場所の包含は proj 見出しが語るので、 線で繋ぐ必要が無い) */}
 			<Show when={props.connectorClass}>
-				<span
-					class={`vp-lane-connector ${props.connectorClass}`}
-					classList={{ last: props.connectorLast }}
-				/>
+				<span class={`vp-lane-dot ${props.connectorClass}`} />
 			</Show>
 			{/* ① agent icon */}
 			<Show when={icon()}>
@@ -324,15 +320,8 @@ export function LaneRow(props: {
 					<CreoIcon name={icon()!} size={14} />
 				</span>
 			</Show>
-			{/* 開発起点マーカー (doc 44 D4)。agent icon の直後 = 「この lane が何か」を
-			    修飾する層に置く (右端の state / badge は「今どうなっているか」で層が違う)。
-			    agent icon より 1 段小さく、光らせない — 起点は状態ではなく属性なので
-			    注意を引かない (光 = needs-you の専有、Shell.tsx の階層規約)。 */}
-			<Show when={isOrigin()}>
-				<span class="vp-lane-origin" title="この repo の開発起点">
-					<CreoIcon name="ph:star-fill" size={11} />
-				</span>
-			</Show>
+			{/* 開発起点マーカー (★) は doc 58 台帳で撤去 — 場所ラベル (main) と二重。
+			    isOrigin は context menu の「開発起点にする」の出し分けで使用継続。 */}
 			{/* session title を agent icon の右へ (= 旧 2 段目を 1 行目に昇格)。
 			    label (④) は tree 段下げで sub 視認可なので omit。
 			    fallback: session title 未設定なら sub は name、 main は repo 名を
@@ -371,21 +360,7 @@ export function LaneRow(props: {
 						title="Canvas に新しい内容が届きました"
 					/>
 				</Show>
-				<button
-					class="vp-lane-files-btn"
-					type="button"
-					title="コードブラウザを開く (Cmd+F)"
-					onClick={(e) => {
-						e.stopPropagation();
-						// 非 active lane の行から押した場合: lane を切り替えつつ、その lane の
-						// code pane を開く（openFor は open flag を立てるだけ — 表示は lane 切替
-						// 後の roster が行う）。
-						sendIpc({ t: "lane:select", path: props.repoPath, address: addr() });
-						window.vpCodePane?.openFor(addr());
-					}}
-				>
-					<CreoIcon name="ph:folder-open" size={12} />
-				</button>
+				{/* 📁 files-btn は doc 58 台帳で撤去 — code pane は Cmd+F で足りる。 */}
 				<Show when={inbox()}>
 					{/* mailbox badge は Wire Inbox panel (doc 34 §4 V1) の起動ボタンを兼ねる。 */}
 					<span
