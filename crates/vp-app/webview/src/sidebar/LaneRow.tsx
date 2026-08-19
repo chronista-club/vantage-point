@@ -96,8 +96,9 @@ export function SessionRow(props: {
 					<CreoIcon name={icon()!} size={14} />
 				</span>
 			</Show>
+			{/* fallback は agent 表示名 — 右端の #key と重複させない（実機 2026-08-19）。 */}
 			<span class="vp-lane-title is-session" title={title() ?? undefined}>
-				{title() ?? `#${props.session.key}`}
+				{title() ?? agentDisplayName(props.session.agent)}
 			</span>
 			<span class="vp-lane-right">
 				<span class="vp-lane-shortcut">#{props.session.key}</span>
