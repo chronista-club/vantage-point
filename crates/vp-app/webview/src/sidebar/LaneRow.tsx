@@ -291,7 +291,8 @@ export function LaneRow(props: {
 
 	return (
 		<div
-			class="vp-lane-row"
+			class="vp-lane-row creo-sidenav-link"
+			aria-current={isActive() ? "page" : undefined}
 			classList={{
 				active: isActive(),
 				inactive: isInactive(),
@@ -334,15 +335,8 @@ export function LaneRow(props: {
 				{sessionTitle() ??
 					(isSub() ? laneLabel(props.lane) : props.lane.address.repo)}
 			</span>
-			{/* 右端ブロック: ⑦ state 文字 → ⑤ git meta (dirty/↑↓ のみ) → ⑥ awaiting dot → ② files → ③ mailbox */}
+			{/* 右端ブロック: ⑦ state 文字 → ⑤ git meta (dirty/↑↓ のみ) → ⑥ awaiting dot → ③ mailbox → #N (末尾固定) */}
 			<span class="vp-lane-right">
-				{/* Index: `⌘ hold l` で打つ番号。root lane だけが持つ（mako 2026-08-09）。
-				    ⚠️ 番号の出どころは `shortcutNumberOf` 一本 — handlers.ts の宛先と同じ関数。 */}
-				<Show when={shortcut()}>
-					<span class="vp-lane-shortcut" title={`⌘ hold l → ${shortcut()}`}>
-						#{shortcut()}
-					</span>
-				</Show>
 				{/* Light Grid state 言語の文字面 (working / idle / needs you)。 FSM の SSOT は
 				    connectorClass (laneConnector 導出) — 二重導出しない。 root (main) は出さない。 */}
 				<Show when={stateLabel(props.connectorClass)}>
@@ -380,6 +374,14 @@ export function LaneRow(props: {
 							}
 							size={13}
 						/>
+					</span>
+				</Show>
+				{/* Index: `⌘ hold l` で打つ番号。root lane だけが持つ（mako 2026-08-09）。
+				    一番右 = 行末尾に固定（mako 2026-08-19）— badge 群の増減で位置が揺れない。
+				    ⚠️ 番号の出どころは `shortcutNumberOf` 一本 — handlers.ts の宛先と同じ関数。 */}
+				<Show when={shortcut()}>
+					<span class="vp-lane-shortcut" title={`⌘ hold l → ${shortcut()}`}>
+						#{shortcut()}
 					</span>
 				</Show>
 			</span>
