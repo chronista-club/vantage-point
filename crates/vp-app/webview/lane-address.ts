@@ -40,6 +40,19 @@ export const MAIN_DISPLAY_NAME = "main";
  *  address / env / 永続 state に残るので受理する。 */
 const LEGACY_MAIN_NAMES = ["lead", "conductor", "root"];
 
+/**
+ * その lane **名**は Main（予約名）か。旧世代の予約名も Main とみなす。
+ *
+ * ⚠️ Main 判定の SSOT はこの 1 関数。sidebar の `isSubLane` も address 判定の
+ * [`isMainAddress`] もここへ委譲する — #1004 (root → main) で sidebar の
+ * `lane.ts` が独自定数 `"root"` を持っていたため rename から取り残され、
+ * **全 main lane が Sub と誤判定**された（state 文字が出る / 太字が消える /
+ * `#N` shortcut が消える）。判定を 2 箇所に持たないための畳み込み。
+ */
+export function isMainLaneName(name: string): boolean {
+	return name === MAIN_LANE_NAME || LEGACY_MAIN_NAMES.includes(name);
+}
+
 /** address の repo 部（先頭分節）。取れなければ空文字。 */
 export function repoOfAddress(address: string): string {
 	return address.split("/")[0] ?? "";
@@ -62,8 +75,7 @@ export function laneNameOfAddress(address: string): string {
  * その address は Main lane か。旧世代の予約名（`root` / `lead`）も Main とみなす。
  */
 export function isMainAddress(address: string): boolean {
-	const name = laneNameOfAddress(address);
-	return name === MAIN_LANE_NAME || LEGACY_MAIN_NAMES.includes(name);
+	return isMainLaneName(laneNameOfAddress(address));
 }
 
 /**

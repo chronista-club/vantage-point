@@ -243,10 +243,12 @@ export const SHELL_CSS = `
    Ctrl+Shift+E の slider が効かなくなる (2026-07-11 Editor Mode 作業台化)。
    text scale 4 段 (Live Token): base=行タイトル/summary、 hint=行本文/menu/input、
    meta=ラベル/ヘッダ/stats、 micro=badge/kbd/footer/git meta。
-   connector 系 (--sb-conn-*) は lane tree connector の演奏 knob: width=線幅、 slot=gutter 幅、
-   dash=idle 破線の dash 長、 flow-beat=HITL pulse の 1 beat (= creo-ui timeline BPM 82.7)、
-   photon-period=photon が spine を root→末端に走る周期、 glow=発光半径。
-   色 (hitl/auto) は Light Grid palette の magenta/cyan (Editor Mode picker で演奏可)。
+   connector 系 (--sb-conn-*) は state dot の演奏 knob: slot=dot gutter 幅、
+   flow-beat=HITL pulse の 1 beat (= creo-ui timeline BPM 82.7)、 glow=発光半径。
+   ⚠️ width / dash / photon-period は doc 58 の spine/tap/photon 撤去で参照ゼロだが、
+   Editor Mode gallery (gallery.ts) が swatch 表示に使うため定義だけ残す —
+   掃除は editor bind オミット (doc 58 外の pending) と同 PR で 1 対 1 に。
+   色 (hitl/auto) は Light Grid palette (Editor Mode picker で演奏可)。
 
    Light Grid palette (--lg-*, Step 7 = Direction B「Light Grid / TRON origin」再スキン):
    sidebar スコープ専用の静的 palette。 app 全体の paradox-violet テーマは変えない —
@@ -316,42 +318,13 @@ html,body{margin:0;height:100%;overflow:hidden;}
    faint fill (#ffffff04) + inset hairline ring のみ (course-correction 2026-07-11:
    カード上の grid テクスチャは行が透明なため文字を横切る scanline ノイズになる → 撤去、
    ambience は #sidebar-root::before の 1 枚に集約)。
-   glow なし — 図 (= session の current / photon) を引き立てるため必ず後退させる。 */
+   glow なし — 図 (= session の state dot) を引き立てるため必ず後退させる。 */
 .vp-proj{margin:8px 8px 0;border-radius:11px;
   background:#ffffff04;
   box-shadow:inset 0 0 0 1px #ffffff08;
   padding:2px 4px 6px;}
-/* repo が所有する current-spine (= 縦ライン)。 Light Grid: session が地の上を走る
-   light-trail の幹。 cyan-dim → 暗 の gradient で下に減衰。 top:0 = summary 直下から、
-   bottom = 最後の lane 中央で止める。 connector の tap (::before) がここから row へ分岐する。 */
-.vp-proj-content{position:relative;}
-.vp-proj-content::before{content:"";position:absolute;left:10.5px;top:0;bottom:17px;
-  width:var(--sb-conn-width,2px);border-radius:2px;
-  background:linear-gradient(var(--lg-cyan-dim,#1C6C7C),#123039);
-  pointer-events:none;}
-/* photon = 文字通りの「current」。 mako motion 方針 (019f50ff): 常時アニメ禁止 —
-   イベント駆動の one-shot のみ。 lane が working に遷移した瞬間に RepoAccordion が
-   .photon-fire を 1 回付与 → spine を root→末端に 1 度だけ走って消える。 定常状態では
-   描画しない (base opacity:0)。 glow は 1 層に抑制 (quiet pass 019f5100)。
-   iteration は Live Token (--sb-photon-loop、 default 1) — REPL で infinite にも戻せる。 */
-.vp-proj-content::after{content:"";position:absolute;
-  left:calc(10.5px + var(--sb-conn-width,2px) / 2 - 4px);top:-4px;
-  width:8px;height:8px;border-radius:50%;
-  background:var(--sb-conn-auto,#FFF76B);
-  box-shadow:0 0 var(--sb-glow,6px) 2px
-    color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 40%);
-  opacity:0;pointer-events:none;}
-.vp-proj-content.photon-fire::after{
-  animation:lg-photon var(--sb-photon-period,1800ms) cubic-bezier(.55,0,.5,1)
-    var(--sb-photon-loop,1);}
-@keyframes lg-photon{
-  0%{top:-4px;opacity:0;}
-  12%{opacity:1;}
-  82%{opacity:1;}
-  100%{top:calc(100% - 21px);opacity:0;}}
-@media (prefers-reduced-motion:reduce){
-  /* one-shot 前提なので reduced-motion では単に走らせない (定常は元々無表示)。 */
-  .vp-proj-content.photon-fire::after{animation:none;}}
+/* spine (repo 所有の縦ライン) と photon は doc 58 台帳で撤去 — 場所の包含は
+   proj 見出しが語るので、線で繋がない。state の視覚は行頭の .vp-lane-dot に集約。 */
 .vp-proj + .vp-proj{border-top:none;}
 /* repo ラベル = 地の目印 (quiet ground marker)。 muted uppercase の小さい tab、 発光なし。
    course-correction 2026-07-11: 「地なのに図として主張」しないようさらに小さく (10px)、
@@ -386,42 +359,30 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* Lane 行 */
 /* ミニマム 1 行 (2026-05-30): icon + session title + 右端 block (meta/awaiting/files/mailbox)。
    2 段目 / "—" placeholder / Main ラベルは廃止、 nowrap で 1 行固定。 */
-/* tree connector — Light Grid (Step 7): 「tap + node」言語。 spine (proj 所有の縦線) から
-   row へ分岐する横 tap (::before) と、 行の結節点 node (::after) で状態を語る。
-   「線種/形 = control surrender FSM」の意味論は glyph 時代 (2026-05-30) から連続:
-   - working (conn-auto): solid cyan tap + cyan node (glow)
-   - idle (conn-dead): dim 破線 tap + 中空 node (縁 dim)
-   - needs-you (conn-hitl): magenta tap + diamond node が downbeat (725ms) で pulse
-   - root (conn-main): spine の頭 = cyan diamond head (tap なし)
-   tap 起点 x=2.5px は spine (10.5px) と同座標 (row padding-left 8px + 2.5px)。 */
-.vp-lane-connector{position:relative;flex:0 0 var(--sb-conn-slot,22px);align-self:stretch;
+/* state dot — doc 58 台帳: connector (tap+node) から tap (横線) を引いた残り = node が
+   行頭の dot になる。「形/色 = control surrender FSM」の意味論は glyph 時代 (2026-05-30)
+   から連続:
+   - working (conn-auto): ベタ塗り小径 dot (glow なし — 光量の主張は needs-you に譲る)
+   - idle (conn-dead): 中空 dot (縁 dim、 ほぼ消える)
+   - needs-you (conn-hitl): diamond が downbeat (725ms) で 1 回 pulse → 静的 glow
+   - main (conn-root): cyan-dim の diamond (状態ではなく幹の印)
+   slot 幅は旧 connector と同じ 22px = 位置 parity (2b の sidenav 化で整える)。 */
+.vp-lane-dot{position:relative;flex:0 0 var(--sb-conn-slot,22px);align-self:stretch;
   user-select:none;}
-.vp-lane-connector::before{content:"";position:absolute;left:2.5px;right:11px;top:50%;
-  height:var(--sb-conn-width,2px);
-  margin-top:calc(var(--sb-conn-width,2px) / -2);border-radius:2px;}
-.vp-lane-connector::after{content:"";position:absolute;right:2px;top:50%;
+.vp-lane-dot::after{content:"";position:absolute;right:2px;top:50%;
   width:8px;height:8px;margin-top:-4px;border-radius:50%;}
-/* working = solid cyan tap + ベタ塗り小径 node。 quiet pass (019f5100): glow なし —
-   cyan が許されるのはこの tap + node だけ、 光量の主張は needs-you に譲る。 */
-.vp-lane-connector.conn-auto::before{background:var(--sb-conn-auto,#FFF76B);}
-.vp-lane-connector.conn-auto::after{width:6px;height:6px;margin-top:-3px;
+.vp-lane-dot.conn-auto::after{width:6px;height:6px;margin-top:-3px;
   background:var(--sb-conn-auto,#FFF76B);}
 /* conn-run は FSM 上 dead path (working は conn-auto に集約) — 保険で working と同扱い */
-.vp-lane-connector.conn-run::before{background:var(--sb-conn-auto,#FFF76B);}
-.vp-lane-connector.conn-run::after{width:6px;height:6px;margin-top:-3px;
+.vp-lane-dot.conn-run::after{width:6px;height:6px;margin-top:-3px;
   background:var(--sb-conn-auto,#FFF76B);}
-/* idle = ほぼ消える (quiet pass): 極薄の破線 tap + 中空 node。 */
-.vp-lane-connector.conn-dead::before{background-image:repeating-linear-gradient(90deg,
-  color-mix(in srgb,var(--lg-cyan-dim,#1C6C7C),transparent 45%) 0 calc(var(--sb-conn-dash,4px) / 2),
-  transparent calc(var(--sb-conn-dash,4px) / 2) var(--sb-conn-dash,4px));}
-.vp-lane-connector.conn-dead::after{background:#123039;
+/* idle = ほぼ消える (quiet pass): 中空 dot。 */
+.vp-lane-dot.conn-dead::after{background:#123039;
   border:1px solid color-mix(in srgb,var(--lg-cyan-dim,#1C6C7C),transparent 40%);}
-/* needs-you / HITL = magenta tap + diamond node。 唯一 glow を許される状態 (quiet pass)。
-   pulse は「needs-you に入った瞬間に 1 回だけ」 (one-shot、 常時 pulse 禁止 019f50ff) —
-   .conn-hitl が付いた時に animation が 1 度走り、 終わると静的 glow に落ち着く。
+/* needs-you / HITL = diamond。 唯一 glow を許される状態 (quiet pass)。
+   pulse は「needs-you に入った瞬間に 1 回だけ」 (one-shot、 常時 pulse 禁止 019f50ff)。
    data source は既存 awaiting_input (laneConnector が conn-hitl を導出済) — 配線済み。 */
-.vp-lane-connector.conn-hitl::before{background:var(--sb-conn-hitl,#FF4A2D);}
-.vp-lane-connector.conn-hitl::after{width:9px;height:9px;margin-top:-4.5px;
+.vp-lane-dot.conn-hitl::after{width:9px;height:9px;margin-top:-4.5px;
   background:var(--sb-conn-hitl,#FF4A2D);border-radius:2px;transform:rotate(45deg);
   box-shadow:0 0 var(--sb-glow,6px) 1px
     color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 55%);
@@ -432,12 +393,11 @@ html,body{margin:0;height:100%;overflow:hidden;}
   61%,100%{opacity:.55;box-shadow:0 0 calc(var(--sb-glow,6px) * .6) 1px
     color-mix(in srgb,var(--sb-conn-hitl,#FF4A2D),transparent 67%);}}
 @media (prefers-reduced-motion:reduce){
-  .vp-lane-connector.conn-hitl::after{animation:none;}}
-/* root (main) = spine の頭。 tap は描かず diamond を頭石として置く。 quiet pass:
-   cyan は working 専用なので頭石は cyan-dim のベタ塗り (glow なし)。 */
-.vp-lane-connector.conn-main::before{display:none;}
-.vp-lane-connector.conn-main::after{width:9px;height:9px;margin-top:-4.5px;
-  left:6.5px;right:auto;border-radius:2px;transform:rotate(45deg);
+  .vp-lane-dot.conn-hitl::after{animation:none;}}
+/* main = 幹の印。 ⚠️ selector は laneConnector が返す **conn-root** (#1003 の rename で
+   旧 conn-main が取り残され、 main の頭石は無色 = 不可視になっていた。 dot 化で修正)。 */
+.vp-lane-dot.conn-root::after{width:9px;height:9px;margin-top:-4.5px;
+  border-radius:2px;transform:rotate(45deg);
   background:var(--lg-cyan-dim,#1C6C7C);}
 /* flex-wrap:wrap = cwd (地) を 2 行目へ折り返すため。 multi-line flex では align-items /
    align-self が flex line 単位で効くので、 1 行目の内部整列 (icon/title の縦位置、 connector の
@@ -450,7 +410,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-row + .vp-lane-row{border-top:none;}
 /* active (= 選択中) lane — 選択表現は faint tint のみ (mako 019f5114: ブラケット/
    ブロック/バー等のアクセント要素はゼロ)。 tint は判別性のため僅かに強め (8%)、
-   光り物は増やさない。 「光る」 のは state (photon / node) の仕事。 */
+   光り物は増やさない。 「光る」 のは state dot の仕事。 */
 .vp-lane-row.active{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 92%);}
 .vp-lane-row.inactive{color:var(--lg-mute,#5C7A85);cursor:default;}
 /* root session (= main、 spine の頭)。 quiet pass (019f5100): cyan wash / glyph glow は
@@ -459,12 +419,6 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* Main / Sub の indent 差は connector (縦棒 + 横枝) が担うため padding override 不要。 */
 .vp-lane-icon{display:inline-flex;width:18px;justify-content:center;flex:0 0 auto;}
 .vp-lane-row.inactive .vp-lane-icon{opacity:0.55;}
-/* 開発起点マーカー (doc 44 D4)。agent icon と title の間に置く「属性」の層。
-   mute 色 = git meta / cwd と同じ最も引っ込んだ階層で、光らせない
-   (光 = needs-you の専有)。起点は常時真なので、目立たせると常に鳴る警告になる。 */
-.vp-lane-origin{display:inline-flex;flex:0 0 auto;margin-right:4px;
-  color:var(--lg-mute,#5C7A85);}
-.vp-lane-row.inactive .vp-lane-origin{opacity:0.55;}
 /* Lane D&D 並べ替え (doc 44 §12) — repo 側 (.vp-proj) と同じ語彙で揃える:
    dragging = 掴み中を半透明、 drop-before/after = 挿入先を brand 色の線。
    落とせるのは同じ repo の lane 同士だけ (帳簿は repo ごとに 1 本)。 */
@@ -493,7 +447,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-state{flex:0 0 auto;font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-size:var(--sb-text-micro,10px);letter-spacing:.04em;text-transform:uppercase;
   color:var(--lg-mute-2,#38525b);font-variant-numeric:tabular-nums;white-space:nowrap;}
-.vp-lane-connector.conn-hitl ~ .vp-lane-right .vp-lane-state{
+.vp-lane-dot.conn-hitl ~ .vp-lane-right .vp-lane-state{
   color:var(--sb-conn-hitl,#FF4A2D);}
 /* Index badge — root lane だけが持つショートカット番号（⌘ hold l で打つ）。
    state 文字と同じ mono micro の語彙に揃え、番号であることを tabular-nums で示す。
@@ -675,15 +629,6 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-ctx-item.danger:hover{background:var(--color-status-error,#d4444c);color:#fff;}
 .vp-ctx-item.danger.confirming{background:var(--color-status-error,#d4444c);
   color:#fff;}
-
-/* Lane row のコードブラウザ起動ボタン (lane 切替 + code pane を開く trigger) */
-.vp-lane-files-btn{display:inline-flex;align-items:center;padding:1px 3px;
-  border:none;background:transparent;color:var(--lg-mute,#5C7A85);
-  cursor:pointer;border-radius:3px;flex:0 0 auto;opacity:0;
-  transition:background .12s ease,color .12s ease,opacity .12s ease;}
-.vp-lane-row:hover .vp-lane-files-btn{opacity:1;}
-.vp-lane-files-btn:hover{background:#ffffff08;
-  color:var(--sb-conn-auto,#FFF76B);}
 
 /* sidebar view modes (2026-08-01): スリム帯。幅 (280px⇄44px) は main_area.rs の
    #sidebar-root / #sidebar-root.slim が司り、ここは帯の中身だけ定義する。 */

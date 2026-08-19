@@ -10,6 +10,12 @@
  * 出力: ../assets/sidebar.bundle.js (vp-app の Rust 側で include_bytes!)
  */
 import { render } from 'solid-js/web'
+// creo-ui 基盤 (doc 58 2b): tokens (CSS 変数のみ) + components (.creo-* class のみ) を
+// 文字列 import (build.mjs の `.css: text` loader)。どちらも body/html への直接スタイルを
+// 持たない = 注入は純増で既存見た目に無害 (2026-08-19 実測)。単一 document だが
+// editor-host bundle は creo CSS を持たない (実測 --spacing- 2 hit のみ) ので二重注入もない。
+import creoTokensCss from '@chronista-club/creo-ui/tokens.css'
+import creoComponentsCss from '@chronista-club/creo-ui/components.css'
 import { Shell, SHELL_CSS } from './src/sidebar/Shell'
 import { installIpcBridge } from './src/sidebar/ipc'
 import { openSidebarDispatch } from './src/sidebar/dispatch'
@@ -50,9 +56,15 @@ try {
   // sidebar の右クリックは独自 ContextMenu に一本化する (VP-204 PR-1)。
   document.addEventListener('contextmenu', (e) => e.preventDefault())
 
-  // shell layout CSS を注入 (creoui token は SIDEBAR_HTML_V2 が inline 済)。
+  // creo-ui theme を dark に固定 (doc 58 2b)。tokens.css は `prefers-color-scheme: light`
+  // かつ data-theme 未指定のとき mint-light に逆転する — VP の webview は OS 設定に
+  // 依らず dark なので、documentElement に明示して逆転条件を外す。
+  document.documentElement.setAttribute('data-theme', 'mint-dark')
+
+  // CSS 注入順 = cascade の下ごしらえ: creo tokens (変数) → creo components (.creo-* class)
+  // → SHELL_CSS (VP 固有)。同 specificity なら後勝ちなので、VP の override が常に効く。
   const style = document.createElement('style')
-  style.textContent = SHELL_CSS
+  style.textContent = `${creoTokensCss}\n${creoComponentsCss}\n${SHELL_CSS}`
   document.head.appendChild(style)
 
   const root = document.getElementById('sidebar-root')
