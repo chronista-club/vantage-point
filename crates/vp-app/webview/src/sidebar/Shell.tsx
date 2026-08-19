@@ -282,7 +282,11 @@ html,body{margin:0;height:100%;overflow:hidden;}
   --color-surface-bg-subtle:#ffffff06;
   --_sidenav__indicator-width:0px;
   --_sidenav__link-radius:8px;
-  --_sidenav__group-gap:0px;}
+  /* ⚠️ 0px にしない: creo の .creo-sidenav-group + .creo-sidenav-group は (0,2,0) で
+     .vp-proj の margin-top (0,1,0) に**必ず勝つ**ため、0 だと 2 個目以降の repo group の
+     縦 gap が潰れる (moody-blues 指摘 2026-08-19)。gap 8px はこの token が SSOT で、
+     .vp-proj の margin-top:8px は 1 個目 (sibling rule が効かない行) の分。 */
+  --_sidenav__group-gap:8px;}
 #sidebar-root .creo-sidenav-title{margin:0;}
 #sidebar-root .creo-sidenav-title::before{display:none;}
 #sidebar-root .creo-sidenav-link{margin:0;color:inherit;}
