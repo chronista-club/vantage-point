@@ -291,7 +291,8 @@ export function LaneRow(props: {
 
 	return (
 		<div
-			class="vp-lane-row"
+			class="vp-lane-row creo-sidenav-link"
+			aria-current={isActive() ? "page" : undefined}
 			classList={{
 				active: isActive(),
 				inactive: isInactive(),

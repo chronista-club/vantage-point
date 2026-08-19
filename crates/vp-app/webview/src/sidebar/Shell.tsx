@@ -270,6 +270,26 @@ html,body{margin:0;height:100%;overflow:hidden;}
    脱 TUI (2026-07): font / color / bg を #sidebar-root スコープに閉じる。 旧 html,body
    直書きは単一 WebView の document 全体を汚染し、 pane header まで 'VPMono' 12px に
    mono 化していた。 サイドバーを sans 全面化しつつ pane header への波及を断つ。 */
+/* ── creo-sidenav bridge (doc 58 2b-ii) ──────────────────────────────────
+   名簿の構造 class は creo (creo-sidenav-group/-title/-list/-link)、見た目の SSOT は
+   Light Grid — この token 差し替えブロックが「Light Grid = creo の 1 theme」を宣言する。
+   creo 既定のうち Light Grid 規約と衝突する 3 点だけ殺す:
+   - aria-current の左 indicator bar → 幅 0 (mako 019f5114: ブラケット/ブロック/バー等ゼロ)
+   - title の brand rail (::before) → presence dot と役割重複
+   - hover / current の文字色変化 → 光り物は state dot の専有 (色は inherit 固定)。 */
+#sidebar-root{
+  --color-brand-primary:var(--sb-conn-auto,#FFF76B);
+  --color-surface-bg-subtle:#ffffff06;
+  --_sidenav__indicator-width:0px;
+  --_sidenav__link-radius:8px;
+  --_sidenav__group-gap:0px;}
+#sidebar-root .creo-sidenav-title{margin:0;}
+#sidebar-root .creo-sidenav-title::before{display:none;}
+#sidebar-root .creo-sidenav-link{margin:0;color:inherit;}
+#sidebar-root .creo-sidenav-link:hover{color:inherit;}
+#sidebar-root .creo-sidenav-link[aria-current="page"]{
+  color:inherit;font-weight:inherit;
+  background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 92%);}
 #sidebar-root{height:100%;position:relative;
   /* Light Grid: 地は void。 sidebar スコープの再スキンはここから下の .vp-* 系にのみ効く。 */
   background:var(--lg-void,#05070A);color:var(--lg-hot,#EAFBFF);
@@ -405,13 +425,13 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-row{position:relative;display:flex;flex-wrap:wrap;align-items:center;
   gap:4px;padding:8px var(--spacing-sm,8px) 8px 8px;font-size:var(--sb-text-hint,12px);cursor:pointer;
   border-radius:8px;transition:background .1s ease;}
-.vp-lane-row:hover{background:#ffffff06;}
 /* row 間の旧 border は撤去 — 地は無地 (行を横切る線は作らない)。 */
 .vp-lane-row + .vp-lane-row{border-top:none;}
 /* active (= 選択中) lane — 選択表現は faint tint のみ (mako 019f5114: ブラケット/
    ブロック/バー等のアクセント要素はゼロ)。 tint は判別性のため僅かに強め (8%)、
    光り物は増やさない。 「光る」 のは state dot の仕事。 */
-.vp-lane-row.active{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 92%);}
+/* active 背景は bridge の [aria-current="page"] が担う (LaneRow が属性を付与)。
+   .active class は shortcut/cwd/icon の従属 selector 用に残る。 */
 .vp-lane-row.inactive{color:var(--lg-mute,#5C7A85);cursor:default;}
 /* root session (= main、 spine の頭)。 quiet pass (019f5100): cyan wash / glyph glow は
    撤去、 weight 600 だけで静かに立たせる (行 tint と glyph 彩色は光の総量を増やすため落とす)。 */

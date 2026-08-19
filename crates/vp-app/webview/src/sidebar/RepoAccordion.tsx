@@ -238,7 +238,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 
 	return (
 		<details
-			class="vp-proj"
+			class="vp-proj creo-sidenav-group"
 			data-path={props.proc.path}
 			classList={{
 				dragging: isDragging(),
@@ -254,7 +254,10 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 			onDrop={onDrop}
 			onDragEnd={clearDrag}
 		>
-			<summary class="vp-proj-summary" onContextMenu={onSummaryContextMenu}>
+			<summary
+				class="vp-proj-summary creo-sidenav-title"
+				onContextMenu={onSummaryContextMenu}
+			>
 				<span
 					class="vp-proj-presence-dot"
 					classList={{
@@ -303,7 +306,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 					</button>
 				</Show>
 			</summary>
-			<div class="vp-proj-content">
+			<div class="vp-proj-content creo-sidenav-list">
 				<Show
 					when={hint()}
 					fallback={
