@@ -99,7 +99,7 @@ bikeboy-ladyland
 | awaiting / canvas unread / mailbox | 残す | 「今どうなっているか」層。3 つで打ち止め |
 | 📁 files-btn | 消す | Cmd+F で足りる（非 active lane は行 click → Cmd+F の 2 手。1-click 動線が欲しくなったら context menu に足す） |
 | now-line（`vp now`、session 鍵） | **2 行目に新設** | 進行の本体。無ければ session title を薄く |
-| header `+` / AddSub の常設「+」 | **New へ**（edge rail、doc 56）— **④ 実施済** | 産める元 ≠ 名簿。form 本体は名簿内に ephemeral に残る（入口 = rail の + New menu / `n` directive）。⚠️ rail は lane 不在（repo 0 件）で隠れるため、空状態の「+ repo を登録」CTA が lane 非依存の逃げ道（review 指摘で追加） |
+| header `+` / AddSub の常設「+」 | **残す**（④ の再裁定 2026-08-20） | ④ 初版は rail の + New menu へ一本化したが、mako 裁定で**「産む動詞は親の行に住む」**に確定 — repo を産む + は CURRENTS 行、lane を産む + は repo 見出し、console を足す + New は rail（= doc 56「動詞の級 = 住所」の素直な適用）。左で産んで右（main area）に現れる = 操作の流れが生成の系譜と一致する。空状態の「+ repo を登録」CTA は案内として残す |
 | ▶ start repo / 停止中 repo の行 | **留保** — 名簿に残す | 起動口の代替（rail からの停止中 repo 一覧）が未設計。X で代替と言うには X が要る（scope-cut-reachable-states）。edge rail は lane 不在時に帯ごと隠れる制約もあり、別途設計 |
 | ACTIONS（BucketList） | **下部 creo 段へ**（§4） | |
 | DaemonWidget 11 行 | **下部 machine 帯へ**（§4） | |
