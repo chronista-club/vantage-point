@@ -108,20 +108,27 @@ export function Shell() {
 			>
 				<header class="vp-sidebar-header">
 					<span class="vp-sidebar-title">CURRENTs</span>
-					{/* repo 追加: repo:add IPC → Rust 側 native folder picker → 登録 (VP-203)。 */}
-					<button
-						class="vp-sidebar-add"
-						title="repo を追加"
-						onClick={() => sendIpc({ t: "repo:add" })}
-					>
-						<CreoIcon name="ph:plus" size={13} />
-					</button>
+					{/* repo 追加（+）は doc 58 ④ で edge rail の + New menu へ移設 —
+					    名簿は働き手の一覧で、産む動詞の常設 UI を持たない。 */}
 				</header>
 
 				<div class="vp-sidebar-list">
 					<Show
 						when={sidebar.processes.length > 0}
-						fallback={<div class="vp-sidebar-empty">repo なし</div>}
+						fallback={
+							/* ⚠️ lane 非依存の最後の逃げ道（moody-blues 指摘 2026-08-20）:
+							   「repo を登録」の常設入口は edge rail の + New menu に移ったが、
+							   rail は lane 不在（= repo 0 件）で帯ごと隠れる。この CTA が無いと
+							   新規 install 直後 / 全 repo 削除後に GUI から復帰できない
+							   （scope-cut-reachable-states — X で代替と言うには X が消えない条件が要る）。 */
+							<button
+								type="button"
+								class="vp-sidebar-empty-cta"
+								onClick={() => sendIpc({ t: "repo:add" })}
+							>
+								+ repo を登録
+							</button>
+						}
 					>
 						<For each={ordered()}>
 							{(proc) => <RepoAccordion proc={proc} />}
@@ -333,16 +340,17 @@ html,body{margin:0;height:100%;overflow:hidden;}
   text-transform:uppercase;font-weight:var(--typography-weight-semibold,600);
   color:var(--lg-mute,#5C7A85);user-select:none;}
 .vp-sidebar-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.vp-sidebar-add{margin-left:auto;display:inline-flex;align-items:center;padding:2px;
-  border:none;background:transparent;color:var(--lg-mute,#5C7A85);cursor:pointer;
-  border-radius:3px;flex:0 0 auto;transition:background .12s ease,color .12s ease;}
-.vp-sidebar-add:hover{background:#ffffff08;
-  color:var(--sb-conn-auto,#FFF76B);}
 /* min-height は ACTIONS（doc 57）が伸びたときの床。scroll container の自動最小サイズは 0 なので、
    これが無いと下の区画が repo list を高さ 0 まで潰せる。 */
 .vp-sidebar-list{flex:1;min-height:96px;overflow-y:auto;padding:0 0 10px;}
 .vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--lg-mute,#5C7A85);
   font-size:var(--sb-text-meta,11px);}
+.vp-sidebar-empty-cta{margin:var(--spacing-sm,8px);padding:6px 10px;display:inline-flex;
+  border:1px dashed var(--lg-hairline,#12222b);border-radius:8px;background:transparent;
+  color:var(--lg-mute,#5C7A85);font-size:var(--sb-text-meta,11px);cursor:pointer;
+  transition:color .12s ease,border-color .12s ease;}
+.vp-sidebar-empty-cta:hover{color:var(--lg-hot,#EAFBFF);
+  border-color:var(--lg-mute-2,#38525b);}
 
 /* Repo accordion — Light Grid: repo = 地 (ground)。 発光させず void に沈む静かな地形。
    faint fill (#ffffff04) + inset hairline ring のみ (course-correction 2026-07-11:
@@ -536,11 +544,11 @@ html,body{margin:0;height:100%;overflow:hidden;}
 
 /* Add Sub「+」(active repo) / Start「▶」(一時停止中 repo) — summary 右端の
    action ボタン。 レイアウトは共通、 Start は起動 affordance として常時 brand 色。 */
-.vp-proj-addsub,.vp-proj-start{margin-left:auto;display:inline-flex;align-items:center;
+.vp-proj-start{margin-left:auto;display:inline-flex;align-items:center;
   padding:2px;border:none;background:transparent;color:var(--lg-mute,#5C7A85);
   cursor:pointer;border-radius:3px;flex:0 0 auto;
   transition:background .12s ease,color .12s ease;}
-.vp-proj-addsub:hover,.vp-proj-addsub.open,.vp-proj-start:hover{
+.vp-proj-start:hover{
   background:#ffffff08;color:var(--sb-conn-auto,#FFF76B);}
 /* Start ▶ も quiet: 定常は muted、 hover 時のみ cyan (interaction feedback)。 */
 .vp-proj-start{color:var(--lg-mute,#5C7A85);}

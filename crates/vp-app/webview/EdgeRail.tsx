@@ -32,6 +32,7 @@ import {
   type AgentsDetail,
 } from './console'
 import { newPaneChoices } from './lane-panes'
+import { emitOpenNewLane } from './new-verbs-bridge'
 
 /** `vp:conversation-agents` bus が運ぶ agent entry（newPaneChoices の入力と同形）。 */
 type RailStand = { name: string; label?: string; chat_capable?: boolean }
@@ -132,6 +133,34 @@ export function mountEdgeRail(railRoot: HTMLElement, mount: HTMLElement): EdgeRa
                 </button>
               )}
             </For>
+            {/* doc 58 ④: 産む動詞は級を跨いで New menu に集まる（sidebar の常設 + は撤去）。
+                上の節 = この lane に console を足す / ここから下 = 新しい場所を産む。 */}
+            <div class="er-sep" />
+            <button
+              type="button"
+              class="er-row"
+              onClick={() => {
+                setMenu(null)
+                // active repo の AddSub form（名簿内、ephemeral）を開く — `n` directive と同じ入口。
+                emitOpenNewLane()
+              }}
+            >
+              <CreoIcon name="ph:git-branch" size={11} />
+              lane を作る…
+            </button>
+            <button
+              type="button"
+              class="er-row"
+              onClick={() => {
+                setMenu(null)
+                // native folder picker → 登録（sidebar channel の既存 handler に届く —
+                // 単一 WebView の ipc は tag で振り分けられるため bundle は関係ない）。
+                sendIpc({ t: 'repo:add' })
+              }}
+            >
+              <CreoIcon name="ph:folder-plus" size={11} />
+              repo を登録…
+            </button>
           </div>
         )}
       </Show>
@@ -162,4 +191,5 @@ export const EDGE_RAIL_CSS = `
   font-family:var(--vp-font-mono),var(--typography-family-mono); font-size:10.5px; line-height:1.6; }
 .er-row:hover{ background:var(--color-surface-bg-emphasis); }
 .er-empty{ padding:6px 8px; color:var(--color-text-secondary); font-size:10.5px; }
+.er-sep{ margin:4px 6px; border-top:1px solid var(--color-surface-border-subtle); }
 `
