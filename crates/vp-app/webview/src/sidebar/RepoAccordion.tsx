@@ -275,7 +275,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 				{/* Add Sub の常設「+」は doc 58 ④ で edge rail の + New menu へ移設。
 				    form 本体と registry（openAddSubFor）は残る — 開く経路が rail と
 				    `n` directive になっただけ。 */}
-				{/* 停止中 repo の起動 affordance。 「+」(showAddSub) は稼働中限定
+				{/* 停止中 repo の起動 affordance。 Add Sub form の入口は稼働中限定
             なので、 停止中のこの「▶」とは同居しない。 */}
 				<Show when={isPaused()}>
 					<button

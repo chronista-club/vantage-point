@@ -115,7 +115,20 @@ export function Shell() {
 				<div class="vp-sidebar-list">
 					<Show
 						when={sidebar.processes.length > 0}
-						fallback={<div class="vp-sidebar-empty">repo なし</div>}
+						fallback={
+							/* ⚠️ lane 非依存の最後の逃げ道（moody-blues 指摘 2026-08-20）:
+							   「repo を登録」の常設入口は edge rail の + New menu に移ったが、
+							   rail は lane 不在（= repo 0 件）で帯ごと隠れる。この CTA が無いと
+							   新規 install 直後 / 全 repo 削除後に GUI から復帰できない
+							   （scope-cut-reachable-states — X で代替と言うには X が消えない条件が要る）。 */
+							<button
+								type="button"
+								class="vp-sidebar-empty-cta"
+								onClick={() => sendIpc({ t: "repo:add" })}
+							>
+								+ repo を登録
+							</button>
+						}
 					>
 						<For each={ordered()}>
 							{(proc) => <RepoAccordion proc={proc} />}
@@ -332,6 +345,12 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-sidebar-list{flex:1;min-height:96px;overflow-y:auto;padding:0 0 10px;}
 .vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--lg-mute,#5C7A85);
   font-size:var(--sb-text-meta,11px);}
+.vp-sidebar-empty-cta{margin:var(--spacing-sm,8px);padding:6px 10px;display:inline-flex;
+  border:1px dashed var(--lg-hairline,#12222b);border-radius:8px;background:transparent;
+  color:var(--lg-mute,#5C7A85);font-size:var(--sb-text-meta,11px);cursor:pointer;
+  transition:color .12s ease,border-color .12s ease;}
+.vp-sidebar-empty-cta:hover{color:var(--lg-hot,#EAFBFF);
+  border-color:var(--lg-mute-2,#38525b);}
 
 /* Repo accordion — Light Grid: repo = 地 (ground)。 発光させず void に沈む静かな地形。
    faint fill (#ffffff04) + inset hairline ring のみ (course-correction 2026-07-11:
