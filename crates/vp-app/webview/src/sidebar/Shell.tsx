@@ -108,8 +108,17 @@ export function Shell() {
 			>
 				<header class="vp-sidebar-header">
 					<span class="vp-sidebar-title">CURRENTs</span>
-					{/* repo 追加（+）は doc 58 ④ で edge rail の + New menu へ移設 —
-					    名簿は働き手の一覧で、産む動詞の常設 UI を持たない。 */}
+					{/* repo 追加: 産む動詞は**親の行**に住む（mako 2026-08-20 — 「repo 増やすのは
+					    CURRENTS に。lane 増やすのは repo に」）。左で産んで右（main area）に
+					    現れる、という操作の流れを生成の系譜と一致させる。
+					    repo:add IPC → Rust 側 native folder picker → 登録 (VP-203)。 */}
+					<button
+						class="vp-sidebar-add"
+						title="repo を登録"
+						onClick={() => sendIpc({ t: "repo:add" })}
+					>
+						<CreoIcon name="ph:plus" size={13} />
+					</button>
 				</header>
 
 				<div class="vp-sidebar-list">
@@ -340,6 +349,11 @@ html,body{margin:0;height:100%;overflow:hidden;}
   text-transform:uppercase;font-weight:var(--typography-weight-semibold,600);
   color:var(--lg-mute,#5C7A85);user-select:none;}
 .vp-sidebar-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.vp-sidebar-add{margin-left:auto;display:inline-flex;align-items:center;padding:2px;
+  border:none;background:transparent;color:var(--lg-mute,#5C7A85);cursor:pointer;
+  border-radius:3px;flex:0 0 auto;transition:background .12s ease,color .12s ease;}
+.vp-sidebar-add:hover{background:#ffffff08;
+  color:var(--sb-conn-auto,#FFF76B);}
 /* min-height は ACTIONS（doc 57）が伸びたときの床。scroll container の自動最小サイズは 0 なので、
    これが無いと下の区画が repo list を高さ 0 まで潰せる。 */
 .vp-sidebar-list{flex:1;min-height:96px;overflow-y:auto;padding:0 0 10px;}
@@ -544,11 +558,11 @@ html,body{margin:0;height:100%;overflow:hidden;}
 
 /* Add Sub「+」(active repo) / Start「▶」(一時停止中 repo) — summary 右端の
    action ボタン。 レイアウトは共通、 Start は起動 affordance として常時 brand 色。 */
-.vp-proj-start{margin-left:auto;display:inline-flex;align-items:center;
+.vp-proj-addsub,.vp-proj-start{margin-left:auto;display:inline-flex;align-items:center;
   padding:2px;border:none;background:transparent;color:var(--lg-mute,#5C7A85);
   cursor:pointer;border-radius:3px;flex:0 0 auto;
   transition:background .12s ease,color .12s ease;}
-.vp-proj-start:hover{
+.vp-proj-addsub:hover,.vp-proj-addsub.open,.vp-proj-start:hover{
   background:#ffffff08;color:var(--sb-conn-auto,#FFF76B);}
 /* Start ▶ も quiet: 定常は muted、 hover 時のみ cyan (interaction feedback)。 */
 .vp-proj-start{color:var(--lg-mute,#5C7A85);}

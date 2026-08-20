@@ -5,8 +5,9 @@
  * native `<details>` で expand/collapse、 開閉時に `process:toggle` IPC を送って
  * Rust 側 state に永続化する。 展開時の内容は repo state に応じた hint、 または Lane 行。
  *
- * Add Sub form は名簿内に ephemeral に出る（開く入口 = edge rail の + New menu /
- * `n` directive、doc 58 ④。常設「+」は撤去済み）。
+ * lane を産む「+」は repo 見出しに住む（mako 2026-08-20 — 産む動詞は親の行に。
+ * repo は CURRENTS 行、lane は repo 行、console は rail の + New）。`n` directive
+ * からも同じ form が開く。
  */
 import {
 	For,
@@ -100,6 +101,12 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 	// entry 不在（旧 daemon / 未取得）は "unregistered" 扱いで ○（dim）。
 	const presence = () =>
 		sidebar.activity.presence?.[props.proc.path] ?? "unregistered";
+	// active repo = 現在 active な Lane を含む repo。 lane を産む「+」はこの時だけ出す。
+	const isActiveRepo = () => {
+		const a = sidebar.active_lane_address;
+		return a != null && lanes().some((l) => laneAddressKey(l) === a);
+	};
+
 	// photon one-shot（spine を走る光）は doc 58 台帳で spine ごと撤去。
 	const [addSubOpen, setAddSubOpen] = createSignal(false);
 	// PR 445 `n` directive: keyboard で AddSub form を open するため、 RepoAccordion 内 local
@@ -124,6 +131,12 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 	// 停止中 = repo の Process が無い state (`isRunningProcess` の否定)。 Start ボタン (▶) と
 	// context menu の出し分けに使う (タブ分割は撤去済、 repo は 1 リストに留まる)。
 	const isPaused = () => !isRunningProcess(props.proc);
+
+	// lane を産む「+」を出す条件。 isActiveRepo だけだと、 一度 active にした repo を
+	// Stop した後も active_lane_address / lanes_by_repo が残る (repo 停止で自動クリア
+	// されない) ため、 停止中でも true になりうる。 稼働中であることを明示的に AND して、
+	// 停止中 repo に「+」と Start「▶」が同居する / 失敗する Add Sub を開けるのを防ぐ。
+	const showAddSub = () => isActiveRepo() && !isPaused();
 
 	// 📁 repo ヘッダの右クリック → repo context menu。
 	//   - 一時停止中: Start repo (restart_process は dead な repo も起こす)
@@ -272,9 +285,23 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 					size={11}
 				/>
 				<span class="vp-proj-name">{props.proc.name}</span>
-				{/* Add Sub の常設「+」は doc 58 ④ で edge rail の + New menu へ移設。
-				    form 本体と registry（openAddSubFor）は残る — 開く経路が rail と
-				    `n` directive になっただけ。 */}
+				{/* lane 追加: 産む動詞は**親の行**に住む（mako 2026-08-20 — repo の子 = lane を
+				    産む「+」は repo 見出しに）。click で AddSub form（下の accordion 内）開閉。 */}
+				<Show when={showAddSub()}>
+					<button
+						class="vp-proj-addsub"
+						classList={{ open: addSubOpen() }}
+						title="lane を作る"
+						onClick={(e) => {
+							// summary click は <details> を toggle するので止める。
+							e.preventDefault();
+							e.stopPropagation();
+							setAddSubOpen((v) => !v);
+						}}
+					>
+						<CreoIcon name="ph:plus" size={12} />
+					</button>
+				</Show>
 				{/* 停止中 repo の起動 affordance。 Add Sub form の入口は稼働中限定
             なので、 停止中のこの「▶」とは同居しない。 */}
 				<Show when={isPaused()}>

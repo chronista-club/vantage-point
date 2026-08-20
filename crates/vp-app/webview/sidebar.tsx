@@ -22,8 +22,6 @@ import { openSidebarDispatch } from './src/sidebar/dispatch'
 import { installSidebarKeybindings } from './src/sidebar/keybindings'
 import { installSidebarFormRestore } from './src/sidebar/form'
 import { onSessionNow } from './session-now-bridge'
-import { onOpenNewLane } from './new-verbs-bridge'
-import { runNewSub } from './src/sidebar/actions/handlers'
 import { applySessionNow } from './src/sidebar/session-now'
 
 // Rust → sidebar の押し込みの受け口を **module 評価の最初に**生やす（実処理の接続は下方
@@ -58,10 +56,6 @@ try {
 
   // 「今なにを」の受け口（doc 58 ②-a）— editor-host bundle の chatview が tee してくる。
   onSessionNow((d) => applySessionNow(d.lane, d.session, d.text))
-
-  // 「lane を作る」の受け口（doc 58 ④）— edge rail の + New menu から届く。
-  // 実処理は `n` directive と同じ runNewSub（active repo 解決 + AddSub form open）。
-  onOpenNewLane(() => runNewSub())
 
   // native WebView の context menu (Reload / Inspect / AutoFill) を抑制する。
   // sidebar の右クリックは独自 ContextMenu に一本化する (VP-204 PR-1)。
