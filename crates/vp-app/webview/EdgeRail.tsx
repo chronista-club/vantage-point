@@ -132,6 +132,9 @@ export function mountEdgeRail(railRoot: HTMLElement, mount: HTMLElement): EdgeRa
                 </button>
               )}
             </For>
+            {/* rail の New は console 専用（lane 級 = doc 56 原理）。repo / lane を産む
+                動詞は各親の行に住む（repo = CURRENTS 行、lane = repo 見出し —
+                mako 2026-08-20「左側での操作が右側に流れるように」）。 */}
           </div>
         )}
       </Show>

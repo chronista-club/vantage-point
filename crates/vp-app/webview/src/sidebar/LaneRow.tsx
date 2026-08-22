@@ -11,7 +11,10 @@ import { Show } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import type { LaneInfo } from "../generated/LaneInfo";
 import type { SubStatusWire } from "../generated/SubStatusWire";
+import type { LaneSessionEntryWire } from "../generated/LaneSessionEntryWire";
 import { sidebar } from "./store";
+import { sessionNow } from "./session-now";
+import { sessionNowKey } from "../../session-now-bridge";
 import { sendIpc } from "./ipc";
 import { resolveRepoOrder } from "./dnd";
 import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
@@ -57,10 +60,63 @@ function SubMeta(props: { ws: SubStatusWire }) {
 }
 
 /**
- * connector class (= control surrender FSM の投影) から state 文字を導出する。
+ * 相部屋の非 root session 行（doc 58 ②-b — 行 = session）。
+ *
+ * 場所ラベル（lane 名）は**出さない** — 直前の root 行と同じ場所であることを省略が
+ * 語る（同じ場所 = 並列、を型で示す。doc 58 §2）。出すのは働き手の identity
+ * （agent icon + title / #key）と進行（now-line）だけ。
+ *
+ * state dot は描かない: session 単位の flow_state は wire に無く、憶測で既定を
+ * 描かない（LaneRow の isOrigin と同じ流儀）。データが載ったら足す。
+ */
+export function SessionRow(props: {
+	lane: LaneInfo;
+	repoPath: string;
+	session: LaneSessionEntryWire;
+}) {
+	const addr = () => laneAddressKey(props.lane);
+	const title = () =>
+		sidebar.session_titles?.[sessionNowKey(addr(), props.session.key)];
+	const nowText = () => sessionNow[sessionNowKey(addr(), props.session.key)];
+	const icon = () => agentIcon(props.session.agent, false);
+	// click は lane ごと select（session 単位の Pane focus は main area 側 roster が担う —
+	// lane を出せば当該 session の Pane も並ぶ、doc 50 session=Pane）。
+	const onSelect = () => {
+		sendIpc({ t: "lane:select", path: props.repoPath, address: addr() });
+	};
+	return (
+		<div
+			class="vp-lane-row vp-session-row creo-sidenav-link"
+			onClick={onSelect}
+		>
+			{/* dot slot 分の空 indent — root 行と縦を揃える（dot は描かない、doc 上記） */}
+			<span class="vp-lane-dot" />
+			<Show when={icon()}>
+				<span class="vp-lane-icon" title={agentDisplayName(props.session.agent)}>
+					<CreoIcon name={icon()!} size={14} />
+				</span>
+			</Show>
+			{/* fallback は agent 表示名 — 右端の #key と重複させない（実機 2026-08-19）。 */}
+			<span class="vp-lane-title is-session" title={title() ?? undefined}>
+				{title() ?? agentDisplayName(props.session.agent)}
+			</span>
+			<span class="vp-lane-right">
+				<span class="vp-lane-shortcut">#{props.session.key}</span>
+			</span>
+			<Show when={nowText()}>
+				<span class="vp-lane-now" title={nowText()}>
+					{nowText()}
+				</span>
+			</Show>
+		</div>
+	);
+}
+
+/**
+ * state class (= control surrender FSM の投影) から state 文字を導出する。
  * conn-auto/run = working、 conn-hitl = needs you。
  * idle (conn-dead) は quiet pass (mako 019f5100) で文字を出さない — 「idle はほぼ消える」。
- * conn-main (root) も state を持たない (spine の頭) ので null。
+ * conn-root (main) も state を持たない (幹) ので null。
  */
 function stateLabel(connectorClass: string | undefined): string | null {
 	switch (connectorClass) {
@@ -77,10 +133,8 @@ function stateLabel(connectorClass: string | undefined): string | null {
 export function LaneRow(props: {
 	lane: LaneInfo;
 	repoPath: string;
-	/** connector の線種 class (conn-*)。 未指定なら connector 自体を描かない。 */
+	/** state dot の状態 class (conn-*)。 未指定なら dot 自体を描かない。 */
 	connectorClass?: string;
-	/** lane list 内の最終行 (= tree corner を └ 相当にする)。 */
-	connectorLast?: boolean;
 }) {
 	const addr = () => laneAddressKey(props.lane);
 	const isActive = () => sidebar.active_lane_address === addr();
@@ -115,11 +169,19 @@ export function LaneRow(props: {
 	// (dead lane に届いた content も気付かせる。awaiting=入力待ちが alive 前提なのとは意味論が違う)。
 	const canvasUnread = () =>
 		!isActive() && (sidebar.canvas_unread?.[addr()] ?? 0) > 0;
-	// cc `/rename` の custom-title (2 行目)。 未設定 lane は dimmed "—"。
-	const sessionTitle = () => sidebar.session_titles?.[addr()];
+	// この lane の root session key（registry 欠落 = 旧 wire / boot 窓は 1 に倒す —
+	// Rust 側 ResolveSessionTitles の fallback と同じ既定）。
+	const rootKey = () => props.lane.sessions?.root ?? 1;
+	// cc `/rename` の custom-title。doc 58 ②-c で鍵が session 単位（`{address}#{session}`、
+	// now-line と同じ sessionNowKey 形）になった。lane 行は root session の分を出す。
+	const sessionTitle = () =>
+		sidebar.session_titles?.[sessionNowKey(addr(), rootKey())];
 	// 地 (ground): cwd を repo root 起点の差分に畳む。 絶対 path は repo が持つので
 	// lane は offset だけを名乗る。 main は差分ゼロ = "" → 行ごと出さない。
 	const cwdLabel = () => laneCwdLabel(props.lane.cwd, props.repoPath);
+	// 「今なにを」(doc 58 ②-a): 行 = lane の間は **root session の分**を出す
+	// （代表 = 役職、doc 54。②-b で行 = session に割れたら session ごとになる）。
+	const nowText = () => sessionNow[sessionNowKey(addr(), rootKey())];
 	// doc 44 D4: 開発起点 lane か。真実源は Repo Host の帳簿で、lanes snapshot の
 	// `origin` として届く (= lane 自身は役割を持たない、P2 のフラット化)。
 	// 未着 (起動直後 / 旧 server) は undefined → star を出さない。憶測で既定を描かない。
@@ -293,7 +355,8 @@ export function LaneRow(props: {
 
 	return (
 		<div
-			class="vp-lane-row"
+			class="vp-lane-row creo-sidenav-link"
+			aria-current={isActive() ? "page" : undefined}
 			classList={{
 				active: isActive(),
 				inactive: isInactive(),
@@ -310,13 +373,11 @@ export function LaneRow(props: {
 			onDrop={onDrop}
 			onDragEnd={clearLaneDrag}
 		>
-			{/* ⓪ tree connector (CSS 描画、 線種で control surrender FSM を表現。
-			    脱 TUI hybrid 2026-07: glyph → pseudo-element、 描画は SHELL_CSS 参照) */}
+			{/* ⓪ state dot (CSS 描画、 形と色で control surrender FSM を表現。
+			    doc 58 台帳: tree 演出 (spine/tap/photon) は撤去、 node = 行頭 dot だけが残る。
+			    場所の包含は proj 見出しが語るので、 線で繋ぐ必要が無い) */}
 			<Show when={props.connectorClass}>
-				<span
-					class={`vp-lane-connector ${props.connectorClass}`}
-					classList={{ last: props.connectorLast }}
-				/>
+				<span class={`vp-lane-dot ${props.connectorClass}`} />
 			</Show>
 			{/* ① agent icon */}
 			<Show when={icon()}>
@@ -324,15 +385,8 @@ export function LaneRow(props: {
 					<CreoIcon name={icon()!} size={14} />
 				</span>
 			</Show>
-			{/* 開発起点マーカー (doc 44 D4)。agent icon の直後 = 「この lane が何か」を
-			    修飾する層に置く (右端の state / badge は「今どうなっているか」で層が違う)。
-			    agent icon より 1 段小さく、光らせない — 起点は状態ではなく属性なので
-			    注意を引かない (光 = needs-you の専有、Shell.tsx の階層規約)。 */}
-			<Show when={isOrigin()}>
-				<span class="vp-lane-origin" title="この repo の開発起点">
-					<CreoIcon name="ph:star-fill" size={11} />
-				</span>
-			</Show>
+			{/* 開発起点マーカー (★) は doc 58 台帳で撤去 — 場所ラベル (main) と二重。
+			    isOrigin は context menu の「開発起点にする」の出し分けで使用継続。 */}
 			{/* session title を agent icon の右へ (= 旧 2 段目を 1 行目に昇格)。
 			    label (④) は tree 段下げで sub 視認可なので omit。
 			    fallback: session title 未設定なら sub は name、 main は repo 名を
@@ -345,15 +399,8 @@ export function LaneRow(props: {
 				{sessionTitle() ??
 					(isSub() ? laneLabel(props.lane) : props.lane.address.repo)}
 			</span>
-			{/* 右端ブロック: ⑦ state 文字 → ⑤ git meta (dirty/↑↓ のみ) → ⑥ awaiting dot → ② files → ③ mailbox */}
+			{/* 右端ブロック: ⑦ state 文字 → ⑤ git meta (dirty/↑↓ のみ) → ⑥ awaiting dot → ③ mailbox → #N (末尾固定) */}
 			<span class="vp-lane-right">
-				{/* Index: `⌘ hold l` で打つ番号。root lane だけが持つ（mako 2026-08-09）。
-				    ⚠️ 番号の出どころは `shortcutNumberOf` 一本 — handlers.ts の宛先と同じ関数。 */}
-				<Show when={shortcut()}>
-					<span class="vp-lane-shortcut" title={`⌘ hold l → ${shortcut()}`}>
-						#{shortcut()}
-					</span>
-				</Show>
 				{/* Light Grid state 言語の文字面 (working / idle / needs you)。 FSM の SSOT は
 				    connectorClass (laneConnector 導出) — 二重導出しない。 root (main) は出さない。 */}
 				<Show when={stateLabel(props.connectorClass)}>
@@ -371,17 +418,7 @@ export function LaneRow(props: {
 						title="Canvas に新しい内容が届きました"
 					/>
 				</Show>
-				<button
-					class="vp-lane-files-btn"
-					type="button"
-					title="ファイルを開く (Cmd+F)"
-					onClick={(e) => {
-						e.stopPropagation();
-						window.vpFilePicker?.open(addr());
-					}}
-				>
-					<CreoIcon name="ph:folder-open" size={12} />
-				</button>
+				{/* 📁 files-btn は doc 58 台帳で撤去 — code pane は Cmd+F で足りる。 */}
 				<Show when={inbox()}>
 					{/* mailbox badge は Wire Inbox panel (doc 34 §4 V1) の起動ボタンを兼ねる。 */}
 					<span
@@ -403,12 +440,27 @@ export function LaneRow(props: {
 						/>
 					</span>
 				</Show>
+				{/* Index: `⌘ hold l` で打つ番号。root lane だけが持つ（mako 2026-08-09）。
+				    一番右 = 行末尾に固定（mako 2026-08-19）— badge 群の増減で位置が揺れない。
+				    ⚠️ 番号の出どころは `shortcutNumberOf` 一本 — handlers.ts の宛先と同じ関数。 */}
+				<Show when={shortcut()}>
+					<span class="vp-lane-shortcut" title={`⌘ hold l → ${shortcut()}`}>
+						#{shortcut()}
+					</span>
+				</Show>
 			</span>
 			{/* ⑧ 地 (ground): repo root 起点の cwd 差分。 1 行目が図 (title / state / git meta)、
 			    ここが地。 mute-2 / micro / mono = git meta と同じ最も引っ込んだ層に置き、 光らせない
 			    (光 = 注意は needs-you の専有)。 CSS の flex:0 0 100% で 2 行目へ折り返す。
 			    差分ゼロ (main = repo root) は **行ごと出さない** — 語ることが無い行は黙る。
 			    tooltip には常に完全な絶対 path を出すので情報は落ちない。 */}
+			{/* 「今なにを」= 進行の本体 (doc 58 §2)。地 (cwd) より 1 段読める色。
+			    無ければ黙る (語ることが無い行は黙る、cwd と同じ流儀)。 */}
+			<Show when={nowText()}>
+				<span class="vp-lane-now" title={nowText()}>
+					{nowText()}
+				</span>
+			</Show>
 			<Show when={cwdLabel()}>
 				<span class="vp-lane-cwd" title={props.lane.cwd}>
 					{cwdLabel()}

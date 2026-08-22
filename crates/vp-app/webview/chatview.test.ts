@@ -26,8 +26,7 @@ import {
   deriveNowLine,
   clampNowLine,
   resolveAnswer,
-  OTHER_LABEL,
-} from './chatview'
+  OTHER_LABEL } from './chatview'
 import type { ConversationEvent } from './console'
 import { marked as markedSingleton } from 'marked'
 

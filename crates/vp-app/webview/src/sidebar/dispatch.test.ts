@@ -22,10 +22,8 @@ function recordingHandlers(): { calls: string[]; handlers: SidebarPushHandlers }
       error: (m) => calls.push(`error:${m}`),
       subCreateResult: (p, n, e) => calls.push(`sub:${p}/${n}:${e}`),
       agentsResult: (p, s, e) => calls.push(`agents:${p}:${s.length}:${e}`),
-      filesListResult: (a, entries, t) => calls.push(`files:${a}:${entries.length}:${t}`),
       wireResult: (p) => calls.push(`wire:${(p as { total?: number }).total}`),
       clonePathPicked: (p) => calls.push(`clone:${p}`),
-      filePickerOpen: (a) => calls.push(`picker:${a}`),
     },
   }
 }
@@ -72,13 +70,13 @@ describe('sidebar dispatch', () => {
   it('保留分と直通分が 1 本の順序に並ぶ', async () => {
     const mod = await import('./dispatch')
     mod.openSidebarDispatch()
-    dispatch({ t: 'file_picker:open', address: 'vp/root' })
+    dispatch({ t: 'clone:path_picked', path: '/tmp/a' })
 
     const { calls, handlers } = recordingHandlers()
     mod.installSidebarDispatch(handlers)
-    dispatch({ t: 'file_picker:open', address: 'vp/perf' })
+    dispatch({ t: 'clone:path_picked', path: '/tmp/b' })
 
-    expect(calls).toEqual(['picker:vp/root', 'picker:vp/perf'])
+    expect(calls).toEqual(['clone:/tmp/a', 'clone:/tmp/b'])
   })
 
   it('optional field の省略は null として渡る（成功 = error 無し）', async () => {
@@ -105,14 +103,14 @@ describe('sidebar dispatch', () => {
     mod.installSidebarDispatch(handlers)
 
     dispatch({
-      t: 'files:list_result',
-      address: 'vp/root',
-      entries: [{}, {}, {}],
-      truncated: true,
+      t: 'agents:result',
+      repo_path: '/p',
+      agents: [{}, {}, {}],
+      error: 'ng',
     })
     dispatch({ t: 'wire:result', payload: { total: 7 } })
 
-    expect(calls).toEqual(['files:vp/root:3:true', 'wire:7'])
+    expect(calls).toEqual(['agents:/p:3:ng', 'wire:7'])
   })
 
   it('install 前に届いた分は二重に流れない', async () => {

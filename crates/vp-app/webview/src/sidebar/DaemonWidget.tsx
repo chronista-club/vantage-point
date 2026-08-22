@@ -1,9 +1,15 @@
 /**
- * sidebar 最下部の Daemon widget。
+ * sidebar 下部の 2 段（doc 58 ③ — 分け方 = アーキテクチャの scope 境界、mako 2026-08-19）:
  *
- * v1.0 柱 2 PR-2。 旧 SIDEBAR_HTML の Daemon widget + `renderActivity` を port。
- * collapsed = 1 行サマリ (状態 dot + version + P/R count)、 expanded = 詳細 stats。
- * `ActivitySnapshot` (Rust が 5s 周期で push) を消費する。
+ * - [`CreoIdRow`] … **creo 段**の住人（cloud scope）。Shell が ACTIONS（BucketList）と
+ *   同じ `.vp-creo-zone` に並べる。offline は段ごと dim = creo 依存を名札付きで隔離。
+ * - [`MachineStrip`] … **machine 帯**（最下、machine scope = daemon ⚙️ + hub + devices 🧲）。
+ *   健康なら 1 行サマリだけ、click で詳細（stats / hub nodes / devices 入口）が展開。
+ *   非健康 signal（offline / update あり / 機材譲渡中）はサマリ行にも出す —
+ *   「畳んであるから気づけない」を作らない。
+ *
+ * `ActivitySnapshot`（Rust が 5s 周期で push）を消費する。旧 DaemonWidget
+ * （11 行 ≈ 340px 常時表示）はこの 2 export に分解されて退役。
  */
 import { For, Show, createSignal, onCleanup } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
@@ -24,7 +30,8 @@ function formatUptime(iso: string | null | undefined, nowMs: number): string {
 	return `${h}h ${m % 60}m ago`;
 }
 
-export function DaemonWidget() {
+/** activity snapshot の共通導出（MachineStrip / CreoIdRow が共用）。 */
+function useActivity() {
 	const a = () => sidebar.activity;
 	const online = () => a().node_online;
 	const summary = () =>
@@ -71,10 +78,6 @@ export function DaemonWidget() {
 	/** どれか 1 つでも token を持っていれば Creo ID にはログイン済み（identity は共通）。 */
 	const signedIn = () => authState("hub") !== "none" || authState("creo") !== "none";
 
-	// uptime 表示を 30s 周期で tick させる (started_at は不変なので時計側を signal 化)。
-	const [now, setNow] = createSignal(Date.now());
-	const timer = setInterval(() => setNow(Date.now()), 30_000);
-	onCleanup(() => clearInterval(timer));
 
 	// Devices 🧲 — machine scope の物理 device。 device 一覧は main area の Devices pane が render、
 	// ここ (Daemon レベルの Devices) は pane を開く入口 + 接続 device 数 badge。
@@ -98,143 +101,192 @@ export function DaemonWidget() {
 	const updateApplying = () => a().update_applying;
 	const latestVersion = () => a().latest_version ?? undefined;
 
+	return {
+		a,
+		online,
+		summary,
+		hub,
+		hubConnected,
+		hubDaemons,
+		hubLabel,
+		showHub,
+		hubCredentialed,
+		authState,
+		creoValid,
+		signedIn,
+		devices,
+		devicesActive,
+		released,
+		heldCount,
+		updateAvailable,
+		updateApplying,
+		latestVersion,
+	};
+}
+
+/**
+ * Creo ID 行（doc 57 Phase 2 → doc 58 ③ で creo 段へ）— **identity の席**。
+ * hub とは独立（identity は 1 つ、token は宛先ごと、service はそれを使う側）。
+ */
+export function CreoIdRow() {
+	const v = useActivity();
 	return (
-		<>
-			<details class="vp-daemon">
-				<summary class="vp-daemon-summary">
-					<span class="vp-daemon-dot" classList={{ offline: !online() }} />
-					<span class="vp-daemon-line">{summary()}</span>
-				</summary>
-				<div class="vp-daemon-detail">
-					<div class="vp-daemon-stat">
-						<span class="k">version</span>
-						<span class="v">{a().daemon_version ?? "—"}</span>
-					</div>
-					<div class="vp-daemon-stat">
-						<span class="k">uptime</span>
-						<span class="v">
-							<Show when={online()} fallback="—">
-								{formatUptime(a().daemon_started_at, now())}
-							</Show>
-						</span>
-					</div>
-					<div class="vp-daemon-stat">
-						<span class="k">repos</span>
-						<span class="v">{a().repo_count}</span>
-					</div>
-					<div class="vp-daemon-stat">
-						<span class="k">running</span>
-						<span class="v">{a().running_repo_count}</span>
-					</div>
+		<Show when={v.online()}>
+			<div
+				class="vp-daemon-summary"
+				title="Creo ID — VP の identity。token は宛先ごとに 1 本ずつ持つ"
+			>
+				<span
+					class="vp-daemon-dot"
+					classList={{ offline: !v.signedIn() }}
+					title={`hub: ${v.authState("hub")} / creo: ${v.authState("creo")}`}
+				/>
+				<span class="vp-daemon-line">
+					Creo ID{v.signedIn() ? "" : " — signed out"}
+				</span>
+				{/* creo（ACTIONS の同期先）の席。hub と独立に張り替えられる。 */}
+				<button
+					type="button"
+					class="vp-hub-auth-btn"
+					title={
+						v.creoValid()
+							? "creo-memories の認証を解除する（ACTIONS の同期が止まる）"
+							: "creo-memories にログインする（Creo ID の session があれば素通りする）"
+					}
+					onClick={(e) => {
+						e.stopPropagation();
+						sendIpc(
+							v.creoValid()
+								? { t: "auth:logout", target: "creo" }
+								: { t: "auth:login", target: "creo" },
+						);
+					}}
+				>
+					{v.creoValid() ? "creo ✓" : "creo"}
+				</button>
+			</div>
+		</Show>
+	);
+}
+
+/**
+ * machine 帯（doc 58 ③）— daemon ⚙️ + hub + devices 🧲 の 1 行サマリ + click 展開。
+ */
+export function MachineStrip() {
+	const v = useActivity();
+	// uptime 表示を 30s 周期で tick させる (started_at は不変なので時計側を signal 化)。
+	// ⚠️ useActivity ではなくここに置く — now() の読み手は本 component の uptime 行だけで、
+	// CreoIdRow にまで timer を張るのは無駄 (review 2026-08-19)。
+	const [now, setNow] = createSignal(Date.now());
+	const timer = setInterval(() => setNow(Date.now()), 30_000);
+	onCleanup(() => clearInterval(timer));
+	return (
+		<details class="vp-daemon vp-machine-strip">
+			<summary class="vp-daemon-summary">
+				<span class="vp-daemon-dot" classList={{ offline: !v.online() }} />
+				<span class="vp-daemon-line">{v.summary()}</span>
+				{/* 非健康 signal は畳んでいても見える（サマリ行の右端に集約） */}
+				<Show when={v.showHub() && !v.hubConnected()}>
+					<span class="vp-machine-flag" title={v.hubLabel()}>hub!</span>
+				</Show>
+				<Show when={v.released()}>
+					<span class="vp-machine-flag" title="vp midi off で機材を他アプリへ譲っています">譲渡中</span>
+				</Show>
+				<Show when={v.online() && v.updateAvailable()}>
+					<span class="vp-machine-flag update" title={`v${v.latestVersion() ?? "?"} が利用可能`}>
+						<CreoIcon name="ph:arrow-circle-up" size={12} />
+					</span>
+				</Show>
+			</summary>
+
+			<div class="vp-daemon-detail">
+				<div class="vp-daemon-stat">
+					<span class="k">version</span>
+					<span class="v">{v.a().daemon_version ?? "—"}</span>
 				</div>
-			</details>
-			<Show when={online() && updateAvailable()}>
+				<div class="vp-daemon-stat">
+					<span class="k">uptime</span>
+					<span class="v">
+						<Show when={v.online()} fallback="—">
+							{formatUptime(v.a().daemon_started_at, now())}
+						</Show>
+					</span>
+				</div>
+				<div class="vp-daemon-stat">
+					<span class="k">repos</span>
+					<span class="v">{v.a().repo_count}</span>
+				</div>
+				<div class="vp-daemon-stat">
+					<span class="k">running</span>
+					<span class="v">{v.a().running_repo_count}</span>
+				</div>
+			</div>
+
+			<Show when={v.online() && v.updateAvailable()}>
 				<div
 					class="vp-daemon-update"
-					classList={{ applying: updateApplying() }}
+					classList={{ applying: v.updateApplying() }}
 					title={
-						updateApplying()
+						v.updateApplying()
 							? "更新を適用しています…"
-							: `v${latestVersion() ?? "?"} が利用可能です。クリックで更新します`
+							: `v${v.latestVersion() ?? "?"} が利用可能です。クリックで更新します`
 					}
 					onClick={() => {
-						// 適用中は再送しない (Rust 側 UPDATE_IN_FLIGHT と二重のガード)。
-						if (updateApplying()) return;
-						const v = latestVersion();
-						// version が無い場合は IPC を送らない (Rust arm も空 version を無視)。
-						if (v) sendIpc({ t: "update:apply", version: v });
+						if (v.updateApplying()) return;
+						const ver = v.latestVersion();
+						if (ver) sendIpc({ t: "update:apply", version: ver });
 					}}
 				>
 					<CreoIcon name="ph:arrow-circle-up" size={14} />
 					<span class="vp-daemon-update-label">
-						{updateApplying() ? "更新中…" : "更新する"}
+						{v.updateApplying() ? "更新中…" : "更新する"}
 					</span>
-					<Show when={latestVersion()}>
-						<span class="vp-daemon-update-ver">v{latestVersion()}</span>
+					<Show when={v.latestVersion()}>
+						<span class="vp-daemon-update-ver">v{v.latestVersion()}</span>
 					</Show>
 				</div>
 			</Show>
-			{/* Creo ID 行（doc 57 Phase 2）— **identity の席**。hub とは独立に出す。
-			    旧実装は Login/Logout が Hub 行の中にあり、`showHub()` に人質を取られていた
-			    （hub federation を切ると Creo ID にログインする手段が GUI から消える）。
-			    identity は 1 つ、token は宛先ごと、service はそれを使う側、という分解に直した。 */}
-			<Show when={online()}>
+
+			<Show when={v.showHub()}>
 				<div
 					class="vp-daemon-summary"
-					title="Creo ID — VP の identity。token は宛先ごとに 1 本ずつ持つ"
+					title={`chronista-hub federation: ${v.hub()}`}
 				>
-					<span
-						class="vp-daemon-dot"
-						classList={{ offline: !signedIn() }}
-						title={`hub: ${authState("hub")} / creo: ${authState("creo")}`}
-					/>
-					<span class="vp-daemon-line">
-						Creo ID{signedIn() ? "" : " — signed out"}
-					</span>
-					{/* creo（ACTIONS の同期先）の席。hub と独立に張り替えられる。 */}
+					<span class="vp-daemon-dot" classList={{ offline: !v.hubConnected() }} />
+					<span class="vp-daemon-line">{v.hubLabel()}</span>
 					<button
 						type="button"
 						class="vp-hub-auth-btn"
 						title={
-							creoValid()
-								? "creo-memories の認証を解除する（ACTIONS の同期が止まる）"
-								: "creo-memories にログインする（Creo ID の session があれば素通りする）"
-						}
-						onClick={(e) => {
-							e.stopPropagation();
-							sendIpc(
-								creoValid()
-									? { t: "auth:logout", target: "creo" }
-									: { t: "auth:login", target: "creo" },
-							);
-						}}
-					>
-						{creoValid() ? "creo ✓" : "creo"}
-					</button>
-				</div>
-			</Show>
-			<Show when={showHub()}>
-				<div
-					class="vp-daemon-summary"
-					title={`chronista-hub federation: ${hub()}`}
-				>
-					<span class="vp-daemon-dot" classList={{ offline: !hubConnected() }} />
-					<span class="vp-daemon-line">{hubLabel()}</span>
-					<button
-						type="button"
-						class="vp-hub-auth-btn"
-						title={
-							hubCredentialed()
+							v.hubCredentialed()
 								? "Creo ID からログアウトする（hub 接続は匿名に落ちる）"
 								: "Creo ID にログインする（browser で認証 → hub 接続に即反映）"
 						}
 						onClick={(e) => {
 							e.stopPropagation();
-							// 宛先を明示する。省略でも hub に落ちるが、Creo ID 行が別に
-							// 立った今は「どの席の話か」をコード上でも曖昧にしない。
-							if (hubCredentialed()) {
+							if (v.hubCredentialed()) {
 								sendIpc({ t: "auth:logout", target: "hub" });
 							} else {
 								sendIpc({ t: "auth:login", target: "hub" });
 							}
 						}}
 					>
-						{hubCredentialed() ? "Logout" : "Login"}
+						{v.hubCredentialed() ? "Logout" : "Login"}
 					</button>
 				</div>
-				<Show when={hubConnected() && hubDaemons().length > 0}>
+				<Show when={v.hubConnected() && v.hubDaemons().length > 0}>
 					<div class="vp-hub-nodes">
-						<For each={hubDaemons()}>
+						<For each={v.hubDaemons()}>
 							{(w) => (
 								<div
 									class="vp-hub-daemon"
 									title={`${w.node_id ? `${w.handle} (${w.node_id})` : w.handle} — ${w.connected ? "connected" : "offline (stale registry entry)"}`}
 								>
 									<span
-											class="vp-hub-daemon-dot"
-											classList={{ offline: !w.connected }}
-										/>
-										<span class="k">{w.handle}</span>
+										class="vp-hub-daemon-dot"
+										classList={{ offline: !w.connected }}
+									/>
+									<span class="k">{w.handle}</span>
 									<Show when={w.endpoints_count > 0}>
 										<span class="v">{w.endpoints_count} ep</span>
 									</Show>
@@ -244,23 +296,23 @@ export function DaemonWidget() {
 					</div>
 				</Show>
 			</Show>
+
 			<div class="vp-devices">
 				<div
 					class="vp-agent-row"
-					classList={{ active: devicesActive() }}
+					classList={{ active: v.devicesActive() }}
 					onClick={() =>
 						sendIpc({ t: "stand:select", path: "", kind: "devices" })
 					}
 				>
 					<span class="vp-agent-icon">
 						<CreoIcon
-							name={agentIcon("devices", devicesActive()) ?? "ph:magnet"}
+							name={agentIcon("devices", v.devicesActive()) ?? "ph:magnet"}
 							size={14}
 						/>
 					</span>
 					<span class="vp-agent-title">{agentDisplayName("devices")}</span>
-					{/* 譲渡中は数字より先に言う — 「効いているか」が一目で要る状態なので。 */}
-					<Show when={released()}>
+					<Show when={v.released()}>
 						<span
 							class="vp-agent-badge released"
 							title="vp midi off で機材を他アプリへ譲っています（`vp midi on` で戻す）"
@@ -268,16 +320,16 @@ export function DaemonWidget() {
 							譲渡中
 						</span>
 					</Show>
-					<Show when={devices().length > 0}>
+					<Show when={v.devices().length > 0}>
 						<span
 							class="vp-agent-badge"
-							title={`${heldCount()} 台を掴んでいます（見えている ${devices().length} 台のうち）`}
+							title={`${v.heldCount()} 台を掴んでいます（見えている ${v.devices().length} 台のうち）`}
 						>
-							{heldCount()}/{devices().length}
+							{v.heldCount()}/{v.devices().length}
 						</span>
 					</Show>
 				</div>
 			</div>
-		</>
+		</details>
 	);
 }

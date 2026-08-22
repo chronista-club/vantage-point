@@ -27,7 +27,7 @@
  */
 
 import { marked } from 'marked'
-import mermaid from 'mermaid'
+import { renderMermaidBlocks } from './mermaid-post'
 
 /** board body の DOM target selector. main_area.rs HTML 側で `id="board-content"` を保証. */
 const TARGET_SELECTOR = '#board-content'
@@ -39,56 +39,12 @@ function getTarget(): HTMLElement | null {
 }
 
 // ----------------------------------------------------------------------------
-// mermaid post-process (= marked が ```mermaid を <pre><code class="language-mermaid">
-// で吐くので、 render 後に走査して SVG 置換。 WASM 非依存、 npm mermaid package のみ)
+// mermaid post-process — 実装は mermaid-post.ts（chat と共有、doc = そちら）。
+// board は確定 content のみ描くので showErrors=true（従来挙動 = silent fail しない）。
 // ----------------------------------------------------------------------------
 
-let mermaidInitialized = false
-
-function ensureMermaidInitialized(): void {
-  if (mermaidInitialized) return
-  mermaidInitialized = true
-  // securityLevel=loose で raw text を直接食わせる (= WebView 内 closed 環境、 user 自身の content)。
-  mermaid.initialize({
-    startOnLoad: false,
-    securityLevel: 'loose',
-    theme: 'dark',
-  })
-}
-
-/** 連番 id 用 counter。 `mermaid.render` の DOM unique id 生成に使う。 */
-let mermaidIdSeq = 0
-
-/**
- * marked が ```mermaid を吐く `<pre><code class="language-mermaid">` を見つけて、
- * 中の code text を `mermaid.render` で SVG 化して `<pre>` の outer を置換する。
- *
- * render エラー時は元の code block を残しつつ error message を `<pre>` で見せる (= silent fail しない)。
- */
 async function runMermaidPostProcess(container: HTMLElement): Promise<void> {
-  const blocks = container.querySelectorAll<HTMLElement>('code.language-mermaid')
-  if (blocks.length === 0) return
-  ensureMermaidInitialized()
-  for (const code of Array.from(blocks)) {
-    const src = code.textContent ?? ''
-    if (!src.trim()) continue
-    // 置換対象は <pre><code> の <pre>。 無ければ code 自身。
-    const replaceTarget = code.closest('pre') ?? code
-    const id = `pp-mermaid-${mermaidIdSeq++}`
-    try {
-      const { svg } = await mermaid.render(id, src)
-      const wrap = document.createElement('div')
-      wrap.className = 'creo-md-mermaid'
-      wrap.innerHTML = svg
-      replaceTarget.replaceWith(wrap)
-    } catch (e) {
-      console.warn('[vpPP] mermaid.render failed', e)
-      const errEl = document.createElement('pre')
-      errEl.className = 'creo-md-mermaid-error'
-      errEl.textContent = `mermaid render error: ${String(e)}\n\n${src}`
-      replaceTarget.replaceWith(errEl)
-    }
-  }
+  await renderMermaidBlocks(container, { showErrors: true })
 }
 
 // ----------------------------------------------------------------------------

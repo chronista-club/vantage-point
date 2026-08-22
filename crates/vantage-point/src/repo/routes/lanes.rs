@@ -1249,14 +1249,19 @@ mod core_tests {
     #[tokio::test]
     async fn create_rejects_reserved_main_name() {
         let state = crate::repo::state::build_test_app_state(None).await;
-        let err = create_sub_orchestrated(&state, req("root"))
-            .await
-            .expect_err("予約名は Err");
-        assert!(
-            err.contains(crate::repo::lanes_state::ROOT_LANE_NAME) && err.contains("reserved"),
-            "error message が予約名である旨を伝える: {}",
-            err
-        );
+        // ⚠️ 現行予約名（main）に加え**旧世代（root / conductor）も拒否**。旧名で Sub を
+        // 作れると `<repo>__root` 等の旧 state と衝突する（migration は衝突時に触らない
+        // ため、その lane の会話が永久に取り残される — validate_sub_name の doc 参照）。
+        for reserved in ["main", "root", "conductor"] {
+            let err = create_sub_orchestrated(&state, req(reserved))
+                .await
+                .expect_err("予約名は Err");
+            assert!(
+                err.contains(reserved) && err.contains("reserved"),
+                "error message が予約名（{reserved}）である旨を伝える: {}",
+                err
+            );
+        }
     }
 
     /// `create_sub_orchestrated`: name が空白のみの場合は早期 Err を返す。

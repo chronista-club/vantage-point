@@ -300,11 +300,17 @@ impl SessionState {
                     //
                     // ただし**黙って外れるのは避ける**。理由が見えないと bug に見えるので、
                     // 旧形を検出したら 1 行残す（復旧は lane を選び直すだけ）。
+                    // ⚠️ 検出は「形が旧い」に加えて「**予約名が旧世代**」も見る —
+                    // `<repo>/lane/root` は形こそ現行だが、daemon が発行する新名
+                    // （`<repo>/lane/main`）とは一致しないので同じく 1 回外れる。
                     if let Some(addr) = &state.active_lane_address
-                        && !addr.contains("/lane/")
+                        && (!addr.contains("/lane/")
+                            || vp_paths::LEGACY_ROOT_LANE_NAMES
+                                .iter()
+                                .any(|old| addr.ends_with(&format!("/lane/{old}"))))
                     {
                         tracing::info!(
-                            "active lane が旧形の address ({addr}) — daemon の発行形と一致しないため選択なしで起動します（lane を選び直せば新形で保存されます）"
+                            "active lane が旧世代の address ({addr}) — daemon の発行形と一致しないため選択なしで起動します（lane を選び直せば新形で保存されます）"
                         );
                     }
                     tracing::info!(

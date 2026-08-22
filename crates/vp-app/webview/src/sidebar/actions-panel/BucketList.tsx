@@ -187,7 +187,7 @@ export function BucketList() {
 }
 
 /**
- * 区画の CSS。`Shell.tsx` の `SHELL_CSS` 末尾に連結する（FILE_EXPLORER_CSS 等と同じ流儀）。
+ * 区画の CSS。`Shell.tsx` の `SHELL_CSS` 末尾に連結する（WIRE_PANEL_CSS 等と同じ流儀）。
  * 色は Light Grid（`--lg-*`）、字は 4 段（`--sb-text-*`）だけを使う。
  */
 export const ACTIONS_CSS = `
@@ -199,8 +199,8 @@ export const ACTIONS_CSS = `
    スクロールで戻る手段が無くなる。repo list は min-height:96px で床が入っているので、
    溢れた分はこの帯が引き受けて内部スクロールに畳む。 */
 .vp-act-buckets{flex:0 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;
-  padding:2px 0 4px;
-  border-top:1px solid var(--lg-hairline,#12222b);}
+  padding:2px 0 4px;}
+/* 名簿との境界線は親 .vp-creo-zone が持つ（doc 58 ③ — CreoIdRow を含む段全体の上辺）。 */
 .vp-act-bucket{flex:0 0 auto;}
 .vp-act-summary{list-style:none;display:flex;align-items:center;gap:6px;
   padding:6px 12px;cursor:pointer;user-select:none;

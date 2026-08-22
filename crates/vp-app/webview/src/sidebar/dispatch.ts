@@ -39,10 +39,8 @@ export interface SidebarPushHandlers {
   error(message: string): void
   subCreateResult(repoPath: string, name: string, error: string | null): void
   agentsResult(repoPath: string, agents: unknown[], error: string | null): void
-  filesListResult(address: string, entries: unknown[], truncated: boolean): void
   wireResult(payload: unknown): void
   clonePathPicked(path: string): void
-  filePickerOpen(address: string): void
 }
 
 let handlers: SidebarPushHandlers | null = null
@@ -65,17 +63,11 @@ function apply(msg: IpcEventEnvelope): void {
     case 'agents:result':
       handlers.agentsResult(msg.repo_path, msg.agents, msg.error ?? null)
       break
-    case 'files:list_result':
-      handlers.filesListResult(msg.address, msg.entries, msg.truncated)
-      break
     case 'wire:result':
       handlers.wireResult(msg.payload)
       break
     case 'clone:path_picked':
       handlers.clonePathPicked(msg.path)
-      break
-    case 'file_picker:open':
-      handlers.filePickerOpen(msg.address)
       break
     default: {
       // 網羅していれば `never`。Rust 側が新しい event を撃ってきた（= 版ズレ）ときだけ来る。

@@ -203,6 +203,10 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 // 確定時に webview が送る。漏れると sidebar IPC へ流れて silent drop =
                 // 「ドラッグしても次回起動で戻る」regression（他の tag と同じ罠）
                 | "shell:layout"
+                // code pane（コードブラウザ P1、CodePane.tsx 発）。漏れると sidebar IPC へ
+                // 流れて silent drop = 「tree が永久に空 / file 無反応」regression
+                | "code:list"
+                | "code:read"
         )
     )
 }
@@ -240,6 +244,10 @@ mod ipc_tag_tests {
             "debuglog:unwatch",
             // shell layout（漏れは「ドラッグしても次回起動で戻る」）
             "shell:layout",
+            // code pane（コードブラウザ）: 漏れは「pane を開いても tree が永久に空」/
+            // 「file を押しても何も出ない」
+            "code:list",
+            "code:read",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/root"}}"#);
             assert!(
@@ -262,8 +270,8 @@ mod ipc_tag_tests {
 #[cfg(test)]
 mod session_derivation_tests {
     use super::{
-        forget_roster_push, lane_has_chat_session, remember_roster_push, roster_push_needed,
-        session_list_payload, term_sessions_of,
+        forget_roster_push, remember_roster_push, roster_push_needed, session_list_payload,
+        term_sessions_of,
     };
     use crate::client::LaneInfo;
 
@@ -410,27 +418,6 @@ mod session_derivation_tests {
         }))
         .expect("LaneInfo deserialize");
         assert_eq!(term_sessions_of(&lane), vec![(1, true)]);
-    }
-
-    #[test]
-    fn chat_gate_looks_at_any_session_not_just_root() {
-        use crate::pane::SidebarState;
-
-        // root=tui + 非 root=chat: conversation 購読を張らないと その chat pane が無言になる。
-        let lane = lane_with(16, serde_json::json!([s(16, "tui"), s(19, "gui")]));
-        let addr = lane.address.key();
-        let mut state = SidebarState::default();
-        state.lanes_by_repo.insert("p".to_string(), vec![lane]);
-        assert!(
-            lane_has_chat_session(&state, &addr),
-            "非 root だけ chat の構成でも購読を張る"
-        );
-
-        // 全部 tui なら購読不要。
-        let lane = lane_with(16, serde_json::json!([s(16, "tui")]));
-        let mut state2 = SidebarState::default();
-        state2.lanes_by_repo.insert("p".to_string(), vec![lane]);
-        assert!(!lane_has_chat_session(&state2, &addr));
     }
 }
 
@@ -1988,9 +1975,10 @@ mod lane_js {
     use wry::WebView;
 
     use crate::generated::push::{
-        BoardMessage, ConsoleAgents, ConsoleEvent, ConsoleModeApplied, ConsoleSessionList,
-        DebuglogLines, DevicesRender, InkSnapshot, InkSnapshotError, PushEventEnvelope,
-        ShellLayout, TermEnsureLane, TermPaste, TermRemoveLane, TermRemoveSession, TermShowLane,
+        BoardMessage, CodeEntries, CodeFile, ConsoleAgents, ConsoleEvent, ConsoleModeApplied,
+        ConsoleSessionList, DebuglogLines, DevicesRender, InkSnapshot, InkSnapshotError,
+        PushEventEnvelope, ShellLayout, TermEnsureLane, TermPaste, TermRemoveLane,
+        TermRemoveSession, TermShowLane,
     };
 
     /// 生成 envelope を webview の単一受け口 `window.vpDispatch` へ押し込む。
@@ -2222,6 +2210,57 @@ mod lane_js {
             main_view,
             &PushEventEnvelope::BoardMessage(BoardMessage { message }),
         );
+    }
+
+    // ===== code pane（コードブラウザ P1）=====
+
+    /// `code:list` の応答: lane workdir の file 一覧。要素の形の持ち主は
+    /// [`crate::file_explorer::Entry`]（serialize 失敗はその 1 件だけ省く —
+    /// `files_list_result` から引き継いだ方針）。
+    pub fn code_entries(
+        main_view: &WebView,
+        lane: &str,
+        entries: &[crate::file_explorer::Entry],
+        truncated: bool,
+    ) {
+        let entries = entries
+            .iter()
+            .filter_map(|e| match serde_json::to_value(e) {
+                Ok(v) => Some(v),
+                Err(err) => {
+                    tracing::warn!("code entry の serialize に失敗（この 1 件を省く）: {err}");
+                    None
+                }
+            })
+            .collect();
+        push(
+            main_view,
+            &PushEventEnvelope::CodeEntries(CodeEntries {
+                lane: lane.to_string(),
+                entries,
+                truncated,
+            }),
+        );
+    }
+
+    /// `code:read` の応答: file 内容。payload は `{"text"} | {"error"}` の 2 択
+    /// （形の持ち主は `file_explorer::read_file`）。
+    pub fn code_file(main_view: &WebView, lane: &str, rel_path: &str, payload: &serde_json::Value) {
+        push(
+            main_view,
+            &PushEventEnvelope::CodeFile(CodeFile {
+                lane: lane.to_string(),
+                rel_path: rel_path.to_string(),
+                payload: payload.clone(),
+            }),
+        );
+    }
+
+    /// File menu「Code Browser」→ code pane の toggle（menu 起点の一方向 push、
+    /// 旧 `file_picker_open` の後継）。active lane 判定は webview 側に委譲。
+    pub fn code_toggle(main_view: &WebView) {
+        // fieldless event は codegen で unit variant になる（payload struct を包まない）。
+        push(main_view, &PushEventEnvelope::CodeToggle);
     }
 
     /// R sidebar の debug log viewer へ tail の行群を渡す（sidebar view modes、2026-08-01）。
@@ -2538,29 +2577,6 @@ fn lane_is_chat(state: &SidebarState, address: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// lane に **chat session（mode=chat）が 1 つでもある**か（doc 50 §4.6 A6）。
-///
-/// [`lane_is_chat`]（= root の mode）との違いが効くのは「root は tui のまま、非 root だけ
-/// chat」の構成。conversation topic の購読は **lane 単位**（session は message field で運ぶ）なので、
-/// 購読を張るかどうかは root の mode ではなく「chat の住人が居るか」で決めないと、その
-/// session の event が誰にも届かない（pane は並ぶのに無言、の形）。
-///
-/// registry snapshot 欠落（boot 窓の placeholder 等）は root mode 導出（= "tui"）に倒す。
-fn lane_has_chat_session(state: &SidebarState, address: &str) -> bool {
-    let Some(lane) = state
-        .lanes_by_repo
-        .values()
-        .flatten()
-        .find(|l| l.address.key() == address)
-    else {
-        return false;
-    };
-    match &lane.sessions {
-        Some(reg) if !reg.sessions.is_empty() => reg.sessions.iter().any(|s| s.mode == "gui"),
-        _ => root_mode_of(lane) == "gui",
-    }
-}
-
 /// doc 38 §4.2: `conversation_session_list` payload（`{focused, sessions:[{key, agent, focused, ...}]}`）
 /// から focused session の agent を引く。New Session の chat 分岐で「現 focused と同じ engine の
 /// 新 Draft を作る」ために使う。`focused` フラグ優先 → `focused` key 一致 → 先頭 の順で解決し、
@@ -2745,13 +2761,18 @@ mod focused_session_stand_tests {
     }
 }
 
-/// gui: active になった chat lane を conversation topic に attach する（`terminal_sessions` の対）。
+/// lane を conversation topic に attach する（`terminal_sessions` の対）。
 ///
-/// 購読 0→1 が daemon の demand hook を撃ち、repo が **transcript replay**（過去会話）を返す。
-/// これが無いと conversation topic は非 retained なので「submit するまで ChatView が空」になる
-/// （app 再起動で会話が消えたように見える）。 idempotent — 既に session があれば no-op。
+/// 購読 0→1 が daemon の demand hook を撃ち、chat session を持つ lane では repo が
+/// **transcript replay**（過去会話）を返す。これが無いと conversation topic は非 retained
+/// なので「submit するまで ChatView が空」になる（app 再起動で会話が消えたように見える）。
+/// idempotent — 既に session があれば no-op。
 ///
-/// tui lane では何もしない（tui の履歴は PtySlot の terminal replay が担う）。
+/// doc 58 ②-a: 旧実装は「chat session を持つ lane だけ」に張っていたが、名簿の
+/// now-line（`vp now` → NowLine event）は **TUI lane からも** conversation topic に
+/// 流れてくるため、gate を外して全 lane に張る。chat 専用の副作用（transcript replay /
+/// eager engine spawn）は repo 側 `handle_conversation_demand_start` の session-mode gate
+/// が守る — TUI session の demand は `not_chat` で graceful no-op（ReplayStart も出ない）。
 fn ensure_conversation_attach(
     address: &str,
     sidebar_state: &SidebarState,
@@ -2760,11 +2781,9 @@ fn ensure_conversation_attach(
     proxy: &EventLoopProxy<AppEvent>,
     daemon_conn: &SharedDaemonConn,
 ) {
-    // doc 50 §4.6 A6: gate は「lane に chat session が居るか」（root の mode ではない）。
-    // 購読は lane 単位で全 session の event を運ぶので、root=tui + 非 root=chat の構成でも
-    // 張る必要がある（張らないと その chat pane が無言になる = xterm 側と同型の穴）。
-    if !lane_has_chat_session(sidebar_state, address) || conversation_sessions.contains_key(address)
-    {
+    // 購読は lane 単位で全 session の event を運ぶ（doc 50 §4.6 A6 — root=tui + 非 root=chat
+    // の構成も 1 本で拾う）。mode による撃ち分けは repo 側 gate に委譲済み（上記 doc）。
+    if conversation_sessions.contains_key(address) {
         return;
     }
     let Some(repo_path) = resolve_repo_path_for_lane(sidebar_state, address) else {
@@ -3162,33 +3181,6 @@ mod sidebar_js {
         );
     }
 
-    /// File Explorer の walk 結果。要素の形の持ち主は [`crate::file_explorer::Entry`]。
-    pub fn files_list_result(
-        sidebar: &WebView,
-        address: String,
-        entries: &[crate::file_explorer::Entry],
-        truncated: bool,
-    ) {
-        let entries = entries
-            .iter()
-            .filter_map(|e| match serde_json::to_value(e) {
-                Ok(v) => Some(v),
-                Err(err) => {
-                    tracing::warn!("file entry の serialize に失敗（この 1 件を省く）: {err}");
-                    None
-                }
-            })
-            .collect();
-        push(
-            sidebar,
-            &IpcEventEnvelope::FilesListResult(crate::generated::sidebar_ipc::FilesListResult {
-                address,
-                entries,
-                truncated,
-            }),
-        );
-    }
-
     /// Wire inbox の履歴。
     pub fn wire_result(sidebar: &WebView, payload: serde_json::Value) {
         push(
@@ -3203,16 +3195,6 @@ mod sidebar_js {
             sidebar,
             &IpcEventEnvelope::ClonePathPicked(crate::generated::sidebar_ipc::ClonePathPicked {
                 path,
-            }),
-        );
-    }
-
-    /// Cmd+O で File Explorer overlay を開かせる（menu 起点の一方向 push）。
-    pub fn file_picker_open(sidebar: &WebView, address: String) {
-        push(
-            sidebar,
-            &IpcEventEnvelope::FilePickerOpen(crate::generated::sidebar_ipc::FilePickerOpen {
-                address,
             }),
         );
     }
@@ -3330,14 +3312,6 @@ struct SidebarIpcOutcome {
     /// 「accordion を閉じる」 = 「ユーザが retry を望んでいる」 と解釈、 失敗ループの
     /// dedup deadlock を抜けられるようにする。 caller は `repo_spawn_triggered.remove(path)` を呼ぶ。
     repo_spawn_release: Option<String>,
-    /// Sidebar File Explorer: `files:list` 要求 `(repo_path, address)`。
-    /// caller (event loop) で lane cwd を解決して `file_explorer::list_entries` を
-    /// blocking thread で実行 → `AppEvent::FilesListResult` で push back。
-    files_list_request: Option<(String, String)>,
-    /// Sidebar File Explorer: `files:open` 要求 `(repo_path, address, rel_path)`。
-    /// caller (event loop) で lane cwd を解決して `file_explorer::open_file` を
-    /// blocking thread で実行 → `AppEvent::FilesOpenResult` で push back。
-    files_open_request: Option<(String, String, String)>,
     /// Model Q: active lane を daemon canonical に永続する要求 `(repo_path, lane_address)`。
     /// caller が `client.set_active_lane` を fire-and-forget で呼ぶ (optimistic local は適用済)。
     set_active_lane_request: Option<(String, String)>,
@@ -3605,20 +3579,6 @@ fn handle_sidebar_ipc(
         IpcEnvelope::RepoAdd | IpcEnvelope::RepoClonePickFolder => {
             tracing::debug!("sidebar IPC: picker 経路の message が handle_sidebar_ipc に到達");
         }
-        IpcEnvelope::FilesList(m) => {
-            // Sidebar File Explorer: lane workdir 配下を walk して entries を返す要求。
-            // caller (event loop) で SidebarState から cwd を解決して blocking thread で実行する。
-            if !m.path.is_empty() && !m.address.is_empty() {
-                out.files_list_request = Some((m.path, m.address));
-            }
-        }
-        IpcEnvelope::FilesOpen(m) => {
-            // Sidebar File Explorer: 選択されたファイルを Canvas (board) に表示する要求。
-            // rel_path は workdir 相対 (TS 側で list_entries の戻り値そのまま投げる想定)。
-            if !m.path.is_empty() && !m.address.is_empty() && !m.rel_path.is_empty() {
-                out.files_open_request = Some((m.path, m.address, m.rel_path));
-            }
-        }
         IpcEnvelope::WireFetch(m) => {
             // Wire inbox (doc 34 §4 V1): 選択 lane の wire 履歴 fetch 要求。
             if !m.address.is_empty() {
@@ -3683,9 +3643,13 @@ fn lane_key_to_wire_agent(address: &str) -> Option<String> {
     if repo.is_empty() || name.is_empty() {
         return None;
     }
-    // ⚠️ **読む側は旧予約名（`lead`）も Main とみなす**。永続 state に残っており、ここで
-    // 弾くとその lane の wire 宛先が引けない（無音で届かなくなる）。
-    if name == crate::lane::ROOT_LANE_NAME || name == "lead" {
+    // ⚠️ **読む側は旧世代の予約名（`conductor` / `root` / `lead`）も Main とみなす**。
+    // 永続 state に残っており、ここで弾くとその lane の wire 宛先が引けない
+    // （無音で届かなくなる）。
+    if name == crate::lane::ROOT_LANE_NAME
+        || name == "lead"
+        || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&name)
+    {
         // 開発起点は lane 部分を省略した形が canonical（`agent@<repo>`）。
         return Some(format!("agent@{repo}"));
     }
@@ -3748,19 +3712,17 @@ async fn wire_fetch_payload(
     serde_json::json!({ "address": address, "agent": agent, "history": history, "unread": unread })
 }
 
-/// SidebarState の `lanes_by_repo` から (repo_path, address) の組に
-/// 対応する Lane の workdir 絶対パスを引く。 見つからなければ `None`。
+/// address だけから lane の workdir を引く（code pane 用）。
 ///
-/// File Explorer の `files:list` / `files:open` で使う。 address は
-/// `LaneAddressWire::key()` 形式 (= `lane:select` 等で使われている wire 文字列)。
-fn lookup_lane_cwd(
-    state: &SidebarState,
-    repo_path: &str,
-    address: &str,
-) -> Option<std::path::PathBuf> {
-    let lanes = state.lanes_by_repo.get(repo_path)?;
-    lanes
-        .iter()
+/// main bundle（CodePane.tsx）は sidebar と違い `lanes_by_repo` の repo_path を
+/// 持たないため、address（`LaneAddressWire::key()` = daemon 発行の canonical）を
+/// 全 repo に対して探す。key は repo 名を含む合成キーなので全 repo 走査でも
+/// 衝突しない（`<repo>/lane/<name>` — 同名 lane が別 repo に居ても key が違う）。
+fn lookup_lane_cwd_by_address(state: &SidebarState, address: &str) -> Option<std::path::PathBuf> {
+    state
+        .lanes_by_repo
+        .values()
+        .flatten()
         .find(|l| l.address.key() == address)
         .map(|l| std::path::PathBuf::from(&l.cwd))
 }
@@ -4325,30 +4287,56 @@ pub fn run() -> anyhow::Result<()> {
                 mark_lane_awaiting_input(&lane, "osc:notification", &mut sidebar_state, &webview);
             }
             Event::UserEvent(AppEvent::ResolveSessionTitles) => {
-                // VP-143: 全 lane の cwd を walk → cc custom-title resolve → diff → sidebar に push。
-                //  poller (`spawn_session_title_poller`) が 5s 間隔で tick を送ってここに来る。
-                //  resolve は read-only file I/O (ディレクトリ列挙 + 末尾 grep) なので
-                //  数 lane × 数 ms 程度、 main thread blocking は無視できる範囲。
+                // VP-143 → doc 58 ②-c: 全 lane の **session ごと**に cc custom-title を resolve
+                // → diff → sidebar に push。poller (`spawn_session_title_poller`) が 5s 間隔で
+                // tick を送ってここに来る。resolve は read-only file I/O なので main thread
+                // blocking は無視できる範囲。
+                //
+                // 鍵は `{address}#{session}`（webview 側 `sessionNowKey` と同形 — now-line と
+                // 同じ語彙で session を指す）。conversation id を持つ session は jsonl を直接
+                // 特定（相部屋で他人の title を拾わない）、持たない session（Draft / TUI の
+                // 旧 wire）は root に限り従来の cwd 推定に fallback する（新規に嘘を増やさない
+                // — 非 root の cwd 推定は「最新 mtime = root の会話」とぶつかりやすい）。
                 let mut changed = false;
                 let mut current_keys: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
                 for lanes in sidebar_state.lanes_by_repo.values() {
                     for lane in lanes {
                         let address = lane.address.key();
-                        current_keys.insert(address.clone());
                         let cwd = std::path::Path::new(&lane.cwd);
-                        let resolved = crate::session_title::resolve_title_for_cwd(cwd);
-                        let prev = sidebar_state.session_titles.get(&address).cloned();
-                        match (resolved, prev) {
-                            (Some(new_title), Some(old)) if old == new_title => {}
-                            (None, None) => {}
-                            (Some(new_title), _) => {
-                                sidebar_state.session_titles.insert(address, new_title);
-                                changed = true;
-                            }
-                            (None, Some(_)) => {
-                                sidebar_state.session_titles.remove(&address);
-                                changed = true;
+                        // sessions registry 欠落（旧 wire / boot 窓）は root=1 の 1 session とみなす
+                        let entries: Vec<(u32, Option<String>, bool)> = match &lane.sessions {
+                            Some(reg) if !reg.sessions.is_empty() => reg
+                                .sessions
+                                .iter()
+                                .map(|e| (e.key, e.conversation.clone(), e.key == reg.root))
+                                .collect(),
+                            _ => vec![(1, None, true)],
+                        };
+                        for (key, conversation, is_root) in entries {
+                            let map_key = format!("{address}#{key}");
+                            current_keys.insert(map_key.clone());
+                            let resolved = match conversation.as_deref() {
+                                Some(conv) => {
+                                    crate::session_title::resolve_title_for_conversation(cwd, conv)
+                                }
+                                None if is_root => {
+                                    crate::session_title::resolve_title_for_cwd(cwd)
+                                }
+                                None => None,
+                            };
+                            let prev = sidebar_state.session_titles.get(&map_key).cloned();
+                            match (resolved, prev) {
+                                (Some(new_title), Some(old)) if old == new_title => {}
+                                (None, None) => {}
+                                (Some(new_title), _) => {
+                                    sidebar_state.session_titles.insert(map_key, new_title);
+                                    changed = true;
+                                }
+                                (None, Some(_)) => {
+                                    sidebar_state.session_titles.remove(&map_key);
+                                    changed = true;
+                                }
                             }
                         }
                     }
@@ -4691,10 +4679,17 @@ pub fn run() -> anyhow::Result<()> {
                 if active_header_refresh {
                     push_active_view(&webview, &sidebar_state);
                 }
-                // gui: active chat lane を conversation topic に attach（→ demand → transcript replay）。
-                // LanesLoaded は lane snapshot 到着のたび走るので、 起動直後の session 復元
-                // (activate は LanesLoaded 前に済んでいる場合がある) もここで確実に拾える。
-                if let Some(addr) = sidebar_state.active_lane_address.clone() {
+                // conversation topic への attach（chat は → demand → transcript replay、TUI は
+                // now-line のみ流れる軽い購読）。doc 58 ②-a で active 限定 → **全 lane** に拡大 —
+                // 名簿は背景 lane の「今なにを」も見せるため。LanesLoaded は lane snapshot 到着の
+                // たび走るので、新 lane / 起動直後の session 復元もここで確実に拾える（冪等）。
+                let all_addrs: Vec<String> = sidebar_state
+                    .lanes_by_repo
+                    .values()
+                    .flatten()
+                    .map(|l| l.address.key().to_string())
+                    .collect();
+                for addr in all_addrs {
                     ensure_conversation_attach(
                         &addr,
                         &sidebar_state,
@@ -5818,34 +5813,63 @@ pub fn run() -> anyhow::Result<()> {
                 // doc 11 PR-C: + Add Sub form の dropdown を populate するための push back。
                 sidebar_js::stands_result(&webview, repo_path, &agents, error);
             }
-            // Sidebar File Explorer: walk 結果を sidebar bundle へ push back。
-            // JS 側 (`FileExplorer.tsx`) が `vpFiles.handleListResult` で受け取る。
-            Event::UserEvent(AppEvent::FilesListResult {
-                address,
+            // ===== code pane（コードブラウザ P1）=====
+            // demand（CodeList / CodeRead）は blocking I/O を spawn_blocking に
+            // 逃し、結果 event で main thread に戻して push する（旧 File Explorer と同型）。
+            Event::UserEvent(AppEvent::CodeList { lane }) => {
+                match lookup_lane_cwd_by_address(&sidebar_state, &lane) {
+                    Some(cwd) => {
+                        let proxy = async_action_proxy.clone();
+                        rt_handle.spawn_blocking(move || {
+                            let (entries, truncated) = crate::file_explorer::list_entries(&cwd);
+                            let _ = proxy.send_event(AppEvent::CodeEntriesResult {
+                                lane,
+                                entries,
+                                truncated,
+                            });
+                        });
+                    }
+                    None => {
+                        tracing::warn!("code:list: lane cwd unknown for address={lane} (skip)");
+                    }
+                }
+            }
+            Event::UserEvent(AppEvent::CodeRead { lane, rel_path }) => {
+                match lookup_lane_cwd_by_address(&sidebar_state, &lane) {
+                    Some(cwd) => {
+                        let proxy = async_action_proxy.clone();
+                        rt_handle.spawn_blocking(move || {
+                            let payload = crate::file_explorer::read_file(&cwd, &rel_path);
+                            let _ = proxy.send_event(AppEvent::CodeFileResult {
+                                lane,
+                                rel_path,
+                                payload,
+                            });
+                        });
+                    }
+                    None => {
+                        tracing::warn!("code:read: lane cwd unknown for address={lane} (skip)");
+                    }
+                }
+            }
+            Event::UserEvent(AppEvent::CodeEntriesResult {
+                lane,
                 entries,
                 truncated,
             }) => {
-                sidebar_js::files_list_result(&webview, address, &entries, truncated);
+                lane_js::code_entries(&webview, &lane, &entries, truncated);
+            }
+            Event::UserEvent(AppEvent::CodeFileResult {
+                lane,
+                rel_path,
+                payload,
+            }) => {
+                lane_js::code_file(&webview, &lane, &rel_path, &payload);
             }
             // Wire inbox (doc 34 §4 V1): fetch 結果を sidebar の vpWire 受け口へ push back。
             Event::UserEvent(AppEvent::WireHistoryResult { address, payload }) => {
                 tracing::debug!("wire history 受領 (address={address})");
                 sidebar_js::wire_result(&webview, payload);
-            }
-            // Sidebar File Explorer: file 読み込み結果を Canvas (board) に inject。
-            // 既存 MCP `show` ルートを QUIC を経由せず WebView 直注入 (= ephemeral / local-only) で
-            // 再現するため、 `RepoMessage::Show` 相当の JSON を main_view にそのまま渡す。
-            Event::UserEvent(AppEvent::FilesOpenResult { content }) => {
-                // doc 19 board Canvas Stack Model: append field は omit (= stack push に
-                // 統一)。 pane_id は dead field だが backward compat で keep。
-                lane_js::board_message(
-                    &webview,
-                    serde_json::json!({
-                        "type": "show",
-                        "pane_id": "main",
-                        "content": content,
-                    }),
-                );
             }
             Event::UserEvent(AppEvent::ActivityUpdate(snap)) => {
                 sidebar_state.activity = snap;
@@ -6461,62 +6485,6 @@ pub fn run() -> anyhow::Result<()> {
                     });
                 }
 
-                // Sidebar File Explorer: lane workdir 配下を walk して entries を返す要求。
-                // walk は I/O blocking のため main thread で実行せず、 dedicated thread に逃す。
-                // 結果は AppEvent::FilesListResult で event loop に戻して sidebar に push back。
-                if let Some((repo_path, address)) = outcome.files_list_request {
-                    match lookup_lane_cwd(&sidebar_state, &repo_path, &address) {
-                        Some(cwd) => {
-                            let proxy = async_action_proxy.clone();
-                            let addr_clone = address.clone();
-                            // sync I/O (walk_dir) は spawn_blocking で Tokio runtime の
-                            // dedicated blocking pool に逃す (主 worker thread を専有しない)。
-                            rt_handle.spawn_blocking(move || {
-                                let (entries, truncated) =
-                                    crate::file_explorer::list_entries(&cwd);
-                                let _ = proxy.send_event(AppEvent::FilesListResult {
-                                    address: addr_clone,
-                                    entries,
-                                    truncated,
-                                });
-                            });
-                        }
-                        None => {
-                            tracing::warn!(
-                                "files:list: lane cwd unknown for path={} address={} (skip)",
-                                repo_path,
-                                address
-                            );
-                        }
-                    }
-                }
-
-                // Sidebar File Explorer: 選択されたファイルを Canvas (board) に表示する要求。
-                // file 読み込み + base64 (画像) も blocking thread に逃す。 結果の Content JSON は
-                // AppEvent::FilesOpenResult で main thread に戻して main_view へ inject。
-                if let Some((repo_path, address, rel_path)) = outcome.files_open_request {
-                    match lookup_lane_cwd(&sidebar_state, &repo_path, &address) {
-                        Some(cwd) => {
-                            let proxy = async_action_proxy.clone();
-                            let rel_clone = rel_path.clone();
-                            // sync I/O (file read + base64 encode) は spawn_blocking で
-                            // Tokio runtime の dedicated blocking pool に逃す。
-                            rt_handle.spawn_blocking(move || {
-                                let content =
-                                    crate::file_explorer::open_file(&cwd, &rel_clone);
-                                let _ = proxy.send_event(AppEvent::FilesOpenResult { content });
-                            });
-                        }
-                        None => {
-                            tracing::warn!(
-                                "files:open: lane cwd unknown for path={} address={} rel_path={} (skip)",
-                                repo_path,
-                                address,
-                                rel_path
-                            );
-                        }
-                    }
-                }
                 // in-app update: sidebar footer の「更新する」ボタン click 要求。
                 // native 確認ダイアログ → self-update → daemon restart → relaunch を
                 // 専用スレッドで起動する（event loop = main thread は塞がない）。
@@ -6641,24 +6609,15 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     }
                 } else if id == menu_ids.open_file {
-                    // Cmd+O: File menu → "Open File..." accelerator。 active lane の workdir に
-                    // 対して File Explorer overlay picker を sidebar に開かせる。
+                    // File menu → "Code Browser": code pane の toggle を webview に要求。
                     //
-                    // menu accelerator は OS-level で global に発火するため、 Pane (terminal /
-                    // Canvas) focus 中の Cmd+O でも到達する (これが要件の本質)。 active lane が
-                    // ない (= 未選択) 時は no-op + warn log。
-                    match sidebar_state.active_lane_address.as_deref() {
-                        Some(addr) => {
-                            // sidebar の File Explorer overlay を開かせる。
-                            // ⚠️ 「開いた」ではなく「**要求した**」— push は fire-and-forget で、
-                            // 受け手（`FileExplorer.tsx`）が mount していなければ届かない。
-                            tracing::info!("Cmd+O: File Explorer open 要求 ({})", addr);
-                            sidebar_js::file_picker_open(&webview, addr.to_string());
-                        }
-                        None => {
-                            tracing::warn!("Cmd+O: active lane なし、 picker open skip");
-                        }
-                    }
+                    // menu click は OS-level で発火するため、 Pane (terminal / Canvas) focus 中
+                    // でも到達する (これが要件の本質)。 active lane の有無は webview 側
+                    // （code-view.ts — lane 不在なら no-op）に委譲し、 Rust に判定を持たない
+                    // （旧 File Explorer は Rust 側で active 判定していたが、 判定が 2 箇所に
+                    // なる & sidebar_state を menu 経路が読む結合が残るため一本化した）。
+                    tracing::info!("File menu: code pane toggle 要求");
+                    lane_js::code_toggle(&webview);
                 } else if id == menu_ids.developer_mode {
                     dev_mode = !dev_mode;
                     dev_mode_item.set_checked(dev_mode);

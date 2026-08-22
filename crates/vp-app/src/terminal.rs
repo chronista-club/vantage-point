@@ -144,19 +144,24 @@ pub enum AppEvent {
     /// signal として機能。 unread_count / has_persistent / last_msg_ts の actual 値は
     /// 後続 PR で backend peek API + 永続 store query を実装して populate。
     ResolveLaneInboxes,
-    /// Sidebar File Explorer: `files:list` の blocking walk 結果を sidebar webview に
-    /// push back する。 `window.vpFiles.handleListResult({address,entries,truncated})` で
-    /// receive される。
-    FilesListResult {
-        address: String,
+    // ===== code pane（コードブラウザ P1）— demand は main webview 発（CodePane.tsx） =====
+    /// `code:list` 要求。lane address から cwd を解決して blocking walk へ。
+    CodeList { lane: String },
+    /// `code:read` 要求。pane 内表示用の raw text 読み（`file_explorer::read_file`）。
+    CodeRead { lane: String, rel_path: String },
+    /// `code:list` の walk 結果 → `lane_js::code_entries` で main webview へ push。
+    CodeEntriesResult {
+        lane: String,
         entries: Vec<crate::file_explorer::Entry>,
         truncated: bool,
     },
-    /// Sidebar File Explorer: `files:open` の blocking file 読み込み結果。
-    /// `content` は `board-handler.ts` の `BoardItem::content` shape
-    /// (`{markdown}` | `{log}` | `{html}` のいずれか)。 main_view に
-    /// `window.vpBoard.handleMessage({type:'show',pane_id:'main',content,append:false})` で注入。
-    FilesOpenResult { content: serde_json::Value },
+    /// `code:read` の読み結果 → `lane_js::code_file` で main webview へ push。
+    /// `payload` は `{"text": string} | {"error": string}` の 2 択（read_file の返り値）。
+    CodeFileResult {
+        lane: String,
+        rel_path: String,
+        payload: serde_json::Value,
+    },
     /// wiremsg Stage 2: repo の "canvas" Unison channel から受信した Canvas (Board)
     /// RepoMessage 1 件。`message` は RepoMessage の生 JSON (`{"type":"show",...}` 等)。
     /// handler は active repo の分のみ main_view WebView に転送する。
@@ -778,6 +783,26 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 method: "board_set_cursor".to_string(),
                 body: parsed.clone(),
             });
+        }
+        // ===== code pane（コードブラウザ P1）=====
+        // ⚠️ app.rs `is_main_ipc_tag` の allowlist と対（片側更新は sidebar IPC へ silent drop）。
+        Some("code:list") => {
+            if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
+                let _ = proxy.send_event(AppEvent::CodeList {
+                    lane: lane.to_string(),
+                });
+            }
+        }
+        Some("code:read") => {
+            if let (Some(lane), Some(rel_path)) = (
+                parsed.get("lane").and_then(|v| v.as_str()),
+                parsed.get("rel_path").and_then(|v| v.as_str()),
+            ) {
+                let _ = proxy.send_event(AppEvent::CodeRead {
+                    lane: lane.to_string(),
+                    rel_path: rel_path.to_string(),
+                });
+            }
         }
         // console bridge: webview の console.* を vp-app log (app.kdl.log) に転送する。
         // agent が DevTools を開かず log Read で webview console を観測する経路。

@@ -1750,6 +1750,11 @@ async fn handle_session_now(
     }
     let addr = crate::repo::lanes_state::LanePool::parse_address(lane)
         .ok_or_else(|| format!("session_now: lane パース失敗: {lane}"))?;
+    // ⚠️ route には **canonical を流す**（生の入力を流さない）。`vp now` は env（VP_LANE）
+    // 由来の lane 文字列を運ぶため、旧世代の spawn env（`root` 等）が混ざる。parse で
+    // 正規化した addr を捨てて raw を流すと、topic 上の lane が旧名のままになり、
+    // 新名 key で照合する GUI の now-line と一致せず**無音で表示されない**。
+    let lane = addr.canonical();
     let session = match payload.get("session").and_then(serde_json::Value::as_u64) {
         Some(s) => s as crate::lane::session_registry::SessionKey,
         None => crate::lane::session_registry::load(&addr.repo, &addr.name, "claude").root,
@@ -1757,7 +1762,7 @@ async fn handle_session_now(
     state
         .topic_router
         .route(crate::protocol::RepoMessage::ConversationEvent {
-            lane: lane.to_string(),
+            lane: lane.clone(),
             session,
             event: crate::conversation::ConversationEvent::NowLine {
                 text: text.to_string(),
@@ -2818,7 +2823,7 @@ mod tests {
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         let addr = LaneAddress::root("vp");
-        let lane = addr.to_string(); // "vp/root"
+        let lane = addr.to_string(); // "vp/main"
 
         // 実 PtySlot を attach (subscribe_output が Some を返す前提を作る)。
         {
@@ -3118,7 +3123,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "terminal_demand_start",
-            serde_json::json!({ "lane": "vp/root" }),
+            serde_json::json!({ "lane": "vp/main" }),
         )
         .await
         .expect("demand_start");
@@ -3568,7 +3573,7 @@ mod tests {
         // root + 2 枚目。どちらも出力を持たせて replay buffer を非空にする。
         {
             let mut pool = state.lane_pool.write().await;
-            let (s0, rx0) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("root");
+            let (s0, rx0) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("main");
             pool.insert_pty_slot(addr.clone(), None, s0, rx0);
             let (s2, rx2) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("s2");
             pool.insert_pty_slot(addr.clone(), Some(2), s2, rx2);
@@ -3700,7 +3705,7 @@ mod tests {
         // boot 途中の姿: root slot だけが立った時点で GUI が購読 → demand edge が先に立つ。
         {
             let mut pool = state.lane_pool.write().await;
-            let (s0, rx0) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("root");
+            let (s0, rx0) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("main");
             pool.insert_pty_slot(addr.clone(), None, s0, rx0);
         }
         let topic = format!("repo/terminal/data/{}/out", lane.replace('/', "~"));
@@ -3783,7 +3788,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "terminal_write",
-            serde_json::json!({ "lane": "vp/root", "data": data }),
+            serde_json::json!({ "lane": "vp/main", "data": data }),
         )
         .await;
         assert!(res.is_err(), "PtySlot 無 lane への write は Err");
@@ -3813,7 +3818,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "lane_nudge",
-            serde_json::json!({ "lane": "vp/root", "text": "x" }),
+            serde_json::json!({ "lane": "vp/main", "text": "x" }),
         )
         .await;
         assert!(res.is_err(), "PtySlot 無 lane への nudge は Err: {res:?}");
@@ -3840,7 +3845,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "conversation_nudge",
-            serde_json::json!({ "lane": "vp/root" }),
+            serde_json::json!({ "lane": "vp/main" }),
         )
         .await;
         assert!(res.is_err(), "text 未指定は Err: {res:?}");
@@ -3856,7 +3861,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "conversation_nudge",
-            serde_json::json!({ "lane": "vp/root", "text": "x" }),
+            serde_json::json!({ "lane": "vp/main", "text": "x" }),
         )
         .await;
         assert!(res.is_err(), "不在 lane への nudge は Err: {res:?}");
@@ -3883,7 +3888,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "conversation_respond",
-            serde_json::json!({ "lane": "vp/root" }),
+            serde_json::json!({ "lane": "vp/main" }),
         )
         .await;
         assert!(res.is_err(), "request_id 未指定は Err: {res:?}");
@@ -3899,7 +3904,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "conversation_respond",
-            serde_json::json!({ "lane": "vp/root", "request_id": "r1", "answers": {} }),
+            serde_json::json!({ "lane": "vp/main", "request_id": "r1", "answers": {} }),
         )
         .await;
         assert!(res.is_err(), "engine 不在への respond は Err: {res:?}");
@@ -3963,7 +3968,7 @@ mod tests {
             let res = dispatch_repo_method(
                 &state,
                 method,
-                serde_json::json!({ "lane": "vp/root", "session": 1 }),
+                serde_json::json!({ "lane": "vp/main", "session": 1 }),
             )
             .await;
             assert!(res.is_err(), "{method}: 不在 lane は Err: {res:?}");
@@ -3972,7 +3977,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "conversation_session_focus",
-            serde_json::json!({ "lane": "vp/root" }),
+            serde_json::json!({ "lane": "vp/main" }),
         )
         .await;
         assert!(res.is_err(), "session 未指定の focus は Err: {res:?}");
@@ -4004,7 +4009,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "lane_capture",
-            serde_json::json!({ "lane": "vp/root" }),
+            serde_json::json!({ "lane": "vp/main" }),
         )
         .await;
         let err = res.expect_err("pool 不在 lane の capture は Err");
@@ -4346,7 +4351,7 @@ mod tests {
             "✕ で PtySlot が畳まれる（動詞 → reconcile の配線が繋がっている証拠）"
         );
         assert!(
-            !crate::lane::session_registry::load("vp", "root", "shell")
+            !crate::lane::session_registry::load("vp", "main", "shell")
                 .sessions
                 .iter()
                 .any(|s| s.key == session),
@@ -4378,9 +4383,11 @@ mod tests {
         let state = build_test_app_state(None).await;
         let (_id, mut srx) = state
             .topic_router
-            .subscribe("repo/conversation/data/vp~root/event")
+            .subscribe("repo/conversation/data/vp~lane~main/event")
             .await;
 
+        // ⚠️ 入力はあえて**旧世代の env 形**（`vp/root`）。session_now は parse で正規化した
+        // canonical を route する契約なので、旧 env の agent からでも新名 topic に届くことを固定。
         let resp = dispatch_repo_method(
             &state,
             "session_now",
@@ -4394,14 +4401,14 @@ mod tests {
             .await
             .expect("timeout")
             .expect("recv");
-        assert_eq!(topic, "repo/conversation/data/vp~root/event");
+        assert_eq!(topic, "repo/conversation/data/vp~lane~main/event");
         match msg {
             RepoMessage::ConversationEvent {
                 lane,
                 session,
                 event,
             } => {
-                assert_eq!(lane, "vp/root");
+                assert_eq!(lane, "vp/lane/main", "route には canonical が流れる");
                 assert_eq!(session, 3);
                 assert_eq!(
                     event,
@@ -4417,7 +4424,7 @@ mod tests {
         let err = dispatch_repo_method(
             &state,
             "session_now",
-            serde_json::json!({ "lane": "vp/root", "text": "  " }),
+            serde_json::json!({ "lane": "vp/main", "text": "  " }),
         )
         .await
         .expect_err("空 text は拒否");
@@ -4608,7 +4615,7 @@ mod tests {
         let err = dispatch_repo_method(
             &state,
             "lane_delete",
-            serde_json::json!({ "address": "vp/root" }),
+            serde_json::json!({ "address": "vp/main" }),
         )
         .await
         .expect_err("Main の delete は Err");
@@ -4679,14 +4686,14 @@ mod tests {
             flow_state: None,
         });
         // hook 相当の会話 id 記録（記録契機 UserPromptSubmit の後の状態）。doc 40: SSOT は registry。
-        crate::lane::session_registry::set_conversation("vp", "root", "claude", 1, Some("sid-new"))
+        crate::lane::session_registry::set_conversation("vp", "main", "claude", 1, Some("sid-new"))
             .expect("record conversation");
 
         let mut rx = state.system_event_tx.subscribe();
         let res = dispatch_repo_method(
             &state,
             "lane_session_changed",
-            serde_json::json!({ "lane": "vp/root" }),
+            serde_json::json!({ "lane": "vp/main" }),
         )
         .await
         .expect("lane_session_changed ok");
@@ -4742,7 +4749,7 @@ mod tests {
             &state,
             "lane_session_changed",
             serde_json::json!({
-                "lane": "vp/root",
+                "lane": "vp/main",
                 "session_id": "sid-issued",
                 "event": "issued",
             }),
@@ -4751,7 +4758,7 @@ mod tests {
         .expect("lane_session_changed ok");
 
         // registry（SSOT）に記録され、旧 store には書かれない
-        let reg = crate::lane::session_registry::load("vp", "root", "claude");
+        let reg = crate::lane::session_registry::load("vp", "main", "claude");
         let root_conv = reg
             .sessions
             .iter()
@@ -4813,7 +4820,7 @@ mod tests {
         // root(#1) は発話済み、同居人 #2 が立っている状態。
         crate::lane::session_registry::set_conversation(
             "vp",
-            "root",
+            "main",
             "claude",
             1,
             Some("sid-root"),
@@ -4821,7 +4828,7 @@ mod tests {
         .expect("root conversation");
         let k2 = crate::lane::session_registry::create(
             "vp",
-            "root",
+            "main",
             "claude",
             "claude",
             crate::lane::session_registry::SessionMode::Tui,
@@ -4834,7 +4841,7 @@ mod tests {
             &state,
             "lane_session_changed",
             serde_json::json!({
-                "lane": "vp/root",
+                "lane": "vp/main",
                 "session_id": "sid-roommate",
                 "event": "spoken",
                 "session": k2,
@@ -4843,7 +4850,7 @@ mod tests {
         .await
         .expect("lane_session_changed ok");
 
-        let reg = crate::lane::session_registry::load("vp", "root", "claude");
+        let reg = crate::lane::session_registry::load("vp", "main", "claude");
         assert_eq!(
             reg.sessions[0].conversation.as_deref(),
             Some("sid-root"),
@@ -4860,7 +4867,7 @@ mod tests {
             &state,
             "lane_session_changed",
             serde_json::json!({
-                "lane": "vp/root",
+                "lane": "vp/main",
                 "session_id": "sid-ghost",
                 "event": "spoken",
                 "session": 99,
@@ -4868,7 +4875,7 @@ mod tests {
         )
         .await
         .expect("lane_session_changed ok（記録はしないが配線は成功）");
-        let reg = crate::lane::session_registry::load("vp", "root", "claude");
+        let reg = crate::lane::session_registry::load("vp", "main", "claude");
         assert_eq!(
             reg.sessions[0].conversation.as_deref(),
             Some("sid-root"),
@@ -5015,7 +5022,7 @@ mod tests {
         let addr = LaneAddress::root(repo);
         // doc 53 R1: mode の SSOT は registry（pool cache は退役）。テストも registry に書いて
         // 読み手（root_mode 直読）と同じ経路を通す。
-        crate::lane::session_registry::set_root_mode(repo, "root", "claude", mode)
+        crate::lane::session_registry::set_root_mode(repo, "main", "claude", mode)
             .expect("test registry へ root mode を書けること");
         state.lane_pool.write().await.insert(LaneInfo {
             id: Default::default(),
@@ -5056,7 +5063,7 @@ mod tests {
             dispatch_repo_method(
                 &state,
                 "conversation_submit",
-                serde_json::json!({ "lane": "vp/root" })
+                serde_json::json!({ "lane": "vp/main" })
             )
             .await
             .is_err(),
@@ -5067,7 +5074,7 @@ mod tests {
             dispatch_repo_method(
                 &state,
                 "conversation_submit",
-                serde_json::json!({ "lane": "vp/root", "prompt": "hi" })
+                serde_json::json!({ "lane": "vp/main", "prompt": "hi" })
             )
             .await
             .is_err(),
@@ -5088,7 +5095,7 @@ mod tests {
         let err = dispatch_repo_method(
             &state,
             "conversation_submit",
-            serde_json::json!({ "lane": "vptest-c1-tui/root", "prompt": "hi" }),
+            serde_json::json!({ "lane": "vptest-c1-tui/main", "prompt": "hi" }),
         )
         .await
         .expect_err("tui mode は Err");
@@ -5127,7 +5134,7 @@ mod tests {
             .expect("create codex session");
         assert_eq!(k2, 2);
 
-        // #2 の replay 源に会話を仕込む（session label = "root#2"）。
+        // #2 の replay 源に会話を仕込む（session label = "main#2"）。
         for ev in [
             ConversationEvent::MessageChunk {
                 text: "codex says hi".to_string(),
@@ -5139,18 +5146,18 @@ mod tests {
                 context_window: None,
             },
         ] {
-            crate::conversation::replay_log::append("vptest-replaylog", "root#2", &ev)
+            crate::conversation::replay_log::append("vptest-replaylog", "main#2", &ev)
                 .expect("replay log append");
         }
 
         // conversation topic を購読（非 retained なので dispatch 前に張る）。
-        let topic = "repo/conversation/data/vptest-replaylog~root/event";
+        let topic = "repo/conversation/data/vptest-replaylog~main/event";
         let (_id, mut srx) = state.topic_router.subscribe(topic).await;
 
         let res = dispatch_repo_method(
             &state,
             "conversation_demand_start",
-            serde_json::json!({ "lane": "vptest-replaylog/root" }),
+            serde_json::json!({ "lane": "vptest-replaylog/main" }),
         )
         .await
         .expect("demand_start");
@@ -5208,15 +5215,15 @@ mod tests {
         assert_eq!(k2, 2);
 
         // 進行中 flight を模擬（handler と同じ key = lane display 形 + session key）。
-        assert!(state.replay_flights.begin("vptest-coalesce/root", 2));
+        assert!(state.replay_flights.begin("vptest-coalesce/main", 2));
 
-        let topic = "repo/conversation/data/vptest-coalesce~root/event";
+        let topic = "repo/conversation/data/vptest-coalesce~main/event";
         let (_id, mut srx) = state.topic_router.subscribe(topic).await;
 
         let res = dispatch_repo_method(
             &state,
             "conversation_demand_start",
-            serde_json::json!({ "lane": "vptest-coalesce/root" }),
+            serde_json::json!({ "lane": "vptest-coalesce/main" }),
         )
         .await
         .expect("demand_start");
@@ -5228,16 +5235,16 @@ mod tests {
             "coalesced の demand は event を 1 つも route しない"
         );
         assert!(
-            state.replay_flights.finish("vptest-coalesce/root", 2),
+            state.replay_flights.finish("vptest-coalesce/main", 2),
             "合流は rerun 予約として残る（flight 完了側が直列に消化する契約）"
         );
-        assert!(!state.replay_flights.finish("vptest-coalesce/root", 2));
+        assert!(!state.replay_flights.finish("vptest-coalesce/main", 2));
 
         // flight 終了後の demand は通常配送に戻る（begin → replay → finish で entry が残らない）。
         let res = dispatch_repo_method(
             &state,
             "conversation_demand_start",
-            serde_json::json!({ "lane": "vptest-coalesce/root" }),
+            serde_json::json!({ "lane": "vptest-coalesce/main" }),
         )
         .await
         .expect("demand_start after flight");
@@ -5245,7 +5252,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "conversation_demand_start",
-            serde_json::json!({ "lane": "vptest-coalesce/root" }),
+            serde_json::json!({ "lane": "vptest-coalesce/main" }),
         )
         .await
         .expect("demand_start twice");
@@ -5297,20 +5304,20 @@ mod tests {
         ] {
             crate::conversation::replay_log::append(
                 "vptest-nonroot-chat",
-                &format!("root#{k2}"),
+                &format!("main#{k2}"),
                 &ev,
             )
             .expect("replay log append");
         }
 
-        let topic = "repo/conversation/data/vptest-nonroot-chat~root/event";
+        let topic = "repo/conversation/data/vptest-nonroot-chat~main/event";
         let (_id, mut srx) = state.topic_router.subscribe(topic).await;
 
         // session を明示して demand（client の mode 切替後の明示 demand と同じ形）。
         let res = dispatch_repo_method(
             &state,
             "conversation_demand_start",
-            serde_json::json!({ "lane": "vptest-nonroot-chat/root", "session": k2 }),
+            serde_json::json!({ "lane": "vptest-nonroot-chat/main", "session": k2 }),
         )
         .await
         .expect("demand_start");
@@ -5441,7 +5448,7 @@ mod tests {
         let _state_dir = crate::test_env::state_dir_async().await;
         let state = build_test_app_state(None).await;
         let addr = insert_test_lane(&state, "vptest-ssa", SessionMode::Tui).await;
-        let lane = "vptest-ssa/root";
+        let lane = "vptest-ssa/main";
 
         // session 省略は Err（root 決め打ちにしない = 誤配送を黙って起こさない）。
         assert!(
@@ -5481,7 +5488,7 @@ mod tests {
         // doc 53 R1: 旧 root cache は退役 — 「cache も追従する」の性質は「読み手が SSOT を
         // 直読する」に言い直された（§8.6: テストの消滅 = 性質の消滅にしない）。
         assert_eq!(
-            session_registry::root_mode(&addr.repo, "root"),
+            session_registry::root_mode(&addr.repo, "main"),
             SessionMode::Gui,
             "root session の mode が registry に永続する"
         );
@@ -5527,12 +5534,12 @@ mod tests {
         let _state_dir = crate::test_env::state_dir_async().await;
         let state = build_test_app_state(None).await;
         let addr = insert_test_lane(&state, "vptest-cap", SessionMode::Tui).await;
-        let lane = "vptest-cap/root";
+        let lane = "vptest-cap/main";
 
         // lane の agent は conversation（chat 可能）だが、**非 root に shell の session** を足す。
         let shell = session_registry::create(
             &addr.repo,
-            "root",
+            "main",
             "claude",
             "shell",
             SessionMode::Tui,
@@ -5585,13 +5592,13 @@ mod tests {
         // conversation data は非 retained なので submit 前に subscribe。
         let (_id, mut srx) = state
             .topic_router
-            .subscribe("repo/conversation/data/vptest-c1-rt~root/event")
+            .subscribe("repo/conversation/data/vptest-c1-rt~main/event")
             .await;
 
         dispatch_repo_method(
             &state,
             "conversation_submit",
-            serde_json::json!({ "lane": "vptest-c1-rt/root", "prompt": "Reply with exactly: PONG" }),
+            serde_json::json!({ "lane": "vptest-c1-rt/main", "prompt": "Reply with exactly: PONG" }),
         )
         .await
         .expect("conversation_submit ok");

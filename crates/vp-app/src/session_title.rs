@@ -100,9 +100,36 @@ pub fn extract_custom_title(jsonl: &Path) -> Option<String> {
 
 /// 完全フロー: `cwd` → 最新 jsonl → custom-title 抽出。
 /// title 未設定 / file 不在時は `None`。
+///
+/// ⚠️ **最新 mtime = その session という推定**（1 lane / 1 cwd 仮定）。相部屋
+/// （同 cwd に複数 session）では他人の title を拾いうる — conversation id が分かる
+/// session は [`resolve_title_for_conversation`] を使う（doc 58 ②-c、旧 doc の
+/// Stage 2 が予定していた解消形）。この関数は conversation 不明時の fallback として残る。
 pub fn resolve_title_for_cwd(cwd: &Path) -> Option<String> {
     let dir = jsonl_dir_for_cwd(cwd)?;
     let jsonl = latest_jsonl(&dir)?;
+    extract_custom_title(&jsonl)
+}
+
+/// session の会話 id で jsonl を**直接特定**して custom-title を抽出（doc 58 ②-c）。
+///
+/// cc の transcript は `<conversation-uuid>.jsonl` で置かれる（`cc_session.rs` の
+/// `transcript_path` と同じ外部 contract）ので、mtime 推定なしで **その session の**
+/// title が取れる — 相部屋で他人の title を拾わない。
+pub fn resolve_title_for_conversation(cwd: &Path, conversation: &str) -> Option<String> {
+    // path 断片としての安全性: uuid 以外（`/` や `..`）が来ても join で外へ出ないよう弾く。
+    if conversation.is_empty()
+        || !conversation
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return None;
+    }
+    let dir = jsonl_dir_for_cwd(cwd)?;
+    let jsonl = dir.join(format!("{conversation}.jsonl"));
+    if !jsonl.is_file() {
+        return None;
+    }
     extract_custom_title(&jsonl)
 }
 
@@ -178,6 +205,38 @@ mod tests {
         drop(f);
 
         assert!(extract_custom_title(&jsonl).is_none());
+    }
+
+    /// doc 58 ②-c: `resolve_title_for_conversation` の**部品と防御**の検証。
+    ///
+    /// ⚠️ 関数本体の e2e（cwd → dir → 指名 file）は書いていない — `jsonl_dir_for_cwd` が
+    /// 実 `$HOME` に依存し、`set_var("HOME")` はプロセス共有でテスト並列実行と衝突する
+    /// （Rust 2024 で unsafe になった理由そのもの）。dir 解決は
+    /// `jsonl_dir_points_at_claude_projects`、抽出は本テストが file 直指定で担保し、
+    /// 残る本体は「join + is_file」のみ（review 2026-08-19: 主張と検証範囲を一致させる）。
+    #[test]
+    fn conversation_title_parts_and_input_guard() {
+        let dir = std::env::temp_dir().join(format!("vp-title-conv-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        // 2 つの会話を並べ、file 直指定の抽出が mtime に依らないことを見る
+        let mut fa = fs::File::create(dir.join("aaaa-1111.jsonl")).unwrap();
+        writeln!(fa, r#"{{"type":"custom-title","customTitle":"会話A"}}"#).unwrap();
+        let mut fb = fs::File::create(dir.join("bbbb-2222.jsonl")).unwrap();
+        writeln!(fb, r#"{{"type":"custom-title","customTitle":"会話B"}}"#).unwrap();
+        assert_eq!(
+            extract_custom_title(&dir.join("aaaa-1111.jsonl")).as_deref(),
+            Some("会話A")
+        );
+        // 危険な conversation 文字列は弾く（path traversal を join に渡さない）
+        assert_eq!(
+            resolve_title_for_conversation(std::path::Path::new("/tmp/x"), "../evil"),
+            None
+        );
+        assert_eq!(
+            resolve_title_for_conversation(std::path::Path::new("/tmp/x"), ""),
+            None
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

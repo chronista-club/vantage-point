@@ -8,7 +8,7 @@
  * 本 file は **Layer C (個別 directive 登録、 mutable per PR)** に対応する。
  *
  * 文法は **単発キー** (= chord 2 段ではない、 規約 v0.3 で確定)。 user の「Cmd hold f → 操作
- * → Cmd hold p」 flow は OS 上で **2 つの独立 `Cmd+letter` keydown** として届く。
+ * → Cmd hold s」 flow は OS 上で **2 つの独立 `Cmd+letter` keydown** として届く。
  */
 
 export type DirectiveSemantic =
@@ -33,13 +33,8 @@ export interface DirectiveEntry {
 export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
   // v0.3 (PR #441) で実装
   f: {
-    description: 'File Explorer overlay (sidebar) を open + focus 移動',
+    description: 'Code pane（コードブラウザ）の toggle + 検索 focus',
     semantic: 'focus-transferring',
-  },
-  p: {
-    description:
-      'send current/selected to board (file picker visible 中なら選択 file を Canvas に投擲、 picker は dismiss しない)',
-    semantic: 'panel-local',
   },
   // v0.5 (PR 445) で実装 — lane 操作系
   r: {
@@ -95,4 +90,10 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
   //   e/g/h (Agent focus) — Scene hotkey `Ctrl+Shift+1..4` と役割重複のため Scene 側に一本化。
   //   w (daemon status)  — 将来の Unison WebView 直結 UI に status を委ねるため撤去。
   //   i (cheatsheet)       — directive を最小動詞に絞る方針で不要。SSOT は docs/design/18。
+  // 2026-08-16 で撤去:
+  //   p (board へ投擲)   — File Explorer の code pane 化に伴いオミット（mako「用途が
+  //                        見えてから。無駄なものは作らない」）。⚠️ 旧 picker の投擲経路
+  //                        （"show" の WebView 直注入）は board 化 #771 の時点で受け手が
+  //                        消えており**既に無音で死んでいた**。復活させる時は repo の
+  //                        `show` method（BoardMutate と同じ daemon ask）経由で作ること。
 }

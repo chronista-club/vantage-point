@@ -53,7 +53,7 @@ enum Commands {
     Now {
         /// 「今なにを」の 1 行（例: "panic 箇所を特定中"）
         text: String,
-        /// lane address 明示（env 不在の手動実行用: "<repo>/root" 等）
+        /// lane address 明示（env 不在の手動実行用: "<repo>/main" 等）
         #[arg(long)]
         lane: Option<String>,
         /// session key 明示（省略時 VP_SESSION_KEY → それも無ければ root）
@@ -275,7 +275,7 @@ enum LaneCommands {
     },
     /// 現 repo の vp-app の active Lane を切り替える (= mcp__switch_lane の CLI pair、Unison-native)
     ///
-    /// `name` は lane token: 'main' (lead) or sub 名 (例: 'feat-api')。現 repo の
+    /// `name` は lane token: 'main' (Main lane) or sub 名 (例: 'feat-api')。現 repo の
     /// local repo に `SwitchLane` を投げ、canvas channel 経由で vp-app がその lane を active 化する。
     /// 該当 repo の repo が稼働している必要あり。unknown lane は vp-app 受信側で no-op。
     Switch {
@@ -896,7 +896,7 @@ fn list_subs_detail() -> Result<()> {
 /// その lane を active 化する（lane-within-repo の per-repo 切替）。
 /// MCP 側も `process_call("switch_lane", …)`（mcp.rs、repo-proxy 経由）で同 dispatch に着地。
 fn switch_lane_via_quic(name: &str) -> Result<()> {
-    // lane token = "root" (lead) or sub 名。server / vp-app 側で実在 lane と照合
+    // lane token = "root" (Main lane の予約名) or sub 名。server / vp-app 側で実在 lane と照合
     // （unknown lane は vp-app 受信側で no-op）。
     let trimmed = name.trim();
     if trimmed.is_empty() {

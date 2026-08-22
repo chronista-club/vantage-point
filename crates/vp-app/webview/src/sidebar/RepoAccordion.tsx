@@ -5,13 +5,13 @@
  * native `<details>` で expand/collapse、 開閉時に `process:toggle` IPC を送って
  * Rust 側 state に永続化する。 展開時の内容は repo state に応じた hint、 または Lane 行。
  *
- * PR-3: active repo (= 現在 active な Lane を含む repo) の summary 右上に
- * 「+」アイコンを出し、 click で Add Sub フォームを開閉する。
+ * lane を産む「+」は repo 見出しに住む（mako 2026-08-20 — 産む動詞は親の行に。
+ * repo は CURRENTS 行、lane は repo 行、console は rail の + New）。`n` directive
+ * からも同じ form が開く。
  */
 import {
 	For,
 	Show,
-	createEffect,
 	createSignal,
 	onCleanup,
 	onMount,
@@ -24,7 +24,7 @@ import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { isRunningProcess } from "./classify";
 import { laneAddressKey, laneConnector } from "./lane";
 import type { LaneInfo } from "../generated/LaneInfo";
-import { LaneRow } from "./LaneRow";
+import { LaneRow, SessionRow } from "./LaneRow";
 import { AddSub } from "./AddSub";
 import { registerAddSubOpenSetter } from "./directive-state";
 import {
@@ -45,6 +45,16 @@ import {
  */
 function connectorFor(lane: LaneInfo): string {
 	return laneConnector(lane, !!sidebar.awaiting_input[laneAddressKey(lane)]);
+}
+
+/**
+ * 相部屋の非 root session（doc 58 ②-b — 行 = session の展開元、純関数的導出）。
+ * registry 欠落（旧 wire / boot 窓）= 空 = root 1 行のみ（従来と同じ見え方）。
+ */
+function extraSessionsOf(lane: LaneInfo) {
+	const reg = lane.sessions;
+	if (!reg) return [];
+	return reg.sessions.filter((s) => s.key !== reg.root);
 }
 
 /**
@@ -91,30 +101,13 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 	// entry 不在（旧 daemon / 未取得）は "unregistered" 扱いで ○（dim）。
 	const presence = () =>
 		sidebar.activity.presence?.[props.proc.path] ?? "unregistered";
-	// active repo = 現在 active な Lane を含む repo。 Add Sub の「+」はこの時だけ出す。
+	// active repo = 現在 active な Lane を含む repo。 lane を産む「+」はこの時だけ出す。
 	const isActiveRepo = () => {
 		const a = sidebar.active_lane_address;
 		return a != null && lanes().some((l) => laneAddressKey(l) === a);
 	};
 
-	// photon one-shot fire (mako motion 方針 019f50ff: 常時アニメ禁止、 イベント駆動のみ)。
-	// working (conn-auto) の lane 数を監視し、 増えた瞬間 = どこかの lane が working に
-	// 遷移した時だけ .photon-fire を付与 → CSS animation が spine を 1 回走る。
-	// 終了検知は animationend (pseudo-element の animation も host で拾える) で class を外す。
-	const [photonFire, setPhotonFire] = createSignal(false);
-	let prevWorking = 0;
-	createEffect(() => {
-		const working = lanes().filter(
-			(l) => connectorFor(l) === "conn-auto",
-		).length;
-		if (working > prevWorking) {
-			// 連続遷移でも再発火するよう一度 false に落としてから次 frame で立てる。
-			setPhotonFire(false);
-			requestAnimationFrame(() => setPhotonFire(true));
-		}
-		prevWorking = working;
-	});
-
+	// photon one-shot（spine を走る光）は doc 58 台帳で spine ごと撤去。
 	const [addSubOpen, setAddSubOpen] = createSignal(false);
 	// PR 445 `n` directive: keyboard で AddSub form を open するため、 RepoAccordion 内 local
 	// signal を **module-scope registry** に export する。 directive 発火時に registry から
@@ -139,7 +132,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 	// context menu の出し分けに使う (タブ分割は撤去済、 repo は 1 リストに留まる)。
 	const isPaused = () => !isRunningProcess(props.proc);
 
-	// Add Sub「+」を出す条件。 isActiveRepo だけだと、 一度 active にした repo を
+	// lane を産む「+」を出す条件。 isActiveRepo だけだと、 一度 active にした repo を
 	// Stop した後も active_lane_address / lanes_by_repo が残る (repo 停止で自動クリア
 	// されない) ため、 停止中でも true になりうる。 稼働中であることを明示的に AND して、
 	// 停止中 repo に「+」と Start「▶」が同居する / 失敗する Add Sub を開けるのを防ぐ。
@@ -256,7 +249,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 
 	return (
 		<details
-			class="vp-proj"
+			class="vp-proj creo-sidenav-group"
 			data-path={props.proc.path}
 			classList={{
 				dragging: isDragging(),
@@ -272,7 +265,10 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 			onDrop={onDrop}
 			onDragEnd={clearDrag}
 		>
-			<summary class="vp-proj-summary" onContextMenu={onSummaryContextMenu}>
+			<summary
+				class="vp-proj-summary creo-sidenav-title"
+				onContextMenu={onSummaryContextMenu}
+			>
 				<span
 					class="vp-proj-presence-dot"
 					classList={{
@@ -289,11 +285,13 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 					size={11}
 				/>
 				<span class="vp-proj-name">{props.proc.name}</span>
+				{/* lane 追加: 産む動詞は**親の行**に住む（mako 2026-08-20 — repo の子 = lane を
+				    産む「+」は repo 見出しに）。click で AddSub form（下の accordion 内）開閉。 */}
 				<Show when={showAddSub()}>
 					<button
 						class="vp-proj-addsub"
 						classList={{ open: addSubOpen() }}
-						title="Add Sub"
+						title="lane を作る"
 						onClick={(e) => {
 							// summary click は <details> を toggle するので止める。
 							e.preventDefault();
@@ -304,7 +302,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 						<CreoIcon name="ph:plus" size={12} />
 					</button>
 				</Show>
-				{/* 停止中 repo の起動 affordance。 「+」(showAddSub) は稼働中限定
+				{/* 停止中 repo の起動 affordance。 Add Sub form の入口は稼働中限定
             なので、 停止中のこの「▶」とは同居しない。 */}
 				<Show when={isPaused()}>
 					<button
@@ -321,26 +319,31 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 					</button>
 				</Show>
 			</summary>
-			<div
-				class="vp-proj-content"
-				classList={{ "photon-fire": photonFire() }}
-				onAnimationEnd={(e) => {
-					// ::after (photon) の one-shot 終了で class を回収。 他 animation は無視。
-					if (e.animationName === "lg-photon") setPhotonFire(false);
-				}}
-			>
+			<div class="vp-proj-content creo-sidenav-list">
 				<Show
 					when={hint()}
 					fallback={
 						<>
 							<For each={lanes()}>
-								{(lane, i) => (
-									<LaneRow
-										lane={lane}
-										repoPath={props.proc.path}
-										connectorClass={connectorFor(lane)}
-										connectorLast={i() === lanes().length - 1}
-									/>
+								{(lane) => (
+									<>
+										<LaneRow
+											lane={lane}
+											repoPath={props.proc.path}
+											connectorClass={connectorFor(lane)}
+										/>
+										{/* doc 58 ②-b: 相部屋（非 root session）は場所ラベル省略の
+										    session 行として root 行の直下に並ぶ。 */}
+										<For each={extraSessionsOf(lane)}>
+											{(sess) => (
+												<SessionRow
+													lane={lane}
+													repoPath={props.proc.path}
+													session={sess}
+												/>
+											)}
+										</For>
+									</>
 								)}
 							</For>
 							<Show when={addSubOpen()}>

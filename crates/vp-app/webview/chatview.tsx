@@ -25,6 +25,8 @@ import {
 } from 'solid-js'
 import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
+import { isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
+import { renderMermaidBlocks } from './mermaid-post'
 import { Marked } from 'marked'
 import type {
   ConversationEvent,
@@ -316,8 +318,7 @@ export function requestSessionMode(
 //     前の session の watchdog を解除してしまう（= 固着の検出を取りこぼす）。
 // ---------------------------------------------------------------------------
 
-/** replay_end が来ない時に replaying を強制解除するまでの猶予 ms（安全網）。 */
-const REPLAY_WATCHDOG_MS = 10_000
+// REPLAY_WATCHDOG_MS の定義は session-now-bridge（console.ts の now-line watchdog と共有）。
 const replayWatchdogs = new Map<string, ReturnType<typeof setTimeout>>()
 
 /**
@@ -582,7 +583,8 @@ function foldEvent(lane: string, ev: ConversationEvent, session: number): void {
  *  engine_exited も含む（旧 error 相乗り時代の自己修復経路の継承）: pending の submit が
  *  engine respawn のトリガになる = 「メッセージ送信で再開」が type-ahead でも成立する。 */
 export function isTurnClosingEvent(kind: ConversationEvent['kind']): boolean {
-  return kind === 'turn_completed' || kind === 'error' || kind === 'engine_exited'
+  // 定義の SSOT は session-now-bridge の TURN_CLOSING_KINDS（now-line tee と共有）。
+  return isTurnClosingKind(kind)
 }
 
 /** doc 35 §5.1: buffer した type-ahead を engine に流す（対象 = turn を閉じた (lane, session)）。
@@ -829,6 +831,27 @@ chatMarked.use({
     },
   ],
 })
+
+/**
+ * markdown 本文の描画 + mermaid 図示（doc: mermaid-post.ts）。
+ *
+ * `innerHTML` 属性でなく ref + createEffect で自前設定するのは、HTML 設定の**後**に
+ * mermaid post-process を確実に走らせるため（属性形だと設定タイミングに hook できない）。
+ * text が変わるたび innerHTML は全置換される — SVG 済み図も一度消えるが、post-process の
+ * svg cache が同期で復元するのでちらつかない。
+ *
+ * `final` = 内容が確定しているか（assistant は sealed、それ以外は常に true）。
+ * streaming 中（final=false）の parse 失敗は「まだ書きかけ」なので code のまま残し、
+ * 確定後の失敗だけ error 表示する。
+ */
+function MsgBody(props: { class: string; text: string; final?: boolean }) {
+  let el!: HTMLDivElement
+  createEffect(() => {
+    el.innerHTML = mdToHtml(props.text)
+    void renderMermaidBlocks(el, { showErrors: props.final !== false })
+  })
+  return <div class={props.class} ref={el} />
+}
 
 /** ChatView 本文の markdown → HTML（[[name]] は上の拡張で creo リンク化される）。 */
 export function mdToHtml(text: string): string {
@@ -1623,7 +1646,7 @@ function PlanCard(props: {
         }
       >
         <div class="conversation-prompt-header">plan 承認</div>
-        <div class="conversation-plan-body" innerHTML={mdToHtml(planText())} />
+        <MsgBody class="conversation-plan-body" text={planText()} />
         <div class="conversation-perm-actions">
           <button
             class="conversation-perm-allow"
@@ -2214,7 +2237,11 @@ function SessionChatView(props: { lane: string; session: number }) {
               }
               return (
                 <div class="conversation-msg" classList={{ user: item.kind === 'user' }}>
-                  <div class="conversation-msg-body" innerHTML={mdToHtml(item.text)} />
+                  <MsgBody
+                    class="conversation-msg-body"
+                    text={item.text}
+                    final={item.kind !== 'assistant' || item.sealed === true}
+                  />
                 </div>
               )
             }}
@@ -2233,7 +2260,7 @@ function SessionChatView(props: { lane: string; session: number }) {
                   : '編集するには入力欄を空にしてください'
               }
             >
-              <div class="conversation-msg-body" innerHTML={mdToHtml(state().pending!)} />
+              <MsgBody class="conversation-msg-body" text={state().pending!} />
               <span class="conversation-pending-badge">
                 {canEditPending() ? '送信待ち · クリックで編集' : '送信待ち · turn 完了後に送信'}
               </span>
@@ -2498,6 +2525,13 @@ export const CHATVIEW_CSS = `
 .conversation-msg-body pre { background: var(--color-bg-elevated, #16191f); border:1px solid var(--color-border,#2a3040);
   border-radius:8px; padding:10px 12px; overflow-x:auto; font-size:var(--chat-text-tool,12px); }
 .conversation-msg-body code { font-family: var(--vp-font-mono),var(--typography-family-mono); }
+/* mermaid 図（mermaid-post.ts が mermaid fence を SVG 化した容れ物）。
+   幅は本文に収め、はみ出す大図は横 scroll（本文全体を横に暴れさせない）。 */
+.conversation-msg-body .creo-md-mermaid { margin:8px 0; overflow-x:auto; }
+.conversation-msg-body .creo-md-mermaid svg { max-width:100%; height:auto; }
+.conversation-msg-body .creo-md-mermaid-error { background: var(--color-bg-elevated,#16191f);
+  border:1px solid var(--color-status-error,#d4444c); border-radius:8px; padding:8px 10px;
+  font-size:11px; white-space:pre-wrap; }
 .conversation-thinking { align-self:flex-start; font-size:var(--chat-text-tool,12px); }
 .conversation-thinking-toggle { background:none; border:none; color: var(--color-text-tertiary,#8b93a7);
   cursor:pointer; font-size:var(--chat-text-tool,12px); padding:2px 0; display:flex; align-items:center; gap:5px; }

@@ -43,8 +43,14 @@ describe("isMainAddress（旧世代の予約名も Main）", () => {
 		expect(isMainAddress(`vp/lane/${MAIN_LANE_NAME}`)).toBe(true);
 	});
 
-	it("⚠️ 旧予約名（lead / conductor）も Main とみなす — 永続 state に残る", () => {
-		for (const addr of ["vp/lead", "vp/lane/lead", "vp/conductor"]) {
+	it("⚠️ 旧予約名（lead / conductor / root）も Main とみなす — 永続 state に残る", () => {
+		for (const addr of [
+			"vp/lead",
+			"vp/lane/lead",
+			"vp/conductor",
+			"vp/root",
+			"vp/lane/root",
+		]) {
 			expect(isMainAddress(addr), addr).toBe(true);
 		}
 	});

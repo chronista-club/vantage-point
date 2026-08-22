@@ -12,8 +12,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@chronista-club/creo-ui": "^0.28.0",
-    "@chronista-club/creo-ui-editor-host": "^0.6.0",
+    "@chronista-club/creo-ui": "^0.30.0",
+    "@chronista-club/creo-ui-editor-host": "^0.8.1",
     "@chronista-club/creo-ui-icons-web": "^0.0.1",
     "@chronista-club/creo-ui-layout": "^0.3.0",
     "@chronista-club/unison-client": "^1.2.0",
@@ -27,7 +27,7 @@
     "animejs": "^4.5.0",
     "iconify-icon": "^3.0.2",
     "marked": "^18.0.3",
-    "mermaid": "^11.6.0",
+    "mermaid": "^11.17.0",
     "solid-js": "^1.9.0",
     "three": "^0.185.1"
   },
@@ -35,6 +35,7 @@
     "@types/three": "^0.185.1",
     "esbuild": "^0.25.0",
     "esbuild-plugin-solid": "^0.6.0",
+    "happy-dom": "^20.11.6",
     "typescript": "^5.9.0",
     "vitest": "^3.0.0"
   }
