@@ -11,8 +11,8 @@
  *   確定後（sealed / board）は書き損じを silent fail させず error pre で見せる（従来挙動）。
  * - **svg cache**: chat は chunk 毎に innerHTML が全置換され post-process 済み SVG も消える。
  *   同じ source の再 render を cache（source → svg）で同期置換にして、streaming 中の
- *   「SVG → code → SVG」のちらつきを最小化する。cache は成功分のみ・session 寿命
- *   （mermaid 図の数は会話あたり高々数十 = 無制限で実害なし）。
+ *   「SVG → code → SVG」のちらつきを最小化する。cache は成功分のみ・**webview プロセス寿命**
+ *   （全会話共通に蓄積するが 1 entry は数 KB の svg 文字列 — reload で消える規模）。
  */
 import mermaid from 'mermaid'
 

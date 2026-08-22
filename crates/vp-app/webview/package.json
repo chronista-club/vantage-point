@@ -35,6 +35,7 @@
     "@types/three": "^0.185.1",
     "esbuild": "^0.25.0",
     "esbuild-plugin-solid": "^0.6.0",
+    "happy-dom": "^20.11.6",
     "typescript": "^5.9.0",
     "vitest": "^3.0.0"
   }
