@@ -132,8 +132,15 @@ impl EngineKind {
                 ("claude-sonnet-5", "Sonnet 5"),
                 ("claude-haiku-4-5", "Haiku 4.5"),
             ]),
-            // vpcode の model は hello.model で渡せるが catalog は P2（engine 既定 = LM Studio 側）。
-            Self::Codex | Self::Grok | Self::OpenCode | Self::Vpcode => Vec::new(),
+            // vpcode に「engine 既定」は無い（hello.model 必須）ので "" は載せない。
+            // **先頭 = VP 既定**（session 未指定時の spawn fallback — vpcode_host の解決順）。
+            // 静的 catalog は仮住まい: P2 で LM Studio /v1/models から動的化の計画。
+            Self::Vpcode => Choice::list(&[
+                ("openai/gpt-oss-20b", "GPT-OSS 20B"),
+                ("qwen/qwen3-coder-30b", "Qwen3 Coder 30B"),
+                ("qwen/qwen2.5-coder-14b", "Qwen2.5 Coder 14B"),
+            ]),
+            Self::Codex | Self::Grok | Self::OpenCode => Vec::new(),
         }
     }
 
@@ -382,7 +389,8 @@ mod tests {
         assert_eq!(EngineKind::from_agent("agy"), None, "agy は撤去済み");
     }
 
-    /// 能力表: 全 engine が chat 対応。model / permission の catalog は claude のみ非空
+    /// 能力表: 全 engine が chat 対応。model catalog は claude と vpcode が非空、
+    /// permission catalog は claude のみ非空
     /// （空/非空が切替可否の唯一の真実 — 旧 `model_switchable` 述語は catalog に畳んだ）。
     #[test]
     fn capability_table() {
@@ -396,6 +404,11 @@ mod tests {
         assert!(EngineKind::Codex.model_choices().is_empty());
         // opencode の model は opencode config が SSOT（VP は注入しない、doc 43 §3）。
         assert!(EngineKind::OpenCode.model_choices().is_empty());
+        // vpcode は catalog 非空（= GUI picker + conversation_set_model が通る）だが
+        // 「engine 既定」が無いので "" を載せない。先頭 = spawn fallback の VP 既定。
+        let vpcode_models = EngineKind::Vpcode.model_choices();
+        assert!(!vpcode_models.is_empty());
+        assert!(vpcode_models.iter().all(|c| !c.value.is_empty()));
 
         // permission mode は claude のみ（他 engine は ChatHost::set_permission_mode が bail）。
         // 表記は TUI と同一（v2.1.200 の manual 改名を反映）、wire 値は互換の "default"。

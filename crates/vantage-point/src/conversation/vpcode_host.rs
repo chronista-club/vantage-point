@@ -65,7 +65,7 @@ pub struct VpcodeHostConfig {
     pub session_key: crate::lane::session_registry::SessionKey,
     /// 再開する会話 id（registry の `conversation`）。None = 新規（**VP がここで採番** — VCP R3）。
     pub session_id: Option<String>,
-    /// session の model 指定（None = engine 既定 = hello.model を省略）。
+    /// session の model 指定（None = spawn 側で解決: env VPCODE_MODEL → catalog 先頭）。
     pub model: Option<String>,
 }
 
@@ -149,17 +149,13 @@ impl VpcodeHost {
     /// vpcode 子プロセスを起動し、hello（transcript 込み）を送って handshake を開始する。
     pub fn spawn(config: VpcodeHostConfig) -> anyhow::Result<Self> {
         // model は **hello の必須 field**（vpcode に「engine 既定」は存在しない — P0 oneshot
-        // も --model / VPCODE_MODEL 必須、2026-08-22 実機で確認）。解決順は
-        // session registry（GUI/API の指定）→ env VPCODE_MODEL（mako の常用 model）。
-        // どちらも無ければ「次の一手が打てる文」で落とす（VCP「診断できる失敗」原則）。
-        let model = config
-            .model
-            .clone()
-            .filter(|m| !m.is_empty())
-            .or_else(|| std::env::var("VPCODE_MODEL").ok().filter(|m| !m.is_empty()))
+        // も --model / VPCODE_MODEL 必須、2026-08-22 実機で確認）。解決は [`resolve_model`]。
+        // catalog も空（P2 動的化で LM Studio 不達等）なら「次の一手が打てる文」で落とす
+        // （VCP「診断できる失敗」原則）。
+        let model = resolve_model(config.model.clone(), std::env::var("VPCODE_MODEL").ok())
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "vpcode は model 指定が必須です（session の model 指定か、daemon 環境の                      VPCODE_MODEL）。候補は `vpcode --models` で一覧できます"
+                    "vpcode の model を解決できません（session の model 指定か、daemon 環境の VPCODE_MODEL）。候補は `vpcode --models` で一覧できます"
                 )
             })?;
         // 会話 id は VP 発行（VCP R3）。新規はここで採番して registry へ —
@@ -401,6 +397,21 @@ impl VpcodeHost {
 // calculations — VCP line の組み立てと翻訳（純関数、単体テスト対象）
 // =============================================================================
 
+/// model の解決（純関数）: session 指定 → env `VPCODE_MODEL` → catalog 先頭（VP 既定）。
+/// 空文字は「未指定」として次段へ倒す。env が catalog より先なのは dev override の慣行
+/// （VP_PROFILE / CHRONISTA_HUB_ADDR と同型）。None = catalog も空（呼び手が診断 Err に変換）。
+fn resolve_model(session: Option<String>, env: Option<String>) -> Option<String> {
+    session
+        .filter(|m| !m.is_empty())
+        .or_else(|| env.filter(|m| !m.is_empty()))
+        .or_else(|| {
+            crate::conversation::EngineKind::Vpcode
+                .model_choices()
+                .first()
+                .map(|c| c.value.clone())
+        })
+}
+
 /// hello（VCP §4）。`model` は**必須**（vpcode に engine 既定は無い — spawn 側で解決済み）。
 /// `transcript` が空なら field ごと省略（新規会話）。system role の混入は engine 側が
 /// 診断付きで拒否する（§9 — こちらは flush 由来のみを保存しているので混入経路が無い、二重防壁）。
@@ -621,6 +632,30 @@ mod tests {
         assert_eq!(v["transcript"].as_array().map(Vec::len), Some(1));
         // 平坦な messages（封筒の入れ子でない）
         assert_eq!(v["transcript"][0]["role"], "user");
+    }
+
+    /// model 解決の優先順: session 指定 → env → catalog 先頭。空文字は「未指定」。
+    /// catalog 先頭 fallback があるので GUI の新規 session は picker 操作なしで動く
+    /// （旧実装は fallback 無しで、model 口の無い GUI では必ず spawn Err = 詰みだった）。
+    #[test]
+    fn resolve_model_priority_session_env_catalog() {
+        let s = |v: &str| Some(v.to_string());
+        assert_eq!(
+            resolve_model(s("a"), s("b")),
+            s("a"),
+            "session 指定が最優先"
+        );
+        assert_eq!(resolve_model(None, s("b")), s("b"), "env が次点");
+        assert_eq!(resolve_model(s(""), s("b")), s("b"), "空文字は未指定扱い");
+        let fallback = resolve_model(None, None).expect("catalog 先頭に fallback");
+        assert_eq!(
+            Some(fallback.as_str()),
+            crate::conversation::EngineKind::Vpcode
+                .model_choices()
+                .first()
+                .map(|c| c.value.as_str()),
+            "fallback = catalog 先頭（VP 既定）"
+        );
     }
 
     /// 翻訳の素通し性: 各 kind が対応 variant へ 1:1 で写る。
