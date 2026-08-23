@@ -228,6 +228,11 @@ fn is_valid_conversation(agent: &str, id: &str) -> bool {
         Some(EngineKind::OpenCode) => id.strip_prefix("ses_").is_some_and(|rest| {
             !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric())
         }),
+        // vpcode = VP 発行の uuid v4（VCP R3 — engine は id を持たない）。grok と同じ
+        // registry-native、英数+ハイフンのみ = injection 面も同じ検証で塞がる。
+        Some(EngineKind::Vpcode) => {
+            !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        }
         // engine を持たない agent（shell / 未知 / 撤去済み cursor・agy）は会話 id を持たない。
         None => false,
     }

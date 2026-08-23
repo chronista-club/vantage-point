@@ -19,16 +19,15 @@
 //!   `<lane>#<n>`）で、他 store（cc_sessions / conversation_sessions）と file 名規約が揃う
 //! - **1 行 1 event の JSONL**（[`ConversationEvent`] を serde でそのまま）。壊れた行は読み時に skip
 //!   （session_store の「壊れた値を渡さない」原則。partial 末尾行 = クラッシュ時の書きかけも黙って落とす）
-//! - **claude は書かない**: transcript が SSOT なので二重化しない（tap は codex/grok/opencode のみ Some）
+//! - **claude は書かない**: transcript が SSOT なので二重化しない（tap は codex/grok/opencode/vpcode
+//!   のみ Some。vpcode の resume 正本は別 store [`super::vpcode_transcript`] — こちらは GUI replay 用）
 //! - 上限は turn 境界でのみ制御（[`truncate_if_needed_in`]、末尾側の完全な行を残して先頭から捨てる）
 //! - 書き手 = `process::conversation_pump` の tap / user 発話は `process::unison_server` の submit 成功後。
 //!   破棄は fresh restart / session remove で他 store と同じ場所に配線（`process::lanes_state`）
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::event::ConversationEvent;
-use crate::lane::session_store::sanitize;
 
 /// 1 session あたりのログ上限の目安（本番）。turn 境界の [`truncate_if_needed_in`] で
 /// これを超えた分を古い方（先頭）から捨てる。会話の replay なので直近だけ残れば十分。
@@ -45,33 +44,26 @@ pub struct ReplayLogTap {
     pub label: String,
 }
 
+/// store の名前空間 dir（[`super::jsonl_store`] の `dir` 引数）。
+const STORE_DIR: &str = "conversation_replay";
+
 /// state base dir 配下の replay log file path（純関数、テスト用に base 注入）。
 fn log_file_in(base: &Path, repo: &str, label: &str) -> PathBuf {
-    base.join("conversation_replay")
-        .join(format!("{}__{}.jsonl", sanitize(repo), sanitize(label)))
+    super::jsonl_store::file_in(base, STORE_DIR, repo, label)
 }
 
 /// 1 event を JSONL 1 行として追記する（親 dir 自動作成）。
 ///
 /// serialize 失敗（想定外）は `io::Error::other` に畳んで返す。呼び手（pump tap）は失敗を
 /// warn するだけで配送は止めない（replay 記録は配送と独立）。
+/// 機構は [`super::jsonl_store`]（vpcode_transcript と共有 — 意味論は本 module の doc）。
 pub fn append_in(
     base: &Path,
     repo: &str,
     label: &str,
     event: &ConversationEvent,
 ) -> std::io::Result<()> {
-    let path = log_file_in(base, repo, label);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut line = serde_json::to_string(event).map_err(std::io::Error::other)?;
-    line.push('\n');
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    file.write_all(line.as_bytes())
+    super::jsonl_store::append_in(base, STORE_DIR, repo, label, event)
 }
 
 /// 全行を読んで [`ConversationEvent`] 列に戻す。file 不在 / 全体が非 UTF-8 は空。
@@ -82,21 +74,12 @@ pub fn append_in(
 /// 止まらず（`Lines<BufReader>` の flatten 罠を回避）、partial 末尾行も 1 セグメントとして
 /// filter_map で黙って落ちる。
 pub fn load_in(base: &Path, repo: &str, label: &str) -> Vec<ConversationEvent> {
-    let Ok(content) = std::fs::read_to_string(log_file_in(base, repo, label)) else {
-        return Vec::new();
-    };
-    content
-        .lines()
-        .filter_map(|line| serde_json::from_str::<ConversationEvent>(line).ok())
-        .collect()
+    super::jsonl_store::read_all_in(base, STORE_DIR, repo, label)
 }
 
 /// ログを消す（file 削除、不在は no-op）。fresh restart / session remove の破棄配線が呼ぶ。
 pub fn clear_in(base: &Path, repo: &str, label: &str) -> std::io::Result<()> {
-    match std::fs::remove_file(log_file_in(base, repo, label)) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        r => r,
-    }
+    super::jsonl_store::clear_in(base, STORE_DIR, repo, label)
 }
 
 /// file が `max_bytes` を超えていたら、**末尾側の完全な行だけ**を残して先頭から捨てる（rewrite）。
@@ -165,6 +148,8 @@ pub fn clear(repo: &str, label: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use super::*;
 
     fn chunk(text: &str) -> ConversationEvent {

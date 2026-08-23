@@ -463,6 +463,11 @@ pub fn build_agent_command_for_session(
             // 元から素の `opencode` を返すので、呼び手の 1 bit は何も足していなかった。
             Some(format!("{}\r", opencode_command(conversation.as_deref())))
         }
+        Some(crate::conversation::EngineKind::Vpcode) => {
+            // vpcode は TUI を持たない（gui 専用 engine — VCP §3 の -p oneshot は対話でない）。
+            // tui slot は素の login shell に倒す = そこで `vpcode -p` を手打ちできる場所になる。
+            None
+        }
         None if effective_agent == "shell" => None,
         None => {
             // "tmux"（PR2 で退役）/ 撤去済み "cursor"・"agy"（sweep 6.5）/ 未知 agent の
