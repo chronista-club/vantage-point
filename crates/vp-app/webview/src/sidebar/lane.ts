@@ -20,6 +20,7 @@ const COMPONENT_ICON: Record<string, { default: IconName; active: IconName }> = 
 	board: { default: "ph:compass", active: "ph:compass-fill" },
 	runner: { default: "ph:plant", active: "ph:plant-fill" },
 	devices: { default: "ph:magnet", active: "ph:magnet-fill" },
+	vpcode: { default: "ph:flask", active: "ph:flask-fill" },
 };
 
 /** Agent kind から icon 名を解決。 active 時は fill weight。 未知 agent は `null`。 */
@@ -43,6 +44,8 @@ export function agentDisplayName(agent: string): string {
 			return "Board";
 		case "runner":
 			return "Runner";
+		case "vpcode":
+			return "vpcode";
 		case "devices":
 			return "Devices";
 		default:

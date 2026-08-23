@@ -639,6 +639,10 @@ fn clear_lane_state_in(base: &Path, repo: &str, lane: &str) {
                 s.key
             );
         }
+        // vpcode transcript（resume 正本）も対で破棄（lanes_state の破棄配線と同じ対）。
+        if let Err(e) = crate::conversation::vpcode_transcript::clear_in(base, repo, &label) {
+            tracing::warn!("vpcode transcript の破棄に失敗（repo={repo}, label={label}）: {e}");
+        }
     }
     // ② session_registry (会話 id と Mode の SSOT — 残すと旧 session / 旧会話 id / 旧 Mode が蘇る)。
     //    ①の列挙後に消す。

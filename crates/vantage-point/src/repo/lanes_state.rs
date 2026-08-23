@@ -1124,6 +1124,14 @@ impl LanePool {
                     s.key
                 )
             })?;
+            // vpcode transcript（resume 正本の side-car）も対で破棄 — replay_log と同寿命
+            // （mako 裁定 2026-08-22 ④: 破棄配線は conversation_replay と対）。
+            crate::conversation::vpcode_transcript::clear(&addr.repo, &label).map_err(|e| {
+                anyhow::anyhow!(
+                    "fresh restart: vpcode transcript の破棄に失敗（addr={addr}, session={}）: {e}",
+                    s.key
+                )
+            })?;
         }
         session_registry::reset_to_single(&addr.repo, &lane_label, default_agent, root_mode)
             .map_err(|e| {
@@ -1827,6 +1835,12 @@ impl LanePool {
                 "session remove: replay_log の破棄に失敗（addr={addr}, session={key}）: {e}"
             );
         }
+        // vpcode transcript も対で破棄（fresh restart 側と同じ配線）。
+        if let Err(e) = crate::conversation::vpcode_transcript::clear(&addr.repo, &label) {
+            tracing::warn!(
+                "session remove: vpcode transcript の破棄に失敗（addr={addr}, session={key}）: {e}"
+            );
+        }
         crate::daemon::pty_slot::clear_replay_session(&addr.repo, &lane_label, key);
     }
 
@@ -2054,6 +2068,22 @@ impl LanePool {
                     },
                 )?)
             }
+            Some(EngineKind::Vpcode) => {
+                // vpcode: 常駐 VpcodeHost（`vpcode --vcp` = VCP JSONL、doc = vpcode_host）。
+                // 会話 id は VP 発行（VCP R3）— None なら host が採番して registry へ書く。
+                // resume 材料は vpcode_transcript store（封筒 side-car、pump 非経由）。
+                ChatHost::Vpcode(crate::conversation::VpcodeHost::spawn(
+                    crate::conversation::VpcodeHostConfig {
+                        cwd: info.cwd.clone(),
+                        repo: addr.repo.clone(),
+                        lane: label.clone(),
+                        lane_label: lane_label.clone(),
+                        session_key: resolved.key,
+                        session_id: resolved.conversation.clone(),
+                        model: resolved.model.clone(),
+                    },
+                )?)
+            }
             Some(EngineKind::Claude) => {
                 // claude: 常駐 stream-json host。resume は registry の会話 id（doc 40 §5）。
                 // doc 33 C2: 会話が成立した id だけ resume に渡す（stale/phantom id で
@@ -2101,12 +2131,12 @@ impl LanePool {
         // （doc — engine 非依存 replay log）。⚠️ この判定は unison_server の reader / writer と
         // replay_log.rs の doc と 4 点セット（片側更新は dead-write を生む、#807 教訓 / doc 43 §5）。
         let replay_tap = match EngineKind::from_agent(&resolved.agent) {
-            Some(EngineKind::Codex | EngineKind::Grok | EngineKind::OpenCode) => {
-                Some(crate::conversation::replay_log::ReplayLogTap {
-                    repo: addr.repo.clone(),
-                    label: label.clone(),
-                })
-            }
+            Some(
+                EngineKind::Codex | EngineKind::Grok | EngineKind::OpenCode | EngineKind::Vpcode,
+            ) => Some(crate::conversation::replay_log::ReplayLogTap {
+                repo: addr.repo.clone(),
+                label: label.clone(),
+            }),
             _ => None,
         };
         let pump = crate::repo::conversation_pump::spawn_lane_conversation_pump(

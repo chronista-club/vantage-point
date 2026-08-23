@@ -947,6 +947,7 @@ async fn replay_once(
                 crate::conversation::EngineKind::Codex
                     | crate::conversation::EngineKind::Grok
                     | crate::conversation::EngineKind::OpenCode
+                    | crate::conversation::EngineKind::Vpcode
             )
         ) {
             crate::conversation::replay_log::load(&addr.repo, &label)
@@ -1245,6 +1246,7 @@ async fn record_user_message_if_transcriptless(
             crate::conversation::EngineKind::Codex
                 | crate::conversation::EngineKind::Grok
                 | crate::conversation::EngineKind::OpenCode
+                | crate::conversation::EngineKind::Vpcode
         )
     ) {
         return;
