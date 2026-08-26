@@ -14,8 +14,9 @@
 //! - **会話 id は VP 発行**（VCP R3 — engine は自分の id を持たない）: 新規はここで uuid を
 //!   採番して registry に書き、hello.session.id で渡す。engine 側の id との突き合わせが無い
 //! - **permission は無政策 engine**（VCP §8）: 毎 tool 実行前に `permission_request` が来て
-//!   engine は block する。判定は 100% VP 側（[`Self::respond_permission`] — GUI の
-//!   PromptCard / conversation_respond 経路がそのまま使える）
+//!   engine は block する。判定は 100% VP 側 — manual mode は GUI の PromptCard /
+//!   conversation_respond 経路（[`VpcodeHost::respond_permission`]）、auto mode は reader が
+//!   request を GUI に出さず即 allow（[`VpcodeHost::set_permission_mode`]）
 //!
 //! ## transcript（resume 正本）は translator 手前で押収
 //!
@@ -87,6 +88,10 @@ struct VcpState {
     /// vpcode 途絶（stdout close / stdin 書込失敗）を観測したか。true の submit は Err —
     /// `ensure_and_submit_chat` の自己修復（engine drop → 再 ensure → retry）に委ねる。
     dead: bool,
+    /// permission 自動承認（無政策 engine の政策は host 側、VCP §8）。true = 毎
+    /// `permission_request` に GUI を経ず即 allow を返す。claude の permission mode と
+    /// 同じく **session 中の一時状態**（registry 永続なし — 再 spawn で manual に戻る）。
+    auto_approve: bool,
     /// stderr の末尾数行（途絶 event の診断材料）。
     stderr_tail: VecDeque<String>,
 }
@@ -219,6 +224,7 @@ impl VpcodeHost {
                 last_envelope_id,
                 stopping: false,
                 dead: false,
+                auto_approve: false,
                 stderr_tail: VecDeque::new(),
             }),
             child: Mutex::new(Some(child)),
@@ -342,6 +348,27 @@ impl VpcodeHost {
         Ok(())
     }
 
+    /// permission mode の切替（[`crate::conversation::EngineKind::permission_choices`] と対の
+    /// 受理語彙）。claude と違い engine へは何も送らない — 政策は 100% host 側なので
+    /// state を書くだけで、次の `permission_request` から効く。
+    pub fn set_permission_mode(&self, mode: &str) -> anyhow::Result<()> {
+        let auto = parse_permission_mode(mode).ok_or_else(|| {
+            anyhow::anyhow!("vpcode の permission mode は manual / auto のみ（{mode:?}）")
+        })?;
+        self.inner
+            .state
+            .lock()
+            .expect("vcp state lock")
+            .auto_approve = auto;
+        tracing::info!(
+            "vpcode permission mode: {}（repo={}, lane={}）",
+            mode,
+            self.inner.repo,
+            self.inner.lane
+        );
+        Ok(())
+    }
+
     /// `permission_request` への回答（VCP §8 control_response）。deny の `message` は
     /// tool 結果として model へ渡る「次の一手が打てる文」。
     pub async fn respond_permission(
@@ -396,6 +423,17 @@ impl VpcodeHost {
 // =============================================================================
 // calculations — VCP line の組み立てと翻訳（純関数、単体テスト対象）
 // =============================================================================
+
+/// permission mode の wire 値 → 自動承認フラグ（純関数）。None = 未知語彙（呼び手が Err に）。
+/// 語彙は [`crate::conversation::EngineKind::permission_choices`] の Vpcode catalog と対 —
+/// 対の固定は engine.rs `capability_table` テスト。
+fn parse_permission_mode(mode: &str) -> Option<bool> {
+    match mode {
+        "manual" => Some(false),
+        "auto" => Some(true),
+        _ => None,
+    }
+}
 
 /// model の解決（純関数）: session 指定 → env `VPCODE_MODEL` → catalog 先頭（VP 既定）。
 /// 空文字は「未指定」として次段へ倒す。env が catalog より先なのは dev override の慣行
@@ -578,7 +616,25 @@ async fn run_reader(inner: Arc<VcpInner>, stdout: tokio::process::ChildStdout, h
                     );
                 }
             }
-            Translated::Event(event) => inner.emit(event),
+            Translated::Event(event) => {
+                // auto mode の permission_request は GUI に出さず host が即 allow（無政策
+                // engine の政策は host 側、VCP §8）。tool_call event は別に流れるので
+                // 実行の可視性は保たれる — 消えるのはカード（block）だけ。
+                if let ConversationEvent::PermissionRequest { request_id, .. } = &event
+                    && inner.state.lock().expect("vcp state lock").auto_approve
+                {
+                    let resp = serde_json::json!({
+                        "kind": "control_response",
+                        "request_id": request_id,
+                        "allow": true,
+                    });
+                    if let Err(e) = inner.write_line(&resp.to_string()).await {
+                        tracing::warn!("vpcode auto-approve の送信失敗（途絶疑い）: {e}");
+                    }
+                    continue;
+                }
+                inner.emit(event)
+            }
             Translated::Skip => {}
         }
     }
@@ -632,6 +688,26 @@ mod tests {
         assert_eq!(v["transcript"].as_array().map(Vec::len), Some(1));
         // 平坦な messages（封筒の入れ子でない）
         assert_eq!(v["transcript"][0]["role"], "user");
+    }
+
+    /// permission mode 語彙: catalog（GUI picker に出る選択肢）と受理語彙の対を固定
+    /// （wire 値の片側更新 = 「型フラット化の文字列取り残し」型を検知する往復テスト）。
+    #[test]
+    fn permission_mode_vocabulary_matches_catalog() {
+        for c in crate::conversation::EngineKind::Vpcode.permission_choices() {
+            assert!(
+                parse_permission_mode(&c.value).is_some(),
+                "catalog 値 {:?} を set_permission_mode が受理しない",
+                c.value
+            );
+        }
+        assert_eq!(parse_permission_mode("manual"), Some(false));
+        assert_eq!(parse_permission_mode("auto"), Some(true));
+        assert_eq!(
+            parse_permission_mode("bypassPermissions"),
+            None,
+            "claude 語彙は借りない（engine ごとの catalog が SSOT）"
+        );
     }
 
     /// model 解決の優先順: session 指定 → env → catalog 先頭。空文字は「未指定」。

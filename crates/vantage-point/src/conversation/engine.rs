@@ -165,8 +165,12 @@ impl EngineKind {
                 ("auto", "auto"),
                 ("bypassPermissions", "bypass permissions"),
             ]),
-            // vpcode は無政策 engine（mode の概念が無い — 毎 tool 実行前に request、VCP §8）。
-            Self::Codex | Self::Grok | Self::OpenCode | Self::Vpcode => Vec::new(),
+            // vpcode は無政策 engine（毎 tool 実行前に request、VCP §8）— **政策は host 側**:
+            // manual = 毎回 PromptCard / auto = host が request に即 allow を返す（カード不出。
+            // tool_call event は別に流れるので実行の可視性は保たれる）。mako 要望 2026-08-23
+            // 「全てに承認がいるね」。将来の allowlist 自動裁定もこの catalog に足すだけ。
+            Self::Vpcode => Choice::list(&[("manual", "manual"), ("auto", "auto approve")]),
+            Self::Codex | Self::Grok | Self::OpenCode => Vec::new(),
         }
     }
 }
@@ -329,14 +333,12 @@ impl ChatHost {
         }
     }
 
-    /// permission mode の動的切替（claude のみ）。
+    /// permission mode の動的切替（claude = engine へ control_request / vpcode = host 内政策）。
     pub async fn set_permission_mode(&self, mode: &str) -> anyhow::Result<()> {
         match self {
             ChatHost::Claude(h) => h.set_permission_mode(mode).await,
-            ChatHost::Codex(_)
-            | ChatHost::Grok(_)
-            | ChatHost::OpenCode(_)
-            | ChatHost::Vpcode(_) => {
+            ChatHost::Vpcode(h) => h.set_permission_mode(mode),
+            ChatHost::Codex(_) | ChatHost::Grok(_) | ChatHost::OpenCode(_) => {
                 anyhow::bail!("このエンジンは対話承認/permission mode を持ちません")
             }
         }
@@ -389,9 +391,8 @@ mod tests {
         assert_eq!(EngineKind::from_agent("agy"), None, "agy は撤去済み");
     }
 
-    /// 能力表: 全 engine が chat 対応。model catalog は claude と vpcode が非空、
-    /// permission catalog は claude のみ非空
-    /// （空/非空が切替可否の唯一の真実 — 旧 `model_switchable` 述語は catalog に畳んだ）。
+    /// 能力表: 全 engine が chat 対応。model / permission の catalog は claude と vpcode が
+    /// 非空（空/非空が切替可否の唯一の真実 — 旧 `model_switchable` 述語は catalog に畳んだ）。
     #[test]
     fn capability_table() {
         assert!(EngineKind::Claude.chat_capable());
@@ -430,5 +431,15 @@ mod tests {
         assert!(EngineKind::Codex.permission_choices().is_empty());
         assert!(EngineKind::Grok.permission_choices().is_empty());
         assert!(EngineKind::OpenCode.permission_choices().is_empty());
+        // vpcode の permission 政策は host 側（manual = 毎カード / auto = host 即 allow）。
+        // wire 値は VpcodeHost::set_permission_mode の受理語彙と対（片側更新を検知する固定）。
+        assert_eq!(
+            EngineKind::Vpcode
+                .permission_choices()
+                .iter()
+                .map(|c| c.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["manual", "auto"],
+        );
     }
 }
