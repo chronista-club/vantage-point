@@ -2433,6 +2433,11 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // QUIC 面 liveness watchdog を起動 (self-heal、 mem_1CcvYA5TRF4EcFafbyKqPg)。
     // quic.start() は永久 block するため、 watchdog は別 task で並走させる。
     tokio::spawn(quic_liveness_watchdog(port));
+    // vpcode の model catalog を engine endpoint から周期取得する (2026-08-26)。
+    // local LLM は user が落として消すので静的表は必ず現実と乖離する — 詳細は
+    // `conversation::vpcode_catalog` の module doc。endpoint 不在でも fail-open
+    // (catalog が空 = 「VP から切替不可」に倒れるだけで daemon は無影響)。
+    tokio::spawn(crate::conversation::vpcode_catalog::refresh_loop());
     if let Err(e) = quic.start().await {
         tracing::error!("Daemon Unison サーバーエラー: {}", e);
     }
