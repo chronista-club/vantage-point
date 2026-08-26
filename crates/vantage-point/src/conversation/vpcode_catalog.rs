@@ -18,8 +18,16 @@
 //! 出る = vpcode が実際に使える」が構造的に一致する。VP 独自の探索路を持つと両者が
 //! 乖離しうる（doc 43 §3 の「二重管理で SSOT が割れる」と同じ轍）。
 //!
-//! OpenAI 互換の `/v1/models` を使うので LM Studio 専用 API（`/api/v0/models`）に
-//! 依存しない — 供給元が Ollama や llama.cpp server に変わっても同じ経路で動く。
+//! OpenAI 互換の `/v1/models` を使うので LM Studio 専用 API（`/api/v0/models`）には
+//! 依存しない — 供給元が llama.cpp server 等に変わっても同じ経路で引ける。
+//!
+//! ⚠️ **ただし引けることと選べることは別**: catalog に載せるのは下流の
+//! [`crate::lane::engine_model::is_valid_model`] を通る id だけ（[`is_selectable`]）。
+//! **Ollama の `name:tag` 形式（`gpt-oss:20b`）は guard の charset に `:` が無いため
+//! 全て落ちる** = Ollama を供給元にすると picker は空になる（切替不可に倒れる）。
+//! guard は shell 埋め込みの injection 防壁なので、対応するなら `:` の安全性を確かめて
+//! guard 側を広げる話（`/` を足した 016d2004 と同型の作業）。落ちた id は
+//! [`refresh_once`] が debug ログに出す。
 //!
 //! ## 同期 API × 背景更新
 //!
@@ -74,14 +82,41 @@ pub fn choices() -> Vec<Choice> {
         .unwrap_or_default()
 }
 
-/// picker に出す価値がある model か（純関数）。
+/// picker に出す価値がある model か（純関数）。落とす条件は 2 つ。
 ///
-/// embedding 専用 model は chat に使えないので落とす（`/v1/models` は OpenAI 互換の
-/// 最小形で **type を返さない**ため、id の慣習に頼る best-effort。LM Studio 専用の
+/// **① 下流の guard を通らない id**（[`crate::lane::engine_model::is_valid_model`]）。
+/// これを通さないと、この module を作った動機そのもの — 「選ぶと必ず失敗する行き止まり」
+/// — を供給元次第で再生産する。GUI の選択は `conversation_set_model` で同じ guard を
+/// 通るので、**catalog に載せてよい id の定義は guard 1 本**に畳む（doc と実装が乖離
+/// しないよう、判定を持たずに借りる）。⚠️ 実例: Ollama の id は `gpt-oss:20b` のような
+/// `name:tag` 形式が標準だが、guard は `:` を許さない（shell 埋め込みの防壁のため
+/// charset を絞っている）。落ちた id は [`refresh_once`] が debug ログに出すので、
+/// 「picker が空」の原因は追える。
+///
+/// **② embedding 専用 model**（chat に使えない）。`/v1/models` は OpenAI 互換の最小形で
+/// **type を返さない**ため、id の慣習に頼る best-effort（LM Studio 専用の
 /// `/api/v0/models` なら `type: "llm"` で厳密に分かるが、供給元非依存を優先した）。
-/// 判定を外して chat model を 1 つ落としても、user は VPCODE_MODEL / 直接指定で回避できる。
+/// 誤って chat model を落としても、user は `VPCODE_MODEL` で直接指定して回避できる。
 fn is_selectable(id: &str) -> bool {
-    !id.is_empty() && !id.to_ascii_lowercase().contains("embed")
+    crate::lane::engine_model::is_valid_model(id) && !id.to_ascii_lowercase().contains("embed")
+}
+
+/// [`is_selectable`] で落ちた id（純関数、診断専用）。
+///
+/// 「endpoint は生きているのに picker が空」を追えるようにするための材料。この状態は
+/// 供給元の id 語彙が VP の guard と合わない時に起きる（例: Ollama の `name:tag`）ので、
+/// 何が落ちたかが見えないと原因に辿り着けない。
+fn rejected_ids(body: &serde_json::Value) -> Vec<String> {
+    body.get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
+                .filter(|id| !is_selectable(id))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// `/v1/models` の JSON → catalog（純関数）。
@@ -126,6 +161,15 @@ pub async fn refresh_once() {
             .build()
             .ok()?;
         let body: serde_json::Value = client.get(&url).send().await.ok()?.json().await.ok()?;
+        // 落ちた id は診断ログへ（「endpoint は生きているのに picker が空」の唯一の手掛かり）。
+        let rejected = rejected_ids(&body);
+        if !rejected.is_empty() {
+            tracing::debug!(
+                "vpcode model catalog: {} 件を除外（embedding / model 名 guard 不適合）: {}",
+                rejected.len(),
+                rejected.join(", ")
+            );
+        }
         Some(parse_models(&body))
     }
     .await;
@@ -213,5 +257,50 @@ mod tests {
         assert!(!is_selectable("Nomic-EMBED-text"));
         assert!(is_selectable("qwen/qwen3-coder-30b"));
         assert!(!is_selectable(""));
+    }
+
+    /// **下流の guard を通らない id は catalog に載せない**（moody-blues 指摘 2026-08-27）。
+    ///
+    /// 載せると「選ぶと必ず失敗する行き止まり」— この module を作った動機そのもの — を
+    /// 供給元次第で再生産する。`is_valid_model` を借りているので、guard が緩められた日には
+    /// catalog も自動で追随する（判定が 2 箇所に分かれて乖離する形を作らない）。
+    #[test]
+    fn rejects_ids_the_downstream_guard_would_refuse() {
+        // Ollama の標準形（`name:tag`）— guard は shell 埋め込みの防壁で `:` を許さない
+        assert!(!is_selectable("gpt-oss:20b"), "colon-tag id");
+        assert!(!is_selectable("qwen3:8b"));
+        // 64 文字超（量子化 suffix 付きの長い HF id 等）
+        assert!(!is_selectable(&"a".repeat(65)));
+        assert!(is_selectable(&"a".repeat(64)), "境界の 64 は通る");
+        // shell metachar は当然落ちる（guard 由来 — ここで別途持たない）
+        assert!(!is_selectable("a b"));
+        assert!(!is_selectable("$(id)"));
+        // 判定は guard に一致する（乖離検知）
+        for id in ["openai/gpt-oss-20b", "gpt-oss:20b", "a b", ""] {
+            assert_eq!(
+                is_selectable(id) && !id.contains("embed"),
+                crate::lane::engine_model::is_valid_model(id) && !id.contains("embed"),
+                "is_selectable が guard と乖離: {id:?}"
+            );
+        }
+    }
+
+    /// 落とした id は診断できる（「endpoint は生きているのに picker が空」の手掛かり）。
+    #[test]
+    fn rejected_ids_are_reportable() {
+        let body = serde_json::json!({
+            "data": [
+                {"id": "openai/gpt-oss-20b"},
+                {"id": "gpt-oss:20b"},
+                {"id": "text-embedding-3-large"},
+            ]
+        });
+        assert_eq!(
+            rejected_ids(&body),
+            vec!["gpt-oss:20b", "text-embedding-3-large"]
+        );
+        // 採用側と排他（1 つの id が両方に出ない）
+        let taken: Vec<String> = parse_models(&body).into_iter().map(|c| c.value).collect();
+        assert_eq!(taken, vec!["openai/gpt-oss-20b"]);
     }
 }
