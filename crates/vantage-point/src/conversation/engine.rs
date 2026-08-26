@@ -133,13 +133,11 @@ impl EngineKind {
                 ("claude-haiku-4-5", "Haiku 4.5"),
             ]),
             // vpcode に「engine 既定」は無い（hello.model 必須）ので "" は載せない。
+            // **候補は engine の endpoint から動的に引く**（[`super::vpcode_catalog`]）—
+            // local LLM は user が落として消すので静的表は必ず現実と乖離する（2026-08-26 に
+            // 実証: 静的 3 択のうち 1 つが消され、catalog に無い model が増えた）。
             // **先頭 = VP 既定**（session 未指定時の spawn fallback — vpcode_host の解決順）。
-            // 静的 catalog は仮住まい: P2 で LM Studio /v1/models から動的化の計画。
-            Self::Vpcode => Choice::list(&[
-                ("openai/gpt-oss-20b", "GPT-OSS 20B"),
-                ("qwen/qwen3-coder-30b", "Qwen3 Coder 30B"),
-                ("qwen/qwen2.5-coder-14b", "Qwen2.5 Coder 14B"),
-            ]),
+            Self::Vpcode => super::vpcode_catalog::choices(),
             Self::Codex | Self::Grok | Self::OpenCode => Vec::new(),
         }
     }
@@ -405,11 +403,17 @@ mod tests {
         assert!(EngineKind::Codex.model_choices().is_empty());
         // opencode の model は opencode config が SSOT（VP は注入しない、doc 43 §3）。
         assert!(EngineKind::OpenCode.model_choices().is_empty());
-        // vpcode は catalog 非空（= GUI picker + conversation_set_model が通る）だが
-        // 「engine 既定」が無いので "" を載せない。先頭 = spawn fallback の VP 既定。
-        let vpcode_models = EngineKind::Vpcode.model_choices();
-        assert!(!vpcode_models.is_empty());
-        assert!(vpcode_models.iter().all(|c| !c.value.is_empty()));
+        // vpcode の catalog は **engine endpoint から動的**（vpcode_catalog）。テスト環境に
+        // LM Studio は居ないので空になる = 「VP から切替不可」に倒れるのが正しい挙動。
+        // 中身の検証は vpcode_catalog の単体テスト（parse の純関数）が持つ。
+        // ここで固定するのは「engine 既定を意味する空文字を載せない」契約だけ。
+        assert!(
+            EngineKind::Vpcode
+                .model_choices()
+                .iter()
+                .all(|c| !c.value.is_empty()),
+            "vpcode に engine 既定は無いので空 value を載せない"
+        );
 
         // permission mode は claude のみ（他 engine は ChatHost::set_permission_mode が bail）。
         // 表記は TUI と同一（v2.1.200 の manual 改名を反映）、wire 値は互換の "default"。

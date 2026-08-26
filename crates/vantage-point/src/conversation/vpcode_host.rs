@@ -723,14 +723,16 @@ mod tests {
         );
         assert_eq!(resolve_model(None, s("b")), s("b"), "env が次点");
         assert_eq!(resolve_model(s(""), s("b")), s("b"), "空文字は未指定扱い");
-        let fallback = resolve_model(None, None).expect("catalog 先頭に fallback");
+        // catalog は engine endpoint 由来（動的）なので、テスト環境では空 = fallback なし。
+        // 固定するのは「両方未指定なら catalog 先頭に一致する」写像そのもの — 空なら None
+        // （呼び手が診断 Err に変換 = 「候補が引けない」も正直に伝わる）。
         assert_eq!(
-            Some(fallback.as_str()),
+            resolve_model(None, None),
             crate::conversation::EngineKind::Vpcode
                 .model_choices()
                 .first()
-                .map(|c| c.value.as_str()),
-            "fallback = catalog 先頭（VP 既定）"
+                .map(|c| c.value.clone()),
+            "fallback = catalog 先頭（VP 既定）／catalog 空なら None"
         );
     }
 

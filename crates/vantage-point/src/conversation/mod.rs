@@ -42,6 +42,7 @@ pub mod jsonl_store;
 pub mod replay_log;
 pub mod skill_docs;
 pub mod transcript;
+pub mod vpcode_catalog;
 pub mod vpcode_host;
 pub mod vpcode_transcript;
 
