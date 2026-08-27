@@ -9,6 +9,7 @@
 //! conversation module に閉じ、chat スタック全体を他repo（GFP 等）へ切り出せる形にする）。
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tokio::task::JoinHandle;
 
 use super::acp_host::AcpAgentHost;
@@ -201,6 +202,10 @@ impl Choice {
 pub struct ChatEngineSlot {
     pub host: ChatHost,
     pub pump: JoinHandle<()>,
+    /// 最終 event 時刻 (epoch ms、0 = まだ無い)。書き手は pump（event ごと store）、
+    /// 読み手は roster enrich（`LanePool::session_activity`）。tui の
+    /// `PtySlot::last_output_at_ms` と対の gui 側活動源。
+    pub last_event_at: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Drop for ChatEngineSlot {

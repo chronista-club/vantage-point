@@ -14,6 +14,7 @@ import type { SubStatusWire } from "../generated/SubStatusWire";
 import type { LaneSessionEntryWire } from "../generated/LaneSessionEntryWire";
 import { sidebar } from "./store";
 import { sessionNow } from "./session-now";
+import { clockNow, quietLabel } from "./activity-freshness";
 import { sessionNowKey } from "../../session-now-bridge";
 import { sendIpc } from "./ipc";
 import { resolveRepoOrder } from "./dnd";
@@ -56,6 +57,34 @@ function SubMeta(props: { ws: SubStatusWire }) {
 				<span class="dirty">{dirty()}M</span>
 			</Show>
 		</span>
+	);
+}
+
+/**
+ * 「今なにを」1 行 + 沈黙時間（quiet）。SessionRow と lane 行の共通描画。
+ *
+ * quiet は **now-line が出ている行にだけ**付ける — 「進行を名乗ったまま活動が無い」だけが
+ * 異常のサイン（idle な行の沈黙は正常なので語らない）。閾値・経過は client 時計で導く
+ * （activity-freshness.ts — server は last_activity_at の事実だけ運ぶ）。
+ */
+function NowLine(props: {
+	text: string | undefined;
+	lastActivityAt: number | null | undefined;
+}) {
+	const quiet = () => quietLabel(props.lastActivityAt, clockNow());
+	return (
+		<Show when={props.text}>
+			<span
+				class="vp-lane-now"
+				classList={{ "is-quiet": !!quiet() }}
+				title={quiet() ? `${quiet()}沈黙 — ${props.text}` : props.text}
+			>
+				<Show when={quiet()}>
+					<span class="vp-lane-now-quiet">⏸{quiet()}</span>
+				</Show>
+				{props.text}
+			</span>
+		</Show>
 	);
 }
 
@@ -103,11 +132,10 @@ export function SessionRow(props: {
 			<span class="vp-lane-right">
 				<span class="vp-lane-shortcut">#{props.session.key}</span>
 			</span>
-			<Show when={nowText()}>
-				<span class="vp-lane-now" title={nowText()}>
-					{nowText()}
-				</span>
-			</Show>
+			<NowLine
+				text={nowText()}
+				lastActivityAt={props.session.last_activity_at}
+			/>
 		</div>
 	);
 }
@@ -182,6 +210,10 @@ export function LaneRow(props: {
 	// 「今なにを」(doc 58 ②-a): 行 = lane の間は **root session の分**を出す
 	// （代表 = 役職、doc 54。②-b で行 = session に割れたら session ごとになる）。
 	const nowText = () => sessionNow[sessionNowKey(addr(), rootKey())];
+	// quiet 判定の活動時刻も root session の分（roster の last_activity_at）。
+	const rootActivity = () =>
+		props.lane.sessions?.sessions?.find((s) => s.key === rootKey())
+			?.last_activity_at;
 	// doc 44 D4: 開発起点 lane か。真実源は Repo Host の帳簿で、lanes snapshot の
 	// `origin` として届く (= lane 自身は役割を持たない、P2 のフラット化)。
 	// 未着 (起動直後 / 旧 server) は undefined → star を出さない。憶測で既定を描かない。
@@ -456,11 +488,7 @@ export function LaneRow(props: {
 			    tooltip には常に完全な絶対 path を出すので情報は落ちない。 */}
 			{/* 「今なにを」= 進行の本体 (doc 58 §2)。地 (cwd) より 1 段読める色。
 			    無ければ黙る (語ることが無い行は黙る、cwd と同じ流儀)。 */}
-			<Show when={nowText()}>
-				<span class="vp-lane-now" title={nowText()}>
-					{nowText()}
-				</span>
-			</Show>
+			<NowLine text={nowText()} lastActivityAt={rootActivity()} />
 			<Show when={cwdLabel()}>
 				<span class="vp-lane-cwd" title={props.lane.cwd}>
 					{cwdLabel()}

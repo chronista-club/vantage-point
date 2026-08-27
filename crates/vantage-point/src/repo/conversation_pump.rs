@@ -39,12 +39,22 @@ pub fn spawn_lane_conversation_pump(
     mut rx: broadcast::Receiver<ConversationEvent>,
     topic_router: Arc<TopicRouter>,
     replay_log: Option<ReplayLogTap>,
+    activity: Arc<std::sync::atomic::AtomicU64>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut tap = replay_log.map(ReplayTap::new);
         loop {
             match rx.recv().await {
                 Ok(event) => {
+                    // roster `last_activity_at` の gui 側供給源（tui は PtySlot.last_output_at）。
+                    // pump は全 chat engine の event が必ず通る唯一の点なので、ここ 1 箇所で足りる。
+                    activity.store(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                     // 配送前に tap する（route は event を move で消費するため参照で先に記録）。
                     // 配信と記録は独立系統 = tap の失敗は route を止めない。
                     if let Some(tap) = tap.as_mut() {
@@ -193,7 +203,15 @@ mod tests {
             .await;
 
         // claude 相当 = tap なし（transcript が SSOT）。
-        let _h = spawn_lane_conversation_pump("vp/root".to_string(), 2, rx, router.clone(), None);
+        let activity = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let _h = spawn_lane_conversation_pump(
+            "vp/root".to_string(),
+            2,
+            rx,
+            router.clone(),
+            None,
+            Arc::clone(&activity),
+        );
 
         tx.send(ConversationEvent::MessageChunk {
             text: "hello".to_string(),
@@ -204,6 +222,11 @@ mod tests {
             .await
             .expect("timeout")
             .expect("recv");
+        // event が pump を通過した = 活動時刻が bump されている（roster enrich の供給源）。
+        assert!(
+            activity.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "pump 通過で last_activity が bump されること"
+        );
         // doc 38 落とし穴①: session が topic key（lane 部分）に混入しないこと。
         assert_eq!(topic, "repo/conversation/data/vp~root/event");
         match msg {
