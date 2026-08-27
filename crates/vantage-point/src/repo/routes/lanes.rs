@@ -142,6 +142,19 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
         });
     }
 
+    // session 活動時刻（in-memory 実体）を 1 lock で先に集める。下の loop は git subprocess を
+    // 含み長い（sub_status 数 100ms）ので、lock 保持と enrich 適用を分離する。
+    let activity: std::collections::HashMap<
+        String,
+        std::collections::HashMap<crate::lane::session_registry::SessionKey, u64>,
+    > = {
+        let pool = state.lane_pool.read().await;
+        lanes
+            .iter()
+            .map(|l| (l.address.to_string(), pool.session_activity(&l.address)))
+            .collect()
+    };
+
     // 既存 Sub の git status を populate
     for lane in lanes.iter_mut() {
         if !lane.address.is_root() {
@@ -158,6 +171,10 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
         // では無害。桁で増える運用になったら spawn_blocking 化 / active lane 限定 read が最適化余地
         //（moody 参考指摘 2026-07-15）。
         lane.refresh_engine_session_id();
+        // 活動時刻は refresh と対（apply_session_activity の doc ⚠️ — 供給点差は #683 地形）。
+        if let Some(act) = activity.get(&lane.address.to_string()) {
+            lane.apply_session_activity(act);
+        }
     }
 
     // doc 44 §12: 帳簿の並び順を最後に適用する（既定順 = 開発起点が先頭 → created_at の上に
@@ -938,10 +955,16 @@ const RESTART_BACKOFF_MS: [u64; 2] = [200, 500]; // attempt 0→1: 200ms、 atte
 /// なったので、これが「roster が変わった」を知らせる唯一の経路 — 撃たない動詞の変化は
 /// 次の定期 snapshot まで GUI に出ない）。R2 の「動詞の末尾で reconcile」と同型の規律。
 pub(crate) async fn emit_lane_update(state: &AppState, addr: &LaneAddress) {
-    let Some(mut info) = state.lane_pool.read().await.get(addr).cloned() else {
-        return;
+    let (mut info, activity) = {
+        let pool = state.lane_pool.read().await;
+        let Some(info) = pool.get(addr).cloned() else {
+            return;
+        };
+        (info, pool.session_activity(addr))
     };
     info.refresh_engine_session_id();
+    // 活動時刻は refresh と対（apply_session_activity の doc ⚠️ — 供給点差は #683 地形）。
+    info.apply_session_activity(&activity);
     if let Err(e) = state
         .system_event_tx
         .send(SystemEvent::Lane(Diff::Update { payload: info }))

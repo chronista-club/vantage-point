@@ -306,6 +306,11 @@ pub struct PtySlot {
     flush_handle: Option<JoinHandle<()>>,
     /// reader task のハンドル
     _reader_handle: tokio::task::JoinHandle<()>,
+    /// 最終出力時刻 (epoch ms)。reader task が読むたびに store する（0 = 未出力）。
+    ///
+    /// 供給源 tap（購読側でない）なのは意図的 — output_tx の購読は demand-driven で、
+    /// 誰も見ていない lane では購読者ゼロになるため、購読側 tap では活動が消える。
+    last_output_at: Arc<AtomicU64>,
 }
 
 impl PtySlot {
@@ -423,6 +428,7 @@ impl PtySlot {
         };
         let replay = Arc::new(Mutex::new(seed));
         let replay_seq = Arc::new(AtomicU64::new(0));
+        let last_output_at = Arc::new(AtomicU64::new(0));
 
         // reader task 開始 (writer を渡して ConPTY DSR に応答できるようにする)
         let reader_handle = start_reader_task(
@@ -431,6 +437,7 @@ impl PtySlot {
             Arc::clone(&writer),
             Arc::clone(&replay),
             Arc::clone(&replay_seq),
+            Arc::clone(&last_output_at),
         );
 
         // disk 永続がある lane は定期 flush task を起動 (runtime 不在なら None = 永続なし)。
@@ -450,6 +457,7 @@ impl PtySlot {
                 replay_path,
                 flush_handle,
                 _reader_handle: reader_handle,
+                last_output_at,
             },
             initial_rx,
         ))
@@ -504,6 +512,18 @@ impl PtySlot {
         let rx = self.output_tx.subscribe();
         drop(guard);
         (snapshot, rx)
+    }
+
+    /// 最終出力時刻 (epoch ms)。未出力（spawn 直後 / まだ 1 byte も来ていない）は None。
+    ///
+    /// roster の `last_activity_at` 供給源（lanes_state の session_activity が読む）。
+    /// TUI の spinner 再描画も出力なので「engine が生きて描いている」までしか言えない —
+    /// 進捗の意味論は載せない（読み手が閾値で quiet を導く）。
+    pub fn last_output_at_ms(&self) -> Option<u64> {
+        match self.last_output_at.load(Ordering::Relaxed) {
+            0 => None,
+            ms => Some(ms),
+        }
     }
 
     /// プロセスID
@@ -564,6 +584,7 @@ fn start_reader_task(
     #[cfg_attr(not(windows), allow(unused_variables))] writer: Arc<Mutex<Box<dyn Write + Send>>>,
     replay: Arc<Mutex<VecDeque<u8>>>,
     replay_seq: Arc<AtomicU64>,
+    last_output_at: Arc<AtomicU64>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
         // Windows ConPTY DSR gating の回避状態。 起動時の cursor-position query に一度だけ
@@ -579,6 +600,9 @@ fn start_reader_task(
                     break;
                 }
                 Ok(n) => {
+                    // 活動時刻の bump は DSR 処理より前（Windows の初回 DSR 除去で chunk が
+                    // 空になっても「出力はあった」事実は変わらない）。
+                    last_output_at.store(epoch_ms(), Ordering::Relaxed);
                     #[cfg_attr(not(windows), allow(unused_mut))]
                     let mut chunk = buf[..n].to_vec();
 
@@ -635,6 +659,14 @@ fn start_reader_task(
             }
         }
     })
+}
+
+/// 現在時刻 (epoch ms)。`last_output_at` の書き込み値（時計が epoch 以前なら 0 = 未出力扱い）。
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// `data` から `seq` の全出現を取り除いた新しい Vec を返す (ConPTY DSR の二重応答防止用)。

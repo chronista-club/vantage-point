@@ -472,6 +472,13 @@ pub struct LaneSessionView {
     /// が bail する engine — codex の approval_policy 等の別語彙は将来 catalog を足すだけ）。
     #[serde(default)]
     pub permission_choices: Vec<crate::conversation::engine::Choice>,
+    /// 最終活動時刻 (epoch ms)。tui = PTY 出力 / gui = ConversationEvent の新しい方。
+    /// None = 実体なし（Draft / 停止中）or 活動未観測。registry（disk）でなく
+    /// **in-memory 実体からの enrich**（[`LanePool::session_activity`]）なので
+    /// `from_registry` 時点では常に None — 供給点（5s snapshot / LaneDiff push）が埋める。
+    /// GUI は client 時計との差で「quiet N 分」を導く（閾値判定は載せない — 事実だけ運ぶ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<u64>,
 }
 
 impl LaneSessionsView {
@@ -497,6 +504,7 @@ impl LaneSessionsView {
                         permission_choices: kind
                             .map(EngineKind::permission_choices)
                             .unwrap_or_default(),
+                        last_activity_at: None,
                     }
                 })
                 .collect(),
@@ -544,6 +552,32 @@ impl LaneInfo {
         // 混ぜないため）。GUI の pane 一覧はこの 1 本から作られる。
         self.sessions = Some(LaneSessionsView::from_registry(&reg));
     }
+
+    /// roster に session ごとの最終活動時刻を焼く（`LanePool::session_activity` の適用側）。
+    ///
+    /// ⚠️ `refresh_engine_session_id` と**対で**呼ぶこと（roster が daemon へ流れる全供給点 —
+    /// registry read の refresh と in-memory 実体の enrich は別入力なので、片方だけだと
+    /// 「session 一覧は出るのに活動時刻が永遠に None」が supply 点差で起きる（#683 地形）。
+    ///
+    /// wire 値は [`ACTIVITY_WIRE_GRANULARITY_MS`] に切り下げて量子化する。`publish_lanes` は
+    /// snapshot の**指紋が変わった時だけ** vp-app を起こす（doc 44 §11.3）ので、生 ms を
+    /// 載せると活動中の lane が 5s tick を全 push 化してしまう — 分粒度なら最大 1 push/min。
+    pub fn apply_session_activity(&mut self, activity: &HashMap<SessionKey, u64>) {
+        if let Some(view) = self.sessions.as_mut() {
+            for s in view.sessions.iter_mut() {
+                s.last_activity_at = activity.get(&s.key).copied().map(quantize_activity_ms);
+            }
+        }
+    }
+}
+
+/// `last_activity_at` を wire に載せる際の量子化粒度 (ms)。GUI の quiet 閾値（分単位）には
+/// 十分細かく、snapshot 指紋（doc 44 §11.3）を無駄に乱さない下限。
+const ACTIVITY_WIRE_GRANULARITY_MS: u64 = 60_000;
+
+/// wire に載せる活動時刻の量子化（[`ACTIVITY_WIRE_GRANULARITY_MS`] へ切り下げ）。
+fn quantize_activity_ms(ms: u64) -> u64 {
+    ms - ms % ACTIVITY_WIRE_GRANULARITY_MS
 }
 
 /// Lane Pool — Main/Sub registry
@@ -1348,6 +1382,41 @@ impl LanePool {
         out
     }
 
+    /// lane の session ごとの最終活動時刻 (epoch ms) を実体から集める。
+    ///
+    /// 供給源は 2 系統: tui = `PtySlot::last_output_at_ms`（出力バイト）/
+    /// gui = `ChatEngineSlot.last_event_at`（ConversationEvent）。**1 session = 高々 1 実体**
+    /// （[`Self::chat_engines`] の doc — slot と engine は排他）なので通常はどちらか一方だけが
+    /// 埋まる。max を取るのは排他が破れた場合に**古い方を勝たせない**ための保険で、
+    /// 「両方持つのが normal」という意味ではない。
+    /// 実体の無い session は entry なし（roster 側は None のまま = Draft / 停止中）。
+    ///
+    /// 読み手は roster enrich の 2 供給点（`build_lanes_snapshot` / `emit_lane_update`）。
+    /// 5s periodic の snapshot push に乗るため、専用の push 契機（sweeper）は持たない。
+    pub fn session_activity(&self, addr: &LaneAddress) -> HashMap<SessionKey, u64> {
+        let mut out: HashMap<SessionKey, u64> = HashMap::new();
+        if let Some(slots) = self.pty_slots.get(addr) {
+            for (key, slot) in slots {
+                let slot = slot.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(ms) = slot.last_output_at_ms() {
+                    out.insert(*key, ms);
+                }
+            }
+        }
+        if let Some(engines) = self.chat_engines.get(addr) {
+            for (key, engine) in engines {
+                let ms = engine
+                    .last_event_at
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                if ms > 0 {
+                    let e = out.entry(*key).or_insert(0);
+                    *e = (*e).max(ms);
+                }
+            }
+        }
+        out
+    }
+
     /// 既存 Lane の PtySlot に新しい subscriber を追加 (PTY output を WS に流す等の用途)。
     /// `None` = address に対応する Lane が無い、 もしくは PtySlot が無い (state=Dead 等)。
     ///
@@ -2139,12 +2208,15 @@ impl LanePool {
             }),
             _ => None,
         };
+        // 活動時刻の共有 atomic（書き手 = pump / 読み手 = session_activity の roster enrich）。
+        let last_event_at = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let pump = crate::repo::conversation_pump::spawn_lane_conversation_pump(
             addr.to_string(),
             resolved.key,
             host.subscribe(),
             topic_router.clone(),
             replay_tap,
+            std::sync::Arc::clone(&last_event_at),
         );
         let pid = host.pid();
         // LaneInfo.pid / state は lane の代表 = focused session に紐づける（非 focused の
@@ -2155,10 +2227,14 @@ impl LanePool {
             info.pid = pid;
             info.state = LaneState::Running;
         }
-        self.chat_engines
-            .entry(addr.clone())
-            .or_default()
-            .insert(resolved.key, ChatEngineSlot { host, pump });
+        self.chat_engines.entry(addr.clone()).or_default().insert(
+            resolved.key,
+            ChatEngineSlot {
+                host,
+                pump,
+                last_event_at,
+            },
+        );
         tracing::info!(
             "chat engine start: addr={addr} session={} pid={pid:?}",
             resolved.key
@@ -3957,8 +4033,51 @@ mod tests {
             crate::conversation::ChatEngineSlot {
                 host: crate::conversation::ChatHost::Claude(host),
                 pump: tokio::spawn(async {}),
+                last_event_at: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             },
         );
+    }
+
+    /// `last_activity_at` の gui 側供給路: chat engine の `last_event_at` を
+    /// `session_activity` が拾う。未活動（0）は entry を作らない
+    /// （None = 活動未観測、を Some(0) で偽らない）。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_activity_reads_chat_engine_last_event() {
+        let addr = LaneAddress::sub("vp".to_string(), "act-test".to_string());
+        let mut pool = LanePool::default();
+        insert_fake_chat_engine(&mut pool, &addr, 1);
+        assert!(
+            pool.session_activity(&addr).is_empty(),
+            "未活動（0）は entry なし"
+        );
+        pool.chat_engines[&addr][&1]
+            .last_event_at
+            .store(123_456, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(pool.session_activity(&addr).get(&1), Some(&123_456));
+    }
+
+    /// `last_activity_at` の tui 側供給路: PTY が 1 byte でも出力すれば
+    /// `last_output_at_ms` が立つ。reader task は store → broadcast の順なので、
+    /// rx で受信できた時点で時刻は必ず見える（タイミング依存なし）。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pty_last_output_at_bumps_on_output() {
+        let (slot, mut rx) = spawn_test_slot("echo activity");
+        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("PTY 出力 timeout")
+            .expect("PTY 出力");
+        assert!(slot.last_output_at_ms().is_some());
+    }
+
+    /// wire 量子化（doc 44 §11.3 — snapshot 指紋を活動のたびに乱さない）は分へ切り下げる。
+    #[test]
+    fn quantize_activity_ms_floors_to_minute() {
+        assert_eq!(quantize_activity_ms(0), 0);
+        assert_eq!(quantize_activity_ms(59_999), 0);
+        assert_eq!(quantize_activity_ms(60_000), 60_000);
+        assert_eq!(quantize_activity_ms(1_756_300_123_456), 1_756_300_080_000);
     }
 
     /// **P5 producer の本体**（doc 46 §3 の宿題）: console をもう 1 枚。

@@ -360,6 +360,13 @@ pub struct LaneSessionEntryWire {
     /// permission picker の選択肢（同上）。空 = 対話承認の概念なし。
     #[serde(default)]
     pub permission_choices: Vec<ChoiceWire>,
+    /// 最終活動時刻 (epoch ms、server 側で分粒度に量子化済み)。tui = PTY 出力 /
+    /// gui = ConversationEvent。None = 実体なし（Draft / 停止中）or 旧 server。
+    /// sidebar はこれと client 時計の差で「quiet N 分」を導く。
+    /// `u64` にしないのは ts-rs が `bigint` を吐いて JSON number と噛み合わないため
+    /// （`ActivitySnapshot.actions_rev` と同型の判断）。
+    #[serde(default)]
+    pub last_activity_at: Option<f64>,
 }
 
 /// picker の選択肢 1 件（server `conversation::engine::Choice` の鏡 — 能力は server が表明し
