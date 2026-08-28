@@ -480,6 +480,100 @@ impl WiremsgStore {
         Ok(true)
     }
 
+    /// agent を**参加している全 thread から離脱**させる（`ParticipantStatus::Left`）。
+    /// 離脱させた thread 数を返す（既に left の分は数えない = 冪等）。
+    ///
+    /// ## なぜ要るか — 宛先が消滅した command が永久に鳴り続ける
+    ///
+    /// nudger は「`to` の全員が ack するまで」再掲示する（[`Self::unacked_commands`]）。
+    /// lane を削除すると **その address を drain/ack できる主体が居なくなる**ので、その lane
+    /// 宛の未 ack が永久に残り、同報 command が**他の受信者にも**鳴り続ける。
+    /// 2026-08-22 の 3 通が 6 日間 vpcode/main を叩き続けた実害がこれ（当の vpcode は ack 済で、
+    /// 未 ack だったのは削除済の `agent@vantage-point/research`）。
+    ///
+    /// ## なぜ `to` を書き換えないか
+    ///
+    /// `to` は履歴であり、かつ [`Self::reply_recipients`] が**返信の宛先継承**に読む。
+    /// 消すと以降の返信の宛先が変わってしまう。VP は既に「参加者が減る」を
+    /// `thread_participant` の sparse 例外表で表しているので、その語彙に乗せる
+    /// （= message は不変、除外は別表。証跡も残る）。
+    pub async fn leave_all_threads(&self, agent: &str) -> Result<usize> {
+        // 当該 agent が受信者に含まれる message の thread root を集める。
+        // root は `prev` を辿った先なので、message ごとに walk して重複を畳む。
+        let mut res = self
+            .db
+            .query("SELECT id FROM wire_messages WHERE $agent IN to_addrs;")
+            .bind(("agent", agent.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("wiremsg leave_all_threads select failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("wiremsg leave_all_threads take failed: {e}"))?;
+
+        let mut roots: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for row in &rows {
+            let id = Self::extract_record_local_id(&row["id"], "wire_messages");
+            if id.is_empty() {
+                continue;
+            }
+            // root 解決に失敗した message は飛ばす（1 件の欠損で全体を止めない）。
+            if let Ok(root) = self.walk_to_root(&id).await {
+                roots.insert(root);
+            }
+        }
+
+        let mut left = 0usize;
+        for root in &roots {
+            // 既に例外行がある（muted / left）thread は触らない。mute を left に
+            // 格上げしないのは、mute が **user の意思**表示だから（削除は agent 側の事情）。
+            let existing = self.participant_status(root, agent).await?;
+            if existing.is_some() {
+                continue;
+            }
+            self.db
+                .query(
+                    "CREATE thread_participant CONTENT {
+                         thread: $thread, agent: $agent, status: 'left', updated_at: $now
+                     };",
+                )
+                .bind(("thread", root.clone()))
+                .bind(("agent", agent.to_string()))
+                .bind(("now", now_ms()))
+                .await
+                .map_err(|e| anyhow::anyhow!("wiremsg leave create failed: {e}"))?
+                .check()
+                .map_err(|e| anyhow::anyhow!("wiremsg leave create check failed: {e}"))?;
+            left += 1;
+        }
+        Ok(left)
+    }
+
+    /// thread × agent の例外行の status を引く（無ければ `None` = active）。
+    async fn participant_status(
+        &self,
+        thread: &str,
+        agent: &str,
+    ) -> Result<Option<ParticipantStatus>> {
+        let mut res = self
+            .db
+            .query(
+                "SELECT status FROM thread_participant
+                     WHERE thread = $thread AND agent = $agent LIMIT 1;",
+            )
+            .bind(("thread", thread.to_string()))
+            .bind(("agent", agent.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("wiremsg participant_status failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("wiremsg participant_status take failed: {e}"))?;
+        Ok(rows.first().and_then(|r| match r["status"].as_str() {
+            Some("muted") => Some(ParticipantStatus::Muted),
+            Some("left") => Some(ParticipantStatus::Left),
+            _ => None,
+        }))
+    }
+
     /// message を ack 済の agent 一覧を返す (read-only)
     pub async fn acks_for(&self, message_id: &str) -> Result<Vec<String>> {
         let mut res = self
@@ -584,10 +678,18 @@ impl WiremsgStore {
         for row in &rows {
             let msg = Self::row_to_message(row)?;
             let acked = self.acks_for(&msg.id).await?;
+            // 離脱済 agent は pending に数えない。**読む主体が居ない宛先を待ち続けると、
+            // 同報 command が他の受信者にも永久に鳴り続ける**（削除済 lane 宛の未 ack が
+            // 6 日間 nudge を撃ち続けた実害、2026-08-29）。root 解決に失敗したら
+            // 「離脱者なし」に倒す = 従来どおり全員を待つ（安全側）。
+            let left = match self.walk_to_root(&msg.id).await {
+                Ok(root) => self.left_agents(&root).await.unwrap_or_default(),
+                Err(_) => std::collections::HashSet::new(),
+            };
             let pending: Vec<String> = msg
                 .to
                 .iter()
-                .filter(|a| **a != msg.from && !acked.contains(a))
+                .filter(|a| **a != msg.from && !acked.contains(a) && !left.contains(*a))
                 .cloned()
                 .collect();
             if !pending.is_empty() {
@@ -1908,6 +2010,65 @@ mod tests {
     async fn ack_unknown_message_errors() {
         let store = make_test_store().await;
         assert!(store.ack("no-such-id", "agent@nexus").await.is_err());
+    }
+
+    /// **削除された lane 宛の未 ack が同報 command を永久に鳴らし続ける**を塞ぐ回帰固定。
+    ///
+    /// 2026-08-22 の実害の再現: 3 宛先の command で 1 人だけが ack、残り 1 人の lane が消滅
+    /// → 消滅した宛先が永久に未 ack → nudger が**既に ack した相手にも**再掲示し続けた。
+    #[tokio::test]
+    async fn leaving_agent_drops_out_of_pending() {
+        let store = make_test_store().await;
+        let cmd = store
+            .send_root(
+                "agent@vp",
+                &["agent@vpcode/main".to_string(), "agent@vp/gone".to_string()],
+                serde_json::json!({"category": "command", "text": "設計これで進めます"}),
+            )
+            .await
+            .expect("command send");
+
+        // 生きている側は ack した。消える側は ack できないまま。
+        store.ack(&cmd.id, "agent@vpcode/main").await.expect("ack");
+        let pending = store.unacked_commands().await.expect("unacked");
+        assert_eq!(
+            pending[0].1,
+            vec!["agent@vp/gone".to_string()],
+            "前提: 消える側が未 ack で残り、nudge が止まらない"
+        );
+
+        // lane 削除相当 = 全 thread から離脱。
+        let left = store
+            .leave_all_threads("agent@vp/gone")
+            .await
+            .expect("leave");
+        assert_eq!(left, 1, "参加していた 1 thread から離脱");
+
+        assert!(
+            store.unacked_commands().await.expect("unacked").is_empty(),
+            "離脱した宛先は待たない = nudge が止まる"
+        );
+
+        // 冪等（削除は複数経路から来うる）。
+        assert_eq!(
+            store
+                .leave_all_threads("agent@vp/gone")
+                .await
+                .expect("leave 2"),
+            0,
+            "既に離脱済なら数えない"
+        );
+
+        // ⚠️ `to` は不変（履歴 + reply の宛先継承が読む）。
+        let msg = store
+            .get_message(&cmd.id)
+            .await
+            .expect("get")
+            .expect("exists");
+        assert!(
+            msg.to.contains(&"agent@vp/gone".to_string()),
+            "宛先の履歴は消さない（誰に送ったかは事実として残る）"
+        );
     }
 
     /// unacked_commands: command category のみ・未 ack 受信者のみが pending に載る
