@@ -1092,10 +1092,18 @@ async fn replay_with_in_flight(
     Ok((events, 0))
 }
 
-/// conversation demand stop ハンドラー。 replay は on-attach の一度きりなので停止対象の task は無い。
-/// （live event の producer は `ClaudeHost` + `conversation_pump` で、 engine の生存に紐づく）
+/// conversation demand stop ハンドラー = **idle teardown の即時契機**。
+///
+/// 購読が 0 になった（= 名簿から lane タイトルが消えた）時に、その lane の**暇な** chat engine
+/// を寝かせる（判定は [`LanePool::drop_idle_chat_engines`] — turn なし + N 分無活動）。
+/// 畳んだ**後**に条件が揃う場合は 30s periodic の `spawn_idle_engine_sweep` が拾う
+/// （demand hook は購読が切れた瞬間の 1 回きりなので、片方だけでは落ちない）。
+///
+/// ⚠️ 旧実装は「replay は on-attach の一度きりなので停止対象の task は無い」として noop
+/// だった（#699）。当時は正しく、engine を寝かせるという発想が無かっただけ — 穴ではなく
+/// 未踏の設計余地だったので、前提が変わった 2026-08-29 に埋めた。
 async fn handle_conversation_demand_stop(
-    _state: &AppState,
+    state: &AppState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload
@@ -1103,7 +1111,29 @@ async fn handle_conversation_demand_stop(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    Ok(serde_json::json!({"status": "noop", "lane": lane}))
+    let Some(addr) = crate::repo::lanes_state::LanePool::parse_address(&lane) else {
+        // 宛先が読めない = 落とす相手が決まらない。黙って何もしない（旧 noop と同じ安全側）。
+        return Ok(serde_json::json!({"status": "noop", "lane": lane}));
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let dropped = state
+        .lane_pool
+        .write()
+        .await
+        .drop_idle_chat_engines(&addr, now_ms);
+    if dropped.is_empty() {
+        return Ok(serde_json::json!({"status": "kept", "lane": lane}));
+    }
+    tracing::info!(
+        "idle chat engine を寝かせた（購読なし・turn なし・{}分無活動）: lane={lane} sessions={dropped:?}",
+        crate::repo::lanes_state::idle_teardown_after_minutes(),
+    );
+    // 実体が変わったので roster を配る（`pid` / 活動時刻が動く = 名簿の見え方が変わる）。
+    crate::repo::routes::lanes::emit_lane_update(state, &addr).await;
+    Ok(serde_json::json!({"status": "slept", "lane": lane, "sessions": dropped}))
 }
 
 /// ConversationEvent 列を per-lane conversation topic に順に route する（conversation_pump と同じ経路）。

@@ -515,7 +515,73 @@ pub(crate) async fn start_repo(
     //         が壊れたまま user が気付かない問題の解消。
     spawn_lane_lifecycle_monitor(state.lane_pool.clone(), shutdown_token.clone());
 
+    // 「Lane タイトルが表示されている Lane だけ生きてる」(mako 2026-08-28): 誰も見ていない
+    // chat engine を、暇になった時点で寝かせる periodic sweep。
+    spawn_idle_engine_sweep(state.clone(), shutdown_token.clone());
+
     Ok(state)
+}
+
+/// idle chat engine の periodic sweep（doc: `LanePool::drop_idle_chat_engines`）。
+///
+/// ## なぜ `conversation_demand_stop` だけでは足りないか
+///
+/// demand hook は **購読が切れた瞬間に 1 回だけ**撃たれる。畳んだ時点で engine がまだ
+/// 「暇 5 分」に達していなければ何も落とせず、その後条件が揃っても**撃ち直す者がいない**
+/// = 永久に落ちない（event-driven な teardown は「条件成立と契機が同時」でないと成立しない）。
+/// sweep は条件成立の側から定期的に見に行くことでこの時間差を埋める。
+///
+/// 判定の真実源は 2 つとも既存: 購読の有無は router の demand count（doc 44 P1 fold-in で
+/// daemon と repo が同一プロセス = **同じ router 実体**なのでここから直接読める）、
+/// 暇かどうかは `ChatEngineSlot` の `turn_active` / `last_event_at`。状態を複製しない。
+fn spawn_idle_engine_sweep(state: Arc<AppState>, shutdown: CancellationToken) {
+    tokio::spawn(async move {
+        // demand hook（即時）と対の遅延経路なので、粒度は粗くてよい（猶予は分単位）。
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        tick.tick().await; // 初回の即時発火は捨てる（起動直後は全 engine が新しい）
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {}
+                _ = shutdown.cancelled() => {
+                    tracing::debug!("idle engine sweep: shutdown");
+                    return;
+                }
+            }
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let candidates: Vec<crate::repo::lanes_state::LaneAddress> = {
+                let pool = state.lane_pool.read().await;
+                pool.lanes_with_chat_engines()
+                    .into_iter()
+                    // 見られている lane は触らない（購読 = 名簿に出ている）。
+                    .filter(|addr| {
+                        let topic = format!(
+                            "repo/conversation/data/{}/event",
+                            addr.to_string().replace('/', "~")
+                        );
+                        !state.topic_router.demand_active(&topic)
+                    })
+                    .collect()
+            };
+            for addr in candidates {
+                let dropped = {
+                    let mut pool = state.lane_pool.write().await;
+                    pool.drop_idle_chat_engines(&addr, now_ms)
+                };
+                if dropped.is_empty() {
+                    continue;
+                }
+                tracing::info!(
+                    "idle chat engine を寝かせた（sweep: 購読なし・turn なし・{}分無活動）: lane={addr} sessions={dropped:?}",
+                    crate::repo::lanes_state::idle_teardown_after_minutes(),
+                );
+                crate::repo::routes::lanes::emit_lane_update(&state, &addr).await;
+            }
+        }
+    });
 }
 
 /// [`start_repo`] で起動した repo の後始末（file watcher 停止 + capability shutdown）。
