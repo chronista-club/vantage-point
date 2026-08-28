@@ -1863,6 +1863,25 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                             let id = msg.id;
                             let method = msg.method.clone();
                             let payload = msg.payload_as_value().unwrap_or_default();
+                            // `subscribe` handshake と対の明示解除。**channel を閉じずに購読だけ
+                            // 降りる**ための動詞（surface は 1 channel を張り続けたまま、見なく
+                            // なった lane の demand を下ろす）。
+                            //
+                            // ⚠️ これが無いと demand は「接続が切れた時」しか下がらない。
+                            // terminal は 1 lane = 1 channel なので閉じれば済むが、conversation は
+                            // lane ごとに channel を張り直さない経路があり、購読解除が
+                            // **到達しないまま engine が生き続けた**（2026-08-29 実測）。
+                            if method == "unsubscribe" {
+                                router.unsubscribe(sub_id).await;
+                                let _ = channel
+                                    .send_response(
+                                        id,
+                                        &method,
+                                        &serde_json::json!({"status": "ok"}),
+                                    )
+                                    .await;
+                                break; // 購読を降りた = この channel の役目は終わり
+                            }
                             let response = forward_to_sp_control(
                                 &control_channels,
                                 &path_key,

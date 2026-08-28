@@ -1686,7 +1686,26 @@ async fn run_conversation_session(
                             )
                             .await;
                     }
-                    None => return Ok(SubscriptionOutcome::AppClosing),
+                    // cmd_tx が drop された = 呼び手が session を畳んだ（repo collapse /
+                    // lane 削除 / app 終了）。**明示的に購読を降りてから**抜ける。
+                    //
+                    // ⚠️ channel を drop するだけでは daemon の demand は下がらない。
+                    // daemon が `router.unsubscribe` を呼ぶのは受信ループが切れた時だけで、
+                    // ここで黙って return すると「GUI は見ていないのに demand は立ったまま」
+                    // になり engine の idle teardown が永久に発火しない（2026-08-29 実測:
+                    // 畳んだ 7 repo の engine が 11 分経っても残っていた）。
+                    None => {
+                        let _ = channel
+                            .request::<serde_json::Value, serde_json::Value>(
+                                "unsubscribe",
+                                &serde_json::json!({}),
+                            )
+                            .await;
+                        tracing::info!(
+                            "conversation session disconnected: lane={lane_key} (unsubscribed)"
+                        );
+                        return Ok(SubscriptionOutcome::AppClosing);
+                    }
                 }
             }
         }
