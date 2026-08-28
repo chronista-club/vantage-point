@@ -575,6 +575,17 @@ impl LaneInfo {
 /// 十分細かく、snapshot 指紋（doc 44 §11.3）を無駄に乱さない下限。
 const ACTIVITY_WIRE_GRANULARITY_MS: u64 = 60_000;
 
+/// idle teardown の猶予 (ms、mako 2026-08-28 裁定 = 5 分)。now-line の quiet 閾値と同値。
+///
+/// 短すぎると名簿を行き来するたびに engine 再起動（`--resume` で数秒）が走り、
+/// 長すぎるとメモリが戻らない。`vp now` の運用単位（サブタスクの切れ目）と揃えてある。
+const IDLE_TEARDOWN_AFTER_MS: u64 = 5 * 60_000;
+
+/// [`IDLE_TEARDOWN_AFTER_MS`] を分で（log 用 — 定数を 2 箇所に書かないための読み出し口）。
+pub fn idle_teardown_after_minutes() -> u64 {
+    IDLE_TEARDOWN_AFTER_MS / 60_000
+}
+
 /// wire に載せる活動時刻の量子化（[`ACTIVITY_WIRE_GRANULARITY_MS`] へ切り下げ）。
 fn quantize_activity_ms(ms: u64) -> u64 {
     ms - ms % ACTIVITY_WIRE_GRANULARITY_MS
@@ -2208,8 +2219,12 @@ impl LanePool {
             }),
             _ => None,
         };
-        // 活動時刻の共有 atomic（書き手 = pump / 読み手 = session_activity の roster enrich）。
+        // 活動時刻 / turn 状態の共有 atomic（書き手 = pump、読み手 = roster enrich と
+        // idle teardown）。turn_active の初期値は **true** — spawn 直後は「これから
+        // 働く」であって暇ではない（false 始まりだと最初の event が来る前の窓で
+        // teardown 対象になる）。
         let last_event_at = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let turn_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let pump = crate::repo::conversation_pump::spawn_lane_conversation_pump(
             addr.to_string(),
             resolved.key,
@@ -2217,6 +2232,7 @@ impl LanePool {
             topic_router.clone(),
             replay_tap,
             std::sync::Arc::clone(&last_event_at),
+            std::sync::Arc::clone(&turn_active),
         );
         let pid = host.pid();
         // LaneInfo.pid / state は lane の代表 = focused session に紐づける（非 focused の
@@ -2233,6 +2249,7 @@ impl LanePool {
                 host,
                 pump,
                 last_event_at,
+                turn_active,
             },
         );
         tracing::info!(
@@ -2359,6 +2376,53 @@ impl LanePool {
             info.pid = None;
         }
         dropped
+    }
+
+    /// **暇な** chat engine を寝かせる（idle teardown、mako 2026-08-28
+    /// 「Lane タイトルが表示されている Lane だけ生きてる」）。落とした session の key を返す。
+    ///
+    /// 呼び手は購読が切れた契機（`conversation_demand_stop`）。lane の全 session を見て、
+    /// **3 条件が揃ったものだけ**落とす:
+    ///
+    /// 1. turn が走っていない（[`ChatEngineSlot::turn_active`]）— ⚠️ 活動時刻だけでは
+    ///    **長い tool 実行中の engine を殺す**（無音になるため。`turn_activity_of` の doc）
+    /// 2. 最終活動から [`IDLE_TEARDOWN_AFTER_MS`] 経過 — 名簿を行き来しただけで落とさない
+    /// 3. （呼び手側の条件）誰も見ていない
+    ///
+    /// 落とすのは **engine だけ**。lane / PtySlot / mailbox / board は無傷で、会話は
+    /// 次の attach（`ensure_chat_engine`）が `--resume` で継ぐ = 失うのは起動時間だけ。
+    /// registry（intent）も 1 bit も動かさないので、reconcile から見た「あるべき姿」は不変。
+    /// chat engine を持つ lane の一覧（idle sweep の走査対象）。
+    pub fn lanes_with_chat_engines(&self) -> Vec<LaneAddress> {
+        self.chat_engines.keys().cloned().collect()
+    }
+
+    pub fn drop_idle_chat_engines(&mut self, addr: &LaneAddress, now_ms: u64) -> Vec<SessionKey> {
+        let Some(slots) = self.chat_engines.get(addr) else {
+            return Vec::new();
+        };
+        let idle: Vec<SessionKey> = slots
+            .iter()
+            .filter(|(_, slot)| {
+                if slot.turn_active.load(std::sync::atomic::Ordering::Relaxed) {
+                    return false;
+                }
+                // 活動が未観測（0）= spawn 直後で 1 度も event が無い。まだ暇と決めない
+                // （saturating_sub で 0 を「大昔」に化けさせない — u64 の 0 は epoch）。
+                match slot
+                    .last_event_at
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    0 => false,
+                    last => now_ms.saturating_sub(last) >= IDLE_TEARDOWN_AFTER_MS,
+                }
+            })
+            .map(|(key, _)| *key)
+            .collect();
+        for key in &idle {
+            self.drop_chat_engine_by_key(addr, *key);
+        }
+        idle
     }
 
     /// 既存 slot の PtySlot を resize する。`session=None` は root。
@@ -4034,6 +4098,7 @@ mod tests {
                 host: crate::conversation::ChatHost::Claude(host),
                 pump: tokio::spawn(async {}),
                 last_event_at: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                turn_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         );
     }
@@ -4069,6 +4134,62 @@ mod tests {
             .expect("PTY 出力 timeout")
             .expect("PTY 出力");
         assert!(slot.last_output_at_ms().is_some());
+    }
+
+    /// idle teardown（mako 2026-08-28）: **3 条件が揃った engine だけ**寝かせる。
+    ///
+    /// ⚠️ ここで守っているのは「働いている lane を殺さない」— 特に **turn 実行中は
+    /// どれだけ無音でも落とさない**（長い tool 実行が無音になるため）。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn drop_idle_chat_engines_spares_busy_and_fresh() {
+        use std::sync::atomic::Ordering;
+        let addr = LaneAddress::sub("vp".to_string(), "idle-test".to_string());
+        let mut pool = LanePool::default();
+        for key in [1, 2, 3, 4] {
+            insert_fake_chat_engine(&mut pool, &addr, key);
+        }
+        // 基準は「1 時間前」を引いても負にならない位置に取る（epoch からの絶対 ms 相当）。
+        let now: u64 = 24 * 60 * 60_000;
+        let slot = |p: &LanePool,
+                    k: SessionKey|
+         -> (
+            std::sync::Arc<std::sync::atomic::AtomicU64>,
+            std::sync::Arc<std::sync::atomic::AtomicBool>,
+        ) {
+            let s = &p.chat_engines[&addr][&k];
+            (s.last_event_at.clone(), s.turn_active.clone())
+        };
+        // #1 暇 + 十分古い = 落ちる唯一の session
+        let (a1, t1) = slot(&pool, 1);
+        a1.store(now - IDLE_TEARDOWN_AFTER_MS, Ordering::Relaxed);
+        t1.store(false, Ordering::Relaxed);
+        // #2 **turn 実行中**（無音が 1 時間続いていても落とさない = 長い tool 実行）
+        let (a2, t2) = slot(&pool, 2);
+        a2.store(now - 60 * 60_000, Ordering::Relaxed);
+        t2.store(true, Ordering::Relaxed);
+        // #3 暇だが活動が新しい（名簿を行き来しただけで落とさない）
+        let (a3, t3) = slot(&pool, 3);
+        a3.store(now - 60_000, Ordering::Relaxed);
+        t3.store(false, Ordering::Relaxed);
+        // #4 活動未観測（spawn 直後）= 0 を「大昔」と誤読しない
+        let (a4, t4) = slot(&pool, 4);
+        a4.store(0, Ordering::Relaxed);
+        t4.store(false, Ordering::Relaxed);
+
+        let dropped = pool.drop_idle_chat_engines(&addr, now);
+
+        assert_eq!(dropped, vec![1], "暇 + 古い session だけが寝る");
+        let alive: Vec<SessionKey> = {
+            let mut v: Vec<_> = pool.chat_engines[&addr].keys().copied().collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(
+            alive,
+            vec![2, 3, 4],
+            "働いている / 新しい / 未観測 は生き残る"
+        );
     }
 
     /// wire 量子化（doc 44 §11.3 — snapshot 指紋を活動のたびに乱さない）は分へ切り下げる。

@@ -206,6 +206,10 @@ pub struct ChatEngineSlot {
     /// 読み手は roster enrich（`LanePool::session_activity`）。tui の
     /// `PtySlot::last_output_at_ms` と対の gui 側活動源。
     pub last_event_at: Arc<std::sync::atomic::AtomicU64>,
+    /// turn が進行中か（書き手は pump の `turn_activity_of`）。idle teardown が
+    /// 「暇な engine だけ寝かせる」ための guard。⚠️ **活動時刻だけでは足りない** —
+    /// 長い tool 実行中は engine が無音になるため（`turn_activity_of` の doc）。
+    pub turn_active: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Drop for ChatEngineSlot {
