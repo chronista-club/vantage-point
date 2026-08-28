@@ -874,6 +874,24 @@ pub async fn delete_lane_orchestrated(
     // 旧構成でもこの非対称は在ったが、書き手が GUI 経由だけだったため表に出にくかった。
     discard_lane_rows(state, &lane_db_key(state), &addr).await;
 
+    // Phase 2a'': wire の宛先としても退去させる（best-effort）。
+    //
+    // nudger は「`to` の全員が ack するまで」再掲示する。lane を消すと **その address を
+    // drain/ack できる主体が居なくなる**ので、放置すると同報 command が他の受信者にも
+    // 永久に鳴り続ける（2026-08-22 の 3 通が 6 日間 vpcode/main を叩いた実害。未 ack の
+    // 正体は削除済の `agent@vantage-point/research` だった）。
+    //
+    // `to` は書き換えない — 履歴であり、`reply` の宛先継承が読む。VP 既存の
+    // 「参加者が減る」語彙（`thread_participant.status = 'left'`）に乗せる。
+    if let Some(store) = state.wiremsg_store.as_ref() {
+        let wire_addr = addr.wire_agent_address();
+        match store.leave_all_threads(&wire_addr).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!("wire: {wire_addr} を {n} thread から離脱させた（lane 削除）"),
+            Err(e) => tracing::warn!("wire 離脱に失敗（lane は削除済、nudge が残りうる）: {e}"),
+        }
+    }
+
     // Phase 2b: lane workspace dir cleanup (best-effort、 cleanup=true 時のみ)。
     // 既存挙動踏襲、 直 lib call (`crate::lane::commands::remove_sub_in`)。
     // 注意: `spawn_blocking` closure は `repo_name` / `name` のみ move、 `addr` は capture
