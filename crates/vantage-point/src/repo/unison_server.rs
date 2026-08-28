@@ -1092,8 +1092,16 @@ async fn replay_with_in_flight(
     Ok((events, 0))
 }
 
-/// conversation demand stop ハンドラー。 replay は on-attach の一度きりなので停止対象の task は無い。
-/// （live event の producer は `ClaudeHost` + `conversation_pump` で、 engine の生存に紐づく）
+/// conversation demand stop ハンドラー = **idle teardown の即時契機**。
+///
+/// 購読が 0 になった（= 名簿から lane タイトルが消えた）時に、その lane の**暇な** chat engine
+/// を寝かせる（判定は [`LanePool::drop_idle_chat_engines`] — turn なし + N 分無活動）。
+/// 畳んだ**後**に条件が揃う場合は 30s periodic の `spawn_idle_engine_sweep` が拾う
+/// （demand hook は購読が切れた瞬間の 1 回きりなので、片方だけでは落ちない）。
+///
+/// ⚠️ 旧実装は「replay は on-attach の一度きりなので停止対象の task は無い」として noop
+/// だった（#699）。当時は正しく、engine を寝かせるという発想が無かっただけ — 穴ではなく
+/// 未踏の設計余地だったので、前提が変わった 2026-08-29 に埋めた。
 async fn handle_conversation_demand_stop(
     state: &AppState,
     payload: serde_json::Value,

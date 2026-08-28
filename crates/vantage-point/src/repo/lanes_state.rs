@@ -2280,13 +2280,25 @@ impl LanePool {
     }
 
     /// chat engine に prompt を投入する（`&self` — read lock 下で呼べる）。`session=None` は focused。
+    ///
+    /// ⚠️ **投入の瞬間に `turn_active` を立てる**（idle teardown から守るため）。turn の状態は
+    /// 普段 pump が engine の**出力**から推定するが、投入は出力を生まない — 「stdin に書いた
+    /// 直後、engine が最初の event を返すまで」の窓が **turn=false かつ活動時刻が古いまま**に
+    /// なる。GUI 経由の submit は購読済み（= demand あり）なので sweep の候補から外れるが、
+    /// **`conversation_nudge`（wire 配送）は購読を要求しない** — まさに「見られていない idle
+    /// lane を起こす」用途なので、この窓に sweep が重なると投入直後の engine を殺す。
+    /// しかも `submit` は既に Ok を返しており、呼び手の self-heal（Err 時 re-spawn）も効かない。
+    /// spawn 時に初期値を true にしてあるのと対称の処置（team-b レビュー指摘、2026-08-29）。
     pub async fn submit_chat(
         &self,
         addr: &LaneAddress,
         session: Option<SessionKey>,
         prompt: &str,
     ) -> anyhow::Result<()> {
-        self.chat_slot(addr, session)?.host.submit(prompt).await
+        let slot = self.chat_slot(addr, session)?;
+        slot.turn_active
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        slot.host.submit(prompt).await
     }
 
     /// doc 35 §5: 実行中 turn を中断する（stop ボタン / Esc）。submit_chat と同型（read lock 下で
@@ -2325,11 +2337,14 @@ impl LanePool {
         request_id: &str,
         decision: crate::conversation::PermissionDecision,
     ) -> anyhow::Result<()> {
-        self.chat_slot(addr, session)
-            .map_err(|e| anyhow::anyhow!("{e} — 応答先が無い"))?
-            .host
-            .respond_permission(request_id, decision)
-            .await
+        let slot = self
+            .chat_slot(addr, session)
+            .map_err(|e| anyhow::anyhow!("{e} — 応答先が無い"))?;
+        // submit_chat と同じ理由で turn を立てる（回答も engine への**入力**なので出力を
+        // 生まず、pump からは観測できない）。承認待ちで止まっていた turn がここで再開する。
+        slot.turn_active
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        slot.host.respond_permission(request_id, decision).await
     }
 
     /// 当該 session の chat engine を落とす（submit 失敗時の self-heal 用。次の ensure で再 spawn）。
@@ -4189,6 +4204,58 @@ mod tests {
             alive,
             vec![2, 3, 4],
             "働いている / 新しい / 未観測 は生き残る"
+        );
+    }
+
+    /// **投入は turn を立てる**（team-b レビュー指摘の回帰固定、2026-08-29）。
+    ///
+    /// turn の状態は普段 pump が engine の**出力**から推定するが、投入（stdin 書き込み）は
+    /// 出力を生まない。`conversation_nudge`（wire 配送）は購読を要求せず「見られていない
+    /// idle lane を起こす」用途なので、投入直後の窓に sweep が重なると**働き始めた engine を
+    /// 殺す**。ここが false に戻ると その経路が再び開く。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn submit_marks_turn_active_so_sweep_spares_it() {
+        use std::sync::atomic::Ordering;
+        // `submit_chat` は registry を引く（`resolve_chat_session`）。lane を pool に入れて
+        // おけば registry file 不在 = N=1 特殊ケースで session 1 が解決される。
+        let _state = crate::test_env::state_dir_async().await;
+        let addr = LaneAddress::root("vp");
+        let mut pool = LanePool::new();
+        insert_chat_lane(&mut pool, &addr);
+        insert_fake_chat_engine(&mut pool, &addr, 1);
+        let now: u64 = 24 * 60 * 60_000;
+        // 「5 分の閾値を跨いだ idle engine」を作る（= sweep の候補そのもの）。
+        let stale = |p: &LanePool| {
+            let s = &p.chat_engines[&addr][&1];
+            s.last_event_at
+                .store(now - IDLE_TEARDOWN_AFTER_MS, Ordering::Relaxed);
+            s.turn_active.store(false, Ordering::Relaxed);
+        };
+
+        // 前提の確認: 投入が無ければこの状態は sweep に落とされる（対照条件）。
+        stale(&pool);
+        assert_eq!(
+            pool.drop_idle_chat_engines(&addr, now),
+            vec![1],
+            "前提: 投入前なら sweep の対象"
+        );
+
+        // 同じ状態を作り直し、今度は投入してから sweep する。
+        insert_fake_chat_engine(&mut pool, &addr, 1);
+        stale(&pool);
+        // 投入（engine は /bin/cat なので応答はしないが、turn_active は立つ）。
+        let _ = pool.submit_chat(&addr, Some(1), "hello").await;
+
+        assert!(
+            pool.chat_engines[&addr][&1]
+                .turn_active
+                .load(Ordering::Relaxed),
+            "投入で turn_active が立つこと"
+        );
+        assert!(
+            pool.drop_idle_chat_engines(&addr, now).is_empty(),
+            "投入直後の engine は活動時刻が古くても落とさない"
         );
     }
 
