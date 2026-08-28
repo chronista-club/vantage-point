@@ -221,6 +221,20 @@ impl LaneAddress {
         self.name == ROOT_LANE_NAME
     }
 
+    /// **wire address の SSOT**（`agent@<repo>` / `agent@<repo>/<name>`）。
+    ///
+    /// root は lane 部を省く（`mcp/lane.rs` の `mailbox_addresses` と同一の形）。
+    /// ⚠️ この写像はもともと呼び手ごとの手書き `format!` に散っていた（8 箇所）。
+    /// lane 削除時の wire 離脱（`WiremsgStore::leave_all_threads`）は**ここがずれると
+    /// 別人を離脱させる**ので、新しい読み手はこのメソッドを通すこと。
+    pub fn wire_agent_address(&self) -> String {
+        if self.is_root() {
+            format!("agent@{}", self.repo)
+        } else {
+            format!("agent@{}/{}", self.repo, self.name)
+        }
+    }
+
     /// **address 文字列の SSOT**（`<repo>/lane/<name>`）。
     ///
     /// ## ⚠️ なぜ `Display` ではなくこの名前なのか
@@ -2531,6 +2545,24 @@ pub async fn deliver_nudge(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// wire address の写像を固定する（`mailbox_addresses` と同一の形）。
+    ///
+    /// ⚠️ **ずれると lane 削除時に別人を wire から離脱させる**（`leave_all_threads` の
+    /// 引数がこれ）。root だけ lane 部を省く非対称があるので literal で固定する。
+    #[test]
+    fn wire_agent_address_matches_mailbox_form() {
+        assert_eq!(
+            LaneAddress::root("vantage-point").wire_agent_address(),
+            "agent@vantage-point",
+            "root は lane 部を持たない"
+        );
+        assert_eq!(
+            LaneAddress::sub("vantage-point".to_string(), "research".to_string())
+                .wire_agent_address(),
+            "agent@vantage-point/research"
+        );
+    }
 
     /// lane を PTY / engine 無しで pool に置く（restart_lane の chat 分岐は早期 return する
     /// ので spawn 不要）。mode は registry（SSOT）に書く — doc 53 R1 で pool cache は退役し、

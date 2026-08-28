@@ -662,6 +662,14 @@ impl WiremsgStore {
     /// 呼ぶため 1 + N クエリ (moody 指摘)。 command は低頻度・store は R2-a でリセット済
     /// のため許容。 未 ack command が常時 20 件を超える規模になったら index 追加 +
     /// JOIN 一発化を検討するのがトリアージライン。
+    ///
+    /// ⚠️ **コストの軸は「件数」だけではない**（2026-08-29 の離脱判定追加で増えた）。
+    /// 離脱者の照合は message ごとに `walk_to_root` するため、**thread の深さ**にも比例する
+    /// （`collect_prev_chain` は `prev` を 1 hop ずつ逐次で辿る）。command は普通 `send_root`
+    /// だが、`wire_send` は `reply_to` 付きの command も送れるので、**深い thread に command が
+    /// 1 件ある**だけで 30s の pulse ごとに深さ分の往復が乗る。件数のトリアージラインでは
+    /// 捕捉できない劣化なので、実害が出たら「command は原則 root」の運用制約か root の
+    /// 非正規化（message 行に root_id を持つ）を検討する。
     pub async fn unacked_commands(&self) -> Result<Vec<(WireMessage, Vec<String>)>> {
         let mut res = self
             .db

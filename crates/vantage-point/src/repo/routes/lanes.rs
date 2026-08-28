@@ -884,9 +884,7 @@ pub async fn delete_lane_orchestrated(
     // `to` は書き換えない — 履歴であり、`reply` の宛先継承が読む。VP 既存の
     // 「参加者が減る」語彙（`thread_participant.status = 'left'`）に乗せる。
     if let Some(store) = state.wiremsg_store.as_ref() {
-        // sub の wire address = `agent@<repo>/<name>`（root は上で弾き済み。生成式は
-        // mcp/lane.rs の `mailbox_addresses` と同一 — ここがずれると別人を離脱させる）。
-        let wire_addr = format!("agent@{}/{}", addr.repo, addr.name);
+        let wire_addr = addr.wire_agent_address();
         match store.leave_all_threads(&wire_addr).await {
             Ok(0) => {}
             Ok(n) => tracing::info!("wire: {wire_addr} を {n} thread から離脱させた（lane 削除）"),
