@@ -1239,7 +1239,10 @@ async fn handle_conversation_submit(
         return Err("conversation_submit: prompt 未指定".to_string());
     }
     let session = payload_session_key("conversation_submit", &payload)?;
-    ensure_and_submit_chat(state, "conversation_submit", lane, session, prompt).await?;
+    // 添付画像（chat 入力欄への貼り付け、2026-08-30）。省略・空は従来どおり text だけ。
+    // ⚠️ VP は保存しない — engine に渡すだけで transcript / replay にも残さない（mako 裁定）。
+    let images = parse_image_inputs(payload.get("images"));
+    ensure_and_submit_chat(state, "conversation_submit", lane, session, prompt, &images).await?;
     // user 発話は pump に流れない（GUI が optimistic bubble を出す設計）ので、transcript を持たない
     // engine の session は replay 源に user turn が残らない。submit 成功後にここで記録する。
     // ⚠️ nudge（下）では書かない — claude の transcript replay が origin.kind=="human" で VP 注入を
@@ -1321,7 +1324,7 @@ async fn handle_conversation_nudge(
             crate::repo::agent_spawner::lane_label(&addr),
         )
     });
-    ensure_and_submit_chat(state, "conversation_nudge", lane, session, text).await?;
+    ensure_and_submit_chat(state, "conversation_nudge", lane, session, text, &[]).await?;
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
@@ -1638,12 +1641,39 @@ async fn handle_conversation_session_switch_root(
 ///
 /// `conversation_submit`（GUI 入力）と `conversation_nudge`（channel E）が共用する。`ctx` はエラー文言の
 /// 前置き（呼び出し元 method 名 — 嘘ログ防止のため呼び元を正しく名乗る）。
+/// payload の `images` を [`crate::conversation::ImageInput`] 列に写す（純関数）。
+///
+/// 形: `[{"media_type":"image/png","data":"<base64>"}, ...]`。不正な要素は**黙って落とす**
+/// （1 枚の取りこぼしで投入自体を失敗させない — text は届けたい）。省略 / 非配列は空。
+///
+/// ⚠️ base64 の妥当性はここでは検証しない。engine（claude）が弾いた場合は Error event として
+/// 会話面に出るので、VP 側で二重に検査しない（判定を 2 箇所に置かない）。
+fn parse_image_inputs(raw: Option<&serde_json::Value>) -> Vec<crate::conversation::ImageInput> {
+    let Some(arr) = raw.and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|item| {
+            let media_type = item.get("media_type")?.as_str()?;
+            let data = item.get("data")?.as_str()?;
+            if media_type.is_empty() || data.is_empty() {
+                return None;
+            }
+            Some(crate::conversation::ImageInput {
+                media_type: media_type.to_string(),
+                data_base64: data.to_string(),
+            })
+        })
+        .collect()
+}
+
 async fn ensure_and_submit_chat(
     state: &AppState,
     ctx: &str,
     lane: &str,
     session: Option<crate::lane::session_registry::SessionKey>,
     prompt: &str,
+    images: &[crate::conversation::ImageInput],
 ) -> Result<(), String> {
     let addr = crate::repo::lanes_state::LanePool::parse_address(lane)
         .ok_or_else(|| format!("{ctx}: lane パース失敗: {lane}"))?;
@@ -1661,7 +1691,7 @@ async fn ensure_and_submit_chat(
         .lane_pool
         .read()
         .await
-        .submit_chat(&addr, session, prompt)
+        .submit_chat(&addr, session, prompt, images)
         .await;
     if let Err(e) = submit_result {
         // self-heal: engine が死んでいた場合は当該 session だけ落として 1 回だけ張り直す。
@@ -1676,7 +1706,7 @@ async fn ensure_and_submit_chat(
             .lane_pool
             .read()
             .await
-            .submit_chat(&addr, session, prompt)
+            .submit_chat(&addr, session, prompt, images)
             .await
             .map_err(|e| format!("{ctx} 失敗（retry 後）: {e}"))?;
     }

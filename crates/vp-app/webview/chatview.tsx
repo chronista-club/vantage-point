@@ -43,6 +43,12 @@ import { focusedOf, noteFocus, syncHeaderSessionId } from './console'
 import { sessionChipPrefix } from './LaneHeader'
 import { isImeKeystroke } from './ime'
 import { applyCompletion, filterSlashCommands, moveSelection, slashQuery } from './slash'
+import {
+  type PastedImage,
+  pickImageFiles,
+  readImageFile,
+  toWirePayload,
+} from './paste-image'
 
 // ---------------------------------------------------------------------------
 // 会話モデル — flat item stream（ConversationEvent を UI 単位に畳む）
@@ -1812,6 +1818,9 @@ function SessionChatView(props: { lane: string; session: number }) {
     sessionsOf(props.lane)?.sessions.find((s) => s.key === props.session)
   /** server catalog + 実測 model の動的追加（一覧に無い実測値は option を足して真実を見せる）。
    *  catalog 空 = この engine は VP から切替不可（picker を出さず read-only 表示に落とす）。 */
+  /** engine が画像投入を受けるか（server の能力表明。false なら貼り付け UI を出さない）。 */
+  const imageCapable = (): boolean => rosterEntry()?.image_capable === true
+
   const modelChoices = (): ReadonlyArray<PickerChoice> => {
     const catalog = rosterEntry()?.model_choices ?? []
     const m = currentModel()
@@ -1870,6 +1879,32 @@ function SessionChatView(props: { lane: string; session: number }) {
   const [draft, setDraft] = createSignal('')
   let inputRef: HTMLTextAreaElement | undefined // dequeue 後に composer へフォーカスを移すため
 
+  // ---- 画像添付（chat 入力欄への貼り付け、2026-08-30）--------------------------
+  // ⚠️ VP は保存しない — 送信時に engine へ渡すだけで、transcript / replay にも残さない
+  // （mako 裁定: 痕跡も残さない）。再 attach 後の画面に画像が出ないのはこのため。
+  const [attachments, setAttachments] = createSignal<PastedImage[]>([])
+  const clearAttachments = () => {
+    // objectURL は明示 revoke しないと leak する（プレビュー用に作った分）。
+    for (const a of attachments()) URL.revokeObjectURL(a.previewUrl)
+    setAttachments([])
+  }
+  const dropAttachment = (id: number) => {
+    setAttachments((prev) => {
+      const hit = prev.find((a) => a.id === id)
+      if (hit) URL.revokeObjectURL(hit.previewUrl)
+      return prev.filter((a) => a.id !== id)
+    })
+  }
+  /** 貼り付け / drop から画像を拾う。engine が画像非対応なら何もしない（行き止まりを作らない）。 */
+  const takeImages = async (list: DataTransfer | null): Promise<boolean> => {
+    if (!imageCapable()) return false
+    const files = pickImageFiles(list)
+    if (files.length === 0) return false
+    const added = await Promise.all(files.map(readImageFile))
+    setAttachments((prev) => [...prev, ...added.filter((a): a is PastedImage => a !== null)])
+    return true
+  }
+
   // ---- slash command 補完（判断は slash.ts、ここは配線だけ）-------------------
   /** 候補一覧。空 = palette を出さない（行頭が `/` でない / 引数を打ち始めた / 一致なし）。 */
   const slashHits = () => {
@@ -1918,8 +1953,15 @@ function SessionChatView(props: { lane: string; session: number }) {
     lc.set(produce((s) => s.items.push({ kind: 'user', text })))
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(
-      JSON.stringify({ t: 'conversation:submit', lane, session: props.session, prompt: text }),
+      JSON.stringify({
+        t: 'conversation:submit',
+        lane,
+        session: props.session,
+        prompt: text,
+        images: toWirePayload(attachments()),
+      }),
     )
+    clearAttachments()
   }
 
   // 送信待ち type-ahead を入力欄へ戻して編集可能にする（dequeue-to-composer, todo 2026-07-14）。
@@ -2339,6 +2381,28 @@ function SessionChatView(props: { lane: string; session: number }) {
               </Show>
             </div>
           </Show>
+          {/* 添付画像のチップ（2026-08-30）。⚠️ slash 候補と同じく**入力欄の上**に出す
+              （下は model / permission の操作列で、被せると押す物が入れ替わる）。
+              VP は保存しないので、送信するとその場で消える（履歴には残らない）。 */}
+          <Show when={attachments().length > 0}>
+            <div class="conversation-attachments">
+              <For each={attachments()}>
+                {(a) => (
+                  <span class="conversation-attachment">
+                    <img src={a.previewUrl} alt="添付画像" />
+                    <button
+                      type="button"
+                      class="conversation-attachment-x"
+                      title="添付を外す"
+                      onClick={() => dropAttachment(a.id)}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                )}
+              </For>
+            </div>
+          </Show>
           {/* 既定は **1 行**。打った分だけ scrollHeight に合わせて伸び、max-height で頭打ち
               （CSS だけでは textarea は内容に追随しないので、伸縮はここで行う）。 */}
           <textarea
@@ -2350,6 +2414,21 @@ function SessionChatView(props: { lane: string; session: number }) {
             onInput={(e) => {
               setDraft(e.currentTarget.value)
               autosize(e.currentTarget)
+            }}
+            /* 画像の貼り付け / drop（2026-08-30）。画像を拾えた時だけ既定動作を止める
+               — text の貼り付けは今まで通り textarea に入る。 */
+            onPaste={(e) => {
+              void takeImages(e.clipboardData).then((took) => {
+                if (took) e.preventDefault()
+              })
+            }}
+            onDragOver={(e) => {
+              if (imageCapable()) e.preventDefault() // drop を受け付ける合図
+            }}
+            onDrop={(e) => {
+              void takeImages(e.dataTransfer).then((took) => {
+                if (took) e.preventDefault()
+              })
             }}
             onKeyDown={(e) => {
               // ⚠️ **IME の判定を最初に**置く。palette も送信も、変換中の打鍵に反応しては
@@ -2675,6 +2754,20 @@ export const CHATVIEW_CSS = `
    そのまま親の hidden に飲まれて**何も出なくなる**（2026-08-09 に実際に踏んだ）。
    横並びだった頃は flex-wrap が高さを内容に従わせていたので露見しなかった。
    ⚠️ この CSS は template literal の中なので、コメントに backtick を書くと文字列が閉じる。 */
+/* 添付画像のチップ列（2026-08-30）。slash 候補と同じく composer の上段に住む。
+   サムネは小さく（打つ場所を圧迫しない）、横に溢れたら折り返す。 */
+.conversation-attachments { flex:none; display:flex; flex-wrap:wrap; gap:6px;
+  padding:6px 8px 2px; }
+.conversation-attachment { position:relative; display:inline-flex; }
+.conversation-attachment img { display:block; width:56px; height:56px; object-fit:cover;
+  border-radius:6px; border:1px solid var(--lg-line,#24343a); }
+/* ✕ は角に重ねる。地に沈めておき hover で持ち上げる（常時目立たせない）。 */
+.conversation-attachment-x { position:absolute; top:-5px; right:-5px; width:16px; height:16px;
+  display:grid; place-items:center; padding:0; border:none; border-radius:50%; cursor:pointer;
+  background:var(--lg-bg-2,#141c1f); color:var(--lg-mute,#5C7A85);
+  font-size:9px; line-height:1; transition:color .1s ease,background .1s ease; }
+.conversation-attachment-x:hover { color:var(--lg-fg,#dfeaee); background:var(--lg-bg-3,#1d282c); }
+
 .conversation-slash { flex:none; display:flex; flex-direction:column; gap:1px;
   padding:6px 6px 2px; max-height:180px; overflow-y:auto; }
 .conversation-slash-item { display:flex; align-items:baseline; gap:8px; width:100%;

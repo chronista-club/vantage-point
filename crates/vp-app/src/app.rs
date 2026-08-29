@@ -1478,6 +1478,8 @@ enum ConversationCmd {
     Submit {
         prompt: String,
         session: Option<u32>,
+        /// 添付画像（chat 入力欄への貼り付け）。空 = text だけ。
+        images: Vec<serde_json::Value>,
     },
     /// doc 35 PR1: PromptCard 回答。 canvas channel 上り request `conversation_respond` で repo に送る。
     Respond {
@@ -1638,7 +1640,7 @@ async fn run_conversation_session(
             }
             cmd = cmd_rx.recv() => {
                 match cmd {
-                    Some(ConversationCmd::Submit { prompt, session }) => {
+                    Some(ConversationCmd::Submit { prompt, session, images }) => {
                         // session: None は JSON null になり、repo 側 payload_session_key が
                         // focused に解決する（旧 UI / 旧 SP との後方互換）。
                         let _ = channel
@@ -1646,6 +1648,7 @@ async fn run_conversation_session(
                                 "conversation_submit",
                                 &serde_json::json!({
                                     "lane": lane_key, "prompt": prompt, "session": session,
+                                    "images": images,
                                 }),
                             )
                             .await;
@@ -5261,7 +5264,7 @@ pub fn run() -> anyhow::Result<()> {
             }
             // Conversation gui: ChatPane の submit → 当該 lane の conversation session に渡す。
             // demand-driven: 未起動なら lazy spawn (subscribe → submit の順で取りこぼしなし)。
-            Event::UserEvent(AppEvent::ConversationSubmit { lane, prompt, session: chat_session }) => {
+            Event::UserEvent(AppEvent::ConversationSubmit { lane, prompt, session: chat_session, images }) => {
                 let session = conversation_sessions.entry(lane.clone()).or_insert_with(|| {
                     // repo_path は active repo から解決 (conversation pane = active lane 前提)。
                     let repo_path =
@@ -5276,7 +5279,7 @@ pub fn run() -> anyhow::Result<()> {
                 });
                 let _ = session
                     .cmd_tx
-                    .send(ConversationCmd::Submit { prompt, session: chat_session });
+                    .send(ConversationCmd::Submit { prompt, session: chat_session, images });
             }
             // Conversation gui HITL (doc 35 PR1): PromptCard の回答 → 当該 lane の conversation session へ。
             // 質問は submit 済み engine 由来なので session は既存のはずだが、防御的に lazy spawn。

@@ -230,6 +230,8 @@ pub enum AppEvent {
         prompt: String,
         /// 宛先 session（doc 50 P2）。None = lane の focused（旧 SP / 旧 UI 互換）。
         session: Option<u32>,
+        /// 添付画像（chat 入力欄への貼り付け）。空 = text だけ。
+        images: Vec<serde_json::Value>,
     },
     /// Conversation gui HITL (doc 35 PR1): PromptCard の回答。 event loop が当該 lane の conversation
     /// session へ渡し、 canvas channel 上り request `conversation_respond` で repo へ。 `request_id` は
@@ -441,6 +443,13 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                     lane: lane.to_string(),
                     prompt: prompt.to_string(),
                     session: parse_session(&parsed),
+                    // 添付画像（2026-08-30）。webview が clipboard から base64 化して運ぶ。
+                    // 中身の検査は repo 側 `parse_image_inputs` に任せる（判定を 2 箇所に置かない）。
+                    images: parsed
+                        .get("images")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default(),
                 });
             }
         }

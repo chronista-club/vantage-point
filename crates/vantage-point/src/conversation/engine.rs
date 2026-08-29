@@ -109,6 +109,19 @@ impl EngineKind {
         )
     }
 
+    /// user の投入に**画像**を混ぜられるか（chat 入力欄への貼り付け）。
+    ///
+    /// claude のみ。`-p --input-format stream-json` の user message は content が配列で、
+    /// Anthropic Messages API と同じ `{"type":"image","source":{"type":"base64",...}}` を
+    /// そのまま受ける（2026-08-30 実測: 8x8 の赤 PNG を投入して「赤。」と回答・result success）。
+    ///
+    /// **能力表明**（`model_choices` の空/非空と同じ規律）: client はこれが false の lane で
+    /// 貼り付け UI を出さない。押しても engine に無視されるだけの行き止まりを作らないため。
+    /// 他 engine が対応したらここに足す（codex/grok/opencode は独自 protocol、vpcode は VCP）。
+    pub fn image_capable(self) -> bool {
+        matches!(self, Self::Claude)
+    }
+
     /// VP の model picker に出す選択肢（engine ごとの catalog — server が SSOT、client は
     /// 並べるだけ。mako 裁定 2026-07-27: model は成長し続け多 engine で頻度も増えるため、
     /// client の hardcode を廃してここに一元化）。
@@ -294,11 +307,36 @@ impl ChatHost {
     }
 
     pub async fn submit(&self, prompt: &str) -> anyhow::Result<()> {
+        self.submit_with_images(prompt, &[]).await
+    }
+
+    /// 画像を添えて投入する（chat 入力欄への貼り付け）。
+    ///
+    /// ⚠️ **画像を運べるのは claude だけ**（[`EngineKind::image_capable`]）。他 engine には
+    /// 画像を渡す先が無いので **text だけを投入する**（黙って捨てる）。client は
+    /// `image_capable` が false の lane で貼り付け UI を出さないので、ここに画像が
+    /// 来るのは異常系（新 engine 追加時の取り残し等）— log で気付けるようにする。
+    pub async fn submit_with_images(
+        &self,
+        prompt: &str,
+        images: &[super::host::ImageInput],
+    ) -> anyhow::Result<()> {
         match self {
-            ChatHost::Claude(h) => h.submit(prompt).await,
-            ChatHost::Codex(h) => h.submit(prompt).await,
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.submit(prompt).await,
-            ChatHost::Vpcode(h) => h.submit(prompt).await,
+            ChatHost::Claude(h) => h.submit_with_images(prompt, images).await,
+            other => {
+                if !images.is_empty() {
+                    tracing::warn!(
+                        "画像 {} 枚を捨てて text だけ投入する（engine が image_capable でない）",
+                        images.len()
+                    );
+                }
+                match other {
+                    ChatHost::Codex(h) => h.submit(prompt).await,
+                    ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.submit(prompt).await,
+                    ChatHost::Vpcode(h) => h.submit(prompt).await,
+                    ChatHost::Claude(_) => unreachable!("上の arm で処理済み"),
+                }
+            }
         }
     }
 
