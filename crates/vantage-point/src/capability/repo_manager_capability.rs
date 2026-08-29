@@ -841,6 +841,16 @@ impl RepoManagerCapability {
             if let Err(e) = db.delete_lane_lifecycles_for_repo(&key).await {
                 tracing::warn!("lane_lifecycle の db/machine 削除に失敗: {}", e);
             }
+            // 消える lane を wire の宛先からも退去させる（best-effort）。
+            //
+            // nudger は「`to` の全員が ack するまで」再掲示するので、drain/ack できる主体が
+            // 居なくなった宛先を残すと **同報 command が他の受信者にも永久に鳴り続ける**
+            // （実害: 2026-08-22 の 3 通が 6 日間 vpcode/main を叩いた）。
+            //
+            // ⚠️ 単一 lane 削除（`delete_lane_orchestrated`）と**対**の後始末。片方だけだと
+            // 「`vp repos remove` / `vp sync` の ghost 除去で消した lane」から同じバグが
+            // 再発する（team-b レビュー指摘、2026-08-29）。lane が消える入口は 2 つある。
+            leave_wire_threads_for_lanes(db, &removed_lanes).await;
         }
 
         // doc 24 §5.3 / B-destroy: ground を provision/reclaim する唯一の主体は daemon。
@@ -1920,6 +1930,40 @@ impl Capability for RepoManagerCapability {
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+}
+
+/// 消える lane 群を wire の宛先から退去させる（repo 丸ごと削除の後始末、best-effort）。
+///
+/// 単一 lane 削除側（`routes::lanes::delete_lane_orchestrated`）と**対**。lane が消える
+/// 入口は 2 つあり、片方だけだと「`vp repos remove` / `vp sync` の ghost 除去で消した
+/// lane」宛の未 ack が残って nudge が止まらなくなる（`WiremsgStore::leave_all_threads`
+/// の doc に実害の記録）。
+///
+/// `RepoManagerCapability` は `WiremsgStore` を持たないので、同じ db から都度組み立てる
+/// （store は `local_seq` の採番状態を持つが、離脱は seq を進めないので副作用はない）。
+async fn leave_wire_threads_for_lanes(
+    db: &crate::db::SharedVpDb,
+    lanes: &[crate::repo::lanes_state::LaneInfo],
+) {
+    if lanes.is_empty() {
+        return;
+    }
+    let store =
+        match crate::capability::WiremsgStore::new(std::sync::Arc::new(db.inner().clone())).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("wire store を開けず離脱を skip（nudge が残りうる）: {e}");
+                return;
+            }
+        };
+    for lane in lanes {
+        let addr = lane.address.wire_agent_address();
+        match store.leave_all_threads(&addr).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!("wire: {addr} を {n} thread から離脱させた（repo 削除）"),
+            Err(e) => tracing::warn!("wire 離脱に失敗（{addr}、nudge が残りうる）: {e}"),
+        }
     }
 }
 

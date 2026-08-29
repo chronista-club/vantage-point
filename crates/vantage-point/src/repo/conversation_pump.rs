@@ -39,12 +39,26 @@ pub fn spawn_lane_conversation_pump(
     mut rx: broadcast::Receiver<ConversationEvent>,
     topic_router: Arc<TopicRouter>,
     replay_log: Option<ReplayLogTap>,
+    activity: Arc<std::sync::atomic::AtomicU64>,
+    turn_active: Arc<std::sync::atomic::AtomicBool>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut tap = replay_log.map(ReplayTap::new);
         loop {
             match rx.recv().await {
                 Ok(event) => {
+                    // roster `last_activity_at` の gui 側供給源（tui は PtySlot.last_output_at）。
+                    // pump は全 chat engine の event が必ず通る唯一の点なので、ここ 1 箇所で足りる。
+                    activity.store(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    if let Some(active) = turn_activity_of(&event) {
+                        turn_active.store(active, std::sync::atomic::Ordering::Relaxed);
+                    }
                     // 配送前に tap する（route は event を move で消費するため参照で先に記録）。
                     // 配信と記録は独立系統 = tap の失敗は route を止めない。
                     if let Some(tap) = tap.as_mut() {
@@ -77,6 +91,36 @@ pub fn spawn_lane_conversation_pump(
             }
         }
     })
+}
+
+/// この event が turn の進行状態をどう動かすか。`None` = 動かさない（判断材料でない）。
+///
+/// **turn 開始の event は存在しない**ので「終端を見たか」で推定する: 作業の event が来たら
+/// 実行中、終端（[`ConversationEvent::TurnCompleted`] / `Error` / `EngineExited`）で終了。
+///
+/// ⚠️ **これが無いと長い tool 実行中の engine を殺す**。tool 実行の間 engine は event を
+/// 出さないので、活動時刻だけでは「暇」と区別が付かない（実測: release build が 72 分
+/// 無音 — 2026-08-28）。idle teardown はこの述語を **and 条件**として要求する。
+///
+/// `Question` / `PermissionRequest` は「人間待ち」= engine は動いていないが、**答える先が
+/// 消えては困る**ので実行中に倒す。`NowLine`（`vp now` 由来）/ replay 系 / `SessionInit` は
+/// turn の外なので `None`（現在の状態を保つ）。
+fn turn_activity_of(event: &ConversationEvent) -> Option<bool> {
+    match event {
+        ConversationEvent::TurnCompleted { .. }
+        | ConversationEvent::Error { .. }
+        | ConversationEvent::EngineExited { .. } => Some(false),
+        ConversationEvent::UserMessage { .. }
+        | ConversationEvent::MessageChunk { .. }
+        | ConversationEvent::ThoughtChunk { .. }
+        | ConversationEvent::ToolCall { .. }
+        | ConversationEvent::ToolCallUpdate { .. }
+        | ConversationEvent::SubagentMessage { .. }
+        | ConversationEvent::Plan { .. }
+        | ConversationEvent::Question { .. }
+        | ConversationEvent::PermissionRequest { .. } => Some(true),
+        _ => None,
+    }
 }
 
 /// pump の replay-log tap 状態。coalesce 用の pending buffer を持ち、配信 event を disk に写す。
@@ -193,7 +237,17 @@ mod tests {
             .await;
 
         // claude 相当 = tap なし（transcript が SSOT）。
-        let _h = spawn_lane_conversation_pump("vp/root".to_string(), 2, rx, router.clone(), None);
+        let activity = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let turn_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _h = spawn_lane_conversation_pump(
+            "vp/root".to_string(),
+            2,
+            rx,
+            router.clone(),
+            None,
+            Arc::clone(&activity),
+            Arc::clone(&turn_active),
+        );
 
         tx.send(ConversationEvent::MessageChunk {
             text: "hello".to_string(),
@@ -204,6 +258,16 @@ mod tests {
             .await
             .expect("timeout")
             .expect("recv");
+        // event が pump を通過した = 活動時刻が bump されている（roster enrich の供給源）。
+        assert!(
+            activity.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "pump 通過で last_activity が bump されること"
+        );
+        // 作業 event なので turn 実行中に倒れる（idle teardown の guard）。
+        assert!(
+            turn_active.load(std::sync::atomic::Ordering::Relaxed),
+            "MessageChunk 通過で turn_active が立つこと"
+        );
         // doc 38 落とし穴①: session が topic key（lane 部分）に混入しないこと。
         assert_eq!(topic, "repo/conversation/data/vp~root/event");
         match msg {
@@ -223,6 +287,43 @@ mod tests {
             }
             other => panic!("想定外の message: {other:?}"),
         }
+    }
+
+    /// idle teardown の guard（`turn_activity_of`）: 作業 event で実行中に倒れ、終端で暇に戻る。
+    ///
+    /// ⚠️ **長い tool 実行を殺さないための述語**。ToolCall の後に何時間 event が
+    /// 来なくても「実行中」のままでなければならない（活動時刻だけでは守れない）。
+    #[test]
+    fn turn_activity_tracks_work_until_terminator() {
+        use ConversationEvent as E;
+        // 作業の event = 実行中
+        for e in [
+            E::MessageChunk { text: "x".into() },
+            E::ThoughtChunk { text: "x".into() },
+            E::UserMessage { text: "x".into() },
+        ] {
+            assert_eq!(turn_activity_of(&e), Some(true), "作業 event: {e:?}");
+        }
+        // 終端 = 暇
+        for e in [
+            E::TurnCompleted {
+                session_id: "s".into(),
+                cost_usd: None,
+                context_tokens: None,
+                context_window: None,
+            },
+            E::Error {
+                message: "x".into(),
+            },
+            E::EngineExited {
+                message: "x".into(),
+            },
+        ] {
+            assert_eq!(turn_activity_of(&e), Some(false), "終端 event: {e:?}");
+        }
+        // turn の外 = 状態を動かさない（`vp now` で「実行中」に化けない）
+        assert_eq!(turn_activity_of(&E::NowLine { text: "x".into() }), None);
+        assert_eq!(turn_activity_of(&E::ReplayEnd { in_flight: false }), None);
     }
 
     /// tap の coalesce（純関数 `tap_event` / `flush_pending` を base 注入で直接検証）:

@@ -221,6 +221,20 @@ impl LaneAddress {
         self.name == ROOT_LANE_NAME
     }
 
+    /// **wire address の SSOT**（`agent@<repo>` / `agent@<repo>/<name>`）。
+    ///
+    /// root は lane 部を省く（`mcp/lane.rs` の `mailbox_addresses` と同一の形）。
+    /// ⚠️ この写像はもともと呼び手ごとの手書き `format!` に散っていた（8 箇所）。
+    /// lane 削除時の wire 離脱（`WiremsgStore::leave_all_threads`）は**ここがずれると
+    /// 別人を離脱させる**ので、新しい読み手はこのメソッドを通すこと。
+    pub fn wire_agent_address(&self) -> String {
+        if self.is_root() {
+            format!("agent@{}", self.repo)
+        } else {
+            format!("agent@{}/{}", self.repo, self.name)
+        }
+    }
+
     /// **address 文字列の SSOT**（`<repo>/lane/<name>`）。
     ///
     /// ## ⚠️ なぜ `Display` ではなくこの名前なのか
@@ -472,6 +486,13 @@ pub struct LaneSessionView {
     /// が bail する engine — codex の approval_policy 等の別語彙は将来 catalog を足すだけ）。
     #[serde(default)]
     pub permission_choices: Vec<crate::conversation::engine::Choice>,
+    /// 最終活動時刻 (epoch ms)。tui = PTY 出力 / gui = ConversationEvent の新しい方。
+    /// None = 実体なし（Draft / 停止中）or 活動未観測。registry（disk）でなく
+    /// **in-memory 実体からの enrich**（[`LanePool::session_activity`]）なので
+    /// `from_registry` 時点では常に None — 供給点（5s snapshot / LaneDiff push）が埋める。
+    /// GUI は client 時計との差で「quiet N 分」を導く（閾値判定は載せない — 事実だけ運ぶ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<u64>,
 }
 
 impl LaneSessionsView {
@@ -497,6 +518,7 @@ impl LaneSessionsView {
                         permission_choices: kind
                             .map(EngineKind::permission_choices)
                             .unwrap_or_default(),
+                        last_activity_at: None,
                     }
                 })
                 .collect(),
@@ -544,6 +566,43 @@ impl LaneInfo {
         // 混ぜないため）。GUI の pane 一覧はこの 1 本から作られる。
         self.sessions = Some(LaneSessionsView::from_registry(&reg));
     }
+
+    /// roster に session ごとの最終活動時刻を焼く（`LanePool::session_activity` の適用側）。
+    ///
+    /// ⚠️ `refresh_engine_session_id` と**対で**呼ぶこと（roster が daemon へ流れる全供給点 —
+    /// registry read の refresh と in-memory 実体の enrich は別入力なので、片方だけだと
+    /// 「session 一覧は出るのに活動時刻が永遠に None」が supply 点差で起きる（#683 地形）。
+    ///
+    /// wire 値は [`ACTIVITY_WIRE_GRANULARITY_MS`] に切り下げて量子化する。`publish_lanes` は
+    /// snapshot の**指紋が変わった時だけ** vp-app を起こす（doc 44 §11.3）ので、生 ms を
+    /// 載せると活動中の lane が 5s tick を全 push 化してしまう — 分粒度なら最大 1 push/min。
+    pub fn apply_session_activity(&mut self, activity: &HashMap<SessionKey, u64>) {
+        if let Some(view) = self.sessions.as_mut() {
+            for s in view.sessions.iter_mut() {
+                s.last_activity_at = activity.get(&s.key).copied().map(quantize_activity_ms);
+            }
+        }
+    }
+}
+
+/// `last_activity_at` を wire に載せる際の量子化粒度 (ms)。GUI の quiet 閾値（分単位）には
+/// 十分細かく、snapshot 指紋（doc 44 §11.3）を無駄に乱さない下限。
+const ACTIVITY_WIRE_GRANULARITY_MS: u64 = 60_000;
+
+/// idle teardown の猶予 (ms、mako 2026-08-28 裁定 = 5 分)。now-line の quiet 閾値と同値。
+///
+/// 短すぎると名簿を行き来するたびに engine 再起動（`--resume` で数秒）が走り、
+/// 長すぎるとメモリが戻らない。`vp now` の運用単位（サブタスクの切れ目）と揃えてある。
+const IDLE_TEARDOWN_AFTER_MS: u64 = 5 * 60_000;
+
+/// [`IDLE_TEARDOWN_AFTER_MS`] を分で（log 用 — 定数を 2 箇所に書かないための読み出し口）。
+pub fn idle_teardown_after_minutes() -> u64 {
+    IDLE_TEARDOWN_AFTER_MS / 60_000
+}
+
+/// wire に載せる活動時刻の量子化（[`ACTIVITY_WIRE_GRANULARITY_MS`] へ切り下げ）。
+fn quantize_activity_ms(ms: u64) -> u64 {
+    ms - ms % ACTIVITY_WIRE_GRANULARITY_MS
 }
 
 /// Lane Pool — Main/Sub registry
@@ -1124,6 +1183,14 @@ impl LanePool {
                     s.key
                 )
             })?;
+            // vpcode transcript（resume 正本の side-car）も対で破棄 — replay_log と同寿命
+            // （mako 裁定 2026-08-22 ④: 破棄配線は conversation_replay と対）。
+            crate::conversation::vpcode_transcript::clear(&addr.repo, &label).map_err(|e| {
+                anyhow::anyhow!(
+                    "fresh restart: vpcode transcript の破棄に失敗（addr={addr}, session={}）: {e}",
+                    s.key
+                )
+            })?;
         }
         session_registry::reset_to_single(&addr.repo, &lane_label, default_agent, root_mode)
             .map_err(|e| {
@@ -1337,6 +1404,41 @@ impl LanePool {
             })
             .collect();
         out.sort_by_key(|s| s.session);
+        out
+    }
+
+    /// lane の session ごとの最終活動時刻 (epoch ms) を実体から集める。
+    ///
+    /// 供給源は 2 系統: tui = `PtySlot::last_output_at_ms`（出力バイト）/
+    /// gui = `ChatEngineSlot.last_event_at`（ConversationEvent）。**1 session = 高々 1 実体**
+    /// （[`Self::chat_engines`] の doc — slot と engine は排他）なので通常はどちらか一方だけが
+    /// 埋まる。max を取るのは排他が破れた場合に**古い方を勝たせない**ための保険で、
+    /// 「両方持つのが normal」という意味ではない。
+    /// 実体の無い session は entry なし（roster 側は None のまま = Draft / 停止中）。
+    ///
+    /// 読み手は roster enrich の 2 供給点（`build_lanes_snapshot` / `emit_lane_update`）。
+    /// 5s periodic の snapshot push に乗るため、専用の push 契機（sweeper）は持たない。
+    pub fn session_activity(&self, addr: &LaneAddress) -> HashMap<SessionKey, u64> {
+        let mut out: HashMap<SessionKey, u64> = HashMap::new();
+        if let Some(slots) = self.pty_slots.get(addr) {
+            for (key, slot) in slots {
+                let slot = slot.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(ms) = slot.last_output_at_ms() {
+                    out.insert(*key, ms);
+                }
+            }
+        }
+        if let Some(engines) = self.chat_engines.get(addr) {
+            for (key, engine) in engines {
+                let ms = engine
+                    .last_event_at
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                if ms > 0 {
+                    let e = out.entry(*key).or_insert(0);
+                    *e = (*e).max(ms);
+                }
+            }
+        }
         out
     }
 
@@ -1827,6 +1929,12 @@ impl LanePool {
                 "session remove: replay_log の破棄に失敗（addr={addr}, session={key}）: {e}"
             );
         }
+        // vpcode transcript も対で破棄（fresh restart 側と同じ配線）。
+        if let Err(e) = crate::conversation::vpcode_transcript::clear(&addr.repo, &label) {
+            tracing::warn!(
+                "session remove: vpcode transcript の破棄に失敗（addr={addr}, session={key}）: {e}"
+            );
+        }
         crate::daemon::pty_slot::clear_replay_session(&addr.repo, &lane_label, key);
     }
 
@@ -2054,6 +2162,22 @@ impl LanePool {
                     },
                 )?)
             }
+            Some(EngineKind::Vpcode) => {
+                // vpcode: 常駐 VpcodeHost（`vpcode --vcp` = VCP JSONL、doc = vpcode_host）。
+                // 会話 id は VP 発行（VCP R3）— None なら host が採番して registry へ書く。
+                // resume 材料は vpcode_transcript store（封筒 side-car、pump 非経由）。
+                ChatHost::Vpcode(crate::conversation::VpcodeHost::spawn(
+                    crate::conversation::VpcodeHostConfig {
+                        cwd: info.cwd.clone(),
+                        repo: addr.repo.clone(),
+                        lane: label.clone(),
+                        lane_label: lane_label.clone(),
+                        session_key: resolved.key,
+                        session_id: resolved.conversation.clone(),
+                        model: resolved.model.clone(),
+                    },
+                )?)
+            }
             Some(EngineKind::Claude) => {
                 // claude: 常駐 stream-json host。resume は registry の会話 id（doc 40 §5）。
                 // doc 33 C2: 会話が成立した id だけ resume に渡す（stale/phantom id で
@@ -2101,20 +2225,28 @@ impl LanePool {
         // （doc — engine 非依存 replay log）。⚠️ この判定は unison_server の reader / writer と
         // replay_log.rs の doc と 4 点セット（片側更新は dead-write を生む、#807 教訓 / doc 43 §5）。
         let replay_tap = match EngineKind::from_agent(&resolved.agent) {
-            Some(EngineKind::Codex | EngineKind::Grok | EngineKind::OpenCode) => {
-                Some(crate::conversation::replay_log::ReplayLogTap {
-                    repo: addr.repo.clone(),
-                    label: label.clone(),
-                })
-            }
+            Some(
+                EngineKind::Codex | EngineKind::Grok | EngineKind::OpenCode | EngineKind::Vpcode,
+            ) => Some(crate::conversation::replay_log::ReplayLogTap {
+                repo: addr.repo.clone(),
+                label: label.clone(),
+            }),
             _ => None,
         };
+        // 活動時刻 / turn 状態の共有 atomic（書き手 = pump、読み手 = roster enrich と
+        // idle teardown）。turn_active の初期値は **true** — spawn 直後は「これから
+        // 働く」であって暇ではない（false 始まりだと最初の event が来る前の窓で
+        // teardown 対象になる）。
+        let last_event_at = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let turn_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let pump = crate::repo::conversation_pump::spawn_lane_conversation_pump(
             addr.to_string(),
             resolved.key,
             host.subscribe(),
             topic_router.clone(),
             replay_tap,
+            std::sync::Arc::clone(&last_event_at),
+            std::sync::Arc::clone(&turn_active),
         );
         let pid = host.pid();
         // LaneInfo.pid / state は lane の代表 = focused session に紐づける（非 focused の
@@ -2125,10 +2257,15 @@ impl LanePool {
             info.pid = pid;
             info.state = LaneState::Running;
         }
-        self.chat_engines
-            .entry(addr.clone())
-            .or_default()
-            .insert(resolved.key, ChatEngineSlot { host, pump });
+        self.chat_engines.entry(addr.clone()).or_default().insert(
+            resolved.key,
+            ChatEngineSlot {
+                host,
+                pump,
+                last_event_at,
+                turn_active,
+            },
+        );
         tracing::info!(
             "chat engine start: addr={addr} session={} pid={pid:?}",
             resolved.key
@@ -2157,13 +2294,25 @@ impl LanePool {
     }
 
     /// chat engine に prompt を投入する（`&self` — read lock 下で呼べる）。`session=None` は focused。
+    ///
+    /// ⚠️ **投入の瞬間に `turn_active` を立てる**（idle teardown から守るため）。turn の状態は
+    /// 普段 pump が engine の**出力**から推定するが、投入は出力を生まない — 「stdin に書いた
+    /// 直後、engine が最初の event を返すまで」の窓が **turn=false かつ活動時刻が古いまま**に
+    /// なる。GUI 経由の submit は購読済み（= demand あり）なので sweep の候補から外れるが、
+    /// **`conversation_nudge`（wire 配送）は購読を要求しない** — まさに「見られていない idle
+    /// lane を起こす」用途なので、この窓に sweep が重なると投入直後の engine を殺す。
+    /// しかも `submit` は既に Ok を返しており、呼び手の self-heal（Err 時 re-spawn）も効かない。
+    /// spawn 時に初期値を true にしてあるのと対称の処置（team-b レビュー指摘、2026-08-29）。
     pub async fn submit_chat(
         &self,
         addr: &LaneAddress,
         session: Option<SessionKey>,
         prompt: &str,
     ) -> anyhow::Result<()> {
-        self.chat_slot(addr, session)?.host.submit(prompt).await
+        let slot = self.chat_slot(addr, session)?;
+        slot.turn_active
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        slot.host.submit(prompt).await
     }
 
     /// doc 35 §5: 実行中 turn を中断する（stop ボタン / Esc）。submit_chat と同型（read lock 下で
@@ -2202,11 +2351,14 @@ impl LanePool {
         request_id: &str,
         decision: crate::conversation::PermissionDecision,
     ) -> anyhow::Result<()> {
-        self.chat_slot(addr, session)
-            .map_err(|e| anyhow::anyhow!("{e} — 応答先が無い"))?
-            .host
-            .respond_permission(request_id, decision)
-            .await
+        let slot = self
+            .chat_slot(addr, session)
+            .map_err(|e| anyhow::anyhow!("{e} — 応答先が無い"))?;
+        // submit_chat と同じ理由で turn を立てる（回答も engine への**入力**なので出力を
+        // 生まず、pump からは観測できない）。承認待ちで止まっていた turn がここで再開する。
+        slot.turn_active
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        slot.host.respond_permission(request_id, decision).await
     }
 
     /// 当該 session の chat engine を落とす（submit 失敗時の self-heal 用。次の ensure で再 spawn）。
@@ -2253,6 +2405,53 @@ impl LanePool {
             info.pid = None;
         }
         dropped
+    }
+
+    /// **暇な** chat engine を寝かせる（idle teardown、mako 2026-08-28
+    /// 「Lane タイトルが表示されている Lane だけ生きてる」）。落とした session の key を返す。
+    ///
+    /// 呼び手は購読が切れた契機（`conversation_demand_stop`）。lane の全 session を見て、
+    /// **3 条件が揃ったものだけ**落とす:
+    ///
+    /// 1. turn が走っていない（[`ChatEngineSlot::turn_active`]）— ⚠️ 活動時刻だけでは
+    ///    **長い tool 実行中の engine を殺す**（無音になるため。`turn_activity_of` の doc）
+    /// 2. 最終活動から [`IDLE_TEARDOWN_AFTER_MS`] 経過 — 名簿を行き来しただけで落とさない
+    /// 3. （呼び手側の条件）誰も見ていない
+    ///
+    /// 落とすのは **engine だけ**。lane / PtySlot / mailbox / board は無傷で、会話は
+    /// 次の attach（`ensure_chat_engine`）が `--resume` で継ぐ = 失うのは起動時間だけ。
+    /// registry（intent）も 1 bit も動かさないので、reconcile から見た「あるべき姿」は不変。
+    /// chat engine を持つ lane の一覧（idle sweep の走査対象）。
+    pub fn lanes_with_chat_engines(&self) -> Vec<LaneAddress> {
+        self.chat_engines.keys().cloned().collect()
+    }
+
+    pub fn drop_idle_chat_engines(&mut self, addr: &LaneAddress, now_ms: u64) -> Vec<SessionKey> {
+        let Some(slots) = self.chat_engines.get(addr) else {
+            return Vec::new();
+        };
+        let idle: Vec<SessionKey> = slots
+            .iter()
+            .filter(|(_, slot)| {
+                if slot.turn_active.load(std::sync::atomic::Ordering::Relaxed) {
+                    return false;
+                }
+                // 活動が未観測（0）= spawn 直後で 1 度も event が無い。まだ暇と決めない
+                // （saturating_sub で 0 を「大昔」に化けさせない — u64 の 0 は epoch）。
+                match slot
+                    .last_event_at
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    0 => false,
+                    last => now_ms.saturating_sub(last) >= IDLE_TEARDOWN_AFTER_MS,
+                }
+            })
+            .map(|(key, _)| *key)
+            .collect();
+        for key in &idle {
+            self.drop_chat_engine_by_key(addr, *key);
+        }
+        idle
     }
 
     /// 既存 slot の PtySlot を resize する。`session=None` は root。
@@ -2346,6 +2545,24 @@ pub async fn deliver_nudge(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// wire address の写像を固定する（`mailbox_addresses` と同一の形）。
+    ///
+    /// ⚠️ **ずれると lane 削除時に別人を wire から離脱させる**（`leave_all_threads` の
+    /// 引数がこれ）。root だけ lane 部を省く非対称があるので literal で固定する。
+    #[test]
+    fn wire_agent_address_matches_mailbox_form() {
+        assert_eq!(
+            LaneAddress::root("vantage-point").wire_agent_address(),
+            "agent@vantage-point",
+            "root は lane 部を持たない"
+        );
+        assert_eq!(
+            LaneAddress::sub("vantage-point".to_string(), "research".to_string())
+                .wire_agent_address(),
+            "agent@vantage-point/research"
+        );
+    }
 
     /// lane を PTY / engine 無しで pool に置く（restart_lane の chat 分岐は早期 return する
     /// ので spawn 不要）。mode は registry（SSOT）に書く — doc 53 R1 で pool cache は退役し、
@@ -3927,8 +4144,160 @@ mod tests {
             crate::conversation::ChatEngineSlot {
                 host: crate::conversation::ChatHost::Claude(host),
                 pump: tokio::spawn(async {}),
+                last_event_at: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                turn_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         );
+    }
+
+    /// `last_activity_at` の gui 側供給路: chat engine の `last_event_at` を
+    /// `session_activity` が拾う。未活動（0）は entry を作らない
+    /// （None = 活動未観測、を Some(0) で偽らない）。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_activity_reads_chat_engine_last_event() {
+        let addr = LaneAddress::sub("vp".to_string(), "act-test".to_string());
+        let mut pool = LanePool::default();
+        insert_fake_chat_engine(&mut pool, &addr, 1);
+        assert!(
+            pool.session_activity(&addr).is_empty(),
+            "未活動（0）は entry なし"
+        );
+        pool.chat_engines[&addr][&1]
+            .last_event_at
+            .store(123_456, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(pool.session_activity(&addr).get(&1), Some(&123_456));
+    }
+
+    /// `last_activity_at` の tui 側供給路: PTY が 1 byte でも出力すれば
+    /// `last_output_at_ms` が立つ。reader task は store → broadcast の順なので、
+    /// rx で受信できた時点で時刻は必ず見える（タイミング依存なし）。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pty_last_output_at_bumps_on_output() {
+        let (slot, mut rx) = spawn_test_slot("echo activity");
+        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("PTY 出力 timeout")
+            .expect("PTY 出力");
+        assert!(slot.last_output_at_ms().is_some());
+    }
+
+    /// idle teardown（mako 2026-08-28）: **3 条件が揃った engine だけ**寝かせる。
+    ///
+    /// ⚠️ ここで守っているのは「働いている lane を殺さない」— 特に **turn 実行中は
+    /// どれだけ無音でも落とさない**（長い tool 実行が無音になるため）。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn drop_idle_chat_engines_spares_busy_and_fresh() {
+        use std::sync::atomic::Ordering;
+        let addr = LaneAddress::sub("vp".to_string(), "idle-test".to_string());
+        let mut pool = LanePool::default();
+        for key in [1, 2, 3, 4] {
+            insert_fake_chat_engine(&mut pool, &addr, key);
+        }
+        // 基準は「1 時間前」を引いても負にならない位置に取る（epoch からの絶対 ms 相当）。
+        let now: u64 = 24 * 60 * 60_000;
+        let slot = |p: &LanePool,
+                    k: SessionKey|
+         -> (
+            std::sync::Arc<std::sync::atomic::AtomicU64>,
+            std::sync::Arc<std::sync::atomic::AtomicBool>,
+        ) {
+            let s = &p.chat_engines[&addr][&k];
+            (s.last_event_at.clone(), s.turn_active.clone())
+        };
+        // #1 暇 + 十分古い = 落ちる唯一の session
+        let (a1, t1) = slot(&pool, 1);
+        a1.store(now - IDLE_TEARDOWN_AFTER_MS, Ordering::Relaxed);
+        t1.store(false, Ordering::Relaxed);
+        // #2 **turn 実行中**（無音が 1 時間続いていても落とさない = 長い tool 実行）
+        let (a2, t2) = slot(&pool, 2);
+        a2.store(now - 60 * 60_000, Ordering::Relaxed);
+        t2.store(true, Ordering::Relaxed);
+        // #3 暇だが活動が新しい（名簿を行き来しただけで落とさない）
+        let (a3, t3) = slot(&pool, 3);
+        a3.store(now - 60_000, Ordering::Relaxed);
+        t3.store(false, Ordering::Relaxed);
+        // #4 活動未観測（spawn 直後）= 0 を「大昔」と誤読しない
+        let (a4, t4) = slot(&pool, 4);
+        a4.store(0, Ordering::Relaxed);
+        t4.store(false, Ordering::Relaxed);
+
+        let dropped = pool.drop_idle_chat_engines(&addr, now);
+
+        assert_eq!(dropped, vec![1], "暇 + 古い session だけが寝る");
+        let alive: Vec<SessionKey> = {
+            let mut v: Vec<_> = pool.chat_engines[&addr].keys().copied().collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(
+            alive,
+            vec![2, 3, 4],
+            "働いている / 新しい / 未観測 は生き残る"
+        );
+    }
+
+    /// **投入は turn を立てる**（team-b レビュー指摘の回帰固定、2026-08-29）。
+    ///
+    /// turn の状態は普段 pump が engine の**出力**から推定するが、投入（stdin 書き込み）は
+    /// 出力を生まない。`conversation_nudge`（wire 配送）は購読を要求せず「見られていない
+    /// idle lane を起こす」用途なので、投入直後の窓に sweep が重なると**働き始めた engine を
+    /// 殺す**。ここが false に戻ると その経路が再び開く。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn submit_marks_turn_active_so_sweep_spares_it() {
+        use std::sync::atomic::Ordering;
+        // `submit_chat` は registry を引く（`resolve_chat_session`）。lane を pool に入れて
+        // おけば registry file 不在 = N=1 特殊ケースで session 1 が解決される。
+        let _state = crate::test_env::state_dir_async().await;
+        let addr = LaneAddress::root("vp");
+        let mut pool = LanePool::new();
+        insert_chat_lane(&mut pool, &addr);
+        insert_fake_chat_engine(&mut pool, &addr, 1);
+        let now: u64 = 24 * 60 * 60_000;
+        // 「5 分の閾値を跨いだ idle engine」を作る（= sweep の候補そのもの）。
+        let stale = |p: &LanePool| {
+            let s = &p.chat_engines[&addr][&1];
+            s.last_event_at
+                .store(now - IDLE_TEARDOWN_AFTER_MS, Ordering::Relaxed);
+            s.turn_active.store(false, Ordering::Relaxed);
+        };
+
+        // 前提の確認: 投入が無ければこの状態は sweep に落とされる（対照条件）。
+        stale(&pool);
+        assert_eq!(
+            pool.drop_idle_chat_engines(&addr, now),
+            vec![1],
+            "前提: 投入前なら sweep の対象"
+        );
+
+        // 同じ状態を作り直し、今度は投入してから sweep する。
+        insert_fake_chat_engine(&mut pool, &addr, 1);
+        stale(&pool);
+        // 投入（engine は /bin/cat なので応答はしないが、turn_active は立つ）。
+        let _ = pool.submit_chat(&addr, Some(1), "hello").await;
+
+        assert!(
+            pool.chat_engines[&addr][&1]
+                .turn_active
+                .load(Ordering::Relaxed),
+            "投入で turn_active が立つこと"
+        );
+        assert!(
+            pool.drop_idle_chat_engines(&addr, now).is_empty(),
+            "投入直後の engine は活動時刻が古くても落とさない"
+        );
+    }
+
+    /// wire 量子化（doc 44 §11.3 — snapshot 指紋を活動のたびに乱さない）は分へ切り下げる。
+    #[test]
+    fn quantize_activity_ms_floors_to_minute() {
+        assert_eq!(quantize_activity_ms(0), 0);
+        assert_eq!(quantize_activity_ms(59_999), 0);
+        assert_eq!(quantize_activity_ms(60_000), 60_000);
+        assert_eq!(quantize_activity_ms(1_756_300_123_456), 1_756_300_080_000);
     }
 
     /// **P5 producer の本体**（doc 46 §3 の宿題）: console をもう 1 枚。

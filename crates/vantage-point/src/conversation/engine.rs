@@ -9,12 +9,14 @@
 //! conversation module に閉じ、chat スタック全体を他repo（GFP 等）へ切り出せる形にする）。
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tokio::task::JoinHandle;
 
 use super::acp_host::AcpAgentHost;
 use super::codex_host::CodexAgentHost;
 use super::event::ConversationEvent;
 use super::host::{ClaudeHost, InFlight, PermissionDecision};
+use super::vpcode_host::VpcodeHost;
 
 /// engine 軸の語彙（どの頭脳か）。agent 名から導く。
 ///
@@ -35,6 +37,10 @@ pub enum EngineKind {
     /// doc 43）+ opencode TUI（tui、`-s <id>` resume）。model / provider は opencode config が
     /// SSOT（local LLM 等 — VP は注入しない、doc 43 §3）。
     OpenCode,
+    /// agent=`"vpcode"` — VP 自前 engine（常駐 VpcodeHost、`vpcode --vcp` = VCP JSONL）。
+    /// **gui 専用**（TUI を持たない — tui slot では素の login shell に倒れる）。
+    /// permission は無政策 engine（毎 tool 実行前に request、判定は VP 側 — VCP §8）。
+    Vpcode,
 }
 
 impl EngineKind {
@@ -43,7 +49,13 @@ impl EngineKind {
     /// 新 engine は [`Self::from_agent`] / [`Self::agent_name`] と併せてここにも足す —
     /// roundtrip テストが片側だけの追加（= GUI dropdown からの取りこぼし、moody 指摘）を
     /// コンパイル時 match 網羅性 + テストで検知する。
-    pub const ALL: [EngineKind; 4] = [Self::Claude, Self::Codex, Self::Grok, Self::OpenCode];
+    pub const ALL: [EngineKind; 5] = [
+        Self::Claude,
+        Self::Codex,
+        Self::Grok,
+        Self::OpenCode,
+        Self::Vpcode,
+    ];
 
     /// agent 名 → engine。対応表の SSOT（新 engine はここに 1 行足す）。
     ///
@@ -55,6 +67,7 @@ impl EngineKind {
             "codex" => Some(Self::Codex),
             "grok" => Some(Self::Grok),
             "opencode" => Some(Self::OpenCode),
+            "vpcode" => Some(Self::Vpcode),
             _ => None,
         }
     }
@@ -66,6 +79,7 @@ impl EngineKind {
             Self::Codex => "codex",
             Self::Grok => "grok",
             Self::OpenCode => "opencode",
+            Self::Vpcode => "vpcode",
         }
     }
 
@@ -78,6 +92,9 @@ impl EngineKind {
             Self::OpenCode => {
                 "VP Agent: OpenCode 🧩 — tui slot（login shell）+ opencode 自動起動（model は opencode config）"
             }
+            Self::Vpcode => {
+                "VP Agent: vpcode 🔬 — VP 自前 engine（Chat 専用、local LLM。VCP 常駐）"
+            }
         }
     }
 
@@ -88,7 +105,7 @@ impl EngineKind {
     pub fn chat_capable(self) -> bool {
         matches!(
             self,
-            Self::Claude | Self::Codex | Self::Grok | Self::OpenCode
+            Self::Claude | Self::Codex | Self::Grok | Self::OpenCode | Self::Vpcode
         )
     }
 
@@ -116,6 +133,12 @@ impl EngineKind {
                 ("claude-sonnet-5", "Sonnet 5"),
                 ("claude-haiku-4-5", "Haiku 4.5"),
             ]),
+            // vpcode に「engine 既定」は無い（hello.model 必須）ので "" は載せない。
+            // **候補は engine の endpoint から動的に引く**（[`super::vpcode_catalog`]）—
+            // local LLM は user が落として消すので静的表は必ず現実と乖離する（2026-08-26 に
+            // 実証: 静的 3 択のうち 1 つが消され、catalog に無い model が増えた）。
+            // **先頭 = VP 既定**（session 未指定時の spawn fallback — vpcode_host の解決順）。
+            Self::Vpcode => super::vpcode_catalog::choices(),
             Self::Codex | Self::Grok | Self::OpenCode => Vec::new(),
         }
     }
@@ -141,6 +164,11 @@ impl EngineKind {
                 ("auto", "auto"),
                 ("bypassPermissions", "bypass permissions"),
             ]),
+            // vpcode は無政策 engine（毎 tool 実行前に request、VCP §8）— **政策は host 側**:
+            // manual = 毎回 PromptCard / auto = host が request に即 allow を返す（カード不出。
+            // tool_call event は別に流れるので実行の可視性は保たれる）。mako 要望 2026-08-23
+            // 「全てに承認がいるね」。将来の allowlist 自動裁定もこの catalog に足すだけ。
+            Self::Vpcode => Choice::list(&[("manual", "manual"), ("auto", "auto approve")]),
             Self::Codex | Self::Grok | Self::OpenCode => Vec::new(),
         }
     }
@@ -174,6 +202,14 @@ impl Choice {
 pub struct ChatEngineSlot {
     pub host: ChatHost,
     pub pump: JoinHandle<()>,
+    /// 最終 event 時刻 (epoch ms、0 = まだ無い)。書き手は pump（event ごと store）、
+    /// 読み手は roster enrich（`LanePool::session_activity`）。tui の
+    /// `PtySlot::last_output_at_ms` と対の gui 側活動源。
+    pub last_event_at: Arc<std::sync::atomic::AtomicU64>,
+    /// turn が進行中か（書き手は pump の `turn_activity_of`）。idle teardown が
+    /// 「暇な engine だけ寝かせる」ための guard。⚠️ **活動時刻だけでは足りない** —
+    /// 長い tool 実行中は engine が無音になるため（`turn_activity_of` の doc）。
+    pub turn_active: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Drop for ChatEngineSlot {
@@ -201,6 +237,8 @@ pub enum ChatHost {
     Codex(CodexAgentHost),
     Grok(AcpAgentHost),
     OpenCode(AcpAgentHost),
+    /// vpcode（VCP 常駐、doc = vpcode_host）。
+    Vpcode(VpcodeHost),
 }
 
 impl ChatHost {
@@ -209,6 +247,7 @@ impl ChatHost {
             ChatHost::Claude(h) => h.subscribe(),
             ChatHost::Codex(h) => h.subscribe(),
             ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.subscribe(),
+            ChatHost::Vpcode(h) => h.subscribe(),
         }
     }
 
@@ -217,6 +256,7 @@ impl ChatHost {
             ChatHost::Claude(h) => h.in_flight(),
             ChatHost::Codex(h) => h.in_flight(),
             ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.in_flight(),
+            ChatHost::Vpcode(h) => h.in_flight(),
         }
     }
 
@@ -228,7 +268,10 @@ impl ChatHost {
     pub fn session_init(&self) -> Option<ConversationEvent> {
         match self {
             ChatHost::Claude(h) => h.session_init(),
-            ChatHost::Codex(_) | ChatHost::Grok(_) | ChatHost::OpenCode(_) => None,
+            ChatHost::Codex(_)
+            | ChatHost::Grok(_)
+            | ChatHost::OpenCode(_)
+            | ChatHost::Vpcode(_) => None,
         }
     }
 
@@ -237,6 +280,7 @@ impl ChatHost {
             ChatHost::Claude(h) => h.commit_seq(),
             ChatHost::Codex(h) => h.commit_seq(),
             ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.commit_seq(),
+            ChatHost::Vpcode(h) => h.commit_seq(),
         }
     }
 
@@ -245,6 +289,7 @@ impl ChatHost {
             ChatHost::Claude(h) => h.pid(),
             ChatHost::Codex(h) => h.pid(),
             ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.pid(),
+            ChatHost::Vpcode(h) => h.pid(),
         }
     }
 
@@ -253,6 +298,7 @@ impl ChatHost {
             ChatHost::Claude(h) => h.submit(prompt).await,
             ChatHost::Codex(h) => h.submit(prompt).await,
             ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.submit(prompt).await,
+            ChatHost::Vpcode(h) => h.submit(prompt).await,
         }
     }
 
@@ -261,6 +307,7 @@ impl ChatHost {
             ChatHost::Claude(h) => h.interrupt().await,
             ChatHost::Codex(h) => h.interrupt().await,
             ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.interrupt().await,
+            ChatHost::Vpcode(h) => h.interrupt().await,
         }
     }
 
@@ -272,6 +319,7 @@ impl ChatHost {
             ChatHost::Claude(_) => {}
             ChatHost::Codex(h) => h.stop(),
             ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.stop(),
+            ChatHost::Vpcode(h) => h.stop(),
         }
     }
 
@@ -283,16 +331,20 @@ impl ChatHost {
     ) -> anyhow::Result<()> {
         match self {
             ChatHost::Claude(h) => h.respond_permission(request_id, decision).await,
+            // vpcode は無政策 engine（VCP §8）— 毎 tool の permission_request にここで答える。
+            // 既存 PromptCard / conversation_respond 経路がそのまま使える（handoff の要点）。
+            ChatHost::Vpcode(h) => h.respond_permission(request_id, decision).await,
             ChatHost::Codex(_) | ChatHost::Grok(_) | ChatHost::OpenCode(_) => {
                 anyhow::bail!("このエンジンは対話承認/permission mode を持ちません")
             }
         }
     }
 
-    /// permission mode の動的切替（claude のみ）。
+    /// permission mode の動的切替（claude = engine へ control_request / vpcode = host 内政策）。
     pub async fn set_permission_mode(&self, mode: &str) -> anyhow::Result<()> {
         match self {
             ChatHost::Claude(h) => h.set_permission_mode(mode).await,
+            ChatHost::Vpcode(h) => h.set_permission_mode(mode),
             ChatHost::Codex(_) | ChatHost::Grok(_) | ChatHost::OpenCode(_) => {
                 anyhow::bail!("このエンジンは対話承認/permission mode を持ちません")
             }
@@ -346,8 +398,8 @@ mod tests {
         assert_eq!(EngineKind::from_agent("agy"), None, "agy は撤去済み");
     }
 
-    /// 能力表: 全 engine が chat 対応。model / permission の catalog は claude のみ非空
-    /// （空/非空が切替可否の唯一の真実 — 旧 `model_switchable` 述語は catalog に畳んだ）。
+    /// 能力表: 全 engine が chat 対応。model / permission の catalog は claude と vpcode が
+    /// 非空（空/非空が切替可否の唯一の真実 — 旧 `model_switchable` 述語は catalog に畳んだ）。
     #[test]
     fn capability_table() {
         assert!(EngineKind::Claude.chat_capable());
@@ -360,6 +412,17 @@ mod tests {
         assert!(EngineKind::Codex.model_choices().is_empty());
         // opencode の model は opencode config が SSOT（VP は注入しない、doc 43 §3）。
         assert!(EngineKind::OpenCode.model_choices().is_empty());
+        // vpcode の catalog は **engine endpoint から動的**（vpcode_catalog）。テスト環境に
+        // LM Studio は居ないので空になる = 「VP から切替不可」に倒れるのが正しい挙動。
+        // 中身の検証は vpcode_catalog の単体テスト（parse の純関数）が持つ。
+        // ここで固定するのは「engine 既定を意味する空文字を載せない」契約だけ。
+        assert!(
+            EngineKind::Vpcode
+                .model_choices()
+                .iter()
+                .all(|c| !c.value.is_empty()),
+            "vpcode に engine 既定は無いので空 value を載せない"
+        );
 
         // permission mode は claude のみ（他 engine は ChatHost::set_permission_mode が bail）。
         // 表記は TUI と同一（v2.1.200 の manual 改名を反映）、wire 値は互換の "default"。
@@ -381,5 +444,15 @@ mod tests {
         assert!(EngineKind::Codex.permission_choices().is_empty());
         assert!(EngineKind::Grok.permission_choices().is_empty());
         assert!(EngineKind::OpenCode.permission_choices().is_empty());
+        // vpcode の permission 政策は host 側（manual = 毎カード / auto = host 即 allow）。
+        // wire 値は VpcodeHost::set_permission_mode の受理語彙と対（片側更新を検知する固定）。
+        assert_eq!(
+            EngineKind::Vpcode
+                .permission_choices()
+                .iter()
+                .map(|c| c.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["manual", "auto"],
+        );
     }
 }

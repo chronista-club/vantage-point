@@ -512,6 +512,11 @@ html,body{margin:0;height:100%;overflow:hidden;}
   padding-left:calc(var(--sb-conn-slot,22px) + 18px + 8px);
   font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-size:var(--sb-text-micro,10px);color:var(--lg-mute,#5C7A85);}
+/* 沈黙 (quiet): 進行を名乗ったまま活動が無い (activity-freshness)。text は地 (mute-2) に
+   引かせ、経過だけ mute に残す。光らせない — 注意の光 (magenta) は needs-you の専有
+   (quiet は「見に行く価値あり」止まりで、断定はしない)。 */
+.vp-lane-now.is-quiet{color:var(--lg-mute-2,#38525b);}
+.vp-lane-now-quiet{color:var(--lg-mute,#5C7A85);margin-right:4px;}
 /* active 行だけ僅かに持ち上げる (可読性)。 glow は足さない — 地は地のまま。 */
 .vp-lane-row.active .vp-lane-cwd{color:var(--lg-mute,#5C7A85);}
 /* state 文字 (working / needs you) — 右端、 mono micro uppercase。 quiet pass (019f5100):

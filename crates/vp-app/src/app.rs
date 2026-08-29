@@ -1686,7 +1686,26 @@ async fn run_conversation_session(
                             )
                             .await;
                     }
-                    None => return Ok(SubscriptionOutcome::AppClosing),
+                    // cmd_tx が drop された = 呼び手が session を畳んだ（repo collapse /
+                    // lane 削除 / app 終了）。**明示的に購読を降りてから**抜ける。
+                    //
+                    // ⚠️ channel を drop するだけでは daemon の demand は下がらない。
+                    // daemon が `router.unsubscribe` を呼ぶのは受信ループが切れた時だけで、
+                    // ここで黙って return すると「GUI は見ていないのに demand は立ったまま」
+                    // になり engine の idle teardown が永久に発火しない（2026-08-29 実測:
+                    // 畳んだ 7 repo の engine が 11 分経っても残っていた）。
+                    None => {
+                        let _ = channel
+                            .request::<serde_json::Value, serde_json::Value>(
+                                "unsubscribe",
+                                &serde_json::json!({}),
+                            )
+                            .await;
+                        tracing::info!(
+                            "conversation session disconnected: lane={lane_key} (unsubscribed)"
+                        );
+                        return Ok(SubscriptionOutcome::AppClosing);
+                    }
                 }
             }
         }
@@ -2783,12 +2802,26 @@ fn ensure_conversation_attach(
 ) {
     // 購読は lane 単位で全 session の event を運ぶ（doc 50 §4.6 A6 — root=tui + 非 root=chat
     // の構成も 1 本で拾う）。mode による撃ち分けは repo 側 gate に委譲済み（上記 doc）。
-    if conversation_sessions.contains_key(address) {
-        return;
-    }
     let Some(repo_path) = resolve_repo_path_for_lane(sidebar_state, address) else {
         return; // repo 未解決 (LanesLoaded 未着) — 後続の LanesLoaded で再評価される
     };
+    // 「Lane タイトルが見えている Lane だけ生きている」（mako 2026-08-28）: accordion を
+    // 畳んだ repo の lane は名簿に出ないので、購読も外す。購読 1→0 が daemon の demand hook
+    // を撃ち、repo 側 `conversation_demand_stop` が暇な engine を寝かせる。
+    //
+    // ⚠️ **detach は now-line も止める**（NowLine は conversation topic を通るため）。
+    // 畳んだ repo の「今」は名簿ごと見えないので、モデル上これで正しい（mako 裁定）。
+    // 副作用: 開き直した直後は now-line が空欄（NowLine は replay 対象外 = 揮発の自己申告、
+    // conversation_pump の doc）。次の `vp now` で埋まる。
+    if !repo_is_expanded(sidebar_state, &repo_path) {
+        if conversation_sessions.remove(address).is_some() {
+            tracing::info!("conversation detach (repo collapsed): {}", address);
+        }
+        return;
+    }
+    if conversation_sessions.contains_key(address) {
+        return;
+    }
     tracing::info!("conversation attach (chat lane): {}", address);
     let session = spawn_conversation_session(
         rt_handle,
@@ -2904,6 +2937,19 @@ fn resolve_repo_path_for_lane(state: &SidebarState, address: &str) -> Option<Str
         .iter()
         .find(|(_path, lanes)| lanes.iter().any(|l| l.address.key() == address))
         .map(|(path, _)| path.clone())
+}
+
+/// repo の accordion が開いているか（= その repo の lane タイトルが名簿に出ているか）。
+///
+/// conversation 購読の gate（[`ensure_conversation_attach`]）が使う。**未知の repo は
+/// 開いている扱い**に倒す — 判断材料が無い時に「畳んでいる」と決めつけると、
+/// snapshot 未着の窓で購読を落として engine を寝かせてしまう（fail-open）。
+fn repo_is_expanded(state: &SidebarState, repo_path: &str) -> bool {
+    state
+        .processes
+        .iter()
+        .find(|p| p.path == repo_path)
+        .is_none_or(|p| p.expanded)
 }
 
 /// Active Lane を切替える — 全副作用を 1 箇所に集約（Simplicity 原則）。
@@ -3312,6 +3358,11 @@ struct SidebarIpcOutcome {
     /// 「accordion を閉じる」 = 「ユーザが retry を望んでいる」 と解釈、 失敗ループの
     /// dedup deadlock を抜けられるようにする。 caller は `repo_spawn_triggered.remove(path)` を呼ぶ。
     repo_spawn_release: Option<String>,
+    /// accordion の開閉が変わったので conversation 購読を張り直す要求。
+    /// caller が全 lane に [`ensure_conversation_attach`] を撃ち直す（開いた repo は attach、
+    /// 畳んだ repo は detach → daemon demand hook → 暇な engine が寝る）。
+    /// これが無くても次の LanesLoaded（5s tick）で追随するが、toggle の手応えが遅れる。
+    conversation_reattach: bool,
     /// Model Q: active lane を daemon canonical に永続する要求 `(repo_path, lane_address)`。
     /// caller が `client.set_active_lane` を fire-and-forget で呼ぶ (optimistic local は適用済)。
     set_active_lane_request: Option<(String, String)>,
@@ -3390,6 +3441,9 @@ fn handle_sidebar_ipc(
                     // session 永続化: vp-app 再起動時に accordion 状態を復元
                     session.set_repo_expanded(m.path.clone(), new_state);
                     session.save();
+                    // 「見えている Lane だけ生きている」: 開閉が変わったら購読を張り直す
+                    // （畳んだ repo は detach → demand hook → 暇な engine が寝る）。
+                    out.conversation_reattach = true;
                 }
                 if new_state && p.state.as_deref() == Some("stopped") {
                     out.repo_spawn_request = Some((p.name.clone(), p.path.clone()));
@@ -6001,6 +6055,26 @@ pub fn run() -> anyhow::Result<()> {
                         "repo auto-spawn dedup released (accordion collapse): {}",
                         path
                     );
+                }
+                // 「見えている Lane だけ生きている」: accordion の開閉で購読を張り直す。
+                // 全 lane を回すのは LanesLoaded の再評価と同じ形（冪等・数十 lane 規模）。
+                if outcome.conversation_reattach {
+                    let all_addrs: Vec<String> = sidebar_state
+                        .lanes_by_repo
+                        .values()
+                        .flatten()
+                        .map(|l| l.address.key().to_string())
+                        .collect();
+                    for addr in all_addrs {
+                        ensure_conversation_attach(
+                            &addr,
+                            &sidebar_state,
+                            &mut conversation_sessions,
+                            &rt_handle,
+                            &async_action_proxy,
+                            &daemon_conn,
+                        );
+                    }
                 }
                 // Phase 5-C: Process restart 要求 (sidebar の 🔄 button から)。
                 // 全 async work は shared runtime (rt_handle) 経由 — bare `tokio::spawn` は禁止

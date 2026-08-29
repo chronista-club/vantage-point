@@ -38,9 +38,13 @@ pub mod codex_rpc_translate;
 pub mod engine;
 pub mod event;
 pub mod host;
+pub mod jsonl_store;
 pub mod replay_log;
 pub mod skill_docs;
 pub mod transcript;
+pub mod vpcode_catalog;
+pub mod vpcode_host;
+pub mod vpcode_transcript;
 
 pub use acp_host::{AcpAgentHost, AcpEngine, AcpHostConfig};
 pub use claude_translate::ClaudeTranslator;
@@ -48,3 +52,4 @@ pub use codex_host::{CodexAgentHost, CodexRpcHostConfig};
 pub use engine::{ChatEngineSlot, ChatHost, EngineKind};
 pub use event::{ConversationEvent, PlanEntry, QuestionOption, QuestionSpec};
 pub use host::{ClaudeHost, ClaudeHostConfig, InFlight, PermissionDecision};
+pub use vpcode_host::{VpcodeHost, VpcodeHostConfig};
