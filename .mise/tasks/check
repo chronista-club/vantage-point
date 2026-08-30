@@ -4,6 +4,21 @@
 #
 # dev loop の最軽量チェック。 install 系 (app:build / daemon:build) と違い binary を作らず
 # compile 可否だけ見る。 旧 build task (cargo build) を Occam で check に改名 (2026-05-30)。
+#
+# mbx (mr boxington) 経由で走らせる (2026-08-30 採用、version は .mise.toml で固定)。
+# rustc を shim して checkout 横断の content-addressed キャッシュを引く。
+#
+# 実測 (VP workspace、2026-08-30):
+#   素の cargo (target ゼロ)  26.9 分
+#   mbx 初回 (dep-info 未学習) 53.7 分  ← **2 倍の税**。697 compilations が照会不能
+#   mbx 2 回目以降             27.5 秒  ← **59 倍**。1.6 GiB の成果物を全 checkout で共有
+#
+# ⚠️ **初回は素の cargo より遅い**。mbx は dep-info を学習して初めてキャッシュを引けるので、
+#    「初見の worktree の 1 回目」には効かない (spec が期待した warm start は否定された)。
+#    効くのは「同じ場所で 2 回目以降」で、日常の dev loop はまさにそれ。
+#
+# ⚠️ release 系 (release:mac) は **cargo のまま**。cross-compile は mbx がバイパスするので
+#    効かない上に、壊してはいけない経路にリスクを持ち込まない (mako 裁定 2026-08-30)。
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
-VP.sh "cargo check"
+VP.sh "mbx check"
