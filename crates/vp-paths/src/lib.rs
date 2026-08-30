@@ -12,7 +12,7 @@
 //!
 //! | zone   | 環境変数            | default                  | 用途 |
 //! |--------|---------------------|--------------------------|------|
-//! | config | `$XDG_CONFIG_HOME`  | `~/.config/vp/`          | 人が編集 (config.kdl / repos.kdl / addresses.toml) |
+//! | config | `$XDG_CONFIG_HOME`  | `~/.config/vp/`          | 人が編集 (config.kdl / repos.kdl / addresses.toml)。例外 = vp-app.toml (GUI が書く user preference) |
 //! | data   | `$XDG_DATA_HOME`    | `~/.local/share/vp/`     | 永続 data store (db / discs) |
 //! | state  | `$XDG_STATE_HOME`   | `~/.local/state/vp/`     | runtime state + log (session.json / sessions/ / log/) |
 //!
