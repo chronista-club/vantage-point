@@ -7,6 +7,7 @@
 # dtolnay/rust-toolchain@1.96 + Cargo.toml rust-version を一緒に bump する。
 rust = "1.96"
 bun = "latest"
+"cargo:mbx" = "1.0.1"
 # Ruby pin は撤去 (2026-07-11)。 mise の ruby backend は ruby-build でソースから
 # コンパイルするが、 macOS 26.x / arm64 で BUILD FAILED し、 Ruby 製 mise task
 # (daemon/app の build・start・stop・swap 等) を全滅させる。 homebrew 等で入れた
