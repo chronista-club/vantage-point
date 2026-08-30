@@ -6,8 +6,11 @@
 //! sub-files.kdl 等、 周辺の設定は既に KDL に揃っていた。 config 本体だけ
 //! TOML で取り残されていたのを KDL に統一し、 club-kdl 資産を一本化する。
 //!
-//! - config.kdl は **人間が編集する read-only な global 設定**。 VP 自身は
-//!   書き戻さない (= `KdlSerialize` 不要、 `KdlDeserialize` のみ)。
+//! - config.kdl が受け持つのは **環境層だけ**（= このマシンの事実。claude-cli-path /
+//!   hub-addr。doc 59 の 3 層モデル）。人間が編集する read-only で VP 自身は書き戻さない
+//!   (= `KdlSerialize` 不要、 `KdlDeserialize` のみ)。
+//! - **user の「好み」（既定 agent × model / theme / アイドル時間 / ログ詳細度）は
+//!   settings.kdl** — daemon が所有して書く（doc 59 §3）。config.kdl とはキーを重複させない。
 //! - registered repos は repos.kdl が SSOT (VP-188)。 config.kdl には出さない。
 //! - kebab-case のキー名 (`default-port` 等) を採用。
 //!
@@ -21,7 +24,7 @@
 //!
 //! | zone   | 環境変数                  | default                  | 用途 |
 //! |--------|---------------------------|--------------------------|------|
-//! | config | `$XDG_CONFIG_HOME`        | `~/.config/vp/`          | 人が編集 (config.kdl / repos.kdl / addresses.toml) |
+//! | config | `$XDG_CONFIG_HOME`        | `~/.config/vp/`          | 設定 3 層 (doc 59): 環境 = config.kdl (人だけが書く) / 好み = settings.kdl (daemon が書く) / 作業 = repos.kdl (VP が書く) |
 //! | data   | `$XDG_DATA_HOME`          | `~/.local/share/vp/`     | 永続 data store (db / discs) |
 //! | state  | `$XDG_STATE_HOME`         | `~/.local/state/vp/`     | runtime state + log (session.json / sessions/ / log/) |
 //!
