@@ -518,12 +518,13 @@ fn clear_lane_state_files(repo_root: &Path, lane: &str) {
     clear_lane_state_files_in(&crate::config::vp_state_dir(), repo_root, lane);
 }
 
-/// lane の claude model を `engine_model` へ永続する (co-evolution #1、CLI `vp lane new/fork --model`)。
+/// lane の claude model を session registry へ永続する (co-evolution #1、CLI `vp lane new/fork --model`)。
 ///
 /// repo key は `clear_lane_state_files` / repo `create_sub_orchestrated` と同一
 /// derivation (repo_root basename) — CLI で書いた model を repo spawn 経路が読めるようにする。
-/// 明示 `--model` が無ければ config の `default-lane-model`（未設定なら Opus）にフォールバックして
-/// record する（内部 helper `persist_lane_model_in` は従来通り None=no-op、既定解決はこの wrapper が担う）。
+/// 明示 `--model` が無ければ config の `default-lane-model` に、それも未設定なら**無記録**
+/// （engine 側の user 既定に委ねる、doc 54 §8-11）に倒す（内部 helper `persist_lane_model_in`
+/// は従来通り None=no-op、既定解決はこの wrapper が担う）。
 /// 不正な model 名は Err で早期に弾く (worktree は作成済だが spawn 前に失敗を返す方が silent degrade より良い)。
 ///
 /// `repo_root` は [`config::find_repo_root`] 由来で **常に main worktree root** に正規化される

@@ -231,7 +231,7 @@ VP_GC_DRY=1 mise run dev:gc                # 消さずに何がどれだけ減�
 
   | zone | env | default | 用途 |
   |------|-----|---------|------|
-  | **config** (`vp_config_dir()`) | `$XDG_CONFIG_HOME` | `~/.config/vp/` | 人が編集（`config.kdl` / `repos.kdl` / `addresses.toml`） |
+  | **config** (`vp_config_dir()`) | `$XDG_CONFIG_HOME` | `~/.config/vp/` | 人が編集（`config.kdl` / `repos.kdl` / `addresses.toml`）。例外 = `vp-app.toml`（GUI が書く user preference） |
   | **data** (`vp_data_dir()`) | `$XDG_DATA_HOME` | `~/.local/share/vp/` | 永続 data store（db / discs） |
   | **state** (`vp_state_dir()`) | `$XDG_STATE_HOME` | `~/.local/state/vp/` | runtime state + log（`session.json` / `sessions/` / `log/`） |
 

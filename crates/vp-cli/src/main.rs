@@ -201,7 +201,8 @@ enum LaneCommands {
         #[arg(long)]
         base: Option<String>,
         /// lane の claude model alias（例: 'opus' / 'sonnet' / 'haiku'）。次回 spawn 時に
-        /// `--model` として読まれる。省略時は config の default-lane-model（既定 Opus）
+        /// `--model` として読まれる。省略時は config の default-lane-model、それも
+        /// 未設定なら無記録 = engine 側の user 既定に委ねる（doc 54 §8-11）
         #[arg(long)]
         model: Option<String>,
     },
@@ -222,7 +223,8 @@ enum LaneCommands {
         #[arg(long)]
         base: Option<String>,
         /// lane の claude model alias（例: 'opus' / 'sonnet' / 'haiku'）。次回 spawn 時に
-        /// `--model` として読まれる。省略時は config の default-lane-model（既定 Opus）
+        /// `--model` として読まれる。省略時は config の default-lane-model、それも
+        /// 未設定なら無記録 = engine 側の user 既定に委ねる（doc 54 §8-11）
         #[arg(long)]
         model: Option<String>,
     },
