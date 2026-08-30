@@ -63,7 +63,8 @@ daemon ⚙️ (Process Manager / 常駐デーモン)
   ├── devices 🧲 (machine scope / device registry)
   └── device_io 🌫️ (lane scope / device I/O)
 
-軸: agent（claude/codex/grok/opencode/shell）× mode（tui/gui）。GUI 容器 = Pane（app 専用語）。
+軸: agent（claude/codex/grok/opencode/vpcode/shell）× mode（tui/gui）。GUI 容器 = Pane（app 専用語）。
+vpcode は自前 engine（VCP protocol、#1014〜#1016 で 5 番目の engine として統合、2026-08-27）。
 部品 = component（lane に host）/ 常駐 = service。総称「Stand」は廃止（義ごとに分解）。
 ```
 
@@ -200,6 +201,11 @@ cargo test --workspace                    # テスト
 cargo install --path crates/vp-cli --locked  # インストール（codesign 自動付与。--locked 必須 — install は Cargo.lock を無視して最新依存を解決するため、未検証の新リリース（例: time 0.3.48 × ratatui-widgets の E0119）を踏む）
 cargo fmt --all -- --check                # フォーマットチェック
 cargo clippy --workspace --all-targets    # Lint
+
+# dev loop の check/test は mbx (mr boxington) 経由が速い（2026-08-30 採用、#1022）
+mise run check                             # mbx check — 同じ場所の 2 回目以降 26.9 分 → 3.4 秒
+mise run test                              # mbx test — ⚠️ 初見 worktree の 1 回目は素の cargo より遅い
+                                           # （dep-info 学習前は照会不能）。release 系は cargo のまま
 
 # dogfood: 普段使いの .app を作業ツリーの build で差し替えて触る（GUI 変更の実機確認の正）
 mise run app:swap                          # DRY build → /Applications/VantagePoint.app 差し替え → 起動

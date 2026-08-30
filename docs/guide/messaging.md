@@ -9,9 +9,9 @@
 | レイヤー | ファイル | 何の真値か |
 |---|---|---|
 | wire store | `crates/vantage-point/src/capability/wiremsg_store.rs` | store / cursor / thread / ack 台帳 |
-| repo→daemon transport | `crates/vantage-point/src/process/world_wire.rs` | wire の中央化 transport（QUIC "wire" channel） |
-| dispatch | `crates/vantage-point/src/process/routes/wire.rs` / `src/daemon/server.rs` | channel method → store dispatch |
-| delivery loop | `crates/vantage-point/src/process/delivery_actor.rs`（repo 受け口 = `unison_server.rs` の `lane_nudge` / `conversation_nudge`） | 未 ack command の再掲示（nudge、`console_mode` で channel C/D/E 分岐） |
+| repo→daemon transport | `crates/vantage-point/src/repo/daemon_wire.rs` | wire の中央化 transport（QUIC "wire" channel） |
+| dispatch | `crates/vantage-point/src/repo/routes/wire.rs` / `src/daemon/server.rs` | channel method → store dispatch |
+| delivery loop | `crates/vantage-point/src/repo/delivery_actor.rs`（repo 受け口 = `unison_server.rs` の `lane_nudge` / `conversation_nudge`） | 未 ack command の再掲示（nudge、`console_mode` で channel C/D/E 分岐） |
 | FSM | `crates/vantage-point/src/flow.rs` | FlowState と derive 規則 |
 | 投影 | `crates/vantage-point/src/daemon/server.rs`（enrich / "lanes" channel） | flow_state を vp-app へ届ける経路 |
 | federation | `crates/vantage-point/src/daemon/{hub_client,dialer}.rs` / `src/daemon/*` | register / discover / direct→relay |
@@ -121,6 +121,8 @@ store が扱う table:
 `delivery_actor.rs` の常駐 actor が、未 ack の `command` を受信者へ nudge する。
 
 - 周期パラメータ: `TICK` 30s、`RENUDGE_AFTER` 600s（= 10 分）、同一 `(message, agent)` への nudge 上限 `MAX_NUDGES` 3（`delivery_actor.rs:50-58`）。
+- **pending の定義**（`wiremsg_store.rs` `unacked_commands`）: `to` − 送信者自身 − ack 済み − **離脱済（`thread_participant.status='left'`）**。
+  - ⚠️ left 除外は #1019（2026-08-30）で追加。lane / repo を削除すると宛先を drain/ack できる主体が消えるため、旧実装では**削除済 lane 宛の未 ack が同報 command を他の受信者にも永久に鳴らし続けた**（実害 6 日間）。削除時に `leave_all_threads` が全 thread へ `left` を書く。`to` は不変（履歴であり reply の宛先継承が読む）。
 - **配送経路は受信者 lane の `console_mode` で分かれる**（分水嶺は `NudgeTarget::nudge_method()`、`delivery_actor.rs:142`。#738 / doc 34 §3）。pulse ループの `if console_mode == Tui`（`delivery_actor.rs:419`）一箇所が Tui と Chat を切り分ける:
   - **Tui lane** — CC activity poll（`agents --json`）で readiness を判定（R3-a）してから配送:
     - idle / waiting（or poll 不能の degraded）→ **channel C** `lane_nudge` を所有 repo の control channel へ forward（`unison_server.rs:707` `handle_lane_nudge`）→ `deliver_nudge`（`lanes_state.rs:1017`）→ `write_to_lane` が **PtySlot に直書き**（`lanes_state.rs:781`）。**tmux 非依存**（tmux decoupling 後、lane = repo の PtySlot 直ホスト）。

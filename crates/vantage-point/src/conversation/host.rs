@@ -5,8 +5,16 @@
 //! `broadcast::Sender` に流す。tui（PtySlot + TUI）とは別系統の「headless engine」。
 //!
 //! PtySlot ⇄ terminal_pump と同型: host が producer（broadcast tx を持つ）、
-//! `conversation_pump` が consumer（TopicRouter へ route）。engine プロセスは会話を保持するため
-//! lane が gui の間は常駐する（demand-driven ではない）。
+//! `conversation_pump` が consumer（TopicRouter へ route）。
+//!
+//! ## 常駐と idle teardown（#1018、2026-08-29 で変更）
+//!
+//! 旧設計は「lane が gui の間は常駐（demand-driven ではない）」だった。現在は
+//! **「Lane タイトルが表示されている Lane だけ生きてる」**（mako 裁定）:
+//! 誰も見ていない（購読なし）+ turn なし + N 分無活動が揃うと
+//! [`crate::repo::lanes_state::LanePool::drop_idle_chat_engines`] が engine を寝かせる
+//! （契機 = `conversation_demand_stop` 即時 + 30s periodic sweep）。会話は次の
+//! attach / submit / nudge が `--resume` で継ぐ — プロセスは死ぬがコンテキストは蘇る。
 //!
 //! ## in-flight tail（replay の冪等性を「生成中」まで広げる）
 //!
