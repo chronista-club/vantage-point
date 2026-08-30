@@ -83,6 +83,10 @@ pub enum AppEvent {
     },
     /// Clone 先フォルダ picker で選択された path を sidebar JS に push (キャンセル時は None)
     ClonePathPicked(Option<String>),
+    /// 設定ページの「Add Repo 初期フォルダ」picker の結果（doc 59 P1）。
+    /// ⚠️ **キャンセルは `None`** = 既存値を保持する（「選ばなかった」を「空にした」と
+    /// 取り違えると設定が黙って消える）。
+    SettingsRepoRootPicked(Option<String>),
     /// Phase 4-paste-fix: clipboard paste request の応答。 OS clipboard の内容を JS に届ける。
     /// 空文字なら paste skip。 `term:paste` の push で focus 中の xterm に inject。
     PasteText(String),
