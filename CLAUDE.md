@@ -231,11 +231,15 @@ VP_GC_DRY=1 mise run dev:gc                # 消さずに何がどれだけ減�
 
   | zone | env | default | 用途 |
   |------|-----|---------|------|
-  | **config** (`vp_config_dir()`) | `$XDG_CONFIG_HOME` | `~/.config/vp/` | 人が編集（`config.kdl` / `repos.kdl` / `addresses.toml`）。例外 = `vp-app.toml`（GUI が書く user preference） |
+  | **config** (`vp_config_dir()`) | `$XDG_CONFIG_HOME` | `~/.config/vp/` | 設定 3 層（doc 59）: 環境 = `config.kdl`（人だけが書く）/ 好み = `settings.kdl`（daemon が書く）/ 作業 = `repos.kdl`（VP が書く）。GUI 固有 = `vp-app.toml` |
   | **data** (`vp_data_dir()`) | `$XDG_DATA_HOME` | `~/.local/share/vp/` | 永続 data store（db / discs） |
   | **state** (`vp_state_dir()`) | `$XDG_STATE_HOME` | `~/.local/state/vp/` | runtime state + log（`session.json` / `sessions/` / `log/`） |
 
-  - 設定ファイルは **KDL**（`vp_config_dir()/config.kdl`、人が編集する read-only global 設定）。登録 repoの SSOT は `repos.kdl`（VP-188、config.kdl には出さない）。
+  - 設定は **KDL** で 3 層に分かれる（`docs/design/59-settings-page.md` が SSOT）。**「何に属するか」で割る**のが原理:
+    - **環境**（このマシンの事実 — `claude-cli-path` / `hub-addr`）= `config.kdl`。**人だけが編集し VP は書き戻さない**（`KdlDeserialize` のみ）
+    - **好み**（user 本人 — 既定 agent × model / theme / アイドル時間 / ログ詳細度）= `settings.kdl`。**daemon が所有して書く**（GUI / CLI は daemon に頼む）。env > settings.kdl > 組み込み既定
+    - **作業**（今なにを開いているか）= `repos.kdl`（VP が書く。VP-188、config.kdl には出さない）
+    - ⚠️ **「config zone = 人が編集」は誤り** — 同じ zone の `repos.kdl` は VP が書いている（council 2026-05-16「ephemeral な DB でなく人間可読 file を SSOT に」）。
   - federation opt-in は config.kdl の `hub-addr "hub.chronista.club:12879"`（常設 SSOT — launchd daemon は shell env を持たない）。env `CHRONISTA_HUB_ADDR` は dev override として優先される。未設定 = federation off（machine-local）。状態確認は `vp daemon status` の `Hub:` 行 or `/api/health` の `hub` field。
   - 起動時に旧パス（Application Support / Library/Logs / `dirs::config_dir()/vantage/` 等）から新 XDG zone へ冪等にデータ移行（`migrate_legacy_paths()`、旧データは残す）。
 - ポート割り当て:
