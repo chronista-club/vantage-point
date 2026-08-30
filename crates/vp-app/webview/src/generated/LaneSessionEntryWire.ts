@@ -23,6 +23,11 @@ conversation: string | null,
  */
 chat_capable: boolean, 
 /**
+ * user の投入に画像を混ぜられるか（chat 入力欄への貼り付け）。
+ * 旧 server は送らない → false（貼り付け UI を出さない = 安全側）。
+ */
+image_capable: boolean, 
+/**
  * この session の model 指定（registry の intent。None = engine 既定）。
  */
 model: string | null, 

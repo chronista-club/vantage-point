@@ -41,7 +41,7 @@
 //! ConversationEvent 語彙（会話の言葉）を engine 制御で汚さないため（責務分離、doc §2.4）。
 //!
 //! data / calculations / actions:
-//! - calculations: stdin メッセージ JSON 生成（[`user_message_json`]）/ control frame の判定
+//! - calculations: stdin メッセージ JSON 生成（[`user_message_json_with_images`]）/ control frame の判定
 //!   （[`classify_control_frame`]）/ 質問 input の写像（[`parse_question_specs`]）/ control_response
 //!   の組み立て（[`build_permission_response`]）— いずれも純関数で単体テスト可能。
 //! - actions: spawn / stdout→translate→broadcast / in-flight tail 更新 / cc_session 記録 /
@@ -60,6 +60,19 @@ use super::event::{ConversationEvent, QuestionOption, QuestionSpec};
 
 /// 我々が spawn 直後に送る initialize control_request の request_id（応答照合用の固定値）。
 const INIT_REQUEST_ID: &str = "vp-init-1";
+
+/// user が投入に添える画像 1 枚（chat 入力欄への貼り付け）。
+///
+/// GUI が clipboard から base64 化して運ぶ。VP は**保存しない** — engine に渡すだけで、
+/// transcript / replay にも残さない（mako 裁定 2026-08-30: 痕跡も残さない）。
+/// 再 attach 後の画面に画像が出ないのはこのため。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageInput {
+    /// `image/png` 等の MIME。clipboard から拾った形式をそのまま運ぶ。
+    pub media_type: String,
+    /// base64 encode 済みの画像データ（data URL の prefix は含まない）。
+    pub data_base64: String,
+}
 
 /// disk（transcript）にまだ載っていない増分と、その commit 世代。
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -491,7 +504,19 @@ impl ClaudeHost {
     ///
     /// `&self`: 内部 Mutex で stdin を直列化（LanePool read lock 下から呼べる）。
     pub async fn submit(&self, prompt: &str) -> anyhow::Result<()> {
-        let json = user_message_json(prompt);
+        self.submit_with_images(prompt, &[]).await
+    }
+
+    /// 画像を添えて投入する（chat 入力欄への貼り付け）。`images` が空なら [`Self::submit`] と同じ。
+    ///
+    /// claude 専用（[`super::EngineKind::image_capable`]）。他 engine の host はこの動詞を
+    /// 持たないので、呼び手（`LanePool::submit_chat`）が engine 種別で分岐する。
+    pub async fn submit_with_images(
+        &self,
+        prompt: &str,
+        images: &[ImageInput],
+    ) -> anyhow::Result<()> {
+        let json = user_message_json_with_images(prompt, images);
         let mut stdin = self.stdin.lock().await;
         stdin.write_all(json.as_bytes()).await?;
         stdin.write_all(b"\n").await?;
@@ -547,13 +572,33 @@ impl ClaudeHost {
 /// stdin 用 user メッセージ JSON を生成する（純関数）。
 ///
 /// 形式: `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"..."}]}}`
-fn user_message_json(text: &str) -> String {
+/// 画像付き user message（stream-json 1 行）。`images` が空なら text だけの content になる。
+///
+/// content は Anthropic Messages API と同一形式で、claude CLI が
+/// `-p --input-format stream-json` でそのまま受ける（2026-08-30 実測: 8x8 の赤 PNG を
+/// 投入して「赤。」と回答）。**画像を先、text を後**に置くのは API の推奨順
+/// （画像を先に見せてから指示を読ませる）。
+///
+/// ⚠️ 画像を受けられるのは claude だけ（[`super::EngineKind::image_capable`]）。
+/// 他 engine の host はこの関数を通らない。
+fn user_message_json_with_images(text: &str, images: &[ImageInput]) -> String {
+    let mut content: Vec<serde_json::Value> = images
+        .iter()
+        .map(|img| {
+            serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img.media_type,
+                    "data": img.data_base64,
+                }
+            })
+        })
+        .collect();
+    content.push(serde_json::json!({ "type": "text", "text": text }));
     serde_json::json!({
         "type": "user",
-        "message": {
-            "role": "user",
-            "content": [{ "type": "text", "text": text }]
-        }
+        "message": { "role": "user", "content": content }
     })
     .to_string()
 }
@@ -912,9 +957,32 @@ mod tests {
         }
     }
 
+    /// 画像付き content の形（Anthropic Messages API と同一 = claude CLI がそのまま受ける）。
+    ///
+    /// ⚠️ **画像が先、text が後**。API の推奨順（先に見せてから指示を読ませる）で、
+    /// 順序を入れ替えると読解が落ちる。2026-08-30 に実 CLI で疎通実証済み
+    /// （8x8 の赤 PNG → 「赤。」と回答 / result success）。
+    #[test]
+    fn user_message_json_puts_images_before_text() {
+        let img = ImageInput {
+            media_type: "image/png".to_string(),
+            data_base64: "aGk=".to_string(),
+        };
+        let json = user_message_json_with_images("これは？", std::slice::from_ref(&img));
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let content = v["message"]["content"].as_array().expect("content 配列");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[0]["source"]["type"], "base64");
+        assert_eq!(content[0]["source"]["media_type"], "image/png");
+        assert_eq!(content[0]["source"]["data"], "aGk=");
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "これは？");
+    }
+
     #[test]
     fn user_message_json_is_valid_stream_json() {
-        let json = user_message_json("こんにちは");
+        let json = user_message_json_with_images("こんにちは", &[]);
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert_eq!(v["type"], "user");
         assert_eq!(v["message"]["role"], "user");
@@ -926,7 +994,7 @@ mod tests {
     fn user_message_json_escapes_quotes_and_newlines() {
         // quote / 改行 / バックスラッシュを含むプロンプトでも valid JSON 1 行になる。
         let tricky = "say \"hi\"\nnext\tline \\ end";
-        let json = user_message_json(tricky);
+        let json = user_message_json_with_images(tricky, &[]);
         assert!(
             !json.contains('\n'),
             "serialized JSON は 1 行（生改行なし）"

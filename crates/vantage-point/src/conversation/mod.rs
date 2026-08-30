@@ -51,5 +51,5 @@ pub use claude_translate::ClaudeTranslator;
 pub use codex_host::{CodexAgentHost, CodexRpcHostConfig};
 pub use engine::{ChatEngineSlot, ChatHost, EngineKind};
 pub use event::{ConversationEvent, PlanEntry, QuestionOption, QuestionSpec};
-pub use host::{ClaudeHost, ClaudeHostConfig, InFlight, PermissionDecision};
+pub use host::{ClaudeHost, ClaudeHostConfig, ImageInput, InFlight, PermissionDecision};
 pub use vpcode_host::{VpcodeHost, VpcodeHostConfig};

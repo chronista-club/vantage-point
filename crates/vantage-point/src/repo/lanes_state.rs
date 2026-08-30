@@ -472,6 +472,11 @@ pub struct LaneSessionView {
     /// 名札の kind badge がこれで gate する（押しても弾かれる行き止まりを作らない）。
     #[serde(default)]
     pub chat_capable: bool,
+    /// user の投入に**画像**を混ぜられるか（chat 入力欄への貼り付け、2026-08-30）。
+    /// client はこれが false の lane で貼り付け UI を出さない（chat_capable と同じ規律 —
+    /// 押しても engine に無視されるだけの行き止まりを作らない）。
+    #[serde(default)]
+    pub image_capable: bool,
     /// この session の model 指定（registry の intent。None = engine 既定に委譲）。
     /// picker の「現在値」は engine 実測（session_init の header.model）が正で、
     /// こちらは「VP が spawn 時に何を注入するか」の側。
@@ -513,6 +518,7 @@ impl LaneSessionsView {
                         mode: s.mode,
                         conversation: s.conversation.clone(),
                         chat_capable: kind.is_some_and(EngineKind::chat_capable),
+                        image_capable: kind.is_some_and(EngineKind::image_capable),
                         model: s.model.clone(),
                         model_choices: kind.map(EngineKind::model_choices).unwrap_or_default(),
                         permission_choices: kind
@@ -2308,11 +2314,12 @@ impl LanePool {
         addr: &LaneAddress,
         session: Option<SessionKey>,
         prompt: &str,
+        images: &[crate::conversation::ImageInput],
     ) -> anyhow::Result<()> {
         let slot = self.chat_slot(addr, session)?;
         slot.turn_active
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        slot.host.submit(prompt).await
+        slot.host.submit_with_images(prompt, images).await
     }
 
     /// doc 35 §5: 実行中 turn を中断する（stop ボタン / Esc）。submit_chat と同型（read lock 下で
@@ -4277,7 +4284,7 @@ mod tests {
         insert_fake_chat_engine(&mut pool, &addr, 1);
         stale(&pool);
         // 投入（engine は /bin/cat なので応答はしないが、turn_active は立つ）。
-        let _ = pool.submit_chat(&addr, Some(1), "hello").await;
+        let _ = pool.submit_chat(&addr, Some(1), "hello", &[]).await;
 
         assert!(
             pool.chat_engines[&addr][&1]
