@@ -291,7 +291,7 @@ mod session_derivation_tests {
             16,
             serde_json::json!([
                 {"key": 16, "agent": "claude", "mode": "gui",
-                 "conversation": "conv-abc", "chat_capable": true},
+                 "conversation": "conv-abc", "chat_capable": true, "image_capable": true},
                 {"key": 24, "agent": "shell", "mode": "tui", "chat_capable": false},
             ]),
         );
@@ -315,6 +315,13 @@ mod session_derivation_tests {
         assert_eq!(
             entries[0]["chat_capable"], true,
             "能力表は server が SSOT — client に engine 名の分岐を作らない"
+        );
+        // ⚠️ 回帰固定（2026-08-30）: entry は手書きの写像なので、wire に足しただけでは
+        // ここに現れない。`image_capable` を落として「server は true なのに client は false」
+        // で貼り付け UI が出なかった実害があった。**能力 field は 1 つずつ assert する**。
+        assert_eq!(
+            entries[0]["image_capable"], true,
+            "画像投入の能力表明も webview へ運ぶ（落とすと貼り付け UI が出ない）"
         );
 
         assert_eq!(entries[1]["key"], 24);
@@ -1955,6 +1962,10 @@ fn push_session_list(webview: &wry::WebView, lane: &str, payload: &serde_json::V
 /// payload の形は webview 契約（`console.ts` の `ConversationSessionListPayload`）そのまま — 供給路を差し替える
 /// だけで消費側（tab strip / pane grid / 名札）は無改造。`root` / `focused` は entry の
 /// bool に展開する（webview は entry ごとの flag で読む）。
+/// ⚠️ **entry は手書きの写像**。`LaneSessionEntryWire` に field を足しても
+/// **ここに書かない限り webview へ届かない**（rustc は何も言わない = 静かに落ちる）。
+/// 2026-08-30 に `image_capable` を roster と wire mirror に足したのにこの 1 箇所を忘れ、
+/// 「server は true を返しているのに client では false」で貼り付け UI が出なかった。
 fn session_list_payload(
     lane: &str,
     sessions: &crate::client::LaneSessionsWire,
@@ -1971,6 +1982,7 @@ fn session_list_payload(
                 "root": s.key == sessions.root,
                 "mode": s.mode,
                 "chat_capable": s.chat_capable,
+                "image_capable": s.image_capable,
                 "model": s.model,
                 "model_choices": s.model_choices,
                 "permission_choices": s.permission_choices,

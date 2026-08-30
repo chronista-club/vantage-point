@@ -7,6 +7,11 @@
  * 実測（Shottr、2026-08-30）: PNG 75KB / AVIF 28KB / JPEG 51KB / **TIFF 1.5MB** / BMP 1.5MB …
  * の 9 フレーバー。素直に先頭を取ると TIFF を掴んで **20 倍**のデータを IPC に流しうる。
  *
+ * ⚠️ ただし **WebKit は `items` に出す前に 1 つへ絞る**（実測 2026-08-30: 9 フレーバーの
+ * clipboard でも `items.length === 1`）。つまり貼り付け経路では下の優先ロジックは
+ * 実質素通り。**削らないのは** ①ブラウザ層の絞り込みは環境 / version 依存 ②drop 経路
+ * （Finder から複数ファイル）では実際に複数来る、の 2 つの理由から。
+ *
  * ## VP は保存しない
  *
  * 拾った画像は送信時に engine へ渡すだけで、transcript / replay には残さない（mako 裁定）。
@@ -42,10 +47,17 @@ let nextId = 1;
 export function pickImageFiles(dt: DataTransfer | null): File[] {
 	if (!dt) return [];
 	const files: File[] = [];
+	const seen: string[] = []; // 診断用（実機で何が来るかは環境依存 — 推測しないで見る）
 	for (const item of Array.from(dt.items ?? [])) {
+		seen.push(`${item.kind}:${item.type}`);
 		if (item.kind !== "file") continue;
 		const f = item.getAsFile();
 		if (f && f.type.startsWith("image/")) files.push(f);
+	}
+	if (files.length === 0 && seen.length > 0) {
+		// 画像を拾えなかった時だけ出す（通常時は黙る）。「clipboard に PNG はあるのに
+		// items には出ない」等の環境差を、推測でなくログで切り分けるため。
+		console.info("[chat] 画像なしの貼り付け:", seen.join(", "));
 	}
 	if (files.length <= 1) return files;
 

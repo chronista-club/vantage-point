@@ -1895,14 +1895,24 @@ function SessionChatView(props: { lane: string; session: number }) {
       return prev.filter((a) => a.id !== id)
     })
   }
-  /** 貼り付け / drop から画像を拾う。engine が画像非対応なら何もしない（行き止まりを作らない）。 */
-  const takeImages = async (list: DataTransfer | null): Promise<boolean> => {
-    if (!imageCapable()) return false
-    const files = pickImageFiles(list)
-    if (files.length === 0) return false
+  /**
+   * 貼り付け / drop から画像を拾う。**同期で** File を確定し、読み取りだけ非同期にする。
+   *
+   * ⚠️ **判定と `preventDefault` は同期でなければならない**。paste イベントは同期に完了する
+   * ので、`await` の後で `preventDefault()` しても手遅れ（既定動作が走り終わっている）。
+   * 実機 2026-08-30: 非同期で止めようとして、clipboard の `furl`（ファイル参照）が
+   * **テキストとして textarea に貼られた**（画像 PNG も同時に載っていたのに）。
+   *
+   * 戻り値 = 拾った File 群（空 = 画像なし → 既定動作に任せて text を貼らせる）。
+   */
+  const takeImageFiles = (list: DataTransfer | null): File[] => {
+    if (!imageCapable()) return []
+    return pickImageFiles(list)
+  }
+  /** 拾った File を base64 化して添付に積む（読み取りは非同期でよい）。 */
+  const attachFiles = async (files: File[]): Promise<void> => {
     const added = await Promise.all(files.map(readImageFile))
     setAttachments((prev) => [...prev, ...added.filter((a): a is PastedImage => a !== null)])
-    return true
   }
 
   // ---- slash command 補完（判断は slash.ts、ここは配線だけ）-------------------
@@ -2418,17 +2428,20 @@ function SessionChatView(props: { lane: string; session: number }) {
             /* 画像の貼り付け / drop（2026-08-30）。画像を拾えた時だけ既定動作を止める
                — text の貼り付けは今まで通り textarea に入る。 */
             onPaste={(e) => {
-              void takeImages(e.clipboardData).then((took) => {
-                if (took) e.preventDefault()
-              })
+              // ⚠️ 同期で判定して同期で止める（`await` を挟むと既定動作に負ける）。
+              const files = takeImageFiles(e.clipboardData)
+              if (files.length === 0) return // 画像なし = text の貼り付けは従来どおり
+              e.preventDefault()
+              void attachFiles(files)
             }}
             onDragOver={(e) => {
               if (imageCapable()) e.preventDefault() // drop を受け付ける合図
             }}
             onDrop={(e) => {
-              void takeImages(e.dataTransfer).then((took) => {
-                if (took) e.preventDefault()
-              })
+              const files = takeImageFiles(e.dataTransfer)
+              if (files.length === 0) return
+              e.preventDefault()
+              void attachFiles(files)
             }}
             onKeyDown={(e) => {
               // ⚠️ **IME の判定を最初に**置く。palette も送信も、変換中の打鍵に反応しては
