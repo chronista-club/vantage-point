@@ -85,16 +85,49 @@ fn fetch_running_processes() -> Vec<String> {
 ///
 /// 表記は **settings.kdl の node 名と同じ kebab-case** に揃える — user が file を開いた
 /// ときに CLI で打った語がそのまま見える（wire の snake_case は内部の都合なので隠す）。
-const SETTABLE_KEYS: [(&str, &str); 1] = [(
-    "log-level",
-    "ログ詳細度（trace|debug|info|warn|error）。空文字で未設定に戻す。反映には daemon 再起動が要る",
-)];
+const SETTABLE_KEYS: [(&str, KeyKind, &str); 2] = [
+    (
+        "log-level",
+        KeyKind::Str,
+        "ログ詳細度（trace|debug|info|warn|error）。空文字で未設定に戻す。反映には daemon 再起動が要る",
+    ),
+    (
+        "idle-timeout-minutes",
+        KeyKind::Uint,
+        "アイドルとみなすまでの分数（既定 5）。now-line の「⏸N分」と engine 停止の両方に効く",
+    ),
+];
 
-/// kebab-case の CLI key → wire の snake_case field 名。
-fn wire_field_of(key: &str) -> Option<&'static str> {
+/// 設定値の型。**CLI は文字列しか受け取れない**ので、wire に載せる前にここで変換する
+/// （数値 key に文字列を送ると daemon 側で「不正」と弾かれ、原因が分かりにくい）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum KeyKind {
+    Str,
+    Uint,
+}
+
+/// kebab-case の CLI key → wire の snake_case field 名と型。
+fn wire_field_of(key: &str) -> Option<(&'static str, KeyKind)> {
     match key {
-        "log-level" => Some("log_level"),
+        "log-level" => Some(("log_level", KeyKind::Str)),
+        "idle-timeout-minutes" => Some(("idle_timeout_minutes", KeyKind::Uint)),
         _ => None,
+    }
+}
+
+/// CLI の文字列値を wire に載せる JSON へ。**空文字は「未設定に戻す」**なので型に関係なく
+/// 空文字のまま送る（daemon 側が消し方として解釈する）。
+fn wire_value(kind: KeyKind, raw: &str) -> Result<serde_json::Value> {
+    let v = raw.trim();
+    if v.is_empty() {
+        return Ok(serde_json::Value::String(String::new()));
+    }
+    match kind {
+        KeyKind::Str => Ok(serde_json::Value::String(v.to_string())),
+        KeyKind::Uint => v
+            .parse::<u64>()
+            .map(|n| serde_json::json!(n))
+            .map_err(|_| anyhow::anyhow!("数値で指定してください: {raw:?}")),
     }
 }
 
@@ -117,11 +150,11 @@ pub enum ConfigCommands {
 /// ⚠️ **daemon に投げる前に弾く**ため純関数として切ってある。handler は知らない field を
 /// 無視するので、打ち間違いをそのまま送ると **成功に見える no-op** になる
 /// （「設定したのに効かない」）。
-fn resolve_key(key: &str) -> Result<&'static str> {
+fn resolve_key(key: &str) -> Result<(&'static str, KeyKind)> {
     wire_field_of(key).ok_or_else(|| {
         let known = SETTABLE_KEYS
             .iter()
-            .map(|(k, _)| *k)
+            .map(|(k, _, _)| *k)
             .collect::<Vec<_>>()
             .join(", ");
         anyhow::anyhow!("未知の設定 key: {key:?}（使えるのは: {known}）")
@@ -132,8 +165,12 @@ fn resolve_key(key: &str) -> Result<&'static str> {
 pub async fn execute_settings(cmd: ConfigCommands) -> Result<()> {
     // ⚠️ key の検証は **接続の前**。後ろに置くと、daemon が落ちているときに
     // 「接続できません」しか出ず、typo に気づけない（原因が 2 つあるのに 1 つしか見えない）。
-    let field = match &cmd {
-        ConfigCommands::Set { key, .. } => Some(resolve_key(key)?),
+    let target = match &cmd {
+        ConfigCommands::Set { key, value } => {
+            let (field, kind) = resolve_key(key)?;
+            // 値の型変換も接続前に済ませる（数値 key に文字を打った場合も daemon 不要で分かる）。
+            Some((field, wire_value(kind, value)?))
+        }
         ConfigCommands::Get => None,
     };
 
@@ -152,8 +189,8 @@ pub async fn execute_settings(cmd: ConfigCommands) -> Result<()> {
             let settings = client.settings_get().await?;
             print_settings(&settings);
         }
-        ConfigCommands::Set { value, .. } => {
-            let field = field.expect("Set なら上で解決済み");
+        ConfigCommands::Set { .. } => {
+            let (field, value) = target.expect("Set なら上で解決済み");
             let settings = client
                 .settings_set(serde_json::json!({ field: value }))
                 .await?;
@@ -172,10 +209,14 @@ fn print_settings(settings: &serde_json::Value) {
         crate::settings_file::settings_file_path().display()
     );
     println!();
-    for (key, help) in SETTABLE_KEYS {
+    for (key, _, help) in SETTABLE_KEYS {
+        // 値は型がまちまち（文字列 / 数値）なので、表示は JSON の素の形をそのまま使う。
         let value = wire_field_of(key)
-            .and_then(|f| settings.get(f))
-            .and_then(|v| v.as_str());
+            .and_then(|(f, _)| settings.get(f))
+            .map(|v| match v.as_str() {
+                Some(s) => s.to_string(),
+                None => v.to_string(),
+            });
         match value {
             Some(v) => println!("  {key} = {v}"),
             None => println!("  {key} = (未設定)"),
@@ -191,7 +232,7 @@ mod settings_tests {
     #[test]
     fn known_key_resolves_to_wire_field() {
         // CLI は kebab-case（settings.kdl の node 名と同じ）、wire は snake_case。
-        assert_eq!(resolve_key("log-level").unwrap(), "log_level");
+        assert_eq!(resolve_key("log-level").unwrap().0, "log_level");
     }
 
     #[test]
@@ -207,8 +248,11 @@ mod settings_tests {
     fn every_settable_key_resolves() {
         // SETTABLE_KEYS（表示用）と wire_field_of（送信用）が食い違うと、
         // help には出るのに設定できない key が生まれる。両者を突き合わせて固定する。
-        for (key, _) in SETTABLE_KEYS {
-            assert!(wire_field_of(key).is_some(), "解決できない key: {key}");
+        for (key, kind, _) in SETTABLE_KEYS {
+            let resolved = wire_field_of(key).unwrap_or_else(|| panic!("解決できない key: {key}"));
+            // ⚠️ 型も突き合わせる。表 (SETTABLE_KEYS) と変換 (wire_field_of) で型がズレると、
+            // 数値 key に文字列を送って daemon 側で弾かれる（CLI 側では気づけない）。
+            assert_eq!(resolved.1, kind, "型が食い違う key: {key}");
         }
     }
 }

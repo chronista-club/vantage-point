@@ -54,6 +54,9 @@ export interface SettingsResult {
   developer_mode_locked: boolean;
   default_repo_root?: string;
   resolved_repo_root?: string;
+  log_level?: string;
+  idle_timeout_minutes?: number;
+  daemon_reachable: boolean;
 }
 
 /** Request "process:toggle" */
@@ -179,6 +182,8 @@ export interface SettingsFetch {}
 export interface SettingsSave {
   developer_mode?: boolean;
   default_repo_root?: string;
+  log_level?: string;
+  idle_timeout_minutes?: number;
 }
 
 /** Request "settings:pick_repo_root" — empty payload */

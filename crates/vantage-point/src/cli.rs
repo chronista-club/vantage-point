@@ -392,6 +392,7 @@ mod log_level_tests {
     fn with_level(level: &str) -> SettingsFile {
         SettingsFile {
             log_level: Some(level.to_string()),
+            ..Default::default()
         }
     }
 

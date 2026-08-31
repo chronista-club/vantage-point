@@ -28,6 +28,8 @@ export function emptyState(): SidebarState {
 			hub_nodes: [],
 			hub_auth: "",
 			presence: {},
+			// 0 = 未取得。`quietAfterMs` が既定 5 分に倒す（daemon から届くまでの間）。
+			idle_timeout_minutes: 0n,
 			update_available: false,
 			update_applying: false,
 			// ACTIONS は `actions-panel/store.ts` の signal が持つ。ここは Rust mirror の

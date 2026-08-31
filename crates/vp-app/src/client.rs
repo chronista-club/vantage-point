@@ -206,6 +206,10 @@ pub struct DaemonHealthInfo {
     /// 旧 daemon は field 不在 → false。sidebar「更新する」ボタンの表示 gate。
     #[serde(default)]
     pub update_available: bool,
+    /// アイドルとみなすまでの分数（daemon の settings.kdl 由来、doc 59 P3）。
+    /// 旧 daemon は返さないので `serde(default)` で 0 に倒し、受け側が既定へ落とす。
+    #[serde(default)]
+    pub idle_timeout_minutes: u64,
     /// 最新 release version（`update_available` 時のボタン label 用、未取得は None）。
     #[serde(default)]
     pub latest_version: Option<String>,

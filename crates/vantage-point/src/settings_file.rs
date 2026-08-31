@@ -55,7 +55,24 @@ pub struct SettingsFile {
     /// 固定する。reload layer は未導入 — doc 59 §5）。設定を変えたら daemon 再起動が要る。
     #[kdl(child, name = "log-level", unwrap_arg)]
     pub log_level: Option<String>,
+
+    /// アイドルとみなすまでの時間（分）。未設定なら [`DEFAULT_IDLE_TIMEOUT_MINUTES`]。
+    ///
+    /// **1 つの値が 2 つの振る舞いを決める**（doc 59 §5.2）:
+    /// - sidebar の now-line が「⏸N分」に沈む閾値（client 判定）
+    /// - 見ていない lane の chat engine を落とすまでの猶予（daemon 判定）
+    ///
+    /// 元は別々の定数だったが `IDLE_TEARDOWN_AFTER_MS` に「now-line の quiet 閾値と同値」と
+    /// 明記されていた = 意図的に同じ値だった。2 つの設定にすると、その同値関係が黙って壊れる。
+    #[kdl(child, name = "idle-timeout-minutes", unwrap_arg)]
+    pub idle_timeout_minutes: Option<u64>,
 }
+
+/// アイドル判定の既定（分）。mako 裁定 2026-08-28 = 5 分。
+///
+/// 短すぎると名簿を行き来するたびに engine 再起動（`--resume` で数秒）が走り、
+/// 長すぎるとメモリが戻らない。`vp now` の運用単位（サブタスクの切れ目）と揃えてある。
+pub const DEFAULT_IDLE_TIMEOUT_MINUTES: u64 = 5;
 
 /// settings.kdl のパス（`~/.config/vp/settings.kdl`）。
 pub fn settings_file_path() -> PathBuf {
@@ -116,6 +133,17 @@ impl SettingsFile {
             .as_deref()
             .map(str::trim)
             .filter(|v| LOG_LEVELS.contains(&v.to_ascii_lowercase().as_str()))
+    }
+
+    /// アイドル判定の**実効値**（分）。未設定 / 0 は既定に倒す。
+    ///
+    /// 0 を弾くのは「無効化」の意味を持たせないため — 1 つの値に「時間」と「有効/無効」の
+    /// 2 つの性質を兼ねさせると、後から「0 は無効なのか即時なのか」を毎回思い出す必要が出る。
+    /// teardown を止めたくなったら**別の key** を足すのが正しい。
+    pub fn idle_timeout_minutes_effective(&self) -> u64 {
+        self.idle_timeout_minutes
+            .filter(|m| *m > 0)
+            .unwrap_or(DEFAULT_IDLE_TIMEOUT_MINUTES)
     }
 
     /// settings.kdl に書き出す。テスト環境では **no-op**（本番 `~/.config/vp/settings.kdl` の
@@ -191,6 +219,7 @@ mod tests {
     fn log_level_roundtrips_through_kdl() {
         let f = SettingsFile {
             log_level: Some("debug".to_string()),
+            ..Default::default()
         };
         let kdl = f.to_kdl().unwrap();
         assert!(kdl.contains("log-level"), "kdl: {kdl}");
@@ -204,6 +233,7 @@ mod tests {
         // 読み手に渡す前にここで落とす。
         let f = SettingsFile {
             log_level: Some("verbose".to_string()),
+            ..Default::default()
         };
         assert_eq!(f.log_level_valid(), None);
     }
@@ -212,6 +242,7 @@ mod tests {
     fn log_level_is_case_insensitive() {
         let f = SettingsFile {
             log_level: Some("DEBUG".to_string()),
+            ..Default::default()
         };
         // 受理はするが、値はそのまま返す（呼び手が lowercase 化して使う）。
         assert_eq!(f.log_level_valid(), Some("DEBUG"));
@@ -221,6 +252,7 @@ mod tests {
     fn log_level_trims_surrounding_whitespace() {
         let f = SettingsFile {
             log_level: Some("  info  ".to_string()),
+            ..Default::default()
         };
         assert_eq!(f.log_level_valid(), Some("info"));
     }
@@ -230,6 +262,7 @@ mod tests {
         for lv in LOG_LEVELS {
             let f = SettingsFile {
                 log_level: Some(lv.to_string()),
+                ..Default::default()
             };
             assert_eq!(f.log_level_valid(), Some(lv), "level={lv}");
         }

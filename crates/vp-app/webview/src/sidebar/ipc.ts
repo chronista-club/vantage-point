@@ -115,12 +115,23 @@ export function installIpcBridge(): void {
         payload as Parameters<NonNullable<Window['vpWire']>['handleResult']>[0],
       ),
     clonePathPicked: (path) => window.setClonePath?.(path),
-    settingsResult: (developerMode, developerModeLocked, defaultRepoRoot, resolvedRepoRoot) =>
+    settingsResult: (
+      developerMode,
+      developerModeLocked,
+      defaultRepoRoot,
+      resolvedRepoRoot,
+      daemonReachable,
+      logLevel,
+      idleTimeoutMinutes,
+    ) =>
       window.vpSettings?.handleResult({
         developerMode,
         developerModeLocked,
         defaultRepoRoot,
         resolvedRepoRoot,
+        daemonReachable,
+        logLevel,
+        idleTimeoutMinutes,
       }),
   })
 }

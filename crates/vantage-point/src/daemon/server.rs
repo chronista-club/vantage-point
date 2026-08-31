@@ -367,6 +367,9 @@ fn user_settings_json(s: &crate::settings_file::SettingsFile) -> serde_json::Val
     if let Some(level) = &s.log_level {
         out.insert("log_level".into(), serde_json::json!(level));
     }
+    if let Some(minutes) = s.idle_timeout_minutes {
+        out.insert("idle_timeout_minutes".into(), serde_json::json!(minutes));
+    }
     serde_json::Value::Object(out)
 }
 
@@ -671,6 +674,7 @@ pub(crate) async fn handle_daemon_control(
                     // なり、user は file を見ても自分の値が入っていて原因に辿り着けない。
                     let candidate = crate::settings_file::SettingsFile {
                         log_level: Some(v.to_string()),
+                        ..Default::default()
                     };
                     if candidate.log_level_valid().is_none() {
                         return Err(format!(
@@ -678,6 +682,19 @@ pub(crate) async fn handle_daemon_control(
                         ));
                     }
                     settings.log_level = Some(v.to_ascii_lowercase());
+                }
+            }
+            if let Some(raw) = payload.get("idle_timeout_minutes") {
+                // 空文字 / null = 未設定に戻す（log_level と同じ消し方に揃える）。
+                if raw.is_null() || raw.as_str().is_some_and(|s| s.trim().is_empty()) {
+                    settings.idle_timeout_minutes = None;
+                } else {
+                    // ⚠️ 0 はエラー。「無効化」の意味を持たせないため（1 つの値に時間と
+                    // 有効/無効の 2 性質を兼ねさせない — 後から意味を思い出す必要が出る）。
+                    let minutes = raw.as_u64().filter(|m| *m > 0).ok_or_else(|| {
+                        format!("idle_timeout_minutes が不正です: {raw}（1 以上の整数）")
+                    })?;
+                    settings.idle_timeout_minutes = Some(minutes);
                 }
             }
             settings.save().map_err(|e| e.to_string())?;

@@ -41,12 +41,20 @@ export interface SidebarPushHandlers {
   agentsResult(repoPath: string, agents: unknown[], error: string | null): void
   wireResult(payload: unknown): void
   clonePathPicked(path: string): void
-  /** 設定の確定値（doc 59 P1）。未設定の path は空文字に潰して渡す。 */
+  /**
+   * 設定の確定値（doc 59 P1 + P3）。未設定の値は空文字 / 0 に潰して渡す。
+   *
+   * `daemonReachable` が false のとき `logLevel` / `idleTimeoutMinutes` は無意味
+   * （daemon に届いていないので取れていない）。受け手はその区画を編集不可にする。
+   */
   settingsResult(
     developerMode: boolean,
     developerModeLocked: boolean,
     defaultRepoRoot: string,
     resolvedRepoRoot: string,
+    daemonReachable: boolean,
+    logLevel: string,
+    idleTimeoutMinutes: number,
   ): void
 }
 
@@ -83,6 +91,9 @@ function apply(msg: IpcEventEnvelope): void {
         msg.developer_mode_locked,
         msg.default_repo_root ?? '',
         msg.resolved_repo_root ?? '',
+        msg.daemon_reachable,
+        msg.log_level ?? '',
+        msg.idle_timeout_minutes ?? 0,
       )
       break
     default: {

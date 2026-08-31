@@ -136,15 +136,6 @@ protocol "sidebar" version="1.0.0" {
         request "auth:logout" {
             field "target" type="string" optional=#true
         }
-        // ACTIONS の永続化 (doc 57 Phase 4)。sidebar の編集を daemon 経由で creo-memories へ。
-        //
-        // Rust 側は 400ms coalesce してから `daemon-control.actions/save` を撃つ (打鍵ごとに
-        // 外部 HTTP を出さない)。**daemon が書く**のは、cache の持ち主が書かないと
-        // 「書いたのに次の push で戻る」が起きるから (doc 57 §4)。
-        //
-        // - `items` = 現在の一覧 **全件**。要素の形の持ち主は Rust `creo::client::CreoAction`
-        // - `removed` = user が明示的に消した id。⚠️ **`items` の不在からは決して削除しない**
-        //   (webview の一覧は push 到着前に短く見えることがあり、推論すると全消しになる)
         // ── 設定ページ（doc 59 P1）─────────────────────────────────────────
         // 設定 overlay の現在値 fetch。応答は `settings:result`（WirePanel の
         // `wire:fetch` と同じ流儀 — 開いた時に取りに行き、常時 push はしない）。
@@ -155,6 +146,11 @@ protocol "sidebar" version="1.0.0" {
         request "settings:save" {
             field "developer_mode" type="bool" optional=#true
             field "default_repo_root" type="string" optional=#true
+            // ── ここから下は daemon 側（settings.kdl）の設定。vp-app は
+            //    daemon-control.settings/set に中継するだけで、自分では書かない
+            //    （書き手は daemon 唯一 — doc 59 §3）。
+            field "log_level" type="string" optional=#true
+            field "idle_timeout_minutes" type="int" optional=#true
         }
         // Add Repo 初期フォルダの folder picker を開く。選択されたら保存して
         // `settings:result` を返す。⚠️ **キャンセル時は撃たない**
@@ -166,6 +162,15 @@ protocol "sidebar" version="1.0.0" {
         // `vp daemon restart` を撃つ（`update_flow.rs` と同じ専用スレッド）。
         request "daemon:restart" {}
 
+        // ACTIONS の永続化 (doc 57 Phase 4)。sidebar の編集を daemon 経由で creo-memories へ。
+        //
+        // Rust 側は 400ms coalesce してから `daemon-control.actions/save` を撃つ (打鍵ごとに
+        // 外部 HTTP を出さない)。**daemon が書く**のは、cache の持ち主が書かないと
+        // 「書いたのに次の push で戻る」が起きるから (doc 57 §4)。
+        //
+        // - `items` = 現在の一覧 **全件**。要素の形の持ち主は Rust `creo::client::CreoAction`
+        // - `removed` = user が明示的に消した id。⚠️ **`items` の不在からは決して削除しない**
+        //   (webview の一覧は push 到着前に短く見えることがあり、推論すると全消しになる)
         request "actions:persist" {
             field "items" type="array<json>"
             field "removed" type="array<string>"
@@ -243,6 +248,12 @@ protocol "sidebar" version="1.0.0" {
             field "developer_mode_locked" type="bool"
             field "default_repo_root" type="string" optional=#true
             field "resolved_repo_root" type="string" optional=#true
+            // ── daemon 側（settings.kdl）の確定値。**daemon 不在なら省略**され、
+            //    UI はその区画を「daemon に接続すると編集できます」に落とす
+            //    （空欄に見せて編集させると、押しても保存できない行き止まりになる）。
+            field "log_level" type="string" optional=#true
+            field "idle_timeout_minutes" type="int" optional=#true
+            field "daemon_reachable" type="bool"
         }
     }
 }

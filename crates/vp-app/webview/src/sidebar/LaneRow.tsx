@@ -14,7 +14,7 @@ import type { SubStatusWire } from "../generated/SubStatusWire";
 import type { LaneSessionEntryWire } from "../generated/LaneSessionEntryWire";
 import { sidebar } from "./store";
 import { sessionNow } from "./session-now";
-import { clockNow, quietLabel } from "./activity-freshness";
+import { clockNow, quietAfterMs, quietLabel } from "./activity-freshness";
 import { sessionNowKey } from "../../session-now-bridge";
 import { sendIpc } from "./ipc";
 import { resolveRepoOrder } from "./dnd";
@@ -71,7 +71,14 @@ function NowLine(props: {
 	text: string | undefined;
 	lastActivityAt: number | null | undefined;
 }) {
-	const quiet = () => quietLabel(props.lastActivityAt, clockNow());
+	// 閾値は daemon の settings.kdl 由来（doc 59 P3）。client 側に定数を持たないので、
+	// 「engine を落とす猶予」と「⏸ を出す閾値」が構造的に同じ値になる。
+	const quiet = () =>
+		quietLabel(
+			props.lastActivityAt,
+			clockNow(),
+			quietAfterMs(sidebar.activity?.idle_timeout_minutes),
+		);
 	return (
 		<Show when={props.text}>
 			<span

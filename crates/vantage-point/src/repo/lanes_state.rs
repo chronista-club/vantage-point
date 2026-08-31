@@ -595,15 +595,31 @@ impl LaneInfo {
 /// 十分細かく、snapshot 指紋（doc 44 §11.3）を無駄に乱さない下限。
 const ACTIVITY_WIRE_GRANULARITY_MS: u64 = 60_000;
 
-/// idle teardown の猶予 (ms、mako 2026-08-28 裁定 = 5 分)。now-line の quiet 閾値と同値。
+/// idle teardown の猶予 (ms)。**settings.kdl の `idle-timeout-minutes` から起動時に確定**する
+/// （doc 59 P3。既定 5 分 = mako 裁定 2026-08-28）。
 ///
 /// 短すぎると名簿を行き来するたびに engine 再起動（`--resume` で数秒）が走り、
 /// 長すぎるとメモリが戻らない。`vp now` の運用単位（サブタスクの切れ目）と揃えてある。
-const IDLE_TEARDOWN_AFTER_MS: u64 = 5 * 60_000;
+///
+/// ⚠️ **now-line の quiet 閾値と同じ値**。元は別々の定数だったが「同値」と doc に書いて
+/// 保っていた = 人手の約束だった。今は 1 つの設定から両方が導かれるので、**構造的に**同値。
+/// GUI へは `/api/health` → `ActivitySnapshot` の既存経路で分単位のまま運ぶ。
+///
+/// `OnceLock` にしているのは、settings.kdl を読むのは起動時 1 回で十分だから
+/// （変更の反映には daemon 再起動が要る — reload layer と同じ制約、doc 59 §5）。
+static IDLE_TEARDOWN_AFTER_MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
 
-/// [`IDLE_TEARDOWN_AFTER_MS`] を分で（log 用 — 定数を 2 箇所に書かないための読み出し口）。
+/// idle teardown の猶予 (ms)。初回呼び出しで settings.kdl を読んで確定する。
+fn idle_teardown_after_ms() -> u64 {
+    *IDLE_TEARDOWN_AFTER_MS.get_or_init(|| idle_teardown_after_minutes() * 60_000)
+}
+
+/// idle 判定の猶予を分で（log / `/api/health` / GUI 配送で共有する読み出し口）。
+///
+/// **定数を 2 箇所に書かない**ための単一の口。ここが settings.kdl と既定の合流点で、
+/// daemon の teardown も GUI の quiet 表示も最終的にこの値を見る。
 pub fn idle_teardown_after_minutes() -> u64 {
-    IDLE_TEARDOWN_AFTER_MS / 60_000
+    crate::settings_file::SettingsFile::load().idle_timeout_minutes_effective()
 }
 
 /// wire に載せる活動時刻の量子化（[`ACTIVITY_WIRE_GRANULARITY_MS`] へ切り下げ）。
@@ -2422,7 +2438,7 @@ impl LanePool {
     ///
     /// 1. turn が走っていない（[`ChatEngineSlot::turn_active`]）— ⚠️ 活動時刻だけでは
     ///    **長い tool 実行中の engine を殺す**（無音になるため。`turn_activity_of` の doc）
-    /// 2. 最終活動から [`IDLE_TEARDOWN_AFTER_MS`] 経過 — 名簿を行き来しただけで落とさない
+    /// 2. 最終活動から [`idle_teardown_after_ms`] 経過 — 名簿を行き来しただけで落とさない
     /// 3. （呼び手側の条件）誰も見ていない
     ///
     /// 落とすのは **engine だけ**。lane / PtySlot / mailbox / board は無傷で、会話は
@@ -2450,7 +2466,7 @@ impl LanePool {
                     .load(std::sync::atomic::Ordering::Relaxed)
                 {
                     0 => false,
-                    last => now_ms.saturating_sub(last) >= IDLE_TEARDOWN_AFTER_MS,
+                    last => now_ms.saturating_sub(last) >= idle_teardown_after_ms(),
                 }
             })
             .map(|(key, _)| *key)
@@ -4216,7 +4232,7 @@ mod tests {
         };
         // #1 暇 + 十分古い = 落ちる唯一の session
         let (a1, t1) = slot(&pool, 1);
-        a1.store(now - IDLE_TEARDOWN_AFTER_MS, Ordering::Relaxed);
+        a1.store(now - idle_teardown_after_ms(), Ordering::Relaxed);
         t1.store(false, Ordering::Relaxed);
         // #2 **turn 実行中**（無音が 1 時間続いていても落とさない = 長い tool 実行）
         let (a2, t2) = slot(&pool, 2);
@@ -4268,7 +4284,7 @@ mod tests {
         let stale = |p: &LanePool| {
             let s = &p.chat_engines[&addr][&1];
             s.last_event_at
-                .store(now - IDLE_TEARDOWN_AFTER_MS, Ordering::Relaxed);
+                .store(now - idle_teardown_after_ms(), Ordering::Relaxed);
             s.turn_active.store(false, Ordering::Relaxed);
         };
 
