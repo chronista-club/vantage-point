@@ -2564,6 +2564,9 @@ async fn collect_activity(
         // in-app update: daemon の定期チェック結果（「更新する」ボタンの表示 gate + label）。
         snap.update_available = h.update_available;
         snap.latest_version = h.latest_version;
+        // アイドル判定（doc 59 P3）: daemon の settings.kdl が唯一の真実源で、
+        // GUI は表示閾値としてそれを borrow する（client 側に定数を持たない）。
+        snap.idle_timeout_minutes = h.idle_timeout_minutes;
         // ACTIONS（doc 57 Phase 3）: daemon が creo から温めた一覧 + その版。
         // 版は sidebar 側が「当てるかどうか」を決めるのに使う（同じ版 = 撃ち返さない）。
         snap.actions = h.actions;
@@ -3283,16 +3286,33 @@ mod sidebar_js {
     }
 }
 
-/// 設定 overlay へ返す確定値を組み立てる（doc 59 P1）。
+/// daemon 側（settings.kdl）から取れた設定。**取れなかった場合と未設定を区別する**ため
+/// `Option` を包んでいる（doc 59 P3）。
+///
+/// `None` = daemon に届かなかった（オフライン / 旧 binary）。この時 UI は該当区画を
+/// 「daemon に接続すると編集できます」に落とす — 空欄を編集可能に見せると、押しても
+/// 保存できない**行き止まり**になる。
+#[derive(Debug, Clone, Default)]
+struct DaemonSettings {
+    log_level: Option<String>,
+    idle_timeout_minutes: Option<i64>,
+}
+
+/// 設定 overlay へ返す確定値を組み立てる（doc 59 P1 + P3）。
 ///
 /// `developer_mode` は **実効値**（env > vp-app.toml > `debug_assertions` の解決後）を渡す —
 /// event loop が持っている `dev_mode` がその値なので、それをそのまま映す。
 /// `resolved_repo_root` は明示値が無いときに実際に使われるパスで、入力欄の placeholder に
 /// なる（「空欄だが実際はここ」を見せるため）。
+///
+/// ⚠️ **真実源が 2 つある**面なので、それぞれの持ち主を分けて扱う:
+/// - `vp-app.toml`（GUI 固有）= developer_mode / default_repo_root — この関数が同期で読む
+/// - `settings.kdl`（好み、daemon 所有）= log_level / idle_timeout — `daemon` 引数で渡る
 fn settings_snapshot(
     settings: &Settings,
     sidebar_state: &SidebarState,
     dev_mode: bool,
+    daemon: Option<&DaemonSettings>,
 ) -> crate::generated::sidebar_ipc::SettingsResult {
     crate::generated::sidebar_ipc::SettingsResult {
         developer_mode: dev_mode,
@@ -3300,6 +3320,9 @@ fn settings_snapshot(
         default_repo_root: settings.default_repo_root.clone(),
         resolved_repo_root: resolve_default_repo_root(settings, sidebar_state)
             .map(|p| p.display().to_string()),
+        daemon_reachable: daemon.is_some(),
+        log_level: daemon.and_then(|d| d.log_level.clone()),
+        idle_timeout_minutes: daemon.and_then(|d| d.idle_timeout_minutes),
     }
 }
 
@@ -4239,6 +4262,11 @@ pub fn run() -> anyhow::Result<()> {
         std::collections::HashMap::new();
     // VP-100 follow-up (1Password 風): runtime 開発者モード state
     let mut dev_mode = initial_dev_mode;
+    // 直近に daemon から引けた settings.kdl の値（doc 59 P3）。
+    // 保持するのは、folder picker のように **vp-app.toml だけを触る操作**の後でも
+    // daemon 側の表示を消さないため（毎回引き直すと overlay が一瞬空欄になる）。
+    // None のままなら「まだ引けていない / 接続できない」。
+    let mut last_daemon_settings: Option<DaemonSettings> = None;
     // repo:add 等の async 操作で event loop に repo list 再 fetch を kick するための proxy
     let async_action_proxy = event_loop.create_proxy();
 
@@ -6035,9 +6063,37 @@ pub fn run() -> anyhow::Result<()> {
                         tracing::warn!("Settings 保存失敗: {e}");
                     }
                 }
+                // picker は vp-app.toml しか触らないので daemon 側は引き直さない
+                // （`last_daemon_settings` に前回の結果が残っている）。
                 sidebar_js::settings_result(
                     &webview,
-                    settings_snapshot(&settings, &sidebar_state, dev_mode),
+                    settings_snapshot(
+                        &settings,
+                        &sidebar_state,
+                        dev_mode,
+                        last_daemon_settings.as_ref(),
+                    ),
+                );
+            }
+            Event::UserEvent(AppEvent::SettingsDaemonFetched(fetched)) => {
+                // daemon 側（settings.kdl）が揃ったので、vp-app.toml 側と合流させて
+                // **1 回だけ** push する。`None` = 接続できなかった（UI は該当区画を
+                // 「daemon に接続すると編集できます」に落とす）。
+                last_daemon_settings = fetched.map(|v| DaemonSettings {
+                    log_level: v
+                        .get("log_level")
+                        .and_then(|x| x.as_str())
+                        .map(str::to_string),
+                    idle_timeout_minutes: v.get("idle_timeout_minutes").and_then(|x| x.as_i64()),
+                });
+                sidebar_js::settings_result(
+                    &webview,
+                    settings_snapshot(
+                        &settings,
+                        &sidebar_state,
+                        dev_mode,
+                        last_daemon_settings.as_ref(),
+                    ),
                 );
             }
             Event::UserEvent(AppEvent::SidebarIpc(msg)) => {
@@ -6670,6 +6726,9 @@ pub fn run() -> anyhow::Result<()> {
                 // 合流する — client が楽観更新をしないので、**真実は vp-app.toml 1 本**で決まり、
                 // 保存失敗時の巻き戻しを client に持たせなくてよい。
                 let settings_saved = outcome.settings_save_request.is_some();
+                // daemon 側（settings.kdl）へ中継する分。**vp-app は書かない** — 書き手を
+                // daemon 唯一にしてある（doc 59 §3）ので、ここは payload を組むだけ。
+                let mut daemon_payload = serde_json::Map::new();
                 if let Some(save) = outcome.settings_save_request {
                     // ⚠️ `None` の field は**不変**（「変えた分だけ送る」契約）。
                     if let Some(dev) = save.developer_mode {
@@ -6688,6 +6747,13 @@ pub fn run() -> anyhow::Result<()> {
                     if let Err(e) = settings.save() {
                         tracing::warn!("Settings 保存失敗: {e}");
                     }
+                    if let Some(level) = save.log_level {
+                        daemon_payload.insert("log_level".into(), serde_json::json!(level));
+                    }
+                    if let Some(minutes) = save.idle_timeout_minutes {
+                        daemon_payload
+                            .insert("idle_timeout_minutes".into(), serde_json::json!(minutes));
+                    }
                 }
                 if outcome.settings_pick_repo_root_request {
                     // rfd は blocking なので専用スレッド → 結果は
@@ -6696,10 +6762,31 @@ pub fn run() -> anyhow::Result<()> {
                     spawn_repo_root_picker(async_action_proxy.clone(), initial);
                 }
                 if outcome.settings_fetch_request || settings_saved {
-                    sidebar_js::settings_result(
-                        &webview,
-                        settings_snapshot(&settings, &sidebar_state, dev_mode),
-                    );
+                    // ⚠️ **書いてから読む**を 1 つの task に閉じ込める。2 本に分けると
+                    // 「保存より先に読み終えて古い値を表示する」順序が生まれる。
+                    // 読めたら `SettingsDaemonFetched` で戻り、そこで vp-app.toml 側と
+                    // 合流させて 1 回だけ push する。
+                    let conn = daemon_conn.clone();
+                    let ev_proxy = proxy.clone();
+                    let payload = (!daemon_payload.is_empty())
+                        .then_some(serde_json::Value::Object(daemon_payload));
+                    rt_handle.spawn(async move {
+                        let fetched = match conn.control().await {
+                            Ok(control) => {
+                                if let Some(p) = payload
+                                    && let Err(e) = control.settings_set(p).await
+                                {
+                                    tracing::warn!("settings/set 失敗: {e}");
+                                }
+                                control.settings_get().await.ok()
+                            }
+                            Err(e) => {
+                                tracing::debug!("settings: daemon に接続できない: {e}");
+                                None
+                            }
+                        };
+                        let _ = ev_proxy.send_event(AppEvent::SettingsDaemonFetched(fetched));
+                    });
                 }
                 if outcome.daemon_restart_request {
                     // ⚠️ **全 repo = 全 lane の claude が落ちる**（doc 44 P1 fold-in）。

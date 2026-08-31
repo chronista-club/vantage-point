@@ -24,8 +24,8 @@ function recordingHandlers(): { calls: string[]; handlers: SidebarPushHandlers }
       agentsResult: (p, s, e) => calls.push(`agents:${p}:${s.length}:${e}`),
       wireResult: (p) => calls.push(`wire:${(p as { total?: number }).total}`),
       clonePathPicked: (p) => calls.push(`clone:${p}`),
-      settingsResult: (dev, locked, root, resolved) =>
-        calls.push(`settings:${dev}:${locked}:${root}:${resolved}`),
+      settingsResult: (dev, locked, root, resolved, reachable, level, idle) =>
+        calls.push(`settings:${dev}:${locked}:${root}:${resolved}:${reachable}:${level}:${idle}`),
     },
   }
 }
@@ -127,9 +127,12 @@ describe('sidebar dispatch', () => {
       developer_mode_locked: false,
       default_repo_root: '/Users/x/repos',
       resolved_repo_root: '/Users/x/repos',
+      daemon_reachable: true,
+      log_level: 'debug',
+      idle_timeout_minutes: 10,
     })
 
-    expect(calls).toEqual(['settings:true:false:/Users/x/repos:/Users/x/repos'])
+    expect(calls).toEqual(['settings:true:false:/Users/x/repos:/Users/x/repos:true:debug:10'])
   })
 
   it('⚠️ 未設定の path は空文字に潰れる（「未設定」と「空」を受け手で分岐させない）', async () => {
@@ -140,9 +143,15 @@ describe('sidebar dispatch', () => {
     const { calls, handlers } = recordingHandlers()
     mod.installSidebarDispatch(handlers)
 
-    dispatch({ t: 'settings:result', developer_mode: false, developer_mode_locked: true })
+    dispatch({
+      t: 'settings:result',
+      developer_mode: false,
+      developer_mode_locked: true,
+      daemon_reachable: false,
+    })
 
-    expect(calls).toEqual(['settings:false:true::'])
+    // ⚠️ daemon 不在なら log_level / idle は「取れていない」— 空文字と 0 に潰れる。
+    expect(calls).toEqual(['settings:false:true:::false::0'])
   })
 
   it('install 前に届いた分は二重に流れない', async () => {

@@ -31,6 +31,12 @@ export type SettingsSnapshot = {
 	defaultRepoRoot: string;
 	/** 明示値が無いとき実際に使われるパス（placeholder 用）。 */
 	resolvedRepoRoot: string;
+	/** daemon に届いたか。false = settings.kdl 側は編集できない（doc 59 P3）。 */
+	daemonReachable: boolean;
+	/** ログ詳細度（settings.kdl 由来、未設定は空文字）。 */
+	logLevel: string;
+	/** アイドル判定の分数（settings.kdl 由来、0 = 未設定 = 既定 5 分）。 */
+	idleTimeoutMinutes: number;
 };
 
 declare global {
@@ -49,6 +55,9 @@ const [devMode, setDevMode] = createSignal(false);
 const [devLocked, setDevLocked] = createSignal(false);
 const [repoRoot, setRepoRoot] = createSignal("");
 const [resolvedRoot, setResolvedRoot] = createSignal("");
+const [daemonReachable, setDaemonReachable] = createSignal(false);
+const [logLevel, setLogLevel] = createSignal("");
+const [idleMinutes, setIdleMinutes] = createSignal(0);
 
 function open(): void {
 	setVisible(true);
@@ -65,6 +74,9 @@ function handleResult(s: SettingsSnapshot): void {
 	setDevLocked(s.developerModeLocked);
 	setRepoRoot(s.defaultRepoRoot);
 	setResolvedRoot(s.resolvedRepoRoot);
+	setDaemonReachable(s.daemonReachable);
+	setLogLevel(s.logLevel);
+	setIdleMinutes(s.idleTimeoutMinutes);
 	setLoaded(true);
 }
 
@@ -81,6 +93,33 @@ function toggleDevMode(): void {
 function saveRepoRoot(value: string): void {
 	sendIpc({ t: "settings:save", default_repo_root: value.trim() });
 }
+
+/**
+ * daemon 側（settings.kdl）の保存。**vp-app は書かない** — daemon に中継するだけで、
+ * 書き手は daemon 唯一（doc 59 §3）。確定値は `settings:result` で戻る。
+ */
+function saveLogLevel(value: string): void {
+	sendIpc({ t: "settings:save", log_level: value });
+}
+
+/**
+ * アイドル判定の保存。空 / 0 は「未設定に戻す」= 既定に倒す。
+ * ⚠️ 1 つの値が **now-line の「⏸N分」と engine 停止の両方**を決める（doc 59 §5.2）。
+ */
+function saveIdleMinutes(raw: string): void {
+	const n = Number.parseInt(raw.trim(), 10);
+	// ⚠️ 空 / 数値でない / 0 以下は **何も送らない**（= 現状維持）。
+	// schema 上この field は int なので「消す」を表現できず、0 は daemon 側でエラーになる
+	// （0 に「無効化」の意味を持たせない方針 — doc 59）。既定に戻したい人は 5 を入れる。
+	if (!Number.isFinite(n) || n <= 0) return;
+	sendIpc({ t: "settings:save", idle_timeout_minutes: n });
+}
+
+/** ログ詳細度の選択肢。空 = 未設定（VP の組み込み既定に従う）。 */
+const LOG_LEVELS = ["", "trace", "debug", "info", "warn", "error"];
+
+/** アイドル判定の既定（分）。daemon が 0 を返した時の表示用。 */
+const DEFAULT_IDLE_MINUTES = 5;
 
 export function SettingsPanel() {
 	const v = useActivity();
@@ -210,6 +249,56 @@ export function SettingsPanel() {
 								</div>
 							</section>
 
+							{/* ── 動作（daemon 側 = settings.kdl）──────────────── */}
+							<section class="vp-settings-section">
+								<h3 class="vp-settings-h">動作</h3>
+								<Show
+									when={daemonReachable()}
+									fallback={
+										<div class="vp-settings-hint">
+											daemon に接続すると編集できます。
+										</div>
+									}
+								>
+									<label class="vp-settings-row" for="vp-set-idle">
+										<span class="vp-settings-label">アイドルとみなす時間</span>
+										<span class="vp-settings-hint">
+											この時間だけ動きが無い session は now-line が「⏸N分」に沈み、
+											開いていない lane は engine を停止してメモリを返します。
+										</span>
+										<div class="vp-settings-inputrow">
+											<input
+												id="vp-set-idle"
+												type="number"
+												min="1"
+												class="vp-settings-input vp-settings-num"
+												value={idleMinutes() || ""}
+												placeholder={String(DEFAULT_IDLE_MINUTES)}
+												onChange={(e) => saveIdleMinutes(e.currentTarget.value)}
+											/>
+											<span class="vp-settings-unit">分</span>
+										</div>
+									</label>
+
+									<label class="vp-settings-row" for="vp-set-loglevel">
+										<span class="vp-settings-label">ログの詳細度</span>
+										<span class="vp-settings-hint">
+											不具合を追うときだけ上げます。⚠️ 反映には daemon の再起動が要ります。
+										</span>
+										<select
+											id="vp-set-loglevel"
+											class="vp-settings-input"
+											value={logLevel()}
+											onChange={(e) => saveLogLevel(e.currentTarget.value)}
+										>
+											{LOG_LEVELS.map((lv) => (
+												<option value={lv}>{lv || "（既定）"}</option>
+											))}
+										</select>
+									</label>
+								</Show>
+							</section>
+
 							{/* ── 開発者 ──────────────────────────────────────── */}
 							<section class="vp-settings-section">
 								<h3 class="vp-settings-h">開発者</h3>
@@ -239,6 +328,32 @@ export function SettingsPanel() {
 							{/* ── メンテナンス ─────────────────────────────────── */}
 							<section class="vp-settings-section">
 								<h3 class="vp-settings-h">メンテナンス</h3>
+								<div class="vp-settings-row">
+									<span class="vp-settings-label">アップデート</span>
+									<Show
+										when={v.updateAvailable()}
+										fallback={
+											<span class="vp-settings-hint">
+												最新版です。新しい版が出ると、ここに更新ボタンが現れます。
+											</span>
+										}
+									>
+										<span class="vp-settings-hint">
+											新しいバージョン <strong>v{v.latestVersion() ?? "?"}</strong> が
+											利用できます。更新すると VP が再起動します。
+										</span>
+										<button
+											type="button"
+											class="vp-settings-btn primary"
+											onClick={() => {
+												const ver = v.latestVersion();
+												if (ver) sendIpc({ t: "update:apply", version: ver });
+											}}
+										>
+											v{v.latestVersion() ?? "?"} に更新…
+										</button>
+									</Show>
+								</div>
 								<div class="vp-settings-row">
 									<span class="vp-settings-label">daemon の再起動</span>
 									<span class="vp-settings-hint">
@@ -284,6 +399,11 @@ export const SETTINGS_PANEL_CSS = `
 .vp-settings-input:focus{outline:none;border-color:var(--sb-conn-auto,#FFF76B);}
 .vp-settings-btn{flex:0 0 auto;font:inherit;font-size:10.5px;padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);color:inherit;cursor:pointer;}
 .vp-settings-btn:hover{background:rgba(255,255,255,.11);}
+.vp-settings-btn.primary{align-self:flex-start;margin-top:4px;border-color:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 55%);background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 88%);}
+.vp-settings-btn.primary:hover{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 78%);}
+.vp-settings-num{max-width:88px;}
+.vp-settings-unit{align-self:center;font-size:10.5px;opacity:.6;}
+select.vp-settings-input{cursor:pointer;}
 .vp-settings-btn.danger{align-self:flex-start;margin-top:4px;border-color:rgba(255,74,45,.45);background:rgba(255,74,45,.1);color:#ff8b73;}
 .vp-settings-btn.danger:hover{background:rgba(255,74,45,.2);}
 .vp-settings-authrow{display:flex;align-items:center;gap:8px;margin-top:4px;}

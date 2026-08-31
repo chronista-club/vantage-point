@@ -40,6 +40,8 @@ pub mod protocol;
 pub mod repo;
 pub mod repos_file;
 pub mod resolve;
+/// user の「好み」の SSOT (`~/.config/vp/settings.kdl`)。daemon が書く。doc 59。
+pub mod settings_file;
 #[cfg(feature = "midi")]
 pub use midistage_profiles::roto_palette;
 pub mod daemon_client;

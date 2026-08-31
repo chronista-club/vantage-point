@@ -129,7 +129,12 @@ vantage-point/
 ```bash
 # Core
 vp ps                  # 稼働中 repo 一覧（REPO / LANES 数 / STATUS active|idle）。詳細は vp lane list
-vp config              # 設定と登録 repo 表示
+vp config              # 設定と登録 repo 表示（daemon 不要）
+vp config get|set      # user 設定 = 「好み」の層（`settings.kdl`、doc 59）。
+                       # ⚠️ **書き手は daemon 唯一**（GUI / CLI は RPC で頼む）— 同時書き込みで
+                       # 片方の変更が消える余地を構造的に消すため。file は人が手で編集してもよい。
+                       # 例: `vp config set log-level debug`（空文字を渡すと未設定に戻る）。
+                       # 反映には daemon 再起動が要る（起動時にしか読まれない）
 vp repos               # 登録 repo 管理（add/remove/rename/enable/disable/reorder/list）
 vp sync                # repos.kdl を現実と同期（ghost repo 除去）
 vp mcp                 # MCPサーバーモード（stdio）

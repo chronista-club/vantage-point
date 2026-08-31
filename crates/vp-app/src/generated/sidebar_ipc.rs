@@ -135,6 +135,10 @@ pub struct SettingsSave {
     pub developer_mode: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_repo_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_minutes: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,6 +197,11 @@ pub struct SettingsResult {
     pub default_repo_root: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_repo_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_minutes: Option<i64>,
+    pub daemon_reachable: bool,
 }
 
 /// Envelope enum for channel "ipc" — a discriminated union over its
