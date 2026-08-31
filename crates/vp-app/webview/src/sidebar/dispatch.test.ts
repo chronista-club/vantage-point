@@ -4,7 +4,7 @@
  * ここで守るのは main bundle の `dispatch.test.ts` と同じ **「押し込みが黙って落ちない」**。
  * 旧来 `window.renderSidebarState(...)` は bundle 準備前なら no-op で「成功」していた。
  *
- * ⚠️ **この 8 面のうち実機で目視できたのは `sidebar:state` だけ**（他は overlay を開く操作が
+ * ⚠️ **この 9 面のうち実機で目視できたのは `sidebar:state` だけ**（他は overlay を開く操作が
  * 要る）。残り 7 面の自動検証はここが唯一なので、arm を足したら test も足すこと。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -24,6 +24,8 @@ function recordingHandlers(): { calls: string[]; handlers: SidebarPushHandlers }
       agentsResult: (p, s, e) => calls.push(`agents:${p}:${s.length}:${e}`),
       wireResult: (p) => calls.push(`wire:${(p as { total?: number }).total}`),
       clonePathPicked: (p) => calls.push(`clone:${p}`),
+      settingsResult: (dev, locked, root, resolved) =>
+        calls.push(`settings:${dev}:${locked}:${root}:${resolved}`),
     },
   }
 }
@@ -111,6 +113,36 @@ describe('sidebar dispatch', () => {
     dispatch({ t: 'wire:result', payload: { total: 7 } })
 
     expect(calls).toEqual(['agents:/p:3:ng', 'wire:7'])
+  })
+
+  it('設定の確定値は 4 引数の順序どおりに届く（doc 59 P1）', async () => {
+    const mod = await import('./dispatch')
+    mod.openSidebarDispatch()
+    const { calls, handlers } = recordingHandlers()
+    mod.installSidebarDispatch(handlers)
+
+    dispatch({
+      t: 'settings:result',
+      developer_mode: true,
+      developer_mode_locked: false,
+      default_repo_root: '/Users/x/repos',
+      resolved_repo_root: '/Users/x/repos',
+    })
+
+    expect(calls).toEqual(['settings:true:false:/Users/x/repos:/Users/x/repos'])
+  })
+
+  it('⚠️ 未設定の path は空文字に潰れる（「未設定」と「空」を受け手で分岐させない）', async () => {
+    // schema 上 optional な `default_repo_root` / `resolved_repo_root` が省略されたとき、
+    // 受け手に undefined を渡すと入力欄が uncontrolled に化ける。空文字で正規化する。
+    const mod = await import('./dispatch')
+    mod.openSidebarDispatch()
+    const { calls, handlers } = recordingHandlers()
+    mod.installSidebarDispatch(handlers)
+
+    dispatch({ t: 'settings:result', developer_mode: false, developer_mode_locked: true })
+
+    expect(calls).toEqual(['settings:false:true::'])
   })
 
   it('install 前に届いた分は二重に流れない', async () => {

@@ -31,7 +31,7 @@ function formatUptime(iso: string | null | undefined, nowMs: number): string {
 }
 
 /** activity snapshot の共通導出（MachineStrip / CreoIdRow が共用）。 */
-function useActivity() {
+export function useActivity() {
 	const a = () => sidebar.activity;
 	const online = () => a().node_online;
 	const summary = () =>

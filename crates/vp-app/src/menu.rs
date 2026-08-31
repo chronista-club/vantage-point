@@ -6,7 +6,7 @@
 //! settings file に永続化、runtime で即時切替 (`Open Developer Tools` の有効/無効が連動)。
 
 use muda::{
-    CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu,
+    Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu,
     accelerator::{Accelerator, Code, Modifiers},
 };
 
@@ -17,8 +17,6 @@ pub struct MenuIds {
     /// File → "Open File..." (Cmd+O、 active lane の File Explorer overlay picker を開く)。
     /// menu accelerator は OS-level で global に動くため、 Pane (terminal/Canvas) focus 中でも発火。
     pub open_file: MenuId,
-    /// View → "Developer Mode" (CheckMenuItem)
-    pub developer_mode: MenuId,
     /// View → "Open Developer Tools" (MenuItem、developer_mode == true の時のみ enabled)
     /// WebView 統合 (step 3a) 後は単一 WebView の devtools を開く (旧 Open Sidebar DevTools は廃止)。
     pub open_devtools: MenuId,
@@ -31,7 +29,6 @@ pub struct MenuIds {
 /// メニューバー + 動的に状態更新する item の handle
 pub struct MenuHandles {
     pub menu: Menu,
-    pub developer_mode_item: CheckMenuItem,
     pub open_devtools_item: MenuItem,
     pub reload_webview_item: MenuItem,
     pub ids: MenuIds,
@@ -102,11 +99,12 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
 
     // View メニュー — VP-100 follow-up で開発者モード設定を追加
     //
-    // 1Password 風 UX:
-    //  - "Developer Mode" check item: 設定で ON にすると "Open Developer Tools" が enabled に
+    // ⚠️ **"Developer Mode" の toggle は menu から設定ページへ移設した**（doc 59 P1、
+    // mako 裁定 2026-08-31）。ここに残るのは dev_mode で gate される 2 項目だけで、
+    // 初期 enabled は起動時の実効値 (`initial_developer_mode`) に従う。設定ページで
+    // 切り替えると event loop が両 item の enabled を更新する。
+    //
     //  - "Open Developer Tools": dev_mode == true の時のみクリック可、`webview.open_devtools()` を呼ぶ
-    //  - 切替は runtime で即時反映、settings file に永続化 (再起動後も保持)
-    let developer_mode_item = CheckMenuItem::new("Developer Mode", true, initial_dev_mode, None);
     let open_devtools_item = MenuItem::new(
         "Open Developer Tools",
         initial_dev_mode, // 初期 enabled は dev_mode に従う
@@ -120,12 +118,6 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyR)),
     );
     let view_menu = Submenu::new("View", true);
-    view_menu
-        .append(&developer_mode_item)
-        .expect("append Developer Mode");
-    view_menu
-        .append(&PredefinedMenuItem::separator())
-        .expect("append separator");
     view_menu
         .append(&open_devtools_item)
         .expect("append Open Developer Tools");
@@ -141,14 +133,12 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
     let ids = MenuIds {
         new_window: new_window_item.id().clone(),
         open_file: open_file_item.id().clone(),
-        developer_mode: developer_mode_item.id().clone(),
         open_devtools: open_devtools_item.id().clone(),
         reload_webview: reload_webview_item.id().clone(),
     };
 
     MenuHandles {
         menu,
-        developer_mode_item,
         open_devtools_item,
         reload_webview_item,
         ids,

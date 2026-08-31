@@ -42,6 +42,7 @@ use crate::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
 use crate::pane::{ActiveComponent, ActivitySnapshot, RepoPaneState, SidebarState};
 use crate::repo_dialog::{
     resolve_default_repo_root, spawn_add_repo_picker, spawn_clone_path_picker, spawn_clone_repo,
+    spawn_repo_root_picker,
 };
 use crate::session_state::SessionState;
 use crate::settings::Settings;
@@ -75,17 +76,29 @@ const MIN_WINDOW_HEIGHT: f64 = 700.0;
 /// 起動後の runtime 切替 (View → Developer Mode メニュー) は app.rs の event loop で
 /// settings ファイルを更新しつつ、対応する menu item の状態を即時反映する。
 fn initial_developer_mode(settings: &Settings) -> bool {
-    if let Ok(v) = std::env::var("VP_DEVELOPER_MODE") {
-        match v.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => return true,
-            "0" | "false" | "no" | "off" => return false,
-            _ => {}
-        }
+    if let Some(b) = developer_mode_env() {
+        return b;
     }
     if let Some(b) = settings.developer_mode {
         return b;
     }
     cfg!(debug_assertions)
+}
+
+/// `VP_DEVELOPER_MODE` の解釈。`Some` = **env が実効値を固定している**（= 設定ページで
+/// 変えても効かない）。
+///
+/// [`initial_developer_mode`] から切り出したのは、設定ページが「この toggle は今 env に
+/// 固定されているか」を知る必要があるため（doc 59 P1）。受理する綴りの一覧を 2 箇所に
+/// 書くと、片方だけ増やしたときに「env は効いているのに UI は編集可能に見える」がすぐ生える。
+fn developer_mode_env() -> Option<bool> {
+    let v = std::env::var("VP_DEVELOPER_MODE").ok()?;
+    match v.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        // 綴り違いは「指定なし」に倒す（file / debug_assertions のフォールバックへ）。
+        _ => None,
+    }
 }
 
 /// Creo UI design tokens (CSS custom properties、mint-dark default)
@@ -3259,6 +3272,35 @@ mod sidebar_js {
             }),
         );
     }
+
+    /// 設定の確定値（doc 59 P1）。fetch / save / picker のいずれも**これ 1 本で終わる** —
+    /// client は楽観更新をしないので、保存失敗時の巻き戻しを持たなくてよい。
+    pub fn settings_result(
+        sidebar: &WebView,
+        result: crate::generated::sidebar_ipc::SettingsResult,
+    ) {
+        push(sidebar, &IpcEventEnvelope::SettingsResult(result));
+    }
+}
+
+/// 設定 overlay へ返す確定値を組み立てる（doc 59 P1）。
+///
+/// `developer_mode` は **実効値**（env > vp-app.toml > `debug_assertions` の解決後）を渡す —
+/// event loop が持っている `dev_mode` がその値なので、それをそのまま映す。
+/// `resolved_repo_root` は明示値が無いときに実際に使われるパスで、入力欄の placeholder に
+/// なる（「空欄だが実際はここ」を見せるため）。
+fn settings_snapshot(
+    settings: &Settings,
+    sidebar_state: &SidebarState,
+    dev_mode: bool,
+) -> crate::generated::sidebar_ipc::SettingsResult {
+    crate::generated::sidebar_ipc::SettingsResult {
+        developer_mode: dev_mode,
+        developer_mode_locked: developer_mode_env().is_some(),
+        default_repo_root: settings.default_repo_root.clone(),
+        resolved_repo_root: resolve_default_repo_root(settings, sidebar_state)
+            .map(|p| p.display().to_string()),
+    }
 }
 
 /// SidebarState を sidebar webview に push（呼び手が多いので薄い別名を残す）。
@@ -3398,16 +3440,28 @@ struct SidebarIpcOutcome {
     ///
     /// ⚠️ **identity は 1 つでも token は宛先ごと**（Auth0 の aud claim）。bool ではなく宛先を
     /// 運ぶのはそのため — 「ログインした」だけでは、どの API に対して有効かが決まらない。
+    auth_login_request: Option<String>,
     /// ACTIONS の永続化要求（doc 57 Phase 4）。caller が coalesce channel へ流す。
     /// ⚠️ この arm は **`changed` を立てない** — DOM は既に user 入力で最新なので、
     /// 撃ち返すと編集中の行に古い値が入って caret が揺れる
     /// （`process:toggle` / `process:reorder` と同じ規律）。
     actions_persist_request: Option<ActionsPersistPayload>,
-    auth_login_request: Option<String>,
     /// Logout ボタン click 要求。値 = 宛先（`None` は「要求なし」、`Some("")` = 全宛先を捨てる）。
     /// caller が blocking pool で `auth_flow::run_logout_blocking` (確認ダイアログ →
     /// `vp auth logout [--for <target>]`) を実行し、成功後に `hub/reconnect` で即反映する。
     auth_logout_request: Option<String>,
+    /// 設定 overlay の現在値要求（doc 59 P1）。caller が `settings:result` を push back する。
+    settings_fetch_request: bool,
+    /// 設定の保存要求（doc 59 P1）。**None の field は不変**（変えた分だけ送る契約）。
+    /// caller が vp-app.toml へ書き、確定値を `settings:result` で push back する。
+    settings_save_request: Option<crate::generated::sidebar_ipc::SettingsSave>,
+    /// Add Repo 初期フォルダの folder picker 要求（doc 59 P1）。
+    /// ⚠️ **キャンセル時は何もしない**（既存値を保持 = `repo:clone:pickFolder` と同じ流儀）。
+    settings_pick_repo_root_request: bool,
+    /// daemon 再起動要求（doc 59 P1）。⚠️ **全 repo = 全 lane の claude が落ちる**
+    /// （doc 44 P1 fold-in）。caller が rfd 確認ダイアログ → `vp daemon restart` を
+    /// 専用スレッドで実行する（`update_flow.rs` と同じ理由 = event loop を塞がない）。
+    daemon_restart_request: bool,
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
@@ -3679,6 +3733,20 @@ fn handle_sidebar_ipc(
             // 空文字 = 宛先指定なし = 全部捨てる（CLI の `--for` 省略と同じ意味）。
             out.auth_logout_request = Some(m.target.unwrap_or_default());
         }
+        IpcEnvelope::SettingsFetch => {
+            // 設定 overlay を開いた。現在値を引き直して push back する（開くたびに引くので、
+            // 手で vp-app.toml を編集した後でも現実に追いつく）。
+            out.settings_fetch_request = true;
+        }
+        IpcEnvelope::SettingsSave(m) => {
+            out.settings_save_request = Some(m);
+        }
+        IpcEnvelope::SettingsPickRepoRoot => {
+            out.settings_pick_repo_root_request = true;
+        }
+        IpcEnvelope::DaemonRestart => {
+            out.daemon_restart_request = true;
+        }
         IpcEnvelope::ActionsPersist(m) => {
             // ACTIONS の編集を creo へ。caller が 400ms coalesce channel に流す。
             // ⚠️ **`out.changed` を立てない**（上の field の注記どおり）。
@@ -3852,7 +3920,6 @@ pub fn run() -> anyhow::Result<()> {
         // muda 0.17: Menu::init_for_nsapp() でメニューバーに attach
         menu_handles.menu.init_for_nsapp();
     }
-    let dev_mode_item = menu_handles.developer_mode_item;
     let open_devtools_item = menu_handles.open_devtools_item;
     let reload_webview_item = menu_handles.reload_webview_item;
     let menu_ids = menu_handles.ids;
@@ -5959,6 +6026,20 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::debug!("clone path picker canceled");
                 }
             }
+            Event::UserEvent(AppEvent::SettingsRepoRootPicked(path)) => {
+                // キャンセル (None) は**書かない**（既存値を保持）。ただし overlay の表示は
+                // 現実に合わせたいので、選ばれた / 選ばれなかったに関わらず確定値を返す。
+                if let Some(p) = path {
+                    settings.default_repo_root = Some(p);
+                    if let Err(e) = settings.save() {
+                        tracing::warn!("Settings 保存失敗: {e}");
+                    }
+                }
+                sidebar_js::settings_result(
+                    &webview,
+                    settings_snapshot(&settings, &sidebar_state, dev_mode),
+                );
+            }
             Event::UserEvent(AppEvent::SidebarIpc(msg)) => {
                 // VP-100 follow-up: repo:add / repo:clone は async picker → API → ReposLoaded ルート
                 // (state 直接 mutate しないので handle_sidebar_ipc の前で分岐)
@@ -6584,6 +6665,47 @@ pub fn run() -> anyhow::Result<()> {
                         let _ = phase_proxy.send_event(AppEvent::UpdateFlowPhase(applying));
                     });
                 }
+
+                // 設定 overlay（doc 59 P1）。fetch / save は最後に必ず「確定値を push back」で
+                // 合流する — client が楽観更新をしないので、**真実は vp-app.toml 1 本**で決まり、
+                // 保存失敗時の巻き戻しを client に持たせなくてよい。
+                let settings_saved = outcome.settings_save_request.is_some();
+                if let Some(save) = outcome.settings_save_request {
+                    // ⚠️ `None` の field は**不変**（「変えた分だけ送る」契約）。
+                    if let Some(dev) = save.developer_mode {
+                        dev_mode = dev;
+                        open_devtools_item.set_enabled(dev);
+                        reload_webview_item.set_enabled(dev);
+                        settings.developer_mode = Some(dev);
+                    }
+                    if let Some(root) = save.default_repo_root {
+                        // 空文字 = **未設定に戻す**（推定へのフォールバックを復活させる）。
+                        // 消し方を別 UI にしないための約束 — 入力欄を空にすれば戻る。
+                        let trimmed = root.trim();
+                        settings.default_repo_root =
+                            (!trimmed.is_empty()).then(|| trimmed.to_string());
+                    }
+                    if let Err(e) = settings.save() {
+                        tracing::warn!("Settings 保存失敗: {e}");
+                    }
+                }
+                if outcome.settings_pick_repo_root_request {
+                    // rfd は blocking なので専用スレッド → 結果は
+                    // `AppEvent::SettingsRepoRootPicked` で戻る（そこで保存 + push back）。
+                    let initial = resolve_default_repo_root(&settings, &sidebar_state);
+                    spawn_repo_root_picker(async_action_proxy.clone(), initial);
+                }
+                if outcome.settings_fetch_request || settings_saved {
+                    sidebar_js::settings_result(
+                        &webview,
+                        settings_snapshot(&settings, &sidebar_state, dev_mode),
+                    );
+                }
+                if outcome.daemon_restart_request {
+                    // ⚠️ **全 repo = 全 lane の claude が落ちる**（doc 44 P1 fold-in）。
+                    // 確認ダイアログは flow 側（rfd が blocking なので専用スレッド）。
+                    crate::daemon_flow::spawn_daemon_restart();
+                }
                 // Hub 行の Login / Logout ボタン click 要求。blocking フロー（browser OAuth
                 // 待ち / 確認ダイアログ / CLI spawn）を blocking pool で実行し、成功したら
                 // `daemon-control.hub/reconnect` で daemon の hub 接続に credential 変化を
@@ -6642,8 +6764,9 @@ pub fn run() -> anyhow::Result<()> {
             }
             // VP-100 follow-up: muda メニュー項目クリック処理
             //
-            // 1Password 風 UX:
-            //  - "Developer Mode" check item トグル → settings 永続化、Open DevTools の enabled 切替
+            // ⚠️ **"Developer Mode" の toggle は設定ページへ移設した**（doc 59 P1）。ここに
+            // 残るのは dev_mode で gate される 2 項目で、gate 自体の切替は
+            // `settings:save` の arm が担う（両 item の `set_enabled` もそちら）。
             //  - "Open Developer Tools" → dev_mode == true なら webview.open_devtools()
             Event::UserEvent(AppEvent::MenuClicked(id)) => {
                 if id == menu_ids.new_window {
@@ -6707,28 +6830,6 @@ pub fn run() -> anyhow::Result<()> {
                     // なる & sidebar_state を menu 経路が読む結合が残るため一本化した）。
                     tracing::info!("File menu: code pane toggle 要求");
                     lane_js::code_toggle(&webview);
-                } else if id == menu_ids.developer_mode {
-                    dev_mode = !dev_mode;
-                    dev_mode_item.set_checked(dev_mode);
-                    open_devtools_item.set_enabled(dev_mode);
-                    reload_webview_item.set_enabled(dev_mode);
-                    settings.developer_mode = Some(dev_mode);
-                    if let Err(e) = settings.save() {
-                        tracing::warn!("Settings 保存失敗: {}", e);
-                    }
-                    tracing::info!("Developer Mode: {} (永続化)", dev_mode);
-                    let body = if dev_mode {
-                        "Developer Mode が有効になりました。View → Open Developer Tools で DevTools を開けます。"
-                    } else {
-                        "Developer Mode が無効になりました。"
-                    };
-                    if let Err(e) = notify_rust::Notification::new()
-                        .summary("Vantage Point")
-                        .body(body)
-                        .show()
-                    {
-                        tracing::debug!("notification 表示失敗: {}", e);
-                    }
                 } else if id == menu_ids.open_devtools {
                     if dev_mode {
                         webview.open_devtools();

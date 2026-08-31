@@ -30,6 +30,7 @@ import {
 } from "./keybindings";
 import { captureHintLabel, captureHintVisible } from "./directive-state";
 import { WirePanel, WIRE_PANEL_CSS } from "./WirePanel";
+import { SettingsPanel, SETTINGS_PANEL_CSS } from "./SettingsPanel";
 import { LanePicker, LANE_PICKER_CSS } from "./LanePicker";
 import { CommandPalette, COMMAND_PALETTE_CSS } from "./CommandPalette";
 import { RepoAccordion } from "./RepoAccordion";
@@ -154,6 +155,18 @@ export function Shell() {
 					<CreoIdRow />
 				</div>
 
+				{/* ⚙ 設定（app 級 — doc 56 §7 の予約席。ACTIONS の下・daemon status の直上）。
+				    住所は「動詞の級」で決まる: 設定は app 全体に効くので rail でなくここ。 */}
+				<button
+					type="button"
+					class="vp-settings-entry"
+					title="設定を開く"
+					onClick={() => window.vpSettings?.open()}
+				>
+					<CreoIcon name="ph:gear-six" size={12} />
+					<span>設定</span>
+				</button>
+
 				{/* machine 帯（doc 58 ③ — machine scope）: daemon ⚙️ + hub + devices 🧲。
 				    健康なら 1 行、詳細は click で展開。 */}
 				<MachineStrip />
@@ -166,6 +179,10 @@ export function Shell() {
 			{/* Wire Inbox overlay panel (doc 34 §4 V1、 singleton)。 LaneRow の mailbox badge click で
           window.vpWire.open(address) が呼ばれ、 選択 lane の wire 履歴 (read-only) + ack を表示する。 */}
 			<WirePanel />
+
+			{/* 設定 overlay (doc 59 P1、singleton)。sidebar 下部の ⚙ 行から
+          window.vpSettings.open() で出現する。 */}
+			<SettingsPanel />
 
 			{/* PR 445 `s` directive: Lane / repo switcher picker overlay (singleton)。
           Cmd hold s で window.vpLanePicker.open() が呼ばれて出現、 lane / repo を fuzzy 検索 + 選択。 */}
@@ -725,6 +742,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   background:var(--lg-mute-2,#38525b);}
 .vp-slim-foot.online{background:var(--lg-cyan-dim,#1C6C7C);}
 ${WIRE_PANEL_CSS}
+${SETTINGS_PANEL_CSS}
 ${LANE_PICKER_CSS}
 ${COMMAND_PALETTE_CSS}
 ${ACTIONS_CSS}

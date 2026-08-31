@@ -41,6 +41,13 @@ export interface SidebarPushHandlers {
   agentsResult(repoPath: string, agents: unknown[], error: string | null): void
   wireResult(payload: unknown): void
   clonePathPicked(path: string): void
+  /** 設定の確定値（doc 59 P1）。未設定の path は空文字に潰して渡す。 */
+  settingsResult(
+    developerMode: boolean,
+    developerModeLocked: boolean,
+    defaultRepoRoot: string,
+    resolvedRepoRoot: string,
+  ): void
 }
 
 let handlers: SidebarPushHandlers | null = null
@@ -68,6 +75,15 @@ function apply(msg: IpcEventEnvelope): void {
       break
     case 'clone:path_picked':
       handlers.clonePathPicked(msg.path)
+      break
+    case 'settings:result':
+      // optional な path は「未設定」を空文字で表す（受け手の分岐を 1 つ減らす）。
+      handlers.settingsResult(
+        msg.developer_mode,
+        msg.developer_mode_locked,
+        msg.default_repo_root ?? '',
+        msg.resolved_repo_root ?? '',
+      )
       break
     default: {
       // 網羅していれば `never`。Rust 側が新しい event を撃ってきた（= 版ズレ）ときだけ来る。
