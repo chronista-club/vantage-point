@@ -610,16 +610,27 @@ const ACTIVITY_WIRE_GRANULARITY_MS: u64 = 60_000;
 static IDLE_TEARDOWN_AFTER_MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
 
 /// idle teardown の猶予 (ms)。初回呼び出しで settings.kdl を読んで確定する。
+///
+/// **settings.kdl を読むのはここだけ**。分側（[`idle_teardown_after_minutes`]）も
+/// この値から導くので、daemon の判定と GUI の表示が同じ瞬間の設定を見る。
 fn idle_teardown_after_ms() -> u64 {
-    *IDLE_TEARDOWN_AFTER_MS.get_or_init(|| idle_teardown_after_minutes() * 60_000)
+    *IDLE_TEARDOWN_AFTER_MS.get_or_init(|| {
+        crate::settings_file::SettingsFile::load().idle_timeout_minutes_effective() * 60_000
+    })
 }
 
 /// idle 判定の猶予を分で（log / `/api/health` / GUI 配送で共有する読み出し口）。
 ///
 /// **定数を 2 箇所に書かない**ための単一の口。ここが settings.kdl と既定の合流点で、
 /// daemon の teardown も GUI の quiet 表示も最終的にこの値を見る。
+///
+/// ⚠️ **必ず [`idle_teardown_after_ms`] から導くこと**（file を直接読み直さない）。
+/// 2026-08-31 の実機検証で踏んだ: ここが `SettingsFile::load()` を毎回呼んでいたため、
+/// 設定変更の直後に **GUI は新しい値で ⏸ を出し、teardown は起動時の古い値で engine を
+/// 落とす**というズレが出た（統合したはずの同値関係が、読み方の違いで壊れていた）。
+/// 「反映には daemon 再起動が要る」という説明とも、起動時固定で揃う。
 pub fn idle_teardown_after_minutes() -> u64 {
-    crate::settings_file::SettingsFile::load().idle_timeout_minutes_effective()
+    idle_teardown_after_ms() / 60_000
 }
 
 /// wire に載せる活動時刻の量子化（[`ACTIVITY_WIRE_GRANULARITY_MS`] へ切り下げ）。
