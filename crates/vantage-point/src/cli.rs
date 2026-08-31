@@ -159,13 +159,30 @@ pub fn parse_debug_env() -> Option<DebugMode> {
         })
 }
 
+/// settings.kdl の `log-level` から `RUST_LOG` の directive を導く（純関数 = テスト可能）。
+///
+/// **env も CLI 引数（`-d`）も無いときだけ**呼ばれる（優先順は
+/// env > CLI 引数 > settings.kdl > 既定）。永続設定より「今回だけ」の指定を優先するのは、
+/// CLI 引数を打った人はその 1 回の実行を変えたいから。
+///
+/// ⚠️ [`init_tracing`] は subscriber を 1 度しか設置できず env も触るため、統合状態のままでは
+/// 単体テストできない。**判定だけを純関数に切り出して**、優先順と綴りの正規化をここで固定する
+/// （actions から calculations を分ける — コーディング規約）。
+fn rust_log_from_settings(settings: &crate::settings_file::SettingsFile) -> Option<String> {
+    settings
+        .log_level_valid()
+        .map(|level| format!("vantage_point={}", level.to_ascii_lowercase()))
+}
+
 /// Initialize tracing with VP_LOG support
 /// VP_LOG環境変数またはDebugModeに基づいてログレベルを設定
 /// - VP_LOG=debug|info|warn|error が優先
 /// - 未設定の場合、debug_modeに基づいて設定:
-///   - None -> warn
+///   - None -> warn（+ settings.kdl の `log-level` があればそれ、doc 59 P2）
 ///   - Simple -> info
 ///   - Detail -> debug
+///
+/// 優先順は **env(VP_LOG / RUST_LOG) > CLI 引数(-d) > settings.kdl > 既定**。
 ///
 /// `tui_mode` が true の場合、ログ出力を stderr ではなくファイルにリダイレクト。
 /// TUI (ratatui) の alternate screen にサーバーログが漏れるのを防ぐ。
@@ -189,7 +206,19 @@ pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool) {
         // 到達不能になり、daemon の INFO (DeviceRegistry/QUIC 起動等の運転記録) が全起動経路で
         // 恒久的に沈黙していた (log 出力先とは独立の第 2 の結線切れ)。
         match debug_mode {
-            DebugMode::None => {}
+            // doc 59 P2: env も CLI 引数も無いときだけ settings.kdl の `log-level` を見る。
+            // **優先順は env > CLI 引数(-d) > settings.kdl > 既定** — 永続設定より「今回だけ」の
+            // 指定を優先する（CLI 引数を打った人は、その 1 回の実行を変えたい）。
+            //
+            // 綴り違いは `log_level_valid` が None に倒すので、ここに不正 directive は来ない
+            // （壊れた directive は EnvFilter ごと沈黙させる = 設定 typo が観測手段を奪う）。
+            DebugMode::None => {
+                if let Some(directive) =
+                    rust_log_from_settings(&crate::settings_file::SettingsFile::load())
+                {
+                    unsafe { std::env::set_var("RUST_LOG", directive) }
+                }
+            }
             DebugMode::Simple => unsafe {
                 std::env::set_var("RUST_LOG", "vantage_point=info");
             },
@@ -353,4 +382,63 @@ pub fn find_vantage_point_app() -> Option<std::path::PathBuf> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod log_level_tests {
+    use super::*;
+    use crate::settings_file::SettingsFile;
+
+    fn with_level(level: &str) -> SettingsFile {
+        SettingsFile {
+            log_level: Some(level.to_string()),
+        }
+    }
+
+    #[test]
+    fn unset_yields_no_directive() {
+        // 未設定なら RUST_LOG を触らない = 後段の default EnvFilter（vantage_point=info +
+        // 依存 crate の抑制）に落ちる。ここで空文字を返すと default が到達不能になり、
+        // 過去に「daemon の INFO が全起動経路で沈黙する」事故が起きている。
+        assert_eq!(rust_log_from_settings(&SettingsFile::default()), None);
+    }
+
+    #[test]
+    fn valid_level_becomes_crate_scoped_directive() {
+        // scope を `vantage_point=` に限るのは、依存 crate（quinn / rustls 等）の
+        // chatty log まで debug に落とさないため。
+        assert_eq!(
+            rust_log_from_settings(&with_level("debug")).as_deref(),
+            Some("vantage_point=debug")
+        );
+    }
+
+    #[test]
+    fn level_is_normalized_to_lowercase() {
+        // EnvFilter の directive は小文字しか受けない。file には大文字で書かれうるので、
+        // 受理（log_level_valid）と正規化（ここ）を分けてある。
+        assert_eq!(
+            rust_log_from_settings(&with_level("DEBUG")).as_deref(),
+            Some("vantage_point=debug")
+        );
+    }
+
+    #[test]
+    fn invalid_level_yields_no_directive() {
+        // ⚠️ 綴り違いを素通しすると EnvFilter の directive が壊れて**全ログが黙る**
+        // （設定 file の typo が観測手段そのものを奪う）。既定に倒すのが安全側。
+        assert_eq!(rust_log_from_settings(&with_level("verbose")), None);
+        assert_eq!(rust_log_from_settings(&with_level("")), None);
+    }
+
+    #[test]
+    fn all_known_levels_produce_directives() {
+        for level in ["trace", "debug", "info", "warn", "error"] {
+            assert_eq!(
+                rust_log_from_settings(&with_level(level)).as_deref(),
+                Some(format!("vantage_point={level}").as_str()),
+                "level={level}"
+            );
+        }
+    }
 }

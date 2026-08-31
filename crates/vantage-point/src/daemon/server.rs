@@ -358,6 +358,18 @@ pub(crate) type MidiDevices = Option<Arc<RwLock<crate::devices::DeviceRegistry>>
 #[cfg(not(feature = "midi"))]
 pub(crate) type MidiDevices = Option<()>;
 
+/// `settings/get` / `settings/set` の応答（doc 59）。**未設定の key は field ごと省略**する。
+///
+/// `null` を載せずに省略するのは「未設定」と「明示的に空」を wire 上でも区別するため —
+/// 呼び手（GUI の入力欄 / CLI の表示）は「書かれていない = 既定に従う」を素直に扱える。
+fn user_settings_json(s: &crate::settings_file::SettingsFile) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    if let Some(level) = &s.log_level {
+        out.insert("log_level".into(), serde_json::json!(level));
+    }
+    serde_json::Value::Object(out)
+}
+
 pub(crate) async fn handle_daemon_control(
     daemon_cap: &Arc<RwLock<crate::capability::RepoManagerCapability>>,
     creo_actions: &crate::creo::client::CreoActionsCache,
@@ -638,6 +650,39 @@ pub(crate) async fn handle_daemon_control(
                 crate::host::ledger::record_farewell_reclaimed(db.as_ref(), path, &lanes, &now)
                     .await;
             Ok(serde_json::json!({ "recorded": recorded }))
+        }
+        // user の「好み」設定（doc 59）。環境（config.kdl）ではなく settings.kdl の担当で、
+        // キーは重複しない。read は file を都度引く — daemon が唯一の書き手なので、
+        // memory に cache を持って「書いたのに古い値が返る」窓を作る必要がない。
+        "settings/get" => Ok(user_settings_json(
+            &crate::settings_file::SettingsFile::load(),
+        )),
+        // ⚠️ **書き手はここだけ**（GUI / CLI はこの RPC に頼む）。同時書き込みで壊れる余地を
+        // 構造的に消すのが目的で、file 自体は人が手で編集してもよい。
+        "settings/set" => {
+            let mut settings = crate::settings_file::SettingsFile::load();
+            if let Some(raw) = payload.get("log_level").and_then(|v| v.as_str()) {
+                let v = raw.trim();
+                if v.is_empty() {
+                    // 空文字 = 未設定に戻す（消し方を別 method にしない）。
+                    settings.log_level = None;
+                } else {
+                    // 綴り違いは**エラーで返す**。黙って捨てると「設定したのに効かない」に
+                    // なり、user は file を見ても自分の値が入っていて原因に辿り着けない。
+                    let candidate = crate::settings_file::SettingsFile {
+                        log_level: Some(v.to_string()),
+                    };
+                    if candidate.log_level_valid().is_none() {
+                        return Err(format!(
+                            "log_level が不正です: {v:?}（trace|debug|info|warn|error）"
+                        ));
+                    }
+                    settings.log_level = Some(v.to_ascii_lowercase());
+                }
+            }
+            settings.save().map_err(|e| e.to_string())?;
+            // 書き込み後の確定値を返す = 呼び手は楽観更新をしなくてよい。
+            Ok(user_settings_json(&settings))
         }
         "host/farewell_log" => {
             let path = payload["path"]

@@ -73,6 +73,17 @@ protocol "vp-daemon" version="0.2.0" {
                 field "lanes" type="json" required=#true description="LaneInfo の配列。各要素は { address: { repo, name }, state, agent, ... }。"
             }
         }
+        request "settings/get" description="user の「好み」設定（~/.config/vp/settings.kdl）を返す read-only 照会。doc 59 の 3 層のうち『好み』の層で、環境（config.kdl = claude-cli-path / hub-addr）とはキーが重複しない。各値は「書かれていなければ省略」= 未設定と明示値を区別する。引数なし。" {
+            returns "UserSettings" {
+                field "log_level" type="string" description="ログ詳細度（trace|debug|info|warn|error）。未設定なら省略。⚠️ daemon の起動時にしか読まれないので、変更の反映には daemon 再起動が要る。"
+            }
+        }
+        request "settings/set" description="user の「好み」設定を書き換える。**daemon が唯一の書き手**（GUI / CLI はこの RPC に頼む）で、atomic write により partial read が起きない。指定しなかった field は不変、空文字を渡すとその key を消す（= 未設定に戻して組み込み既定へ倒す）。書き込み後の確定値を返すので、呼び手は楽観更新をしなくてよい。" {
+            field "log_level" type="string" description="ログ詳細度（trace|debug|info|warn|error）。空文字 = 未設定に戻す。綴り違いはエラーを返す（黙って捨てると『設定したのに効かない』になる）。"
+            returns "UserSettings" {
+                field "log_level" type="string" description="書き込み後の確定値。未設定なら省略。"
+            }
+        }
         request "host/farewell_log" description="Repo Host の帳簿から見送りの記録を新しい順に返す read-only 照会（doc 44 §7.5）。kind='reclaimed' が「いつ何を見送ったか」、kind='pending' が「人の判断待ちがいつから何回続いているか」。lane_name は記録時点のスナップショット（key は lane_id なので rename でも履歴は動かない）。" {
             field "path" type="string" required=#true description="対象 repo の path（内部で正規化して照合する）。"
             field "limit" type="int" description="返す件数の上限。0 / 省略は無制限。"

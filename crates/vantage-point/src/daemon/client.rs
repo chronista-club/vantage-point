@@ -450,6 +450,24 @@ impl DaemonControlClient {
             .unwrap_or_default())
     }
 
+    /// user の「好み」設定（`settings.kdl`）を読む（doc 59）。
+    ///
+    /// 返るのは**書かれている key だけ**の object（未設定は field ごと省略）。
+    pub async fn settings_get(&self) -> Result<serde_json::Value> {
+        self.call("settings/get", serde_json::json!({})).await
+    }
+
+    /// user の「好み」設定を書き換え、**書き込み後の確定値**を返す（doc 59）。
+    ///
+    /// `payload` に載せた key だけが変わる（載せない key は不変）。空文字を渡すと
+    /// その key は未設定に戻る（= 組み込み既定へ倒れる）。
+    ///
+    /// ⚠️ **書き手は daemon だけ** — GUI / CLI がそれぞれ file を書くと、同時実行で
+    /// 片方の変更が消える。この RPC を通すことでその余地が構造的に無くなる。
+    pub async fn settings_set(&self, payload: serde_json::Value) -> Result<serde_json::Value> {
+        self.call("settings/set", payload).await
+    }
+
     /// sub lane を作成する（daemon-canonical な descriptor を作る）。
     ///
     /// `branch` / `agent` 省略時は daemon 側で default を導出する
