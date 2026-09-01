@@ -151,6 +151,8 @@ protocol "sidebar" version="1.0.0" {
             //    （書き手は daemon 唯一 — doc 59 §3）。
             field "log_level" type="string" optional=#true
             field "idle_timeout_minutes" type="int" optional=#true
+            field "default_agent" type="string" optional=#true
+            field "default_model" type="string" optional=#true
         }
         // Add Repo 初期フォルダの folder picker を開く。選択されたら保存して
         // `settings:result` を返す。⚠️ **キャンセル時は撃たない**
@@ -253,6 +255,13 @@ protocol "sidebar" version="1.0.0" {
             //    （空欄に見せて編集させると、押しても保存できない行き止まりになる）。
             field "log_level" type="string" optional=#true
             field "idle_timeout_minutes" type="int" optional=#true
+            // 既定 agent × model（doc 59 P4）。**組で**運ぶ — 片方だけ送ると
+            // 受け手が「codex なのに claude の model」を再構成できてしまう。
+            field "default_agent" type="string" optional=#true
+            field "default_model" type="string" optional=#true
+            // その agent が model を受け付けるか。false なら model 欄を出さない
+            // （codex は VP から model を渡さない = 押しても効かない欄を並べない）。
+            field "default_agent_takes_model" type="bool"
             field "daemon_reachable" type="bool"
         }
     }

@@ -66,6 +66,13 @@ pub struct SettingsFile {
     /// 明記されていた = 意図的に同じ値だった。2 つの設定にすると、その同値関係が黙って壊れる。
     #[kdl(child, name = "idle-timeout-minutes", unwrap_arg)]
     pub idle_timeout_minutes: Option<u64>,
+
+    /// 新しい lane を作るときの既定 agent × model（doc 59 P4）。
+    ///
+    /// **1 つの node で組を持つ** — 旧 config.kdl の `default-agent` /
+    /// `default-lane-model` は独立した 2 キーで、意味のない組み合わせが表現できた。
+    #[kdl(child, name = "default-lane")]
+    pub default_lane: Option<DefaultLane>,
 }
 
 /// アイドル判定の既定（分）。mako 裁定 2026-08-28 = 5 分。
@@ -73,6 +80,105 @@ pub struct SettingsFile {
 /// 短すぎると名簿を行き来するたびに engine 再起動（`--resume` で数秒）が走り、
 /// 長すぎるとメモリが戻らない。`vp now` の運用単位（サブタスクの切れ目）と揃えてある。
 pub const DEFAULT_IDLE_TIMEOUT_MINUTES: u64 = 5;
+
+/// 新しい lane を作るときの既定（doc 59 P4）。**agent と model を 1 つの node で持つ**。
+///
+/// ## なぜ「組」なのか
+///
+/// 旧 config.kdl は `default-agent` と `default-lane-model` の**独立した 2 キー**だった。
+/// 既定を解決する [`crate::repo::routes::lanes`] は **agent を見ずに** model を返してから
+/// agent と組にして registry へ書くため、`default-agent "codex"` +
+/// `default-lane-model "claude-opus-5"` という **意味のない組み合わせが表現できて**しまった。
+/// 1 つの node にすれば、その穴が設定の形そのもので塞がる。
+///
+/// ## 対象 agent を絞る理由
+///
+/// mako 裁定 2026-08-31「まずは対象は **claude と codex** のみで良い」。
+/// grok / opencode / vpcode も lane では使えるが、**既定にはしない**（使う時に選ぶ）。
+#[derive(Debug, Clone, Default, PartialEq, KdlDeserialize, KdlSerialize)]
+#[kdl(name = "default-lane")]
+pub struct DefaultLane {
+    /// 既定の agent（`claude` / `codex`）。未設定なら `claude`。
+    #[kdl(property)]
+    pub agent: Option<String>,
+    /// 既定の model alias。**agent が受け付ける場合のみ意味を持つ**。
+    ///
+    /// ⚠️ codex は VP から model を渡していない（`EngineKind::model_choices` が空）ので、
+    /// ここに値があっても無視される。設定する側（`settings/set` / GUI）が先に弾く。
+    #[kdl(property)]
+    pub model: Option<String>,
+}
+
+/// 既定 agent に選べるもの（doc 59 P4、mako 裁定 = claude と codex のみ）。
+pub const SELECTABLE_AGENTS: [&str; 2] = ["claude", "codex"];
+
+/// 既定 agent の fallback。
+pub const DEFAULT_AGENT: &str = "claude";
+
+impl DefaultLane {
+    /// 既定 agent の**実効値**。未設定 / 対象外は [`DEFAULT_AGENT`] に倒す。
+    ///
+    /// 対象外を既定に倒すのは、設定 file の typo で lane 作成そのものが止まらないため
+    /// （`log_level_valid` と同じ degrade 方針）。
+    pub fn agent_effective(&self) -> &str {
+        self.agent
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| SELECTABLE_AGENTS.contains(a))
+            .unwrap_or(DEFAULT_AGENT)
+    }
+
+    /// 既定 model の**実効値**。「その agent が model を受け付けるか」まで見る。
+    ///
+    /// ⚠️ **agent を見ずに model を返さない**のが P4 の核心。旧実装はこれを分けていたため、
+    /// codex の session に claude の model 名が載る組み合わせが作れてしまった。
+    /// 形式検証（`is_valid_model`）も通すので、`--model` への injection も塞がる。
+    pub fn model_effective(&self) -> Option<&str> {
+        if !agent_accepts_model(self.agent_effective()) {
+            return None;
+        }
+        self.model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .filter(|m| crate::lane::engine_model::is_valid_model(m))
+    }
+}
+
+/// 新しい lane の既定 agent（doc 59 P4）— **全 lane 作成経路が共有する単一の読み出し口**。
+///
+/// 旧 `Config::default_agent_or_claude()` の置き換え。呼び手（repo/server / routes/lanes /
+/// routes/daemon）が個別に file を読んで既定を組み立てると、次に既定の決め方が変わった時に
+/// 1 箇所だけ古くなる。
+pub fn default_lane_agent() -> String {
+    SettingsFile::load()
+        .default_lane
+        .unwrap_or_default()
+        .agent_effective()
+        .to_string()
+}
+
+/// 新しい lane の既定 agent × model を**組で**返す（doc 59 P4）。
+///
+/// ⚠️ **必ず組で受け取ること**。agent と model を別々に引くと、旧実装と同じ
+/// 「codex の session に claude の model が載る」穴が復活する。
+pub fn default_lane_pair() -> (String, Option<String>) {
+    let lane = SettingsFile::load().default_lane.unwrap_or_default();
+    (
+        lane.agent_effective().to_string(),
+        lane.model_effective().map(str::to_string),
+    )
+}
+
+/// その agent は VP から model を渡せるか（doc 59 P4）。
+///
+/// 判定の源は [`crate::conversation::engine::EngineKind::model_choices`] —
+/// **空 = VP からの切替なし**という既存の能力表明をそのまま使う。ここで独自の一覧を
+/// 持つと、engine 側が model を受けるようになった時に片方だけ古くなる。
+pub fn agent_accepts_model(agent: &str) -> bool {
+    crate::conversation::engine::EngineKind::from_agent(agent)
+        .is_some_and(|k| !k.model_choices().is_empty())
+}
 
 /// settings.kdl のパス（`~/.config/vp/settings.kdl`）。
 pub fn settings_file_path() -> PathBuf {
@@ -255,6 +361,101 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(f.log_level_valid(), Some("info"));
+    }
+
+    // ── doc 59 P4: 既定 agent × model の「組」──────────────────────────
+
+    #[test]
+    fn default_lane_falls_back_to_claude() {
+        // 未設定 / 対象外 agent は既定へ。設定 file の typo で lane 作成が止まらないため。
+        assert_eq!(DefaultLane::default().agent_effective(), "claude");
+        let odd = DefaultLane {
+            agent: Some("nonexistent".into()),
+            model: None,
+        };
+        assert_eq!(odd.agent_effective(), "claude");
+    }
+
+    #[test]
+    fn selectable_agents_are_claude_and_codex_only() {
+        // mako 裁定 2026-08-31。grok / opencode / vpcode も lane では使えるが既定にはしない。
+        for a in SELECTABLE_AGENTS {
+            let l = DefaultLane {
+                agent: Some(a.into()),
+                model: None,
+            };
+            assert_eq!(l.agent_effective(), a, "agent={a}");
+        }
+        let grok = DefaultLane {
+            agent: Some("grok".into()),
+            model: None,
+        };
+        assert_eq!(
+            grok.agent_effective(),
+            "claude",
+            "既定に選べるのは 2 つだけ"
+        );
+    }
+
+    #[test]
+    fn model_is_dropped_when_the_agent_cannot_take_one() {
+        // ⚠️ **P4 の核心**。旧実装は agent を見ずに model を返したため、
+        // codex の session に claude の model 名が載る組み合わせが作れた。
+        let bad = DefaultLane {
+            agent: Some("codex".into()),
+            model: Some("claude-opus-5".into()),
+        };
+        assert_eq!(bad.agent_effective(), "codex");
+        assert_eq!(
+            bad.model_effective(),
+            None,
+            "codex は model を受け付けないので落とす"
+        );
+    }
+
+    #[test]
+    fn model_survives_for_an_agent_that_takes_one() {
+        let good = DefaultLane {
+            agent: Some("claude".into()),
+            model: Some("claude-opus-5".into()),
+        };
+        assert_eq!(good.model_effective(), Some("claude-opus-5"));
+    }
+
+    #[test]
+    fn malformed_model_is_dropped() {
+        // `--model` へ unquoted で埋まるので、形式検証を通らない値は落とす（injection 防壁）。
+        let injected = DefaultLane {
+            agent: Some("claude".into()),
+            model: Some("opus; rm -rf /".into()),
+        };
+        assert_eq!(injected.model_effective(), None);
+    }
+
+    #[test]
+    fn default_lane_roundtrips_through_kdl() {
+        let f = SettingsFile {
+            default_lane: Some(DefaultLane {
+                agent: Some("claude".into()),
+                model: Some("claude-opus-5".into()),
+            }),
+            ..Default::default()
+        };
+        let kdl = f.to_kdl().unwrap();
+        assert!(kdl.contains("default-lane"), "kdl: {kdl}");
+        assert_eq!(SettingsFile::from_kdl(&kdl).unwrap(), f);
+    }
+
+    #[test]
+    fn agent_accepts_model_follows_the_engine_capability() {
+        // 一覧を独自に持たず `EngineKind::model_choices` を見る = engine が model を
+        // 受けるようになった時に片方だけ古くならない。
+        assert!(agent_accepts_model("claude"));
+        assert!(
+            !agent_accepts_model("codex"),
+            "codex は今 model_choices が空"
+        );
+        assert!(!agent_accepts_model("nonexistent"));
     }
 
     #[test]

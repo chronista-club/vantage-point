@@ -56,6 +56,9 @@ export interface SettingsResult {
   resolved_repo_root?: string;
   log_level?: string;
   idle_timeout_minutes?: number;
+  default_agent?: string;
+  default_model?: string;
+  default_agent_takes_model: boolean;
   daemon_reachable: boolean;
 }
 
@@ -184,6 +187,8 @@ export interface SettingsSave {
   default_repo_root?: string;
   log_level?: string;
   idle_timeout_minutes?: number;
+  default_agent?: string;
+  default_model?: string;
 }
 
 /** Request "settings:pick_repo_root" — empty payload */

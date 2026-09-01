@@ -123,6 +123,9 @@ export function installIpcBridge(): void {
       daemonReachable,
       logLevel,
       idleTimeoutMinutes,
+      defaultAgent,
+      defaultModel,
+      defaultAgentTakesModel,
     ) =>
       window.vpSettings?.handleResult({
         developerMode,
@@ -132,6 +135,9 @@ export function installIpcBridge(): void {
         daemonReachable,
         logLevel,
         idleTimeoutMinutes,
+        defaultAgent,
+        defaultModel,
+        defaultAgentTakesModel,
       }),
   })
 }

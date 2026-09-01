@@ -3296,6 +3296,13 @@ mod sidebar_js {
 struct DaemonSettings {
     log_level: Option<String>,
     idle_timeout_minutes: Option<i64>,
+    /// 既定 agent × model（doc 59 P4）。**組で保持する** — 別々に持つと
+    /// 「codex なのに claude の model」を UI 側で再構成できてしまう。
+    default_agent: Option<String>,
+    default_model: Option<String>,
+    /// 実効 agent が model 指定を受け付けるか。**daemon が判定した結果**をそのまま持つ
+    /// （vp-app は engine の能力表明を知らない = 一覧を複製しない）。
+    default_agent_takes_model: bool,
 }
 
 /// 設定 overlay へ返す確定値を組み立てる（doc 59 P1 + P3）。
@@ -3323,6 +3330,11 @@ fn settings_snapshot(
         daemon_reachable: daemon.is_some(),
         log_level: daemon.and_then(|d| d.log_level.clone()),
         idle_timeout_minutes: daemon.and_then(|d| d.idle_timeout_minutes),
+        default_agent: daemon.and_then(|d| d.default_agent.clone()),
+        default_model: daemon.and_then(|d| d.default_model.clone()),
+        // daemon が判定した結果をそのまま流す。UI はこれが false なら model 欄を出さない
+        // （codex は VP から model を渡さない = 押しても効かない欄を並べない）。
+        default_agent_takes_model: daemon.is_some_and(|d| d.default_agent_takes_model),
     }
 }
 
@@ -6079,12 +6091,24 @@ pub fn run() -> anyhow::Result<()> {
                 // daemon 側（settings.kdl）が揃ったので、vp-app.toml 側と合流させて
                 // **1 回だけ** push する。`None` = 接続できなかった（UI は該当区画を
                 // 「daemon に接続すると編集できます」に落とす）。
-                last_daemon_settings = fetched.map(|v| DaemonSettings {
-                    log_level: v
-                        .get("log_level")
-                        .and_then(|x| x.as_str())
-                        .map(str::to_string),
-                    idle_timeout_minutes: v.get("idle_timeout_minutes").and_then(|x| x.as_i64()),
+                last_daemon_settings = fetched.map(|v| {
+                    let text = |k: &str| {
+                        v.get(k)
+                            .and_then(|x| x.as_str())
+                            .map(str::to_string)
+                    };
+                    DaemonSettings {
+                        log_level: text("log_level"),
+                        idle_timeout_minutes: v
+                            .get("idle_timeout_minutes")
+                            .and_then(|x| x.as_i64()),
+                        default_agent: text("default_agent"),
+                        default_model: text("default_model"),
+                        default_agent_takes_model: v
+                            .get("default_agent_takes_model")
+                            .and_then(|x| x.as_bool())
+                            .unwrap_or(false),
+                    }
                 });
                 sidebar_js::settings_result(
                     &webview,
@@ -6753,6 +6777,12 @@ pub fn run() -> anyhow::Result<()> {
                     if let Some(minutes) = save.idle_timeout_minutes {
                         daemon_payload
                             .insert("idle_timeout_minutes".into(), serde_json::json!(minutes));
+                    }
+                    if let Some(agent) = save.default_agent {
+                        daemon_payload.insert("default_agent".into(), serde_json::json!(agent));
+                    }
+                    if let Some(model) = save.default_model {
+                        daemon_payload.insert("default_model".into(), serde_json::json!(model));
                     }
                 }
                 if outcome.settings_pick_repo_root_request {
