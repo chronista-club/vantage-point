@@ -85,7 +85,7 @@ fn fetch_running_processes() -> Vec<String> {
 ///
 /// 表記は **settings.kdl の node 名と同じ kebab-case** に揃える — user が file を開いた
 /// ときに CLI で打った語がそのまま見える（wire の snake_case は内部の都合なので隠す）。
-const SETTABLE_KEYS: [(&str, KeyKind, &str); 2] = [
+const SETTABLE_KEYS: [(&str, KeyKind, &str); 4] = [
     (
         "log-level",
         KeyKind::Str,
@@ -95,6 +95,16 @@ const SETTABLE_KEYS: [(&str, KeyKind, &str); 2] = [
         "idle-timeout-minutes",
         KeyKind::Uint,
         "アイドルとみなすまでの分数（既定 5）。now-line の「⏸N分」と engine 停止の両方に効く",
+    ),
+    (
+        "default-agent",
+        KeyKind::Str,
+        "新しい lane の既定 agent（claude | codex）。空文字で未設定に戻す",
+    ),
+    (
+        "default-model",
+        KeyKind::Str,
+        "新しい lane の既定 model。⚠️ その agent が model を受け付ける場合のみ設定できる",
     ),
 ];
 
@@ -111,6 +121,8 @@ fn wire_field_of(key: &str) -> Option<(&'static str, KeyKind)> {
     match key {
         "log-level" => Some(("log_level", KeyKind::Str)),
         "idle-timeout-minutes" => Some(("idle_timeout_minutes", KeyKind::Uint)),
+        "default-agent" => Some(("default_agent", KeyKind::Str)),
+        "default-model" => Some(("default_model", KeyKind::Str)),
         _ => None,
     }
 }

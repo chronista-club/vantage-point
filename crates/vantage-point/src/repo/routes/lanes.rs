@@ -110,10 +110,8 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
         .to_string();
     let present: std::collections::HashSet<String> =
         lanes.iter().map(|l| l.address.to_string()).collect();
-    let default_agent = crate::config::Config::load()
-        .unwrap_or_default()
-        .default_agent_or_claude()
-        .to_string();
+    // doc 59 P4: 既定 agent は settings.kdl（好みの層）が持つ。
+    let default_agent = crate::settings_file::default_lane_agent();
     // ⚠️ この placeholder の field は **publish ごとに変わってはいけない**（doc 44 §11.3）。
     // `publish_lanes` は snapshot の指紋で「変わった時だけ vp-app を起こす」ので、ここに
     // 呼ぶたび変わる値を焼くと 5s tick がそのまま push 源に戻り、修正が無効化される。
@@ -391,14 +389,13 @@ pub(crate) async fn create_sub_orchestrated(
     // をそのまま受け取る。 未指定なら config の `default_agent` (未設定なら "claude" fallback、
     // PR-pre2 / VP-118 で "hd" → "claude" rename)。
     //
-    // Config::load() は他 handler でも ad-hoc に呼ばれており (server.rs:49, mcp.rs:2577 等)、
-    // SSOT は config.toml ファイル自体。 AppState に持たせない pattern を踏襲。
-    let config = crate::config::Config::load().unwrap_or_default();
+    // doc 59 P4: 既定 agent は settings.kdl（好みの層）が持つ。読み出し口は
+    // `default_lane_agent` 1 つで、全 lane 作成経路が共有する。
     let agent: String = req
         .agent
         .as_deref()
         .map(str::to_string)
-        .unwrap_or_else(|| config.default_agent_or_claude().to_string());
+        .unwrap_or_else(crate::settings_file::default_lane_agent);
 
     // 重複チェック + 予約 (check-and-reserve、二重 dispatch race の根治)。
     //
@@ -557,13 +554,20 @@ pub(crate) async fn create_sub_orchestrated(
     // 検証は関数冒頭 (reserve 前) で済んでいるので、ここは永続のみ。 IO 失敗は best-effort warn
     // （claude default に degrade するだけで lane 作成は続行）。
     //
-    // doc 54 §8-11: 明示 model > config `default-lane-model` > **無記録**（engine 側の
-    // user 既定に委ねる — 旧「未設定なら Opus 強制」は撤去）。CLI (persist_lane_model) と
-    // 同じ既定規則を共有し、tui/gui 両方に効く（model は per-lane 単一真実源）。
-    if let Some(model) = crate::lane::engine_model::resolve_default(
-        req.model.as_deref(),
-        config.default_lane_model(),
-    ) {
+    // doc 54 §8-11: 明示 model > settings.kdl の既定 > **無記録**（engine 側の user 既定に
+    // 委ねる — 旧「未設定なら Opus 強制」は撤去）。CLI (persist_lane_model) と同じ既定規則を
+    // 共有し、tui/gui 両方に効く（model は per-lane 単一真実源）。
+    //
+    // ⚠️ doc 59 P4: **この lane の agent が model を受け付ける時だけ**既定を当てる。
+    // 旧実装は agent を見ずに `default-lane-model` を返してから agent と組にしていたため、
+    // `default-agent "codex"` + `default-lane-model "claude-opus-5"` のような
+    // **意味のない組み合わせ**が registry に載った（silent no-op で気づけない）。
+    let default_model = crate::settings_file::default_lane_pair()
+        .1
+        .filter(|_| crate::settings_file::agent_accepts_model(&agent));
+    if let Some(model) =
+        crate::lane::engine_model::resolve_default(req.model.as_deref(), default_model.as_deref())
+    {
         let lane_label = crate::repo::agent_spawner::lane_label(&addr);
         // 記録先は registry の初期 session（key=1）の `SessionEntry.model`（session 紐づけ、
         // 2026-07-27）。default_agent = この lane の agent — 早期に registry file が生えても

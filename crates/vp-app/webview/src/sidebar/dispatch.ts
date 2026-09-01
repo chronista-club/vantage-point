@@ -55,6 +55,9 @@ export interface SidebarPushHandlers {
     daemonReachable: boolean,
     logLevel: string,
     idleTimeoutMinutes: number,
+    defaultAgent: string,
+    defaultModel: string,
+    defaultAgentTakesModel: boolean,
   ): void
 }
 
@@ -94,6 +97,9 @@ function apply(msg: IpcEventEnvelope): void {
         msg.daemon_reachable,
         msg.log_level ?? '',
         msg.idle_timeout_minutes ?? 0,
+        msg.default_agent ?? '',
+        msg.default_model ?? '',
+        msg.default_agent_takes_model,
       )
       break
     default: {

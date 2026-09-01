@@ -531,10 +531,16 @@ fn clear_lane_state_files(repo_root: &Path, lane: &str) {
 /// (lane worktree の中から呼んでも repo 読み手の `addr.repo` = main root basename と一致する。
 /// 旧: worktree 内実行で repo key mismatch → model が silent 無視。repo key 正規化で解消)。
 fn persist_lane_model(repo_root: &Path, lane: &str, model: Option<&str>) -> Result<(), String> {
-    // doc 54 §8-11: 明示 `--model` > config `default-lane-model` > 無記録（engine 側の
-    // user 既定に委ねる）。mcp / sidebar 経路（create_sub_orchestrated）と同じ既定規則。
-    let cfg = crate::config::Config::load().unwrap_or_default();
-    let effective = super::engine_model::resolve_default(model, cfg.default_lane_model());
+    // doc 54 §8-11: 明示 `--model` > settings.kdl の既定 > 無記録（engine 側の user 既定に
+    // 委ねる）。mcp / sidebar 経路（create_sub_orchestrated）と同じ既定規則。
+    //
+    // ⚠️ doc 59 P4: 既定は **agent と組で**引く。CLI の `vp lane new` は claude 前提で
+    // model を記録する経路なので、既定 agent が model を受け付けない（codex 等）なら
+    // 既定 model は当てない（`default_lane_pair` が組で解決済み）。
+    let effective = super::engine_model::resolve_default(
+        model,
+        crate::settings_file::default_lane_pair().1.as_deref(),
+    );
     persist_lane_model_in(
         &crate::config::vp_state_dir(),
         repo_root,

@@ -77,14 +77,22 @@ protocol "vp-daemon" version="0.2.0" {
             returns "UserSettings" {
                 field "log_level" type="string" description="ログ詳細度（trace|debug|info|warn|error）。未設定なら省略。⚠️ daemon の起動時にしか読まれないので、変更の反映には daemon 再起動が要る。"
                 field "idle_timeout_minutes" type="int" description="アイドルとみなすまでの分数。未設定なら省略（既定 5 分）。**1 つの値が 2 つの振る舞いを決める** — sidebar の now-line が『⏸N分』に沈む閾値（client 判定）と、見ていない lane の chat engine を落とす猶予（daemon 判定）。"
+                field "default_agent" type="string" description="新しい lane の既定 agent（claude | codex）。未設定なら省略（既定 claude）。"
+                field "default_model" type="string" description="新しい lane の既定 model alias。**agent が model を受け付ける場合のみ**意味を持つ（codex は VP から model を渡さないので設定できない）。未設定なら省略。"
+                field "default_agent_takes_model" type="bool" required=#true description="実効 agent が VP からの model 指定を受け付けるか。判定の源は engine の能力表明（EngineKind::model_choices が空 = 受け付けない）。client はこれが false なら model 欄を出さない（押しても効かない欄を並べない）。"
             }
         }
         request "settings/set" description="user の「好み」設定を書き換える。**daemon が唯一の書き手**（GUI / CLI はこの RPC に頼む）で、atomic write により partial read が起きない。指定しなかった field は不変、空文字を渡すとその key を消す（= 未設定に戻して組み込み既定へ倒す）。書き込み後の確定値を返すので、呼び手は楽観更新をしなくてよい。" {
             field "log_level" type="string" description="ログ詳細度（trace|debug|info|warn|error）。空文字 = 未設定に戻す。綴り違いはエラーを返す（黙って捨てると『設定したのに効かない』になる）。"
             field "idle_timeout_minutes" type="int" description="アイドルとみなすまでの分数（1 以上）。0 はエラー — 『無効化』の意味を持たせず、1 つの値に時間と有効/無効の 2 性質を兼ねさせないため。"
+            field "default_agent" type="string" description="新しい lane の既定 agent。claude | codex のみ（doc 59 P4、mako 裁定）。空文字 = 未設定に戻す。それ以外はエラー。"
+            field "default_model" type="string" description="新しい lane の既定 model alias。空文字 = 未設定に戻す。**その agent が model を受け付けない場合はエラー**（保存しても無視されるだけの値を黙って書かない）。"
             returns "UserSettings" {
                 field "log_level" type="string" description="書き込み後の確定値。未設定なら省略。"
                 field "idle_timeout_minutes" type="int" description="書き込み後の確定値。未設定なら省略。"
+                field "default_agent" type="string" description="書き込み後の確定値。未設定なら省略。"
+                field "default_model" type="string" description="書き込み後の確定値。未設定なら省略。"
+                field "default_agent_takes_model" type="bool" required=#true description="書き込み後の実効 agent が model を受け付けるか。"
             }
         }
         request "host/farewell_log" description="Repo Host の帳簿から見送りの記録を新しい順に返す read-only 照会（doc 44 §7.5）。kind='reclaimed' が「いつ何を見送ったか」、kind='pending' が「人の判断待ちがいつから何回続いているか」。lane_name は記録時点のスナップショット（key は lane_id なので rename でも履歴は動かない）。" {

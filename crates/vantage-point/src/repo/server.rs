@@ -299,10 +299,8 @@ pub(crate) async fn start_repo(
     // doc 13 §6 自動 spawn rule = Lane 起動時に board 同時 spawn (default) を default で実現。
     if let Some(lc_pool) = state.lane_capabilities.as_ref() {
         let main_addr = super::lanes_state::LaneAddress::root(&repo_name_for_remote);
-        let default_agent = crate::config::Config::load()
-            .unwrap_or_default()
-            .default_agent_or_claude()
-            .to_string();
+        // doc 59 P4: 既定 agent は settings.kdl（好みの層）が持つ。
+        let default_agent = crate::settings_file::default_lane_agent();
         lc_pool
             .write()
             .await
@@ -367,10 +365,8 @@ pub(crate) async fn start_repo(
             );
             // doc 11 PR-B: agent は String 化、 default は config の `default_agent`
             // (未設定なら "claude" fallback、 PR-pre2 / VP-118 で "hd" → "claude")。
-            let default_agent = crate::config::Config::load()
-                .unwrap_or_default()
-                .default_agent_or_claude()
-                .to_string();
+            // doc 59 P4: 既定 agent は settings.kdl（好みの層）が持つ。
+            let default_agent = crate::settings_file::default_lane_agent();
             // in-process 直結: 型付き LaneCmd を channel に同期 send (serialize / retry 不要)。
             // send が Err を返すのは receiver drop 後のみ (= actor task 終了後。 startup 時点では
             // 起き得ないが防御的に warn)。 投入順序は Semaphore gate が並列度を制御するため保証不要。

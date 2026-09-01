@@ -37,6 +37,12 @@ export type SettingsSnapshot = {
 	logLevel: string;
 	/** アイドル判定の分数（settings.kdl 由来、0 = 未設定 = 既定 5 分）。 */
 	idleTimeoutMinutes: number;
+	/** 新しい lane の既定 agent（未設定は空文字 = claude 相当）。 */
+	defaultAgent: string;
+	/** 新しい lane の既定 model（未設定は空文字）。 */
+	defaultModel: string;
+	/** その agent が model 指定を受け付けるか。**daemon が判定した結果**。 */
+	defaultAgentTakesModel: boolean;
 };
 
 declare global {
@@ -58,6 +64,9 @@ const [resolvedRoot, setResolvedRoot] = createSignal("");
 const [daemonReachable, setDaemonReachable] = createSignal(false);
 const [logLevel, setLogLevel] = createSignal("");
 const [idleMinutes, setIdleMinutes] = createSignal(0);
+const [defaultAgent, setDefaultAgent] = createSignal("");
+const [defaultModel, setDefaultModel] = createSignal("");
+const [agentTakesModel, setAgentTakesModel] = createSignal(false);
 
 function open(): void {
 	setVisible(true);
@@ -77,6 +86,9 @@ function handleResult(s: SettingsSnapshot): void {
 	setDaemonReachable(s.daemonReachable);
 	setLogLevel(s.logLevel);
 	setIdleMinutes(s.idleTimeoutMinutes);
+	setDefaultAgent(s.defaultAgent);
+	setDefaultModel(s.defaultModel);
+	setAgentTakesModel(s.defaultAgentTakesModel);
 	setLoaded(true);
 }
 
@@ -114,6 +126,32 @@ function saveIdleMinutes(raw: string): void {
 	if (!Number.isFinite(n) || n <= 0) return;
 	sendIpc({ t: "settings:save", idle_timeout_minutes: n });
 }
+
+/**
+ * 既定 agent の保存（doc 59 P4）。
+ *
+ * ⚠️ agent を変えると model の可否も変わる（codex は model を受け付けない）。
+ * daemon が確定値と `default_agent_takes_model` を返すので、UI はそれに従うだけ。
+ */
+function saveDefaultAgent(value: string): void {
+	sendIpc({ t: "settings:save", default_agent: value });
+}
+
+/** 既定 model の保存。空 = 未設定に戻す。 */
+function saveDefaultModel(value: string): void {
+	sendIpc({ t: "settings:save", default_model: value.trim() });
+}
+
+/** 既定に選べる agent（doc 59 P4、mako 裁定 = claude と codex のみ）。空 = 未設定。 */
+const SELECTABLE_AGENTS = ["", "claude", "codex"];
+
+/**
+ * claude の model 候補。空 = engine 既定に委ねる。
+ *
+ * ⚠️ ここは表示用の短縮リスト。daemon 側は形式検証（`is_valid_model`）だけ通すので、
+ * 手で settings.kdl に別の alias を書くこともできる。
+ */
+const CLAUDE_MODELS = ["", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"];
 
 /** ログ詳細度の選択肢。空 = 未設定（VP の組み込み既定に従う）。 */
 const LOG_LEVELS = ["", "trace", "debug", "info", "warn", "error"];
@@ -260,6 +298,46 @@ export function SettingsPanel() {
 										</div>
 									}
 								>
+									<label class="vp-settings-row" for="vp-set-agent">
+										<span class="vp-settings-label">新しい lane の既定</span>
+										<span class="vp-settings-hint">
+											lane を作るときに最初から選ばれている agent と model です。
+										</span>
+										<div class="vp-settings-inputrow">
+											<select
+												id="vp-set-agent"
+												class="vp-settings-input"
+												value={defaultAgent()}
+												onChange={(e) => saveDefaultAgent(e.currentTarget.value)}
+											>
+												{SELECTABLE_AGENTS.map((a) => (
+													<option value={a}>{a || "（既定: claude）"}</option>
+												))}
+											</select>
+											{/* ⚠️ model 欄は **その agent が受け付ける時だけ** 出す。
+											    codex は VP から model を渡さないので、出すと
+											    「選べるのに効かない」欄になる。 */}
+											<Show
+												when={agentTakesModel()}
+												fallback={
+													<span class="vp-settings-unit">
+														model は {defaultAgent() || "claude"} 側で選択
+													</span>
+												}
+											>
+												<select
+													class="vp-settings-input"
+													value={defaultModel()}
+													onChange={(e) => saveDefaultModel(e.currentTarget.value)}
+												>
+													{CLAUDE_MODELS.map((m) => (
+														<option value={m}>{m || "（engine 既定）"}</option>
+													))}
+												</select>
+											</Show>
+										</div>
+									</label>
+
 									<label class="vp-settings-row" for="vp-set-idle">
 										<span class="vp-settings-label">アイドルとみなす時間</span>
 										<span class="vp-settings-hint">

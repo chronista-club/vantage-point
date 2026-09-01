@@ -139,6 +139,10 @@ pub struct SettingsSave {
     pub log_level: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_timeout_minutes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -201,6 +205,11 @@ pub struct SettingsResult {
     pub log_level: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_timeout_minutes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    pub default_agent_takes_model: bool,
     pub daemon_reachable: bool,
 }
 

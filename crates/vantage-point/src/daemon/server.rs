@@ -370,6 +370,30 @@ fn user_settings_json(s: &crate::settings_file::SettingsFile) -> serde_json::Val
     if let Some(minutes) = s.idle_timeout_minutes {
         out.insert("idle_timeout_minutes".into(), serde_json::json!(minutes));
     }
+    // doc 59 P4: 既定 agent × model は **組で**返す。片方だけ返すと受け手が
+    // 「agent は codex なのに model は claude」を再構成できてしまう。
+    if let Some(lane) = &s.default_lane {
+        if let Some(agent) = &lane.agent {
+            out.insert("default_agent".into(), serde_json::json!(agent));
+        }
+        if let Some(model) = &lane.model {
+            out.insert("default_model".into(), serde_json::json!(model));
+        }
+    }
+    // ⚠️ **能力の判定は daemon 側でやって結果だけ返す**。vp-app は engine の能力表明
+    // （`EngineKind::model_choices`）を知らない（重量 dep を持ち込まない方針で
+    // vantage-point crate に依存していない）ので、client 側に一覧を複製すると
+    // engine が model を受けるようになった時に片方だけ古くなる。
+    let effective_agent = s
+        .default_lane
+        .clone()
+        .unwrap_or_default()
+        .agent_effective()
+        .to_string();
+    out.insert(
+        "default_agent_takes_model".into(),
+        serde_json::json!(crate::settings_file::agent_accepts_model(&effective_agent)),
+    );
     serde_json::Value::Object(out)
 }
 
@@ -697,6 +721,45 @@ pub(crate) async fn handle_daemon_control(
                     settings.idle_timeout_minutes = Some(minutes);
                 }
             }
+            // doc 59 P4: 既定 agent × model。**agent を先に確定してから model を検証する** —
+            // 順序が逆だと「codex に claude の model」を弾けない。
+            let mut lane = settings.default_lane.clone().unwrap_or_default();
+            if let Some(raw) = payload.get("default_agent").and_then(|v| v.as_str()) {
+                let v = raw.trim();
+                if v.is_empty() {
+                    lane.agent = None;
+                } else if crate::settings_file::SELECTABLE_AGENTS.contains(&v) {
+                    lane.agent = Some(v.to_string());
+                } else {
+                    return Err(format!(
+                        "default_agent が不正です: {v:?}（{}）",
+                        crate::settings_file::SELECTABLE_AGENTS.join(" | ")
+                    ));
+                }
+            }
+            if let Some(raw) = payload.get("default_model").and_then(|v| v.as_str()) {
+                let v = raw.trim();
+                if v.is_empty() {
+                    lane.model = None;
+                } else {
+                    // ⚠️ **その agent が model を受け付けるか**を先に見る。受け付けないなら
+                    // 保存しても無視されるだけなので、黙って書かずエラーで返す
+                    // （「設定したのに効かない」を作らない）。
+                    let agent = lane.agent_effective().to_string();
+                    if !crate::settings_file::agent_accepts_model(&agent) {
+                        return Err(format!(
+                            "{agent} は VP から model を指定できません（model は {agent} 側で選択します）"
+                        ));
+                    }
+                    if !crate::lane::engine_model::is_valid_model(v) {
+                        return Err(format!("default_model の形式が不正です: {v:?}"));
+                    }
+                    lane.model = Some(v.to_string());
+                }
+            }
+            settings.default_lane =
+                (lane != crate::settings_file::DefaultLane::default()).then_some(lane);
+
             settings.save().map_err(|e| e.to_string())?;
             // 書き込み後の確定値を返す = 呼び手は楽観更新をしなくてよい。
             Ok(user_settings_json(&settings))
