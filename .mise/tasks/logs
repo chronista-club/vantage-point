@@ -1,11 +1,13 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#MISE description="Tail VP logs (daemon + daemon stdout + app tracing + app stdout) — terminal で常時 stream 表示"
+#MISE description="Tail VP logs (daemon + daemon stdout + app tracing + app stdout) — terminal で常時 stream 表示 (profile 依存: dev daemon は VP_PROFILE=dev mise run logs)"
 #
 # file-based mise task 移行 (2026-05-30)。 旧 [tasks.logs] を Ruby file task に移植。
 # log file が無くても tail -F が掴めるよう先に touch、 最後に exec tail -F で 4 file を stream。
 # ログローテーションは file-rotate (容量/件数ベース) で現行ファイル名を bare 名に保つため、
 # ここで tail する exact name は不変 (rotate された世代は app.kdl.log.1 等の別名に逃げる)。
+# 2026-09-02: dir は profile 依存 (VP.log_dir → vp/log or vp-dev/log)。 dev daemon (mise run daemon) の log を
+# 見るなら `VP_PROFILE=dev mise run logs`。 dev_profile! は呼ばない (app:swap の dogfood は brew 側の log を読む)。
 require "fileutils"
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
@@ -22,7 +24,7 @@ FILES = {
 paths = FILES.keys.map { File.join(dir, it) }
 FileUtils.touch(paths)
 
-VP.log "Tailing 4 files:"
+VP.log "Tailing 4 files in #{dir} (profile=#{ENV['VP_PROFILE'] || 'brew'}):"
 FILES.each { |name, desc| warn "   #{name.ljust(18)} (#{desc})" }
 warn "─" * 50
 

@@ -98,7 +98,7 @@ sibling が無い / branch がズレていると `no such module 'UnisonClient'`
 ### codesign（cp 禁止は Rust 側の話）
 Swift agent は xcodebuild が自動署名（`CODE_SIGN_STYLE: Automatic`）。**`.app` を `cp` で別所へ運ぶと
 署名が剥がれ macOS に kill される**ので、`open` で DerivedData の成果物を直接起動する。CLI（`vp`）側は
-従来どおり `cargo install --path crates/vp-cli --force`（cp は厳禁、CLAUDE.md feedback）。
+`mise run daemon:build`（dev root `~/.local/opt/vp-dev/bin` に cargo install。`~/.cargo/bin` には置かない — CLAUDE.md VP_PROFILE 節。cp は厳禁）。
 
 ### Swift 6 concurrency
 `SWIFT_VERSION: "6.0"`（strict concurrency）。`Sendable` / actor-isolation の error が出やすい。
@@ -109,10 +109,10 @@ Swift agent は xcodebuild が自動署名（`CODE_SIGN_STYLE: Automatic`）。*
 Swift agent ではなく Rust（`crates/vantage-point/` / `crates/vp-cli/`）を触ったとき:
 
 ```bash
-cargo install --path crates/vp-cli --force   # vp（~/.cargo/bin/vp）更新
+mise run daemon:build   # dev vp（~/.local/opt/vp-dev/bin/vp）更新。~/.cargo/bin には置かない（CLAUDE.md VP_PROFILE 節）
 ```
 
-daemon の再起動は `vp restart-all` or `vp daemon stop && vp daemon start`。
+daemon への反映は 2 経路。普段使い（brew、:32000）に効かせるなら `VP_SWAP_RESTART_DAEMON=1 mise run app:swap`（lane の claude が全部落ちる。⚠️ VP の lane の中から打つと自分が死ぬ）。dev profile（:32100）で試すなら `mise run daemon`（build → stop → start、brew 側は触らない）。
 
 ## やらない判断（ユーザー確認を挟む）
 
