@@ -372,7 +372,20 @@ async fn hub_credential() -> Option<Vec<u8>> {
     )
     .await
     {
-        Ok(creds) => credential_from_creds(creds),
+        Ok(crate::commands::auth::CredentialState::Valid(creds)) => {
+            credential_from_creds(Some(creds))
+        }
+        // 完全失効 + 巻き直し不能。旧実装は失効 token をそのまま提示して verifier に
+        // 拒否され「credential 付き接続に失敗 → 降格して再試行」の 2 手を毎接続で踏んでいた。
+        // 最初から匿名で繋ぐ（permissive hub なら接続維持、required なら弾かれるのは同じ）。
+        Ok(crate::commands::auth::CredentialState::ExpiredUnrecoverable) => {
+            tracing::warn!(
+                "hub credential が失効していて巻き直せません（refresh_token 不在 / refresh 失敗）— \
+                 匿名で接続します。`vp auth login` で再ログインしてください"
+            );
+            None
+        }
+        Ok(crate::commands::auth::CredentialState::Absent) => None,
         // file 読み込み / refresh 構築失敗（壊れた file 等）は credential なし扱い。federation を
         // 止めるより observe/permissive で繋ぐ方が degrade として穏当。
         Err(e) => {

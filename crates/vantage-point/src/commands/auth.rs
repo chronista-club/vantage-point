@@ -603,20 +603,40 @@ async fn refresh_tokens(config: &OidcConfig, refresh_token: &str) -> Result<Toke
 ///
 /// `skew_secs` = 期限までこの秒数を切ったら「切れそう」とみなす slack（clock 誤差 + refresh
 /// 往復の余裕）。
+/// 巻き直し試行後の credential の状態。
+///
+/// 旧 `Option<Credentials>` は「有効」と「**失効していて巻き直せない**」を区別できず、
+/// 呼び手は失効 token をそのまま Bearer に組んで 401 を受け続けた（2026-09-01 の live 障害
+/// 「メモリが表示されない」— creo 側に 24h で 565 件の 401 storm。VP 側は 3 段
+/// （`Ok(Some(失効))` → 401 を `Ok(None)` 扱い → ACTIONS 空なら warn 抑制）すべてで
+/// 異常が正常に化け、**2.5 時間 1 行もログが出なかった**）。
+#[derive(Debug)]
+pub enum CredentialState {
+    /// 有効（skew の外、skew 内で refresh 成功、または skew 内でまだ寿命が残っている）。
+    /// この token で HTTP を撃ってよい。
+    Valid(Credentials),
+    /// **完全に失効していて巻き直せない**（refresh_token 無し / refresh 失敗）。
+    /// この token で撃つと 401 が確定する — 呼び手は **HTTP を撃たずに** `vp auth login` を
+    /// 促すこと（撃ち続けると相手側に 401 storm を作る）。
+    ExpiredUnrecoverable,
+    /// 未ログイン（credential file にこの audience の席が無い）。
+    Absent,
+}
+
 pub async fn credentials_refreshed_if_needed(
     audience: &str,
     skew_secs: u64,
-) -> Result<Option<Credentials>> {
+) -> Result<CredentialState> {
     let Some(creds) = read_credentials_for(audience)? else {
-        return Ok(None);
+        return Ok(CredentialState::Absent);
     };
     // まだ十分に有効なら触らない（大多数のケース、HTTP を撃たない）。
     if !creds.is_expired(skew_secs) {
-        return Ok(Some(creds));
+        return Ok(CredentialState::Valid(creds));
     }
-    // 切れそう。refresh_token が無ければ巻き直せない — 既存を返す（期限切れは hub が判断）。
+    // skew 内 or 失効。refresh_token が無ければ巻き直せない。
     let Some(refresh) = creds.refresh_token.as_deref() else {
-        return Ok(Some(creds));
+        return Ok(unrefreshable_state(creds));
     };
     let config = OidcConfig::from_env().context("refresh: OidcConfig 構築に失敗")?;
     match refresh_tokens(&config, refresh).await {
@@ -625,15 +645,28 @@ pub async fn credentials_refreshed_if_needed(
             // ⚠️ 巻き直した token は **元の audience の席へ**戻す。ここを取り違えると
             // hub の refresh が creo の token を上書きする（identity は同じでも宛先が違う）。
             save_credentials_for(audience, &new_creds)?;
-            Ok(Some(new_creds))
+            Ok(CredentialState::Valid(new_creds))
         }
-        // refresh 失敗（network / IdP 側）でも既存 token を返す。まだ有効な可能性があり、
-        // ここで None にすると「有効 token を持っているのに credential なし接続」になって
-        // required hub で無用に弾かれる。
         Err(e) => {
-            tracing::warn!("hub credential の proactive refresh に失敗（既存 token で続行）: {e}");
-            Ok(Some(creds))
+            // ⚠️ 文言に audience を含める。旧「hub credential の…」固定は creo の失敗でも
+            // hub と表示され、2026-09-01 の切り分けを迷走させた。
+            tracing::warn!("{audience} の credential refresh に失敗: {e}");
+            Ok(unrefreshable_state(creds))
         }
+    }
+}
+
+/// 巻き直せなかった creds の行き先を決める（skew 内か完全失効かで分かれる）。
+///
+/// - **skew 内でまだ寿命が残っている** → `Valid`（残りを使い切る。ここで捨てると
+///   「有効 token を持っているのに credential なし接続」になり required hub で無用に弾かれる）
+/// - **完全失効**（`is_expired(0)`） → `ExpiredUnrecoverable`。旧実装はここでも既存を
+///   返していたため、失効 token での 401 が永久に続いた（本 enum 導入の動機）。
+fn unrefreshable_state(creds: Credentials) -> CredentialState {
+    if creds.is_expired(0) {
+        CredentialState::ExpiredUnrecoverable
+    } else {
+        CredentialState::Valid(creds)
     }
 }
 
@@ -1451,7 +1484,7 @@ mod tests {
         let got = credentials_refreshed_if_needed(DEFAULT_AUDIENCE, 300)
             .await
             .expect("ok");
-        assert!(got.is_none());
+        assert!(matches!(got, CredentialState::Absent));
         unsafe {
             std::env::remove_var("VP_CREDENTIALS_PATH");
         }
@@ -1477,7 +1510,43 @@ mod tests {
         let got = credentials_refreshed_if_needed(DEFAULT_AUDIENCE, 300)
             .await
             .expect("ok");
-        assert_eq!(got.expect("some").access_token, "still-valid");
+        let CredentialState::Valid(c) = got else {
+            panic!("Valid を期待: {got:?}");
+        };
+        assert_eq!(c.access_token, "still-valid");
+        unsafe {
+            std::env::remove_var("VP_CREDENTIALS_PATH");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ⚠️ 2026-09-01 live 障害の固定: **完全失効** + refresh_token 無しで旧実装は
+    /// 失効 token をそのまま返し、呼び手が Bearer に組んで 401 を 2.5 時間受け続けた
+    /// （creo 側に 24h で 565 件の 401 storm）。呼び手が「撃ってはいけない」と
+    /// 判断できる signal（ExpiredUnrecoverable）を返すこと。
+    #[tokio::test]
+    async fn refreshed_reports_unrecoverable_when_fully_expired_without_refresh_token() {
+        let _g = env_guard_async().await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let json = format!(
+            r#"{{"access_token": "long-dead", "expires_at": {}}}"#,
+            now - 100
+        );
+        let path = write_temp_creds("vp-refresh-dead", &json);
+        // SAFETY: env_guard で直列化済み。
+        unsafe {
+            std::env::set_var("VP_CREDENTIALS_PATH", &path);
+        }
+        let got = credentials_refreshed_if_needed(DEFAULT_AUDIENCE, 300)
+            .await
+            .expect("ok");
+        assert!(
+            matches!(got, CredentialState::ExpiredUnrecoverable),
+            "完全失効 + 巻き直し不能は Valid で返さない: {got:?}"
+        );
         unsafe {
             std::env::remove_var("VP_CREDENTIALS_PATH");
         }
@@ -1504,7 +1573,12 @@ mod tests {
         let got = credentials_refreshed_if_needed(DEFAULT_AUDIENCE, 300)
             .await
             .expect("ok");
-        assert_eq!(got.expect("some").access_token, "expiring-no-refresh");
+        // skew 内 = **まだ寿命が残っている**ので Valid（ここで捨てると「有効 token を
+        // 持っているのに credential なし接続」になる）。完全失効は下のテストが別に固定する。
+        let CredentialState::Valid(c) = got else {
+            panic!("Valid を期待: {got:?}");
+        };
+        assert_eq!(c.access_token, "expiring-no-refresh");
         unsafe {
             std::env::remove_var("VP_CREDENTIALS_PATH");
         }
