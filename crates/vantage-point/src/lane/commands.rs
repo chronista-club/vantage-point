@@ -2135,10 +2135,10 @@ mod tests {
         assert_eq!(model_of("feat"), None);
 
         // 有効な model は初期 session（key=1）に basename key で書かれる
-        persist_lane_model_in(base, &repo_root, "feat", Some("claude-fable-5")).expect("record");
+        persist_lane_model_in(base, &repo_root, "feat", Some("claude-fable-5-1")).expect("record");
         assert_eq!(
             model_of("feat").as_deref(),
-            Some("claude-fable-5"),
+            Some("claude-fable-5-1"),
             "repo spawn が読む repo=basename('vp') key の session 1 に書かれる"
         );
 

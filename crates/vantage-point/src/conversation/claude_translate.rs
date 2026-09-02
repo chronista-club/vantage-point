@@ -936,10 +936,12 @@ mod tests {
     #[test]
     fn context_window_prefers_session_model_entry() {
         let mut t = ClaudeTranslator::new();
-        t.ingest(r#"{"type":"system","subtype":"init","session_id":"s","model":"claude-fable-5"}"#);
+        t.ingest(
+            r#"{"type":"system","subtype":"init","session_id":"s","model":"claude-fable-5-1"}"#,
+        );
         t.ingest(r#"{"type":"assistant","message":{"role":"assistant","content":[],"usage":{"input_tokens":1,"cache_read_input_tokens":1,"cache_creation_input_tokens":1}}}"#);
         // subagent (haiku) の方が usage が大きくても、session model の entry が勝つ。
-        let evs = t.ingest(r#"{"type":"result","subtype":"success","session_id":"s","is_error":false,"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":999,"cacheReadInputTokens":999999,"contextWindow":1000000},"claude-fable-5":{"inputTokens":10,"cacheReadInputTokens":100,"contextWindow":200000}}}"#);
+        let evs = t.ingest(r#"{"type":"result","subtype":"success","session_id":"s","is_error":false,"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":999,"cacheReadInputTokens":999999,"contextWindow":1000000},"claude-fable-5-1":{"inputTokens":10,"cacheReadInputTokens":100,"contextWindow":200000}}}"#);
         match &evs.events[..] {
             [ConversationEvent::TurnCompleted { context_window, .. }] => {
                 assert_eq!(*context_window, Some(200000));

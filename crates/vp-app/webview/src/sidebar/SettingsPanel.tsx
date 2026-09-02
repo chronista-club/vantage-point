@@ -151,7 +151,7 @@ const SELECTABLE_AGENTS = ["", "claude", "codex"];
  * ⚠️ ここは表示用の短縮リスト。daemon 側は形式検証（`is_valid_model`）だけ通すので、
  * 手で settings.kdl に別の alias を書くこともできる。
  */
-const CLAUDE_MODELS = ["", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"];
+const CLAUDE_MODELS = ["", "claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"];
 
 /** ログ詳細度の選択肢。空 = 未設定（VP の組み込み既定に従う）。 */
 const LOG_LEVELS = ["", "trace", "debug", "info", "warn", "error"];
