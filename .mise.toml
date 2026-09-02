@@ -59,7 +59,7 @@ shell = "{% if os() == 'windows' %}bash -c{% else %}sh -c{% endif %}"
 # app:stop は file-based task に移行 (.mise/tasks/app/stop、 2026-05-30)。
 
 [tasks."app"]
-description = "既存 app stop → vp-app build → app start (World は touch しない、 World 再起動は `mise run daemon`)"
+description = "既存 app stop → vp-app build → app start (World は touch しない、 World 再起動は `mise run daemon`。 mac は dev profile :32100 の dev root binary / win は ~/.cargo/bin 実体)"
 run = """
 set -euo pipefail
 # build より先に stop する: Windows は実行中の .exe を置換できないため、 running app が
@@ -83,7 +83,7 @@ mise run app:start
 # 全て .mise/tasks/daemon/ 配下。 app:* と鏡像。
 
 [tasks."daemon"]
-description = "vp binary を build → 既存 World を cascade stop → World を background spawn (full restart、 `mise run daemon && mise run app` で諸々再起動)"
+description = "vp binary を build → 既存 World を cascade stop → World を background spawn (full restart、 `mise run daemon && mise run app` で諸々再起動。 mac は dev profile :32100 の dev root binary / win は ~/.cargo/bin 実体)"
 run = """
 set -euo pipefail
 mise run daemon:build

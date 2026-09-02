@@ -1,8 +1,10 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#MISE description="vp-app GUI を停止 (`vp app stop` の thin wrapper、 daemon / tmux / SP は触らない)"
+#MISE description="dev vp-app GUI を停止 (`vp app stop` の thin wrapper、 mac: dev profile 固定。 daemon は触らない)"
 #
 # file-based mise task 移行 (2026-05-30)。 旧 [tasks."app:stop"] (exec vp app stop) を移植。
+# 2026-09-02: dev root の vp (VP.dev_bin) + mac は VP_PROFILE=dev 固定 (app:start と鏡像)。
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
-VP.exec(VP.cargo_bin("vp"), "app", "stop")
+VP.dev_profile!
+VP.exec(VP.dev_bin("vp"), "app", "stop")

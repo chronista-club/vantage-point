@@ -62,13 +62,48 @@ module VP
   # 実行中ホストが Windows か (path / binary 拡張子の分岐に使う)。
   def windows? = Gem.win_platform?
 
-  # ~/.cargo/bin/<name> の絶対 path。 codesign 済 binary の single source
-  # (cp だと codesign が剥がれて macOS に kill される → install 経由必須、 CLAUDE.md feedback)。
-  # Windows では cargo install が `<name>.exe` を置くので拡張子を補う (= `vp app` 側の
-  # binary_candidates と同じ Windows 対応、 dual source drift 防止)。
+  # ~/.cargo/bin/<name> の絶対 path。 Windows の実体 (= `vp daemon install` が Task Scheduler に
+  # 焼く path) と、 cargo install だけで使う外部開発者の `vp`。 Windows では cargo install が
+  # `<name>.exe` を置くので拡張子を補う (= `vp app` 側の binary_candidates と同じ Windows 対応)。
+  #
+  # ⚠️ mac の dev binary はここに**置かない** (`dev_bin` を使う)。 `~/.cargo/bin` は PATH で
+  # `/opt/homebrew/bin` より先に来る上、 mise の rust tool が中身を丸ごと shim 化するため、
+  # `vp` を置いた瞬間に素の `vp` (= brew release) が dev binary に化ける (2026-09-02)。
   def cargo_bin(name)
     exe = windows? ? "#{name}.exe" : name
     File.join(Dir.home, ".cargo", "bin", exe)
+  end
+
+  # dev binary の install root (mac)。 PATH の**外**に置くことで素の `vp` と構造的に分離する
+  # (VP_PROFILE が state を vp-dev に分けたのと同じ手を binary にも適用)。 VP_DEV_ROOT で上書き可
+  # (nexus の `vpd` alias が同じ env を見る = 1 つの knob)。
+  def dev_root = ENV["VP_DEV_ROOT"] || File.join(Dir.home, ".local", "opt", "vp-dev")
+
+  # dev binary の絶対 path。 mac = `<dev_root>/bin/<name>`、 Windows = `~/.cargo/bin/<name>.exe`
+  # (Windows は brew が無く cargo binary が実体そのもの)。 `vp-app` を `vp` の隣に置くので
+  # `vp app start` は「自分の隣」(find_vp_app_binary 第 3 段) で見つける。
+  def dev_bin(name)
+    windows? ? cargo_bin(name) : File.join(dev_root, "bin", name)
+  end
+
+  # cargo の build artifact dir。 lane (worktree) が main の target/ を借りる運用 (CARGO_TARGET_DIR) を尊重。
+  def target_dir = ENV["CARGO_TARGET_DIR"] || File.join(root, "target")
+
+  # `cargo install` の引数列 (daemon:build / app:build の single source、 鏡像を保つ)。
+  #   --locked     : Cargo.lock を無視した最新解決で未検証 release を踏まない (CLAUDE.md)
+  #   --target-dir : cargo install の既定は毎回 temp dir で **full rebuild** になる。 workspace の
+  #                  target/ を使って incremental にする
+  #   --root       : mac は dev_root (PATH 外)。 Windows は既定 (~/.cargo/bin = 実体)
+  def cargo_install_args(crate)
+    args = ["--path", File.join(root, "crates", crate), "--locked", "--target-dir", target_dir]
+    args += ["--root", dev_root] unless windows?
+    args
+  end
+
+  # profile 別の app dir 名 (vp-paths の `app_dir_name()` と同形)。 未設定 / 空 = brew = "vp"。
+  def app_dir_name
+    profile = ENV["VP_PROFILE"]
+    profile.nil? || profile.empty? ? "vp" : "vp-#{profile}"
   end
 
   # macOS LaunchAgent の Label（daemon/process.rs の `LAUNCH_AGENT_LABEL` と同形）。
@@ -109,13 +144,25 @@ module VP
   # 「自分が VP の lane の中にいるか」を知りたい場合は ENV["VP_LANE"] を見ること。
 
   # VP の log 出力先 (daemon:start が書き、 logs が tail する共通 dir)。
-  # XDG_STATE_HOME → ~/.local/state を基底に vp/log。 VP_LOG_DIR で上書き可。
-  def log_dir = ENV["VP_LOG_DIR"] || File.join(ENV["XDG_STATE_HOME"] || File.join(Dir.home, ".local", "state"), "vp", "log")
+  # XDG_STATE_HOME → ~/.local/state を基底に <app_dir_name>/log = daemon 自身が書く state zone と
+  # 同じ profile 分離 (brew の LaunchAgent daemon と dev daemon が同じ file に書き込まないため)。
+  # VP_LOG_DIR で上書き可。
+  def log_dir = ENV["VP_LOG_DIR"] || File.join(ENV["XDG_STATE_HOME"] || File.join(Dir.home, ".local", "state"), app_dir_name, "log")
 
   # ── actions (副作用) ──────────────────────────────────────
 
   # semantic icon glyph を返す (task 側: `VP.log "#{VP.icon(:build)} Building…"`)。
   def icon(name) = Icon[name]
+
+  # mac の daemon:* / app:* task は dev root の binary を **dev profile 専用**で走らせる
+  # (dev binary を brew namespace :32000 = LaunchAgent の daemon が居る側で起こす経路を残さない)。
+  # ENV を書き換えるので、 以降の log_dir 計算と spawn / exec する子に伝播する。
+  # Windows は cargo binary が実体そのものなので profile は呼び手の env に従う (app:swap の win_task_name と同じ)。
+  def dev_profile!
+    return if windows?
+
+    ENV["VP_PROFILE"] = "dev"
+  end
 
   # 進捗ログ (cyan chevron)。 task の stdout を汚さないよう stderr へ。
   def log(msg) = warn("\e[36m#{Icon[:arrow]}\e[0m #{msg}")

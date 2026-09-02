@@ -1,16 +1,17 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#MISE description="vp binary (vp-cli: daemon + CLI commands) を release build + ~/.cargo/bin に install"
+#MISE description="vp binary (vp-cli: daemon + CLI commands) を release build + dev root に install (mac: ~/.local/opt/vp-dev/bin、 win: ~/.cargo/bin)"
 #
 # 2026-05-30 Occam 対称化: cli: namespace を統合 (app:/daemon: を鏡像に)。
 # 2026-06-09 task namespace を world: → daemon: にリネーム (`vp daemon` CLI 名に揃える)。
-# cargo install --path で codesign 付き binary を ~/.cargo/bin (PATH) に配置 = shell `vp` と
-# mise task 系で source 共通化 (dual source drift 防止)。 cp は codesign 剥がれ → install 必須。
-#
-# --locked 必須 (CLAUDE.md): cargo install は Cargo.lock を無視して依存を最新解決するため、
-# 未検証の新リリース (例: time 0.3.48 × ratatui-widgets の E0119) を踏んで build が壊れる。
+# 2026-09-02 install 先を ~/.cargo/bin から dev root (PATH 外、 VP.dev_root) に移設:
+#   ~/.cargo/bin は PATH で brew より先に来る上、 mise の rust tool が中身を丸ごと shim 化するため、
+#   `vp` を置くと素の `vp` (brew release) が dev binary に化ける。 引数は VP.cargo_install_args が
+#   single source (app:build と鏡像)。 --target-dir で workspace の target/ を使い incremental に
+#   (cargo install の既定は temp dir で毎回 full rebuild)。
+# cargo install --path で codesign 付き binary を配置 (cp は codesign 剥がれ → install 必須)。
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
-VP.log "Building vp-cli (vp binary) + install to ~/.cargo/bin…"
-VP.sh "cargo install --path crates/vp-cli --locked"
-VP.log "#{VP.icon(:ok)} Installed: #{VP.cargo_bin('vp')}"
+VP.log "#{VP.icon(:build)} Building vp-cli (vp binary) + install to #{VP.dev_bin('vp')}…"
+VP.run("cargo", "install", *VP.cargo_install_args("vp-cli"))
+VP.log "#{VP.icon(:ok)} Installed: #{VP.dev_bin('vp')}"

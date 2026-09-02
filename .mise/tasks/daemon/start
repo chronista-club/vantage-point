@@ -1,27 +1,35 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#MISE description="daemon を background spawn (nohup detach、 task は即 exit、 log は logs task で tail)"
+#MISE description="dev daemon を background spawn (mac: dev profile :32100 固定、 nohup detach、 task は即 exit、 log は logs task で tail)"
 #
 # vp daemon を background spawn する daemon group の一員 (2026-06-09 world→daemon rename)。
 # bash の `nohup "$VP" daemon start </dev/null >>log 2>&1 & disown` (controlling tty / parent process
 # group から切離して spawn) を Process.spawn(pgroup: true, redirect to log) + Process.detach で表現。
 # task は spawn 後すぐ exit (旧: foreground blocking で log tail まで持っていたのを 2026-05-07 に detach 化)。
 #
-# 既存 daemon が居る場合は事前に `mise run daemon:stop`、 または `vp daemon stop && mise run daemon:start`。
+# 2026-09-02: 起動するのは dev root の binary (VP.dev_bin、 mac は PATH 外)。 mac では VP_PROFILE=dev を
+# 固定する (VP.dev_profile!) — dev binary を brew namespace (:32000、 LaunchAgent の daemon が居る側) で
+# 起こす経路を残さないため。 log dir も同じ profile (vp-dev/log) に揃う。 Windows は cargo binary が
+# 実体そのものなので profile は呼び手の env に従う。
+#
+# 既存 daemon が居る場合は事前に `mise run daemon:stop`、 または `vpd daemon stop && mise run daemon:start`。
 # restart は CLI に持たない方針 (user 指示「restart いらない、 build -> start -> stop が cli で回ってから」)。
 require "fileutils"
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
+
+VP.dev_profile! # ⚠️ log_dir より前 (log dir は profile で分かれる)
 
 FileUtils.mkdir_p(VP.log_dir)
 daemon_log = File.join(VP.log_dir, "daemon.kdl.log")  # tracing 経由 KDL (structured)
 stdout_log = File.join(VP.log_dir, "daemon.stdout.log") # stdout/stderr (panic 等の chaotic 出力)
 FileUtils.touch([daemon_log, stdout_log])
 
-vp = VP.cargo_bin("vp")
+vp = VP.dev_bin("vp")
 VP.need_exec(vp, hint: "先に `mise run daemon:build`")
 
 # structured log の出力先を子に継承させる (= bash の export VP_DAEMON_LOG_FILE)。
 ENV["VP_DAEMON_LOG_FILE"] = daemon_log
+VP.log "profile: #{ENV['VP_PROFILE'] || 'brew'} / binary: #{vp}"
 VP.log "daemon log: #{daemon_log}"
 VP.log "daemon stdout: #{stdout_log}"
 VP.log "Spawning daemon (detach、 task 即 exit)…"
@@ -32,4 +40,4 @@ pid = Process.spawn(vp, "daemon", "start",
                     out: [stdout_log, "a"], err: %i[child out])
 Process.detach(pid) # zombie 回収 (= shell job table から外す disown 相当)
 VP.log "#{VP.icon(:ok)} daemon spawned (PID=#{pid})"
-VP.log "tail: mise run logs"
+VP.log "tail: #{VP.windows? ? '' : 'VP_PROFILE=dev '}mise run logs"

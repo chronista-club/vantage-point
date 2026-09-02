@@ -1,15 +1,15 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#MISE description="vp-app GUI binary を release build + ~/.cargo/bin に install (codesign 付与、 PATH 経由でも fresh)"
+#MISE description="vp-app GUI binary を release build + dev root に install (mac: ~/.local/opt/vp-dev/bin = vp の隣、 win: ~/.cargo/bin)"
 #
 # file-based mise task 移行 (2026-05-30)。 旧 [tasks."app:build"] を Ruby file task に移植。
-# cargo install --path で codesign 付き binary を ~/.cargo/bin に配置 (cp だと codesign 剥がれて
-# macOS に kill される、 CLAUDE.md feedback)。 build artifact (target/) も副産物で生成される。
-#
-# --locked 必須 (CLAUDE.md): cargo install は Cargo.lock を無視して依存を最新解決するため、
-# 未検証の新リリースを踏んで build が壊れる。 daemon:build と揃える (鏡像を保つ)。
+# 2026-09-02 install 先を ~/.cargo/bin から dev root (PATH 外、 VP.dev_root) に移設 (daemon:build と鏡像)。
+#   `vp app start` は PATH 上の `vp-app` を先に探すため、 ~/.cargo/bin に置くと **release の vp が
+#   dev の GUI を起動**する。 dev root では `vp` の隣に置かれ「自分の隣」候補で見つかる。
+# cargo install --path で codesign 付き binary を配置 (cp だと codesign 剥がれて macOS に kill される、
+# CLAUDE.md feedback)。 引数は VP.cargo_install_args が single source。
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
-VP.log "Building vp-app (release) + install to ~/.cargo/bin…"
-VP.sh "cargo install --path crates/vp-app --locked"
-VP.log "#{VP.icon(:ok)} Installed: #{VP.cargo_bin('vp-app')}"
+VP.log "#{VP.icon(:build)} Building vp-app (release) + install to #{VP.dev_bin('vp-app')}…"
+VP.run("cargo", "install", *VP.cargo_install_args("vp-app"))
+VP.log "#{VP.icon(:ok)} Installed: #{VP.dev_bin('vp-app')}"

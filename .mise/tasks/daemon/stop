@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#MISE description="daemon を停止 (= 全 project + lane も停止。旧 cascade nuke 相当)"
+#MISE description="dev daemon を停止 (mac: dev profile :32100 固定。 = その profile の全 project + lane も停止)"
 #
 # 2026-05-30 daemon→world 改名。
 # tmux decoupling PR2: 旧 tmux session kill phase は退役 (lane は PtySlot の子)。
@@ -10,16 +10,22 @@
 #   phase [1/2] は「エラーも出さず何もしない」空振りになっていた。
 #   現在は `vp daemon stop` 自体が World の graceful shutdown で全 project を畳むので、
 #   cascade は daemon stop 一手で成立する。
+# 2026-09-02: dev root の vp (VP.dev_bin) + mac は VP_PROFILE=dev 固定 (daemon:start と鏡像)。
+#   brew の daemon (:32000) はこの task では止めない — `vp daemon stop` / `vp daemon restart` を直に打つ。
 #
 # ⚠️ fold-in 後は「gentle な停止」(daemon だけ止めて project は温存) が原理的に存在しない。
-#    このタスクは必ず全 lane の claude を落とす。VP の lane の中から回すと自分が死ぬ。
+#    このタスクは必ずその profile の全 lane の claude を落とす。同じ profile の lane の中から回すと自分が死ぬ。
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
-vp = VP.cargo_bin("vp")
+# 自分が居る lane の profile (dev_profile! で書き換える前に控える)。 mac では停止対象が dev 固定なので、
+# brew daemon の lane から回しても自分は落ちない — 警告は「停止対象と同じ profile の lane に居る」時だけ出す。
+lane_profile = ENV["VP_PROFILE"]
+VP.dev_profile!
+vp = VP.dev_bin("vp")
 
 VP.log "#{VP.icon(:bomb)} daemon 停止 (profile=#{ENV['VP_PROFILE'] || 'brew'}、 全 project + lane も停止)…"
 
-if ENV["VP_LANE"]
+if ENV["VP_LANE"] && lane_profile == ENV["VP_PROFILE"]
   warn "   #{VP.icon(:warn)} VP の lane の中から実行しています — この停止で自分自身も落ちます"
   warn "      会話は cc_session の --resume で次回 spawn 時に継がれます"
 end
