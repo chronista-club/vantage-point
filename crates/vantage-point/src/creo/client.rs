@@ -275,6 +275,13 @@ fn parse_actions(body: &str) -> Result<Vec<CreoAction>> {
     Ok(items)
 }
 
+/// 直前の poll が「失効して巻き直し不能」だったか（遷移 warn の edge 用）。
+///
+/// ⚠️ 既存の warn（cache の `set` が変化を返した時だけ）は **ACTIONS が元々空だと
+/// 完全に沈黙する** — 2026-09-01 の障害で VP 側が 2.5 時間 1 行もログを出さなかった
+/// 一因。items でなく **credential 状態そのもの**の edge を持つ。
+static WAS_UNRECOVERABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// creo から ACTIONS を引く。
 ///
 /// 戻り値の 3 値には**別々の意味**があり、呼び手の反応も違う:
@@ -285,14 +292,33 @@ fn parse_actions(body: &str) -> Result<Vec<CreoAction>> {
 /// - `Err(_)` — 取得に失敗（network / creo 側）。**cache は据え置く** — 直前まで正しかった
 ///   一覧を消すより、少し古いものを見せる方が嘘が小さい
 pub async fn fetch_actions() -> Result<Option<Vec<CreoAction>>> {
+    use std::sync::atomic::Ordering;
     let audience = crate::commands::auth::creo_audience();
     // 期限が近ければ先に巻き直す（hub 接続が接続直前に同じことをしているのと同型）。
-    let Some(creds) =
-        crate::commands::auth::credentials_refreshed_if_needed(&audience, REFRESH_SKEW_SECS)
+    let creds =
+        match crate::commands::auth::credentials_refreshed_if_needed(&audience, REFRESH_SKEW_SECS)
             .await?
-    else {
-        return Ok(None);
-    };
+        {
+            crate::commands::auth::CredentialState::Valid(c) => {
+                // 回復（login で file が更新された）。次に失効したらまた 1 回鳴らす。
+                WAS_UNRECOVERABLE.store(false, Ordering::Relaxed);
+                c
+            }
+            // ⚠️ 完全失効 + 巻き直し不能。**HTTP を撃たない** — 撃つと 401 が確定で、
+            // 20〜30s poll × 数時間で相手側に 401 storm を作る（2026-09-01 実害: 24h 565 件）。
+            // `Ok(None)` に畳むのは「未ログイン」と同じ UI 帰結（ACTIONS を空に + 要 login）で
+            // 正しいから。warn は状態遷移の 1 回だけ（30s ごとに鳴らさない）。
+            crate::commands::auth::CredentialState::ExpiredUnrecoverable => {
+                if !WAS_UNRECOVERABLE.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        "creo credential が失効していて巻き直せません — ポーリングを停止します\
+                    （`vp auth login` で自動再開）"
+                    );
+                }
+                return Ok(None);
+            }
+            crate::commands::auth::CredentialState::Absent => return Ok(None),
+        };
 
     let url = format!(
         "{}/api/memories?tags={ACTIONS_TAG}&limit={FETCH_LIMIT}",
@@ -421,12 +447,16 @@ pub async fn save_actions(
     prev: &[CreoAction],
 ) -> Result<Option<Vec<CreoAction>>> {
     let audience = crate::commands::auth::creo_audience();
-    let Some(creds) =
-        crate::commands::auth::credentials_refreshed_if_needed(&audience, REFRESH_SKEW_SECS)
+    let creds =
+        match crate::commands::auth::credentials_refreshed_if_needed(&audience, REFRESH_SKEW_SECS)
             .await?
-    else {
-        return Ok(None);
-    };
+        {
+            crate::commands::auth::CredentialState::Valid(c) => c,
+            // ⚠️ 完全失効 + 巻き直し不能。**HTTP を撃たない**（fetch_actions と同じ理由）。
+            // 遷移 warn は fetch 側が 30s ごとの poll で立てるので、ここでは出さない。
+            crate::commands::auth::CredentialState::ExpiredUnrecoverable => return Ok(None),
+            crate::commands::auth::CredentialState::Absent => return Ok(None),
+        };
     let client = reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
         .build()
