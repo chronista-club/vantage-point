@@ -87,8 +87,8 @@ mod tests {
         );
         // 明示の前後空白は trim される
         assert_eq!(
-            resolve_default(Some(" claude-fable-5 "), Some("claude-opus-4-8")),
-            Some("claude-fable-5".to_string())
+            resolve_default(Some(" claude-fable-5-1 "), Some("claude-opus-4-8")),
+            Some("claude-fable-5-1".to_string())
         );
     }
 

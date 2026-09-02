@@ -209,7 +209,7 @@ pub struct CreateLaneReq {
     /// 省略時は sub-files.kdl の base-ref → origin/HEAD → main。
     #[serde(default)]
     pub base: Option<String>,
-    /// lane の claude model alias (co-evolution #1、例: 'opus' / 'sonnet' / 'claude-fable-5')。
+    /// lane の claude model alias (co-evolution #1、例: 'opus' / 'sonnet' / 'claude-fable-5-1')。
     /// spawn 前に `engine_model` へ永続し、tui spawn / respawn / gui engine が共有する。
     /// 省略時は config の `default-lane-model`（未設定なら Opus）にフォールバックして record する。
     #[serde(default)]
