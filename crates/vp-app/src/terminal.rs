@@ -83,6 +83,17 @@ pub enum AppEvent {
     },
     /// Clone 先フォルダ picker で選択された path を sidebar JS に push (キャンセル時は None)
     ClonePathPicked(Option<String>),
+    /// 設定ページの「Add Repo 初期フォルダ」picker の結果（doc 59 P1）。
+    /// ⚠️ **キャンセルは `None`** = 既存値を保持する（「選ばなかった」を「空にした」と
+    /// 取り違えると設定が黙って消える）。
+    SettingsRepoRootPicked(Option<String>),
+    /// daemon 側（settings.kdl）の設定を引き終えた（doc 59 P3）。
+    ///
+    /// `None` = **daemon に届かなかった**（オフライン / `settings/get` を知らない旧 binary）。
+    /// 未設定（= 空 object）と区別する必要がある — 前者は「編集できない」、後者は
+    /// 「既定で動いている」で、UI の出し方が変わる。
+    /// 生 JSON で運ぶのは、daemon 応答の形の持ち主を `vantage-point` 側に留めるため。
+    SettingsDaemonFetched(Option<serde_json::Value>),
     /// Phase 4-paste-fix: clipboard paste request の応答。 OS clipboard の内容を JS に届ける。
     /// 空文字なら paste skip。 `term:paste` の push で focus 中の xterm に inject。
     PasteText(String),

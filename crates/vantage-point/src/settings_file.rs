@@ -1,0 +1,471 @@
+//! user の「好み」の SSOT — `~/.config/vp/settings.kdl`（doc 59）
+//!
+//! ## なぜ config.kdl と分けるか
+//!
+//! 設定は「誰が書くか」ではなく **「何に属するか」** で割る（doc 59 §1）:
+//!
+//! | 層 | 何に属するか | 置き場所 | 書き手 |
+//! |---|---|---|---|
+//! | **環境** | このマシンの事実（claude-cli-path / hub-addr） | `config.kdl` | 人だけ |
+//! | **好み** | **user 本人**（ログ詳細度 / 既定 agent × model / theme） | **本 file** | daemon |
+//! | **作業** | 今なにを開いているか | `repos.kdl` | VP |
+//!
+//! `claude-cli-path` はマシンを移ると無意味になるが、「ログは debug で見たい」は人に
+//! 付いていく。寿命も持ち運び先も違うものが config.kdl に同居していたのが元の捻れだった。
+//!
+//! ## 誰が書くか
+//!
+//! **daemon が唯一の書き手**（[`crate::repos_file`] と同じ流儀）。GUI / CLI は daemon に
+//! 頼む形にして、同時書き込みで壊れる余地を構造的に消す。ただし **人が手で編集しても
+//! 構わない** — 人間可読な KDL であることが repos.kdl から引き継いだ利点で、
+//! daemon の次の読み込みで拾われる。
+//!
+//! ## 優先順位
+//!
+//! **env > settings.kdl > 組み込み既定**。env を最優先に残すのは、既存の逃げ道
+//! （`VP_LOG` / `VANTAGE_DEBUG`）を壊さないため。⚠️ `config.kdl` とはキーを**重複させない** —
+//! 同じ設定が 2 箇所にあると「どちらが勝つか」を覚える必要が生まれる。
+//!
+//! ## 不正値は落とさず degrade する
+//!
+//! 綴り違いは**その key だけ無視**して既定に倒す（`Config::default_lane_model` と同じ流儀）。
+//! 設定 file の typo 1 つで daemon が起動しなくなるほうが害が大きい。
+
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use club_kdl::{KdlDeserialize, KdlSerialize};
+
+/// 受理するログ詳細度（`tracing` の level 名）。
+///
+/// 表記は `VP_LOG` と揃えてある（user が env で使い慣れた語をそのまま設定にも書ける）。
+const LOG_LEVELS: [&str; 5] = ["trace", "debug", "info", "warn", "error"];
+
+/// settings.kdl 全体。
+///
+/// **全 field が `Option`** = 「書かれていない」を表現できる形にしてある。未設定と
+/// 明示的な既定値は意味が違う（未設定なら将来 VP 側の既定を変えたときに追随するが、
+/// 明示値は user の意思として固定される）。
+#[derive(Debug, Clone, Default, PartialEq, KdlDeserialize, KdlSerialize)]
+#[kdl(document)]
+pub struct SettingsFile {
+    /// ログ詳細度（`trace` / `debug` / `info` / `warn` / `error`）。
+    ///
+    /// ⚠️ **daemon の起動時にしか読まれない**（`init_tracing` が `EnvFilter` を 1 回作って
+    /// 固定する。reload layer は未導入 — doc 59 §5）。設定を変えたら daemon 再起動が要る。
+    #[kdl(child, name = "log-level", unwrap_arg)]
+    pub log_level: Option<String>,
+
+    /// アイドルとみなすまでの時間（分）。未設定なら [`DEFAULT_IDLE_TIMEOUT_MINUTES`]。
+    ///
+    /// **1 つの値が 2 つの振る舞いを決める**（doc 59 §5.2）:
+    /// - sidebar の now-line が「⏸N分」に沈む閾値（client 判定）
+    /// - 見ていない lane の chat engine を落とすまでの猶予（daemon 判定）
+    ///
+    /// 元は別々の定数だったが `IDLE_TEARDOWN_AFTER_MS` に「now-line の quiet 閾値と同値」と
+    /// 明記されていた = 意図的に同じ値だった。2 つの設定にすると、その同値関係が黙って壊れる。
+    #[kdl(child, name = "idle-timeout-minutes", unwrap_arg)]
+    pub idle_timeout_minutes: Option<u64>,
+
+    /// 新しい lane を作るときの既定 agent × model（doc 59 P4）。
+    ///
+    /// **1 つの node で組を持つ** — 旧 config.kdl の `default-agent` /
+    /// `default-lane-model` は独立した 2 キーで、意味のない組み合わせが表現できた。
+    #[kdl(child, name = "default-lane")]
+    pub default_lane: Option<DefaultLane>,
+}
+
+/// アイドル判定の既定（分）。mako 裁定 2026-08-28 = 5 分。
+///
+/// 短すぎると名簿を行き来するたびに engine 再起動（`--resume` で数秒）が走り、
+/// 長すぎるとメモリが戻らない。`vp now` の運用単位（サブタスクの切れ目）と揃えてある。
+pub const DEFAULT_IDLE_TIMEOUT_MINUTES: u64 = 5;
+
+/// 新しい lane を作るときの既定（doc 59 P4）。**agent と model を 1 つの node で持つ**。
+///
+/// ## なぜ「組」なのか
+///
+/// 旧 config.kdl は `default-agent` と `default-lane-model` の**独立した 2 キー**だった。
+/// 既定を解決する [`crate::repo::routes::lanes`] は **agent を見ずに** model を返してから
+/// agent と組にして registry へ書くため、`default-agent "codex"` +
+/// `default-lane-model "claude-opus-5"` という **意味のない組み合わせが表現できて**しまった。
+/// 1 つの node にすれば、その穴が設定の形そのもので塞がる。
+///
+/// ## 対象 agent を絞る理由
+///
+/// mako 裁定 2026-08-31「まずは対象は **claude と codex** のみで良い」。
+/// grok / opencode / vpcode も lane では使えるが、**既定にはしない**（使う時に選ぶ）。
+#[derive(Debug, Clone, Default, PartialEq, KdlDeserialize, KdlSerialize)]
+#[kdl(name = "default-lane")]
+pub struct DefaultLane {
+    /// 既定の agent（`claude` / `codex`）。未設定なら `claude`。
+    #[kdl(property)]
+    pub agent: Option<String>,
+    /// 既定の model alias。**agent が受け付ける場合のみ意味を持つ**。
+    ///
+    /// ⚠️ codex は VP から model を渡していない（`EngineKind::model_choices` が空）ので、
+    /// ここに値があっても無視される。設定する側（`settings/set` / GUI）が先に弾く。
+    #[kdl(property)]
+    pub model: Option<String>,
+}
+
+/// 既定 agent に選べるもの（doc 59 P4、mako 裁定 = claude と codex のみ）。
+pub const SELECTABLE_AGENTS: [&str; 2] = ["claude", "codex"];
+
+/// 既定 agent の fallback。
+pub const DEFAULT_AGENT: &str = "claude";
+
+impl DefaultLane {
+    /// 既定 agent の**実効値**。未設定 / 対象外は [`DEFAULT_AGENT`] に倒す。
+    ///
+    /// 対象外を既定に倒すのは、設定 file の typo で lane 作成そのものが止まらないため
+    /// （`log_level_valid` と同じ degrade 方針）。
+    pub fn agent_effective(&self) -> &str {
+        self.agent
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| SELECTABLE_AGENTS.contains(a))
+            .unwrap_or(DEFAULT_AGENT)
+    }
+
+    /// 既定 model の**実効値**。「その agent が model を受け付けるか」まで見る。
+    ///
+    /// ⚠️ **agent を見ずに model を返さない**のが P4 の核心。旧実装はこれを分けていたため、
+    /// codex の session に claude の model 名が載る組み合わせが作れてしまった。
+    /// 形式検証（`is_valid_model`）も通すので、`--model` への injection も塞がる。
+    pub fn model_effective(&self) -> Option<&str> {
+        if !agent_accepts_model(self.agent_effective()) {
+            return None;
+        }
+        self.model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .filter(|m| crate::lane::engine_model::is_valid_model(m))
+    }
+}
+
+/// 新しい lane の既定 agent（doc 59 P4）— **全 lane 作成経路が共有する単一の読み出し口**。
+///
+/// 旧 `Config::default_agent_or_claude()` の置き換え。呼び手（repo/server / routes/lanes /
+/// routes/daemon）が個別に file を読んで既定を組み立てると、次に既定の決め方が変わった時に
+/// 1 箇所だけ古くなる。
+pub fn default_lane_agent() -> String {
+    SettingsFile::load()
+        .default_lane
+        .unwrap_or_default()
+        .agent_effective()
+        .to_string()
+}
+
+/// 新しい lane の既定 agent × model を**組で**返す（doc 59 P4）。
+///
+/// ⚠️ **必ず組で受け取ること**。agent と model を別々に引くと、旧実装と同じ
+/// 「codex の session に claude の model が載る」穴が復活する。
+pub fn default_lane_pair() -> (String, Option<String>) {
+    let lane = SettingsFile::load().default_lane.unwrap_or_default();
+    (
+        lane.agent_effective().to_string(),
+        lane.model_effective().map(str::to_string),
+    )
+}
+
+/// その agent は VP から model を渡せるか（doc 59 P4）。
+///
+/// 判定の源は [`crate::conversation::engine::EngineKind::model_choices`] —
+/// **空 = VP からの切替なし**という既存の能力表明をそのまま使う。ここで独自の一覧を
+/// 持つと、engine 側が model を受けるようになった時に片方だけ古くなる。
+pub fn agent_accepts_model(agent: &str) -> bool {
+    crate::conversation::engine::EngineKind::from_agent(agent)
+        .is_some_and(|k| !k.model_choices().is_empty())
+}
+
+/// settings.kdl のパス（`~/.config/vp/settings.kdl`）。
+pub fn settings_file_path() -> PathBuf {
+    crate::config::config_dir().join("settings.kdl")
+}
+
+impl SettingsFile {
+    /// settings.kdl を読み込む。**存在しない / 壊れている場合は既定**（= 全て未設定）。
+    ///
+    /// パース失敗で `Err` を返さないのは、設定 file の typo が daemon の起動を妨げないため
+    /// （module doc の degrade 方針）。壊れていることは warn で残す。
+    pub fn load() -> Self {
+        let path = settings_file_path();
+        if !path.exists() {
+            return Self::default();
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(s) => match Self::from_kdl(&s) {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!(
+                        "settings.kdl のパースに失敗（既定で続行）: {} — {e}",
+                        path.display()
+                    );
+                    Self::default()
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    "settings.kdl の読み込みに失敗（既定で続行）: {} — {e}",
+                    path.display()
+                );
+                Self::default()
+            }
+        }
+    }
+
+    /// kdl 文字列から parse（path 非依存 = テスト可能）。空文字は既定。
+    pub fn from_kdl(s: &str) -> Result<Self> {
+        if s.trim().is_empty() {
+            return Ok(Self::default());
+        }
+        club_kdl::from_str(s).context("settings.kdl パース失敗")
+    }
+
+    /// kdl 文字列へ（path 非依存 = テスト可能）。
+    pub fn to_kdl(&self) -> Result<String> {
+        club_kdl::to_string_pretty(self).context("settings.kdl シリアライズ失敗")
+    }
+
+    /// ログ詳細度の**実効値**。未設定 / 綴り違いは `None`（= 既定に倒す）。
+    ///
+    /// 検証をここに置くのは、読み手（`init_tracing`）が綴りを知らなくて済むようにするため。
+    /// 不正値を素通しすると `EnvFilter` の directive が壊れて**全ログが黙る**（= 設定 file の
+    /// typo が観測手段そのものを奪う）。
+    pub fn log_level_valid(&self) -> Option<&str> {
+        self.log_level
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| LOG_LEVELS.contains(&v.to_ascii_lowercase().as_str()))
+    }
+
+    /// アイドル判定の**実効値**（分）。未設定 / 0 は既定に倒す。
+    ///
+    /// 0 を弾くのは「無効化」の意味を持たせないため — 1 つの値に「時間」と「有効/無効」の
+    /// 2 つの性質を兼ねさせると、後から「0 は無効なのか即時なのか」を毎回思い出す必要が出る。
+    /// teardown を止めたくなったら**別の key** を足すのが正しい。
+    pub fn idle_timeout_minutes_effective(&self) -> u64 {
+        self.idle_timeout_minutes
+            .filter(|m| *m > 0)
+            .unwrap_or(DEFAULT_IDLE_TIMEOUT_MINUTES)
+    }
+
+    /// settings.kdl に書き出す。テスト環境では **no-op**（本番 `~/.config/vp/settings.kdl` の
+    /// 破壊防止 — [`crate::repos_file::ReposFile::save`] と同じ規律）。
+    #[cfg(test)]
+    pub fn save(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// settings.kdl に書き出す。atomic write（temp → rename）で partial read を防ぐ。
+    ///
+    /// rename は同一ファイルシステム内で atomic なので、読み手は**古い file か新しい file の
+    /// どちらか**しか見ない（書きかけを読むことがない）。全ての write 経路がここを通る。
+    #[cfg(not(test))]
+    pub fn save(&self) -> Result<()> {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        /// atomic write の temp file 名を経路ごとにユニークにする連番。
+        static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+        let path = settings_file_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("config dir 作成失敗: {}", parent.display()))?;
+        }
+        let body = self.to_kdl()?;
+
+        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = path.with_extension(format!("kdl.tmp{}.{seq}", std::process::id()));
+        {
+            let mut f = std::fs::File::create(&tmp)
+                .with_context(|| format!("settings.kdl temp 作成失敗: {}", tmp.display()))?;
+            f.write_all(HEADER.as_bytes())?;
+            f.write_all(body.as_bytes())?;
+            f.sync_all()?;
+        }
+        std::fs::rename(&tmp, &path)
+            .with_context(|| format!("settings.kdl rename 失敗: {}", path.display()))?;
+        tracing::info!("settings.kdl 保存: {}", path.display());
+        Ok(())
+    }
+}
+
+/// 書き出す file の先頭に置く案内。**人が開いたときに「何を書く場所か」が分かる**ように
+/// （この file は VP が書くが、人が手で編集することも許している）。
+#[cfg_attr(test, allow(dead_code))]
+const HEADER: &str = "\
+// VP の user 設定（好み）— VP が読み書きします。手で編集しても構いません。
+//
+// ここに置くのは「あなたに属する設定」です。マシン固有の環境（claude-cli-path /
+// hub-addr）は config.kdl の担当で、キーは重複しません。
+// 優先順位: 環境変数 > このファイル > 組み込み既定。
+//
+// 変更の反映には daemon の再起動が要ります（vp daemon restart）。
+
+";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_or_missing_yields_default() {
+        assert_eq!(SettingsFile::from_kdl("").unwrap(), SettingsFile::default());
+        assert_eq!(
+            SettingsFile::from_kdl("   \n  ").unwrap(),
+            SettingsFile::default()
+        );
+    }
+
+    #[test]
+    fn log_level_roundtrips_through_kdl() {
+        let f = SettingsFile {
+            log_level: Some("debug".to_string()),
+            ..Default::default()
+        };
+        let kdl = f.to_kdl().unwrap();
+        assert!(kdl.contains("log-level"), "kdl: {kdl}");
+        // ⚠️ 往復で固定する — serialize / deserialize の片側だけ直すと wire が黙ってズレる。
+        assert_eq!(SettingsFile::from_kdl(&kdl).unwrap(), f);
+    }
+
+    #[test]
+    fn invalid_log_level_degrades_to_none() {
+        // 設定 file の typo 1 つで EnvFilter の directive が壊れると**全ログが黙る**ため、
+        // 読み手に渡す前にここで落とす。
+        let f = SettingsFile {
+            log_level: Some("verbose".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(f.log_level_valid(), None);
+    }
+
+    #[test]
+    fn log_level_is_case_insensitive() {
+        let f = SettingsFile {
+            log_level: Some("DEBUG".to_string()),
+            ..Default::default()
+        };
+        // 受理はするが、値はそのまま返す（呼び手が lowercase 化して使う）。
+        assert_eq!(f.log_level_valid(), Some("DEBUG"));
+    }
+
+    #[test]
+    fn log_level_trims_surrounding_whitespace() {
+        let f = SettingsFile {
+            log_level: Some("  info  ".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(f.log_level_valid(), Some("info"));
+    }
+
+    // ── doc 59 P4: 既定 agent × model の「組」──────────────────────────
+
+    #[test]
+    fn default_lane_falls_back_to_claude() {
+        // 未設定 / 対象外 agent は既定へ。設定 file の typo で lane 作成が止まらないため。
+        assert_eq!(DefaultLane::default().agent_effective(), "claude");
+        let odd = DefaultLane {
+            agent: Some("nonexistent".into()),
+            model: None,
+        };
+        assert_eq!(odd.agent_effective(), "claude");
+    }
+
+    #[test]
+    fn selectable_agents_are_claude_and_codex_only() {
+        // mako 裁定 2026-08-31。grok / opencode / vpcode も lane では使えるが既定にはしない。
+        for a in SELECTABLE_AGENTS {
+            let l = DefaultLane {
+                agent: Some(a.into()),
+                model: None,
+            };
+            assert_eq!(l.agent_effective(), a, "agent={a}");
+        }
+        let grok = DefaultLane {
+            agent: Some("grok".into()),
+            model: None,
+        };
+        assert_eq!(
+            grok.agent_effective(),
+            "claude",
+            "既定に選べるのは 2 つだけ"
+        );
+    }
+
+    #[test]
+    fn model_is_dropped_when_the_agent_cannot_take_one() {
+        // ⚠️ **P4 の核心**。旧実装は agent を見ずに model を返したため、
+        // codex の session に claude の model 名が載る組み合わせが作れた。
+        let bad = DefaultLane {
+            agent: Some("codex".into()),
+            model: Some("claude-opus-5".into()),
+        };
+        assert_eq!(bad.agent_effective(), "codex");
+        assert_eq!(
+            bad.model_effective(),
+            None,
+            "codex は model を受け付けないので落とす"
+        );
+    }
+
+    #[test]
+    fn model_survives_for_an_agent_that_takes_one() {
+        let good = DefaultLane {
+            agent: Some("claude".into()),
+            model: Some("claude-opus-5".into()),
+        };
+        assert_eq!(good.model_effective(), Some("claude-opus-5"));
+    }
+
+    #[test]
+    fn malformed_model_is_dropped() {
+        // `--model` へ unquoted で埋まるので、形式検証を通らない値は落とす（injection 防壁）。
+        let injected = DefaultLane {
+            agent: Some("claude".into()),
+            model: Some("opus; rm -rf /".into()),
+        };
+        assert_eq!(injected.model_effective(), None);
+    }
+
+    #[test]
+    fn default_lane_roundtrips_through_kdl() {
+        let f = SettingsFile {
+            default_lane: Some(DefaultLane {
+                agent: Some("claude".into()),
+                model: Some("claude-opus-5".into()),
+            }),
+            ..Default::default()
+        };
+        let kdl = f.to_kdl().unwrap();
+        assert!(kdl.contains("default-lane"), "kdl: {kdl}");
+        assert_eq!(SettingsFile::from_kdl(&kdl).unwrap(), f);
+    }
+
+    #[test]
+    fn agent_accepts_model_follows_the_engine_capability() {
+        // 一覧を独自に持たず `EngineKind::model_choices` を見る = engine が model を
+        // 受けるようになった時に片方だけ古くならない。
+        assert!(agent_accepts_model("claude"));
+        assert!(
+            !agent_accepts_model("codex"),
+            "codex は今 model_choices が空"
+        );
+        assert!(!agent_accepts_model("nonexistent"));
+    }
+
+    #[test]
+    fn all_known_levels_are_accepted() {
+        for lv in LOG_LEVELS {
+            let f = SettingsFile {
+                log_level: Some(lv.to_string()),
+                ..Default::default()
+            };
+            assert_eq!(f.log_level_valid(), Some(lv), "level={lv}");
+        }
+    }
+}

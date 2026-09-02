@@ -77,7 +77,7 @@ claude auth
 
 | zone | 環境変数 | default | 用途 |
 |------|----------|---------|------|
-| config | `$XDG_CONFIG_HOME` | `~/.config/vp/` | 人が編集（`config.kdl` / `repos.kdl`） |
+| config | `$XDG_CONFIG_HOME` | `~/.config/vp/` | 設定 3 層（[doc 59](../design/59-settings-page.md)）: 環境 = `config.kdl`（人だけが書く）/ 好み = `settings.kdl`（daemon が書く）/ 作業 = `repos.kdl`（VP が書く）。GUI 固有 = `vp-app.toml` |
 | data | `$XDG_DATA_HOME` | `~/.local/share/vp/` | 永続 data store（db / discs） |
 | state | `$XDG_STATE_HOME` | `~/.local/state/vp/` | runtime state + log |
 

@@ -92,6 +92,12 @@ pub struct HealthResponse {
     /// vp-app 側はこの値が変わった時だけ sidebar に当てる。5s ごとに同じ一覧を当て直すと、
     /// **編集中の行を書き戻して caret が飛ぶ**（`<Index>` は位置キーイングなので値だけ差し戻る）。
     pub actions_rev: u32,
+    /// アイドルとみなすまでの分数（settings.kdl の `idle-timeout-minutes`、doc 59 P3）。
+    ///
+    /// **daemon が持つ 1 つの値を GUI にも配る**ための field。sidebar の now-line が
+    /// 「⏸N分」に沈む閾値（client 判定）と、engine を落とす猶予（daemon 判定）は
+    /// 意図的に同値なので、client 側に定数を二重に持たせない。
+    pub idle_timeout_minutes: u64,
 }
 
 // L0 portless B-4 (wire-unison): repo `/api/wire/*` HTTP proxy handler (wire_send/recv/unread-count/
@@ -287,6 +293,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         processes,
         update_available,
         latest_version,
+        idle_timeout_minutes: crate::repo::lanes_state::idle_teardown_after_minutes(),
         actions: actions_snapshot.items,
         actions_rev: actions_snapshot.rev,
     })

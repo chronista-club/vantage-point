@@ -6,8 +6,11 @@
 //! sub-files.kdl 等、 周辺の設定は既に KDL に揃っていた。 config 本体だけ
 //! TOML で取り残されていたのを KDL に統一し、 club-kdl 資産を一本化する。
 //!
-//! - config.kdl は **人間が編集する read-only な global 設定**。 VP 自身は
-//!   書き戻さない (= `KdlSerialize` 不要、 `KdlDeserialize` のみ)。
+//! - config.kdl が受け持つのは **環境層だけ**（= このマシンの事実。claude-cli-path /
+//!   hub-addr。doc 59 の 3 層モデル）。人間が編集する read-only で VP 自身は書き戻さない
+//!   (= `KdlSerialize` 不要、 `KdlDeserialize` のみ)。
+//! - **user の「好み」（既定 agent × model / theme / アイドル時間 / ログ詳細度）は
+//!   settings.kdl** — daemon が所有して書く（doc 59 §3）。config.kdl とはキーを重複させない。
 //! - registered repos は repos.kdl が SSOT (VP-188)。 config.kdl には出さない。
 //! - kebab-case のキー名 (`default-port` 等) を採用。
 //!
@@ -21,7 +24,7 @@
 //!
 //! | zone   | 環境変数                  | default                  | 用途 |
 //! |--------|---------------------------|--------------------------|------|
-//! | config | `$XDG_CONFIG_HOME`        | `~/.config/vp/`          | 人が編集 (config.kdl / repos.kdl / addresses.toml) |
+//! | config | `$XDG_CONFIG_HOME`        | `~/.config/vp/`          | 設定 3 層 (doc 59): 環境 = config.kdl (人だけが書く) / 好み = settings.kdl (daemon が書く) / 作業 = repos.kdl (VP が書く) |
 //! | data   | `$XDG_DATA_HOME`          | `~/.local/share/vp/`     | 永続 data store (db / discs) |
 //! | state  | `$XDG_STATE_HOME`         | `~/.local/state/vp/`     | runtime state + log (session.json / sessions/ / log/) |
 //!
@@ -96,29 +99,6 @@ pub struct Config {
     #[serde(default)]
     #[kdl(child, name = "claude-cli-path", unwrap_arg)]
     pub claude_cli_path: Option<String>,
-
-    /// Lane 作成時の default agent 名 (例: "claude" / "shell" / "tmux")。
-    ///
-    /// `mise run vp:agent:{name}` の `name` 部分を指定。 None なら "claude" fallback
-    /// (`Config::default_agent_or_claude()` 経由)。
-    ///
-    /// doc 11 §3 (Agent init_script system / mise task 路線)、 PR-B 対応。
-    /// PR-pre2 (VP-118): "hd" → "claude" rename (Agent metaphor + identifier sweep)。
-    #[serde(default)]
-    #[kdl(child, name = "default-agent", unwrap_arg)]
-    pub default_agent: Option<String>,
-
-    /// sub lane 追加時の既定 claude model alias（`--model` 未指定時に engine_model へ記録）。
-    ///
-    /// **未設定なら記録しない = engine 側の user 既定に委ねる**（doc 54 §8-11、mako 2026-07-25
-    /// 「Opus のところはユーザ設定に任せる」。旧: Opus を強制 record して claude の user 既定を
-    /// 上書きしていた）。mcp / cli / sidebar(GUI) の全 sub 追加経路が共有し、
-    /// tui(TUI console) / gui(chat engine) 両方に効く（model は per-lane 1 file の
-    /// 単一真実源、[`crate::lane::engine_model`]）。
-    /// 例: config.kdl に `default-lane-model "claude-sonnet-5"` で VP 側の既定を固定可。
-    #[serde(default)]
-    #[kdl(child, name = "default-lane-model", unwrap_arg)]
-    pub default_lane_model: Option<String>,
 
     /// chronista-hub の Unison surface addr（federation opt-in、例: "hub.chronista.club:12879"）。
     ///
@@ -322,22 +302,6 @@ impl Config {
     ///
     /// PR-pre2 (VP-118): rename `default_stand_or_hd` → `default_agent_or_claude`、
     /// fallback "hd" → "claude" (HD → Echoes rename の一環)。
-    pub fn default_agent_or_claude(&self) -> &str {
-        self.default_agent.as_deref().unwrap_or("claude")
-    }
-
-    /// sub 追加時の既定 model alias（config 未指定 or 形式外なら **None = 記録しない**）。
-    ///
-    /// None のとき engine_model file は書かれず `--model` も注入されない = engine 側の
-    /// user 既定（claude なら ~/.claude 設定）が効く（doc 54 §8-11）。形式外の値は record 時に
-    /// 弾かれ lane 作成を壊すため、ここで is_valid_model を通し不正なら None へ degrade する
-    /// （config typo で lane が作れなくなる事故を防ぐ）。
-    pub fn default_lane_model(&self) -> Option<&str> {
-        self.default_lane_model
-            .as_deref()
-            .filter(|m| crate::lane::engine_model::is_valid_model(m))
-    }
-
     /// Resolve repo directory from various sources
     /// Priority: CLI flag > cwd > config default
     /// 相対パスは絶対パスに変換される
@@ -523,7 +487,6 @@ startup {
             config.claude_cli_path.as_deref(),
             Some("/opt/claude/bin/claude")
         );
-        assert_eq!(config.default_agent.as_deref(), Some("claude"));
         assert_eq!(config.hub_addr.as_deref(), Some("hub.chronista.club:12879"));
         assert_eq!(config.startup.max_concurrent_lane_spawn, 3);
         // repos は config.kdl に出さない (#[kdl(skip)]、 SSOT は repos.kdl)
@@ -580,22 +543,6 @@ startup {
         assert!(config.hub_addr.is_none());
         // default-port node 不在 → KDL field default は 0 (load の post-process で 33000)
         assert_eq!(config.default_port, 0);
-        // default-lane-model node 不在 → None（getter も None = 記録しない、doc 54 §8-11）
-        assert!(config.default_lane_model.is_none());
-        assert_eq!(config.default_lane_model(), None);
-    }
-
-    #[test]
-    fn test_default_lane_model_kdl_parses() {
-        let kdl = r#"
-default-lane-model "claude-sonnet-5"
-"#;
-        let config: Config = club_kdl::from_str(kdl).expect("default-lane-model parse");
-        assert_eq!(
-            config.default_lane_model.as_deref(),
-            Some("claude-sonnet-5")
-        );
-        assert_eq!(config.default_lane_model(), Some("claude-sonnet-5"));
     }
 
     /// VP-189: section を 1 つも持たない空 config.kdl でも parse できる
@@ -621,24 +568,24 @@ default-lane-model "claude-sonnet-5"
         assert_eq!(config.startup.max_concurrent_lane_spawn, 1);
     }
 
+    /// ⚠️ **旧キーが残った config.kdl を壊さない**（doc 59 P4 で settings.kdl へ移設）。
+    ///
+    /// 2026-08-31 に実測して確認した性質をここで固定する。既に `default-agent` /
+    /// `default-lane-model` を書いている user の config.kdl は、キーを撤去した後も
+    /// **黙って無視されて読める**（`Config::load` はパース失敗を Err にするので、
+    /// ここが壊れると起動そのものが止まる）。
+    ///
+    /// 裏返すと config.kdl の typo も静かに無視される（= 設定したのに効かない）。
+    /// その代わり settings.kdl 側は `settings/set` が未知 key をエラーで返す。
     #[test]
-    fn test_default_lane_model_none_defers_to_engine() {
-        // doc 54 §8-11: 未設定 → None = 記録しない（engine 側の user 既定に委ねる。
-        // 旧「Opus 強制」の再演をここで塞ぐ）
-        let cfg = Config::default();
-        assert_eq!(cfg.default_lane_model(), None);
-        // 明示設定はそのまま採用
-        let cfg = Config {
-            default_lane_model: Some("claude-sonnet-5".to_string()),
-            ..Config::default()
-        };
-        assert_eq!(cfg.default_lane_model(), Some("claude-sonnet-5"));
-        // 形式外の値は record を壊すため None へ degrade（config typo で lane 作成が死なない）
-        let cfg = Config {
-            default_lane_model: Some("opus; rm -rf /".to_string()),
-            ..Config::default()
-        };
-        assert_eq!(cfg.default_lane_model(), None);
+    fn removed_keys_do_not_break_existing_config() {
+        let kdl = r#"
+hub-addr "hub.chronista.club:12879"
+default-agent "codex"
+default-lane-model "claude-opus-5"
+"#;
+        let config: Config = club_kdl::from_str(kdl).expect("旧キー入りでも parse できる");
+        assert_eq!(config.hub_addr.as_deref(), Some("hub.chronista.club:12879"));
     }
 
     /// VP-189: 既に有効な値が入っていれば apply_load_defaults は上書きしない

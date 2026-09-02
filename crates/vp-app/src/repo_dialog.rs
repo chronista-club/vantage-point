@@ -142,6 +142,34 @@ pub(crate) fn spawn_add_repo_picker(
         });
 }
 
+/// 設定ページの「Add Repo の初期フォルダ」picker（doc 59 P1）。
+///
+/// rfd は blocking なので専用スレッドで回す（本 module の他 picker と同じ理由 =
+/// event loop = main thread を塞がない）。結果は [`AppEvent::SettingsRepoRootPicked`] で戻す。
+///
+/// ⚠️ **キャンセルは `None`** — 呼び手が既存値を保持する（`repo:clone:pickFolder` と同じ流儀。
+/// 「選ばなかった」を「空にした」と取り違えると、設定が黙って消える）。
+pub(crate) fn spawn_repo_root_picker(
+    proxy: EventLoopProxy<AppEvent>,
+    initial_dir: Option<std::path::PathBuf>,
+) {
+    let _ = thread::Builder::new()
+        .name("settings-repo-root-picker".into())
+        .spawn(move || {
+            let mut dialog = rfd::FileDialog::new().set_title("Add Repo の初期フォルダを選択");
+            if let Some(d) = initial_dir.as_ref() {
+                dialog = dialog.set_directory(d);
+            }
+            let picked = dialog
+                .pick_folder()
+                .map(|p| p.to_string_lossy().into_owned());
+            if picked.is_none() {
+                tracing::debug!("settings:pick_repo_root canceled by user");
+            }
+            let _ = proxy.send_event(AppEvent::SettingsRepoRootPicked(picked));
+        });
+}
+
 /// VP-100 follow-up: 「+ Clone Repository」クリック時の git clone + API 呼出。
 ///
 /// 1. `git clone <url> <target>` を実行 (target は override 優先、無ければ

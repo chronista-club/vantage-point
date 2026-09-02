@@ -48,6 +48,20 @@ export interface ClonePathPicked {
   path: string;
 }
 
+/** Event "settings:result" */
+export interface SettingsResult {
+  developer_mode: boolean;
+  developer_mode_locked: boolean;
+  default_repo_root?: string;
+  resolved_repo_root?: string;
+  log_level?: string;
+  idle_timeout_minutes?: number;
+  default_agent?: string;
+  default_model?: string;
+  default_agent_takes_model: boolean;
+  daemon_reachable: boolean;
+}
+
 /** Request "process:toggle" */
 export interface ProcessToggle {
   path: string;
@@ -164,6 +178,25 @@ export interface AuthLogout {
   target?: string;
 }
 
+/** Request "settings:fetch" — empty payload */
+export interface SettingsFetch {}
+
+/** Request "settings:save" */
+export interface SettingsSave {
+  developer_mode?: boolean;
+  default_repo_root?: string;
+  log_level?: string;
+  idle_timeout_minutes?: number;
+  default_agent?: string;
+  default_model?: string;
+}
+
+/** Request "settings:pick_repo_root" — empty payload */
+export interface SettingsPickRepoRoot {}
+
+/** Request "daemon:restart" — empty payload */
+export interface DaemonRestart {}
+
 /** Request "actions:persist" */
 export interface ActionsPersist {
   items: any[];
@@ -178,6 +211,7 @@ export type IpcChannelEventTypes = {
   AgentsResult: AgentsResult;
   WireResult: WireResult;
   ClonePathPicked: ClonePathPicked;
+  SettingsResult: SettingsResult;
 };
 
 /** Request name → { request, response } 生成 interface の map for "ipc" */
@@ -203,6 +237,10 @@ export type IpcChannelRequestTypes = {
   UpdateApply: { request: UpdateApply; response: void };
   AuthLogin: { request: AuthLogin; response: void };
   AuthLogout: { request: AuthLogout; response: void };
+  SettingsFetch: { request: SettingsFetch; response: void };
+  SettingsSave: { request: SettingsSave; response: void };
+  SettingsPickRepoRoot: { request: SettingsPickRepoRoot; response: void };
+  DaemonRestart: { request: DaemonRestart; response: void };
   ActionsPersist: { request: ActionsPersist; response: void };
 };
 
@@ -212,7 +250,7 @@ export const IpcChannelMeta = {
   backend: "stream" as const,
   from: "client" as const,
   lifetime: "transient" as const,
-  events: ["sidebar:state", "sidebar:error", "sub:create_result", "agents:result", "wire:result", "clone:path_picked"] as const,
+  events: ["sidebar:state", "sidebar:error", "sub:create_result", "agents:result", "wire:result", "clone:path_picked", "settings:result"] as const,
   requests: {
     ProcessToggle: { request: "process:toggle" as const, response: "void" as const },
     ProcessReorder: { request: "process:reorder" as const, response: "void" as const },
@@ -235,6 +273,10 @@ export const IpcChannelMeta = {
     UpdateApply: { request: "update:apply" as const, response: "void" as const },
     AuthLogin: { request: "auth:login" as const, response: "void" as const },
     AuthLogout: { request: "auth:logout" as const, response: "void" as const },
+    SettingsFetch: { request: "settings:fetch" as const, response: "void" as const },
+    SettingsSave: { request: "settings:save" as const, response: "void" as const },
+    SettingsPickRepoRoot: { request: "settings:pick_repo_root" as const, response: "void" as const },
+    DaemonRestart: { request: "daemon:restart" as const, response: "void" as const },
     ActionsPersist: { request: "actions:persist" as const, response: "void" as const },
   } as const,
   __types: undefined as unknown as { events: IpcChannelEventTypes; requests: IpcChannelRequestTypes },
@@ -263,6 +305,10 @@ export type IpcEnvelope =
   | ({ t: "update:apply" } & UpdateApply)
   | ({ t: "auth:login" } & AuthLogin)
   | ({ t: "auth:logout" } & AuthLogout)
+  | ({ t: "settings:fetch" } & SettingsFetch)
+  | ({ t: "settings:save" } & SettingsSave)
+  | ({ t: "settings:pick_repo_root" } & SettingsPickRepoRoot)
+  | ({ t: "daemon:restart" } & DaemonRestart)
   | ({ t: "actions:persist" } & ActionsPersist);
 
 /** Envelope union for channel "ipc" — discriminated on "t". */
@@ -272,6 +318,7 @@ export type IpcEventEnvelope =
   | ({ t: "sub:create_result" } & SubCreateResult)
   | ({ t: "agents:result" } & AgentsResult)
   | ({ t: "wire:result" } & WireResult)
-  | ({ t: "clone:path_picked" } & ClonePathPicked);
+  | ({ t: "clone:path_picked" } & ClonePathPicked)
+  | ({ t: "settings:result" } & SettingsResult);
 
 

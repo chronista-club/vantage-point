@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.66.0"
+version = "0.67.0"
 edition = "2024"
 rust-version = "1.96" # = .mise.toml [tools].rust (基本 stable 追随、 minor pin)
 authors = ["Chronista Club"]
@@ -66,7 +66,7 @@ tokio-stream = "0.1"
 # 依存で先行反映していたが、1.7.0 で crates.io 出荷されたため version 指定へ復帰
 # (nightly HEAD 追従の移動標的を解消)。
 # 1.8.0: KDL request safety hint 属性 (#95) + unison-mcp rmcp 2 系 live bridge (#93)。
-unison = { package = "club-unison", version = "1.8.0" }
+unison = { package = "club-unison", version = "1.9.0" }
 
 # Lifecycle / Outcome / drive primitives。 crates.io package = `club-nostos`、 Rust 識別子は
 # `nostos` に alias (unison と同じ package rename 方針)。 doc 24 §4.6 lifecycle co-evolution:

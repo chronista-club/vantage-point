@@ -63,7 +63,8 @@ daemon ⚙️ (Process Manager / 常駐デーモン)
   ├── devices 🧲 (machine scope / device registry)
   └── device_io 🌫️ (lane scope / device I/O)
 
-軸: agent（claude/codex/grok/opencode/shell）× mode（tui/gui）。GUI 容器 = Pane（app 専用語）。
+軸: agent（claude/codex/grok/opencode/vpcode/shell）× mode（tui/gui）。GUI 容器 = Pane（app 専用語）。
+vpcode は自前 engine（VCP protocol、#1014〜#1016 で 5 番目の engine として統合、2026-08-27）。
 部品 = component（lane に host）/ 常駐 = service。総称「Stand」は廃止（義ごとに分解）。
 ```
 
@@ -128,7 +129,12 @@ vantage-point/
 ```bash
 # Core
 vp ps                  # 稼働中 repo 一覧（REPO / LANES 数 / STATUS active|idle）。詳細は vp lane list
-vp config              # 設定と登録 repo 表示
+vp config              # 設定と登録 repo 表示（daemon 不要）
+vp config get|set      # user 設定 = 「好み」の層（`settings.kdl`、doc 59）。
+                       # ⚠️ **書き手は daemon 唯一**（GUI / CLI は RPC で頼む）— 同時書き込みで
+                       # 片方の変更が消える余地を構造的に消すため。file は人が手で編集してもよい。
+                       # 例: `vp config set log-level debug`（空文字を渡すと未設定に戻る）。
+                       # 反映には daemon 再起動が要る（起動時にしか読まれない）
 vp repos               # 登録 repo 管理（add/remove/rename/enable/disable/reorder/list）
 vp sync                # repos.kdl を現実と同期（ghost repo 除去）
 vp mcp                 # MCPサーバーモード（stdio）
@@ -201,6 +207,11 @@ cargo install --path crates/vp-cli --locked  # インストール（codesign 自
 cargo fmt --all -- --check                # フォーマットチェック
 cargo clippy --workspace --all-targets    # Lint
 
+# dev loop の check/test は mbx (mr boxington) 経由が速い（2026-08-30 採用、#1022）
+mise run check                             # mbx check — 同じ場所の 2 回目以降 26.9 分 → 3.4 秒
+mise run test                              # mbx test — ⚠️ 初見 worktree の 1 回目は素の cargo より遅い
+                                           # （dep-info 学習前は照会不能）。release 系は cargo のまま
+
 # dogfood: 普段使いの .app を作業ツリーの build で差し替えて触る（GUI 変更の実機確認の正）
 mise run app:swap                          # DRY build → /Applications/VantagePoint.app 差し替え → 起動
 VP_SWAP_RESTART_DAEMON=1 mise run app:swap # server (crates/vantage-point) も効かせる（lane が全部落ちる）
@@ -225,11 +236,15 @@ VP_GC_DRY=1 mise run dev:gc                # 消さずに何がどれだけ減�
 
   | zone | env | default | 用途 |
   |------|-----|---------|------|
-  | **config** (`vp_config_dir()`) | `$XDG_CONFIG_HOME` | `~/.config/vp/` | 人が編集（`config.kdl` / `repos.kdl` / `addresses.toml`） |
+  | **config** (`vp_config_dir()`) | `$XDG_CONFIG_HOME` | `~/.config/vp/` | 設定 3 層（doc 59）: 環境 = `config.kdl`（人だけが書く）/ 好み = `settings.kdl`（daemon が書く）/ 作業 = `repos.kdl`（VP が書く）。GUI 固有 = `vp-app.toml` |
   | **data** (`vp_data_dir()`) | `$XDG_DATA_HOME` | `~/.local/share/vp/` | 永続 data store（db / discs） |
   | **state** (`vp_state_dir()`) | `$XDG_STATE_HOME` | `~/.local/state/vp/` | runtime state + log（`session.json` / `sessions/` / `log/`） |
 
-  - 設定ファイルは **KDL**（`vp_config_dir()/config.kdl`、人が編集する read-only global 設定）。登録 repoの SSOT は `repos.kdl`（VP-188、config.kdl には出さない）。
+  - 設定は **KDL** で 3 層に分かれる（`docs/design/59-settings-page.md` が SSOT）。**「何に属するか」で割る**のが原理:
+    - **環境**（このマシンの事実 — `claude-cli-path` / `hub-addr`）= `config.kdl`。**人だけが編集し VP は書き戻さない**（`KdlDeserialize` のみ）
+    - **好み**（user 本人 — 既定 agent × model / theme / アイドル時間 / ログ詳細度）= `settings.kdl`。**daemon が所有して書く**（GUI / CLI は daemon に頼む）。env > settings.kdl > 組み込み既定
+    - **作業**（今なにを開いているか）= `repos.kdl`（VP が書く。VP-188、config.kdl には出さない）
+    - ⚠️ **「config zone = 人が編集」は誤り** — 同じ zone の `repos.kdl` は VP が書いている（council 2026-05-16「ephemeral な DB でなく人間可読 file を SSOT に」）。
   - federation opt-in は config.kdl の `hub-addr "hub.chronista.club:12879"`（常設 SSOT — launchd daemon は shell env を持たない）。env `CHRONISTA_HUB_ADDR` は dev override として優先される。未設定 = federation off（machine-local）。状態確認は `vp daemon status` の `Hub:` 行 or `/api/health` の `hub` field。
   - 起動時に旧パス（Application Support / Library/Logs / `dirs::config_dir()/vantage/` 等）から新 XDG zone へ冪等にデータ移行（`migrate_legacy_paths()`、旧データは残す）。
 - ポート割り当て:

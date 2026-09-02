@@ -819,8 +819,12 @@ mod tests {
 
         // id 無し（素の claude）にも --model が乗る。doc 53 §12.1 で `--continue` 枝が
         // 消えたので、ここは fallback を持たない単一 command = 1 回だけ。
-        let bare = claude_command(None, Some("claude-fable-5"));
-        assert_eq!(bare.matches("--model claude-fable-5").count(), 1, "{bare}");
+        let bare = claude_command(None, Some("claude-fable-5-1"));
+        assert_eq!(
+            bare.matches("--model claude-fable-5-1").count(),
+            1,
+            "{bare}"
+        );
     }
 
     /// 不正な model 名（injection 形 / 空 / 先頭 `-`）は `--model` に採用されない。

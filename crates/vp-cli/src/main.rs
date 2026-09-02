@@ -62,8 +62,12 @@ enum Commands {
     },
     /// repos.kdl を現実と同期 — ghost repo (dir 実在せず) を除去
     Sync,
-    /// 設定と登録済みrepoを表示
-    Config,
+    /// 設定と登録済みrepoを表示 / user 設定の読み書き（`vp config set …`）
+    Config {
+        /// 省略時は従来どおり「設定と登録 repo の表示」。
+        #[command(subcommand)]
+        cmd: Option<commands::config::ConfigCommands>,
+    },
     /// MCPサーバーとして起動（stdio JSON-RPC）
     Mcp,
     /// self-update: GitHub Releasesから最新バイナリに更新
@@ -201,7 +205,8 @@ enum LaneCommands {
         #[arg(long)]
         base: Option<String>,
         /// lane の claude model alias（例: 'opus' / 'sonnet' / 'haiku'）。次回 spawn 時に
-        /// `--model` として読まれる。省略時は config の default-lane-model（既定 Opus）
+        /// `--model` として読まれる。省略時は config の default-lane-model、それも
+        /// 未設定なら無記録 = engine 側の user 既定に委ねる（doc 54 §8-11）
         #[arg(long)]
         model: Option<String>,
     },
@@ -222,7 +227,8 @@ enum LaneCommands {
         #[arg(long)]
         base: Option<String>,
         /// lane の claude model alias（例: 'opus' / 'sonnet' / 'haiku'）。次回 spawn 時に
-        /// `--model` として読まれる。省略時は config の default-lane-model（既定 Opus）
+        /// `--model` として読まれる。省略時は config の default-lane-model、それも
+        /// 未設定なら無記録 = engine 側の user 既定に委ねる（doc 54 §8-11）
         #[arg(long)]
         model: Option<String>,
     },
@@ -418,7 +424,17 @@ fn main() -> Result<()> {
             session,
         } => commands::now::report(&text, lane.as_deref(), session, &config),
         Commands::Sync => commands::sync::execute(),
-        Commands::Config => commands::config::execute(&config),
+        Commands::Config { cmd } => match cmd {
+            // 従来の `vp config`（表示のみ、daemon 不要で動く）。
+            None => commands::config::execute(&config),
+            // user 設定（settings.kdl）の読み書きは **daemon に頼む**（doc 59 §3 —
+            // 書き手を 1 人にして同時書き込みを構造的に消す）。repos と同じく
+            // per-command Runtime で block_on する。
+            Some(cmd) => {
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(commands::config::execute_settings(cmd))
+            }
+        },
         Commands::Mcp => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(mcp::run_mcp_server(None))

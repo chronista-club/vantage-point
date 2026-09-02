@@ -162,6 +162,21 @@ impl DaemonControl {
         Ok(())
     }
 
+    /// user の「好み」設定（settings.kdl）を読む（doc 59）。
+    ///
+    /// 返るのは**書かれている key だけ**の object（未設定は field ごと省略）。
+    pub async fn settings_get(&self) -> Result<serde_json::Value> {
+        self.control("settings/get", serde_json::json!({})).await
+    }
+
+    /// user の「好み」設定を書き換え、**書き込み後の確定値**を返す（doc 59）。
+    ///
+    /// ⚠️ **書き手は daemon だけ** — GUI が file を直接書くと CLI との同時実行で
+    /// 片方の変更が消える。payload に載せた key だけが変わり、空文字は未設定に戻す。
+    pub async fn settings_set(&self, payload: serde_json::Value) -> Result<serde_json::Value> {
+        self.control("settings/set", payload).await
+    }
+
     /// ACTIONS を creo-memories へ永続化する (doc 57 Phase 4)。
     ///
     /// **書くのは daemon** — cache の持ち主が書かないと、書いた直後の `/api/health` が

@@ -21,8 +21,9 @@ _.file = ".env"
 
 # Windows host (MINGW64 / Git Bash) で task の `run` block を bash で実行する。
 # default は cmd.exe で、`set -euo pipefail` 等の bash idiom が崩壊するため必須。
-[settings]
-windows_default_inline_shell_args = "bash -c"
+# shell interpreter の global-only 化に伴い、project task に限定して指定する。
+[task_config]
+shell = "{% if os() == 'windows' %}bash -c{% else %}sh -c{% endif %}"
 
 # build → check に改名 (cargo check、 .mise/tasks/check、 2026-05-30 Occam)。
 

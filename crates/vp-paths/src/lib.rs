@@ -12,7 +12,7 @@
 //!
 //! | zone   | 環境変数            | default                  | 用途 |
 //! |--------|---------------------|--------------------------|------|
-//! | config | `$XDG_CONFIG_HOME`  | `~/.config/vp/`          | 人が編集 (config.kdl / repos.kdl / addresses.toml) |
+//! | config | `$XDG_CONFIG_HOME`  | `~/.config/vp/`          | 設定 3 層 (doc 59): 環境 = config.kdl (人だけが書く) / 好み = settings.kdl (daemon が書く) / 作業 = repos.kdl (VP が書く)。GUI 固有 = vp-app.toml |
 //! | data   | `$XDG_DATA_HOME`    | `~/.local/share/vp/`     | 永続 data store (db / discs) |
 //! | state  | `$XDG_STATE_HOME`   | `~/.local/state/vp/`     | runtime state + log (session.json / sessions/ / log/) |
 //!
@@ -229,7 +229,9 @@ pub fn term_trace(hop: &str, lane: &str, data: &[u8]) {
 
 /// VP の config zone (XDG `$XDG_CONFIG_HOME/vp/`、 default `~/.config/vp/`)。
 ///
-/// 人が編集する設定 (config.kdl / repos.kdl / addresses.toml) の置き場。
+/// 設定 file の置き場。**「人が編集する zone」ではない** — 何に属するかで 3 層に割れており
+/// (doc 59)、環境 (config.kdl) だけが人の手専用で、好み (settings.kdl) と作業 (repos.kdl) は
+/// VP が書く。
 /// `XDG_CONFIG_HOME` 環境変数を優先、 未設定なら `$HOME/.config/vp/`。 macOS
 /// でも `~/Library/Application Support/` は使わない (= dotfile 一極集中方針)。
 pub fn vp_config_dir() -> PathBuf {

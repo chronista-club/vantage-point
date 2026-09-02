@@ -65,6 +65,11 @@ presence: { [key in string]?: string },
  */
 update_available: boolean, 
 /**
+ * アイドルとみなすまでの分数（`/api/health` 由来、doc 59 P3）。
+ * **0 = 未取得**（旧 daemon / オフライン）で、webview 側が既定 5 分に倒す。
+ */
+idle_timeout_minutes: bigint, 
+/**
  * 最新 release version（ボタン label「更新する ⤴ vX.Y.Z」用、未取得は None）。
  */
 latest_version?: string | null, 

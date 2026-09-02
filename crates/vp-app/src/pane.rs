@@ -171,6 +171,10 @@ pub struct ActivitySnapshot {
     /// sidebar Daemon widget の「更新する」ボタンの表示 gate。旧 daemon は false。
     #[serde(default)]
     pub update_available: bool,
+    /// アイドルとみなすまでの分数（`/api/health` 由来、doc 59 P3）。
+    /// **0 = 未取得**（旧 daemon / オフライン）で、webview 側が既定 5 分に倒す。
+    #[serde(default)]
+    pub idle_timeout_minutes: u64,
     /// 最新 release version（ボタン label「更新する ⤴ vX.Y.Z」用、未取得は None）。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub latest_version: Option<String>,

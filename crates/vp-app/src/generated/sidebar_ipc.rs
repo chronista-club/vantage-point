@@ -127,6 +127,31 @@ pub struct AuthLogout {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettingsFetch;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettingsSave {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub developer_mode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_repo_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_minutes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettingsPickRepoRoot;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonRestart;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionsPersist {
     pub items: Vec<serde_json::Value>,
     pub removed: Vec<String>,
@@ -166,6 +191,26 @@ pub struct WireResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClonePathPicked {
     pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettingsResult {
+    pub developer_mode: bool,
+    pub developer_mode_locked: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_repo_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_repo_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_minutes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    pub default_agent_takes_model: bool,
+    pub daemon_reachable: bool,
 }
 
 /// Envelope enum for channel "ipc" — a discriminated union over its
@@ -215,6 +260,14 @@ pub enum IpcEnvelope {
     AuthLogin(AuthLogin),
     #[serde(rename = "auth:logout")]
     AuthLogout(AuthLogout),
+    #[serde(rename = "settings:fetch")]
+    SettingsFetch,
+    #[serde(rename = "settings:save")]
+    SettingsSave(SettingsSave),
+    #[serde(rename = "settings:pick_repo_root")]
+    SettingsPickRepoRoot,
+    #[serde(rename = "daemon:restart")]
+    DaemonRestart,
     #[serde(rename = "actions:persist")]
     ActionsPersist(ActionsPersist),
 }
@@ -236,4 +289,6 @@ pub enum IpcEventEnvelope {
     WireResult(WireResult),
     #[serde(rename = "clone:path_picked")]
     ClonePathPicked(ClonePathPicked),
+    #[serde(rename = "settings:result")]
+    SettingsResult(SettingsResult),
 }

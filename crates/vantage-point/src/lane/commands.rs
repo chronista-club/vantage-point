@@ -518,22 +518,29 @@ fn clear_lane_state_files(repo_root: &Path, lane: &str) {
     clear_lane_state_files_in(&crate::config::vp_state_dir(), repo_root, lane);
 }
 
-/// lane の claude model を `engine_model` へ永続する (co-evolution #1、CLI `vp lane new/fork --model`)。
+/// lane の claude model を session registry へ永続する (co-evolution #1、CLI `vp lane new/fork --model`)。
 ///
 /// repo key は `clear_lane_state_files` / repo `create_sub_orchestrated` と同一
 /// derivation (repo_root basename) — CLI で書いた model を repo spawn 経路が読めるようにする。
-/// 明示 `--model` が無ければ config の `default-lane-model`（未設定なら Opus）にフォールバックして
-/// record する（内部 helper `persist_lane_model_in` は従来通り None=no-op、既定解決はこの wrapper が担う）。
+/// 明示 `--model` が無ければ config の `default-lane-model` に、それも未設定なら**無記録**
+/// （engine 側の user 既定に委ねる、doc 54 §8-11）に倒す（内部 helper `persist_lane_model_in`
+/// は従来通り None=no-op、既定解決はこの wrapper が担う）。
 /// 不正な model 名は Err で早期に弾く (worktree は作成済だが spawn 前に失敗を返す方が silent degrade より良い)。
 ///
 /// `repo_root` は [`config::find_repo_root`] 由来で **常に main worktree root** に正規化される
 /// (lane worktree の中から呼んでも repo 読み手の `addr.repo` = main root basename と一致する。
 /// 旧: worktree 内実行で repo key mismatch → model が silent 無視。repo key 正規化で解消)。
 fn persist_lane_model(repo_root: &Path, lane: &str, model: Option<&str>) -> Result<(), String> {
-    // doc 54 §8-11: 明示 `--model` > config `default-lane-model` > 無記録（engine 側の
-    // user 既定に委ねる）。mcp / sidebar 経路（create_sub_orchestrated）と同じ既定規則。
-    let cfg = crate::config::Config::load().unwrap_or_default();
-    let effective = super::engine_model::resolve_default(model, cfg.default_lane_model());
+    // doc 54 §8-11: 明示 `--model` > settings.kdl の既定 > 無記録（engine 側の user 既定に
+    // 委ねる）。mcp / sidebar 経路（create_sub_orchestrated）と同じ既定規則。
+    //
+    // ⚠️ doc 59 P4: 既定は **agent と組で**引く。CLI の `vp lane new` は claude 前提で
+    // model を記録する経路なので、既定 agent が model を受け付けない（codex 等）なら
+    // 既定 model は当てない（`default_lane_pair` が組で解決済み）。
+    let effective = super::engine_model::resolve_default(
+        model,
+        crate::settings_file::default_lane_pair().1.as_deref(),
+    );
     persist_lane_model_in(
         &crate::config::vp_state_dir(),
         repo_root,
@@ -2128,10 +2135,10 @@ mod tests {
         assert_eq!(model_of("feat"), None);
 
         // 有効な model は初期 session（key=1）に basename key で書かれる
-        persist_lane_model_in(base, &repo_root, "feat", Some("claude-fable-5")).expect("record");
+        persist_lane_model_in(base, &repo_root, "feat", Some("claude-fable-5-1")).expect("record");
         assert_eq!(
             model_of("feat").as_deref(),
-            Some("claude-fable-5"),
+            Some("claude-fable-5-1"),
             "repo spawn が読む repo=basename('vp') key の session 1 に書かれる"
         );
 

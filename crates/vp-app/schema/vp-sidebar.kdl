@@ -136,6 +136,34 @@ protocol "sidebar" version="1.0.0" {
         request "auth:logout" {
             field "target" type="string" optional=#true
         }
+        // ── 設定ページ（doc 59 P1）─────────────────────────────────────────
+        // 設定 overlay の現在値 fetch。応答は `settings:result`（WirePanel の
+        // `wire:fetch` と同じ流儀 — 開いた時に取りに行き、常時 push はしない）。
+        request "settings:fetch" {}
+        // 設定の保存。**変えた field だけ**を送る（省略 = 不変）。Rust 側が
+        // `vp-app.toml` へ atomic に書き、確定値を `settings:result` で push back する
+        // （楽観更新の巻き戻しを client に持たせない）。
+        request "settings:save" {
+            field "developer_mode" type="bool" optional=#true
+            field "default_repo_root" type="string" optional=#true
+            // ── ここから下は daemon 側（settings.kdl）の設定。vp-app は
+            //    daemon-control.settings/set に中継するだけで、自分では書かない
+            //    （書き手は daemon 唯一 — doc 59 §3）。
+            field "log_level" type="string" optional=#true
+            field "idle_timeout_minutes" type="int" optional=#true
+            field "default_agent" type="string" optional=#true
+            field "default_model" type="string" optional=#true
+        }
+        // Add Repo 初期フォルダの folder picker を開く。選択されたら保存して
+        // `settings:result` を返す。⚠️ **キャンセル時は撃たない**
+        // （`repo:clone:pickFolder` と同じ流儀 = 既存値を保持）。
+        request "settings:pick_repo_root" {}
+        // daemon 再起動要求。⚠️ **全 repo = 全 lane の claude が落ちる**
+        // （doc 44 P1 fold-in で repo は daemon プロセス内の `Arc<AppState>`）。
+        // Rust 側が rfd 確認ダイアログで「何が落ちて何が戻るか」を出してから
+        // `vp daemon restart` を撃つ（`update_flow.rs` と同じ専用スレッド）。
+        request "daemon:restart" {}
+
         // ACTIONS の永続化 (doc 57 Phase 4)。sidebar の編集を daemon 経由で creo-memories へ。
         //
         // Rust 側は 400ms coalesce してから `daemon-control.actions/save` を撃つ (打鍵ごとに
@@ -204,6 +232,37 @@ protocol "sidebar" version="1.0.0" {
         // ⚠️ **キャンセル時は撃たない**（既存の override を保持する = 既存挙動）。
         event "clone:path_picked" {
             field "path" type="string"
+        }
+
+        // 設定の現在値（`settings:fetch` / `settings:save` / `settings:pick_repo_root` の戻り、
+        // doc 59 P1）。
+        //
+        // - `developer_mode` = **実効値**（env > vp-app.toml > debug_assertions の解決後）
+        // - `developer_mode_locked` = `VP_DEVELOPER_MODE` で固定されている（= 設定ページで
+        //   変えても効かない）。UI はこの時 toggle を無効化する — 「押しても効かない
+        //   選択肢を並べない」ため
+        // - `default_repo_root` = vp-app.toml の明示値（未設定なら省略）
+        // - `resolved_repo_root` = 明示値が無い時に**実際に使われる**パス
+        //   （`resolve_default_repo_root` の推定結果）。空欄の入力欄に placeholder として
+        //   出し、「空だが実際はここ」を見せる
+        event "settings:result" {
+            field "developer_mode" type="bool"
+            field "developer_mode_locked" type="bool"
+            field "default_repo_root" type="string" optional=#true
+            field "resolved_repo_root" type="string" optional=#true
+            // ── daemon 側（settings.kdl）の確定値。**daemon 不在なら省略**され、
+            //    UI はその区画を「daemon に接続すると編集できます」に落とす
+            //    （空欄に見せて編集させると、押しても保存できない行き止まりになる）。
+            field "log_level" type="string" optional=#true
+            field "idle_timeout_minutes" type="int" optional=#true
+            // 既定 agent × model（doc 59 P4）。**組で**運ぶ — 片方だけ送ると
+            // 受け手が「codex なのに claude の model」を再構成できてしまう。
+            field "default_agent" type="string" optional=#true
+            field "default_model" type="string" optional=#true
+            // その agent が model を受け付けるか。false なら model 欄を出さない
+            // （codex は VP から model を渡さない = 押しても効かない欄を並べない）。
+            field "default_agent_takes_model" type="bool"
+            field "daemon_reachable" type="bool"
         }
     }
 }

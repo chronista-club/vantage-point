@@ -70,11 +70,10 @@ pub(crate) fn resolve_create_lane_args(
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string())
         .unwrap_or_else(|| super::lanes::derive_default_branch(&repo_root, name));
-    let agent = agent.map(|s| s.to_string()).unwrap_or_else(|| {
-        crate::config::Config::load()
-            .map(|c| c.default_agent_or_claude().to_string())
-            .unwrap_or_else(|_| "claude".to_string())
-    });
+    // doc 59 P4: 既定 agent は settings.kdl（好みの層）が持つ。
+    let agent = agent
+        .map(|s| s.to_string())
+        .unwrap_or_else(crate::settings_file::default_lane_agent);
     (branch, agent)
 }
 

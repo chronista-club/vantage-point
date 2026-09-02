@@ -358,6 +358,45 @@ pub(crate) type MidiDevices = Option<Arc<RwLock<crate::devices::DeviceRegistry>>
 #[cfg(not(feature = "midi"))]
 pub(crate) type MidiDevices = Option<()>;
 
+/// `settings/get` / `settings/set` の応答（doc 59）。**未設定の key は field ごと省略**する。
+///
+/// `null` を載せずに省略するのは「未設定」と「明示的に空」を wire 上でも区別するため —
+/// 呼び手（GUI の入力欄 / CLI の表示）は「書かれていない = 既定に従う」を素直に扱える。
+fn user_settings_json(s: &crate::settings_file::SettingsFile) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    if let Some(level) = &s.log_level {
+        out.insert("log_level".into(), serde_json::json!(level));
+    }
+    if let Some(minutes) = s.idle_timeout_minutes {
+        out.insert("idle_timeout_minutes".into(), serde_json::json!(minutes));
+    }
+    // doc 59 P4: 既定 agent × model は **組で**返す。片方だけ返すと受け手が
+    // 「agent は codex なのに model は claude」を再構成できてしまう。
+    if let Some(lane) = &s.default_lane {
+        if let Some(agent) = &lane.agent {
+            out.insert("default_agent".into(), serde_json::json!(agent));
+        }
+        if let Some(model) = &lane.model {
+            out.insert("default_model".into(), serde_json::json!(model));
+        }
+    }
+    // ⚠️ **能力の判定は daemon 側でやって結果だけ返す**。vp-app は engine の能力表明
+    // （`EngineKind::model_choices`）を知らない（重量 dep を持ち込まない方針で
+    // vantage-point crate に依存していない）ので、client 側に一覧を複製すると
+    // engine が model を受けるようになった時に片方だけ古くなる。
+    let effective_agent = s
+        .default_lane
+        .clone()
+        .unwrap_or_default()
+        .agent_effective()
+        .to_string();
+    out.insert(
+        "default_agent_takes_model".into(),
+        serde_json::json!(crate::settings_file::agent_accepts_model(&effective_agent)),
+    );
+    serde_json::Value::Object(out)
+}
+
 pub(crate) async fn handle_daemon_control(
     daemon_cap: &Arc<RwLock<crate::capability::RepoManagerCapability>>,
     creo_actions: &crate::creo::client::CreoActionsCache,
@@ -638,6 +677,92 @@ pub(crate) async fn handle_daemon_control(
                 crate::host::ledger::record_farewell_reclaimed(db.as_ref(), path, &lanes, &now)
                     .await;
             Ok(serde_json::json!({ "recorded": recorded }))
+        }
+        // user の「好み」設定（doc 59）。環境（config.kdl）ではなく settings.kdl の担当で、
+        // キーは重複しない。read は file を都度引く — daemon が唯一の書き手なので、
+        // memory に cache を持って「書いたのに古い値が返る」窓を作る必要がない。
+        "settings/get" => Ok(user_settings_json(
+            &crate::settings_file::SettingsFile::load(),
+        )),
+        // ⚠️ **書き手はここだけ**（GUI / CLI はこの RPC に頼む）。同時書き込みで壊れる余地を
+        // 構造的に消すのが目的で、file 自体は人が手で編集してもよい。
+        "settings/set" => {
+            let mut settings = crate::settings_file::SettingsFile::load();
+            if let Some(raw) = payload.get("log_level").and_then(|v| v.as_str()) {
+                let v = raw.trim();
+                if v.is_empty() {
+                    // 空文字 = 未設定に戻す（消し方を別 method にしない）。
+                    settings.log_level = None;
+                } else {
+                    // 綴り違いは**エラーで返す**。黙って捨てると「設定したのに効かない」に
+                    // なり、user は file を見ても自分の値が入っていて原因に辿り着けない。
+                    let candidate = crate::settings_file::SettingsFile {
+                        log_level: Some(v.to_string()),
+                        ..Default::default()
+                    };
+                    if candidate.log_level_valid().is_none() {
+                        return Err(format!(
+                            "log_level が不正です: {v:?}（trace|debug|info|warn|error）"
+                        ));
+                    }
+                    settings.log_level = Some(v.to_ascii_lowercase());
+                }
+            }
+            if let Some(raw) = payload.get("idle_timeout_minutes") {
+                // 空文字 / null = 未設定に戻す（log_level と同じ消し方に揃える）。
+                if raw.is_null() || raw.as_str().is_some_and(|s| s.trim().is_empty()) {
+                    settings.idle_timeout_minutes = None;
+                } else {
+                    // ⚠️ 0 はエラー。「無効化」の意味を持たせないため（1 つの値に時間と
+                    // 有効/無効の 2 性質を兼ねさせない — 後から意味を思い出す必要が出る）。
+                    let minutes = raw.as_u64().filter(|m| *m > 0).ok_or_else(|| {
+                        format!("idle_timeout_minutes が不正です: {raw}（1 以上の整数）")
+                    })?;
+                    settings.idle_timeout_minutes = Some(minutes);
+                }
+            }
+            // doc 59 P4: 既定 agent × model。**agent を先に確定してから model を検証する** —
+            // 順序が逆だと「codex に claude の model」を弾けない。
+            let mut lane = settings.default_lane.clone().unwrap_or_default();
+            if let Some(raw) = payload.get("default_agent").and_then(|v| v.as_str()) {
+                let v = raw.trim();
+                if v.is_empty() {
+                    lane.agent = None;
+                } else if crate::settings_file::SELECTABLE_AGENTS.contains(&v) {
+                    lane.agent = Some(v.to_string());
+                } else {
+                    return Err(format!(
+                        "default_agent が不正です: {v:?}（{}）",
+                        crate::settings_file::SELECTABLE_AGENTS.join(" | ")
+                    ));
+                }
+            }
+            if let Some(raw) = payload.get("default_model").and_then(|v| v.as_str()) {
+                let v = raw.trim();
+                if v.is_empty() {
+                    lane.model = None;
+                } else {
+                    // ⚠️ **その agent が model を受け付けるか**を先に見る。受け付けないなら
+                    // 保存しても無視されるだけなので、黙って書かずエラーで返す
+                    // （「設定したのに効かない」を作らない）。
+                    let agent = lane.agent_effective().to_string();
+                    if !crate::settings_file::agent_accepts_model(&agent) {
+                        return Err(format!(
+                            "{agent} は VP から model を指定できません（model は {agent} 側で選択します）"
+                        ));
+                    }
+                    if !crate::lane::engine_model::is_valid_model(v) {
+                        return Err(format!("default_model の形式が不正です: {v:?}"));
+                    }
+                    lane.model = Some(v.to_string());
+                }
+            }
+            settings.default_lane =
+                (lane != crate::settings_file::DefaultLane::default()).then_some(lane);
+
+            settings.save().map_err(|e| e.to_string())?;
+            // 書き込み後の確定値を返す = 呼び手は楽観更新をしなくてよい。
+            Ok(user_settings_json(&settings))
         }
         "host/farewell_log" => {
             let path = payload["path"]
