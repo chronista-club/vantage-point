@@ -114,11 +114,52 @@ impl WireMessage {
     /// 新規 thread の root message を構築 (`prev = None`)
     ///
     /// `local_seq` は 0 で構築し、 [`WiremsgStore::insert_message`] が INSERT 時に採番する。
+    /// main lane の alias 綴りを bare 形へ畳む（調査 = creo mem_1CeXGzBGyzaPXAjTUwZpBK）。
+    ///
+    /// `agent@<repo>/main`（+ 旧世代の予約名 `root` / `conductor`）→ `agent@<repo>`。
+    /// 予約名は 2 度改名されており（`conductor` → `root` → `main`）、3 世代とも
+    /// sub lane 名として **作成禁止**（`validate_sub_name`）— つまりこの suffix は実 sub を
+    /// 指し得ないので、無条件に畳んで安全。実 sub（例 `/sampler`）は不変。
+    ///
+    /// ## なぜ store 境界か（memory `normalize-at-module-boundary`）
+    ///
+    /// address を **key として使う**のは本 module（to 照合 / ack 台帳 / cursor / nudge
+    /// pending）。入口（routes/wire.rs）だけで畳むと、`expand_reply_recipients` が
+    /// **既存 row の alias 入り to を継いで新 row に増殖させる**経路が残る。全 public API の
+    /// 冒頭で畳めば、dispatch_wire も relay inbound も reply 展開も全部この内側になる。
+    ///
+    /// 綴りが 2 つ生まれた経緯: MCP 自己 identity / CLI hook は bare 一本だが、
+    /// federation 宛先規約（`vp wire send --node`）が `/main` 付きを使い、relay inbound が
+    /// envelope を素通ししていた。生文字列一致の照合と組み合わさって「ack しても
+    /// 再掲示が止まらない」（2026-09-02 creo-ui session、24h で数十回）を起こした。
+    pub(crate) fn normalize_wire_addr(addr: &str) -> String {
+        // 現行 = ROOT_LANE_NAME ("main")。旧 2 世代も畳む — 古い doc 例や他 node の
+        // 旧 binary から届く綴りを弾かないため（federation は version 混在が常態）。
+        const MAIN_ALIASES: [&str; 3] = [vp_paths::ROOT_LANE_NAME, "root", "conductor"];
+        if let Some((base, lane)) = addr.rsplit_once('/') {
+            // `@` を含む base だけが `agent@<repo>` 形。含まない場合（bare "agent" や
+            // 形式外）は wire address ではないので触らない（fail-safe）。
+            if base.contains('@') && MAIN_ALIASES.contains(&lane) {
+                return base.to_string();
+            }
+        }
+        addr.to_string()
+    }
+
     pub fn new_root(from: impl Into<String>, to: Vec<String>, body: serde_json::Value) -> Self {
+        // alias 畳み後に同一 agent が 2 回並びうる（["agent@x", "agent@x/main"]）ので
+        // 順序保持で dedup する（to の順序は表示に使われる）。
+        let from = Self::normalize_wire_addr(&from.into());
+        let mut seen = std::collections::HashSet::new();
+        let to: Vec<String> = to
+            .iter()
+            .map(|a| Self::normalize_wire_addr(a))
+            .filter(|a| seen.insert(a.clone()))
+            .collect();
         Self {
             id: new_message_id(),
             prev: None,
-            from: from.into(),
+            from,
             to,
             body,
             created_at: now_ms(),
@@ -136,10 +177,18 @@ impl WireMessage {
         body: serde_json::Value,
         prev_id: impl Into<String>,
     ) -> Self {
+        // new_root と同じ不変条件: store に入る row の address は常に正規化済み。
+        let from = Self::normalize_wire_addr(&from.into());
+        let mut seen = std::collections::HashSet::new();
+        let to: Vec<String> = to
+            .iter()
+            .map(|a| Self::normalize_wire_addr(a))
+            .filter(|a| seen.insert(a.clone()))
+            .collect();
         Self {
             id: new_message_id(),
             prev: Some(prev_id.into()),
-            from: from.into(),
+            from,
             to,
             body,
             created_at: now_ms(),
@@ -298,24 +347,28 @@ impl WiremsgStore {
         use std::collections::BTreeSet;
 
         // prev の参加者 (from ∪ to) を継ぐ
+        // ⚠️ **正規化済み空間で set 演算する**。既存 row（正規化導入前に保存された分）の
+        // to には alias 綴りが残っており、素通しで継ぐと ①新 row に alias が増殖し
+        // ②下の remove(from)（bare）が alias と不一致で送信者が to に残る
+        // （= 自分の返信で自分が nudge される、実例 01a04e19）。
         let mut set: BTreeSet<String> = BTreeSet::new();
-        set.insert(prev_msg.from.clone());
+        set.insert(WireMessage::normalize_wire_addr(&prev_msg.from));
         for t in &prev_msg.to {
-            set.insert(t.clone());
+            set.insert(WireMessage::normalize_wire_addr(t));
         }
         // caller 指定 (新規参加者追加用) を union
         for e in extra {
-            set.insert(e.clone());
+            set.insert(WireMessage::normalize_wire_addr(e));
         }
         // left の agent を除外 (thread root id を walk して引く)。
         // left 強制は send 側の責務 (R1) — recv 側 filter は廃止。
         let root_id = self.walk_to_root(&prev_msg.id).await?;
         let left = self.left_agents(&root_id).await?;
         for l in &left {
-            set.remove(l);
+            set.remove(&WireMessage::normalize_wire_addr(l));
         }
         // 送信者自身は to に入れない (= 自分の reply を未読で見ない)
-        set.remove(from);
+        set.remove(&WireMessage::normalize_wire_addr(from));
         Ok(set.into_iter().collect())
     }
 
@@ -337,6 +390,9 @@ impl WiremsgStore {
     /// **取得した最新 message の `local_seq`** に前進させること。 本メソッドは cursor を
     /// 変更しない。
     pub async fn fetch_unread(&self, agent: &str) -> Result<Vec<WireMessage>> {
+        // alias 綴り（`/main` 等）の問い合わせも同一 agent として扱う（module doc の不変条件）。
+        let agent = &WireMessage::normalize_wire_addr(agent);
+
         // 1. agent の per-agent cursor (last_read = local_seq) を取得
         let cursor = self.get_cursor(agent).await?;
         // 2. agent ∈ to_addrs かつ cursor 超過の message を取得 (local_seq 昇順)
@@ -372,6 +428,9 @@ impl WiremsgStore {
     /// unique 制約エラー) を避けるため `UPSERT` 文を使う。 `agent` 一致の 1 行を
     /// atomic に upsert する。
     pub async fn advance_cursor(&self, agent: &str, cursor: u64) -> Result<()> {
+        // alias 綴り（`/main` 等）の問い合わせも同一 agent として扱う（module doc の不変条件）。
+        let agent = &WireMessage::normalize_wire_addr(agent);
+
         let now = now_ms();
         // UPSERT ... WHERE agent = $agent: agent 一致行があれば update、 無ければ create。
         // SELECT→CREATE を 1 文に畳んで並行 recv の二重 CREATE race を消す (moody #2)。
@@ -402,6 +461,9 @@ impl WiremsgStore {
     /// 5-state FSM derive (= sub の現状態 = 最新 wmsg の `from` / `body.kind` から推論) で使う。
     /// 1 件も無ければ `None`。 local_seq DESC LIMIT 1 で取得する。
     pub async fn latest_msg_for_agent(&self, agent: &str) -> Result<Option<WireMessage>> {
+        // alias 綴り（`/main` 等）の問い合わせも同一 agent として扱う（module doc の不変条件）。
+        let agent = &WireMessage::normalize_wire_addr(agent);
+
         let mut res = self
             .db
             .query(
@@ -427,6 +489,9 @@ impl WiremsgStore {
     /// した count。 thread root id は各 message の `prev` を辿った先
     /// ([`walk_to_root`](Self::walk_to_root))。 未読 0 の thread は HashMap に現れない。
     pub async fn unread_count_by_thread(&self, agent: &str) -> Result<HashMap<String, u64>> {
+        // alias 綴り（`/main` 等）の問い合わせも同一 agent として扱う（module doc の不変条件）。
+        let agent = &WireMessage::normalize_wire_addr(agent);
+
         let unread = self.fetch_unread(agent).await?;
         let mut counts: HashMap<String, u64> = HashMap::new();
         for m in &unread {
@@ -444,6 +509,9 @@ impl WiremsgStore {
     /// 戻り値: 新規 ack なら `true`、 既に ack 済 (冪等) なら `false`。
     /// 存在しない `message_id` は Err (typo を黙って成功させない)。
     pub async fn ack(&self, message_id: &str, agent: &str) -> Result<bool> {
+        // alias 綴り（`/main` 等）の問い合わせも同一 agent として扱う（module doc の不変条件）。
+        let agent = &WireMessage::normalize_wire_addr(agent);
+
         // message 実在確認 (誤 id の ack を黙って成功させない)
         if self.get_message(message_id).await?.is_none() {
             anyhow::bail!("wiremsg ack: message not found: {message_id}");
@@ -498,6 +566,9 @@ impl WiremsgStore {
     /// `thread_participant` の sparse 例外表で表しているので、その語彙に乗せる
     /// （= message は不変、除外は別表。証跡も残る）。
     pub async fn leave_all_threads(&self, agent: &str) -> Result<usize> {
+        // alias 綴り（`/main` 等）の問い合わせも同一 agent として扱う（module doc の不変条件）。
+        let agent = &WireMessage::normalize_wire_addr(agent);
+
         // 当該 agent が受信者に含まれる message の thread root を集める。
         // root は `prev` を辿った先なので、message ごとに walk して重複を畳む。
         let mut res = self
@@ -600,6 +671,9 @@ impl WiremsgStore {
     /// の未読は減らない(per-agent 単一 cursor の横取り禁止 = V1 の必須制約)。
     /// `limit` は呼び手(route 層)で clamp 済みの前提だが、 injection 面では u64 の直埋めのみ。
     pub async fn history_for_agent(&self, agent: &str, limit: u64) -> Result<Vec<WireMessage>> {
+        // alias 綴り（`/main` 等）の問い合わせも同一 agent として扱う（module doc の不変条件）。
+        let agent = &WireMessage::normalize_wire_addr(agent);
+
         // LIMIT は bind でなく整数直埋め (SurrealDB の LIMIT は bind 変数を受けないため。
         // u64 なので injection 面は無い)。
         let query = format!(
@@ -626,6 +700,9 @@ impl WiremsgStore {
     /// [`acks_for`](Self::acks_for) の agent 側からの逆引き。 1 query で済ませる
     /// (history 1 回分 = 高々 limit 件なので INSIDE の線形照合で十分)。
     pub async fn acked_ids_for_agent(&self, agent: &str, ids: &[String]) -> Result<Vec<String>> {
+        // alias 綴り（`/main` 等）の問い合わせも同一 agent として扱う（module doc の不変条件）。
+        let agent = &WireMessage::normalize_wire_addr(agent);
+
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -718,6 +795,9 @@ impl WiremsgStore {
     /// needs_user は「ユーザ本人への相談」という設計上の低頻度 kind (性能トリアージは
     /// unacked_commands の note と同じ基準)。
     pub async fn pending_needs_user(&self, agent: &str) -> Result<Option<WireMessage>> {
+        // alias 綴り（`/main` 等）の問い合わせも同一 agent として扱う（module doc の不変条件）。
+        let agent = &WireMessage::normalize_wire_addr(agent);
+
         let mut res = self
             .db
             .query(
@@ -1036,9 +1116,12 @@ impl WireNotifier {
     /// `wire_recv` handler は戻り値の `notified()` を **store poll の前に** 生成すること
     /// (struct doc の取りこぼし防止プロトコル参照)。
     pub async fn handle(&self, agent: &str) -> Arc<Notify> {
+        // 待機（recv）と通知（send の宛先）で綴りが違っても同じ Notify を掴む
+        // （alias で待機 + bare で notify だと永久に起こされず long-poll が timeout する）。
+        let agent = WireMessage::normalize_wire_addr(agent);
         let mut guard = self.waiters.lock().await;
         guard
-            .entry(agent.to_string())
+            .entry(agent)
             .or_insert_with(|| Arc::new(Notify::new()))
             .clone()
     }
@@ -2121,6 +2204,94 @@ mod tests {
                 .await
                 .expect("unacked 3")
                 .is_empty()
+        );
+    }
+
+    /// 正規化の境界を固定する。⚠️ 予約名 3 世代（conductor → root → main）は
+    /// `validate_sub_name` が作成禁止にしているから畳める — 予約を外すならここも見直すこと。
+    #[test]
+    fn normalize_wire_addr_folds_only_reserved_aliases() {
+        let n = WireMessage::normalize_wire_addr;
+        // 3 世代の alias は bare へ
+        assert_eq!(n("agent@creo-ui/main"), "agent@creo-ui");
+        assert_eq!(n("agent@nexus/root"), "agent@nexus");
+        assert_eq!(n("agent@vp/conductor"), "agent@vp");
+        // 実 sub lane は不変（畳むと誤配送になる）
+        assert_eq!(n("agent@vp/sampler"), "agent@vp/sampler");
+        // bare / 形式外は不変（fail-safe — `@` の無いものは wire address ではない）
+        assert_eq!(n("agent@vp"), "agent@vp");
+        assert_eq!(n("agent"), "agent");
+        assert_eq!(n("foo/main"), "foo/main");
+    }
+
+    /// ⚠️ 実バグ再現（2026-09-02、creo-ui session の再掲示ループ / mem_1CeXGzBGyzaPXAjTUwZpBK）:
+    /// to は federation 由来の alias 綴り（`/main`）、ack は MCP 自己 identity の bare 綴り。
+    /// 生文字列一致だと永久に不一致で、nudge が MAX_NUDGES ×（daemon 再起動ごと）鳴り続けた。
+    #[tokio::test]
+    async fn alias_addressed_command_is_cleared_by_bare_ack() {
+        let store = make_test_store().await;
+        let cmd = store
+            .send_root(
+                "agent@anycreative.tech/main",
+                &["agent@creo-ui/main".to_string()],
+                serde_json::json!({"category": "command", "text": "task"}),
+            )
+            .await
+            .expect("send");
+        // 受信者は自分を bare 形で名乗る（`SelfLane::from_address` / CLI hook の実挙動）
+        store.ack(&cmd.id, "agent@creo-ui").await.expect("ack");
+        assert!(
+            store.unacked_commands().await.expect("unacked").is_empty(),
+            "bare ack が alias 宛の pending を消す（main は予約名なので同一 agent）"
+        );
+    }
+
+    /// 症状①（同 memory）: alias 宛の message が bare 形の recv で見えず、
+    /// nudge だけ届いて `wire_recv` が 0 件 timeout する。
+    #[tokio::test]
+    async fn bare_agent_sees_alias_addressed_unread() {
+        let store = make_test_store().await;
+        store
+            .send_root(
+                "agent@vp",
+                &["agent@creo-ui/main".to_string()],
+                serde_json::json!({"category": "event", "text": "hi"}),
+            )
+            .await
+            .expect("send");
+        let unread = store.fetch_unread("agent@creo-ui").await.expect("fetch");
+        assert_eq!(unread.len(), 1, "alias 宛は bare の自分宛として読める");
+    }
+
+    /// 副次バグ（同 memory）: prev の to に送信者の alias が居ると、reply-all 展開の
+    /// `set.remove(from)`（bare）が効かず、**自分の返信で自分が nudge される**
+    /// （実例: 01a04e19 — to に送信者 agent@nexus の alias agent@nexus/main が残留）。
+    #[tokio::test]
+    async fn reply_does_not_keep_senders_alias_in_recipients() {
+        let store = make_test_store().await;
+        let root = store
+            .send_root(
+                "agent@vp",
+                // 送信相手 bare + 返信者の alias（federation 経由で混入した形を再現）
+                &["agent@nexus/main".to_string()],
+                serde_json::json!({"category": "command", "text": "task"}),
+            )
+            .await
+            .expect("send root");
+        let reply = store
+            .send_reply(
+                "agent@nexus",
+                &[],
+                serde_json::json!({"category": "event", "text": "done"}),
+                &root.id,
+            )
+            .await
+            .expect("reply");
+        assert!(
+            !reply.to.contains(&"agent@nexus/main".to_string())
+                && !reply.to.contains(&"agent@nexus".to_string()),
+            "送信者は alias 綴りでも to に残らない: {:?}",
+            reply.to
         );
     }
 
