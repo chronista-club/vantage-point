@@ -831,6 +831,16 @@ chatMarked.use({
       if (!block) return escaped
       return `<p>${escaped.replace(/\n+$/, '').replace(/\n/g, '<br>')}</p>\n`
     },
+    // marked は未閉鎖の inline <pre>/<code>/<kbd>/<script> が開いた時点で inRawBlock を立て、
+    // 以降の text token を escaped: true にして既定 renderer に**生のまま**吐かせる（state は
+    // message 末尾まで残る）。html token を escape しても、属性前に空白の無い <img/src=x onerror=…>
+    // はこの text 経路を通って要素になる（review 実測 2026-09-03）。chat は raw HTML を一切通さない
+    // ので html token と同じ扱いに揃える。子 token を持つ text / それ以外は false で既定へ委譲。
+    text(token) {
+      if ('tokens' in token && token.tokens) return false
+      if ('escaped' in token && token.escaped) return escapeHtml(token.text)
+      return false
+    },
   },
   extensions: [
     {

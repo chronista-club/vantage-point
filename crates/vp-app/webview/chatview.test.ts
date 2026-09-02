@@ -1250,8 +1250,23 @@ describe('raw HTML は文字として描く — 閉じ忘れ <h1> が message �
     expect(mdToHtml('**太字**')).toContain('<strong>')
     expect(mdToHtml('`<h1>`')).toContain('&lt;h1&gt;')
   })
-  it('送信側は関知しない — mdToHtml は表示専用で、入力 text 自体は変換しない（回帰の意図確認）', () => {
-    const text = '<h1>x'
-    expect(text).toBe('<h1>x')
+  it('inline の <code> が開いた後の raw HTML も素通りしない（marked の inRawBlock 経路、review 指摘）', () => {
+    // marked は未閉鎖の inline <pre>/<code>/<kbd>/<script> で inRawBlock を立て、以降の text token を
+    // escaped 扱いで生のまま吐く。属性前に空白が無い <img/src=…> は tag 正規表現に当たらず text 側を通る
+    const html = mdToHtml('a <code> b <img/src=x onerror=alert(1)> c')
+    expect(html).not.toContain('<img')
+    expect(html).toContain('&lt;img/src=x onerror=alert(1)&gt;')
+    // state は段落を跨いで message 末尾まで残る
+    const html2 = mdToHtml('a <code> b\n\n新しい段落 <svg/onload=alert(1)>')
+    expect(html2).not.toContain('<svg')
+  })
+  it('block token は <p> で包み、改行は <br>、末尾の改行は落とす（出力形を固定）', () => {
+    expect(mdToHtml('<div>a\nb</div>\n\n\n')).toBe('<p>&lt;div&gt;a<br>b&lt;/div&gt;</p>\n')
+  })
+  it('inline token は <p> を足さない（段落は marked が付ける）', () => {
+    expect(mdToHtml('x<b>y</b>z')).toBe('<p>x&lt;b&gt;y&lt;/b&gt;z</p>\n')
+  })
+  it('hook は chat 専用 instance に閉じる — グローバル marked（board-render 側）は raw HTML を通したまま', () => {
+    expect(markedSingleton.parse('<h1>x') as string).toContain('<h1>')
   })
 })
