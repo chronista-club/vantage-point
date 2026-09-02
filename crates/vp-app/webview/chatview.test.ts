@@ -1228,3 +1228,45 @@ describe('foldInto — 受信時刻の刻印 (doc 57 §4.2)', () => {
     expect(th.at).toBe(undefined)
   })
 })
+
+describe('raw HTML は文字として描く — 閉じ忘れ <h1> が message 末尾まで巨大化する件 (mako 2026-09-03)', () => {
+  it('行頭の <h1>（block HTML）はタグでなく文字になる', () => {
+    const html = mdToHtml('<h1>本家....となってる"')
+    expect(html).not.toContain('<h1>')
+    expect(html).toContain('&lt;h1&gt;本家....となってる&quot;')
+  })
+  it('文中の <h1>（inline HTML）も文字になり、後続が見出しに巻き込まれない', () => {
+    const html = mdToHtml('詳細OK それ以外は、<h1>本家\n本家...')
+    expect(html).not.toContain('<h1>')
+    expect(html).toContain('&lt;h1&gt;本家')
+  })
+  it('script を持ち込む HTML（img onerror）は要素にならない — webview は IPC を持つ', () => {
+    const html = mdToHtml('<img src=x onerror="alert(1)">')
+    expect(html).not.toContain('<img')
+    expect(html).toContain('&lt;img')
+  })
+  it('markdown の見出し・強調・code は今までどおり効く（escape するのは raw HTML だけ）', () => {
+    expect(mdToHtml('# 見出し')).toContain('<h1')
+    expect(mdToHtml('**太字**')).toContain('<strong>')
+    expect(mdToHtml('`<h1>`')).toContain('&lt;h1&gt;')
+  })
+  it('inline の <code> が開いた後の raw HTML も素通りしない（marked の inRawBlock 経路、review 指摘）', () => {
+    // marked は未閉鎖の inline <pre>/<code>/<kbd>/<script> で inRawBlock を立て、以降の text token を
+    // escaped 扱いで生のまま吐く。属性前に空白が無い <img/src=…> は tag 正規表現に当たらず text 側を通る
+    const html = mdToHtml('a <code> b <img/src=x onerror=alert(1)> c')
+    expect(html).not.toContain('<img')
+    expect(html).toContain('&lt;img/src=x onerror=alert(1)&gt;')
+    // state は段落を跨いで message 末尾まで残る
+    const html2 = mdToHtml('a <code> b\n\n新しい段落 <svg/onload=alert(1)>')
+    expect(html2).not.toContain('<svg')
+  })
+  it('block token は <p> で包み、改行は <br>、末尾の改行は落とす（出力形を固定）', () => {
+    expect(mdToHtml('<div>a\nb</div>\n\n\n')).toBe('<p>&lt;div&gt;a<br>b&lt;/div&gt;</p>\n')
+  })
+  it('inline token は <p> を足さない（段落は marked が付ける）', () => {
+    expect(mdToHtml('x<b>y</b>z')).toBe('<p>x&lt;b&gt;y&lt;/b&gt;z</p>\n')
+  })
+  it('hook は chat 専用 instance に閉じる — グローバル marked（board-render 側）は raw HTML を通したまま', () => {
+    expect(markedSingleton.parse('<h1>x') as string).toContain('<h1>')
+  })
+})
