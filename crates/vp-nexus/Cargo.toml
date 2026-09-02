@@ -53,7 +53,12 @@ clap = { workspace = true }
 # Phase A1a (= dogfood 4): Creo ID JWT verify middleware 用。
 # - jsonwebtoken: JWT decode/verify (RS256 + JWKS 対応)、 vp-nexus 専用
 # - reqwest: JWKS fetch (workspace dep を再利用)
-jsonwebtoken = { version = "11", features = ["rust_crypto"] } # 11 で crypto provider (rust_crypto | aws_lc_rs) の明示が必須 — rsa crate と同じ pure Rust 実装を選ぶ
+# crypto provider の明示は 10.0.0 から必須（未選択は compile error でなく初回 verify で runtime panic）。
+# 旧 `jsonwebtoken = "10"` は surrealdb-core が引く jsonwebtoken 10 の aws_lc_rs を feature unification で
+# 偶然貰って動いていただけで、`cargo build -p vp-nexus` 単体（nexus hub の deploy 経路）では panic した。
+# 11 は surrealdb の 10 と別 major = 別 crate 実体になり偶発 unification が起きないので、自前で選ぶ。
+# rsa crate と同じ pure Rust の rust_crypto を採る（2026-09-02）。
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 reqwest = { workspace = true }
 # Phase A3a (= dogfood 13): settings sync の unison QUIC transport。
 # club-unison は独立 crate なので vantage-point crate には依存しない (= 独立性維持)。

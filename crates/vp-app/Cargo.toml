@@ -24,6 +24,8 @@ vp-paths = { path = "../vp-paths" }
 
 # Native window + WebView (crossplat: macOS/Windows/Linux)
 # Phase 5-C (2026-04-28): wry 0.54 → 0.55 (custom protocol + WKWebView origin handling 改善期待)、tao 0.34 → 0.35
+# 2026-09-02: wry 0.56 / tao 0.37。macOS backend は event_loop / app_state が byte 同一、custom protocol の
+# origin (`vp-asset://<path>`) も不変。wry の transparent / fullscreen feature 削除は未使用で不発
 wry = { version = "0.56", features = ["devtools"] }
 tao = "0.37"
 
