@@ -61,9 +61,9 @@ impl VantageMcp {
         let v = self
             .quic_call("editor_fields", serde_json::json!({}))
             .await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            v.to_string(),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(v.to_string()),
+        ]))
     }
 
     /// Editor Mode の現在値 snapshot
@@ -74,9 +74,9 @@ impl VantageMcp {
         let v = self
             .quic_call("editor_values", serde_json::json!({}))
             .await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            v.to_string(),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(v.to_string()),
+        ]))
     }
 
     /// Editor Mode field へ値を書く（画面に即時反映）
@@ -93,9 +93,9 @@ impl VantageMcp {
                 serde_json::json!({ "id": params.id, "value": params.value }),
             )
             .await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            v.to_string(),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(v.to_string()),
+        ]))
     }
 }
 

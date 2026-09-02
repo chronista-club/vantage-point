@@ -11,10 +11,10 @@ name = "vantage_point"
 path = "src/lib.rs"
 
 [features]
-# Daemon-only build (Linux の GTK/ALSA 無し環境で通す) は
-# `--no-default-features` で gui + midi を外す。
-default = ["gui", "midi"]
-gui = ["dep:tao", "dep:muda"]
+# Daemon-only build (Linux の ALSA 無し環境で通す) は `--no-default-features` で midi を外す。
+# 旧 `gui` feature (tao / muda) は 2026-09-02 に撤去 — この crate 内に参照が 0 件の dead feature で、
+# default-on のため `cargo build -p vantage-point` が使わない GUI stack を毎回 compile していた。GUI は vp-app crate。
+default = ["midi"]
 midi = ["dep:midir", "dep:midistage-profiles"]
 
 [dependencies]
@@ -68,15 +68,11 @@ urlencoding = "2"
 reqwest = { workspace = true }
 
 # MCP (Model Context Protocol)
-rmcp = { version = "1.7", features = ["server", "transport-io"] }
+rmcp = { version = "3.2", features = ["server", "transport-io"] }
 schemars = "1"
 
 # QUIC protocol (crates.io package = club-unison、 Rust 識別子 = unison。 VP-185 で alias)
 unison = { workspace = true }
-
-# GUI stack (feature = "gui" 有効時のみ有効化)
-tao = { version = "0.35", optional = true }
-muda = { version = "0.19", optional = true }
 
 # Open URLs in system browser (= 既存、 別 module の URL open に利用中)
 open = "5"
@@ -115,7 +111,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Hostname
 hostname = "0.4"
-libc = "0.2.186"
+libc = "0.2.189"
 
 # Low-level socket control (IPV6_V6ONLY=0 を Windows でも明示設定するために必要。
 # tokio::net::TcpSocket には set_only_v6 が無いので socket2 経由で setsockopt する)
@@ -128,10 +124,10 @@ rustls = { version = "0.23", features = ["aws-lc-rs"] }
 portable-pty = "0.9"
 
 # Base64 encoding (for PTY binary I/O over WebSocket)
-base64 = "0.22"
+base64 = "0.23"
 
 # WebSocket client (for Canvas Lane bridge to other Processes)
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 
 # File system watcher (for trace log → WebSocket broadcast)
 notify = "8"

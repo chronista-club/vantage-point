@@ -21,7 +21,7 @@ clap = { version = "4", features = ["derive"] }
 # HTTP server
 axum = "0.8"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.7", features = ["cors", "trace"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -75,7 +75,7 @@ unison = { package = "club-unison", version = "1.9.0" }
 nostos = { package = "club-nostos", version = "0.2" }
 
 # KDL parsing (club-kdl、 旧 unison-kdl。 v0.5.0 で rename + crates.io 移行)
-club-kdl = "0.11"
+club-kdl = "0.12"
 
 # Glob patterns (lane / Stone Free)
 glob = "0.3"
@@ -85,4 +85,4 @@ ratatui = { version = "0.30", features = ["crossterm"] }
 crossterm = "0.29"
 
 # Database (DB は SurrealDB に一本化、 sqlx / rusqlite は dead dep として撤去 — PR 457)
-surrealdb = { version = "3.1", default-features = false, features = ["kv-mem", "kv-surrealkv"] }
+surrealdb = { version = "3.2", default-features = false, features = ["kv-mem", "kv-surrealkv"] }

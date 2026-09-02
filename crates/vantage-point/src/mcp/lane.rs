@@ -193,9 +193,9 @@ impl VantageMcp {
             lane: params.lane.clone(),
         };
         self.process_call("switch_lane", &msg).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!("Switched active lane to '{}'", params.lane),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(format!("Switched active lane to '{}'", params.lane)),
+        ]))
     }
 
     /// R5: 現 repo の repo に Sub Lane を新規作成 (lane clone + PtySlot spawn)。
@@ -251,9 +251,9 @@ impl VantageMcp {
             })
             .unwrap_or_else(|| params.name.clone());
         let cwd = parsed.get("cwd").and_then(|v| v.as_str()).unwrap_or("?");
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!("Sub Lane created: {}\n  cwd: {}", addr, cwd),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(format!("Sub Lane created: {}\n  cwd: {}", addr, cwd)),
+        ]))
     }
 
     /// Delete a Sub Lane in the current repo (VP-124 Phase 1).
@@ -310,21 +310,24 @@ impl VantageMcp {
                     .get("cleanup")
                     .and_then(|v| v.as_str())
                     .unwrap_or("(skipped)");
-                Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-                    format!(
+                Ok(CallToolResult::success(vec![
+                    rmcp::model::ContentBlock::text(format!(
                         "Sub Lane deleted: {}\n  pid: {} (killed)\n  cleanup: {}",
                         address, pid, cleanup_status
-                    ),
-                )]))
+                    )),
+                ]))
             }
             Err(e) => {
                 // 冪等性: 既に無い Sub の delete は repo が DeleteLaneError::LaneNotFound
                 // ("Lane not found: ...") を返す → no-op 成功扱い。 真の異常と区別し、 AI agent が
                 // 「もう消えてる」 と判別できるようにする (旧 HTTP 404 idempotent path の置換)。
                 if e.to_string().contains("Lane not found") {
-                    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-                        format!("Sub Lane already gone (no-op, idempotent): {}", address),
-                    )]))
+                    Ok(CallToolResult::success(vec![
+                        rmcp::model::ContentBlock::text(format!(
+                            "Sub Lane already gone (no-op, idempotent): {}",
+                            address
+                        )),
+                    ]))
                 } else {
                     Err(e)
                 }
@@ -432,9 +435,11 @@ impl VantageMcp {
             },
         });
 
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(
+                serde_json::to_string_pretty(&result).unwrap_or_default(),
+            ),
+        ]))
     }
 
     /// flow_handoff: 新 Sub 作成 + 初手 wire_send + nudge を atomic に
@@ -598,9 +603,11 @@ impl VantageMcp {
             "mode": mode,
             "nudge": nudge_status,
         });
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(
+                serde_json::to_string_pretty(&result).unwrap_or_default(),
+            ),
+        ]))
     }
 
     /// flow_progress: parallel work 集約 view (read-only)
@@ -745,8 +752,10 @@ impl VantageMcp {
             },
             "subs": subs,
         });
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(
+                serde_json::to_string_pretty(&result).unwrap_or_default(),
+            ),
+        ]))
     }
 }
