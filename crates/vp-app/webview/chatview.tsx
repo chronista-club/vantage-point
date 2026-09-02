@@ -819,6 +819,19 @@ export function creoLinkHtml(name: string): string {
 // 持たないので、リンク化すると webview ごと遷移しうる — review 指摘 2026-07-31）。
 const chatMarked = new Marked()
 chatMarked.use({
+  // raw HTML（block = 行頭の <h1> 等 / inline = 文中の <b> 等）はタグとして解釈せず文字として描く。
+  // 閉じ忘れの <h1> が同じ message の末尾まで巨大化する（mako 2026-09-03）のと、<img onerror> で
+  // webview（Rust への IPC 持ち）に script を持ち込める穴を、同じ 1 hook で塞ぐ。escape するのは
+  // raw HTML token だけで、markdown 由来の見出し / 強調 / code は marked がこれまでどおり HTML 化する。
+  // 送信側（conversation:submit の prompt）は触らない = model には `<h1>` が文字のまま届く。
+  // block token は <p> 無しの裸テキストになるので、breaks: true と揃えて改行を <br> にして <p> で包む。
+  renderer: {
+    html({ text, block }) {
+      const escaped = escapeHtml(text)
+      if (!block) return escaped
+      return `<p>${escaped.replace(/\n+$/, '').replace(/\n/g, '<br>')}</p>\n`
+    },
+  },
   extensions: [
     {
       name: 'creoLink',

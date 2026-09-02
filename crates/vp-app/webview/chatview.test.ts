@@ -1228,3 +1228,30 @@ describe('foldInto — 受信時刻の刻印 (doc 57 §4.2)', () => {
     expect(th.at).toBe(undefined)
   })
 })
+
+describe('raw HTML は文字として描く — 閉じ忘れ <h1> が message 末尾まで巨大化する件 (mako 2026-09-03)', () => {
+  it('行頭の <h1>（block HTML）はタグでなく文字になる', () => {
+    const html = mdToHtml('<h1>本家....となってる"')
+    expect(html).not.toContain('<h1>')
+    expect(html).toContain('&lt;h1&gt;本家....となってる&quot;')
+  })
+  it('文中の <h1>（inline HTML）も文字になり、後続が見出しに巻き込まれない', () => {
+    const html = mdToHtml('詳細OK それ以外は、<h1>本家\n本家...')
+    expect(html).not.toContain('<h1>')
+    expect(html).toContain('&lt;h1&gt;本家')
+  })
+  it('script を持ち込む HTML（img onerror）は要素にならない — webview は IPC を持つ', () => {
+    const html = mdToHtml('<img src=x onerror="alert(1)">')
+    expect(html).not.toContain('<img')
+    expect(html).toContain('&lt;img')
+  })
+  it('markdown の見出し・強調・code は今までどおり効く（escape するのは raw HTML だけ）', () => {
+    expect(mdToHtml('# 見出し')).toContain('<h1')
+    expect(mdToHtml('**太字**')).toContain('<strong>')
+    expect(mdToHtml('`<h1>`')).toContain('&lt;h1&gt;')
+  })
+  it('送信側は関知しない — mdToHtml は表示専用で、入力 text 自体は変換しない（回帰の意図確認）', () => {
+    const text = '<h1>x'
+    expect(text).toBe('<h1>x')
+  })
+})
