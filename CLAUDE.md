@@ -204,6 +204,7 @@ vp midi roto demo|anim|probe  # ROTO-CONTROL 実機 smoke / BPM 同期アニメ 
 cargo build --release -p vantage-point   # ビルド
 cargo test --workspace                    # テスト
 cargo install --path crates/vp-cli --locked  # インストール（codesign 自動付与。--locked 必須 — install は Cargo.lock を無視して最新依存を解決するため、未検証の新リリース（例: time 0.3.48 × ratatui-widgets の E0119）を踏む）
+                                          # ⚠️ brew と併用する dogfood 機ではこれを素で打たず `mise run daemon:build`（dev root ~/.local/opt/vp-dev/bin に install、~/.cargo/bin に vp を置かない — 下記 VP_PROFILE 節）
 cargo fmt --all -- --check                # フォーマットチェック
 cargo clippy --workspace --all-targets    # Lint
 
@@ -224,7 +225,7 @@ mise run dev:gc                            # incremental 全消し + cargo-sweep
 VP_GC_DRY=1 mise run dev:gc                # 消さずに何がどれだけ減るか見る
 ```
 
-> **`app:swap` を使う理由**: dev profile（`VP_PROFILE=dev`）は state を別 namespace に切るため daemon / repo / GUI を三点セットで立て直す要があり、素の `~/.cargo/bin/vp-app` は `.app` bundle でないので macOS の app として扱えない（screenshot 許可対象にすらならない）。`app:swap` は本番と同じ `.app` 形のまま notarize の待ち時間だけを落とす（quarantine xattr が付かない自前 build に notarization ticket は不要 — Developer ID 署名で足りる）。
+> **`app:swap` を使う理由**: dev profile（`VP_PROFILE=dev`）は state を別 namespace に切るため daemon / repo / GUI を三点セットで立て直す要があり、素の dev binary（`~/.local/opt/vp-dev/bin/vp-app`）は `.app` bundle でないので macOS の app として扱えない（screenshot 許可対象にすらならない）。`app:swap` は本番と同じ `.app` 形のまま notarize の待ち時間だけを落とす（quarantine xattr が付かない自前 build に notarization ticket は不要 — Developer ID 署名で足りる）。
 > ⚠️ **GUI と server で反映タイミングが違う**: `.app` 差し替えで入れ替わるのは GUI（vp-app）だけ。daemon / repo は既に memory 上の旧 binary で走っているので、`crates/vantage-point` を触ったなら `VP_SWAP_RESTART_DAEMON=1` が要る（= repo の子である lane の claude が全部落ちる。会話は `cc_session` の `--resume` で復帰）。
 > webview（tsx/ts）変更は swap が内部で `app:bundle` を回すので手動 `bun run build` / `touch main_area.rs` は不要（旧儀式は build.rs の rerun-if-changed で根治）。webview 依存は npm semver pin（`file:` sibling 依存と bundle commit は 2026-07-19 に廃止）。creoui / club-unison の同時開発は `bun link`（docs/guide/webview.md）。
 > ⚠️ **`target/` は放置すると青天井**（2026-08-12 実測で **804 GB**: `debug/deps` 444 GB / **832,079 files**、`debug/incremental` 303 GB）。**cargo は build artifact を GC しない** — 依存 / feature / rustc version が変わるたびに新しい hash 名が増え、古い物は永久に残る。dogfood ループ（1 日に何度も `app:swap` / `cargo test`）だと積み上がり続ける。⚠️ 症状が出るのは disk が埋まった時で、出方が **release 途中の ENOSPC**（`docs/guide/release.md` の罠、2026-07-14 に実際に踏んだ）＝「気づいた時には手遅れ」型なので定期的に `mise run dev:gc` を回す。⚠️ **`rm -rf target/debug` に短絡しない** — `deps/` は現行 build に要る物と stale が同じ dir に混在するので、消すと次が full rebuild になる。`incremental/`（純粋 cache）は無条件安全、`deps/` は mtime で選別する `cargo-sweep` に任せる、の 2 層で扱うこと。
@@ -255,7 +256,7 @@ VP_GC_DRY=1 mise run dev:gc                # 消さずに何がどれだけ減�
 
 ### VP_PROFILE — dev / brew の state 分離（#643）
 
-dev binary（`~/.cargo/bin/vp`、`cargo install` 由来）と release（brew cask / `.app`、`/opt/homebrew/bin/vp`）を混在させると **state を全共有して衝突**する（sp_LOCK 奪い合い / port 衝突）。`VP_PROFILE` 環境変数で state を完全 namespace 分離してこれを構造的に防ぐ。SSOT は `vp-paths`（`vp_profile()` / `app_dir_name()` / `default_daemon_port()`）。
+dev binary（`~/.local/opt/vp-dev/bin/vp`、`mise run daemon:build` 由来）と release（brew cask / `.app`、`/opt/homebrew/bin/vp`）を混在させると **state を全共有して衝突**する（sp_LOCK 奪い合い / port 衝突）。`VP_PROFILE` 環境変数で state を完全 namespace 分離してこれを構造的に防ぐ。SSOT は `vp-paths`（`vp_profile()` / `app_dir_name()` / `default_daemon_port()`）。
 
 | レバー | 未設定 = **brew**（一般ユーザ・従来通り） | `VP_PROFILE=dev`（開発者） |
 |---|---|---|
@@ -266,15 +267,18 @@ dev binary（`~/.cargo/bin/vp`、`cargo install` 由来）と release（brew cas
 > （旧レバー「tmux socket `-L vp` / `-L vp-dev`」は tmux decoupling PR2 で退役 — lane は repo の PtySlot 直ホストで tmux server を持たない）
 
 - env は継承で伝播する（dev shell → daemon → repo → lane claude）ので **`export VP_PROFILE=dev` 一発**で以降の全 vp が dev namespace になる。`vp switch` command / 起動時 guard / LaunchAgent 処理は不要。brew は LaunchAgent 起動で env を持たないため自然に brew namespace。
-- **dev 起動は専用 alias（`.zprofile`）**: `alias vpd='VP_PROFILE=dev ~/.cargo/bin/vp'`。素の `vp`（release）と混ざらないよう cargo dev binary を明示指定する。
+- **dev 起動は専用 alias（nexus `profile.zsh`）**: `alias vpd='VP_PROFILE=dev "${VP_DEV_ROOT:-$HOME/.local/opt/vp-dev}/bin/vp"'`。素の `vp`（release）と混ざらないよう **dev root の binary** を明示指定する。
   ```zsh
+  mise run daemon:build   # dev vp を作る → ~/.local/opt/vp-dev/bin/vp（mac。win は ~/.cargo/bin）
+  mise run app:build      # dev vp-app を作る → 同 dir（vp の隣 = `vp app start` が「自分の隣」で見つける）
   vpd daemon start   # → daemon :32100 / ~/.local/share/vp-dev
   vpd daemon status  # → Port: 32100 で確認 / vpd db path → .../vp-dev/db/...
-  vpd app start      # dev GUI（要 `cargo install --path crates/vp-app` で dev vp-app）
+  vpd app start      # dev GUI
+  mise run daemon    # = daemon:build → daemon:stop → daemon:start（mac は dev profile 固定 = :32100 だけを触る）
   ```
-- ⚠️ **`~/.cargo/bin/vp` は既定で不在**（2026-07-23 に撤去）。cargo dev binary は PATH 上 `/opt/homebrew/bin` より先に来るため、置いたままにすると **alias が効かない経路（script / 非対話 shell / 他プロセスからの exec）が古い dev binary を掴む**。素の `vp` は PATH で `/opt/homebrew/bin/vp`（= `.app` 同梱 CLI への symlink）へ解決させるのが正。`vpd` を使うときだけ `cargo install --path crates/vp-cli --locked` で作り直す（作らない限り `vpd` は command not found のまま = それが安全側の既定）。
+- ⚠️ **dev binary は PATH に置かない**（2026-09-02 に `~/.cargo/bin` から dev root `~/.local/opt/vp-dev/bin` へ移設）。`~/.cargo/bin` に `vp` を置くと素の `vp` が dev binary に化ける経路が **2 本**ある: ① PATH で `~/.cargo/bin` が `/opt/homebrew/bin` より先、かつ **mise の rust tool が `~/.cargo/bin` を丸ごと shim 化**する（binary を消しても shim が残る → `mise reshim`。PATH の並びは対話 shell / script / launchd で違うので順序では守れない）② `vp app start` は PATH 上の `vp-app` を先に探すので、`~/.cargo/bin/vp-app` があると **release の `vp` が dev の GUI を起動**する。素の `vp` は PATH で `/opt/homebrew/bin/vp`（= `.app` 同梱 CLI への symlink）へ解決させるのが正。`cargo install --path crates/vp-cli` を素で打たない（`mise run daemon:build` を使う。README の素の cargo install は brew を入れない外部開発者向け）。旧 dev binary を消すときは `rm` でなく **`cargo uninstall vp-cli vp-app`** まで（`rm` だけだと `~/.cargo/.crates.toml` の台帳が残り、`cargo install-update` や mise の reshim で `~/.cargo/bin/vp` が蘇る。先に `rm` してしまった後は cargo が「corrupt metadata」で拒むので `touch ~/.cargo/bin/{vp,vp-app}` してから uninstall）。
 - release（brew）は素の `vp`（= `.app` 同梱 CLI への symlink）/ GUI は `VantagePoint.app`。dev(32100) と release(32000) は完全並列で常駐でき、互いに衝突しない。
-- ⚠️ `VP_PROFILE` を honor するのは **#643 を含む binary のみ**。未対応 binary に `VP_PROFILE=dev` を渡しても無視され brew namespace(32000) に落ちる（混在再発）ので、dev alias は feature 込みで `cargo install` した `~/.cargo/bin/vp` を明示指定する。
+- ⚠️ `VP_PROFILE` を honor するのは **#643 を含む binary のみ**。未対応 binary に `VP_PROFILE=dev` を渡しても無視され brew namespace(32000) に落ちる（混在再発）ので、dev alias は feature 込みで build した dev root の `vp` を明示指定する。
 
 ### プロセス管理（Reconciliation）
 

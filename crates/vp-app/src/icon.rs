@@ -2,7 +2,7 @@
 //!
 //! ## macOS (dock)
 //!
-//! `vp app start` が起動する bare binary (`~/.cargo/bin/vp-app`) は .app bundle 外なので
+//! `vp app start` が起動する bare binary (dev root `~/.local/opt/vp-dev/bin/vp-app` 等) は .app bundle 外なので
 //! bundle の `icon.icns` (release:mac が同梱) が効かず、 dock が generic icon になる。 起動時に
 //! `NSApplication.setApplicationIconImage` で portal favicon (`assets/icon.png`、 portal の
 //! `assets/favicon.svg` 由来の山シルエット) を当て、 dev / cargo 起動でも dock を portal icon にする。

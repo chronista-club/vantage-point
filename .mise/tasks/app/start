@@ -1,15 +1,19 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-#MISE description="vp-app GUI を起動 (`vp app start`、 spawn + 即 exit、 ~/.cargo/bin/vp{,-app} 前提)"
+#MISE description="dev vp-app GUI を起動 (`vp app start`、 spawn + 即 exit、 mac: dev profile 固定 / dev root の vp{,-app} 前提)"
 #
 # file-based mise task 移行 (2026-05-30)。 旧 [tasks."app:start"] を Ruby file task に移植。
-# single source of truth: ~/.cargo/bin の codesign 済 binary を使う (target/release から spawn
-# すると shell の vp と dual source で drift する罠あり)。 vp に VP_APP_BIN を渡し spawn + 親即 exit。
-# ログ観察は `mise run logs` で 3 file を集約 tail。
+# single source of truth: dev root (VP.dev_bin) の codesign 済 binary を使う (target/release から spawn
+# すると別 binary と dual source で drift する罠あり)。 vp に VP_APP_BIN を渡し spawn + 親即 exit。
+# 2026-09-02: mac は VP_PROFILE=dev 固定 (VP.dev_profile!、 daemon:start と鏡像)。 brew の .app を
+# 起動するのは `vp app start` / app:swap であってこの task ではない。
+# ログ観察は `VP_PROFILE=dev mise run logs` で 4 file を集約 tail。
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
-vp_app = VP.cargo_bin("vp-app")
-vp     = VP.cargo_bin("vp")
+VP.dev_profile!
+
+vp_app = VP.dev_bin("vp-app")
+vp     = VP.dev_bin("vp")
 VP.need_exec(vp_app, hint: "先に `mise run app:build`")
 VP.need_exec(vp,     hint: "先に `mise run daemon:build`")
 
