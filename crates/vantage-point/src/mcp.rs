@@ -520,12 +520,12 @@ impl VantageMcp {
         // QUIC チャネルをリセットして再接続を強制（新 repo に張り直す）
         *self.process_channel.lock().await = None;
 
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!(
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(format!(
                 "Process '{}' を Daemon restart で再起動: {}",
                 repo_name, result
-            ),
-        )]))
+            )),
+        ]))
     }
 
     // ========================================================================
@@ -556,9 +556,11 @@ impl VantageMcp {
                 std::time::Duration::from_secs(timeout + 5),
             )
             .await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
+            ),
+        ]))
     }
 
     /// complete の本体（生成 tool wrapper `complete` から委譲、doc 28 §4）。
@@ -581,9 +583,11 @@ impl VantageMcp {
         };
         let payload = serde_json::json!({ "id": params.id, "outcome": outcome });
         let resp = self.quic_call("complete", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "completed".to_string()),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "completed".to_string()),
+            ),
+        ]))
     }
 
     /// wire_send の本体（生成 tool wrapper `wire_send` から委譲、body="custom"）。
@@ -609,9 +613,12 @@ impl VantageMcp {
             "reply_to": params.reply_to,
         });
         let resp = self.quic_call("wire_send", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "wire message sent".to_string()),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(
+                serde_json::to_string_pretty(&resp)
+                    .unwrap_or_else(|_| "wire message sent".to_string()),
+            ),
+        ]))
     }
 }
 

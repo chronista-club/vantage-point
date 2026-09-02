@@ -128,9 +128,11 @@ impl VantageMcp {
             "message_id": params.message_id,
         });
         let resp = self.quic_call("wire_thread", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
+            ),
+        ]))
     }
 
     #[tool(
@@ -145,9 +147,11 @@ impl VantageMcp {
             "agent": __self_lane,
         });
         let resp = self.quic_call("wire_unread_count", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
+            ),
+        ]))
     }
 
     #[tool(
@@ -163,9 +167,11 @@ impl VantageMcp {
             "message_id": params.message_id,
         });
         let resp = self.quic_call("wire_ack", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
+            ),
+        ]))
     }
 
     #[tool(
@@ -182,9 +188,11 @@ impl VantageMcp {
             "task": params.task,
         });
         let resp = self.quic_call("delegate", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "delegated".to_string()),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "delegated".to_string()),
+            ),
+        ]))
     }
 
     #[tool(
@@ -209,8 +217,10 @@ impl VantageMcp {
             "answer": params.answer,
         });
         let resp = self.quic_call("respond", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "responded".to_string()),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(
+                serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "responded".to_string()),
+            ),
+        ]))
     }
 }
