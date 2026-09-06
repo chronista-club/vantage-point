@@ -27,6 +27,7 @@ pub mod app;
 /// sidebar Hub 行の Login / Logout フロー (`vp auth login|logout` spawn + hub/reconnect)。
 pub mod auth_flow;
 pub mod client;
+pub mod conversation_submission;
 /// daemon control plane クライアント (Unison `daemon-control` / `registry`)。 doc 45 段 3。
 pub mod daemon_control;
 /// 設定ページの「daemon を再起動」フロー (確認ダイアログ → `vp daemon restart`)。doc 59 P1。

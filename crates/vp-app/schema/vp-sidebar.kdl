@@ -96,8 +96,6 @@ protocol "sidebar" version="1.0.0" {
             field "path" type="string"
             field "kind" type="string"
         }
-        // Clone 用フォルダ picker を開く要求 (fieldless)
-        request "repo:clone:pickFolder" {}
         // Wire inbox (doc 34 §4 V1): 選択 lane の wire 履歴を read-only で取得。
         // Rust が Daemon "wire" channel に wire/history + wire/unread-count を request し、
         // 結果を window.vpWire.handleResult で push back する (cursor 不触り)。
@@ -156,7 +154,7 @@ protocol "sidebar" version="1.0.0" {
         }
         // Add Repo 初期フォルダの folder picker を開く。選択されたら保存して
         // `settings:result` を返す。⚠️ **キャンセル時は撃たない**
-        // （`repo:clone:pickFolder` と同じ流儀 = 既存値を保持）。
+        // キャンセル時は既存値を保持する。
         request "settings:pick_repo_root" {}
         // daemon 再起動要求。⚠️ **全 repo = 全 lane の claude が落ちる**
         // （doc 44 P1 fold-in で repo は daemon プロセス内の `Arc<AppState>`）。
@@ -226,12 +224,6 @@ protocol "sidebar" version="1.0.0" {
         // Wire inbox の履歴（`wire:fetch` / `wire:ack` の戻り）。
         event "wire:result" {
             field "payload" type="json"
-        }
-
-        // Clone 用フォルダ picker の選択結果（`repo:clone:pickFolder` の戻り）。
-        // ⚠️ **キャンセル時は撃たない**（既存の override を保持する = 既存挙動）。
-        event "clone:path_picked" {
-            field "path" type="string"
         }
 
         // 設定の現在値（`settings:fetch` / `settings:save` / `settings:pick_repo_root` の戻り、

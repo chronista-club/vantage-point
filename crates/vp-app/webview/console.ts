@@ -50,6 +50,8 @@ export type QuestionSpec = {
 }
 
 export type ConversationEvent =
+  /** Local GUI request acknowledgement; never persisted or emitted by an engine. */
+  | { kind: 'submit_result'; request_id: string; error: string | null }
   | {
       kind: 'session_init'
       session_id: string

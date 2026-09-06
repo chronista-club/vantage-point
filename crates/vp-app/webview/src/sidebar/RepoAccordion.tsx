@@ -109,6 +109,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 
 	// photon one-shot（spine を走る光）は doc 58 台帳で spine ごと撤去。
 	const [addSubOpen, setAddSubOpen] = createSignal(false);
+	const [addSubPending, setAddSubPending] = createSignal(false);
 	// PR 445 `n` directive: keyboard で AddSub form を open するため、 RepoAccordion 内 local
 	// signal を **module-scope registry** に export する。 directive 発火時に registry から
 	// setter を引いて open する経路 (= directive-state.ts::openAddSubFor)。
@@ -291,6 +292,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 					<button
 						class="vp-proj-addsub"
 						classList={{ open: addSubOpen() }}
+						disabled={addSubPending()}
 						title="lane を作る"
 						onClick={(e) => {
 							// summary click は <details> を toggle するので止める。
@@ -350,6 +352,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 								<AddSub
 									repoPath={props.proc.path}
 									onClose={() => setAddSubOpen(false)}
+									onPendingChange={setAddSubPending}
 								/>
 							</Show>
 						</>

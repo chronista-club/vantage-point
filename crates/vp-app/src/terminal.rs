@@ -81,8 +81,6 @@ pub enum AppEvent {
         address: String,
         payload: serde_json::Value,
     },
-    /// Clone 先フォルダ picker で選択された path を sidebar JS に push (キャンセル時は None)
-    ClonePathPicked(Option<String>),
     /// 設定ページの「Add Repo 初期フォルダ」picker の結果（doc 59 P1）。
     /// ⚠️ **キャンセルは `None`** = 既存値を保持する（「選ばなかった」を「空にした」と
     /// 取り違えると設定が黙って消える）。
@@ -111,7 +109,7 @@ pub enum AppEvent {
     },
     /// doc 11 PR-C / F6④: 利用可能 Agent 一覧を sidebar に push back する。
     /// `+ Add Sub` form 開閉時に JS から `agents:fetch` が来て、 Rust 側で Daemon
-    /// repo-proxy ask (`agents_list`) を叩いた結果がここに乗る。 JS は `window.handleAgentsResult`
+    /// repo-proxy ask (`agents_list`) を叩いた結果がここに乗る。 JS は sidebar の `agents:result`
     /// で受領し、 dropdown を populate する。 `error` Some なら fetch 失敗、 dropdown は
     /// disabled + error message 表示。
     AgentsResult {
@@ -237,6 +235,7 @@ pub enum AppEvent {
     /// Conversation gui: WebView (ChatPane) からのプロンプト投入。 event loop が当該 lane の
     /// conversation session を lazy spawn し、 canvas channel 上り request `conversation_submit` で repo へ。
     ConversationSubmit {
+        request_id: String,
         lane: String,
         prompt: String,
         /// 宛先 session（doc 50 P2）。None = lane の focused（旧 SP / 旧 UI 互換）。
@@ -451,6 +450,11 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             let prompt = parsed.get("prompt").and_then(|v| v.as_str());
             if let (Some(lane), Some(prompt)) = (lane, prompt) {
                 let _ = proxy.send_event(AppEvent::ConversationSubmit {
+                    request_id: parsed
+                        .get("request_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     lane: lane.to_string(),
                     prompt: prompt.to_string(),
                     session: parse_session(&parsed),

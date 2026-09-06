@@ -5,7 +5,7 @@
 //!
 //! VP-194 (app.rs module split、 doc 11 R-3): app.rs の event loop に同居していた
 //! repo ダイアログ群 (`resolve_default_repo_root` / `spawn_add_repo_picker` /
-//! `spawn_clone_repo` / `spawn_clone_path_picker` / `derive_repo_name`) を本 module に
+//! `spawn_clone_repo` / `derive_repo_name`) を本 module に
 //! 切り出した。 挙動は不変 (= 純粋な module 移動、 picker / API / event 送出は同一)。
 //!
 //! doc 45 段 3: daemon 呼び出しを HTTP から Unison (`daemon-control`) に差し替えた。
@@ -147,7 +147,7 @@ pub(crate) fn spawn_add_repo_picker(
 /// rfd は blocking なので専用スレッドで回す（本 module の他 picker と同じ理由 =
 /// event loop = main thread を塞がない）。結果は [`AppEvent::SettingsRepoRootPicked`] で戻す。
 ///
-/// ⚠️ **キャンセルは `None`** — 呼び手が既存値を保持する（`repo:clone:pickFolder` と同じ流儀。
+/// ⚠️ **キャンセルは `None`** — 呼び手が既存値を保持する（
 /// 「選ばなかった」を「空にした」と取り違えると、設定が黙って消える）。
 pub(crate) fn spawn_repo_root_picker(
     proxy: EventLoopProxy<AppEvent>,
@@ -258,27 +258,6 @@ pub(crate) fn spawn_clone_repo(
                     }
                 }
             });
-        });
-}
-
-/// Clone 先 folder picker。選択結果 (キャンセル時は None) を `AppEvent::ClonePathPicked`
-/// で main thread に送り、sidebar JS の `window.setClonePath()` に push する。
-///
-/// `initial_dir` が `Some` なら picker の初期表示ディレクトリに設定。
-pub(crate) fn spawn_clone_path_picker(
-    proxy: EventLoopProxy<AppEvent>,
-    initial_dir: Option<std::path::PathBuf>,
-) {
-    let _ = thread::Builder::new()
-        .name("clone-path-picker".into())
-        .spawn(move || {
-            let mut dialog = rfd::FileDialog::new().set_title("Clone 先フォルダを選択");
-            if let Some(d) = initial_dir.as_ref() {
-                dialog = dialog.set_directory(d);
-            }
-            let folder = dialog.pick_folder();
-            let payload = folder.map(|p| p.to_string_lossy().into_owned());
-            let _ = proxy.send_event(AppEvent::ClonePathPicked(payload));
         });
 }
 

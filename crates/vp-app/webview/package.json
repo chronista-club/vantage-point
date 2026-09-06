@@ -9,6 +9,7 @@
     "build:dev": "bun run build.mjs --dev",
     "dev": "bun run build.mjs --watch",
     "test": "vitest run",
+    "typecheck": "tsc --noEmit",
     "test:watch": "vitest"
   },
   "dependencies": {

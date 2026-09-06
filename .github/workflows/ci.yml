@@ -66,6 +66,12 @@ jobs:
           bun install --frozen-lockfile
           bun run build
 
+      - name: Test and typecheck webview
+        working-directory: crates/vp-app/webview
+        run: |
+          bun run test
+          bun run typecheck
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -74,6 +80,13 @@ jobs:
         # (= install_test_jwks は production binary に含めない security 要件)。
         # 他 crate に test-utils feature がなくても無視されるので workspace 全体で OK。
         run: cargo test --workspace --features vp-nexus/test-utils
+
+      # Tests regenerate KDL and ts-rs bindings. Any drift invalidates the bundle
+      # built above; fail instead of accepting a build made from stale contracts.
+      - name: Check generated files are committed
+        run: |
+          git diff --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
 
   # ===========================================
   # Windows ビルド check（VP-87 Phase W0）

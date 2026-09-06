@@ -770,59 +770,71 @@ mod tests {
         })
     }
 
-    #[tokio::test]
-    async fn test_pty_spawn_and_output() {
-        // echo コマンドでテスト用の出力を確認
-        let shell = default_test_shell();
+    /// ユーザーのシェル設定・プロンプトに依存せず、既知の出力を出す PTY。
+    /// 起動後も生存させ、後発の購読と live 出力を同じプロセスで検証する。
+    fn spawn_output_fixture() -> (PtySlot, broadcast::Receiver<Vec<u8>>) {
+        let (shell, args) = if cfg!(windows) {
+            ("cmd.exe", vec!["/D", "/Q", "/K", "echo VP_PTY_READY"])
+        } else {
+            (
+                "/bin/sh",
+                vec![
+                    "-c",
+                    "printf 'VP_PTY_READY\\n'; while IFS= read -r line; do printf '%s\\n' \"$line\"; done",
+                ],
+            )
+        };
+        let args: Vec<String> = args.into_iter().map(String::from).collect();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
-
-        let (slot, mut rx) =
-            PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("PTY spawn に失敗");
-
-        // PIDが取得できること
-        assert!(slot.pid() > 0 || slot.pid() == 0); // CI環境では0の可能性
-
-        // シェルコマンドが正しいこと
-        assert_eq!(slot.shell_cmd(), shell);
-
-        // 初期 receiver でシェルのプロンプトなど何らかの出力が来ることを確認
-        let result = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv()).await;
-        assert!(
-            result.is_ok(),
-            "タイムアウト: PTY から出力を受信できなかった"
-        );
+        PtySlot::spawn(&cwd, shell, &args, &[], 80, 24, None).expect("PTY spawn に失敗")
     }
 
-    /// attach_output: 過去出力が replay snapshot に入り、 以降の出力は receiver に届く
-    /// (replay-on-attach の要 — vp-app 再起動後の新 xterm が前回画面を復元できる根拠)。
+    /// read の分割単位は OS 次第なので、marker 全体が揃うまで受信する。
+    async fn receive_marker(rx: &mut broadcast::Receiver<Vec<u8>>, marker: &[u8]) -> Vec<u8> {
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let mut received = Vec::new();
+            loop {
+                received.extend(rx.recv().await.expect("PTY 出力の受信"));
+                if received.windows(marker.len()).any(|bytes| bytes == marker) {
+                    return received;
+                }
+            }
+        })
+        .await
+        .expect("タイムアウト: PTY の marker を受信できなかった")
+    }
+
+    #[tokio::test]
+    async fn test_pty_spawn_and_output() {
+        let (slot, mut rx) = spawn_output_fixture();
+        assert_eq!(
+            slot.shell_cmd(),
+            if cfg!(windows) { "cmd.exe" } else { "/bin/sh" }
+        );
+        // プロンプトや空の受信成功ではなく、子プロセスが出した内容を確認する。
+        receive_marker(&mut rx, b"VP_PTY_READY").await;
+    }
+
+    /// attach_output: 過去出力が replay snapshot に入り、以降の出力は receiver に届く。
     #[tokio::test]
     async fn test_attach_output_replays_past_bytes() {
-        let shell = default_test_shell();
-        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+        let (mut slot, mut rx) = spawn_output_fixture();
+        let first = receive_marker(&mut rx, b"VP_PTY_READY").await;
 
-        let (slot, mut rx) =
-            PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("PTY spawn に失敗");
-
-        // シェル初期出力 (プロンプト等) を待つ = replay buffer に何か溜まる
-        let first = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv())
-            .await
-            .expect("タイムアウト: PTY 初期出力なし")
-            .expect("recv");
-        assert!(!first.is_empty());
-
-        // 後発 attach: 初期出力を「過去」として snapshot で受け取れる
-        let (snapshot, _live_rx) = slot.attach_output();
+        let (snapshot, mut live_rx) = slot.attach_output();
         assert!(
-            !snapshot.is_empty(),
-            "attach_output の snapshot に過去出力が含まれるはず"
+            snapshot.starts_with(&first),
+            "snapshot に過去出力が欠落なく含まれる"
         );
-        // snapshot は broadcast 済 bytes の先頭を含む (欠落なしの根拠)
-        assert!(
-            snapshot
-                .windows(first.len().min(snapshot.len()))
-                .any(|w| w == &first[..first.len().min(snapshot.len())]),
-            "snapshot に初期出力の bytes が含まれるはず"
-        );
+
+        // 後発 receiver が attach 後の出力も受け取れることを確認する。
+        let input: &[u8] = if cfg!(windows) {
+            b"echo VP_PTY_LIVE\r"
+        } else {
+            b"VP_PTY_LIVE\n"
+        };
+        slot.write(input).expect("PTY への入力");
+        receive_marker(&mut live_rx, b"VP_PTY_LIVE").await;
     }
 
     /// disk 永続 round-trip: 出力 → flush task が disk へ書く → その file を seed に新 PtySlot を

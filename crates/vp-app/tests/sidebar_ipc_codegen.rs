@@ -82,9 +82,11 @@ fn regenerates_sidebar_ipc_bindings() {
     assert!(rust_file.contains("pub enum IpcEnvelope {"));
     // fieldless request → unit variant。
     assert!(rust_file.contains("    RepoAdd,\n"));
-    assert!(rust_file.contains("    RepoClonePickFolder,\n"));
+    assert!(
+        !rust_file.contains("RepoClonePickFolder"),
+        "retired clone picker must not regenerate"
+    );
     // wire 名は serde rename で保持 (`:` 2 個の最難ケース含む)。
-    assert!(rust_file.contains("#[serde(rename = \"repo:clone:pickFolder\")]"));
 
     // --- TypeScript ---------------------------------------------------------
     let ts_emitted = TypeScriptEmitter::new().emit(&schema);
@@ -97,9 +99,11 @@ fn regenerates_sidebar_ipc_bindings() {
     write_if_changed(&root.join("webview/src/generated/SidebarIpc.ts"), &ts_file);
 
     assert!(ts_file.contains("export type IpcEnvelope ="));
-    assert!(ts_file.contains("({ t: \"repo:clone:pickFolder\" } & RepoClonePickFolder)"));
 
-    // schema の全 13 request の wire 名が Rust / TS 双方に出ていること。
+    assert!(!ts_file.contains("ClonePathPicked"));
+    assert!(!ts_file.contains("RepoClonePickFolder"));
+
+    // 現行 request / event の wire 名が Rust / TS 双方に出ていること。
     for wire in [
         "process:toggle",
         "process:reorder",
@@ -113,7 +117,6 @@ fn regenerates_sidebar_ipc_bindings() {
         "lane:add_sub",
         "agents:fetch",
         "stand:select",
-        "repo:clone:pickFolder",
         // in-app update: sidebar footer の「更新する」ボタン。schema 編集で codegen から
         // 落ちると button → Rust dispatch が silently 壊れるので regression net を張る。
         "update:apply",
@@ -123,7 +126,6 @@ fn regenerates_sidebar_ipc_bindings() {
         "sub:create_result",
         "agents:result",
         "wire:result",
-        "clone:path_picked",
         // （旧 `files:list_result` / `file_picker:open` は code pane 化で退役 —
         //   File Explorer overlay picker の sidebar channel ごと撤去。後継は
         //   main webview 側の `code:entries` / `code:toggle`、vp-push.kdl の網羅）

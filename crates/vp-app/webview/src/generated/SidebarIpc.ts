@@ -43,11 +43,6 @@ export interface WireResult {
   payload: any;
 }
 
-/** Event "clone:path_picked" */
-export interface ClonePathPicked {
-  path: string;
-}
-
 /** Event "settings:result" */
 export interface SettingsResult {
   developer_mode: boolean;
@@ -147,9 +142,6 @@ export interface StandSelect {
   kind: string;
 }
 
-/** Request "repo:clone:pickFolder" — empty payload */
-export interface RepoClonePickFolder {}
-
 /** Request "wire:fetch" */
 export interface WireFetch {
   path: string;
@@ -210,7 +202,6 @@ export type IpcChannelEventTypes = {
   SubCreateResult: SubCreateResult;
   AgentsResult: AgentsResult;
   WireResult: WireResult;
-  ClonePathPicked: ClonePathPicked;
   SettingsResult: SettingsResult;
 };
 
@@ -231,7 +222,6 @@ export type IpcChannelRequestTypes = {
   LaneAddSub: { request: LaneAddSub; response: void };
   AgentsFetch: { request: AgentsFetch; response: void };
   StandSelect: { request: StandSelect; response: void };
-  RepoClonePickFolder: { request: RepoClonePickFolder; response: void };
   WireFetch: { request: WireFetch; response: void };
   WireAck: { request: WireAck; response: void };
   UpdateApply: { request: UpdateApply; response: void };
@@ -250,7 +240,7 @@ export const IpcChannelMeta = {
   backend: "stream" as const,
   from: "client" as const,
   lifetime: "transient" as const,
-  events: ["sidebar:state", "sidebar:error", "sub:create_result", "agents:result", "wire:result", "clone:path_picked", "settings:result"] as const,
+  events: ["sidebar:state", "sidebar:error", "sub:create_result", "agents:result", "wire:result", "settings:result"] as const,
   requests: {
     ProcessToggle: { request: "process:toggle" as const, response: "void" as const },
     ProcessReorder: { request: "process:reorder" as const, response: "void" as const },
@@ -267,7 +257,6 @@ export const IpcChannelMeta = {
     LaneAddSub: { request: "lane:add_sub" as const, response: "void" as const },
     AgentsFetch: { request: "agents:fetch" as const, response: "void" as const },
     StandSelect: { request: "stand:select" as const, response: "void" as const },
-    RepoClonePickFolder: { request: "repo:clone:pickFolder" as const, response: "void" as const },
     WireFetch: { request: "wire:fetch" as const, response: "void" as const },
     WireAck: { request: "wire:ack" as const, response: "void" as const },
     UpdateApply: { request: "update:apply" as const, response: "void" as const },
@@ -299,7 +288,6 @@ export type IpcEnvelope =
   | ({ t: "lane:add_sub" } & LaneAddSub)
   | ({ t: "agents:fetch" } & AgentsFetch)
   | ({ t: "stand:select" } & StandSelect)
-  | ({ t: "repo:clone:pickFolder" } & RepoClonePickFolder)
   | ({ t: "wire:fetch" } & WireFetch)
   | ({ t: "wire:ack" } & WireAck)
   | ({ t: "update:apply" } & UpdateApply)
@@ -318,7 +306,6 @@ export type IpcEventEnvelope =
   | ({ t: "sub:create_result" } & SubCreateResult)
   | ({ t: "agents:result" } & AgentsResult)
   | ({ t: "wire:result" } & WireResult)
-  | ({ t: "clone:path_picked" } & ClonePathPicked)
   | ({ t: "settings:result" } & SettingsResult);
 
 
