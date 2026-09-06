@@ -1,214 +1,133 @@
 # Vantage Point
 
-**AI ネイティブ開発環境** — Claude CLI をエンジンとして、TUI コンソール・Canvas（WebView）・
-外部コントロールを統合した開発体験を提供する Rust 製アプリ。
-VP が主、Claude Code はそのエンジン。プロジェクト選択 → TUI コンソール → Claude との対話が
-1st ビュー。TUI で操る、Canvas で視る。
+Rust 製の AI ネイティブ開発環境。repo ごとに作業を開き、lane（worktree）と session を使って
+会話・ターミナル・board を同じウィンドウで扱います。
 
-OSS（MIT / Apache-2.0 dual ライセンス）として公開。配布は **notarized `.dmg` 直配布
-（GitHub Releases）/ Homebrew cask / `cargo install`** の三本柱（現状 macOS arm64 主軸）。
+- **Console**: Claude / Codex / Grok / OpenCode / vpcode と shell。engine と表示モード（TUI / GUI）は別の軸です。
+- **Lane / session**: 作業場所を lane で隔離し、各 lane に複数の session を持てます。
+- **Board**: Markdown・HTML・図・ログなどをペインに表示します。
+- **Wire**: lane 間のメッセージ、依頼、応答を履歴として扱います。
+- **Devices**: MIDI 機材との連携（対応 feature を有効にしたビルド）。
 
-## Status
-
-Private alpha → public OSS 移行中 (2026-04-23)。API・内部構造は活発に変化中。
-README は work in progress、詳細は `docs/` 配下。
-
-## Core concepts
-
-- **AI ネイティブ開発環境** — VP が主、Claude Code はそのエンジン
-- **プロジェクト起点** — プロジェクト選択 → TUI コンソール → Claude との対話が 1st ビュー
-- **Canvas + TUI** — TUI で操る、Canvas で視る。両者が並列に動く
-- **セッション永続化** — 前回の続きから再開できる開発環境
-- **Lane** — canonical address `echoes.{lane}@{project}` が tmux session、
-  Claude agent、wiremsg actor、deterministic port range を一意に束ねる
-- **Port Management** — `33000 + slot × 100 + lane × 10 + role` で
-  Lane × role port が透過的固定、bookmark 可能
-
-アーキテクチャは機能名で構成:
-daemon ⚙️ (Process Manager / 常駐デーモン) / repo 📦 (Repo Runtime) /
-conversation 💬 (AI との会話層) / board 🧭 (Information Navigator) /
-runner 🌿 (Code Runner) / devices 🧲 + device_io 🌫️ (device 連携) 等。
-命名定義は `crates/vantage-point/src/stands.rs` に集約。
+macOS を主軸に開発しています。Windows は CI のコンパイル確認と追随開発の対象、Linux は未検証です。
+AI を使う場合は、選んだ engine の CLI と認証を別途用意してください。VP は tmux に依存しません。
 
 ## インストール
 
-macOS 11.0 (Big Sur) 以降、[Claude CLI](https://docs.anthropic.com/en/docs/build-with-claude/claude-code) が必要。
-現状の配布は macOS arm64 主軸。
-
-### 1. Homebrew cask（推奨）
+macOS 向け Homebrew cask:
 
 ```bash
 brew tap chronista-club/tap
 brew install --cask vantage-point
 ```
 
-### 2. `.dmg` 直ダウンロード
+または [GitHub Releases](https://github.com/chronista-club/vantage-point/releases/latest) の
+DMG を開き、`VantagePoint.app` を `/Applications` にコピーします。
 
-[GitHub Releases](https://github.com/chronista-club/vantage-point/releases/latest) から
-`VantagePoint-<ver>-arm64.dmg` を取得（Developer ID 署名 + Apple notarization 済）。
-マウントして `VantagePoint.app` を `/Applications` にコピーする。
-
-### 3. `cargo install`（開発者向け）
-
-CLI `vp` のみをビルド・インストールする。
+ソースから CLI のみインストールする場合:
 
 ```bash
-cargo install --path crates/vp-cli
+git clone https://github.com/chronista-club/vantage-point.git
+cd vantage-point
+cargo install --path crates/vp-cli --locked
 ```
 
-> App Store では配布しない（Claude CLI 依存で sandbox 不可のため）。
+GUI の開発ビルドは [セットアップガイド](docs/guide/setup.md) を参照してください。
 
-### 更新
+## 最初の repo を開く
 
 ```bash
-vp update
+vp daemon start
+vp repos add my-project /path/to/my-project
+vp repos start my-project
+vp app start
 ```
 
----
+GUI では sidebar の CURRENTs にある `+` から既存の repo を登録できます。
+repo を選び、lane の console で会話や shell を開きます。repo 行の `+` から Sub lane を作成できます。
+作成に失敗した場合はフォームに理由が表示され、入力を修正して再試行できます。
 
-## vp start すると何が起こるか
+CLI で lane を作成する例（repo の作業ディレクトリで実行）:
+
+```bash
+vp lane new topic mako/topic --base origin/nightly
+vp lane list
+vp lane slots my-project/topic
+```
+
+`--base` は対象 repo の開発ブランチを指定します。このリポジトリの開発 trunk は `nightly` です。
+
+## よく使う操作
+
+```bash
+vp ps                         # 稼働中 repo
+vp config                     # 設定と登録 repo（daemon 不要）
+vp repos list                 # 登録 repo
+vp repos start my-project     # repo runtime を起動
+vp repos stop my-project      # repo runtime を停止
+vp repos disable /path/to/my-project   # 次回 daemon 起動でも自動起動しない
+vp daemon status              # daemon の状態
+vp app start                  # GUI を起動
+vp app stop                   # GUI を停止
+vp update --check             # 更新の確認
+vp mcp                        # MCP サーバー（stdio）
+vp wire --help                # lane 間メッセージ
+vp pane --help                # board / ペイン操作
+```
+
+daemon 内で全 repo runtime が動くため、`vp daemon stop` / `restart` は全 repo とその engine に影響します。
+GUI の停止と daemon の停止は別の操作です。詳細な引数は各コマンドの `--help` で確認できます。
+
+MCP クライアントには、コマンド `vp`、引数 `mcp` の stdio サーバーとして登録します。
+利用できる操作と宛先は [メッセージング](docs/guide/messaging.md) と
+[dev-flow primitives](docs/guide/dev-flow-primitives.md) を参照してください。
+
+## 構成
 
 ```mermaid
-sequenceDiagram
-    participant U as ユーザー
-    participant VP as vp start
-    participant CC as Claude Code
-    participant B as Canvas (WebView)
-
-    U->>VP: vp start
-    VP->>B: WebView ウィンドウを開く
-    VP->>VP: HTTP + WebSocket サーバー起動<br/>（ポート 33000〜）
-    U->>CC: claude mcp add vp -- vp mcp
-    CC->>VP: MCP ツール呼び出し<br/>show / split_pane / clear
-    VP->>B: WebSocket でコンテンツ配信
+flowchart TD
+    GUI[vp-app: SolidJS / wry / tao] -->|Unison 制御・購読| Daemon
+    CLI[vp CLI / MCP] -->|Unison| Daemon
+    GUI -->|HTTP health 診断| Daemon
+    subgraph Process[daemon プロセス]
+      Daemon[daemon :32000] --> Repo[repo runtime]
+      Repo --> Lane[lane / session]
+      Repo --> Board[board / DB]
+      Lane --> Engine[PTY / chat engine]
+      Daemon --> Devices[devices]
+    end
 ```
 
-1. `vp start` で Process（HTTP + WebSocket サーバー）が起動し、Canvas（WebView）が開く
-2. Claude Code に MCP サーバーとして登録する
-3. Claude Code がセッション中に `show` ツールを呼ぶと、Canvas にコンテンツが表示される
+repo runtime は daemon と同一プロセスにあり、repo ごとのサーバーポートは持ちません。
+AI CLI 等の engine は子プロセスとして起動します。
+[設計 44](docs/design/44-world-one-process.md)・[設計 45](docs/design/45-transport-consolidation.md) が現在の構成の入口です。
 
-ターミナルでは表示しきれないもの — Mermaid 図、HTML、長いログ — を Canvas 側に出力できる。
+| crate | 役割 |
+|-------|------|
+| `vantage-point` | daemon・repo runtime・lane・会話・board・DB・MCP |
+| `vp-cli` | `vp` コマンド入口 |
+| `vp-app` | ネイティブ GUI と SolidJS WebView |
+| `vp-paths` | config / data / state のパス解決 |
+| `midistage-profiles` | MIDI デバイス profile |
+| `vp-nexus` | 認証・同期等のサービス |
 
----
+## 設定と保存先
 
-## Claude Code に登録する
+XDG の各環境変数を未指定の場合:
 
-```bash
-claude mcp add vp -- vp mcp
-```
+| 場所 | 内容 |
+|------|------|
+| `~/.config/vp/` | 環境 `config.kdl`、好み `settings.kdl`、登録 repo `repos.kdl`、GUI `vp-app.toml` |
+| `~/.local/share/vp/` | 永続データ |
+| `~/.local/state/vp/` | runtime state とログ |
 
-登録後、Claude Code のセッション中に以下の MCP ツールが使える:
+登録 repo は `vp repos`、好みは `vp config get` / `set` または GUI 設定から操作します。
+詳細は [設定の設計](docs/design/59-settings-page.md) を参照してください。
 
-| ツール | 説明 |
-|--------|------|
-| `show` | Markdown / HTML / ログをペインに表示 |
-| `split_pane` | ペインを水平・垂直に分割 |
-| `close_pane` | ペインを閉じる |
-| `toggle_pane` | 左右パネルの表示切替 |
-| `clear` | ペインをクリア |
-| `open_canvas` | Canvas ウィンドウを開く |
-| `close_canvas` | Canvas ウィンドウを閉じる |
-| `permission` | ツール実行の承認リクエスト |
-| `restart` | Process を再起動 |
+## 開発・ライセンス
 
-その他、Lane 操作・wiremsg・ポート照会・tmux 連携など多数の MCP ツールを提供する。
+[ドキュメント索引](docs/README.md) · [環境構築](docs/guide/setup.md) ·
+[コントリビュート](CONTRIBUTING.md) · [セキュリティ報告](SECURITY.md)
 
----
-
-## コマンド
-
-```bash
-# Core
-vp start [N]          # プロジェクト N 番の Process を起動
-vp stop               # Process を停止
-vp restart            # 再起動（セッション状態を保持）
-vp ps                 # 稼働中 Process の一覧
-vp open [N]           # WebUI を開く
-vp config             # 設定と登録プロジェクトを表示
-vp update             # 最新版に更新
-vp mcp                # MCP サーバーとして起動（Claude Code 用）
-
-# daemon（常駐デーモン）
-vp daemon             # daemon 起動
-vp daemon start|stop|status
-
-# App（vp-app GUI）
-vp app start          # vp-app GUI を起動（spawn + 即 exit、cwd を起点に開く）
-vp app stop           # vp-app を停止
-vp tray               # システムトレイモード
-```
-
-### MIDI
-
-```bash
-vp start --midi 0     # MIDI ポート 0 を有効化
-vp midi ports         # ポート一覧
-vp midi monitor       # 入力監視
-```
-
-### 設定ファイル
-
-設定は KDL 形式。config / data / state は XDG Base Directory 準拠の 3 zone に分かれる
-（全 OS 統一）:
-
-| zone | 環境変数 | default | 用途 |
-|------|----------|---------|------|
-| config | `$XDG_CONFIG_HOME` | `~/.config/vp/` | 人が編集（`config.kdl` / `projects.kdl`） |
-| data | `$XDG_DATA_HOME` | `~/.local/share/vp/` | 永続 data store（db / discs） |
-| state | `$XDG_STATE_HOME` | `~/.local/state/vp/` | runtime state + log |
-
-登録プロジェクトの SSOT は `~/.config/vp/projects.kdl`:
-
-```kdl
-project "my-project" path="/path/to/your/project" slot=0
-```
-
----
-
-## vp-app（Mac GUI）
-
-Process をメニューバー / WebView から操作できる Mac アプリ（`crates/vp-app`、Rust wry+tao +
-SolidJS + creo-ui）。notarized `.dmg` でインストールする（上記「インストール」参照）。
-
-```
-vp-app (GUI: wry+tao)   vp (CLI)
-        └────────┬───────┘
-                 │ HTTP + QUIC
-        daemon ⚙️ :32000          ← Process Manager (常駐 daemon)
-                 │ spawn + reconcile
-     ┌───────────┼───────────┐
-   repo :33000 repo :33001 ...     ← repo 📦 (repo ごと)
-```
-
----
-
-## プロジェクト構成
-
-```
-vantage-point/
-├── crates/
-│   ├── vantage-point/   # server lib (daemon + repo の HTTP/WS server)
-│   ├── vp-paths/        # config/data/state path 解決 (XDG SSOT、 vantage-point + vp-app 共有)
-│   ├── vp-app/          # Rust GUI (wry + tao + xterm.js + creo-ui) — Mac 主軸
-│   │   └── webview/  # SolidJS フロントエンド（vp-app に同梱）
-│   ├── vp-cli/          # CLI binary (vp、 lane lib も内包)
-│   └── vp-mdast{,-wasm}/ # Markdown AST parser (+ wasm binding)
-└── docs/                # 仕様・設計・ガイド
-```
-
-## 技術スタック
-
-| レイヤー | 技術 |
-|---------|------|
-| CLI / Process | Rust (Tokio, Axum, Clap) |
-| WebView | wry + tao |
-| Frontend | SolidJS + xterm.js + creo-ui (vp-app webview) |
-| MCP | rmcp (stdio) |
-| MIDI | midir |
-
-## ライセンス
-
-**MIT OR Apache-2.0** dual license.
-
-詳細は [LICENSE-MIT](LICENSE-MIT) / [LICENSE-APACHE](LICENSE-APACHE) を参照。
-コントリビュートについては [CONTRIBUTING.md](CONTRIBUTING.md)、セキュリティ報告は [SECURITY.md](SECURITY.md) を参照。
+MIT OR Apache-2.0 dual license。
+[LICENSE-MIT](LICENSE-MIT) / [LICENSE-APACHE](LICENSE-APACHE)

@@ -23,7 +23,6 @@ function recordingHandlers(): { calls: string[]; handlers: SidebarPushHandlers }
       subCreateResult: (p, n, e) => calls.push(`sub:${p}/${n}:${e}`),
       agentsResult: (p, s, e) => calls.push(`agents:${p}:${s.length}:${e}`),
       wireResult: (p) => calls.push(`wire:${(p as { total?: number }).total}`),
-      clonePathPicked: (p) => calls.push(`clone:${p}`),
       settingsResult: (dev, locked, root, resolved, reachable, level, idle, agent, model, takes) =>
         calls.push(
           `settings:${dev}:${locked}:${root}:${resolved}:${reachable}:${level}:${idle}:${agent}:${model}:${takes}`,
@@ -67,20 +66,20 @@ describe('sidebar dispatch', () => {
     const { calls, handlers } = recordingHandlers()
     mod.installSidebarDispatch(handlers)
 
-    dispatch({ t: 'clone:path_picked', path: '/tmp/x' })
-    expect(calls).toEqual(['clone:/tmp/x'])
+    dispatch({ t: 'sidebar:error', message: '/tmp/x' })
+    expect(calls).toEqual(['error:/tmp/x'])
   })
 
   it('保留分と直通分が 1 本の順序に並ぶ', async () => {
     const mod = await import('./dispatch')
     mod.openSidebarDispatch()
-    dispatch({ t: 'clone:path_picked', path: '/tmp/a' })
+    dispatch({ t: 'sidebar:error', message: '/tmp/a' })
 
     const { calls, handlers } = recordingHandlers()
     mod.installSidebarDispatch(handlers)
-    dispatch({ t: 'clone:path_picked', path: '/tmp/b' })
+    dispatch({ t: 'sidebar:error', message: '/tmp/b' })
 
-    expect(calls).toEqual(['clone:/tmp/a', 'clone:/tmp/b'])
+    expect(calls).toEqual(['error:/tmp/a', 'error:/tmp/b'])
   })
 
   it('optional field の省略は null として渡る（成功 = error 無し）', async () => {

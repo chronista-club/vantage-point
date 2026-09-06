@@ -14,12 +14,27 @@ ID 体系: `VP-SPEC-NNN` / `VP-DESIGN-NNN` / `VP-GUIDE-NNN`
 | VP-SPEC-002 | [02-capability.md](./spec/02-capability.md) | Capability / MIDI 仕様 |
 | VP-SPEC-003 | [03-update.md](./spec/03-update.md) | セルフアップデート |
 
-### Design — 設計 (How)
+### Design — 現行実装を読む入口
 
-| ID | ドキュメント | 内容 |
-|----|-------------|------|
-| VP-DESIGN-001 | [01-architecture.md](./design/01-architecture.md) | システムアーキテクチャ |
-| VP-DESIGN-002 | [02-capability-evolution.md](./archive/02-capability-evolution.md) | 旧 Capability 進化システム（撤去済、 archive） |
+設計書には未実装の後続案も含まれます。各文書の Status / Status log と対象コードを併せて読みます。
+
+| ドキュメント | 現行の責務 |
+|-------------|------------|
+| [44-world-one-process.md](design/44-world-one-process.md) | daemon 内の repo runtime・lifecycle |
+| [45-transport-consolidation.md](design/45-transport-consolidation.md) | Unison 制御・購読と HTTP 診断 |
+| [46-lane-pane-model.md](design/46-lane-pane-model.md) | lane / session / pane の関係 |
+| [33-console-unification.md](design/33-console-unification.md) | Console の TUI / GUI 表示 |
+| [50-pane-chrome-and-session-panes.md](design/50-pane-chrome-and-session-panes.md) | session を単位にした pane / 操作 |
+| [53-lane-reconcile.md](design/53-lane-reconcile.md) | lane reconcile・供給と購読の境界 |
+| [52-board-redesign.md](design/52-board-redesign.md) | board の現行実装と段階的な再設計 |
+| [59-settings-page.md](design/59-settings-page.md) | 設定の所有と GUI |
+
+### 提案・歴史を読む
+
+- [設計書一覧](design/): 上表以外も含む全設計。文書内の Draft / 将来フェーズは実装済みの保証ではありません。
+- [01-architecture.md](design/01-architecture.md): 初期アーキテクチャの記録。現行のプロセス・通信構成は設計 44 / 45 を参照。
+- [11-vp-app-refactor.md](design/11-vp-app-refactor.md): 当時の改善計画。現在の未完タスク一覧としては使いません。
+- [Archive](archive/): 撤去済み・置換済みの設計。旧名称や当時の前提は履歴として残します。
 
 ### Guide — ガイド (Usage)
 
@@ -47,5 +62,5 @@ ID 体系: `VP-SPEC-NNN` / `VP-DESIGN-NNN` / `VP-GUIDE-NNN`
 
 ## repo情報
 
-- **バージョン**: 0.19.0
+- **バージョン**: [Cargo.toml](../Cargo.toml) の `workspace.package.version` が正本
 - **ライセンス**: MIT OR Apache-2.0（dual）

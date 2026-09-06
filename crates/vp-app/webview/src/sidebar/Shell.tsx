@@ -18,6 +18,7 @@ import { For, Show, createEffect, createMemo } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
+import { sidebarError, reportSidebarError } from "./feedback";
 import { expandSidebar, sidebarForm } from "./form";
 import { laneAddressKey } from "./lane";
 import { resolveRepoOrder } from "./dnd";
@@ -99,6 +100,12 @@ export function Shell() {
 
 	return (
 		<div class="vp-sidebar-shell">
+      <Show when={sidebarError()}>
+        <div role="alert" class="vp-operation-error">
+          {sidebarError()}
+          <button aria-label="エラーを閉じる" onClick={() => reportSidebarError(null)}>×</button>
+        </div>
+      </Show>
 			{/* sidebar view modes (2026-08-01): フル形 3 段 (header / list / daemon) と
 			    スリム帯 (SlimRail) の 2 態を `[` directive で行き来する。overlay 群
 			    (ContextMenu / ⌘K 等) は形に依らず常時 mount — 形は
@@ -358,6 +365,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
    閉じるために必要。 無いと overlay が viewport 基準になり sidebar 外に描画される
    (PR #439 dogfood feedback — 当時は FileExplorer で踏んだ。 picker は code pane 化で退役)。
    (+ Light Grid: ::before の ambience grid より上に content を置く役も担う) */
+.vp-operation-error{color:var(--color-status-error,#f0a3a3);padding:8px;overflow-wrap:anywhere;font-size:12px;}
 .vp-sidebar-shell{position:relative;display:flex;flex-direction:column;height:100%;}
 /* 横線ゼロ方針 (mako 019f50fe): 画面に残ってよい横線は session tap だけ。
    header 下線 / Daemon・Devices 上線 / detail 破線は全削除、 区切りは spacing で。 */

@@ -83,3 +83,20 @@ bun install --frozen-lockfile
 
 ⚠️ link したまま `mise run app:bundle` / release を回さない — `--frozen-lockfile` は
 link を検知できない。出荷系は必ず npm 版で（link 解除 → install → build）。
+
+## 操作結果と生成物の検証
+
+`bun run test` と `bun run typecheck` は CI の必須 check job でも実行する。
+Rust テストは KDL / ts-rs の生成物を書き出すため、CI はテスト後の tracked diff と
+未追跡ファイルを検知して失敗する。schema と生成物は同じ変更に含める。
+
+sidebar の lane 作成は repo path と名前が一致する結果を待ち、成功時だけフォームを閉じる。
+失敗時は入力を保つ。一般エラーは sidebar に表示し、ユーザーが閉じるまで残す。
+chat の受付結果は lane / session / request ID に照合し、本文・画像は失敗表示から入力欄へ戻せる。
+通信失敗で受付結果が不明な場合は、応答を確認してから再送する。
+
+旧生成ファイル `ActiveStand.ts` / `ProjectPaneState.ts` は各々 `ActiveComponent.ts` /
+`RepoPaneState.ts` に移行済みの重複のため撤去。旧 clone folder picker IPC は呼び出す UI と
+結果の消費者がなく、schema・dispatch・native picker をまとめて撤去する。
+公開 Rust adapter と lane component container の削除はこの整理に含めない。repo 内の参照不在だけでは
+外部 API 利用や MIDI runtime の不要性を証明できないため、別途境界を確認して扱う。
