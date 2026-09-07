@@ -5,7 +5,7 @@
 //!
 //! ## 構成（棚卸し 項目 6 / 6-0、2026-09-08。SSOT は docs/design/60-vp-app-layout.md）
 //!
-//! - crate root = 共有型・共有 state（`events` / `client` / `lane_address` / `pane` / `session_state` / `settings`）
+//! - crate root = 共有型・共有 state（`events` / `daemon_wire` / `lane_address` / `pane` / `session_state` / `settings`）
 //!   と基盤（log / icon / menu / tray）。どの directory からも参照してよい
 //! - `app/` = UI thread の世界（EventLoop、state 遷移、効果の実行）
 //! - `daemon/` = daemon との線 / `lane/` = lane ごとの session / `webview/` = IPC decode と投影 /
@@ -29,12 +29,12 @@
 /// UI thread の世界 — EventLoop + window lifecycle + state 遷移と効果の実行。
 /// （6-0 で `app/mod.rs` に。6-2 で boot / state / on_* に分解予定）
 pub mod app;
-/// daemon の HTTP health (`/api/health`) + wire 型（6-0b で `daemon_wire` / `daemon::health_probe` に分解予定）。
-pub mod client;
 /// chat submit の応答分類（純粋関数、`tests/` から参照）。
 pub mod conversation_submission;
-/// daemon との線（接続・制御 RPC・起動 / 再起動）。
+/// daemon との線（接続・制御 RPC・health probe・起動 / 再起動）。
 pub mod daemon;
+/// daemon ↔ vp-app の wire 型（共有型。webview の wire 型は `generated/`）。
+pub mod daemon_wire;
 pub mod debug_log;
 /// tao EventLoop に流す app 全体の event（`AppEvent`）。送り手は各 sibling、受け手は `app::run()`。
 pub mod events;
@@ -53,7 +53,6 @@ pub mod menu;
 pub mod pane;
 pub mod session_state;
 pub mod settings;
-pub mod shell_detect;
 pub mod tray;
 /// webview との線（IPC decode / asset / main-area / ink snapshot / code pane）。
 pub mod webview;

@@ -13,7 +13,7 @@
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     /// daemon から Repo list 取得成功 (= `fetch_repos_with_ports` 経由で runtime port 込み)。
-    ReposLoaded(Vec<crate::client::RepoInfo>),
+    ReposLoaded(Vec<crate::daemon_wire::RepoInfo>),
     /// daemon への接続失敗 (= daemon 未起動 / network エラー)。
     ReposError(String),
     /// VP-95: Activity widget の定期更新 payload
@@ -46,7 +46,7 @@ pub enum AppEvent {
     /// 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Process recursive)
     LanesLoaded {
         repo_path: String,
-        lanes: Vec<crate::client::LaneInfo>,
+        lanes: Vec<crate::daemon_wire::LaneInfo>,
         /// doc 44 D4: この repo の開発起点 lane 名（Host の帳簿が解決した値）。
         ///
         /// `None` = snapshot に載っていなかった（旧 server / 解決不能）。受け手は
@@ -103,7 +103,7 @@ pub enum AppEvent {
     /// disabled + error message 表示。
     AgentsResult {
         repo_path: String,
-        agents: Vec<crate::client::AgentInfo>,
+        agents: Vec<crate::daemon_wire::AgentInfo>,
         error: Option<String>,
     },
     /// webview が受け口を全部生やした（`entry.tsx` の `t:"ready"`）。

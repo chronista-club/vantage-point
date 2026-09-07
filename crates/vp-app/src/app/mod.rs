@@ -36,8 +36,9 @@ use wry::{
     Rect, WebView, WebViewBuilder, dpi::LogicalPosition, dpi::LogicalSize as WryLogicalSize,
 };
 
-use crate::client::{DaemonRpcClient, RepoInfo};
+use crate::daemon::HealthProbe;
 use crate::daemon::control::DaemonControl;
+use crate::daemon_wire::RepoInfo;
 use crate::events::AppEvent;
 use crate::flows::repo_dialog::{
     resolve_default_repo_root, spawn_add_repo_picker, spawn_clone_repo, spawn_repo_root_picker,
@@ -48,18 +49,12 @@ use crate::settings::Settings;
 use crate::webview::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
 use crate::webview::terminal_ipc;
 
-/// Sidebar の固定幅 (LogicalPixel)。
-/// WebView 統合 (step 3a) 後は HTML 側 CSS (#sidebar-root width:280px) が司るため Rust 側は未使用
-/// (MIN_WINDOW_WIDTH 算出の参照値として comment でのみ言及)。
-#[allow(dead_code)]
-const SIDEBAR_WIDTH: f64 = 280.0;
-
 /// 起動時の window default size (LogicalPixel)。 with_inner_size と clamp 矯正後の値で
 /// 共用するため定数化。
 const DEFAULT_WINDOW_WIDTH: f64 = 1200.0;
 const DEFAULT_WINDOW_HEIGHT: f64 = 800.0;
 
-/// 最低 window size (LogicalPixel)。 SIDEBAR_WIDTH (280) + 余裕ある main 領域 (820+) を
+/// 最低 window size (LogicalPixel)。 sidebar 幅 280 (HTML 側 CSS `#sidebar-root` が司る) + 余裕ある main 領域 (820+) を
 /// 構造的に確保。 これ未満になる window は使用に耐えないため、 OS の min 制約 (drag 防止)
 /// と起動時 clamp (state restoration 後の矯正) の両方で下限として参照する。
 const MIN_WINDOW_WIDTH: f64 = 1100.0;
@@ -286,7 +281,7 @@ mod session_derivation_tests {
         forget_roster_push, remember_roster_push, roster_push_needed, session_list_payload,
         term_sessions_of,
     };
-    use crate::client::LaneInfo;
+    use crate::daemon_wire::LaneInfo;
 
     /// doc 53 §11: snapshot の roster が **webview 契約の形**に写ること。
     ///
@@ -478,8 +473,8 @@ pub(crate) fn resolve_active_repo_path(state: &crate::pane::SidebarState) -> Opt
 }
 
 pub(crate) fn merge_ports_from_running(
-    repos: &mut [crate::client::RepoInfo],
-    running: &[crate::client::RunningRepo],
+    repos: &mut [crate::daemon_wire::RepoInfo],
+    running: &[crate::daemon_wire::RunningRepo],
 ) {
     let port_by_name: std::collections::HashMap<String, u16> = running
         .iter()
@@ -902,7 +897,7 @@ async fn lanes_session_after_open(
         if payload.get("type").and_then(|t| t.as_str()) != Some("lanes_snapshot") {
             continue;
         }
-        let lanes: Vec<crate::client::LaneInfo> =
+        let lanes: Vec<crate::daemon_wire::LaneInfo> =
             match serde_json::from_value(payload.get("lanes").cloned().unwrap_or_default()) {
                 Ok(lanes) => lanes,
                 Err(e) => {
@@ -1917,7 +1912,7 @@ async fn run_device_session(
 /// doc 50 §4.6 A6: xterm は (lane, session) ごとなので、boot / lane 選択の経路は
 /// 「この lane にどの term pane が要るか」をここで解決する。registry snapshot（`sessions`）が
 /// 無い旧 SP からの wire は root=1 の 1 枚に畳む（従来挙動 = lane に xterm 1 枚）。
-fn term_sessions_of(lane: &crate::client::LaneInfo) -> Vec<(u32, bool)> {
+fn term_sessions_of(lane: &crate::daemon_wire::LaneInfo) -> Vec<(u32, bool)> {
     match &lane.sessions {
         Some(reg) if !reg.sessions.is_empty() => reg
             .sessions
@@ -1984,7 +1979,7 @@ fn push_session_list(webview: &wry::WebView, lane: &str, payload: &serde_json::V
 /// 「server は true を返しているのに client では false」で貼り付け UI が出なかった。
 fn session_list_payload(
     lane: &str,
-    sessions: &crate::client::LaneSessionsWire,
+    sessions: &crate::daemon_wire::LaneSessionsWire,
 ) -> serde_json::Value {
     let entries: Vec<serde_json::Value> = sessions
         .sessions
@@ -2392,7 +2387,7 @@ fn spawn_activity_poller(
     conn: SharedDaemonConn,
 ) {
     rt_handle.spawn(async move {
-        let health = DaemonRpcClient::default();
+        let health = HealthProbe::default();
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         let mut prev_online: Option<bool> = None;
         let mut prev_running: Option<usize> = None;
@@ -2546,7 +2541,7 @@ fn spawn_lane_inbox_poller(rt_handle: &tokio::runtime::Handle, proxy: EventLoopP
 /// `control` が `None` = 共有 QUIC connection が未確立で、この時 node_online は
 /// HTTP health だけで決まる (= daemon は生きているが QUIC がまだ、を正しく表せる)。
 async fn collect_activity(
-    health: &DaemonRpcClient,
+    health: &HealthProbe,
     control: Option<&DaemonControl>,
 ) -> ActivitySnapshot {
     let mut snap = ActivitySnapshot::default();
@@ -2607,7 +2602,7 @@ async fn collect_activity(
 /// 1 関数に閉じる**（読み手 3 系統: chat 判定 / respawn gate / header 差分。R4 で pane 一覧
 /// 配信に差し替える時の改修点もここ 1 箇所）。sessions 欠落（boot 窓の placeholder 等）は
 /// "tui"（旧 serde default と同値）に倒す。
-fn root_mode_of(lane: &crate::client::LaneInfo) -> &str {
+fn root_mode_of(lane: &crate::daemon_wire::LaneInfo) -> &str {
     lane.sessions
         .as_ref()
         .and_then(|reg| reg.sessions.iter().find(|s| s.key == reg.root))
@@ -2654,7 +2649,7 @@ fn focused_session_agent(payload: &serde_json::Value) -> Option<String> {
 #[cfg(test)]
 mod header_lane_fields_changed_tests {
     use super::header_lane_fields_changed;
-    use crate::client::LaneInfo;
+    use crate::daemon_wire::LaneInfo;
 
     /// 最小 LaneInfo（全 field serde default）に engine_session_id だけ与える。
     fn lane(engine_session_id: Option<&str>) -> LaneInfo {
@@ -2938,8 +2933,8 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
 /// ため毎回撃つと setActivePane が noise になる — header が実際に読む field（session chip /
 /// cwd / branch / lane 名 / agent / Mode 初期値）に変化がある時だけ true を返す。
 fn header_lane_fields_changed(
-    prev: &crate::client::LaneInfo,
-    next: &crate::client::LaneInfo,
+    prev: &crate::daemon_wire::LaneInfo,
+    next: &crate::daemon_wire::LaneInfo,
 ) -> bool {
     prev.engine_session_id != next.engine_session_id
         || prev.cwd != next.cwd
@@ -3095,7 +3090,7 @@ fn maybe_respawn_dead_lane(
         // auto-respawn は Dead lane の復活なので会話を継ぐ (fresh=false)。
         let payload = serde_json::json!({ "address": &addr_owned, "fresh": false });
         match daemon_repo_request(
-            crate::client::default_daemon_port(),
+            crate::daemon::default_daemon_port(),
             &repo_path,
             "lane_restart",
             payload,
@@ -3238,7 +3233,7 @@ mod sidebar_js {
     pub fn stands_result(
         sidebar: &WebView,
         repo_path: String,
-        agents: &[crate::client::AgentInfo],
+        agents: &[crate::daemon_wire::AgentInfo],
         error: Option<String>,
     ) {
         let agents = agents
@@ -3966,7 +3961,7 @@ pub fn run() -> anyhow::Result<()> {
     // 集約する共有ハンドル。 manager task が connect/reconnect を一手に所有し、 各 session
     // (device/lanes/canvas/terminal) は `wait_client` で得た共有 client に open_channel する。
     // event loop closure が move capture するので、 closure 内の spawn は `daemon_conn.clone()` を渡す。
-    let daemon_conn = spawn_daemon_conn_manager(&rt_handle, crate::client::default_daemon_port());
+    let daemon_conn = spawn_daemon_conn_manager(&rt_handle, crate::daemon::default_daemon_port());
 
     // フィードバック方向 (doc 49 LE-19): webview の場の状態 → daemon-device 上り event。
     // watch = latest-wins (webview が throttle 済みでも Rust 側で自然に coalesce)。
@@ -4020,7 +4015,7 @@ pub fn run() -> anyhow::Result<()> {
 
     // 最低サイズ + 起動時 size 強制矯正 — sidebar (固定 280px) 圧縮 bug の構造的防御。
     //
-    // 1. `with_min_inner_size`: SIDEBAR_WIDTH + 余裕ある main 領域を構造的に確保する OS
+    // 1. `with_min_inner_size`: sidebar 幅 (280) + 余裕ある main 領域を構造的に確保する OS
     //    レベル下限 (NSWindow.setMinSize)。 手動 drag による narrow 化を防ぐ。
     // 2. 起動時 clamp: macOS state restoration は `applicationDidFinishLaunching` 後の
     //    async phase で `restorableState` を frame に反映するため、 build 直後の同期
@@ -4113,7 +4108,7 @@ pub fn run() -> anyhow::Result<()> {
     // /api/daemon/repos 取得に必要)。
     let _ = proxy; // 旧 spawn_shell / connect_daemon_terminal で proxy を消費していた、 互換用に残す
     let node_url = std::env::var("VP_DAEMON_URL")
-        .unwrap_or_else(|_| format!("http://127.0.0.1:{}", crate::client::default_daemon_port()));
+        .unwrap_or_else(|_| format!("http://127.0.0.1:{}", crate::daemon::default_daemon_port()));
     if let Err(e) = crate::daemon::launcher::ensure_daemon_ready(&node_url) {
         tracing::warn!(
             "daemon auto-launch 失敗 (continue with offline state): {}",
@@ -4954,7 +4949,7 @@ pub fn run() -> anyhow::Result<()> {
                             && let Some(path) =
                                 resolve_repo_path_for_lane(&sidebar_state, &addr_str)
                         {
-                            let port = crate::client::default_daemon_port();
+                            let port = crate::daemon::default_daemon_port();
                             let lane_for_req = addr_str.clone();
                             rt_handle.spawn(async move {
                                 if let Err(e) = daemon_repo_request(
@@ -5470,7 +5465,7 @@ pub fn run() -> anyhow::Result<()> {
                 let (lane_for_js, mode_for_js) = (lane.clone(), mode.clone());
                 rt_handle.spawn(async move {
                     match daemon_repo_request(
-                        crate::client::default_daemon_port(),
+                        crate::daemon::default_daemon_port(),
                         &path,
                         "session_set_mode",
                         serde_json::json!({ "lane": lane, "session": session, "mode": mode }),
@@ -5582,7 +5577,7 @@ pub fn run() -> anyhow::Result<()> {
                         let lane_for_log = lane.clone();
                         rt_handle.spawn(async move {
                             if let Err(e) = daemon_repo_request(
-                                crate::client::default_daemon_port(),
+                                crate::daemon::default_daemon_port(),
                                 &path,
                                 "conversation_demand_start",
                                 serde_json::json!({ "lane": lane_for_log, "session": session }),
@@ -5613,7 +5608,7 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("console:new_session skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
-                let port = crate::client::default_daemon_port();
+                let port = crate::daemon::default_daemon_port();
                 // doc 46 P2 要件 4: Mode は**明示指定を優先**し、無ければ lane の現 Mode を継ぐ。
                 // 未知の値（typo 等）は継承に倒す — 「指定したのに黙って別の Mode で作られた」より
                 // 「指定が効かなかった」方が気付きやすい。
@@ -5721,7 +5716,7 @@ pub fn run() -> anyhow::Result<()> {
                     );
                     return;
                 };
-                let port = crate::client::default_daemon_port();
+                let port = crate::daemon::default_daemon_port();
                 rt_handle.spawn(async move {
                     let payload = serde_json::json!({ "lane": &lane, "session": session });
                     match daemon_repo_request(port, &path, "conversation_session_switch_root", payload)
@@ -5772,7 +5767,7 @@ pub fn run() -> anyhow::Result<()> {
                     let payload =
                         serde_json::json!({ "lane": &lane, "session": session, "model": model });
                     match daemon_repo_request(
-                        crate::client::default_daemon_port(),
+                        crate::daemon::default_daemon_port(),
                         &path,
                         "conversation_set_model",
                         payload,
@@ -5807,7 +5802,7 @@ pub fn run() -> anyhow::Result<()> {
                     // doc 53 §11: 動詞を撃つだけ。roster の更新は server の `emit_lane_update`
                     // → lanes snapshot → LanesLoaded で届く（旧: ここで一覧を取り直していた）。
                     if let Err(e) = daemon_repo_request(
-                        crate::client::default_daemon_port(),
+                        crate::daemon::default_daemon_port(),
                         &path,
                         "conversation_session_create",
                         create,
@@ -5830,7 +5825,7 @@ pub fn run() -> anyhow::Result<()> {
                 };
                 rt_handle.spawn(async move {
                     if let Err(e) = daemon_repo_request(
-                        crate::client::default_daemon_port(),
+                        crate::daemon::default_daemon_port(),
                         &path,
                         "conversation_demand_start",
                         serde_json::json!({ "lane": &lane }),
@@ -5848,7 +5843,7 @@ pub fn run() -> anyhow::Result<()> {
                 };
                 rt_handle.spawn(async move {
                     if let Err(e) = daemon_repo_request(
-                        crate::client::default_daemon_port(),
+                        crate::daemon::default_daemon_port(),
                         &path,
                         "conversation_session_focus",
                         serde_json::json!({ "lane": &lane, "session": session }),
@@ -5865,7 +5860,7 @@ pub fn run() -> anyhow::Result<()> {
                     // 新 focused の transcript replay を発火（session 省略 = focused に解決）。
                     // 応答は使わない（replay は topic 経由で ReplayStart として届く）。エラーは warn のみ。
                     if let Err(e) = daemon_repo_request(
-                        crate::client::default_daemon_port(),
+                        crate::daemon::default_daemon_port(),
                         &path,
                         "conversation_demand_start",
                         serde_json::json!({ "lane": &lane }),
@@ -5884,7 +5879,7 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("conversation:session_remove skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
-                let port = crate::client::default_daemon_port();
+                let port = crate::daemon::default_daemon_port();
                 rt_handle.spawn(async move {
                     if let Err(e) = daemon_repo_request(
                         port,
@@ -5924,7 +5919,7 @@ pub fn run() -> anyhow::Result<()> {
                 let proxy = async_action_proxy.clone();
                 rt_handle.spawn(async move {
                     match daemon_repo_request(
-                        crate::client::default_daemon_port(),
+                        crate::daemon::default_daemon_port(),
                         &path,
                         "agents_list",
                         serde_json::json!({}),
@@ -5959,7 +5954,7 @@ pub fn run() -> anyhow::Result<()> {
                 };
                 rt_handle.spawn(async move {
                     match daemon_repo_request(
-                        crate::client::default_daemon_port(),
+                        crate::daemon::default_daemon_port(),
                         &path,
                         &method,
                         body,
@@ -6420,7 +6415,7 @@ pub fn run() -> anyhow::Result<()> {
                     rt_handle.spawn(async move {
                         let payload = serde_json::json!({ "address": &address });
                         match daemon_repo_request(
-                            crate::client::default_daemon_port(),
+                            crate::daemon::default_daemon_port(),
                             &repo_path,
                             "lane_delete",
                             payload,
@@ -6452,7 +6447,7 @@ pub fn run() -> anyhow::Result<()> {
                     rt_handle.spawn(async move {
                         let payload = serde_json::json!({ "address": &address, "fresh": fresh });
                         match daemon_repo_request(
-                            crate::client::default_daemon_port(),
+                            crate::daemon::default_daemon_port(),
                             &repo_path,
                             "lane_restart",
                             payload,
@@ -6486,7 +6481,7 @@ pub fn run() -> anyhow::Result<()> {
                 if let Some((repo_path, address)) = outcome.new_root_request {
                     rt_handle.spawn(async move {
                         match daemon_repo_request(
-                            crate::client::default_daemon_port(),
+                            crate::daemon::default_daemon_port(),
                             &repo_path,
                             "conversation_session_new_root",
                             serde_json::json!({ "lane": &address }),
@@ -6520,7 +6515,7 @@ pub fn run() -> anyhow::Result<()> {
                         }
                         let payload = serde_json::json!({ "lane": lane_name });
                         match daemon_repo_request(
-                            crate::client::default_daemon_port(),
+                            crate::daemon::default_daemon_port(),
                             &repo_path,
                             "lane_origin_set",
                             payload,
@@ -6558,7 +6553,7 @@ pub fn run() -> anyhow::Result<()> {
                         }
                         let payload = serde_json::json!({ "order": names });
                         match daemon_repo_request(
-                            crate::client::default_daemon_port(),
+                            crate::daemon::default_daemon_port(),
                             &repo_path,
                             "lane_order_set",
                             payload,
@@ -6662,7 +6657,7 @@ pub fn run() -> anyhow::Result<()> {
                     let proxy = async_action_proxy.clone();
                     rt_handle.spawn(async move {
                         let (agents, error) = match daemon_repo_request(
-                            crate::client::default_daemon_port(),
+                            crate::daemon::default_daemon_port(),
                             &repo_path,
                             "agents_list",
                             serde_json::json!({}),
@@ -6674,7 +6669,7 @@ pub fn run() -> anyhow::Result<()> {
                                 let agents = v
                                     .get("agents")
                                     .and_then(|s| {
-                                        serde_json::from_value::<Vec<crate::client::AgentInfo>>(
+                                        serde_json::from_value::<Vec<crate::daemon_wire::AgentInfo>>(
                                             s.clone(),
                                         )
                                         .ok()
@@ -6972,7 +6967,7 @@ mod port_merge_tests {
     //! merge logic は pure calculation なので Small Test として検証する。
 
     use super::*;
-    use crate::client::{RepoInfo, RepoStatus, RunningRepo};
+    use crate::daemon_wire::{RepoInfo, RepoStatus, RunningRepo};
 
     fn make_repo(name: &str, port: Option<u16>) -> RepoInfo {
         RepoInfo {
