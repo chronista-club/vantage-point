@@ -34,6 +34,8 @@ pub mod daemon_control;
 pub mod daemon_flow;
 pub mod daemon_launcher;
 pub mod debug_log;
+/// tao EventLoop に流す app 全体の event（`AppEvent`）。送り手は各 sibling、受け手は `app::run()`。
+pub mod events;
 /// code pane（コードブラウザ）の file 供給 — lane workdir walk + ファイル読み。
 /// code:list / code:read IPC の Rust 側実装。
 pub mod file_explorer;

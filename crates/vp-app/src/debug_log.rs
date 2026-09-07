@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use tao::event_loop::EventLoopProxy;
 
-use crate::terminal::AppEvent;
+use crate::events::AppEvent;
 
 /// watch 開始時に遡る backlog の上限 byte 数（≈ 数百行。表示側の cap は 2000 行）。
 const BACKLOG_BYTES: u64 = 64 * 1024;

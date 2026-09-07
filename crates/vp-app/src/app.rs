@@ -38,6 +38,7 @@ use wry::{
 
 use crate::client::{DaemonRpcClient, RepoInfo};
 use crate::daemon_control::DaemonControl;
+use crate::events::AppEvent;
 use crate::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
 use crate::pane::{ActiveComponent, ActivitySnapshot, RepoPaneState, SidebarState};
 use crate::repo_dialog::{
@@ -45,7 +46,7 @@ use crate::repo_dialog::{
 };
 use crate::session_state::SessionState;
 use crate::settings::Settings;
-use crate::terminal::{self, AppEvent};
+use crate::terminal;
 
 /// Sidebar の固定幅 (LogicalPixel)。
 /// WebView 統合 (step 3a) 後は HTML 側 CSS (#sidebar-root width:280px) が司るため Rust 側は未使用
@@ -2046,7 +2047,7 @@ mod lane_js {
     ///
     /// ⚠️ `window.vpDispatch &&` の guard は**残す**。bundle 評価前に Rust が撃つ窓は依然あり、
     /// そこは JS が存在しないので queue にも積めない。その窓の救済は
-    /// [`AppEvent::WebviewReady`](crate::terminal::AppEvent::WebviewReady) の replay
+    /// [`AppEvent::WebviewReady`](crate::events::AppEvent::WebviewReady) の replay
     /// （受け口が揃った合図を受けて現在の状態を丸ごと撃ち直す）。
     fn push(main_view: &WebView, msg: &PushEventEnvelope) {
         let json = match serde_json::to_string(msg) {
