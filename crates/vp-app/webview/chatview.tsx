@@ -55,7 +55,7 @@ import {
 // ---------------------------------------------------------------------------
 
 type ChatItem =
-  | { kind: 'user'; text: string }
+  | { kind: 'user'; text: string; submissionId?: string }
   | { kind: 'assistant'; text: string; sealed?: boolean } // append 先。sealed=turn 境界（§5.1、次 turn は新バブル）
   | { kind: 'thinking'; text: string; at?: number } // thought_chunk を末尾 thinking に append。at = live 受信時刻（doc 57 §4.2、replay では刻まない）
   // tool。input/result は詳細展開の表示源。backend は最初から ToolCall{input} /
@@ -184,6 +184,7 @@ type ChatState = {
   commandDocs: Record<string, string>
   /** doc 35 §5.1: streaming 中に送られた type-ahead。turn 閉で flush（表示順=処理順の不変条件）。 */
   pending: string | null
+  submission: Submission | null
   /** status 同期: 最後に畳んだイベント種別（foldInto で全イベント更新）。 */
   lastEvent: string | null
   /** status 同期: 最後にイベントを受けた時刻 ms（foldEvent で Date.now。hang 検出の時間軸）。 */
@@ -196,6 +197,14 @@ type ChatState = {
    *  turn より長生きしない）。書き手は A3b の `now_line` event（PR2 で配線 — 受け皿を先に置く
    *  reader-first）。 */
   nowLine: string | null
+}
+
+type Submission = {
+  id: string
+  text: string
+  images: ReturnType<typeof toWirePayload>
+  status: 'sending' | 'failed'
+  error: string | null
 }
 
 type LaneChat = {
@@ -390,6 +399,24 @@ function clearReplaying(lane: string): void {
  * tool_call_update は id 一致で done 化。ここが gui の描画正しさの中核。
  */
 export function foldInto(s: ChatState, ev: ConversationEvent): void {
+  // Acknowledgements are scoped by request as well as lane/session. They are not
+  // turn-closing engine events and must never flush type-ahead on rejection.
+  if (ev.kind === 'submit_result') {
+    const submission = s.submission
+    if (!submission || submission.id !== ev.request_id || submission.status !== 'sending') return
+    if (ev.error !== null) {
+      submission.status = 'failed'
+      submission.error = ev.error
+      s.replaying = false
+      s.items = s.items.filter((item) => item.kind !== 'user' || item.submissionId !== submission.id)
+    } else {
+      for (const item of s.items) {
+        if (item.kind === 'user' && item.submissionId === submission.id) delete item.submissionId
+      }
+      s.submission = null
+    }
+    return
+  }
   s.lastEvent = ev.kind // 拾える全イベント種別を status に同期（時刻は foldEvent が Date.now で付す）
   switch (ev.kind) {
     case 'replay_start':
@@ -578,7 +605,10 @@ function foldEvent(lane: string, ev: ConversationEvent, session: number): void {
   // doc 38 §4.3: replay window の watchdog を張り替える。replay_start で arm、replay_end / error で
   // 解除（foldInto は既に replaying を下ろしている — ここは timer の後始末）。10s 無応答なら強制解除。
   if (ev.kind === 'replay_start') armReplayWatchdog(lane, session)
-  else if (ev.kind === 'replay_end' || ev.kind === 'error' || ev.kind === 'engine_exited')
+  else if (
+    ev.kind === 'replay_end' || ev.kind === 'error' || ev.kind === 'engine_exited' ||
+    (ev.kind === 'submit_result' && ev.error !== null)
+  )
     clearReplayWatchdog(lane, session) // engine 途絶 = 続きの replay はもう来ない → watchdog を固着させない
   // doc 35 §5.1: turn が閉じた event を契機に pending を flush。派生状態 streaming===false は見ない
   //（replay_start / question / permission_request も false にするため — それらで流すと順序が壊れる）。
@@ -599,15 +629,42 @@ export function isTurnClosingEvent(kind: ConversationEvent['kind']): boolean {
 function flushPending(lane: string, session: number): void {
   const lc = laneChat(lane, session)
   const text = lc.state.pending
-  if (!text) return
-  lc.set(
-    produce((s) => {
-      s.items.push({ kind: 'user', text })
-      s.pending = null
-    }),
-  )
-  const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-  ipc?.postMessage(JSON.stringify({ t: 'conversation:submit', lane, session, prompt: text }))
+  if (!text || lc.state.submission) return
+  lc.set('pending', null)
+  sendSubmission(lane, session, text, [])
+}
+
+/** Keep the exact payload in memory until accepted or explicitly recovered. */
+export function beginSubmission(
+  s: ChatState, id: string, text: string, images: Submission['images'],
+): boolean {
+  if (s.submission) return false
+  s.submission = { id, text, images, status: 'sending', error: null }
+  s.items.push({ kind: 'user', text, submissionId: id })
+  return true
+}
+
+let submissionSequence = 0
+const submissionEpoch = Date.now()
+
+export function sendSubmission(lane: string, session: number, text: string, images: Submission['images']): void {
+  const lc = laneChat(lane, session)
+  if (lc.state.submission) return
+  // Custom-scheme WebViews may not expose crypto.randomUUID. Identity only
+  // needs to be unique within this document and across its reloads.
+  const id = `submit-${submissionEpoch}-${++submissionSequence}`
+  lc.set(produce((s) => { beginSubmission(s, id, text, images) }))
+  try {
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    if (!ipc) throw new Error('接続がありません。入力を戻して再試行してください。')
+    ipc.postMessage(JSON.stringify({
+      t: 'conversation:submit', lane, session, prompt: text, images, request_id: id,
+    }))
+  } catch (e) {
+    foldEvent(lane, {
+      kind: 'submit_result', request_id: id, error: e instanceof Error ? e.message : String(e),
+    }, session)
+  }
 }
 
 /**
@@ -636,6 +693,7 @@ export function emptyChatState(): ChatState {
     slashCommands: [],
     commandDocs: {},
     pending: null,
+    submission: null,
     lastEvent: null,
     lastEventAt: null,
     replaying: false,
@@ -1973,7 +2031,7 @@ function SessionChatView(props: { lane: string; session: number }) {
   const submit = () => {
     const lane = props.lane
     const text = draft().trim()
-    if (!text) return
+    if (!text || lc.state.submission) return
     setDraft('')
     if (inputRef) autosize(inputRef) // 送信後は 1 行に畳み戻す
     // doc 35 §5.1: streaming 中は engine へ送らず pending に buffer（items[] を触らない = 順序を汚さない）。
@@ -1982,19 +2040,21 @@ function SessionChatView(props: { lane: string; session: number }) {
       lc.set('pending', (p) => (p ? `${p}\n${text}` : text))
       return
     }
-    // idle: 送信順 = 処理順なので optimistic に即描画して送る
-    lc.set(produce((s) => s.items.push({ kind: 'user', text })))
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(
-      JSON.stringify({
-        t: 'conversation:submit',
-        lane,
-        session: props.session,
-        prompt: text,
-        images: toWirePayload(attachments()),
-      }),
-    )
+    sendSubmission(lane, props.session, text, toWirePayload(attachments()))
     clearAttachments()
+  }
+
+  const recoverSubmission = () => {
+    const submission = lc.state.submission
+    if (!submission || submission.status !== 'failed' || draft().trim() || attachments().length) return
+    setDraft(submission.text)
+    setAttachments(submission.images.map((image, index) => ({
+      id: Date.now() + index, mediaType: image.media_type, dataBase64: image.data,
+      previewUrl: `data:${image.media_type};base64,${image.data}`,
+      bytes: Math.floor(image.data.length * 3 / 4),
+    })))
+    lc.set('submission', null)
+    queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
   }
 
   // 送信待ち type-ahead を入力欄へ戻して編集可能にする（dequeue-to-composer, todo 2026-07-14）。
@@ -2324,6 +2384,19 @@ function SessionChatView(props: { lane: string; session: number }) {
           <Show when={state().streaming}>
             <div class="conversation-cursor" />
           </Show>
+          <Show when={state().submission}>
+            {(submission) => <div class="conversation-msg user pending" role="status">
+              <Show when={submission().status === 'failed'}><MsgBody class="conversation-msg-body" text={submission().text} /></Show>
+              <span>{submission().images.length > 0 ? `画像 ${submission().images.length} 枚 · ` : ''}</span>
+              <Show when={submission().status === 'failed'} fallback={<span>送信中…</span>}>
+                <div role="alert">{submission().error}</div>
+                <button onClick={recoverSubmission} disabled={!!draft().trim() || attachments().length > 0}
+                  title="編集中の入力がある場合は、先にコピーして入力欄を空にしてください">
+                  入力欄に戻す
+                </button>
+              </Show>
+            </div>}
+          </Show>
           <Show when={state().pending}>
             <div
               class="conversation-msg user pending"
@@ -2561,7 +2634,7 @@ function SessionChatView(props: { lane: string; session: number }) {
                 <CreoIcon name="ph:stop" size={11} /> 停止
               </button>
             </Show>
-            <button class="conversation-send" onClick={submit} disabled={!draft().trim()}>
+            <button class="conversation-send" onClick={submit} disabled={!draft().trim() || !!state().submission}>
               <CreoIcon name="ph:paper-plane-right" size={12} /> 送信
             </button>
           </div>

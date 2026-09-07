@@ -94,9 +94,6 @@ pub struct StandSelect {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RepoClonePickFolder;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireFetch {
     pub path: String,
     pub address: String,
@@ -189,11 +186,6 @@ pub struct WireResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClonePathPicked {
-    pub path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsResult {
     pub developer_mode: bool,
     pub developer_mode_locked: bool,
@@ -248,8 +240,6 @@ pub enum IpcEnvelope {
     AgentsFetch(AgentsFetch),
     #[serde(rename = "stand:select")]
     StandSelect(StandSelect),
-    #[serde(rename = "repo:clone:pickFolder")]
-    RepoClonePickFolder,
     #[serde(rename = "wire:fetch")]
     WireFetch(WireFetch),
     #[serde(rename = "wire:ack")]
@@ -287,8 +277,6 @@ pub enum IpcEventEnvelope {
     AgentsResult(AgentsResult),
     #[serde(rename = "wire:result")]
     WireResult(WireResult),
-    #[serde(rename = "clone:path_picked")]
-    ClonePathPicked(ClonePathPicked),
     #[serde(rename = "settings:result")]
     SettingsResult(SettingsResult),
 }

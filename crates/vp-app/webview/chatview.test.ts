@@ -1270,3 +1270,64 @@ describe('raw HTML は文字として描く — 閉じ忘れ <h1> が message �
     expect(markedSingleton.parse('<h1>x') as string).toContain('<h1>')
   })
 })
+
+describe('submit acknowledgement', () => {
+  it('retains rejected text and images, clears waiting, and ignores stale results', async () => {
+    const { beginSubmission } = await import('./chatview')
+    const s = emptyChatState()
+    const images = [{ media_type: 'image/png', data: 'aGVsbG8=' }]
+    expect(beginSubmission(s, 'req-1', 'hello', images)).toBe(true)
+    expect(beginSubmission(s, 'req-2', 'duplicate', [])).toBe(false)
+    foldInto(s, { kind: 'submit_result', request_id: 'other', error: null })
+    expect(s.submission?.id).toBe('req-1')
+    foldInto(s, { kind: 'submit_result', request_id: 'req-1', error: 'engine missing' })
+    expect(s.submission).toMatchObject({ text: 'hello', images, error: 'engine missing', status: 'failed' })
+    expect(s.streaming).toBe(false)
+    expect(isTurnClosingEvent('submit_result')).toBe(false)
+    expect(s.items).toEqual([])
+  })
+  it('adds an accepted message once and never mixes session state', async () => {
+    const { beginSubmission } = await import('./chatview')
+    const a = emptyChatState(), b = emptyChatState()
+    beginSubmission(a, 'a1', 'first', [])
+    beginSubmission(b, 'b1', 'second', [])
+    foldInto(b, { kind: 'submit_result', request_id: 'a1', error: 'failed' })
+    expect(b.submission?.status).toBe('sending')
+    foldInto(a, { kind: 'submit_result', request_id: 'a1', error: null })
+    foldInto(a, { kind: 'submit_result', request_id: 'a1', error: null })
+    expect(a.items).toEqual([{ kind: 'user', text: 'first' }])
+    expect(a.submission).toBe(null)
+  })
+})
+
+it('keeps user before engine events and does not reopen a turn on a late acknowledgement', async () => {
+  const { beginSubmission } = await import('./chatview')
+  const s = emptyChatState()
+  beginSubmission(s, 'ordered', 'hello', [])
+  foldInto(s, { kind: 'message_chunk', text: 'reply' })
+  foldInto(s, { kind: 'turn_completed', session_id: 'sid' })
+  foldInto(s, { kind: 'submit_result', request_id: 'ordered', error: null })
+  expect(s.items.map(i => i.kind)).toEqual(['user', 'assistant'])
+  expect(s.streaming).toBe(false)
+})
+
+it('sends once in a WebView without crypto.randomUUID', async () => {
+  const { sendSubmission } = await import('./chatview')
+  const savedWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const savedCrypto = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
+  const sent: string[] = []
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { ipc: { postMessage: (m: string) => sent.push(m) } } })
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: {} })
+  try {
+    sendSubmission('webview-test/main', 2, 'hello', [])
+    sendSubmission('webview-test/main', 2, 'duplicate click', [])
+    expect(sent).toHaveLength(1)
+    expect(JSON.parse(sent[0]!)).toMatchObject({ t: 'conversation:submit', lane: 'webview-test/main', session: 2, prompt: 'hello' })
+    expect(JSON.parse(sent[0]!).request_id).toBeTruthy()
+  } finally {
+    if (savedWindow) Object.defineProperty(globalThis, 'window', savedWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+    if (savedCrypto) Object.defineProperty(globalThis, 'crypto', savedCrypto)
+    else Reflect.deleteProperty(globalThis, 'crypto')
+  }
+})

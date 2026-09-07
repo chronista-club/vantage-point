@@ -41,8 +41,7 @@ use crate::daemon_control::DaemonControl;
 use crate::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
 use crate::pane::{ActiveComponent, ActivitySnapshot, RepoPaneState, SidebarState};
 use crate::repo_dialog::{
-    resolve_default_repo_root, spawn_add_repo_picker, spawn_clone_path_picker, spawn_clone_repo,
-    spawn_repo_root_picker,
+    resolve_default_repo_root, spawn_add_repo_picker, spawn_clone_repo, spawn_repo_root_picker,
 };
 use crate::session_state::SessionState;
 use crate::settings::Settings;
@@ -1496,6 +1495,7 @@ enum ConversationCmd {
     /// プロンプト投入。 canvas channel 上り request `conversation_submit` で repo に送る。
     /// session（doc 50 P2）: None = focused（repo 側 payload_session_key の後方互換）。
     Submit {
+        reply: tokio::sync::oneshot::Sender<crate::conversation_submission::SubmitReply>,
         prompt: String,
         session: Option<u32>,
         /// 添付画像（chat 入力欄への貼り付け）。空 = text だけ。
@@ -1660,10 +1660,11 @@ async fn run_conversation_session(
             }
             cmd = cmd_rx.recv() => {
                 match cmd {
-                    Some(ConversationCmd::Submit { prompt, session, images }) => {
+                    Some(ConversationCmd::Submit { prompt, session, images, reply }) => {
+                        if reply.is_closed() { continue; }
                         // session: None は JSON null になり、repo 側 payload_session_key が
                         // focused に解決する（旧 UI / 旧 SP との後方互換）。
-                        let _ = channel
+                        let result = channel
                             .request::<serde_json::Value, serde_json::Value>(
                                 "conversation_submit",
                                 &serde_json::json!({
@@ -1672,6 +1673,7 @@ async fn run_conversation_session(
                                 }),
                             )
                             .await;
+                        let _ = reply.send(result);
                     }
                     Some(ConversationCmd::Respond { request_id, answers, behavior, message, session }) => {
                         // allow/deny のどちらの形も同 request に載せる（repo 側が behavior で分岐）。
@@ -3266,16 +3268,6 @@ mod sidebar_js {
         );
     }
 
-    /// Clone 用フォルダ picker の選択結果。**キャンセル時は呼ばない**（既存 override を保持）。
-    pub fn clone_path_picked(sidebar: &WebView, path: String) {
-        push(
-            sidebar,
-            &IpcEventEnvelope::ClonePathPicked(crate::generated::sidebar_ipc::ClonePathPicked {
-                path,
-            }),
-        );
-    }
-
     /// 設定の確定値（doc 59 P1）。fetch / save / picker のいずれも**これ 1 本で終わる** —
     /// client は楽観更新をしないので、保存失敗時の巻き戻しを持たなくてよい。
     pub fn settings_result(
@@ -3491,7 +3483,7 @@ struct SidebarIpcOutcome {
     /// caller が vp-app.toml へ書き、確定値を `settings:result` で push back する。
     settings_save_request: Option<crate::generated::sidebar_ipc::SettingsSave>,
     /// Add Repo 初期フォルダの folder picker 要求（doc 59 P1）。
-    /// ⚠️ **キャンセル時は何もしない**（既存値を保持 = `repo:clone:pickFolder` と同じ流儀）。
+    /// ⚠️ **キャンセル時は何もしない**（既存値を保持）。
     settings_pick_repo_root_request: bool,
     /// daemon 再起動要求（doc 59 P1）。⚠️ **全 repo = 全 lane の claude が落ちる**
     /// （doc 44 P1 fold-in）。caller が rfd 確認ダイアログ → `vp daemon restart` を
@@ -3619,7 +3611,7 @@ fn handle_sidebar_ipc(
         }
         IpcEnvelope::AgentsFetch(m) => {
             // doc 11 PR-C: sidebar の + Add Sub form 開閉時に利用可能 Agent 一覧を取得。
-            // caller (event loop) で daemon repo-proxy ask (`agents_list`) → window.handleAgentsResult で push back。
+            // caller (event loop) で daemon repo-proxy ask (`agents_list`) → sidebar の agents:result で push back。
             if !m.path.is_empty() {
                 out.list_stands_request = Some(m.path);
             }
@@ -3732,9 +3724,9 @@ fn handle_sidebar_ipc(
             tracing::info!("repo:delete {} (repo_name={})", m.path, repo_name);
             out.delete_repo_request = Some((repo_name, m.path));
         }
-        // repo:add / repo:clone:pickFolder は `AppEvent::SidebarIpc` の
+        // repo:add は `AppEvent::SidebarIpc` の
         // dispatch 段で picker ルートに分岐済 (handle_sidebar_ipc には到達しない)。
-        IpcEnvelope::RepoAdd | IpcEnvelope::RepoClonePickFolder => {
+        IpcEnvelope::RepoAdd => {
             tracing::debug!("sidebar IPC: picker 経路の message が handle_sidebar_ipc に到達");
         }
         IpcEnvelope::WireFetch(m) => {
@@ -5383,7 +5375,7 @@ pub fn run() -> anyhow::Result<()> {
             }
             // Conversation gui: ChatPane の submit → 当該 lane の conversation session に渡す。
             // demand-driven: 未起動なら lazy spawn (subscribe → submit の順で取りこぼしなし)。
-            Event::UserEvent(AppEvent::ConversationSubmit { lane, prompt, session: chat_session, images }) => {
+            Event::UserEvent(AppEvent::ConversationSubmit { lane, prompt, session: chat_session, images, request_id }) => {
                 let session = conversation_sessions.entry(lane.clone()).or_insert_with(|| {
                     // repo_path は active repo から解決 (conversation pane = active lane 前提)。
                     let repo_path =
@@ -5396,9 +5388,19 @@ pub fn run() -> anyhow::Result<()> {
                         lane.clone(),
                     )
                 });
+                let (reply, result) = tokio::sync::oneshot::channel();
+                let proxy = async_action_proxy.clone();
+                rt_handle.spawn(async move {
+                    let event = crate::conversation_submission::await_submit_result(&request_id, result).await;
+                    let _ = proxy.send_event(AppEvent::ConversationEvent {
+                        lane,
+                        session: chat_session.unwrap_or(1),
+                        event,
+                    });
+                });
                 let _ = session
                     .cmd_tx
-                    .send(ConversationCmd::Submit { prompt, session: chat_session, images });
+                    .send(ConversationCmd::Submit { prompt, session: chat_session, images, reply });
             }
             // Conversation gui HITL (doc 35 PR1): PromptCard の回答 → 当該 lane の conversation session へ。
             // 質問は submit 済み engine 由来なので session は既存のはずだが、防御的に lazy spawn。
@@ -6058,14 +6060,6 @@ pub fn run() -> anyhow::Result<()> {
                 sidebar_state.activity.update_applying = applying;
                 push_sidebar_state(&webview, &sidebar_state);
             }
-            Event::UserEvent(AppEvent::ClonePathPicked(path)) => {
-                // user キャンセル時 (None) は JS 状態を変更しない (= 既存 override を保持)
-                if let Some(p) = path {
-                    sidebar_js::clone_path_picked(&webview, p);
-                } else {
-                    tracing::debug!("clone path picker canceled");
-                }
-            }
             Event::UserEvent(AppEvent::SettingsRepoRootPicked(path)) => {
                 // キャンセル (None) は**書かない**（既存値を保持）。ただし overlay の表示は
                 // 現実に合わせたいので、選ばれた / 選ばれなかったに関わらず確定値を返す。
@@ -6161,12 +6155,6 @@ pub fn run() -> anyhow::Result<()> {
                                 rt_handle.clone(),
                                 daemon_conn.clone(),
                             );
-                            return;
-                        }
-                        Some("repo:clone:pickFolder") => {
-                            let initial_dir =
-                                resolve_default_repo_root(&settings, &sidebar_state);
-                            spawn_clone_path_picker(async_action_proxy.clone(), initial_dir);
                             return;
                         }
                         _ => {}

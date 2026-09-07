@@ -40,7 +40,6 @@ export interface SidebarPushHandlers {
   subCreateResult(repoPath: string, name: string, error: string | null): void
   agentsResult(repoPath: string, agents: unknown[], error: string | null): void
   wireResult(payload: unknown): void
-  clonePathPicked(path: string): void
   /**
    * 設定の確定値（doc 59 P1 + P3）。未設定の値は空文字 / 0 に潰して渡す。
    *
@@ -83,9 +82,6 @@ function apply(msg: IpcEventEnvelope): void {
       break
     case 'wire:result':
       handlers.wireResult(msg.payload)
-      break
-    case 'clone:path_picked':
-      handlers.clonePathPicked(msg.path)
       break
     case 'settings:result':
       // optional な path は「未設定」を空文字で表す（受け手の分岐を 1 つ減らす）。

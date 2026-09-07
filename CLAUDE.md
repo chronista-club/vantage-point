@@ -97,14 +97,14 @@ product の依存。 maintainer の repo にある道具は repo の道具（各
 ### システム構成
 
 ```
-vp-app (GUI: wry+tao)   vp (CLI)
+vp-app (GUI: wry+tao)   vp (CLI / MCP)
         └────────┬───────┘
-                 │ HTTP + QUIC（listener は daemon のみ）
-        daemon ⚙️ :32000          ← Process Manager (常駐 daemon)
-                 │ spawn ↓ ／ repo→daemon QUIC registry 自己登録 ↑（reconcile = Push 一本）
-     ┌───────────┼───────────┐
-   repo[33000] repo[33001] ...     ← repo 📦 (repo ごと、portless = outbound-only)
-     └ 機能: conversation 💬 / board 🧭 / runner 🌿（machine scope に devices 🧲 / lane scope に device_io 🌫️）
+                 │ Unison 制御・購読 + HTTP health 診断
+        daemon ⚙️ :32000          ← 常駐プロセス
+                 ├ repo 📦 runtime（同一プロセス、repo ごとの listener は無し）
+                 │   ├ lane / session → PTY または chat engine（子プロセス）
+                 │   └ board / DB / runner
+                 └ devices 🧲（machine scope）
 ```
 
 ## repo 構造
@@ -112,11 +112,12 @@ vp-app (GUI: wry+tao)   vp (CLI)
 ```
 vantage-point/
 ├── crates/
-│   ├── vantage-point/   # server lib (daemon + repo の HTTP/WS server)
+│   ├── vantage-point/   # server lib (daemon + 同一プロセス内 repo runtime)
 │   ├── vp-paths/        # config/data/state path 解決 (XDG SSOT、 vantage-point + vp-app 共有)
 │   ├── vp-app/          # Rust GUI (wry + tao + xterm.js + creo-ui) — Mac 主軸 (2026-04-26 移行)
 │   ├── vp-cli/          # CLI binary (vp、 lane lib も内包)
-│   └── vp-mdast{,-wasm}/ # Markdown AST parser (+ wasm binding)
+│   ├── midistage-profiles/ # MIDI デバイス profile
+│   └── vp-nexus/        # 認証・同期等のサービス
 ├── docs/
 │   ├── spec/            # 仕様書
 │   ├── design/          # 設計書
