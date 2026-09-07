@@ -250,7 +250,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
         }
         // replay demand（2026-07-24）: webview が renderer を張った直後に撃つ「消費者主導」の
         // demand。Rust attach 時 demand の boot 窓取りこぼし（bundle 読込前配送 = silent drop）
-        // を埋める。⚠️ app.rs の is_main_ipc_tag allowlist と両方更新（片側だと sidebar IPC へ
+        // を埋める。⚠️ webview/ipc_route.rs の is_main_ipc_tag allowlist と両方更新（片側だと sidebar IPC へ
         // 流れて silent drop — 2026-07-16 の「+」無反応 regression と同じ罠）。
         Some("conversation:demand_start") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
@@ -451,7 +451,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             });
         }
         // ===== code pane（コードブラウザ P1）=====
-        // ⚠️ app.rs `is_main_ipc_tag` の allowlist と対（片側更新は sidebar IPC へ silent drop）。
+        // ⚠️ webview/ipc_route.rs `is_main_ipc_tag` の allowlist と対（片側更新は sidebar IPC へ silent drop）。
         Some("code:list") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
                 let _ = proxy.send_event(AppEvent::CodeList {
