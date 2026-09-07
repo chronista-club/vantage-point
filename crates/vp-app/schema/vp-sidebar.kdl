@@ -8,7 +8,7 @@
 //
 // 生成は `cargo test -p vp-app --test sidebar_ipc_codegen` で走る
 // (tests/sidebar_ipc_codegen.rs)。 手書き側 (webview/src/sidebar/ipc.ts の
-// `SidebarIpcMsg` / app.rs の `handle_sidebar_ipc`) の移行は PR-2 / PR-3。
+// `SidebarIpcMsg` / app/sidebar_ipc.rs の `handle_sidebar_ipc`) の移行は PR-2 / PR-3。
 //
 // 全 request は client → server。 serde tag フィールド名 = "t"。
 
