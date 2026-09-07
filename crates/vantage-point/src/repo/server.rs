@@ -220,7 +220,6 @@ pub(crate) async fn start_repo(
         hub_auth: crate::daemon::hub_client::HubAuthStatus::new(),
         // ACTIONS の poller も daemon のみ（repo mode は空 + rev 0 = 未取得のまま）。
         creo_actions: crate::creo::client::CreoActionsCache::new(),
-        interactive_agent: Arc::new(RwLock::new(None)),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: terminal_token.clone(),
@@ -810,7 +809,6 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         actor_registry: Arc::new(RwLock::new(crate::capability::ActorRegistry::new())),
         daemon: Some(daemon_cap.clone()),
         update: Some(update_cap.clone()),
-        interactive_agent: Arc::new(RwLock::new(None)),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: "DAEMON_DISABLED".to_string(),

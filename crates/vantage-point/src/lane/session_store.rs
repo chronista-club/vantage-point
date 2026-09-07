@@ -86,7 +86,7 @@ pub(crate) fn sanitize(part: &str) -> String {
         .collect()
 }
 
-/// CLI 実行パスの明示解決（launchd 起動 daemon の細い PATH 対策、`agent::get_claude_cli_path` と同根）。
+/// CLI 実行パスの明示解決（launchd 起動 daemon の細い PATH 対策、`conversation::host` の `get_claude_cli_path` と同根）。
 ///
 /// daemon は launchd 起動だと PATH が細く、Rust から直接 exec する経路（codex app-server の
 /// 常駐 spawn 等）は login shell を経由しない（slot の login shell 注入は tui にだけ効く）。
