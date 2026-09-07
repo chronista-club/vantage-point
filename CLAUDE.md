@@ -292,22 +292,19 @@ daemon が **QUIC registry（Push）** でプロセスを管理する。SP-portl
 - `running_processes` / `repos` の HashMap キーは正規化パス（`normalize_path_key()`）。`repo_name` は表示用ラベル
 - `/api/health` レスポンスに `services` フィールドを含む（各機能の状態をリアルタイムで返す）
 
-## Agent モジュール
+## 会話 engine（旧 Agent モジュール）
 
-Claude CLI統合の実装（`crates/vantage-point/src/agent.rs`）。2つの実行モードを提供:
+Claude との会話は mode で経路が違う（`crates/vantage-point/src/conversation/`）:
 
-| モード | CLI形式 | 用途 |
-|--------|---------|------|
-| **OneShot**（`ClaudeAgent`） | `claude -p "prompt"` | 単発プロンプト |
-| **Interactive**（`InteractiveClaudeAgent`、デフォルト） | `claude -p --input-format stream-json` | 持続プロセス、複数ターン |
+| mode | 経路 | 実体 |
+|------|------|------|
+| **gui**（chat） | `conversation/host.rs::ClaudeHost` が `claude -p --input-format stream-json` を常駐 spawn し、stdout を `ConversationEvent` に翻訳して broadcast | doc 32 §3 |
+| **tui**（console） | **lane の PtySlot 直ホスト**。`repo/agent_spawner.rs::build_agent_command` が tui slot（login shell）に `claude --resume … || claude` を type-ahead 注入 | tmux decoupling PR2、`docs/design/tmux-decoupling.md` §13 |
 
-> 対話モードの claude（TUI）は Agent モジュールではなく、 **lane の PtySlot 直ホスト**（`stand_spawner::build_stand_command` が tui slot（login shell）に `claude --resume … || claude` を type-ahead 注入）が担う（tmux decoupling PR2、design doc `docs/design/tmux-decoupling.md` §13）。
-
-### Stream-JSON 入力フォーマット
-
-```json
-{"type":"user","message":{"role":"user","content":[{"type":"text","text":"メッセージ"}]}}
-```
+> 旧 `agent.rs`（`ClaudeAgent` OneShot / `InteractiveClaudeAgent`）は **2026-09 に撤去**。`InteractiveClaudeAgent` は
+> #390 以来一度も `Some` にならない `AppState` の field で、health の `services.claude` も定数 `"idle"` を返すだけだった。
+> Claude CLI の path 解決（`get_claude_cli_path`）だけが生きていて `conversation/host.rs` の private fn に移した。
+> 他 engine（codex / acp / vpcode）の host も同 dir。
 
 ## コーディング規約
 

@@ -11,7 +11,6 @@ use tokio_util::sync::CancellationToken;
 use super::hub::Hub;
 use super::process_runner::ProcessRegistry;
 use super::topic_router::TopicRouter;
-use crate::agent::InteractiveClaudeAgent;
 use crate::capability::{ActorRegistry, RepoManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
 use crate::protocol::{Content, RepoMessage};
@@ -165,8 +164,6 @@ pub(crate) struct AppState {
     /// creo-memories から引いて温める。repo / test mode では常に空 + `rev: 0`（= 未取得）で、
     /// vp-app 側はそれを見て**何もしない** — sidebar は Phase 1 の local 挙動のまま残る。
     pub creo_actions: crate::creo::client::CreoActionsCache,
-    /// Interactive Claude agent (stream-json mode for structured communication)
-    pub interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
     /// Processの待ち受けポート番号
     pub port: u16,
     /// ファイル監視マネージャー
@@ -440,7 +437,6 @@ pub(crate) async fn build_test_app_state_with(
         hub_nodes: crate::daemon::hub_client::HubNodesCache::new(),
         hub_auth: crate::daemon::hub_client::HubAuthStatus::new(),
         creo_actions: crate::creo::client::CreoActionsCache::new(),
-        interactive_agent: Arc::new(RwLock::new(None)),
         port: 0,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: "test".to_string(),

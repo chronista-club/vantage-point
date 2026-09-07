@@ -119,19 +119,6 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
     let services = if state.terminal_token != "DAEMON_DISABLED" {
         let mut map = std::collections::HashMap::new();
 
-        // 💬 Conversation (Coding Assistant) — interactive_agent の有無で判定
-        let conversation_status = {
-            let agent = state.interactive_agent.read().await;
-            if agent.is_some() { "active" } else { "idle" }
-        };
-        map.insert(
-            "claude".to_string(),
-            ServiceStatus {
-                status: conversation_status,
-                detail: None,
-            },
-        );
-
         // 🧭 Board（Canvas）— WebSocket クライアント接続数
         let canvas_clients = state.canvas_senders.lock().await.len();
         map.insert(

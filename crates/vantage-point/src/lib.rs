@@ -3,7 +3,6 @@
 //! CLI バイナリ (`vp`) や外部クレートから利用される
 //! Process サーバー、MCP、Daemon 等のコアロジックを提供する。
 
-pub mod agent;
 pub mod capability;
 pub mod cli;
 pub mod commands;
