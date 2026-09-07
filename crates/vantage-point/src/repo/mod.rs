@@ -6,9 +6,8 @@
 //! ## 構成
 //! - **Process**: サーバー（開発プロセス本体）
 //! - **Point**: WebView（視点/観測点）
-//! - **Capability**: Process が持つ能力（Agent, MIDI, Protocol等）
+//! - **Capability**: repo が持つ能力（現行は repo_manager / update。旧 Agent / Protocol は 2026-09 撤去、MIDI は daemon の DeviceRegistry）
 
-pub mod capabilities;
 /// CC activity poll — `claude agents --json` の LaneActivity 供給 (R3-a / Phase A)
 pub(crate) mod cc_activity;
 /// Lane conversation pump — ClaudeHost の ConversationEvent を per-lane topic に route (doc 30、gui)
@@ -48,7 +47,6 @@ pub mod topic;
 pub(crate) mod topic_router;
 pub(crate) mod unison_server;
 
-pub use capabilities::CapabilityConfig;
 // doc 44 P1 (fold-in): `run`（repo プロセスとしての実行）は退役。repo は daemon の
 // `run_daemon` が in-process で起こす（`RepoRuntimes::start` → `start_repo`）。
 pub use server::run_daemon;

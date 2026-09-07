@@ -57,11 +57,7 @@ Process (Star Platinum ⭐)
 │   ├── TmuxHandle (tmux 統合)
 │   └── terminal_token (UUID v4 認証)
 │
-├── Capabilities (ProcessCapabilities)
-│   ├── AgentCapability      💬 Echoes (REQ2)
-│   ├── ProtocolCapability   🧭 Paisley Park (REQ3)
-│   ├── MidiCapability       🍇 Hermit Purple (REQ5)
-│   └── BonjourCapability    (mDNS 発見)
+├── (旧 Capabilities 層 — Agent / Protocol は 2026-09 に撤去。会話は conversation/、device は daemon の DeviceRegistry)
 │
 ├── Communication Layers
 │   ├── HTTP (Axum)          REST API + 静的ファイル

@@ -13,7 +13,6 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 
-use super::capabilities::{CapabilityConfig, RepoCapabilities};
 use super::hub::Hub;
 use super::routes::{health, update};
 use super::state::AppState;
@@ -118,7 +117,7 @@ async fn publish_lanes(
 /// 停止は `shutdown_token` を cancel して [`shutdown_repo`] を呼ぶ。
 pub(crate) async fn start_repo(
     port: u16,
-    cap_config: CapabilityConfig,
+    repo_dir: String,
     shutdown_token: CancellationToken,
     node_lanes: Option<NodeLaneView>,
     vpdb: Option<crate::db::SharedVpDb>,
@@ -130,7 +129,6 @@ pub(crate) async fn start_repo(
     // demand hook は placeholder 生成時に登録済みなので二重登録しない）。
     adopted_router: Option<Arc<TopicRouter>>,
 ) -> Result<Arc<AppState>> {
-    let repo_dir = cap_config.repo_dir.clone();
     let config_for_init = crate::config::Config::load().unwrap_or_default();
 
     // 旧 file-backed 永続化レイヤー退役: 永続は SurrealDB 一本化 (board pane state は pane_contents)。
@@ -145,23 +143,11 @@ pub(crate) async fn start_repo(
     // トレースログファイルを早期初期化
     crate::trace_log::init_log_file();
 
-    // Initialize Capability system
-    let capabilities = Arc::new(RepoCapabilities::new(cap_config).await);
-
-    // Initialize all capabilities
-    if let Err(e) = capabilities.initialize().await {
-        tracing::warn!("Failed to initialize capabilities: {}", e);
-    }
-
     // wiremsg R5-4: 旧 msgbox の registry サブシステム (daemon registry への actor
     // register / unregister) は撤去済。 wire の cross-process delivery は daemon の
     // repo registry (repo → repo port) を使う別経路で、 msgbox registry には依存しない。
 
     let hub = Hub::new();
-
-    // Start event bridge: EventBus -> Hub（shutdown token で停止可能）
-    let _event_bridge = capabilities.start_event_bridge(hub.sender(), shutdown_token.clone());
-    tracing::info!("Capability event bridge started");
 
     // Terminal チャネル認証トークンを生成
     let terminal_token = crate::discovery::generate_terminal_token();
@@ -222,7 +208,6 @@ pub(crate) async fn start_repo(
         shutdown_token: shutdown_token.clone(),
         // Phase A4-2b: lane_pool init で同 var を後続参照するため clone
         repo_dir: repo_dir.clone(),
-        capabilities,
         // R3: wire cross-process delivery の宛先分類用 — 解決済 repo 名
         repo_name: repo_name_for_remote.clone(),
         // VP-159 PR-4b: ActorRegistry を move (= lane-spawn は AppState 構築後に追加)
@@ -580,7 +565,7 @@ fn spawn_idle_engine_sweep(state: Arc<AppState>, shutdown: CancellationToken) {
     });
 }
 
-/// [`start_repo`] で起動した repo の後始末（file watcher 停止 + capability shutdown）。
+/// [`start_repo`] で起動した repo の後始末（file watcher 停止）。
 ///
 /// shutdown_token を cancel した**後**に呼ぶこと（token cancel は spawn 済 task の停止、
 /// 本関数は token では止まらないリソースの解放を担当する）。
@@ -592,11 +577,6 @@ pub(crate) async fn shutdown_repo(state: &Arc<AppState>) {
     state.file_watchers.lock().await.stop_all();
 
     // (tmux decoupling PR2: lane は PtySlot の子 — 親が落ちれば完全に落ちる)
-
-    tracing::info!("Shutting down capabilities...");
-    if let Err(e) = state.capabilities.shutdown().await {
-        tracing::warn!("Error during capability shutdown: {}", e);
-    }
 }
 
 /// daemon の HTTP router を組む（= 残っている HTTP 面の全て）。
@@ -825,12 +805,6 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         repo_dir: String::new(),
         // R3: daemon mode は cross-process forward の対象外 (= 自 repo を持たない)
         repo_name: String::new(),
-        capabilities: Arc::new(
-            RepoCapabilities::new(CapabilityConfig {
-                repo_dir: String::new(),
-            })
-            .await,
-        ),
         // VP-159 PR-4b: daemon mode では空で構築 (= machine scope actor の register は後続 PR、
         // device registry の metadata register は dynamic routing vision 確定後)
         actor_registry: Arc::new(RwLock::new(crate::capability::ActorRegistry::new())),

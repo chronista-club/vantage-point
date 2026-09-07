@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn coexist_5_actors_in_registry() {
         // VP-159 PR-4a invariant (= PR-2 / PR-3 invariant の延長): 5 actor (2 Agent + 3 Service)
-        // が 1 registry に coexist できる事。 PR-4b で AgentCapability (Agent) + ProtocolCapability
+        // が 1 registry に coexist できる事。 PR-4b で旧 AgentCapability (Agent) + ProtocolCapability（2026-09 撤去）
         // (Agent) + NotificationActor (Service) + LaneSpawnActor (Service) + DeviceRegistry
         // (Service) を同 registry で host する path を fixture で代理検証。
         let mut r = ActorRegistry::new();

@@ -52,7 +52,6 @@ fn handle_process_message(
     // 明示的なキャッシュは不要。Hub に broadcast するだけ。
     state.hub.broadcast(msg);
 
-    // NOTE: Msgbox 経由の配信は ProtocolCapability 側の受信ループ実装後に追加（VP-24）
     // 現在は Hub broadcast のみで Canvas に配信。
 
     Ok(serde_json::json!({"status": "ok"}))

@@ -421,8 +421,8 @@ impl ActorRegistry {
 
 | actor | trait | scope | spawn pattern | host location |
 |-------|-------|-------|---------------|---------------|
-| `agent` (Echoes 💬) | Stand | Project | EventBus observer (VP-157、 spawn loop なし) | `ProcessCapabilities` |
-| `protocol` | Stand | Project | msgbox consumer | `ProcessCapabilities` |
+| `agent` (Echoes 💬) | Stand | Project | ~~EventBus observer (VP-157、 spawn loop なし)~~ **撤去 (2026-09)** — publisher が居ない observer だった。会話 engine は `conversation/` | ~~`ProcessCapabilities`~~ |
+| `protocol` | Stand | Project | ~~msgbox consumer~~ **撤去 (2026-09)** — 受信ループは実装されないまま dead | ~~`ProcessCapabilities`~~ |
 | `notify` | SpawnableService | Project | msgbox consumer (spawn_loop) | `AppState.actor_registry` (PR-4b) |
 | `lane-spawn` | SpawnableService | Project | msgbox consumer (spawn_loop、 Semaphore-gated) | `AppState.actor_registry` (PR-4b) |
 | `hermit_purple` 🍇 | Service (not Spawnable) | World | instance hold + monitor_task | `WorldCapabilities.midi` |
@@ -464,7 +464,7 @@ VP の通信 primitive と使い分け:
 | primitive | 用途 | 使うもの |
 |-----------|------|---------|
 | **Msgbox (`MsgboxRouter`)** | address-bound actor 間通信 (= `register("name")` で address 所有) | `Stand` / `SpawnableService` (= agent / protocol / notify / lane-spawn / hermit_purple) |
-| **EventBus (broadcast)** | observer pattern (= 1 event を複数 subscriber に配信) | `AgentCapability` の notification 受信 (VP-157 observer 化)、 `CapabilityEvent` 配信 |
+| **EventBus (broadcast)** | observer pattern (= 1 event を複数 subscriber に配信) | `DeviceRegistry` の device event 配信 → daemon の Unison bridge (旧 `AgentCapability` 経路は 2026-09 撤去) |
 | **TopicRouter (topic 購読)** | topic ベースの pub/sub (= `{scope}/{capability}/{category}/{detail}`) | Canvas / pane_contents / RetainedStore |
 | **mpsc (internal channel)** | 自己完結 actor の internal command queue | `TmuxActor` (= tmux command queue)、 `ProcessRunner` (= Ruby VM 系) |
 | **Unison QUIC** | cross-Process 通信 (= SP ↔ TheWorld) | `SystemEvent` push / registry channel / process チャネル |

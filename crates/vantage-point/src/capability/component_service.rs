@@ -80,9 +80,9 @@ pub enum LayerScope {
 /// ```rust,ignore
 /// use vantage_point::capability::{Agent, LayerScope};
 ///
-/// pub struct AgentCapability { /* ... */ }
+/// pub struct SomeCapability { /* ... */ }
 ///
-/// impl Component for AgentCapability {
+/// impl Component for SomeCapability {
 ///     fn name(&self) -> &str { "agent" }
 ///     fn layer_scope(&self) -> LayerScope { LayerScope::Repo }
 ///     fn as_any(&self) -> &dyn std::any::Any { self }
@@ -286,7 +286,7 @@ mod tests {
     fn n_distinct_stands_coexist_in_collection() {
         // PR-2 invariant (PR-δ-3 同型): 異なる name / scope の N 個 Agent impl が同じ
         // Vec<Box<dyn Component>> で共存できる事 (= PR-4 supervisor 統一の foundation)。
-        // 実 impl (AgentCapability / ProtocolCapability) を fixture で代理、 actor_name と
+        // 実 impl (旧 AgentCapability / ProtocolCapability、2026-09 撤去) を fixture で代理、 actor_name と
         // layer_scope の組合わせで supervisor が dispatch / filter できる pattern を検証。
         let agents: Vec<Box<dyn Component>> = vec![
             Box::new(FixtureComponent {

@@ -73,7 +73,7 @@
 //! - Cmd 定義: `super::lane_cmd::LaneCmd`
 //! - VP-159 PR-3 — Service trait 形式登録 (= ECS 純度回復)
 //! - parent epic: VP-156 (Mailbox routing 統一)
-//! - PR-2 同型 pattern: `AgentCapability` / `ProtocolCapability` (impl Agent)
+//! - PR-2 同型 pattern: 旧 `AgentCapability` / `ProtocolCapability` (impl Agent、2026-09 撤去)
 
 use std::any::Any;
 use std::sync::Arc;

@@ -15,7 +15,7 @@
 //! - PR-α-1 (VP-111 ✅): struct 新設、 既存 machine 階層 instance を集約 view、
 //!   `AppState.machine_capabilities` field に Some で注入。
 //! - 旧 `MidiCapability` hosting（PR-α-2 の single-device monitor）は退役 — 消費者
-//!   （`ProtocolCapability`）が本番で実体化されず、enumeration 先頭 device（実機で LPD8）を
+//!   （旧 `ProtocolCapability`、2026-09 撤去）が本番で実体化されず、enumeration 先頭 device（実機で LPD8）を
 //!   無条件 grab して DeviceRegistry listener を沈黙させる害だけが残っていたため（fleet dogfood で発覚）。
 //! - 後続 cleanup: AppState 既存 field (`daemon` / `update`) と本 struct の重複保持を整理
 //!   (現状は意図的 HACK、 LSCM A6 share-nothing 整合は β 以降で)。

@@ -344,7 +344,7 @@ pub fn format_history_line(entry: &FarewellEntry) -> String {
 /// - `AppState.repo_dir` — `RepoRuntimes::start` が受け取った**生のパス**
 /// - `path_key` — `normalize_path_key`（canonicalize 済、symlink 解決後）
 ///
-/// `RepoRuntimes` は map key に正規化を使いつつ `CapabilityConfig` には生を渡すので、
+/// `RepoRuntimes` は map key に正規化を使いつつ `start_repo` には生を渡すので、
 /// 両者は一致するとは限らない（macOS の `/tmp` → `/private/tmp` 等）。ズレると
 /// **書き手と読み手が別の行を触り、起点を指定しても snapshot に載らない**。
 ///
@@ -717,7 +717,7 @@ mod tests {
     /// 帳簿に触る経路は 4 本あり、渡ってくる path の形が揃っていない:
     /// `AppState.repo_dir`（`RepoRuntimes::start` が受け取った生のパス）と
     /// `path_key`（`normalize_path_key` = canonicalize 済）。`RepoRuntimes` は map key に
-    /// 正規化を使いつつ `CapabilityConfig` には生を渡すので、両者は一致するとは限らない。
+    /// 正規化を使いつつ `start_repo` には生を渡すので、両者は一致するとは限らない。
     ///
     /// ズレると **起点を指定しても snapshot に載らない**（書いた行と読む行が違う）。
     /// 症状は「設定が効かない」だけで error も log も出ないため、テストで固定する。
