@@ -18,7 +18,7 @@ use std::thread;
 
 use tao::event_loop::EventLoopProxy;
 
-use crate::app::SharedDaemonConn;
+use crate::daemon::conn::SharedDaemonConn;
 use crate::events::AppEvent;
 use crate::pane::SidebarState;
 use crate::settings::Settings;

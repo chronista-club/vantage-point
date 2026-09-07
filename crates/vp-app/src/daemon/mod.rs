@@ -1,8 +1,10 @@
 //! daemon との線 — 接続・制御 RPC・購読・poller・起動 / 再起動 / 診断。
 //!
-//! 再接続の唯一の所有者は `conn`（6-1 で app から移設予定）。他 directory の関数は呼ばない
+//! 再接続の唯一の所有者は `conn`。他 directory の関数は呼ばない
 //! （共有型 `crate::daemon_wire` / `crate::pane` の参照は可）。棚卸し 項目 6 / 6-0（2026-09-08）。
 
+/// 共有 QUIC connection の manager（再接続の唯一の所有者）+ repo-proxy ask。
+pub mod conn;
 /// daemon control plane クライアント (Unison `daemon-control` / `registry`)。 doc 45 段 3。
 pub mod control;
 /// HTTP `/api/health` の probe（Unison が壊れた時の診断用、doc 45 §2）。
