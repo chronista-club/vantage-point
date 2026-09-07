@@ -11,6 +11,8 @@ pub mod control;
 pub mod health_probe;
 /// daemon の起動確認 / 自動起動（`vp daemon start` の spawn）。
 pub mod launcher;
+/// 定期 poller と spawner（repo fetch / activity / title / inbox / actions persist / repo start）。
+pub mod pollers;
 /// 設定ページの「daemon を再起動」フロー (確認ダイアログ → `vp daemon restart`)。doc 59 P1。
 pub mod restart;
 /// Unison channel 購読 pump（lanes / canvas / device）。
