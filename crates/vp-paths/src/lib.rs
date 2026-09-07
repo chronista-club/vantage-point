@@ -29,14 +29,14 @@ pub mod spawn_env;
 /// VP の実行 profile (`VP_PROFILE` env var)。
 ///
 /// - 未設定 / 空文字 = `None` = **brew (一般ユーザ)** — 従来の `vp` namespace。
-/// - `Some("dev")` = **開発者** — dev binary (`~/.cargo/bin`) を brew cask と混在させても
-///   state を完全分離するための namespace suffix。
+/// - `Some("dev")` = **開発者** — dev binary (`~/.local/opt/vp-dev/bin`、 PATH 外の dev root) を
+///   brew cask と混在させても state を完全分離するための namespace suffix。
 ///
-/// dev binary と brew cask は single-instance 前提で state (dir / daemon port / tmux socket) を
-/// 共有するため、 両方走ると sp_LOCK 衝突・port 衝突・tmux adopt 混線を起こす (2026-07-01 実機事故)。
-/// この profile が dir / port / socket の 3 レバー全ての分岐点。
+/// dev binary と brew cask は single-instance 前提で state (dir / daemon port / pidfile) を
+/// 共有するため、 両方走ると sp_LOCK 衝突・port 衝突を起こす (2026-07-01 実機事故)。
+/// この profile が dir / port / pidfile の全レバーの分岐点 (旧 tmux socket レバーは tmux decoupling で退役)。
 ///
-/// env は継承で伝播する (dev shell → vp-app → daemon → repo → tmux)。 brew は LaunchAgent 起動で
+/// env は継承で伝播する (dev shell → vp-app → daemon → repo → lane claude)。 brew は LaunchAgent 起動で
 /// env を持たないため自然に `None` = brew namespace になる。 値は起動時に 1 回だけ読む。
 pub fn vp_profile() -> Option<&'static str> {
     static PROFILE: OnceLock<Option<String>> = OnceLock::new();

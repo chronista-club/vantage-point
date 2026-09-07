@@ -40,6 +40,8 @@ shell = "{% if os() == 'windows' %}bash -c{% else %}sh -c{% endif %}"
 #     で動く以上 vp: prefix 冗長、 user 体感 `mise run vp:app` → `mise run app` の短縮を優先)
 # 2026-05-07 同時変更: cargo build → cargo install --path に切替、 binary は `~/.cargo/bin/` (PATH) に
 #   配置して codesign 付与 + shell `vp` コマンドと mise task 系で source 共通化 (dual source drift 防止)。
+# 2026-09-02 撤回: mac は dev root (~/.local/opt/vp-dev/bin、 PATH 外) に分離 — shell `vp` (brew release) と
+#   dev binary の source 共通化こそが「素の vp が dev に化ける」事故源だった (CLAUDE.md VP_PROFILE 節)。
 # `mise run app` (Rust GUI) を使うこと。 注: `vp:stand:*` (file-based tasks at `.mise/tasks/vp/stand/`)
 # は別系統で rename 対象外。 doc 11 で確立した init script chain を物理 path 含めて維持。
 
@@ -59,7 +61,7 @@ shell = "{% if os() == 'windows' %}bash -c{% else %}sh -c{% endif %}"
 # app:stop は file-based task に移行 (.mise/tasks/app/stop、 2026-05-30)。
 
 [tasks."app"]
-description = "既存 app stop → vp-app build → app start (World は touch しない、 World 再起動は `mise run daemon`)"
+description = "既存 app stop → vp-app build → app start (World は touch しない、 World 再起動は `mise run daemon`。 mac は dev profile :32100 の dev root binary / win は ~/.cargo/bin 実体)"
 run = """
 set -euo pipefail
 # build より先に stop する: Windows は実行中の .exe を置換できないため、 running app が
@@ -83,7 +85,7 @@ mise run app:start
 # 全て .mise/tasks/daemon/ 配下。 app:* と鏡像。
 
 [tasks."daemon"]
-description = "vp binary を build → 既存 World を cascade stop → World を background spawn (full restart、 `mise run daemon && mise run app` で諸々再起動)"
+description = "vp binary を build → 既存 World を cascade stop → World を background spawn (full restart、 `mise run daemon && mise run app` で諸々再起動。 mac は dev profile :32100 の dev root binary / win は ~/.cargo/bin 実体)"
 run = """
 set -euo pipefail
 mise run daemon:build

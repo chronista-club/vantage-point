@@ -82,9 +82,9 @@ impl VantageMcp {
                 serde_json::json!({ "value": { "scope": params.scope } }),
             )
             .await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            v.to_string(),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(v.to_string()),
+        ]))
     }
 
     /// Layout の書き込み（構造記法 + attention overlay + locks。即適用・author="ai" で settle）
@@ -106,9 +106,9 @@ impl VantageMcp {
                 } }),
             )
             .await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            v.to_string(),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(v.to_string()),
+        ]))
     }
 
     /// settle log（履歴 = 無名 Scene の列）の直近 entry
@@ -125,9 +125,9 @@ impl VantageMcp {
                 serde_json::json!({ "value": { "scope": params.scope, "limit": params.limit } }),
             )
             .await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            v.to_string(),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(v.to_string()),
+        ]))
     }
 }
 

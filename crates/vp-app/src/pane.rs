@@ -479,7 +479,10 @@ mod tests {
     #[test]
     fn ts_rs_export_sidebar_state_generates_file() {
         // ts-rs の自動生成 export test を明示的に呼んでファイルを書き出す。
-        <SidebarState as TS>::export_all().expect("SidebarState binding export 失敗");
+        // ts-rs 12 で `export_all` に Config が必須化。`from_env()` で `.cargo/config.toml` の
+        // `TS_RS_EXPORT_DIR`（= crates/vp-app）を効かせ、自動 export test と同じ出力先に揃える。
+        <SidebarState as TS>::export_all(&ts_rs::Config::from_env())
+            .expect("SidebarState binding export 失敗");
         let manifest = env!("CARGO_MANIFEST_DIR");
         let generated =
             std::path::Path::new(manifest).join("webview/src/generated/SidebarState.ts");

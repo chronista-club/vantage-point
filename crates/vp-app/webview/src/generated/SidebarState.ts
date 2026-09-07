@@ -29,7 +29,7 @@ activity: ActivitySnapshot,
  * 関連 memory: mem_1CaSugEk1W2vr5TAdfDn5D (多 scope architecture)
  * 起動時に再 fetch されるので disk persistence は実質意味薄いが、Serialize は維持
  */
-lanes_by_repo: { [key in string]?: Array<LaneInfo> }, 
+lanes_by_repo: { [key in string]: Array<LaneInfo> }, 
 /**
  * 現在 active な Lane の address (Display 形 `"<repo>/root"` 等)
  * app 全体で 1 つだけ。 `lane:select` IPC で更新される。
@@ -49,7 +49,7 @@ active_lane_address?: string | null,
  * でもあるので、skip すると Rust 側だけ更新されて sidebar に永久に届かない。
  * 空の時だけ省く（`session_titles` 等と同じ扱い）。
  */
-origin_by_repo?: { [key in string]?: string }, 
+origin_by_repo?: { [key in string]: string }, 
 /**
  * Phase 5-A: 現在 active な Repo-scope Agent kind
  * (`"board"` / `"runner"` / `"devices"`)。
@@ -72,14 +72,14 @@ currents_order?: Array<string> | null,
  * `OscNotification` event で increment、 `lane:select` で対応 Lane を 0 reset。
  * disk persist 不要 (session 起動で 0 から)、 skip_serializing で軽量化。
  */
-unread_notifications: { [key in string]?: number }, 
+unread_notifications: { [key in string]: number }, 
 /**
  * Lane が cc の input 待ち状態かどうか (OSC 99 final-chunk 受信 = true)。
  * Key: Lane address、 Value: true なら sidebar 行右端に黄 dot + pulse 表示。
  * `OscNotification` event で `insert(addr, true)`、 `lane:select` で対応 Lane を `remove`。
  * `unread_notifications` (履歴 count) と分離した「現在の活動状態」 表現。
  */
-awaiting_input: { [key in string]?: boolean }, 
+awaiting_input: { [key in string]: boolean }, 
 /**
  * Canvas (Board) 着信の per-Lane 未読 count (bug: canvas 可観測性 D)。
  * Key: Lane address (`"<repo>/root"` 等)、 Value: 現在 active でない lane に
@@ -88,7 +88,7 @@ awaiting_input: { [key in string]?: boolean },
  * sidebar で Canvas 専用 icon (Phosphor easel) を出し「用事」と「絵が届いた」の語彙を分ける。
  * disk persist 不要 (起動で 0)。
  */
-canvas_unread: { [key in string]?: number }, 
+canvas_unread: { [key in string]: number }, 
 /**
  * VP-143: per-Lane の cc session display name (`/rename` で設定された custom-title)。
  * Key: Lane address、 Value: title 文字列。
@@ -97,7 +97,7 @@ canvas_unread: { [key in string]?: number },
  * `/rename` 未実行 lane は entry なし → JS 側で branch 名 fallback。
  * disk persist 不要 (起動時に再 resolve)、 skip_serializing で軽量化。
  */
-session_titles?: { [key in string]?: string }, 
+session_titles?: { [key in string]: string }, 
 /**
  * VP-147 PR-P2-3: per-Lane の mailbox inbox 状況。
  * Key: Lane address (Display 形 `"<repo>/root"`)、 Value: [`MessageState`]。
@@ -108,7 +108,7 @@ session_titles?: { [key in string]?: string },
  * Phase 2 PR-P2-3 では unread_count / has_persistent / last_msg_ts は default 値、
  * icon visibility のみ用途。 actual peek 値は後続 PR で backend API 経由で populate。
  */
-lane_inboxes?: { [key in string]?: MessageState }, 
+lane_inboxes?: { [key in string]: MessageState }, 
 /**
  * DeviceRegistry 🧲 接続中 device 一覧 (`devices.device_connected` / `disconnected` で更新)。
  * JS 側は DeviceRegistry pane に device list を render する。 disk persist 不要 (起動時 0)。
@@ -125,4 +125,4 @@ devices?: Array<DeviceSnapshot>,
  * stall→ready は復帰時の snapshot で上書きされ自動解消 (self-heal と連動)。 起動時は全 repo entry
  * なしなので `skip_serializing_if = is_empty` で初期は wire に出ない (disk 非永続なので実害なし)。
  */
-lane_sub_state?: { [key in string]?: string }, };
+lane_sub_state?: { [key in string]: string }, };

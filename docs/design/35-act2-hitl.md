@@ -294,3 +294,10 @@ doc 32/34 と同じ流儀。順序の根拠: **既定を壊さない最小の①
 - initialize handshake が routing に必須か、`--permission-prompt-tool stdio` flag 単独で足りるか（spike は SDK 同形で両方送った。実害無いので実装は handshake を送る）。
 - multiSelect=true の回答形（label 配列 or `", "` 結合）の実 wire 確認。
 - `set_permission_mode("plan")` 中の ExitPlanMode の can_use_tool 形（PR4 着手時に spike 追加）。
+
+## Status log — 操作失敗の返却
+
+- 2026-09-07: GUI の submit にローカル request ID と受付結果を追加。結果は lane / session / request ID が一致する送信だけに適用する。失敗時は本文と添付画像をメモリに保ち、明示操作で入力欄に戻す。画像は永続化しない。
+- 受付結果は engine の turn 終了とは別で、拒否・通信失敗を type-ahead の自動送信契機にしない。受付待ちの二重送信も抑止する。送信時に user bubble を仮置きし、成功時に確定、拒否時には該当 bubble だけを取り消す。受付結果より先に engine event が届いても発言順と turn の閉鎖状態を保つ。
+- 待機期限を過ぎた未送信 command は接続復帰後に送らない。既に request を送った後の切断・timeout は受付結果が不明と表示し、自動再送しない。server に既存の self-heal retry はそのまま残す。
+- `record_user_message_if_transcriptless` は submit 成功後の best-effort 記録。記録失敗を submit 拒否に変換しない。

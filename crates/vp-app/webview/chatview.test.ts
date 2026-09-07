@@ -1228,3 +1228,106 @@ describe('foldInto — 受信時刻の刻印 (doc 57 §4.2)', () => {
     expect(th.at).toBe(undefined)
   })
 })
+
+describe('raw HTML は文字として描く — 閉じ忘れ <h1> が message 末尾まで巨大化する件 (mako 2026-09-03)', () => {
+  it('行頭の <h1>（block HTML）はタグでなく文字になる', () => {
+    const html = mdToHtml('<h1>本家....となってる"')
+    expect(html).not.toContain('<h1>')
+    expect(html).toContain('&lt;h1&gt;本家....となってる&quot;')
+  })
+  it('文中の <h1>（inline HTML）も文字になり、後続が見出しに巻き込まれない', () => {
+    const html = mdToHtml('詳細OK それ以外は、<h1>本家\n本家...')
+    expect(html).not.toContain('<h1>')
+    expect(html).toContain('&lt;h1&gt;本家')
+  })
+  it('script を持ち込む HTML（img onerror）は要素にならない — webview は IPC を持つ', () => {
+    const html = mdToHtml('<img src=x onerror="alert(1)">')
+    expect(html).not.toContain('<img')
+    expect(html).toContain('&lt;img')
+  })
+  it('markdown の見出し・強調・code は今までどおり効く（escape するのは raw HTML だけ）', () => {
+    expect(mdToHtml('# 見出し')).toContain('<h1')
+    expect(mdToHtml('**太字**')).toContain('<strong>')
+    expect(mdToHtml('`<h1>`')).toContain('&lt;h1&gt;')
+  })
+  it('inline の <code> が開いた後の raw HTML も素通りしない（marked の inRawBlock 経路、review 指摘）', () => {
+    // marked は未閉鎖の inline <pre>/<code>/<kbd>/<script> で inRawBlock を立て、以降の text token を
+    // escaped 扱いで生のまま吐く。属性前に空白が無い <img/src=…> は tag 正規表現に当たらず text 側を通る
+    const html = mdToHtml('a <code> b <img/src=x onerror=alert(1)> c')
+    expect(html).not.toContain('<img')
+    expect(html).toContain('&lt;img/src=x onerror=alert(1)&gt;')
+    // state は段落を跨いで message 末尾まで残る
+    const html2 = mdToHtml('a <code> b\n\n新しい段落 <svg/onload=alert(1)>')
+    expect(html2).not.toContain('<svg')
+  })
+  it('block token は <p> で包み、改行は <br>、末尾の改行は落とす（出力形を固定）', () => {
+    expect(mdToHtml('<div>a\nb</div>\n\n\n')).toBe('<p>&lt;div&gt;a<br>b&lt;/div&gt;</p>\n')
+  })
+  it('inline token は <p> を足さない（段落は marked が付ける）', () => {
+    expect(mdToHtml('x<b>y</b>z')).toBe('<p>x&lt;b&gt;y&lt;/b&gt;z</p>\n')
+  })
+  it('hook は chat 専用 instance に閉じる — グローバル marked（board-render 側）は raw HTML を通したまま', () => {
+    expect(markedSingleton.parse('<h1>x') as string).toContain('<h1>')
+  })
+})
+
+describe('submit acknowledgement', () => {
+  it('retains rejected text and images, clears waiting, and ignores stale results', async () => {
+    const { beginSubmission } = await import('./chatview')
+    const s = emptyChatState()
+    const images = [{ media_type: 'image/png', data: 'aGVsbG8=' }]
+    expect(beginSubmission(s, 'req-1', 'hello', images)).toBe(true)
+    expect(beginSubmission(s, 'req-2', 'duplicate', [])).toBe(false)
+    foldInto(s, { kind: 'submit_result', request_id: 'other', error: null })
+    expect(s.submission?.id).toBe('req-1')
+    foldInto(s, { kind: 'submit_result', request_id: 'req-1', error: 'engine missing' })
+    expect(s.submission).toMatchObject({ text: 'hello', images, error: 'engine missing', status: 'failed' })
+    expect(s.streaming).toBe(false)
+    expect(isTurnClosingEvent('submit_result')).toBe(false)
+    expect(s.items).toEqual([])
+  })
+  it('adds an accepted message once and never mixes session state', async () => {
+    const { beginSubmission } = await import('./chatview')
+    const a = emptyChatState(), b = emptyChatState()
+    beginSubmission(a, 'a1', 'first', [])
+    beginSubmission(b, 'b1', 'second', [])
+    foldInto(b, { kind: 'submit_result', request_id: 'a1', error: 'failed' })
+    expect(b.submission?.status).toBe('sending')
+    foldInto(a, { kind: 'submit_result', request_id: 'a1', error: null })
+    foldInto(a, { kind: 'submit_result', request_id: 'a1', error: null })
+    expect(a.items).toEqual([{ kind: 'user', text: 'first' }])
+    expect(a.submission).toBe(null)
+  })
+})
+
+it('keeps user before engine events and does not reopen a turn on a late acknowledgement', async () => {
+  const { beginSubmission } = await import('./chatview')
+  const s = emptyChatState()
+  beginSubmission(s, 'ordered', 'hello', [])
+  foldInto(s, { kind: 'message_chunk', text: 'reply' })
+  foldInto(s, { kind: 'turn_completed', session_id: 'sid' })
+  foldInto(s, { kind: 'submit_result', request_id: 'ordered', error: null })
+  expect(s.items.map(i => i.kind)).toEqual(['user', 'assistant'])
+  expect(s.streaming).toBe(false)
+})
+
+it('sends once in a WebView without crypto.randomUUID', async () => {
+  const { sendSubmission } = await import('./chatview')
+  const savedWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const savedCrypto = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
+  const sent: string[] = []
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { ipc: { postMessage: (m: string) => sent.push(m) } } })
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: {} })
+  try {
+    sendSubmission('webview-test/main', 2, 'hello', [])
+    sendSubmission('webview-test/main', 2, 'duplicate click', [])
+    expect(sent).toHaveLength(1)
+    expect(JSON.parse(sent[0]!)).toMatchObject({ t: 'conversation:submit', lane: 'webview-test/main', session: 2, prompt: 'hello' })
+    expect(JSON.parse(sent[0]!).request_id).toBeTruthy()
+  } finally {
+    if (savedWindow) Object.defineProperty(globalThis, 'window', savedWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+    if (savedCrypto) Object.defineProperty(globalThis, 'crypto', savedCrypto)
+    else Reflect.deleteProperty(globalThis, 'crypto')
+  }
+})

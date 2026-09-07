@@ -368,7 +368,7 @@ fn emit_tool_method(group: &ToolGroup, tool: &Tool) -> String {
         "        let resp = self.quic_call(\"{}\", payload).await?;\n",
         tool.method
     ));
-    out.push_str("        Ok(CallToolResult::success(vec![rmcp::model::Content::text(\n");
+    out.push_str("        Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(\n");
     out.push_str(&format!(
         "            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| \"{}\".to_string()),\n",
         rust_str(&tool.fallback)

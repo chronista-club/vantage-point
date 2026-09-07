@@ -24,8 +24,10 @@ vp-paths = { path = "../vp-paths" }
 
 # Native window + WebView (crossplat: macOS/Windows/Linux)
 # Phase 5-C (2026-04-28): wry 0.54 → 0.55 (custom protocol + WKWebView origin handling 改善期待)、tao 0.34 → 0.35
-wry = { version = "0.55", features = ["devtools"] }
-tao = "0.35"
+# 2026-09-02: wry 0.56 / tao 0.37。macOS backend は event_loop / app_state が byte 同一、custom protocol の
+# origin (`vp-asset://<path>`) も不変。wry の transparent / fullscreen feature 削除は未使用で不発
+wry = { version = "0.56", features = ["devtools"] }
+tao = "0.37"
 
 # Menu + tray (crossplat)
 muda = "0.19"
@@ -55,13 +57,13 @@ notify-rust = "4"
 portable-pty = "0.9"
 
 # Base64 encoding (for PTY binary I/O over wry IPC)
-base64 = "0.22"
+base64 = "0.23"
 
 # VP_SHELL_ARGS のシェル風クォート split
 shell-words = "1.1"
 
 # VP-93 Step 2a: daemon 経由 terminal (WebSocket client)
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 futures-util = "0.3"
 
 # wiremsg Stage 1 consumer: repo の "lanes" Unison channel を QUIC 購読する。
@@ -135,7 +137,7 @@ tempfile = "3"
 # dev-dependency に置き、 `#[cfg_attr(test, derive(TS), ...)]` で test build 時のみ
 # `TS` derive を効かせる。 binding 出力は `cargo test -p vp-app` の export test 経由。
 # `serde-compat` で `#[serde(...)]` attribute (rename_all / alias / default) を尊重する。
-ts-rs = { version = "11", features = ["serde-compat"] }  # 12 で export_all() に Config 引数必須化、 migrate は別 PR
+ts-rs = { version = "12", features = ["serde-compat"] }  # 12 で export_all() に Config 必須化 → pane.rs の export test は Config::from_env() で TS_RS_EXPORT_DIR を効かせる (2026-09-02)
 
 # VP-208 Phase A: sidebar IPC を KDL protocol schema (schema/vp-sidebar.kdl) を
 # SSOT に Rust enum + TS union 生成。 package 名 `club-kdl-codegen` / lib 名 `kdl_codegen`。

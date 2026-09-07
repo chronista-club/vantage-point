@@ -138,9 +138,9 @@ impl VantageMcp {
 
         self.process_call("show", &msg).await?;
 
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            "Content pinned to the board.".to_string(),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text("Content pinned to the board.".to_string()),
+        ]))
     }
 
     /// Clear content in a pane
@@ -156,9 +156,9 @@ impl VantageMcp {
             scope,
         };
         self.process_call("clear", &msg).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            "Board cleared.".to_string(),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text("Board cleared.".to_string()),
+        ]))
     }
 
     /// board item を id 指定で in-place 置換する（doc 52 §5）。
@@ -181,9 +181,9 @@ impl VantageMcp {
             "scope": scope,
         });
         self.quic_call("board_update", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!("Board item {} updated.", params.id),
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(format!("Board item {} updated.", params.id)),
+        ]))
     }
 
     /// 呼び出し元 Lane の board を id 付き全文で読む（doc 52 §4 中継台 + §5 identity）。
@@ -209,9 +209,9 @@ impl VantageMcp {
         // 見ているか」を知り、その item を優先して update / 中継できるようにマークする。
         let cursor = resp.get("cursor").and_then(|v| v.as_str());
         if items.is_empty() {
-            return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-                "Board is empty.".to_string(),
-            )]));
+            return Ok(CallToolResult::success(vec![
+                rmcp::model::ContentBlock::text("Board is empty.".to_string()),
+            ]));
         }
         let mut out = format!("Board ({} items, newest first):", items.len());
         for it in &items {
@@ -246,9 +246,9 @@ impl VantageMcp {
                 id, ct, title, stamp, viewing, content
             ));
         }
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            out,
-        )]))
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(out),
+        ]))
     }
 
     /// Capture the Vantage Point GUI window as a PNG screenshot
@@ -298,15 +298,15 @@ impl VantageMcp {
             )
         })?;
 
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!(
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(format!(
                 "Screenshot saved: {}\nSize: {}x{} ({}ms)\nUse the Read tool to view this image.",
                 result.path.display(),
                 result.width,
                 result.height,
                 result.elapsed_ms
-            ),
-        )]))
+            )),
+        ]))
     }
 
     // doc 52 §7: list_canvas / read_pane は死んだ読み手として撤去（board モデル化で retained

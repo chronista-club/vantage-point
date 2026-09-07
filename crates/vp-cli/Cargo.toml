@@ -15,8 +15,8 @@ name = "vp_cli"
 path = "src/lib.rs"
 
 [features]
-default = ["gui", "midi"]
-gui = ["vantage-point/gui"]
+# gui feature（vantage-point/gui への転送）は 2026-09-02 に撤去 — 転送先が dead feature で、この crate 内の参照も 0 件。
+default = ["midi"]
 midi = ["vantage-point/midi"]
 
 [dependencies]
