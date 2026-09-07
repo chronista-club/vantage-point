@@ -301,7 +301,6 @@ pub(crate) async fn start_repo(
     // - bootstrap は lane subs をスキャンして `LaneCmd::SpawnLane` を投入 (= 1 回限りの seed)。
     //   block 終端で Sender drop → actor は buffered Cmd を全 drain 後に正常終了する
     // - N=config.startup.max_concurrent_lane_spawn (default 1、 dogfood で計測 log を集計して tweak)
-    // PR-β-2 (VP-120): lane_capabilities pool clone も渡し、 Sub spawn 時に populate_lane する。
     //
     // in-process 直結 (2026-07-09): 旧 wiremsg R2-a 経路 (daemon 中央 wire store の
     // `lane-spawn@<repo>` mailbox 往復) を撤去。 producer は本 bootstrap のみで、 at-most-once
@@ -322,9 +321,8 @@ pub(crate) async fn start_repo(
         state.actor_registry.write().await.spawn_service(
             super::lane_spawn_actor::LaneSpawnActor::new(
                 state.lane_pool.clone(),
-                state.lane_capabilities.clone(), // PR-β-2 (VP-120): Sub spawn 時に populate_lane する
-                state.system_event_tx.clone(),   // Phase 2 (Step E): system event central bus
-                state.terminal_pumps.clone(),    // doc 53 R2: 復元後 pump reconcile 用
+                state.system_event_tx.clone(), // Phase 2 (Step E): system event central bus
+                state.terminal_pumps.clone(),  // doc 53 R2: 復元後 pump reconcile 用
                 state.topic_router.clone(),
                 max_concurrent,
                 lane_spawn_rx,

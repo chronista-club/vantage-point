@@ -85,7 +85,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::capability::component_service::{LayerScope, Service, SpawnableService};
 
-use super::lane_capabilities::LaneCapabilitiesPool;
 use super::lane_cmd::LaneCmd;
 use super::lanes_state::{Diff, LaneAddress, LaneInfo, LanePool, LaneState, SystemEvent};
 
@@ -94,12 +93,8 @@ use super::lanes_state::{Diff, LaneAddress, LaneInfo, LanePool, LaneState, Syste
 ///
 /// repo-local Service (= 1 Repo per Process)、 channel receiver + dependencies を保持し、
 /// `spawn_loop(shutdown)` で background recv loop を `tokio::spawn` 起動する。
-///
-/// PR-β-2 (VP-120): `lane_capabilities_pool: Option<...>` で Sub spawn 成功時に
-/// `populate_lane` を呼び、 Lane あたり独立 BoardState を host する。
 pub struct LaneSpawnActor {
     lane_pool: Arc<RwLock<LanePool>>,
-    lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>,
     system_event_tx: tokio::sync::broadcast::Sender<SystemEvent>,
     /// doc 53 R2: spawn / boot 復元の末尾で terminal pump を reconcile するための台帳 + router。
     /// boot 中に demand（購読）が先に立っていても、 復元完了後の reconcile が残りの slot に
@@ -123,7 +118,6 @@ impl LaneSpawnActor {
     /// `spawn_loop()` 内で 1 に丸めて warn する (= sequential、 `Semaphore::new(0)` の永久 block 回避)。
     pub fn new(
         lane_pool: Arc<RwLock<LanePool>>,
-        lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>,
         system_event_tx: tokio::sync::broadcast::Sender<SystemEvent>,
         terminal_pumps: Arc<RwLock<crate::repo::terminal_pump::TerminalPumps>>,
         topic_router: Arc<crate::repo::topic_router::TopicRouter>,
@@ -132,7 +126,6 @@ impl LaneSpawnActor {
     ) -> Self {
         Self {
             lane_pool,
-            lane_capabilities_pool,
             system_event_tx,
             terminal_pumps,
             topic_router,
@@ -178,7 +171,6 @@ impl SpawnableService for LaneSpawnActor {
 
         let Self {
             lane_pool,
-            lane_capabilities_pool,
             system_event_tx,
             terminal_pumps,
             topic_router,
@@ -201,12 +193,11 @@ impl SpawnableService for LaneSpawnActor {
                         Some(cmd) => {
                             let sem = semaphore.clone();
                             let pool = lane_pool.clone();
-                            let lc_pool = lane_capabilities_pool.clone();
                             let tx = system_event_tx.clone();
                             let pumps = terminal_pumps.clone();
                             let router = topic_router.clone();
                             tokio::spawn(async move {
-                                handle_cmd(cmd, pool, lc_pool, tx, pumps, router, sem).await;
+                                handle_cmd(cmd, pool, tx, pumps, router, sem).await;
                             });
                         }
                         None => {
@@ -227,13 +218,9 @@ impl SpawnableService for LaneSpawnActor {
 }
 
 /// 単一 `LaneCmd` を処理。 Semaphore permit を acquire してから heavy spawn を実行。
-///
-/// PR-β-2 (VP-120): `lane_capabilities_pool` 引数 (Option) を追加、 spawn 成功時に
-/// `populate_lane` を呼んで Sub Lane あたり独立 BoardState を host する。
 async fn handle_cmd(
     cmd: LaneCmd,
     pool: Arc<RwLock<LanePool>>,
-    lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>,
     system_event_tx: tokio::sync::broadcast::Sender<SystemEvent>,
     terminal_pumps: Arc<RwLock<crate::repo::terminal_pump::TerminalPumps>>,
     topic_router: Arc<crate::repo::topic_router::TopicRouter>,
@@ -339,22 +326,6 @@ async fn handle_cmd(
         started.elapsed().as_millis() as u64
     );
 
-    // Sub Lane spawn 完了 → LaneCapabilities pool に entry 追加
-    // (Lane あたり独立 BoardState を host、 doc 13 §6 自動 spawn rule = default)。
-    // None は daemon mode (Lane scope なし) で発生、 repo mode では常に Some。
-    //
-    // doc 53 §12.2: **spawn 失敗でも populate する**（旧: Dead なら skip）。intent が残る以上
-    // lane は「立ち上がっていないが在る」— 次の契機で slot が立った時に board だけ不在、を
-    // 作らない。chat lane（PTY 無しで正常）も同じ扱いになり、旧 state 分岐の非対称も消える。
-    if let Some(lc_pool) = lane_capabilities_pool.as_ref() {
-        lc_pool.write().await.populate_lane(addr.clone(), &agent);
-        tracing::debug!(
-            "LaneCapabilities pool に Sub Lane populate (addr={}, agent={})",
-            addr,
-            agent
-        );
-    }
-
     // Phase 2 (Step E): Sub spawn 完了を SystemEvent::Lane(Diff::Add) で daemon に push。
     // QUIC registry channel 経由で realtime sync。 失敗は warn のみ (best-effort、
     // repo lane_pool が SSOT、 reconnect 時に register snapshot で必ず再構築される)。
@@ -381,10 +352,8 @@ mod tests {
         let shutdown = CancellationToken::new();
 
         // 0 を渡しても 1 に丸めて起動するはず (= タイムアウトせずに actor 起動 + shutdown 完了)
-        // PR-β-2 (VP-120): lane_capabilities_pool = None で test (Lane scope なしの動作確認)
         let handle = LaneSpawnActor::new(
             pool,
-            None,
             tx,
             Default::default(),
             std::sync::Arc::new(crate::repo::topic_router::TopicRouter::new()),
@@ -410,10 +379,8 @@ mod tests {
         let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<LaneCmd>();
         let shutdown = CancellationToken::new();
 
-        // PR-β-2 (VP-120): lane_capabilities_pool = None で test
         let handle = LaneSpawnActor::new(
             pool.clone(),
-            None,
             tx,
             Default::default(),
             std::sync::Arc::new(crate::repo::topic_router::TopicRouter::new()),
@@ -444,7 +411,6 @@ mod tests {
 
         let handle = LaneSpawnActor::new(
             pool,
-            None,
             tx,
             Default::default(),
             std::sync::Arc::new(crate::repo::topic_router::TopicRouter::new()),
@@ -505,7 +471,6 @@ mod tests {
 
         let handle = LaneSpawnActor::new(
             pool.clone(),
-            None,
             tx,
             Default::default(),
             std::sync::Arc::new(crate::repo::topic_router::TopicRouter::new()),
@@ -565,7 +530,6 @@ mod tests {
 
         let handle = LaneSpawnActor::new(
             pool.clone(),
-            None,
             tx,
             Default::default(),
             std::sync::Arc::new(crate::repo::topic_router::TopicRouter::new()),
