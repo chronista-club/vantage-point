@@ -187,7 +187,7 @@ GUI が話す言葉を 1 つに固定する。エンジン追加時は SP 側に
 - **GitNexus**: symbol 編集前に `impact`、commit 前に `detect_changes`。index 更新は `bunx gitnexus analyze`
 - **dogfood 安全**: この lane は VP 上で動いているため、検証時の daemon 再起動は **gentle（`vp daemon stop`）のみ**。cascade（`mr daemon`）は自分の claude を殺す。dev 検証は `VP_PROFILE=dev` + `vpd` + `cargo install --locked`
 - **pre-MVP 原則**: 最短で canonical、中間状態・dead code を作らない
-- **cleanup（Epic 末尾、別小 PR）**: 未使用の手書き `protocol/acp.rs`（+ ToAcp trait 群）の削除。blast radius があるため本流 4 PR には混ぜない
+- **cleanup（Epic 末尾、別小 PR）** ✅ 済（2026-09、棚卸し 項目 5 PR-B）: 未使用の手書き `protocol/acp.rs`（+ ToAcp trait 群）の削除。blast radius があるため本流 4 PR には混ぜない
 
 ## 9. 未決事項
 

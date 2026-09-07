@@ -184,7 +184,6 @@ impl TopicRouter {
             RepoMessage::ComponentDismissed { .. } => {
                 "repo/conversation/event/component-dismissed".to_string()
             }
-            RepoMessage::AgUi { .. } => "repo/conversation/event/ag-ui".to_string(),
             RepoMessage::SessionList { .. } => "repo/conversation/state/session-list".to_string(),
             RepoMessage::SessionSwitched { .. } => "repo/conversation/state/session".to_string(),
             RepoMessage::SessionCreated { .. } => {

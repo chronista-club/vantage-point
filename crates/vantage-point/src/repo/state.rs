@@ -12,7 +12,6 @@ use super::hub::Hub;
 use super::process_runner::ProcessRegistry;
 use super::topic_router::TopicRouter;
 use crate::agent::InteractiveClaudeAgent;
-use crate::agui::AgUiEvent;
 use crate::capability::{ActorRegistry, RepoManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
 use crate::protocol::{Content, RepoMessage};
@@ -307,13 +306,6 @@ impl AppState {
                 false
             }
         }
-    }
-
-    /// Send AG-UI event to connected clients (REQ-AGUI-040)
-    // 要確認（audit 2026-07-18、先行実装の可能性）: AG-UI protocol の先行 API（REQ-AGUI-040）。未 call。
-    #[allow(dead_code)]
-    pub fn send_agui_event(&self, event: AgUiEvent) {
-        self.hub.broadcast(RepoMessage::AgUi { event });
     }
 
     // =========================================================================
