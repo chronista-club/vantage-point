@@ -47,6 +47,7 @@ use crate::pane::{ActiveComponent, ActivitySnapshot, RepoPaneState, SidebarState
 use crate::session_state::SessionState;
 use crate::settings::Settings;
 use crate::webview::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
+use crate::webview::push_main;
 use crate::webview::terminal_ipc;
 
 /// 起動時の window default size (LogicalPixel)。 with_inner_size と clamp 矯正後の値で
@@ -1960,7 +1961,7 @@ fn forget_roster_push(last: &mut std::collections::HashMap<String, String>, addr
 /// doc 53 §11: 呼び手は LanesLoaded の 1 箇所だけ（旧実装は動詞ごとの再取得 7 箇所から
 /// 撃っていた — 供給路が 2 本ある構造そのものだった）。
 fn push_session_list(webview: &wry::WebView, lane: &str, payload: &serde_json::Value) {
-    lane_js::console_session_list(webview, lane, payload.clone());
+    push_main::console_session_list(webview, lane, payload.clone());
 }
 
 /// doc 53 §11: lane snapshot の roster を webview の session 一覧 payload に写す（純関数）。
@@ -2014,314 +2015,6 @@ fn root_session_of(sidebar_state: &crate::pane::SidebarState, lane: &str) -> u32
         .find(|l| l.address.key() == lane)
         .and_then(|l| l.sessions.as_ref().map(|r| r.root))
         .unwrap_or(1)
-}
-
-mod lane_js {
-    use wry::WebView;
-
-    use crate::generated::push::{
-        BoardMessage, CodeEntries, CodeFile, ConsoleAgents, ConsoleEvent, ConsoleModeApplied,
-        ConsoleSessionList, DebuglogLines, DevicesRender, InkSnapshot, InkSnapshotError,
-        PushEventEnvelope, ShellLayout, TermEnsureLane, TermPaste, TermRemoveLane,
-        TermRemoveSession, TermShowLane,
-    };
-
-    /// 生成 envelope を webview の単一受け口 `window.vpDispatch` へ押し込む。
-    ///
-    /// ## なぜ名前で関数を呼ばず envelope 1 本にするか（`schema/vp-push.kdl`）
-    ///
-    /// 旧来 Rust → JS は `window.ensureLane(...)` のように**名前で関数を呼ぶ**形で、負債が 2 つ:
-    ///
-    /// 1. **型が無い** — 引数の数や順序が食い違っても Rust も TS も黙る
-    /// 2. **押し込みが黙って落ちる** — `window.X && window.X.y(...)` は bundle 準備前なら
-    ///    **no-op で「成功」する**。VP はこの穴を feature ごとの pull で埋めてきた
-    ///    （旧 `lanes:ensure-all` / `bastet:devices_fetch` / `board:demand` — 3 本とも退役済）
-    ///
-    /// envelope なら ① は codegen が、② は受け側 1 箇所の buffer が塞ぐ。窓口が 1 つになって
-    /// 初めて buffer を 1 個置けば済む（~24 個の窓口それぞれには置けなかった）。
-    ///
-    /// ⚠️ `window.vpDispatch &&` の guard は**残す**。bundle 評価前に Rust が撃つ窓は依然あり、
-    /// そこは JS が存在しないので queue にも積めない。その窓の救済は
-    /// [`AppEvent::WebviewReady`](crate::events::AppEvent::WebviewReady) の replay
-    /// （受け口が揃った合図を受けて現在の状態を丸ごと撃ち直す）。
-    fn push(main_view: &WebView, msg: &PushEventEnvelope) {
-        let json = match serde_json::to_string(msg) {
-            Ok(j) => j,
-            Err(e) => {
-                tracing::error!("push envelope の serialize に失敗: {e}");
-                return;
-            }
-        };
-        let script = format!("window.vpDispatch && window.vpDispatch({json})");
-        if let Err(e) = main_view.evaluate_script(&script) {
-            tracing::warn!("vpDispatch script failed: {e}");
-        }
-    }
-
-    /// (lane, session) の xterm instance を用意する — 既存ならば no-op (idempotent)。
-    ///
-    /// terminal S4: repo port は不要になった (xterm の transport は Daemon "canvas" channel +
-    /// per-lane terminal session、 旧 `/ws/terminal?port=` 直結を撤去)。 JS は xterm instance を
-    /// 作るだけで socket は持たない。 出力/入力は Rust の terminal session が IPC で橋渡しする。
-    ///
-    /// doc 50 §4.6 A6: xterm は **(lane, session) ごと**。`is_root` は host の選び方を決める
-    /// （root = 静的 `#lane-host` / 非 root = 動的 `#term-session-<n>`）。
-    pub fn ensure_lane(main_view: &WebView, address: &str, session: u32, is_root: bool) {
-        push(
-            main_view,
-            &PushEventEnvelope::TermEnsureLane(TermEnsureLane {
-                lane: address.to_string(),
-                session: i64::from(session),
-                is_root,
-            }),
-        );
-    }
-
-    /// 1 session の term instance だけ畳む（mode 切替 tui→chat の後始末。lane 全体は [`remove_lane`]）。
-    pub fn remove_lane_session(main_view: &WebView, address: &str, session: u32) {
-        push(
-            main_view,
-            &PushEventEnvelope::TermRemoveSession(TermRemoveSession {
-                lane: address.to_string(),
-                session: i64::from(session),
-            }),
-        );
-    }
-
-    /// active な 1 Lane を表示。`None` なら empty placeholder。
-    ///
-    /// `is_chat` = gui (root mode="gui"、sessions 由来)。 chat lane は xterm を持たない
-    /// (ChatView が内容) ため、これを渡さないと JS 側が「xterm 無し = 内容無し」と誤判定して
-    /// placeholder を被せる。
-    ///
-    /// 「lane 未選択」は schema の `optional` field で表現される（旧: JS の `null` 直書き）。
-    pub fn show_lane(main_view: &WebView, address: Option<&str>, is_chat: bool) {
-        push(
-            main_view,
-            &PushEventEnvelope::TermShowLane(TermShowLane {
-                lane: address.map(str::to_string),
-                // lane 未選択なら chat 判定も意味を持たない（旧実装の `showLane(null, false)`）。
-                is_chat: address.is_some() && is_chat,
-            }),
-        );
-    }
-
-    /// Lane が消えた時に、その lane の **全 session** の xterm を dispose。
-    pub fn remove_lane(main_view: &WebView, address: &str) {
-        push(
-            main_view,
-            &PushEventEnvelope::TermRemoveLane(TermRemoveLane {
-                lane: address.to_string(),
-            }),
-        );
-    }
-
-    /// OS clipboard の中身を focus 中の xterm へ流し込む（`paste:request` の戻り）。
-    ///
-    /// 宛先は JS 側が決める（focus 中の 1 枚。A6 で lane に active pane が複数並ぶように
-    /// なったので「最初の active」では意図しない pane に貼られる）。
-    pub fn deliver_paste(main_view: &WebView, text: &str) {
-        push(
-            main_view,
-            &PushEventEnvelope::TermPaste(TermPaste {
-                text: text.to_string(),
-            }),
-        );
-    }
-
-    /// 計器盤 pane に MIDI device 一覧を render する（daemon-device bridge の出口）。
-    ///
-    /// 差分ではなく**全量の置き換え**（level 駆動）なので、途中の 1 通を落としても次の 1 通で
-    /// 正しい状態に戻る。`AppEvent::DeviceEvent` と webview 誕生時の replay の両方から呼ぶ。
-    pub fn render_devices(main_view: &WebView, devices: &[crate::pane::DeviceSnapshot]) {
-        // 1 件でも黙って消えると「device が 1 つ足りない」だけが残って原因が辿れない。
-        // 実路では起きない（`DeviceSnapshot` は平たい 3 field）が、**黙って落とさない**のが
-        // この経路の主題なので、省いたことは必ず言う。
-        let devices = devices
-            .iter()
-            .filter_map(|d| match serde_json::to_value(d) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    tracing::warn!("device の serialize に失敗（この 1 件を省く）: {e}");
-                    None
-                }
-            })
-            .collect();
-        push(
-            main_view,
-            &PushEventEnvelope::DevicesRender(DevicesRender { devices }),
-        );
-    }
-
-    /// shell (L sidebar | main | R sidebar) の形を復元する。
-    ///
-    /// ⚠️ **保存が無ければ呼ばない**（caller 側の `if let Some`）。撃たなければ webview の
-    /// 既定値がそのまま残る = 既定を Rust と webview の 2 箇所に書かずに済む。
-    pub fn shell_layout(main_view: &WebView, l: &crate::session_state::ShellLayout) {
-        use crate::session_state::SidebarForm;
-        push(
-            main_view,
-            &PushEventEnvelope::ShellLayout(ShellLayout {
-                sidebar_width: l.sidebar_width as i64,
-                right_sidebar_width: l.right_sidebar_width as i64,
-                sidebar_form: match l.sidebar_form {
-                    SidebarForm::Slim => "slim".to_string(),
-                    SidebarForm::Full => "full".to_string(),
-                },
-                right_sidebar_open: l.right_sidebar_open,
-            }),
-        );
-    }
-
-    /// Console 面へ lane の session 一覧（roster）を渡す。
-    ///
-    /// 供給はこの 1 本（doc 53 §11）。呼び手は [`super::push_session_list`] 経由の 1 箇所だけ。
-    pub fn console_session_list(main_view: &WebView, lane: &str, payload: serde_json::Value) {
-        push(
-            main_view,
-            &PushEventEnvelope::ConsoleSessionList(ConsoleSessionList {
-                lane: lane.to_string(),
-                payload,
-            }),
-        );
-    }
-
-    /// Console 面へ gui の構造化イベントを渡す。
-    ///
-    /// ⚠️ これは制御面ではなく **stream**。取りこぼしは受け側の replay 要求
-    /// （`conversation:demand_start`）が埋める設計で、押し込みの保留箱には頼らない。
-    pub fn console_event(main_view: &WebView, lane: &str, event: serde_json::Value, session: u32) {
-        push(
-            main_view,
-            &PushEventEnvelope::ConsoleEvent(ConsoleEvent {
-                lane: lane.to_string(),
-                event,
-                session: i64::from(session),
-            }),
-        );
-    }
-
-    /// mode 切替が実体に適用されたことを Console 面へ報せる（`SessionModeApplied` の戻り）。
-    pub fn console_mode_applied(main_view: &WebView, lane: &str, session: u32, mode: &str) {
-        push(
-            main_view,
-            &PushEventEnvelope::ConsoleModeApplied(ConsoleModeApplied {
-                lane: lane.to_string(),
-                session: i64::from(session),
-                mode: mode.to_string(),
-            }),
-        );
-    }
-
-    /// 「+」menu へ agent 一覧を返す。`req` は要求元の相関 id（doc 47 §6、省略 = 誰も拾わない）。
-    pub fn console_stands(
-        main_view: &WebView,
-        lane: &str,
-        payload: serde_json::Value,
-        req: Option<String>,
-    ) {
-        push(
-            main_view,
-            &PushEventEnvelope::ConsoleAgents(ConsoleAgents {
-                lane: lane.to_string(),
-                payload,
-                req,
-            }),
-        );
-    }
-
-    /// 対話面（ink）へ snapshot の成功を返す（`path` = PNG の絶対 path）。
-    pub fn ink_snapshot(main_view: &WebView, path: String) {
-        push(
-            main_view,
-            &PushEventEnvelope::InkSnapshot(InkSnapshot { path }),
-        );
-    }
-
-    /// 対話面（ink）へ snapshot の失敗を返す（注釈は残して再送可能にする）。
-    pub fn ink_snapshot_error(main_view: &WebView, message: String) {
-        push(
-            main_view,
-            &PushEventEnvelope::InkSnapshotError(InkSnapshotError { message }),
-        );
-    }
-
-    /// 掲示板（board）へ repo の canvas message をそのまま渡す。
-    ///
-    /// 中身の形は repo が持つ（VP は転送するだけ）。型が要るのは「どの窓口へ届けるか」の方で、
-    /// それは envelope の tag が担う。
-    pub fn board_message(main_view: &WebView, message: serde_json::Value) {
-        push(
-            main_view,
-            &PushEventEnvelope::BoardMessage(BoardMessage { message }),
-        );
-    }
-
-    // ===== code pane（コードブラウザ P1）=====
-
-    /// `code:list` の応答: lane workdir の file 一覧。要素の形の持ち主は
-    /// [`crate::webview::file_explorer::Entry`]（serialize 失敗はその 1 件だけ省く —
-    /// `files_list_result` から引き継いだ方針）。
-    pub fn code_entries(
-        main_view: &WebView,
-        lane: &str,
-        entries: &[crate::webview::file_explorer::Entry],
-        truncated: bool,
-    ) {
-        let entries = entries
-            .iter()
-            .filter_map(|e| match serde_json::to_value(e) {
-                Ok(v) => Some(v),
-                Err(err) => {
-                    tracing::warn!("code entry の serialize に失敗（この 1 件を省く）: {err}");
-                    None
-                }
-            })
-            .collect();
-        push(
-            main_view,
-            &PushEventEnvelope::CodeEntries(CodeEntries {
-                lane: lane.to_string(),
-                entries,
-                truncated,
-            }),
-        );
-    }
-
-    /// `code:read` の応答: file 内容。payload は `{"text"} | {"error"}` の 2 択
-    /// （形の持ち主は `file_explorer::read_file`）。
-    pub fn code_file(main_view: &WebView, lane: &str, rel_path: &str, payload: &serde_json::Value) {
-        push(
-            main_view,
-            &PushEventEnvelope::CodeFile(CodeFile {
-                lane: lane.to_string(),
-                rel_path: rel_path.to_string(),
-                payload: payload.clone(),
-            }),
-        );
-    }
-
-    /// File menu「Code Browser」→ code pane の toggle（menu 起点の一方向 push、
-    /// 旧 `file_picker_open` の後継）。active lane 判定は webview 側に委譲。
-    pub fn code_toggle(main_view: &WebView) {
-        // fieldless event は codegen で unit variant になる（payload struct を包まない）。
-        push(main_view, &PushEventEnvelope::CodeToggle);
-    }
-
-    /// R sidebar の debug log viewer へ tail の行群を渡す（sidebar view modes、2026-08-01）。
-    ///
-    /// ⚠️ stream（`console_event` と同類）— 取りこぼしは次の `debuglog:watch` が
-    /// backlog 込みで埋めるので、保留箱には頼らない。
-    pub fn debuglog_lines(main_view: &WebView, source: &str, reset: bool, lines: Vec<String>) {
-        push(
-            main_view,
-            &PushEventEnvelope::DebuglogLines(DebuglogLines {
-                source: source.to_string(),
-                reset,
-                lines,
-            }),
-        );
-    }
 }
 
 /// 「Current repo が dead 状態」 のとき daemon に repo spawn を要求する fire-and-forget task。
@@ -3150,7 +2843,7 @@ fn persist_window_geometry(session_state: &mut SessionState, window: &tao::windo
 
 /// sidebar bundle への押し込み（server → client）。
 ///
-/// ## なぜ [`lane_js`] と別モジュールなのか
+/// ## なぜ [`crate::webview::push_main`] と別モジュールなのか
 ///
 /// webview は 1 document だが **bundle は 2 本**（`editor-host.bundle.js` /
 /// `sidebar.bundle.js`）で、module state を共有できない。`dispatch.ts` の保留箱は main bundle
@@ -3165,7 +2858,7 @@ mod sidebar_js {
 
     /// 生成 envelope を sidebar bundle の単一受け口 `window.vpSidebarDispatch` へ押し込む。
     ///
-    /// ⚠️ guard を残す理由は [`super::lane_js`] と同じ — bundle 評価**前**に撃つ窓があり、
+    /// ⚠️ guard を残す理由は [`crate::webview::push_main`] と同じ — bundle 評価**前**に撃つ窓があり、
     /// そこは JS が存在しないので保留箱にも積めない。sidebar の state は変化のたびに
     /// 撃ち直されるので、その窓の取りこぼしは次の push で埋まる。
     fn push(sidebar: &WebView, msg: &IpcEventEnvelope) {
@@ -4442,7 +4135,7 @@ pub fn run() -> anyhow::Result<()> {
                     // escape は envelope の serde_json 化に含まれる（Phase review fix #3 の
                     // 「手書き escape は null byte / surrogate を見落とす」は、payload ごと
                     // JSON にすることで構造的に解消）。
-                    lane_js::deliver_paste(&webview, &text);
+                    push_main::deliver_paste(&webview, &text);
                 }
             }
             Event::UserEvent(AppEvent::OscNotification { lane, code: _ }) => {
@@ -4747,7 +4440,7 @@ pub fn run() -> anyhow::Result<()> {
                     .unwrap_or_default();
                 for addr in &removed_addrs {
                     tracing::info!("Lane removed (LanesLoaded diff): {}", addr);
-                    lane_js::remove_lane(&webview, addr);
+                    push_main::remove_lane(&webview, addr);
                     // terminal S4: 消えた lane の terminal session を停止 (= map から remove で
                     // cmd_tx drop → canvas channel close → Daemon demand stop → repo pump stop)。
                     terminal_sessions.remove(addr);
@@ -4808,7 +4501,7 @@ pub fn run() -> anyhow::Result<()> {
                         // term session ごとに xterm を用意する（PtySlot 不在なら pump が張れない
                         // だけで graceful — Dead lane は別途 on-demand respawn が拾う）。
                         for (session, is_root) in terms {
-                            lane_js::ensure_lane(&webview, &addr_str, session, is_root);
+                            push_main::ensure_lane(&webview, &addr_str, session, is_root);
                         }
                         // terminal session 未起動なら start (idempotent)。
                         terminal_sessions
@@ -4912,7 +4605,7 @@ pub fn run() -> anyhow::Result<()> {
                         // 落ちる）。ensureLane は idempotent なので catch-up で撃ち直してよい。
                         let addr_str = lane.address.key();
                         for (session, is_root) in term_sessions_of(lane) {
-                            lane_js::ensure_lane(&webview, &addr_str, session, is_root);
+                            push_main::ensure_lane(&webview, &addr_str, session, is_root);
                         }
                         // doc 53 §11: **roster も同じ窓で落ちる**（team-b 指摘 2026-07-25）。
                         //
@@ -4974,7 +4667,7 @@ pub fn run() -> anyhow::Result<()> {
                 // 現在 active な Lane を再度 show する (lane-empty placeholder を解除する保険)
                 if let Some(addr) = sidebar_state.active_lane_address.clone() {
                     let is_chat = lane_is_chat(&sidebar_state, &addr);
-                    lane_js::show_lane(&webview, Some(&addr), is_chat);
+                    push_main::show_lane(&webview, Some(&addr), is_chat);
                     // 起動 race で silent drop されるのは ensureLane だけではない。 auto-select の
                     // activate_lane が撃つ setActivePane も同じ窓で落ちるが、これが JS 側の
                     // 「active lane」を埋める唯一の経路 — showLane だけ再発行しても JS の active
@@ -4989,7 +4682,7 @@ pub fn run() -> anyhow::Result<()> {
                 // 計器盤: daemon-device の接続時 snapshot は bundle ロード前に届いて落ちている
                 // （sidebar の Devices badge は state 再 push で生きるが pane だけ空、2026-07-23
                 // 実機で確認）。保持済み state から全量で撃ち直す。
-                lane_js::render_devices(&webview, &sidebar_state.devices);
+                push_main::render_devices(&webview, &sidebar_state.devices);
                 // shell (L|main|R) の形: 保存があれば復元する。無ければ撃たない
                 // （webview の既定値が残る = 既定を 2 箇所に書かない）。
                 // ⚠️ 撃った/撃たなかったを**両方**残す。「行が無い」は「保存が無かった」とも
@@ -4998,7 +4691,7 @@ pub fn run() -> anyhow::Result<()> {
                 match session_state.shell_layout().cloned() {
                     Some(layout) => {
                         tracing::info!("shell layout 復元: {layout:?}");
-                        lane_js::shell_layout(&webview, &layout);
+                        push_main::shell_layout(&webview, &layout);
                     }
                     None => tracing::info!("shell layout 復元: 保存なし（既定のまま）"),
                 }
@@ -5012,7 +4705,7 @@ pub fn run() -> anyhow::Result<()> {
                 // stamp 済なので、まとめて配っても混ざらない。
                 for boards in board_snapshots.values() {
                     for message in boards.values() {
-                        lane_js::board_message(&webview, message.clone());
+                        push_main::board_message(&webview, message.clone());
                     }
                 }
                 // LanesLoaded のたびに follow up 発火する loop event のため log omit。
@@ -5079,8 +4772,8 @@ pub fn run() -> anyhow::Result<()> {
                 // ink: snapshot 完了/失敗を webview に返す（ink.ts が会話へ一行 + 画像を送る）。
                 // 成功と失敗で受け手の振る舞いが別なので event も 2 本（schema 参照）。
                 match path {
-                    Some(p) => lane_js::ink_snapshot(&webview, p),
-                    None => lane_js::ink_snapshot_error(&webview, error.unwrap_or_default()),
+                    Some(p) => push_main::ink_snapshot(&webview, p),
+                    None => push_main::ink_snapshot_error(&webview, error.unwrap_or_default()),
                 }
             }
             Event::UserEvent(AppEvent::ShellLayout {
@@ -5140,7 +4833,7 @@ pub fn run() -> anyhow::Result<()> {
                 // stream なので replay は持たない（次の watch が毎回 backlog から始まる）。
                 use std::sync::atomic::Ordering;
                 if generation == debuglog_watch_gen.load(Ordering::Relaxed) {
-                    lane_js::debuglog_lines(&webview, &source, reset, lines);
+                    push_main::debuglog_lines(&webview, &source, reset, lines);
                 }
             }
             Event::UserEvent(AppEvent::DeviceEvent { payload }) => {
@@ -5149,7 +4842,7 @@ pub fn run() -> anyhow::Result<()> {
                 // (DeviceRegistry pane の device list) の両方に push。
                 if crate::pane::apply_device_event(&mut sidebar_state.devices, &payload) {
                     push_sidebar_state(&webview, &sidebar_state);
-                    lane_js::render_devices(&webview, &sidebar_state.devices);
+                    push_main::render_devices(&webview, &sidebar_state.devices);
                 }
                 // fleet 配線 (doc 49 LE-19): 操作入力 (control_event) は webview の mapping
                 // registry へ fire-and-forget 転送。受け手 (window.vpFleet) は gallery-panes.tsx。
@@ -5273,7 +4966,7 @@ pub fn run() -> anyhow::Result<()> {
                     // 前の repo の箱を見せていた（bug の後半）。
                     // board 以外（switch_lane を除く content）は従来どおり active repo のみ。
                     match serde_json::to_value(&message) {
-                        Ok(json) => lane_js::board_message(&webview, json),
+                        Ok(json) => push_main::board_message(&webview, json),
                         Err(e) => {
                             tracing::warn!("CanvasMessage serialize 失敗: {}", e);
                         }
@@ -5347,7 +5040,7 @@ pub fn run() -> anyhow::Result<()> {
             }) => {
                 // doc 38 Phase 2: 第 3 引数 session（VP 採番 key）を渡す。console.ts が focused
                 // 判定に使い、chatview が背景 session の stream を焦点会話へ混ぜないよう filter する。
-                lane_js::console_event(&webview, &lane, event.clone(), session);
+                push_main::console_event(&webview, &lane, event.clone(), session);
                 // 路 A（memory echoes-act2-notification-signal）: gui の完了/エラーを tui の
                 // OSC 通知と同じ sink に流す。headless stream-json は Notification hook を発火しない
                 // ため、turn_completed（stream `result` 由来）が「Claude が返し終えた＝入力待ち」の
@@ -5513,7 +5206,7 @@ pub fn run() -> anyhow::Result<()> {
                 push_sidebar_state(&webview, &sidebar_state);
                 // xterm の起立 / 撤去（World A は instance 管理に徹し、顔ぶれの決定は上位が持つ）。
                 if is_tui {
-                    lane_js::ensure_lane(&webview, &lane, session, is_root);
+                    push_main::ensure_lane(&webview, &lane, session, is_root);
                     // 購読が無いと新 PtySlot の出力が届かない（terminal topic は非 retained）。
                     // demand 0→1 が repo の pump 張り直し + replay を撃つ。idempotent。
                     match resolve_repo_path_for_lane(&sidebar_state, &lane) {
@@ -5543,11 +5236,11 @@ pub fn run() -> anyhow::Result<()> {
                     // repo 応答待ちの間に別 lane へ移っていたら表示は奪わない（mode は手元 snapshot に
                     // 反映済みなので、戻った時に正しい顔ぶれで開く）。
                     if sidebar_state.active_lane_address.as_deref() == Some(lane.as_str()) {
-                        lane_js::show_lane(&webview, Some(&lane), false);
+                        push_main::show_lane(&webview, Some(&lane), false);
                     }
                 } else {
                     // →chat: その session の xterm を畳む（PtySlot は repo 側で drop 済）。
-                    lane_js::remove_lane_session(&webview, &lane, session);
+                    push_main::remove_lane_session(&webview, &lane, session);
                     // tui→II の対称: conversation topic への購読を確保する（初回 chat 化で張られる）。
                     // 上の手元 snapshot 反映が先に要る（attach の gate が mode を読む）。
                     ensure_conversation_attach(
@@ -5592,7 +5285,7 @@ pub fn run() -> anyhow::Result<()> {
                         });
                     }
                 }
-                lane_js::console_mode_applied(&webview, &lane, session, &mode);
+                push_main::console_mode_applied(&webview, &lane, session, &mode);
             }
             // 新セッション開始（✨ New ボタン）。doc 39 §4「New は今いる Mode に出す」で分岐する:
             //  - chat lane（gui）: 「新 Draft session を作って focus」。旧会話はタブに残る
@@ -5940,7 +5633,7 @@ pub fn run() -> anyhow::Result<()> {
             // doc 38 Phase 2: agents_list の結果を「+」menu へ push back。
             // doc 47 §6: 第 3 引数 = 要求元の相関 id。共有 bus の購読側はこれで振り分ける。
             Event::UserEvent(AppEvent::Agents { lane, payload, req }) => {
-                lane_js::console_stands(&webview, &lane, payload, req);
+                push_main::console_stands(&webview, &lane, payload, req);
             }
             Event::UserEvent(AppEvent::BoardMutate { method, body }) => {
                 // board モデル (2026-07-15): WebView の board mutate（thumbnail ✕ / Clear ボタン）を
@@ -6031,14 +5724,14 @@ pub fn run() -> anyhow::Result<()> {
                 entries,
                 truncated,
             }) => {
-                lane_js::code_entries(&webview, &lane, &entries, truncated);
+                push_main::code_entries(&webview, &lane, &entries, truncated);
             }
             Event::UserEvent(AppEvent::CodeFileResult {
                 lane,
                 rel_path,
                 payload,
             }) => {
-                lane_js::code_file(&webview, &lane, &rel_path, &payload);
+                push_main::code_file(&webview, &lane, &rel_path, &payload);
             }
             // Wire inbox (doc 34 §4 V1): fetch 結果を sidebar の vpWire 受け口へ push back。
             Event::UserEvent(AppEvent::WireHistoryResult { address, payload }) => {
@@ -6411,7 +6104,7 @@ pub fn run() -> anyhow::Result<()> {
                     // ask (lane_delete) に移管。 repo port 解決は不要になり repo_path を handshake で渡す。
                     // JS-side からも先 removeLane を呼ぶ (= xterm 即時 dispose、 server 反映は
                     // repo の "lanes" topic snapshot 経由で sidebar に届く)。
-                    lane_js::remove_lane(&webview, &address);
+                    push_main::remove_lane(&webview, &address);
                     rt_handle.spawn(async move {
                         let payload = serde_json::json!({ "address": &address });
                         match daemon_repo_request(
@@ -6930,7 +6623,7 @@ pub fn run() -> anyhow::Result<()> {
                     // （旧 File Explorer は Rust 側で active 判定していたが、 判定が 2 箇所に
                     // なる & sidebar_state を menu 経路が読む結合が残るため一本化した）。
                     tracing::info!("File menu: code pane toggle 要求");
-                    lane_js::code_toggle(&webview);
+                    push_main::code_toggle(&webview);
                 } else if id == menu_ids.open_devtools {
                     if dev_mode {
                         webview.open_devtools();

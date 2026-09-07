@@ -11,5 +11,7 @@ pub mod file_explorer;
 pub mod ink_snapshot;
 /// main-area の HTML / bundle 埋め込みと active pane script。
 pub mod main_area;
+/// Rust → main webview の投影（typed push、`vp-push.kdl` envelope）。
+pub mod push_main;
 /// main_area webview からの IPC handler（decode → `AppEvent`）。
 pub mod terminal_ipc;
