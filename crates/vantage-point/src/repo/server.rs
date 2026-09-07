@@ -257,11 +257,6 @@ pub(crate) async fn start_repo(
         // Phase A4-2b: Repo scope の Agent pool (board/runner ほか) — skeleton
         // PR-α-1 (VP-111): repo モードでは MachineCapabilities を持たない (daemon mode 専用)
         machine_capabilities: None,
-        // PR-β-1 (VP-119): repo モードで LaneCapabilities pool 受け皿を Some で初期化。
-        // 物理移管 (board) は PR-β-2、 本 PR では空 HashMap で構築のみ。
-        lane_capabilities: Some(Arc::new(RwLock::new(
-            super::lane_capabilities::LaneCapabilitiesPool::new(),
-        ))),
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
         // repo mode は delegation store を持たない (daemon 中央 store に proxy する)。
         delegation_store: None,
@@ -277,23 +272,6 @@ pub(crate) async fn start_repo(
 
     // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
     state.restore_pane_contents().await;
-
-    // PR-β-2 (VP-120): Main Lane の LaneCapabilities entry を populate (LanePool::with_root と同期)。
-    // PR-β-1 で空 HashMap だった lane_capabilities pool に、 Main Lane の独立 BoardState を host。
-    // doc 13 §6 自動 spawn rule = Lane 起動時に board 同時 spawn (default) を default で実現。
-    if let Some(lc_pool) = state.lane_capabilities.as_ref() {
-        let main_addr = super::lanes_state::LaneAddress::root(&repo_name_for_remote);
-        // doc 59 P4: 既定 agent は settings.kdl（好みの層）が持つ。
-        let default_agent = crate::settings_file::default_lane_agent();
-        lc_pool
-            .write()
-            .await
-            .populate_lane(main_addr, default_agent);
-        tracing::info!(
-            "PR-β-2: LaneCapabilities pool に Main Lane populate (repo={}, board host 化)",
-            repo_name_for_remote
-        );
-    }
 
     // (I-b、 2026-04-30) Lane spawn actor を起動し、 既存 lane subs を Cmd 化して投入。
     // in-process channel + Semaphore で並列 spawn を gate する設計。
@@ -829,8 +807,6 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
         // PR-α-1 (VP-111): machine 階層 Agent container (LSCM doc 12 §3 / §9)
         machine_capabilities: Some(machine_capabilities),
-        // PR-β-1 (VP-119): daemon mode では LaneCapabilities を持たない (Lane scope は repo per repo)
-        lane_capabilities: None,
         // S2: daemon mode は repo の per-lane pump を持たない (terminal pump は repo scope)。
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
         // 委譲 (delegation) の daemon 中央 store (doc 28 §6)。daemon mode のみ Some。

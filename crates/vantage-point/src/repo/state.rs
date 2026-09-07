@@ -213,16 +213,6 @@ pub(crate) struct AppState {
     /// と重複保持 (意図的 HACK、 LSCM A6 share-nothing 整合は β 以降の cleanup PR で整理予定)。
     /// 関連: doc 12 §3 / §9、 Linear VP-109 (epic) / VP-111/112/113/114/115 ✅
     pub machine_capabilities: Option<Arc<crate::daemon::machine_capabilities::MachineCapabilities>>,
-    /// Lane 階層 Agent container pool (LSCM、 PR-δ-2 / VP-136 で board を `LaneComponentRegistry` 経由 host に統一)。
-    ///
-    /// repo mode (`run`) でのみ Some、 daemon mode (`run_daemon`) では None。
-    /// PR-β-1 (VP-119) で空 HashMap 受け皿として新設、 PR-β-2 (VP-120) で board を
-    /// `repo_stands.board` から本 pool の各 Lane entry に物理移管。 PR-δ-2 (VP-136) で
-    /// `LaneComponent` trait + `LaneComponentRegistry` 経由 host に進化、 hardcoded field を
-    /// trait-based generic interface に置換。 cardinality 1 → N invariant は保持。
-    /// 既存 `lane_pool` / `repo_stands` とは並立 (gradual migration、 PR-γ で runner も移管予定)。
-    /// 関連: doc 12 §9 catalog、 doc 13 §3 / §9 / §10 Q-7、 Linear VP-109 (epic) / VP-119 / VP-120 / VP-135 / VP-136
-    pub lane_capabilities: Option<Arc<RwLock<super::lane_capabilities::LaneCapabilitiesPool>>>,
     /// S2 (doc 27 §4.1): demand-driven terminal pump の lane → session → JoinHandle map。
     ///
     /// daemon の demand hook が control reverse-route で `terminal_demand_start {lane}` を撃つと、
@@ -395,7 +385,7 @@ impl AppState {
 /// `daemon` のみ caller が optional に指定 (= 503 path / 200 path 切り替え)。
 ///
 /// 用途: `crates/vantage-point/src/process/routes/` の各 handler を Axum oneshot で
-/// smoke test する際の shared fixture。 重い field (vpdb / wiremsg_store / lane_capabilities)
+/// smoke test する際の shared fixture。 重い field (vpdb / wiremsg_store)
 /// は None で軽量化。
 ///
 /// Note: `pub(crate)` のため `crates/vantage-point/src/` 内 inline `#[cfg(test)]` mod
@@ -420,7 +410,6 @@ pub(crate) async fn build_test_app_state_with(
     vpdb: Option<crate::db::SharedVpDb>,
     daemon: Option<Arc<RwLock<RepoManagerCapability>>>,
 ) -> Arc<AppState> {
-    use super::lane_capabilities::LaneCapabilitiesPool;
     use super::lanes_state::LanePool;
     use crate::capability::WireNotifier;
 
@@ -451,7 +440,6 @@ pub(crate) async fn build_test_app_state_with(
         lane_pool: Arc::new(RwLock::new(LanePool::new())),
         system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
         machine_capabilities: None,
-        lane_capabilities: Some(Arc::new(RwLock::new(LaneCapabilitiesPool::new()))),
         terminal_pumps: Arc::new(RwLock::new(HashMap::new())),
         // test fixture は repo 相当 (Daemon store 無し)。delegation の store test は
         // capability::delegation_store の単体 test が担う。
