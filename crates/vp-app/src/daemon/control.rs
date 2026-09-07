@@ -1,6 +1,6 @@
 //! daemon control plane クライアント (Unison `daemon-control` / `registry`)
 //!
-//! doc 45 段 3: vp-app が抱えていた REST client (`client::DaemonRpcClient`) のうち、
+//! doc 45 段 3: vp-app が抱えていた REST client (旧 `client::DaemonRpcClient`、health だけ `daemon::health_probe::HealthProbe` に残る) のうち、
 //! repos / processes / lanes を触る面をここへ移した。vp-app は既に Unison を
 //! 主要な transport として使っている (lanes / canvas / terminal / device / wire / repo-proxy)
 //! ので、control plane だけ HTTP に残す理由が無い — Unison 側には KDL schema と drift
@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use crate::client::{RepoInfo, RunningRepo};
+use crate::daemon_wire::{RepoInfo, RunningRepo};
 
 /// 1 RPC の上限。旧 reqwest client の 10s timeout をそのまま引き継ぐ。
 const RPC_TIMEOUT: Duration = Duration::from_secs(10);
@@ -341,7 +341,7 @@ mod tests {
         assert_eq!(via_unison[0].name, "vp");
         assert_eq!(
             via_unison[0].state,
-            crate::client::RepoStatus::Running,
+            crate::daemon_wire::RepoStatus::Running,
             "process_status が state に載ること"
         );
     }

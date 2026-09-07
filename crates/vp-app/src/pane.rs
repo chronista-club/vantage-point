@@ -213,7 +213,7 @@ pub struct SidebarState {
     /// 関連 memory: mem_1CaSugEk1W2vr5TAdfDn5D (多 scope architecture)
     /// 起動時に再 fetch されるので disk persistence は実質意味薄いが、Serialize は維持
     #[serde(default)]
-    pub lanes_by_repo: std::collections::HashMap<String, Vec<crate::client::LaneInfo>>,
+    pub lanes_by_repo: std::collections::HashMap<String, Vec<crate::daemon_wire::LaneInfo>>,
     /// 現在 active な Lane の address (Display 形 `"<repo>/root"` 等)
     /// app 全体で 1 つだけ。 `lane:select` IPC で更新される。
     #[serde(default, skip_serializing_if = "Option::is_none")]
