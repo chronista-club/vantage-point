@@ -68,7 +68,7 @@ vp app start → vp-app(wry/WebView2) → daemon spawn → SP spawn → lane/sta
 対象: [crates/vantage-point/src/process/stand_spawner.rs:272-299](../../crates/vantage-point/src/process/stand_spawner.rs)
 
 - **Windows**: `program = <git-bash path>`, `args = [<script path>]` に組み替える(Unix は現行どおり script 直 exec)。git-bash は `C:\...` 形式の引数を MSYS path に自動変換するので script path はそのまま渡してよい。
-- **git-bash 検出 helper**: `vp-app/src/shell_detect.rs` の git-bash 検出ロジック(標準 install path 2 候補 → PATH 内 bash.exe から System32/**WindowsApps** 除外)を **`vp-paths` に移して共有**(Task 2 と同じ理由。vp-app 側は re-export or 呼び替え)。
+- **git-bash 検出 helper** ✅ 済（`vp-paths/src/shell.rs` に集約、WindowsApps 除外込み。vp-app 側の `shell_detect.rs` は 2026-09 に撤去）: `vp-app/src/shell_detect.rs` の git-bash 検出ロジック(標準 install path 2 候補 → PATH 内 bash.exe から System32/**WindowsApps** 除外)を **`vp-paths` に移して共有**(Task 2 と同じ理由。vp-app 側は re-export or 呼び替え)。
   - ⚠️ 現行 shell_detect の除外は `\windows\system32\` のみ。実機では `WindowsApps\bash.exe`(WSL stub)が PATH に居るので **`\windowsapps\` の除外を追加**すること。
 - **git-bash 不在時**: stand spawn を親切なエラーで即 fail(「Git for Windows を入れてください」)。pwsh native な stand script は Phase W3 以降。
 - **mise fallback 経路**(L290-297、install root 解決失敗時)も Windows では `mise.exe run ...` が同じ shebang 問題を踏まない(mise 自身が interpreter を解決する)ため現状維持で可。

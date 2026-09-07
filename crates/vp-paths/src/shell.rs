@@ -1,8 +1,8 @@
 //! shell interpreter の探索 — Windows で git-bash を見つける共有ロジック。
 //!
-//! vantage-point (agent_spawner: agent script を bash 経由で exec) と vp-app (shell_detect:
-//! Main pane の login shell) の双方が git-bash の実在 path を必要とする。 両者が別実装を
-//! 持つと drift するため本 crate に集約する (spawn_env と同じ SSOT 方針)。
+//! vantage-point (agent_spawner: agent script を bash 経由で exec / pty_slot) が git-bash の実在
+//! path を必要とする。 かつて vp-app 側にも別実装 (`shell_detect.rs`、2026-09 撤去) があり drift
+//! したため本 crate に集約する (spawn_env と同じ SSOT 方針)。
 
 #[cfg(windows)]
 use std::path::PathBuf;
