@@ -565,7 +565,7 @@ fn spawn_idle_engine_sweep(state: Arc<AppState>, shutdown: CancellationToken) {
     });
 }
 
-/// [`start_repo`] で起動した repo の後始末（file watcher 停止 + capability shutdown）。
+/// [`start_repo`] で起動した repo の後始末（file watcher 停止）。
 ///
 /// shutdown_token を cancel した**後**に呼ぶこと（token cancel は spawn 済 task の停止、
 /// 本関数は token では止まらないリソースの解放を担当する）。

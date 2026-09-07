@@ -6,7 +6,7 @@
 //! ## 構成
 //! - **Process**: サーバー（開発プロセス本体）
 //! - **Point**: WebView（視点/観測点）
-//! - **Capability**: Process が持つ能力（Agent, MIDI, Protocol等）
+//! - **Capability**: repo が持つ能力（現行は repo_manager / update。旧 Agent / Protocol は 2026-09 撤去、MIDI は daemon の DeviceRegistry）
 
 /// CC activity poll — `claude agents --json` の LaneActivity 供給 (R3-a / Phase A)
 pub(crate) mod cc_activity;
