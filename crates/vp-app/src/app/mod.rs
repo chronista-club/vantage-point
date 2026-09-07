@@ -49,6 +49,7 @@ use crate::settings::Settings;
 use crate::webview::editor_bridge::{editor_bridge_js, fleet_dispatch_js, fleet_feedback_payload};
 use crate::webview::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
 use crate::webview::push_main;
+use crate::webview::push_sidebar::{self, push_sidebar_state};
 use crate::webview::terminal_ipc;
 
 /// 起動時の window default size (LogicalPixel)。 with_inner_size と clamp 矯正後の値で
@@ -2624,132 +2625,6 @@ fn persist_window_geometry(session_state: &mut SessionState, window: &tao::windo
     }
 }
 
-/// sidebar bundle への押し込み（server → client）。
-///
-/// ## なぜ [`crate::webview::push_main`] と別モジュールなのか
-///
-/// webview は 1 document だが **bundle は 2 本**（`editor-host.bundle.js` /
-/// `sidebar.bundle.js`）で、module state を共有できない。`dispatch.ts` の保留箱は main bundle
-/// の中にあるので、sidebar 側の受け手をそこへ登録する術がない。**bundle が受け口の単位**
-/// なので、sidebar は自分の受け口（`window.vpSidebarDispatch`）を持つ。
-///
-/// SSOT は `schema/vp-sidebar.kdl`（request と同じ channel の event 側 = `IpcEventEnvelope`）。
-mod sidebar_js {
-    use wry::WebView;
-
-    use crate::generated::sidebar_ipc::IpcEventEnvelope;
-
-    /// 生成 envelope を sidebar bundle の単一受け口 `window.vpSidebarDispatch` へ押し込む。
-    ///
-    /// ⚠️ guard を残す理由は [`crate::webview::push_main`] と同じ — bundle 評価**前**に撃つ窓があり、
-    /// そこは JS が存在しないので保留箱にも積めない。sidebar の state は変化のたびに
-    /// 撃ち直されるので、その窓の取りこぼしは次の push で埋まる。
-    fn push(sidebar: &WebView, msg: &IpcEventEnvelope) {
-        let json = match serde_json::to_string(msg) {
-            Ok(j) => j,
-            Err(e) => {
-                tracing::error!("sidebar push envelope の serialize に失敗: {e}");
-                return;
-            }
-        };
-        let script = format!("window.vpSidebarDispatch && window.vpSidebarDispatch({json})");
-        if let Err(e) = sidebar.evaluate_script(&script) {
-            tracing::warn!("vpSidebarDispatch script failed: {e}");
-        }
-    }
-
-    /// sidebar の全 state を push する唯一の経路。
-    ///
-    /// `state` の形の持ち主は Rust の [`crate::pane::SidebarState`]（ts-rs が TS 型を出す）。
-    /// envelope は「どの窓口へ届けるか」だけを型にし、中身はその 1 つの定義に委ねる。
-    pub fn state(sidebar: &WebView, state: &crate::pane::SidebarState) {
-        let value = match serde_json::to_value(state) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("SidebarState serialize 失敗: {e}");
-                return;
-            }
-        };
-        push(
-            sidebar,
-            &IpcEventEnvelope::SidebarState(crate::generated::sidebar_ipc::SidebarState {
-                state: value,
-            }),
-        );
-    }
-
-    /// daemon 接続失敗等の error 表示。
-    pub fn error(sidebar: &WebView, message: &str) {
-        push(
-            sidebar,
-            &IpcEventEnvelope::SidebarError(crate::generated::sidebar_ipc::SidebarError {
-                message: message.to_string(),
-            }),
-        );
-    }
-
-    /// + Add Sub の作成結果。`error` None = 成功（form を閉じる）。
-    pub fn sub_create_result(
-        sidebar: &WebView,
-        repo_path: String,
-        name: String,
-        error: Option<String>,
-    ) {
-        push(
-            sidebar,
-            &IpcEventEnvelope::SubCreateResult(crate::generated::sidebar_ipc::SubCreateResult {
-                repo_path,
-                name,
-                error,
-            }),
-        );
-    }
-
-    /// + Add Sub の dropdown を populate する Agent 一覧。
-    pub fn stands_result(
-        sidebar: &WebView,
-        repo_path: String,
-        agents: &[crate::daemon_wire::AgentInfo],
-        error: Option<String>,
-    ) {
-        let agents = agents
-            .iter()
-            .filter_map(|s| match serde_json::to_value(s) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    tracing::warn!("AgentInfo の serialize に失敗（この 1 件を省く）: {e}");
-                    None
-                }
-            })
-            .collect();
-        push(
-            sidebar,
-            &IpcEventEnvelope::AgentsResult(crate::generated::sidebar_ipc::AgentsResult {
-                repo_path,
-                agents,
-                error,
-            }),
-        );
-    }
-
-    /// Wire inbox の履歴。
-    pub fn wire_result(sidebar: &WebView, payload: serde_json::Value) {
-        push(
-            sidebar,
-            &IpcEventEnvelope::WireResult(crate::generated::sidebar_ipc::WireResult { payload }),
-        );
-    }
-
-    /// 設定の確定値（doc 59 P1）。fetch / save / picker のいずれも**これ 1 本で終わる** —
-    /// client は楽観更新をしないので、保存失敗時の巻き戻しを持たなくてよい。
-    pub fn settings_result(
-        sidebar: &WebView,
-        result: crate::generated::sidebar_ipc::SettingsResult,
-    ) {
-        push(sidebar, &IpcEventEnvelope::SettingsResult(result));
-    }
-}
-
 /// daemon 側（settings.kdl）から取れた設定。**取れなかった場合と未設定を区別する**ため
 /// `Option` を包んでいる（doc 59 P3）。
 ///
@@ -2800,11 +2675,6 @@ fn settings_snapshot(
         // （codex は VP から model を渡さない = 押しても効かない欄を並べない）。
         default_agent_takes_model: daemon.is_some_and(|d| d.default_agent_takes_model),
     }
-}
-
-/// SidebarState を sidebar webview に push（呼び手が多いので薄い別名を残す）。
-fn push_sidebar_state(sidebar: &WebView, state: &SidebarState) {
-    sidebar_js::state(sidebar, state);
 }
 
 /// lane を「入力待ち（要注意）」として記録し、sidebar の unread count / 黄 dot を更新する。
@@ -5443,7 +5313,7 @@ pub fn run() -> anyhow::Result<()> {
                 });
             }
             Event::UserEvent(AppEvent::ReposError(msg)) => {
-                sidebar_js::error(&webview, &msg);
+                push_sidebar::error(&webview, &msg);
             }
             // R5 Sub create flow: spawn_blocking thread からの結果を sidebar に push back。
             // success → form を閉じる + addSubOpen から削除。
@@ -5453,7 +5323,7 @@ pub fn run() -> anyhow::Result<()> {
                 name,
                 error,
             }) => {
-                sidebar_js::sub_create_result(&webview, repo_path, name, error);
+                push_sidebar::sub_create_result(&webview, repo_path, name, error);
             }
             Event::UserEvent(AppEvent::AgentsResult {
                 repo_path,
@@ -5461,7 +5331,7 @@ pub fn run() -> anyhow::Result<()> {
                 error,
             }) => {
                 // doc 11 PR-C: + Add Sub form の dropdown を populate するための push back。
-                sidebar_js::stands_result(&webview, repo_path, &agents, error);
+                push_sidebar::stands_result(&webview, repo_path, &agents, error);
             }
             // ===== code pane（コードブラウザ P1）=====
             // demand（CodeList / CodeRead）は blocking I/O を spawn_blocking に
@@ -5519,7 +5389,7 @@ pub fn run() -> anyhow::Result<()> {
             // Wire inbox (doc 34 §4 V1): fetch 結果を sidebar の vpWire 受け口へ push back。
             Event::UserEvent(AppEvent::WireHistoryResult { address, payload }) => {
                 tracing::debug!("wire history 受領 (address={address})");
-                sidebar_js::wire_result(&webview, payload);
+                push_sidebar::wire_result(&webview, payload);
             }
             Event::UserEvent(AppEvent::ActivityUpdate(snap)) => {
                 sidebar_state.activity = snap;
@@ -5543,7 +5413,7 @@ pub fn run() -> anyhow::Result<()> {
                 }
                 // picker は vp-app.toml しか触らないので daemon 側は引き直さない
                 // （`last_daemon_settings` に前回の結果が残っている）。
-                sidebar_js::settings_result(
+                push_sidebar::settings_result(
                     &webview,
                     settings_snapshot(
                         &settings,
@@ -5576,7 +5446,7 @@ pub fn run() -> anyhow::Result<()> {
                             .unwrap_or(false),
                     }
                 });
-                sidebar_js::settings_result(
+                push_sidebar::settings_result(
                     &webview,
                     settings_snapshot(
                         &settings,
