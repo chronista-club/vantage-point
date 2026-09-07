@@ -107,8 +107,8 @@ pub struct SlotRect {
 /// `VP_WEBVIEW_DEV=<assets dir>` 設定時は `web_assets::serve` の disk-read が優先される
 /// (= cargo build なしの bundle 差替え = HMR)。vendor 静的 JS/CSS は inline のまま
 /// (dev loop で変わるのは bundle だけ)。
-pub const EDITOR_HOST_BUNDLE_JS: &str = include_str!("../assets/editor-host.bundle.js");
-pub const SIDEBAR_BUNDLE_JS: &str = include_str!("../assets/sidebar.bundle.js");
+pub const EDITOR_HOST_BUNDLE_JS: &str = include_str!("../../assets/editor-host.bundle.js");
+pub const SIDEBAR_BUNDLE_JS: &str = include_str!("../../assets/sidebar.bundle.js");
 
 /// Main area の HTML (xterm.js + canvas placeholder + preview iframe + empty state)
 ///
@@ -122,17 +122,17 @@ pub const MAIN_AREA_HTML: &str = concat!(
 <title>vp-app main</title>
 <style>
 "#,
-    include_str!("../assets/creo-tokens.css"),
+    include_str!("../../assets/creo-tokens.css"),
     r#"
 </style>
 <style>
 "#,
-    include_str!("../assets/vp-tokens.css"),
+    include_str!("../../assets/vp-tokens.css"),
     r#"
 </style>
 <style>
 "#,
-    include_str!("../assets/creo-components.css"),
+    include_str!("../../assets/creo-components.css"),
     r#"
 </style>
 <style>
@@ -141,7 +141,7 @@ pub const MAIN_AREA_HTML: &str = concat!(
     // (*.bundle.js と同じ扱い、build.rs が存在を guard)。bundle 側から head へ注入せず
     // ここに焼くのは、直後に続く app 側の上書き規則 (.xterm-viewport::-webkit-scrollbar 等) が
     // **同じ <style> の後ろ**に来る cascade 順を保つため。
-    include_str!("../assets/xterm.css"),
+    include_str!("../../assets/xterm.css"),
     r#"
 html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
 body{overflow:hidden;}

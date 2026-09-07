@@ -37,16 +37,16 @@ use wry::{
 };
 
 use crate::client::{DaemonRpcClient, RepoInfo};
-use crate::daemon_control::DaemonControl;
+use crate::daemon::control::DaemonControl;
 use crate::events::AppEvent;
-use crate::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
-use crate::pane::{ActiveComponent, ActivitySnapshot, RepoPaneState, SidebarState};
-use crate::repo_dialog::{
+use crate::flows::repo_dialog::{
     resolve_default_repo_root, spawn_add_repo_picker, spawn_clone_repo, spawn_repo_root_picker,
 };
+use crate::pane::{ActiveComponent, ActivitySnapshot, RepoPaneState, SidebarState};
 use crate::session_state::SessionState;
 use crate::settings::Settings;
-use crate::terminal;
+use crate::webview::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
+use crate::webview::terminal_ipc;
 
 /// Sidebar の固定幅 (LogicalPixel)。
 /// WebView 統合 (step 3a) 後は HTML 側 CSS (#sidebar-root width:280px) が司るため Rust 側は未使用
@@ -105,7 +105,7 @@ fn developer_mode_env() -> Option<bool> {
 ///
 /// <https://github.com/chronista-club/creo-ui> packages/web が source。
 /// vp-app の 3 ペインすべてに inline して共通 token で描画する。
-pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
+pub const CREO_TOKENS_CSS: &str = include_str!("../../assets/creo-tokens.css");
 
 /// WebView 統合 (step 3a) 後の唯一の webview が `vp-asset://` で配信する asset。
 /// `MAIN_AREA_HTML` を `app/index.html` で、SolidJS bundle 2 本を外部 script として配信
@@ -152,7 +152,7 @@ fn update_pane_bounds(webview: &WebView, window_size: tao::dpi::PhysicalSize<u32
 
 /// WebView 統合 (step 3a): 統合 ipc_handler の dispatch 判定。
 /// main (terminal / pane) IPC tag なら true、 sidebar IpcEnvelope tag (repo: / lane: 系)
-/// なら false。 tag 集合は `terminal::handle_ipc_message` の match arm と一致 (disjoint)。
+/// なら false。 tag 集合は `terminal_ipc::handle_ipc_message` の match arm と一致 (disjoint)。
 /// terminal の fall-through に頼ると sidebar tag を silent drop するため、 ここで明示判定する。
 fn is_main_ipc_tag(body: &str) -> bool {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
@@ -608,17 +608,17 @@ impl SharedDaemonConn {
     pub(crate) async fn control_within(
         &self,
         wait: Duration,
-    ) -> anyhow::Result<crate::daemon_control::DaemonControl> {
+    ) -> anyhow::Result<crate::daemon::control::DaemonControl> {
         let mut conn = self.clone();
         match tokio::time::timeout(wait, conn.wait_client()).await {
-            Ok(Some(client)) => Ok(crate::daemon_control::DaemonControl::new(client)),
+            Ok(Some(client)) => Ok(crate::daemon::control::DaemonControl::new(client)),
             Ok(None) => anyhow::bail!("app 終了中 (daemon conn manager 停止)"),
             Err(_) => anyhow::bail!("Daemon QUIC 未接続 (daemon 未起動?)"),
         }
     }
 
     /// [`Self::control_within`] の既定待ち時間版。
-    pub(crate) async fn control(&self) -> anyhow::Result<crate::daemon_control::DaemonControl> {
+    pub(crate) async fn control(&self) -> anyhow::Result<crate::daemon::control::DaemonControl> {
         self.control_within(CONTROL_WAIT).await
     }
 }
@@ -2265,12 +2265,12 @@ mod lane_js {
     // ===== code pane（コードブラウザ P1）=====
 
     /// `code:list` の応答: lane workdir の file 一覧。要素の形の持ち主は
-    /// [`crate::file_explorer::Entry`]（serialize 失敗はその 1 件だけ省く —
+    /// [`crate::webview::file_explorer::Entry`]（serialize 失敗はその 1 件だけ省く —
     /// `files_list_result` から引き継いだ方針）。
     pub fn code_entries(
         main_view: &WebView,
         lane: &str,
-        entries: &[crate::file_explorer::Entry],
+        entries: &[crate::webview::file_explorer::Entry],
         truncated: bool,
     ) {
         let entries = entries
@@ -2689,7 +2689,7 @@ mod header_lane_fields_changed_tests {
 #[cfg(test)]
 mod lane_key_wire_agent_tests {
     use super::lane_key_to_wire_agent;
-    use crate::lane::{LaneAddress, LaneAddressWire};
+    use crate::lane_address::{LaneAddress, LaneAddressWire};
 
     /// doc 44 P2: lane key (`<repo>/<name>`) → wire agent address。
     ///
@@ -3811,7 +3811,7 @@ fn lane_key_to_wire_agent(address: &str) -> Option<String> {
     // ⚠️ **読む側は旧世代の予約名（`conductor` / `root` / `lead`）も Main とみなす**。
     // 永続 state に残っており、ここで弾くとその lane の wire 宛先が引けない
     // （無音で届かなくなる）。
-    if name == crate::lane::ROOT_LANE_NAME
+    if name == crate::lane_address::ROOT_LANE_NAME
         || name == "lead"
         || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&name)
     {
@@ -3908,7 +3908,7 @@ pub fn run() -> anyhow::Result<()> {
 
     // ink（対話面, doc 52 §3）: 送信済み snapshot は ephemeral だが disk に残るので、起動時に
     // 7 日超を掃除する（「消し手のないファイルを作らない」— terminal replay disk leak の轍）。
-    crate::ink_snapshot::prune_old(Duration::from_secs(7 * 24 * 3600));
+    crate::webview::ink_snapshot::prune_old(Duration::from_secs(7 * 24 * 3600));
 
     // Windows taskbar の identity。 **window を作る前**に設定する必要がある
     // (既存 window の AUMID は後から変えられない)。 非 Windows は no-op。
@@ -4114,7 +4114,7 @@ pub fn run() -> anyhow::Result<()> {
     let _ = proxy; // 旧 spawn_shell / connect_daemon_terminal で proxy を消費していた、 互換用に残す
     let node_url = std::env::var("VP_DAEMON_URL")
         .unwrap_or_else(|_| format!("http://127.0.0.1:{}", crate::client::default_daemon_port()));
-    if let Err(e) = crate::daemon_launcher::ensure_daemon_ready(&node_url) {
+    if let Err(e) = crate::daemon::launcher::ensure_daemon_ready(&node_url) {
         tracing::warn!(
             "daemon auto-launch 失敗 (continue with offline state): {}",
             e
@@ -4158,7 +4158,7 @@ pub fn run() -> anyhow::Result<()> {
         // SecurityError を throw し sidebar bundle が boot 中に落ちる。custom protocol で
         // 実オリジン (vp-asset://app) を与え、MAIN_AREA_HTML を app/index.html として配信する。
         .with_custom_protocol("vp-asset".to_string(), move |id, request| {
-            crate::web_assets::serve(id, request, MAIN_VIEW_ASSETS)
+            crate::webview::assets::serve(id, request, MAIN_VIEW_ASSETS)
         })
         .with_initialization_script(&echo_init)
         .with_url("vp-asset://app/index.html")
@@ -4178,7 +4178,7 @@ pub fn run() -> anyhow::Result<()> {
                 return;
             }
             if is_main_ipc_tag(body) {
-                terminal::handle_ipc_message(body, &ipc_proxy);
+                terminal_ipc::handle_ipc_message(body, &ipc_proxy);
             } else {
                 let _ = sidebar_ipc_proxy.send_event(AppEvent::SidebarIpc(body.to_string()));
             }
@@ -4487,10 +4487,10 @@ pub fn run() -> anyhow::Result<()> {
                             current_keys.insert(map_key.clone());
                             let resolved = match conversation.as_deref() {
                                 Some(conv) => {
-                                    crate::session_title::resolve_title_for_conversation(cwd, conv)
+                                    crate::lane::title::resolve_title_for_conversation(cwd, conv)
                                 }
                                 None if is_root => {
-                                    crate::session_title::resolve_title_for_cwd(cwd)
+                                    crate::lane::title::resolve_title_for_cwd(cwd)
                                 }
                                 None => None,
                             };
@@ -5057,12 +5057,12 @@ pub fn run() -> anyhow::Result<()> {
                 let lane_key = sidebar_state
                     .active_lane_address
                     .as_deref()
-                    .map(crate::ink_snapshot::lane_key_from_address)
+                    .map(crate::webview::ink_snapshot::lane_key_from_address)
                     .unwrap_or_else(|| "main".to_string());
-                match crate::ink_snapshot::snapshot_path(&lane_key) {
+                match crate::webview::ink_snapshot::snapshot_path(&lane_key) {
                     Ok(out_path) => {
                         let ready_proxy = proxy.clone();
-                        crate::ink_snapshot::take_snapshot(
+                        crate::webview::ink_snapshot::take_snapshot(
                             &webview,
                             rect,
                             out_path,
@@ -5240,7 +5240,7 @@ pub fn run() -> anyhow::Result<()> {
                         message.get("lane").and_then(|l| l.as_str()),
                     ) {
                         // token → lane address（形式は `address_from_lane_token` の 1 箇所）
-                        let address = crate::lane::address_from_lane_token(repo, token);
+                        let address = crate::lane_address::address_from_lane_token(repo, token);
                         // Model B (focus = 操舵ポインタ): switch_lane は全 instance に broadcast される
                         // が、適用するのは **focused instance だけ**。非 focus の window はこの event を
                         // 無視し、自分の lane に park されたまま (= 2 window が別々の lane を同時に見られる)。
@@ -5295,9 +5295,9 @@ pub fn run() -> anyhow::Result<()> {
                     let token = message
                         .get("lane")
                         .and_then(|l| l.as_str())
-                        .unwrap_or(crate::lane::ROOT_LANE_NAME);
+                        .unwrap_or(crate::lane_address::ROOT_LANE_NAME);
                     // token → lane address（switch_lane と同じ helper を通す）。
-                    let address = crate::lane::address_from_lane_token(repo, token);
+                    let address = crate::lane_address::address_from_lane_token(repo, token);
                     if sidebar_state.active_lane_address.as_deref() != Some(address.as_str()) {
                         mark_lane_canvas_unread(&address, &mut sidebar_state, &webview);
                     }
@@ -6000,7 +6000,7 @@ pub fn run() -> anyhow::Result<()> {
                     Some(cwd) => {
                         let proxy = async_action_proxy.clone();
                         rt_handle.spawn_blocking(move || {
-                            let (entries, truncated) = crate::file_explorer::list_entries(&cwd);
+                            let (entries, truncated) = crate::webview::file_explorer::list_entries(&cwd);
                             let _ = proxy.send_event(AppEvent::CodeEntriesResult {
                                 lane,
                                 entries,
@@ -6018,7 +6018,7 @@ pub fn run() -> anyhow::Result<()> {
                     Some(cwd) => {
                         let proxy = async_action_proxy.clone();
                         rt_handle.spawn_blocking(move || {
-                            let payload = crate::file_explorer::read_file(&cwd, &rel_path);
+                            let payload = crate::webview::file_explorer::read_file(&cwd, &rel_path);
                             let _ = proxy.send_event(AppEvent::CodeFileResult {
                                 lane,
                                 rel_path,
@@ -6730,7 +6730,7 @@ pub fn run() -> anyhow::Result<()> {
                 // on_phase は AppEvent 経由で event loop に戻し、「更新中…」表示に使う。
                 if let Some(version) = outcome.update_apply_request {
                     let phase_proxy = proxy.clone();
-                    crate::update_flow::spawn_update_flow(version, move |applying| {
+                    crate::flows::update::spawn_update_flow(version, move |applying| {
                         let _ = phase_proxy.send_event(AppEvent::UpdateFlowPhase(applying));
                     });
                 }
@@ -6810,7 +6810,7 @@ pub fn run() -> anyhow::Result<()> {
                 if outcome.daemon_restart_request {
                     // ⚠️ **全 repo = 全 lane の claude が落ちる**（doc 44 P1 fold-in）。
                     // 確認ダイアログは flow 側（rfd が blocking なので専用スレッド）。
-                    crate::daemon_flow::spawn_daemon_restart();
+                    crate::daemon::restart::spawn_daemon_restart();
                 }
                 // Hub 行の Login / Logout ボタン click 要求。blocking フロー（browser OAuth
                 // 待ち / 確認ダイアログ / CLI spawn）を blocking pool で実行し、成功したら
@@ -6828,8 +6828,8 @@ pub fn run() -> anyhow::Result<()> {
                     let rt = rt_handle.clone();
                     rt_handle.spawn(async move {
                         let flow = rt.spawn_blocking(move || match login_target {
-                            Some(t) => crate::auth_flow::run_login_blocking(&t),
-                            None => crate::auth_flow::run_logout_blocking(
+                            Some(t) => crate::flows::auth::run_login_blocking(&t),
+                            None => crate::flows::auth::run_logout_blocking(
                                 logout_target.as_deref().unwrap_or(""),
                             ),
                         });
@@ -7071,7 +7071,8 @@ mod main_view_asset_tests {
     /// `MAIN_VIEW_ASSETS` で統合 HTML が `vp-asset://app/index.html` から取れる。
     #[test]
     fn main_view_html_servable_via_vp_asset() {
-        let html = crate::web_assets::lookup_asset("vp-asset://app/index.html", MAIN_VIEW_ASSETS);
+        let html =
+            crate::webview::assets::lookup_asset("vp-asset://app/index.html", MAIN_VIEW_ASSETS);
         assert!(html.is_some(), "index.html not lookupable");
         let (bytes, ct) = html.unwrap();
         assert_eq!(ct, "text/html; charset=utf-8");
@@ -7105,7 +7106,7 @@ mod main_view_asset_tests {
             ("vp-asset://app/sidebar.bundle.js", "[vp-sidebar] booting"),
             ("vp-asset://app/editor-host.bundle.js", "EditorHost"),
         ] {
-            let asset = crate::web_assets::lookup_asset(path, MAIN_VIEW_ASSETS);
+            let asset = crate::webview::assets::lookup_asset(path, MAIN_VIEW_ASSETS);
             assert!(asset.is_some(), "{path} not lookupable");
             let (bytes, ct) = asset.unwrap();
             assert_eq!(ct, "application/javascript; charset=utf-8");

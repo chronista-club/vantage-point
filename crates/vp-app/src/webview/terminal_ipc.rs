@@ -293,7 +293,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                     (get("x"), get("y"), get("w"), get("h"))
                 {
                     let _ = proxy.send_event(AppEvent::InkSnapshot {
-                        rect: crate::ink_snapshot::InkRect { x, y, w, h },
+                        rect: crate::webview::ink_snapshot::InkRect { x, y, w, h },
                     });
                 }
             }
@@ -415,7 +415,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 .unwrap_or("empty")
                 .to_string();
             if let Some(rect_v) = parsed.get("rect") {
-                let rect = crate::main_area::SlotRect {
+                let rect = crate::webview::main_area::SlotRect {
                     x: rect_v.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0),
                     y: rect_v.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0),
                     w: rect_v.get("w").and_then(|v| v.as_f64()).unwrap_or(0.0),

@@ -15,7 +15,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::daemon_launcher::locate_vp_binary;
+use crate::daemon::launcher::locate_vp_binary;
 
 /// login / logout フローの二重起動ガード（ボタン連打 / browser 放置中の再 click 対策）。
 static AUTH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);

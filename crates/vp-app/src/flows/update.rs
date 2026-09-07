@@ -35,7 +35,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use crate::daemon_launcher::locate_vp_binary;
+use crate::daemon::launcher::locate_vp_binary;
 
 /// 更新フローが実行中かのガード。「更新する」CTA の連打で破壊的フローが二重に
 /// 走るのを防ぐ（rfd ダイアログ表示中の追加 click 対策）。フロー完了 / キャンセル /

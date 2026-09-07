@@ -89,7 +89,7 @@ pub fn init_tracing() -> LogInitResult {
     let mut env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| {
             tracing_subscriber::EnvFilter::new(
-                "vp_app=info,vp_app::terminal=warn,vantage_point=info",
+                "vp_app=info,vp_app::webview::terminal_ipc=warn,vantage_point=info",
             )
         })
         .add_directive("hyper_util=warn".parse().expect("static directive"))

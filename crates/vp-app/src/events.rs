@@ -38,7 +38,7 @@ pub enum AppEvent {
     SlotRect {
         pane_id: Option<String>,
         kind: String,
-        rect: crate::main_area::SlotRect,
+        rect: crate::webview::main_area::SlotRect,
     },
     /// VP-100 follow-up: muda メニュー項目クリック (developer mode toggle / open devtools 等)
     MenuClicked(muda::MenuId),
@@ -121,7 +121,9 @@ pub enum AppEvent {
     /// event loop が WKWebView.takeSnapshot で `rect` を撮って PNG を state_dir に書き、完了を
     /// `InkSnapshotReady` で受けて push envelope `ink:snapshot` を webview に返す。
     /// 送信文面・宛先（chat/tui）の決定は webview 側（ink.ts）が既存 IPC で行う（server 0 行）。
-    InkSnapshot { rect: crate::ink_snapshot::InkRect },
+    InkSnapshot {
+        rect: crate::webview::ink_snapshot::InkRect,
+    },
     /// ink: takeSnapshot の completion handler（main thread）から event loop へ返す結果。
     /// `path` Some = 成功（PNG の絶対パス）、`error` Some = 失敗（理由）。
     InkSnapshotReady {
@@ -150,7 +152,7 @@ pub enum AppEvent {
     /// `code:list` の walk 結果 → `lane_js::code_entries` で main webview へ push。
     CodeEntriesResult {
         lane: String,
-        entries: Vec<crate::file_explorer::Entry>,
+        entries: Vec<crate::webview::file_explorer::Entry>,
         truncated: bool,
     },
     /// `code:read` の読み結果 → `lane_js::code_file` で main webview へ push。
