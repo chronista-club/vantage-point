@@ -8,7 +8,7 @@
 //! ⚠️ 現状は純粋ではない: `ProcessToggle` / `ProcessReorder` で `session.save()`（file 書き込み）を呼ぶ。
 //! 純粋化（保存要求を outcome で返す）は test を先に置いてから別 PR（doc 60 §6 A）。
 
-use super::ActionsPersistPayload;
+use crate::daemon::pollers::ActionsPersistPayload;
 use crate::pane::{ActiveComponent, SidebarState};
 use crate::session_state::SessionState;
 

@@ -130,7 +130,7 @@ pub(crate) fn spawn_add_repo_picker(
                 tracing::info!("add_repo + start_process 完了 → repos 再 fetch");
                 // runtime port を merge する helper 経由で送る (= port を None で潰さない、
                 // restart / stop / delete callback と同じ invariant)。
-                match crate::app::fetch_repos_with_ports(&control).await {
+                match crate::daemon::pollers::fetch_repos_with_ports(&control).await {
                     Ok(repos) => {
                         let _ = proxy.send_event(AppEvent::ReposLoaded(repos));
                     }
@@ -249,7 +249,7 @@ pub(crate) fn spawn_clone_repo(
                 }
                 tracing::info!("clone + add_repo 成功 → repos 再 fetch");
                 // runtime port を merge する helper 経由で送る (= add_repo picker 経路と同じ invariant)。
-                match crate::app::fetch_repos_with_ports(&control).await {
+                match crate::daemon::pollers::fetch_repos_with_ports(&control).await {
                     Ok(repos) => {
                         let _ = proxy.send_event(AppEvent::ReposLoaded(repos));
                     }
