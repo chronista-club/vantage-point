@@ -1,6 +1,6 @@
 # doc 60 — vp-app の module 配置と依存 rule（app / daemon / lane / webview / flows）
 
-> **Status**: 実装中（6-0 配置替え = 2026-09-08 着地、6-1 切り出し進行、6-2 は別 conception）
+> **Status**: 実装中（6-0 / 6-0b / 6-1 = 2026-09-08 着地、次は A / B / C、6-2 は別 conception）
 > **Date**: 2026-09-08
 > **Owners**: vp-app（`crates/vp-app`）
 > **Supersedes**: [doc 11](11-vp-app-refactor.md) §2 / §5 Q3 / Q4（flat 前提の分割案）
@@ -115,4 +115,9 @@ crates/vp-app/src/
 
 ## Status log
 
-- 2026-09-08: 6-0 (a)(b)(c)(d) 着地（PR #TBD）。app.rs は `app/mod.rs` に、sibling 14 file を directory へ。
+- 2026-09-08: 6-0 (a)(b)(c)(d) 着地（PR #1043）。app.rs は `app/mod.rs` に、sibling 14 file を directory へ。
+- 2026-09-08: 6-0b 着地（PR #1044）。`client.rs` → `daemon_wire.rs` + `daemon/health_probe.rs`、`shell_detect.rs` 削除。
+- 2026-09-08: 6-1 移設 10 本すべて着地（PR #1045〜#1054）: push_main / editor_bridge / push_sidebar / app/sidebar_ipc /
+  daemon/conn / daemon/subscriptions / daemon/pollers / lane_address + daemon/wire / webview/ipc_route / lane/terminal +
+  lane/conversation。各 PR は順序付き diff で本文一致（差分は `use` / 可視性 / dedent）、test 1295 を維持。
+  `app/mod.rs` は 7,117 → 4,168 行（`run()` 据え置き）。次は A（sidebar test 先行 → 純粋化）→ B（ask 一本化）→ C（採否）→ 6-2。

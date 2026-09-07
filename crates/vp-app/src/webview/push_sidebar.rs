@@ -1,6 +1,5 @@
 //! Rust → sidebar bundle の投影（`window.vpSidebarDispatch` への typed push、`vp-sidebar.kdl` の event envelope）
 //!
-//!
 //! 旧 `app.rs` の `mod sidebar_js` + `push_sidebar_state`（棚卸し 項目 6 / 6-1 #3、2026-09-08。本文は順序付き diff で
 //! 一致、差分は dedent / 可視性 / `sidebar_js::state` → `self::state`）。`DaemonSettings` / `settings_snapshot` は
 //! app 側の関数（`developer_mode_env` / `flows::repo_dialog::resolve_default_repo_root`）を呼ぶ = state 側の
