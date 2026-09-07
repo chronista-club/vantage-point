@@ -63,7 +63,7 @@ conductor の既知事故 2 件（wire ack 遅延の二重配送 / conductor ses
 
 3 層モデル:
 1. **決定的判定**（Host 内・純関数 = calculations、テスト可能）: merged? 衝突? base 古い?
-2. **LLM への発注**（Host が呼ぶ stateless one-shot、既存 OneShot `ClaudeAgent` が道具）:
+2. **LLM への発注**（Host が呼ぶ stateless one-shot。~~既存 OneShot `ClaudeAgent` が道具~~ → `ClaudeAgent` は 2026-09 撤去済。実装時は `conversation/host.rs::ClaudeHost` か `claude -p` の直接 spawn を道具にする）:
    進捗サマリ文章化・brief 下書き等の言語タスク
 3. **人間へのエスカレーション**（帳簿に積んで注視中の session / GUI へ）: 事実だけで決まらない案件
 
