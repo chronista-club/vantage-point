@@ -14,7 +14,7 @@ vp-app の GUI は `crates/vp-app/webview/` の SolidJS + xterm.js を esbuild �
 | 手元で cargo を直接叩く | 先に `mise run app:bundle`（不在なら vp-app の build.rs が手順を案内して fail） |
 
 bundle の再 embed は `crates/vp-app/build.rs` の `rerun-if-changed` が保証する
-（旧「`touch main_area.rs` の儀式」は不要）。
+（旧「`touch webview/main_area.rs` の儀式」は不要）。
 
 ### 旧運用と転換理由
 
@@ -59,7 +59,7 @@ VP_WEBVIEW_DEV=~/repos/vantage-point/crates/vp-app/assets vp app start
 - 未設定 / read 失敗時は焼き込み bundle に fallback（= prod 挙動、壊れない）。
 - creo-ui 側を触る日は下の `bun link` と組み合わせる — 供給側 `bun run build` →
   watch が拾って bundle 再生成 → Cmd+R、で **cross-repo でも cargo 無しの秒ループ**になる。
-- 実装: `web_assets.rs`（disk-read）+ `main_area.rs`（bundle の外部 `<script src>` 化）。
+- 実装: `webview/assets.rs`（disk-read）+ `webview/main_area.rs`（bundle の外部 `<script src>` 化）。
   #494 の復活（#815 で撤去、外部 script 化で発火するようになった）。
 
 ## dev loop: creo-ui / club-unison を同時開発する日（bun link）

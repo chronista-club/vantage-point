@@ -25,7 +25,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use crate::daemon_launcher::locate_vp_binary;
+use crate::daemon::launcher::locate_vp_binary;
 
 /// 再起動フローが実行中かのガード。ボタン連打で `vp daemon restart` が二重に走るのを防ぐ
 /// （rfd ダイアログ表示中の追加 click 対策。`update_flow` の `UPDATE_IN_FLIGHT` と同型）。

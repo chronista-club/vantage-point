@@ -247,7 +247,7 @@ impl LaneAddress {
     ///
     /// ⚠️ **client は自分で組み立てない**。この値は daemon が発行して `LaneAddressWire::key`
     /// に載せ、vp-app / webview はそのまま運ぶ。以前は Rust 2 実装 + TS 2 実装が同じ写像を
-    /// 持ち、doc に「手で一致させる」と書く運用だった（`vp-app/src/lane.rs` の
+    /// 持ち、doc に「手で一致させる」と書く運用だった（`vp-app/src/lane_address.rs` の
     /// `key_matches_display` は**実際に食い違った**記録）。
     ///
     /// ⚠️ 分節は 3 つ。読み側 [`LanePool::parse_address`] は旧形（`<repo>/<name>` /

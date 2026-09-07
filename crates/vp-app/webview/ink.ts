@@ -6,7 +6,7 @@
  *
  * - 読み方 = **合成画像 + item id**（semantic anchor は廃案）。annotation は構造データにせず
  *   pixel のまま届き、意味は受け手（claude / codex / grok = vision）が画像から汲む
- * - 撮影 = **WKWebView.takeSnapshot(rect = #ink-stage)**（Rust 側 ink_snapshot.rs）。webview は
+ * - 撮影 = **WKWebView.takeSnapshot(rect = #ink-stage)**（Rust 側 webview/ink_snapshot.rs）。webview は
  *   rect を送り、Rust が PNG を書いて push envelope `ink:snapshot`（失敗時
  *   `ink:snapshot_error`）で返す。`window.vpInk` は DevTools 検分用に残っているだけで、
  *   **Rust は名前で呼ばない**（doc 53 §6.5.1.3）

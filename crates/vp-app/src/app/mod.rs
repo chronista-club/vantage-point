@@ -37,15 +37,16 @@ use wry::{
 };
 
 use crate::client::{DaemonRpcClient, RepoInfo};
-use crate::daemon_control::DaemonControl;
-use crate::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
-use crate::pane::{ActiveComponent, ActivitySnapshot, RepoPaneState, SidebarState};
-use crate::repo_dialog::{
+use crate::daemon::control::DaemonControl;
+use crate::events::AppEvent;
+use crate::flows::repo_dialog::{
     resolve_default_repo_root, spawn_add_repo_picker, spawn_clone_repo, spawn_repo_root_picker,
 };
+use crate::pane::{ActiveComponent, ActivitySnapshot, RepoPaneState, SidebarState};
 use crate::session_state::SessionState;
 use crate::settings::Settings;
-use crate::terminal::{self, AppEvent};
+use crate::webview::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
+use crate::webview::terminal_ipc;
 
 /// Sidebar の固定幅 (LogicalPixel)。
 /// WebView 統合 (step 3a) 後は HTML 側 CSS (#sidebar-root width:280px) が司るため Rust 側は未使用
@@ -104,12 +105,12 @@ fn developer_mode_env() -> Option<bool> {
 ///
 /// <https://github.com/chronista-club/creo-ui> packages/web が source。
 /// vp-app の 3 ペインすべてに inline して共通 token で描画する。
-pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
+pub const CREO_TOKENS_CSS: &str = include_str!("../../assets/creo-tokens.css");
 
 /// WebView 統合 (step 3a) 後の唯一の webview が `vp-asset://` で配信する asset。
 /// `MAIN_AREA_HTML` を `app/index.html` で、SolidJS bundle 2 本を外部 script として配信
 /// (doc 48 Phase 1 で inline → `<script src>` 化。`VP_WEBVIEW_DEV` 設定時は
-/// `web_assets::serve` の disk-read が baked より優先され、cargo build なしの HMR になる)。
+/// `webview::assets::serve` の disk-read が baked より優先され、cargo build なしの HMR になる)。
 ///
 /// ## なぜ with_html ではなく custom protocol か (統合 origin fix)
 /// `with_html` で load した document は **about:blank = 不透明 (opaque) オリジン**になり、
@@ -151,7 +152,7 @@ fn update_pane_bounds(webview: &WebView, window_size: tao::dpi::PhysicalSize<u32
 
 /// WebView 統合 (step 3a): 統合 ipc_handler の dispatch 判定。
 /// main (terminal / pane) IPC tag なら true、 sidebar IpcEnvelope tag (repo: / lane: 系)
-/// なら false。 tag 集合は `terminal::handle_ipc_message` の match arm と一致 (disjoint)。
+/// なら false。 tag 集合は `terminal_ipc::handle_ipc_message` の match arm と一致 (disjoint)。
 /// terminal の fall-through に頼ると sidebar tag を silent drop するため、 ここで明示判定する。
 fn is_main_ipc_tag(body: &str) -> bool {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
@@ -182,7 +183,7 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "conversation:respond"
                 | "conversation:interrupt"
                 | "conversation:set_permission_mode"
-                // doc 38 Phase 2: session tab strip の tag。terminal.rs に match arm を
+                // doc 38 Phase 2: session tab strip の tag。webview/terminal_ipc.rs に match arm を
                 // 足すだけでは届かない — この allowlist に無い tag は sidebar IPC に流れて
                 // 「unknown variant」で捨てられる（2026-07-16 dogfood で「+」無反応の根因）。
                 // 旧 `echoes:sessions_fetch` は doc 53 §11 で退役（roster は snapshot が運ぶ）。
@@ -193,7 +194,7 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "conversation:session_remove"
                 | "conversation:agents_fetch"
                 // replay demand（2026-07-24）: 消費者主導 demand。allowlist 漏れは sidebar IPC へ
-                // 流れて silent drop = 「chat が空のまま」regression（terminal.rs の arm と対）
+                // 流れて silent drop = 「chat が空のまま」regression（webview/terminal_ipc.rs の arm と対）
                 | "conversation:demand_start"
                 // doc 50 §4.6 A6: 名札 kind badge の Mode 切替（session 明示）。漏れると
                 // sidebar IPC へ流れて silent drop = 「badge を押しても変身しない」regression。
@@ -228,7 +229,7 @@ mod ipc_tag_tests {
     use super::is_main_ipc_tag;
 
     /// doc 38 Phase 2/3 の session tab tag が main webview IPC として dispatch されること。
-    /// terminal.rs の match arm と本 allowlist は**両方**更新が要る（片側更新だと
+    /// webview/terminal_ipc.rs の match arm と本 allowlist は**両方**更新が要る（片側更新だと
     /// sidebar IPC に落ちて silent drop — 2026-07-16 の「+」無反応 regression の固定。
     /// Phase 3 の `conversation:session_remove` も同じ理由で allowlist に載せた）。
     #[test]
@@ -607,17 +608,17 @@ impl SharedDaemonConn {
     pub(crate) async fn control_within(
         &self,
         wait: Duration,
-    ) -> anyhow::Result<crate::daemon_control::DaemonControl> {
+    ) -> anyhow::Result<crate::daemon::control::DaemonControl> {
         let mut conn = self.clone();
         match tokio::time::timeout(wait, conn.wait_client()).await {
-            Ok(Some(client)) => Ok(crate::daemon_control::DaemonControl::new(client)),
+            Ok(Some(client)) => Ok(crate::daemon::control::DaemonControl::new(client)),
             Ok(None) => anyhow::bail!("app 終了中 (daemon conn manager 停止)"),
             Err(_) => anyhow::bail!("Daemon QUIC 未接続 (daemon 未起動?)"),
         }
     }
 
     /// [`Self::control_within`] の既定待ち時間版。
-    pub(crate) async fn control(&self) -> anyhow::Result<crate::daemon_control::DaemonControl> {
+    pub(crate) async fn control(&self) -> anyhow::Result<crate::daemon::control::DaemonControl> {
         self.control_within(CONTROL_WAIT).await
     }
 }
@@ -2046,7 +2047,7 @@ mod lane_js {
     ///
     /// ⚠️ `window.vpDispatch &&` の guard は**残す**。bundle 評価前に Rust が撃つ窓は依然あり、
     /// そこは JS が存在しないので queue にも積めない。その窓の救済は
-    /// [`AppEvent::WebviewReady`](crate::terminal::AppEvent::WebviewReady) の replay
+    /// [`AppEvent::WebviewReady`](crate::events::AppEvent::WebviewReady) の replay
     /// （受け口が揃った合図を受けて現在の状態を丸ごと撃ち直す）。
     fn push(main_view: &WebView, msg: &PushEventEnvelope) {
         let json = match serde_json::to_string(msg) {
@@ -2264,12 +2265,12 @@ mod lane_js {
     // ===== code pane（コードブラウザ P1）=====
 
     /// `code:list` の応答: lane workdir の file 一覧。要素の形の持ち主は
-    /// [`crate::file_explorer::Entry`]（serialize 失敗はその 1 件だけ省く —
+    /// [`crate::webview::file_explorer::Entry`]（serialize 失敗はその 1 件だけ省く —
     /// `files_list_result` から引き継いだ方針）。
     pub fn code_entries(
         main_view: &WebView,
         lane: &str,
-        entries: &[crate::file_explorer::Entry],
+        entries: &[crate::webview::file_explorer::Entry],
         truncated: bool,
     ) {
         let entries = entries
@@ -2495,7 +2496,7 @@ fn spawn_actions_persist_writer(
 ///
 /// task 自体は state を持たず、 ただ tick を main thread に届ける役割。 main thread の
 /// handler が `sidebar_state.lanes_by_repo` を walk して
-/// `session_title::resolve_title_for_cwd` を呼び、 結果を `session_titles` map に diff/update
+/// `lane::title::resolve_title_for_cwd` を呼び、 結果を `session_titles` map に diff/update
 /// + sidebar に push する。
 ///
 /// `proxy.send_event` 失敗 (= EventLoop 終了) で task を終了する。 polling 周期は
@@ -2688,7 +2689,7 @@ mod header_lane_fields_changed_tests {
 #[cfg(test)]
 mod lane_key_wire_agent_tests {
     use super::lane_key_to_wire_agent;
-    use crate::lane::{LaneAddress, LaneAddressWire};
+    use crate::lane_address::{LaneAddress, LaneAddressWire};
 
     /// doc 44 P2: lane key (`<repo>/<name>`) → wire agent address。
     ///
@@ -3458,11 +3459,11 @@ struct SidebarIpcOutcome {
     /// 再 fetch して `AppEvent::WireHistoryResult` で最新状態を push back する。
     wire_ack_request: Option<(String, String)>,
     /// in-app update: sidebar footer の「更新する」ボタン click 要求 `(latest_version)`。
-    /// caller (event loop) が `update_flow::spawn_update_flow` を呼び、native 確認ダイアログ →
+    /// caller (event loop) が `flows::update::spawn_update_flow` を呼び、native 確認ダイアログ →
     /// self-update → `vp daemon restart` → GUI relaunch を専用スレッドで実行する。
     update_apply_request: Option<String>,
     /// Login ボタン click 要求。値 = token の宛先（"hub" | "creo"）。caller (event loop) が
-    /// blocking pool で `auth_flow::run_login_blocking` (`vp auth login --for <target>` spawn) を
+    /// blocking pool で `flows::auth::run_login_blocking` (`vp auth login --for <target>` spawn) を
     /// 実行し、成功後に `daemon-control.hub/reconnect` で hub 接続へ即反映する。
     ///
     /// ⚠️ **identity は 1 つでも token は宛先ごと**（Auth0 の aud claim）。bool ではなく宛先を
@@ -3474,7 +3475,7 @@ struct SidebarIpcOutcome {
     /// （`process:toggle` / `process:reorder` と同じ規律）。
     actions_persist_request: Option<ActionsPersistPayload>,
     /// Logout ボタン click 要求。値 = 宛先（`None` は「要求なし」、`Some("")` = 全宛先を捨てる）。
-    /// caller が blocking pool で `auth_flow::run_logout_blocking` (確認ダイアログ →
+    /// caller が blocking pool で `flows::auth::run_logout_blocking` (確認ダイアログ →
     /// `vp auth logout [--for <target>]`) を実行し、成功後に `hub/reconnect` で即反映する。
     auth_logout_request: Option<String>,
     /// 設定 overlay の現在値要求（doc 59 P1）。caller が `settings:result` を push back する。
@@ -3487,7 +3488,7 @@ struct SidebarIpcOutcome {
     settings_pick_repo_root_request: bool,
     /// daemon 再起動要求（doc 59 P1）。⚠️ **全 repo = 全 lane の claude が落ちる**
     /// （doc 44 P1 fold-in）。caller が rfd 確認ダイアログ → `vp daemon restart` を
-    /// 専用スレッドで実行する（`update_flow.rs` と同じ理由 = event loop を塞がない）。
+    /// 専用スレッドで実行する（`flows/update.rs` と同じ理由 = event loop を塞がない）。
     daemon_restart_request: bool,
 }
 
@@ -3810,7 +3811,7 @@ fn lane_key_to_wire_agent(address: &str) -> Option<String> {
     // ⚠️ **読む側は旧世代の予約名（`conductor` / `root` / `lead`）も Main とみなす**。
     // 永続 state に残っており、ここで弾くとその lane の wire 宛先が引けない
     // （無音で届かなくなる）。
-    if name == crate::lane::ROOT_LANE_NAME
+    if name == crate::lane_address::ROOT_LANE_NAME
         || name == "lead"
         || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&name)
     {
@@ -3892,7 +3893,7 @@ fn lookup_lane_cwd_by_address(state: &SidebarState, address: &str) -> Option<std
 }
 
 // R-0 (`docs/design/11-vp-app-refactor.md` § 3.0a / `mem_1CaaaDoXHZvhR46ZfLN6jx`):
-//   旧 `lane_address_key(&LaneAddressWire) -> String` 関数は `lane.rs::LaneAddressWire::key()`
+//   旧 `lane_address_key(&LaneAddressWire) -> String` 関数は `lane_address.rs::LaneAddressWire::key()`
 //   メソッドに移管 (G2 解消、 3 重実装の 1 元化)。 caller は `wire.key()` で同等の文字列を取れる。
 
 /// App のエントリポイント
@@ -3907,7 +3908,7 @@ pub fn run() -> anyhow::Result<()> {
 
     // ink（対話面, doc 52 §3）: 送信済み snapshot は ephemeral だが disk に残るので、起動時に
     // 7 日超を掃除する（「消し手のないファイルを作らない」— terminal replay disk leak の轍）。
-    crate::ink_snapshot::prune_old(Duration::from_secs(7 * 24 * 3600));
+    crate::webview::ink_snapshot::prune_old(Duration::from_secs(7 * 24 * 3600));
 
     // Windows taskbar の identity。 **window を作る前**に設定する必要がある
     // (既存 window の AUMID は後から変えられない)。 非 Windows は no-op。
@@ -4113,7 +4114,7 @@ pub fn run() -> anyhow::Result<()> {
     let _ = proxy; // 旧 spawn_shell / connect_daemon_terminal で proxy を消費していた、 互換用に残す
     let node_url = std::env::var("VP_DAEMON_URL")
         .unwrap_or_else(|_| format!("http://127.0.0.1:{}", crate::client::default_daemon_port()));
-    if let Err(e) = crate::daemon_launcher::ensure_daemon_ready(&node_url) {
+    if let Err(e) = crate::daemon::launcher::ensure_daemon_ready(&node_url) {
         tracing::warn!(
             "daemon auto-launch 失敗 (continue with offline state): {}",
             e
@@ -4157,7 +4158,7 @@ pub fn run() -> anyhow::Result<()> {
         // SecurityError を throw し sidebar bundle が boot 中に落ちる。custom protocol で
         // 実オリジン (vp-asset://app) を与え、MAIN_AREA_HTML を app/index.html として配信する。
         .with_custom_protocol("vp-asset".to_string(), move |id, request| {
-            crate::web_assets::serve(id, request, MAIN_VIEW_ASSETS)
+            crate::webview::assets::serve(id, request, MAIN_VIEW_ASSETS)
         })
         .with_initialization_script(&echo_init)
         .with_url("vp-asset://app/index.html")
@@ -4177,7 +4178,7 @@ pub fn run() -> anyhow::Result<()> {
                 return;
             }
             if is_main_ipc_tag(body) {
-                terminal::handle_ipc_message(body, &ipc_proxy);
+                terminal_ipc::handle_ipc_message(body, &ipc_proxy);
             } else {
                 let _ = sidebar_ipc_proxy.send_event(AppEvent::SidebarIpc(body.to_string()));
             }
@@ -4486,10 +4487,10 @@ pub fn run() -> anyhow::Result<()> {
                             current_keys.insert(map_key.clone());
                             let resolved = match conversation.as_deref() {
                                 Some(conv) => {
-                                    crate::session_title::resolve_title_for_conversation(cwd, conv)
+                                    crate::lane::title::resolve_title_for_conversation(cwd, conv)
                                 }
                                 None if is_root => {
-                                    crate::session_title::resolve_title_for_cwd(cwd)
+                                    crate::lane::title::resolve_title_for_cwd(cwd)
                                 }
                                 None => None,
                             };
@@ -5056,12 +5057,12 @@ pub fn run() -> anyhow::Result<()> {
                 let lane_key = sidebar_state
                     .active_lane_address
                     .as_deref()
-                    .map(crate::ink_snapshot::lane_key_from_address)
+                    .map(crate::webview::ink_snapshot::lane_key_from_address)
                     .unwrap_or_else(|| "main".to_string());
-                match crate::ink_snapshot::snapshot_path(&lane_key) {
+                match crate::webview::ink_snapshot::snapshot_path(&lane_key) {
                     Ok(out_path) => {
                         let ready_proxy = proxy.clone();
-                        crate::ink_snapshot::take_snapshot(
+                        crate::webview::ink_snapshot::take_snapshot(
                             &webview,
                             rect,
                             out_path,
@@ -5239,7 +5240,7 @@ pub fn run() -> anyhow::Result<()> {
                         message.get("lane").and_then(|l| l.as_str()),
                     ) {
                         // token → lane address（形式は `address_from_lane_token` の 1 箇所）
-                        let address = crate::lane::address_from_lane_token(repo, token);
+                        let address = crate::lane_address::address_from_lane_token(repo, token);
                         // Model B (focus = 操舵ポインタ): switch_lane は全 instance に broadcast される
                         // が、適用するのは **focused instance だけ**。非 focus の window はこの event を
                         // 無視し、自分の lane に park されたまま (= 2 window が別々の lane を同時に見られる)。
@@ -5294,9 +5295,9 @@ pub fn run() -> anyhow::Result<()> {
                     let token = message
                         .get("lane")
                         .and_then(|l| l.as_str())
-                        .unwrap_or(crate::lane::ROOT_LANE_NAME);
+                        .unwrap_or(crate::lane_address::ROOT_LANE_NAME);
                     // token → lane address（switch_lane と同じ helper を通す）。
-                    let address = crate::lane::address_from_lane_token(repo, token);
+                    let address = crate::lane_address::address_from_lane_token(repo, token);
                     if sidebar_state.active_lane_address.as_deref() != Some(address.as_str()) {
                         mark_lane_canvas_unread(&address, &mut sidebar_state, &webview);
                     }
@@ -5999,7 +6000,7 @@ pub fn run() -> anyhow::Result<()> {
                     Some(cwd) => {
                         let proxy = async_action_proxy.clone();
                         rt_handle.spawn_blocking(move || {
-                            let (entries, truncated) = crate::file_explorer::list_entries(&cwd);
+                            let (entries, truncated) = crate::webview::file_explorer::list_entries(&cwd);
                             let _ = proxy.send_event(AppEvent::CodeEntriesResult {
                                 lane,
                                 entries,
@@ -6017,7 +6018,7 @@ pub fn run() -> anyhow::Result<()> {
                     Some(cwd) => {
                         let proxy = async_action_proxy.clone();
                         rt_handle.spawn_blocking(move || {
-                            let payload = crate::file_explorer::read_file(&cwd, &rel_path);
+                            let payload = crate::webview::file_explorer::read_file(&cwd, &rel_path);
                             let _ = proxy.send_event(AppEvent::CodeFileResult {
                                 lane,
                                 rel_path,
@@ -6729,7 +6730,7 @@ pub fn run() -> anyhow::Result<()> {
                 // on_phase は AppEvent 経由で event loop に戻し、「更新中…」表示に使う。
                 if let Some(version) = outcome.update_apply_request {
                     let phase_proxy = proxy.clone();
-                    crate::update_flow::spawn_update_flow(version, move |applying| {
+                    crate::flows::update::spawn_update_flow(version, move |applying| {
                         let _ = phase_proxy.send_event(AppEvent::UpdateFlowPhase(applying));
                     });
                 }
@@ -6809,7 +6810,7 @@ pub fn run() -> anyhow::Result<()> {
                 if outcome.daemon_restart_request {
                     // ⚠️ **全 repo = 全 lane の claude が落ちる**（doc 44 P1 fold-in）。
                     // 確認ダイアログは flow 側（rfd が blocking なので専用スレッド）。
-                    crate::daemon_flow::spawn_daemon_restart();
+                    crate::daemon::restart::spawn_daemon_restart();
                 }
                 // Hub 行の Login / Logout ボタン click 要求。blocking フロー（browser OAuth
                 // 待ち / 確認ダイアログ / CLI spawn）を blocking pool で実行し、成功したら
@@ -6827,8 +6828,8 @@ pub fn run() -> anyhow::Result<()> {
                     let rt = rt_handle.clone();
                     rt_handle.spawn(async move {
                         let flow = rt.spawn_blocking(move || match login_target {
-                            Some(t) => crate::auth_flow::run_login_blocking(&t),
-                            None => crate::auth_flow::run_logout_blocking(
+                            Some(t) => crate::flows::auth::run_login_blocking(&t),
+                            None => crate::flows::auth::run_logout_blocking(
                                 logout_target.as_deref().unwrap_or(""),
                             ),
                         });
@@ -7064,13 +7065,14 @@ mod port_merge_tests {
 mod main_view_asset_tests {
     //! 統合 WebView (step 3a) の単一 HTML が vp-asset:// で配信でき、SolidJS bundle を
     //! 外部 script (vp-asset://app/*.bundle.js) として参照・配信できること (doc 48 Phase 1)。
-    //! Bundle font / serve handler のテストは `web_assets` module 側に分離。
+    //! Bundle font / serve handler のテストは `webview::assets` module 側に分離。
     use super::*;
 
     /// `MAIN_VIEW_ASSETS` で統合 HTML が `vp-asset://app/index.html` から取れる。
     #[test]
     fn main_view_html_servable_via_vp_asset() {
-        let html = crate::web_assets::lookup_asset("vp-asset://app/index.html", MAIN_VIEW_ASSETS);
+        let html =
+            crate::webview::assets::lookup_asset("vp-asset://app/index.html", MAIN_VIEW_ASSETS);
         assert!(html.is_some(), "index.html not lookupable");
         let (bytes, ct) = html.unwrap();
         assert_eq!(ct, "text/html; charset=utf-8");
@@ -7104,7 +7106,7 @@ mod main_view_asset_tests {
             ("vp-asset://app/sidebar.bundle.js", "[vp-sidebar] booting"),
             ("vp-asset://app/editor-host.bundle.js", "EditorHost"),
         ] {
-            let asset = crate::web_assets::lookup_asset(path, MAIN_VIEW_ASSETS);
+            let asset = crate::webview::assets::lookup_asset(path, MAIN_VIEW_ASSETS);
             assert!(asset.is_some(), "{path} not lookupable");
             let (bytes, ct) = asset.unwrap();
             assert_eq!(ct, "application/javascript; charset=utf-8");

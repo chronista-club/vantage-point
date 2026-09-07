@@ -19,9 +19,9 @@ use std::thread;
 use tao::event_loop::EventLoopProxy;
 
 use crate::app::SharedDaemonConn;
+use crate::events::AppEvent;
 use crate::pane::SidebarState;
 use crate::settings::Settings;
-use crate::terminal::AppEvent;
 
 /// Settings + 既存 repoから picker の初期ディレクトリを解決。
 ///

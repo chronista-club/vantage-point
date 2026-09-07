@@ -3,6 +3,7 @@
 # 11: vp-app holistic architecture refactor — purple-haze proposal (2026-05-01)
 
 > **Status**: 未採用 proposal (2026-05-16、VP-191 棚卸し時点)
+> **Superseded (2026-09-08)**: vp-app の module 配置は [doc 60](60-vp-app-layout.md) が現行。§5 Q3 の「flat」決定は階層（app / daemon / lane / webview / flows）に更新、§5 Q4（`AppEvent` → `events.rs`）は 6-0 で実施。R-2 / R-4 / R-5 は doc 60 の 6-1 に置き換え
 > **Author**: team-bucciarati::purple-haze (research-only agent、 1200 行 raw 提案)
 > **Synthesis memory**: creo `mem_1CaaaDoXHZvhR46ZfLN6jx` (圧縮版 v2 plan、 意思決定 sheet)
 > **Trigger**: PR #235 review で user が「app.rs 3126 行は重い、 整理した方が良い」 と発言 → main の 5 段 plan (`mem_1CaaYnQDGoYeckjX2TDCnd` v1) を叩き台として holistic 再設計

@@ -35,7 +35,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use crate::daemon_launcher::locate_vp_binary;
+use crate::daemon::launcher::locate_vp_binary;
 
 /// 更新フローが実行中かのガード。「更新する」CTA の連打で破壊的フローが二重に
 /// 走るのを防ぐ（rfd ダイアログ表示中の追加 click 対策）。フロー完了 / キャンセル /
@@ -194,7 +194,7 @@ fn run_step(label: &str, program: &Path, args: &[String]) -> bool {
     );
     // GUI (.app) を Finder / Dock / launchd 経由で起動するとプロセスの PATH が最小集合
     // (/usr/bin:/bin:...) になり、brew (/opt/homebrew/bin) 等の user-installed tool を
-    // 見つけられず spawn が失敗する (#498/#501)。daemon_launcher.rs の spawn 同様、
+    // 見つけられず spawn が失敗する (#498/#501)。daemon/launcher.rs の spawn 同様、
     // augmented PATH を注入して brew / vp を確実に解決する。
     match Command::new(program)
         .args(args)
@@ -275,7 +275,7 @@ fn post_update_script(
 
 /// 更新フロー後半を detached helper に委譲し、自身（旧 GUI）を終了する。
 ///
-/// helper は setsid で完全独立させる（daemon_launcher の spawn と同型）ため、旧 GUI が
+/// helper は setsid で完全独立させる（daemon::launcher の spawn と同型）ため、旧 GUI が
 /// いつ・どう消えてもフローは完走する。出力は `vp_log_dir()/update-helper.log` に append。
 #[cfg(unix)]
 fn handoff_to_helper_and_exit(channel: UpdateChannel, vp: &Path) -> ! {

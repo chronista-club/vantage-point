@@ -3,7 +3,7 @@
 //! ## doc 45 段 3 — 残っているのは health だけ
 //!
 //! 元は repos / processes / lanes を触る REST client (12 method) だったが、
-//! control plane は Unison に寄せた ([`crate::daemon_control`])。ここに残るのは
+//! control plane は Unison に寄せた ([`crate::daemon::control`])。ここに残るのは
 //! **`/api/health` 1 本**で、これは統一の取りこぼしではなく doc 45 §2 の設計判断:
 //! health は「他が壊れている時に動いてほしい」probe なので、Unison 層が wedge した時に
 //! 診断手段ごと失わないよう、意図的に鈍い外殻 (HTTP) として置く。
@@ -24,9 +24,9 @@ use anyhow::Result;
 use serde::Deserialize;
 
 // R-0 (`docs/design/11-vp-app-refactor.md` § 3.0a / `mem_1CaaaDoXHZvhR46ZfLN6jx`):
-//   `LaneAddressWire` の正規定義は `lane.rs` に移管 (G2 解消、 3 重実装の 1 元化)。
+//   `LaneAddressWire` の正規定義は `lane_address.rs` に移管 (G2 解消、 3 重実装の 1 元化)。
 //   client.rs は consumer として use で bring-into-scope する。
-use crate::lane::LaneAddressWire;
+use crate::lane_address::LaneAddressWire;
 
 // v1.0 柱 2 PR-1: ts-rs で sidebar wire 型を TS に export (test build 時のみ)。
 #[cfg(test)]
@@ -51,7 +51,7 @@ fn default_base_url() -> String {
 
 /// daemon の HTTP health クライアント (`/api/health` 専用)
 ///
-/// doc 45 段 3 以降、control plane は [`crate::daemon_control::DaemonControl`] が持つ。
+/// doc 45 段 3 以降、control plane は [`crate::daemon::control::DaemonControl`] が持つ。
 pub struct DaemonRpcClient {
     base_url: String,
     client: reqwest::Client,
@@ -253,8 +253,8 @@ pub struct RunningRepo {
     pub port: u16,
 }
 
-// `LaneAddressWire` の定義は `crate::lane::LaneAddressWire` に移管 (R-0、 G2 解消)。
-// 本 file 上部の `use crate::lane::LaneAddressWire;` で bring-into-scope 済。
+// `LaneAddressWire` の定義は `crate::lane_address::LaneAddressWire` に移管 (R-0、 G2 解消)。
+// 本 file 上部の `use crate::lane_address::LaneAddressWire;` で bring-into-scope 済。
 
 /// Lane info (repo `/api/lanes` レスポンス要素)
 ///
