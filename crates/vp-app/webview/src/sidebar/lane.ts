@@ -133,7 +133,7 @@ export function laneCwdLabel(cwd: string, repoPath: string): string {
  * 旧実装は `${repo}/${name}` を自分で組み、doc に「Rust `LaneAddressWire::key()` と
  * **byte-for-byte 一致させる**」と書いていた = **手で同期を保つ契約**。同じ写像が
  * Rust 2 実装 + TS 2 実装の計 4 箇所にあり、Rust 内ですら食い違った記録がある
- * （`vp-app/src/lane.rs` の `key_matches_display`）。
+ * （`vp-app/src/lane_address.rs` の `key_matches_display`）。
  *
  * 形式（`<repo>/lane/<name>`）を知るのは daemon の `LaneAddress::canonical` だけ。
  * ここが組み立てを持たない限り、**形式が変わっても webview は無改修**で追随する。

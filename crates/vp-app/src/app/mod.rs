@@ -3488,7 +3488,7 @@ struct SidebarIpcOutcome {
     settings_pick_repo_root_request: bool,
     /// daemon 再起動要求（doc 59 P1）。⚠️ **全 repo = 全 lane の claude が落ちる**
     /// （doc 44 P1 fold-in）。caller が rfd 確認ダイアログ → `vp daemon restart` を
-    /// 専用スレッドで実行する（`update_flow.rs` と同じ理由 = event loop を塞がない）。
+    /// 専用スレッドで実行する（`flows/update.rs` と同じ理由 = event loop を塞がない）。
     daemon_restart_request: bool,
 }
 

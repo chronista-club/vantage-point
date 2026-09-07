@@ -194,7 +194,7 @@ fn run_step(label: &str, program: &Path, args: &[String]) -> bool {
     );
     // GUI (.app) を Finder / Dock / launchd 経由で起動するとプロセスの PATH が最小集合
     // (/usr/bin:/bin:...) になり、brew (/opt/homebrew/bin) 等の user-installed tool を
-    // 見つけられず spawn が失敗する (#498/#501)。daemon_launcher.rs の spawn 同様、
+    // 見つけられず spawn が失敗する (#498/#501)。daemon/launcher.rs の spawn 同様、
     // augmented PATH を注入して brew / vp を確実に解決する。
     match Command::new(program)
         .args(args)

@@ -28,6 +28,7 @@ ID 体系: `VP-SPEC-NNN` / `VP-DESIGN-NNN` / `VP-GUIDE-NNN`
 | [53-lane-reconcile.md](design/53-lane-reconcile.md) | lane reconcile・供給と購読の境界 |
 | [52-board-redesign.md](design/52-board-redesign.md) | board の現行実装と段階的な再設計 |
 | [59-settings-page.md](design/59-settings-page.md) | 設定の所有と GUI |
+| [60-vp-app-layout.md](design/60-vp-app-layout.md) | vp-app の module 配置と依存 rule（app / daemon / lane / webview / flows） |
 
 ### 提案・歴史を読む
 
