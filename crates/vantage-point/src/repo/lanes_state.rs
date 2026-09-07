@@ -10,16 +10,18 @@
 //! - PR-pre2 (VP-118 / 2026-05-04): HD → Echoes rename。
 //! - PR-β-2 (VP-120 / 2026-05-04): board を Repo → Lane に物理移管 (`LaneCapabilities.board`)。
 //! - PR-δ-2 (VP-136 / 2026-05-06): board を `LaneComponentRegistry` 経由 host へ rewire (`LaneCapabilities.registry`)。
+//! - 2026-09 (棚卸し 項目 5): `LaneCapabilities` / `LaneComponentRegistry` / `BoardComponent` を撤去。
+//!   board の正は doc 52 以降 DB（`unison_server` の `append_board_item` / `load_board`）で、container に読み手は無かった。
 //!
 //! ## architecture (LSCM 確定 + PR-δ-2 後)
 //!
 //! Lane scope に host する Agent:
-//! - Conversation 💬 (旧 HD) — Lane mise task PtySlot で立つ (= LaneCapabilities では host しない)
+//! - Conversation 💬 (旧 HD) — Lane PtySlot で立つ
 //! - shell — Lane mise task PtySlot で立つ (= 同上)
-//! - Board 🧭 — `LaneCapabilities.registry` 内 BoardComponent (PR-δ-2 で trait-based host へ rewire、 Lane あたり 1 instance)
+//! - Board 🧭 — DB が正 (doc 52、 per-scope の item list)。旧 `BoardComponent` container は 2026-09 撤去
 //! - Runner 🌿 (planned PR-γ で Lane 移管予定、 LaneComponent impl 追加)
 //!
-//! Repo scope の Agent pool (`repo_components_state.rs`) は runner / external-control のみ host していた (PR-β-2 後、現在は縮退済)。
+//! Repo scope の Agent pool (旧 `repo_components_state.rs`) は 2026-09 に撤去。
 //! Lane は **Main/Sub の PTY セッション + Agent container** に集中:
 //! - Main 1 / repo (固定)、agent = "claude" / "shell" / "tmux"
 //! - Sub 0..n / repo (可変、lane clone)、agent 同上

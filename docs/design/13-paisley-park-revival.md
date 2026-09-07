@@ -349,6 +349,8 @@ Out-of-scope (Post-PR-ε):
 
 ## §9. PR roadmap
 
+> **Status (2026-09-08)**: 本節の PR-β / PR-δ 系列で入れた `LaneCapabilities` / `LaneComponentRegistry` / `BoardComponent`（`BoardState`）は **棚卸し 項目 5 PR-D で撤去**。board は doc 52（server-authoritative）以降 DB が正で、container に production の読み手は無かった。以下は歴史記録。
+
 doc 12 §9 で plot された PR-β/δ/ε を本 doc で技術設計確定:
 
 | PR | Linear / status | scope | 規模 | 依存 |

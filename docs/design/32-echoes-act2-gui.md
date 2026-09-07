@@ -47,7 +47,7 @@ SP (Star Platinum)
  │   │   ⚠️ --permission-prompt-tool は claude 2.1.197 で削除済み（§10 Step 0）。
  │   │      MVP は acceptEdits で auto-apply。対話 permission は control protocol（defer）
  │   ├─ 翻訳層: stream-json → EchoesEvent（§4 の語彙）。**stream_event delta が本流**
- │   └─ 土台 = agent.rs::InteractiveClaudeAgent の昇格・拡張
+ │   └─ 土台 = agent.rs::InteractiveClaudeAgent の昇格・拡張（→ PR1 で `conversation/host.rs::ClaudeHost` として新規実装。agent.rs は 2026-09 撤去）
  │      ⚠️ 現行パーサは stream_event / thinking / tool_result を扱わない（§10）。実質書き直し
  └─ Unison channel "echoes"（仮）で vp-app へ配信（canvas / lanes / terminal と同型）
 

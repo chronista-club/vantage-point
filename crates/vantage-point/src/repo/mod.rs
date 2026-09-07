@@ -17,12 +17,8 @@ pub(crate) mod delegation;
 /// wire delivery loop — 未 ack command の lane nudge + 再掲示 (R2-b、 daemon 常駐)
 pub(crate) mod delivery_actor;
 pub(crate) mod hub;
-/// Lane 階層 Agent container (LSCM doc 12 §9 / doc 13 §3、 PR-β-1 受け皿、 VP-119)
-pub(crate) mod lane_capabilities;
 /// Lane subcommand types (LaneCmd) — Mailbox actor 経由の Lane 操作 Cmd (I-b、 2026-04-30)
 pub(crate) mod lane_cmd;
-/// Lane に host される component の minimal marker trait + Registry (PR-δ-1、 VP-135)
-pub(crate) mod lane_component;
 /// lane の実体（PtySlot / chat engine / 代表値）を intent（registry）に合わせる reconcile 本体（doc 53 §12）
 pub(crate) mod lane_reconcile;
 /// Lane spawn actor — `LaneCmd` を recv して Semaphore で gate しつつ Lane を spawn (I-b、 2026-04-30)
@@ -30,7 +26,6 @@ pub(crate) mod lane_spawn_actor;
 /// Lane state types (LaneAddress / LanePool 等) — Lane scope の data model
 pub(crate) mod lanes_state;
 pub mod process_runner;
-pub(crate) mod repo_components_state;
 /// Repo scope の Agent pool (board / runner ほか — 現在は縮退済)
 pub(crate) mod repo_registry;
 pub(crate) mod retained;

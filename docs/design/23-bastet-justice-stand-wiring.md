@@ -138,6 +138,8 @@ impl Service for Bastet {
 
 ## 6. Justice 🌫️ 設計（E3）— Lane の双方向 I/O endpoint
 
+> **Status (2026-09-08)**: **E3 は放棄**（mako 裁定、棚卸し 項目 5 PR-D）。E3-1 で入れた `DeviceIoComponent`（`device_io.rs`）は registry insert 以外に呼び手が無いまま残っていたため撤去。現行 MIDI は daemon の `DeviceRegistry`（E2）直で、fleet switch / `project_track` もそちら。本節は歴史記録として残す。
+
 ### 6.1 LaneStandHost impl
 
 ```rust,ignore
