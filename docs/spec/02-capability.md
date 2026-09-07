@@ -77,9 +77,9 @@ wiremsg は agent 間メッセージングの substrate。 message は中央 sto
 > **改訂 (2026-07-27)**: 旧 `MidiCapability`（REQ-CAP-010）と LPD8 単体定義（REQ-CAP-011）は
 > 撤去済 — single-device monitor は消費者不在のまま enumeration 先頭 device を無条件 grab する
 > 害だけが残っていた（fleet dogfood で発覚）。現行の device 連携は **devices 🧲（machine scope の
-> multi-device registry）+ device_io 🌫️（Lane scope の双方向 I/O）**。設計 SSOT =
-> `design/23-bastet-justice-stand-wiring.md`、実装 = `crates/vantage-point/src/bastet.rs` /
-> `justice.rs`。CLI は `vp midi lpd8 write|switch` / `vp midi monitor|ports`。
+> multi-device registry）**。設計 SSOT = `design/23-bastet-justice-stand-wiring.md`（E2）、
+> 実装 = `crates/vantage-point/src/devices.rs` + `daemon/machine_capabilities.rs`。
+> **改訂 (2026-09-08)**: Lane scope の device_io 🌫️（doc 23 E3）は放棄・撤去（棚卸し 項目 5 PR-D）。CLI は `vp midi lpd8 write|switch` / `vp midi monitor|ports`。
 
 ### REQ-CAP-020: Canvas / TUI 連携
 
