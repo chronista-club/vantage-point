@@ -5,6 +5,8 @@
 
 /// `vp-asset://` custom protocol の asset 供給（bundle の disk-read / embed）。
 pub mod assets;
+/// editor bridge / fleet の JS 式 builder（純 calculation）。
+pub mod editor_bridge;
 /// code pane（コードブラウザ）の file 供給 — lane workdir walk + ファイル読み。
 pub mod file_explorer;
 /// ink snapshot（WKWebView の PNG capture、macOS のみ実体）。
