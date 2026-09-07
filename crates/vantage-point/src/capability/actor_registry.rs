@@ -26,7 +26,7 @@
 //!
 //! - parent epic: VP-156 (Mailbox routing 統一)、 VP-159 (H1 段)
 //! - spike v0.1: `mem_1CavCepJdf8XyQ82AAiSpv`
-//! - PR-1 受け皿 pattern 先例: `LaneComponentHost` (PR-δ-1、 #288/VP-135)、 Agent/Service trait (PR-1、 #326)
+//! - PR-1 受け皿 pattern 先例: 旧 `LaneComponentHost` (PR-δ-1、 #288/VP-135、 2026-09 撤去)、 Agent/Service trait (PR-1、 #326)
 //! - PR-2 同型: agent / protocol を Agent impl (= #327)
 //! - PR-3 同型: notify / lane-spawn / devices を Service impl (= #329)
 //! - PR-4b 想定: Service trait sig 拡張 (`spawn_loop`) + 既存 3 Service の migration + caller 集約

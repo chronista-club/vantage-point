@@ -317,6 +317,7 @@ window 経由の一時フラグで凌いだ（#838）。他の bus（`vp:echoes-
 > 分かれている。
 > → P5 で `pty_slots` は session ごとになり、`chat_engines` と**同じ形**に揃った。
 > 残る不揃いは `LaneCapabilitiesPool`（PP が lane ごと = 住人になっていない）1 つ。
+> → ✅ 2026-09（棚卸し 項目 5 PR-D）で `LaneCapabilitiesPool` ごと撤去。board は doc 52 で DB が正になっており、pool に読み手は無かった。
 
 ### ✅ 決定: `conductor` → `root` に改名（全面）
 
