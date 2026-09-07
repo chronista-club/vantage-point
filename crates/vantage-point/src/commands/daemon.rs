@@ -192,7 +192,7 @@ fn wait_health(port: u16) -> Result<crate::cli::HealthResponse> {
 /// - `launchctl print` の exit 0 は「job が load 済み」しか意味しない（その job が port
 ///   holder を所有している保証はない — 2026-07-14 の教訓）。caller が port 解放を確認して
 ///   から呼ぶこと
-/// - 対 vp-app: `crates/vp-app/src/daemon_launcher.rs` の `try_kickstart_launch_agent` と
+/// - 対 vp-app: `crates/vp-app/src/daemon/launcher.rs` の `try_kickstart_launch_agent` と
 ///   同型（vp-app は vantage-point 非依存のため実装を共有できない。変更時は両方を同期）
 #[cfg(target_os = "macos")]
 fn try_kickstart_launch_agent() -> bool {

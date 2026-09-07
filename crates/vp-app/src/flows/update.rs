@@ -275,7 +275,7 @@ fn post_update_script(
 
 /// 更新フロー後半を detached helper に委譲し、自身（旧 GUI）を終了する。
 ///
-/// helper は setsid で完全独立させる（daemon_launcher の spawn と同型）ため、旧 GUI が
+/// helper は setsid で完全独立させる（daemon::launcher の spawn と同型）ため、旧 GUI が
 /// いつ・どう消えてもフローは完走する。出力は `vp_log_dir()/update-helper.log` に append。
 #[cfg(unix)]
 fn handoff_to_helper_and_exit(channel: UpdateChannel, vp: &Path) -> ! {

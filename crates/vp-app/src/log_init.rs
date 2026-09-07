@@ -74,7 +74,7 @@ pub fn init_tracing() -> LogInitResult {
     ));
 
     // Phase 5-C: log filter の noise 抑制 (2026-04-28 観測: 23MB log の 70% が hyper_util::pool、
-    //   25% が vp_app::terminal の PTY I/O event だった)。 vp_app の他モジュールは info で残し、
+    //   25% が vp_app::webview::terminal_ipc（旧 vp_app::terminal）の PTY I/O event だった)。 vp_app の他モジュールは info で残し、
     //   noise 源を warn まで上げる。 必要なら RUST_LOG 環境変数で override 可。
     //
     // Phase 5-D fix: ユーザ shell の `RUST_LOG=vantage_point=debug` 等が `try_from_default_env` で

@@ -24,7 +24,7 @@ use anyhow::Result;
 use serde::Deserialize;
 
 // R-0 (`docs/design/11-vp-app-refactor.md` § 3.0a / `mem_1CaaaDoXHZvhR46ZfLN6jx`):
-//   `LaneAddressWire` の正規定義は `lane.rs` に移管 (G2 解消、 3 重実装の 1 元化)。
+//   `LaneAddressWire` の正規定義は `lane_address.rs` に移管 (G2 解消、 3 重実装の 1 元化)。
 //   client.rs は consumer として use で bring-into-scope する。
 use crate::lane_address::LaneAddressWire;
 

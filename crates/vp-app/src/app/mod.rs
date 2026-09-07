@@ -110,7 +110,7 @@ pub const CREO_TOKENS_CSS: &str = include_str!("../../assets/creo-tokens.css");
 /// WebView 統合 (step 3a) 後の唯一の webview が `vp-asset://` で配信する asset。
 /// `MAIN_AREA_HTML` を `app/index.html` で、SolidJS bundle 2 本を外部 script として配信
 /// (doc 48 Phase 1 で inline → `<script src>` 化。`VP_WEBVIEW_DEV` 設定時は
-/// `web_assets::serve` の disk-read が baked より優先され、cargo build なしの HMR になる)。
+/// `webview::assets::serve` の disk-read が baked より優先され、cargo build なしの HMR になる)。
 ///
 /// ## なぜ with_html ではなく custom protocol か (統合 origin fix)
 /// `with_html` で load した document は **about:blank = 不透明 (opaque) オリジン**になり、
@@ -183,7 +183,7 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "conversation:respond"
                 | "conversation:interrupt"
                 | "conversation:set_permission_mode"
-                // doc 38 Phase 2: session tab strip の tag。terminal.rs に match arm を
+                // doc 38 Phase 2: session tab strip の tag。webview/terminal_ipc.rs に match arm を
                 // 足すだけでは届かない — この allowlist に無い tag は sidebar IPC に流れて
                 // 「unknown variant」で捨てられる（2026-07-16 dogfood で「+」無反応の根因）。
                 // 旧 `echoes:sessions_fetch` は doc 53 §11 で退役（roster は snapshot が運ぶ）。
@@ -194,7 +194,7 @@ fn is_main_ipc_tag(body: &str) -> bool {
                 | "conversation:session_remove"
                 | "conversation:agents_fetch"
                 // replay demand（2026-07-24）: 消費者主導 demand。allowlist 漏れは sidebar IPC へ
-                // 流れて silent drop = 「chat が空のまま」regression（terminal.rs の arm と対）
+                // 流れて silent drop = 「chat が空のまま」regression（webview/terminal_ipc.rs の arm と対）
                 | "conversation:demand_start"
                 // doc 50 §4.6 A6: 名札 kind badge の Mode 切替（session 明示）。漏れると
                 // sidebar IPC へ流れて silent drop = 「badge を押しても変身しない」regression。
@@ -229,7 +229,7 @@ mod ipc_tag_tests {
     use super::is_main_ipc_tag;
 
     /// doc 38 Phase 2/3 の session tab tag が main webview IPC として dispatch されること。
-    /// terminal.rs の match arm と本 allowlist は**両方**更新が要る（片側更新だと
+    /// webview/terminal_ipc.rs の match arm と本 allowlist は**両方**更新が要る（片側更新だと
     /// sidebar IPC に落ちて silent drop — 2026-07-16 の「+」無反応 regression の固定。
     /// Phase 3 の `conversation:session_remove` も同じ理由で allowlist に載せた）。
     #[test]
@@ -2496,7 +2496,7 @@ fn spawn_actions_persist_writer(
 ///
 /// task 自体は state を持たず、 ただ tick を main thread に届ける役割。 main thread の
 /// handler が `sidebar_state.lanes_by_repo` を walk して
-/// `session_title::resolve_title_for_cwd` を呼び、 結果を `session_titles` map に diff/update
+/// `lane::title::resolve_title_for_cwd` を呼び、 結果を `session_titles` map に diff/update
 /// + sidebar に push する。
 ///
 /// `proxy.send_event` 失敗 (= EventLoop 終了) で task を終了する。 polling 周期は
@@ -3459,11 +3459,11 @@ struct SidebarIpcOutcome {
     /// 再 fetch して `AppEvent::WireHistoryResult` で最新状態を push back する。
     wire_ack_request: Option<(String, String)>,
     /// in-app update: sidebar footer の「更新する」ボタン click 要求 `(latest_version)`。
-    /// caller (event loop) が `update_flow::spawn_update_flow` を呼び、native 確認ダイアログ →
+    /// caller (event loop) が `flows::update::spawn_update_flow` を呼び、native 確認ダイアログ →
     /// self-update → `vp daemon restart` → GUI relaunch を専用スレッドで実行する。
     update_apply_request: Option<String>,
     /// Login ボタン click 要求。値 = token の宛先（"hub" | "creo"）。caller (event loop) が
-    /// blocking pool で `auth_flow::run_login_blocking` (`vp auth login --for <target>` spawn) を
+    /// blocking pool で `flows::auth::run_login_blocking` (`vp auth login --for <target>` spawn) を
     /// 実行し、成功後に `daemon-control.hub/reconnect` で hub 接続へ即反映する。
     ///
     /// ⚠️ **identity は 1 つでも token は宛先ごと**（Auth0 の aud claim）。bool ではなく宛先を
@@ -3475,7 +3475,7 @@ struct SidebarIpcOutcome {
     /// （`process:toggle` / `process:reorder` と同じ規律）。
     actions_persist_request: Option<ActionsPersistPayload>,
     /// Logout ボタン click 要求。値 = 宛先（`None` は「要求なし」、`Some("")` = 全宛先を捨てる）。
-    /// caller が blocking pool で `auth_flow::run_logout_blocking` (確認ダイアログ →
+    /// caller が blocking pool で `flows::auth::run_logout_blocking` (確認ダイアログ →
     /// `vp auth logout [--for <target>]`) を実行し、成功後に `hub/reconnect` で即反映する。
     auth_logout_request: Option<String>,
     /// 設定 overlay の現在値要求（doc 59 P1）。caller が `settings:result` を push back する。
@@ -3893,7 +3893,7 @@ fn lookup_lane_cwd_by_address(state: &SidebarState, address: &str) -> Option<std
 }
 
 // R-0 (`docs/design/11-vp-app-refactor.md` § 3.0a / `mem_1CaaaDoXHZvhR46ZfLN6jx`):
-//   旧 `lane_address_key(&LaneAddressWire) -> String` 関数は `lane.rs::LaneAddressWire::key()`
+//   旧 `lane_address_key(&LaneAddressWire) -> String` 関数は `lane_address.rs::LaneAddressWire::key()`
 //   メソッドに移管 (G2 解消、 3 重実装の 1 元化)。 caller は `wire.key()` で同等の文字列を取れる。
 
 /// App のエントリポイント
@@ -7065,7 +7065,7 @@ mod port_merge_tests {
 mod main_view_asset_tests {
     //! 統合 WebView (step 3a) の単一 HTML が vp-asset:// で配信でき、SolidJS bundle を
     //! 外部 script (vp-asset://app/*.bundle.js) として参照・配信できること (doc 48 Phase 1)。
-    //! Bundle font / serve handler のテストは `web_assets` module 側に分離。
+    //! Bundle font / serve handler のテストは `webview::assets` module 側に分離。
     use super::*;
 
     /// `MAIN_VIEW_ASSETS` で統合 HTML が `vp-asset://app/index.html` から取れる。

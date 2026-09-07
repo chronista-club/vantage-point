@@ -54,7 +54,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             // ⚠️ 外から「GUI が使える状態になった」を待つ信号は **webview 側の
             // `console.info("[vp-bundle] ready")`**（console bridge が `target="webview"` で
             // 必ずログに出す）。ここで `tracing::info!` を足しても出ない — default filter が
-            // `vp_app::terminal=warn` で、PTY hot path の洪水を防ぐため意図的に絞ってある。
+            // `vp_app::webview::terminal_ipc=warn` で、PTY hot path の洪水を防ぐため意図的に絞ってある。
             tracing::debug!("webview ready");
             let _ = proxy.send_event(AppEvent::WebviewReady);
         }
