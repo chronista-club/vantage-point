@@ -39,8 +39,6 @@ use std::sync::Arc;
 use super::lane_component::LaneComponentRegistry;
 use super::lanes_state::LaneAddress;
 use super::repo_components_state::BoardComponent;
-#[cfg(feature = "midi")]
-use crate::device_io::DeviceIoComponent;
 
 /// Lane 階層 Agent container (Lane あたり 1 instance)。
 ///
@@ -77,9 +75,6 @@ impl LaneCapabilities {
         let mut registry = LaneComponentRegistry::new();
         // PR-δ-2 (VP-136): board を最初の住人として LaneComponentRegistry に登録
         registry.insert(Arc::new(BoardComponent::new()));
-        // E3-1: Device I/O 🌫️ を Lane に自動 host（midi feature 有効時）
-        #[cfg(feature = "midi")]
-        registry.insert(Arc::new(DeviceIoComponent::new()));
         Self {
             address,
             agent: agent.into(),
