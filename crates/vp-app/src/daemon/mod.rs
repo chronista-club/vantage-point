@@ -13,6 +13,8 @@ pub mod health_probe;
 pub mod launcher;
 /// 設定ページの「daemon を再起動」フロー (確認ダイアログ → `vp daemon restart`)。doc 59 P1。
 pub mod restart;
+/// Unison channel 購読 pump（lanes / canvas / device）。
+pub mod subscriptions;
 
 pub use control::DaemonControl;
 pub use health_probe::HealthProbe;
