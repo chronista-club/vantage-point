@@ -412,3 +412,570 @@ pub(crate) fn handle_sidebar_ipc(
     }
     out
 }
+
+/// 現行の挙動を固定する characterization test（doc 60 §6 A、純粋化の前に置く）。
+///
+/// 観測は 3 面: (1) `SidebarState` / `SessionState` の in-memory 変化、(2) `SidebarIpcOutcome` の
+/// field、(3) `session.save()` の **file 書き込み**（`$XDG_STATE_HOME` を tempdir に向けて
+/// `SessionState::path(0)` を読む）。純粋化後は (3) が「outcome の保存要求 + 呼び手の実行」に
+/// 変わるが、`apply` helper が呼び手を模すので test 本体の観測は変えない。
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon_wire::LaneInfo;
+    use crate::pane::RepoPaneState;
+
+    /// 呼び手（`run()` の `SidebarIpc` arm）の模型。現状は解釈だけで効果は持たない。
+    fn apply(msg: &str, state: &mut SidebarState, session: &mut SessionState) -> SidebarIpcOutcome {
+        handle_sidebar_ipc(msg, state, session)
+    }
+
+    fn repo(path: &str, expanded: bool, status: Option<&str>) -> RepoPaneState {
+        let mut p = RepoPaneState::new(path, path.rsplit('/').next().unwrap_or(path));
+        p.expanded = expanded;
+        p.state = status.map(str::to_string);
+        p
+    }
+
+    fn lane(repo: &str, name: &str) -> LaneInfo {
+        serde_json::from_value(serde_json::json!({"address": {"repo": repo, "name": name}}))
+            .expect("LaneInfo deserialize")
+    }
+
+    /// primary instance の session file を読む（無ければ None = save されていない）。
+    fn saved_session() -> Option<SessionState> {
+        let p = SessionState::path(0).expect("state dir");
+        let s = std::fs::read_to_string(p).ok()?;
+        Some(serde_json::from_str(&s).expect("session json"))
+    }
+
+    const REPO: &str = "/w/vp";
+
+    #[test]
+    fn malformed_json_is_ignored() {
+        let mut state = SidebarState::default();
+        let mut session = SessionState::default();
+        let out = apply("{not json", &mut state, &mut session);
+        assert!(!out.changed && !out.active_changed && out.activate_lane.is_none());
+        assert!(state.processes.is_empty() && session.repos.is_empty());
+    }
+
+    // ===== process:toggle =====
+
+    #[test]
+    fn process_toggle_expand_syncs_state_saves_session_and_reattaches() {
+        let _env = crate::test_env::state_dir();
+        let mut state = SidebarState::default();
+        state.processes.push(repo(REPO, false, Some("running")));
+        let mut session = SessionState::default();
+        let out = apply(
+            &format!(r#"{{"t":"process:toggle","path":"{REPO}","expanded":true}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert!(state.processes[0].expanded);
+        assert_eq!(session.repo_expanded(REPO), Some(true));
+        // file にも書かれる（vp-app 再起動時の accordion 復元）
+        assert_eq!(
+            saved_session().expect("saved").repo_expanded(REPO),
+            Some(true)
+        );
+        // DOM は user click で toggle 済なので再 push しない（flash 回避）
+        assert!(!out.changed && !out.active_changed);
+        assert!(out.conversation_reattach);
+        assert_eq!(out.repo_spawn_request, None);
+        assert_eq!(out.repo_spawn_release, None);
+    }
+
+    #[test]
+    fn process_toggle_expand_of_stopped_repo_requests_spawn() {
+        let _env = crate::test_env::state_dir();
+        let mut state = SidebarState::default();
+        state.processes.push(repo(REPO, false, Some("stopped")));
+        let mut session = SessionState::default();
+        let out = apply(
+            &format!(r#"{{"t":"process:toggle","path":"{REPO}","expanded":true}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(
+            out.repo_spawn_request,
+            Some(("vp".to_string(), REPO.to_string()))
+        );
+        assert!(out.conversation_reattach);
+    }
+
+    #[test]
+    fn process_toggle_without_change_does_not_save_but_still_requests_spawn() {
+        let _env = crate::test_env::state_dir();
+        let mut state = SidebarState::default();
+        state.processes.push(repo(REPO, true, Some("stopped")));
+        let mut session = SessionState::default();
+        let out = apply(
+            &format!(r#"{{"t":"process:toggle","path":"{REPO}","expanded":true}}"#),
+            &mut state,
+            &mut session,
+        );
+        // 既に expanded=true → sync も save も無し
+        assert_eq!(session.repo_expanded(REPO), None);
+        assert!(saved_session().is_none(), "変化が無いのに save された");
+        assert!(!out.conversation_reattach);
+        // ただし「expand かつ stopped」の auto-spawn 判定は変化の有無と独立
+        assert_eq!(
+            out.repo_spawn_request,
+            Some(("vp".to_string(), REPO.to_string()))
+        );
+    }
+
+    #[test]
+    fn process_toggle_collapse_saves_and_releases_spawn_dedup() {
+        let _env = crate::test_env::state_dir();
+        let mut state = SidebarState::default();
+        state.processes.push(repo(REPO, true, Some("stopped")));
+        let mut session = SessionState::default();
+        let out = apply(
+            &format!(r#"{{"t":"process:toggle","path":"{REPO}","expanded":false}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert!(!state.processes[0].expanded);
+        assert_eq!(
+            saved_session().expect("saved").repo_expanded(REPO),
+            Some(false)
+        );
+        assert!(out.conversation_reattach);
+        assert_eq!(out.repo_spawn_request, None);
+        assert_eq!(out.repo_spawn_release, Some(REPO.to_string()));
+    }
+
+    #[test]
+    fn process_toggle_unknown_path_is_noop() {
+        let _env = crate::test_env::state_dir();
+        let mut state = SidebarState::default();
+        state.processes.push(repo(REPO, false, None));
+        let mut session = SessionState::default();
+        let out = apply(
+            r#"{"t":"process:toggle","path":"/w/other","expanded":true}"#,
+            &mut state,
+            &mut session,
+        );
+        assert!(!state.processes[0].expanded);
+        assert!(saved_session().is_none());
+        assert!(!out.conversation_reattach && out.repo_spawn_request.is_none());
+    }
+
+    // ===== process:reorder =====
+
+    #[test]
+    fn process_reorder_saves_session_updates_state_and_requests_daemon_persist() {
+        let _env = crate::test_env::state_dir();
+        let mut state = SidebarState::default();
+        let mut session = SessionState::default();
+        let out = apply(
+            r#"{"t":"process:reorder","order":["/w/b","/w/a"]}"#,
+            &mut state,
+            &mut session,
+        );
+        let order = vec!["/w/b".to_string(), "/w/a".to_string()];
+        assert_eq!(session.currents_order, Some(order.clone()));
+        assert_eq!(state.currents_order, Some(order.clone()));
+        assert_eq!(
+            saved_session().expect("saved").currents_order,
+            Some(order.clone())
+        );
+        assert_eq!(out.reorder_request, Some(order));
+        // DOM 順は user 操作で既に変わっている → 再 push しない
+        assert!(!out.changed);
+    }
+
+    // ===== lane:select =====
+
+    #[test]
+    fn lane_select_existing_lane_requests_activation_and_canonical_persist() {
+        let mut state = SidebarState::default();
+        state.lanes_by_repo.insert(
+            REPO.to_string(),
+            vec![lane("vp", "root"), lane("vp", "sub-a")],
+        );
+        let mut session = SessionState::default();
+        let out = apply(
+            &format!(r#"{{"t":"lane:select","path":"{REPO}","address":"vp/sub-a"}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(out.activate_lane.as_deref(), Some("vp/sub-a"));
+        assert_eq!(
+            out.set_active_lane_request,
+            Some((REPO.to_string(), "vp/sub-a".to_string()))
+        );
+        // 楽観反映は caller の activate_lane() が行う — ここでは state を触らない
+        assert_eq!(state.active_lane_address, None);
+        assert!(!out.changed && !out.active_changed);
+    }
+
+    #[test]
+    fn lane_select_unknown_or_empty_address_is_noop() {
+        let mut state = SidebarState::default();
+        state
+            .lanes_by_repo
+            .insert(REPO.to_string(), vec![lane("vp", "root")]);
+        let mut session = SessionState::default();
+        for msg in [
+            format!(r#"{{"t":"lane:select","path":"{REPO}","address":"vp/ghost"}}"#),
+            format!(r#"{{"t":"lane:select","path":"/w/none","address":"vp/root"}}"#),
+            format!(r#"{{"t":"lane:select","path":"{REPO}","address":""}}"#),
+        ] {
+            let out = apply(&msg, &mut state, &mut session);
+            assert!(out.activate_lane.is_none(), "{msg}");
+            assert!(out.set_active_lane_request.is_none(), "{msg}");
+        }
+    }
+
+    // ===== lane:delete =====
+
+    #[test]
+    fn lane_delete_of_active_lane_clears_active_and_requests_delete() {
+        let mut state = SidebarState {
+            active_lane_address: Some("vp/sub-a".to_string()),
+            ..Default::default()
+        };
+        let mut session = SessionState::default();
+        let out = apply(
+            &format!(r#"{{"t":"lane:delete","path":"{REPO}","address":"vp/sub-a"}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(state.active_lane_address, None);
+        assert!(out.changed && out.active_changed);
+        assert_eq!(
+            out.delete_lane_request,
+            Some((REPO.to_string(), "vp/sub-a".to_string()))
+        );
+    }
+
+    #[test]
+    fn lane_delete_of_inactive_lane_only_requests() {
+        let mut state = SidebarState {
+            active_lane_address: Some("vp/root".to_string()),
+            ..Default::default()
+        };
+        let mut session = SessionState::default();
+        let out = apply(
+            &format!(r#"{{"t":"lane:delete","path":"{REPO}","address":"vp/sub-a"}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(state.active_lane_address.as_deref(), Some("vp/root"));
+        assert!(!out.changed && !out.active_changed);
+        assert!(out.delete_lane_request.is_some());
+        // 空 path / address は無視
+        let out = apply(
+            r#"{"t":"lane:delete","path":"","address":"vp/sub-a"}"#,
+            &mut state,
+            &mut session,
+        );
+        assert!(out.delete_lane_request.is_none());
+    }
+
+    // ===== stand:select =====
+
+    #[test]
+    fn stand_select_sets_component_and_clears_lane_exclusively() {
+        let mut state = SidebarState {
+            active_lane_address: Some("vp/root".to_string()),
+            ..Default::default()
+        };
+        let mut session = SessionState::default();
+        let out = apply(
+            &format!(r#"{{"t":"stand:select","path":"{REPO}","kind":"board"}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(
+            state.active_component,
+            Some(ActiveComponent {
+                repo_path: REPO.to_string(),
+                kind: "board".to_string()
+            })
+        );
+        assert_eq!(state.active_lane_address, None);
+        assert!(out.changed && out.active_changed);
+        // 同じ component をもう一度 → no-op
+        let out = apply(
+            &format!(r#"{{"t":"stand:select","path":"{REPO}","kind":"board"}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert!(!out.changed && !out.active_changed);
+    }
+
+    #[test]
+    fn stand_select_devices_allows_empty_path_but_others_do_not() {
+        let mut state = SidebarState::default();
+        let mut session = SessionState::default();
+        let out = apply(
+            r#"{"t":"stand:select","path":"","kind":"devices"}"#,
+            &mut state,
+            &mut session,
+        );
+        assert!(out.changed);
+        assert_eq!(
+            state.active_component.as_ref().map(|c| c.kind.as_str()),
+            Some("devices")
+        );
+        let out = apply(
+            r#"{"t":"stand:select","path":"","kind":"board"}"#,
+            &mut state,
+            &mut session,
+        );
+        assert!(!out.changed);
+        assert_eq!(
+            state.active_component.as_ref().map(|c| c.kind.as_str()),
+            Some("devices")
+        );
+    }
+
+    // ===== lane 操作の要求（state は触らない） =====
+
+    #[test]
+    fn lane_requests_do_not_touch_state() {
+        let mut state = SidebarState::default();
+        let mut session = SessionState::default();
+        let out = apply(
+            &format!(r#"{{"t":"lane:restart","path":"{REPO}","address":"vp/root"}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(
+            out.restart_lane_request,
+            Some((REPO.to_string(), "vp/root".to_string(), false))
+        );
+        let out = apply(
+            &format!(r#"{{"t":"lane:restart","path":"{REPO}","address":"vp/root","fresh":true}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(out.restart_lane_request.map(|r| r.2), Some(true));
+
+        let out = apply(
+            &format!(r#"{{"t":"lane:new_root","path":"{REPO}","address":"vp/root"}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(
+            out.new_root_request,
+            Some((REPO.to_string(), "vp/root".to_string()))
+        );
+
+        // 起点 / 並び順は帳簿が真実源 — 楽観更新しない
+        let out = apply(
+            &format!(r#"{{"t":"lane:set_origin","path":"{REPO}","address":"vp/sub-a"}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(
+            out.set_origin_request,
+            Some((REPO.to_string(), "vp/sub-a".to_string()))
+        );
+        assert!(state.origin_by_repo.is_empty());
+        let out = apply(
+            &format!(r#"{{"t":"lane:reorder","path":"{REPO}","order":["vp/sub-a","vp/root"]}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(
+            out.reorder_lanes_request,
+            Some((
+                REPO.to_string(),
+                vec!["vp/sub-a".to_string(), "vp/root".to_string()]
+            ))
+        );
+        let out = apply(
+            &format!(r#"{{"t":"lane:reorder","path":"{REPO}","order":[]}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert!(out.reorder_lanes_request.is_none());
+
+        assert!(!out.changed && state.active_lane_address.is_none() && session.repos.is_empty());
+    }
+
+    #[test]
+    fn lane_add_sub_folds_empty_branch_and_agent_to_none() {
+        let mut state = SidebarState::default();
+        let mut session = SessionState::default();
+        let out = apply(
+            &format!(
+                r#"{{"t":"lane:add_sub","path":"{REPO}","name":"feat","branch":"","agent":""}}"#
+            ),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(
+            out.add_sub_request,
+            Some((REPO.to_string(), "feat".to_string(), None, None))
+        );
+        let out = apply(
+            &format!(
+                r#"{{"t":"lane:add_sub","path":"{REPO}","name":"feat","branch":"b","agent":"codex"}}"#
+            ),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(
+            out.add_sub_request,
+            Some((
+                REPO.to_string(),
+                "feat".to_string(),
+                Some("b".to_string()),
+                Some("codex".to_string())
+            ))
+        );
+        let out = apply(
+            &format!(r#"{{"t":"lane:add_sub","path":"{REPO}","name":""}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert!(out.add_sub_request.is_none());
+        let out = apply(
+            &format!(r#"{{"t":"agents:fetch","path":"{REPO}"}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(out.list_stands_request.as_deref(), Some(REPO));
+    }
+
+    // ===== process / repo 操作は path の leaf を repo name に =====
+
+    #[test]
+    fn process_and_repo_requests_use_leaf_name() {
+        let mut state = SidebarState::default();
+        let mut session = SessionState::default();
+        let out = apply(
+            &format!(r#"{{"t":"process:restart","path":"{REPO}"}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(out.restart_process_request.as_deref(), Some("vp"));
+        let out = apply(
+            &format!(r#"{{"t":"process:stop","path":"{REPO}"}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(out.stop_process_request.as_deref(), Some("vp"));
+        let out = apply(
+            &format!(r#"{{"t":"repo:delete","path":"{REPO}"}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(
+            out.delete_repo_request,
+            Some(("vp".to_string(), REPO.to_string()))
+        );
+        for t in ["process:restart", "process:stop", "repo:delete"] {
+            let out = apply(
+                &format!(r#"{{"t":"{t}","path":""}}"#),
+                &mut state,
+                &mut session,
+            );
+            assert!(
+                out.restart_process_request.is_none()
+                    && out.stop_process_request.is_none()
+                    && out.delete_repo_request.is_none(),
+                "{t} with empty path"
+            );
+        }
+        // repo:add は dispatch 段で picker に分岐済 — ここに来ても何もしない
+        let out = apply(r#"{"t":"repo:add"}"#, &mut state, &mut session);
+        assert!(!out.changed && out.repo_spawn_request.is_none());
+    }
+
+    // ===== wire / update / auth / settings / daemon / actions =====
+
+    #[test]
+    fn effect_only_arms_map_to_outcome_fields() {
+        let mut state = SidebarState::default();
+        let mut session = SessionState::default();
+        let out = apply(
+            &format!(r#"{{"t":"wire:fetch","path":"{REPO}","address":"vp/root"}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(out.wire_fetch_request.as_deref(), Some("vp/root"));
+        let out = apply(
+            &format!(r#"{{"t":"wire:ack","path":"{REPO}","address":"vp/root","message_id":"m1"}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(
+            out.wire_ack_request,
+            Some(("vp/root".to_string(), "m1".to_string()))
+        );
+        let out = apply(
+            &format!(r#"{{"t":"wire:ack","path":"{REPO}","address":"vp/root","message_id":""}}"#),
+            &mut state,
+            &mut session,
+        );
+        assert!(out.wire_ack_request.is_none());
+
+        let out = apply(
+            r#"{"t":"update:apply","version":"0.68.0"}"#,
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(out.update_apply_request.as_deref(), Some("0.68.0"));
+        let out = apply(
+            r#"{"t":"update:apply","version":""}"#,
+            &mut state,
+            &mut session,
+        );
+        assert!(out.update_apply_request.is_none());
+
+        // login の宛先省略 = "hub"、logout の宛先省略 = ""（全宛先）
+        let out = apply(r#"{"t":"auth:login"}"#, &mut state, &mut session);
+        assert_eq!(out.auth_login_request.as_deref(), Some("hub"));
+        let out = apply(
+            r#"{"t":"auth:login","target":"creo"}"#,
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(out.auth_login_request.as_deref(), Some("creo"));
+        let out = apply(r#"{"t":"auth:logout"}"#, &mut state, &mut session);
+        assert_eq!(out.auth_logout_request.as_deref(), Some(""));
+
+        let out = apply(r#"{"t":"settings:fetch"}"#, &mut state, &mut session);
+        assert!(out.settings_fetch_request);
+        let out = apply(
+            r#"{"t":"settings:save","developer_mode":true}"#,
+            &mut state,
+            &mut session,
+        );
+        let save = out.settings_save_request.expect("settings_save");
+        assert_eq!(save.developer_mode, Some(true));
+        assert_eq!(
+            save.log_level, None,
+            "None の field は不変（変えた分だけ送る契約）"
+        );
+        let out = apply(
+            r#"{"t":"settings:pick_repo_root"}"#,
+            &mut state,
+            &mut session,
+        );
+        assert!(out.settings_pick_repo_root_request);
+        let out = apply(r#"{"t":"daemon:restart"}"#, &mut state, &mut session);
+        assert!(out.daemon_restart_request);
+
+        let out = apply(
+            r#"{"t":"actions:persist","items":[{"id":"a"}],"removed":["b"]}"#,
+            &mut state,
+            &mut session,
+        );
+        let payload = out.actions_persist_request.expect("actions_persist");
+        assert_eq!(payload.items.len(), 1);
+        assert_eq!(payload.removed, vec!["b".to_string()]);
+        // DOM は user 入力で最新 → 撃ち返さない
+        assert!(!out.changed);
+
+        assert!(state.active_lane_address.is_none() && session.repos.is_empty());
+    }
+}
