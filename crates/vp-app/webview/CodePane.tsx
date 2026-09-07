@@ -14,7 +14,7 @@
  * ## 配線（entry.tsx が結ぶ）
  *
  * - demand: pane open（`vp:code-view`）で `code:list`、file 選択で `code:read` を送る
- *   （⚠️ 2 tag とも app.rs `is_main_ipc_tag` の allowlist と対）
+ *   （⚠️ 2 tag とも webview/ipc_route.rs `is_main_ipc_tag` の allowlist と対）
  * - 供給: `code:entries` / `code:file` push が `handleEntries` / `handleFile` に届く
  *   （dispatch.ts → entry.tsx の配線）。⚠️ **lane 不一致の結果は捨てる** — 旧 FileExplorer
  *   の race 防御（他 lane の遅延到着が現 lane の表示を上書きする）を引き継ぐ
