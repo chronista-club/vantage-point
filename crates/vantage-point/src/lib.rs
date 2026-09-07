@@ -4,7 +4,6 @@
 //! Process サーバー、MCP、Daemon 等のコアロジックを提供する。
 
 pub mod agent;
-pub mod agui;
 pub mod capability;
 pub mod cli;
 pub mod commands;
