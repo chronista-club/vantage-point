@@ -39,9 +39,7 @@ use wry::{
     Rect, WebView, WebViewBuilder, dpi::LogicalPosition, dpi::LogicalSize as WryLogicalSize,
 };
 
-use crate::daemon::conn::{
-    SharedDaemonConn, SubscriptionOutcome, daemon_repo_request, spawn_daemon_conn_manager,
-};
+use crate::daemon::conn::{SharedDaemonConn, daemon_repo_request, spawn_daemon_conn_manager};
 use crate::daemon::pollers::{
     ActionsPersistPayload, fetch_repos_with_ports, resolve_active_repo_path,
     spawn_actions_persist_writer, spawn_activity_poller, spawn_lane_inbox_poller,

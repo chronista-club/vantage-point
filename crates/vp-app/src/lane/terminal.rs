@@ -5,8 +5,6 @@
 //! `cmd_rx` は再接続を跨いで生きる（切断中の write / resize は次接続で送る、doc 60 §4）。
 //! app/mod.rs から移設（棚卸し 項目 6 / 6-1 #10、2026-09-08）。
 
-use std::time::Duration;
-
 use tao::event_loop::EventLoopProxy;
 
 use crate::daemon::conn::{SharedDaemonConn, SubscriptionOutcome};
