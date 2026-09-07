@@ -2,12 +2,17 @@ import { describe, it, expect } from 'vitest'
 import {
   foldInto,
   emptyChatState,
-  linkOpenPayload,
   deriveStatus,
   canDequeuePending,
-  isTurnClosingEvent,
   classifyToolRun,
   toolGroupStatus,
+  lampOf,
+  deriveNowLine,
+  clampNowLine,
+} from './chat-model'
+import {
+  linkOpenPayload,
+  isTurnClosingEvent,
   formatToolInput,
   formatToolResult,
   shortenPath,
@@ -22,9 +27,6 @@ import {
   canSwitchTo,
   canCloseSession,
   chatKey,
-  lampOf,
-  deriveNowLine,
-  clampNowLine,
   resolveAnswer,
   OTHER_LABEL } from './chatview'
 import type { ConversationEvent } from './console'
@@ -1273,7 +1275,7 @@ describe('raw HTML は文字として描く — 閉じ忘れ <h1> が message �
 
 describe('submit acknowledgement', () => {
   it('retains rejected text and images, clears waiting, and ignores stale results', async () => {
-    const { beginSubmission } = await import('./chatview')
+    const { beginSubmission } = await import('./chat-model')
     const s = emptyChatState()
     const images = [{ media_type: 'image/png', data: 'aGVsbG8=' }]
     expect(beginSubmission(s, 'req-1', 'hello', images)).toBe(true)
@@ -1287,7 +1289,7 @@ describe('submit acknowledgement', () => {
     expect(s.items).toEqual([])
   })
   it('adds an accepted message once and never mixes session state', async () => {
-    const { beginSubmission } = await import('./chatview')
+    const { beginSubmission } = await import('./chat-model')
     const a = emptyChatState(), b = emptyChatState()
     beginSubmission(a, 'a1', 'first', [])
     beginSubmission(b, 'b1', 'second', [])
@@ -1301,7 +1303,7 @@ describe('submit acknowledgement', () => {
 })
 
 it('keeps user before engine events and does not reopen a turn on a late acknowledgement', async () => {
-  const { beginSubmission } = await import('./chatview')
+  const { beginSubmission } = await import('./chat-model')
   const s = emptyChatState()
   beginSubmission(s, 'ordered', 'hello', [])
   foldInto(s, { kind: 'message_chunk', text: 'reply' })
