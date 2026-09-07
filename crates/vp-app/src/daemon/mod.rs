@@ -17,6 +17,8 @@ pub mod pollers;
 pub mod restart;
 /// Unison channel 購読 pump（lanes / canvas / device）。
 pub mod subscriptions;
+/// wire inbox の取得（"wire" channel への一発 ask）。
+pub mod wire;
 
 pub use control::DaemonControl;
 pub use health_probe::HealthProbe;

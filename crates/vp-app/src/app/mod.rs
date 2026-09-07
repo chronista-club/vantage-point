@@ -50,6 +50,7 @@ use crate::daemon::pollers::{
 use crate::daemon::subscriptions::{
     spawn_canvas_subscription, spawn_device_subscription, spawn_lanes_subscription,
 };
+use crate::daemon::wire::wire_fetch_payload;
 use crate::events::AppEvent;
 use crate::flows::repo_dialog::{
     resolve_default_repo_root, spawn_add_repo_picker, spawn_clone_repo, spawn_repo_root_picker,
@@ -1090,84 +1091,6 @@ mod header_lane_fields_changed_tests {
 }
 
 #[cfg(test)]
-mod lane_key_wire_agent_tests {
-    use super::lane_key_to_wire_agent;
-    use crate::lane_address::{LaneAddress, LaneAddressWire};
-
-    /// doc 44 P2: lane key (`<repo>/<name>`) → wire agent address。
-    ///
-    /// この関数は `delivery_actor::wire_agent_to_lane_display` の**逆写像**で、両者は
-    /// 文字列を直に組み立てる（型を経由しない）ため、片方だけ形が変わると非対称に壊れる。
-    /// フラット化では実際に両方が旧 3 分節形のまま取り残されていた。
-    #[test]
-    fn maps_flat_lane_key_to_agent_address() {
-        // 開発起点は lane 部分を省いた形が canonical
-        assert_eq!(
-            lane_key_to_wire_agent("vp/root").as_deref(),
-            Some("agent@vp")
-        );
-        // それ以外は `<repo>/<name>`
-        assert_eq!(
-            lane_key_to_wire_agent("vp/feat-api").as_deref(),
-            Some("agent@vp/feat-api")
-        );
-    }
-
-    /// `LaneAddressWire::key()` が吐いた形をそのまま食えること（実際の供給元との結線）。
-    #[test]
-    fn accepts_key_produced_by_wire_type() {
-        for (name, expected) in [("root", "agent@vp"), ("feat-api", "agent@vp/feat-api")] {
-            let wire = LaneAddressWire {
-                repo: "vp".into(),
-                name: name.into(),
-                key: format!("vp/lane/{name}"),
-            };
-            assert_eq!(
-                lane_key_to_wire_agent(&wire.key()).as_deref(),
-                Some(expected),
-                "key()={} が変換できること",
-                wire.key()
-            );
-            // domain 型の Display も同じ形（P2 で両者は一致する）
-            assert_eq!(wire.key(), LaneAddress::new("vp", name).to_string());
-        }
-    }
-
-    #[test]
-    fn rejects_malformed_keys() {
-        assert_eq!(lane_key_to_wire_agent("vp"), None); // 区切り無し
-        assert_eq!(lane_key_to_wire_agent("/root"), None); // repo 空
-        assert_eq!(lane_key_to_wire_agent("vp/"), None); // name 空
-        assert_eq!(lane_key_to_wire_agent("vp/<unnamed>"), None); // spawning placeholder
-        assert_eq!(lane_key_to_wire_agent("vp/lane/<unnamed>"), None); // canonical 形でも同じ
-    }
-
-    /// ⚠️ **旧形の address からも宛先が引ける**こと。
-    ///
-    /// 永続 state（DB / session.json）には旧 2 分節・旧 3 分節が残る。ここで弾くと
-    /// **wire が無音で届かなくなる**ので、lane 名を最後の分節から取って受け入れる。
-    /// 旧実装は `name.contains('/')` で 3 分節を弾いており、canonical 化で
-    /// **全 lane の宛先が引けなくなる**ところだった。
-    #[test]
-    fn accepts_every_address_generation() {
-        for addr in ["vp/lane/foo", "vp/sub/foo", "vp/wing/foo", "vp/foo"] {
-            assert_eq!(
-                lane_key_to_wire_agent(addr).as_deref(),
-                Some("agent@vp/foo"),
-                "{addr} から宛先が引けない"
-            );
-        }
-        for addr in ["vp/lane/root", "vp/root"] {
-            assert_eq!(
-                lane_key_to_wire_agent(addr).as_deref(),
-                Some("agent@vp"),
-                "{addr}: 開発起点は lane 部を省く"
-            );
-        }
-    }
-}
-
-#[cfg(test)]
 mod focused_session_stand_tests {
     use super::focused_session_agent;
 
@@ -1656,96 +1579,6 @@ fn mark_lane_canvas_unread(lane: &str, sidebar_state: &mut SidebarState, webview
     *count += 1;
     tracing::info!("canvas:show lane={lane} canvas_unread={}", *count);
     push_sidebar_state(webview, sidebar_state);
-}
-
-/// sidebar の lane address key (`<repo>/<name>`) → wire agent address。
-///
-/// `LaneAddressWire::key()` の逆写像 (delivery_actor の `wire_agent_to_lane_display` と対)。
-///
-/// doc 44 P2: フラット化で key が 2 分節 (`<repo>/<name>`) になった。旧実装は
-/// `<repo>/sub/<name>` の 3 分節を前提に `split_once` していたため、新形では
-/// 常に `None` に落ちて **sub lane の wire inbox が GUI から開けなくなる**
-/// （§6.4 と同型の「型を経由しない文字列」の取り残し。しかも対になる
-/// `wire_agent_to_lane_display` の**逆方向**なので、片方だけ直すと非対称に壊れる）。
-fn lane_key_to_wire_agent(address: &str) -> Option<String> {
-    // ⚠️ lane address は `<repo>/lane/<name>`（旧 `<repo>/<name>` / `<repo>/sub/<name>` も
-    // 永続に残る）。**wire address（`agent@<repo>/<name>`）は別体系**で `lane` 分節を持たない
-    // ので、ここで lane 名だけを取り出して組み直す。
-    //
-    // ⚠️ 旧実装は `split_once('/')` の後ろを lane 名と見なし `name.contains('/')` で弾いて
-    // いたため、canonical が来ると **None = 宛先が引けない**（wire が無音で届かなくなる）。
-    let (repo, rest) = address.split_once('/')?;
-    let name = rest.rsplit('/').next()?;
-    if repo.is_empty() || name.is_empty() {
-        return None;
-    }
-    // ⚠️ **読む側は旧世代の予約名（`conductor` / `root` / `lead`）も Main とみなす**。
-    // 永続 state に残っており、ここで弾くとその lane の wire 宛先が引けない
-    // （無音で届かなくなる）。
-    if name == crate::lane_address::ROOT_LANE_NAME
-        || name == "lead"
-        || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&name)
-    {
-        // 開発起点は lane 部分を省略した形が canonical（`agent@<repo>`）。
-        return Some(format!("agent@{repo}"));
-    }
-    // "<unnamed>" は spawning 中(name 未確定)の placeholder で実在の wire agent ではない
-    // — 偽 address で空 inbox を開かないよう除外する。
-    if name == "<unnamed>" {
-        return None;
-    }
-    Some(format!("agent@{repo}/{name}"))
-}
-
-/// Wire inbox (doc 34 §4 V1): Daemon "wire" channel に read-only request を投げて
-/// `{address, agent, history, unread}` payload を組み立てる (エラーは `{address, error}`)。
-///
-/// **wire/recv は使わない** — per-agent 単一 cursor を GUI が進めると lane の claude から
-/// 未読を横取りするため、 cursor 不触りの wire/history + wire/unread-count のみを叩く。
-/// `ack_message_id` が Some なら先に wire/ack を実行してから fetch する (ack → 最新状態の
-/// 再描画を 1 往復に畳む)。
-async fn wire_fetch_payload(
-    mut conn: SharedDaemonConn,
-    address: String,
-    ack_message_id: Option<String>,
-) -> serde_json::Value {
-    let Some(agent) = lane_key_to_wire_agent(&address) else {
-        return serde_json::json!({ "address": address, "error": "wire address を持たない lane" });
-    };
-    let Some(client) = conn.wait_client().await else {
-        return serde_json::json!({ "address": address, "error": "Daemon 未接続" });
-    };
-    let channel = match client.open_channel("wire").await {
-        Ok(c) => c,
-        Err(e) => {
-            return serde_json::json!({ "address": address, "error": format!("wire channel: {e}") });
-        }
-    };
-    if let Some(id) = ack_message_id {
-        // ack は台帳の意味論どおり「処理済み宣言」。 GUI からの手動 ack は dogfood の
-        // オペレーション手段 (needs_user relay 等の規約整合は doc 34 §7 で継続検討)。
-        let _ = channel
-            .request::<serde_json::Value, serde_json::Value>(
-                "wire/ack",
-                &serde_json::json!({ "message_id": id, "agent": agent }),
-            )
-            .await;
-    }
-    let history = channel
-        .request::<serde_json::Value, serde_json::Value>(
-            "wire/history",
-            &serde_json::json!({ "agent": agent }),
-        )
-        .await
-        .unwrap_or_else(|e| serde_json::json!({ "error": format!("wire/history: {e}") }));
-    let unread = channel
-        .request::<serde_json::Value, serde_json::Value>(
-            "wire/unread-count",
-            &serde_json::json!({ "agent": agent }),
-        )
-        .await
-        .unwrap_or_else(|e| serde_json::json!({ "error": format!("wire/unread-count: {e}") }));
-    serde_json::json!({ "address": address, "agent": agent, "history": history, "unread": unread })
 }
 
 /// address だけから lane の workdir を引く（code pane 用）。

@@ -283,3 +283,126 @@ mod tests {
         assert_eq!(p.key(), "vp/foo");
     }
 }
+
+// ---------------------------------------------------------------------------
+// lane address key → wire agent address（旧 app/mod.rs から移設、棚卸し 項目 6 / 6-1 #8、2026-09-08）。
+// ⚠️ 逆写像は server 側 `crates/vantage-point/src/repo/delivery_actor.rs::wire_agent_to_lane_display`
+// （doc 44: 対の関数なので片方だけ直すと非対称に壊れる。crate を跨ぐので同居できず、往復は両側の test で固定）。
+// ---------------------------------------------------------------------------
+
+/// sidebar の lane address key (`<repo>/<name>`) → wire agent address。
+///
+/// `LaneAddressWire::key()` の逆写像 (delivery_actor の `wire_agent_to_lane_display` と対)。
+///
+/// doc 44 P2: フラット化で key が 2 分節 (`<repo>/<name>`) になった。旧実装は
+/// `<repo>/sub/<name>` の 3 分節を前提に `split_once` していたため、新形では
+/// 常に `None` に落ちて **sub lane の wire inbox が GUI から開けなくなる**
+/// （§6.4 と同型の「型を経由しない文字列」の取り残し。しかも対になる
+/// `wire_agent_to_lane_display` の**逆方向**なので、片方だけ直すと非対称に壊れる）。
+pub(crate) fn lane_key_to_wire_agent(address: &str) -> Option<String> {
+    // ⚠️ lane address は `<repo>/lane/<name>`（旧 `<repo>/<name>` / `<repo>/sub/<name>` も
+    // 永続に残る）。**wire address（`agent@<repo>/<name>`）は別体系**で `lane` 分節を持たない
+    // ので、ここで lane 名だけを取り出して組み直す。
+    //
+    // ⚠️ 旧実装は `split_once('/')` の後ろを lane 名と見なし `name.contains('/')` で弾いて
+    // いたため、canonical が来ると **None = 宛先が引けない**（wire が無音で届かなくなる）。
+    let (repo, rest) = address.split_once('/')?;
+    let name = rest.rsplit('/').next()?;
+    if repo.is_empty() || name.is_empty() {
+        return None;
+    }
+    // ⚠️ **読む側は旧世代の予約名（`conductor` / `root` / `lead`）も Main とみなす**。
+    // 永続 state に残っており、ここで弾くとその lane の wire 宛先が引けない
+    // （無音で届かなくなる）。
+    if name == crate::lane_address::ROOT_LANE_NAME
+        || name == "lead"
+        || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&name)
+    {
+        // 開発起点は lane 部分を省略した形が canonical（`agent@<repo>`）。
+        return Some(format!("agent@{repo}"));
+    }
+    // "<unnamed>" は spawning 中(name 未確定)の placeholder で実在の wire agent ではない
+    // — 偽 address で空 inbox を開かないよう除外する。
+    if name == "<unnamed>" {
+        return None;
+    }
+    Some(format!("agent@{repo}/{name}"))
+}
+
+#[cfg(test)]
+mod lane_key_wire_agent_tests {
+    use super::lane_key_to_wire_agent;
+    use crate::lane_address::{LaneAddress, LaneAddressWire};
+
+    /// doc 44 P2: lane key (`<repo>/<name>`) → wire agent address。
+    ///
+    /// この関数は `delivery_actor::wire_agent_to_lane_display` の**逆写像**で、両者は
+    /// 文字列を直に組み立てる（型を経由しない）ため、片方だけ形が変わると非対称に壊れる。
+    /// フラット化では実際に両方が旧 3 分節形のまま取り残されていた。
+    #[test]
+    fn maps_flat_lane_key_to_agent_address() {
+        // 開発起点は lane 部分を省いた形が canonical
+        assert_eq!(
+            lane_key_to_wire_agent("vp/root").as_deref(),
+            Some("agent@vp")
+        );
+        // それ以外は `<repo>/<name>`
+        assert_eq!(
+            lane_key_to_wire_agent("vp/feat-api").as_deref(),
+            Some("agent@vp/feat-api")
+        );
+    }
+
+    /// `LaneAddressWire::key()` が吐いた形をそのまま食えること（実際の供給元との結線）。
+    #[test]
+    fn accepts_key_produced_by_wire_type() {
+        for (name, expected) in [("root", "agent@vp"), ("feat-api", "agent@vp/feat-api")] {
+            let wire = LaneAddressWire {
+                repo: "vp".into(),
+                name: name.into(),
+                key: format!("vp/lane/{name}"),
+            };
+            assert_eq!(
+                lane_key_to_wire_agent(&wire.key()).as_deref(),
+                Some(expected),
+                "key()={} が変換できること",
+                wire.key()
+            );
+            // domain 型の Display も同じ形（P2 で両者は一致する）
+            assert_eq!(wire.key(), LaneAddress::new("vp", name).to_string());
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_keys() {
+        assert_eq!(lane_key_to_wire_agent("vp"), None); // 区切り無し
+        assert_eq!(lane_key_to_wire_agent("/root"), None); // repo 空
+        assert_eq!(lane_key_to_wire_agent("vp/"), None); // name 空
+        assert_eq!(lane_key_to_wire_agent("vp/<unnamed>"), None); // spawning placeholder
+        assert_eq!(lane_key_to_wire_agent("vp/lane/<unnamed>"), None); // canonical 形でも同じ
+    }
+
+    /// ⚠️ **旧形の address からも宛先が引ける**こと。
+    ///
+    /// 永続 state（DB / session.json）には旧 2 分節・旧 3 分節が残る。ここで弾くと
+    /// **wire が無音で届かなくなる**ので、lane 名を最後の分節から取って受け入れる。
+    /// 旧実装は `name.contains('/')` で 3 分節を弾いており、canonical 化で
+    /// **全 lane の宛先が引けなくなる**ところだった。
+    #[test]
+    fn accepts_every_address_generation() {
+        for addr in ["vp/lane/foo", "vp/sub/foo", "vp/wing/foo", "vp/foo"] {
+            assert_eq!(
+                lane_key_to_wire_agent(addr).as_deref(),
+                Some("agent@vp/foo"),
+                "{addr} から宛先が引けない"
+            );
+        }
+        for addr in ["vp/lane/root", "vp/root"] {
+            assert_eq!(
+                lane_key_to_wire_agent(addr).as_deref(),
+                Some("agent@vp"),
+                "{addr}: 開発起点は lane 部を省く"
+            );
+        }
+    }
+}
