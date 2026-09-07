@@ -15,5 +15,7 @@ pub mod ink_snapshot;
 pub mod main_area;
 /// Rust → main webview の投影（typed push、`vp-push.kdl` envelope）。
 pub mod push_main;
+/// Rust → sidebar bundle の投影（typed push）+ 設定 snapshot。
+pub mod push_sidebar;
 /// main_area webview からの IPC handler（decode → `AppEvent`）。
 pub mod terminal_ipc;
