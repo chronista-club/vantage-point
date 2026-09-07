@@ -149,13 +149,13 @@ pub enum AppEvent {
     CodeList { lane: String },
     /// `code:read` 要求。pane 内表示用の raw text 読み（`file_explorer::read_file`）。
     CodeRead { lane: String, rel_path: String },
-    /// `code:list` の walk 結果 → `lane_js::code_entries` で main webview へ push。
+    /// `code:list` の walk 結果 → `push_main::code_entries` で main webview へ push。
     CodeEntriesResult {
         lane: String,
         entries: Vec<crate::webview::file_explorer::Entry>,
         truncated: bool,
     },
-    /// `code:read` の読み結果 → `lane_js::code_file` で main webview へ push。
+    /// `code:read` の読み結果 → `push_main::code_file` で main webview へ push。
     /// `payload` は `{"text": string} | {"error": string}` の 2 択（read_file の返り値）。
     CodeFileResult {
         lane: String,

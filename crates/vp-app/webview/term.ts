@@ -766,7 +766,7 @@ export function installTerm(): TermPushHandlers {
 
 	// Phase 4-paste-fix: Rust 側 arboard で読み取った OS clipboard 内容を active Lane の xterm に inject。
 	// `terminal.rs::handle_ipc_message` の `paste:request` → `AppEvent::PasteText` → `app.rs` event loop
-	// の `lane_js::deliver_paste` → `term:paste` envelope → dispatch.ts、の最終受け取り口。
+	// の `push_main::deliver_paste` → `term:paste` envelope → dispatch.ts、の最終受け取り口。
 	const deliverPaste = (text: string): void => {
 		if (!text) return;
 		// 宛先は **focus 中の 1 枚**。A6（session = Pane）で lane に active な pane が複数

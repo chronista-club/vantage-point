@@ -1,7 +1,7 @@
 //! Rust → main webview の投影（`window.vpDispatch` への typed push、`schema/vp-push.kdl` の envelope）。
 //!
 //! 旧 `app.rs` 内の `mod lane_js`（棚卸し 項目 6 / 6-1 で移設、2026-09-08。本文は順序付き diff で一致、
-//! 差分は dedent と `pub` → `pub(crate)`）。ここは**投影だけ**を持つ: server の真実（SidebarState /
+//! 差分は dedent / rustfmt の折り返し / `pub` → `pub(crate)` / private fn への doc link 1 つを平文に）。ここは**投影だけ**を持つ: server の真実（SidebarState /
 //! snapshot）を JS の受け口へ押し込む関数群で、state 遷移や購読の寿命はここに置かない（doc 60 §2）。
 //! 受け口が居ない boot 窓の救済は `AppEvent::WebviewReady` の replay（`app` 側）。
 
