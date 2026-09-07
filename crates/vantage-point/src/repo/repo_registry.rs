@@ -139,9 +139,6 @@ impl RepoRuntimes {
         }
 
         let shutdown = CancellationToken::new();
-        let cap_config = super::capabilities::CapabilityConfig {
-            repo_dir: repo_dir.to_string(),
-        };
         // boot 窓の根治: 先行 subscribe が作った placeholder canvas router が居れば
         // それを repo の topic_router として養子縁組する（既存購読者ごと実 router 化）
         let adopted_router = self.adopted_router_for(&key).await;
@@ -151,7 +148,7 @@ impl RepoRuntimes {
         // port はもう bind されない（SP-portless の遺産）。fold-in で概念ごと消えるため 0 を渡す。
         let state = super::server::start_repo(
             0,
-            cap_config,
+            repo_dir.to_string(),
             shutdown.clone(),
             self.node_lanes.clone(),
             self.daemon_db.clone(),

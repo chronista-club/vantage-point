@@ -12,18 +12,15 @@
 //! - [docs/spec/02-capability.md](../../../docs/spec/02-capability.md)
 
 pub mod actor_registry;
-pub mod agent_capability;
 pub mod component_service;
 pub mod core;
 pub mod delegation_store;
 pub mod eventbus;
-pub mod protocol_capability;
 pub mod repo_manager_capability;
 pub mod update_capability;
 pub mod wiremsg_store;
 
 pub use actor_registry::{ActorKind, ActorRegistry, ActorRegistryEntry};
-pub use agent_capability::AgentCapability;
 pub use core::{
     CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityState, DiagnosticReport,
 };
@@ -31,7 +28,6 @@ pub use eventbus::EventBus;
 // wiremsg R5-4: 旧 msgbox の registry サブシステム (`msgbox_registry` / `msgbox_remote`) を
 // 完全撤去。 msg messaging は wiremsg (`wiremsg_store`) に一本化済。
 pub use component_service::{Component, LayerScope, Service};
-pub use protocol_capability::ProtocolCapability;
 pub use repo_manager_capability::{
     RepoHealthInfo, RepoInfo, RepoManagerCapability, RepoPresenceState, RepoStatus, RunningRepo,
     normalize_path_key,

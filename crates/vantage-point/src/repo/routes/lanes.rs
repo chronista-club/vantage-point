@@ -239,7 +239,7 @@ pub(crate) fn build_create_lane_req(name: &str, branch: &str, agent: &str) -> Cr
 
 /// lane descriptor / lifecycle を db に永続する時の repo key。
 ///
-/// `AppState.repo_dir` は生パス（`CapabilityConfig` にそのまま入る）だが、db の
+/// `AppState.repo_dir` は生パス（`start_repo` に渡された値そのまま）だが、db の
 /// `repo_path` 列と daemon の registry key は**正規化済パス**なので、境界で 1 回だけ畳む。
 /// call site に任せると 1 箇所忘れて「boot load では引けない行」が無音で生まれる
 /// （doc 44 §10.4 の帳簿 key と同じ罠）。

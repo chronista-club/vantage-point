@@ -8,7 +8,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use super::capabilities::RepoCapabilities;
 use super::hub::Hub;
 use super::process_runner::ProcessRegistry;
 use super::topic_router::TopicRouter;
@@ -133,8 +132,6 @@ pub(crate) struct AppState {
     /// 判定するのに使う。 `agent@<repo>` の `<repo>` が本 field と異なれば remote repo。
     /// daemon mode では空文字列 (= cross-process forward は repo mode 専用)。
     pub repo_name: String,
-    /// Capability system (Agent, MIDI, Protocol)
-    pub capabilities: Arc<RepoCapabilities>,
     /// VP-159 PR-4b: Agent / Service actor の supervisor 受け皿。
     ///
     /// repo mode で notify / lane-spawn を `spawn_service` 経由で起動・register、 JoinHandle を保持。
@@ -434,17 +431,9 @@ pub(crate) async fn build_test_app_state_with(
     vpdb: Option<crate::db::SharedVpDb>,
     daemon: Option<Arc<RwLock<RepoManagerCapability>>>,
 ) -> Arc<AppState> {
-    use super::capabilities::CapabilityConfig;
     use super::lane_capabilities::LaneCapabilitiesPool;
     use super::lanes_state::LanePool;
     use crate::capability::WireNotifier;
-
-    let capabilities = Arc::new(
-        RepoCapabilities::new(CapabilityConfig {
-            repo_dir: repo_dir.to_string(),
-        })
-        .await,
-    );
 
     Arc::new(AppState {
         replay_flights: ReplayFlights::default(),
@@ -452,7 +441,6 @@ pub(crate) async fn build_test_app_state_with(
         shutdown_token: CancellationToken::new(),
         repo_dir: repo_dir.to_string(),
         repo_name: String::new(),
-        capabilities,
         actor_registry: Arc::new(RwLock::new(ActorRegistry::new())),
         daemon,
         update: None,
