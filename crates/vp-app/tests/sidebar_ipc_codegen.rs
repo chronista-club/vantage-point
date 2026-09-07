@@ -11,7 +11,7 @@
 //! 「生成物がコンパイル可能」 はこの test crate がビルドされる時点で保証される。
 //!
 //! PR-1 scope: 生成物を既存の手書き定義 (`webview/src/sidebar/ipc.ts` の
-//! `SidebarIpcMsg` / `app.rs` の `handle_sidebar_ipc`) と並存させるのみ。
+//! `SidebarIpcMsg` / `app/sidebar_ipc.rs` の `handle_sidebar_ipc`) と並存させるのみ。
 //! caller 移行は PR-2 (Rust) / PR-3 (TS)。
 
 use std::path::{Path, PathBuf};
