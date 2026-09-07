@@ -367,7 +367,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
         Some("paste:request") => {
             // Phase 4-paste-fix: navigator.clipboard.readText() が webview で permission denied する
             // ケースの fallback。 arboard で OS clipboard を読んで AppEvent::PasteText で main thread
-            // に届ける → event loop が `lane_js::deliver_paste` で `term:paste` を push。
+            // に届ける → event loop が `push_main::deliver_paste` で `term:paste` を push。
             let text = match arboard::Clipboard::new() {
                 Ok(mut cb) => match cb.get_text() {
                     Ok(t) => {
