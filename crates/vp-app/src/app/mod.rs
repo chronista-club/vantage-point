@@ -331,8 +331,6 @@ mod session_derivation_tests {
     }
 }
 
-/// Phase 2.5 (per-Lane instance): main_view の JS API を呼ぶ helper 群。
-/// xterm.js + WebSocket は **JS-side で per-Lane に管理** され、 Rust は thin trigger を出すだけ。
 /// lane の term session（tui = mode "tui"）の (session, is_root) 一覧を返す。
 ///
 /// doc 50 §4.6 A6: xterm は (lane, session) ごとなので、boot / lane 選択の経路は
