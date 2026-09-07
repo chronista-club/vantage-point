@@ -21,7 +21,7 @@ crates/vp-app/src/
 │  ── 共有型・共有 state（crate root。どの directory からも参照してよい）──
 ├── events.rs            AppEvent（tao EventLoop の UserEvent。旧 terminal.rs から移設 = doc 11 Q4）
 ├── daemon_wire.rs       ← client.rs の wire 型（6-0b。LaneInfo / RepoInfo / LaneSessionsWire …）
-├── lane_address.rs      LaneAddressWire + lane_key_to_wire_agent と逆写像（6-1、往復 test）
+├── lane_address.rs      LaneAddressWire + lane_key_to_wire_agent（6-1。逆写像は server 側 repo/delivery_actor.rs、往復は両側の test）
 ├── pane.rs / session_state.rs / settings.rs
 ├── generated/           KDL codegen（webview との wire 型）
 │  ── 処理 ──
@@ -69,7 +69,7 @@ crates/vp-app/src/
 - **lane ごとの cmd channel は再接続を跨いで生きる**（切断中に積まれた write / resize は次接続で送る）。
 - **conversation の demand は初回も再接続も毎回撃つ**（前任 GUI の残留購読で edge が立たない事故の対策）。
 - **購読の寿命は accordion の可視性**（1→0 で daemon の demand hook が engine を寝かせる）。
-- `lane_key_to_wire_agent` と逆写像は同じ file に一緒に動く（doc 44）。
+- `lane_key_to_wire_agent` と逆写像 `wire_agent_to_lane_display` は対で動く（doc 44）。逆写像は crate を跨ぐ（`vantage-point::repo::delivery_actor`）ので同居できず、往復は両側の test で固定する。
 
 ## 4. 再接続 loop 5 本の方針（契約。共通化は出荷条件にしない）
 
