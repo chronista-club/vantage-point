@@ -847,9 +847,11 @@ mod tests {
         };
         let _ = SessionState::load(0); // 不在
         assert_eq!(count(dir), 0);
-        let mut s = SessionState::default();
-        s.active_lane_address = Some("vp/lane/root".into());
-        s.save();
+        SessionState {
+            active_lane_address: Some("vp/lane/root".into()),
+            ..SessionState::default()
+        }
+        .save();
         let loaded = SessionState::load(0); // 正常
         assert_eq!(loaded.active_lane_address.as_deref(), Some("vp/lane/root"));
         assert_eq!(count(dir), 0);
