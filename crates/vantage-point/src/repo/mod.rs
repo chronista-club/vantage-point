@@ -16,6 +16,8 @@ pub(crate) mod conversation_pump;
 pub(crate) mod delegation;
 /// wire delivery loop — 未 ack command の lane nudge + 再掲示 (R2-b、 daemon 常駐)
 pub(crate) mod delivery_actor;
+/// Editor bridge — MCP → GUI Editor Mode / layout の request-response（doc 48 Phase 2 / doc 49 LE-15、doc 61）
+pub(crate) mod editor_bridge;
 pub(crate) mod hub;
 /// Lane subcommand types (LaneCmd) — Mailbox actor 経由の Lane 操作 Cmd (I-b、 2026-04-30)
 pub(crate) mod lane_cmd;
