@@ -137,7 +137,7 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
 | 値 | 誰が正か | boot 窓（未取得時）に何を保持するか | いつ保存するか | RPC 失敗時 | primary / secondary |
 |---|---|---|---|---|---|
 | `active_lane_address`（sidebar） | UI（user 操作 / 復元）。初回 ReposLoaded で daemon の canonical を seed | `None`。session 値は `Persist::pending_active_lane` に退避 | `activate` が session に鏡して save | `set_active_lane` の失敗は warn のみ（楽観） | secondary は自動選択しないが session 復元はする |
-| `pending_active_lane`（cursor） | session file | boot holder そのもの。その lane を含む snapshot で **1 度だけ**消費（`restore_active_lane`） | 保存しない | — | 同じ。lanes が来なければ永遠に Some |
+| `pending_active_lane`（cursor） | session file | boot holder そのもの。その lane を含む snapshot で **1 度だけ**消費（`restore_active_lane`） | 保存しない | — | 同じ。消費されずに残るのは repo down / lane 消滅 / 旧形 address（b-3 以降は daemon 値で自動修復されない、user が選び直すまで） |
 | `active_lane_address`（session） | instance 別 file | load 値。`observe_daemon_active_lane` は **pending 未消費の間は書かない**（b-3 で危険 B / C を解消: 旧実装は in-memory を書き換え、resize / move の throttle save や boot 窓の close が daemon 値を file に流していた）。保存値が無い時だけ daemon 値を採る | `activate` + 他の save 全部が memory の値を flush（memory には user の最後の選択しか入らない） | — | file が別 |
 | `currents_order`（session） | sidebar の DnD | `UiState::new` で sidebar に写す（起動直後の仮表示） | sidebar IPC reorder（`session_save`） | daemon reorder 失敗は warn、session は書き済 | 写しは window ごと。**生きている window 間は同期しない**（b-7、daemon push で項目 7 と） |
 | `currents_order`（sidebar） | **daemon の順**（毎 ReposLoaded で上書き） | session 値 | 保存しない（**危険 E**: session に戻さない） | daemon 不在なら session 順が生きる | 同じ |

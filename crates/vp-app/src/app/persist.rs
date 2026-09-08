@@ -60,6 +60,7 @@ impl Persist {
     }
 
     /// 復元待ちの lane（消費前だけ Some）。今は test の観測用。
+    /// 消費されないまま残るのは: repo が down / lane が消えた / 旧形の address（`session_state.rs::load`）。
     #[cfg(test)]
     pub(super) fn pending_active_lane(&self) -> Option<&str> {
         self.pending_active_lane.as_deref()
