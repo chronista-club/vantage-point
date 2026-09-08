@@ -26,45 +26,37 @@
 //! - **γ-light readiness**: main area の slot rect を ResizeObserver 経由で Rust に
 //!   push (`AppEvent::SlotRect`)、Phase 4+ で native overlay の `set_position` 同期に使用
 
-/// sidebar IPC の解釈（state 遷移）。効果の実行は本 module の `run()`。
+/// 起動 = resource の構築（`Boot`）。`run()` が最後まで所有する。
+mod boot;
+/// sidebar IPC の解釈（state 遷移 + 効果要求）。
 mod sidebar_ipc;
-
-use std::time::Duration;
+/// event loop の可変 state（`UiState`）。
+mod state;
 
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
-use tao::window::WindowBuilder;
-use wry::{
-    Rect, WebView, WebViewBuilder, dpi::LogicalPosition, dpi::LogicalSize as WryLogicalSize,
-};
+use tao::event_loop::{ControlFlow, EventLoopProxy};
+use wry::{Rect, WebView, dpi::LogicalPosition, dpi::LogicalSize as WryLogicalSize};
 
-use crate::daemon::conn::{SharedDaemonConn, daemon_repo_request, spawn_daemon_conn_manager};
-use crate::daemon::pollers::{
-    ActionsPersistPayload, fetch_repos_with_ports, resolve_active_repo_path,
-    spawn_actions_persist_writer, spawn_activity_poller, spawn_lane_inbox_poller,
-    spawn_menu_event_pump, spawn_processes_fetch, spawn_session_title_poller, spawn_sp_start,
-};
-use crate::daemon::subscriptions::{
-    spawn_canvas_subscription, spawn_device_subscription, spawn_lanes_subscription,
-};
+use crate::daemon::conn::{SharedDaemonConn, daemon_repo_request};
+use crate::daemon::pollers::{fetch_repos_with_ports, resolve_active_repo_path, spawn_sp_start};
+use crate::daemon::subscriptions::{spawn_canvas_subscription, spawn_lanes_subscription};
 use crate::daemon::wire::wire_fetch_payload;
 use crate::events::AppEvent;
 use crate::flows::repo_dialog::{
     resolve_default_repo_root, spawn_add_repo_picker, spawn_clone_repo, spawn_repo_root_picker,
 };
 use crate::lane::conversation::{ConversationCmd, LaneConversation, spawn_conversation_session};
-use crate::lane::terminal::{LaneTerminal, TermCmd, spawn_terminal_session};
+use crate::lane::terminal::{TermCmd, spawn_terminal_session};
 use crate::pane::{RepoPaneState, SidebarState};
 use crate::session_state::SessionState;
 use crate::settings::Settings;
-use crate::webview::editor_bridge::{fleet_dispatch_js, fleet_feedback_payload};
-use crate::webview::ipc_route::is_main_ipc_tag;
-use crate::webview::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
+use crate::webview::editor_bridge::fleet_dispatch_js;
+use crate::webview::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML};
 use crate::webview::push_main;
 use crate::webview::push_sidebar::{self, push_sidebar_state};
-use crate::webview::terminal_ipc;
 use sidebar_ipc::handle_sidebar_ipc;
+use state::GEOMETRY_SAVE_THROTTLE;
 
 /// 起動時の window default size (LogicalPixel)。 with_inner_size と clamp 矯正後の値で
 /// 共用するため定数化。
@@ -1041,429 +1033,34 @@ fn lookup_lane_cwd_by_address(state: &SidebarState, address: &str) -> Option<std
 
 /// App のエントリポイント
 pub fn run() -> anyhow::Result<()> {
-    // R-1 (`docs/design/11-vp-app-refactor.md` § 3.1 / `mem_1CaaaDoXHZvhR46ZfLN6jx`):
-    //   tracing init を `crate::log_init::init_tracing()` に切り出し済。
-    //   filter resilience (PR #235) + appender + KdlFormatter wiring + 起動ログを内包。
-    let _log = crate::log_init::init_tracing();
+    // resource（runtime / window / webview / menu / tray / daemon 接続）と初期 state を作る。
+    // `boot` と `ui` は閉包に move し、process の寿命と一致させる（doc 60 §6 6-2）。
+    let (event_loop, boot, mut ui) = boot::boot()?;
 
-    // VP-192: 旧 config/data パスからの冪等なデータ移行 (Settings/SessionState 読み込み前)
-    vp_paths::migrate_legacy_paths();
-
-    // ink（対話面, doc 52 §3）: 送信済み snapshot は ephemeral だが disk に残るので、起動時に
-    // 7 日超を掃除する（「消し手のないファイルを作らない」— terminal replay disk leak の轍）。
-    crate::webview::ink_snapshot::prune_old(Duration::from_secs(7 * 24 * 3600));
-
-    // Windows taskbar の identity。 **window を作る前**に設定する必要がある
-    // (既存 window の AUMID は後から変えられない)。 非 Windows は no-op。
-    crate::icon::set_app_user_model_id();
-
-    let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
-
-    // 根治: vp-app 共有 Tokio runtime (multi-thread)。
-    //
-    // tao の event_loop は macOS main thread を専有し、 closure 内には Tokio
-    // runtime context が無いため、 bare `tokio::spawn` を呼ぶと
-    // 「no reactor running」 panic で即死する (= 過去事故、 board 永続化 #456241e 等)。
-    //
-    // 全 async work はここで作る共有 runtime の `Handle::spawn` に乗せる。
-    // closure / helper 関数には `rt_handle.clone()` を move-capture で配る。
-    // `tokio::spawn` 直書きは `crates/vp-app/.clippy.toml` の
-    // `disallowed-methods` で compile-time block。
-    //
-    // `_rt` は `run()` の戻りまで生存させる (= drop すると runtime が止まる)。
-    let _rt = tokio::runtime::Runtime::new()?;
-    let rt_handle = _rt.handle().clone();
-
-    // VP-100 follow-up: 永続設定 + 1Password 風 開発者モード切替
-    let mut settings = Settings::load();
-    let initial_dev_mode = initial_developer_mode(&settings);
-    tracing::info!("Settings: developer_mode = {} (initial)", initial_dev_mode);
-
-    // メニューバー (View → Developer Mode / Open Developer Tools を含む) + トレイ
-    let menu_handles = crate::menu::build_menu_bar(initial_dev_mode);
-    let _menu = menu_handles.menu.clone();
-    // macOS: NSApp に menu を attach、 accelerator (Cmd+N 等) を NSApplication menu hotkey 化。
-    // これを呼ばないと MenuItem::new() の accelerator が NSResponder chain で発火しない。
-    // 既存の PredefinedMenuItem (close_window/undo/copy 等) は muda 内部で auto-attach されるが、
-    // user-defined MenuItem は明示の init_for_nsapp が要る。
-    #[cfg(target_os = "macos")]
-    {
-        // muda 0.17: Menu::init_for_nsapp() でメニューバーに attach
-        menu_handles.menu.init_for_nsapp();
-    }
-    let open_devtools_item = menu_handles.open_devtools_item;
-    let reload_webview_item = menu_handles.reload_webview_item;
-    let menu_ids = menu_handles.ids;
-    let _tray = match crate::tray::build_tray() {
-        Ok(t) => Some(t),
-        Err(e) => {
-            tracing::warn!("トレイ初期化失敗 (無効化): {}", e);
-            None
-        }
-    };
-
-    // muda の MenuEvent を main loop に橋渡しする pump を起動
-    spawn_menu_event_pump(&rt_handle, event_loop.create_proxy());
-
-    // F1b (doc 27 §3.4.4): vp-app → Daemon :32000 の全 persistent session を 1 QUIC connection に
-    // 集約する共有ハンドル。 manager task が connect/reconnect を一手に所有し、 各 session
-    // (device/lanes/canvas/terminal) は `wait_client` で得た共有 client に open_channel する。
-    // event loop closure が move capture するので、 closure 内の spawn は `daemon_conn.clone()` を渡す。
-    let daemon_conn = spawn_daemon_conn_manager(&rt_handle, crate::daemon::default_daemon_port());
-
-    // フィードバック方向 (doc 49 LE-19): webview の場の状態 → daemon-device 上り event。
-    // watch = latest-wins (webview が throttle 済みでも Rust 側で自然に coalesce)。
-    // 送り手 = ipc_handler の "fleet:feedback" 分岐 / 受け手 = device session の sender task。
-    let (fleet_feedback_tx, fleet_feedback_rx) =
-        tokio::sync::watch::channel(serde_json::Value::Null);
-
-    // ACTIONS の永続化 (doc 57 Phase 4)。同じく watch = latest-wins。
-    // 送り手 = `handle_sidebar_ipc` の `actions:persist` 分岐 / 受け手 = 下の debounce task。
-    let (actions_persist_tx, actions_persist_rx) =
-        tokio::sync::watch::channel::<Option<ActionsPersistPayload>>(None);
-    spawn_actions_persist_writer(&rt_handle, actions_persist_rx, daemon_conn.clone());
-
-    // DeviceRegistry 🧲 device event を daemon (daemon-device channel) から購読する (daemon に 1 本)。
-    // canvas/lanes は per-repo だが device は machine scope (= daemon singleton) なので起動時 1 回。
-    spawn_device_subscription(
-        &rt_handle,
-        event_loop.create_proxy(),
-        daemon_conn.clone(),
-        fleet_feedback_rx,
-    );
-
-    // vp-app instance index 判定 (= multi-window 復元)。 per-instance file load に先立って
-    // 必要なので session_state より前に確定する。
-    // `VP_APP_INSTANCE` (= "0", "1", ...) が instance 番号。 未設定 / "0" = primary。
-    let instance_index: usize = std::env::var("VP_APP_INSTANCE")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(0);
-    let is_primary = instance_index == 0;
-    tracing::info!(
-        "vp-app boot: instance_index={} (= {})",
-        instance_index,
-        if is_primary { "primary" } else { "secondary" }
-    );
-
-    // session_state を WindowBuilder より前に load して、 window geometry (= 前回終了時の
-    // position + size + monitor) を起動時に復元できるようにする。 per-instance 分離後は
-    // **自分の instance file** (`session.json` / `session.<N>.json`) を読む。 `mut` で keep し、
-    // 後段で active_lane_address / repos / currents_order 等の mutate + save にも使う。
-    let mut session_state = SessionState::load(instance_index);
-    // この instance window を「開いている」 と記録する (= 次回 primary 起動時の auto-spawn
-    // signal)。 clean close (`CloseRequested`) で `open=false` に上書きするので、 明示的に
-    // 閉じた window は復活せず、 kill された window は復元される。
-    session_state.set_open(true);
-    session_state.save();
-
-    // PR #458: invalid geometry (= MIN 未満 / NaN / Inf) は None に fallback。
-    // per-instance 分離後は自分の file の geometry を使う。
-    let restored_geometry = session_state.window_geometry().cloned();
-
-    // 最低サイズ + 起動時 size 強制矯正 — sidebar (固定 280px) 圧縮 bug の構造的防御。
-    //
-    // 1. `with_min_inner_size`: sidebar 幅 (280) + 余裕ある main 領域を構造的に確保する OS
-    //    レベル下限 (NSWindow.setMinSize)。 手動 drag による narrow 化を防ぐ。
-    // 2. 起動時 clamp: macOS state restoration は `applicationDidFinishLaunching` 後の
-    //    async phase で `restorableState` を frame に反映するため、 build 直後の同期
-    //    `inner_size()` チェックは race する (#428 Moody Blues Issue #1 で発覚)。
-    //    EventLoop が走り始めた**最初の Resized event** (= restoration 適用後) で
-    //    min 未満を検出して `set_inner_size(DEFAULT)` で force-resize する経路に移行。
-    //    詳細は event loop の Resized handler 側コメント。
-    // 3. window geometry 復元: `session_state.window_geometry` Some なら前回の size +
-    //    position を apply (= 個別位置)。 None なら default。 monitor 復元は EventLoop
-    //    走り始め後に `available_monitors()` で確認、 disconnect されてれば primary 内に clamp。
-    let mut builder = WindowBuilder::new()
-        .with_title("Vantage Point")
-        .with_min_inner_size(LogicalSize::new(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT));
-    // window icon (Windows: titlebar + taskbar / Linux: WM)。 Windows は exe に焼いた icon
-    // resource が主役だが、 window 単位の icon を明示しておくと起動経路によらず確実に出る。
-    // mac は dock icon (icon::set_app_icon) が担当で window icon の概念が無いため素通り。
-    if let Some((rgba, w, h)) = crate::icon::icon_rgba(256)
-        && let Ok(icon) = tao::window::Icon::from_rgba(rgba, w, h)
-    {
-        builder = builder.with_window_icon(Some(icon));
-    }
-    if let Some(geom) = &restored_geometry {
-        builder = builder
-            .with_inner_size(LogicalSize::new(geom.width, geom.height))
-            .with_position(LogicalPosition::new(geom.x, geom.y));
-    } else {
-        builder = builder.with_inner_size(LogicalSize::new(
-            DEFAULT_WINDOW_WIDTH,
-            DEFAULT_WINDOW_HEIGHT,
-        ));
-    }
-    let window = builder.build(&event_loop)?;
-
-    // 表示モード復元 (doc 30 §6.1): windowed 座標で build した後、 保存が Fullscreen なら全画面化する。
-    // windowed frame を base に残すことで全画面解除時に元の窓サイズへ戻せる。 monitor 精密指定は
-    // EventLoop 走行後の `available_monitors()` race を避け、 current monitor (= 復元位置の display) で
-    // 全画面化する (`Borderless(None)`)。 monitor 相対の厳密復元は doc 30 §6.2 の将来課題。
-    if restored_geometry
-        .as_ref()
-        .is_some_and(|g| g.display_mode == crate::session_state::DisplayMode::Fullscreen)
-    {
-        tracing::info!(
-            "session restore [instance={}]: 全画面モードを復元",
-            instance_index
-        );
-        window.set_fullscreen(Some(tao::window::Fullscreen::Borderless(None)));
-    }
-
-    // primary 起動時、 前回「開いていた」 secondary instance (= `session.<N>.json` で
-    // open==true、 N≥1) を **child process として auto-spawn** する。 これで「複数 window を
-    // 開いて再起動 → 全 window 復元」 が動く。 明示的に閉じた (= clean close で open=false)
-    // instance は復活しない ─ per-instance file 分離 + open flag 管理によって、 共有 1 file
-    // 時代の「close しても slot が残り再 spawn される」 bug を根治した。
-    //
-    // 子は `VP_APP_INSTANCE=<idx>` で自分の file を read する。
-    // spawn 失敗は warn して continue (= primary 起動は阻害しない)。
-    if is_primary {
-        let to_spawn = SessionState::open_secondary_indices();
-        if !to_spawn.is_empty() {
-            match std::env::current_exe() {
-                Ok(exe) => {
-                    for idx in to_spawn {
-                        match std::process::Command::new(&exe)
-                            .env("VP_APP_INSTANCE", idx.to_string())
-                            .spawn()
-                        {
-                            Ok(child) => tracing::info!(
-                                "auto-spawned secondary instance (pid={}, instance_index={})",
-                                child.id(),
-                                idx
-                            ),
-                            Err(e) => tracing::warn!(
-                                "auto-spawn secondary (instance={}) failed (起動は継続): {}",
-                                idx,
-                                e
-                            ),
-                        }
-                    }
-                }
-                Err(e) => tracing::warn!("current_exe() 失敗 (auto-spawn skip): {}", e),
-            }
-        }
-    }
-
-    // Terminal backend: daemon を auto-launch (down なら `vp` binary を spawn)。
     let proxy = event_loop.create_proxy();
     // Phase 2.5 (per-Lane instance): startup の placeholder PTY 接続は撤去。
     // Lane が出現するまで main area は empty placeholder ("No Lane selected") のみ。
     // ただし daemon の auto-launch だけは継続 (sidebar の Activity widget や
     // /api/daemon/repos 取得に必要)。
     let _ = proxy; // 旧 spawn_shell / connect_daemon_terminal で proxy を消費していた、 互換用に残す
-    let node_url = std::env::var("VP_DAEMON_URL")
-        .unwrap_or_else(|_| format!("http://127.0.0.1:{}", crate::daemon::default_daemon_port()));
-    if let Err(e) = crate::daemon::launcher::ensure_daemon_ready(&node_url) {
-        tracing::warn!(
-            "daemon auto-launch 失敗 (continue with offline state): {}",
-            e
-        );
-    }
-
-    // daemon から repo list を非同期 fetch (起動初回)
-    spawn_processes_fetch(&rt_handle, event_loop.create_proxy(), daemon_conn.clone());
-    // VP-95: Activity widget の定期更新 (5s 間隔)
-    spawn_activity_poller(&rt_handle, event_loop.create_proxy(), daemon_conn.clone());
-    // VP-143: cc session display name (custom-title) の 5s 周期 resolve
-    spawn_session_title_poller(&rt_handle, event_loop.create_proxy());
-    // VP-147 PR-P2-3: per-Lane mailbox inbox 状況の 5s 周期 resolve (sidebar message icon 用 signal)
-    spawn_lane_inbox_poller(&rt_handle, event_loop.create_proxy());
-
-    // WebView 統合 (step 3a): sidebar + main を 1 WebView (1 DOM, CSS flex) に統合。
-    // sidebar.bundle.js は vp-asset://app/sidebar.bundle.js の外部 script として load される
-    // (doc 48 Phase 1 で inline → 外部化。#sidebar-root に mount)。
-    // 旧 2 WebView (cross-WebView IPC bridge で keyboard を 2 往復させていた) を廃し、
-    // sidebar↔main の event / state が同一 DOM 内で直接流れる。
-    let sidebar_ipc_proxy = event_loop.create_proxy();
-    let ipc_proxy = event_loop.create_proxy();
-    // DevTools は compile 時 always 有効。menu の「Open Developer Tools」から
-    // `webview.open_devtools()` を呼ぶかで runtime 制御 (本番ビルドでも切替可)。
-    // echo probe trigger (Unison 北極星 step 2/3): VP_UNISON_ECHO_CERT が set なら
-    // webview load 前に cert を global へ注入する。 entry.tsx が load 時に検出して
-    // window.vpUnisonEcho を auto-run し、 結果は console bridge 経由で app.kdl.log に出る
-    // (= agent が DevTools なしで round-trip を観測する経路)。 未 set なら空 script で no-op。
-    let echo_init = std::env::var("VP_UNISON_ECHO_CERT")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(|cert| {
-            format!(
-                "window.__VP_ECHO_CERT__ = {};",
-                serde_json::to_string(&cert).unwrap_or_else(|_| "\"\"".into())
-            )
-        })
-        .unwrap_or_default();
-    let webview = WebViewBuilder::new()
-        // 統合 origin fix: with_html (about:blank = 不透明オリジン) だと localStorage が
-        // SecurityError を throw し sidebar bundle が boot 中に落ちる。custom protocol で
-        // 実オリジン (vp-asset://app) を与え、MAIN_AREA_HTML を app/index.html として配信する。
-        .with_custom_protocol("vp-asset".to_string(), move |id, request| {
-            crate::webview::assets::serve(id, request, MAIN_VIEW_ASSETS)
-        })
-        .with_initialization_script(&echo_init)
-        .with_url("vp-asset://app/index.html")
-        .with_bounds(Rect {
-            position: LogicalPosition::new(0.0, 0.0).into(),
-            size: WryLogicalSize::new(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT).into(),
-        })
-        .with_devtools(true)
-        .with_ipc_handler(move |req| {
-            // 統合 ipc dispatch: t 値で明示分岐 (sidebar tag と main tag は disjoint)。
-            // main tag (terminal / pane 系) → terminal、 それ以外 (sidebar IpcEnvelope:
-            // repo: / lane: 系) → SidebarIpc。 terminal の fall-through に頼らない。
-            let body = req.body();
-            // fleet feedback (LE-19) は event loop を経由せず watch へ直行 (高頻度 + 状態量)
-            if let Some(fb) = fleet_feedback_payload(body) {
-                let _ = fleet_feedback_tx.send(fb);
-                return;
-            }
-            if is_main_ipc_tag(body) {
-                terminal_ipc::handle_ipc_message(body, &ipc_proxy);
-            } else {
-                let _ = sidebar_ipc_proxy.send_event(AppEvent::SidebarIpc(body.to_string()));
-            }
-        })
-        .with_focused(true)
-        .build_as_child(&window)?;
-
-    tracing::info!("メインウィンドウ作成 (sidebar + main を 1 WebView に統合)");
-
-    // 起動直後の bounds 明示同期 — 「下部が空く」 bug の構造的 fix。
-    // WebView の初期 `with_bounds` は DEFAULT_WINDOW_HEIGHT (800) 固定なので、 復元 geometry が
-    // DEFAULT より大きい (= 前回 window を縦に広げていた) 場合、 起動後に `WindowEvent::Resized`
-    // が発火しない限り content が 800px のまま下部が黒く空く。 macOS は `with_inner_size` で
-    // born した window に初回 Resized を出さないことがあるため、 ここで実 inner_size に
-    // 明示同期して初回 paint から content view を全面に張る (Resized handler と idempotent)。
-    update_pane_bounds(&webview, window.inner_size(), window.scale_factor());
-
-    // Phase 2.x-d: 旧 single-PTY 経路 (`xterm_ready` / `pending` / `PENDING_MAX`) は撤去。
-    // per-Lane instance + browser-native WebSocket では各 Lane の xterm.js が独立に
-    // WS から bytes を受けるので、 Rust 側で buffer / flush 同期する必要が無い。
-    // VP-95: sidebar 全体 state (repos + widget + activity)
-    let mut sidebar_state = SidebarState::default();
-    // in-app update: 適用フロー実行中フラグ（GUI local）。ActivitySnapshot は health poll で
-    // 定期上書きされるため、event loop 側で保持して毎回 snapshot に再適用する。
-    let mut update_applying = false;
-    // session_state は WindowBuilder 上で既に load 済 (= window geometry を先に必要)。
-    // 直前 active Lane を初回 LanesLoaded で復元するための pending 値。
-    // 1 度復元したら None にして、 後続 LanesLoaded で再復元しないように。
-    let mut pending_session_active_lane: Option<String> = session_state.active_lane_address.clone();
-    // SidebarState に currents_order を即反映 (renderRepos がこの順で並べる)
-    sidebar_state.currents_order = session_state.currents_order.clone();
-    // VP-100 γ-light: pane_id → slot rect。Phase 2 では蓄積するだけ、Phase 4+ で
-    // native overlay の `set_position` 同期に使う。
-    let mut slot_rects: std::collections::HashMap<String, SlotRect> =
-        std::collections::HashMap::new();
-    // repo auto-spawn: 1 セッションで同じ repo を二重 trigger しないための guard。
-    // path をキーにする (repo_name は重複しうる、 path は正規化済 unique)。
-    // daemon 側でも `Process already running` で弾かれるが、 無駄な POST を避ける。
-    let mut repo_spawn_triggered: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
-    // オンデマンド respawn: active にする lane が Dead (pid:null) の時に restart_lane を 1 回だけ
-    // 発火するための guard。 lane address をキーにする。 lane が Running に戻ったら (LanesLoaded で
-    // pid あり検出時) entry を解除し、 再度 Dead 化した時に再 respawn できるようにする。
-    let mut lane_respawn_triggered: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
     // maybe_respawn_dead_lane の async restart_lane が失敗した時に event loop へ
     // 通知を返し lane_respawn_triggered を解除するための proxy (永続 suppression 回避)。
     let respawn_proxy = event_loop.create_proxy();
-    // R sidebar の debug log tail の世代カウンタ（sidebar view modes、2026-08-01）。
-    // watch / unwatch のたびに進め、旧世代の tail thread は次の poll で自然に退場する
-    // （= 最後の watch が勝つ単一 tail。join も channel 後始末も不要 — debug_log.rs 参照）。
-    let debuglog_watch_gen: std::sync::Arc<std::sync::atomic::AtomicU64> =
-        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    // wiremsg Stage 1: per-repo の "lanes" Unison 購読を 1 本だけ張るための guard。
-    // path をキーにする。F1b: 購読は共有 connection に追従して give-up しないので、 一度
-    // spawn したら app 終了まで張りっぱなし (= guard から除去されない)。
-    let mut lanes_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // wiremsg Stage 2: per-repo の "gui" Unison 購読 guard (lanes_sub_active と同型)。
-    let mut canvas_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // board pane の boot 窓救済（doc 52 §10 wave 0、device 一覧と同型）: gui channel で届いた
-    // BoardUpdated を repo × lane で保持し、`AppEvent::WebviewReady` の replay で再配信する。
-    // retained BoardUpdated は bundle 評価前に届いて受け口不在で落ちるため、これが無いと
-    // reopen 時に board pane が出ない（live show まで空）。
-    let mut board_snapshots: std::collections::HashMap<
-        String,
-        std::collections::HashMap<String, serde_json::Value>,
-    > = std::collections::HashMap::new();
-    // terminal S4: per-lane terminal session registry (lane key → LaneTerminal)。
-    // LanesLoaded で live lane に対し start、 消えた lane / app 終了で stop (= map から remove)。
-    let mut terminal_sessions: std::collections::HashMap<String, LaneTerminal> =
-        std::collections::HashMap::new();
-    // Conversation gui (doc 32): per-lane conversation session registry (lane key → LaneConversation)。
-    // terminal と違い demand-driven: ConversationSubmit の初回で lazy spawn (reconcile 非結合)。
-    let mut conversation_sessions: std::collections::HashMap<String, LaneConversation> =
-        std::collections::HashMap::new();
-    // doc 53 §11: lane ごとに **最後に webview へ渡した roster** の指紋。定期 snapshot で
-    // 同じ roster を撃ち直して pane を作り直さないための変化検知（`header_lane_fields_changed`
-    // と同じ「変化時のみ push」の規律）。
-    //
-    // ⚠️ 旧実装にはここに **取りこぼした fetch の保留箱**（`pending_session_fetch`）が在った。
-    // 供給が fetch 1 本だった時代、boot 直後の要求が repo 未解決で捨てられると
-    // 「pane も名札も出ない」になり、再試行の契機が無かったため箱で救っていた。
-    // 供給が snapshot（retained + 変化時 push）に一本化された今、取りこぼしという状態自体が
-    // 存在しない（doc 53 §6.5.2 が予言した「供給路を 1 本にすれば要らない」）。
-    let mut last_roster_push: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    // VP-100 follow-up (1Password 風): runtime 開発者モード state
-    let mut dev_mode = initial_dev_mode;
-    // 直近に daemon から引けた settings.kdl の値（doc 59 P3）。
-    // 保持するのは、folder picker のように **vp-app.toml だけを触る操作**の後でも
-    // daemon 側の表示を消さないため（毎回引き直すと overlay が一瞬空欄になる）。
-    // None のままなら「まだ引けていない / 接続できない」。
-    let mut last_daemon_settings: Option<DaemonSettings> = None;
     // repo:add 等の async 操作で event loop に repo list 再 fetch を kick するための proxy
     let async_action_proxy = event_loop.create_proxy();
-
-    // 起動時 size clamp 用 once-flag。 macOS state restoration の `restorableState` は
-    // EventLoop 起動後の async phase で frame に反映され、 初回の `WindowEvent::Resized`
-    // として届く。 この flag が false のうちに来た Resized が「restoration 適用直後」と
-    // みなして min 制約と照合し、 必要なら force-resize する (#428 Moody Blues Issue #1)。
-    // PR #458 fix: 保存 geometry を復元した path では起動時 clamp を skip。
-    // 復元値 (with_inner_size apply 済) を macOS state restoration race 由来の小 size で
-    // 上書きしないため、 復元 path 中は最初の Resized event を「正常な user-driven resize」
-    // 扱いにする。 default path (= restored_geometry None) では従来通り clamp logic を走らせる。
-    let mut initial_size_clamp_done = restored_geometry.is_some();
-
-    // PR #459 throttled save: window resize / move 中も 500ms throttle で session save。
-    // CloseRequested の force save に依存しない (= `ge app:stop` の SIGTERM kill や crash
-    // でも直近 state が persistent)。 dogfood で「ge app で再起動すると save 走らない」
-    // bug を解消。
-    const GEOMETRY_SAVE_THROTTLE: std::time::Duration = std::time::Duration::from_millis(500);
-    let mut last_geometry_save = std::time::Instant::now() - std::time::Duration::from_secs(1);
-
-    // dock app icon (portal favicon) の再アサート用。 bare binary は .app bundle が無いため
-    // macOS が launch 完了時に generic icon を被せ、 run() 前 (window.build 直後) の
-    // setApplicationIconImage を上書きする。 event loop 開始後 ~1.5s 間 set_app_icon() を
-    // 呼び続けて (WaitUntil で loop を起こす) portal icon を定着させる。 .dmg 版は冪等。
-    let icon_launch_at = std::time::Instant::now();
-    let mut icon_settled = false;
-
-    // Model B (focus = 操舵ポインタ): この vp-app instance が OS の key window かを追跡する。
-    // multi-window は別プロセス (VP_APP_INSTANCE = primary 0 / secondary N) なので、ROTO の
-    // switch_lane broadcast は全 instance の "canvas" 購読に届く。両 window が一斉に切り替わるのを
-    // 防ぐため、**focused instance だけ**が switch_lane を適用する (B-local self-filter)。
-    // with_focused(true) で起動するので初期値は true。
-    let mut is_focused = true;
-    // Model B #2: 直近 daemon に報告した active_lane。 focus が高速に flip しても
-    // 同じ lane への重複報告 (= reqwest::Client 新規構築 + 無駄 POST) を抑止する。
-    let mut last_focus_reported_lane: Option<String> = None;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
         // launch settle まで dock icon を再設定 (bare binary 対策)。 settle 後は通常の Wait。
-        if !icon_settled {
+        if !ui.win.icon_settled {
             crate::icon::set_app_icon();
-            if icon_launch_at.elapsed() < std::time::Duration::from_millis(1500) {
+            if ui.win.icon_launch_at.elapsed() < std::time::Duration::from_millis(1500) {
                 *control_flow = ControlFlow::WaitUntil(
                     std::time::Instant::now() + std::time::Duration::from_millis(150),
                 );
             } else {
-                icon_settled = true;
+                ui.win.icon_settled = true;
             }
         }
 
@@ -1476,14 +1073,14 @@ pub fn run() -> anyhow::Result<()> {
                 // この window は **明示的に閉じられた** → 次回 primary 起動時に auto-respawn
                 // しないよう自 instance file に open=false を記録する。 強制 kill (= SIGTERM /
                 // crash) では CloseRequested が来ないので open=true のまま残り、 復元される。
-                session_state.set_open(false);
+                ui.session_state.set_open(false);
                 // window geometry + 表示モード (position/size/monitor/fullscreen) も自 instance file に
                 // save。 起動時に WindowBuilder + set_fullscreen で apply されて前回の配置に復元される。
-                persist_window_geometry(&mut session_state, &window);
-                if let Some(g) = session_state.window_geometry() {
+                persist_window_geometry(&mut ui.session_state, &boot.window);
+                if let Some(g) = ui.session_state.window_geometry() {
                     tracing::info!(
                         "session save [instance={}]: window geometry ({}x{} @ {},{}, monitor={:?}, mode={:?}), open=false",
-                        instance_index,
+                        boot.instance_index,
                         g.width,
                         g.height,
                         g.x,
@@ -1493,19 +1090,19 @@ pub fn run() -> anyhow::Result<()> {
                     );
                 }
                 // open=false (+ geometry) を確実に書き出す (outer_position 失敗でも open は残す)。
-                session_state.save();
+                ui.session_state.save();
                 *control_flow = ControlFlow::Exit;
             }
             Event::WindowEvent {
                 event: WindowEvent::Resized(size),
                 ..
             } => {
-                let scale = window.scale_factor();
+                let scale = boot.window.scale_factor();
                 // 初回 Resized = macOS state restoration 適用後の frame。 min 未満なら
                 // force-resize して default に揃える (#428 Moody Blues Issue #1 fix)。
                 // 2 回目以降は user resize / clamp 由来の通常 resize として update_pane_bounds 走らせる。
-                if !initial_size_clamp_done {
-                    initial_size_clamp_done = true;
+                if !ui.win.initial_size_clamp_done {
+                    ui.win.initial_size_clamp_done = true;
                     let logical = size.to_logical::<f64>(scale);
                     if logical.width < MIN_WINDOW_WIDTH || logical.height < MIN_WINDOW_HEIGHT {
                         tracing::info!(
@@ -1515,7 +1112,7 @@ pub fn run() -> anyhow::Result<()> {
                             DEFAULT_WINDOW_WIDTH,
                             DEFAULT_WINDOW_HEIGHT
                         );
-                        window.set_inner_size(LogicalSize::new(
+                        boot.window.set_inner_size(LogicalSize::new(
                             DEFAULT_WINDOW_WIDTH,
                             DEFAULT_WINDOW_HEIGHT,
                         ));
@@ -1524,14 +1121,14 @@ pub fn run() -> anyhow::Result<()> {
                         return;
                     }
                 }
-                update_pane_bounds(&webview, size, scale);
+                update_pane_bounds(&boot.webview, size, scale);
                 // PR #459 throttled save: resize 中も 500ms throttle で geometry + 表示モードを save。
                 // 全画面 enter/exit も Resized を撃つので、 helper 内の fullscreen 判定で mode が追従する。
                 let now = std::time::Instant::now();
-                if now.duration_since(last_geometry_save) > GEOMETRY_SAVE_THROTTLE {
-                    last_geometry_save = now;
-                    persist_window_geometry(&mut session_state, &window);
-                    session_state.save();
+                if now.duration_since(ui.win.last_geometry_save) > GEOMETRY_SAVE_THROTTLE {
+                    ui.win.last_geometry_save = now;
+                    persist_window_geometry(&mut ui.session_state, &boot.window);
+                    ui.session_state.save();
                 }
             }
             Event::WindowEvent {
@@ -1541,10 +1138,10 @@ pub fn run() -> anyhow::Result<()> {
                 // PR #459 throttled save: window 移動中も 500ms throttle で geometry + 表示モードを save。
                 // Resized と pair (= drag による size 変更だけでなく位置変更も capture)。
                 let now = std::time::Instant::now();
-                if now.duration_since(last_geometry_save) > GEOMETRY_SAVE_THROTTLE {
-                    last_geometry_save = now;
-                    persist_window_geometry(&mut session_state, &window);
-                    session_state.save();
+                if now.duration_since(ui.win.last_geometry_save) > GEOMETRY_SAVE_THROTTLE {
+                    ui.win.last_geometry_save = now;
+                    persist_window_geometry(&mut ui.session_state, &boot.window);
+                    ui.session_state.save();
                 }
             }
             // Model B (focus = 操舵ポインタ): focus 状態を追跡する。OS の key window は全プロセス間で
@@ -1555,22 +1152,22 @@ pub fn run() -> anyhow::Result<()> {
                 event: WindowEvent::Focused(focused),
                 ..
             } => {
-                is_focused = focused;
+                ui.win.is_focused = focused;
                 tracing::debug!("window focus changed: is_focused={}", focused);
                 // Model B #2: focus を得た瞬間、 この window の display lane を daemon canonical の
                 // active_lane に報告する。 daemon active_lane が focused window に追従 → ROTO LCD
                 // follows focus (#4) が「active_lane を映すだけ」 で自動成立する。 focus-loss (false)
                 // は無視 ── 次に focus を得た window が上書きするため (lane 未選択 window も skip)。
                 if focused
-                    && let Some(address) = sidebar_state.active_lane_address.clone()
-                    && last_focus_reported_lane.as_deref() != Some(address.as_str())
-                    && let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &address)
+                    && let Some(address) = ui.sidebar_state.active_lane_address.clone()
+                    && ui.win.last_focus_reported_lane.as_deref() != Some(address.as_str())
+                    && let Some(path) = resolve_repo_path_for_lane(&ui.sidebar_state, &address)
                 {
                     // 重複報告抑止: 報告する lane を記録してから spawn。 同 lane への
                     // 連続 focus event は上の guard で弾かれ、 RPC は lane 切替時のみ。
-                    last_focus_reported_lane = Some(address.clone());
-                    let conn = daemon_conn.clone();
-                    rt_handle.spawn(async move {
+                    ui.win.last_focus_reported_lane = Some(address.clone());
+                    let conn = boot.daemon_conn.clone();
+                    boot.rt_handle.spawn(async move {
                         let result = match conn.control().await {
                             Ok(control) => control.set_active_lane(path, address).await,
                             Err(e) => Err(e),
@@ -1590,13 +1187,13 @@ pub fn run() -> anyhow::Result<()> {
                     // escape は envelope の serde_json 化に含まれる（Phase review fix #3 の
                     // 「手書き escape は null byte / surrogate を見落とす」は、payload ごと
                     // JSON にすることで構造的に解消）。
-                    push_main::deliver_paste(&webview, &text);
+                    push_main::deliver_paste(&boot.webview, &text);
                 }
             }
             Event::UserEvent(AppEvent::OscNotification { lane, code: _ }) => {
                 // Phase 5-D Sprint C P2.1: per-Lane HD notification（tui / OSC 由来）。
                 // active lane は即読 skip。共通 sink（gui の turn_completed と合流）。
-                mark_lane_awaiting_input(&lane, "osc:notification", &mut sidebar_state, &webview);
+                mark_lane_awaiting_input(&lane, "osc:notification", &mut ui.sidebar_state, &boot.webview);
             }
             Event::UserEvent(AppEvent::ResolveSessionTitles) => {
                 // VP-143 → doc 58 ②-c: 全 lane の **session ごと**に cc custom-title を resolve
@@ -1612,7 +1209,7 @@ pub fn run() -> anyhow::Result<()> {
                 let mut changed = false;
                 let mut current_keys: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
-                for lanes in sidebar_state.lanes_by_repo.values() {
+                for lanes in ui.sidebar_state.lanes_by_repo.values() {
                     for lane in lanes {
                         let address = lane.address.key();
                         let cwd = std::path::Path::new(&lane.cwd);
@@ -1637,16 +1234,16 @@ pub fn run() -> anyhow::Result<()> {
                                 }
                                 None => None,
                             };
-                            let prev = sidebar_state.session_titles.get(&map_key).cloned();
+                            let prev = ui.sidebar_state.session_titles.get(&map_key).cloned();
                             match (resolved, prev) {
                                 (Some(new_title), Some(old)) if old == new_title => {}
                                 (None, None) => {}
                                 (Some(new_title), _) => {
-                                    sidebar_state.session_titles.insert(map_key, new_title);
+                                    ui.sidebar_state.session_titles.insert(map_key, new_title);
                                     changed = true;
                                 }
                                 (None, Some(_)) => {
-                                    sidebar_state.session_titles.remove(&map_key);
+                                    ui.sidebar_state.session_titles.remove(&map_key);
                                     changed = true;
                                 }
                             }
@@ -1654,18 +1251,18 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
                 // 既に消えた lane の stale entry 掃除
-                let stale: Vec<String> = sidebar_state
+                let stale: Vec<String> = ui.sidebar_state
                     .session_titles
                     .keys()
                     .filter(|k| !current_keys.contains(k.as_str()))
                     .cloned()
                     .collect();
                 for k in stale {
-                    sidebar_state.session_titles.remove(&k);
+                    ui.sidebar_state.session_titles.remove(&k);
                     changed = true;
                 }
                 if changed {
-                    push_sidebar_state(&webview, &sidebar_state);
+                    push_sidebar_state(&boot.webview, &ui.sidebar_state);
                 }
             }
             Event::UserEvent(AppEvent::ResolveLaneInboxes) => {
@@ -1678,7 +1275,7 @@ pub fn run() -> anyhow::Result<()> {
                 let mut changed = false;
                 let mut current_keys: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
-                for lanes in sidebar_state.lanes_by_repo.values() {
+                for lanes in ui.sidebar_state.lanes_by_repo.values() {
                     for lane in lanes {
                         let address = lane.address.key();
                         current_keys.insert(address.clone());
@@ -1689,7 +1286,7 @@ pub fn run() -> anyhow::Result<()> {
                         //   に書き換えて、 既存 entry の `unread_count` 等を refresh する。 現状 (Phase 2)
                         //   は actual 値が無いので Vacant のみ insert で sufficient (icon visibility のみ)。
                         if let std::collections::hash_map::Entry::Vacant(e) =
-                            sidebar_state.lane_inboxes.entry(address)
+                            ui.sidebar_state.lane_inboxes.entry(address)
                         {
                             e.insert(MessageState::default());
                             changed = true;
@@ -1697,18 +1294,18 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
                 // 既に消えた lane の stale entry 掃除
-                let stale: Vec<String> = sidebar_state
+                let stale: Vec<String> = ui.sidebar_state
                     .lane_inboxes
                     .keys()
                     .filter(|k| !current_keys.contains(k.as_str()))
                     .cloned()
                     .collect();
                 for k in stale {
-                    sidebar_state.lane_inboxes.remove(&k);
+                    ui.sidebar_state.lane_inboxes.remove(&k);
                     changed = true;
                 }
                 if changed {
-                    push_sidebar_state(&webview, &sidebar_state);
+                    push_sidebar_state(&boot.webview, &ui.sidebar_state);
                 }
             }
             Event::UserEvent(AppEvent::ReposLoaded(repos)) => {
@@ -1722,7 +1319,7 @@ pub fn run() -> anyhow::Result<()> {
                 // 「prev (旧 sidebar_state.processes) には port があった、 新 repos には port が無い」
                 // 形の merge は port を不用意に消すので、 sidebar_state の port は新側 (port_by_name 反映済)
                 // で上書きされる。 retroactive ensureLane (= 後段) で None→Some 遷移を補う。
-                let prev: std::collections::HashMap<String, RepoPaneState> = sidebar_state
+                let prev: std::collections::HashMap<String, RepoPaneState> = ui.sidebar_state
                     .processes
                     .drain(..)
                     .map(|p| (p.path.clone(), p))
@@ -1740,7 +1337,7 @@ pub fn run() -> anyhow::Result<()> {
                 // Phase 3 (app 側を per-repo active に拡張、 daemon は既に per-repo 保持)。
                 let daemon_active_lane: Option<String> =
                     repos.iter().find_map(|p| p.active_lane.clone());
-                sidebar_state.processes = repos
+                ui.sidebar_state.processes = repos
                     .into_iter()
                     .map(|p| {
                         // RepoInfo.state / .port を RepoPaneState に merge
@@ -1756,7 +1353,7 @@ pub fn run() -> anyhow::Result<()> {
                             //   2. 上記 None かつ session 中の追加 (= 初回 fetch ではない) なら auto-expand
                             //   3. 初回 fetch の新規は閉じた状態
                             let mut s = RepoPaneState::new(p.path.clone(), p.name.clone());
-                            s.expanded = session_state
+                            s.expanded = ui.session_state
                                 .repo_expanded(&p.path)
                                 .unwrap_or(!is_initial_load);
                             s
@@ -1769,14 +1366,14 @@ pub fn run() -> anyhow::Result<()> {
                 // Phase 1 (doc 24): currents_order を daemon の repo_order (= fetch 順) の
                 // mirror にする。これで currents_order は独立 SSOT ではなく canonical の派生となり、
                 // JS resolveRepoOrder は実質 passthrough（sidebar = daemon = ROTO = CLI で一致）。
-                sidebar_state.currents_order =
+                ui.sidebar_state.currents_order =
                     Some(repo_ports.iter().map(|(path, _)| path.clone()).collect());
                 // Model Q: 初回 load で active lane を daemon canonical から復元 (session.json でなく daemon が源)。
                 if is_initial_load
                     && let Some(addr) = daemon_active_lane
                 {
-                    sidebar_state.active_lane_address = Some(addr.clone());
-                    session_state.active_lane_address = Some(addr);
+                    ui.sidebar_state.active_lane_address = Some(addr.clone());
+                    ui.session_state.active_lane_address = Some(addr);
                 }
                 // wiremsg: 各 repo の repo の Unison channel を購読する (per-repo 1 本ずつ)。
                 // - Stage 1: "lanes" channel → sidebar Lane ツリー
@@ -1789,20 +1386,20 @@ pub fn run() -> anyhow::Result<()> {
                     // (lanes=lane_registry / canvas=TopicRouter) なので repo port 不問 = repo が down
                     // (port=None) でも「前回の続き」を表示でき、 port None→Some race で購読が始まらない
                     // 旧 gating の穴も解消する。 repo 復帰時は register / canvas push で各 channel が更新。
-                    if lanes_sub_active.insert(path.clone()) {
+                    if ui.guards.lanes_sub_active.insert(path.clone()) {
                         spawn_lanes_subscription(
-                            &rt_handle,
+                            &boot.rt_handle,
                             async_action_proxy.clone(),
                             path.clone(),
-                            daemon_conn.clone(),
+                            boot.daemon_conn.clone(),
                         );
                     }
-                    if canvas_sub_active.insert(path.clone()) {
+                    if ui.guards.canvas_sub_active.insert(path.clone()) {
                         spawn_canvas_subscription(
-                            &rt_handle,
+                            &boot.rt_handle,
                             async_action_proxy.clone(),
                             path.clone(),
-                            daemon_conn.clone(),
+                            boot.daemon_conn.clone(),
                         );
                     }
                 }
@@ -1815,9 +1412,9 @@ pub fn run() -> anyhow::Result<()> {
                 // user が re-expand すれば再度 spawn が trigger される。
                 // 注意: spawn 進行中 (state=="spawning") は外さない、 一連の spawn cycle が完了
                 // (= "running") した時のみ。 こうすれば spawn 中の重複 POST も防げる。
-                for proc in &sidebar_state.processes {
+                for proc in &ui.sidebar_state.processes {
                     if proc.state.as_deref() == Some("running")
-                        && repo_spawn_triggered.remove(&proc.path)
+                        && ui.guards.repo_spawn_triggered.remove(&proc.path)
                     {
                         tracing::debug!(
                             "sp_spawn_triggered cleared (running): {}",
@@ -1825,7 +1422,7 @@ pub fn run() -> anyhow::Result<()> {
                         );
                     }
                 }
-                push_sidebar_state(&webview, &sidebar_state);
+                push_sidebar_state(&boot.webview, &ui.sidebar_state);
             }
             // Phase A4-3b: repo の Lane fetch 結果を sidebar_state に反映
             Event::UserEvent(AppEvent::LanesLoaded {
@@ -1837,7 +1434,7 @@ pub fn run() -> anyhow::Result<()> {
                 // 起点が載っていなかっただけで「起点が無い」ではないので、前回値を保つ
                 // （既定値に落とすと ⭐ が明滅する）。
                 if let Some(origin) = origin {
-                    sidebar_state
+                    ui.sidebar_state
                         .origin_by_repo
                         .insert(repo_path.clone(), origin);
                 }
@@ -1848,10 +1445,10 @@ pub fn run() -> anyhow::Result<()> {
                 // 例外: secondary instance (Cmd+N で spawn = `instance_index != 0`) の場合は
                 // auto-select を skip。 元 vp-app が既に同 lane の terminal WS を持ってる事が多く、
                 // 衝突して両方の console が壊れるため。 Secondary は user が手動 lane 選択する前提。
-                let is_secondary = instance_index != 0;
+                let is_secondary = boot.instance_index != 0;
                 // session 復元優先: pending_session_active_lane が今回の lanes に含まれれば、
                 // auto-select-first より先にそれを採用 (vp-app 再起動時に直前 active を維持)。
-                let session_match: Option<String> = pending_session_active_lane
+                let session_match: Option<String> = ui.pending_session_active_lane
                     .as_ref()
                     .filter(|saved| {
                         lanes
@@ -1864,12 +1461,12 @@ pub fn run() -> anyhow::Result<()> {
                 //  Active Lane が 1 件も無ければ auto-select はスキップ (user 明示選択を待つ)。
                 let first_active = lanes.iter().find(|l| l.pid.is_some());
                 let auto_select = !is_secondary
-                    && sidebar_state.active_lane_address.is_none()
+                    && ui.sidebar_state.active_lane_address.is_none()
                     && session_match.is_none()
                     && first_active.is_some();
                 let first_addr = if let Some(saved) = session_match {
                     // session 復元: 1 度限り、 復元済 marker として pending を消費
-                    pending_session_active_lane = None;
+                    ui.pending_session_active_lane = None;
                     tracing::info!("session 復元: active_lane = {}", saved);
                     Some(saved)
                 } else if auto_select {
@@ -1879,7 +1476,7 @@ pub fn run() -> anyhow::Result<()> {
                 };
                 let path_key = repo_path.clone();
                 // Phase 2.5: prev lanes との diff で「消えた Lane」 を判定 → removeLane 発行
-                let removed_addrs: Vec<String> = sidebar_state
+                let removed_addrs: Vec<String> = ui.sidebar_state
                     .lanes_by_repo
                     .get(&path_key)
                     .map(|prev| {
@@ -1895,27 +1492,27 @@ pub fn run() -> anyhow::Result<()> {
                     .unwrap_or_default();
                 for addr in &removed_addrs {
                     tracing::info!("Lane removed (LanesLoaded diff): {}", addr);
-                    push_main::remove_lane(&webview, addr);
+                    push_main::remove_lane(&boot.webview, addr);
                     // terminal S4: 消えた lane の terminal session を停止 (= map から remove で
                     // cmd_tx drop → canvas channel close → Daemon demand stop → repo pump stop)。
-                    terminal_sessions.remove(addr);
+                    ui.sessions.terminal_sessions.remove(addr);
                     // conversation session も対で停止（terminal_sessions と同寿命）。remove が無いと
                     // 削除済 lane の購読 task が demand を立てたまま永久残留する。
-                    conversation_sessions.remove(addr);
+                    ui.sessions.conversation_sessions.remove(addr);
                     // VP-147 PR-P2-3 Moody Blues fix #1: lane delete 検出時に lane_inboxes
                     // も即時 cleanup (= 5s polling tick 待たずに stale state 解消)。
-                    sidebar_state.lane_inboxes.remove(addr);
+                    ui.sidebar_state.lane_inboxes.remove(addr);
                 }
                 // 供給 push 根治（session chip 凍結、2026-07-17）: この snapshot で active lane の
                 // header 相当 field（engine_session_id 等）が変わったかを差し替え前に判定して
                 // おく。従来は cache 更新のみで setActivePane を撃ち直さず、lane を選び直すまで
                 // Conversation ヘッダが旧値で凍結した。LanesLoaded は高頻度 loop event なので、
                 // 変化時のみ（下の push）に絞る。
-                let active_header_refresh = sidebar_state
+                let active_header_refresh = ui.sidebar_state
                     .active_lane_address
                     .as_deref()
                     .and_then(|addr| {
-                        let prev = sidebar_state
+                        let prev = ui.sidebar_state
                             .lanes_by_repo
                             .get(&path_key)?
                             .iter()
@@ -1924,17 +1521,17 @@ pub fn run() -> anyhow::Result<()> {
                         Some(header_lane_fields_changed(prev, next))
                     })
                     .unwrap_or(false);
-                sidebar_state.lanes_by_repo.insert(repo_path, lanes);
+                ui.sidebar_state.lanes_by_repo.insert(repo_path, lanes);
                 // 購読フェーズを "ready" に (= snapshot を 1 度でも受けた)。 stalled から復帰した場合も
                 // ここで解消。 absent(初期 loading) / stalled と区別して hintFor が lane 0本 を
                 // 「📡 lane なし」 と正しく出せる (doc 30 §5-3)。
-                sidebar_state
+                ui.sidebar_state
                     .lane_sub_state
                     .insert(path_key.clone(), "ready".to_string());
                 // terminal S4: per-lane instance — repo port には依存しない (xterm transport は
                 // Daemon "canvas" channel)。 live lane (pid あり) ごとに ensureLane (JS xterm 作成) +
                 // terminal session start (Daemon 購読 → demand → repo pump)。 どちらも idempotent。
-                if let Some(lanes_for_proj) = sidebar_state.lanes_by_repo.get(&path_key) {
+                if let Some(lanes_for_proj) = ui.sidebar_state.lanes_by_repo.get(&path_key) {
                     for lane in lanes_for_proj {
                         // doc 50 §4.6 A6: gate は **term session が 1 つでもあるか**。
                         //
@@ -1952,20 +1549,20 @@ pub fn run() -> anyhow::Result<()> {
                         }
                         // Running に戻った lane は respawn guard を解除 (再 Dead 化時に再 respawn 可能に)。
                         let addr_str = lane.address.key();
-                        lane_respawn_triggered.remove(&addr_str);
+                        ui.guards.lane_respawn_triggered.remove(&addr_str);
                         // term session ごとに xterm を用意する（PtySlot 不在なら pump が張れない
                         // だけで graceful — Dead lane は別途 on-demand respawn が拾う）。
                         for (session, is_root) in terms {
-                            push_main::ensure_lane(&webview, &addr_str, session, is_root);
+                            push_main::ensure_lane(&boot.webview, &addr_str, session, is_root);
                         }
                         // terminal session 未起動なら start (idempotent)。
-                        terminal_sessions
+                        ui.sessions.terminal_sessions
                             .entry(addr_str.clone())
                             .or_insert_with(|| {
                                 spawn_terminal_session(
-                                    &rt_handle,
+                                    &boot.rt_handle,
                                     async_action_proxy.clone(),
-                                    daemon_conn.clone(),
+                                    boot.daemon_conn.clone(),
                                     path_key.clone(),
                                     addr_str.clone(),
                                 )
@@ -1976,27 +1573,27 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::info!("auto-select first lane: {}", addr);
                     activate_lane(
                         &addr,
-                        &mut sidebar_state,
-                        &mut session_state,
-                        &webview,
-                        &mut lane_respawn_triggered,
-                        &rt_handle,
+                        &mut ui.sidebar_state,
+                        &mut ui.session_state,
+                        &boot.webview,
+                        &mut ui.guards.lane_respawn_triggered,
+                        &boot.rt_handle,
                         &respawn_proxy,
-                        &daemon_conn,
+                        &boot.daemon_conn,
                     );
                 } else {
-                    push_sidebar_state(&webview, &sidebar_state);
+                    push_sidebar_state(&boot.webview, &ui.sidebar_state);
                 }
                 // 供給 push 根治: active lane の header field が変わった snapshot でだけ
                 // setActivePane を再発行（webview の LaneHeader ctx 層が新値に追従する）。
                 if active_header_refresh {
-                    push_active_view(&webview, &sidebar_state);
+                    push_active_view(&boot.webview, &ui.sidebar_state);
                 }
                 // conversation topic への attach（chat は → demand → transcript replay、TUI は
                 // now-line のみ流れる軽い購読）。doc 58 ②-a で active 限定 → **全 lane** に拡大 —
                 // 名簿は背景 lane の「今なにを」も見せるため。LanesLoaded は lane snapshot 到着の
                 // たび走るので、新 lane / 起動直後の session 復元もここで確実に拾える（冪等）。
-                let all_addrs: Vec<String> = sidebar_state
+                let all_addrs: Vec<String> = ui.sidebar_state
                     .lanes_by_repo
                     .values()
                     .flatten()
@@ -2005,11 +1602,11 @@ pub fn run() -> anyhow::Result<()> {
                 for addr in all_addrs {
                     ensure_conversation_attach(
                         &addr,
-                        &sidebar_state,
-                        &mut conversation_sessions,
-                        &rt_handle,
+                        &ui.sidebar_state,
+                        &mut ui.sessions.conversation_sessions,
+                        &boot.rt_handle,
                         &async_action_proxy,
-                        &daemon_conn,
+                        &boot.daemon_conn,
                     );
                 }
                 // doc 53 §11: **roster の供給点はここ 1 本**（旧 `conversation_session_list` fetch は
@@ -2019,23 +1616,23 @@ pub fn run() -> anyhow::Result<()> {
                 // 変化した lane だけ push する（LanesLoaded は定期 snapshot でも走る高頻度 event。
                 // 毎回撃つと webview が roster を作り直して pane が無用に再配置される）。
                 // 判定の規律は上の `active_header_refresh` と同型 = 「変化時のみ push」。
-                if let Some(lanes_for_proj) = sidebar_state.lanes_by_repo.get(&path_key) {
+                if let Some(lanes_for_proj) = ui.sidebar_state.lanes_by_repo.get(&path_key) {
                     for lane in lanes_for_proj {
                         let Some(sessions) = lane.sessions.as_ref() else {
                             continue;
                         };
                         let addr = lane.address.key();
                         let payload = session_list_payload(&addr, sessions);
-                        if !roster_push_needed(&last_roster_push, &addr, &payload) {
+                        if !roster_push_needed(&ui.guards.last_roster_push, &addr, &payload) {
                             continue;
                         }
-                        remember_roster_push(&mut last_roster_push, &addr, &payload);
-                        push_session_list(&webview, &addr, &payload);
+                        remember_roster_push(&mut ui.guards.last_roster_push, &addr, &payload);
+                        push_session_list(&boot.webview, &addr, &payload);
                     }
                 }
                 // 消えた lane の指紋も落とす（同名再作成で「変化なし」と誤判定しないため）。
                 for addr in &removed_addrs {
-                    forget_roster_push(&mut last_roster_push, addr);
+                    forget_roster_push(&mut ui.guards.last_roster_push, addr);
                 }
             }
             // webview が「受け口を全部生やした」と名乗った（`entry.tsx` の `t:"ready"`）。
@@ -2054,14 +1651,14 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::WebviewReady) => {
                 // terminal S4: JS xterm instance の catch-up 再発行のみ (repo port 不要)。
                 // terminal session 自体は LanesLoaded reconcile が管理するのでここでは触らない。
-                for (_repo_path, lanes) in sidebar_state.lanes_by_repo.clone().iter() {
+                for (_repo_path, lanes) in ui.sidebar_state.lanes_by_repo.clone().iter() {
                     for lane in lanes {
                         // doc 50 §4.6 A6: gate は term session の有無（LanesLoaded と同じ規則 —
                         // lane 単位の pid / mode で切ると root=chat の lane の非 root term が
                         // 落ちる）。ensureLane は idempotent なので catch-up で撃ち直してよい。
                         let addr_str = lane.address.key();
                         for (session, is_root) in term_sessions_of(lane) {
-                            push_main::ensure_lane(&webview, &addr_str, session, is_root);
+                            push_main::ensure_lane(&boot.webview, &addr_str, session, is_root);
                         }
                         // doc 53 §11: **roster も同じ窓で落ちる**（team-b 指摘 2026-07-25）。
                         //
@@ -2077,7 +1674,7 @@ pub fn run() -> anyhow::Result<()> {
                         // （送った値は同じなので指紋の更新は不要）。
                         if let Some(sessions) = lane.sessions.as_ref() {
                             push_session_list(
-                                &webview,
+                                &boot.webview,
                                 &addr_str,
                                 &session_list_payload(&addr_str, sessions),
                             );
@@ -2096,11 +1693,11 @@ pub fn run() -> anyhow::Result<()> {
                         // 冪等 — 既に張られていれば pump は kept、replay だけが流れ直す）。
                         if !term_sessions_of(lane).is_empty()
                             && let Some(path) =
-                                resolve_repo_path_for_lane(&sidebar_state, &addr_str)
+                                resolve_repo_path_for_lane(&ui.sidebar_state, &addr_str)
                         {
                             let lane_for_req = addr_str.clone();
-                            let conn = daemon_conn.clone();
-                            rt_handle.spawn(async move {
+                            let conn = boot.daemon_conn.clone();
+                            boot.rt_handle.spawn(async move {
                                 if let Err(e) = daemon_repo_request(
                                     &conn,
                                     &path,
@@ -2121,9 +1718,9 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
                 // 現在 active な Lane を再度 show する (lane-empty placeholder を解除する保険)
-                if let Some(addr) = sidebar_state.active_lane_address.clone() {
-                    let is_chat = lane_is_chat(&sidebar_state, &addr);
-                    push_main::show_lane(&webview, Some(&addr), is_chat);
+                if let Some(addr) = ui.sidebar_state.active_lane_address.clone() {
+                    let is_chat = lane_is_chat(&ui.sidebar_state, &addr);
+                    push_main::show_lane(&boot.webview, Some(&addr), is_chat);
                     // 起動 race で silent drop されるのは ensureLane だけではない。 auto-select の
                     // activate_lane が撃つ setActivePane も同じ窓で落ちるが、これが JS 側の
                     // 「active lane」を埋める唯一の経路 — showLane だけ再発行しても JS の active
@@ -2133,21 +1730,21 @@ pub fn run() -> anyhow::Result<()> {
                     // doc 50 §4.6 A6: lane 単位 mode の catch-up は退役（lane 単位 mode が
                     // 消滅）。roster の catch-up は上の lane ループが撃つ（doc 53 §11 — push 型に
                     // なって以降、この経路にも roster が要る）。
-                    push_active_view(&webview, &sidebar_state);
+                    push_active_view(&boot.webview, &ui.sidebar_state);
                 }
                 // 計器盤: daemon-device の接続時 snapshot は bundle ロード前に届いて落ちている
                 // （sidebar の Devices badge は state 再 push で生きるが pane だけ空、2026-07-23
                 // 実機で確認）。保持済み state から全量で撃ち直す。
-                push_main::render_devices(&webview, &sidebar_state.devices);
+                push_main::render_devices(&boot.webview, &ui.sidebar_state.devices);
                 // shell (L|main|R) の形: 保存があれば復元する。無ければ撃たない
                 // （webview の既定値が残る = 既定を 2 箇所に書かない）。
                 // ⚠️ 撃った/撃たなかったを**両方**残す。「行が無い」は「保存が無かった」とも
                 // 「ここに来ていない」とも読めてしまい、実機の切り分けで 1 往復損する
                 // （2026-08-06 に実際に損した）。
-                match session_state.shell_layout().cloned() {
+                match ui.session_state.shell_layout().cloned() {
                     Some(layout) => {
                         tracing::info!("shell layout 復元: {layout:?}");
-                        push_main::shell_layout(&webview, &layout);
+                        push_main::shell_layout(&boot.webview, &layout);
                     }
                     None => tracing::info!("shell layout 復元: 保存なし（既定のまま）"),
                 }
@@ -2159,9 +1756,9 @@ pub fn run() -> anyhow::Result<()> {
                 // 別 repo へ切り替えると board が空のままだった（webview は `(repo, lane)` で
                 // 箱を持つので、届いていない repo の箱は作られない）。message には repo が
                 // stamp 済なので、まとめて配っても混ざらない。
-                for boards in board_snapshots.values() {
+                for boards in ui.board_snapshots.values() {
                     for message in boards.values() {
-                        push_main::board_message(&webview, message.clone());
+                        push_main::board_message(&boot.webview, message.clone());
                     }
                 }
                 // LanesLoaded のたびに follow up 発火する loop event のため log omit。
@@ -2179,10 +1776,10 @@ pub fn run() -> anyhow::Result<()> {
                 // 購読フェーズを "stalled" に倒して UI に surface する (doc 30 §5-3)。 hintFor が
                 // `📡 loading lanes…` ではなく「⚠️ lane 接続が停滞 — restart で復帰」を出す。 復帰時の
                 // snapshot 受信 (LanesLoaded) で "ready" に上書きされて自動解消する (self-heal と連動)。
-                sidebar_state
+                ui.sidebar_state
                     .lane_sub_state
                     .insert(repo_path, "stalled".to_string());
-                push_sidebar_state(&webview, &sidebar_state);
+                push_sidebar_state(&boot.webview, &ui.sidebar_state);
             }
             // オンデマンド respawn の restart_lane が失敗した lane を guard から解除する。
             // 解除しておくと、 次に同 lane を active にした (or LanesLoaded for Dead の) 時点で
@@ -2190,7 +1787,7 @@ pub fn run() -> anyhow::Result<()> {
             // 即ループにはならない: クリック起点は user 操作、 起動時 first_addr は active 設定後
             // None になるため LanesLoaded loop event での連続発火は起きない。
             Event::UserEvent(AppEvent::LaneRespawnFailed { address }) => {
-                if lane_respawn_triggered.remove(&address) {
+                if ui.guards.lane_respawn_triggered.remove(&address) {
                     tracing::info!("auto-respawn guard 解除 (restart 失敗): {}", address);
                 }
             }
@@ -2198,7 +1795,7 @@ pub fn run() -> anyhow::Result<()> {
                 // ink（対話面, doc 52 §3）: board pane（#ink-stage）を WKWebView.takeSnapshot で
                 // PNG 化する。保存先 dir は active lane の flat key で分ける（board と同じ空間）。
                 // completion（main thread）は InkSnapshotReady で event loop に戻す（proxy.clone）。
-                let lane_key = sidebar_state
+                let lane_key = ui.sidebar_state
                     .active_lane_address
                     .as_deref()
                     .map(crate::webview::ink_snapshot::lane_key_from_address)
@@ -2207,7 +1804,7 @@ pub fn run() -> anyhow::Result<()> {
                     Ok(out_path) => {
                         let ready_proxy = proxy.clone();
                         crate::webview::ink_snapshot::take_snapshot(
-                            &webview,
+                            &boot.webview,
                             rect,
                             out_path,
                             move |path, error| {
@@ -2228,8 +1825,8 @@ pub fn run() -> anyhow::Result<()> {
                 // ink: snapshot 完了/失敗を webview に返す（ink.ts が会話へ一行 + 画像を送る）。
                 // 成功と失敗で受け手の振る舞いが別なので event も 2 本（schema 参照）。
                 match path {
-                    Some(p) => push_main::ink_snapshot(&webview, p),
-                    None => push_main::ink_snapshot_error(&webview, error.unwrap_or_default()),
+                    Some(p) => push_main::ink_snapshot(&boot.webview, p),
+                    None => push_main::ink_snapshot_error(&boot.webview, error.unwrap_or_default()),
                 }
             }
             Event::UserEvent(AppEvent::ShellLayout {
@@ -2242,7 +1839,7 @@ pub fn run() -> anyhow::Result<()> {
                 // 「window をどう開いていたか」なので window_geometry と同じ箱に入れる。
                 // ⚠️ 値の検証は `set_shell_layout` の clamp が持つ（webview の値を信用しない）。
                 use crate::session_state::{ShellLayout, SidebarForm};
-                session_state.set_shell_layout(ShellLayout {
+                ui.session_state.set_shell_layout(ShellLayout {
                     sidebar_width,
                     right_sidebar_width,
                     // 未知の形は full に倒す（版ズレで「開けない sidebar」を作らない）
@@ -2253,20 +1850,20 @@ pub fn run() -> anyhow::Result<()> {
                     },
                     right_sidebar_open,
                 });
-                session_state.save();
+                ui.session_state.save();
             }
             Event::UserEvent(AppEvent::DebugLogWatch { source }) => {
                 // R sidebar の debug log（sidebar view modes）: 世代を進めて旧 tail を退場させ、
                 // 新しい tail thread を起こす（最後の watch が勝つ = 単一 tail）。
                 use std::sync::atomic::Ordering;
-                let generation = debuglog_watch_gen.fetch_add(1, Ordering::Relaxed) + 1;
+                let generation = ui.debuglog_watch_gen.fetch_add(1, Ordering::Relaxed) + 1;
                 match crate::debug_log::log_path(&source) {
                     Some(path) => {
                         crate::debug_log::spawn_tail(
                             source,
                             path,
                             generation,
-                            debuglog_watch_gen.clone(),
+                            ui.debuglog_watch_gen.clone(),
                             proxy.clone(),
                         );
                     }
@@ -2276,7 +1873,7 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::DebugLogUnwatch) => {
                 // 世代を進めるだけで tail は次の poll で止まる（見ていない log は読まない）。
                 use std::sync::atomic::Ordering;
-                debuglog_watch_gen.fetch_add(1, Ordering::Relaxed);
+                ui.debuglog_watch_gen.fetch_add(1, Ordering::Relaxed);
             }
             Event::UserEvent(AppEvent::DebugLogChunk {
                 source,
@@ -2288,22 +1885,22 @@ pub fn run() -> anyhow::Result<()> {
                 // 残 chunk はここで棄てる（新 backlog の後に旧行が 1 回混ざる race の封じ）。
                 // stream なので replay は持たない（次の watch が毎回 backlog から始まる）。
                 use std::sync::atomic::Ordering;
-                if generation == debuglog_watch_gen.load(Ordering::Relaxed) {
-                    push_main::debuglog_lines(&webview, &source, reset, lines);
+                if generation == ui.debuglog_watch_gen.load(Ordering::Relaxed) {
+                    push_main::debuglog_lines(&boot.webview, &source, reset, lines);
                 }
             }
             Event::UserEvent(AppEvent::DeviceEvent { payload }) => {
                 tracing::debug!("🧲 device event: {}", payload);
                 // Phase 2: device 一覧を registry 更新 → sidebar (Devices badge) + main area
                 // (DeviceRegistry pane の device list) の両方に push。
-                if crate::pane::apply_device_event(&mut sidebar_state.devices, &payload) {
-                    push_sidebar_state(&webview, &sidebar_state);
-                    push_main::render_devices(&webview, &sidebar_state.devices);
+                if crate::pane::apply_device_event(&mut ui.sidebar_state.devices, &payload) {
+                    push_sidebar_state(&boot.webview, &ui.sidebar_state);
+                    push_main::render_devices(&boot.webview, &ui.sidebar_state.devices);
                 }
                 // fleet 配線 (doc 49 LE-19): 操作入力 (control_event) は webview の mapping
                 // registry へ fire-and-forget 転送。受け手 (window.vpFleet) は gallery-panes.tsx。
                 if let Some(js) = fleet_dispatch_js(&payload)
-                    && let Err(e) = webview.evaluate_script(&js)
+                    && let Err(e) = boot.webview.evaluate_script(&js)
                 {
                     tracing::warn!("fleet dispatch: evaluate_script 失敗: {}", e);
                 }
@@ -2312,7 +1909,7 @@ pub fn run() -> anyhow::Result<()> {
                 // doc 48 Phase 2: editor bridge の webview 評価。結果 (wry が JSON 文字列化
                 // した評価値) を canvas session 側へ返す。受信側は timeout で打ち切るので
                 // callback が遅れて発火しても送信は無害 (受け手 drop 済なら send Err → 無視)。
-                if let Err(e) = webview.evaluate_script_with_callback(&js, move |result| {
+                if let Err(e) = boot.webview.evaluate_script_with_callback(&js, move |result| {
                     let _ = resp.send(result);
                 }) {
                     tracing::warn!("editor bridge: evaluate_script 失敗: {}", e);
@@ -2326,7 +1923,7 @@ pub fn run() -> anyhow::Result<()> {
                 // active repo の分のみ main area の Board body に転送する
                 // （**board_updated だけは例外** — 下記）。
                 // active 判定: active_lane_address の repo segment == repo_path の basename。
-                let active_repo = sidebar_state
+                let active_repo = ui.sidebar_state
                     .active_lane_address
                     .as_deref()
                     .and_then(|addr| addr.split('/').next());
@@ -2369,7 +1966,7 @@ pub fn run() -> anyhow::Result<()> {
                         .and_then(|l| l.as_str())
                         .unwrap_or("main")
                         .to_string();
-                    board_snapshots
+                    ui.board_snapshots
                         .entry(proj.to_string())
                         .or_default()
                         .insert(lane_key, message.clone());
@@ -2388,25 +1985,25 @@ pub fn run() -> anyhow::Result<()> {
                         // Model B (focus = 操舵ポインタ): switch_lane は全 instance に broadcast される
                         // が、適用するのは **focused instance だけ**。非 focus の window はこの event を
                         // 無視し、自分の lane に park されたまま (= 2 window が別々の lane を同時に見られる)。
-                        if is_focused {
+                        if ui.win.is_focused {
                             activate_lane(
                                 &address,
-                                &mut sidebar_state,
-                                &mut session_state,
-                                &webview,
-                                &mut lane_respawn_triggered,
-                                &rt_handle,
+                                &mut ui.sidebar_state,
+                                &mut ui.session_state,
+                                &boot.webview,
+                                &mut ui.guards.lane_respawn_triggered,
+                                &boot.rt_handle,
                                 &respawn_proxy,
-                                &daemon_conn,
+                                &boot.daemon_conn,
                             );
                             // gui: chat lane なら conversation topic に attach（→ transcript replay）。
                             ensure_conversation_attach(
                                 &address,
-                                &sidebar_state,
-                                &mut conversation_sessions,
-                                &rt_handle,
+                                &ui.sidebar_state,
+                                &mut ui.sessions.conversation_sessions,
+                                &boot.rt_handle,
                                 &async_action_proxy,
-                                &daemon_conn,
+                                &boot.daemon_conn,
                             );
                         } else {
                             tracing::debug!(
@@ -2423,7 +2020,7 @@ pub fn run() -> anyhow::Result<()> {
                     // 前の repo の箱を見せていた（bug の後半）。
                     // board 以外（switch_lane を除く content）は従来どおり active repo のみ。
                     match serde_json::to_value(&message) {
-                        Ok(json) => push_main::board_message(&webview, json),
+                        Ok(json) => push_main::board_message(&boot.webview, json),
                         Err(e) => {
                             tracing::warn!("CanvasMessage serialize 失敗: {}", e);
                         }
@@ -2443,8 +2040,8 @@ pub fn run() -> anyhow::Result<()> {
                         .unwrap_or(crate::lane_address::ROOT_LANE_NAME);
                     // token → lane address（switch_lane と同じ helper を通す）。
                     let address = crate::lane_address::address_from_lane_token(repo, token);
-                    if sidebar_state.active_lane_address.as_deref() != Some(address.as_str()) {
-                        mark_lane_canvas_unread(&address, &mut sidebar_state, &webview);
+                    if ui.sidebar_state.active_lane_address.as_deref() != Some(address.as_str()) {
+                        mark_lane_canvas_unread(&address, &mut ui.sidebar_state, &boot.webview);
                     }
                 }
             }
@@ -2463,7 +2060,7 @@ pub fn run() -> anyhow::Result<()> {
                     session,
                     serde_json::to_string(&data).unwrap_or_else(|_| "\"\"".into()),
                 );
-                if let Err(e) = webview.evaluate_script(&script) {
+                if let Err(e) = boot.webview.evaluate_script(&script) {
                     tracing::warn!("vpTerminal.handleOutput 失敗 (lane={}): {}", lane, e);
                 }
             }
@@ -2474,7 +2071,7 @@ pub fn run() -> anyhow::Result<()> {
                 data,
             }) => {
                 vp_paths::term_trace("A:app-dispatch(b64)", &lane, data.as_bytes());
-                if let Some(term) = terminal_sessions.get(&lane) {
+                if let Some(term) = ui.sessions.terminal_sessions.get(&lane) {
                     let _ = term.cmd_tx.send(TermCmd::Write(session, data));
                 }
             }
@@ -2485,7 +2082,7 @@ pub fn run() -> anyhow::Result<()> {
                 cols,
                 rows,
             }) => {
-                if let Some(term) = terminal_sessions.get(&lane) {
+                if let Some(term) = ui.sessions.terminal_sessions.get(&lane) {
                     let _ = term.cmd_tx.send(TermCmd::Resize(session, cols, rows));
                 }
             }
@@ -2497,7 +2094,7 @@ pub fn run() -> anyhow::Result<()> {
             }) => {
                 // doc 38 Phase 2: 第 3 引数 session（VP 採番 key）を渡す。console.ts が focused
                 // 判定に使い、chatview が背景 session の stream を焦点会話へ混ぜないよう filter する。
-                push_main::console_event(&webview, &lane, event.clone(), session);
+                push_main::console_event(&boot.webview, &lane, event.clone(), session);
                 // 路 A（memory echoes-act2-notification-signal）: gui の完了/エラーを tui の
                 // OSC 通知と同じ sink に流す。headless stream-json は Notification hook を発火しない
                 // ため、turn_completed（stream `result` 由来）が「Claude が返し終えた＝入力待ち」の
@@ -2514,29 +2111,29 @@ pub fn run() -> anyhow::Result<()> {
                     mark_lane_awaiting_input(
                         &lane,
                         &format!("gui:{kind}"),
-                        &mut sidebar_state,
-                        &webview,
+                        &mut ui.sidebar_state,
+                        &boot.webview,
                     );
                 }
             }
             // Conversation gui: ChatPane の submit → 当該 lane の conversation session に渡す。
             // demand-driven: 未起動なら lazy spawn (subscribe → submit の順で取りこぼしなし)。
             Event::UserEvent(AppEvent::ConversationSubmit { lane, prompt, session: chat_session, images, request_id }) => {
-                let session = conversation_sessions.entry(lane.clone()).or_insert_with(|| {
+                let session = ui.sessions.conversation_sessions.entry(lane.clone()).or_insert_with(|| {
                     // repo_path は active repo から解決 (conversation pane = active lane 前提)。
                     let repo_path =
-                        resolve_active_repo_path(&sidebar_state).unwrap_or_default();
+                        resolve_active_repo_path(&ui.sidebar_state).unwrap_or_default();
                     spawn_conversation_session(
-                        &rt_handle,
+                        &boot.rt_handle,
                         async_action_proxy.clone(),
-                        daemon_conn.clone(),
+                        boot.daemon_conn.clone(),
                         repo_path,
                         lane.clone(),
                     )
                 });
                 let (reply, result) = tokio::sync::oneshot::channel();
                 let proxy = async_action_proxy.clone();
-                rt_handle.spawn(async move {
+                boot.rt_handle.spawn(async move {
                     let event = crate::conversation_submission::await_submit_result(&request_id, result).await;
                     let _ = proxy.send_event(AppEvent::ConversationEvent {
                         lane,
@@ -2558,13 +2155,13 @@ pub fn run() -> anyhow::Result<()> {
                 message,
                 session: chat_session,
             }) => {
-                let session = conversation_sessions.entry(lane.clone()).or_insert_with(|| {
+                let session = ui.sessions.conversation_sessions.entry(lane.clone()).or_insert_with(|| {
                     let repo_path =
-                        resolve_active_repo_path(&sidebar_state).unwrap_or_default();
+                        resolve_active_repo_path(&ui.sidebar_state).unwrap_or_default();
                     spawn_conversation_session(
-                        &rt_handle,
+                        &boot.rt_handle,
                         async_action_proxy.clone(),
-                        daemon_conn.clone(),
+                        boot.daemon_conn.clone(),
                         repo_path,
                         lane.clone(),
                     )
@@ -2580,7 +2177,7 @@ pub fn run() -> anyhow::Result<()> {
             // doc 35 §5 / PR2: 実行中 turn の中断を当該 lane の conversation session に渡す。
             // interrupt は走行中 turn 前提なので session が居るはず（lazy spawn しない）。
             Event::UserEvent(AppEvent::ConversationInterrupt { lane, session: chat_session }) => {
-                if let Some(session) = conversation_sessions.get(&lane) {
+                if let Some(session) = ui.sessions.conversation_sessions.get(&lane) {
                     let _ = session
                         .cmd_tx
                         .send(ConversationCmd::Interrupt { session: chat_session });
@@ -2594,7 +2191,7 @@ pub fn run() -> anyhow::Result<()> {
                 mode,
                 session: chat_session,
             }) => {
-                if let Some(session) = conversation_sessions.get(&lane) {
+                if let Some(session) = ui.sessions.conversation_sessions.get(&lane) {
                     let _ = session
                         .cmd_tx
                         .send(ConversationCmd::SetPermissionMode { mode, session: chat_session });
@@ -2607,14 +2204,14 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::SessionSetMode { lane, session, mode }) => {
                 // repo は対象 lane 自身から逆引き（#705 のレース教訓 — repo 応答待ちの間に
                 // active lane が変わり得るため resolve_active_repo_path は使わない）。
-                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                let Some(path) = resolve_repo_path_for_lane(&ui.sidebar_state, &lane) else {
                     tracing::warn!("session:set_mode skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 let proxy = async_action_proxy.clone();
                 let (lane_for_js, mode_for_js) = (lane.clone(), mode.clone());
-                let conn = daemon_conn.clone();
-                rt_handle.spawn(async move {
+                let conn = boot.daemon_conn.clone();
+                boot.rt_handle.spawn(async move {
                     match daemon_repo_request(
                         &conn,
                         &path,
@@ -2646,14 +2243,14 @@ pub fn run() -> anyhow::Result<()> {
             // 落ちる順序 race）。ここは「mode が変わった」事実を JS に渡すだけに徹する。
             Event::UserEvent(AppEvent::SessionModeApplied { lane, session, mode }) => {
                 let is_tui = mode == "tui";
-                let is_root = root_session_of(&sidebar_state, &lane) == session;
+                let is_root = root_session_of(&ui.sidebar_state, &lane) == session;
                 // 手元 snapshot（registry の投影）を即時更新する。lanes snapshot の反映は 5s
                 // periodic 頼みで stale が残るため（ConsoleModeApplied と同じ理由）、mode を
                 // 読む後続（term_sessions_of / attach gate / activate_lane）が旧値を見ないようにする。
                 // doc 53 R1: 更新は sessions の 1 箇所だけ — 読み手（lane_is_chat / respawn
                 // gate / header 差分）は sessions から root mode を導出するので、この 1 書きで
                 // 全読み手に届く（旧「root なら lane 単位 mode 投影も更新」は退役）。
-                for lanes in sidebar_state.lanes_by_repo.values_mut() {
+                for lanes in ui.sidebar_state.lanes_by_repo.values_mut() {
                     if let Some(l) = lanes.iter_mut().find(|l| l.address.key() == lane)
                         && let Some(reg) = l.sessions.as_mut()
                         && let Some(e) = reg.sessions.iter_mut().find(|s| s.key == session)
@@ -2661,19 +2258,19 @@ pub fn run() -> anyhow::Result<()> {
                         e.mode = mode.clone();
                     }
                 }
-                push_sidebar_state(&webview, &sidebar_state);
+                push_sidebar_state(&boot.webview, &ui.sidebar_state);
                 // xterm の起立 / 撤去（World A は instance 管理に徹し、顔ぶれの決定は上位が持つ）。
                 if is_tui {
-                    push_main::ensure_lane(&webview, &lane, session, is_root);
+                    push_main::ensure_lane(&boot.webview, &lane, session, is_root);
                     // 購読が無いと新 PtySlot の出力が届かない（terminal topic は非 retained）。
                     // demand 0→1 が repo の pump 張り直し + replay を撃つ。idempotent。
-                    match resolve_repo_path_for_lane(&sidebar_state, &lane) {
+                    match resolve_repo_path_for_lane(&ui.sidebar_state, &lane) {
                         Some(path) => {
-                            terminal_sessions.entry(lane.clone()).or_insert_with(|| {
+                            ui.sessions.terminal_sessions.entry(lane.clone()).or_insert_with(|| {
                                 spawn_terminal_session(
-                                    &rt_handle,
+                                    &boot.rt_handle,
                                     async_action_proxy.clone(),
-                                    daemon_conn.clone(),
+                                    boot.daemon_conn.clone(),
                                     path,
                                     lane.clone(),
                                 )
@@ -2693,21 +2290,21 @@ pub fn run() -> anyhow::Result<()> {
                     //
                     // repo 応答待ちの間に別 lane へ移っていたら表示は奪わない（mode は手元 snapshot に
                     // 反映済みなので、戻った時に正しい顔ぶれで開く）。
-                    if sidebar_state.active_lane_address.as_deref() == Some(lane.as_str()) {
-                        push_main::show_lane(&webview, Some(&lane), false);
+                    if ui.sidebar_state.active_lane_address.as_deref() == Some(lane.as_str()) {
+                        push_main::show_lane(&boot.webview, Some(&lane), false);
                     }
                 } else {
                     // →chat: その session の xterm を畳む（PtySlot は repo 側で drop 済）。
-                    push_main::remove_lane_session(&webview, &lane, session);
+                    push_main::remove_lane_session(&boot.webview, &lane, session);
                     // tui→II の対称: conversation topic への購読を確保する（初回 chat 化で張られる）。
                     // 上の手元 snapshot 反映が先に要る（attach の gate が mode を読む）。
                     ensure_conversation_attach(
                         &lane,
-                        &sidebar_state,
-                        &mut conversation_sessions,
-                        &rt_handle,
+                        &ui.sidebar_state,
+                        &mut ui.sessions.conversation_sessions,
+                        &boot.rt_handle,
                         &async_action_proxy,
-                        &daemon_conn,
+                        &boot.daemon_conn,
                     );
                     // **Reborn ⊃ replay の実体**（doc 50 §4.6 ① / §4.7 逸脱②）: 切替のたび
                     // transcript を読み直す。
@@ -2723,11 +2320,11 @@ pub fn run() -> anyhow::Result<()> {
                     // demand は session を明示する（replay は session 単位 — `conversation_demand_start`
                     // の None は focused に解決されるので、非 focused な pane を切り替えた時に
                     // 別会話を読んでしまう）。
-                    if let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) {
+                    if let Some(path) = resolve_repo_path_for_lane(&ui.sidebar_state, &lane) {
                         let proxy = async_action_proxy.clone();
                         let lane_for_log = lane.clone();
-                        let conn = daemon_conn.clone();
-                        rt_handle.spawn(async move {
+                        let conn = boot.daemon_conn.clone();
+                        boot.rt_handle.spawn(async move {
                             if let Err(e) = daemon_repo_request(
                                 &conn,
                                 &path,
@@ -2744,7 +2341,7 @@ pub fn run() -> anyhow::Result<()> {
                         });
                     }
                 }
-                push_main::console_mode_applied(&webview, &lane, session, &mode);
+                push_main::console_mode_applied(&boot.webview, &lane, session, &mode);
             }
             // 新セッション開始（✨ New ボタン）。doc 39 §4「New は今いる Mode に出す」で分岐する:
             //  - chat lane（gui）: 「新 Draft session を作って focus」。旧会話はタブに残る
@@ -2756,7 +2353,7 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::ConsoleNewSession { lane, engine, mode }) => {
                 // repo は対象 lane 自身から逆引き（#705 のレース教訓 — repo 応答待ちの間に
                 // active lane が変わり得るため resolve_active_repo_path は使わない）。
-                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                let Some(path) = resolve_repo_path_for_lane(&ui.sidebar_state, &lane) else {
                     tracing::warn!("console:new_session skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
@@ -2766,12 +2363,12 @@ pub fn run() -> anyhow::Result<()> {
                 let want_chat = match mode.as_deref() {
                     Some("gui") => true,
                     Some("tui") => false,
-                    _ => lane_is_chat(&sidebar_state, &lane),
+                    _ => lane_is_chat(&ui.sidebar_state, &lane),
                 };
                 if want_chat {
                     // doc 38 §4.2: chat lane は「新 Draft session を作って focus」。
-                    let conn = daemon_conn.clone();
-                    rt_handle.spawn(async move {
+                    let conn = boot.daemon_conn.clone();
+                    boot.rt_handle.spawn(async move {
                         // 1. engine を決める。doc 46 P2 要件 4 の**明示指定があればそれを使い**、
                         //    無い時だけ現 focused を継ぐ（従来挙動）。指定がある場合は
                         //    session_list の往復ごと省ける。
@@ -2837,8 +2434,8 @@ pub fn run() -> anyhow::Result<()> {
                     // （新しい console を見せる唯一の方法が root の付け替えだった）が、A6 で制約が
                     // 外れた今は「勝手に root を動かす副作用」に意味が反転する。root の付け替えは
                     // `console:switch_root`（root picker）の明示操作に一本化した。
-                    let conn = daemon_conn.clone();
-                    rt_handle.spawn(async move {
+                    let conn = boot.daemon_conn.clone();
+                    boot.rt_handle.spawn(async move {
                         // engine の明示指定は backend まで通す（無ければ lane の agent を継ぐ）。
                         let mut payload = serde_json::json!({ "lane": &lane });
                         if let Some(e) = &engine {
@@ -2863,14 +2460,14 @@ pub fn run() -> anyhow::Result<()> {
             // 対象 session には既存の会話があるため、clear でなく transcript replay で追従させる
             //（conversation_session_focus chain と同じ規律）。
             Event::UserEvent(AppEvent::ConsoleSwitchRoot { lane, session }) => {
-                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                let Some(path) = resolve_repo_path_for_lane(&ui.sidebar_state, &lane) else {
                     tracing::warn!(
                         "console:switch_root skip — lane の repo 解決失敗 (lane={lane})"
                     );
                     return;
                 };
-                let conn = daemon_conn.clone();
-                rt_handle.spawn(async move {
+                let conn = boot.daemon_conn.clone();
+                boot.rt_handle.spawn(async move {
                     let payload = serde_json::json!({ "lane": &lane, "session": session });
                     match daemon_repo_request(&conn, &path, "conversation_session_switch_root", payload)
                         .await
@@ -2910,14 +2507,14 @@ pub fn run() -> anyhow::Result<()> {
                 session,
                 model,
             }) => {
-                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                let Some(path) = resolve_repo_path_for_lane(&ui.sidebar_state, &lane) else {
                     tracing::warn!(
                         "conversation:set_model skip — lane の repo 解決失敗 (lane={lane})"
                     );
                     return;
                 };
-                let conn = daemon_conn.clone();
-                rt_handle.spawn(async move {
+                let conn = boot.daemon_conn.clone();
+                boot.rt_handle.spawn(async move {
                     let payload =
                         serde_json::json!({ "lane": &lane, "session": session, "model": model });
                     match daemon_repo_request(
@@ -2944,12 +2541,12 @@ pub fn run() -> anyhow::Result<()> {
             // doc 38 Phase 2: 「+」からの新 session 作成。focus は送らない = backend 既定 true。
             // 作成後に一覧を取り直して tab strip に新 session を即反映（1 task で直列）。
             Event::UserEvent(AppEvent::ConversationSessionCreate { lane, agent }) => {
-                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                let Some(path) = resolve_repo_path_for_lane(&ui.sidebar_state, &lane) else {
                     tracing::warn!("conversation:session_create skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
-                let conn = daemon_conn.clone();
-                rt_handle.spawn(async move {
+                let conn = boot.daemon_conn.clone();
+                boot.rt_handle.spawn(async move {
                     let mut create = serde_json::json!({ "lane": &lane });
                     if let Some(s) = &agent {
                         create["agent"] = serde_json::Value::String(s.clone());
@@ -2974,12 +2571,12 @@ pub fn run() -> anyhow::Result<()> {
                 // 消費者主導の replay demand（2026-07-24）: webview が renderer を張った直後に
                 // 届く。attach 時 demand（run_conversation_session）の boot 窓取りこぼしを埋める第 2 弾
                 //（冪等 — ensure_chat_engine は既起動 no-op / replay は clear-prefix で収束）。
-                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                let Some(path) = resolve_repo_path_for_lane(&ui.sidebar_state, &lane) else {
                     tracing::warn!("conversation:demand_start skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
-                let conn = daemon_conn.clone();
-                rt_handle.spawn(async move {
+                let conn = boot.daemon_conn.clone();
+                boot.rt_handle.spawn(async move {
                     if let Err(e) = daemon_repo_request(
                         &conn,
                         &path,
@@ -2993,12 +2590,12 @@ pub fn run() -> anyhow::Result<()> {
                 });
             }
             Event::UserEvent(AppEvent::ConversationSessionFocus { lane, session }) => {
-                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                let Some(path) = resolve_repo_path_for_lane(&ui.sidebar_state, &lane) else {
                     tracing::warn!("conversation:session_focus skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
-                let conn = daemon_conn.clone();
-                rt_handle.spawn(async move {
+                let conn = boot.daemon_conn.clone();
+                boot.rt_handle.spawn(async move {
                     if let Err(e) = daemon_repo_request(
                         &conn,
                         &path,
@@ -3032,12 +2629,12 @@ pub fn run() -> anyhow::Result<()> {
             // demand_start（除去後の新 focused の会話を replay）の順で直列に（focus 切替と同型）。
             // 最後の 1 本は backend が Err で拒否する（GUI も × は 2 本以上でしか出さない = 多重防御）。
             Event::UserEvent(AppEvent::ConversationSessionRemove { lane, session }) => {
-                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                let Some(path) = resolve_repo_path_for_lane(&ui.sidebar_state, &lane) else {
                     tracing::warn!("conversation:session_remove skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
-                let conn = daemon_conn.clone();
-                rt_handle.spawn(async move {
+                let conn = boot.daemon_conn.clone();
+                boot.rt_handle.spawn(async move {
                     if let Err(e) = daemon_repo_request(
                         &conn,
                         &path,
@@ -3069,13 +2666,13 @@ pub fn run() -> anyhow::Result<()> {
             // doc 38 Phase 2: 「+」menu の engine 選択肢を埋める agents 一覧取得。
             // 既存 + Add Sub と同じ agents_list を再利用（doc 38 §3 の作成 UX）。
             Event::UserEvent(AppEvent::AgentsFetch { lane, req }) => {
-                let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) else {
+                let Some(path) = resolve_repo_path_for_lane(&ui.sidebar_state, &lane) else {
                     tracing::warn!("conversation:agents_fetch skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
                 let proxy = async_action_proxy.clone();
-                let conn = daemon_conn.clone();
-                rt_handle.spawn(async move {
+                let conn = boot.daemon_conn.clone();
+                boot.rt_handle.spawn(async move {
                     match daemon_repo_request(
                         &conn,
                         &path,
@@ -3098,7 +2695,7 @@ pub fn run() -> anyhow::Result<()> {
             // doc 38 Phase 2: agents_list の結果を「+」menu へ push back。
             // doc 47 §6: 第 3 引数 = 要求元の相関 id。共有 bus の購読側はこれで振り分ける。
             Event::UserEvent(AppEvent::Agents { lane, payload, req }) => {
-                push_main::console_stands(&webview, &lane, payload, req);
+                push_main::console_stands(&boot.webview, &lane, payload, req);
             }
             Event::UserEvent(AppEvent::BoardMutate { method, body }) => {
                 // board モデル (2026-07-15): WebView の board mutate（thumbnail ✕ / Clear ボタン）を
@@ -3106,12 +2703,12 @@ pub fn run() -> anyhow::Result<()> {
                 // BoardUpdated(retained) を broadcast し、 canvas channel 経由で webview の board が
                 // 更新される（webview は truth を持たず repo の反映を待つ view）。 active repo 解決
                 // 失敗は silent skip。
-                let Some(path) = resolve_active_repo_path(&sidebar_state) else {
+                let Some(path) = resolve_active_repo_path(&ui.sidebar_state) else {
                     tracing::debug!("board mutate skip — active repo 解決失敗");
                     return;
                 };
-                let conn = daemon_conn.clone();
-                rt_handle.spawn(async move {
+                let conn = boot.daemon_conn.clone();
+                boot.rt_handle.spawn(async move {
                     match daemon_repo_request(
                         &conn,
                         &path,
@@ -3126,7 +2723,7 @@ pub fn run() -> anyhow::Result<()> {
                 });
             }
             Event::UserEvent(AppEvent::ReposError(msg)) => {
-                push_sidebar::error(&webview, &msg);
+                push_sidebar::error(&boot.webview, &msg);
             }
             // R5 Sub create flow: spawn_blocking thread からの結果を sidebar に push back。
             // success → form を閉じる + addSubOpen から削除。
@@ -3136,7 +2733,7 @@ pub fn run() -> anyhow::Result<()> {
                 name,
                 error,
             }) => {
-                push_sidebar::sub_create_result(&webview, repo_path, name, error);
+                push_sidebar::sub_create_result(&boot.webview, repo_path, name, error);
             }
             Event::UserEvent(AppEvent::AgentsResult {
                 repo_path,
@@ -3144,16 +2741,16 @@ pub fn run() -> anyhow::Result<()> {
                 error,
             }) => {
                 // doc 11 PR-C: + Add Sub form の dropdown を populate するための push back。
-                push_sidebar::stands_result(&webview, repo_path, &agents, error);
+                push_sidebar::stands_result(&boot.webview, repo_path, &agents, error);
             }
             // ===== code pane（コードブラウザ P1）=====
             // demand（CodeList / CodeRead）は blocking I/O を spawn_blocking に
             // 逃し、結果 event で main thread に戻して push する（旧 File Explorer と同型）。
             Event::UserEvent(AppEvent::CodeList { lane }) => {
-                match lookup_lane_cwd_by_address(&sidebar_state, &lane) {
+                match lookup_lane_cwd_by_address(&ui.sidebar_state, &lane) {
                     Some(cwd) => {
                         let proxy = async_action_proxy.clone();
-                        rt_handle.spawn_blocking(move || {
+                        boot.rt_handle.spawn_blocking(move || {
                             let (entries, truncated) = crate::webview::file_explorer::list_entries(&cwd);
                             let _ = proxy.send_event(AppEvent::CodeEntriesResult {
                                 lane,
@@ -3168,10 +2765,10 @@ pub fn run() -> anyhow::Result<()> {
                 }
             }
             Event::UserEvent(AppEvent::CodeRead { lane, rel_path }) => {
-                match lookup_lane_cwd_by_address(&sidebar_state, &lane) {
+                match lookup_lane_cwd_by_address(&ui.sidebar_state, &lane) {
                     Some(cwd) => {
                         let proxy = async_action_proxy.clone();
-                        rt_handle.spawn_blocking(move || {
+                        boot.rt_handle.spawn_blocking(move || {
                             let payload = crate::webview::file_explorer::read_file(&cwd, &rel_path);
                             let _ = proxy.send_event(AppEvent::CodeFileResult {
                                 lane,
@@ -3190,49 +2787,49 @@ pub fn run() -> anyhow::Result<()> {
                 entries,
                 truncated,
             }) => {
-                push_main::code_entries(&webview, &lane, &entries, truncated);
+                push_main::code_entries(&boot.webview, &lane, &entries, truncated);
             }
             Event::UserEvent(AppEvent::CodeFileResult {
                 lane,
                 rel_path,
                 payload,
             }) => {
-                push_main::code_file(&webview, &lane, &rel_path, &payload);
+                push_main::code_file(&boot.webview, &lane, &rel_path, &payload);
             }
             // Wire inbox (doc 34 §4 V1): fetch 結果を sidebar の vpWire 受け口へ push back。
             Event::UserEvent(AppEvent::WireHistoryResult { address, payload }) => {
                 tracing::debug!("wire history 受領 (address={address})");
-                push_sidebar::wire_result(&webview, payload);
+                push_sidebar::wire_result(&boot.webview, payload);
             }
             Event::UserEvent(AppEvent::ActivityUpdate(snap)) => {
-                sidebar_state.activity = snap;
+                ui.sidebar_state.activity = snap;
                 // 適用中フラグは GUI local（health 由来ではない）ので poll 上書きから守る。
-                sidebar_state.activity.update_applying = update_applying;
-                push_sidebar_state(&webview, &sidebar_state);
+                ui.sidebar_state.activity.update_applying = ui.update_applying;
+                push_sidebar_state(&boot.webview, &ui.sidebar_state);
             }
             Event::UserEvent(AppEvent::UpdateFlowPhase(applying)) => {
-                update_applying = applying;
-                sidebar_state.activity.update_applying = applying;
-                push_sidebar_state(&webview, &sidebar_state);
+                ui.update_applying = applying;
+                ui.sidebar_state.activity.update_applying = applying;
+                push_sidebar_state(&boot.webview, &ui.sidebar_state);
             }
             Event::UserEvent(AppEvent::SettingsRepoRootPicked(path)) => {
                 // キャンセル (None) は**書かない**（既存値を保持）。ただし overlay の表示は
                 // 現実に合わせたいので、選ばれた / 選ばれなかったに関わらず確定値を返す。
                 if let Some(p) = path {
-                    settings.default_repo_root = Some(p);
-                    if let Err(e) = settings.save() {
+                    ui.settings.default_repo_root = Some(p);
+                    if let Err(e) = ui.settings.save() {
                         tracing::warn!("Settings 保存失敗: {e}");
                     }
                 }
                 // picker は vp-app.toml しか触らないので daemon 側は引き直さない
                 // （`last_daemon_settings` に前回の結果が残っている）。
                 push_sidebar::settings_result(
-                    &webview,
+                    &boot.webview,
                     settings_snapshot(
-                        &settings,
-                        &sidebar_state,
-                        dev_mode,
-                        last_daemon_settings.as_ref(),
+                        &ui.settings,
+                        &ui.sidebar_state,
+                        ui.dev_mode,
+                        ui.last_daemon_settings.as_ref(),
                     ),
                 );
             }
@@ -3240,7 +2837,7 @@ pub fn run() -> anyhow::Result<()> {
                 // daemon 側（settings.kdl）が揃ったので、vp-app.toml 側と合流させて
                 // **1 回だけ** push する。`None` = 接続できなかった（UI は該当区画を
                 // 「daemon に接続すると編集できます」に落とす）。
-                last_daemon_settings = fetched.map(|v| {
+                ui.last_daemon_settings = fetched.map(|v| {
                     let text = |k: &str| {
                         v.get(k)
                             .and_then(|x| x.as_str())
@@ -3260,12 +2857,12 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 });
                 push_sidebar::settings_result(
-                    &webview,
+                    &boot.webview,
                     settings_snapshot(
-                        &settings,
-                        &sidebar_state,
-                        dev_mode,
-                        last_daemon_settings.as_ref(),
+                        &ui.settings,
+                        &ui.sidebar_state,
+                        ui.dev_mode,
+                        ui.last_daemon_settings.as_ref(),
                     ),
                 );
             }
@@ -3276,12 +2873,12 @@ pub fn run() -> anyhow::Result<()> {
                     match parsed.get("t").and_then(|v| v.as_str()) {
                         Some("repo:add") => {
                             let initial_dir =
-                                resolve_default_repo_root(&settings, &sidebar_state);
+                                resolve_default_repo_root(&ui.settings, &ui.sidebar_state);
                             spawn_add_repo_picker(
                                 async_action_proxy.clone(),
                                 initial_dir,
-                                rt_handle.clone(),
-                                daemon_conn.clone(),
+                                boot.rt_handle.clone(),
+                                boot.daemon_conn.clone(),
                             );
                             return;
                         }
@@ -3301,72 +2898,72 @@ pub fn run() -> anyhow::Result<()> {
                                 .filter(|s| !s.is_empty())
                                 .map(std::path::PathBuf::from);
                             let default_root =
-                                resolve_default_repo_root(&settings, &sidebar_state);
+                                resolve_default_repo_root(&ui.settings, &ui.sidebar_state);
                             spawn_clone_repo(
                                 async_action_proxy.clone(),
                                 url,
                                 default_root,
                                 target_override,
-                                rt_handle.clone(),
-                                daemon_conn.clone(),
+                                boot.rt_handle.clone(),
+                                boot.daemon_conn.clone(),
                             );
                             return;
                         }
                         _ => {}
                     }
                 }
-                let outcome = handle_sidebar_ipc(&msg, &mut sidebar_state, &mut session_state);
+                let outcome = handle_sidebar_ipc(&msg, &mut ui.sidebar_state, &mut ui.session_state);
                 // 解釈は純粋（doc 60 §6 A-2）: session の file 書き込みは要求を見てここで行う。
                 // in-memory の更新は handle 側で済んでいるので、他の効果より先に書いて
                 // 旧実装（handle 内で save）と同じ順序を保つ。
                 if outcome.session_save {
-                    session_state.save();
+                    ui.session_state.save();
                 }
                 // Lane activation — activate_lane() が全副作用を処理
                 if let Some(addr) = outcome.activate_lane {
                     activate_lane(
                         &addr,
-                        &mut sidebar_state,
-                        &mut session_state,
-                        &webview,
-                        &mut lane_respawn_triggered,
-                        &rt_handle,
+                        &mut ui.sidebar_state,
+                        &mut ui.session_state,
+                        &boot.webview,
+                        &mut ui.guards.lane_respawn_triggered,
+                        &boot.rt_handle,
                         &respawn_proxy,
-                        &daemon_conn,
+                        &boot.daemon_conn,
                     );
                     // gui: chat lane なら conversation topic に attach（→ transcript replay）。
                     ensure_conversation_attach(
                         &addr,
-                        &sidebar_state,
-                        &mut conversation_sessions,
-                        &rt_handle,
+                        &ui.sidebar_state,
+                        &mut ui.sessions.conversation_sessions,
+                        &boot.rt_handle,
                         &async_action_proxy,
-                        &daemon_conn,
+                        &boot.daemon_conn,
                     );
                 } else {
                     if outcome.changed {
-                        push_sidebar_state(&webview, &sidebar_state);
+                        push_sidebar_state(&boot.webview, &ui.sidebar_state);
                     }
                     if outcome.active_changed {
-                        push_active_view(&webview, &sidebar_state);
+                        push_active_view(&boot.webview, &ui.sidebar_state);
                     }
                 }
                 // Architecture v4: dead な repo が expand されたら repo を auto-spawn。
                 // dedup: 同 session で同じ path を 2 回呼ばない (daemon 側でも弾かれるが
                 // 余計な POST を避ける)。
                 if let Some((name, path)) = outcome.repo_spawn_request {
-                    if repo_spawn_triggered.insert(path.clone()) {
+                    if ui.guards.repo_spawn_triggered.insert(path.clone()) {
                         tracing::info!(
                             "repo auto-spawn 要求 (accordion expand trigger): name={} path={}",
                             name,
                             path
                         );
                         spawn_sp_start(
-                            &rt_handle,
+                            &boot.rt_handle,
                             async_action_proxy.clone(),
                             name,
                             path,
-                            daemon_conn.clone(),
+                            boot.daemon_conn.clone(),
                         );
                     } else {
                         tracing::debug!("repo auto-spawn skip (既 trigger): {}", path);
@@ -3375,7 +2972,7 @@ pub fn run() -> anyhow::Result<()> {
                 // Phase 5-D fix: accordion 閉じた → dedup HashSet から path を release。
                 //  spawn 失敗で entry が居残ったまま user が collapse → expand すれば確実に retry。
                 if let Some(path) = outcome.repo_spawn_release
-                    && repo_spawn_triggered.remove(&path)
+                    && ui.guards.repo_spawn_triggered.remove(&path)
                 {
                     tracing::info!(
                         "repo auto-spawn dedup released (accordion collapse): {}",
@@ -3385,7 +2982,7 @@ pub fn run() -> anyhow::Result<()> {
                 // 「見えている Lane だけ生きている」: accordion の開閉で購読を張り直す。
                 // 全 lane を回すのは LanesLoaded の再評価と同じ形（冪等・数十 lane 規模）。
                 if outcome.conversation_reattach {
-                    let all_addrs: Vec<String> = sidebar_state
+                    let all_addrs: Vec<String> = ui.sidebar_state
                         .lanes_by_repo
                         .values()
                         .flatten()
@@ -3394,11 +2991,11 @@ pub fn run() -> anyhow::Result<()> {
                     for addr in all_addrs {
                         ensure_conversation_attach(
                             &addr,
-                            &sidebar_state,
-                            &mut conversation_sessions,
-                            &rt_handle,
+                            &ui.sidebar_state,
+                            &mut ui.sessions.conversation_sessions,
+                            &boot.rt_handle,
                             &async_action_proxy,
-                            &daemon_conn,
+                            &boot.daemon_conn,
                         );
                     }
                 }
@@ -3408,8 +3005,8 @@ pub fn run() -> anyhow::Result<()> {
                 // 無いので必ず `rt_handle.spawn` を使う。
                 if let Some(repo_name) = outcome.restart_process_request {
                     let proxy = async_action_proxy.clone();
-                    let conn = daemon_conn.clone();
-                    rt_handle.spawn(async move {
+                    let conn = boot.daemon_conn.clone();
+                    boot.rt_handle.spawn(async move {
                         // doc 45 段 3: 旧 `POST /api/daemon/processes/{name}/restart` を
                         // Unison `daemon-control.repos/restart` に差し替え。 接続先は共有
                         // QUIC connection (port 解決は conn manager が持つ)。
@@ -3446,8 +3043,8 @@ pub fn run() -> anyhow::Result<()> {
                 // Process stop 要求 (repo context menu の Stop repo から)。
                 if let Some(repo_name) = outcome.stop_process_request {
                     let proxy = async_action_proxy.clone();
-                    let conn = daemon_conn.clone();
-                    rt_handle.spawn(async move {
+                    let conn = boot.daemon_conn.clone();
+                    boot.rt_handle.spawn(async move {
                         let control = match conn.control().await {
                             Ok(c) => c,
                             Err(e) => {
@@ -3482,8 +3079,8 @@ pub fn run() -> anyhow::Result<()> {
                 // (restart_process が capability 内でやっているのと同じ順序)。
                 if let Some((repo_name, repo_path)) = outcome.delete_repo_request {
                     let proxy = async_action_proxy.clone();
-                    let conn = daemon_conn.clone();
-                    rt_handle.spawn(async move {
+                    let conn = boot.daemon_conn.clone();
+                    boot.rt_handle.spawn(async move {
                         let control = match conn.control().await {
                             Ok(c) => c,
                             Err(e) => {
@@ -3534,8 +3131,8 @@ pub fn run() -> anyhow::Result<()> {
                 // ReposLoaded で currents_order が canonical 順に reconcile される。
                 if let Some(order) = outcome.reorder_request {
                     let proxy = async_action_proxy.clone();
-                    let conn = daemon_conn.clone();
-                    rt_handle.spawn(async move {
+                    let conn = boot.daemon_conn.clone();
+                    boot.rt_handle.spawn(async move {
                         let control = match conn.control().await {
                             Ok(c) => c,
                             Err(e) => {
@@ -3560,8 +3157,8 @@ pub fn run() -> anyhow::Result<()> {
                 }
                 // Model Q: active lane を daemon canonical に永続 (fire-and-forget、 optimistic 適用済)。
                 if let Some((repo_path, address)) = outcome.set_active_lane_request {
-                    let conn = daemon_conn.clone();
-                    rt_handle.spawn(async move {
+                    let conn = boot.daemon_conn.clone();
+                    boot.rt_handle.spawn(async move {
                         let result = match conn.control().await {
                             Ok(control) => control.set_active_lane(repo_path, address).await,
                             Err(e) => Err(e),
@@ -3577,9 +3174,9 @@ pub fn run() -> anyhow::Result<()> {
                     // ask (lane_delete) に移管。 repo port 解決は不要になり repo_path を handshake で渡す。
                     // JS-side からも先 removeLane を呼ぶ (= xterm 即時 dispose、 server 反映は
                     // repo の "lanes" topic snapshot 経由で sidebar に届く)。
-                    push_main::remove_lane(&webview, &address);
-                    let conn = daemon_conn.clone();
-                    rt_handle.spawn(async move {
+                    push_main::remove_lane(&boot.webview, &address);
+                    let conn = boot.daemon_conn.clone();
+                    boot.rt_handle.spawn(async move {
                         let payload = serde_json::json!({ "address": &address });
                         match daemon_repo_request(
                             &conn,
@@ -3611,8 +3208,8 @@ pub fn run() -> anyhow::Result<()> {
                 if let Some((repo_path, address, fresh)) = outcome.restart_lane_request {
                     // F6③: 旧 DaemonRpcClient.restart_lane (repo 直結 reqwest) を daemon repo-proxy
                     // ask (lane_restart) に移管。 repo port 解決は不要、 repo_path を handshake で渡す。
-                    let conn = daemon_conn.clone();
-                    rt_handle.spawn(async move {
+                    let conn = boot.daemon_conn.clone();
+                    boot.rt_handle.spawn(async move {
                         let payload = serde_json::json!({ "address": &address, "fresh": fresh });
                         match daemon_repo_request(
                             &conn,
@@ -3647,8 +3244,8 @@ pub fn run() -> anyhow::Result<()> {
                 //（= Reset Lane との違い）。反映は lanes snapshot / session list が運ぶので
                 // 楽観更新しない。
                 if let Some((repo_path, address)) = outcome.new_root_request {
-                    let conn = daemon_conn.clone();
-                    rt_handle.spawn(async move {
+                    let conn = boot.daemon_conn.clone();
+                    boot.rt_handle.spawn(async move {
                         match daemon_repo_request(
                             &conn,
                             &repo_path,
@@ -3674,8 +3271,8 @@ pub fn run() -> anyhow::Result<()> {
                 // Host の帳簿のポインタを書き換えるだけ — cwd も active lane も engine も動かない。
                 // 反映は次の lanes snapshot の `origin` で戻る（楽観更新しない = 帳簿が真実源）。
                 if let Some((repo_path, address)) = outcome.set_origin_request {
-                    let conn = daemon_conn.clone();
-                    rt_handle.spawn(async move {
+                    let conn = boot.daemon_conn.clone();
+                    boot.rt_handle.spawn(async move {
                         // 帳簿は lane **名**で受ける（起点は repo ごとに 1 本なので
                         // address の `<repo>` 部分は冗長）。address からは末尾を取る。
                         let lane_name = address.rsplit('/').next().unwrap_or("").to_string();
@@ -3710,8 +3307,8 @@ pub fn run() -> anyhow::Result<()> {
                 // address 列を lane 名の列に畳んでから投げる（帳簿は lane 名で受け、
                 // 境界で lane_id に解決する — 起点と同じ規律）。
                 if let Some((repo_path, order)) = outcome.reorder_lanes_request {
-                    let conn = daemon_conn.clone();
-                    rt_handle.spawn(async move {
+                    let conn = boot.daemon_conn.clone();
+                    boot.rt_handle.spawn(async move {
                         let names: Vec<String> = order
                             .iter()
                             .filter_map(|a| a.rsplit('/').next())
@@ -3758,8 +3355,8 @@ pub fn run() -> anyhow::Result<()> {
                     let branch_clone = branch.clone();
                     let stand_clone = agent.clone();
                     let path_clone = repo_path.clone();
-                    let conn = daemon_conn.clone();
-                    rt_handle.spawn(async move {
+                    let conn = boot.daemon_conn.clone();
+                    boot.rt_handle.spawn(async move {
                         let control = match conn.control().await {
                             Ok(c) => c,
                             Err(e) => {
@@ -3826,8 +3423,8 @@ pub fn run() -> anyhow::Result<()> {
                 // repo port 解決が消滅し、 surface は Daemon :32000 だけを知れば済む (L1 portless 前進)。
                 if let Some(repo_path) = outcome.list_stands_request {
                     let proxy = async_action_proxy.clone();
-                    let conn = daemon_conn.clone();
-                    rt_handle.spawn(async move {
+                    let conn = boot.daemon_conn.clone();
+                    boot.rt_handle.spawn(async move {
                         let (agents, error) = match daemon_repo_request(
                             &conn,
                             &repo_path,
@@ -3883,8 +3480,8 @@ pub fn run() -> anyhow::Result<()> {
                     .or_else(|| outcome.wire_fetch_request.map(|a| (a, None)));
                 if let Some((address, ack_id)) = wire_req {
                     let proxy = async_action_proxy.clone();
-                    let conn = daemon_conn.clone();
-                    rt_handle.spawn(async move {
+                    let conn = boot.daemon_conn.clone();
+                    boot.rt_handle.spawn(async move {
                         let payload = wire_fetch_payload(conn, address.clone(), ack_id).await;
                         let _ =
                             proxy.send_event(AppEvent::WireHistoryResult { address, payload });
@@ -3912,19 +3509,19 @@ pub fn run() -> anyhow::Result<()> {
                 if let Some(save) = outcome.settings_save_request {
                     // ⚠️ `None` の field は**不変**（「変えた分だけ送る」契約）。
                     if let Some(dev) = save.developer_mode {
-                        dev_mode = dev;
-                        open_devtools_item.set_enabled(dev);
-                        reload_webview_item.set_enabled(dev);
-                        settings.developer_mode = Some(dev);
+                        ui.dev_mode = dev;
+                        boot.open_devtools_item.set_enabled(dev);
+                        boot.reload_webview_item.set_enabled(dev);
+                        ui.settings.developer_mode = Some(dev);
                     }
                     if let Some(root) = save.default_repo_root {
                         // 空文字 = **未設定に戻す**（推定へのフォールバックを復活させる）。
                         // 消し方を別 UI にしないための約束 — 入力欄を空にすれば戻る。
                         let trimmed = root.trim();
-                        settings.default_repo_root =
+                        ui.settings.default_repo_root =
                             (!trimmed.is_empty()).then(|| trimmed.to_string());
                     }
-                    if let Err(e) = settings.save() {
+                    if let Err(e) = ui.settings.save() {
                         tracing::warn!("Settings 保存失敗: {e}");
                     }
                     if let Some(level) = save.log_level {
@@ -3944,7 +3541,7 @@ pub fn run() -> anyhow::Result<()> {
                 if outcome.settings_pick_repo_root_request {
                     // rfd は blocking なので専用スレッド → 結果は
                     // `AppEvent::SettingsRepoRootPicked` で戻る（そこで保存 + push back）。
-                    let initial = resolve_default_repo_root(&settings, &sidebar_state);
+                    let initial = resolve_default_repo_root(&ui.settings, &ui.sidebar_state);
                     spawn_repo_root_picker(async_action_proxy.clone(), initial);
                 }
                 if outcome.settings_fetch_request || settings_saved {
@@ -3952,11 +3549,11 @@ pub fn run() -> anyhow::Result<()> {
                     // 「保存より先に読み終えて古い値を表示する」順序が生まれる。
                     // 読めたら `SettingsDaemonFetched` で戻り、そこで vp-app.toml 側と
                     // 合流させて 1 回だけ push する。
-                    let conn = daemon_conn.clone();
+                    let conn = boot.daemon_conn.clone();
                     let ev_proxy = proxy.clone();
                     let payload = (!daemon_payload.is_empty())
                         .then_some(serde_json::Value::Object(daemon_payload));
-                    rt_handle.spawn(async move {
+                    boot.rt_handle.spawn(async move {
                         let fetched = match conn.control().await {
                             Ok(control) => {
                                 if let Some(p) = payload
@@ -3986,14 +3583,14 @@ pub fn run() -> anyhow::Result<()> {
                 // ACTIONS の永続化要求（doc 57 Phase 4）。watch は latest-wins なので、
                 // 打鍵ごとに来ても debounce task が静まった 1 回だけを daemon へ撃つ。
                 if let Some(payload) = outcome.actions_persist_request {
-                    let _ = actions_persist_tx.send(Some(payload));
+                    let _ = boot.actions_persist_tx.send(Some(payload));
                 }
                 if outcome.auth_login_request.is_some() || outcome.auth_logout_request.is_some() {
                     let login_target = outcome.auth_login_request.clone();
                     let logout_target = outcome.auth_logout_request.clone();
-                    let conn = daemon_conn.clone();
-                    let rt = rt_handle.clone();
-                    rt_handle.spawn(async move {
+                    let conn = boot.daemon_conn.clone();
+                    let rt = boot.rt_handle.clone();
+                    boot.rt_handle.spawn(async move {
                         let flow = rt.spawn_blocking(move || match login_target {
                             Some(t) => crate::flows::auth::run_login_blocking(&t),
                             None => crate::flows::auth::run_logout_blocking(
@@ -4029,7 +3626,7 @@ pub fn run() -> anyhow::Result<()> {
                 rect,
             }) => {
                 if let Some(id) = pane_id {
-                    slot_rects.insert(id.clone(), rect);
+                    ui.win.slot_rects.insert(id.clone(), rect);
                     tracing::trace!("slot:rect kind={} pane={} rect={:?}", kind, id, rect);
                 } else {
                     tracing::trace!("slot:rect kind={} (no pane_id) rect={:?}", kind, rect);
@@ -4042,7 +3639,7 @@ pub fn run() -> anyhow::Result<()> {
             // `settings:save` の arm が担う（両 item の `set_enabled` もそちら）。
             //  - "Open Developer Tools" → dev_mode == true なら webview.open_devtools()
             Event::UserEvent(AppEvent::MenuClicked(id)) => {
-                if id == menu_ids.new_window {
+                if id == boot.menu_ids.new_window {
                     // Cmd+N: 新規 vp-app process を spawn = 新しい MainWindow が独立 process で立つ。
                     // 同 EventLoop に重ねるのではなく fork-style で別 process 化することで、
                     // state 干渉ゼロ + crash isolation + multi-instance 並行開発が可能に。
@@ -4093,7 +3690,7 @@ pub fn run() -> anyhow::Result<()> {
                             reserved.save();
                         }
                     }
-                } else if id == menu_ids.open_file {
+                } else if id == boot.menu_ids.open_file {
                     // File menu → "Code Browser": code pane の toggle を webview に要求。
                     //
                     // menu click は OS-level で発火するため、 Pane (terminal / Canvas) focus 中
@@ -4102,19 +3699,19 @@ pub fn run() -> anyhow::Result<()> {
                     // （旧 File Explorer は Rust 側で active 判定していたが、 判定が 2 箇所に
                     // なる & sidebar_state を menu 経路が読む結合が残るため一本化した）。
                     tracing::info!("File menu: code pane toggle 要求");
-                    push_main::code_toggle(&webview);
-                } else if id == menu_ids.open_devtools {
-                    if dev_mode {
-                        webview.open_devtools();
+                    push_main::code_toggle(&boot.webview);
+                } else if id == boot.menu_ids.open_devtools {
+                    if ui.dev_mode {
+                        boot.webview.open_devtools();
                         tracing::info!("DevTools open");
                     } else {
                         tracing::warn!("Open DevTools clicked but dev_mode=false (gated)");
                     }
-                } else if id == menu_ids.reload_webview {
+                } else if id == boot.menu_ids.reload_webview {
                     // doc 48 Phase 1: HMR loop の reload 側。VP_WEBVIEW_DEV 設定時は
                     // reload で *.bundle.js が disk から fresh に取り直される。
-                    if dev_mode {
-                        if let Err(e) = webview.evaluate_script("location.reload()") {
+                    if ui.dev_mode {
+                        if let Err(e) = boot.webview.evaluate_script("location.reload()") {
                             tracing::warn!("Reload WebView 失敗: {}", e);
                         } else {
                             tracing::info!("Reload WebView (location.reload)");
