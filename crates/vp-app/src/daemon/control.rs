@@ -20,7 +20,8 @@
 //!
 //! 接続自体は `SharedDaemonConn` の 1 本 (F1b、doc 27 §3.4.4) を共有するので、
 //! 増えるのは QUIC stream だけ。stream open は同一 connection 上の 1 往復で、
-//! 毎回 connect し直していた旧 `daemon_repo_request` より安い。
+//! 毎回 connect し直していた旧 `daemon_repo_request`（F6 暫定、doc 60 §6 B で本 module の
+//! `repo_request` に一本化 2026-09-08）より安い。
 //!
 //! ⚠️ stream は必ず `close()` する。drop 任せにすると recv task と QUIC stream が残り、
 //! MAX_STREAMS 枯渇に効いてくる (`run_lanes_session` が踏んだのと同じ罠)。
@@ -34,6 +35,12 @@ use crate::daemon_wire::{RepoInfo, RunningRepo};
 
 /// 1 RPC の上限。旧 reqwest client の 10s timeout をそのまま引き継ぐ。
 const RPC_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// repo-proxy ask（[`DaemonControl::repo_request`]）の上限。旧 `daemon_repo_request` が使っていた
+/// Unison 既定の request timeout（30 秒）を **別 const** で引き継ぐ（doc 60 §6 B の契約）。
+/// `RPC_TIMEOUT` に畳むと lane 操作（restart / slot_new / session_create）が意図せず 10 秒に
+/// 短縮される。open / handshake / 応答待ちの各段がこの上限を持つ。
+const REPO_ASK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// `repos/restart` だけの上限。daemon 側で stop → grace sleep → start → 起動確認と
 /// 繋ぐので他の RPC より桁が違う。旧 HTTP client では 10s を超えると reqwest が
@@ -88,6 +95,59 @@ impl DaemonControl {
     async fn control(&self, method: &str, payload: serde_json::Value) -> Result<serde_json::Value> {
         self.call_on("daemon-control", method, payload, RPC_TIMEOUT)
             .await
+    }
+
+    /// F6 (doc 27 §3.4): vp-app → daemon repo-proxy → repo の one-shot ask（doc 60 §6 B）。
+    ///
+    /// **1 RPC = 1 stream**: `open_channel("repo-proxy")` → handshake（`subscribe {repo_path}` で
+    /// daemon が path_key 正規化 → 当該 repo control へ routing）→ `method` を request → **必ず
+    /// `close()`**（handshake 失敗 / request 失敗 / timeout のどの経路でも）。stream を使い回さない。
+    /// 各段の上限は [`REPO_ASK_TIMEOUT`]（`RPC_TIMEOUT` とは別）。
+    ///
+    /// **自動再送しない**: 応答を失った更新 / 削除を勝手に再送すると二重実行になる。失敗は
+    /// 呼び手に返し、user 操作で再試行する。repo が dispatch の Err を `{"error"}` の正常応答
+    /// として返す場合は [`rpc_error`] で Err に戻す（transport 成功 = 処理成功ではない）。
+    /// transport 障害は `repo-proxy <段>: …`、repo 側の失敗は `repo-proxy <method>: <error>` で区別できる。
+    pub async fn repo_request(
+        &self,
+        repo_path: &str,
+        method: &str,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let channel =
+            tokio::time::timeout(REPO_ASK_TIMEOUT, self.client.open_channel("repo-proxy"))
+                .await
+                .map_err(|_| anyhow!("repo-proxy channel open: timeout"))?
+                .map_err(|e| anyhow!("repo-proxy channel open: {e}"))?;
+        // handshake と ask をまとめて 1 つの result にし、結果に関わらず stream を閉じる。
+        let result: Result<serde_json::Value> = async {
+            tokio::time::timeout(
+                REPO_ASK_TIMEOUT,
+                channel.request::<serde_json::Value, serde_json::Value>(
+                    "subscribe",
+                    &serde_json::json!({ "repo_path": repo_path }),
+                ),
+            )
+            .await
+            .map_err(|_| anyhow!("repo-proxy handshake: timeout"))?
+            .map_err(|e| anyhow!("repo-proxy handshake: {e}"))?;
+            let resp = tokio::time::timeout(
+                REPO_ASK_TIMEOUT,
+                channel.request::<serde_json::Value, serde_json::Value>(method, &payload),
+            )
+            .await
+            .map_err(|_| anyhow!("repo-proxy {method}: timeout"))?
+            .map_err(|e| anyhow!("repo-proxy {method}: {e}"))?;
+            Ok(resp)
+        }
+        .await;
+        let _ = channel.close().await;
+
+        let resp = result?;
+        if let Some(err) = rpc_error(&resp) {
+            bail!("repo-proxy {method}: {err}");
+        }
+        Ok(resp)
     }
 
     // =====================================================================
@@ -382,5 +442,17 @@ mod tests {
         assert!(rpc_error(&serde_json::json!({ "status": "ok" })).is_none());
         // repos/list は裸配列を返す — error field を持ち得ないので None。
         assert!(rpc_error(&serde_json::json!([{ "name": "vp" }])).is_none());
+        // 意図した拡張（doc 60 §6 B、review 2026-09-08）: 旧 daemon_repo_request の判定は文字列の
+        // `error` だけだったが、本 fn は **`error` key があれば値の型を問わず失敗**と読む
+        // （silent success より loud を取る）。repo の全 method は成功応答に `error` key を持たない
+        // （2026-09-08 監査）。`conversation_submission.rs` の `"error": null` 成功形は本 fn を通さない。
+        assert_eq!(
+            rpc_error(&serde_json::json!({ "error": null })).as_deref(),
+            Some("null")
+        );
+        assert_eq!(
+            rpc_error(&serde_json::json!({ "error": 42 })).as_deref(),
+            Some("42")
+        );
     }
 }
