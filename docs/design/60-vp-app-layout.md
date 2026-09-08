@@ -138,7 +138,7 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
 |---|---|---|---|---|---|
 | `active_lane_address`（sidebar） | UI（user 操作 / 復元）。初回 ReposLoaded で daemon の canonical を seed | `None`。session 値は `Persist::pending_active_lane` に退避 | `activate` が session に鏡して save | `set_active_lane` の失敗は warn のみ（楽観） | secondary は自動選択しないが session 復元はする |
 | `pending_active_lane`（cursor） | session file | boot holder そのもの。その lane を含む snapshot で **1 度だけ**消費（`restore_active_lane`） | 保存しない | — | 同じ。lanes が来なければ永遠に Some |
-| `active_lane_address`（session） | instance 別 file | load 値。⚠️ `observe_daemon_active_lane` が pending 未消費でも in-memory を書き換える（**危険 B**: その後の resize / move の throttle save が daemon 値を file に流し、instance 別の保存値が消える） | `activate` + 他の save 全部が memory の値を flush（**危険 C**: boot 窓の CloseRequested も同じ経路で daemon 値を書く = 「起動して lanes が届く前に閉じる」と前回の選択が消える） | — | file が別 |
+| `active_lane_address`（session） | instance 別 file | load 値。`observe_daemon_active_lane` は **pending 未消費の間は書かない**（b-3 で危険 B / C を解消: 旧実装は in-memory を書き換え、resize / move の throttle save や boot 窓の close が daemon 値を file に流していた）。保存値が無い時だけ daemon 値を採る | `activate` + 他の save 全部が memory の値を flush（memory には user の最後の選択しか入らない） | — | file が別 |
 | `currents_order`（session） | sidebar の DnD | `UiState::new` で sidebar に写す（起動直後の仮表示） | sidebar IPC reorder（`session_save`） | daemon reorder 失敗は warn、session は書き済 | 写しは window ごと。**生きている window 間は同期しない**（b-7、daemon push で項目 7 と） |
 | `currents_order`（sidebar） | **daemon の順**（毎 ReposLoaded で上書き） | session 値 | 保存しない（**危険 E**: session に戻さない） | daemon 不在なら session 順が生きる | 同じ |
 | `repos[path].expanded` | UI toggle | 新規 repo だけ session を見る。既存は前回の in-memory 値、初回以外の新規は auto-expand | sidebar IPC toggle（`session_save`）。**危険 F**: auto-expand は保存しない | — | 同じ |
@@ -153,7 +153,7 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
 |---|---|---|
 | b-1 ✅ | — | `Persist` 導入（現行挙動のまま、characterization test 10 本。危険 B の現状も test で固定） |
 | b-2 ✅ | A | 壊れた session file は boot の再 save の前に `session.json.corrupt-<unix 秒>` へ退避（`SessionState::load` の parse 失敗分岐。読めない / 不在は対象外） |
-| b-3 | B + C | `observe_daemon_active_lane` は pending 未消費の間 session を書かない（sidebar の表示だけ）。close も同じ |
+| b-3 ✅ | B + C | `observe_daemon_active_lane` は pending 未消費の間 session を書かない（sidebar の表示は on_lanes が別に更新）。close / throttle save は memory を flush するだけなので同時に解消 |
 | b-4 | E + F | ReposLoaded ごとに daemon 順を session に鏡す（`note_repo_order`）。auto-expand も鏡す（`note_repo_expanded`） |
 | b-5 | — | `catch_up` が `push_sidebar_state` を撃つ |
 | b-6 | D | 復元経路の最初の Resized の size を 1 nightly 分 log → 実測してから |
@@ -169,6 +169,7 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
   `app/mod.rs` は 7,117 → 4,168 行（`run()` 据え置き）。次は A（sidebar test 先行 → 純粋化）→ B（ask 一本化）→ C（採否）→ 6-2。
 - 2026-09-08: A 着地（A-1 #1055 test 先行 / A-2 純粋化）。`handle_sidebar_ipc` は file を書かない。次は B（ask 一本化）→ C（採否）→ 6-2。
 - 2026-09-08: C は不採用（共通化しない、test も今は足さない）。次は 6-2 の conception。
+- 2026-09-08: 6-2b b-3 着地（危険 B + C）。daemon の active lane は復元待ちの間 session に入らない。実機: 起動して lanes が届く前に window を閉じても、次回起動で前回の lane が選ばれる。
 - 2026-09-08: 6-2b b-2 着地（危険 A）。壊れた session file は `session.json.corrupt-<ts>` へ退避してから default で起動。
 - 2026-09-08: 6-2b b-1 着地。`app/persist.rs`（`Persist` = SessionState の所有者、復元 cursor + 保存 8 箇所を集約）+ §8 の表。危険 A〜F は b-2 以降。
 - 2026-09-08: 6-2a 着地（PR #1058〜#1067）。`run()` は routing table だけになり、resource は `Boot`、可変 state は `UiState`、arm は `on_*` / `catch_up`、調整役は `lane_view`。次は 6-2b（復元と保存の表 → persist.rs → 危険 A〜F）と PR-EX。実機（mako、`app:swap`）: boot / geometry 復元 / Cmd+N / close / resize / chat / mode 切替 / ROTO switch_lane（2 window）/ reopen / settings:save / toggle・reorder の永続。
