@@ -163,7 +163,7 @@ pub(crate) fn shell_layout(main_view: &WebView, l: &crate::session_state::ShellL
 
 /// Console 面へ lane の session 一覧（roster）を渡す。
 ///
-/// 供給はこの 1 本（doc 53 §11）。呼び手は `app::push_session_list` 経由の 1 箇所だけ。
+/// 供給はこの 1 本（doc 53 §11）。呼び手は `app::lane_view::push_session_list` 経由の 1 箇所だけ。
 pub(crate) fn console_session_list(main_view: &WebView, lane: &str, payload: serde_json::Value) {
     push(
         main_view,

@@ -73,7 +73,7 @@ export function isSubLane(lane: LaneInfo): boolean {
  * root session の mode ("tui" | "gui") を sessions (registry snapshot) から導出する。
  *
  * doc 53 R1: 旧 lane 単位 `console_mode` field は退役 — TS 側の導出はこの 1 関数に閉じる
- * (Rust 側の対 = `app::root_mode_of`)。sessions 欠落 (boot 窓の placeholder 等) は "tui"
+ * (Rust 側の対 = `app::lane_view::root_mode_of`)。sessions 欠落 (boot 窓の placeholder 等) は "tui"
  * (旧 serde default と同値) に倒す。
  */
 export function rootModeOf(lane: LaneInfo): string {
