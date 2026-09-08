@@ -5,8 +5,9 @@
 //! これが decode でなく state 遷移だから（Codex 再レビュー ⑥ / doc 60 §2）。効果の実行は `run()` の
 //! `SidebarIpc` arm が `SidebarIpcOutcome` を読んで行う。
 //!
-//! ⚠️ 現状は純粋ではない: `ProcessToggle` / `ProcessReorder` で `session.save()`（file 書き込み）を呼ぶ。
-//! 純粋化（保存要求を outcome で返す）は test を先に置いてから別 PR（doc 60 §6 A）。
+//! **純粋**（doc 60 §6 A-2、2026-09-08）: file 書き込みはしない。`ProcessToggle` / `ProcessReorder` は
+//! `SessionState` を in-memory で更新し、永続化は `session_save` で要求 → 呼び手が `session.save()`。
+//! 挙動は `tests` の characterization test（A-1）で前後照合済。
 
 use crate::daemon::pollers::ActionsPersistPayload;
 use crate::pane::{ActiveComponent, SidebarState};
@@ -112,6 +113,10 @@ pub(crate) struct SidebarIpcOutcome {
     /// Add Repo 初期フォルダの folder picker 要求（doc 59 P1）。
     /// ⚠️ **キャンセル時は何もしない**（既存値を保持）。
     pub(crate) settings_pick_repo_root_request: bool,
+    /// `SessionState` の永続化要求（doc 60 §6 A-2）。呼び手が `session.save()` を実行する。
+    /// in-memory の更新（`set_repo_expanded` / `currents_order`）は本 fn が済ませているので、
+    /// 呼び手は file 書き込みだけを担う。
+    pub(crate) session_save: bool,
     /// daemon 再起動要求（doc 59 P1）。⚠️ **全 repo = 全 lane の claude が落ちる**
     /// （doc 44 P1 fold-in）。caller が rfd 確認ダイアログ → `vp daemon restart` を
     /// 専用スレッドで実行する（`flows/update.rs` と同じ理由 = event loop を塞がない）。
@@ -163,7 +168,7 @@ pub(crate) fn handle_sidebar_ipc(
                     );
                     // session 永続化: vp-app 再起動時に accordion 状態を復元
                     session.set_repo_expanded(m.path.clone(), new_state);
-                    session.save();
+                    out.session_save = true;
                     // 「見えている Lane だけ生きている」: 開閉が変わったら購読を張り直す
                     // （畳んだ repo は detach → demand hook → 暇な engine が寝る）。
                     out.conversation_reattach = true;
@@ -299,7 +304,7 @@ pub(crate) fn handle_sidebar_ipc(
             // optimistic 反映: session 保存 + SidebarState（次回 push で JS 側 sort に使う）。
             // changed フラグは立てない (DOM 順は user 操作で既に変わっている、re-push で flash を避ける)。
             session.currents_order = Some(m.order.clone());
-            session.save();
+            out.session_save = true;
             state.currents_order = Some(m.order.clone());
             // Phase 1 (doc 24): daemon の repo_order にも永続化する。
             // caller が client.reorder_repos → re-fetch → ReposLoaded で canonical を反映し、
@@ -416,9 +421,9 @@ pub(crate) fn handle_sidebar_ipc(
 /// 現行の挙動を固定する characterization test（doc 60 §6 A、純粋化の前に置く）。
 ///
 /// 観測は 3 面: (1) `SidebarState` / `SessionState` の in-memory 変化、(2) `SidebarIpcOutcome` の
-/// field、(3) `session.save()` の **file 書き込み**（`$XDG_STATE_HOME` を tempdir に向けて
-/// `SessionState::path(0)` を読む）。純粋化後は (3) が「outcome の保存要求 + 呼び手の実行」に
-/// 変わるが、`apply` helper が呼び手を模すので test 本体の観測は変えない。
+/// field、(3) session の **file 書き込み**（`$XDG_STATE_HOME` を tempdir に向けて
+/// `SessionState::path(0)` を読む）。(3) は A-2 で「outcome の `session_save` + 呼び手の実行」に
+/// なったが、`apply` helper が呼び手（`run()` の `SidebarIpc` arm）を模すので test 本体は A-1 のまま。
 /// 全 test が `test_env::state_dir()` を取る — save しない arm でも、`apply` が汎用 executor に
 /// なった後に実 `~/.local/state` へ書く余地を構造的に消すため（review 2026-09-08）。
 #[cfg(test)]
@@ -427,9 +432,13 @@ mod tests {
     use crate::daemon_wire::LaneInfo;
     use crate::pane::RepoPaneState;
 
-    /// 呼び手（`run()` の `SidebarIpc` arm）の模型。現状は解釈だけで効果は持たない。
+    /// 呼び手（`run()` の `SidebarIpc` arm）の模型。解釈 → `session_save` なら file に書く。
     fn apply(msg: &str, state: &mut SidebarState, session: &mut SessionState) -> SidebarIpcOutcome {
-        handle_sidebar_ipc(msg, state, session)
+        let out = handle_sidebar_ipc(msg, state, session);
+        if out.session_save {
+            session.save();
+        }
+        out
     }
 
     fn repo(path: &str, expanded: bool, status: Option<&str>) -> RepoPaneState {
