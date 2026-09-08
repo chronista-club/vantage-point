@@ -3,7 +3,7 @@
 //! wiremsg R2-a で wire store は daemon (`db/machine/`) に中央化された。
 //! 本 module は store 直結のロジック層 (`*_store` 関数) と、 run_daemon の Router に
 //! 登録する axum wrapper (`daemon_wire_*_handler`) を提供する。 repo 側
-//! (`unison_server::handle_wire_*`) はアドレス正規化のみ行い、 ここへ HTTP relay
+//! (`wire_relay::handle_wire_*`) はアドレス正規化のみ行い、 ここへ HTTP relay
 //! する薄い proxy ([`crate::repo::daemon_wire`])。
 //!
 //! ## アドレス規約 (N1: canonical = qualified 一本)

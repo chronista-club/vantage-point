@@ -1,38 +1,33 @@
-//! Unison QUIC サーバー
+//! repo "process" channel の受付（doc 61 §1）。
 //!
-//! MCP <-> Process 間の高速通信レイヤー。
-//! Axum HTTP サーバーと並行して起動し、同じ Hub.broadcast() パターンで
-//! WebSocket クライアントにメッセージを配信する。
+//! `dispatch_repo_method` が 72 method の match 1 枚で、各 arm は owner / `*_ops` module の handler を
+//! 呼ぶだけ（`board` / `editor_bridge` / `conversation_replay` / `conversation_ops` / `terminal_ops` /
+//! `lane_ops` / `process_ops` / `wire_relay` / `routes::agents` / `delegation`）。ここに残るのは
+//! 受付の続き（`handle_process_message` = pane ops の generic relay）と、群ごとに `None` の意味が違う
+//! `payload_session_key`、および `QUIC_PORT_OFFSET`。
+//!
+//! 唯一の呼び手は `repo_registry.rs`（daemon の repo-proxy → in-process dispatch、doc 45 §5.2 の
+//! 単一 stream 逐次）。arm の中で spawn しない。
 //!
 //! ポート: HTTP と同一ポート番号を使う。 HTTP は TCP・QUIC は UDP で OS レベルの
 //! ポート名前空間が独立しているため衝突しない (`QUIC_PORT_OFFSET = 0`)。
-//!
-//! "process" チャネルですべての操作を統一:
-//! - show / clear / toggle_pane / split_pane / close_pane
-//! - watch_file / unwatch_file
 
 use std::sync::Arc;
-
-use serde::{Deserialize, Serialize};
 
 use super::board;
 use super::conversation_ops;
 use super::conversation_replay;
 use super::editor_bridge;
 use super::lane_ops;
+use super::process_ops;
 use super::state::AppState;
 use super::terminal_ops;
+use super::wire_relay;
 use crate::protocol::RepoMessage;
 
 /// QUIC ポートのオフセット（HTTP ポートからの差分）
 /// TCP (HTTP) と UDP (QUIC) は OS レベルで独立 → 同一ポートで共存可能
 pub const QUIC_PORT_OFFSET: u16 = 0;
-
-/// UnwatchFile リクエストのペイロード
-#[derive(Debug, Serialize, Deserialize)]
-struct UnwatchFileRequest {
-    pane_id: String,
-}
 
 // =============================================================================
 // Process チャネル ハンドラー
@@ -60,153 +55,6 @@ fn handle_process_message(
 
     // 現在は Hub broadcast のみで Canvas に配信。
 
-    Ok(serde_json::json!({"status": "ok"}))
-}
-
-/// watch_file メソッドのハンドラー
-async fn handle_watch_file(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let config: crate::file_watcher::WatchConfig = serde_json::from_value(payload)
-        .map_err(|e| format!("Invalid watch_file payload: {}", e))?;
-
-    let pane_id = config.pane_id.clone();
-
-    state
-        .file_watchers
-        .lock()
-        .await
-        .start_watch(config, state.hub.clone())
-        .map_err(|e| format!("watch_file 開始失敗: {}", e))?;
-
-    Ok(serde_json::json!({"status": "ok", "pane_id": pane_id}))
-}
-
-/// unwatch_file メソッドのハンドラー
-async fn handle_unwatch_file(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let req: UnwatchFileRequest = serde_json::from_value(payload)
-        .map_err(|e| format!("Invalid unwatch_file payload: {}", e))?;
-
-    state.file_watchers.lock().await.stop_watch(&req.pane_id);
-
-    Ok(serde_json::json!({"status": "ok", "pane_id": req.pane_id}))
-}
-
-// =============================================================================
-// ProcessRunner ハンドラー
-// =============================================================================
-
-/// プロセス起動
-async fn handle_process_run(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let params: crate::repo::process_runner::RunParams =
-        serde_json::from_value(payload).map_err(|e| format!("パラメータ不正: {}", e))?;
-    let process_id = crate::repo::process_runner::process_run(
-        &state.process_registry,
-        &params,
-        &state.repo_dir,
-        &state.hub,
-    )
-    .await?;
-    Ok(serde_json::json!({"status": "ok", "process_id": process_id}))
-}
-
-/// プロセス停止
-async fn handle_process_stop(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let process_id = payload["process_id"]
-        .as_str()
-        .ok_or_else(|| "process_id が必要です".to_string())?;
-    crate::repo::process_runner::process_stop(&state.process_registry, process_id).await?;
-    Ok(serde_json::json!({"status": "ok"}))
-}
-
-/// コード注入
-async fn handle_process_inject(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let params: crate::repo::process_runner::InjectParams =
-        serde_json::from_value(payload).map_err(|e| format!("パラメータ不正: {}", e))?;
-    crate::repo::process_runner::process_inject(&state.process_registry, &params).await?;
-    Ok(serde_json::json!({"status": "ok"}))
-}
-
-/// プロセス一覧
-async fn handle_process_list(state: &AppState) -> Result<serde_json::Value, String> {
-    let processes = state.process_registry.lock().await.list();
-    Ok(serde_json::json!({"status": "ok", "processes": processes}))
-}
-
-// L0 portless Group B-3: 旧 SP HTTP `/api/ruby/*` を repo-proxy ask に移管。 HTTP handler と同じ
-// `process_runner::ruby_*` core を呼ぶ薄い adapter (payload からフィールド抽出)。 ruby_list は
-// `process_registry.list()` = `handle_process_list` と同一なので dispatch 側で再利用する。
-
-/// ruby_eval: 短命 Ruby 実行
-async fn handle_ruby_eval(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let code = payload.get("code").and_then(|v| v.as_str());
-    let file = payload.get("file").and_then(|v| v.as_str());
-    let pane_id = payload
-        .get("pane_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("main");
-    let r =
-        crate::repo::process_runner::ruby_eval(code, file, pane_id, &state.repo_dir, &state.hub)
-            .await?;
-    Ok(serde_json::json!({
-        "status": "ok",
-        "stdout": r.stdout,
-        "stderr": r.stderr,
-        "exit_code": r.exit_code,
-        "elapsed_ms": r.elapsed_ms,
-    }))
-}
-
-/// ruby_run: 長命 Ruby daemon 起動
-async fn handle_ruby_run(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let code = payload.get("code").and_then(|v| v.as_str());
-    let file = payload.get("file").and_then(|v| v.as_str());
-    let name = payload.get("name").and_then(|v| v.as_str());
-    let pane_id = payload
-        .get("pane_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("main");
-    let process_id = crate::repo::process_runner::ruby_run(
-        &state.process_registry,
-        code,
-        file,
-        name,
-        pane_id,
-        &state.repo_dir,
-        &state.hub,
-    )
-    .await?;
-    Ok(serde_json::json!({"status": "ok", "process_id": process_id}))
-}
-
-/// ruby_stop: Ruby daemon 停止
-async fn handle_ruby_stop(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let process_id = payload["process_id"]
-        .as_str()
-        .ok_or_else(|| "process_id が必要です".to_string())?;
-    crate::repo::process_runner::ruby_stop(&state.process_registry, process_id).await?;
     Ok(serde_json::json!({"status": "ok"}))
 }
 
@@ -274,8 +122,8 @@ pub(crate) async fn dispatch_repo_method(
         "toggle_pane" | "split_pane" | "close_pane" | "switch_lane" => {
             handle_process_message(state, payload)
         }
-        "watch_file" => handle_watch_file(state, payload).await,
-        "unwatch_file" => handle_unwatch_file(state, payload).await,
+        "watch_file" => process_ops::handle_watch_file(state, payload).await,
+        "unwatch_file" => process_ops::handle_unwatch_file(state, payload).await,
         // S2: demand-driven terminal pump (Daemon demand hook → control reverse-route)
         // doc 53 R2: start / stop は同じ reconcile の契機（demand の今は level で読む）。
         "terminal_demand_start" | "terminal_demand_stop" => {
@@ -375,27 +223,29 @@ pub(crate) async fn dispatch_repo_method(
         // tmux decoupling PR2: 旧 "tmux_*" dispatch (split/list/close/capture/agent_meta/
         // send_keys/resolve_pane) は退役。 後継は lane 語彙の "lane_nudge" / "lane_capture"。
         // ProcessRunner
-        "process_run" => handle_process_run(state, payload).await,
-        "process_stop" => handle_process_stop(state, payload).await,
-        "process_inject" => handle_process_inject(state, payload).await,
-        "process_list" => handle_process_list(state).await,
+        "process_run" => process_ops::handle_process_run(state, payload).await,
+        "process_stop" => process_ops::handle_process_stop(state, payload).await,
+        "process_inject" => process_ops::handle_process_inject(state, payload).await,
+        "process_list" => process_ops::handle_process_list(state).await,
         // L0 portless Group B-3: Ruby VM (旧 SP HTTP /api/ruby/* を repo-proxy ask に移管)。
         // ruby_list は process_registry.list() = process_list と同一なので handle_process_list 再利用。
-        "ruby_eval" => handle_ruby_eval(state, payload).await,
-        "ruby_run" => handle_ruby_run(state, payload).await,
-        "ruby_stop" => handle_ruby_stop(state, payload).await,
-        "ruby_list" => handle_process_list(state).await,
+        "ruby_eval" => process_ops::handle_ruby_eval(state, payload).await,
+        "ruby_run" => process_ops::handle_ruby_run(state, payload).await,
+        "ruby_stop" => process_ops::handle_ruby_stop(state, payload).await,
+        "ruby_list" => process_ops::handle_process_list(state).await,
         // wiremsg threaded inbox (Phase A ①、 R2 で wire_thread 追加)
-        "wire_send" => handle_wire_send(state, payload).await,
-        "wire_recv" => handle_wire_recv(state, payload).await,
-        "wire_thread" => handle_wire_thread(state, payload).await,
+        "wire_send" => wire_relay::handle_wire_send(state, payload).await,
+        "wire_recv" => wire_relay::handle_wire_recv(state, payload).await,
+        "wire_thread" => wire_relay::handle_wire_thread(state, payload).await,
         // flow_progress 用 read-only 未読 count (cursor 不触り)
-        "wire_unread_count" => handle_wire_unread_count(state, payload).await,
+        "wire_unread_count" => wire_relay::handle_wire_unread_count(state, payload).await,
         // flow_progress 5-state FSM derive 用 read-only 最新 wmsg
-        "wire_latest_msg" => handle_wire_latest_msg(state, payload).await,
+        "wire_latest_msg" => wire_relay::handle_wire_latest_msg(state, payload).await,
         // flow_progress AwaitingUser 判定用 read-only 未 ack needs_user
-        "wire_needs_user_pending" => handle_wire_needs_user_pending(state, payload).await,
-        "wire_ack" => handle_wire_ack(state, payload).await,
+        "wire_needs_user_pending" => {
+            wire_relay::handle_wire_needs_user_pending(state, payload).await
+        }
+        "wire_ack" => wire_relay::handle_wire_ack(state, payload).await,
         // Agent 委譲 (doc 28 §4): delegate=B を wake / complete=A を wake /
         // respond=NeedsInput(Reborn) に A が回答して B を再 wake (Active へ loop)。
         "delegate" => super::delegation::handle_delegate(state, payload).await,
@@ -405,211 +255,8 @@ pub(crate) async fn dispatch_repo_method(
     }
 }
 
-// =============================================================================
-// wiremsg ハンドラー (R2-a: daemon 中央 store への proxy 層)
-//
-// store 直結のロジックは routes/wire.rs (daemon 側) に移設済。 repo の責務は
-// 「アドレス正規化 (N1) → daemon へ HTTP relay」 のみ。 QUIC dispatch と
-// HTTP wrapper (routes/health.rs) は本 proxy 群を呼ぶため signature 不変。
-// =============================================================================
-
-/// agent address を canonical (qualified) 形に正規化する (wiremsg N1、 refactor R1 PR-B)
-///
-/// bare `"agent"` を qualified (`agent@<repo>`) に正規化する。
-///
-/// 現行 MCP (`SelfLane::from_address`) は main も canonical `agent@<repo>` を
-/// 自前で送るため、本関数は実質 **冪等な素通し + 後方互換 (旧 client / bare 送信者) 用の
-/// 防御層**。bare を残す理由: 旧 bare 送信が来ても store 識別子を qualified 一本に揃え、
-/// cross-process 返信 (`agent@<repo>` 宛 forward) が bare query と完全一致せず届かない
-/// バグ (B2、 レビュー mem_1CbuxQuNRwHBiZgBVUWVfN) を防ぐため。
-/// bare 以外 (qualified / board@... / runner@... 等) はそのまま返す。
-///
-/// ⚠️ 正規化先 `self_repo` は「繋いだ repo の repo」なので、bare のままだと誤 repo 接続で
-/// identity が化ける (= 旧 main バグの根)。だから identity の SSOT は MCP 側 canonical
-/// 送出に移した。本関数は qualified を受けたら何もしない (= repo 非依存) のが正常運用。
-fn normalize_agent_addr(addr: &str, self_repo: &str) -> String {
-    if addr == "agent" {
-        format!("agent@{}", self_repo)
-    } else {
-        addr.to_string()
-    }
-}
-
-/// wiremsg を送信する (R2-a: daemon 中央 store への proxy)
-///
-/// payload: `{ from, to: [..], body, reply_to? }`
-///
-/// repo の責務はアドレス正規化 (N1: bare `"agent"` → `"agent@<self_repo>"`) のみ。
-/// 保存・notify・local_seq 採番・body coerce は全て daemon 側
-/// ([`crate::repo::routes::wire`])。 cross-process forward は中央化で概念ごと消滅。
-pub(crate) async fn handle_wire_send(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let from = payload
-        .get("from")
-        .and_then(|v| v.as_str())
-        .map(|s| normalize_agent_addr(s, &state.repo_name))
-        .ok_or_else(|| "wire_send: 'from' required".to_string())?;
-    let to: Vec<String> = payload
-        .get("to")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str())
-                .map(|s| normalize_agent_addr(s, &state.repo_name))
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut forwarded = serde_json::json!({
-        "from": from,
-        "to": to,
-    });
-    if let Some(body) = payload.get("body") {
-        forwarded["body"] = body.clone();
-    }
-    if let Some(reply_to) = payload.get("reply_to") {
-        forwarded["reply_to"] = reply_to.clone();
-    }
-    super::daemon_wire::call("/api/wire/send", forwarded).await
-}
-
-/// wiremsg を受信する (R2-a: daemon 中央 store への proxy、 long-poll は daemon 側)
-///
-/// payload: `{ agent, timeout? }` — timeout の clamp (default 5s / max 30s) も daemon 側。
-pub(crate) async fn handle_wire_recv(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let agent = payload
-        .get("agent")
-        .and_then(|v| v.as_str())
-        .map(|s| normalize_agent_addr(s, &state.repo_name))
-        .ok_or_else(|| "wire_recv: 'agent' required".to_string())?;
-    let timeout = payload.get("timeout").and_then(|v| v.as_u64()).unwrap_or(5);
-    super::daemon_wire::call(
-        "/api/wire/recv",
-        serde_json::json!({ "agent": agent, "timeout": timeout }),
-    )
-    .await
-}
-
-/// wiremsg の ancestor-chain (系譜) を取得する (R2-a: daemon proxy、 read-only)
-///
-/// payload: `{ message_id }` — agent 文脈不要のため正規化なしで relay。
-pub(crate) async fn handle_wire_thread(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let _ = state; // thread は repo 文脈 (正規化) 不要。 signature は他 handler と統一
-    let message_id = payload
-        .get("message_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "wire_thread: 'message_id' required".to_string())?;
-    super::daemon_wire::call(
-        "/api/wire/thread",
-        serde_json::json!({ "message_id": message_id }),
-    )
-    .await
-}
-
-/// wiremsg の agent 関与最新 message を取得する (R2-a: daemon proxy、 read-only)
-///
-/// payload: `{ agent }`。 `flow_progress` の 5-state FSM derive で使う。
-pub(crate) async fn handle_wire_latest_msg(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let agent = payload
-        .get("agent")
-        .and_then(|v| v.as_str())
-        .map(|s| normalize_agent_addr(s, &state.repo_name))
-        .ok_or_else(|| "wire_latest_msg: 'agent' required".to_string())?;
-    super::daemon_wire::call(
-        "/api/wire/latest-msg",
-        serde_json::json!({ "agent": agent }),
-    )
-    .await
-}
-
-/// wiremsg の agent 発 未 ack needs_user を取得する (daemon proxy、 read-only)
-///
-/// payload: `{ agent }` → `{ status, message }`。 `flow_progress` の `AwaitingUser` 判定で使う。
-pub(crate) async fn handle_wire_needs_user_pending(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let agent = payload
-        .get("agent")
-        .and_then(|v| v.as_str())
-        .map(|s| normalize_agent_addr(s, &state.repo_name))
-        .ok_or_else(|| "wire_needs_user_pending: 'agent' required".to_string())?;
-    super::daemon_wire::call(
-        "/api/wire/needs-user-pending",
-        serde_json::json!({ "agent": agent }),
-    )
-    .await
-}
-
-/// wiremsg の per-agent 未読 count を取得する (R2-a: daemon proxy、 read-only)
-///
-/// payload: `{ agent }`。 `flow_progress` の集約 view / `wire_inbox` MCP tool で使う。
-pub(crate) async fn handle_wire_unread_count(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let agent = payload
-        .get("agent")
-        .and_then(|v| v.as_str())
-        .map(|s| normalize_agent_addr(s, &state.repo_name))
-        .ok_or_else(|| "wire_unread_count: 'agent' required".to_string())?;
-    super::daemon_wire::call(
-        "/api/wire/unread-count",
-        serde_json::json!({ "agent": agent }),
-    )
-    .await
-}
-
-/// wiremsg を ack する (R2-a 新設、 決定 D3: cursor 非破壊の ack 台帳への proxy)
-///
-/// payload: `{ message_id, agent }` → `{ status, acked }`
-pub(crate) async fn handle_wire_ack(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let message_id = payload
-        .get("message_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "wire_ack: 'message_id' required".to_string())?;
-    let agent = payload
-        .get("agent")
-        .and_then(|v| v.as_str())
-        .map(|s| normalize_agent_addr(s, &state.repo_name))
-        .ok_or_else(|| "wire_ack: 'agent' required".to_string())?;
-    super::daemon_wire::call(
-        "/api/wire/ack",
-        serde_json::json!({ "message_id": message_id, "agent": agent }),
-    )
-    .await
-}
-
 #[cfg(test)]
 mod tests {
-    use super::normalize_agent_addr;
-
-    #[test]
-    fn normalize_bare_agent_to_qualified() {
-        assert_eq!(normalize_agent_addr("agent", "vp"), "agent@vp");
-    }
-
-    #[test]
-    fn normalize_keeps_qualified_and_other_addrs() {
-        assert_eq!(normalize_agent_addr("agent@vp", "vp"), "agent@vp");
-        assert_eq!(normalize_agent_addr("agent@other", "vp"), "agent@other");
-        assert_eq!(normalize_agent_addr("agent@vp/sub", "vp"), "agent@vp/sub");
-        assert_eq!(normalize_agent_addr("board@vp", "vp"), "board@vp");
-    }
-
     /// doc 38: session param（additive）の入口検証。省略/null は OK（focused に解決）、
     /// 型不正・0 は Err — 黙って focused に落とすと誤配送になる。
     #[test]
