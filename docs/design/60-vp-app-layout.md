@@ -37,7 +37,7 @@ crates/vp-app/src/
 │   ├── on_lanes.rs      ReposLoaded / LanesLoaded / LanesError / LaneRespawnFailed / ReposError / SubCreateResult（lanes snapshot の所有者）
 │   ├── on_conversation.rs Conversation* / Session* / Console* / Agents* / OscNotification
 │   ├── on_terminal.rs   TerminalOutput / Write / Resize / PasteText
-│   ├── on_board.rs      CanvasMessage / EditorEval / BoardMutate（board_snapshots の所有者）
+│   ├── on_board.rs      CanvasMessage / EditorCommand / BoardMutate（board_snapshots の所有者。editor bridge の JS はここで組む）
 │   ├── on_sidebar.rs    SidebarIpc（fast path + handle + 28 段の効果実行、1 fn）/ UpdateFlowPhase / Settings* + settings_snapshot
 │   ├── on_misc.rs       Titles / Inboxes / Ink / Debuglog / Device / Code / Wire / Activity
 │   ├── catch_up.rs      WebviewReady（§3「1 つの list」。新しい面の replay はここに足す）
@@ -71,9 +71,9 @@ crates/vp-app/src/
   - `lane` → `daemon/conn`（session が接続を握る）は許す。
   - `flows` → `daemon`（repo picker が add / start / fetch、update が `locate_vp_binary`）は許す。
   - `daemon` / `lane` / `webview` は上記以外で互いの関数を呼ばない。
-- **既知の例外（移設直後に残る）**: `daemon/subscriptions`（canvas 購読）→ `webview/editor_bridge::editor_bridge_js`。
-  解消は「購読側は op を `AppEvent` で渡し、JS 構築は UI 側で行う」= `AppEvent` の契約変更なので 6-2 か独立 PR。
-- `pane.rs` は data only（doc 11 §2.3）。`AppEvent` は `Clone`（`EditorEval` が oneshot でなく `mpsc` を運ぶ理由）。
+- 既知の例外だった `daemon/subscriptions`（canvas 購読）→ `webview/editor_bridge::editor_bridge_js` は **6-2 PR-EX で解消**:
+  購読側は `AppEvent::EditorCommand { op, field_id, value, resp }` で op だけを渡し、JS の組み立て（未知 op の判定含む）と評価は `app/on_board::editor_command`。
+- `pane.rs` は data only（doc 11 §2.3）。`AppEvent` は `Clone`（`EditorCommand` が oneshot でなく `mpsc` を運ぶ理由）。
 - `tokio::spawn` は crate 全体で禁止（`clippy.toml`）。async を起こす module は `rt_handle: &tokio::runtime::Handle` を引数で受ける。
 
 ## 3. 変えないもの（seam の内側に住む不変条件）
@@ -114,7 +114,7 @@ crates/vp-app/src/
 - **C. loop 共通化**（❌ 不採用、mako 2026-09-08）: 5 本の違いは「順序と後始末」（切断中の keystroke 保持 / collapse 時の unsubscribe / 失敗回数の reset）で、共通化すると引数の山になり読みにくくなる一方、利益は行数だけ。§4 の表を契約として残す。再接続の挙動を触る PR が出た時に、その loop の厳密 test（擬似 daemon harness）をその PR で置く
 - **6-2a**（✅ 2026-09-08、PR #1058〜#1067 の 10 本）: PR-1 `Boot` / `UiState`（閉包は `ui.` / `boot.` の prefix 以外 byte 一致）→ PR-2 `lane_view` → PR-3〜10 arm を fn ごとに `on_*` / `catch_up` へ（本体は 12 空白 dedent → rustfmt で一致、先行コメントは fn の doc へ移動、routing 行は 100 桁超なら block 形、引数 8 個以上は `#[allow(too_many_arguments)]`、fn の引数が既に参照の proxy は `&` を外す）。`run()` 3,090 → 320 行、`app/mod.rs` 4,168 → 540 行。test 1313 維持。handler は `&mut UiState` 全体を受ける（範囲の絞り込みは §2 の表を見て module 単位で後から）。`Vec<SidebarEffect>` は延期（第 2 の生成者が現れるまで、mako 2026-09-08）
 - **6-2b**（挙動を変える、test 先行）: §8 の復元と保存の表 → `app/persist.rs`（SessionState の所有者 = 復元 cursor + 保存への変換 1 箇所）→ 危険 A（壊れた file の退避）/ B + C（pending 未消費の間 daemon 値を書かない）/ E + F（daemon 順と auto-expand を session に鏡す）/ b-5（WebviewReady で push_sidebar_state）/ D（1 nightly log してから）。b-7（window 間の並び順伝播）は daemon push で項目 7 と一緒に
-- **6-2 PR-EX**: 既知の例外（`daemon/subscriptions` → `editor_bridge_js`）を `AppEvent::EditorCommand` で解消
+- **6-2 PR-EX**（✅）: 既知の例外（`daemon/subscriptions` → `editor_bridge_js`）を `AppEvent::EditorCommand` で解消。daemon/ → webview/ の辺は 0 本に
 
 ## 7. 検証で保持する動作
 
@@ -161,6 +161,7 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
 
 ## Status log
 
+- 2026-09-08: 6-2 PR-EX 着地。`EditorEval { js }` → `EditorCommand { op, field_id, value }`。daemon/ が webview/ を呼ぶ辺は無くなった。挙動差: 未知 op の error JSON が event loop を 1 往復してから返る（timeout 2.5 秒の内側、実用上同じ）。実機: editor field の set / get（doc 48 の MCP `editor_set` / `editor_fields`）。
 - 2026-09-08: 6-0 (a)(b)(c)(d) 着地（PR #1043）。app.rs は `app/mod.rs` に、sibling 14 file を directory へ。
 - 2026-09-08: 6-0b 着地（PR #1044）。`client.rs` → `daemon_wire.rs` + `daemon/health_probe.rs`、`shell_detect.rs` 削除。
 - 2026-09-08: 6-1 移設 10 本すべて着地（PR #1045〜#1054）: push_main / editor_bridge / push_sidebar / app/sidebar_ipc /

@@ -6,15 +6,13 @@
 //! 500 ms retry / device は backoff + `MAX_FAILURES` で終了）。契約は doc 60 §4 の表、共通化は出荷条件にしない。
 //!
 //! 旧 `app/mod.rs` から移設（棚卸し 項目 6 / 6-1 #6、2026-09-08。本文は順序付き diff で一致、差分は
-//! `spawn_*` の `pub(crate)` のみ）。canvas 購読が `webview::editor_bridge::editor_bridge_js` を呼ぶのは
-//! doc 60 §2 の既知の例外（解消は op を `AppEvent` で渡す形に変える 6-2 で）。
+//! `spawn_*` の `pub(crate)` のみ）。canvas 購読の editor bridge は op を `AppEvent::EditorCommand` で UI 側に渡す
+//! （JS の組み立ては `app/on_board`。6-2 PR-EX で daemon/ → webview/ の辺を解消、doc 60 §2）。
 
 use tao::event_loop::EventLoopProxy;
 
 use crate::daemon::conn::{SharedDaemonConn, SubscriptionOutcome};
 use crate::events::AppEvent;
-// doc 60 §2 の既知の例外: daemon 側の購読が webview の JS builder を呼ぶ（解消は 6-2）
-use crate::webview::editor_bridge::editor_bridge_js;
 
 /// wiremsg Stage 1 consumer: repo の "lanes" Unison channel を購読し、retained Lane
 /// snapshot を受信して `AppEvent::LanesLoaded` を emit する。旧 `spawn_lanes_fetch`
@@ -309,30 +307,35 @@ async fn run_canvas_session(
             if request_id.is_empty() {
                 continue;
             }
-            let op = payload.get("op").and_then(|v| v.as_str()).unwrap_or("");
-            let body = match editor_bridge_js(
-                op,
-                payload.get("field_id").and_then(|v| v.as_str()),
-                payload.get("value"),
-            ) {
-                Some(js) => {
-                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-                    if proxy
-                        .send_event(AppEvent::EditorEval { js, resp: tx })
-                        .is_err()
-                    {
-                        return Ok(SubscriptionOutcome::AppClosing);
-                    }
-                    // daemon 側の待ち (3s) より短く切る (VP-163 と同じ向き: 内側が先に諦める)
-                    match tokio::time::timeout(std::time::Duration::from_millis(2500), rx.recv())
-                        .await
-                    {
-                        Ok(Some(raw)) => serde_json::from_str::<serde_json::Value>(&raw)
-                            .unwrap_or(serde_json::Value::String(raw)),
-                        _ => serde_json::json!({"error": "webview 評価 timeout"}),
-                    }
-                }
-                None => serde_json::json!({"error": format!("未知の editor op: {op}")}),
+            // op と引数だけを UI 側へ渡す。JS の組み立て（未知 op の判定含む）は on_board の責務
+            // （doc 60 §2: daemon/ は webview/ を呼ばない — 6-2 PR-EX）。
+            let op = payload
+                .get("op")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            if proxy
+                .send_event(AppEvent::EditorCommand {
+                    op,
+                    field_id: payload
+                        .get("field_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    value: payload.get("value").cloned(),
+                    resp: tx,
+                })
+                .is_err()
+            {
+                return Ok(SubscriptionOutcome::AppClosing);
+            }
+            // daemon 側の待ち (3s) より短く切る (VP-163 と同じ向き: 内側が先に諦める)
+            let body = match tokio::time::timeout(std::time::Duration::from_millis(2500), rx.recv())
+                .await
+            {
+                Ok(Some(raw)) => serde_json::from_str::<serde_json::Value>(&raw)
+                    .unwrap_or(serde_json::Value::String(raw)),
+                _ => serde_json::json!({"error": "webview 評価 timeout"}),
             };
             if let Err(e) = channel
                 .request::<serde_json::Value, serde_json::Value>(

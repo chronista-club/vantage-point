@@ -280,9 +280,12 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::DeviceEvent { payload }) => {
                 on_misc::device_event(&mut ui, &boot, payload)
             }
-            Event::UserEvent(AppEvent::EditorEval { js, resp }) => {
-                on_board::editor_eval(&mut ui, &boot, js, resp)
-            }
+            Event::UserEvent(AppEvent::EditorCommand {
+                op,
+                field_id,
+                value,
+                resp,
+            }) => on_board::editor_command(&mut ui, &boot, op, field_id, value, resp),
             Event::UserEvent(AppEvent::CanvasMessage { repo_path, message }) => {
                 on_board::canvas_message(
                     &mut ui,

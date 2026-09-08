@@ -3,7 +3,7 @@
 //! 旧 `terminal.rs` が所有していたが、sidebar / conversation / device 由来の variant が大半で
 //! terminal 固有ではないため独立 module に移設（doc 11 §5 Q4、棚卸し 項目 6 / 6-0、2026-09-08）。
 //! 送り手は `EventLoopProxy<AppEvent>` を持つ各 sibling（購読 pump / poller / IPC handler）、
-//! 受け手は `app::run()` の event loop。`Clone` を derive しているため `EditorEval` は
+//! 受け手は `app::run()` の event loop。`Clone` を derive しているため `EditorCommand` は
 //! `oneshot` でなく `mpsc::UnboundedSender` を運ぶ。
 
 /// EventLoop に送る app 全体のイベント
@@ -20,14 +20,18 @@ pub enum AppEvent {
     ActivityUpdate(crate::pane::ActivitySnapshot),
     /// VP-95: sidebar webview からの IPC メッセージ (JSON 文字列、main loop でパース)
     SidebarIpc(String),
-    /// doc 48 Phase 2 (editor bridge): daemon からの `EditorCommand` を webview で評価する。
+    /// doc 48 Phase 2 (editor bridge): daemon からの `editor_command` を webview で評価する。
     ///
-    /// `js` を main webview で `evaluate_script_with_callback` し、結果 (wry が JSON
-    /// 文字列化した評価値) を `resp` に 1 回送る。sender が mpsc なのは AppEvent の
-    /// Clone derive と両立させるため (oneshot は Clone 不可)。受け手は
-    /// `run_canvas_session` の editor_command intercept (timeout 側が受信を打ち切る)。
-    EditorEval {
-        js: String,
+    /// 購読側（`daemon/subscriptions`）は **op と引数だけ**を運び、JS の組み立て
+    /// （`webview::editor_bridge::editor_bridge_js`）と評価は UI 側（`app/on_board`）が行う
+    /// （doc 60 §2 の依存 rule: daemon/ は webview/ を呼ばない。6-2 PR-EX で解消）。
+    /// 結果（wry が JSON 文字列化した評価値、未知 op なら `{"error":…}` の JSON）を `resp` に 1 回送る。
+    /// sender が mpsc なのは AppEvent の Clone derive と両立させるため (oneshot は Clone 不可)。
+    /// 受け手は `run_canvas_session` の editor_command intercept (timeout 側が受信を打ち切る)。
+    EditorCommand {
+        op: String,
+        field_id: Option<String>,
+        value: Option<serde_json::Value>,
         resp: tokio::sync::mpsc::UnboundedSender<String>,
     },
     /// VP-100 γ-light: main area の active pane slot 矩形通知。
