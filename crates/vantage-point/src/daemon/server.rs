@@ -1743,6 +1743,15 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                                     "daemon-repo subscribe lagged: {} events dropped",
                                                     n
                                                 );
+                                                // b-7: 落とした中に ReposChanged が含まれうるので、subscriber に
+                                                // 取り直しを促す 1 発を送る（受け手は中身を見ず repos/list を再 fetch）。
+                                                let resync = serde_json::to_value(
+                                                    ProcessLifecycleEvent::ReposChanged,
+                                                )
+                                                .unwrap_or(serde_json::Value::Null);
+                                                if channel.send_event("event", &resync).await.is_err() {
+                                                    break;
+                                                }
                                             }
                                             Err(
                                                 tokio::sync::broadcast::error::RecvError::Closed,

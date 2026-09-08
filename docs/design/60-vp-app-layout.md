@@ -85,9 +85,9 @@ crates/vp-app/src/
 - **購読の寿命は accordion の可視性**（1→0 で daemon の demand hook が engine を寝かせる）。
 - `lane_key_to_wire_agent` と逆写像 `wire_agent_to_lane_display` は対で動く（doc 44）。逆写像は crate を跨ぐ（`vantage-point::repo::delivery_actor`）ので同居できず、往復は両側の test で固定する。
 
-## 4. 再接続 loop 5 本の方針（契約。共通化は出荷条件にしない）
+## 4. 再接続 loop 6 本の方針（契約。共通化は出荷条件にしない）
 
-骨格（`wait_client → run_session → Disconnected / AppClosing`）は似ているが、障害時の方針が違う（Codex 再レビュー ①）。共通化するなら接続待ち・retry・終了・後始末の責任が引数で読める場合だけ。読みにくくなるなら 5 本の重複を残す。
+骨格（`wait_client → run_session → Disconnected / AppClosing`）は似ているが、障害時の方針が違う（Codex 再レビュー ①）。共通化するなら接続待ち・retry・終了・後始末の責任が引数で読める場合だけ。読みにくくなるなら 6 本の重複を残す。
 
 | loop | 接続待ち | 失敗時 | 終了 | 後始末 |
 |---|---|---|---|---|
@@ -96,7 +96,7 @@ crates/vp-app/src/
 | terminal | 待つ | 再試行。`cmd_rx` を再接続越しに保持 | 送り手（`LaneTerminal`）消失で終了 | — |
 | conversation | 待つ | 再試行。購読後に毎回 demand | collapse 等で終了 | 明示 `unsubscribe` |
 | device | 待つ | 指数 backoff、`MAX_FAILURES` で終了（MIDI 非提供時の意図した縮退） | 上限到達で終了 | 切断で失敗回数 reset |
-| repos（b-7） | 待つ | 500 ms 待って再試行（channel は常に在る） | app 終了 | `ReposChanged` / `Lagged` ごとに `fetch_repos_with_ports` → `ReposLoaded` |
+| repos（b-7、`ReposChanged` → 50 ms で drain → `fetch_repos_with_ports` → `ReposLoaded`） | 待つ | 指数 backoff（500 ms → 16 s）、give-up しない（古い daemon で channel 不在でも新 daemon で立つ） | app 終了 | 切断で失敗回数 reset。daemon 側が Lagged を `ReposChanged` 1 発に変換するので client に Lagged 分岐は無い |
 
 ## 5. 移設の照合方法
 
@@ -112,7 +112,7 @@ crates/vp-app/src/
 - **6-1**（各 1 PR、順序付き照合）: push_main → editor_bridge → push_sidebar → **app/sidebar_ipc**（そのまま移設、`session.save()` 込み）→ daemon/pollers → lane_address → webview/ipc_route → daemon/conn → daemon/subscriptions → lane/terminal + lane/conversation
 - **A. sidebar**（✅ 2026-09-08）: A-1 #1055 で現行を固定する test 18 本（25 arm の状態変化・`session.save()` の有無（temp dir）・outcome）→ A-2 で `save` 2 箇所（`ProcessToggle` / `ProcessReorder`）を outcome の `session_save` にして `run()` が実行（test 本体は不変、`apply` helper が呼び手を模す）。codegen PR-2 / PR-3 は既に済だった（Rust / TS とも生成型を使用）
 - **B. 統合 1: daemon ask の一本化**（✅ 2026-09-08、独立 PR、Codex 再レビュー ②）: `daemon_repo_request`（呼ぶたびに QUIC connect、26 箇所）→ `DaemonControl::repo_request`。契約: **1 RPC = 1 stream**（request ごとに `open_channel("repo-proxy")` → handshake → request → 必ず `close()`）/ `REPO_ASK_TIMEOUT` = 現行と同じ 30 秒を別 const（`RPC_TIMEOUT` 10 秒に短縮しない）/ 応答を失った更新・削除は自動再送しない / `{"error"}` と transport 障害を区別
-- **C. loop 共通化**（❌ 不採用、mako 2026-09-08）: 5 本の違いは「順序と後始末」（切断中の keystroke 保持 / collapse 時の unsubscribe / 失敗回数の reset）で、共通化すると引数の山になり読みにくくなる一方、利益は行数だけ。§4 の表を契約として残す。再接続の挙動を触る PR が出た時に、その loop の厳密 test（擬似 daemon harness）をその PR で置く
+- **C. loop 共通化**（❌ 不採用、mako 2026-09-08）: 6 本の違いは「順序と後始末」（切断中の keystroke 保持 / collapse 時の unsubscribe / 失敗回数の reset）で、共通化すると引数の山になり読みにくくなる一方、利益は行数だけ。§4 の表を契約として残す。再接続の挙動を触る PR が出た時に、その loop の厳密 test（擬似 daemon harness）をその PR で置く
 - **6-2a**（✅ 2026-09-08、PR #1058〜#1067 の 10 本）: PR-1 `Boot` / `UiState`（閉包は `ui.` / `boot.` の prefix 以外 byte 一致）→ PR-2 `lane_view` → PR-3〜10 arm を fn ごとに `on_*` / `catch_up` へ（本体は 12 空白 dedent → rustfmt で一致、先行コメントは fn の doc へ移動、routing 行は 100 桁超なら block 形、引数 8 個以上は `#[allow(too_many_arguments)]`、fn の引数が既に参照の proxy は `&` を外す）。`run()` 3,090 → 320 行、`app/mod.rs` 4,168 → 540 行。test 1313 維持。handler は `&mut UiState` 全体を受ける（範囲の絞り込みは §2 の表を見て module 単位で後から）。`Vec<SidebarEffect>` は延期（第 2 の生成者が現れるまで、mako 2026-09-08）
 - **6-2b**（挙動を変える、test 先行）: §8 の復元と保存の表 → `app/persist.rs`（SessionState の所有者 = 復元 cursor + 保存への変換 1 箇所）→ 危険 A（壊れた file の退避）/ B + C（pending 未消費の間 daemon 値を書かない）/ E + F（daemon 順と auto-expand を session に鏡す）/ b-5（WebviewReady で push_sidebar_state）/ D（1 nightly log してから）。b-7（window 間の並び順伝播）は daemon push で項目 7 と一緒に
 - **6-2 PR-EX**（✅）: 既知の例外（`daemon/subscriptions` → `editor_bridge_js`）を `AppEvent::EditorCommand` で解消。daemon/ → webview/ の辺は 0 本に

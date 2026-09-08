@@ -129,7 +129,7 @@ arm の形は `"show" | "clear" => board::handle_canvas_command(state, payload).
 - channel loop は variant を serialize するだけなので不変。
 
 **vp-app 側**
-- `daemon/subscriptions.rs::spawn_repos_subscription`: `device_subscription_loop` を雛形に（`MAX_FAILURES` は持たない、channel は常に在る）。`wait_client → open_channel("daemon-repo") → subscribe → recv loop`。event（`Lagged` 含む）ごとに `conn.control()` → `fetch_repos_with_ports` → `AppEvent::ReposLoaded`。burst は溜まった event を drain してから 1 回 fetch。
+- `daemon/subscriptions.rs::spawn_repos_subscription`: `device_subscription_loop` を雛形に（指数 backoff 500 ms → 16 s、give-up はしない）。`wait_client → open_channel("daemon-repo") → subscribe → recv loop`。`ReposChanged` を受けたら 50 ms の間に続く event を drain してから `conn.control()` → `fetch_repos_with_ports` → `AppEvent::ReposLoaded` を 1 回。daemon 側は broadcast が Lagged した時に `ReposChanged` を 1 発送って取り直しを促す（client に Lagged 分岐は無い）。
 - `app/boot.rs` の `spawn_device_subscription` の隣で起動。
 - doc 60 §4 の表に `repos` 行、§8 の `currents_order` から「生きている window 間は同期しない」を落とす。`pollers.rs` の count ベース再 fetch は fallback として残す（撤去は soak 後、§6）。
 - 自 window の echo は無害: DnD → 楽観 order → event → fetch → prev-merge。`note_repo_order` は同じ順なので save なし。
@@ -144,7 +144,8 @@ arm の形は `"show" | "clear" => board::handle_canvas_command(state, payload).
 - flaky PTY test の readiness を時間でなく観測に（台帳 項目 10）
 - `daemon/server.rs::handle_daemon_control`（440 行 match）の分割 = 項目 7 の範囲外、7b の後に別項目
 - `route_conversation` の `conversation_pump.rs` への移動 / `repo/lane/` subdirectory への集約（`lanes_state` / `lane_reconcile` / `lane_cmd` / `lane_spawn_actor` / `lane_ops` / 旧 `routes/lanes`）
-- b-7 soak 後に count ベースの再 fetch を撤去
+- b-7 soak 後に count ベースの再 fetch（`pollers.rs`）と、自 window の操作直後の再 fetch（`on_sidebar.rs` ×4 / `flows/repo_dialog.rs` ×2。push の self-echo と二重）を撤去
+- `persist_repos()` の vpdb=Some 分岐で DB 全置換が成功して kdl mirror の export だけ失敗した時、今は Err で `ReposChanged` も出ない（SSOT は変わっているのに window が古いまま）。mirror 失敗を warn に落として DB 成功で発火するかは別 PR で（既存の error 意味論を変えるため）
 
 ## 7. 落とし穴
 
@@ -157,4 +158,5 @@ arm の形は `"show" | "clear" => board::handle_canvas_command(state, payload).
 ## Status log
 
 - 2026-09-08: 設計確定（mako）。決定 3 点は §0。次は PR-1（editor_bridge）。
+- 2026-09-09: PR-B7（b-7）着地。`persist_repos()` 末尾で `ReposChanged`、vp-app は `daemon-repo` 購読 → 50 ms drain → `repos/list` 再 fetch。実機は mako（2 window）。
 - 2026-09-09: PR-1〜7（#1075 / #1076 / #1077 / #1078 / #1079 / #1080 / #1081）着地。`unison_server.rs` 5,691 → 344 行、外部参照は §4 の 3 symbol だけ。PR-8 で `reconcile_lane` / `reconcile_terminal_pumps` を `impl AppState` の method に（呼び手 10 + test 5）。残りは PR-B7 と 7b。
