@@ -419,6 +419,8 @@ pub(crate) fn handle_sidebar_ipc(
 /// field、(3) `session.save()` の **file 書き込み**（`$XDG_STATE_HOME` を tempdir に向けて
 /// `SessionState::path(0)` を読む）。純粋化後は (3) が「outcome の保存要求 + 呼び手の実行」に
 /// 変わるが、`apply` helper が呼び手を模すので test 本体の観測は変えない。
+/// 全 test が `test_env::state_dir()` を取る — save しない arm でも、`apply` が汎用 executor に
+/// なった後に実 `~/.local/state` へ書く余地を構造的に消すため（review 2026-09-08）。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,6 +455,7 @@ mod tests {
 
     #[test]
     fn malformed_json_is_ignored() {
+        let _env = crate::test_env::state_dir();
         let mut state = SidebarState::default();
         let mut session = SessionState::default();
         let out = apply("{not json", &mut state, &mut session);
@@ -549,6 +552,24 @@ mod tests {
     }
 
     #[test]
+    fn process_toggle_collapse_without_change_still_releases_spawn_dedup() {
+        let _env = crate::test_env::state_dir();
+        let mut state = SidebarState::default();
+        state.processes.push(repo(REPO, false, Some("stopped")));
+        let mut session = SessionState::default();
+        let out = apply(
+            &format!(r#"{{"t":"process:toggle","path":"{REPO}","expanded":false}}"#),
+            &mut state,
+            &mut session,
+        );
+        // 既に collapsed → sync も save も無いが、release は変化の有無と独立
+        assert!(saved_session().is_none());
+        assert!(!out.conversation_reattach);
+        assert_eq!(out.repo_spawn_release, Some(REPO.to_string()));
+        assert_eq!(out.repo_spawn_request, None);
+    }
+
+    #[test]
     fn process_toggle_unknown_path_is_noop() {
         let _env = crate::test_env::state_dir();
         let mut state = SidebarState::default();
@@ -592,6 +613,7 @@ mod tests {
 
     #[test]
     fn lane_select_existing_lane_requests_activation_and_canonical_persist() {
+        let _env = crate::test_env::state_dir();
         let mut state = SidebarState::default();
         state.lanes_by_repo.insert(
             REPO.to_string(),
@@ -615,6 +637,7 @@ mod tests {
 
     #[test]
     fn lane_select_unknown_or_empty_address_is_noop() {
+        let _env = crate::test_env::state_dir();
         let mut state = SidebarState::default();
         state
             .lanes_by_repo
@@ -635,6 +658,7 @@ mod tests {
 
     #[test]
     fn lane_delete_of_active_lane_clears_active_and_requests_delete() {
+        let _env = crate::test_env::state_dir();
         let mut state = SidebarState {
             active_lane_address: Some("vp/sub-a".to_string()),
             ..Default::default()
@@ -655,6 +679,7 @@ mod tests {
 
     #[test]
     fn lane_delete_of_inactive_lane_only_requests() {
+        let _env = crate::test_env::state_dir();
         let mut state = SidebarState {
             active_lane_address: Some("vp/root".to_string()),
             ..Default::default()
@@ -681,6 +706,7 @@ mod tests {
 
     #[test]
     fn stand_select_sets_component_and_clears_lane_exclusively() {
+        let _env = crate::test_env::state_dir();
         let mut state = SidebarState {
             active_lane_address: Some("vp/root".to_string()),
             ..Default::default()
@@ -711,6 +737,7 @@ mod tests {
 
     #[test]
     fn stand_select_devices_allows_empty_path_but_others_do_not() {
+        let _env = crate::test_env::state_dir();
         let mut state = SidebarState::default();
         let mut session = SessionState::default();
         let out = apply(
@@ -739,6 +766,7 @@ mod tests {
 
     #[test]
     fn lane_requests_do_not_touch_state() {
+        let _env = crate::test_env::state_dir();
         let mut state = SidebarState::default();
         let mut session = SessionState::default();
         let out = apply(
@@ -802,6 +830,7 @@ mod tests {
 
     #[test]
     fn lane_add_sub_folds_empty_branch_and_agent_to_none() {
+        let _env = crate::test_env::state_dir();
         let mut state = SidebarState::default();
         let mut session = SessionState::default();
         let out = apply(
@@ -849,6 +878,7 @@ mod tests {
 
     #[test]
     fn process_and_repo_requests_use_leaf_name() {
+        let _env = crate::test_env::state_dir();
         let mut state = SidebarState::default();
         let mut session = SessionState::default();
         let out = apply(
@@ -894,6 +924,7 @@ mod tests {
 
     #[test]
     fn effect_only_arms_map_to_outcome_fields() {
+        let _env = crate::test_env::state_dir();
         let mut state = SidebarState::default();
         let mut session = SessionState::default();
         let out = apply(
