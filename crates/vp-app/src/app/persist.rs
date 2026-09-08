@@ -152,6 +152,29 @@ impl Persist {
         self.session.save();
     }
 
+    /// 危険 E（doc 60 §8）: daemon の repo 順（canonical）を session の写しに鏡す。写しは次回 boot 窓の
+    /// 仮表示にだけ使うので、**変わった時だけ** file に書く（DnD 直後の再 fetch では同じ順が来て no-op）。
+    /// 戻り値 = 書いたか。
+    pub(super) fn note_repo_order(&mut self, order: Vec<String>) -> bool {
+        if self.session.currents_order.as_ref() == Some(&order) {
+            return false;
+        }
+        self.session.currents_order = Some(order);
+        self.session.save();
+        true
+    }
+
+    /// 危険 F（doc 60 §8）: session 中に現れた repo の auto-expand を session に鏡す（旧実装は user の
+    /// toggle しか保存せず、次回 boot で collapsed に戻っていた）。**値が変わった時だけ** file に書く。
+    pub(super) fn note_repo_expanded(&mut self, path: &str, expanded: bool) -> bool {
+        if self.session.repo_expanded(path) == Some(expanded) {
+            return false;
+        }
+        self.session.set_repo_expanded(path.to_string(), expanded);
+        self.session.save();
+        true
+    }
+
     /// window の現在の geometry + 表示モードを SessionState に write-through する (doc 30 §3.4a / §6.1)。
     ///
     /// - **通常ウィンドウ**: 位置・サイズ・monitor・`display_mode=Windowed` を `set_window_geometry`。
@@ -380,6 +403,38 @@ mod tests {
         let l = s.shell_layout().expect("layout");
         assert_eq!(l.sidebar_width, 300.0);
         assert!(l.right_sidebar_open);
+    }
+
+    /// 危険 E（b-4）: daemon の順は変わった時だけ file に鏡す。同じ順の再 fetch は書かない。
+    #[test]
+    fn note_repo_order_saves_only_on_change() {
+        let _env = crate::test_env::state_dir();
+        let mut p = Persist::from_session(SessionState::default());
+        let order = vec!["/w/b".to_string(), "/w/a".to_string()];
+        assert!(p.note_repo_order(order.clone()));
+        assert_eq!(saved(0).expect("saved").currents_order, Some(order.clone()));
+        // 同じ順 → 書かない（file を消して確かめる）
+        std::fs::remove_file(SessionState::path(0).unwrap()).unwrap();
+        assert!(!p.note_repo_order(order));
+        assert!(saved(0).is_none());
+        // 順が変わった → 書く
+        let order2 = vec!["/w/a".to_string(), "/w/b".to_string()];
+        assert!(p.note_repo_order(order2.clone()));
+        assert_eq!(saved(0).expect("saved").currents_order, Some(order2));
+    }
+
+    /// 危険 F（b-4）: auto-expand は session に残る。既に同じ値なら書かない。
+    #[test]
+    fn note_repo_expanded_saves_only_on_change() {
+        let _env = crate::test_env::state_dir();
+        let mut p = Persist::from_session(SessionState::default());
+        assert!(p.note_repo_expanded("/w/vp", true));
+        assert_eq!(saved(0).expect("saved").repo_expanded("/w/vp"), Some(true));
+        std::fs::remove_file(SessionState::path(0).unwrap()).unwrap();
+        assert!(!p.note_repo_expanded("/w/vp", true));
+        assert!(saved(0).is_none());
+        assert!(p.note_repo_expanded("/w/vp", false));
+        assert_eq!(saved(0).expect("saved").repo_expanded("/w/vp"), Some(false));
     }
 
     #[test]
