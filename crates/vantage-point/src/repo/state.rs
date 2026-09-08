@@ -448,6 +448,20 @@ pub(crate) async fn build_test_app_state_with(
     })
 }
 
+/// テスト用の spawn 可能な shell。 `$SHELL` があればそれを、 無ければ OS 既定
+/// (Unix: `/bin/sh`、 Windows: `cmd.exe`) を使う。 Windows には `/bin/sh` が無いので
+/// OS 分岐が必須 (pty_slot の `default_test_shell` と同方針)。
+#[cfg(test)]
+pub(crate) fn default_test_shell() -> String {
+    std::env::var("SHELL").unwrap_or_else(|_| {
+        if cfg!(windows) {
+            "cmd.exe".to_string()
+        } else {
+            "/bin/sh".to_string()
+        }
+    })
+}
+
 /// C1 test 用の chat-mode main LaneInfo を pool に登録する（claude 不要）。
 #[cfg(test)]
 pub(crate) async fn insert_test_lane(

@@ -45,6 +45,8 @@ pub(crate) mod daemon_wire;
 pub(crate) mod routes;
 mod server;
 pub(crate) mod state;
+/// terminal ops — terminal demand / write / resize の Unison method handler + reconcile の収束点（doc 61）
+pub(crate) mod terminal_ops;
 pub(crate) mod terminal_pump;
 pub mod topic;
 pub(crate) mod topic_router;

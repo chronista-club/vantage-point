@@ -855,7 +855,7 @@ pub async fn delete_lane_orchestrated(
     // terminal pump を lane 削除に追随させる（doc 53 R2: 動詞の末尾 = reconcile の契機）。
     // pool から lane が消えた後なので live slot = ∅ → 全 pump が撤去される。task 自体は
     // PtySlot drop の broadcast Closed でも自壊するが、台帳 entry の掃除は reconcile が担う。
-    crate::repo::unison_server::reconcile_terminal_pumps(state, &addr.to_string()).await;
+    crate::repo::terminal_ops::reconcile_terminal_pumps(state, &addr.to_string()).await;
 
     // tmux decoupling PR2: 旧 Phase 2a (tmux session kill) は退役 — claude は PtySlot の
     // 子なので Phase 1 の remove (= PtySlot drop) で完全停止する（第 2 の生存木は無い）。
@@ -1059,7 +1059,7 @@ async fn converge_lane(
 ) -> Result<serde_json::Value, String> {
     let mut last_err: Option<String> = None;
     for attempt in 0..RESTART_MAX_ATTEMPTS {
-        let r = crate::repo::unison_server::reconcile_lane(state, &addr).await;
+        let r = crate::repo::terminal_ops::reconcile_lane(state, &addr).await;
         if r.failed == 0 {
             let pid = state
                 .lane_pool

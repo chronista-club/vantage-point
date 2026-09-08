@@ -266,7 +266,7 @@ pub(crate) async fn handle_conversation_session_create(
     // doc 53 §12.4 R3c: 動詞は registry に書いた。実体を合わせるのは reconcile。
     // Chat の engine は lazy なので普通は no-op — それでも呼ぶのは「**契機は判断を持たない**」
     // ため（「今回は要らない」を動詞ごとに判断し始めると、要る場合を 1 つ取りこぼす）。
-    super::unison_server::reconcile_lane(state, &addr).await;
+    super::terminal_ops::reconcile_lane(state, &addr).await;
     // doc 53 §11: roster が変わったので知らせる（GUI の pane 一覧は snapshot 1 本で供給される）。
     super::routes::lanes::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
@@ -294,7 +294,7 @@ pub(crate) async fn handle_conversation_session_focus(
         .focus_chat_session(&addr, session)
         .map_err(|e| format!("conversation_session_focus: {e}"))?;
     // doc 53 §12.4 R3c: focused は intent の一部（registry）。実体側は reconcile。
-    super::unison_server::reconcile_lane(state, &addr).await;
+    super::terminal_ops::reconcile_lane(state, &addr).await;
     {
         // doc 38 Phase 3（focused eager）: tab 切替 = その会話を見る宣言。新 focused の engine を
         // eager に resume spawn する（切替後の初 submit を待たない）。mode=Tui の session（registry のみの
@@ -339,7 +339,7 @@ pub(crate) async fn handle_conversation_session_remove(
     // doc 53 §12.4 R3c: registry から消えた session の実体（PtySlot / chat engine）は
     // reconcile が畳む。旧実装は動詞が種類ごとに手で畳んでいて、A6 で term pane に ✕ が
     // 出たとき **chat 側だけ畳んで PTY が孤児**になるバグを出した（doc 50 §4.6）。
-    super::unison_server::reconcile_lane(state, &addr).await;
+    super::terminal_ops::reconcile_lane(state, &addr).await;
     // ⚠️ replay の破棄は reconcile の**後**。slot が生きている間に消すと `PtySlot::drop` の
     // 最終 flush が書き戻して復活する（`restart_lane` の Reset 分岐が踏んだのと同じ罠）。
     state
@@ -385,7 +385,7 @@ pub(crate) async fn handle_conversation_session_new_root(
     // root slot を張り替えていたので、代表が変わるたびに前の pane が消えていた — session =
     // Pane（doc 50）の今、代表の変更は pane の破棄ではない。reconcile は新 root の実体を
     // 足すだけ（新 root は会話 id を持たないので bare で立つ）。
-    super::unison_server::reconcile_lane(state, &addr).await;
+    super::terminal_ops::reconcile_lane(state, &addr).await;
     super::routes::lanes::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
 }
@@ -424,7 +424,7 @@ pub(crate) async fn handle_conversation_session_switch_root(
     // desired は変わらない = 実体には何も起きないのが正しい（旧実装は root slot を対象 session の
     // 会話で張り替えていた = 代表の変更を化身の置き換えと混同していた）。呼ぶのは
     // 「契機は判断を持たない」の規律と、代表値（pid / state）の導出をやり直すため。
-    super::unison_server::reconcile_lane(state, &addr).await;
+    super::terminal_ops::reconcile_lane(state, &addr).await;
     super::routes::lanes::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
 }
@@ -533,7 +533,7 @@ async fn apply_session_mode(
     // では demand が 1 のままで 0→1 hook が発火しないので、この契機が必須）、chat 方向は
     // slot が畳まれて pump 台帳 entry が撤去される。健在な兄弟 pane は pid 照合で触られない
     // （team-b 10 回目の「隣の pane の clear + 全 replay」は構造で再発しない）。
-    super::unison_server::reconcile_lane(state, addr).await;
+    super::terminal_ops::reconcile_lane(state, addr).await;
     {
         // doc 33 §9: chat へは engine を eager spawn（切替時に resume を開始 → session_init を
         // 早く出す）。失敗しても切替自体は成功扱い（engine は次 submit で self-heal 再試行）。
