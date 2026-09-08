@@ -169,7 +169,7 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
   `app/mod.rs` は 7,117 → 4,168 行（`run()` 据え置き）。次は A（sidebar test 先行 → 純粋化）→ B（ask 一本化）→ C（採否）→ 6-2。
 - 2026-09-08: A 着地（A-1 #1055 test 先行 / A-2 純粋化）。`handle_sidebar_ipc` は file を書かない。次は B（ask 一本化）→ C（採否）→ 6-2。
 - 2026-09-08: C は不採用（共通化しない、test も今は足さない）。次は 6-2 の conception。
-- 2026-09-08: 6-2b b-5 着地。WebviewReady で sidebar state も撃ち直す。実機: reopen 直後（5 秒待たずに）sidebar が出る。
+- 2026-09-08: 6-2b b-5 着地。WebviewReady で sidebar state も撃ち直す。実機（未確認、mako）: Reload WebView / reopen 直後に sidebar が出る（5 秒待たない）。
 - 2026-09-08: 6-2b b-4 着地（危険 E + F）。daemon の repo 順と auto-expand を session に鏡す（変化時のみ save）。実機: 再起動で並び順と expanded が保たれる。
 - 2026-09-08: 6-2b b-3 着地（危険 B + C）。daemon の active lane は復元待ちの間 session に入らない。実機: 起動して lanes が届く前に window を閉じても、次回起動で前回の lane が選ばれる。
 - 2026-09-08: 6-2b b-2 着地（危険 A）。壊れた session file は `session.json.corrupt-<ts>` へ退避してから default で起動。

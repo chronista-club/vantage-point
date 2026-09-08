@@ -367,7 +367,7 @@ pub(super) fn boot() -> anyhow::Result<(EventLoop<AppEvent>, Boot, UiState)> {
         settings,
         persist,
         initial_dev_mode,
-        restored_geometry.is_some(),
+        restored_geometry.as_ref().map(|g| (g.width, g.height)),
     );
     let boot = Boot {
         webview,

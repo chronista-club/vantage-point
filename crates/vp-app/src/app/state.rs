@@ -100,8 +100,10 @@ pub(super) struct WindowState {
     pub(super) initial_size_clamp_done: bool,
     /// 危険 D（doc 60 §8、b-6 = 実測）: 復元経路では最初の Resized を user 操作扱いで書き通す。
     /// その size が復元 geometry と違うか（= macOS の restorableState が別の frame を当てているか）を
-    /// 1 nightly 分 log で観測する。true = まだ最初の Resized を見ていない。
-    pub(super) restore_first_resized_pending: bool,
+    /// 1 nightly 分 log で観測する。`Some((w, h))` = boot 時の復元値、まだ最初の Resized を見ていない。
+    /// ⚠️ 基準は boot で clone した値を持つ — `session.window_geometry()` は直前の `record_window`
+    /// で live の frame に上書きされ得るので、log 時に読むと同語反復になる。
+    pub(super) restore_first_resized: Option<(f64, f64)>,
     /// dock app icon (portal favicon) の再アサート用。 bare binary は .app bundle が無いため
     /// macOS が launch 完了時に generic icon を被せ、 run() 前 (window.build 直後) の
     /// setApplicationIconImage を上書きする。 event loop 開始後 ~1.5s 間 set_app_icon() を
@@ -139,7 +141,7 @@ impl UiState {
         settings: Settings,
         persist: Persist,
         initial_dev_mode: bool,
-        restored_geometry: bool,
+        restored_geometry: Option<(f64, f64)>,
     ) -> Self {
         // Phase 2.x-d: 旧 single-PTY 経路 (`xterm_ready` / `pending` / `PENDING_MAX`) は撤去。
         // per-Lane instance + browser-native WebSocket では各 Lane の xterm.js が独立に
@@ -166,8 +168,8 @@ impl UiState {
                 last_roster_push: HashMap::new(),
             },
             win: WindowState {
-                initial_size_clamp_done: restored_geometry,
-                restore_first_resized_pending: restored_geometry,
+                initial_size_clamp_done: restored_geometry.is_some(),
+                restore_first_resized: restored_geometry,
                 icon_launch_at: Instant::now(),
                 icon_settled: false,
                 is_focused: true,
