@@ -157,3 +157,4 @@ arm の形は `"show" | "clear" => board::handle_canvas_command(state, payload).
 ## Status log
 
 - 2026-09-08: 設計確定（mako）。決定 3 点は §0。次は PR-1（editor_bridge）。
+- 2026-09-09: PR-1〜7（#1075 / #1076 / #1077 / #1078 / #1079 / #1080 / #1081）着地。`unison_server.rs` 5,691 → 344 行、外部参照は §4 の 3 symbol だけ。PR-8 で `reconcile_lane` / `reconcile_terminal_pumps` を `impl AppState` の method に（呼び手 10 + test 5）。残りは PR-B7 と 7b。

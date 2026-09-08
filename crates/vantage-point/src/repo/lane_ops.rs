@@ -102,7 +102,7 @@ pub(crate) async fn handle_lane_slot_new(
     // tui で購読済の lane に 2 枚目を足すと購読者数は 1→1 のまま = demand hook のエッジが
     // 立たない → 入力は通る（terminal_write は直送）のに**出力だけ永久に沈黙**する。
     // 「lane 単位のハンドルが session の増加を捉えない」= 制約撤廃の随伴（doc 50 §4.7）の一族。
-    super::terminal_ops::reconcile_lane(state, &addr).await;
+    state.reconcile_lane(&addr).await;
     // pid は**導出**する（動詞の戻り値ではなくなった）。spawn に失敗していれば None =
     // 「intent はあるが立っていない」の観測値そのもの（doc 53 §12.2 — 巻き戻さない）。
     let (pid, count) = {

@@ -2,7 +2,7 @@
 //!
 //! demand hook（`terminal_demand_start` / `_stop`）は向きを信じず、`reconcile_terminal_pumps` 1 呼びで
 //! 購読者数の level（`TopicRouter::demand_active`）に収束させる（doc 27 §4.1 → doc 53 R2）。
-//! `reconcile_lane` は「動詞の末尾」として全群が呼ぶ収束点で、PR-8 で `impl AppState` の method に移す。
+//! `reconcile_lane` は「動詞の末尾」として全群が呼ぶ収束点で、`AppState` の method（`state.reconcile_lane`）。
 //! 受付は `unison_server::dispatch_repo_method`。
 
 use super::state::AppState;
@@ -46,7 +46,7 @@ pub(crate) async fn handle_terminal_demand(
         )
         .await
     } else {
-        reconcile_terminal_pumps(state, &lane).await
+        state.reconcile_terminal_pumps(&lane).await
     };
     Ok(serde_json::json!({
         "status": "reconciled", "lane": lane,
@@ -54,41 +54,44 @@ pub(crate) async fn handle_terminal_demand(
     }))
 }
 
-/// [`crate::repo::terminal_pump::reconcile_lane_pumps`] の AppState 版（呼び手の糖衣）。
-///
-/// demand hook / 動詞の末尾（mode 切替・slot 追加・restart）/ boot 復元後 — pump に影響する
-/// あらゆる契機がこの 1 本を呼ぶ。旧 `respawn_terminal_pump` の `only` 引数（呼び手ごとの
-/// scope 判断）は廃止 — 「pid 一致は触らない」の照合が兄弟保護を構造で保証する。
-pub(crate) async fn reconcile_terminal_pumps(
-    state: &AppState,
-    lane: &str,
-) -> crate::repo::terminal_pump::PumpReconcile {
-    crate::repo::terminal_pump::reconcile_lane_pumps(
-        &state.lane_pool,
-        &state.terminal_pumps,
-        &state.topic_router,
-        lane,
-    )
-    .await
-}
+/// reconcile の収束点を `AppState` の method として持つ（doc 61、mako 2026-09-08）。
+impl AppState {
+    /// [`crate::repo::terminal_pump::reconcile_lane_pumps`] の AppState 版（呼び手の糖衣）。
+    ///
+    /// demand hook / 動詞の末尾（mode 切替・slot 追加・restart）/ boot 復元後 — pump に影響する
+    /// あらゆる契機がこの 1 本を呼ぶ。旧 `respawn_terminal_pump` の `only` 引数（呼び手ごとの
+    /// scope 判断）は廃止 — 「pid 一致は触らない」の照合が兄弟保護を構造で保証する。
+    pub(crate) async fn reconcile_terminal_pumps(
+        &self,
+        lane: &str,
+    ) -> crate::repo::terminal_pump::PumpReconcile {
+        crate::repo::terminal_pump::reconcile_lane_pumps(
+            &self.lane_pool,
+            &self.terminal_pumps,
+            &self.topic_router,
+            lane,
+        )
+        .await
+    }
 
-/// [`crate::repo::lane_reconcile::reconcile_lane`] の AppState 版（呼び手の糖衣）。
-///
-/// **動詞の末尾はこれ 1 本**（doc 53 §12.4 / R3c）。registry に intent を書いた動詞は、
-/// 実体（PtySlot / chat engine / 代表値 / pump）を自分で動かさずにこれを呼ぶ。
-/// pump だけを合わせたい契機（demand hook）は [`reconcile_terminal_pumps`] のまま —
-/// あちらは lane 全体の実体を触らない軽い経路。
-pub(crate) async fn reconcile_lane(
-    state: &AppState,
-    addr: &crate::repo::lanes_state::LaneAddress,
-) -> crate::repo::lane_reconcile::LaneReconcile {
-    crate::repo::lane_reconcile::reconcile_lane(
-        &state.lane_pool,
-        &state.terminal_pumps,
-        &state.topic_router,
-        addr,
-    )
-    .await
+    /// [`crate::repo::lane_reconcile::reconcile_lane`] の AppState 版（呼び手の糖衣）。
+    ///
+    /// **動詞の末尾はこれ 1 本**（doc 53 §12.4 / R3c）。registry に intent を書いた動詞は、
+    /// 実体（PtySlot / chat engine / 代表値 / pump）を自分で動かさずにこれを呼ぶ。
+    /// pump だけを合わせたい契機（demand hook）は [`Self::reconcile_terminal_pumps`] のまま —
+    /// あちらは lane 全体の実体を触らない軽い経路。
+    pub(crate) async fn reconcile_lane(
+        &self,
+        addr: &crate::repo::lanes_state::LaneAddress,
+    ) -> crate::repo::lane_reconcile::LaneReconcile {
+        crate::repo::lane_reconcile::reconcile_lane(
+            &self.lane_pool,
+            &self.terminal_pumps,
+            &self.topic_router,
+            addr,
+        )
+        .await
+    }
 }
 
 /// S3 (doc 27 §4.1, 経路 B): terminal 入力。
@@ -626,7 +629,6 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn reconnecting_client_gets_replay_even_when_slot_is_unchanged() {
-        use super::reconcile_terminal_pumps;
         use crate::daemon::pty_slot::PtySlot;
         use crate::protocol::RepoMessage;
         use crate::repo::lanes_state::LaneAddress;
@@ -654,7 +656,7 @@ mod tests {
 
         // ① 最初の client が購読 → pump が張られ replay が流れる。
         let (sub1, _rx1) = state.topic_router.subscribe(&topic).await;
-        reconcile_terminal_pumps(&state, &lane).await;
+        state.reconcile_terminal_pumps(&lane).await;
         let pid_before = {
             let pumps = state.terminal_pumps.read().await;
             pumps
@@ -673,7 +675,7 @@ mod tests {
         // ② client が入れ替わる（GUI 再起動）。**slot は触らない** = pid は変わらない。
         //    旧購読の掃除は QUIC idle timeout 待ちで遅れるので、ここでは外さない（実機と同じ形）。
         let (_sub2, mut rx2) = state.topic_router.subscribe(&topic).await;
-        reconcile_terminal_pumps(&state, &lane).await;
+        state.reconcile_terminal_pumps(&lane).await;
 
         // 新しい購読者に **過去の画面（replay）が届く**こと。
         let mut seen = String::new();
@@ -715,7 +717,6 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn reconcile_touches_only_the_swapped_slot_leaving_siblings_alone() {
-        use super::reconcile_terminal_pumps;
         use crate::daemon::pty_slot::PtySlot;
         use crate::protocol::RepoMessage;
         use crate::repo::lanes_state::LaneAddress;
@@ -782,7 +783,7 @@ mod tests {
         {}
 
         // 変化が無ければ reconcile は何もしない（= 契機が重なっても pane は無傷）。
-        let idle = reconcile_terminal_pumps(&state, &lane).await;
+        let idle = state.reconcile_terminal_pumps(&lane).await;
         assert_eq!(
             (idle.attached, idle.removed, idle.kept),
             (0, 0, 2),
@@ -797,7 +798,7 @@ mod tests {
             pool.write_to_lane(&addr, Some(2), b"echo VP_B2\n")
                 .expect("w s2b");
         }
-        let swapped = reconcile_terminal_pumps(&state, &lane).await;
+        let swapped = state.reconcile_terminal_pumps(&lane).await;
         assert_eq!(
             (swapped.attached, swapped.kept),
             (1, 1),
@@ -847,7 +848,6 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn late_restored_slot_gets_pump_on_next_reconcile() {
-        use super::reconcile_terminal_pumps;
         use crate::daemon::pty_slot::PtySlot;
         use crate::protocol::RepoMessage;
         use crate::repo::lanes_state::LaneAddress;
@@ -899,7 +899,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(600)).await;
 
         // 復元完了の契機（lane_spawn_actor / server boot 相当）→ 不足分だけ attach。
-        let r = reconcile_terminal_pumps(&state, &lane).await;
+        let r = state.reconcile_terminal_pumps(&lane).await;
         assert_eq!(
             (r.attached, r.removed, r.kept),
             (1, 0, 1),
