@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
-use super::DaemonSettings;
+use super::on_sidebar::DaemonSettings;
 use crate::lane::conversation::LaneConversation;
 use crate::lane::terminal::LaneTerminal;
 use crate::pane::SidebarState;
