@@ -211,7 +211,7 @@ pub(super) fn slot_rect(
 /// ⚠️ **"Developer Mode" の toggle は設定ページへ移設した**（doc 59 P1）。ここに
 /// 残るのは dev_mode で gate される 2 項目で、gate 自体の切替は
 /// `settings:save` の arm が担う（両 item の `set_enabled` もそちら）。
-/// - "Open Developer Tools" → dev_mode == true なら webview.open_devtools()
+///  - "Open Developer Tools" → dev_mode == true なら webview.open_devtools()
 pub(super) fn menu_clicked(ui: &mut UiState, boot: &Boot, id: muda::MenuId) {
     if id == boot.menu_ids.new_window {
         // Cmd+N: 新規 vp-app process を spawn = 新しい MainWindow が独立 process で立つ。

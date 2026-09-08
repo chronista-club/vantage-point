@@ -918,7 +918,14 @@ pub fn run() -> anyhow::Result<()> {
                 sidebar_form,
                 right_sidebar_open,
             }) => {
-                on_window::shell_layout(&mut ui, &boot, sidebar_width, right_sidebar_width, sidebar_form, right_sidebar_open)
+                on_window::shell_layout(
+                    &mut ui,
+                    &boot,
+                    sidebar_width,
+                    right_sidebar_width,
+                    sidebar_form,
+                    right_sidebar_open,
+                )
             }
             Event::UserEvent(AppEvent::DebugLogWatch { source }) => {
                 // R sidebar の debug log（sidebar view modes）: 世代を進めて旧 tail を退場させ、
