@@ -30,6 +30,8 @@
 mod boot;
 /// lane の見え方の調整役（activate_lane / conversation attach / roster / 未読印）。
 mod lane_view;
+/// event handler: terminal（PTY 出力 / keystroke / resize / paste）。
+mod on_terminal;
 /// sidebar IPC の解釈（state 遷移 + 効果要求）。
 mod sidebar_ipc;
 /// event loop の可変 state（`UiState`）。
@@ -49,7 +51,7 @@ use crate::flows::repo_dialog::{
     resolve_default_repo_root, spawn_add_repo_picker, spawn_clone_repo, spawn_repo_root_picker,
 };
 use crate::lane::conversation::{ConversationCmd, spawn_conversation_session};
-use crate::lane::terminal::{TermCmd, spawn_terminal_session};
+use crate::lane::terminal::spawn_terminal_session;
 use crate::pane::{RepoPaneState, SidebarState};
 use crate::session_state::SessionState;
 use crate::settings::Settings;
@@ -400,17 +402,8 @@ pub fn run() -> anyhow::Result<()> {
                     });
                 }
             }
-            // Phase 4-paste-fix: clipboard.readText の webview permission 問題への fallback。
-            // IPC `paste:request` を Rust が受けて arboard で読み取り、 ここで JS に inject。
             Event::UserEvent(AppEvent::PasteText(text)) => {
-                if text.is_empty() {
-                    tracing::debug!("PasteText empty (clipboard 空 or 取得失敗)、 skip");
-                } else {
-                    // escape は envelope の serde_json 化に含まれる（Phase review fix #3 の
-                    // 「手書き escape は null byte / surrogate を見落とす」は、payload ごと
-                    // JSON にすることで構造的に解消）。
-                    push_main::deliver_paste(&boot.webview, &text);
-                }
+                on_terminal::paste_text(&mut ui, &boot, text)
             }
             Event::UserEvent(AppEvent::OscNotification { lane, code: _ }) => {
                 // Phase 5-D Sprint C P2.1: per-Lane HD notification（tui / OSC 由来）。
@@ -1267,47 +1260,22 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
             }
-            // terminal S4 (doc 27 §4.1): per-lane terminal session 由来の PTY 出力を当該 lane の
-            // xterm に inject する。 data は base64 (JS 側で decode → term.write)。
             Event::UserEvent(AppEvent::TerminalOutput {
                 lane,
                 session,
                 data,
-            }) => {
-                // doc 50 §4.6 A6: 同 lane の複数 xterm に振り分けるため session を第 2 引数で渡す
-                // （push envelope `console:event` と同じ形）。
-                let script = format!(
-                    "window.vpTerminal && window.vpTerminal.handleOutput({}, {}, {})",
-                    serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
-                    session,
-                    serde_json::to_string(&data).unwrap_or_else(|_| "\"\"".into()),
-                );
-                if let Err(e) = boot.webview.evaluate_script(&script) {
-                    tracing::warn!("vpTerminal.handleOutput 失敗 (lane={}): {}", lane, e);
-                }
-            }
-            // terminal S4: xterm onData → 当該 lane の terminal session に渡す (上り request)。
+            }) => on_terminal::terminal_output(&mut ui, &boot, lane, session, data),
             Event::UserEvent(AppEvent::TerminalWrite {
                 lane,
                 session,
                 data,
-            }) => {
-                vp_paths::term_trace("A:app-dispatch(b64)", &lane, data.as_bytes());
-                if let Some(term) = ui.sessions.terminal_sessions.get(&lane) {
-                    let _ = term.cmd_tx.send(TermCmd::Write(session, data));
-                }
-            }
-            // terminal S4: xterm resize → 当該 lane の terminal session に渡す (上り request)。
+            }) => on_terminal::terminal_write(&mut ui, &boot, lane, session, data),
             Event::UserEvent(AppEvent::TerminalResize {
                 lane,
                 session,
                 cols,
                 rows,
-            }) => {
-                if let Some(term) = ui.sessions.terminal_sessions.get(&lane) {
-                    let _ = term.cmd_tx.send(TermCmd::Resize(session, cols, rows));
-                }
-            }
+            }) => on_terminal::terminal_resize(&mut ui, &boot, lane, session, cols, rows),
             // Conversation gui (doc 32): repo から受信した構造化イベントを当該 lane の Console pane に渡す。
             Event::UserEvent(AppEvent::ConversationEvent {
                 lane,
