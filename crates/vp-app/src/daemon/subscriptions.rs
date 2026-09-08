@@ -1,8 +1,8 @@
 //! daemon の Unison channel 購読 pump — lanes（retained `repo/runtime/state/#`）/ canvas（`repo/board/#`）/
-//! device（`daemon-device`）。受け取った event は `AppEvent` に変換して event loop へ渡す。
+//! device（`daemon-device`）/ repos（`daemon-repo` の `ReposChanged`、b-7）。受け取った event は `AppEvent` に変換して event loop へ渡す。
 //!
 //! 再接続は持たない（`daemon::conn` の manager が唯一の所有者、`wait_client` で追従するだけ）。
-//! 5 本の loop は骨格が似ているが障害時の方針が違う（lanes は 12 秒で `LanesError` を UI へ / canvas は
+//! 6 本の loop は骨格が似ているが障害時の方針が違う（lanes は 12 秒で `LanesError` を UI へ / canvas は
 //! 500 ms retry / device は backoff + `MAX_FAILURES` で終了）。契約は doc 60 §4 の表、共通化は出荷条件にしない。
 //!
 //! 旧 `app/mod.rs` から移設（棚卸し 項目 6 / 6-1 #6、2026-09-08。本文は順序付き diff で一致、差分は
@@ -478,4 +478,119 @@ async fn run_device_session(
     };
     feedback_task.abort();
     outcome
+}
+
+/// b-7（doc 60 §8 / doc 61 §5）: daemon の "daemon-repo" channel を購読し、`ReposChanged` が来るたびに
+/// `fetch_repos_with_ports` で repo 一覧を取り直して `AppEvent::ReposLoaded` を再送する。
+///
+/// 旧来の再 fetch は count ベース（online 復帰 / 稼働数 / 登録数）だったので、並び替え / rename /
+/// enabled の変更は自 window しか知らず、他 window には永久に届かなかった。daemon 側は
+/// `persist_repos()` の末尾で 1 回発火する（reorder / add / remove / rename / set_enabled / sync を網羅）。
+/// count ベースの再 fetch（`pollers.rs`）は fallback として残す。
+pub(crate) fn spawn_repos_subscription(
+    rt_handle: &tokio::runtime::Handle,
+    proxy: EventLoopProxy<AppEvent>,
+    conn: SharedDaemonConn,
+) {
+    rt_handle.spawn(repos_subscription_loop(proxy, conn));
+}
+
+/// "daemon-repo" channel の購読 → 再購読を司る long-lived ループ。
+///
+/// channel は同世代の daemon なら常に在るが、古い daemon（`daemon-repo` 未提供）に繋いだ時に
+/// warn を 2 Hz で吐き続けないよう device と同じ指数 backoff（500 ms → 16 s）を持つ。give-up は
+/// しない（新しい daemon に繋ぎ直せば購読が立つ）。接続後の切断は失敗に数えない（doc 60 §4）。
+async fn repos_subscription_loop(proxy: EventLoopProxy<AppEvent>, mut conn: SharedDaemonConn) {
+    let mut failures: u32 = 0;
+    loop {
+        let client = match conn.wait_client().await {
+            Some(c) => c,
+            None => return, // app 終了
+        };
+        match run_repos_session(&proxy, &conn, &client).await {
+            Ok(SubscriptionOutcome::AppClosing) => return,
+            Ok(SubscriptionOutcome::Disconnected) => {
+                failures = 0;
+            }
+            Err(e) => {
+                failures += 1;
+                let delay_ms = std::cmp::min(500u64 << (failures - 1).min(5), 16_000);
+                tracing::warn!(
+                    "daemon-repo subscription error, retrying in {} ms: {}",
+                    delay_ms,
+                    e
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
+}
+
+/// burst（`vp sync` の ghost 除去 N 件 = `ReposChanged` N 発）を 1 回の fetch に畳む待ち時間。
+const REPOS_CHANGED_COALESCE: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// 1 回の "daemon-repo" channel 接続セッション: `open_channel("daemon-repo")` → `subscribe` →
+/// event ループ。`ReposChanged` 以外の lifecycle event（Add / Remove = 稼働の変化）は
+/// `pollers.rs` の running 数で既に拾うので無視する。daemon 側の broadcast が Lagged した時は
+/// daemon が `ReposChanged` を 1 発送って取り直しを促すので、client に Lagged の分岐は無い。
+/// `ReposChanged` を受けたら `REPOS_CHANGED_COALESCE` の間に続く event を drain してから 1 回 fetch する。
+async fn run_repos_session(
+    proxy: &EventLoopProxy<AppEvent>,
+    conn: &SharedDaemonConn,
+    client: &unison::ProtocolClient,
+) -> Result<SubscriptionOutcome, String> {
+    use unison::network::MessageType;
+
+    let channel = client
+        .open_channel("daemon-repo")
+        .await
+        .map_err(|e| format!("open daemon-repo channel: {}", e))?;
+    channel
+        .request::<serde_json::Value, serde_json::Value>("subscribe", &serde_json::json!({}))
+        .await
+        .map_err(|e| format!("daemon-repo subscribe: {}", e))?;
+    tracing::info!("daemon-repo subscription connected");
+
+    loop {
+        let msg = match channel.recv().await {
+            Ok(m) => m,
+            Err(_) => return Ok(SubscriptionOutcome::Disconnected),
+        };
+        if msg.msg_type != MessageType::Event || msg.method != "event" {
+            continue;
+        }
+        let kind = msg
+            .payload_as_value()
+            .ok()
+            .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(String::from));
+        if kind.as_deref() != Some("repos_changed") {
+            continue;
+        }
+        // burst を畳む: 直後に続く event は種類を問わず読み捨てる（Add / Remove は元々無視、
+        // ReposChanged は次の 1 回の fetch に含まれる）。timeout で抜けたら fetch へ。
+        loop {
+            match tokio::time::timeout(REPOS_CHANGED_COALESCE, channel.recv()).await {
+                Ok(Ok(_)) => continue,
+                Ok(Err(_)) => return Ok(SubscriptionOutcome::Disconnected),
+                Err(_elapsed) => break,
+            }
+        }
+        // 取り直しは共有 connection の control client で（購読 stream とは別 stream）。
+        let repos = match conn.control().await {
+            Ok(control) => match crate::daemon::pollers::fetch_repos_with_ports(&control).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("ReposChanged 後の repos 再 fetch 失敗: {}", e);
+                    continue;
+                }
+            },
+            Err(e) => {
+                tracing::warn!("ReposChanged 後の control 取得失敗: {}", e);
+                continue;
+            }
+        };
+        if proxy.send_event(AppEvent::ReposLoaded(repos)).is_err() {
+            return Ok(SubscriptionOutcome::AppClosing);
+        }
+    }
 }

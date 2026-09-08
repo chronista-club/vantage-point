@@ -32,7 +32,7 @@ use crate::daemon::pollers::{
     spawn_lane_inbox_poller, spawn_menu_event_pump, spawn_processes_fetch,
     spawn_session_title_poller,
 };
-use crate::daemon::subscriptions::spawn_device_subscription;
+use crate::daemon::subscriptions::{spawn_device_subscription, spawn_repos_subscription};
 use crate::events::AppEvent;
 use crate::session_state::SessionState;
 use crate::settings::Settings;
@@ -165,6 +165,10 @@ pub(super) fn boot() -> anyhow::Result<(EventLoop<AppEvent>, Boot, UiState)> {
         daemon_conn.clone(),
         fleet_feedback_rx,
     );
+
+    // b-7: 登録 repo 一覧の変化（並び順 / rename / enabled）を daemon-repo channel の push で受け、
+    // 他 window の操作や CLI `vp repos reorder` を即時に反映する（doc 60 §8、doc 61 §5）。
+    spawn_repos_subscription(&rt_handle, event_loop.create_proxy(), daemon_conn.clone());
 
     // vp-app instance index 判定 (= multi-window 復元)。 per-instance file load に先立って
     // 必要なので session file の load より前に確定する。

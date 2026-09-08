@@ -489,6 +489,11 @@ fn processes(watch: bool) -> Result<()> {
                 Ok(ProcessLifecycleEvent::Remove { repo_path }) => {
                     println!("➖ Remove: {}", repo_path);
                 }
+                Ok(ProcessLifecycleEvent::ReposChanged) => {
+                    println!(
+                        "🔃 ReposChanged: 登録 repo 一覧（並び順 / 名前 / enabled）が更新された"
+                    );
+                }
                 Err(e) => {
                     eprintln!("⚠️  stream 終了: {}", e);
                     break;

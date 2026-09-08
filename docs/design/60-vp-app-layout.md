@@ -85,9 +85,9 @@ crates/vp-app/src/
 - **購読の寿命は accordion の可視性**（1→0 で daemon の demand hook が engine を寝かせる）。
 - `lane_key_to_wire_agent` と逆写像 `wire_agent_to_lane_display` は対で動く（doc 44）。逆写像は crate を跨ぐ（`vantage-point::repo::delivery_actor`）ので同居できず、往復は両側の test で固定する。
 
-## 4. 再接続 loop 5 本の方針（契約。共通化は出荷条件にしない）
+## 4. 再接続 loop 6 本の方針（契約。共通化は出荷条件にしない）
 
-骨格（`wait_client → run_session → Disconnected / AppClosing`）は似ているが、障害時の方針が違う（Codex 再レビュー ①）。共通化するなら接続待ち・retry・終了・後始末の責任が引数で読める場合だけ。読みにくくなるなら 5 本の重複を残す。
+骨格（`wait_client → run_session → Disconnected / AppClosing`）は似ているが、障害時の方針が違う（Codex 再レビュー ①）。共通化するなら接続待ち・retry・終了・後始末の責任が引数で読める場合だけ。読みにくくなるなら 6 本の重複を残す。
 
 | loop | 接続待ち | 失敗時 | 終了 | 後始末 |
 |---|---|---|---|---|
@@ -96,6 +96,7 @@ crates/vp-app/src/
 | terminal | 待つ | 再試行。`cmd_rx` を再接続越しに保持 | 送り手（`LaneTerminal`）消失で終了 | — |
 | conversation | 待つ | 再試行。購読後に毎回 demand | collapse 等で終了 | 明示 `unsubscribe` |
 | device | 待つ | 指数 backoff、`MAX_FAILURES` で終了（MIDI 非提供時の意図した縮退） | 上限到達で終了 | 切断で失敗回数 reset |
+| repos（b-7、`ReposChanged` → 50 ms で drain → `fetch_repos_with_ports` → `ReposLoaded`） | 待つ | 指数 backoff（500 ms → 16 s）、give-up しない（古い daemon で channel 不在でも新 daemon で立つ） | app 終了 | 切断で失敗回数 reset。daemon 側が Lagged を `ReposChanged` 1 発に変換するので client に Lagged 分岐は無い |
 
 ## 5. 移設の照合方法
 
@@ -111,7 +112,7 @@ crates/vp-app/src/
 - **6-1**（各 1 PR、順序付き照合）: push_main → editor_bridge → push_sidebar → **app/sidebar_ipc**（そのまま移設、`session.save()` 込み）→ daemon/pollers → lane_address → webview/ipc_route → daemon/conn → daemon/subscriptions → lane/terminal + lane/conversation
 - **A. sidebar**（✅ 2026-09-08）: A-1 #1055 で現行を固定する test 18 本（25 arm の状態変化・`session.save()` の有無（temp dir）・outcome）→ A-2 で `save` 2 箇所（`ProcessToggle` / `ProcessReorder`）を outcome の `session_save` にして `run()` が実行（test 本体は不変、`apply` helper が呼び手を模す）。codegen PR-2 / PR-3 は既に済だった（Rust / TS とも生成型を使用）
 - **B. 統合 1: daemon ask の一本化**（✅ 2026-09-08、独立 PR、Codex 再レビュー ②）: `daemon_repo_request`（呼ぶたびに QUIC connect、26 箇所）→ `DaemonControl::repo_request`。契約: **1 RPC = 1 stream**（request ごとに `open_channel("repo-proxy")` → handshake → request → 必ず `close()`）/ `REPO_ASK_TIMEOUT` = 現行と同じ 30 秒を別 const（`RPC_TIMEOUT` 10 秒に短縮しない）/ 応答を失った更新・削除は自動再送しない / `{"error"}` と transport 障害を区別
-- **C. loop 共通化**（❌ 不採用、mako 2026-09-08）: 5 本の違いは「順序と後始末」（切断中の keystroke 保持 / collapse 時の unsubscribe / 失敗回数の reset）で、共通化すると引数の山になり読みにくくなる一方、利益は行数だけ。§4 の表を契約として残す。再接続の挙動を触る PR が出た時に、その loop の厳密 test（擬似 daemon harness）をその PR で置く
+- **C. loop 共通化**（❌ 不採用、mako 2026-09-08）: 6 本の違いは「順序と後始末」（切断中の keystroke 保持 / collapse 時の unsubscribe / 失敗回数の reset）で、共通化すると引数の山になり読みにくくなる一方、利益は行数だけ。§4 の表を契約として残す。再接続の挙動を触る PR が出た時に、その loop の厳密 test（擬似 daemon harness）をその PR で置く
 - **6-2a**（✅ 2026-09-08、PR #1058〜#1067 の 10 本）: PR-1 `Boot` / `UiState`（閉包は `ui.` / `boot.` の prefix 以外 byte 一致）→ PR-2 `lane_view` → PR-3〜10 arm を fn ごとに `on_*` / `catch_up` へ（本体は 12 空白 dedent → rustfmt で一致、先行コメントは fn の doc へ移動、routing 行は 100 桁超なら block 形、引数 8 個以上は `#[allow(too_many_arguments)]`、fn の引数が既に参照の proxy は `&` を外す）。`run()` 3,090 → 320 行、`app/mod.rs` 4,168 → 540 行。test 1313 維持。handler は `&mut UiState` 全体を受ける（範囲の絞り込みは §2 の表を見て module 単位で後から）。`Vec<SidebarEffect>` は延期（第 2 の生成者が現れるまで、mako 2026-09-08）
 - **6-2b**（挙動を変える、test 先行）: §8 の復元と保存の表 → `app/persist.rs`（SessionState の所有者 = 復元 cursor + 保存への変換 1 箇所）→ 危険 A（壊れた file の退避）/ B + C（pending 未消費の間 daemon 値を書かない）/ E + F（daemon 順と auto-expand を session に鏡す）/ b-5（WebviewReady で push_sidebar_state）/ D（1 nightly log してから）。b-7（window 間の並び順伝播）は daemon push で項目 7 と一緒に
 - **6-2 PR-EX**（✅）: 既知の例外（`daemon/subscriptions` → `editor_bridge_js`）を `AppEvent::EditorCommand` で解消。daemon/ → webview/ の辺は 0 本に
@@ -139,7 +140,7 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
 | `active_lane_address`（sidebar） | UI（user 操作 / 復元）。初回 ReposLoaded で daemon の canonical を seed | `None`。session 値は `Persist::pending_active_lane` に退避 | `activate` が session に鏡して save | `set_active_lane` の失敗は warn のみ（楽観） | secondary は自動選択しないが session 復元はする |
 | `pending_active_lane`（cursor） | session file | boot holder そのもの。その lane を含む snapshot で **1 度だけ**消費（`restore_active_lane`） | 保存しない | — | 同じ。消費されずに残るのは repo down / lane 消滅 / 旧形 address（b-3 以降は daemon 値で自動修復されない、user が選び直すまで） |
 | `active_lane_address`（session） | instance 別 file | load 値。`observe_daemon_active_lane` は **pending 未消費の間は書かない**（b-3 で危険 B / C を解消: 旧実装は in-memory を書き換え、resize / move の throttle save や boot 窓の close が daemon 値を file に流していた）。保存値が無い時だけ daemon 値を採る | `activate` + 他の save 全部が memory の値を flush（memory には user の最後の選択しか入らない） | — | file が別 |
-| `currents_order`（session） | daemon の順の写し（b-4 以降。DnD は楽観で先に書く） | `UiState::new` で sidebar に写す（起動直後の仮表示） | sidebar IPC reorder（`session_save`）+ ReposLoaded ごとの `note_repo_order`（変わった時だけ） | daemon reorder 失敗は warn、session は楽観値のまま（次の ReposLoaded で daemon 順に戻る） | 写しは window ごと。**生きている window 間は同期しない**（b-7、daemon push で項目 7 と） |
+| `currents_order`（session） | daemon の順の写し（b-4 以降。DnD は楽観で先に書く） | `UiState::new` で sidebar に写す（起動直後の仮表示） | sidebar IPC reorder（`session_save`）+ ReposLoaded ごとの `note_repo_order`（変わった時だけ） | daemon reorder 失敗は warn、session は楽観値のまま（次の ReposLoaded で daemon 順に戻る） | 写しは window ごと。生きている window 間は daemon の `ReposChanged` push（b-7、doc 61 §5）で同期する |
 | `currents_order`（sidebar） | **daemon の順**（毎 ReposLoaded で上書き） | session 値 | ReposLoaded ごとに `note_repo_order` で session に鏡す（変わった時だけ save。b-4 で危険 E を解消） | daemon 不在なら session 順が生きる | 同じ |
 | `repos[path].expanded` | UI toggle | 新規 repo だけ session を見る。既存は前回の in-memory 値、初回以外の新規は auto-expand | sidebar IPC toggle（`session_save`）+ auto-expand 時に `note_repo_expanded`（b-4 で危険 F を解消） | — | 同じ |
 | `window_geometry` / `display_mode` | OS window | `restored_geometry`（boot で clone） | close（`save_on_close`）/ resize・move（`save_geometry_throttled`、500 ms） | `outer_position` 失敗は warn、geometry を触らない | file が別。**危険 D**: 復元時は最初の Resized を user 操作扱い |
@@ -157,9 +158,11 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
 | b-4 ✅ | E + F | ReposLoaded ごとに daemon 順を session に鏡す（`note_repo_order`）。auto-expand も鏡す（`note_repo_expanded`）。どちらも変わった時だけ save |
 | b-5 ✅ | — | `catch_up` が list の先頭で `push_sidebar_state` を撃つ（reopen 直後の sidebar が空でない） |
 | b-6 ▶ | D | 復元経路の最初の Resized の size を log（`restore 経路の最初の Resized:` を `app.kdl.log` で grep）。復元値と違う事例が出たら修正、出なければ D は無しと判定して閉じる |
-| b-7 | — | window 間の並び順伝播は daemon push（項目 7 と設計） |
+| b-7 ✅ | — | window 間の並び順伝播は daemon push（`daemon-repo` の `ReposChanged`、doc 61 §5。`persist_repos()` 末尾で 1 回発火 → vp-app が `repos/list` を取り直す） |
 
 ## Status log
+
+- 2026-09-09: 6-2b b-7 着地（PR-B7）。`daemon-repo` の `ReposChanged` push で window 間の repo 並び順 / rename / enabled が同期する。実機（mako、未確認）: 2 window で DnD / `vp repos reorder` / rename / enabled が両 window に届く。
 
 - 2026-09-08: 6-2 PR-EX 着地。`EditorEval { js }` → `EditorCommand { op, field_id, value }`。daemon/ が webview/ を呼ぶ辺は無くなった。挙動差: 未知 op の error JSON が event loop を 1 往復してから返る（timeout 2.5 秒の内側、実用上同じ）。実機: editor field の set / get（doc 48 の MCP `editor_set` / `editor_fields`）。
 - 2026-09-08: 6-0 (a)(b)(c)(d) 着地（PR #1043）。app.rs は `app/mod.rs` に、sibling 14 file を directory へ。
