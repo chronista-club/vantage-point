@@ -6,8 +6,8 @@
 //!
 //! 旧 `app/mod.rs` の `SubscriptionOutcome` / `SharedDaemonConn` / `spawn_daemon_conn_manager` /
 //! `daemon_repo_request`（棚卸し 項目 6 / 6-1、2026-09-08。本文は順序付き diff で一致、差分は可視性のみ）。
-//! ⚠️ `daemon_repo_request` は呼ぶたびに QUIC client を作って捨てる（F6 の暫定）。共有接続への
-//! 一本化（1 RPC = 1 stream / 必ず close / 30 秒の別 const / 自動再送しない）は doc 60 §6 B の独立 PR。
+//! `daemon_repo_request` は doc 60 §6 B（2026-09-08）で共有接続の `DaemonControl::repo_request` に
+//! 一本化（旧実装は呼ぶたびに QUIC client を作って捨てていた F6 の暫定）。
 
 use std::time::Duration;
 
@@ -209,53 +209,22 @@ pub(crate) fn spawn_daemon_conn_manager(
 
 /// F6 (doc 27 §3.4): vp-app → daemon repo-proxy → repo の one-shot ask。
 ///
-/// 旧 SP HTTP 直結 (`reqwest http://127.0.0.1:{repo_port}/api/...`) の置換。 surface は Daemon :32000
-/// だけに繋ぐ (§6)。 低頻度 ask 専用 (pp:state debounce save / lane ops) なので 1 回ごとに
-/// connect → `open_channel("repo-proxy")` → handshake({repo_path}) → request(method) → drop。
-/// (connection 共有は F1 で畳む。) method は repo `dispatch_repo_method` に届き、 戻り値が返る。
+/// 共有接続（`SharedDaemonConn`）の確立を [`CONTROL_WAIT`] だけ待ち、`DaemonControl::repo_request`
+/// で 1 stream 往復する（契約は同 fn の doc: 1 RPC = 1 stream / 必ず close / `REPO_ASK_TIMEOUT` /
+/// 自動再送しない）。旧実装（呼ぶたびに QUIC connect → handshake → request → drop、doc 27 F6 の
+/// 暫定）は doc 60 §6 B で畳んだ。daemon 再起動中（manager が backoff 中）は接続待ちで失敗として
+/// 返る — 以前は fresh connect が偶然通ることがあったが、今は「daemon 不在」が正直に見える。
+///
+/// 戻り値の `Err(String)` は呼び手 25 箇所が log 文言に使うので型を据え置く。
 pub(crate) async fn daemon_repo_request(
-    daemon_port: u16,
+    conn: &SharedDaemonConn,
     repo_path: &str,
     method: &str,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    use unison::ProtocolClient;
-    use unison::network::TrustAnchors;
-    use unison::network::quic::QuicClient;
-
-    let addr = format!("[::1]:{}", daemon_port);
-    let transport = QuicClient::builder()
-        .trust_anchors(TrustAnchors::SkipVerification)
-        .build()
-        .map_err(|e| format!("QUIC client build: {}", e))?;
-    let client = ProtocolClient::new(transport);
-    client
-        .connect(&addr)
+    let control = conn.control().await.map_err(|e| e.to_string())?;
+    control
+        .repo_request(repo_path, method, payload)
         .await
-        .map_err(|e| format!("connect {}: {}", addr, e))?;
-    let channel = client
-        .open_channel("repo-proxy")
-        .await
-        .map_err(|e| format!("open repo-proxy: {}", e))?;
-    // handshake: repo_path → daemon が path_key 正規化 → 当該 repo control へ routing。
-    channel
-        .request::<serde_json::Value, serde_json::Value>(
-            "subscribe",
-            &serde_json::json!({ "repo_path": repo_path }),
-        )
-        .await
-        .map_err(|e| format!("repo-proxy handshake: {}", e))?;
-    // ask: method を daemon が repo dispatch_repo_method へ forward し応答を relay。
-    let resp = channel
-        .request::<serde_json::Value, serde_json::Value>(method, &payload)
-        .await
-        .map_err(|e| format!("repo-proxy {}: {}", method, e))?;
-    // repo は dispatch の Err を `{"error": ...}` の**正常応答**として返す（discovery.rs の
-    // Daemon uplink/control）。transport 成功 = 処理成功ではないので、ここで Err に戻す。
-    // これが無いと呼び手は全員「ok」と読み、未実装 method を旧 binary の repo に投げた時などに
-    // 「成功ログが出るのに何も起きない」silent success になる。
-    if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
-        return Err(format!("repo-proxy {}: {}", method, err));
-    }
-    Ok(resp)
+        .map_err(|e| e.to_string())
 }

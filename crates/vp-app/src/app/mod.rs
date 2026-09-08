@@ -773,6 +773,7 @@ fn activate_lane(
     lane_respawn_triggered: &mut std::collections::HashSet<String>,
     rt_handle: &tokio::runtime::Handle,
     respawn_proxy: &EventLoopProxy<AppEvent>,
+    conn: &SharedDaemonConn,
 ) {
     // 1. State
     sidebar_state.active_lane_address = Some(address.to_string());
@@ -810,6 +811,7 @@ fn activate_lane(
         lane_respawn_triggered,
         rt_handle,
         respawn_proxy,
+        conn,
     );
 }
 
@@ -829,6 +831,7 @@ fn maybe_respawn_dead_lane(
     triggered: &mut std::collections::HashSet<String>,
     rt_handle: &tokio::runtime::Handle,
     proxy: &EventLoopProxy<AppEvent>,
+    conn: &SharedDaemonConn,
 ) {
     // addr の lane を lanes_by_repo から探し、 所属 repo path と pid を取得。
     let entry = state.lanes_by_repo.iter().find_map(|(path, lanes)| {
@@ -859,17 +862,11 @@ fn maybe_respawn_dead_lane(
     let addr_owned = addr.to_string();
     let proxy = proxy.clone();
     tracing::info!("auto-respawn dead lane (on-demand): addr={}", addr_owned);
+    let conn = conn.clone();
     rt_handle.spawn(async move {
         // auto-respawn は Dead lane の復活なので会話を継ぐ (fresh=false)。
         let payload = serde_json::json!({ "address": &addr_owned, "fresh": false });
-        match daemon_repo_request(
-            crate::daemon::default_daemon_port(),
-            &repo_path,
-            "lane_restart",
-            payload,
-        )
-        .await
-        {
+        match daemon_repo_request(&conn, &repo_path, "lane_restart", payload).await {
             Ok(_) => {
                 // 成功時は LanesLoaded で Running 検出時に triggered から解除される。
                 tracing::info!("auto-respawn lane_restart ok: {}", addr_owned);
@@ -1985,6 +1982,7 @@ pub fn run() -> anyhow::Result<()> {
                         &mut lane_respawn_triggered,
                         &rt_handle,
                         &respawn_proxy,
+                        &daemon_conn,
                     );
                 } else {
                     push_sidebar_state(&webview, &sidebar_state);
@@ -2100,11 +2098,11 @@ pub fn run() -> anyhow::Result<()> {
                             && let Some(path) =
                                 resolve_repo_path_for_lane(&sidebar_state, &addr_str)
                         {
-                            let port = crate::daemon::default_daemon_port();
                             let lane_for_req = addr_str.clone();
+                            let conn = daemon_conn.clone();
                             rt_handle.spawn(async move {
                                 if let Err(e) = daemon_repo_request(
-                                    port,
+                                    &conn,
                                     &path,
                                     "terminal_demand_start",
                                     // `replay: true` = 「画面を持っていないので流し直して」。
@@ -2399,6 +2397,7 @@ pub fn run() -> anyhow::Result<()> {
                                 &mut lane_respawn_triggered,
                                 &rt_handle,
                                 &respawn_proxy,
+                                &daemon_conn,
                             );
                             // gui: chat lane なら conversation topic に attach（→ transcript replay）。
                             ensure_conversation_attach(
@@ -2614,9 +2613,10 @@ pub fn run() -> anyhow::Result<()> {
                 };
                 let proxy = async_action_proxy.clone();
                 let (lane_for_js, mode_for_js) = (lane.clone(), mode.clone());
+                let conn = daemon_conn.clone();
                 rt_handle.spawn(async move {
                     match daemon_repo_request(
-                        crate::daemon::default_daemon_port(),
+                        &conn,
                         &path,
                         "session_set_mode",
                         serde_json::json!({ "lane": lane, "session": session, "mode": mode }),
@@ -2726,9 +2726,10 @@ pub fn run() -> anyhow::Result<()> {
                     if let Some(path) = resolve_repo_path_for_lane(&sidebar_state, &lane) {
                         let proxy = async_action_proxy.clone();
                         let lane_for_log = lane.clone();
+                        let conn = daemon_conn.clone();
                         rt_handle.spawn(async move {
                             if let Err(e) = daemon_repo_request(
-                                crate::daemon::default_daemon_port(),
+                                &conn,
                                 &path,
                                 "conversation_demand_start",
                                 serde_json::json!({ "lane": lane_for_log, "session": session }),
@@ -2759,7 +2760,6 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("console:new_session skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
-                let port = crate::daemon::default_daemon_port();
                 // doc 46 P2 要件 4: Mode は**明示指定を優先**し、無ければ lane の現 Mode を継ぐ。
                 // 未知の値（typo 等）は継承に倒す — 「指定したのに黙って別の Mode で作られた」より
                 // 「指定が効かなかった」方が気付きやすい。
@@ -2770,6 +2770,7 @@ pub fn run() -> anyhow::Result<()> {
                 };
                 if want_chat {
                     // doc 38 §4.2: chat lane は「新 Draft session を作って focus」。
+                    let conn = daemon_conn.clone();
                     rt_handle.spawn(async move {
                         // 1. engine を決める。doc 46 P2 要件 4 の**明示指定があればそれを使い**、
                         //    無い時だけ現 focused を継ぐ（従来挙動）。指定がある場合は
@@ -2777,7 +2778,7 @@ pub fn run() -> anyhow::Result<()> {
                         let agent = match engine {
                             Some(e) => Some(e),
                             None => match daemon_repo_request(
-                                port,
+                                &conn,
                                 &path,
                                 "conversation_session_list",
                                 serde_json::json!({ "lane": &lane }),
@@ -2799,7 +2800,7 @@ pub fn run() -> anyhow::Result<()> {
                             create["agent"] = serde_json::Value::String(s.clone());
                         }
                         if let Err(e) =
-                            daemon_repo_request(port, &path, "conversation_session_create", create).await
+                            daemon_repo_request(&conn, &path, "conversation_session_create", create).await
                         {
                             tracing::warn!("console:new_session（chat）session_create 失敗 (lane={lane}): {e}");
                             return;
@@ -2817,7 +2818,7 @@ pub fn run() -> anyhow::Result<()> {
                         // 4. demand_start で新 focused（Draft）の replay を発火。no_session path でも
                         //    ReplayStart/End が届いて会話がクリアされる（doc 38 §4.2）。
                         if let Err(e) = daemon_repo_request(
-                            port,
+                            &conn,
                             &path,
                             "conversation_demand_start",
                             serde_json::json!({ "lane": &lane }),
@@ -2836,13 +2837,14 @@ pub fn run() -> anyhow::Result<()> {
                     // （新しい console を見せる唯一の方法が root の付け替えだった）が、A6 で制約が
                     // 外れた今は「勝手に root を動かす副作用」に意味が反転する。root の付け替えは
                     // `console:switch_root`（root picker）の明示操作に一本化した。
+                    let conn = daemon_conn.clone();
                     rt_handle.spawn(async move {
                         // engine の明示指定は backend まで通す（無ければ lane の agent を継ぐ）。
                         let mut payload = serde_json::json!({ "lane": &lane });
                         if let Some(e) = &engine {
                             payload["agent"] = serde_json::Value::String(e.clone());
                         }
-                        match daemon_repo_request(port, &path, "lane_slot_new", payload).await {
+                        match daemon_repo_request(&conn, &path, "lane_slot_new", payload).await {
                             Ok(res) => {
                                 let session = res.get("session").and_then(serde_json::Value::as_u64);
                                 tracing::info!(
@@ -2867,10 +2869,10 @@ pub fn run() -> anyhow::Result<()> {
                     );
                     return;
                 };
-                let port = crate::daemon::default_daemon_port();
+                let conn = daemon_conn.clone();
                 rt_handle.spawn(async move {
                     let payload = serde_json::json!({ "lane": &lane, "session": session });
-                    match daemon_repo_request(port, &path, "conversation_session_switch_root", payload)
+                    match daemon_repo_request(&conn, &path, "conversation_session_switch_root", payload)
                         .await
                     {
                         Ok(_) => {
@@ -2882,7 +2884,7 @@ pub fn run() -> anyhow::Result<()> {
                             // なっている（event は session ごとの store に振り分けられる —
                             // `ConsoleNewSession` の chat 分岐のコメント参照）。
                             if let Err(e) = daemon_repo_request(
-                                port,
+                                &conn,
                                 &path,
                                 "conversation_demand_start",
                                 serde_json::json!({ "lane": &lane }),
@@ -2914,11 +2916,12 @@ pub fn run() -> anyhow::Result<()> {
                     );
                     return;
                 };
+                let conn = daemon_conn.clone();
                 rt_handle.spawn(async move {
                     let payload =
                         serde_json::json!({ "lane": &lane, "session": session, "model": model });
                     match daemon_repo_request(
-                        crate::daemon::default_daemon_port(),
+                        &conn,
                         &path,
                         "conversation_set_model",
                         payload,
@@ -2945,6 +2948,7 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("conversation:session_create skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
+                let conn = daemon_conn.clone();
                 rt_handle.spawn(async move {
                     let mut create = serde_json::json!({ "lane": &lane });
                     if let Some(s) = &agent {
@@ -2953,7 +2957,7 @@ pub fn run() -> anyhow::Result<()> {
                     // doc 53 §11: 動詞を撃つだけ。roster の更新は server の `emit_lane_update`
                     // → lanes snapshot → LanesLoaded で届く（旧: ここで一覧を取り直していた）。
                     if let Err(e) = daemon_repo_request(
-                        crate::daemon::default_daemon_port(),
+                        &conn,
                         &path,
                         "conversation_session_create",
                         create,
@@ -2974,9 +2978,10 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("conversation:demand_start skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
+                let conn = daemon_conn.clone();
                 rt_handle.spawn(async move {
                     if let Err(e) = daemon_repo_request(
-                        crate::daemon::default_daemon_port(),
+                        &conn,
                         &path,
                         "conversation_demand_start",
                         serde_json::json!({ "lane": &lane }),
@@ -2992,9 +2997,10 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("conversation:session_focus skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
+                let conn = daemon_conn.clone();
                 rt_handle.spawn(async move {
                     if let Err(e) = daemon_repo_request(
-                        crate::daemon::default_daemon_port(),
+                        &conn,
                         &path,
                         "conversation_session_focus",
                         serde_json::json!({ "lane": &lane, "session": session }),
@@ -3011,7 +3017,7 @@ pub fn run() -> anyhow::Result<()> {
                     // 新 focused の transcript replay を発火（session 省略 = focused に解決）。
                     // 応答は使わない（replay は topic 経由で ReplayStart として届く）。エラーは warn のみ。
                     if let Err(e) = daemon_repo_request(
-                        crate::daemon::default_daemon_port(),
+                        &conn,
                         &path,
                         "conversation_demand_start",
                         serde_json::json!({ "lane": &lane }),
@@ -3030,10 +3036,10 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("conversation:session_remove skip — lane の repo 解決失敗 (lane={lane})");
                     return;
                 };
-                let port = crate::daemon::default_daemon_port();
+                let conn = daemon_conn.clone();
                 rt_handle.spawn(async move {
                     if let Err(e) = daemon_repo_request(
-                        port,
+                        &conn,
                         &path,
                         "conversation_session_remove",
                         serde_json::json!({ "lane": &lane, "session": session }),
@@ -3049,7 +3055,7 @@ pub fn run() -> anyhow::Result<()> {
                     // 除去後の roster / focused は snapshot が運ぶ（doc 53 §11）。
                     // 除去後の新 focused の transcript replay を発火（session 省略 = focused に解決）。
                     if let Err(e) = daemon_repo_request(
-                        port,
+                        &conn,
                         &path,
                         "conversation_demand_start",
                         serde_json::json!({ "lane": &lane }),
@@ -3068,9 +3074,10 @@ pub fn run() -> anyhow::Result<()> {
                     return;
                 };
                 let proxy = async_action_proxy.clone();
+                let conn = daemon_conn.clone();
                 rt_handle.spawn(async move {
                     match daemon_repo_request(
-                        crate::daemon::default_daemon_port(),
+                        &conn,
                         &path,
                         "agents_list",
                         serde_json::json!({}),
@@ -3103,9 +3110,10 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::debug!("board mutate skip — active repo 解決失敗");
                     return;
                 };
+                let conn = daemon_conn.clone();
                 rt_handle.spawn(async move {
                     match daemon_repo_request(
-                        crate::daemon::default_daemon_port(),
+                        &conn,
                         &path,
                         &method,
                         body,
@@ -3324,6 +3332,7 @@ pub fn run() -> anyhow::Result<()> {
                         &mut lane_respawn_triggered,
                         &rt_handle,
                         &respawn_proxy,
+                        &daemon_conn,
                     );
                     // gui: chat lane なら conversation topic に attach（→ transcript replay）。
                     ensure_conversation_attach(
@@ -3569,10 +3578,11 @@ pub fn run() -> anyhow::Result<()> {
                     // JS-side からも先 removeLane を呼ぶ (= xterm 即時 dispose、 server 反映は
                     // repo の "lanes" topic snapshot 経由で sidebar に届く)。
                     push_main::remove_lane(&webview, &address);
+                    let conn = daemon_conn.clone();
                     rt_handle.spawn(async move {
                         let payload = serde_json::json!({ "address": &address });
                         match daemon_repo_request(
-                            crate::daemon::default_daemon_port(),
+                            &conn,
                             &repo_path,
                             "lane_delete",
                             payload,
@@ -3601,10 +3611,11 @@ pub fn run() -> anyhow::Result<()> {
                 if let Some((repo_path, address, fresh)) = outcome.restart_lane_request {
                     // F6③: 旧 DaemonRpcClient.restart_lane (repo 直結 reqwest) を daemon repo-proxy
                     // ask (lane_restart) に移管。 repo port 解決は不要、 repo_path を handshake で渡す。
+                    let conn = daemon_conn.clone();
                     rt_handle.spawn(async move {
                         let payload = serde_json::json!({ "address": &address, "fresh": fresh });
                         match daemon_repo_request(
-                            crate::daemon::default_daemon_port(),
+                            &conn,
                             &repo_path,
                             "lane_restart",
                             payload,
@@ -3636,9 +3647,10 @@ pub fn run() -> anyhow::Result<()> {
                 //（= Reset Lane との違い）。反映は lanes snapshot / session list が運ぶので
                 // 楽観更新しない。
                 if let Some((repo_path, address)) = outcome.new_root_request {
+                    let conn = daemon_conn.clone();
                     rt_handle.spawn(async move {
                         match daemon_repo_request(
-                            crate::daemon::default_daemon_port(),
+                            &conn,
                             &repo_path,
                             "conversation_session_new_root",
                             serde_json::json!({ "lane": &address }),
@@ -3662,6 +3674,7 @@ pub fn run() -> anyhow::Result<()> {
                 // Host の帳簿のポインタを書き換えるだけ — cwd も active lane も engine も動かない。
                 // 反映は次の lanes snapshot の `origin` で戻る（楽観更新しない = 帳簿が真実源）。
                 if let Some((repo_path, address)) = outcome.set_origin_request {
+                    let conn = daemon_conn.clone();
                     rt_handle.spawn(async move {
                         // 帳簿は lane **名**で受ける（起点は repo ごとに 1 本なので
                         // address の `<repo>` 部分は冗長）。address からは末尾を取る。
@@ -3672,7 +3685,7 @@ pub fn run() -> anyhow::Result<()> {
                         }
                         let payload = serde_json::json!({ "lane": lane_name });
                         match daemon_repo_request(
-                            crate::daemon::default_daemon_port(),
+                            &conn,
                             &repo_path,
                             "lane_origin_set",
                             payload,
@@ -3697,6 +3710,7 @@ pub fn run() -> anyhow::Result<()> {
                 // address 列を lane 名の列に畳んでから投げる（帳簿は lane 名で受け、
                 // 境界で lane_id に解決する — 起点と同じ規律）。
                 if let Some((repo_path, order)) = outcome.reorder_lanes_request {
+                    let conn = daemon_conn.clone();
                     rt_handle.spawn(async move {
                         let names: Vec<String> = order
                             .iter()
@@ -3710,7 +3724,7 @@ pub fn run() -> anyhow::Result<()> {
                         }
                         let payload = serde_json::json!({ "order": names });
                         match daemon_repo_request(
-                            crate::daemon::default_daemon_port(),
+                            &conn,
                             &repo_path,
                             "lane_order_set",
                             payload,
@@ -3812,9 +3826,10 @@ pub fn run() -> anyhow::Result<()> {
                 // repo port 解決が消滅し、 surface は Daemon :32000 だけを知れば済む (L1 portless 前進)。
                 if let Some(repo_path) = outcome.list_stands_request {
                     let proxy = async_action_proxy.clone();
+                    let conn = daemon_conn.clone();
                     rt_handle.spawn(async move {
                         let (agents, error) = match daemon_repo_request(
-                            crate::daemon::default_daemon_port(),
+                            &conn,
                             &repo_path,
                             "agents_list",
                             serde_json::json!({}),
