@@ -54,7 +54,7 @@ pub(crate) async fn handle_terminal_demand(
     }))
 }
 
-/// reconcile の収束点を `AppState` の method として持つ（doc 61、mako 2026-09-08）。
+// reconcile の収束点を `AppState` の method として持つ（doc 61、mako 2026-09-08）。
 impl AppState {
     /// [`crate::repo::terminal_pump::reconcile_lane_pumps`] の AppState 版（呼び手の糖衣）。
     ///
