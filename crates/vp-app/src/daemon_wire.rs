@@ -268,7 +268,7 @@ pub struct LaneInfo {
 
 /// session mode の serde default（旧 wire に field が無い時）。doc 53 R1: 旧 lane 単位
 /// `console_mode` field は退役 — mode の導出は `sessions`（registry snapshot）から行う
-/// （Rust 側 = `app::root_mode_of` / TS 側 = `sidebar/lane.ts rootModeOf` の各 1 箇所）。
+/// （Rust 側 = `app::lane_view::root_mode_of` / TS 側 = `sidebar/lane.ts rootModeOf` の各 1 箇所）。
 fn default_mode() -> String {
     "tui".to_string()
 }
