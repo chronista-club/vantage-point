@@ -1595,6 +1595,8 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                             )
                             .await;
                     }
+                    // 登録一覧の変化は presence でないので event log には流さない（GUI 同期用）。
+                    Ok(ProcessLifecycleEvent::ReposChanged) => continue,
                     // lagged: broadcast buffer 溢れ。次の event から再開（log は best-effort）。
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,

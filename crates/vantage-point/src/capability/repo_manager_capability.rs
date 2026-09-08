@@ -569,6 +569,17 @@ impl RepoManagerCapability {
     /// add / delete / rename / reorder / set_enabled / auto_reassign_slot の各操作後に呼ぶ。
     /// test 環境では `ReposFile::save()` が no-op なので本番ファイルを破壊しない。
     async fn persist_repos(&self) -> CapabilityResult<()> {
+        self.persist_repos_inner().await?;
+        // b-7（doc 60 §8 / doc 61 §5）: 書き込みが成功した後に 1 回だけ `ReposChanged` を流す。
+        // 中身は運ばない（受け手は `repos/list` を取り直す）。未配線（CLI / test）なら no-op。
+        if let Some(ref tx) = self.process_lifecycle_tx {
+            let _ = tx.send(crate::daemon::protocol::ProcessLifecycleEvent::ReposChanged);
+        }
+        Ok(())
+    }
+
+    /// `persist_repos` の書き込み本体（DB 全置換 + repos.kdl export、または repos.kdl 直書き）。
+    async fn persist_repos_inner(&self) -> CapabilityResult<()> {
         // read guard は entries 構築のみで解放する (DB / file の await 中は lock を持たない)。
         let entries: Vec<crate::repos_file::RepoEntry> = {
             let repos = self.repos.read().await;
@@ -2918,5 +2929,72 @@ mod tests {
             }
             other => panic!("Remove イベントが流れるべき: {other:?}"),
         }
+    }
+
+    /// b-7（doc 60 §8 / doc 61 §5）: 登録 repo 一覧の永続化は `ReposChanged` を 1 回流す。
+    ///
+    /// vp-app の再 fetch は count ベース（online 復帰 / 稼働数 / 登録数）なので、reorder は
+    /// 他 window に永久に届かなかった。`persist_repos()` の末尾 1 点で発火させ、
+    /// 書き手（reorder / add / remove / rename / set_enabled / sync）を網羅する。
+    #[tokio::test]
+    async fn reorder_repos_emits_repos_changed_once() {
+        use crate::daemon::protocol::ProcessLifecycleEvent;
+
+        let mut cap = make_test_cap();
+        let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+        cap.set_process_lifecycle_tx(tx);
+        {
+            let repos = cap.repos_ref();
+            let mut w = repos.write().await;
+            w.insert("/tmp/proj-a".to_string(), test_repo("proj-a", None));
+            w.insert("/tmp/proj-b".to_string(), test_repo("proj-b", None));
+        }
+
+        cap.reorder_repos(&["/tmp/proj-b".to_string(), "/tmp/proj-a".to_string()])
+            .await
+            .expect("reorder_repos");
+
+        assert_eq!(
+            rx.try_recv().expect("ReposChanged が 1 回流れる"),
+            ProcessLifecycleEvent::ReposChanged
+        );
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            ),
+            "1 操作で 2 回流さない"
+        );
+    }
+
+    /// count が変わらない変更（rename / enabled）でも流れる = 旧 poll が拾えなかった穴を塞ぐ。
+    #[tokio::test]
+    async fn rename_and_set_enabled_emit_repos_changed() {
+        use crate::daemon::protocol::ProcessLifecycleEvent;
+
+        let mut cap = make_test_cap();
+        let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+        cap.set_process_lifecycle_tx(tx);
+        cap.repos_ref()
+            .write()
+            .await
+            .insert("/tmp/proj-a".to_string(), test_repo("proj-a", None));
+        *cap.repo_order.write().await = vec!["/tmp/proj-a".to_string()];
+
+        cap.rename_repo("/tmp/proj-a", "proj-renamed")
+            .await
+            .expect("rename_repo");
+        assert_eq!(
+            rx.try_recv().expect("rename で流れる"),
+            ProcessLifecycleEvent::ReposChanged
+        );
+
+        cap.set_repo_enabled("/tmp/proj-a", false)
+            .await
+            .expect("set_repo_enabled");
+        assert_eq!(
+            rx.try_recv().expect("set_enabled で流れる"),
+            ProcessLifecycleEvent::ReposChanged
+        );
     }
 }

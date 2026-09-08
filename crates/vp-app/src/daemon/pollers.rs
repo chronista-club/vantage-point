@@ -210,8 +210,9 @@ pub(crate) fn spawn_activity_poller(
             // 登録数の変化（add / remove）。旧 trigger は running 数しか見ておらず、
             // 「全 repo を停止してから remove」の順で操作すると running が 0→0 のまま
             // 再 fetch が一度も走らず、sidebar が消えた repo を表示し続けた
-            // （2026-07-24 実機）。⚠️ 数ベースなので rename / enable-flag だけの変化は
-            // 拾えない — 一覧変化の push 配信は transport 統一（doc 45）に委ねる。
+            // （2026-07-24 実機）。数ベースなので rename / enable-flag / 並び順だけの変化は
+            // 拾えない — それは daemon-repo の `ReposChanged` push（`subscriptions::spawn_repos_subscription`、
+            // b-7）が担う。ここは push が届かなかった時の fallback として残す。
             let registered_changed = prev_registered.is_some_and(|p| p != snap.repo_count);
             prev_online = Some(snap.node_online);
             prev_running = Some(snap.running_repo_count);
