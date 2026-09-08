@@ -66,7 +66,10 @@ tokio-stream = "0.1"
 # 依存で先行反映していたが、1.7.0 で crates.io 出荷されたため version 指定へ復帰
 # (nightly HEAD 追従の移動標的を解消)。
 # 1.8.0: KDL request safety hint 属性 (#95) + unison-mcp rmcp 2 系 live bridge (#93)。
-unison = { package = "club-unison", version = "1.9.0" }
+# 2.0.0 (2026-09-06): 呼び手の無い public API の一掃だけの major。wire bytes は不変
+# (golden fixture 同一、TS / Swift client は 1.x のまま)。VP 側の追随は `spawn_listen` →
+# `listener(addr).spawn()` の 1 箇所（ignored の federation e2e test）のみ。
+unison = { package = "club-unison", version = "2.0.0" }
 
 # Lifecycle / Outcome / drive primitives。 crates.io package = `club-nostos`、 Rust 識別子は
 # `nostos` に alias (unison と同じ package rename 方針)。 doc 24 §4.6 lifecycle co-evolution:
