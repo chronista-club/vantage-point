@@ -68,6 +68,24 @@ pub(super) fn resized(ui: &mut UiState, boot: &Boot, size: tao::dpi::PhysicalSiz
             return;
         }
     }
+    // 危険 D の実測（b-6、1 nightly 分）: 復元経路の最初の Resized が復元値と一致するかを残す。
+    // 一致しなければ「restorableState の frame を user 操作として保存している」= D は実在。
+    if ui.win.restore_first_resized_pending {
+        ui.win.restore_first_resized_pending = false;
+        let logical = size.to_logical::<f64>(scale);
+        let restored = ui
+            .persist
+            .session
+            .window_geometry()
+            .map(|g| format!("{}x{}", g.width, g.height))
+            .unwrap_or_else(|| "none".into());
+        tracing::info!(
+            "restore 経路の最初の Resized: {}x{} (復元 geometry {}) — 危険 D の実測（doc 60 §8 b-6）",
+            logical.width,
+            logical.height,
+            restored
+        );
+    }
     update_pane_bounds(&boot.webview, size, scale);
     // PR #459 throttled save: resize 中も 500ms throttle で geometry + 表示モードを save。
     // 全画面 enter/exit も Resized を撃つので、 helper 内の fullscreen 判定で mode が追従する。

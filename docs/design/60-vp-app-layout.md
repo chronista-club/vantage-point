@@ -156,7 +156,7 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
 | b-3 ✅ | B + C | `observe_daemon_active_lane` は pending 未消費の間 session を書かない（sidebar の表示は on_lanes が別に更新）。close / throttle save は memory を flush するだけなので同時に解消 |
 | b-4 ✅ | E + F | ReposLoaded ごとに daemon 順を session に鏡す（`note_repo_order`）。auto-expand も鏡す（`note_repo_expanded`）。どちらも変わった時だけ save |
 | b-5 ✅ | — | `catch_up` が list の先頭で `push_sidebar_state` を撃つ（reopen 直後の sidebar が空でない） |
-| b-6 | D | 復元経路の最初の Resized の size を 1 nightly 分 log → 実測してから |
+| b-6 ▶ | D | 復元経路の最初の Resized の size を log（`restore 経路の最初の Resized:` を `app.kdl.log` で grep）。復元値と違う事例が出たら修正、出なければ D は無しと判定して閉じる |
 | b-7 | — | window 間の並び順伝播は daemon push（項目 7 と設計） |
 
 ## Status log

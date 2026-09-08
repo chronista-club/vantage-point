@@ -98,6 +98,10 @@ pub(super) struct WindowState {
     /// 上書きしないため、 復元 path 中は最初の Resized event を「正常な user-driven resize」
     /// 扱いにする。 default path (= restored_geometry None) では従来通り clamp logic を走らせる。
     pub(super) initial_size_clamp_done: bool,
+    /// 危険 D（doc 60 §8、b-6 = 実測）: 復元経路では最初の Resized を user 操作扱いで書き通す。
+    /// その size が復元 geometry と違うか（= macOS の restorableState が別の frame を当てているか）を
+    /// 1 nightly 分 log で観測する。true = まだ最初の Resized を見ていない。
+    pub(super) restore_first_resized_pending: bool,
     /// dock app icon (portal favicon) の再アサート用。 bare binary は .app bundle が無いため
     /// macOS が launch 完了時に generic icon を被せ、 run() 前 (window.build 直後) の
     /// setApplicationIconImage を上書きする。 event loop 開始後 ~1.5s 間 set_app_icon() を
@@ -163,6 +167,7 @@ impl UiState {
             },
             win: WindowState {
                 initial_size_clamp_done: restored_geometry,
+                restore_first_resized_pending: restored_geometry,
                 icon_launch_at: Instant::now(),
                 icon_settled: false,
                 is_focused: true,
