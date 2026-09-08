@@ -95,7 +95,7 @@ crates/vp-app/src/
 - **6-0**（1 PR）: (a) `events.rs` 抽出 → (b) directory + `git mv` + `lib.rs` + path 書き換え + `include_str` / log filter → (c) doc / コメント → (d) 本 doc
 - **6-0b**（小 PR）: `client.rs` → `daemon_wire.rs` + `daemon/health_probe.rs`、`shell_detect.rs` 削除
 - **6-1**（各 1 PR、順序付き照合）: push_main → editor_bridge → push_sidebar → **app/sidebar_ipc**（そのまま移設、`session.save()` 込み）→ daemon/pollers → lane_address → webview/ipc_route → daemon/conn → daemon/subscriptions → lane/terminal + lane/conversation
-- **A. sidebar**: 現行を固定する test を先に置く（25 arm の状態変化・`session.save()` の有無（temp dir）・outcome）→ `save` 2 箇所（`ProcessToggle` / `ProcessReorder`）を outcome の `session_save` にして呼び手が実行 → codegen PR-2
+- **A. sidebar**（✅ 2026-09-08）: A-1 #1055 で現行を固定する test 18 本（25 arm の状態変化・`session.save()` の有無（temp dir）・outcome）→ A-2 で `save` 2 箇所（`ProcessToggle` / `ProcessReorder`）を outcome の `session_save` にして `run()` が実行（test 本体は不変、`apply` helper が呼び手を模す）。codegen PR-2 / PR-3 は既に済だった（Rust / TS とも生成型を使用）
 - **B. 統合 1: daemon ask の一本化**（独立 PR、Codex 再レビュー ②）: `daemon_repo_request`（呼ぶたびに QUIC connect、26 箇所）→ `DaemonControl::repo_request`。契約: **1 RPC = 1 stream**（request ごとに `open_channel("repo-proxy")` → handshake → request → 必ず `close()`）/ `REPO_ASK_TIMEOUT` = 現行と同じ 30 秒を別 const（`RPC_TIMEOUT` 10 秒に短縮しない）/ 応答を失った更新・削除は自動再送しない / `{"error"}` と transport 障害を区別
 - **C. loop 共通化**: §4 を固定する test を置いてから採否判断。出荷条件にしない
 - **6-2**（別 conception）: `Boot`（Runtime / menu / tray / window / webview を所有、`run()` が最後まで持つ）と `UiState`（可変 state ~20 個）を分けて導入 / 復元と保存の表（値ごとに 誰が正か・未取得時・いつ保存・RPC 失敗・primary/secondary window）/ `SidebarIpcOutcome` → `Vec<SidebarEffect>`（`AppEvent` = 出来事、effect = 要求で併存）/ `on_*` / `app/lane_view.rs`（調整役）/ `catch_up.rs`
@@ -121,3 +121,4 @@ crates/vp-app/src/
   daemon/conn / daemon/subscriptions / daemon/pollers / lane_address + daemon/wire / webview/ipc_route / lane/terminal +
   lane/conversation。各 PR は順序付き diff で本文一致（差分は `use` / 可視性 / dedent）、test 1295 を維持。
   `app/mod.rs` は 7,117 → 4,168 行（`run()` 据え置き）。次は A（sidebar test 先行 → 純粋化）→ B（ask 一本化）→ C（採否）→ 6-2。
+- 2026-09-08: A 着地（A-1 #1055 test 先行 / A-2 純粋化）。`handle_sidebar_ipc` は file を書かない。次は B（ask 一本化）→ C（採否）→ 6-2。

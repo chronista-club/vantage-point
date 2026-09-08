@@ -3308,6 +3308,12 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
                 let outcome = handle_sidebar_ipc(&msg, &mut sidebar_state, &mut session_state);
+                // 解釈は純粋（doc 60 §6 A-2）: session の file 書き込みは要求を見てここで行う。
+                // in-memory の更新は handle 側で済んでいるので、他の効果より先に書いて
+                // 旧実装（handle 内で save）と同じ順序を保つ。
+                if outcome.session_save {
+                    session_state.save();
+                }
                 // Lane activation — activate_lane() が全副作用を処理
                 if let Some(addr) = outcome.activate_lane {
                     activate_lane(
