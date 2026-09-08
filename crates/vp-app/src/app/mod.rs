@@ -26,7 +26,6 @@
 //! - **γ-light readiness**: main area の slot rect を ResizeObserver 経由で Rust に
 //!   push (`AppEvent::SlotRect`)、Phase 4+ で native overlay の `set_position` 同期に使用
 
-/// sidebar IPC の解釈（state 遷移）。効果の実行は本 module の `run()`。
 /// 起動 = resource の構築（`Boot`）。`run()` が最後まで所有する。
 mod boot;
 /// sidebar IPC の解釈（state 遷移 + 効果要求）。
@@ -1038,7 +1037,6 @@ pub fn run() -> anyhow::Result<()> {
     // `boot` と `ui` は閉包に move し、process の寿命と一致させる（doc 60 §6 6-2）。
     let (event_loop, boot, mut ui) = boot::boot()?;
 
-    // Terminal backend: daemon を auto-launch (down なら `vp` binary を spawn)。
     let proxy = event_loop.create_proxy();
     // Phase 2.5 (per-Lane instance): startup の placeholder PTY 接続は撤去。
     // Lane が出現するまで main area は empty placeholder ("No Lane selected") のみ。

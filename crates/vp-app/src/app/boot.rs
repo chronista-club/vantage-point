@@ -42,7 +42,8 @@ use crate::webview::terminal_ipc;
 /// 起動時に構築した resource。`run()` の閉包が値で持ち、process の寿命と一致する。
 ///
 /// 宣言順 = drop 順（今は `run()` が戻らないので関係しないが、将来の graceful exit のため）:
-/// webview → window → menu / tray → daemon 接続 → runtime handle → log guard → runtime 本体。
+/// webview → window → menu / tray → daemon 接続 → runtime handle → runtime 本体 → log guard
+/// （旧 local の逆順 drop と同じ: runtime を止めてから log を flush する）。
 pub(super) struct Boot {
     /// sidebar + main を 1 枚に統合した WebView（`build_as_child(&window)`）。
     pub(super) webview: WebView,
@@ -66,10 +67,10 @@ pub(super) struct Boot {
     pub(super) rt_handle: tokio::runtime::Handle,
     /// vp-app instance index（0 = primary / N≥1 = secondary、`VP_APP_INSTANCE`）。
     pub(super) instance_index: usize,
-    /// tracing の guard（drop で appender が flush される）。
-    _log: crate::log_init::LogInitResult,
     /// 共有 Tokio runtime 本体。drop すると全 task が止まる。
     _rt: tokio::runtime::Runtime,
+    /// tracing の guard（drop で appender が flush される）。runtime の後に落とす。
+    _log: crate::log_init::LogInitResult,
 }
 
 /// resource を構築し、event loop と初期 [`UiState`] と共に返す。
@@ -383,8 +384,8 @@ pub(super) fn boot() -> anyhow::Result<(EventLoop<AppEvent>, Boot, UiState)> {
         actions_persist_tx,
         rt_handle,
         instance_index,
-        _log,
         _rt,
+        _log,
     };
     Ok((event_loop, boot, ui))
 }
