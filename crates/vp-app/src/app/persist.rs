@@ -9,7 +9,8 @@
 //! 起動直後の `SidebarState` は空。session file の active lane は [`Persist::pending_active_lane`] に
 //! 退避し、その lane を含む lanes snapshot が届いた時に **1 度だけ**消費する（[`Persist::restore_active_lane`]）。
 //! daemon 側の canonical（初回 ReposLoaded の `active_lane`）は [`Persist::observe_daemon_active_lane`] で
-//! 受ける — ⚠️ 現状は pending 未消費でも session を書き換える（危険 B、b-3 で直す）。
+//! 受けるが、**pending 未消費の間は session を書かない**（b-3、危険 B / C）。sidebar の表示は呼び手が
+//! 別に更新するので、file に残るのは「user が最後に選んだ lane」だけになる。
 //!
 //! ## 保存の契機
 //! boot（open=true）/ close（open=false + geometry）/ resize・move（500 ms throttle + geometry）/
@@ -59,6 +60,7 @@ impl Persist {
     }
 
     /// 復元待ちの lane（消費前だけ Some）。今は test の観測用。
+    /// 消費されないまま残るのは: repo が down / lane が消えた / 旧形の address（`session_state.rs::load`）。
     #[cfg(test)]
     pub(super) fn pending_active_lane(&self) -> Option<&str> {
         self.pending_active_lane.as_deref()
@@ -78,9 +80,20 @@ impl Persist {
     }
 
     /// Model Q: 初回 load で daemon canonical の active lane を受ける（session.json でなく daemon が源）。
-    /// ⚠️ 現状は file に書かず in-memory だけ更新するが、後続の resize / close の save で流れる
-    /// = pending 未消費の間に instance 別の保存値が daemon 値で消える（危険 B / C、b-3 で直す）。
+    ///
+    /// **pending 未消費の間は session を書かない**（危険 B / C の根治、doc 60 §8）: 旧実装は in-memory を
+    /// 書き換えていたので、後続の resize / move の throttle save や boot 窓の close が daemon 値を file に
+    /// 流し、instance 別の保存値（user が最後に選んだ lane）が消えていた。保存値が無い（pending = None）
+    /// 時だけ daemon 値を採る（次回 boot は daemon の選択から始まる = 従来の Model Q）。
+    /// sidebar の表示は呼び手（on_lanes）が別に更新するので、画面は従来どおり daemon 値になる。
     pub(super) fn observe_daemon_active_lane(&mut self, addr: String) {
+        if self.pending_active_lane.is_some() {
+            tracing::debug!(
+                "daemon の active lane ({addr}) は session に書かない（復元待ち {:?} を優先）",
+                self.pending_active_lane
+            );
+            return;
+        }
         self.session.active_lane_address = Some(addr);
     }
 
@@ -246,25 +259,73 @@ mod tests {
         assert_eq!(p.pending_active_lane(), Some("vp/lane/sub-a"));
     }
 
-    /// 危険 B の現状: daemon 値は in-memory を書き換えるが file は書かない。
-    /// pending は残る（復元は後続 snapshot 待ち）。b-3 でこの test の期待が変わる。
+    /// 危険 B / C（b-3）: pending 未消費の間、daemon 値は session に入らない。
+    /// その後の無関係な save（resize / move の throttle、boot 窓の close）でも保存値は残る。
     #[test]
-    fn observe_daemon_active_lane_updates_memory_only_and_keeps_pending() {
+    fn observe_daemon_active_lane_keeps_saved_value_while_pending() {
         let _env = crate::test_env::state_dir();
         let mut p = Persist::from_session(with_active("vp/lane/sub-a"));
         p.observe_daemon_active_lane("vp/lane/root".to_string());
         assert_eq!(
             p.session.active_lane_address.as_deref(),
-            Some("vp/lane/root")
+            Some("vp/lane/sub-a"),
+            "復元待ちの間は daemon 値で上書きしない"
         );
         assert_eq!(p.pending_active_lane(), Some("vp/lane/sub-a"));
         assert!(saved(0).is_none(), "observe だけでは書かない");
-        // ⚠️ 現状: その後の無関係な save（resize / close）が daemon 値を file に流す
+        // 危険 C: boot 窓で閉じても保存値は残る
         p.finish_close();
         assert_eq!(
             saved(0).expect("saved").active_lane_address.as_deref(),
-            Some("vp/lane/root"),
-            "危険 B: instance 別の保存値 vp/sub-a が daemon 値で消える（b-3 で直す）"
+            Some("vp/lane/sub-a")
+        );
+    }
+
+    /// 保存値が無ければ daemon 値を採る（従来の Model Q: 次回 boot は daemon の選択から）。
+    #[test]
+    fn observe_daemon_active_lane_adopts_when_nothing_pending() {
+        let _env = crate::test_env::state_dir();
+        let mut p = Persist::from_session(SessionState::default());
+        assert_eq!(p.pending_active_lane(), None);
+        p.observe_daemon_active_lane("vp/lane/root".to_string());
+        assert_eq!(
+            p.session.active_lane_address.as_deref(),
+            Some("vp/lane/root")
+        );
+        assert!(saved(0).is_none(), "observe だけでは書かない");
+        p.finish_close();
+        assert_eq!(
+            saved(0).expect("saved").active_lane_address.as_deref(),
+            Some("vp/lane/root")
+        );
+    }
+
+    /// on_lanes の実際の流れ: daemon 値を観測 → その lane を含まない snapshot → 含む snapshot で復元 →
+    /// activate で file が復元値に確定する。daemon 値は一度も file に出ない。
+    #[test]
+    fn restore_then_activate_persists_saved_lane_not_daemon_lane() {
+        let _env = crate::test_env::state_dir();
+        let mut p = Persist::from_session(with_active("vp/lane/sub-a"));
+        p.observe_daemon_active_lane("other/lane/root".to_string());
+        assert_eq!(p.restore_active_lane(&[lane("other", "root")]), None);
+        p.finish_close(); // 途中で閉じても
+        assert_eq!(
+            saved(0).expect("saved").active_lane_address.as_deref(),
+            Some("vp/lane/sub-a")
+        );
+        let restored = p
+            .restore_active_lane(&[lane("vp", "root"), lane("vp", "sub-a")])
+            .expect("restored");
+        p.activate(&restored);
+        assert_eq!(
+            saved(0).expect("saved").active_lane_address.as_deref(),
+            Some("vp/lane/sub-a")
+        );
+        // 復元後は pending が無いので、次の daemon 観測は従来どおり採る
+        p.observe_daemon_active_lane("vp/lane/root".to_string());
+        assert_eq!(
+            p.session.active_lane_address.as_deref(),
+            Some("vp/lane/root")
         );
     }
 
