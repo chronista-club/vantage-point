@@ -448,6 +448,37 @@ pub(crate) async fn build_test_app_state_with(
     })
 }
 
+/// C1 test 用の chat-mode main LaneInfo を pool に登録する（claude 不要）。
+#[cfg(test)]
+pub(crate) async fn insert_test_lane(
+    state: &crate::repo::state::AppState,
+    repo: &str,
+    mode: crate::lane::session_registry::SessionMode,
+) -> crate::repo::lanes_state::LaneAddress {
+    use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+    let addr = LaneAddress::root(repo);
+    // doc 53 R1: mode の SSOT は registry（pool cache は退役）。テストも registry に書いて
+    // 読み手（root_mode 直読）と同じ経路を通す。
+    crate::lane::session_registry::set_root_mode(repo, "main", "claude", mode)
+        .expect("test registry へ root mode を書けること");
+    state.lane_pool.write().await.insert(LaneInfo {
+        id: Default::default(),
+        address: addr.clone(),
+        state: LaneState::Running,
+        agent: "claude".to_string(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        pid: None,
+        cwd: std::env::temp_dir().to_string_lossy().to_string(),
+        sub_status: None,
+        cc_session_id: None,
+        sessions: None,
+        engine_session_id: None,
+        agent_name: None,
+        flow_state: None,
+    });
+    addr
+}
+
 #[cfg(test)]
 mod lane_resolve_tests {
     use super::build_test_app_state;

@@ -67,7 +67,7 @@ arm の形は `"show" | "clear" => board::handle_canvas_command(state, payload).
 
 ## 2. 依存 rule
 
-- `unison_server` → `*_ops` / owner。`*_ops` → owner + `state`。**owner は `unison_server` を呼ばない**（例外: `payload_session_key`。§6 で解消するまで `_ops` からの参照だけ許す）。
+- `unison_server` → `*_ops` / owner。`*_ops` → owner + `state`。**owner は `unison_server` を呼ばない**（例外: `payload_session_key`。`_ops` と `conversation_replay` からの参照を、§6 の統一で置き場が決まるまで許す）。
 - **単一 stream 逐次**（doc 45 §5.2）: dispatch は 1 stream につき recv → handle → send。arm の中で `spawn` しない。分割で並行化しない。
 - **所有領域は state の field で決まる**: board = `vpdb` の board 系 + hub broadcast / editor_bridge = `editor_pending` / conversation_replay = `replay_flights` + `replay_log` + `topic_router` / terminal = `terminal_pumps` + PtySlot / lane = `lane_pool` + ledger + `system_event_tx` / process = `file_watchers` + `process_registry` / wire = `repo_name` のみ（stateless relay）。
 - `pub mod process_runner` は公開 API。`process_ops.rs` から再輸出しない。
@@ -77,7 +77,7 @@ arm の形は `"show" | "clear" => board::handle_canvas_command(state, payload).
 
 | 領域 | 不変条件 | 守り手（test） |
 |---|---|---|
-| replay | `SessionInit` は `ReplayStart` の直後（`splice_session_init`）。in-flight の replay は `replay_with_in_flight` の `seq` 検算で coalesce。codex は buffered log を replay | `session_init_goes_after_replay_start` ほか 6 本 |
+| replay | `SessionInit` は `ReplayStart` の直後（`splice_session_init`）。flight 中の demand は `AppState::replay_flights` で合流し rerun を予約する。`replay_with_in_flight` は commit 世代 `seq` を読み前後で検算する。codex は buffered log を replay | `session_init_goes_after_replay_start` ほか 6 本 |
 | board | append → broadcast の順。`handle_board_update` は read-modify-write。cursor の freshness | board test 2 本 + db 側 |
 | lane | `lane_origin_set` / `lane_order_set` は ledger 書き → `system_event_tx` の順。`lane_session_changed` は record → emit | lane test 14 本 |
 | terminal | demand は level 読み（doc 53 §2.3）。reconcile は sibling slot を触らない | terminal test 9 本（flaky 2 本は §7） |
@@ -140,7 +140,7 @@ arm の形は `"show" | "clear" => board::handle_canvas_command(state, payload).
 ## 6. 移設に混ぜない follow-up（台帳へ）
 
 - `Result<Value, String>` の共通 error helper（今は全 handler が `Err(format!(...))` 手書き）
-- `payload_session_key` の群ごとの `None` の意味の統一（doc 40 §4 の `ReportTarget::Unspecified` を test 先行で）
+- `payload_session_key` の群ごとの `None` の意味の統一（doc 40 §4 の `ReportTarget::Unspecified` を test 先行で）。統一と一緒に置き場を決めて §2 の例外を消す
 - flaky PTY test の readiness を時間でなく観測に（台帳 項目 10）
 - `daemon/server.rs::handle_daemon_control`（440 行 match）の分割 = 項目 7 の範囲外、7b の後に別項目
 - `route_conversation` の `conversation_pump.rs` への移動 / `repo/lane/` subdirectory への集約（`lanes_state` / `lane_reconcile` / `lane_cmd` / `lane_spawn_actor` / `lane_ops` / 旧 `routes/lanes`）

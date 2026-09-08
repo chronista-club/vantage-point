@@ -14,6 +14,8 @@ pub(crate) mod board;
 pub(crate) mod cc_activity;
 /// Lane conversation pump — ClaudeHost の ConversationEvent を per-lane topic に route (doc 30、gui)
 pub(crate) mod conversation_pump;
+/// conversation replay — attach 時の会話配り直しと demand の合流（doc 32 §3、doc 61）
+pub(crate) mod conversation_replay;
 /// Agent 委譲 (delegation) — durable cross-agent future の v1 ローカル atom (doc 28 §4)
 pub(crate) mod delegation;
 /// wire delivery loop — 未 ack command の lane nudge + 再掲示 (R2-b、 daemon 常駐)
