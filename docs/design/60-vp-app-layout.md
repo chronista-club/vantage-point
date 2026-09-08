@@ -144,7 +144,7 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
 | `repos[path].expanded` | UI toggle | 新規 repo だけ session を見る。既存は前回の in-memory 値、初回以外の新規は auto-expand | sidebar IPC toggle（`session_save`）。**危険 F**: auto-expand は保存しない | — | 同じ |
 | `window_geometry` / `display_mode` | OS window | `restored_geometry`（boot で clone） | close（`save_on_close`）/ resize・move（`save_geometry_throttled`、500 ms） | `outer_position` 失敗は warn、geometry を触らない | file が別。**危険 D**: 復元時は最初の Resized を user 操作扱い |
 | `shell_layout` | webview | `catch_up` で再 push、無ければ push しない | `save_shell_layout` | — | 同じ |
-| `open` | app lifecycle | `Persist::boot` で true + **即 save**（**危険 A**: 壊れた file を default で上書き） | close で false | spawn 失敗で rollback（menu_clicked、別 SessionState） | primary だけが他 instance の flag を読む |
+| `open` | app lifecycle | `Persist::boot` で true + **即 save**（危険 A は b-2 で解消: 壊れた file は load 時に退避済） | close で false | spawn 失敗で rollback（menu_clicked、別 SessionState） | primary だけが他 instance の flag を読む |
 | `active_component` | UI | — | **永続しない** | — | — |
 
 **危険と直す順（各 PR は test 先行、`test_env::state_dir()` で隔離）**
@@ -152,7 +152,7 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
 | PR | 危険 | 直し方 |
 |---|---|---|
 | b-1 ✅ | — | `Persist` 導入（現行挙動のまま、characterization test 10 本。危険 B の現状も test で固定） |
-| b-2 | A | 壊れた session file は boot の再 save の前に `session.json.corrupt-<ts>` へ退避 |
+| b-2 ✅ | A | 壊れた session file は boot の再 save の前に `session.json.corrupt-<unix 秒>` へ退避（`SessionState::load` の parse 失敗分岐。読めない / 不在は対象外） |
 | b-3 | B + C | `observe_daemon_active_lane` は pending 未消費の間 session を書かない（sidebar の表示だけ）。close も同じ |
 | b-4 | E + F | ReposLoaded ごとに daemon 順を session に鏡す（`note_repo_order`）。auto-expand も鏡す（`note_repo_expanded`） |
 | b-5 | — | `catch_up` が `push_sidebar_state` を撃つ |
@@ -169,6 +169,7 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
   `app/mod.rs` は 7,117 → 4,168 行（`run()` 据え置き）。次は A（sidebar test 先行 → 純粋化）→ B（ask 一本化）→ C（採否）→ 6-2。
 - 2026-09-08: A 着地（A-1 #1055 test 先行 / A-2 純粋化）。`handle_sidebar_ipc` は file を書かない。次は B（ask 一本化）→ C（採否）→ 6-2。
 - 2026-09-08: C は不採用（共通化しない、test も今は足さない）。次は 6-2 の conception。
+- 2026-09-08: 6-2b b-2 着地（危険 A）。壊れた session file は `session.json.corrupt-<ts>` へ退避してから default で起動。
 - 2026-09-08: 6-2b b-1 着地。`app/persist.rs`（`Persist` = SessionState の所有者、復元 cursor + 保存 8 箇所を集約）+ §8 の表。危険 A〜F は b-2 以降。
 - 2026-09-08: 6-2a 着地（PR #1058〜#1067）。`run()` は routing table だけになり、resource は `Boot`、可変 state は `UiState`、arm は `on_*` / `catch_up`、調整役は `lane_view`。次は 6-2b（復元と保存の表 → persist.rs → 危険 A〜F）と PR-EX。実機（mako、`app:swap`）: boot / geometry 復元 / Cmd+N / close / resize / chat / mode 切替 / ROTO switch_lane（2 window）/ reopen / settings:save / toggle・reorder の永続。
 - 2026-09-08: B 着地。`daemon_repo_request` は共有接続の `DaemonControl::repo_request`（1 RPC = 1 stream / 必ず close / `REPO_ASK_TIMEOUT` 30 秒 / 自動再送しない）に一本化、呼び手 25 箇所は第 1 引数が port → `&SharedDaemonConn`。次は C（採否）→ 6-2。実機: daemon 再起動中の lane 操作が失敗として見えること / 失敗後に stream が残らないこと（mako、`app:swap`）。
