@@ -448,8 +448,8 @@ pub(crate) async fn build_test_app_state_with(
     })
 }
 
-#[cfg(test)]
 /// C1 test 用の chat-mode main LaneInfo を pool に登録する（claude 不要）。
+#[cfg(test)]
 pub(crate) async fn insert_test_lane(
     state: &crate::repo::state::AppState,
     repo: &str,

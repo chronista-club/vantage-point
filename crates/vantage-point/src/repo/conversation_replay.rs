@@ -2,11 +2,11 @@
 //!
 //! `conversation_demand_start` で transcript（commit 済）と engine host の in-flight tail を継いで
 //! `ReplayStart → SessionInit → events → ReplayEnd` を per-lane topic に流す。replay 中に来た demand は
-//! 合流（coalesce）して flight 完了側が直列に消化する（`replay_with_in_flight`）。`conversation_demand_stop`
+//! 合流（coalesce）して flight 完了側が直列に消化する（`AppState::replay_flights`）。`conversation_demand_stop`
 //! は購読が 0 になった時に engine を寝かせる hook。`route_conversation` は replay だけが使う配送口。
 //!
 //! 不変条件（verbatim に保つ）: `SessionInit` は `ReplayStart` の直後（`splice_session_init`）/
-//! `replay_with_in_flight` は commit 世代 `seq` を読み前後で検算する / in-flight の demand は配送しない。
+//! `replay_with_in_flight` は commit 世代 `seq` を読み前後で検算する / flight 中に来た demand は自分では配送せず rerun を予約する。
 //! 受付は `unison_server::dispatch_repo_method`。
 
 use super::state::AppState;
