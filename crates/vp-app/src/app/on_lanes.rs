@@ -72,13 +72,19 @@ pub(super) fn repos_loaded(
                 // 新規 repo の expanded 解決:
                 //   1. session file に saved 値があれば最優先 (vp-app 再起動の復元)
                 //   2. 上記 None かつ session 中の追加 (= 初回 fetch ではない) なら auto-expand
+                //      — b-4（危険 F）: この auto-expand も session に鏡す（次回 boot で collapsed に戻さない）
                 //   3. 初回 fetch の新規は閉じた状態
                 let mut s = RepoPaneState::new(p.path.clone(), p.name.clone());
-                s.expanded = ui
-                    .persist
-                    .session
-                    .repo_expanded(&p.path)
-                    .unwrap_or(!is_initial_load);
+                s.expanded = match ui.persist.session.repo_expanded(&p.path) {
+                    Some(saved) => saved,
+                    None => {
+                        let auto = !is_initial_load;
+                        if auto {
+                            ui.persist.note_repo_expanded(&p.path, true);
+                        }
+                        auto
+                    }
+                };
                 s
             };
             pane_state.state = Some(state_str);
@@ -89,8 +95,11 @@ pub(super) fn repos_loaded(
     // Phase 1 (doc 24): currents_order を daemon の repo_order (= fetch 順) の
     // mirror にする。これで currents_order は独立 SSOT ではなく canonical の派生となり、
     // JS resolveRepoOrder は実質 passthrough（sidebar = daemon = ROTO = CLI で一致）。
-    ui.sidebar_state.currents_order =
-        Some(repo_ports.iter().map(|(path, _)| path.clone()).collect());
+    let canonical_order: Vec<String> = repo_ports.iter().map(|(path, _)| path.clone()).collect();
+    ui.sidebar_state.currents_order = Some(canonical_order.clone());
+    // b-4（危険 E）: 次回 boot 窓の仮表示が「最後に見た順」になるよう session の写しにも鏡す
+    // （変わった時だけ file に書く。DnD 直後の再 fetch は同じ順なので no-op）。
+    ui.persist.note_repo_order(canonical_order);
     // Model Q: 初回 load で active lane を daemon canonical から復元 (session.json でなく daemon が源)。
     if is_initial_load && let Some(addr) = daemon_active_lane {
         ui.sidebar_state.active_lane_address = Some(addr.clone());

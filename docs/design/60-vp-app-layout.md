@@ -139,9 +139,9 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
 | `active_lane_address`（sidebar） | UI（user 操作 / 復元）。初回 ReposLoaded で daemon の canonical を seed | `None`。session 値は `Persist::pending_active_lane` に退避 | `activate` が session に鏡して save | `set_active_lane` の失敗は warn のみ（楽観） | secondary は自動選択しないが session 復元はする |
 | `pending_active_lane`（cursor） | session file | boot holder そのもの。その lane を含む snapshot で **1 度だけ**消費（`restore_active_lane`） | 保存しない | — | 同じ。消費されずに残るのは repo down / lane 消滅 / 旧形 address（b-3 以降は daemon 値で自動修復されない、user が選び直すまで） |
 | `active_lane_address`（session） | instance 別 file | load 値。`observe_daemon_active_lane` は **pending 未消費の間は書かない**（b-3 で危険 B / C を解消: 旧実装は in-memory を書き換え、resize / move の throttle save や boot 窓の close が daemon 値を file に流していた）。保存値が無い時だけ daemon 値を採る | `activate` + 他の save 全部が memory の値を flush（memory には user の最後の選択しか入らない） | — | file が別 |
-| `currents_order`（session） | sidebar の DnD | `UiState::new` で sidebar に写す（起動直後の仮表示） | sidebar IPC reorder（`session_save`） | daemon reorder 失敗は warn、session は書き済 | 写しは window ごと。**生きている window 間は同期しない**（b-7、daemon push で項目 7 と） |
-| `currents_order`（sidebar） | **daemon の順**（毎 ReposLoaded で上書き） | session 値 | 保存しない（**危険 E**: session に戻さない） | daemon 不在なら session 順が生きる | 同じ |
-| `repos[path].expanded` | UI toggle | 新規 repo だけ session を見る。既存は前回の in-memory 値、初回以外の新規は auto-expand | sidebar IPC toggle（`session_save`）。**危険 F**: auto-expand は保存しない | — | 同じ |
+| `currents_order`（session） | daemon の順の写し（b-4 以降。DnD は楽観で先に書く） | `UiState::new` で sidebar に写す（起動直後の仮表示） | sidebar IPC reorder（`session_save`）+ ReposLoaded ごとの `note_repo_order`（変わった時だけ） | daemon reorder 失敗は warn、session は楽観値のまま（次の ReposLoaded で daemon 順に戻る） | 写しは window ごと。**生きている window 間は同期しない**（b-7、daemon push で項目 7 と） |
+| `currents_order`（sidebar） | **daemon の順**（毎 ReposLoaded で上書き） | session 値 | ReposLoaded ごとに `note_repo_order` で session に鏡す（変わった時だけ save。b-4 で危険 E を解消） | daemon 不在なら session 順が生きる | 同じ |
+| `repos[path].expanded` | UI toggle | 新規 repo だけ session を見る。既存は前回の in-memory 値、初回以外の新規は auto-expand | sidebar IPC toggle（`session_save`）+ auto-expand 時に `note_repo_expanded`（b-4 で危険 F を解消） | — | 同じ |
 | `window_geometry` / `display_mode` | OS window | `restored_geometry`（boot で clone） | close（`save_on_close`）/ resize・move（`save_geometry_throttled`、500 ms） | `outer_position` 失敗は warn、geometry を触らない | file が別。**危険 D**: 復元時は最初の Resized を user 操作扱い |
 | `shell_layout` | webview | `catch_up` で再 push、無ければ push しない | `save_shell_layout` | — | 同じ |
 | `open` | app lifecycle | `Persist::boot` で true + **即 save**（危険 A は b-2 で解消: 壊れた file は load 時に退避済） | close で false | spawn 失敗で rollback（menu_clicked、別 SessionState） | primary だけが他 instance の flag を読む |
@@ -154,7 +154,7 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
 | b-1 ✅ | — | `Persist` 導入（現行挙動のまま、characterization test 10 本。危険 B の現状も test で固定） |
 | b-2 ✅ | A | 壊れた session file は boot の再 save の前に `session.json.corrupt-<unix 秒>` へ退避（`SessionState::load` の parse 失敗分岐。読めない / 不在は対象外） |
 | b-3 ✅ | B + C | `observe_daemon_active_lane` は pending 未消費の間 session を書かない（sidebar の表示は on_lanes が別に更新）。close / throttle save は memory を flush するだけなので同時に解消 |
-| b-4 | E + F | ReposLoaded ごとに daemon 順を session に鏡す（`note_repo_order`）。auto-expand も鏡す（`note_repo_expanded`） |
+| b-4 ✅ | E + F | ReposLoaded ごとに daemon 順を session に鏡す（`note_repo_order`）。auto-expand も鏡す（`note_repo_expanded`）。どちらも変わった時だけ save |
 | b-5 | — | `catch_up` が `push_sidebar_state` を撃つ |
 | b-6 | D | 復元経路の最初の Resized の size を 1 nightly 分 log → 実測してから |
 | b-7 | — | window 間の並び順伝播は daemon push（項目 7 と設計） |
@@ -169,6 +169,7 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
   `app/mod.rs` は 7,117 → 4,168 行（`run()` 据え置き）。次は A（sidebar test 先行 → 純粋化）→ B（ask 一本化）→ C（採否）→ 6-2。
 - 2026-09-08: A 着地（A-1 #1055 test 先行 / A-2 純粋化）。`handle_sidebar_ipc` は file を書かない。次は B（ask 一本化）→ C（採否）→ 6-2。
 - 2026-09-08: C は不採用（共通化しない、test も今は足さない）。次は 6-2 の conception。
+- 2026-09-08: 6-2b b-4 着地（危険 E + F）。daemon の repo 順と auto-expand を session に鏡す（変化時のみ save）。実機: 再起動で並び順と expanded が保たれる。
 - 2026-09-08: 6-2b b-3 着地（危険 B + C）。daemon の active lane は復元待ちの間 session に入らない。実機: 起動して lanes が届く前に window を閉じても、次回起動で前回の lane が選ばれる。
 - 2026-09-08: 6-2b b-2 着地（危険 A）。壊れた session file は `session.json.corrupt-<ts>` へ退避してから default で起動。
 - 2026-09-08: 6-2b b-1 着地。`app/persist.rs`（`Persist` = SessionState の所有者、復元 cursor + 保存 8 箇所を集約）+ §8 の表。危険 A〜F は b-2 以降。
