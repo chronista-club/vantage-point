@@ -1,9 +1,21 @@
 //! editor bridge / fleet の **JS 式 builder**（純 calculation、webview で評価する文字列を作るだけ）。
 //!
 //! 旧 `app.rs` から移設（棚卸し 項目 6 / 6-1 #2、2026-09-08。本文は順序付き diff で一致、差分は
-//! `fn` → `pub(crate) fn` の 3 箇所）。呼び手は canvas 購読（`editor_command` → `AppEvent::EditorEval`、
-//! doc 60 §2 の既知の例外 = daemon 側から webview の builder を呼ぶ）、IPC handler（`fleet:feedback`）、
+//! `fn` → `pub(crate) fn` の 3 箇所）。呼び手は `app/on_board::editor_command`（購読側は op だけを
+//! `AppEvent::EditorCommand` で渡す。6-2 PR-EX で daemon/ → webview/ の辺を解消）、IPC handler（`fleet:feedback`）、
 //! device event arm（`fleet:dispatch`）。
+
+/// `editor_command` の op を JS に組む。未知の op（`editor_bridge_js` が None）は評価せず、
+/// 購読側がそのまま daemon へ返す `{"error": "未知の editor op: <op>"}` を Err で返す（文言は
+/// 旧 `run_canvas_session` の None 分岐と同じ）。
+pub(crate) fn editor_command_js(
+    op: &str,
+    field_id: Option<&str>,
+    value: Option<&serde_json::Value>,
+) -> Result<String, serde_json::Value> {
+    editor_bridge_js(op, field_id, value)
+        .ok_or_else(|| serde_json::json!({"error": format!("未知の editor op: {op}")}))
+}
 
 /// doc 48 Phase 2: `EditorCommand` op → webview で評価する JS 式 (純 calculation)。
 ///
@@ -135,7 +147,7 @@ mod fleet_dispatch_js_tests {
 
 #[cfg(test)]
 mod editor_bridge_js_tests {
-    use super::editor_bridge_js;
+    use super::{editor_bridge_js, editor_command_js};
 
     /// fields / values は bridge global (`vpEditorHost.mcp`) を経由する。
     #[test]
@@ -220,5 +232,14 @@ mod editor_bridge_js_tests {
         )
         .expect("layout_history");
         assert!(js.contains(r#"h.history({"limit":5})"#), "js={js}");
+    }
+
+    /// PR-EX: 未知 op は旧購読側と同じ文言の error JSON、既知 op は editor_bridge_js と同じ JS。
+    #[test]
+    fn editor_command_js_maps_unknown_op_to_error_json() {
+        let err = editor_command_js("nope", None, None).unwrap_err();
+        assert_eq!(err, serde_json::json!({"error": "未知の editor op: nope"}));
+        let js = editor_command_js("fields", None, None).unwrap();
+        assert_eq!(Some(js), editor_bridge_js("fields", None, None));
     }
 }

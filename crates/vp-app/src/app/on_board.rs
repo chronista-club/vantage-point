@@ -17,17 +17,28 @@ use super::state::UiState;
 use crate::daemon::conn::daemon_repo_request;
 use crate::daemon::pollers::resolve_active_repo_path;
 use crate::events::AppEvent;
+use crate::webview::editor_bridge::editor_command_js;
 use crate::webview::push_main;
 
-pub(super) fn editor_eval(
+/// doc 48 Phase 2: editor bridge。購読側から届いた op と引数で JS を組み（`editor_bridge_js`）、
+/// main webview で評価して結果を `resp` に返す。未知の op は評価せず `{"error":…}` の JSON を返す
+/// （旧 `EditorEval` は購読側が JS を組んでいた = daemon/ → webview/ の依存。6-2 PR-EX で UI 側に移した）。
+/// 受信側は timeout で打ち切るので callback が遅れて発火しても送信は無害 (受け手 drop 済なら send Err → 無視)。
+pub(super) fn editor_command(
     _ui: &mut UiState,
     boot: &Boot,
-    js: String,
+    op: String,
+    field_id: Option<String>,
+    value: Option<serde_json::Value>,
     resp: tokio::sync::mpsc::UnboundedSender<String>,
 ) {
-    // doc 48 Phase 2: editor bridge の webview 評価。結果 (wry が JSON 文字列化
-    // した評価値) を canvas session 側へ返す。受信側は timeout で打ち切るので
-    // callback が遅れて発火しても送信は無害 (受け手 drop 済なら send Err → 無視)。
+    let js = match editor_command_js(&op, field_id.as_deref(), value.as_ref()) {
+        Ok(js) => js,
+        Err(error_json) => {
+            let _ = resp.send(error_json.to_string());
+            return;
+        }
+    };
     if let Err(e) = boot
         .webview
         .evaluate_script_with_callback(&js, move |result| {
