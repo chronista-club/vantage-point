@@ -8,6 +8,8 @@
 //! - **Point**: WebView（視点/観測点）
 //! - **Capability**: repo が持つ能力（現行は repo_manager / update。旧 Agent / Protocol は 2026-09 撤去、MIDI は daemon の DeviceRegistry）
 
+/// board — scope 別の永続 board（show / board_* の owner、doc 52 / doc 61）
+pub(crate) mod board;
 /// CC activity poll — `claude agents --json` の LaneActivity 供給 (R3-a / Phase A)
 pub(crate) mod cc_activity;
 /// Lane conversation pump — ClaudeHost の ConversationEvent を per-lane topic に route (doc 30、gui)
