@@ -5,7 +5,7 @@
 //! 旧 `run()` の match arm を移したもの（doc 60 §6 6-2 PR-9、2026-09-08）。本体は arm の中身を
 //! 12 空白 dedent しただけ、arm の前のコメントは fn の doc へ移動。
 //!
-//! 触る state（read）: `ui.sidebar_state` / `ui.session_state` / `ui.board_snapshots`。
+//! 触る state（read）: `ui.sidebar_state` / `ui.persist.session` / `ui.board_snapshots`。
 //! resource: `boot.webview` / `boot.rt_handle` / `boot.daemon_conn`。
 //! ⚠️ 現状 `push_sidebar_state` を撃たない（後続 tick 頼み）— 6-2b b-5 で足す。
 
@@ -123,7 +123,7 @@ pub(super) fn webview_ready(ui: &mut UiState, boot: &Boot) {
     // ⚠️ 撃った/撃たなかったを**両方**残す。「行が無い」は「保存が無かった」とも
     // 「ここに来ていない」とも読めてしまい、実機の切り分けで 1 往復損する
     // （2026-08-06 に実際に損した）。
-    match ui.session_state.shell_layout().cloned() {
+    match ui.persist.session.shell_layout().cloned() {
         Some(layout) => {
             tracing::info!("shell layout 復元: {layout:?}");
             push_main::shell_layout(&boot.webview, &layout);

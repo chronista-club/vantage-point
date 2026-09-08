@@ -46,6 +46,8 @@ mod on_sidebar;
 mod on_terminal;
 /// event handler: window（close / resize / move / focus / shell layout / menu / secondary window）。
 mod on_window;
+/// 復元と保存の 1 箇所（`Persist` = SessionState の所有者、doc 60 §8）。
+mod persist;
 /// sidebar IPC の解釈（state 遷移 + 効果要求）。
 mod sidebar_ipc;
 /// event loop の可変 state（`UiState`）。

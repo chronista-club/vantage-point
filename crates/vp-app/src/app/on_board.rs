@@ -5,7 +5,7 @@
 //! 中身を 12 空白 dedent しただけ、arm の前のコメントは fn の doc へ移動。
 //!
 //! 触る state: `ui.board_snapshots`（所有者）、`ui.sidebar_state`（canvas 未読 / active lane）、
-//! `ui.session_state` / `ui.guards.lane_respawn_triggered` / `ui.sessions.conversation_sessions`
+//! `ui.persist`（activate） / `ui.guards.lane_respawn_triggered` / `ui.sessions.conversation_sessions`
 //! （`activate_lane` + `ensure_conversation_attach` 経由 = 群を跨ぐ）、`ui.win.is_focused`（read、
 //! Model B の self-filter）。resource: `boot.webview` / `boot.rt_handle` / `boot.daemon_conn`。
 
@@ -112,7 +112,7 @@ pub(super) fn canvas_message(
                 activate_lane(
                     &address,
                     &mut ui.sidebar_state,
-                    &mut ui.session_state,
+                    &mut ui.persist,
                     &boot.webview,
                     &mut ui.guards.lane_respawn_triggered,
                     &boot.rt_handle,
