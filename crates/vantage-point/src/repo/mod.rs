@@ -12,6 +12,8 @@
 pub(crate) mod board;
 /// CC activity poll — `claude agents --json` の LaneActivity 供給 (R3-a / Phase A)
 pub(crate) mod cc_activity;
+/// conversation ops — 会話系 Unison method の handler（owner は lanes_state / conversation::engine、doc 61）
+pub(crate) mod conversation_ops;
 /// Lane conversation pump — ClaudeHost の ConversationEvent を per-lane topic に route (doc 30、gui)
 pub(crate) mod conversation_pump;
 /// conversation replay — attach 時の会話配り直しと demand の合流（doc 32 §3、doc 61）
