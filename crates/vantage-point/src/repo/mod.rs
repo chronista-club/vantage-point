@@ -27,6 +27,8 @@ pub(crate) mod editor_bridge;
 pub(crate) mod hub;
 /// Lane subcommand types (LaneCmd) — Mailbox actor 経由の Lane 操作 Cmd (I-b、 2026-04-30)
 pub(crate) mod lane_cmd;
+/// lane ops — lane 系 Unison method の handler（owner は routes/lanes / host/ledger / session_registry、doc 61）
+pub(crate) mod lane_ops;
 /// lane の実体（PtySlot / chat engine / 代表値）を intent（registry）に合わせる reconcile 本体（doc 53 §12）
 pub(crate) mod lane_reconcile;
 /// Lane spawn actor — `LaneCmd` を recv して Semaphore で gate しつつ Lane を spawn (I-b、 2026-04-30)

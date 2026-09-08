@@ -4,7 +4,7 @@
 //!
 //! sidebar の `+ Add Sub` で agent dropdown 表示するための data source。
 //! entry point は daemon repo-proxy ask `agents_list`
-//! （`unison_server::handle_stands_list` → `list_agents`）。
+//! （`dispatch_repo_method` → 本 module の `handle_stands_list` → `list_agents`）。
 //!
 //! ## tmux decoupling PR2: 静的テーブル化
 //!
@@ -63,6 +63,13 @@ pub fn list_agents() -> Vec<AgentInfo> {
     agents
 }
 
+/// F6④ (doc 27 §3.4.5/§6): Agent 一覧。 旧 SP HTTP `GET /api/agents` を repo-proxy ask に移管。
+/// tmux decoupling PR2: built-in 静的テーブル (旧 mise task scan + TTL cache は廃止)。
+pub(crate) async fn handle_stands_list() -> Result<serde_json::Value, String> {
+    let agents = list_agents();
+    Ok(serde_json::json!({ "agents": agents }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +102,24 @@ mod tests {
         );
         assert!(cap("vpcode"), "vpcode は常駐 VpcodeHost（VCP、gui 専用）");
         assert!(!cap("shell"), "shell は engine なし（shell のみ）");
+    }
+
+    /// F6④: agents_list dispatch — repo-proxy ask が `{agents:[...]}` 形で返る。
+    /// list_stands_cached は mise 不在 (CI) でも空 Vec に graceful degrade するので、 配線 +
+    /// wire shape (agents array 常在) を CI でも固定できる (実 agent 内容は stands.rs の
+    /// mise-gated test が担保)。
+    #[tokio::test]
+    async fn stands_list_returns_stands_array() {
+        use crate::repo::state::build_test_app_state;
+        use crate::repo::unison_server::dispatch_repo_method;
+
+        let state = build_test_app_state(None).await;
+        let res = dispatch_repo_method(&state, "agents_list", serde_json::json!({}))
+            .await
+            .expect("agents_list dispatch");
+        assert!(
+            res.get("agents").map(|s| s.is_array()).unwrap_or(false),
+            "agents_list は {{agents:[...]}} 形で返る: {res}"
+        );
     }
 }
