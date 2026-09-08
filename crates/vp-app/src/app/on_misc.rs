@@ -7,7 +7,7 @@
 //! 触る state: `ui.sidebar_state`（titles / inboxes / devices / activity）、`ui.debuglog_watch_gen`、
 //! `ui.update_applying`（read）。resource: `boot.webview` / `boot.rt_handle`。
 //! ⚠️ `resolve_session_titles` / `resolve_lane_inboxes` は `ui.sidebar_state.lanes_by_repo` を読む
-//! （書き手は ReposLoaded / LanesLoaded の arm。6-2 PR-7 で `on_lanes` へ）。
+//! （書き手は LanesLoaded の arm。6-2 PR-7 で `on_lanes` へ）。
 
 use tao::event_loop::EventLoopProxy;
 

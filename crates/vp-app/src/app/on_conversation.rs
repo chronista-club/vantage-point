@@ -9,7 +9,7 @@
 //! `ui.sessions.terminal_sessions`（`session_mode_applied` が tui 化で spawn）。
 //! resource: `boot.webview` / `boot.rt_handle` / `boot.daemon_conn`。
 //! ⚠️ `session_mode_applied` は `ui.sidebar_state.lanes_by_repo` の session.mode を書く
-//! （lanes snapshot の所有者は ReposLoaded / LanesLoaded の arm。6-2 PR-7 で `on_lanes` へ）。
+//! （lanes snapshot の所有者は LanesLoaded の arm。6-2 PR-7 で `on_lanes` へ）。
 
 use tao::event_loop::EventLoopProxy;
 
@@ -476,7 +476,7 @@ pub(super) fn console_new_session(
 /// doc 39 P3: Root 切替 picker — 既存 session へ root を向け替え（slot = Resume respawn）。
 /// 後続は new_root（ConsoleSessionRenewed = clear）と違い conversation_demand_start:
 /// 対象 session には既存の会話があるため、clear でなく transcript replay で追従させる
-/// （conversation_session_focus chain と同じ規律）。
+///（conversation_session_focus chain と同じ規律）。
 pub(super) fn console_switch_root(ui: &mut UiState, boot: &Boot, lane: String, session: u64) {
     let Some(path) = resolve_repo_path_for_lane(&ui.sidebar_state, &lane) else {
         tracing::warn!("console:switch_root skip — lane の repo 解決失敗 (lane={lane})");
