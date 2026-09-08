@@ -25,9 +25,23 @@ crates/vp-app/src/
 ├── pane.rs / session_state.rs / settings.rs
 ├── generated/           KDL codegen（webview との wire 型）
 │  ── 処理 ──
-├── app/                 UI thread の世界 = state 遷移と効果の生成・実行
-│   ├── mod.rs           run()（6-2 で boot / state / on_* / lane_view / catch_up に分解）
-│   └── sidebar_ipc.rs   SidebarIpcOutcome + handle_sidebar_ipc（6-1。state 遷移なので webview/ でなく app/）
+├── app/                 UI thread の世界 = state 遷移と効果の生成・実行（6-2a、2026-09-08）
+│   ├── mod.rs           run(): boot() → proxy 3 本 → event_loop.run(閉包 = preamble + routing table 57 行)
+│   ├── boot.rs          struct Boot（resource: webview / window / menu / tray / daemon_conn / rt_handle / _rt / _log。
+│   │                      run() が最後まで所有、Send ではない）+ fn boot() -> (EventLoop, Boot, UiState)
+│   ├── state.rs         struct UiState { settings, session_state, sidebar_state, …, guards: Guards,
+│   │                      win: WindowState, sessions: LaneSessions }（旧 let mut 21 個）+ GEOMETRY_SAVE_THROTTLE
+│   ├── lane_view.rs     調整役 helper（activate_lane / maybe_respawn_dead_lane / ensure_conversation_attach /
+│   │                      push_active_view / roster 4 本 / term_sessions_of / mark_lane_* …）。field を明示引数で受ける
+│   ├── on_window.rs     Close / Resized / Moved / Focused / ShellLayout / SlotRect / MenuClicked + persist_window_geometry
+│   ├── on_lanes.rs      ReposLoaded / LanesLoaded / LanesError / LaneRespawnFailed / ReposError / SubCreateResult（lanes snapshot の所有者）
+│   ├── on_conversation.rs Conversation* / Session* / Console* / Agents* / OscNotification
+│   ├── on_terminal.rs   TerminalOutput / Write / Resize / PasteText
+│   ├── on_board.rs      CanvasMessage / EditorEval / BoardMutate（board_snapshots の所有者）
+│   ├── on_sidebar.rs    SidebarIpc（fast path + handle + 28 段の効果実行、1 fn）/ UpdateFlowPhase / Settings* + settings_snapshot
+│   ├── on_misc.rs       Titles / Inboxes / Ink / Debuglog / Device / Code / Wire / Activity
+│   ├── catch_up.rs      WebviewReady（§3「1 つの list」。新しい面の replay はここに足す）
+│   └── sidebar_ipc.rs   SidebarIpcOutcome + handle_sidebar_ipc（純粋、A-2）+ characterization test 18 本（A-1）
 ├── daemon/              daemon との線
 │   ├── conn.rs          SharedDaemonConn / conn manager（再接続の唯一の所有者）（6-1）
 │   ├── control.rs       DaemonControl（制御 RPC。統合 1 で repo_request を持つ）
@@ -98,7 +112,9 @@ crates/vp-app/src/
 - **A. sidebar**（✅ 2026-09-08）: A-1 #1055 で現行を固定する test 18 本（25 arm の状態変化・`session.save()` の有無（temp dir）・outcome）→ A-2 で `save` 2 箇所（`ProcessToggle` / `ProcessReorder`）を outcome の `session_save` にして `run()` が実行（test 本体は不変、`apply` helper が呼び手を模す）。codegen PR-2 / PR-3 は既に済だった（Rust / TS とも生成型を使用）
 - **B. 統合 1: daemon ask の一本化**（✅ 2026-09-08、独立 PR、Codex 再レビュー ②）: `daemon_repo_request`（呼ぶたびに QUIC connect、26 箇所）→ `DaemonControl::repo_request`。契約: **1 RPC = 1 stream**（request ごとに `open_channel("repo-proxy")` → handshake → request → 必ず `close()`）/ `REPO_ASK_TIMEOUT` = 現行と同じ 30 秒を別 const（`RPC_TIMEOUT` 10 秒に短縮しない）/ 応答を失った更新・削除は自動再送しない / `{"error"}` と transport 障害を区別
 - **C. loop 共通化**（❌ 不採用、mako 2026-09-08）: 5 本の違いは「順序と後始末」（切断中の keystroke 保持 / collapse 時の unsubscribe / 失敗回数の reset）で、共通化すると引数の山になり読みにくくなる一方、利益は行数だけ。§4 の表を契約として残す。再接続の挙動を触る PR が出た時に、その loop の厳密 test（擬似 daemon harness）をその PR で置く
-- **6-2**（別 conception）: `Boot`（Runtime / menu / tray / window / webview を所有、`run()` が最後まで持つ）と `UiState`（可変 state ~20 個）を分けて導入 / 復元と保存の表（値ごとに 誰が正か・未取得時・いつ保存・RPC 失敗・primary/secondary window）/ `SidebarIpcOutcome` → `Vec<SidebarEffect>`（`AppEvent` = 出来事、effect = 要求で併存）/ `on_*` / `app/lane_view.rs`（調整役）/ `catch_up.rs`
+- **6-2a**（✅ 2026-09-08、PR #1058〜#1067 の 10 本）: PR-1 `Boot` / `UiState`（閉包は `ui.` / `boot.` の prefix 以外 byte 一致）→ PR-2 `lane_view` → PR-3〜10 arm を fn ごとに `on_*` / `catch_up` へ（本体は 12 空白 dedent → rustfmt で一致、先行コメントは fn の doc へ移動、routing 行は 100 桁超なら block 形、引数 8 個以上は `#[allow(too_many_arguments)]`、fn の引数が既に参照の proxy は `&` を外す）。`run()` 3,090 → 320 行、`app/mod.rs` 4,168 → 540 行。test 1313 維持。handler は `&mut UiState` 全体を受ける（範囲の絞り込みは §2 の表を見て module 単位で後から）。`Vec<SidebarEffect>` は延期（第 2 の生成者が現れるまで、mako 2026-09-08）
+- **6-2b**（挙動を変える、test 先行）: §8 の復元と保存の表 → `app/persist.rs`（SessionState の所有者 = 復元 cursor + 保存への変換 1 箇所）→ 危険 A（壊れた file の退避）/ B + C（pending 未消費の間 daemon 値を書かない）/ E + F（daemon 順と auto-expand を session に鏡す）/ b-5（WebviewReady で push_sidebar_state）/ D（1 nightly log してから）。b-7（window 間の並び順伝播）は daemon push で項目 7 と一緒に
+- **6-2 PR-EX**: 既知の例外（`daemon/subscriptions` → `editor_bridge_js`）を `AppEvent::EditorCommand` で解消
 
 ## 7. 検証で保持する動作
 
@@ -123,4 +139,5 @@ crates/vp-app/src/
   `app/mod.rs` は 7,117 → 4,168 行（`run()` 据え置き）。次は A（sidebar test 先行 → 純粋化）→ B（ask 一本化）→ C（採否）→ 6-2。
 - 2026-09-08: A 着地（A-1 #1055 test 先行 / A-2 純粋化）。`handle_sidebar_ipc` は file を書かない。次は B（ask 一本化）→ C（採否）→ 6-2。
 - 2026-09-08: C は不採用（共通化しない、test も今は足さない）。次は 6-2 の conception。
+- 2026-09-08: 6-2a 着地（PR #1058〜#1067）。`run()` は routing table だけになり、resource は `Boot`、可変 state は `UiState`、arm は `on_*` / `catch_up`、調整役は `lane_view`。次は 6-2b（復元と保存の表 → persist.rs → 危険 A〜F）と PR-EX。実機（mako、`app:swap`）: boot / geometry 復元 / Cmd+N / close / resize / chat / mode 切替 / ROTO switch_lane（2 window）/ reopen / settings:save / toggle・reorder の永続。
 - 2026-09-08: B 着地。`daemon_repo_request` は共有接続の `DaemonControl::repo_request`（1 RPC = 1 stream / 必ず close / `REPO_ASK_TIMEOUT` 30 秒 / 自動再送しない）に一本化、呼び手 25 箇所は第 1 引数が port → `&SharedDaemonConn`。次は C（採否）→ 6-2。実機: daemon 再起動中の lane 操作が失敗として見えること / 失敗後に stream が残らないこと（mako、`app:swap`）。
