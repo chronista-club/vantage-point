@@ -35,6 +35,8 @@ pub(crate) mod lane_reconcile;
 pub(crate) mod lane_spawn_actor;
 /// Lane state types (LaneAddress / LanePool 等) — Lane scope の data model
 pub(crate) mod lanes_state;
+/// process ops — file watch / process runner / ruby の Unison method handler（doc 61）
+pub(crate) mod process_ops;
 pub mod process_runner;
 /// Repo scope の Agent pool (board / runner ほか — 現在は縮退済)
 pub(crate) mod repo_registry;
@@ -53,6 +55,8 @@ pub(crate) mod terminal_pump;
 pub mod topic;
 pub(crate) mod topic_router;
 pub(crate) mod unison_server;
+/// wire relay — wiremsg の repo 側 proxy（アドレス正規化 → daemon relay、R2-a / doc 61）
+pub(crate) mod wire_relay;
 
 // doc 44 P1 (fold-in): `run`（repo プロセスとしての実行）は退役。repo は daemon の
 // `run_daemon` が in-process で起こす（`RepoRuntimes::start` → `start_repo`）。

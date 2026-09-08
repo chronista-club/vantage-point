@@ -349,9 +349,9 @@ pub async fn shutdown_handler(State(state): State<Arc<AppState>>) -> impl IntoRe
 // consumer ゼロで dead 撤去済。
 
 // L0 portless Group B-3: Ruby VM HTTP handler (eval/run/stop/list) は唯一の consumer だった MCP を
-// repo-proxy ask (`unison_server::handle_ruby_*`、 同じ `process_runner::ruby_*` core) に移管し撤去。
+// repo-proxy ask (`process_ops::handle_ruby_*`、 同じ `process_runner::ruby_*` core) に移管し撤去。
 // L0 portless: `/api/process/*` (ProcessRunner 汎用 HTTP) handler 群は consumer 消滅で撤去。
-// 生きてる process 操作は QUIC `process` channel (`unison_server::handle_process_*`) が
+// 生きてる process 操作は QUIC `process` channel (`process_ops::handle_process_*`) が
 // 同じ `process_runner` core を呼ぶので、 HTTP 入口だけ落とせば core は維持される。
 
 #[cfg(test)]
