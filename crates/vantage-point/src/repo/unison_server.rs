@@ -87,12 +87,11 @@ pub(crate) fn payload_session_key(
     }
 }
 
-/// repo "process" channel の method dispatch（reverse-routing と共有する単一の入口）。
+/// repo "process" channel の method dispatch（単一の入口）。
 ///
-/// repo の "process" Unison channel handler と、 Daemon reverse-routing 経由 (repo control
-/// keepalive) の **両方**がこの関数を呼ぶことで、 「MCP が repo 直結」「MCP → Daemon → repo
-/// reverse」どちらの経路でも同一の dispatch ロジック・同一の AppState 操作になる
-/// (L0 SP-portless: repo listen port を Daemon 単一 endpoint に寄せても挙動不変)。
+/// 経路は 1 本: MCP / GUI → daemon の repo-proxy → `RepoRuntimes::dispatch`（`repo_registry.rs`）
+/// → 本 fn（in-process 直呼び）。doc 44 P1 fold-in で repo は listener を持たなくなったので、
+/// 旧「repo 直結の channel handler」経路は無い。
 pub(crate) async fn dispatch_repo_method(
     state: &Arc<AppState>,
     method: &str,
