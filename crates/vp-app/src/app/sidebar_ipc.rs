@@ -622,7 +622,7 @@ mod tests {
         let mut session = SessionState::default();
         for msg in [
             format!(r#"{{"t":"lane:select","path":"{REPO}","address":"vp/ghost"}}"#),
-            format!(r#"{{"t":"lane:select","path":"/w/none","address":"vp/root"}}"#),
+            r#"{"t":"lane:select","path":"/w/none","address":"vp/root"}"#.to_string(),
             format!(r#"{{"t":"lane:select","path":"{REPO}","address":""}}"#),
         ] {
             let out = apply(&msg, &mut state, &mut session);
