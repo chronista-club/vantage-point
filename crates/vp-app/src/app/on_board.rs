@@ -166,13 +166,7 @@ pub(super) fn canvas_message(
     }
 }
 
-pub(super) fn board_mutate(
-    ui: &mut UiState,
-    boot: &Boot,
-    proxy: &EventLoopProxy<AppEvent>,
-    method: String,
-    body: serde_json::Value,
-) {
+pub(super) fn board_mutate(ui: &mut UiState, boot: &Boot, method: String, body: serde_json::Value) {
     // board モデル (2026-07-15): WebView の board mutate（thumbnail ✕ / Clear ボタン）を
     // daemon repo-proxy ask で active repo の repo に forward する。 repo が DB を更新して
     // BoardUpdated(retained) を broadcast し、 canvas channel 経由で webview の board が

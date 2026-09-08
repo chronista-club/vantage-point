@@ -607,7 +607,7 @@ pub fn run() -> anyhow::Result<()> {
                 on_conversation::agents(&mut ui, &boot, lane, payload, req)
             }
             Event::UserEvent(AppEvent::BoardMutate { method, body }) => {
-                on_board::board_mutate(&mut ui, &boot, &proxy, method, body)
+                on_board::board_mutate(&mut ui, &boot, method, body)
             }
             Event::UserEvent(AppEvent::ReposError(msg)) => {
                 on_lanes::repos_error(&mut ui, &boot, msg)
