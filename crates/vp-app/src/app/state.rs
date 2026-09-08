@@ -151,9 +151,11 @@ impl UiState {
         // Phase 2.x-d: 旧 single-PTY 経路 (`xterm_ready` / `pending` / `PENDING_MAX`) は撤去。
         // per-Lane instance + browser-native WebSocket では各 Lane の xterm.js が独立に
         // WS から bytes を受けるので、 Rust 側で buffer / flush 同期する必要が無い。
-        let mut sidebar_state = SidebarState::default();
         // SidebarState に currents_order を即反映 (renderRepos がこの順で並べる)
-        sidebar_state.currents_order = session_state.currents_order.clone();
+        let sidebar_state = SidebarState {
+            currents_order: session_state.currents_order.clone(),
+            ..SidebarState::default()
+        };
         Self {
             settings,
             pending_session_active_lane: session_state.active_lane_address.clone(),
