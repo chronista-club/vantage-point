@@ -155,8 +155,8 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
 | b-2 ✅ | A | 壊れた session file は boot の再 save の前に `session.json.corrupt-<unix 秒>` へ退避（`SessionState::load` の parse 失敗分岐。読めない / 不在は対象外） |
 | b-3 ✅ | B + C | `observe_daemon_active_lane` は pending 未消費の間 session を書かない（sidebar の表示は on_lanes が別に更新）。close / throttle save は memory を flush するだけなので同時に解消 |
 | b-4 ✅ | E + F | ReposLoaded ごとに daemon 順を session に鏡す（`note_repo_order`）。auto-expand も鏡す（`note_repo_expanded`）。どちらも変わった時だけ save |
-| b-5 | — | `catch_up` が `push_sidebar_state` を撃つ |
-| b-6 | D | 復元経路の最初の Resized の size を 1 nightly 分 log → 実測してから |
+| b-5 ✅ | — | `catch_up` が list の先頭で `push_sidebar_state` を撃つ（reopen 直後の sidebar が空でない） |
+| b-6 ▶ | D | 復元経路の最初の Resized の size を log（`restore 経路の最初の Resized:` を `app.kdl.log` で grep）。復元値と違う事例が出たら修正、出なければ D は無しと判定して閉じる |
 | b-7 | — | window 間の並び順伝播は daemon push（項目 7 と設計） |
 
 ## Status log
@@ -169,6 +169,7 @@ session file（`session.json` / `session.<N>.json`、instance ごと）に何が
   `app/mod.rs` は 7,117 → 4,168 行（`run()` 据え置き）。次は A（sidebar test 先行 → 純粋化）→ B（ask 一本化）→ C（採否）→ 6-2。
 - 2026-09-08: A 着地（A-1 #1055 test 先行 / A-2 純粋化）。`handle_sidebar_ipc` は file を書かない。次は B（ask 一本化）→ C（採否）→ 6-2。
 - 2026-09-08: C は不採用（共通化しない、test も今は足さない）。次は 6-2 の conception。
+- 2026-09-08: 6-2b b-5 着地。WebviewReady で sidebar state も撃ち直す。実機（未確認、mako）: Reload WebView / reopen 直後に sidebar が出る（5 秒待たない）。
 - 2026-09-08: 6-2b b-4 着地（危険 E + F）。daemon の repo 順と auto-expand を session に鏡す（変化時のみ save）。実機: 再起動で並び順と expanded が保たれる。
 - 2026-09-08: 6-2b b-3 着地（危険 B + C）。daemon の active lane は復元待ちの間 session に入らない。実機: 起動して lanes が届く前に window を閉じても、次回起動で前回の lane が選ばれる。
 - 2026-09-08: 6-2b b-2 着地（危険 A）。壊れた session file は `session.json.corrupt-<ts>` へ退避してから default で起動。
