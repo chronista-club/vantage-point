@@ -10,9 +10,9 @@
 //! 必ず最新化される。 生成 Rust が壊れていれば vp-app lib の build が先に失敗するため、
 //! 「生成物がコンパイル可能」 はこの test crate がビルドされる時点で保証される。
 //!
-//! PR-1 scope: 生成物を既存の手書き定義 (`webview/src/sidebar/ipc.ts` の
-//! `SidebarIpcMsg` / `app/sidebar_ipc.rs` の `handle_sidebar_ipc`) と並存させるのみ。
-//! caller 移行は PR-2 (Rust) / PR-3 (TS)。
+//! caller 移行は済: Rust は `app/sidebar_ipc.rs::handle_sidebar_ipc` が `IpcEnvelope` で
+//! typed dispatch（PR-2）、TS は `webview/src/sidebar/ipc.ts::sendIpc` が生成 `IpcEnvelope`
+//! を受ける（PR-3）。手書きの `SidebarIpcMsg` は残っていない（2026-09-08 確認）。
 
 use std::path::{Path, PathBuf};
 

@@ -53,6 +53,9 @@ pub mod menu;
 pub mod pane;
 pub mod session_state;
 pub mod settings;
+/// test 専用: `$XDG_STATE_HOME` を差し替える test の直列化 + 復元（server crate と同型）。
+#[cfg(test)]
+mod test_env;
 pub mod tray;
 /// webview との線（IPC decode / asset / main-area / ink snapshot / code pane）。
 pub mod webview;
