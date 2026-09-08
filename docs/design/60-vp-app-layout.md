@@ -97,7 +97,7 @@ crates/vp-app/src/
 - **6-1**（各 1 PR、順序付き照合）: push_main → editor_bridge → push_sidebar → **app/sidebar_ipc**（そのまま移設、`session.save()` 込み）→ daemon/pollers → lane_address → webview/ipc_route → daemon/conn → daemon/subscriptions → lane/terminal + lane/conversation
 - **A. sidebar**（✅ 2026-09-08）: A-1 #1055 で現行を固定する test 18 本（25 arm の状態変化・`session.save()` の有無（temp dir）・outcome）→ A-2 で `save` 2 箇所（`ProcessToggle` / `ProcessReorder`）を outcome の `session_save` にして `run()` が実行（test 本体は不変、`apply` helper が呼び手を模す）。codegen PR-2 / PR-3 は既に済だった（Rust / TS とも生成型を使用）
 - **B. 統合 1: daemon ask の一本化**（✅ 2026-09-08、独立 PR、Codex 再レビュー ②）: `daemon_repo_request`（呼ぶたびに QUIC connect、26 箇所）→ `DaemonControl::repo_request`。契約: **1 RPC = 1 stream**（request ごとに `open_channel("repo-proxy")` → handshake → request → 必ず `close()`）/ `REPO_ASK_TIMEOUT` = 現行と同じ 30 秒を別 const（`RPC_TIMEOUT` 10 秒に短縮しない）/ 応答を失った更新・削除は自動再送しない / `{"error"}` と transport 障害を区別
-- **C. loop 共通化**: §4 を固定する test を置いてから採否判断。出荷条件にしない
+- **C. loop 共通化**（❌ 不採用、mako 2026-09-08）: 5 本の違いは「順序と後始末」（切断中の keystroke 保持 / collapse 時の unsubscribe / 失敗回数の reset）で、共通化すると引数の山になり読みにくくなる一方、利益は行数だけ。§4 の表を契約として残す。再接続の挙動を触る PR が出た時に、その loop の厳密 test（擬似 daemon harness）をその PR で置く
 - **6-2**（別 conception）: `Boot`（Runtime / menu / tray / window / webview を所有、`run()` が最後まで持つ）と `UiState`（可変 state ~20 個）を分けて導入 / 復元と保存の表（値ごとに 誰が正か・未取得時・いつ保存・RPC 失敗・primary/secondary window）/ `SidebarIpcOutcome` → `Vec<SidebarEffect>`（`AppEvent` = 出来事、effect = 要求で併存）/ `on_*` / `app/lane_view.rs`（調整役）/ `catch_up.rs`
 
 ## 7. 検証で保持する動作
@@ -122,4 +122,5 @@ crates/vp-app/src/
   lane/conversation。各 PR は順序付き diff で本文一致（差分は `use` / 可視性 / dedent）、test 1295 を維持。
   `app/mod.rs` は 7,117 → 4,168 行（`run()` 据え置き）。次は A（sidebar test 先行 → 純粋化）→ B（ask 一本化）→ C（採否）→ 6-2。
 - 2026-09-08: A 着地（A-1 #1055 test 先行 / A-2 純粋化）。`handle_sidebar_ipc` は file を書かない。次は B（ask 一本化）→ C（採否）→ 6-2。
+- 2026-09-08: C は不採用（共通化しない、test も今は足さない）。次は 6-2 の conception。
 - 2026-09-08: B 着地。`daemon_repo_request` は共有接続の `DaemonControl::repo_request`（1 RPC = 1 stream / 必ず close / `REPO_ASK_TIMEOUT` 30 秒 / 自動再送しない）に一本化、呼び手 25 箇所は第 1 引数が port → `&SharedDaemonConn`。次は C（採否）→ 6-2。実機: daemon 再起動中の lane 操作が失敗として見えること / 失敗後に stream が残らないこと（mako、`app:swap`）。
