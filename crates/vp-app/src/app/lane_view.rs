@@ -10,6 +10,7 @@
 use tao::event_loop::EventLoopProxy;
 use wry::WebView;
 
+use super::persist::Persist;
 use crate::daemon::conn::{SharedDaemonConn, daemon_repo_request};
 use crate::events::AppEvent;
 use crate::lane::conversation::{LaneConversation, spawn_conversation_session};
@@ -624,7 +625,7 @@ pub(super) fn repo_is_expanded(state: &SidebarState, repo_path: &str) -> bool {
 pub(super) fn activate_lane(
     address: &str,
     sidebar_state: &mut SidebarState,
-    session_state: &mut crate::session_state::SessionState,
+    persist: &mut Persist,
     webview: &wry::WebView,
     lane_respawn_triggered: &mut std::collections::HashSet<String>,
     rt_handle: &tokio::runtime::Handle,
@@ -637,9 +638,8 @@ pub(super) fn activate_lane(
         sidebar_state.active_component = None;
     }
 
-    // 2. Session persistence
-    session_state.active_lane_address = Some(address.to_string());
-    session_state.save();
+    // 2. Session persistence（保存は Persist が 1 箇所で担う）
+    persist.activate(address);
 
     // 3. Notification reset (同 lane click 連打でも badge を消す)
     sidebar_state.unread_notifications.remove(address);

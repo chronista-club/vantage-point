@@ -112,7 +112,7 @@ pub(super) fn canvas_message(
                 activate_lane(
                     &address,
                     &mut ui.sidebar_state,
-                    &mut ui.session_state,
+                    &mut ui.persist,
                     &boot.webview,
                     &mut ui.guards.lane_respawn_triggered,
                     &boot.rt_handle,

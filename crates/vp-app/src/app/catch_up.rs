@@ -123,7 +123,7 @@ pub(super) fn webview_ready(ui: &mut UiState, boot: &Boot) {
     // ⚠️ 撃った/撃たなかったを**両方**残す。「行が無い」は「保存が無かった」とも
     // 「ここに来ていない」とも読めてしまい、実機の切り分けで 1 往復損する
     // （2026-08-06 に実際に損した）。
-    match ui.session_state.shell_layout().cloned() {
+    match ui.persist.session.shell_layout().cloned() {
         Some(layout) => {
             tracing::info!("shell layout 復元: {layout:?}");
             push_main::shell_layout(&boot.webview, &layout);

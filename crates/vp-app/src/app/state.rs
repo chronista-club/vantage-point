@@ -12,37 +12,28 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::on_sidebar::DaemonSettings;
+use super::persist::Persist;
 use crate::lane::conversation::LaneConversation;
 use crate::lane::terminal::LaneTerminal;
 use crate::pane::SidebarState;
-use crate::session_state::SessionState;
 use crate::settings::Settings;
 use crate::webview::main_area::SlotRect;
-
-/// PR #459 throttled save: window resize / move 中も 500ms throttle で session save。
-/// CloseRequested の force save に依存しない (= `ge app:stop` の SIGTERM kill や crash
-/// でも直近 state が persistent)。 dogfood で「ge app で再起動すると save 走らない」
-/// bug を解消。
-pub(super) const GEOMETRY_SAVE_THROTTLE: Duration = Duration::from_millis(500);
 
 /// event loop の可変 state（所有者 = `run()` の閉包）。
 pub(super) struct UiState {
     /// VP-100 follow-up: 永続設定 + 1Password 風 開発者モード切替（vp-app.toml）。
     pub(super) settings: Settings,
-    /// この instance の session file（`session.json` / `session.<N>.json`）。WindowBuilder より前に
-    /// load 済（window geometry の復元）。active_lane_address / repos / currents_order 等の mutate + save に使う。
-    pub(super) session_state: SessionState,
+    /// この instance の session file の所有者（復元 cursor + 保存の 1 箇所、doc 60 §8）。
+    /// WindowBuilder より前に load 済（window geometry の復元）。
+    pub(super) persist: Persist,
     /// VP-95: sidebar 全体 state (repos + widget + activity)。
     pub(super) sidebar_state: SidebarState,
     /// in-app update: 適用フロー実行中フラグ（GUI local）。ActivitySnapshot は health poll で
     /// 定期上書きされるため、event loop 側で保持して毎回 snapshot に再適用する。
     pub(super) update_applying: bool,
-    /// 直前 active Lane を初回 LanesLoaded で復元するための pending 値。
-    /// 1 度復元したら None にして、 後続 LanesLoaded で再復元しないように。
-    pub(super) pending_session_active_lane: Option<String>,
     /// R sidebar の debug log tail の世代カウンタ（sidebar view modes、2026-08-01）。
     /// watch / unwatch のたびに進め、旧世代の tail thread は次の poll で自然に退場する
     /// （= 最後の watch が勝つ単一 tail。join も channel 後始末も不要 — debug_log.rs 参照）。
@@ -107,8 +98,6 @@ pub(super) struct WindowState {
     /// 上書きしないため、 復元 path 中は最初の Resized event を「正常な user-driven resize」
     /// 扱いにする。 default path (= restored_geometry None) では従来通り clamp logic を走らせる。
     pub(super) initial_size_clamp_done: bool,
-    /// 直近の geometry 保存時刻（[`GEOMETRY_SAVE_THROTTLE`] の起点）。
-    pub(super) last_geometry_save: Instant,
     /// dock app icon (portal favicon) の再アサート用。 bare binary は .app bundle が無いため
     /// macOS が launch 完了時に generic icon を被せ、 run() 前 (window.build 直後) の
     /// setApplicationIconImage を上書きする。 event loop 開始後 ~1.5s 間 set_app_icon() を
@@ -141,10 +130,10 @@ pub(super) struct LaneSessions {
 }
 
 impl UiState {
-    /// boot 直後の初期 state。`session_state` から復元 cursor と currents_order の写しを取る。
+    /// boot 直後の初期 state。`persist` の session から currents_order の写しを取る。
     pub(super) fn new(
         settings: Settings,
-        session_state: SessionState,
+        persist: Persist,
         initial_dev_mode: bool,
         restored_geometry: bool,
     ) -> Self {
@@ -153,13 +142,12 @@ impl UiState {
         // WS から bytes を受けるので、 Rust 側で buffer / flush 同期する必要が無い。
         // SidebarState に currents_order を即反映 (renderRepos がこの順で並べる)
         let sidebar_state = SidebarState {
-            currents_order: session_state.currents_order.clone(),
+            currents_order: persist.session.currents_order.clone(),
             ..SidebarState::default()
         };
         Self {
             settings,
-            pending_session_active_lane: session_state.active_lane_address.clone(),
-            session_state,
+            persist,
             sidebar_state,
             update_applying: false,
             debuglog_watch_gen: Arc::new(AtomicU64::new(0)),
@@ -175,7 +163,6 @@ impl UiState {
             },
             win: WindowState {
                 initial_size_clamp_done: restored_geometry,
-                last_geometry_save: Instant::now() - Duration::from_secs(1),
                 icon_launch_at: Instant::now(),
                 icon_settled: false,
                 is_focused: true,

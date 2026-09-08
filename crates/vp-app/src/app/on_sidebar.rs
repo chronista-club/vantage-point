@@ -195,19 +195,19 @@ pub(super) fn sidebar_ipc(
             _ => {}
         }
     }
-    let outcome = handle_sidebar_ipc(&msg, &mut ui.sidebar_state, &mut ui.session_state);
+    let outcome = handle_sidebar_ipc(&msg, &mut ui.sidebar_state, &mut ui.persist.session);
     // 解釈は純粋（doc 60 §6 A-2）: session の file 書き込みは要求を見てここで行う。
     // in-memory の更新は handle 側で済んでいるので、他の効果より先に書いて
     // 旧実装（handle 内で save）と同じ順序を保つ。
     if outcome.session_save {
-        ui.session_state.save();
+        ui.persist.save();
     }
     // Lane activation — activate_lane() が全副作用を処理
     if let Some(addr) = outcome.activate_lane {
         activate_lane(
             &addr,
             &mut ui.sidebar_state,
-            &mut ui.session_state,
+            &mut ui.persist,
             &boot.webview,
             &mut ui.guards.lane_respawn_triggered,
             &boot.rt_handle,

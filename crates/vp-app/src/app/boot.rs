@@ -20,6 +20,7 @@ use wry::{
     Rect, WebView, WebViewBuilder, dpi::LogicalPosition, dpi::LogicalSize as WryLogicalSize,
 };
 
+use super::persist::Persist;
 use super::state::UiState;
 use super::{
     DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, MAIN_VIEW_ASSETS, MIN_WINDOW_HEIGHT,
@@ -183,16 +184,12 @@ pub(super) fn boot() -> anyhow::Result<(EventLoop<AppEvent>, Boot, UiState)> {
     // position + size + monitor) を起動時に復元できるようにする。 per-instance 分離後は
     // **自分の instance file** (`session.json` / `session.<N>.json`) を読む。 `mut` で keep し、
     // 後段で active_lane_address / repos / currents_order 等の mutate + save にも使う。
-    let mut session_state = SessionState::load(instance_index);
-    // この instance window を「開いている」 と記録する (= 次回 primary 起動時の auto-spawn
-    // signal)。 clean close (`CloseRequested`) で `open=false` に上書きするので、 明示的に
-    // 閉じた window は復活せず、 kill された window は復元される。
-    session_state.set_open(true);
-    session_state.save();
+    // 「開いている」印の即 save（次回 primary 起動時の auto-spawn signal）も `Persist::boot` が担う。
+    let persist = Persist::boot(instance_index);
 
     // PR #458: invalid geometry (= MIN 未満 / NaN / Inf) は None に fallback。
     // per-instance 分離後は自分の file の geometry を使う。
-    let restored_geometry = session_state.window_geometry().cloned();
+    let restored_geometry = persist.session.window_geometry().cloned();
 
     // 最低サイズ + 起動時 size 強制矯正 — sidebar (固定 280px) 圧縮 bug の構造的防御。
     //
@@ -368,7 +365,7 @@ pub(super) fn boot() -> anyhow::Result<(EventLoop<AppEvent>, Boot, UiState)> {
 
     let ui = UiState::new(
         settings,
-        session_state,
+        persist,
         initial_dev_mode,
         restored_geometry.is_some(),
     );
