@@ -58,7 +58,11 @@ async fn start_wire_target(tx: mpsc::Sender<Value>) -> anyhow::Result<(ServerHan
             }
         })
         .await;
-    let handle = server.spawn_listen("[::1]:0").await?;
+    // club-unison 2.0: `spawn_listen` は builder（`listener(addr).spawn()`）に置き換わった。
+    let handle = std::sync::Arc::new(server)
+        .listener("[::1]:0")
+        .spawn()
+        .await?;
     let port = handle.local_addr().port();
     Ok((handle, port))
 }
