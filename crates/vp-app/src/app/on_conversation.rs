@@ -311,7 +311,7 @@ pub(super) fn session_mode_applied(
             &ui.sidebar_state,
             &mut ui.sessions.conversation_sessions,
             &boot.rt_handle,
-            &async_action_proxy,
+            async_action_proxy,
             &boot.daemon_conn,
         );
         // **Reborn ⊃ replay の実体**（doc 50 §4.6 ① / §4.7 逸脱②）: 切替のたび
