@@ -402,9 +402,9 @@ pub fn run() -> anyhow::Result<()> {
                     });
                 }
             }
-            // Phase 4-paste-fix: clipboard.readText の webview permission 問題への fallback。
-            // IPC `paste:request` を Rust が受けて arboard で読み取り、 ここで JS に inject。
-            Event::UserEvent(AppEvent::PasteText(text)) => on_terminal::paste_text(&mut ui, &boot, text),
+            Event::UserEvent(AppEvent::PasteText(text)) => {
+                on_terminal::paste_text(&mut ui, &boot, text)
+            }
             Event::UserEvent(AppEvent::OscNotification { lane, code: _ }) => {
                 // Phase 5-D Sprint C P2.1: per-Lane HD notification（tui / OSC 由来）。
                 // active lane は即読 skip。共通 sink（gui の turn_completed と合流）。
@@ -1260,20 +1260,16 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
             }
-            // terminal S4 (doc 27 §4.1): per-lane terminal session 由来の PTY 出力を当該 lane の
-            // xterm に inject する。 data は base64 (JS 側で decode → term.write)。
             Event::UserEvent(AppEvent::TerminalOutput {
                 lane,
                 session,
                 data,
             }) => on_terminal::terminal_output(&mut ui, &boot, lane, session, data),
-            // terminal S4: xterm onData → 当該 lane の terminal session に渡す (上り request)。
             Event::UserEvent(AppEvent::TerminalWrite {
                 lane,
                 session,
                 data,
             }) => on_terminal::terminal_write(&mut ui, &boot, lane, session, data),
-            // terminal S4: xterm resize → 当該 lane の terminal session に渡す (上り request)。
             Event::UserEvent(AppEvent::TerminalResize {
                 lane,
                 session,
