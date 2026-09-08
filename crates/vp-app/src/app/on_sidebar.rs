@@ -8,7 +8,7 @@
 //! と `changed` / `active_changed` の push は排他、`settings_save_request` は `settings_fetch` の前 …）。
 //! この順序は契約（doc 60 §6 A / Codex ⑥）で、`Vec<SidebarEffect>` 化は第 2 の生成者が現れるまで延期。
 //!
-//! 触る state: ほぼ全部（`ui.sidebar_state` / `ui.session_state` / `ui.settings` / `ui.dev_mode` /
+//! 触る state: ほぼ全部（`ui.sidebar_state` / `ui.persist` / `ui.settings` / `ui.dev_mode` /
 //! `ui.last_daemon_settings` / `ui.update_applying` / `ui.guards.*` / `ui.sessions.conversation_sessions`）
 //! = `&mut UiState` が正直な signature。resource: `boot.webview` / `boot.rt_handle` / `boot.daemon_conn` /
 //! `boot.actions_persist_tx` / menu item（developer mode の有効化）。

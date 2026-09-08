@@ -5,7 +5,7 @@
 //! 旧 `run()` の match arm を移したもの（doc 60 §6 6-2 PR-9、2026-09-08）。本体は arm の中身を
 //! 12 空白 dedent しただけ、arm の前のコメントは fn の doc へ移動。
 //!
-//! 触る state（read）: `ui.sidebar_state` / `ui.session_state` / `ui.board_snapshots`。
+//! 触る state（read）: `ui.sidebar_state` / `ui.persist.session` / `ui.board_snapshots`。
 //! resource: `boot.webview` / `boot.rt_handle` / `boot.daemon_conn`。
 //! ⚠️ 現状 `push_sidebar_state` を撃たない（後続 tick 頼み）— 6-2b b-5 で足す。
 

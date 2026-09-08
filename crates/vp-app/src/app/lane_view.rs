@@ -616,7 +616,7 @@ pub(super) fn repo_is_expanded(state: &SidebarState, repo_path: &str) -> bool {
 /// sidebar click / switch_lane (QUIC) / auto-select の 3 入口すべてがこの関数を呼ぶ。
 /// 副作用:
 ///   1. `sidebar_state.active_lane_address` + `active_component` (排他 clear)
-///   2. `session_state` 永続化
+///   2. session 永続化（`Persist::activate`）
 ///   3. notification / awaiting_input reset
 ///   4. sidebar UI push (`sidebar:state`)
 ///   5. main area push (`setActivePane` → `showLane`)

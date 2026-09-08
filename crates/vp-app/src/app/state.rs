@@ -1,7 +1,7 @@
 //! UI thread の可変 state — 旧 `run()` の閉包が捕まえていた 21 個の `let mut` を 1 struct に束ねる
 //! （doc 60 §6 6-2、Codex 再レビュー ⑤）。resource は [`super::boot::Boot`]。
 //!
-//! 閉包は [`UiState`] を値で持つので、`&mut ui.sidebar_state` と `&mut ui.session_state` は
+//! 閉包は [`UiState`] を値で持つので、`&mut ui.sidebar_state` と `&mut ui.persist` は
 //! 旧 local と同じく **disjoint な place borrow** として共存する。handler（`on_*`）は `&mut UiState`
 //! を受け、helper（lane_view 等）は今どおり field を明示引数で受ける（`&mut UiState` を取る helper は
 //! 呼び手の field borrow と衝突するので作らない）。

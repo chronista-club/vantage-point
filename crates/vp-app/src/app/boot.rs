@@ -167,7 +167,7 @@ pub(super) fn boot() -> anyhow::Result<(EventLoop<AppEvent>, Boot, UiState)> {
     );
 
     // vp-app instance index 判定 (= multi-window 復元)。 per-instance file load に先立って
-    // 必要なので session_state より前に確定する。
+    // 必要なので session file の load より前に確定する。
     // `VP_APP_INSTANCE` (= "0", "1", ...) が instance 番号。 未設定 / "0" = primary。
     let instance_index: usize = std::env::var("VP_APP_INSTANCE")
         .ok()
@@ -180,7 +180,7 @@ pub(super) fn boot() -> anyhow::Result<(EventLoop<AppEvent>, Boot, UiState)> {
         if is_primary { "primary" } else { "secondary" }
     );
 
-    // session_state を WindowBuilder より前に load して、 window geometry (= 前回終了時の
+    // session file を WindowBuilder より前に load して、 window geometry (= 前回終了時の
     // position + size + monitor) を起動時に復元できるようにする。 per-instance 分離後は
     // **自分の instance file** (`session.json` / `session.<N>.json`) を読む。 `mut` で keep し、
     // 後段で active_lane_address / repos / currents_order 等の mutate + save にも使う。
@@ -201,7 +201,7 @@ pub(super) fn boot() -> anyhow::Result<(EventLoop<AppEvent>, Boot, UiState)> {
     //    EventLoop が走り始めた**最初の Resized event** (= restoration 適用後) で
     //    min 未満を検出して `set_inner_size(DEFAULT)` で force-resize する経路に移行。
     //    詳細は event loop の Resized handler 側コメント。
-    // 3. window geometry 復元: `session_state.window_geometry` Some なら前回の size +
+    // 3. window geometry 復元: `persist.session.window_geometry` Some なら前回の size +
     //    position を apply (= 個別位置)。 None なら default。 monitor 復元は EventLoop
     //    走り始め後に `available_monitors()` で確認、 disconnect されてれば primary 内に clamp。
     let mut builder = WindowBuilder::new()

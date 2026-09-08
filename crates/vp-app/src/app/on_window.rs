@@ -6,7 +6,7 @@
 //! ⚠️ `resized` の途中 `return` は旧 arm の早期 return と同じ意味（match の後に共通処理は無い）:
 //! 起動時 clamp の直後は pane bounds の更新と geometry 保存を **次の Resized に譲る**。
 //!
-//! 触る state: `ui.session_state` / `ui.win` / `ui.dev_mode`、`ui.sidebar_state`（read）。
+//! 触る state: `ui.persist`（close / geometry / shell layout の save） / `ui.win` / `ui.dev_mode`、`ui.sidebar_state`（read）。
 //! resource: `boot.window` / `boot.webview` / `boot.menu_ids` / menu item / `boot.daemon_conn` /
 //! `boot.rt_handle` / `boot.instance_index`。
 

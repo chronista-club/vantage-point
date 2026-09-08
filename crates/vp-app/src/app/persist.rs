@@ -181,9 +181,13 @@ impl Persist {
 mod tests {
     use super::*;
 
+    /// daemon が発行する現行形の key（`<repo>/lane/<name>`）を持つ lane。key 無しの fixture は
+    /// 旧 2 分節形に落ちて `SessionState::load` が「旧世代」と見なす形なので、ここでは canonical を書く。
     fn lane(repo: &str, name: &str) -> LaneInfo {
-        serde_json::from_value(serde_json::json!({"address": {"repo": repo, "name": name}}))
-            .expect("LaneInfo deserialize")
+        serde_json::from_value(serde_json::json!({
+            "address": {"repo": repo, "name": name, "key": format!("{repo}/lane/{name}")}
+        }))
+        .expect("LaneInfo deserialize")
     }
 
     fn saved(instance: usize) -> Option<SessionState> {
@@ -210,17 +214,23 @@ mod tests {
     #[test]
     fn boot_parks_saved_lane_as_pending() {
         let _env = crate::test_env::state_dir();
-        with_active("vp/sub-a").save();
+        with_active("vp/lane/sub-a").save();
         let p = Persist::boot(0);
-        assert_eq!(p.pending_active_lane(), Some("vp/sub-a"));
-        assert_eq!(p.session.active_lane_address.as_deref(), Some("vp/sub-a"));
+        assert_eq!(p.pending_active_lane(), Some("vp/lane/sub-a"));
+        assert_eq!(
+            p.session.active_lane_address.as_deref(),
+            Some("vp/lane/sub-a")
+        );
     }
 
     #[test]
     fn restore_consumes_pending_once_when_lanes_contain_it() {
-        let mut p = Persist::from_session(with_active("vp/sub-a"));
+        let mut p = Persist::from_session(with_active("vp/lane/sub-a"));
         let lanes = [lane("vp", "root"), lane("vp", "sub-a")];
-        assert_eq!(p.restore_active_lane(&lanes).as_deref(), Some("vp/sub-a"));
+        assert_eq!(
+            p.restore_active_lane(&lanes).as_deref(),
+            Some("vp/lane/sub-a")
+        );
         assert_eq!(p.pending_active_lane(), None);
         // 2 回目は復元しない（後続の LanesLoaded で再復元して user の選択を上書きしない）
         assert_eq!(p.restore_active_lane(&lanes), None);
@@ -228,12 +238,12 @@ mod tests {
 
     #[test]
     fn restore_keeps_pending_when_snapshot_is_another_repo() {
-        let mut p = Persist::from_session(with_active("vp/sub-a"));
+        let mut p = Persist::from_session(with_active("vp/lane/sub-a"));
         assert_eq!(p.restore_active_lane(&[lane("other", "root")]), None);
-        assert_eq!(p.pending_active_lane(), Some("vp/sub-a"));
+        assert_eq!(p.pending_active_lane(), Some("vp/lane/sub-a"));
         // 空の snapshot でも同じ
         assert_eq!(p.restore_active_lane(&[]), None);
-        assert_eq!(p.pending_active_lane(), Some("vp/sub-a"));
+        assert_eq!(p.pending_active_lane(), Some("vp/lane/sub-a"));
     }
 
     /// 危険 B の現状: daemon 値は in-memory を書き換えるが file は書かない。
@@ -241,16 +251,19 @@ mod tests {
     #[test]
     fn observe_daemon_active_lane_updates_memory_only_and_keeps_pending() {
         let _env = crate::test_env::state_dir();
-        let mut p = Persist::from_session(with_active("vp/sub-a"));
-        p.observe_daemon_active_lane("vp/root".to_string());
-        assert_eq!(p.session.active_lane_address.as_deref(), Some("vp/root"));
-        assert_eq!(p.pending_active_lane(), Some("vp/sub-a"));
+        let mut p = Persist::from_session(with_active("vp/lane/sub-a"));
+        p.observe_daemon_active_lane("vp/lane/root".to_string());
+        assert_eq!(
+            p.session.active_lane_address.as_deref(),
+            Some("vp/lane/root")
+        );
+        assert_eq!(p.pending_active_lane(), Some("vp/lane/sub-a"));
         assert!(saved(0).is_none(), "observe だけでは書かない");
         // ⚠️ 現状: その後の無関係な save（resize / close）が daemon 値を file に流す
         p.finish_close();
         assert_eq!(
             saved(0).expect("saved").active_lane_address.as_deref(),
-            Some("vp/root"),
+            Some("vp/lane/root"),
             "危険 B: instance 別の保存値 vp/sub-a が daemon 値で消える（b-3 で直す）"
         );
     }
@@ -259,11 +272,14 @@ mod tests {
     fn activate_mirrors_and_saves() {
         let _env = crate::test_env::state_dir();
         let mut p = Persist::from_session(SessionState::default());
-        p.activate("vp/sub-b");
-        assert_eq!(p.session.active_lane_address.as_deref(), Some("vp/sub-b"));
+        p.activate("vp/lane/sub-b");
+        assert_eq!(
+            p.session.active_lane_address.as_deref(),
+            Some("vp/lane/sub-b")
+        );
         assert_eq!(
             saved(0).expect("saved").active_lane_address.as_deref(),
-            Some("vp/sub-b")
+            Some("vp/lane/sub-b")
         );
     }
 

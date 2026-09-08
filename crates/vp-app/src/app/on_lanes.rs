@@ -5,8 +5,9 @@
 //! 中身を 12 空白 dedent しただけ、arm の前のコメントは fn の doc へ移動。
 //!
 //! 触る state（この module が **所有者**）: `ui.sidebar_state`（processes / lanes_by_repo / origin /
-//! lane_sub_state / currents_order / active_lane）、`ui.pending_session_active_lane`、
-//! `ui.guards.*`（購読 guard / spawn dedup / roster 指紋）、`ui.sessions.*`（reconcile）、`ui.session_state`。
+//! lane_sub_state / currents_order / active_lane）、`ui.guards.*`（購読 guard / spawn dedup / roster 指紋）、
+//! `ui.sessions.*`（reconcile）。session file と復元 cursor は `ui.persist` が所有（doc 60 §8）— ここは
+//! `restore_active_lane` / `observe_daemon_active_lane` / `activate` で頼むだけ。
 //! resource: `boot.webview` / `boot.rt_handle` / `boot.daemon_conn` / `boot.instance_index`。
 
 use tao::event_loop::EventLoopProxy;
@@ -69,7 +70,7 @@ pub(super) fn repos_loaded(
                 existing.clone()
             } else {
                 // 新規 repo の expanded 解決:
-                //   1. session_state に saved 値があれば最優先 (vp-app 再起動の復元)
+                //   1. session file に saved 値があれば最優先 (vp-app 再起動の復元)
                 //   2. 上記 None かつ session 中の追加 (= 初回 fetch ではない) なら auto-expand
                 //   3. 初回 fetch の新規は閉じた状態
                 let mut s = RepoPaneState::new(p.path.clone(), p.name.clone());
@@ -168,7 +169,7 @@ pub(super) fn lanes_loaded(
     // auto-select を skip。 元 vp-app が既に同 lane の terminal WS を持ってる事が多く、
     // 衝突して両方の console が壊れるため。 Secondary は user が手動 lane 選択する前提。
     let is_secondary = boot.instance_index != 0;
-    // session 復元優先: pending_session_active_lane が今回の lanes に含まれれば、
+    // session 復元優先: persist の pending（前回の active lane）が今回の lanes に含まれれば、
     // auto-select-first より先にそれを採用 (vp-app 再起動時に直前 active を維持)。
     let session_match: Option<String> = ui.persist.restore_active_lane(&lanes);
     // F.8 B Convergent: auto-select は pid あり (= Active = Pane 起動済) な Lane のみ対象。
