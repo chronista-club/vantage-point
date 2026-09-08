@@ -7,7 +7,8 @@
 //!
 //! 触る state（read）: `ui.sidebar_state` / `ui.persist.session` / `ui.board_snapshots`。
 //! resource: `boot.webview` / `boot.rt_handle` / `boot.daemon_conn`。
-//! ⚠️ 現状 `push_sidebar_state` を撃たない（後続 tick 頼み）— 6-2b b-5 で足す。
+//! sidebar の名簿（`push_sidebar_state`）も list の先頭で撃つ（b-5。それまでは 5 秒後の tick 頼みで、
+//! reopen 直後の sidebar が空だった）。
 
 use super::boot::Boot;
 use super::lane_view::{
@@ -17,6 +18,7 @@ use super::lane_view::{
 use super::state::UiState;
 use crate::daemon::conn::daemon_repo_request;
 use crate::webview::push_main;
+use crate::webview::push_sidebar::push_sidebar_state;
 
 /// webview が「受け口を全部生やした」と名乗った（`entry.tsx` の `t:"ready"`）。
 ///
@@ -32,6 +34,9 @@ use crate::webview::push_main;
 /// 「webview が生まれた」という事実は 1 つなので、signal も 1 本に畳んである。
 /// 新しい面を足したら **ここに replay を 1 行足す**（新しい IPC tag は要らない）。
 pub(super) fn webview_ready(ui: &mut UiState, boot: &Boot) {
+    // 0. sidebar の名簿（repos / lanes / activity / devices）。boot 窓で届いた LanesLoaded 等の push は
+    //    bundle 評価前で受け口不在だったので、ここで現在の state を丸ごと撃ち直す（b-5、doc 60 §8）。
+    push_sidebar_state(&boot.webview, &ui.sidebar_state);
     // terminal S4: JS xterm instance の catch-up 再発行のみ (repo port 不要)。
     // terminal session 自体は LanesLoaded reconcile が管理するのでここでは触らない。
     for (_repo_path, lanes) in ui.sidebar_state.lanes_by_repo.clone().iter() {
