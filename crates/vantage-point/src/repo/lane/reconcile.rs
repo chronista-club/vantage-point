@@ -41,7 +41,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::lane::session_registry::{self, SessionKey, SessionMode};
-use crate::repo::lanes_state::{LaneAddress, LanePool, LaneState};
+use crate::repo::lane::{LaneAddress, LanePool, LaneState};
 use crate::repo::terminal_pump::TerminalPumps;
 use crate::repo::topic_router::TopicRouter;
 

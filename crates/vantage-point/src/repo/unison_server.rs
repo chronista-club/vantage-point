@@ -18,7 +18,7 @@ use super::board;
 use super::conversation_ops;
 use super::conversation_replay;
 use super::editor_bridge;
-use super::lane_ops;
+use super::lane;
 use super::process_ops;
 use super::state::AppState;
 use super::terminal_ops;
@@ -182,13 +182,13 @@ pub(crate) async fn dispatch_repo_method(
         // doc 51 §1 A3b: `vp now` — session の「今なにを」自己申告を now-line に注入
         "session_now" => conversation_ops::handle_session_now(state, payload).await,
         // tmux decoupling PR1: 制御面 nudge の repo-proxy 入口 (旧 tmux send-keys の置換)
-        "lane_nudge" => lane_ops::handle_lane_nudge(state, payload).await,
+        "lane_nudge" => lane::ops::handle_lane_nudge(state, payload).await,
         // tmux decoupling PR2: lane console capture (旧 tmux capture-pane の native 代替)
-        "lane_capture" => lane_ops::handle_lane_capture(state, payload).await,
+        "lane_capture" => lane::ops::handle_lane_capture(state, payload).await,
         // doc 46 P5: lane が持つ PTY slot の一覧（UI を通さない slot 枚数の読み手）
-        "lane_slots" => lane_ops::handle_lane_slots(state, payload).await,
+        "lane_slots" => lane::ops::handle_lane_slots(state, payload).await,
         // doc 46 P5 producer: 新 session を採番して console を 1 枚立てる（`lane_slots` の書き手）
-        "lane_slot_new" => lane_ops::handle_lane_slot_new(state, payload).await,
+        "lane_slot_new" => lane::ops::handle_lane_slot_new(state, payload).await,
         "terminal_resize" => terminal_ops::handle_terminal_resize(state, payload).await,
         // board モデル (2026-07-15): webview からの board mutate（thumbnail ✕ / Clear ボタン）。
         // 旧 pp_state_save/load は撤去（board は repo truth、 webview は BoardUpdated 購読 + mutate へ）。
@@ -197,18 +197,18 @@ pub(crate) async fn dispatch_repo_method(
         // cursor の server 昇格（doc 52 §5 計器盤）: thumbnail click / scrollback の注視を repo truth に。
         "board_set_cursor" => board::handle_board_set_cursor(state, payload).await,
         // lanes portless: Lane create/list (旧 SP HTTP POST/GET /api/lanes を repo-proxy ask に移管)
-        "lane_create" => lane_ops::handle_lane_create(state, payload).await,
-        "lanes_list" => lane_ops::handle_lanes_list(state).await,
+        "lane_create" => lane::ops::handle_lane_create(state, payload).await,
+        "lanes_list" => lane::ops::handle_lanes_list(state).await,
         // F6②: Lane delete (旧 SP HTTP DELETE /api/lanes を repo-proxy ask に移管)
-        "lane_delete" => lane_ops::handle_lane_delete(state, payload).await,
+        "lane_delete" => lane::ops::handle_lane_delete(state, payload).await,
         // F6③: Lane restart (旧 SP HTTP POST /api/lanes/restart を repo-proxy ask に移管)
-        "lane_restart" => lane_ops::handle_lane_restart(state, payload).await,
+        "lane_restart" => lane::ops::handle_lane_restart(state, payload).await,
         // 供給 push 根治: hook → daemon 経由の session pointer 変化通知（Diff::Update push の起点）
-        "lane_session_changed" => lane_ops::handle_lane_session_changed(state, payload).await,
+        "lane_session_changed" => lane::ops::handle_lane_session_changed(state, payload).await,
         // doc 44 D4: Repo Host の帳簿 — 開発起点ポインタの読み書き
-        "lane_origin_get" => lane_ops::handle_lane_origin_get(state).await,
-        "lane_origin_set" => lane_ops::handle_lane_origin_set(state, payload).await,
-        "lane_order_set" => lane_ops::handle_lane_order_set(state, payload).await,
+        "lane_origin_get" => lane::ops::handle_lane_origin_get(state).await,
+        "lane_origin_set" => lane::ops::handle_lane_origin_set(state, payload).await,
+        "lane_order_set" => lane::ops::handle_lane_order_set(state, payload).await,
         // F6④: Agent 一覧 (旧 SP HTTP GET /api/agents を repo-proxy ask に移管)
         "agents_list" => super::agents::handle_stands_list().await,
         // L0 finale: repo graceful shutdown を QUIC で (旧 SP HTTP POST /api/shutdown を置換、

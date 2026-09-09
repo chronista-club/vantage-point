@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use super::state::AppState;
+use crate::repo::state::AppState;
 
 /// tmux decoupling PR1: lane nudge。 論理 lane address 宛に literal text + Enter を PtySlot へ書く。
 ///
@@ -24,12 +24,12 @@ pub(crate) async fn handle_lane_nudge(
         return Err("lane_nudge: lane 未指定".to_string());
     }
     let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("");
-    let Some(addr) = crate::repo::lanes_state::LanePool::parse_address(lane) else {
+    let Some(addr) = crate::repo::lane::LanePool::parse_address(lane) else {
         return Err(format!("lane_nudge: lane パース失敗: {}", lane));
     };
     // doc 46 P5: `session` 省略 = root（mailbox を名乗る住人）。明示指定で同居する別 slot に届く。
-    let session = super::unison_server::payload_session_key("lane_nudge", &payload)?;
-    crate::repo::lanes_state::deliver_nudge(&state.lane_pool, &addr, session, text)
+    let session = crate::repo::unison_server::payload_session_key("lane_nudge", &payload)?;
+    crate::repo::lane::deliver_nudge(&state.lane_pool, &addr, session, text)
         .await
         .map_err(|e| format!("lane_nudge 失敗: {}", e))?;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session}))
@@ -48,7 +48,7 @@ pub(crate) async fn handle_lane_slots(
     if lane.is_empty() {
         return Err("lane_slots: lane 未指定".to_string());
     }
-    let Some(addr) = crate::repo::lanes_state::LanePool::parse_address(lane) else {
+    let Some(addr) = crate::repo::lane::LanePool::parse_address(lane) else {
         return Err(format!("lane_slots: lane パース失敗: {}", lane));
     };
     let pool = state.lane_pool.read().await;
@@ -85,7 +85,7 @@ pub(crate) async fn handle_lane_slot_new(
     if lane.is_empty() {
         return Err("lane_slot_new: lane 未指定".to_string());
     }
-    let Some(addr) = crate::repo::lanes_state::LanePool::parse_address(lane) else {
+    let Some(addr) = crate::repo::lane::LanePool::parse_address(lane) else {
         return Err(format!("lane_slot_new: lane パース失敗: {}", lane));
     };
     let agent = payload.get("agent").and_then(|v| v.as_str());
@@ -116,7 +116,7 @@ pub(crate) async fn handle_lane_slot_new(
     };
     // doc 53 §11: **本バグの当事者** — CLI / MCP から console を足しても、これが無いと
     // GUI の roster に出ない（GUI 自身の動詞しか fetch の契機にならなかった）。
-    super::lane_lifecycle::emit_lane_update(state, &addr).await;
+    super::lifecycle::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({
         "status": "ok",
         "lane": lane,
@@ -138,11 +138,11 @@ pub(crate) async fn handle_lane_capture(
     if lane.is_empty() {
         return Err("lane_capture: lane 未指定".to_string());
     }
-    let Some(addr) = crate::repo::lanes_state::LanePool::parse_address(lane) else {
+    let Some(addr) = crate::repo::lane::LanePool::parse_address(lane) else {
         return Err(format!("lane_capture: lane パース失敗: {}", lane));
     };
     // doc 46 P5: `session` 省略 = root（lane の代表 slot）。明示指定で同居する別 slot を読む。
-    let session = super::unison_server::payload_session_key("lane_capture", &payload)?;
+    let session = crate::repo::unison_server::payload_session_key("lane_capture", &payload)?;
     let pool = state.lane_pool.read().await;
     let content = match pool.capture_lane(&addr, session) {
         Some(c) => c,
@@ -199,9 +199,9 @@ pub(crate) async fn handle_lane_delete(
         .get("cleanup")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
-    let addr = crate::repo::lanes_state::LanePool::parse_address(address)
+    let addr = crate::repo::lane::LanePool::parse_address(address)
         .ok_or_else(|| format!("lane_delete: invalid lane address: {}", address))?;
-    match super::lane_lifecycle::delete_lane_orchestrated(state, addr, cleanup).await {
+    match super::lifecycle::delete_lane_orchestrated(state, addr, cleanup).await {
         Ok(info) => Ok(serde_json::json!({
             "deleted": info.address,
             "pid": info.pid,
@@ -232,12 +232,12 @@ pub(crate) async fn handle_lane_restart(
         .get("fresh")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let addr = crate::repo::lanes_state::LanePool::parse_address(address)
+    let addr = crate::repo::lane::LanePool::parse_address(address)
         .ok_or_else(|| format!("lane_restart: invalid lane address: {}", address))?;
     if fresh {
-        super::lane_lifecycle::reset_lane_orchestrated(state, addr).await
+        super::lifecycle::reset_lane_orchestrated(state, addr).await
     } else {
-        super::lane_lifecycle::restart_lane_orchestrated(state, addr).await
+        super::lifecycle::restart_lane_orchestrated(state, addr).await
     }
 }
 
@@ -260,7 +260,7 @@ pub(crate) async fn handle_lane_session_changed(
     if lane.is_empty() {
         return Err("lane_session_changed: lane 必須".to_string());
     }
-    let addr = crate::repo::lanes_state::LanePool::parse_address(lane)
+    let addr = crate::repo::lane::LanePool::parse_address(lane)
         .ok_or_else(|| format!("lane_session_changed: invalid lane address: {lane}"))?;
     let Some(agent) = state
         .lane_pool
@@ -284,11 +284,13 @@ pub(crate) async fn handle_lane_session_changed(
         // `session` 不在 = 報告者が名乗らなかった（VP_SESSION_KEY 無しで spawn 済の slot /
         // VP 外起動）→ 後方互換で root 宛。**ここで root に丸めない**（Unspecified のまま
         // 渡す）ことで、実在しない session の報告が root に化けるのを registry 側が拒める。
-        let target =
-            match super::unison_server::payload_session_key("lane_session_changed", &payload)? {
-                Some(key) => ReportTarget::Session(key),
-                None => ReportTarget::Unspecified,
-            };
+        let target = match crate::repo::unison_server::payload_session_key(
+            "lane_session_changed",
+            &payload,
+        )? {
+            Some(key) => ReportTarget::Session(key),
+            None => ReportTarget::Unspecified,
+        };
         let report = ConversationReport {
             target,
             conversation: sid,
@@ -308,7 +310,7 @@ pub(crate) async fn handle_lane_session_changed(
             }
         }
     }
-    super::lane_lifecycle::emit_lane_update(state, &addr).await;
+    super::lifecycle::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({ "status": "ok", "lane": lane }))
 }
 
@@ -320,9 +322,9 @@ pub(crate) async fn handle_lane_create(
     state: &Arc<AppState>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let req: super::lane_lifecycle::CreateLaneReq = serde_json::from_value(payload)
+    let req: super::lifecycle::CreateLaneReq = serde_json::from_value(payload)
         .map_err(|e| format!("lane_create: invalid payload: {}", e))?;
-    let info = super::lane_lifecycle::create_sub_orchestrated(state, req).await?;
+    let info = super::lifecycle::create_sub_orchestrated(state, req).await?;
     serde_json::to_value(&info).map_err(|e| format!("lane_create: LaneInfo serialize 失敗: {}", e))
 }
 
@@ -372,7 +374,7 @@ pub(crate) async fn handle_lane_origin_set(
     // これが無いと 5s periodic tick まで sidebar の star が動かず「押しても無反応」に見える。
     let _ = state
         .system_event_tx
-        .send(crate::repo::lanes_state::SystemEvent::LanesProjectionChanged);
+        .send(crate::repo::lane::SystemEvent::LanesProjectionChanged);
     let origin = crate::host::ledger::origin(state.vpdb.as_ref(), &state.repo_dir, &lanes).await;
     serde_json::to_value(&origin).map_err(|e| format!("lane_origin_set: serialize 失敗: {e}"))
 }
@@ -404,14 +406,14 @@ pub(crate) async fn handle_lane_order_set(
     // （doc 44 §11 の指紋は lanes の並びも含むため、次の publish で必ず届く）。
     let _ = state
         .system_event_tx
-        .send(crate::repo::lanes_state::SystemEvent::LanesProjectionChanged);
+        .send(crate::repo::lane::SystemEvent::LanesProjectionChanged);
     Ok(serde_json::json!({ "status": "ok", "count": order.len() }))
 }
 
 /// lanes portless (doc 27 §3.4.5): Lane list。 旧 SP HTTP `GET /api/lanes` を repo-proxy ask に
 /// 移管。 core の `build_lanes_snapshot` を呼び `{lanes:[...]}` で wrap (旧 HTTP `LanesResponse` 互換)。
 pub(crate) async fn handle_lanes_list(state: &Arc<AppState>) -> Result<serde_json::Value, String> {
-    let lanes = super::lane_lifecycle::build_lanes_snapshot(state).await;
+    let lanes = super::lifecycle::build_lanes_snapshot(state).await;
     // doc 46 P5: slot は lane に 1 枚ではなく session ごとになった。`vp lane ls --detail` から
     // 枚数が見えるよう、lane ごとの slot session key を snapshot に添える（LaneInfo 自体には
     // 足さない — descriptor は帳簿の永続形で、slot は in-memory な runtime 事実だから。
@@ -471,7 +473,7 @@ mod tests {
     /// 未指定 / parse 不能 / pool 不在（lane 不在）/ chat mode lane（console 無しが正常）を分岐して返す。
     #[tokio::test]
     async fn lane_capture_dispatch_error_paths() {
-        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
@@ -551,7 +553,7 @@ mod tests {
     #[tokio::test]
     async fn lane_slots_lists_every_session_slot() {
         use crate::daemon::pty_slot::PtySlot;
-        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
@@ -654,7 +656,7 @@ mod tests {
     #[tokio::test]
     async fn lane_slot_new_adds_a_console_visible_in_lane_slots() {
         use crate::daemon::pty_slot::PtySlot;
-        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
@@ -746,7 +748,7 @@ mod tests {
     #[tokio::test]
     async fn lane_delete_removes_sub_and_idempotent() {
         use crate::daemon::pty_slot::PtySlot;
-        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
@@ -873,7 +875,8 @@ mod tests {
     /// これが Daemon lane_registry / vp-app header を追従させる push の起点になる。
     #[tokio::test]
     async fn lane_session_changed_emits_enriched_lane_update() {
-        use crate::repo::lanes_state::{Diff, LaneAddress, LaneInfo, LaneState, SystemEvent};
+        use crate::repo::lane::state::Diff;
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState, SystemEvent};
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
@@ -932,7 +935,8 @@ mod tests {
     /// = 「発行時点で chip が点く」の配線検証。
     #[tokio::test]
     async fn lane_session_changed_records_conversation_report_into_registry() {
-        use crate::repo::lanes_state::{Diff, LaneAddress, LaneInfo, LaneState, SystemEvent};
+        use crate::repo::lane::state::Diff;
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState, SystemEvent};
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
@@ -1006,7 +1010,7 @@ mod tests {
     /// 実在しない session の報告は root に化けず、何も書かない。
     #[tokio::test]
     async fn lane_session_changed_records_into_reported_session() {
-        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
@@ -1124,14 +1128,14 @@ mod tests {
         let err = dispatch_repo_method(
             &state,
             "lane_create",
-            serde_json::json!({ "name": crate::repo::lanes_state::ROOT_LANE_NAME }),
+            serde_json::json!({ "name": crate::repo::lane::ROOT_LANE_NAME }),
         )
         .await
         .expect_err("予約名は Err");
         // doc 44 §9: 判定は `validate_sub_name` に一本化された（両経路で同じ gate）。
         // message は同関数のものになるので、予約名を名指ししていることだけを見る。
         assert!(
-            err.contains(crate::repo::lanes_state::ROOT_LANE_NAME) && err.contains("reserved"),
+            err.contains(crate::repo::lane::ROOT_LANE_NAME) && err.contains("reserved"),
             "error は予約名である旨を含む: {err}"
         );
 
@@ -1158,7 +1162,7 @@ mod tests {
     #[tokio::test]
     async fn lane_slot_new_attaches_pump_to_the_new_slot() {
         use crate::daemon::pty_slot::PtySlot;
-        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
         use std::time::Duration;

@@ -198,14 +198,14 @@ pub(crate) struct AppState {
     pub delivery_notify: Arc<tokio::sync::Notify>,
     /// Lane Pool (Main/Sub registry) — Lane scope の Agent container
     /// 関連 memory: mem_1CaSsN7xj69aVQtLPQFJxQ (repo-as-Repo-Master 9 component #4)
-    pub lane_pool: Arc<RwLock<super::lanes_state::LanePool>>,
+    pub lane_pool: Arc<RwLock<super::lane::LanePool>>,
     /// Phase 2 (Step E): repo の system 系 lifecycle event を 1 つの broadcast bus で配信。
     /// caller (lane_spawn_actor / lane_lifecycle / restart_lane / lifecycle monitor) が
     /// `state.system_event_tx.send(SystemEvent::Lane(LaneDiff::*))` 等で publish、
     /// repo の lanes publish task (`publish_lanes`) が subscribe して daemon の集約 view を
     /// 更新する経路（doc 44 P1 fold-in で旧 `spawn_daemon_uplink` の QUIC push から置換）。
     /// 将来 Pane / Agent / Process 等の lifecycle event も同 bus に variant 追加で乗せる。
-    pub system_event_tx: tokio::sync::broadcast::Sender<super::lanes_state::SystemEvent>,
+    pub system_event_tx: tokio::sync::broadcast::Sender<super::lane::SystemEvent>,
     /// machine 階層 Agent container (LSCM、 PR-α series / VP-109)。
     ///
     /// daemon mode (`run_daemon`) でのみ Some、 repo mode (`run`) では None。
@@ -245,19 +245,16 @@ impl AppState {
     // lane の解決は `resolve_lane_address`、 console I/O は PtySlot (deliver_nudge / lane_capture)。
 
     /// lane address 文字列（`<repo>/root` / `<repo>/sub/<name>`）を、
-    /// Running な lane の [`LaneAddress`](super::lanes_state::LaneAddress) に解決する。
+    /// Running な lane の [`LaneAddress`](super::lane::LaneAddress) に解決する。
     ///
     /// nudge の宛先を `LaneAddress` で返し、
-    /// [`deliver_nudge`](super::lanes_state::deliver_nudge) の入力にする。
+    /// [`deliver_nudge`](super::lane::deliver_nudge) の入力にする。
     /// parse 不能 / lane 不在 / 非 Running なら None。
-    pub async fn resolve_lane_address(
-        &self,
-        query: &str,
-    ) -> Option<super::lanes_state::LaneAddress> {
-        let addr = super::lanes_state::LanePool::parse_address(query)?;
+    pub async fn resolve_lane_address(&self, query: &str) -> Option<super::lane::LaneAddress> {
+        let addr = super::lane::LanePool::parse_address(query)?;
         let pool = self.lane_pool.read().await;
         let info = pool.get(&addr)?;
-        if !matches!(info.state, super::lanes_state::LaneState::Running) {
+        if !matches!(info.state, super::lane::LaneState::Running) {
             return None;
         }
         Some(addr)
@@ -272,7 +269,7 @@ impl AppState {
     /// `daemon-handle:` 接頭の remote 分岐を足すだけで federation 化できる）。
     ///
     /// tmux decoupling PR1: 旧 `tmux send-keys`（`send_keys_to_session`）を repo-local な
-    /// [`deliver_nudge`](super::lanes_state::deliver_nudge) 直書きに置換。 delegation handler は
+    /// [`deliver_nudge`](super::lane::deliver_nudge) 直書きに置換。 delegation handler は
     /// repo プロセス内で走る（`&AppState` を持つ）ため、 PtySlot に in-process で直接届く
     /// （Daemon-side re-nudge は `lane_nudge` proxy 経由、 同じ `deliver_nudge` sink に収束）。
     ///
@@ -284,7 +281,7 @@ impl AppState {
             return false;
         };
         // session=None = root（wire mailbox `agent@<lane>` を名乗るのは root、doc 39/46 P5）。
-        match super::lanes_state::deliver_nudge(&self.lane_pool, &lane_addr, None, text).await {
+        match super::lane::deliver_nudge(&self.lane_pool, &lane_addr, None, text).await {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!(
@@ -410,7 +407,7 @@ pub(crate) async fn build_test_app_state_with(
     vpdb: Option<crate::db::SharedVpDb>,
     daemon: Option<Arc<RwLock<RepoManagerCapability>>>,
 ) -> Arc<AppState> {
-    use super::lanes_state::LanePool;
+    use super::lane::LanePool;
     use crate::capability::WireNotifier;
 
     Arc::new(AppState {
@@ -438,7 +435,7 @@ pub(crate) async fn build_test_app_state_with(
         wire_notifier: WireNotifier::new(),
         delivery_notify: Arc::new(tokio::sync::Notify::new()),
         lane_pool: Arc::new(RwLock::new(LanePool::new())),
-        system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
+        system_event_tx: tokio::sync::broadcast::channel::<super::lane::SystemEvent>(64).0,
         machine_capabilities: None,
         terminal_pumps: Arc::new(RwLock::new(HashMap::new())),
         // test fixture は repo 相当 (Daemon store 無し)。delegation の store test は
@@ -468,8 +465,8 @@ pub(crate) async fn insert_test_lane(
     state: &crate::repo::state::AppState,
     repo: &str,
     mode: crate::lane::session_registry::SessionMode,
-) -> crate::repo::lanes_state::LaneAddress {
-    use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+) -> crate::repo::lane::LaneAddress {
+    use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
     let addr = LaneAddress::root(repo);
     // doc 53 R1: mode の SSOT は registry（pool cache は退役）。テストも registry に書いて
     // 読み手（root_mode 直読）と同じ経路を通す。
@@ -496,7 +493,7 @@ pub(crate) async fn insert_test_lane(
 #[cfg(test)]
 mod lane_resolve_tests {
     use super::build_test_app_state;
-    use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+    use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
 
     /// 指定 lane の Running な LaneInfo を作る test helper
     fn running_lane(addr: LaneAddress, agent: &str) -> LaneInfo {

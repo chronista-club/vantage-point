@@ -40,7 +40,7 @@ use std::path::Path;
 use anyhow::Result;
 use tokio::sync::broadcast;
 
-use super::lanes_state::LaneAddress;
+use super::lane::LaneAddress;
 use crate::daemon::pty_slot::PtySlot;
 
 /// wiremsg R2-c（チャネル B、決定 D2）: wire 未読通知 hook を VP が spawn 時に注入する。

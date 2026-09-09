@@ -34,7 +34,7 @@ fn lane_name_of(lane: &serde_json::Value) -> String {
 /// MCP tool の `kind` param は client との契約なので語彙は据え置き、判定だけ名前ベースにした
 /// （開発起点は予約名 `main`、それ以外が旧 sub）。
 fn lane_kind_label(lane: &serde_json::Value) -> &'static str {
-    if lane_name_of(lane) == crate::repo::lanes_state::ROOT_LANE_NAME {
+    if lane_name_of(lane) == crate::repo::lane::ROOT_LANE_NAME {
         "root"
     } else {
         "sub"
@@ -288,8 +288,7 @@ impl VantageMcp {
                     None,
                 )
             })?;
-        let address =
-            crate::repo::lanes_state::LaneAddress::new(repo_name, params.name).canonical();
+        let address = crate::repo::lane::LaneAddress::new(repo_name, params.name).canonical();
         let cleanup = params.cleanup.unwrap_or(true);
 
         // daemon repo-proxy 経由で repo の lane_delete を ask (workspace cleanup 等 orchestration を
@@ -535,8 +534,7 @@ impl VantageMcp {
 
         let sub_address = format!("agent@{}/{}", repo_name, sub_name);
         let lane_address =
-            crate::repo::lanes_state::LaneAddress::new(repo_name.clone(), sub_name.clone())
-                .canonical();
+            crate::repo::lane::LaneAddress::new(repo_name.clone(), sub_name.clone()).canonical();
 
         // ── Step 2: wire_send (initial task spec を root thread として送信) ──
         // body は { task_spec, mode, priority?, scope_outs? } 等の自由 schema。

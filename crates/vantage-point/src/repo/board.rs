@@ -27,7 +27,7 @@ fn board_key(scope: Option<&str>, lane: Option<&str>) -> (String, String, Option
     }
     // lane 正規化: None/""/予約名 → '' (開発起点 lane)。
     let lane_name = lane
-        .filter(|s| !s.is_empty() && *s != crate::repo::lanes_state::ROOT_LANE_NAME)
+        .filter(|s| !s.is_empty() && *s != crate::repo::lane::ROOT_LANE_NAME)
         .unwrap_or("")
         .to_string();
     let broadcast_lane = if lane_name.is_empty() {

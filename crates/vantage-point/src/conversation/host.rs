@@ -12,7 +12,7 @@
 //! 旧設計は「lane が gui の間は常駐（demand-driven ではない）」だった。現在は
 //! **「Lane タイトルが表示されている Lane だけ生きてる」**（mako 裁定）:
 //! 誰も見ていない（購読なし）+ turn なし + N 分無活動が揃うと
-//! [`crate::repo::lanes_state::LanePool::drop_idle_chat_engines`] が engine を寝かせる
+//! [`crate::repo::lane::LanePool::drop_idle_chat_engines`] が engine を寝かせる
 //! （契機 = `conversation_demand_stop` 即時 + 30s periodic sweep）。会話は次の
 //! attach / submit / nudge が `--resume` で継ぐ — プロセスは死ぬがコンテキストは蘇る。
 //!

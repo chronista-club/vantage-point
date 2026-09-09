@@ -217,7 +217,7 @@ pub struct RunningRepo {
 
 /// Lane info (repo `/api/lanes` レスポンス要素)
 ///
-/// vantage-point 側 `lanes_state::LaneInfo` の wire shape。
+/// vantage-point 側 `lane::LaneInfo` の wire shape。
 /// vp-app は `vantage-point` に依存しないので独立 lite struct で deserialize。
 /// UI 表示 (sidebar の Lane 行) に必要な field のみ。
 /// Serialize は SidebarState 経由で webview / disk persistence に流れるため必要。
@@ -225,7 +225,7 @@ pub struct RunningRepo {
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct LaneInfo {
     pub address: LaneAddressWire,
-    // doc 44 P2: `kind` / `name` を撤去（server 側 `lanes_state::LaneInfo` と対）。
+    // doc 44 P2: `kind` / `name` を撤去（server 側 `lane::LaneInfo` と対）。
     // どちらも `address` が持つ情報の複製で、真実源が 2 つある状態だった。
     // lane 名は `address.name` が唯一の在処、開発起点は予約名で表される。
     /// "spawning" | "running" | "exiting" | "dead"
@@ -253,7 +253,7 @@ pub struct LaneInfo {
     #[serde(default)]
     pub agent_name: Option<String>,
     /// doc 40 §3 / doc 50 §4.6 A6: lane の session 構造（registry snapshot）。
-    /// server（`lanes_state::LaneInfo.sessions`）が enrich して流している値で、
+    /// server（`lane::LaneInfo.sessions`）が enrich して流している値で、
     /// 「どの session が root か」「各 session の mode」の SSOT。boot 経路が xterm を
     /// (lane, session) で ensure するのに使う。旧 SP からは欠落 = None。
     #[serde(default)]
@@ -273,7 +273,7 @@ fn default_mode() -> String {
     "tui".to_string()
 }
 
-/// lane の session roster（server `lanes_state::LaneSessionsView` の鏡）。
+/// lane の session roster（server `lane::LaneSessionsView` の鏡）。
 ///
 /// doc 50 §4.6 A6: 「どの session が root か」「各 session の mode（tui/chat）」を boot 経路が
 /// 読み、xterm を (lane, session) 単位で ensure するのに使う。

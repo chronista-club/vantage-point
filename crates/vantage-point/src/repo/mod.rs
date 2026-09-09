@@ -16,7 +16,7 @@ pub(crate) mod agents;
 pub(crate) mod board;
 /// CC activity poll — `claude agents --json` の LaneActivity 供給 (R3-a / Phase A)
 pub(crate) mod cc_activity;
-/// conversation ops — 会話系 Unison method の handler（owner は lanes_state / conversation::engine、doc 61）
+/// conversation ops — 会話系 Unison method の handler（owner は lane::state / conversation::engine、doc 61）
 pub(crate) mod conversation_ops;
 /// Lane conversation pump — ClaudeHost の ConversationEvent を per-lane topic に route (doc 30、gui)
 pub(crate) mod conversation_pump;
@@ -32,18 +32,9 @@ pub(crate) mod editor_bridge;
 /// HTTP（axum）の route handler — health / shutdown / update だけ。Router は `server.rs`（7b で routes/ から）
 pub(crate) mod http;
 pub(crate) mod hub;
-/// Lane subcommand types (LaneCmd) — Mailbox actor 経由の Lane 操作 Cmd (I-b、 2026-04-30)
-pub(crate) mod lane_cmd;
-/// lane lifecycle — create / delete / restart / reset の orchestration と lanes snapshot、`emit_lane_update`（7b で routes/lanes から）
-pub(crate) mod lane_lifecycle;
-/// lane ops — lane 系 Unison method の handler（owner は lane_lifecycle / host/ledger / session_registry、doc 61）
-pub(crate) mod lane_ops;
-/// lane の実体（PtySlot / chat engine / 代表値）を intent（registry）に合わせる reconcile 本体（doc 53 §12）
-pub(crate) mod lane_reconcile;
-/// Lane spawn actor — `LaneCmd` を recv して Semaphore で gate しつつ Lane を spawn (I-b、 2026-04-30)
-pub(crate) mod lane_spawn_actor;
-/// Lane state types (LaneAddress / LanePool 等) — Lane scope の data model
-pub(crate) mod lanes_state;
+/// lane — repo 側の lane runtime（値型 / LanePool / reconcile / lifecycle / spawn actor / Unison handler）。identity と
+/// registry の SSOT は `crate::lane`（doc 61 §1、項目 9-1）
+pub(crate) mod lane;
 /// process ops — file watch / process runner / ruby の Unison method handler（doc 61）
 pub(crate) mod process_ops;
 pub mod process_runner;

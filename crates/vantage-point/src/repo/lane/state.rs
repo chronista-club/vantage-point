@@ -969,7 +969,7 @@ impl LanePool {
     ///
     /// ⚠️ **ここは配線であって門番ではない**（法の check は持たない — 既存 entry があれば
     /// 黙って replace する）。R3c で slot を立てる入口は
-    /// [`reconcile_lane`](crate::repo::lane_reconcile::reconcile_lane) **1 本**になり、
+    /// [`reconcile_lane`](crate::repo::lane::reconcile::reconcile_lane) **1 本**になり、
     /// 法（1 session = 高々 1 エンジン）は**断り文句ではなく導出規則**が守る（mode=Tui の
     /// session にだけ slot を立て、同じ write lock 区間で mode=Chat でない engine を畳む）。
     /// 旧 `open_slot_for_session`（4 つの入口 guard）は R3c-1 で退役。
@@ -1041,7 +1041,7 @@ impl LanePool {
     ///
     /// 旧実装は動詞ごとに `info.pid = …` を手で書いていた（census §10.1 の「代表値追随」列）。
     /// 派生値を書き手ごとに持つと、書き忘れた動詞だけが古い値を映す（doc 53 §3.3）。
-    /// 判断は純関数 [`crate::repo::lane_reconcile::lane_state_of`] が持ち、ここは
+    /// 判断は純関数 [`crate::repo::lane::reconcile::lane_state_of`] が持ち、ここは
     /// 実体を集めて書き戻すだけ。
     pub fn refresh_lane_representation(&mut self, addr: &LaneAddress) {
         let root_mode = self.root_mode(addr);
@@ -1051,7 +1051,7 @@ impl LanePool {
             .get(addr)
             .and_then(|m| m.get(&root_key))
             .and_then(|slot| slot.lock().ok().map(|s| s.pid()));
-        let (state, pid) = crate::repo::lane_reconcile::lane_state_of(root_mode, root_pid);
+        let (state, pid) = crate::repo::lane::reconcile::lane_state_of(root_mode, root_pid);
         if let Some(info) = self.lanes.get_mut(addr) {
             info.state = state;
             info.pid = pid;
@@ -1241,7 +1241,7 @@ impl LanePool {
     /// restart は **intent の変化ではない**（registry は 1 bit も動かない）。生きた化身を
     /// 意図的に殺して立て直す操作なので、「世代（pid）を intent 側に持つ」形は採らない
     /// （intent に実体由来の値を入れると doc 53 §3.3「派生値を cache に持たない」に反する）。
-    /// 捨てたあと呼び手が [`reconcile_lane`](crate::repo::lane_reconcile::reconcile_lane) を
+    /// 捨てたあと呼び手が [`reconcile_lane`](crate::repo::lane::reconcile::reconcile_lane) を
     /// 呼べば、registry に従って立ち直る（会話 id があれば `--resume`、無ければ素で）。
     ///
     /// **root だけ**を捨てる（同居している非 root の pane は独立の住人 = 巻き添えにしない）。
@@ -1568,7 +1568,7 @@ impl LanePool {
     //
     // **R3c-1 で排他の守り方が変わった**（doc 53 §12.7 発見①）。旧: slot を立てる入口
     // `open_slot_for_session` に 4 つの guard を置いて**断る**。新: slot を立てるのは
-    // [`reconcile_lane`](crate::repo::lane_reconcile::reconcile_lane) 1 本だけになり、
+    // [`reconcile_lane`](crate::repo::lane::reconcile::reconcile_lane) 1 本だけになり、
     // **導出規則が破れた状態を生成しない**（mode=Tui の session にだけ slot を立て、同じ
     // write lock 区間で mode=Chat でない engine を畳む = 外から同居は観測できない）。
     //
@@ -1607,7 +1607,7 @@ impl LanePool {
     /// ## R3c: この動詞は registry にしか触らない（doc 53 §12.4）
     ///
     /// 旧実装は「session 採番 → その場で slot spawn → 失敗したら registry 巻き戻し」だった。
-    /// slot を立てるのは [`reconcile_lane`](crate::repo::lane_reconcile::reconcile_lane) の
+    /// slot を立てるのは [`reconcile_lane`](crate::repo::lane::reconcile::reconcile_lane) の
     /// 仕事になったので、ここは **intent を書くだけ**。呼び手が末尾で reconcile を呼ぶ。
     ///
     /// 巻き戻しも廃した（doc 53 §12.2 = mako 判断）— spawn 失敗で intent を消すと「なぜ
@@ -1749,7 +1749,7 @@ impl LanePool {
     /// engine は spawn しない（Draft のまま。focused eager は Phase 3、submit で lazy spawn）。
     ///
     /// R3c: 元から registry しか触らない動詞（`&self` がその証拠）。呼び手は末尾で
-    /// [`reconcile_lane`](crate::repo::lane_reconcile::reconcile_lane) を呼ぶ — Chat の
+    /// [`reconcile_lane`](crate::repo::lane::reconcile::reconcile_lane) を呼ぶ — Chat の
     /// engine は lazy なので普通は no-op だが、**契機は判断を持たない**（doc 53 §12.4）。
     pub fn create_chat_session(
         &self,
@@ -1891,7 +1891,7 @@ impl LanePool {
     ///
     /// R3c: **代表値（`LaneInfo.pid`）の手書き追随を廃した**。旧実装は「chat lane なら新
     /// focused の engine の pid を写す」だったが、R3b で代表値は root から導出される
-    /// （[`lane_state_of`](crate::repo::lane_reconcile::lane_state_of) = chat は常に
+    /// （[`lane_state_of`](crate::repo::lane::reconcile::lane_state_of) = chat は常に
     /// pid 無しが正常形）ことになったので、**この動詞だけが focused 由来の pid を書き戻して
     /// 経路差を作っていた**（census §10.1「代表値追随」列の最後の 2 件のうち 1 件）。
     ///
@@ -2637,10 +2637,10 @@ mod tests {
     async fn reconcile_for_test(
         pool: &std::sync::Arc<tokio::sync::RwLock<LanePool>>,
         addr: &LaneAddress,
-    ) -> crate::repo::lane_reconcile::LaneReconcile {
+    ) -> crate::repo::lane::reconcile::LaneReconcile {
         let pumps = tokio::sync::RwLock::new(Default::default());
         let router = std::sync::Arc::new(crate::repo::topic_router::TopicRouter::new());
-        crate::repo::lane_reconcile::reconcile_lane(pool, &pumps, &router, addr).await
+        crate::repo::lane::reconcile::reconcile_lane(pool, &pumps, &router, addr).await
     }
 
     /// doc 54 §8-11: main の初回作成（registry 不在）は既定レンズ（Chat）で立ち、
@@ -3138,7 +3138,7 @@ mod tests {
         }
         let pumps = std::sync::Arc::new(tokio::sync::RwLock::new(Default::default()));
         let router = std::sync::Arc::new(crate::repo::topic_router::TopicRouter::new());
-        crate::repo::lane_reconcile::reconcile_lane(&pool, &pumps, &router, &addr).await;
+        crate::repo::lane::reconcile::reconcile_lane(&pool, &pumps, &router, &addr).await;
 
         let slots = pool.read().await.slot_sessions(&addr);
         assert!(

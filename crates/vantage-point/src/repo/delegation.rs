@@ -105,7 +105,7 @@ pub(crate) fn lane_query_for(addr: &str) -> String {
         // 既に lane form（main / sub/... / 旧世代の予約名・lead / wing）なら素通し。
         // ⚠️ 旧予約名（root / conductor）は resolve 側（parse_address）が Main に正規化する。
         Some((_, tail))
-            if tail == crate::repo::lanes_state::ROOT_LANE_NAME
+            if tail == crate::repo::lane::ROOT_LANE_NAME
                 || tail == "lead"
                 || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&tail)
                 || tail.starts_with("sub/")
@@ -116,7 +116,7 @@ pub(crate) fn lane_query_for(addr: &str) -> String {
         // `agent@<repo>/<name>` → sub lane。
         Some((repo, name)) => format!("{repo}/sub/{name}"),
         // `agent@<repo>` → main lane。⚠️ 予約名は定数経由（文字列直書きは rename で取り残る）。
-        None => format!("{rest}/{}", crate::repo::lanes_state::ROOT_LANE_NAME),
+        None => format!("{rest}/{}", crate::repo::lane::ROOT_LANE_NAME),
     }
 }
 
@@ -320,7 +320,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use super::lanes_state::LaneInfo;
+use super::lane::LaneInfo;
 
 /// reconcile pulse の間隔（wire delivery loop の TICK と同じ 30s）。
 const RECONCILE_TICK: Duration = Duration::from_secs(30);

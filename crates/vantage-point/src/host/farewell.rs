@@ -662,11 +662,7 @@ mod tests {
         };
 
         // 起点が別 lane（予約名）なら、w1 はただの sub として判定される
-        let as_normal = find(survey_repo(
-            &root,
-            &[],
-            crate::repo::lanes_state::ROOT_LANE_NAME,
-        ));
+        let as_normal = find(survey_repo(&root, &[], crate::repo::lane::ROOT_LANE_NAME));
         assert!(!as_normal.facts.is_origin, "起点ではない");
         assert!(
             !as_normal.verdict.reason().contains("開発起点"),
@@ -731,7 +727,7 @@ mod tests {
         let running = find(survey_repo(
             &root,
             &["w1".to_string()],
-            crate::repo::lanes_state::ROOT_LANE_NAME,
+            crate::repo::lane::ROOT_LANE_NAME,
         ));
         assert!(running.facts.is_running, "稼働の事実が facts まで届く");
         assert!(
@@ -746,11 +742,7 @@ mod tests {
         );
 
         // 供給されなければ同じ lane が稼働中扱いされない（= 引数が効いていることの裏取り）
-        let stopped = find(survey_repo(
-            &root,
-            &[],
-            crate::repo::lanes_state::ROOT_LANE_NAME,
-        ));
+        let stopped = find(survey_repo(&root, &[], crate::repo::lane::ROOT_LANE_NAME));
         assert!(!stopped.facts.is_running);
         assert!(
             !stopped.verdict.reason().contains("稼働中"),
@@ -762,7 +754,7 @@ mod tests {
         let other = find(survey_repo(
             &root,
             &["w2".to_string()],
-            crate::repo::lanes_state::ROOT_LANE_NAME,
+            crate::repo::lane::ROOT_LANE_NAME,
         ));
         assert!(!other.facts.is_running, "他 lane の稼働は w1 に波及しない");
 

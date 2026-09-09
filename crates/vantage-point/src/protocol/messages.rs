@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::repo::lanes_state::LaneInfo;
+use crate::repo::lane::LaneInfo;
 
 /// Content types that can be displayed in the viewer
 #[derive(Debug, Clone, Serialize, Deserialize)]

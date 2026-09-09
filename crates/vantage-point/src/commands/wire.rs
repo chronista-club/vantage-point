@@ -388,8 +388,7 @@ fn wire_address_from_env(repo: Option<&str>, lane: Option<&str>) -> Option<Strin
     // ため、daemon を更新しても**既に生きている agent の VP_LANE は旧名のまま**。ここで
     // 弾くと更新を跨いだ hook の名乗りが `agent@<repo>/root`（実在しない Sub）になり、
     // 報告が誰にも届かなくなる（session_now と同じ世代混在の入口）。
-    if lane == crate::repo::lanes_state::ROOT_LANE_NAME
-        || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&lane)
+    if lane == crate::repo::lane::ROOT_LANE_NAME || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&lane)
     {
         Some(format!("agent@{repo}"))
     } else {

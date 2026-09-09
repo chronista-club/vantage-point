@@ -30,8 +30,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneState, SystemEvent};
-use super::state::AppState;
+use super::state::{Diff, LaneAddress, LaneInfo, LaneState, SystemEvent};
+use crate::repo::state::AppState;
 
 // doc 11 §3.7 の `migrate_legacy_stand` shim は 2026-05-03 削除済。 PR #257 の
 // agent 識別子 String 化と同タイミングで導入した旧 agent 名 → 現行名の変換 (PR-pre2 で hd → echoes)
@@ -116,7 +116,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
     // `publish_lanes` は snapshot の指紋で「変わった時だけ vp-app を起こす」ので、ここに
     // 呼ぶたび変わる値を焼くと 5s tick がそのまま push 源に戻り、修正が無効化される。
     for entry in crate::lane::commands::list_subs_for_repo(std::path::Path::new(&state.repo_dir)) {
-        let address = crate::repo::lanes_state::LaneAddress::sub(repo.clone(), entry.name.clone());
+        let address = crate::repo::lane::LaneAddress::sub(repo.clone(), entry.name.clone());
         if present.contains(&address.to_string()) {
             continue; // 既に pool 由来 (spawn 済 or Dead) で snapshot に居る
         }
@@ -126,7 +126,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             // mode を導出して「chat lane を xterm で開く」誤復元を防ぐ（doc 47 §4 の性質は不変）。
             id: crate::lane::lane_id::load_or_create(&repo, &entry.name),
             address,
-            state: crate::repo::lanes_state::LaneState::Spawning,
+            state: crate::repo::lane::LaneState::Spawning,
             agent: default_agent.clone(),
             created_at: ground_created_at(&entry.path),
             pid: None,
@@ -266,7 +266,7 @@ async fn persist_lane_intent(state: &Arc<AppState>, key: &str, info: &LaneInfo) 
         .upsert_lane_lifecycle(
             key,
             &addr,
-            crate::repo::lanes_state::LaneLifecycle::Provisioning.as_str(),
+            crate::repo::lane::LaneLifecycle::Provisioning.as_str(),
         )
         .await
     {
@@ -298,11 +298,7 @@ async fn persist_lane_ready(state: &Arc<AppState>, key: &str, info: &LaneInfo) {
         tracing::warn!("lane descriptor (確定) の db 永続に失敗: {}", e);
     }
     if let Err(e) = db
-        .upsert_lane_lifecycle(
-            key,
-            &addr,
-            crate::repo::lanes_state::LaneLifecycle::Ready.as_str(),
-        )
+        .upsert_lane_lifecycle(key, &addr, crate::repo::lane::LaneLifecycle::Ready.as_str())
         .await
     {
         tracing::warn!("lane_lifecycle=ready の db 永続に失敗: {}", e);
@@ -1008,7 +1004,7 @@ pub(crate) async fn emit_lane_update(state: &AppState, addr: &LaneAddress) {
 /// 戻り値: `{restarted, pid, attempts}` / 全 attempts 失敗で `Err`（`LaneInfo.state` は
 /// reconcile が root の実体から Dead を導出済み）。
 ///
-/// [`LanePool::drop_root_entities`]: crate::repo::lanes_state::LanePool::drop_root_entities
+/// [`LanePool::drop_root_entities`]: crate::repo::lane::LanePool::drop_root_entities
 pub async fn restart_lane_orchestrated(
     state: &Arc<AppState>,
     addr: LaneAddress,
@@ -1033,7 +1029,7 @@ pub async fn restart_lane_orchestrated(
 /// 新しい root を bare（会話 id が無い = 継がない）で立てる。破棄に失敗した場合は
 /// **何も遷移させずに** Err を返す（fresh でない中間状態を作らない）。
 ///
-/// [`LanePool::reset_lane`]: crate::repo::lanes_state::LanePool::reset_lane
+/// [`LanePool::reset_lane`]: crate::repo::lane::LanePool::reset_lane
 pub async fn reset_lane_orchestrated(
     state: &Arc<AppState>,
     addr: LaneAddress,

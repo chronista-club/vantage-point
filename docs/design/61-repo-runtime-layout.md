@@ -40,16 +40,17 @@ crates/vantage-point/src/repo/
 ├── conversation_ops.rs     submit / nudge / respond / interrupt / permission_mode / session_* / set_mode / now / set_model
 │                             （owner = lanes_state の facade + conversation::engine）
 ├── terminal_ops.rs         terminal demand / write / resize（owner = terminal_pump + lanes_state）
-├── lane_ops.rs             lane nudge / slots / slot_new / capture / delete / restart / session_changed / create / origin / order / lanes_list
-│                             （owner = lane_lifecycle + host/ledger + lane/session_registry）
+├── lane/ops.rs             lane nudge / slots / slot_new / capture / delete / restart / session_changed / create / origin / order / lanes_list
+│                             （owner = lane/lifecycle + host/ledger + crate::lane/session_registry）
 ├── process_ops.rs          watch_file / unwatch_file / process_* / ruby_*（owner = process_runner + file_watcher）
 │  ── 既存（変えない）──
 ├── state.rs                AppState（+ #[cfg(test)] の共有 fixture: build_test_app_state / default_test_shell / insert_test_lane）
 ├── server.rs               QUIC accept loop / run_daemon / seed の呼び出し
 ├── repo_registry.rs        daemon → repo の in-process dispatch（dispatch_repo_method の唯一の呼び手）
-├── lanes_state.rs / lane_reconcile.rs / lane_cmd.rs / lane_spawn_actor.rs / terminal_pump.rs / conversation_pump.rs
+├── lane/                   repo 側の lane runtime（9-1a で集約: state（旧 lanes_state）/ reconcile / cmd / spawn_actor / ops / lifecycle）。
+│                             facade `pub use state::{LaneAddress, LaneInfo, LanePool, …}`。identity・registry の SSOT は crate::lane
+├── terminal_pump.rs / conversation_pump.rs
 ├── http/                   health / update（axum handler はこれだけ。Router は server.rs）— 7b
-├── lane_lifecycle.rs       create / delete / restart / reset の orchestration + lanes snapshot + emit_lane_update — 7b（旧 routes/lanes）
 ├── agents.rs               agent 静的 table + agents_list — 7b（旧 routes/agents）
 │  （旧 routes/{daemon,delegation,wire} は daemon/{control_ops,delegation_ops,wire_ops} へ。repo の AppState に依存せず呼び手が daemon 側だけ）
 └── delegation.rs / daemon_wire.rs / hub.rs / topic.rs / topic_router.rs / retained.rs / process_runner.rs / agent_spawner.rs / …
@@ -161,6 +162,7 @@ arm の形は `"show" | "clear" => board::handle_canvas_command(state, payload).
 ## Status log
 
 - 2026-09-08: 設計確定（mako）。決定 3 点は §0。次は PR-1（editor_bridge）。
+- 2026-09-09: 9-1a 着地。`repo/lane/` に 6 file を集約（`lanes_state` → `lane/state`、`lane_*` の prefix を落とす）、facade `pub use` は外から使う item だけ。本文不変。次は 9-1b（state.rs の値 / runtime 分割）。
 - 2026-09-09: 7b 着地。`repo/routes/` を解体: HTTP 2 file → `repo/http/`、`lanes` → `repo/lane_lifecycle.rs`、`agents` → `repo/agents.rs`、daemon 側 3 file → `daemon/{control_ops,delegation_ops,wire_ops}.rs`。rename-all-at-once、`pub use` shim なし、test 22 本は file ごと移動。
 - 2026-09-09: PR-B7（b-7）着地。`persist_repos()` 末尾で `ReposChanged`、vp-app は `daemon-repo` 購読 → 50 ms drain → `repos/list` 再 fetch。実機は mako（2 window）。
 - 2026-09-09: PR-1〜7（#1075 / #1076 / #1077 / #1078 / #1079 / #1080 / #1081）着地。`unison_server.rs` 5,691 → 344 行、外部参照は §4 の 3 symbol だけ。PR-8 で `reconcile_lane` / `reconcile_terminal_pumps` を `impl AppState` の method に（呼び手 10 + test 5）。残りは PR-B7 と 7b。

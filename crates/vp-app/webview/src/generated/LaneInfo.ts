@@ -6,7 +6,7 @@ import type { SubStatusWire } from "./SubStatusWire";
 /**
  * Lane info (repo `/api/lanes` レスポンス要素)
  *
- * vantage-point 側 `lanes_state::LaneInfo` の wire shape。
+ * vantage-point 側 `lane::LaneInfo` の wire shape。
  * vp-app は `vantage-point` に依存しないので独立 lite struct で deserialize。
  * UI 表示 (sidebar の Lane 行) に必要な field のみ。
  * Serialize は SidebarState 経由で webview / disk persistence に流れるため必要。
@@ -37,7 +37,7 @@ engine_session_id: string | null,
 agent_name: string | null, 
 /**
  * doc 40 §3 / doc 50 §4.6 A6: lane の session 構造（registry snapshot）。
- * server（`lanes_state::LaneInfo.sessions`）が enrich して流している値で、
+ * server（`lane::LaneInfo.sessions`）が enrich して流している値で、
  * 「どの session が root か」「各 session の mode」の SSOT。boot 経路が xterm を
  * (lane, session) で ensure するのに使う。旧 SP からは欠落 = None。
  */

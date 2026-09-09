@@ -44,7 +44,7 @@ use crate::capability::component_service::{LayerScope, Service, SpawnableService
 use crate::daemon::server::ControlChannels;
 // channel E (doc 34): root session の mode (registry 直読) が forward method (lane_nudge / conversation_nudge) を分ける。
 use crate::lane::session_registry::SessionMode;
-use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
 
 /// 配信 pulse の定期 tick (Notify wake の取りこぼし安全網)
 const TICK: Duration = Duration::from_secs(30);
@@ -103,7 +103,7 @@ fn decide_nudge(
 ///
 /// ⚠️ 戻り値は [`pick_nudge_target`] が `LaneAddress::to_string()` と**生の完全一致**で
 /// 照合する（間に `parse_address` を挟まない唯一の経路）。したがって
-/// [`LaneAddress`](crate::repo::lanes_state::LaneAddress) の Display 形と
+/// [`LaneAddress`](crate::repo::lane::LaneAddress) の Display 形と
 /// **byte-for-byte 同じ形を組み立てる責任がここにある**。
 /// doc 44 P2 のフラット化ではこの直書きが取り残され、sub 宛 nudge が恒久的に
 /// 不一致になる回帰を生んだ（main は形が変わらないため無症状で気付きにくい）。
@@ -241,7 +241,7 @@ pub(crate) fn lane_identity_from_agent(addr: &str) -> Option<(String, String)> {
     match rest.split_once('/') {
         None => Some((
             rest.to_string(),
-            crate::repo::lanes_state::ROOT_LANE_NAME.to_string(),
+            crate::repo::lane::ROOT_LANE_NAME.to_string(),
         )),
         Some((repo, name)) if !repo.is_empty() && !name.is_empty() => {
             Some((repo.to_string(), name.to_string()))
@@ -635,7 +635,7 @@ mod tests {
     /// pick_nudge_target 用の test lane (vp/root)。 tmux decoupling PR1 で nudge は
     /// tmux 状態を読まなくなったため tmux entry は空でよい。
     fn test_lane(state: LaneState) -> LaneInfo {
-        use crate::repo::lanes_state::LaneAddress;
+        use crate::repo::lane::LaneAddress;
         LaneInfo {
             id: Default::default(),
             address: LaneAddress::root("vp"),

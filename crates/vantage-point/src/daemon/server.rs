@@ -41,8 +41,7 @@ pub struct DaemonState {
     /// repo が register payload に lanes を載せて push、 disconnect で全 Lane drop。
     /// agent (Conversation on Claude CLI) が `GET /api/lanes` で resolve するための cache。
     #[allow(clippy::type_complexity)]
-    pub lane_registry:
-        Option<Arc<RwLock<HashMap<String, Vec<crate::repo::lanes_state::LaneInfo>>>>>,
+    pub lane_registry: Option<Arc<RwLock<HashMap<String, Vec<crate::repo::lane::LaneInfo>>>>>,
     /// L1 lifecycle (Phase C): repo の接続 presence（RepoManagerCapability と Arc 共有）。
     /// registry channel handler が register→Connected / unregister→Unregistered / 切断→Disconnected
     /// を書き、`/api/health` の `processes[]` が同一 Arc を読んで vp-app に expose する（doc 27 §3.2）。
@@ -187,7 +186,7 @@ impl DaemonState {
         mut self,
         running_repos: Arc<RwLock<HashMap<String, RunningRepo>>>,
         repos: Arc<RwLock<HashMap<String, crate::capability::RepoInfo>>>,
-        lane_registry: Arc<RwLock<HashMap<String, Vec<crate::repo::lanes_state::LaneInfo>>>>,
+        lane_registry: Arc<RwLock<HashMap<String, Vec<crate::repo::lane::LaneInfo>>>>,
         process_presence: Arc<RwLock<HashMap<String, RepoPresenceState>>>,
     ) -> Self {
         self.running_repos = Some(running_repos);
@@ -921,7 +920,7 @@ async fn send_channel_response(
 #[allow(clippy::type_complexity)]
 pub(crate) async fn build_node_lanes(
     running_repos: &Arc<RwLock<HashMap<String, RunningRepo>>>,
-    lane_registry: &Option<Arc<RwLock<HashMap<String, Vec<crate::repo::lanes_state::LaneInfo>>>>>,
+    lane_registry: &Option<Arc<RwLock<HashMap<String, Vec<crate::repo::lane::LaneInfo>>>>>,
     daemon_cap: &Option<Arc<RwLock<crate::capability::RepoManagerCapability>>>,
 ) -> Vec<serde_json::Value> {
     // 並び順は sidebar と一致させる（= repo_order）。物理 controller は位置 = 意味なので、
@@ -984,7 +983,7 @@ pub(crate) async fn build_node_lanes(
 #[allow(clippy::type_complexity)]
 async fn send_lanes_snapshot(
     channel: &UnisonChannel,
-    lane_registry: &Arc<RwLock<HashMap<String, Vec<crate::repo::lanes_state::LaneInfo>>>>,
+    lane_registry: &Arc<RwLock<HashMap<String, Vec<crate::repo::lane::LaneInfo>>>>,
     path_key: &str,
     wiremsg_store: &Option<crate::capability::WiremsgStore>,
     running_repos: &Option<Arc<RwLock<HashMap<String, RunningRepo>>>>,
@@ -1029,7 +1028,7 @@ async fn send_lanes_snapshot(
 /// main は dev-flow FSM の対象外 (spine の頭) で `None` のまま。 store クエリ失敗は
 /// 当該 lane を `None` に留めて degrade (client 側は pid heuristic に fallback)。
 async fn enrich_lanes_flow_state(
-    lanes: &mut [crate::repo::lanes_state::LaneInfo],
+    lanes: &mut [crate::repo::lane::LaneInfo],
     store: &crate::capability::WiremsgStore,
     repo_name: &str,
 ) {
@@ -1405,7 +1404,7 @@ async fn handle_wire_channel(
         // ⚠️ 分岐は要らない — canonical は root を「名前の 1 つ」として扱う。旧 `lead` だけ
         // 予約名へ寄せる（P2 以前の env が残っている場合の互換）。
         let label = if label == "lead" { "root" } else { label };
-        let display = crate::repo::lanes_state::LaneAddress::new(repo, label).canonical();
+        let display = crate::repo::lane::LaneAddress::new(repo, label).canonical();
         // doc 40 §4: hook の会話報告（session_id + event + 報告者が名乗る session）を repo へ
         // 透過する。無い場合は従来の「変化通知のみ」（re-enrich + push）として振る舞う =
         // 新旧 binary 混在に安全。`session` 不在も同様で、repo 側が root 宛の後方互換に倒す
@@ -2868,7 +2867,7 @@ mod tests {
     /// 続いて created_at 昇順。
     #[tokio::test]
     async fn daemon_control_lanes_list_filters_and_sorts() {
-        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
 
         let cap = new_daemon_cap();
 

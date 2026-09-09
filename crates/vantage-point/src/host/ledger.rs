@@ -13,7 +13,7 @@
 //!
 //! ポインタが指すのは lane **そのもの**であって「今その名前で呼ばれているもの」ではない。
 //! 名前は表示のための自然キーで、将来 rename できるようにすると動く。だから帳簿は
-//! [`crate::repo::lanes_state::LaneId`]（UUID v7、doc 24 §7 の I1）を key にする。
+//! [`crate::repo::lane::LaneId`]（UUID v7、doc 24 §7 の I1）を key にする。
 //!
 //! 名前 ↔ id の解決は **境界で 1 回だけ**行う: 人が打つのは名前、帳簿に入るのは id
 //! （[`resolve_origin_name`] が読み側、unison `lane_origin_set` が書き側）。
@@ -33,7 +33,7 @@
 //! （履歴は rename で動いてはいけない / 同名 lane の再作成と混ざってはいけない）。
 
 use crate::host::farewell::FarewellVerdict;
-use crate::repo::lanes_state::ROOT_LANE_NAME;
+use crate::repo::lane::ROOT_LANE_NAME;
 
 /// 起点の解決に要る lane の最小情報（id と表示名の対）。
 ///
@@ -385,7 +385,7 @@ pub async fn origin(
 pub async fn origin_name_for_lanes(
     vpdb: Option<&crate::db::SharedVpDb>,
     repo_path: &str,
-    lanes: &[crate::repo::lanes_state::LaneInfo],
+    lanes: &[crate::repo::lane::LaneInfo],
 ) -> String {
     let refs: Vec<LaneRef> = lanes
         .iter()
@@ -401,7 +401,7 @@ pub async fn origin_name_for_lanes(
 pub async fn sort_lanes_by_ledger(
     vpdb: Option<&crate::db::SharedVpDb>,
     repo_path: &str,
-    lanes: &mut [crate::repo::lanes_state::LaneInfo],
+    lanes: &mut [crate::repo::lane::LaneInfo],
 ) {
     let Some(db) = vpdb else { return };
     let order = match db.list_lane_order(&row_key(repo_path)).await {
@@ -665,7 +665,7 @@ mod tests {
     /// [`origin_name_for_lanes`] 1 本に畳んでいる。ここではその 1 本を固定する。
     #[tokio::test]
     async fn origin_name_for_lanes_resolves_through_db() {
-        use crate::repo::lanes_state::LanePool;
+        use crate::repo::lane::LanePool;
 
         // ⚠️ `with_root` は **実 PTY を spawn** し、その replay を `vp_state_dir()` に書く。
         // 隔離しないと user の実 state（`~/.local/state/vp/terminal_replay/proj__root__1`）を
@@ -679,8 +679,8 @@ mod tests {
         // **答えが分岐する形**で組む（1 本だけだと全ケース同じ答えになり判別力ゼロ）。
         let mut lanes = LanePool::with_root("proj", "/tmp/proj").list();
         let mut sub = lanes[0].clone();
-        sub.address = crate::repo::lanes_state::LaneAddress::new("proj", "feat-x");
-        sub.id = crate::repo::lanes_state::LaneId::generate();
+        sub.address = crate::repo::lane::LaneAddress::new("proj", "feat-x");
+        sub.id = crate::repo::lane::LaneId::generate();
         let sub_id = sub.id.to_string();
         lanes.push(sub);
 

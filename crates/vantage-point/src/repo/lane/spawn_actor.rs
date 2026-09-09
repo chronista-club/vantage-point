@@ -70,7 +70,7 @@
 //! ## 関連
 //!
 //! - 設計 spec: memory `mem_1CaZiXoUVvZ4hSrYtVSW8R` (I-b design spark, 2026-04-30)
-//! - Cmd 定義: `super::lane_cmd::LaneCmd`
+//! - Cmd 定義: `super::cmd::LaneCmd`
 //! - VP-159 PR-3 — Service trait 形式登録 (= ECS 純度回復)
 //! - parent epic: VP-156 (Mailbox routing 統一)
 //! - PR-2 同型 pattern: 旧 `AgentCapability` / `ProtocolCapability` (impl Agent、2026-09 撤去)
@@ -85,8 +85,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::capability::component_service::{LayerScope, Service, SpawnableService};
 
-use super::lane_cmd::LaneCmd;
-use super::lanes_state::{Diff, LaneAddress, LaneInfo, LanePool, LaneState, SystemEvent};
+use super::cmd::LaneCmd;
+use super::state::{Diff, LaneAddress, LaneInfo, LanePool, LaneState, SystemEvent};
 
 /// Lane spawn Service (= in-process channel から `LaneCmd::SpawnLane` を recv、
 /// 並列度 N で gate しつつ Lane を spawn する infra actor)。
@@ -316,7 +316,7 @@ async fn handle_cmd(
     // 実体を立てる（3 段隔離は reconcile の中 — 800ms×N を lock 下で回さない）。
     // 失敗しても intent は残る = 次の契機で再試行される（doc 53 §12.2）。
     let r =
-        crate::repo::lane_reconcile::reconcile_lane(&pool, &terminal_pumps, &topic_router, &addr)
+        crate::repo::lane::reconcile::reconcile_lane(&pool, &terminal_pumps, &topic_router, &addr)
             .await;
     tracing::info!(
         "Lane spawn completed: addr={} spawned={} failed={} elapsed_ms={}",

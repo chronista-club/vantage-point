@@ -48,7 +48,7 @@ pub(crate) async fn handle_conversation_demand_start(
         return Err("conversation_demand_start: lane 未指定".to_string());
     }
     let session = super::unison_server::payload_session_key("conversation_demand_start", &payload)?;
-    let Some(addr) = crate::repo::lanes_state::LanePool::parse_address(&lane) else {
+    let Some(addr) = crate::repo::lane::LanePool::parse_address(&lane) else {
         return Err(format!(
             "conversation_demand_start: lane パース失敗: {lane}"
         ));
@@ -141,9 +141,9 @@ pub(crate) async fn handle_conversation_demand_start(
 /// ReplayStart → 本文 → ReplayEnd の**連続 1 本**で route する。
 async fn replay_once(
     state: &AppState,
-    addr: &crate::repo::lanes_state::LaneAddress,
+    addr: &crate::repo::lane::LaneAddress,
     lane: &str,
-    resolved: &crate::repo::lanes_state::ResolvedSession,
+    resolved: &crate::repo::lane::ResolvedSession,
 ) -> Result<serde_json::Value, String> {
     let lane_label = crate::repo::agent_spawner::lane_label(addr).to_string();
     let label = crate::lane::session_registry::session_label(&lane_label, resolved.key);
@@ -255,7 +255,7 @@ fn splice_session_init(
 /// 戻り値は `(replay 列, 継いだ tail の長さ)`。 tail 長 0 は「生成中でない」か「収束せず捨てた」。
 async fn replay_with_in_flight(
     state: &AppState,
-    addr: &crate::repo::lanes_state::LaneAddress,
+    addr: &crate::repo::lane::LaneAddress,
     session: crate::lane::session_registry::SessionKey,
     session_id: &str,
 ) -> Result<(Vec<crate::conversation::ConversationEvent>, usize), String> {
@@ -331,7 +331,7 @@ pub(crate) async fn handle_conversation_demand_stop(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let Some(addr) = crate::repo::lanes_state::LanePool::parse_address(&lane) else {
+    let Some(addr) = crate::repo::lane::LanePool::parse_address(&lane) else {
         // 宛先が読めない = 落とす相手が決まらない。黙って何もしない（旧 noop と同じ安全側）。
         return Ok(serde_json::json!({"status": "noop", "lane": lane}));
     };
@@ -349,10 +349,10 @@ pub(crate) async fn handle_conversation_demand_stop(
     }
     tracing::info!(
         "idle chat engine を寝かせた（購読なし・turn なし・{}分無活動）: lane={lane} sessions={dropped:?}",
-        crate::repo::lanes_state::idle_teardown_after_minutes(),
+        crate::repo::lane::idle_teardown_after_minutes(),
     );
     // 実体が変わったので roster を配る（`pid` / 活動時刻が動く = 名簿の見え方が変わる）。
-    crate::repo::lane_lifecycle::emit_lane_update(state, &addr).await;
+    crate::repo::lane::lifecycle::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "slept", "lane": lane, "sessions": dropped}))
 }
 
