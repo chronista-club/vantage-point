@@ -51,7 +51,7 @@ async fn record_user_message_if_transcriptless(
     session: Option<crate::lane::session_registry::SessionKey>,
     prompt: &str,
 ) {
-    let Some(addr) = crate::repo::lane::LanePool::parse_address(lane) else {
+    let Some(addr) = crate::repo::lane::parse_address(lane) else {
         return;
     };
     let resolved = {
@@ -107,7 +107,7 @@ pub(crate) async fn handle_conversation_nudge(
     // focused に注入すると「gui で別タブを見ている」だけで配送先が変わる誤配送になる
     // （N=1 では root=focused=1 で従来と同一挙動）。lane パース失敗は session=None のまま
     // ensure_and_submit_chat 側の同じパースが報告する（エラー文言の一元化）。
-    let session = crate::repo::lane::LanePool::parse_address(lane).map(|addr| {
+    let session = crate::repo::lane::parse_address(lane).map(|addr| {
         crate::lane::session_registry::root(
             &addr.repo,
             crate::repo::agent_spawner::lane_label(&addr),
@@ -154,7 +154,7 @@ pub(crate) async fn handle_conversation_respond(
     };
 
     let session = super::unison_server::payload_session_key("conversation_respond", &payload)?;
-    let addr = crate::repo::lane::LanePool::parse_address(lane)
+    let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("conversation_respond: lane パース失敗: {lane}"))?;
     state
         .lane_pool
@@ -177,7 +177,7 @@ pub(crate) async fn handle_conversation_interrupt(
         return Err("conversation_interrupt: lane 未指定".to_string());
     }
     let session = super::unison_server::payload_session_key("conversation_interrupt", &payload)?;
-    let addr = crate::repo::lane::LanePool::parse_address(lane)
+    let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("conversation_interrupt: lane パース失敗: {lane}"))?;
     state
         .lane_pool
@@ -204,7 +204,7 @@ pub(crate) async fn handle_conversation_set_permission_mode(
     }
     let session =
         super::unison_server::payload_session_key("conversation_set_permission_mode", &payload)?;
-    let addr = crate::repo::lane::LanePool::parse_address(lane)
+    let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("conversation_set_permission_mode: lane パース失敗: {lane}"))?;
     state
         .lane_pool
@@ -227,7 +227,7 @@ pub(crate) async fn handle_conversation_session_list(
     if lane.is_empty() {
         return Err("conversation_session_list: lane 未指定".to_string());
     }
-    let addr = crate::repo::lane::LanePool::parse_address(lane)
+    let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("conversation_session_list: lane パース失敗: {lane}"))?;
     let sessions = state
         .lane_pool
@@ -255,7 +255,7 @@ pub(crate) async fn handle_conversation_session_create(
         .get("focus")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
-    let addr = crate::repo::lane::LanePool::parse_address(lane)
+    let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("conversation_session_create: lane パース失敗: {lane}"))?;
     let key = state
         .lane_pool
@@ -285,7 +285,7 @@ pub(crate) async fn handle_conversation_session_focus(
     let session =
         super::unison_server::payload_session_key("conversation_session_focus", &payload)?
             .ok_or_else(|| "conversation_session_focus: session 未指定".to_string())?;
-    let addr = crate::repo::lane::LanePool::parse_address(lane)
+    let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("conversation_session_focus: lane パース失敗: {lane}"))?;
     state
         .lane_pool
@@ -328,7 +328,7 @@ pub(crate) async fn handle_conversation_session_remove(
     let session =
         super::unison_server::payload_session_key("conversation_session_remove", &payload)?
             .ok_or_else(|| "conversation_session_remove: session 未指定".to_string())?;
-    let addr = crate::repo::lane::LanePool::parse_address(lane)
+    let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("conversation_session_remove: lane パース失敗: {lane}"))?;
     let focused = state
         .lane_pool
@@ -373,7 +373,7 @@ pub(crate) async fn handle_conversation_session_new_root(
     if lane.is_empty() {
         return Err("conversation_session_new_root: lane 未指定".to_string());
     }
-    let addr = crate::repo::lane::LanePool::parse_address(lane)
+    let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("conversation_session_new_root: lane パース失敗: {lane}"))?;
     let key = state
         .lane_pool
@@ -412,7 +412,7 @@ pub(crate) async fn handle_conversation_session_switch_root(
         .and_then(|v| v.as_u64())
         .ok_or_else(|| "conversation_session_switch_root: session 未指定".to_string())?
         as crate::lane::session_registry::SessionKey;
-    let addr = crate::repo::lane::LanePool::parse_address(lane)
+    let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("conversation_session_switch_root: lane パース失敗: {lane}"))?;
     state
         .lane_pool
@@ -467,7 +467,7 @@ async fn ensure_and_submit_chat(
     prompt: &str,
     images: &[crate::conversation::ImageInput],
 ) -> Result<(), String> {
-    let addr = crate::repo::lane::LanePool::parse_address(lane)
+    let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("{ctx}: lane パース失敗: {lane}"))?;
 
     // ensure（mode ガード + lazy spawn は LanePool = 法の番人が行う）。session=None は focused。
@@ -571,7 +571,7 @@ pub(crate) async fn handle_session_set_mode(
     let mode_str = payload.get("mode").and_then(|v| v.as_str()).unwrap_or("");
     let mode = crate::lane::session_registry::SessionMode::parse(mode_str)
         .ok_or_else(|| format!("session_set_mode: mode 不正: {mode_str:?}（tui|gui）"))?;
-    let addr = crate::repo::lane::LanePool::parse_address(lane)
+    let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("session_set_mode: lane パース失敗: {lane}"))?;
     apply_session_mode(state, lane, &addr, session, mode).await
 }
@@ -602,7 +602,7 @@ pub(crate) async fn handle_session_now(
     if text.is_empty() {
         return Err("session_now: text が空です".to_string());
     }
-    let addr = crate::repo::lane::LanePool::parse_address(lane)
+    let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("session_now: lane パース失敗: {lane}"))?;
     // ⚠️ route には **canonical を流す**（生の入力を流さない）。`vp now` は env（VP_LANE）
     // 由来の lane 文字列を運ぶため、旧世代の spawn env（`root` 等）が混ざる。parse で
@@ -658,7 +658,7 @@ pub(crate) async fn handle_conversation_set_model(
     {
         return Err(format!("conversation_set_model: model 名が不正: {m:?}"));
     }
-    let addr = crate::repo::lane::LanePool::parse_address(lane)
+    let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("conversation_set_model: lane パース失敗: {lane}"))?;
 
     {

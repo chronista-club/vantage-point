@@ -2,8 +2,8 @@
 //!
 //! `LaneInfo`（wire に載る descriptor）/ `LaneState` / `LaneLifecycle` / `Diff` / `SystemEvent` /
 //! `LaneSessionsView`。disk / engine / lock を触らない。descriptor は帳簿の永続形で、slot は
-//! in-memory な runtime 事実（doc 46 の境界）— 混ぜない。`refresh_engine_session_id` /
-//! `from_registry`（disk・engine catalog を読む）は `pool.rs` に置き、9-1c で `enrich.rs` へ。
+//! in-memory な runtime 事実（doc 46 の境界）— 混ぜない。disk（session registry）と engine catalog を
+//! 読んで値を完成させる投影は [`super::enrich`]（9-1c で分離）。
 
 use serde::{Deserialize, Serialize};
 
@@ -198,7 +198,7 @@ pub struct LaneInfo {
     /// doc 39 P4-C: この lane の **root session の agent**（= slot に載る engine 種別）。tui の
     /// session chip prefix の供給源（`agent` は lane 作成時固定なので cross-engine root では slot の
     /// engine と食い違う — chip が旧 engine の prefix で点く）。`engine_session_id` と同じ
-    /// [`Self::refresh_engine_session_id`] で populate。root entry 不在は None = vp-app 側が従来の
+    /// [`super::enrich::refresh_engine_session_id`] で populate。root entry 不在は None = vp-app 側が従来の
     /// lane `agent` に fallback。serde default + skip で wire 後方互換。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_name: Option<String>,
@@ -211,7 +211,7 @@ pub struct LaneInfo {
     /// ⚠️ **disk 型（`SessionRegistry`）を直に載せない** — roster には `chat_capable` のような
     /// **導出値**が要り（能力表は server が SSOT = client に engine 名の分岐を作らない）、
     /// disk の永続形に runtime 由来の field を混ぜないため wire 専用型に分ける（§11.2 決定 3）。
-    /// populate は [`Self::refresh_engine_session_id`]（enrich 供給点）。
+    /// populate は [`super::enrich::refresh_engine_session_id`]（enrich 供給点）。
     /// serde default + skip で wire 後方互換。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sessions: Option<LaneSessionsView>,
@@ -275,8 +275,8 @@ pub struct LaneSessionView {
     pub permission_choices: Vec<crate::conversation::engine::Choice>,
     /// 最終活動時刻 (epoch ms)。tui = PTY 出力 / gui = ConversationEvent の新しい方。
     /// None = 実体なし（Draft / 停止中）or 活動未観測。registry（disk）でなく
-    /// **in-memory 実体からの enrich**（[`LanePool::session_activity`]）なので
-    /// `from_registry` 時点では常に None — 供給点（5s snapshot / LaneDiff push）が埋める。
+    /// **in-memory 実体からの enrich**（[`super::pool::LanePool::session_activity`]）なので
+    /// [`super::enrich::sessions_view_from_registry`] 時点では常に None — 供給点（5s snapshot / LaneDiff push）が埋める。
     /// GUI は client 時計との差で「quiet N 分」を導く（閾値判定は載せない — 事実だけ運ぶ）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_activity_at: Option<u64>,

@@ -27,7 +27,7 @@ pub(crate) async fn handle_terminal_demand(
     if lane.is_empty() {
         return Err("terminal_demand: lane 未指定".to_string());
     }
-    if crate::repo::lane::LanePool::parse_address(&lane).is_none() {
+    if crate::repo::lane::parse_address(&lane).is_none() {
         return Err(format!("terminal_demand: lane パース失敗: {}", lane));
     }
     // client が「画面を持っていない」と名乗った場合は replay を必ず流す
@@ -113,7 +113,7 @@ pub(crate) async fn handle_terminal_write(
         .decode(data_b64)
         .map_err(|e| format!("terminal_write: base64 decode 失敗: {}", e))?;
     vp_paths::term_trace("B:repo-recv", lane, &bytes);
-    let Some(addr) = crate::repo::lane::LanePool::parse_address(lane) else {
+    let Some(addr) = crate::repo::lane::parse_address(lane) else {
         return Err(format!("terminal_write: lane パース失敗: {}", lane));
     };
     state
@@ -148,7 +148,7 @@ pub(crate) async fn handle_terminal_resize(
         ));
     }
     let (cols, rows) = (cols as u16, rows as u16);
-    let Some(addr) = crate::repo::lane::LanePool::parse_address(lane) else {
+    let Some(addr) = crate::repo::lane::parse_address(lane) else {
         return Err(format!("terminal_resize: lane パース失敗: {}", lane));
     };
     state
