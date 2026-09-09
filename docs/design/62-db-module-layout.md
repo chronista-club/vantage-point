@@ -120,7 +120,11 @@
 
 - **`make_test_db` の共有化**: `db/` の外の `VpDb::connect_mem()` は **18 箇所 / 9 file**、うち `define_schema()` と対になる同型 fixture が **17 箇所**（`repo/board.rs:423` だけ `define_schema` を呼ばない意図的な例外）。
   内訳 — `host/ledger.rs` 5 / `capability/repo_manager_capability.rs` 3 / `repo/lane/lifecycle.rs` 3 / `repo/board.rs` 2 / `capability/delegation_store.rs` 1 / `daemon/wire_ops.rs` 1 / `daemon/hub_client.rs` 1 / `tests/wire_unread_count.rs` 1 / `tests/wiremsg_threading.rs` 1。
-  `tests/repos_db_poc.rs` は `connect_embedded` + `define_schema` の**別形**なので畳む対象外。`pub(crate)` 化した後に畳む。
+  `tests/repos_db_poc.rs` は `connect_embedded` + `define_schema` の**別形**なので畳む対象外。
+  ⚠️ **畳めるのは 16 箇所まで**。`#[cfg(test)] pub(crate)` は **integration test（`tests/*.rs`）からは使えない** —
+  lib が dependency として build されるとき `cfg(test)` は立たず、`pub(crate)` も crate の外に出ない。
+  `tests/wire_unread_count.rs` と `tests/wiremsg_threading.rs` の 2 箇所はこの経路では畳めない。
+  `connect_mem` が `pub`（`#[cfg(test)]` 無し）なのは VP-174 でまさにこの理由から。
 - **dead method の棚卸し**（**`cut-before-fix`**: まず「切っていいか」を問う）。外部呼び手 0 は **10 本**あり、3 層に分かれる:
   1. `upsert_repo` — `import_repos`（`mod.rs:1142`）が内部で呼ぶので **dead ではない**
   2. `replace_lanes_for_repo` / `clear_all_processes` / `clear_pane_contents` — **test からだけ**呼ばれる（`mod.rs:2366 / 2484 / 2637`）

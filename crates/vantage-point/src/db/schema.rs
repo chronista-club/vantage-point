@@ -7,10 +7,11 @@
 //!
 //! - 1 クエリ + `.check()` という実行の形が、分割すると実行順と冪等性の検証を増やす。
 //! - `wire_messages` / `agent_cursor` / `thread_participant` / `wire_acks` / `delegations`
-//!   / `prompts` / `notifications` の **7 table は [`VpDb`] に method が 1 つも無い**。wire 4 table は
-//!   `capability/wiremsg_store.rs`、`delegations` は `capability/delegation_store.rs` が
-//!   [`VpDb::inner`] 経由で持つ。**`prompts` / `notifications` は誰も触っていない**（dead schema）。
-//!   いずれもここが唯一の定義点なので、domain module に割ると行き場を失う。
+//!   / `prompts` / `notifications` の **7 table は [`VpDb`] に method が 1 つも無い**。wire 4 table の
+//!   owner は `capability/wiremsg_store.rs`、`delegations` は `capability/delegation_store.rs`。
+//!   どちらも生の handle を受け取るだけで、[`VpDb::inner`] を呼ぶのは **store を組み立てる側**
+//!   （`repo/server.rs` / `daemon/wire_ops.rs` 他）。**`prompts` / `notifications` は誰も触って
+//!   いない**（dead schema）。いずれもここが唯一の定義点なので、domain module に割ると行き場を失う。
 //!
 //! ## 定義している table（18）
 //!

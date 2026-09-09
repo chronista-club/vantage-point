@@ -18,10 +18,12 @@
 //! （`clear_stale_lock`）、path 解決（[`db_data_dir_for_machine`] / [`reclaim_legacy_repo_dbs`]）、
 //! そして crate に開く面（[`VpDb`] / [`SharedVpDb`] / [`Action`]）。
 //!
-//! ## table ごとの永続操作は domain module にある
+//! ## table ごとの永続操作は domain module へ移す途中（doc 62）
 //!
-//! [`schema`] が table 定義と起動時 migration を持ち、以下が table ごとの CRUD を持つ。
-//! いずれも `impl VpDb` を書き足すだけなので、[`VpDb`] は 1 型・接続も 1 本のまま。
+//! 現時点で分離済みなのは `schema`（table 定義と起動時 migration）だけで、
+//! process / repos / lane / 帳簿 / board / service_status の CRUD は
+//! **まだこの file に同居している**（PR-2〜5 で移設）。移設先はどれも `impl VpDb` を
+//! 書き足すだけなので、[`VpDb`] は 1 型・接続も 1 本のまま。
 //! 設計は [doc 62](../../../../docs/design/62-db-module-layout.md)。
 
 use std::path::{Path, PathBuf};
