@@ -280,7 +280,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         processes,
         update_available,
         latest_version,
-        idle_timeout_minutes: crate::repo::lanes_state::idle_teardown_after_minutes(),
+        idle_timeout_minutes: crate::repo::lane::idle_teardown_after_minutes(),
         actions: actions_snapshot.items,
         actions_rev: actions_snapshot.rev,
     })

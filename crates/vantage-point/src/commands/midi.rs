@@ -1282,7 +1282,7 @@ mod tests {
     /// JSON 直読みはコンパイラが黙るので、この往復が唯一の検出口。
     #[test]
     fn parse_daemon_lanes_reads_the_real_lane_info_shape() {
-        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
 
         let make = |name: &str| LaneInfo {
             id: Default::default(),
@@ -1304,7 +1304,7 @@ mod tests {
                 "repo_name": "vp",
                 "repo_path": "/repos/vp",
                 "port": 33000,
-                "lanes": [make(crate::repo::lanes_state::ROOT_LANE_NAME), make("feat-x")],
+                "lanes": [make(crate::repo::lane::ROOT_LANE_NAME), make("feat-x")],
             }]
         });
 

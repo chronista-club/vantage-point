@@ -60,7 +60,7 @@ impl Liveness {
 /// # なぜ pid を見ないか
 ///
 /// gui（chat）の lane は **`pid: None` + `state: running` が正常形**
-/// （`lane_spawn_actor` は chat mode で PtySlot を張らず engine-less で登録する）。
+/// （`lane/spawn_actor` は chat mode で PtySlot を張らず engine-less で登録する）。
 /// pid の有無で判定すると chat lane を「停止中」と誤認して見送ってしまう。
 ///
 /// # なぜ `spawning` を含めないか

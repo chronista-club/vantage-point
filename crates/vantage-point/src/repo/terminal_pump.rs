@@ -25,7 +25,7 @@ use tokio::task::JoinHandle;
 
 use crate::lane::session_registry::SessionKey;
 use crate::protocol::RepoMessage;
-use crate::repo::lanes_state::LanePool;
+use crate::repo::lane::LanePool;
 use crate::repo::topic_router::TopicRouter;
 
 /// replay snapshot の 1 message あたりの分割サイズ。

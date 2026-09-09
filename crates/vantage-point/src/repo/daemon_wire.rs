@@ -4,7 +4,7 @@
 //! 中央化されている。 repo の wire ハンドラ ([`crate::repo::unison_server`]) /
 //! delegation ([`crate::repo::delegation`]) はこの client 経由で中央 store を読み書きする。
 //! (旧 lane-spawn actor の wire recv は in-process channel 直結に移行済 — 2026-07-09、
-//! 詳細は [`crate::repo::lane_spawn_actor`] module doc)
+//! 詳細は [`crate::repo::lane::spawn_actor`] module doc)
 //!
 //! ## B-4: transport を HTTP → unison channel に移行 (doc 27 §62「全通信 unison channel」)
 //!

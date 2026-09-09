@@ -273,7 +273,7 @@ impl VpDb {
         Ok(())
     }
 
-    /// doc 44 P2: `lane` / `lane_lifecycle` の **address 文字列列**を新形へ正規化する（冪等）。
+    /// doc 44 P2: `lane` / `lane/lifecycle` の **address 文字列列**を新形へ正規化する（冪等）。
     ///
     /// フラット化で address の表示形が `<repo>/sub/<name>` → `<repo>/<name>` に
     /// 変わった。descriptor（object 列）は `LaneAddress` の serde default が吸収するが、
@@ -321,7 +321,7 @@ impl VpDb {
                 continue;
             };
             // parse_address は旧 3 分節形を受理して新形に正規化する。
-            let Some(new) = crate::repo::lanes_state::LanePool::parse_address(old)
+            let Some(new) = crate::repo::lane::LanePool::parse_address(old)
                 .map(|a| a.to_string())
                 .filter(|new| new != old)
             else {
@@ -867,7 +867,7 @@ impl VpDb {
     pub async fn upsert_lane(
         &self,
         repo_path: &str,
-        lane: &crate::repo::lanes_state::LaneInfo,
+        lane: &crate::repo::lane::LaneInfo,
     ) -> Result<()> {
         let address = lane.address.to_string();
         let descriptor = serde_json::to_value(lane)
@@ -924,7 +924,7 @@ impl VpDb {
     pub async fn replace_lanes_for_repo(
         &self,
         repo_path: &str,
-        lanes: &[crate::repo::lanes_state::LaneInfo],
+        lanes: &[crate::repo::lane::LaneInfo],
     ) -> Result<()> {
         self.delete_lanes_for_repo(repo_path).await?;
         for lane in lanes {
@@ -937,7 +937,7 @@ impl VpDb {
     ///
     /// list_processes と同じく serde_json::Value で受け、 info object を LaneInfo に
     /// deserialize する。 壊れた行は warn して skip (boot を止めない、 §4.6 ゆるやか統治)。
-    pub async fn list_lanes(&self) -> Result<Vec<(String, crate::repo::lanes_state::LaneInfo)>> {
+    pub async fn list_lanes(&self) -> Result<Vec<(String, crate::repo::lane::LaneInfo)>> {
         let mut result = self
             .db
             .query("SELECT repo_path, descriptor FROM lane")
@@ -952,7 +952,7 @@ impl VpDb {
             let Some(desc_val) = v.get("descriptor") else {
                 continue;
             };
-            match serde_json::from_value::<crate::repo::lanes_state::LaneInfo>(desc_val.clone()) {
+            match serde_json::from_value::<crate::repo::lane::LaneInfo>(desc_val.clone()) {
                 Ok(info) => out.push((path.to_string(), info)),
                 Err(e) => tracing::warn!("lane descriptor deserialize 失敗 (skip): {}", e),
             }
@@ -1764,7 +1764,7 @@ DEFINE INDEX IF NOT EXISTS idx_host_origin_path ON host_origin COLUMNS repo_path
 -- Repo Host の帳簿②: lane の並び順 (doc 44 D5 / §12)。
 --
 -- ⚠️ `lane` table には置けない — `upsert_lane` が DELETE+CREATE なので、repo/repo 由来の
--- descriptor push が来るたびに ord が消える。`lane_lifecycle` を別 table にしたのと同じ理由で、
+-- descriptor push が来るたびに ord が消える。`lane/lifecycle` を別 table にしたのと同じ理由で、
 -- 「Host の intent」と「lane が報告する state」は table を分ける。
 --
 -- key は `host_origin` と同じく **lane_id (UUID)**。並び順は lane そのものに付く指定なので、
@@ -2032,7 +2032,7 @@ mod tests {
     /// 正規化されること。
     ///
     /// これを怠ると実害が出る: `lane` は upsert（DELETE+CREATE）の WHERE が新形で当たらず
-    /// **旧形の行が残って重複**し、`lane_lifecycle` は照合できず**孤児**になる。
+    /// **旧形の行が残って重複**し、`lane/lifecycle` は照合できず**孤児**になる。
     /// descriptor（object 列）は `LaneAddress` の serde default が吸収するが、
     /// address を文字列 key として持つ列はそれでは救えない。
     #[tokio::test]
@@ -2297,7 +2297,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_lane_upsert_list_and_delete() {
-        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
         // doc 24 §10 Phase 2: lane descriptor の daemon-canonical durable round-trip。
         let db = make_test_db().await;
 

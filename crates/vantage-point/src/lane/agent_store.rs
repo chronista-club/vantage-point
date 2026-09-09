@@ -9,7 +9,7 @@
 //!
 //! ## 設計（console_mode / session_store と同じ per-lane state file パターン）
 //!
-//! - **書き手**: `create_sub_orchestrated`（lane_lifecycle.rs）が agent 解決直後に record。
+//! - **書き手**: `create_sub_orchestrated`（lane/lifecycle.rs）が agent 解決直後に record。
 //!   全 create 入口（GUI watcher / MCP add_sub / CLI flow handoff）がここを通る choke point
 //! - **読み手**: repo boot bootstrap（server.rs）が SpawnLane Cmd の agent に使う
 //!   （記録不在 = 旧 lane / 手動 `vp lane new` は従来どおり config default に fallback）

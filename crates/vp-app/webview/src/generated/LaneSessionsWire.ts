@@ -2,7 +2,7 @@
 import type { LaneSessionEntryWire } from "./LaneSessionEntryWire";
 
 /**
- * lane の session roster（server `lanes_state::LaneSessionsView` の鏡）。
+ * lane の session roster（server `lane::LaneSessionsView` の鏡）。
  *
  * doc 50 §4.6 A6: 「どの session が root か」「各 session の mode（tui/chat）」を boot 経路が
  * 読み、xterm を (lane, session) 単位で ensure するのに使う。

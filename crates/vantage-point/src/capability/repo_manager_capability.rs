@@ -195,7 +195,7 @@ pub struct RepoManagerCapability {
     /// repo が register payload に lanes を載せて push、 disconnect で全 Lane drop。
     /// agent (Conversation on Claude CLI) が `GET /api/lanes` で resolve するための cache。
     #[allow(clippy::type_complexity)]
-    lane_registry: Arc<RwLock<HashMap<String, Vec<crate::repo::lanes_state::LaneInfo>>>>,
+    lane_registry: Arc<RwLock<HashMap<String, Vec<crate::repo::lane::LaneInfo>>>>,
     /// 設定
     config: Option<Config>,
     /// vpバイナリパス
@@ -313,7 +313,7 @@ impl RepoManagerCapability {
     #[allow(clippy::type_complexity)]
     pub fn lane_registry_ref(
         &self,
-    ) -> Arc<RwLock<HashMap<String, Vec<crate::repo::lanes_state::LaneInfo>>>> {
+    ) -> Arc<RwLock<HashMap<String, Vec<crate::repo::lane::LaneInfo>>>> {
         self.lane_registry.clone()
     }
 
@@ -485,7 +485,7 @@ impl RepoManagerCapability {
     ///
     /// destroy-side (`destroying`) と orphan→adopt は後続 increment。
     async fn reconcile_lanes(&self) {
-        use crate::repo::lanes_state::LaneLifecycle;
+        use crate::repo::lane::LaneLifecycle;
         let Some(db) = &self.vpdb else { return };
         let lifecycles = match db.list_lane_lifecycles().await {
             Ok(v) => v,
@@ -936,7 +936,7 @@ impl RepoManagerCapability {
         name: &str,
         branch: &str,
         agent: &str,
-    ) -> CapabilityResult<crate::repo::lanes_state::LaneInfo> {
+    ) -> CapabilityResult<crate::repo::lane::LaneInfo> {
         let name = name.trim();
         crate::lane::config::validate_sub_name(name).map_err(CapabilityError::Other)?;
 
@@ -956,8 +956,8 @@ impl RepoManagerCapability {
             ))
         })?;
 
-        let req = crate::repo::lane_lifecycle::build_create_lane_req(name, branch, agent);
-        crate::repo::lane_lifecycle::create_sub_orchestrated(&state, req)
+        let req = crate::repo::lane::lifecycle::build_create_lane_req(name, branch, agent);
+        crate::repo::lane::lifecycle::create_sub_orchestrated(&state, req)
             .await
             .map_err(CapabilityError::Other)
     }
@@ -1693,7 +1693,7 @@ impl RepoManagerCapability {
             // で dir は既に gone。 self-loop case (= repo 経由削除で dir 消滅 → watcher が Remove 検知 →
             // 本 lane_delete 発火) は server が "Lane not found" を Err で返すので no-op 扱い。
             let address =
-                crate::repo::lanes_state::LaneAddress::new(repo_name.as_str(), sub_name.as_str())
+                crate::repo::lane::LaneAddress::new(repo_name.as_str(), sub_name.as_str())
                     .canonical();
             let payload = serde_json::json!({ "address": address, "cleanup": false });
             tracing::info!(
@@ -1774,7 +1774,7 @@ impl RepoManagerCapability {
 
             // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を daemon repo-proxy ask
             // `lane_create` に移管 (Daemon 内 loopback、 surface 群と uniform な transport)。 payload は
-            // CreateLaneReq (lane_lifecycle.rs) 互換。 cwd 明示で既存 dir を再利用 (new_sub_in skip)。
+            // CreateLaneReq (lane/lifecycle.rs) 互換。 cwd 明示で既存 dir を再利用 (new_sub_in skip)。
             // doc 44 P2: `kind` は撤去（lane に種別が無くなり、指定する余地が消えた）。
             //
             // agent は payload に積まない = 受け手の default に委ねる。
@@ -1946,7 +1946,7 @@ impl Capability for RepoManagerCapability {
 
 /// 消える lane 群を wire の宛先から退去させる（repo 丸ごと削除の後始末、best-effort）。
 ///
-/// 単一 lane 削除側（`lane_lifecycle::delete_lane_orchestrated`）と**対**。lane が消える
+/// 単一 lane 削除側（`lane::lifecycle::delete_lane_orchestrated`）と**対**。lane が消える
 /// 入口は 2 つあり、片方だけだと「`vp repos remove` / `vp sync` の ghost 除去で消した
 /// lane」宛の未 ack が残って nudge が止まらなくなる（`WiremsgStore::leave_all_threads`
 /// の doc に実害の記録）。
@@ -1955,7 +1955,7 @@ impl Capability for RepoManagerCapability {
 /// （store は `local_seq` の採番状態を持つが、離脱は seq を進めないので副作用はない）。
 async fn leave_wire_threads_for_lanes(
     db: &crate::db::SharedVpDb,
-    lanes: &[crate::repo::lanes_state::LaneInfo],
+    lanes: &[crate::repo::lane::LaneInfo],
 ) {
     if lanes.is_empty() {
         return;
@@ -2457,7 +2457,7 @@ mod tests {
         // doc 24 §5.3 / B-destroy: repo remove で sub worktree(ground) は daemon が
         // reclaim、 main(=repo root = user の repo) は絶対に消さない、 を検証する。
         // git なしの plain dir で実行 (remove_sub_workspace は .git 無しなら fs 削除に落ちる)。
-        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
 
         let cap = make_test_cap();
         // 一意な temp repo root (再実行に備え事前掃除)。
@@ -2528,7 +2528,7 @@ mod tests {
         // sync (= `vp sp start` が起動時に撃つ) を回しても復活しないことを焼き付ける。 旧挙動では
         // sync_repos(Some(dir)) が起点 dir を無条件再登録し、 生きた sub で repo が
         // 死にきれず後で repo start → 復活する経路があった (mem_1CcuRsC9pF3fiZptwmdgTS)。
-        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
 
         let cap = make_test_cap();
         let tmp = std::env::temp_dir().join(format!("vp-test-sync-revive-{}", std::process::id()));
@@ -2642,9 +2642,9 @@ mod tests {
                 .await
                 .expect_err("Daemon 入口は拒否する")
                 .to_string();
-            let core_err = crate::repo::lane_lifecycle::create_sub_orchestrated(
+            let core_err = crate::repo::lane::lifecycle::create_sub_orchestrated(
                 &state,
-                crate::repo::lane_lifecycle::build_create_lane_req(bad, "test/x", "claude"),
+                crate::repo::lane::lifecycle::build_create_lane_req(bad, "test/x", "claude"),
             )
             .await
             .expect_err("core も拒否する");
@@ -2686,7 +2686,7 @@ mod tests {
         let key = normalize_path_key(&PathBuf::from(&repo_path));
 
         // 本物の開発起点 descriptor を db に置く（= 破壊対象）。
-        let main = crate::repo::lanes_state::LanePool::with_root("reserved", repo_path.clone());
+        let main = crate::repo::lane::LanePool::with_root("reserved", repo_path.clone());
         let main_info = main.list().into_iter().next().expect("root descriptor");
         db.upsert_lane(&key, &main_info).await.unwrap();
         let addr_str = main_info.address.to_string();
@@ -2719,7 +2719,7 @@ mod tests {
     #[tokio::test]
     async fn test_reconcile_lanes_heals_lifecycle_by_ground() {
         // doc 24 §4.6 boot reconcile heal: provisioning+ground在→ready / ready+ground無→dead。
-        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
 
         let mut cap = make_test_cap();
         let db = std::sync::Arc::new({

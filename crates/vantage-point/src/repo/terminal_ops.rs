@@ -1,4 +1,4 @@
-//! terminal ops — terminal demand / write / resize の Unison method handler（owner は `terminal_pump` と `lanes_state`、doc 61）。
+//! terminal ops — terminal demand / write / resize の Unison method handler（owner は `terminal_pump` と `lane/state`、doc 61）。
 //!
 //! demand hook（`terminal_demand_start` / `_stop`）は向きを信じず、`reconcile_terminal_pumps` 1 呼びで
 //! 購読者数の level（`TopicRouter::demand_active`）に収束させる（doc 27 §4.1 → doc 53 R2）。
@@ -27,7 +27,7 @@ pub(crate) async fn handle_terminal_demand(
     if lane.is_empty() {
         return Err("terminal_demand: lane 未指定".to_string());
     }
-    if crate::repo::lanes_state::LanePool::parse_address(&lane).is_none() {
+    if crate::repo::lane::LanePool::parse_address(&lane).is_none() {
         return Err(format!("terminal_demand: lane パース失敗: {}", lane));
     }
     // client が「画面を持っていない」と名乗った場合は replay を必ず流す
@@ -74,7 +74,7 @@ impl AppState {
         .await
     }
 
-    /// [`crate::repo::lane_reconcile::reconcile_lane`] の AppState 版（呼び手の糖衣）。
+    /// [`crate::repo::lane::reconcile::reconcile_lane`] の AppState 版（呼び手の糖衣）。
     ///
     /// **動詞の末尾はこれ 1 本**（doc 53 §12.4 / R3c）。registry に intent を書いた動詞は、
     /// 実体（PtySlot / chat engine / 代表値 / pump）を自分で動かさずにこれを呼ぶ。
@@ -82,9 +82,9 @@ impl AppState {
     /// あちらは lane 全体の実体を触らない軽い経路。
     pub(crate) async fn reconcile_lane(
         &self,
-        addr: &crate::repo::lanes_state::LaneAddress,
-    ) -> crate::repo::lane_reconcile::LaneReconcile {
-        crate::repo::lane_reconcile::reconcile_lane(
+        addr: &crate::repo::lane::LaneAddress,
+    ) -> crate::repo::lane::reconcile::LaneReconcile {
+        crate::repo::lane::reconcile::reconcile_lane(
             &self.lane_pool,
             &self.terminal_pumps,
             &self.topic_router,
@@ -113,7 +113,7 @@ pub(crate) async fn handle_terminal_write(
         .decode(data_b64)
         .map_err(|e| format!("terminal_write: base64 decode 失敗: {}", e))?;
     vp_paths::term_trace("B:repo-recv", lane, &bytes);
-    let Some(addr) = crate::repo::lanes_state::LanePool::parse_address(lane) else {
+    let Some(addr) = crate::repo::lane::LanePool::parse_address(lane) else {
         return Err(format!("terminal_write: lane パース失敗: {}", lane));
     };
     state
@@ -148,7 +148,7 @@ pub(crate) async fn handle_terminal_resize(
         ));
     }
     let (cols, rows) = (cols as u16, rows as u16);
-    let Some(addr) = crate::repo::lanes_state::LanePool::parse_address(lane) else {
+    let Some(addr) = crate::repo::lane::LanePool::parse_address(lane) else {
         return Err(format!("terminal_resize: lane パース失敗: {}", lane));
     };
     state
@@ -180,7 +180,7 @@ mod tests {
     async fn terminal_demand_start_routes_pty_output_then_stop() {
         use crate::daemon::pty_slot::PtySlot;
         use crate::protocol::RepoMessage;
-        use crate::repo::lanes_state::LaneAddress;
+        use crate::repo::lane::LaneAddress;
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
         use std::time::Duration;
@@ -298,7 +298,7 @@ mod tests {
     #[tokio::test]
     async fn terminal_write_reaches_pty_and_resize_ok() {
         use crate::daemon::pty_slot::PtySlot;
-        use crate::repo::lanes_state::LaneAddress;
+        use crate::repo::lane::LaneAddress;
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
         use base64::Engine;
@@ -403,7 +403,7 @@ mod tests {
     async fn replay_on_attach_restores_screen_for_sub_lane() {
         use crate::daemon::pty_slot::PtySlot;
         use crate::protocol::RepoMessage;
-        use crate::repo::lanes_state::LaneAddress;
+        use crate::repo::lane::LaneAddress;
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
         use base64::Engine;
@@ -504,7 +504,7 @@ mod tests {
     async fn reconcile_covers_all_sessions() {
         use crate::daemon::pty_slot::PtySlot;
         use crate::protocol::RepoMessage;
-        use crate::repo::lanes_state::LaneAddress;
+        use crate::repo::lane::LaneAddress;
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
         use base64::Engine;
@@ -631,7 +631,7 @@ mod tests {
     async fn reconnecting_client_gets_replay_even_when_slot_is_unchanged() {
         use crate::daemon::pty_slot::PtySlot;
         use crate::protocol::RepoMessage;
-        use crate::repo::lanes_state::LaneAddress;
+        use crate::repo::lane::LaneAddress;
         use crate::repo::state::build_test_app_state;
         use base64::Engine;
         use std::time::Duration;
@@ -719,7 +719,7 @@ mod tests {
     async fn reconcile_touches_only_the_swapped_slot_leaving_siblings_alone() {
         use crate::daemon::pty_slot::PtySlot;
         use crate::protocol::RepoMessage;
-        use crate::repo::lanes_state::LaneAddress;
+        use crate::repo::lane::LaneAddress;
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
         use std::time::Duration;
@@ -850,7 +850,7 @@ mod tests {
     async fn late_restored_slot_gets_pump_on_next_reconcile() {
         use crate::daemon::pty_slot::PtySlot;
         use crate::protocol::RepoMessage;
-        use crate::repo::lanes_state::LaneAddress;
+        use crate::repo::lane::LaneAddress;
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
         use base64::Engine;

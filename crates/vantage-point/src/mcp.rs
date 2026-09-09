@@ -86,7 +86,7 @@ impl SelfLane {
     pub fn detect() -> Self {
         // identity 解決不能な main (cwd/config 取得失敗) → None で fail-closed
         let main_unresolved = || SelfLane {
-            lane_name: crate::repo::lanes_state::ROOT_LANE_NAME.to_string(),
+            lane_name: crate::repo::lane::ROOT_LANE_NAME.to_string(),
             sub_parent: None,
             root_repo: None,
         };
@@ -112,7 +112,7 @@ impl SelfLane {
         // main: 自 repo 名を config-only で解決 (未登録 cwd は None = fail-closed)。
         // cwd は上で取得済みのものを正規化して渡す (二重取得を避ける)。
         SelfLane {
-            lane_name: crate::repo::lanes_state::ROOT_LANE_NAME.to_string(),
+            lane_name: crate::repo::lane::ROOT_LANE_NAME.to_string(),
             sub_parent: None,
             root_repo: crate::resolve::match_repo_name_for_path(
                 &crate::config::Config::normalize_path(&cwd),
@@ -455,7 +455,7 @@ impl VantageMcp {
     /// `lane_delete` に移管。 不在 sub は "Lane not found" を Err で返すので idempotent
     /// no-op として吸収する (= 旧 HTTP 404 NOT_FOUND を許容していた挙動と等価)。
     async fn flow_rollback_sub(&self, repo_name: &str, sub_name: &str) -> Result<(), String> {
-        let address = crate::repo::lanes_state::LaneAddress::new(repo_name, sub_name).canonical();
+        let address = crate::repo::lane::LaneAddress::new(repo_name, sub_name).canonical();
         let payload = serde_json::json!({ "address": address, "cleanup": true });
         match self
             .quic_call_with_timeout("lane_delete", payload, Duration::from_secs(30))
@@ -866,7 +866,7 @@ mod tests {
         // wiremsg identity SSOT: main は解決済 repo で "agent@<repo>"、
         // sub は "agent@<parent>/<name>"。repo 未解決の main は fail-closed (Err)。
         let main = SelfLane {
-            lane_name: crate::repo::lanes_state::ROOT_LANE_NAME.to_string(),
+            lane_name: crate::repo::lane::ROOT_LANE_NAME.to_string(),
             sub_parent: None,
             root_repo: Some("vantage-point".to_string()),
         };
@@ -881,7 +881,7 @@ mod tests {
 
         // 未登録 cwd の main (repo 未解決) → fail-closed
         let unresolved = SelfLane {
-            lane_name: crate::repo::lanes_state::ROOT_LANE_NAME.to_string(),
+            lane_name: crate::repo::lane::ROOT_LANE_NAME.to_string(),
             sub_parent: None,
             root_repo: None,
         };
@@ -995,7 +995,7 @@ mod tests {
 
         // main context → None（sub_parent が無い）
         let main = SelfLane {
-            lane_name: crate::repo::lanes_state::ROOT_LANE_NAME.to_string(),
+            lane_name: crate::repo::lane::ROOT_LANE_NAME.to_string(),
             sub_parent: None,
             root_repo: None,
         };

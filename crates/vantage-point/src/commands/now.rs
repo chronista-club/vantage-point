@@ -28,7 +28,7 @@ fn lane_addr_from_env() -> Option<String> {
     let repo = std::env::var("VP_REPO").ok().filter(|s| !s.is_empty())?;
     let label = std::env::var("VP_LANE").ok().filter(|s| !s.is_empty())?;
     // ⚠️ 形式は `LaneAddress::canonical` の 1 箇所。root/sub の分岐は要らない。
-    Some(crate::repo::lanes_state::LaneAddress::new(repo, label).canonical())
+    Some(crate::repo::lane::LaneAddress::new(repo, label).canonical())
 }
 
 /// 「今なにを」1 行を daemon へ送る（`session_now` method）。

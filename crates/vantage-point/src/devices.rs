@@ -33,7 +33,7 @@ use crate::commands::roto_control::{
     RotoView,
 };
 use crate::device_input::DeviceInput;
-use crate::repo::lanes_state::LaneAddress;
+use crate::repo::lane::LaneAddress;
 
 /// hot-plug polling 間隔（doc 23 Q-4: 2〜3s、体感重視）
 const DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);

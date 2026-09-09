@@ -64,7 +64,7 @@ impl LaneAddress {
 }
 
 impl fmt::Display for LaneAddress {
-    /// ⚠️ **daemon の [`canonical`](../../vantage_point/repo/lanes_state/struct.LaneAddress.html)
+    /// ⚠️ **daemon の [`canonical`](../../vantage_point/repo/lane/struct.LaneAddress.html)
     /// と同じ形**（`<repo>/lane/<name>`）。vp-app は `vantage-point` に依存しないので
     /// 実装を共有できず、ここが 2 つ目の写像になる。
     ///

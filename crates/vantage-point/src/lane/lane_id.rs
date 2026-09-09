@@ -5,11 +5,11 @@
 //! path=identity を断つ種)。
 //!
 //! **strangler 注意**: 生成した id は **まだ pool key には使わない** (operative key は
-//! [`crate::repo::lanes_state::LaneAddress`])。「id を持つが id で引かない」中間状態
+//! [`crate::repo::lane::LaneAddress`])。「id を持つが id で引かない」中間状態
 //! の土台 — 後続 increment で徐々に id へ寄せる。
 //!
-//! - **書き手 / 読み手**: lane spawn 経路 (`LanePool::with_root` / `lane_spawn_actor` /
-//!   `lane_lifecycle` の sub create) が [`load_or_create`] を呼ぶ。初回は生成 + 永続、
+//! - **書き手 / 読み手**: lane spawn 経路 (`LanePool::with_root` / `lane/spawn_actor` /
+//!   `lane/lifecycle` の sub create) が [`load_or_create`] を呼ぶ。初回は生成 + 永続、
 //!   2 回目以降 (= 再起動後の同 lane re-spawn) は disk から復元 → **再起動を越えて安定**。
 //! - 置き場: `vp_state_dir()/lane_ids/<repo>__<lane>` (1 lane 1 file 1 行)。
 //!   cc_session (`<repo>__<lane>`) と同じ命名規則。
@@ -18,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::repo::lanes_state::LaneId;
+use crate::repo::lane::LaneId;
 
 /// file 名に使えない文字を潰す ([`crate::lane::cc_session`] と同一規則)。
 /// separator (`/` `\`) と `.` を `-` に置換し、 path traversal を自明に防ぐ。

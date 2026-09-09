@@ -26,12 +26,12 @@ use crate::file_watcher::FileWatcherManager;
 /// register snapshot を push していた。同一プロセスになった今、その push は
 /// **map への書き込み**に退化する（[`publish_lanes`]）。
 pub(crate) type NodeLaneView =
-    Arc<RwLock<std::collections::HashMap<String, Vec<super::lanes_state::LaneInfo>>>>;
+    Arc<RwLock<std::collections::HashMap<String, Vec<super::lane::LaneInfo>>>>;
 
 /// LanePool の現 snapshot を「daemon の集約 view」と「repo の hub」の両方へ配る。
 ///
 /// doc 44 P1 (fold-in): lanes が daemon へ流れる供給点は 3 つ（起動時 seed / 5s periodic /
-/// `SystemEvent::Lane`）あり、`lanes_state.rs` の規約どおり**全供給点で同じ enrich を通す**
+/// `SystemEvent::Lane`）あり、`lane/state.rs` の規約どおり**全供給点で同じ enrich を通す**
 /// 必要がある。旧構成ではこの 3 点が hub へ broadcast し、repo の uplink が QUIC で daemon の
 /// `lane_registry` へ中継していた。fold-in で中継が消えたため、daemon 側 view の更新を
 /// ここに並置する — これを怠ると daemon の view が boot 時の db 値で固まり、
@@ -76,7 +76,7 @@ async fn publish_lanes(
     path_key: &str,
     notifier: &mut LaneChangeNotifier,
 ) {
-    let lanes = super::lane_lifecycle::build_lanes_snapshot(state).await;
+    let lanes = super::lane::lifecycle::build_lanes_snapshot(state).await;
     if let Some(view) = node_lanes {
         view.write()
             .await
@@ -244,7 +244,7 @@ pub(crate) async fn start_repo(
         // lane subs を `LaneCmd::SpawnLane` Cmd 化して `lane-spawn` mailbox に投入する
         // (= concurrency 制御を `Arc<Semaphore::new(N)>` で表現、 N=config.startup.max_concurrent_lane_spawn)。
         // 詳細は run() 内 lane_spawn_actor wiring 参照。
-        lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::with_root(
+        lane_pool: Arc::new(RwLock::new(super::lane::LanePool::with_root(
             repo_name_for_remote.clone(),
             repo_dir.clone(),
         ))),
@@ -253,7 +253,7 @@ pub(crate) async fn start_repo(
         // caller publish (SystemEvent::Lane(LaneDiff::*) 等) + `publish_lanes` subscribe で
         // daemon の集約 view を更新する経路。 将来 Pane / Agent 等の event も同 bus に variant
         // 追加で乗る。
-        system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
+        system_event_tx: tokio::sync::broadcast::channel::<super::lane::SystemEvent>(64).0,
         // Phase A4-2b: Repo scope の Agent pool (board/runner ほか) — skeleton
         // PR-α-1 (VP-111): repo モードでは MachineCapabilities を持たない (daemon mode 専用)
         machine_capabilities: None,
@@ -283,7 +283,7 @@ pub(crate) async fn start_repo(
     // in-process 直結 (2026-07-09): 旧 wiremsg R2-a 経路 (daemon 中央 wire store の
     // `lane-spawn@<repo>` mailbox 往復) を撤去。 producer は本 bootstrap のみで、 at-most-once
     // 配送 + repo 再起動時の幽霊 long-poll 消費で Cmd が失われ sub が永久 Spawning になる
-    // 障害があった (詳細は lane_spawn_actor.rs module doc)。 channel は process-local なので
+    // 障害があった (詳細は lane/spawn_actor.rs module doc)。 channel は process-local なので
     // この failure mode が構造的に消滅し、 daemon 不達 retry も不要 (standalone repo でも spawn 可)。
     {
         let max_concurrent = crate::config::Config::load()
@@ -293,11 +293,11 @@ pub(crate) async fn start_repo(
         // bootstrap → actor の in-process 直結 channel。 unbounded なので send は同期・即時
         // (receiver 生存中は infallible)、 recv loop 開始前の send もバッファされる。
         let (lane_spawn_tx, lane_spawn_rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::lane_cmd::LaneCmd>();
+            tokio::sync::mpsc::unbounded_channel::<super::lane::cmd::LaneCmd>();
         // VP-159 PR-4b: ActorRegistry 経由で spawn + register (= JoinHandle を registry が保持、
         // PR-5 supervisor 統一で abort / await を activate)。 Semaphore gate / race guard は完全互換。
         state.actor_registry.write().await.spawn_service(
-            super::lane_spawn_actor::LaneSpawnActor::new(
+            super::lane::spawn_actor::LaneSpawnActor::new(
                 state.lane_pool.clone(),
                 state.system_event_tx.clone(), // Phase 2 (Step E): system event central bus
                 state.terminal_pumps.clone(),  // doc 53 R2: 復元後 pump reconcile 用
@@ -337,7 +337,7 @@ pub(crate) async fn start_repo(
                 // (agent 非永続の既知バグの根治)。
                 let agent = crate::lane::agent_store::last(&subs_repo_id, &entry.name)
                     .unwrap_or_else(|| default_agent.clone());
-                let cmd = super::lane_cmd::LaneCmd::SpawnLane {
+                let cmd = super::lane::cmd::LaneCmd::SpawnLane {
                     repo_id: subs_repo_id.clone(),
                     name: entry.name.clone(),
                     cwd: entry.path.clone(),
@@ -370,8 +370,8 @@ pub(crate) async fn start_repo(
         //
         // address の repo 名は with_root と同じ解決済の名（`state.repo_name`）を使う —
         // `subs_repo_id`（dir 名）は登録名と異なり得る。
-        let main_addr = super::lanes_state::LaneAddress::root(&state.repo_name);
-        super::lane_reconcile::reconcile_lane(
+        let main_addr = super::lane::LaneAddress::root(&state.repo_name);
+        super::lane::reconcile::reconcile_lane(
             &state.lane_pool,
             &state.terminal_pumps,
             &state.topic_router,
@@ -426,7 +426,7 @@ pub(crate) async fn start_repo(
         // （repo 再起動を越えて board が復元される。 別 load 経路は不要）。
         super::board::seed_boards(&state).await;
         tokio::spawn(async move {
-            use super::lanes_state::SystemEvent;
+            use super::lane::SystemEvent;
             use tokio::sync::broadcast::error::RecvError;
             // repo-local lane refactor PR 1: CLI `vp lane new` は SystemEvent::Lane を
             // fire しない (= 直 fs op、 repo 経由しない)。 disk-only sub を sidebar に届ける
@@ -508,7 +508,7 @@ fn spawn_idle_engine_sweep(state: Arc<AppState>, shutdown: CancellationToken) {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0);
-            let candidates: Vec<crate::repo::lanes_state::LaneAddress> = {
+            let candidates: Vec<crate::repo::lane::LaneAddress> = {
                 let pool = state.lane_pool.read().await;
                 pool.lanes_with_chat_engines()
                     .into_iter()
@@ -532,9 +532,9 @@ fn spawn_idle_engine_sweep(state: Arc<AppState>, shutdown: CancellationToken) {
                 }
                 tracing::info!(
                     "idle chat engine を寝かせた（sweep: 購読なし・turn なし・{}分無活動）: lane={addr} sessions={dropped:?}",
-                    crate::repo::lanes_state::idle_teardown_after_minutes(),
+                    crate::repo::lane::idle_teardown_after_minutes(),
                 );
-                crate::repo::lane_lifecycle::emit_lane_update(&state, &addr).await;
+                crate::repo::lane::lifecycle::emit_lane_update(&state, &addr).await;
             }
         }
     });
@@ -802,9 +802,9 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         // Phase A4-2b: Daemon モードでは Lane / Repo の機能を持たない (空 Pool で AppState を満たす)
         // 多 scope architecture: daemon は App scope の component、Lane/RepoStand は Repo scope
-        lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::new())),
+        lane_pool: Arc::new(RwLock::new(super::lane::LanePool::new())),
         // Phase 2 (Step E): system event central bus
-        system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
+        system_event_tx: tokio::sync::broadcast::channel::<super::lane::SystemEvent>(64).0,
         // PR-α-1 (VP-111): machine 階層 Agent container (LSCM doc 12 §3 / §9)
         machine_capabilities: Some(machine_capabilities),
         // S2: daemon mode は repo の per-lane pump を持たない (terminal pump は repo scope)。
@@ -1395,7 +1395,7 @@ async fn bind_dual_stack(port: u16) -> Result<tokio::net::TcpListener> {
 /// ## shutdown
 /// `shutdown_token.cancelled()` で graceful 終了。 repo shutdown で task も clean に止まる。
 fn spawn_lane_lifecycle_monitor(
-    lane_pool: Arc<RwLock<super::lanes_state::LanePool>>,
+    lane_pool: Arc<RwLock<super::lane::LanePool>>,
     shutdown: CancellationToken,
 ) {
     tokio::spawn(async move {

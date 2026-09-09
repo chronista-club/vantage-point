@@ -68,7 +68,7 @@ pub(crate) fn resolve_create_lane_args(
     let branch = branch
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| crate::repo::lane_lifecycle::derive_default_branch(&repo_root, name));
+        .unwrap_or_else(|| crate::repo::lane::lifecycle::derive_default_branch(&repo_root, name));
     // doc 59 P4: 既定 agent は settings.kdl（好みの層）が持つ。
     let agent = agent
         .map(|s| s.to_string())
@@ -110,12 +110,12 @@ pub struct LanesQuery {
 pub(crate) async fn collect_lanes(
     daemon: &RepoManagerCapability,
     query: &LanesQuery,
-) -> Vec<crate::repo::lanes_state::LaneInfo> {
+) -> Vec<crate::repo::lane::LaneInfo> {
     let lane_registry = daemon.lane_registry_ref();
     let registry = lane_registry.read().await;
 
     // 全 repo の Lane を flatten + filter (repo / lane / agent)
-    let mut lanes: Vec<crate::repo::lanes_state::LaneInfo> = registry
+    let mut lanes: Vec<crate::repo::lane::LaneInfo> = registry
         .values()
         .flatten()
         .filter(|l| query.repo.as_deref().is_none_or(|p| l.address.repo == p))
