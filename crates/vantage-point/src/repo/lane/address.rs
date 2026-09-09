@@ -1,57 +1,13 @@
 //! lane の名前（値型、棚卸し 項目 9-1b で `state.rs` から分離）。
 //!
-//! `LaneId`（daemon 発行の識別子）と `LaneAddress`（`<repo>/lane/<name>` の宛先）。disk / engine /
-//! lock を触らない。Display 形の逆変換 [`parse_address`] もここ（9-1c で `LanePool` から移設 —
+//! `LaneAddress`（`<repo>/lane/<name>` の宛先）。disk / engine / lock を触らない。id 側（`LaneId`）は
+//! identity の SSOT がある [`crate::lane::lane_id`]（9-1d で移設 — `crate::lane` → `repo::lane` の
+//! code 依存を切るため）。Display 形の逆変換 [`parse_address`] もここ（9-1c で `LanePool` から移設 —
 //! `&self` を取らない純パーサだったので runtime 型の名前空間に住む理由が無かった）。
 
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-
-/// Lane の位置独立な安定 id (I1、 doc 24 §7 / §10 Phase 2)。
-///
-/// path / port / PID に依存しない不変 handle。Lane の cwd が動こうと repo が
-/// rename されようと、 この id は変わらない (= 発端バグの path=identity を断つ種)。
-///
-/// **strangler 注意**: 現状この id は **pool key には使わない** (operative key は
-/// [`LaneAddress`])。「id を持つが id で引かない」中間状態 — 後続 increment で徐々に
-/// id へ寄せる土台。生成・永続は [`crate::lane::lane_id`]。
-///
-/// **format は意図的に opaque** (doc §12-E: format / 採番 / 衝突解決は連邦時 = Phase 3
-/// まで決め打ちしない)。現状 UUID v7 (時刻順 sortable) で生成するが、 呼び手は中身に
-/// 依存しないこと。serde は `transparent` で素の文字列として乗る (人にも読める wire)。
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct LaneId(String);
-
-impl LaneId {
-    /// 新規 id を生成する (現状 UUID v7、 format は opaque)。
-    pub fn generate() -> Self {
-        Self(uuid::Uuid::now_v7().to_string())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// 空 id (legacy wire payload を `#[serde(default)]` で受けた時の値) 判定。
-    /// `skip_serializing_if` と組で「空なら wire から省略」= 古 client と完全互換。
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-impl From<String> for LaneId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-impl fmt::Display for LaneId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
 
 /// 開発起点 lane の予約名（doc 44 D4）。
 ///
