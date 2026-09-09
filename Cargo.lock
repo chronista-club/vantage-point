@@ -9274,6 +9274,7 @@ dependencies = [
  "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
+ "ts-rs",
  "tui-markdown",
  "tui-scrollview",
  "unicode-normalization",

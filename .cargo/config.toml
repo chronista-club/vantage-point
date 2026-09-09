@@ -10,9 +10,10 @@
 # `TS_RS_EXPORT_DIR` を vp-app crate 直下に固定する。 これで vp-app の各型の
 # `export_to` を `webview/src/generated/...` と crate-root 相対で書ける。
 #
-# NOTE: 現状 ts-rs export を行うのは vp-app crate のみ。 将来別 crate が ts-rs
-# export を追加する場合、 本設定だと出力先が vp-app 配下に固定されてしまうため、
-# その時点で per-crate な解決方法に見直すこと。
+# NOTE: ts-rs export を行うのは vp-app crate と、 vantage-point crate の
+# `conversation/event.rs`（ConversationEvent の TS 型、 棚卸し 項目 8 / 8-2）。 後者も
+# 出力先は webview なので、 vp-app 配下固定のままで正しい。 webview 以外へ出す crate が
+# 現れたら per-crate な解決方法に見直すこと。
 #
 # `relative = true` は本 file の位置 (= workspace root) 相対の意味。
 [env]
