@@ -136,7 +136,7 @@ pub struct Config {
 
 /// repo startup behavior config (I-b、 2026-04-30)。
 ///
-/// [`LaneSpawnActor`](crate::repo::lane_spawn_actor) が Sub spawn を Cmd 化
+/// [`LaneSpawnActor`](crate::repo::lane::spawn_actor) が Sub spawn を Cmd 化
 /// (in-process channel) した上で、 内部 Semaphore で同時実行数を gate する。 `max_concurrent_lane_spawn` で
 /// 制限値を tweak、 default は **1** (= 完全 sequential、 dogfood の視覚 pop 体験 +
 /// Claude CLI rate-limit 安全)。 計測 log (`Lane spawn completed: ... elapsed=`) を

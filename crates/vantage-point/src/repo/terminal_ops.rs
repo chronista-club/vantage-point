@@ -1,4 +1,4 @@
-//! terminal ops — terminal demand / write / resize の Unison method handler（owner は `terminal_pump` と `lanes_state`、doc 61）。
+//! terminal ops — terminal demand / write / resize の Unison method handler（owner は `terminal_pump` と `lane/state`、doc 61）。
 //!
 //! demand hook（`terminal_demand_start` / `_stop`）は向きを信じず、`reconcile_terminal_pumps` 1 呼びで
 //! 購読者数の level（`TopicRouter::demand_active`）に収束させる（doc 27 §4.1 → doc 53 R2）。

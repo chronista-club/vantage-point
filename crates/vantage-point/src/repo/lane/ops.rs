@@ -1,4 +1,4 @@
-//! lane ops — lane 系 Unison method の handler（owner は `lane_lifecycle` / `host/ledger` / `lane/session_registry`、doc 61）。
+//! lane ops — lane 系 Unison method の handler（owner は `lane/lifecycle` / `host/ledger` / `lane/session_registry`、doc 61）。
 //!
 //! nudge / slots / slot_new / capture / delete / restart / session_changed / create / origin_get / origin_set /
 //! order_set / lanes_list。payload を剥がして owner を呼び JSON を返す。`lane_origin_set` / `lane_order_set` は

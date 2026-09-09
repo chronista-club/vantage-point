@@ -27,7 +27,7 @@
 //! ③ 適用     write lock で insert + race 再検査（他の動詞が先に立てていたら捨てる）
 //! ```
 //!
-//! `lane_spawn_actor` が既にこの形（読み → `spawn_blocking` → `pool.write()` で race 再検査）。
+//! `lane/spawn_actor` が既にこの形（読み → `spawn_blocking` → `pool.write()` で race 再検査）。
 //! 新しい規律ではなく、**既に採っている形を lane の中へ持ち込む**。
 //!
 //! ## 失敗の意味論（doc 53 §12.2、mako 判断）

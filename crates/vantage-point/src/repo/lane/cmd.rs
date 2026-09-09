@@ -4,7 +4,7 @@
 //! 常時 N 動かす、 cmd type で queue 振り分け」 を実装。 in-process 直結 (2026-07-09) で
 //! 配送は **`tokio::sync::mpsc` unbounded channel** になった (旧 Mailbox actor address
 //! `lane-spawn@<repo>` 経由は repo 再起動時の幽霊消費のため撤去、 詳細は
-//! [`crate::repo::lane_spawn_actor`] module doc)。
+//! [`crate::repo::lane::spawn_actor`] module doc)。
 //! 各 Cmd の処理は actor 内の `tokio::sync::Semaphore::new(N)` で gate された
 //! worker pool で並列実行 (= 内部 tokio worker pool、 Lane の sub とは別概念)。
 //!
@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 // doc 11 PR-B: LaneComponent enum 削除、 agent は String 化 (mise task 名 "claude" / "shell" 等、
 // PR-pre2 (VP-118) で "hd" → "claude" rename)。
 
-/// Lane に対する操作 Cmd。 [`LaneSpawnActor`](crate::repo::lane_spawn_actor) が
+/// Lane に対する操作 Cmd。 [`LaneSpawnActor`](crate::repo::lane::spawn_actor) が
 /// in-process channel で recv し、 内部 Semaphore で gate された tokio worker pool で
 /// 1 つずつ実行する。
 ///
@@ -54,7 +54,7 @@ pub enum LaneCmd {
     /// gate しつつ並列処理する design。
     SpawnLane {
         /// LaneAddress.repo の値 (= lane repo prefix と一致する repo_id、
-        /// `lane_lifecycle.rs::create_sub_orchestrated` の derivation と整合)
+        /// `lane/lifecycle.rs::create_sub_orchestrated` の derivation と整合)
         repo_id: String,
         /// Sub name (LaneAddress.name に入る)
         name: String,

@@ -31,7 +31,7 @@ pub(crate) type NodeLaneView =
 /// LanePool の現 snapshot を「daemon の集約 view」と「repo の hub」の両方へ配る。
 ///
 /// doc 44 P1 (fold-in): lanes が daemon へ流れる供給点は 3 つ（起動時 seed / 5s periodic /
-/// `SystemEvent::Lane`）あり、`lanes_state.rs` の規約どおり**全供給点で同じ enrich を通す**
+/// `SystemEvent::Lane`）あり、`lane/state.rs` の規約どおり**全供給点で同じ enrich を通す**
 /// 必要がある。旧構成ではこの 3 点が hub へ broadcast し、repo の uplink が QUIC で daemon の
 /// `lane_registry` へ中継していた。fold-in で中継が消えたため、daemon 側 view の更新を
 /// ここに並置する — これを怠ると daemon の view が boot 時の db 値で固まり、
@@ -283,7 +283,7 @@ pub(crate) async fn start_repo(
     // in-process 直結 (2026-07-09): 旧 wiremsg R2-a 経路 (daemon 中央 wire store の
     // `lane-spawn@<repo>` mailbox 往復) を撤去。 producer は本 bootstrap のみで、 at-most-once
     // 配送 + repo 再起動時の幽霊 long-poll 消費で Cmd が失われ sub が永久 Spawning になる
-    // 障害があった (詳細は lane_spawn_actor.rs module doc)。 channel は process-local なので
+    // 障害があった (詳細は lane/spawn_actor.rs module doc)。 channel は process-local なので
     // この failure mode が構造的に消滅し、 daemon 不達 retry も不要 (standalone repo でも spawn 可)。
     {
         let max_concurrent = crate::config::Config::load()

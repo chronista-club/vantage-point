@@ -38,16 +38,15 @@ crates/vantage-point/src/repo/
 ├── wire_relay.rs           repo 側の wire relay（normalize_agent_addr / handle_wire_* 7 本）。transport は daemon_wire、store は daemon/wire_ops（7b）
 │  ── _ops（受付の続き。owner は別）──
 ├── conversation_ops.rs     submit / nudge / respond / interrupt / permission_mode / session_* / set_mode / now / set_model
-│                             （owner = lanes_state の facade + conversation::engine）
-├── terminal_ops.rs         terminal demand / write / resize（owner = terminal_pump + lanes_state）
-├── lane/ops.rs             lane nudge / slots / slot_new / capture / delete / restart / session_changed / create / origin / order / lanes_list
-│                             （owner = lane/lifecycle + host/ledger + crate::lane/session_registry）
+│                             （owner = lane/state の facade + conversation::engine）
+├── terminal_ops.rs         terminal demand / write / resize（owner = terminal_pump + lane/state）
 ├── process_ops.rs          watch_file / unwatch_file / process_* / ruby_*（owner = process_runner + file_watcher）
 │  ── 既存（変えない）──
 ├── state.rs                AppState（+ #[cfg(test)] の共有 fixture: build_test_app_state / default_test_shell / insert_test_lane）
 ├── server.rs               QUIC accept loop / run_daemon / seed の呼び出し
 ├── repo_registry.rs        daemon → repo の in-process dispatch（dispatch_repo_method の唯一の呼び手）
-├── lane/                   repo 側の lane runtime（9-1a で集約: state（旧 lanes_state）/ reconcile / cmd / spawn_actor / ops / lifecycle）。
+├── lane/                   repo 側の lane runtime（9-1a で集約: state（旧 lanes_state）/ reconcile / cmd / spawn_actor / lifecycle /
+│                             ops = lane 系 Unison handler、owner は lifecycle + host/ledger + crate::lane/session_registry）。
 │                             facade `pub use state::{LaneAddress, LaneInfo, LanePool, …}`。identity・registry の SSOT は crate::lane
 ├── terminal_pump.rs / conversation_pump.rs
 ├── http/                   health / update（axum handler はこれだけ。Router は server.rs）— 7b

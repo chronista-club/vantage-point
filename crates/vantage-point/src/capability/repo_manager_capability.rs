@@ -1774,7 +1774,7 @@ impl RepoManagerCapability {
 
             // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を daemon repo-proxy ask
             // `lane_create` に移管 (Daemon 内 loopback、 surface 群と uniform な transport)。 payload は
-            // CreateLaneReq (lane_lifecycle.rs) 互換。 cwd 明示で既存 dir を再利用 (new_sub_in skip)。
+            // CreateLaneReq (lane/lifecycle.rs) 互換。 cwd 明示で既存 dir を再利用 (new_sub_in skip)。
             // doc 44 P2: `kind` は撤去（lane に種別が無くなり、指定する余地が消えた）。
             //
             // agent は payload に積まない = 受け手の default に委ねる。
@@ -1946,7 +1946,7 @@ impl Capability for RepoManagerCapability {
 
 /// 消える lane 群を wire の宛先から退去させる（repo 丸ごと削除の後始末、best-effort）。
 ///
-/// 単一 lane 削除側（`lane_lifecycle::delete_lane_orchestrated`）と**対**。lane が消える
+/// 単一 lane 削除側（`lane::lifecycle::delete_lane_orchestrated`）と**対**。lane が消える
 /// 入口は 2 つあり、片方だけだと「`vp repos remove` / `vp sync` の ghost 除去で消した
 /// lane」宛の未 ack が残って nudge が止まらなくなる（`WiremsgStore::leave_all_threads`
 /// の doc に実害の記録）。

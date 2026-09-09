@@ -2,7 +2,7 @@
 //!
 //! `dispatch_repo_method` が 72 method の match 1 枚で、各 arm は owner / `*_ops` module の handler を
 //! 呼ぶだけ（`board` / `editor_bridge` / `conversation_replay` / `conversation_ops` / `terminal_ops` /
-//! `lane_ops` / `process_ops` / `wire_relay` / `agents` / `delegation`）。ここに残るのは
+//! `lane/ops` / `process_ops` / `wire_relay` / `agents` / `delegation`）。ここに残るのは
 //! 受付の続き（`handle_process_message` = pane ops の generic relay）と、群ごとに `None` の意味が違う
 //! `payload_session_key`、および `QUIC_PORT_OFFSET`。
 //!

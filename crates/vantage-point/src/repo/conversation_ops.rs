@@ -1,4 +1,4 @@
-//! conversation ops — Unison method の handler で、owner は `lanes_state` の facade と `conversation::engine`（doc 61）。
+//! conversation ops — Unison method の handler で、owner は `lane/state` の facade と `conversation::engine`（doc 61）。
 //!
 //! submit / nudge / respond / interrupt / set_permission_mode / session_*（list / create / focus / remove /
 //! new_root / switch_root）/ session_set_mode / session_now / conversation_set_model。payload を剥がして

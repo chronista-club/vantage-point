@@ -273,7 +273,7 @@ impl VpDb {
         Ok(())
     }
 
-    /// doc 44 P2: `lane` / `lane_lifecycle` の **address 文字列列**を新形へ正規化する（冪等）。
+    /// doc 44 P2: `lane` / `lane/lifecycle` の **address 文字列列**を新形へ正規化する（冪等）。
     ///
     /// フラット化で address の表示形が `<repo>/sub/<name>` → `<repo>/<name>` に
     /// 変わった。descriptor（object 列）は `LaneAddress` の serde default が吸収するが、
@@ -1764,7 +1764,7 @@ DEFINE INDEX IF NOT EXISTS idx_host_origin_path ON host_origin COLUMNS repo_path
 -- Repo Host の帳簿②: lane の並び順 (doc 44 D5 / §12)。
 --
 -- ⚠️ `lane` table には置けない — `upsert_lane` が DELETE+CREATE なので、repo/repo 由来の
--- descriptor push が来るたびに ord が消える。`lane_lifecycle` を別 table にしたのと同じ理由で、
+-- descriptor push が来るたびに ord が消える。`lane/lifecycle` を別 table にしたのと同じ理由で、
 -- 「Host の intent」と「lane が報告する state」は table を分ける。
 --
 -- key は `host_origin` と同じく **lane_id (UUID)**。並び順は lane そのものに付く指定なので、
@@ -2032,7 +2032,7 @@ mod tests {
     /// 正規化されること。
     ///
     /// これを怠ると実害が出る: `lane` は upsert（DELETE+CREATE）の WHERE が新形で当たらず
-    /// **旧形の行が残って重複**し、`lane_lifecycle` は照合できず**孤児**になる。
+    /// **旧形の行が残って重複**し、`lane/lifecycle` は照合できず**孤児**になる。
     /// descriptor（object 列）は `LaneAddress` の serde default が吸収するが、
     /// address を文字列 key として持つ列はそれでは救えない。
     #[tokio::test]

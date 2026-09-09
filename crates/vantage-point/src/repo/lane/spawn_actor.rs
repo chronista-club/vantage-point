@@ -42,7 +42,7 @@
 //!   producer は同 Process の bootstrap (server.rs) が持つ Sender のみ。 bootstrap 完了で
 //!   Sender drop → channel close → actor は buffered Cmd を全 drain 後に**正常終了**する
 //!   (= actor は「起動時一斉 spawn の Semaphore gate」、 仕事が尽きたら畳む)
-//! - **Cmd 型**: `LaneCmd::SpawnLane{...}` (= `crate::repo::lane_cmd`) を型付きで直接 send
+//! - **Cmd 型**: `LaneCmd::SpawnLane{...}` (= `crate::repo::lane::cmd`) を型付きで直接 send
 //!   (serialize 不要)
 //! - **concurrency**: `Arc<Semaphore::new(max_concurrent)>` で permit gate、 各 Cmd は
 //!   `tokio::spawn` で並列処理されるが Semaphore で同時実行上限を制御

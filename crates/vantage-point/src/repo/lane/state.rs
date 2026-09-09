@@ -114,7 +114,7 @@ pub enum LaneState {
 ///
 /// process liveness ([`LaneState`]) とは **別軸**: ground (worktree) の生成/破棄の lifecycle を
 /// daemon-internal に追跡する (PtySlot の生死ではない)。 daemon-canonical で、 descriptor とは
-/// 別 table (`lane_lifecycle`) に永続する (repo push が descriptor を round-trip して clobber する
+/// 別 table (`lane/lifecycle`) に永続する (repo push が descriptor を round-trip して clobber する
 /// のを避けるため)。
 ///
 /// **intent-first bracket**: create は `Provisioning` を先に書く → worktree provision → `Ready`。
@@ -1347,7 +1347,7 @@ impl LanePool {
             [repo, name] if !repo.is_empty() && !name.is_empty() => Some(name_or_root(repo, name)),
             // 旧 3 分節形 "<repo>/sub/<name>" (P2 以前の永続 address / wire) を
             // 新形に正規化して受理する。lead/wing → root/sub の rename 時と同じ手当て
-            // で、DB (`lane` / `lane_lifecycle` の address 列) と session.json を無傷で引き継ぐ。
+            // で、DB (`lane` / `lane/lifecycle` の address 列) と session.json を無傷で引き継ぐ。
             // canonical: "<repo>/lane/<name>"。名前空間を明示した現行形。
             [repo, LANE_SEGMENT, name] if !repo.is_empty() && !name.is_empty() => {
                 Some(name_or_root(repo, name))
