@@ -20,9 +20,9 @@
 //!
 //! ## table ごとの永続操作は domain module へ移す途中（doc 62）
 //!
-//! 現時点で分離済みなのは `schema`（table 定義と起動時 migration）だけで、
-//! process / repos / lane / 帳簿 / board / service_status の CRUD は
-//! **まだこの file に同居している**（PR-2〜5 で移設）。移設先はどれも `impl VpDb` を
+//! 分離済みは `schema`（table 定義と起動時 migration）と `board`（`pane_contents`）。
+//! process / repos / lane / 帳簿 / service_status の CRUD は
+//! **まだこの file に同居している**（PR-3〜5 で移設）。移設先はどれも `impl VpDb` を
 //! 書き足すだけなので、[`VpDb`] は 1 型・接続も 1 本のまま。
 //! 設計は [doc 62](../../../../docs/design/62-db-module-layout.md)。
 
@@ -81,7 +81,7 @@ pub fn db_data_dir_for_machine() -> PathBuf {
 /// なったため、`db/sp_*` は **1 バイトも読まれない残骸**になった。だが撤去されたのは
 /// 「開くコード」だけで、既に disk にある dir はそのまま残っていた（実機で 23 dir / 約 1.2 GB）。
 ///
-/// 捨ててよいことは doc 44 §5.2 で 2026-07-20 に検証済み。実害は旧 DB の board board
+/// 捨ててよいことは doc 44 §5.2 で 2026-07-20 に検証済み。実害は旧 DB の board
 /// (`pane_contents`) が引き継がれないことだけで、これは fold-in の破壊的変更として
 /// 既に出荷・周知されている（board は空から始まる）。
 ///

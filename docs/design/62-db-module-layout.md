@@ -79,7 +79,7 @@
 | `normalize_lane_addresses_in` | **1 行の失敗で `?` しない**。UNIQUE 衝突が残り全行を巻き添えにするのを防ぐため warn して続行 |
 | `normalize_legacy_lane_addresses` | 3 組 `(lane, address)` `(lane_lifecycle, address)` `(active_lane, lane_address)` — **列名が table ごとに違う**（doc 44 P2 の時点で実際に漏れていた） |
 | `upsert_lane` / `upsert_lane_lifecycle` | DELETE + CREATE（UPDATE ではない） |
-| `append_board_item` | head push / cursor の昇格 / 容量 eviction の順序（doc 52 §5） |
+| `append_board_item` | head push → capacity で trim → **trim 後の列に対して** cursor を決める順序。cursor は既定で据え置き（scrollback）で、NONE / 旧 head を見ていた / trim で消える の 3 場合だけ昇格する。trim の前に決めると evict 済み item を指して主画面が空白化する（doc 52 §5「流されない」、regression は `test_board_cursor_survives_capacity_eviction`） |
 | `update_board_item` | in-place（read-modify-write）で cursor を動かさない |
 | 全 repo 固有 table | `repo_path` 列による scope 隔離 |
 

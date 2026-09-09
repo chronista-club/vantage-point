@@ -5,8 +5,12 @@
 //!
 //! ## 触ってはいけない順序
 //!
-//! - [`VpDb::append_board_item`]: head push → cursor の昇格 → 容量 eviction の順。
-//!   cursor を新 item に移すのは server 側の仕事（doc 52 §5、view-local cursor は廃止済み）
+//! - [`VpDb::append_board_item`]: 新 item を head に積んで capacity で trim した列を作り、
+//!   **その trim 後の列に対して** cursor を決める。cursor は既定で**据え置き**（scrollback）で、
+//!   NONE / 旧 head を見ていた（follow）/ trim で消える、の 3 場合だけ新 item へ昇格する。
+//!   trim の前に cursor を決めると evict 済みの item を指して主画面が無言で空白化する
+//!   （doc 52 §5「流されない」、regression は `test_board_cursor_survives_capacity_eviction`）。
+//!   cursor を動かすのは server 側の仕事で、view-local cursor は廃止済み
 //! - [`VpDb::update_board_item`]: **in-place**（read-modify-write）で cursor を動かさない
 //! - repo scope の隔離は `repo_path` 列が持つ（doc 44 §5.2）
 //!
