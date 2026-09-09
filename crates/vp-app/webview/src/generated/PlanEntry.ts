@@ -7,4 +7,11 @@ export type PlanEntry = { content: string,
 /**
  * "pending" | "in_progress" | "completed"（claude の status をそのまま運ぶ）。
  */
-status: string, active_form?: string, };
+status: string, 
+/**
+ * ⚠️ `serde(default)` + `skip_serializing_if` の `Option` は ts-rs が `foo?: T | null` にするので
+ * `ts(optional)` が無くても 8-1 の fixture gate（`satisfies`）を通ってしまう（省略可能な field は
+ * 無くても error にならない）。この組み合わせの `Option` field を足す時は必ず `ts(optional)` を付ける。
+ * `skip_serializing_if` だけの `Option`（他 6 field）は `foo: T | null` の必須になるので gate が拾う。
+ */
+active_form?: string, };
