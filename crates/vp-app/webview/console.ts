@@ -21,24 +21,31 @@
 
 import { emitSessionNow, isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
 
+/** session の mode（SSOT は Rust `lane/session_registry.rs::SessionMode`、`console:mode_applied` / roster で届く）。 */
+export type SessionMode = 'tui' | 'gui'
+
 // ---------------------------------------------------------------------------
 // ConversationEvent 型 — SSOT は Rust `crates/vantage-point/src/conversation/event.rs`（PR1 で凍結）。
-// vp-app Rust はこれを serde_json::Value で素通しするため ts-rs 経路が無く、手書きで mirror
-// する（変更時は event.rs と同時に更新すること）。
+// vp-app Rust はこれを serde_json::Value で素通しするため ts-rs 経路が無く、手書きで mirror する。
+// 契約は `src/generated/ConversationEventFixtures.ts`（Rust が実際に serialize した全 variant の
+// 送信形、`cargo test -p vantage-point --test conversation_event_fixtures` で再生成）が
+// `satisfies EngineConversationEvent` で tsc に検査させる = event.rs を変えて fixture を
+// 再生成すると、ここの mirror がずれていれば `bun run typecheck` が落ちる（棚卸し 項目 8）。
+//
+// 必須性は **Rust の送信形**に合わせる: `skip_serializing_if` の field だけ `?`、
+// `#[serde(default)]` だけの field（is_error / multi_select / description）は常に serialize されるので必須。
 // ---------------------------------------------------------------------------
-
-export type SessionMode = 'tui' | 'gui'
 
 export type PlanEntry = {
   content: string
   status: 'pending' | 'in_progress' | 'completed' | string
-  active_form?: string | null
+  active_form?: string
 }
 
-/** AskUserQuestion の 1 選択肢（doc 35 §3）。 */
+/** AskUserQuestion の 1 選択肢（doc 35 §3）。description は Rust 側 `#[serde(default)]` = 常に出る（無ければ空文字）。 */
 export type QuestionOption = {
   label: string
-  description?: string
+  description: string
 }
 
 /** AskUserQuestion の 1 質問（doc 35 §3）。multiSelect は複数選択 + 確定ボタン。 */
@@ -46,12 +53,17 @@ export type QuestionSpec = {
   question: string
   header: string
   options: QuestionOption[]
-  multi_select?: boolean
+  multi_select: boolean
 }
 
-export type ConversationEvent =
+/** vp-app local の event（engine は出さない、Rust の ConversationEvent にも無い）。
+ *  `conversation_submission.rs` が生成し `on_conversation.rs` が同じ経路に横入れする。 */
+export type LocalConversationEvent =
   /** Local GUI request acknowledgement; never persisted or emitted by an engine. */
-  | { kind: 'submit_result'; request_id: string; error: string | null }
+  { kind: 'submit_result'; request_id: string; error: string | null }
+
+/** Rust `ConversationEvent`（16 variant）の mirror。engine 由来のものだけ。 */
+export type EngineConversationEvent =
   | {
       kind: 'session_init'
       session_id: string
@@ -76,7 +88,7 @@ export type ConversationEvent =
   | { kind: 'message_chunk'; text: string }
   | { kind: 'thought_chunk'; text: string }
   | { kind: 'tool_call'; id: string; name: string; input: unknown }
-  | { kind: 'tool_call_update'; tool_use_id: string; content: string; is_error?: boolean }
+  | { kind: 'tool_call_update'; tool_use_id: string; content: string; is_error: boolean }
   /**
    * subagent（Agent tool が回した子）の発話。engine が --forward-subagent-text 付きの時だけ来る。
    * parent_tool_use_id は親の tool_call.id と一致するので、GUI は該当 tool 行の中に入れ子で描く。
@@ -110,6 +122,9 @@ export type ConversationEvent =
   /** tool 承認要求（permission-mode=default 時の can_use_tool、doc 35 PR3）。
    *  GUI は PromptCard で allow/deny を描き、conversation:respond {request_id, behavior} で戻す。 */
   | { kind: 'permission_request'; request_id: string; tool_name: string; input: unknown }
+
+/** console / chat が受ける event = engine 由来 + vp-app local。 */
+export type ConversationEvent = EngineConversationEvent | LocalConversationEvent
 
 /** ChatView（C2）が lane ごとに登録する renderer。
  *  doc 38 Phase 2: 第 2 引数 session = ConversationEvent envelope 由来の VP 採番 key（1 Lane = N session）。
