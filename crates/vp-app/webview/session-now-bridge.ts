@@ -16,8 +16,7 @@
  *   Rust を経由せず window event で足りる（配線ゼロ・順序も 1 document 内で自明）。
  * - event 名 / detail 形 / 鍵合成は **bundle 間の契約**。文字列を両側に直書きすると
  *   rename で片側だけ変わり無音で断線する（#1003/#1004 の取り残しと同型）ので、
- *   両 bundle がこの 1 module を import type { ConversationEvent } from "./console";
-import する形で drift を構造的に封じる。
+ *   両 bundle がこの 1 module を import する形で drift を構造的に封じる。
  *
  * ## 「今」の契約（doc 51 §1 A3）
  *
@@ -25,7 +24,7 @@ import する形で drift を構造的に封じる。
  * turn を閉じる event で null が流れてくる。
  */
 
-import type { ConversationEvent } from "./console";
+import type { EngineConversationEvent } from "./console";
 
 /** window event 名（bundle 間契約）。 */
 export const SESSION_NOW_EVENT = "vp:session-now";
@@ -55,7 +54,7 @@ export function emitSessionNow(detail: SessionNowDetail): void {
  * これを参照する。chatview ↔ console の import 向き（chatview → console）の制約で
  * chatview 側に置けないため、両者が依存できる本 bridge に置く。
  */
-export const TURN_CLOSING_KINDS = ["turn_completed", "error", "engine_exited"] as const satisfies readonly ConversationEvent["kind"][];
+export const TURN_CLOSING_KINDS = ["turn_completed", "error", "engine_exited"] as const satisfies readonly EngineConversationEvent["kind"][];
 
 /**
  * replay_end が来ない時に replay 追跡を強制解除するまでの猶予 ms（安全網）。

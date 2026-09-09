@@ -125,7 +125,7 @@
 
 | PR | 内容 | Exit |
 |---|---|---|
-| ✅ **C1 — Console 骨格（交通整理本体）** | §2 SP engine slot + console_mode + `console_set_mode` + submit ガード / §3 wire + reconcile 安全 / §4 vpConsole facade + ring buffer / §5 ts-rs | 実機: tui⇄chat 切替で同一会話が継続（`vp lane capture` と `vpConsole.peek` で両モード確認）。二重エンジンが**作れない** |
+| ✅ **C1 — Console 骨格（交通整理本体）** | §2 SP engine slot + console_mode + `console_set_mode` + submit ガード / §3 wire + reconcile 安全 / §4 vpConsole facade + ring buffer（§5 ts-rs は未実装 → 項目 8 で fixture gate、生成は 8-2）| 実機: tui⇄chat 切替で同一会話が継続（`vp lane capture` と `vpConsole.peek` で両モード確認）。二重エンジンが**作れない** |
 | ✅ **C2 — ChatView（旧 PR2b）** | SolidJS ChatView（MVP a: streaming markdown + thinking 折りたたみ + tool 1 行 + e: plan ウィジェット + motion）+ **最小 Act toggle**（explicit 切替に必須。**root = conductor の Console 先行**、2026-07-09 user 要件。performer への露出と正式な切替 UX は C4） | 実会話 1 本を GUI だけで完走 |
 | C3（旧 PR3） | 事後 diff カード | doc 32 §8 のまま |
 | C4（旧 PR4） | 画像・@-mention + 正式切替 UX | doc 32 §8 のまま |

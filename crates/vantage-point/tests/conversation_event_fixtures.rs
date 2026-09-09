@@ -9,7 +9,8 @@
 //! - 送信形 = `skip_serializing_if` で省略される optional は **無い / 有る** の両方を載せる。
 //!   `#[serde(default)]` だけの field（`is_error` / `multi_select` / `description`）は
 //!   常に serialize されるので TS 側も必須で受ける
-//! - 受理形（古い payload を Rust が読む側）は対象外: 送り手は Rust だけなので
+//! - 受理形（古い payload を Rust が読む側 = `replay_log.rs` が過去版の JSONL を読む）は対象外:
+//!   TS への送り手は Rust だけで、読んだ event も再 serialize されてから TS に届く（default が埋まる）
 //! - 生成物は commit する。CI の `git diff --exit-code` が drift を検出する
 //!   （codegen test 自体は「書き換えて成功」なので、再生成の成功と drift 検出は別）
 //!
@@ -125,11 +126,27 @@ fn fixtures() -> Vec<(&'static str, ConversationEvent)> {
             },
         ),
         (
-            "subagent_message",
+            "subagent_message_text",
             ConversationEvent::SubagentMessage {
                 parent_tool_use_id: "toolu_03".into(),
                 role: SubagentRole::Text,
                 text: "sub".into(),
+            },
+        ),
+        (
+            "subagent_message_prompt",
+            ConversationEvent::SubagentMessage {
+                parent_tool_use_id: "toolu_03".into(),
+                role: SubagentRole::Prompt,
+                text: "子への指示".into(),
+            },
+        ),
+        (
+            "subagent_message_thinking",
+            ConversationEvent::SubagentMessage {
+                parent_tool_use_id: "toolu_03".into(),
+                role: SubagentRole::Thinking,
+                text: "子の思考".into(),
             },
         ),
         (
@@ -220,10 +237,15 @@ fn fixtures() -> Vec<(&'static str, ConversationEvent)> {
 
 fn render() -> String {
     let mut out = String::new();
-    out.push_str("// 生成物 — 編集しない。SSOT は crates/vantage-point/src/conversation/event.rs、\n");
-    out.push_str("// 再生成は `cargo test -p vantage-point --test conversation_event_fixtures`。\n");
+    out.push_str(
+        "// 生成物 — 編集しない。SSOT は crates/vantage-point/src/conversation/event.rs、\n",
+    );
+    out.push_str(
+        "// 再生成は `cargo test -p vantage-point --test conversation_event_fixtures`。\n",
+    );
     out.push_str("// Rust が実際に serialize した ConversationEvent（送信形）。`satisfies` で TS の mirror 型と\n");
-    out.push_str("// 突き合わせる（tsc --noEmit）= field 名 / kind / 必須性の drift を型検査で止める。\n");
+    out.push_str("// 突き合わせる（tsc --noEmit）= field 名 / kind / 型 / 「TS が Rust より厳しい」向きの必須性を型検査で止める。\n");
+    out.push_str("// 「TS が緩い」向き（Rust が常に出す field を TS が ? にする）は型では通るので vitest 側で固定する。\n");
     out.push_str("import type { EngineConversationEvent } from '../../console'\n\n");
     out.push_str("export const CONVERSATION_EVENT_FIXTURES = {\n");
     for (name, ev) in fixtures() {
@@ -266,7 +288,10 @@ fn fixtures_cover_every_kind() {
         .collect();
     let expected: std::collections::BTreeSet<String> =
         EXPECTED_KINDS.iter().map(|s| s.to_string()).collect();
-    assert_eq!(kinds, expected, "fixture の kind 集合が EXPECTED_KINDS と一致すること");
+    assert_eq!(
+        kinds, expected,
+        "fixture の kind 集合が EXPECTED_KINDS と一致すること"
+    );
 }
 
 /// serialize → deserialize → serialize が同じ JSON に戻る（送信形は自己整合）。

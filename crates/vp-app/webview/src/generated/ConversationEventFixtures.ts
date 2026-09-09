@@ -1,7 +1,8 @@
 // 生成物 — 編集しない。SSOT は crates/vantage-point/src/conversation/event.rs、
 // 再生成は `cargo test -p vantage-point --test conversation_event_fixtures`。
 // Rust が実際に serialize した ConversationEvent（送信形）。`satisfies` で TS の mirror 型と
-// 突き合わせる（tsc --noEmit）= field 名 / kind / 必須性の drift を型検査で止める。
+// 突き合わせる（tsc --noEmit）= field 名 / kind / 型 / 「TS が Rust より厳しい」向きの必須性を型検査で止める。
+// 「TS が緩い」向き（Rust が常に出す field を TS が ? にする）は型では通るので vitest 側で固定する。
 import type { EngineConversationEvent } from '../../console'
 
 export const CONVERSATION_EVENT_FIXTURES = {
@@ -79,11 +80,23 @@ export const CONVERSATION_EVENT_FIXTURES = {
     "content": "boom",
     "is_error": true
   },
-  subagent_message: {
+  subagent_message_text: {
     "kind": "subagent_message",
     "parent_tool_use_id": "toolu_03",
     "role": "text",
     "text": "sub"
+  },
+  subagent_message_prompt: {
+    "kind": "subagent_message",
+    "parent_tool_use_id": "toolu_03",
+    "role": "prompt",
+    "text": "子への指示"
+  },
+  subagent_message_thinking: {
+    "kind": "subagent_message",
+    "parent_tool_use_id": "toolu_03",
+    "role": "thinking",
+    "text": "子の思考"
   },
   plan: {
     "kind": "plan",

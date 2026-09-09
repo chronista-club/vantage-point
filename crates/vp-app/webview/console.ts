@@ -30,7 +30,8 @@ export type SessionMode = 'tui' | 'gui'
 // 契約は `src/generated/ConversationEventFixtures.ts`（Rust が実際に serialize した全 variant の
 // 送信形、`cargo test -p vantage-point --test conversation_event_fixtures` で再生成）が
 // `satisfies EngineConversationEvent` で tsc に検査させる = event.rs を変えて fixture を
-// 再生成すると、ここの mirror がずれていれば `bun run typecheck` が落ちる（棚卸し 項目 8）。
+// 再生成すると、field 名 / kind / 型 / TS 側が厳しい向きの必須性のずれで `bun run typecheck` が落ちる。
+// TS が緩い向き（Rust が常に出す field を `?` にする）は型では通らないので vitest が固定する（棚卸し 項目 8）。
 //
 // 必須性は **Rust の送信形**に合わせる: `skip_serializing_if` の field だけ `?`、
 // `#[serde(default)]` だけの field（is_error / multi_select / description）は常に serialize されるので必須。
@@ -106,6 +107,7 @@ export type EngineConversationEvent =
       kind: 'turn_completed'
       session_id: string
       cost_usd?: number
+      /** Rust は u64。JSON では number で運び、TS も number で受ける（2^53 未満の運用値）。 */
       context_tokens?: number
       context_window?: number
     }
