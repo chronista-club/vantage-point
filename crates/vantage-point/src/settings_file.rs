@@ -86,7 +86,7 @@ pub const DEFAULT_IDLE_TIMEOUT_MINUTES: u64 = 5;
 /// ## なぜ「組」なのか
 ///
 /// 旧 config.kdl は `default-agent` と `default-lane-model` の**独立した 2 キー**だった。
-/// 既定を解決する [`crate::repo::routes::lanes`] は **agent を見ずに** model を返してから
+/// 既定を解決する [`crate::repo::lane_lifecycle`] は **agent を見ずに** model を返してから
 /// agent と組にして registry へ書くため、`default-agent "codex"` +
 /// `default-lane-model "claude-opus-5"` という **意味のない組み合わせが表現できて**しまった。
 /// 1 つの node にすれば、その穴が設定の形そのもので塞がる。
@@ -147,8 +147,8 @@ impl DefaultLane {
 
 /// 新しい lane の既定 agent（doc 59 P4）— **全 lane 作成経路が共有する単一の読み出し口**。
 ///
-/// 旧 `Config::default_agent_or_claude()` の置き換え。呼び手（repo/server / routes/lanes /
-/// routes/daemon）が個別に file を読んで既定を組み立てると、次に既定の決め方が変わった時に
+/// 旧 `Config::default_agent_or_claude()` の置き換え。呼び手（repo/server / lane_lifecycle /
+/// daemon/control_ops）が個別に file を読んで既定を組み立てると、次に既定の決め方が変わった時に
 /// 1 箇所だけ古くなる。
 pub fn default_lane_agent() -> String {
     SettingsFile::load()

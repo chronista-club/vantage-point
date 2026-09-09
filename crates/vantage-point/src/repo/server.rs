@@ -1,7 +1,7 @@
 //! HTTP server with WebSocket support
 //!
 //! Process サーバーのエントリーポイント。`run()` と `run_daemon()` でサーバーを起動する。
-//! ルートハンドラーは `routes/` モジュールに分離されている。
+//! HTTP handler は `http/`（health / shutdown / update）に分離されている。Router は `build_daemon_router`。
 
 use std::net::{Ipv6Addr, SocketAddrV6};
 use std::sync::Arc;
@@ -13,8 +13,8 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 
+use super::http::{health, update};
 use super::hub::Hub;
-use super::routes::{health, update};
 use super::state::AppState;
 use super::topic_router::TopicRouter;
 use crate::capability::{RepoManagerCapability, UpdateCapability};
@@ -76,7 +76,7 @@ async fn publish_lanes(
     path_key: &str,
     notifier: &mut LaneChangeNotifier,
 ) {
-    let lanes = super::routes::lanes::build_lanes_snapshot(state).await;
+    let lanes = super::lane_lifecycle::build_lanes_snapshot(state).await;
     if let Some(view) = node_lanes {
         view.write()
             .await
@@ -389,7 +389,7 @@ pub(crate) async fn start_repo(
     //
     // 旧経路を構成していた `spawn_daemon_uplink` / `run_control_driver` / "control" channel は
     // いずれも撤去済（残っていた 451 行は `run()` を外した時点で孤児化してコンパイラが検出した）。
-    // health/shutdown handler は run_daemon (Daemon) が使うため routes/health.rs に残置。
+    // health/shutdown handler は run_daemon (Daemon) が使うため http/health.rs に残置。
 
     // wiremsg Stage 0: Lane lifecycle event を retained topic に publish する。
     // `SystemEvent::Lane` を購読し、LanePool の全 list snapshot を
@@ -534,7 +534,7 @@ fn spawn_idle_engine_sweep(state: Arc<AppState>, shutdown: CancellationToken) {
                     "idle chat engine を寝かせた（sweep: 購読なし・turn なし・{}分無活動）: lane={addr} sessions={dropped:?}",
                     crate::repo::lanes_state::idle_teardown_after_minutes(),
                 );
-                crate::repo::routes::lanes::emit_lane_update(&state, &addr).await;
+                crate::repo::lane_lifecycle::emit_lane_update(&state, &addr).await;
             }
         }
     });
@@ -579,11 +579,11 @@ fn build_daemon_router(state: Arc<AppState>) -> Router {
         // end-to-end で dead だった（doc 45 §3.1 — 移設ではなく撤去が正解の例）。
         // doc 45 段 4: `/api/daemon/*`（repos CRUD / processes lifecycle / lanes）は撤去。
         // 同じ操作は Unison "daemon-control" channel が持ち、実装は
-        // `routes::daemon` の共有関数（apply_repo_update / collect_lanes /
+        // `daemon::control_ops` の共有関数（apply_repo_update / collect_lanes /
         // resolve_create_lane_args）に畳んであるので面が減っても振る舞いは変わらない。
         // L0 portless B-4 (wire-unison): 中央 wire/delegation store の HTTP 入口 (`/api/wire/*`
         // `/api/delegation/*`) は daemon の "wire" unison channel に移行 (doc 27 §62)。
-        // `daemon_wire::call` が QUIC で叩き、 `handle_wire_channel` が `routes::{wire,delegation}::
+        // `daemon_wire::call` が QUIC で叩き、 `handle_wire_channel` が `daemon::{wire_ops,delegation_ops}::
         // dispatch_*` に振る。 観測 (`vp wire deleg-thread`) / pull-hook (`vp wire hook-check`) も
         // 同 channel 経由。
         // doc 44 P1 (fold-in): 旧「Process が自己登録する」HTTP register/unregister は撤去。
@@ -1131,7 +1131,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
                     );
                     return;
                 };
-                match crate::repo::routes::wire::dispatch_wire(
+                match crate::daemon::wire_ops::dispatch_wire(
                     &store,
                     &notifier,
                     &notify,

@@ -115,7 +115,7 @@ mako 裁定済みで、本 doc はその予約席に入るだけである。
 ### 5.1 既定 agent × model を「組」にする理由
 
 現状の `default-agent` と `default-lane-model` は**独立した 2 キー**で、既定を解決する
-[`routes/lanes.rs`](../../crates/vantage-point/src/repo/routes/lanes.rs) は
+[`routes/lanes.rs`](../../crates/vantage-point/src/repo/lane_lifecycle.rs) は
 **agent を見ずに** model を返してから agent と組にして registry へ書く:
 
 ```rust

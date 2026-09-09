@@ -332,7 +332,7 @@ pub type LaneDiff = Diff<LaneAddress, LaneInfo>;
 
 /// Phase 2 (Step E): repo の system 系 lifecycle event を 1 つの broadcast bus で配信。
 ///
-/// caller (lane_spawn_actor / routes/* / lifecycle monitor / restart_lane 等) が
+/// caller (lane_spawn_actor / lane_lifecycle / lifecycle monitor / restart_lane 等) が
 /// `state.system_event_tx.send(SystemEvent::*)` で publish、repo の lanes publish task
 /// (`publish_lanes`) が受けて daemon の集約 view を更新する（doc 44 P1 fold-in で
 /// 旧 QUIC registry push から置き換わった）。

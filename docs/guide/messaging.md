@@ -10,7 +10,7 @@
 |---|---|---|
 | wire store | `crates/vantage-point/src/capability/wiremsg_store.rs` | store / cursor / thread / ack 台帳 |
 | repo→daemon transport | `crates/vantage-point/src/repo/daemon_wire.rs` | wire の中央化 transport（QUIC "wire" channel） |
-| dispatch | `crates/vantage-point/src/repo/routes/wire.rs` / `src/daemon/server.rs` | channel method → store dispatch |
+| dispatch | `crates/vantage-point/src/daemon/wire_ops.rs` / `src/daemon/server.rs` | channel method → store dispatch |
 | delivery loop | `crates/vantage-point/src/repo/delivery_actor.rs`（repo 受け口 = `unison_server.rs` の `lane_nudge` / `conversation_nudge`） | 未 ack command の再掲示（nudge、`console_mode` で channel C/D/E 分岐） |
 | FSM | `crates/vantage-point/src/flow.rs` | FlowState と derive 規則 |
 | 投影 | `crates/vantage-point/src/daemon/server.rs`（enrich / "lanes" channel） | flow_state を vp-app へ届ける経路 |
@@ -89,7 +89,7 @@ store が扱う table:
 | `state` / `data` / `log` | 同じく非 nudge（用途別ラベル） |
 
 - **default = `command`**、ただし **MCP `wire_send` 経路のみ**が注入する（`wire_send_impl` が `body` に `category` を `or_insert("command")`、`mcp.rs:962`）。**CLI `vp wire send` は default を注入しない** — `--category` を明示した時だけ `body.category` が付く（`commands/wire.rs:690`）。この非対称は「CC 限定 scope に default を閉じる」意図的な設計で、delegation やサーバ内部 sender を巻き込まないため（`mcp.rs` コメント）。
-- 消費側: daemon の `dispatch_wire("send")` が `body.category == "command"` を見て delivery loop を即 wake する（`routes/wire.rs:361`）。
+- 消費側: daemon の `dispatch_wire("send")` が `body.category == "command"` を見て delivery loop を即 wake する（`daemon/wire_ops.rs:361`）。
 
 ### 1.5 kind taxonomy
 
@@ -288,7 +288,7 @@ let path = if let Some(remote) = daemon {
 
 ## 4. 入口一覧表（MCP ⇄ CLI ⇄ 内部 channel method）
 
-> ⚠ **「HTTP」列は公開 HTTP API ではない**。かつての `/api/wire/*` axum route は撤去済（`routes/health.rs:49`）。今この文字列は `world_wire::call` に渡す**論理 path** で、`/api/` を剥いだ残り（`wire/send` 等）が **unison QUIC "wire" channel の method** になる。3 者はすべて同じ下層 `WiremsgStore`（daemon）に収束する。
+> ⚠ **「HTTP」列は公開 HTTP API ではない**。かつての `/api/wire/*` axum route は撤去済（`repo/http/health.rs:49`）。今この文字列は `world_wire::call` に渡す**論理 path** で、`/api/` を剥いだ残り（`wire/send` 等）が **unison QUIC "wire" channel の method** になる。3 者はすべて同じ下層 `WiremsgStore`（daemon）に収束する。
 
 ### wire family
 

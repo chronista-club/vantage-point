@@ -553,7 +553,7 @@ fn persist_lane_model(repo_root: &Path, lane: &str, model: Option<&str>) -> Resu
 ///
 /// 記録先は registry の初期 session（key=1）の `SessionEntry.model`（2026-07-27 に per-lane
 /// `engine_model` file から session 紐づけへ移行）。CLI 作成 lane は既定 agent = claude
-/// （`--agent` を持つのは orchestrated 経路のみ — `agent_store` の書き手が routes 側だけ
+/// （`--agent` を持つのは orchestrated 経路のみ — `agent_store` の書き手が lane_lifecycle 側だけ
 /// であることに対応）。model 未指定なら registry file を作らない（set_model_in が
 /// 変化なし = no-save に倒す）。
 fn persist_lane_model_in(

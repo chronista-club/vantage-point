@@ -428,7 +428,7 @@ impl DaemonControlClient {
     /// filter 付きの lane 一覧（`repo` / `lane` / `agent`、いずれも省略可 = 無フィルタ）。
     ///
     /// 並びは repo 名昇順 → 同 repo 内は開発起点 (root) 先 → created_at 昇順
-    /// （実装は `routes::daemon::collect_lanes`。doc 45 段 4 で旧 HTTP `GET /api/daemon/lanes` を
+    /// （実装は `daemon::control_ops::collect_lanes`。doc 45 段 4 で旧 HTTP `GET /api/daemon/lanes` を
     /// 撤去し、この面が lane 一覧の唯一の入口になった）。
     pub async fn lanes_list_filtered(
         &self,

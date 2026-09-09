@@ -8,6 +8,10 @@
 //! - **Point**: WebView（視点/観測点）
 //! - **Capability**: repo が持つ能力（現行は repo_manager / update。旧 Agent / Protocol は 2026-09 撤去、MIDI は daemon の DeviceRegistry）
 
+/// AgentSpawner — agent 名 → slot (login shell) + claude 注入の spawn command 構築 (tmux decoupling PR2)
+pub(crate) mod agent_spawner;
+/// agent discovery — built-in の agent 静的 table + `agents_list` handler（7b で routes/ から）
+pub(crate) mod agents;
 /// board — scope 別の永続 board（show / board_* の owner、doc 52 / doc 61）
 pub(crate) mod board;
 /// CC activity poll — `claude agents --json` の LaneActivity 供給 (R3-a / Phase A)
@@ -18,16 +22,21 @@ pub(crate) mod conversation_ops;
 pub(crate) mod conversation_pump;
 /// conversation replay — attach 時の会話配り直しと demand の合流（doc 32 §3、doc 61）
 pub(crate) mod conversation_replay;
+pub(crate) mod daemon_wire;
 /// Agent 委譲 (delegation) — durable cross-agent future の v1 ローカル atom (doc 28 §4)
 pub(crate) mod delegation;
 /// wire delivery loop — 未 ack command の lane nudge + 再掲示 (R2-b、 daemon 常駐)
 pub(crate) mod delivery_actor;
 /// Editor bridge — MCP → GUI Editor Mode / layout の request-response（doc 48 Phase 2 / doc 49 LE-15、doc 61）
 pub(crate) mod editor_bridge;
+/// HTTP（axum）の route handler — health / shutdown / update だけ。Router は `server.rs`（7b で routes/ から）
+pub(crate) mod http;
 pub(crate) mod hub;
 /// Lane subcommand types (LaneCmd) — Mailbox actor 経由の Lane 操作 Cmd (I-b、 2026-04-30)
 pub(crate) mod lane_cmd;
-/// lane ops — lane 系 Unison method の handler（owner は routes/lanes / host/ledger / session_registry、doc 61）
+/// lane lifecycle — create / delete / restart / reset の orchestration と lanes snapshot、`emit_lane_update`（7b で routes/lanes から）
+pub(crate) mod lane_lifecycle;
+/// lane ops — lane 系 Unison method の handler（owner は lane_lifecycle / host/ledger / session_registry、doc 61）
 pub(crate) mod lane_ops;
 /// lane の実体（PtySlot / chat engine / 代表値）を intent（registry）に合わせる reconcile 本体（doc 53 §12）
 pub(crate) mod lane_reconcile;
@@ -41,12 +50,6 @@ pub mod process_runner;
 /// Repo scope の Agent pool (board / runner ほか — 現在は縮退済)
 pub(crate) mod repo_registry;
 pub(crate) mod retained;
-// L0 portless B-4 (wire-unison): daemon の "wire" channel handler が
-// `routes::wire` / `routes::delegation` の dispatch fn を呼ぶため crate 可視に格上げ。
-/// AgentSpawner — agent 名 → slot (login shell) + claude 注入の spawn command 構築 (tmux decoupling PR2)
-pub(crate) mod agent_spawner;
-pub(crate) mod daemon_wire;
-pub(crate) mod routes;
 mod server;
 pub(crate) mod state;
 /// terminal ops — terminal demand / write / resize の Unison method handler + reconcile の収束点（doc 61）

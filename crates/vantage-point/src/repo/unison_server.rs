@@ -2,7 +2,7 @@
 //!
 //! `dispatch_repo_method` が 72 method の match 1 枚で、各 arm は owner / `*_ops` module の handler を
 //! 呼ぶだけ（`board` / `editor_bridge` / `conversation_replay` / `conversation_ops` / `terminal_ops` /
-//! `lane_ops` / `process_ops` / `wire_relay` / `routes::agents` / `delegation`）。ここに残るのは
+//! `lane_ops` / `process_ops` / `wire_relay` / `agents` / `delegation`）。ここに残るのは
 //! 受付の続き（`handle_process_message` = pane ops の generic relay）と、群ごとに `None` の意味が違う
 //! `payload_session_key`、および `QUIC_PORT_OFFSET`。
 //!
@@ -210,7 +210,7 @@ pub(crate) async fn dispatch_repo_method(
         "lane_origin_set" => lane_ops::handle_lane_origin_set(state, payload).await,
         "lane_order_set" => lane_ops::handle_lane_order_set(state, payload).await,
         // F6④: Agent 一覧 (旧 SP HTTP GET /api/agents を repo-proxy ask に移管)
-        "agents_list" => super::routes::agents::handle_stands_list().await,
+        "agents_list" => super::agents::handle_stands_list().await,
         // L0 finale: repo graceful shutdown を QUIC で (旧 SP HTTP POST /api/shutdown を置換、
         // Daemon stop_process / restart_process 用)。 shutdown_token.cancel() で graceful 停止
         // (DB close 等)。 repo が即 QUIC server を畳むため応答が返らない事もあるが best-effort。

@@ -30,8 +30,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use super::super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneState, SystemEvent};
-use super::super::state::AppState;
+use super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneState, SystemEvent};
+use super::state::AppState;
 
 // doc 11 §3.7 の `migrate_legacy_stand` shim は 2026-05-03 削除済。 PR #257 の
 // agent 識別子 String 化と同タイミングで導入した旧 agent 名 → 現行名の変換 (PR-pre2 で hd → echoes)
@@ -1132,7 +1132,7 @@ async fn converge_lane(
 /// 例: user="Mako", name="sub" → `mako/sub`
 ///
 /// branch 未指定時の create で使う。 doc 24 §10 B-create で daemon 側 create
-/// (`routes/daemon.rs` の `resolve_create_lane_args` = Unison `lanes/create` の実体) からも
+/// (`daemon/control_ops.rs` の `resolve_create_lane_args` = Unison `lanes/create` の実体) からも
 /// sibling 呼びするため `pub(crate)`。
 pub(crate) fn derive_default_branch(repo_root: &std::path::Path, name: &str) -> String {
     let prefix = std::process::Command::new("git")

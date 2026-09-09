@@ -13,9 +13,8 @@
 //! なりかけたものを段 1 で 1 実装へ畳んだ。畳んであったおかげで段 4 の HTTP 撤去は
 //! **handler の殻を剥がすだけ**で済み、振る舞いは 1 行も動いていない。
 //!
-//! なお `routes/` に非 HTTP の core 関数が残るのは本 module が最初ではない
-//! （`routes/lanes.rs` / `routes/stands.rs` / `routes/wire.rs` / `routes/delegation.rs` も
-//! HTTP 撤去後に core / dispatch 実装だけを保持している）。
+//! 7b（doc 61、2026-09-09）で `repo/routes/daemon.rs` から `daemon/control_ops.rs` へ。repo の `AppState` に
+//! 依存せず呼び手も daemon 側だけなので、置き場を daemon に揃えた。
 
 use crate::capability::RepoManagerCapability;
 
@@ -69,7 +68,7 @@ pub(crate) fn resolve_create_lane_args(
     let branch = branch
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| super::lanes::derive_default_branch(&repo_root, name));
+        .unwrap_or_else(|| crate::repo::lane_lifecycle::derive_default_branch(&repo_root, name));
     // doc 59 P4: 既定 agent は settings.kdl（好みの層）が持つ。
     let agent = agent
         .map(|s| s.to_string())
