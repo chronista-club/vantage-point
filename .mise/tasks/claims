@@ -19,7 +19,8 @@
 #   容疑者を全部リストにするのが仕事。
 #
 # 使い方:
-#   mise run claims                # nightly との diff（既定）
+#   mise run claims                # merge-base(nightly, HEAD) と**作業ツリー**の diff（既定）
+#                                  #   = commit 済み + staged + unstaged + untracked file の全行
 #   mise run claims -- --staged    # staged only
 #   mise run claims -- --base main
 #   mise run claims -- --all crates/vantage-point/src/db   # diff でなく path 全体
@@ -89,7 +90,15 @@ if mode == :all
     end
   end
 else
-  args = mode == :staged ? ["diff", "--cached", "-U0"] : ["diff", "-U0", "#{base}...HEAD"]
+  # ⚠️ base...HEAD（三点）は commit 済みしか見ない。この gate は CLAUDE.md の
+  # 「commit 前に回す」列に居るので、既定は **merge-base と作業ツリー**を比べる。
+  # 三点にしていた初版は **未 commit の変更が常に不可視**で、branch にまだ commit が
+  # 無ければ（= nightly 上の作業や branch の 1 本目）出力がまるごと空になっていた。
+  args = if mode == :staged
+           ["diff", "--cached", "-U0"]
+         else
+           ["diff", "-U0", run("git", "merge-base", base, "HEAD").chomp]
+         end
   args += ["--"] + paths unless paths.empty?
   file = nil
   lno = 0
@@ -102,6 +111,22 @@ else
       body = l[1..].chomp
       claims << Claim.new(file, lno, body) if file && prose?(body, file)
       lno += 1
+    end
+  end
+
+  # ⚠️ `git diff` は working tree を見るが **untracked file は含まない**。
+  # 新規 doc / 新規 test file を足す PR で `git add` 前に回すと、この gate が
+  # 沈黙してしまう（= 修正前と同じ穴）。index を汚さずに拾うため、追跡外の
+  # file は全行を新規散文として扱う（新規 file の中身は全部が追加行）。
+  unless mode == :staged
+    untracked = run("git", "ls-files", "--others", "--exclude-standard", *paths)
+    untracked.lines.map(&:chomp).each do |f|
+      next unless File.file?(f)
+      File.readlines(f).each_with_index do |l, i|
+        claims << Claim.new(f, i + 1, l.chomp) if prose?(l, f)
+      rescue ArgumentError # binary / 不正 encoding は飛ばす
+        next
+      end
     end
   end
 end
