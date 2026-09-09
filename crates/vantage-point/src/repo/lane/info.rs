@@ -7,7 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::address::{LaneAddress, LaneId};
+use super::address::LaneAddress;
+use crate::lane::lane_id::LaneId;
 use crate::lane::session_registry::{SessionKey, SessionMode};
 
 // doc 44 P2: `LaneKind`（Main / Sub）は撤去。

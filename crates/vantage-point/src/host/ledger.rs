@@ -13,7 +13,7 @@
 //!
 //! ポインタが指すのは lane **そのもの**であって「今その名前で呼ばれているもの」ではない。
 //! 名前は表示のための自然キーで、将来 rename できるようにすると動く。だから帳簿は
-//! [`crate::repo::lane::LaneId`]（UUID v7、doc 24 §7 の I1）を key にする。
+//! [`crate::lane::lane_id::LaneId`]（UUID v7、doc 24 §7 の I1）を key にする。
 //!
 //! 名前 ↔ id の解決は **境界で 1 回だけ**行う: 人が打つのは名前、帳簿に入るのは id
 //! （[`resolve_origin_name`] が読み側、unison `lane_origin_set` が書き側）。
@@ -680,7 +680,7 @@ mod tests {
         let mut lanes = LanePool::with_root("proj", "/tmp/proj").list();
         let mut sub = lanes[0].clone();
         sub.address = crate::repo::lane::LaneAddress::new("proj", "feat-x");
-        sub.id = crate::repo::lane::LaneId::generate();
+        sub.id = crate::lane::lane_id::LaneId::generate();
         let sub_id = sub.id.to_string();
         lanes.push(sub);
 
