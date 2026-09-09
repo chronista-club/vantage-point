@@ -313,6 +313,41 @@ async fn discard_lane_rows(state: &Arc<AppState>, key: &str, addr: &LaneAddress)
     let _ = db.delete_lane_lifecycle(key, &addr_str).await;
 }
 
+/// lane を wire の宛先からも退去させる（best-effort、`delete_lane_orchestrated` の Phase 2a''）。
+///
+/// ⚠️ **`state.wiremsg_store` は使えない。** repo 役の `AppState` はこれを**常に `None`** で
+/// 構築する（`repo/server.rs` の repo ctor）。`Arc<AppState>` なので後から代入する経路も無い。
+/// 旧実装は `if let Some(store) = state.wiremsg_store.as_ref()` で、**production で一度も
+/// 真にならなかった** — PR #1019（`257269bd`、2026-08-29）が「6 日間 nudge が鳴り続けた」
+/// 実害を直したはずの fix が、**入った瞬間から never-fire だった**（2026-09-10 に発見、
+/// 12 日間）。単一 lane 削除の全 6 入口が影響。fixture も `None` 固定だったので test も
+/// 緑のまま通っていた。
+///
+/// daemon 側の対（[`crate::capability`] の `leave_wire_threads_for_lanes`、repo 丸ごと削除）
+/// と同じく **db から都度組む**。直前の [`discard_lane_rows`] も `state.vpdb` を直に叩いており、
+/// repo 役が db を触るのは lane 削除経路の既定の作法。
+///
+/// ⚠️ `WiremsgStore::new` は `math::max(local_seq)` を読んで**独立した採番器**を作る。
+/// 離脱は seq を進めないので副作用は無いが、**この局所 store を send に流用しないこと**
+/// （第 2 writer ができる）。
+async fn leave_wire_threads(state: &Arc<AppState>, addr: &LaneAddress) {
+    let Some(db) = &state.vpdb else { return };
+    let store =
+        match crate::capability::WiremsgStore::new(std::sync::Arc::new(db.inner().clone())).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("wire store を開けず離脱を skip（nudge が残りうる）: {e}");
+                return;
+            }
+        };
+    let wire_addr = addr.wire_agent_address();
+    match store.leave_all_threads(&wire_addr).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("wire: {wire_addr} を {n} thread から離脱させた（lane 削除）"),
+        Err(e) => tracing::warn!("wire 離脱に失敗（lane は削除済、nudge が残りうる）: {e}"),
+    }
+}
+
 /// create 失敗時の後始末を **1 つの動詞**に畳む（pool の reservation + db の intent）。
 ///
 /// 失敗経路は 4 本（clone task panic / clone 失敗 / spawn task panic / spawn 失敗 rollback）
@@ -883,14 +918,7 @@ pub async fn delete_lane_orchestrated(
     //
     // `to` は書き換えない — 履歴であり、`reply` の宛先継承が読む。VP 既存の
     // 「参加者が減る」語彙（`thread_participant.status = 'left'`）に乗せる。
-    if let Some(store) = state.wiremsg_store.as_ref() {
-        let wire_addr = addr.wire_agent_address();
-        match store.leave_all_threads(&wire_addr).await {
-            Ok(0) => {}
-            Ok(n) => tracing::info!("wire: {wire_addr} を {n} thread から離脱させた（lane 削除）"),
-            Err(e) => tracing::warn!("wire 離脱に失敗（lane は削除済、nudge が残りうる）: {e}"),
-        }
-    }
+    leave_wire_threads(state, &addr).await;
 
     // Phase 2b: lane workspace dir cleanup (best-effort、 cleanup=true 時のみ)。
     // 既存挙動踏襲、 直 lib call (`crate::lane::commands::remove_sub_in`)。
@@ -1584,6 +1612,143 @@ mod core_tests {
         assert!(
             db.list_lane_lifecycles().await.unwrap().is_empty(),
             "lane 削除で lifecycle も回収される"
+        );
+    }
+
+    /// **消えた lane 宛の未 ack が同報 command を永久に鳴らすのを止める**の、
+    /// `delete_lane_orchestrated` を通した回帰固定（PR #1019 の fix が repo 役では
+    /// 発火していなかったため）。
+    ///
+    /// store 単体 test（`wiremsg_store::tests::leaving_agent_drops_out_of_pending`）は
+    /// `leave_all_threads` を直接叩くので**この経路の欠落を捕まえられない**。実際
+    /// `state.wiremsg_store` は repo 役では常に `None` で、削除経路の `if let Some(store)`
+    /// が一度も真にならないまま 2026-08 から緑だった。**削除 orchestration を通すこと**が
+    /// この test の要点。
+    ///
+    /// 併せて固定するもの:
+    /// - 対象外の未 ack command は残る（離脱は宛先単位で、全部を薙がない）
+    /// - message の `to` と履歴は書き換えない（`reply` の宛先継承が読む）
+    /// - `cleanup=false`（workspace を消さない削除）でも離脱する
+    #[tokio::test]
+    async fn delete_lane_leaves_wire_threads() {
+        let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
+        db.define_schema().await.unwrap();
+        let state = crate::repo::state::build_test_app_state_with(
+            "/tmp/vp-wire-leave",
+            Some(db.clone()),
+            None,
+        )
+        .await;
+
+        let addr = LaneAddress::sub("vp-wire-leave", "sub");
+        let doomed = addr.wire_agent_address();
+        assert_eq!(
+            doomed, "agent@vp-wire-leave/sub",
+            "前提: 離脱させる宛先の形"
+        );
+
+        // 同じ db を見る store（fix も `state.vpdb` から同形に組む）。
+        let store = crate::capability::WiremsgStore::new(std::sync::Arc::new(db.inner().clone()))
+            .await
+            .expect("wire store");
+
+        // ① 2 宛先の command。生きている側だけが ack 済 = 消える側で nudge が止まらない状態。
+        let cmd = store
+            .send_root(
+                "agent@vp-wire-leave",
+                &["agent@vpcode/main".to_string(), doomed.clone()],
+                serde_json::json!({"category": "command", "text": "設計これで進めます"}),
+            )
+            .await
+            .expect("command send");
+        store.ack(&cmd.id, "agent@vpcode/main").await.expect("ack");
+
+        // ② 無関係な未 ack command（離脱が薙ぎ払わないことの対照）。
+        let other = store
+            .send_root(
+                "agent@vp-wire-leave",
+                &["agent@other/lane".to_string()],
+                serde_json::json!({"category": "command", "text": "別件"}),
+            )
+            .await
+            .expect("other send");
+
+        let pending = store.unacked_commands().await.expect("unacked");
+        assert_eq!(pending.len(), 2, "前提: 2 件とも未 ack で残っている");
+        let doomed_pending: Vec<_> = pending
+            .iter()
+            .find(|(m, _)| m.id == cmd.id)
+            .expect("対象 command")
+            .1
+            .clone();
+        assert_eq!(
+            doomed_pending,
+            vec![doomed.clone()],
+            "前提: 消える宛先だけが未 ack で残り、nudge が止まらない"
+        );
+
+        // lane を実在させて削除経路を通す。
+        let info = LaneInfo {
+            id: Default::default(),
+            address: addr.clone(),
+            state: LaneState::Running,
+            agent: "claude".to_string(),
+            created_at: "2026-09-10T00:00:00Z".to_string(),
+            pid: None,
+            cwd: "/tmp/vp-wire-leave/.vp/lanes/sub".to_string(),
+            sub_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            agent_name: None,
+            flow_state: None,
+        };
+        state.lane_pool.write().await.insert(info.clone());
+        persist_lane_ready(&state, &lane_db_key(&state), &info).await;
+
+        delete_lane_orchestrated(&state, addr, false)
+            .await
+            .expect("delete 成功");
+
+        // ③ 消えた宛先は待たれない。無関係な command は残る。
+        let after = store.unacked_commands().await.expect("unacked after");
+        assert!(
+            !after.iter().any(|(m, _)| m.id == cmd.id),
+            "削除した lane 宛の command は pending から外れる（= nudge が止まる）"
+        );
+        let other_pending = after
+            .iter()
+            .find(|(m, _)| m.id == other.id)
+            .expect("無関係な command は pending に残る");
+        assert_eq!(
+            other_pending.1,
+            vec!["agent@other/lane".to_string()],
+            "離脱は宛先単位 — 無関係な未 ack を薙がない"
+        );
+
+        // ④ 履歴は不変（`to` は `reply` の宛先継承が読むので書き換えない）。
+        let hist = store.history_for_agent(&doomed, 10).await.expect("history");
+        let kept = hist
+            .iter()
+            .find(|m| m.id == cmd.id)
+            .expect("削除後も履歴からは引ける");
+        assert!(
+            kept.to.contains(&doomed),
+            "`to` は書き換えない（履歴であり reply の宛先継承が読む）"
+        );
+
+        // ⑤ root は削除不可 = 離脱にも到達しない。`address.rs` が「ここがずれると**別人を
+        // 離脱させる**」と警告している（root の wire address は `agent@<repo>` で conductor と
+        // 同じ）ので、early return が leave の手前に在ることを安く固定しておく。
+        let before = store.unacked_commands().await.expect("unacked before root");
+        delete_lane_orchestrated(&state, LaneAddress::root("vp-wire-leave"), false)
+            .await
+            .expect_err("root は削除できない");
+        let after_root = store.unacked_commands().await.expect("unacked after root");
+        assert_eq!(
+            before.len(),
+            after_root.len(),
+            "root 削除の early return は wire を触らない（conductor を巻き添えにしない）"
         );
     }
 
