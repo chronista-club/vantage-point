@@ -1,8 +1,9 @@
 //! daemon 中央 wire store のハンドラ群 (R2-a、 設計 mem_1CbvcJj4ppU3QKH9d7xMpT)
 //!
 //! wiremsg R2-a で wire store は daemon (`db/machine/`) に中央化された。
-//! 本 module は store 直結のロジック層 (`*_store` 関数) と、 daemon の "wire" channel
-//! （`handle_wire_channel`）が呼ぶ [`dispatch_wire`] を提供する（旧 axum wrapper は doc 45 段 4 で撤去済）。
+//! 本 module は store 直結のロジック層 (`*_store` 関数) と [`dispatch_wire`] を提供する。呼び手は
+//! daemon の "wire" channel（`handle_wire_channel`）と、federation relay の inbound（`run_daemon`、
+//! `repo/server.rs`）の 2 つ（旧 axum wrapper は doc 45 段 4 で撤去済）。
 //! repo 側 (`wire_relay::handle_wire_*`) はアドレス正規化のみ行い、 QUIC でここへ relay
 //! する薄い proxy ([`crate::repo::daemon_wire`])。7b（doc 61）で `repo/routes/wire.rs` から移設。
 //!

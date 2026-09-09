@@ -10,6 +10,8 @@
 //! - `delegation/complete`       — complete: Outcome 遷移、更新後 record を返す
 //! - `delegation/respond`        — respond: Active へ戻す、更新後 record を返す
 //! - `delegation/mark_delivered` — wake の woke 結果を記録（B/C 用）
+//! - `delegation/poll`           — pull-hook: agent 関与の undelivered 委譲を返す（`vp wire hook-check`）
+//! - `delegation/list`           — 観測: 全委譲を created_at 昇順で返す read-only（Canvas 表示用）
 //!
 //! 未知 id は `{ "error": ... }` を返す（`daemon_wire::call` が Err に変換 → repo handler が Err）。
 
