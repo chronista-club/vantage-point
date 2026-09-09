@@ -136,7 +136,7 @@ if let Some(model) = engine_model::resolve_default(req.model, config.default_lan
 
 ### 5.2 アイドル時間を 1 つにする理由
 
-[`lane/state.rs`](../../crates/vantage-point/src/repo/lane/state.rs) の
+[`lane/pool.rs`](../../crates/vantage-point/src/repo/lane/pool.rs) の
 `IDLE_TEARDOWN_AFTER_MS` には「**now-line の quiet 閾値と同値**」と明記されている。
 2 つのスライダーにすると、この意図的な同値関係が黙って壊れる（片方だけ動かせてしまう）。
 

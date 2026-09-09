@@ -30,7 +30,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use super::state::{Diff, LaneAddress, LaneInfo, LaneState, SystemEvent};
+use super::info::Diff;
+use super::{LaneAddress, LaneInfo, LaneState, SystemEvent};
 use crate::repo::state::AppState;
 
 // doc 11 §3.7 の `migrate_legacy_stand` shim は 2026-05-03 削除済。 PR #257 の
