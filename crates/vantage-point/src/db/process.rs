@@ -1,7 +1,14 @@
 //! repo process の永続層（`processes` table）と、その LIVE SELECT。
 //!
-//! QUIC registry（Push）が単一の真実源で、この table はその写し。daemon 再起動時の
-//! クリーンアップに [`VpDb::clear_all_processes`] を使う。
+//! daemon 内の running registry（`capability/repo_manager_capability.rs`）が単一の真実源で、
+//! この table はその写し。書き手は `start_process` / `stop_process` の 2 箇所だけ。
+//!
+//! ⚠️ 「repo の QUIC 自己登録が書く」は **doc 44 P1 fold-in で失効した**帰属。repo が
+//! プロセスでなくなり自己登録しに来る者が居なくなったので、書き手は daemon-canonical に
+//! 戻っている（registry handler は #824 で撤去済み）。
+//!
+//! [`VpDb::clear_all_processes`] は daemon 再起動時のクリーンアップ**用**に在るが、
+//! **現状の呼び手は test だけ**（doc 62 §6 の cut 候補）。
 //!
 //! [`VpDb::live_processes`] だけ性質が違って、SurrealDB の LIVE SELECT stream を返す。
 //! 消費側（`repo/server.rs`）は `crate::db::Action` で差分の種類を見る。この re-export は

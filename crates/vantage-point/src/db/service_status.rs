@@ -1,7 +1,11 @@
 //! service（各機能）の状態記録（`service_status` table）。
 //!
-//! `/api/health` が返す `services` の裏付け。repo 固有なので `repo_path` 列で scope を切る。
-//! 読み手は `repo/http/health.rs`。
+//! `/api/health` が算出した `services` を DB にも書き残す先（VP-21）。repo 固有なので
+//! `repo_path` 列で scope を切る。
+//!
+//! ⚠️ **`repo/http/health.rs` は読み手ではなく書き手**。`services` は live な in-memory state
+//! から算出していて、この table は関与しない（算出結果を後から写しているだけ）。
+//! [`VpDb::list_service_status`] は現状**呼び手が 1 つも無い**（doc 62 §6 の cut 候補）。
 //!
 //! 設計は [doc 62](../../../../docs/design/62-db-module-layout.md)。
 

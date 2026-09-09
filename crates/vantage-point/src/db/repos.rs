@@ -4,8 +4,9 @@
 //! この table は db/machine 側の写し + 一方向 export（council 2026-05-16「ephemeral な DB でなく
 //! 人間可読 file を SSOT に」）。VP-182 の「DB dir 変更で repos 消失」を構造的に解消した形。
 //!
-//! `export_repos` / `import_repos` / `replace_all_repos` は生 SQL を持たない合成 method で、
-//! `crate::repos_file::RepoEntry` を介して kdl 側とやり取りする。
+//! `export_repos`（→ `list_repos`）と `import_repos`（→ `upsert_repo`）は生 SQL を持たない
+//! 合成 method で、`crate::repos_file::RepoEntry` を介して kdl 側とやり取りする。
+//! `replace_all_repos` だけは `DELETE FROM repos` の生 SQL + `import_repos` の全置換。
 //!
 //! unit test はここに無い。実体は `tests/repos_db_poc.rs`（統合 test）にある。
 //!

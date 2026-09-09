@@ -31,9 +31,14 @@
 //! | `board` | `pane_contents` |
 //! | `service_status` | `service_status` |
 //!
+//! 表に出ている 11 table 以外の 7 つ（`prompts` / `notifications` / wire 4 / `delegations`）は
+//! `schema` が定義するだけで [`VpDb`] に method が無い。wire と delegation は
+//! `capability/` 側が [`VpDb::inner`] 経由で持ち、`prompts` / `notifications` は誰も触っていない。
+//!
 //! どれも `impl VpDb` を書き足すだけなので、[`VpDb`] は **1 型・接続も 1 本**のまま。
 //! 子 module は親の private field を見られるので、各 module は `self.db` を直接使う
-//! （[`VpDb::inner`] は外向けの escape hatch で、`db/` の中では使わない）。
+//! （[`VpDb::inner`] は外向けの escape hatch で、`db/` の**本番コードでは使わない**。
+//! 旧形 row を直に流し込む `schema` の test だけが例外）。
 //! 設計は [doc 62](../../../../docs/design/62-db-module-layout.md)。
 
 use std::path::{Path, PathBuf};
