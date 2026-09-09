@@ -1,9 +1,9 @@
 //! `LanePool` — lane runtime の実体（PtySlot / chat engine / pump / lock）。棚卸し 項目 9-1b で
 //! `state.rs` から分離。値型は `address.rs` / `info.rs`。
 //!
-//! ここに一時的に残る「値型の impl だが disk / engine を読む」もの（9-1c で `enrich.rs` へ）:
-//! `LaneInfo::refresh_engine_session_id`（`session_registry::load`）/ `LaneSessionsView::from_registry`
-//! （`EngineKind` catalog）/ `idle_teardown_after_*`（settings.kdl）。
+//! 値の投影（disk / engine catalog を読んで `LaneInfo` を完成させる）は 9-1c で [`super::enrich`]
+//! へ出した。ここに残る唯一の設定読みは `idle_teardown_after_*`（settings.kdl）で、これは
+//! `LaneInfo` の投影ではなく **LanePool 自身の調整値**（idle engine を畳む猶予）。
 //!
 //! ## lane が host するもの（doc 12 LSCM、§9 catalog が居住 layer の SSOT）
 //!

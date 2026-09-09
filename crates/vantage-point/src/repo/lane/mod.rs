@@ -7,7 +7,7 @@
 //! `address.rs` に移した（`LanePool` の associated fn だったが `&self` を取らない純パーサ）。
 //!
 //! 依存 rule: 値（address / info）← 何も呼ばない / enrich → info + registry +
-//! engine catalog / pool → 値 + enrich + registry + engine / reconcile → pool / lifecycle → pool +
+//! engine catalog / pool → 値 + registry + engine / reconcile → pool / lifecycle → pool +
 //! reconcile + enrich / ops → lifecycle + pool。`crate::lane` → `repo::lane` の辺は 0 本にする。
 
 /// lane の名前（値型）: LaneId / LaneAddress / ROOT_LANE_NAME

@@ -20,10 +20,11 @@ use crate::lane::session_registry::{self, SessionKey};
 /// （Conversation 共通ヘッダの session chip 用。表示専用の別契約 — [`LaneInfo::cc_session_id`] は
 /// claude resume 用でここでは触らない）。engine 対応表は `EngineKind` が SSOT。
 ///
-/// ⚠️ **lanes が daemon へ流れる供給点すべてで呼ぶこと**: ①`build_lanes_snapshot`
-/// （ask 経路 = MCP list_lanes / lanes_list）②uplink の agent_card（register payload）
-/// ③uplink の LaneDiff push（lanes/add|update）。供給が複数経路あるのは #683 と同じ地形で、
-/// 1 箇所だけ enrich すると「ask には出るが registry（= vp-app）には出ない」に化ける
+/// ⚠️ **lanes が daemon へ流れる供給点すべてで呼ぶこと**: 現在は `lifecycle::build_lanes_snapshot`
+/// （ask 経路 = MCP list_lanes / lanes_list、および `publish_lanes` の 5s snapshot）と
+/// `lifecycle::emit_lane_update` の 2 本（旧 uplink の agent_card / LaneDiff push は doc 44 P1
+/// fold-in で経路ごと消滅、2026-09-09 時点で code 参照ゼロ）。供給が複数経路あるのは #683 と同じ
+/// 地形で、1 箇所だけ enrich すると「ask には出るが registry（= vp-app）には出ない」に化ける
 /// （2026-07-16 の tui session chip 不点灯の根因）。1 lane 2 file read
 /// （session registry + session store、いずれも数百 byte）で軽微。
 pub(crate) fn refresh_engine_session_id(info: &mut LaneInfo) {

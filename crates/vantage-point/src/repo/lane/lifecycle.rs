@@ -163,9 +163,8 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
             }
         }
         // doc 40 §5: chip（engine_session_id）/ channel D（cc_session_id）/ sessions を
-        // registry 1 read で enrich する（LaneInfo 側メソッドに一本化 — 旧「main 限定の
-        // cc_session 個別 enrich」は本 method に畳んだ。uplink の agent_card / LaneDiff push と
-        // 同一実装になり、供給点ごとの実装差（#683 地形）が消えた）。
+        // registry 1 read で enrich する（`enrich::refresh_engine_session_id` に一本化 — 旧「main
+        // 限定の cc_session 個別 enrich」は畳んだ。供給点ごとの実装差（#683 地形）が消えた）。
         // QUIC 5s tick 経路で lane 数 × registry 1 file read の同期 I/O。通常運用（〜十数 lane）
         // では無害。桁で増える運用になったら spawn_blocking 化 / active lane 限定 read が最適化余地
         //（moody 参考指摘 2026-07-15）。
