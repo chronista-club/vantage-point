@@ -875,7 +875,7 @@ mod tests {
     /// これが Daemon lane_registry / vp-app header を追従させる push の起点になる。
     #[tokio::test]
     async fn lane_session_changed_emits_enriched_lane_update() {
-        use crate::repo::lane::state::Diff;
+        use crate::repo::lane::info::Diff;
         use crate::repo::lane::{LaneAddress, LaneInfo, LaneState, SystemEvent};
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
@@ -935,7 +935,7 @@ mod tests {
     /// = 「発行時点で chip が点く」の配線検証。
     #[tokio::test]
     async fn lane_session_changed_records_conversation_report_into_registry() {
-        use crate::repo::lane::state::Diff;
+        use crate::repo::lane::info::Diff;
         use crate::repo::lane::{LaneAddress, LaneInfo, LaneState, SystemEvent};
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;

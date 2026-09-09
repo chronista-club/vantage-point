@@ -1,3 +1,10 @@
+//! `LanePool` — lane runtime の実体（PtySlot / chat engine / pump / lock）。棚卸し 項目 9-1b で
+//! `state.rs` から分離。値型は `address.rs` / `info.rs`。
+//!
+//! ここに一時的に残る「値型の impl だが disk / engine を読む」もの（9-1c で `enrich.rs` へ）:
+//! `LaneInfo::refresh_engine_session_id`（`session_registry::load`）/ `LaneSessionsView::from_registry`
+//! （`EngineKind` catalog）/ `idle_teardown_after_*`（settings.kdl）。
+//!
 //! Lane state types — repo が持つ Lane (Main/Sub) の data model
 //!
 //! 関連 memory:
@@ -32,475 +39,11 @@
 //! Sub create / destroy / Agent 切替は A4-4 / A5 で実装。
 
 use std::collections::HashMap;
-use std::fmt;
 
-use serde::{Deserialize, Serialize};
-
-/// Lane の位置独立な安定 id (I1、 doc 24 §7 / §10 Phase 2)。
-///
-/// path / port / PID に依存しない不変 handle。Lane の cwd が動こうと repo が
-/// rename されようと、 この id は変わらない (= 発端バグの path=identity を断つ種)。
-///
-/// **strangler 注意**: 現状この id は **pool key には使わない** (operative key は
-/// [`LaneAddress`])。「id を持つが id で引かない」中間状態 — 後続 increment で徐々に
-/// id へ寄せる土台。生成・永続は [`crate::lane::lane_id`]。
-///
-/// **format は意図的に opaque** (doc §12-E: format / 採番 / 衝突解決は連邦時 = Phase 3
-/// まで決め打ちしない)。現状 UUID v7 (時刻順 sortable) で生成するが、 呼び手は中身に
-/// 依存しないこと。serde は `transparent` で素の文字列として乗る (人にも読める wire)。
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct LaneId(String);
-
-impl LaneId {
-    /// 新規 id を生成する (現状 UUID v7、 format は opaque)。
-    pub fn generate() -> Self {
-        Self(uuid::Uuid::now_v7().to_string())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// 空 id (legacy wire payload を `#[serde(default)]` で受けた時の値) 判定。
-    /// `skip_serializing_if` と組で「空なら wire から省略」= 古 client と完全互換。
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-impl From<String> for LaneId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-impl fmt::Display for LaneId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-// doc 44 P2: `LaneKind`（Main / Sub）は撤去。
-//
-// D4「lane 自身は役割状態を持たない」— lane は全て対等になり、開発起点は
-// [`ROOT_LANE_NAME`] の予約名（将来は Host が持つポインタ）で表される。
-// 旧 kind の唯一の実質は「main は repo に 1 本・worktree を持たない」だが、
-// それは **名前の一意性**（1 repo に同名 lane は 1 本）で既に表現されている。
-
-// `LaneComponent` enum は doc 11 (PR-B) で削除。 agent 識別子は `String` に統一
-// (例: "claude" / "shell")。 tmux decoupling PR2 で agent script 層 (mise task) も廃止され、
-// agent は `agent_spawner::build_agent_command` の Rust-native 分岐になった。
-//
-// `TmuxMode` / `TmuxLaneAddress` (Phase 1a の tmux session registry) は tmux decoupling PR2 で
-// 退役 — lane の identity は `LaneAddress` ただ一つ、 process host は PtySlot ただ一つ
-// (design doc §13)。
-
-/// Lane の state machine 状態 (Phase A4-2b では Running 固定で pre-populate)
-///
-/// 注意: 「lane disk dir 存在 + Pane 不在」 は **Lane state ではなく `pid: None` で表現する** 設計。
-/// Active/Inactive 概念は Repo 集約 (sidebar 側 client-side computed) として扱い、 Lane state には混ぜない。
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LaneState {
-    Spawning,
-    #[default]
-    Running,
-    Exiting,
-    Dead,
-}
-
-/// Lane の **durable lifecycle** (doc 24 §4.6 — daemon 堅牢化の軽量 WAL)。
-///
-/// process liveness ([`LaneState`]) とは **別軸**: ground (worktree) の生成/破棄の lifecycle を
-/// daemon-internal に追跡する (PtySlot の生死ではない)。 daemon-canonical で、 descriptor とは
-/// 別 table (`lane/lifecycle`) に永続する (repo push が descriptor を round-trip して clobber する
-/// のを避けるため)。
-///
-/// **intent-first bracket**: create は `Provisioning` を先に書く → worktree provision → `Ready`。
-/// crash で `Provisioning` が残れば boot reconcile が ground 存在で heal (`Ready` or `Dead`)。
-/// destroy-side (`Destroying`) は後続 increment。
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LaneLifecycle {
-    /// ground を provision 中 (intent 記録済、 external op in-flight)。
-    Provisioning,
-    /// ground 準備完了 (= 通常状態)。
-    #[default]
-    Ready,
-    /// 失敗 / 外部削除で回収待ち (保持: inspection / `--resume` 可、 ground は当面残す)。
-    Dead,
-}
-
-impl LaneLifecycle {
-    /// db 永続用の文字列表現。
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            LaneLifecycle::Provisioning => "provisioning",
-            LaneLifecycle::Ready => "ready",
-            LaneLifecycle::Dead => "dead",
-        }
-    }
-
-    /// db 文字列からの復元 (未知/`ready` は `Ready` に倒す = 安全側)。
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "provisioning" => LaneLifecycle::Provisioning,
-            "dead" => LaneLifecycle::Dead,
-            _ => LaneLifecycle::Ready,
-        }
-    }
-}
-
-/// 開発起点 lane の予約名（doc 44 D4）。
-///
-/// 旧 `LaneKind::Main` の後継だが、**役割ではなく名前**である点が違う。
-/// lane 側に「自分は main だ」という状態はなく、この名前を持つ lane が
-/// たまたま開発起点である、という関係に退化した（P3 で Host のポインタに移る）。
-///
-/// この名前は `LaneAddress` の Display 形が旧 main と一致する（`<repo>/root`）
-/// ように選んである — 既存の永続 address / wire を無傷で引き継ぐため。
-///
-/// **定義は `vp-paths` が唯一**（2026-07-21）。vp-app が同名定数を独自に持っていて
-/// 「同値でなければ address が食い違う」をコメントの約束で担保していたため、
-/// 定義ごと共有 crate へ畳んだ。ここは re-export。
-pub use vp_paths::ROOT_LANE_NAME;
-
-/// Lane の address — Pool key
-///
-/// 表示形 (`Display` 実装): `"<repo>/<name>"`  例: `"vp/root"` / `"vp/foo"`
-///
-/// doc 44 P2（フラット化）: 旧 `{ repo, kind, name: Option<String> }` の 3-tuple から
-/// **`{ repo, name }` の 2-tuple** になった。旧構造は main だけ `name: None` という
-/// 非対称を抱えており、それが「lane が役割を自意識する」構造の物理形だった（D4）。
-///
-/// ⚠️ sub の表示形が `<repo>/sub/<name>` → `<repo>/<name>` に変わる。
-/// DB / session.json に残る旧形は [`LanePool::parse_address`] が受理して新形に正規化する
-/// （lead/wing → root/sub の rename 時と同じ手当て）。
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
-pub struct LaneAddress {
-    pub repo: String,
-    /// lane 名（人間可読、例: "foo"）。開発起点は [`ROOT_LANE_NAME`]。
-    ///
-    /// `default` は P2 以前に永続した descriptor を読むための互換。旧 `LaneAddress` は
-    /// main だけ `name` を持たず（`skip_serializing_if` で省略）、DB の `lane.descriptor`
-    /// にその形で入っている。既定値を予約名にすると、旧 main レコードは name 欠落 →
-    /// `"root"`、旧 sub は `name: "foo"` がそのまま読める（余分な `kind` は
-    /// unknown field として無視される）ので、**custom Deserialize なしで旧形が全部読める**。
-    #[serde(default = "default_lane_name")]
-    pub name: String,
-}
-
-/// [`LaneAddress::name`] の serde 既定値（P2 以前の永続 descriptor 互換、上記参照）。
-fn default_lane_name() -> String {
-    ROOT_LANE_NAME.to_string()
-}
-
-impl LaneAddress {
-    /// 任意の lane を構築する（フラット化後の canonical な構築子）。
-    pub fn new(repo: impl Into<String>, name: impl Into<String>) -> Self {
-        Self {
-            repo: repo.into(),
-            name: name.into(),
-        }
-    }
-
-    /// 開発起点 lane（予約名 [`ROOT_LANE_NAME`]）を構築する。
-    pub fn root(repo: impl Into<String>) -> Self {
-        Self::new(repo, ROOT_LANE_NAME)
-    }
-
-    /// 名前付き lane を構築する（旧 sub）。
-    ///
-    /// 旧 API 名を残しているのは呼び出し 100 箇所超の互換のため。フラット化後は
-    /// [`Self::new`] と完全に同義で、「sub という種別」はもう存在しない。
-    pub fn sub(repo: impl Into<String>, name: impl Into<String>) -> Self {
-        Self::new(repo, name)
-    }
-
-    /// 開発起点 lane か（= 予約名を持つか）。
-    pub fn is_root(&self) -> bool {
-        self.name == ROOT_LANE_NAME
-    }
-
-    /// **wire address の SSOT**（`agent@<repo>` / `agent@<repo>/<name>`）。
-    ///
-    /// root は lane 部を省く（`mcp/lane.rs` の `mailbox_addresses` と同一の形）。
-    /// ⚠️ この写像はもともと呼び手ごとの手書き `format!` に散っていた（8 箇所）。
-    /// lane 削除時の wire 離脱（`WiremsgStore::leave_all_threads`）は**ここがずれると
-    /// 別人を離脱させる**ので、新しい読み手はこのメソッドを通すこと。
-    pub fn wire_agent_address(&self) -> String {
-        if self.is_root() {
-            format!("agent@{}", self.repo)
-        } else {
-            format!("agent@{}/{}", self.repo, self.name)
-        }
-    }
-
-    /// **address 文字列の SSOT**（`<repo>/lane/<name>`）。
-    ///
-    /// ## ⚠️ なぜ `Display` ではなくこの名前なのか
-    ///
-    /// `Display` は**人間に見せる**ための trait で、永続化・wire の鍵に使うと 1 つの impl が
-    /// 2 仕事を持つ（log を読みやすくしただけで**永続形が黙って変わる**）。形式は契約なので
-    /// 명示的な名前で持つ。`Display` はここへ委譲するだけ。
-    ///
-    /// ⚠️ **client は自分で組み立てない**。この値は daemon が発行して `LaneAddressWire::key`
-    /// に載せ、vp-app / webview はそのまま運ぶ。以前は Rust 2 実装 + TS 2 実装が同じ写像を
-    /// 持ち、doc に「手で一致させる」と書く運用だった（`vp-app/src/lane_address.rs` の
-    /// `key_matches_display` は**実際に食い違った**記録）。
-    ///
-    /// ⚠️ 分節は 3 つ。読み側 [`LanePool::parse_address`] は旧形（`<repo>/<name>` /
-    /// `<repo>/sub/<name>` / `<repo>/wing/<name>` / `<repo>/lead`）も受理して救済する。
-    pub fn canonical(&self) -> String {
-        format!("{}/{}/{}", self.repo, LANE_SEGMENT, self.name)
-    }
-
-    // `tmux_session_name` / `tmux_session_prefix` (Phase 1a の deterministic tmux 名導出) は
-    // tmux decoupling PR2 で退役。 lane の identity は [`Self::canonical`] ただ一つ
-    // (design doc §13.2 — sanitize 形は tmux の「`/` 禁止」制約由来だった)。
-}
-
-/// ⚠️ **`key` を必ず添えて送る**（daemon が address を発行する側）。
-///
-/// derive をやめて手で書いているのは、`{repo, name}` に加えて [`Self::canonical`] の
-/// 結果を wire に載せるため。これで client（vp-app / webview）は**組み立てを持たない** —
-/// 以前は Rust と TS が同じ写像を各々実装し、doc に「byte-for-byte 一致させる」と書く
-/// 運用だった。
-///
-/// ⚠️ 読み側（`Deserialize`）は `key` を**見ない**。unknown field として無視され、
-/// domain 型は `{repo, name}` から再構築される = 鍵の二重管理にならない。
-impl Serialize for LaneAddress {
-    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut st = ser.serialize_struct("LaneAddress", 3)?;
-        st.serialize_field("repo", &self.repo)?;
-        st.serialize_field("name", &self.name)?;
-        st.serialize_field("key", &self.canonical())?;
-        st.end()
-    }
-}
-
-/// address の名前空間分節。`<repo>/lane/<name>` の `lane`。
-///
-/// ⚠️ 分節を明示するのは、将来 `<repo>/board/…` のような別種を足したときに衝突させないため。
-pub const LANE_SEGMENT: &str = "lane";
-
-impl fmt::Display for LaneAddress {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // ⚠️ 形式の定義は [`LaneAddress::canonical`] 一箇所。ここは委譲するだけ。
-        f.write_str(&self.canonical())
-    }
-}
-
-/// Phase 2 (Step E): エンティティ lifecycle の diff event を表現する generic ADT。
-///
-/// - `I` = identifier 型 (削除時のみ必要、 例: `LaneAddress`)
-/// - `P` = payload 型 (add/update 時の full state、 例: `LaneInfo`)
-///
-/// caller で event 発生 → AppState の broadcast channel に publish → subscriber が
-/// daemon 側 cache を realtime sync する primitive。
-///
-/// doc 44 P1 (fold-in): subscriber は旧「repo の QUIC registry push」から、repo 自身の
-/// lanes publish task（`process/server.rs` の `publish_lanes`）に替わった。同一プロセスに
-/// なったので push は daemon の集約 view への map 書き込みに退化している。
-///
-/// wire format: internally tagged JSON
-/// ```json
-/// {"kind": "add", "payload": {...}}
-/// {"kind": "remove", "id": {...}}
-/// {"kind": "update", "payload": {...}}
-/// ```
-///
-/// QUIC channel は ordered (single connection) なので、 register snapshot → diff の順序保証あり。
-/// 将来 `Diff<PaneId, PaneInfo>` / `Diff<ComponentKind, AgentInfo>` 等の type alias で reuse 可能。
-///
-/// 関連 memory: Phase 1 完成 (mem_1Cac2YvnAhaVRCJemidtkx) の「残作業: Phase 2 Step E」に該当。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum Diff<I, P> {
-    /// 新規追加 (Lane spawn 完了 / Pane create 等、 full payload で挿入)
-    Add { payload: P },
-    /// 削除 (Lane destroy / Pane close 等、 id のみで identify)
-    Remove { id: I },
-    /// 更新 (state 変更 / pid 更新 / restart 完了 等、 full payload で replace)
-    Update { payload: P },
-}
-
-/// Phase 2: Lane lifecycle 用の Diff alias。 repo の lane_pool 変更を daemon に伝える。
-pub type LaneDiff = Diff<LaneAddress, LaneInfo>;
-
-/// Phase 2 (Step E): repo の system 系 lifecycle event を 1 つの broadcast bus で配信。
-///
-/// caller (lane_spawn_actor / lane_lifecycle / lifecycle monitor / restart_lane 等) が
-/// `state.system_event_tx.send(SystemEvent::*)` で publish、repo の lanes publish task
-/// (`publish_lanes`) が受けて daemon の集約 view を更新する（doc 44 P1 fold-in で
-/// 旧 QUIC registry push から置き換わった）。
-///
-/// scope ごとに variant 分け、 内部に該当 Diff を内包。 将来 Pane / Agent 等は
-/// variant 追加で扱える central event bus pattern (Erlang event manager 風)。
-///
-/// wire format: internally tagged JSON で、 内側は Diff の `kind` も二重 tag:
-/// ```json
-/// {"scope": "lane", "kind": "add", "payload": {...}}
-/// {"scope": "lane", "kind": "remove", "id": {...}}
-/// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "scope")]
-// `Lane(LaneDiff)` は 352 byte、`LanesReordered` は 0 byte で size 差が出る。
-// Box 化はしない: 本 enum は broadcast channel (容量 64) を流れるだけで滞留せず、
-// 最悪でも 22KB。対して `SystemEvent::Lane(Diff::*)` の構築点は複数あり、
-// Box 化はそこ全部に `Box::new` を撒く割に得るものが無い。
-#[allow(clippy::large_enum_variant)]
-pub enum SystemEvent {
-    /// Lane lifecycle diff (Phase 2 Step E)
-    Lane(LaneDiff),
-    /// 帳簿由来の **snapshot 投影**が変わった（並び順 / 開発起点 …、doc 44 §12）。
-    ///
-    /// **個々の lane は何も変わっていない**ので `Lane(Diff::*)` では表せない
-    /// （Diff は per-lane の差分で、偽の Add/Update を流すと購読側が実在しない
-    /// 変化に反応する）。snapshot 全体の性質なので独立 variant にする。
-    ///
-    /// ⚠️ 旧名 `LanesReordered` は「並び替え専用」に読めたため、**同じ性質の
-    /// 起点変更で撃ち忘れ**が起きた（起点が 5s tick まで sidebar に載らなかった）。
-    /// 帳簿が snapshot の見え方を変えたら、種類を問わずこれを撃つ。
-    LanesProjectionChanged,
-    // 将来 variant 追加候補:
-    //   Pane(Diff<PaneId, PaneInfo>),       // Phase 7 (Pane Revival)
-    //   component(Diff<ComponentKind, AgentInfo>),  // 各機能 の lifecycle
-    //   Process(Diff<ProcessKey, RunningRepo>),  // Process registry diff
-}
-
-/// Lane の info (REST response 用 + 内部 registry の値)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LaneInfo {
-    /// I1 (doc 24 §7): 位置独立な安定 id。生成・永続は [`crate::lane::lane_id`]。
-    /// **まだ pool key には使わない** (operative key は `address`)。strangler の種。
-    /// 旧 wire payload (id 欄なし) は `#[serde(default)]` で空 [`LaneId`] になり、
-    /// `skip_serializing_if` で再び省略される (= 古 client と完全互換)。
-    #[serde(default, skip_serializing_if = "LaneId::is_empty")]
-    pub id: LaneId,
-    pub address: LaneAddress,
-    // doc 44 P2: `kind` / `name` を撤去。どちらも `address` が持つ情報の複製で、
-    // 真実源が 2 つある状態だった（`address.kind` / `address.name` と同値）。
-    // kind は概念ごと消え、name は `address.name` が唯一の在処になる。
-    pub state: LaneState,
-    /// agent 名 (例: "hd" / "shell" / "tmux"、 doc 11 PR-B で String に変更)
-    pub agent: String,
-    /// ISO 8601
-    pub created_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pid: Option<u32>,
-    pub cwd: String,
-    /// Phase 5-D: Sub のみ embed (Main は git workspace を持たない設計)。
-    /// `cwd` から `lane::commands::sub_status()` を呼んで populate。
-    /// `/api/lanes` 応答時に lazy 取得 (registry には保存しない、 git 状態は volatile)。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sub_status: Option<crate::lane::commands::SubStatus>,
-    /// R3-b → doc 39 §3-1: この lane の **root session** の CC session id（wire 配送は常に
-    /// root = lane の人格に解決する）。 registry には保存せず `/api/lanes` 応答時に root
-    /// session の state file (`lane::cc_session`、 書き手は SessionStart/UserPromptSubmit hook)
-    /// を lazy read する (`sub_status` と同じ前例)。 conversation の `--resume` 再利用と
-    /// R3-c の `--bg` session 管理の土台。
-    ///
-    /// ⚠️ **claude 専用の契約**: delivery_actor（channel D）が `claude -p --resume <id>` に
-    /// 使うため、他 engine の id を入れてはならない（root が非 claude session の場合、その
-    /// label の cc_session store には書き手がいないため自然に None になる）。表示用の
-    /// engine 横断 id は [`Self::engine_session_id`]（別契約）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cc_session_id: Option<String>,
-    /// doc 37: この lane の **active engine の** session id（claude=cc_session / codex=thread id /
-    /// grok=ACP sessionId。shell は None）。Conversation 共通ヘッダの session chip 用（表示専用 —
-    /// resume に使うのは registry の会話 id / `cc_session_id` 側）。doc 40: 供給は registry
-    /// （root session の conversation）に一本化。serde default + skip で wire 後方互換。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub engine_session_id: Option<String>,
-    /// doc 39 P4-C: この lane の **root session の agent**（= slot に載る engine 種別）。tui の
-    /// session chip prefix の供給源（`agent` は lane 作成時固定なので cross-engine root では slot の
-    /// engine と食い違う — chip が旧 engine の prefix で点く）。`engine_session_id` と同じ
-    /// [`Self::refresh_engine_session_id`] で populate。root entry 不在は None = vp-app 側が従来の
-    /// lane `agent` に fallback。serde default + skip で wire 後方互換。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_name: Option<String>,
-    /// doc 40 §3 → doc 53 §11: lane の session roster（**wire view**）。
-    ///
-    /// GUI の roster（pane 一覧の元）は**これ 1 本**で供給される（旧: `conversation_session_list`
-    /// の fetch と snapshot の 2 本立てで、fetch は GUI 自身の動詞でしか撃たれないため
-    /// **CLI / MCP 由来の session 変化が pane に出なかった** — doc 53 §11.1）。
-    ///
-    /// ⚠️ **disk 型（`SessionRegistry`）を直に載せない** — roster には `chat_capable` のような
-    /// **導出値**が要り（能力表は server が SSOT = client に engine 名の分岐を作らない）、
-    /// disk の永続形に runtime 由来の field を混ぜないため wire 専用型に分ける（§11.2 決定 3）。
-    /// populate は [`Self::refresh_engine_session_id`]（enrich 供給点）。
-    /// serde default + skip で wire 後方互換。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sessions: Option<LaneSessionsView>,
-    /// FSM 投影 (2026-07-11): dev-flow FSM (`flow::derive_flow_state`) の現在 state。
-    /// **daemon が vp-app への snapshot 送信時に enrich する derive 値** — repo / lane_registry /
-    /// db では常に `None` (derive できるものは store しない原則)。 source は wire store
-    /// (latest msg + 未 ack needs_user) + sub_status で、 `vp flow progress` と同一判定。
-    /// serde default + skip で旧 SP / 旧 client と wire 完全互換。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub flow_state: Option<crate::flow::FlowState>,
-}
-
-/// lane の session roster の **wire view**（disk 型 `SessionRegistry` の投影 + 導出値）。
-///
-/// doc 53 §11: GUI の roster 供給はこれ 1 本（`LaneInfo.sessions`）。registry を丸ごと載せる
-/// のではなく「client が roster を描くのに要るもの」だけを写し、能力（`chat_capable`）は
-/// **server が導出**して載せる。`next`（採番カーソル）は client に読み手が無いので写さない。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LaneSessionsView {
-    /// lane の器（slot / mailbox）に化身する session。
-    pub root: SessionKey,
-    /// 現在 focus されている session。
-    pub focused: SessionKey,
-    /// session 一覧（生成順）。
-    pub sessions: Vec<LaneSessionView>,
-}
-
-/// [`LaneSessionsView`] の 1 session。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LaneSessionView {
-    pub key: SessionKey,
-    /// engine 種別（agent 名）。
-    pub agent: String,
-    /// この session の Mode（見え方）。
-    pub mode: SessionMode,
-    /// engine の会話 id（registry が SSOT。Draft = None）。session chip / タブの表示用。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conversation: Option<String>,
-    /// この session を Chat にできるか（能力表 = `EngineKind` が SSOT、server 導出）。
-    /// 名札の kind badge がこれで gate する（押しても弾かれる行き止まりを作らない）。
-    #[serde(default)]
-    pub chat_capable: bool,
-    /// user の投入に**画像**を混ぜられるか（chat 入力欄への貼り付け、2026-08-30）。
-    /// client はこれが false の lane で貼り付け UI を出さない（chat_capable と同じ規律 —
-    /// 押しても engine に無視されるだけの行き止まりを作らない）。
-    #[serde(default)]
-    pub image_capable: bool,
-    /// この session の model 指定（registry の intent。None = engine 既定に委譲）。
-    /// picker の「現在値」は engine 実測（session_init の header.model）が正で、
-    /// こちらは「VP が spawn 時に何を注入するか」の側。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    /// model picker の選択肢（`EngineKind` catalog、server 導出 — client は並べるだけ）。
-    /// **空 = VP からの model 切替なし**（client は read-only 表示 or 非表示に落とす —
-    /// chat_capable と同じく「押しても弾かれる行き止まり」を server 表明で根絶する）。
-    #[serde(default)]
-    pub model_choices: Vec<crate::conversation::engine::Choice>,
-    /// permission picker の選択肢（同上）。空 = 対話承認の概念なし（`set_permission_mode`
-    /// が bail する engine — codex の approval_policy 等の別語彙は将来 catalog を足すだけ）。
-    #[serde(default)]
-    pub permission_choices: Vec<crate::conversation::engine::Choice>,
-    /// 最終活動時刻 (epoch ms)。tui = PTY 出力 / gui = ConversationEvent の新しい方。
-    /// None = 実体なし（Draft / 停止中）or 活動未観測。registry（disk）でなく
-    /// **in-memory 実体からの enrich**（[`LanePool::session_activity`]）なので
-    /// `from_registry` 時点では常に None — 供給点（5s snapshot / LaneDiff push）が埋める。
-    /// GUI は client 時計との差で「quiet N 分」を導く（閾値判定は載せない — 事実だけ運ぶ）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_activity_at: Option<u64>,
-}
+use super::address::{LANE_SEGMENT, LaneAddress};
+use super::info::{LaneInfo, LaneSessionView, LaneSessionsView, LaneState, quantize_activity_ms};
+use crate::conversation::{ChatEngineSlot, ChatHost, EngineKind};
+use crate::lane::session_registry::{self, SessionKey, SessionMode};
 
 impl LaneSessionsView {
     /// disk の registry から wire view を作る（導出値はここで 1 回だけ計算する）。
@@ -593,10 +136,6 @@ impl LaneInfo {
     }
 }
 
-/// `last_activity_at` を wire に載せる際の量子化粒度 (ms)。GUI の quiet 閾値（分単位）には
-/// 十分細かく、snapshot 指紋（doc 44 §11.3）を無駄に乱さない下限。
-const ACTIVITY_WIRE_GRANULARITY_MS: u64 = 60_000;
-
 /// idle teardown の猶予 (ms)。**settings.kdl の `idle-timeout-minutes` から起動時に確定**する
 /// （doc 59 P3。既定 5 分 = mako 裁定 2026-08-28）。
 ///
@@ -633,11 +172,6 @@ fn idle_teardown_after_ms() -> u64 {
 /// 「反映には daemon 再起動が要る」という説明とも、起動時固定で揃う。
 pub fn idle_teardown_after_minutes() -> u64 {
     idle_teardown_after_ms() / 60_000
-}
-
-/// wire に載せる活動時刻の量子化（[`ACTIVITY_WIRE_GRANULARITY_MS`] へ切り下げ）。
-fn quantize_activity_ms(ms: u64) -> u64 {
-    ms - ms % ACTIVITY_WIRE_GRANULARITY_MS
 }
 
 /// Lane Pool — Main/Sub registry
@@ -717,26 +251,6 @@ pub struct LanePool {
     ///   ガードは focused にのみ適用 — doc 38 落とし穴③）
     chat_engines: HashMap<LaneAddress, HashMap<SessionKey, ChatEngineSlot>>,
 }
-
-// chat engine の所有型（ChatEngineSlot / ChatHost）と engine 軸の語彙（EngineKind）は
-// `crate::conversation::engine` に移設した（doc 37 — chat スタックを conversation module に閉じ、
-// 他repoへ切り出せる形にする）。LanePool は所有と排他の「法」だけを担う。
-use crate::conversation::{ChatEngineSlot, ChatHost, EngineKind};
-// session 層の語彙（doc 38）。registry は disk が SSOT（LanePool は cache を持たない —
-// 「状態の供給を 1 系統に」の原則。読みは毎回 registry file、書きは registry module 経由）。
-use crate::lane::session_registry::{self, SessionKey, SessionMode};
-
-// doc 53 §12.1 / R3c-2: **`RespawnMode` は退役した**（3 値 → 2 値 → 0）。
-//
-// 旧 3 値（Resume / Bare / Reset）は「素の engine で起動する」と「store を破棄する」の 2 軸
-// だった。前者は `--continue` 退役（R3a）で **registry から導出**されるようになり（会話 id が
-// 無ければ素で立つ）、旧 `Bare` と旧 `Resume` は同じ操作になった。残った 1 軸
-// （registry を破棄するか）も R3c-2 で**別の動詞**になった:
-//
-// - restart = 実体を捨てて reconcile に戻させる（intent は動かさない、doc 53 §12.3）
-// - Reset   = intent ごと素に戻す（registry + replay + 全実体を捨てて既定形を書く）
-//
-// 「同じ関数に mode で 2 つの意味を持たせる」形が、そもそも intent と実体を混ぜていた証拠だった。
 
 /// [`LanePool::resolve_chat_session`] の解決結果 — session key と、その engine（agent）・
 /// focused かどうか。ガード分岐（focused のみ mode ガード）と host 構築に使う。
@@ -2582,24 +2096,6 @@ pub async fn deliver_nudge(
 mod tests {
     use super::*;
 
-    /// wire address の写像を固定する（`mailbox_addresses` と同一の形）。
-    ///
-    /// ⚠️ **ずれると lane 削除時に別人を wire から離脱させる**（`leave_all_threads` の
-    /// 引数がこれ）。root だけ lane 部を省く非対称があるので literal で固定する。
-    #[test]
-    fn wire_agent_address_matches_mailbox_form() {
-        assert_eq!(
-            LaneAddress::root("vantage-point").wire_agent_address(),
-            "agent@vantage-point",
-            "root は lane 部を持たない"
-        );
-        assert_eq!(
-            LaneAddress::sub("vantage-point".to_string(), "research".to_string())
-                .wire_agent_address(),
-            "agent@vantage-point/research"
-        );
-    }
-
     /// lane を PTY / engine 無しで pool に置く（restart_lane の chat 分岐は早期 return する
     /// ので spawn 不要）。mode は registry（SSOT）に書く — doc 53 R1 で pool cache は退役し、
     /// 読み手（root_mode 直読）と同じ経路をテストも通る。⚠️ 呼び手は `test_env::state_dir`
@@ -3352,37 +2848,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn lane_address_canonical_has_lane_segment() {
-        // address の形式は `<repo>/lane/<name>`。⚠️ 定義は `canonical()` の 1 箇所で、
-        // Display はそこへ委譲するだけ（人間向け trait を永続形の SSOT にしない）。
-        assert_eq!(LaneAddress::root("vp").canonical(), "vp/lane/main");
-        assert_eq!(LaneAddress::sub("vp", "foo").canonical(), "vp/lane/foo");
-        // Display が委譲しているか（片方だけ変わると永続と表示がずれる）。
-        assert_eq!(LaneAddress::root("vp").to_string(), "vp/lane/main");
-    }
-
-    /// ⚠️ **wire に `key` が載る**（daemon が発行する側）。載らないと client が
-    /// `{repo}/{name}` へ縮退し、無音で旧形に戻る。
-    #[test]
-    fn wire_carries_daemon_issued_key() {
-        let json = serde_json::to_value(LaneAddress::sub("vp", "foo")).expect("serialize");
-        assert_eq!(json["key"], "vp/lane/foo", "key が載っていない: {json}");
-        assert_eq!(json["repo"], "vp", "描画用の部品も残す");
-        assert_eq!(json["name"], "foo");
-    }
-
-    /// ⚠️ **読み側は `key` を見ない**。見ると鍵が二重管理になり、送られた key と
-    /// `{repo,name}` から再構築した値が食い違う状態を表現できてしまう。
-    #[test]
-    fn deserialize_ignores_key_and_rebuilds_from_parts() {
-        // 意図的に矛盾した key を混ぜる。無視されて {repo,name} が勝つのが正。
-        let v = serde_json::json!({ "repo": "vp", "name": "foo", "key": "うそ/lane/うそ" });
-        let addr: LaneAddress = serde_json::from_value(v).expect("deserialize");
-        assert_eq!(addr, LaneAddress::sub("vp", "foo"));
-        assert_eq!(addr.canonical(), "vp/lane/foo");
-    }
-
     /// ⚠️ **canonical → parse → 同一**（往復）。形式を変えたとき読み側が追随しているかは
     /// これでしか担保できない（片方だけ直すと「書けるが読めない」address が生まれる）。
     #[test]
@@ -3509,26 +2974,6 @@ mod tests {
         assert_eq!(lanes[0].agent, "claude"); // default は "claude" (PR-pre2 で "hd" → "claude" rename)
     }
 
-    /// doc 44 P2: 旧 `LaneKind` の serde テスト 2 本（snake_case / "worker" 拒否）は型ごと撤去。
-    /// 代わりに固定すべきは「**P2 以前に永続した descriptor が読めること**」になった。
-    #[test]
-    fn legacy_lane_address_deserializes() {
-        // 旧 main: name 省略 + kind field あり → 予約名に落ちる
-        let main: LaneAddress = serde_json::from_str(r#"{"repo":"vp","kind":"main"}"#).unwrap();
-        assert_eq!(main, LaneAddress::root("vp"));
-        assert!(main.is_root());
-
-        // 旧 sub: name あり + kind field は unknown として無視される
-        let sub: LaneAddress =
-            serde_json::from_str(r#"{"repo":"vp","kind":"sub","name":"foo"}"#).unwrap();
-        assert_eq!(sub, LaneAddress::new("vp", "foo"));
-        assert!(!sub.is_root());
-
-        // 新形（kind なし）
-        let flat: LaneAddress = serde_json::from_str(r#"{"repo":"vp","name":"bar"}"#).unwrap();
-        assert_eq!(flat, LaneAddress::new("vp", "bar"));
-    }
-
     /// 旧 3 分節 address 文字列（`<repo>/sub/<name>`）が新形に正規化されること。
     #[test]
     fn legacy_address_string_normalizes() {
@@ -3549,29 +2994,6 @@ mod tests {
         assert_eq!(
             LanePool::parse_address("vp/foo").unwrap(),
             LaneAddress::new("vp", "foo")
-        );
-    }
-
-    #[test]
-    fn lane_info_worker_status_alias_rejected() {
-        // `worker_status` serde alias 削除の回帰ガード。
-        // 旧 SP が `worker_status` キーで送ってきても、 新 repo は sub_status: None として扱う
-        // (= 情報損失は許容、 crash やパース失敗より優先)。
-        // `#[serde(default)]` が残っているので unknown field は無視され None になる。
-        let json = r#"{
-            "address": {"repo": "vp", "kind": "sub", "name": "foo"},
-            "kind": "sub",
-            "name": "foo",
-            "state": "running",
-            "agent": "claude",
-            "created_at": "2026-05-26T00:00:00Z",
-            "cwd": "/tmp",
-            "worker_status": {"branch": "main", "ahead": 0, "behind": 0, "is_merged": false, "has_changes": false}
-        }"#;
-        let info: LaneInfo = serde_json::from_str(json).expect("パース自体は成功する");
-        assert!(
-            info.sub_status.is_none(),
-            "worker_status キーは sub_status に流れ込まない (alias 削除済)"
         );
     }
 
@@ -3613,127 +3035,7 @@ mod tests {
         );
     }
 
-    /// tmux decoupling PR2: 旧 wire payload (tmux field 入り) が新 LaneInfo に decode できる
-    /// （unknown field は serde が無視 = 旧 client / 旧 DB descriptor との後方互換）。
-    #[test]
-    fn lane_info_decodes_legacy_payload_with_tmux_field() {
-        let legacy = r#"{
-            "address": {"repo": "vp", "kind": "main"},
-            "kind": "main",
-            "state": "running",
-            "agent": "claude",
-            "created_at": "2026-05-01T00:00:00Z",
-            "cwd": "/tmp",
-            "tmux": [{"agent": "claude", "session": "vp-vp-root-conversation", "mode": "tmux"}]
-        }"#;
-        let info: LaneInfo = serde_json::from_str(legacy).expect("legacy payload decodes");
-        assert_eq!(info.address, LaneAddress::root("vp"));
-    }
-
-    // ========================================================================
-    // Phase 2 (Step E) — Lane lifecycle diff push (SystemEvent + Diff<I, P>)
-    // ========================================================================
-
-    #[test]
-    fn lane_diff_add_serde_round_trip() {
-        // Diff::Add { payload: LaneInfo } の wire 形式 + decode
-        let info = LaneInfo {
-            id: Default::default(),
-            address: LaneAddress::sub("vp", "sub"),
-            state: LaneState::Running,
-            agent: "hd".to_string(),
-            created_at: "2026-05-01T00:00:00Z".to_string(),
-            pid: Some(12345),
-            cwd: "/tmp".to_string(),
-            sub_status: None,
-            cc_session_id: None,
-            sessions: None,
-            engine_session_id: None,
-            agent_name: None,
-            flow_state: None,
-        };
-        let diff: LaneDiff = Diff::Add {
-            payload: info.clone(),
-        };
-        let json = serde_json::to_string(&diff).unwrap();
-        assert!(json.contains("\"kind\":\"add\""), "got: {}", json);
-        assert!(json.contains("\"payload\""), "got: {}", json);
-
-        let restored: LaneDiff = serde_json::from_str(&json).unwrap();
-        match restored {
-            Diff::Add { payload } => {
-                assert_eq!(payload.address, info.address);
-            }
-            _ => panic!("expected Diff::Add"),
-        }
-    }
-
-    #[test]
-    fn lane_diff_remove_serde_round_trip() {
-        // Diff::Remove { id: LaneAddress } で id のみ送る wire 形式
-        let addr = LaneAddress::sub("vp", "osc");
-        let diff: LaneDiff = Diff::Remove { id: addr.clone() };
-        let json = serde_json::to_string(&diff).unwrap();
-        assert!(json.contains("\"kind\":\"remove\""), "got: {}", json);
-        assert!(json.contains("\"id\""), "got: {}", json);
-
-        let restored: LaneDiff = serde_json::from_str(&json).unwrap();
-        match restored {
-            Diff::Remove { id } => assert_eq!(id, addr),
-            _ => panic!("expected Diff::Remove"),
-        }
-    }
-
-    #[test]
-    fn system_event_lane_serde_flattens_inner_diff() {
-        // SystemEvent::Lane(LaneDiff) の wire 形式は
-        // {"scope": "lane", "kind": "add", "payload": {...}} のように
-        // outer scope tag + inner Diff tag が同 level に flatten される。
-        let info = LaneInfo {
-            id: Default::default(),
-            address: LaneAddress::root("vp"),
-            state: LaneState::Running,
-            agent: "hd".to_string(),
-            created_at: "2026-05-01T00:00:00Z".to_string(),
-            pid: None,
-            cwd: "/tmp".to_string(),
-            sub_status: None,
-            cc_session_id: None,
-            sessions: None,
-            engine_session_id: None,
-            agent_name: None,
-            flow_state: None,
-        };
-        let event = SystemEvent::Lane(Diff::Add {
-            payload: info.clone(),
-        });
-        let json = serde_json::to_string(&event).unwrap();
-        // outer: scope tag
-        assert!(
-            json.contains("\"scope\":\"lane\""),
-            "scope tag missing, got: {}",
-            json
-        );
-        // inner: Diff::kind tag が同 level に flatten される (serde internally tagged の挙動)
-        assert!(
-            json.contains("\"kind\":\"add\""),
-            "inner kind missing, got: {}",
-            json
-        );
-
-        let restored: SystemEvent = serde_json::from_str(&json).unwrap();
-        match restored {
-            SystemEvent::Lane(Diff::Add { payload }) => {
-                assert_eq!(payload.address, info.address);
-            }
-            _ => panic!("expected SystemEvent::Lane(Diff::Add)"),
-        }
-    }
-
-    // =========================================================================
     // doc 46 P5 — slot は (lane, session) key（端末の複数枚化）
-    // =========================================================================
-
     /// テスト用の PtySlot を 1 枚 spawn する（`sh -c <cmd>`、replay 永続なし）。
     /// - `"cat"`: 入力待ちで生き続ける（生きた slot）
     /// - `"exit 0"`: 即終了する（Dead 検出の対象）
@@ -4325,15 +3627,6 @@ mod tests {
             pool.drop_idle_chat_engines(&addr, now).is_empty(),
             "投入直後の engine は活動時刻が古くても落とさない"
         );
-    }
-
-    /// wire 量子化（doc 44 §11.3 — snapshot 指紋を活動のたびに乱さない）は分へ切り下げる。
-    #[test]
-    fn quantize_activity_ms_floors_to_minute() {
-        assert_eq!(quantize_activity_ms(0), 0);
-        assert_eq!(quantize_activity_ms(59_999), 0);
-        assert_eq!(quantize_activity_ms(60_000), 60_000);
-        assert_eq!(quantize_activity_ms(1_756_300_123_456), 1_756_300_080_000);
     }
 
     /// **P5 producer の本体**（doc 46 §3 の宿題）: console をもう 1 枚。

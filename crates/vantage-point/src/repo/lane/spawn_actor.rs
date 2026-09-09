@@ -86,7 +86,8 @@ use tokio_util::sync::CancellationToken;
 use crate::capability::component_service::{LayerScope, Service, SpawnableService};
 
 use super::cmd::LaneCmd;
-use super::state::{Diff, LaneAddress, LaneInfo, LanePool, LaneState, SystemEvent};
+use super::info::Diff;
+use super::{LaneAddress, LaneInfo, LanePool, LaneState, SystemEvent};
 
 /// Lane spawn Service (= in-process channel から `LaneCmd::SpawnLane` を recv、
 /// 並列度 N で gate しつつ Lane を spawn する infra actor)。
