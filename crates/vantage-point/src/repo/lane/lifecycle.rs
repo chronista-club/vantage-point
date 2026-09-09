@@ -169,10 +169,10 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
         // QUIC 5s tick 経路で lane 数 × registry 1 file read の同期 I/O。通常運用（〜十数 lane）
         // では無害。桁で増える運用になったら spawn_blocking 化 / active lane 限定 read が最適化余地
         //（moody 参考指摘 2026-07-15）。
-        lane.refresh_engine_session_id();
+        super::enrich::refresh_engine_session_id(lane);
         // 活動時刻は refresh と対（apply_session_activity の doc ⚠️ — 供給点差は #683 地形）。
         if let Some(act) = activity.get(&lane.address.to_string()) {
-            lane.apply_session_activity(act);
+            super::enrich::apply_session_activity(lane, act);
         }
     }
 
@@ -981,9 +981,9 @@ pub(crate) async fn emit_lane_update(state: &AppState, addr: &LaneAddress) {
         };
         (info, pool.session_activity(addr))
     };
-    info.refresh_engine_session_id();
+    super::enrich::refresh_engine_session_id(&mut info);
     // 活動時刻は refresh と対（apply_session_activity の doc ⚠️ — 供給点差は #683 地形）。
-    info.apply_session_activity(&activity);
+    super::enrich::apply_session_activity(&mut info, &activity);
     if let Err(e) = state
         .system_event_tx
         .send(SystemEvent::Lane(Diff::Update { payload: info }))

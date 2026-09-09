@@ -321,7 +321,7 @@ impl VpDb {
                 continue;
             };
             // parse_address は旧 3 分節形を受理して新形に正規化する。
-            let Some(new) = crate::repo::lane::LanePool::parse_address(old)
+            let Some(new) = crate::repo::lane::parse_address(old)
                 .map(|a| a.to_string())
                 .filter(|new| new != old)
             else {

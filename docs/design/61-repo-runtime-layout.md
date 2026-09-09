@@ -46,10 +46,12 @@ crates/vantage-point/src/repo/
 ├── server.rs               QUIC accept loop / run_daemon / seed の呼び出し
 ├── repo_registry.rs        daemon → repo の in-process dispatch（dispatch_repo_method の唯一の呼び手）
 ├── lane/                   repo 側の lane runtime。identity・registry の SSOT は `crate::lane`（disk）
-│   ├── address.rs          値: LaneId / LaneAddress / ROOT_LANE_NAME / LANE_SEGMENT（9-1b）
+│   ├── address.rs          値: LaneId / LaneAddress / ROOT_LANE_NAME / LANE_SEGMENT + parse_address（9-1b / 9-1c）
 │   ├── info.rs             値: LaneInfo / LaneState / LaneLifecycle / Diff / SystemEvent / LaneSessionsView（9-1b）
-│   ├── pool.rs             runtime: LanePool（PtySlot / chat engine / pump / lock）+ deliver_nudge。
-│   │                         9-1c で enrich.rs へ出す disk 読み 3 本を一時同居（9-1b）
+│   ├── enrich.rs           投影: 値に disk（session registry）と engine catalog の事実を写す。
+│   │                         refresh_engine_session_id / apply_session_activity は**対で呼ぶ**（9-1c）
+│   ├── pool.rs             runtime: LanePool（PtySlot / chat engine / pump / lock）+ deliver_nudge +
+│   │                         idle_teardown_after_*（settings.kdl を読む runtime の調整値）
 │   ├── reconcile.rs / cmd.rs / spawn_actor.rs / lifecycle.rs / ops.rs（9-1a で prefix を落として集約）
 │   └── mod.rs              facade `pub use address::{…} / info::{…} / pool::{…}`（外から使う item だけ）
 ├── terminal_pump.rs / conversation_pump.rs
@@ -165,6 +167,7 @@ arm の形は `"show" | "clear" => board::handle_canvas_command(state, payload).
 ## Status log
 
 - 2026-09-08: 設計確定（mako）。決定 3 点は §0。次は PR-1（editor_bridge）。
+- 2026-09-09: 9-1c 着地。値 module から disk / engine を切り離した: `LaneInfo::refresh_engine_session_id` / `LaneSessionsView::from_registry` / `apply_session_activity` を `enrich.rs` の自由関数へ（対で呼ぶ契約を module doc に）、`LanePool::parse_address`（`&self` を取らない純パーサ）を `address.rs` へ（呼び手 53）。値（address / info）は disk / engine / lock を触らない状態になった。
 - 2026-09-09: 9-1b 着地。`lane/state.rs` を `address`（値: 名前）/ `info`（値: 帳簿）/ `pool`（runtime）に分割。本文一致、test 50 本の置き場だけ変わる。値 module は disk / engine / lock を触らない（`refresh_engine_session_id` / `from_registry` / `idle_teardown_after_*` は pool に一時同居 → 9-1c で `enrich.rs`）。
 - 2026-09-09: 9-1a 着地。`repo/lane/` に 6 file を集約（`lanes_state` → `lane/state`、`lane_*` の prefix を落とす）、facade `pub use` は外から使う item だけ。本文不変。次は 9-1b（state.rs の値 / runtime 分割）。
 - 2026-09-09: 7b 着地。`repo/routes/` を解体: HTTP 2 file → `repo/http/`、`lanes` → `repo/lane_lifecycle.rs`、`agents` → `repo/agents.rs`、daemon 側 3 file → `daemon/{control_ops,delegation_ops,wire_ops}.rs`。rename-all-at-once、`pub use` shim なし、test 22 本は file ごと移動。

@@ -48,7 +48,7 @@ pub(crate) async fn handle_conversation_demand_start(
         return Err("conversation_demand_start: lane 未指定".to_string());
     }
     let session = super::unison_server::payload_session_key("conversation_demand_start", &payload)?;
-    let Some(addr) = crate::repo::lane::LanePool::parse_address(&lane) else {
+    let Some(addr) = crate::repo::lane::parse_address(&lane) else {
         return Err(format!(
             "conversation_demand_start: lane パース失敗: {lane}"
         ));
@@ -331,7 +331,7 @@ pub(crate) async fn handle_conversation_demand_stop(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let Some(addr) = crate::repo::lane::LanePool::parse_address(&lane) else {
+    let Some(addr) = crate::repo::lane::parse_address(&lane) else {
         // 宛先が読めない = 落とす相手が決まらない。黙って何もしない（旧 noop と同じ安全側）。
         return Ok(serde_json::json!({"status": "noop", "lane": lane}));
     };

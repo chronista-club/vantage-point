@@ -251,7 +251,7 @@ impl AppState {
     /// [`deliver_nudge`](super::lane::deliver_nudge) の入力にする。
     /// parse 不能 / lane 不在 / 非 Running なら None。
     pub async fn resolve_lane_address(&self, query: &str) -> Option<super::lane::LaneAddress> {
-        let addr = super::lane::LanePool::parse_address(query)?;
+        let addr = super::lane::parse_address(query)?;
         let pool = self.lane_pool.read().await;
         let info = pool.get(&addr)?;
         if !matches!(info.state, super::lane::LaneState::Running) {

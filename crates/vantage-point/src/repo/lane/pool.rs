@@ -18,8 +18,8 @@
 
 use std::collections::HashMap;
 
-use super::address::{LANE_SEGMENT, LaneAddress};
-use super::info::{LaneInfo, LaneSessionView, LaneSessionsView, LaneState, quantize_activity_ms};
+use super::address::LaneAddress;
+use super::info::{LaneInfo, LaneState};
 // chat engine の所有型（ChatEngineSlot / ChatHost）と engine 軸の語彙（EngineKind）は
 // `crate::conversation::engine` に移設した（doc 37 — chat スタックを conversation module に閉じ、
 // 他repoへ切り出せる形にする）。LanePool は所有と排他の「法」だけを担う。
@@ -27,97 +27,6 @@ use crate::conversation::{ChatEngineSlot, ChatHost, EngineKind};
 // session 層の語彙（doc 38）。registry は disk が SSOT（LanePool は cache を持たない —
 // 「状態の供給を 1 系統に」の原則。読みは毎回 registry file、書きは registry module 経由）。
 use crate::lane::session_registry::{self, SessionKey, SessionMode};
-
-impl LaneSessionsView {
-    /// disk の registry から wire view を作る（導出値はここで 1 回だけ計算する）。
-    fn from_registry(reg: &session_registry::SessionRegistry) -> Self {
-        Self {
-            root: reg.root,
-            focused: reg.focused,
-            sessions: reg
-                .sessions
-                .iter()
-                .map(|s| {
-                    // 導出値は engine 判定 1 回に畳む（能力表 = EngineKind が SSOT）。
-                    let kind = EngineKind::from_agent(&s.agent);
-                    LaneSessionView {
-                        key: s.key,
-                        agent: s.agent.clone(),
-                        mode: s.mode,
-                        conversation: s.conversation.clone(),
-                        chat_capable: kind.is_some_and(EngineKind::chat_capable),
-                        image_capable: kind.is_some_and(EngineKind::image_capable),
-                        model: s.model.clone(),
-                        model_choices: kind.map(EngineKind::model_choices).unwrap_or_default(),
-                        permission_choices: kind
-                            .map(EngineKind::permission_choices)
-                            .unwrap_or_default(),
-                        last_activity_at: None,
-                    }
-                })
-                .collect(),
-        }
-    }
-}
-
-impl LaneInfo {
-    /// doc 37: active engine の session id を state file から lazy read して埋める
-    /// （Conversation 共通ヘッダの session chip 用。表示専用の別契約 — [`Self::cc_session_id`] は
-    /// claude resume 用でここでは触らない）。engine 対応表は `EngineKind` が SSOT。
-    ///
-    /// ⚠️ **lanes が daemon へ流れる供給点すべてで呼ぶこと**: ①`build_lanes_snapshot`
-    /// （ask 経路 = MCP list_lanes / lanes_list）②uplink の agent_card（register payload）
-    /// ③uplink の LaneDiff push（lanes/add|update）。供給が複数経路あるのは #683 と同じ地形で、
-    /// 1 箇所だけ enrich すると「ask には出るが registry（= vp-app）には出ない」に化ける
-    /// （2026-07-16 の tui session chip 不点灯の根因）。1 lane 2 file read
-    /// （session registry + session store、いずれも数百 byte）で軽微。
-    pub fn refresh_engine_session_id(&mut self) {
-        let lane_label = crate::repo::agent_spawner::lane_label(&self.address);
-        // doc 40 §5: 会話 id の SSOT = session registry を 1 回 load し、
-        // - `engine_session_id`（chip）= root session の conversation（doc 39 P1: chip は
-        //   lane の人格を映す。gui のタブ表示は per-session 値 = #796 が担う）
-        // - `cc_session_id`（channel D の claude 専用契約）= root が claude の時だけ同値
-        //   （他 engine の id を混ぜない — 旧 field doc の不変条件を維持。旧実装の
-        //   build_lanes_snapshot 個別 enrich は本 method に畳んだ = 供給点の実装差解消）
-        // - `sessions` = registry snapshot 丸ごと（LaneInfo descriptor 完成、doc 40 §3）
-        // registry file 不在（N=1 特殊ケース）は root=1 で従来と同一の読み先になる。
-        // 旧 engine 別 store の 3-way dispatch は load 内の backfill bridge に移った。
-        let reg = crate::lane::session_registry::load(&self.address.repo, lane_label, &self.agent);
-        let root = reg.sessions.iter().find(|s| s.key == reg.root);
-        self.engine_session_id = root.and_then(|s| s.conversation.clone());
-        // doc 39 P4-C: chip prefix は root session の agent（= slot の engine）で決める。lane 固定の
-        // `self.agent` は cross-engine root で slot と食い違うため、root entry の agent を別 field で運ぶ。
-        self.agent_name = root.map(|s| s.agent.clone());
-        self.cc_session_id = root
-            .filter(|s| {
-                matches!(
-                    crate::conversation::EngineKind::from_agent(&s.agent),
-                    Some(crate::conversation::EngineKind::Claude)
-                )
-            })
-            .and_then(|s| s.conversation.clone());
-        // doc 53 §11: roster は wire view で載せる（disk 型は載せない — 導出値 chat_capable を
-        // 混ぜないため）。GUI の pane 一覧はこの 1 本から作られる。
-        self.sessions = Some(LaneSessionsView::from_registry(&reg));
-    }
-
-    /// roster に session ごとの最終活動時刻を焼く（`LanePool::session_activity` の適用側）。
-    ///
-    /// ⚠️ `refresh_engine_session_id` と**対で**呼ぶこと（roster が daemon へ流れる全供給点 —
-    /// registry read の refresh と in-memory 実体の enrich は別入力なので、片方だけだと
-    /// 「session 一覧は出るのに活動時刻が永遠に None」が supply 点差で起きる（#683 地形）。
-    ///
-    /// wire 値は [`ACTIVITY_WIRE_GRANULARITY_MS`] に切り下げて量子化する。`publish_lanes` は
-    /// snapshot の**指紋が変わった時だけ** vp-app を起こす（doc 44 §11.3）ので、生 ms を
-    /// 載せると活動中の lane が 5s tick を全 push 化してしまう — 分粒度なら最大 1 push/min。
-    pub fn apply_session_activity(&mut self, activity: &HashMap<SessionKey, u64>) {
-        if let Some(view) = self.sessions.as_mut() {
-            for s in view.sessions.iter_mut() {
-                s.last_activity_at = activity.get(&s.key).copied().map(quantize_activity_ms);
-            }
-        }
-    }
-}
 
 /// idle teardown の猶予 (ms)。**settings.kdl の `idle-timeout-minutes` から起動時に確定**する
 /// （doc 59 P3。既定 5 分 = mako 裁定 2026-08-28）。
@@ -826,46 +735,6 @@ impl LanePool {
             root_mode.as_str()
         );
         Ok(())
-    }
-
-    /// Display 形 (`"<repo>/root"` / `"<repo>/sub/<name>"`) をパースして LaneAddress を作る。
-    /// vp-app の sidebar から `lane:select` IPC の address (= `lane_address_key`) を逆変換するために使う。
-    pub fn parse_address(s: &str) -> Option<LaneAddress> {
-        // 旧世代の**予約名**を現行の予約名へ写す（形の救済と直交する、名前の救済）。
-        //
-        // 予約名は `conductor` → `root` → `main` と 2 度改名されており、DB / session.json の
-        // address 文字列に旧名のまま残る。ここで寄せておくと、起動時の
-        // `normalize_legacy_lane_addresses`（parse → to_string の差分検知）が**既存行を
-        // 自動で新名へ書き換える** = 名前の migration を別途書かなくてよい。
-        //
-        // ⚠️ 旧予約名の Sub は存在しえない（`validate_sub_name` が当時から予約名を拒否）
-        // ので、この写しが実在の Sub を誤って Main に化けさせることはない。
-        fn name_or_root(repo: &str, name: &str) -> LaneAddress {
-            if vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&name) {
-                LaneAddress::root(repo)
-            } else {
-                LaneAddress::new(repo, name)
-            }
-        }
-        let parts: Vec<&str> = s.splitn(3, '/').collect();
-        match parts.as_slice() {
-            // 旧 "lead" は開発起点の旧名 (main rename 前の session.json / wire address 互換)。
-            [repo, "lead"] if !repo.is_empty() => Some(LaneAddress::root(*repo)),
-            // 旧 2 分節形 "<repo>/<name>" (doc 44 P2 のフラット化形)。canonical が
-            // `<repo>/lane/<name>` になった後も、永続 state / wire に残る旧形として受理する。
-            [repo, name] if !repo.is_empty() && !name.is_empty() => Some(name_or_root(repo, name)),
-            // 旧 3 分節形 "<repo>/sub/<name>" (P2 以前の永続 address / wire) を
-            // 新形に正規化して受理する。lead/wing → root/sub の rename 時と同じ手当て
-            // で、DB (`lane` / `lane/lifecycle` の address 列) と session.json を無傷で引き継ぐ。
-            // canonical: "<repo>/lane/<name>"。名前空間を明示した現行形。
-            [repo, LANE_SEGMENT, name] if !repo.is_empty() && !name.is_empty() => {
-                Some(name_or_root(repo, name))
-            }
-            [repo, "sub" | "wing", name] if !repo.is_empty() && !name.is_empty() => {
-                Some(name_or_root(repo, name))
-            }
-            _ => None,
-        }
     }
 
     /// slot の console 現在画面を text で返す（tmux decoupling: `capture-pane` の native 代替）。
@@ -2848,7 +2717,8 @@ mod tests {
     #[test]
     fn canonical_round_trips_through_parse() {
         for addr in [LaneAddress::root("vp"), LaneAddress::sub("vp", "foo")] {
-            let parsed = LanePool::parse_address(&addr.canonical()).expect("canonical は読める");
+            let parsed =
+                crate::repo::lane::parse_address(&addr.canonical()).expect("canonical は読める");
             assert_eq!(parsed, addr, "往復で同一に戻る");
         }
     }
@@ -2862,13 +2732,13 @@ mod tests {
         let expected = LaneAddress::sub("vp", "foo");
         for old in ["vp/foo", "vp/sub/foo", "vp/wing/foo"] {
             assert_eq!(
-                LanePool::parse_address(old),
+                crate::repo::lane::parse_address(old),
                 Some(expected.clone()),
                 "旧形 {old} が読めない"
             );
         }
         assert_eq!(
-            LanePool::parse_address("vp/lead"),
+            crate::repo::lane::parse_address("vp/lead"),
             Some(LaneAddress::root("vp")),
             "旧 lead は開発起点へ"
         );
@@ -2890,7 +2760,7 @@ mod tests {
             "vp/lane/conductor",
         ] {
             assert_eq!(
-                LanePool::parse_address(old),
+                crate::repo::lane::parse_address(old),
                 Some(main.clone()),
                 "{old} が Main に正規化されない"
             );
@@ -2899,7 +2769,7 @@ mod tests {
         assert_eq!(main.canonical(), "vp/lane/main");
         // ⚠️ 紛らわしいが**別 lane** の名前は写さない（`root-old` は legacy 名ではない）
         assert_eq!(
-            LanePool::parse_address("vp/lane/root-old"),
+            crate::repo::lane::parse_address("vp/lane/root-old"),
             Some(LaneAddress::new("vp", "root-old"))
         );
     }
@@ -2973,59 +2843,59 @@ mod tests {
     #[test]
     fn legacy_address_string_normalizes() {
         assert_eq!(
-            LanePool::parse_address("vp/sub/foo").unwrap(),
+            crate::repo::lane::parse_address("vp/sub/foo").unwrap(),
             LaneAddress::new("vp", "foo")
         );
         assert_eq!(
-            LanePool::parse_address("vp/wing/foo").unwrap(),
+            crate::repo::lane::parse_address("vp/wing/foo").unwrap(),
             LaneAddress::new("vp", "foo")
         );
         // 旧 main 名 "lead" も予約名に寄る
         assert_eq!(
-            LanePool::parse_address("vp/lead").unwrap(),
+            crate::repo::lane::parse_address("vp/lead").unwrap(),
             LaneAddress::root("vp")
         );
         // 新形はそのまま
         assert_eq!(
-            LanePool::parse_address("vp/foo").unwrap(),
+            crate::repo::lane::parse_address("vp/foo").unwrap(),
             LaneAddress::new("vp", "foo")
         );
     }
 
     #[test]
     fn parse_address_main_and_sub() {
-        let main = LanePool::parse_address("vp/main").unwrap();
+        let main = crate::repo::lane::parse_address("vp/main").unwrap();
         assert_eq!(main, LaneAddress::root("vp"));
 
-        let sub = LanePool::parse_address("vp/sub/foo").unwrap();
+        let sub = crate::repo::lane::parse_address("vp/sub/foo").unwrap();
         assert_eq!(sub, LaneAddress::sub("vp", "foo"));
 
         // CJK / kebab-case repo name も通る
-        let main2 = LanePool::parse_address("vantage-point/main").unwrap();
+        let main2 = crate::repo::lane::parse_address("vantage-point/main").unwrap();
         assert_eq!(main2, LaneAddress::root("vantage-point"));
 
         // doc 44 P2: `vp/foo` は「未知 kind」ではなく **name が foo の lane** になった。
         assert_eq!(
-            LanePool::parse_address("vp/foo").unwrap(),
+            crate::repo::lane::parse_address("vp/foo").unwrap(),
             LaneAddress::new("vp", "foo")
         );
 
         // 不正
-        assert!(LanePool::parse_address("vp").is_none()); // / 無し
-        assert!(LanePool::parse_address("/main").is_none()); // repo 空
-        assert!(LanePool::parse_address("vp/").is_none()); // name 空
-        assert!(LanePool::parse_address("vp/sub/").is_none()); // 旧形の name 空
+        assert!(crate::repo::lane::parse_address("vp").is_none()); // / 無し
+        assert!(crate::repo::lane::parse_address("/main").is_none()); // repo 空
+        assert!(crate::repo::lane::parse_address("vp/").is_none()); // name 空
+        assert!(crate::repo::lane::parse_address("vp/sub/").is_none()); // 旧形の name 空
         // 旧 "worker" token は受理しない（3 分節の互換は sub/wing のみ）
-        assert!(LanePool::parse_address("vp/worker/foo").is_none());
+        assert!(crate::repo::lane::parse_address("vp/worker/foo").is_none());
 
         // 後方互換: root/sub rename 前の "lead"/"wing" address も受理する
         // (既存 session.json の active lane / 既存 wire address を orphan にしないため)
         assert_eq!(
-            LanePool::parse_address("vp/lead").unwrap(),
+            crate::repo::lane::parse_address("vp/lead").unwrap(),
             LaneAddress::root("vp")
         );
         assert_eq!(
-            LanePool::parse_address("vp/wing/bar").unwrap(),
+            crate::repo::lane::parse_address("vp/wing/bar").unwrap(),
             LaneAddress::sub("vp", "bar")
         );
     }

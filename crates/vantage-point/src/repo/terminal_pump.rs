@@ -218,7 +218,7 @@ async fn reconcile_lane_pumps_inner(
     lane: &str,
     force_replay: bool,
 ) -> PumpReconcile {
-    let Some(addr) = LanePool::parse_address(lane) else {
+    let Some(addr) = crate::repo::lane::parse_address(lane) else {
         return PumpReconcile::default();
     };
     let demand = topic_router.demand_active(&lane_topic(lane));

@@ -24,7 +24,7 @@ pub(crate) async fn handle_lane_nudge(
         return Err("lane_nudge: lane 未指定".to_string());
     }
     let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("");
-    let Some(addr) = crate::repo::lane::LanePool::parse_address(lane) else {
+    let Some(addr) = crate::repo::lane::parse_address(lane) else {
         return Err(format!("lane_nudge: lane パース失敗: {}", lane));
     };
     // doc 46 P5: `session` 省略 = root（mailbox を名乗る住人）。明示指定で同居する別 slot に届く。
@@ -48,7 +48,7 @@ pub(crate) async fn handle_lane_slots(
     if lane.is_empty() {
         return Err("lane_slots: lane 未指定".to_string());
     }
-    let Some(addr) = crate::repo::lane::LanePool::parse_address(lane) else {
+    let Some(addr) = crate::repo::lane::parse_address(lane) else {
         return Err(format!("lane_slots: lane パース失敗: {}", lane));
     };
     let pool = state.lane_pool.read().await;
@@ -85,7 +85,7 @@ pub(crate) async fn handle_lane_slot_new(
     if lane.is_empty() {
         return Err("lane_slot_new: lane 未指定".to_string());
     }
-    let Some(addr) = crate::repo::lane::LanePool::parse_address(lane) else {
+    let Some(addr) = crate::repo::lane::parse_address(lane) else {
         return Err(format!("lane_slot_new: lane パース失敗: {}", lane));
     };
     let agent = payload.get("agent").and_then(|v| v.as_str());
@@ -138,7 +138,7 @@ pub(crate) async fn handle_lane_capture(
     if lane.is_empty() {
         return Err("lane_capture: lane 未指定".to_string());
     }
-    let Some(addr) = crate::repo::lane::LanePool::parse_address(lane) else {
+    let Some(addr) = crate::repo::lane::parse_address(lane) else {
         return Err(format!("lane_capture: lane パース失敗: {}", lane));
     };
     // doc 46 P5: `session` 省略 = root（lane の代表 slot）。明示指定で同居する別 slot を読む。
@@ -199,7 +199,7 @@ pub(crate) async fn handle_lane_delete(
         .get("cleanup")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
-    let addr = crate::repo::lane::LanePool::parse_address(address)
+    let addr = crate::repo::lane::parse_address(address)
         .ok_or_else(|| format!("lane_delete: invalid lane address: {}", address))?;
     match super::lifecycle::delete_lane_orchestrated(state, addr, cleanup).await {
         Ok(info) => Ok(serde_json::json!({
@@ -232,7 +232,7 @@ pub(crate) async fn handle_lane_restart(
         .get("fresh")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let addr = crate::repo::lane::LanePool::parse_address(address)
+    let addr = crate::repo::lane::parse_address(address)
         .ok_or_else(|| format!("lane_restart: invalid lane address: {}", address))?;
     if fresh {
         super::lifecycle::reset_lane_orchestrated(state, addr).await
@@ -260,7 +260,7 @@ pub(crate) async fn handle_lane_session_changed(
     if lane.is_empty() {
         return Err("lane_session_changed: lane 必須".to_string());
     }
-    let addr = crate::repo::lane::LanePool::parse_address(lane)
+    let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("lane_session_changed: invalid lane address: {lane}"))?;
     let Some(agent) = state
         .lane_pool
