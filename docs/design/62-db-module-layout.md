@@ -146,4 +146,9 @@
 ## Status log
 
 - 2026-09-09: 設計確定。探索で `impl VpDb` の全 60 method（行範囲 / 可視性 / table / 外部呼び手数）と SCHEMA_SQL の 18 table、test 39 本（`#[test]` 5 + `#[tokio::test]` 34）の所属、外部参照 5 symbol を確定。PR-0 として本 doc を起票。
+- 2026-09-09: **実装完了**（#1092 doc + #1093〜#1097 の 5 PR）。`db/mod.rs` 3,230 → **442 行**、9 file 合計 3,480 行。
+  §1 の目標 tree と実測が完全一致（60 method / 39 test / table 帰属）。`VpDb` は 1 型・接続も 1 本、新規 crate なし、`db/` の外の diff は 0 行、test 1341 不変。
+  banner ズレ 5 件を解いた。repos の tombstone 2 組は唯一の意図的な位置変更（指す item が既に無いので置き場所を内容で決めた。base の削除行列に対する相対順序は保持）。
+  **review 5 回で出た指摘 14 件は全て散文（`//!` header と本 doc）で、移設本体の欠陥は 0 件**。誤りの型は「実装を見ずに書いた」「古い doc を引き写した」「自分の調査結果を再利用しなかった」の 3 つ。
+  §6 に追加された follow-up: `prompts` / `notifications` は dead schema / `list_service_status` にも読み手が無い（`repo/http/health.rs` は**書き手**）/ wire 4 table の owner は `capability/wiremsg_store.rs` / `make_test_db` の共有化は integration test 2 箇所に届かない / 帳簿② の banner が無い。
 - 2026-09-09: Moody Blues の事実確認で 13 件を訂正。主なもの — table 数 17 → **18**（4 箇所）/ test の attribute 内訳が逆 / wire 4 table の CRUD 所有者は `daemon/wire_ops.rs` ではなく **`capability/wiremsg_store.rs`** / **`prompts` と `notifications` は誰も触っていない dead schema**（§6 に項目追加）/ 借用は 5 件でなく **7 件**（`FarewellKind::from_label` と `vp_data_dir`）/ `inner()` の 8 呼び手は 3 系統でなく **6 file**（うち 2 は production path）/ 照合の line 層は doc 61 に無く doc 62 での新設 / `commands/db.rs` の `use crate::db;` が外部参照の grep から漏れる。
