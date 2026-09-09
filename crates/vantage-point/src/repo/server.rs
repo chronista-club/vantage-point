@@ -31,7 +31,7 @@ pub(crate) type NodeLaneView =
 /// LanePool の現 snapshot を「daemon の集約 view」と「repo の hub」の両方へ配る。
 ///
 /// doc 44 P1 (fold-in): lanes が daemon へ流れる供給点は 3 つ（起動時 seed / 5s periodic /
-/// `SystemEvent::Lane`）あり、`lane/state.rs` の規約どおり**全供給点で同じ enrich を通す**
+/// `SystemEvent::Lane`）あり、`lane/pool.rs`（`refresh_engine_session_id`）の規約どおり**全供給点で同じ enrich を通す**
 /// 必要がある。旧構成ではこの 3 点が hub へ broadcast し、repo の uplink が QUIC で daemon の
 /// `lane_registry` へ中継していた。fold-in で中継が消えたため、daemon 側 view の更新を
 /// ここに並置する — これを怠ると daemon の view が boot 時の db 値で固まり、

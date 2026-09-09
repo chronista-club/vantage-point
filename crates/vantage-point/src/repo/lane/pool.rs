@@ -5,44 +5,27 @@
 //! `LaneInfo::refresh_engine_session_id`（`session_registry::load`）/ `LaneSessionsView::from_registry`
 //! （`EngineKind` catalog）/ `idle_teardown_after_*`（settings.kdl）。
 //!
-//! Lane state types — repo が持つ Lane (Main/Sub) の data model
+//! ## lane が host するもの（doc 12 LSCM、§9 catalog が居住 layer の SSOT）
 //!
-//! 関連 memory:
-//! - `mem_1CaSrCxysdGaaSsN4Dvxth` (VP Architecture: 3 段 Agent scope + Lane semantic)
-//! - `mem_1CaSsN7xj69aVQtLPQFJxQ` (repo-as-Repo-Master: 9 component minimum)
-//! - **2026-04-27 rule** (旧):「Lane scope に attach するのは conversation と shell のみ。board/runner/external-control は Repo scope」
-//!   → **doc 12 LSCM (VP-109、 2026-05-04) で明示的に supersede**。 LSCM では Layer container
-//!   (Daemon / Repo / Lane) が必要な 機能を抱える composition モデルで、 各機能の居住可能
-//!   Layer は doc 12 §9 catalog の「保持 layer pattern」 列が SSOT。
-//! - PR-pre2 (VP-118 / 2026-05-04): HD → Echoes rename。
-//! - PR-β-2 (VP-120 / 2026-05-04): board を Repo → Lane に物理移管 (`LaneCapabilities.board`)。
-//! - PR-δ-2 (VP-136 / 2026-05-06): board を `LaneComponentRegistry` 経由 host へ rewire (`LaneCapabilities.registry`)。
-//! - 2026-09 (棚卸し 項目 5): `LaneCapabilities` / `LaneComponentRegistry` / `BoardComponent` を撤去。
-//!   board の正は doc 52 以降 DB（`unison_server` の `append_board_item` / `load_board`）で、container に読み手は無かった。
+//! - conversation 💬 — lane の PtySlot（tui）か chat engine（gui）で立つ
+//! - shell — login shell の PtySlot（tmux / mise 層は tmux decoupling PR2 で全廃。agent は
+//!   `agent_spawner::build_agent_command` の Rust-native 分岐）
+//! - board 🧭 — 正は DB（doc 52 以降）。旧 `BoardComponent` container は棚卸し 項目 5 で撤去
 //!
-//! ## architecture (LSCM 確定 + PR-δ-2 後)
-//!
-//! Lane scope に host する Agent:
-//! - Conversation 💬 (旧 HD) — Lane PtySlot で立つ
-//! - shell — Lane mise task PtySlot で立つ (= 同上)
-//! - Board 🧭 — DB が正 (doc 52、 per-scope の item list)。旧 `BoardComponent` container は 2026-09 撤去
-//! - Runner 🌿 (planned PR-γ で Lane 移管予定、 LaneComponent impl 追加)
-//!
-//! Repo scope の Agent pool (旧 `repo_components_state.rs`) は 2026-09 に撤去。
-//! Lane は **Main/Sub の PTY セッション + Agent container** に集中:
-//! - Main 1 / repo (固定)、agent = "claude" / "shell" / "tmux"
-//! - Sub 0..n / repo (可変、lane clone)、agent 同上
-//!
-//! ## Phase A4-2b スコープ
-//!
-//! `LanePool::with_root` で Main Lane 1 つ pre-populate。
-//! Sub create / destroy / Agent 切替は A4-4 / A5 で実装。
+//! 旧 `LaneCapabilities` / `LaneComponentRegistry` / repo scope の Agent pool はいずれも読み手を
+//! 失って撤去済。関連 memory: `mem_1CaSrCxysdGaaSsN4Dvxth`（3 段 Agent scope + Lane semantic）/
+//! `mem_1CaSsN7xj69aVQtLPQFJxQ`（repo-as-Repo-Master）。
 
 use std::collections::HashMap;
 
 use super::address::{LANE_SEGMENT, LaneAddress};
 use super::info::{LaneInfo, LaneSessionView, LaneSessionsView, LaneState, quantize_activity_ms};
+// chat engine の所有型（ChatEngineSlot / ChatHost）と engine 軸の語彙（EngineKind）は
+// `crate::conversation::engine` に移設した（doc 37 — chat スタックを conversation module に閉じ、
+// 他repoへ切り出せる形にする）。LanePool は所有と排他の「法」だけを担う。
 use crate::conversation::{ChatEngineSlot, ChatHost, EngineKind};
+// session 層の語彙（doc 38）。registry は disk が SSOT（LanePool は cache を持たない —
+// 「状態の供給を 1 系統に」の原則。読みは毎回 registry file、書きは registry module 経由）。
 use crate::lane::session_registry::{self, SessionKey, SessionMode};
 
 impl LaneSessionsView {
@@ -251,6 +234,18 @@ pub struct LanePool {
     ///   ガードは focused にのみ適用 — doc 38 落とし穴③）
     chat_engines: HashMap<LaneAddress, HashMap<SessionKey, ChatEngineSlot>>,
 }
+
+// doc 53 §12.1 / R3c-2: **`RespawnMode` は退役した**（3 値 → 2 値 → 0）。
+//
+// 旧 3 値（Resume / Bare / Reset）は「素の engine で起動する」と「store を破棄する」の 2 軸
+// だった。前者は `--continue` 退役（R3a）で **registry から導出**されるようになり（会話 id が
+// 無ければ素で立つ）、旧 `Bare` と旧 `Resume` は同じ操作になった。残った 1 軸
+// （registry を破棄するか）も R3c-2 で**別の動詞**になった:
+//
+// - restart = 実体を捨てて reconcile に戻させる（intent は動かさない、doc 53 §12.3）
+// - Reset   = intent ごと素に戻す（registry + replay + 全実体を捨てて既定形を書く）
+//
+// 「同じ関数に mode で 2 つの意味を持たせる」形が、そもそも intent と実体を混ぜていた証拠だった。
 
 /// [`LanePool::resolve_chat_session`] の解決結果 — session key と、その engine（agent）・
 /// focused かどうか。ガード分岐（focused のみ mode ガード）と host 構築に使う。

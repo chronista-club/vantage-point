@@ -10,6 +10,13 @@ use serde::{Deserialize, Serialize};
 use super::address::{LaneAddress, LaneId};
 use crate::lane::session_registry::{SessionKey, SessionMode};
 
+// doc 44 P2: `LaneKind`（Main / Sub）は撤去。
+//
+// D4「lane 自身は役割状態を持たない」— lane は全て対等になり、開発起点は
+// [`super::address::ROOT_LANE_NAME`] の予約名（将来は Host が持つポインタ）で表される。
+// 旧 kind の唯一の実質は「main は repo に 1 本・worktree を持たない」だが、
+// それは **名前の一意性**（1 repo に同名 lane は 1 本）で既に表現されている。
+
 /// Lane の state machine 状態 (Phase A4-2b では Running 固定で pre-populate)
 ///
 /// 注意: 「lane disk dir 存在 + Pane 不在」 は **Lane state ではなく `pid: None` で表現する** 設計。

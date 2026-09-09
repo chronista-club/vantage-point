@@ -193,6 +193,14 @@ impl fmt::Display for LaneAddress {
     }
 }
 
+// `LaneComponent` enum は doc 11 (PR-B) で削除。 agent 識別子は `String` に統一
+// (例: "claude" / "shell")。 tmux decoupling PR2 で agent script 層 (mise task) も廃止され、
+// agent は `agent_spawner::build_agent_command` の Rust-native 分岐になった。
+//
+// `TmuxMode` / `TmuxLaneAddress` (Phase 1a の tmux session registry) は tmux decoupling PR2 で
+// 退役 — lane の identity は `LaneAddress` ただ一つ、 process host は PtySlot ただ一つ
+// (design doc §13)。
+
 #[cfg(test)]
 mod tests {
     use super::*;
