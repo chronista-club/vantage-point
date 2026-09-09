@@ -214,6 +214,14 @@ mise run check                             # mbx check — 同じ場所の 2 回
 mise run test                              # mbx test — ⚠️ 初見 worktree の 1 回目は素の cargo より遅い
                                            # （dep-info 学習前は照会不能）。release 系は cargo のまま
 
+# commit 前: 散文（`//!` header / doc / commit message）の主張を実物に当てる
+mise run claims                            # diff から「数えるべき / 開くべき」行を抜き出す
+                                           # ⚠️ 判定はしない — 容疑者を全部並べるだけ。1 件ずつ実物に当てる。
+                                           # なぜ要るか: この repo の refactor は**本文の欠陥 0 件、
+                                           # review 指摘 28 件が全部散文**だった（本文には checker があり
+                                           # 散文には無い）。上位 2 型「数えられるものを数えなかった」
+                                           # 「出典を確認せず近い方に帰属」が 6 割で、どちらも diff から拾える。
+
 # dogfood: 普段使いの .app を作業ツリーの build で差し替えて触る（GUI 変更の実機確認の正）
 mise run app:swap                          # DRY build → /Applications/VantagePoint.app 差し替え → 起動
 VP_SWAP_RESTART_DAEMON=1 mise run app:swap # server (crates/vantage-point) も効かせる（lane が全部落ちる）
@@ -371,6 +379,7 @@ task 管理は creo-memories に一本化（Linear は不使用、2026-05-19 確
 
 1. `git fetch origin nightly && git checkout -b mako/{slug} origin/nightly` で lane 開始
 2. lane 上で commit、 PR は **base = nightly** で `gh pr create --base nightly` で作る
+   - commit 前の gate: `cargo fmt --all -- --check` / `mise run check` / `cargo clippy --workspace --all-targets -- -D warnings` / `mise run test` / **`mise run claims`**（散文の主張を実物に当てる）
 3. PR merge / 直 push で nightly が進む
 4. nightly が一定量積み上がったら release PR (nightly → main) を切って tag cut
 
