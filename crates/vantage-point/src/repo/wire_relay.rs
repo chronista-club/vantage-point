@@ -1,9 +1,9 @@
 //! wire relay — wiremsg の repo 側 proxy 層（R2-a: daemon 中央 store への relay、doc 61）。
 //!
-//! store 直結のロジックは routes/wire.rs (daemon 側) に移設済。 repo の責務は
+//! store 直結のロジックは daemon/wire_ops.rs (daemon 側) に移設済。 repo の責務は
 //! 「アドレス正規化 (N1) → daemon へ relay」 のみ。
 //!
-//! 受付は `unison_server::dispatch_repo_method`。旧 HTTP wrapper（`routes/health.rs`）は撤去済で、呼び手は QUIC dispatch だけ。
+//! 受付は `unison_server::dispatch_repo_method`。旧 HTTP wrapper（`http/health.rs`）は撤去済で、呼び手は QUIC dispatch だけ。
 
 use super::state::AppState;
 
@@ -35,7 +35,7 @@ fn normalize_agent_addr(addr: &str, self_repo: &str) -> String {
 ///
 /// repo の責務はアドレス正規化 (N1: bare `"agent"` → `"agent@<self_repo>"`) のみ。
 /// 保存・notify・local_seq 採番・body coerce は全て daemon 側
-/// ([`crate::repo::routes::wire`])。 cross-process forward は中央化で概念ごと消滅。
+/// ([`crate::daemon::wire_ops`])。 cross-process forward は中央化で概念ごと消滅。
 pub(crate) async fn handle_wire_send(
     state: &AppState,
     payload: serde_json::Value,

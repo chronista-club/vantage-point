@@ -95,7 +95,7 @@ pub struct DaemonState {
     pub(crate) control_channels: ControlChannels,
     /// repos 操作の権威 (= CLI → Daemon 直接 Unison "daemon-control" channel の data plane)。
     ///
-    /// HTTP `routes/daemon.rs` と同一の `RepoManagerCapability` 実体を Arc 共有し、
+    /// HTTP `daemon/control_ops.rs` と同一の `RepoManagerCapability` 実体を Arc 共有し、
     /// add/remove/rename/set_enabled/reorder/list を Unison 経由でも受ける。
     /// control plane 一元化 (creo `mem_1CbmWjCGNi9z49s3r21TwQ`): repos は daemon 権威なので
     /// CLI は repo を経由せず daemon に直接 Unison RPC する (= repos.kdl 共有メモリの置換)。
@@ -336,13 +336,13 @@ pub(crate) async fn registry_process_snapshot(
 ///
 /// ## doc 45 — control plane の唯一の入口
 ///
-/// 段 1 で `routes/daemon.rs`（旧 HTTP）にしか無かった操作をここへ出し
+/// 段 1 で `daemon/control_ops.rs`（旧 HTTP）にしか無かった操作をここへ出し
 /// （`repos/update` `repos/reload` `repos/sync` `repos/restart` `repos/pointview`
 /// `lanes/create` `lanes/set_active`、および `lanes/list` の filter/sort）、段 2 で CLI・
 /// 段 3 で vp-app を移設、**段 4 で HTTP route を撤去**した。repos CRUD / lifecycle / lanes を
 /// 触れる面は現在ここだけで、HTTP に残るのは `/api/health` `/api/shutdown` の 2 本のみ（§2）。
 ///
-/// route 層にしか無かった orchestration は `routes::daemon` の `pub(crate)` 関数に括り出して
+/// route 層にしか無かった orchestration は `daemon::control_ops` の `pub(crate)` 関数に括り出して
 /// ある（`apply_repo_update` / `collect_lanes` / `resolve_create_lane_args`）。段 1 で
 /// 1 実装に畳んであったので、段 4 の撤去は handler の殻を剥がすだけで済んだ。
 ///
@@ -480,7 +480,7 @@ pub(crate) async fn handle_daemon_control(
             let name = payload["name"].as_str();
             let enabled = payload["enabled"].as_bool();
             let cap = daemon_cap.read().await;
-            crate::repo::routes::daemon::apply_repo_update(&cap, path, name, enabled).await?;
+            crate::daemon::control_ops::apply_repo_update(&cap, path, name, enabled).await?;
             Ok(serde_json::json!({"status": "updated", "path": path}))
         }
         // doc 45 段 1: HTTP `POST /api/daemon/repos/sync` の Unison 版。
@@ -586,12 +586,12 @@ pub(crate) async fn handle_daemon_control(
         //
         // doc 45 段 1: HTTP 版の query filter (repo / lane / agent) と表示順を取り込んだ。
         // ここが素の flatten のままだと、CLI を Unison に移した瞬間に一覧の並びが静かに変わる。
-        // filter/sort は `routes::daemon::collect_lanes` を HTTP と共有する。
+        // filter/sort は `daemon::control_ops::collect_lanes` を HTTP と共有する。
         "lanes/list" => {
-            let query: crate::repo::routes::daemon::LanesQuery =
+            let query: crate::daemon::control_ops::LanesQuery =
                 serde_json::from_value(payload).unwrap_or_default();
             let cap = daemon_cap.read().await;
-            let lanes = crate::repo::routes::daemon::collect_lanes(&cap, &query).await;
+            let lanes = crate::daemon::control_ops::collect_lanes(&cap, &query).await;
             Ok(serde_json::json!({ "count": lanes.len(), "lanes": lanes }))
         }
         // doc 45 段 1: HTTP `POST /api/daemon/lanes` の Unison 版（doc 24 §10 Phase 2 B-create）。
@@ -605,7 +605,7 @@ pub(crate) async fn handle_daemon_control(
             let name = payload["name"]
                 .as_str()
                 .ok_or_else(|| "name is required".to_string())?;
-            let (branch, agent) = crate::repo::routes::daemon::resolve_create_lane_args(
+            let (branch, agent) = crate::daemon::control_ops::resolve_create_lane_args(
                 path,
                 name,
                 payload["branch"].as_str(),
@@ -1363,7 +1363,7 @@ pub(crate) async fn forward_to_sp_control(
 ///
 /// `daemon_wire::call` が path `"/api/<rest>"` を method=`"<rest>"` (= `"wire/send"` /
 /// `"delegation/create"` 等) にして本 channel に投げてくる。prefix で wire / delegation を切り分け、
-/// `routes::{wire,delegation}::dispatch_*` に委譲する。store は `with_wire` で plumb された
+/// `daemon::{wire_ops,delegation_ops}::dispatch_*` に委譲する。store は `with_wire` で plumb された
 /// daemon process AppState 由来の Arc。未初期化 (repo mode / DB 接続失敗) は Err を返し、channel
 /// handler が `{"error": ...}` フレームに詰める (旧 HTTP handler の error JSON と等価)。
 async fn handle_wire_channel(
@@ -1502,7 +1502,7 @@ async fn handle_wire_channel(
             Vec::new()
         };
         let result =
-            crate::repo::routes::wire::dispatch_wire(store, notifier, delivery, sub, payload).await;
+            crate::daemon::wire_ops::dispatch_wire(store, notifier, delivery, sub, payload).await;
         if result.is_ok() {
             notify_lane_change_for_repos(state, &wire_repos).await;
         }
@@ -1511,7 +1511,7 @@ async fn handle_wire_channel(
         let store = state.delegation_store.as_ref().ok_or_else(|| {
             "delegation store not initialized (daemon DB 接続失敗 or repo mode)".to_string()
         })?;
-        crate::repo::routes::delegation::dispatch_delegation(store, sub, payload).await
+        crate::daemon::delegation_ops::dispatch_delegation(store, sub, payload).await
     } else {
         Err(format!("不明な wire channel method: {method}"))
     }
@@ -2821,7 +2821,7 @@ mod tests {
     // 対して直接固定し直す** — 旧面が消えたからといって期待値まで消すと、
     // 移行で守ったものが黙って外れる。
     //
-    // 実装は `routes::daemon` の共有関数（apply_repo_update / collect_lanes /
+    // 実装は `daemon::control_ops` の共有関数（apply_repo_update / collect_lanes /
     // resolve_create_lane_args）1 本なので、ここが落ちるのは振る舞いが動いた時。
     // =====================================================================
 
@@ -3051,7 +3051,7 @@ mod tests {
     /// `lanes/create` の省略時 default 導出（旧 HTTP route と共有していた calc）。
     #[test]
     fn create_lane_defaults_are_derived() {
-        use crate::repo::routes::daemon::resolve_create_lane_args;
+        use crate::daemon::control_ops::resolve_create_lane_args;
 
         let (branch, agent) = resolve_create_lane_args("/tmp/parity", "sub", None, None);
         assert!(

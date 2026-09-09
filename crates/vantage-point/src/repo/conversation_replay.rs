@@ -352,7 +352,7 @@ pub(crate) async fn handle_conversation_demand_stop(
         crate::repo::lanes_state::idle_teardown_after_minutes(),
     );
     // 実体が変わったので roster を配る（`pid` / 活動時刻が動く = 名簿の見え方が変わる）。
-    crate::repo::routes::lanes::emit_lane_update(state, &addr).await;
+    crate::repo::lane_lifecycle::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "slept", "lane": lane, "sessions": dropped}))
 }
 

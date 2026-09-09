@@ -200,7 +200,7 @@ pub(crate) struct AppState {
     /// 関連 memory: mem_1CaSsN7xj69aVQtLPQFJxQ (repo-as-Repo-Master 9 component #4)
     pub lane_pool: Arc<RwLock<super::lanes_state::LanePool>>,
     /// Phase 2 (Step E): repo の system 系 lifecycle event を 1 つの broadcast bus で配信。
-    /// caller (lane_spawn_actor / routes/lanes / restart_lane / lifecycle monitor) が
+    /// caller (lane_spawn_actor / lane_lifecycle / restart_lane / lifecycle monitor) が
     /// `state.system_event_tx.send(SystemEvent::Lane(LaneDiff::*))` 等で publish、
     /// repo の lanes publish task (`publish_lanes`) が subscribe して daemon の集約 view を
     /// 更新する経路（doc 44 P1 fold-in で旧 `spawn_daemon_uplink` の QUIC push から置換）。
@@ -384,7 +384,7 @@ impl AppState {
 /// Test 用の minimal AppState builder。 各 field は default / None / in-memory mock で構築、
 /// `daemon` のみ caller が optional に指定 (= 503 path / 200 path 切り替え)。
 ///
-/// 用途: `crates/vantage-point/src/process/routes/` の各 handler を Axum oneshot で
+/// 用途: `crates/vantage-point/src/repo/http/` の各 handler を Axum oneshot で
 /// smoke test する際の shared fixture。 重い field (vpdb / wiremsg_store)
 /// は None で軽量化。
 ///

@@ -124,7 +124,7 @@ impl WireMessage {
     /// ## なぜ store 境界か（memory `normalize-at-module-boundary`）
     ///
     /// address を **key として使う**のは本 module（to 照合 / ack 台帳 / cursor / nudge
-    /// pending）。入口（routes/wire.rs）だけで畳むと、`expand_reply_recipients` が
+    /// pending）。入口（daemon/wire_ops.rs）だけで畳むと、`expand_reply_recipients` が
     /// **既存 row の alias 入り to を継いで新 row に増殖させる**経路が残る。全 public API の
     /// 冒頭で畳めば、dispatch_wire も relay inbound も reply 展開も全部この内側になる。
     ///

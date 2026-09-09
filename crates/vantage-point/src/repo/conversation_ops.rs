@@ -268,7 +268,7 @@ pub(crate) async fn handle_conversation_session_create(
     // ため（「今回は要らない」を動詞ごとに判断し始めると、要る場合を 1 つ取りこぼす）。
     state.reconcile_lane(&addr).await;
     // doc 53 §11: roster が変わったので知らせる（GUI の pane 一覧は snapshot 1 本で供給される）。
-    super::routes::lanes::emit_lane_update(state, &addr).await;
+    super::lane_lifecycle::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
 }
 
@@ -309,7 +309,7 @@ pub(crate) async fn handle_conversation_session_focus(
         }
     }
     // doc 53 §11: focused も roster の一部（chip / tab の点灯先）なので知らせる。
-    super::routes::lanes::emit_lane_update(state, &addr).await;
+    super::lane_lifecycle::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session}))
 }
 
@@ -348,7 +348,7 @@ pub(crate) async fn handle_conversation_session_remove(
         .await
         .discard_session_traces(&addr, session);
     // doc 53 §11: session が 1 本消えた = roster の変化。
-    super::routes::lanes::emit_lane_update(state, &addr).await;
+    super::lane_lifecycle::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session, "focused": focused}))
 }
 
@@ -386,7 +386,7 @@ pub(crate) async fn handle_conversation_session_new_root(
     // Pane（doc 50）の今、代表の変更は pane の破棄ではない。reconcile は新 root の実体を
     // 足すだけ（新 root は会話 id を持たないので bare で立つ）。
     state.reconcile_lane(&addr).await;
-    super::routes::lanes::emit_lane_update(state, &addr).await;
+    super::lane_lifecycle::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
 }
 
@@ -425,7 +425,7 @@ pub(crate) async fn handle_conversation_session_switch_root(
     // 会話で張り替えていた = 代表の変更を化身の置き換えと混同していた）。呼ぶのは
     // 「契機は判断を持たない」の規律と、代表値（pid / state）の導出をやり直すため。
     state.reconcile_lane(&addr).await;
-    super::routes::lanes::emit_lane_update(state, &addr).await;
+    super::lane_lifecycle::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane, "session": key}))
 }
 
@@ -548,7 +548,7 @@ async fn apply_session_mode(
         }
     }
     // doc 53 §11: mode は roster の一部（pane の kind を決める）ので知らせる。
-    super::routes::lanes::emit_lane_update(state, addr).await;
+    super::lane_lifecycle::emit_lane_update(state, addr).await;
     Ok(serde_json::json!({
         "status": "ok", "lane": lane, "session": session, "mode": mode.as_str()
     }))

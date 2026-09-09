@@ -54,7 +54,7 @@ pub enum LaneCmd {
     /// gate しつつ並列処理する design。
     SpawnLane {
         /// LaneAddress.repo の値 (= lane repo prefix と一致する repo_id、
-        /// `routes/lanes.rs::create_handler` の derivation と整合)
+        /// `lane_lifecycle.rs::create_sub_orchestrated` の derivation と整合)
         repo_id: String,
         /// Sub name (LaneAddress.name に入る)
         name: String,

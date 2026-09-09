@@ -375,7 +375,7 @@ pub struct SubStatusWire {
 
 /// doc 11 PR-C: daemon repo-proxy ask `agents_list` 応答 (`{agents:[...]}`) の 1 entry。
 ///
-/// repo 側 `process::routes::agents::AgentInfo` と wire 互換 (snake_case 統一済)。 F6④ で repo 直結
+/// repo 側 `repo::agents::AgentInfo` と wire 互換 (snake_case 統一済)。 F6④ で repo 直結
 /// HTTP は撤去したが、 本 struct は ask 応答の deserialize + JS push back の serialize 用に残置。
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct AgentInfo {

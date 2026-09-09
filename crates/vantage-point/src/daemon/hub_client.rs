@@ -1464,7 +1464,7 @@ mod tests {
                 let notifier = notifier.clone();
                 let notify = notify.clone();
                 async move {
-                    let _ = crate::repo::routes::wire::dispatch_wire(
+                    let _ = crate::daemon::wire_ops::dispatch_wire(
                         &store,
                         &notifier,
                         &notify,
@@ -1499,7 +1499,7 @@ mod tests {
         // 受信 node の store に届くまで poll（relay → handler → dispatch_wire は非同期）。
         let mut delivered = None;
         for _ in 0..50 {
-            let recvd = crate::repo::routes::wire::dispatch_wire(
+            let recvd = crate::daemon::wire_ops::dispatch_wire(
                 &store,
                 &notifier,
                 &notify,

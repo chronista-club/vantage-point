@@ -25,7 +25,7 @@ import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
 import { laneAddressKey } from "./lane";
 
-/** wire/history の 1 message (routes/wire.rs `wire_history_store` の出力形) */
+/** wire/history の 1 message (daemon/wire_ops.rs `wire_history_store` の出力形) */
 interface WireMsg {
 	id: string;
 	prev: string | null;

@@ -1,4 +1,4 @@
-//! lane ops — lane 系 Unison method の handler（owner は `routes/lanes` / `host/ledger` / `lane/session_registry`、doc 61）。
+//! lane ops — lane 系 Unison method の handler（owner は `lane_lifecycle` / `host/ledger` / `lane/session_registry`、doc 61）。
 //!
 //! nudge / slots / slot_new / capture / delete / restart / session_changed / create / origin_get / origin_set /
 //! order_set / lanes_list。payload を剥がして owner を呼び JSON を返す。`lane_origin_set` / `lane_order_set` は
@@ -116,7 +116,7 @@ pub(crate) async fn handle_lane_slot_new(
     };
     // doc 53 §11: **本バグの当事者** — CLI / MCP から console を足しても、これが無いと
     // GUI の roster に出ない（GUI 自身の動詞しか fetch の契機にならなかった）。
-    super::routes::lanes::emit_lane_update(state, &addr).await;
+    super::lane_lifecycle::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({
         "status": "ok",
         "lane": lane,
@@ -201,7 +201,7 @@ pub(crate) async fn handle_lane_delete(
         .unwrap_or(true);
     let addr = crate::repo::lanes_state::LanePool::parse_address(address)
         .ok_or_else(|| format!("lane_delete: invalid lane address: {}", address))?;
-    match super::routes::lanes::delete_lane_orchestrated(state, addr, cleanup).await {
+    match super::lane_lifecycle::delete_lane_orchestrated(state, addr, cleanup).await {
         Ok(info) => Ok(serde_json::json!({
             "deleted": info.address,
             "pid": info.pid,
@@ -235,9 +235,9 @@ pub(crate) async fn handle_lane_restart(
     let addr = crate::repo::lanes_state::LanePool::parse_address(address)
         .ok_or_else(|| format!("lane_restart: invalid lane address: {}", address))?;
     if fresh {
-        super::routes::lanes::reset_lane_orchestrated(state, addr).await
+        super::lane_lifecycle::reset_lane_orchestrated(state, addr).await
     } else {
-        super::routes::lanes::restart_lane_orchestrated(state, addr).await
+        super::lane_lifecycle::restart_lane_orchestrated(state, addr).await
     }
 }
 
@@ -308,7 +308,7 @@ pub(crate) async fn handle_lane_session_changed(
             }
         }
     }
-    super::routes::lanes::emit_lane_update(state, &addr).await;
+    super::lane_lifecycle::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({ "status": "ok", "lane": lane }))
 }
 
@@ -320,9 +320,9 @@ pub(crate) async fn handle_lane_create(
     state: &Arc<AppState>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let req: super::routes::lanes::CreateLaneReq = serde_json::from_value(payload)
+    let req: super::lane_lifecycle::CreateLaneReq = serde_json::from_value(payload)
         .map_err(|e| format!("lane_create: invalid payload: {}", e))?;
-    let info = super::routes::lanes::create_sub_orchestrated(state, req).await?;
+    let info = super::lane_lifecycle::create_sub_orchestrated(state, req).await?;
     serde_json::to_value(&info).map_err(|e| format!("lane_create: LaneInfo serialize 失敗: {}", e))
 }
 
@@ -411,7 +411,7 @@ pub(crate) async fn handle_lane_order_set(
 /// lanes portless (doc 27 §3.4.5): Lane list。 旧 SP HTTP `GET /api/lanes` を repo-proxy ask に
 /// 移管。 core の `build_lanes_snapshot` を呼び `{lanes:[...]}` で wrap (旧 HTTP `LanesResponse` 互換)。
 pub(crate) async fn handle_lanes_list(state: &Arc<AppState>) -> Result<serde_json::Value, String> {
-    let lanes = super::routes::lanes::build_lanes_snapshot(state).await;
+    let lanes = super::lane_lifecycle::build_lanes_snapshot(state).await;
     // doc 46 P5: slot は lane に 1 枚ではなく session ごとになった。`vp lane ls --detail` から
     // 枚数が見えるよう、lane ごとの slot session key を snapshot に添える（LaneInfo 自体には
     // 足さない — descriptor は帳簿の永続形で、slot は in-memory な runtime 事実だから。

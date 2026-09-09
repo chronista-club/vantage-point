@@ -1,13 +1,17 @@
-//! 委譲 (delegation) の daemon 中央 store HTTP handler（doc 28 §4 / §6）。
+//! 委譲 (delegation) の daemon 中央 store への method dispatch（doc 28 §4 / §6）。
 //!
-//! repo の `process/delegation.rs` が `daemon_wire::call("/api/delegation/*")` で叩く先。
+//! repo の `repo/delegation.rs` が `daemon_wire::call` で叩く先（daemon の "wire" channel の
+//! `delegation/*` prefix → [`dispatch_delegation`]。旧 HTTP `/api/delegation/*` は doc 45 段 4 で撤去済）。
+//! 7b（doc 61）で `repo/routes/delegation.rs` から移設。
 //! store（`DelegationStore`、SurrealDB backing）への CRUD/遷移のみを担う — wake（誰を起こすか）
 //! は repo-local の責務（store は data + transition、wake は actions として分離）。
 //!
-//! - `POST /api/delegation/create`         — delegate: record 作成（state=active）
-//! - `POST /api/delegation/complete`       — complete: Outcome 遷移、更新後 record を返す
-//! - `POST /api/delegation/respond`        — respond: Active へ戻す、更新後 record を返す
-//! - `POST /api/delegation/mark_delivered` — wake の woke 結果を記録（B/C 用）
+//! - `delegation/create`         — delegate: record 作成（state=active）
+//! - `delegation/complete`       — complete: Outcome 遷移、更新後 record を返す
+//! - `delegation/respond`        — respond: Active へ戻す、更新後 record を返す
+//! - `delegation/mark_delivered` — wake の woke 結果を記録（B/C 用）
+//! - `delegation/poll`           — pull-hook: agent 関与の undelivered 委譲を返す（`vp wire hook-check`）
+//! - `delegation/list`           — 観測: 全委譲を created_at 昇順で返す read-only（Canvas 表示用）
 //!
 //! 未知 id は `{ "error": ... }` を返す（`daemon_wire::call` が Err に変換 → repo handler が Err）。
 
