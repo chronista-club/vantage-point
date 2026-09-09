@@ -99,7 +99,7 @@ describe('foldInto — ConversationEvent → ChatState 畳み込み (doc 33 C2)'
   it('tool_call → tool_call_update が id 一致で done 化する', () => {
     const s = fold([
       { kind: 'tool_call', id: 'tu-1', name: 'Bash', input: { command: 'ls' } },
-      { kind: 'tool_call_update', tool_use_id: 'tu-1', content: 'file.txt' },
+      { kind: 'tool_call_update', tool_use_id: 'tu-1', content: 'file.txt', is_error: false },
     ])
     expect(s.items).toEqual([
       {
@@ -129,7 +129,7 @@ describe('foldInto — ConversationEvent → ChatState 畳み込み (doc 33 C2)'
   it('id 不一致の update は既存 tool を触らない', () => {
     const s = fold([
       { kind: 'tool_call', id: 'tu-1', name: 'Read', input: {} },
-      { kind: 'tool_call_update', tool_use_id: 'other', content: 'x' },
+      { kind: 'tool_call_update', tool_use_id: 'other', content: 'x', is_error: false },
     ])
     expect(s.items[0]).toEqual({
       kind: 'tool',
@@ -210,7 +210,7 @@ describe('foldInto — ConversationEvent → ChatState 畳み込み (doc 33 C2)'
       {
         kind: 'question',
         request_id: 'q1',
-        questions: [{ question: 'どっち?', header: 'Q', options: [] }],
+        questions: [{ question: 'どっち?', header: 'Q', options: [], multi_select: false }],
       },
     ])
     expect(lampOf(deriveStatus(asking))).toBe('need')
@@ -255,7 +255,7 @@ describe('foldInto — ConversationEvent → ChatState 畳み込み (doc 33 C2)'
       {
         kind: 'question',
         request_id: 'q1',
-        questions: [{ question: 'resize はどちらで束ねますか？', header: 'Q', options: [] }],
+        questions: [{ question: 'resize はどちらで束ねますか？', header: 'Q', options: [], multi_select: false }],
       },
     ])
     asking.nowLine = '古い自己報告'
@@ -373,7 +373,7 @@ describe('foldInto — ConversationEvent → ChatState 畳み込み (doc 33 C2)'
 
   it('回答後の message_chunk は新 assistant バブルを立てる（質問→継続の流れ）', () => {
     const s = fold([
-      { kind: 'question', request_id: 'r1', questions: [{ question: 'Q?', header: 'H', options: [{ label: 'A' }] }] },
+      { kind: 'question', request_id: 'r1', questions: [{ question: 'Q?', header: 'H', options: [{ label: 'A', description: '' }], multi_select: false }] },
       { kind: 'message_chunk', text: '続き' },
     ])
     expect(s.items.map((i) => i.kind)).toEqual(['prompt', 'assistant'])
@@ -401,7 +401,7 @@ describe('foldInto — ConversationEvent → ChatState 畳み込み (doc 33 C2)'
       { kind: 'session_init', session_id: 's', model: 'm' },
       { kind: 'thought_chunk', text: 'plan it' },
       { kind: 'tool_call', id: 't1', name: 'Read', input: {} },
-      { kind: 'tool_call_update', tool_use_id: 't1', content: 'lines' },
+      { kind: 'tool_call_update', tool_use_id: 't1', content: 'lines', is_error: false },
       { kind: 'message_chunk', text: 'done' },
       { kind: 'turn_completed', session_id: 's' },
     ])
@@ -416,7 +416,7 @@ describe('transcript replay — gui replay-on-attach', () => {
     { kind: 'replay_start' },
     { kind: 'user_message', text: '直して' },
     { kind: 'tool_call', id: 't1', name: 'Edit', input: {} },
-    { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok' },
+    { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok', is_error: false },
     { kind: 'message_chunk', text: '直しました' },
   ]
 
@@ -492,7 +492,7 @@ describe('replay が in-flight stream の途中に着地した場合', () => {
     const s = emptyChatState()
     foldInto(s, { kind: 'user_message', text: '直して' })
     foldInto(s, { kind: 'tool_call', id: 't1', name: 'Edit', input: {} })
-    foldInto(s, { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok' })
+    foldInto(s, { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok', is_error: false })
     foldInto(s, { kind: 'message_chunk', text: '直しま' })
     return s
   }
@@ -503,7 +503,7 @@ describe('replay が in-flight stream の途中に着地した場合', () => {
     // --- transcript（commit 済み） ---
     { kind: 'user_message', text: '直して' },
     { kind: 'tool_call', id: 't1', name: 'Edit', input: {} },
-    { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok' },
+    { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok', is_error: false },
     // --- in-flight tail（disk にまだ無い増分） ---
     { kind: 'message_chunk', text: '直しま' },
   ]
@@ -573,7 +573,7 @@ describe('replay が in-flight stream の途中に着地した場合', () => {
       { kind: 'user_message', text: '直して' },
       { kind: 'tool_call', id: 't1', name: 'Edit', input: {} },
     ])
-    foldInto(s, { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok' })
+    foldInto(s, { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok', is_error: false })
 
     expect(s.items[1]).toEqual({
       kind: 'tool',
@@ -591,7 +591,7 @@ describe('replay が in-flight stream の途中に着地した場合', () => {
       { kind: 'replay_start' },
       { kind: 'message_chunk', text: '本文' },
       // 結び先の tool_call が無い update（起きたら backend のバグ）
-      { kind: 'tool_call_update', tool_use_id: 'ghost', content: 'x' },
+      { kind: 'tool_call_update', tool_use_id: 'ghost', content: 'x', is_error: false },
     ])
     expect(s.items).toEqual([{ kind: 'assistant', text: '本文' }])
   })
@@ -741,7 +741,7 @@ describe('tool 詳細の保持 — accordion の個別展開の表示源（reduc
   it('tool_call_update の content を result として保持する', () => {
     const s = fold([
       { kind: 'tool_call', id: 't1', name: 'Bash', input: { command: 'ls' } },
-      { kind: 'tool_call_update', tool_use_id: 't1', content: 'a.txt\nb.txt' },
+      { kind: 'tool_call_update', tool_use_id: 't1', content: 'a.txt\nb.txt', is_error: false },
     ])
     const t = s.items[0]
     expect(t.kind === 'tool' && t.result).toBe('a.txt\nb.txt')
@@ -760,9 +760,9 @@ describe('tool 詳細の保持 — accordion の個別展開の表示源（reduc
   it('連続同名 tool でも各件が別々の input/result を持つ（group を開いて個別に掘れる）', () => {
     const s = fold([
       { kind: 'tool_call', id: 'a', name: 'Bash', input: { command: 'one' } },
-      { kind: 'tool_call_update', tool_use_id: 'a', content: 'r1' },
+      { kind: 'tool_call_update', tool_use_id: 'a', content: 'r1', is_error: false },
       { kind: 'tool_call', id: 'b', name: 'Bash', input: { command: 'two' } },
-      { kind: 'tool_call_update', tool_use_id: 'b', content: 'r2' },
+      { kind: 'tool_call_update', tool_use_id: 'b', content: 'r2', is_error: false },
     ])
     const tools = s.items.filter((i) => i.kind === 'tool')
     expect(tools).toHaveLength(2)
@@ -781,7 +781,7 @@ describe('subagent_message — Agent の子の発話を親と取り違えない�
     { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'prompt', text: '6x7 は?' },
     { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'thinking', text: '掛け算する' },
     { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'text', text: '42' },
-    { kind: 'tool_call_update', tool_use_id: 'toolu_1', content: '42' },
+    { kind: 'tool_call_update', tool_use_id: 'toolu_1', content: '42', is_error: false },
     { kind: 'message_chunk', text: '答えは 42 です' },
   ]
 
@@ -1210,7 +1210,7 @@ describe('foldInto — 受信時刻の刻印 (doc 57 §4.2)', () => {
   it('live の tool_call / update は at / doneAt を刻む', () => {
     const s = fold([
       { kind: 'tool_call', id: 't1', name: 'Bash', input: {} },
-      { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok' },
+      { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok', is_error: false },
     ] as ConversationEvent[])
     const t = s.items[0] as { at?: number; doneAt?: number }
     expect(typeof t.at).toBe('number')
@@ -1220,7 +1220,7 @@ describe('foldInto — 受信時刻の刻印 (doc 57 §4.2)', () => {
     const s = fold([
       { kind: 'replay_start' },
       { kind: 'tool_call', id: 't1', name: 'Bash', input: {} },
-      { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok' },
+      { kind: 'tool_call_update', tool_use_id: 't1', content: 'ok', is_error: false },
       { kind: 'thought_chunk', text: '考え' },
     ] as ConversationEvent[])
     const t = s.items.find((i) => i.kind === 'tool') as { at?: number; doneAt?: number }
