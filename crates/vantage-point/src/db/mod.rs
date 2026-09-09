@@ -21,7 +21,7 @@
 //! ## table ごとの永続操作は domain module へ移す途中（doc 62）
 //!
 //! 分離済みは `schema`（table 定義と起動時 migration）/ `board`（`pane_contents`）/
-//! `lane`（descriptor・lifecycle・presence）。process / repos / 帳簿 / service_status の CRUD は
+//! `lane`（descriptor・lifecycle・presence）。process / repos / node / 帳簿 / service_status の CRUD は
 //! **まだこの file に同居している**（PR-4〜5 で移設）。移設先はどれも `impl VpDb` を
 //! 書き足すだけなので、[`VpDb`] は 1 型・接続も 1 本のまま。
 //! 設計は [doc 62](../../../../docs/design/62-db-module-layout.md)。

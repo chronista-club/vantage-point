@@ -7,7 +7,7 @@
 //! |---|---|---|
 //! | `lane` | descriptor。repo push の cache ではなく **daemon-canonical な durable truth** | doc 24 §10 Phase 2 |
 //! | `lane_lifecycle` | `provisioning` / `ready` / `dead` の **軽量 WAL**。descriptor と別 table なので repo push に clobber されない | doc 24 §4.6 |
-//! | `active_lane` | repo ごとの注視（presence、Model Q） | doc 44 |
+//! | `active_lane` | repo ごとの注視（presence、Model Q） | doc 24 §4.2（Model Q）/ doc 44 D5（注視） |
 //!
 //! ## 触ってはいけないもの
 //!
