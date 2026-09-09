@@ -1,10 +1,10 @@
 //! ConversationEvent の Rust → TS 契約 fixture（棚卸し 項目 8 / 8-1）。
 //!
 //! SSOT は `crates/vantage-point/src/conversation/event.rs`。vp-app の Rust は event を
-//! `serde_json::Value` で素通しし、webview `console.ts` が型を**手書きで mirror** している
-//! （ts-rs 経路が無い）。ここでは **Rust が実際に serialize する形（送信形）** を全 variant について
+//! `serde_json::Value` で素通しし、TS 型は 8-2 で ts-rs が `webview/src/generated/ConversationEvent.ts`
+//! に生成する。ここでは **Rust が実際に serialize する形（送信形）** を全 variant について
 //! TS の literal file に書き出し、webview の `tsc --noEmit`（`satisfies`）と vitest が
-//! mirror との一致を検査する。
+//! 生成型との一致（= ts-rs 注釈の付け忘れ・付け間違い）を検査する。
 //!
 //! - 送信形 = `skip_serializing_if` で省略される optional は **無い / 有る** の両方を載せる。
 //!   `#[serde(default)]` だけの field（`is_error` / `multi_select` / `description`）は
@@ -243,7 +243,7 @@ fn render() -> String {
     out.push_str(
         "// 再生成は `cargo test -p vantage-point --test conversation_event_fixtures`。\n",
     );
-    out.push_str("// Rust が実際に serialize した ConversationEvent（送信形）。`satisfies` で TS の mirror 型と\n");
+    out.push_str("// Rust が実際に serialize した ConversationEvent（送信形）。`satisfies` で ts-rs 生成型と\n");
     out.push_str("// 突き合わせる（tsc --noEmit）= field 名 / kind / 型 / 「TS が Rust より厳しい」向きの必須性を型検査で止める。\n");
     out.push_str("// 「TS が緩い」向き（Rust が常に出す field を TS が ? にする）は型では通るので vitest 側で固定する。\n");
     out.push_str("import type { EngineConversationEvent } from '../../console'\n\n");

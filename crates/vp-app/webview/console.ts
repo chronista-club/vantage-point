@@ -25,105 +25,26 @@ import { emitSessionNow, isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session
 export type SessionMode = 'tui' | 'gui'
 
 // ---------------------------------------------------------------------------
-// ConversationEvent 型 — SSOT は Rust `crates/vantage-point/src/conversation/event.rs`（PR1 で凍結）。
-// vp-app Rust はこれを serde_json::Value で素通しするため ts-rs 経路が無く、手書きで mirror する。
-// 契約は `src/generated/ConversationEventFixtures.ts`（Rust が実際に serialize した全 variant の
-// 送信形、`cargo test -p vantage-point --test conversation_event_fixtures` で再生成）が
-// `satisfies EngineConversationEvent` で tsc に検査させる = event.rs を変えて fixture を
-// 再生成すると、field 名 / kind / 型 / TS 側が厳しい向きの必須性のずれで `bun run typecheck` が落ちる。
-// TS が緩い向き（Rust が常に出す field を `?` にする）は型では通らないので vitest が固定する（棚卸し 項目 8）。
-//
-// 必須性は **Rust の送信形**に合わせる: `skip_serializing_if` の field だけ `?`、
-// `#[serde(default)]` だけの field（is_error / multi_select / description）は常に serialize されるので必須。
+// ConversationEvent 型 — SSOT は Rust `crates/vantage-point/src/conversation/event.rs`。
+// 8-2（棚卸し 項目 8）で ts-rs が `src/generated/ConversationEvent.ts` に生成する形になり、
+// 手書きの mirror は無くなった（再生成: `cargo test -p vantage-point --lib conversation::event::ts_export`）。
+// 契約の検査は `src/generated/ConversationEventFixtures.ts`（Rust の送信形）が `satisfies` で
+// 生成型に当たる + vitest（`conversation-event-contract.test.ts`）。
 // ---------------------------------------------------------------------------
 
-export type PlanEntry = {
-  content: string
-  status: 'pending' | 'in_progress' | 'completed' | string
-  active_form?: string
-}
+import type { ConversationEvent as EngineConversationEvent } from './src/generated/ConversationEvent'
+import type { PlanEntry } from './src/generated/PlanEntry'
+import type { QuestionOption } from './src/generated/QuestionOption'
+import type { QuestionSpec } from './src/generated/QuestionSpec'
+import type { SubagentRole } from './src/generated/SubagentRole'
 
-/** AskUserQuestion の 1 選択肢（doc 35 §3）。description は Rust 側 `#[serde(default)]` = 常に出る（無ければ空文字）。 */
-export type QuestionOption = {
-  label: string
-  description: string
-}
-
-/** AskUserQuestion の 1 質問（doc 35 §3）。multiSelect は複数選択 + 確定ボタン。 */
-export type QuestionSpec = {
-  question: string
-  header: string
-  options: QuestionOption[]
-  multi_select: boolean
-}
+export type { EngineConversationEvent, PlanEntry, QuestionOption, QuestionSpec, SubagentRole }
 
 /** vp-app local の event（engine は出さない、Rust の ConversationEvent にも無い）。
  *  `conversation_submission.rs` が生成し `on_conversation.rs` が同じ経路に横入れする。 */
 export type LocalConversationEvent =
   /** Local GUI request acknowledgement; never persisted or emitted by an engine. */
   { kind: 'submit_result'; request_id: string; error: string | null }
-
-/** Rust `ConversationEvent`（16 variant）の mirror。engine 由来のものだけ。 */
-export type EngineConversationEvent =
-  | {
-      kind: 'session_init'
-      session_id: string
-      model?: string
-      permission_mode?: string
-      cwd?: string
-      tools?: string[]
-      mcp_servers?: string[]
-      slash_commands?: string[]
-      /** slash command 名 → 短い説明。⚠️ **候補の源ではない**（引けたものだけ添える装飾）。 */
-      command_docs?: Record<string, string>
-    }
-  /** transcript replay の開始マーカー。受信側は会話表示 + buffer をクリアしてから後続を畳む
-   *  （replay を冪等にする = reconnect / demand 再発火で会話が二重化しない）。 */
-  | { kind: 'replay_start' }
-  /** transcript replay の終端マーカー（replay_start と対、replay 列の最後に 1 回）。
-   *  in_flight = 直後に本当に生成中の turn があるか。GUI はこれで streaming を確定する
-   *  （過去発話の message_chunk が立てた streaming を打ち消す）。 */
-  | { kind: 'replay_end'; in_flight: boolean }
-  /** user 自身の過去発話（transcript replay 専用。live では ChatView が submit 時に足す）。 */
-  | { kind: 'user_message'; text: string }
-  | { kind: 'message_chunk'; text: string }
-  | { kind: 'thought_chunk'; text: string }
-  | { kind: 'tool_call'; id: string; name: string; input: unknown }
-  | { kind: 'tool_call_update'; tool_use_id: string; content: string; is_error: boolean }
-  /**
-   * subagent（Agent tool が回した子）の発話。engine が --forward-subagent-text 付きの時だけ来る。
-   * parent_tool_use_id は親の tool_call.id と一致するので、GUI は該当 tool 行の中に入れ子で描く。
-   * ⚠️ delta ではなく「block 1 個ぶんの完成テキスト」（subagent は snapshot でしか流れてこない）。
-   */
-  | {
-      kind: 'subagent_message'
-      parent_tool_use_id: string
-      role: 'prompt' | 'thinking' | 'text'
-      text: string
-    }
-  | { kind: 'plan'; entries: PlanEntry[] }
-  /** context_tokens/window = tui statusline 相当の context ゲージ（省略時 GUI は前値を保つ）。 */
-  | {
-      kind: 'turn_completed'
-      session_id: string
-      cost_usd?: number
-      /** Rust は u64。JSON では number で運び、TS も number で受ける（2^53 未満の運用値）。 */
-      context_tokens?: number
-      context_window?: number
-    }
-  /** session の「今なにを」自己申告（doc 51 §1 A3b — `vp now` CLI 発、daemon が注入）。
-   *  GUI は now-line（名札直下の動的一行）に出し、turn_completed で消す。 */
-  | { kind: 'now_line'; text: string }
-  | { kind: 'error'; message: string }
-  /** engine プロセスの終了（途絶）= 回復可能な休眠。error（本物の異常）と別語彙で、
-   *  GUI は「💤 休眠（送信で起動）」と穏当に出す。次の submit / reconnect demand で復活する。 */
-  | { kind: 'engine_exited'; message: string }
-  /** clarifying question（AskUserQuestion の can_use_tool 横取り、doc 35 PR1）。
-   *  GUI は PromptCard で選択肢を描き、回答を conversation:respond {request_id, answers} で戻す。 */
-  | { kind: 'question'; request_id: string; questions: QuestionSpec[] }
-  /** tool 承認要求（permission-mode=default 時の can_use_tool、doc 35 PR3）。
-   *  GUI は PromptCard で allow/deny を描き、conversation:respond {request_id, behavior} で戻す。 */
-  | { kind: 'permission_request'; request_id: string; tool_name: string; input: unknown }
 
 /** console / chat が受ける event = engine 由来 + vp-app local。 */
 export type ConversationEvent = EngineConversationEvent | LocalConversationEvent

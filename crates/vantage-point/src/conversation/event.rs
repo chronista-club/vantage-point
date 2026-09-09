@@ -8,12 +8,15 @@
 //! 由来のマッピングは design doc 32 §4 / §10（Step 0 実測スキーマ）を参照。
 
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use ts_rs::TS;
 
 /// GUI へ配信する構造化イベント（1 engine turn = 複数 ConversationEvent の列）。
 ///
 /// serde 表現は `{"kind":"message_chunk","text":"..."}` の形（`tag = "kind"`）。
 /// vp-app 側はこの `kind` で分岐して描画する。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConversationEvent {
     /// セッション初期化。engine プロセス起動直後に 1 回。
@@ -21,10 +24,13 @@ pub enum ConversationEvent {
     SessionInit {
         session_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(test, ts(optional))]
         model: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(test, ts(optional))]
         permission_mode: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(test, ts(optional))]
         cwd: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tools: Vec<String>,
@@ -79,6 +85,7 @@ pub enum ConversationEvent {
     ToolCall {
         id: String,
         name: String,
+        #[cfg_attr(test, ts(type = "unknown"))]
         input: serde_json::Value,
     },
 
@@ -122,12 +129,15 @@ pub enum ConversationEvent {
     TurnCompleted {
         session_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(test, ts(optional))]
         cost_usd: Option<f64>,
         /// 現在の会話が占める context tokens（ゲージの分子）。
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(test, ts(optional, type = "number"))]
         context_tokens: Option<u64>,
         /// モデルの context window 総量（ゲージの分母）。
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(test, ts(optional, type = "number"))]
         context_window: Option<u64>,
     },
 
@@ -178,6 +188,7 @@ pub enum ConversationEvent {
         /// 承認対象 tool 名（Write / Bash / …）。
         tool_name: String,
         /// tool の原 input（GUI が要約表示、allow 時は verbatim echo）。
+        #[cfg_attr(test, ts(type = "unknown"))]
         input: serde_json::Value,
     },
 }
@@ -186,6 +197,7 @@ pub enum ConversationEvent {
 ///
 /// engine の 1 本の stream に親子が混在するため、GUI が「誰が何を言ったか」を復元するのに要る。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 #[serde(rename_all = "snake_case")]
 pub enum SubagentRole {
     /// subagent に与えられた指示（親の `Agent` tool input の `prompt` と同内容）。
@@ -198,11 +210,17 @@ pub enum SubagentRole {
 
 /// plan の 1 項目（TodoWrite の todo に対応）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct PlanEntry {
     pub content: String,
     /// "pending" | "in_progress" | "completed"（claude の status をそのまま運ぶ）。
     pub status: String,
+    /// ⚠️ `serde(default)` + `skip_serializing_if` の `Option` は ts-rs が `foo?: T | null` にするので
+    /// `ts(optional)` が無くても 8-1 の fixture gate（`satisfies`）を通ってしまう（省略可能な field は
+    /// 無くても error にならない）。この組み合わせの `Option` field を足す時は必ず `ts(optional)` を付ける。
+    /// `skip_serializing_if` だけの `Option`（他 6 field）は `foo: T | null` の必須になるので gate が拾う。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub active_form: Option<String>,
 }
 
@@ -211,6 +229,7 @@ pub struct PlanEntry {
 /// 由来は claude の逆方向 `can_use_tool` input（`{questions:[{question,header,options,multiSelect}]}`、
 /// camelCase）。[`super::host`] の control frame 翻訳が本型（GUI 語彙 = snake_case）へ写す。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct QuestionSpec {
     /// 質問文（answers map のキーにもなる）。
     pub question: String,
@@ -225,10 +244,30 @@ pub struct QuestionSpec {
 
 /// 質問の 1 選択肢。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct QuestionOption {
     /// 回答値（answers に詰まる label）。
     pub label: String,
     /// 補足説明（無い場合は空）。
     #[serde(default)]
     pub description: String,
+}
+
+#[cfg(test)]
+mod ts_export {
+    use super::ConversationEvent;
+    use ts_rs::TS;
+
+    /// 棚卸し 項目 8 / 8-2: `ConversationEvent` と nested 型の TS 型を
+    /// `crates/vp-app/webview/src/generated/` に export する（doc 33 §5 の未消化 TODO）。
+    /// 出力先は workspace `.cargo/config.toml` の `TS_RS_EXPORT_DIR`（= crates/vp-app）相対。
+    /// 生成物は commit し、CI の `git diff --exit-code` が drift を検出する。
+    #[test]
+    fn export_conversation_event_ts() {
+        <ConversationEvent as TS>::export_all(&ts_rs::Config::from_env())
+            .expect("ConversationEvent の TS export 失敗");
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../vp-app/webview/src/generated/ConversationEvent.ts");
+        assert!(out.exists(), "生成物が無い: {}", out.display());
+    }
 }

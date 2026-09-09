@@ -108,7 +108,7 @@
 ## 5. 型の契約
 
 - `EchoesEvent` / `ConsoleMode` に **ts-rs derive**（repo 既存の generated/ 経路に乗せる）→ `webview/src/generated/EchoesEvent.ts`。ChatView は typed switch で描画（stringly-typed の増殖を止める）
-- **実際の着地（2026-09-09 訂正、棚卸し 項目 8）**: ts-rs derive は入っておらず、`console.ts` が `ConversationEvent` を手書きで mirror している（C1 の ✅ はこの点で実装と乖離していた）。8-1 で契約を fixture で担保: `tests/conversation_event_fixtures.rs` が Rust の送信形（全 16 variant）を `webview/src/generated/ConversationEventFixtures.ts` に書き、`satisfies EngineConversationEvent` を tsc が検査、vitest が kind の網羅と shape を固定。GUI local の `submit_result` は `LocalConversationEvent` として分離。ts-rs 生成（doc 61 §6 8-2）は別 PR。
+- **実際の着地（2026-09-09 訂正、棚卸し 項目 8）**: C1 時点では ts-rs derive は入っておらず、`console.ts` が `ConversationEvent` を手書きで mirror していた（C1 の ✅ はこの点で実装と乖離していた）。8-1 で契約を fixture で担保: `tests/conversation_event_fixtures.rs` が Rust の送信形（全 16 variant）を `webview/src/generated/ConversationEventFixtures.ts` に書き、`satisfies EngineConversationEvent` を tsc が検査、vitest が kind の網羅と shape を固定。GUI local の `submit_result` は `LocalConversationEvent` として分離。8-2（同日）で ts-rs を vantage-point の dev-dependency に入れ、`ConversationEvent` / `PlanEntry` / `QuestionSpec` / `QuestionOption` / `SubagentRole` を `webview/src/generated/` に生成。`console.ts` の手書き mirror は消え、`LocalConversationEvent`（`submit_result`）との union だけを持つ。u64 の 2 field は `#[ts(type = "number")]`。
 
 ## 6. 非目標（over-scope 防止、各理由付き）
 
@@ -125,7 +125,7 @@
 
 | PR | 内容 | Exit |
 |---|---|---|
-| ✅ **C1 — Console 骨格（交通整理本体）** | §2 SP engine slot + console_mode + `console_set_mode` + submit ガード / §3 wire + reconcile 安全 / §4 vpConsole facade + ring buffer（§5 ts-rs は未実装 → 項目 8 で fixture gate、生成は 8-2）| 実機: tui⇄chat 切替で同一会話が継続（`vp lane capture` と `vpConsole.peek` で両モード確認）。二重エンジンが**作れない** |
+| ✅ **C1 — Console 骨格（交通整理本体）** | §2 SP engine slot + console_mode + `console_set_mode` + submit ガード / §3 wire + reconcile 安全 / §4 vpConsole facade + ring buffer（§5 ts-rs は項目 8 の 8-1 fixture gate + 8-2 生成で 2026-09-09 に着地）| 実機: tui⇄chat 切替で同一会話が継続（`vp lane capture` と `vpConsole.peek` で両モード確認）。二重エンジンが**作れない** |
 | ✅ **C2 — ChatView（旧 PR2b）** | SolidJS ChatView（MVP a: streaming markdown + thinking 折りたたみ + tool 1 行 + e: plan ウィジェット + motion）+ **最小 Act toggle**（explicit 切替に必須。**root = conductor の Console 先行**、2026-07-09 user 要件。performer への露出と正式な切替 UX は C4） | 実会話 1 本を GUI だけで完走 |
 | C3（旧 PR3） | 事後 diff カード | doc 32 §8 のまま |
 | C4（旧 PR4） | 画像・@-mention + 正式切替 UX | doc 32 §8 のまま |

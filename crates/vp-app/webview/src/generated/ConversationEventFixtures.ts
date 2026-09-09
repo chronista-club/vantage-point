@@ -1,6 +1,6 @@
 // 生成物 — 編集しない。SSOT は crates/vantage-point/src/conversation/event.rs、
 // 再生成は `cargo test -p vantage-point --test conversation_event_fixtures`。
-// Rust が実際に serialize した ConversationEvent（送信形）。`satisfies` で TS の mirror 型と
+// Rust が実際に serialize した ConversationEvent（送信形）。`satisfies` で ts-rs 生成型と
 // 突き合わせる（tsc --noEmit）= field 名 / kind / 型 / 「TS が Rust より厳しい」向きの必須性を型検査で止める。
 // 「TS が緩い」向き（Rust が常に出す field を TS が ? にする）は型では通るので vitest 側で固定する。
 import type { EngineConversationEvent } from '../../console'
