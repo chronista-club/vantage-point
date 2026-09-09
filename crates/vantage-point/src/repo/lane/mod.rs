@@ -8,11 +8,15 @@
 //!
 //! 依存 rule: 値（address / info）← 何も呼ばない / enrich → info + registry +
 //! engine catalog / pool → 値 + registry + engine / reconcile → pool / lifecycle → pool +
-//! reconcile + enrich / ops → lifecycle + pool。`crate::lane` → `repo::lane` の **code 依存は 0 本**（9-1d 達成。`LaneId` の家を `crate::lane::lane_id` に移し、
-//! `ROOT_LANE_NAME` は定義元の `vp_paths` を直参照）。doc link は残る（`lane_id` が「operative key は
-//! `LaneAddress`」と説明する等）。
+//! reconcile + enrich / ops → lifecycle + pool。
+//!
+//! `crate::lane` → `repo::lane` の **code 依存は 0 本**（9-1d 達成 — `LaneId` の家を
+//! `crate::lane::lane_id` に移し、`ROOT_LANE_NAME` は定義元の `vp_paths` を直参照）。doc link は
+//! 残る（`lane_id` が「operative key は `LaneAddress`」と説明する等）。なお `crate::lane` から
+//! `crate::host` / `crate::conversation` / `crate::daemon::pty_slot` への辺は別軸で残っている。
 
-/// lane の名前（値型）: LaneId / LaneAddress / ROOT_LANE_NAME
+/// lane の名前（値型）: LaneAddress / ROOT_LANE_NAME / LANE_SEGMENT + parse_address
+/// （`LaneId` は identity の SSOT がある `crate::lane::lane_id`）
 pub(crate) mod address;
 /// LaneCmd — spawn actor に渡す Cmd 型
 pub(crate) mod cmd;
