@@ -150,9 +150,6 @@ pub(crate) async fn start_repo(
 
     let hub = Hub::new();
 
-    // Terminal チャネル認証トークンを生成
-    let terminal_token = crate::discovery::generate_terminal_token();
-
     // TopicRouter 初期化 + Hub → TopicRouter ブリッジ（shutdown token で停止可能）。
     // 養子縁組（adopted_router = Some）の場合は購読者付きの placeholder をそのまま使う
     let topic_router = adopted_router.unwrap_or_else(|| Arc::new(TopicRouter::new()));
@@ -213,23 +210,12 @@ pub(crate) async fn start_repo(
         repo_name: repo_name_for_remote.clone(),
         // VP-159 PR-4b: ActorRegistry を move (= lane-spawn は AppState 構築後に追加)
         actor_registry: Arc::new(RwLock::new(actor_registry)),
-        daemon: None,
-        update: None,
-        // repo mode は hub federation を持たない（daemon のみ）→ Disabled / 空 / Unknown のまま。
-        hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
-        hub_nodes: crate::daemon::hub_client::HubNodesCache::new(),
-        hub_auth: crate::daemon::hub_client::HubAuthStatus::new(),
-        // ACTIONS の poller も daemon のみ（repo mode は空 + rev 0 = 未取得のまま）。
-        creo_actions: crate::creo::client::CreoActionsCache::new(),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
-        terminal_token: terminal_token.clone(),
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::repo::process_runner::ProcessRegistry::new(),
         )),
         topic_router,
-        canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-        started_at: chrono::Utc::now().to_rfc3339(),
         vpdb: vpdb.clone(),
         // wiremsg R2-a: repo は wire store を持たない (daemon に中央化、 handler は proxy)
         wiremsg_store: None,
@@ -255,9 +241,6 @@ pub(crate) async fn start_repo(
         // daemon の集約 view を更新する経路。 将来 Pane / Agent 等の event も同 bus に variant
         // 追加で乗る。
         system_event_tx: tokio::sync::broadcast::channel::<super::lane::SystemEvent>(64).0,
-        // Phase A4-2b: Repo scope の Agent pool (board/runner ほか) — skeleton
-        // PR-α-1 (VP-111): repo モードでは MachineCapabilities を持たない (daemon mode 専用)
-        machine_capabilities: None,
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
         // repo mode は delegation store を持たない (daemon 中央 store に proxy する)。
         delegation_store: None,
@@ -571,13 +554,12 @@ pub(crate) async fn shutdown_repo(state: &Arc<AppState>) {
 /// `run_daemon` から関数として切り出してあるのは、**route 登録そのものをテストで固定する**ため
 /// （撤去の巻き添えで health / shutdown を落とすと、診断手段と緊急停止を同時に失う）。
 ///
-/// 棚卸し 9-2（doc 63 §5）: state は 2 本ある。`/api/update/*`（PR-2a）と `/api/shutdown`
-/// （PR-2b）は `Arc<DaemonState>`、`/api/health` はまだ `Arc<AppState>`（PR-2c で移す）。
-/// `Router<S>::with_state` が `Router<()>` を返すので、群ごとに state を確定させてから
-/// `merge` で合流し、**CORS は合流後に 1 回**掛ける（片方だけに掛けると、もう片方の
-/// route が `Access-Control-Allow-Origin` を返さなくなる — `daemon_router_applies_cors_to_both_state_groups`）。
-fn build_daemon_router(state: Arc<AppState>, daemon_state: Arc<DaemonState>) -> Router {
-    let repo_state_routes = Router::new()
+/// 棚卸し 9-2（doc 63 §5）: state は `Arc<DaemonState>` の 1 本（PR-2a〜2c で `/api/update/*` →
+/// `/api/shutdown` → `/api/health` の順に載せ替えた。PR-2a / 2b の間は `AppState` 群と
+/// `Router::merge` で合流させていたが、PR-2c で `AppState` 群が空になり merge も消えた）。
+/// CORS は全 route に 1 回掛ける（`daemon_router_applies_cors_to_every_route`）。
+fn build_daemon_router(daemon_state: Arc<DaemonState>) -> Router {
+    Router::new()
         .route("/api/health", get(health::health_handler))
         // L0 portless: `/ws/lanes` (repo_feed WS) は consumer 消滅で dead のため撤去。
         // doc 45 段 4: `/api/canvas/{switch_lane,layout}` は撤去。宛先の `canvas_senders` を
@@ -599,8 +581,6 @@ fn build_daemon_router(state: Arc<AppState>, daemon_state: Arc<DaemonState>) -> 
         // doc 44 P1 (fold-in): slot ベース port resolver (`/api/daemon/port_for`) と
         // slot 割当 route (set_slot / unassign_slot) は `vp port` 退役とともに撤去。
         // repo は portless（port=0）になり、slot が解決する listen port が存在しない。
-        .with_state(state);
-    let daemon_state_routes = Router::new()
         .route("/api/shutdown", post(health::shutdown_handler))
         // Update API routes (vp CLI)
         .route("/api/update/check", get(update::update_check))
@@ -614,10 +594,8 @@ fn build_daemon_router(state: Arc<AppState>, daemon_state: Arc<DaemonState>) -> 
             "/api/update/mac/rollback",
             post(update::update_mac_rollback),
         )
-        .with_state(daemon_state);
-    repo_state_routes
-        .merge(daemon_state_routes)
         .layer(CorsLayer::permissive())
+        .with_state(daemon_state)
 }
 
 /// daemon モードで Process サーバーを起動
@@ -766,7 +744,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         .as_ref()
         .map(|db| crate::capability::DelegationStore::new(std::sync::Arc::new(db.inner().clone())));
 
-    // chronista-hub federation の接続状態。run_hub_federation（writer）と AppState（= /api/health
+    // chronista-hub federation の接続状態。run_hub_federation（writer）と DaemonState（= /api/health
     // reader）で同一 instance を共有する（daemon mode のみ更新、初期 Disabled）。
     let hub_status = crate::daemon::hub_client::HubFederationStatus::new();
     // hub registry の available nodes cache も同 pattern で共有（writer = run_hub_federation の
@@ -778,9 +756,10 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // ACTIONS の cache も同 pattern で共有（writer = 下の 30s poller、reader = `/api/health` の
     // `actions` / `actions_rev` field。初期 = 空 + rev 0 = 未取得、doc 57 Phase 3）。
     let creo_actions = crate::creo::client::CreoActionsCache::new();
-    // 9-2 PR-1: daemon 役 AppState と DaemonState の**両方**に渡す部品はここで 1 度だけ作る。
-    // AppState の中で inline に new() すると DaemonState 側に同じ実体を渡す手段が無い
-    // （PR-3 で daemon 役 AppState が消えたら DaemonState だけが持つ）。
+    // 9-2 PR-1: DaemonState に渡す部品はここで 1 度だけ作る（AppState の中で inline に
+    // new() すると DaemonState 側に同じ実体を渡す手段が無い、が動機だった。PR-2c で hub × 3 /
+    // creo_actions / started_at は AppState から消え、actor_registry / wire_notifier /
+    // delivery_notify だけがまだ両方に渡る — PR-3 で daemon 役 AppState ごと消える）。
     // VP-159 PR-4b: daemon mode では空で構築 (= machine scope actor の register は後続 PR、
     // device registry の metadata register は dynamic routing vision 確定後)
     let actor_registry = Arc::new(RwLock::new(crate::capability::ActorRegistry::new()));
@@ -795,25 +774,16 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         replay_flights: crate::repo::state::ReplayFlights::default(),
         hub,
         shutdown_token: shutdown_token.clone(),
-        hub_status: hub_status.clone(),
-        hub_nodes: hub_nodes.clone(),
-        hub_auth: hub_auth.clone(),
-        creo_actions: creo_actions.clone(),
         repo_dir: String::new(),
         // R3: daemon mode は cross-process forward の対象外 (= 自 repo を持たない)
         repo_name: String::new(),
         actor_registry: actor_registry.clone(),
-        daemon: Some(daemon_cap.clone()),
-        update: Some(update_cap.clone()),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
-        terminal_token: "DAEMON_DISABLED".to_string(),
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::repo::process_runner::ProcessRegistry::new(),
         )),
         topic_router,
-        canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-        started_at: started_at.clone(),
         vpdb: vpdb.clone(), // Daemon モードでも DB 参照あり
         // Phase A ① / R1: Daemon モードでも wiremsg store を build (上で async build 済)
         wiremsg_store: wiremsg_store.clone(),
@@ -824,8 +794,6 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         lane_pool: Arc::new(RwLock::new(super::lane::LanePool::new())),
         // Phase 2 (Step E): system event central bus
         system_event_tx: tokio::sync::broadcast::channel::<super::lane::SystemEvent>(64).0,
-        // PR-α-1 (VP-111): machine 階層 Agent container (LSCM doc 12 §3 / §9)
-        machine_capabilities: Some(machine_capabilities.clone()),
         // S2: daemon mode は repo の per-lane pump を持たない (terminal pump は repo scope)。
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
         // 委譲 (delegation) の daemon 中央 store (doc 28 §6)。daemon mode のみ Some。
@@ -1012,11 +980,12 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         .write()
         .await
         .set_process_lifecycle_tx(daemon_state.process_lifecycle_tx.clone());
-    // HTTP router は 2 state を取るので assemble の後で組む（9-2 PR-2a でここへ動かした。
+    // HTTP router は DaemonState を取るので assemble の後で組む（9-2 PR-2a でここへ動かした。
     // `axum::serve` は下の方なので位置は自由。`bind_dual_stack` → `write_pid_file` の順は
-    // 上のまま動かしていない）。`state` は後段（wire delivery actor / federation relay の
-    // on_relay）でも参照するため clone — 9-2 PR-3 で daemon 役 AppState ごと消える。
-    let app = build_daemon_router(state.clone(), daemon_state.clone());
+    // 上のまま動かしていない）。daemon 役 `state`（AppState）はもう HTTP に渡らない —
+    // 残る読み手は wire delivery actor / delegation reconcile / federation relay の on_relay /
+    // `hub`（3 箇所）で、9-2 PR-3 で構築ごと消える。
+    let app = build_daemon_router(daemon_state.clone());
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
         daemon_state,
         port,
@@ -1152,7 +1121,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         };
 
         // 常駐ループ。接続/登録失敗は run_hub_federation 内で warn に落として再接続（degradation）。
-        // hub_status / hub_nodes は AppState と共有（run_hub_federation が更新、/api/health が読む）。
+        // hub_status / hub_nodes は DaemonState と共有（run_hub_federation が更新、/api/health が読む）。
         tokio::spawn(crate::daemon::hub_client::run_hub_federation(
             hub_addr,
             node_id,
@@ -1565,13 +1534,9 @@ mod tests {
     // `build_daemon_router` を組んで実際に叩き、両方向を 1 箇所で見る。
     // =====================================================================
 
-    /// production の router を 2 state で組む。`update` は **`DaemonState` 側だけ `Some`**
-    /// （`AppState` 側は `None`）— `/api/update/*` が `AppState.update` を読み続けていれば
-    /// 503 になるので、handler がどちらを読んでいるかが応答で分かる（9-2 PR-2a）。
+    /// production の router を test 用 `DaemonState`（`update: Some`）で組む。
     async fn daemon_router() -> Router {
-        let state = crate::repo::state::build_test_app_state().await;
-        let daemon_state = crate::daemon::server::build_test_daemon_state().await;
-        build_daemon_router(state, daemon_state)
+        build_daemon_router(crate::daemon::server::build_test_daemon_state().await)
     }
 
     async fn route_status(uri: &str, method: &str) -> axum::http::StatusCode {
@@ -1674,9 +1639,9 @@ mod tests {
     /// - **`update: None` の DaemonState** → 7 route 全部が 503 `Update capability not available`
     ///   （guard の形。network に出る check / apply と、実際に再起動 script を spawn する
     ///   restart はこの層でしか叩けない）
-    /// - **`update: Some` の DaemonState + `update: None` の AppState** → param 検証で 400 を返す
-    ///   4 route が 400。handler が `AppState.update` を読み続けていれば 503 になるので、
-    ///   これが「載せ替わった」の証明。check / apply は `Some` だと GitHub API に出るので
+    /// - **`update: Some` の DaemonState** → param 検証で 400 を返す 4 route が 400
+    ///   （PR-2a 時点では `AppState.update` を `None` にして「載せ替わった」の証明にしていた。
+    ///   PR-2c で `AppState` は router に渡らなくなった）。check / apply は `Some` だと GitHub API に出るので
     ///   ここには入れない。restart は `Some` だと `restart_self` が本当に走るので入れない
     #[tokio::test]
     async fn daemon_router_keeps_update_routes() {
@@ -1691,10 +1656,9 @@ mod tests {
         ];
 
         // 層 1: update 不在 → 503。`DaemonState::new()` は update: None
-        let without_update = build_daemon_router(
-            crate::repo::state::build_test_app_state().await,
-            std::sync::Arc::new(crate::daemon::server::DaemonState::new()),
-        );
+        let without_update = build_daemon_router(std::sync::Arc::new(
+            crate::daemon::server::DaemonState::new(),
+        ));
         for (uri, method) in all {
             let (status, body) =
                 route_json(without_update.clone(), uri, method, serde_json::json!({})).await;
@@ -1708,7 +1672,7 @@ mod tests {
             );
         }
 
-        // 層 2: DaemonState.update だけ Some → param 検証まで進んで 400
+        // 層 2: DaemonState.update が Some → param 検証まで進んで 400
         let with_update = daemon_router().await;
         for (uri, method, error) in [
             ("/api/update/rollback", "POST", "backup_path is required"),
@@ -1738,15 +1702,15 @@ mod tests {
         }
     }
 
-    /// CORS は merge 後の router に 1 回掛ける（doc 63 §6「共通 CORS は合流後に掛ける」）。
+    /// CORS は router 全体に 1 回掛ける。
     ///
-    /// 2 state の群それぞれから 1 route ずつ preflight を通す — 片方の群だけに
-    /// `CorsLayer` を掛けると、もう片方が `Access-Control-Allow-Origin` を返さなくなる
-    /// （permissive を掛けている以上、両群に掛かるのが仕様。今の消費者は `vp` CLI /
-    /// Ruby / Swift で browser 経由ではないが、群の分割で挙動が割れないことを固定する）。
+    /// PR-2a / 2b の間は state の違う 2 群を `Router::merge` していたので「両群に掛かる」を
+    /// 固定していた（片群だけに掛ける mutation で赤を実測）。PR-2c で 1 群に戻ったが、
+    /// route 群が再び分かれても挙動が割れないよう、health と update から 1 route ずつ
+    /// preflight を通し続ける（今の消費者は `vp` CLI / Ruby / Swift で browser 経由ではない）。
     /// CORS の test は PR-2a 以前は 0 本。
     #[tokio::test]
-    async fn daemon_router_applies_cors_to_both_state_groups() {
+    async fn daemon_router_applies_cors_to_every_route() {
         use tower::ServiceExt;
         for (uri, method) in [("/api/health", "GET"), ("/api/update/check", "GET")] {
             let req = axum::http::Request::builder()
@@ -1767,7 +1731,7 @@ mod tests {
                     .get("access-control-allow-origin")
                     .and_then(|v| v.to_str().ok()),
                 Some("*"),
-                "{uri}: permissive CORS が merge 後の両群に掛かっている"
+                "{uri}: permissive CORS が全 route に掛かっている"
             );
         }
     }

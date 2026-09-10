@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use axum::{Json, extract::State, response::IntoResponse};
 
-use super::super::state::AppState;
 use crate::daemon::server::DaemonState;
 
 /// 機能（service）のステータス
@@ -41,10 +40,6 @@ pub struct HealthResponse {
     pub status: &'static str,
     pub version: &'static str,
     pub pid: u32,
-    pub repo_dir: String,
-    /// Terminal チャネル認証トークン（TUI 接続用）
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub terminal_token: Option<String>,
     /// プロセス起動時刻（ISO 8601）
     pub started_at: String,
     /// 配下の service ステータス
@@ -109,137 +104,46 @@ pub struct HealthResponse {
 // L0 portless: `/api/diagnose` (Agent 自己診断 HTTP) は consumer 消滅で撤去。 必要なら将来
 // Daemon channel / mailbox query (`devices@machine` 等) 経由で再設計する。
 
-pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
-    let token = if state.terminal_token == "DAEMON_DISABLED" {
-        None
-    } else {
-        Some(state.terminal_token.clone())
-    };
-
-    // Agent ステータスを収集（daemon モードでは省略）
-    let services = if state.terminal_token != "DAEMON_DISABLED" {
+pub async fn health_handler(State(state): State<Arc<DaemonState>>) -> Json<HealthResponse> {
+    // services — DeviceRegistry 🧲 のみ報告（machine 階層に host される唯一の observable Agent）。
+    //
+    // 棚卸し 9-2 PR-2c: 旧 repo 分岐（board / runner / devices の per-repo 報告 + `service_status`
+    // table への書き込み）は削除した。`/api/health` は daemon 役にしか mount されないので、
+    // その分岐は production で一度も通っていなかった（`terminal_token` の sentinel で分けていた）。
+    #[cfg(feature = "midi")]
+    let services = {
         let mut map = std::collections::HashMap::new();
-
-        // 🧭 Board（Canvas）— WebSocket クライアント接続数
-        let canvas_clients = state.canvas_senders.lock().await.len();
-        map.insert(
-            "board".to_string(),
-            ServiceStatus {
-                status: if canvas_clients > 0 {
-                    "connected"
-                } else {
-                    "idle"
-                },
-                detail: Some(serde_json::json!({ "clients": canvas_clients })),
-            },
-        );
-
-        // 🌿 Runner（ProcessRunner）— 実行中プロセス数
-        let running_repos = state.process_registry.lock().await.list().len();
-        map.insert(
-            "runner".to_string(),
-            ServiceStatus {
-                status: if running_repos > 0 { "active" } else { "idle" },
-                detail: Some(serde_json::json!({ "processes": running_repos })),
-            },
-        );
-
-        // 🧲 DeviceRegistry（MIDI device registry）— daemon mode のみ host。
-        // repo mode からは「disabled」として報告（α-3 で cross-process query 経由に rewire 予定）。
-        #[cfg(feature = "midi")]
-        let (devices_status, devices_detail) = {
-            if let Some(wc) = state.machine_capabilities.as_ref() {
-                if let Some(ref devices) = wc.devices {
-                    let b = devices.read().await;
-                    let count = b.device_count().await;
-                    let discovering = b.is_discovering();
-                    // 艦隊スイッチ: OFF は「device が居ない」ではなく「**握っていない**」。
-                    // 一覧は保つので count は落とさず、status で区別する（他アプリへ譲っている状態）。
-                    let enabled = b.midi_enabled();
-                    (
-                        match (enabled, count > 0) {
-                            (false, _) => "released",
-                            (true, true) => "active",
-                            (true, false) => "idle",
-                        },
-                        Some(serde_json::json!({
-                            "devices": count,
-                            "discovering": discovering,
-                            "midi_enabled": enabled,
-                        })),
-                    )
-                } else {
-                    ("disabled", None)
-                }
-            } else {
-                ("disabled", None)
-            }
-        };
-        #[cfg(not(feature = "midi"))]
-        let (devices_status, devices_detail) = ("disabled", None);
-        map.insert(
-            "devices".to_string(),
-            ServiceStatus {
-                status: devices_status,
-                detail: devices_detail,
-            },
-        );
-
-        // DB にも Agent ステータスを書き込み（VP-21）
-        if let Some(ref db) = state.vpdb {
-            for (key, s) in &map {
-                if let Err(e) = db
-                    .upsert_service_status(&state.repo_dir, key, s.status, s.detail.as_ref())
-                    .await
-                {
-                    tracing::warn!("DB service_status 書き込み失敗 ({}): {}", key, e);
-                }
-            }
-        }
-
-        Some(map)
-    } else {
-        // daemon mode — DeviceRegistry のみ報告（machine 階層に host される唯一の observable Agent）
-        #[cfg(feature = "midi")]
-        {
-            let mut map = std::collections::HashMap::new();
-            if let Some(devices) = state
-                .machine_capabilities
-                .as_ref()
-                .and_then(|wc| wc.devices.as_ref())
-            {
-                let b = devices.read().await;
-                let count = b.device_count().await;
-                let discovering = b.is_discovering();
-                // 艦隊スイッチ（repo mode 側と同じ規律 — OFF は「握っていない」）。
-                let enabled = b.midi_enabled();
-                map.insert(
-                    "devices".to_string(),
-                    ServiceStatus {
-                        status: match (enabled, count > 0) {
-                            (false, _) => "released",
-                            (true, true) => "active",
-                            (true, false) => "idle",
-                        },
-                        detail: Some(serde_json::json!({
-                            "devices": count,
-                            "discovering": discovering,
-                            "midi_enabled": enabled,
-                        })),
+        if let Some(devices) = state.devices.as_ref() {
+            let b = devices.read().await;
+            let count = b.device_count().await;
+            let discovering = b.is_discovering();
+            // 艦隊スイッチ: OFF は「device が居ない」ではなく「**握っていない**」。
+            // 一覧は保つので count は落とさず、status で区別する（他アプリへ譲っている状態）。
+            let enabled = b.midi_enabled();
+            map.insert(
+                "devices".to_string(),
+                ServiceStatus {
+                    status: match (enabled, count > 0) {
+                        (false, _) => "released",
+                        (true, true) => "active",
+                        (true, false) => "idle",
                     },
-                );
-            }
-            if map.is_empty() { None } else { Some(map) }
+                    detail: Some(serde_json::json!({
+                        "devices": count,
+                        "discovering": discovering,
+                        "midi_enabled": enabled,
+                    })),
+                },
+            );
         }
-        #[cfg(not(feature = "midi"))]
-        {
-            None
-        }
+        if map.is_empty() { None } else { Some(map) }
     };
+    #[cfg(not(feature = "midi"))]
+    let services = None;
 
     // L1 lifecycle: daemon mode は配下 repo の presence 一覧を expose（vp-app sidebar の ●◐○ 用）。
-    // repo mode (`state.daemon` 不在) は None — presence は daemon-canonical で daemon のみが持つ。
-    let processes = match state.daemon.as_ref() {
+    // `daemon_cap` 不在（test の `DaemonState::new()`）は None — production の daemon では常に Some。
+    let processes = match state.daemon_cap.as_ref() {
         Some(daemon) => Some(daemon.read().await.presence_snapshot().await),
         None => None,
     };
@@ -270,8 +174,6 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
         pid: std::process::id(),
-        repo_dir: state.repo_dir.clone(),
-        terminal_token: token,
         started_at: state.started_at.clone(),
         services,
         hub: state.hub_status.get().as_str(),
@@ -321,8 +223,8 @@ fn auth_target_states() -> std::collections::BTreeMap<String, String> {
 // いずれも `state.hub.broadcast(RepoMessage)` するだけで、 QUIC dispatch が同じ broadcast を行う。
 
 // doc 45 段 4: `/api/canvas/switch_lane` `/api/canvas/layout` の handler は撤去。
-// switch_lane の宛先 `AppState.canvas_senders` は**どこからも populate されない**
-// （旧 localhost browser Canvas の WS 撤去で書き手が消えた）ので、常に 0 client に
+// switch_lane の宛先 `AppState.canvas_senders`（棚卸し 9-2 PR-2c で field ごと削除）は
+// **どこからも populate されなかった**（旧 localhost browser Canvas の WS 撤去で書き手が消えた）ので、常に 0 client に
 // 送っていた。layout の `load/save_canvas_layout` も呼び出し元がこの 2 handler だけで、
 // end-to-end で dead だった（doc 45 §3.1）。Unison に移すと「読み手のいない書き込み」を
 // 新設することになるので、移設先ではなく撤去に置いた。
@@ -406,14 +308,14 @@ mod tests {
     // =====================================================================
     // 棚卸し 9-2 PR-0.5 — daemon 形 `/api/health` の characterization
     //
-    // production の `/api/health` は `build_daemon_router` にしか mount されておらず
-    // （`repo/server.rs:572`、production 呼び手は `:946` の 1 本）、渡るのは必ず
-    // **daemon 役**の `AppState`。つまり `terminal_token != "DAEMON_DISABLED"` の
-    // 分岐（`:119-200`）は production で一度も通らない。
+    // production の `/api/health` は `build_daemon_router` にしか mount されておらず、
+    // 渡るのは必ず daemon 役の state。PR-0.5 時点では `AppState` で、`terminal_token !=
+    // "DAEMON_DISABLED"` の repo 分岐は production で一度も通っていなかった。
     //
-    // 9-2 の PR-2c はこの handler の state を `Arc<DaemonState>` に載せ替え、
-    // `AppState` の daemon 専用 10 field を同時に削除する。**その前後で応答が
-    // 1 bit も変わらないこと**を確かめるための基準線をここに置く。
+    // 9-2 の PR-2c でこの handler の state を `Arc<DaemonState>` に載せ替え、repo 分岐と
+    // `AppState` の daemon 専用 10 field を同時に削除した。**その前後で応答が 1 bit も
+    // 変わらないこと**を確かめるための基準線がここ（PR-2c で書き換えたのは fixture 2 関数 +
+    // 承認済み差分 = `repo_dir` / `terminal_token` の 2 key だけ）。
     //
     // ## 網は 2 層
     //
@@ -426,18 +328,18 @@ mod tests {
     //    新しく作って渡しても compile は通り、既定値のままの health を返し続ける。
     //    層 1 だけでは全部の cache がその壊し方を素通しする。
     //
-    // ⚠️ PR-2c で書き換えてよいのは state を組む 2 関数（`daemon_health_body` の本体と
+    // ⚠️ 載せ替えで書き換えてよいのは state を組む 2 関数（`daemon_health_body` の本体と
     //    `health_body_of` の引数型）だけ。assert を緩めたら「載せ替えた」ではなく「変えた」。
-    //    **例外は `repo_dir`** — doc 63 §3 が PR-2c での削除を承認済みなので、
-    //    `daemon_health_carries_repo_dir` を**test ごと消す**（assert の書き換えではなく）。
+    //    **例外は `repo_dir` / `terminal_token`** — doc 63 §3 が削除を承認済み。
+    //    `daemon_health_carries_repo_dir` は test ごと消し、key 集合の期待から 2 key を外した。
     // =====================================================================
 
     /// 既定値のままの daemon 形で `/api/health` を 1 回叩いて body を返す。
     ///
-    /// **PR-2c で書き換えるのはここ** — state の組み立てが `DaemonState` に変わるだけで、
-    /// 呼び手の assert は verbatim で通るのが合格条件。
+    /// **PR-2c で書き換えたのはここ** — state の組み立てが `DaemonState` に変わっただけで、
+    /// 呼び手の assert は（承認済みの 2 key を期待から外した以外）verbatim で通った。
     async fn daemon_health_body() -> serde_json::Value {
-        let state = crate::repo::state::build_test_daemon_app_state().await;
+        let state = crate::daemon::server::build_test_daemon_state().await;
         health_body_of(state).await
     }
 
@@ -445,7 +347,7 @@ mod tests {
     ///
     /// `daemon_health_body` と分けてあるのは、cache を非初期値へ動かした state や、
     /// **同じ state を 2 回**叩く必要がある test があるため。
-    async fn health_body_of(state: Arc<AppState>) -> serde_json::Value {
+    async fn health_body_of(state: Arc<DaemonState>) -> serde_json::Value {
         let app = Router::new()
             .route("/api/health", get(health_handler))
             .with_state(state);
@@ -467,11 +369,10 @@ mod tests {
 
     /// 起動直後の daemon が返す **key 集合**を固定する。
     ///
-    /// `HealthResponse` は 17 field で、うち **6 つ**が `skip_serializing_if` を持つ
-    /// （`terminal_token` / `services` / `hub_auth` / `auth_targets` / `processes` /
-    /// `latest_version`）。起動直後の daemon ではそのうち **3 つ**が省略側に倒れる:
+    /// `HealthResponse` は 15 field（PR-2c で `repo_dir` / `terminal_token` を削除、17 → 15）で、
+    /// うち **5 つ**が `skip_serializing_if` を持つ（`services` / `hub_auth` / `auth_targets` /
+    /// `processes` / `latest_version`）。起動直後の daemon ではそのうち **2 つ**が省略側に倒れる:
     ///
-    /// - `terminal_token` — daemon は token を配らない（`None`）
     /// - `hub_auth` — `Unknown` = 空文字列
     /// - `latest_version` — update cache が未取得
     ///
@@ -481,7 +382,7 @@ mod tests {
     /// ⚠️ `services` は **cfg 依存**。production の daemon ctor は `with_devices` で
     /// 無条件に `devices: Some(..)` を置く（`daemon/machine_capabilities.rs:82-95`）ので
     /// default build では必ず出る。`--no-default-features` では handler が `None` を返す
-    /// （`health.rs:233-236`）。
+    /// （`health_handler` の `#[cfg(not(feature = "midi"))]` 側）。
     ///
     /// **「増えた」も「減った」も落とす**のが要点。field を足した PR は、ここを意識的に
     /// 更新することで「daemon の応答形を変えた」と宣言することになる。
@@ -505,7 +406,6 @@ mod tests {
             "idle_timeout_minutes",
             "pid",
             "processes",
-            "repo_dir",
             "started_at",
             "status",
             "update_available",
@@ -518,7 +418,7 @@ mod tests {
 
         assert_eq!(keys, expected, "起動直後の daemon の key 集合");
 
-        for omitted in ["terminal_token", "hub_auth", "latest_version"] {
+        for omitted in ["hub_auth", "latest_version"] {
             assert!(
                 body.get(omitted).is_none(),
                 "{omitted} は起動直後の daemon では省略される"
@@ -603,23 +503,6 @@ mod tests {
         );
     }
 
-    /// `repo_dir` は daemon 役では空文字列。
-    ///
-    /// ⚠️ **PR-2c でこの test は「まるごと削除」する。** doc 63 §3 が
-    /// `HealthResponse.repo_dir` ごとの削除を承認しているので、これは緩めてよい唯一の
-    /// assert。単独の test に出してあるのは、PR-2c の review で
-    /// **「承認済みの削除」と「緩めた assert」を目視で区別できる**ようにするため
-    /// （doc 63 §6「`repo_dir` 等の削除は『承認済み差分』として baseline と分ける」）。
-    /// 合格条件は「この test が 1 本まるごと消え、他の assert は 1 文字も変わらない」。
-    #[tokio::test]
-    async fn daemon_health_carries_repo_dir() {
-        let body = daemon_health_body().await;
-        assert_eq!(
-            body["repo_dir"], "",
-            "daemon 役は repo を持たない（repo ctor だけが実 path を入れる、`repo/server.rs:210`）"
-        );
-    }
-
     /// **この PR の本体** — 各値が「組み立てで渡した実体」から来ていること。
     ///
     /// doc 63 §6:
@@ -628,7 +511,7 @@ mod tests {
     /// > version、presence は代表例。`Arc` 同一性は補助
     ///
     /// なぜ既定値の固定では足りないか: PR-2c は 10 field の供給元を
-    /// `AppState` から `DaemonState` へ移す。**移し先で新しい実体を作ってしまっても
+    /// `AppState` から `DaemonState` へ移した。**移し先で新しい実体を作ってしまっても
     /// compile は通り、`-D warnings` も鳴らない**（doc 63 §6）。全部の cache が
     /// constructor 既定のままだと、新しい実体も同じ既定値を返すので応答は一致する。
     /// 非初期値へ動かして初めて「同じ実体か」を問える。
@@ -640,7 +523,7 @@ mod tests {
     async fn daemon_health_projects_the_given_instances() {
         use crate::daemon::hub_client::{HubAuthState, HubFederationState, NodeEntry};
 
-        let state = crate::repo::state::build_test_daemon_app_state().await;
+        let state = crate::daemon::server::build_test_daemon_state().await;
 
         // ── 渡した実体を非初期値へ動かす ────────────────────────────────
         state.hub_status.set(HubFederationState::Connected);
@@ -678,7 +561,7 @@ mod tests {
         // ので、repo を 1 件差してから presence を付ける。
         {
             let cap = state
-                .daemon
+                .daemon_cap
                 .as_ref()
                 .expect("daemon 形は Some")
                 .read()
@@ -782,7 +665,7 @@ mod tests {
     /// を固定する。
     #[tokio::test]
     async fn daemon_health_started_at_is_the_states_value() {
-        let state = crate::repo::state::build_test_daemon_app_state().await;
+        let state = crate::daemon::server::build_test_daemon_state().await;
         let expected = state.started_at.clone();
 
         let first = health_body_of(state.clone()).await;
@@ -795,79 +678,6 @@ mod tests {
         assert_eq!(
             second["started_at"], expected,
             "2 回目も同じ — 構築時に 1 度確定して以後不変"
-        );
-    }
-
-    #[tokio::test]
-    async fn health_handler_returns_200_with_stands_field() {
-        let state = crate::repo::state::build_test_app_state().await;
-        let app = Router::new()
-            .route("/api/health", get(health_handler))
-            .with_state(state);
-        let resp = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/health")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body_bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
-            .await
-            .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-        // HealthResponse の必須 field を verify (= 構造変更 regression net)
-        assert_eq!(body.get("status").and_then(|v| v.as_str()), Some("ok"));
-        assert!(body.get("version").is_some(), "version field 必須");
-        assert!(body.get("pid").is_some(), "pid field 必須");
-        assert!(body.get("repo_dir").is_some(), "repo_dir field 必須");
-        assert!(body.get("started_at").is_some(), "started_at field 必須");
-        // stands は test 用 AppState では terminal_token == "test" なので
-        // "DAEMON_DISABLED" 分岐に入らず populate される
-        assert!(
-            body.get("services").is_some(),
-            "services field 必須 (= Agent status map)"
-        );
-        // hub federation 状態（test AppState は HubFederationStatus::new() = Disabled）。
-        // field 名変更 / as_str() パス破壊の regression net。
-        assert_eq!(
-            body.get("hub").and_then(|v| v.as_str()),
-            Some("disabled"),
-            "hub field 必須 (repo/test mode は Disabled = \"disabled\")"
-        );
-        // hub_nodes は常時 serialize（repo/test mode = HubNodesCache::new() は空配列）。
-        assert_eq!(
-            body.get("hub_nodes")
-                .and_then(|v| v.as_array())
-                .map(Vec::len),
-            Some(0),
-            "hub_nodes field 必須 (repo/test mode は空配列)"
-        );
-        // in-app update: test AppState は update capability 不在（None）= 常に false。
-        // cache 未チェック時も false なので、field の常時 serialize を regression net にする。
-        assert_eq!(
-            body.get("update_available").and_then(|v| v.as_bool()),
-            Some(false),
-            "update_available field 必須 (repo/test mode は false)"
-        );
-        assert!(
-            body.get("latest_version").is_none(),
-            "latest_version は cache 未取得時 omit"
-        );
-        // ACTIONS（doc 57 Phase 3）: test/repo mode は poller を持たないので空 + rev 0。
-        // **常時 serialize** を固定する — omit すると vp-app 側で「未取得」と「0 件」の
-        // 区別が付かなくなる（rev 0 が「当てない」の印そのもの）。
-        assert_eq!(
-            body.get("actions").and_then(|v| v.as_array()).map(Vec::len),
-            Some(0),
-            "actions field 必須 (repo/test mode は空配列)"
-        );
-        assert_eq!(
-            body.get("actions_rev").and_then(|v| v.as_u64()),
-            Some(0),
-            "actions_rev field 必須 (未取得 = 0)"
         );
     }
 }
