@@ -144,11 +144,6 @@ async fn query_daemon() -> Option<Vec<ProcessInfo>> {
     )
 }
 
-/// Terminal トークンを生成（UUID v4）
-pub fn generate_terminal_token() -> String {
-    uuid::Uuid::new_v4().to_string()
-}
-
 // ─── Daemon uplink（退役）───────────────────────────────────
 //
 // doc 44 P1 (fold-in): repo → daemon の uplink（registry / canvas-ingest / control の

@@ -4,8 +4,8 @@
 //!
 //! state は `Arc<DaemonState>`（棚卸し 9-2 PR-2a で `Arc<AppState>` から載せ替え）。読むのは
 //! `update`（`MachineCapabilities.update` と同一 Arc）と `shutdown_token`（restart が cancel する、
-//! `run_daemon` の 1 本）だけ。`build_daemon_router` が `Router::merge` で `/api/health`
-//! （まだ `AppState`、PR-2c で移す）と合流させる。
+//! `run_daemon` の 1 本）だけ。`build_daemon_router` の全 route が同じ `Arc<DaemonState>` を取る
+//! （PR-2c で `/api/health` も載せ替わり、`AppState` 群と `Router::merge` する形は消えた）。
 
 use std::sync::Arc;
 

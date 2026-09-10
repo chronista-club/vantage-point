@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use super::hub::Hub;
 use super::process_runner::ProcessRegistry;
 use super::topic_router::TopicRouter;
-use crate::capability::{ActorRegistry, RepoManagerCapability, UpdateCapability};
+use crate::capability::ActorRegistry;
 use crate::file_watcher::FileWatcherManager;
 use crate::protocol::{Content, RepoMessage};
 
@@ -137,47 +137,14 @@ pub(crate) struct AppState {
     /// metadata register は dynamic routing vision 確定後、 cf. design-spark `mem_1CavFi5D1aMSpEkas89SvQ`)。
     /// PR-5 supervisor 統一で JoinHandle 経由の abort / await を activate する foundation。
     pub actor_registry: Arc<RwLock<ActorRegistry>>,
-    /// Daemon capability for managing multiple processes (optional, only for daemon mode)
-    pub daemon: Option<Arc<RwLock<RepoManagerCapability>>>,
-    /// Update capability for version checking (optional, only for daemon mode)
-    pub update: Option<Arc<RwLock<UpdateCapability>>>,
-    /// chronista-hub federation の接続状態（daemon mode のみ更新、`/api/health` で vp-app に返す）。
-    ///
-    /// daemon mode では [`run_hub_federation`](crate::daemon::hub_client::run_hub_federation) が
-    /// 遷移ごとに更新する。repo / test mode では `Disabled` のまま（federation は daemon のみ）。
-    pub hub_status: crate::daemon::hub_client::HubFederationStatus,
-    /// hub registry の available nodes cache（`/api/health` の `hub_nodes` field）。
-    ///
-    /// daemon mode では [`run_hub_federation`](crate::daemon::hub_client::run_hub_federation) が
-    /// 接続直後 + 定期 discover で更新する（自 daemon 除外・handle dedup 済、切断で clear）。
-    /// repo / test mode では常に空。
-    pub hub_nodes: crate::daemon::hub_client::HubNodesCache,
-    /// hub 接続の credential 提示結果（`/api/health` の `hub_auth` field）。
-    ///
-    /// daemon mode では [`run_hub_federation`](crate::daemon::hub_client::run_hub_federation) が
-    /// 接続確立 / 切断ごとに更新する（credentialed / anonymous / unknown）。vp-app sidebar の
-    /// Hub 行が Login / Logout ボタンの切替に使う。repo / test mode では `Unknown` のまま。
-    pub hub_auth: crate::daemon::hub_client::HubAuthStatus,
-    /// ACTIONS の cache（`/api/health` の `actions` / `actions_rev` field、doc 57 Phase 3）。
-    ///
-    /// daemon mode では [`run_daemon`](crate::repo::server::run_daemon) が spawn する 30s poller が
-    /// creo-memories から引いて温める。repo / test mode では常に空 + `rev: 0`（= 未取得）で、
-    /// vp-app 側はそれを見て**何もしない** — sidebar は Phase 1 の local 挙動のまま残る。
-    pub creo_actions: crate::creo::client::CreoActionsCache,
     /// Processの待ち受けポート番号
     pub port: u16,
     /// ファイル監視マネージャー
     pub file_watchers: Arc<tokio::sync::Mutex<FileWatcherManager>>,
-    /// Terminal チャネル認証トークン
-    pub terminal_token: String,
     /// プロセスレジストリ（ProcessRunner）
     pub process_registry: Arc<tokio::sync::Mutex<ProcessRegistry>>,
     /// Topic ベースのメッセージルーター（Hub → Topic 振り分け）
     pub topic_router: Arc<TopicRouter>,
-    /// Canvas WS クライアントへの送信チャネル（HTTP API → lanes WS handler）
-    pub canvas_senders: Arc<tokio::sync::Mutex<Vec<tokio::sync::mpsc::Sender<serde_json::Value>>>>,
-    /// プロセス起動時刻（ISO 8601）
-    pub started_at: String,
     /// SurrealDB クライアント（VP-21: 状態管理の DB 統一）
     pub vpdb: Option<crate::db::SharedVpDb>,
     /// Phase A ①: wiremsg threaded inbox store (= `wire_send` / `wire_recv` の実体)
@@ -206,13 +173,6 @@ pub(crate) struct AppState {
     /// 更新する経路（doc 44 P1 fold-in で旧 `spawn_daemon_uplink` の QUIC push から置換）。
     /// 将来 Pane / Agent / Process 等の lifecycle event も同 bus に variant 追加で乗せる。
     pub system_event_tx: tokio::sync::broadcast::Sender<super::lane::SystemEvent>,
-    /// machine 階層 Agent container (LSCM、 PR-α series / VP-109)。
-    ///
-    /// daemon mode (`run_daemon`) でのみ Some、 repo mode (`run`) では None。
-    /// PR-α 完了後も既存 machine 階層 field (daemon / update)
-    /// と重複保持 (意図的 HACK、 LSCM A6 share-nothing 整合は β 以降の cleanup PR で整理予定)。
-    /// 関連: doc 12 §3 / §9、 Linear VP-109 (epic) / VP-111/112/113/114/115 ✅
-    pub machine_capabilities: Option<Arc<crate::daemon::machine_capabilities::MachineCapabilities>>,
     /// S2 (doc 27 §4.1): demand-driven terminal pump の lane → session → JoinHandle map。
     ///
     /// daemon の demand hook が control reverse-route で `terminal_demand_start {lane}` を撃つと、
@@ -381,8 +341,8 @@ impl AppState {
 /// Test 用の minimal AppState builder（repo 役）。 各 field は default / None / in-memory mock で構築。
 ///
 /// 旧 `daemon` 引数は 9-2 PR-1.5 で落とした — 全 call site が `None` を渡していて、`Some` を
-/// 渡す「200 path」は 1 つも無かった。daemon 役の fixture は [`build_test_daemon_app_state`]
-/// （`daemon: Some` を内部で置く）。
+/// 渡す「200 path」は 1 つも無かった。daemon 役は PR-2c で `AppState` を持たなくなった —
+/// daemon 側の fixture は `daemon/server.rs` の `build_test_daemon_state()`。
 ///
 /// 用途: `crates/vantage-point/src/repo/http/` の各 handler を Axum oneshot で
 /// smoke test する際の shared fixture。 重い field (vpdb / wiremsg_store)
@@ -407,108 +367,6 @@ pub(crate) async fn build_test_app_state_with(
     repo_dir: &str,
     vpdb: Option<crate::db::SharedVpDb>,
 ) -> Arc<AppState> {
-    build_test_app_state_raw(TestStateParams {
-        repo_dir: repo_dir.to_string(),
-        vpdb,
-        ..TestStateParams::repo_role()
-    })
-    .await
-}
-
-/// **daemon 役**の `AppState` を組む fixture。
-///
-/// `build_test_app_state[_with]` が返すのは repo 役の形（`terminal_token = "test"`）で、
-/// `/api/health` の **production で唯一到達する分岐**（daemon 形）を再現できない。
-///
-/// production の daemon ctor（`repo/server.rs:772`）が置く目印のうち、**health が読む
-/// 5 つ**を同じ形で再現する:
-///
-/// | field | 値 | health での役割 |
-/// |---|---|---|
-/// | `repo_dir` | `""`（`:780`） | 応答の `repo_dir` |
-/// | `terminal_token` | `"DAEMON_DISABLED"`（`:790`） | daemon / repo の分岐 |
-/// | `daemon` | `Some`（`:786`） | `processes` の producer |
-/// | `update` | `Some`（`:787`） | `update_available` / `latest_version` |
-/// | `machine_capabilities` | `Some` + `devices`（`:809`） | `services.devices` |
-///
-/// ⚠️ **`repo_name` はこの fixture が置き分けているものではない** — [`build_test_app_state_raw`]
-/// が repo 役も含め全 fixture で空文字列を hardcode している。daemon の目印として数えない。
-///
-/// ⚠️ **`with_devices` は使わない。** あれは `attach_fleet_inputs().await` で実機の MIDI port を
-/// 開けにいく（`daemon/machine_capabilities.rs:82-95` の `:90`）。[`DeviceRegistry::new`] だけなら純粋なので、
-/// registry の構築だけをここで行う。
-///
-/// ⚠️ **daemon 役の `Some` はこの fixture が内部で置く。** `build_test_app_state[_with]` に
-/// daemon を差す口は無い（旧 `daemon` 引数は全 65 site が `None` = dead だったため
-/// 棚卸し 9-2 PR-1.5 で削除済み）。repo 役の fixture に daemon を後付けしないこと。
-///
-/// **各 cache は既定値のまま返す。** 実体の同一性を見る test は、返ってきた state の
-/// 内部可変性（`hub_status.set` 等）で**非初期値へ動かしてから** health を叩くこと
-/// （doc 63 §6「共有実体」）。
-#[cfg(test)]
-pub(crate) async fn build_test_daemon_app_state() -> Arc<AppState> {
-    let daemon = Arc::new(RwLock::new(RepoManagerCapability::new()));
-    let update = Arc::new(RwLock::new(UpdateCapability::new_for_test()));
-
-    let machine_capabilities = {
-        #[allow(unused_mut)]
-        let mut wc = crate::daemon::machine_capabilities::MachineCapabilities::new(
-            daemon.clone(),
-            update.clone(),
-        );
-        #[cfg(feature = "midi")]
-        {
-            let bus = Arc::new(crate::capability::eventbus::EventBus::new());
-            wc.devices = Some(Arc::new(RwLock::new(crate::devices::DeviceRegistry::new(
-                bus,
-            ))));
-        }
-        Arc::new(wc)
-    };
-
-    build_test_app_state_raw(TestStateParams {
-        repo_dir: String::new(),
-        terminal_token: "DAEMON_DISABLED".to_string(),
-        vpdb: None,
-        daemon: Some(daemon),
-        update: Some(update),
-        machine_capabilities: Some(machine_capabilities),
-    })
-    .await
-}
-
-/// [`build_test_app_state_raw`] の引数。
-///
-/// 位置引数をやめて名前付き field にしてあるのは、`repo_dir` と `terminal_token` が
-/// **どちらも文字列で、取り違えても compile が通る**から。`daemon` / `update` /
-/// `machine_capabilities` は中身の型が違うので入れ替えれば型エラーで止まる。
-#[cfg(test)]
-struct TestStateParams {
-    repo_dir: String,
-    terminal_token: String,
-    vpdb: Option<crate::db::SharedVpDb>,
-    daemon: Option<Arc<RwLock<RepoManagerCapability>>>,
-    update: Option<Arc<RwLock<UpdateCapability>>>,
-    machine_capabilities: Option<Arc<crate::daemon::machine_capabilities::MachineCapabilities>>,
-}
-
-#[cfg(test)]
-impl TestStateParams {
-    /// repo 役の既定（daemon 系は全て `None`、`terminal_token` は `"test"`）。
-    fn repo_role() -> Self {
-        Self {
-            repo_dir: String::new(),
-            terminal_token: "test".to_string(),
-            vpdb: None,
-            daemon: None,
-            update: None,
-            machine_capabilities: None,
-        }
-    }
-}
-
-#[cfg(test)]
-async fn build_test_app_state_raw(p: TestStateParams) -> Arc<AppState> {
     use super::lane::LanePool;
     use crate::capability::WireNotifier;
 
@@ -516,29 +374,19 @@ async fn build_test_app_state_raw(p: TestStateParams) -> Arc<AppState> {
         replay_flights: ReplayFlights::default(),
         hub: Hub::new(),
         shutdown_token: CancellationToken::new(),
-        repo_dir: p.repo_dir,
+        repo_dir: repo_dir.to_string(),
         repo_name: String::new(),
         actor_registry: Arc::new(RwLock::new(ActorRegistry::new())),
-        daemon: p.daemon,
-        update: p.update,
-        hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
-        hub_nodes: crate::daemon::hub_client::HubNodesCache::new(),
-        hub_auth: crate::daemon::hub_client::HubAuthStatus::new(),
-        creo_actions: crate::creo::client::CreoActionsCache::new(),
         port: 0,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
-        terminal_token: p.terminal_token,
         process_registry: Arc::new(tokio::sync::Mutex::new(ProcessRegistry::new())),
         topic_router: Arc::new(TopicRouter::new()),
-        canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-        started_at: chrono::Utc::now().to_rfc3339(),
-        vpdb: p.vpdb,
+        vpdb,
         wiremsg_store: None,
         wire_notifier: WireNotifier::new(),
         delivery_notify: Arc::new(tokio::sync::Notify::new()),
         lane_pool: Arc::new(RwLock::new(LanePool::new())),
         system_event_tx: tokio::sync::broadcast::channel::<super::lane::SystemEvent>(64).0,
-        machine_capabilities: p.machine_capabilities,
         terminal_pumps: Arc::new(RwLock::new(HashMap::new())),
         // test fixture は repo 相当 (Daemon store 無し)。delegation の store test は
         // capability::delegation_store の単体 test が担う。

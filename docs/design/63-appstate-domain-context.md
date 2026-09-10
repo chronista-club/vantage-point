@@ -196,7 +196,7 @@ lane runtime  : lane_pool, terminal_pumps, replay_flights, system_event_tx
 | **1.5** ✅ | `build_test_app_state*` から dead な `daemon` 引数を落とす（65 site） | `git diff` の追加行 ≒ 削除行。変更が `(None)` → `()` と fixture 定義だけ |
 | **2a** ✅ | `/api/update/*` 7 route → `Arc<DaemonState>`。**`AppState.update` は残す** | drift test の**本文（route 表と assert）が 1 文字も変わらず**緑。**`daemon_router_keeps_update_routes` を `assert_ne!(NOT_FOUND)` から実応答の固定へ強化**（§5.2） |
 | **2b** ✅ | `/api/shutdown` → `Arc<DaemonState>` | **組み立て口に渡した token** が cancel される。handler 内で新設した token を cancel する test では不足（その mutation で赤を実測）。`DaemonState.shutdown_token` は PR-1 で `pub` で新設済み |
-| **2c** | `/api/health` → `Arc<DaemonState>`。到達不能 block（`health.rs:119-200`）削除 + **10 field 同時削除** | PR-0.5 の test が fixture 差し替えのみで緑。旧 `health_handler_returns_200_with_stands_field` は**書き換えでなく削除**（書き換えると「repo 分岐を守っている test」の見た目だけが残る）。`services.devices` が daemon 分岐で出続ける |
+| **2c** ✅ | `/api/health` → `Arc<DaemonState>`。到達不能 block（`health.rs:119-200`）削除 + **10 field 同時削除** | PR-0.5 の test が fixture 差し替えのみで緑。旧 `health_handler_returns_200_with_stands_field` は**書き換えでなく削除**（書き換えると「repo 分岐を守っている test」の見た目だけが残る）。`services.devices` が daemon 分岐で出続ける |
 | **3** | daemon 役 `AppState` を**構築ごと**削除（`repo/server.rs:772` の全 field — 現 HEAD で 29、**PR-2c 後は 19** + `hub` / `topic_router` local）+ **wire 系 4 field も同時削除** | 不変条件 3 を守る。`git diff` が `repo/server.rs` の外に出ない。**`--no-default-features` でも `mise run check` を 1 回** |
 | **4** | `port` だけ削除 | field 数を**先に宣言してから** diff を見る（15 → 14） |
 | **5** | `AppState` → `RepoState` 改名**だけ** | GitNexus `rename` を使う。改名前後を**名前だけ正規化して内容比較**。`grep -rn "AppState" crates/ \| wc -l` == **0**（**doc コメント含む**） |
@@ -233,7 +233,7 @@ router 構築（`let app = build_daemon_router(state.clone(), daemon_state.clone
 | `daemon_router_drops_removed_control_routes` | `:1641`（PR-2a 後） | 撤去済みの 18 組（`(path, method)`、distinct path は 15）が **`NOT_FOUND`** | 強 |
 | `daemon_router_keeps_update_routes` | `:1682`（PR-2a 後） | ~~update 7 route が `NOT_FOUND` でない~~ → **PR-2a で強化**: `update: None` の `DaemonState` で 7 route 全部 503 + `DaemonState.update` だけ `Some` で param 検証 4 route が 400（`AppState.update` を読み続けていれば 503） | **強** |
 
-⚠️ **「update 7 route に drift net が無い」は誤り**（v2 までの記述を訂正）。網は在ったが `assert_ne!` で**登録の有無しか見ていなかった**。PR-2a で強化した。check / apply は `Some` だと GitHub API に出る、restart は `Some` だと `restart_self` が本当に走るので、この 3 本は 503 層でしか叩かない。CORS は `daemon_router_applies_cors_to_both_state_groups` を新設（2 群から 1 route ずつ preflight）。
+⚠️ **「update 7 route に drift net が無い」は誤り**（v2 までの記述を訂正）。網は在ったが `assert_ne!` で**登録の有無しか見ていなかった**。PR-2a で強化した。check / apply は `Some` だと GitHub API に出る、restart は `Some` だと `restart_self` が本当に走るので、この 3 本は 503 層でしか叩かない。CORS は `daemon_router_applies_cors_to_every_route`（PR-2a では `_to_both_state_groups`、PR-2c で 1 群に戻って改名）を新設（health と update から 1 route ずつ preflight）。
 
 ⚠️ **`route_status` fixture 自体は PR-2a で変わった。** `build_daemon_router` が `Arc<DaemonState>` も取るため（test 用は `daemon/server.rs` の `build_test_daemon_state()`、production と同じ `assemble` を通す）。完了条件の「触られずに緑」が指すのは**各 test の本文（route 表と assert）**であって fixture ではない。
 
@@ -247,7 +247,7 @@ CI は `cargo clippy --workspace --all-targets -- -D warnings`。**`AppState` �
 
 | 契約 | 壊し方を検出する検証 |
 |---|---|
-| **HTTP 登録と middleware** | production の router builder を `oneshot` で通す。9 route の method・想定応答・**CORS**。update の download / restart を実行しない fixture。CORS の test は PR-2a 以前 0 本だった → `daemon_router_applies_cors_to_both_state_groups` を新設 |
+| **HTTP 登録と middleware** | production の router builder を `oneshot` で通す。9 route の method・想定応答・**CORS**。update の download / restart を実行しない fixture。CORS の test は PR-2a 以前 0 本だった → `daemon_router_applies_cors_to_every_route`（PR-2a では `_to_both_state_groups`、PR-2c で 1 群に戻って改名）を新設 |
 | **共有実体**（最重要） | 組み立てに渡した cache を**非初期値へ変更**し、HTTP が同じ値を返す。ACTIONS は items と rev、hub は status / nodes / auth、update は available と version、presence は代表例。`Arc` 同一性の比較は補助 |
 | **停止 signal** | 組み立て口に渡した token が HTTP shutdown で cancel。update restart も同じ token |
 | **health の契約** | 正常 daemon / DB なし / midi 有無。**`started_at` は構築時に 1 度確定し、複数回の health で不変**。`repo_dir` 等の削除は「承認済み差分」として baseline と分ける |
@@ -412,3 +412,4 @@ struct の見た目が `Arc<...>` でなくても、`Clone` が同一実体を�
 - 2026-09-10: **PR-1.5。** `build_test_app_state(daemon)` → `build_test_app_state()`、`build_test_app_state_with(repo_dir, vpdb, daemon)` → 2 引数。65 site（`(None)` 59 + `_with(…, None)` 6）が全部 `None` だったことを base `adfd7a8a` で再確認。production 0 行、test 1350 不変。`TestStateParams.daemon` は daemon 役 fixture が使うので残す。
 - 2026-09-10: **PR-2a。** `/api/update/*` 7 handler の state を `Arc<DaemonState>`（読むのは `update` と `shutdown_token`、どちらも同名 field）。`build_daemon_router(state, daemon_state)` は群ごとに `with_state` してから `merge`、CORS は合流後に 1 回。`let app` を assemble の後ろへ。`AppState.update` は health が読むので残る。test: `daemon_router_keeps_update_routes` を 2 層（503 全 7 / 400 param 検証 4）に強化、CORS test 新設、fixture `build_test_daemon_state()`（`assemble` 経由）。drift 2 本（health+shutdown / 撤去 18 組）は本文無変更。
 - 2026-09-10: **PR-2b。** `shutdown_handler` の state を `Arc<DaemonState>`、route を `daemon_state_routes` 群へ（`AppState` 群に残るのは `/api/health` だけ）。test `shutdown_handler_cancels_shutdown_token` は `build_test_daemon_state()` で、`assemble` に渡した token が cancel されることを見る（handler が新設した token を cancel する mutation で赤）。`AppState.shutdown_token` は `repo/unison_server.rs:219` が読むので残る。
+- 2026-09-10: **PR-2c。** `health_handler` の state を `Arc<DaemonState>`（`daemon_cap` / `update` / `devices` / hub × 3 / `creo_actions` / `started_at` を読む）。repo 分岐（旧 `health.rs:119-200`、production 到達不能、`service_status` table への唯一の書き手）を削除。`HealthResponse` から `repo_dir` / `terminal_token` を削除（17 → 15、`status` / `version` / `pid` は不変）。**`AppState` 29 → 19 field**（`daemon` / `update` / `machine_capabilities` / `hub_status` / `hub_nodes` / `hub_auth` / `creo_actions` / `terminal_token` / `started_at` / `canvas_senders`）— 読み手は全部 health.rs だったことを `git grep` で全数確認。`build_daemon_router(daemon_state)` は 1 state に戻り `Router::merge` が消えた。`generate_terminal_token`（唯一の呼び手が消えた）を削除。test: fixture 2 関数を `build_test_daemon_state()` に、`daemon_health_carries_repo_dir` と旧 `health_handler_returns_200_with_stands_field` を削除、key 集合の期待から `repo_dir` / `terminal_token` を外した（承認済み差分）。他の assert は無変更。`build_test_daemon_app_state` / `TestStateParams` / `build_test_app_state_raw` は用済みで削除。

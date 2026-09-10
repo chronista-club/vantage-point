@@ -30,8 +30,7 @@ pub(crate) type ControlChannels = Arc<crate::repo::repo_registry::RepoRuntimes>;
 
 /// Daemon の共有状態
 pub struct DaemonState {
-    /// Daemon 起動時刻（RFC 3339）。`/api/health` の `started_at` に**そのまま**投影する値
-    /// （9-2 PR-2c で handler がここを読む。それまでは `AppState.started_at` が同じ文字列を持つ）。
+    /// Daemon 起動時刻（RFC 3339）。`/api/health` の `started_at` に**そのまま**投影する値。
     ///
     /// 構築時に 1 度確定して以後不変。`Instant` から `Utc::now() - elapsed()` で再計算する形は
     /// 取らない — sleep をまたぐと wall clock とずれ、5s 周期の health から起動時刻が動いて
@@ -156,15 +155,15 @@ pub struct DaemonState {
     /// L2 (doc 27 §5-3): event log（agent の episodic memory）。always-on daemon が in-memory ring で
     /// 保持し、"events" channel の emit/query と auto-feed task（process lifecycle → event）が共有する。
     pub event_log: super::event_log::EventLog,
-    /// ACTIONS の cache（doc 57）— `AppState.creo_actions` と**同一 Arc**。
+    /// ACTIONS の cache（doc 57）— `run_daemon` の 30s poller が温める実体と**同一 Arc**。
     ///
     /// 読み（30s poller）と書き（`daemon-control.actions/save`）が同じ実体を触るために plumb する。
     /// 別々に作ると「書いたのに `/api/health` に出ない」= 入口ごとに別の真実になる。
     pub creo_actions: crate::creo::client::CreoActionsCache,
     /// in-app update の capability — `MachineCapabilities.update` と**同一 Arc**。
     ///
-    /// `/api/health` の `update_available` / `latest_version` と `/api/update/*` の供給元。
-    /// 9-2 PR-2a / PR-2c で handler がここを読む（それまでは `AppState.update` が同じ Arc を映す）。
+    /// `/api/health` の `update_available` / `latest_version` と `/api/update/*` の供給元
+    /// （9-2 PR-2a / PR-2c で handler をここへ載せ替えた）。
     pub update: Option<Arc<RwLock<crate::capability::UpdateCapability>>>,
     /// chronista-hub federation の接続状態（writer = `run_hub_federation`、reader = `/api/health` の `hub`）。
     pub hub_status: crate::daemon::hub_client::HubFederationStatus,
@@ -324,8 +323,8 @@ impl DaemonState {
 /// test 用の daemon 役 `DaemonState`（棚卸し 9-2 PR-2a）。
 ///
 /// production と同じ [`assemble`](DaemonState::assemble) を通す — fixture だけ別経路で組むと、
-/// 結線の変更が test に映らない。`build_test_daemon_app_state`（`repo/state.rs`）の
-/// `DaemonState` 版で、PR-2c の health もこれに載せ替える。
+/// 結線の変更が test に映らない。router / health / shutdown の test が共有する
+/// （旧 `build_test_daemon_app_state`（`AppState` 版）は PR-2c で削除）。
 ///
 /// - `update` は `Some(new_for_test())`（`new()` は `gh auth token` を subprocess で叩く）。
 ///   network に出る handler（check / apply）や restart を `Some` のまま叩かないこと
@@ -3351,7 +3350,7 @@ mod tests {
     /// DeviceRegistry 🧲 は `MachineCapabilities.devices` の実体をそのまま共有する（feature = "midi"）。
     ///
     /// `with_devices` は使わない — `attach_fleet_inputs` が実機 MIDI を開ける
-    /// （`build_test_daemon_app_state` と同じ理由）。registry を手で置いて結線だけを見る。
+    /// （`build_test_daemon_state` と同じ理由）。registry を手で置いて結線だけを見る。
     #[cfg(feature = "midi")]
     #[tokio::test]
     async fn assemble_shares_devices_from_machine_capabilities() {
