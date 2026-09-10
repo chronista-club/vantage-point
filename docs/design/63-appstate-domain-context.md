@@ -112,7 +112,7 @@ if let Some(store) = state.wiremsg_store.as_ref() { store.leave_all_threads(..).
 | 段階 | 軸 | 完了条件 | 今回やる範囲 |
 |---|---|---|---|
 | **1** | 実行範囲（daemon 役 / repo 役） | **役の混在が消え、既存の結線と HTTP 契約が保たれた** | PR-0 〜 5（全部） |
-| **2** | 操作に渡す依存 | **leaf が全体 State を知らずに使える** | 最初の 1 PR だけ |
+| **2** | 操作に渡す依存 | **leaf が全体 State を知らずに使える** | PR-S2a `BoardContext` ✅（board の handler 6 + `seed_boards` が `repo_dir` / `vpdb` / `hub` の借用だけで動く、module から `RepoState` の import が消えた）→ PR-S2b `EditorContext`（`editor_pending` / `hub`）。**それ以上は広げない** |
 | **3** | 所有と寿命（停止責任） | **停止を要求した仕事の終わりまで確認できる** | 別 PR、段階 2 を待たない |
 
 ⚠️ **3 つを同じ PR の完了条件にしない。** 段階 1 で field 数が 29 → 14 になっても、board の読み取りに lane pool を渡せる状態は残る。それは段階 2 の仕事。段階 1 の合格を段階 2 の未達で止めない。
@@ -177,7 +177,7 @@ lane runtime  : lane_pool, terminal_pumps, replay_flights, system_event_tx
 | # | 不変条件 | 根拠 |
 |---|---|---|
 | 1 | **lane の格納構造を変えない** | §1 の 8 点。**`state.lane_pool` の出現 58**（`.lane_pool` の行は prod 59 + test 40、`lane_pool` を含む行は 125）が 1 つも動かないこと |
-| 2 | **保存済み DB key を黙って変えない** | key の系が既に 2 つある。board は `state.repo_dir` の**生文字列**を渡し（`repo/board.rs:93` / `:146` / `:160`）、`db/board.rs:402` の `load_board` は文字列一致で読む。runtime registry は `normalize_path_key`（`repo_registry.rs:130`）。**型を付けることと永続 key の正規化を分ける** |
+| 2 | **保存済み DB key を黙って変えない** | key の系が既に 2 つある。board は `BoardContext.repo_dir`（= `RepoState.repo_dir` の借用）の**生文字列**を渡し（`repo/board.rs` の `broadcast_board` / `handle_canvas_command` / `handle_board_clear` 等、段階 2 PR-S2a 以前は `state.repo_dir` 直読み）、`db/board.rs:402` の `load_board` は文字列一致で読む。runtime registry は `normalize_path_key`（`repo_registry.rs:130`）。**型を付けることと永続 key の正規化を分ける** |
 | 3 | **`bind_dual_stack`（`repo/server.rs:950`）→ `write_pid_file`（`:955`）の相対順** | バインド前に PID を書くと、失敗時に既存 daemon の PID を上書きして制御不能になる。PR-3 で動かすのは `let app`（`:946`）1 行だけ（`axum::serve` は `:1304` なので後ろへ動かせる） |
 | 4 | **破棄責任を変えない** | `lane_pool` → `PtySlot::drop`（`daemon/pty_slot.rs:547`）が lane の子プロセス回収の**唯一の経路**。副次的に「repo 役の drop で子が死ぬ」契約が型から読めるようになる |
 | 5 | **`HealthResponse` の `status` / `version` / `pid`** | **crate 内の `crate::cli::HealthResponse`（`cli.rs:12-19`）がこの 3 つを `#[serde(default)]` 無しで宣言している**。呼び手は全部 `.json().ok()?` で error を握り潰すので、1 つでも消すと **生きている daemon が「不在」に見える**（`daemon/process.rs:66` の pidfile 復元 / `commands/daemon.rs:120`・`:173`・`:268`）。⚠️ VP 外の消費者ではない（§7） |
@@ -423,3 +423,4 @@ struct の見た目が `Arc<...>` でなくても、`Clone` が同一実体を�
 - 2026-09-10: **PR-4。** `AppState.port` を削除（**15 → 14**、先に宣言してから diff を見た）。唯一の caller `RepoRuntimes::start` が `0` 固定で渡していて（SP-portless の遺産）、読み手は `restore_pane_contents` の tracing log の引数 1 つだけ → `repo_dir` に置換。`start_repo` の第 1 引数 `port` も落とした。
 - 2026-09-11: **PR-5。** `AppState` → `RepoState` 改名だけ。GitNexus `rename`（index を `bunx gitnexus analyze` で更新してから）で 31 file / 173 edit、`.rs` 外の comment 1 行（`vp-app/schema/vp-sidebar.kdl`）は sed。`grep -rnw AppState crates/` は **0**（doc コメント含む）。`git diff` の ± 行を `AppState` → `RepoState` で正規化して突き合わせると差 **0 行**（= 改名以外の変更なし、+174 / −174）。歴史的な散文（「PR-2c で `RepoState` の 10 field を削除」等）は「今 `RepoState` と呼ぶ struct が当時持っていた」と読む。test fixture の fn 名 `build_test_app_state*` は型名ではないので据え置き（follow-up 候補）。docs/ 配下の旧 doc は凍結（CLAUDE.md の方針）。
 - 2026-09-11: **9-2 締め。** 段階 1 完了を Status に。現行 doc に残っていた旧名を更新（doc 61 × 6 / doc 59 × 1、doc 47 は凍結注記ありで据え置き）、maintainer script の `.mise/tasks/daemon/stop`（comment 2 箇所 + `#MISE description` + 実行時 log の `project` → `repo`、rename 注記に 2026-07-27 の戻りを追記）/ `scripts/mise/vp.rb`（comment 1 箇所）— 「project が World プロセス内の Arc<AppState>」は語彙が 3 つ古かったのでまとめて現行に。§10 に 59 / 47 を追記、§8 に follow-up 4 件を追記。file 名は据え置き。
+- 2026-09-11: **段階 2 PR-S2a `BoardContext`。** 段階 2 は「最初の 1 PR だけ」の予定だったが、`EditorBridge` が同型で小さい（読むのは `editor_pending` / `hub` の 2 つ、spawn なし）ので PR-S2b として続けて取る — それ以上は広げない。`repo/board.rs` の handler 6 + `seed_boards`（+ 内部の `broadcast_board`）が `&RepoState` の代わりに `BoardContext<'_>`（`repo_dir: &str` / `vpdb: Option<&SharedVpDb>` / `hub: &Hub`、`Copy` の借用）を取る。`RepoState::board()` が組む。board.rs から `RepoState` の import が消えた = board が State の何を読むかは struct の 3 field で閉じる。test `board_handlers_need_only_the_board_context`（`RepoState` を組まずに mem db + `Hub` で show → read → `BoardUpdated` 受信、degrade の `None` も）。既存 2 本（dispatch 経由）は結線側の網。§7 の「`Arc<RepoState>` を隠さない / `Deref` で公開しない」どおり。`Option<&T>` は「DB 接続失敗で無い」`vpdb` 専用の形で、`EditorContext` の 2 field は非 `Option`。

@@ -103,11 +103,11 @@ pub(crate) async fn dispatch_repo_method(
         // retained）→ canvas channel → vp-app が受信して active Lane を切り替える。
         // board モデル (2026-07-15): show/clear は repo-authoritative な board 経路へ。
         // item を DB に durable append し、 更新後 board を BoardUpdated(retained) で broadcast する。
-        "show" | "clear" => board::handle_canvas_command(state, payload).await,
+        "show" | "clear" => board::handle_canvas_command(state.board(), payload).await,
         // doc 52 §5: id 指定 in-place 置換（read-first、id 不在は loud error）
-        "board_update" => board::handle_board_update(state, payload).await,
+        "board_update" => board::handle_board_update(state.board(), payload).await,
         // doc 52 §4/§5: 呼び出し元 lane の board を id 付き全文で返す（中継台 + identity lookup）
-        "read_board" => board::handle_board_read(state, payload).await,
+        "read_board" => board::handle_board_read(state.board(), payload).await,
         // doc 48 Phase 2: editor bridge (MCP → GUI request-response)
         "editor_fields" | "editor_values" | "editor_set" => {
             editor_bridge::handle_editor_command(state, method, payload).await
@@ -192,10 +192,10 @@ pub(crate) async fn dispatch_repo_method(
         "terminal_resize" => terminal_ops::handle_terminal_resize(state, payload).await,
         // board モデル (2026-07-15): webview からの board mutate（thumbnail ✕ / Clear ボタン）。
         // 旧 pp_state_save/load は撤去（board は repo truth、 webview は BoardUpdated 購読 + mutate へ）。
-        "board_delete_item" => board::handle_board_delete_item(state, payload).await,
-        "board_clear" => board::handle_board_clear(state, payload).await,
+        "board_delete_item" => board::handle_board_delete_item(state.board(), payload).await,
+        "board_clear" => board::handle_board_clear(state.board(), payload).await,
         // cursor の server 昇格（doc 52 §5 計器盤）: thumbnail click / scrollback の注視を repo truth に。
-        "board_set_cursor" => board::handle_board_set_cursor(state, payload).await,
+        "board_set_cursor" => board::handle_board_set_cursor(state.board(), payload).await,
         // lanes portless: Lane create/list (旧 SP HTTP POST/GET /api/lanes を repo-proxy ask に移管)
         "lane_create" => lane::ops::handle_lane_create(state, payload).await,
         "lanes_list" => lane::ops::handle_lanes_list(state).await,

@@ -176,6 +176,16 @@ pub(crate) struct RepoState {
 }
 
 impl RepoState {
+    /// board 操作に渡す借用 context（doc 63 §2 段階 2）。board の handler は `RepoState` を
+    /// 受け取らず、これだけを受け取る（`repo/board.rs`）。
+    pub(crate) fn board(&self) -> super::board::BoardContext<'_> {
+        super::board::BoardContext {
+            repo_dir: &self.repo_dir,
+            vpdb: self.vpdb.as_ref(),
+            hub: &self.hub,
+        }
+    }
+
     // tmux decoupling PR2: `ensure_tmux` / `primary_tmux_session` / `resolve_lane_session`
     // (TmuxActor 遅延初期化 + LaneAddress ⇄ tmux session 名の翻訳層) は退役。
     // lane の解決は `resolve_lane_address`、 console I/O は PtySlot (deliver_nudge / lane_capture)。

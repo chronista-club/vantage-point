@@ -398,7 +398,7 @@ pub(crate) async fn start_repo(
         // board モデル (2026-07-15): DB の全 board を起動直後に retained topic へ seed する。
         // webview が canvas channel を購読した瞬間、 BoardUpdated(retained) で全 board が初期配信される
         // （repo 再起動を越えて board が復元される。 別 load 経路は不要）。
-        super::board::seed_boards(&state).await;
+        super::board::seed_boards(state.board()).await;
         tokio::spawn(async move {
             use super::lane::SystemEvent;
             use tokio::sync::broadcast::error::RecvError;
