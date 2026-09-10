@@ -767,6 +767,17 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // ACTIONS の cache も同 pattern で共有（writer = 下の 30s poller、reader = `/api/health` の
     // `actions` / `actions_rev` field。初期 = 空 + rev 0 = 未取得、doc 57 Phase 3）。
     let creo_actions = crate::creo::client::CreoActionsCache::new();
+    // 9-2 PR-1: daemon 役 AppState と DaemonState の**両方**に渡す部品はここで 1 度だけ作る。
+    // AppState の中で inline に new() すると DaemonState 側に同じ実体を渡す手段が無い
+    // （PR-3 で daemon 役 AppState が消えたら DaemonState だけが持つ）。
+    // VP-159 PR-4b: daemon mode では空で構築 (= machine scope actor の register は後続 PR、
+    // device registry の metadata register は dynamic routing vision 確定後)
+    let actor_registry = Arc::new(RwLock::new(crate::capability::ActorRegistry::new()));
+    // 起動時刻は構築時に 1 度確定して以後不変（health はこの値をそのまま返す、doc 63 §7）
+    let started_at = chrono::Utc::now().to_rfc3339();
+    let wire_notifier = crate::capability::WireNotifier::new();
+    // R2-b: wire delivery loop の即時 wake (daemon_wire_send_handler が command 着信で notify)
+    let delivery_notify = std::sync::Arc::new(tokio::sync::Notify::new());
 
     // Create minimal state for daemon mode
     let state = Arc::new(AppState {
@@ -780,9 +791,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         repo_dir: String::new(),
         // R3: daemon mode は cross-process forward の対象外 (= 自 repo を持たない)
         repo_name: String::new(),
-        // VP-159 PR-4b: daemon mode では空で構築 (= machine scope actor の register は後続 PR、
-        // device registry の metadata register は dynamic routing vision 確定後)
-        actor_registry: Arc::new(RwLock::new(crate::capability::ActorRegistry::new())),
+        actor_registry: actor_registry.clone(),
         daemon: Some(daemon_cap.clone()),
         update: Some(update_cap.clone()),
         port,
@@ -793,24 +802,23 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         )),
         topic_router,
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-        started_at: chrono::Utc::now().to_rfc3339(),
+        started_at: started_at.clone(),
         vpdb: vpdb.clone(), // Daemon モードでも DB 参照あり
         // Phase A ① / R1: Daemon モードでも wiremsg store を build (上で async build 済)
-        wiremsg_store,
-        wire_notifier: crate::capability::WireNotifier::new(),
-        // R2-b: wire delivery loop の即時 wake (daemon_wire_send_handler が command 着信で notify)
-        delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+        wiremsg_store: wiremsg_store.clone(),
+        wire_notifier: wire_notifier.clone(),
+        delivery_notify: delivery_notify.clone(),
         // Phase A4-2b: Daemon モードでは Lane / Repo の機能を持たない (空 Pool で AppState を満たす)
         // 多 scope architecture: daemon は App scope の component、Lane/RepoStand は Repo scope
         lane_pool: Arc::new(RwLock::new(super::lane::LanePool::new())),
         // Phase 2 (Step E): system event central bus
         system_event_tx: tokio::sync::broadcast::channel::<super::lane::SystemEvent>(64).0,
         // PR-α-1 (VP-111): machine 階層 Agent container (LSCM doc 12 §3 / §9)
-        machine_capabilities: Some(machine_capabilities),
+        machine_capabilities: Some(machine_capabilities.clone()),
         // S2: daemon mode は repo の per-lane pump を持たない (terminal pump は repo scope)。
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
         // 委譲 (delegation) の daemon 中央 store (doc 28 §6)。daemon mode のみ Some。
-        delegation_store,
+        delegation_store: delegation_store.clone(),
         editor_pending: Default::default(),
     });
 
@@ -941,8 +949,8 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         );
     }
 
-    // L0 portless B-4: state は後段の daemon_state_builder.with_wire でも参照するため clone
-    // (Arc clone は安価、 router と daemon QUIC server が同一 AppState を共有)。
+    // state は後段（wire delivery actor / federation relay の on_relay）でも参照するため clone
+    // (Arc clone は安価)。9-2 PR-3 で daemon 役 AppState ごと消える。
     let app = build_daemon_router(state.clone());
 
     // Phase 5-D: dual-stack listen (IPv4 + IPv6) ─ vp-app の `http://127.0.0.1:32000` ping、
@@ -957,57 +965,38 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // Clone for shutdown
     let daemon_for_shutdown = daemon_cap.clone();
 
-    // Daemon QUIC サーバー起動（PTY セッション管理 + Registry チャネル、同一ポートで UDP/QUIC）
-    // RepoManagerCapability の running_repos を DaemonState と共有
-    let running_processes_ref = daemon_cap.read().await.running_processes_ref();
-    let repos_ref = daemon_cap.read().await.repos_ref();
-    // Phase 1b: lane_registry も共有 (repo register の lanes payload を cache する)
-    let lane_registry_ref = daemon_cap.read().await.lane_registry_ref();
-    // L1 lifecycle: process_presence も共有 (registry handler が presence を遷移させる)
-    let process_presence_ref = daemon_cap.read().await.process_presence_ref();
-    let mut daemon_state_builder = crate::daemon::server::DaemonState::new()
-        .with_running_processes(
-            running_processes_ref,
-            repos_ref,
-            lane_registry_ref,
-            process_presence_ref,
-        )
-        // control plane 一元化: daemon_cap (= HTTP AppState.daemon と同一 Arc) を共有し、
-        // Unison "daemon-control" channel から repos mutation を受けられるようにする。
-        .with_daemon_cap(daemon_cap.clone())
-        // tmux decoupling PR1: 上で hoist した control channel map を daemon server と共有する
-        // (daemon が repo 接続で populate → nudge loop がここから forward 先を引く)。
-        .with_control_channels(control_channels.clone())
-        // boot 窓の根治: RepoRuntimes と同一の canvas map を共有（分裂すると養子縁組不能）
-        .with_canvas_routers(canvas_routers.clone())
-        // doc 44 §11: repo 側の publish が撃つのと**同一の** channel を daemon の
-        // push loop に購読させる（別々に作ると生産者ゼロで永久沈黙する）。
-        .with_lane_change_tx(lane_change_tx.clone())
-        // doc 57 Phase 4: ACTIONS の cache を AppState と共有する。読み（30s poller →
-        // `/api/health`）と書き（`daemon-control.actions/save`）が同じ実体を触るために要る。
-        .with_creo_actions(creo_actions.clone());
-    // doc 24 §10 Phase 2: lane descriptor の durable 永続先 (capability boot load と同一 db)。
-    if let Some(ref db) = vpdb {
-        daemon_state_builder = daemon_state_builder.with_vpdb(db.clone());
-    }
-    // L0 portless B-4 (wire-unison): daemon 中央 wire/delegation store を daemon QUIC server と共有する。
-    // `state` (daemon process AppState) が保持する **同一 Arc** を渡す (同一プロセス) — "wire" channel が
-    // これを使って旧 `/api/wire/*` `/api/delegation/*` HTTP を unison channel で serve する (doc 27 §62)。
-    daemon_state_builder = daemon_state_builder.with_wire(
-        state.wiremsg_store.clone(),
-        state.wire_notifier.clone(),
-        state.delivery_notify.clone(),
-        state.delegation_store.clone(),
+    // Daemon QUIC サーバー起動（PTY セッション管理 + Registry チャネル、同一ポートで UDP/QUIC）。
+    //
+    // 9-2 PR-1: 結線は `DaemonState::assemble` の 1 箇所（doc 63 §5.1）。渡すのは全部
+    // **上で作った同じ実体** — repo の各 view は `machine_capabilities.repo_manager` から、
+    // update / devices も同じ container から取り出す。ここで `new()` を書いたら別実体になる。
+    // 共有の理由は各 field の doc（`daemon/server.rs`）に残してある:
+    // - daemon_cap: Unison "daemon-control" の repos mutation を HTTP と同じ権威に反映
+    // - control_channels / canvas_routers / lane_change_tx: RepoRuntimes と分裂すると forward 不能 /
+    //   養子縁組不能 / 生産者ゼロで永久沈黙
+    // - creo_actions: 書き（actions/save）が読み（poller → health）と別実体だと「書いたのに戻る」
+    // - wiremsg_store 等: "wire" channel が旧 `/api/wire/*` を同じ中央 store で serve する
+    let daemon_state = std::sync::Arc::new(
+        crate::daemon::server::DaemonState::assemble(crate::daemon::server::DaemonAssembly {
+            machine_capabilities: machine_capabilities.clone(),
+            hub_status: hub_status.clone(),
+            hub_nodes: hub_nodes.clone(),
+            hub_auth: hub_auth.clone(),
+            creo_actions: creo_actions.clone(),
+            shutdown_token: shutdown_token.clone(),
+            actor_registry: actor_registry.clone(),
+            started_at: started_at.clone(),
+            vpdb: vpdb.clone(),
+            control_channels: control_channels.clone(),
+            canvas_routers: canvas_routers.clone(),
+            lane_change_tx: lane_change_tx.clone(),
+            wiremsg_store: wiremsg_store.clone(),
+            wire_notifier: wire_notifier.clone(),
+            delivery_notify: delivery_notify.clone(),
+            delegation_store: delegation_store.clone(),
+        })
+        .await,
     );
-    // DeviceRegistry 🧲 EventBus を共有 — daemon-device channel が device event を vp-app に bridge する。
-    // machine_capabilities は L810 で move 済みなので、 move 前に clone した devices_for_shutdown を使う。
-    #[cfg(feature = "midi")]
-    if let Some(devices) = devices_for_shutdown.as_ref() {
-        let event_bus = devices.read().await.event_bus().clone();
-        daemon_state_builder = daemon_state_builder.with_devices_event_bus(event_bus);
-        // M2 / doc 26 §2: device channel (agent → daemon) が registry を更新するため registry 本体も共有。
-        daemon_state_builder = daemon_state_builder.with_devices(devices.clone());
-    }
     // doc 44 P1 (fold-in): capability の start_process / stop_process が lifecycle event を
     // 流せるよう、DaemonState と**同一の** broadcast Sender を共有する（clone しても同じ
     // channel を指す）。これが無いと `vp daemon processes --watch` / event log の
@@ -1015,9 +1004,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     daemon_cap
         .write()
         .await
-        .set_process_lifecycle_tx(daemon_state_builder.process_lifecycle_tx.clone());
-
-    let daemon_state = std::sync::Arc::new(daemon_state_builder);
+        .set_process_lifecycle_tx(daemon_state.process_lifecycle_tx.clone());
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
         daemon_state,
         port,

@@ -192,7 +192,7 @@ lane runtime  : lane_pool, terminal_pumps, replay_flights, system_event_tx
 | **A** ✅ | wire 離脱バグの修正（#1099） | 新 test が fix 前に**赤**、fix 後に緑。`delete_lane_clears_persisted_rows` / `leaving_agent_drops_out_of_pending` が緑のまま |
 | **0** | 本 doc（材料表 → 設計） | doc review |
 | **0.5** | `/api/health` の daemon 形 characterization test | **`HealthResponse` の全 17 key を、存在だけでなく値と省略条件で固定する**（`status=="ok"` / `version` / `pid` / `repo_dir==""` / `started_at` / `hub=="disabled"` / `hub_nodes==[]` / `auth_targets` の key 集合 / **`processes==[]`** / `update_available==false` / `latest_version` omit / `actions==[]` / `actions_rev==0` / `terminal_token` omit / `services` の有無 / `idle_timeout_minutes`）。⚠️ **`processes` を外さない** — `health.rs:241` の `state.daemon` が producer で、PR-2c が `DaemonState.daemon_cap` に載せ替える**まさにその field**。`repo_dir` も §3 で削除対象なので baseline に要る。**PR-2c で fixture を差し替えるだけで通ること**が進行条件。assert を 1 つでも緩めたら不合格 |
-| **1** | `DaemonState` に 6 field 追加 + `started_at` を `String` 化 + **組み立て口を 1 つに**（§5.1） | drift test 3 本の**本文が触られずに**緑。**共有実体テスト**が通る（§6） |
+| **1** ✅ | `DaemonState` に 6 field 追加 + `started_at` を `String` 化 + **組み立て口を 1 つに**（§5.1） | drift test 3 本の**本文が触られずに**緑。**共有実体テスト**が通る（§6） — `assemble_projects_the_given_instances`、mutation 3 本で赤を実測 |
 | **1.5** | `build_test_app_state*` から dead な `daemon` 引数を落とす（65 site） | `git diff` の追加行 ≒ 削除行。変更が `(None)` → `()` と fixture 定義だけ |
 | **2a** | `/api/update/*` 7 route → `Arc<DaemonState>`。**`AppState.update` は残す** | drift test の**本文（route 表と assert）が 1 文字も変わらず**緑。**`daemon_router_keeps_update_routes` を `assert_ne!(NOT_FOUND)` から実応答の固定へ強化**（§5.2） |
 | **2b** | `/api/shutdown` → `Arc<DaemonState>` | **組み立て口に渡した token** が cancel される。handler 内で新設した token を cancel する test では不足。→ `shutdown_token` は `DaemonState` に**無い**（PR-1 で新設する 6 のうちの 1 つ）。新設時に `pub` で入れる |
@@ -214,13 +214,14 @@ lane runtime  : lane_pool, terminal_pumps, replay_flights, system_event_tx
 - **`actor_registry` は handler の依存ではない。** PR-1 では保持先を移すだけで、最終的には段階 3 の task 所有側へ
 
 ```
-現在: router 構築 server.rs:946 → DaemonState builder :968 → Arc 化 :1020
-必要: HTTP を DaemonState に移すには、部品の結線を router より前に完了させる
-     → 副作用のない assembly 関数を共通入口にする
-       （socket / device / poller を起動せずに実物の結線をテストできる）
+PR-1 前: router 構築 server.rs:946 → DaemonState builder（new() + with_* 10 本）:968 → Arc 化 :1020
+PR-1 後: router 構築 → `DaemonState::assemble(DaemonAssembly { 16 field 全部必須 })` → Arc 化
+       副作用なし（socket / device / poller を起動しない）なので test が実物の結線を通せる
 ```
 
-必須 field を持つ名前付き引数用 struct は候補だが、**`Default` で穴を埋める仕組みには戻さない**。bind・PID 書き込み・外部サービス起動の順序変更は別に扱う（不変条件 3）。
+必須 field を持つ名前付き引数用 struct（`DaemonAssembly`）で入れた。**`Default` で穴を埋める仕組みには戻さない** — `Option` は「DB 接続失敗で無い」3 つ（`vpdb` / `wiremsg_store` / `delegation_store`）だけ。`Default` / `new()` 自体は test と `daemon/process.rs::run_daemon`（workspace 内に呼び手なし）のために残した。bind・PID 書き込み・外部サービス起動の順序は動かしていない（不変条件 3）。
+
+⚠️ **router 構築（`let app = build_daemon_router(state.clone())`）はまだ assemble より前にある。** PR-1 では動かさない — PR-2a で `build_daemon_router` が `Arc<DaemonState>` も取るようになった時に、`let app` を assemble の後ろへ動かす（`axum::serve` まで使わないので後ろへ動かせる、不変条件 3）。
 
 ### 5.2 drift net の現状 — 3 本ある
 
@@ -402,3 +403,10 @@ struct の見た目が `Arc<...>` でなくても、`Clone` が同一実体を�
   ⑮ 行ずれ 5 件（`build_daemon_router` の定義行 / `WiremsgStore::new` / doc 01 / doc 12 / doc 44 の「30 field」）
   ⑯ PR-0.5 の検収列挙に **`processes` が無い** — PR-2c が載せ替える当の field
   ⑰ 再現不能だった「31%（16/52）」を落とし、`actor_registry` / `wire_notifier` の出典を実物へ
+- 2026-09-10: **PR-0.5（#1102）。** daemon 形 `/api/health` の characterization 6 本 + fixture `build_test_daemon_app_state()`。層 1（key 集合と既定値）+ 層 2（渡した実体の投影 / `started_at` の不変）。mutation 3 本で赤を実測。production 変更 0 行。
+- 2026-09-10: **PR-1。** `DaemonState` は **19 → 25 field**（`update` / `hub_status` / `hub_nodes` / `hub_auth` / `shutdown_token` / `actor_registry`）、`started_at` は `Instant` → `String`（production の読み手 0、test 1 本だけが `elapsed()` を見ていた）。
+  **組み立て口は `DaemonState::assemble(DaemonAssembly)` の 1 つ**（§5.1）。builder 10 本（`with_running_processes` / `with_daemon_cap` / `with_creo_actions` / `with_control_channels` / `with_canvas_routers` / `with_lane_change_tx` / `with_vpdb` / `with_devices_event_bus` / `with_devices` / `with_wire`）を撤去。repo の 4 view は `machine_capabilities.repo_manager` の `*_ref()` から、`update` / `devices` も同じ container から取り出す。
+  `run_daemon` は両方（daemon 役 `AppState` と `DaemonState`）に渡す部品（`actor_registry` / `started_at` / `wire_notifier` / `delivery_notify`）を **1 度だけ作る**よう hoist した — `AppState` の中で inline に `new()` すると `DaemonState` に同じ実体を渡す手段が無い。
+  **共有実体テスト**: `assemble_projects_the_given_instances`（渡した側を非初期値へ動かして state 側から見える + `Arc::ptr_eq` 補助）+ `assemble_shares_devices_from_machine_capabilities`（midi）。mutation 3 本（`hub_status` を `new()` / `shutdown_token` を `new()` / `process_presence` を空 map）で**この test だけが赤**、health 6 本と drift 3 本は緑のまま（HTTP はまだ `AppState` を読む）。
+  drift test 3 本（§5.2）は本文どころか fixture も触っていない。health 6 本も同じ。
+
