@@ -145,9 +145,7 @@ impl RepoRuntimes {
         if adopted_router.is_some() {
             tracing::info!("canvas placeholder router を養子縁組 (key={})", key);
         }
-        // port はもう bind されない（SP-portless の遺産）。fold-in で概念ごと消えるため 0 を渡す。
         let state = super::server::start_repo(
-            0,
             repo_dir.to_string(),
             shutdown.clone(),
             self.node_lanes.clone(),

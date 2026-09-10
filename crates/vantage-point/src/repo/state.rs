@@ -135,8 +135,6 @@ pub(crate) struct AppState {
     /// （daemon 側の registry は `DaemonState.actor_registry`、9-2 PR-3 で分離）。
     /// PR-5 supervisor 統一で JoinHandle 経由の abort / await を activate する foundation。
     pub actor_registry: Arc<RwLock<ActorRegistry>>,
-    /// Processの待ち受けポート番号
-    pub port: u16,
     /// ファイル監視マネージャー
     pub file_watchers: Arc<tokio::sync::Mutex<FileWatcherManager>>,
     /// プロセスレジストリ（ProcessRunner）
@@ -297,9 +295,9 @@ impl AppState {
         }
         if count > 0 {
             tracing::info!(
-                "ペイン状態を pane_contents から復元: {} ペイン (port={})",
+                "ペイン状態を pane_contents から復元: {} ペイン (repo_dir={})",
                 count,
-                self.port
+                self.repo_dir
             );
         }
     }
@@ -351,7 +349,6 @@ pub(crate) async fn build_test_app_state_with(
         repo_dir: repo_dir.to_string(),
         repo_name: String::new(),
         actor_registry: Arc::new(RwLock::new(ActorRegistry::new())),
-        port: 0,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         process_registry: Arc::new(tokio::sync::Mutex::new(ProcessRegistry::new())),
         topic_router: Arc::new(TopicRouter::new()),
