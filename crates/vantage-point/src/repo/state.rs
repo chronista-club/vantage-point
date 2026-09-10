@@ -2,7 +2,6 @@
 //!
 //! Process サーバーの共有状態と関連型を定義する。
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -171,8 +170,7 @@ pub(crate) struct RepoState {
     /// `handle_editor_command` が登録して `EditorCommand` を broadcast、GUI からの
     /// `editor_result` (`handle_editor_result`) が解決する。timeout 時は登録側が
     /// remove するので、遅延到着した stale 応答は不在 key として無視される (idempotent)。
-    pub editor_pending:
-        Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<serde_json::Value>>>>,
+    pub editor_pending: Arc<super::editor_bridge::EditorPending>,
 }
 
 impl RepoState {
@@ -182,6 +180,14 @@ impl RepoState {
         super::board::BoardContext {
             repo_dir: &self.repo_dir,
             vpdb: self.vpdb.as_ref(),
+            hub: &self.hub,
+        }
+    }
+
+    /// editor bridge に渡す借用 context（doc 63 §2 段階 2、PR-S2b）。`repo/editor_bridge.rs`。
+    pub(crate) fn editor(&self) -> super::editor_bridge::EditorContext<'_> {
+        super::editor_bridge::EditorContext {
+            pending: &self.editor_pending,
             hub: &self.hub,
         }
     }
@@ -368,7 +374,7 @@ pub(crate) async fn build_test_app_state_with(
         vpdb,
         lane_pool: Arc::new(RwLock::new(LanePool::new())),
         system_event_tx: tokio::sync::broadcast::channel::<super::lane::SystemEvent>(64).0,
-        terminal_pumps: Arc::new(RwLock::new(HashMap::new())),
+        terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
         editor_pending: Default::default(),
     })
 }

@@ -5,9 +5,30 @@
 //! oneshot を登録し、`RepoMessage::EditorCommand` を broadcast、GUI（vp-app）が `editor_result` で
 //! 返した payload で解決する。往路（`handle_editor_command`）と復路（`handle_editor_result`）は
 //! 同じ `editor_pending` を触るのでここに同居する。
+//!
+//! 棚卸し 9-2 段階 2（doc 63 §2、PR-S2b）: handler は `RepoState` を受け取らず、要る 2 つ
+//! （`editor_pending` / `hub`）だけを束ねた [`EditorContext`] を受け取る。呼び手は
+//! `RepoState::editor()` で作る。この module は `RepoState` を import しない。
 
-use super::state::RepoState;
+use super::hub::Hub;
 use crate::protocol::RepoMessage;
+use std::collections::HashMap;
+
+/// editor bridge の pending 応答 map（request_id → oneshot）。`RepoState.editor_pending` の型。
+pub(crate) type EditorPending =
+    tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<serde_json::Value>>>;
+
+/// editor bridge が要る依存だけの借用 context（doc 63 §2 段階 2）。
+///
+/// `BoardContext` と同型の `Copy` 借用。2 field とも非 `Option`（`Option<&T>` は「DB 接続失敗で
+/// 無い」`vpdb` 専用の形）。往路は timeout まで 1 つの借用の中で待つ（spawn しない）ので借用で足りる。
+#[derive(Clone, Copy)]
+pub(crate) struct EditorContext<'a> {
+    /// 往路が登録し、復路が `request_id` で解決する。timeout 時は往路が remove
+    pub pending: &'a EditorPending,
+    /// `EditorCommand` の broadcast 先（canvas channel、非 retained event topic）
+    pub hub: &'a Hub,
+}
 
 /// GUI 応答待ちの上限。MCP 側 outer timeout (5s、`quic_call`) より短くすること
 /// (VP-163: server が client より長く待つと channel reset → 空振りリトライになる)。
@@ -20,7 +41,7 @@ const EDITOR_BRIDGE_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// 結果を `editor_result` で返すと oneshot が解決する。timeout = GUI 不在 / 対象
 /// repo 未表示 / Editor Mode 未 mount。
 pub(crate) async fn handle_editor_command(
-    state: &RepoState,
+    ctx: EditorContext<'_>,
     method: &str,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -38,12 +59,8 @@ pub(crate) async fn handle_editor_command(
 
     let request_id = crate::trace_log::new_trace_id();
     let (tx, rx) = tokio::sync::oneshot::channel::<serde_json::Value>();
-    state
-        .editor_pending
-        .lock()
-        .await
-        .insert(request_id.clone(), tx);
-    state.hub.broadcast(RepoMessage::EditorCommand {
+    ctx.pending.lock().await.insert(request_id.clone(), tx);
+    ctx.hub.broadcast(RepoMessage::EditorCommand {
         request_id: request_id.clone(),
         op,
         field_id,
@@ -55,7 +72,7 @@ pub(crate) async fn handle_editor_command(
         // timeout / sender drop: pending を掃除してから明示エラー
         // (残すと map が leak し、遅延応答が別 request に誤配されうる)
         _ => {
-            state.editor_pending.lock().await.remove(&request_id);
+            ctx.pending.lock().await.remove(&request_id);
             Err(
                 "editor bridge timeout — vp-app が起動して当該 repo を表示しているか確認"
                     .to_string(),
@@ -69,7 +86,7 @@ pub(crate) async fn handle_editor_command(
 /// 不在 key = timeout 済の stale 応答。エラーにせず無視する (idempotent) —
 /// GUI 側は応答の成否で挙動を変えないため。
 pub(crate) async fn handle_editor_result(
-    state: &RepoState,
+    ctx: EditorContext<'_>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let request_id = payload
@@ -81,7 +98,7 @@ pub(crate) async fn handle_editor_result(
         .get("payload")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
-    if let Some(tx) = state.editor_pending.lock().await.remove(request_id) {
+    if let Some(tx) = ctx.pending.lock().await.remove(request_id) {
         let _ = tx.send(body);
     }
     Ok(serde_json::json!({"status": "ok"}))
@@ -89,6 +106,48 @@ pub(crate) async fn handle_editor_result(
 
 #[cfg(test)]
 mod tests {
+    /// 棚卸し 9-2 段階 2（doc 63 §2）: **editor bridge の handler は `RepoState` 無しで動く。**
+    ///
+    /// `Mutex<HashMap>` と `Hub` だけで [`super::EditorContext`] を組み、往路 → 復路の相関を通す。
+    /// `RepoState` を組まないこと自体が証明（handler が State の別 field を読み始めれば compile で落ちる）。
+    /// 下の 3 本（`RepoState::editor()` 経由）は結線側の網。
+    #[tokio::test]
+    async fn editor_handlers_need_only_the_editor_context() {
+        use super::{EditorContext, EditorPending, handle_editor_command, handle_editor_result};
+        use crate::protocol::RepoMessage;
+        use crate::repo::hub::Hub;
+
+        let pending: EditorPending = tokio::sync::Mutex::new(std::collections::HashMap::new());
+        let hub = Hub::new();
+        let ctx = EditorContext {
+            pending: &pending,
+            hub: &hub,
+        };
+        let mut hub_rx = hub.subscribe();
+
+        let (cmd_res, ()) = tokio::join!(
+            handle_editor_command(ctx, "layout_get", serde_json::json!({})),
+            async {
+                let msg = hub_rx.recv().await.expect("EditorCommand broadcast");
+                let RepoMessage::EditorCommand { request_id, op, .. } = msg else {
+                    panic!("EditorCommand 以外が broadcast された");
+                };
+                assert_eq!(
+                    op, "layout_get",
+                    "editor_ prefix が無い method は op = method"
+                );
+                handle_editor_result(
+                    ctx,
+                    serde_json::json!({ "request_id": request_id, "payload": { "layout": "L" } }),
+                )
+                .await
+                .expect("editor_result ok");
+            }
+        );
+        assert_eq!(cmd_res.expect("roundtrip")["layout"], "L");
+        assert!(pending.lock().await.is_empty(), "解決後の pending は空");
+    }
+
     /// doc 48 Phase 2: editor bridge の相関 — command が pending を作り broadcast、
     /// GUI 相当の `editor_result` が request_id で解決して呼び出し元に payload が返る。
     #[tokio::test]
@@ -102,7 +161,7 @@ mod tests {
         let mut hub_rx = state.hub.subscribe();
 
         let (cmd_res, ()) = tokio::join!(
-            handle_editor_command(&state, "editor_values", serde_json::json!({})),
+            handle_editor_command(state.editor(), "editor_values", serde_json::json!({})),
             async {
                 let msg = hub_rx.recv().await.expect("EditorCommand broadcast");
                 let RepoMessage::EditorCommand { request_id, op, .. } = msg else {
@@ -110,7 +169,7 @@ mod tests {
                 };
                 assert_eq!(op, "values");
                 handle_editor_result(
-                    &state,
+                    state.editor(),
                     serde_json::json!({
                         "request_id": request_id,
                         "payload": { "values": { "sb.text.base": 13 } }
@@ -134,7 +193,7 @@ mod tests {
 
         let state = build_test_app_state().await;
         let r = handle_editor_result(
-            &state,
+            state.editor(),
             serde_json::json!({"request_id": "gone", "payload": {}}),
         )
         .await;
@@ -154,7 +213,7 @@ mod tests {
             serde_json::json!({"value": 1}),
         ] {
             assert!(
-                handle_editor_command(&state, "editor_set", payload.clone())
+                handle_editor_command(state.editor(), "editor_set", payload.clone())
                     .await
                     .is_err(),
                 "payload {payload} が弾かれていない"

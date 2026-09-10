@@ -110,14 +110,14 @@ pub(crate) async fn dispatch_repo_method(
         "read_board" => board::handle_board_read(state.board(), payload).await,
         // doc 48 Phase 2: editor bridge (MCP → GUI request-response)
         "editor_fields" | "editor_values" | "editor_set" => {
-            editor_bridge::handle_editor_command(state, method, payload).await
+            editor_bridge::handle_editor_command(state.editor(), method, payload).await
         }
         // doc 49 LE-P2 PR2: layout bridge (LE-15)。editor bridge と同じ配管を op を変えて共用
         // (method に editor_ prefix が無いので op = method のまま vp-app に届く)
         "layout_get" | "layout_set" | "layout_history" => {
-            editor_bridge::handle_editor_command(state, method, payload).await
+            editor_bridge::handle_editor_command(state.editor(), method, payload).await
         }
-        "editor_result" => editor_bridge::handle_editor_result(state, payload).await,
+        "editor_result" => editor_bridge::handle_editor_result(state.editor(), payload).await,
         "toggle_pane" | "split_pane" | "close_pane" | "switch_lane" => {
             handle_process_message(state, payload)
         }
