@@ -217,12 +217,6 @@ pub(crate) async fn start_repo(
         )),
         topic_router,
         vpdb: vpdb.clone(),
-        // wiremsg R2-a: repo は wire store を持たない (daemon に中央化、 handler は proxy)
-        wiremsg_store: None,
-        // wire_notifier / delivery_notify は daemon mode 専用 (daemon の long-poll 起床 /
-        // delivery loop wake)。 repo では未使用だが AppState 共有 field のため空で満たす
-        wire_notifier: crate::capability::WireNotifier::new(),
-        delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         // Phase A4-2b: Lane scope の Agent pool — Main Lane 1 つ pre-populate
         // memory rule: 多 scope architecture (App/Repo/Lane/Pane)、HD/TH は Lane scope。
         // Sub Lane の動的 create は A4-4、Agent spawn 連動は A5 で実装。
@@ -242,8 +236,6 @@ pub(crate) async fn start_repo(
         // 追加で乗る。
         system_event_tx: tokio::sync::broadcast::channel::<super::lane::SystemEvent>(64).0,
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
-        // repo mode は delegation store を持たない (daemon 中央 store に proxy する)。
-        delegation_store: None,
         editor_pending: Default::default(),
     });
 
@@ -681,13 +673,9 @@ pub async fn run_daemon(port: u16) -> Result<()> {
 
     let daemon_cap = Arc::new(RwLock::new(daemon_cap));
     let update_cap = Arc::new(RwLock::new(update_cap));
-    let hub = Hub::new();
 
-    // TopicRouter（Daemon モードでは Hub ブリッジ不要だが、AppState の必須フィールド）
-    let topic_router = Arc::new(TopicRouter::new());
-
-    // PR-α-1 (VP-111): machine 階層の機能 を 1 instance ずつ生成して、 AppState 既存 field と
-    // MachineCapabilities container の両方に share させる (二重生成は避ける)。
+    // PR-α-1 (VP-111): machine 階層の機能 を 1 instance ずつ生成して MachineCapabilities
+    // container に集約する。`DaemonState::assemble` がここから取り出す (二重生成は避ける)。
     //
     // device 管理は DeviceRegistry 🧲 に一本化（feature = "midi" 時は `with_devices` で host 化）。
     // 旧 MidiCapability hosting（単一 port の無条件 grab）は退役 — 消費者不在のまま
@@ -756,10 +744,8 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // ACTIONS の cache も同 pattern で共有（writer = 下の 30s poller、reader = `/api/health` の
     // `actions` / `actions_rev` field。初期 = 空 + rev 0 = 未取得、doc 57 Phase 3）。
     let creo_actions = crate::creo::client::CreoActionsCache::new();
-    // 9-2 PR-1: DaemonState に渡す部品はここで 1 度だけ作る（AppState の中で inline に
-    // new() すると DaemonState 側に同じ実体を渡す手段が無い、が動機だった。PR-2c で hub × 3 /
-    // creo_actions / started_at は AppState から消え、actor_registry / wire_notifier /
-    // delivery_notify だけがまだ両方に渡る — PR-3 で daemon 役 AppState ごと消える）。
+    // 9-2 PR-1: DaemonState に渡す部品はここで 1 度だけ作る。delivery actor / federation relay も
+    // 同じ local を capture する（別々に new() すると wire の起床が届かない）。
     // VP-159 PR-4b: daemon mode では空で構築 (= machine scope actor の register は後続 PR、
     // device registry の metadata register は dynamic routing vision 確定後)
     let actor_registry = Arc::new(RwLock::new(crate::capability::ActorRegistry::new()));
@@ -768,38 +754,6 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     let wire_notifier = crate::capability::WireNotifier::new();
     // R2-b: wire delivery loop の即時 wake (daemon_wire_send_handler が command 着信で notify)
     let delivery_notify = std::sync::Arc::new(tokio::sync::Notify::new());
-
-    // Create minimal state for daemon mode
-    let state = Arc::new(AppState {
-        replay_flights: crate::repo::state::ReplayFlights::default(),
-        hub,
-        shutdown_token: shutdown_token.clone(),
-        repo_dir: String::new(),
-        // R3: daemon mode は cross-process forward の対象外 (= 自 repo を持たない)
-        repo_name: String::new(),
-        actor_registry: actor_registry.clone(),
-        port,
-        file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
-        process_registry: Arc::new(tokio::sync::Mutex::new(
-            crate::repo::process_runner::ProcessRegistry::new(),
-        )),
-        topic_router,
-        vpdb: vpdb.clone(), // Daemon モードでも DB 参照あり
-        // Phase A ① / R1: Daemon モードでも wiremsg store を build (上で async build 済)
-        wiremsg_store: wiremsg_store.clone(),
-        wire_notifier: wire_notifier.clone(),
-        delivery_notify: delivery_notify.clone(),
-        // Phase A4-2b: Daemon モードでは Lane / Repo の機能を持たない (空 Pool で AppState を満たす)
-        // 多 scope architecture: daemon は App scope の component、Lane/RepoStand は Repo scope
-        lane_pool: Arc::new(RwLock::new(super::lane::LanePool::new())),
-        // Phase 2 (Step E): system event central bus
-        system_event_tx: tokio::sync::broadcast::channel::<super::lane::SystemEvent>(64).0,
-        // S2: daemon mode は repo の per-lane pump を持たない (terminal pump は repo scope)。
-        terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
-        // 委譲 (delegation) の daemon 中央 store (doc 28 §6)。daemon mode のみ Some。
-        delegation_store: delegation_store.clone(),
-        editor_pending: Default::default(),
-    });
 
     // in-app update: GitHub Releases latest の定期チェック（起動時 + 24h 毎）で
     // UpdateCapability の cache を温める。/api/health がこの cache を読んで
@@ -901,14 +855,14 @@ pub async fn run_daemon(port: u16) -> Result<()> {
 
     // R2-b: wire delivery loop (未 ack command の nudge + 再掲示) を spawn。
     // store 未構築 (DB 接続失敗) なら skip — wire 自体が動かないため delivery も不要。
-    if let Some(store) = state.wiremsg_store.clone() {
+    if let Some(store) = wiremsg_store.clone() {
         let lane_registry = daemon_cap.read().await.lane_registry_ref();
-        state.actor_registry.write().await.spawn_service(
+        actor_registry.write().await.spawn_service(
             super::delivery_actor::DeliveryActor::new(
                 store,
                 lane_registry,
                 control_channels.clone(),
-                state.delivery_notify.clone(),
+                delivery_notify.clone(),
             ),
             shutdown_token.clone(),
         );
@@ -918,7 +872,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // delivered=false の再 nudge + stale な未終了の timeout → Failed{timeout}。
     // Daemon-side wake (lane_registry + repo-proxy lane_nudge) なので delivery loop と同じ
     // lane_registry / control_channels を使う。
-    if let Some(store) = state.delegation_store.clone() {
+    if let Some(store) = delegation_store.clone() {
         let lane_registry = daemon_cap.read().await.lane_registry_ref();
         super::delegation::spawn_reconcile_loop(
             store,
@@ -982,9 +936,8 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         .set_process_lifecycle_tx(daemon_state.process_lifecycle_tx.clone());
     // HTTP router は DaemonState を取るので assemble の後で組む（9-2 PR-2a でここへ動かした。
     // `axum::serve` は下の方なので位置は自由。`bind_dual_stack` → `write_pid_file` の順は
-    // 上のまま動かしていない）。daemon 役 `state`（AppState）はもう HTTP に渡らない —
-    // 残る読み手は wire delivery actor / delegation reconcile / federation relay の on_relay /
-    // `hub`（3 箇所）で、9-2 PR-3 で構築ごと消える。
+    // 上のまま動かしていない）。daemon 役の `AppState` は 9-2 PR-3 で構築ごと消えた —
+    // daemon の state は `DaemonState` の 1 本。
     let app = build_daemon_router(daemon_state.clone());
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
         daemon_state,
@@ -1018,10 +971,11 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         // relay → VP wire 配送ポリシー（flow ③+⑤）。別 node が relay で送ってきた wire envelope
         // (`{from, to, body}`) を **ローカル中央 wire store に inject** する（= 遠方からの relay を
         // 「ローカル送信」に畳む）。宛先 lane は `wire_recv` で普通に拾う。store/notifier/notify は
-        // AppState の Arc を capture（再接続ごとに handler 再登録するため closure は Clone）。
-        let wire_store = state.wiremsg_store.clone();
-        let wire_notifier = state.wire_notifier.clone();
-        let wire_notify = state.delivery_notify.clone();
+        // `DaemonState::assemble` に渡したのと同じ local を capture（再接続ごとに handler 再登録する
+        // ため closure は Clone）。
+        let wire_store = wiremsg_store.clone();
+        let wire_notifier = wire_notifier.clone();
+        let wire_notify = delivery_notify.clone();
         // discovery（flow step 2）: lanes-query に応答するため lane_registry と hub_addr も capture。
         let fed_lane_registry = daemon_cap.read().await.lane_registry_ref();
         let fed_hub_addr = hub_addr.clone();

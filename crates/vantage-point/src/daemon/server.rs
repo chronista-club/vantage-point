@@ -138,18 +138,18 @@ pub struct DaemonState {
     /// L0 portless B-4 (wire-unison): daemon 中央 wire store の参照 — "wire" Unison channel の data plane。
     ///
     /// 旧 `daemon_wire::call` の HTTP relay 先 (`POST /api/wire/*`) を unison channel に移行 (doc 27 §62
-    /// 「全通信 unison」)。run_daemon が **daemon process AppState と同一 Arc** を `assemble` で plumb する
-    /// (同一プロセス)。`wire` channel handler がこれを使って wire の send/recv/thread/unread/latest/ack を
-    /// 中央 store に直結する。repo mode の DaemonState では None (= wire は Daemon 専有)。
+    /// 「全通信 unison」)。run_daemon が `assemble` で plumb する（delivery actor / federation relay も
+    /// **同一 Arc** を capture）。`wire` channel handler がこれを使って wire の send/recv/thread/unread/latest/ack を
+    /// 中央 store に直結する。DB 接続失敗時は None (= 当該 method は error を返す)。
     pub wiremsg_store: Option<crate::capability::WiremsgStore>,
-    /// wire long-poll (`wire_recv`) の起床通知器 — `wiremsg_store` と対で plumb される (同 AppState 由来)。
+    /// wire long-poll (`wire_recv`) の起床通知器 — `wiremsg_store` と対で plumb される。
     pub wire_notifier: Option<crate::capability::WireNotifier>,
     /// command 着信時に delivery loop を即 wake する Notify — `wire/send` で category=command を検出して叩く。
     pub delivery_notify: Option<Arc<tokio::sync::Notify>>,
     /// 委譲 (delegation) の daemon 中央 store — "wire" channel の `delegation/*` method の data plane (doc 28 §6)。
     ///
     /// `daemon_wire::call("/api/delegation/*")` は wire と同じ transport を共有するため、unison 移行も同 channel に
-    /// 相乗りする (path 分岐で dispatch)。run_daemon が AppState と同一 Arc を plumb する。
+    /// 相乗りする (path 分岐で dispatch)。run_daemon が `assemble` で plumb する（reconcile loop と同一 Arc）。
     /// (`DelegationStore` は pub(crate) なので本 field も crate 可視に揃える)
     pub(crate) delegation_store: Option<crate::capability::DelegationStore>,
     /// L2 (doc 27 §5-3): event log（agent の episodic memory）。always-on daemon が in-memory ring で
@@ -178,8 +178,8 @@ pub struct DaemonState {
     pub shutdown_token: tokio_util::sync::CancellationToken,
     /// machine scope の actor registry（delivery actor 等の常駐 service を spawn する所有側）。
     ///
-    /// handler の依存ではない。daemon 役 `AppState` と同じ実体をここでも持つ（`AppState` 側は
-    /// PR-3 で消える）。最終的には段階 3 の task 所有側へ動かす（doc 63 §5.1）。
+    /// handler の依存ではない。`run_daemon` が delivery actor を spawn するのと同じ実体。
+    /// 最終的には段階 3 の task 所有側へ動かす（doc 63 §5.1）。
     pub actor_registry: Arc<RwLock<crate::capability::ActorRegistry>>,
 }
 
@@ -252,7 +252,7 @@ pub(crate) struct DaemonAssembly {
 }
 
 impl DaemonState {
-    /// 空の DaemonState（test と、`daemon/process.rs::run_daemon` 用 — 後者は workspace 内に呼び手なし）。
+    /// 空の DaemonState（test 用。旧 `daemon/process.rs::run_daemon` は呼び手が無く 9-2 PR-3 で削除）。
     ///
     /// production の daemon は [`assemble`](Self::assemble) で組む — `new()` の後に field を
     /// 個別に埋める経路は 9-2 PR-1 で撤去した（別実体が静かに混ざる余地を残さないため）。
@@ -1428,7 +1428,7 @@ pub(crate) async fn forward_to_sp_control(
 /// `daemon_wire::call` が path `"/api/<rest>"` を method=`"<rest>"` (= `"wire/send"` /
 /// `"delegation/create"` 等) にして本 channel に投げてくる。prefix で wire / delegation を切り分け、
 /// `daemon::{wire_ops,delegation_ops}::dispatch_*` に委譲する。store は `assemble` で plumb された
-/// daemon process AppState 由来の Arc。未初期化 (repo mode / DB 接続失敗) は Err を返し、channel
+/// daemon 中央 store の Arc。未初期化 (test の `DaemonState::new()` / DB 接続失敗) は Err を返し、channel
 /// handler が `{"error": ...}` フレームに詰める (旧 HTTP handler の error JSON と等価)。
 async fn handle_wire_channel(
     state: &DaemonState,
@@ -2526,7 +2526,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // 別 channel にする。 daemon_cap 不在 (= 非 daemon mode) なら登録しない。
     if let Some(ref daemon_cap) = state.daemon_cap {
         let daemon_cap = daemon_cap.clone();
-        // ACTIONS の cache は AppState と同一 Arc（`assemble` で plumb 済）。
+        // ACTIONS の cache は `run_daemon` の 30s poller と同一 Arc（`assemble` で plumb 済）。
         let creo_actions = state.creo_actions.clone();
         // 艦隊スイッチ（`devices/midi`）の宛先。midi 無し build では常に None。
         #[cfg(feature = "midi")]
@@ -2587,7 +2587,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // `daemon_wire::call` (repo→daemon の wire/delegation transport) を HTTP `POST /api/wire/*`
     // `/api/delegation/*` から本 channel に移行 (doc 27 §62「全通信 unison」)。method は
     // "wire/<m>" / "delegation/<m>" の prefix 分岐で各 store dispatch に振る (`handle_wire_channel`)。
-    // store は daemon process AppState と共有 (`assemble` で plumb)。repo mode (store=None) では
+    // store は `assemble` で plumb された daemon 中央 store。未初期化 (store=None) では
     // 各 method が error を返す (= 旧 HTTP handler の「store not initialized」と等価)。
     // =========================================================================
     server

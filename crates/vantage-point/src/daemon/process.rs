@@ -1,7 +1,8 @@
 //! Daemon プロセスのライフサイクル管理
 //!
-//! PIDファイルによる生存確認、バックグラウンド自動起動、
-//! シグナルハンドリングによるグレースフル停止を提供する。
+//! PIDファイルによる生存確認、バックグラウンド自動起動、停止 (SIGTERM / HTTP graceful) を提供する。
+//! daemon 本体の起動は `crate::repo::run_daemon`（旧 `process::run_daemon` は呼び手が無く
+//! 棚卸し 9-2 PR-3 で削除）。
 
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -105,50 +106,6 @@ pub fn remove_pid_file() {
             tracing::info!("PIDファイル削除: {}", path.display());
         }
     }
-}
-
-/// Daemon をフォアグラウンドで起動する
-///
-/// `vp daemon start` から呼ばれる。PIDファイルを書き出し、
-/// シグナルハンドリングを設定し、シャットダウンを待機する。
-pub async fn run_daemon(port: u16) -> Result<()> {
-    // PIDファイル書き出し
-    write_pid_file()?;
-
-    println!(
-        "VP Daemon started (PID: {}, port: {})",
-        std::process::id(),
-        port
-    );
-    tracing::info!(
-        "VP Daemon 起動 (PID: {}, port: {})",
-        std::process::id(),
-        port
-    );
-
-    // DaemonState を初期化し、Unison Server を起動
-    let state = std::sync::Arc::new(super::server::DaemonState::new());
-    let server_handle = tokio::spawn(super::server::start_daemon_server(state, port));
-
-    // シャットダウン待機 (Unix: SIGTERM / SIGINT。Windows: Ctrl-C のみ)
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("SIGINT (Ctrl-C) 受信、シャットダウン開始");
-            println!("Shutting down VP Daemon...");
-        }
-        _ = crate::platform::wait_for_terminate_signal() => {
-            tracing::info!("SIGTERM 受信、シャットダウン開始");
-            println!("Shutting down VP Daemon (SIGTERM)...");
-        }
-        _ = server_handle => {
-            tracing::warn!("Unison Server が予期せず終了");
-        }
-    }
-
-    // クリーンアップ
-    remove_pid_file();
-    println!("VP Daemon stopped.");
-    Ok(())
 }
 
 /// daemon がまだ起動していなければバックグラウンドで自動起動する

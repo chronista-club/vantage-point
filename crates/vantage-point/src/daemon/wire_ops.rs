@@ -401,7 +401,7 @@ pub(crate) async fn wire_ack_store(
 /// `method` は `daemon_wire::call` が path `"/api/wire/<m>"` から prefix を剥いだ sub-part
 /// (= `"send"` / `"recv"` / `"thread"` / `"unread-count"` / `"latest-msg"` / `"ack"`)。
 ///
-/// store / notifier / delivery_notify は daemon が daemon process AppState と共有する Arc。
+/// store / notifier / delivery_notify は `DaemonState::assemble` で plumb された daemon 中央の Arc。
 /// エラーは Err(String) で返り、channel handler が `{"error": ...}` フレームに詰める
 /// (unison 慣習 — 専用 error frame なし)。
 pub(crate) async fn dispatch_wire(

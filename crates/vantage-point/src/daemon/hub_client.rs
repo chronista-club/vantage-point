@@ -1032,7 +1032,7 @@ pub async fn federate_discover_lanes(
 ///
 /// 受信した relay frame は `on_relay`（caller 注入）に渡す。transport の lifecycle（接続 / 再接続 /
 /// register）と **配送ポリシー**（relay → VP wire への routing 等）を分離するため、配送先は
-/// run_daemon 側で AppState（wire store）を capture したクロージャとして渡す。`on_relay` は再接続
+/// run_daemon 側で `DaemonState::assemble` に渡したのと同じ wire store local を capture したクロージャとして渡す。`on_relay` は再接続
 /// ごとに再登録するため `Clone` を要求する。`shutdown` cancel でループを抜ける。hub 未設定時は
 /// この関数自体を呼ばない（caller 側で opt-in 判定）。
 ///
@@ -1444,7 +1444,7 @@ mod tests {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let addr = hub_addr().expect("CHRONISTA_HUB_ADDR を設定して hub を起動して実行すること");
 
-        // 受信 node のローカル中央 wire store（run_daemon の AppState 相当を mem db で再現）。
+        // 受信 node のローカル中央 wire store（run_daemon が `assemble` に渡す store 相当を mem db で再現）。
         let db = crate::db::VpDb::connect_mem().await.expect("connect_mem");
         db.define_schema().await.expect("define_schema");
         let store = crate::capability::WiremsgStore::new(std::sync::Arc::new(db.inner().clone()))
