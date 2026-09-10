@@ -1,6 +1,11 @@
 //! Update APIルートハンドラー
 //!
 //! vp CLI と VantagePoint.app の更新管理。
+//!
+//! state は `Arc<DaemonState>`（棚卸し 9-2 PR-2a で `Arc<AppState>` から載せ替え）。読むのは
+//! `update`（`MachineCapabilities.update` と同一 Arc）と `shutdown_token`（restart が cancel する、
+//! `run_daemon` の 1 本）だけ。`build_daemon_router` が `Router::merge` で health / shutdown
+//! （まだ `AppState`）と合流させる。
 
 use std::sync::Arc;
 
@@ -10,11 +15,11 @@ use axum::{
     response::IntoResponse,
 };
 
-use super::super::state::AppState;
 use crate::capability::UpdateCapability;
+use crate::daemon::server::DaemonState;
 
 /// GET /api/update/check - 更新をチェック
-pub async fn update_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn update_check(State(state): State<Arc<DaemonState>>) -> impl IntoResponse {
     let Some(update) = &state.update else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -36,7 +41,7 @@ pub async fn update_check(State(state): State<Arc<AppState>>) -> impl IntoRespon
 }
 
 /// POST /api/update/apply - 更新を適用（ダウンロード＆置換）
-pub async fn update_apply(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn update_apply(State(state): State<Arc<DaemonState>>) -> impl IntoResponse {
     let Some(update) = &state.update else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -92,7 +97,7 @@ pub async fn update_apply(State(state): State<Arc<AppState>>) -> impl IntoRespon
 
 /// POST /api/update/rollback - ロールバックを実行
 pub async fn update_rollback(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<DaemonState>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let Some(update) = &state.update else {
@@ -136,7 +141,7 @@ pub async fn update_rollback(
 /// - `app_path`: 再起動するアプリのパス（省略時は現在のバイナリ）
 /// - `delay`: 遅延秒数（デフォルト: 1秒）
 pub async fn update_restart(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<DaemonState>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let Some(_update) = &state.update else {
@@ -194,7 +199,7 @@ pub async fn update_restart(
 /// クエリパラメータ:
 /// - `current_version`: 現在のアプリバージョン（必須）
 pub async fn update_mac_check(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<DaemonState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let Some(update) = &state.update else {
@@ -236,7 +241,7 @@ pub async fn update_mac_check(
 /// - `current_version`: 現在のバージョン（必須）
 /// - `app_path`: アプリパス（省略時は自動検索）
 pub async fn update_mac_apply(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<DaemonState>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let Some(update) = &state.update else {
@@ -305,7 +310,7 @@ pub async fn update_mac_apply(
 
 /// POST /api/update/mac/rollback - VantagePoint.app をロールバック
 pub async fn update_mac_rollback(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<DaemonState>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let Some(update) = &state.update else {

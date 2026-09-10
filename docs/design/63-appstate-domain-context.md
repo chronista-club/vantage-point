@@ -194,7 +194,7 @@ lane runtime  : lane_pool, terminal_pumps, replay_flights, system_event_tx
 | **0.5** | `/api/health` の daemon 形 characterization test | **`HealthResponse` の全 17 key を、存在だけでなく値と省略条件で固定する**（`status=="ok"` / `version` / `pid` / `repo_dir==""` / `started_at` / `hub=="disabled"` / `hub_nodes==[]` / `auth_targets` の key 集合 / **`processes==[]`** / `update_available==false` / `latest_version` omit / `actions==[]` / `actions_rev==0` / `terminal_token` omit / `services` の有無 / `idle_timeout_minutes`）。⚠️ **`processes` を外さない** — `health.rs:241` の `state.daemon` が producer で、PR-2c が `DaemonState.daemon_cap` に載せ替える**まさにその field**。`repo_dir` も §3 で削除対象なので baseline に要る。**PR-2c で fixture を差し替えるだけで通ること**が進行条件。assert を 1 つでも緩めたら不合格 |
 | **1** ✅ | `DaemonState` に 6 field 追加 + `started_at` を `String` 化 + **組み立て口を 1 つに**（§5.1） | drift test 3 本の**本文が触られずに**緑。**共有実体テスト**が通る（§6） — `assemble_projects_the_given_instances`、mutation 3 本で赤を実測 |
 | **1.5** ✅ | `build_test_app_state*` から dead な `daemon` 引数を落とす（65 site） | `git diff` の追加行 ≒ 削除行。変更が `(None)` → `()` と fixture 定義だけ |
-| **2a** | `/api/update/*` 7 route → `Arc<DaemonState>`。**`AppState.update` は残す** | drift test の**本文（route 表と assert）が 1 文字も変わらず**緑。**`daemon_router_keeps_update_routes` を `assert_ne!(NOT_FOUND)` から実応答の固定へ強化**（§5.2） |
+| **2a** ✅ | `/api/update/*` 7 route → `Arc<DaemonState>`。**`AppState.update` は残す** | drift test の**本文（route 表と assert）が 1 文字も変わらず**緑。**`daemon_router_keeps_update_routes` を `assert_ne!(NOT_FOUND)` から実応答の固定へ強化**（§5.2） |
 | **2b** | `/api/shutdown` → `Arc<DaemonState>` | **組み立て口に渡した token** が cancel される。handler 内で新設した token を cancel する test では不足。→ `shutdown_token` は `DaemonState` に**無い**（PR-1 で新設する 6 のうちの 1 つ）。新設時に `pub` で入れる |
 | **2c** | `/api/health` → `Arc<DaemonState>`。到達不能 block（`health.rs:119-200`）削除 + **10 field 同時削除** | PR-0.5 の test が fixture 差し替えのみで緑。旧 `health_handler_returns_200_with_stands_field` は**書き換えでなく削除**（書き換えると「repo 分岐を守っている test」の見た目だけが残る）。`services.devices` が daemon 分岐で出続ける |
 | **3** | daemon 役 `AppState` を**構築ごと**削除（`repo/server.rs:772` の全 field — 現 HEAD で 29、**PR-2c 後は 19** + `hub` / `topic_router` local）+ **wire 系 4 field も同時削除** | 不変条件 3 を守る。`git diff` が `repo/server.rs` の外に出ない。**`--no-default-features` でも `mise run check` を 1 回** |
@@ -221,7 +221,7 @@ PR-1 後: router 構築 → `DaemonState::assemble(DaemonAssembly { 16 field 全
 
 必須 field を持つ名前付き引数用 struct（`DaemonAssembly`）で入れた。**`Default` で穴を埋める仕組みには戻さない** — `Option` は「DB 接続失敗で無い」3 つ（`vpdb` / `wiremsg_store` / `delegation_store`）だけ。`Default` / `new()` 自体は test と `daemon/process.rs::run_daemon`（workspace 内に呼び手なし）のために残した。bind・PID 書き込み・外部サービス起動の順序は動かしていない（不変条件 3）。
 
-⚠️ **router 構築（`let app = build_daemon_router(state.clone())`）はまだ assemble より前にある。** PR-1 では動かさない — PR-2a で `build_daemon_router` が `Arc<DaemonState>` も取るようになった時に、`let app` を assemble の後ろへ動かす（`axum::serve` まで使わないので後ろへ動かせる、不変条件 3）。
+router 構築（`let app = build_daemon_router(state.clone(), daemon_state.clone())`）は **PR-2a で assemble の後ろへ動かした**（`build_daemon_router` が `Arc<DaemonState>` も取るため。`axum::serve` まで使わないので後ろへ動かせる。`bind_dual_stack` → `write_pid_file` は動かしていない、不変条件 3）。
 
 ### 5.2 drift net の現状 — 3 本ある
 
@@ -229,13 +229,13 @@ PR-1 後: router 構築 → `DaemonState::assemble(DaemonAssembly { 16 field 全
 
 | test | 行 | 見ているもの | 強度 |
 |---|---|---|---|
-| `daemon_router_keeps_health_and_shutdown` | `:1590` | health / shutdown が **`OK`** | 強 |
-| `daemon_router_drops_removed_control_routes` | `:1609` | 撤去済みの 18 組（`(path, method)`、distinct path は 15）が **`NOT_FOUND`** | 強 |
-| `daemon_router_keeps_update_routes` | `:1641` | update 7 route が **`NOT_FOUND` でない** | **弱** |
+| `daemon_router_keeps_health_and_shutdown` | `:1622`（PR-2a 後） | health / shutdown が **`OK`** | 強 |
+| `daemon_router_drops_removed_control_routes` | `:1641`（PR-2a 後） | 撤去済みの 18 組（`(path, method)`、distinct path は 15）が **`NOT_FOUND`** | 強 |
+| `daemon_router_keeps_update_routes` | `:1682`（PR-2a 後） | ~~update 7 route が `NOT_FOUND` でない~~ → **PR-2a で強化**: `update: None` の `DaemonState` で 7 route 全部 503 + `DaemonState.update` だけ `Some` で param 検証 4 route が 400（`AppState.update` を読み続けていれば 503） | **強** |
 
-⚠️ **「update 7 route に drift net が無い」は誤り**（v2 までの記述を訂正）。網は在るが `assert_ne!` で**登録の有無しか見ていない**。PR-2a でやるのは**新設ではなく強化**。
+⚠️ **「update 7 route に drift net が無い」は誤り**（v2 までの記述を訂正）。網は在ったが `assert_ne!` で**登録の有無しか見ていなかった**。PR-2a で強化した。check / apply は `Some` だと GitHub API に出る、restart は `Some` だと `restart_self` が本当に走るので、この 3 本は 503 層でしか叩かない。CORS は `daemon_router_applies_cors_to_both_state_groups` を新設（2 群から 1 route ずつ preflight）。
 
-⚠️ **`route_status` fixture 自体は PR-2a で必ず変わる。** `build_daemon_router` が `Arc<DaemonState>` も取るようになるため。完了条件の「触られずに緑」が指すのは**各 test の本文（route 表と assert）**であって fixture ではない。
+⚠️ **`route_status` fixture 自体は PR-2a で変わった。** `build_daemon_router` が `Arc<DaemonState>` も取るため（test 用は `daemon/server.rs` の `build_test_daemon_state()`、production と同じ `assemble` を通す）。完了条件の「触られずに緑」が指すのは**各 test の本文（route 表と assert）**であって fixture ではない。
 
 ---
 
@@ -247,7 +247,7 @@ CI は `cargo clippy --workspace --all-targets -- -D warnings`。**`AppState` �
 
 | 契約 | 壊し方を検出する検証 |
 |---|---|
-| **HTTP 登録と middleware** | production の router builder を `oneshot` で通す。9 route の method・想定応答・**CORS**。update の download / restart を実行しない fixture。⚠️ **CORS の test は現状 0 本**（`CorsLayer` は `repo/server.rs:14` と `:608` にしか出てこない）。ここは強化ではなく**新設** |
+| **HTTP 登録と middleware** | production の router builder を `oneshot` で通す。9 route の method・想定応答・**CORS**。update の download / restart を実行しない fixture。CORS の test は PR-2a 以前 0 本だった → `daemon_router_applies_cors_to_both_state_groups` を新設 |
 | **共有実体**（最重要） | 組み立てに渡した cache を**非初期値へ変更**し、HTTP が同じ値を返す。ACTIONS は items と rev、hub は status / nodes / auth、update は available と version、presence は代表例。`Arc` 同一性の比較は補助 |
 | **停止 signal** | 組み立て口に渡した token が HTTP shutdown で cancel。update restart も同じ token |
 | **health の契約** | 正常 daemon / DB なし / midi 有無。**`started_at` は構築時に 1 度確定し、複数回の health で不変**。`repo_dir` 等の削除は「承認済み差分」として baseline と分ける |
@@ -410,3 +410,4 @@ struct の見た目が `Arc<...>` でなくても、`Clone` が同一実体を�
   **共有実体テスト**: `assemble_projects_the_given_instances`（渡した側を非初期値へ動かして state 側から見える + `Arc::ptr_eq` 補助）+ `assemble_shares_devices_from_machine_capabilities`（midi）。mutation 3 本（`hub_status` を `new()` / `shutdown_token` を `new()` / `process_presence` を空 map）で**この test だけが赤**、health 6 本と drift 3 本は緑のまま（HTTP はまだ `AppState` を読む）。
   drift test 3 本（§5.2）は本文どころか fixture も触っていない。health 6 本も同じ。
 - 2026-09-10: **PR-1.5。** `build_test_app_state(daemon)` → `build_test_app_state()`、`build_test_app_state_with(repo_dir, vpdb, daemon)` → 2 引数。65 site（`(None)` 59 + `_with(…, None)` 6）が全部 `None` だったことを base `adfd7a8a` で再確認。production 0 行、test 1350 不変。`TestStateParams.daemon` は daemon 役 fixture が使うので残す。
+- 2026-09-10: **PR-2a。** `/api/update/*` 7 handler の state を `Arc<DaemonState>`（読むのは `update` と `shutdown_token`、どちらも同名 field）。`build_daemon_router(state, daemon_state)` は群ごとに `with_state` してから `merge`、CORS は合流後に 1 回。`let app` を assemble の後ろへ。`AppState.update` は health が読むので残る。test: `daemon_router_keeps_update_routes` を 2 層（503 全 7 / 400 param 検証 4）に強化、CORS test 新設、fixture `build_test_daemon_state()`（`assemble` 経由）。drift 2 本（health+shutdown / 撤去 18 組）は本文無変更。
