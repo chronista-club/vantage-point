@@ -150,7 +150,7 @@ vp daemon restart [--if-running]  # ownership-agnostic 再起動（実 port hold
 vp daemon install|uninstall  # LaunchAgent 常駐化（macOS、login always-on + crash 自動再起動）
 vp repos start|stop <name>  # 単一 repo の起動/停止（doc 44 P1 fold-in で `vp sp` から移設）
 # ⚠️⚠️ doc 44 P1 (fold-in) で daemon 停止の意味論が変わった:
-#   repo は daemon プロセス内の Arc<AppState> になったため、**daemon を止めると
+#   repo は daemon プロセス内の Arc<RepoState> になったため、**daemon を止めると
 #   全 repo が必ず一緒に落ちる**（= lane claude も全部落ちる）。旧「gentle（daemon だけ
 #   止めて repo は温存）」は repo が別プロセスだった時代の挙動で、fold-in 後は成立しない。
 #   → lane の中から daemon を再起動すると自分が死ぬ。実機検証は VP の外（kitty 等）で行うこと。
@@ -310,7 +310,7 @@ Claude との会話は mode で経路が違う（`crates/vantage-point/src/conve
 | **tui**（console） | **lane の PtySlot 直ホスト**。`repo/agent_spawner.rs::build_agent_command` が tui slot（login shell）に `claude --resume … || claude` を type-ahead 注入 | tmux decoupling PR2、`docs/design/tmux-decoupling.md` §13 |
 
 > 旧 `agent.rs`（`ClaudeAgent` OneShot / `InteractiveClaudeAgent`）は **2026-09 に撤去**。`InteractiveClaudeAgent` は
-> #390 以来一度も `Some` にならない `AppState` の field で、health の `services.claude` も定数 `"idle"` を返すだけだった。
+> #390 以来一度も `Some` にならない `AppState`（現 `RepoState`）の field で、health の `services.claude` も定数 `"idle"` を返すだけだった。
 > Claude CLI の path 解決（`get_claude_cli_path`）だけが生きていて `conversation/host.rs` の private fn に移した。
 > 他 engine（codex / acp / vpcode）の host も同 dir。
 

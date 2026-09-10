@@ -2,10 +2,10 @@
 //!
 //! demand hook（`terminal_demand_start` / `_stop`）は向きを信じず、`reconcile_terminal_pumps` 1 呼びで
 //! 購読者数の level（`TopicRouter::demand_active`）に収束させる（doc 27 §4.1 → doc 53 R2）。
-//! `reconcile_lane` は「動詞の末尾」として全群が呼ぶ収束点で、`AppState` の method（`state.reconcile_lane`）。
+//! `reconcile_lane` は「動詞の末尾」として全群が呼ぶ収束点で、`RepoState` の method（`state.reconcile_lane`）。
 //! 受付は `unison_server::dispatch_repo_method`。
 
-use super::state::AppState;
+use super::state::RepoState;
 
 /// S2 (doc 27 §4.1) → doc 53 R2: terminal demand start / stop の共通ハンドラー。
 ///
@@ -16,7 +16,7 @@ use super::state::AppState;
 /// （start 側は「購読者が現れたので pump を揃えろ」、 stop 側は「消えたので畳め」、
 /// どちらも reconcile 1 呼びで正しい方に収束する）。
 pub(crate) async fn handle_terminal_demand(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload
@@ -54,9 +54,9 @@ pub(crate) async fn handle_terminal_demand(
     }))
 }
 
-// reconcile の収束点を `AppState` の method として持つ（doc 61、mako 2026-09-08）。
-impl AppState {
-    /// [`crate::repo::terminal_pump::reconcile_lane_pumps`] の AppState 版（呼び手の糖衣）。
+// reconcile の収束点を `RepoState` の method として持つ（doc 61、mako 2026-09-08）。
+impl RepoState {
+    /// [`crate::repo::terminal_pump::reconcile_lane_pumps`] の RepoState 版（呼び手の糖衣）。
     ///
     /// demand hook / 動詞の末尾（mode 切替・slot 追加・restart）/ boot 復元後 — pump に影響する
     /// あらゆる契機がこの 1 本を呼ぶ。旧 `respawn_terminal_pump` の `only` 引数（呼び手ごとの
@@ -74,7 +74,7 @@ impl AppState {
         .await
     }
 
-    /// [`crate::repo::lane::reconcile::reconcile_lane`] の AppState 版（呼び手の糖衣）。
+    /// [`crate::repo::lane::reconcile::reconcile_lane`] の RepoState 版（呼び手の糖衣）。
     ///
     /// **動詞の末尾はこれ 1 本**（doc 53 §12.4 / R3c）。registry に intent を書いた動詞は、
     /// 実体（PtySlot / chat engine / 代表値 / pump）を自分で動かさずにこれを呼ぶ。
@@ -100,7 +100,7 @@ impl AppState {
 /// `data` は base64 (出力 pump の encoding と対称、 任意バイトを JSON で運ぶため)。 decode して
 /// 当該 slot の PtySlot に書き込む (`session` 省略 = root、doc 46 P5)。
 pub(crate) async fn handle_terminal_write(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     use base64::Engine;
@@ -131,7 +131,7 @@ pub(crate) async fn handle_terminal_write(
 
 /// S3: terminal resize。 PtySlot (+ TermAttach grid) を cols×rows に同期する。
 pub(crate) async fn handle_terminal_resize(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");

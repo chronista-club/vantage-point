@@ -2,14 +2,14 @@
 //!
 //! `conversation_demand_start` で transcript（commit 済）と engine host の in-flight tail を継いで
 //! `ReplayStart → SessionInit → events → ReplayEnd` を per-lane topic に流す。replay 中に来た demand は
-//! 合流（coalesce）して flight 完了側が直列に消化する（`AppState::replay_flights`）。`conversation_demand_stop`
+//! 合流（coalesce）して flight 完了側が直列に消化する（`RepoState::replay_flights`）。`conversation_demand_stop`
 //! は購読が 0 になった時に engine を寝かせる hook。`route_conversation` は replay だけが使う配送口。
 //!
 //! 不変条件（verbatim に保つ）: `SessionInit` は `ReplayStart` の直後（`splice_session_init`）/
 //! `replay_with_in_flight` は commit 世代 `seq` を読み前後で検算する / flight 中に来た demand は自分では配送せず rerun を予約する。
 //! 受付は `unison_server::dispatch_repo_method`。
 
-use super::state::AppState;
+use super::state::RepoState;
 
 /// gui replay-on-attach: conversation demand start ハンドラー。
 ///
@@ -36,7 +36,7 @@ use super::state::AppState;
 /// chat mode でない lane / cc_session id 不明 / transcript 不在は「replay 無し」で graceful に返す
 /// （console は live event を待つだけで壊れない）。
 pub(crate) async fn handle_conversation_demand_start(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload
@@ -140,7 +140,7 @@ pub(crate) async fn handle_conversation_demand_start(
 /// claude × 会話 id ありは transcript replay、それ以外は replay_log（codex 系）or 空を、
 /// ReplayStart → 本文 → ReplayEnd の**連続 1 本**で route する。
 async fn replay_once(
-    state: &AppState,
+    state: &RepoState,
     addr: &crate::repo::lane::LaneAddress,
     lane: &str,
     resolved: &crate::repo::lane::ResolvedSession,
@@ -254,7 +254,7 @@ fn splice_session_init(
 ///
 /// 戻り値は `(replay 列, 継いだ tail の長さ)`。 tail 長 0 は「生成中でない」か「収束せず捨てた」。
 async fn replay_with_in_flight(
-    state: &AppState,
+    state: &RepoState,
     addr: &crate::repo::lane::LaneAddress,
     session: crate::lane::session_registry::SessionKey,
     session_id: &str,
@@ -323,7 +323,7 @@ async fn replay_with_in_flight(
 /// だった（#699）。当時は正しく、engine を寝かせるという発想が無かっただけ — 穴ではなく
 /// 未踏の設計余地だったので、前提が変わった 2026-08-29 に埋めた。
 pub(crate) async fn handle_conversation_demand_stop(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload
@@ -359,7 +359,7 @@ pub(crate) async fn handle_conversation_demand_stop(
 /// ConversationEvent 列を per-lane conversation topic に順に route する（conversation_pump と同じ経路）。
 /// `session` は発生元 session の key（doc 38 — topic は per-lane のまま、session は field で運ぶ）。
 async fn route_conversation(
-    state: &AppState,
+    state: &RepoState,
     lane: &str,
     session: crate::lane::session_registry::SessionKey,
     events: Vec<crate::conversation::ConversationEvent>,

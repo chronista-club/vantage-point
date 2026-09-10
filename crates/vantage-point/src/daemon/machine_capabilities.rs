@@ -13,13 +13,13 @@
 //! ## 実装状態
 //!
 //! - PR-α-1 (VP-111 ✅): struct 新設、 既存 machine 階層 instance を集約 view。
-//!   注入先は当初 `AppState.machine_capabilities` だったが、棚卸し 9-2 PR-1〜2c で
+//!   注入先は当初 `RepoState.machine_capabilities` だったが、棚卸し 9-2 PR-1〜2c で
 //!   `DaemonState::assemble` がここから `repo_manager` / `update` / `devices` を取り出す形になった。
 //! - 旧 `MidiCapability` hosting（PR-α-2 の single-device monitor）は退役 — 消費者
 //!   （旧 `ProtocolCapability`、2026-09 撤去）が本番で実体化されず、enumeration 先頭 device（実機で LPD8）を
 //!   無条件 grab して DeviceRegistry listener を沈黙させる害だけが残っていたため（fleet dogfood で発覚）。
-//! - 旧 cleanup 項目「AppState 既存 field (`daemon` / `update`) との重複保持を整理」は
-//!   棚卸し 9-2 PR-2c で済んだ（`AppState` 側の field を削除、`DaemonState` は本 struct から取り出す）。
+//! - 旧 cleanup 項目「RepoState 既存 field (`daemon` / `update`) との重複保持を整理」は
+//!   棚卸し 9-2 PR-2c で済んだ（`RepoState` 側の field を削除、`DaemonState` は本 struct から取り出す）。
 //!
 //! wiremsg R5-4: 旧 msgbox の registry サブシステム (旧 External Control agent の registry
 //! 登録を含む) は撤去済。 wire の cross-process delivery は daemon の repo registry
@@ -55,7 +55,7 @@ impl MachineCapabilities {
     /// 既存 instance を集約して新規構築 (midi なし版、 feature gate 無効時 / test 用)。
     ///
     /// PR-α-1 (VP-111): `run_daemon` で散乱していた machine 階層 capability 群の集約 view を提供。
-    /// 旧 `AppState` の `daemon` / `update` との重複保持は棚卸し 9-2 PR-2c で解消済み。
+    /// 旧 `RepoState` の `daemon` / `update` との重複保持は棚卸し 9-2 PR-2c で解消済み。
     ///
     /// DeviceRegistry を host したい場合は `with_devices` を使う (feature = "midi")。
     pub fn new(

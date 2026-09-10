@@ -148,7 +148,7 @@ async fn query_daemon() -> Option<Vec<ProcessInfo>> {
 //
 // doc 44 P1 (fold-in): repo → daemon の uplink（registry / canvas-ingest / control の
 // 3 channel を 1 QUIC connection に集約したもの）は、repo プロセスの消滅とともに退役した。
-// repo は daemon と同一プロセスの `Arc<AppState>` になったため、
+// repo は daemon と同一プロセスの `Arc<RepoState>` になったため、
 //   - 自己登録 / heartbeat → `RepoRuntimes` の map エントリ
 //   - canvas-ingest      → repo の TopicRouter を daemon が直接購読
 //   - control 逆ルート    → `dispatch_repo_method` の直呼び

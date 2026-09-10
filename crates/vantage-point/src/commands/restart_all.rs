@@ -1,6 +1,6 @@
 //! `vp restart-all` コマンドの実行ロジック
 //!
-//! doc 44 P1 (fold-in): repo が daemon プロセス内の `Arc<AppState>` になったため、
+//! doc 44 P1 (fold-in): repo が daemon プロセス内の `Arc<RepoState>` になったため、
 //! 「全 Process + daemon の一括再起動」は **daemon の再起動 1 手**に collapse する。
 //! 停止側は daemon の graceful shutdown が抱えている repo を全部畳み、起動側は
 //! autostart が enabled な repo を順に起こす。

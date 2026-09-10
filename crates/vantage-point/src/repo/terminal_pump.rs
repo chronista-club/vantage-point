@@ -149,7 +149,7 @@ pub struct TerminalPump {
     pub handle: JoinHandle<()>,
 }
 
-/// demand-driven terminal pump の lane → session → pump 台帳（`AppState::terminal_pumps`）。
+/// demand-driven terminal pump の lane → session → pump 台帳（`RepoState::terminal_pumps`）。
 /// 外側 key は LaneAddress の Display 形 (`"<repo>/root"` 等)。
 pub type TerminalPumps = HashMap<String, HashMap<SessionKey, TerminalPump>>;
 

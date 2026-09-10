@@ -15,7 +15,7 @@ use tower_http::cors::CorsLayer;
 
 use super::http::{health, update};
 use super::hub::Hub;
-use super::state::AppState;
+use super::state::RepoState;
 use super::topic_router::TopicRouter;
 use crate::capability::{RepoManagerCapability, UpdateCapability};
 use crate::daemon::server::DaemonState;
@@ -71,7 +71,7 @@ impl LaneChangeNotifier {
 }
 
 async fn publish_lanes(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
     hub: &Hub,
     node_lanes: &Option<NodeLaneView>,
     path_key: &str,
@@ -105,7 +105,7 @@ async fn publish_lanes(
 ///
 /// doc 44 P1 (fold-in): 旧 `run()` から **uplink と終端 block を除いた部分**を切り出したもの。
 /// repo プロセスとして動く間は [`run`] が本関数を呼んで uplink を張り、daemon 一枚化後は
-/// daemon が repo ごとに本関数を直接呼んで `Arc<AppState>` を map に抱える。
+/// daemon が repo ごとに本関数を直接呼んで `Arc<RepoState>` を map に抱える。
 ///
 /// `node_lanes` は daemon の lane 集約 view（repo プロセスとして動く場合は `None`）。
 /// 旧 SP uplink の代わりに、本関数が起こす publish task が直接ここへ書き込む。
@@ -128,12 +128,12 @@ pub(crate) async fn start_repo(
     // Some ならそれを本 repo の topic_router として採用する（既存購読者ごと実 router 化。
     // demand hook は placeholder 生成時に登録済みなので二重登録しない）。
     adopted_router: Option<Arc<TopicRouter>>,
-) -> Result<Arc<AppState>> {
+) -> Result<Arc<RepoState>> {
     let config_for_init = crate::config::Config::load().unwrap_or_default();
 
     // 旧 file-backed 永続化レイヤー退役: 永続は SurrealDB 一本化 (board pane state は pane_contents)。
 
-    // repo_name は repo_dir から解決（AppState / lane pool 等で使用）
+    // repo_name は repo_dir から解決（RepoState / lane pool 等で使用）
     let repo_name_for_remote =
         crate::resolve::repo_name_from_path(&repo_dir, &config_for_init).to_string();
 
@@ -199,7 +199,7 @@ pub(crate) async fn start_repo(
     // mem_1CavFi5D1aMSpEkas89SvQ)、 PR-5 supervisor 統一で JoinHandle 経由 abort を activate。
     let actor_registry = crate::capability::ActorRegistry::new();
 
-    let state = Arc::new(AppState {
+    let state = Arc::new(RepoState {
         replay_flights: crate::repo::state::ReplayFlights::default(),
         hub,
         shutdown_token: shutdown_token.clone(),
@@ -207,7 +207,7 @@ pub(crate) async fn start_repo(
         repo_dir: repo_dir.clone(),
         // R3: wire cross-process delivery の宛先分類用 — 解決済 repo 名
         repo_name: repo_name_for_remote.clone(),
-        // VP-159 PR-4b: ActorRegistry を move (= lane-spawn は AppState 構築後に追加)
+        // VP-159 PR-4b: ActorRegistry を move (= lane-spawn は RepoState 構築後に追加)
         actor_registry: Arc::new(RwLock::new(actor_registry)),
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         process_registry: Arc::new(tokio::sync::Mutex::new(
@@ -219,7 +219,7 @@ pub(crate) async fn start_repo(
         // memory rule: 多 scope architecture (App/Repo/Lane/Pane)、HD/TH は Lane scope。
         // Sub Lane の動的 create は A4-4、Agent spawn 連動は A5 で実装。
         //
-        // (I-b、 2026-04-30): Sub auto-spawn は AppState 構築後に Mailbox actor 経由で実施。
+        // (I-b、 2026-04-30): Sub auto-spawn は RepoState 構築後に Mailbox actor 経由で実施。
         // lane subs を `LaneCmd::SpawnLane` Cmd 化して `lane-spawn` mailbox に投入する
         // (= concurrency 制御を `Arc<Semaphore::new(N)>` で表現、 N=config.startup.max_concurrent_lane_spawn)。
         // 詳細は run() 内 lane_spawn_actor wiring 参照。
@@ -239,7 +239,7 @@ pub(crate) async fn start_repo(
 
     // Phase review fix #2: LanePool::with_root は内部で PtySlot::spawn (openpty + spawn_command)
     // で OS syscall ブロッキング → spawn_blocking で tokio worker thread (= tokio runtime の OS thread) を保護。
-    // でも... AppState 既に構築済なので restructure したいけど不可。 代替:
+    // でも... RepoState 既に構築済なので restructure したいけど不可。 代替:
     // with_root 自体は sync だが state 構築段階で `tokio::task::block_in_place` も使えない。
     // 結果的に repo 起動時 1 回だけの呼び出しなので影響は軽微。 review 指摘は記録、 現実装維持。
     // (`create_handler` 側の spawn_blocking 化は完了済 = lanes.rs の方が頻繁に呼ばれる重要 path)
@@ -335,7 +335,7 @@ pub(crate) async fn start_repo(
         //
         // reconcile が registry に従って mode=Tui の全 session に slot を立て、末尾で pump も
         // 合わせる（R2）。旧実装は ①`with_root` が root を spawn ②`restore_term_slots` が
-        // 非 root を spawn ③ここで pump だけ reconcile、の 3 段で、①② が **AppState 構築中の
+        // 非 root を spawn ③ここで pump だけ reconcile、の 3 段で、①② が **RepoState 構築中の
         // sync 文脈**（server.rs 自身が「restructure したいが不可」と書いていた場所）だった。
         //
         // pump 側の事情も引き続き満たす: router を養子縁組した場合（repo 起動前から GUI が
@@ -464,7 +464,7 @@ pub(crate) async fn start_repo(
 /// 判定の真実源は 2 つとも既存: 購読の有無は router の demand count（doc 44 P1 fold-in で
 /// daemon と repo が同一プロセス = **同じ router 実体**なのでここから直接読める）、
 /// 暇かどうかは `ChatEngineSlot` の `turn_active` / `last_event_at`。状態を複製しない。
-fn spawn_idle_engine_sweep(state: Arc<AppState>, shutdown: CancellationToken) {
+fn spawn_idle_engine_sweep(state: Arc<RepoState>, shutdown: CancellationToken) {
     tokio::spawn(async move {
         // demand hook（即時）と対の遅延経路なので、粒度は粗くてよい（猶予は分単位）。
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -518,7 +518,7 @@ fn spawn_idle_engine_sweep(state: Arc<AppState>, shutdown: CancellationToken) {
 ///
 /// shutdown_token を cancel した**後**に呼ぶこと（token cancel は spawn 済 task の停止、
 /// 本関数は token では止まらないリソースの解放を担当する）。
-pub(crate) async fn shutdown_repo(state: &Arc<AppState>) {
+pub(crate) async fn shutdown_repo(state: &Arc<RepoState>) {
     // pane 状態は webview が board state ask（repo-proxy）で逐次 pane_contents に保存済 (旧 DISC
     // shutdown snapshot は退役)。 shutdown 時の明示保存は不要。
 
@@ -545,8 +545,8 @@ pub(crate) async fn shutdown_repo(state: &Arc<AppState>) {
 /// （撤去の巻き添えで health / shutdown を落とすと、診断手段と緊急停止を同時に失う）。
 ///
 /// 棚卸し 9-2（doc 63 §5）: state は `Arc<DaemonState>` の 1 本（PR-2a〜2c で `/api/update/*` →
-/// `/api/shutdown` → `/api/health` の順に載せ替えた。PR-2a / 2b の間は `AppState` 群と
-/// `Router::merge` で合流させていたが、PR-2c で `AppState` 群が空になり merge も消えた）。
+/// `/api/shutdown` → `/api/health` の順に載せ替えた。PR-2a / 2b の間は `RepoState` 群と
+/// `Router::merge` で合流させていたが、PR-2c で `RepoState` 群が空になり merge も消えた）。
 /// CORS は全 route に 1 回掛ける（`daemon_router_applies_cors_to_every_route`）。
 fn build_daemon_router(daemon_state: Arc<DaemonState>) -> Router {
     Router::new()
@@ -819,7 +819,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // forward 不能になるため、 ここで作った 1 つを 3 者 (daemon_state + 両 loop) に配る。
     // doc 44 P1 (fold-in): 旧「repo control channel registry」を per-repo 実行状態の
     // registry に置き換える。 repo プロセスが無くなったので、 daemon は repo を
-    // `Arc<AppState>` として直接抱え、 forward ではなく in-process dispatch で操作する。
+    // `Arc<RepoState>` として直接抱え、 forward ではなく in-process dispatch で操作する。
     // ここで作った 1 つを 3 者 (daemon_state + delivery loop + delegation reconcile loop) に
     // 配るのは旧構成と同じ (別々に new() すると map が分裂して到達不能になる)。
     // doc 44 P1 (fold-in): daemon の lane 集約 view を registry に結線する。旧構成では
@@ -934,7 +934,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         .set_process_lifecycle_tx(daemon_state.process_lifecycle_tx.clone());
     // HTTP router は DaemonState を取るので assemble の後で組む（9-2 PR-2a でここへ動かした。
     // `axum::serve` は下の方なので位置は自由。`bind_dual_stack` → `write_pid_file` の順は
-    // 上のまま動かしていない）。daemon 役の `AppState` は 9-2 PR-3 で構築ごと消えた —
+    // 上のまま動かしていない）。daemon 役の `RepoState` は 9-2 PR-3 で構築ごと消えた —
     // daemon の state は `DaemonState` の 1 本。
     let app = build_daemon_router(daemon_state.clone());
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
@@ -1095,7 +1095,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
 
     // doc 44 P1 (fold-in): health monitor は退役。旧構成では「別プロセスの repo が crash して
     // registry から消える」のを PID liveness で検知し respawn していたが、repo が Daemon 内の
-    // Arc<AppState> になり、pid が全 repo 共通で Daemon 自身になったため、監視対象
+    // Arc<RepoState> になり、pid が全 repo 共通で Daemon 自身になったため、監視対象
     // （死にうる repo プロセス）が存在しなくなった。lane の engine（claude/codex）の死は
     // 別途 lane lifecycle monitor が見る。
 
@@ -1592,8 +1592,8 @@ mod tests {
     ///   （guard の形。network に出る check / apply と、実際に再起動 script を spawn する
     ///   restart はこの層でしか叩けない）
     /// - **`update: Some` の DaemonState** → param 検証で 400 を返す 4 route が 400
-    ///   （PR-2a 時点では `AppState.update` を `None` にして「載せ替わった」の証明にしていた。
-    ///   PR-2c で `AppState` は router に渡らなくなった）。check / apply は `Some` だと GitHub API に出るので
+    ///   （PR-2a 時点では `RepoState.update` を `None` にして「載せ替わった」の証明にしていた。
+    ///   PR-2c で `RepoState` は router に渡らなくなった）。check / apply は `Some` だと GitHub API に出るので
     ///   ここには入れない。restart は `Some` だと `restart_self` が本当に走るので入れない
     #[tokio::test]
     async fn daemon_router_keeps_update_routes() {

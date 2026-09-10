@@ -339,7 +339,7 @@ impl DaemonControlClient {
 
     /// repo を起動する (旧 `vp sp start` の後継)。
     ///
-    /// doc 44 P1 (fold-in): repo は daemon プロセス内の `Arc<AppState>` なので、
+    /// doc 44 P1 (fold-in): repo は daemon プロセス内の `Arc<RepoState>` なので、
     /// 「起動」は子プロセス spawn ではなく daemon の registry への登録を意味する。
     /// 既に起動済みなら daemon 側で no-op になる (二重起動は map のキー一意性が防ぐ)。
     pub async fn repos_start(&self, name: &str) -> Result<serde_json::Value> {

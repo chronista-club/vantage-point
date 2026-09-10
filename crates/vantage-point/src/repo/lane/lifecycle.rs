@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 
 use super::info::Diff;
 use super::{LaneAddress, LaneInfo, LaneState, SystemEvent};
-use crate::repo::state::AppState;
+use crate::repo::state::RepoState;
 
 // doc 11 §3.7 の `migrate_legacy_stand` shim は 2026-05-03 削除済。 PR #257 の
 // agent 識別子 String 化と同タイミングで導入した旧 agent 名 → 現行名の変換 (PR-pre2 で hd → echoes)
@@ -89,7 +89,7 @@ fn ground_created_at(path: &str) -> String {
 ///
 /// Phase 5-D: Sub Lane に対しては `cwd` から git 状態 (`SubStatus`) を populate。
 /// registry には保存せず、 build 時に都度 `sub_status()` を呼ぶ (volatile + 5-7 git subprocess)。
-pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
+pub async fn build_lanes_snapshot(state: &RepoState) -> Vec<LaneInfo> {
     let pool = state.lane_pool.read().await;
     let mut lanes = pool.list();
     drop(pool); // git subprocess 中の lock を保たない (sub_status は数 100ms かかる事あり)
@@ -239,11 +239,11 @@ pub(crate) fn build_create_lane_req(name: &str, branch: &str, agent: &str) -> Cr
 
 /// lane descriptor / lifecycle を db に永続する時の repo key。
 ///
-/// `AppState.repo_dir` は生パス（`start_repo` に渡された値そのまま）だが、db の
+/// `RepoState.repo_dir` は生パス（`start_repo` に渡された値そのまま）だが、db の
 /// `repo_path` 列と daemon の registry key は**正規化済パス**なので、境界で 1 回だけ畳む。
 /// call site に任せると 1 箇所忘れて「boot load では引けない行」が無音で生まれる
 /// （doc 44 §10.4 の帳簿 key と同じ罠）。
-fn lane_db_key(state: &AppState) -> String {
+fn lane_db_key(state: &RepoState) -> String {
     crate::capability::normalize_path_key(std::path::Path::new(&state.repo_dir))
 }
 
@@ -256,7 +256,7 @@ fn lane_db_key(state: &AppState) -> String {
 ///
 /// 失敗は warn のみ（db が無い / 書けない時に lane 作成そのものを止めない — 永続の欠落は
 /// 「再起動後に reconcile 対象から漏れる」degrade で、作成自体は成立する）。
-async fn persist_lane_intent(state: &Arc<AppState>, key: &str, info: &LaneInfo) {
+async fn persist_lane_intent(state: &Arc<RepoState>, key: &str, info: &LaneInfo) {
     let Some(db) = &state.vpdb else { return };
     let addr = info.address.to_string();
     if let Err(e) = db.upsert_lane(key, info).await {
@@ -286,7 +286,7 @@ async fn persist_lane_intent(state: &Arc<AppState>, key: &str, info: &LaneInfo) 
 /// `LanePool` にしか無い。`Running` のまま焼くと、repo が起動していない間 boot load 済の
 /// 行が「稼働中」を主張し、`vp lane cleanup` の稼働 guard（`host::liveness`）が
 /// **永久に見送りを止める**（doc 44 §7.5 が `Spawning` を稼働に数えないのと同じ理由）。
-async fn persist_lane_ready(state: &Arc<AppState>, key: &str, info: &LaneInfo) {
+async fn persist_lane_ready(state: &Arc<RepoState>, key: &str, info: &LaneInfo) {
     let Some(db) = &state.vpdb else { return };
     let addr = info.address.to_string();
     let descriptor = LaneInfo {
@@ -306,7 +306,7 @@ async fn persist_lane_ready(state: &Arc<AppState>, key: &str, info: &LaneInfo) {
 }
 
 /// lane descriptor + lifecycle を db から回収する（rollback / delete 共用）。
-async fn discard_lane_rows(state: &Arc<AppState>, key: &str, addr: &LaneAddress) {
+async fn discard_lane_rows(state: &Arc<RepoState>, key: &str, addr: &LaneAddress) {
     let Some(db) = &state.vpdb else { return };
     let addr_str = addr.to_string();
     let _ = db.delete_lane(key, &addr_str).await;
@@ -315,8 +315,8 @@ async fn discard_lane_rows(state: &Arc<AppState>, key: &str, addr: &LaneAddress)
 
 /// lane を wire の宛先からも退去させる（best-effort、`delete_lane_orchestrated` の Phase 2a''）。
 ///
-/// ⚠️ **`AppState` に wire store は無い**（9-2 PR-3 で field ごと削除。それ以前も repo 役は
-/// `wiremsg_store: None` で構築していて、`Arc<AppState>` なので後から代入する経路も無かった）。
+/// ⚠️ **`RepoState` に wire store は無い**（9-2 PR-3 で field ごと削除。それ以前も repo 役は
+/// `wiremsg_store: None` で構築していて、`Arc<RepoState>` なので後から代入する経路も無かった）。
 /// 旧実装は `if let Some(store) = state.wiremsg_store.as_ref()` で、**production で一度も
 /// 真にならなかった** — PR #1019（`257269bd`、2026-08-29）が「6 日間 nudge が鳴り続けた」
 /// 実害を直したはずの fix が、**入った瞬間から never-fire だった**（2026-09-10 に発見、
@@ -330,7 +330,7 @@ async fn discard_lane_rows(state: &Arc<AppState>, key: &str, addr: &LaneAddress)
 /// ⚠️ `WiremsgStore::new` は `math::max(local_seq)` を読んで**独立した採番器**を作る。
 /// 離脱は seq を進めないので副作用は無いが、**この局所 store を send に流用しないこと**
 /// （第 2 writer ができる）。
-async fn leave_wire_threads(state: &Arc<AppState>, addr: &LaneAddress) {
+async fn leave_wire_threads(state: &Arc<RepoState>, addr: &LaneAddress) {
     let Some(db) = &state.vpdb else { return };
     let store =
         match crate::capability::WiremsgStore::new(std::sync::Arc::new(db.inner().clone())).await {
@@ -354,7 +354,7 @@ async fn leave_wire_threads(state: &Arc<AppState>, addr: &LaneAddress) {
 /// あり、そこで落とすものが 2 つある。別々に書くと片方だけ足した経路が必ず生まれ、
 /// 「placeholder が leak してその addr の lane が二度と作れない」か「拒否されたはずの
 /// lane が db に残る」のどちらかが**無音で**起きる（1 辺が 2 仕事をしている罠）。
-async fn abort_lane_creation(state: &Arc<AppState>, key: &str, addr: &LaneAddress) {
+async fn abort_lane_creation(state: &Arc<RepoState>, key: &str, addr: &LaneAddress) {
     state.lane_pool.write().await.remove(addr);
     discard_lane_rows(state, key, addr).await;
 }
@@ -388,7 +388,7 @@ async fn abort_lane_creation(state: &Arc<AppState>, key: &str, addr: &LaneAddres
 ///
 /// 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane = Session Process + lane clone 連動)
 pub(crate) async fn create_sub_orchestrated(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
     req: CreateLaneReq,
 ) -> Result<LaneInfo, String> {
     // 入力 validation。
@@ -409,7 +409,7 @@ pub(crate) async fn create_sub_orchestrated(
         return Err(format!("model 名が不正です: {:?}", model.trim()));
     }
 
-    // repo_id: AppState の repo_dir から basename
+    // repo_id: RepoState の repo_dir から basename
     let repo_id = std::path::Path::new(&state.repo_dir)
         .file_name()
         .and_then(|s| s.to_str())
@@ -858,7 +858,7 @@ pub enum DeleteLaneError {
 ///
 /// 関連: VP-124 (PR-Phase 1 設計)、 mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane lifecycle)
 pub async fn delete_lane_orchestrated(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
     addr: LaneAddress,
     cleanup: bool,
 ) -> Result<DeletedLaneInfo, DeleteLaneError> {
@@ -1000,7 +1000,7 @@ const RESTART_BACKOFF_MS: [u64; 2] = [200, 500]; // attempt 0→1: 200ms、 atte
 /// doc 53 §11: **session を変える動詞の末尾でも呼ぶ**（roster の供給が snapshot 1 本に
 /// なったので、これが「roster が変わった」を知らせる唯一の経路 — 撃たない動詞の変化は
 /// 次の定期 snapshot まで GUI に出ない）。R2 の「動詞の末尾で reconcile」と同型の規律。
-pub(crate) async fn emit_lane_update(state: &AppState, addr: &LaneAddress) {
+pub(crate) async fn emit_lane_update(state: &RepoState, addr: &LaneAddress) {
     let (mut info, activity) = {
         let pool = state.lane_pool.read().await;
         let Some(info) = pool.get(addr).cloned() else {
@@ -1034,7 +1034,7 @@ pub(crate) async fn emit_lane_update(state: &AppState, addr: &LaneAddress) {
 ///
 /// [`LanePool::drop_root_entities`]: crate::repo::lane::LanePool::drop_root_entities
 pub async fn restart_lane_orchestrated(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
     addr: LaneAddress,
 ) -> Result<serde_json::Value, String> {
     // ⚠️ 実在確認は**ここでしかできない**: `drop_root_entities` は不在なら no-op、reconcile も
@@ -1059,7 +1059,7 @@ pub async fn restart_lane_orchestrated(
 ///
 /// [`LanePool::reset_lane`]: crate::repo::lane::LanePool::reset_lane
 pub async fn reset_lane_orchestrated(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
     addr: LaneAddress,
 ) -> Result<serde_json::Value, String> {
     state
@@ -1078,7 +1078,7 @@ pub async fn reset_lane_orchestrated(
 /// そのまま残り、立たなかったものだけが次の attempt の対象になる（desired との差分だけを
 /// 埋めるのが reconcile なので、この性質は自動的に手に入る）。
 async fn converge_lane(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
     addr: LaneAddress,
 ) -> Result<serde_json::Value, String> {
     let mut last_err: Option<String> = None;

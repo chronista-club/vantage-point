@@ -20,7 +20,7 @@ use super::conversation_replay;
 use super::editor_bridge;
 use super::lane;
 use super::process_ops;
-use super::state::AppState;
+use super::state::RepoState;
 use super::terminal_ops;
 use super::wire_relay;
 use crate::protocol::RepoMessage;
@@ -42,7 +42,7 @@ pub const QUIC_PORT_OFFSET: u16 = 0;
 /// 1. Hub broadcast → WebSocket → Canvas（既存）
 /// 2. Msgbox "protocol" → board Capability（VP-24）
 fn handle_process_message(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let msg: RepoMessage = serde_json::from_value(payload.clone())
@@ -93,7 +93,7 @@ pub(crate) fn payload_session_key(
 /// → 本 fn（in-process 直呼び）。doc 44 P1 fold-in で repo は listener を持たなくなったので、
 /// 旧「repo 直結の channel handler」経路は無い。
 pub(crate) async fn dispatch_repo_method(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
     method: &str,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {

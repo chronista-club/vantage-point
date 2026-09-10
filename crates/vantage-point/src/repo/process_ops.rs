@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::state::AppState;
+use super::state::RepoState;
 
 /// UnwatchFile リクエストのペイロード
 #[derive(Debug, Serialize, Deserialize)]
@@ -16,7 +16,7 @@ struct UnwatchFileRequest {
 
 /// watch_file メソッドのハンドラー
 pub(crate) async fn handle_watch_file(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let config: crate::file_watcher::WatchConfig = serde_json::from_value(payload)
@@ -36,7 +36,7 @@ pub(crate) async fn handle_watch_file(
 
 /// unwatch_file メソッドのハンドラー
 pub(crate) async fn handle_unwatch_file(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let req: UnwatchFileRequest = serde_json::from_value(payload)
@@ -53,7 +53,7 @@ pub(crate) async fn handle_unwatch_file(
 
 /// プロセス起動
 pub(crate) async fn handle_process_run(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let params: crate::repo::process_runner::RunParams =
@@ -70,7 +70,7 @@ pub(crate) async fn handle_process_run(
 
 /// プロセス停止
 pub(crate) async fn handle_process_stop(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let process_id = payload["process_id"]
@@ -82,7 +82,7 @@ pub(crate) async fn handle_process_stop(
 
 /// コード注入
 pub(crate) async fn handle_process_inject(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let params: crate::repo::process_runner::InjectParams =
@@ -92,7 +92,7 @@ pub(crate) async fn handle_process_inject(
 }
 
 /// プロセス一覧
-pub(crate) async fn handle_process_list(state: &AppState) -> Result<serde_json::Value, String> {
+pub(crate) async fn handle_process_list(state: &RepoState) -> Result<serde_json::Value, String> {
     let processes = state.process_registry.lock().await.list();
     Ok(serde_json::json!({"status": "ok", "processes": processes}))
 }
@@ -103,7 +103,7 @@ pub(crate) async fn handle_process_list(state: &AppState) -> Result<serde_json::
 
 /// ruby_eval: 短命 Ruby 実行
 pub(crate) async fn handle_ruby_eval(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let code = payload.get("code").and_then(|v| v.as_str());
@@ -126,7 +126,7 @@ pub(crate) async fn handle_ruby_eval(
 
 /// ruby_run: 長命 Ruby daemon 起動
 pub(crate) async fn handle_ruby_run(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let code = payload.get("code").and_then(|v| v.as_str());
@@ -151,7 +151,7 @@ pub(crate) async fn handle_ruby_run(
 
 /// ruby_stop: Ruby daemon 停止
 pub(crate) async fn handle_ruby_stop(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let process_id = payload["process_id"]

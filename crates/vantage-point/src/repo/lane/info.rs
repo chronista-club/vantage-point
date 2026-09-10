@@ -79,7 +79,7 @@ impl LaneLifecycle {
 /// - `I` = identifier 型 (削除時のみ必要、 例: `LaneAddress`)
 /// - `P` = payload 型 (add/update 時の full state、 例: `LaneInfo`)
 ///
-/// caller で event 発生 → AppState の broadcast channel に publish → subscriber が
+/// caller で event 発生 → RepoState の broadcast channel に publish → subscriber が
 /// daemon 側 cache を realtime sync する primitive。
 ///
 /// doc 44 P1 (fold-in): subscriber は旧「repo の QUIC registry push」から、repo 自身の

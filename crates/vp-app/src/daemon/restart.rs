@@ -5,7 +5,7 @@
 //!
 //! ## なぜ確認が要るか
 //!
-//! doc 44 P1 fold-in 以降、repo は daemon プロセス内の `Arc<AppState>` なので、
+//! doc 44 P1 fold-in 以降、repo は daemon プロセス内の `Arc<RepoState>` なので、
 //! **daemon を止めると全 repo = 全 lane の claude が一緒に落ちる**。旧「gentle（daemon だけ
 //! 止めて repo は温存）」は repo が別プロセスだった時代の挙動で、今は成立しない。
 //! GUI の押しやすい場所に置く以上、押す前に代償が見えている必要がある。
