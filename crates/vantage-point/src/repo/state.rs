@@ -407,6 +407,109 @@ pub(crate) async fn build_test_app_state_with(
     vpdb: Option<crate::db::SharedVpDb>,
     daemon: Option<Arc<RwLock<RepoManagerCapability>>>,
 ) -> Arc<AppState> {
+    build_test_app_state_raw(TestStateParams {
+        repo_dir: repo_dir.to_string(),
+        vpdb,
+        daemon,
+        ..TestStateParams::repo_role()
+    })
+    .await
+}
+
+/// **daemon 役**の `AppState` を組む fixture。
+///
+/// `build_test_app_state[_with]` が返すのは repo 役の形（`terminal_token = "test"`）で、
+/// `/api/health` の **production で唯一到達する分岐**（daemon 形）を再現できない。
+///
+/// production の daemon ctor（`repo/server.rs:772`）が置く目印のうち、**health が読む
+/// 5 つ**を同じ形で再現する:
+///
+/// | field | 値 | health での役割 |
+/// |---|---|---|
+/// | `repo_dir` | `""`（`:780`） | 応答の `repo_dir` |
+/// | `terminal_token` | `"DAEMON_DISABLED"`（`:790`） | daemon / repo の分岐 |
+/// | `daemon` | `Some`（`:786`） | `processes` の producer |
+/// | `update` | `Some`（`:787`） | `update_available` / `latest_version` |
+/// | `machine_capabilities` | `Some` + `devices`（`:809`） | `services.devices` |
+///
+/// ⚠️ **`repo_name` はこの fixture が置き分けているものではない** — [`build_test_app_state_raw`]
+/// が repo 役も含め全 fixture で空文字列を hardcode している。daemon の目印として数えない。
+///
+/// ⚠️ **`with_devices` は使わない。** あれは `attach_fleet_inputs().await` で実機の MIDI port を
+/// 開けにいく（`daemon/machine_capabilities.rs:82-95` の `:90`）。[`DeviceRegistry::new`] だけなら純粋なので、
+/// registry の構築だけをここで行う。
+///
+/// ⚠️ **`build_test_app_state` の `daemon` 引数を使って `Some` を渡さないこと。** その引数は
+/// 全 65 site で `None` = dead であることが棚卸し 9-2 PR-1.5（引数削除）の前提なので、
+/// 1 箇所でも `Some` を通すと前提が崩れる。ここでは内部で直に置く。
+///
+/// **各 cache は既定値のまま返す。** 実体の同一性を見る test は、返ってきた state の
+/// 内部可変性（`hub_status.set` 等）で**非初期値へ動かしてから** health を叩くこと
+/// （doc 63 §6「共有実体」）。
+#[cfg(test)]
+pub(crate) async fn build_test_daemon_app_state() -> Arc<AppState> {
+    let daemon = Arc::new(RwLock::new(RepoManagerCapability::new()));
+    let update = Arc::new(RwLock::new(UpdateCapability::new_for_test()));
+
+    let machine_capabilities = {
+        #[allow(unused_mut)]
+        let mut wc = crate::daemon::machine_capabilities::MachineCapabilities::new(
+            daemon.clone(),
+            update.clone(),
+        );
+        #[cfg(feature = "midi")]
+        {
+            let bus = Arc::new(crate::capability::eventbus::EventBus::new());
+            wc.devices = Some(Arc::new(RwLock::new(crate::devices::DeviceRegistry::new(
+                bus,
+            ))));
+        }
+        Arc::new(wc)
+    };
+
+    build_test_app_state_raw(TestStateParams {
+        repo_dir: String::new(),
+        terminal_token: "DAEMON_DISABLED".to_string(),
+        vpdb: None,
+        daemon: Some(daemon),
+        update: Some(update),
+        machine_capabilities: Some(machine_capabilities),
+    })
+    .await
+}
+
+/// [`build_test_app_state_raw`] の引数。
+///
+/// 位置引数をやめて名前付き field にしてあるのは、`repo_dir` と `terminal_token` が
+/// **どちらも文字列で、取り違えても compile が通る**から。`daemon` / `update` /
+/// `machine_capabilities` は中身の型が違うので入れ替えれば型エラーで止まる。
+#[cfg(test)]
+struct TestStateParams {
+    repo_dir: String,
+    terminal_token: String,
+    vpdb: Option<crate::db::SharedVpDb>,
+    daemon: Option<Arc<RwLock<RepoManagerCapability>>>,
+    update: Option<Arc<RwLock<UpdateCapability>>>,
+    machine_capabilities: Option<Arc<crate::daemon::machine_capabilities::MachineCapabilities>>,
+}
+
+#[cfg(test)]
+impl TestStateParams {
+    /// repo 役の既定（daemon 系は全て `None`、`terminal_token` は `"test"`）。
+    fn repo_role() -> Self {
+        Self {
+            repo_dir: String::new(),
+            terminal_token: "test".to_string(),
+            vpdb: None,
+            daemon: None,
+            update: None,
+            machine_capabilities: None,
+        }
+    }
+}
+
+#[cfg(test)]
+async fn build_test_app_state_raw(p: TestStateParams) -> Arc<AppState> {
     use super::lane::LanePool;
     use crate::capability::WireNotifier;
 
@@ -414,29 +517,29 @@ pub(crate) async fn build_test_app_state_with(
         replay_flights: ReplayFlights::default(),
         hub: Hub::new(),
         shutdown_token: CancellationToken::new(),
-        repo_dir: repo_dir.to_string(),
+        repo_dir: p.repo_dir,
         repo_name: String::new(),
         actor_registry: Arc::new(RwLock::new(ActorRegistry::new())),
-        daemon,
-        update: None,
+        daemon: p.daemon,
+        update: p.update,
         hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
         hub_nodes: crate::daemon::hub_client::HubNodesCache::new(),
         hub_auth: crate::daemon::hub_client::HubAuthStatus::new(),
         creo_actions: crate::creo::client::CreoActionsCache::new(),
         port: 0,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
-        terminal_token: "test".to_string(),
+        terminal_token: p.terminal_token,
         process_registry: Arc::new(tokio::sync::Mutex::new(ProcessRegistry::new())),
         topic_router: Arc::new(TopicRouter::new()),
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
-        vpdb,
+        vpdb: p.vpdb,
         wiremsg_store: None,
         wire_notifier: WireNotifier::new(),
         delivery_notify: Arc::new(tokio::sync::Notify::new()),
         lane_pool: Arc::new(RwLock::new(LanePool::new())),
         system_event_tx: tokio::sync::broadcast::channel::<super::lane::SystemEvent>(64).0,
-        machine_capabilities: None,
+        machine_capabilities: p.machine_capabilities,
         terminal_pumps: Arc::new(RwLock::new(HashMap::new())),
         // test fixture は repo 相当 (Daemon store 無し)。delegation の store test は
         // capability::delegation_store の単体 test が担う。

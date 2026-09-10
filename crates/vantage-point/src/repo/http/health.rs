@@ -394,6 +394,401 @@ mod tests {
         );
     }
 
+    // =====================================================================
+    // 棚卸し 9-2 PR-0.5 — daemon 形 `/api/health` の characterization
+    //
+    // production の `/api/health` は `build_daemon_router` にしか mount されておらず
+    // （`repo/server.rs:572`、production 呼び手は `:946` の 1 本）、渡るのは必ず
+    // **daemon 役**の `AppState`。つまり `terminal_token != "DAEMON_DISABLED"` の
+    // 分岐（`:119-200`）は production で一度も通らない。
+    //
+    // 9-2 の PR-2c はこの handler の state を `Arc<DaemonState>` に載せ替え、
+    // `AppState` の daemon 専用 10 field を同時に削除する。**その前後で応答が
+    // 1 bit も変わらないこと**を確かめるための基準線をここに置く。
+    //
+    // ## 網は 2 層
+    //
+    // 1. **形**（key 集合と既定値）— field が増減していない
+    // 2. **実体**（`daemon_health_projects_the_given_instances`）— 値が
+    //    **組み立てで渡した実体**から来ている
+    //
+    // ⚠️ **2 が本体。** doc 63 §6 の通り、`-D warnings` は孤児 field を検出するが
+    //    **同じ型の別実体は検出できない**。PR-2c が `HubFederationStatus::new()` を
+    //    新しく作って渡しても compile は通り、既定値のままの health を返し続ける。
+    //    層 1 だけでは全部の cache がその壊し方を素通しする。
+    //
+    // ⚠️ PR-2c で書き換えてよいのは state を組む 2 関数（`daemon_health_body` の本体と
+    //    `health_body_of` の引数型）だけ。assert を緩めたら「載せ替えた」ではなく「変えた」。
+    //    **例外は `repo_dir`** — doc 63 §3 が PR-2c での削除を承認済みなので、
+    //    `daemon_health_carries_repo_dir` を**test ごと消す**（assert の書き換えではなく）。
+    // =====================================================================
+
+    /// 既定値のままの daemon 形で `/api/health` を 1 回叩いて body を返す。
+    ///
+    /// **PR-2c で書き換えるのはここ** — state の組み立てが `DaemonState` に変わるだけで、
+    /// 呼び手の assert は verbatim で通るのが合格条件。
+    async fn daemon_health_body() -> serde_json::Value {
+        let state = crate::repo::state::build_test_daemon_app_state().await;
+        health_body_of(state).await
+    }
+
+    /// 渡された state で `/api/health` を 1 回叩く。
+    ///
+    /// `daemon_health_body` と分けてあるのは、cache を非初期値へ動かした state や、
+    /// **同じ state を 2 回**叩く必要がある test があるため。
+    async fn health_body_of(state: Arc<AppState>) -> serde_json::Value {
+        let app = Router::new()
+            .route("/api/health", get(health_handler))
+            .with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// 起動直後の daemon が返す **key 集合**を固定する。
+    ///
+    /// `HealthResponse` は 17 field で、うち **6 つ**が `skip_serializing_if` を持つ
+    /// （`terminal_token` / `services` / `hub_auth` / `auth_targets` / `processes` /
+    /// `latest_version`）。起動直後の daemon ではそのうち **3 つ**が省略側に倒れる:
+    ///
+    /// - `terminal_token` — daemon は token を配らない（`None`）
+    /// - `hub_auth` — `Unknown` = 空文字列
+    /// - `latest_version` — update cache が未取得
+    ///
+    /// 残る 3 つは出る: `auth_targets` は Hub / Creo が必ず入って空にならず、
+    /// `processes` は空配列、`services` は **midi build なら** `devices` 1 件。
+    ///
+    /// ⚠️ `services` は **cfg 依存**。production の daemon ctor は `with_devices` で
+    /// 無条件に `devices: Some(..)` を置く（`daemon/machine_capabilities.rs:82-95`）ので
+    /// default build では必ず出る。`--no-default-features` では handler が `None` を返す
+    /// （`health.rs:233-236`）。
+    ///
+    /// **「増えた」も「減った」も落とす**のが要点。field を足した PR は、ここを意識的に
+    /// 更新することで「daemon の応答形を変えた」と宣言することになる。
+    #[tokio::test]
+    async fn daemon_health_key_set_is_pinned() {
+        let body = daemon_health_body().await;
+        let mut keys: Vec<&str> = body
+            .as_object()
+            .expect("body は JSON object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+
+        let mut expected = vec![
+            "actions",
+            "actions_rev",
+            "auth_targets",
+            "hub",
+            "hub_nodes",
+            "idle_timeout_minutes",
+            "pid",
+            "processes",
+            "repo_dir",
+            "started_at",
+            "status",
+            "update_available",
+            "version",
+        ];
+        if cfg!(feature = "midi") {
+            expected.push("services");
+        }
+        expected.sort_unstable();
+
+        assert_eq!(keys, expected, "起動直後の daemon の key 集合");
+
+        for omitted in ["terminal_token", "hub_auth", "latest_version"] {
+            assert!(
+                body.get(omitted).is_none(),
+                "{omitted} は起動直後の daemon では省略される"
+            );
+        }
+    }
+
+    /// 起動直後の既定値を固定する。
+    ///
+    /// ⚠️ **ここは形の網であって、実体の網ではない。** 「空 cache だから 0 / 空」なので、
+    /// PR-2c が**別の空実体**を渡しても全部緑のまま通る。実体の同一性は
+    /// [`daemon_health_projects_the_given_instances`] が見る。
+    #[tokio::test]
+    async fn daemon_health_defaults_are_pinned() {
+        let body = daemon_health_body().await;
+
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            body["pid"].as_u64(),
+            Some(u64::from(std::process::id())),
+            "pid は自プロセス"
+        );
+
+        let started_at = body["started_at"].as_str().expect("started_at は文字列");
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(started_at).is_ok(),
+            "started_at は RFC3339: {started_at}"
+        );
+
+        // federation 未接続の daemon。`hub_auth` は Unknown = 空文字列で omit される。
+        assert_eq!(body["hub"], "disabled");
+        assert_eq!(body["hub_nodes"].as_array().map(Vec::len), Some(0));
+
+        // `auth_target_states()` は Hub / Creo を必ず両方返す（= map は空にならず
+        // 常に serialize される）。値は local の credential 次第なので domain だけ固定。
+        // ⚠️ credential は `~/.vp/credentials.json`（`commands/auth.rs:272-281`）で
+        //    **XDG zone ではない**ので、`test_env::StateDirGuard` を取っても隔離できない。
+        //    取れば crate 唯一のロックで直列化されるコストだけが乗る。値ではなく
+        //    domain を固定するのが正しい扱い。
+        let auth = body["auth_targets"]
+            .as_object()
+            .expect("auth_targets は object");
+        let mut targets: Vec<&str> = auth.keys().map(String::as_str).collect();
+        targets.sort_unstable();
+        assert_eq!(targets, ["creo", "hub"], "auth の宛先は 2 つで固定");
+        for (target, state) in auth {
+            let state = state.as_str().unwrap_or_default();
+            assert!(
+                matches!(state, "none" | "expired" | "valid"),
+                "{target} の状態は 3 値のいずれか（実際: {state}）"
+            );
+        }
+
+        // 空 capability なので `presence_snapshot()` は空 Vec。
+        // **配列であること**（repo 役の omit と区別が付くこと）に意味がある。
+        assert_eq!(
+            body["processes"].as_array().map(Vec::len),
+            Some(0),
+            "daemon 形は必ず配列"
+        );
+
+        // update cache 未取得 = `(false, None)`。`latest_version` は omit 側。
+        assert_eq!(body["update_available"], false);
+
+        // ACTIONS: poller を回していないので空 + rev 0。**rev 0 が「未取得」の印そのもの**
+        // なので、omit させずに常時 serialize することに意味がある（doc 57）。
+        assert_eq!(body["actions"].as_array().map(Vec::len), Some(0));
+        assert_eq!(body["actions_rev"].as_u64(), Some(0));
+
+        // settings.kdl 由来なので machine ごとに違う。定数ではなく**供給元**に固定する。
+        //
+        // ⚠️ **これは「file を読み直していない」ことまでは見ていない。** handler と test が
+        //    同じ `OnceLock` を読むので恒真。`pool.rs:60-64` が名指しで禁じている
+        //    「`SettingsFile::load()` で読み直す」形に戻っても、test process 内では
+        //    同じ数になって通る。塞ぐなら OnceLock の固着性（1 度読ませてから config を
+        //    差し替えて**最初の値**が返ること）を見る別 test が要る。
+        assert_eq!(
+            body["idle_timeout_minutes"].as_u64(),
+            Some(crate::repo::lane::idle_teardown_after_minutes()),
+            "idle_timeout_minutes は idle_teardown_after_minutes() の投影"
+        );
+    }
+
+    /// `repo_dir` は daemon 役では空文字列。
+    ///
+    /// ⚠️ **PR-2c でこの test は「まるごと削除」する。** doc 63 §3 が
+    /// `HealthResponse.repo_dir` ごとの削除を承認しているので、これは緩めてよい唯一の
+    /// assert。単独の test に出してあるのは、PR-2c の review で
+    /// **「承認済みの削除」と「緩めた assert」を目視で区別できる**ようにするため
+    /// （doc 63 §6「`repo_dir` 等の削除は『承認済み差分』として baseline と分ける」）。
+    /// 合格条件は「この test が 1 本まるごと消え、他の assert は 1 文字も変わらない」。
+    #[tokio::test]
+    async fn daemon_health_carries_repo_dir() {
+        let body = daemon_health_body().await;
+        assert_eq!(
+            body["repo_dir"], "",
+            "daemon 役は repo を持たない（repo ctor だけが実 path を入れる、`repo/server.rs:210`）"
+        );
+    }
+
+    /// **この PR の本体** — 各値が「組み立てで渡した実体」から来ていること。
+    ///
+    /// doc 63 §6:
+    /// > 組み立てに渡した cache を**非初期値へ変更**し、HTTP が同じ値を返す。
+    /// > ACTIONS は items と rev、hub は status / nodes / auth、update は available と
+    /// > version、presence は代表例。`Arc` 同一性は補助
+    ///
+    /// なぜ既定値の固定では足りないか: PR-2c は 10 field の供給元を
+    /// `AppState` から `DaemonState` へ移す。**移し先で新しい実体を作ってしまっても
+    /// compile は通り、`-D warnings` も鳴らない**（doc 63 §6）。全部の cache が
+    /// constructor 既定のままだと、新しい実体も同じ既定値を返すので応答は一致する。
+    /// 非初期値へ動かして初めて「同じ実体か」を問える。
+    ///
+    /// `update` の cache は private field（`update_capability.rs:174`）で、Rust の privacy は
+    /// **module 単位**なので同 module の test からしか代入できない。network を経ずに温める口
+    /// （`seed_cached_release_for_test`）を capability 側に足して、ここも層 2 に載せてある。
+    #[tokio::test]
+    async fn daemon_health_projects_the_given_instances() {
+        use crate::daemon::hub_client::{HubAuthState, HubFederationState, NodeEntry};
+
+        let state = crate::repo::state::build_test_daemon_app_state().await;
+
+        // ── 渡した実体を非初期値へ動かす ────────────────────────────────
+        state.hub_status.set(HubFederationState::Connected);
+        state.hub_auth.set(HubAuthState::Credentialed);
+        state.hub_nodes.set(vec![NodeEntry {
+            node_id: "node-1".to_string(),
+            endpoints: vec!["[::1]:12879".to_string(), "127.0.0.1:12879".to_string()],
+            handle: "@someone".to_string(),
+            name: "someone".to_string(),
+            registered_at: "2026-09-10T00:00:00Z".to_string(),
+            connected: true,
+        }]);
+        let changed = state
+            .creo_actions
+            .set(vec![crate::creo::client::CreoAction {
+                id: "act-1".to_string(),
+                text: "棚卸し 9-2 を進める".to_string(),
+                done: false,
+                bucket: "today".to_string(),
+                order: "a0".to_string(),
+            }]);
+        assert!(changed, "前提: 内容が変わったので rev が上がる");
+
+        // update cache は private field なので capability 側の test 用の口から温める
+        // （network も subprocess も踏まない）。
+        state
+            .update
+            .as_ref()
+            .expect("daemon 形は Some")
+            .write()
+            .await
+            .seed_cached_release_for_test("999.0.0");
+
+        // presence は `repos` を軸に map される（`repo_manager_capability.rs:344-366`）
+        // ので、repo を 1 件差してから presence を付ける。
+        {
+            let cap = state
+                .daemon
+                .as_ref()
+                .expect("daemon 形は Some")
+                .read()
+                .await;
+            cap.repos_ref().write().await.insert(
+                "/repos/vp".to_string(),
+                crate::capability::RepoInfo {
+                    name: "vp".to_string(),
+                    path: std::path::PathBuf::from("/repos/vp"),
+                    process_status: crate::capability::RepoStatus::Stopped,
+                    port: None,
+                    enabled: true,
+                    slot: None,
+                    active_lane: None,
+                },
+            );
+            cap.set_presence("/repos/vp", crate::capability::RepoPresenceState::Connected)
+                .await;
+        }
+
+        // ── 応答が同じ実体を映していること ──────────────────────────────
+        let body = health_body_of(state).await;
+
+        assert_eq!(body["hub"], "connected", "hub_status の投影");
+        assert_eq!(
+            body["hub_auth"], "credentialed",
+            "hub_auth の投影（Unknown を脱したので key 自体も現れる）"
+        );
+
+        let nodes = body["hub_nodes"].as_array().expect("hub_nodes は配列");
+        assert_eq!(nodes.len(), 1, "hub_nodes の投影");
+        assert_eq!(nodes[0]["handle"], "@someone");
+        assert_eq!(nodes[0]["node_id"], "node-1");
+        assert_eq!(
+            nodes[0]["endpoints_count"], 2,
+            "endpoints は数だけを返す（`HubNodeInfo`）"
+        );
+        assert_eq!(nodes[0]["connected"], true);
+
+        let actions = body["actions"].as_array().expect("actions は配列");
+        assert_eq!(actions.len(), 1, "creo_actions の投影");
+        assert_eq!(actions[0]["id"], "act-1");
+        assert_eq!(
+            body["actions_rev"].as_u64(),
+            Some(1),
+            "rev も同じ cache から来る（set で 0 → 1）"
+        );
+
+        let processes = body["processes"].as_array().expect("processes は配列");
+        assert_eq!(processes.len(), 1, "daemon capability の presence 投影");
+        assert_eq!(processes[0]["repo"], "vp");
+        assert_eq!(processes[0]["presence"], "connected");
+
+        assert_eq!(
+            body["update_available"], true,
+            "update capability の投影（既定は false なので別実体なら赤くなる）"
+        );
+        assert_eq!(
+            body["latest_version"], "999.0.0",
+            "既定では omit される key。値が出ること自体が実体の証拠"
+        );
+    }
+
+    /// midi build では `services.devices` が出る。
+    ///
+    /// ⚠️ **これは「艦隊スイッチを agent から読む唯一の経路」**（doc 63 §7 /
+    /// `tests/vp_daemon_kdl.rs:176`）。`devices/midi` を agent に露出しない設計判断は
+    /// 「読み側は `/api/health` の `services.devices` で知れる」を根拠にしているので、
+    /// PR-2c が `machine_capabilities` の結線を落とすとその根拠ごと消える。
+    ///
+    /// `midi_enabled` は state zone の `midi-switch.json` 由来（daemon 再起動をまたいで
+    /// 保つ）なので machine 依存。値ではなく **status の domain** を固定する。
+    #[cfg(feature = "midi")]
+    #[tokio::test]
+    async fn daemon_health_reports_devices_service() {
+        let body = daemon_health_body().await;
+        let devices = body["services"]["devices"]
+            .as_object()
+            .expect("midi build の daemon は services.devices を返す");
+        let status = devices["status"].as_str().unwrap_or_default();
+        assert!(
+            matches!(status, "released" | "idle" | "active"),
+            "status は 3 値のいずれか（実際: {status}）"
+        );
+        assert_eq!(
+            devices["detail"]["devices"].as_u64(),
+            Some(0),
+            "hot-plug していない registry なので 0 台"
+        );
+    }
+
+    /// `started_at` は **state が持つ値そのもの**で、health を何度叩いても動かない。
+    ///
+    /// doc 63 §7: PR-1 で `DaemonState.started_at` を `Instant` から `String` へ移すとき、
+    /// `Utc::now() - elapsed()` で毎回再計算する形にすると sleep をまたいで wall clock と
+    /// ずれる。health は 5s 周期で叩かれるので、**vp-app 側から起動時刻が動いて見える**。
+    ///
+    /// ⚠️ **2 回の応答を突き合わせるだけでは網として弱い。** 応答時刻を返す実装でも、
+    /// 2 呼び出しが同じ μs に入れば偶然一致しうる（mutation で実測した差は 6 μs だった）。
+    /// **供給元（`state.started_at`）と直接比べる**ことで、時間に依存せず「投影であること」
+    /// を固定する。
+    #[tokio::test]
+    async fn daemon_health_started_at_is_the_states_value() {
+        let state = crate::repo::state::build_test_daemon_app_state().await;
+        let expected = state.started_at.clone();
+
+        let first = health_body_of(state.clone()).await;
+        let second = health_body_of(state).await;
+
+        assert_eq!(
+            first["started_at"], expected,
+            "started_at は state の値の投影（再計算しない）"
+        );
+        assert_eq!(
+            second["started_at"], expected,
+            "2 回目も同じ — 構築時に 1 度確定して以後不変"
+        );
+    }
+
     #[tokio::test]
     async fn health_handler_returns_200_with_stands_field() {
         let state = crate::repo::state::build_test_app_state(None).await;
