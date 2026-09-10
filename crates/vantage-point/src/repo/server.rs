@@ -117,7 +117,6 @@ async fn publish_lanes(
 /// 返る時点で lane bootstrap / lifecycle monitor / lanes snapshot publish まで起動済み。
 /// 停止は `shutdown_token` を cancel して [`shutdown_repo`] を呼ぶ。
 pub(crate) async fn start_repo(
-    port: u16,
     repo_dir: String,
     shutdown_token: CancellationToken,
     node_lanes: Option<NodeLaneView>,
@@ -210,7 +209,6 @@ pub(crate) async fn start_repo(
         repo_name: repo_name_for_remote.clone(),
         // VP-159 PR-4b: ActorRegistry を move (= lane-spawn は AppState 構築後に追加)
         actor_registry: Arc::new(RwLock::new(actor_registry)),
-        port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::repo::process_runner::ProcessRegistry::new(),
