@@ -370,7 +370,7 @@ mod tests {
     /// —— 撤去の巻き添えで落ちると、Unison が wedge した時に止める手段ごと失う。
     #[tokio::test]
     async fn shutdown_handler_cancels_shutdown_token() {
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         let token = state.shutdown_token.clone();
         assert!(!token.is_cancelled(), "前提: まだ cancel されていない");
 
@@ -791,7 +791,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_handler_returns_200_with_stands_field() {
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         let app = Router::new()
             .route("/api/health", get(health_handler))
             .with_state(state);

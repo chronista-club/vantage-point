@@ -2629,7 +2629,7 @@ mod tests {
     #[tokio::test]
     async fn test_daemon_entry_and_core_reject_names_identically() {
         let cap = make_test_cap();
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         let parent = std::env::temp_dir().join(format!("vp-test-parity-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&parent);
         let tmp = parent.join("parity");

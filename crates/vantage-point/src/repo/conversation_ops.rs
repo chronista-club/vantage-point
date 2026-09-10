@@ -728,7 +728,7 @@ mod tests {
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         // lane 未指定
         let res = dispatch_repo_method(
             &state,
@@ -771,7 +771,7 @@ mod tests {
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         // lane 未指定
         let res = dispatch_repo_method(
             &state,
@@ -813,7 +813,7 @@ mod tests {
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         for method in [
             "conversation_session_list",
             "conversation_session_create",
@@ -868,7 +868,7 @@ mod tests {
         use crate::repo::unison_server::dispatch_repo_method;
 
         let _state_dir = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let addr = LaneAddress::root("vp");
         let lane = addr.to_string();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
@@ -974,7 +974,7 @@ mod tests {
         use crate::repo::unison_server::dispatch_repo_method;
 
         let _state_dir = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let (_id, mut srx) = state
             .topic_router
             .subscribe("repo/conversation/data/vp~lane~main/event")
@@ -1038,7 +1038,7 @@ mod tests {
 
         // session_registry は vp_state_dir() を読む → tempdir に隔離。
         let _state_dir = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
 
         // sub LaneInfo を組む（chat engine 不在なので drop→ensure の engine 入替は
         // no-op — drop_chat_engine が false を返し ensure は走らない）。
@@ -1130,7 +1130,7 @@ mod tests {
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         assert!(
             dispatch_repo_method(
                 &state,
@@ -1172,7 +1172,7 @@ mod tests {
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         insert_test_lane(&state, "vptest-c1-tui", SessionMode::Tui).await;
         let err = dispatch_repo_method(
             &state,
@@ -1205,7 +1205,7 @@ mod tests {
         // ⚠️ 隔離しないと実 state dir を汚染し、**2 回目以降の run で mode が既に chat のため
         // no-op 早期 return して落ちる**（= 実行順・実行回数に依存する偽の緑/赤）。
         let _state_dir = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let addr = insert_test_lane(&state, "vptest-ssa", SessionMode::Tui).await;
         let lane = "vptest-ssa/main";
 
@@ -1291,7 +1291,7 @@ mod tests {
         use crate::repo::unison_server::dispatch_repo_method;
 
         let _state_dir = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let addr = insert_test_lane(&state, "vptest-cap", SessionMode::Tui).await;
         let lane = "vptest-cap/main";
 
@@ -1343,7 +1343,7 @@ mod tests {
         use crate::repo::unison_server::dispatch_repo_method;
         use std::time::Duration;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         // doc 33: submit には mode=chat の lane が pool に要る。
         // repo 名はテスト固有にする — 実在 repo だと registry の会話 id が本物の
         // session id を返し、temp cwd との不整合で resume が失敗する。

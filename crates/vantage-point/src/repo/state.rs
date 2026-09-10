@@ -378,8 +378,11 @@ impl AppState {
 
 // --- VP-13 sub-scope E: Medium 層 route test 用 fixture ---
 
-/// Test 用の minimal AppState builder。 各 field は default / None / in-memory mock で構築、
-/// `daemon` のみ caller が optional に指定 (= 503 path / 200 path 切り替え)。
+/// Test 用の minimal AppState builder（repo 役）。 各 field は default / None / in-memory mock で構築。
+///
+/// 旧 `daemon` 引数は 9-2 PR-1.5 で落とした — 全 call site が `None` を渡していて、`Some` を
+/// 渡す「200 path」は 1 つも無かった。daemon 役の fixture は [`build_test_daemon_app_state`]
+/// （`daemon: Some` を内部で置く）。
 ///
 /// 用途: `crates/vantage-point/src/repo/http/` の各 handler を Axum oneshot で
 /// smoke test する際の shared fixture。 重い field (vpdb / wiremsg_store)
@@ -389,10 +392,8 @@ impl AppState {
 /// からのみ使用可。 integration test (`crates/vantage-point/tests/`) は別 crate なので
 /// 不可 (= 必要なら pub 化検討、 PR 4b cleanup philosophy に従い API surface 拡大は控えめに)。
 #[cfg(test)]
-pub(crate) async fn build_test_app_state(
-    daemon: Option<Arc<RwLock<RepoManagerCapability>>>,
-) -> Arc<AppState> {
-    build_test_app_state_with("", None, daemon).await
+pub(crate) async fn build_test_app_state() -> Arc<AppState> {
+    build_test_app_state_with("", None).await
 }
 
 /// `build_test_app_state` の `repo_dir` / `vpdb` を差せる版。
@@ -405,12 +406,10 @@ pub(crate) async fn build_test_app_state(
 pub(crate) async fn build_test_app_state_with(
     repo_dir: &str,
     vpdb: Option<crate::db::SharedVpDb>,
-    daemon: Option<Arc<RwLock<RepoManagerCapability>>>,
 ) -> Arc<AppState> {
     build_test_app_state_raw(TestStateParams {
         repo_dir: repo_dir.to_string(),
         vpdb,
-        daemon,
         ..TestStateParams::repo_role()
     })
     .await
@@ -439,9 +438,9 @@ pub(crate) async fn build_test_app_state_with(
 /// 開けにいく（`daemon/machine_capabilities.rs:82-95` の `:90`）。[`DeviceRegistry::new`] だけなら純粋なので、
 /// registry の構築だけをここで行う。
 ///
-/// ⚠️ **`build_test_app_state` の `daemon` 引数を使って `Some` を渡さないこと。** その引数は
-/// 全 65 site で `None` = dead であることが棚卸し 9-2 PR-1.5（引数削除）の前提なので、
-/// 1 箇所でも `Some` を通すと前提が崩れる。ここでは内部で直に置く。
+/// ⚠️ **daemon 役の `Some` はこの fixture が内部で置く。** `build_test_app_state[_with]` に
+/// daemon を差す口は無い（旧 `daemon` 引数は全 65 site が `None` = dead だったため
+/// 棚卸し 9-2 PR-1.5 で削除済み）。repo 役の fixture に daemon を後付けしないこと。
 ///
 /// **各 cache は既定値のまま返す。** 実体の同一性を見る test は、返ってきた state の
 /// 内部可変性（`hub_status.set` 等）で**非初期値へ動かしてから** health を叩くこと
@@ -620,7 +619,7 @@ mod lane_resolve_tests {
     /// Running な lane は LaneAddress に解決される（main / sub 両方）。
     #[tokio::test]
     async fn resolve_lane_address_returns_running_lane() {
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         {
             let mut pool = state.lane_pool.write().await;
             pool.insert(running_lane(LaneAddress::root("vantage-point"), "claude"));
@@ -645,7 +644,7 @@ mod lane_resolve_tests {
     /// lane address として parse できない query は None。
     #[tokio::test]
     async fn resolve_lane_address_none_for_non_lane_query() {
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         assert_eq!(state.resolve_lane_address("%3").await, None);
         assert_eq!(state.resolve_lane_address("some-label").await, None);
     }
@@ -653,7 +652,7 @@ mod lane_resolve_tests {
     /// Dead lane は nudge 不可なので None。
     #[tokio::test]
     async fn resolve_lane_address_none_for_dead_lane() {
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         {
             let mut pool = state.lane_pool.write().await;
             let mut info = running_lane(LaneAddress::root("vp"), "claude");

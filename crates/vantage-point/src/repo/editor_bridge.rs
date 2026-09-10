@@ -97,7 +97,7 @@ mod tests {
         use crate::protocol::RepoMessage;
         use crate::repo::state::build_test_app_state;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         // broadcast より先に購読しておかないと EditorCommand を取りこぼす
         let mut hub_rx = state.hub.subscribe();
 
@@ -132,7 +132,7 @@ mod tests {
         use super::handle_editor_result;
         use crate::repo::state::build_test_app_state;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let r = handle_editor_result(
             &state,
             serde_json::json!({"request_id": "gone", "payload": {}}),
@@ -147,7 +147,7 @@ mod tests {
         use super::handle_editor_command;
         use crate::repo::state::build_test_app_state;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         for payload in [
             serde_json::json!({}),
             serde_json::json!({"id": "x"}),

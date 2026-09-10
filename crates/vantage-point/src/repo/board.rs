@@ -421,7 +421,7 @@ mod tests {
         use std::sync::Arc;
 
         let db = Arc::new(VpDb::connect_mem().await.unwrap());
-        let state = build_test_app_state_with("/repos/vp", Some(db), None).await;
+        let state = build_test_app_state_with("/repos/vp", Some(db)).await;
 
         // show で 1 件貼る（lane/scope 省略 = main lane / scope=lane）。
         let show = serde_json::json!({
@@ -514,7 +514,7 @@ mod tests {
         // schema（idx_pane_scope UNIQUE）を定義しないと show ごとに新 row になり ON DUPLICATE KEY
         // UPDATE の item 蓄積が起きない（accumulation / follow の検証に必須）。
         db.define_schema().await.unwrap();
-        let state = build_test_app_state_with("/repos/vp", Some(db), None).await;
+        let state = build_test_app_state_with("/repos/vp", Some(db)).await;
 
         let show = |body: &str| {
             serde_json::json!({

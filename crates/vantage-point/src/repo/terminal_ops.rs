@@ -185,7 +185,7 @@ mod tests {
         use crate::repo::unison_server::dispatch_repo_method;
         use std::time::Duration;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         let addr = LaneAddress::root("vp");
@@ -280,7 +280,7 @@ mod tests {
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let res = dispatch_repo_method(
             &state,
             "terminal_demand_start",
@@ -304,7 +304,7 @@ mod tests {
         use base64::Engine;
         use std::time::Duration;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         let addr = LaneAddress::root("vp");
@@ -409,7 +409,7 @@ mod tests {
         use base64::Engine;
         use std::time::Duration;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         // sub lane (main とは別 topic key になる)
@@ -510,7 +510,7 @@ mod tests {
         use base64::Engine;
         use std::time::Duration;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         let addr = LaneAddress::sub("vp", "feat-multi");
@@ -637,7 +637,7 @@ mod tests {
         use std::time::Duration;
 
         let _state_dir = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         let addr = LaneAddress::sub("vp", "feat-reconnect");
@@ -724,7 +724,7 @@ mod tests {
         use crate::repo::unison_server::dispatch_repo_method;
         use std::time::Duration;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         let addr = LaneAddress::sub("vp", "feat-scoped");
@@ -856,7 +856,7 @@ mod tests {
         use base64::Engine;
         use std::time::Duration;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         let addr = LaneAddress::sub("vp", "feat-late");
@@ -943,7 +943,7 @@ mod tests {
         use crate::repo::unison_server::dispatch_repo_method;
         use base64::Engine;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let data = base64::engine::general_purpose::STANDARD.encode(b"x");
         let res = dispatch_repo_method(
             &state,
