@@ -138,7 +138,7 @@ module VP
   # 走っている SP の PID 一覧。
   #
   # doc 44 P1 (fold-in): `sp_pids` / `ancestor_sp_pid` は撤去した。
-  # project が World プロセス内の Arc<AppState> になり、独立した SP プロセスが
+  # repo が daemon プロセス内の Arc<RepoState> になり、独立した SP プロセスが
   # 存在しなくなったため、`pgrep -f 'vp sp start'` は永久に 0 件マッチだった
   # (= 呼び手が「SP は居ない」と誤認する silent no-op)。
   # 「自分が VP の lane の中にいるか」を知りたい場合は ENV["VP_LANE"] を見ること。
