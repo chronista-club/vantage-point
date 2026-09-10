@@ -223,7 +223,7 @@ fn auth_target_states() -> std::collections::BTreeMap<String, String> {
 // いずれも `state.hub.broadcast(RepoMessage)` するだけで、 QUIC dispatch が同じ broadcast を行う。
 
 // doc 45 段 4: `/api/canvas/switch_lane` `/api/canvas/layout` の handler は撤去。
-// switch_lane の宛先 `AppState.canvas_senders`（棚卸し 9-2 PR-2c で field ごと削除）は
+// switch_lane の宛先 `RepoState.canvas_senders`（棚卸し 9-2 PR-2c で field ごと削除）は
 // **どこからも populate されなかった**（旧 localhost browser Canvas の WS 撤去で書き手が消えた）ので、常に 0 client に
 // 送っていた。layout の `load/save_canvas_layout` も呼び出し元がこの 2 handler だけで、
 // end-to-end で dead だった（doc 45 §3.1）。Unison に移すと「読み手のいない書き込み」を
@@ -309,11 +309,11 @@ mod tests {
     // 棚卸し 9-2 PR-0.5 — daemon 形 `/api/health` の characterization
     //
     // production の `/api/health` は `build_daemon_router` にしか mount されておらず、
-    // 渡るのは必ず daemon 役の state。PR-0.5 時点では `AppState` で、`terminal_token !=
+    // 渡るのは必ず daemon 役の state。PR-0.5 時点では `RepoState` で、`terminal_token !=
     // "DAEMON_DISABLED"` の repo 分岐は production で一度も通っていなかった。
     //
     // 9-2 の PR-2c でこの handler の state を `Arc<DaemonState>` に載せ替え、repo 分岐と
-    // `AppState` の daemon 専用 10 field を同時に削除した。**その前後で応答が 1 bit も
+    // `RepoState` の daemon 専用 10 field を同時に削除した。**その前後で応答が 1 bit も
     // 変わらないこと**を確かめるための基準線がここ（PR-2c で書き換えたのは fixture 2 関数 +
     // 承認済み差分 = `repo_dir` / `terminal_token` の 2 key だけ）。
     //
@@ -511,7 +511,7 @@ mod tests {
     /// > version、presence は代表例。`Arc` 同一性は補助
     ///
     /// なぜ既定値の固定では足りないか: PR-2c は 10 field の供給元を
-    /// `AppState` から `DaemonState` へ移した。**移し先で新しい実体を作ってしまっても
+    /// `RepoState` から `DaemonState` へ移した。**移し先で新しい実体を作ってしまっても
     /// compile は通り、`-D warnings` も鳴らない**（doc 63 §6）。全部の cache が
     /// constructor 既定のままだと、新しい実体も同じ既定値を返すので応答は一致する。
     /// 非初期値へ動かして初めて「同じ実体か」を問える。

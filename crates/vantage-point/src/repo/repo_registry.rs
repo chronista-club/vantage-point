@@ -4,17 +4,17 @@
 //!
 //! 旧構成では repo 1 件 = repo プロセス 1 本で、daemon は QUIC registry / control /
 //! canvas-ingest の 3 channel を張って外から操作していた。fold-in はこのプロセス境界を
-//! 取り払い、repo を **daemon プロセス内の `Arc<AppState>` 1 個**に降格させる。
+//! 取り払い、repo を **daemon プロセス内の `Arc<RepoState>` 1 個**に降格させる。
 //! 本 registry がその map の実体で、旧 `running_repos` + `control_channels` の
 //! 役割を 1 つにまとめて引き継ぐ。
 //!
 //! doc 44 D2 が言う「repo は認知境界に退化する」はここで達成される — repo は
 //! もはやプロセスでも actor でもなく、**この HashMap のエントリ**でしかない。
 //!
-//! # なぜ AppState を 1 枚に畳まないのか
+//! # なぜ RepoState を 1 枚に畳まないのか
 //!
 //! `LanePool` は key が `LaneAddress { repo, kind, name }` なので原理的には全 repo
-//! 分を 1 枚に merge できる。ただしそれをやると `AppState.repo_dir` の単一前提が壊れ、
+//! 分を 1 枚に merge できる。ただしそれをやると `RepoState.repo_dir` の単一前提が壊れ、
 //! `dispatch_repo_method` の signature 変更 → 約 50 箇所のテスト改修に波及する。
 //! 一方 fold-in の目的（Daemon↔repo 配管の撤去・`vp sp` 退役・spine 三段→二段）は
 //! **プロセス境界を消すだけで達成される**ため、1 枚化は分離して doc 44 P2
@@ -28,11 +28,11 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use super::state::AppState;
+use super::state::RepoState;
 
 /// repo 1 件分の実行状態と、その停止スイッチ。
 pub(crate) struct RepoRuntime {
-    pub state: Arc<AppState>,
+    pub state: Arc<RepoState>,
     /// cancel すると当該 repo の spawn 済 task 群（lane monitor / snapshot publish 等）が止まる。
     pub shutdown: CancellationToken,
 }
@@ -215,7 +215,7 @@ impl RepoRuntimes {
     ///
     /// doc 44 P1 (fold-in): 旧構成では repo = 別プロセス (repo) だったため、daemon が
     /// 落ちても repo は生き残るのが**設計上の正**だった（`vp daemon stop` の gentle 挙動）。
-    /// repo が Daemon 内の `Arc<AppState>` になった今、この前提は反転する — repo は
+    /// repo が Daemon 内の `Arc<RepoState>` になった今、この前提は反転する — repo は
     /// daemon の tokio task と SurrealDB handle でしかないので、**daemon が畳まなければ
     /// 誰も畳まない**。
     ///
@@ -244,8 +244,8 @@ impl RepoRuntimes {
         count
     }
 
-    /// 登録済 repo の `AppState` を引く。
-    pub async fn get(&self, path_key: &str) -> Option<Arc<AppState>> {
+    /// 登録済 repo の `RepoState` を引く。
+    pub async fn get(&self, path_key: &str) -> Option<Arc<RepoState>> {
         self.inner
             .read()
             .await

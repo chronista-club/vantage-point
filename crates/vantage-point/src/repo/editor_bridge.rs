@@ -1,12 +1,12 @@
 //! Editor bridge (doc 48 Phase 2) — MCP → GUI Editor Mode の request-response。
 //!
 //! `editor_fields` / `editor_values` / `editor_set`（doc 48）と `layout_get` / `layout_set` /
-//! `layout_history`（doc 49 LE-15）は同じ配管: request_id を発行して `AppState::editor_pending` に
+//! `layout_history`（doc 49 LE-15）は同じ配管: request_id を発行して `RepoState::editor_pending` に
 //! oneshot を登録し、`RepoMessage::EditorCommand` を broadcast、GUI（vp-app）が `editor_result` で
 //! 返した payload で解決する。往路（`handle_editor_command`）と復路（`handle_editor_result`）は
 //! 同じ `editor_pending` を触るのでここに同居する。
 
-use super::state::AppState;
+use super::state::RepoState;
 use crate::protocol::RepoMessage;
 
 /// GUI 応答待ちの上限。MCP 側 outer timeout (5s、`quic_call`) より短くすること
@@ -20,7 +20,7 @@ const EDITOR_BRIDGE_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// 結果を `editor_result` で返すと oneshot が解決する。timeout = GUI 不在 / 対象
 /// repo 未表示 / Editor Mode 未 mount。
 pub(crate) async fn handle_editor_command(
-    state: &AppState,
+    state: &RepoState,
     method: &str,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -69,7 +69,7 @@ pub(crate) async fn handle_editor_command(
 /// 不在 key = timeout 済の stale 応答。エラーにせず無視する (idempotent) —
 /// GUI 側は応答の成否で挙動を変えないため。
 pub(crate) async fn handle_editor_result(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let request_id = payload

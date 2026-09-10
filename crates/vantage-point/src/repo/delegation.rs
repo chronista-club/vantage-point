@@ -21,12 +21,12 @@
 //! - record の `requester` / `doer` は**論理 wire address**（`agent@<repo>` /
 //!   `agent@<repo>/<name>`）で持つ。raw tmux session は焼き込まない。
 //! - wake は `address → (local lane session)` の resolution を介す（[`lane_query_for`] +
-//!   [`AppState::nudge_lane`]）。後で `daemon-handle:` 接頭の remote 分岐を足すだけで federation 化
+//!   [`RepoState::nudge_lane`]）。後で `daemon-handle:` 接頭の remote 分岐を足すだけで federation 化
 //!   できる（local は退化形）。
 
 use serde::{Deserialize, Serialize};
 
-use super::state::AppState;
+use super::state::RepoState;
 
 /// 委譲 1 件の record（daemon 中央 store = `delegations` table のエントリ）。
 ///
@@ -88,7 +88,7 @@ pub(crate) enum Outcome {
     NeedsInput { question: String },
 }
 
-/// 論理 wire address（`agent@...`）を、[`AppState::resolve_lane_address`](crate::repo::state::AppState::resolve_lane_address)
+/// 論理 wire address（`agent@...`）を、[`RepoState::resolve_lane_address`](crate::repo::state::RepoState::resolve_lane_address)
 /// が解する lane address query（`<repo>/main` / `<repo>/sub/<name>`）に翻訳する。
 ///
 /// これが resolution の **local 分岐**（= federation 不変条件の swappable 層）。後で
@@ -169,7 +169,7 @@ fn respond_wake_prompt(id: &str, task: &str, answer: &str) -> String {
 /// store は wire と同じく daemon 中央（`daemon_wire::call`）。wake は repo-local（`nudge_lane`、
 /// doer が別 repo / 不在なら `woke=false` で graceful、取りこぼしは reconcile が後で拾う = follow-up B）。
 pub(crate) async fn handle_delegate(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let doer = payload
@@ -215,7 +215,7 @@ pub(crate) async fn handle_delegate(
 /// Daemon store で transition（Done/Failed/AwaitingResponse）→ 更新後 record を受け取り requester を
 /// repo-local wake（Outcome 同梱）。未知 id は Daemon handler が error を返し、`daemon_wire::call` 経由で Err。
 pub(crate) async fn handle_complete(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let id = payload
@@ -260,7 +260,7 @@ pub(crate) async fn handle_complete(
 /// answer 同梱で再 wake。未知 id は Daemon handler が error を返す。状態 AwaitingResponse でなくても
 /// 前進させる lenient 設計は Daemon store 側（`apply_respond`）が担保（厳密ガードは reconcile follow-up）。
 pub(crate) async fn handle_respond(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let id = payload

@@ -341,7 +341,7 @@ pub fn format_history_line(entry: &FarewellEntry) -> String {
 ///
 /// 呼び手によって渡ってくる path が違うため:
 ///
-/// - `AppState.repo_dir` — `RepoRuntimes::start` が受け取った**生のパス**
+/// - `RepoState.repo_dir` — `RepoRuntimes::start` が受け取った**生のパス**
 /// - `path_key` — `normalize_path_key`（canonicalize 済、symlink 解決後）
 ///
 /// `RepoRuntimes` は map key に正規化を使いつつ `start_repo` には生を渡すので、
@@ -715,7 +715,7 @@ mod tests {
     /// 回帰固定: **書き手と読み手が別の形の path を渡しても同じ行を触る**。
     ///
     /// 帳簿に触る経路は 4 本あり、渡ってくる path の形が揃っていない:
-    /// `AppState.repo_dir`（`RepoRuntimes::start` が受け取った生のパス）と
+    /// `RepoState.repo_dir`（`RepoRuntimes::start` が受け取った生のパス）と
     /// `path_key`（`normalize_path_key` = canonicalize 済）。`RepoRuntimes` は map key に
     /// 正規化を使いつつ `start_repo` には生を渡すので、両者は一致するとは限らない。
     ///

@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use super::state::AppState;
+use super::state::RepoState;
 
 /// gui (doc 33): conversation プロンプト投入。
 ///
@@ -16,7 +16,7 @@ use super::state::AppState;
 /// 生きた TUI を暗黙に殺さない）。engine は LanePool が lazy spawn（初回のみ）し、
 /// ConversationEvent は conversation_pump 経由で `repo/conversation/data/{lane}/event` に流れる。
 pub(crate) async fn handle_conversation_submit(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -46,7 +46,7 @@ pub(crate) async fn handle_conversation_submit(
 /// 既に成立済みなので warn に留める（配送と replay 記録は独立系統）。tap（pump）が assistant 側を
 /// 書くのと対になり、replay で user ⇄ assistant のターンが揃う。
 async fn record_user_message_if_transcriptless(
-    state: &AppState,
+    state: &RepoState,
     lane: &str,
     session: Option<crate::lane::session_registry::SessionKey>,
     prompt: &str,
@@ -92,7 +92,7 @@ async fn record_user_message_if_transcriptless(
 /// として submit する。turn 実行中でも engine 側が queue するため任意時点で呼べる
 /// （doc 34 Step 0 spike ①実測）。
 pub(crate) async fn handle_conversation_nudge(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -124,7 +124,7 @@ pub(crate) async fn handle_conversation_nudge(
 /// `{lane, request_id, behavior:"deny", message?}`。**ensure しない**（応答対象 engine 不在は Err —
 /// 質問した engine が死んでいたら応答先が無い、doc §2.3）。
 pub(crate) async fn handle_conversation_respond(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -169,7 +169,7 @@ pub(crate) async fn handle_conversation_respond(
 /// doc 35 §5: 実行中 turn の中断（stop ボタン / Esc）。`{lane}` → `LanePool::interrupt_chat`。
 /// engine は turn を止めるだけでプロセスは生存し、次の submit を受けられる。
 pub(crate) async fn handle_conversation_interrupt(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -191,7 +191,7 @@ pub(crate) async fn handle_conversation_interrupt(
 
 /// doc 35 §2.5 / PR3: permission mode の動的切替。`{lane, mode}` → LanePool::set_permission_mode_chat。
 pub(crate) async fn handle_conversation_set_permission_mode(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -220,7 +220,7 @@ pub(crate) async fn handle_conversation_set_permission_mode(
 /// `{lane}` → `{lane, focused, sessions: [{key, agent, engine_session_id?, live, focused}]}`。
 /// Phase 2 の tab strip はこれを描くだけ（UI は state を持たない）。
 pub(crate) async fn handle_conversation_session_list(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -243,7 +243,7 @@ pub(crate) async fn handle_conversation_session_list(
 /// `{lane, agent?, focus?}` → `{lane, session}`。agent 省略 = lane の agent、focus 省略 = true
 /// （「+」で作った session にそのまま話しかける UX が既定）。engine は spawn しない（Draft）。
 pub(crate) async fn handle_conversation_session_create(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -275,7 +275,7 @@ pub(crate) async fn handle_conversation_session_create(
 /// doc 38: focused session の切替。`{lane, session}`。registry 永続のみ（slot への注入 /
 /// eager resume spawn は Phase 3 の attach 状態機械で束ねて実装）。
 pub(crate) async fn handle_conversation_session_focus(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -318,7 +318,7 @@ pub(crate) async fn handle_conversation_session_focus(
 /// root は registry が拒否（doc 39 §6 — 最後の 1 本の拒否を包含。GUI も root タブの × を
 /// 隠す = 多重防御）。lane を素に戻すのは Reset lane（fresh restart）の役目。
 pub(crate) async fn handle_conversation_session_remove(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -366,7 +366,7 @@ pub(crate) async fn handle_conversation_session_remove(
 /// ちょうどこれ（旧 root を残すか閉じるかは Reborn の設計で決める）。
 /// A6 で lane 単位 mode の gate（旧「mode=Tui 限定」）は撤去済。
 pub(crate) async fn handle_conversation_session_new_root(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -400,7 +400,7 @@ pub(crate) async fn handle_conversation_session_new_root(
 ///
 /// lane 単位 mode の gate は A6 で撤去（残る制限は既知 engine のみ — `switch_root_session` 参照）。
 pub(crate) async fn handle_conversation_session_switch_root(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -460,7 +460,7 @@ fn parse_image_inputs(raw: Option<&serde_json::Value>) -> Vec<crate::conversatio
 }
 
 async fn ensure_and_submit_chat(
-    state: &AppState,
+    state: &RepoState,
     ctx: &str,
     lane: &str,
     session: Option<crate::lane::session_registry::SessionKey>,
@@ -516,7 +516,7 @@ async fn ensure_and_submit_chat(
 /// replay の順序 race になる（非 retained topic で落ちる）。既存 `ConsoleNewSession` と同じ
 /// 「購読してから demand」の規律で、Reborn ⊃ replay（更新済 transcript の再読）を保証する。
 async fn apply_session_mode(
-    state: &AppState,
+    state: &RepoState,
     lane: &str,
     addr: &crate::repo::lane::LaneAddress,
     session: crate::lane::session_registry::SessionKey,
@@ -559,7 +559,7 @@ async fn apply_session_mode(
 /// 名札の kind badge が任意 pane を切り替える経路（旧 lane 単位 `console_set_mode` の後継）。
 /// session は明示必須（root 決め打ちにしない）。replay は client が新 pane 購読後に撃つ。
 pub(crate) async fn handle_session_set_mode(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -587,7 +587,7 @@ pub(crate) async fn handle_session_set_mode(
 /// （now-line は揮発。lane 行への掲揚で保持が要るのは Phase B の関心 — その時に retained 化を
 /// 判断する）。session 未指定は root（lane の代表）に読み替える。
 pub(crate) async fn handle_session_now(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -638,7 +638,7 @@ pub(crate) async fn handle_session_now(
 /// engine 不在（tui 中 / chat-idle）は記録のみ = 次 spawn から適用。
 /// ⚠️ 進行中の turn は engine drop で切れる（UI 側は streaming 中 picker を disable して抑止）。
 pub(crate) async fn handle_conversation_set_model(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");

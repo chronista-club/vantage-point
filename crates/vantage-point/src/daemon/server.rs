@@ -24,7 +24,7 @@ use crate::capability::{RepoPresenceState, RunningRepo};
 /// doc 44 P1 (fold-in): 旧 SP control channel registry (`path_key` → QUIC channel) の後継。
 ///
 /// repo プロセスが消えたので「どう話すか」は QUIC channel ではなく **Daemon 内の
-/// `Arc<AppState>` を引くこと**になった。型名は呼び出し側の意味 (= repo へ話す口) を
+/// `Arc<RepoState>` を引くこと**になった。型名は呼び出し側の意味 (= repo へ話す口) を
 /// 保つため据え置き、指す先だけを差し替えている。
 pub(crate) type ControlChannels = Arc<crate::repo::repo_registry::RepoRuntimes>;
 
@@ -101,7 +101,7 @@ pub struct DaemonState {
     /// client (MCP/CLI) の process 操作は、この handle を**逆用**して当該 repo に forward していた
     /// (= Daemon→repo reverse-routing)。repo 切断で handle を除去 = reverse 不能、という寿命だった。
     ///
-    /// fold-in 後: repo は daemon と同一プロセスの `Arc<AppState>` なので、forward ではなく
+    /// fold-in 後: repo は daemon と同一プロセスの `Arc<RepoState>` なので、forward ではなく
     /// `RepoRuntimes::dispatch` → `dispatch_repo_method` の直呼びになる。「切断」という
     /// 状態が存在せず、map に居るか居ないかだけになった。
     ///
@@ -324,7 +324,7 @@ impl DaemonState {
 ///
 /// production と同じ [`assemble`](DaemonState::assemble) を通す — fixture だけ別経路で組むと、
 /// 結線の変更が test に映らない。router / health / shutdown の test が共有する
-/// （旧 `build_test_daemon_app_state`（`AppState` 版）は PR-2c で削除）。
+/// （旧 `build_test_daemon_app_state`（`RepoState` 版）は PR-2c で削除）。
 ///
 /// - `update` は `Some(new_for_test())`（`new()` は `gh auth token` を subprocess で叩く）。
 ///   network に出る handler（check / apply）や restart を `Some` のまま叩かないこと
@@ -1207,7 +1207,7 @@ async fn canvas_router_for(
     control_channels: &ControlChannels,
     path_key: &str,
 ) -> Arc<crate::repo::topic_router::TopicRouter> {
-    // doc 44 P1 (fold-in): repo が起動していれば **その AppState の router が唯一の正**。
+    // doc 44 P1 (fold-in): repo が起動していれば **その RepoState の router が唯一の正**。
     // pump が route する先と surface が購読する先を同一にするため、cache に別 router が
     // 載っていたら差し替える（repo 起動前に surface が subscribe して placeholder が
     // 作られていた場合の是正。placeholder には元々データが流れないので失うものは無い）。

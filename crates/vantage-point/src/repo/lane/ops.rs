@@ -7,16 +7,16 @@
 
 use std::sync::Arc;
 
-use crate::repo::state::AppState;
+use crate::repo::state::RepoState;
 
 /// tmux decoupling PR1: lane nudge。 論理 lane address 宛に literal text + Enter を PtySlot へ書く。
 ///
 /// 旧制御面 (`tmux send-keys -t <session>`) の repo-proxy 置換。 daemon (delivery/reconcile
 /// loop の re-nudge) / CLI (`vp flow handoff`) / MCP (`flow_handoff`) が control channel 経由で
-/// この method を ask する。 repo-local な `AppState::nudge_lane` は同じ `deliver_nudge` sink を
+/// この method を ask する。 repo-local な `RepoState::nudge_lane` は同じ `deliver_nudge` sink を
 /// in-process で呼ぶ (text→Enter の submit 意味論は `deliver_nudge` に集約)。
 pub(crate) async fn handle_lane_nudge(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -41,7 +41,7 @@ pub(crate) async fn handle_lane_nudge(
 /// **UI を通さずに枚数と中身を読む口**をここに置く（doc 47 §7 成立条件② — 「読み手のない
 /// 書き込み」を作らない）。CLI `vp lane slots` がこの method を ask する。
 pub(crate) async fn handle_lane_slots(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -78,7 +78,7 @@ pub(crate) async fn handle_lane_slots(
 /// 購読者不在の CLI 運用では pump なしのまま `vp lane slots` / `vp lane capture --session` /
 /// `vp lane nudge --session` で読み書きする（capture は TermAttach 直読で topic 非依存）。
 pub(crate) async fn handle_lane_slot_new(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -131,7 +131,7 @@ pub(crate) async fn handle_lane_slot_new(
 /// 旧 `tmux capture-pane`（`handle_tmux_capture`）の native 代替 — main が sub の
 /// console を読む dev-flow 用途。 CLI `vp lane capture` / 将来の MCP がこの method を ask する。
 pub(crate) async fn handle_lane_capture(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -186,7 +186,7 @@ pub(crate) async fn handle_lane_capture(
 /// 移管（surface→repo 直結 HTTP を撤去、 daemon 経由の ask に統一）。 logic は旧 `delete_handler`
 /// から移設し、 core の `delete_lane_orchestrated` を再利用（HTTP route + handler は削除）。
 pub(crate) async fn handle_lane_delete(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let address = payload
@@ -214,7 +214,7 @@ pub(crate) async fn handle_lane_delete(
 /// F6③ (doc 27 §3.4.5/§6): Lane restart。 旧 SP HTTP `POST /api/lanes/restart` を repo-proxy
 /// ask に移管。 core の `restart_lane_orchestrated` (VP-131 透過 retry loop) を呼ぶ薄い adapter。
 pub(crate) async fn handle_lane_restart(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let address = payload
@@ -253,7 +253,7 @@ pub(crate) async fn handle_lane_restart(
 /// その session に記録される（root 固定ではない）— 同じ lane に複数の console slot が
 /// 同居しても、同居人の報告が root の `--resume` を壊さない。
 pub(crate) async fn handle_lane_session_changed(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -319,7 +319,7 @@ pub(crate) async fn handle_lane_session_changed(
 /// payload は `CreateLaneReq` 互換 JSON (kind/name/agent?/cwd?/branch?/base?)。 成功は LaneInfo JSON、
 /// 失敗は core が返す String error (旧 HTTP の CONFLICT="already exists" 等を保持)。
 pub(crate) async fn handle_lane_create(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let req: super::lifecycle::CreateLaneReq = serde_json::from_value(payload)
@@ -332,7 +332,7 @@ pub(crate) async fn handle_lane_create(
 ///
 /// `LaneInfo` 全体ではなく [`crate::host::ledger::LaneRef`] に落とすのは、帳簿が lane の
 /// 中身に依存しないため（`host::farewell` が git を知らないのと同じ切り方）。
-async fn ledger_lane_refs(state: &Arc<AppState>) -> Vec<crate::host::ledger::LaneRef> {
+async fn ledger_lane_refs(state: &Arc<RepoState>) -> Vec<crate::host::ledger::LaneRef> {
     state
         .lane_pool
         .read()
@@ -348,7 +348,7 @@ async fn ledger_lane_refs(state: &Arc<AppState>) -> Vec<crate::host::ledger::Lan
 /// 未設定 / dangling でも error にせず、**どう決まったか**を `source` で返す
 /// （起点が読めないだけで呼び出し側が止まる方が困る）。
 pub(crate) async fn handle_lane_origin_get(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
 ) -> Result<serde_json::Value, String> {
     let lanes = ledger_lane_refs(state).await;
     let origin = crate::host::ledger::origin(state.vpdb.as_ref(), &state.repo_dir, &lanes).await;
@@ -361,7 +361,7 @@ pub(crate) async fn handle_lane_origin_get(
 /// [`crate::host::ledger::set_origin`] が境界で 1 回だけ行う。
 /// D5 の通り **何も動かさない**（cwd も active lane も変えない、ポインタの書き換えだけ）。
 pub(crate) async fn handle_lane_origin_set(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
@@ -384,7 +384,7 @@ pub(crate) async fn handle_lane_origin_set(
 /// 起点と同じく、人が触るのは名前で帳簿に入るのは `lane_id`。保存後の反映は
 /// 次の lanes snapshot に載って戻る（`build_lanes_snapshot` が帳簿の順で並べる）。
 pub(crate) async fn handle_lane_order_set(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let order: Vec<String> = payload
@@ -412,7 +412,7 @@ pub(crate) async fn handle_lane_order_set(
 
 /// lanes portless (doc 27 §3.4.5): Lane list。 旧 SP HTTP `GET /api/lanes` を repo-proxy ask に
 /// 移管。 core の `build_lanes_snapshot` を呼び `{lanes:[...]}` で wrap (旧 HTTP `LanesResponse` 互換)。
-pub(crate) async fn handle_lanes_list(state: &Arc<AppState>) -> Result<serde_json::Value, String> {
+pub(crate) async fn handle_lanes_list(state: &Arc<RepoState>) -> Result<serde_json::Value, String> {
     let lanes = super::lifecycle::build_lanes_snapshot(state).await;
     // doc 46 P5: slot は lane に 1 枚ではなく session ごとになった。`vp lane ls --detail` から
     // 枚数が見えるよう、lane ごとの slot session key を snapshot に添える（LaneInfo 自体には

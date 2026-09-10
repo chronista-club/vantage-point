@@ -1191,7 +1191,7 @@ impl RepoManagerCapability {
         // spawn し、QUIC registry への自己登録を `wait_for_health` で待ち、port が他 repo に
         // 取られていれば `auto_reassign_slot` して 1 回だけ retry する、という多段の段取りだった。
         //
-        // repo が Daemon 内の `Arc<AppState>` になった今、これは単なる関数呼び出しになる。
+        // repo が Daemon 内の `Arc<RepoState>` になった今、これは単なる関数呼び出しになる。
         // 旧段取りの構成要素はいずれも概念ごと不要になった:
         //   - port 解決      … bind しないので割り当てる対象が無い
         //   - health 待ち    … 起動の成否は Result で同期的に返る

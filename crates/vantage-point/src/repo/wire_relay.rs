@@ -5,7 +5,7 @@
 //!
 //! 受付は `unison_server::dispatch_repo_method`。旧 HTTP wrapper（`http/health.rs`）は撤去済で、呼び手は QUIC dispatch だけ。
 
-use super::state::AppState;
+use super::state::RepoState;
 
 /// agent address を canonical (qualified) 形に正規化する (wiremsg N1、 refactor R1 PR-B)
 ///
@@ -37,7 +37,7 @@ fn normalize_agent_addr(addr: &str, self_repo: &str) -> String {
 /// 保存・notify・local_seq 採番・body coerce は全て daemon 側
 /// ([`crate::daemon::wire_ops`])。 cross-process forward は中央化で概念ごと消滅。
 pub(crate) async fn handle_wire_send(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let from = payload
@@ -72,7 +72,7 @@ pub(crate) async fn handle_wire_send(
 ///
 /// payload: `{ agent, timeout? }` — timeout の clamp (default 5s / max 30s) も daemon 側。
 pub(crate) async fn handle_wire_recv(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let agent = payload
@@ -92,7 +92,7 @@ pub(crate) async fn handle_wire_recv(
 ///
 /// payload: `{ message_id }` — agent 文脈不要のため正規化なしで relay。
 pub(crate) async fn handle_wire_thread(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let _ = state; // thread は repo 文脈 (正規化) 不要。 signature は他 handler と統一
@@ -111,7 +111,7 @@ pub(crate) async fn handle_wire_thread(
 ///
 /// payload: `{ agent }`。 `flow_progress` の 5-state FSM derive で使う。
 pub(crate) async fn handle_wire_latest_msg(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let agent = payload
@@ -130,7 +130,7 @@ pub(crate) async fn handle_wire_latest_msg(
 ///
 /// payload: `{ agent }` → `{ status, message }`。 `flow_progress` の `AwaitingUser` 判定で使う。
 pub(crate) async fn handle_wire_needs_user_pending(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let agent = payload
@@ -149,7 +149,7 @@ pub(crate) async fn handle_wire_needs_user_pending(
 ///
 /// payload: `{ agent }`。 `flow_progress` の集約 view / `wire_inbox` MCP tool で使う。
 pub(crate) async fn handle_wire_unread_count(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let agent = payload
@@ -168,7 +168,7 @@ pub(crate) async fn handle_wire_unread_count(
 ///
 /// payload: `{ message_id, agent }` → `{ status, acked }`
 pub(crate) async fn handle_wire_ack(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let message_id = payload

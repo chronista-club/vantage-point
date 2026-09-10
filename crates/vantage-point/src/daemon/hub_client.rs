@@ -193,7 +193,7 @@ impl HubAuthStatus {
 /// の select が待ち受け、planned reconnect（backoff なし）で張り直す — 次の connect で
 /// [`hub_credential`] が file を読み直すため、新しい auth 状態が数秒で `hub_auth` に現れる。
 ///
-/// process-global static なのは、書き手（`handle_daemon_control`）が AppState を持たない
+/// process-global static なのは、書き手（`handle_daemon_control`）が RepoState を持たない
 /// dispatch 関数で、読み手（常駐ループ）が daemon プロセスに 1 本だけだから。`notify_one` は
 /// 待ち手不在でも permit を 1 つ積むので、ループが connect 処理中でも要求は失われない。
 static HUB_RECONNECT_REQUEST: tokio::sync::Notify = tokio::sync::Notify::const_new();

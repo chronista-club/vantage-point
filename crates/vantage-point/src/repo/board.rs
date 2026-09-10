@@ -10,7 +10,7 @@
 //! `board_set_cursor`（受付は `unison_server::dispatch_repo_method`）。`seed_boards` は起動時に DB の board を
 //! retained topic へ投入する（`repo/server.rs`）。
 
-use super::state::AppState;
+use super::state::RepoState;
 use crate::protocol::{BoardItem, Content, RepoMessage};
 
 /// board の DB pane_id（webview の PP_PANE_ID と一致）。
@@ -81,7 +81,7 @@ fn extract_stack(rec: Option<&serde_json::Value>) -> (Vec<BoardItem>, Option<Str
 
 /// 指定 board を DB から読んで BoardUpdated で broadcast する（retained 更新 + live 配信）。
 async fn broadcast_board(
-    state: &AppState,
+    state: &RepoState,
     board_scope: &str,
     lane_name: &str,
     broadcast_lane: Option<String>,
@@ -108,7 +108,7 @@ async fn broadcast_board(
 /// show: item を生成 → DB append（durable）→ 更新後 board を BoardUpdated で broadcast。
 /// clear: DB clear → 空 board を broadcast。
 pub(crate) async fn handle_canvas_command(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let Some(vpdb) = state.vpdb.as_ref() else {
@@ -169,7 +169,7 @@ pub(crate) async fn handle_canvas_command(
 
 /// webview からの board item 削除（thumbnail ✕）。 DB から消して更新後 board を broadcast。
 pub(crate) async fn handle_board_delete_item(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let Some(vpdb) = state.vpdb.as_ref() else {
@@ -200,7 +200,7 @@ pub(crate) async fn handle_board_delete_item(
 
 /// webview からの board clear（Clear ボタン）。 = mcp clear と同じ結果。
 pub(crate) async fn handle_board_clear(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let Some(vpdb) = state.vpdb.as_ref() else {
@@ -223,7 +223,7 @@ pub(crate) async fn handle_board_clear(
 /// error**（`show` 二挙動を避け `update` に分けた狙い = 静かな重複を作らない）。存在すれば
 /// content / contentType を差し替え（id/title/createdAt は保持）→ 更新後 board を broadcast。
 pub(crate) async fn handle_board_update(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let Some(vpdb) = state.vpdb.as_ref() else {
@@ -298,7 +298,7 @@ pub(crate) async fn handle_board_update(
 /// read-first: item_id が board に居ることを確認してから set（無い id で cursor を迷子に
 /// させない）。set 後の board を broadcast（cursor が真として全 view に配られる）。
 pub(crate) async fn handle_board_set_cursor(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let Some(vpdb) = state.vpdb.as_ref() else {
@@ -343,7 +343,7 @@ pub(crate) async fn handle_board_set_cursor(
 /// 呼び出し元 lane の board を **id 付き全文**で返す（AI は content/title で「どれか」を認識し、
 /// id で update / creo 中継の対象を指す）。read-only（broadcast しない）。
 pub(crate) async fn handle_board_read(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let Some(vpdb) = state.vpdb.as_ref() else {
@@ -365,7 +365,7 @@ pub(crate) async fn handle_board_read(
 ///
 /// webview が canvas channel を購読した瞬間、 retained BoardUpdated として全 board が初期配信される
 /// （別 load 経路が不要）。 空 board / 別 pane_id の row は skip。
-pub(crate) async fn seed_boards(state: &AppState) {
+pub(crate) async fn seed_boards(state: &RepoState) {
     let Some(vpdb) = state.vpdb.as_ref() else {
         return;
     };

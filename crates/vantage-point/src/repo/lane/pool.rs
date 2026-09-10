@@ -91,7 +91,7 @@ pub struct LanePool {
     ///
     /// spawn 失敗 / 未 spawn の Lane は entry なし (state=Dead で record される)。
     /// `Mutex` wrap は PtySlot が Send-only (内部 Box<dyn Write+Send> 等) で Sync でないため、
-    /// AppState が `Arc<RwLock<LanePool>>` で thread-shared に必要
+    /// RepoState が `Arc<RwLock<LanePool>>` で thread-shared に必要
     pty_slots: HashMap<
         LaneAddress,
         HashMap<SessionKey, std::sync::Mutex<crate::daemon::pty_slot::PtySlot>>,
@@ -287,7 +287,7 @@ impl LanePool {
         // `reconcile_lane` が registry に従って立てる（`process/server.rs` の run()）。
         //
         // 旧実装はここで root の PTY を spawn し、続けて `restore_term_slots` で非 root も
-        // 立てていた。AppState 構築の途中（sync 文脈）で 800ms×N の spawn を回す形で、
+        // 立てていた。RepoState 構築の途中（sync 文脈）で 800ms×N の spawn を回す形で、
         // server.rs 自身が「restructure したいが不可」とコメントを残していた場所でもある。
         // 立てる仕事を reconcile に渡すと、その制約ごと消える。
         let info = LaneInfo {
@@ -1919,7 +1919,7 @@ impl LanePool {
 /// **1-write へ再度畳まないこと**（claude TUI の paste 判定に依存する submit のため）。
 ///
 /// PtySlot の lock は各 write ごとに `read().await` で都度取り即 drop し、間の sleep は無 lock で
-/// 行う（await 跨ぎで guard を保持しない）。 in-process nudge（`AppState::nudge_lane`）と
+/// 行う（await 跨ぎで guard を保持しない）。 in-process nudge（`RepoState::nudge_lane`）と
 /// Daemon→repo proxy（`lane_nudge`）の双方から呼ばれる共通 sink（submit 意味論を 1 箇所に集約）。
 ///
 /// ## 並行 nudge の直列化（#674 の race を塞ぐ）

@@ -115,8 +115,11 @@ impl ReplayFlights {
     }
 }
 
-/// Application state
-pub(crate) struct AppState {
+/// repo runtime の共有状態（1 repo = 1 実体、daemon が `RepoRuntimes` に抱える）。
+///
+/// daemon 側の対は [`crate::daemon::server::DaemonState`]。棚卸し 9-2 で daemon 専用 field と
+/// daemon 役の構築を全部そちらへ移し、残った repo 役だけの struct をこの名に改名した（PR-5）。
+pub(crate) struct RepoState {
     /// conversation replay の single-flight 台帳（[`ReplayFlights`] — 3 重 demand の直列化）。
     pub replay_flights: ReplayFlights,
     pub hub: Hub,
@@ -172,7 +175,7 @@ pub(crate) struct AppState {
         Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<serde_json::Value>>>>,
 }
 
-impl AppState {
+impl RepoState {
     // tmux decoupling PR2: `ensure_tmux` / `primary_tmux_session` / `resolve_lane_session`
     // (TmuxActor 遅延初期化 + LaneAddress ⇄ tmux session 名の翻訳層) は退役。
     // lane の解決は `resolve_lane_address`、 console I/O は PtySlot (deliver_nudge / lane_capture)。
@@ -203,7 +206,7 @@ impl AppState {
     ///
     /// tmux decoupling PR1: 旧 `tmux send-keys`（`send_keys_to_session`）を repo-local な
     /// [`deliver_nudge`](super::lane::deliver_nudge) 直書きに置換。 delegation handler は
-    /// repo プロセス内で走る（`&AppState` を持つ）ため、 PtySlot に in-process で直接届く
+    /// repo プロセス内で走る（`&RepoState` を持つ）ため、 PtySlot に in-process で直接届く
     /// （Daemon-side re-nudge は `lane_nudge` proxy 経由、 同じ `deliver_nudge` sink に収束）。
     ///
     /// 解決できない（lane 不在 / 非 Running / PtySlot 不在）場合は `false` を返し graceful に握る
@@ -311,10 +314,10 @@ impl AppState {
 
 // --- VP-13 sub-scope E: Medium 層 route test 用 fixture ---
 
-/// Test 用の minimal AppState builder（repo 役）。 各 field は default / None / in-memory mock で構築。
+/// Test 用の minimal RepoState builder（repo 役）。 各 field は default / None / in-memory mock で構築。
 ///
 /// 旧 `daemon` 引数は 9-2 PR-1.5 で落とした — 全 call site が `None` を渡していて、`Some` を
-/// 渡す「200 path」は 1 つも無かった。daemon 役は PR-2c で `AppState` を持たなくなった —
+/// 渡す「200 path」は 1 つも無かった。daemon 役は PR-2c で `RepoState` を持たなくなった —
 /// daemon 側の fixture は `daemon/server.rs` の `build_test_daemon_state()`。
 ///
 /// 用途: `crates/vantage-point/src/repo/http/` の各 handler を Axum oneshot で
@@ -325,7 +328,7 @@ impl AppState {
 /// からのみ使用可。 integration test (`crates/vantage-point/tests/`) は別 crate なので
 /// 不可 (= 必要なら pub 化検討、 PR 4b cleanup philosophy に従い API surface 拡大は控えめに)。
 #[cfg(test)]
-pub(crate) async fn build_test_app_state() -> Arc<AppState> {
+pub(crate) async fn build_test_app_state() -> Arc<RepoState> {
     build_test_app_state_with("", None).await
 }
 
@@ -339,10 +342,10 @@ pub(crate) async fn build_test_app_state() -> Arc<AppState> {
 pub(crate) async fn build_test_app_state_with(
     repo_dir: &str,
     vpdb: Option<crate::db::SharedVpDb>,
-) -> Arc<AppState> {
+) -> Arc<RepoState> {
     use super::lane::LanePool;
 
-    Arc::new(AppState {
+    Arc::new(RepoState {
         replay_flights: ReplayFlights::default(),
         hub: Hub::new(),
         shutdown_token: CancellationToken::new(),
@@ -377,7 +380,7 @@ pub(crate) fn default_test_shell() -> String {
 /// C1 test 用の chat-mode main LaneInfo を pool に登録する（claude 不要）。
 #[cfg(test)]
 pub(crate) async fn insert_test_lane(
-    state: &crate::repo::state::AppState,
+    state: &crate::repo::state::RepoState,
     repo: &str,
     mode: crate::lane::session_registry::SessionMode,
 ) -> crate::repo::lane::LaneAddress {

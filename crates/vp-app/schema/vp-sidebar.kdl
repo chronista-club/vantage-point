@@ -157,7 +157,7 @@ protocol "sidebar" version="1.0.0" {
         // キャンセル時は既存値を保持する。
         request "settings:pick_repo_root" {}
         // daemon 再起動要求。⚠️ **全 repo = 全 lane の claude が落ちる**
-        // （doc 44 P1 fold-in で repo は daemon プロセス内の `Arc<AppState>`）。
+        // （doc 44 P1 fold-in で repo は daemon プロセス内の `Arc<RepoState>`）。
         // Rust 側が rfd 確認ダイアログで「何が落ちて何が戻るか」を出してから
         // `vp daemon restart` を撃つ（`flows/update.rs` と同じ専用スレッド）。
         request "daemon:restart" {}
