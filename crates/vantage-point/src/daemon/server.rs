@@ -321,6 +321,57 @@ impl DaemonState {
     }
 }
 
+/// test 用の daemon 役 `DaemonState`（棚卸し 9-2 PR-2a）。
+///
+/// production と同じ [`assemble`](DaemonState::assemble) を通す — fixture だけ別経路で組むと、
+/// 結線の変更が test に映らない。`build_test_daemon_app_state`（`repo/state.rs`）の
+/// `DaemonState` 版で、PR-2c の health もこれに載せ替える。
+///
+/// - `update` は `Some(new_for_test())`（`new()` は `gh auth token` を subprocess で叩く）。
+///   network に出る handler（check / apply）や restart を `Some` のまま叩かないこと
+/// - devices（feature = "midi"）は registry を手で置く。`with_devices` は `attach_fleet_inputs`
+///   が実機 MIDI を開けるので使わない
+/// - DB 系（`vpdb` / `wiremsg_store` / `delegation_store`）は `None`
+#[cfg(test)]
+pub(crate) async fn build_test_daemon_state() -> Arc<DaemonState> {
+    use crate::capability::{ActorRegistry, RepoManagerCapability, UpdateCapability};
+
+    let repo_manager = Arc::new(RwLock::new(RepoManagerCapability::new()));
+    let update = Arc::new(RwLock::new(UpdateCapability::new_for_test()));
+    #[allow(unused_mut)]
+    let mut machine_capabilities =
+        crate::daemon::machine_capabilities::MachineCapabilities::new(repo_manager, update);
+    #[cfg(feature = "midi")]
+    {
+        machine_capabilities.devices =
+            Some(Arc::new(RwLock::new(crate::devices::DeviceRegistry::new(
+                Arc::new(crate::capability::eventbus::EventBus::new()),
+            ))));
+    }
+    let (lane_change_tx, _) = tokio::sync::broadcast::channel::<String>(64);
+    Arc::new(
+        DaemonState::assemble(DaemonAssembly {
+            machine_capabilities: Arc::new(machine_capabilities),
+            hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
+            hub_nodes: crate::daemon::hub_client::HubNodesCache::new(),
+            hub_auth: crate::daemon::hub_client::HubAuthStatus::new(),
+            creo_actions: crate::creo::client::CreoActionsCache::new(),
+            shutdown_token: tokio_util::sync::CancellationToken::new(),
+            actor_registry: Arc::new(RwLock::new(ActorRegistry::new())),
+            started_at: chrono::Utc::now().to_rfc3339(),
+            vpdb: None,
+            control_channels: Arc::new(crate::repo::repo_registry::RepoRuntimes::new()),
+            canvas_routers: Default::default(),
+            lane_change_tx,
+            wiremsg_store: None,
+            wire_notifier: crate::capability::WireNotifier::new(),
+            delivery_notify: Arc::new(tokio::sync::Notify::new()),
+            delegation_store: None,
+        })
+        .await,
+    )
+}
+
 /// `registry.list` の応答 body（稼働中 repo の snapshot）。
 ///
 /// ## doc 45 — processes 一覧の唯一の面

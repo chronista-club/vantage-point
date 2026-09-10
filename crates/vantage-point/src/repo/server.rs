@@ -18,6 +18,7 @@ use super::hub::Hub;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
 use crate::capability::{RepoManagerCapability, UpdateCapability};
+use crate::daemon::server::DaemonState;
 use crate::file_watcher::FileWatcherManager;
 
 /// daemon が持つ「repo path_key → lane 一覧」集約 view の共有参照。
@@ -569,8 +570,14 @@ pub(crate) async fn shutdown_repo(state: &Arc<AppState>) {
 ///
 /// `run_daemon` から関数として切り出してあるのは、**route 登録そのものをテストで固定する**ため
 /// （撤去の巻き添えで health / shutdown を落とすと、診断手段と緊急停止を同時に失う）。
-fn build_daemon_router(state: Arc<AppState>) -> Router {
-    Router::new()
+///
+/// 棚卸し 9-2（doc 63 §5）: state は 2 本ある。`/api/update/*` は `Arc<DaemonState>`（PR-2a）、
+/// `/api/health` / `/api/shutdown` はまだ `Arc<AppState>`（PR-2b / 2c で移す）。
+/// `Router<S>::with_state` が `Router<()>` を返すので、群ごとに state を確定させてから
+/// `merge` で合流し、**CORS は合流後に 1 回**掛ける（片方だけに掛けると、もう片方の
+/// route が `Access-Control-Allow-Origin` を返さなくなる — `daemon_router_applies_cors_to_both_state_groups`）。
+fn build_daemon_router(state: Arc<AppState>, daemon_state: Arc<DaemonState>) -> Router {
+    let repo_state_routes = Router::new()
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
         // L0 portless: `/ws/lanes` (repo_feed WS) は consumer 消滅で dead のため撤去。
@@ -593,6 +600,8 @@ fn build_daemon_router(state: Arc<AppState>) -> Router {
         // doc 44 P1 (fold-in): slot ベース port resolver (`/api/daemon/port_for`) と
         // slot 割当 route (set_slot / unassign_slot) は `vp port` 退役とともに撤去。
         // repo は portless（port=0）になり、slot が解決する listen port が存在しない。
+        .with_state(state);
+    let daemon_state_routes = Router::new()
         // Update API routes (vp CLI)
         .route("/api/update/check", get(update::update_check))
         .route("/api/update/apply", post(update::update_apply))
@@ -605,8 +614,10 @@ fn build_daemon_router(state: Arc<AppState>) -> Router {
             "/api/update/mac/rollback",
             post(update::update_mac_rollback),
         )
+        .with_state(daemon_state);
+    repo_state_routes
+        .merge(daemon_state_routes)
         .layer(CorsLayer::permissive())
-        .with_state(state)
 }
 
 /// daemon モードで Process サーバーを起動
@@ -949,10 +960,6 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         );
     }
 
-    // state は後段（wire delivery actor / federation relay の on_relay）でも参照するため clone
-    // (Arc clone は安価)。9-2 PR-3 で daemon 役 AppState ごと消える。
-    let app = build_daemon_router(state.clone());
-
     // Phase 5-D: dual-stack listen (IPv4 + IPv6) ─ vp-app の `http://127.0.0.1:32000` ping、
     //  repo からの `http://[::1]:32000` register、 LAN IPv6 access の 3 経路を全部受け取れるように。
     let listener = bind_dual_stack(port).await?;
@@ -1005,6 +1012,11 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         .write()
         .await
         .set_process_lifecycle_tx(daemon_state.process_lifecycle_tx.clone());
+    // HTTP router は 2 state を取るので assemble の後で組む（9-2 PR-2a でここへ動かした。
+    // `axum::serve` は下の方なので位置は自由。`bind_dual_stack` → `write_pid_file` の順は
+    // 上のまま動かしていない）。`state` は後段（wire delivery actor / federation relay の
+    // on_relay）でも参照するため clone — 9-2 PR-3 で daemon 役 AppState ごと消える。
+    let app = build_daemon_router(state.clone(), daemon_state.clone());
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
         daemon_state,
         port,
@@ -1553,19 +1565,52 @@ mod tests {
     // `build_daemon_router` を組んで実際に叩き、両方向を 1 箇所で見る。
     // =====================================================================
 
+    /// production の router を 2 state で組む。`update` は **`DaemonState` 側だけ `Some`**
+    /// （`AppState` 側は `None`）— `/api/update/*` が `AppState.update` を読み続けていれば
+    /// 503 になるので、handler がどちらを読んでいるかが応答で分かる（9-2 PR-2a）。
+    async fn daemon_router() -> Router {
+        let state = crate::repo::state::build_test_app_state().await;
+        let daemon_state = crate::daemon::server::build_test_daemon_state().await;
+        build_daemon_router(state, daemon_state)
+    }
+
     async fn route_status(uri: &str, method: &str) -> axum::http::StatusCode {
         use tower::ServiceExt;
-        let state = crate::repo::state::build_test_app_state().await;
         let req = axum::http::Request::builder()
             .method(method)
             .uri(uri)
             .body(axum::body::Body::empty())
             .expect("request");
-        build_daemon_router(state)
+        daemon_router()
+            .await
             .oneshot(req)
             .await
             .expect("oneshot")
             .status()
+    }
+
+    /// JSON body 付きで叩いて (status, body) を返す。`Json<Value>` extractor は content-type が
+    /// 無いと handler に入る前に 415 を返すので、handler 本体を通すにはこれが要る。
+    async fn route_json(
+        router: Router,
+        uri: &str,
+        method: &str,
+        body: serde_json::Value,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        use tower::ServiceExt;
+        let req = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .expect("request");
+        let resp = router.oneshot(req).await.expect("oneshot");
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
     }
 
     /// doc 45 §2 で HTTP に残すと決めた 2 本が、撤去の巻き添えで消えていないこと。
@@ -1622,11 +1667,20 @@ mod tests {
         }
     }
 
-    /// `/api/update/*` は段 4 のスコープ外（doc 45 §3「churn が低いので後回しでよい」）。
-    /// 「ついでに消えた」を検出する側の網。
+    /// `/api/update/*` 7 route が **`DaemonState.update` を読んで**応答すること（9-2 PR-2a で
+    /// `assert_ne!(NOT_FOUND)` から実応答の固定へ強化）。
+    ///
+    /// 2 層:
+    /// - **`update: None` の DaemonState** → 7 route 全部が 503 `Update capability not available`
+    ///   （guard の形。network に出る check / apply と、実際に再起動 script を spawn する
+    ///   restart はこの層でしか叩けない）
+    /// - **`update: Some` の DaemonState + `update: None` の AppState** → param 検証で 400 を返す
+    ///   4 route が 400。handler が `AppState.update` を読み続けていれば 503 になるので、
+    ///   これが「載せ替わった」の証明。check / apply は `Some` だと GitHub API に出るので
+    ///   ここには入れない。restart は `Some` だと `restart_self` が本当に走るので入れない
     #[tokio::test]
     async fn daemon_router_keeps_update_routes() {
-        for (uri, method) in [
+        let all = [
             ("/api/update/check", "GET"),
             ("/api/update/apply", "POST"),
             ("/api/update/rollback", "POST"),
@@ -1634,11 +1688,86 @@ mod tests {
             ("/api/update/mac/check", "GET"),
             ("/api/update/mac/apply", "POST"),
             ("/api/update/mac/rollback", "POST"),
+        ];
+
+        // 層 1: update 不在 → 503。`DaemonState::new()` は update: None
+        let without_update = build_daemon_router(
+            crate::repo::state::build_test_app_state().await,
+            std::sync::Arc::new(crate::daemon::server::DaemonState::new()),
+        );
+        for (uri, method) in all {
+            let (status, body) =
+                route_json(without_update.clone(), uri, method, serde_json::json!({})).await;
+            assert_eq!(
+                (status, body["error"].as_str()),
+                (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    Some("Update capability not available")
+                ),
+                "{method} {uri}: update 不在は 503"
+            );
+        }
+
+        // 層 2: DaemonState.update だけ Some → param 検証まで進んで 400
+        let with_update = daemon_router().await;
+        for (uri, method, error) in [
+            ("/api/update/rollback", "POST", "backup_path is required"),
+            (
+                "/api/update/mac/check",
+                "GET",
+                "current_version query parameter is required",
+            ),
+            (
+                "/api/update/mac/apply",
+                "POST",
+                "current_version is required",
+            ),
+            (
+                "/api/update/mac/rollback",
+                "POST",
+                "backup_path is required",
+            ),
         ] {
-            assert_ne!(
-                route_status(uri, method).await,
-                axum::http::StatusCode::NOT_FOUND,
-                "{method} {uri} は段 4 のスコープ外（route は残す）"
+            let (status, body) =
+                route_json(with_update.clone(), uri, method, serde_json::json!({})).await;
+            assert_eq!(
+                (status, body["error"].as_str()),
+                (axum::http::StatusCode::BAD_REQUEST, Some(error)),
+                "{method} {uri}: DaemonState.update を読んでいれば param 検証まで進む"
+            );
+        }
+    }
+
+    /// CORS は merge 後の router に 1 回掛ける（doc 63 §6「共通 CORS は合流後に掛ける」）。
+    ///
+    /// 2 state の群それぞれから 1 route ずつ preflight を通す — 片方の群だけに
+    /// `CorsLayer` を掛けると、もう片方が `Access-Control-Allow-Origin` を返さなくなる
+    /// （permissive を掛けている以上、両群に掛かるのが仕様。今の消費者は `vp` CLI /
+    /// Ruby / Swift で browser 経由ではないが、群の分割で挙動が割れないことを固定する）。
+    /// CORS の test は PR-2a 以前は 0 本。
+    #[tokio::test]
+    async fn daemon_router_applies_cors_to_both_state_groups() {
+        use tower::ServiceExt;
+        for (uri, method) in [("/api/health", "GET"), ("/api/update/check", "GET")] {
+            let req = axum::http::Request::builder()
+                .method("OPTIONS")
+                .uri(uri)
+                .header("origin", "http://localhost:5173")
+                .header("access-control-request-method", method)
+                .body(axum::body::Body::empty())
+                .expect("request");
+            let resp = daemon_router().await.oneshot(req).await.expect("oneshot");
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::OK,
+                "preflight {uri} は 200"
+            );
+            assert_eq!(
+                resp.headers()
+                    .get("access-control-allow-origin")
+                    .and_then(|v| v.to_str().ok()),
+                Some("*"),
+                "{uri}: permissive CORS が merge 後の両群に掛かっている"
             );
         }
     }
