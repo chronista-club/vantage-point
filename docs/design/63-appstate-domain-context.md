@@ -1,6 +1,6 @@
 # doc 63 — `AppState` を `DaemonState` / `RepoState` に分ける（棚卸し 項目 9-2）
 
-> **Status**: 設計確定（2026-09-10）。PR-A（wire 離脱バグ）着地済み、本 doc が PR-0
+> **Status**: **段階 1 完了（2026-09-11）** — PR-A〜5（#1099 / #1101〜#1110、起票 #1098 を含めて 12 commit）が全部 nightly に着地。`RepoState`（14 field）/ `DaemonState`（25 field）の 2 型。段階 2（`BoardContext` / `EditorBridge`）/ 段階 3（停止責任）は未着手。file 名は「`AppState` を分ける」という設計の主題なので据え置き（doc 44 が `world` を残すのと同じ）
 > **Date**: 2026-09-09 起票（材料表）→ 2026-09-10 設計へ
 > **Owners**: server crate（`crates/vantage-point/src/repo/state.rs` / `daemon/server.rs`）
 > **台帳**: `.vp/reports/refactor-audit-2026-09-07.md` 項目 9。姉妹 doc: [doc 60](60-vp-app-layout.md) / [doc 61](61-repo-runtime-layout.md) / [doc 62](62-db-module-layout.md)
@@ -286,6 +286,10 @@ CI は `cargo clippy --workspace --all-targets -- -D warnings`。**`AppState` �
 - **`terminal_pumps` / `replay_flights` の key を `LaneAddress` に揃える**。今は生 `String` で producer が 2 系統。`parse_address` は旧形（旧 2 分節形 `<repo>/<name>`、旧予約名 `conductor` / `lead`）を受理して canonical に正規化するので、canonical 以外の文字列が key に入ると demand 経路と動詞経路が別 entry を触る。**実害の有無は未確認**。terminal / replay の再編より先にやる。
 - **lane runtime の bundle を named struct に**。4 つ組 `{lane_pool, terminal_pumps, topic_router, system_event_tx}` を手で受け取るのは `LaneSpawnActor::new`（`spawn_actor.rs:121`）**だけ**で、`reconcile_lane`（`reconcile.rs:114-119`）は `system_event_tx` を取らない 3 つ + `addr`。**束ねる根拠は「2 箇所が同じ形」ではなく「呼び出しごとに手で選び直している」**方に置く。**名前は `LaneState` にできない**（§1 の 7）。
 - `ensure_and_submit_chat` の lock 範囲（台帳項目 8、未測定）。
+- **`discovery.rs` の `ProcessInfo.terminal_token`** — `generate_terminal_token` 削除（PR-2c）で非 `None` の書き手が crate 内 0（`:141` が `None` 固定）。cut 候補。
+- **test fixture の fn 名 `build_test_app_state*`** — 型は `RepoState` になったが fn 名は据え置き（PR-5 は型名だけ）。改名するなら 114 site を一括で。
+- **CI に `--no-default-features` の job が無い** — 9-2 では Moody Blues / 手動 `cargo check` で守った。`Cargo.toml:14` が「Daemon-only build」を明記している以上、job を足す価値はある。
+- **`daemon/server.rs:407` の「HTTP に残るのは health / shutdown の 2 本」** — update 7 route を数えていない。PR-6（`repo/http/` を `daemon/` へ移設）で直す。
 - **doc 12 の `notify` service は実在しない**（`spawn_service` の呼び手は lane-spawn と delivery の 2 本）。新しい context に移さない。doc 01 の `ProcessMessage::Show` も型名が現行 `RepoMessage` と不一致（stale）。
 
 ### 段階 3 で拾う既知の穴 2 件
@@ -367,12 +371,14 @@ struct の見た目が `Arc<...>` でなくても、`Clone` が同一実体を�
 | [doc 44](44-world-one-process.md) | §5.0 | 「World と SP は既に同じ `AppState` 型を共有。mode 差はフィールドを `Some`/`None` で出し分けているだけ」。⚠️ 「当時 30 field」は誤読 — doc 44 `:148` は「per-project 14 / global 12 / dead 4（**dead は P1 露払いで削除済**）」なので当時の live は **26**。現 HEAD の 29 と直接は比べられない |
 | doc 44 | §10.6 | 「`AppState` に `lane_change_tx` が無い」← 現 HEAD でも field ではなく `start_repo` の引数のまま |
 | [doc 45](45-transport-consolidation.md) | §3.1 / §5.3 | `canvas_senders` は populate されない / 書き手ゼロのまま残す。⚠️ §5.3 の「消すと応答形が変わる」は**現 HEAD では成立しない**（§9-2） |
-| [doc 61](61-repo-runtime-layout.md) | §0 / §3 / §4 | `reconcile_lane` / `reconcile_terminal_pumps` を `impl AppState` に（PR-8 実施済）/ `replay_flights` の合流を不変条件として固定 |
+| [doc 61](61-repo-runtime-layout.md) | §0 / §3 / §4 | `reconcile_lane` / `reconcile_terminal_pumps` を `impl AppState` に（**2026-09-11 に `RepoState` へ更新済み**）（PR-8 実施済）/ `replay_flights` の合流を不変条件として固定 |
+| [doc 59](59-settings-page.md) | 再起動の確認ダイアログ | 「repo は daemon プロセス内の `Arc<AppState>`」（**2026-09-11 に `RepoState` へ更新済み**） |
+| [doc 47](47-internal-consistency.md) | 470 | 「project = World 内 `Arc<AppState>`」— 旧命名の歴史文書（冒頭に凍結注記あり）なので**据え置き** |
 | [doc 62](62-db-module-layout.md) | §6 | `service_status` / `prompts` / `notifications` の `cut-before-fix` 候補 |
 | [doc 12](12-stand-architecture.md) | 表 422- | `AppState.actor_registry` の owner に `notify` service を挙げるが**実在しない**（stale） |
 | [doc 01](01-architecture.md) | 102 | `AppState.hub.broadcast(ProcessMessage::Show)` ← 型名が現行 `RepoMessage` と不一致（stale） |
 
-`docs/design/53` と `54` は `AppState` の言及 **0 件**。
+`docs/design/53` と `54` は `AppState` の言及 **0 件**。他の旧 doc（01 / 12 / 13 / 15 / 32 / 33 / 44 / 45 / 47 / 50、archive、superpowers plans）は冒頭の旧命名 banner で凍結。doc 57:93 の `AppState` は UI mockup のサンプル文字列で識別子ではない。
 
 ## Status log
 
@@ -416,3 +422,4 @@ struct の見た目が `Arc<...>` でなくても、`Clone` が同一実体を�
 - 2026-09-10: **PR-3。** daemon 役 `AppState` を構築ごと削除（`hub` / `topic_router` local も）。wire 系 4 field（`wiremsg_store` / `wire_notifier` / `delivery_notify` / `delegation_store`）を `AppState` から削除 → **19 → 15 field**。`run_daemon` の delivery actor / delegation reconcile / federation relay は `assemble` に渡した local をそのまま capture。`daemon/process.rs::run_daemon`（呼び手なし、`DaemonState::new()` で空の daemon を立てる）も削除。`bind_dual_stack` → `write_pid_file` の順は不変。
 - 2026-09-10: **PR-4。** `AppState.port` を削除（**15 → 14**、先に宣言してから diff を見た）。唯一の caller `RepoRuntimes::start` が `0` 固定で渡していて（SP-portless の遺産）、読み手は `restore_pane_contents` の tracing log の引数 1 つだけ → `repo_dir` に置換。`start_repo` の第 1 引数 `port` も落とした。
 - 2026-09-11: **PR-5。** `AppState` → `RepoState` 改名だけ。GitNexus `rename`（index を `bunx gitnexus analyze` で更新してから）で 31 file / 173 edit、`.rs` 外の comment 1 行（`vp-app/schema/vp-sidebar.kdl`）は sed。`grep -rnw AppState crates/` は **0**（doc コメント含む）。`git diff` の ± 行を `AppState` → `RepoState` で正規化して突き合わせると差 **0 行**（= 改名以外の変更なし、+174 / −174）。歴史的な散文（「PR-2c で `RepoState` の 10 field を削除」等）は「今 `RepoState` と呼ぶ struct が当時持っていた」と読む。test fixture の fn 名 `build_test_app_state*` は型名ではないので据え置き（follow-up 候補）。docs/ 配下の旧 doc は凍結（CLAUDE.md の方針）。
+- 2026-09-11: **9-2 締め。** 段階 1 完了を Status に。現行 doc に残っていた旧名を更新（doc 61 × 6 / doc 59 × 1、doc 47 は凍結注記ありで据え置き）、maintainer script の `.mise/tasks/daemon/stop`（comment 2 箇所 + `#MISE description` + 実行時 log の `project` → `repo`、rename 注記に 2026-07-27 の戻りを追記）/ `scripts/mise/vp.rb`（comment 1 箇所）— 「project が World プロセス内の Arc<AppState>」は語彙が 3 つ古かったのでまとめて現行に。§10 に 59 / 47 を追記、§8 に follow-up 4 件を追記。file 名は据え置き。

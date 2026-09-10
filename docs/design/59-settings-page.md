@@ -147,7 +147,7 @@ GUI へは roster と同じ経路で運べる。
 ### 5.3 daemon 再起動ボタンの警告義務
 
 daemon を止めると **全 repo が落ちる = 全 lane の claude が落ちる**（doc 44 P1 fold-in 以降、
-repo は daemon プロセス内の `Arc<AppState>`）。GUI から気軽に押せる位置に置く以上、
+repo は daemon プロセス内の `Arc<RepoState>`）。GUI から気軽に押せる位置に置く以上、
 確認ダイアログで「**何が落ちて、何が戻るか**」を明示する:
 
 - 落ちる: すべての lane のプロセス
