@@ -128,13 +128,11 @@ pub(crate) struct AppState {
     ///
     /// R3 (wire cross-process delivery): `wire_send` の宛先分類で「自 repo の repo か否か」を
     /// 判定するのに使う。 `agent@<repo>` の `<repo>` が本 field と異なれば remote repo。
-    /// daemon mode では空文字列 (= cross-process forward は repo mode 専用)。
     pub repo_name: String,
     /// VP-159 PR-4b: Agent / Service actor の supervisor 受け皿。
     ///
-    /// repo mode で notify / lane-spawn を `spawn_service` 経由で起動・register、 JoinHandle を保持。
-    /// daemon mode では空で構築 (= machine scope actor の register は後続 PR、 device registry の
-    /// metadata register は dynamic routing vision 確定後、 cf. design-spark `mem_1CavFi5D1aMSpEkas89SvQ`)。
+    /// notify / lane-spawn を `spawn_service` 経由で起動・register、 JoinHandle を保持
+    /// （daemon 側の registry は `DaemonState.actor_registry`、9-2 PR-3 で分離）。
     /// PR-5 supervisor 統一で JoinHandle 経由の abort / await を activate する foundation。
     pub actor_registry: Arc<RwLock<ActorRegistry>>,
     /// Processの待ち受けポート番号
@@ -147,22 +145,6 @@ pub(crate) struct AppState {
     pub topic_router: Arc<TopicRouter>,
     /// SurrealDB クライアント（VP-21: 状態管理の DB 統一）
     pub vpdb: Option<crate::db::SharedVpDb>,
-    /// Phase A ①: wiremsg threaded inbox store (= `wire_send` / `wire_recv` の実体)
-    ///
-    /// `vpdb` が `Some` の時に同 DB 接続から build する。 TopicRouter は介さず、
-    /// `wire_recv` がこの store を直接 long-poll する。
-    /// 設計 memory: `mem_1CbD9H1KGQykBaFG8XXVsn`。
-    ///
-    /// wiremsg R5-3: 旧 `msgbox_store` (msgs table) は撤去済。
-    /// msg messaging はこの wiremsg store に一本化。
-    pub wiremsg_store: Option<crate::capability::WiremsgStore>,
-    /// Phase A ①: wiremsg long-poll の repo 内 in-process 起床機構
-    ///
-    /// `wire_send` が宛先 agent を notify、 待機中の `wire_recv` を起こす。
-    pub wire_notifier: crate::capability::WireNotifier,
-    /// R2-b: wire delivery loop の即時 wake (command 着信時に notify)。
-    /// daemon mode でのみ DeliveryActor が待ち受ける。 repo では未使用 (proxy が daemon に送るだけ)。
-    pub delivery_notify: Arc<tokio::sync::Notify>,
     /// Lane Pool (Main/Sub registry) — Lane scope の Agent container
     /// 関連 memory: mem_1CaSsN7xj69aVQtLPQFJxQ (repo-as-Repo-Master 9 component #4)
     pub lane_pool: Arc<RwLock<super::lane::LanePool>>,
@@ -183,13 +165,6 @@ pub(crate) struct AppState {
     /// 外側 key は LaneAddress の Display 形 (`"<repo>/root"` 等)、内側 key は session key。
     /// `pty_slots` と対称の入れ子（lane 単位の teardown と session 単位の付け替えを両立）。
     pub terminal_pumps: Arc<RwLock<TerminalPumps>>,
-    /// Agent 委譲 (delegation) の daemon 中央 store (doc 28 §4 / §6)。
-    ///
-    /// **daemon mode (`run_daemon`) でのみ Some**、repo mode (`run`) では None。delegation record は
-    /// wire と同じく daemon の SurrealDB に中央化 (durable、repo 再起動を跨いで生存、Daemon
-    /// reconcile loop の駆動源)。repo の `handle_delegate` 等は `daemon_wire::call("/api/delegation/*")`
-    /// でここに proxy する (wake = repo-local nudge は保持、cf. `repo/delegation.rs`)。
-    pub delegation_store: Option<crate::capability::DelegationStore>,
     /// doc 48 Phase 2: editor bridge の pending 応答 map (request_id → oneshot)。
     ///
     /// `handle_editor_command` が登録して `EditorCommand` を broadcast、GUI からの
@@ -345,7 +320,7 @@ impl AppState {
 /// daemon 側の fixture は `daemon/server.rs` の `build_test_daemon_state()`。
 ///
 /// 用途: `crates/vantage-point/src/repo/http/` の各 handler を Axum oneshot で
-/// smoke test する際の shared fixture。 重い field (vpdb / wiremsg_store)
+/// smoke test する際の shared fixture。 重い field (vpdb)
 /// は None で軽量化。
 ///
 /// Note: `pub(crate)` のため `crates/vantage-point/src/` 内 inline `#[cfg(test)]` mod
@@ -368,7 +343,6 @@ pub(crate) async fn build_test_app_state_with(
     vpdb: Option<crate::db::SharedVpDb>,
 ) -> Arc<AppState> {
     use super::lane::LanePool;
-    use crate::capability::WireNotifier;
 
     Arc::new(AppState {
         replay_flights: ReplayFlights::default(),
@@ -382,15 +356,9 @@ pub(crate) async fn build_test_app_state_with(
         process_registry: Arc::new(tokio::sync::Mutex::new(ProcessRegistry::new())),
         topic_router: Arc::new(TopicRouter::new()),
         vpdb,
-        wiremsg_store: None,
-        wire_notifier: WireNotifier::new(),
-        delivery_notify: Arc::new(tokio::sync::Notify::new()),
         lane_pool: Arc::new(RwLock::new(LanePool::new())),
         system_event_tx: tokio::sync::broadcast::channel::<super::lane::SystemEvent>(64).0,
         terminal_pumps: Arc::new(RwLock::new(HashMap::new())),
-        // test fixture は repo 相当 (Daemon store 無し)。delegation の store test は
-        // capability::delegation_store の単体 test が担う。
-        delegation_store: None,
         editor_pending: Default::default(),
     })
 }

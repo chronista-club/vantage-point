@@ -286,7 +286,7 @@ pub struct DeliveryActor {
     lane_registry: Arc<RwLock<HashMap<String, Vec<LaneInfo>>>>,
     /// tmux decoupling PR1: repo control channel registry（nudge の forward 先解決に使う）
     control_channels: ControlChannels,
-    /// wire_send (command) 時の即時 wake (AppState.delivery_notify と共有)
+    /// wire_send (command) 時の即時 wake (DaemonState.delivery_notify と共有)
     wake: Arc<tokio::sync::Notify>,
 }
 

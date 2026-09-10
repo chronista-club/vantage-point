@@ -315,8 +315,8 @@ async fn discard_lane_rows(state: &Arc<AppState>, key: &str, addr: &LaneAddress)
 
 /// lane を wire の宛先からも退去させる（best-effort、`delete_lane_orchestrated` の Phase 2a''）。
 ///
-/// ⚠️ **`state.wiremsg_store` は使えない。** repo 役の `AppState` はこれを**常に `None`** で
-/// 構築する（`repo/server.rs` の repo ctor）。`Arc<AppState>` なので後から代入する経路も無い。
+/// ⚠️ **`AppState` に wire store は無い**（9-2 PR-3 で field ごと削除。それ以前も repo 役は
+/// `wiremsg_store: None` で構築していて、`Arc<AppState>` なので後から代入する経路も無かった）。
 /// 旧実装は `if let Some(store) = state.wiremsg_store.as_ref()` で、**production で一度も
 /// 真にならなかった** — PR #1019（`257269bd`、2026-08-29）が「6 日間 nudge が鳴り続けた」
 /// 実害を直したはずの fix が、**入った瞬間から never-fire だった**（2026-09-10 に発見、
@@ -1619,7 +1619,7 @@ mod core_tests {
     ///
     /// store 単体 test（`wiremsg_store::tests::leaving_agent_drops_out_of_pending`）は
     /// `leave_all_threads` を直接叩くので**この経路の欠落を捕まえられない**。実際
-    /// `state.wiremsg_store` は repo 役では常に `None` で、削除経路の `if let Some(store)`
+    /// 旧 `state.wiremsg_store`（PR-3 で削除）は repo 役では常に `None` で、削除経路の `if let Some(store)`
     /// が一度も真にならないまま 2026-08 から緑だった。**削除 orchestration を通すこと**が
     /// この test の要点。
     ///
