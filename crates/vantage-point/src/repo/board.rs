@@ -9,9 +9,30 @@
 //! Unison method: `show` / `clear` / `board_update` / `read_board` / `board_delete_item` / `board_clear` /
 //! `board_set_cursor`（受付は `unison_server::dispatch_repo_method`）。`seed_boards` は起動時に DB の board を
 //! retained topic へ投入する（`repo/server.rs`）。
+//!
+//! 棚卸し 9-2 段階 2（doc 63 §2）: handler は `RepoState` を受け取らず、要る 3 つ（`repo_dir` /
+//! `vpdb` / `hub`）だけを束ねた [`BoardContext`] を受け取る。呼び手は `RepoState::board()` で作る。
+//! この module は `RepoState` を import しない — board が State の何を読むかは、この struct の
+//! field が全部で、それ以外に手が届かない。
 
-use super::state::RepoState;
+use super::hub::Hub;
+use crate::db::SharedVpDb;
 use crate::protocol::{BoardItem, Content, RepoMessage};
+
+/// board 操作が要る依存だけの借用 context（doc 63 §2 段階 2）。
+///
+/// `RepoState` から 3 field を borrow するだけで、cache や channel は新設しない。同期呼び出し用の
+/// 借用なので `Copy`（spawn 先に持ち込むなら必要な handle を個別に clone する — `Arc<RepoState>` を
+/// 隠したり `Deref` で全 field を公開したりしない、doc 63 §7）。
+#[derive(Clone, Copy)]
+pub(crate) struct BoardContext<'a> {
+    /// board の永続 key（生パス。`lane_db_key` と違って正規化しない — 不変条件 2）
+    pub repo_dir: &'a str,
+    /// `None` = DB 接続失敗（daemon の degrade）。handler は `Err` / no-op で返す
+    pub vpdb: Option<&'a SharedVpDb>,
+    /// `BoardUpdated` の broadcast 先（retained topic → canvas channel → webview）
+    pub hub: &'a Hub,
+}
 
 /// board の DB pane_id（webview の PP_PANE_ID と一致）。
 const BOARD_PANE_ID: &str = "board";
@@ -81,20 +102,20 @@ fn extract_stack(rec: Option<&serde_json::Value>) -> (Vec<BoardItem>, Option<Str
 
 /// 指定 board を DB から読んで BoardUpdated で broadcast する（retained 更新 + live 配信）。
 async fn broadcast_board(
-    state: &RepoState,
+    ctx: BoardContext<'_>,
     board_scope: &str,
     lane_name: &str,
     broadcast_lane: Option<String>,
 ) -> Result<(), String> {
-    let Some(vpdb) = state.vpdb.as_ref() else {
+    let Some(vpdb) = ctx.vpdb else {
         return Ok(());
     };
     let rec = vpdb
-        .load_board(&state.repo_dir, board_scope, lane_name, BOARD_PANE_ID)
+        .load_board(ctx.repo_dir, board_scope, lane_name, BOARD_PANE_ID)
         .await
         .map_err(|e| format!("board load: {}", e))?;
     let (items, cursor) = extract_stack(rec.as_ref());
-    state.hub.broadcast(RepoMessage::BoardUpdated {
+    ctx.hub.broadcast(RepoMessage::BoardUpdated {
         scope: board_scope.to_string(),
         lane: broadcast_lane,
         items,
@@ -108,10 +129,10 @@ async fn broadcast_board(
 /// show: item を生成 → DB append（durable）→ 更新後 board を BoardUpdated で broadcast。
 /// clear: DB clear → 空 board を broadcast。
 pub(crate) async fn handle_canvas_command(
-    state: &RepoState,
+    ctx: BoardContext<'_>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let Some(vpdb) = state.vpdb.as_ref() else {
+    let Some(vpdb) = ctx.vpdb else {
         return Err("canvas_command: vpdb 未初期化".to_string());
     };
     let msg: RepoMessage =
@@ -143,7 +164,7 @@ pub(crate) async fn handle_canvas_command(
                 "updatedAt": created_at,
             });
             vpdb.append_board_item(
-                &state.repo_dir,
+                ctx.repo_dir,
                 &board_scope,
                 &lane_name,
                 BOARD_PANE_ID,
@@ -152,15 +173,15 @@ pub(crate) async fn handle_canvas_command(
             )
             .await
             .map_err(|e| format!("board append: {}", e))?;
-            broadcast_board(state, &board_scope, &lane_name, bc_lane).await?;
+            broadcast_board(ctx, &board_scope, &lane_name, bc_lane).await?;
             Ok(serde_json::json!({"status": "ok"}))
         }
         RepoMessage::Clear { lane, scope, .. } => {
             let (board_scope, lane_name, bc_lane) = board_key(scope.as_deref(), lane.as_deref());
-            vpdb.clear_board(&state.repo_dir, &board_scope, &lane_name, BOARD_PANE_ID)
+            vpdb.clear_board(ctx.repo_dir, &board_scope, &lane_name, BOARD_PANE_ID)
                 .await
                 .map_err(|e| format!("board clear: {}", e))?;
-            broadcast_board(state, &board_scope, &lane_name, bc_lane).await?;
+            broadcast_board(ctx, &board_scope, &lane_name, bc_lane).await?;
             Ok(serde_json::json!({"status": "ok"}))
         }
         _ => Err("canvas_command: show/clear 以外のメッセージ".to_string()),
@@ -169,10 +190,10 @@ pub(crate) async fn handle_canvas_command(
 
 /// webview からの board item 削除（thumbnail ✕）。 DB から消して更新後 board を broadcast。
 pub(crate) async fn handle_board_delete_item(
-    state: &RepoState,
+    ctx: BoardContext<'_>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let Some(vpdb) = state.vpdb.as_ref() else {
+    let Some(vpdb) = ctx.vpdb else {
         return Err("board_delete_item: vpdb 未初期化".to_string());
     };
     let item_id = payload
@@ -186,7 +207,7 @@ pub(crate) async fn handle_board_delete_item(
         payload.get("lane").and_then(|v| v.as_str()),
     );
     vpdb.delete_board_item(
-        &state.repo_dir,
+        ctx.repo_dir,
         &board_scope,
         &lane_name,
         BOARD_PANE_ID,
@@ -194,26 +215,26 @@ pub(crate) async fn handle_board_delete_item(
     )
     .await
     .map_err(|e| format!("board delete: {}", e))?;
-    broadcast_board(state, &board_scope, &lane_name, bc_lane).await?;
+    broadcast_board(ctx, &board_scope, &lane_name, bc_lane).await?;
     Ok(serde_json::json!({"status": "ok"}))
 }
 
 /// webview からの board clear（Clear ボタン）。 = mcp clear と同じ結果。
 pub(crate) async fn handle_board_clear(
-    state: &RepoState,
+    ctx: BoardContext<'_>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let Some(vpdb) = state.vpdb.as_ref() else {
+    let Some(vpdb) = ctx.vpdb else {
         return Err("board_clear: vpdb 未初期化".to_string());
     };
     let (board_scope, lane_name, bc_lane) = board_key(
         payload.get("scope").and_then(|v| v.as_str()),
         payload.get("lane").and_then(|v| v.as_str()),
     );
-    vpdb.clear_board(&state.repo_dir, &board_scope, &lane_name, BOARD_PANE_ID)
+    vpdb.clear_board(ctx.repo_dir, &board_scope, &lane_name, BOARD_PANE_ID)
         .await
         .map_err(|e| format!("board clear: {}", e))?;
-    broadcast_board(state, &board_scope, &lane_name, bc_lane).await?;
+    broadcast_board(ctx, &board_scope, &lane_name, bc_lane).await?;
     Ok(serde_json::json!({"status": "ok"}))
 }
 
@@ -223,10 +244,10 @@ pub(crate) async fn handle_board_clear(
 /// error**（`show` 二挙動を避け `update` に分けた狙い = 静かな重複を作らない）。存在すれば
 /// content / contentType を差し替え（id/title/createdAt は保持）→ 更新後 board を broadcast。
 pub(crate) async fn handle_board_update(
-    state: &RepoState,
+    ctx: BoardContext<'_>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let Some(vpdb) = state.vpdb.as_ref() else {
+    let Some(vpdb) = ctx.vpdb else {
         return Err("board_update: vpdb 未初期化".to_string());
     };
     let item_id = payload
@@ -253,7 +274,7 @@ pub(crate) async fn handle_board_update(
     );
     // read-first の loud error: 対象 lane の board に id が居ることを確認してから更新する。
     let rec = vpdb
-        .load_board(&state.repo_dir, &board_scope, &lane_name, BOARD_PANE_ID)
+        .load_board(ctx.repo_dir, &board_scope, &lane_name, BOARD_PANE_ID)
         .await
         .map_err(|e| format!("board load: {}", e))?;
     let (items, _) = extract_stack(rec.as_ref());
@@ -277,7 +298,7 @@ pub(crate) async fn handle_board_update(
             .to_string(),
     };
     vpdb.update_board_item(
-        &state.repo_dir,
+        ctx.repo_dir,
         &board_scope,
         &lane_name,
         BOARD_PANE_ID,
@@ -287,7 +308,7 @@ pub(crate) async fn handle_board_update(
     )
     .await
     .map_err(|e| format!("board update: {}", e))?;
-    broadcast_board(state, &board_scope, &lane_name, bc_lane).await?;
+    broadcast_board(ctx, &board_scope, &lane_name, bc_lane).await?;
     Ok(serde_json::json!({"status": "ok"}))
 }
 
@@ -298,10 +319,10 @@ pub(crate) async fn handle_board_update(
 /// read-first: item_id が board に居ることを確認してから set（無い id で cursor を迷子に
 /// させない）。set 後の board を broadcast（cursor が真として全 view に配られる）。
 pub(crate) async fn handle_board_set_cursor(
-    state: &RepoState,
+    ctx: BoardContext<'_>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let Some(vpdb) = state.vpdb.as_ref() else {
+    let Some(vpdb) = ctx.vpdb else {
         return Err("board_set_cursor: vpdb 未初期化".to_string());
     };
     let item_id = payload
@@ -315,7 +336,7 @@ pub(crate) async fn handle_board_set_cursor(
         payload.get("lane").and_then(|v| v.as_str()),
     );
     let rec = vpdb
-        .load_board(&state.repo_dir, &board_scope, &lane_name, BOARD_PANE_ID)
+        .load_board(ctx.repo_dir, &board_scope, &lane_name, BOARD_PANE_ID)
         .await
         .map_err(|e| format!("board load: {}", e))?;
     let (items, _) = extract_stack(rec.as_ref());
@@ -326,7 +347,7 @@ pub(crate) async fn handle_board_set_cursor(
         ));
     }
     vpdb.set_board_cursor(
-        &state.repo_dir,
+        ctx.repo_dir,
         &board_scope,
         &lane_name,
         BOARD_PANE_ID,
@@ -334,7 +355,7 @@ pub(crate) async fn handle_board_set_cursor(
     )
     .await
     .map_err(|e| format!("board set_cursor: {}", e))?;
-    broadcast_board(state, &board_scope, &lane_name, bc_lane).await?;
+    broadcast_board(ctx, &board_scope, &lane_name, bc_lane).await?;
     Ok(serde_json::json!({"status": "ok"}))
 }
 
@@ -343,10 +364,10 @@ pub(crate) async fn handle_board_set_cursor(
 /// 呼び出し元 lane の board を **id 付き全文**で返す（AI は content/title で「どれか」を認識し、
 /// id で update / creo 中継の対象を指す）。read-only（broadcast しない）。
 pub(crate) async fn handle_board_read(
-    state: &RepoState,
+    ctx: BoardContext<'_>,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let Some(vpdb) = state.vpdb.as_ref() else {
+    let Some(vpdb) = ctx.vpdb else {
         return Err("read_board: vpdb 未初期化".to_string());
     };
     let (board_scope, lane_name, _) = board_key(
@@ -354,7 +375,7 @@ pub(crate) async fn handle_board_read(
         payload.get("lane").and_then(|v| v.as_str()),
     );
     let rec = vpdb
-        .load_board(&state.repo_dir, &board_scope, &lane_name, BOARD_PANE_ID)
+        .load_board(ctx.repo_dir, &board_scope, &lane_name, BOARD_PANE_ID)
         .await
         .map_err(|e| format!("board load: {}", e))?;
     let (items, cursor) = extract_stack(rec.as_ref());
@@ -365,11 +386,11 @@ pub(crate) async fn handle_board_read(
 ///
 /// webview が canvas channel を購読した瞬間、 retained BoardUpdated として全 board が初期配信される
 /// （別 load 経路が不要）。 空 board / 別 pane_id の row は skip。
-pub(crate) async fn seed_boards(state: &RepoState) {
-    let Some(vpdb) = state.vpdb.as_ref() else {
+pub(crate) async fn seed_boards(ctx: BoardContext<'_>) {
+    let Some(vpdb) = ctx.vpdb else {
         return;
     };
-    let rows = match vpdb.list_pane_contents(&state.repo_dir).await {
+    let rows = match vpdb.list_pane_contents(ctx.repo_dir).await {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("board seed: pane_contents list 失敗: {}", e);
@@ -396,7 +417,7 @@ pub(crate) async fn seed_boards(state: &RepoState) {
         } else {
             Some(lane_name.to_string())
         };
-        state.hub.broadcast(RepoMessage::BoardUpdated {
+        ctx.hub.broadcast(RepoMessage::BoardUpdated {
             scope,
             lane: bc_lane,
             items,
@@ -411,6 +432,72 @@ pub(crate) async fn seed_boards(state: &RepoState) {
 
 #[cfg(test)]
 mod tests {
+    /// 棚卸し 9-2 段階 2（doc 63 §2）: **board の handler は `RepoState` 無しで動く。**
+    ///
+    /// mem db と `Hub` だけで [`BoardContext`] を組み、show → read_board を通し、`hub` の購読者に
+    /// `BoardUpdated` が届くことまで見る。`RepoState` を組まないこと自体が「leaf が全体 State を
+    /// 知らない」の証明（handler が State の別 field を読み始めれば、ここは compile で落ちる）。
+    /// 下の 2 本（`dispatch_repo_method` 経由）は `RepoState::board()` の結線側を固定する。
+    #[tokio::test]
+    async fn board_handlers_need_only_the_board_context() {
+        use super::*;
+        use crate::db::VpDb;
+        use std::sync::Arc;
+
+        let db: SharedVpDb = Arc::new(VpDb::connect_mem().await.unwrap());
+        let hub = Hub::new();
+        let mut rx = hub.subscribe();
+        let ctx = BoardContext {
+            repo_dir: "/repos/vp",
+            vpdb: Some(&db),
+            hub: &hub,
+        };
+
+        handle_canvas_command(
+            ctx,
+            serde_json::json!({
+                "type": "show", "pane_id": "main",
+                "content": { "markdown": "leaf" }, "append": false, "title": "t"
+            }),
+        )
+        .await
+        .expect("show");
+
+        let read = handle_board_read(ctx, serde_json::json!({}))
+            .await
+            .expect("read_board");
+        assert_eq!(read["items"][0]["content"], "leaf");
+
+        match rx
+            .try_recv()
+            .expect("show は BoardUpdated を broadcast する")
+        {
+            RepoMessage::BoardUpdated { scope, items, .. } => {
+                assert_eq!(scope, "lane");
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].content, "leaf");
+            }
+            other => panic!("BoardUpdated 以外が流れた: {other:?}"),
+        }
+
+        // vpdb 無し（DB 接続失敗の degrade）は loud error / no-op で、panic しない
+        let degraded = BoardContext {
+            repo_dir: "/repos/vp",
+            vpdb: None,
+            hub: &hub,
+        };
+        assert!(
+            handle_board_read(degraded, serde_json::json!({}))
+                .await
+                .is_err()
+        );
+        seed_boards(degraded).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "degrade では何も broadcast しない（no-op）"
+        );
+    }
+
     /// doc 52 §4/§5: show → read_board（id 取得）→ board_update（in-place 置換）→ read_board の往復。
     /// 未知 id の update が loud error になることも固定する。
     #[tokio::test]
