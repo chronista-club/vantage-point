@@ -437,7 +437,7 @@ mod tests {
 
         // replay_log / session_registry は vp_state_dir() を読む → tempdir に隔離。
         let _state_guard = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let addr = insert_test_lane(&state, "vptest-replaylog", SessionMode::Gui).await;
 
         // focused な codex session #2 を作る（session=None がこれに解決される）。
@@ -517,7 +517,7 @@ mod tests {
         use std::time::Duration;
 
         let _state_guard = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let addr = insert_test_lane(&state, "vptest-coalesce", SessionMode::Gui).await;
 
         // focused な codex session #2（session 省略の demand がこれに解決される）。
@@ -593,7 +593,7 @@ mod tests {
         use std::time::Duration;
 
         let _state_guard = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         // **root は tui**（= 旧 gate ならここで not_chat に落ちる）。
         let addr = insert_test_lane(&state, "vptest-nonroot-chat", SessionMode::Tui).await;
 

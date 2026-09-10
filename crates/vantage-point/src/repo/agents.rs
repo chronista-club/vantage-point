@@ -113,7 +113,7 @@ mod tests {
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let res = dispatch_repo_method(&state, "agents_list", serde_json::json!({}))
             .await
             .expect("agents_list dispatch");

@@ -298,7 +298,7 @@ mod tests {
         use super::dispatch_repo_method;
         use crate::repo::state::build_test_app_state;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         // delegate: doer 欠落 → Err (proxy 前)。
         assert!(
             dispatch_repo_method(

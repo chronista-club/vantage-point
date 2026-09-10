@@ -1268,7 +1268,7 @@ mod core_tests {
     /// (sub 有りの merge 検証は repo_dir を差せる fixture が要るため follow-up)
     #[tokio::test]
     async fn build_lanes_snapshot_empty_when_pool_and_disk_empty() {
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         // LanePool 空 (LanePool::new()) + repo_dir="" (sub 不在) → 0 件
         let lanes = build_lanes_snapshot(&state).await;
         assert!(
@@ -1317,7 +1317,7 @@ mod core_tests {
     /// message は同関数のものになるので、**予約名を名指ししていること**だけを見る。
     #[tokio::test]
     async fn create_rejects_reserved_main_name() {
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         // ⚠️ 現行予約名（main）に加え**旧世代（root / conductor）も拒否**。旧名で Sub を
         // 作れると `<repo>__root` 等の旧 state と衝突する（migration は衝突時に触らない
         // ため、その lane の会話が永久に取り残される — validate_sub_name の doc 参照）。
@@ -1336,7 +1336,7 @@ mod core_tests {
     /// `create_sub_orchestrated`: name が空白のみの場合は早期 Err を返す。
     #[tokio::test]
     async fn create_rejects_empty_name() {
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         let err = create_sub_orchestrated(&state, req("   "))
             .await
             .expect_err("name 空白のみは Err");
@@ -1354,7 +1354,7 @@ mod core_tests {
     /// 入口に寄せたので、reserve も disk dir も作らずに拒否される。
     #[tokio::test]
     async fn create_rejects_unsafe_name_at_the_door() {
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         for bad in ["../etc/passwd", "foo bar", "foo;rm", ".hidden", "-leading"] {
             let err = create_sub_orchestrated(&state, req(bad))
                 .await
@@ -1375,7 +1375,7 @@ mod core_tests {
     /// pool に PtySlot が生えない (= claude を fork しない) ことを確認する。
     #[tokio::test]
     async fn create_rejects_second_when_reservation_present() {
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         // repo_dir="" → repo_id="unknown"。1 個目が claim した想定の Spawning placeholder。
         let addr = LaneAddress::sub("unknown", "dup");
         {
@@ -1450,7 +1450,7 @@ mod core_tests {
         let repo_dir = repo.to_string_lossy().to_string();
 
         let state =
-            crate::repo::state::build_test_app_state_with(&repo_dir, Some(db.clone()), None).await;
+            crate::repo::state::build_test_app_state_with(&repo_dir, Some(db.clone())).await;
 
         let res = create_sub_orchestrated(&state, req("ghost")).await;
         assert!(
@@ -1507,8 +1507,7 @@ mod core_tests {
         let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
         db.define_schema().await.unwrap();
         let state =
-            crate::repo::state::build_test_app_state_with("/tmp/vp-intent", Some(db.clone()), None)
-                .await;
+            crate::repo::state::build_test_app_state_with("/tmp/vp-intent", Some(db.clone())).await;
         let key = lane_db_key(&state);
         let addr = LaneAddress::sub("vp-intent", "sub");
 
@@ -1579,8 +1578,7 @@ mod core_tests {
         let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
         db.define_schema().await.unwrap();
         let state =
-            crate::repo::state::build_test_app_state_with("/tmp/vp-delete", Some(db.clone()), None)
-                .await;
+            crate::repo::state::build_test_app_state_with("/tmp/vp-delete", Some(db.clone())).await;
         let addr = LaneAddress::sub("vp-delete", "sub");
         let info = LaneInfo {
             id: Default::default(),
@@ -1633,12 +1631,9 @@ mod core_tests {
     async fn delete_lane_leaves_wire_threads() {
         let db = std::sync::Arc::new(crate::db::VpDb::connect_mem().await.unwrap());
         db.define_schema().await.unwrap();
-        let state = crate::repo::state::build_test_app_state_with(
-            "/tmp/vp-wire-leave",
-            Some(db.clone()),
-            None,
-        )
-        .await;
+        let state =
+            crate::repo::state::build_test_app_state_with("/tmp/vp-wire-leave", Some(db.clone()))
+                .await;
 
         let addr = LaneAddress::sub("vp-wire-leave", "sub");
         let doomed = addr.wire_agent_address();
@@ -1760,7 +1755,7 @@ mod core_tests {
     /// (JoinError cleanup 経路) reservation 除去は同じく走るので、どちらでも placeholder は残らない。
     #[tokio::test]
     async fn reservation_removed_after_failed_create() {
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         let addr = LaneAddress::sub("unknown", "fail");
         let res = create_sub_orchestrated(&state, req("fail")).await;
         assert!(res.is_err(), "repo_dir 不在での clone は失敗する: {res:?}");

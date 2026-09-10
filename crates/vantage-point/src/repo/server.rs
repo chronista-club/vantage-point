@@ -1425,7 +1425,7 @@ mod tests {
     /// 過去 pid の lane を配り続けた）。関数呼び出しになった今はここで固定できる。
     #[tokio::test]
     async fn publish_lanes_updates_daemon_view() {
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         let hub = state.hub.clone();
         let view: NodeLaneView = Arc::new(RwLock::new(std::collections::HashMap::new()));
         let key = "/tmp/proj-publish-lanes";
@@ -1454,7 +1454,7 @@ mod tests {
     /// fold-in 完了前の repo 単体起動が壊れる。
     #[tokio::test]
     async fn publish_lanes_without_daemon_view_is_noop() {
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         let hub = state.hub.clone();
 
         publish_lanes(
@@ -1479,7 +1479,7 @@ mod tests {
     /// 「生産者ゼロで永久沈黙」として fold-in 中に発見・再配線済）。
     #[tokio::test]
     async fn publish_lanes_wakes_vp_app_push_loop() {
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         let hub = state.hub.clone();
         let key = "/tmp/proj-wakeup";
         let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(8);
@@ -1500,7 +1500,7 @@ mod tests {
     /// 定期的に流れる。指紋で「変わった時だけ」に絞る。
     #[tokio::test]
     async fn publish_lanes_does_not_wake_on_unchanged_snapshot() {
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         let hub = state.hub.clone();
         let key = "/tmp/proj-unchanged";
         let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(8);
@@ -1555,7 +1555,7 @@ mod tests {
 
     async fn route_status(uri: &str, method: &str) -> axum::http::StatusCode {
         use tower::ServiceExt;
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         let req = axum::http::Request::builder()
             .method(method)
             .uri(uri)

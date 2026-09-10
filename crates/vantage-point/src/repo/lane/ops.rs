@@ -446,7 +446,7 @@ mod tests {
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         // lane 未指定
         let res =
             dispatch_repo_method(&state, "lane_nudge", serde_json::json!({ "text": "x" })).await;
@@ -480,7 +480,7 @@ mod tests {
         // doc 53 R1: chat 案内の分岐が registry（root_mode）直読になったため、state dir を
         // 隔離して registry に書く（隔離しないと実 state を読み書きしてしまう）。
         let _state_dir = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let res = dispatch_repo_method(&state, "lane_capture", serde_json::json!({})).await;
         assert!(res.is_err(), "lane 未指定は Err: {res:?}");
         let res = dispatch_repo_method(
@@ -559,7 +559,7 @@ mod tests {
 
         // slot_inventory は root を registry から解決する → tempdir に隔離。
         let _state_dir = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
 
         let addr = LaneAddress::root("vp");
         let res = dispatch_repo_method(
@@ -662,7 +662,7 @@ mod tests {
 
         // session registry / slot_inventory の root 解決は vp_state_dir() を読む → tempdir に隔離。
         let _state_dir = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let addr = LaneAddress::root("vp");
         let lane = addr.to_string();
 
@@ -752,7 +752,7 @@ mod tests {
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         let addr = LaneAddress::sub("vp", "chore");
@@ -822,7 +822,7 @@ mod tests {
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         // delete_lane_orchestrated は LanePool の有無に関係なく kind=Main を最初に弾く。
         let err = dispatch_repo_method(
             &state,
@@ -844,7 +844,7 @@ mod tests {
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let res = dispatch_repo_method(
             &state,
             "lane_restart",
@@ -860,7 +860,7 @@ mod tests {
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let res = dispatch_repo_method(
             &state,
             "lane_session_changed",
@@ -882,7 +882,7 @@ mod tests {
 
         // refresh_engine_session_id は vp_state_dir() を読む — tempdir guard で隔離。
         let state_dir = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         state.lane_pool.write().await.insert(LaneInfo {
             id: Default::default(),
             address: LaneAddress::root("vp"),
@@ -941,7 +941,7 @@ mod tests {
         use crate::repo::unison_server::dispatch_repo_method;
 
         let state_dir = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         state.lane_pool.write().await.insert(LaneInfo {
             id: Default::default(),
             address: LaneAddress::root("vp"),
@@ -1015,7 +1015,7 @@ mod tests {
         use crate::repo::unison_server::dispatch_repo_method;
 
         let state_dir = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         state.lane_pool.write().await.insert(LaneInfo {
             id: Default::default(),
             address: LaneAddress::root("vp"),
@@ -1104,7 +1104,7 @@ mod tests {
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let res = dispatch_repo_method(&state, "lanes_list", serde_json::json!({}))
             .await
             .expect("lanes_list dispatch");
@@ -1124,7 +1124,7 @@ mod tests {
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let err = dispatch_repo_method(
             &state,
             "lane_create",
@@ -1168,7 +1168,7 @@ mod tests {
         use std::time::Duration;
 
         let _state_dir = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state(None).await;
+        let state = build_test_app_state().await;
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         let addr = LaneAddress::sub("vp", "feat-slotpump");
