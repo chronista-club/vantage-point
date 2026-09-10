@@ -1,6 +1,6 @@
 # doc 63 — `AppState` を `DaemonState` / `RepoState` に分ける（棚卸し 項目 9-2）
 
-> **Status**: **段階 1 完了（2026-09-11）** — PR-A〜5（#1099 / #1101〜#1110、起票 #1098 を含めて 12 commit）が全部 nightly に着地。`RepoState`（14 field）/ `DaemonState`（25 field）の 2 型。段階 2（`BoardContext` / `EditorBridge`）/ 段階 3（停止責任）は未着手。file 名は「`AppState` を分ける」という設計の主題なので据え置き（doc 44 が `world` を残すのと同じ）
+> **Status**: **段階 1 完了（2026-09-11）** — PR-A〜5（#1099 / #1101〜#1110、起票 #1098 を含めて 12 commit）が全部 nightly に着地。`RepoState`（14 field）/ `DaemonState`（25 field）の 2 型。段階 2（`BoardContext` #1112 / `EditorContext` #1113）完了。段階 3（停止責任）は PR-S3a（runner）で着手、残りは §8。file 名は「`AppState` を分ける」という設計の主題なので据え置き（doc 44 が `world` を残すのと同じ）
 > **Date**: 2026-09-09 起票（材料表）→ 2026-09-10 設計へ
 > **Owners**: server crate（`crates/vantage-point/src/repo/state.rs` / `daemon/server.rs`）
 > **台帳**: `.vp/reports/refactor-audit-2026-09-07.md` 項目 9。姉妹 doc: [doc 60](60-vp-app-layout.md) / [doc 61](61-repo-runtime-layout.md) / [doc 62](62-db-module-layout.md)
@@ -113,7 +113,7 @@ if let Some(store) = state.wiremsg_store.as_ref() { store.leave_all_threads(..).
 |---|---|---|---|
 | **1** | 実行範囲（daemon 役 / repo 役） | **役の混在が消え、既存の結線と HTTP 契約が保たれた** | PR-0 〜 5（全部） |
 | **2** | 操作に渡す依存 | **leaf が全体 State を知らずに使える** | PR-S2a `BoardContext` ✅（board の handler 6 + `seed_boards` が `repo_dir` / `vpdb` / `hub` の借用だけで動く、module から `RepoState` の import が消えた）→ PR-S2b `EditorContext` ✅（`editor_pending` / `hub`、非 `Option` 2 field）。**段階 2 はここで閉じる** |
-| **3** | 所有と寿命（停止責任） | **停止を要求した仕事の終わりまで確認できる** | 別 PR、段階 2 を待たない |
+| **3** | 所有と寿命（停止責任） | **停止を要求した仕事の終わりまで確認できる** | PR-S3a: runner（`process_registry`）を repo stop で止めて終了を確認 ✅ → 残りは §8「段階 3 で拾う既知の穴」の ②（Editor の pending）と、`RepoTasks`（`ActorRegistry` の整理）は着手判断待ち |
 
 ⚠️ **3 つを同じ PR の完了条件にしない。** 段階 1 で field 数が 29 → 14 になっても、board の読み取りに lane pool を渡せる状態は残る。それは段階 2 の仕事。段階 1 の合格を段階 2 の未達で止めない。
 
@@ -289,12 +289,13 @@ CI は `cargo clippy --workspace --all-targets -- -D warnings`。**`AppState` �
 - **`discovery.rs` の `ProcessInfo.terminal_token`** — `generate_terminal_token` 削除（PR-2c）で非 `None` の書き手が crate 内 0（`:141` が `None` 固定）。cut 候補。
 - **test fixture の fn 名 `build_test_app_state*`** — 型は `RepoState` になったが fn 名は据え置き（PR-5 は型名だけ）。改名するなら 114 site を一括で。
 - **CI に `--no-default-features` の job が無い** — 9-2 では Moody Blues / 手動 `cargo check` で守った。`Cargo.toml:14` が「Daemon-only build」を明記している以上、job を足す価値はある。
+- **runner（`process_registry` / `process_run` / `ruby_run` …）に production の入口が無い** — dispatch の method 名にしか呼び手が無く、CLI / MCP / vp-app / webview の grep で 0 件（2026-09-11、PR-S3a で発覚）。`writer-without-reader` の型。`cut-before-fix`: 使う予定が無ければ registry ごと切る（切るなら PR-S3a の停止契約も一緒に消えるが、それが正しい）。**判断は mako、起票名 PR-S3x「runner の cut 判断」**。registry が空なら `stop_all` は no-op（両 loop が空、log も出ない）ので、判断待ちの間のコストは 0。
 - **`daemon/server.rs:407` の「HTTP に残るのは health / shutdown の 2 本」** — update 7 route を数えていない。PR-6（`repo/http/` を `daemon/` へ移設）で直す。
 - **doc 12 の `notify` service は実在しない**（`spawn_service` の呼び手は lane-spawn と delivery の 2 本）。新しい context に移さない。doc 01 の `ProcessMessage::Show` も型名が現行 `RepoMessage` と不一致（stale）。
 
-### 段階 3 で拾う既知の穴 2 件
+### 段階 3 で拾う既知の穴 2 件（① は PR-S3a で解決、② は未着手）
 
-- **① 長期 runner が repo stop で止まらない**（静的確認のみ、実機再現は未実施）。`process_runner.rs` に `CancellationToken` の参照が **0 件**。`:325` の task が registry の Arc を保持し、`:430` は専用 shutdown receiver を待つ。
+- ~~**① 長期 runner が repo stop で止まらない**~~ → **PR-S3a で修正**（2026-09-11）。`shutdown_repo` が `process_runner::stop_all` を呼ぶ: `ProcessRegistry` の受付を閉じ（`closing`、以後の `register` は拒み `process_run` は spawn した子を kill する = 契約 ①）、lock 内で `(shutdown_tx, done_rx)` を取り出して lock 外で送信・終了待ち（契約 ②）、終了は `update_status` が Completed / Failed で `watch` に `true` を流す通知で確認（契約 ③ — 親 `stream_output` は `child.wait()` の後に stdout / stderr の pump を `abort()` してから `update_status` を呼ぶ。pipe の EOF 頼みだと孫が pipe を継いだ場合に pump が残る）。runner ごと 8 秒で見切る（`stream_output` の kill 猶予 5 秒より長く）。test 3 本（`sleep 30` を起こして `shutdown_repo` → Completed / 閉じた後の `process_run` は Err / `stop_all` の件数と全 Completed）。旧: `process_runner.rs` に `CancellationToken` の参照 0、`:325` の task が registry の Arc を保持し `:430` は専用 shutdown receiver を待っていた。
 - **② Editor の呼び出し中断で pending が残る**（Codex の probe で再現、`.vp/reports/probes/editor-cancel/`）。`pending_after_future_drop_and_3_1s=1` / `pending_after_late_response=0` / `pending_after_normal_timeout=0`。**本番の通信経路でこの中断が起きるかは未検証**なので、GUI の実機バグとしては扱わない。
 
 停止契約に加える 3 点: ① **受付を閉じる場所を spawn の境界まで届かせる**（`RepoRuntimes::dispatch`（`repo_registry.rs:265`）は State の Arc を取得してから実行するので、map から除去しても in-flight は残る。`is_cancelled()` の一度読みでは検査直後の窓が残る）② **lock 内で停止対象を取り出し、lock 外で通知・終了待ち**（runner の終了処理は `process_runner.rs:438` / `:445` で registry lock を取る。`stop_all` が同じ lock を保持したまま join すると行き詰まる）③ **親 task と、その中から作る task の両方を回収**（`:325` の外側に加え stdout / stderr の `:404` / `:416`）。
@@ -425,3 +426,4 @@ struct の見た目が `Arc<...>` でなくても、`Clone` が同一実体を�
 - 2026-09-11: **9-2 締め。** 段階 1 完了を Status に。現行 doc に残っていた旧名を更新（doc 61 × 6 / doc 59 × 1、doc 47 は凍結注記ありで据え置き）、maintainer script の `.mise/tasks/daemon/stop`（comment 2 箇所 + `#MISE description` + 実行時 log の `project` → `repo`、rename 注記に 2026-07-27 の戻りを追記）/ `scripts/mise/vp.rb`（comment 1 箇所）— 「project が World プロセス内の Arc<AppState>」は語彙が 3 つ古かったのでまとめて現行に。§10 に 59 / 47 を追記、§8 に follow-up 4 件を追記。file 名は据え置き。
 - 2026-09-11: **段階 2 PR-S2a `BoardContext`。** 段階 2 は「最初の 1 PR だけ」の予定だったが、`EditorBridge` が同型で小さい（読むのは `editor_pending` / `hub` の 2 つ、spawn なし）ので PR-S2b として続けて取る — それ以上は広げない。`repo/board.rs` の handler 6 + `seed_boards`（+ 内部の `broadcast_board`）が `&RepoState` の代わりに `BoardContext<'_>`（`repo_dir: &str` / `vpdb: Option<&SharedVpDb>` / `hub: &Hub`、`Copy` の借用）を取る。`RepoState::board()` が組む。board.rs から `RepoState` の import が消えた = board が State の何を読むかは struct の 3 field で閉じる。test `board_handlers_need_only_the_board_context`（`RepoState` を組まずに mem db + `Hub` で show → read → `BoardUpdated` 受信、degrade の `None` も）。既存 2 本（dispatch 経由）は結線側の網。§7 の「`Arc<RepoState>` を隠さない / `Deref` で公開しない」どおり。`Option<&T>` は「DB 接続失敗で無い」`vpdb` 専用の形で、`EditorContext` の 2 field は非 `Option`。
 - 2026-09-11: **段階 2 PR-S2b `EditorContext`。** `repo/editor_bridge.rs` の往路 / 復路 2 handler が `&RepoState` の代わりに `EditorContext<'_>`（`pending: &EditorPending` / `hub: &Hub`、`Copy`）を取る。`EditorPending` は `RepoState.editor_pending` の型 alias（`Arc<EditorPending>`）。`RepoState::editor()` が組む。module から `RepoState` の import が消えた。test `editor_handlers_need_only_the_editor_context`（`RepoState` を組まずに `Mutex<HashMap>` + `Hub` で往路 → 復路の相関）。既存 3 本は `state.editor()` に差し替えて結線側の網。**段階 2 はこの 2 PR で閉じる**（他の leaf は次の機会に同型で）。
+- 2026-09-11: **段階 3 PR-S3a（runner の停止責任）。** 既知の穴 ① を修正。`ProcessRegistry` に `closing` と entry ごとの `done` watch を足し、`process_runner::stop_all` が「受付を閉じる → lock 外で shutdown 送信 → 終了通知を待つ」を 1 関数で担い、`shutdown_repo` から呼ぶ（`RepoRuntimes::stop` / `shutdown_all` / `start` の rollback の 4 経路すべてに効く）。`register` は `Result` になり、閉じた後の `process_run` は子を kill して Err。mutation 2 本（`shutdown_repo` から `stop_all` を外す / `closing` を立てない）で赤を実測。`CancellationToken` は持ち込まない — runner は既存の `shutdown_tx` 経路（stdin EOF → 5 秒 → kill）で止め、増やしたのは「終了の確認」だけ。⚠️ **実機確認の手段が無い**: `process_run` / `ruby_run` 等は `dispatch_repo_method` の arm にしか呼び手が無く、CLI / MCP / vp-app のどこからも叩かれていない（runner は production で end-to-end dead の可能性 — §8 follow-up、`cut-before-fix`）。証拠は unit test 3 本。

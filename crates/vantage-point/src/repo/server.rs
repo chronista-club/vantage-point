@@ -514,13 +514,21 @@ fn spawn_idle_engine_sweep(state: Arc<RepoState>, shutdown: CancellationToken) {
     });
 }
 
-/// [`start_repo`] で起動した repo の後始末（file watcher 停止）。
+/// [`start_repo`] で起動した repo の後始末（runner 停止 → file watcher 停止）。
 ///
 /// shutdown_token を cancel した**後**に呼ぶこと（token cancel は spawn 済 task の停止、
 /// 本関数は token では止まらないリソースの解放を担当する）。
 pub(crate) async fn shutdown_repo(state: &Arc<RepoState>) {
     // pane 状態は webview が board state ask（repo-proxy）で逐次 pane_contents に保存済 (旧 DISC
     // shutdown snapshot は退役)。 shutdown 時の明示保存は不要。
+
+    // 棚卸し 9-2 段階 3: runner（`vp process run` / ruby）の子プロセスを止め、終了まで確認する。
+    // fold-in 前は repo プロセスの終了が子を道連れにしていたが、repo が daemon 内の task に
+    // なった今は誰かが畳まないと子が生き残る（doc 63 §8 の既知の穴 ①）。
+    let stopped = super::process_runner::stop_all(&state.process_registry).await;
+    if stopped > 0 {
+        tracing::info!("repo stop: runner {stopped} 本を停止して終了を確認");
+    }
 
     // ファイル監視を全停止
     state.file_watchers.lock().await.stop_all();
