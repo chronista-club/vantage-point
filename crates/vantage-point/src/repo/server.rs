@@ -571,15 +571,14 @@ pub(crate) async fn shutdown_repo(state: &Arc<AppState>) {
 /// `run_daemon` から関数として切り出してあるのは、**route 登録そのものをテストで固定する**ため
 /// （撤去の巻き添えで health / shutdown を落とすと、診断手段と緊急停止を同時に失う）。
 ///
-/// 棚卸し 9-2（doc 63 §5）: state は 2 本ある。`/api/update/*` は `Arc<DaemonState>`（PR-2a）、
-/// `/api/health` / `/api/shutdown` はまだ `Arc<AppState>`（PR-2b / 2c で移す）。
+/// 棚卸し 9-2（doc 63 §5）: state は 2 本ある。`/api/update/*`（PR-2a）と `/api/shutdown`
+/// （PR-2b）は `Arc<DaemonState>`、`/api/health` はまだ `Arc<AppState>`（PR-2c で移す）。
 /// `Router<S>::with_state` が `Router<()>` を返すので、群ごとに state を確定させてから
 /// `merge` で合流し、**CORS は合流後に 1 回**掛ける（片方だけに掛けると、もう片方の
 /// route が `Access-Control-Allow-Origin` を返さなくなる — `daemon_router_applies_cors_to_both_state_groups`）。
 fn build_daemon_router(state: Arc<AppState>, daemon_state: Arc<DaemonState>) -> Router {
     let repo_state_routes = Router::new()
         .route("/api/health", get(health::health_handler))
-        .route("/api/shutdown", post(health::shutdown_handler))
         // L0 portless: `/ws/lanes` (repo_feed WS) は consumer 消滅で dead のため撤去。
         // doc 45 段 4: `/api/canvas/{switch_lane,layout}` は撤去。宛先の `canvas_senders` を
         // populate する書き手が旧 localhost browser Canvas の WS 撤去で消えており、
@@ -602,6 +601,7 @@ fn build_daemon_router(state: Arc<AppState>, daemon_state: Arc<DaemonState>) -> 
         // repo は portless（port=0）になり、slot が解決する listen port が存在しない。
         .with_state(state);
     let daemon_state_routes = Router::new()
+        .route("/api/shutdown", post(health::shutdown_handler))
         // Update API routes (vp CLI)
         .route("/api/update/check", get(update::update_check))
         .route("/api/update/apply", post(update::update_apply))

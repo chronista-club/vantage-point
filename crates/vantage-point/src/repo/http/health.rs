@@ -8,6 +8,7 @@ use std::sync::Arc;
 use axum::{Json, extract::State, response::IntoResponse};
 
 use super::super::state::AppState;
+use crate::daemon::server::DaemonState;
 
 /// 機能（service）のステータス
 #[derive(serde::Serialize)]
@@ -337,7 +338,10 @@ fn auth_target_states() -> std::collections::BTreeMap<String, String> {
 // vp-mdast / vp-mdast-wasm crate + web/wasm/ asset (482KB) と共に撤去。
 
 /// POST /api/shutdown - Graceful shutdown
-pub async fn shutdown_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+///
+/// state は `Arc<DaemonState>`（棚卸し 9-2 PR-2b）。cancel するのは `run_daemon` が作って
+/// `DaemonState::assemble` に渡した **その 1 本**の token（poller / actor / federation が購読する）。
+pub async fn shutdown_handler(State(state): State<Arc<DaemonState>>) -> impl IntoResponse {
     tracing::info!("Shutdown requested via API");
     state.shutdown_token.cancel();
     Json(serde_json::json!({"status": "shutting_down"}))
@@ -368,9 +372,14 @@ mod tests {
     /// doc 45 §2: `/api/shutdown` は HTTP に残す 2 本のうちの 1 本（緊急停止は最も単純な
     /// 経路であるべき）。handler が生きていて `shutdown_token` を実際に cancel することを固定する
     /// —— 撤去の巻き添えで落ちると、Unison が wedge した時に止める手段ごと失う。
+    ///
+    /// 9-2 PR-2b: state は `DaemonState`。見るのは **`assemble` に渡した token**（fixture の
+    /// `state.shutdown_token` は渡した実体そのもの — `assemble_projects_the_given_instances` が
+    /// 固定している）。handler が内部で新設した token を cancel しても誰も止まらないので、
+    /// その形は赤になる（doc 63 §5 PR-2b の完了条件）。
     #[tokio::test]
     async fn shutdown_handler_cancels_shutdown_token() {
-        let state = crate::repo::state::build_test_app_state().await;
+        let state = crate::daemon::server::build_test_daemon_state().await;
         let token = state.shutdown_token.clone();
         assert!(!token.is_cancelled(), "前提: まだ cancel されていない");
 
