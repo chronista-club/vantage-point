@@ -79,7 +79,8 @@ pub(crate) struct RepoRuntimes {
     /// SurrealDB handle が「Daemon stopped」ログの後も生き残る（= プロセスが終了できない）。
     ///
     /// 起動の入口は複数あり、いずれも daemon の shutdown 手続きの射程外で走る:
-    ///   - `autostart_enabled_repos`（spawn した JoinHandle を保持していない）
+    ///   - `autostart_enabled_repos`（`ActorRegistry` 経由で spawn され、停止末尾の `stop_all` が
+    ///     待つ。repo ごとの境目で token を見て降りるが、見切りの abort が起きれば下記の孤児化）
     ///   - `repos/start` RPC（unison が接続ごとに独立 task で handler を回すため、
     ///     accept loop を abort しても既存接続の in-flight handler には波及しない）
     ///
@@ -220,6 +221,13 @@ impl RepoRuntimes {
         true
     }
 
+    /// 受付を閉じる（以後の [`start`](Self::start) は起動後に自己回収して Err）。
+    /// daemon 停止末尾が常駐 task を待つ前に呼び、待っている間に autostart が新しい repo を
+    /// 起こさないようにする。`shutdown_all` も同じ flag を立てるので重ねて呼んでよい。
+    pub fn close(&self) {
+        self.closing.store(true, Ordering::Release);
+    }
+
     /// 登録済 repo を**すべて**停止する（daemon の graceful shutdown 用）。戻り値は停止数。
     ///
     /// doc 44 P1 (fold-in): 旧構成では repo = 別プロセス (repo) だったため、daemon が
@@ -235,7 +243,7 @@ impl RepoRuntimes {
     /// :32000 の bind を握るので、次の daemon は起動そのものが弾かれる（= 失敗が早期化した
     /// だけで、畳み残しが致命的である点は変わらない）。
     pub async fn shutdown_all(&self) -> usize {
-        // drain より先に受付を閉じる。この順序が要点で、逆にすると「drain 済みの map へ
+        // drain より先に受付を閉じる（`close` と同じ flag）。この順序が要点で、逆にすると「drain 済みの map へ
         // 進行中の start が insert を完了させる」窓が残る（= 畳んだはずの repo が生き残る）。
         self.closing.store(true, Ordering::Release);
         // 先に map を空にしてから停止する（停止の await 中に別 caller が同じ repo を

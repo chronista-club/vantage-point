@@ -1075,11 +1075,22 @@ pub async fn run_hub_federation<F, Fut>(
         status.set(HubFederationState::Connecting);
         auth.set(HubAuthState::Unknown);
         // 再接続ごとに handler を再登録するため clone（connect_with_inbound は on_msg を move する）。
-        match HubClient::connect_with_inbound(&addr, 5, on_relay.clone()).await {
+        // 棚卸し 9-2 段階 3（PR-S3c）: connect（5 回試行 + QUIC handshake の timeout）と register は
+        // 数秒かかり得るので cancel と競わせる。hub 不達のまま daemon を止めると、ここで待った分だけ
+        // `stop_all` の timeout を食う。
+        let connected = tokio::select! {
+            _ = shutdown.cancelled() => return,
+            r = HubClient::connect_with_inbound(&addr, 5, on_relay.clone()) => r,
+        };
+        match connected {
             Ok(client) => {
                 // 接続がどう成立したか（credentialed / anonymous）を health に転写する。
                 auth.set(client.auth_state());
-                match client.register(&node_id, &endpoints, &handle, &name).await {
+                let registered = tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    r = client.register(&node_id, &endpoints, &handle, &name) => r,
+                };
+                match registered {
                     Ok(entry) => {
                         status.set(HubFederationState::Connected);
                         tracing::info!(

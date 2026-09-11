@@ -787,8 +787,10 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     let creo_actions = crate::creo::client::CreoActionsCache::new();
     // 9-2 PR-1: DaemonState に渡す部品はここで 1 度だけ作る。delivery actor / federation relay も
     // 同じ local を capture する（別々に new() すると wire の起床が届かない）。
-    // VP-159 PR-4b: daemon mode では空で構築 (= machine scope actor の register は後続 PR、
-    // device registry の metadata register は dynamic routing vision 確定後)
+    // 棚卸し 9-2 段階 3（PR-S3c）: daemon が spawn する常駐 task はすべてこの registry に預け、
+    // 停止末尾で `actor_registry::stop_all` が終了を待つ（repo 側の `shutdown_repo` と同じ契約）。
+    // `DaemonState.actor_registry` にも同じ Arc を渡す（device registry の metadata register は
+    // dynamic routing vision 確定後）。
     let actor_registry = Arc::new(RwLock::new(crate::capability::ActorRegistry::new()));
     // 起動時刻は構築時に 1 度確定して以後不変（health はこの値をそのまま返す、doc 63 §7）
     let started_at = chrono::Utc::now().to_rfc3339();
@@ -804,7 +806,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     {
         let update_cap = update_cap.clone();
         let shutdown = shutdown_token.clone();
-        tokio::spawn(async move {
+        let task = async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
             loop {
                 tokio::select! {
@@ -826,7 +828,12 @@ pub async fn run_daemon(port: u16) -> Result<()> {
                     }
                 }
             }
-        });
+        };
+        actor_registry
+            .write()
+            .await
+            .spawn_task("update-check", LayerScope::Machine, task)
+            .map_err(anyhow::Error::msg)?;
     }
 
     // doc 57 Phase 3: ACTIONS を creo-memories から 30s ごとに引いて cache を温める。
@@ -837,7 +844,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     {
         let cache = creo_actions.clone();
         let shutdown = shutdown_token.clone();
-        tokio::spawn(async move {
+        let task = async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
                 tokio::select! {
@@ -853,7 +860,12 @@ pub async fn run_daemon(port: u16) -> Result<()> {
                     }
                 }
             }
-        });
+        };
+        actor_registry
+            .write()
+            .await
+            .spawn_task("creo-actions-poll", LayerScope::Machine, task)
+            .map_err(anyhow::Error::msg)?;
     }
 
     // tmux decoupling PR1: repo control channel registry を hoist する。 daemon server (下記
@@ -919,12 +931,20 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // lane_registry / control_channels を使う。
     if let Some(store) = delegation_store.clone() {
         let lane_registry = daemon_cap.read().await.lane_registry_ref();
-        super::delegation::spawn_reconcile_loop(
-            store,
-            lane_registry,
-            control_channels.clone(),
-            shutdown_token.clone(),
-        );
+        actor_registry
+            .write()
+            .await
+            .spawn_task(
+                "delegation-reconcile",
+                LayerScope::Machine,
+                super::delegation::reconcile_loop(
+                    store,
+                    lane_registry,
+                    control_channels.clone(),
+                    shutdown_token.clone(),
+                ),
+            )
+            .map_err(anyhow::Error::msg)?;
     }
 
     // Phase 5-D: dual-stack listen (IPv4 + IPv6) ─ vp-app の `http://127.0.0.1:32000` ping、
@@ -1121,18 +1141,26 @@ pub async fn run_daemon(port: u16) -> Result<()> {
 
         // 常駐ループ。接続/登録失敗は run_hub_federation 内で warn に落として再接続（degradation）。
         // hub_status / hub_nodes は DaemonState と共有（run_hub_federation が更新、/api/health が読む）。
-        tokio::spawn(crate::daemon::hub_client::run_hub_federation(
-            hub_addr,
-            node_id,
-            endpoints,
-            handle,
-            name,
-            hub_status,
-            hub_nodes,
-            hub_auth,
-            shutdown_token.clone(),
-            on_relay,
-        ));
+        actor_registry
+            .write()
+            .await
+            .spawn_task(
+                "hub-federation",
+                LayerScope::Machine,
+                crate::daemon::hub_client::run_hub_federation(
+                    hub_addr,
+                    node_id,
+                    endpoints,
+                    handle,
+                    name,
+                    hub_status,
+                    hub_nodes,
+                    hub_auth,
+                    shutdown_token.clone(),
+                    on_relay,
+                ),
+            )
+            .map_err(anyhow::Error::msg)?;
     } else {
         tracing::debug!(
             "chronista-hub federation 無効 (env {} / config.kdl hub-addr とも未設定) — machine-local 動作",
@@ -1148,24 +1176,41 @@ pub async fn run_daemon(port: u16) -> Result<()> {
 
     // 起動時設定の復帰: enabled な repo の repo を自動起動（VP-207）。
     // daemon restart 後に working set を復元する。1 回限りの startup タスク。
-    let _autostart = tokio::spawn(RepoManagerCapability::autostart_enabled_repos(
-        daemon_cap.clone(),
-    ));
+    // 1 回限りだが registry に載せる: 停止時に起動途中の repo を作りかけで残さないため
+    // （`stop_all` が完了を待ち、`shutdown_all` はその後に回る）。repo ごとの境目で token を
+    // 見て降り、進行中の 1 本は完走させて `RepoRuntimes::start` の `closing` 巻き戻しに任せる。
+    actor_registry
+        .write()
+        .await
+        .spawn_task(
+            "autostart-repos",
+            LayerScope::Machine,
+            RepoManagerCapability::autostart_enabled_repos(
+                daemon_cap.clone(),
+                shutdown_token.clone(),
+            ),
+        )
+        .map_err(anyhow::Error::msg)?;
 
     // VP-129 MVP: lane root FSEvents watcher 起動。 user の Finder / `rm -rf` で sub dir
     // を削除した時、 OS file system event → repo `DELETE /api/lanes` 自動発火 (= D10 Reconciliation
     // の 3rd path 拡張、 Push QUIC + Pull port scan + FSEvents の 3-trigger model 完成)。
-    let _lane_watcher = tokio::spawn(RepoManagerCapability::run_lane_watcher(
-        daemon_cap.clone(),
-        shutdown_token.clone(),
-    ));
+    actor_registry
+        .write()
+        .await
+        .spawn_task(
+            "lane-watcher",
+            LayerScope::Machine,
+            RepoManagerCapability::run_lane_watcher(daemon_cap.clone(), shutdown_token.clone()),
+        )
+        .map_err(anyhow::Error::msg)?;
 
     // LIVE SELECT → 通知ブリッジ（VP-21 Phase 4）
     // processes テーブルの変更を検知して DistributedNotification に変換
     // DB 切断でストリームが終了した場合は再接続ループで自律復帰する
     if let Some(db) = vpdb.clone() {
         let shutdown = shutdown_token.clone();
-        tokio::spawn(async move {
+        let task = async move {
             use futures::StreamExt;
             tracing::info!("LIVE SELECT processes ブリッジ起動");
             // 再接続ループ: ストリームが切断されたら 5秒待って再サブスクライブ
@@ -1250,7 +1295,12 @@ pub async fn run_daemon(port: u16) -> Result<()> {
                     }
                 }
             }
-        });
+        };
+        actor_registry
+            .write()
+            .await
+            .spawn_task("live-select-bridge", LayerScope::Machine, task)
+            .map_err(anyhow::Error::msg)?;
     }
 
     // シグナルハンドラ: Unix は SIGTERM、Windows は Ctrl-C を代替イベントに
@@ -1277,6 +1327,20 @@ pub async fn run_daemon(port: u16) -> Result<()> {
 
     // クリーンアップ
     daemon_handle.abort();
+
+    // 棚卸し 9-2 段階 3（PR-S3c）: 常駐 task の終了を確認する（token は serve が返った時点で
+    // cancel 済み）。repo を畳む前に待つのは、lane watcher が drain 中の repo に `lane_delete` を
+    // 撃たないため、そして autostart が起動途中の repo を `shutdown_all` の後に差し込まないため。
+    // 先に受付を閉じておくと、待っている間に autostart が新しい repo を起こさない。
+    // 予算は repo 側の 8 秒より短い 2 秒 — Unix の `vp daemon stop` は SIGTERM の 500ms 後に
+    // SIGKILL するので、ここで長く待つほど repo / db の後始末が kill 期限の外へ押し出される。
+    control_channels.close();
+    let daemon_tasks = crate::capability::actor_registry::stop_all_with(
+        &actor_registry,
+        std::time::Duration::from_secs(2),
+    )
+    .await;
+    tracing::info!("Daemon shutdown: 常駐 task {daemon_tasks} 本の終了を確認");
 
     // Shutdown capabilities
     tracing::info!("Shutting down Daemon...");

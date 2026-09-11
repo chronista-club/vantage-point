@@ -1428,7 +1428,10 @@ impl RepoManagerCapability {
     ///
     /// 二重起動は `RepoRuntimes` の map キー一意性が構造的に防ぐ。
     /// lock 規律: `start_process`（内部で sleep する）を呼ぶ前に read ガードを clone して解放する。
-    pub async fn autostart_enabled_repos(daemon: Arc<RwLock<Self>>) {
+    pub async fn autostart_enabled_repos(
+        daemon: Arc<RwLock<Self>>,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) {
         // doc 44 P1 (fold-in): 旧「registry 静穏待ち」(最大 60s) を撤去した。
         //
         // あの待ちの目的は「gentle daemon restart を生き延びた旧 SP の QUIC heal 再登録が
@@ -1468,7 +1471,15 @@ impl RepoManagerCapability {
         );
 
         // start_process は内部で sleep するため、read ガードを保持せず clone した cap で呼ぶ。
+        // 棚卸し 9-2 段階 3（PR-S3c）: 本 task は `ActorRegistry` に載り、daemon 停止末尾の
+        // `stop_all` が完了を待つ（見切りは abort）。abort は `start_repo` の途中で future を
+        // drop して spawn 済み task を孤児にするので（`RepoRuntimes.closing` の doc）、
+        // そうなる前に repo ごとの境目で cancel を見て自分から降りる。
         for name in &targets {
+            if shutdown.is_cancelled() {
+                tracing::info!("autostart: daemon 停止のため残りの起動を見送る");
+                return;
+            }
             let daemon_cap = {
                 let w = daemon.read().await;
                 w.clone()
@@ -1478,7 +1489,10 @@ impl RepoManagerCapability {
                 Err(e) => tracing::warn!("autostart: '{}' 起動失敗: {}", name, e),
             }
             // burst を避けて少しずらす。
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            tokio::select! {
+                _ = shutdown.cancelled() => return,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
+            }
         }
     }
 

@@ -1,8 +1,8 @@
 //! ActorRegistry — 常駐 task の台帳と停止責任
 //!
 //! repo（`start_repo`）/ daemon（`run_daemon`）が spawn する常駐 task を名前・scope・kind
-//! 付きで預かり、`JoinHandle` を保持する。repo 側は `shutdown_repo` が [`stop_all`] で
-//! 終了を確認する（棚卸し 9-2 段階 3 PR-S3b、doc 63 §8）。
+//! 付きで預かり、`JoinHandle` を保持する。repo 側は `shutdown_repo`（PR-S3b）、daemon 側は
+//! `run_daemon` の停止末尾（PR-S3c）が [`stop_all`] で終了を確認する（棚卸し 9-2 段階 3、doc 63 §8）。
 //!
 //! ## 経緯
 //!
@@ -56,19 +56,17 @@ pub enum ActorKind {
 
 /// registry に登録される actor の entry。
 ///
-/// PR-4a 段階では `task: None` (= metadata catalog only)、 PR-4b で各 actor の
-/// `spawn_loop()` 経路から `Some(JoinHandle<()>)` で populate される設計。
+/// `register_*` で登録した entry は `task: None`（metadata のみ）、`spawn_*` で登録した
+/// entry は `Some(JoinHandle)` を持ち、`stop_all` が取り出して待つ。
 pub struct ActorRegistryEntry {
     /// actor 名 (= mailbox address の actor 部分と一致、 例: `"notify"` / `"agent"`)
     pub name: String,
-    /// actor の lifecycle / address scope (= LSCM Daemon / Repo / Lane)
+    /// actor の lifecycle / address scope (= `LayerScope`: Machine / Repo / Lane)
     pub scope: LayerScope,
     /// actor の種類 (= Agent or Service)
     pub kind: ActorKind,
-    /// background task の JoinHandle。
-    ///
-    /// PR-4a: 常に `None` (= passive catalog、 spawn 統合は PR-4b)
-    /// PR-4b: `Some(JoinHandle<()>)` で各 Service の spawn_loop が attach される予定
+    /// background task の JoinHandle（`spawn_service` / `spawn_task` で attach、
+    /// `close_and_take_tasks` が取り出した後は `None`）。
     pub task: Option<JoinHandle<()>>,
 }
 
@@ -91,7 +89,7 @@ impl std::fmt::Debug for ActorRegistryEntry {
 ///
 /// ## scope と kind の 2 軸 filter
 ///
-/// scope (= Daemon / Repo / Lane) と kind (= Agent / Service / Task) の 2 軸で filter できる
+/// scope (= Machine / Repo / Lane) と kind (= Agent / Service / Task) の 2 軸で filter できる
 /// （`list_by_scope` / `list_by_kind`）。
 #[derive(Default)]
 pub struct ActorRegistry {
@@ -113,11 +111,10 @@ impl ActorRegistry {
         }
     }
 
-    /// `Service` を registry に register する (= metadata only、 PR-4a 段階では task=None)。
+    /// `Service` を registry に register する (= metadata only、 task=None)。
     ///
-    /// 引数は `&S` で borrow、 actor instance は caller が保持する。 PR-4b で
-    /// `register_service_with_task(&mut self, service: S, shutdown)` 等の owning method を
-    /// 追加して spawn 統合する想定。
+    /// 引数は `&S` で borrow、 actor instance は caller が保持する。 spawn まで registry に
+    /// 任せるなら `spawn_service`。
     ///
     /// 同 name の existing entry があれば上書き (= caller の責務で重複 register を回避)。
     pub fn register_service<S: Service>(&mut self, service: &S) {
