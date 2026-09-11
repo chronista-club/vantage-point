@@ -19,8 +19,8 @@
 //!
 //! thread/start|resume の response で得た thread id は `session_registry::set_conversation` に
 //! 書く（旧 `codex_session` store には**書かない** — 新 host は registry 直結の規約）。
-//! resume 空振り（thread 消失等の error response）は `thread/start` へ self-heal し、新 thread id
-//! が registry を上書きする（TurnHost の「記録破棄 → fresh」と同じ流儀の常駐版）。
+//! resume の error response は元 ID を保持して利用者へ通知する。次の送信で host を
+//! 作り直し、同じ ID に再試行する。新規会話への自動 fallback は行わない（doc 41 §2-5）。
 //!
 //! ## 途絶検知（常駐の規律）
 //!
@@ -93,7 +93,7 @@ struct RpcState {
     pending: HashMap<i64, ReqKind>,
     /// 明示 stop 中か（reader loop 終端の途絶 Error を抑止）。
     stopping: bool,
-    /// app-server 途絶（stdout close / stdin 書込失敗）を観測したか。true の submit は
+    /// app-server 途絶（stdout close / stdin 書込失敗）または起動 error を観測したか。true の submit は
     /// **Err を返す** — `ensure_and_submit_chat` の自己修復（engine drop → 再 ensure →
     /// 同一 message retry）に修復を委ねる（moody 指摘 #1: 常駐化で新たに背負った
     /// プロセス死亡時の責務。旧 TurnHost は turn ごと spawn なのでこの問題自体が無かった）。
@@ -125,6 +125,21 @@ struct RpcInner {
 }
 
 impl RpcInner {
+    /// 起動を待つ prompt を失敗として畳み、次の submit を host 再生成へ繋ぐ。
+    /// registry は触らず、再生成時も元の新規 / 再開の選択を保つ。
+    fn fail_startup(&self, message: String) {
+        {
+            let mut st = self.state.lock().expect("rpc state lock");
+            st.dead = true;
+            st.turn_active = false;
+            st.turn_id = None;
+            st.queue.clear();
+        }
+        self.emit(ConversationEvent::Error {
+            message: format!("{message}\n送信内容は実行されていません。再送すると再試行します。"),
+        });
+    }
+
     /// JSONL 1 行を書く。失敗 = 途絶（Err を返す — submit 経路は自己修復に繋ぐため
     /// 握り潰さない。reader task 内の呼び出しは log のみで握る = stdout close 検知に収束）。
     async fn write_line(&self, line: &str) -> std::io::Result<()> {
@@ -344,7 +359,7 @@ impl CodexAgentHost {
 
     /// ユーザープロンプトを投入する（idle なら即 turn/start、それ以外は queue）。
     ///
-    /// **途絶時は Err を返す**（moody 指摘 #1）: `ensure_and_submit_chat` の自己修復
+    /// **途絶・起動失敗時は Err を返す**: `ensure_and_submit_chat` の自己修復
     /// （engine drop → 再 ensure → 同一 message retry）は submit の Err を条件に発火する。
     /// 新 host は registry の conversation から `thread/resume` するため、復旧後も会話文脈は
     /// 継がれる（= 途絶 Error の「次の送信で自動復旧」を実現する配線。旧 TurnHost は
@@ -353,7 +368,9 @@ impl CodexAgentHost {
         let line = {
             let mut st = self.inner.state.lock().expect("rpc state lock");
             if st.dead {
-                anyhow::bail!("codex app-server が終了しています（engine 再起動で復旧）");
+                anyhow::bail!(
+                    "codex app-server が利用できません（途絶・起動失敗。再起動で再試行）"
+                );
             }
             if st.turn_active || st.thread_id.is_none() {
                 st.queue.push_back(prompt.to_string());
@@ -647,9 +664,10 @@ async fn handle_response(
     match kind {
         ReqKind::Initialize => {
             if let Some(err) = error {
-                inner.emit(ConversationEvent::Error {
-                    message: format!("codex app-server initialize 失敗: {}", error_message(err)),
-                });
+                inner.fail_startup(format!(
+                    "codex app-server initialize 失敗: {}",
+                    error_message(err)
+                ));
                 return;
             }
             inner.write_line_logged(&build_initialized()).await;
@@ -670,20 +688,10 @@ async fn handle_response(
         }
         ReqKind::ThreadResume => {
             if let Some(err) = error {
-                // resume 空振り → fresh へ self-heal（doc 41 §2-2。新 thread id が registry を
-                // 上書きするので記録破棄の別手順は不要）。
-                tracing::warn!(
-                    "codex thread/resume 失敗 → thread/start へ self-heal（repo={}, lane={}）: {}",
-                    inner.repo,
-                    inner.lane,
+                inner.fail_startup(format!(
+                    "Codex の会話を再開できませんでした。元の会話 ID は保持しています: {}",
                     error_message(err)
-                );
-                let line = {
-                    let mut st = inner.state.lock().expect("rpc state lock");
-                    let id = st.alloc(ReqKind::ThreadStart);
-                    build_thread_start(id, &inner.cwd)
-                };
-                inner.write_line_logged(&line).await;
+                ));
                 return;
             }
             if let Some(tid) = msg.pointer("/result/thread/id").and_then(|v| v.as_str()) {
@@ -692,9 +700,7 @@ async fn handle_response(
         }
         ReqKind::ThreadStart => {
             if let Some(err) = error {
-                inner.emit(ConversationEvent::Error {
-                    message: format!("codex thread/start 失敗: {}", error_message(err)),
-                });
+                inner.fail_startup(format!("codex thread/start 失敗: {}", error_message(err)));
                 return;
             }
             if let Some(tid) = msg.pointer("/result/thread/id").and_then(|v| v.as_str()) {
@@ -731,6 +737,152 @@ async fn handle_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Task: mem_1Cex2VPFy3gQnXtpYqF1in
+    fn response_test_host() -> CodexAgentHost {
+        let (event_tx, _) = broadcast::channel(32);
+        CodexAgentHost {
+            inner: Arc::new(RpcInner {
+                event_tx,
+                repo: "codex-resume-test".into(),
+                lane: "main".into(),
+                cwd: "/workspace".into(),
+                stdin: tokio::sync::Mutex::new(None),
+                state: Mutex::new(RpcState {
+                    thread_id: None,
+                    turn_id: None,
+                    turn_active: false,
+                    queue: VecDeque::new(),
+                    in_flight: InFlight::default(),
+                    child_pid: None,
+                    next_id: 0,
+                    pending: HashMap::new(),
+                    stopping: false,
+                    dead: false,
+                    stderr_tail: VecDeque::new(),
+                }),
+                child: Mutex::new(None),
+            }),
+            reader: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_error_keeps_conversation_and_rejects_further_submits() {
+        let _state = crate::test_env::state_dir_async().await;
+        let original = "01a08fa2-a700-7f73-9889-bb52a4258923";
+        crate::lane::session_registry::set_conversation(
+            "codex-resume-test",
+            "main",
+            "codex",
+            1,
+            Some(original),
+        )
+        .unwrap();
+        for reason in [
+            "no rollout found",
+            "required MCP server failed to initialize",
+        ] {
+            let host = response_test_host();
+            let mut rx = host.subscribe();
+            host.submit("queued before resume response").await.unwrap();
+            let id = host
+                .inner
+                .state
+                .lock()
+                .unwrap()
+                .alloc(ReqKind::ThreadResume);
+            handle_response(
+                &host.inner,
+                id,
+                &serde_json::json!({
+                    "id": id, "error": {"code": -32603, "message": reason}
+                }),
+                &Some(original.into()),
+            )
+            .await;
+
+            {
+                let state = host.inner.state.lock().unwrap();
+                assert!(
+                    state.pending.is_empty(),
+                    "resume error must not request a new thread"
+                );
+                assert!(
+                    state.queue.is_empty(),
+                    "failed prompts must not leak into a later turn"
+                );
+                assert!(!state.turn_active);
+            }
+            assert!(
+                matches!(rx.try_recv().unwrap(), ConversationEvent::Error { message } if message.contains(reason))
+            );
+            assert!(
+                host.submit("retry by rebuilding the host").await.is_err(),
+                "the existing Chat retry path needs Err, not an indefinitely queued prompt"
+            );
+            let registry =
+                crate::lane::session_registry::load("codex-resume-test", "main", "codex");
+            assert_eq!(registry.sessions[0].conversation.as_deref(), Some(original));
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_errors_allow_host_retry_instead_of_queueing_forever() {
+        for kind in [ReqKind::Initialize, ReqKind::ThreadStart] {
+            let host = response_test_host();
+            let mut rx = host.subscribe();
+            host.submit("waiting for startup").await.unwrap();
+            let id = host.inner.state.lock().unwrap().alloc(kind);
+            handle_response(
+                &host.inner,
+                id,
+                &serde_json::json!({
+                    "id": id, "error": {"code": -32603, "message": "startup unavailable"}
+                }),
+                &None,
+            )
+            .await;
+            assert!(
+                matches!(rx.try_recv().unwrap(), ConversationEvent::Error { message } if message.contains("startup unavailable"))
+            );
+            assert!(host.submit("retry").await.is_err());
+            assert!(host.inner.state.lock().unwrap().queue.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_resume_and_explicit_start_adopt_the_returned_thread() {
+        let _state = crate::test_env::state_dir_async().await;
+        for (kind, target) in [
+            (
+                ReqKind::ThreadResume,
+                Some("01a08fa2-a700-7f73-9889-bb52a4258923"),
+            ),
+            (ReqKind::ThreadStart, None),
+        ] {
+            let host = response_test_host();
+            let mut rx = host.subscribe();
+            let thread = target.unwrap_or("01a09005-f22f-7dd3-9e7b-0ad53926478b");
+            let id = host.inner.state.lock().unwrap().alloc(kind);
+            handle_response(
+                &host.inner,
+                id,
+                &serde_json::json!({
+                    "id": id, "result": {"thread": {"id": thread}}
+                }),
+                &target.map(str::to_owned),
+            )
+            .await;
+            assert!(
+                matches!(rx.try_recv().unwrap(), ConversationEvent::SessionInit { session_id, .. } if session_id == thread)
+            );
+            let registry =
+                crate::lane::session_registry::load("codex-resume-test", "main", "codex");
+            assert_eq!(registry.sessions[0].conversation.as_deref(), Some(thread));
+            assert!(!host.inner.state.lock().unwrap().dead);
+        }
+    }
 
     /// request line の形を doc 41 §1 の実測 wire に固定する（protocol drift 検知）。
     #[test]
