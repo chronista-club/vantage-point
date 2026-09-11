@@ -169,8 +169,9 @@ pub(crate) struct RepoState {
     /// doc 48 Phase 2: editor bridge の pending 応答 map (request_id → oneshot)。
     ///
     /// `handle_editor_command` が登録して `EditorCommand` を broadcast、GUI からの
-    /// `editor_result` (`handle_editor_result`) が解決する。timeout 時は登録側が
-    /// remove するので、遅延到着した stale 応答は不在 key として無視される (idempotent)。
+    /// `editor_result` (`handle_editor_result`) が解決する。登録側の `PendingGuard` が drop
+    /// （応答 / timeout / future の途中 drop のいずれでも）で remove するので、遅延到着した
+    /// stale 応答は不在 key として無視される (idempotent)。
     pub editor_pending: Arc<super::editor_bridge::EditorPending>,
 }
 
