@@ -41,8 +41,8 @@ jobs:
       # VP-180 (2026-05-15) で導入: club-unison v0.7.0+ の build script が protoc を要求
       # (= buffa::Message / ProtoCodec を生成するため、 v0.9 の wire format pivot 以降は
       # buffa-build が主役)。 macOS GHA runner には未インストールのため brew で入れる必要。
-      - name: Install protoc (for club-unison build script)
-        run: brew install protobuf
+      - name: Install protoc and fish (build and Console regression tests)
+        run: brew install protobuf fish
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.96 # = .mise.toml [tools].rust (基本 stable 追随、 minor pin・patch float)
@@ -80,6 +80,9 @@ jobs:
         # (= install_test_jwks は production binary に含めない security 要件)。
         # 他 crate に test-utils feature がなくても無視されるので workspace 全体で OK。
         run: cargo test --workspace --features vp-nexus/test-utils
+
+      - name: Test Codex Console with fish
+        run: SHELL=fish cargo test -p vantage-point --lib codex_console_fish_launch -- --ignored
 
       # Tests regenerate KDL and ts-rs bindings. Any drift invalidates the bundle
       # built above; fail instead of accepting a build made from stale contracts.

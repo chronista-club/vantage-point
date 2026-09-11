@@ -225,3 +225,7 @@ repo 全体では VP_* が 31 種。残りは各 component の config knob / dev
 - **doc 39 との整合**: §3-4 の「root 切替後の発話は新 root の store に記録される」は
   本 doc §1-1 のとおり現実装で不成立 → PR-1 が実装で成立させる（doc 39 側に注記済み）。
   doc 39 §4-1（発行時点表示の不変条件）の実現機構も本 doc に一本化
+
+## Status log
+
+- 2026-09-11: [design 64](64-codex-console-resume.md) で Codex TUI の報告入口を追加。session registry を保存先として共有し、Claude の F1/F2 policy と Codex の記録 policy は分離する。報告に engine を付け、Codex は明示 session と engine 一致を必須とする。

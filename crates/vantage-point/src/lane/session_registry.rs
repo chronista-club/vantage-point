@@ -580,6 +580,53 @@ pub fn record_conversation_in(
     }
 }
 
+/// Codex TUI の thread 報告を、名乗った Console に記録する。
+/// Claude の transcript/F1/F2 policy とは別の入口。宛先省略や別 engine への保存は認めない。
+pub fn record_codex_conversation_in(
+    base: &Path,
+    repo: &str,
+    lane: &str,
+    default_agent: &str,
+    session: SessionKey,
+    thread_id: &str,
+) -> std::io::Result<bool> {
+    let _guard = mutation_guard();
+    let mut reg = load_in(base, repo, lane, default_agent);
+    let entry = reg
+        .sessions
+        .iter_mut()
+        .find(|s| s.key == session)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "unknown Codex Console session",
+            )
+        })?;
+    if !matches!(
+        crate::conversation::EngineKind::from_agent(&entry.agent),
+        Some(crate::conversation::EngineKind::Codex)
+    ) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Codex report targets a different engine",
+        ));
+    }
+    if !super::codex_session::is_valid_thread_id(thread_id)
+        || uuid::Uuid::parse_str(thread_id).is_err()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid Codex thread ID",
+        ));
+    }
+    if entry.conversation.as_deref() == Some(thread_id) {
+        return Ok(false);
+    }
+    entry.conversation = Some(thread_id.to_owned());
+    save_in(base, repo, lane, &reg)?;
+    Ok(true)
+}
+
 /// session の会話 id を書く（doc 40 §4 — gui host の record-from-init / cursor create-chat
 /// 採番の書き込み口。repo プロセス内から呼ぶ）。
 ///
@@ -1021,6 +1068,45 @@ pub fn record_conversation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_console_rejects_wrong_session_engine_and_id_without_changing_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = create_in(
+            dir.path(),
+            "vp",
+            "main",
+            "claude",
+            "codex",
+            SessionMode::Tui,
+            false,
+        )
+        .unwrap();
+        let thread = "01a09005-f22f-7dd3-9e7b-0ad53926478b";
+        assert!(
+            record_codex_conversation_in(dir.path(), "vp", "main", "claude", key, thread).unwrap()
+        );
+        assert!(
+            !record_codex_conversation_in(dir.path(), "vp", "main", "claude", key, thread).unwrap()
+        );
+        let original = load_in(dir.path(), "vp", "main", "claude");
+        for (target, id) in [
+            (0, thread),
+            (99, thread),
+            (1, thread),
+            (key, ""),
+            (key, "not-a-uuid"),
+            (key, "a'; echo unsafe"),
+            (key, "{01a09005-f22f-7dd3-9e7b-0ad53926478b}"),
+        ] {
+            assert!(
+                record_codex_conversation_in(dir.path(), "vp", "main", "claude", target, id)
+                    .is_err(),
+                "must reject {target}: {id}"
+            );
+            assert_eq!(load_in(dir.path(), "vp", "main", "claude"), original);
+        }
+    }
 
     /// file 不在 = N=1 の特殊ケース（lane の agent で session #1・focused=1・root=1）。
     /// 既存 install が registry file 無しで従来どおり動くことの根拠。

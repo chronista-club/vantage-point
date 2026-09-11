@@ -612,8 +612,7 @@ async fn hook_check() -> Result<()> {
     use std::io::IsTerminal;
     if std::io::stdin().is_terminal() {
         eprintln!(
-            "[vp wire hook-check] CC hook 専用コマンドです (stdin に hook JSON を pipe して使う)。\
-             conversation spawn が --settings で自動注入します。"
+            "[vp wire hook-check] hook 専用コマンドです (stdin に hook JSON を pipe して使う)。"
         );
         return Ok(());
     }
@@ -631,16 +630,16 @@ async fn hook_check() -> Result<()> {
 
     let repo = std::env::var("VP_REPO").ok();
     let lane = std::env::var("VP_LANE").ok();
-    // doc 40 §4 / doc 46 P5: 自分がどの session の claude かを名乗る（None = 不明。root では
+    // doc 40 §4 / doc 46 P5: 自分がどの session の agent かを名乗る（None = 不明。root では
     // ないので、ここで root に丸めない — 判断は repo 側 policy に 1 本化する）。
     let session_key = session_key_from_env(std::env::var("VP_SESSION_KEY").ok().as_deref());
 
     // doc 40 §4: hook は会話 id の**報告者** — (repo, lane, session, session_id, 契機) を
-    // daemon 経由で repo へ送るだけ。宛先 session の解決と記録判断（F1/F2 guard 込みの policy）は
-    // repo 側 `session_registry::record_conversation` の 1 箇所が持つ。旧実装の
+    // daemon 経由で repo へ送るだけ。記録判断は repo 側の engine 別入口が持つ
+    // （Claude = record_conversation、Codex = record_codex_conversation_in、doc 64）。旧実装の
     // `cc_session::record(VP_LANE)` 直書きは root の session label に追従せず、root≥2 で
     // 書き手/読み手のラベル乖離バグを起こした（doc 40 §1-1 の根治でここから file 書きを撤去）。
-    // 失敗は無視（fail-open — 毎 turn 再報告されるので次の発話で self-heal する、doc 40 §9）。
+    // 失敗は無視（fail-open）。再報告の頻度は engine/plugin の hook 定義に従う。
     if let Some(report) = conversation_report_kind(&event_name)
         && let Some(sid) = parsed
             .as_ref()
@@ -660,16 +659,16 @@ async fn hook_check() -> Result<()> {
             .find(|s| s.key == target_key)
             .and_then(|s| s.conversation.as_deref());
         if target_conv != Some(sid) {
-            let mut payload = serde_json::json!({
-                "repo": p,
-                "lane": l,
-                "session_id": sid,
-                "event": report,
-            });
-            // 名乗れる時だけ載せる（field 不在 = 不明 = repo 側で root 宛の後方互換扱い）。
-            if let Some(key) = session_key {
-                payload["session"] = key.into();
-            }
+            let Some(payload) = hook_conversation_payload(
+                p,
+                l,
+                sid,
+                report,
+                session_key,
+                std::env::var("VP_HOOK_ENGINE").ok().as_deref(),
+            ) else {
+                return Ok(());
+            };
             let _ = tokio::time::timeout(
                 Duration::from_secs(2),
                 crate::repo::daemon_wire::call("/api/lane/session-changed", payload),
@@ -718,6 +717,34 @@ async fn hook_check() -> Result<()> {
         println!("{out}");
     }
     Ok(())
+}
+
+/// 報告元は起動コマンドの marker で指定する。宛先 session の agent から推測しない。
+fn hook_conversation_payload(
+    repo: &str,
+    lane: &str,
+    thread_id: &str,
+    event: &str,
+    session: Option<crate::lane::session_registry::SessionKey>,
+    engine: Option<&str>,
+) -> Option<serde_json::Value> {
+    match engine {
+        Some("codex") => {
+            session.filter(|key| *key > 0)?;
+        }
+        Some("claude") | None => {}
+        Some(_) => return None,
+    }
+    let mut payload = serde_json::json!({
+        "repo": repo, "lane": lane, "session_id": thread_id, "event": event,
+    });
+    if let Some(key) = session {
+        payload["session"] = key.into();
+    }
+    if let Some(engine) = engine {
+        payload["engine"] = engine.into();
+    }
+    Some(payload)
 }
 
 /// 観測（Canvas Pane 可視化、doc 28 §7/§2）: daemon 中央 store の全委譲を取得し、
@@ -801,6 +828,48 @@ async fn discover_lanes(node: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // mem_1CewV2A7phkmfC4rgi1NxC: native SessionStart ID + scoped engine marker.
+    #[test]
+    fn codex_console_hook_report_preserves_engine_and_session() {
+        let payload = hook_conversation_payload(
+            "vp",
+            "main",
+            "01a09005-f22f-7dd3-9e7b-0ad53926478b",
+            "issued",
+            Some(2),
+            Some("codex"),
+        )
+        .unwrap();
+        assert_eq!(payload["engine"], "codex");
+        assert_eq!(payload["session"], 2);
+        assert_eq!(
+            payload["session_id"],
+            "01a09005-f22f-7dd3-9e7b-0ad53926478b"
+        );
+    }
+
+    #[test]
+    fn codex_console_hook_requires_explicit_target_and_known_engine() {
+        for session in [None, Some(0)] {
+            assert!(
+                hook_conversation_payload("vp", "main", "thread", "issued", session, Some("codex"))
+                    .is_none()
+            );
+        }
+        assert!(
+            hook_conversation_payload("vp", "main", "thread", "issued", Some(2), Some("other"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn legacy_claude_hook_keeps_its_unspecified_target() {
+        let payload =
+            hook_conversation_payload("vp", "main", "claude-id", "spoken", None, None).unwrap();
+        assert!(payload.get("engine").is_none());
+        assert!(payload.get("session").is_none());
+    }
     use clap::Parser;
 
     /// 試験用 wrapper: WireCommands を root subcommand として parse する小さい CLI。
