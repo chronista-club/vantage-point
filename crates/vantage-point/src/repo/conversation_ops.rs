@@ -720,6 +720,143 @@ pub(crate) async fn handle_conversation_set_model(
 mod tests {
     use crate::repo::state::insert_test_lane;
 
+    /// Task mem_1Cex2VPFy3gQnXtpYqF1in: tests/fixtures/codex-chat-retry を PATH の
+    /// 先頭に置き、単独実行する。テスト用 peer は Codex の外部 JSONL 境界だけを置き換える。
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "requires the codex-chat-retry fixture on PATH and Python 3"]
+    async fn codex_chat_resume_retry_roundtrip() {
+        use crate::conversation::ConversationEvent;
+        use crate::lane::session_registry::{self, SessionMode};
+        use crate::protocol::RepoMessage;
+        use crate::repo::state::build_test_app_state;
+        use crate::repo::unison_server::dispatch_repo_method;
+
+        let expected_cli = dunce::canonicalize(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/codex-chat-retry/codex"),
+        )
+        .unwrap();
+        assert_eq!(
+            dunce::canonicalize(crate::lane::codex_session::codex_cli_path()).unwrap(),
+            expected_cli,
+            "refuse to start the real Codex CLI"
+        );
+        let isolated = crate::test_env::state_dir_async().await;
+        std::fs::write(isolated.path().join("codex-retry-fixture"), "").unwrap();
+        let state = build_test_app_state().await;
+        let addr = insert_test_lane(&state, "codex-retry-test", SessionMode::Tui).await;
+        {
+            let mut pool = state.lane_pool.write().await;
+            let mut lane = pool.get(&addr).unwrap().clone();
+            lane.cwd = isolated.path().to_string_lossy().into_owned();
+            pool.insert(lane);
+        }
+        let session = session_registry::create(
+            &addr.repo,
+            "main",
+            "claude",
+            "codex",
+            SessionMode::Gui,
+            false,
+        )
+        .unwrap();
+        let thread = "01a09005-f22f-7dd3-9e7b-0ad53926478b";
+        session_registry::set_conversation(&addr.repo, "main", "claude", session, Some(thread))
+            .unwrap();
+        let topic = "repo/conversation/data/codex-retry-test~lane~main/event";
+        let (_id, mut events) = state.topic_router.subscribe(topic).await;
+        let run = async {
+            for (attempt, prompt) in [(1, "first unsent prompt"), (2, "explicit retry prompt")] {
+                dispatch_repo_method(
+                    &state,
+                    "conversation_submit",
+                    serde_json::json!({
+                        "lane": "codex-retry-test/main", "session": session, "prompt": prompt
+                    }),
+                )
+                .await
+                .unwrap();
+                loop {
+                    let (_, event) =
+                        tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                            .await
+                            .expect("Chat event within deadline")
+                            .expect("topic open");
+                    if let RepoMessage::ConversationEvent { event, .. } = event {
+                        match event {
+                            ConversationEvent::Error { message } => {
+                                assert_eq!(attempt, 1, "retry must succeed: {message}");
+                                assert!(
+                                    message.contains("fixture resume unavailable"),
+                                    "{message}"
+                                );
+                                break;
+                            }
+                            ConversationEvent::TurnCompleted { session_id, .. } => {
+                                assert_eq!(attempt, 2);
+                                assert_eq!(session_id, thread);
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                let reg = session_registry::load(&addr.repo, "main", "claude");
+                assert_eq!(
+                    reg.sessions
+                        .iter()
+                        .find(|s| s.key == session)
+                        .unwrap()
+                        .conversation
+                        .as_deref(),
+                    Some(thread)
+                );
+            }
+            let requests: Vec<serde_json::Value> =
+                std::fs::read_to_string(isolated.path().join("requests.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .map(|s| serde_json::from_str(s).unwrap())
+                    .collect();
+            assert_eq!(
+                std::fs::read_to_string(isolated.path().join("spawn-count")).unwrap(),
+                "2"
+            );
+            assert!(
+                !requests
+                    .iter()
+                    .any(|r| r["request"]["method"] == "thread/start")
+            );
+            let resumes: Vec<_> = requests
+                .iter()
+                .filter(|r| r["request"]["method"] == "thread/resume")
+                .collect();
+            assert_eq!(resumes.len(), 2);
+            assert!(
+                resumes
+                    .iter()
+                    .all(|r| r["request"]["params"]["threadId"] == thread)
+            );
+            let turns: Vec<_> = requests
+                .iter()
+                .filter(|r| r["request"]["method"] == "turn/start")
+                .collect();
+            assert_eq!(turns.len(), 1);
+            assert_eq!(turns[0]["attempt"], 2);
+            assert_eq!(
+                turns[0]["request"]["params"]["input"][0]["text"],
+                "explicit retry prompt"
+            );
+        };
+        run.await;
+        state
+            .lane_pool
+            .write()
+            .await
+            .drop_chat_engine(&addr, Some(session));
+    }
+
     /// channel E (doc 34): conversation_nudge dispatch の error 経路 4 種
     /// (lane 未指定 / text 未指定 / parse 失敗 / lane 不在)。happy path は実 engine 要のため
     /// conversation_host_roundtrip (ignored) と実機 dogfood で検証。

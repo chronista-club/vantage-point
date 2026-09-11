@@ -84,6 +84,9 @@ jobs:
       - name: Test Codex Console with fish
         run: SHELL=fish cargo test -p vantage-point --lib codex_console_fish_launch -- --ignored
 
+      - name: Test Codex Chat resume retry
+        run: PATH="$PWD/crates/vantage-point/tests/fixtures/codex-chat-retry:$PATH" cargo test -p vantage-point --lib codex_chat_resume_retry_roundtrip -- --ignored
+
       # Tests regenerate KDL and ts-rs bindings. Any drift invalidates the bundle
       # built above; fail instead of accepting a build made from stale contracts.
       - name: Check generated files are committed
