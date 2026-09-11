@@ -351,32 +351,29 @@ fn wake_for(d: &Delegation) -> (String, String) {
     }
 }
 
-/// reconcile loop を spawn（run_daemon で呼ぶ）。shutdown でループ終了。
-pub(crate) fn spawn_reconcile_loop(
+/// reconcile loop（run_daemon が `ActorRegistry::spawn_task` に渡す）。shutdown でループ終了。
+pub(crate) async fn reconcile_loop(
     store: crate::capability::DelegationStore,
     lane_registry: Arc<RwLock<HashMap<String, Vec<LaneInfo>>>>,
     control_channels: crate::daemon::server::ControlChannels,
     shutdown: CancellationToken,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        tracing::info!(
-            "delegation reconcile loop 起動 (tick={:?}, timeout={}ms)",
-            RECONCILE_TICK,
-            TIMEOUT_MS
-        );
-        loop {
-            tokio::select! {
-                _ = shutdown.cancelled() => break,
-                _ = tokio::time::sleep(RECONCILE_TICK) => {}
-            }
-            if let Err(e) =
-                reconcile_pulse(&store, &lane_registry, &control_channels, TIMEOUT_MS).await
-            {
-                tracing::warn!("delegation reconcile pulse 失敗 (次 tick で再試行): {e}");
-            }
+) {
+    tracing::info!(
+        "delegation reconcile loop 起動 (tick={:?}, timeout={}ms)",
+        RECONCILE_TICK,
+        TIMEOUT_MS
+    );
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = tokio::time::sleep(RECONCILE_TICK) => {}
         }
-        tracing::info!("delegation reconcile loop: shutdown");
-    })
+        if let Err(e) = reconcile_pulse(&store, &lane_registry, &control_channels, TIMEOUT_MS).await
+        {
+            tracing::warn!("delegation reconcile pulse 失敗 (次 tick で再試行): {e}");
+        }
+    }
+    tracing::info!("delegation reconcile loop: shutdown");
 }
 
 /// 1 回の reconcile pulse: timeout 化 → undelivered を Daemon-side で再 wake。
@@ -449,6 +446,29 @@ async fn reconcile_pulse(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 棚卸し 9-2 段階 3（PR-S3c）: `reconcile_loop` は `ActorRegistry::spawn_task` に渡す future
+    /// なので、cancel で自ら終わることが `stop_all` の前提（終わらなければ 8 秒待って abort）。
+    #[tokio::test]
+    async fn reconcile_loop_exits_on_cancel() {
+        let db = crate::db::VpDb::connect_mem().await.unwrap();
+        db.define_schema().await.unwrap();
+        let store = crate::capability::DelegationStore::new(Arc::new(db.inner().clone()));
+        let lane_registry = Arc::new(RwLock::new(HashMap::new()));
+        let control_channels = Arc::new(crate::repo::repo_registry::RepoRuntimes::new());
+        let shutdown = CancellationToken::new();
+        let handle = tokio::spawn(reconcile_loop(
+            store,
+            lane_registry,
+            control_channels,
+            shutdown.clone(),
+        ));
+        shutdown.cancel();
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("cancel で 1 秒以内に終わる")
+            .expect("panic せず終わる");
+    }
 
     #[test]
     fn lane_query_wire_main_to_lane() {
