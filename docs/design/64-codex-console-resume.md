@@ -12,7 +12,7 @@ VP Chat の履歴復元、GUI host の resume fallback、model/effort、subagent
 
 ## 記録と再開
 
-1. `codex_command` は subshell 内の Codex コマンドのみに `VP_HOOK_ENGINE=codex` を渡す。Console の親 shell には export しない。ユーザーが `codex` を shell 関数にしていても marker を親へ残さない。
+1. `codex_command` は選択済みの login shell に合わせ、Codex コマンドのみに `VP_HOOK_ENGINE=codex` を渡す。fish 3.1+ では command 単位の variable override、それ以外の POSIX 系 shell では subshell を使う。Console の親 shell には export せず、ユーザーの `codex` 関数・alias を利用する。
 2. 有効・信頼済みの VP plugin の `SessionStart` が `vp wire hook-check` を呼ぶ。
 3. hook は native JSON の `session_id` と、VP の `repo / lane / session key`、報告元 `engine` を daemon に報告する。
 4. daemon は lane label を address に変換し、報告フィールドを欠落・補完させず repo へ中継する。
@@ -27,7 +27,7 @@ Codex の報告に Claude transcript の有無を適用しない。report は en
 ## 失敗と既存会話の復旧
 
 resume の非ゼロ終了を `|| codex` で新規作成へ変換しない。Codex のエラーを Console に残し、元 ID を保って shell に戻る。
-復旧時はその Console 内で次を実行する。環境変数は、手動で選んだ会話も VP に記録するための起動指定。
+復旧時はその Console 内で次を実行する。環境変数は、手動で選んだ会話も VP に記録するための起動指定。以下は sh / bash / zsh の場合。
 
 ```sh
 # 既に VP が記録し損ねた会話を、Codex 自身の一覧から選ぶ
@@ -38,6 +38,8 @@ resume の非ゼロ終了を `|| codex` で新規作成へ変換しない。Code
 ```
 
 `--last` や rollout の更新時刻で他の会話を自動選択しない。新規に進む操作は `(VP_HOOK_ENGINE=codex codex)`。
+fish 3.1+ では外側の括弧を付けず、`VP_HOOK_ENGINE=codex codex resume`、`VP_HOOK_ENGINE=codex codex resume '<thread-id>'`、`VP_HOOK_ENGINE=codex codex` を使う。fish の variable override は関数・alias の解決と親環境を保つ（[公式仕様](https://fishshell.com/docs/current/language.html#overriding-variables-for-a-single-command)）。
+
 VP session 自体の削除（名札の ×）は registry entry を削除する操作であり、TUI の終了や VP の再起動とは区別する。
 
 ## Codex 0.154.0 での実測と前提
@@ -48,6 +50,7 @@ VP session 自体の削除（名札の ×）は registry entry を削除する�
 - この検証の hook 環境には `CODEX_THREAD_ID` がなかった。これを ID の供給源にしない。
 - hook の実行前に終了した未発話の TUI は、VP がまだ ID を持たないことがある。hook 信頼は Codex 側の `/hooks` でユーザーが管理する。VP は自動承認・trust bypass を行わない。
 - fork / subagent と通常の Console 再開を同一視しない。今回の実測は通常の TUI 会話を対象とする。
+- fish 4.9.3 からも実 Codex TUI を指名 resume し、履歴・前の返答・正常終了を確認した。native SessionStart の環境に `VP_HOOK_ENGINE=codex` と `VP_SESSION_KEY=2` が届いた。VP 呼び出し先は引き続き検証用スタブで、実 daemon と更新アプリの往復検収は別途必要。
 
 公式仕様: [Hooks](https://learn.chatgpt.com/docs/hooks)、[App Server](https://learn.chatgpt.com/docs/app-server)。
 
@@ -67,6 +70,7 @@ VP session 自体の削除（名札の ×）は registry entry を削除する�
 - resume 失敗時に元 ID を上書きする。
 - `hooks/list` の enabled/trusted を hook 発火・配送成功の証拠とする。
 - marker を単なる `VAR=value function` で限定したつもりになる（POSIX shell の関数では親へ残り得る）。
+- fish に POSIX subshell の `(command)` を注入する（fish では command substitution になり、起動できない）。
 - rollout JSONL の本文を読み解いて ID を発見する。
 
 ## Status log
