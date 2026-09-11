@@ -133,9 +133,10 @@ pub(crate) struct RepoState {
     pub repo_name: String,
     /// VP-159 PR-4b: Agent / Service actor の supervisor 受け皿。
     ///
-    /// notify / lane-spawn を `spawn_service` 経由で起動・register、 JoinHandle を保持
-    /// （daemon 側の registry は `DaemonState.actor_registry`、9-2 PR-3 で分離）。
-    /// PR-5 supervisor 統一で JoinHandle 経由の abort / await を activate する foundation。
+    /// repo が spawn する常駐 task の台帳（lane-spawn actor + TopicRouter bridge / lanes publish /
+    /// lifecycle monitor / idle sweep）。 `shutdown_repo` が `actor_registry::stop_all` で
+    /// 終了を待つ（棚卸し 9-2 段階 3 PR-S3b）。 daemon 側の registry は `DaemonState.actor_registry`
+    /// （9-2 PR-3 で分離）。
     pub actor_registry: Arc<RwLock<ActorRegistry>>,
     /// ファイル監視マネージャー
     pub file_watchers: Arc<tokio::sync::Mutex<FileWatcherManager>>,
