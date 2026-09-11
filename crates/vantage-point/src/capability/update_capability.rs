@@ -179,6 +179,44 @@ pub struct UpdateCapability {
 }
 
 impl UpdateCapability {
+    /// test 用の `UpdateCapability`。**外部プロセスも network も触らない。**
+    ///
+    /// [`Self::new`] は `get_github_token()` 経由で **`gh auth token` を blocking な
+    /// subprocess として実行する**（`GITHUB_TOKEN` 未設定時）。`#[tokio::test]` の中で
+    /// これを踏むと、test の速度と結果が「その機械に `gh` が入っているか」に依存する。
+    /// health の characterization（棚卸し 9-2 PR-0.5）が触るのは cache
+    /// （[`Self::cached_update_status`] と [`Self::seed_cached_release_for_test`]）だけで、
+    /// **token を要る経路（[`Self::check_update`]）は通らない**。
+    #[cfg(test)]
+    pub(crate) fn new_for_test() -> Self {
+        Self {
+            state: CapabilityState::Uninitialized,
+            client: reqwest::Client::builder().build().unwrap_or_default(),
+            cached_release: None,
+            last_check: None,
+            github_token: None,
+        }
+    }
+
+    /// test 用に「取得済みの release」を差す（network を経ずに cache だけ温める）。
+    ///
+    /// `cached_release` は private field で、Rust の privacy は **module 単位**なので
+    /// 同 module の test からは直接代入できるが、外（`repo/http/health.rs` 等）からは
+    /// 届かない。`/api/health` の `update_available` / `latest_version` が
+    /// **渡した実体から来ているか**を確かめるにはこの口が要る（doc 63 §6「共有実体」）。
+    #[cfg(test)]
+    pub(crate) fn seed_cached_release_for_test(&mut self, version: &str) {
+        self.cached_release = Some(ReleaseInfo {
+            version: version.to_string(),
+            tag_name: format!("v{version}"),
+            name: None,
+            body: None,
+            published_at: None,
+            html_url: String::new(),
+            assets: vec![],
+        });
+    }
+
     /// 新しいUpdateCapabilityを作成
     pub fn new() -> Self {
         let client = reqwest::Client::builder()

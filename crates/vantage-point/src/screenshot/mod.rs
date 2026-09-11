@@ -168,7 +168,7 @@ pub trait Capture: Send + Sync {
 /// `main` / `main-area`: sidebar 右側全部
 /// `full`: window 全体
 pub fn region_for_name(name: &str, window: &WindowInfo) -> Option<Rect> {
-    const SIDEBAR_WIDTH: u32 = 280; // vp-app/src/app.rs の SIDEBAR_WIDTH と同期
+    const SIDEBAR_WIDTH: u32 = 280; // vp-app の sidebar 幅（webview/main_area.rs の `#sidebar-root` CSS 280px）と同期
     match name {
         "sidebar" => Some(Rect {
             x: window.x,

@@ -2,8 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::agui::AgUiEvent;
-use crate::repo::lanes_state::LaneInfo;
+use crate::repo::lane::LaneInfo;
 
 /// Content types that can be displayed in the viewer
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,8 +190,6 @@ pub enum RepoMessage {
     },
     /// Component dismissed/resolved
     ComponentDismissed { request_id: String },
-    /// AG-UI protocol event (REQ-AGUI-040)
-    AgUi { event: AgUiEvent },
     /// ターミナルPTY出力（base64エンコード）
     TerminalOutput { data: String },
     /// ターミナルPTYセッション開始通知

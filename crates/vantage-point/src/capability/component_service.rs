@@ -14,7 +14,7 @@
 //!
 //! | sub-PR | scope | status |
 //! |--------|-------|--------|
-//! | PR-1 | `Agent` / `Service` trait + `LayerScope` enum 受け皿 + `LaneComponent` → `LaneComponentHost` rename | 本 PR |
+//! | PR-1 | `Agent` / `Service` trait + `LayerScope` enum 受け皿 + `LaneComponent` → `LaneComponentHost` rename (後者は 2026-09 撤去) | 本 PR |
 //! | PR-2 | Agent migrate (`agent` + `protocol`、 observer/consumer pattern 形式化) | 未着手 |
 //! | PR-3 | Service migrate (`notify` + `lane-spawn` + `repo-bootstrap` + `devices`) | 未着手 |
 //! | PR-4 | supervisor 統一 (`ActorRegistry` / `SupervisorFactory` 集約) | 未着手 |
@@ -38,8 +38,8 @@
 //! - VP-24 (Mailbox core 2026-03-18) — original ECS 意図
 //! - VP-157 (PR #325) — `mcp` 廃止 + agent observer 化 (= ECS 純度回復の第一歩)
 //! - PR-α-1 (#265、 VP-111) — 受け皿 pattern 先例 (`MachineCapabilities`)
-//! - PR-β-1 (#274、 VP-119) — 受け皿 pattern 直近先例 (`LaneCapabilities`)
-//! - PR-δ-1 (#288、 VP-135) — minimal marker pattern 先例 (`LaneComponentHost`)
+//! - PR-β-1 (#274、 VP-119) — 受け皿 pattern 直近先例 (`LaneCapabilities`、 2026-09 撤去)
+//! - PR-δ-1 (#288、 VP-135) — minimal marker pattern 先例 (`LaneComponentHost`、 2026-09 撤去)
 
 use std::any::Any;
 
@@ -80,26 +80,20 @@ pub enum LayerScope {
 /// ```rust,ignore
 /// use vantage_point::capability::{Agent, LayerScope};
 ///
-/// pub struct AgentCapability { /* ... */ }
+/// pub struct SomeCapability { /* ... */ }
 ///
-/// impl Component for AgentCapability {
+/// impl Component for SomeCapability {
 ///     fn name(&self) -> &str { "agent" }
 ///     fn layer_scope(&self) -> LayerScope { LayerScope::Repo }
 ///     fn as_any(&self) -> &dyn std::any::Any { self }
 /// }
 /// ```
 ///
-/// ## `LaneComponentHost` との違い
+/// ## 旧 `LaneComponentHost` との違い（歴史）
 ///
-/// `process::lane_component::LaneComponentHost` は **Lane に host される受動的 marker** (= passive、
-/// `board` 等)。 `Agent` は **ECS entity bound actor** (= active、 `agent` /
-/// `protocol`)。 同じ「Agent」 という言葉で 2 概念を区別する規約:
-///
-/// - `Agent` (本 trait): ECS entity bound、 自律的に lifecycle / message を処理
-/// - `LaneComponentHost` (PR-δ-1): Lane に hosted、 LaneComponentRegistry で N 個 host する marker
-///
-/// 将来的に `board` が `LaneComponentHost` impl から `Agent` impl に進化する path も
-/// 想定 (= PR-γ で Lane に migrate されたら entity bound 化)、 その際は両 trait impl も可能。
+/// 旧 `LaneComponentHost` は **Lane に host される受動的 marker** (= passive、 `board` 等) だったが、
+/// 読み手の無い container として 2026-09 に撤去。 `Component` は **ECS entity bound actor** (= active)
+/// の側で、 現状 production の impl は無い（`Service` / `SpawnableService` が生きている側）。
 pub trait Component: Any + Send + Sync + 'static {
     /// actor 名 (例: `"agent"` / `"protocol"`)。 mailbox address の actor 部分と一致する。
     ///
@@ -158,13 +152,13 @@ pub trait Service: Any + Send + Sync + 'static {
 /// は dynamic routing vision 確定後に再設計 (= design-spark `mem_1CavFi5D1aMSpEkas89SvQ` 参照)。
 ///
 /// `ActorRegistry::spawn_service<S: SpawnableService>` が spawn 統合 + JoinHandle 保持する際の
-/// trait bound。 PR-5 supervisor 統一で JoinHandle 経由の abort / await を activate する foundation。
+/// trait bound。 保持した `JoinHandle` は `actor_registry::stop_all` が回収する（棚卸し 9-2 段階 3 PR-S3b）。
 pub trait SpawnableService: Service {
     /// recv loop を `tokio::spawn` で起動し、 `JoinHandle<()>` を返す。 `self` は consume される。
     ///
     /// `shutdown_token.cancelled()` で loop 終了、 channel close (= recv が None) でも終了。
-    /// 返り値の `JoinHandle` を `ActorRegistry` が保持し、 supervisor 統一 (PR-5) で
-    /// abort / await できる設計。
+    /// 返り値の `JoinHandle` を `ActorRegistry` が保持し、 停止時に `stop_all` が await
+    /// （待ちきれなければ abort）する。
     fn spawn_loop(self, shutdown: CancellationToken) -> JoinHandle<()>;
 }
 
@@ -286,7 +280,7 @@ mod tests {
     fn n_distinct_stands_coexist_in_collection() {
         // PR-2 invariant (PR-δ-3 同型): 異なる name / scope の N 個 Agent impl が同じ
         // Vec<Box<dyn Component>> で共存できる事 (= PR-4 supervisor 統一の foundation)。
-        // 実 impl (AgentCapability / ProtocolCapability) を fixture で代理、 actor_name と
+        // 実 impl (旧 AgentCapability / ProtocolCapability、2026-09 撤去) を fixture で代理、 actor_name と
         // layer_scope の組合わせで supervisor が dispatch / filter できる pattern を検証。
         let agents: Vec<Box<dyn Component>> = vec![
             Box::new(FixtureComponent {

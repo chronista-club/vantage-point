@@ -193,7 +193,7 @@ impl HubAuthStatus {
 /// の select が待ち受け、planned reconnect（backoff なし）で張り直す — 次の connect で
 /// [`hub_credential`] が file を読み直すため、新しい auth 状態が数秒で `hub_auth` に現れる。
 ///
-/// process-global static なのは、書き手（`handle_daemon_control`）が AppState を持たない
+/// process-global static なのは、書き手（`handle_daemon_control`）が RepoState を持たない
 /// dispatch 関数で、読み手（常駐ループ）が daemon プロセスに 1 本だけだから。`notify_one` は
 /// 待ち手不在でも permit を 1 つ積むので、ループが connect 処理中でも要求は失われない。
 static HUB_RECONNECT_REQUEST: tokio::sync::Notify = tokio::sync::Notify::const_new();
@@ -1032,7 +1032,7 @@ pub async fn federate_discover_lanes(
 ///
 /// 受信した relay frame は `on_relay`（caller 注入）に渡す。transport の lifecycle（接続 / 再接続 /
 /// register）と **配送ポリシー**（relay → VP wire への routing 等）を分離するため、配送先は
-/// run_daemon 側で AppState（wire store）を capture したクロージャとして渡す。`on_relay` は再接続
+/// run_daemon 側で `DaemonState::assemble` に渡したのと同じ wire store local を capture したクロージャとして渡す。`on_relay` は再接続
 /// ごとに再登録するため `Clone` を要求する。`shutdown` cancel でループを抜ける。hub 未設定時は
 /// この関数自体を呼ばない（caller 側で opt-in 判定）。
 ///
@@ -1075,11 +1075,22 @@ pub async fn run_hub_federation<F, Fut>(
         status.set(HubFederationState::Connecting);
         auth.set(HubAuthState::Unknown);
         // 再接続ごとに handler を再登録するため clone（connect_with_inbound は on_msg を move する）。
-        match HubClient::connect_with_inbound(&addr, 5, on_relay.clone()).await {
+        // 棚卸し 9-2 段階 3（PR-S3c）: connect（5 回試行 + QUIC handshake の timeout）と register は
+        // 数秒かかり得るので cancel と競わせる。hub 不達のまま daemon を止めると、ここで待った分だけ
+        // `stop_all` の timeout を食う。
+        let connected = tokio::select! {
+            _ = shutdown.cancelled() => return,
+            r = HubClient::connect_with_inbound(&addr, 5, on_relay.clone()) => r,
+        };
+        match connected {
             Ok(client) => {
                 // 接続がどう成立したか（credentialed / anonymous）を health に転写する。
                 auth.set(client.auth_state());
-                match client.register(&node_id, &endpoints, &handle, &name).await {
+                let registered = tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    r = client.register(&node_id, &endpoints, &handle, &name) => r,
+                };
+                match registered {
                     Ok(entry) => {
                         status.set(HubFederationState::Connected);
                         tracing::info!(
@@ -1444,7 +1455,7 @@ mod tests {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let addr = hub_addr().expect("CHRONISTA_HUB_ADDR を設定して hub を起動して実行すること");
 
-        // 受信 node のローカル中央 wire store（run_daemon の AppState 相当を mem db で再現）。
+        // 受信 node のローカル中央 wire store（run_daemon が `assemble` に渡す store 相当を mem db で再現）。
         let db = crate::db::VpDb::connect_mem().await.expect("connect_mem");
         db.define_schema().await.expect("define_schema");
         let store = crate::capability::WiremsgStore::new(std::sync::Arc::new(db.inner().clone()))
@@ -1464,7 +1475,7 @@ mod tests {
                 let notifier = notifier.clone();
                 let notify = notify.clone();
                 async move {
-                    let _ = crate::repo::routes::wire::dispatch_wire(
+                    let _ = crate::daemon::wire_ops::dispatch_wire(
                         &store,
                         &notifier,
                         &notify,
@@ -1499,7 +1510,7 @@ mod tests {
         // 受信 node の store に届くまで poll（relay → handler → dispatch_wire は非同期）。
         let mut delivered = None;
         for _ in 0..50 {
-            let recvd = crate::repo::routes::wire::dispatch_wire(
+            let recvd = crate::daemon::wire_ops::dispatch_wire(
                 &store,
                 &notifier,
                 &notify,

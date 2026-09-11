@@ -12,7 +12,7 @@
 //! **許容**であり、 vp が mise に依存するわけではない (tmux decoupling PR2 で vp runtime は
 //! mise-free — mise を exec する箇所は product に存在しない)。
 //!
-//! この補正は **vantage-point (daemon / repo / PtySlot) と vp-app (daemon_launcher) の双方**が
+//! この補正は **vantage-point (daemon / repo / PtySlot) と vp-app (daemon::launcher) の双方**が
 //! spawn 最上流で必要とする。 かつては `vantage_point::spawn_env` が SSOT で vp-app が手動同期
 //! レプリカを持っていたが (drift 源)、 path 解決の SSOT である本 crate (vantage-point + vp-app
 //! 共有、 循環なし) に一本化した。 `vantage_point::spawn_env` は本 module を re-export する。

@@ -1,24 +1,73 @@
 //! lane ごとの位置独立な安定 id の永続化 (I1、 doc 24 §7 / §10 Phase 2)。
 //!
+//! 型（[`LaneId`]）と永続の両方をここに持つ（9-1d で `repo/lane/address.rs` から型を移設 —
+//! identity の SSOT を 1 module に集め、`crate::lane` → `repo::lane` の code 依存を 0 にした）。
+//!
 //! Lane の identity を path / port / PID から切り離す第一歩。Lane の cwd が
 //! 動こうと repo が rename されようと、 この id は変わらない (= 発端バグの
 //! path=identity を断つ種)。
 //!
 //! **strangler 注意**: 生成した id は **まだ pool key には使わない** (operative key は
-//! [`crate::repo::lanes_state::LaneAddress`])。「id を持つが id で引かない」中間状態
+//! [`crate::repo::lane::LaneAddress`])。「id を持つが id で引かない」中間状態
 //! の土台 — 後続 increment で徐々に id へ寄せる。
 //!
-//! - **書き手 / 読み手**: lane spawn 経路 (`LanePool::with_root` / `lane_spawn_actor` /
-//!   `routes::lanes` の sub create) が [`load_or_create`] を呼ぶ。初回は生成 + 永続、
+//! - **書き手 / 読み手**: lane spawn 経路 (`LanePool::with_root` / `lane/spawn_actor` /
+//!   `lane/lifecycle` の sub create) が [`load_or_create`] を呼ぶ。初回は生成 + 永続、
 //!   2 回目以降 (= 再起動後の同 lane re-spawn) は disk から復元 → **再起動を越えて安定**。
 //! - 置き場: `vp_state_dir()/lane_ids/<repo>__<lane>` (1 lane 1 file 1 行)。
 //!   cc_session (`<repo>__<lane>`) と同じ命名規則。
 //!
 //! 設計は [`crate::lane::cc_session`] を mirror (純関数 `*_in(base)` + 本番 wrapper)。
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::repo::lanes_state::LaneId;
+use serde::{Deserialize, Serialize};
+
+/// Lane の位置独立な安定 id (I1、 doc 24 §7 / §10 Phase 2)。
+///
+/// path / port / PID に依存しない不変 handle。Lane の cwd が動こうと repo が
+/// rename されようと、 この id は変わらない (= 発端バグの path=identity を断つ種)。
+///
+/// **strangler 注意**: 現状この id は **pool key には使わない** (operative key は
+/// [`crate::repo::lane::LaneAddress`])。「id を持つが id で引かない」中間状態 — 後続 increment で徐々に
+/// id へ寄せる土台。生成・永続は本 module（[`load_or_create`]）。
+///
+/// **format は意図的に opaque** (doc §12-E: format / 採番 / 衝突解決は連邦時 = Phase 3
+/// まで決め打ちしない)。現状 UUID v7 (時刻順 sortable) で生成するが、 呼び手は中身に
+/// 依存しないこと。serde は `transparent` で素の文字列として乗る (人にも読める wire)。
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LaneId(String);
+
+impl LaneId {
+    /// 新規 id を生成する (現状 UUID v7、 format は opaque)。
+    pub fn generate() -> Self {
+        Self(uuid::Uuid::now_v7().to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// 空 id (legacy wire payload を `#[serde(default)]` で受けた時の値) 判定。
+    /// `skip_serializing_if` と組で「空なら wire から省略」= 古 client と完全互換。
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl From<String> for LaneId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl fmt::Display for LaneId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 /// file 名に使えない文字を潰す ([`crate::lane::cc_session`] と同一規則)。
 /// separator (`/` `\`) と `.` を `-` に置換し、 path traversal を自明に防ぐ。

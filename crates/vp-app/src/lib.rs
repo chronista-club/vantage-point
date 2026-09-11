@@ -3,12 +3,15 @@
 //! `main.rs` から使う app モジュール一式。
 //! クロスプラットフォーム (macOS / Windows / Linux) 対応を原則とする。
 //!
-//! ## モジュール
-//! - `app`: EventLoop + window lifecycle
-//! - `client`: daemon の HTTP health (`/api/health`) + wire 型
-//! - `daemon_control`: daemon control plane クライアント (Unison、doc 45 段 3)
-//! - `menu`: muda メニューバー
-//! - `tray`: tray-icon 常駐アイコン
+//! ## 構成（棚卸し 項目 6 / 6-0、2026-09-08。SSOT は docs/design/60-vp-app-layout.md）
+//!
+//! - crate root = 共有型・共有 state（`events` / `daemon_wire` / `lane_address` / `pane` / `session_state` / `settings`）
+//!   と基盤（log / icon / menu / tray）。どの directory からも参照してよい
+//! - `app/` = UI thread の世界（EventLoop、state 遷移、効果の実行）
+//! - `daemon/` = daemon との線 / `lane/` = lane ごとの session / `webview/` = IPC decode と投影 /
+//!   `flows/` = 別 thread の対話 flow
+//! - 処理の呼び出しは `app` → 各 directory の一方向（`flows` → `daemon` は許可）。
+//!   directory 同士は互いの関数を呼ばない
 //!
 //! ## Tokio runtime 規約 (= panic 再発防止 gate)
 //!
@@ -23,38 +26,37 @@
 
 #![deny(clippy::disallowed_methods)]
 
+/// UI thread の世界 — EventLoop + window lifecycle + state 遷移と効果の実行。
+/// （6-0 で `app/mod.rs` に。6-2 で boot / state / on_* に分解予定）
 pub mod app;
-/// sidebar Hub 行の Login / Logout フロー (`vp auth login|logout` spawn + hub/reconnect)。
-pub mod auth_flow;
-pub mod client;
+/// chat submit の応答分類（純粋関数、`tests/` から参照）。
 pub mod conversation_submission;
-/// daemon control plane クライアント (Unison `daemon-control` / `registry`)。 doc 45 段 3。
-pub mod daemon_control;
-/// 設定ページの「daemon を再起動」フロー (確認ダイアログ → `vp daemon restart`)。doc 59 P1。
-pub mod daemon_flow;
-pub mod daemon_launcher;
+/// daemon との線（接続・制御 RPC・health probe・起動 / 再起動）。
+pub mod daemon;
+/// daemon ↔ vp-app の wire 型（共有型。webview の wire 型は `generated/`）。
+pub mod daemon_wire;
 pub mod debug_log;
-/// code pane（コードブラウザ）の file 供給 — lane workdir walk + ファイル読み。
-/// code:list / code:read IPC の Rust 側実装。
-pub mod file_explorer;
+/// tao EventLoop に流す app 全体の event（`AppEvent`）。送り手は各 sibling、受け手は `app::run()`。
+pub mod events;
+/// 別 thread で走る対話 flow（auth / update / repo dialog）。
+pub mod flows;
 /// club-kdl-codegen 生成物 (KDL protocol schema → Rust 型)。 VP-208 Phase A。
 pub mod generated;
 pub mod icon;
-pub mod ink_snapshot;
+/// lane ごとの session と見え方（title。session 本体は 6-1 で移設）。
 pub mod lane;
+/// lane address の wire 型（`LaneAddressWire`、共有型）。
+pub mod lane_address;
 pub mod log_format;
 pub mod log_init;
-pub mod main_area;
 pub mod menu;
 pub mod pane;
-/// Repo add / clone ダイアログ (folder picker + git clone + daemon API)。 VP-194 R-3。
-pub mod repo_dialog;
 pub mod session_state;
-pub mod session_title;
 pub mod settings;
-pub mod shell_detect;
-pub mod terminal;
+/// test 専用: `$XDG_STATE_HOME` を差し替える test の直列化 + 復元（server crate と同型）。
+#[cfg(test)]
+mod test_env;
 pub mod tray;
-pub mod update_flow;
-pub mod web_assets;
+/// webview との線（IPC decode / asset / main-area / ink snapshot / code pane）。
+pub mod webview;
 // ws_terminal: Phase 2.x-d で削除 (per-Lane browser-native WebSocket に移行、 Rust 中継経路は不要)

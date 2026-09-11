@@ -10,7 +10,7 @@
 |---|---|---|
 | wire store | `crates/vantage-point/src/capability/wiremsg_store.rs` | store / cursor / thread / ack 台帳 |
 | repo→daemon transport | `crates/vantage-point/src/repo/daemon_wire.rs` | wire の中央化 transport（QUIC "wire" channel） |
-| dispatch | `crates/vantage-point/src/repo/routes/wire.rs` / `src/daemon/server.rs` | channel method → store dispatch |
+| dispatch | `crates/vantage-point/src/daemon/wire_ops.rs` / `src/daemon/server.rs` | channel method → store dispatch |
 | delivery loop | `crates/vantage-point/src/repo/delivery_actor.rs`（repo 受け口 = `unison_server.rs` の `lane_nudge` / `conversation_nudge`） | 未 ack command の再掲示（nudge、`console_mode` で channel C/D/E 分岐） |
 | FSM | `crates/vantage-point/src/flow.rs` | FlowState と derive 規則 |
 | 投影 | `crates/vantage-point/src/daemon/server.rs`（enrich / "lanes" channel） | flow_state を vp-app へ届ける経路 |
@@ -89,7 +89,7 @@ store が扱う table:
 | `state` / `data` / `log` | 同じく非 nudge（用途別ラベル） |
 
 - **default = `command`**、ただし **MCP `wire_send` 経路のみ**が注入する（`wire_send_impl` が `body` に `category` を `or_insert("command")`、`mcp.rs:962`）。**CLI `vp wire send` は default を注入しない** — `--category` を明示した時だけ `body.category` が付く（`commands/wire.rs:690`）。この非対称は「CC 限定 scope に default を閉じる」意図的な設計で、delegation やサーバ内部 sender を巻き込まないため（`mcp.rs` コメント）。
-- 消費側: daemon の `dispatch_wire("send")` が `body.category == "command"` を見て delivery loop を即 wake する（`routes/wire.rs:361`）。
+- 消費側: daemon の `dispatch_wire("send")` が `body.category == "command"` を見て delivery loop を即 wake する（`daemon/wire_ops.rs:361`）。
 
 ### 1.5 kind taxonomy
 
@@ -194,7 +194,7 @@ sub の wire 活動
 
 - **`LaneInfo.flow_state`（`lanes_state.rs:324`）は `Option<FlowState>`**。repo / lane_registry / db では**常に `None`**（「derive できるものは store しない」原則）。付与するのは daemon だけ。
 - **付与点 = `enrich_lanes_flow_state`（`daemon/server.rs:557`）**。`send_lanes_snapshot`（`:515`）が snapshot を送る直前に呼ぶ。Sub のみ対象（main は None のまま）、`agent<repo>/<name>` を組み、`latest_msg_for_agent` + `pending_needs_user` を **hop なしの in-process store から**引いて `derive_flow_state` する。`vp flow progress` と同一判定。store 未接続時は enrich を skip（field 欠落）。
-- **"lanes" channel は unison/QUIC channel**（`register_channel("lanes")`、`daemon/server.rs:1218`）。WebSocket でも SSE でもない。vp-app は **repo ではなく daemon :32000 の集約 channel** に繋ぐ（`vp-app/src/app.rs` の lanes subscription、stall timeout 12s）。
+- **"lanes" channel は unison/QUIC channel**（`register_channel("lanes")`、`daemon/server.rs:1218`）。WebSocket でも SSE でもない。vp-app は **repo ではなく daemon :32000 の集約 channel** に繋ぐ（`vp-app/src/app/mod.rs` の lanes subscription、stall timeout 12s）。
 - **再 push は wire 活動が撃つ**（polling 無し）: `wire/send` と `wire/ack` の dispatch 前に関与 repo を集め（`collect_wire_projects`、`daemon/server.rs:618`）、dispatch 成功後に `notify_lane_change_for_projects` が `lane_change_tx`（broadcast）へ path_key を送る（`:644`）。"lanes" channel handler がこれを subscribe していて、当該 repo の snapshot を**再 enrich して再送**する。つまり wire を送る/ack するだけで flow_state の変化が sidebar に届く。
 - **sidebar 描画**（`vp-app/webview/src/sidebar/lane.ts` `laneConnector`）: `awaiting_user` → `conn-hitl`（needs-you = magenta diamond）、`working|hitl_pending|stuck` → `conn-auto`（solid cyan）、`idle|completed` → `conn-dead`。**`flow_state` 欠落（旧 daemon）は pid heuristic に fallback**。FlowState の serde は snake_case（`flow.rs:43`、TS 側との契約）。
 
@@ -288,7 +288,7 @@ let path = if let Some(remote) = daemon {
 
 ## 4. 入口一覧表（MCP ⇄ CLI ⇄ 内部 channel method）
 
-> ⚠ **「HTTP」列は公開 HTTP API ではない**。かつての `/api/wire/*` axum route は撤去済（`routes/health.rs:49`）。今この文字列は `world_wire::call` に渡す**論理 path** で、`/api/` を剥いだ残り（`wire/send` 等）が **unison QUIC "wire" channel の method** になる。3 者はすべて同じ下層 `WiremsgStore`（daemon）に収束する。
+> ⚠ **「HTTP」列は公開 HTTP API ではない**。かつての `/api/wire/*` axum route は撤去済（`repo/http/health.rs:49`）。今この文字列は `world_wire::call` に渡す**論理 path** で、`/api/` を剥いだ残り（`wire/send` 等）が **unison QUIC "wire" channel の method** になる。3 者はすべて同じ下層 `WiremsgStore`（daemon）に収束する。
 
 ### wire family
 
@@ -301,7 +301,7 @@ let path = if let Some(remote) = daemon {
 | 系譜 | `wire_thread` | `vp wire thread` | `wire/thread` | read-only、root-first |
 | 継続 watch | —（`wire_recv` の loop 相当） | `vp wire watch` / `watch-supervised` | `wire/recv` loop | Monitor の subscription source |
 | hook | —（hook 実体） | `vp wire hook-check` | `wire/unread-count` + `delegation/poll` | claude hook、fail-open |
-| GUI 履歴 / ack | — | —（vp-app sidebar Wire Inbox panel） | `wire/history` + `wire/unread-count`（fetch）→ `wire/ack` | **#742 / doc 34 §4 V1**。read-only 履歴（`inbound` / `acked` flag 付き）。**cursor 不触り**（`wire/recv` を使わず lane claude の未読を横取りしない）。ack は `wire/ack` を再利用し「ack → 再 fetch」を 1 往復に畳む。LaneRow の mailbox badge click → daemon "wire" channel を直接 open（`vp-app/src/app.rs` の `wire_fetch_payload`） |
+| GUI 履歴 / ack | — | —（vp-app sidebar Wire Inbox panel） | `wire/history` + `wire/unread-count`（fetch）→ `wire/ack` | **#742 / doc 34 §4 V1**。read-only 履歴（`inbound` / `acked` flag 付き）。**cursor 不触り**（`wire/recv` を使わず lane claude の未読を横取りしない）。ack は `wire/ack` を再利用し「ack → 再 fetch」を 1 往復に畳む。LaneRow の mailbox badge click → daemon "wire" channel を直接 open（`vp-app/src/app/mod.rs` の `wire_fetch_payload`） |
 | federation 送信 | — | `vp wire send --daemon` | `wire/federate` | §3.4（daemon 層が hub relay へ） |
 | federation 探索 | — | `vp wire discover --daemon` | `wire/discover-lanes` | §3.3 |
 

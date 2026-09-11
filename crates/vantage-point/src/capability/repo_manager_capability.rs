@@ -195,7 +195,7 @@ pub struct RepoManagerCapability {
     /// repo が register payload に lanes を載せて push、 disconnect で全 Lane drop。
     /// agent (Conversation on Claude CLI) が `GET /api/lanes` で resolve するための cache。
     #[allow(clippy::type_complexity)]
-    lane_registry: Arc<RwLock<HashMap<String, Vec<crate::repo::lanes_state::LaneInfo>>>>,
+    lane_registry: Arc<RwLock<HashMap<String, Vec<crate::repo::lane::LaneInfo>>>>,
     /// 設定
     config: Option<Config>,
     /// vpバイナリパス
@@ -313,7 +313,7 @@ impl RepoManagerCapability {
     #[allow(clippy::type_complexity)]
     pub fn lane_registry_ref(
         &self,
-    ) -> Arc<RwLock<HashMap<String, Vec<crate::repo::lanes_state::LaneInfo>>>> {
+    ) -> Arc<RwLock<HashMap<String, Vec<crate::repo::lane::LaneInfo>>>> {
         self.lane_registry.clone()
     }
 
@@ -485,7 +485,7 @@ impl RepoManagerCapability {
     ///
     /// destroy-side (`destroying`) と orphan→adopt は後続 increment。
     async fn reconcile_lanes(&self) {
-        use crate::repo::lanes_state::LaneLifecycle;
+        use crate::repo::lane::LaneLifecycle;
         let Some(db) = &self.vpdb else { return };
         let lifecycles = match db.list_lane_lifecycles().await {
             Ok(v) => v,
@@ -569,6 +569,17 @@ impl RepoManagerCapability {
     /// add / delete / rename / reorder / set_enabled / auto_reassign_slot の各操作後に呼ぶ。
     /// test 環境では `ReposFile::save()` が no-op なので本番ファイルを破壊しない。
     async fn persist_repos(&self) -> CapabilityResult<()> {
+        self.persist_repos_inner().await?;
+        // b-7（doc 60 §8 / doc 61 §5）: 書き込みが成功した後に 1 回だけ `ReposChanged` を流す。
+        // 中身は運ばない（受け手は `repos/list` を取り直す）。未配線（CLI / test）なら no-op。
+        if let Some(ref tx) = self.process_lifecycle_tx {
+            let _ = tx.send(crate::daemon::protocol::ProcessLifecycleEvent::ReposChanged);
+        }
+        Ok(())
+    }
+
+    /// `persist_repos` の書き込み本体（DB 全置換 + repos.kdl export、または repos.kdl 直書き）。
+    async fn persist_repos_inner(&self) -> CapabilityResult<()> {
         // read guard は entries 構築のみで解放する (DB / file の await 中は lock を持たない)。
         let entries: Vec<crate::repos_file::RepoEntry> = {
             let repos = self.repos.read().await;
@@ -925,7 +936,7 @@ impl RepoManagerCapability {
         name: &str,
         branch: &str,
         agent: &str,
-    ) -> CapabilityResult<crate::repo::lanes_state::LaneInfo> {
+    ) -> CapabilityResult<crate::repo::lane::LaneInfo> {
         let name = name.trim();
         crate::lane::config::validate_sub_name(name).map_err(CapabilityError::Other)?;
 
@@ -945,8 +956,8 @@ impl RepoManagerCapability {
             ))
         })?;
 
-        let req = crate::repo::routes::lanes::build_create_lane_req(name, branch, agent);
-        crate::repo::routes::lanes::create_sub_orchestrated(&state, req)
+        let req = crate::repo::lane::lifecycle::build_create_lane_req(name, branch, agent);
+        crate::repo::lane::lifecycle::create_sub_orchestrated(&state, req)
             .await
             .map_err(CapabilityError::Other)
     }
@@ -1180,7 +1191,7 @@ impl RepoManagerCapability {
         // spawn し、QUIC registry への自己登録を `wait_for_health` で待ち、port が他 repo に
         // 取られていれば `auto_reassign_slot` して 1 回だけ retry する、という多段の段取りだった。
         //
-        // repo が Daemon 内の `Arc<AppState>` になった今、これは単なる関数呼び出しになる。
+        // repo が Daemon 内の `Arc<RepoState>` になった今、これは単なる関数呼び出しになる。
         // 旧段取りの構成要素はいずれも概念ごと不要になった:
         //   - port 解決      … bind しないので割り当てる対象が無い
         //   - health 待ち    … 起動の成否は Result で同期的に返る
@@ -1417,7 +1428,10 @@ impl RepoManagerCapability {
     ///
     /// 二重起動は `RepoRuntimes` の map キー一意性が構造的に防ぐ。
     /// lock 規律: `start_process`（内部で sleep する）を呼ぶ前に read ガードを clone して解放する。
-    pub async fn autostart_enabled_repos(daemon: Arc<RwLock<Self>>) {
+    pub async fn autostart_enabled_repos(
+        daemon: Arc<RwLock<Self>>,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) {
         // doc 44 P1 (fold-in): 旧「registry 静穏待ち」(最大 60s) を撤去した。
         //
         // あの待ちの目的は「gentle daemon restart を生き延びた旧 SP の QUIC heal 再登録が
@@ -1457,7 +1471,15 @@ impl RepoManagerCapability {
         );
 
         // start_process は内部で sleep するため、read ガードを保持せず clone した cap で呼ぶ。
+        // 棚卸し 9-2 段階 3（PR-S3c）: 本 task は `ActorRegistry` に載り、daemon 停止末尾の
+        // `stop_all` が完了を待つ（見切りは abort）。abort は `start_repo` の途中で future を
+        // drop して spawn 済み task を孤児にするので（`RepoRuntimes.closing` の doc）、
+        // そうなる前に repo ごとの境目で cancel を見て自分から降りる。
         for name in &targets {
+            if shutdown.is_cancelled() {
+                tracing::info!("autostart: daemon 停止のため残りの起動を見送る");
+                return;
+            }
             let daemon_cap = {
                 let w = daemon.read().await;
                 w.clone()
@@ -1467,7 +1489,10 @@ impl RepoManagerCapability {
                 Err(e) => tracing::warn!("autostart: '{}' 起動失敗: {}", name, e),
             }
             // burst を避けて少しずらす。
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            tokio::select! {
+                _ = shutdown.cancelled() => return,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
+            }
         }
     }
 
@@ -1682,7 +1707,7 @@ impl RepoManagerCapability {
             // で dir は既に gone。 self-loop case (= repo 経由削除で dir 消滅 → watcher が Remove 検知 →
             // 本 lane_delete 発火) は server が "Lane not found" を Err で返すので no-op 扱い。
             let address =
-                crate::repo::lanes_state::LaneAddress::new(repo_name.as_str(), sub_name.as_str())
+                crate::repo::lane::LaneAddress::new(repo_name.as_str(), sub_name.as_str())
                     .canonical();
             let payload = serde_json::json!({ "address": address, "cleanup": false });
             tracing::info!(
@@ -1763,7 +1788,7 @@ impl RepoManagerCapability {
 
             // lanes portless (doc 27 §3.4.5): 旧 SP HTTP POST /api/lanes を daemon repo-proxy ask
             // `lane_create` に移管 (Daemon 内 loopback、 surface 群と uniform な transport)。 payload は
-            // CreateLaneReq (routes/lanes.rs) 互換。 cwd 明示で既存 dir を再利用 (new_sub_in skip)。
+            // CreateLaneReq (lane/lifecycle.rs) 互換。 cwd 明示で既存 dir を再利用 (new_sub_in skip)。
             // doc 44 P2: `kind` は撤去（lane に種別が無くなり、指定する余地が消えた）。
             //
             // agent は payload に積まない = 受け手の default に委ねる。
@@ -1935,7 +1960,7 @@ impl Capability for RepoManagerCapability {
 
 /// 消える lane 群を wire の宛先から退去させる（repo 丸ごと削除の後始末、best-effort）。
 ///
-/// 単一 lane 削除側（`routes::lanes::delete_lane_orchestrated`）と**対**。lane が消える
+/// 単一 lane 削除側（`lane::lifecycle::delete_lane_orchestrated`）と**対**。lane が消える
 /// 入口は 2 つあり、片方だけだと「`vp repos remove` / `vp sync` の ghost 除去で消した
 /// lane」宛の未 ack が残って nudge が止まらなくなる（`WiremsgStore::leave_all_threads`
 /// の doc に実害の記録）。
@@ -1944,7 +1969,7 @@ impl Capability for RepoManagerCapability {
 /// （store は `local_seq` の採番状態を持つが、離脱は seq を進めないので副作用はない）。
 async fn leave_wire_threads_for_lanes(
     db: &crate::db::SharedVpDb,
-    lanes: &[crate::repo::lanes_state::LaneInfo],
+    lanes: &[crate::repo::lane::LaneInfo],
 ) {
     if lanes.is_empty() {
         return;
@@ -2446,7 +2471,7 @@ mod tests {
         // doc 24 §5.3 / B-destroy: repo remove で sub worktree(ground) は daemon が
         // reclaim、 main(=repo root = user の repo) は絶対に消さない、 を検証する。
         // git なしの plain dir で実行 (remove_sub_workspace は .git 無しなら fs 削除に落ちる)。
-        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
 
         let cap = make_test_cap();
         // 一意な temp repo root (再実行に備え事前掃除)。
@@ -2517,7 +2542,7 @@ mod tests {
         // sync (= `vp sp start` が起動時に撃つ) を回しても復活しないことを焼き付ける。 旧挙動では
         // sync_repos(Some(dir)) が起点 dir を無条件再登録し、 生きた sub で repo が
         // 死にきれず後で repo start → 復活する経路があった (mem_1CcuRsC9pF3fiZptwmdgTS)。
-        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
 
         let cap = make_test_cap();
         let tmp = std::env::temp_dir().join(format!("vp-test-sync-revive-{}", std::process::id()));
@@ -2618,7 +2643,7 @@ mod tests {
     #[tokio::test]
     async fn test_daemon_entry_and_core_reject_names_identically() {
         let cap = make_test_cap();
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         let parent = std::env::temp_dir().join(format!("vp-test-parity-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&parent);
         let tmp = parent.join("parity");
@@ -2631,9 +2656,9 @@ mod tests {
                 .await
                 .expect_err("Daemon 入口は拒否する")
                 .to_string();
-            let core_err = crate::repo::routes::lanes::create_sub_orchestrated(
+            let core_err = crate::repo::lane::lifecycle::create_sub_orchestrated(
                 &state,
-                crate::repo::routes::lanes::build_create_lane_req(bad, "test/x", "claude"),
+                crate::repo::lane::lifecycle::build_create_lane_req(bad, "test/x", "claude"),
             )
             .await
             .expect_err("core も拒否する");
@@ -2675,7 +2700,7 @@ mod tests {
         let key = normalize_path_key(&PathBuf::from(&repo_path));
 
         // 本物の開発起点 descriptor を db に置く（= 破壊対象）。
-        let main = crate::repo::lanes_state::LanePool::with_root("reserved", repo_path.clone());
+        let main = crate::repo::lane::LanePool::with_root("reserved", repo_path.clone());
         let main_info = main.list().into_iter().next().expect("root descriptor");
         db.upsert_lane(&key, &main_info).await.unwrap();
         let addr_str = main_info.address.to_string();
@@ -2708,7 +2733,7 @@ mod tests {
     #[tokio::test]
     async fn test_reconcile_lanes_heals_lifecycle_by_ground() {
         // doc 24 §4.6 boot reconcile heal: provisioning+ground在→ready / ready+ground無→dead。
-        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
 
         let mut cap = make_test_cap();
         let db = std::sync::Arc::new({
@@ -2918,5 +2943,72 @@ mod tests {
             }
             other => panic!("Remove イベントが流れるべき: {other:?}"),
         }
+    }
+
+    /// b-7（doc 60 §8 / doc 61 §5）: 登録 repo 一覧の永続化は `ReposChanged` を 1 回流す。
+    ///
+    /// vp-app の再 fetch は count ベース（online 復帰 / 稼働数 / 登録数）なので、reorder は
+    /// 他 window に永久に届かなかった。`persist_repos()` の末尾 1 点で発火させ、
+    /// 書き手（reorder / add / remove / rename / set_enabled / sync）を網羅する。
+    #[tokio::test]
+    async fn reorder_repos_emits_repos_changed_once() {
+        use crate::daemon::protocol::ProcessLifecycleEvent;
+
+        let mut cap = make_test_cap();
+        let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+        cap.set_process_lifecycle_tx(tx);
+        {
+            let repos = cap.repos_ref();
+            let mut w = repos.write().await;
+            w.insert("/tmp/proj-a".to_string(), test_repo("proj-a", None));
+            w.insert("/tmp/proj-b".to_string(), test_repo("proj-b", None));
+        }
+
+        cap.reorder_repos(&["/tmp/proj-b".to_string(), "/tmp/proj-a".to_string()])
+            .await
+            .expect("reorder_repos");
+
+        assert_eq!(
+            rx.try_recv().expect("ReposChanged が 1 回流れる"),
+            ProcessLifecycleEvent::ReposChanged
+        );
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            ),
+            "1 操作で 2 回流さない"
+        );
+    }
+
+    /// count が変わらない変更（rename / enabled）でも流れる = 旧 poll が拾えなかった穴を塞ぐ。
+    #[tokio::test]
+    async fn rename_and_set_enabled_emit_repos_changed() {
+        use crate::daemon::protocol::ProcessLifecycleEvent;
+
+        let mut cap = make_test_cap();
+        let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+        cap.set_process_lifecycle_tx(tx);
+        cap.repos_ref()
+            .write()
+            .await
+            .insert("/tmp/proj-a".to_string(), test_repo("proj-a", None));
+        *cap.repo_order.write().await = vec!["/tmp/proj-a".to_string()];
+
+        cap.rename_repo("/tmp/proj-a", "proj-renamed")
+            .await
+            .expect("rename_repo");
+        assert_eq!(
+            rx.try_recv().expect("rename で流れる"),
+            ProcessLifecycleEvent::ReposChanged
+        );
+
+        cap.set_repo_enabled("/tmp/proj-a", false)
+            .await
+            .expect("set_repo_enabled");
+        assert_eq!(
+            rx.try_recv().expect("set_enabled で流れる"),
+            ProcessLifecycleEvent::ReposChanged
+        );
     }
 }

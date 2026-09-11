@@ -4,17 +4,17 @@
 //!
 //! 旧構成では repo 1 件 = repo プロセス 1 本で、daemon は QUIC registry / control /
 //! canvas-ingest の 3 channel を張って外から操作していた。fold-in はこのプロセス境界を
-//! 取り払い、repo を **daemon プロセス内の `Arc<AppState>` 1 個**に降格させる。
+//! 取り払い、repo を **daemon プロセス内の `Arc<RepoState>` 1 個**に降格させる。
 //! 本 registry がその map の実体で、旧 `running_repos` + `control_channels` の
 //! 役割を 1 つにまとめて引き継ぐ。
 //!
 //! doc 44 D2 が言う「repo は認知境界に退化する」はここで達成される — repo は
 //! もはやプロセスでも actor でもなく、**この HashMap のエントリ**でしかない。
 //!
-//! # なぜ AppState を 1 枚に畳まないのか
+//! # なぜ RepoState を 1 枚に畳まないのか
 //!
 //! `LanePool` は key が `LaneAddress { repo, kind, name }` なので原理的には全 repo
-//! 分を 1 枚に merge できる。ただしそれをやると `AppState.repo_dir` の単一前提が壊れ、
+//! 分を 1 枚に merge できる。ただしそれをやると `RepoState.repo_dir` の単一前提が壊れ、
 //! `dispatch_repo_method` の signature 変更 → 約 50 箇所のテスト改修に波及する。
 //! 一方 fold-in の目的（Daemon↔repo 配管の撤去・`vp sp` 退役・spine 三段→二段）は
 //! **プロセス境界を消すだけで達成される**ため、1 枚化は分離して doc 44 P2
@@ -28,11 +28,11 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use super::state::AppState;
+use super::state::RepoState;
 
 /// repo 1 件分の実行状態と、その停止スイッチ。
 pub(crate) struct RepoRuntime {
-    pub state: Arc<AppState>,
+    pub state: Arc<RepoState>,
     /// cancel すると当該 repo の spawn 済 task 群（lane monitor / snapshot publish 等）が止まる。
     pub shutdown: CancellationToken,
 }
@@ -79,7 +79,8 @@ pub(crate) struct RepoRuntimes {
     /// SurrealDB handle が「Daemon stopped」ログの後も生き残る（= プロセスが終了できない）。
     ///
     /// 起動の入口は複数あり、いずれも daemon の shutdown 手続きの射程外で走る:
-    ///   - `autostart_enabled_repos`（spawn した JoinHandle を保持していない）
+    ///   - `autostart_enabled_repos`（`ActorRegistry` 経由で spawn され、停止末尾の `stop_all` が
+    ///     待つ。repo ごとの境目で token を見て降りるが、見切りの abort が起きれば下記の孤児化）
     ///   - `repos/start` RPC（unison が接続ごとに独立 task で handler を回すため、
     ///     accept loop を abort しても既存接続の in-flight handler には波及しない）
     ///
@@ -139,26 +140,30 @@ impl RepoRuntimes {
         }
 
         let shutdown = CancellationToken::new();
-        let cap_config = super::capabilities::CapabilityConfig {
-            repo_dir: repo_dir.to_string(),
-        };
         // boot 窓の根治: 先行 subscribe が作った placeholder canvas router が居れば
         // それを repo の topic_router として養子縁組する（既存購読者ごと実 router 化）
         let adopted_router = self.adopted_router_for(&key).await;
         if adopted_router.is_some() {
             tracing::info!("canvas placeholder router を養子縁組 (key={})", key);
         }
-        // port はもう bind されない（SP-portless の遺産）。fold-in で概念ごと消えるため 0 を渡す。
-        let state = super::server::start_repo(
-            0,
-            cap_config,
+        let state = match super::server::start_repo(
+            repo_dir.to_string(),
             shutdown.clone(),
             self.node_lanes.clone(),
             self.daemon_db.clone(),
             self.lane_change_tx.clone(),
             adopted_router,
         )
-        .await?;
+        .await
+        {
+            Ok(state) => state,
+            Err(e) => {
+                // 途中まで spawn した task（bridge / publish 等）に「止まれ」を届ける。
+                // state が返っていないので `shutdown_repo` は呼べない — token で畳む。
+                shutdown.cancel();
+                return Err(e);
+            }
+        };
 
         // 起動中に別 caller が同 repo を起こしていた場合はこちらを捨てる（後勝ちにしない）。
         let mut guard = self.inner.write().await;
@@ -216,11 +221,18 @@ impl RepoRuntimes {
         true
     }
 
+    /// 受付を閉じる（以後の [`start`](Self::start) は起動後に自己回収して Err）。
+    /// daemon 停止末尾が常駐 task を待つ前に呼び、待っている間に autostart が新しい repo を
+    /// 起こさないようにする。`shutdown_all` も同じ flag を立てるので重ねて呼んでよい。
+    pub fn close(&self) {
+        self.closing.store(true, Ordering::Release);
+    }
+
     /// 登録済 repo を**すべて**停止する（daemon の graceful shutdown 用）。戻り値は停止数。
     ///
     /// doc 44 P1 (fold-in): 旧構成では repo = 別プロセス (repo) だったため、daemon が
     /// 落ちても repo は生き残るのが**設計上の正**だった（`vp daemon stop` の gentle 挙動）。
-    /// repo が Daemon 内の `Arc<AppState>` になった今、この前提は反転する — repo は
+    /// repo が Daemon 内の `Arc<RepoState>` になった今、この前提は反転する — repo は
     /// daemon の tokio task と SurrealDB handle でしかないので、**daemon が畳まなければ
     /// 誰も畳まない**。
     ///
@@ -231,7 +243,7 @@ impl RepoRuntimes {
     /// :32000 の bind を握るので、次の daemon は起動そのものが弾かれる（= 失敗が早期化した
     /// だけで、畳み残しが致命的である点は変わらない）。
     pub async fn shutdown_all(&self) -> usize {
-        // drain より先に受付を閉じる。この順序が要点で、逆にすると「drain 済みの map へ
+        // drain より先に受付を閉じる（`close` と同じ flag）。この順序が要点で、逆にすると「drain 済みの map へ
         // 進行中の start が insert を完了させる」窓が残る（= 畳んだはずの repo が生き残る）。
         self.closing.store(true, Ordering::Release);
         // 先に map を空にしてから停止する（停止の await 中に別 caller が同じ repo を
@@ -249,8 +261,8 @@ impl RepoRuntimes {
         count
     }
 
-    /// 登録済 repo の `AppState` を引く。
-    pub async fn get(&self, path_key: &str) -> Option<Arc<AppState>> {
+    /// 登録済 repo の `RepoState` を引く。
+    pub async fn get(&self, path_key: &str) -> Option<Arc<RepoState>> {
         self.inner
             .read()
             .await

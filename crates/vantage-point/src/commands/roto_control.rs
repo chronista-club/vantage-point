@@ -32,7 +32,7 @@ use crate::capability::eventbus::EventBus;
 use crate::capability::{RepoManagerCapability, RunningRepo};
 use crate::device_input::{ControlEvent, DeviceInput, roto::RotoInput};
 use crate::device_profile::{DeviceProfile, Rgb, roto::RotoProfile};
-use crate::repo::lanes_state::LaneInfo;
+use crate::repo::lane::LaneInfo;
 
 use super::midi::{
     LaneNav, RotoLane, page_slots, parse_node_lanes, roto_autorespond, roto_lane_nav,

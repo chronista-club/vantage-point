@@ -9,7 +9,7 @@
  * - **actions**: `toggleSidebarForm` / `expandSidebar` / `collapseSidebar`（signal と
  *   `#sidebar-root` の幅 class を常に同時に書く — 片方だけ動く状態を作らない）
  *
- * 幅そのもの（280px / 44px）は main_area.rs の `#sidebar-root` CSS が司る。
+ * 幅そのもの（280px / 44px）は webview/main_area.rs の `#sidebar-root` CSS が司る。
  * 形の**永続**は `shell-layout.ts`（main bundle）が持つ — ここは形を変えたことを
  * `vp:sidebar-form` で伝え、復元は `vp:shell-restore` / 保留箱で受け取る側。
  */

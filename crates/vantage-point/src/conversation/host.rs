@@ -12,7 +12,7 @@
 //! 旧設計は「lane が gui の間は常駐（demand-driven ではない）」だった。現在は
 //! **「Lane タイトルが表示されている Lane だけ生きてる」**（mako 裁定）:
 //! 誰も見ていない（購読なし）+ turn なし + N 分無活動が揃うと
-//! [`crate::repo::lanes_state::LanePool::drop_idle_chat_engines`] が engine を寝かせる
+//! [`crate::repo::lane::LanePool::drop_idle_chat_engines`] が engine を寝かせる
 //! （契機 = `conversation_demand_stop` 即時 + 30s periodic sweep）。会話は次の
 //! attach / submit / nudge が `--resume` で継ぐ — プロセスは死ぬがコンテキストは蘇る。
 //!
@@ -269,13 +269,56 @@ fn probe_forward_subagent_text(claude_path: &str) -> bool {
     !stderr.contains("unknown option")
 }
 
+/// Claude CLI の実行パスを解決する。
+///
+/// kitty 等の GUI ランチャーから起動した場合、シェルプロファイルが読まれず
+/// PATH に `~/.local/bin` が含まれないことがある。
+/// well-known locations へのフォールバックで確実に CLI を見つける。
+///
+/// （旧 `agent::get_claude_cli_path`。agent.rs は 2026-09 に撤去、唯一の呼び手だった本 module へ移設。
+/// `lane::session_store` にも同根の resolver がある — 統一は後続）
+fn get_claude_cli_path(config_path: Option<&str>) -> String {
+    // 1. 設定で指定されていればそれを使用
+    if let Some(path) = config_path {
+        return path.to_string();
+    }
+
+    // 2. 現在のPATHで見つかればそのまま使用
+    if let Ok(output) = std::process::Command::new("which").arg("claude").output()
+        && output.status.success()
+        && let Ok(path) = String::from_utf8(output.stdout)
+    {
+        let path = path.trim();
+        if !path.is_empty() {
+            return path.to_string();
+        }
+    }
+
+    // 3. well-known locations をフォールバック
+    let home = std::env::var("HOME").unwrap_or_default();
+    let candidates = [
+        format!("{}/.local/bin/claude", home),
+        format!("{}/.claude/local/claude", home),
+        "/usr/local/bin/claude".to_string(),
+    ];
+
+    for path in &candidates {
+        if std::path::Path::new(path).exists() {
+            return path.clone();
+        }
+    }
+
+    // 4. 見つからなければデフォルト（PATHに委ねる）
+    "claude".to_string()
+}
+
 impl ClaudeHost {
     /// headless claude を spawn し、stdout ポンプを起動する。
     ///
     /// stdout の各行は [`ClaudeTranslator`] を通り、[`ConversationEvent`] として broadcast される。
     /// `SessionInit` を観測したら session id を cc_session に記録する（resume の SSOT）。
     pub fn spawn(config: ClaudeHostConfig) -> anyhow::Result<Self> {
-        let claude_path = crate::agent::get_claude_cli_path(config.claude_cli_path.as_deref());
+        let claude_path = get_claude_cli_path(config.claude_cli_path.as_deref());
         let mut cmd = Command::new(&claude_path);
         // 親（repo）の env を継承 — spawn_env 済みの PATH 等を引き継ぐ。
         cmd.envs(std::env::vars());

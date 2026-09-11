@@ -25,7 +25,7 @@ use tokio::task::JoinHandle;
 
 use crate::lane::session_registry::SessionKey;
 use crate::protocol::RepoMessage;
-use crate::repo::lanes_state::LanePool;
+use crate::repo::lane::LanePool;
 use crate::repo::topic_router::TopicRouter;
 
 /// replay snapshot の 1 message あたりの分割サイズ。
@@ -149,7 +149,7 @@ pub struct TerminalPump {
     pub handle: JoinHandle<()>,
 }
 
-/// demand-driven terminal pump の lane → session → pump 台帳（`AppState::terminal_pumps`）。
+/// demand-driven terminal pump の lane → session → pump 台帳（`RepoState::terminal_pumps`）。
 /// 外側 key は LaneAddress の Display 形 (`"<repo>/root"` 等)。
 pub type TerminalPumps = HashMap<String, HashMap<SessionKey, TerminalPump>>;
 
@@ -218,7 +218,7 @@ async fn reconcile_lane_pumps_inner(
     lane: &str,
     force_replay: bool,
 ) -> PumpReconcile {
-    let Some(addr) = LanePool::parse_address(lane) else {
+    let Some(addr) = crate::repo::lane::parse_address(lane) else {
         return PumpReconcile::default();
     };
     let demand = topic_router.demand_active(&lane_topic(lane));

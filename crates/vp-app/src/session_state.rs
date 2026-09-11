@@ -293,6 +293,8 @@ impl SessionState {
                     // ⚠️ **旧形の address は正規化しない**（mako 2026-08-10）。この値は daemon が
                     // 発行する key と**比較するだけ**で、一致しなければ「選択なし」で起動し、
                     // user が選び直した瞬間に新形が入る = 実害は初回 1 回。
+                    // ⚠️ 6-2b b-3 以降、旧形の値は「復元待ち」のまま file に残り続ける（daemon の値で
+                    // 自動的に上書きされない）。直るのは user が lane を選び直した時だけ。
                     //
                     // ⚠️ ここで直すと **client 側に「address の形式を知るコード」が再び生まれる**
                     // — 形式を daemon の 1 箇所に閉じるという今回の設計と逆行する
@@ -324,11 +326,23 @@ impl SessionState {
                     state
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "SessionState JSON パース失敗 ({}): {} - default 使用",
-                        p.display(),
-                        e
-                    );
+                    // 危険 A（doc 60 §8）: 読めたが JSON でない file は、起動直後の `set_open(true)` +
+                    // save が default で上書きする前に **退避**する。手で直せる形で残し、default で起動。
+                    let backup = Self::corrupt_backup_path(&p);
+                    match std::fs::rename(&p, &backup) {
+                        Ok(()) => tracing::warn!(
+                            "SessionState JSON パース失敗 ({}): {} - {} に退避して default 使用",
+                            p.display(),
+                            e,
+                            backup.display()
+                        ),
+                        Err(re) => tracing::warn!(
+                            "SessionState JSON パース失敗 ({}): {} - 退避も失敗 ({}) のため default で上書きします",
+                            p.display(),
+                            e,
+                            re
+                        ),
+                    }
                     fallback()
                 }
             },
@@ -341,6 +355,20 @@ impl SessionState {
                 fallback()
             }
         }
+    }
+
+    /// 壊れた session file の退避先（`session.json.corrupt-<unix 秒>`）。同秒に 2 回壊れても
+    /// 後勝ちで済む（復旧の手掛かりが 1 つ残れば足りる）。
+    fn corrupt_backup_path(p: &std::path::Path) -> PathBuf {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let name = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("session.json");
+        p.with_file_name(format!("{name}.corrupt-{ts}"))
     }
 
     /// 自 instance の file に atomic write (`tmp file → rename`)。
@@ -764,5 +792,70 @@ mod tests {
             SessionState::next_free_index_from(&HashSet::from([1, 3])),
             2
         );
+    }
+
+    /// 危険 A（doc 60 §8）: 壊れた session file は default で上書きする前に退避される。
+    #[test]
+    fn corrupt_file_is_backed_up_before_fallback() {
+        let _env = crate::test_env::state_dir();
+        let p = SessionState::path(0).expect("state dir");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "{ this is not json").unwrap();
+
+        let s = SessionState::load(0);
+        assert!(
+            s.active_lane_address.is_none() && s.open,
+            "default で起動する"
+        );
+        assert!(!p.exists(), "壊れた file は元の path から退避される");
+        let dir = p.parent().unwrap();
+        let backups: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("session.json.corrupt-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "退避 file が 1 つ: {backups:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(&backups[0])).unwrap(),
+            "{ this is not json",
+            "中身はそのまま（手で直せる）"
+        );
+        // 起動直後の save（Persist::boot 相当）が走っても、退避済の内容は上書きされない
+        let mut s = s;
+        s.set_open(true);
+        s.save();
+        assert!(p.exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join(&backups[0])).unwrap(),
+            "{ this is not json"
+        );
+    }
+
+    /// 不在 / 正常な file は退避しない（退避は「読めたが JSON でない」時だけ）。
+    #[test]
+    fn valid_or_missing_file_is_not_backed_up() {
+        let _env = crate::test_env::state_dir();
+        let p = SessionState::path(0).expect("state dir");
+        let dir = p.parent().unwrap();
+        let count = |dir: &std::path::Path| {
+            std::fs::read_dir(dir)
+                .map(|rd| {
+                    rd.filter_map(|e| e.ok())
+                        .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+                        .count()
+                })
+                .unwrap_or(0)
+        };
+        let _ = SessionState::load(0); // 不在
+        assert_eq!(count(dir), 0);
+        SessionState {
+            active_lane_address: Some("vp/lane/root".into()),
+            ..SessionState::default()
+        }
+        .save();
+        let loaded = SessionState::load(0); // 正常
+        assert_eq!(loaded.active_lane_address.as_deref(), Some("vp/lane/root"));
+        assert_eq!(count(dir), 0);
     }
 }

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::sync::RwLock;
 use unison::network::quic::QuicServer;
@@ -24,14 +24,19 @@ use crate::capability::{RepoPresenceState, RunningRepo};
 /// doc 44 P1 (fold-in): 旧 SP control channel registry (`path_key` → QUIC channel) の後継。
 ///
 /// repo プロセスが消えたので「どう話すか」は QUIC channel ではなく **Daemon 内の
-/// `Arc<AppState>` を引くこと**になった。型名は呼び出し側の意味 (= repo へ話す口) を
+/// `Arc<RepoState>` を引くこと**になった。型名は呼び出し側の意味 (= repo へ話す口) を
 /// 保つため据え置き、指す先だけを差し替えている。
 pub(crate) type ControlChannels = Arc<crate::repo::repo_registry::RepoRuntimes>;
 
 /// Daemon の共有状態
 pub struct DaemonState {
-    /// Daemon 起動時刻（uptime計算用）
-    pub started_at: Instant,
+    /// Daemon 起動時刻（RFC 3339）。`/api/health` の `started_at` に**そのまま**投影する値。
+    ///
+    /// 構築時に 1 度確定して以後不変。`Instant` から `Utc::now() - elapsed()` で再計算する形は
+    /// 取らない — sleep をまたぐと wall clock とずれ、5s 周期の health から起動時刻が動いて
+    /// 見える（doc 63 §7）。9-2 PR-1 で `Instant` を置換した（production の読み手は 0 で、
+    /// test だけが `elapsed()` を見ていた）。
+    pub started_at: String,
     /// 稼働中 Process 一覧（Registry チャネル経由で repo が自己登録）
     /// RepoManagerCapability と共有される
     pub running_repos: Option<Arc<RwLock<HashMap<String, RunningRepo>>>>,
@@ -41,8 +46,7 @@ pub struct DaemonState {
     /// repo が register payload に lanes を載せて push、 disconnect で全 Lane drop。
     /// agent (Conversation on Claude CLI) が `GET /api/lanes` で resolve するための cache。
     #[allow(clippy::type_complexity)]
-    pub lane_registry:
-        Option<Arc<RwLock<HashMap<String, Vec<crate::repo::lanes_state::LaneInfo>>>>>,
+    pub lane_registry: Option<Arc<RwLock<HashMap<String, Vec<crate::repo::lane::LaneInfo>>>>>,
     /// L1 lifecycle (Phase C): repo の接続 presence（RepoManagerCapability と Arc 共有）。
     /// registry channel handler が register→Connected / unregister→Unregistered / 切断→Disconnected
     /// を書き、`/api/health` の `processes[]` が同一 Arc を読んで vp-app に expose する（doc 27 §3.2）。
@@ -63,6 +67,10 @@ pub struct DaemonState {
     /// `process_lifecycle_tx` (process Add/Remove) と相補: あちらは repo の up/down、 こちらは
     /// repo 内 lane (Sub 等) の add/remove/update を realtime 配信する。 capacity 64 は
     /// 同上 (短時間に lane diff が集中しても drop しない buffer)。
+    ///
+    /// fold-in 後は **repo 側の `publish_lanes` が生産者**（doc 44 §11）なので、`run_daemon` が
+    /// 先に channel を作って `RepoRuntimes` とここの両方へ配る。別々に作ると生産者ゼロで
+    /// 永久沈黙する（`process_lifecycle_tx` を capability と共有しているのと同じ構図）。
     pub lane_change_tx: tokio::sync::broadcast::Sender<String>,
     /// L0 SP-portless (canvas slice): repo ごとの Canvas (Board) TopicRouter。
     ///
@@ -80,6 +88,10 @@ pub struct DaemonState {
     /// 非対称なのは意図的: control_channels は live 接続 handle、 canvas_routers は durable state)。
     /// daemon は long-lived なので repo 数が大きく増える運用に入る前に repo-remove cleanup を
     /// 入れる (現 dogfooding 規模では bounded growth 実害なし)。
+    ///
+    /// `RepoRuntimes` と**同一の** map（boot 窓の根治）: repo 起動が先行 subscribe の placeholder
+    /// router を養子縁組するため、別々に `new()` すると map が分裂して placeholder の購読者が
+    /// 永遠に取り残される。
     #[allow(clippy::type_complexity)]
     pub canvas_routers: Arc<RwLock<HashMap<String, Arc<crate::repo::topic_router::TopicRouter>>>>,
     /// repo ごとの実行状態 registry（旧「repo control channel handle」の後継）。
@@ -89,13 +101,17 @@ pub struct DaemonState {
     /// client (MCP/CLI) の process 操作は、この handle を**逆用**して当該 repo に forward していた
     /// (= Daemon→repo reverse-routing)。repo 切断で handle を除去 = reverse 不能、という寿命だった。
     ///
-    /// fold-in 後: repo は daemon と同一プロセスの `Arc<AppState>` なので、forward ではなく
+    /// fold-in 後: repo は daemon と同一プロセスの `Arc<RepoState>` なので、forward ではなく
     /// `RepoRuntimes::dispatch` → `dispatch_repo_method` の直呼びになる。「切断」という
     /// 状態が存在せず、map に居るか居ないかだけになった。
+    ///
+    /// `run_daemon` が hoist した `RepoRuntimes` と**同一 Arc**。Daemon-side の nudge loop
+    /// （delivery actor / delegation reconcile）も同じ map を引いて `lane_nudge` を所有 repo に
+    /// forward するので、別々に `new()` すると map が分裂して forward 不能になる。
     pub(crate) control_channels: ControlChannels,
     /// repos 操作の権威 (= CLI → Daemon 直接 Unison "daemon-control" channel の data plane)。
     ///
-    /// HTTP `routes/daemon.rs` と同一の `RepoManagerCapability` 実体を Arc 共有し、
+    /// HTTP `daemon/control_ops.rs` と同一の `RepoManagerCapability` 実体を Arc 共有し、
     /// add/remove/rename/set_enabled/reorder/list を Unison 経由でも受ける。
     /// control plane 一元化 (creo `mem_1CbmWjCGNi9z49s3r21TwQ`): repos は daemon 権威なので
     /// CLI は repo を経由せず daemon に直接 Unison RPC する (= repos.kdl 共有メモリの置換)。
@@ -122,28 +138,49 @@ pub struct DaemonState {
     /// L0 portless B-4 (wire-unison): daemon 中央 wire store の参照 — "wire" Unison channel の data plane。
     ///
     /// 旧 `daemon_wire::call` の HTTP relay 先 (`POST /api/wire/*`) を unison channel に移行 (doc 27 §62
-    /// 「全通信 unison」)。run_daemon が **daemon process AppState と同一 Arc** を `with_wire` で plumb する
-    /// (同一プロセス)。`wire` channel handler がこれを使って wire の send/recv/thread/unread/latest/ack を
-    /// 中央 store に直結する。repo mode の DaemonState では None (= wire は Daemon 専有)。
+    /// 「全通信 unison」)。run_daemon が `assemble` で plumb する（delivery actor / federation relay も
+    /// **同一 Arc** を capture）。`wire` channel handler がこれを使って wire の send/recv/thread/unread/latest/ack を
+    /// 中央 store に直結する。DB 接続失敗時は None (= 当該 method は error を返す)。
     pub wiremsg_store: Option<crate::capability::WiremsgStore>,
-    /// wire long-poll (`wire_recv`) の起床通知器 — `wiremsg_store` と対で plumb される (同 AppState 由来)。
+    /// wire long-poll (`wire_recv`) の起床通知器 — `wiremsg_store` と対で plumb される。
     pub wire_notifier: Option<crate::capability::WireNotifier>,
     /// command 着信時に delivery loop を即 wake する Notify — `wire/send` で category=command を検出して叩く。
     pub delivery_notify: Option<Arc<tokio::sync::Notify>>,
     /// 委譲 (delegation) の daemon 中央 store — "wire" channel の `delegation/*` method の data plane (doc 28 §6)。
     ///
     /// `daemon_wire::call("/api/delegation/*")` は wire と同じ transport を共有するため、unison 移行も同 channel に
-    /// 相乗りする (path 分岐で dispatch)。run_daemon が AppState と同一 Arc を plumb する。
+    /// 相乗りする (path 分岐で dispatch)。run_daemon が `assemble` で plumb する（reconcile loop と同一 Arc）。
     /// (`DelegationStore` は pub(crate) なので本 field も crate 可視に揃える)
     pub(crate) delegation_store: Option<crate::capability::DelegationStore>,
     /// L2 (doc 27 §5-3): event log（agent の episodic memory）。always-on daemon が in-memory ring で
     /// 保持し、"events" channel の emit/query と auto-feed task（process lifecycle → event）が共有する。
     pub event_log: super::event_log::EventLog,
-    /// ACTIONS の cache（doc 57）— `AppState.creo_actions` と**同一 Arc**。
+    /// ACTIONS の cache（doc 57）— `run_daemon` の 30s poller が温める実体と**同一 Arc**。
     ///
     /// 読み（30s poller）と書き（`daemon-control.actions/save`）が同じ実体を触るために plumb する。
     /// 別々に作ると「書いたのに `/api/health` に出ない」= 入口ごとに別の真実になる。
     pub creo_actions: crate::creo::client::CreoActionsCache,
+    /// in-app update の capability — `MachineCapabilities.update` と**同一 Arc**。
+    ///
+    /// `/api/health` の `update_available` / `latest_version` と `/api/update/*` の供給元
+    /// （9-2 PR-2a / PR-2c で handler をここへ載せ替えた）。
+    pub update: Option<Arc<RwLock<crate::capability::UpdateCapability>>>,
+    /// chronista-hub federation の接続状態（writer = `run_hub_federation`、reader = `/api/health` の `hub`）。
+    pub hub_status: crate::daemon::hub_client::HubFederationStatus,
+    /// hub registry の available nodes cache（writer = 定期 discover、reader = `/api/health` の `hub_nodes`）。
+    pub hub_nodes: crate::daemon::hub_client::HubNodesCache,
+    /// hub 接続の auth 状態（writer = `run_hub_federation`、reader = `/api/health` の `hub_auth`）。
+    pub hub_auth: crate::daemon::hub_client::HubAuthStatus,
+    /// daemon 全体の停止 signal。`POST /api/shutdown` が cancel し、poller / actor / federation が購読する。
+    ///
+    /// `run_daemon` が作った**その 1 本**を受け取る。handler 内で新設した token を cancel しても
+    /// 誰も止まらない（9-2 PR-2b の完了条件はこの token が cancel されること、doc 63 §5）。
+    pub shutdown_token: tokio_util::sync::CancellationToken,
+    /// machine scope の actor registry（delivery actor 等の常駐 service を spawn する所有側）。
+    ///
+    /// handler の依存ではない。`run_daemon` が delivery actor を spawn するのと同じ実体。
+    /// 最終的には段階 3 の task 所有側へ動かす（doc 63 §5.1）。
+    pub actor_registry: Arc<RwLock<crate::capability::ActorRegistry>>,
 }
 
 impl Default for DaemonState {
@@ -151,7 +188,7 @@ impl Default for DaemonState {
         let (process_lifecycle_tx, _) = tokio::sync::broadcast::channel(64);
         let (lane_change_tx, _) = tokio::sync::broadcast::channel(64);
         Self {
-            started_at: Instant::now(),
+            started_at: chrono::Utc::now().to_rfc3339(),
             running_repos: None,
             repos: None,
             lane_registry: None,
@@ -171,140 +208,167 @@ impl Default for DaemonState {
             delegation_store: None,
             event_log: super::event_log::EventLog::new(),
             creo_actions: crate::creo::client::CreoActionsCache::new(),
+            update: None,
+            hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
+            hub_nodes: crate::daemon::hub_client::HubNodesCache::new(),
+            hub_auth: crate::daemon::hub_client::HubAuthStatus::new(),
+            shutdown_token: tokio_util::sync::CancellationToken::new(),
+            actor_registry: Arc::new(RwLock::new(crate::capability::ActorRegistry::new())),
         }
     }
 }
 
+/// [`DaemonState::assemble`] の入力 — daemon の結線に要る部品を**全部必須**で渡す。
+///
+/// doc 63 §5.1「組み立て口を 1 つに」。旧 builder（`Default` + `with_*` 10 本）は「渡し忘れた
+/// field が既定の別実体で静かに埋まる」経路だった — health が初期値を永遠に返す / 書いたのに
+/// 戻る / 生産者ゼロで永久沈黙、はどれもこの形で起きうる（各 field の doc に理由として残っている）。
+/// struct literal は field を 1 つ欠くと compile が落ちる。
+///
+/// 関連 handle は**既存の所有元から一括で**受け取る:
+/// - `machine_capabilities` から `repo_manager` / `update` / `devices` を取り出す（別々の引数として再選択させない）
+/// - repo の各 view（running / repos / lanes / presence）は `repo_manager` の `*_ref()` から取り出す（空 map で埋めない）
+///
+/// `process_lifecycle_tx` / `event_log` は daemon が所有する側なのでここでは受けず `assemble` が作る
+/// （capability は組み立て後に `set_process_lifecycle_tx` で同じ Sender を受け取る）。
+pub(crate) struct DaemonAssembly {
+    pub machine_capabilities: Arc<crate::daemon::machine_capabilities::MachineCapabilities>,
+    pub hub_status: crate::daemon::hub_client::HubFederationStatus,
+    pub hub_nodes: crate::daemon::hub_client::HubNodesCache,
+    pub hub_auth: crate::daemon::hub_client::HubAuthStatus,
+    pub creo_actions: crate::creo::client::CreoActionsCache,
+    pub shutdown_token: tokio_util::sync::CancellationToken,
+    pub actor_registry: Arc<RwLock<crate::capability::ActorRegistry>>,
+    /// 起動時刻（RFC 3339）。呼び手が 1 度だけ確定させて渡す（health はこの値をそのまま返す）。
+    pub started_at: String,
+    pub vpdb: Option<crate::db::SharedVpDb>,
+    pub control_channels: ControlChannels,
+    pub canvas_routers: crate::repo::topic_router::CanvasRouters,
+    pub lane_change_tx: tokio::sync::broadcast::Sender<String>,
+    pub wiremsg_store: Option<crate::capability::WiremsgStore>,
+    pub wire_notifier: crate::capability::WireNotifier,
+    pub delivery_notify: Arc<tokio::sync::Notify>,
+    pub delegation_store: Option<crate::capability::DelegationStore>,
+}
+
 impl DaemonState {
-    /// 新しい DaemonState を作成
+    /// 空の DaemonState（test 用。旧 `daemon/process.rs::run_daemon` は呼び手が無く 9-2 PR-3 で削除）。
+    ///
+    /// production の daemon は [`assemble`](Self::assemble) で組む — `new()` の後に field を
+    /// 個別に埋める経路は 9-2 PR-1 で撤去した（別実体が静かに混ざる余地を残さないため）。
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// RepoManagerCapability の running_repos を共有する
-    #[allow(clippy::type_complexity)]
-    pub fn with_running_processes(
-        mut self,
-        running_repos: Arc<RwLock<HashMap<String, RunningRepo>>>,
-        repos: Arc<RwLock<HashMap<String, crate::capability::RepoInfo>>>,
-        lane_registry: Arc<RwLock<HashMap<String, Vec<crate::repo::lanes_state::LaneInfo>>>>,
-        process_presence: Arc<RwLock<HashMap<String, RepoPresenceState>>>,
-    ) -> Self {
-        self.running_repos = Some(running_repos);
-        self.repos = Some(repos);
-        self.lane_registry = Some(lane_registry);
-        self.process_presence = Some(process_presence);
-        self
-    }
-
-    /// ACTIONS の cache を daemon process の `AppState` と共有する（doc 57 Phase 4）。
+    /// daemon の結線を **1 箇所で**済ませる（doc 63 §5.1）。
     ///
-    /// 読み（30s poller → `/api/health`）と書き（`daemon-control.actions/save`）が
-    /// **同じ実体**を触るために要る。渡し忘れると書きが空の cache に書き込んで、
-    /// sidebar には poller の結果だけが出る（= 書いたのに戻る）。
-    pub fn with_creo_actions(mut self, cache: crate::creo::client::CreoActionsCache) -> Self {
-        self.creo_actions = cache;
-        self
-    }
+    /// 副作用なし — socket / device / poller は起動しない。だから test が実物の結線を
+    /// そのまま通せる（`assemble_projects_the_given_instances`）。`Default` で穴を埋めない:
+    /// [`DaemonAssembly`] の全 field が必須で、`Option` になるのは「DB 接続失敗で無い」もの
+    /// （`vpdb` / `wiremsg_store` / `delegation_store`）だけ。
+    pub(crate) async fn assemble(a: DaemonAssembly) -> Self {
+        // repo の各 view は同じ RepoManagerCapability から取り出す（空 map で補わない）
+        let (running_repos, repos, lane_registry, process_presence) = {
+            let rm = a.machine_capabilities.repo_manager.read().await;
+            (
+                rm.running_processes_ref(),
+                rm.repos_ref(),
+                rm.lane_registry_ref(),
+                rm.process_presence_ref(),
+            )
+        };
+        // DeviceRegistry 🧲 は MachineCapabilities が host している実体をそのまま共有する
+        // （event_bus は registry 内蔵 — 別に new() すると device event が vp-app に届かない）
+        #[cfg(feature = "midi")]
+        let (devices, devices_event_bus) = match a.machine_capabilities.devices.as_ref() {
+            Some(d) => (Some(d.clone()), Some(d.read().await.event_bus().clone())),
+            None => (None, None),
+        };
+        #[cfg(not(feature = "midi"))]
+        let devices_event_bus = None;
+        // daemon が所有する側の bus（capability は組み立て後に同じ Sender を受け取る）
+        let (process_lifecycle_tx, _) = tokio::sync::broadcast::channel(64);
 
-    /// repos 操作の権威 (`RepoManagerCapability`) を共有する。
-    ///
-    /// HTTP `AppState.daemon` と同一の Arc を渡すことで、 Unison "daemon-control" channel から
-    /// 受けた repos mutation を HTTP と同じ実体に反映する (= 入口は複数でも権威は 1 つ)。
-    pub fn with_daemon_cap(
-        mut self,
-        daemon_cap: Arc<RwLock<crate::capability::RepoManagerCapability>>,
-    ) -> Self {
-        self.daemon_cap = Some(daemon_cap);
-        self
+        Self {
+            started_at: a.started_at,
+            running_repos: Some(running_repos),
+            repos: Some(repos),
+            lane_registry: Some(lane_registry),
+            process_presence: Some(process_presence),
+            process_lifecycle_tx,
+            lane_change_tx: a.lane_change_tx,
+            canvas_routers: a.canvas_routers,
+            control_channels: a.control_channels,
+            daemon_cap: Some(a.machine_capabilities.repo_manager.clone()),
+            vpdb: a.vpdb,
+            devices_event_bus,
+            #[cfg(feature = "midi")]
+            devices,
+            wiremsg_store: a.wiremsg_store,
+            wire_notifier: Some(a.wire_notifier),
+            delivery_notify: Some(a.delivery_notify),
+            delegation_store: a.delegation_store,
+            event_log: super::event_log::EventLog::new(),
+            creo_actions: a.creo_actions,
+            update: Some(a.machine_capabilities.update.clone()),
+            hub_status: a.hub_status,
+            hub_nodes: a.hub_nodes,
+            hub_auth: a.hub_auth,
+            shutdown_token: a.shutdown_token,
+            actor_registry: a.actor_registry,
+        }
     }
+}
 
-    /// tmux decoupling PR1: repo control channel registry を外部の Arc と共有する。
-    ///
-    /// `control_channels` は repo 接続の live handle map（key = `path_key`）。 daemon server の
-    /// repo-proxy handler が populate し、 canvas/terminal_write の reverse-routing に使う。
-    /// Daemon-side の nudge loop（delivery_actor / delegation reconcile）も同一 map を引いて
-    /// `lane_nudge` を所有 repo に forward するため、 `run_daemon` が hoist した同一 Arc を
-    /// DaemonState と両 loop の双方に注入する（別々に `new()` すると map が分裂して forward 不能）。
-    pub(crate) fn with_control_channels(mut self, control_channels: ControlChannels) -> Self {
-        self.control_channels = control_channels;
-        self
-    }
+/// test 用の daemon 役 `DaemonState`（棚卸し 9-2 PR-2a）。
+///
+/// production と同じ [`assemble`](DaemonState::assemble) を通す — fixture だけ別経路で組むと、
+/// 結線の変更が test に映らない。router / health / shutdown の test が共有する
+/// （旧 `build_test_daemon_app_state`（`RepoState` 版）は PR-2c で削除）。
+///
+/// - `update` は `Some(new_for_test())`（`new()` は `gh auth token` を subprocess で叩く）。
+///   network に出る handler（check / apply）や restart を `Some` のまま叩かないこと
+/// - devices（feature = "midi"）は registry を手で置く。`with_devices` は `attach_fleet_inputs`
+///   が実機 MIDI を開けるので使わない
+/// - DB 系（`vpdb` / `wiremsg_store` / `delegation_store`）は `None`
+#[cfg(test)]
+pub(crate) async fn build_test_daemon_state() -> Arc<DaemonState> {
+    use crate::capability::{ActorRegistry, RepoManagerCapability, UpdateCapability};
 
-    /// canvas 集約 map を**外から**共有する（boot 窓の根治）。
-    ///
-    /// 既定では [`Default`] が内部で作るが、run_daemon は `RepoRuntimes` と同一の map を
-    /// 配る必要がある — repo 起動が先行 subscribe の placeholder router を養子縁組する
-    /// ため（別々に `new()` すると map が分裂し、placeholder 購読者が永遠に取り残される）。
-    pub(crate) fn with_canvas_routers(
-        mut self,
-        canvas_routers: crate::repo::topic_router::CanvasRouters,
-    ) -> Self {
-        self.canvas_routers = canvas_routers;
-        self
-    }
-
-    /// doc 24 §10 Phase 2: lane descriptor の durable 永続先 (db/machine) を共有する。
-    ///
-    /// registry channel handler がこの db に repo push を永続して daemon-canonical 化する。
-    /// capability の boot load (`load_config`) と同一の db を指す (= 書いた truth を起動時に読む)。
-    /// vp-app への lanes push を起こす通知路を**外から**差し替える（doc 44 §11）。
-    ///
-    /// 既定では [`new`](Self::new) が内部で作るが、fold-in 後は **repo 側の
-    /// `publish_lanes` が生産者**になるため、daemon が先に channel を作って
-    /// `RepoRuntimes` と DaemonState の両方へ配る必要がある。
-    /// `process_lifecycle_tx` を capability と共有しているのと同じ構図。
-    pub fn with_lane_change_tx(mut self, tx: tokio::sync::broadcast::Sender<String>) -> Self {
-        self.lane_change_tx = tx;
-        self
-    }
-
-    pub fn with_vpdb(mut self, vpdb: crate::db::SharedVpDb) -> Self {
-        self.vpdb = Some(vpdb);
-        self
-    }
-
-    /// DeviceRegistry 🧲 EventBus を共有する (feature = "midi")。
-    ///
-    /// `run_daemon` が `MachineCapabilities.devices` の `event_bus()` を渡し、 daemon-device channel
-    /// handler がこれを subscribe して device event を vp-app に push する。
-    pub fn with_devices_event_bus(
-        mut self,
-        event_bus: Arc<crate::capability::eventbus::EventBus>,
-    ) -> Self {
-        self.devices_event_bus = Some(event_bus);
-        self
-    }
-
-    /// DeviceRegistry 🧲 registry 本体を共有する (feature = "midi")。
-    ///
-    /// `device` channel handler が agent の `ReportDevice` を受けて registry を更新するために使う。
-    /// `with_devices_event_bus` と同じ `MachineCapabilities.devices` を指す (event_bus は registry 内蔵)。
+    let repo_manager = Arc::new(RwLock::new(RepoManagerCapability::new()));
+    let update = Arc::new(RwLock::new(UpdateCapability::new_for_test()));
+    #[allow(unused_mut)]
+    let mut machine_capabilities =
+        crate::daemon::machine_capabilities::MachineCapabilities::new(repo_manager, update);
     #[cfg(feature = "midi")]
-    pub fn with_devices(mut self, devices: Arc<RwLock<crate::devices::DeviceRegistry>>) -> Self {
-        self.devices = Some(devices);
-        self
+    {
+        machine_capabilities.devices =
+            Some(Arc::new(RwLock::new(crate::devices::DeviceRegistry::new(
+                Arc::new(crate::capability::eventbus::EventBus::new()),
+            ))));
     }
-
-    /// L0 portless B-4 (wire-unison): daemon 中央 wire/delegation store を共有する。
-    ///
-    /// run_daemon が daemon process `AppState` 構築後に **同一 Arc** を渡す (同一プロセスなので clone で共有)。
-    /// "wire" channel handler がこれらを使って `daemon_wire::call` の旧 HTTP relay 先を unison で serve する。
-    /// `wiremsg_store` / `delegation_store` は DB 接続失敗時 None (= 当該 method は error を返す)。
-    /// (`DelegationStore` が pub(crate) のため本 method も crate 可視。 caller は同一 crate の run_daemon)
-    pub(crate) fn with_wire(
-        mut self,
-        wiremsg_store: Option<crate::capability::WiremsgStore>,
-        wire_notifier: crate::capability::WireNotifier,
-        delivery_notify: Arc<tokio::sync::Notify>,
-        delegation_store: Option<crate::capability::DelegationStore>,
-    ) -> Self {
-        self.wiremsg_store = wiremsg_store;
-        self.wire_notifier = Some(wire_notifier);
-        self.delivery_notify = Some(delivery_notify);
-        self.delegation_store = delegation_store;
-        self
-    }
+    let (lane_change_tx, _) = tokio::sync::broadcast::channel::<String>(64);
+    Arc::new(
+        DaemonState::assemble(DaemonAssembly {
+            machine_capabilities: Arc::new(machine_capabilities),
+            hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
+            hub_nodes: crate::daemon::hub_client::HubNodesCache::new(),
+            hub_auth: crate::daemon::hub_client::HubAuthStatus::new(),
+            creo_actions: crate::creo::client::CreoActionsCache::new(),
+            shutdown_token: tokio_util::sync::CancellationToken::new(),
+            actor_registry: Arc::new(RwLock::new(ActorRegistry::new())),
+            started_at: chrono::Utc::now().to_rfc3339(),
+            vpdb: None,
+            control_channels: Arc::new(crate::repo::repo_registry::RepoRuntimes::new()),
+            canvas_routers: Default::default(),
+            lane_change_tx,
+            wiremsg_store: None,
+            wire_notifier: crate::capability::WireNotifier::new(),
+            delivery_notify: Arc::new(tokio::sync::Notify::new()),
+            delegation_store: None,
+        })
+        .await,
+    )
 }
 
 /// `registry.list` の応答 body（稼働中 repo の snapshot）。
@@ -336,13 +400,13 @@ pub(crate) async fn registry_process_snapshot(
 ///
 /// ## doc 45 — control plane の唯一の入口
 ///
-/// 段 1 で `routes/daemon.rs`（旧 HTTP）にしか無かった操作をここへ出し
+/// 段 1 で `daemon/control_ops.rs`（旧 HTTP）にしか無かった操作をここへ出し
 /// （`repos/update` `repos/reload` `repos/sync` `repos/restart` `repos/pointview`
 /// `lanes/create` `lanes/set_active`、および `lanes/list` の filter/sort）、段 2 で CLI・
 /// 段 3 で vp-app を移設、**段 4 で HTTP route を撤去**した。repos CRUD / lifecycle / lanes を
 /// 触れる面は現在ここだけで、HTTP に残るのは `/api/health` `/api/shutdown` の 2 本のみ（§2）。
 ///
-/// route 層にしか無かった orchestration は `routes::daemon` の `pub(crate)` 関数に括り出して
+/// route 層にしか無かった orchestration は `daemon::control_ops` の `pub(crate)` 関数に括り出して
 /// ある（`apply_repo_update` / `collect_lanes` / `resolve_create_lane_args`）。段 1 で
 /// 1 実装に畳んであったので、段 4 の撤去は handler の殻を剥がすだけで済んだ。
 ///
@@ -480,7 +544,7 @@ pub(crate) async fn handle_daemon_control(
             let name = payload["name"].as_str();
             let enabled = payload["enabled"].as_bool();
             let cap = daemon_cap.read().await;
-            crate::repo::routes::daemon::apply_repo_update(&cap, path, name, enabled).await?;
+            crate::daemon::control_ops::apply_repo_update(&cap, path, name, enabled).await?;
             Ok(serde_json::json!({"status": "updated", "path": path}))
         }
         // doc 45 段 1: HTTP `POST /api/daemon/repos/sync` の Unison 版。
@@ -586,12 +650,12 @@ pub(crate) async fn handle_daemon_control(
         //
         // doc 45 段 1: HTTP 版の query filter (repo / lane / agent) と表示順を取り込んだ。
         // ここが素の flatten のままだと、CLI を Unison に移した瞬間に一覧の並びが静かに変わる。
-        // filter/sort は `routes::daemon::collect_lanes` を HTTP と共有する。
+        // filter/sort は `daemon::control_ops::collect_lanes` を HTTP と共有する。
         "lanes/list" => {
-            let query: crate::repo::routes::daemon::LanesQuery =
+            let query: crate::daemon::control_ops::LanesQuery =
                 serde_json::from_value(payload).unwrap_or_default();
             let cap = daemon_cap.read().await;
-            let lanes = crate::repo::routes::daemon::collect_lanes(&cap, &query).await;
+            let lanes = crate::daemon::control_ops::collect_lanes(&cap, &query).await;
             Ok(serde_json::json!({ "count": lanes.len(), "lanes": lanes }))
         }
         // doc 45 段 1: HTTP `POST /api/daemon/lanes` の Unison 版（doc 24 §10 Phase 2 B-create）。
@@ -605,7 +669,7 @@ pub(crate) async fn handle_daemon_control(
             let name = payload["name"]
                 .as_str()
                 .ok_or_else(|| "name is required".to_string())?;
-            let (branch, agent) = crate::repo::routes::daemon::resolve_create_lane_args(
+            let (branch, agent) = crate::daemon::control_ops::resolve_create_lane_args(
                 path,
                 name,
                 payload["branch"].as_str(),
@@ -921,7 +985,7 @@ async fn send_channel_response(
 #[allow(clippy::type_complexity)]
 pub(crate) async fn build_node_lanes(
     running_repos: &Arc<RwLock<HashMap<String, RunningRepo>>>,
-    lane_registry: &Option<Arc<RwLock<HashMap<String, Vec<crate::repo::lanes_state::LaneInfo>>>>>,
+    lane_registry: &Option<Arc<RwLock<HashMap<String, Vec<crate::repo::lane::LaneInfo>>>>>,
     daemon_cap: &Option<Arc<RwLock<crate::capability::RepoManagerCapability>>>,
 ) -> Vec<serde_json::Value> {
     // 並び順は sidebar と一致させる（= repo_order）。物理 controller は位置 = 意味なので、
@@ -984,7 +1048,7 @@ pub(crate) async fn build_node_lanes(
 #[allow(clippy::type_complexity)]
 async fn send_lanes_snapshot(
     channel: &UnisonChannel,
-    lane_registry: &Arc<RwLock<HashMap<String, Vec<crate::repo::lanes_state::LaneInfo>>>>,
+    lane_registry: &Arc<RwLock<HashMap<String, Vec<crate::repo::lane::LaneInfo>>>>,
     path_key: &str,
     wiremsg_store: &Option<crate::capability::WiremsgStore>,
     running_repos: &Option<Arc<RwLock<HashMap<String, RunningRepo>>>>,
@@ -1029,7 +1093,7 @@ async fn send_lanes_snapshot(
 /// main は dev-flow FSM の対象外 (spine の頭) で `None` のまま。 store クエリ失敗は
 /// 当該 lane を `None` に留めて degrade (client 側は pid heuristic に fallback)。
 async fn enrich_lanes_flow_state(
-    lanes: &mut [crate::repo::lanes_state::LaneInfo],
+    lanes: &mut [crate::repo::lane::LaneInfo],
     store: &crate::capability::WiremsgStore,
     repo_name: &str,
 ) {
@@ -1143,7 +1207,7 @@ async fn canvas_router_for(
     control_channels: &ControlChannels,
     path_key: &str,
 ) -> Arc<crate::repo::topic_router::TopicRouter> {
-    // doc 44 P1 (fold-in): repo が起動していれば **その AppState の router が唯一の正**。
+    // doc 44 P1 (fold-in): repo が起動していれば **その RepoState の router が唯一の正**。
     // pump が route する先と surface が購読する先を同一にするため、cache に別 router が
     // 載っていたら差し替える（repo 起動前に surface が subscribe して placeholder が
     // 作られていた場合の是正。placeholder には元々データが流れないので失うものは無い）。
@@ -1363,8 +1427,8 @@ pub(crate) async fn forward_to_sp_control(
 ///
 /// `daemon_wire::call` が path `"/api/<rest>"` を method=`"<rest>"` (= `"wire/send"` /
 /// `"delegation/create"` 等) にして本 channel に投げてくる。prefix で wire / delegation を切り分け、
-/// `routes::{wire,delegation}::dispatch_*` に委譲する。store は `with_wire` で plumb された
-/// daemon process AppState 由来の Arc。未初期化 (repo mode / DB 接続失敗) は Err を返し、channel
+/// `daemon::{wire_ops,delegation_ops}::dispatch_*` に委譲する。store は `assemble` で plumb された
+/// daemon 中央 store の Arc。未初期化 (test の `DaemonState::new()` / DB 接続失敗) は Err を返し、channel
 /// handler が `{"error": ...}` フレームに詰める (旧 HTTP handler の error JSON と等価)。
 async fn handle_wire_channel(
     state: &DaemonState,
@@ -1405,7 +1469,7 @@ async fn handle_wire_channel(
         // ⚠️ 分岐は要らない — canonical は root を「名前の 1 つ」として扱う。旧 `lead` だけ
         // 予約名へ寄せる（P2 以前の env が残っている場合の互換）。
         let label = if label == "lead" { "root" } else { label };
-        let display = crate::repo::lanes_state::LaneAddress::new(repo, label).canonical();
+        let display = crate::repo::lane::LaneAddress::new(repo, label).canonical();
         // doc 40 §4: hook の会話報告（session_id + event + 報告者が名乗る session）を repo へ
         // 透過する。無い場合は従来の「変化通知のみ」（re-enrich + push）として振る舞う =
         // 新旧 binary 混在に安全。`session` 不在も同様で、repo 側が root 宛の後方互換に倒す
@@ -1502,7 +1566,7 @@ async fn handle_wire_channel(
             Vec::new()
         };
         let result =
-            crate::repo::routes::wire::dispatch_wire(store, notifier, delivery, sub, payload).await;
+            crate::daemon::wire_ops::dispatch_wire(store, notifier, delivery, sub, payload).await;
         if result.is_ok() {
             notify_lane_change_for_repos(state, &wire_repos).await;
         }
@@ -1511,7 +1575,7 @@ async fn handle_wire_channel(
         let store = state.delegation_store.as_ref().ok_or_else(|| {
             "delegation store not initialized (daemon DB 接続失敗 or repo mode)".to_string()
         })?;
-        crate::repo::routes::delegation::dispatch_delegation(store, sub, payload).await
+        crate::daemon::delegation_ops::dispatch_delegation(store, sub, payload).await
     } else {
         Err(format!("不明な wire channel method: {method}"))
     }
@@ -1595,6 +1659,8 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                             )
                             .await;
                     }
+                    // 登録一覧の変化は presence でないので event log には流さない（GUI 同期用）。
+                    Ok(ProcessLifecycleEvent::ReposChanged) => continue,
                     // lagged: broadcast buffer 溢れ。次の event から再開（log は best-effort）。
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -1741,6 +1807,15 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                                     "daemon-repo subscribe lagged: {} events dropped",
                                                     n
                                                 );
+                                                // b-7: 落とした中に ReposChanged が含まれうるので、subscriber に
+                                                // 取り直しを促す 1 発を送る（受け手は中身を見ず repos/list を再 fetch）。
+                                                let resync = serde_json::to_value(
+                                                    ProcessLifecycleEvent::ReposChanged,
+                                                )
+                                                .unwrap_or(serde_json::Value::Null);
+                                                if channel.send_event("event", &resync).await.is_err() {
+                                                    break;
+                                                }
                                             }
                                             Err(
                                                 tokio::sync::broadcast::error::RecvError::Closed,
@@ -2451,7 +2526,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // 別 channel にする。 daemon_cap 不在 (= 非 daemon mode) なら登録しない。
     if let Some(ref daemon_cap) = state.daemon_cap {
         let daemon_cap = daemon_cap.clone();
-        // ACTIONS の cache は AppState と同一 Arc（`with_creo_actions` で plumb 済）。
+        // ACTIONS の cache は `run_daemon` の 30s poller と同一 Arc（`assemble` で plumb 済）。
         let creo_actions = state.creo_actions.clone();
         // 艦隊スイッチ（`devices/midi`）の宛先。midi 無し build では常に None。
         #[cfg(feature = "midi")]
@@ -2512,7 +2587,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // `daemon_wire::call` (repo→daemon の wire/delegation transport) を HTTP `POST /api/wire/*`
     // `/api/delegation/*` から本 channel に移行 (doc 27 §62「全通信 unison」)。method は
     // "wire/<m>" / "delegation/<m>" の prefix 分岐で各 store dispatch に振る (`handle_wire_channel`)。
-    // store は daemon process AppState と共有 (`with_wire` で plumb)。repo mode (store=None) では
+    // store は `assemble` で plumb された daemon 中央 store。未初期化 (store=None) では
     // 各 method が error を返す (= 旧 HTTP handler の「store not initialized」と等価)。
     // =========================================================================
     server
@@ -2810,7 +2885,7 @@ mod tests {
     // 対して直接固定し直す** — 旧面が消えたからといって期待値まで消すと、
     // 移行で守ったものが黙って外れる。
     //
-    // 実装は `routes::daemon` の共有関数（apply_repo_update / collect_lanes /
+    // 実装は `daemon::control_ops` の共有関数（apply_repo_update / collect_lanes /
     // resolve_create_lane_args）1 本なので、ここが落ちるのは振る舞いが動いた時。
     // =====================================================================
 
@@ -2857,7 +2932,7 @@ mod tests {
     /// 続いて created_at 昇順。
     #[tokio::test]
     async fn daemon_control_lanes_list_filters_and_sorts() {
-        use crate::repo::lanes_state::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
 
         let cap = new_daemon_cap();
 
@@ -3040,7 +3115,7 @@ mod tests {
     /// `lanes/create` の省略時 default 導出（旧 HTTP route と共有していた calc）。
     #[test]
     fn create_lane_defaults_are_derived() {
-        use crate::repo::routes::daemon::resolve_create_lane_args;
+        use crate::daemon::control_ops::resolve_create_lane_args;
 
         let (branch, agent) = resolve_create_lane_args("/tmp/parity", "sub", None, None);
         assert!(
@@ -3071,11 +3146,251 @@ mod tests {
     #[test]
     fn test_daemon_state_new() {
         let state = DaemonState::new();
-        // 起動時刻が現在に近いことを確認
+        // 起動時刻は RFC 3339 の String（9-2 PR-1 で `Instant` を置換）。現在に近いことを確認
+        let t = chrono::DateTime::parse_from_rfc3339(&state.started_at)
+            .expect("started_at は RFC 3339")
+            .with_timezone(&chrono::Utc);
         assert!(
-            state.started_at.elapsed().as_secs() < 1,
-            "started_at が現在時刻から離れすぎている"
+            (chrono::Utc::now() - t).num_seconds().abs() < 5,
+            "started_at が現在時刻から離れすぎている: {}",
+            state.started_at
         );
+    }
+
+    /// 9-2 PR-1 の本体 — `assemble` が「渡した実体」をそのまま結線していること。
+    ///
+    /// doc 63 §6「共有実体」: `-D warnings` は孤児 field を検出するが**同じ型の別実体**は
+    /// 検出できない。組み立て口の中で `HubFederationStatus::new()` を作り直しても compile は
+    /// 通り、health は初期値を永遠に返す。だから渡した側を**非初期値へ動かして**、state 側から
+    /// 同じ値が見えることで固定する（`Arc::ptr_eq` は補助）。
+    ///
+    /// mutation で赤を実測: `hub_status` を `new()` で作り直す / `shutdown_token` を `new()` で
+    /// 作り直す / `process_presence` を空 map で埋める — いずれもここだけが落ちる。
+    #[tokio::test]
+    async fn assemble_projects_the_given_instances() {
+        use crate::capability::{ActorRegistry, RepoManagerCapability, UpdateCapability};
+        use crate::daemon::hub_client::{
+            HubAuthState, HubAuthStatus, HubFederationState, HubFederationStatus, HubNodesCache,
+            NodeEntry,
+        };
+
+        // ── 部品（production と同じ所有元から）────────────────────────────
+        let repo_manager = Arc::new(RwLock::new(RepoManagerCapability::new()));
+        // `new()` は `gh auth token` を subprocess で叩くので test 用 constructor を使う
+        let update = Arc::new(RwLock::new(UpdateCapability::new_for_test()));
+        let machine_capabilities = Arc::new(
+            crate::daemon::machine_capabilities::MachineCapabilities::new(
+                repo_manager.clone(),
+                update.clone(),
+            ),
+        );
+        let hub_status = HubFederationStatus::new();
+        let hub_nodes = HubNodesCache::new();
+        let hub_auth = HubAuthStatus::new();
+        let creo_actions = crate::creo::client::CreoActionsCache::new();
+        let shutdown_token = tokio_util::sync::CancellationToken::new();
+        let actor_registry = Arc::new(RwLock::new(ActorRegistry::new()));
+        let control_channels: ControlChannels =
+            Arc::new(crate::repo::repo_registry::RepoRuntimes::new());
+        let canvas_routers: crate::repo::topic_router::CanvasRouters = Default::default();
+        let (lane_change_tx, _) = tokio::sync::broadcast::channel::<String>(64);
+        let wire_notifier = crate::capability::WireNotifier::new();
+        let delivery_notify = Arc::new(tokio::sync::Notify::new());
+        let started_at = "2026-09-10T00:00:00+00:00".to_string();
+        // DB 系は mem db で実物を渡す（`None` を渡すと「`None` に固定した」mutation を素通しする）
+        let db = crate::db::VpDb::connect_mem().await.expect("connect_mem");
+        db.define_schema().await.expect("define_schema");
+        let vpdb: crate::db::SharedVpDb = Arc::new(db);
+        let wiremsg_store = crate::capability::WiremsgStore::new(Arc::new(vpdb.inner().clone()))
+            .await
+            .expect("WiremsgStore::new");
+        let delegation_store =
+            crate::capability::DelegationStore::new(Arc::new(vpdb.inner().clone()));
+
+        let state = DaemonState::assemble(DaemonAssembly {
+            machine_capabilities,
+            hub_status: hub_status.clone(),
+            hub_nodes: hub_nodes.clone(),
+            hub_auth: hub_auth.clone(),
+            creo_actions: creo_actions.clone(),
+            shutdown_token: shutdown_token.clone(),
+            actor_registry: actor_registry.clone(),
+            started_at: started_at.clone(),
+            vpdb: Some(vpdb.clone()),
+            control_channels: control_channels.clone(),
+            canvas_routers: canvas_routers.clone(),
+            lane_change_tx: lane_change_tx.clone(),
+            wiremsg_store: Some(wiremsg_store.clone()),
+            wire_notifier: wire_notifier.clone(),
+            delivery_notify: delivery_notify.clone(),
+            delegation_store: Some(delegation_store),
+        })
+        .await;
+
+        // ── 渡した側を非初期値へ動かし、state 側から同じ値が見える ─────────
+        hub_status.set(HubFederationState::Connected);
+        assert_eq!(state.hub_status.get().as_str(), "connected", "hub_status");
+        hub_auth.set(HubAuthState::Credentialed);
+        assert_eq!(state.hub_auth.get().as_str(), "credentialed", "hub_auth");
+        hub_nodes.set(vec![NodeEntry {
+            node_id: "node-1".to_string(),
+            endpoints: vec!["[::1]:12879".to_string()],
+            handle: "@someone".to_string(),
+            name: "someone".to_string(),
+            registered_at: "2026-09-10T00:00:00Z".to_string(),
+            connected: true,
+        }]);
+        assert_eq!(state.hub_nodes.get()[0].handle, "@someone", "hub_nodes");
+        creo_actions.set(vec![crate::creo::client::CreoAction {
+            id: "act-1".to_string(),
+            text: "棚卸し 9-2 を進める".to_string(),
+            done: false,
+            bucket: "today".to_string(),
+            order: "a0".to_string(),
+        }]);
+        let snap = state.creo_actions.get();
+        assert_eq!(
+            (snap.rev, snap.items[0].id.as_str()),
+            (1, "act-1"),
+            "creo_actions"
+        );
+        update.write().await.seed_cached_release_for_test("999.0.0");
+        assert_eq!(
+            state
+                .update
+                .as_ref()
+                .expect("update は MachineCapabilities から取り出す")
+                .read()
+                .await
+                .cached_update_status(),
+            (true, Some("999.0.0".to_string())),
+            "update は MachineCapabilities.update と同一"
+        );
+        shutdown_token.cancel();
+        assert!(
+            state.shutdown_token.is_cancelled(),
+            "shutdown_token は run_daemon の 1 本（新設した token では誰も止まらない）"
+        );
+        // lane_change_tx: 渡した Sender で送ると state 側の subscriber に届く（同じ channel）
+        let mut rx = state.lane_change_tx.subscribe();
+        lane_change_tx.send("/repos/vp".to_string()).expect("send");
+        assert_eq!(
+            rx.recv().await.expect("recv"),
+            "/repos/vp",
+            "lane_change_tx"
+        );
+        // presence: RepoManagerCapability 側で書いた値が state の view に見える
+        repo_manager
+            .read()
+            .await
+            .set_presence("/repos/vp", crate::capability::RepoPresenceState::Connected)
+            .await;
+        assert!(
+            state
+                .process_presence
+                .as_ref()
+                .expect("view は repo_manager から取り出す")
+                .read()
+                .await
+                .contains_key("/repos/vp"),
+            "process_presence は repo_manager の view（空 map で補っていない）"
+        );
+        assert_eq!(
+            state.started_at, started_at,
+            "started_at は渡した値そのもの"
+        );
+
+        // ── Arc 同一性（補助）──────────────────────────────────────────
+        let rm = repo_manager.read().await;
+        assert!(Arc::ptr_eq(
+            state.running_repos.as_ref().unwrap(),
+            &rm.running_processes_ref()
+        ));
+        assert!(Arc::ptr_eq(state.repos.as_ref().unwrap(), &rm.repos_ref()));
+        assert!(Arc::ptr_eq(
+            state.lane_registry.as_ref().unwrap(),
+            &rm.lane_registry_ref()
+        ));
+        drop(rm);
+        assert!(Arc::ptr_eq(
+            state.daemon_cap.as_ref().unwrap(),
+            &repo_manager
+        ));
+        assert!(Arc::ptr_eq(&state.actor_registry, &actor_registry));
+        assert!(Arc::ptr_eq(&state.control_channels, &control_channels));
+        assert!(Arc::ptr_eq(&state.canvas_routers, &canvas_routers));
+        assert!(Arc::ptr_eq(
+            state.delivery_notify.as_ref().unwrap(),
+            &delivery_notify
+        ));
+        assert!(Arc::ptr_eq(state.vpdb.as_ref().unwrap(), &vpdb), "vpdb");
+        // wire_notifier: agent ごとの Notify handle が同じ Arc なら同じ notifier
+        assert!(
+            Arc::ptr_eq(
+                &state.wire_notifier.as_ref().unwrap().handle("a@b").await,
+                &wire_notifier.handle("a@b").await
+            ),
+            "wire_notifier は渡した実体（別に new() すると wire_recv が起きない）"
+        );
+        // wiremsg_store / delegation_store: 渡したものが落ちていない（`None` 固定の mutation を検出）。
+        // 同じ db の上なら別実体でも振る舞いは同じなので、ここは「渡した store で送った物が読める」まで。
+        let store = state.wiremsg_store.as_ref().expect("wiremsg_store は Some");
+        wiremsg_store
+            .send_root("a@b", &["c@d".to_string()], serde_json::json!({"k": "v"}))
+            .await
+            .expect("send_root");
+        assert_eq!(
+            store.fetch_unread("c@d").await.expect("fetch_unread").len(),
+            1,
+            "渡した store で送った物が state 側の store から読める"
+        );
+        assert!(state.delegation_store.is_some(), "delegation_store は Some");
+    }
+
+    /// DeviceRegistry 🧲 は `MachineCapabilities.devices` の実体をそのまま共有する（feature = "midi"）。
+    ///
+    /// `with_devices` は使わない — `attach_fleet_inputs` が実機 MIDI を開ける
+    /// （`build_test_daemon_state` と同じ理由）。registry を手で置いて結線だけを見る。
+    #[cfg(feature = "midi")]
+    #[tokio::test]
+    async fn assemble_shares_devices_from_machine_capabilities() {
+        use crate::capability::{ActorRegistry, RepoManagerCapability, UpdateCapability};
+
+        let repo_manager = Arc::new(RwLock::new(RepoManagerCapability::new()));
+        let update = Arc::new(RwLock::new(UpdateCapability::new_for_test()));
+        let mut wc =
+            crate::daemon::machine_capabilities::MachineCapabilities::new(repo_manager, update);
+        let devices = Arc::new(RwLock::new(crate::devices::DeviceRegistry::new(Arc::new(
+            crate::capability::eventbus::EventBus::new(),
+        ))));
+        wc.devices = Some(devices.clone());
+        let (lane_change_tx, _) = tokio::sync::broadcast::channel::<String>(64);
+
+        let state = DaemonState::assemble(DaemonAssembly {
+            machine_capabilities: Arc::new(wc),
+            hub_status: Default::default(),
+            hub_nodes: Default::default(),
+            hub_auth: Default::default(),
+            creo_actions: Default::default(),
+            shutdown_token: tokio_util::sync::CancellationToken::new(),
+            actor_registry: Arc::new(RwLock::new(ActorRegistry::new())),
+            started_at: String::new(),
+            vpdb: None,
+            control_channels: Arc::new(crate::repo::repo_registry::RepoRuntimes::new()),
+            canvas_routers: Default::default(),
+            lane_change_tx,
+            wiremsg_store: None,
+            wire_notifier: Default::default(),
+            delivery_notify: Arc::new(tokio::sync::Notify::new()),
+            delegation_store: None,
+        })
+        .await;
+
+        assert!(Arc::ptr_eq(state.devices.as_ref().unwrap(), &devices));
+        assert!(Arc::ptr_eq(
+            state.devices_event_bus.as_ref().unwrap(),
+            devices.read().await.event_bus()
+        ));
     }
 
     #[test]

@@ -339,7 +339,7 @@ impl DaemonControlClient {
 
     /// repo を起動する (旧 `vp sp start` の後継)。
     ///
-    /// doc 44 P1 (fold-in): repo は daemon プロセス内の `Arc<AppState>` なので、
+    /// doc 44 P1 (fold-in): repo は daemon プロセス内の `Arc<RepoState>` なので、
     /// 「起動」は子プロセス spawn ではなく daemon の registry への登録を意味する。
     /// 既に起動済みなら daemon 側で no-op になる (二重起動は map のキー一意性が防ぐ)。
     pub async fn repos_start(&self, name: &str) -> Result<serde_json::Value> {
@@ -428,7 +428,7 @@ impl DaemonControlClient {
     /// filter 付きの lane 一覧（`repo` / `lane` / `agent`、いずれも省略可 = 無フィルタ）。
     ///
     /// 並びは repo 名昇順 → 同 repo 内は開発起点 (root) 先 → created_at 昇順
-    /// （実装は `routes::daemon::collect_lanes`。doc 45 段 4 で旧 HTTP `GET /api/daemon/lanes` を
+    /// （実装は `daemon::control_ops::collect_lanes`。doc 45 段 4 で旧 HTTP `GET /api/daemon/lanes` を
     /// 撤去し、この面が lane 一覧の唯一の入口になった）。
     pub async fn lanes_list_filtered(
         &self,

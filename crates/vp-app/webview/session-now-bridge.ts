@@ -24,6 +24,8 @@
  * turn を閉じる event で null が流れてくる。
  */
 
+import type { EngineConversationEvent } from "./console";
+
 /** window event 名（bundle 間契約）。 */
 export const SESSION_NOW_EVENT = "vp:session-now";
 
@@ -52,7 +54,7 @@ export function emitSessionNow(detail: SessionNowDetail): void {
  * これを参照する。chatview ↔ console の import 向き（chatview → console）の制約で
  * chatview 側に置けないため、両者が依存できる本 bridge に置く。
  */
-export const TURN_CLOSING_KINDS = ["turn_completed", "error", "engine_exited"] as const;
+export const TURN_CLOSING_KINDS = ["turn_completed", "error", "engine_exited"] as const satisfies readonly EngineConversationEvent["kind"][];
 
 /**
  * replay_end が来ない時に replay 追跡を強制解除するまでの猶予 ms（安全網）。

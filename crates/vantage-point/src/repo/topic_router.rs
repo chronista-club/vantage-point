@@ -105,8 +105,7 @@ impl TopicRouter {
     /// lane segment の正規化: `None` = Main lane（予約名 `root`）。
     /// per-lane board topic の lane 部に使う。
     fn lane_seg(lane: &Option<String>) -> &str {
-        lane.as_deref()
-            .unwrap_or(crate::repo::lanes_state::ROOT_LANE_NAME)
+        lane.as_deref().unwrap_or(crate::repo::lane::ROOT_LANE_NAME)
     }
 
     /// lane address（`vp/sub/foo` 等、 `/` を含む）を topic segment 安全な 1 token に
@@ -184,7 +183,6 @@ impl TopicRouter {
             RepoMessage::ComponentDismissed { .. } => {
                 "repo/conversation/event/component-dismissed".to_string()
             }
-            RepoMessage::AgUi { .. } => "repo/conversation/event/ag-ui".to_string(),
             RepoMessage::SessionList { .. } => "repo/conversation/state/session-list".to_string(),
             RepoMessage::SessionSwitched { .. } => "repo/conversation/state/session".to_string(),
             RepoMessage::SessionCreated { .. } => {

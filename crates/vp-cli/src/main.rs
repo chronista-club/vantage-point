@@ -449,7 +449,7 @@ fn main() -> Result<()> {
             commands::daemon::execute(cmd)
         }
         // doc 44 P1 (fold-in): `vp sp` は退役。repo は daemon プロセス内の
-        // `Arc<AppState>` になり、外から起動する概念が消えた。lifecycle 操作は
+        // `Arc<RepoState>` になり、外から起動する概念が消えた。lifecycle 操作は
         // `vp repos start|stop`（名詞を repo から repo へ移した）。
         // tmux decoupling PR2: `vp hd` / `vp tmux` は退役。 lane の console 操作は
         // `vp lane capture` / `vp lane nudge` (lane 語彙の後継)。

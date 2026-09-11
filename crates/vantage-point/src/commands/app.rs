@@ -86,7 +86,7 @@ fn start() -> Result<()> {
     // Unix: setsid 相当 (新 process group で child を分離、 親 shell の SIGHUP から守る)。
     // Windows: CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS で console を切り離し、
     //          親 (vp.exe) が exit しても vp-app GUI が独立稼働する。
-    //          daemon_launcher.rs と同パターン。
+    //          vp-app の daemon/launcher.rs と同パターン。
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

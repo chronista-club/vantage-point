@@ -71,7 +71,7 @@ struct WatchHandle {
 /// 同時監視数の上限
 const MAX_WATCHERS: usize = 20;
 
-/// 監視マネージャー（AppState に保持）
+/// 監視マネージャー（RepoState に保持）
 pub struct FileWatcherManager {
     watchers: HashMap<String, WatchHandle>,
 }

@@ -732,7 +732,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-ctx-item.danger.confirming{background:var(--color-status-error,#d4444c);
   color:#fff;}
 
-/* sidebar view modes (2026-08-01): スリム帯。幅 (280px⇄44px) は main_area.rs の
+/* sidebar view modes (2026-08-01): スリム帯。幅 (280px⇄44px) は webview/main_area.rs の
    #sidebar-root / #sidebar-root.slim が司り、ここは帯の中身だけ定義する。 */
 .vp-slim-rail{display:flex;flex-direction:column;align-items:center;gap:6px;
   padding:10px 0;height:100%;box-sizing:border-box;overflow-y:auto;overflow-x:hidden;}

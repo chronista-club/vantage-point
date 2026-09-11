@@ -8,7 +8,7 @@
 //
 // 生成は `cargo test -p vp-app --test sidebar_ipc_codegen` で走る
 // (tests/sidebar_ipc_codegen.rs)。 手書き側 (webview/src/sidebar/ipc.ts の
-// `SidebarIpcMsg` / app.rs の `handle_sidebar_ipc`) の移行は PR-2 / PR-3。
+// `SidebarIpcMsg` / app/sidebar_ipc.rs の `handle_sidebar_ipc`) の移行は PR-2 / PR-3。
 //
 // 全 request は client → server。 serde tag フィールド名 = "t"。
 
@@ -112,13 +112,13 @@ protocol "sidebar" version="1.0.0" {
         }
         // in-app update: sidebar の「更新する」ボタン click。 Rust 側で macOS ネイティブ
         // 確認ダイアログ (rfd) を出し、 OK なら self-update (brew / vp update) →
-        // `vp daemon restart` → GUI relaunch を実行する (update_flow.rs)。
+        // `vp daemon restart` → GUI relaunch を実行する (flows/update.rs)。
         // version = 適用予定の latest version (ダイアログ文言用)。
         request "update:apply" {
             field "version" type="string"
         }
         // Login ボタン: `vp auth login --for <target>` (browser OAuth) を spawn し、 成功後に
-        // daemon-control.hub/reconnect で hub 接続へ即反映する (auth_flow.rs)。
+        // daemon-control.hub/reconnect で hub 接続へ即反映する (flows/auth.rs)。
         //
         // `target` = token の宛先 ("hub" | "creo")。**identity は 1 つ（Creo ID）だが
         // access_token は aud claim で宛先が固定される**ため、宛先ごとに 1 本ずつ要る
@@ -157,9 +157,9 @@ protocol "sidebar" version="1.0.0" {
         // キャンセル時は既存値を保持する。
         request "settings:pick_repo_root" {}
         // daemon 再起動要求。⚠️ **全 repo = 全 lane の claude が落ちる**
-        // （doc 44 P1 fold-in で repo は daemon プロセス内の `Arc<AppState>`）。
+        // （doc 44 P1 fold-in で repo は daemon プロセス内の `Arc<RepoState>`）。
         // Rust 側が rfd 確認ダイアログで「何が落ちて何が戻るか」を出してから
-        // `vp daemon restart` を撃つ（`update_flow.rs` と同じ専用スレッド）。
+        // `vp daemon restart` を撃つ（`flows/update.rs` と同じ専用スレッド）。
         request "daemon:restart" {}
 
         // ACTIONS の永続化 (doc 57 Phase 4)。sidebar の編集を daemon 経由で creo-memories へ。

@@ -21,12 +21,12 @@
 //! - record の `requester` / `doer` は**論理 wire address**（`agent@<repo>` /
 //!   `agent@<repo>/<name>`）で持つ。raw tmux session は焼き込まない。
 //! - wake は `address → (local lane session)` の resolution を介す（[`lane_query_for`] +
-//!   [`AppState::nudge_lane`]）。後で `daemon-handle:` 接頭の remote 分岐を足すだけで federation 化
+//!   [`RepoState::nudge_lane`]）。後で `daemon-handle:` 接頭の remote 分岐を足すだけで federation 化
 //!   できる（local は退化形）。
 
 use serde::{Deserialize, Serialize};
 
-use super::state::AppState;
+use super::state::RepoState;
 
 /// 委譲 1 件の record（daemon 中央 store = `delegations` table のエントリ）。
 ///
@@ -88,7 +88,7 @@ pub(crate) enum Outcome {
     NeedsInput { question: String },
 }
 
-/// 論理 wire address（`agent@...`）を、[`AppState::resolve_lane_address`](crate::repo::state::AppState::resolve_lane_address)
+/// 論理 wire address（`agent@...`）を、[`RepoState::resolve_lane_address`](crate::repo::state::RepoState::resolve_lane_address)
 /// が解する lane address query（`<repo>/main` / `<repo>/sub/<name>`）に翻訳する。
 ///
 /// これが resolution の **local 分岐**（= federation 不変条件の swappable 層）。後で
@@ -105,7 +105,7 @@ pub(crate) fn lane_query_for(addr: &str) -> String {
         // 既に lane form（main / sub/... / 旧世代の予約名・lead / wing）なら素通し。
         // ⚠️ 旧予約名（root / conductor）は resolve 側（parse_address）が Main に正規化する。
         Some((_, tail))
-            if tail == crate::repo::lanes_state::ROOT_LANE_NAME
+            if tail == crate::repo::lane::ROOT_LANE_NAME
                 || tail == "lead"
                 || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&tail)
                 || tail.starts_with("sub/")
@@ -116,7 +116,7 @@ pub(crate) fn lane_query_for(addr: &str) -> String {
         // `agent@<repo>/<name>` → sub lane。
         Some((repo, name)) => format!("{repo}/sub/{name}"),
         // `agent@<repo>` → main lane。⚠️ 予約名は定数経由（文字列直書きは rename で取り残る）。
-        None => format!("{rest}/{}", crate::repo::lanes_state::ROOT_LANE_NAME),
+        None => format!("{rest}/{}", crate::repo::lane::ROOT_LANE_NAME),
     }
 }
 
@@ -169,7 +169,7 @@ fn respond_wake_prompt(id: &str, task: &str, answer: &str) -> String {
 /// store は wire と同じく daemon 中央（`daemon_wire::call`）。wake は repo-local（`nudge_lane`、
 /// doer が別 repo / 不在なら `woke=false` で graceful、取りこぼしは reconcile が後で拾う = follow-up B）。
 pub(crate) async fn handle_delegate(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let doer = payload
@@ -215,7 +215,7 @@ pub(crate) async fn handle_delegate(
 /// Daemon store で transition（Done/Failed/AwaitingResponse）→ 更新後 record を受け取り requester を
 /// repo-local wake（Outcome 同梱）。未知 id は Daemon handler が error を返し、`daemon_wire::call` 経由で Err。
 pub(crate) async fn handle_complete(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let id = payload
@@ -260,7 +260,7 @@ pub(crate) async fn handle_complete(
 /// answer 同梱で再 wake。未知 id は Daemon handler が error を返す。状態 AwaitingResponse でなくても
 /// 前進させる lenient 設計は Daemon store 側（`apply_respond`）が担保（厳密ガードは reconcile follow-up）。
 pub(crate) async fn handle_respond(
-    state: &AppState,
+    state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let id = payload
@@ -320,7 +320,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use super::lanes_state::LaneInfo;
+use super::lane::LaneInfo;
 
 /// reconcile pulse の間隔（wire delivery loop の TICK と同じ 30s）。
 const RECONCILE_TICK: Duration = Duration::from_secs(30);
@@ -351,32 +351,29 @@ fn wake_for(d: &Delegation) -> (String, String) {
     }
 }
 
-/// reconcile loop を spawn（run_daemon で呼ぶ）。shutdown でループ終了。
-pub(crate) fn spawn_reconcile_loop(
+/// reconcile loop（run_daemon が `ActorRegistry::spawn_task` に渡す）。shutdown でループ終了。
+pub(crate) async fn reconcile_loop(
     store: crate::capability::DelegationStore,
     lane_registry: Arc<RwLock<HashMap<String, Vec<LaneInfo>>>>,
     control_channels: crate::daemon::server::ControlChannels,
     shutdown: CancellationToken,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        tracing::info!(
-            "delegation reconcile loop 起動 (tick={:?}, timeout={}ms)",
-            RECONCILE_TICK,
-            TIMEOUT_MS
-        );
-        loop {
-            tokio::select! {
-                _ = shutdown.cancelled() => break,
-                _ = tokio::time::sleep(RECONCILE_TICK) => {}
-            }
-            if let Err(e) =
-                reconcile_pulse(&store, &lane_registry, &control_channels, TIMEOUT_MS).await
-            {
-                tracing::warn!("delegation reconcile pulse 失敗 (次 tick で再試行): {e}");
-            }
+) {
+    tracing::info!(
+        "delegation reconcile loop 起動 (tick={:?}, timeout={}ms)",
+        RECONCILE_TICK,
+        TIMEOUT_MS
+    );
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = tokio::time::sleep(RECONCILE_TICK) => {}
         }
-        tracing::info!("delegation reconcile loop: shutdown");
-    })
+        if let Err(e) = reconcile_pulse(&store, &lane_registry, &control_channels, TIMEOUT_MS).await
+        {
+            tracing::warn!("delegation reconcile pulse 失敗 (次 tick で再試行): {e}");
+        }
+    }
+    tracing::info!("delegation reconcile loop: shutdown");
 }
 
 /// 1 回の reconcile pulse: timeout 化 → undelivered を Daemon-side で再 wake。
@@ -449,6 +446,29 @@ async fn reconcile_pulse(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 棚卸し 9-2 段階 3（PR-S3c）: `reconcile_loop` は `ActorRegistry::spawn_task` に渡す future
+    /// なので、cancel で自ら終わることが `stop_all` の前提（終わらなければ 8 秒待って abort）。
+    #[tokio::test]
+    async fn reconcile_loop_exits_on_cancel() {
+        let db = crate::db::VpDb::connect_mem().await.unwrap();
+        db.define_schema().await.unwrap();
+        let store = crate::capability::DelegationStore::new(Arc::new(db.inner().clone()));
+        let lane_registry = Arc::new(RwLock::new(HashMap::new()));
+        let control_channels = Arc::new(crate::repo::repo_registry::RepoRuntimes::new());
+        let shutdown = CancellationToken::new();
+        let handle = tokio::spawn(reconcile_loop(
+            store,
+            lane_registry,
+            control_channels,
+            shutdown.clone(),
+        ));
+        shutdown.cancel();
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("cancel で 1 秒以内に終わる")
+            .expect("panic せず終わる");
+    }
 
     #[test]
     fn lane_query_wire_main_to_lane() {

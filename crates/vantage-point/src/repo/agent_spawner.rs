@@ -40,7 +40,7 @@ use std::path::Path;
 use anyhow::Result;
 use tokio::sync::broadcast;
 
-use super::lanes_state::LaneAddress;
+use super::lane::LaneAddress;
 use crate::daemon::pty_slot::PtySlot;
 
 /// wiremsg R2-c（チャネル B、決定 D2）: wire 未読通知 hook を VP が spawn 時に注入する。
@@ -349,7 +349,7 @@ pub fn build_agent_command(agent_name: &str, addr: &LaneAddress, repo_dir: &Path
 ///
 /// - file は **session 単位**（`__<session>`）になり奪い合いが構造的に消えた
 ///   （身元を role にすると root 付け替えで再発する — [`crate::daemon::pty_slot::replay_file_path_session_in`]）
-/// - 非 root term も boot で復元される（`lane_reconcile::reconcile_lane`、doc 53 §12）ので読み手が居る
+/// - 非 root term も boot で復元される（`lane::reconcile::reconcile_lane`、doc 53 §12）ので読み手が居る
 /// - lane GC / Reset は prefix 掃き（`clear_replay_in`）で session file 群も消す
 pub fn build_agent_command_for_session(
     agent_name: &str,

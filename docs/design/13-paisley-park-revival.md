@@ -349,6 +349,8 @@ Out-of-scope (Post-PR-ε):
 
 ## §9. PR roadmap
 
+> **Status (2026-09-08)**: 本節の PR-β / PR-δ 系列で入れた `LaneCapabilities` / `LaneComponentRegistry` / `BoardComponent`（`BoardState`）は **棚卸し 項目 5 PR-D で撤去**。board は doc 52（server-authoritative）以降 DB が正で、container に production の読み手は無かった。以下は歴史記録。
+
 doc 12 §9 で plot された PR-β/δ/ε を本 doc で技術設計確定:
 
 | PR | Linear / status | scope | 規模 | 依存 |
@@ -414,7 +416,7 @@ PR-β 開始前 (および各 sub-PR 開始前) に確定すべき残点。 P0 =
 | Q-4: Hub federation 公開範囲 | P2 | 暫定: state stream のみ |
 | **Q-5**: caller Lane resolution path | **✅ 実質解決** | **PR-ε-3 で `setWantedLane(address)` pattern で解決**。 setActivePane bridge が Lane click 時に「subscribe したい Lane」 を slot に保持、 ensureLane wrap が race recovery で auto connect する event-driven design。 当初 plan の env 注入 / param 拡張は未採用 (= JS 側 client state で完結) |
 | **Q-6**: address grammar `.{lane}` sub-suffix 拡張 | **P0** | PR-β-1 hard prerequisite |
-| **Q-7**: `interactive_agent` vs Lane Echoes 整理 | **P0** | PR-β-2 物理移管時 |
+| **Q-7**: `interactive_agent` vs Lane Echoes 整理 | **✅ 解決 (2026-09、削除)** | `interactive_agent` は #390 以来 `None` のまま = 実体無し。棚卸し 項目 5 PR-C で `AppState` field ごと撤去。Echoes = Lane 側（`ClaudeHost` / PtySlot） |
 | Q-8: Topic 命名規約 4→5 階層拡張 | P1 | doc 12 §5 update PR (並列) |
 | Q-9: Active subscriber loop 検出 | P1 | PR-ε-3 では Passive subscribe (= 受信のみ、 自分の broadcast を再 subscribe しない) のため不要。 Active mode (= PP が他 Stand event を listen して能動 push) 実装時に再検討 |
 | Q-10: Echoes idle 時の context inject 先 | P1 | PR-ε-3 では未対応 (Tag 編集等の双方向書き込み機能を v1 では実装せず)。 §8 Out-of-scope 通り future work |
@@ -483,6 +485,7 @@ doc 12 §13 Q-7 (Msgbox registry の `(layer_path, actor)` key 拡張) は **reg
 現実装 `state.rs:124` に `interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>` (Project scope の in-process Claude SDK 経由 Echoes) があり、 一方 `lane_pool.pty_slots[lane]` に各 Lane の Echoes process (tmux 経由 claude CLI) も別エンティティとして立つ。 PP が pair する Echoes は後者だが、 前者の存在 / 役割が doc 12 §9 catalog で整理されていない。
 
 - **暫定**: PP pair 対象 = Lane Echoes (PTY 経由)。 `interactive_agent` (in-process) は cleanup PR で別 Stand に格上げするか削除するかを別途判断
+- **✅ 解決 (2026-09-08、棚卸し 項目 5 PR-C)**: **削除**。 `interactive_agent` は #390 (VP-200) で唯一の書き手を失って以来 `None` 固定 = 実体の無い field だった。 in-process 経路は `conversation/host.rs::ClaudeHost` (gui) が正で、 PTY 経路 (tui) と並ぶ 2 本が現行。 doc 12 §13 Q-12 の catalog 追加候補も不要
 - **doc 12 back-port**: §13 Q-12 catalog 漏れ list に「`interactive_agent` (Echoes と独立 / 同体?)」 追加候補
 
 ### Q-8: Topic 命名規約 4 → 5 階層拡張 (P1、 doc 12 §5 back-port 候補)

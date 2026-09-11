@@ -1,7 +1,7 @@
 //! HTTP server with WebSocket support
 //!
 //! Process サーバーのエントリーポイント。`run()` と `run_daemon()` でサーバーを起動する。
-//! ルートハンドラーは `routes/` モジュールに分離されている。
+//! HTTP handler は `http/`（health / shutdown / update）に分離されている。Router は `build_daemon_router`。
 
 use std::net::{Ipv6Addr, SocketAddrV6};
 use std::sync::Arc;
@@ -13,12 +13,13 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 
-use super::capabilities::{CapabilityConfig, RepoCapabilities};
+use super::http::{health, update};
 use super::hub::Hub;
-use super::routes::{health, update};
-use super::state::AppState;
+use super::state::RepoState;
 use super::topic_router::TopicRouter;
+use crate::capability::component_service::LayerScope;
 use crate::capability::{RepoManagerCapability, UpdateCapability};
+use crate::daemon::server::DaemonState;
 use crate::file_watcher::FileWatcherManager;
 
 /// daemon が持つ「repo path_key → lane 一覧」集約 view の共有参照。
@@ -27,12 +28,12 @@ use crate::file_watcher::FileWatcherManager;
 /// register snapshot を push していた。同一プロセスになった今、その push は
 /// **map への書き込み**に退化する（[`publish_lanes`]）。
 pub(crate) type NodeLaneView =
-    Arc<RwLock<std::collections::HashMap<String, Vec<super::lanes_state::LaneInfo>>>>;
+    Arc<RwLock<std::collections::HashMap<String, Vec<super::lane::LaneInfo>>>>;
 
 /// LanePool の現 snapshot を「daemon の集約 view」と「repo の hub」の両方へ配る。
 ///
 /// doc 44 P1 (fold-in): lanes が daemon へ流れる供給点は 3 つ（起動時 seed / 5s periodic /
-/// `SystemEvent::Lane`）あり、`lanes_state.rs` の規約どおり**全供給点で同じ enrich を通す**
+/// `SystemEvent::Lane`）あり、`lane/enrich.rs`（`refresh_engine_session_id`）の規約どおり**全供給点で同じ enrich を通す**
 /// 必要がある。旧構成ではこの 3 点が hub へ broadcast し、repo の uplink が QUIC で daemon の
 /// `lane_registry` へ中継していた。fold-in で中継が消えたため、daemon 側 view の更新を
 /// ここに並置する — これを怠ると daemon の view が boot 時の db 値で固まり、
@@ -71,13 +72,13 @@ impl LaneChangeNotifier {
 }
 
 async fn publish_lanes(
-    state: &Arc<AppState>,
+    state: &Arc<RepoState>,
     hub: &Hub,
     node_lanes: &Option<NodeLaneView>,
     path_key: &str,
     notifier: &mut LaneChangeNotifier,
 ) {
-    let lanes = super::routes::lanes::build_lanes_snapshot(state).await;
+    let lanes = super::lane::lifecycle::build_lanes_snapshot(state).await;
     if let Some(view) = node_lanes {
         view.write()
             .await
@@ -105,7 +106,7 @@ async fn publish_lanes(
 ///
 /// doc 44 P1 (fold-in): 旧 `run()` から **uplink と終端 block を除いた部分**を切り出したもの。
 /// repo プロセスとして動く間は [`run`] が本関数を呼んで uplink を張り、daemon 一枚化後は
-/// daemon が repo ごとに本関数を直接呼んで `Arc<AppState>` を map に抱える。
+/// daemon が repo ごとに本関数を直接呼んで `Arc<RepoState>` を map に抱える。
 ///
 /// `node_lanes` は daemon の lane 集約 view（repo プロセスとして動く場合は `None`）。
 /// 旧 SP uplink の代わりに、本関数が起こす publish task が直接ここへ書き込む。
@@ -117,8 +118,7 @@ async fn publish_lanes(
 /// 返る時点で lane bootstrap / lifecycle monitor / lanes snapshot publish まで起動済み。
 /// 停止は `shutdown_token` を cancel して [`shutdown_repo`] を呼ぶ。
 pub(crate) async fn start_repo(
-    port: u16,
-    cap_config: CapabilityConfig,
+    repo_dir: String,
     shutdown_token: CancellationToken,
     node_lanes: Option<NodeLaneView>,
     vpdb: Option<crate::db::SharedVpDb>,
@@ -129,13 +129,12 @@ pub(crate) async fn start_repo(
     // Some ならそれを本 repo の topic_router として採用する（既存購読者ごと実 router 化。
     // demand hook は placeholder 生成時に登録済みなので二重登録しない）。
     adopted_router: Option<Arc<TopicRouter>>,
-) -> Result<Arc<AppState>> {
-    let repo_dir = cap_config.repo_dir.clone();
+) -> Result<Arc<RepoState>> {
     let config_for_init = crate::config::Config::load().unwrap_or_default();
 
     // 旧 file-backed 永続化レイヤー退役: 永続は SurrealDB 一本化 (board pane state は pane_contents)。
 
-    // repo_name は repo_dir から解決（AppState / lane pool 等で使用）
+    // repo_name は repo_dir から解決（RepoState / lane pool 等で使用）
     let repo_name_for_remote =
         crate::resolve::repo_name_from_path(&repo_dir, &config_for_init).to_string();
 
@@ -145,26 +144,16 @@ pub(crate) async fn start_repo(
     // トレースログファイルを早期初期化
     crate::trace_log::init_log_file();
 
-    // Initialize Capability system
-    let capabilities = Arc::new(RepoCapabilities::new(cap_config).await);
-
-    // Initialize all capabilities
-    if let Err(e) = capabilities.initialize().await {
-        tracing::warn!("Failed to initialize capabilities: {}", e);
-    }
-
     // wiremsg R5-4: 旧 msgbox の registry サブシステム (daemon registry への actor
     // register / unregister) は撤去済。 wire の cross-process delivery は daemon の
     // repo registry (repo → repo port) を使う別経路で、 msgbox registry には依存しない。
 
     let hub = Hub::new();
 
-    // Start event bridge: EventBus -> Hub（shutdown token で停止可能）
-    let _event_bridge = capabilities.start_event_bridge(hub.sender(), shutdown_token.clone());
-    tracing::info!("Capability event bridge started");
-
-    // Terminal チャネル認証トークンを生成
-    let terminal_token = crate::discovery::generate_terminal_token();
+    // 棚卸し 9-2 段階 3（PR-S3b）: repo が spawn する常駐 task はすべてこの registry に預ける。
+    // `shutdown_repo` が `actor_registry::stop_all` で終了を待つ（token cancel だけでは
+    // 「止まれと言った」までで、「止まった」は誰も確認していなかった — doc 63 §9 の順序依存）。
+    let actor_registry = Arc::new(RwLock::new(crate::capability::ActorRegistry::new()));
 
     // TopicRouter 初期化 + Hub → TopicRouter ブリッジ（shutdown token で停止可能）。
     // 養子縁組（adopted_router = Some）の場合は購読者付きの placeholder をそのまま使う
@@ -173,25 +162,32 @@ pub(crate) async fn start_repo(
         let router_clone = topic_router.clone();
         let mut hub_rx = hub.subscribe();
         let shutdown = shutdown_token.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = shutdown.cancelled() => {
-                        tracing::info!("TopicRouter bridge: shutdown");
-                        break;
-                    }
-                    result = hub_rx.recv() => {
-                        match result {
-                            Ok(msg) => router_clone.route(msg).await,
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!("TopicRouter lagged: {} messages dropped", n);
+        actor_registry
+            .write()
+            .await
+            .spawn_task("topic-router-bridge", LayerScope::Repo, async move {
+                loop {
+                    tokio::select! {
+                        _ = shutdown.cancelled() => {
+                            tracing::info!("TopicRouter bridge: shutdown");
+                            break;
+                        }
+                        result = hub_rx.recv() => {
+                            match result {
+                                Ok(msg) => router_clone.route(msg).await,
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                    tracing::warn!("TopicRouter lagged: {} messages dropped", n);
+                                }
                             }
                         }
                     }
                 }
-            }
-        });
+            })
+            // `closing` を立てられるのは `shutdown_repo`（= state が返った後）だけなので、
+            // 本関数の中で Err になることは無い。Err 時の後始末は `RepoRuntimes::start` が
+            // token cancel で担う。
+            .map_err(anyhow::Error::msg)?;
     }
 
     // SurrealDB — daemon が開いた唯一の handle をそのまま使う（doc 44 P1 PR4）。
@@ -210,57 +206,31 @@ pub(crate) async fn start_repo(
     // `RepoRuntimes` の map への二重 insert 防止が引き継いだ（プロセスが無いので、
     // 重複は HashMap のキー衝突として表現される）。
 
-    // VP-159 PR-4b: Agent / Service actor の supervisor 受け皿。 repo-local Service (= lane-spawn)
-    // を `spawn_service` 経由で起動・register、 JoinHandle を保持。 machine scope の
-    // device registry の metadata register は dynamic routing vision 確定後 (cf. design-spark
-    // mem_1CavFi5D1aMSpEkas89SvQ)、 PR-5 supervisor 統一で JoinHandle 経由 abort を activate。
-    let actor_registry = crate::capability::ActorRegistry::new();
-
-    let state = Arc::new(AppState {
+    let state = Arc::new(RepoState {
         replay_flights: crate::repo::state::ReplayFlights::default(),
         hub,
         shutdown_token: shutdown_token.clone(),
         // Phase A4-2b: lane_pool init で同 var を後続参照するため clone
         repo_dir: repo_dir.clone(),
-        capabilities,
         // R3: wire cross-process delivery の宛先分類用 — 解決済 repo 名
         repo_name: repo_name_for_remote.clone(),
-        // VP-159 PR-4b: ActorRegistry を move (= lane-spawn は AppState 構築後に追加)
-        actor_registry: Arc::new(RwLock::new(actor_registry)),
-        daemon: None,
-        update: None,
-        // repo mode は hub federation を持たない（daemon のみ）→ Disabled / 空 / Unknown のまま。
-        hub_status: crate::daemon::hub_client::HubFederationStatus::new(),
-        hub_nodes: crate::daemon::hub_client::HubNodesCache::new(),
-        hub_auth: crate::daemon::hub_client::HubAuthStatus::new(),
-        // ACTIONS の poller も daemon のみ（repo mode は空 + rev 0 = 未取得のまま）。
-        creo_actions: crate::creo::client::CreoActionsCache::new(),
-        interactive_agent: Arc::new(RwLock::new(None)),
-        port,
+        // 常駐 task の台帳（bridge は登録済、lane-spawn / publish / lifecycle monitor / sweep は構築後に追加）
+        actor_registry: actor_registry.clone(),
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
-        terminal_token: terminal_token.clone(),
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::repo::process_runner::ProcessRegistry::new(),
         )),
         topic_router,
-        canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-        started_at: chrono::Utc::now().to_rfc3339(),
         vpdb: vpdb.clone(),
-        // wiremsg R2-a: repo は wire store を持たない (daemon に中央化、 handler は proxy)
-        wiremsg_store: None,
-        // wire_notifier / delivery_notify は daemon mode 専用 (daemon の long-poll 起床 /
-        // delivery loop wake)。 repo では未使用だが AppState 共有 field のため空で満たす
-        wire_notifier: crate::capability::WireNotifier::new(),
-        delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         // Phase A4-2b: Lane scope の Agent pool — Main Lane 1 つ pre-populate
         // memory rule: 多 scope architecture (App/Repo/Lane/Pane)、HD/TH は Lane scope。
         // Sub Lane の動的 create は A4-4、Agent spawn 連動は A5 で実装。
         //
-        // (I-b、 2026-04-30): Sub auto-spawn は AppState 構築後に Mailbox actor 経由で実施。
+        // (I-b、 2026-04-30): Sub auto-spawn は RepoState 構築後に Mailbox actor 経由で実施。
         // lane subs を `LaneCmd::SpawnLane` Cmd 化して `lane-spawn` mailbox に投入する
         // (= concurrency 制御を `Arc<Semaphore::new(N)>` で表現、 N=config.startup.max_concurrent_lane_spawn)。
         // 詳細は run() 内 lane_spawn_actor wiring 参照。
-        lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::with_root(
+        lane_pool: Arc::new(RwLock::new(super::lane::LanePool::with_root(
             repo_name_for_remote.clone(),
             repo_dir.clone(),
         ))),
@@ -269,24 +239,14 @@ pub(crate) async fn start_repo(
         // caller publish (SystemEvent::Lane(LaneDiff::*) 等) + `publish_lanes` subscribe で
         // daemon の集約 view を更新する経路。 将来 Pane / Agent 等の event も同 bus に variant
         // 追加で乗る。
-        system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
-        // Phase A4-2b: Repo scope の Agent pool (board/runner ほか) — skeleton
-        // PR-α-1 (VP-111): repo モードでは MachineCapabilities を持たない (daemon mode 専用)
-        machine_capabilities: None,
-        // PR-β-1 (VP-119): repo モードで LaneCapabilities pool 受け皿を Some で初期化。
-        // 物理移管 (board) は PR-β-2、 本 PR では空 HashMap で構築のみ。
-        lane_capabilities: Some(Arc::new(RwLock::new(
-            super::lane_capabilities::LaneCapabilitiesPool::new(),
-        ))),
+        system_event_tx: tokio::sync::broadcast::channel::<super::lane::SystemEvent>(64).0,
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
-        // repo mode は delegation store を持たない (daemon 中央 store に proxy する)。
-        delegation_store: None,
         editor_pending: Default::default(),
     });
 
     // Phase review fix #2: LanePool::with_root は内部で PtySlot::spawn (openpty + spawn_command)
     // で OS syscall ブロッキング → spawn_blocking で tokio worker thread (= tokio runtime の OS thread) を保護。
-    // でも... AppState 既に構築済なので restructure したいけど不可。 代替:
+    // でも... RepoState 既に構築済なので restructure したいけど不可。 代替:
     // with_root 自体は sync だが state 構築段階で `tokio::task::block_in_place` も使えない。
     // 結果的に repo 起動時 1 回だけの呼び出しなので影響は軽微。 review 指摘は記録、 現実装維持。
     // (`create_handler` 側の spawn_blocking 化は完了済 = lanes.rs の方が頻繁に呼ばれる重要 path)
@@ -294,35 +254,17 @@ pub(crate) async fn start_repo(
     // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
     state.restore_pane_contents().await;
 
-    // PR-β-2 (VP-120): Main Lane の LaneCapabilities entry を populate (LanePool::with_root と同期)。
-    // PR-β-1 で空 HashMap だった lane_capabilities pool に、 Main Lane の独立 BoardState を host。
-    // doc 13 §6 自動 spawn rule = Lane 起動時に board 同時 spawn (default) を default で実現。
-    if let Some(lc_pool) = state.lane_capabilities.as_ref() {
-        let main_addr = super::lanes_state::LaneAddress::root(&repo_name_for_remote);
-        // doc 59 P4: 既定 agent は settings.kdl（好みの層）が持つ。
-        let default_agent = crate::settings_file::default_lane_agent();
-        lc_pool
-            .write()
-            .await
-            .populate_lane(main_addr, default_agent);
-        tracing::info!(
-            "PR-β-2: LaneCapabilities pool に Main Lane populate (repo={}, board host 化)",
-            repo_name_for_remote
-        );
-    }
-
     // (I-b、 2026-04-30) Lane spawn actor を起動し、 既存 lane subs を Cmd 化して投入。
     // in-process channel + Semaphore で並列 spawn を gate する設計。
     // - actor は `cmd_rx` (unbounded channel) を recv し、 `Arc<Semaphore::new(N)>` で gate しつつ並列実行
     // - bootstrap は lane subs をスキャンして `LaneCmd::SpawnLane` を投入 (= 1 回限りの seed)。
     //   block 終端で Sender drop → actor は buffered Cmd を全 drain 後に正常終了する
     // - N=config.startup.max_concurrent_lane_spawn (default 1、 dogfood で計測 log を集計して tweak)
-    // PR-β-2 (VP-120): lane_capabilities pool clone も渡し、 Sub spawn 時に populate_lane する。
     //
     // in-process 直結 (2026-07-09): 旧 wiremsg R2-a 経路 (daemon 中央 wire store の
     // `lane-spawn@<repo>` mailbox 往復) を撤去。 producer は本 bootstrap のみで、 at-most-once
     // 配送 + repo 再起動時の幽霊 long-poll 消費で Cmd が失われ sub が永久 Spawning になる
-    // 障害があった (詳細は lane_spawn_actor.rs module doc)。 channel は process-local なので
+    // 障害があった (詳細は lane/spawn_actor.rs module doc)。 channel は process-local なので
     // この failure mode が構造的に消滅し、 daemon 不達 retry も不要 (standalone repo でも spawn 可)。
     {
         let max_concurrent = crate::config::Config::load()
@@ -332,21 +274,25 @@ pub(crate) async fn start_repo(
         // bootstrap → actor の in-process 直結 channel。 unbounded なので send は同期・即時
         // (receiver 生存中は infallible)、 recv loop 開始前の send もバッファされる。
         let (lane_spawn_tx, lane_spawn_rx) =
-            tokio::sync::mpsc::unbounded_channel::<super::lane_cmd::LaneCmd>();
+            tokio::sync::mpsc::unbounded_channel::<super::lane::cmd::LaneCmd>();
         // VP-159 PR-4b: ActorRegistry 経由で spawn + register (= JoinHandle を registry が保持、
-        // PR-5 supervisor 統一で abort / await を activate)。 Semaphore gate / race guard は完全互換。
-        state.actor_registry.write().await.spawn_service(
-            super::lane_spawn_actor::LaneSpawnActor::new(
-                state.lane_pool.clone(),
-                state.lane_capabilities.clone(), // PR-β-2 (VP-120): Sub spawn 時に populate_lane する
-                state.system_event_tx.clone(),   // Phase 2 (Step E): system event central bus
-                state.terminal_pumps.clone(),    // doc 53 R2: 復元後 pump reconcile 用
-                state.topic_router.clone(),
-                max_concurrent,
-                lane_spawn_rx,
-            ),
-            shutdown_token.clone(),
-        );
+        // `shutdown_repo` の `stop_all` が終了を待つ)。 Semaphore gate / race guard は完全互換。
+        state
+            .actor_registry
+            .write()
+            .await
+            .spawn_service(
+                super::lane::spawn_actor::LaneSpawnActor::new(
+                    state.lane_pool.clone(),
+                    state.system_event_tx.clone(), // Phase 2 (Step E): system event central bus
+                    state.terminal_pumps.clone(),  // doc 53 R2: 復元後 pump reconcile 用
+                    state.topic_router.clone(),
+                    max_concurrent,
+                    lane_spawn_rx,
+                ),
+                shutdown_token.clone(),
+            )
+            .map_err(anyhow::Error::msg)?;
 
         let subs_repo_id = std::path::Path::new(&state.repo_dir)
             .file_name()
@@ -377,7 +323,7 @@ pub(crate) async fn start_repo(
                 // (agent 非永続の既知バグの根治)。
                 let agent = crate::lane::agent_store::last(&subs_repo_id, &entry.name)
                     .unwrap_or_else(|| default_agent.clone());
-                let cmd = super::lane_cmd::LaneCmd::SpawnLane {
+                let cmd = super::lane::cmd::LaneCmd::SpawnLane {
                     repo_id: subs_repo_id.clone(),
                     name: entry.name.clone(),
                     cwd: entry.path.clone(),
@@ -401,7 +347,7 @@ pub(crate) async fn start_repo(
         //
         // reconcile が registry に従って mode=Tui の全 session に slot を立て、末尾で pump も
         // 合わせる（R2）。旧実装は ①`with_root` が root を spawn ②`restore_term_slots` が
-        // 非 root を spawn ③ここで pump だけ reconcile、の 3 段で、①② が **AppState 構築中の
+        // 非 root を spawn ③ここで pump だけ reconcile、の 3 段で、①② が **RepoState 構築中の
         // sync 文脈**（server.rs 自身が「restructure したいが不可」と書いていた場所）だった。
         //
         // pump 側の事情も引き続き満たす: router を養子縁組した場合（repo 起動前から GUI が
@@ -410,8 +356,8 @@ pub(crate) async fn start_repo(
         //
         // address の repo 名は with_root と同じ解決済の名（`state.repo_name`）を使う —
         // `subs_repo_id`（dir 名）は登録名と異なり得る。
-        let main_addr = super::lanes_state::LaneAddress::root(&state.repo_name);
-        super::lane_reconcile::reconcile_lane(
+        let main_addr = super::lane::LaneAddress::root(&state.repo_name);
+        super::lane::reconcile::reconcile_lane(
             &state.lane_pool,
             &state.terminal_pumps,
             &state.topic_router,
@@ -429,7 +375,7 @@ pub(crate) async fn start_repo(
     //
     // 旧経路を構成していた `spawn_daemon_uplink` / `run_control_driver` / "control" channel は
     // いずれも撤去済（残っていた 451 行は `run()` を外した時点で孤児化してコンパイラが検出した）。
-    // health/shutdown handler は run_daemon (Daemon) が使うため routes/health.rs に残置。
+    // health/shutdown handler は run_daemon (Daemon) が使うため http/health.rs に残置。
 
     // wiremsg Stage 0: Lane lifecycle event を retained topic に publish する。
     // `SystemEvent::Lane` を購読し、LanePool の全 list snapshot を
@@ -464,41 +410,46 @@ pub(crate) async fn start_repo(
         // board モデル (2026-07-15): DB の全 board を起動直後に retained topic へ seed する。
         // webview が canvas channel を購読した瞬間、 BoardUpdated(retained) で全 board が初期配信される
         // （repo 再起動を越えて board が復元される。 別 load 経路は不要）。
-        super::unison_server::seed_boards(&state).await;
-        tokio::spawn(async move {
-            use super::lanes_state::SystemEvent;
-            use tokio::sync::broadcast::error::RecvError;
-            // repo-local lane refactor PR 1: CLI `vp lane new` は SystemEvent::Lane を
-            // fire しない (= 直 fs op、 repo 経由しない)。 disk-only sub を sidebar に届ける
-            // safety net として 5s periodic tick で snapshot 再 publish する。
-            // (FSEvents-based lane watcher の repo-local 拡張は後 PR の範囲)
-            let mut periodic = tokio::time::interval(std::time::Duration::from_secs(5));
-            periodic.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                tokio::select! {
-                    _ = shutdown.cancelled() => break,
-                    _ = periodic.tick() => {
-                        publish_lanes(
-                            &state_for_pub, &hub, &daemon_lanes_for_pub, &path_key_for_pub,
-                            &mut notifier,
-                        ).await;
-                    }
-                    ev = sys_rx.recv() => match ev {
-                        // Lane lifecycle 変化 / 並び替え / lag → 現 snapshot を全量 publish（idempotent）。
-                        // 帳簿由来の投影変化（並び順 / 開発起点）は per-lane の diff を持たないが
-                        // snapshot の見え方が変わるので、同じ全量 publish で届く。
-                        Ok(SystemEvent::Lane(_) | SystemEvent::LanesProjectionChanged)
-                        | Err(RecvError::Lagged(_)) => {
+        super::board::seed_boards(state.board()).await;
+        state
+            .actor_registry
+            .write()
+            .await
+            .spawn_task("lanes-publish", LayerScope::Repo, async move {
+                use super::lane::SystemEvent;
+                use tokio::sync::broadcast::error::RecvError;
+                // repo-local lane refactor PR 1: CLI `vp lane new` は SystemEvent::Lane を
+                // fire しない (= 直 fs op、 repo 経由しない)。 disk-only sub を sidebar に届ける
+                // safety net として 5s periodic tick で snapshot 再 publish する。
+                // (FSEvents-based lane watcher の repo-local 拡張は後 PR の範囲)
+                let mut periodic = tokio::time::interval(std::time::Duration::from_secs(5));
+                periodic.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        _ = shutdown.cancelled() => break,
+                        _ = periodic.tick() => {
                             publish_lanes(
                                 &state_for_pub, &hub, &daemon_lanes_for_pub, &path_key_for_pub,
                                 &mut notifier,
                             ).await;
                         }
-                        Err(RecvError::Closed) => break,
-                    },
+                        ev = sys_rx.recv() => match ev {
+                            // Lane lifecycle 変化 / 並び替え / lag → 現 snapshot を全量 publish（idempotent）。
+                            // 帳簿由来の投影変化（並び順 / 開発起点）は per-lane の diff を持たないが
+                            // snapshot の見え方が変わるので、同じ全量 publish で届く。
+                            Ok(SystemEvent::Lane(_) | SystemEvent::LanesProjectionChanged)
+                            | Err(RecvError::Lagged(_)) => {
+                                publish_lanes(
+                                    &state_for_pub, &hub, &daemon_lanes_for_pub, &path_key_for_pub,
+                                    &mut notifier,
+                                ).await;
+                            }
+                            Err(RecvError::Closed) => break,
+                        },
+                    }
                 }
-            }
-        });
+            })
+            .map_err(anyhow::Error::msg)?;
     }
 
     // Phase 5-D: Lane lifecycle monitor — child PtySlot (例: `claude --continue`) が
@@ -509,11 +460,11 @@ pub(crate) async fn start_repo(
     //   - sidebar が /api/lanes を polling するので Dead 状態が UI に伝播
     //   関連: 2026-04-28 unison-kdl で post-spawn zombie 観測 → 検知機構が無く Main コンソール
     //         が壊れたまま user が気付かない問題の解消。
-    spawn_lane_lifecycle_monitor(state.lane_pool.clone(), shutdown_token.clone());
+    spawn_lane_lifecycle_monitor(&state, shutdown_token.clone()).await?;
 
     // 「Lane タイトルが表示されている Lane だけ生きてる」(mako 2026-08-28): 誰も見ていない
     // chat engine を、暇になった時点で寝かせる periodic sweep。
-    spawn_idle_engine_sweep(state.clone(), shutdown_token.clone());
+    spawn_idle_engine_sweep(state.clone(), shutdown_token.clone()).await?;
 
     Ok(state)
 }
@@ -530,8 +481,9 @@ pub(crate) async fn start_repo(
 /// 判定の真実源は 2 つとも既存: 購読の有無は router の demand count（doc 44 P1 fold-in で
 /// daemon と repo が同一プロセス = **同じ router 実体**なのでここから直接読める）、
 /// 暇かどうかは `ChatEngineSlot` の `turn_active` / `last_event_at`。状態を複製しない。
-fn spawn_idle_engine_sweep(state: Arc<AppState>, shutdown: CancellationToken) {
-    tokio::spawn(async move {
+async fn spawn_idle_engine_sweep(state: Arc<RepoState>, shutdown: CancellationToken) -> Result<()> {
+    let registry = state.actor_registry.clone();
+    let task = async move {
         // demand hook（即時）と対の遅延経路なので、粒度は粗くてよい（猶予は分単位）。
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -548,7 +500,7 @@ fn spawn_idle_engine_sweep(state: Arc<AppState>, shutdown: CancellationToken) {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0);
-            let candidates: Vec<crate::repo::lanes_state::LaneAddress> = {
+            let candidates: Vec<crate::repo::lane::LaneAddress> = {
                 let pool = state.lane_pool.read().await;
                 pool.lanes_with_chat_engines()
                     .into_iter()
@@ -572,31 +524,51 @@ fn spawn_idle_engine_sweep(state: Arc<AppState>, shutdown: CancellationToken) {
                 }
                 tracing::info!(
                     "idle chat engine を寝かせた（sweep: 購読なし・turn なし・{}分無活動）: lane={addr} sessions={dropped:?}",
-                    crate::repo::lanes_state::idle_teardown_after_minutes(),
+                    crate::repo::lane::idle_teardown_after_minutes(),
                 );
-                crate::repo::routes::lanes::emit_lane_update(&state, &addr).await;
+                crate::repo::lane::lifecycle::emit_lane_update(&state, &addr).await;
             }
         }
-    });
+    };
+    registry
+        .write()
+        .await
+        .spawn_task("idle-engine-sweep", LayerScope::Repo, task)
+        .map_err(anyhow::Error::msg)
 }
 
-/// [`start_repo`] で起動した repo の後始末（file watcher 停止 + capability shutdown）。
+/// [`start_repo`] で起動した repo の後始末（runner 停止 → 常駐 task の回収 → file watcher 停止）。
 ///
-/// shutdown_token を cancel した**後**に呼ぶこと（token cancel は spawn 済 task の停止、
-/// 本関数は token では止まらないリソースの解放を担当する）。
-pub(crate) async fn shutdown_repo(state: &Arc<AppState>) {
+/// shutdown_token の cancel（= spawn 済 task への「止まれ」）は本関数が先頭で保証する（冪等
+/// なので呼び手が先に cancel していてもよい）。その上で終了を確認し、token では止まらない
+/// リソースを解放する。cancel を呼び手任せにすると、忘れた経路で `stop_all` が誰も止めて
+/// いない task を timeout まで待つ（本数 × 8 秒ではなく最大 8 秒だが、hang には違いない）。
+pub(crate) async fn shutdown_repo(state: &Arc<RepoState>) {
+    state.shutdown_token.cancel();
+
     // pane 状態は webview が board state ask（repo-proxy）で逐次 pane_contents に保存済 (旧 DISC
     // shutdown snapshot は退役)。 shutdown 時の明示保存は不要。
+
+    // 棚卸し 9-2 段階 3: runner（`vp process run` / ruby）の子プロセスを止め、終了まで確認する。
+    // fold-in 前は repo プロセスの終了が子を道連れにしていたが、repo が daemon 内の task に
+    // なった今は誰かが畳まないと子が生き残る（doc 63 §8 の既知の穴 ①）。
+    let stopped = super::process_runner::stop_all(&state.process_registry).await;
+    if stopped > 0 {
+        tracing::info!("repo stop: runner {stopped} 本を停止して終了を確認");
+    }
+
+    // 棚卸し 9-2 段階 3（PR-S3b）: [`start_repo`] が registry に預けた常駐 task（TopicRouter
+    // bridge / lane-spawn actor / lanes publish / lifecycle monitor / idle sweep）の終了を待つ。
+    // これらは `state.clone()` や `lane_pool` の Arc を握っているので、待たずに返すと
+    // `RepoState` の drop（= `PtySlot::drop` で lane の子プロセス回収）がいつ起きるか
+    // 決まらない（doc 63 §9「順序依存が暗黙」）。受付も閉じるので、以後の spawn は Err。
+    let tasks = crate::capability::actor_registry::stop_all(&state.actor_registry).await;
+    tracing::info!("repo stop: 常駐 task {tasks} 本の終了を確認");
 
     // ファイル監視を全停止
     state.file_watchers.lock().await.stop_all();
 
     // (tmux decoupling PR2: lane は PtySlot の子 — 親が落ちれば完全に落ちる)
-
-    tracing::info!("Shutting down capabilities...");
-    if let Err(e) = state.capabilities.shutdown().await {
-        tracing::warn!("Error during capability shutdown: {}", e);
-    }
 }
 
 /// daemon の HTTP router を組む（= 残っている HTTP 面の全て）。
@@ -614,21 +586,25 @@ pub(crate) async fn shutdown_repo(state: &Arc<AppState>) {
 ///
 /// `run_daemon` から関数として切り出してあるのは、**route 登録そのものをテストで固定する**ため
 /// （撤去の巻き添えで health / shutdown を落とすと、診断手段と緊急停止を同時に失う）。
-fn build_daemon_router(state: Arc<AppState>) -> Router {
+///
+/// 棚卸し 9-2（doc 63 §5）: state は `Arc<DaemonState>` の 1 本（PR-2a〜2c で `/api/update/*` →
+/// `/api/shutdown` → `/api/health` の順に載せ替えた。PR-2a / 2b の間は `RepoState` 群と
+/// `Router::merge` で合流させていたが、PR-2c で `RepoState` 群が空になり merge も消えた）。
+/// CORS は全 route に 1 回掛ける（`daemon_router_applies_cors_to_every_route`）。
+fn build_daemon_router(daemon_state: Arc<DaemonState>) -> Router {
     Router::new()
         .route("/api/health", get(health::health_handler))
-        .route("/api/shutdown", post(health::shutdown_handler))
         // L0 portless: `/ws/lanes` (repo_feed WS) は consumer 消滅で dead のため撤去。
         // doc 45 段 4: `/api/canvas/{switch_lane,layout}` は撤去。宛先の `canvas_senders` を
         // populate する書き手が旧 localhost browser Canvas の WS 撤去で消えており、
         // end-to-end で dead だった（doc 45 §3.1 — 移設ではなく撤去が正解の例）。
         // doc 45 段 4: `/api/daemon/*`（repos CRUD / processes lifecycle / lanes）は撤去。
         // 同じ操作は Unison "daemon-control" channel が持ち、実装は
-        // `routes::daemon` の共有関数（apply_repo_update / collect_lanes /
+        // `daemon::control_ops` の共有関数（apply_repo_update / collect_lanes /
         // resolve_create_lane_args）に畳んであるので面が減っても振る舞いは変わらない。
         // L0 portless B-4 (wire-unison): 中央 wire/delegation store の HTTP 入口 (`/api/wire/*`
         // `/api/delegation/*`) は daemon の "wire" unison channel に移行 (doc 27 §62)。
-        // `daemon_wire::call` が QUIC で叩き、 `handle_wire_channel` が `routes::{wire,delegation}::
+        // `daemon_wire::call` が QUIC で叩き、 `handle_wire_channel` が `daemon::{wire_ops,delegation_ops}::
         // dispatch_*` に振る。 観測 (`vp wire deleg-thread`) / pull-hook (`vp wire hook-check`) も
         // 同 channel 経由。
         // doc 44 P1 (fold-in): 旧「Process が自己登録する」HTTP register/unregister は撤去。
@@ -638,6 +614,7 @@ fn build_daemon_router(state: Arc<AppState>) -> Router {
         // doc 44 P1 (fold-in): slot ベース port resolver (`/api/daemon/port_for`) と
         // slot 割当 route (set_slot / unassign_slot) は `vp port` 退役とともに撤去。
         // repo は portless（port=0）になり、slot が解決する listen port が存在しない。
+        .route("/api/shutdown", post(health::shutdown_handler))
         // Update API routes (vp CLI)
         .route("/api/update/check", get(update::update_check))
         .route("/api/update/apply", post(update::update_apply))
@@ -651,7 +628,7 @@ fn build_daemon_router(state: Arc<AppState>) -> Router {
             post(update::update_mac_rollback),
         )
         .layer(CorsLayer::permissive())
-        .with_state(state)
+        .with_state(daemon_state)
 }
 
 /// daemon モードで Process サーバーを起動
@@ -737,13 +714,9 @@ pub async fn run_daemon(port: u16) -> Result<()> {
 
     let daemon_cap = Arc::new(RwLock::new(daemon_cap));
     let update_cap = Arc::new(RwLock::new(update_cap));
-    let hub = Hub::new();
 
-    // TopicRouter（Daemon モードでは Hub ブリッジ不要だが、AppState の必須フィールド）
-    let topic_router = Arc::new(TopicRouter::new());
-
-    // PR-α-1 (VP-111): machine 階層の機能 を 1 instance ずつ生成して、 AppState 既存 field と
-    // MachineCapabilities container の両方に share させる (二重生成は避ける)。
+    // PR-α-1 (VP-111): machine 階層の機能 を 1 instance ずつ生成して MachineCapabilities
+    // container に集約する。`DaemonState::assemble` がここから取り出す (二重生成は避ける)。
     //
     // device 管理は DeviceRegistry 🧲 に一本化（feature = "midi" 時は `with_devices` で host 化）。
     // 旧 MidiCapability hosting（単一 port の無条件 grab）は退役 — 消費者不在のまま
@@ -800,7 +773,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         .as_ref()
         .map(|db| crate::capability::DelegationStore::new(std::sync::Arc::new(db.inner().clone())));
 
-    // chronista-hub federation の接続状態。run_hub_federation（writer）と AppState（= /api/health
+    // chronista-hub federation の接続状態。run_hub_federation（writer）と DaemonState（= /api/health
     // reader）で同一 instance を共有する（daemon mode のみ更新、初期 Disabled）。
     let hub_status = crate::daemon::hub_client::HubFederationStatus::new();
     // hub registry の available nodes cache も同 pattern で共有（writer = run_hub_federation の
@@ -812,61 +785,18 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // ACTIONS の cache も同 pattern で共有（writer = 下の 30s poller、reader = `/api/health` の
     // `actions` / `actions_rev` field。初期 = 空 + rev 0 = 未取得、doc 57 Phase 3）。
     let creo_actions = crate::creo::client::CreoActionsCache::new();
-
-    // Create minimal state for daemon mode
-    let state = Arc::new(AppState {
-        replay_flights: crate::repo::state::ReplayFlights::default(),
-        hub,
-        shutdown_token: shutdown_token.clone(),
-        hub_status: hub_status.clone(),
-        hub_nodes: hub_nodes.clone(),
-        hub_auth: hub_auth.clone(),
-        creo_actions: creo_actions.clone(),
-        repo_dir: String::new(),
-        // R3: daemon mode は cross-process forward の対象外 (= 自 repo を持たない)
-        repo_name: String::new(),
-        capabilities: Arc::new(
-            RepoCapabilities::new(CapabilityConfig {
-                repo_dir: String::new(),
-            })
-            .await,
-        ),
-        // VP-159 PR-4b: daemon mode では空で構築 (= machine scope actor の register は後続 PR、
-        // device registry の metadata register は dynamic routing vision 確定後)
-        actor_registry: Arc::new(RwLock::new(crate::capability::ActorRegistry::new())),
-        daemon: Some(daemon_cap.clone()),
-        update: Some(update_cap.clone()),
-        interactive_agent: Arc::new(RwLock::new(None)),
-        port,
-        file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
-        terminal_token: "DAEMON_DISABLED".to_string(),
-        process_registry: Arc::new(tokio::sync::Mutex::new(
-            crate::repo::process_runner::ProcessRegistry::new(),
-        )),
-        topic_router,
-        canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-        started_at: chrono::Utc::now().to_rfc3339(),
-        vpdb: vpdb.clone(), // Daemon モードでも DB 参照あり
-        // Phase A ① / R1: Daemon モードでも wiremsg store を build (上で async build 済)
-        wiremsg_store,
-        wire_notifier: crate::capability::WireNotifier::new(),
-        // R2-b: wire delivery loop の即時 wake (daemon_wire_send_handler が command 着信で notify)
-        delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
-        // Phase A4-2b: Daemon モードでは Lane / Repo の機能を持たない (空 Pool で AppState を満たす)
-        // 多 scope architecture: daemon は App scope の component、Lane/RepoStand は Repo scope
-        lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::new())),
-        // Phase 2 (Step E): system event central bus
-        system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
-        // PR-α-1 (VP-111): machine 階層 Agent container (LSCM doc 12 §3 / §9)
-        machine_capabilities: Some(machine_capabilities),
-        // PR-β-1 (VP-119): daemon mode では LaneCapabilities を持たない (Lane scope は repo per repo)
-        lane_capabilities: None,
-        // S2: daemon mode は repo の per-lane pump を持たない (terminal pump は repo scope)。
-        terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
-        // 委譲 (delegation) の daemon 中央 store (doc 28 §6)。daemon mode のみ Some。
-        delegation_store,
-        editor_pending: Default::default(),
-    });
+    // 9-2 PR-1: DaemonState に渡す部品はここで 1 度だけ作る。delivery actor / federation relay も
+    // 同じ local を capture する（別々に new() すると wire の起床が届かない）。
+    // 棚卸し 9-2 段階 3（PR-S3c）: daemon が spawn する常駐 task はすべてこの registry に預け、
+    // 停止末尾で `actor_registry::stop_all` が終了を待つ（repo 側の `shutdown_repo` と同じ契約）。
+    // `DaemonState.actor_registry` にも同じ Arc を渡す（device registry の metadata register は
+    // dynamic routing vision 確定後）。
+    let actor_registry = Arc::new(RwLock::new(crate::capability::ActorRegistry::new()));
+    // 起動時刻は構築時に 1 度確定して以後不変（health はこの値をそのまま返す、doc 63 §7）
+    let started_at = chrono::Utc::now().to_rfc3339();
+    let wire_notifier = crate::capability::WireNotifier::new();
+    // R2-b: wire delivery loop の即時 wake (daemon_wire_send_handler が command 着信で notify)
+    let delivery_notify = std::sync::Arc::new(tokio::sync::Notify::new());
 
     // in-app update: GitHub Releases latest の定期チェック（起動時 + 24h 毎）で
     // UpdateCapability の cache を温める。/api/health がこの cache を読んで
@@ -876,7 +806,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     {
         let update_cap = update_cap.clone();
         let shutdown = shutdown_token.clone();
-        tokio::spawn(async move {
+        let task = async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
             loop {
                 tokio::select! {
@@ -898,7 +828,12 @@ pub async fn run_daemon(port: u16) -> Result<()> {
                     }
                 }
             }
-        });
+        };
+        actor_registry
+            .write()
+            .await
+            .spawn_task("update-check", LayerScope::Machine, task)
+            .map_err(anyhow::Error::msg)?;
     }
 
     // doc 57 Phase 3: ACTIONS を creo-memories から 30s ごとに引いて cache を温める。
@@ -909,7 +844,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     {
         let cache = creo_actions.clone();
         let shutdown = shutdown_token.clone();
-        tokio::spawn(async move {
+        let task = async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
                 tokio::select! {
@@ -925,7 +860,12 @@ pub async fn run_daemon(port: u16) -> Result<()> {
                     }
                 }
             }
-        });
+        };
+        actor_registry
+            .write()
+            .await
+            .spawn_task("creo-actions-poll", LayerScope::Machine, task)
+            .map_err(anyhow::Error::msg)?;
     }
 
     // tmux decoupling PR1: repo control channel registry を hoist する。 daemon server (下記
@@ -934,7 +874,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // forward 不能になるため、 ここで作った 1 つを 3 者 (daemon_state + 両 loop) に配る。
     // doc 44 P1 (fold-in): 旧「repo control channel registry」を per-repo 実行状態の
     // registry に置き換える。 repo プロセスが無くなったので、 daemon は repo を
-    // `Arc<AppState>` として直接抱え、 forward ではなく in-process dispatch で操作する。
+    // `Arc<RepoState>` として直接抱え、 forward ではなく in-process dispatch で操作する。
     // ここで作った 1 つを 3 者 (daemon_state + delivery loop + delegation reconcile loop) に
     // 配るのは旧構成と同じ (別々に new() すると map が分裂して到達不能になる)。
     // doc 44 P1 (fold-in): daemon の lane 集約 view を registry に結線する。旧構成では
@@ -968,36 +908,44 @@ pub async fn run_daemon(port: u16) -> Result<()> {
 
     // R2-b: wire delivery loop (未 ack command の nudge + 再掲示) を spawn。
     // store 未構築 (DB 接続失敗) なら skip — wire 自体が動かないため delivery も不要。
-    if let Some(store) = state.wiremsg_store.clone() {
+    if let Some(store) = wiremsg_store.clone() {
         let lane_registry = daemon_cap.read().await.lane_registry_ref();
-        state.actor_registry.write().await.spawn_service(
-            super::delivery_actor::DeliveryActor::new(
-                store,
-                lane_registry,
-                control_channels.clone(),
-                state.delivery_notify.clone(),
-            ),
-            shutdown_token.clone(),
-        );
+        actor_registry
+            .write()
+            .await
+            .spawn_service(
+                super::delivery_actor::DeliveryActor::new(
+                    store,
+                    lane_registry,
+                    control_channels.clone(),
+                    delivery_notify.clone(),
+                ),
+                shutdown_token.clone(),
+            )
+            .map_err(anyhow::Error::msg)?;
     }
 
     // 委譲 reconcile loop (doc 28 §7、 Push+Pull の Pull パス) を spawn。
     // delivered=false の再 nudge + stale な未終了の timeout → Failed{timeout}。
     // Daemon-side wake (lane_registry + repo-proxy lane_nudge) なので delivery loop と同じ
     // lane_registry / control_channels を使う。
-    if let Some(store) = state.delegation_store.clone() {
+    if let Some(store) = delegation_store.clone() {
         let lane_registry = daemon_cap.read().await.lane_registry_ref();
-        super::delegation::spawn_reconcile_loop(
-            store,
-            lane_registry,
-            control_channels.clone(),
-            shutdown_token.clone(),
-        );
+        actor_registry
+            .write()
+            .await
+            .spawn_task(
+                "delegation-reconcile",
+                LayerScope::Machine,
+                super::delegation::reconcile_loop(
+                    store,
+                    lane_registry,
+                    control_channels.clone(),
+                    shutdown_token.clone(),
+                ),
+            )
+            .map_err(anyhow::Error::msg)?;
     }
-
-    // L0 portless B-4: state は後段の daemon_state_builder.with_wire でも参照するため clone
-    // (Arc clone は安価、 router と daemon QUIC server が同一 AppState を共有)。
-    let app = build_daemon_router(state.clone());
 
     // Phase 5-D: dual-stack listen (IPv4 + IPv6) ─ vp-app の `http://127.0.0.1:32000` ping、
     //  repo からの `http://[::1]:32000` register、 LAN IPv6 access の 3 経路を全部受け取れるように。
@@ -1011,57 +959,38 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // Clone for shutdown
     let daemon_for_shutdown = daemon_cap.clone();
 
-    // Daemon QUIC サーバー起動（PTY セッション管理 + Registry チャネル、同一ポートで UDP/QUIC）
-    // RepoManagerCapability の running_repos を DaemonState と共有
-    let running_processes_ref = daemon_cap.read().await.running_processes_ref();
-    let repos_ref = daemon_cap.read().await.repos_ref();
-    // Phase 1b: lane_registry も共有 (repo register の lanes payload を cache する)
-    let lane_registry_ref = daemon_cap.read().await.lane_registry_ref();
-    // L1 lifecycle: process_presence も共有 (registry handler が presence を遷移させる)
-    let process_presence_ref = daemon_cap.read().await.process_presence_ref();
-    let mut daemon_state_builder = crate::daemon::server::DaemonState::new()
-        .with_running_processes(
-            running_processes_ref,
-            repos_ref,
-            lane_registry_ref,
-            process_presence_ref,
-        )
-        // control plane 一元化: daemon_cap (= HTTP AppState.daemon と同一 Arc) を共有し、
-        // Unison "daemon-control" channel から repos mutation を受けられるようにする。
-        .with_daemon_cap(daemon_cap.clone())
-        // tmux decoupling PR1: 上で hoist した control channel map を daemon server と共有する
-        // (daemon が repo 接続で populate → nudge loop がここから forward 先を引く)。
-        .with_control_channels(control_channels.clone())
-        // boot 窓の根治: RepoRuntimes と同一の canvas map を共有（分裂すると養子縁組不能）
-        .with_canvas_routers(canvas_routers.clone())
-        // doc 44 §11: repo 側の publish が撃つのと**同一の** channel を daemon の
-        // push loop に購読させる（別々に作ると生産者ゼロで永久沈黙する）。
-        .with_lane_change_tx(lane_change_tx.clone())
-        // doc 57 Phase 4: ACTIONS の cache を AppState と共有する。読み（30s poller →
-        // `/api/health`）と書き（`daemon-control.actions/save`）が同じ実体を触るために要る。
-        .with_creo_actions(creo_actions.clone());
-    // doc 24 §10 Phase 2: lane descriptor の durable 永続先 (capability boot load と同一 db)。
-    if let Some(ref db) = vpdb {
-        daemon_state_builder = daemon_state_builder.with_vpdb(db.clone());
-    }
-    // L0 portless B-4 (wire-unison): daemon 中央 wire/delegation store を daemon QUIC server と共有する。
-    // `state` (daemon process AppState) が保持する **同一 Arc** を渡す (同一プロセス) — "wire" channel が
-    // これを使って旧 `/api/wire/*` `/api/delegation/*` HTTP を unison channel で serve する (doc 27 §62)。
-    daemon_state_builder = daemon_state_builder.with_wire(
-        state.wiremsg_store.clone(),
-        state.wire_notifier.clone(),
-        state.delivery_notify.clone(),
-        state.delegation_store.clone(),
+    // Daemon QUIC サーバー起動（PTY セッション管理 + Registry チャネル、同一ポートで UDP/QUIC）。
+    //
+    // 9-2 PR-1: 結線は `DaemonState::assemble` の 1 箇所（doc 63 §5.1）。渡すのは全部
+    // **上で作った同じ実体** — repo の各 view は `machine_capabilities.repo_manager` から、
+    // update / devices も同じ container から取り出す。ここで `new()` を書いたら別実体になる。
+    // 共有の理由は各 field の doc（`daemon/server.rs`）に残してある:
+    // - daemon_cap: Unison "daemon-control" の repos mutation を HTTP と同じ権威に反映
+    // - control_channels / canvas_routers / lane_change_tx: RepoRuntimes と分裂すると forward 不能 /
+    //   養子縁組不能 / 生産者ゼロで永久沈黙
+    // - creo_actions: 書き（actions/save）が読み（poller → health）と別実体だと「書いたのに戻る」
+    // - wiremsg_store 等: "wire" channel が旧 `/api/wire/*` を同じ中央 store で serve する
+    let daemon_state = std::sync::Arc::new(
+        crate::daemon::server::DaemonState::assemble(crate::daemon::server::DaemonAssembly {
+            machine_capabilities: machine_capabilities.clone(),
+            hub_status: hub_status.clone(),
+            hub_nodes: hub_nodes.clone(),
+            hub_auth: hub_auth.clone(),
+            creo_actions: creo_actions.clone(),
+            shutdown_token: shutdown_token.clone(),
+            actor_registry: actor_registry.clone(),
+            started_at: started_at.clone(),
+            vpdb: vpdb.clone(),
+            control_channels: control_channels.clone(),
+            canvas_routers: canvas_routers.clone(),
+            lane_change_tx: lane_change_tx.clone(),
+            wiremsg_store: wiremsg_store.clone(),
+            wire_notifier: wire_notifier.clone(),
+            delivery_notify: delivery_notify.clone(),
+            delegation_store: delegation_store.clone(),
+        })
+        .await,
     );
-    // DeviceRegistry 🧲 EventBus を共有 — daemon-device channel が device event を vp-app に bridge する。
-    // machine_capabilities は L810 で move 済みなので、 move 前に clone した devices_for_shutdown を使う。
-    #[cfg(feature = "midi")]
-    if let Some(devices) = devices_for_shutdown.as_ref() {
-        let event_bus = devices.read().await.event_bus().clone();
-        daemon_state_builder = daemon_state_builder.with_devices_event_bus(event_bus);
-        // M2 / doc 26 §2: device channel (agent → daemon) が registry を更新するため registry 本体も共有。
-        daemon_state_builder = daemon_state_builder.with_devices(devices.clone());
-    }
     // doc 44 P1 (fold-in): capability の start_process / stop_process が lifecycle event を
     // 流せるよう、DaemonState と**同一の** broadcast Sender を共有する（clone しても同じ
     // channel を指す）。これが無いと `vp daemon processes --watch` / event log の
@@ -1069,9 +998,12 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     daemon_cap
         .write()
         .await
-        .set_process_lifecycle_tx(daemon_state_builder.process_lifecycle_tx.clone());
-
-    let daemon_state = std::sync::Arc::new(daemon_state_builder);
+        .set_process_lifecycle_tx(daemon_state.process_lifecycle_tx.clone());
+    // HTTP router は DaemonState を取るので assemble の後で組む（9-2 PR-2a でここへ動かした。
+    // `axum::serve` は下の方なので位置は自由。`bind_dual_stack` → `write_pid_file` の順は
+    // 上のまま動かしていない）。daemon 役の `RepoState` は 9-2 PR-3 で構築ごと消えた —
+    // daemon の state は `DaemonState` の 1 本。
+    let app = build_daemon_router(daemon_state.clone());
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
         daemon_state,
         port,
@@ -1104,10 +1036,11 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         // relay → VP wire 配送ポリシー（flow ③+⑤）。別 node が relay で送ってきた wire envelope
         // (`{from, to, body}`) を **ローカル中央 wire store に inject** する（= 遠方からの relay を
         // 「ローカル送信」に畳む）。宛先 lane は `wire_recv` で普通に拾う。store/notifier/notify は
-        // AppState の Arc を capture（再接続ごとに handler 再登録するため closure は Clone）。
-        let wire_store = state.wiremsg_store.clone();
-        let wire_notifier = state.wire_notifier.clone();
-        let wire_notify = state.delivery_notify.clone();
+        // `DaemonState::assemble` に渡したのと同じ local を capture（再接続ごとに handler 再登録する
+        // ため closure は Clone）。
+        let wire_store = wiremsg_store.clone();
+        let wire_notifier = wire_notifier.clone();
+        let wire_notify = delivery_notify.clone();
         // discovery（flow step 2）: lanes-query に応答するため lane_registry と hub_addr も capture。
         let fed_lane_registry = daemon_cap.read().await.lane_registry_ref();
         let fed_hub_addr = hub_addr.clone();
@@ -1185,7 +1118,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
                     );
                     return;
                 };
-                match crate::repo::routes::wire::dispatch_wire(
+                match crate::daemon::wire_ops::dispatch_wire(
                     &store,
                     &notifier,
                     &notify,
@@ -1207,19 +1140,27 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         };
 
         // 常駐ループ。接続/登録失敗は run_hub_federation 内で warn に落として再接続（degradation）。
-        // hub_status / hub_nodes は AppState と共有（run_hub_federation が更新、/api/health が読む）。
-        tokio::spawn(crate::daemon::hub_client::run_hub_federation(
-            hub_addr,
-            node_id,
-            endpoints,
-            handle,
-            name,
-            hub_status,
-            hub_nodes,
-            hub_auth,
-            shutdown_token.clone(),
-            on_relay,
-        ));
+        // hub_status / hub_nodes は DaemonState と共有（run_hub_federation が更新、/api/health が読む）。
+        actor_registry
+            .write()
+            .await
+            .spawn_task(
+                "hub-federation",
+                LayerScope::Machine,
+                crate::daemon::hub_client::run_hub_federation(
+                    hub_addr,
+                    node_id,
+                    endpoints,
+                    handle,
+                    name,
+                    hub_status,
+                    hub_nodes,
+                    hub_auth,
+                    shutdown_token.clone(),
+                    on_relay,
+                ),
+            )
+            .map_err(anyhow::Error::msg)?;
     } else {
         tracing::debug!(
             "chronista-hub federation 無効 (env {} / config.kdl hub-addr とも未設定) — machine-local 動作",
@@ -1229,30 +1170,47 @@ pub async fn run_daemon(port: u16) -> Result<()> {
 
     // doc 44 P1 (fold-in): health monitor は退役。旧構成では「別プロセスの repo が crash して
     // registry から消える」のを PID liveness で検知し respawn していたが、repo が Daemon 内の
-    // Arc<AppState> になり、pid が全 repo 共通で Daemon 自身になったため、監視対象
+    // Arc<RepoState> になり、pid が全 repo 共通で Daemon 自身になったため、監視対象
     // （死にうる repo プロセス）が存在しなくなった。lane の engine（claude/codex）の死は
     // 別途 lane lifecycle monitor が見る。
 
     // 起動時設定の復帰: enabled な repo の repo を自動起動（VP-207）。
     // daemon restart 後に working set を復元する。1 回限りの startup タスク。
-    let _autostart = tokio::spawn(RepoManagerCapability::autostart_enabled_repos(
-        daemon_cap.clone(),
-    ));
+    // 1 回限りだが registry に載せる: 停止時に起動途中の repo を作りかけで残さないため
+    // （`stop_all` が完了を待ち、`shutdown_all` はその後に回る）。repo ごとの境目で token を
+    // 見て降り、進行中の 1 本は完走させて `RepoRuntimes::start` の `closing` 巻き戻しに任せる。
+    actor_registry
+        .write()
+        .await
+        .spawn_task(
+            "autostart-repos",
+            LayerScope::Machine,
+            RepoManagerCapability::autostart_enabled_repos(
+                daemon_cap.clone(),
+                shutdown_token.clone(),
+            ),
+        )
+        .map_err(anyhow::Error::msg)?;
 
     // VP-129 MVP: lane root FSEvents watcher 起動。 user の Finder / `rm -rf` で sub dir
     // を削除した時、 OS file system event → repo `DELETE /api/lanes` 自動発火 (= D10 Reconciliation
     // の 3rd path 拡張、 Push QUIC + Pull port scan + FSEvents の 3-trigger model 完成)。
-    let _lane_watcher = tokio::spawn(RepoManagerCapability::run_lane_watcher(
-        daemon_cap.clone(),
-        shutdown_token.clone(),
-    ));
+    actor_registry
+        .write()
+        .await
+        .spawn_task(
+            "lane-watcher",
+            LayerScope::Machine,
+            RepoManagerCapability::run_lane_watcher(daemon_cap.clone(), shutdown_token.clone()),
+        )
+        .map_err(anyhow::Error::msg)?;
 
     // LIVE SELECT → 通知ブリッジ（VP-21 Phase 4）
     // processes テーブルの変更を検知して DistributedNotification に変換
     // DB 切断でストリームが終了した場合は再接続ループで自律復帰する
     if let Some(db) = vpdb.clone() {
         let shutdown = shutdown_token.clone();
-        tokio::spawn(async move {
+        let task = async move {
             use futures::StreamExt;
             tracing::info!("LIVE SELECT processes ブリッジ起動");
             // 再接続ループ: ストリームが切断されたら 5秒待って再サブスクライブ
@@ -1337,7 +1295,12 @@ pub async fn run_daemon(port: u16) -> Result<()> {
                     }
                 }
             }
-        });
+        };
+        actor_registry
+            .write()
+            .await
+            .spawn_task("live-select-bridge", LayerScope::Machine, task)
+            .map_err(anyhow::Error::msg)?;
     }
 
     // シグナルハンドラ: Unix は SIGTERM、Windows は Ctrl-C を代替イベントに
@@ -1364,6 +1327,20 @@ pub async fn run_daemon(port: u16) -> Result<()> {
 
     // クリーンアップ
     daemon_handle.abort();
+
+    // 棚卸し 9-2 段階 3（PR-S3c）: 常駐 task の終了を確認する（token は serve が返った時点で
+    // cancel 済み）。repo を畳む前に待つのは、lane watcher が drain 中の repo に `lane_delete` を
+    // 撃たないため、そして autostart が起動途中の repo を `shutdown_all` の後に差し込まないため。
+    // 先に受付を閉じておくと、待っている間に autostart が新しい repo を起こさない。
+    // 予算は repo 側の 8 秒より短い 2 秒 — Unix の `vp daemon stop` は SIGTERM の 500ms 後に
+    // SIGKILL するので、ここで長く待つほど repo / db の後始末が kill 期限の外へ押し出される。
+    control_channels.close();
+    let daemon_tasks = crate::capability::actor_registry::stop_all_with(
+        &actor_registry,
+        std::time::Duration::from_secs(2),
+    )
+    .await;
+    tracing::info!("Daemon shutdown: 常駐 task {daemon_tasks} 本の終了を確認");
 
     // Shutdown capabilities
     tracing::info!("Shutting down Daemon...");
@@ -1448,11 +1425,12 @@ async fn bind_dual_stack(port: u16) -> Result<tokio::net::TcpListener> {
 ///
 /// ## shutdown
 /// `shutdown_token.cancelled()` で graceful 終了。 repo shutdown で task も clean に止まる。
-fn spawn_lane_lifecycle_monitor(
-    lane_pool: Arc<RwLock<super::lanes_state::LanePool>>,
+async fn spawn_lane_lifecycle_monitor(
+    state: &Arc<RepoState>,
     shutdown: CancellationToken,
-) {
-    tokio::spawn(async move {
+) -> Result<()> {
+    let lane_pool = state.lane_pool.clone();
+    let task = async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
         // 初回 tick は即時発火するので 1 周回飛ばす (repo 起動直後の他 setup を妨げない配慮)
         tick.tick().await;
@@ -1477,12 +1455,64 @@ fn spawn_lane_lifecycle_monitor(
                 );
             }
         }
-    });
+    };
+    state
+        .actor_registry
+        .write()
+        .await
+        .spawn_task("lane-lifecycle-monitor", LayerScope::Repo, task)
+        .map_err(anyhow::Error::msg)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 棚卸し 9-2 段階 3（PR-S3b）: `shutdown_repo` は registry に預けた常駐 task の終了を
+    /// 待ってから返り、受付を閉じる。
+    ///
+    /// 落ちるべき壊し方: `shutdown_repo` から `actor_registry::stop_all` を外すと、task は
+    /// cancel 後も 200ms 走っているので `finished` が立つ前に返ってしまい 1 つ目の assert が
+    /// 落ちる（token cancel は「止まれ」であって「止まった」ではない）。
+    #[tokio::test]
+    async fn shutdown_repo_waits_for_registered_tasks_and_closes_the_registry() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let state = crate::repo::state::build_test_app_state().await;
+        let finished = Arc::new(AtomicBool::new(false));
+        {
+            let token = state.shutdown_token.clone();
+            let done = finished.clone();
+            state
+                .actor_registry
+                .write()
+                .await
+                .spawn_task("slow-stopper", LayerScope::Repo, async move {
+                    token.cancelled().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    done.store(true, Ordering::SeqCst);
+                })
+                .expect("停止前は起動できる");
+        }
+
+        // cancel は shutdown_repo 自身が先頭で行う（呼び手は cancel 済みでもよい）
+        tokio::time::timeout(std::time::Duration::from_secs(5), shutdown_repo(&state))
+            .await
+            .expect("shutdown_repo が返る");
+
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "shutdown_repo が返った時点で task は末尾まで走り終えている"
+        );
+        assert!(
+            state
+                .actor_registry
+                .write()
+                .await
+                .spawn_task("late", LayerScope::Repo, async {})
+                .is_err(),
+            "停止後の spawn は拒否される"
+        );
+    }
 
     /// doc 44 P1 (fold-in) 回帰固定: lanes の供給点は daemon の集約 view を必ず更新する。
     ///
@@ -1492,7 +1522,7 @@ mod tests {
     /// 過去 pid の lane を配り続けた）。関数呼び出しになった今はここで固定できる。
     #[tokio::test]
     async fn publish_lanes_updates_daemon_view() {
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         let hub = state.hub.clone();
         let view: NodeLaneView = Arc::new(RwLock::new(std::collections::HashMap::new()));
         let key = "/tmp/proj-publish-lanes";
@@ -1521,7 +1551,7 @@ mod tests {
     /// fold-in 完了前の repo 単体起動が壊れる。
     #[tokio::test]
     async fn publish_lanes_without_daemon_view_is_noop() {
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         let hub = state.hub.clone();
 
         publish_lanes(
@@ -1546,7 +1576,7 @@ mod tests {
     /// 「生産者ゼロで永久沈黙」として fold-in 中に発見・再配線済）。
     #[tokio::test]
     async fn publish_lanes_wakes_vp_app_push_loop() {
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         let hub = state.hub.clone();
         let key = "/tmp/proj-wakeup";
         let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(8);
@@ -1567,7 +1597,7 @@ mod tests {
     /// 定期的に流れる。指紋で「変わった時だけ」に絞る。
     #[tokio::test]
     async fn publish_lanes_does_not_wake_on_unchanged_snapshot() {
-        let state = crate::repo::state::build_test_app_state(None).await;
+        let state = crate::repo::state::build_test_app_state().await;
         let hub = state.hub.clone();
         let key = "/tmp/proj-unchanged";
         let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(8);
@@ -1620,19 +1650,48 @@ mod tests {
     // `build_daemon_router` を組んで実際に叩き、両方向を 1 箇所で見る。
     // =====================================================================
 
+    /// production の router を test 用 `DaemonState`（`update: Some`）で組む。
+    async fn daemon_router() -> Router {
+        build_daemon_router(crate::daemon::server::build_test_daemon_state().await)
+    }
+
     async fn route_status(uri: &str, method: &str) -> axum::http::StatusCode {
         use tower::ServiceExt;
-        let state = crate::repo::state::build_test_app_state(None).await;
         let req = axum::http::Request::builder()
             .method(method)
             .uri(uri)
             .body(axum::body::Body::empty())
             .expect("request");
-        build_daemon_router(state)
+        daemon_router()
+            .await
             .oneshot(req)
             .await
             .expect("oneshot")
             .status()
+    }
+
+    /// JSON body 付きで叩いて (status, body) を返す。`Json<Value>` extractor は content-type が
+    /// 無いと handler に入る前に 415 を返すので、handler 本体を通すにはこれが要る。
+    async fn route_json(
+        router: Router,
+        uri: &str,
+        method: &str,
+        body: serde_json::Value,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        use tower::ServiceExt;
+        let req = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .expect("request");
+        let resp = router.oneshot(req).await.expect("oneshot");
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
     }
 
     /// doc 45 §2 で HTTP に残すと決めた 2 本が、撤去の巻き添えで消えていないこと。
@@ -1689,11 +1748,20 @@ mod tests {
         }
     }
 
-    /// `/api/update/*` は段 4 のスコープ外（doc 45 §3「churn が低いので後回しでよい」）。
-    /// 「ついでに消えた」を検出する側の網。
+    /// `/api/update/*` 7 route が **`DaemonState.update` を読んで**応答すること（9-2 PR-2a で
+    /// `assert_ne!(NOT_FOUND)` から実応答の固定へ強化）。
+    ///
+    /// 2 層:
+    /// - **`update: None` の DaemonState** → 7 route 全部が 503 `Update capability not available`
+    ///   （guard の形。network に出る check / apply と、実際に再起動 script を spawn する
+    ///   restart はこの層でしか叩けない）
+    /// - **`update: Some` の DaemonState** → param 検証で 400 を返す 4 route が 400
+    ///   （PR-2a 時点では `RepoState.update` を `None` にして「載せ替わった」の証明にしていた。
+    ///   PR-2c で `RepoState` は router に渡らなくなった）。check / apply は `Some` だと GitHub API に出るので
+    ///   ここには入れない。restart は `Some` だと `restart_self` が本当に走るので入れない
     #[tokio::test]
     async fn daemon_router_keeps_update_routes() {
-        for (uri, method) in [
+        let all = [
             ("/api/update/check", "GET"),
             ("/api/update/apply", "POST"),
             ("/api/update/rollback", "POST"),
@@ -1701,11 +1769,85 @@ mod tests {
             ("/api/update/mac/check", "GET"),
             ("/api/update/mac/apply", "POST"),
             ("/api/update/mac/rollback", "POST"),
+        ];
+
+        // 層 1: update 不在 → 503。`DaemonState::new()` は update: None
+        let without_update = build_daemon_router(std::sync::Arc::new(
+            crate::daemon::server::DaemonState::new(),
+        ));
+        for (uri, method) in all {
+            let (status, body) =
+                route_json(without_update.clone(), uri, method, serde_json::json!({})).await;
+            assert_eq!(
+                (status, body["error"].as_str()),
+                (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    Some("Update capability not available")
+                ),
+                "{method} {uri}: update 不在は 503"
+            );
+        }
+
+        // 層 2: DaemonState.update が Some → param 検証まで進んで 400
+        let with_update = daemon_router().await;
+        for (uri, method, error) in [
+            ("/api/update/rollback", "POST", "backup_path is required"),
+            (
+                "/api/update/mac/check",
+                "GET",
+                "current_version query parameter is required",
+            ),
+            (
+                "/api/update/mac/apply",
+                "POST",
+                "current_version is required",
+            ),
+            (
+                "/api/update/mac/rollback",
+                "POST",
+                "backup_path is required",
+            ),
         ] {
-            assert_ne!(
-                route_status(uri, method).await,
-                axum::http::StatusCode::NOT_FOUND,
-                "{method} {uri} は段 4 のスコープ外（route は残す）"
+            let (status, body) =
+                route_json(with_update.clone(), uri, method, serde_json::json!({})).await;
+            assert_eq!(
+                (status, body["error"].as_str()),
+                (axum::http::StatusCode::BAD_REQUEST, Some(error)),
+                "{method} {uri}: DaemonState.update を読んでいれば param 検証まで進む"
+            );
+        }
+    }
+
+    /// CORS は router 全体に 1 回掛ける。
+    ///
+    /// PR-2a / 2b の間は state の違う 2 群を `Router::merge` していたので「両群に掛かる」を
+    /// 固定していた（片群だけに掛ける mutation で赤を実測）。PR-2c で 1 群に戻ったが、
+    /// route 群が再び分かれても挙動が割れないよう、health と update から 1 route ずつ
+    /// preflight を通し続ける（今の消費者は `vp` CLI / Ruby / Swift で browser 経由ではない）。
+    /// CORS の test は PR-2a 以前は 0 本。
+    #[tokio::test]
+    async fn daemon_router_applies_cors_to_every_route() {
+        use tower::ServiceExt;
+        for (uri, method) in [("/api/health", "GET"), ("/api/update/check", "GET")] {
+            let req = axum::http::Request::builder()
+                .method("OPTIONS")
+                .uri(uri)
+                .header("origin", "http://localhost:5173")
+                .header("access-control-request-method", method)
+                .body(axum::body::Body::empty())
+                .expect("request");
+            let resp = daemon_router().await.oneshot(req).await.expect("oneshot");
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::OK,
+                "preflight {uri} は 200"
+            );
+            assert_eq!(
+                resp.headers()
+                    .get("access-control-allow-origin")
+                    .and_then(|v| v.to_str().ok()),
+                Some("*"),
+                "{uri}: permissive CORS が全 route に掛かっている"
             );
         }
     }

@@ -553,7 +553,7 @@ fn persist_lane_model(repo_root: &Path, lane: &str, model: Option<&str>) -> Resu
 ///
 /// 記録先は registry の初期 session（key=1）の `SessionEntry.model`（2026-07-27 に per-lane
 /// `engine_model` file から session 紐づけへ移行）。CLI 作成 lane は既定 agent = claude
-/// （`--agent` を持つのは orchestrated 経路のみ — `agent_store` の書き手が routes 側だけ
+/// （`--agent` を持つのは orchestrated 経路のみ — `agent_store` の書き手が lane_lifecycle 側だけ
 /// であることに対応）。model 未指定なら registry file を作らない（set_model_in が
 /// 変化なし = no-save に倒す）。
 fn persist_lane_model_in(
@@ -906,7 +906,7 @@ pub fn status_subs() -> Result<(), String> {
 /// 消しうる**。実害の確率は低い（起点が merged かつ clean かつ停止中である必要がある）が、
 /// 「確認できなかった」という事実は人に見せる（Host は推測しない）。
 fn origin_for_cleanup(repo_root: &Path) -> String {
-    let reserved = crate::repo::lanes_state::ROOT_LANE_NAME.to_string();
+    let reserved = vp_paths::ROOT_LANE_NAME.to_string();
     let Some(repo_path) = repo_root.to_str() else {
         return reserved;
     };
@@ -1761,7 +1761,7 @@ mod tests {
         git(&["commit", "-qm", "init"]);
 
         // 起点照会は daemon を叩くので注入する（保留経路では呼ばれないこと自体も要件）。
-        let origin = |_: &Path| crate::repo::lanes_state::ROOT_LANE_NAME.to_string();
+        let origin = |_: &Path| vp_paths::ROOT_LANE_NAME.to_string();
         let mut ledger = SpyLedger::default();
         let mut out = Vec::new();
 
@@ -1890,7 +1890,7 @@ mod tests {
             &root,
             false,
             &Liveness::Known(Vec::new()),
-            |_| crate::repo::lanes_state::ROOT_LANE_NAME.to_string(),
+            |_| vp_paths::ROOT_LANE_NAME.to_string(),
             &mut ledger,
         )
         .expect("判定は Err ではない");

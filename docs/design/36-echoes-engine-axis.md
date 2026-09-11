@@ -126,7 +126,7 @@ HITL / permission / replay は cursor 非対応（archive/cursor-engine.md）な
 
 ## 6. 未解決・リスク
 
-- **⚠️ 最重要の落とし穴: `#sub` を wire 越しの `lane` に埋めるな**。`LanePool::parse_address`
+- **⚠️ 最重要の落とし穴: `#sub` を wire 越しの `lane` に埋めるな**。`lane::parse_address`
   （`lanes_state.rs`）は `"vp/performer/foo#sub"` を `LaneAddress::performer("vp","foo#sub")` として
   **パース自体は成功**させるが、実在登録（name=`"foo"`）と `Eq`/`Hash` 不一致 → `chat_engines.get()` が
   必ず外れ "Lane not found" で落ちる。しかも console.ts / vp-app の `echoes_sessions` は文字列 key で

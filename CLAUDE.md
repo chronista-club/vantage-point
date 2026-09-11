@@ -150,7 +150,7 @@ vp daemon restart [--if-running]  # ownership-agnostic 再起動（実 port hold
 vp daemon install|uninstall  # LaunchAgent 常駐化（macOS、login always-on + crash 自動再起動）
 vp repos start|stop <name>  # 単一 repo の起動/停止（doc 44 P1 fold-in で `vp sp` から移設）
 # ⚠️⚠️ doc 44 P1 (fold-in) で daemon 停止の意味論が変わった:
-#   repo は daemon プロセス内の Arc<AppState> になったため、**daemon を止めると
+#   repo は daemon プロセス内の Arc<RepoState> になったため、**daemon を止めると
 #   全 repo が必ず一緒に落ちる**（= lane claude も全部落ちる）。旧「gentle（daemon だけ
 #   止めて repo は温存）」は repo が別プロセスだった時代の挙動で、fold-in 後は成立しない。
 #   → lane の中から daemon を再起動すると自分が死ぬ。実機検証は VP の外（kitty 等）で行うこと。
@@ -214,6 +214,14 @@ mise run check                             # mbx check — 同じ場所の 2 回
 mise run test                              # mbx test — ⚠️ 初見 worktree の 1 回目は素の cargo より遅い
                                            # （dep-info 学習前は照会不能）。release 系は cargo のまま
 
+# commit 前: 散文（`//!` header / doc / commit message）の主張を実物に当てる
+mise run claims                            # diff から「数えるべき / 開くべき」行を抜き出す
+                                           # ⚠️ 判定はしない — 容疑者を全部並べるだけ。1 件ずつ実物に当てる。
+                                           # なぜ要るか: この repo の refactor は**本文の欠陥 0 件、
+                                           # review 指摘 28 件が全部散文**だった（本文には checker があり
+                                           # 散文には無い）。上位 2 型「数えられるものを数えなかった」
+                                           # 「出典を確認せず近い方に帰属」が 6 割で、どちらも diff から拾える。
+
 # dogfood: 普段使いの .app を作業ツリーの build で差し替えて触る（GUI 変更の実機確認の正）
 mise run app:swap                          # DRY build → /Applications/VantagePoint.app 差し替え → 起動
 VP_SWAP_RESTART_DAEMON=1 mise run app:swap # server (crates/vantage-point) も効かせる（lane が全部落ちる）
@@ -228,7 +236,7 @@ VP_GC_DRY=1 mise run dev:gc                # 消さずに何がどれだけ減�
 
 > **`app:swap` を使う理由**: dev profile（`VP_PROFILE=dev`）は state を別 namespace に切るため daemon / repo / GUI を三点セットで立て直す要があり、素の dev binary（`~/.local/opt/vp-dev/bin/vp-app`）は `.app` bundle でないので macOS の app として扱えない（screenshot 許可対象にすらならない）。`app:swap` は本番と同じ `.app` 形のまま notarize の待ち時間だけを落とす（quarantine xattr が付かない自前 build に notarization ticket は不要 — Developer ID 署名で足りる）。
 > ⚠️ **GUI と server で反映タイミングが違う**: `.app` 差し替えで入れ替わるのは GUI（vp-app）だけ。daemon / repo は既に memory 上の旧 binary で走っているので、`crates/vantage-point` を触ったなら `VP_SWAP_RESTART_DAEMON=1` が要る（= repo の子である lane の claude が全部落ちる。会話は `cc_session` の `--resume` で復帰）。
-> webview（tsx/ts）変更は swap が内部で `app:bundle` を回すので手動 `bun run build` / `touch main_area.rs` は不要（旧儀式は build.rs の rerun-if-changed で根治）。webview 依存は npm semver pin（`file:` sibling 依存と bundle commit は 2026-07-19 に廃止）。creoui / club-unison の同時開発は `bun link`（docs/guide/webview.md）。
+> webview（tsx/ts）変更は swap が内部で `app:bundle` を回すので手動 `bun run build` / `touch webview/main_area.rs` は不要（旧儀式は build.rs の rerun-if-changed で根治）。webview 依存は npm semver pin（`file:` sibling 依存と bundle commit は 2026-07-19 に廃止）。creoui / club-unison の同時開発は `bun link`（docs/guide/webview.md）。
 > ⚠️ **`target/` は放置すると青天井**（2026-08-12 実測で **804 GB**: `debug/deps` 444 GB / **832,079 files**、`debug/incremental` 303 GB）。**cargo は build artifact を GC しない** — 依存 / feature / rustc version が変わるたびに新しい hash 名が増え、古い物は永久に残る。dogfood ループ（1 日に何度も `app:swap` / `cargo test`）だと積み上がり続ける。⚠️ 症状が出るのは disk が埋まった時で、出方が **release 途中の ENOSPC**（`docs/guide/release.md` の罠、2026-07-14 に実際に踏んだ）＝「気づいた時には手遅れ」型なので定期的に `mise run dev:gc` を回す。⚠️ **`rm -rf target/debug` に短絡しない** — `deps/` は現行 build に要る物と stale が同じ dir に混在するので、消すと次が full rebuild になる。`incremental/`（純粋 cache）は無条件安全、`deps/` は mtime で選別する `cargo-sweep` に任せる、の 2 層で扱うこと。
 > ⚠️ **swap 後は brew と現実が乖離する**: `app:swap` は brew cask 管理下の `.app` を dev build で上書きするが、Caskroom のメタデータは触らない。しかも swap した dev build は作業ツリーの version をそのまま名乗るため、**`brew upgrade --cask vantage-point` は version 一致で no-op になり dev build が居座り続ける**（Caskroom が持つのは実体コピーではなく `/Applications` への symlink なので brew は中身の差分を検知できない）。公式 release に戻すのは **`brew reinstall --cask vantage-point`**（`upgrade` では戻らない）。今どちらが入っているかは `spctl -a -t exec -vvv /Applications/VantagePoint.app` で判別できる（`Notarized Developer ID` = 公式 release / `Developer ID` = swap 済の dev build）。
 
@@ -292,22 +300,19 @@ daemon が **QUIC registry（Push）** でプロセスを管理する。SP-portl
 - `running_processes` / `repos` の HashMap キーは正規化パス（`normalize_path_key()`）。`repo_name` は表示用ラベル
 - `/api/health` レスポンスに `services` フィールドを含む（各機能の状態をリアルタイムで返す）
 
-## Agent モジュール
+## 会話 engine（旧 Agent モジュール）
 
-Claude CLI統合の実装（`crates/vantage-point/src/agent.rs`）。2つの実行モードを提供:
+Claude との会話は mode で経路が違う（`crates/vantage-point/src/conversation/`）:
 
-| モード | CLI形式 | 用途 |
-|--------|---------|------|
-| **OneShot**（`ClaudeAgent`） | `claude -p "prompt"` | 単発プロンプト |
-| **Interactive**（`InteractiveClaudeAgent`、デフォルト） | `claude -p --input-format stream-json` | 持続プロセス、複数ターン |
+| mode | 経路 | 実体 |
+|------|------|------|
+| **gui**（chat） | `conversation/host.rs::ClaudeHost` が `claude -p --input-format stream-json` を常駐 spawn し、stdout を `ConversationEvent` に翻訳して broadcast | doc 32 §3 |
+| **tui**（console） | **lane の PtySlot 直ホスト**。`repo/agent_spawner.rs::build_agent_command` が tui slot（login shell）に `claude --resume … || claude` を type-ahead 注入 | tmux decoupling PR2、`docs/design/tmux-decoupling.md` §13 |
 
-> 対話モードの claude（TUI）は Agent モジュールではなく、 **lane の PtySlot 直ホスト**（`stand_spawner::build_stand_command` が tui slot（login shell）に `claude --resume … || claude` を type-ahead 注入）が担う（tmux decoupling PR2、design doc `docs/design/tmux-decoupling.md` §13）。
-
-### Stream-JSON 入力フォーマット
-
-```json
-{"type":"user","message":{"role":"user","content":[{"type":"text","text":"メッセージ"}]}}
-```
+> 旧 `agent.rs`（`ClaudeAgent` OneShot / `InteractiveClaudeAgent`）は **2026-09 に撤去**。`InteractiveClaudeAgent` は
+> #390 以来一度も `Some` にならない `AppState`（現 `RepoState`）の field で、health の `services.claude` も定数 `"idle"` を返すだけだった。
+> Claude CLI の path 解決（`get_claude_cli_path`）だけが生きていて `conversation/host.rs` の private fn に移した。
+> 他 engine（codex / acp / vpcode）の host も同 dir。
 
 ## コーディング規約
 
@@ -374,6 +379,7 @@ task 管理は creo-memories に一本化（Linear は不使用、2026-05-19 確
 
 1. `git fetch origin nightly && git checkout -b mako/{slug} origin/nightly` で lane 開始
 2. lane 上で commit、 PR は **base = nightly** で `gh pr create --base nightly` で作る
+   - commit 前の gate: `cargo fmt --all -- --check` / `mise run check` / `cargo clippy --workspace --all-targets -- -D warnings` / `mise run test` / **`mise run claims`**（散文の主張を実物に当てる）
 3. PR merge / 直 push で nightly が進む
 4. nightly が一定量積み上がったら release PR (nightly → main) を切って tag cut
 

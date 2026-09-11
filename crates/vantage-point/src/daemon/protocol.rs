@@ -95,6 +95,12 @@ pub enum ProcessLifecycleEvent {
         /// 正規化済 repo path
         repo_path: String,
     },
+    /// 登録 repo 一覧（並び順 / 名前 / enabled / add / remove）が永続化された（doc 60 §8 b-7、doc 61 §5）。
+    ///
+    /// `RepoManagerCapability::persist_repos()` の末尾で 1 回発火する。中身は運ばない —
+    /// 受け手（vp-app）は `repos/list` を取り直す（GUI window 間で並び順を同期するための contract。
+    /// 旧 CLI の `vp daemon processes --watch` はこの variant を知らないので stream 終了になる）。
+    ReposChanged,
 }
 
 /// DeviceRegistry 🧲 — device 接続/切断/操作イベント (= "daemon-device" Unison channel の data plane)

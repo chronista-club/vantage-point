@@ -3,8 +3,6 @@
 //! CLI バイナリ (`vp`) や外部クレートから利用される
 //! Process サーバー、MCP、Daemon 等のコアロジックを提供する。
 
-pub mod agent;
-pub mod agui;
 pub mod capability;
 pub mod cli;
 pub mod commands;
@@ -21,8 +19,6 @@ pub use midistage_profiles::device_input;
 #[cfg(feature = "midi")]
 pub use midistage_profiles::device_profile;
 pub mod conversation;
-#[cfg(feature = "midi")]
-pub mod device_io;
 pub mod discovery;
 pub mod file_watcher;
 pub mod flow;

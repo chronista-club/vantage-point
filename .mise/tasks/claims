@@ -1,0 +1,161 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#MISE description="diff の散文から「実物に当てるべき主張」を抜き出す (数値 / 述語 / 出典)"
+#
+# なぜ要るか (2026-09-10 実測):
+#   この repo の refactor では **本文（コード）の欠陥は 0 件、review 指摘 28 件が全部
+#   散文（`//!` header / 設計 doc / commit message）** だった（9-3 の移設 5 PR で 12 /
+#   doc 62 で 13 / 9-2 PR-A で 3、2026-09-09〜09-10 の実測）。差は明確で、本文には checker が
+#   あり（順序付き diff / item 照合 / test / clippy）、散文には無い。
+#
+#   壊れ方は 4 型で、上位 2 型（数えられるものを数えなかった / 出典を確認せず近い方に
+#   帰属）が 6 割を占める。どちらも **diff から機械的に拾える**。
+#     例: 「5 か月 never-fire」→ 実際 12 日（#1019 = 2026-08-29、発見 2026-09-10）
+#         「Model Q（doc 44）」→ doc 44 に Model Q は 0 hit、定義は doc 24 §4.2
+#         「daemon 再起動時のクリーンアップに使う」→ 呼び手は test だけ
+#
+#   このタスクは判定しない。**「この行は実物に当てたか？」を漏れなく並べる**だけ。
+#   判定は人 (or agent) が grep して行う。checker が犯人を当てるのではなく、
+#   容疑者を全部リストにするのが仕事。
+#
+# 使い方:
+#   mise run claims                # merge-base(nightly, HEAD) と**作業ツリー**の diff（既定）
+#                                  #   = commit 済み + staged + unstaged + untracked file の全行
+#   mise run claims -- --staged    # staged only
+#   mise run claims -- --base main
+#   mise run claims -- --all crates/vantage-point/src/db   # diff でなく path 全体
+
+require "optparse"
+require "open3"
+
+base = "nightly"
+mode = :diff
+paths = []
+
+OptionParser.new do |o|
+  o.on("--base BASE") { |v| base = v }
+  o.on("--staged") { mode = :staged }
+  o.on("--all") { mode = :all }
+end.parse!(ARGV)
+paths = ARGV
+
+def run(*cmd)
+  out, err, st = Open3.capture3(*cmd)
+  abort "失敗: #{cmd.join(' ')}\n#{err}" unless st.success?
+  out
+end
+
+# --- 拾う対象 -------------------------------------------------------------
+# 「数える / 開く / 引く」のどれかをしないと書けないはずの表現。
+RULES = [
+  [:数値,
+   /\d+\s*(か月|ヶ月|カ月|日間|日|週間|年|件|本|箇所|行|回|個|つ|%|倍)(?!\w)/,
+   "両端を書いたか（期間なら開始と終了、件数なら数えた command）"],
+
+  [:述語,
+   /(使う|使っている|呼ぶ|呼び手|読む|読み手|書き手|持つ|持たない|触る|触らない|
+     存在しない|居ない|無い|ない\b|0\s*件|だけ|のみ|唯一|全部|すべて|常に|決して|
+     一度も|必ず)/x,
+   "git grep で数えたか（0 件の主張は特に）"],
+
+  [:出典,
+   %r{(doc\s*\d+|§\s*[\d.]+|PR\s*#\d+|\B#\d{3,}|[\w/]+\.rs:\d+|[\w-]+\.md)},
+   "その節 / 行 / PR を実際に開いたか（近い方に帰属していないか）"],
+
+  [:時制,
+   /(である|になる|になっている|しておく|する予定|まだ|既に|今は|現時点)/,
+   "未来を現在形で / 過去を現在形で書いていないか（段階的な refactor で毎回古くなる）"],
+]
+
+# 散文だけを見る。コードの行は checker が別に守っている。
+PROSE = %r{^\s*(//[/!]?|\#|\*|<!--|\||[-*]\s|\d+\.\s)|^\s*[^\s/].*(?<!;)$}
+
+def prose?(line, file)
+  return true if file.end_with?(".md")
+  s = line.strip
+  s.start_with?("//", "#", "*") || s.start_with?("///", "//!")
+end
+
+# --- 対象行を集める -------------------------------------------------------
+Claim = Struct.new(:file, :line_no, :text)
+claims = []
+
+if mode == :all
+  abort "--all は path が要る" if paths.empty?
+  files = run("git", "ls-files", *paths).lines.map(&:chomp)
+  files.each do |f|
+    next unless File.file?(f)
+    File.readlines(f).each_with_index do |l, i|
+      claims << Claim.new(f, i + 1, l.chomp) if prose?(l, f)
+    end
+  end
+else
+  # ⚠️ base...HEAD（三点）は commit 済みしか見ない。この gate は CLAUDE.md の
+  # 「commit 前に回す」列に居るので、既定は **merge-base と作業ツリー**を比べる。
+  # 三点にしていた初版は **未 commit の変更が常に不可視**で、branch にまだ commit が
+  # 無ければ（= nightly 上の作業や branch の 1 本目）出力がまるごと空になっていた。
+  args = if mode == :staged
+           ["diff", "--cached", "-U0"]
+         else
+           ["diff", "-U0", run("git", "merge-base", base, "HEAD").chomp]
+         end
+  args += ["--"] + paths unless paths.empty?
+  file = nil
+  lno = 0
+  run("git", *args).each_line do |l|
+    if l.start_with?("+++ b/")
+      file = l[6..].chomp
+    elsif (m = l.match(/^@@ .*\+(\d+)/))
+      lno = m[1].to_i
+    elsif l.start_with?("+") && !l.start_with?("+++")
+      body = l[1..].chomp
+      claims << Claim.new(file, lno, body) if file && prose?(body, file)
+      lno += 1
+    end
+  end
+
+  # ⚠️ `git diff` は working tree を見るが **untracked file は含まない**。
+  # 新規 doc / 新規 test file を足す PR で `git add` 前に回すと、この gate が
+  # 沈黙してしまう（= 修正前と同じ穴）。index を汚さずに拾うため、追跡外の
+  # file は全行を新規散文として扱う（新規 file の中身は全部が追加行）。
+  unless mode == :staged
+    untracked = run("git", "ls-files", "--others", "--exclude-standard", *paths)
+    untracked.lines.map(&:chomp).each do |f|
+      next unless File.file?(f)
+      File.readlines(f).each_with_index do |l, i|
+        claims << Claim.new(f, i + 1, l.chomp) if prose?(l, f)
+      rescue ArgumentError # binary / 不正 encoding は飛ばす
+        next
+      end
+    end
+  end
+end
+
+# --- 分類して出す ---------------------------------------------------------
+hits = Hash.new { |h, k| h[k] = [] }
+claims.each do |c|
+  RULES.each { |(kind, re, _)| hits[kind] << c if c.text =~ re }
+end
+
+total = hits.values.map(&:size).sum
+if total.zero?
+  puts "確認すべき主張は見つからなかった（散文の追加が無いか、数値・述語・出典を含まない）"
+  exit 0
+end
+
+RULES.each do |(kind, _, howto)|
+  list = hits[kind]
+  next if list.empty?
+  puts "\n\e[1m#{kind}\e[0m (#{list.size})  — #{howto}"
+  list.each do |c|
+    body = c.text.strip.gsub(%r{^(///|//!|//|\#|\*)\s?}, "")
+    body = body[0, 150]
+    puts "  \e[2m#{c.file}:#{c.line_no}\e[0m"
+    puts "    #{body}"
+  end
+end
+
+puts "\n\e[1m計 #{total} 件\e[0m（重複あり）。1 件ずつ実物に当ててから commit すること。"
+puts "  数値 → 両端を書く（「12 日（2026-08-29 → 09-10）」）"
+puts "  述語 → git grep で数える。0 件の主張は特に"
+puts "  出典 → その節を開く。近い方に帰属しない"

@@ -1,7 +1,7 @@
 /**
  * Conversation tui（xterm）の配線 — 旧 World A。
  *
- * doc 53 §6.5 の「もう半分」。2026-07-26 まで、この 976 行は `crates/vp-app/src/main_area.rs` の
+ * doc 53 §6.5 の「もう半分」。2026-07-26 まで、この 976 行は `crates/vp-app/src/webview/main_area.rs`（当時は `src/main_area.rs`）の
  * inline `<script>` に Rust 文字列として埋め込まれていた（World A）。同じ webview の中に 2 つの
  * コードベースが並ぶ形で、doc 53 §6.5 の実測では **A6 で出た 17 バグの最大タイのクラスタ（4 件）が
  * この境界に集まっていた**（同じ概念を 2 言語で表現する / 片方だけ改修に追随する）。
@@ -409,7 +409,7 @@ export function installTerm(): TermPushHandlers {
 
 		// ===== Transport: Daemon "canvas" channel 経由 (terminal S4、 doc 27 §4.1) =====
 		// 旧 `/ws/terminal` browser-native WebSocket 直結を撤去し、 Rust 側 per-lane terminal session
-		// (app.rs `spawn_terminal_session`) に橋渡しする IPC 経路に直切替:
+		// (app/mod.rs `spawn_terminal_session`) に橋渡しする IPC 経路に直切替:
 		//   - 出力: Rust が daemon canvas channel から PTY bytes を受け、 `window.vpTerminal.handleOutput
 		//           (address, session, base64)` で inject (下記 coalescer で 1 frame 分まとめて term.write)。
 		//   - 入力: `term.onData` → IPC `{t:'term:write', lane, session, data:base64}` → Rust session → repo。
@@ -458,7 +458,7 @@ export function installTerm(): TermPushHandlers {
 		}
 
 		// ⚠️ ここに「生成直後の初回 fit」は置かない。`.lane-pane` は `display:none` で生まれ
-		// （main_area.rs の CSS）、`.active` が付くのは `createLaneInstance` が**戻った後**
+		// （webview/main_area.rs の CSS）、`.active` が付くのは `createLaneInstance` が**戻った後**
 		// （`ensureLane`）。つまり生成時点の `clientWidth` は必ず 0 で、`clientWidth > 0` を
 		// 条件にした fit は**一度も走らない**（旧実装の `fit()` 単独呼び出しも到達不能だった）。
 		// サイズ合わせは `syncSize` が「可視になった契機」で行う。
@@ -631,7 +631,7 @@ export function installTerm(): TermPushHandlers {
 	 * **level 駆動**（#918 と同型）: 「サイズが変わった」という edge ではなく「今この instance が
 	 * 可視である」という level を契機に撃つ。container の ResizeObserver は size **変化**でしか
 	 * 発火しないので、生成後に誰もサイズを動かさなければ一度も同期されない — PTY は
-	 * `spawn_agent(&cmd, 120, 48)`（`lane_reconcile.rs`）の 120×48 のまま取り残される。
+	 * `spawn_agent(&cmd, 120, 48)`（`lane/reconcile.rs`）の 120×48 のまま取り残される。
 	 *
 	 * rAF 2 段なのは、`display` 切替の layout flush 前に走ると fit が 0 幅で潰れるため
 	 * （= 狭幅復元bug の intermittent 原因）。幅がまだ 0 なら見送り、80×24 を保つ。
@@ -766,7 +766,7 @@ export function installTerm(): TermPushHandlers {
 
 	// Phase 4-paste-fix: Rust 側 arboard で読み取った OS clipboard 内容を active Lane の xterm に inject。
 	// `terminal.rs::handle_ipc_message` の `paste:request` → `AppEvent::PasteText` → `app.rs` event loop
-	// の `lane_js::deliver_paste` → `term:paste` envelope → dispatch.ts、の最終受け取り口。
+	// の `push_main::deliver_paste` → `term:paste` envelope → dispatch.ts、の最終受け取り口。
 	const deliverPaste = (text: string): void => {
 		if (!text) return;
 		// 宛先は **focus 中の 1 枚**。A6（session = Pane）で lane に active な pane が複数

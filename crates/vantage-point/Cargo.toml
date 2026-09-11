@@ -219,6 +219,9 @@ windows = { version = "0.62", features = [
 
 [dev-dependencies]
 tempfile = "3.27.0"
+# 棚卸し 項目 8 / 8-2: ConversationEvent の TS 型を生成（test 時のみ）。出力先は workspace の
+# `.cargo/config.toml` の TS_RS_EXPORT_DIR（= crates/vp-app）相対で `webview/src/generated/`。
+ts-rs = { version = "12", features = ["serde-compat"] }
 # VP-13 sub-scope E: Medium 層 route test 用 (= Axum oneshot pattern、 ServiceExt::oneshot)
 tower = { workspace = true, features = ["util"] }
 # hub_client_e2e: 本番 vp バイナリと同じ rustls CryptoProvider をテストプロセスで install するため

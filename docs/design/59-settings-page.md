@@ -115,7 +115,7 @@ mako 裁定済みで、本 doc はその予約席に入るだけである。
 ### 5.1 既定 agent × model を「組」にする理由
 
 現状の `default-agent` と `default-lane-model` は**独立した 2 キー**で、既定を解決する
-[`routes/lanes.rs`](../../crates/vantage-point/src/repo/routes/lanes.rs) は
+[`lane/lifecycle.rs`](../../crates/vantage-point/src/repo/lane/lifecycle.rs) は
 **agent を見ずに** model を返してから agent と組にして registry へ書く:
 
 ```rust
@@ -136,7 +136,7 @@ if let Some(model) = engine_model::resolve_default(req.model, config.default_lan
 
 ### 5.2 アイドル時間を 1 つにする理由
 
-[`lanes_state.rs`](../../crates/vantage-point/src/repo/lanes_state.rs) の
+[`lane/pool.rs`](../../crates/vantage-point/src/repo/lane/pool.rs) の
 `IDLE_TEARDOWN_AFTER_MS` には「**now-line の quiet 閾値と同値**」と明記されている。
 2 つのスライダーにすると、この意図的な同値関係が黙って壊れる（片方だけ動かせてしまう）。
 
@@ -147,7 +147,7 @@ GUI へは roster と同じ経路で運べる。
 ### 5.3 daemon 再起動ボタンの警告義務
 
 daemon を止めると **全 repo が落ちる = 全 lane の claude が落ちる**（doc 44 P1 fold-in 以降、
-repo は daemon プロセス内の `Arc<AppState>`）。GUI から気軽に押せる位置に置く以上、
+repo は daemon プロセス内の `Arc<RepoState>`）。GUI から気軽に押せる位置に置く以上、
 確認ダイアログで「**何が落ちて、何が戻るか**」を明示する:
 
 - 落ちる: すべての lane のプロセス

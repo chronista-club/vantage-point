@@ -101,12 +101,20 @@ struct ProcessEntry {
     inject_tx: Option<mpsc::Sender<String>>,
     /// 完了時刻（クリーンアップ判定用）
     completed_at: Option<std::time::Instant>,
+    /// 終了の確認（棚卸し 9-2 段階 3）。`update_status` が Completed / Failed に遷移させた時に
+    /// `true` を送る。`stop_all` はこれを待って「停止を要求した仕事の終わり」を確認する。
+    done_tx: tokio::sync::watch::Sender<bool>,
+    done_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 /// プロセスレジストリ
 pub struct ProcessRegistry {
     processes: HashMap<String, ProcessEntry>,
     counter: u32,
+    /// 受付を閉じたか（棚卸し 9-2 段階 3、停止契約 ①）。`stop_all` が立て、以後 `register` は
+    /// 拒む。repo stop の後に in-flight の `process_run` が子を spawn しても、登録できずに
+    /// kill されるので「畳んだはずの repo の runner が生き残る」窓が閉じる。
+    closing: bool,
 }
 
 impl Default for ProcessRegistry {
@@ -120,6 +128,7 @@ impl ProcessRegistry {
         Self {
             processes: HashMap::new(),
             counter: 0,
+            closing: false,
         }
     }
 
@@ -143,11 +152,15 @@ impl ProcessRegistry {
         pane_id: String,
         shutdown_tx: mpsc::Sender<()>,
         inject_tx: mpsc::Sender<String>,
-    ) {
+    ) -> Result<(), String> {
+        if self.closing {
+            return Err("process registry は停止中（repo stop 後の起動は拒む）".to_string());
+        }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+        let (done_tx, done_rx) = tokio::sync::watch::channel(false);
 
         self.processes.insert(
             process_id.clone(),
@@ -163,8 +176,11 @@ impl ProcessRegistry {
                 shutdown_tx: Some(shutdown_tx),
                 inject_tx: Some(inject_tx),
                 completed_at: None,
+                done_tx,
+                done_rx,
             },
         );
+        Ok(())
     }
 
     /// プロセス状態を更新
@@ -177,10 +193,36 @@ impl ProcessRegistry {
                 }
                 _ => {}
             }
+            let finished = matches!(
+                status,
+                ProcessStatus::Completed { .. } | ProcessStatus::Failed { .. }
+            );
             entry.info.status = status;
             entry.shutdown_tx = None;
             entry.inject_tx = None;
+            if finished {
+                let _ = entry.done_tx.send(true);
+            }
         }
+    }
+
+    /// 受付を閉じ、走っている runner の停止手段を**lock の外で使う形**で取り出す
+    /// （棚卸し 9-2 段階 3、停止契約 ②）。返り値 = (process_id, shutdown 送信口, 終了通知)。
+    ///
+    /// ここで送信も待機もしない — runner の終了処理（`stream_output`）は `update_status` で
+    /// この registry の lock を取るので、lock を握ったまま待つと行き詰まる。
+    fn close_and_take_stop_handles(
+        &mut self,
+    ) -> Vec<(String, mpsc::Sender<()>, tokio::sync::watch::Receiver<bool>)> {
+        self.closing = true;
+        self.processes
+            .iter()
+            .filter_map(|(id, e)| {
+                e.shutdown_tx
+                    .as_ref()
+                    .map(|tx| (id.clone(), tx.clone(), e.done_rx.clone()))
+            })
+            .collect()
     }
 
     /// 完了済みエントリのうち、指定秒数以上経過したものを削除
@@ -304,7 +346,9 @@ pub async fn process_run(
     let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
     let (inject_tx, inject_rx) = mpsc::channel::<String>(64);
 
-    registry.lock().await.register(
+    // `let` で受けて guard を先に落とす — `if let` の scrutinee にすると then-block の
+    // `kill().await` の間も registry の lock を握る（停止契約 ② に反する）。
+    let registered = registry.lock().await.register(
         process_id.clone(),
         display_name,
         command_display,
@@ -312,6 +356,11 @@ pub async fn process_run(
         shutdown_tx,
         inject_tx,
     );
+    if let Err(e) = registered {
+        // 受付が閉じた後に滑り込んだ spawn（停止契約 ①）。登録できない子は畳んで返す
+        let _ = child.kill().await;
+        return Err(e);
+    }
 
     // ブートストラップコードがあれば stdin に送信
     let bootstrap = params.bootstrap.clone();
@@ -361,6 +410,45 @@ pub async fn process_stop(
     Ok(())
 }
 
+/// 受付を閉じて走っている runner を全部止め、**終了まで確認する**（棚卸し 9-2 段階 3）。
+///
+/// repo stop（`shutdown_repo`）から呼ぶ。返り値 = 停止を要求した runner 数。
+///
+/// 停止契約（doc 63 §8）:
+/// - ① 受付を閉じる — `closing` を立てるので、以後の `process_run` は登録できず子を kill する
+/// - ② lock 内で停止対象を取り出し、lock 外で通知・終了待ち — `stream_output` の終了処理が
+///   同じ lock を取るため
+/// - ③ 親 task と中で作る task の両方 — 親（`stream_output`）は `child.wait()` の後、stdout /
+///   stderr の pump を `abort()` してから `update_status` を呼ぶので、done を待てば両方が終わっている
+///   （pipe の EOF だけに頼ると、孫が pipe を継いだ場合に pump が残る）
+///
+/// 終了待ちは runner ごとに `STOP_ALL_CONFIRM_TIMEOUT`。`stream_output` は shutdown 受信後
+/// 5 秒で kill するので、それより長く取る。超えたら warn を出して次へ（daemon の graceful
+/// shutdown を 1 つの runner に人質に取らせない）。
+pub async fn stop_all(registry: &std::sync::Arc<tokio::sync::Mutex<ProcessRegistry>>) -> usize {
+    let targets = registry.lock().await.close_and_take_stop_handles();
+    let count = targets.len();
+    for (id, tx, _) in &targets {
+        if tx.send(()).await.is_err() {
+            tracing::debug!("runner {id}: shutdown 送信先が既に閉じている（終了済み）");
+        }
+    }
+    for (id, _, mut done) in targets {
+        match tokio::time::timeout(STOP_ALL_CONFIRM_TIMEOUT, done.wait_for(|d| *d)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) => tracing::debug!("runner {id}: entry が先に消えた（終了済み扱い）"),
+            Err(_) => tracing::warn!(
+                "runner {id}: {}s 以内に終了を確認できなかった（kill 済みのはず、registry は未更新）",
+                STOP_ALL_CONFIRM_TIMEOUT.as_secs()
+            ),
+        }
+    }
+    count
+}
+
+/// `stop_all` が runner 1 つの終了を待つ上限。`stream_output` の shutdown → kill 猶予（5 秒）より長く。
+const STOP_ALL_CONFIRM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
 /// コードを注入
 pub async fn process_inject(
     registry: &std::sync::Arc<tokio::sync::Mutex<ProcessRegistry>>,
@@ -398,29 +486,33 @@ async fn stream_output(
 
     // stdout/stderr を並行で読み取り
     let (line_tx, mut line_rx) = mpsc::channel::<(String, String)>(256);
+    // pump の JoinHandle は親が保持する（停止契約 ③）。shutdown 経路では子を畳んだ後に abort する —
+    // 子が孫に pipe を継がせていると write 端が閉じず `next_line` が返らないので、pipe の EOF だけに
+    // 頼ると pump が残る。通常終了（全 sender drop = `line_rx` が None）では既に抜けているので no-op。
+    let mut pumps: Vec<tokio::task::JoinHandle<()>> = Vec::with_capacity(2);
 
     if let Some(out) = stdout {
         let tx = line_tx.clone();
-        tokio::spawn(async move {
+        pumps.push(tokio::spawn(async move {
             let mut reader = BufReader::new(out).lines();
             while let Ok(Some(line)) = reader.next_line().await {
                 if tx.send(("stdout".to_string(), line)).await.is_err() {
                     break;
                 }
             }
-        });
+        }));
     }
 
     if let Some(err) = stderr {
         let tx = line_tx.clone();
-        tokio::spawn(async move {
+        pumps.push(tokio::spawn(async move {
             let mut reader = BufReader::new(err).lines();
             while let Ok(Some(line)) = reader.next_line().await {
                 if tx.send(("stderr".to_string(), line)).await.is_err() {
                     break;
                 }
             }
-        });
+        }));
     }
     drop(line_tx);
 
@@ -432,22 +524,22 @@ async fn stream_output(
                 drop(stdin.take());
 
                 // タイムアウト後に強制 kill
-                tokio::select! {
-                    status = child.wait() => {
-                        let exit_code = status.ok().and_then(|s| s.code());
-                        registry.lock().await.update_status(
-                            process_id,
-                            ProcessStatus::Completed { exit_code },
-                        );
-                    }
+                let exit_code = tokio::select! {
+                    status = child.wait() => status.ok().and_then(|s| s.code()),
                     _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
                         let _ = child.kill().await;
-                        registry.lock().await.update_status(
-                            process_id,
-                            ProcessStatus::Completed { exit_code: Some(-9) },
-                        );
+                        Some(-9)
                     }
+                };
+                // 子が終わったので pump を回収してから「終了」を registry に流す（停止契約 ③ —
+                // done を待つ側は、親も pump も終わっていることを信じてよい）
+                for pump in &pumps {
+                    pump.abort();
                 }
+                registry
+                    .lock()
+                    .await
+                    .update_status(process_id, ProcessStatus::Completed { exit_code });
 
                 hub.broadcast(RepoMessage::Show {
                     pane_id: pane_id.to_string(),
@@ -706,4 +798,110 @@ pub async fn ruby_list(
     registry: &std::sync::Arc<tokio::sync::Mutex<ProcessRegistry>>,
 ) -> Vec<ProcessInfo> {
     registry.lock().await.list()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    //! 棚卸し 9-2 段階 3（doc 63 §8「① 長期 runner が repo stop で止まらない」）。
+    //! `sleep` を runner として起こし、repo stop 相当の経路で止まって**終了まで確認できる**ことを固定する。
+
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn sleep_params(secs: &str) -> RunParams {
+        RunParams {
+            command: "sleep".to_string(),
+            args: vec![secs.to_string()],
+            name: None,
+            pane_id: None,
+            working_dir: None,
+            bootstrap: None,
+        }
+    }
+
+    fn status_of(reg: &ProcessRegistry, id: &str) -> ProcessStatus {
+        reg.list()
+            .into_iter()
+            .find(|p| p.process_id == id)
+            .map(|p| p.status)
+            .expect("entry が居る")
+    }
+
+    /// 長期 runner が repo stop（`shutdown_repo`）で止まり、registry が Completed になるまで確認できる。
+    ///
+    /// fix 前は `shutdown_repo` が file watcher しか止めず、`sleep 30` は Running のまま生き残る
+    /// （= この assert が赤）。10 秒の外側 timeout は「lock を握ったまま待つと行き詰まる」（停止契約 ②）
+    /// の網でもある — `stream_output` の `update_status` が lock を取れないと done が来ない。
+    #[tokio::test]
+    async fn shutdown_repo_stops_running_runners_and_confirms_exit() {
+        let state = crate::repo::state::build_test_app_state().await;
+        let id = process_run(
+            &state.process_registry,
+            &sleep_params("30"),
+            "/tmp",
+            &state.hub,
+        )
+        .await
+        .expect("sleep 30 を起こす");
+        assert!(matches!(
+            status_of(&*state.process_registry.lock().await, &id),
+            ProcessStatus::Running
+        ));
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            crate::repo::server::shutdown_repo(&state),
+        )
+        .await
+        .expect("shutdown_repo が 10 秒以内に返る（lock を握ったまま待っていない）");
+
+        assert!(
+            matches!(
+                status_of(&*state.process_registry.lock().await, &id),
+                ProcessStatus::Completed { .. }
+            ),
+            "repo stop で runner が止まり、終了が registry に反映される"
+        );
+    }
+
+    /// 受付を閉じた後の `process_run` は登録できず、spawn した子を kill して Err を返す（停止契約 ①）。
+    #[tokio::test]
+    async fn process_run_is_refused_after_stop_all() {
+        let registry = Arc::new(Mutex::new(ProcessRegistry::new()));
+        let hub = crate::repo::hub::Hub::new();
+        assert_eq!(stop_all(&registry).await, 0, "runner 0 で閉じる");
+
+        let r = process_run(&registry, &sleep_params("30"), "/tmp", &hub).await;
+        assert!(r.is_err(), "閉じた後の起動は Err: {r:?}");
+        assert!(
+            registry.lock().await.list().is_empty(),
+            "登録されていない（子は kill 済み）"
+        );
+    }
+
+    /// `stop_all` は走っている runner の数を返し、全部 Completed にしてから返る。
+    #[tokio::test]
+    async fn stop_all_reports_count_and_waits_for_every_runner() {
+        let registry = Arc::new(Mutex::new(ProcessRegistry::new()));
+        let hub = crate::repo::hub::Hub::new();
+        let a = process_run(&registry, &sleep_params("30"), "/tmp", &hub)
+            .await
+            .unwrap();
+        let b = process_run(&registry, &sleep_params("30"), "/tmp", &hub)
+            .await
+            .unwrap();
+
+        let n = tokio::time::timeout(std::time::Duration::from_secs(10), stop_all(&registry))
+            .await
+            .expect("10 秒以内");
+        assert_eq!(n, 2);
+        let reg = registry.lock().await;
+        for id in [&a, &b] {
+            assert!(matches!(
+                status_of(&reg, id),
+                ProcessStatus::Completed { .. }
+            ));
+        }
+    }
 }
