@@ -15,8 +15,53 @@ use crate::protocol::RepoMessage;
 use std::collections::HashMap;
 
 /// editor bridge の pending 応答 map（request_id → oneshot）。`RepoState.editor_pending` の型。
+///
+/// `std::sync::Mutex` なのは、掃除を [`PendingGuard`] の `Drop`（同期）で行うため。lock を
+/// 持ったまま await する箇所は無い（insert / remove の 1 行だけ）。
 pub(crate) type EditorPending =
-    tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<serde_json::Value>>>;
+    std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<serde_json::Value>>>;
+
+/// pending map の lock（poison は中身を取り出して続行 — map は 1 行操作しかしないので壊れない）。
+fn lock_pending(
+    pending: &EditorPending,
+) -> std::sync::MutexGuard<'_, HashMap<String, tokio::sync::oneshot::Sender<serde_json::Value>>> {
+    pending.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 往路が登録した pending を、往路の future がどう終わっても掃除する guard（棚卸し 9-2 段階 3、
+/// doc 63 §8 の穴 ②）。
+///
+/// 旧形は timeout 分岐で `remove` していたので、往路の future が timeout の前に drop されると
+/// （`select!` / `timeout` で包んだ呼び手や task の abort）entry が残り、遅延応答が別 request
+/// に誤配されうる。今の本番経路（repo-proxy channel の loop が inline で await）ではその drop は
+/// 起きないことを実測したが、「掃除は分岐の 1 行に書いてある」より「drop に結びつける」方が
+/// 呼び手の形に依存しない。解決済み（復路が remove 済み）なら remove は no-op。
+struct PendingGuard<'a> {
+    pending: &'a EditorPending,
+    request_id: String,
+}
+
+impl<'a> PendingGuard<'a> {
+    /// 登録と guard 生成を 1 呼び出しに畳む（「登録された pending には必ず guard がある」を
+    /// 隣接ではなく型の事実にする）。
+    fn register(
+        pending: &'a EditorPending,
+        request_id: String,
+        tx: tokio::sync::oneshot::Sender<serde_json::Value>,
+    ) -> Self {
+        lock_pending(pending).insert(request_id.clone(), tx);
+        Self {
+            pending,
+            request_id,
+        }
+    }
+}
+
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        lock_pending(self.pending).remove(&self.request_id);
+    }
+}
 
 /// editor bridge が要る依存だけの借用 context（doc 63 §2 段階 2）。
 ///
@@ -24,7 +69,7 @@ pub(crate) type EditorPending =
 /// 無い」`vpdb` 専用の形）。往路は timeout まで 1 つの借用の中で待つ（spawn しない）ので借用で足りる。
 #[derive(Clone, Copy)]
 pub(crate) struct EditorContext<'a> {
-    /// 往路が登録し、復路が `request_id` で解決する。timeout 時は往路が remove
+    /// 往路が登録し、復路が `request_id` で解決する。往路の [`PendingGuard`] が drop で remove
     pub pending: &'a EditorPending,
     /// `EditorCommand` の broadcast 先（canvas channel、非 retained event topic）
     pub hub: &'a Hub,
@@ -59,9 +104,10 @@ pub(crate) async fn handle_editor_command(
 
     let request_id = crate::trace_log::new_trace_id();
     let (tx, rx) = tokio::sync::oneshot::channel::<serde_json::Value>();
-    ctx.pending.lock().await.insert(request_id.clone(), tx);
+    // 掃除は guard の drop に結びつける（timeout / 応答 / 途中 drop のどれでも）。
+    let _guard = PendingGuard::register(ctx.pending, request_id.clone(), tx);
     ctx.hub.broadcast(RepoMessage::EditorCommand {
-        request_id: request_id.clone(),
+        request_id,
         op,
         field_id,
         value,
@@ -69,15 +115,10 @@ pub(crate) async fn handle_editor_command(
 
     match tokio::time::timeout(EDITOR_BRIDGE_TIMEOUT, rx).await {
         Ok(Ok(body)) => Ok(body),
-        // timeout / sender drop: pending を掃除してから明示エラー
-        // (残すと map が leak し、遅延応答が別 request に誤配されうる)
-        _ => {
-            ctx.pending.lock().await.remove(&request_id);
-            Err(
-                "editor bridge timeout — vp-app が起動して当該 repo を表示しているか確認"
-                    .to_string(),
-            )
-        }
+        // timeout / sender drop: 明示エラー（pending は guard が掃除する）
+        _ => Err(
+            "editor bridge timeout — vp-app が起動して当該 repo を表示しているか確認".to_string(),
+        ),
     }
 }
 
@@ -98,7 +139,8 @@ pub(crate) async fn handle_editor_result(
         .get("payload")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
-    if let Some(tx) = ctx.pending.lock().await.remove(request_id) {
+    let tx = lock_pending(ctx.pending).remove(request_id);
+    if let Some(tx) = tx {
         let _ = tx.send(body);
     }
     Ok(serde_json::json!({"status": "ok"}))
@@ -117,7 +159,7 @@ mod tests {
         use crate::protocol::RepoMessage;
         use crate::repo::hub::Hub;
 
-        let pending: EditorPending = tokio::sync::Mutex::new(std::collections::HashMap::new());
+        let pending: EditorPending = std::sync::Mutex::new(std::collections::HashMap::new());
         let hub = Hub::new();
         let ctx = EditorContext {
             pending: &pending,
@@ -145,7 +187,7 @@ mod tests {
             }
         );
         assert_eq!(cmd_res.expect("roundtrip")["layout"], "L");
-        assert!(pending.lock().await.is_empty(), "解決後の pending は空");
+        assert!(pending.lock().unwrap().is_empty(), "解決後の pending は空");
     }
 
     /// doc 48 Phase 2: editor bridge の相関 — command が pending を作り broadcast、
@@ -182,7 +224,7 @@ mod tests {
         let body = cmd_res.expect("roundtrip 成功");
         assert_eq!(body["values"]["sb.text.base"], 13);
         // 解決後の pending は空 (leak しない)
-        assert!(state.editor_pending.lock().await.is_empty());
+        assert!(state.editor_pending.lock().unwrap().is_empty());
     }
 
     /// 不在 request_id への応答 (= timeout 済 stale) はエラーにせず no-op で吸収する。
@@ -219,6 +261,47 @@ mod tests {
                 "payload {payload} が弾かれていない"
             );
         }
-        assert!(state.editor_pending.lock().await.is_empty());
+        assert!(state.editor_pending.lock().unwrap().is_empty());
+    }
+
+    /// 棚卸し 9-2 段階 3（doc 63 §8 穴 ②）: 往路の future が応答も timeout も待たずに drop されても
+    /// pending は残らない（Codex の probe `pending_after_future_drop_and_3_1s=1` の再現を test に）。
+    ///
+    /// 落ちるべき壊し方: `PendingGuard` を外して timeout 分岐の `remove` に戻すと、drop 直後の
+    /// pending が 1 のまま（3 秒後にも 1 のまま）で赤。
+    #[tokio::test]
+    async fn dropped_command_future_cleans_its_pending() {
+        use super::{EditorContext, EditorPending, handle_editor_command};
+        use crate::repo::hub::Hub;
+
+        let pending: EditorPending = std::sync::Mutex::new(std::collections::HashMap::new());
+        let hub = Hub::new();
+        let ctx = EditorContext {
+            pending: &pending,
+            hub: &hub,
+        };
+        let mut hub_rx = hub.subscribe();
+
+        let mut command = Box::pin(handle_editor_command(
+            ctx,
+            "editor_values",
+            serde_json::json!({}),
+        ));
+        // GUI の応答は来ない。broadcast が届いた時点で往路は pending を登録して待っている。
+        tokio::select! {
+            _ = &mut command => panic!("GUI 応答なしに往路が終わった"),
+            msg = hub_rx.recv() => { msg.expect("EditorCommand broadcast"); }
+        }
+        assert_eq!(
+            pending.lock().unwrap().len(),
+            1,
+            "待っている間は pending が 1"
+        );
+
+        drop(command);
+        assert!(
+            pending.lock().unwrap().is_empty(),
+            "往路の future を drop した時点で pending は掃除されている"
+        );
     }
 }
