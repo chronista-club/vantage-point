@@ -1,6 +1,6 @@
 # doc 63 — `AppState` を `DaemonState` / `RepoState` に分ける（棚卸し 項目 9-2）
 
-> **Status**: **段階 1 完了（2026-09-11）** — PR-A〜5（#1099 / #1101〜#1110、起票 #1098 を含めて 12 commit）が全部 nightly に着地。`RepoState`（14 field）/ `DaemonState`（25 field）の 2 型。段階 2（`BoardContext` #1112 / `EditorContext` #1113）完了。段階 3（停止責任）は PR-S3a（runner）で着手、残りは §8。file 名は「`AppState` を分ける」という設計の主題なので据え置き（doc 44 が `world` を残すのと同じ）
+> **Status**: **段階 1 完了（2026-09-11）** — PR-A〜5（#1099 / #1101〜#1110、起票 #1098 を含めて 12 commit）が全部 nightly に着地。`RepoState`（14 field）/ `DaemonState`（25 field）の 2 型。段階 2（`BoardContext` #1112 / `EditorContext` #1113）完了。段階 3（停止責任）は PR-S3a（runner）/ PR-S3b（repo の常駐 task = `ActorRegistry::stop_all`）まで着地、残りは §8（daemon 側の task 回収 / 穴 ②）。file 名は「`AppState` を分ける」という設計の主題なので据え置き（doc 44 が `world` を残すのと同じ）
 > **Date**: 2026-09-09 起票（材料表）→ 2026-09-10 設計へ
 > **Owners**: server crate（`crates/vantage-point/src/repo/state.rs` / `daemon/server.rs`）
 > **台帳**: `.vp/reports/refactor-audit-2026-09-07.md` 項目 9。姉妹 doc: [doc 60](60-vp-app-layout.md) / [doc 61](61-repo-runtime-layout.md) / [doc 62](62-db-module-layout.md)
@@ -113,7 +113,7 @@ if let Some(store) = state.wiremsg_store.as_ref() { store.leave_all_threads(..).
 |---|---|---|---|
 | **1** | 実行範囲（daemon 役 / repo 役） | **役の混在が消え、既存の結線と HTTP 契約が保たれた** | PR-0 〜 5（全部） |
 | **2** | 操作に渡す依存 | **leaf が全体 State を知らずに使える** | PR-S2a `BoardContext` ✅（board の handler 6 + `seed_boards` が `repo_dir` / `vpdb` / `hub` の借用だけで動く、module から `RepoState` の import が消えた）→ PR-S2b `EditorContext` ✅（`editor_pending` / `hub`、非 `Option` 2 field）。**段階 2 はここで閉じる** |
-| **3** | 所有と寿命（停止責任） | **停止を要求した仕事の終わりまで確認できる** | PR-S3a: runner（`process_registry`）を repo stop で止めて終了を確認 ✅ → 残りは §8「段階 3 で拾う既知の穴」の ②（Editor の pending）と、`RepoTasks`（`ActorRegistry` の整理）は着手判断待ち |
+| **3** | 所有と寿命（停止責任） | **停止を要求した仕事の終わりまで確認できる** | PR-S3a: runner（`process_registry`）を repo stop で止めて終了を確認 ✅ / PR-S3b: repo が spawn する常駐 task 5 本を `ActorRegistry` に預け、`shutdown_repo` が `actor_registry::stop_all` で終了を確認 ✅ → 残りは §8 の ②（Editor の pending）と daemon 側の task 回収（`run_daemon` の spawn 8 箇所、着手判断待ち） |
 
 ⚠️ **3 つを同じ PR の完了条件にしない。** 段階 1 で field 数が 29 → 14 になっても、board の読み取りに lane pool を渡せる状態は残る。それは段階 2 の仕事。段階 1 の合格を段階 2 の未達で止めない。
 
@@ -302,6 +302,8 @@ CI は `cargo clippy --workspace --all-targets -- -D warnings`。**`AppState` �
 
 ⚠️ **Tokio の `JoinHandle` は drop すると detach する**ので、保持場所を変えるだけでは停止保証は増えない。`RepoTasks` は既存 `ActorRegistry` の役割を整理して接続し、**並行する新しい台帳を増やさない**。
 
+→ **PR-S3b（2026-09-11）で repo 側は実装済**。`RepoTasks` という新しい型は作らず、`ActorRegistry` に `spawn_task`（mailbox を持たない loop 用、`ActorKind::Task`）/ `close_and_take_tasks` / `stop_all` を足した。`start_repo` が spawn する 5 本（TopicRouter bridge / lane-spawn actor / lanes publish / lifecycle monitor / idle sweep）は全部 registry 経由になり、`shutdown_repo` が runner の次に `stop_all` で終了を待つ（task ごと 8 秒で見切って `abort`）。`LaneSpawnActor` は Cmd ごとの子 task を `JoinSet` で持ち、どちらの終了経路でも子を待ち切ってから返る（契約 ③。親を `abort` すると `JoinSet` の drop で子も落ちる）。**daemon 側は未接続**: `run_daemon` の常駐 task 8 本（update / actions poll、DeliveryActor、delegation reconcile、hub federation、autostart、lane watcher、LIVE SELECT bridge。`tokio::spawn` は他に `daemon_handle` と signal handler の 2 本があり、前者は `abort()` 済み、後者は cancel で抜ける）は、`daemon_handle.abort()` → `shutdown_all` → capability shutdown → `remove_pid_file` の順で終了確認が無い。⚠️ **repo 側の「5 本が registry 経由」は test で固定していない**（`start_repo` を叩く test が crate に無く、1 本を素の `tokio::spawn` に戻す mutation は緑のまま通る）。固定した契約は「registry に載った task は `shutdown_repo` が待つ」（server.rs の test）と「`LaneSpawnActor` は子を待ち、子は cancel で降りる」（spawn_actor.rs の test）の 2 つ。
+
 ---
 
 ## 9. 材料 — field ごとの所有表（実測、nightly `50582832`、2026-09-09）
@@ -318,7 +320,7 @@ CI は `cargo clippy --workspace --all-targets -- -D warnings`。**`AppState` �
 | `lane_pool` | `Arc<RwLock<LanePool>>` | repo = `with_root` / daemon = `new()`（空） | 自分 | 独立 | **`.lane_pool` の行 = prod 59 / test 40、7 file（最大）** | **`PtySlot::drop` が子プロセス回収の唯一の経路** |
 | `terminal_pumps` | `Arc<RwLock<TerminalPumps>>` | ctor が空 map | 自分 | 独立 | prod 5 / test 10、3 file | **`JoinHandle` に `Drop` 無し** |
 | `system_event_tx` | `broadcast::Sender<SystemEvent>` | ctor（capacity 64） | 自分 | 独立 | prod 7 / test 2、3 file | 閉じ手なし |
-| `actor_registry` | `Arc<RwLock<ActorRegistry>>` | ctor が `new()` | 自分 | 独立 | prod 2 | **task の abort / await 経路が無い**（`spawn_service`（`actor_registry.rs:146`）は `task: Some(..)` を保持するが、`abort()` の呼び手は crate 全体で 0 件） |
+| `actor_registry` | `Arc<RwLock<ActorRegistry>>` | ctor が `new()` | 自分 | 独立 | prod 2 | ~~**task の abort / await 経路が無い**~~ → PR-S3b で `actor_registry::stop_all` を `shutdown_repo` から呼ぶ（記録当時: `spawn_service` は `task: Some(..)` を保持するだけで `abort()` の呼び手は crate 全体で 0 件だった） |
 | `replay_flights` | `ReplayFlights`（内部 `std::sync::Mutex`） | `Default` | 自分 | 独立 | prod 3 / test 3、1 file | 無し |
 | `editor_pending` | `Arc<Mutex<HashMap<_, oneshot::Sender<_>>>>` | `Default` | 自分 | 独立 | prod 3 / test 2、1 file | 登録側 timeout remove / 解決側 remove（idempotent） |
 | `file_watchers` | `Arc<Mutex<FileWatcherManager>>` | ctor | 自分 | 独立 | prod 3、2 file | **`shutdown_repo` が明示的に片付ける唯一の field** |
@@ -361,7 +363,7 @@ struct の見た目が `Arc<...>` でなくても、`Clone` が同一実体を�
   - `lane_pool` 内の chat engine → **`ChatEngineSlot::drop`**（`conversation/engine.rs:229`）: `host.stop()` + `pump.abort()`
 - **`terminal_pumps` の `JoinHandle` に `Drop` は無い。** tokio の `JoinHandle` は drop で detach。明示 abort は reconcile の撤去経路（`terminal_pump.rs:311`）だけ。`AppState` を drop しても pump は止まらず、source（`PtySlot` の broadcast）が閉じることで自然終了する。
 - **`shutdown_repo`（`repo/server.rs:547-555`）が明示的に片付けるのは `file_watchers.stop_all()` の 1 件だけ。** 残りは Arc drop 任せ。
-- ⚠️ **順序依存が暗黙**: `state.clone()` を capture した spawned task（`repo/server.rs:401` / `:476`）が生きている間は refcount が 0 にならない。`cancel()` → task 終了 → 最後の Arc drop → `PtySlot::drop`、という順序に依存しているが、**await で待っていない**（段階 3）。
+- ⚠️ **順序依存が暗黙**: `state.clone()` を capture した spawned task（`repo/server.rs:401` / `:476`）が生きている間は refcount が 0 にならない。`cancel()` → task 終了 → 最後の Arc drop → `PtySlot::drop`、という順序に依存しているが、**await で待っていない**（段階 3）。→ PR-S3b で `shutdown_repo` が待つ（この 2 本は `lanes-publish` / `idle-engine-sweep` として registry に載る）。
 
 ---
 
@@ -427,3 +429,4 @@ struct の見た目が `Arc<...>` でなくても、`Clone` が同一実体を�
 - 2026-09-11: **段階 2 PR-S2a `BoardContext`。** 段階 2 は「最初の 1 PR だけ」の予定だったが、`EditorBridge` が同型で小さい（読むのは `editor_pending` / `hub` の 2 つ、spawn なし）ので PR-S2b として続けて取る — それ以上は広げない。`repo/board.rs` の handler 6 + `seed_boards`（+ 内部の `broadcast_board`）が `&RepoState` の代わりに `BoardContext<'_>`（`repo_dir: &str` / `vpdb: Option<&SharedVpDb>` / `hub: &Hub`、`Copy` の借用）を取る。`RepoState::board()` が組む。board.rs から `RepoState` の import が消えた = board が State の何を読むかは struct の 3 field で閉じる。test `board_handlers_need_only_the_board_context`（`RepoState` を組まずに mem db + `Hub` で show → read → `BoardUpdated` 受信、degrade の `None` も）。既存 2 本（dispatch 経由）は結線側の網。§7 の「`Arc<RepoState>` を隠さない / `Deref` で公開しない」どおり。`Option<&T>` は「DB 接続失敗で無い」`vpdb` 専用の形で、`EditorContext` の 2 field は非 `Option`。
 - 2026-09-11: **段階 2 PR-S2b `EditorContext`。** `repo/editor_bridge.rs` の往路 / 復路 2 handler が `&RepoState` の代わりに `EditorContext<'_>`（`pending: &EditorPending` / `hub: &Hub`、`Copy`）を取る。`EditorPending` は `RepoState.editor_pending` の型 alias（`Arc<EditorPending>`）。`RepoState::editor()` が組む。module から `RepoState` の import が消えた。test `editor_handlers_need_only_the_editor_context`（`RepoState` を組まずに `Mutex<HashMap>` + `Hub` で往路 → 復路の相関）。既存 3 本は `state.editor()` に差し替えて結線側の網。**段階 2 はこの 2 PR で閉じる**（他の leaf は次の機会に同型で）。
 - 2026-09-11: **段階 3 PR-S3a（runner の停止責任）。** 既知の穴 ① を修正。`ProcessRegistry` に `closing` と entry ごとの `done` watch を足し、`process_runner::stop_all` が「受付を閉じる → lock 外で shutdown 送信 → 終了通知を待つ」を 1 関数で担い、`shutdown_repo` から呼ぶ（`RepoRuntimes::stop` / `shutdown_all` / `start` の rollback の 4 経路すべてに効く）。`register` は `Result` になり、閉じた後の `process_run` は子を kill して Err。mutation 2 本（`shutdown_repo` から `stop_all` を外す / `closing` を立てない）で赤を実測。`CancellationToken` は持ち込まない — runner は既存の `shutdown_tx` 経路（stdin EOF → 5 秒 → kill）で止め、増やしたのは「終了の確認」だけ。⚠️ **実機確認の手段が無い**: `process_run` / `ruby_run` 等は `dispatch_repo_method` の arm にしか呼び手が無く、CLI / MCP / vp-app のどこからも叩かれていない（runner は production で end-to-end dead の可能性 — §8 follow-up、`cut-before-fix`）。証拠は unit test 3 本。
+- 2026-09-11: **段階 3 PR-S3b（repo の常駐 task の停止責任）。** `ActorRegistry` を repo の task 台帳として接続。`spawn_task`（`ActorKind::Task`）/ `close_and_take_tasks` / `stop_all`（lock 内で受付を閉じて handle を取り出し、lock 外で 1 本ずつ待つ。`STOP_ALL_CONFIRM_TIMEOUT` 8 秒で `abort` — `timeout` は `JoinHandle` を消費するので `AbortHandle` を先に控える）。`spawn_service` は `Result` になり、閉じた後は起動せず Err。`start_repo` の spawn 5 本を全部 registry 経由に（helper 2 本は `async fn … -> Result<()>` になり registry へ登録）、`shutdown_repo` は runner → 常駐 task → file watcher の順。`LaneSpawnActor` は子 task を `JoinSet` で回収（既存 test 2 本の「detach 完了待ち sleep」が不要になったので削除 = 契約 ③ の副産物）。mutation 4 本（`stop_all` を呼ばない / `closing` を立てない / abort しない / 子を detach）でそれぞれ狙った test 1 本だけが赤。Moody Blues 3 件を反映: `handle_cmd` に token を渡し permit 待ち前と登録直前で降りる（待つだけでなく止める — sequential 既定だと drain が bootstrap 全量待ちになっていた）/ `stop_all` は `join_all` で並行に待つ（本数 × 8 秒 → 最大 8 秒）/ `shutdown_repo` が先頭で cancel を保証（prose 契約を code に）。`RepoRuntimes::start` は `start_repo` の Err で token を cancel する。daemon 側の task は未接続（§8）。

@@ -145,7 +145,7 @@ impl RepoRuntimes {
         if adopted_router.is_some() {
             tracing::info!("canvas placeholder router を養子縁組 (key={})", key);
         }
-        let state = super::server::start_repo(
+        let state = match super::server::start_repo(
             repo_dir.to_string(),
             shutdown.clone(),
             self.node_lanes.clone(),
@@ -153,7 +153,16 @@ impl RepoRuntimes {
             self.lane_change_tx.clone(),
             adopted_router,
         )
-        .await?;
+        .await
+        {
+            Ok(state) => state,
+            Err(e) => {
+                // 途中まで spawn した task（bridge / publish 等）に「止まれ」を届ける。
+                // state が返っていないので `shutdown_repo` は呼べない — token で畳む。
+                shutdown.cancel();
+                return Err(e);
+            }
+        };
 
         // 起動中に別 caller が同 repo を起こしていた場合はこちらを捨てる（後勝ちにしない）。
         let mut guard = self.inner.write().await;

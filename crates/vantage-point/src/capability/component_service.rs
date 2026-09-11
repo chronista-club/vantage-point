@@ -152,13 +152,13 @@ pub trait Service: Any + Send + Sync + 'static {
 /// は dynamic routing vision 確定後に再設計 (= design-spark `mem_1CavFi5D1aMSpEkas89SvQ` 参照)。
 ///
 /// `ActorRegistry::spawn_service<S: SpawnableService>` が spawn 統合 + JoinHandle 保持する際の
-/// trait bound。 PR-5 supervisor 統一で JoinHandle 経由の abort / await を activate する foundation。
+/// trait bound。 保持した `JoinHandle` は `actor_registry::stop_all` が回収する（棚卸し 9-2 段階 3 PR-S3b）。
 pub trait SpawnableService: Service {
     /// recv loop を `tokio::spawn` で起動し、 `JoinHandle<()>` を返す。 `self` は consume される。
     ///
     /// `shutdown_token.cancelled()` で loop 終了、 channel close (= recv が None) でも終了。
-    /// 返り値の `JoinHandle` を `ActorRegistry` が保持し、 supervisor 統一 (PR-5) で
-    /// abort / await できる設計。
+    /// 返り値の `JoinHandle` を `ActorRegistry` が保持し、 停止時に `stop_all` が await
+    /// （待ちきれなければ abort）する。
     fn spawn_loop(self, shutdown: CancellationToken) -> JoinHandle<()>;
 }
 

@@ -18,7 +18,7 @@
 //!   形式登録 (= ECS 純度回復、 actor を struct で表現)。
 //! - **PR-4b**: `SpawnableService` super-trait を impl (= `spawn(self)` → `spawn_loop(self) ->
 //!   JoinHandle<()>` に統一)、 caller (= server.rs) は `ActorRegistry::spawn_service` 経由に集約
-//!   (= JoinHandle を ActorRegistry が保持、 PR-5 supervisor 統一の foundation)。
+//!   (= JoinHandle を ActorRegistry が保持。 棚卸し 9-2 段階 3 PR-S3b で `stop_all` が回収)。
 //!
 //! ## in-process channel 直結 (2026-07-09) — repo 再起動時の幽霊 long-poll 消費の根治
 //!
@@ -80,7 +80,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::{RwLock, Semaphore};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use crate::capability::component_service::{LayerScope, Service, SpawnableService};
@@ -159,6 +159,13 @@ impl SpawnableService for LaneSpawnActor {
     /// ActorRegistry が JoinHandle を保持する path を開く。 max_concurrent=0 は意味的に
     /// 「全 spawn を block」 だが事故 config の可能性が高い、 1 に丸めて warn する
     /// (= sequential、 Semaphore::new(0) の永久 block 回避)。
+    ///
+    /// どちらの終了でも、Cmd ごとに spawn した `handle_cmd` の子 task を `JoinSet` で
+    /// 待ち切ってから返る（棚卸し 9-2 段階 3 の停止契約 ③「親と子の両方を回収」）。
+    /// 子を待たずに返すと、shutdown 中に lane を作り終える子が残り、`stop_all` は親の
+    /// 終了しか確認できない。子には token も渡し、`handle_cmd` は permit 待ちの前と登録の
+    /// 直前で cancel を見て降りる（待つだけでなく止める）。見切りは `ActorRegistry::stop_all`
+    /// の timeout + abort が担う（abort で `JoinSet` が drop され、子も一緒に abort される）。
     fn spawn_loop(self, shutdown: CancellationToken) -> JoinHandle<()> {
         let n = if self.max_concurrent == 0 {
             tracing::warn!(
@@ -184,11 +191,14 @@ impl SpawnableService for LaneSpawnActor {
                 "Lane spawn actor 起動 (in-process channel, max_concurrent={})",
                 n
             );
+            // Cmd ごとの子 task。完了した子は select の 3 本目で随時 reap する
+            // （`join_next` を呼ばないと完了済 entry が溜まり続ける）。
+            let mut children: JoinSet<()> = JoinSet::new();
             loop {
                 tokio::select! {
                     _ = shutdown.cancelled() => {
                         tracing::info!("Lane spawn actor: shutdown");
-                        return;
+                        break;
                     }
                     maybe = cmd_rx.recv() => match maybe {
                         Some(cmd) => {
@@ -197,8 +207,9 @@ impl SpawnableService for LaneSpawnActor {
                             let tx = system_event_tx.clone();
                             let pumps = terminal_pumps.clone();
                             let router = topic_router.clone();
-                            tokio::spawn(async move {
-                                handle_cmd(cmd, pool, tx, pumps, router, sem).await;
+                            let token = shutdown.clone();
+                            children.spawn(async move {
+                                handle_cmd(cmd, pool, tx, pumps, router, sem, token).await;
                             });
                         }
                         None => {
@@ -209,10 +220,28 @@ impl SpawnableService for LaneSpawnActor {
                             tracing::info!(
                                 "Lane spawn actor: channel closed (bootstrap 投入完了・全 Cmd drain 済) → 正常終了"
                             );
-                            return;
+                            break;
+                        }
+                    },
+                    Some(res) = children.join_next(), if !children.is_empty() => {
+                        if let Err(e) = res {
+                            tracing::warn!("Lane spawn actor: 子 task が異常終了: {e}");
                         }
                     }
                 }
+            }
+            // 進行中の spawn を待ち切る。ここで `return` すると `JoinSet` の drop が子を abort
+            // し、作りかけの lane が中途半端に残る（bootstrap 完了直後の正常終了でも同じ）。
+            // `JoinSet::len` は完了済みで未回収の子も数えるので、実際に join した数を数える。
+            let mut drained = 0usize;
+            while let Some(res) = children.join_next().await {
+                drained += 1;
+                if let Err(e) = res {
+                    tracing::warn!("Lane spawn actor: 子 task が異常終了: {e}");
+                }
+            }
+            if drained > 0 {
+                tracing::info!("Lane spawn actor: 未回収だった子 task {drained} 本を回収");
             }
         })
     }
@@ -226,6 +255,7 @@ async fn handle_cmd(
     terminal_pumps: Arc<RwLock<crate::repo::terminal_pump::TerminalPumps>>,
     topic_router: Arc<crate::repo::topic_router::TopicRouter>,
     semaphore: Arc<Semaphore>,
+    shutdown: CancellationToken,
 ) {
     let LaneCmd::SpawnLane {
         repo_id,
@@ -248,6 +278,14 @@ async fn handle_cmd(
         }
     }
 
+    // 棚卸し 9-2 段階 3（PR-S3b）: 「止まれ」を末端まで届ける。repo stop の後に lane を
+    // 起こしても畳まれるだけなので、permit を待つ前と登録の直前で降りる（親の drain が
+    // bootstrap 全量の完了待ちにならないための出口でもある — sequential 既定だと 800ms×N）。
+    if shutdown.is_cancelled() {
+        tracing::debug!("Lane spawn actor: shutdown 中のため spawn を見送る addr={addr}");
+        return;
+    }
+
     // permit acquire — N 本同時まで通過、 残りは queue で wait
     let _permit = match semaphore.acquire_owned().await {
         Ok(p) => p,
@@ -267,6 +305,11 @@ async fn handle_cmd(
             );
             return;
         }
+    }
+
+    if shutdown.is_cancelled() {
+        tracing::debug!("Lane spawn actor: shutdown 中のため spawn を見送る addr={addr}");
+        return;
     }
 
     tracing::info!(
@@ -486,8 +529,7 @@ mod tests {
             .expect("actor は buffered Cmd drain 後 2s 以内に終了するはず")
             .expect("actor task は panic せず終了するはず");
 
-        // handle_cmd の spawn task が guard で return するのを待つ (dispatch は detach のため)
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // actor は子 task（handle_cmd）を待ち切ってから終了するので、ここで sleep は要らない
         // race guard により重複 spawn されず、 pool は事前 insert の 1 件のまま
         assert_eq!(pool.read().await.count(), 1);
     }
@@ -542,8 +584,7 @@ mod tests {
             .await
             .expect("actor 終了")
             .expect("actor task panic せず");
-        // detach spawn task の完了待ち
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        // actor は子 task（handle_cmd）を待ち切ってから終了する（PR-S3b、旧 150ms sleep は不要）
 
         let addr = LaneAddress::sub("proj", "chat-perf");
         let pool_read = pool.read().await;
@@ -567,5 +608,77 @@ mod tests {
         );
         drop(pool_read);
         // env は `state` guard の drop で復元される。
+    }
+
+    /// 棚卸し 9-2 段階 3（PR-S3b）停止契約 ③: shutdown 時、進行中の `handle_cmd`（子 task）を
+    /// 待ち切ってから actor が終了し、その子は cancel を見て lane を作らずに降りる。
+    ///
+    /// 子を「進行中」で止める仕掛け: test が `lane_pool` の write lock を握っておくと、
+    /// `handle_cmd` は最初の pool 参照で待たされる。その状態で cancel しても actor は返らず、
+    /// lock を放してはじめて返る — 返った時点で子は cancel を見ているので pool は空のまま。
+    ///
+    /// 落ちるべき壊し方: 子を `tokio::spawn` で detach する旧形に戻すと、cancel 直後に actor が
+    /// 返ってしまい 1 つ目の assert（「まだ返らない」）が落ちる。`handle_cmd` の cancel 確認を
+    /// 外すと lane が作られて 2 つ目の assert が落ちる。
+    #[tokio::test]
+    async fn shutdown_waits_for_in_flight_spawns_and_stops_them() {
+        use crate::lane::session_registry::SessionMode;
+        let state = crate::test_env::state_dir_async().await;
+        crate::lane::session_registry::set_root_mode(
+            "proj",
+            "in-flight",
+            "claude",
+            SessionMode::Gui,
+        )
+        .expect("record chat mode");
+
+        let pool = Arc::new(RwLock::new(LanePool::new()));
+        let (tx, _rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<LaneCmd>();
+        let shutdown = CancellationToken::new();
+
+        let handle = LaneSpawnActor::new(
+            pool.clone(),
+            tx,
+            Default::default(),
+            std::sync::Arc::new(crate::repo::topic_router::TopicRouter::new()),
+            1,
+            cmd_rx,
+        )
+        .spawn_loop(shutdown.clone());
+
+        // 子 task を pool の lock で足止めしてから Cmd を投入する
+        let hold = pool.write().await;
+        cmd_tx
+            .send(LaneCmd::SpawnLane {
+                repo_id: "proj".to_string(),
+                name: "in-flight".to_string(),
+                cwd: state.path().to_string_lossy().to_string(),
+                agent: "claude".to_string(),
+            })
+            .expect("send SpawnLane");
+        // actor が Cmd を受けて子を spawn するまで（lock 待ちで止まる）
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        shutdown.cancel();
+        let mut handle = handle;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(300), &mut handle)
+                .await
+                .is_err(),
+            "進行中の子 task がある間は cancel しても actor は返らない"
+        );
+
+        drop(hold);
+        tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+            .await
+            .expect("lock を放せば子が完了し actor も終了する")
+            .expect("actor task panic せず");
+        let addr = LaneAddress::sub("proj", "in-flight");
+        assert!(
+            pool.read().await.get(&addr).is_none(),
+            "進行中だった子は cancel を見て降り、shutdown 中に lane を作らない"
+        );
+        drop(cmd_tx);
     }
 }
