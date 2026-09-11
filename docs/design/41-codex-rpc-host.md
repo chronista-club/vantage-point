@@ -133,3 +133,7 @@ dev path step 7（local LLM 正式化）の設計判断 — ここでは予約�
   （`thread/compact/start` あり）は将来の考慮点
 - **`turn/steer`**: 実行中 turn への注入（claude に無い能力）。v1 scope 外だが、queued-message
   の上位互換として picker/UX の将来素材（doc 39 §6 でも記録済み）
+
+## Status log
+
+- 2026-09-11: [design 64](64-codex-console-resume.md) で TUI 自身の hook からも thread ID を記録する経路を追加。§2 の TUI ID 供給は GUI 専用ではなくなる。GUI host / Chat 履歴の改善は別の段階で扱う。

@@ -18,8 +18,7 @@
 //! `agent_name` で注入する agent 起動 command を切り替える。各 engine CLI は「TUI 起動 / ID 指名 resume」の
 //! surface が揃っているため、同じ login-shell-layered 構造に載る:
 //! - `"claude"`（claude）: [`claude_command`]、 cc_session `--resume` + wire hook + model alias
-//! - `"codex"`: [`codex_command`]、 codex_session `resume`（採番は gui の record-from-init のみ
-//!   — codex に create-chat 相当が無いため、tui 単独ではまず素の `codex` で開始する）
+//! - `"codex"`: [`codex_command`]、TUI hook / GUI が記録した thread を指名 resume。
 //! - `"grok"`: [`grok_command`]、registry の会話 id を `-r '<id>'` で指名 resume（doc 42）
 //! - `"opencode"`: [`opencode_command`]、registry の会話 id を `-s '<id>'` で指名 resume（doc 43。
 //!   model は opencode config が SSOT — VP は注入しない）
@@ -253,24 +252,13 @@ fn claude_command(resume_id: Option<&str>, model: Option<&str>) -> String {
     }
 }
 
-/// agent 起動（codex agent）: codex 起動 command line を組み立てる。
-///
-/// codex の TUI resume は `codex resume '<id>'`（id は UUID の指名 — `--last` は claude
-/// `--continue` と同型の「最新」曖昧性があるため使わない、doc 37 §7）。id の供給源は
-/// gui（[`crate::conversation::codex_host`] の record-from-init）だけ — codex には cursor の
-/// create-chat 相当（id 先取り）が無いため、tui 単独ではまず素の `codex` で始まり、
-/// gui を一度でも通ると以後は resume で継がれる。
-///
-/// - `Some(id)`（`codex_session::is_valid_thread_id` 検証済）: `codex resume '<id>' || codex`
-///   （thread 消失時は素の codex に fallback、 shell の `||` が native 処理）
-/// - `None`: `codex`（新規会話）
-///
-/// wire hook / model 注入はしない（hook 機構は claude 専用。model は codex 側で選択 —
-/// `EngineKind::model_choices` が空 = VP からの切替なし、の能力表明に対応）。
+/// Codex TUI を起動する。VP の信頼済み plugin hook に報告元 engine を渡す。
+/// marker は Codex コマンドだけに限定し、終了後の shell へ残さない。
+/// resume 失敗時は shell に戻る。新規会話への自動 fallback で元 ID を失わない。
 fn codex_command(resume_id: Option<&str>) -> String {
     match resume_id.filter(|id| crate::lane::codex_session::is_valid_thread_id(id)) {
-        Some(id) => format!("codex resume '{}' || codex", id),
-        None => "codex".to_string(),
+        Some(id) => format!("(VP_HOOK_ENGINE=codex codex resume '{}')", id),
+        None => "(VP_HOOK_ENGINE=codex codex)".to_string(),
     }
 }
 
@@ -508,6 +496,42 @@ pub fn build_agent_command_for_session(
 mod tests {
     use super::*;
 
+    // mem_1CewV2A7phkmfC4rgi1NxC: a failed resume must leave the saved conversation recoverable.
+    #[cfg(unix)]
+    #[test]
+    fn codex_console_resume_failure_does_not_start_fresh() {
+        let script = format!(
+            "codex() {{ if [ \"$1\" = resume ]; then return 42; fi; return 0; }}; {}",
+            codex_command(Some("01a08ffe-b1f3-7e52-98f0-830c87a5d4b1"))
+        );
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", &script])
+            .status()
+            .expect("execute generated Console command");
+        assert_eq!(
+            status.code(),
+            Some(42),
+            "resume failure must remain visible"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_console_engine_marker_is_scoped_to_codex() {
+        let script = format!(
+            "codex() {{ test \"$VP_HOOK_ENGINE\" = codex; }}; {} && test -z \"${{VP_HOOK_ENGINE+x}}\"",
+            codex_command(None)
+        );
+        assert!(
+            std::process::Command::new("/bin/sh")
+                .args(["-c", &script])
+                .env_remove("VP_HOOK_ENGINE")
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
     /// slot の shell は login shell、 cwd は repo dir（旧 install-root ダンスの廃止を固定）。
     #[test]
     fn build_stand_command_floor_is_login_shell_at_repo_dir() {
@@ -637,7 +661,7 @@ mod tests {
         );
         let input = cmd.initial_input.expect("codex は initial_input あり");
         assert!(
-            input.starts_with("codex") && !input.contains("claude"),
+            input.starts_with("(VP_HOOK_ENGINE=codex codex") && !input.contains("claude"),
             "engine は #2 の agent（root の claude ではない）: {input}"
         );
         assert!(
@@ -965,7 +989,7 @@ mod tests {
         let cmd = build_agent_command("claude", &addr, Path::new("/tmp"));
         let input = cmd.initial_input.expect("codex root は initial_input あり");
         assert!(
-            input.starts_with("codex") && !input.contains("claude"),
+            input.starts_with("(VP_HOOK_ENGINE=codex codex") && !input.contains("claude"),
             "root が codex なら slot は codex 起動（lane agent=conversation に引きずられない）: {input}"
         );
     }

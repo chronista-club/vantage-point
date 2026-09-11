@@ -272,10 +272,18 @@ pub(crate) async fn handle_lane_session_changed(
         return Err(format!("lane_session_changed: lane が存在しません: {lane}"));
     };
     // doc 40 §4/§6: hook の会話報告（session_id + event + 報告者が名乗る session）を
-    // **報告された session** に適用する — policy（宛先解決 + F1/F2 guard）の唯一の実装点は
-    // record_conversation。session_id 無し = 旧 hook / 旧 daemon からの「変化通知のみ」
+    // **報告された session** に適用する。Claude の宛先解決 + F1/F2 guard は
+    // record_conversation、Codex の記録判断は record_codex_conversation_in（doc 64）。
+    // session_id 無し = 旧 hook / 旧 daemon からの「変化通知のみ」
     // （従来互換、enrich だけ行う）。
     if let Some(sid) = payload.get("session_id").and_then(|v| v.as_str()) {
+        let engine = match payload.get("engine") {
+            None => "claude", // 既存の Claude hook との wire 互換。
+            Some(v) => v
+                .as_str()
+                .filter(|s| matches!(*s, "claude" | "codex"))
+                .ok_or_else(|| "lane_session_changed: invalid report engine".to_string())?,
+        };
         use crate::lane::session_registry::{ConversationReport, ReportTarget, ReportTrigger};
         let trigger = match payload.get("event").and_then(|v| v.as_str()) {
             Some("issued") => ReportTrigger::Issued,
@@ -297,16 +305,31 @@ pub(crate) async fn handle_lane_session_changed(
             trigger,
         };
         let lane_label = crate::repo::agent_spawner::lane_label(&addr);
-        match crate::lane::session_registry::record_conversation(
-            &addr.repo, lane_label, &agent, report,
-        ) {
-            Ok(outcome) => {
-                tracing::info!(
-                    "conversation report: addr={addr} report={report:?} outcome={outcome:?}"
-                );
-            }
-            Err(e) => {
-                tracing::warn!("conversation report 適用失敗: addr={addr} err={e}");
+        if engine == "codex" {
+            let ReportTarget::Session(key) = target else {
+                return Err("lane_session_changed: Codex report requires session".to_string());
+            };
+            crate::lane::session_registry::record_codex_conversation_in(
+                &crate::config::vp_state_dir(),
+                &addr.repo,
+                lane_label,
+                &agent,
+                key,
+                sid,
+            )
+            .map_err(|e| format!("lane_session_changed: {e}"))?;
+        } else {
+            match crate::lane::session_registry::record_conversation(
+                &addr.repo, lane_label, &agent, report,
+            ) {
+                Ok(outcome) => {
+                    tracing::info!(
+                        "conversation report: addr={addr} report={report:?} outcome={outcome:?}"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("conversation report 適用失敗: addr={addr} err={e}");
+                }
             }
         }
     }
@@ -1096,6 +1119,127 @@ mod tests {
             "実在しない session の報告は root に化けない"
         );
         assert_eq!(reg.sessions.len(), 2, "session は増えない");
+    }
+
+    // mem_1CewV2A7phkmfC4rgi1NxC: Codex reports bind to their own Console and survive respawn.
+    #[tokio::test]
+    async fn codex_console_report_is_saved_for_the_next_spawn() {
+        use crate::lane::session_registry::{self, SessionMode};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::state::build_test_app_state;
+        use crate::repo::unison_server::dispatch_repo_method;
+
+        let dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let addr = LaneAddress::root("vp");
+        state.lane_pool.write().await.insert(LaneInfo {
+            id: Default::default(),
+            address: addr.clone(),
+            state: LaneState::Running,
+            agent: "claude".into(),
+            created_at: "2026-09-11T00:00:00Z".into(),
+            pid: Some(1),
+            cwd: dir.path().to_string_lossy().into_owned(),
+            sub_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            agent_name: None,
+            flow_state: None,
+        });
+        session_registry::set_conversation("vp", "main", "claude", 1, Some("claude-original"))
+            .unwrap();
+        let key =
+            session_registry::create("vp", "main", "claude", "codex", SessionMode::Tui, false)
+                .unwrap();
+        let thread = "01a08ffe-b1f3-7e52-98f0-830c87a5d4b1";
+        dispatch_repo_method(
+            &state,
+            "lane_session_changed",
+            serde_json::json!({
+                "lane": "vp/main", "session": key, "session_id": thread,
+                "event": "issued", "engine": "codex"
+            }),
+        )
+        .await
+        .unwrap();
+
+        let reg = session_registry::load("vp", "main", "claude");
+        assert_eq!(
+            reg.sessions[0].conversation.as_deref(),
+            Some("claude-original")
+        );
+        assert_eq!(reg.sessions[1].conversation.as_deref(), Some(thread));
+        let command = crate::repo::agent_spawner::build_agent_command_for_session(
+            "claude",
+            &addr,
+            dir.path(),
+            Some(key),
+        );
+        assert!(
+            command
+                .initial_input
+                .unwrap()
+                .contains(&format!("resume '{thread}'"))
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_console_invalid_reports_leave_saved_thread_unchanged() {
+        use crate::lane::session_registry;
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::state::build_test_app_state;
+        use crate::repo::unison_server::dispatch_repo_method;
+        let dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        state.lane_pool.write().await.insert(LaneInfo {
+            id: Default::default(),
+            address: LaneAddress::root("vp"),
+            state: LaneState::Running,
+            agent: "codex".into(),
+            created_at: "2026-09-11T00:00:00Z".into(),
+            pid: Some(1),
+            cwd: dir.path().to_string_lossy().into_owned(),
+            sub_status: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            agent_name: None,
+            flow_state: None,
+        });
+        let thread = "01a09005-f22f-7dd3-9e7b-0ad53926478b";
+        session_registry::set_conversation("vp", "main", "codex", 1, Some(thread)).unwrap();
+        let original = session_registry::load("vp", "main", "codex");
+        for fields in [
+            serde_json::json!({"engine":"codex"}),
+            serde_json::json!({"engine":"codex", "session":99}),
+            serde_json::json!({"engine":"codex", "session":0}),
+            serde_json::json!({"engine":"codex", "session":"invalid"}),
+            serde_json::json!({"engine":"other", "session":1}),
+            serde_json::json!({"engine":null, "session":1}),
+        ] {
+            let mut payload = fields;
+            payload["lane"] = "vp/main".into();
+            payload["session_id"] = "01a09000-d2c2-7392-9214-782dec85a872".into();
+            payload["event"] = "issued".into();
+            assert!(
+                dispatch_repo_method(&state, "lane_session_changed", payload)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(session_registry::load("vp", "main", "codex"), original);
+        }
+        // Legacy Claude reports stay on the Claude policy and cannot rewrite a Codex Console.
+        dispatch_repo_method(
+            &state,
+            "lane_session_changed",
+            serde_json::json!({
+                "lane":"vp/main", "session":1, "session_id":"claude-report", "event":"spoken"
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(session_registry::load("vp", "main", "codex"), original);
     }
 
     /// lanes portless: `lanes_list` dispatch arm が `{lanes:[...]}` 形で返る (build_lanes_snapshot 経由)。
