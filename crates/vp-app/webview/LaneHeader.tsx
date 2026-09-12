@@ -32,7 +32,7 @@
  */
 
 import { MAIN_DISPLAY_NAME, subNameOfAddress } from './lane-address'
-import { render } from 'solid-js/web'
+import { Portal, render } from 'solid-js/web'
 import { createSignal, For, Show } from 'solid-js'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import {
@@ -280,76 +280,78 @@ export function mountLaneHeader(mount: HTMLElement, vpConsole: VpConsole): LaneH
                 </button>
               )}
             </Show>
-            {/* doc 39 P3: Root 切替 picker。ヘッダ strip は overflow:hidden なので
-                position:fixed で clipping の外に出す（開いた時点の chip 位置に固定）。 */}
+            {/* header の clipping の外へ出し、lane 内に留めて pane / gallery の
+                非表示を継承する（doc 39 §9）。 */}
             <Show when={pickerOpen()}>
-              <div
-                class="eh-root-picker"
-                style={{ left: `${pickerPos().x}px`, top: `${pickerPos().y}px` }}
-              >
-                <div class="eh-rp-title">Root agent</div>
-                <For
-                  each={rootPickerItems(sessions())}
-                  fallback={<div class="eh-rp-empty">読み込み中…</div>}
+              <Portal mount={mount.parentElement ?? document.body}>
+                <div
+                  class="eh-root-picker"
+                  style={{ left: `${pickerPos().x}px`, top: `${pickerPos().y}px` }}
                 >
-                  {(item) => (
-                    <button
-                      type="button"
-                      class="eh-rp-row"
-                      classList={{ 'eh-rp-root': item.isRoot, 'eh-rp-disabled': item.disabled }}
-                      title={
-                        item.isRoot
-                          ? '今の slot（root）'
-                          : item.disabled
-                            ? 'この session は resume を持たないため root に切替不可'
-                            : 'この session を root にする（slot を resume で張り替え）'
-                      }
-                      onClick={() => {
-                        if (item.disabled) return
-                        if (item.isRoot) setPickerOpen(false)
-                        else switchRoot(item.key)
-                      }}
-                    >
-                      <CreoIcon
-                        name={item.isRoot ? 'ph:circle-fill' : 'ph:circle'}
-                        size={9}
-                      />
-                      {item.label}
-                      <span class="eh-rp-key">#{item.key}</span>
-                      <Show when={item.isRoot}>
-                        <span class="eh-rp-now">今の slot</span>
-                      </Show>
-                    </button>
-                  )}
-                </For>
-                {/* doc 50 §4.6 A6: 「✨ 新 ID から」は撤去した。
-                    「新しい session を作る」は 2 つの操作に分かれ、この行はその合成でしかない:
-                    ① lane の名札の **Add**（Conversation を足す = pane が増える）
-                    ② その pane の **Reborn**（同じ場所で新しく始める = pane 数は不変）
-                    root を新しい session にしたいなら「root pane で Reborn」で到達できる
-                    （A6 で switch_root の tui 限定 gate も外れたので、どの session でも代表にできる）。
-                    picker は **既存の Conversation から代表を選ぶ**ことに専念する。 */}
-                <div class="eh-rp-divider" />
-                <Show when={summary().sessionId ?? c().sessionId}>
-                  {(sid) => (
-                    <button
-                      type="button"
-                      class="eh-rp-row"
-                      onClick={() => {
-                        copy('sid', sid())
-                        setPickerOpen(false)
-                      }}
-                    >
-                      <CreoIcon name="ph:copy" size={11} />
-                      今の id を copy
-                    </button>
-                  )}
-                </Show>
-                {/* doc 50 §4.6 A6: 「見え方」行はここから退役した。見え方は session の属性に
-                    なり、切替は**各 pane の名札 kind badge**が持つ（§4.6 ② — Mode = Pane の
-                    kind なので「この pane が何であるか」を名乗る名札が住処）。この picker は
-                    root の付け替え（lane の代表を誰にするか）に専念する。 */}
-              </div>
+                  <div class="eh-rp-title">Root agent</div>
+                  <For
+                    each={rootPickerItems(sessions())}
+                    fallback={<div class="eh-rp-empty">読み込み中…</div>}
+                  >
+                    {(item) => (
+                      <button
+                        type="button"
+                        class="eh-rp-row"
+                        classList={{ 'eh-rp-root': item.isRoot, 'eh-rp-disabled': item.disabled }}
+                        title={
+                          item.isRoot
+                            ? '今の slot（root）'
+                            : item.disabled
+                              ? 'この session は resume を持たないため root に切替不可'
+                              : 'この session を root にする（slot を resume で張り替え）'
+                        }
+                        onClick={() => {
+                          if (item.disabled) return
+                          if (item.isRoot) setPickerOpen(false)
+                          else switchRoot(item.key)
+                        }}
+                      >
+                        <CreoIcon
+                          name={item.isRoot ? 'ph:circle-fill' : 'ph:circle'}
+                          size={9}
+                        />
+                        {item.label}
+                        <span class="eh-rp-key">#{item.key}</span>
+                        <Show when={item.isRoot}>
+                          <span class="eh-rp-now">今の slot</span>
+                        </Show>
+                      </button>
+                    )}
+                  </For>
+                  {/* doc 50 §4.6 A6: 「✨ 新 ID から」は撤去した。
+                      「新しい session を作る」は 2 つの操作に分かれ、この行はその合成でしかない:
+                      ① lane の名札の **Add**（Conversation を足す = pane が増える）
+                      ② その pane の **Reborn**（同じ場所で新しく始める = pane 数は不変）
+                      root を新しい session にしたいなら「root pane で Reborn」で到達できる
+                      （A6 で switch_root の tui 限定 gate も外れたので、どの session でも代表にできる）。
+                      picker は **既存の Conversation から代表を選ぶ**ことに専念する。 */}
+                  <div class="eh-rp-divider" />
+                  <Show when={summary().sessionId ?? c().sessionId}>
+                    {(sid) => (
+                      <button
+                        type="button"
+                        class="eh-rp-row"
+                        onClick={() => {
+                          copy('sid', sid())
+                          setPickerOpen(false)
+                        }}
+                      >
+                        <CreoIcon name="ph:copy" size={11} />
+                        今の id を copy
+                      </button>
+                    )}
+                  </Show>
+                  {/* doc 50 §4.6 A6: 「見え方」行はここから退役した。見え方は session の属性に
+                      なり、切替は**各 pane の名札 kind badge**が持つ（§4.6 ② — Mode = Pane の
+                      kind なので「この pane が何であるか」を名乗る名札が住処）。この picker は
+                      root の付け替え（lane の代表を誰にするか）に専念する。 */}
+                </div>
+              </Portal>
             </Show>
             {/* + New は edge rail（右端の帯）へ移設した（doc 56 prototype、mako 2026-07-30
                 「二つ動線は混乱する」— 動線一本化。lane 級動詞の家は rail、名札は読む帯へ純化）。 */}
@@ -406,25 +408,26 @@ export const LANE_HEADER_CSS = `
 #lane-header .eh-lane{ color:var(--color-text-primary); border-color:transparent; padding-left:0; font-weight:500; }
 #lane-header .eh-cwd, #lane-header .eh-session{
   font-family:var(--vp-font-mono),var(--typography-family-mono); font-size:10.5px; }
-/* doc 39 P3: Root 切替 picker。strip の overflow:hidden を position:fixed で脱出する。 */
+/* Root picker は Portal で header の clipping から出し、popup 自身を CSS の基点にする。 */
 #lane-header .eh-session-caret{ opacity:.6; margin-left:2px; }
-#lane-header .eh-root-picker{ position:fixed; z-index:1000; min-width:230px; padding:4px;
+.eh-root-picker{ position:fixed; z-index:1000; min-width:230px; padding:4px;
   background:var(--color-surface-surface); border:1px solid var(--color-surface-border-subtle);
   border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.35); -webkit-app-region:no-drag;
+  user-select:none; white-space:nowrap;
   font-family:var(--vp-font-sans),var(--typography-family-sans); }
-#lane-header .eh-rp-title{ padding:4px 8px 2px; color:var(--color-text-secondary); font-size:10.5px; }
-#lane-header .eh-rp-row{ display:flex; align-items:center; gap:6px; width:100%; text-align:left;
+.eh-root-picker .eh-rp-title{ padding:4px 8px 2px; color:var(--color-text-secondary); font-size:10.5px; }
+.eh-root-picker .eh-rp-row{ display:flex; align-items:center; gap:6px; width:100%; text-align:left;
   padding:5px 8px; border:0; border-radius:6px; background:transparent; cursor:pointer;
   color:var(--color-text-primary);
   font-family:var(--vp-font-mono),var(--typography-family-mono); font-size:10.5px; line-height:1.6; }
-#lane-header .eh-rp-row:hover{ background:var(--color-surface-bg-emphasis); }
-#lane-header .eh-rp-key{ color:var(--color-text-secondary); }
-#lane-header .eh-rp-row.eh-rp-root{ color:var(--color-brand-primary); }
-#lane-header .eh-rp-row.eh-rp-disabled{ opacity:.45; cursor:default; }
-#lane-header .eh-rp-row.eh-rp-disabled:hover{ background:transparent; }
-#lane-header .eh-rp-now{ margin-left:auto; color:var(--color-text-secondary); font-size:10px; }
-#lane-header .eh-rp-divider{ height:1px; margin:4px 6px; background:var(--color-surface-border-subtle); }
-#lane-header .eh-rp-empty{ padding:6px 8px; color:var(--color-text-secondary); font-size:10.5px; }
+.eh-root-picker .eh-rp-row:hover{ background:var(--color-surface-bg-emphasis); }
+.eh-root-picker .eh-rp-key{ color:var(--color-text-secondary); }
+.eh-root-picker .eh-rp-row.eh-rp-root{ color:var(--color-brand-primary); }
+.eh-root-picker .eh-rp-row.eh-rp-disabled{ opacity:.45; cursor:default; }
+.eh-root-picker .eh-rp-row.eh-rp-disabled:hover{ background:transparent; }
+.eh-root-picker .eh-rp-now{ margin-left:auto; color:var(--color-text-secondary); font-size:10px; }
+.eh-root-picker .eh-rp-divider{ height:1px; margin:4px 6px; background:var(--color-surface-border-subtle); }
+.eh-root-picker .eh-rp-empty{ padding:6px 8px; color:var(--color-text-secondary); font-size:10.5px; }
 /* + New の CSS（.eh-new / .eh-new-menu）は edge rail への移設に伴い撤去（EdgeRail.tsx の
    EDGE_RAIL_CSS が後継、doc 56 prototype 2026-07-30）。 */
 `
