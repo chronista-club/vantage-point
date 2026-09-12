@@ -6,6 +6,13 @@
 import type { EngineConversationEvent } from '../../console'
 
 export const CONVERSATION_EVENT_FIXTURES = {
+  codex_message: {
+    "kind": "codex_message",
+    "item_id": "turn/message",
+    "text": "本文",
+    "questions": [],
+    "append": false
+  },
   codex_interactions: {
     "kind": "codex_interactions",
     "requests": [

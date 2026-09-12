@@ -138,13 +138,18 @@ pub fn spawn_recovering_conversation_pump(
 /// turn の外なので `None`（現在の状態を保つ）。
 fn turn_activity_of(event: &ConversationEvent) -> Option<bool> {
     match event {
-        ConversationEvent::CodexInteractions { requests } if !requests.is_empty() => Some(true),
+        ConversationEvent::CodexInteractions { requests }
+            if requests.iter().any(|r| r.item_id.is_none() || r.can_accept) =>
+        {
+            Some(true)
+        }
         ConversationEvent::CodexHistory { in_flight, .. } => Some(*in_flight),
         ConversationEvent::TurnCompleted { .. }
         | ConversationEvent::Error { .. }
         | ConversationEvent::EngineExited { .. } => Some(false),
         ConversationEvent::UserMessage { .. }
         | ConversationEvent::MessageChunk { .. }
+        | ConversationEvent::CodexMessage { .. }
         | ConversationEvent::ThoughtChunk { .. }
         | ConversationEvent::ToolCall { .. }
         | ConversationEvent::ToolCallUpdate { .. }
@@ -261,6 +266,7 @@ mod tests {
     #[test]
     fn interactions_keep_host_alive_while_waiting_for_user() {
         let request = crate::conversation::event::CodexInteraction {
+            item_id: None,
             request_id: "codex:test:1".into(),
             kind: "question".into(),
             title: "質問".into(),
@@ -404,6 +410,12 @@ mod tests {
         // 作業の event = 実行中
         for e in [
             E::MessageChunk { text: "x".into() },
+            E::CodexMessage {
+                item_id: "turn/message".into(),
+                text: "x".into(),
+                questions: Vec::new(),
+                append: true,
+            },
             E::ThoughtChunk { text: "x".into() },
             E::UserMessage { text: "x".into() },
         ] {

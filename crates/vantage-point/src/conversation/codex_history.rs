@@ -181,13 +181,18 @@ impl CodexHistory {
                 let delta = params["delta"].as_str().unwrap_or("");
                 if let Some(
                     ConversationEvent::MessageChunk { text }
+                    | ConversationEvent::CodexMessage { text, .. }
                     | ConversationEvent::ThoughtChunk { text },
                 ) = row.events.last_mut()
                 {
                     text.push_str(delta);
                 } else if method == "item/agentMessage/delta" {
-                    row.events
-                        .push(ConversationEvent::MessageChunk { text: delta.into() });
+                    row.events.push(ConversationEvent::CodexMessage {
+                        item_id: super::codex_async_questions::item_key(params),
+                        text: delta.into(),
+                        questions: Vec::new(),
+                        append: false,
+                    });
                 } else {
                     row.events
                         .push(ConversationEvent::ThoughtChunk { text: delta.into() });
@@ -227,6 +232,7 @@ impl CodexHistory {
         for event in &mut item.events {
             match event {
                 ConversationEvent::MessageChunk { text }
+                | ConversationEvent::CodexMessage { text, .. }
                 | ConversationEvent::ThoughtChunk { text }
                 | ConversationEvent::UserMessage { text } => self.truncated |= trim_text(text),
                 ConversationEvent::ToolCallUpdate { content, .. } => {
@@ -310,8 +316,11 @@ mod tests {
         }]}), "thread-1").unwrap();
         assert_eq!(
             history.snapshot().0,
-            [ConversationEvent::MessageChunk {
-                text: "途中".into()
+            [ConversationEvent::CodexMessage {
+                item_id: "active/a".into(),
+                text: "途中".into(),
+                questions: Vec::new(),
+                append: false
             }]
         );
         assert!(!history.ingest(
@@ -320,8 +329,11 @@ mod tests {
         ));
         assert_eq!(
             history.snapshot().0,
-            [ConversationEvent::MessageChunk {
-                text: "途中の続き".into()
+            [ConversationEvent::CodexMessage {
+                item_id: "active/a".into(),
+                text: "途中の続き".into(),
+                questions: Vec::new(),
+                append: false
             }]
         );
     }
@@ -411,8 +423,11 @@ mod tests {
         let before = history.snapshot().0;
         assert_eq!(
             before,
-            [ConversationEvent::MessageChunk {
-                text: "前半と後半".into()
+            [ConversationEvent::CodexMessage {
+                item_id: "turn-live/a".into(),
+                text: "前半と後半".into(),
+                questions: Vec::new(),
+                append: false
             }]
         );
         history.ingest("item/completed", &json!({"turnId":"turn-live","item":{"type":"agentMessage","id":"a","text":"前半と後半"}}));

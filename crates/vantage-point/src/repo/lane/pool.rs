@@ -142,6 +142,10 @@ pub struct LanePool {
     /// - **session 同士は独立**（doc 38 §2「lane 内の session 同士は独立」。console_mode
     ///   ガードは focused にのみ適用 — doc 38 落とし穴③）
     chat_engines: HashMap<LaneAddress, HashMap<SessionKey, ChatEngineSlot>>,
+    /// host の交代を越える非同期質問。各領域は native thread ID も照合する。
+    codex_question_sessions: std::sync::Mutex<
+        HashMap<(LaneAddress, SessionKey), crate::conversation::CodexQuestionSession>,
+    >,
 }
 
 // doc 53 §12.1 / R3c-2: **`RespawnMode` は退役した**（3 値 → 2 値 → 0）。
@@ -522,6 +526,10 @@ impl LanePool {
         }
         // doc 33: chat engine も同時に drop（kill_on_drop + pump abort）。
         self.chat_engines.remove(addr);
+        self.codex_question_sessions
+            .lock()
+            .expect("question sessions lock")
+            .retain(|(lane, _), _| lane != addr);
         self.lanes.remove(addr)
     }
 
@@ -720,6 +728,10 @@ impl LanePool {
             desired.remove(addr);
         }
         self.chat_engines.remove(addr);
+        self.codex_question_sessions
+            .lock()
+            .expect("question sessions lock")
+            .retain(|(lane, _), _| lane != addr);
         // ③ PTY replay の破棄（必ず ② の後 — 上の doc 参照）。best-effort。
         if let Err(e) = crate::daemon::pty_slot::clear_replay_in(
             &crate::config::vp_state_dir(),
@@ -1320,6 +1332,10 @@ impl LanePool {
                 anyhow::anyhow!("session remove に失敗（addr={addr}, session={key}）: {e}")
             })?;
         tracing::info!("session remove: addr={addr} session={key} → focused={new_focused}");
+        self.codex_question_sessions
+            .lock()
+            .expect("question sessions lock")
+            .remove(&(addr.clone(), key));
         Ok(new_focused)
     }
 
@@ -1462,6 +1478,19 @@ impl LanePool {
         Ok(())
     }
 
+    pub(crate) fn codex_question_session(
+        &self,
+        addr: &LaneAddress,
+        key: SessionKey,
+    ) -> crate::conversation::CodexQuestionSession {
+        self.codex_question_sessions
+            .lock()
+            .expect("question sessions lock")
+            .entry((addr.clone(), key))
+            .or_default()
+            .clone()
+    }
+
     /// chat engine を確保する（無ければ spawn + pump 起動）。`session=None` は focused。
     ///
     /// **法の番人**（doc 38 で session 粒度 → doc 46 P5 で slot 側も session 粒度）:
@@ -1534,16 +1563,19 @@ impl LanePool {
             Some(EngineKind::Codex) => {
                 // codex: 常駐 RpcHost（`codex app-server` JSONL JSON-RPC、doc 41）。thread id は
                 // registry の会話 id（doc 40 §5 — tui と共有。書き戻しは host が registry 直結）。
-                ChatHost::Codex(crate::conversation::CodexAgentHost::spawn(
-                    crate::conversation::CodexRpcHostConfig {
-                        cwd: info.cwd.clone(),
-                        repo: addr.repo.clone(),
-                        lane: label.clone(),
-                        lane_label: lane_label.clone(),
-                        session_key: resolved.key,
-                        thread_id: resolved.conversation.clone(),
-                    },
-                )?)
+                ChatHost::Codex(
+                    crate::conversation::CodexAgentHost::spawn_with_question_session(
+                        crate::conversation::CodexRpcHostConfig {
+                            cwd: info.cwd.clone(),
+                            repo: addr.repo.clone(),
+                            lane: label.clone(),
+                            lane_label: lane_label.clone(),
+                            session_key: resolved.key,
+                            thread_id: resolved.conversation.clone(),
+                        },
+                        self.codex_question_session(addr, resolved.key),
+                    )?,
+                )
             }
             Some(EngineKind::Grok) => {
                 // grok: 常駐 AcpAgentHost（`grok agent stdio` = ACP、doc 42）。sessionId は
@@ -2018,6 +2050,38 @@ pub async fn deliver_nudge(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn question_sessions_follow_session_lifetime_not_display_mode() {
+        let _state = crate::test_env::state_dir();
+        let mut pool = LanePool::new();
+        let addr = LaneAddress::root("question-handoff");
+        let other = LaneAddress::root("question-handoff-other");
+        insert_lane(&mut pool, &addr, SessionMode::Gui);
+        insert_lane(&mut pool, &other, SessionMode::Gui);
+        let key = pool
+            .create_chat_session(&addr, Some("codex"), false)
+            .unwrap();
+        for (lane, session) in [(&addr, 1), (&addr, key), (&other, 1)] {
+            pool.codex_question_session(lane, session);
+        }
+        for mode in [SessionMode::Tui, SessionMode::Gui] {
+            pool.set_session_mode(&addr, key, mode).unwrap();
+            assert_eq!(pool.codex_question_sessions.lock().unwrap().len(), 3);
+        }
+        pool.remove_session(&addr, key).unwrap();
+        assert!(
+            !pool
+                .codex_question_sessions
+                .lock()
+                .unwrap()
+                .contains_key(&(addr.clone(), key))
+        );
+        pool.reset_lane(&addr).unwrap();
+        assert_eq!(pool.codex_question_sessions.lock().unwrap().len(), 1);
+        pool.remove(&other);
+        assert!(pool.codex_question_sessions.lock().unwrap().is_empty());
+    }
 
     /// lane を PTY / engine 無しで pool に置く（restart_lane の chat 分岐は早期 return する
     /// ので spawn 不要）。mode は registry（SSOT）に書く — doc 53 R1 で pool cache は退役し、

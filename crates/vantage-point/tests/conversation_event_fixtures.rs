@@ -25,7 +25,8 @@ use vantage_point::conversation::event::{
 
 /// TS 側の union が持つべき kind。variant を足したらここも足す
 /// （fixture の網羅 assert が落ちて気付く）。
-const EXPECTED_KINDS: [&str; 20] = [
+const EXPECTED_KINDS: [&str; 21] = [
+    "codex_message",
     "codex_interactions",
     "codex_interaction_result",
     "session_init",
@@ -52,9 +53,19 @@ const EXPECTED_KINDS: [&str; 20] = [
 fn fixtures() -> Vec<(&'static str, ConversationEvent)> {
     vec![
         (
+            "codex_message",
+            ConversationEvent::CodexMessage {
+                item_id: "turn/message".into(),
+                text: "本文".into(),
+                questions: Vec::new(),
+                append: false,
+            },
+        ),
+        (
             "codex_interactions",
             ConversationEvent::CodexInteractions {
                 requests: vec![vantage_point::conversation::event::CodexInteraction {
+                    item_id: None,
                     request_id: "codex:fixture:1".into(),
                     kind: "question".into(),
                     title: "質問".into(),
