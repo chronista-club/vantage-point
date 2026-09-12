@@ -286,7 +286,7 @@ function foldEvent(lane: string, ev: ConversationEvent, session: number): void {
   // 解除（foldInto は既に replaying を下ろしている — ここは timer の後始末）。10s 無応答なら強制解除。
   if (ev.kind === 'replay_start') armReplayWatchdog(lane, session)
   else if (
-    ev.kind === 'replay_end' || ev.kind === 'error' || ev.kind === 'engine_exited' ||
+    ev.kind === 'replay_end' || ev.kind === 'codex_history' || ev.kind === 'error' || ev.kind === 'engine_exited' ||
     (ev.kind === 'submit_result' && ev.error !== null)
   )
     clearReplayWatchdog(lane, session) // engine 途絶 = 続きの replay はもう来ない → watchdog を固着させない
@@ -1849,6 +1849,9 @@ function SessionChatView(props: { lane: string; session: number }) {
           onScroll={onStreamScroll}
           onClick={onStreamLinkClick}
         >
+          <Show when={state().historyTruncated}>
+            <div class="chat-history-notice" role="status">直近の履歴を表示しています。一部の履歴・入力・出力は省略されています。</div>
+          </Show>
           <For each={state().items}>
             {(item, index) => {
               if (item.kind === 'thinking' || item.kind === 'tool') {
@@ -2202,6 +2205,7 @@ export const CHATVIEW_CSS = `
   font-family: var(--vp-font-sans),var(--typography-family-sans); overflow:hidden; }
 .conversation-empty { margin:auto; color: var(--color-text-tertiary, #616b80); font-size:13px; }
 .conversation-stream { flex:1; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:12px; }
+.chat-history-notice { padding:8px 10px; border:1px solid var(--color-border,#2a3040); border-radius:6px; color:var(--color-text-secondary,#a6afc0); font-size:var(--chat-text-meta); line-height:1.6; }
 /* スクロールバー常時表示（mako 2026-07-24）: 既定の overlay scrollbar は「スクロール中だけ」
    なので現在地が読めない。custom style を当てると常時表示になる（WebKit 仕様）。細く控えめに。 */
 .conversation-stream::-webkit-scrollbar { width:8px; }

@@ -101,6 +101,7 @@ pub(super) fn conversation_submit(
         });
     let (reply, result) = tokio::sync::oneshot::channel();
     let proxy = async_action_proxy.clone();
+    let client_user_message_id = request_id.clone();
     boot.rt_handle.spawn(async move {
         let event = crate::conversation_submission::await_submit_result(&request_id, result).await;
         let _ = proxy.send_event(AppEvent::ConversationEvent {
@@ -110,6 +111,7 @@ pub(super) fn conversation_submit(
         });
     });
     let _ = session.cmd_tx.send(ConversationCmd::Submit {
+        client_user_message_id,
         prompt,
         session: chat_session,
         images,

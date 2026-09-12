@@ -31,7 +31,19 @@ pub(crate) async fn handle_conversation_submit(
     // 添付画像（chat 入力欄への貼り付け、2026-08-30）。省略・空は従来どおり text だけ。
     // ⚠️ VP は保存しない — engine に渡すだけで transcript / replay にも残さない（mako 裁定）。
     let images = parse_image_inputs(payload.get("images"));
-    ensure_and_submit_chat(state, "conversation_submit", lane, session, prompt, &images).await?;
+    let client_id = payload
+        .get("client_user_message_id")
+        .and_then(serde_json::Value::as_str);
+    ensure_and_submit_chat(
+        state,
+        "conversation_submit",
+        lane,
+        session,
+        prompt,
+        &images,
+        client_id,
+    )
+    .await?;
     // user 発話は pump に流れない（GUI が optimistic bubble を出す設計）ので、transcript を持たない
     // engine の session は replay 源に user turn が残らない。submit 成功後にここで記録する。
     // ⚠️ nudge（下）では書かない — claude の transcript replay が origin.kind=="human" で VP 注入を
@@ -40,7 +52,7 @@ pub(crate) async fn handle_conversation_submit(
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
-/// transcript を持たない engine（codex / grok / opencode）の session に、user 発話を replay log へ記録する。
+/// native 履歴を使わない engine の session に、user 発話を replay log へ記録する。
 ///
 /// claude は transcript が SSOT なので記録しない（二重化回避）。engine 解決に失敗しても submit は
 /// 既に成立済みなので warn に留める（配送と replay 記録は独立系統）。tap（pump）が assistant 側を
@@ -61,12 +73,11 @@ async fn record_user_message_if_transcriptless(
     let Ok(resolved) = resolved else {
         return;
     };
-    // 記録対象は transcript を持たない engine のみ（tap と同じ Codex|Grok|OpenCode 判定）。
+    // 記録対象は pump の tap と揃える。Claude / Codex は native 履歴を読む。
     if !matches!(
         crate::conversation::EngineKind::from_agent(&resolved.agent),
         Some(
-            crate::conversation::EngineKind::Codex
-                | crate::conversation::EngineKind::Grok
+            crate::conversation::EngineKind::Grok
                 | crate::conversation::EngineKind::OpenCode
                 | crate::conversation::EngineKind::Vpcode
         )
@@ -113,7 +124,7 @@ pub(crate) async fn handle_conversation_nudge(
             crate::repo::agent_spawner::lane_label(&addr),
         )
     });
-    ensure_and_submit_chat(state, "conversation_nudge", lane, session, text, &[]).await?;
+    ensure_and_submit_chat(state, "conversation_nudge", lane, session, text, &[], None).await?;
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
@@ -466,6 +477,7 @@ async fn ensure_and_submit_chat(
     session: Option<crate::lane::session_registry::SessionKey>,
     prompt: &str,
     images: &[crate::conversation::ImageInput],
+    client_id: Option<&str>,
 ) -> Result<(), String> {
     let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("{ctx}: lane パース失敗: {lane}"))?;
@@ -483,7 +495,7 @@ async fn ensure_and_submit_chat(
         .lane_pool
         .read()
         .await
-        .submit_chat(&addr, session, prompt, images)
+        .submit_identified_chat(&addr, session, prompt, images, client_id)
         .await;
     if let Err(e) = submit_result {
         // self-heal: engine が死んでいた場合は当該 session だけ落として 1 回だけ張り直す。
@@ -498,7 +510,7 @@ async fn ensure_and_submit_chat(
             .lane_pool
             .read()
             .await
-            .submit_chat(&addr, session, prompt, images)
+            .submit_identified_chat(&addr, session, prompt, images, client_id)
             .await
             .map_err(|e| format!("{ctx} 失敗（retry 後）: {e}"))?;
     }
@@ -772,7 +784,8 @@ mod tests {
                     &state,
                     "conversation_submit",
                     serde_json::json!({
-                        "lane": "codex-retry-test/main", "session": session, "prompt": prompt
+                        "lane": "codex-retry-test/main", "session": session, "prompt": prompt,
+                        "client_user_message_id": "retry-request"
                     }),
                 )
                 .await
@@ -843,11 +856,61 @@ mod tests {
                 .filter(|r| r["request"]["method"] == "turn/start")
                 .collect();
             assert_eq!(turns.len(), 1);
+            assert_eq!(
+                turns[0]["request"]["params"]["clientUserMessageId"],
+                "retry-request"
+            );
             assert_eq!(turns[0]["attempt"], 2);
             assert_eq!(
                 turns[0]["request"]["params"]["input"][0]["text"],
                 "explicit retry prompt"
             );
+            dispatch_repo_method(
+                &state,
+                "conversation_demand_start",
+                serde_json::json!({"lane":"codex-retry-test/main", "session":session}),
+            )
+            .await
+            .unwrap();
+            loop {
+                let (_, message) =
+                    tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                if let RepoMessage::ConversationEvent {
+                    event:
+                        ConversationEvent::CodexHistory {
+                            events,
+                            user_message_ids,
+                            in_flight,
+                            ..
+                        },
+                    session: key,
+                    ..
+                } = message
+                {
+                    assert_eq!(key, session);
+                    assert!(!in_flight);
+                    assert_eq!(user_message_ids, ["retry-request"]);
+                    for text in ["Console question", "explicit retry prompt"] {
+                        assert!(
+                            events.contains(&ConversationEvent::UserMessage { text: text.into() })
+                        );
+                    }
+                    for text in ["Console answer", "Chat answer"] {
+                        assert_eq!(
+                            events
+                                .iter()
+                                .filter(|e| **e
+                                    == ConversationEvent::MessageChunk { text: text.into() })
+                                .count(),
+                            1
+                        );
+                    }
+                    break;
+                }
+            }
         };
         run.await;
         state

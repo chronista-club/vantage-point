@@ -17,7 +17,7 @@ export type ConversationEvent = { "kind": "session_init", session_id: string, mo
  * こちらは引ければ添えるだけの装飾。実測（2026-08-08）で 160 個中 86 個しか
  * 引けない = **説明の無い候補が普通に混ざる**前提で UI を組むこと。
  */
-command_docs?: { [key in string]: string }, } | { "kind": "replay_start" } | { "kind": "replay_end", in_flight: boolean, } | { "kind": "user_message", text: string, } | { "kind": "message_chunk", text: string, } | { "kind": "thought_chunk", text: string, } | { "kind": "tool_call", id: string, name: string, input: unknown, } | { "kind": "tool_call_update", tool_use_id: string, 
+command_docs?: { [key in string]: string }, } | { "kind": "replay_start" } | { "kind": "replay_end", in_flight: boolean, } | { "kind": "codex_history", thread_id: string, events: Array<ConversationEvent>, user_message_ids: Array<string>, in_flight: boolean, truncated: boolean, } | { "kind": "user_message", text: string, } | { "kind": "message_chunk", text: string, } | { "kind": "thought_chunk", text: string, } | { "kind": "tool_call", id: string, name: string, input: unknown, } | { "kind": "tool_call_update", tool_use_id: string, 
 /**
  * 結果本文（text 化。大きい場合は翻訳層で切り詰め得る）。
  */

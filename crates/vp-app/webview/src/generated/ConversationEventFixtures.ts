@@ -6,6 +6,21 @@
 import type { EngineConversationEvent } from '../../console'
 
 export const CONVERSATION_EVENT_FIXTURES = {
+  codex_history: {
+    "kind": "codex_history",
+    "thread_id": "codex-thread",
+    "events": [
+      {
+        "kind": "user_message",
+        "text": "Console の会話"
+      }
+    ],
+    "user_message_ids": [
+      "request-1"
+    ],
+    "in_flight": false,
+    "truncated": true
+  },
   session_init_minimal: {
     "kind": "session_init",
     "session_id": "sid-1"

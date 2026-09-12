@@ -24,6 +24,7 @@ pub(crate) enum ConversationCmd {
     /// プロンプト投入。 canvas channel 上り request `conversation_submit` で repo に送る。
     /// session（doc 50 P2）: None = focused（repo 側 payload_session_key の後方互換）。
     Submit {
+        client_user_message_id: String,
         reply: tokio::sync::oneshot::Sender<crate::conversation_submission::SubmitReply>,
         prompt: String,
         session: Option<u32>,
@@ -189,7 +190,7 @@ async fn run_conversation_session(
             }
             cmd = cmd_rx.recv() => {
                 match cmd {
-                    Some(ConversationCmd::Submit { prompt, session, images, reply }) => {
+                    Some(ConversationCmd::Submit { prompt, session, images, reply, client_user_message_id }) => {
                         if reply.is_closed() { continue; }
                         // session: None は JSON null になり、repo 側 payload_session_key が
                         // focused に解決する（旧 UI / 旧 SP との後方互換）。
@@ -199,6 +200,7 @@ async fn run_conversation_session(
                                 &serde_json::json!({
                                     "lane": lane_key, "prompt": prompt, "session": session,
                                     "images": images,
+                                    "client_user_message_id": client_user_message_id,
                                 }),
                             )
                             .await;

@@ -1297,7 +1297,7 @@ describe('submit acknowledgement', () => {
     expect(b.submission?.status).toBe('sending')
     foldInto(a, { kind: 'submit_result', request_id: 'a1', error: null })
     foldInto(a, { kind: 'submit_result', request_id: 'a1', error: null })
-    expect(a.items).toEqual([{ kind: 'user', text: 'first' }])
+    expect(a.items).toEqual([{ kind: 'user', text: 'first', clientId: 'a1' }])
     expect(a.submission).toBe(null)
   })
 })

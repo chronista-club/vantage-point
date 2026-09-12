@@ -30,9 +30,21 @@ for line in sys.stdin:
         if attempt == 1:
             send({"id": request_id, "error": {"code": -32603, "message": "fixture resume unavailable"}})
         else:
-            send({"id": request_id, "result": {"thread": {"id": request["params"]["threadId"]}}})
+            send({"id": request_id, "result": {"thread": {"id": request["params"]["threadId"], "turns": [
+                {"id": "console-turn", "status": "completed", "items": [
+                    {"id": "console-user", "type": "userMessage", "content": [{"type": "text", "text": "Console question"}]},
+                    {"id": "console-answer", "type": "agentMessage", "text": "Console answer"}
+                ]}
+            ]}}})
     elif method == "turn/start":
+        send({"method": "turn/started", "params": {"turn": {"id": "retry-turn"}}})
         send({"id": request_id, "result": {"turn": {"id": "retry-turn"}}})
+        send({"method": "item/completed", "params": {"turnId": "retry-turn", "item": {
+            "id": "retry-user", "type": "userMessage", "clientId": request["params"].get("clientUserMessageId"),
+            "content": request["params"]["input"]
+        }}})
+        send({"method": "item/agentMessage/delta", "params": {"turnId": "retry-turn", "itemId": "retry-answer", "delta": "Chat answer"}})
+        send({"method": "item/completed", "params": {"turnId": "retry-turn", "item": {"id": "retry-answer", "type": "agentMessage", "text": "Chat answer"}}})
         send({"method": "turn/completed", "params": {"turn": {"id": "retry-turn", "status": "completed"}}})
     elif method == "thread/start":
         # Old VP behavior is observable as an Error, without ever creating a real thread.
