@@ -138,6 +138,7 @@ pub fn spawn_recovering_conversation_pump(
 /// turn の外なので `None`（現在の状態を保つ）。
 fn turn_activity_of(event: &ConversationEvent) -> Option<bool> {
     match event {
+        ConversationEvent::CodexInteractions { requests } if !requests.is_empty() => Some(true),
         ConversationEvent::CodexHistory { in_flight, .. } => Some(*in_flight),
         ConversationEvent::TurnCompleted { .. }
         | ConversationEvent::Error { .. }
@@ -256,6 +257,29 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn interactions_keep_host_alive_while_waiting_for_user() {
+        let request = crate::conversation::event::CodexInteraction {
+            request_id: "codex:test:1".into(),
+            kind: "question".into(),
+            title: "質問".into(),
+            details: String::new(),
+            questions: vec![],
+            blocking: true,
+            can_accept: true,
+        };
+        assert_eq!(
+            turn_activity_of(&ConversationEvent::CodexInteractions {
+                requests: vec![request]
+            }),
+            Some(true)
+        );
+        assert_eq!(
+            turn_activity_of(&ConversationEvent::CodexInteractions { requests: vec![] }),
+            None
+        );
+    }
 
     #[tokio::test]
     async fn lag_discards_stale_deltas_and_requests_ordered_history() {

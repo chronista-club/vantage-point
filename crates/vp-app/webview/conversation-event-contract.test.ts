@@ -19,6 +19,8 @@ type Kind = EngineConversationEvent['kind']
 
 /** TS union の kind 一覧。union に variant を足したら **ここにも足す**（fixture の網羅 assert が落ちる）。 */
 const ENGINE_KINDS = [
+  'codex_interactions',
+  'codex_interaction_result',
   'session_init',
   'replay_start',
   'replay_end',
@@ -46,6 +48,8 @@ void _missing
 
 /** kind ごとの必須 field とその typeof。optional（Rust `skip_serializing_if`）は載せない。 */
 const REQUIRED: Record<Kind, Record<string, 'string' | 'boolean' | 'number' | 'object' | 'array' | 'null'>> = {
+  codex_interactions: { requests: 'array' },
+  codex_interaction_result: { request_id: 'string', error: 'null' },
   session_init: { session_id: 'string' },
   replay_start: {},
   replay_end: { in_flight: 'boolean' },

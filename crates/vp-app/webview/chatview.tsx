@@ -1,4 +1,6 @@
 import { changeCodexSelection } from './codex-selection-control'
+import { CodexInteractionCard } from './codex-interactions'
+import { beginCodexResponse } from './codex-interaction-model'
 /**
  * ChatView (doc 33 C2) — Conversation gui の Console 面 GUI（SolidJS）。
  *
@@ -1977,6 +1979,25 @@ function SessionChatView(props: { lane: string; session: number }) {
               </span>
             </div>
           </Show>
+        </div>
+        <div style={{ 'max-height': '45vh', overflow: 'auto' }}>
+          <For each={state().codexInteractions?.requests ?? []}>{request =>
+            <CodexInteractionCard request={request}
+              sending={state().codexInteractions?.sending.includes(request.request_id) ?? false}
+              error={state().codexInteractions?.errors[request.request_id]}
+              respond={(id, behavior, answers) => {
+                let started = false
+                lc.set(produce(s => { started = beginCodexResponse(s, id) }))
+                if (!started) return
+                const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+                if (!ipc) {
+                  lc.set(produce(s => foldInto(s, { kind: 'codex_interaction_result', request_id: id, error: '接続がありません。再接続後に回答してください。' })))
+                  return
+                }
+                ipc.postMessage(JSON.stringify({ t: 'conversation:respond', lane: props.lane,
+                  session: props.session, request_id: id, behavior, answers }))
+              }} />
+          }</For>
         </div>
         {/* status bar — **入力の上**（stream に隣接）。engine が今何をしているかの読み取り専用の
             計器で、操作は持たない。context 残量も「読み取り」なのでここ。 */}

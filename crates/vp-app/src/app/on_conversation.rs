@@ -133,6 +133,30 @@ pub(super) fn conversation_respond(
     message: Option<String>,
     chat_session: Option<u32>,
 ) {
+    // Codex の回答は request ごとの結果を UI へ返す。旧 engine の経路は維持する。
+    if request_id.starts_with("codex:") {
+        let Some(chat_session) = chat_session else {
+            return;
+        };
+        let path = resolve_repo_path_for_lane(&ui.sidebar_state, &lane);
+        let conn = boot.daemon_conn.clone();
+        let proxy = async_action_proxy.clone();
+        boot.rt_handle.spawn(async move {
+            let result = if let Some(path) = path {
+                let payload = serde_json::json!({"lane":lane,"session":chat_session,"request_id":request_id,
+                    "answers":answers,"behavior":behavior,"message":message});
+                match tokio::time::timeout(std::time::Duration::from_secs(15), daemon_repo_request(&conn, &path, "conversation_respond", payload)).await {
+                    Ok(result) => result.map(|_| ()),
+                    Err(_) => Err("回答送信の結果を確認できません。再接続して要求の状態を確認してください。".into()),
+                }
+            } else { Err("対象の作業場所が見つかりません".into()) };
+            let _ = proxy.send_event(AppEvent::ConversationEvent {
+                lane, session: chat_session,
+                event: serde_json::json!({"kind":"codex_interaction_result","request_id":request_id,"error":result.err()}),
+            });
+        });
+        return;
+    }
     let session = ui
         .sessions
         .conversation_sessions
