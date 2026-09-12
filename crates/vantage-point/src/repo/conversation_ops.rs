@@ -917,12 +917,20 @@ mod tests {
                             events.contains(&ConversationEvent::UserMessage { text: text.into() })
                         );
                     }
-                    for text in ["Console answer", "Chat answer"] {
+                    for (item_id, text) in [
+                        ("console-turn/console-answer", "Console answer"),
+                        ("retry-turn-1/retry-answer-1", "Chat answer"),
+                    ] {
                         assert_eq!(
                             events
                                 .iter()
                                 .filter(|e| **e
-                                    == ConversationEvent::MessageChunk { text: text.into() })
+                                    == ConversationEvent::CodexMessage {
+                                        item_id: item_id.into(),
+                                        text: text.into(),
+                                        questions: Vec::new(),
+                                        append: false,
+                                    })
                                 .count(),
                             1
                         );
