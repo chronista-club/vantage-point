@@ -36,6 +36,7 @@ pub mod claude_translate;
 mod codex_history;
 pub mod codex_host;
 pub mod codex_rpc_translate;
+mod codex_settings;
 pub mod engine;
 pub mod event;
 pub mod host;

@@ -498,6 +498,11 @@ async fn ensure_and_submit_chat(
         .submit_identified_chat(&addr, session, prompt, images, client_id)
         .await;
     if let Err(e) = submit_result {
+        if e.downcast_ref::<crate::conversation::codex_host::CodexSelectionRejected>()
+            .is_some()
+        {
+            return Err(format!("{ctx}: {e}"));
+        }
         // self-heal: engine が死んでいた場合は当該 session だけ落として 1 回だけ張り直す。
         tracing::warn!("{ctx} 失敗 → engine 再起動して retry: {e}");
         {
@@ -694,6 +699,20 @@ pub(crate) async fn handle_conversation_set_model(
             .ok_or_else(|| {
                 format!("conversation_set_model: session が存在しません（lane={lane}, session={session}）")
             })?;
+        if entry_agent == "codex" {
+            let model = model.ok_or("Codex の model が指定されていません")?;
+            let effort = payload
+                .get("effort")
+                .and_then(|v| v.as_str())
+                .ok_or("Codex の effort が指定されていません")?
+                .to_owned();
+            let config = pool.configure_codex(
+                &addr,
+                session,
+                crate::conversation::event::CodexSelection { model, effort },
+            )?;
+            return Ok(serde_json::json!({"status":"ok","codex_config":config}));
+        }
         match crate::conversation::EngineKind::from_agent(&entry_agent) {
             Some(k) if !k.model_choices().is_empty() => {}
             Some(_) => {
@@ -911,6 +930,72 @@ mod tests {
                     break;
                 }
             }
+            let configure = |effort: &str| serde_json::json!({"lane":"codex-retry-test/main","session":session,"model":"fixture-model","effort":effort});
+            let result = dispatch_repo_method(&state, "conversation_set_model", configure("high"))
+                .await
+                .unwrap();
+            assert_eq!(result["codex_config"]["selection"]["effort"], "high");
+            assert!(
+                dispatch_repo_method(&state, "conversation_set_model", configure("invalid"))
+                    .await
+                    .is_err()
+            );
+            let saved = session_registry::load(&addr.repo, "main", "claude");
+            let pair = saved
+                .sessions
+                .iter()
+                .find(|entry| entry.key == session)
+                .unwrap()
+                .codex_selection
+                .as_ref()
+                .unwrap();
+            assert_eq!(pair.effort, "high");
+            assert!(
+                saved
+                    .sessions
+                    .iter()
+                    .filter(|entry| entry.key != session)
+                    .all(|entry| entry.codex_selection.is_none())
+            );
+            dispatch_repo_method(&state, "conversation_submit", serde_json::json!({"lane":"codex-retry-test/main","session":session,"prompt":"configured prompt","client_user_message_id":"configured-request"})).await.unwrap();
+            loop {
+                let (_, event) =
+                    tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                if let RepoMessage::ConversationEvent { event, .. } = event {
+                    match event {
+                        ConversationEvent::TurnCompleted { session_id, .. } => {
+                            assert_eq!(session_id, thread);
+                            break;
+                        }
+                        ConversationEvent::Error { message } => {
+                            panic!("configured turn failed: {message}")
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let requests: Vec<serde_json::Value> =
+                std::fs::read_to_string(isolated.path().join("requests.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+            let configured = requests
+                .iter()
+                .rev()
+                .find(|request| request["request"]["method"] == "turn/start")
+                .unwrap();
+            assert_eq!(configured["request"]["params"]["model"], "fixture-model");
+            assert_eq!(configured["request"]["params"]["effort"], "high");
+            assert_eq!(configured["request"]["params"]["threadId"], thread);
+            assert_eq!(
+                std::fs::read_to_string(isolated.path().join("spawn-count")).unwrap(),
+                "2",
+                "model change must not restart the host"
+            );
         };
         run.await;
         state
@@ -1229,7 +1314,7 @@ mod tests {
     /// `console_set_model` の root 決め打ちは session 明示化で退役 — doc 50 session=Pane、
     /// mako 裁定 2026-07-27）。cross-engine lane（#812）で lane agent と食い違っても、
     /// **同一 lane 内で session ごとに可否が分かれる**ことを固定する。可否の真実は
-    /// `EngineKind::model_choices` の空/非空 1 本（旧 `model_switchable` 述語は catalog に畳んだ）。
+    /// Claude の catalog と Codex の native pair 検証を当該 session に適用する。
     #[tokio::test]
     async fn conversation_set_model_gates_on_session_agent() {
         use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
@@ -1300,17 +1385,17 @@ mod tests {
             "他 session は無傷（per-session — 旧 lane 単位との違いの核）"
         );
 
-        // codex session（key=1）は catalog 空 → 拒否（同一 lane 内で session ごとに可否が分かれる）。
+        // Codex は model / effort のペアが必要。Claude の model-only 設定を流用しない。
         let err = dispatch_repo_method(
             &state,
             "conversation_set_model",
             serde_json::json!({ "lane": lane.as_str(), "session": 1, "model": "sonnet" }),
         )
         .await
-        .expect_err("codex session は拒否");
+        .expect_err("Codex は effort 未指定を拒否");
         assert!(
-            err.contains("codex"),
-            "拒否メッセージは session の engine(codex)を指す: {err}"
+            err.contains("Codex") && err.contains("effort"),
+            "拒否メッセージは Codex の必須項目を指す: {err}"
         );
 
         // session 未指定は Err（root 決め打ちにしない — session_set_mode と同じ規律）。

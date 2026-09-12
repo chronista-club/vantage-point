@@ -68,6 +68,7 @@ pub struct CodexRpcHostConfig {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ReqKind {
     Initialize,
+    ModelList,
     ThreadResume,
     ThreadRead,
     ThreadStart,
@@ -77,6 +78,11 @@ enum ReqKind {
 
 /// reader task / host メソッドが共有する可変状態（std Mutex — await を跨がずに触る）。
 struct RpcState {
+    config: super::event::CodexConfigView,
+    catalog_generation: u64,
+    catalog_ready: bool,
+    catalog_pages: Vec<super::event::CodexModel>,
+    catalog_cursors: Vec<String>,
     history: Option<CodexHistory>,
     startup_error: Option<String>,
     /// 初回 thread/read 待機中の対象。本文更新が競合した場合は復元を中断する。
@@ -110,12 +116,31 @@ struct RpcState {
 }
 
 impl RpcState {
+    fn begin_catalog(&mut self) -> (i64, u64) {
+        self.catalog_ready = false;
+        self.config.error = None;
+        self.catalog_pages.clear();
+        self.catalog_cursors.clear();
+        self.catalog_generation = self.catalog_generation.wrapping_add(1);
+        (self.alloc(ReqKind::ModelList), self.catalog_generation)
+    }
+
     fn alloc(&mut self, kind: ReqKind) -> i64 {
         self.next_id += 1;
         self.pending.insert(self.next_id, kind);
         self.next_id
     }
 }
+
+/// 送信前の設定拒否。transport failure と区別し、host を再起動しない。
+#[derive(Debug)]
+pub(crate) struct CodexSelectionRejected(pub String);
+impl std::fmt::Display for CodexSelectionRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for CodexSelectionRejected {}
 
 /// reader task と host が共有する不変部 + 状態。
 struct RpcInner {
@@ -131,6 +156,30 @@ struct RpcInner {
 }
 
 impl RpcInner {
+    fn expire_catalog(&self, generation: u64) -> bool {
+        let mut st = self.state.lock().expect("rpc state lock");
+        if st.catalog_ready || st.dead || st.catalog_generation != generation {
+            return false;
+        }
+        st.catalog_ready = true;
+        st.pending.retain(|_, kind| *kind != ReqKind::ModelList);
+        st.catalog_pages.clear();
+        st.config.error = Some(
+            "Codex のモデル候補の取得がタイムアウトしました。Chat を開き直すと再試行します。"
+                .into(),
+        );
+        let event = Self::config_event(&st);
+        self.emit_locked(&mut st, event);
+        true
+    }
+
+    fn config_event(st: &RpcState) -> ConversationEvent {
+        ConversationEvent::CodexConfig {
+            config: Some(st.config.clone()),
+            request_id: None,
+            error: None,
+        }
+    }
     /// 起動を待つ prompt を失敗として畳み、次の submit を host 再生成へ繋ぐ。
     /// registry は触らず、再生成時も元の新規 / 再開の選択を保つ。
     fn fail_startup(&self, message: String) {
@@ -274,24 +323,45 @@ impl RpcInner {
                 .unwrap_or_else(|| "Codex が休眠しています。再送すると再試行します。".into());
             self.emit_locked(&mut st, ConversationEvent::Error { message });
         }
+        let config = Self::config_event(&st);
+        self.emit_locked(&mut st, config);
     }
 
     /// queue の先頭を turn/start として送る（thread 確定済み && idle の時だけ）。
     async fn drain_queue(&self) {
         let line = {
             let mut st = self.state.lock().expect("rpc state lock");
-            if st.turn_active || st.thread_id.is_none() || st.queue.is_empty() {
+            if st.dead
+                || st.turn_active
+                || st.thread_id.is_none()
+                || st.queue.is_empty()
+                || (st.config.selection.is_some() && !st.catalog_ready)
+            {
                 None
             } else {
+                if let Some(selection) = &st.config.selection
+                    && let Err(message) =
+                        super::codex_settings::validate(&st.config.models, selection)
+                {
+                    st.queue.clear();
+                    self.emit_locked(
+                        &mut st,
+                        ConversationEvent::Error {
+                            message: format!("{message} 送信内容は実行されていません。"),
+                        },
+                    );
+                    return;
+                }
                 let (prompt, client_id) = st.queue.pop_front().expect("non-empty queue");
                 let thread_id = st.thread_id.clone().expect("thread id");
                 st.turn_active = true;
                 let id = st.alloc(ReqKind::TurnStart);
-                Some(build_identified_turn_start(
+                Some(build_configured_turn_start(
                     id,
                     &thread_id,
                     &prompt,
                     client_id.as_deref(),
+                    st.config.selection.as_ref(),
                 ))
             }
         };
@@ -337,6 +407,12 @@ impl CodexAgentHost {
         let stderr = child.stderr.take();
         let child_pid = child.id();
 
+        let selection =
+            crate::lane::session_registry::load(&config.repo, &config.lane_label, "codex")
+                .sessions
+                .into_iter()
+                .find(|entry| entry.key == config.session_key && entry.agent == "codex")
+                .and_then(|entry| entry.codex_selection);
         let (event_tx, _rx) = broadcast::channel::<ConversationEvent>(256);
         let inner = Arc::new(RpcInner {
             event_tx,
@@ -345,6 +421,14 @@ impl CodexAgentHost {
             cwd: config.cwd,
             stdin: tokio::sync::Mutex::new(stdin),
             state: Mutex::new(RpcState {
+                config: super::event::CodexConfigView {
+                    selection,
+                    ..Default::default()
+                },
+                catalog_generation: 0,
+                catalog_ready: false,
+                catalog_pages: Vec::new(),
+                catalog_cursors: Vec::new(),
                 history: None,
                 startup_error: None,
                 hydration_target: None,
@@ -396,12 +480,56 @@ impl CodexAgentHost {
         })
     }
 
+    /// Idle の同一 host に次送信の設定を保存する。実行中の turn を中断しない。
+    pub fn configure_selection(
+        &self,
+        selection: super::event::CodexSelection,
+    ) -> Result<super::event::CodexConfigView, String> {
+        let mut st = self.inner.state.lock().expect("rpc state lock");
+        if st.dead
+            || st.thread_id.is_none()
+            || st.turn_active
+            || !st.queue.is_empty()
+            || !st.catalog_ready
+        {
+            return Err("Codex の準備または応答の完了後に変更してください。".into());
+        }
+        super::codex_settings::validate(&st.config.models, &selection)?;
+        let (lane, key) = crate::lane::session_registry::parse_session_label(&self.inner.lane);
+        crate::lane::session_registry::set_codex_selection(
+            &self.inner.repo,
+            lane,
+            key,
+            selection.clone(),
+        )
+        .map_err(|error| format!("Codex 設定を保存できませんでした: {error}"))?;
+        st.config.selection = Some(selection);
+        st.config.error = None;
+        let event = RpcInner::config_event(&st);
+        self.inner.emit_locked(&mut st, event);
+        Ok(st.config.clone())
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<ConversationEvent> {
         self.inner.event_tx.subscribe()
     }
 
     pub fn request_history(&self) {
         self.inner.request_history();
+        let retry = {
+            let mut st = self.inner.state.lock().expect("rpc state lock");
+            if !st.dead && st.catalog_ready && st.config.models.is_empty() {
+                Some(st.begin_catalog())
+            } else {
+                None
+            }
+        };
+        if let Some(request) = retry {
+            let inner = self.inner.clone();
+            tokio::spawn(async move {
+                request_model_catalog(&inner, request).await;
+            });
+        }
     }
 
     pub fn history_recovery(&self) -> Arc<dyn Fn() + Send + Sync> {
@@ -451,6 +579,15 @@ impl CodexAgentHost {
         prompt: &str,
         client_id: Option<&str>,
     ) -> anyhow::Result<()> {
+        self.submit_with_activity(prompt, client_id, None).await
+    }
+
+    pub(crate) async fn submit_with_activity(
+        &self,
+        prompt: &str,
+        client_id: Option<&str>,
+        activity: Option<&std::sync::atomic::AtomicBool>,
+    ) -> anyhow::Result<()> {
         let line = {
             let mut st = self.inner.state.lock().expect("rpc state lock");
             if st.dead {
@@ -458,7 +595,24 @@ impl CodexAgentHost {
                     "codex app-server が利用できません（途絶・起動失敗。再起動で再試行）"
                 );
             }
-            if st.turn_active || st.thread_id.is_none() {
+            if let Some(selection) = &st.config.selection {
+                if !st.catalog_ready {
+                    return Err(CodexSelectionRejected(
+                        "モデル候補の取得完了後に再送してください。送信内容は実行されていません。"
+                            .into(),
+                    )
+                    .into());
+                }
+                super::codex_settings::validate(&st.config.models, selection)
+                    .map_err(CodexSelectionRejected)?;
+            }
+            if let Some(activity) = activity {
+                activity.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            if st.turn_active
+                || st.thread_id.is_none()
+                || (st.config.selection.is_some() && !st.catalog_ready)
+            {
                 st.queue
                     .push_back((prompt.to_string(), client_id.map(str::to_owned)));
                 tracing::debug!(
@@ -475,8 +629,12 @@ impl CodexAgentHost {
                 let thread_id = st.thread_id.clone().expect("thread id");
                 st.turn_active = true;
                 let id = st.alloc(ReqKind::TurnStart);
-                Some(build_identified_turn_start(
-                    id, &thread_id, prompt, client_id,
+                Some(build_configured_turn_start(
+                    id,
+                    &thread_id,
+                    prompt,
+                    client_id,
+                    st.config.selection.as_ref(),
                 ))
             }
         };
@@ -615,6 +773,24 @@ fn build_identified_turn_start(
         serde_json::from_str(&build_turn_start(id, thread_id, prompt)).expect("turn request JSON");
     if let Some(client_id) = client_id {
         request["params"]["clientUserMessageId"] = serde_json::json!(client_id);
+    }
+    request.to_string()
+}
+
+fn build_configured_turn_start(
+    id: i64,
+    thread_id: &str,
+    prompt: &str,
+    client_id: Option<&str>,
+    selection: Option<&super::event::CodexSelection>,
+) -> String {
+    let mut request: serde_json::Value = serde_json::from_str(&build_identified_turn_start(
+        id, thread_id, prompt, client_id,
+    ))
+    .expect("turn request JSON");
+    if let Some(selection) = selection {
+        request["params"]["model"] = serde_json::json!(selection.model);
+        request["params"]["effort"] = serde_json::json!(selection.effort);
     }
     request.to_string()
 }
@@ -807,6 +983,21 @@ fn process_notification(
     false
 }
 
+async fn request_model_catalog(inner: &Arc<RpcInner>, (catalog_id, generation): (i64, u64)) {
+    let weak = Arc::downgrade(inner);
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        let Some(inner) = weak.upgrade() else {
+            return;
+        };
+        if !inner.expire_catalog(generation) {
+            return;
+        }
+        inner.drain_queue().await;
+    });
+    inner.write_line_logged(&serde_json::json!({"id":catalog_id,"method":"model/list","params":{"includeHidden":false,"limit":100}}).to_string()).await;
+}
+
 async fn handle_response(
     inner: &Arc<RpcInner>,
     id: i64,
@@ -831,6 +1022,8 @@ async fn handle_response(
                 return;
             }
             inner.write_line_logged(&build_initialized()).await;
+            let request = inner.state.lock().expect("rpc state lock").begin_catalog();
+            request_model_catalog(inner, request).await;
             let line = {
                 let mut st = inner.state.lock().expect("rpc state lock");
                 match resume_target {
@@ -855,6 +1048,11 @@ async fn handle_response(
                 return;
             }
             let thread = &msg["result"]["thread"];
+            {
+                let mut st = inner.state.lock().expect("rpc state lock");
+                st.config.model = msg["result"]["model"].as_str().map(str::to_owned);
+                st.config.effort = msg["result"]["reasoningEffort"].as_str().map(str::to_owned);
+            }
             let result = &msg["result"];
             if thread["historyMode"] == "paginated"
                 || result["turnsBackwardsCursor"].is_string()
@@ -900,6 +1098,11 @@ async fn handle_response(
                 return;
             }
             if let Some(tid) = msg.pointer("/result/thread/id").and_then(|v| v.as_str()) {
+                {
+                    let mut st = inner.state.lock().expect("rpc state lock");
+                    st.config.model = msg["result"]["model"].as_str().map(str::to_owned);
+                    st.config.effort = msg["result"]["reasoningEffort"].as_str().map(str::to_owned);
+                }
                 inner.adopt_thread(&msg["result"]["thread"], tid).await;
             } else {
                 inner.fail_startup("Codex thread/start に会話 ID がありません".into());
@@ -929,12 +1132,302 @@ async fn handle_response(
                 tracing::warn!("codex turn/interrupt 失敗: {}", error_message(err));
             }
         }
+        ReqKind::ModelList => {
+            let next = {
+                let mut st = inner.state.lock().expect("rpc state lock");
+                let page = match error {
+                    Some(error) => Err(format!(
+                        "Codex のモデル候補を取得できませんでした: {}",
+                        error_message(error)
+                    )),
+                    None => super::codex_settings::parse_page(&msg["result"]),
+                };
+                let page = page.and_then(|(models, cursor)| {
+                    for model in models {
+                        if st.catalog_pages.len() >= 256
+                            || st.catalog_pages.iter().any(|m| m.model == model.model)
+                        {
+                            return Err("Codex のモデル候補が重複または上限を超えています".into());
+                        }
+                        st.catalog_pages.push(model);
+                    }
+                    if let Some(cursor) = &cursor {
+                        if st.catalog_cursors.len() >= 32 || st.catalog_cursors.contains(cursor) {
+                            return Err("Codex のモデル候補のページを取得できませんでした".into());
+                        }
+                        st.catalog_cursors.push(cursor.clone());
+                    }
+                    Ok(cursor)
+                });
+                match page {
+                    Ok(Some(cursor)) => {
+                        let id = st.alloc(ReqKind::ModelList);
+                        Some(serde_json::json!({"id":id,"method":"model/list","params":{"includeHidden":false,"limit":100,"cursor":cursor}}).to_string())
+                    }
+                    result => {
+                        st.catalog_ready = true;
+                        st.config.models = if result.is_ok() {
+                            std::mem::take(&mut st.catalog_pages)
+                        } else {
+                            st.catalog_pages.clear();
+                            Vec::new()
+                        };
+                        st.config.error = result.err().or_else(|| {
+                            st.config.selection.as_ref().and_then(|selection| {
+                                super::codex_settings::validate(&st.config.models, selection).err()
+                            })
+                        });
+                        if st.config.models.is_empty() && st.config.error.is_none() {
+                            st.config.error = Some("Codex のモデル候補がありません".into());
+                        }
+                        let event = RpcInner::config_event(&st);
+                        inner.emit_locked(&mut st, event);
+                        None
+                    }
+                }
+            };
+            if let Some(next) = next {
+                inner.write_line_logged(&next).await;
+            } else {
+                inner.drain_queue().await;
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn catalog_model() -> serde_json::Value {
+        serde_json::json!({"model":"fixture-model","displayName":"Fixture","defaultReasoningEffort":"low","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]})
+    }
+
+    #[tokio::test]
+    async fn catalog_pages_are_atomic_and_repeated_cursors_fail_closed() {
+        let host = response_test_host();
+        let id = host.inner.state.lock().unwrap().alloc(ReqKind::ModelList);
+        handle_response(
+            &host.inner,
+            id,
+            &serde_json::json!({"result":{"data":[catalog_model()],"nextCursor":"again"}}),
+            &None,
+        )
+        .await;
+        let next_id = {
+            let st = host.inner.state.lock().unwrap();
+            assert!(st.config.models.is_empty());
+            assert!(!st.catalog_ready);
+            *st.pending
+                .iter()
+                .find(|(_, kind)| **kind == ReqKind::ModelList)
+                .unwrap()
+                .0
+        };
+        handle_response(
+            &host.inner,
+            next_id,
+            &serde_json::json!({"result":{"data":[],"nextCursor":"again"}}),
+            &None,
+        )
+        .await;
+        let st = host.inner.state.lock().unwrap();
+        assert!(st.config.models.is_empty());
+        assert!(st.config.error.is_some());
+        assert!(st.catalog_ready);
+        assert!(!st.dead);
+    }
+
+    #[tokio::test]
+    async fn catalog_second_page_publishes_all_candidates() {
+        let host = response_test_host();
+        let id = host.inner.state.lock().unwrap().alloc(ReqKind::ModelList);
+        handle_response(
+            &host.inner,
+            id,
+            &serde_json::json!({"result":{"data":[catalog_model()],"nextCursor":"next"}}),
+            &None,
+        )
+        .await;
+        let id = *host
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .pending
+            .iter()
+            .find(|(_, kind)| **kind == ReqKind::ModelList)
+            .unwrap()
+            .0;
+        let mut second = catalog_model();
+        second["model"] = "second-model".into();
+        handle_response(
+            &host.inner,
+            id,
+            &serde_json::json!({"result":{"data":[second],"nextCursor":null}}),
+            &None,
+        )
+        .await;
+        assert_eq!(host.inner.state.lock().unwrap().config.models.len(), 2);
+    }
+
+    #[test]
+    fn next_turn_uses_pair_and_unselected_turn_delegates_to_native() {
+        let selection = super::super::event::CodexSelection {
+            model: "fixture-model".into(),
+            effort: "high".into(),
+        };
+        let request: serde_json::Value = serde_json::from_str(&build_configured_turn_start(
+            4,
+            "thread",
+            "prompt",
+            Some("client"),
+            Some(&selection),
+        ))
+        .unwrap();
+        assert_eq!(request["params"]["model"], "fixture-model");
+        assert_eq!(request["params"]["effort"], "high");
+        assert_eq!(request["params"]["threadId"], "thread");
+        let native: serde_json::Value = serde_json::from_str(&build_configured_turn_start(
+            4, "thread", "prompt", None, None,
+        ))
+        .unwrap();
+        assert!(native["params"].get("model").is_none());
+        assert!(native["params"].get("effort").is_none());
+    }
+
+    #[tokio::test]
+    async fn busy_selection_rejection_leaves_registry_and_conversation_unchanged() {
+        let isolated = crate::test_env::state_dir_async().await;
+        let host = response_test_host();
+        {
+            let mut st = host.inner.state.lock().unwrap();
+            st.thread_id = Some("thread".into());
+            st.catalog_ready = true;
+            st.config.models = super::super::codex_settings::parse_page(
+                &serde_json::json!({"data":[catalog_model()]}),
+            )
+            .unwrap()
+            .0;
+            st.turn_active = true;
+        }
+        let pair = super::super::event::CodexSelection {
+            model: "fixture-model".into(),
+            effort: "high".into(),
+        };
+        assert!(host.configure_selection(pair).is_err());
+        assert!(host.inner.state.lock().unwrap().config.selection.is_none());
+        assert_eq!(std::fs::read_dir(isolated.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn late_catalog_timeout_does_not_cancel_a_new_attempt() {
+        let host = response_test_host();
+        host.inner.state.lock().unwrap().catalog_generation = 2;
+        assert!(!host.inner.expire_catalog(1));
+        assert!(!host.inner.state.lock().unwrap().catalog_ready);
+        assert!(host.inner.expire_catalog(2));
+        assert!(host.inner.state.lock().unwrap().catalog_ready);
+        assert!(host.inner.state.lock().unwrap().config.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn invalid_saved_selection_rejects_submit_without_ending_live_turn() {
+        let host = response_test_host();
+        let mut rx = host.subscribe();
+        {
+            let mut st = host.inner.state.lock().unwrap();
+            st.catalog_ready = true;
+            st.thread_id = Some("thread".into());
+            st.turn_active = true;
+            st.config.selection = Some(super::super::event::CodexSelection {
+                model: "missing".into(),
+                effort: "high".into(),
+            });
+        }
+        assert!(
+            host.submit_with_client_id("unsent", Some("request"))
+                .await
+                .is_err()
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "submission refusal must not emit a turn-closing Error"
+        );
+        assert!(host.inner.state.lock().unwrap().turn_active);
+    }
+
+    #[tokio::test]
+    async fn reopening_chat_retries_failed_catalog() {
+        let host = response_test_host();
+        {
+            let mut st = host.inner.state.lock().unwrap();
+            st.catalog_ready = true;
+            st.config.error = Some("failed".into());
+        }
+        let previous_generation = host.inner.state.lock().unwrap().catalog_generation;
+        host.request_history();
+        assert!(
+            !host.inner.expire_catalog(previous_generation),
+            "old timer cannot expire the retry before its send task runs"
+        );
+        assert!(!host.inner.state.lock().unwrap().catalog_ready);
+    }
+
+    #[tokio::test]
+    async fn model_catalog_keeps_model_specific_efforts() {
+        let host = response_test_host();
+        let id = host.inner.state.lock().unwrap().alloc(ReqKind::ModelList);
+        handle_response(&host.inner, id, &serde_json::json!({"result":{"data":[
+            {"model":"one","displayName":"One","defaultReasoningEffort":"low","supportedReasoningEfforts":[{"reasoningEffort":"low"}]},
+            {"model":"two","displayName":"Two","defaultReasoningEffort":"high","supportedReasoningEfforts":[{"reasoningEffort":"medium"},{"reasoningEffort":"high"}]}
+        ],"nextCursor":null}}), &None).await;
+        let st = host.inner.state.lock().unwrap();
+        assert_eq!(st.config.models.len(), 2);
+        assert_eq!(st.config.models[1].efforts, ["medium", "high"]);
+        assert_eq!(st.config.models[1].default_effort, "high");
+    }
+
+    #[test]
+    fn codex_selection_survives_registry_roundtrip() {
+        let value = serde_json::json!({"key":2,"agent":"codex","codex_selection":{"model":"two","effort":"high"}});
+        let entry: crate::lane::session_registry::SessionEntry =
+            serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(entry).unwrap()["codex_selection"],
+            value["codex_selection"]
+        );
+    }
+
+    // mem_1CexxKRvy7R87G6RL6RzuX: native の設定を次送信の選択とは区別して運ぶ。
+    #[tokio::test]
+    async fn resume_preserves_native_model_and_effort_for_settings() {
+        let _state = crate::test_env::state_dir_async().await;
+        let host = response_test_host();
+        let mut rx = host.subscribe();
+        let id = host
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .alloc(ReqKind::ThreadResume);
+        handle_response(
+            &host.inner,
+            id,
+            &serde_json::json!({"result":{
+                "model":"native-model", "reasoningEffort":"high",
+                "thread":{"id":"t", "turns":[]}
+            }}),
+            &Some("t".into()),
+        )
+        .await;
+        let events: Vec<serde_json::Value> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|event| serde_json::to_value(event).unwrap())
+            .collect();
+        assert!(events.iter().any(|event| event["kind"] == "codex_config"
+            && event["config"]["model"] == "native-model"
+            && event["config"]["effort"] == "high"));
+    }
 
     #[tokio::test]
     async fn concurrent_hydration_update_cannot_adopt_stale_active_state() {
@@ -1141,6 +1634,11 @@ mod tests {
                 cwd: "/workspace".into(),
                 stdin: tokio::sync::Mutex::new(None),
                 state: Mutex::new(RpcState {
+                    config: crate::conversation::event::CodexConfigView::default(),
+                    catalog_generation: 0,
+                    catalog_ready: false,
+                    catalog_pages: Vec::new(),
+                    catalog_cursors: Vec::new(),
                     history: None,
                     startup_error: None,
                     hydration_target: None,

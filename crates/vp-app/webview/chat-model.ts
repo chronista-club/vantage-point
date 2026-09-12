@@ -156,6 +156,9 @@ export type ChatState = {
   replaying: boolean
   historyTruncated?: boolean
   historyThreadId?: string
+  codexConfig?: Extract<ConversationEvent, { kind: 'codex_config' }>['config']
+  codexSettingsRequest?: string | null
+  codexSettingsError?: string | null
   /** now-line の契約供給（doc 51 §1 A3b — AI が自分の今を報告する口）。null = 契約報告なし
    *  = deriveNowLine の機械導出（A3a の保険）が下支えする。turn_completed で消える（「今」は
    *  turn より長生きしない）。書き手は A3b の `now_line` event（PR2 で配線 — 受け皿を先に置く
@@ -178,6 +181,15 @@ export type Submission = {
  * tool_call_update は id 一致で done 化。ここが gui の描画正しさの中核。
  */
 export function foldInto(s: ChatState, ev: ConversationEvent): void {
+  if (ev.kind === 'codex_config') {
+    if (ev.request_id && ev.request_id !== s.codexSettingsRequest) return
+    if (ev.config && !ev.request_id) s.codexConfig = ev.config
+    if (ev.request_id) {
+      s.codexSettingsRequest = null
+      s.codexSettingsError = ev.error
+    }
+    return
+  }
   // Acknowledgements are scoped by request as well as lane/session. They are not
   // turn-closing engine events and must never flush type-ahead on rejection.
   if (ev.kind === 'submit_result') {

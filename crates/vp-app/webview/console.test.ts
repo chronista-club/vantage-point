@@ -90,6 +90,17 @@ function installDomStub(): void {
 
 beforeEach(() => installDomStub())
 
+it('Codex の設定は履歴の置換と ring 上限を越えても session ごとに復元する', () => {
+  const con = installConsole()
+  const lane = 'proj/codex-config-ring'
+  con.handleEvent(lane, JSON.parse(JSON.stringify({ kind: 'codex_config', config: { model: 'native' }, request_id: null, error: null })), 2)
+  con.handleEvent(lane, JSON.parse(JSON.stringify({ kind: 'codex_history', thread_id: 't', events: [], user_message_ids: [], in_flight: false, truncated: false })), 2)
+  for (let i = 0; i < 2500; i++) con.handleEvent(lane, { kind: 'message_chunk', text: 'x' }, 2)
+  const got: string[] = []
+  con.attachRenderer(lane, (ev, session) => got.push(`${session}:${ev.kind}`))
+  expect(got.filter(value => value === '2:codex_config')).toHaveLength(1)
+})
+
 it('Codex snapshot は同じ session の旧 buffer だけを置き換える', () => {
   const con = installConsole()
   const lane = 'proj/codex-history-ring'

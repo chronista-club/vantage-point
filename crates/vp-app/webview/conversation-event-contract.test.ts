@@ -22,6 +22,7 @@ const ENGINE_KINDS = [
   'session_init',
   'replay_start',
   'replay_end',
+  'codex_config',
   'codex_history',
   'user_message',
   'message_chunk',
@@ -44,10 +45,11 @@ const _missing: Missing extends never ? true : never = true
 void _missing
 
 /** kind ごとの必須 field とその typeof。optional（Rust `skip_serializing_if`）は載せない。 */
-const REQUIRED: Record<Kind, Record<string, 'string' | 'boolean' | 'number' | 'object' | 'array'>> = {
+const REQUIRED: Record<Kind, Record<string, 'string' | 'boolean' | 'number' | 'object' | 'array' | 'null'>> = {
   session_init: { session_id: 'string' },
   replay_start: {},
   replay_end: { in_flight: 'boolean' },
+  codex_config: { config: 'object', request_id: 'null', error: 'null' },
   codex_history: { thread_id: 'string', events: 'array', user_message_ids: 'array', in_flight: 'boolean', truncated: 'boolean' },
   user_message: { text: 'string' },
   message_chunk: { text: 'string' },

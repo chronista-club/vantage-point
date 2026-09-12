@@ -19,6 +19,12 @@ use ts_rs::TS;
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConversationEvent {
+    /// Codex の次送信設定。会話終了・送信結果とは独立した状態と応答。
+    CodexConfig {
+        config: Option<CodexConfigView>,
+        request_id: Option<String>,
+        error: Option<String>,
+    },
     /// セッション初期化。engine プロセス起動直後に 1 回。
     /// session_id は cc_session への記録に使う（tui ⇄ gui の resume 共有）。
     SessionInit {
@@ -200,6 +206,32 @@ pub enum ConversationEvent {
         #[cfg_attr(test, ts(type = "unknown"))]
         input: serde_json::Value,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexSelection {
+    pub model: String,
+    pub effort: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexModel {
+    pub model: String,
+    pub label: String,
+    pub efforts: Vec<String>,
+    pub default_effort: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexConfigView {
+    pub models: Vec<CodexModel>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub selection: Option<CodexSelection>,
+    pub error: Option<String>,
 }
 
 /// [`ConversationEvent::SubagentMessage`] の発話種別。
