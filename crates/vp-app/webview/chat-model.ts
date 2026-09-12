@@ -17,7 +17,7 @@ import type { toWirePayload } from './paste-image'
 // ---------------------------------------------------------------------------
 
 export type ChatItem =
-  | { kind: 'user'; text: string; submissionId?: string }
+  | { kind: 'user'; text: string; submissionId?: string; clientId?: string }
   | { kind: 'assistant'; text: string; sealed?: boolean } // append 先。sealed=turn 境界（§5.1、次 turn は新バブル）
   | { kind: 'thinking'; text: string; at?: number } // thought_chunk を末尾 thinking に append。at = live 受信時刻（doc 57 §4.2、replay では刻まない）
   // tool。input/result は詳細展開の表示源。backend は最初から ToolCall{input} /
@@ -154,6 +154,8 @@ export type ChatState = {
   /** transcript replay（attach/reconnect 時の過去会話再送）進行中か。replay_start→true /
    *  replay_end→false。コーナーの再同期ローディングアニメ（resync-loader）の可視条件。 */
   replaying: boolean
+  historyTruncated?: boolean
+  historyThreadId?: string
   /** now-line の契約供給（doc 51 §1 A3b — AI が自分の今を報告する口）。null = 契約報告なし
    *  = deriveNowLine の機械導出（A3a の保険）が下支えする。turn_completed で消える（「今」は
    *  turn より長生きしない）。書き手は A3b の `now_line` event（PR2 で配線 — 受け皿を先に置く
@@ -196,6 +198,26 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
   }
   s.lastEvent = ev.kind // 拾える全イベント種別を status に同期（時刻は foldEvent が Date.now で付す）
   switch (ev.kind) {
+    case 'codex_history': {
+      const included = new Set(ev.user_message_ids)
+      const local = s.historyThreadId && s.historyThreadId !== ev.thread_id ? [] : s.items.filter(
+        item => item.kind === 'user' && item.clientId && !included.has(item.clientId),
+      )
+      foldInto(s, { kind: 'replay_start' })
+      for (const event of ev.events) {
+        // 表示データのみ。過去の承認・送信・snapshot を再帰実行しない。
+        if (['user_message', 'message_chunk', 'thought_chunk', 'tool_call', 'tool_call_update', 'turn_completed'].includes(event.kind)) {
+          foldInto(s, event)
+        }
+      }
+      s.items.push(...local)
+      foldInto(s, { kind: 'replay_end', in_flight: ev.in_flight })
+      s.historyThreadId = ev.thread_id
+      s.header = { ...s.header, sessionId: ev.thread_id }
+      s.historyTruncated = ev.truncated
+      s.lastEvent = ev.kind
+      break
+    }
     case 'replay_start':
       // 以降は transcript replay（過去会話の再送）。会話を一度クリアしてから畳み直す。
       // backend は「新規 attach」と「reconnect / demand 再発火」を区別できないため、reset せず
@@ -210,6 +232,7 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       // 再構築される。復帰後の message_chunk はそこへ自然に append される（= 文の途中から
       // 新バブルが立つことはない）。tail が streaming を立て直すのでカーソルも戻る。
       s.items = []
+      s.historyTruncated = false
       s.plan = []
       s.streaming = false
       s.cost = null
@@ -373,7 +396,7 @@ export function beginSubmission(
 ): boolean {
   if (s.submission) return false
   s.submission = { id, text, images, status: 'sending', error: null }
-  s.items.push({ kind: 'user', text, submissionId: id })
+  s.items.push({ kind: 'user', text, submissionId: id, clientId: id })
   return true
 }
 /**

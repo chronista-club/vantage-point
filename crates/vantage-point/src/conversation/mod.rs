@@ -33,6 +33,7 @@
 pub mod acp_host;
 pub mod acp_translate;
 pub mod claude_translate;
+mod codex_history;
 pub mod codex_host;
 pub mod codex_rpc_translate;
 pub mod engine;

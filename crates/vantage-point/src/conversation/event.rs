@@ -1,8 +1,8 @@
 //! ConversationEvent — Conversation gui GUI が話す唯一の言葉（PR1 で凍結）
 //!
-//! vp-app（GUI）はこの語彙だけを描画する。engine（現状 claude）ごとの
-//! stream 形式は repo 側の翻訳層（[`super::claude_translate`]）で吸収し、engine を
-//! 足すときは翻訳層を 1 個追加するだけで GUI は無改修 — これが多 engine 方針の支え。
+//! vp-app（GUI）はこの語彙を描画する。engine ごとの stream 形式は repo 側の翻訳層で吸収する。
+//! native 履歴のライフサイクルが異なる Codex は一括 snapshot を持ち、GUI の専用 reducer で
+//! 表示を再構築する（design 65）。通常の本文・tool の表示部品は共通に使う。
 //!
 //! 語彙は ACP `session/update` の実績あるサブセットを借用。
 //! 由来のマッピングは design doc 32 §4 / §10（Step 0 実測スキーマ）を参照。
@@ -66,6 +66,15 @@ pub enum ConversationEvent {
     /// 下ろさず、engine が idle でも「応答中」が永久に居座る。結果、turn 完了を契機にする処理
     /// （type-ahead の flush 等）が二度と発火しない。終端で真値を宣言して打ち消す。
     ReplayEnd { in_flight: bool },
+
+    /// Codex native 履歴の一括置換。内側は表示専用で、live の副作用を再実行しない。
+    CodexHistory {
+        thread_id: String,
+        events: Vec<ConversationEvent>,
+        user_message_ids: Vec<String>,
+        in_flight: bool,
+        truncated: bool,
+    },
 
     /// user 自身の発話（transcript replay 専用）。
     ///

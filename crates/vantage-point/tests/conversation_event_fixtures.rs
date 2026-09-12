@@ -23,12 +23,13 @@ use vantage_point::conversation::event::{
     ConversationEvent, PlanEntry, QuestionOption, QuestionSpec, SubagentRole,
 };
 
-/// TS 側の union が持つべき kind（= Rust の 16 variant）。variant を足したらここも足す
+/// TS 側の union が持つべき kind。variant を足したらここも足す
 /// （fixture の網羅 assert が落ちて気付く）。
-const EXPECTED_KINDS: [&str; 16] = [
+const EXPECTED_KINDS: [&str; 17] = [
     "session_init",
     "replay_start",
     "replay_end",
+    "codex_history",
     "user_message",
     "message_chunk",
     "thought_chunk",
@@ -47,6 +48,18 @@ const EXPECTED_KINDS: [&str; 16] = [
 /// 全 variant の代表値。optional の有無 / 空 vec・map / false / 数値 / 任意 JSON を含める。
 fn fixtures() -> Vec<(&'static str, ConversationEvent)> {
     vec![
+        (
+            "codex_history",
+            ConversationEvent::CodexHistory {
+                thread_id: "codex-thread".into(),
+                events: vec![ConversationEvent::UserMessage {
+                    text: "Console の会話".into(),
+                }],
+                user_message_ids: vec!["request-1".into()],
+                in_flight: false,
+                truncated: true,
+            },
+        ),
         (
             "session_init_minimal",
             ConversationEvent::SessionInit {

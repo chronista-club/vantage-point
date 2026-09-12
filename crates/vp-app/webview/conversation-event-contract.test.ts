@@ -22,6 +22,7 @@ const ENGINE_KINDS = [
   'session_init',
   'replay_start',
   'replay_end',
+  'codex_history',
   'user_message',
   'message_chunk',
   'thought_chunk',
@@ -47,6 +48,7 @@ const REQUIRED: Record<Kind, Record<string, 'string' | 'boolean' | 'number' | 'o
   session_init: { session_id: 'string' },
   replay_start: {},
   replay_end: { in_flight: 'boolean' },
+  codex_history: { thread_id: 'string', events: 'array', user_message_ids: 'array', in_flight: 'boolean', truncated: 'boolean' },
   user_message: { text: 'string' },
   message_chunk: { text: 'string' },
   thought_chunk: { text: 'string' },
@@ -71,7 +73,7 @@ function typeOf(v: unknown): string {
 const fixtures = Object.entries(CONVERSATION_EVENT_FIXTURES) as [string, EngineConversationEvent][]
 
 describe('ConversationEvent contract (Rust fixture ↔ TS mirror)', () => {
-  it('fixture が全 kind を 1 つ以上含む（Rust 16 variant = TS union）', () => {
+  it('fixture が全 kind を 1 つ以上含む（Rust variant = TS union）', () => {
     const seen = new Set(fixtures.map(([, ev]) => ev.kind))
     expect([...seen].sort()).toEqual([...ENGINE_KINDS].sort())
   })

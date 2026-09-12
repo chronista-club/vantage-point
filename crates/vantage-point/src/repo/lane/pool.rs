@@ -1632,18 +1632,18 @@ impl LanePool {
                 );
             }
         };
-        // replay-log tap: transcript を持たない engine（codex / grok / opencode）の session にだけ
+        // replay-log tap: native 履歴を使わない engine の session にだけ
         // 付ける。claude は transcript が SSOT なので None（二重化しない）。tap は配信 event を
         // per-session に disk 記録し、demand_start の no_session path がそれを replay 源にする
         // （doc — engine 非依存 replay log）。⚠️ この判定は unison_server の reader / writer と
         // replay_log.rs の doc と 4 点セット（片側更新は dead-write を生む、#807 教訓 / doc 43 §5）。
         let replay_tap = match EngineKind::from_agent(&resolved.agent) {
-            Some(
-                EngineKind::Codex | EngineKind::Grok | EngineKind::OpenCode | EngineKind::Vpcode,
-            ) => Some(crate::conversation::replay_log::ReplayLogTap {
-                repo: addr.repo.clone(),
-                label: label.clone(),
-            }),
+            Some(EngineKind::Grok | EngineKind::OpenCode | EngineKind::Vpcode) => {
+                Some(crate::conversation::replay_log::ReplayLogTap {
+                    repo: addr.repo.clone(),
+                    label: label.clone(),
+                })
+            }
             _ => None,
         };
         // 活動時刻 / turn 状態の共有 atomic（書き手 = pump、読み手 = roster enrich と
@@ -1652,7 +1652,11 @@ impl LanePool {
         // teardown 対象になる）。
         let last_event_at = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let turn_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let pump = crate::repo::conversation_pump::spawn_lane_conversation_pump(
+        let history_recovery = match &host {
+            ChatHost::Codex(host) => Some(host.history_recovery()),
+            _ => None,
+        };
+        let pump = crate::repo::conversation_pump::spawn_recovering_conversation_pump(
             addr.to_string(),
             resolved.key,
             host.subscribe(),
@@ -1660,6 +1664,7 @@ impl LanePool {
             replay_tap,
             std::sync::Arc::clone(&last_event_at),
             std::sync::Arc::clone(&turn_active),
+            history_recovery,
         );
         let pid = host.pid();
         // LaneInfo.pid / state は lane の代表 = focused session に紐づける（非 focused の
@@ -1706,6 +1711,22 @@ impl LanePool {
             })
     }
 
+    /// Codex 履歴は host の通知と同じ配送順序で採取する。
+    pub fn request_codex_history(
+        &self,
+        addr: &LaneAddress,
+        session: SessionKey,
+    ) -> anyhow::Result<()> {
+        let slot = self.chat_slot(addr, Some(session))?;
+        match &slot.host {
+            crate::conversation::engine::ChatHost::Codex(host) => {
+                host.request_history();
+                Ok(())
+            }
+            _ => anyhow::bail!("Codex の chat host がありません"),
+        }
+    }
+
     /// chat engine に prompt を投入する（`&self` — read lock 下で呼べる）。`session=None` は focused。
     ///
     /// ⚠️ **投入の瞬間に `turn_active` を立てる**（idle teardown から守るため）。turn の状態は
@@ -1716,6 +1737,7 @@ impl LanePool {
     /// lane を起こす」用途なので、この窓に sweep が重なると投入直後の engine を殺す。
     /// しかも `submit` は既に Ok を返しており、呼び手の self-heal（Err 時 re-spawn）も効かない。
     /// spawn 時に初期値を true にしてあるのと対称の処置（team-b レビュー指摘、2026-08-29）。
+    #[cfg(test)]
     pub async fn submit_chat(
         &self,
         addr: &LaneAddress,
@@ -1723,10 +1745,27 @@ impl LanePool {
         prompt: &str,
         images: &[crate::conversation::ImageInput],
     ) -> anyhow::Result<()> {
+        self.submit_identified_chat(addr, session, prompt, images, None)
+            .await
+    }
+
+    pub async fn submit_identified_chat(
+        &self,
+        addr: &LaneAddress,
+        session: Option<SessionKey>,
+        prompt: &str,
+        images: &[crate::conversation::ImageInput],
+        client_id: Option<&str>,
+    ) -> anyhow::Result<()> {
         let slot = self.chat_slot(addr, session)?;
         slot.turn_active
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        slot.host.submit_with_images(prompt, images).await
+        match &slot.host {
+            crate::conversation::engine::ChatHost::Codex(host) => {
+                host.submit_with_client_id(prompt, client_id).await
+            }
+            _ => slot.host.submit_with_images(prompt, images).await,
+        }
     }
 
     /// doc 35 §5: 実行中 turn を中断する（stop ボタン / Esc）。submit_chat と同型（read lock 下で

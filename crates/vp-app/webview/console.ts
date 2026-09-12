@@ -369,6 +369,11 @@ export function installConsole(): VpConsole {
     handleEvent(lane, event, session) {
       const s = normalizeSession(session)
       const entry = laneOf(lane)
+      if (event.kind === 'codex_history') {
+        entry.buffer = entry.buffer.filter((b) => b.session !== s)
+        replayingSessions.delete(`${lane}\u0000${s}`)
+        settleReplayNow(lane, s, `${lane}\u0000${s}`)
+      }
       // replay 開始 = 該当 session の過去会話再送。doc 38 Phase 2: replay は session 単位なので、
       // その session の buffer 分だけ捨てる（他 session の buffer を巻き込まない）。ChatView 未
       // mount のまま 2 回 replay された場合に後着 renderer が二重の会話を畳むのを防ぐ。N=1 では

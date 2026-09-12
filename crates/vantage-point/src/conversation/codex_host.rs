@@ -41,6 +41,7 @@ use tokio::process::{Child, ChildStdin};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
+use super::codex_history::CodexHistory;
 use super::codex_rpc_translate::CodexRpcTranslator;
 use super::event::ConversationEvent;
 use super::host::InFlight;
@@ -68,6 +69,7 @@ pub struct CodexRpcHostConfig {
 enum ReqKind {
     Initialize,
     ThreadResume,
+    ThreadRead,
     ThreadStart,
     TurnStart,
     TurnInterrupt,
@@ -75,6 +77,10 @@ enum ReqKind {
 
 /// reader task / host メソッドが共有する可変状態（std Mutex — await を跨がずに触る）。
 struct RpcState {
+    history: Option<CodexHistory>,
+    startup_error: Option<String>,
+    /// 初回 thread/read 待機中の対象。本文更新が競合した場合は復元を中断する。
+    hydration_target: Option<String>,
     /// 確定した thread id（handshake 完了まで None）。
     thread_id: Option<String>,
     /// 実行中 turn の id（`turn/interrupt` の宛先。idle は None）。
@@ -82,7 +88,7 @@ struct RpcState {
     /// turn 実行中か（true の submit は queue へ）。
     turn_active: bool,
     /// thread 未確定 or turn 実行中に来た submit の待ち行列。
-    queue: VecDeque<String>,
+    queue: VecDeque<(String, Option<String>)>,
     /// disk にまだ載っていない増分 + commit 世代（[`super::host`] と同契約）。
     in_flight: InFlight,
     /// app-server 子プロセスの pid。
@@ -128,16 +134,20 @@ impl RpcInner {
     /// 起動を待つ prompt を失敗として畳み、次の submit を host 再生成へ繋ぐ。
     /// registry は触らず、再生成時も元の新規 / 再開の選択を保つ。
     fn fail_startup(&self, message: String) {
-        {
-            let mut st = self.state.lock().expect("rpc state lock");
-            st.dead = true;
-            st.turn_active = false;
-            st.turn_id = None;
-            st.queue.clear();
-        }
-        self.emit(ConversationEvent::Error {
-            message: format!("{message}\n送信内容は実行されていません。再送すると再試行します。"),
-        });
+        let mut st = self.state.lock().expect("rpc state lock");
+        self.fail_startup_locked(&mut st, message);
+    }
+
+    fn fail_startup_locked(&self, st: &mut RpcState, message: String) {
+        let message = format!("{message}\n送信内容は実行されていません。再送すると再試行します。");
+        st.dead = true;
+        st.startup_error = Some(message.clone());
+        st.turn_active = false;
+        st.turn_id = None;
+        st.queue.clear();
+        st.pending.clear();
+        st.hydration_target = None;
+        self.emit_locked(st, ConversationEvent::Error { message });
     }
 
     /// JSONL 1 行を書く。失敗 = 途絶（Err を返す — submit 経路は自己修復に繋ぐため
@@ -164,10 +174,14 @@ impl RpcInner {
     }
 
     fn emit(&self, event: ConversationEvent) {
+        let mut st = self.state.lock().expect("rpc state lock");
+        self.emit_locked(&mut st, event);
+    }
+
+    fn emit_locked(&self, st: &mut RpcState, event: ConversationEvent) {
         // in-flight fold（[`super::host::fold_in_flight`] と同規律のローカル版）:
         // 増分だけ tail に積み、会話が確定する event で世代を進めて捨てる。
         {
-            let mut st = self.state.lock().expect("rpc state lock");
             match &event {
                 ConversationEvent::MessageChunk { .. } | ConversationEvent::ThoughtChunk { .. } => {
                     st.in_flight.tail.push(event.clone());
@@ -186,10 +200,30 @@ impl RpcInner {
     }
 
     /// thread id 確定（start/resume の response）: registry 書き込み + SessionInit + queue 排出。
-    async fn adopt_thread(&self, thread_id: &str) {
+    async fn adopt_thread(&self, thread: &serde_json::Value, thread_id: &str) {
+        let history = match CodexHistory::from_thread(thread, thread_id) {
+            Ok(history) => history,
+            Err(reason) => {
+                self.fail_startup(format!(
+                    "Codex の履歴を復元できませんでした。元の会話 ID は保持しています: {reason}"
+                ));
+                return;
+            }
+        };
         {
             let mut st = self.state.lock().expect("rpc state lock");
+            if st.dead {
+                return;
+            }
+            st.hydration_target = None;
             st.thread_id = Some(thread_id.to_string());
+            st.turn_id = thread["turns"]
+                .as_array()
+                .and_then(|turns| turns.iter().rev().find(|t| t["status"] == "inProgress"))
+                .and_then(|t| t["id"].as_str())
+                .map(str::to_owned);
+            st.turn_active = st.turn_id.is_some();
+            st.history = Some(history);
         }
         // doc 40 §4: 新 host は registry 直結（codex_session store には書かない）。
         let (lane_label, key) = crate::lane::session_registry::parse_session_label(&self.lane);
@@ -216,7 +250,30 @@ impl RpcInner {
             slash_commands: Vec::new(),
             command_docs: Default::default(),
         });
+        self.request_history();
         self.drain_queue().await;
+    }
+
+    /// ready 前の demand は adopt_thread の snapshot に合流する。失敗時は表示を消さない。
+    fn request_history(&self) {
+        let mut st = self.state.lock().expect("rpc state lock");
+        if let Some(history) = &st.history {
+            let (events, user_message_ids, truncated) = history.snapshot();
+            let event = ConversationEvent::CodexHistory {
+                thread_id: st.thread_id.clone().unwrap_or_default(),
+                events,
+                user_message_ids,
+                in_flight: st.turn_active,
+                truncated,
+            };
+            self.emit_locked(&mut st, event);
+        } else if st.dead {
+            let message = st
+                .startup_error
+                .clone()
+                .unwrap_or_else(|| "Codex が休眠しています。再送すると再試行します。".into());
+            self.emit_locked(&mut st, ConversationEvent::Error { message });
+        }
     }
 
     /// queue の先頭を turn/start として送る（thread 確定済み && idle の時だけ）。
@@ -226,11 +283,16 @@ impl RpcInner {
             if st.turn_active || st.thread_id.is_none() || st.queue.is_empty() {
                 None
             } else {
-                let prompt = st.queue.pop_front().expect("non-empty queue");
+                let (prompt, client_id) = st.queue.pop_front().expect("non-empty queue");
                 let thread_id = st.thread_id.clone().expect("thread id");
                 st.turn_active = true;
                 let id = st.alloc(ReqKind::TurnStart);
-                Some(build_turn_start(id, &thread_id, &prompt))
+                Some(build_identified_turn_start(
+                    id,
+                    &thread_id,
+                    &prompt,
+                    client_id.as_deref(),
+                ))
             }
         };
         if let Some(line) = line {
@@ -283,6 +345,9 @@ impl CodexAgentHost {
             cwd: config.cwd,
             stdin: tokio::sync::Mutex::new(stdin),
             state: Mutex::new(RpcState {
+                history: None,
+                startup_error: None,
+                hydration_target: None,
                 thread_id: None,
                 turn_id: None,
                 turn_active: false,
@@ -335,6 +400,19 @@ impl CodexAgentHost {
         self.inner.event_tx.subscribe()
     }
 
+    pub fn request_history(&self) {
+        self.inner.request_history();
+    }
+
+    pub fn history_recovery(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let inner = Arc::downgrade(&self.inner);
+        Arc::new(move || {
+            if let Some(inner) = inner.upgrade() {
+                inner.request_history();
+            }
+        })
+    }
+
     pub fn in_flight(&self) -> InFlight {
         self.inner
             .state
@@ -365,6 +443,14 @@ impl CodexAgentHost {
     /// 継がれる（= 途絶 Error の「次の送信で自動復旧」を実現する配線。旧 TurnHost は
     /// turn ごと spawn でこの責務自体が無かった — 常駐化で新たに背負った責務）。
     pub async fn submit(&self, prompt: &str) -> anyhow::Result<()> {
+        self.submit_with_client_id(prompt, None).await
+    }
+
+    pub async fn submit_with_client_id(
+        &self,
+        prompt: &str,
+        client_id: Option<&str>,
+    ) -> anyhow::Result<()> {
         let line = {
             let mut st = self.inner.state.lock().expect("rpc state lock");
             if st.dead {
@@ -373,7 +459,8 @@ impl CodexAgentHost {
                 );
             }
             if st.turn_active || st.thread_id.is_none() {
-                st.queue.push_back(prompt.to_string());
+                st.queue
+                    .push_back((prompt.to_string(), client_id.map(str::to_owned)));
                 tracing::debug!(
                     "codex submit: {} → queue（depth={}）",
                     if st.turn_active {
@@ -388,7 +475,9 @@ impl CodexAgentHost {
                 let thread_id = st.thread_id.clone().expect("thread id");
                 st.turn_active = true;
                 let id = st.alloc(ReqKind::TurnStart);
-                Some(build_turn_start(id, &thread_id, prompt))
+                Some(build_identified_turn_start(
+                    id, &thread_id, prompt, client_id,
+                ))
             }
         };
         if let Some(line) = line
@@ -516,6 +605,20 @@ fn build_turn_interrupt(id: i64, thread_id: &str, turn_id: &str) -> String {
     .to_string()
 }
 
+fn build_identified_turn_start(
+    id: i64,
+    thread_id: &str,
+    prompt: &str,
+    client_id: Option<&str>,
+) -> String {
+    let mut request: serde_json::Value =
+        serde_json::from_str(&build_turn_start(id, thread_id, prompt)).expect("turn request JSON");
+    if let Some(client_id) = client_id {
+        request["params"]["clientUserMessageId"] = serde_json::json!(client_id);
+    }
+    request.to_string()
+}
+
 /// JSON-RPC error object から人間向け message を取り出す（形が崩れていても何か返す）。
 fn error_message(err: &serde_json::Value) -> String {
     err.get("message")
@@ -569,53 +672,12 @@ async fn run_reader(
         // notification
         let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
         let params = msg.get("params").cloned().unwrap_or_default();
-        match method {
-            "turn/started" => {
-                let mut st = inner.state.lock().expect("rpc state lock");
-                st.turn_active = true;
-                st.turn_id = params
-                    .pointer("/turn/id")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string);
-            }
-            "turn/completed" => {
-                let session_id = {
-                    let mut st = inner.state.lock().expect("rpc state lock");
-                    st.turn_active = false;
-                    st.turn_id = None;
-                    st.thread_id.clone().unwrap_or_default()
-                };
-                // status=interrupted も「turn の完了」（意図的中断はエラーではない、doc 41 §2-3）。
-                // error field が載っていれば Error を併発して chatview に見せる。
-                if let Some(err) = params.pointer("/turn/error").filter(|v| !v.is_null()) {
-                    inner.emit(ConversationEvent::Error {
-                        message: format!("codex turn error: {}", error_message(err)),
-                    });
-                }
-                inner.emit(ConversationEvent::TurnCompleted {
-                    session_id,
-                    cost_usd: None,
-                    context_tokens: None,
-                    context_window: None,
-                });
-                inner.drain_queue().await;
-            }
-            "error" => {
-                inner.emit(ConversationEvent::Error {
-                    message: format!("codex: {}", error_message(&params)),
-                });
-            }
-            _ => {
-                for event in translator.ingest(method, &params) {
-                    inner.emit(event);
-                }
-            }
+        if process_notification(&inner, &mut translator, method, &params) {
+            inner.drain_queue().await;
         }
     }
 
-    // stdout close = 途絶（常駐の規律、#692 と同じ）。dead を立てて以後の submit を Err に
-    // 倒す = `ensure_and_submit_chat` の自己修復（drop → 再 ensure → retry）が発火する
-    // （moody #1 の配線）。明示 stop では Error を出さない。
+    // stdout close = 途絶。履歴を保持し、次の submit による再生成へ繋ぐ。
     let (stopping, stderr_tail) = {
         let mut st = inner.state.lock().expect("rpc state lock");
         st.dead = true;
@@ -631,20 +693,118 @@ async fn run_reader(
         )
     };
     if !stopping {
-        tracing::warn!(
-            "codex app-server 途絶（repo={}, lane={}）",
-            inner.repo,
-            inner.lane
-        );
-        let detail = if stderr_tail.is_empty() {
-            String::new()
-        } else {
-            format!("\n{stderr_tail}")
-        };
         inner.emit(ConversationEvent::EngineExited {
-            message: format!("codex app-server が休眠しました。次の送信で再開します。{detail}"),
+            message: format!(
+                "codex app-server が休眠しました。次の送信で再開します。\n{stderr_tail}"
+            ),
         });
     }
+}
+
+/// 履歴反映と live enqueue を同じ lock で直列化し、snapshot の境界を守る。
+fn process_notification(
+    inner: &RpcInner,
+    translator: &mut CodexRpcTranslator,
+    method: &str,
+    params: &serde_json::Value,
+) -> bool {
+    let mut st = inner.state.lock().expect("rpc state lock");
+    if st.dead {
+        return false;
+    }
+    if st.hydration_target.as_deref().is_some_and(|target| {
+        params["threadId"].as_str() == Some(target)
+            && (method.starts_with("item/") || matches!(method, "turn/started" | "turn/completed"))
+    }) {
+        inner.fail_startup_locked(
+            &mut st,
+            "Codex の履歴取得中に会話が更新されました。元の会話 ID と表示は保持しています。会話の更新が落ち着いてから再試行してください。".into(),
+        );
+        return false;
+    }
+    if params["threadId"]
+        .as_str()
+        .is_some_and(|id| st.thread_id.as_deref() != Some(id))
+    {
+        return false;
+    }
+    let restored = st
+        .history
+        .as_ref()
+        .is_some_and(|history| history.restored_pending_item(params));
+    if restored && method == "item/started" {
+        return false;
+    }
+    if st
+        .history
+        .as_mut()
+        .is_some_and(|history| history.ingest(method, params))
+    {
+        return false;
+    }
+    if restored && method == "item/completed" {
+        let (events, user_message_ids, truncated) =
+            st.history.as_ref().expect("restored history").snapshot();
+        let snapshot = ConversationEvent::CodexHistory {
+            thread_id: st.thread_id.clone().unwrap_or_default(),
+            events,
+            user_message_ids,
+            in_flight: st.turn_active,
+            truncated,
+        };
+        inner.emit_locked(&mut st, snapshot);
+        return false;
+    }
+    match method {
+        "turn/started" => {
+            st.turn_active = true;
+            st.turn_id = params
+                .pointer("/turn/id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+        }
+        "turn/completed" => {
+            let session_id = {
+                st.turn_active = false;
+                st.turn_id = None;
+                st.thread_id.clone().unwrap_or_default()
+            };
+            // status=interrupted も「turn の完了」（意図的中断はエラーではない、doc 41 §2-3）。
+            // error field が載っていれば Error を併発して chatview に見せる。
+            if let Some(err) = params.pointer("/turn/error").filter(|v| !v.is_null()) {
+                inner.emit_locked(
+                    &mut st,
+                    ConversationEvent::Error {
+                        message: format!("codex turn error: {}", error_message(err)),
+                    },
+                );
+            }
+            inner.emit_locked(
+                &mut st,
+                ConversationEvent::TurnCompleted {
+                    session_id,
+                    cost_usd: None,
+                    context_tokens: None,
+                    context_window: None,
+                },
+            );
+            return true;
+        }
+        "error" => {
+            inner.emit_locked(
+                &mut st,
+                ConversationEvent::Error {
+                    message: format!("codex: {}", error_message(params)),
+                },
+            );
+        }
+        _ => {
+            for event in translator.ingest(method, params) {
+                inner.emit_locked(&mut st, event);
+            }
+        }
+    }
+    false
 }
 
 async fn handle_response(
@@ -694,9 +854,45 @@ async fn handle_response(
                 ));
                 return;
             }
-            if let Some(tid) = msg.pointer("/result/thread/id").and_then(|v| v.as_str()) {
-                inner.adopt_thread(tid).await;
+            let thread = &msg["result"]["thread"];
+            let result = &msg["result"];
+            if thread["historyMode"] == "paginated"
+                || result["turnsBackwardsCursor"].is_string()
+                || result["itemsBackwardsCursor"].is_string()
+            {
+                if thread["id"].as_str() != resume_target.as_deref() {
+                    inner.fail_startup(
+                        "Codex 履歴の会話 ID が一致しません。元の会話 ID は保持しています。".into(),
+                    );
+                    return;
+                }
+                let id = {
+                    let mut st = inner.state.lock().expect("rpc state lock");
+                    st.hydration_target = resume_target.clone();
+                    st.alloc(ReqKind::ThreadRead)
+                };
+                let request = serde_json::json!({"id":id,"method":"thread/read","params":{"threadId":resume_target,"includeTurns":true}});
+                inner.write_line_logged(&request.to_string()).await;
+                return;
             }
+            inner
+                .adopt_thread(thread, resume_target.as_deref().unwrap_or(""))
+                .await;
+        }
+        ReqKind::ThreadRead => {
+            if let Some(err) = error {
+                inner.fail_startup(format!(
+                    "Codex の履歴を取得できませんでした。元の会話 ID は保持しています: {}",
+                    error_message(err)
+                ));
+                return;
+            }
+            inner
+                .adopt_thread(
+                    &msg["result"]["thread"],
+                    resume_target.as_deref().unwrap_or(""),
+                )
+                .await;
         }
         ReqKind::ThreadStart => {
             if let Some(err) = error {
@@ -704,7 +900,9 @@ async fn handle_response(
                 return;
             }
             if let Some(tid) = msg.pointer("/result/thread/id").and_then(|v| v.as_str()) {
-                inner.adopt_thread(tid).await;
+                inner.adopt_thread(&msg["result"]["thread"], tid).await;
+            } else {
+                inner.fail_startup("Codex thread/start に会話 ID がありません".into());
             }
         }
         ReqKind::TurnStart => {
@@ -738,6 +936,200 @@ async fn handle_response(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn concurrent_hydration_update_cannot_adopt_stale_active_state() {
+        let _state = crate::test_env::state_dir_async().await;
+        let host = response_test_host();
+        let mut rx = host.subscribe();
+        host.submit("pending prompt").await.unwrap();
+        let id = host
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .alloc(ReqKind::ThreadResume);
+        handle_response(&host.inner, id, &serde_json::json!({"result":{"thread":{"id":"t","historyMode":"paginated","turns":[]}}}), &Some("t".into())).await;
+        let read_id = *host
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .pending
+            .keys()
+            .next()
+            .unwrap();
+        process_notification(
+            &host.inner,
+            &mut CodexRpcTranslator::new(),
+            "turn/completed",
+            &serde_json::json!({"threadId":"other-thread","turn":{"id":"other","status":"completed"}}),
+        );
+        assert!(
+            !host.inner.state.lock().unwrap().dead,
+            "別 thread の通知では中断しない"
+        );
+        process_notification(
+            &host.inner,
+            &mut CodexRpcTranslator::new(),
+            "turn/completed",
+            &serde_json::json!({"threadId":"t","turn":{"id":"active","status":"completed"}}),
+        );
+        handle_response(&host.inner, read_id, &serde_json::json!({"result":{"thread":{"id":"t","turns":[{"id":"active","status":"inProgress","items":[]}]}}}), &Some("t".into())).await;
+        let st = host.inner.state.lock().unwrap();
+        assert!(st.dead, "曖昧な snapshot を採用せず明示的な再試行へ戻す");
+        assert!(!st.turn_active);
+        assert!(st.queue.is_empty());
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            events
+                .iter()
+                .any(|ev| matches!(ev, ConversationEvent::Error { .. }))
+        );
+        assert!(!events.iter().any(|ev| matches!(
+            ev,
+            ConversationEvent::CodexHistory { .. } | ConversationEvent::SessionInit { .. }
+        )));
+    }
+
+    #[tokio::test]
+    async fn restored_active_item_completion_does_not_repeat_its_text() {
+        let _state = crate::test_env::state_dir_async().await;
+        let host = response_test_host();
+        host.inner.adopt_thread(&serde_json::json!({"id":"t","turns":[{
+            "id":"running","status":"inProgress","items":[{"id":"a","type":"agentMessage","text":"復元済み"}]
+        }]}), "t").await;
+        let mut rx = host.subscribe();
+        let mut translator = CodexRpcTranslator::new();
+        process_notification(
+            &host.inner,
+            &mut translator,
+            "item/completed",
+            &serde_json::json!({"threadId":"t","turnId":"running","item":{"id":"a","type":"agentMessage","text":"復元済み"}}),
+        );
+        assert!(
+            !std::iter::from_fn(|| rx.try_recv().ok())
+                .any(|ev| matches!(ev, ConversationEvent::MessageChunk { .. })),
+            "snapshot 済みの本文を完成通知で二度 append しない"
+        );
+    }
+
+    #[tokio::test]
+    async fn restored_running_tool_completion_only_updates_the_existing_call() {
+        let _state = crate::test_env::state_dir_async().await;
+        let host = response_test_host();
+        host.inner.adopt_thread(&serde_json::json!({"id":"t","turns":[{
+            "id":"running","status":"inProgress","items":[{"id":"tool","type":"commandExecution","command":"test","status":"inProgress"}]
+        }]}), "t").await;
+        let mut rx = host.subscribe();
+        process_notification(
+            &host.inner,
+            &mut CodexRpcTranslator::new(),
+            "item/completed",
+            &serde_json::json!({"threadId":"t","turnId":"running","item":{"id":"tool","type":"commandExecution","command":"test","status":"completed","aggregatedOutput":"ok"}}),
+        );
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            !events
+                .iter()
+                .any(|ev| matches!(ev, ConversationEvent::ToolCall { .. }))
+        );
+        assert!(events.iter().any(|ev| matches!(
+            ev,
+            ConversationEvent::ToolCallUpdate { .. } | ConversationEvent::CodexHistory { .. }
+        )));
+    }
+
+    #[tokio::test]
+    async fn restored_text_completion_keeps_unobserved_suffix() {
+        let _state = crate::test_env::state_dir_async().await;
+        let host = response_test_host();
+        host.inner.adopt_thread(&serde_json::json!({"id":"t","turns":[{
+            "id":"running","status":"inProgress","items":[{"id":"a","type":"agentMessage","text":"途中"}]
+        }]}), "t").await;
+        let mut rx = host.subscribe();
+        process_notification(
+            &host.inner,
+            &mut CodexRpcTranslator::new(),
+            "item/completed",
+            &serde_json::json!({"threadId":"t","turnId":"running","item":{"id":"a","type":"agentMessage","text":"途中の続き"}}),
+        );
+        assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|ev| matches!(ev, ConversationEvent::CodexHistory { events, .. } if events.contains(&ConversationEvent::MessageChunk { text:"途中の続き".into() }))));
+    }
+
+    #[tokio::test]
+    async fn paginated_resume_hydrates_full_items_before_adopting() {
+        let _state = crate::test_env::state_dir_async().await;
+        let host = response_test_host();
+        let mut rx = host.subscribe();
+        let id = host
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .alloc(ReqKind::ThreadResume);
+        handle_response(&host.inner, id, &serde_json::json!({"id":id,"result":{
+            "turnsBackwardsCursor":"cursor", "thread":{"id":"paged","historyMode":"paginated","turns":[
+                {"id":"old","status":"completed","itemsView":"summary","items":[]}
+            ]}
+        }}), &Some("paged".into())).await;
+        assert!(
+            !host.inner.state.lock().unwrap().dead,
+            "本文を thread/read で取得する前に失敗にしない"
+        );
+        assert!(rx.try_recv().is_err(), "不完全な履歴で現在の表示を消さない");
+        let id = *host
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .pending
+            .keys()
+            .next()
+            .expect("履歴取得 request");
+        handle_response(&host.inner, id, &serde_json::json!({"id":id,"result":{"thread":{"id":"paged","turns":[
+            {"id":"old","status":"completed","items":[{"id":"a","type":"agentMessage","text":"復元"}]}
+        ]}}}), &Some("paged".into())).await;
+        assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|ev| matches!(ev, ConversationEvent::CodexHistory { events, .. } if events.contains(&ConversationEvent::MessageChunk { text:"復元".into() }))));
+    }
+
+    // mem_1Cex9hm7knkwwNWrjqTEBu — Console の native 履歴が host の出力に届く。
+    #[tokio::test]
+    async fn resume_emits_native_history_without_a_new_turn() {
+        let _state = crate::test_env::state_dir_async().await;
+        let host = response_test_host();
+        let mut rx = host.subscribe();
+        let id = host
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .alloc(ReqKind::ThreadResume);
+        handle_response(&host.inner, id, &serde_json::json!({"id":id,"result":{"thread":{
+            "id":"console-thread","turns":[{"id":"old","status":"completed","items":[
+                {"id":"user","type":"userMessage","content":[{"type":"text","text":"Console の質問"}]},
+                {"id":"answer","type":"agentMessage","text":"Console の応答"}
+            ]}]
+        }}}), &Some("console-thread".into())).await;
+        let mut snapshot = None;
+        while let Ok(ev) = rx.try_recv() {
+            if let ConversationEvent::CodexHistory {
+                events, in_flight, ..
+            } = ev
+            {
+                assert!(!in_flight);
+                snapshot = Some(events);
+            }
+        }
+        let events = snapshot.expect("resume の本文を表示に配送する");
+        assert!(events.contains(&ConversationEvent::UserMessage {
+            text: "Console の質問".into()
+        }));
+        assert!(events.contains(&ConversationEvent::MessageChunk {
+            text: "Console の応答".into()
+        }));
+        assert!(!host.inner.state.lock().unwrap().turn_active);
+    }
+
     // Task: mem_1Cex2VPFy3gQnXtpYqF1in
     fn response_test_host() -> CodexAgentHost {
         let (event_tx, _) = broadcast::channel(32);
@@ -749,6 +1141,9 @@ mod tests {
                 cwd: "/workspace".into(),
                 stdin: tokio::sync::Mutex::new(None),
                 state: Mutex::new(RpcState {
+                    history: None,
+                    startup_error: None,
+                    hydration_target: None,
                     thread_id: None,
                     turn_id: None,
                     turn_active: false,
@@ -869,7 +1264,7 @@ mod tests {
                 &host.inner,
                 id,
                 &serde_json::json!({
-                    "id": id, "result": {"thread": {"id": thread}}
+                    "id": id, "result": {"thread": {"id": thread, "turns":[]}}
                 }),
                 &target.map(str::to_owned),
             )
