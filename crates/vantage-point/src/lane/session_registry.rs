@@ -107,6 +107,9 @@ pub struct SessionEntry {
     /// file/wire 後方互換（model 無し = 旧 file はそのまま読める）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Codex Chat の次送信への指定。未設定なら native の設定に委ねる。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_selection: Option<crate::conversation::event::CodexSelection>,
 }
 
 /// lane の session 一覧 + focused + root（disk に JSON でそのまま永続される形）。
@@ -145,6 +148,7 @@ impl SessionRegistry {
                 mode: SessionMode::Tui,
                 conversation: None,
                 model: None,
+                codex_selection: None,
             }],
         }
     }
@@ -330,6 +334,7 @@ pub fn create_in(
         mode,
         conversation: None,
         model: None,
+        codex_selection: None,
     });
     if focus {
         reg.focused = key;
@@ -360,6 +365,7 @@ pub fn create_root_in(
         mode,
         conversation: None,
         model: None,
+        codex_selection: None,
     });
     reg.focused = key;
     reg.root = key;
@@ -707,6 +713,33 @@ pub fn set_model_in(
     entry.model = new;
     save_in(base, repo, lane, &reg)?;
     Ok(true)
+}
+
+/// 検証済みの Codex 設定ペアを一回の registry 書き込みで保存する。
+pub fn set_codex_selection(
+    repo: &str,
+    lane: &str,
+    key: SessionKey,
+    selection: crate::conversation::event::CodexSelection,
+) -> std::io::Result<()> {
+    let _guard = mutation_guard();
+    let base = crate::config::vp_state_dir();
+    let mut reg = load_in(&base, repo, lane, "codex");
+    let entry = reg
+        .sessions
+        .iter_mut()
+        .find(|s| s.key == key && s.agent == "codex")
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Codex session が見つかりません",
+            )
+        })?;
+    if entry.codex_selection.as_ref() == Some(&selection) {
+        return Ok(());
+    }
+    entry.codex_selection = Some(selection);
+    save_in(&base, repo, lane, &reg)
 }
 
 /// 本番 base での [`set_model_in`]。
@@ -1126,6 +1159,7 @@ mod tests {
                     mode: SessionMode::Tui,
                     conversation: None,
                     model: None,
+                    codex_selection: None,
                 }],
             }
         );

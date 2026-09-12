@@ -400,7 +400,18 @@ pub fn run() -> anyhow::Result<()> {
                 lane,
                 session,
                 model,
-            }) => on_conversation::conversation_set_model(&mut ui, &boot, lane, session, model),
+                effort,
+                request_id,
+            }) => on_conversation::conversation_set_model(
+                &mut ui,
+                &boot,
+                &async_action_proxy,
+                lane,
+                session,
+                model,
+                effort,
+                request_id,
+            ),
             Event::UserEvent(AppEvent::ConversationSessionCreate { lane, agent }) => {
                 on_conversation::conversation_session_create(&mut ui, &boot, lane, agent)
             }

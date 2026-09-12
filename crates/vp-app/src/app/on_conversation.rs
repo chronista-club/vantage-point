@@ -517,25 +517,46 @@ pub(super) fn console_switch_root(ui: &mut UiState, boot: &Boot, lane: String, s
 /// gui モデル切替: conversation_set_model で repo に forward（fire & forget、
 /// session 単位）。適用の視覚確認は新 engine の session_init が header.model を
 /// 更新することで得る。
+#[allow(clippy::too_many_arguments)]
 pub(super) fn conversation_set_model(
     ui: &mut UiState,
     boot: &Boot,
+    proxy: &EventLoopProxy<AppEvent>,
     lane: String,
     session: u64,
     model: Option<String>,
+    effort: Option<String>,
+    request_id: Option<String>,
 ) {
+    let Ok(session) = u32::try_from(session) else {
+        return;
+    };
     let Some(path) = resolve_repo_path_for_lane(&ui.sidebar_state, &lane) else {
         tracing::warn!("conversation:set_model skip — lane の repo 解決失敗 (lane={lane})");
+        if let Some(request_id) = request_id {
+            let _ = proxy.send_event(AppEvent::ConversationEvent {
+                lane, session,
+                event: serde_json::json!({"kind":"codex_config", "config":null, "request_id":request_id, "error":"対象の作業場所が見つかりません"}),
+            });
+        }
         return;
     };
     let conn = boot.daemon_conn.clone();
+    let proxy = proxy.clone();
     boot.rt_handle.spawn(async move {
-        let payload = serde_json::json!({ "lane": &lane, "session": session, "model": model });
-        match daemon_repo_request(&conn, &path, "conversation_set_model", payload).await {
-            Ok(_) => tracing::info!("conversation:set_model ok: lane={lane} session={session}"),
-            Err(e) => {
-                tracing::warn!("conversation:set_model 失敗 (lane={lane} session={session}): {e}")
-            }
+        let payload = serde_json::json!({ "lane": &lane, "session": session, "model": model, "effort":effort });
+        let result = daemon_repo_request(&conn, &path, "conversation_set_model", payload).await;
+        if let Some(request_id) = request_id {
+            let (config, error) = match result {
+                Ok(value) => (value.get("codex_config").cloned(), None),
+                Err(error) => (None, Some(error)),
+            };
+            let _ = proxy.send_event(AppEvent::ConversationEvent {
+                lane, session,
+                event: serde_json::json!({"kind":"codex_config", "config":config, "request_id":request_id, "error":error}),
+            });
+        } else if let Err(error) = result {
+            tracing::warn!("conversation:set_model 失敗 (lane={lane} session={session}): {error}");
         }
     });
 }

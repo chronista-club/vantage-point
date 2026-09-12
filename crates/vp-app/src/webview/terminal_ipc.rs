@@ -219,6 +219,14 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                     lane: lane.to_string(),
                     session,
                     model,
+                    effort: parsed
+                        .get("effort")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned),
+                    request_id: parsed
+                        .get("request_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned),
                 });
             }
         }

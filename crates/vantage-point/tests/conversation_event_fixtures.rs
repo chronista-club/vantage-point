@@ -25,10 +25,11 @@ use vantage_point::conversation::event::{
 
 /// TS 側の union が持つべき kind。variant を足したらここも足す
 /// （fixture の網羅 assert が落ちて気付く）。
-const EXPECTED_KINDS: [&str; 17] = [
+const EXPECTED_KINDS: [&str; 18] = [
     "session_init",
     "replay_start",
     "replay_end",
+    "codex_config",
     "codex_history",
     "user_message",
     "message_chunk",
@@ -48,6 +49,14 @@ const EXPECTED_KINDS: [&str; 17] = [
 /// 全 variant の代表値。optional の有無 / 空 vec・map / false / 数値 / 任意 JSON を含める。
 fn fixtures() -> Vec<(&'static str, ConversationEvent)> {
     vec![
+        (
+            "codex_config",
+            ConversationEvent::CodexConfig {
+                config: Some(vantage_point::conversation::event::CodexConfigView::default()),
+                request_id: None,
+                error: None,
+            },
+        ),
         (
             "codex_history",
             ConversationEvent::CodexHistory {

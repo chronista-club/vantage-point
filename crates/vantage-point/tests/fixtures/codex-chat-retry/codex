@@ -18,6 +18,7 @@ def send(message):
     print(json.dumps(message), flush=True)
 
 
+turn_number = 0
 for line in sys.stdin:
     request = json.loads(line)
     with (root / "requests.jsonl").open("a") as log:
@@ -26,26 +27,29 @@ for line in sys.stdin:
     request_id = request.get("id")
     if method == "initialize":
         send({"id": request_id, "result": {}})
+    elif method == "model/list":
+        send({"id": request_id, "result": {"data": [{"model": "fixture-model", "displayName": "Fixture", "defaultReasoningEffort": "low", "supportedReasoningEfforts": [{"reasoningEffort": "low"}, {"reasoningEffort": "high"}]}], "nextCursor": None}})
     elif method == "thread/resume":
         if attempt == 1:
             send({"id": request_id, "error": {"code": -32603, "message": "fixture resume unavailable"}})
         else:
-            send({"id": request_id, "result": {"thread": {"id": request["params"]["threadId"], "turns": [
+            send({"id": request_id, "result": {"model": "fixture-model", "reasoningEffort": "low", "thread": {"id": request["params"]["threadId"], "turns": [
                 {"id": "console-turn", "status": "completed", "items": [
                     {"id": "console-user", "type": "userMessage", "content": [{"type": "text", "text": "Console question"}]},
                     {"id": "console-answer", "type": "agentMessage", "text": "Console answer"}
                 ]}
             ]}}})
     elif method == "turn/start":
-        send({"method": "turn/started", "params": {"turn": {"id": "retry-turn"}}})
-        send({"id": request_id, "result": {"turn": {"id": "retry-turn"}}})
-        send({"method": "item/completed", "params": {"turnId": "retry-turn", "item": {
-            "id": "retry-user", "type": "userMessage", "clientId": request["params"].get("clientUserMessageId"),
+        turn_number += 1
+        send({"method": "turn/started", "params": {"turn": {"id": f"retry-turn-{turn_number}"}}})
+        send({"id": request_id, "result": {"turn": {"id": f"retry-turn-{turn_number}"}}})
+        send({"method": "item/completed", "params": {"turnId": f"retry-turn-{turn_number}", "item": {
+            "id": f"retry-user-{turn_number}", "type": "userMessage", "clientId": request["params"].get("clientUserMessageId"),
             "content": request["params"]["input"]
         }}})
-        send({"method": "item/agentMessage/delta", "params": {"turnId": "retry-turn", "itemId": "retry-answer", "delta": "Chat answer"}})
-        send({"method": "item/completed", "params": {"turnId": "retry-turn", "item": {"id": "retry-answer", "type": "agentMessage", "text": "Chat answer"}}})
-        send({"method": "turn/completed", "params": {"turn": {"id": "retry-turn", "status": "completed"}}})
+        send({"method": "item/agentMessage/delta", "params": {"turnId": f"retry-turn-{turn_number}", "itemId": f"retry-answer-{turn_number}", "delta": "Chat answer"}})
+        send({"method": "item/completed", "params": {"turnId": f"retry-turn-{turn_number}", "item": {"id": f"retry-answer-{turn_number}", "type": "agentMessage", "text": "Chat answer"}}})
+        send({"method": "turn/completed", "params": {"turn": {"id": f"retry-turn-{turn_number}", "status": "completed"}}})
     elif method == "thread/start":
         # Old VP behavior is observable as an Error, without ever creating a real thread.
         send({"id": request_id, "error": {"code": -32603, "message": "unexpected fresh start"}})

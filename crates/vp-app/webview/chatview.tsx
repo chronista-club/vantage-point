@@ -1,3 +1,4 @@
+import { changeCodexSelection } from './codex-selection-control'
 /**
  * ChatView (doc 33 C2) — Conversation gui の Console 面 GUI（SolidJS）。
  *
@@ -39,7 +40,7 @@ import type {
 // doc 38 Phase 2: focused 判定 / 楽観的 focus 切替は console.ts の per-lane registry を共有する
 // （repo が真実源、ここは view）。session chip の prefix 規則は LaneHeader を SSOT として再利用。
 // doc 47 §6: 共有 bus の相関 id（採番 + 照合）も console.ts が SSOT。
-import { focusedOf, noteFocus, syncHeaderSessionId } from './console'
+import { focusedOf, noteFocus, syncHeaderSessionId, nextRequestId } from './console'
 import { sessionChipPrefix } from './LaneHeader'
 import { isImeKeystroke } from './ime'
 import { applyCompletion, filterSlashCommands, moveSelection, slashQuery } from './slash'
@@ -1452,6 +1453,24 @@ function SessionChatView(props: { lane: string; session: number }) {
   }
   const permissionChoices = (): ReadonlyArray<PickerChoice> =>
     rosterEntry()?.permission_choices ?? []
+  const codexModel = () => state().codexConfig?.selection?.model ?? state().codexConfig?.model ?? ''
+  const codexEffort = () => state().codexConfig?.selection?.effort ?? state().codexConfig?.effort ?? ''
+  const codexModels = () => state().codexConfig?.models ?? []
+  const codexBusy = () => state().streaming || state().replaying || !!state().submission || !!state().pending || !!state().codexSettingsRequest
+  const setCodexSelection = (model: string, effort: string) => {
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    if (!ipc || codexBusy()) return
+    const requestId = nextRequestId('codex-settings')
+    lc.set('codexSettingsRequest', requestId)
+    lc.set('codexSettingsError', null)
+    ipc.postMessage(JSON.stringify({ t: 'conversation:set_model', lane: props.lane, session: props.session, model, effort, request_id: requestId }))
+    setTimeout(() => {
+      if (lc.state.codexSettingsRequest === requestId) {
+        lc.set('codexSettingsRequest', null)
+        lc.set('codexSettingsError', '設定変更の結果を確認できませんでした。表示を確認して再試行してください。')
+      }
+    }, 30_000)
+  }
   const setModel = (model: string) => {
     const lane = props.lane
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
@@ -2124,6 +2143,28 @@ function SessionChatView(props: { lane: string; session: number }) {
             }}
           />
           <div class="conversation-actions">
+            <Show when={rosterEntry()?.agent === 'codex'}>
+              <Show when={codexModels().length > 0} fallback={<span class="conversation-model-readonly">{state().codexConfig?.error ?? 'モデル候補を取得中…'}</span>}>
+                <select class="conversation-model-select" aria-label="Codex model" title="次の Chat 送信に使うモデル" disabled={codexBusy()}
+                  onChange={(e) => changeCodexSelection(e.currentTarget, codexModel(), value => { const model = codexModels().find(m => m.model === value); if (model) setCodexSelection(model.model, model.default_effort) })}>
+                  <Show when={!codexModels().some(m => m.model === codexModel())}>
+                    <option value={codexModel()} selected disabled>{codexModel() || 'モデルを選択'}</option>
+                  </Show>
+                  <For each={codexModels()}>{m => <option value={m.model} selected={m.model === codexModel()}>{m.label}</option>}</For>
+                </select>
+                <select class="conversation-model-select" aria-label="Codex effort" title="次の Chat 送信の reasoning effort" disabled={codexBusy() || !codexModels().some(m => m.model === codexModel())}
+                  onChange={(e) => changeCodexSelection(e.currentTarget, codexEffort(), value => setCodexSelection(codexModel(), value))}>
+                  <Show when={!codexModels().find(m => m.model === codexModel())?.efforts.includes(codexEffort())}>
+                    <option value={codexEffort()} selected disabled>{codexEffort() || 'Codex 既定'}</option>
+                  </Show>
+                  <For each={codexModels().find(m => m.model === codexModel())?.efforts ?? []}>{effort => <option value={effort} selected={effort === codexEffort()}>{effort}</option>}</For>
+                </select>
+              </Show>
+              <Show when={state().codexSettingsRequest}><span class="conversation-model-readonly">保存中…</span></Show>
+              <Show when={state().codexSettingsError || (codexModels().length > 0 && state().codexConfig?.error)}>
+                <span role="status" class="conversation-model-readonly">{state().codexSettingsError || state().codexConfig?.error}</span>
+              </Show>
+            </Show>
             {/* model picker: catalog（server 能力表明）が非空の engine だけ出す。
                 空 + 実測 model あり = read-only 表示（「今どの model か」の情報は保ちつつ、
                 押しても server に弾かれる行き止まりを作らない）。 */}

@@ -1711,6 +1711,23 @@ impl LanePool {
             })
     }
 
+    pub fn configure_codex(
+        &self,
+        addr: &LaneAddress,
+        session: SessionKey,
+        selection: crate::conversation::event::CodexSelection,
+    ) -> Result<crate::conversation::event::CodexConfigView, String> {
+        let slot = self
+            .chat_slot(addr, Some(session))
+            .map_err(|error| error.to_string())?;
+        match &slot.host {
+            crate::conversation::engine::ChatHost::Codex(host) => {
+                host.configure_selection(selection)
+            }
+            _ => Err("Codex の Chat を開いてから変更してください。".into()),
+        }
+    }
+
     /// Codex 履歴は host の通知と同じ配送順序で採取する。
     pub fn request_codex_history(
         &self,
@@ -1758,13 +1775,16 @@ impl LanePool {
         client_id: Option<&str>,
     ) -> anyhow::Result<()> {
         let slot = self.chat_slot(addr, session)?;
-        slot.turn_active
-            .store(true, std::sync::atomic::Ordering::Relaxed);
         match &slot.host {
             crate::conversation::engine::ChatHost::Codex(host) => {
-                host.submit_with_client_id(prompt, client_id).await
+                host.submit_with_activity(prompt, client_id, Some(&slot.turn_active))
+                    .await
             }
-            _ => slot.host.submit_with_images(prompt, images).await,
+            _ => {
+                slot.turn_active
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                slot.host.submit_with_images(prompt, images).await
+            }
         }
     }
 

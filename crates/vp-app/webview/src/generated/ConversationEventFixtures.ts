@@ -6,6 +6,18 @@
 import type { EngineConversationEvent } from '../../console'
 
 export const CONVERSATION_EVENT_FIXTURES = {
+  codex_config: {
+    "kind": "codex_config",
+    "config": {
+      "models": [],
+      "model": null,
+      "effort": null,
+      "selection": null,
+      "error": null
+    },
+    "request_id": null,
+    "error": null
+  },
   codex_history: {
     "kind": "codex_history",
     "thread_id": "codex-thread",
