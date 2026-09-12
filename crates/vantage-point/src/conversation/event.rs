@@ -206,6 +206,35 @@ pub enum ConversationEvent {
         #[cfg_attr(test, ts(type = "unknown"))]
         input: serde_json::Value,
     },
+    /// 現 host の未回答要求。過去の会話イベントからは復元しない。
+    CodexInteractions { requests: Vec<CodexInteraction> },
+    /// 回答 transport の結果。会話や turn の完了とは独立する。
+    CodexInteractionResult {
+        request_id: String,
+        error: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexInteraction {
+    pub request_id: String,
+    pub kind: String,
+    pub title: String,
+    pub details: String,
+    pub questions: Vec<CodexQuestion>,
+    pub blocking: bool,
+    pub can_accept: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexQuestion {
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    pub options: Vec<QuestionOption>,
+    pub is_secret: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

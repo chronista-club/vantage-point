@@ -25,7 +25,9 @@ use vantage_point::conversation::event::{
 
 /// TS 側の union が持つべき kind。variant を足したらここも足す
 /// （fixture の網羅 assert が落ちて気付く）。
-const EXPECTED_KINDS: [&str; 18] = [
+const EXPECTED_KINDS: [&str; 20] = [
+    "codex_interactions",
+    "codex_interaction_result",
     "session_init",
     "replay_start",
     "replay_end",
@@ -49,6 +51,36 @@ const EXPECTED_KINDS: [&str; 18] = [
 /// 全 variant の代表値。optional の有無 / 空 vec・map / false / 数値 / 任意 JSON を含める。
 fn fixtures() -> Vec<(&'static str, ConversationEvent)> {
     vec![
+        (
+            "codex_interactions",
+            ConversationEvent::CodexInteractions {
+                requests: vec![vantage_point::conversation::event::CodexInteraction {
+                    request_id: "codex:fixture:1".into(),
+                    kind: "question".into(),
+                    title: "質問".into(),
+                    details: String::new(),
+                    blocking: true,
+                    can_accept: true,
+                    questions: vec![vantage_point::conversation::event::CodexQuestion {
+                        id: "question-id".into(),
+                        header: "対象".into(),
+                        question: "どちら？".into(),
+                        options: vec![QuestionOption {
+                            label: "A".into(),
+                            description: "候補".into(),
+                        }],
+                        is_secret: false,
+                    }],
+                }],
+            },
+        ),
+        (
+            "codex_interaction_result",
+            ConversationEvent::CodexInteractionResult {
+                request_id: "codex:fixture:1".into(),
+                error: None,
+            },
+        ),
         (
             "codex_config",
             ConversationEvent::CodexConfig {
@@ -296,7 +328,7 @@ fn write_if_changed(path: &Path, content: &str) {
         .unwrap_or_else(|e| panic!("生成物の書き込み失敗 {}: {e}", path.display()));
 }
 
-/// 全 16 variant が fixture に 1 つ以上ある（variant 追加の取りこぼしを Rust 側で止める）。
+/// 全 variant が fixture に 1 つ以上ある（variant 追加の取りこぼしを Rust 側で止める）。
 #[test]
 fn fixtures_cover_every_kind() {
     let kinds: std::collections::BTreeSet<String> = fixtures()

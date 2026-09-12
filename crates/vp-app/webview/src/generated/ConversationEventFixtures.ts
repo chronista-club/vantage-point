@@ -6,6 +6,38 @@
 import type { EngineConversationEvent } from '../../console'
 
 export const CONVERSATION_EVENT_FIXTURES = {
+  codex_interactions: {
+    "kind": "codex_interactions",
+    "requests": [
+      {
+        "request_id": "codex:fixture:1",
+        "kind": "question",
+        "title": "質問",
+        "details": "",
+        "questions": [
+          {
+            "id": "question-id",
+            "header": "対象",
+            "question": "どちら？",
+            "options": [
+              {
+                "label": "A",
+                "description": "候補"
+              }
+            ],
+            "is_secret": false
+          }
+        ],
+        "blocking": true,
+        "can_accept": true
+      }
+    ]
+  },
+  codex_interaction_result: {
+    "kind": "codex_interaction_result",
+    "request_id": "codex:fixture:1",
+    "error": null
+  },
   codex_config: {
     "kind": "codex_config",
     "config": {

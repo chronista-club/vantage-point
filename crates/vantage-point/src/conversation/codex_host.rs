@@ -12,8 +12,7 @@
 //! - 会話: `thread/resume`（conversation あり）/ `thread/start` → `turn/start` → notification
 //!   stream → `turn/completed`。中断は `turn/interrupt`（**プロセスを殺さない** — TurnHost の
 //!   kill との最大の差。turn は status=interrupted で完了する）
-//! - approval: `approvalPolicy: "never"` + `sandbox: "danger-full-access"` = 旧
-//!   `--dangerously-bypass-approvals-and-sandbox` の等価（tui/gui parity ポリシー維持）
+//! - approval / sandbox は native の設定に従う。逆方向の質問・承認は design 67 の台帳へ。
 //!
 //! ## 会話 id（thread id）は registry 直結（doc 40 §4）
 //!
@@ -84,6 +83,7 @@ struct RpcState {
     catalog_pages: Vec<super::event::CodexModel>,
     catalog_cursors: Vec<String>,
     history: Option<CodexHistory>,
+    interactions: super::codex_interactions::Interactions,
     startup_error: Option<String>,
     /// 初回 thread/read 待機中の対象。本文更新が競合した場合は復元を中断する。
     hydration_target: Option<String>,
@@ -325,6 +325,8 @@ impl RpcInner {
         }
         let config = Self::config_event(&st);
         self.emit_locked(&mut st, config);
+        let interactions = st.interactions.snapshot();
+        self.emit_locked(&mut st, interactions);
     }
 
     /// queue の先頭を turn/start として送る（thread 確定済み && idle の時だけ）。
@@ -378,6 +380,56 @@ pub struct CodexAgentHost {
 }
 
 impl CodexAgentHost {
+    /// 回答呼び出し元の切断で送信処理を途中破棄しない。成功確定は stdin 書込後。
+    pub async fn respond_permission(
+        &self,
+        request_id: &str,
+        decision: super::host::PermissionDecision,
+    ) -> anyhow::Result<()> {
+        let inner = self.inner.clone();
+        let request_id = request_id.to_string();
+        tokio::spawn(async move {
+            let line = {
+                let mut st = inner.state.lock().expect("rpc state lock");
+                if st.dead {
+                    anyhow::bail!("Codex host は終了しています");
+                }
+                st.interactions
+                    .begin_response(&request_id, &decision)
+                    .map_err(anyhow::Error::msg)?
+            };
+            let result =
+                tokio::time::timeout(std::time::Duration::from_secs(10), inner.write_line(&line))
+                    .await;
+            let success = matches!(result, Ok(Ok(())));
+            {
+                let mut st = inner.state.lock().expect("rpc state lock");
+                if success {
+                    st.interactions.finish_response(&request_id);
+                } else {
+                    st.dead = true;
+                    st.turn_active = false;
+                    st.turn_id = None;
+                    st.queue.clear();
+                    st.interactions.clear();
+                }
+                let event = st.interactions.snapshot();
+                inner.emit_locked(&mut st, event);
+            }
+            if !success {
+                if let Some(child) = inner.child.lock().expect("child lock").as_mut() {
+                    let _ = child.start_kill();
+                }
+                let message = "Codex への回答送信を確認できません。会話を開き直してください。";
+                inner.emit(ConversationEvent::Error {
+                    message: message.into(),
+                });
+                anyhow::bail!(message);
+            }
+            Ok(())
+        })
+        .await?
+    }
     /// app-server 子プロセスを起動し、handshake（initialize → thread start/resume）を開始する。
     ///
     /// [`super::host::ClaudeHost`] と同じく spawn は eager（ensure 時にプロセスが立つ）。
@@ -430,6 +482,7 @@ impl CodexAgentHost {
                 catalog_pages: Vec::new(),
                 catalog_cursors: Vec::new(),
                 history: None,
+                interactions: Default::default(),
                 startup_error: None,
                 hydration_target: None,
                 thread_id: None,
@@ -681,7 +734,11 @@ impl CodexAgentHost {
         {
             let mut st = self.inner.state.lock().expect("rpc state lock");
             st.stopping = true;
+            st.dead = true;
             st.queue.clear();
+            st.interactions.clear();
+            let event = st.interactions.snapshot();
+            self.inner.emit_locked(&mut st, event);
         }
         if let Some(mut child) = self.inner.child.lock().expect("child lock").take() {
             let _ = child.start_kill();
@@ -701,13 +758,9 @@ impl CodexAgentHost {
 // calculations — JSON-RPC line 組み立て（純関数、単体テスト対象）
 // =============================================================================
 
-/// approval/sandbox の共通指定（doc 41 §1: 旧 `--dangerously-bypass` の等価。
-/// claude bypassPermissions と同じ tui/gui parity ポリシー）。
+/// native の承認・sandbox 設定を尊重し、Chat から強制的な上書きをしない。
 fn thread_permission_fields() -> serde_json::Value {
-    serde_json::json!({
-        "approvalPolicy": "never",
-        "sandbox": "danger-full-access",
-    })
+    serde_json::json!({})
 }
 
 fn build_initialize(id: i64) -> String {
@@ -715,6 +768,7 @@ fn build_initialize(id: i64) -> String {
         "id": id,
         "method": "initialize",
         "params": {
+            "capabilities": { "experimentalApi": true },
             "clientInfo": {
                 "name": "vantage_point",
                 "title": "Vantage Point",
@@ -827,17 +881,36 @@ async fn run_reader(
         let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue; // 非 JSON 行は無視（JSONL 前提、doc 41 §1）
         };
-        // server → client request（id + method）: approvalPolicy=never では飛んでこない想定だが、
-        // 来たら未対応 error を返して turn を塞がない（fail-fast で server 側に判断を戻す）。
+        // server → client request は現 host の未回答台帳へ。未知・不正要求だけ error を返す。
         if let (Some(id), Some(method)) =
             (msg.get("id"), msg.get("method").and_then(|m| m.as_str()))
         {
-            tracing::warn!("codex app-server からの想定外 request: {method}");
-            let resp = serde_json::json!({
-                "id": id,
-                "error": { "code": -32601, "message": "not supported by VP CodexRpcHost" }
-            });
-            inner.write_line_logged(&resp.to_string()).await;
+            let result = {
+                let mut st = inner.state.lock().expect("rpc state lock");
+                let thread = st.thread_id.clone();
+                let turn = st.turn_id.clone();
+                if st.dead {
+                    Err("Codex host は終了しています".to_string())
+                } else {
+                    let result = st.interactions.receive(
+                        id,
+                        method,
+                        &msg["params"],
+                        thread.as_deref(),
+                        turn.as_deref(),
+                    );
+                    if result.is_ok() {
+                        let event = st.interactions.snapshot();
+                        inner.emit_locked(&mut st, event);
+                    }
+                    result
+                }
+            };
+            if let Err(message) = result {
+                let response =
+                    serde_json::json!({"id":id,"error":{"code":-32602,"message":message}});
+                inner.write_line_logged(&response.to_string()).await;
+            }
             continue;
         }
         // response（id のみ）
@@ -859,6 +932,9 @@ async fn run_reader(
         st.dead = true;
         st.turn_active = false;
         st.turn_id = None;
+        st.interactions.clear();
+        let event = st.interactions.snapshot();
+        inner.emit_locked(&mut st, event);
         (
             st.stopping,
             st.stderr_tail
@@ -903,6 +979,10 @@ fn process_notification(
         .is_some_and(|id| st.thread_id.as_deref() != Some(id))
     {
         return false;
+    }
+    if st.interactions.observe(method, params) {
+        let event = st.interactions.snapshot();
+        inner.emit_locked(&mut st, event);
     }
     let restored = st
         .history
@@ -1198,6 +1278,206 @@ async fn handle_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // mem_1CeySwxuoVc17bGLnU5Np3
+    #[tokio::test]
+    async fn interactions_stop_invalidates_pending_requests() {
+        let mut host = response_test_host();
+        host.inner
+            .state
+            .lock()
+            .unwrap()
+            .interactions
+            .receive(
+                &serde_json::json!(7),
+                "item/commandExecution/requestApproval",
+                &serde_json::json!({"threadId":"thread","turnId":"turn","command":"ls"}),
+                Some("thread"),
+                Some("turn"),
+            )
+            .unwrap();
+        host.stop();
+        assert_eq!(
+            serde_json::to_value(host.inner.state.lock().unwrap().interactions.snapshot()).unwrap()
+                ["requests"],
+            serde_json::json!([])
+        );
+        assert!(host.inner.state.lock().unwrap().dead);
+    }
+
+    #[tokio::test]
+    async fn interactions_failed_write_invalidates_request_without_claiming_success() {
+        let host = response_test_host();
+        let id = {
+            let mut st = host.inner.state.lock().unwrap();
+            st.interactions
+                .receive(
+                    &serde_json::json!(7),
+                    "item/commandExecution/requestApproval",
+                    &serde_json::json!({"threadId":"thread","turnId":"turn","command":"ls"}),
+                    Some("thread"),
+                    Some("turn"),
+                )
+                .unwrap();
+            serde_json::to_value(st.interactions.snapshot()).unwrap()["requests"][0]["request_id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(
+            host.respond_permission(
+                &id,
+                super::super::host::PermissionDecision::Allow { answers: None }
+            )
+            .await
+            .is_err()
+        );
+        let st = host.inner.state.lock().unwrap();
+        assert!(st.dead);
+        assert_eq!(
+            serde_json::to_value(st.interactions.snapshot()).unwrap()["requests"],
+            serde_json::json!([])
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interactions_jsonl_answers_and_declines_match_native_requests() {
+        let host = response_test_host();
+        {
+            let mut st = host.inner.state.lock().unwrap();
+            st.thread_id = Some("thread".into());
+            st.turn_id = Some("turn".into());
+            st.turn_active = true;
+        }
+        let script = r#"import json, sys
+def send(v): print(json.dumps(v), flush=True)
+json.loads(sys.stdin.readline())
+send({'id':7,'method':'item/tool/requestUserInput','params':{'threadId':'thread','turnId':'turn','itemId':'item','isBlocking':True,'questions':[{'id':'choice','header':'対象','question':'どちら？','options':None}]}})
+assert json.loads(sys.stdin.readline()) == {'id':7,'result':{'answers':{'choice':{'answers':['answer']}}}}
+send({'id':'approval','method':'item/commandExecution/requestApproval','params':{'threadId':'thread','turnId':'turn','itemId':'cmd','command':'ls','cwd':'/work'}})
+assert json.loads(sys.stdin.readline()) == {'id':'approval','result':{'decision':'decline'}}
+send({'method':'item/agentMessage/delta','params':{'threadId':'thread','turnId':'turn','itemId':'reply','delta':'roundtrip-ok'}})
+for line in sys.stdin: pass
+"#;
+        let mut child = tokio::process::Command::new("python3")
+            .args(["-u", "-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        *host.inner.stdin.lock().await = child.stdin.take();
+        let mut rx = host.subscribe();
+        let reader = tokio::spawn(run_reader(
+            host.inner.clone(),
+            child.stdout.take().unwrap(),
+            None,
+        ));
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut replied = std::collections::HashSet::new();
+            loop {
+                match rx.recv().await.unwrap() {
+                    ConversationEvent::CodexInteractions { requests } => {
+                        for request in requests {
+                            if !replied.insert(request.request_id.clone()) {
+                                continue;
+                            }
+                            // 再接続 snapshot も同じ未回答 ID を持つ。
+                            host.request_history();
+                            let decision = if request.kind == "question" {
+                                super::super::host::PermissionDecision::Allow {
+                                    answers: Some(serde_json::json!({"choice":"answer"})),
+                                }
+                            } else {
+                                super::super::host::PermissionDecision::Deny {
+                                    message: String::new(),
+                                }
+                            };
+                            host.respond_permission(&request.request_id, decision.clone())
+                                .await
+                                .unwrap();
+                            assert!(
+                                host.respond_permission(&request.request_id, decision)
+                                    .await
+                                    .is_err()
+                            );
+                        }
+                    }
+                    ConversationEvent::MessageChunk { text } if text == "roundtrip-ok" => break,
+                    ConversationEvent::Error { message } => panic!("{message}"),
+                    _ => {}
+                }
+            }
+        })
+        .await;
+        reader.abort();
+        child.kill().await.unwrap();
+        outcome.expect("JSONL の質問・承認往復");
+    }
+
+    #[test]
+    fn interactions_preserve_native_permission_settings() {
+        for line in [
+            build_thread_start(1, "/work"),
+            build_thread_resume(2, "thread", "/work"),
+        ] {
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert!(
+                request["params"].get("approvalPolicy").is_none(),
+                "native の承認設定を上書きしない"
+            );
+            assert!(
+                request["params"].get("sandbox").is_none(),
+                "native の sandbox を上書きしない"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interactions_reader_publishes_native_question() {
+        let host = response_test_host();
+        {
+            let mut st = host.inner.state.lock().unwrap();
+            st.thread_id = Some("thread".into());
+            st.turn_id = Some("turn".into());
+            st.turn_active = true;
+        }
+        let script = r#"import json, sys
+json.loads(sys.stdin.readline())
+print(json.dumps({'id':7,'method':'item/tool/requestUserInput','params':{'threadId':'thread','turnId':'turn','itemId':'item','isBlocking':True,'questions':[{'id':'choice','header':'対象','question':'どちら？','options':[{'label':'A','description':'最初'}]}]}}), flush=True)
+for line in sys.stdin:
+    pass
+"#;
+        let mut child = tokio::process::Command::new("python3")
+            .args(["-u", "-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        *host.inner.stdin.lock().await = child.stdin.take();
+        let mut rx = host.subscribe();
+        let reader = tokio::spawn(run_reader(
+            host.inner.clone(),
+            child.stdout.take().unwrap(),
+            None,
+        ));
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let ev = serde_json::to_value(rx.recv().await.unwrap()).unwrap();
+                if ev["kind"] == "codex_interactions" {
+                    break ev;
+                }
+            }
+        })
+        .await;
+        reader.abort();
+        child.kill().await.unwrap();
+        let event = observed.expect("native の質問を Chat へ届ける");
+        assert_eq!(event["requests"][0]["questions"][0]["id"], "choice");
+    }
 
     fn catalog_model() -> serde_json::Value {
         serde_json::json!({"model":"fixture-model","displayName":"Fixture","defaultReasoningEffort":"low","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]})
@@ -1640,6 +1920,7 @@ mod tests {
                     catalog_pages: Vec::new(),
                     catalog_cursors: Vec::new(),
                     history: None,
+                    interactions: Default::default(),
                     startup_error: None,
                     hydration_target: None,
                     thread_id: None,
@@ -1791,14 +2072,14 @@ mod tests {
         let start: serde_json::Value = serde_json::from_str(&build_thread_start(2, "/w")).unwrap();
         assert_eq!(start["method"], "thread/start");
         assert_eq!(start["params"]["cwd"], "/w");
-        assert_eq!(start["params"]["approvalPolicy"], "never");
-        assert_eq!(start["params"]["sandbox"], "danger-full-access");
+        assert!(start["params"].get("approvalPolicy").is_none());
+        assert!(start["params"].get("sandbox").is_none());
 
         let resume: serde_json::Value =
             serde_json::from_str(&build_thread_resume(3, "019f-abc", "/w")).unwrap();
         assert_eq!(resume["method"], "thread/resume");
         assert_eq!(resume["params"]["threadId"], "019f-abc");
-        assert_eq!(resume["params"]["approvalPolicy"], "never");
+        assert!(resume["params"].get("approvalPolicy").is_none());
 
         let turn: serde_json::Value =
             serde_json::from_str(&build_turn_start(4, "019f-abc", "hi -x")).unwrap();

@@ -90,6 +90,20 @@ function installDomStub(): void {
 
 beforeEach(() => installDomStub())
 
+it('Codex の未回答は最新 snapshot だけを別 session と分けて保持する', () => {
+  const con = installConsole()
+  const lane = 'proj/codex-interactions-ring'
+  con.handleEvent(lane, JSON.parse('{"kind":"codex_interactions","requests":[{"request_id":"first"}]}'), 1)
+  con.handleEvent(lane, JSON.parse('{"kind":"codex_interactions","requests":[{"request_id":"other"}]}'), 2)
+  con.handleEvent(lane, JSON.parse('{"kind":"codex_interactions","requests":[]}'), 1)
+  for (let i = 0; i < 1100; i++) con.handleEvent(lane, { kind: 'message_chunk', text: 'x' }, 2)
+  const got: unknown[] = []
+  con.attachRenderer(lane, (event, session) => {
+    if (event.kind === 'codex_interactions') got.push({ session, requests: event.requests })
+  })
+  expect(got).toEqual([{ session: 1, requests: [] }, { session: 2, requests: [{ request_id: 'other' }] }])
+})
+
 it('Codex の設定は履歴の置換と ring 上限を越えても session ごとに復元する', () => {
   const con = installConsole()
   const lane = 'proj/codex-config-ring'

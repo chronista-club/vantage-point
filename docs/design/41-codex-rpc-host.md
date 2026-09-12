@@ -165,5 +165,6 @@ dev path step 7（local LLM 正式化）の設計判断 — ここでは予約�
 
 ## Status log
 
+- 2026-09-12: [design 67](67-codex-chat-interactions.md) で質問・承認応答を追加。§1・§2 の approvalPolicy / sandbox 強制指定を廃止し、native 設定に従う。
 - 2026-09-11: [design 64](64-codex-console-resume.md) で TUI 自身の hook からも thread ID を記録する経路を追加。§2 の TUI ID 供給は GUI 専用ではなくなる。GUI host / Chat 履歴の改善は別の段階で扱う。
 - 2026-09-12: §2-5 で Chat の自動新規 fallback を廃止し、元 ID の保持・起動失敗の表示・次回送信による再試行へ変更。検証結果は PR と task に記録する。

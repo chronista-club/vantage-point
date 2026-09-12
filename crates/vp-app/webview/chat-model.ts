@@ -11,6 +11,7 @@
  */
 import type { ConversationEvent, PlanEntry, QuestionSpec } from './console'
 import type { toWirePayload } from './paste-image'
+import { foldCodexInteractions, type CodexInteractionState } from './codex-interaction-model'
 
 // ---------------------------------------------------------------------------
 // 会話モデル — flat item stream（ConversationEvent を UI 単位に畳む）
@@ -119,6 +120,7 @@ export function toolGroupStatus(tools: ToolItem[]): { running: boolean; label: s
 }
 
 export type ChatState = {
+  codexInteractions?: CodexInteractionState
   header: { model?: string; sessionId?: string } | null
   items: ChatItem[]
   plan: PlanEntry[]
@@ -181,6 +183,7 @@ export type Submission = {
  * tool_call_update は id 一致で done 化。ここが gui の描画正しさの中核。
  */
 export function foldInto(s: ChatState, ev: ConversationEvent): void {
+  if (foldCodexInteractions(s, ev)) return
   if (ev.kind === 'codex_config') {
     if (ev.request_id && ev.request_id !== s.codexSettingsRequest) return
     if (ev.config && !ev.request_id) s.codexConfig = ev.config
@@ -469,6 +472,8 @@ export function deriveStatus(s: ChatState | null, nowMs = 0): ConversationStatus
   const idleSec =
     s.lastEventAt != null && nowMs > 0 ? Math.max(0, Math.round((nowMs - s.lastEventAt) / 1000)) : undefined
   const base = { pending, lastEvent, idleSec }
+  const codexWaiting = s.codexInteractions?.requests[0]
+  if (codexWaiting) return { ...base, kind: 'awaiting', label: codexWaiting.kind === 'question' ? '質問待ち' : '承認待ち', stalled: false }
   // 未回答の HITL prompt（質問 / 承認）が最優先 = ユーザーにボールがある。
   const waiting = s.items.find((i) => i.kind === 'prompt' && !i.answered) as
     | Extract<ChatItem, { kind: 'prompt' }>

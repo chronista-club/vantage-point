@@ -2,10 +2,11 @@
 //!
 //! - repo 一覧 fetch（`fetch_repos_with_ports` = `repos/list` + `registry.list` の join）
 //! - activity poller（5 秒、`/api/health` + `repos/list` + `registry.list`）/ session title / lane inbox
-//! - actions persist writer（coalescing channel）/ repo start（`spawn_sp_start`）/ menu event pump
+//! - actions persist writer（coalescing channel）/ repo start（`spawn_sp_start`）/ menu event handler
 //!
 //! 全部 `spawn_*(&tokio::runtime::Handle, EventLoopProxy<AppEvent>, …)` の形で、結果は `AppEvent` で
 //! event loop に返す（`tokio::spawn` 直書き禁止 = `rt_handle` を受ける）。
+//! メニュー通知だけは muda の callback から直接 event loop へ返す。
 //!
 //! 旧 `app/mod.rs` から移設（棚卸し 項目 6 / 6-1 #7、2026-09-08。本文は順序付き diff で一致、差分は
 //! `spawn_*` の `pub(crate)` のみ。`port_merge_tests` も一緒に移設）。
@@ -21,24 +22,15 @@ use crate::daemon_wire::RepoInfo;
 use crate::events::AppEvent;
 use crate::pane::ActivitySnapshot;
 
-/// muda の `MenuEvent::receiver()` channel を polling して `AppEvent::MenuClicked` に
-/// 変換する pump スレッドを起動する。muda の menu event は global channel (single
-/// receiver) なので 1 thread だけ起動する。
-///
-/// channel は sync (`rx.recv()` が blocking) なので shared runtime の blocking pool に逃す。
-pub(crate) fn spawn_menu_event_pump(
-    rt_handle: &tokio::runtime::Handle,
-    proxy: EventLoopProxy<AppEvent>,
-) {
-    rt_handle.spawn_blocking(move || {
-        let rx = muda::MenuEvent::receiver();
-        while let Ok(ev) = rx.recv() {
-            if proxy.send_event(AppEvent::MenuClicked(ev.id)).is_err() {
-                tracing::debug!("EventLoop 終了、menu pump も終了");
-                break;
-            }
+/// muda のメニュー通知を event loop へ転送する。各 GUI process の boot で一度だけ登録。
+/// global receiver の無期限 recv を spawn_blocking に載せると、ウィンドウ終了後も
+/// Runtime::drop がその task を待ち、操作不能なアプリが残るため callback を使う。
+pub(crate) fn spawn_menu_event_pump(proxy: EventLoopProxy<AppEvent>) {
+    muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| {
+        if proxy.send_event(AppEvent::MenuClicked(ev.id)).is_err() {
+            tracing::debug!("EventLoop 終了、menu event を破棄");
         }
-    });
+    }));
 }
 
 /// F6 (doc 27 §3.4): active_lane_address から対応する repo_path を引く。
