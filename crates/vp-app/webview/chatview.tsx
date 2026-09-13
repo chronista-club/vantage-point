@@ -1,6 +1,7 @@
 import { changeCodexSelection } from './codex-selection-control'
 import { CodexInteractionCard } from './codex-interactions'
 import { CodexQueuePanel } from './codex-queue'
+import { CodexRuntimePanel } from './codex-runtime'
 import { beginCodexResponse } from './codex-interaction-model'
 /**
  * ChatView (doc 33 C2) — Conversation gui の Console 面 GUI（SolidJS）。
@@ -2268,6 +2269,9 @@ function SessionChatView(props: { lane: string; session: number }) {
           />
           <div class="conversation-actions">
             <Show when={rosterEntry()?.agent === 'codex'}>
+              <CodexRuntimePanel runtime={state().codexConfig?.runtime} busy={codexBusy() || !codexModel()}
+                connected={state().codexQueue?.ready === true}
+                changeMode={mode => sendCodexInput({kind:'mode',mode})} />
               <Show when={codexModels().length > 0} fallback={<span class="conversation-model-readonly">{state().codexConfig?.error ?? 'モデル候補を取得中…'}</span>}>
                 <select class="conversation-model-select" aria-label="Codex model" title="次の Chat 送信に使うモデル" disabled={codexBusy()}
                   onChange={(e) => changeCodexSelection(e.currentTarget, codexModel(), value => { const model = codexModels().find(m => m.model === value); if (model) setCodexSelection(model.model, model.default_effort) })}>

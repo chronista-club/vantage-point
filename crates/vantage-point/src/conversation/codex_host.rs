@@ -48,6 +48,8 @@ use super::host::InFlight;
 
 #[path = "codex_queue.rs"]
 mod native_queue;
+#[path = "codex_runtime.rs"]
+mod runtime;
 
 /// CodexAgentHost の起動設定。
 #[derive(Debug, Clone)]
@@ -424,6 +426,14 @@ impl CodexAgentHost {
         thread: &str,
         action: &serde_json::Value,
     ) -> anyhow::Result<()> {
+        if action["kind"] == "mode" {
+            return runtime::change_mode(
+                self.inner.clone(),
+                thread.to_owned(),
+                action["mode"].as_str().unwrap_or("").to_owned(),
+            )
+            .await;
+        }
         native_queue::control(self.inner.clone(), thread.to_owned(), action.clone()).await
     }
     /// 回答呼び出し元の切断で送信処理を途中破棄しない。成功確定は stdin 書込後。
@@ -736,6 +746,12 @@ impl CodexAgentHost {
                 anyhow::bail!(
                     "codex app-server が利用できません（途絶・起動失敗。再起動で再試行）"
                 );
+            }
+            if st.queue_busy {
+                return Err(CodexSelectionRejected(
+                    "Codex の操作完了後に送信してください。入力は送信されていません。".into(),
+                )
+                .into());
             }
             if let Some(selection) = &st.config.selection {
                 if !st.catalog_ready {
@@ -1105,6 +1121,17 @@ fn process_notification(
         );
         return false;
     }
+    if method == "thread/settings/updated" {
+        if st.thread_id.is_some() && params["threadId"].as_str() == st.thread_id.as_deref() {
+            let settings = &params["threadSettings"];
+            st.config.runtime = Some(Box::new(runtime::parse(settings)));
+            st.config.model = settings["model"].as_str().map(str::to_owned);
+            st.config.effort = settings["effort"].as_str().map(str::to_owned);
+            let event = RpcInner::config_event(&st);
+            inner.emit_locked(&mut st, event);
+        }
+        return false;
+    }
     if st.interactions.observe(method, params) {
         let event = st.interaction_snapshot();
         inner.emit_locked(&mut st, event);
@@ -1440,6 +1467,7 @@ async fn handle_response(
                 let mut st = inner.state.lock().expect("rpc state lock");
                 st.config.model = msg["result"]["model"].as_str().map(str::to_owned);
                 st.config.effort = msg["result"]["reasoningEffort"].as_str().map(str::to_owned);
+                st.config.runtime = Some(Box::new(runtime::parse(&msg["result"])));
             }
             let result = &msg["result"];
             if thread["historyMode"] == "paginated"
@@ -1490,6 +1518,7 @@ async fn handle_response(
                     let mut st = inner.state.lock().expect("rpc state lock");
                     st.config.model = msg["result"]["model"].as_str().map(str::to_owned);
                     st.config.effort = msg["result"]["reasoningEffort"].as_str().map(str::to_owned);
+                    st.config.runtime = Some(Box::new(runtime::parse(&msg["result"])));
                 }
                 inner.adopt_thread(&msg["result"]["thread"], tid).await;
             } else {
@@ -2245,6 +2274,145 @@ for line in sys.stdin: pass
                 "native の sandbox を上書きしない"
             );
         }
+    }
+
+    // mem_1CeySwxuoVc17bGLnU5Np3: effective permissions and native collaboration mode.
+    #[tokio::test]
+    async fn runtime_pending_operation_rejects_submit_without_retiring_host() {
+        let host = response_test_host();
+        {
+            let mut state = host.inner.state.lock().unwrap();
+            state.thread_id = Some("thread".into());
+            state.queue_busy = true;
+        }
+        let error = host.submit("must not overtake settings").await.unwrap_err();
+        assert!(error.is::<CodexSelectionRejected>());
+        let state = host.inner.state.lock().unwrap();
+        assert!(!state.dead);
+        assert!(!state.turn_active);
+        assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn runtime_settings_follow_only_the_current_thread() {
+        let host = response_test_host();
+        host.inner.state.lock().unwrap().thread_id = Some("thread".into());
+        let mut translator = CodexRpcTranslator::new();
+        let mut params = serde_json::json!({"threadId":"other","threadSettings":{
+            "model":"fixture","effort":"high","approvalPolicy":"on-request",
+            "sandboxPolicy":{"type":"workspaceWrite","writableRoots":["/work"],"networkAccess":false},
+            "activePermissionProfile":{"id":":workspace","extends":null},
+            "collaborationMode":{"mode":"plan","settings":{"developer_instructions":"not for the UI"}}
+        }});
+        process_notification(
+            &host.inner,
+            &mut translator,
+            "thread/settings/updated",
+            &params,
+        );
+        assert!(
+            serde_json::to_value(&host.inner.state.lock().unwrap().config).unwrap()["runtime"]
+                .is_null()
+        );
+        params["threadId"] = "thread".into();
+        process_notification(
+            &host.inner,
+            &mut translator,
+            "thread/settings/updated",
+            &params,
+        );
+        let config = serde_json::to_value(&host.inner.state.lock().unwrap().config).unwrap();
+        assert_eq!(config["runtime"]["mode"], "plan");
+        assert_eq!(config["runtime"]["approval"], "on-request");
+        assert_eq!(config["runtime"]["sandbox"], "workspaceWrite");
+        assert_eq!(config["runtime"]["network_access"], false);
+        assert_eq!(
+            config["runtime"]["writable_roots"],
+            serde_json::json!(["/work"])
+        );
+        assert!(!config.to_string().contains("not for the UI"));
+    }
+
+    #[test]
+    fn runtime_external_sandbox_network_is_not_unknown() {
+        for (value, expected) in [("enabled", true), ("restricted", false)] {
+            let settings = serde_json::json!({"approvalPolicy":"on-request", "sandboxPolicy":{"type":"externalSandbox","networkAccess":value}});
+            assert_eq!(runtime::parse(&settings).network_access, Some(expected));
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_mode_deadline_finishes_before_daemon_timeout() {
+        let host = response_test_host();
+        {
+            let mut st = host.inner.state.lock().unwrap();
+            st.thread_id = Some("thread".into());
+            st.config.model = Some("fixture".into());
+            st.native_queue.ready = true;
+        }
+        let writer = host.inner.stdin.lock().await;
+        let inner = host.inner.clone();
+        let task = tokio::spawn(runtime::change_mode(inner, "thread".into(), "plan".into()));
+        let result = tokio::time::timeout(std::time::Duration::from_secs(29), task)
+            .await
+            .expect("mode operation must finish before daemon's 30-second deadline");
+        assert!(result.unwrap().is_err());
+        assert!(host.inner.state.lock().unwrap().dead);
+        drop(writer);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn runtime_mode_uses_native_settings_without_permission_overrides() {
+        let host = response_test_host();
+        {
+            let mut st = host.inner.state.lock().unwrap();
+            st.thread_id = Some("thread".into());
+            st.config.model = Some("fixture".into());
+            st.native_queue.ready = true;
+            st.native_queue.thread_id = "thread".into();
+        }
+        let script = r#"import json,sys
+def send(v): print(json.dumps(v),flush=True)
+for line in sys.stdin:
+    r=json.loads(line)
+    if r.get('method')=='initialize': continue
+    if r['method']=='collaborationMode/list':
+        send({'id':r['id'],'result':{'data':[{'name':'Plan','mode':'plan','model':None,'reasoning_effort':'medium'}]}})
+    elif r['method']=='thread/settings/update':
+        assert set(r['params'])=={'threadId','collaborationMode'}
+        assert r['params']['collaborationMode']=={'mode':'plan','settings':{'model':'fixture','reasoning_effort':None,'developer_instructions':None}}
+        send({'method':'thread/settings/updated','params':{'threadId':'thread','threadSettings':{'model':'fixture','effort':None,'approvalPolicy':'on-request','sandboxPolicy':{'type':'readOnly','networkAccess':False},'collaborationMode':{'mode':'plan'}}}})
+        send({'id':r['id'],'result':{}})
+    else: raise AssertionError(r)
+"#;
+        let mut child = tokio::process::Command::new(if cfg!(target_os = "macos") {
+            "/usr/bin/python3"
+        } else {
+            "python3"
+        })
+        .args(["-u", "-c", script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+        *host.inner.stdin.lock().await = child.stdin.take();
+        let reader = tokio::spawn(run_reader(
+            host.inner.clone(),
+            child.stdout.take().unwrap(),
+            None,
+        ));
+        let result = host
+            .codex_input("thread", &serde_json::json!({"kind":"mode","mode":"plan"}))
+            .await;
+        reader.abort();
+        child.kill().await.unwrap();
+        result.expect("native mode update succeeds");
+        assert_eq!(
+            serde_json::to_value(&host.inner.state.lock().unwrap().config).unwrap()["runtime"]["mode"],
+            "plan"
+        );
     }
 
     // mem_1CeySwxuoVc17bGLnU5Np3: native JSONL -> card -> typed MCP response.

@@ -7,6 +7,25 @@ use super::super::event::{CodexQueuedInput, ConversationEvent};
 use super::{ReqKind, RpcInner};
 
 pub(super) async fn rpc(inner: &RpcInner, method: &str, params: Value) -> anyhow::Result<Value> {
+    rpc_until(
+        inner,
+        method,
+        params,
+        tokio::time::Instant::now() + std::time::Duration::from_secs(35),
+    )
+    .await
+}
+
+pub(super) async fn rpc_until(
+    inner: &RpcInner,
+    method: &str,
+    params: Value,
+    deadline: tokio::time::Instant,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        tokio::time::Instant::now() < deadline,
+        "操作の確認期限を過ぎました。自動再送はしていません。"
+    );
     let (id, receive) = {
         let mut state = inner.state.lock().expect("rpc state lock");
         anyhow::ensure!(!state.dead, "Codex host は終了しています");
@@ -16,7 +35,7 @@ pub(super) async fn rpc(inner: &RpcInner, method: &str, params: Value) -> anyhow
         (id, receive)
     };
     let mut write_completed = false;
-    let response = tokio::time::timeout(std::time::Duration::from_secs(35), async {
+    let response = tokio::time::timeout_at(deadline, async {
         inner
             .write_line(&json!({"id":id,"method":method,"params":params}).to_string())
             .await

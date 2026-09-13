@@ -333,6 +333,21 @@ pub struct CodexConfigView {
     pub effort: Option<String>,
     pub selection: Option<CodexSelection>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub runtime: Option<Box<CodexRuntime>>,
+}
+
+/// Whitelisted effective settings. Native developer instructions never leave the host.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexRuntime {
+    pub approval: String,
+    pub sandbox: String,
+    pub network_access: Option<bool>,
+    pub writable_roots: Vec<String>,
+    pub profile: Option<String>,
+    pub mode: Option<String>,
 }
 
 /// [`ConversationEvent::SubagentMessage`] の発話種別。
