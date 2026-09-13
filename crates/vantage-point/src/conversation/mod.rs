@@ -39,6 +39,7 @@ pub(crate) use codex_question_session::CodexQuestionSession;
 mod codex_history;
 pub mod codex_host;
 mod codex_interactions;
+mod codex_permissions;
 pub mod codex_rpc_translate;
 mod codex_settings;
 pub mod engine;

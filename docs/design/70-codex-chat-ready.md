@@ -41,7 +41,29 @@ daemon の stderr に native が受けた VP の JSON-RPC error が記録され�
 - 未対応のフォームを適当に文字列化して受理済みにしない。
 - Queue の同じ入力を VP と native の両方で所有しない。
 
+## 独立権限の応答
+
+`item/permissions/requestApproval` は既存の thread / turn 検証と未回答台帳を使う。
+表示用の項目 ID から、host が保持する要求内の権限へ対応付ける。UI からパスや権限
+profile を受け取ってそのまま転送しない。質問と同じ session 下書きに選択を保持するが、
+権限要求そのものは履歴や別 host に復元しない。
+
+ネットワークと legacy read / write の各パスは個別に選択する。`entries` を含む
+ファイル権限は deny や glob の関係を保つため全体を一項目として扱い、ルールを表示する。
+未対応の権限形式は許可せず、黙って切り捨てた部分的な profile を作らない。
+初期状態は全項目未選択、期間は turn。明示的に session を選んだ場合だけ session を返す。
+「許可しない」は空の `permissions` と `scope: turn` を返す。
+
 ## Status log
+
+- 2026-09-13: PR #1126 の承認修正は Chat で許可とターン中断・再開を確認し、
+  全 CI 成功後に nightly へ統合。次の実装単位として独立権限を進める。
+- 独立権限の受信・部分許可・期間指定・辞退と、未知形式の許可無効化を実装。
+  未対応要求と未知フィールドのテストが失敗することを確認してから修正した。
+  `mise run test` は成功（主要ライブラリ 1,104 成功・除外 11）、WebView は 601 成功。
+  check / Clippy / typecheck / fmt も成功。実機の表示・操作は確認待ち。
+  現在の CLI の `codex features list` では `request_permissions_tool` が under development / false。
+  実機検収は専用セッションで機能を有効にして行い、普段の設定は変更しない。
 
 - 2026-09-13: ユーザーの「やりきってしまおう」で残作業に GO。
   PR #1125 を全 CI 成功後に nightly へ統合。承認エラーの原因を実機ログで特定。

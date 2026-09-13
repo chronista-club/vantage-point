@@ -3,6 +3,39 @@ import { build } from 'esbuild'
 import { solidPlugin } from 'esbuild-plugin-solid'
 import { Window, type HTMLButtonElement, type HTMLInputElement } from 'happy-dom'
 
+it('独立権限は未選択から項目と期間を選び、明示送信する', async () => {
+  const result = await build({
+    stdin: { contents: `
+      import { render } from 'solid-js/web'
+      import { createComponent } from 'solid-js'
+      import { CodexInteractionCard } from './codex-interactions'
+      window.answers = []
+      render(() => createComponent(CodexInteractionCard, { sending: false, request: {
+        request_id: 'p', kind: 'permissions', title: '追加権限', details: '', can_accept: true, blocking: true,
+        questions: [{id:'p0', header:'', question:'読み取り: /docs', options:[], is_secret:false},
+          {id:'scope', header:'', question:'許可の期間', options:[], is_secret:false}]
+      }, respond: (id, behavior, answers) => window.answers.push({id, behavior, answers}) }), document.body)
+    `, resolveDir: process.cwd(), loader: 'tsx' },
+    bundle: true, write: false, format: 'iife', conditions: ['browser'], plugins: [solidPlugin()],
+  })
+  const window = new Window()
+  try {
+    window.eval(result.outputFiles[0].text)
+    const doc = window.document
+    const checkbox = doc.querySelector<HTMLInputElement>('input[type=checkbox]')
+    expect(checkbox).not.toBeNull()
+    expect(checkbox!.checked).toBe(false)
+    const confirm = doc.querySelector<HTMLButtonElement>('.conversation-prompt-confirm')!
+    expect(confirm.disabled).toBe(true)
+    checkbox!.click()
+    expect((window as unknown as {answers:unknown[]}).answers).toEqual([])
+    expect(doc.querySelector<HTMLInputElement>('input[value=turn]')!.checked).toBe(true)
+    doc.querySelector<HTMLInputElement>('input[value=session]')!.click()
+    confirm.click()
+    expect((window as unknown as {answers:unknown[]}).answers).toEqual([{id:'p',behavior:'allow',answers:{p0:'allow',scope:'session'}}])
+  } finally { await window.happyDOM.close() }
+}, 15000)
+
 it('拒否が turn 中断になる承認は、操作の意味を明示する', async () => {
   const result = await build({
     stdin: { contents: `

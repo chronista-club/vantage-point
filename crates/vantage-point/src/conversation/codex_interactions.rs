@@ -10,6 +10,7 @@ const MAX_DETAIL_BYTES: usize = 64 * 1024;
 const MAX_PENDING: usize = 8;
 
 struct Pending {
+    permissions: Option<super::codex_permissions::Permissions>,
     native_id: Value,
     turn: String,
     view: CodexInteraction,
@@ -102,6 +103,7 @@ impl Interactions {
         }
         let (kind, title) = match method {
             "item/tool/requestUserInput" => ("question", "Codex からの質問"),
+            "item/permissions/requestApproval" => ("permissions", "追加権限の承認"),
             "item/commandExecution/requestApproval"
                 if params["networkApprovalContext"].is_object() =>
             {
@@ -115,7 +117,32 @@ impl Interactions {
         let mut detail = serde_json::Map::new();
         let mut can_accept = true;
         let mut cancel_on_deny = false;
-        if kind == "question" {
+        let permissions = if kind == "permissions" {
+            match super::codex_permissions::Permissions::parse(&params["permissions"]) {
+                Ok(permissions) => Some(permissions),
+                Err(message) => {
+                    can_accept = false;
+                    detail.insert("許可できない理由".into(), json!(message));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if kind == "permissions" {
+            if let Some(permissions) = &permissions {
+                questions = permissions.questions();
+            }
+            for (key, label) in [
+                ("environmentId", "実行環境"),
+                ("cwd", "作業ディレクトリ"),
+                ("reason", "理由"),
+            ] {
+                if let Some(value) = params.get(key).filter(|v| !v.is_null()) {
+                    detail.insert(label.into(), value.clone());
+                }
+            }
+        } else if kind == "question" {
             let rows = params["questions"]
                 .as_array()
                 .filter(|rows| !rows.is_empty() && rows.len() <= 16)
@@ -232,6 +259,7 @@ impl Interactions {
         self.pending.insert(
             request_id,
             Pending {
+                permissions,
                 native_id: id.clone(),
                 turn: turn.unwrap_or_default().into(),
                 view,
@@ -255,6 +283,14 @@ impl Interactions {
             return Err("回答を送信中です".into());
         }
         let result = match decision {
+            PermissionDecision::Deny { .. } if pending.view.kind == "permissions" => {
+                json!({"permissions":{},"scope":"turn"})
+            }
+            PermissionDecision::Allow { answers } if pending.permissions.is_some() => pending
+                .permissions
+                .as_ref()
+                .unwrap()
+                .response(answers.as_ref())?,
             PermissionDecision::Deny { .. } if pending.view.kind == "question" => {
                 json!({"answers":{}})
             }
@@ -307,6 +343,160 @@ mod tests {
             {"id":"one","question":"同じ文面","header":"一つ目","isSecret":true},
             {"id":"two","question":"同じ文面","header":"二つ目","options":[{"label":"A","description":"候補"}]}
         ]})
+    }
+
+    // mem_1CeySwxuoVc17bGLnU5Np3: independent permissions stay within the request.
+    #[test]
+    fn interactions_permissions_preserve_constraints_and_reject_unknown_formats() {
+        let files = json!({"read":null,"write":null,"globScanMaxDepth":3,"entries":[
+            {"access":"write","path":{"type":"path","path":"/data"}},
+            {"access":"deny","path":{"type":"glob_pattern","pattern":"/data/secrets/**"}}
+        ]});
+        let mut pending = Interactions::default();
+        let mut params =
+            json!({"threadId":"thread","turnId":"turn","permissions":{"fileSystem":files}});
+        pending
+            .receive(
+                &json!(1),
+                "item/permissions/requestApproval",
+                &params,
+                Some("thread"),
+                Some("turn"),
+            )
+            .unwrap();
+        let id = pending.pending.keys().next().unwrap().clone();
+        assert!(
+            pending.pending[&id].view.questions[0]
+                .question
+                .contains("アクセス禁止")
+        );
+        let result: Value = serde_json::from_str(
+            &pending
+                .begin_response(
+                    &id,
+                    &PermissionDecision::Allow {
+                        answers: Some(json!({"p0":"allow"})),
+                    },
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            result["result"],
+            json!({"permissions":{"fileSystem":files},"scope":"turn"})
+        );
+        pending.clear();
+        params["permissions"]["fileSystem"]["entries"][0]["path"]["futureRestriction"] =
+            json!("unknown");
+        pending
+            .receive(
+                &json!(2),
+                "item/permissions/requestApproval",
+                &params,
+                Some("thread"),
+                Some("turn"),
+            )
+            .expect("未対応形式も説明して辞退できる");
+        let id = pending.pending.keys().next().unwrap().clone();
+        assert!(!pending.pending[&id].view.can_accept);
+        assert!(
+            pending
+                .begin_response(
+                    &id,
+                    &PermissionDecision::Allow {
+                        answers: Some(json!({"p0":"allow"}))
+                    }
+                )
+                .is_err()
+        );
+        assert!(pending.observe("turn/completed", &json!({"turn":{"id":"turn"}})));
+        assert!(
+            pending
+                .begin_response(
+                    &id,
+                    &PermissionDecision::Deny {
+                        message: String::new()
+                    }
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn interactions_permissions_select_subset_and_scope() {
+        let params = json!({"threadId":"thread","turnId":"turn","itemId":"p",
+            "cwd":"/work","environmentId":"local","reason":"資料の参照",
+            "permissions":{"network":{"enabled":true},"fileSystem":{"read":["/docs"],"write":["/out"]}}});
+        let mut pending = Interactions::default();
+        pending
+            .receive(
+                &json!(42),
+                "item/permissions/requestApproval",
+                &params,
+                Some("thread"),
+                Some("turn"),
+            )
+            .expect("独立権限を表示できる");
+        let id = pending.pending.keys().next().unwrap().clone();
+        assert_eq!(pending.pending[&id].view.kind, "permissions");
+        assert!(
+            pending
+                .begin_response(
+                    &id,
+                    &PermissionDecision::Allow {
+                        answers: Some(json!({"scope":"forever","p1":"allow"}))
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            pending
+                .begin_response(
+                    &id,
+                    &PermissionDecision::Allow {
+                        answers: Some(json!({"scope":"turn","unrequested":"allow"}))
+                    }
+                )
+                .is_err()
+        );
+        let reply: Value = serde_json::from_str(
+            &pending
+                .begin_response(
+                    &id,
+                    &PermissionDecision::Allow {
+                        answers: Some(json!({"scope":"session","p1":"allow"})),
+                    },
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            reply,
+            json!({"id":42,"result":{"permissions":{"fileSystem":{"read":["/docs"],"write":null}},"scope":"session"}})
+        );
+        pending.clear();
+        pending
+            .receive(
+                &json!(43),
+                "item/permissions/requestApproval",
+                &params,
+                Some("thread"),
+                Some("turn"),
+            )
+            .unwrap();
+        let id = pending.pending.keys().next().unwrap().clone();
+        let reply: Value = serde_json::from_str(
+            &pending
+                .begin_response(
+                    &id,
+                    &PermissionDecision::Deny {
+                        message: String::new(),
+                    },
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reply["result"], json!({"permissions":{},"scope":"turn"}));
     }
 
     #[test]
