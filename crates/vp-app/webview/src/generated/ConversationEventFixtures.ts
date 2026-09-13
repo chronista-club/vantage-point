@@ -57,6 +57,18 @@ export const CONVERSATION_EVENT_FIXTURES = {
     "request_id": null,
     "error": null
   },
+  codex_queue: {
+    "kind": "codex_queue",
+    "queue": {
+      "thread_id": "",
+      "turn_id": null,
+      "ready": false,
+      "items": [],
+      "error": null
+    },
+    "request_id": null,
+    "error": null
+  },
   codex_history: {
     "kind": "codex_history",
     "thread_id": "codex-thread",

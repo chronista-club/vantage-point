@@ -46,6 +46,9 @@ use super::codex_rpc_translate::CodexRpcTranslator;
 use super::event::ConversationEvent;
 use super::host::InFlight;
 
+#[path = "codex_queue.rs"]
+mod native_queue;
+
 /// CodexAgentHost の起動設定。
 #[derive(Debug, Clone)]
 pub struct CodexRpcHostConfig {
@@ -67,6 +70,7 @@ pub struct CodexRpcHostConfig {
 /// 送信済み request の種別（response 到着時の分岐に使う）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ReqKind {
+    QueueRpc,
     Initialize,
     ModelList,
     ThreadResume,
@@ -80,6 +84,10 @@ enum ReqKind {
 
 /// reader task / host メソッドが共有する可変状態（std Mutex — await を跨がずに触る）。
 struct RpcState {
+    native_queue: super::event::CodexQueueView,
+    queue_busy: bool,
+    queue_dirty: bool,
+    queue_refreshing: bool,
     config: super::event::CodexConfigView,
     catalog_generation: u64,
     catalog_ready: bool,
@@ -279,6 +287,7 @@ impl RpcInner {
             }
             st.hydration_target = None;
             st.thread_id = Some(thread_id.to_string());
+            st.queue_dirty = true;
             if let Some(questions) = self.question_session.resume(thread_id) {
                 st.async_questions = questions;
             }
@@ -343,6 +352,20 @@ impl RpcInner {
         self.emit_locked(&mut st, config);
         let interactions = st.interaction_snapshot();
         self.emit_locked(&mut st, interactions);
+        if st.history.is_some() || !st.native_queue.thread_id.is_empty() {
+            st.native_queue.thread_id = st.thread_id.clone().unwrap_or_default();
+            st.native_queue.turn_id = st.turn_id.clone();
+            st.native_queue.ready &= !st.dead;
+            let queue = st.native_queue.clone();
+            self.emit_locked(
+                &mut st,
+                ConversationEvent::CodexQueue {
+                    queue: Some(queue),
+                    request_id: None,
+                    error: None,
+                },
+            );
+        }
     }
 
     /// queue の先頭を turn/start として送る（thread 確定済み && idle の時だけ）。
@@ -396,6 +419,13 @@ pub struct CodexAgentHost {
 }
 
 impl CodexAgentHost {
+    pub async fn codex_input(
+        &self,
+        thread: &str,
+        action: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        native_queue::control(self.inner.clone(), thread.to_owned(), action.clone()).await
+    }
     /// 回答呼び出し元の切断で送信処理を途中破棄しない。成功確定は stdin 書込後。
     pub async fn respond_permission(
         &self,
@@ -509,6 +539,10 @@ impl CodexAgentHost {
             cwd: config.cwd,
             stdin: tokio::sync::Mutex::new(stdin),
             state: Mutex::new(RpcState {
+                native_queue: Default::default(),
+                queue_busy: false,
+                queue_dirty: false,
+                queue_refreshing: false,
                 config: super::event::CodexConfigView {
                     selection,
                     ..Default::default()
@@ -583,6 +617,11 @@ impl CodexAgentHost {
             || st.thread_id.is_none()
             || st.turn_active
             || !st.queue.is_empty()
+            || st.queue_busy
+            || st.queue_dirty
+            || st.queue_refreshing
+            || !st.native_queue.items.is_empty()
+            || (!st.native_queue.thread_id.is_empty() && !st.native_queue.ready)
             || !st.catalog_ready
         {
             return Err("Codex の準備または応答の完了後に変更してください。".into());
@@ -609,6 +648,11 @@ impl CodexAgentHost {
 
     pub fn request_history(&self) {
         self.inner.request_history();
+        {
+            let mut state = self.inner.state.lock().expect("rpc state lock");
+            state.queue_dirty |= !state.native_queue.thread_id.is_empty();
+        }
+        native_queue::refresh(&self.inner);
         let retry = {
             let mut st = self.inner.state.lock().expect("rpc state lock");
             if !st.dead && st.catalog_ready && st.config.models.is_empty() {
@@ -630,6 +674,11 @@ impl CodexAgentHost {
         Arc::new(move || {
             if let Some(inner) = inner.upgrade() {
                 inner.request_history();
+                {
+                    let mut state = inner.state.lock().expect("rpc state lock");
+                    state.queue_dirty |= !state.native_queue.thread_id.is_empty();
+                }
+                native_queue::refresh(&inner);
             }
         })
     }
@@ -968,6 +1017,7 @@ async fn run_reader(
         // response（id のみ）
         if let Some(id) = msg.get("id").and_then(|v| v.as_i64()) {
             handle_response(&inner, id, &msg, &resume_target).await;
+            native_queue::refresh(&inner);
             continue;
         }
         // notification
@@ -976,6 +1026,7 @@ async fn run_reader(
         if process_notification(&inner, &mut translator, method, &params) {
             inner.drain_queue().await;
         }
+        native_queue::refresh(&inner);
     }
 
     // stdout close = 途絶。履歴を保持し、次の submit による再生成へ繋ぐ。
@@ -1035,6 +1086,25 @@ fn process_notification(
     {
         return false;
     }
+    if method == "thread/queue/changed" {
+        if st.thread_id.is_none() || params["threadId"].as_str() != st.thread_id.as_deref() {
+            return false;
+        }
+        st.queue_dirty = true;
+        st.native_queue.thread_id = st.thread_id.clone().unwrap_or_default();
+        st.native_queue.turn_id = st.turn_id.clone();
+        st.native_queue.ready = false;
+        let queue = st.native_queue.clone();
+        inner.emit_locked(
+            &mut st,
+            ConversationEvent::CodexQueue {
+                queue: Some(queue),
+                request_id: None,
+                error: None,
+            },
+        );
+        return false;
+    }
     if st.interactions.observe(method, params) {
         let event = st.interaction_snapshot();
         inner.emit_locked(&mut st, event);
@@ -1066,6 +1136,24 @@ fn process_notification(
         inner.emit_locked(&mut st, snapshot);
         return false;
     }
+    if matches!(method, "item/started" | "item/completed")
+        && params["item"]["type"] == "userMessage"
+        && let Some(history) = &st.history
+    {
+        let (events, user_message_ids, truncated) = history.snapshot();
+        let snapshot = ConversationEvent::CodexHistory {
+            thread_id: st.thread_id.clone().unwrap_or_default(),
+            events,
+            user_message_ids,
+            in_flight: st.turn_active,
+            truncated,
+        };
+        if let Some(client) = params["item"]["clientId"].as_str() {
+            st.reply_clients.remove(client);
+        }
+        inner.emit_locked(&mut st, snapshot);
+        return false;
+    }
     if method == "item/completed" && st.async_questions.observe(params) {
         let event = st.interaction_snapshot();
         inner.emit_locked(&mut st, event);
@@ -1093,8 +1181,10 @@ fn process_notification(
                 .pointer("/turn/id")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
+            st.queue_dirty |= !st.native_queue.thread_id.is_empty();
         }
         "turn/completed" => {
+            st.queue_dirty |= !st.native_queue.thread_id.is_empty();
             let session_id = {
                 st.turn_active = false;
                 st.turn_id = None;
@@ -1442,6 +1532,17 @@ async fn handle_response(
                 let _ = waiter.send(msg.clone());
             }
         }
+        ReqKind::QueueRpc => {
+            if let Some(waiter) = inner
+                .state
+                .lock()
+                .expect("rpc state lock")
+                .reply_waiters
+                .remove(&id)
+            {
+                let _ = waiter.send(msg.clone());
+            }
+        }
         ReqKind::TurnInterrupt => {
             if let Some(err) = error {
                 tracing::warn!("codex turn/interrupt 失敗: {}", error_message(err));
@@ -1512,7 +1613,335 @@ async fn handle_response(
 
 #[cfg(test)]
 mod tests {
+    // mem_1CeySwxuoVc17bGLnU5Np3: native Queue の更新を現在の会話だけに投影する。
+    #[tokio::test]
+    async fn native_queue_change_invalidates_only_current_thread_view() {
+        let host = response_test_host();
+        host.inner.state.lock().unwrap().thread_id = Some("thread".into());
+        let mut rx = host.subscribe();
+        let mut translator = super::super::codex_rpc_translate::CodexRpcTranslator::new();
+        process_notification(
+            &host.inner,
+            &mut translator,
+            "thread/queue/changed",
+            &serde_json::json!({"threadId":"other"}),
+        );
+        assert!(rx.try_recv().is_err());
+        process_notification(
+            &host.inner,
+            &mut translator,
+            "thread/queue/changed",
+            &serde_json::json!({"threadId":"thread"}),
+        );
+        let event = rx.try_recv().expect("Queue 更新中の状態を配送する");
+        let view = serde_json::to_value(event).unwrap();
+        assert_eq!(view["kind"], "codex_queue");
+        assert_eq!(view["queue"]["thread_id"], "thread");
+        assert_eq!(view["queue"]["ready"], false);
+    }
+
     use super::*;
+
+    #[tokio::test]
+    async fn native_queue_blocked_writer_releases_control_and_retires_host() {
+        let host = response_test_host();
+        #[cfg(unix)]
+        {
+            *host.inner.child.lock().unwrap() = Some(
+                tokio::process::Command::new("/bin/sleep")
+                    .arg("120")
+                    .kill_on_drop(true)
+                    .spawn()
+                    .unwrap(),
+            );
+        }
+        {
+            let mut state = host.inner.state.lock().unwrap();
+            state.thread_id = Some("thread".into());
+            state.native_queue.ready = true;
+        }
+        let mut events = host.subscribe();
+        // A stalled writer owns this lock. Delivery must have a deadline before acquiring it.
+        let _blocked_writer = host.inner.stdin.lock().await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(40),
+            host.codex_input(
+                "thread",
+                &serde_json::json!({"kind":"add","text":"RETAIN ME","client_id":"client"}),
+            ),
+        )
+        .await
+        .expect("stdin 待ちでも操作を終了し、呼び出し側の復旧用 lock を解放する");
+        assert!(result.is_err());
+        #[cfg(unix)]
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if host
+                    .inner
+                    .child
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .try_wait()
+                    .unwrap()
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("反応しない子プロセスも終了する");
+        let state = host.inner.state.lock().unwrap();
+        assert!(state.dead, "途中書込の可能性がある接続を再利用しない");
+        assert!(!state.queue_busy);
+        assert!(state.reply_waiters.is_empty());
+        assert!(
+            std::iter::from_fn(|| events.try_recv().ok())
+                .any(|event| matches!(event, ConversationEvent::EngineExited { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn native_queue_started_input_appears_once_in_history() {
+        let host = response_test_host();
+        {
+            let mut state = host.inner.state.lock().unwrap();
+            state.thread_id = Some("thread".into());
+            state.turn_id = Some("turn".into());
+            state.turn_active = true;
+            state.history = Some(
+                CodexHistory::from_thread(&serde_json::json!({"id":"thread","turns":[]}), "thread")
+                    .unwrap(),
+            );
+        }
+        let mut rx = host.subscribe();
+        let mut translator = CodexRpcTranslator::new();
+        let params = serde_json::json!({"threadId":"thread","turnId":"turn","item":{"id":"native-user","type":"userMessage","clientId":"queued-client","content":[{"type":"text","text":"QUEUED INPUT"}]}});
+        process_notification(&host.inner, &mut translator, "item/started", &params);
+        process_notification(&host.inner, &mut translator, "item/completed", &params);
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let snapshot = events.iter().rev().find_map(|event| {
+            if let ConversationEvent::CodexHistory {
+                events,
+                user_message_ids,
+                ..
+            } = event
+            {
+                Some((events, user_message_ids))
+            } else {
+                None
+            }
+        });
+        let (history, ids) = snapshot.expect("native で開始された入力を表示へ配送する");
+        assert_eq!(history.iter().filter(|event| matches!(event,ConversationEvent::UserMessage{text} if text=="QUEUED INPUT")).count(),1);
+        assert_eq!(ids, &["queued-client"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_queue_refresh_discards_pages_changed_during_read() {
+        let host = response_test_host();
+        host.inner.state.lock().unwrap().thread_id = Some("thread".into());
+        let mut rx = host.subscribe();
+        let script = r#"import json,sys
+def send(v):print(json.dumps(v),flush=True)
+json.loads(sys.stdin.readline())
+send({'method':'thread/queue/changed','params':{'threadId':'thread'}})
+for n,line in enumerate(sys.stdin):
+ r=json.loads(line)
+ assert r['method']=='thread/queue/list',r
+ assert r['params']['threadId']=='thread'
+ row={'id':'new' if n>1 else 'old'+str(n),'clientUserMessageId':'client','input':[{'type':'text','text':'LATEST' if n>1 else 'OLD'}]}
+ send({'id':r['id'],'result':{'data':[row],'nextCursor':'page2' if n==0 else None}})
+ if n==0: send({'method':'thread/queue/changed','params':{'threadId':'thread'}})
+"#;
+        let mut child = tokio::process::Command::new(if cfg!(target_os = "macos") {
+            "/usr/bin/python3"
+        } else {
+            "python3"
+        })
+        .args(["-u", "-c", script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+        *host.inner.stdin.lock().await = child.stdin.take();
+        let reader = tokio::spawn(run_reader(
+            host.inner.clone(),
+            child.stdout.take().unwrap(),
+            None,
+        ));
+        let view = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let ConversationEvent::CodexQueue {
+                    queue: Some(view), ..
+                } = rx.recv().await.unwrap()
+                    && view.ready
+                {
+                    break view;
+                }
+            }
+        })
+        .await
+        .expect("Queue snapshot");
+        reader.abort();
+        child.kill().await.ok();
+        assert_eq!(view.items.len(), 1);
+        assert_eq!(view.items[0].id, "new");
+        assert_eq!(view.items[0].text, "LATEST");
+    }
+
+    // mem_1CeySwxuoVc17bGLnU5Np3: 制御操作は native ACK を待ち、途絶時には再送しない。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_queue_actions_wait_for_ack_and_never_retry() {
+        for (action, method, outcome) in [
+            (
+                serde_json::json!({"kind":"refresh"}),
+                "thread/queue/list",
+                "accepted",
+            ),
+            (
+                serde_json::json!({"kind":"add","text":"NEXT","client_id":"client"}),
+                "thread/queue/add",
+                "accepted",
+            ),
+            (
+                serde_json::json!({"kind":"update","id":"q1","text":"EDITED"}),
+                "thread/queue/update",
+                "accepted",
+            ),
+            (
+                serde_json::json!({"kind":"delete","id":"q1"}),
+                "thread/queue/delete",
+                "accepted",
+            ),
+            (
+                serde_json::json!({"kind":"reorder","ids":["q2","q1"]}),
+                "thread/queue/reorder",
+                "accepted",
+            ),
+            (
+                serde_json::json!({"kind":"start","id":"q1"}),
+                "thread/queue/start",
+                "accepted",
+            ),
+            (
+                serde_json::json!({"kind":"steer","text":"NOW","client_id":"client","turn_id":"turn"}),
+                "turn/steer",
+                "accepted",
+            ),
+            (
+                serde_json::json!({"kind":"steer","text":"NOW","client_id":"client","turn_id":"turn"}),
+                "turn/steer",
+                "rejected",
+            ),
+            (
+                serde_json::json!({"kind":"add","text":"NEXT","client_id":"client"}),
+                "thread/queue/add",
+                "disconnected",
+            ),
+        ] {
+            let host = response_test_host();
+            let mut queue_events = host.subscribe();
+            {
+                let mut st = host.inner.state.lock().unwrap();
+                st.thread_id = Some("thread".into());
+                st.turn_active = method != "thread/queue/start";
+                st.turn_id = st.turn_active.then(|| "turn".into());
+                st.native_queue.ready = method != "thread/queue/list";
+                st.native_queue.items = ["q1", "q2"]
+                    .iter()
+                    .map(|id| super::super::event::CodexQueuedInput {
+                        id: (*id).into(),
+                        client_id: (*id).into(),
+                        text: (*id).into(),
+                        editable: true,
+                    })
+                    .collect();
+            }
+            let script = r#"import json,sys,time
+def send(v): print(json.dumps(v),flush=True)
+json.loads(sys.stdin.readline())
+for line in sys.stdin:
+ r=json.loads(line)
+ if r['method']=='thread/queue/list':
+  send({'id':r['id'],'result':{'data':[],'nextCursor':None}});continue
+ assert r['method']==sys.argv[1],r
+ assert r['params']['threadId']=='thread',r
+ if r['method']=='turn/steer': assert r['params']['expectedTurnId']=='turn',r
+ if r['method'] in ['thread/queue/add','turn/steer']: assert r['params']['clientUserMessageId']=='client',r
+ if r['method'] in ['thread/queue/delete','thread/queue/update','thread/queue/start']: assert r['params']['queuedSubmissionId']=='q1',r
+ if r['method']=='thread/queue/reorder': assert r['params']['queuedSubmissionIds']==['q2','q1'],r
+ if r['method']=='thread/queue/update': assert r['params']['input'][0]['text']=='EDITED',r
+ time.sleep(.05)
+ if sys.argv[2]=='disconnected': sys.exit(0)
+ if sys.argv[2]=='rejected': send({'id':r['id'],'error':{'code':-32600,'message':'no active turn to steer'}})
+ else:
+  result={}
+  if r['method']=='turn/steer':result={'turnId':'turn'}
+  if r['method']=='thread/queue/start':result={'turn':{'id':'next'}}
+  if r['method']=='thread/queue/delete':result={'deleted':True}
+  if r['method'] in ['thread/queue/add','thread/queue/update']:result={'queuedSubmission':{'id':'q1','input':r['params']['input'],'clientUserMessageId':'client'}}
+  send({'id':r['id'],'result':result})
+ for line in sys.stdin:
+  r=json.loads(line)
+  assert r['method']=='thread/queue/list','mutation retried'
+  send({'id':r['id'],'result':{'data':[],'nextCursor':None}})
+"#;
+            let mut child = tokio::process::Command::new(if cfg!(target_os = "macos") {
+                "/usr/bin/python3"
+            } else {
+                "python3"
+            })
+            .args(["-u", "-c", script, method, outcome])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+            *host.inner.stdin.lock().await = child.stdin.take();
+            let reader = tokio::spawn(run_reader(
+                host.inner.clone(),
+                child.stdout.take().unwrap(),
+                None,
+            ));
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                host.codex_input("thread", &action),
+            )
+            .await
+            .expect("ACK wait must settle");
+            if method == "thread/queue/list" && result.is_ok() {
+                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    loop {
+                        if let ConversationEvent::CodexQueue {
+                            queue: Some(view), ..
+                        } = queue_events.recv().await.unwrap()
+                            && view.ready
+                        {
+                            assert!(view.items.is_empty());
+                            assert_eq!(view.thread_id, "thread");
+                            break;
+                        }
+                    }
+                })
+                .await
+                .expect("再取得が実際の一覧を配送する");
+            }
+            reader.abort();
+            child.kill().await.ok();
+            assert_eq!(
+                result.is_ok(),
+                outcome == "accepted",
+                "{method}/{outcome}: {result:?}"
+            );
+        }
+    }
 
     #[cfg(unix)]
     #[tokio::test]
@@ -1738,13 +2167,17 @@ assert json.loads(sys.stdin.readline()) == {'id':'approval','result':{'decision'
 send({'method':'item/agentMessage/delta','params':{'threadId':'thread','turnId':'turn','itemId':'reply','delta':'roundtrip-ok'}})
 for line in sys.stdin: pass
 "#;
-        let mut child = tokio::process::Command::new("python3")
-            .args(["-u", "-c", script])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+        let mut child = tokio::process::Command::new(if cfg!(target_os = "macos") {
+            "/usr/bin/python3"
+        } else {
+            "python3"
+        })
+        .args(["-u", "-c", script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
         *host.inner.stdin.lock().await = child.stdin.take();
         let mut rx = host.subscribe();
         let reader = tokio::spawn(run_reader(
@@ -1825,13 +2258,17 @@ for request_id, action in [(1,'accept'),('two','decline'),(3,'cancel')]:
     reply=json.loads(sys.stdin.readline())
     assert reply == {'id':request_id,'result':{'action':action,'content':{'enabled':False} if action=='accept' else None,'_meta':None}}, reply
 "#;
-        let mut child = tokio::process::Command::new("python3")
-            .args(["-u", "-c", script])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+        let mut child = tokio::process::Command::new(if cfg!(target_os = "macos") {
+            "/usr/bin/python3"
+        } else {
+            "python3"
+        })
+        .args(["-u", "-c", script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
         *host.inner.stdin.lock().await = child.stdin.take();
         let mut rx = host.subscribe();
         let reader = tokio::spawn(run_reader(
@@ -1893,13 +2330,17 @@ print(json.dumps({'id':7,'method':'item/tool/requestUserInput','params':{'thread
 for line in sys.stdin:
     pass
 "#;
-        let mut child = tokio::process::Command::new("python3")
-            .args(["-u", "-c", script])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+        let mut child = tokio::process::Command::new(if cfg!(target_os = "macos") {
+            "/usr/bin/python3"
+        } else {
+            "python3"
+        })
+        .args(["-u", "-c", script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
         *host.inner.stdin.lock().await = child.stdin.take();
         let mut rx = host.subscribe();
         let reader = tokio::spawn(run_reader(
@@ -2039,6 +2480,41 @@ for line in sys.stdin:
             effort: "high".into(),
         };
         assert!(host.configure_selection(pair).is_err());
+        assert!(host.inner.state.lock().unwrap().config.selection.is_none());
+        assert_eq!(std::fs::read_dir(isolated.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn paused_native_queue_blocks_selection_without_writing_registry() {
+        let isolated = crate::test_env::state_dir_async().await;
+        let host = response_test_host();
+        {
+            let mut st = host.inner.state.lock().unwrap();
+            st.thread_id = Some("thread".into());
+            st.catalog_ready = true;
+            st.config.models = super::super::codex_settings::parse_page(
+                &serde_json::json!({"data":[catalog_model()]}),
+            )
+            .unwrap()
+            .0;
+            st.native_queue.ready = true;
+            st.native_queue
+                .items
+                .push(super::super::event::CodexQueuedInput {
+                    id: "paused".into(),
+                    client_id: "client".into(),
+                    text: "NEXT".into(),
+                    editable: true,
+                });
+        }
+        assert!(
+            host.configure_selection(super::super::event::CodexSelection {
+                model: "fixture-model".into(),
+                effort: "high".into(),
+            })
+            .is_err(),
+            "native Queue の設定は前のターンを継承するため、表示だけ変更しない"
+        );
         assert!(host.inner.state.lock().unwrap().config.selection.is_none());
         assert_eq!(std::fs::read_dir(isolated.path()).unwrap().count(), 0);
     }
@@ -2600,6 +3076,10 @@ for line in sys.stdin:
                 cwd: "/workspace".into(),
                 stdin: tokio::sync::Mutex::new(None),
                 state: Mutex::new(RpcState {
+                    native_queue: Default::default(),
+                    queue_busy: false,
+                    queue_dirty: false,
+                    queue_refreshing: false,
                     config: crate::conversation::event::CodexConfigView::default(),
                     catalog_generation: 0,
                     catalog_ready: false,

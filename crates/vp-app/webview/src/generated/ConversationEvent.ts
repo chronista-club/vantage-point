@@ -2,6 +2,7 @@
 import type { CodexConfigView } from "./CodexConfigView";
 import type { CodexInteraction } from "./CodexInteraction";
 import type { CodexQuestion } from "./CodexQuestion";
+import type { CodexQueueView } from "./CodexQueueView";
 import type { PlanEntry } from "./PlanEntry";
 import type { QuestionSpec } from "./QuestionSpec";
 import type { SubagentRole } from "./SubagentRole";
@@ -12,7 +13,7 @@ import type { SubagentRole } from "./SubagentRole";
  * serde 表現は `{"kind":"message_chunk","text":"..."}` の形（`tag = "kind"`）。
  * vp-app 側はこの `kind` で分岐して描画する。
  */
-export type ConversationEvent = { "kind": "codex_config", config: CodexConfigView | null, request_id: string | null, error: string | null, } | { "kind": "session_init", session_id: string, model?: string, permission_mode?: string, cwd?: string, tools?: Array<string>, mcp_servers?: Array<string>, slash_commands?: Array<string>, 
+export type ConversationEvent = { "kind": "codex_queue", queue: CodexQueueView | null, request_id: string | null, error: string | null, } | { "kind": "codex_config", config: CodexConfigView | null, request_id: string | null, error: string | null, } | { "kind": "session_init", session_id: string, model?: string, permission_mode?: string, cwd?: string, tools?: Array<string>, mcp_servers?: Array<string>, slash_commands?: Array<string>, 
 /**
  * slash command 名 → 短い説明（`skill_docs` が SKILL.md から拾う）。
  *

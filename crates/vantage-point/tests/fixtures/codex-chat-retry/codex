@@ -29,6 +29,8 @@ for line in sys.stdin:
         send({"id": request_id, "result": {}})
     elif method == "model/list":
         send({"id": request_id, "result": {"data": [{"model": "fixture-model", "displayName": "Fixture", "defaultReasoningEffort": "low", "supportedReasoningEfforts": [{"reasoningEffort": "low"}, {"reasoningEffort": "high"}]}], "nextCursor": None}})
+    elif method == "thread/queue/list":
+        send({"id": request_id, "result": {"data": [], "nextCursor": None}})
     elif method == "thread/resume":
         if attempt == 1:
             send({"id": request_id, "error": {"code": -32603, "message": "fixture resume unavailable"}})

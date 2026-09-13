@@ -9,6 +9,29 @@ use std::sync::Arc;
 
 use super::state::RepoState;
 
+/// Native input controls require an existing host. Unknown delivery is never retried.
+pub(crate) async fn handle_conversation_codex_input(
+    state: &RepoState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload["lane"].as_str().ok_or("lane 未指定")?;
+    let addr = crate::repo::lane::parse_address(lane).ok_or("lane が不正です")?;
+    let session = super::unison_server::payload_session_key("conversation_codex_input", &payload)?
+        .ok_or("session 未指定")?;
+    let thread = payload["thread_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("thread 未指定")?;
+    state
+        .lane_pool
+        .read()
+        .await
+        .codex_input(&addr, session, thread, &payload["action"])
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({"status":"ok"}))
+}
+
 /// gui (doc 33): conversation プロンプト投入。
 ///
 /// surface (vp-app) → daemon canvas channel → repo control → 本 dispatch。
@@ -938,6 +961,40 @@ mod tests {
                     break;
                 }
             }
+            // History demand publishes the cached Queue, then refreshes it from Codex.
+            // Model changes require that fresh Queue read to finish as well as the turn.
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                let mut cached_queue_seen = false;
+                loop {
+                    let (_, message) = events.recv().await.unwrap();
+                    if let RepoMessage::ConversationEvent {
+                        session: key,
+                        event:
+                            ConversationEvent::CodexQueue {
+                                queue: Some(queue),
+                                request_id: None,
+                                ..
+                            },
+                        ..
+                    } = message
+                    {
+                        assert_eq!(key, session);
+                        assert_eq!(queue.thread_id, thread);
+                        if !cached_queue_seen {
+                            cached_queue_seen = true;
+                            continue;
+                        }
+                        if queue.ready {
+                            assert!(queue.items.is_empty());
+                            assert!(queue.turn_id.is_none());
+                            assert!(queue.error.is_none());
+                            break;
+                        }
+                    }
+                }
+            })
+            .await
+            .expect("native Queue の再取得完了を待つ");
             let configure = |effort: &str| serde_json::json!({"lane":"codex-retry-test/main","session":session,"model":"fixture-model","effort":effort});
             let result = dispatch_repo_method(&state, "conversation_set_model", configure("high"))
                 .await
