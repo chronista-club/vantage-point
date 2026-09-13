@@ -226,6 +226,9 @@ pub enum ConversationEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct CodexInteraction {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub elicitation: Option<CodexElicitation>,
     /// native が decline を提示せず、許可しない応答で turn を中断する場合。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
@@ -241,6 +244,34 @@ pub struct CodexInteraction {
     pub questions: Vec<CodexQuestion>,
     pub blocking: bool,
     pub can_accept: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexElicitation {
+    pub server_name: String,
+    pub message: String,
+    pub url: Option<String>,
+    pub fields: Vec<CodexElicitationField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexElicitationField {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub kind: String,
+    pub required: bool,
+    pub options: Vec<CodexElicitationOption>,
+    pub default_value: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexElicitationOption {
+    pub value: String,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

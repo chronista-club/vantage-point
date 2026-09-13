@@ -54,7 +54,35 @@ profile を受け取ってそのまま転送しない。質問と同じ session 
 初期状態は全項目未選択、期間は turn。明示的に session を選んだ場合だけ session を返す。
 「許可しない」は空の `permissions` と `scope: turn` を返す。
 
+## MCP elicitation の応答
+
+`mcpServer/elicitation/request` の native request ID を既存台帳で管理する。
+turn ID は相関情報として扱い、null や過去の turn でも thread ID が一致すれば受け付ける。turn の完了だけでは
+MCP 要求を捨てず、native の resolved 通知、回答の配送、host 終了で解放する。
+
+form / openai/form / openaiForm は表示できる平坦な object schema を受け付ける。
+文字列・数値・真偽値・単一選択・複数選択を表示し、文字列の下書きから元の型に変換する。
+任意項目の未回答と false を区別する。制約検証は `jsonschema` に委譲し、format 検証も有効にする。
+検証器の API は [jsonschema の公式ドキュメント](https://docs.rs/jsonschema/0.56.0/jsonschema/) を参照する。
+外部参照のネットワーク・ファイル取得は依存機能で無効化する。表示できない制約や形式は
+理由を表示し、回答を無効にする。検証エラーへ回答本文を複写しない。
+
+URL 手続きは http(s) のリンクを明示的に開く。開いただけでは完了通知を送らず、
+ユーザーが完了を確認してから accept を返す。辞退は decline、手続きのキャンセルは
+cancel を返す。これはコマンド承認の turn 中断とは別の MCP 応答である。
+カードは本文リンクの委譲ハンドラーの外側にも表示されるため、カード自身が
+WebView 内遷移を止め、既存の `open-url` IPC へ明示操作を渡す。
+`openai/userVerification` は未対応として説明し、辞退・キャンセルのみ返せる。
+
 ## Status log
+
+- 2026-09-13: 独立権限は Chat で項目・期間を選んで許可し、指定ファイルの書き込み・読み取り・削除を確認。
+  辞退では空の権限が返り、会話が継続することも実機確認済み。
+- MCP の平坦フォーム・URL 手続き・辞退・キャンセルを実装。null / 過去 turn の相関情報を扱い、
+  typed content と native ID の JSONL 往復を検証した。任意の選択の取り消しと空文字の選択肢を区別し、
+  URL のクリックが既存 IPC に届くことも RED → GREEN で確認。
+  `mise run test` 成功（主要ライブラリ 1,112 成功・除外 11）、WebView 603 成功、
+  check / Clippy / fmt / typecheck も成功。MCP の実機表示・操作は確認待ち。
 
 - 2026-09-13: PR #1126 の承認修正は Chat で許可とターン中断・再開を確認し、
   全 CI 成功後に nightly へ統合。次の実装単位として独立権限を進める。

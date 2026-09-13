@@ -36,6 +36,7 @@ pub mod claude_translate;
 mod codex_async_questions;
 mod codex_question_session;
 pub(crate) use codex_question_session::CodexQuestionSession;
+mod codex_elicitation;
 mod codex_history;
 pub mod codex_host;
 mod codex_interactions;

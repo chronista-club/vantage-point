@@ -1812,6 +1812,71 @@ for line in sys.stdin: pass
         }
     }
 
+    // mem_1CeySwxuoVc17bGLnU5Np3: native JSONL -> card -> typed MCP response.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interactions_mcp_jsonl_roundtrip() {
+        let host = response_test_host();
+        host.inner.state.lock().unwrap().thread_id = Some("thread".into());
+        let script = r#"import json,sys
+json.loads(sys.stdin.readline())
+for request_id, action in [(1,'accept'),('two','decline'),(3,'cancel')]:
+    print(json.dumps({'id':request_id,'method':'mcpServer/elicitation/request','params':{'threadId':'thread','turnId':None,'serverName':'fixture','mode':'form','message':action,'requestedSchema':{'type':'object','properties':{'enabled':{'type':'boolean'}},'required':['enabled']}}}),flush=True)
+    reply=json.loads(sys.stdin.readline())
+    assert reply == {'id':request_id,'result':{'action':action,'content':{'enabled':False} if action=='accept' else None,'_meta':None}}, reply
+"#;
+        let mut child = tokio::process::Command::new("python3")
+            .args(["-u", "-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        *host.inner.stdin.lock().await = child.stdin.take();
+        let mut rx = host.subscribe();
+        let reader = tokio::spawn(run_reader(
+            host.inner.clone(),
+            child.stdout.take().unwrap(),
+            None,
+        ));
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let mut replied = std::collections::HashSet::new();
+            while replied.len() < 3 {
+                if let ConversationEvent::CodexInteractions { requests } = rx.recv().await.unwrap()
+                {
+                    for request in requests {
+                        if !replied.insert(request.request_id.clone()) {
+                            continue;
+                        }
+                        let model = request.elicitation.as_ref().unwrap();
+                        assert_eq!(model.server_name, "fixture");
+                        let decision = match model.message.as_str() {
+                            "accept" => super::super::host::PermissionDecision::Allow {
+                                answers: Some(serde_json::json!({"field:enabled":"false"})),
+                            },
+                            "decline" => super::super::host::PermissionDecision::Deny {
+                                message: String::new(),
+                            },
+                            _ => super::super::host::PermissionDecision::Allow {
+                                answers: Some(serde_json::json!({"action":"cancel"})),
+                            },
+                        };
+                        host.respond_permission(&request.request_id, decision)
+                            .await
+                            .unwrap();
+                    }
+                }
+            }
+            assert!(child.wait().await.unwrap().success());
+        })
+        .await;
+        reader.abort();
+        if child.try_wait().unwrap().is_none() {
+            child.kill().await.unwrap();
+        }
+        outcome.expect("MCP の JSONL 往復");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn interactions_reader_publishes_native_question() {

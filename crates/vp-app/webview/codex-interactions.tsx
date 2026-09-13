@@ -1,5 +1,6 @@
 import { For, Show, createSignal } from 'solid-js'
 import type { CodexInteraction } from './src/generated/CodexInteraction'
+import { McpElicitationPanel } from './mcp-elicitation'
 
 /** 質問 ID を選択状態のキーにする。親から session の下書きを受け取れる。 */
 export function CodexInteractionCard(props: {
@@ -30,7 +31,7 @@ export function CodexInteractionCard(props: {
     <Show when={request().details}>
       <pre style={{ 'white-space': 'pre-wrap', 'overflow-wrap': 'anywhere', 'max-height': '16rem', overflow: 'auto' }}>{request().details}</pre>
     </Show>
-    <fieldset disabled={props.sending} style={{ border: 'none', padding: '0', margin: '0' }}>
+    <Show when={request().kind === 'mcp_elicitation'} fallback={<fieldset disabled={props.sending} style={{ border: 'none', padding: '0', margin: '0' }}>
       <For each={request().questions}>{q => <div class="conversation-prompt-q">
         <Show when={permissions()} fallback={<>
         <div class="conversation-prompt-header">{q.header}</div>
@@ -75,7 +76,9 @@ export function CodexInteractionCard(props: {
           {request().cancel_on_deny ? '許可せずターンを中断' : permissions() ? '許可しない' : request().questions.length > 0 ? '回答を見送る' : '拒否'}
         </button>
       </div>
-    </fieldset>
+    </fieldset>}>
+      <McpElicitationPanel request={request()} sending={props.sending} answers={answers()} setAnswer={setAnswer} respond={props.respond} />
+    </Show>
     <Show when={props.error}><div role="alert">{props.error}</div></Show>
   </section>
 }

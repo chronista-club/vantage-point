@@ -10,6 +10,7 @@ const MAX_DETAIL_BYTES: usize = 64 * 1024;
 const MAX_PENDING: usize = 8;
 
 struct Pending {
+    elicitation: Option<super::codex_elicitation::Elicitation>,
     permissions: Option<super::codex_permissions::Permissions>,
     native_id: Value,
     turn: String,
@@ -70,7 +71,8 @@ impl Interactions {
         } else if method == "turn/completed"
             && let Some(turn) = params["turn"]["id"].as_str()
         {
-            self.pending.retain(|_, p| p.turn != turn);
+            self.pending
+                .retain(|_, p| p.view.kind == "mcp_elicitation" || p.turn != turn);
             self.file_changes
                 .retain(|key, _| !key.starts_with(&format!("{turn}/")));
         }
@@ -88,11 +90,15 @@ impl Interactions {
         if !(id.is_string() || id.as_i64().is_some()) {
             return Err("不正な request ID".into());
         }
-        if thread.is_none()
-            || params["threadId"].as_str() != thread
-            || turn.is_none()
-            || params["turnId"].as_str() != turn
-        {
+        let is_mcp = method == "mcpServer/elicitation/request";
+        let valid_turn = if is_mcp {
+            params
+                .get("turnId")
+                .is_some_and(|id| id.is_null() || id.as_str().is_some_and(|s| !s.is_empty()))
+        } else {
+            turn.is_some() && params["turnId"].as_str() == turn
+        };
+        if thread.is_none() || params["threadId"].as_str() != thread || !valid_turn {
             return Err("質問・承認の対象会話または turn が一致しません".into());
         }
         if self.pending.values().any(|p| p.native_id == *id) {
@@ -103,6 +109,7 @@ impl Interactions {
         }
         let (kind, title) = match method {
             "item/tool/requestUserInput" => ("question", "Codex からの質問"),
+            "mcpServer/elicitation/request" => ("mcp_elicitation", "MCP サーバーからの手続き"),
             "item/permissions/requestApproval" => ("permissions", "追加権限の承認"),
             "item/commandExecution/requestApproval"
                 if params["networkApprovalContext"].is_object() =>
@@ -117,6 +124,19 @@ impl Interactions {
         let mut detail = serde_json::Map::new();
         let mut can_accept = true;
         let mut cancel_on_deny = false;
+        let elicitation = if is_mcp {
+            match super::codex_elicitation::Elicitation::parse(params) {
+                Ok(request) => Some(request),
+                Err(message) => {
+                    can_accept = false;
+                    detail.insert("回答できない理由".into(), json!(message));
+                    detail.insert("MCP サーバー".into(), params["serverName"].clone());
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let permissions = if kind == "permissions" {
             match super::codex_permissions::Permissions::parse(&params["permissions"]) {
                 Ok(permissions) => Some(permissions),
@@ -129,7 +149,9 @@ impl Interactions {
         } else {
             None
         };
-        if kind == "permissions" {
+        if is_mcp {
+            // The specialized view carries the server identity and validated form fields.
+        } else if kind == "permissions" {
             if let Some(permissions) = &permissions {
                 questions = permissions.questions();
             }
@@ -242,6 +264,7 @@ impl Interactions {
         self.next_id += 1;
         let request_id = format!("codex:{}:{}", self.generation, self.next_id);
         let view = CodexInteraction {
+            elicitation: elicitation.as_ref().map(|e| e.view.clone()),
             cancel_on_deny: cancel_on_deny.then_some(true),
             item_id: None,
             request_id: request_id.clone(),
@@ -259,6 +282,7 @@ impl Interactions {
         self.pending.insert(
             request_id,
             Pending {
+                elicitation,
                 permissions,
                 native_id: id.clone(),
                 turn: turn.unwrap_or_default().into(),
@@ -283,6 +307,20 @@ impl Interactions {
             return Err("回答を送信中です".into());
         }
         let result = match decision {
+            PermissionDecision::Deny { .. } if pending.view.kind == "mcp_elicitation" => {
+                super::codex_elicitation::response("decline", Value::Null)
+            }
+            PermissionDecision::Allow { answers } if pending.view.kind == "mcp_elicitation" => {
+                if answers.as_ref() == Some(&json!({"action":"cancel"})) {
+                    super::codex_elicitation::response("cancel", Value::Null)
+                } else {
+                    pending
+                        .elicitation
+                        .as_ref()
+                        .ok_or("この MCP 手続きには回答できません")?
+                        .accept(answers.as_ref())?
+                }
+            }
             PermissionDecision::Deny { .. } if pending.view.kind == "permissions" => {
                 json!({"permissions":{},"scope":"turn"})
             }
@@ -343,6 +381,171 @@ mod tests {
             {"id":"one","question":"同じ文面","header":"一つ目","isSecret":true},
             {"id":"two","question":"同じ文面","header":"二つ目","options":[{"label":"A","description":"候補"}]}
         ]})
+    }
+
+    // mem_1CeySwxuoVc17bGLnU5Np3: MCP requests have their own identity and typed replies.
+    #[test]
+    fn interactions_mcp_turn_is_correlation_not_authority() {
+        let mut pending = Interactions::default();
+        let mut params = json!({"threadId":"thread","turnId":"finished-turn","serverName":"test","mode":"url","url":"https://example.com/"});
+        pending
+            .receive(
+                &json!(1),
+                "mcpServer/elicitation/request",
+                &params,
+                Some("thread"),
+                Some("new-turn"),
+            )
+            .expect("同じ会話の MCP 要求は古い turn の相関情報でも受ける");
+        assert!(!pending.observe("turn/completed", &json!({"turn":{"id":"finished-turn"}})));
+        assert!(
+            pending
+                .receive(
+                    &json!(2),
+                    "mcpServer/elicitation/request",
+                    &params,
+                    Some("other"),
+                    None
+                )
+                .is_err()
+        );
+        params["turnId"] = json!(123);
+        assert!(
+            pending
+                .receive(
+                    &json!(2),
+                    "mcpServer/elicitation/request",
+                    &params,
+                    Some("thread"),
+                    None
+                )
+                .is_err()
+        );
+        pending.clear();
+        assert!(pending.pending.is_empty());
+    }
+
+    #[test]
+    fn interactions_mcp_form_preserves_types_and_validates_before_reply() {
+        let mut pending = Interactions::default();
+        let params = json!({"threadId":"thread","turnId":null,"serverName":"documents","mode":"form","message":"設定してください",
+            "requestedSchema":{"type":"object","properties":{
+                "count":{"type":"integer","minimum":1,"maximum":5},
+                "enabled":{"type":"boolean"}, "note":{"type":"string"}},"required":["count","enabled"]}});
+        pending
+            .receive(
+                &json!("mcp-1"),
+                "mcpServer/elicitation/request",
+                &params,
+                Some("thread"),
+                None,
+            )
+            .expect("turn がない MCP form を表示する");
+        let id = pending.pending.keys().next().unwrap().clone();
+        assert!(!pending.observe("turn/completed", &json!({"turn":{"id":"turn"}})));
+        for answers in [
+            json!({"field:count":"9","field:enabled":"false"}),
+            json!({"field:count":"2"}),
+            json!({"field:count":"2","field:enabled":"false","injected":"yes"}),
+        ] {
+            assert!(
+                pending
+                    .begin_response(
+                        &id,
+                        &PermissionDecision::Allow {
+                            answers: Some(answers)
+                        }
+                    )
+                    .is_err()
+            );
+        }
+        let response: Value = serde_json::from_str(
+            &pending
+                .begin_response(
+                    &id,
+                    &PermissionDecision::Allow {
+                        answers: Some(json!({"field:count":"2","field:enabled":"false"})),
+                    },
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            response,
+            json!({"id":"mcp-1","result":{"action":"accept","content":{"count":2,"enabled":false},"_meta":null}})
+        );
+        assert!(pending.observe("serverRequest/resolved", &json!({"requestId":"mcp-1"})));
+    }
+
+    #[test]
+    fn interactions_mcp_url_decline_cancel_and_unsupported_schema() {
+        for (mode, url, decision, action) in [
+            (
+                "url",
+                "https://example.com/verify",
+                PermissionDecision::Allow {
+                    answers: Some(json!({"action":"accept"})),
+                },
+                "accept",
+            ),
+            (
+                "url",
+                "https://example.com/verify",
+                PermissionDecision::Allow {
+                    answers: Some(json!({"action":"cancel"})),
+                },
+                "cancel",
+            ),
+            (
+                "url",
+                "javascript:alert(1)",
+                PermissionDecision::Deny {
+                    message: String::new(),
+                },
+                "decline",
+            ),
+            (
+                "openai/userVerification",
+                "",
+                PermissionDecision::Deny {
+                    message: String::new(),
+                },
+                "decline",
+            ),
+        ] {
+            let mut pending = Interactions::default();
+            let params = json!({"threadId":"thread","turnId":null,"serverName":"test","mode":mode,"url":url,"message":"手続き"});
+            assert!(
+                pending
+                    .receive(
+                        &json!(1),
+                        "mcpServer/elicitation/request",
+                        &params,
+                        Some("other"),
+                        None
+                    )
+                    .is_err()
+            );
+            pending
+                .receive(
+                    &json!(1),
+                    "mcpServer/elicitation/request",
+                    &params,
+                    Some("thread"),
+                    None,
+                )
+                .unwrap();
+            let id = pending.pending.keys().next().unwrap().clone();
+            if !url.starts_with("https://") {
+                assert!(!pending.pending[&id].view.can_accept);
+            }
+            let response: Value =
+                serde_json::from_str(&pending.begin_response(&id, &decision).unwrap()).unwrap();
+            assert_eq!(
+                response["result"],
+                json!({"action":action,"content":null,"_meta":null})
+            );
+        }
     }
 
     // mem_1CeySwxuoVc17bGLnU5Np3: independent permissions stay within the request.
