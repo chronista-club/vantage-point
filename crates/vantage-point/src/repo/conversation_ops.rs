@@ -961,6 +961,40 @@ mod tests {
                     break;
                 }
             }
+            // History demand publishes the cached Queue, then refreshes it from Codex.
+            // Model changes require that fresh Queue read to finish as well as the turn.
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                let mut cached_queue_seen = false;
+                loop {
+                    let (_, message) = events.recv().await.unwrap();
+                    if let RepoMessage::ConversationEvent {
+                        session: key,
+                        event:
+                            ConversationEvent::CodexQueue {
+                                queue: Some(queue),
+                                request_id: None,
+                                ..
+                            },
+                        ..
+                    } = message
+                    {
+                        assert_eq!(key, session);
+                        assert_eq!(queue.thread_id, thread);
+                        if !cached_queue_seen {
+                            cached_queue_seen = true;
+                            continue;
+                        }
+                        if queue.ready {
+                            assert!(queue.items.is_empty());
+                            assert!(queue.turn_id.is_none());
+                            assert!(queue.error.is_none());
+                            break;
+                        }
+                    }
+                }
+            })
+            .await
+            .expect("native Queue の再取得完了を待つ");
             let configure = |effort: &str| serde_json::json!({"lane":"codex-retry-test/main","session":session,"model":"fixture-model","effort":effort});
             let result = dispatch_repo_method(&state, "conversation_set_model", configure("high"))
                 .await
