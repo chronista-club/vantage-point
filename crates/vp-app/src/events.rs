@@ -229,6 +229,13 @@ pub enum AppEvent {
     },
     /// Conversation gui: WebView (ChatPane) からのプロンプト投入。 event loop が当該 lane の
     /// conversation session を lazy spawn し、 canvas channel 上り request `conversation_submit` で repo へ。
+    ConversationCodexInput {
+        lane: String,
+        session: u32,
+        thread_id: String,
+        request_id: String,
+        action: serde_json::Value,
+    },
     ConversationSubmit {
         request_id: String,
         lane: String,

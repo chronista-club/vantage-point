@@ -19,6 +19,12 @@ use ts_rs::TS;
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConversationEvent {
+    /// Native Queue の表示用 snapshot。待機入力は履歴へ追加しない。
+    CodexQueue {
+        queue: Option<CodexQueueView>,
+        request_id: Option<String>,
+        error: Option<String>,
+    },
     /// Codex の次送信設定。会話終了・送信結果とは独立した状態と応答。
     CodexConfig {
         config: Option<CodexConfigView>,
@@ -221,6 +227,25 @@ pub enum ConversationEvent {
         request_id: String,
         error: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexQueueView {
+    pub thread_id: String,
+    pub turn_id: Option<String>,
+    pub ready: bool,
+    pub items: Vec<CodexQueuedInput>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexQueuedInput {
+    pub id: String,
+    pub client_id: String,
+    pub text: String,
+    pub editable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

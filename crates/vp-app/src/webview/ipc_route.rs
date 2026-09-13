@@ -35,6 +35,7 @@ pub(crate) fn is_main_ipc_tag(body: &str) -> bool {
                 | "console"
                 | "open-url"
                 | "conversation:submit"
+                | "conversation:codex_input"
                 | "conversation:respond"
                 | "conversation:interrupt"
                 | "conversation:set_permission_mode"

@@ -25,7 +25,8 @@ use vantage_point::conversation::event::{
 
 /// TS 側の union が持つべき kind。variant を足したらここも足す
 /// （fixture の網羅 assert が落ちて気付く）。
-const EXPECTED_KINDS: [&str; 21] = [
+const EXPECTED_KINDS: [&str; 22] = [
+    "codex_queue",
     "codex_message",
     "codex_interactions",
     "codex_interaction_result",
@@ -98,6 +99,14 @@ fn fixtures() -> Vec<(&'static str, ConversationEvent)> {
             "codex_config",
             ConversationEvent::CodexConfig {
                 config: Some(vantage_point::conversation::event::CodexConfigView::default()),
+                request_id: None,
+                error: None,
+            },
+        ),
+        (
+            "codex_queue",
+            ConversationEvent::CodexQueue {
+                queue: Some(vantage_point::conversation::event::CodexQueueView::default()),
                 request_id: None,
                 error: None,
             },

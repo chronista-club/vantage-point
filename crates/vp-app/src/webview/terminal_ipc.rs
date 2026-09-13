@@ -87,6 +87,22 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
             }
         }
         // Conversation gui (doc 32): ChatPane からのプロンプト投入。 lane + prompt 必須。
+        Some("conversation:codex_input") => {
+            if let (Some(lane), Some(session), Some(thread), Some(request)) = (
+                parsed["lane"].as_str(),
+                parse_session(&parsed),
+                parsed["thread_id"].as_str(),
+                parsed["request_id"].as_str(),
+            ) {
+                let _ = proxy.send_event(AppEvent::ConversationCodexInput {
+                    lane: lane.into(),
+                    session,
+                    thread_id: thread.into(),
+                    request_id: request.into(),
+                    action: parsed["action"].clone(),
+                });
+            }
+        }
         Some("conversation:submit") => {
             let lane = parsed.get("lane").and_then(|v| v.as_str());
             let prompt = parsed.get("prompt").and_then(|v| v.as_str());

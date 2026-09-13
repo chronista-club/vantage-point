@@ -13,6 +13,7 @@ import type { ConversationEvent, PlanEntry, QuestionSpec } from './console'
 import type { toWirePayload } from './paste-image'
 import { foldCodexInteractions, type CodexInteractionState } from './codex-interaction-model'
 import type { CodexQuestion } from './src/generated/CodexQuestion'
+import type { CodexQueueView } from './src/generated/CodexQueueView'
 
 // ---------------------------------------------------------------------------
 // 会話モデル — flat item stream（ConversationEvent を UI 単位に畳む）
@@ -121,6 +122,9 @@ export function toolGroupStatus(tools: ToolItem[]): { running: boolean; label: s
 }
 
 export type ChatState = {
+  codexQueue?: CodexQueueView
+  codexQueueEdits?: Record<string, string>
+  codexInput?: { id: string; text: string; status: 'sending' | 'failed'; error: string | null } | null
   codexInteractions?: CodexInteractionState
   header: { model?: string; sessionId?: string } | null
   items: ChatItem[]
@@ -184,7 +188,21 @@ export type Submission = {
  * tool_call_update は id 一致で done 化。ここが gui の描画正しさの中核。
  */
 export function foldInto(s: ChatState, ev: ConversationEvent): void {
+  if (ev.kind === 'engine_exited' && s.codexQueue) {
+    s.codexQueue.ready = false
+    s.codexQueue.turn_id = null
+  }
   if (foldCodexInteractions(s, ev)) return
+  if (ev.kind === 'codex_queue') {
+    if (ev.queue && !ev.request_id) s.codexQueue = ev.queue
+    if (ev.request_id && s.codexInput?.id === ev.request_id) {
+      if (ev.error) {
+        s.codexInput.status = 'failed'
+        s.codexInput.error = ev.error
+      } else s.codexInput = null
+    }
+    return
+  }
   if (ev.kind === 'codex_config') {
     if (ev.request_id && ev.request_id !== s.codexSettingsRequest) return
     if (ev.config && !ev.request_id) s.codexConfig = ev.config

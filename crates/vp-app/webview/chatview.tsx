@@ -1,5 +1,6 @@
 import { changeCodexSelection } from './codex-selection-control'
 import { CodexInteractionCard } from './codex-interactions'
+import { CodexQueuePanel } from './codex-queue'
 import { beginCodexResponse } from './codex-interaction-model'
 /**
  * ChatView (doc 33 C2) — Conversation gui の Console 面 GUI（SolidJS）。
@@ -1477,6 +1478,8 @@ function SessionChatView(props: { lane: string; session: number }) {
   const codexEffort = () => state().codexConfig?.selection?.effort ?? state().codexConfig?.effort ?? ''
   const codexModels = () => state().codexConfig?.models ?? []
   const codexBusy = () => state().streaming || state().replaying || !!state().submission || !!state().pending || !!state().codexSettingsRequest
+    || !!state().codexInput || !!state().codexQueue?.turn_id || !!state().codexQueue?.items.length
+    || (!!state().codexQueue && !state().codexQueue?.ready)
   const setCodexSelection = (model: string, effort: string) => {
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     if (!ipc || codexBusy()) return
@@ -1608,10 +1611,49 @@ function SessionChatView(props: { lane: string; session: number }) {
   const lamp = () => lampOf(statusLine())
   // now-line（doc 51 §1 A3）: 名札直下の「今なにを」。null = 行ごと描かない。
   const nowLine = () => deriveNowLine(state())
+  const codexInputBusy = () => !!state().codexInput
+  const codexTurnActive = () => rosterEntry()?.agent === 'codex' && (state().streaming || !!state().codexQueue?.turn_id)
+  const sendCodexInput = (action: Record<string, unknown>, text = '') => {
+    const queue = state().codexQueue
+    if (!queue || (!queue.ready && action.kind !== 'refresh') || codexInputBusy()) return false
+    const requestId = nextRequestId('codex-input')
+    lc.set('codexInput', { id: requestId, text, status: 'sending', error: null })
+    try {
+      const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+      if (!ipc) throw new Error('接続がありません。入力は送信されていません。')
+      ipc.postMessage(JSON.stringify({ t: 'conversation:codex_input', lane: props.lane,
+        session: props.session, thread_id: queue.thread_id, request_id: requestId,
+        action: { ...action, client_id: requestId } }))
+      setTimeout(() => {
+        if (lc.state.codexInput?.id === requestId && lc.state.codexInput.status === 'sending') {
+          lc.set(produce(s => foldInto(s, { kind: 'codex_queue', queue: null, request_id: requestId,
+            error: '送信結果を確認できません。自動再送はしていません。待機一覧と会話履歴を確認してください。' })))
+        }
+      }, 45_000)
+    } catch (error) {
+      lc.set(produce(s => foldInto(s, { kind: 'codex_queue', queue: null, request_id: requestId,
+        error: error instanceof Error ? error.message : String(error) })))
+      return false
+    }
+    return true
+  }
+  const queueDraft = () => {
+    const text = draft().trim()
+    if (!text || !sendCodexInput({ kind: 'add', text }, text)) return
+    setDraft('')
+    if (inputRef) autosize(inputRef)
+  }
   const submit = () => {
     const lane = props.lane
     const text = draft().trim()
-    if (!text || lc.state.submission) return
+    if (!text || lc.state.submission || codexInputBusy()) return
+    if (codexTurnActive()) {
+      const turn = lc.state.codexQueue?.turn_id
+      if (!turn || !sendCodexInput({ kind: 'steer', text, turn_id: turn }, text)) return
+      setDraft('')
+      if (inputRef) autosize(inputRef)
+      return
+    }
     setDraft('')
     if (inputRef) autosize(inputRef) // 送信後は 1 行に畳み戻す
     // doc 35 §5.1: streaming 中は engine へ送らず pending に buffer（items[] を触らない = 順序を汚さない）。
@@ -2076,6 +2118,27 @@ function SessionChatView(props: { lane: string; session: number }) {
         </div>
         {/* composer — 入力とその操作を 1 つの器にまとめる。上 = 打つ場所、下 = 操作。
             model / permission も「送る前に決める操作」なのでここ（読み取りの status とは分ける）。 */}
+        <Show when={state().codexQueue}>{queue => <CodexQueuePanel queue={queue()} busy={codexInputBusy()}
+          edits={state().codexQueueEdits ?? {}} act={sendCodexInput}
+          edit={(id,text) => lc.set(produce(s => {
+            const edits = s.codexQueueEdits ??= {}
+            if (text === undefined) delete edits[id]
+            else edits[id] = text
+          }))} />}</Show>
+        <Show when={state().codexInput?.status === 'failed'}>
+          <div class="codex-queue" role="status">
+            <div>{state().codexInput?.error}</div>
+            <Show when={state().codexInput?.text}>
+              <button disabled={!!draft().trim()} onClick={() => {
+                if (draft().trim()) return
+                setDraft(lc.state.codexInput?.text ?? '')
+                lc.set('codexInput',null)
+                queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
+              }}>入力を戻す</button>
+            </Show>
+            <button onClick={() => lc.set('codexInput',null)}>閉じる</button>
+          </div>
+        </Show>
         <div class="conversation-composer">
           {/* slash command の候補。⚠️ **入力欄の上**に出す（下は model / permission の操作列で、
               そこに被せると押そうとした物が入れ替わる）。source は session_init が広告した
@@ -2280,8 +2343,15 @@ function SessionChatView(props: { lane: string; session: number }) {
                 <CreoIcon name="ph:stop" size={11} /> 停止
               </button>
             </Show>
-            <button class="conversation-send" onClick={submit} disabled={!draft().trim() || !!state().submission}>
-              <CreoIcon name="ph:paper-plane-right" size={12} /> 送信
+            <Show when={codexTurnActive()}>
+              <button class="conversation-stop" onClick={queueDraft}
+                disabled={!draft().trim() || !state().codexQueue?.ready || codexInputBusy()}>
+                次に実行する
+              </button>
+            </Show>
+            <button class="conversation-send" onClick={submit} disabled={!draft().trim() || !!state().submission || codexInputBusy()
+              || (codexTurnActive() && (!state().codexQueue?.ready || !state().codexQueue?.turn_id))}>
+              <CreoIcon name="ph:paper-plane-right" size={12} /> {codexTurnActive() ? '今伝える' : '送信'}
             </button>
           </div>
         </div>
@@ -2296,6 +2366,15 @@ function SessionChatView(props: { lane: string; session: number }) {
 /** ChatView の scoped CSS。entry.tsx が `<style>` で注入する（board-render.ts の style 注入と同型）。
  *  色は creo-ui token（--color-* 系）に寄せ、無い環境でも読める fallback を持つ。 */
 export const CHATVIEW_CSS = `
+.codex-queue { flex:none; margin:0 14px; padding:6px 0; font-size:12px; color:var(--color-text-secondary,#a8b0c0); max-height:240px; overflow:auto; }
+.codex-queue:empty { display:none; }
+.codex-queue-heading,.codex-queue-actions { display:flex; align-items:center; gap:6px; }
+.codex-queue-heading { justify-content:space-between; }
+.codex-queue-row { padding:6px 0; border-bottom:1px solid var(--color-border,#2a3040); }
+.codex-queue-text { white-space:pre-wrap; overflow-wrap:anywhere; max-height:90px; overflow:auto; margin-bottom:4px; }
+.codex-queue button { border:1px solid var(--color-border,#2a3040); border-radius:5px; background:transparent; color:inherit; cursor:pointer; font:inherit; padding:2px 7px; }
+.codex-queue button:disabled { opacity:.4; cursor:default; }
+.codex-queue textarea { box-sizing:border-box; width:100%; min-height:54px; font:inherit; background:var(--color-bg-elevated,#161a20); color:var(--color-text,#e6e9ef); border:1px solid var(--color-border,#2a3040); border-radius:5px; }
 /* chat Live Token (--chat-text-*) の定義は :root に置く。適用 (use site) は .chat-view 以下に
    閉じているので他 pane を汚染しない。:root 定義にする理由 = creo-ui Editor Mode
    (entry.tsx ChatTokenBinds) の slider が documentElement.style.setProperty で書くため、

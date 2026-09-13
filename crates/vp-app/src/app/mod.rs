@@ -328,6 +328,22 @@ pub fn run() -> anyhow::Result<()> {
                 event,
                 session,
             }) => on_conversation::conversation_event(&mut ui, &boot, lane, event, session),
+            Event::UserEvent(AppEvent::ConversationCodexInput {
+                lane,
+                session,
+                thread_id,
+                request_id,
+                action,
+            }) => on_conversation::conversation_codex_input(
+                &ui,
+                &boot,
+                &async_action_proxy,
+                lane,
+                session,
+                thread_id,
+                request_id,
+                action,
+            ),
             Event::UserEvent(AppEvent::ConversationSubmit {
                 lane,
                 prompt,

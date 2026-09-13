@@ -119,6 +119,33 @@ pub(super) fn conversation_submit(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(super) fn conversation_codex_input(
+    ui: &UiState,
+    boot: &Boot,
+    proxy: &EventLoopProxy<AppEvent>,
+    lane: String,
+    session: u32,
+    thread_id: String,
+    request_id: String,
+    action: serde_json::Value,
+) {
+    let path = resolve_repo_path_for_lane(&ui.sidebar_state, &lane);
+    let conn = boot.daemon_conn.clone();
+    let proxy = proxy.clone();
+    boot.rt_handle.spawn(async move {
+        let result = match path {
+            Some(path) => daemon_repo_request(&conn, &path, "conversation_codex_input",
+                serde_json::json!({"lane":lane,"session":session,"thread_id":thread_id,"action":action})).await.map(|_| ()),
+            None => Err("対象の作業場所が見つかりません。入力は送信されていません。".into()),
+        };
+        let _ = proxy.send_event(AppEvent::ConversationEvent {
+            lane, session,
+            event: serde_json::json!({"kind":"codex_queue","queue":null,"request_id":request_id,"error":result.err()}),
+        });
+    });
+}
+
 /// Conversation gui HITL (doc 35 PR1): PromptCard の回答 → 当該 lane の conversation session へ。
 /// 質問は submit 済み engine 由来なので session は既存のはずだが、防御的に lazy spawn。
 #[allow(clippy::too_many_arguments)] // payload の field をそのまま渡す（AppEvent の struct 化は別 PR）

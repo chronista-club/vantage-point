@@ -138,6 +138,9 @@ pub(crate) async fn dispatch_repo_method(
         // S3: terminal 入力/resize (surface → canvas channel upstream → control reverse-route)
         "terminal_write" => terminal_ops::handle_terminal_write(state, payload).await,
         "conversation_submit" => conversation_ops::handle_conversation_submit(state, payload).await,
+        "conversation_codex_input" => {
+            conversation_ops::handle_conversation_codex_input(state, payload).await
+        }
         // channel E (doc 34): wire/delegation nudge の chat-engine 注入 (lane_nudge の Chat 対応物)
         "conversation_nudge" => conversation_ops::handle_conversation_nudge(state, payload).await,
         // gui HITL (doc 35 PR1): PromptCard 回答 → 逆方向 can_use_tool へ control_response 書き戻し

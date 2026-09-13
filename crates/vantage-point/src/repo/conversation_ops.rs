@@ -9,6 +9,29 @@ use std::sync::Arc;
 
 use super::state::RepoState;
 
+/// Native input controls require an existing host. Unknown delivery is never retried.
+pub(crate) async fn handle_conversation_codex_input(
+    state: &RepoState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload["lane"].as_str().ok_or("lane 未指定")?;
+    let addr = crate::repo::lane::parse_address(lane).ok_or("lane が不正です")?;
+    let session = super::unison_server::payload_session_key("conversation_codex_input", &payload)?
+        .ok_or("session 未指定")?;
+    let thread = payload["thread_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("thread 未指定")?;
+    state
+        .lane_pool
+        .read()
+        .await
+        .codex_input(&addr, session, thread, &payload["action"])
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({"status":"ok"}))
+}
+
 /// gui (doc 33): conversation プロンプト投入。
 ///
 /// surface (vp-app) → daemon canvas channel → repo control → 本 dispatch。

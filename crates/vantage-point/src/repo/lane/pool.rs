@@ -1760,6 +1760,22 @@ impl LanePool {
         }
     }
 
+    pub async fn codex_input(
+        &self,
+        addr: &LaneAddress,
+        session: SessionKey,
+        thread: &str,
+        action: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let slot = self.chat_slot(addr, Some(session))?;
+        match &slot.host {
+            crate::conversation::engine::ChatHost::Codex(host) => {
+                host.codex_input(thread, action).await
+            }
+            _ => anyhow::bail!("Codex の Chat を開いてから操作してください。"),
+        }
+    }
+
     /// Codex 履歴は host の通知と同じ配送順序で採取する。
     pub fn request_codex_history(
         &self,

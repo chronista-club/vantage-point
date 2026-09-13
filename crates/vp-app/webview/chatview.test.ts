@@ -32,6 +32,37 @@ import {
 import type { ConversationEvent } from './console'
 import { marked as markedSingleton } from 'marked'
 
+it('native Queue becomes read-only on host exit without losing waiting text or edit drafts', () => {
+  const state = emptyChatState()
+  const queue = {thread_id:'thread',turn_id:'turn',ready:true,items:[{id:'q',client_id:'c',text:'待機入力',editable:true}],error:null}
+  foldInto(state,{kind:'codex_queue',queue,request_id:null,error:null})
+  state.codexQueueEdits={q:'編集中'}
+  foldInto(state,{kind:'engine_exited',message:'切断しました'})
+  expect(state).toMatchObject({codexQueue:{ready:false,items:queue.items},codexQueueEdits:{q:'編集中'}})
+})
+
+it('native Queue acknowledgements keep rejected input and ignore stale acknowledgements', () => {
+  const state = emptyChatState()
+  Object.assign(state, { codexInput: { id: 'current', text: '追加指示', status: 'sending', error: null } })
+  state.streaming = true
+  foldInto(state, { kind: 'codex_queue', queue: null, request_id: 'old', error: null } as ConversationEvent)
+  expect(state).toMatchObject({ codexInput: { id: 'current', status: 'sending' } })
+  foldInto(state, { kind: 'codex_queue', queue: null, request_id: 'current', error: '宛先ターンは終了しました' } as ConversationEvent)
+  expect(state).toMatchObject({ codexInput: { text: '追加指示', status: 'failed', error: '宛先ターンは終了しました' }, streaming: true })
+})
+
+// mem_1CeySwxuoVc17bGLnU5Np3: Queue は本文・送信待ちと独立した native snapshot。
+it('native Queue snapshots preserve drafts and never append waiting input to history', () => {
+  const state = emptyChatState()
+  state.pending = '別エンジンの下書き'
+  const queue = { thread_id: 'thread', turn_id: 'turn', ready: true,
+    items: [{ id: 'queued', client_id: 'client', text: '次に実行', editable: true }], error: null }
+  foldInto(state, { kind: 'codex_queue', queue, request_id: null, error: null } as ConversationEvent)
+  expect(state).toMatchObject({ codexQueue: queue, pending: '別エンジンの下書き', items: [] })
+  foldInto(state, { kind: 'codex_queue', queue: { ...queue, ready: false }, request_id: null, error: null } as ConversationEvent)
+  expect(state).toMatchObject({ codexQueue: { ...queue, ready: false }, items: [] })
+})
+
 /** tool ChatItem を手軽に組む helper（classifyToolRun のテスト用）。 */
 let toolSeq = 0
 function tool(name: string, done = true, error = false) {
