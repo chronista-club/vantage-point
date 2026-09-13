@@ -5,6 +5,7 @@ export type CodexInteractionState = {
   requests: CodexInteraction[]
   sending: string[]
   errors: Record<string, string>
+  drafts?: Record<string, Record<string, string>>
 }
 
 type Holder = { codexInteractions?: CodexInteractionState }
@@ -19,12 +20,19 @@ export function foldCodexInteractions(s: Holder, ev: ConversationEvent): boolean
       return existing && JSON.stringify(existing) === JSON.stringify(request) ? existing : request
     })
     const ids = new Set(ev.requests.map(r => r.request_id))
-    state.sending = state.sending.filter(id => ids.has(id))
+    state.sending = state.sending.filter(id => {
+      const request = state.requests.find(r => r.request_id === id)
+      return request && !(request.kind === 'async_question' && !request.can_accept)
+    })
+    for (const id of Object.keys(state.drafts ?? {})) if (!ids.has(id)) delete state.drafts![id]
     for (const id of Object.keys(state.errors)) if (!ids.has(id)) delete state.errors[id]
   } else if (state.sending.includes(ev.request_id)) {
     state.sending = state.sending.filter(id => id !== ev.request_id)
     if (ev.error) state.errors[ev.request_id] = ev.error
-    else state.requests = state.requests.filter(r => r.request_id !== ev.request_id)
+    else {
+      state.requests = state.requests.filter(r => r.request_id !== ev.request_id)
+      if (state.drafts) delete state.drafts[ev.request_id]
+    }
   }
   return true
 }

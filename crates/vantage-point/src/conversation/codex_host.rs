@@ -41,6 +41,7 @@ use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use super::codex_history::CodexHistory;
+use super::codex_question_session::CodexQuestionSession;
 use super::codex_rpc_translate::CodexRpcTranslator;
 use super::event::ConversationEvent;
 use super::host::InFlight;
@@ -73,6 +74,8 @@ enum ReqKind {
     ThreadStart,
     TurnStart,
     TurnInterrupt,
+    AsyncReplyStart,
+    AsyncReplySteer,
 }
 
 /// reader task / host メソッドが共有する可変状態（std Mutex — await を跨がずに触る）。
@@ -84,6 +87,9 @@ struct RpcState {
     catalog_cursors: Vec<String>,
     history: Option<CodexHistory>,
     interactions: super::codex_interactions::Interactions,
+    async_questions: super::codex_async_questions::AsyncQuestions,
+    reply_waiters: HashMap<i64, tokio::sync::oneshot::Sender<serde_json::Value>>,
+    reply_clients: std::collections::HashSet<String>,
     startup_error: Option<String>,
     /// 初回 thread/read 待機中の対象。本文更新が競合した場合は復元を中断する。
     hydration_target: Option<String>,
@@ -116,6 +122,10 @@ struct RpcState {
 }
 
 impl RpcState {
+    fn interaction_snapshot(&self) -> ConversationEvent {
+        self.async_questions.snapshot(self.interactions.snapshot())
+    }
+
     fn begin_catalog(&mut self) -> (i64, u64) {
         self.catalog_ready = false;
         self.config.error = None;
@@ -144,6 +154,7 @@ impl std::error::Error for CodexSelectionRejected {}
 
 /// reader task と host が共有する不変部 + 状態。
 struct RpcInner {
+    question_session: CodexQuestionSession,
     event_tx: broadcast::Sender<ConversationEvent>,
     repo: String,
     lane: String,
@@ -232,7 +243,9 @@ impl RpcInner {
         // 増分だけ tail に積み、会話が確定する event で世代を進めて捨てる。
         {
             match &event {
-                ConversationEvent::MessageChunk { .. } | ConversationEvent::ThoughtChunk { .. } => {
+                ConversationEvent::MessageChunk { .. }
+                | ConversationEvent::CodexMessage { .. }
+                | ConversationEvent::ThoughtChunk { .. } => {
                     st.in_flight.tail.push(event.clone());
                 }
                 ConversationEvent::SessionInit { .. }
@@ -266,6 +279,9 @@ impl RpcInner {
             }
             st.hydration_target = None;
             st.thread_id = Some(thread_id.to_string());
+            if let Some(questions) = self.question_session.resume(thread_id) {
+                st.async_questions = questions;
+            }
             st.turn_id = thread["turns"]
                 .as_array()
                 .and_then(|turns| turns.iter().rev().find(|t| t["status"] == "inProgress"))
@@ -325,7 +341,7 @@ impl RpcInner {
         }
         let config = Self::config_event(&st);
         self.emit_locked(&mut st, config);
-        let interactions = st.interactions.snapshot();
+        let interactions = st.interaction_snapshot();
         self.emit_locked(&mut st, interactions);
     }
 
@@ -386,6 +402,16 @@ impl CodexAgentHost {
         request_id: &str,
         decision: super::host::PermissionDecision,
     ) -> anyhow::Result<()> {
+        if self
+            .inner
+            .state
+            .lock()
+            .expect("rpc state lock")
+            .async_questions
+            .contains(request_id)
+        {
+            return respond_async_question(self.inner.clone(), request_id.into(), decision).await;
+        }
         let inner = self.inner.clone();
         let request_id = request_id.to_string();
         tokio::spawn(async move {
@@ -412,8 +438,11 @@ impl CodexAgentHost {
                     st.turn_id = None;
                     st.queue.clear();
                     st.interactions.clear();
+                    st.async_questions.clear();
+                    st.reply_waiters.clear();
+                    st.reply_clients.clear();
                 }
-                let event = st.interactions.snapshot();
+                let event = st.interaction_snapshot();
                 inner.emit_locked(&mut st, event);
             }
             if !success {
@@ -436,6 +465,13 @@ impl CodexAgentHost {
     /// handshake は reader task 内で非同期に進み、完了前の submit は queue に積まれて
     /// thread 確定後に自動送出される。
     pub fn spawn(config: CodexRpcHostConfig) -> anyhow::Result<Self> {
+        Self::spawn_with_question_session(config, CodexQuestionSession::default())
+    }
+
+    pub(crate) fn spawn_with_question_session(
+        config: CodexRpcHostConfig,
+        question_session: CodexQuestionSession,
+    ) -> anyhow::Result<Self> {
         let mut cmd = tokio::process::Command::new(crate::lane::codex_session::codex_cli_path());
         cmd.arg("app-server")
             .current_dir(&config.cwd)
@@ -483,6 +519,9 @@ impl CodexAgentHost {
                 catalog_cursors: Vec::new(),
                 history: None,
                 interactions: Default::default(),
+                async_questions: question_session.preview(config.thread_id.as_deref()),
+                reply_waiters: HashMap::new(),
+                reply_clients: Default::default(),
                 startup_error: None,
                 hydration_target: None,
                 thread_id: None,
@@ -498,6 +537,7 @@ impl CodexAgentHost {
                 stderr_tail: VecDeque::new(),
             }),
             child: Mutex::new(Some(child)),
+            question_session,
         });
         // stderr drain（moody 指摘 #2）: 未ログイン / CLI 不整合の原因を log + 末尾保持して
         // 途絶 Error の診断材料にする（旧 TurnHost の stderr 合成の常駐版）。
@@ -733,11 +773,23 @@ impl CodexAgentHost {
     pub fn stop(&mut self) {
         {
             let mut st = self.inner.state.lock().expect("rpc state lock");
+            if st.stopping {
+                return;
+            }
             st.stopping = true;
             st.dead = true;
             st.queue.clear();
             st.interactions.clear();
-            let event = st.interactions.snapshot();
+            st.async_questions = if let Some(thread_id) = st.thread_id.as_deref() {
+                self.inner
+                    .question_session
+                    .suspend(thread_id, &st.async_questions)
+            } else {
+                st.async_questions.for_handoff().waiting_for_resume()
+            };
+            st.reply_waiters.clear();
+            st.reply_clients.clear();
+            let event = st.interaction_snapshot();
             self.inner.emit_locked(&mut st, event);
         }
         if let Some(mut child) = self.inner.child.lock().expect("child lock").take() {
@@ -900,7 +952,7 @@ async fn run_reader(
                         turn.as_deref(),
                     );
                     if result.is_ok() {
-                        let event = st.interactions.snapshot();
+                        let event = st.interaction_snapshot();
                         inner.emit_locked(&mut st, event);
                     }
                     result
@@ -933,7 +985,10 @@ async fn run_reader(
         st.turn_active = false;
         st.turn_id = None;
         st.interactions.clear();
-        let event = st.interactions.snapshot();
+        st.async_questions.disconnect();
+        st.reply_waiters.clear();
+        st.reply_clients.clear();
+        let event = st.interaction_snapshot();
         inner.emit_locked(&mut st, event);
         (
             st.stopping,
@@ -981,7 +1036,7 @@ fn process_notification(
         return false;
     }
     if st.interactions.observe(method, params) {
-        let event = st.interactions.snapshot();
+        let event = st.interaction_snapshot();
         inner.emit_locked(&mut st, event);
     }
     let restored = st
@@ -1010,6 +1065,26 @@ fn process_notification(
         };
         inner.emit_locked(&mut st, snapshot);
         return false;
+    }
+    if method == "item/completed" && st.async_questions.observe(params) {
+        let event = st.interaction_snapshot();
+        inner.emit_locked(&mut st, event);
+    }
+    if matches!(method, "item/started" | "item/completed")
+        && params["item"]["type"] == "userMessage"
+        && let Some(client) = params["item"]["clientId"].as_str()
+        && st.reply_clients.remove(client)
+    {
+        let text = params["item"]["content"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| row["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        inner.emit_locked(&mut st, ConversationEvent::UserMessage { text });
     }
     match method {
         "turn/started" => {
@@ -1044,6 +1119,9 @@ fn process_notification(
                     context_window: None,
                 },
             );
+            // turn は完了しても、回答先の host は live 質問がある間保持する。
+            let interactions = st.interaction_snapshot();
+            inner.emit_locked(&mut st, interactions);
             return true;
         }
         "error" => {
@@ -1061,6 +1139,146 @@ fn process_notification(
         }
     }
     false
+}
+
+/// caller の切断で配送を中断しない。stdin 書込ではなく RPC 応答で受理を確定する。
+async fn respond_async_question(
+    inner: Arc<RpcInner>,
+    request_id: String,
+    decision: super::host::PermissionDecision,
+) -> anyhow::Result<()> {
+    tokio::spawn(async move {
+        let (id, line, receive, client_id, expected_turn) = {
+            let mut st = inner.state.lock().expect("rpc state lock");
+            if matches!(decision, super::host::PermissionDecision::Deny { .. }) {
+                st.async_questions
+                    .begin(&request_id, &decision)
+                    .map_err(anyhow::Error::msg)?;
+                inner.question_session.dismiss(&request_id);
+                if st.history.is_some() {
+                    // Empty interactions alone cannot clear the pump's activity guard.
+                    // Re-publish the actual turn state after a local dismissal.
+                    drop(st);
+                    inner.request_history();
+                    return Ok(());
+                }
+                let event = st.interaction_snapshot();
+                inner.emit_locked(&mut st, event);
+                return Ok(());
+            }
+            if st.dead {
+                anyhow::bail!("Codex host は終了しています");
+            }
+            let thread = st
+                .thread_id
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("会話の準備中です"))?;
+            if st.turn_active && st.turn_id.is_none() {
+                anyhow::bail!("ターンの開始を待ってから回答してください");
+            }
+            if let Some(selection) = &st.config.selection {
+                super::codex_settings::validate(&st.config.models, selection)
+                    .map_err(anyhow::Error::msg)?;
+            }
+            let Some(prompt) = st
+                .async_questions
+                .begin(&request_id, &decision)
+                .map_err(anyhow::Error::msg)?
+            else {
+                let event = st.interaction_snapshot();
+                inner.emit_locked(&mut st, event);
+                return Ok(());
+            };
+            let client = uuid::Uuid::new_v4().to_string();
+            let expected = st.turn_id.clone().filter(|_| st.turn_active);
+            let kind = if expected.is_some() {
+                ReqKind::AsyncReplySteer
+            } else {
+                ReqKind::AsyncReplyStart
+            };
+            let id = st.alloc(kind);
+            let line = if let Some(turn) = &expected {
+                serde_json::json!({"id":id,"method":"turn/steer","params":{
+                    "threadId":thread,"expectedTurnId":turn,"clientUserMessageId":client,
+                    "input":[{"type":"text","text":prompt}]
+                }})
+                .to_string()
+            } else {
+                st.turn_active = true;
+                build_configured_turn_start(
+                    id,
+                    &thread,
+                    &prompt,
+                    Some(&client),
+                    st.config.selection.as_ref(),
+                )
+            };
+            let (send, receive) = tokio::sync::oneshot::channel();
+            st.reply_waiters.insert(id, send);
+            st.reply_clients.insert(client.clone());
+            (id, line, receive, client, expected)
+        };
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            inner.write_line(&line).await.map_err(|e| e.to_string())?;
+            receive.await.map_err(|_| "接続が終了しました".to_string())
+        })
+        .await;
+        let result = match outcome {
+            Ok(Ok(response)) => {
+                if let Some(error) = response.get("error").filter(|e| !e.is_null()) {
+                    Err((
+                        false,
+                        format!("回答は受理されませんでした: {}", error_message(error)),
+                    ))
+                } else {
+                    let returned = response
+                        .pointer(if expected_turn.is_some() {
+                            "/result/turnId"
+                        } else {
+                            "/result/turn/id"
+                        })
+                        .and_then(|v| v.as_str());
+                    if returned.is_some_and(|t| {
+                        !t.is_empty()
+                            && expected_turn
+                                .as_deref()
+                                .is_none_or(|expected| expected == t)
+                    }) {
+                        Ok(())
+                    } else {
+                        Err((
+                            true,
+                            "回答の受理を確認できません。履歴を確認してください。".into(),
+                        ))
+                    }
+                }
+            }
+            _ => Err((
+                true,
+                "回答の送信結果が不明です。自動再送はしません。会話履歴を確認してください。".into(),
+            )),
+        };
+        {
+            let mut st = inner.state.lock().expect("rpc state lock");
+            st.reply_waiters.remove(&id);
+            match &result {
+                Ok(()) => {
+                    st.async_questions.finish(&request_id);
+                    inner.question_session.dismiss(&request_id);
+                }
+                Err((uncertain, _)) => {
+                    st.async_questions.failed(&request_id, *uncertain);
+                    if !uncertain {
+                        st.reply_clients.remove(&client_id);
+                    }
+                }
+            }
+            let event = st.interaction_snapshot();
+            inner.emit_locked(&mut st, event);
+        }
+        result.map_err(|(_, message)| anyhow::anyhow!(message))
+    })
+    .await?
 }
 
 async fn request_model_catalog(inner: &Arc<RpcInner>, (catalog_id, generation): (i64, u64)) {
@@ -1207,6 +1425,23 @@ async fn handle_response(
                 st.turn_id = Some(turn_id.to_string());
             }
         }
+        ReqKind::AsyncReplyStart | ReqKind::AsyncReplySteer => {
+            let mut st = inner.state.lock().expect("rpc state lock");
+            if kind == ReqKind::AsyncReplyStart {
+                if error.is_some() {
+                    st.turn_active = false;
+                    st.turn_id = None;
+                } else if st.turn_active && st.turn_id.is_none() {
+                    st.turn_id = msg
+                        .pointer("/result/turn/id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned);
+                }
+            }
+            if let Some(waiter) = st.reply_waiters.remove(&id) {
+                let _ = waiter.send(msg.clone());
+            }
+        }
         ReqKind::TurnInterrupt => {
             if let Some(err) = error {
                 tracing::warn!("codex turn/interrupt 失敗: {}", error_message(err));
@@ -1279,6 +1514,149 @@ async fn handle_response(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn async_question_jsonl_uses_steer_or_start_and_waits_for_rpc_result() {
+        for active in [true, false] {
+            for outcome in ["accepted", "rejected", "disconnected"] {
+                eprintln!("async probe active={active} outcome={outcome}: start");
+                let host = response_test_host();
+                {
+                    let mut st = host.inner.state.lock().unwrap();
+                    st.thread_id = Some("thread".into());
+                    st.turn_id = active.then(|| "turn".into());
+                    st.turn_active = active;
+                }
+                let script = r#"import json,sys,time
+def send(v): print(json.dumps(v),flush=True)
+json.loads(sys.stdin.readline())
+send({'method':'item/completed','params':{'threadId':'thread','turnId':'turn','item':{'type':'agentMessage','id':'q','text':'質問','delivery':'async','questions':[{'title':'どちら？','options':['A','B']}]}}})
+r=json.loads(sys.stdin.readline())
+assert r['method']==sys.argv[1], r
+assert r['params']['threadId']=='thread'
+assert '質問: どちら？' in r['params']['input'][0]['text']
+assert '回答: A' in r['params']['input'][0]['text']
+assert r['params']['clientUserMessageId']
+if r['method']=='turn/steer': assert r['params']['expectedTurnId']=='turn'
+time.sleep(0.05)
+if sys.argv[2]=='disconnected': sys.exit(0)
+if sys.argv[2]=='rejected': send({'id':r['id'],'error':{'code':-32600,'message':'no active turn to steer'}})
+else:
+ send({'method':'item/started','params':{'threadId':'thread','turnId':'turn','item':{'type':'userMessage','id':'u','clientId':r['params']['clientUserMessageId'],'content':r['params']['input']}}})
+ send({'id':r['id'],'result':{'turnId':'turn'} if r['method']=='turn/steer' else {'turn':{'id':'next'}}})
+for line in sys.stdin: pass
+"#;
+                let mut child = tokio::process::Command::new(if cfg!(target_os = "macos") {
+                    "/usr/bin/python3"
+                } else {
+                    "python3"
+                })
+                .args([
+                    "-u",
+                    "-c",
+                    script,
+                    if active { "turn/steer" } else { "turn/start" },
+                    outcome,
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+                *host.inner.stdin.lock().await = child.stdin.take();
+                let mut rx = host.subscribe();
+                let reader = tokio::spawn(run_reader(
+                    host.inner.clone(),
+                    child.stdout.take().unwrap(),
+                    None,
+                ));
+                let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    let request = loop {
+                        if let ConversationEvent::CodexInteractions { requests } =
+                            rx.recv().await.unwrap()
+                            && let Some(request) = requests.into_iter().next()
+                        {
+                            break request;
+                        }
+                    };
+                    let decision = super::super::host::PermissionDecision::Allow {
+                        answers: Some(serde_json::json!({"0":"A"})),
+                    };
+                    eprintln!("async probe active={active} outcome={outcome}: question received");
+                    let response = host.respond_permission(&request.request_id, decision).await;
+                    eprintln!(
+                        "async probe active={active} outcome={outcome}: response {response:?}"
+                    );
+                    assert_eq!(
+                        response.is_ok(),
+                        outcome == "accepted",
+                        "{outcome}: {response:?}"
+                    );
+                    let st = host.inner.state.lock().unwrap();
+                    assert_eq!(
+                        st.async_questions.contains(&request.request_id),
+                        outcome != "accepted"
+                    );
+                    if outcome == "disconnected" {
+                        let value = serde_json::to_value(st.interaction_snapshot()).unwrap();
+                        assert_eq!(value["requests"][0]["can_accept"], false);
+                    }
+                    assert!(st.reply_waiters.is_empty());
+                })
+                .await;
+                reader.abort();
+                let _ = child.kill().await;
+                result.expect("非同期質問の JSONL 往復");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn async_question_remains_answerable_after_turn_completion() {
+        let host = response_test_host();
+        {
+            let mut st = host.inner.state.lock().unwrap();
+            st.thread_id = Some("thread".into());
+            st.turn_id = Some("turn".into());
+            st.turn_active = true;
+        }
+        let mut rx = host.subscribe();
+        let mut tr = CodexRpcTranslator::new();
+        process_notification(
+            &host.inner,
+            &mut tr,
+            "item/completed",
+            &serde_json::json!({
+                "threadId":"thread","turnId":"turn","item":{"type":"agentMessage","id":"q",
+                "delivery":"async","text":"選んでください","questions":[{"title":"どちら？","options":["A","B"]}]}
+            }),
+        );
+        process_notification(
+            &host.inner,
+            &mut tr,
+            "turn/completed",
+            &serde_json::json!({"threadId":"thread","turn":{"id":"turn","status":"completed"}}),
+        );
+        host.request_history();
+        let mut latest = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let ConversationEvent::CodexInteractions { requests } = event {
+                latest = requests;
+            }
+        }
+        assert_eq!(latest.len(), 1);
+        assert!(!latest[0].blocking);
+        assert_eq!(latest[0].questions[0].options[0].label, "A");
+        host.respond_permission(
+            &latest[0].request_id,
+            super::super::host::PermissionDecision::Deny {
+                message: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+
     // mem_1CeySwxuoVc17bGLnU5Np3
     #[tokio::test]
     async fn interactions_stop_invalidates_pending_requests() {
@@ -1319,7 +1697,7 @@ mod tests {
                     Some("turn"),
                 )
                 .unwrap();
-            serde_json::to_value(st.interactions.snapshot()).unwrap()["requests"][0]["request_id"]
+            serde_json::to_value(st.interaction_snapshot()).unwrap()["requests"][0]["request_id"]
                 .as_str()
                 .unwrap()
                 .to_string()
@@ -1335,7 +1713,7 @@ mod tests {
         let st = host.inner.state.lock().unwrap();
         assert!(st.dead);
         assert_eq!(
-            serde_json::to_value(st.interactions.snapshot()).unwrap()["requests"],
+            serde_json::to_value(st.interaction_snapshot()).unwrap()["requests"],
             serde_json::json!([])
         );
     }
@@ -1404,7 +1782,7 @@ for line in sys.stdin: pass
                             );
                         }
                     }
-                    ConversationEvent::MessageChunk { text } if text == "roundtrip-ok" => break,
+                    ConversationEvent::CodexMessage { text, .. } if text == "roundtrip-ok" => break,
                     ConversationEvent::Error { message } => panic!("{message}"),
                     _ => {}
                 }
@@ -1781,7 +2159,7 @@ for line in sys.stdin:
         );
         assert!(
             !std::iter::from_fn(|| rx.try_recv().ok())
-                .any(|ev| matches!(ev, ConversationEvent::MessageChunk { .. })),
+                .any(|ev| matches!(ev, ConversationEvent::CodexMessage { .. })),
             "snapshot 済みの本文を完成通知で二度 append しない"
         );
     }
@@ -1826,7 +2204,7 @@ for line in sys.stdin:
             "item/completed",
             &serde_json::json!({"threadId":"t","turnId":"running","item":{"id":"a","type":"agentMessage","text":"途中の続き"}}),
         );
-        assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|ev| matches!(ev, ConversationEvent::CodexHistory { events, .. } if events.contains(&ConversationEvent::MessageChunk { text:"途中の続き".into() }))));
+        assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|ev| matches!(ev, ConversationEvent::CodexHistory { events, .. } if events.contains(&ConversationEvent::CodexMessage { item_id: "running/a".into(), text:"途中の続き".into(), questions: Vec::new(), append: false }))));
     }
 
     #[tokio::test]
@@ -1862,7 +2240,7 @@ for line in sys.stdin:
         handle_response(&host.inner, id, &serde_json::json!({"id":id,"result":{"thread":{"id":"paged","turns":[
             {"id":"old","status":"completed","items":[{"id":"a","type":"agentMessage","text":"復元"}]}
         ]}}}), &Some("paged".into())).await;
-        assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|ev| matches!(ev, ConversationEvent::CodexHistory { events, .. } if events.contains(&ConversationEvent::MessageChunk { text:"復元".into() }))));
+        assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|ev| matches!(ev, ConversationEvent::CodexHistory { events, .. } if events.contains(&ConversationEvent::CodexMessage { item_id: "old/a".into(), text:"復元".into(), questions: Vec::new(), append: false }))));
     }
 
     // mem_1Cex9hm7knkwwNWrjqTEBu — Console の native 履歴が host の出力に届く。
@@ -1897,17 +2275,260 @@ for line in sys.stdin:
         assert!(events.contains(&ConversationEvent::UserMessage {
             text: "Console の質問".into()
         }));
-        assert!(events.contains(&ConversationEvent::MessageChunk {
-            text: "Console の応答".into()
+        assert!(events.contains(&ConversationEvent::CodexMessage {
+            item_id: "old/answer".into(),
+            text: "Console の応答".into(),
+            questions: Vec::new(),
+            append: false
         }));
         assert!(!host.inner.state.lock().unwrap().turn_active);
     }
 
+    // mem_1CeySwxuoVc17bGLnU5Np3: Console 切替で host を落としてもカードの ID を失わない。
+    #[tokio::test]
+    async fn async_question_teardown_keeps_a_disabled_card() {
+        let mut host = response_test_host();
+        let id = {
+            let mut st = host.inner.state.lock().unwrap();
+            st.thread_id = Some("thread".into());
+            st.async_questions.observe(&serde_json::json!({"turnId":"turn","item":{
+                "id":"q","type":"agentMessage","delivery":"async","questions":[{"title":"どちら？","options":["A","B"]}]
+            }}));
+            serde_json::to_value(st.interaction_snapshot()).unwrap()["requests"][0]["request_id"]
+                .clone()
+        };
+        let mut rx = host.subscribe();
+        host.stop();
+        let event = serde_json::to_value(rx.try_recv().unwrap()).unwrap();
+        assert_eq!(event["requests"][0]["request_id"], id);
+        assert_eq!(event["requests"][0]["can_accept"], false);
+    }
+
+    // mem_1CeySwxuoVc17bGLnU5Np3: 同じ pool/session、別 host で質問を引き取る。
+    #[tokio::test]
+    async fn async_question_handoff_survives_slot_drop_and_verified_resume() {
+        let _state = crate::test_env::state_dir_async().await;
+        for sending in [false, true] {
+            let pool = crate::repo::lane::pool::LanePool::default();
+            let addr = crate::repo::lane::LaneAddress::root("codex-resume-test");
+            let old =
+                response_test_host_with_questions(pool.codex_question_session(&addr, 1), None);
+            let id = {
+                let mut st = old.inner.state.lock().unwrap();
+                st.thread_id = Some("thread".into());
+                st.async_questions.observe(&serde_json::json!({"turnId":"turn","item":{
+                    "id":"q","type":"agentMessage","delivery":"async","questions":[{"title":"どちら？","options":["A","B"]}]
+                }}));
+                let id = serde_json::to_value(st.interaction_snapshot()).unwrap()["requests"][0]["request_id"].as_str().unwrap().to_string();
+                if sending {
+                    st.async_questions
+                        .begin(
+                            &id,
+                            &super::super::host::PermissionDecision::Allow {
+                                answers: Some(serde_json::json!({"0":"A"})),
+                            },
+                        )
+                        .unwrap();
+                }
+                st.interactions
+                    .receive(
+                        &serde_json::json!(7),
+                        "item/commandExecution/requestApproval",
+                        &serde_json::json!({"threadId":"thread","turnId":"turn","command":"ls"}),
+                        Some("thread"),
+                        Some("turn"),
+                    )
+                    .unwrap();
+                id
+            };
+            let mut old_rx = old.subscribe();
+            let slot = super::super::engine::ChatEngineSlot {
+                host: super::super::engine::ChatHost::Codex(old),
+                pump: tokio::spawn(async {}),
+                last_event_at: Default::default(),
+                turn_active: Default::default(),
+            };
+            // reconcile の mode 変更時と同じ ChatEngineSlot::drop → host.stop を通す。
+            drop(slot);
+            let stopped = serde_json::to_value(old_rx.try_recv().unwrap()).unwrap();
+            assert_eq!(
+                stopped["requests"].as_array().unwrap().len(),
+                1,
+                "native 承認は引き継がない"
+            );
+            assert_eq!(stopped["requests"][0]["request_id"], id);
+            assert_eq!(stopped["requests"][0]["can_accept"], false);
+
+            let other = response_test_host_with_questions(
+                pool.codex_question_session(&addr, 2),
+                Some("thread"),
+            );
+            assert!(
+                serde_json::to_value(other.inner.state.lock().unwrap().interaction_snapshot())
+                    .unwrap()["requests"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty(),
+                "同じ native thread でも別 VP session へ混ぜない"
+            );
+
+            let mut next = response_test_host_with_questions(
+                pool.codex_question_session(&addr, 1),
+                Some("thread"),
+            );
+            let mut rx = next.subscribe();
+            next.inner.request_history();
+            let preparing = std::iter::from_fn(|| rx.try_recv().ok())
+                .find(|e| matches!(e, ConversationEvent::CodexInteractions { .. }))
+                .unwrap();
+            let preparing = serde_json::to_value(preparing).unwrap();
+            assert_eq!(
+                preparing["requests"][0]["request_id"], id,
+                "起動直後も下書きの ID を残す"
+            );
+            assert_eq!(preparing["requests"][0]["can_accept"], false);
+
+            next.inner
+                .adopt_thread(&serde_json::json!({"id":"thread","turns":[]}), "thread")
+                .await;
+            let resumed =
+                serde_json::to_value(next.inner.state.lock().unwrap().interaction_snapshot())
+                    .unwrap();
+            assert_eq!(resumed["requests"][0]["request_id"], id);
+            assert_eq!(resumed["requests"][0]["can_accept"], !sending);
+            let answer = next.inner.state.lock().unwrap().async_questions.begin(
+                &id,
+                &super::super::host::PermissionDecision::Allow {
+                    answers: Some(serde_json::json!({"0":"B"})),
+                },
+            );
+            assert_eq!(answer.is_ok(), !sending, "送信途中の切替は成否不明を維持");
+            if let Ok(Some(text)) = answer {
+                assert!(text.contains("回答: B"));
+            }
+            next.stop();
+            // 別会話へ移ったら元の質問を回答可能に戻さない。
+            let different = response_test_host_with_questions(
+                pool.codex_question_session(&addr, 1),
+                Some("another-thread"),
+            );
+            assert!(
+                serde_json::to_value(different.inner.state.lock().unwrap().interaction_snapshot())
+                    .unwrap()["requests"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn async_question_handoff_survives_failed_resume_and_respects_dismissal() {
+        let _state = crate::test_env::state_dir_async().await;
+        let session = CodexQuestionSession::default();
+        let mut old = response_test_host_with_questions(session.clone(), None);
+        let id = {
+            let mut st = old.inner.state.lock().unwrap();
+            st.thread_id = Some("thread".into());
+            st.async_questions.observe(&serde_json::json!({"turnId":"turn","item":{
+                "id":"q","type":"agentMessage","delivery":"async","questions":[{"title":"回答？","options":null}]
+            }}));
+            serde_json::to_value(st.interaction_snapshot()).unwrap()["requests"][0]["request_id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        old.stop();
+        old.stop(); // 二度目の teardown で保管した回答権限を上書きしない。
+        let mut failed = response_test_host_with_questions(session.clone(), Some("thread"));
+        failed
+            .inner
+            .adopt_thread(&serde_json::json!({"id":"wrong","turns":[]}), "thread")
+            .await;
+        assert!(failed.inner.state.lock().unwrap().dead);
+        failed.stop();
+        let mut retry = response_test_host_with_questions(session.clone(), Some("thread"));
+        retry
+            .inner
+            .adopt_thread(&serde_json::json!({"id":"thread","turns":[]}), "thread")
+            .await;
+        assert_eq!(
+            serde_json::to_value(retry.inner.state.lock().unwrap().interaction_snapshot()).unwrap()
+                ["requests"][0]["can_accept"],
+            true
+        );
+        retry.stop();
+        let preparing = response_test_host_with_questions(session.clone(), Some("thread"));
+        preparing
+            .respond_permission(
+                &id,
+                super::super::host::PermissionDecision::Deny {
+                    message: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+        preparing
+            .inner
+            .adopt_thread(&serde_json::json!({"id":"thread","turns":[]}), "thread")
+            .await;
+        assert!(
+            !preparing
+                .inner
+                .state
+                .lock()
+                .unwrap()
+                .async_questions
+                .contains(&id)
+        );
+    }
+
+    #[tokio::test]
+    async fn async_question_dismissal_resynchronizes_turn_activity() {
+        let _state = crate::test_env::state_dir_async().await;
+        for active in [false, true] {
+            let host = response_test_host();
+            host.inner
+                .adopt_thread(&serde_json::json!({"id":"thread","turns":[]}), "thread")
+                .await;
+            let id = {
+                let mut st = host.inner.state.lock().unwrap();
+                st.turn_active = active;
+                st.async_questions.observe(&serde_json::json!({"turnId":"turn","item":{
+                    "id":"q","type":"agentMessage","delivery":"async","questions":[{"title":"回答？","options":null}]
+                }}));
+                serde_json::to_value(st.interaction_snapshot()).unwrap()["requests"][0]["request_id"].as_str().unwrap().to_string()
+            };
+            let mut rx = host.subscribe();
+            host.respond_permission(
+                &id,
+                super::super::host::PermissionDecision::Deny {
+                    message: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+            assert!(
+                std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(event,
+                ConversationEvent::CodexHistory { in_flight, .. } if in_flight == active)),
+                "ローカル見送りでも実 turn の稼働状態を配信し直す"
+            );
+        }
+    }
+
     // Task: mem_1Cex2VPFy3gQnXtpYqF1in
     fn response_test_host() -> CodexAgentHost {
+        response_test_host_with_questions(CodexQuestionSession::default(), None)
+    }
+
+    fn response_test_host_with_questions(
+        question_session: CodexQuestionSession,
+        thread_id: Option<&str>,
+    ) -> CodexAgentHost {
         let (event_tx, _) = broadcast::channel(32);
         CodexAgentHost {
             inner: Arc::new(RpcInner {
+                question_session: question_session.clone(),
                 event_tx,
                 repo: "codex-resume-test".into(),
                 lane: "main".into(),
@@ -1921,6 +2542,9 @@ for line in sys.stdin:
                     catalog_cursors: Vec::new(),
                     history: None,
                     interactions: Default::default(),
+                    async_questions: question_session.preview(thread_id),
+                    reply_waiters: HashMap::new(),
+                    reply_clients: Default::default(),
                     startup_error: None,
                     hydration_target: None,
                     thread_id: None,
@@ -2160,7 +2784,15 @@ for line in sys.stdin:
                 ConversationEvent::SessionInit {
                     session_id: sid, ..
                 } => session_id = sid,
-                ConversationEvent::MessageChunk { text: t } => text.push_str(&t),
+                ConversationEvent::CodexMessage {
+                    text: t, append, ..
+                } => {
+                    if append {
+                        text.push_str(&t);
+                    } else {
+                        text = t;
+                    }
+                }
                 ConversationEvent::TurnCompleted { .. } => break,
                 ConversationEvent::Error { message } => panic!("engine error: {message}"),
                 _ => {}
@@ -2189,7 +2821,7 @@ for line in sys.stdin:
                 .expect("60s 以内に turn が走り出す")
                 .expect("recv");
             match ev {
-                ConversationEvent::MessageChunk { .. } | ConversationEvent::ThoughtChunk { .. } => {
+                ConversationEvent::CodexMessage { .. } | ConversationEvent::ThoughtChunk { .. } => {
                     break;
                 }
                 ConversationEvent::Error { message } => panic!("engine error: {message}"),

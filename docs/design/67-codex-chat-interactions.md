@@ -25,6 +25,10 @@ Chat の起動で approvalPolicy / sandbox を上書きせず、native の設定
 独立した権限要求 `item/permissions/requestApproval` と MCP elicitation は本段階の対象外。
 既存設定が承認不要ならカードは発生しない。
 
+`agentMessage` の `delivery: "async"` / `questions` は別の仕組みであり、元 RPC ID へ
+回答する要求ではない。発話としての表示と steer / start による回答配送は design 69 を参照。
+以下の turn 完了時の失効規則は server request に適用する。
+
 ## ライフサイクル
 
 - native request ID（文字列または整数）は型を保持。UI 向け ID は host 世代と採番を含め、
@@ -58,3 +62,5 @@ Rust ↔ TypeScript の型・fixture 契約と既存 Chat テストも通す。
 - 2026-09-12: 要求受付・回答の JSONL 送信・Chat カードを実装。`mise run test` は
   1,412 成功・失敗 0・除外 23、WebView の `bun run test` は 592 成功。
   WebView の型チェック・bundle ビルド、compile check、Clippy も成功。実機での操作確認は未実施。
+- 2026-09-13: 実機で本文として現れた質問は非同期 agentMessage と判明。design 69 で
+  live 台帳と配送を分離し、共通カードに選択・自由入力の下書きを接続。承認の配送規則は維持。

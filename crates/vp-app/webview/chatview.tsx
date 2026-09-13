@@ -1428,6 +1428,24 @@ export function SessionPlate(props: {
 function SessionChatView(props: { lane: string; session: number }) {
   const lc = laneChat(props.lane, props.session)
   const state = (): ChatState => lc.state
+  const setCodexAnswer = (id: string, question: string, text: string) => lc.set(produce(s => {
+    if (!s.codexInteractions) return
+    const drafts = s.codexInteractions.drafts ??= {}
+    drafts[id] = { ...(drafts[id] ?? {}), [question]: text }
+  }))
+  const respondCodex = (id: string, behavior: 'allow' | 'deny', answers?: Record<string, string>) => {
+    let started = false
+    lc.set(produce(s => { started = beginCodexResponse(s, id) }))
+    if (!started) return
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    if (!ipc) {
+      lc.set(produce(s => foldInto(s, { kind: 'codex_interaction_result', request_id: id,
+        error: '接続がありません。再接続後に回答してください。' })))
+      return
+    }
+    ipc.postMessage(JSON.stringify({ t: 'conversation:respond', lane: props.lane,
+      session: props.session, request_id: id, behavior, answers }))
+  }
   /** この pane が lane の focused session か（= chat 動詞の宛先か）。 */
   const isFocused = (): boolean => (sessionsOf(props.lane)?.focused ?? 1) === props.session
   // 名札まわり（label / root chip / 会話 id / badge / ✕）は `SessionPlate` に移管した
@@ -1926,6 +1944,29 @@ function SessionChatView(props: { lane: string; session: number }) {
                   </Switch>
                 )
               }
+              if (item.kind === 'assistant' && item.codexItemId) {
+                const liveQuestion = () => state().codexInteractions?.requests.find(r => r.item_id === item.codexItemId)
+                return <div class="conversation-msg">
+                  <Show when={liveQuestion()} fallback={
+                    <Show when={item.codexQuestions?.length} fallback={
+                      <MsgBody class="conversation-msg-body" text={item.text} final={item.sealed === true} />
+                    }>
+                      <section class="conversation-prompt" aria-label="質問の履歴">
+                        <div class="conversation-prompt-header">質問の履歴</div>
+                        <For each={item.codexQuestions}>{q => <div class="conversation-prompt-q">
+                          <div>{q.question}</div>
+                          <For each={q.options}>{option => <div>{option.label}</div>}</For>
+                        </div>}</For>
+                      </section>
+                    </Show>
+                  }>{request => <CodexInteractionCard request={request()}
+                    answers={state().codexInteractions?.drafts?.[request().request_id] ?? {}}
+                    setAnswer={(question, text) => setCodexAnswer(request().request_id, question, text)}
+                    sending={state().codexInteractions?.sending.includes(request().request_id) ?? false}
+                    error={state().codexInteractions?.errors[request().request_id]}
+                    respond={respondCodex} />}</Show>
+                </div>
+              }
               if (item.kind === 'prompt') {
                 if (!item.permission)
                   return <PromptCard item={item} onAnswer={answerPrompt} onCancel={cancelPrompt} />
@@ -1981,22 +2022,21 @@ function SessionChatView(props: { lane: string; session: number }) {
           </Show>
         </div>
         <div style={{ 'max-height': '45vh', overflow: 'auto' }}>
-          <For each={state().codexInteractions?.requests ?? []}>{request =>
+          <Show when={state().codexInteractions?.requests.some(r => r.item_id && r.can_accept)}>
+            <button type="button" class="conversation-prompt-opt" onClick={() => {
+              const question = state().codexInteractions?.requests.find(r => r.item_id && r.can_accept)
+              if (question) document.getElementById(question.request_id)?.scrollIntoView({ block: 'center' })
+            }}>
+              未回答の質問 {state().codexInteractions?.requests.filter(r => r.item_id && r.can_accept).length} 件
+            </button>
+          </Show>
+          <For each={(state().codexInteractions?.requests ?? []).filter(r => !r.item_id || !state().items.some(i => i.kind === 'assistant' && i.codexItemId === r.item_id))}>{request =>
             <CodexInteractionCard request={request}
+              answers={state().codexInteractions?.drafts?.[request.request_id] ?? {}}
+              setAnswer={(question, text) => setCodexAnswer(request.request_id, question, text)}
               sending={state().codexInteractions?.sending.includes(request.request_id) ?? false}
               error={state().codexInteractions?.errors[request.request_id]}
-              respond={(id, behavior, answers) => {
-                let started = false
-                lc.set(produce(s => { started = beginCodexResponse(s, id) }))
-                if (!started) return
-                const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-                if (!ipc) {
-                  lc.set(produce(s => foldInto(s, { kind: 'codex_interaction_result', request_id: id, error: '接続がありません。再接続後に回答してください。' })))
-                  return
-                }
-                ipc.postMessage(JSON.stringify({ t: 'conversation:respond', lane: props.lane,
-                  session: props.session, request_id: id, behavior, answers }))
-              }} />
+              respond={respondCodex} />
           }</For>
         </div>
         {/* status bar — **入力の上**（stream に隣接）。engine が今何をしているかの読み取り専用の

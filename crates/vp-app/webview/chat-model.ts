@@ -12,6 +12,7 @@
 import type { ConversationEvent, PlanEntry, QuestionSpec } from './console'
 import type { toWirePayload } from './paste-image'
 import { foldCodexInteractions, type CodexInteractionState } from './codex-interaction-model'
+import type { CodexQuestion } from './src/generated/CodexQuestion'
 
 // ---------------------------------------------------------------------------
 // 会話モデル — flat item stream（ConversationEvent を UI 単位に畳む）
@@ -19,7 +20,7 @@ import { foldCodexInteractions, type CodexInteractionState } from './codex-inter
 
 export type ChatItem =
   | { kind: 'user'; text: string; submissionId?: string; clientId?: string }
-  | { kind: 'assistant'; text: string; sealed?: boolean } // append 先。sealed=turn 境界（§5.1、次 turn は新バブル）
+  | { kind: 'assistant'; text: string; sealed?: boolean; codexItemId?: string; codexQuestions?: CodexQuestion[] } // append 先。sealed=turn 境界（§5.1、次 turn は新バブル）
   | { kind: 'thinking'; text: string; at?: number } // thought_chunk を末尾 thinking に append。at = live 受信時刻（doc 57 §4.2、replay では刻まない）
   // tool。input/result は詳細展開の表示源。backend は最初から ToolCall{input} /
   // ToolCallUpdate{content} を送っているので、view が保持するだけで詳細が開ける。
@@ -221,7 +222,7 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       foldInto(s, { kind: 'replay_start' })
       for (const event of ev.events) {
         // 表示データのみ。過去の承認・送信・snapshot を再帰実行しない。
-        if (['user_message', 'message_chunk', 'thought_chunk', 'tool_call', 'tool_call_update', 'turn_completed'].includes(event.kind)) {
+        if (['user_message', 'message_chunk', 'codex_message', 'thought_chunk', 'tool_call', 'tool_call_update', 'turn_completed'].includes(event.kind)) {
           foldInto(s, event)
         }
       }
@@ -275,6 +276,19 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       if (ev.slash_commands) s.slashCommands = ev.slash_commands
       if (ev.command_docs) s.commandDocs = ev.command_docs
       break
+    case 'codex_message': {
+      s.streaming = true
+      const item = s.items.find(i => i.kind === 'assistant' && i.codexItemId === ev.item_id)
+      if (item?.kind === 'assistant') {
+        item.text = ev.append ? item.text + ev.text : ev.text
+        item.sealed = !ev.append
+        if (!ev.append) item.codexQuestions = ev.questions
+      } else {
+        s.items.push({ kind: 'assistant', text: ev.text, codexItemId: ev.item_id,
+          codexQuestions: ev.questions, sealed: !ev.append })
+      }
+      break
+    }
     case 'message_chunk': {
       s.streaming = true
       const last = s.items[s.items.length - 1]
@@ -472,7 +486,7 @@ export function deriveStatus(s: ChatState | null, nowMs = 0): ConversationStatus
   const idleSec =
     s.lastEventAt != null && nowMs > 0 ? Math.max(0, Math.round((nowMs - s.lastEventAt) / 1000)) : undefined
   const base = { pending, lastEvent, idleSec }
-  const codexWaiting = s.codexInteractions?.requests[0]
+  const codexWaiting = s.codexInteractions?.requests.find(r => r.blocking)
   if (codexWaiting) return { ...base, kind: 'awaiting', label: codexWaiting.kind === 'question' ? '質問待ち' : '承認待ち', stalled: false }
   // 未回答の HITL prompt（質問 / 承認）が最優先 = ユーザーにボールがある。
   const waiting = s.items.find((i) => i.kind === 'prompt' && !i.answered) as

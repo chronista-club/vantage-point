@@ -212,6 +212,7 @@ impl Interactions {
         self.next_id += 1;
         let request_id = format!("codex:{}:{}", self.generation, self.next_id);
         let view = CodexInteraction {
+            item_id: None,
             request_id: request_id.clone(),
             kind: kind.into(),
             title: title.into(),

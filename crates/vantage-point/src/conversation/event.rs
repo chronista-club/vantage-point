@@ -92,6 +92,14 @@ pub enum ConversationEvent {
     /// 本文テキストの増分（1 token 前後）。GUI は末尾に append。
     MessageChunk { text: String },
 
+    /// Codex の発話単位。completed の全文で delta を置換し、質問構造を失わない。
+    CodexMessage {
+        item_id: String,
+        text: String,
+        questions: Vec<CodexQuestion>,
+        append: bool,
+    },
+
     /// thinking の増分。GUI は折りたたみ領域に append。
     ThoughtChunk { text: String },
 
@@ -218,6 +226,10 @@ pub enum ConversationEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct CodexInteraction {
+    /// 非同期質問の発話キー。server request は発話本文とは独立する。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub item_id: Option<String>,
     pub request_id: String,
     pub kind: String,
     pub title: String,
