@@ -115,6 +115,13 @@ export function bucketOf(raw: unknown): BucketId {
  */
 export interface ActionItem extends OutlinerNode {
 	id: string;
+	/** Capture ownership is independent of the selected Project. */
+	atlas_id?: string | null;
+	/** null is an unclassified capture, not an implicit todo. */
+	kind?: string | null;
+	locked?: boolean;
+	/** Stable capture receipt; native id may be assigned after submission. */
+	client_id?: string;
 	/** タイトル + 内容。1 行目がタイトル、2 行目以降が内容（doc 57 §3 の写像）。 */
 	text: string;
 	done?: boolean;
@@ -294,6 +301,10 @@ export function normalizeActions(
 		seen.add(id);
 		out.push({
 			id,
+			...(typeof e.atlas_id === "string" || e.atlas_id === null ? { atlas_id: e.atlas_id } : {}),
+			...(typeof e.kind === "string" || e.kind === null ? { kind: e.kind } : {}),
+			...(typeof e.locked === "boolean" ? { locked: e.locked } : {}),
+			...(typeof e.client_id === "string" ? { client_id: e.client_id } : {}),
 			text: typeof e.text === "string" ? e.text : "",
 			done: e.done === true,
 			bucket: bucketOf(e.bucket),

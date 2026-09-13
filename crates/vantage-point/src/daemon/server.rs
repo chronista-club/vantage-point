@@ -3272,6 +3272,7 @@ mod tests {
             done: false,
             bucket: "today".to_string(),
             order: "a0".to_string(),
+            ..Default::default()
         }]);
         let snap = state.creo_actions.get();
         assert_eq!(

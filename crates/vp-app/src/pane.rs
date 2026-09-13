@@ -109,6 +109,18 @@ pub struct HubNode {
 pub struct ActionItem {
     /// creo の memory id（`mem_xxx`）。Action の同一性はこれ 1 本。
     pub id: String,
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional))]
+    pub atlas_id: Option<String>,
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional))]
+    pub kind: Option<String>,
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional))]
+    pub locked: Option<bool>,
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional))]
+    pub client_id: Option<String>,
     /// タイトル + 内容。1 行目がタイトル、2 行目以降が内容。
     #[serde(default)]
     pub text: String,
@@ -121,6 +133,16 @@ pub struct ActionItem {
     /// 区画内の並び（`metadata.vp.order`）。未設定は空文字。
     #[serde(default)]
     pub order: String,
+}
+
+/// A destination offered by Creo; independent of the active Project.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct ActionAtlas {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub writable: bool,
 }
 
 /// Activity widget の payload
@@ -193,6 +215,14 @@ pub struct ActivitySnapshot {
     /// JSON の number と噛み合わなくなるため。
     #[serde(default)]
     pub actions_rev: u32,
+    #[serde(default)]
+    pub actions_atlases: Vec<ActionAtlas>,
+    #[serde(default)]
+    pub actions_scope: String,
+    #[serde(default)]
+    pub actions_error: String,
+    #[serde(default)]
+    pub actions_imported: bool,
 }
 
 /// Sidebar 全体の state (sidebar webview に渡す)
@@ -458,6 +488,21 @@ mod tests {
         assert!(parsed.activity.node_online);
         assert_eq!(parsed.widget, WidgetKind::Activity);
         assert_eq!(parsed.active_lane_address.as_deref(), Some("alpha/root"));
+    }
+
+    #[test]
+    fn actions_catalog_survives_sidebar_wire() {
+        let mut value = serde_json::to_value(SidebarState::default()).unwrap();
+        value["activity"]["actions_atlases"] = serde_json::json!([
+            {"id":"atlas-personal","name":"Personal","path":"/Personal","writable":true}
+        ]);
+        value["activity"]["actions_scope"] = serde_json::json!("account-a");
+        value["activity"]["actions_error"] = serde_json::json!("保存先を確認してください");
+        let state: SidebarState = serde_json::from_value(value.clone()).unwrap();
+        let roundtrip = serde_json::to_value(state).unwrap();
+        for key in ["actions_atlases", "actions_scope", "actions_error"] {
+            assert_eq!(roundtrip["activity"][key], value["activity"][key], "{key}");
+        }
     }
 
     #[test]

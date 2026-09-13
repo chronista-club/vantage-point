@@ -14,7 +14,7 @@ export type ActionItem = {
 /**
  * creo の memory id（`mem_xxx`）。Action の同一性はこれ 1 本。
  */
-id: string, 
+id: string, atlas_id?: string, kind?: string, locked?: boolean, client_id?: string,
 /**
  * タイトル + 内容。1 行目がタイトル、2 行目以降が内容。
  */

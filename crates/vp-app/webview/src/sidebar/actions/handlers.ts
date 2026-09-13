@@ -20,8 +20,6 @@ import {
 import type { SidebarForm } from "../form";
 import { isSubLane, laneAddressKey, laneShortcutNumber } from "../lane";
 import { PANEL_BUCKETS } from "../actions-panel/model";
-import { appendAction, openBuckets, toggleBucket } from "../actions-panel/store";
-import { focusActionRow } from "../actions-panel/ActionRow";
 import {
 	openAddSubFor,
 	setCaptureHintLabel,
@@ -418,12 +416,10 @@ function captureNumberHandler(e: KeyboardEvent): void {
 	const n = Number.parseInt(e.key, 10);
 	if (Number.isInteger(n) && n >= 1 && n <= PANEL_BUCKETS.length) {
 		e.preventDefault();
-		const bucket = PANEL_BUCKETS[n - 1];
 		// ⚠️ ここだけ `selected` — 下で行に focus を当てるので、畳むと編集中に潰れる。
 		exitCaptureMode(true);
-		// 区画を開いてから足す — 閉じたままだと行が DOM に出ず focus が当たらない。
-		if (!openBuckets().has(bucket.id)) toggleBucket(bucket.id);
-		focusActionRow(appendAction(bucket.id));
+		// All capture paths use the same explicit Atlas selector.
+		document.querySelector<HTMLTextAreaElement>('[aria-label="メモ"]')?.focus();
 		return;
 	}
 	if (

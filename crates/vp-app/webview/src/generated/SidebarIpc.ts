@@ -191,6 +191,8 @@ export interface DaemonRestart {}
 
 /** Request "actions:persist" */
 export interface ActionsPersist {
+  scope?: string;
+  import_legacy?: boolean;
   items: any[];
   removed: string[];
 }

@@ -1,189 +1,50 @@
-/**
- * ACTIONS の区画（doc 57 §2）— daemon status の直上に並ぶ 5 つの `<details>`。
- *
- * doc 56 §7 が「app 級の家 = サイドバー下部・daemon status の上」として予約していた住所。
- * CURRENTs を描かないのは、そこが既存の repo 一覧そのものだから（合流は Phase 5）。
- *
- * ## 層
- *
- * - **data**: `store.ts`（木と開閉）
- * - **calculations**: `model.ts`（並び・件数・キーの意図）
- * - **actions**: この file（DOM イベント → store の書き換え → focus 移動）
- */
-import { For, Index, Show } from "solid-js";
-import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
-import {
-	PANEL_BUCKETS,
-	type BucketDef,
-	actionsFetchState,
-	countUndone,
-	itemsIn,
-} from "./model";
+/** Project-independent capture and cross-Atlas list (design 71). */
+import { For, Show } from "solid-js";
+import { actionsFetchState } from "./model";
 import { sidebar } from "../store";
-import {
-	actions,
-	appendAction,
-	commitActions,
-	moveAction,
-	openBuckets,
-	removeAction,
-	setActionDone,
-	setActionText,
-	toggleBucket,
-} from "./store";
+import { actions, commitActions, moveAction, removeAction, setActionDone, setActionText, importLegacyActions, importingLegacy, actionMoveError } from "./store";
 import { ActionRow, focusActionRow } from "./ActionRow";
+import { Capture } from "./Capture";
 
-/**
- * ACTIONS の取得状態。`/api/health` の 2 値から導く（新しい配管は無い）。
- *
- * ⚠️ `services` ではなく既に sidebar へ届いている値を読む — 読み手のいない場所に
- * 出しても意味が無い（`DaemonWidget` の艦隊スイッチ表示と同じ判断）。
- */
-const fetchState = () =>
-	actionsFetchState(
-		sidebar.activity.actions_rev ?? 0,
-		sidebar.activity.auth_targets?.creo,
-	);
-
-function Bucket(props: { def: BucketDef }) {
-	const items = () => itemsIn(actions(), props.def.id);
-	const undone = () => countUndone(actions(), props.def.id);
-	const open = () => openBuckets().has(props.def.id);
-
-	/** 兄弟へ focus を移す。端なら何もしない。 */
-	const focusSibling = (from: string, dir: -1 | 1) => {
-		const list = items();
-		const at = list.findIndex((i) => i.id === from);
-		const next = list[at + dir];
-		if (next) focusActionRow(next.id);
-	};
-
-	/** 消したあとは前の行へ戻る（無ければ後ろ）。 */
-	const removeAndFocus = (id: string) => {
-		const list = items();
-		const at = list.findIndex((i) => i.id === id);
-		const fallback = list[at - 1] ?? list[at + 1];
-		if (commitActions(removeAction(id)) && fallback) focusActionRow(fallback.id);
-	};
-
-	/**
-	 * 並べ替え。**必ず focus を張り直す**のが肝。
-	 *
-	 * `<Index>` は位置キーイングなので、行が動いても DOM スロットは居座り、そこへ隣の Action の
-	 * 中身が流れ込む。focus は DOM 側に残ったままなので、張り直さないと**気づかず別の Action を
-	 * 編集する**。id は移動しても変わらないので、同じ id で引き直せば正しい行に戻る。
-	 * （`onInsert` / `onRemove` が focus を扱っているのと同じ責務。ここだけ抜けていた）
-	 */
-	const moveAndFocus = (id: string, dir: -1 | 1) => {
-		if (commitActions(moveAction(id, dir))) focusActionRow(id);
-	};
-
-	/**
-	 * 何も書かずに抜けた行を捨てる。**焦点の転送が終わってから**消すのが肝。
-	 *
-	 * `blur` は `focusActionRow` の `el.focus()` が同期的に撃つので、その場で木を書き換えると
-	 * `<Index>`（位置キーイング）の中身が 1 つずれ、**転送先の箱に別の Action が流れ込んだ状態で
-	 * 焦点が着く**（転送先が最後の行なら箱ごと消えて焦点が落ちる）。空行は `atStart` と `atEnd` が
-	 * 同時に真なので矢印が必ず行移動になり、この経路は普通に踏む。
-	 *
-	 * そこで microtask 1 つ待って転送の完了を見届け、**着地した行の id を DOM から読んでから**
-	 * 消し、同じ id で焦点を張り直す。`moveAndFocus` / `removeAndFocus` と同じ
-	 * 「書き換えたら張り直す」契約に揃えた形。
-	 */
-	const abandonIfEmpty = (id: string) => {
-		queueMicrotask(() => {
-			const landed = (document.activeElement as HTMLElement | null)
-				?.closest?.("[data-vp-act-row]")
-				?.getAttribute("data-vp-act-row");
-			// まだ自分に焦点がある = 転送ではなく一時的な blur。消さない。
-			if (landed === id) return;
-			if (commitActions(removeAction(id)) && landed) focusActionRow(landed);
-		});
-	};
-
-	return (
-		<details
-			class="vp-act-bucket"
-			open={open()}
-			onToggle={(e) => {
-				// store が SSOT。値が一致していれば何もしない（echo loop 防止、
-				// RepoAccordion:129-136 と同型）。
-				if (e.currentTarget.open !== open()) toggleBucket(props.def.id);
-			}}
-		>
-			<summary class="vp-act-summary" title={props.def.hint}>
-				<span class="vp-act-caret">›</span>
-				<span class="vp-act-label">{props.def.label}</span>
-				<Show when={undone() > 0}>
-					<span class="vp-act-badge">{undone()}</span>
-				</Show>
-			</summary>
-
-			{/* ⚠️ `<details>` は閉じていても子を DOM に持つので、Show で中身ごと出し入れする
-			    （100 行あっても閉じている間はコストゼロ）。 */}
-			<Show when={open()}>
-				<div class="vp-act-list">
-					{/* 位置キーイング。item が差し替わっても <input> の DOM が保たれる
-					    = focus と IME が飛ばない（ActionRow の doc 参照）。 */}
-					<Index each={items()}>
-						{(row) => (
-							<ActionRow
-								item={row()}
-								onText={(text) => commitActions(setActionText(row().id, text))}
-								onToggleDone={() =>
-									commitActions(setActionDone(row().id, !row().done))
-								}
-								onRemove={() => removeAndFocus(row().id)}
-								onAbandon={() => abandonIfEmpty(row().id)}
-								onMove={(dir) => moveAndFocus(row().id, dir)}
-								onFocusSibling={(dir) => focusSibling(row().id, dir)}
-							/>
-						)}
-					</Index>
-
-					{/* ⚠️ 未取得のときに「まだ何もない」と言わない — 空と未取得は同じ姿なので、
-					    ここで言い分けないと user は「本当に空」と読む（2026-08-07 の実害）。 */}
-					<Show when={items().length === 0}>
-						<div class="vp-act-empty">
-							{fetchState() === "ready" ? "まだ何もない" : "—"}
-						</div>
-					</Show>
-
-					<button
-						type="button"
-						class="vp-act-add"
-						onClick={() => focusActionRow(appendAction(props.def.id))}
-					>
-						<CreoIcon name="ph:plus" size={10} />
-						追加
-					</button>
-				</div>
-			</Show>
-		</details>
-	);
-}
+const fetchState = () => actionsFetchState(sidebar.activity.actions_rev ?? 0, sidebar.activity.auth_targets?.creo);
 
 export function BucketList() {
-	return (
-		<div class="vp-act-buckets">
-			{/* ⚠️ **区画を開かなくても見える**位置に置く。区画は既定で閉じているので、
-			    中に出しても「空に見える」ままで気づけない。ready のときは何も出さない
-			    （正常時に増える表示はゼロ = それとなく、の条件）。 */}
-			<Show when={fetchState() !== "ready"}>
-				<div
-					class="vp-act-status"
-					title={
-						fetchState() === "disconnected"
-							? "Creo ID に未接続 — 下の Creo ID 行からログインすると同期される"
-							: "creo から最初の取得を待っている"
-					}
-				>
-					{fetchState() === "disconnected" ? "未接続" : "取得中…"}
-				</div>
-			</Show>
-			<For each={PANEL_BUCKETS}>{(def) => <Bucket def={def} />}</For>
-		</div>
-	);
+  const ordered = () => [...actions()].sort((a,b) => a.order.localeCompare(b.order) || a.id.localeCompare(b.id));
+  const focusSibling = (id: string, dir: -1 | 1) => {
+    const list = ordered();
+    const next = list[list.findIndex(i => i.id === id) + dir];
+    if (next) focusActionRow(next.id);
+  };
+  return <div class="vp-act-buckets">
+    <div class="vp-act-heading">ACTIONS <span>{actions().length || ""}</span></div>
+    <Capture atlases={sidebar.activity.actions_atlases ?? []} scope={sidebar.activity.actions_scope ?? ""} />
+    <Show when={sidebar.activity.actions_error}><div class="vp-act-status" role="status">{sidebar.activity.actions_error}</div></Show>
+    <Show when={actionMoveError()}><div class="vp-act-status" role="status">{actionMoveError()}</div></Show>
+    <Show when={!sidebar.activity.actions_imported}>
+      <button type="button" class="vp-act-add" aria-label="以前のACTIONSを取り込む"
+        disabled={importingLegacy() || fetchState() !== "ready"} onClick={importLegacyActions}>
+        {importingLegacy() ? "以前のメモを取り込み中…" : "以前の ACTIONS を取り込む"}
+      </button>
+    </Show>
+    <Show when={fetchState() !== "ready"}>
+      <div class="vp-act-status">{fetchState() === "disconnected" ? "未接続" : "取得中…"}</div>
+    </Show>
+    <div class="vp-act-list" aria-label="メモ一覧">
+      <For each={ordered().map(item => item.client_id ?? item.id)}>{key => {
+        const initial = actions().find(item => (item.client_id ?? item.id) === key)!;
+        const item = () => actions().find(item => (item.client_id ?? item.id) === key) ?? initial;
+        return <ActionRow item={item()}
+          atlasName={sidebar.activity.actions_atlases?.find(a => a.id === item().atlas_id)?.path ?? "Atlas 未確認"}
+          onText={text => commitActions(setActionText(item().id, text))}
+          onToggleDone={() => commitActions(setActionDone(item().id, !item().done))}
+          onRemove={() => commitActions(removeAction(item().id))}
+          onAbandon={() => {}}
+          onMove={dir => { const id = item().id; if (commitActions(moveAction(id, dir))) focusActionRow(id); }}
+          onFocusSibling={dir => focusSibling(item().id, dir)} />
+      }}</For>
+      <Show when={fetchState() === "ready" && !actions().length}><div class="vp-act-empty">思いついたことを、ここから。</div></Show>
+    </div>
+  </div>;
 }
 
 /**
@@ -191,6 +52,17 @@ export function BucketList() {
  * 色は Light Grid（`--lg-*`）、字は 4 段（`--sb-text-*`）だけを使う。
  */
 export const ACTIONS_CSS = `
+.vp-act-heading{display:flex;justify-content:space-between;padding:8px 12px 4px;
+  font-size:var(--sb-text-micro,10px);letter-spacing:.14em;color:var(--lg-mute,#5C7A85);}
+.vp-act-capture{margin:4px 10px 8px;border:1px solid color-mix(in srgb,var(--lg-mute),transparent 75%);border-radius:6px;}
+.vp-act-capture:focus-within{border-color:var(--lg-cyan-dim,#1C6C7C);}
+.vp-act-capture textarea{display:block;box-sizing:border-box;width:100%;resize:vertical;min-height:48px;max-height:160px;
+  border:0;background:transparent;color:var(--lg-hot,#EAFBFF);font:inherit;font-size:var(--sb-text-hint,12px);padding:8px;outline:none;}
+.vp-act-capture-controls{display:flex;gap:6px;align-items:center;padding:0 6px 6px;}
+.vp-act-capture select{min-width:0;flex:1;border:0;background:transparent;color:var(--lg-mute,#5C7A85);font:inherit;font-size:var(--sb-text-micro,10px);}
+.vp-act-capture button{border:0;border-radius:4px;padding:3px 8px;background:color-mix(in srgb,var(--lg-cyan-dim,#1C6C7C),transparent 65%);color:var(--lg-hot,#EAFBFF);font:inherit;font-size:var(--sb-text-micro,10px);cursor:pointer;}
+.vp-act-capture button:disabled{opacity:.35;cursor:default;}
+.vp-act-atlas{grid-column:2/-1;grid-row:2;font-size:var(--sb-text-micro,10px);color:var(--lg-mute,#5C7A85);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 /* ACTIONS（doc 57）— app 級の家。repo が「地」、lane が「図」なのに対しここは「棚」。
    面を持たず、sidebar header と同じ muted 見出しで section として立つだけにする。 */
 /* ⚠️ flex:0 1 auto + min-height:0 + overflow が daemon widget の生命線。
@@ -225,7 +97,7 @@ export const ACTIONS_CSS = `
 
 /* align-items:flex-start = 複数行に開いたとき、チェックと道具が 1 行目に揃うようにする
    （center だと縦中央に浮いて、どの行に効くのか読めなくなる）。 */
-.vp-act-row{display:flex;align-items:flex-start;gap:5px;border-radius:6px;padding:2px 6px;
+.vp-act-row{display:grid;grid-template-columns:11px minmax(0,1fr) repeat(4,auto);align-items:start;column-gap:5px;row-gap:1px;border-radius:6px;padding:5px 6px;
   font-size:var(--sb-text-hint,12px);
   color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 25%);}
 .vp-act-row:hover{background:#ffffff06;}
@@ -240,6 +112,9 @@ export const ACTIONS_CSS = `
   transition:background .12s ease,border-color .12s ease;}
 .vp-act-check:hover{border-color:var(--lg-cyan-dim,#1C6C7C);
   background:color-mix(in srgb,var(--lg-cyan-dim,#1C6C7C),transparent 80%);}
+.vp-act-check:disabled,.vp-act-del:disabled{opacity:.35;cursor:default;}
+.vp-act-text{grid-column:2;grid-row:1;}
+.vp-act-check{grid-column:1;grid-row:1;}
 .vp-act-row[data-done] .vp-act-check{background:var(--lg-cyan-dim,#1C6C7C);
   border-color:var(--lg-cyan-dim,#1C6C7C);}
 .vp-act-row[data-done] .vp-act-text{color:var(--lg-mute-2,#38525b);text-decoration:line-through;}
