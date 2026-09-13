@@ -65,6 +65,7 @@ fn fixtures() -> Vec<(&'static str, ConversationEvent)> {
             "codex_interactions",
             ConversationEvent::CodexInteractions {
                 requests: vec![vantage_point::conversation::event::CodexInteraction {
+                    cancel_on_deny: None,
                     item_id: None,
                     request_id: "codex:fixture:1".into(),
                     kind: "question".into(),

@@ -266,6 +266,7 @@ mod tests {
     #[test]
     fn interactions_keep_host_alive_while_waiting_for_user() {
         let request = crate::conversation::event::CodexInteraction {
+            cancel_on_deny: None,
             item_id: None,
             request_id: "codex:test:1".into(),
             kind: "question".into(),
