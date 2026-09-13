@@ -2185,7 +2185,9 @@ for line in sys.stdin: pass
             child.stdout.take().unwrap(),
             None,
         ));
-        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        // Includes Python startup and two responses, each with a 10-second write deadline.
+        // The outer test deadline must leave room for those operations on shared CI runners.
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(45), async {
             let mut replied = std::collections::HashSet::new();
             loop {
                 match rx.recv().await.unwrap() {
