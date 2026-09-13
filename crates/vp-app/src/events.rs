@@ -229,6 +229,13 @@ pub enum AppEvent {
     },
     /// Conversation gui: WebView (ChatPane) からのプロンプト投入。 event loop が当該 lane の
     /// conversation session を lazy spawn し、 canvas channel 上り request `conversation_submit` で repo へ。
+    ConversationCodexInput {
+        lane: String,
+        session: u32,
+        thread_id: String,
+        request_id: String,
+        action: serde_json::Value,
+    },
     ConversationSubmit {
         request_id: String,
         lane: String,
@@ -310,6 +317,8 @@ pub enum AppEvent {
         lane: String,
         session: u64,
         model: Option<String>,
+        effort: Option<String>,
+        request_id: Option<String>,
     },
     // doc 53 §11: 旧 `ConversationSessionsFetch`（session 一覧の ask 要求）は退役。roster の供給は
     // lanes snapshot 1 本になった（fetch は GUI 自身の動詞でしか撃たれず、CLI / MCP 由来の

@@ -9,6 +9,29 @@ use std::sync::Arc;
 
 use super::state::RepoState;
 
+/// Native input controls require an existing host. Unknown delivery is never retried.
+pub(crate) async fn handle_conversation_codex_input(
+    state: &RepoState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let lane = payload["lane"].as_str().ok_or("lane 未指定")?;
+    let addr = crate::repo::lane::parse_address(lane).ok_or("lane が不正です")?;
+    let session = super::unison_server::payload_session_key("conversation_codex_input", &payload)?
+        .ok_or("session 未指定")?;
+    let thread = payload["thread_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("thread 未指定")?;
+    state
+        .lane_pool
+        .read()
+        .await
+        .codex_input(&addr, session, thread, &payload["action"])
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({"status":"ok"}))
+}
+
 /// gui (doc 33): conversation プロンプト投入。
 ///
 /// surface (vp-app) → daemon canvas channel → repo control → 本 dispatch。
@@ -31,7 +54,19 @@ pub(crate) async fn handle_conversation_submit(
     // 添付画像（chat 入力欄への貼り付け、2026-08-30）。省略・空は従来どおり text だけ。
     // ⚠️ VP は保存しない — engine に渡すだけで transcript / replay にも残さない（mako 裁定）。
     let images = parse_image_inputs(payload.get("images"));
-    ensure_and_submit_chat(state, "conversation_submit", lane, session, prompt, &images).await?;
+    let client_id = payload
+        .get("client_user_message_id")
+        .and_then(serde_json::Value::as_str);
+    ensure_and_submit_chat(
+        state,
+        "conversation_submit",
+        lane,
+        session,
+        prompt,
+        &images,
+        client_id,
+    )
+    .await?;
     // user 発話は pump に流れない（GUI が optimistic bubble を出す設計）ので、transcript を持たない
     // engine の session は replay 源に user turn が残らない。submit 成功後にここで記録する。
     // ⚠️ nudge（下）では書かない — claude の transcript replay が origin.kind=="human" で VP 注入を
@@ -40,7 +75,7 @@ pub(crate) async fn handle_conversation_submit(
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
-/// transcript を持たない engine（codex / grok / opencode）の session に、user 発話を replay log へ記録する。
+/// native 履歴を使わない engine の session に、user 発話を replay log へ記録する。
 ///
 /// claude は transcript が SSOT なので記録しない（二重化回避）。engine 解決に失敗しても submit は
 /// 既に成立済みなので warn に留める（配送と replay 記録は独立系統）。tap（pump）が assistant 側を
@@ -61,12 +96,11 @@ async fn record_user_message_if_transcriptless(
     let Ok(resolved) = resolved else {
         return;
     };
-    // 記録対象は transcript を持たない engine のみ（tap と同じ Codex|Grok|OpenCode 判定）。
+    // 記録対象は pump の tap と揃える。Claude / Codex は native 履歴を読む。
     if !matches!(
         crate::conversation::EngineKind::from_agent(&resolved.agent),
         Some(
-            crate::conversation::EngineKind::Codex
-                | crate::conversation::EngineKind::Grok
+            crate::conversation::EngineKind::Grok
                 | crate::conversation::EngineKind::OpenCode
                 | crate::conversation::EngineKind::Vpcode
         )
@@ -113,7 +147,7 @@ pub(crate) async fn handle_conversation_nudge(
             crate::repo::agent_spawner::lane_label(&addr),
         )
     });
-    ensure_and_submit_chat(state, "conversation_nudge", lane, session, text, &[]).await?;
+    ensure_and_submit_chat(state, "conversation_nudge", lane, session, text, &[], None).await?;
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
@@ -466,6 +500,7 @@ async fn ensure_and_submit_chat(
     session: Option<crate::lane::session_registry::SessionKey>,
     prompt: &str,
     images: &[crate::conversation::ImageInput],
+    client_id: Option<&str>,
 ) -> Result<(), String> {
     let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("{ctx}: lane パース失敗: {lane}"))?;
@@ -483,9 +518,14 @@ async fn ensure_and_submit_chat(
         .lane_pool
         .read()
         .await
-        .submit_chat(&addr, session, prompt, images)
+        .submit_identified_chat(&addr, session, prompt, images, client_id)
         .await;
     if let Err(e) = submit_result {
+        if e.downcast_ref::<crate::conversation::codex_host::CodexSelectionRejected>()
+            .is_some()
+        {
+            return Err(format!("{ctx}: {e}"));
+        }
         // self-heal: engine が死んでいた場合は当該 session だけ落として 1 回だけ張り直す。
         tracing::warn!("{ctx} 失敗 → engine 再起動して retry: {e}");
         {
@@ -498,7 +538,7 @@ async fn ensure_and_submit_chat(
             .lane_pool
             .read()
             .await
-            .submit_chat(&addr, session, prompt, images)
+            .submit_identified_chat(&addr, session, prompt, images, client_id)
             .await
             .map_err(|e| format!("{ctx} 失敗（retry 後）: {e}"))?;
     }
@@ -682,6 +722,20 @@ pub(crate) async fn handle_conversation_set_model(
             .ok_or_else(|| {
                 format!("conversation_set_model: session が存在しません（lane={lane}, session={session}）")
             })?;
+        if entry_agent == "codex" {
+            let model = model.ok_or("Codex の model が指定されていません")?;
+            let effort = payload
+                .get("effort")
+                .and_then(|v| v.as_str())
+                .ok_or("Codex の effort が指定されていません")?
+                .to_owned();
+            let config = pool.configure_codex(
+                &addr,
+                session,
+                crate::conversation::event::CodexSelection { model, effort },
+            )?;
+            return Ok(serde_json::json!({"status":"ok","codex_config":config}));
+        }
         match crate::conversation::EngineKind::from_agent(&entry_agent) {
             Some(k) if !k.model_choices().is_empty() => {}
             Some(_) => {
@@ -719,6 +773,302 @@ pub(crate) async fn handle_conversation_set_model(
 #[cfg(test)]
 mod tests {
     use crate::repo::state::insert_test_lane;
+
+    /// Task mem_1Cex2VPFy3gQnXtpYqF1in: tests/fixtures/codex-chat-retry を PATH の
+    /// 先頭に置き、単独実行する。テスト用 peer は Codex の外部 JSONL 境界だけを置き換える。
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "requires the codex-chat-retry fixture on PATH and Python 3"]
+    async fn codex_chat_resume_retry_roundtrip() {
+        use crate::conversation::ConversationEvent;
+        use crate::lane::session_registry::{self, SessionMode};
+        use crate::protocol::RepoMessage;
+        use crate::repo::state::build_test_app_state;
+        use crate::repo::unison_server::dispatch_repo_method;
+
+        let expected_cli = dunce::canonicalize(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/codex-chat-retry/codex"),
+        )
+        .unwrap();
+        assert_eq!(
+            dunce::canonicalize(crate::lane::codex_session::codex_cli_path()).unwrap(),
+            expected_cli,
+            "refuse to start the real Codex CLI"
+        );
+        let isolated = crate::test_env::state_dir_async().await;
+        std::fs::write(isolated.path().join("codex-retry-fixture"), "").unwrap();
+        let state = build_test_app_state().await;
+        let addr = insert_test_lane(&state, "codex-retry-test", SessionMode::Tui).await;
+        {
+            let mut pool = state.lane_pool.write().await;
+            let mut lane = pool.get(&addr).unwrap().clone();
+            lane.cwd = isolated.path().to_string_lossy().into_owned();
+            pool.insert(lane);
+        }
+        let session = session_registry::create(
+            &addr.repo,
+            "main",
+            "claude",
+            "codex",
+            SessionMode::Gui,
+            false,
+        )
+        .unwrap();
+        let thread = "01a09005-f22f-7dd3-9e7b-0ad53926478b";
+        session_registry::set_conversation(&addr.repo, "main", "claude", session, Some(thread))
+            .unwrap();
+        let topic = "repo/conversation/data/codex-retry-test~lane~main/event";
+        let (_id, mut events) = state.topic_router.subscribe(topic).await;
+        let run = async {
+            for (attempt, prompt) in [(1, "first unsent prompt"), (2, "explicit retry prompt")] {
+                dispatch_repo_method(
+                    &state,
+                    "conversation_submit",
+                    serde_json::json!({
+                        "lane": "codex-retry-test/main", "session": session, "prompt": prompt,
+                        "client_user_message_id": "retry-request"
+                    }),
+                )
+                .await
+                .unwrap();
+                loop {
+                    let (_, event) =
+                        tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                            .await
+                            .expect("Chat event within deadline")
+                            .expect("topic open");
+                    if let RepoMessage::ConversationEvent { event, .. } = event {
+                        match event {
+                            ConversationEvent::Error { message } => {
+                                assert_eq!(attempt, 1, "retry must succeed: {message}");
+                                assert!(
+                                    message.contains("fixture resume unavailable"),
+                                    "{message}"
+                                );
+                                break;
+                            }
+                            ConversationEvent::TurnCompleted { session_id, .. } => {
+                                assert_eq!(attempt, 2);
+                                assert_eq!(session_id, thread);
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                let reg = session_registry::load(&addr.repo, "main", "claude");
+                assert_eq!(
+                    reg.sessions
+                        .iter()
+                        .find(|s| s.key == session)
+                        .unwrap()
+                        .conversation
+                        .as_deref(),
+                    Some(thread)
+                );
+            }
+            let requests: Vec<serde_json::Value> =
+                std::fs::read_to_string(isolated.path().join("requests.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .map(|s| serde_json::from_str(s).unwrap())
+                    .collect();
+            assert_eq!(
+                std::fs::read_to_string(isolated.path().join("spawn-count")).unwrap(),
+                "2"
+            );
+            assert!(
+                !requests
+                    .iter()
+                    .any(|r| r["request"]["method"] == "thread/start")
+            );
+            let resumes: Vec<_> = requests
+                .iter()
+                .filter(|r| r["request"]["method"] == "thread/resume")
+                .collect();
+            assert_eq!(resumes.len(), 2);
+            assert!(
+                resumes
+                    .iter()
+                    .all(|r| r["request"]["params"]["threadId"] == thread)
+            );
+            let turns: Vec<_> = requests
+                .iter()
+                .filter(|r| r["request"]["method"] == "turn/start")
+                .collect();
+            assert_eq!(turns.len(), 1);
+            assert_eq!(
+                turns[0]["request"]["params"]["clientUserMessageId"],
+                "retry-request"
+            );
+            assert_eq!(turns[0]["attempt"], 2);
+            assert_eq!(
+                turns[0]["request"]["params"]["input"][0]["text"],
+                "explicit retry prompt"
+            );
+            dispatch_repo_method(
+                &state,
+                "conversation_demand_start",
+                serde_json::json!({"lane":"codex-retry-test/main", "session":session}),
+            )
+            .await
+            .unwrap();
+            loop {
+                let (_, message) =
+                    tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                if let RepoMessage::ConversationEvent {
+                    event:
+                        ConversationEvent::CodexHistory {
+                            events,
+                            user_message_ids,
+                            in_flight,
+                            ..
+                        },
+                    session: key,
+                    ..
+                } = message
+                {
+                    assert_eq!(key, session);
+                    assert!(!in_flight);
+                    assert_eq!(user_message_ids, ["retry-request"]);
+                    for text in ["Console question", "explicit retry prompt"] {
+                        assert!(
+                            events.contains(&ConversationEvent::UserMessage { text: text.into() })
+                        );
+                    }
+                    for (item_id, text) in [
+                        ("console-turn/console-answer", "Console answer"),
+                        ("retry-turn-1/retry-answer-1", "Chat answer"),
+                    ] {
+                        assert_eq!(
+                            events
+                                .iter()
+                                .filter(|e| **e
+                                    == ConversationEvent::CodexMessage {
+                                        item_id: item_id.into(),
+                                        text: text.into(),
+                                        questions: Vec::new(),
+                                        append: false,
+                                    })
+                                .count(),
+                            1
+                        );
+                    }
+                    break;
+                }
+            }
+            // History demand publishes the cached Queue, then refreshes it from Codex.
+            // Model changes require that fresh Queue read to finish as well as the turn.
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                let mut cached_queue_seen = false;
+                loop {
+                    let (_, message) = events.recv().await.unwrap();
+                    if let RepoMessage::ConversationEvent {
+                        session: key,
+                        event:
+                            ConversationEvent::CodexQueue {
+                                queue: Some(queue),
+                                request_id: None,
+                                ..
+                            },
+                        ..
+                    } = message
+                    {
+                        assert_eq!(key, session);
+                        assert_eq!(queue.thread_id, thread);
+                        if !cached_queue_seen {
+                            cached_queue_seen = true;
+                            continue;
+                        }
+                        if queue.ready {
+                            assert!(queue.items.is_empty());
+                            assert!(queue.turn_id.is_none());
+                            assert!(queue.error.is_none());
+                            break;
+                        }
+                    }
+                }
+            })
+            .await
+            .expect("native Queue の再取得完了を待つ");
+            let configure = |effort: &str| serde_json::json!({"lane":"codex-retry-test/main","session":session,"model":"fixture-model","effort":effort});
+            let result = dispatch_repo_method(&state, "conversation_set_model", configure("high"))
+                .await
+                .unwrap();
+            assert_eq!(result["codex_config"]["selection"]["effort"], "high");
+            assert!(
+                dispatch_repo_method(&state, "conversation_set_model", configure("invalid"))
+                    .await
+                    .is_err()
+            );
+            let saved = session_registry::load(&addr.repo, "main", "claude");
+            let pair = saved
+                .sessions
+                .iter()
+                .find(|entry| entry.key == session)
+                .unwrap()
+                .codex_selection
+                .as_ref()
+                .unwrap();
+            assert_eq!(pair.effort, "high");
+            assert!(
+                saved
+                    .sessions
+                    .iter()
+                    .filter(|entry| entry.key != session)
+                    .all(|entry| entry.codex_selection.is_none())
+            );
+            dispatch_repo_method(&state, "conversation_submit", serde_json::json!({"lane":"codex-retry-test/main","session":session,"prompt":"configured prompt","client_user_message_id":"configured-request"})).await.unwrap();
+            loop {
+                let (_, event) =
+                    tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                if let RepoMessage::ConversationEvent { event, .. } = event {
+                    match event {
+                        ConversationEvent::TurnCompleted { session_id, .. } => {
+                            assert_eq!(session_id, thread);
+                            break;
+                        }
+                        ConversationEvent::Error { message } => {
+                            panic!("configured turn failed: {message}")
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let requests: Vec<serde_json::Value> =
+                std::fs::read_to_string(isolated.path().join("requests.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+            let configured = requests
+                .iter()
+                .rev()
+                .find(|request| request["request"]["method"] == "turn/start")
+                .unwrap();
+            assert_eq!(configured["request"]["params"]["model"], "fixture-model");
+            assert_eq!(configured["request"]["params"]["effort"], "high");
+            assert_eq!(configured["request"]["params"]["threadId"], thread);
+            assert_eq!(
+                std::fs::read_to_string(isolated.path().join("spawn-count")).unwrap(),
+                "2",
+                "model change must not restart the host"
+            );
+        };
+        run.await;
+        state
+            .lane_pool
+            .write()
+            .await
+            .drop_chat_engine(&addr, Some(session));
+    }
 
     /// channel E (doc 34): conversation_nudge dispatch の error 経路 4 種
     /// (lane 未指定 / text 未指定 / parse 失敗 / lane 不在)。happy path は実 engine 要のため
@@ -1029,7 +1379,7 @@ mod tests {
     /// `console_set_model` の root 決め打ちは session 明示化で退役 — doc 50 session=Pane、
     /// mako 裁定 2026-07-27）。cross-engine lane（#812）で lane agent と食い違っても、
     /// **同一 lane 内で session ごとに可否が分かれる**ことを固定する。可否の真実は
-    /// `EngineKind::model_choices` の空/非空 1 本（旧 `model_switchable` 述語は catalog に畳んだ）。
+    /// Claude の catalog と Codex の native pair 検証を当該 session に適用する。
     #[tokio::test]
     async fn conversation_set_model_gates_on_session_agent() {
         use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
@@ -1100,17 +1450,17 @@ mod tests {
             "他 session は無傷（per-session — 旧 lane 単位との違いの核）"
         );
 
-        // codex session（key=1）は catalog 空 → 拒否（同一 lane 内で session ごとに可否が分かれる）。
+        // Codex は model / effort のペアが必要。Claude の model-only 設定を流用しない。
         let err = dispatch_repo_method(
             &state,
             "conversation_set_model",
             serde_json::json!({ "lane": lane.as_str(), "session": 1, "model": "sonnet" }),
         )
         .await
-        .expect_err("codex session は拒否");
+        .expect_err("Codex は effort 未指定を拒否");
         assert!(
-            err.contains("codex"),
-            "拒否メッセージは session の engine(codex)を指す: {err}"
+            err.contains("Codex") && err.contains("effort"),
+            "拒否メッセージは Codex の必須項目を指す: {err}"
         );
 
         // session 未指定は Err（root 決め打ちにしない — session_set_mode と同じ規律）。

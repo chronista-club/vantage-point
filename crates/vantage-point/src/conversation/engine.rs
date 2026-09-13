@@ -362,7 +362,7 @@ impl ChatHost {
         }
     }
 
-    /// 逆方向 permission への回答（control channel を持つのは claude のみ）。
+    /// engine ごとの逆方向の質問・permission request へ回答する。
     pub async fn respond_permission(
         &self,
         request_id: &str,
@@ -370,10 +370,11 @@ impl ChatHost {
     ) -> anyhow::Result<()> {
         match self {
             ChatHost::Claude(h) => h.respond_permission(request_id, decision).await,
+            ChatHost::Codex(h) => h.respond_permission(request_id, decision).await,
             // vpcode は無政策 engine（VCP §8）— 毎 tool の permission_request にここで答える。
             // 既存 PromptCard / conversation_respond 経路がそのまま使える（handoff の要点）。
             ChatHost::Vpcode(h) => h.respond_permission(request_id, decision).await,
-            ChatHost::Codex(_) | ChatHost::Grok(_) | ChatHost::OpenCode(_) => {
+            ChatHost::Grok(_) | ChatHost::OpenCode(_) => {
                 anyhow::bail!("このエンジンは対話承認/permission mode を持ちません")
             }
         }

@@ -1,3 +1,7 @@
+import { changeCodexSelection } from './codex-selection-control'
+import { CodexInteractionCard } from './codex-interactions'
+import { CodexQueuePanel } from './codex-queue'
+import { beginCodexResponse } from './codex-interaction-model'
 /**
  * ChatView (doc 33 C2) — Conversation gui の Console 面 GUI（SolidJS）。
  *
@@ -39,7 +43,7 @@ import type {
 // doc 38 Phase 2: focused 判定 / 楽観的 focus 切替は console.ts の per-lane registry を共有する
 // （repo が真実源、ここは view）。session chip の prefix 規則は LaneHeader を SSOT として再利用。
 // doc 47 §6: 共有 bus の相関 id（採番 + 照合）も console.ts が SSOT。
-import { focusedOf, noteFocus, syncHeaderSessionId } from './console'
+import { focusedOf, noteFocus, syncHeaderSessionId, nextRequestId } from './console'
 import { sessionChipPrefix } from './LaneHeader'
 import { isImeKeystroke } from './ime'
 import { applyCompletion, filterSlashCommands, moveSelection, slashQuery } from './slash'
@@ -286,7 +290,7 @@ function foldEvent(lane: string, ev: ConversationEvent, session: number): void {
   // 解除（foldInto は既に replaying を下ろしている — ここは timer の後始末）。10s 無応答なら強制解除。
   if (ev.kind === 'replay_start') armReplayWatchdog(lane, session)
   else if (
-    ev.kind === 'replay_end' || ev.kind === 'error' || ev.kind === 'engine_exited' ||
+    ev.kind === 'replay_end' || ev.kind === 'codex_history' || ev.kind === 'error' || ev.kind === 'engine_exited' ||
     (ev.kind === 'submit_result' && ev.error !== null)
   )
     clearReplayWatchdog(lane, session) // engine 途絶 = 続きの replay はもう来ない → watchdog を固着させない
@@ -1425,6 +1429,24 @@ export function SessionPlate(props: {
 function SessionChatView(props: { lane: string; session: number }) {
   const lc = laneChat(props.lane, props.session)
   const state = (): ChatState => lc.state
+  const setCodexAnswer = (id: string, question: string, text: string) => lc.set(produce(s => {
+    if (!s.codexInteractions) return
+    const drafts = s.codexInteractions.drafts ??= {}
+    drafts[id] = { ...(drafts[id] ?? {}), [question]: text }
+  }))
+  const respondCodex = (id: string, behavior: 'allow' | 'deny', answers?: Record<string, string>) => {
+    let started = false
+    lc.set(produce(s => { started = beginCodexResponse(s, id) }))
+    if (!started) return
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    if (!ipc) {
+      lc.set(produce(s => foldInto(s, { kind: 'codex_interaction_result', request_id: id,
+        error: '接続がありません。再接続後に回答してください。' })))
+      return
+    }
+    ipc.postMessage(JSON.stringify({ t: 'conversation:respond', lane: props.lane,
+      session: props.session, request_id: id, behavior, answers }))
+  }
   /** この pane が lane の focused session か（= chat 動詞の宛先か）。 */
   const isFocused = (): boolean => (sessionsOf(props.lane)?.focused ?? 1) === props.session
   // 名札まわり（label / root chip / 会話 id / badge / ✕）は `SessionPlate` に移管した
@@ -1452,6 +1474,26 @@ function SessionChatView(props: { lane: string; session: number }) {
   }
   const permissionChoices = (): ReadonlyArray<PickerChoice> =>
     rosterEntry()?.permission_choices ?? []
+  const codexModel = () => state().codexConfig?.selection?.model ?? state().codexConfig?.model ?? ''
+  const codexEffort = () => state().codexConfig?.selection?.effort ?? state().codexConfig?.effort ?? ''
+  const codexModels = () => state().codexConfig?.models ?? []
+  const codexBusy = () => state().streaming || state().replaying || !!state().submission || !!state().pending || !!state().codexSettingsRequest
+    || !!state().codexInput || !!state().codexQueue?.turn_id || !!state().codexQueue?.items.length
+    || (!!state().codexQueue && !state().codexQueue?.ready)
+  const setCodexSelection = (model: string, effort: string) => {
+    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+    if (!ipc || codexBusy()) return
+    const requestId = nextRequestId('codex-settings')
+    lc.set('codexSettingsRequest', requestId)
+    lc.set('codexSettingsError', null)
+    ipc.postMessage(JSON.stringify({ t: 'conversation:set_model', lane: props.lane, session: props.session, model, effort, request_id: requestId }))
+    setTimeout(() => {
+      if (lc.state.codexSettingsRequest === requestId) {
+        lc.set('codexSettingsRequest', null)
+        lc.set('codexSettingsError', '設定変更の結果を確認できませんでした。表示を確認して再試行してください。')
+      }
+    }, 30_000)
+  }
   const setModel = (model: string) => {
     const lane = props.lane
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
@@ -1569,10 +1611,49 @@ function SessionChatView(props: { lane: string; session: number }) {
   const lamp = () => lampOf(statusLine())
   // now-line（doc 51 §1 A3）: 名札直下の「今なにを」。null = 行ごと描かない。
   const nowLine = () => deriveNowLine(state())
+  const codexInputBusy = () => !!state().codexInput
+  const codexTurnActive = () => rosterEntry()?.agent === 'codex' && (state().streaming || !!state().codexQueue?.turn_id)
+  const sendCodexInput = (action: Record<string, unknown>, text = '') => {
+    const queue = state().codexQueue
+    if (!queue || (!queue.ready && action.kind !== 'refresh') || codexInputBusy()) return false
+    const requestId = nextRequestId('codex-input')
+    lc.set('codexInput', { id: requestId, text, status: 'sending', error: null })
+    try {
+      const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
+      if (!ipc) throw new Error('接続がありません。入力は送信されていません。')
+      ipc.postMessage(JSON.stringify({ t: 'conversation:codex_input', lane: props.lane,
+        session: props.session, thread_id: queue.thread_id, request_id: requestId,
+        action: { ...action, client_id: requestId } }))
+      setTimeout(() => {
+        if (lc.state.codexInput?.id === requestId && lc.state.codexInput.status === 'sending') {
+          lc.set(produce(s => foldInto(s, { kind: 'codex_queue', queue: null, request_id: requestId,
+            error: '送信結果を確認できません。自動再送はしていません。待機一覧と会話履歴を確認してください。' })))
+        }
+      }, 45_000)
+    } catch (error) {
+      lc.set(produce(s => foldInto(s, { kind: 'codex_queue', queue: null, request_id: requestId,
+        error: error instanceof Error ? error.message : String(error) })))
+      return false
+    }
+    return true
+  }
+  const queueDraft = () => {
+    const text = draft().trim()
+    if (!text || !sendCodexInput({ kind: 'add', text }, text)) return
+    setDraft('')
+    if (inputRef) autosize(inputRef)
+  }
   const submit = () => {
     const lane = props.lane
     const text = draft().trim()
-    if (!text || lc.state.submission) return
+    if (!text || lc.state.submission || codexInputBusy()) return
+    if (codexTurnActive()) {
+      const turn = lc.state.codexQueue?.turn_id
+      if (!turn || !sendCodexInput({ kind: 'steer', text, turn_id: turn }, text)) return
+      setDraft('')
+      if (inputRef) autosize(inputRef)
+      return
+    }
     setDraft('')
     if (inputRef) autosize(inputRef) // 送信後は 1 行に畳み戻す
     // doc 35 §5.1: streaming 中は engine へ送らず pending に buffer（items[] を触らない = 順序を汚さない）。
@@ -1849,6 +1930,9 @@ function SessionChatView(props: { lane: string; session: number }) {
           onScroll={onStreamScroll}
           onClick={onStreamLinkClick}
         >
+          <Show when={state().historyTruncated}>
+            <div class="chat-history-notice" role="status">直近の履歴を表示しています。一部の履歴・入力・出力は省略されています。</div>
+          </Show>
           <For each={state().items}>
             {(item, index) => {
               if (item.kind === 'thinking' || item.kind === 'tool') {
@@ -1901,6 +1985,29 @@ function SessionChatView(props: { lane: string; session: number }) {
                     </Match>
                   </Switch>
                 )
+              }
+              if (item.kind === 'assistant' && item.codexItemId) {
+                const liveQuestion = () => state().codexInteractions?.requests.find(r => r.item_id === item.codexItemId)
+                return <div class="conversation-msg">
+                  <Show when={liveQuestion()} fallback={
+                    <Show when={item.codexQuestions?.length} fallback={
+                      <MsgBody class="conversation-msg-body" text={item.text} final={item.sealed === true} />
+                    }>
+                      <section class="conversation-prompt" aria-label="質問の履歴">
+                        <div class="conversation-prompt-header">質問の履歴</div>
+                        <For each={item.codexQuestions}>{q => <div class="conversation-prompt-q">
+                          <div>{q.question}</div>
+                          <For each={q.options}>{option => <div>{option.label}</div>}</For>
+                        </div>}</For>
+                      </section>
+                    </Show>
+                  }>{request => <CodexInteractionCard request={request()}
+                    answers={state().codexInteractions?.drafts?.[request().request_id] ?? {}}
+                    setAnswer={(question, text) => setCodexAnswer(request().request_id, question, text)}
+                    sending={state().codexInteractions?.sending.includes(request().request_id) ?? false}
+                    error={state().codexInteractions?.errors[request().request_id]}
+                    respond={respondCodex} />}</Show>
+                </div>
               }
               if (item.kind === 'prompt') {
                 if (!item.permission)
@@ -1956,6 +2063,24 @@ function SessionChatView(props: { lane: string; session: number }) {
             </div>
           </Show>
         </div>
+        <div style={{ 'max-height': '45vh', overflow: 'auto' }}>
+          <Show when={state().codexInteractions?.requests.some(r => r.item_id && r.can_accept)}>
+            <button type="button" class="conversation-prompt-opt" onClick={() => {
+              const question = state().codexInteractions?.requests.find(r => r.item_id && r.can_accept)
+              if (question) document.getElementById(question.request_id)?.scrollIntoView({ block: 'center' })
+            }}>
+              未回答の質問 {state().codexInteractions?.requests.filter(r => r.item_id && r.can_accept).length} 件
+            </button>
+          </Show>
+          <For each={(state().codexInteractions?.requests ?? []).filter(r => !r.item_id || !state().items.some(i => i.kind === 'assistant' && i.codexItemId === r.item_id))}>{request =>
+            <CodexInteractionCard request={request}
+              answers={state().codexInteractions?.drafts?.[request.request_id] ?? {}}
+              setAnswer={(question, text) => setCodexAnswer(request.request_id, question, text)}
+              sending={state().codexInteractions?.sending.includes(request.request_id) ?? false}
+              error={state().codexInteractions?.errors[request.request_id]}
+              respond={respondCodex} />
+          }</For>
+        </div>
         {/* status bar — **入力の上**（stream に隣接）。engine が今何をしているかの読み取り専用の
             計器で、操作は持たない。context 残量も「読み取り」なのでここ。 */}
         <div
@@ -1993,6 +2118,27 @@ function SessionChatView(props: { lane: string; session: number }) {
         </div>
         {/* composer — 入力とその操作を 1 つの器にまとめる。上 = 打つ場所、下 = 操作。
             model / permission も「送る前に決める操作」なのでここ（読み取りの status とは分ける）。 */}
+        <Show when={state().codexQueue}>{queue => <CodexQueuePanel queue={queue()} busy={codexInputBusy()}
+          edits={state().codexQueueEdits ?? {}} act={sendCodexInput}
+          edit={(id,text) => lc.set(produce(s => {
+            const edits = s.codexQueueEdits ??= {}
+            if (text === undefined) delete edits[id]
+            else edits[id] = text
+          }))} />}</Show>
+        <Show when={state().codexInput?.status === 'failed'}>
+          <div class="codex-queue" role="status">
+            <div>{state().codexInput?.error}</div>
+            <Show when={state().codexInput?.text}>
+              <button disabled={!!draft().trim()} onClick={() => {
+                if (draft().trim()) return
+                setDraft(lc.state.codexInput?.text ?? '')
+                lc.set('codexInput',null)
+                queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
+              }}>入力を戻す</button>
+            </Show>
+            <button onClick={() => lc.set('codexInput',null)}>閉じる</button>
+          </div>
+        </Show>
         <div class="conversation-composer">
           {/* slash command の候補。⚠️ **入力欄の上**に出す（下は model / permission の操作列で、
               そこに被せると押そうとした物が入れ替わる）。source は session_init が広告した
@@ -2121,6 +2267,28 @@ function SessionChatView(props: { lane: string; session: number }) {
             }}
           />
           <div class="conversation-actions">
+            <Show when={rosterEntry()?.agent === 'codex'}>
+              <Show when={codexModels().length > 0} fallback={<span class="conversation-model-readonly">{state().codexConfig?.error ?? 'モデル候補を取得中…'}</span>}>
+                <select class="conversation-model-select" aria-label="Codex model" title="次の Chat 送信に使うモデル" disabled={codexBusy()}
+                  onChange={(e) => changeCodexSelection(e.currentTarget, codexModel(), value => { const model = codexModels().find(m => m.model === value); if (model) setCodexSelection(model.model, model.default_effort) })}>
+                  <Show when={!codexModels().some(m => m.model === codexModel())}>
+                    <option value={codexModel()} selected disabled>{codexModel() || 'モデルを選択'}</option>
+                  </Show>
+                  <For each={codexModels()}>{m => <option value={m.model} selected={m.model === codexModel()}>{m.label}</option>}</For>
+                </select>
+                <select class="conversation-model-select" aria-label="Codex effort" title="次の Chat 送信の reasoning effort" disabled={codexBusy() || !codexModels().some(m => m.model === codexModel())}
+                  onChange={(e) => changeCodexSelection(e.currentTarget, codexEffort(), value => setCodexSelection(codexModel(), value))}>
+                  <Show when={!codexModels().find(m => m.model === codexModel())?.efforts.includes(codexEffort())}>
+                    <option value={codexEffort()} selected disabled>{codexEffort() || 'Codex 既定'}</option>
+                  </Show>
+                  <For each={codexModels().find(m => m.model === codexModel())?.efforts ?? []}>{effort => <option value={effort} selected={effort === codexEffort()}>{effort}</option>}</For>
+                </select>
+              </Show>
+              <Show when={state().codexSettingsRequest}><span class="conversation-model-readonly">保存中…</span></Show>
+              <Show when={state().codexSettingsError || (codexModels().length > 0 && state().codexConfig?.error)}>
+                <span role="status" class="conversation-model-readonly">{state().codexSettingsError || state().codexConfig?.error}</span>
+              </Show>
+            </Show>
             {/* model picker: catalog（server 能力表明）が非空の engine だけ出す。
                 空 + 実測 model あり = read-only 表示（「今どの model か」の情報は保ちつつ、
                 押しても server に弾かれる行き止まりを作らない）。 */}
@@ -2175,8 +2343,15 @@ function SessionChatView(props: { lane: string; session: number }) {
                 <CreoIcon name="ph:stop" size={11} /> 停止
               </button>
             </Show>
-            <button class="conversation-send" onClick={submit} disabled={!draft().trim() || !!state().submission}>
-              <CreoIcon name="ph:paper-plane-right" size={12} /> 送信
+            <Show when={codexTurnActive()}>
+              <button class="conversation-stop" onClick={queueDraft}
+                disabled={!draft().trim() || !state().codexQueue?.ready || codexInputBusy()}>
+                次に実行する
+              </button>
+            </Show>
+            <button class="conversation-send" onClick={submit} disabled={!draft().trim() || !!state().submission || codexInputBusy()
+              || (codexTurnActive() && (!state().codexQueue?.ready || !state().codexQueue?.turn_id))}>
+              <CreoIcon name="ph:paper-plane-right" size={12} /> {codexTurnActive() ? '今伝える' : '送信'}
             </button>
           </div>
         </div>
@@ -2191,6 +2366,15 @@ function SessionChatView(props: { lane: string; session: number }) {
 /** ChatView の scoped CSS。entry.tsx が `<style>` で注入する（board-render.ts の style 注入と同型）。
  *  色は creo-ui token（--color-* 系）に寄せ、無い環境でも読める fallback を持つ。 */
 export const CHATVIEW_CSS = `
+.codex-queue { flex:none; margin:0 14px; padding:6px 0; font-size:12px; color:var(--color-text-secondary,#a8b0c0); max-height:240px; overflow:auto; }
+.codex-queue:empty { display:none; }
+.codex-queue-heading,.codex-queue-actions { display:flex; align-items:center; gap:6px; }
+.codex-queue-heading { justify-content:space-between; }
+.codex-queue-row { padding:6px 0; border-bottom:1px solid var(--color-border,#2a3040); }
+.codex-queue-text { white-space:pre-wrap; overflow-wrap:anywhere; max-height:90px; overflow:auto; margin-bottom:4px; }
+.codex-queue button { border:1px solid var(--color-border,#2a3040); border-radius:5px; background:transparent; color:inherit; cursor:pointer; font:inherit; padding:2px 7px; }
+.codex-queue button:disabled { opacity:.4; cursor:default; }
+.codex-queue textarea { box-sizing:border-box; width:100%; min-height:54px; font:inherit; background:var(--color-bg-elevated,#161a20); color:var(--color-text,#e6e9ef); border:1px solid var(--color-border,#2a3040); border-radius:5px; }
 /* chat Live Token (--chat-text-*) の定義は :root に置く。適用 (use site) は .chat-view 以下に
    閉じているので他 pane を汚染しない。:root 定義にする理由 = creo-ui Editor Mode
    (entry.tsx ChatTokenBinds) の slider が documentElement.style.setProperty で書くため、
@@ -2202,6 +2386,7 @@ export const CHATVIEW_CSS = `
   font-family: var(--vp-font-sans),var(--typography-family-sans); overflow:hidden; }
 .conversation-empty { margin:auto; color: var(--color-text-tertiary, #616b80); font-size:13px; }
 .conversation-stream { flex:1; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:12px; }
+.chat-history-notice { padding:8px 10px; border:1px solid var(--color-border,#2a3040); border-radius:6px; color:var(--color-text-secondary,#a6afc0); font-size:var(--chat-text-meta); line-height:1.6; }
 /* スクロールバー常時表示（mako 2026-07-24）: 既定の overlay scrollbar は「スクロール中だけ」
    なので現在地が読めない。custom style を当てると常時表示になる（WebKit 仕様）。細く控えめに。 */
 .conversation-stream::-webkit-scrollbar { width:8px; }

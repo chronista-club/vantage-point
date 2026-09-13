@@ -90,6 +90,44 @@ function installDomStub(): void {
 
 beforeEach(() => installDomStub())
 
+it('Codex の未回答は最新 snapshot だけを別 session と分けて保持する', () => {
+  const con = installConsole()
+  const lane = 'proj/codex-interactions-ring'
+  con.handleEvent(lane, JSON.parse('{"kind":"codex_interactions","requests":[{"request_id":"first"}]}'), 1)
+  con.handleEvent(lane, JSON.parse('{"kind":"codex_interactions","requests":[{"request_id":"other"}]}'), 2)
+  con.handleEvent(lane, JSON.parse('{"kind":"codex_interactions","requests":[]}'), 1)
+  for (let i = 0; i < 1100; i++) con.handleEvent(lane, { kind: 'message_chunk', text: 'x' }, 2)
+  const got: unknown[] = []
+  con.attachRenderer(lane, (event, session) => {
+    if (event.kind === 'codex_interactions') got.push({ session, requests: event.requests })
+  })
+  expect(got).toEqual([{ session: 1, requests: [] }, { session: 2, requests: [{ request_id: 'other' }] }])
+})
+
+it('Codex の設定は履歴の置換と ring 上限を越えても session ごとに復元する', () => {
+  const con = installConsole()
+  const lane = 'proj/codex-config-ring'
+  con.handleEvent(lane, JSON.parse(JSON.stringify({ kind: 'codex_config', config: { model: 'native' }, request_id: null, error: null })), 2)
+  con.handleEvent(lane, JSON.parse(JSON.stringify({ kind: 'codex_history', thread_id: 't', events: [], user_message_ids: [], in_flight: false, truncated: false })), 2)
+  for (let i = 0; i < 2500; i++) con.handleEvent(lane, { kind: 'message_chunk', text: 'x' }, 2)
+  const got: string[] = []
+  con.attachRenderer(lane, (ev, session) => got.push(`${session}:${ev.kind}`))
+  expect(got.filter(value => value === '2:codex_config')).toHaveLength(1)
+})
+
+it('Codex snapshot は同じ session の旧 buffer だけを置き換える', () => {
+  const con = installConsole()
+  const lane = 'proj/codex-history-ring'
+  con.handleEvent(lane, { kind: 'user_message', text: '別 session' }, 1)
+  for (let i = 0; i < 3; i++) {
+    con.handleEvent(lane, JSON.parse(JSON.stringify({ kind: 'codex_history', thread_id: 't', events: [], user_message_ids: [], in_flight: false, truncated: true })), 2)
+    con.handleEvent(lane, { kind: 'message_chunk', text: '増分' }, 2)
+  }
+  const got: string[] = []
+  con.attachRenderer(lane, (ev, session) => got.push(`${session}:${ev.kind}`))
+  expect(got).toEqual(['1:user_message', '2:codex_history', '2:message_chunk'])
+})
+
 describe('normalizeSession — envelope session の正規化（未指定 = 1）', () => {
   it('未指定は 1（旧 SP / N=1 の後方互換）', () => {
     expect(normalizeSession(undefined)).toBe(1)

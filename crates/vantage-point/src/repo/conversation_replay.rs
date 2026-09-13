@@ -137,19 +137,41 @@ pub(crate) async fn handle_conversation_demand_start(
 
 /// replay 1 本分の配送（[`handle_conversation_demand_start`] の single-flight loop の中身）。
 ///
-/// claude × 会話 id ありは transcript replay、それ以外は replay_log（codex 系）or 空を、
-/// ReplayStart → 本文 → ReplayEnd の**連続 1 本**で route する。
+/// Codex は host の一括 snapshot、Claude は transcript、他 engine は replay_log を配送する。
 async fn replay_once(
     state: &RepoState,
     addr: &crate::repo::lane::LaneAddress,
     lane: &str,
     resolved: &crate::repo::lane::ResolvedSession,
 ) -> Result<serde_json::Value, String> {
+    if crate::conversation::EngineKind::from_agent(&resolved.agent)
+        == Some(crate::conversation::EngineKind::Codex)
+    {
+        let result = state
+            .lane_pool
+            .read()
+            .await
+            .request_codex_history(addr, resolved.key);
+        if let Err(error) = result {
+            let message = format!("Codex の履歴を復元できません: {error}");
+            route_conversation(
+                state,
+                lane,
+                resolved.key,
+                vec![crate::conversation::ConversationEvent::Error {
+                    message: message.clone(),
+                }],
+            )
+            .await;
+            return Err(message);
+        }
+        return Ok(serde_json::json!({"status":"ok", "lane":lane, "session":resolved.key}));
+    }
     let lane_label = crate::repo::agent_spawner::lane_label(addr).to_string();
     let label = crate::lane::session_registry::session_label(&lane_label, resolved.key);
     // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。会話 id は
     // registry が SSOT（doc 40 §5 reader #6 — resolve 時の registry load から持ち回った
-    // `resolved.conversation`。旧 cc_session store 直読みは PR-2 で退役）。codex / grok /
+    // `resolved.conversation`。旧 cc_session store 直読みは PR-2 で退役）。grok /
     // opencode session は claude transcript を持たないため None に倒し、必ず下の no_session
     // path（replay_log）を通す。
     let session_id = match crate::conversation::EngineKind::from_agent(&resolved.agent) {
@@ -157,15 +179,14 @@ async fn replay_once(
         _ => None,
     };
     let Some(session_id) = session_id else {
-        // transcript を持たない engine（codex / grok / opencode）は、repo が pump tap で per-session に
+        // native 履歴を使わない engine は、repo が pump tap で per-session に
         // 記録した replay log を replay 源にする（engine 非依存 replay log。判定は lanes_state の
-        // replay_tap と同じ Codex|Grok|OpenCode）。それ以外（claude で会話未開始 等）は log を読まず
+        // replay_tap と同じ判定）。それ以外（claude で会話未開始 等）は log を読まず
         // 空 chat に収束させる。
         let buffered = if matches!(
             crate::conversation::EngineKind::from_agent(&resolved.agent),
             Some(
-                crate::conversation::EngineKind::Codex
-                    | crate::conversation::EngineKind::Grok
+                crate::conversation::EngineKind::Grok
                     | crate::conversation::EngineKind::OpenCode
                     | crate::conversation::EngineKind::Vpcode
             )
@@ -381,6 +402,61 @@ mod tests {
     use crate::conversation::ConversationEvent;
     use crate::repo::state::insert_test_lane;
 
+    /// replay log の検証で外部 CLI を起動しない。存在しない cwd で eager spawn を止める。
+    async fn prevent_engine_spawn(
+        state: &super::RepoState,
+        addr: &crate::repo::lane::LaneAddress,
+        root: &std::path::Path,
+    ) {
+        let mut pool = state.lane_pool.write().await;
+        let mut lane = pool.get(addr).unwrap().clone();
+        lane.cwd = root
+            .join("absent-engine-cwd")
+            .to_string_lossy()
+            .into_owned();
+        pool.insert(lane);
+    }
+
+    #[tokio::test]
+    async fn missing_codex_host_reports_history_failure_without_clearing_display() {
+        use crate::lane::session_registry::{self, SessionMode};
+        use crate::protocol::RepoMessage;
+        let _isolated = crate::test_env::state_dir_async().await;
+        let state = crate::repo::state::build_test_app_state().await;
+        let addr = insert_test_lane(&state, "history-failure", SessionMode::Tui).await;
+        let key = session_registry::create(
+            &addr.repo,
+            "main",
+            "claude",
+            "codex",
+            SessionMode::Gui,
+            false,
+        )
+        .unwrap();
+        let resolved = state
+            .lane_pool
+            .read()
+            .await
+            .resolve_chat_session(&addr, Some(key))
+            .unwrap();
+        let (_, mut events) = state
+            .topic_router
+            .subscribe("repo/conversation/data/history-failure~lane~main/event")
+            .await;
+        assert!(
+            super::replay_once(&state, &addr, &addr.to_string(), &resolved)
+                .await
+                .is_err()
+        );
+        assert!(
+            matches!(events.try_recv(), Ok((_, RepoMessage::ConversationEvent { session, event:ConversationEvent::Error { .. }, .. })) if session == key)
+        );
+        assert!(
+            events.try_recv().is_err(),
+            "失敗で ReplayStart を送って表示を消さない"
+        );
+    }
+
     fn init_ev() -> ConversationEvent {
         ConversationEvent::SessionInit {
             session_id: "sid".into(),
@@ -423,11 +499,11 @@ mod tests {
         assert!(matches!(ev[0], ConversationEvent::SessionInit { .. }));
     }
 
-    /// engine 非依存 replay log: codex session に会話を仕込むと、demand_start が replay_log を
+    /// engine 非依存 replay log: Grok session に会話を仕込むと、demand_start が replay_log を
     /// 読み `ReplayStart → 記録 events → ReplayEnd` を配送する（transcript を持たない engine の
-    /// replay 源）。codex host の spawn は exec-free なので claude / codex CLI は不要。
+    /// replay 源）。外部 engine は存在しない cwd により起動させない。
     #[tokio::test]
-    async fn conversation_demand_start_replays_buffered_log_for_codex_session() {
+    async fn conversation_demand_start_replays_buffered_log_for_grok_session() {
         use crate::conversation::ConversationEvent;
         use crate::lane::session_registry::SessionMode;
         use crate::protocol::RepoMessage;
@@ -439,20 +515,21 @@ mod tests {
         let _state_guard = crate::test_env::state_dir_async().await;
         let state = build_test_app_state().await;
         let addr = insert_test_lane(&state, "vptest-replaylog", SessionMode::Gui).await;
+        prevent_engine_spawn(&state, &addr, _state_guard.path()).await;
 
-        // focused な codex session #2 を作る（session=None がこれに解決される）。
+        // focused な Grok session #2 を作る（session=None がこれに解決される）。
         let k2 = state
             .lane_pool
             .write()
             .await
-            .create_chat_session(&addr, Some("codex"), true)
-            .expect("create codex session");
+            .create_chat_session(&addr, Some("grok"), true)
+            .expect("create Grok session");
         assert_eq!(k2, 2);
 
         // #2 の replay 源に会話を仕込む（session label = "main#2"）。
         for ev in [
             ConversationEvent::MessageChunk {
-                text: "codex says hi".to_string(),
+                text: "Grok says hi".to_string(),
             },
             ConversationEvent::TurnCompleted {
                 session_id: "s".to_string(),
@@ -498,7 +575,7 @@ mod tests {
         assert_eq!(
             got[1],
             ConversationEvent::MessageChunk {
-                text: "codex says hi".to_string()
+                text: "Grok says hi".to_string()
             }
         );
         assert!(matches!(got[2], ConversationEvent::TurnCompleted { .. }));
@@ -519,14 +596,15 @@ mod tests {
         let _state_guard = crate::test_env::state_dir_async().await;
         let state = build_test_app_state().await;
         let addr = insert_test_lane(&state, "vptest-coalesce", SessionMode::Gui).await;
+        prevent_engine_spawn(&state, &addr, _state_guard.path()).await;
 
-        // focused な codex session #2（session 省略の demand がこれに解決される）。
+        // focused な Grok session #2（session 省略の demand がこれに解決される）。
         let k2 = state
             .lane_pool
             .write()
             .await
-            .create_chat_session(&addr, Some("codex"), true)
-            .expect("create codex session");
+            .create_chat_session(&addr, Some("grok"), true)
+            .expect("create Grok session");
         assert_eq!(k2, 2);
 
         // 進行中 flight を模擬（handler と同じ key = lane display 形 + session key）。
@@ -563,7 +641,7 @@ mod tests {
         )
         .await
         .expect("demand_start after flight");
-        assert_eq!(res["status"], "no_session", "codex は replay_log path");
+        assert_eq!(res["status"], "no_session", "Grok は replay_log path");
         let res = dispatch_repo_method(
             &state,
             "conversation_demand_start",
@@ -596,13 +674,14 @@ mod tests {
         let state = build_test_app_state().await;
         // **root は tui**（= 旧 gate ならここで not_chat に落ちる）。
         let addr = insert_test_lane(&state, "vptest-nonroot-chat", SessionMode::Tui).await;
+        prevent_engine_spawn(&state, &addr, _state_guard.path()).await;
 
         // 非 root の chat session を作る（create_chat_session は mode=Chat で作る）。
         let k2 = state
             .lane_pool
             .write()
             .await
-            .create_chat_session(&addr, Some("codex"), true)
+            .create_chat_session(&addr, Some("grok"), true)
             .expect("create chat session");
 
         // その session の replay 源に会話を仕込む。

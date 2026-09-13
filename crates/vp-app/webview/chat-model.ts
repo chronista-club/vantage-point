@@ -11,14 +11,17 @@
  */
 import type { ConversationEvent, PlanEntry, QuestionSpec } from './console'
 import type { toWirePayload } from './paste-image'
+import { foldCodexInteractions, type CodexInteractionState } from './codex-interaction-model'
+import type { CodexQuestion } from './src/generated/CodexQuestion'
+import type { CodexQueueView } from './src/generated/CodexQueueView'
 
 // ---------------------------------------------------------------------------
 // 会話モデル — flat item stream（ConversationEvent を UI 単位に畳む）
 // ---------------------------------------------------------------------------
 
 export type ChatItem =
-  | { kind: 'user'; text: string; submissionId?: string }
-  | { kind: 'assistant'; text: string; sealed?: boolean } // append 先。sealed=turn 境界（§5.1、次 turn は新バブル）
+  | { kind: 'user'; text: string; submissionId?: string; clientId?: string }
+  | { kind: 'assistant'; text: string; sealed?: boolean; codexItemId?: string; codexQuestions?: CodexQuestion[] } // append 先。sealed=turn 境界（§5.1、次 turn は新バブル）
   | { kind: 'thinking'; text: string; at?: number } // thought_chunk を末尾 thinking に append。at = live 受信時刻（doc 57 §4.2、replay では刻まない）
   // tool。input/result は詳細展開の表示源。backend は最初から ToolCall{input} /
   // ToolCallUpdate{content} を送っているので、view が保持するだけで詳細が開ける。
@@ -119,6 +122,10 @@ export function toolGroupStatus(tools: ToolItem[]): { running: boolean; label: s
 }
 
 export type ChatState = {
+  codexQueue?: CodexQueueView
+  codexQueueEdits?: Record<string, string>
+  codexInput?: { id: string; text: string; status: 'sending' | 'failed'; error: string | null } | null
+  codexInteractions?: CodexInteractionState
   header: { model?: string; sessionId?: string } | null
   items: ChatItem[]
   plan: PlanEntry[]
@@ -154,6 +161,11 @@ export type ChatState = {
   /** transcript replay（attach/reconnect 時の過去会話再送）進行中か。replay_start→true /
    *  replay_end→false。コーナーの再同期ローディングアニメ（resync-loader）の可視条件。 */
   replaying: boolean
+  historyTruncated?: boolean
+  historyThreadId?: string
+  codexConfig?: Extract<ConversationEvent, { kind: 'codex_config' }>['config']
+  codexSettingsRequest?: string | null
+  codexSettingsError?: string | null
   /** now-line の契約供給（doc 51 §1 A3b — AI が自分の今を報告する口）。null = 契約報告なし
    *  = deriveNowLine の機械導出（A3a の保険）が下支えする。turn_completed で消える（「今」は
    *  turn より長生きしない）。書き手は A3b の `now_line` event（PR2 で配線 — 受け皿を先に置く
@@ -176,6 +188,30 @@ export type Submission = {
  * tool_call_update は id 一致で done 化。ここが gui の描画正しさの中核。
  */
 export function foldInto(s: ChatState, ev: ConversationEvent): void {
+  if (ev.kind === 'engine_exited' && s.codexQueue) {
+    s.codexQueue.ready = false
+    s.codexQueue.turn_id = null
+  }
+  if (foldCodexInteractions(s, ev)) return
+  if (ev.kind === 'codex_queue') {
+    if (ev.queue && !ev.request_id) s.codexQueue = ev.queue
+    if (ev.request_id && s.codexInput?.id === ev.request_id) {
+      if (ev.error) {
+        s.codexInput.status = 'failed'
+        s.codexInput.error = ev.error
+      } else s.codexInput = null
+    }
+    return
+  }
+  if (ev.kind === 'codex_config') {
+    if (ev.request_id && ev.request_id !== s.codexSettingsRequest) return
+    if (ev.config && !ev.request_id) s.codexConfig = ev.config
+    if (ev.request_id) {
+      s.codexSettingsRequest = null
+      s.codexSettingsError = ev.error
+    }
+    return
+  }
   // Acknowledgements are scoped by request as well as lane/session. They are not
   // turn-closing engine events and must never flush type-ahead on rejection.
   if (ev.kind === 'submit_result') {
@@ -196,6 +232,26 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
   }
   s.lastEvent = ev.kind // 拾える全イベント種別を status に同期（時刻は foldEvent が Date.now で付す）
   switch (ev.kind) {
+    case 'codex_history': {
+      const included = new Set(ev.user_message_ids)
+      const local = s.historyThreadId && s.historyThreadId !== ev.thread_id ? [] : s.items.filter(
+        item => item.kind === 'user' && item.clientId && !included.has(item.clientId),
+      )
+      foldInto(s, { kind: 'replay_start' })
+      for (const event of ev.events) {
+        // 表示データのみ。過去の承認・送信・snapshot を再帰実行しない。
+        if (['user_message', 'message_chunk', 'codex_message', 'thought_chunk', 'tool_call', 'tool_call_update', 'turn_completed'].includes(event.kind)) {
+          foldInto(s, event)
+        }
+      }
+      s.items.push(...local)
+      foldInto(s, { kind: 'replay_end', in_flight: ev.in_flight })
+      s.historyThreadId = ev.thread_id
+      s.header = { ...s.header, sessionId: ev.thread_id }
+      s.historyTruncated = ev.truncated
+      s.lastEvent = ev.kind
+      break
+    }
     case 'replay_start':
       // 以降は transcript replay（過去会話の再送）。会話を一度クリアしてから畳み直す。
       // backend は「新規 attach」と「reconnect / demand 再発火」を区別できないため、reset せず
@@ -210,6 +266,7 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       // 再構築される。復帰後の message_chunk はそこへ自然に append される（= 文の途中から
       // 新バブルが立つことはない）。tail が streaming を立て直すのでカーソルも戻る。
       s.items = []
+      s.historyTruncated = false
       s.plan = []
       s.streaming = false
       s.cost = null
@@ -237,6 +294,19 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       if (ev.slash_commands) s.slashCommands = ev.slash_commands
       if (ev.command_docs) s.commandDocs = ev.command_docs
       break
+    case 'codex_message': {
+      s.streaming = true
+      const item = s.items.find(i => i.kind === 'assistant' && i.codexItemId === ev.item_id)
+      if (item?.kind === 'assistant') {
+        item.text = ev.append ? item.text + ev.text : ev.text
+        item.sealed = !ev.append
+        if (!ev.append) item.codexQuestions = ev.questions
+      } else {
+        s.items.push({ kind: 'assistant', text: ev.text, codexItemId: ev.item_id,
+          codexQuestions: ev.questions, sealed: !ev.append })
+      }
+      break
+    }
     case 'message_chunk': {
       s.streaming = true
       const last = s.items[s.items.length - 1]
@@ -373,7 +443,7 @@ export function beginSubmission(
 ): boolean {
   if (s.submission) return false
   s.submission = { id, text, images, status: 'sending', error: null }
-  s.items.push({ kind: 'user', text, submissionId: id })
+  s.items.push({ kind: 'user', text, submissionId: id, clientId: id })
   return true
 }
 /**
@@ -434,6 +504,8 @@ export function deriveStatus(s: ChatState | null, nowMs = 0): ConversationStatus
   const idleSec =
     s.lastEventAt != null && nowMs > 0 ? Math.max(0, Math.round((nowMs - s.lastEventAt) / 1000)) : undefined
   const base = { pending, lastEvent, idleSec }
+  const codexWaiting = s.codexInteractions?.requests.find(r => r.blocking)
+  if (codexWaiting) return { ...base, kind: 'awaiting', label: codexWaiting.kind === 'question' ? '質問待ち' : '承認待ち', stalled: false }
   // 未回答の HITL prompt（質問 / 承認）が最優先 = ユーザーにボールがある。
   const waiting = s.items.find((i) => i.kind === 'prompt' && !i.answered) as
     | Extract<ChatItem, { kind: 'prompt' }>

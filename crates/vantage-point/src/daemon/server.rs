@@ -1472,18 +1472,9 @@ async fn handle_wire_channel(
         let display = crate::repo::lane::LaneAddress::new(repo, label).canonical();
         // doc 40 §4: hook の会話報告（session_id + event + 報告者が名乗る session）を repo へ
         // 透過する。無い場合は従来の「変化通知のみ」（re-enrich + push）として振る舞う =
-        // 新旧 binary 混在に安全。`session` 不在も同様で、repo 側が root 宛の後方互換に倒す
+        // 新旧 binary 混在に安全。`session` 不在時は repo 側が engine ごとの policy で扱う
         // （daemon は routing のみ — ここで欠けた値を補完しない）。
-        let mut fwd = serde_json::json!({ "lane": display });
-        if let Some(sid) = payload.get("session_id").and_then(|v| v.as_str()) {
-            fwd["session_id"] = sid.into();
-        }
-        if let Some(ev) = payload.get("event").and_then(|v| v.as_str()) {
-            fwd["event"] = ev.into();
-        }
-        if let Some(session) = payload.get("session").and_then(|v| v.as_u64()) {
-            fwd["session"] = session.into();
-        }
+        let fwd = forward_conversation_report(&display, &payload);
         let resp = forward_to_sp_control(
             &state.control_channels,
             &path_key,
@@ -1579,6 +1570,17 @@ async fn handle_wire_channel(
     } else {
         Err(format!("不明な wire channel method: {method}"))
     }
+}
+
+fn forward_conversation_report(lane: &str, payload: &serde_json::Value) -> serde_json::Value {
+    let mut fwd = serde_json::json!({ "lane": lane });
+    // 不正な field も保持する。欠落に変えると受信側の Claude/root 互換に化ける。
+    for key in ["session_id", "event", "session", "engine"] {
+        if let Some(value) = payload.get(key) {
+            fwd[key] = value.clone();
+        }
+    }
+    fwd
 }
 
 /// Daemon の Unison QUIC サーバーを起動する
@@ -2770,6 +2772,29 @@ async fn probe_quic_once(addr: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // mem_1CewV2A7phkmfC4rgi1NxC: source identity must reach the registry policy unchanged.
+    #[test]
+    fn codex_console_report_forwarding_preserves_identity() {
+        for engine in [
+            serde_json::json!("codex"),
+            serde_json::json!(7),
+            serde_json::Value::Null,
+        ] {
+            for session in [serde_json::json!(2), serde_json::json!("invalid")] {
+                let original = serde_json::json!({"repo":"vp", "lane":"main", "session_id":"thread-id", "event":"issued", "engine":engine, "session":session});
+                let fwd = forward_conversation_report("vp/root", &original);
+                assert_eq!(fwd["lane"], "vp/root");
+                for key in ["engine", "session", "session_id", "event"] {
+                    assert_eq!(
+                        fwd.get(key),
+                        original.get(key),
+                        "relay must preserve {key}, including malformed input for the receiver to reject"
+                    );
+                }
+            }
+        }
+    }
     use std::sync::Arc;
 
     // =====================================================================

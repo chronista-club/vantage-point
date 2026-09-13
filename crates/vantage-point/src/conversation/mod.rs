@@ -33,8 +33,16 @@
 pub mod acp_host;
 pub mod acp_translate;
 pub mod claude_translate;
+mod codex_async_questions;
+mod codex_question_session;
+pub(crate) use codex_question_session::CodexQuestionSession;
+mod codex_elicitation;
+mod codex_history;
 pub mod codex_host;
+mod codex_interactions;
+mod codex_permissions;
 pub mod codex_rpc_translate;
+mod codex_settings;
 pub mod engine;
 pub mod event;
 pub mod host;

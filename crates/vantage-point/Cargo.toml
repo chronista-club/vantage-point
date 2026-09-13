@@ -35,6 +35,7 @@ tower-http = { workspace = true, features = ["fs", "cors"] }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+jsonschema = { version = "0.56", default-features = false }
 
 # Logging
 tracing = { workspace = true }

@@ -334,3 +334,26 @@ doc 53 §12.3 の原則（restart = 動詞が実体を捨てて reconcile が戻
 
 関連: doc 50 §4.6 A6（Add × Reborn 分解 — Reborn は未実装のまま）/ doc 53 §12.3（restart = 実体のみ）/
 doc 46 §1.5（session ↔ Pane 1:1）/ doc 53 §12.4 R3c-2（new_root は旧 root の pane を残す）。
+
+## 9. Root picker のクリック到達（2026-09-12）
+
+実機で Codex #39 を選択してもメニューが閉じるだけで、root は Claude #35 に
+残った。計測した 2 回とも pointerdown / pointerup / click の target は背後の
+xterm `CANVAS` で、picker 外クリックとして閉じていた。行の disabled は false。
+選択 handler / root 切替 IPC は呼ばれていなかった。
+
+`position:fixed` の popup を `overflow:hidden` の `#lane-header` 内に置く旧構造は、
+表示が手前に見えても WKWebView のクリックが背後の canvas に届く場合があった。
+
+picker は Solid Portal で header の親（`#pane-lane`）へ出す。header の clipping /
+stacking から離し、popup 自身の z-index で terminal pane より前面に置く。
+body まで出さず lane 内に留めるため、pane / gallery の非表示を引き続き継承する。
+位置は chip の viewport 座標、CSS は `.eh-root-picker` を基点とする。
+
+回帰テストは実 Solid コンポーネントで clipping 境界の外・lane 内の配置、行の CSS、
+Codex 選択の IPC、未知 engine / 現 root、外側クリックと lane 解除時の除去を確認する。
+DOM テストだけでは compositor の hit test は検証できないため、実機で
+`pointerdown row:39 inside:true → row-handler → app received` と root の更新を確認する。
+2026-09-12 の実機確認では BUTTON に click が届き、`console:switch_root ok` と
+保存データの `root:39`（Codex）を確認した。ユーザーの PC 再起動後も root と
+元の会話 ID が保存データに残っていることを確認済み。調査用ログは撤去した。

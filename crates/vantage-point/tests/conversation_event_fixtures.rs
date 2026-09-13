@@ -23,12 +23,18 @@ use vantage_point::conversation::event::{
     ConversationEvent, PlanEntry, QuestionOption, QuestionSpec, SubagentRole,
 };
 
-/// TS 側の union が持つべき kind（= Rust の 16 variant）。variant を足したらここも足す
+/// TS 側の union が持つべき kind。variant を足したらここも足す
 /// （fixture の網羅 assert が落ちて気付く）。
-const EXPECTED_KINDS: [&str; 16] = [
+const EXPECTED_KINDS: [&str; 22] = [
+    "codex_queue",
+    "codex_message",
+    "codex_interactions",
+    "codex_interaction_result",
     "session_init",
     "replay_start",
     "replay_end",
+    "codex_config",
+    "codex_history",
     "user_message",
     "message_chunk",
     "thought_chunk",
@@ -47,6 +53,76 @@ const EXPECTED_KINDS: [&str; 16] = [
 /// 全 variant の代表値。optional の有無 / 空 vec・map / false / 数値 / 任意 JSON を含める。
 fn fixtures() -> Vec<(&'static str, ConversationEvent)> {
     vec![
+        (
+            "codex_message",
+            ConversationEvent::CodexMessage {
+                item_id: "turn/message".into(),
+                text: "本文".into(),
+                questions: Vec::new(),
+                append: false,
+            },
+        ),
+        (
+            "codex_interactions",
+            ConversationEvent::CodexInteractions {
+                requests: vec![vantage_point::conversation::event::CodexInteraction {
+                    elicitation: None,
+                    cancel_on_deny: None,
+                    item_id: None,
+                    request_id: "codex:fixture:1".into(),
+                    kind: "question".into(),
+                    title: "質問".into(),
+                    details: String::new(),
+                    blocking: true,
+                    can_accept: true,
+                    questions: vec![vantage_point::conversation::event::CodexQuestion {
+                        id: "question-id".into(),
+                        header: "対象".into(),
+                        question: "どちら？".into(),
+                        options: vec![QuestionOption {
+                            label: "A".into(),
+                            description: "候補".into(),
+                        }],
+                        is_secret: false,
+                    }],
+                }],
+            },
+        ),
+        (
+            "codex_interaction_result",
+            ConversationEvent::CodexInteractionResult {
+                request_id: "codex:fixture:1".into(),
+                error: None,
+            },
+        ),
+        (
+            "codex_config",
+            ConversationEvent::CodexConfig {
+                config: Some(vantage_point::conversation::event::CodexConfigView::default()),
+                request_id: None,
+                error: None,
+            },
+        ),
+        (
+            "codex_queue",
+            ConversationEvent::CodexQueue {
+                queue: Some(vantage_point::conversation::event::CodexQueueView::default()),
+                request_id: None,
+                error: None,
+            },
+        ),
+        (
+            "codex_history",
+            ConversationEvent::CodexHistory {
+                thread_id: "codex-thread".into(),
+                events: vec![ConversationEvent::UserMessage {
+                    text: "Console の会話".into(),
+                }],
+                user_message_ids: vec!["request-1".into()],
+                in_flight: false,
+                truncated: true,
+            },
+        ),
         (
             "session_init_minimal",
             ConversationEvent::SessionInit {
@@ -274,7 +350,7 @@ fn write_if_changed(path: &Path, content: &str) {
         .unwrap_or_else(|e| panic!("生成物の書き込み失敗 {}: {e}", path.display()));
 }
 
-/// 全 16 variant が fixture に 1 つ以上ある（variant 追加の取りこぼしを Rust 側で止める）。
+/// 全 variant が fixture に 1 つ以上ある（variant 追加の取りこぼしを Rust 側で止める）。
 #[test]
 fn fixtures_cover_every_kind() {
     let kinds: std::collections::BTreeSet<String> = fixtures()

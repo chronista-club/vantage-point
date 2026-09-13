@@ -77,7 +77,7 @@ pub(super) struct Boot {
 /// resource を構築し、event loop と初期 [`UiState`] と共に返す。
 ///
 /// `EventLoop` は window の構築に借り、`run()` が `.run(self)` で消費するので別に返す。
-pub(super) fn boot() -> anyhow::Result<(EventLoop<AppEvent>, Boot, UiState)> {
+pub(super) fn boot(instance_index: usize) -> anyhow::Result<(EventLoop<AppEvent>, Boot, UiState)> {
     let _log = crate::log_init::init_tracing();
 
     // VP-192: 旧 config/data パスからの冪等なデータ移行 (Settings/SessionState 読み込み前)
@@ -137,7 +137,7 @@ pub(super) fn boot() -> anyhow::Result<(EventLoop<AppEvent>, Boot, UiState)> {
     };
 
     // muda の MenuEvent を main loop に橋渡しする pump を起動
-    spawn_menu_event_pump(&rt_handle, event_loop.create_proxy());
+    spawn_menu_event_pump(event_loop.create_proxy());
 
     // F1b (doc 27 §3.4.4): vp-app → Daemon :32000 の全 persistent session を 1 QUIC connection に
     // 集約する共有ハンドル。 manager task が connect/reconnect を一手に所有し、 各 session
@@ -173,10 +173,7 @@ pub(super) fn boot() -> anyhow::Result<(EventLoop<AppEvent>, Boot, UiState)> {
     // vp-app instance index 判定 (= multi-window 復元)。 per-instance file load に先立って
     // 必要なので session file の load より前に確定する。
     // `VP_APP_INSTANCE` (= "0", "1", ...) が instance 番号。 未設定 / "0" = primary。
-    let instance_index: usize = std::env::var("VP_APP_INSTANCE")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(0);
+    // run がこの番号の process lock を確保してから渡す。
     let is_primary = instance_index == 0;
     tracing::info!(
         "vp-app boot: instance_index={} (= {})",

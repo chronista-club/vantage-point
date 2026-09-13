@@ -20,6 +20,30 @@ use crate::conversation::replay_log::{self, ReplayLogTap};
 use crate::protocol::RepoMessage;
 use crate::repo::topic_router::TopicRouter;
 
+pub type HistoryRecovery = Arc<dyn Fn() + Send + Sync>;
+
+#[cfg(test)]
+pub fn spawn_lane_conversation_pump(
+    lane: String,
+    session: crate::lane::session_registry::SessionKey,
+    rx: broadcast::Receiver<ConversationEvent>,
+    topic_router: Arc<TopicRouter>,
+    replay_log: Option<ReplayLogTap>,
+    activity: Arc<std::sync::atomic::AtomicU64>,
+    turn_active: Arc<std::sync::atomic::AtomicBool>,
+) -> JoinHandle<()> {
+    spawn_recovering_conversation_pump(
+        lane,
+        session,
+        rx,
+        topic_router,
+        replay_log,
+        activity,
+        turn_active,
+        None,
+    )
+}
+
 /// 1 session の chat host output broadcast を購読し、`ConversationEvent` topic に流す pump を spawn。
 ///
 /// - `lane`: LaneAddress の Display 形（`"vp/root"` 等）。topic key 化は `TopicRouter` が担う。
@@ -29,11 +53,12 @@ use crate::repo::topic_router::TopicRouter;
 /// - `rx`: chat host の `subscribe()` で得た ConversationEvent の broadcast receiver。
 /// - `topic_router`: repo の topic_router。
 /// - `replay_log`: `Some` = 配信 event を disk に per-session 記録して replay 源にする。
-///   **transcript を持たない engine（cursor/codex）にだけ渡す** — claude は transcript が SSOT
+///   **native 履歴を使わない engine にだけ渡す** — Claude / Codex は native 履歴が SSOT
 ///   なので `None`（二重化しない）。記録は配送と独立（書き込み失敗は warn するだけ）。
 ///
-/// Host drop（broadcast Closed）で pump は自然終了する。lag 時は drop を warn して継続。
-pub fn spawn_lane_conversation_pump(
+/// Host drop で終了する。lag 時は warn し、Codex は recover で最新履歴を再配送する。
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_recovering_conversation_pump(
     lane: String,
     session: crate::lane::session_registry::SessionKey,
     mut rx: broadcast::Receiver<ConversationEvent>,
@@ -41,6 +66,7 @@ pub fn spawn_lane_conversation_pump(
     replay_log: Option<ReplayLogTap>,
     activity: Arc<std::sync::atomic::AtomicU64>,
     turn_active: Arc<std::sync::atomic::AtomicBool>,
+    recover: Option<HistoryRecovery>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut tap = replay_log.map(ReplayTap::new);
@@ -76,6 +102,11 @@ pub fn spawn_lane_conversation_pump(
                     tracing::warn!(
                         "lane conversation pump lagged: {n} events dropped (lane={lane}#{session})"
                     );
+                    if let Some(recover) = &recover {
+                        // 古い tail を捨ててから、host の同じ ordered stream に snapshot を要求。
+                        rx = rx.resubscribe();
+                        recover();
+                    }
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     // 終了時に coalesce 中の MessageChunk を取りこぼさない（turn 未完のまま
@@ -107,11 +138,18 @@ pub fn spawn_lane_conversation_pump(
 /// turn の外なので `None`（現在の状態を保つ）。
 fn turn_activity_of(event: &ConversationEvent) -> Option<bool> {
     match event {
+        ConversationEvent::CodexInteractions { requests }
+            if requests.iter().any(|r| r.item_id.is_none() || r.can_accept) =>
+        {
+            Some(true)
+        }
+        ConversationEvent::CodexHistory { in_flight, .. } => Some(*in_flight),
         ConversationEvent::TurnCompleted { .. }
         | ConversationEvent::Error { .. }
         | ConversationEvent::EngineExited { .. } => Some(false),
         ConversationEvent::UserMessage { .. }
         | ConversationEvent::MessageChunk { .. }
+        | ConversationEvent::CodexMessage { .. }
         | ConversationEvent::ThoughtChunk { .. }
         | ConversationEvent::ToolCall { .. }
         | ConversationEvent::ToolCallUpdate { .. }
@@ -225,6 +263,81 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn interactions_keep_host_alive_while_waiting_for_user() {
+        let request = crate::conversation::event::CodexInteraction {
+            elicitation: None,
+            cancel_on_deny: None,
+            item_id: None,
+            request_id: "codex:test:1".into(),
+            kind: "question".into(),
+            title: "質問".into(),
+            details: String::new(),
+            questions: vec![],
+            blocking: true,
+            can_accept: true,
+        };
+        assert_eq!(
+            turn_activity_of(&ConversationEvent::CodexInteractions {
+                requests: vec![request]
+            }),
+            Some(true)
+        );
+        assert_eq!(
+            turn_activity_of(&ConversationEvent::CodexInteractions { requests: vec![] }),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn lag_discards_stale_deltas_and_requests_ordered_history() {
+        let router = Arc::new(TopicRouter::new());
+        let (tx, rx) = broadcast::channel(2);
+        let (_, mut events) = router
+            .subscribe("repo/conversation/data/vp~root/event")
+            .await;
+        for _ in 0..4 {
+            tx.send(ConversationEvent::MessageChunk {
+                text: "古い差分".into(),
+            })
+            .unwrap();
+        }
+        let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let recovery = Arc::new(move || {
+            tx.send(ConversationEvent::CodexHistory {
+                thread_id: "t".into(),
+                events: vec![],
+                user_message_ids: vec![],
+                in_flight: false,
+                truncated: false,
+            })
+            .unwrap();
+        });
+        let pump = spawn_recovering_conversation_pump(
+            "vp/root".into(),
+            2,
+            rx,
+            router,
+            None,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            active.clone(),
+            Some(recovery),
+        );
+        let (_, message) = tokio::time::timeout(Duration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        pump.abort();
+        assert!(matches!(
+            message,
+            RepoMessage::ConversationEvent {
+                event: ConversationEvent::CodexHistory { .. },
+                ..
+            }
+        ));
+        assert!(!active.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
     /// pump が ConversationEvent を per-lane topic に route し、subscriber が受け取れる。
     #[tokio::test]
     async fn test_pump_routes_conversation_event_to_per_lane_topic() {
@@ -299,6 +412,12 @@ mod tests {
         // 作業の event = 実行中
         for e in [
             E::MessageChunk { text: "x".into() },
+            E::CodexMessage {
+                item_id: "turn/message".into(),
+                text: "x".into(),
+                questions: Vec::new(),
+                append: true,
+            },
             E::ThoughtChunk { text: "x".into() },
             E::UserMessage { text: "x".into() },
         ] {

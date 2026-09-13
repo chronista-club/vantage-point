@@ -69,7 +69,7 @@ app-server は 1 接続で複数 thread を多重化できるが、**採らな�
 | stream | stdout JSONL → translate | notification JSONL → translate（§2-3） |
 | interrupt | プロセス kill（現行） | **`turn/interrupt {threadId, turnId}`** — 会話プロセスを殺さず turn だけ止める（TurnHost の kill より上等。turnId は `turn/started` で保持） |
 | 停止 | Child kill_on_drop | 同（Drop で子プロセス kill。thread は disk rollout に残る = resume 可能） |
-| self-heal | resume 失敗 → fresh 落ち | `thread/resume` error → `thread/start` に倒す（TurnHost の「no rollout found → 記録破棄」と同じ流儀。doc 40 の conversation は新 thread id で上書き） |
+| 再開失敗 | 既存の Claude policy | `thread/resume` error は元 ID を保持して Error を表示。次の送信で host を作り直して同じ ID に再試行する（§2-5） |
 
 ### 2-3. 翻訳表（app-server notification → EchoesEvent）
 
@@ -95,6 +95,35 @@ app-server は 1 接続で複数 thread を多重化できるが、**採らな�
 - Act I（床）は現状維持: `codex resume '<id>'` type-ahead（stand_spawner）。thread id は registry
   共有なので II⇄I 継続は自動整合（backfill bridge は PR-2 までの過渡）
 - `codex_session` store: RpcHost は書かない（registry 直結）。store の退役は doc 40 PR-2 に合流
+
+### 2-5. Chat の起動失敗と再試行（2026-09-12）
+
+Task: `mem_1Cex2VPFy3gQnXtpYqF1in`。Console resume（design 64）の次の修正単位。
+
+`thread/resume` の error を `thread/start` に変換しない。元の registry ID を保持し、
+Codex が返した理由と再送の案内を `ConversationEvent::Error` で表示する。会話が見つからない
+場合も、設定・依存先の初期化に失敗した場合も同じ扱いとする。
+[公式 App Server 仕様](https://learn.chatgpt.com/docs/app-server) は、必須 MCP server の初期化失敗で
+`thread/start` と `thread/resume` が失敗することを明記している。
+
+失敗した host は以後の submit を Err にする。既存の `ensure_and_submit_chat` がその
+session の host を破棄・再作成し、registry に残っている元 ID で再開する。自動で繰り返す
+再試行 loop は作らず、次のユーザー送信が再試行のきっかけになる。
+`initialize` と明示的新規作成の `thread/start` の error も、待機が固着しないよう同じ
+起動失敗の扱いにする。
+
+失敗した起動を待っていた prompt は host の queue から除去し、後から別の turn へ送らない。
+Chat に表示されたユーザー発話は残るが、Codex へ届いたことは意味しない。再送の案内を表示する。
+元の会話を続けず新しく始める場合は、既存の新規 Chat 作成操作で別 session を作る。
+
+正常な start / resume は従来通り返された thread ID を記録し、待機中の prompt を送信する。
+Console 由来の履歴を Chat に復元することと live/replay の整合は、この変更の次の修正単位。
+
+**やってはいけない**:
+
+- 起動 error を「会話が消失した」と決めつけ、新しい ID で上書きする。
+- エラー表示だけを足して、以後の submit が永久に queue に溜まる host を残す。
+- 失敗した起動の待機 prompt を、新しい会話へ自動送信する。
 
 ## 3. --oss / LM Studio 裏打ち（PR-B 実測、2026-07-18 **PASS**）
 
@@ -133,3 +162,9 @@ dev path step 7（local LLM 正式化）の設計判断 — ここでは予約�
   （`thread/compact/start` あり）は将来の考慮点
 - **`turn/steer`**: 実行中 turn への注入（claude に無い能力）。v1 scope 外だが、queued-message
   の上位互換として picker/UX の将来素材（doc 39 §6 でも記録済み）
+
+## Status log
+
+- 2026-09-12: [design 67](67-codex-chat-interactions.md) で質問・承認応答を追加。§1・§2 の approvalPolicy / sandbox 強制指定を廃止し、native 設定に従う。
+- 2026-09-11: [design 64](64-codex-console-resume.md) で TUI 自身の hook からも thread ID を記録する経路を追加。§2 の TUI ID 供給は GUI 専用ではなくなる。GUI host / Chat 履歴の改善は別の段階で扱う。
+- 2026-09-12: §2-5 で Chat の自動新規 fallback を廃止し、元 ID の保持・起動失敗の表示・次回送信による再試行へ変更。検証結果は PR と task に記録する。

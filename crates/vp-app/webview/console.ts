@@ -292,6 +292,8 @@ type BufferedEvent = { event: ConversationEvent; session: number }
 
 type LaneConsole = {
   buffer: BufferedEvent[]
+  codexConfigs: Map<number, ConversationEvent>
+  codexInteractions: Map<number, ConversationEvent>
   mode: SessionMode
   renderer: ConsoleRenderer | null
   /** Conversation 共通ヘッダ用 summary（session_init / turn_completed / error の畳み込み）。 */
@@ -303,7 +305,7 @@ const lanes = new Map<string, LaneConsole>()
 function laneOf(lane: string): LaneConsole {
   let entry = lanes.get(lane)
   if (!entry) {
-    entry = { buffer: [], mode: 'tui', renderer: null, header: {} }
+    entry = { buffer: [], codexConfigs: new Map(), codexInteractions: new Map(), mode: 'tui', renderer: null, header: {} }
     lanes.set(lane, entry)
   }
   return entry
@@ -369,6 +371,15 @@ export function installConsole(): VpConsole {
     handleEvent(lane, event, session) {
       const s = normalizeSession(session)
       const entry = laneOf(lane)
+      if (event.kind === 'codex_interactions') entry.codexInteractions.set(s, event)
+      if (event.kind === 'codex_config' && event.config && !event.request_id) {
+        entry.codexConfigs.set(s, { ...event, request_id: null, error: null })
+      }
+      if (event.kind === 'codex_history') {
+        entry.buffer = entry.buffer.filter((b) => b.session !== s)
+        replayingSessions.delete(`${lane}\u0000${s}`)
+        settleReplayNow(lane, s, `${lane}\u0000${s}`)
+      }
       // replay 開始 = 該当 session の過去会話再送。doc 38 Phase 2: replay は session 単位なので、
       // その session の buffer 分だけ捨てる（他 session の buffer を巻き込まない）。ChatView 未
       // mount のまま 2 回 replay された場合に後着 renderer が二重の会話を畳むのを防ぐ。N=1 では
@@ -381,7 +392,7 @@ export function installConsole(): VpConsole {
         replayingSessions.add(`${lane}\u0000${s}`)
       }
       if (event.kind === 'replay_end') replayingSessions.delete(`${lane}\u0000${s}`)
-      entry.buffer.push({ event, session: s })
+      if (!['codex_config', 'codex_interactions', 'codex_interaction_result'].includes(event.kind)) entry.buffer.push({ event, session: s })
       if (entry.buffer.length > BUFFER_CAP) {
         entry.buffer.splice(0, entry.buffer.length - BUFFER_CAP)
       }
@@ -460,7 +471,9 @@ export function installConsole(): VpConsole {
       entry.renderer = renderer
       // mount 前に届いた分を replay（subscribe→submit 順と合わせ、取りこぼしゼロ）。
       // doc 38 Phase 2: 各 buffered event の session を renderer に渡す（filter が効く）。
-      for (const b of entry.buffer) {
+      const configs = [...entry.codexConfigs].map(([session, event]) => ({ session, event }))
+      const interactions = [...entry.codexInteractions].map(([session, event]) => ({ session, event }))
+      for (const b of [...configs, ...entry.buffer, ...interactions]) {
         try {
           renderer(b.event, b.session)
         } catch (e) {

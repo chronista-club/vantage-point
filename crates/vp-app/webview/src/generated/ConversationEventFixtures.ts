@@ -6,6 +6,84 @@
 import type { EngineConversationEvent } from '../../console'
 
 export const CONVERSATION_EVENT_FIXTURES = {
+  codex_message: {
+    "kind": "codex_message",
+    "item_id": "turn/message",
+    "text": "本文",
+    "questions": [],
+    "append": false
+  },
+  codex_interactions: {
+    "kind": "codex_interactions",
+    "requests": [
+      {
+        "request_id": "codex:fixture:1",
+        "kind": "question",
+        "title": "質問",
+        "details": "",
+        "questions": [
+          {
+            "id": "question-id",
+            "header": "対象",
+            "question": "どちら？",
+            "options": [
+              {
+                "label": "A",
+                "description": "候補"
+              }
+            ],
+            "is_secret": false
+          }
+        ],
+        "blocking": true,
+        "can_accept": true
+      }
+    ]
+  },
+  codex_interaction_result: {
+    "kind": "codex_interaction_result",
+    "request_id": "codex:fixture:1",
+    "error": null
+  },
+  codex_config: {
+    "kind": "codex_config",
+    "config": {
+      "models": [],
+      "model": null,
+      "effort": null,
+      "selection": null,
+      "error": null
+    },
+    "request_id": null,
+    "error": null
+  },
+  codex_queue: {
+    "kind": "codex_queue",
+    "queue": {
+      "thread_id": "",
+      "turn_id": null,
+      "ready": false,
+      "items": [],
+      "error": null
+    },
+    "request_id": null,
+    "error": null
+  },
+  codex_history: {
+    "kind": "codex_history",
+    "thread_id": "codex-thread",
+    "events": [
+      {
+        "kind": "user_message",
+        "text": "Console の会話"
+      }
+    ],
+    "user_message_ids": [
+      "request-1"
+    ],
+    "in_flight": false,
+    "truncated": true
+  },
   session_init_minimal: {
     "kind": "session_init",
     "session_id": "sid-1"

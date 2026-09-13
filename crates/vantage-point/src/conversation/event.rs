@@ -1,8 +1,8 @@
 //! ConversationEvent — Conversation gui GUI が話す唯一の言葉（PR1 で凍結）
 //!
-//! vp-app（GUI）はこの語彙だけを描画する。engine（現状 claude）ごとの
-//! stream 形式は repo 側の翻訳層（[`super::claude_translate`]）で吸収し、engine を
-//! 足すときは翻訳層を 1 個追加するだけで GUI は無改修 — これが多 engine 方針の支え。
+//! vp-app（GUI）はこの語彙を描画する。engine ごとの stream 形式は repo 側の翻訳層で吸収する。
+//! native 履歴のライフサイクルが異なる Codex は一括 snapshot を持ち、GUI の専用 reducer で
+//! 表示を再構築する（design 65）。通常の本文・tool の表示部品は共通に使う。
 //!
 //! 語彙は ACP `session/update` の実績あるサブセットを借用。
 //! 由来のマッピングは design doc 32 §4 / §10（Step 0 実測スキーマ）を参照。
@@ -19,6 +19,18 @@ use ts_rs::TS;
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConversationEvent {
+    /// Native Queue の表示用 snapshot。待機入力は履歴へ追加しない。
+    CodexQueue {
+        queue: Option<CodexQueueView>,
+        request_id: Option<String>,
+        error: Option<String>,
+    },
+    /// Codex の次送信設定。会話終了・送信結果とは独立した状態と応答。
+    CodexConfig {
+        config: Option<CodexConfigView>,
+        request_id: Option<String>,
+        error: Option<String>,
+    },
     /// セッション初期化。engine プロセス起動直後に 1 回。
     /// session_id は cc_session への記録に使う（tui ⇄ gui の resume 共有）。
     SessionInit {
@@ -67,6 +79,15 @@ pub enum ConversationEvent {
     /// （type-ahead の flush 等）が二度と発火しない。終端で真値を宣言して打ち消す。
     ReplayEnd { in_flight: bool },
 
+    /// Codex native 履歴の一括置換。内側は表示専用で、live の副作用を再実行しない。
+    CodexHistory {
+        thread_id: String,
+        events: Vec<ConversationEvent>,
+        user_message_ids: Vec<String>,
+        in_flight: bool,
+        truncated: bool,
+    },
+
     /// user 自身の発話（transcript replay 専用）。
     ///
     /// live 経路では ChatView が submit 時に optimistic に user bubble を足すため発火しない。
@@ -76,6 +97,14 @@ pub enum ConversationEvent {
 
     /// 本文テキストの増分（1 token 前後）。GUI は末尾に append。
     MessageChunk { text: String },
+
+    /// Codex の発話単位。completed の全文で delta を置換し、質問構造を失わない。
+    CodexMessage {
+        item_id: String,
+        text: String,
+        questions: Vec<CodexQuestion>,
+        append: bool,
+    },
 
     /// thinking の増分。GUI は折りたたみ領域に append。
     ThoughtChunk { text: String },
@@ -191,6 +220,119 @@ pub enum ConversationEvent {
         #[cfg_attr(test, ts(type = "unknown"))]
         input: serde_json::Value,
     },
+    /// 現 host の未回答要求。過去の会話イベントからは復元しない。
+    CodexInteractions { requests: Vec<CodexInteraction> },
+    /// 回答 transport の結果。会話や turn の完了とは独立する。
+    CodexInteractionResult {
+        request_id: String,
+        error: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexQueueView {
+    pub thread_id: String,
+    pub turn_id: Option<String>,
+    pub ready: bool,
+    pub items: Vec<CodexQueuedInput>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexQueuedInput {
+    pub id: String,
+    pub client_id: String,
+    pub text: String,
+    pub editable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexInteraction {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub elicitation: Option<CodexElicitation>,
+    /// native が decline を提示せず、許可しない応答で turn を中断する場合。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub cancel_on_deny: Option<bool>,
+    /// 非同期質問の発話キー。server request は発話本文とは独立する。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub item_id: Option<String>,
+    pub request_id: String,
+    pub kind: String,
+    pub title: String,
+    pub details: String,
+    pub questions: Vec<CodexQuestion>,
+    pub blocking: bool,
+    pub can_accept: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexElicitation {
+    pub server_name: String,
+    pub message: String,
+    pub url: Option<String>,
+    pub fields: Vec<CodexElicitationField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexElicitationField {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub kind: String,
+    pub required: bool,
+    pub options: Vec<CodexElicitationOption>,
+    pub default_value: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexElicitationOption {
+    pub value: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexQuestion {
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    pub options: Vec<QuestionOption>,
+    pub is_secret: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexSelection {
+    pub model: String,
+    pub effort: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexModel {
+    pub model: String,
+    pub label: String,
+    pub efforts: Vec<String>,
+    pub default_effort: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexConfigView {
+    pub models: Vec<CodexModel>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub selection: Option<CodexSelection>,
+    pub error: Option<String>,
 }
 
 /// [`ConversationEvent::SubagentMessage`] の発話種別。

@@ -30,6 +30,7 @@
 mod boot;
 /// boot 窓の catch-up（`WebviewReady` で state を 1 つの list で撃ち直す）。
 mod catch_up;
+mod instance_guard;
 /// lane の見え方の調整役（activate_lane / conversation attach / roster / 未読印）。
 mod lane_view;
 /// event handler: board / canvas / editor（board snapshot の投影、switch_lane、editor bridge、board mutate）。
@@ -163,9 +164,19 @@ fn update_pane_bounds(webview: &WebView, window_size: tao::dpi::PhysicalSize<u32
 
 /// App のエントリポイント
 pub fn run() -> anyhow::Result<()> {
+    let instance_index = std::env::var("VP_APP_INSTANCE")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
+    // boot より前に確保する。重複起動では window も session 保存も secondary 復元も行わない。
+    // この guard は run の scope で保持し、GUI process の終了で OS が lock を解放する。
+    let Some(_instance_guard) = instance_guard::acquire(&vp_paths::vp_state_dir(), instance_index)?
+    else {
+        return Ok(());
+    };
     // resource（runtime / window / webview / menu / tray / daemon 接続）と初期 state を作る。
     // `boot` と `ui` は閉包に move し、process の寿命と一致させる（doc 60 §6 6-2）。
-    let (event_loop, boot, mut ui) = boot::boot()?;
+    let (event_loop, boot, mut ui) = boot::boot(instance_index)?;
 
     let proxy = event_loop.create_proxy();
     // Phase 2.5 (per-Lane instance): startup の placeholder PTY 接続は撤去。
@@ -317,6 +328,22 @@ pub fn run() -> anyhow::Result<()> {
                 event,
                 session,
             }) => on_conversation::conversation_event(&mut ui, &boot, lane, event, session),
+            Event::UserEvent(AppEvent::ConversationCodexInput {
+                lane,
+                session,
+                thread_id,
+                request_id,
+                action,
+            }) => on_conversation::conversation_codex_input(
+                &ui,
+                &boot,
+                &async_action_proxy,
+                lane,
+                session,
+                thread_id,
+                request_id,
+                action,
+            ),
             Event::UserEvent(AppEvent::ConversationSubmit {
                 lane,
                 prompt,
@@ -400,7 +427,18 @@ pub fn run() -> anyhow::Result<()> {
                 lane,
                 session,
                 model,
-            }) => on_conversation::conversation_set_model(&mut ui, &boot, lane, session, model),
+                effort,
+                request_id,
+            }) => on_conversation::conversation_set_model(
+                &mut ui,
+                &boot,
+                &async_action_proxy,
+                lane,
+                session,
+                model,
+                effort,
+                request_id,
+            ),
             Event::UserEvent(AppEvent::ConversationSessionCreate { lane, agent }) => {
                 on_conversation::conversation_session_create(&mut ui, &boot, lane, agent)
             }

@@ -8,9 +8,9 @@
 //!
 //! | notification | ConversationEvent |
 //! |--------------|-------------|
-//! | `item/agentMessage/delta` | `MessageChunk`（主 stream） |
+//! | `item/agentMessage/delta` | `CodexMessage`（item 単位の増分） |
 //! | `item/reasoning/textDelta` / `summaryTextDelta` | `ThoughtChunk` |
-//! | `item/completed` agentMessage / reasoning | delta を一度も見ていない時だけ全文 fallback（重複防止 — claude 翻訳と同じ規律） |
+//! | `item/completed` agentMessage / reasoning | agentMessage は構造を含む全文で置換。reasoning は delta 未観測時のみ fallback |
 //! | `item/started` tool 系 | `ToolCall` |
 //! | `item/completed` tool 系 | `ToolCallUpdate`（started 未観測なら ToolCall を補完 — exec 版 codex_translate の規律を踏襲） |
 //! | その他（userMessage / mcpServer 状態 / tokenUsage 等） | 無視（未知 method に寛容 = protocol drift 吸収、doc 41 §5） |
@@ -120,15 +120,17 @@ impl CodexRpcTranslator {
     /// という前提は**置かない** — 未知 method は無条件に空を返す（寛容）。
     pub fn ingest(&mut self, method: &str, params: &serde_json::Value) -> Vec<ConversationEvent> {
         match method {
-            "item/agentMessage/delta" => {
-                self.mark_delta(params);
-                match params.get("delta").and_then(|v| v.as_str()) {
-                    Some(d) if !d.is_empty() => {
-                        vec![ConversationEvent::MessageChunk { text: d.into() }]
-                    }
-                    _ => Vec::new(),
+            "item/agentMessage/delta" => match params.get("delta").and_then(|v| v.as_str()) {
+                Some(d) if !d.is_empty() => {
+                    vec![ConversationEvent::CodexMessage {
+                        item_id: super::codex_async_questions::item_key(params),
+                        text: d.into(),
+                        questions: Vec::new(),
+                        append: true,
+                    }]
                 }
-            }
+                _ => Vec::new(),
+            },
             "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
                 self.mark_delta(params);
                 match params.get("delta").and_then(|v| v.as_str()) {
@@ -148,7 +150,17 @@ impl CodexRpcTranslator {
                 let Some(item) = params.get("item") else {
                     return Vec::new();
                 };
-                self.item_completed(item)
+                if item["type"] == "agentMessage" {
+                    vec![ConversationEvent::CodexMessage {
+                        item_id: super::codex_async_questions::item_key(params),
+                        text: item["text"].as_str().unwrap_or_default().into(),
+                        questions: super::codex_async_questions::questions(item)
+                            .unwrap_or_default(),
+                        append: false,
+                    }]
+                } else {
+                    self.item_completed(item)
+                }
             }
             _ => Vec::new(),
         }
@@ -182,17 +194,6 @@ impl CodexRpcTranslator {
         let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let id = item.get("id").and_then(|v| v.as_str()).unwrap_or_default();
         match item_type {
-            "agentMessage" => {
-                if self.delta_seen.remove(id) {
-                    return Vec::new(); // delta で全文流し済み
-                }
-                match item.get("text").and_then(|v| v.as_str()) {
-                    Some(t) if !t.is_empty() => {
-                        vec![ConversationEvent::MessageChunk { text: t.into() }]
-                    }
-                    _ => Vec::new(),
-                }
-            }
             "reasoning" => {
                 if self.delta_seen.remove(id) {
                     return Vec::new();
@@ -233,44 +234,56 @@ impl CodexRpcTranslator {
 mod tests {
     use super::*;
 
-    /// doc 41 §1 の実測 wire（2026-07-18、codex-cli 0.144.5）そのままの行で
-    /// delta → completed 抑止の主経路を固定する。
+    #[test]
+    fn async_question_preserves_structure_after_delta() {
+        let mut tr = CodexRpcTranslator::new();
+        tr.ingest(
+            "item/agentMessage/delta",
+            &serde_json::json!({"turnId":"turn","itemId":"q","delta":"途中"}),
+        );
+        let events = tr.ingest(
+            "item/completed",
+            &serde_json::json!({"turnId":"turn","item":{
+                "type":"agentMessage","id":"q","text":"どちら？\n- A","delivery":"async",
+                "questions":[{"title":"どちら？","options":["A"]}]
+            }}),
+        );
+        let value = serde_json::to_value(events).unwrap();
+        assert_eq!(value[0]["kind"], "codex_message");
+        assert_eq!(value[0]["item_id"], "turn/q");
+        assert_eq!(value[0]["questions"][0]["options"][0]["label"], "A");
+        assert_eq!(value[0]["append"], false);
+    }
+
+    /// 完成時の全文を捨てず、同一 item の置換として届ける。
     #[test]
     fn real_wire_agent_message_deltas_then_completed_suppressed() {
         let mut tr = CodexRpcTranslator::new();
-        let d1: serde_json::Value = serde_json::from_str(
-            r#"{"threadId":"019f7207-7392-7a41-b2a2-0d6adcfc405e","turnId":"019f7207-9b54-7a42-a926-9ef7edfdeeb4","itemId":"msg_04f764","delta":"pong"}"#,
-        )
-        .unwrap();
-        let d2: serde_json::Value =
-            serde_json::from_str(r#"{"itemId":"msg_04f764","delta":"-alpha"}"#).unwrap();
+        for text in ["pong", "-alpha"] {
+            let ev = tr.ingest(
+                "item/agentMessage/delta",
+                &serde_json::json!({"turnId":"turn","itemId":"msg","delta":text}),
+            );
+            assert_eq!(
+                ev,
+                vec![ConversationEvent::CodexMessage {
+                    item_id: "turn/msg".into(),
+                    text: text.into(),
+                    questions: Vec::new(),
+                    append: true,
+                }]
+            );
+        }
+        let done = tr.ingest("item/completed", &serde_json::json!({"turnId":"turn","item":{
+            "type":"agentMessage","id":"msg","text":"pong-alpha","phase":"final_answer","memoryCitation":null
+        }}));
         assert_eq!(
-            tr.ingest("item/agentMessage/delta", &d1),
-            vec![ConversationEvent::MessageChunk {
-                text: "pong".into()
-            }]
-        );
-        assert_eq!(
-            tr.ingest("item/agentMessage/delta", &d2),
-            vec![ConversationEvent::MessageChunk {
-                text: "-alpha".into()
-            }]
-        );
-        // completed（実測形: text に全文）— delta 済みなので何も出さない
-        let done: serde_json::Value = serde_json::from_str(
-            r#"{"item":{"type":"agentMessage","id":"msg_04f764","text":"pong-alpha","phase":"final_answer","memoryCitation":null}}"#,
-        )
-        .unwrap();
-        assert_eq!(tr.ingest("item/completed", &done), Vec::new());
-        // 別 item の completed（delta 無し）は全文 fallback
-        let done2: serde_json::Value = serde_json::from_str(
-            r#"{"item":{"type":"agentMessage","id":"msg_other","text":"full text"}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            tr.ingest("item/completed", &done2),
-            vec![ConversationEvent::MessageChunk {
-                text: "full text".into()
+            done,
+            vec![ConversationEvent::CodexMessage {
+                item_id: "turn/msg".into(),
+                text: "pong-alpha".into(),
+                questions: Vec::new(),
+                append: false,
             }]
         );
     }

@@ -19,9 +19,15 @@ type Kind = EngineConversationEvent['kind']
 
 /** TS union の kind 一覧。union に variant を足したら **ここにも足す**（fixture の網羅 assert が落ちる）。 */
 const ENGINE_KINDS = [
+  'codex_queue',
+  'codex_message',
+  'codex_interactions',
+  'codex_interaction_result',
   'session_init',
   'replay_start',
   'replay_end',
+  'codex_config',
+  'codex_history',
   'user_message',
   'message_chunk',
   'thought_chunk',
@@ -43,10 +49,16 @@ const _missing: Missing extends never ? true : never = true
 void _missing
 
 /** kind ごとの必須 field とその typeof。optional（Rust `skip_serializing_if`）は載せない。 */
-const REQUIRED: Record<Kind, Record<string, 'string' | 'boolean' | 'number' | 'object' | 'array'>> = {
+const REQUIRED: Record<Kind, Record<string, 'string' | 'boolean' | 'number' | 'object' | 'array' | 'null'>> = {
+  codex_queue: { queue: 'object', request_id: 'null', error: 'null' },
+  codex_message: { item_id: 'string', text: 'string', questions: 'array', append: 'boolean' },
+  codex_interactions: { requests: 'array' },
+  codex_interaction_result: { request_id: 'string', error: 'null' },
   session_init: { session_id: 'string' },
   replay_start: {},
   replay_end: { in_flight: 'boolean' },
+  codex_config: { config: 'object', request_id: 'null', error: 'null' },
+  codex_history: { thread_id: 'string', events: 'array', user_message_ids: 'array', in_flight: 'boolean', truncated: 'boolean' },
   user_message: { text: 'string' },
   message_chunk: { text: 'string' },
   thought_chunk: { text: 'string' },
@@ -71,7 +83,7 @@ function typeOf(v: unknown): string {
 const fixtures = Object.entries(CONVERSATION_EVENT_FIXTURES) as [string, EngineConversationEvent][]
 
 describe('ConversationEvent contract (Rust fixture ↔ TS mirror)', () => {
-  it('fixture が全 kind を 1 つ以上含む（Rust 16 variant = TS union）', () => {
+  it('fixture が全 kind を 1 つ以上含む（Rust variant = TS union）', () => {
     const seen = new Set(fixtures.map(([, ev]) => ev.kind))
     expect([...seen].sort()).toEqual([...ENGINE_KINDS].sort())
   })
