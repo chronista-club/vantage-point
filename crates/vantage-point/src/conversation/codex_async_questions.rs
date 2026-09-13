@@ -121,6 +121,7 @@ impl AsyncQuestions {
             Pending {
                 responding: false,
                 view: CodexInteraction {
+                    cancel_on_deny: None,
                     item_id: Some(key),
                     request_id,
                     kind: "async_question".into(),

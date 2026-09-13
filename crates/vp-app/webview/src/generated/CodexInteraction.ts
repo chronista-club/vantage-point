@@ -3,6 +3,10 @@ import type { CodexQuestion } from "./CodexQuestion";
 
 export type CodexInteraction = { 
 /**
+ * native が decline を提示せず、許可しない応答で turn を中断する場合。
+ */
+cancel_on_deny?: boolean, 
+/**
  * 非同期質問の発話キー。server request は発話本文とは独立する。
  */
 item_id?: string, request_id: string, kind: string, title: string, details: string, questions: Array<CodexQuestion>, blocking: boolean, can_accept: boolean, };

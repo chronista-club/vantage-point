@@ -114,6 +114,7 @@ impl Interactions {
         let mut questions = Vec::new();
         let mut detail = serde_json::Map::new();
         let mut can_accept = true;
+        let mut cancel_on_deny = false;
         if kind == "question" {
             let rows = params["questions"]
                 .as_array()
@@ -169,9 +170,11 @@ impl Interactions {
                 if let Some(choices) = params.get("availableDecisions").filter(|v| !v.is_null()) {
                     let choices = choices.as_array().ok_or("不正な承認選択肢")?;
                     can_accept = choices.contains(&json!("accept"));
-                    // 最小の拒否応答ができない要求は未対応として native へ戻す。
                     if !choices.contains(&json!("decline")) {
-                        return Err("今回のみの拒否をサポートしない承認要求".into());
+                        if !choices.contains(&json!("cancel")) {
+                            return Err("拒否または中断をサポートしない承認要求".into());
+                        }
+                        cancel_on_deny = true;
                     }
                 }
                 let has_target = params["command"]
@@ -212,6 +215,7 @@ impl Interactions {
         self.next_id += 1;
         let request_id = format!("codex:{}:{}", self.generation, self.next_id);
         let view = CodexInteraction {
+            cancel_on_deny: cancel_on_deny.then_some(true),
             item_id: None,
             request_id: request_id.clone(),
             kind: kind.into(),
@@ -253,6 +257,9 @@ impl Interactions {
         let result = match decision {
             PermissionDecision::Deny { .. } if pending.view.kind == "question" => {
                 json!({"answers":{}})
+            }
+            PermissionDecision::Deny { .. } if pending.view.cancel_on_deny == Some(true) => {
+                json!({"decision":"cancel"})
             }
             PermissionDecision::Deny { .. } => json!({"decision":"decline"}),
             PermissionDecision::Allow { answers } => {
@@ -363,6 +370,38 @@ mod tests {
         )
         .unwrap();
         assert_eq!(response, json!({"id":"7","result":{"answers":{}}}));
+    }
+
+    #[test]
+    fn interactions_command_accept_cancel_is_answerable() {
+        for (decision, expected) in [
+            (PermissionDecision::Allow { answers: None }, "accept"),
+            (
+                PermissionDecision::Deny {
+                    message: String::new(),
+                },
+                "cancel",
+            ),
+        ] {
+            let mut pending = Interactions::default();
+            pending
+                .receive(
+                    &json!("approval"),
+                    "item/commandExecution/requestApproval",
+                    &json!({"threadId":"thread","turnId":"turn","command":"printf test",
+                    "availableDecisions":["accept","acceptForSession","cancel"]}),
+                    Some("thread"),
+                    Some("turn"),
+                )
+                .expect("cancel を提示する承認もカードにする");
+            let id = pending.pending.keys().next().unwrap().clone();
+            let reply: Value =
+                serde_json::from_str(&pending.begin_response(&id, &decision).unwrap()).unwrap();
+            assert_eq!(
+                reply,
+                json!({"id":"approval","result":{"decision":expected}})
+            );
+        }
     }
 
     #[test]

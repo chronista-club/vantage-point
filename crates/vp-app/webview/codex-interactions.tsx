@@ -51,7 +51,7 @@ export function CodexInteractionCard(props: {
           {props.sending ? '送信中…' : request().questions.length > 0 ? '回答する' : '今回のみ許可'}
         </button>
         <button class="conversation-prompt-cancel" onClick={() => props.respond(request().request_id, 'deny')}>
-          {request().questions.length > 0 ? '回答を見送る' : '拒否'}
+          {request().cancel_on_deny ? '許可せずターンを中断' : request().questions.length > 0 ? '回答を見送る' : '拒否'}
         </button>
       </div>
     </fieldset>
