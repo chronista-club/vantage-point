@@ -1,6 +1,6 @@
 # 71. Project と独立したメモ・Action
 
-> **Status**: Implemented — 実機確認待ち
+> **Status**: Implemented — 主要導線の実機確認済み
 > **Related**: design 57、58、`mem_1Cf1r1bEcTcknGH3Xk3naa`
 > **対象**: `creo/client.rs`, `webview/src/sidebar/actions-panel/`
 
@@ -35,6 +35,7 @@ lock 中の記憶や、操作権限のない Atlas に対する失敗を成功�
 ## Status log
 
 - 2026-09-14: Project からの独立と、入力時の Atlas 指定を合意。実装に着手。
+- 2026-09-15: ユーザー実機で Atlas 指定保存、Project 切替時の下書き・選択・一覧保持、旧 ACTIONS の取り込みを確認。
 
 ## 一覧の帰属と保存の復旧
 
