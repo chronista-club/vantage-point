@@ -88,6 +88,10 @@ pub struct HealthResponse {
     /// vp-app 側はこの値が変わった時だけ sidebar に当てる。5s ごとに同じ一覧を当て直すと、
     /// **編集中の行を書き戻して caret が飛ぶ**（`<Index>` は位置キーイングなので値だけ差し戻る）。
     pub actions_rev: u32,
+    pub actions_atlases: Vec<crate::creo::client::CreoAtlas>,
+    pub actions_scope: String,
+    pub actions_error: String,
+    pub actions_imported: bool,
     /// アイドルとみなすまでの分数（settings.kdl の `idle-timeout-minutes`、doc 59 P3）。
     ///
     /// **daemon が持つ 1 つの値を GUI にも配る**ための field。sidebar の now-line が
@@ -186,6 +190,10 @@ pub async fn health_handler(State(state): State<Arc<DaemonState>>) -> Json<Healt
         idle_timeout_minutes: crate::repo::lane::idle_teardown_after_minutes(),
         actions: actions_snapshot.items,
         actions_rev: actions_snapshot.rev,
+        actions_atlases: actions_snapshot.atlases,
+        actions_scope: actions_snapshot.scope,
+        actions_error: actions_snapshot.error,
+        actions_imported: actions_snapshot.imported,
     })
 }
 
@@ -367,6 +375,14 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    #[tokio::test]
+    async fn actions_catalog_health_contract_is_always_present() {
+        let body = daemon_health_body().await;
+        assert_eq!(body["actions_atlases"], serde_json::json!([]));
+        assert_eq!(body["actions_scope"], "");
+        assert_eq!(body["actions_error"], "");
+    }
+
     /// 起動直後の daemon が返す **key 集合**を固定する。
     ///
     /// `HealthResponse` は 15 field（PR-2c で `repo_dir` / `terminal_token` を削除、17 → 15）で、
@@ -400,6 +416,10 @@ mod tests {
         let mut expected = vec![
             "actions",
             "actions_rev",
+            "actions_atlases",
+            "actions_scope",
+            "actions_error",
+            "actions_imported",
             "auth_targets",
             "hub",
             "hub_nodes",
@@ -544,6 +564,7 @@ mod tests {
                 done: false,
                 bucket: "today".to_string(),
                 order: "a0".to_string(),
+                ..Default::default()
             }]);
         assert!(changed, "前提: 内容が変わったので rev が上がる");
 

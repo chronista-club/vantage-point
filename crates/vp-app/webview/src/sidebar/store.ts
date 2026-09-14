@@ -36,6 +36,10 @@ export function emptyState(): SidebarState {
 			// 空値で、`actions_rev: 0` = 未取得 = **取り込まない**印（doc 57 Phase 3）。
 			actions: [],
 			actions_rev: 0,
+			actions_atlases: [],
+			actions_scope: "",
+			actions_error: "",
+			actions_imported: false,
 		},
 		lanes_by_repo: {},
 		unread_notifications: {},

@@ -249,10 +249,12 @@ impl DaemonControl {
         &self,
         items: Vec<serde_json::Value>,
         removed: Vec<String>,
+        scope: Option<String>,
+        import_legacy: Option<bool>,
     ) -> Result<()> {
         self.control(
             "actions/save",
-            serde_json::json!({ "items": items, "removed": removed }),
+            serde_json::json!({ "items": items, "removed": removed, "scope": scope, "import_legacy": import_legacy.unwrap_or(false) }),
         )
         .await?;
         Ok(())

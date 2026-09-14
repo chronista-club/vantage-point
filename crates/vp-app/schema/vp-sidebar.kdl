@@ -172,6 +172,8 @@ protocol "sidebar" version="1.0.0" {
         // - `removed` = user が明示的に消した id。⚠️ **`items` の不在からは決して削除しない**
         //   (webview の一覧は push 到着前に短く見えることがあり、推論すると全消しになる)
         request "actions:persist" {
+            field "scope" type="string" optional=#true
+            field "import_legacy" type="bool" optional=#true
             field "items" type="array<json>"
             field "removed" type="array<string>"
         }

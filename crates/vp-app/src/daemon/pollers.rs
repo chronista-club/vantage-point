@@ -210,7 +210,7 @@ pub(crate) fn spawn_activity_poller(
             prev_running = Some(snap.running_repo_count);
             prev_registered = Some(snap.repo_count);
             if proxy
-                .send_event(AppEvent::ActivityUpdate(snap.clone()))
+                .send_event(AppEvent::ActivityUpdate(Box::new(snap.clone())))
                 .is_err()
             {
                 tracing::debug!("EventLoop 終了、activity poller も終了");
@@ -243,6 +243,8 @@ pub(crate) fn spawn_activity_poller(
 /// **別物** — あちらは受信 envelope、こちらは coalesce channel を流れる値。
 #[derive(Debug, Clone)]
 pub struct ActionsPersistPayload {
+    pub scope: Option<String>,
+    pub import_legacy: Option<bool>,
     pub items: Vec<serde_json::Value>,
     pub removed: Vec<String>,
 }
@@ -277,7 +279,15 @@ pub(crate) fn spawn_actions_persist_writer(
             };
             match conn.control().await {
                 Ok(control) => {
-                    if let Err(e) = control.save_actions(payload.items, payload.removed).await {
+                    if let Err(e) = control
+                        .save_actions(
+                            payload.items,
+                            payload.removed,
+                            payload.scope,
+                            payload.import_legacy,
+                        )
+                        .await
+                    {
                         // 失敗しても手元の表示は消さない（次の編集 / 次の poll で再試行される）。
                         tracing::warn!("ACTIONS の永続化に失敗: {}", e);
                     }
@@ -376,6 +386,10 @@ async fn collect_activity(
         // 版は sidebar 側が「当てるかどうか」を決めるのに使う（同じ版 = 撃ち返さない）。
         snap.actions = h.actions;
         snap.actions_rev = h.actions_rev;
+        snap.actions_atlases = h.actions_atlases;
+        snap.actions_scope = h.actions_scope;
+        snap.actions_error = h.actions_error;
+        snap.actions_imported = h.actions_imported;
         // L1 lifecycle: repo presence map（repo 行の ●◐○ dot 用、path → presence）。
         snap.presence = h
             .processes

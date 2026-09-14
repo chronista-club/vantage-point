@@ -15,7 +15,7 @@ type Store = typeof import("./store");
 
 /** creo 由来の 1 件（Rust `CreoAction` と同形の生 JSON）。 */
 function raw(id: string, text: string) {
-	return { id, text, done: false, bucket: "nexts", order: "a" };
+	return { id, text, done: false, bucket: "nexts" as const, order: "a" };
 }
 
 describe("applyActionsFromDaemon", () => {
@@ -24,6 +24,38 @@ describe("applyActionsFromDaemon", () => {
 	beforeEach(async () => {
 		vi.resetModules();
 		store = await import("./store");
+	});
+
+	it("keeps a submitted capture until its native receipt arrives", () => {
+		store.commitActions([{ id: "act-capture", text: "保存待ち", bucket: "ideas", order: "a", atlas_id: "atlas-other", kind: null }]);
+		store.applyActionsFromDaemon([raw("mem-existing", "既存")], 1);
+		expect(store.actions().some(i => i.id === "act-capture")).toBe(true);
+		store.applyActionsFromDaemon([{ ...raw("mem-created", "保存待ち"), client_id: "act-capture", atlas_id: "atlas-other", kind: null }], 2);
+		expect(store.actions().map(i => i.id)).toEqual(["mem-created"]);
+	});
+
+	it("isolates pending captures when the Creo account changes", () => {
+		store.applyActionsFromDaemon([], 1, "account-a");
+		store.commitActions([{id:"act-a", text:"A のメモ", atlas_id:"atlas-a", bucket:"ideas", order:"a"}]);
+		store.applyActionsFromDaemon([], 1, "account-b");
+		expect(store.actions()).toEqual([]);
+		store.applyActionsFromDaemon([], 2, "account-a");
+		expect(store.actions().map(i => i.text)).toEqual(["A のメモ"]);
+	});
+
+	it("keeps one editable row when its capture receipt arrives", () => {
+		store.commitActions([{id:"act-a",text:"最初",atlas_id:"atlas-a",bucket:"ideas",order:"a"}]);
+		store.beginEditing("act-a");
+		store.commitActions(store.setActionText("act-a", "編集中"));
+		store.applyActionsFromDaemon([{id:"mem-a",client_id:"act-a",text:"最初",atlas_id:"atlas-a",bucket:"ideas",order:"a"}], 1);
+		expect(store.actions()).toHaveLength(1);
+		expect(store.actions()[0]).toMatchObject({id:"mem-a",text:"編集中"});
+	});
+
+	it("moves against visible neighbors across legacy buckets", () => {
+		store.commitActions([{...raw("mem-a","A"),order:"a"},{...raw("mem-b","B"),bucket:"ideas",order:"b"},{...raw("mem-c","C"),order:"c"}]);
+		store.commitActions(store.moveAction("mem-a",1));
+		expect([...store.actions()].sort((a,b)=>a.order.localeCompare(b.order)).map(i=>i.id)).toEqual(["mem-b","mem-a","mem-c"]);
 	});
 
 	it("rev 0（未取得 / 未ログイン / 旧 daemon）では触らない", () => {
@@ -130,6 +162,18 @@ describe("永続 payload", () => {
 		store.commitActions(store.setActionText("mem_1", "書き換え"));
 		expect(last().items).toHaveLength(2);
 		expect(last().removed).toEqual([]);
+	});
+
+	it("旧区画の並びキーが重複しても上下へ移動できる", () => {
+		store.applyActionsFromDaemon([raw("A", "a0"), raw("B", "a0"), raw("C", "a0")], 1);
+		store.commitActions(store.moveAction("C", -1));
+		expect([...store.actions()].sort((a, b) => a.order.localeCompare(b.order) || a.id.localeCompare(b.id)).map(a => a.id)).toEqual(["A", "C", "B"]);
+	});
+
+	it("重複順序の再採番でロック行を書き換えない", () => {
+		store.applyActionsFromDaemon([{...raw("A", "a"), locked: true}, raw("B", "b"), raw("C", "c")], 1);
+		const before = store.actions();
+		expect(store.moveAction("C", -1)).toBe(before);
 	});
 
 	it("⚠️ 消した id は `removed` に明示して載る（不在からは推論させない）", () => {

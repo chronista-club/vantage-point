@@ -90,6 +90,7 @@ function autoSize(el: HTMLTextAreaElement, open: boolean): void {
 
 export interface ActionRowProps {
 	item: ActionItem;
+	atlasName?: string;
 	onText(text: string): void;
 	onToggleDone(): void;
 	onRemove(): void;
@@ -127,6 +128,7 @@ export function ActionRow(props: ActionRowProps) {
 	const onKeyDown = (
 		e: KeyboardEvent & { currentTarget: HTMLTextAreaElement },
 	) => {
+		if (props.item.locked) return;
 		const t = e.currentTarget;
 		const isMac = navigator.platform.toUpperCase().includes("MAC");
 		const intent = actKeyIntent(
@@ -154,7 +156,7 @@ export function ActionRow(props: ActionRowProps) {
 				insertNewline(t);
 				break;
 			case "remove":
-				props.onRemove();
+				if (!(props.item.atlas_id && isLocalId(props.item.id))) props.onRemove();
 				break;
 			case "move-up":
 				props.onMove(-1);
@@ -211,11 +213,13 @@ export function ActionRow(props: ActionRowProps) {
 			data-vp-act-row={props.item.id}
 			data-done={props.item.done ? "" : undefined}
 		>
+			<Show when={props.atlasName}><span class="vp-act-atlas">{props.atlasName}</span></Show>
 			{/* done トグル。bullet の位置を奪っている — 280px に押せる的を 2 つ並べる余裕が
 			    無いため（doc 57 §2）。Things / Workflowy と同じ発想で学習コストもない。 */}
 			<button
 				type="button"
 				class="vp-act-check"
+				disabled={props.item.locked || (!!props.item.atlas_id && props.item.kind !== "todo")}
 				role="checkbox"
 				aria-checked={props.item.done ?? false}
 				title={props.item.done ? "未完了に戻す（⌘Enter）" : "完了にする（⌘Enter）"}
@@ -227,6 +231,7 @@ export function ActionRow(props: ActionRowProps) {
 			    未 focus では 1 行に畳んでタイトルだけ見せる（doc 57 §2）。 */}
 			<textarea
 				ref={el}
+				readOnly={props.item.locked}
 				class="vp-act-text"
 				rows={1}
 				placeholder="やること"
@@ -295,7 +300,8 @@ export function ActionRow(props: ActionRowProps) {
 			<button
 				type="button"
 				class="vp-act-del"
-				title="削除 — creo の memory ごと消える"
+				disabled={props.item.locked || (!!props.item.atlas_id && isLocalId(props.item.id))}
+				title={isLocalId(props.item.id) ? "保存結果の確認後に削除できます" : "削除 — creo の memory ごと消える"}
 				onClick={() => props.onRemove()}
 			>
 				<CreoIcon name="ph:x" size={9} />
