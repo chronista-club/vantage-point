@@ -1,0 +1,7 @@
+# Rust toolchain の SSOT (rustup ネイティブ pin、mise 非依存)。
+# ローカル・CI・IDE がこの版に揃う。
+# 基本 stable 追随、minor pin (patch float)。stable が上がったら本 file + ci.yml の
+# dtolnay/rust-toolchain@1.96 + Cargo.toml rust-version を一緒に bump する。
+[toolchain]
+channel = "1.96"
+components = ["rustfmt", "clippy"]
