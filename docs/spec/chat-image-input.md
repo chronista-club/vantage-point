@@ -1,6 +1,6 @@
 # Chat の画像入力
 
-Status: Codex 対応を実装済み（実機確認待ち）
+Status: Codex 対応を実装・実機確認済み（2026-09-15）
 
 Chat の入力欄に画像を貼り付け、本文と一緒に対応エンジンへ渡せるようにする。
 エンジンごとの能力表は `EngineKind::image_capable` を正本とし、session roster を通じて UI へ配信する。
@@ -9,7 +9,7 @@ Console 自体が画像を受け取れることと、VP Chat の画像対応は�
 | エンジン | Chat の画像入力 | 送信形式 |
 |---|---|---|
 | Claude | 対応済み | stream-json の image content block |
-| Codex | 今回対応・実機確認待ち | app-server の image input（data URL） |
+| Codex | 対応・実機確認済み | app-server の image input（data URL） |
 | Grok / OpenCode / vpcode | 未対応 | — |
 
 ## 成功条件

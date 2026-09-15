@@ -32,17 +32,52 @@ pub(super) fn parse(value: &Value) -> CodexRuntime {
     }
     CodexRuntime {
         approval,
+        cwd: text(&value["cwd"]),
+        reviewer: text(&value["approvalsReviewer"]),
+        preset: permission_preset(value).map(str::to_owned),
         sandbox: text(&sandbox["type"]).unwrap_or_else(|| "未確認".into()),
         network_access: sandbox["networkAccess"].as_bool().or_else(
             || match sandbox["networkAccess"].as_str() {
                 Some("enabled") => Some(true),
                 Some("restricted") => Some(false),
+                _ if sandbox["type"] == "dangerFullAccess" => Some(true),
                 _ => None,
             },
         ),
         writable_roots,
         profile: text(&value["activePermissionProfile"]["id"]),
         mode: text(&value["collaborationMode"]["mode"]),
+    }
+}
+
+// 全軸を確認できる組み込み設定だけをプリセット表示する。
+fn permission_preset(value: &Value) -> Option<&'static str> {
+    let sandbox = value.get("sandboxPolicy").unwrap_or(&value["sandbox"]);
+    let profile = value["activePermissionProfile"]["id"].as_str()?;
+    let reviewer = value["approvalsReviewer"].as_str()?;
+    let approval = value["approvalPolicy"].as_str()?;
+    match (profile, sandbox["type"].as_str()?, approval, reviewer) {
+        (":danger-full-access", "dangerFullAccess", "never", "user") => Some("full-access"),
+        (":read-only", "readOnly", "on-request", "user") if sandbox["networkAccess"] == false => {
+            Some("read-only")
+        }
+        (":workspace", "workspaceWrite", "on-request", "user" | "auto_review")
+            if sandbox["networkAccess"] == false
+                && sandbox["excludeTmpdirEnvVar"] == false
+                && sandbox["excludeSlashTmp"] == false
+                && sandbox["writableRoots"].as_array().is_some_and(|roots| {
+                    roots
+                        .iter()
+                        .all(|root| value["cwd"].is_string() && root == &value["cwd"])
+                }) =>
+        {
+            Some(if reviewer == "user" {
+                "standard"
+            } else {
+                "auto-review"
+            })
+        }
+        _ => None,
     }
 }
 

@@ -48,6 +48,8 @@ use super::host::InFlight;
 
 #[path = "codex_queue.rs"]
 mod native_queue;
+#[path = "codex_permission_menu.rs"]
+mod permissions;
 #[path = "codex_runtime.rs"]
 mod runtime;
 
@@ -434,6 +436,13 @@ impl CodexAgentHost {
         thread: &str,
         action: &serde_json::Value,
     ) -> anyhow::Result<()> {
+        if matches!(
+            action["kind"].as_str(),
+            Some("permissions" | "permission_options")
+        ) {
+            return permissions::control(self.inner.clone(), thread.to_owned(), action.clone())
+                .await;
+        }
         if action["kind"] == "mode" {
             return runtime::change_mode(
                 self.inner.clone(),
@@ -2418,11 +2427,180 @@ for line in sys.stdin: pass
     }
 
     #[test]
+    fn permissions_runtime_retains_reviewer_without_guessing_missing_values() {
+        let settings = serde_json::json!({"approvalsReviewer":"auto_review", "approvalPolicy":"on-request",
+            "sandboxPolicy":{"type":"workspaceWrite","networkAccess":false,"writableRoots":[],"excludeTmpdirEnvVar":false,"excludeSlashTmp":false},
+            "activePermissionProfile":{"id":":workspace"},"cwd":"/work"});
+        let runtime = serde_json::to_value(runtime::parse(&settings)).unwrap();
+        assert_eq!(runtime["reviewer"], "auto_review");
+        assert_eq!(runtime["cwd"], "/work");
+        assert_eq!(runtime["preset"], "auto-review");
+        let unknown = serde_json::to_value(runtime::parse(&serde_json::json!({}))).unwrap();
+        assert!(unknown["reviewer"].is_null());
+        assert!(unknown["preset"].is_null());
+        let full = runtime::parse(
+            &serde_json::json!({"approvalsReviewer":"user","approvalPolicy":"never",
+            "sandboxPolicy":{"type":"dangerFullAccess"},"activePermissionProfile":{"id":":danger-full-access"}}),
+        );
+        assert_eq!(full.network_access, Some(true));
+        assert_eq!(full.preset.as_deref(), Some("full-access"));
+        let mut custom = settings.clone();
+        custom["sandboxPolicy"]["writableRoots"] = serde_json::json!(["/extra"]);
+        assert!(serde_json::to_value(runtime::parse(&custom)).unwrap()["preset"].is_null());
+    }
+
+    #[test]
     fn runtime_external_sandbox_network_is_not_unknown() {
         for (value, expected) in [("enabled", true), ("restricted", false)] {
             let settings = serde_json::json!({"approvalPolicy":"on-request", "sandboxPolicy":{"type":"externalSandbox","networkAccess":value}});
             assert_eq!(runtime::parse(&settings).network_access, Some(expected));
         }
+    }
+
+    // mem_1Cf4jdULqRjEXawJPqbxfS: 候補取得と変更を分け、native 通知で確定する。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn permissions_options_are_read_only_and_explicit_change_is_confirmed() {
+        let host = response_test_host();
+        {
+            let mut st = host.inner.state.lock().unwrap();
+            st.thread_id = Some("thread".into());
+            st.native_queue.ready = true;
+            st.config.runtime = Some(Box::new(runtime::parse(&serde_json::json!({
+                "approvalPolicy":"on-request","approvalsReviewer":"user","cwd":"/work",
+                "sandboxPolicy":{"type":"workspaceWrite","networkAccess":false},
+                "activePermissionProfile":{"id":":workspace"}
+            }))));
+        }
+        let script = r#"import json,sys
+def send(v): print(json.dumps(v),flush=True)
+for line in sys.stdin:
+    r=json.loads(line)
+    if r.get('method')=='initialize': continue
+    if r['method']=='permissionProfile/list':
+        assert r['params']['cwd']=='/work'
+        send({'id':r['id'],'result':{'data':[{'id':':workspace','allowed':True},{'id':':read-only','allowed':True},{'id':':danger-full-access','allowed':True},{'id':'locked','allowed':False}],'nextCursor':None}})
+    elif r['method']=='configRequirements/read':
+        send({'id':r['id'],'result':{'requirements':{'allowedApprovalPolicies':['on-request'],'allowedApprovalsReviewers':['user','auto_review']}}})
+    elif r['method']=='thread/settings/update':
+        if r['params']['approvalsReviewer']=='user':
+            send({'id':r['id'],'error':{'code':-32600,'message':'fixture rejected update'}})
+            continue
+        assert r['params']=={'threadId':'thread','permissions':':workspace','approvalPolicy':'on-request','approvalsReviewer':'auto_review'}, r
+        send({'method':'thread/settings/updated','params':{'threadId':'thread','threadSettings':{'cwd':'/work','approvalPolicy':'on-request','approvalsReviewer':'auto_review','sandboxPolicy':{'type':'workspaceWrite','networkAccess':False},'activePermissionProfile':{'id':':workspace'}}}})
+        send({'id':r['id'],'result':{}})
+    else: raise AssertionError(r)
+"#;
+        let mut child = tokio::process::Command::new(if cfg!(target_os = "macos") {
+            "/usr/bin/python3"
+        } else {
+            "python3"
+        })
+        .args(["-u", "-c", script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+        *host.inner.stdin.lock().await = child.stdin.take();
+        let reader = tokio::spawn(run_reader(
+            host.inner.clone(),
+            child.stdout.take().unwrap(),
+            None,
+        ));
+        let loaded = host
+            .codex_input("thread", &serde_json::json!({"kind":"permission_options"}))
+            .await;
+        assert!(loaded.is_ok(), "{loaded:?}");
+        let config = serde_json::to_value(&host.inner.state.lock().unwrap().config).unwrap();
+        assert_eq!(config["runtime"]["reviewer"], "user");
+        let choices = config["permission_choices"].as_array().unwrap();
+        assert!(
+            choices.iter().find(|c| c["id"] == "full-access").unwrap()["disabled_reason"]
+                .is_string()
+        );
+        assert!(
+            choices
+                .iter()
+                .find(|c| c["id"] == "profile:locked")
+                .unwrap()["disabled_reason"]
+                .is_string()
+        );
+        host.inner.state.lock().unwrap().turn_active = true;
+        assert!(
+            host.codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"auto-review"})
+            )
+            .await
+            .is_err()
+        );
+        host.inner.state.lock().unwrap().turn_active = false;
+        host.inner.state.lock().unwrap().queue_dirty = true;
+        assert!(
+            host.codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"auto-review"})
+            )
+            .await
+            .is_err()
+        );
+        host.inner.state.lock().unwrap().queue_dirty = false;
+        assert!(
+            host.codex_input(
+                "other",
+                &serde_json::json!({"kind":"permissions","choice":"auto-review"})
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            host.codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"full-access"})
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            host.codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"profile:locked"})
+            )
+            .await
+            .is_err()
+        );
+        let changed = host
+            .codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"auto-review"}),
+            )
+            .await;
+        changed.expect("explicit choice succeeds");
+        assert_eq!(
+            serde_json::to_value(&host.inner.state.lock().unwrap().config).unwrap()["runtime"]["reviewer"],
+            "auto_review"
+        );
+        assert!(!host.inner.state.lock().unwrap().queue_busy);
+        let rejected = host
+            .codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"standard"}),
+            )
+            .await;
+        assert!(
+            rejected
+                .unwrap_err()
+                .to_string()
+                .contains("fixture rejected update")
+        );
+        {
+            let state = host.inner.state.lock().unwrap();
+            assert!(state.config.runtime.is_none());
+            assert!(!state.queue_busy && !state.dead);
+        }
+        reader.abort();
+        child.kill().await.unwrap();
     }
 
     #[tokio::test]
