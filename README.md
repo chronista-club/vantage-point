@@ -3,7 +3,7 @@
 Rust 製の AI ネイティブ開発環境。repo ごとに作業を開き、lane（worktree）と session を使って
 会話・ターミナル・board を同じウィンドウで扱います。
 
-- **Console**: Claude / Codex / Grok / OpenCode / vpcode と shell。engine と表示モード（TUI / GUI）は別の軸です。
+- **Console**: Claude / Codex / Grok / OpenCode と shell。engine と表示モード（TUI / GUI）は別の軸です。
 - **Lane / session**: 作業場所を lane で隔離し、各 lane に複数の session を持てます。
 - **Board**: Markdown・HTML・図・ログなどをペインに表示します。
 - **Wire**: lane 間のメッセージ、依頼、応答を履歴として扱います。

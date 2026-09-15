@@ -139,3 +139,12 @@ doc 33 C1 の lazy 決定（submit まで engine-less）+ #683 ガード（chat 
 - performer lane 間の session 移動 / session の wire address 化 — 別 doc
 - GUI add_performer の stand 落ち bug（`mem_1Cd4M7i5Enp3HHMLVYayRe`）— 独立に修正可能（watcher spawn が
   descriptor の stand を読む fix。per-lane stand 永続の解消を兼ねる）
+
+## 8. エージェント選択の公開範囲（2026-09-15）
+
+完成度が整うまで、ユーザー裁定により `vpcode` を選択候補から一時的に外す
+（`mem_1Cf4Q3T1Z4DscKtWekxJPc`）。daemon の `agents_list` で候補を絞り、
+セッション追加・ペイン追加・Sub 作成へ共通に反映する。
+`EngineKind` の認識と既存セッションの履歴・実行機構は保持する。
+各画面へ個別の除外判定を複製せず、再公開も共通一覧の変更で行う。
+コード編集パネルは今回の対象に含めない。実機の候補表示は確認待ち。

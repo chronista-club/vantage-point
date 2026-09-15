@@ -40,15 +40,17 @@ pub struct AgentInfo {
     pub chat_capable: bool,
 }
 
-/// built-in agent 一覧（engine 群 + shell）。
+/// ユーザーが新規作成時に選択できる built-in agent 一覧（公開 engine 群 + shell）。
 ///
 /// engine 軸は [`crate::conversation::EngineKind`] が SSOT（doc 37）— **ここに engine を手書きで
-/// 足さない**。新 engine は `EngineKind::ALL` に足せば dropdown に自動で載る（cursor 追加時に
+/// 足さない**。新 engine は `EngineKind::ALL` 由来で、公開対象をここで絞る（cursor 追加時に
 /// この静的 vec が取り残されて「GUI から作れない engine」が生まれた同型ミスの再発防止、
 /// moody 指摘 2026-07-15）。engine を持たない `"shell"`（shell のみ）だけをここで足す。
 pub fn list_agents() -> Vec<AgentInfo> {
     let mut agents: Vec<AgentInfo> = crate::conversation::EngineKind::ALL
         .iter()
+        // 完成度が整うまで vpcode の選択導線を一時的に隠す。既存 session の engine 認識は保持。
+        .filter(|k| **k != crate::conversation::EngineKind::Vpcode)
         .map(|k| AgentInfo {
             name: k.agent_name().to_string(),
             description: k.description().to_string(),
@@ -80,10 +82,7 @@ mod tests {
     fn list_stands_returns_builtin() {
         let agents = list_agents();
         let names: Vec<&str> = agents.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(
-            names,
-            vec!["claude", "codex", "grok", "opencode", "vpcode", "shell"]
-        );
+        assert_eq!(names, vec!["claude", "codex", "grok", "opencode", "shell"]);
         assert!(agents.iter().all(|s| !s.description.is_empty()));
     }
 
@@ -100,7 +99,6 @@ mod tests {
             cap("opencode"),
             "opencode は grok と同じ常駐 AcpAgentHost（doc 43）"
         );
-        assert!(cap("vpcode"), "vpcode は常駐 VpcodeHost（VCP、gui 専用）");
         assert!(!cap("shell"), "shell は engine なし（shell のみ）");
     }
 
