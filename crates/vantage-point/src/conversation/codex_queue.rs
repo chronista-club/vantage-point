@@ -237,7 +237,25 @@ fn field<'a>(action: &'a Value, key: &str) -> anyhow::Result<&'a str> {
 fn input(action: &Value) -> anyhow::Result<Value> {
     let text = field(action, "text")?;
     anyhow::ensure!(!text.trim().is_empty(), "入力が空です");
-    Ok(json!([{"type":"text","text":text,"text_elements":[]}]))
+    let mut images = Vec::new();
+    if let Some(raw) = action.get("images") {
+        for image in raw
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("画像の形式が不正です"))?
+        {
+            let media_type = field(image, "media_type")?;
+            let data = field(image, "data")?;
+            anyhow::ensure!(
+                media_type.starts_with("image/") && !data.is_empty(),
+                "画像の形式が不正です"
+            );
+            images.push(super::super::host::ImageInput {
+                media_type: media_type.to_owned(),
+                data_base64: data.to_owned(),
+            });
+        }
+    }
+    Ok(super::image_input(text, &images))
 }
 
 /// One refresh worker per host; notifications during pagination invalidate the whole read.
@@ -350,4 +368,21 @@ async fn list(inner: &RpcInner, thread: &str) -> anyhow::Result<Vec<CodexQueuedI
         );
     }
     anyhow::bail!("待機一覧が表示上限を超えています。Console で確認してください。")
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    #[test]
+    fn codex_queue_input_preserves_images() {
+        let result = input(&json!({"text":"describe", "images":[
+            {"media_type":"image/png","data":"aGVsbG8="}
+        ]}))
+        .unwrap();
+        assert_eq!(
+            result[1],
+            json!({"type":"image","url":"data:image/png;base64,aGVsbG8="})
+        );
+    }
 }

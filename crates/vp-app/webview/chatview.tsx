@@ -1614,17 +1614,17 @@ function SessionChatView(props: { lane: string; session: number }) {
   const nowLine = () => deriveNowLine(state())
   const codexInputBusy = () => !!state().codexInput
   const codexTurnActive = () => rosterEntry()?.agent === 'codex' && (state().streaming || !!state().codexQueue?.turn_id)
-  const sendCodexInput = (action: Record<string, unknown>, text = '') => {
+  const sendCodexInput = (action: Record<string, unknown>, text = '', images: Submission['images'] = []) => {
     const queue = state().codexQueue
     if (!queue || (!queue.ready && action.kind !== 'refresh') || codexInputBusy()) return false
     const requestId = nextRequestId('codex-input')
-    lc.set('codexInput', { id: requestId, text, status: 'sending', error: null })
+    lc.set('codexInput', { id: requestId, text, images, status: 'sending', error: null })
     try {
       const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
       if (!ipc) throw new Error('接続がありません。入力は送信されていません。')
       ipc.postMessage(JSON.stringify({ t: 'conversation:codex_input', lane: props.lane,
         session: props.session, thread_id: queue.thread_id, request_id: requestId,
-        action: { ...action, client_id: requestId } }))
+        action: { ...action, images, client_id: requestId } }))
       setTimeout(() => {
         if (lc.state.codexInput?.id === requestId && lc.state.codexInput.status === 'sending') {
           lc.set(produce(s => foldInto(s, { kind: 'codex_queue', queue: null, request_id: requestId,
@@ -1640,7 +1640,8 @@ function SessionChatView(props: { lane: string; session: number }) {
   }
   const queueDraft = () => {
     const text = draft().trim()
-    if (!text || !sendCodexInput({ kind: 'add', text }, text)) return
+    if (!text || !sendCodexInput({ kind: 'add', text }, text, toWirePayload(attachments()))) return
+    clearAttachments()
     setDraft('')
     if (inputRef) autosize(inputRef)
   }
@@ -1650,7 +1651,8 @@ function SessionChatView(props: { lane: string; session: number }) {
     if (!text || lc.state.submission || codexInputBusy()) return
     if (codexTurnActive()) {
       const turn = lc.state.codexQueue?.turn_id
-      if (!turn || !sendCodexInput({ kind: 'steer', text, turn_id: turn }, text)) return
+      if (!turn || !sendCodexInput({ kind: 'steer', text, turn_id: turn }, text, toWirePayload(attachments()))) return
+      clearAttachments()
       setDraft('')
       if (inputRef) autosize(inputRef)
       return
@@ -2130,9 +2132,13 @@ function SessionChatView(props: { lane: string; session: number }) {
           <div class="codex-queue" role="status">
             <div>{state().codexInput?.error}</div>
             <Show when={state().codexInput?.text}>
-              <button disabled={!!draft().trim()} onClick={() => {
-                if (draft().trim()) return
+              <button disabled={!!draft().trim() || attachments().length > 0} onClick={() => {
+                if (draft().trim() || attachments().length) return
                 setDraft(lc.state.codexInput?.text ?? '')
+                setAttachments((lc.state.codexInput?.images ?? []).map((image, index) => ({
+                  id: Date.now() + index, mediaType: image.media_type, dataBase64: image.data,
+                  previewUrl: `data:${image.media_type};base64,${image.data}`, bytes: Math.floor(image.data.length * 3 / 4),
+                })))
                 lc.set('codexInput',null)
                 queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
               }}>入力を戻す</button>

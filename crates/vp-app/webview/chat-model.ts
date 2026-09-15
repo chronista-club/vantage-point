@@ -124,7 +124,7 @@ export function toolGroupStatus(tools: ToolItem[]): { running: boolean; label: s
 export type ChatState = {
   codexQueue?: CodexQueueView
   codexQueueEdits?: Record<string, string>
-  codexInput?: { id: string; text: string; status: 'sending' | 'failed'; error: string | null } | null
+  codexInput?: { id: string; text: string; images?: Submission['images']; status: 'sending' | 'failed'; error: string | null } | null
   codexInteractions?: CodexInteractionState
   header: { model?: string; sessionId?: string } | null
   items: ChatItem[]

@@ -1825,7 +1825,7 @@ impl LanePool {
         let slot = self.chat_slot(addr, session)?;
         match &slot.host {
             crate::conversation::engine::ChatHost::Codex(host) => {
-                host.submit_with_activity(prompt, client_id, Some(&slot.turn_active))
+                host.submit_images_with_activity(prompt, images, client_id, Some(&slot.turn_active))
                     .await
             }
             _ => {

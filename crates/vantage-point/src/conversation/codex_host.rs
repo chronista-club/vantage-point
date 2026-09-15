@@ -84,6 +84,13 @@ enum ReqKind {
     AsyncReplySteer,
 }
 
+/// 起動待ちの本文と添付を一組で保持する。
+struct PendingPrompt {
+    text: String,
+    client_id: Option<String>,
+    images: Vec<super::host::ImageInput>,
+}
+
 /// reader task / host メソッドが共有する可変状態（std Mutex — await を跨がずに触る）。
 struct RpcState {
     native_queue: super::event::CodexQueueView,
@@ -110,7 +117,7 @@ struct RpcState {
     /// turn 実行中か（true の submit は queue へ）。
     turn_active: bool,
     /// thread 未確定 or turn 実行中に来た submit の待ち行列。
-    queue: VecDeque<(String, Option<String>)>,
+    queue: VecDeque<PendingPrompt>,
     /// disk にまだ載っていない増分 + commit 世代（[`super::host`] と同契約）。
     in_flight: InFlight,
     /// app-server 子プロセスの pid。
@@ -395,16 +402,17 @@ impl RpcInner {
                     );
                     return;
                 }
-                let (prompt, client_id) = st.queue.pop_front().expect("non-empty queue");
+                let prompt = st.queue.pop_front().expect("non-empty queue");
                 let thread_id = st.thread_id.clone().expect("thread id");
                 st.turn_active = true;
                 let id = st.alloc(ReqKind::TurnStart);
-                Some(build_configured_turn_start(
+                Some(build_image_turn_start(
                     id,
                     &thread_id,
-                    &prompt,
-                    client_id.as_deref(),
+                    &prompt.text,
+                    prompt.client_id.as_deref(),
                     st.config.selection.as_ref(),
+                    &prompt.images,
                 ))
             }
         };
@@ -740,6 +748,17 @@ impl CodexAgentHost {
         client_id: Option<&str>,
         activity: Option<&std::sync::atomic::AtomicBool>,
     ) -> anyhow::Result<()> {
+        self.submit_images_with_activity(prompt, &[], client_id, activity)
+            .await
+    }
+
+    pub(crate) async fn submit_images_with_activity(
+        &self,
+        prompt: &str,
+        images: &[super::host::ImageInput],
+        client_id: Option<&str>,
+        activity: Option<&std::sync::atomic::AtomicBool>,
+    ) -> anyhow::Result<()> {
         let line = {
             let mut st = self.inner.state.lock().expect("rpc state lock");
             if st.dead {
@@ -771,8 +790,11 @@ impl CodexAgentHost {
                 || st.thread_id.is_none()
                 || (st.config.selection.is_some() && !st.catalog_ready)
             {
-                st.queue
-                    .push_back((prompt.to_string(), client_id.map(str::to_owned)));
+                st.queue.push_back(PendingPrompt {
+                    text: prompt.to_owned(),
+                    client_id: client_id.map(str::to_owned),
+                    images: images.to_vec(),
+                });
                 tracing::debug!(
                     "codex submit: {} → queue（depth={}）",
                     if st.turn_active {
@@ -787,12 +809,13 @@ impl CodexAgentHost {
                 let thread_id = st.thread_id.clone().expect("thread id");
                 st.turn_active = true;
                 let id = st.alloc(ReqKind::TurnStart);
-                Some(build_configured_turn_start(
+                Some(build_image_turn_start(
                     id,
                     &thread_id,
                     prompt,
                     client_id,
                     st.config.selection.as_ref(),
+                    images,
                 ))
             }
         };
@@ -963,6 +986,33 @@ fn build_configured_turn_start(
         request["params"]["model"] = serde_json::json!(selection.model);
         request["params"]["effort"] = serde_json::json!(selection.effort);
     }
+    request.to_string()
+}
+
+/// Image inputs use inline data URLs; VP does not create image files.
+fn image_input(prompt: &str, images: &[super::host::ImageInput]) -> serde_json::Value {
+    let mut input = vec![serde_json::json!({"type":"text","text":prompt,"text_elements":[]})];
+    input.extend(images.iter().map(|image| {
+        serde_json::json!({
+            "type":"image", "url":format!("data:{};base64,{}",image.media_type,image.data_base64)
+        })
+    }));
+    serde_json::Value::Array(input)
+}
+
+fn build_image_turn_start(
+    id: i64,
+    thread_id: &str,
+    prompt: &str,
+    client_id: Option<&str>,
+    selection: Option<&super::event::CodexSelection>,
+    images: &[super::host::ImageInput],
+) -> String {
+    let mut request: serde_json::Value = serde_json::from_str(&build_configured_turn_start(
+        id, thread_id, prompt, client_id, selection,
+    ))
+    .expect("turn request JSON");
+    request["params"]["input"] = image_input(prompt, images);
     request.to_string()
 }
 
@@ -1642,6 +1692,40 @@ async fn handle_response(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn codex_startup_queue_keeps_images_and_request_identity() {
+        let host = response_test_host();
+        let images = vec![super::super::host::ImageInput {
+            media_type: "image/png".into(),
+            data_base64: "aGVsbG8=".into(),
+        }];
+        host.submit_images_with_activity("describe", &images, Some("client"), None)
+            .await
+            .unwrap();
+        let state = host.inner.state.lock().unwrap();
+        let pending = state.queue.front().unwrap();
+        assert_eq!(pending.images, images);
+        let selection = super::super::event::CodexSelection {
+            model: "fixture".into(),
+            effort: "high".into(),
+        };
+        let request: serde_json::Value = serde_json::from_str(&build_image_turn_start(
+            4,
+            "thread",
+            &pending.text,
+            pending.client_id.as_deref(),
+            Some(&selection),
+            &pending.images,
+        ))
+        .unwrap();
+        assert_eq!(request["params"]["clientUserMessageId"], "client");
+        assert_eq!(request["params"]["model"], "fixture");
+        assert_eq!(
+            request["params"]["input"][1]["url"],
+            "data:image/png;base64,aGVsbG8="
+        );
+    }
+
     // mem_1CeySwxuoVc17bGLnU5Np3: native Queue の更新を現在の会話だけに投影する。
     #[tokio::test]
     async fn native_queue_change_invalidates_only_current_thread_view() {

@@ -167,3 +167,15 @@ stdin lock の取得から ACK までに 35 秒の期限を設ける。書込未
   Chat での再検収はアプリと daemon への反映後に行う。
 - 修正後の `mise run test` は成功（主要ライブラリ 1,102 成功・除外 11、失敗 0）。
   workspace の check / Clippy、WebView typecheck、fmt も成功。
+
+## Chat 画像入力（2026-09-15、実機確認待ち）
+
+[能力と成功条件](../spec/chat-image-input.md)を正本とする。
+`EngineKind::image_capable` の Claude 限定判定と、Codex 送信経路の text-only 実装が、
+Console では貼れるのに Chat では貼れない原因だった。
+
+Codex app-server の `UserInput::Image { url }` に `data:<MIME>;base64,<data>` を渡す。
+通常送信と起動待ち入力、native Queue / steer の各経路で画像を保持する。
+UI は送信確認まで本文と画像を一組で保持し、失敗時に復元する。
+既存の画像付き Queue 項目の編集制限は維持する。
+実機での貼り付け・画像認識・Queue/steer は確認待ち。

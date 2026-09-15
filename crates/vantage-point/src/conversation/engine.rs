@@ -111,15 +111,16 @@ impl EngineKind {
 
     /// user の投入に**画像**を混ぜられるか（chat 入力欄への貼り付け）。
     ///
-    /// claude のみ。`-p --input-format stream-json` の user message は content が配列で、
+    /// Claude は `-p --input-format stream-json` の user message に content 配列を渡す。
     /// Anthropic Messages API と同じ `{"type":"image","source":{"type":"base64",...}}` を
     /// そのまま受ける（2026-08-30 実測: 8x8 の赤 PNG を投入して「赤。」と回答・result success）。
     ///
     /// **能力表明**（`model_choices` の空/非空と同じ規律）: client はこれが false の lane で
     /// 貼り付け UI を出さない。押しても engine に無視されるだけの行き止まりを作らないため。
-    /// 他 engine が対応したらここに足す（codex/grok/opencode は独自 protocol、vpcode は VCP）。
+    /// Codex は app-server の image input（data URL）へ変換する。
+    /// 対応範囲: docs/spec/chat-image-input.md。他 engine が対応したらここに足す。
     pub fn image_capable(self) -> bool {
-        matches!(self, Self::Claude)
+        matches!(self, Self::Claude | Self::Codex)
     }
 
     /// VP の model picker に出す選択肢（engine ごとの catalog — server が SSOT、client は
@@ -313,7 +314,7 @@ impl ChatHost {
 
     /// 画像を添えて投入する（chat 入力欄への貼り付け）。
     ///
-    /// ⚠️ **画像を運べるのは claude だけ**（[`EngineKind::image_capable`]）。他 engine には
+    /// ⚠️ **画像を運べるのは Claude / Codex**（[`EngineKind::image_capable`]）。他 engine には
     /// 画像を渡す先が無いので **text だけを投入する**（黙って捨てる）。client は
     /// `image_capable` が false の lane で貼り付け UI を出さないので、ここに画像が
     /// 来るのは異常系（新 engine 追加時の取り残し等）— log で気付けるようにする。
@@ -324,6 +325,10 @@ impl ChatHost {
     ) -> anyhow::Result<()> {
         match self {
             ChatHost::Claude(h) => h.submit_with_images(prompt, images).await,
+            ChatHost::Codex(h) => {
+                h.submit_images_with_activity(prompt, images, None, None)
+                    .await
+            }
             other => {
                 if !images.is_empty() {
                     tracing::warn!(
@@ -332,10 +337,9 @@ impl ChatHost {
                     );
                 }
                 match other {
-                    ChatHost::Codex(h) => h.submit(prompt).await,
                     ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.submit(prompt).await,
                     ChatHost::Vpcode(h) => h.submit(prompt).await,
-                    ChatHost::Claude(_) => unreachable!("上の arm で処理済み"),
+                    ChatHost::Claude(_) | ChatHost::Codex(_) => unreachable!("上の arm で処理済み"),
                 }
             }
         }
@@ -394,6 +398,10 @@ impl ChatHost {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_advertises_image_input() {
+        assert!(super::EngineKind::Codex.image_capable());
+    }
     use super::*;
 
     /// ALL ⇄ from_agent ⇄ agent_name の roundtrip（片側だけ足した engine を検知する防壁）。
