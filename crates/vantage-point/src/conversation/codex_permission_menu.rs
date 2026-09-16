@@ -245,9 +245,12 @@ pub(super) async fn control(
                     .runtime
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("実効権限が未確認です。"))?;
-                // 同値更新には native 通知が来ない。確認済みの組み込み設定なら
-                // 変更要求を送らず完了する（名前付き profile の再読込は省略しない）。
-                if runtime.preset.as_deref() == Some(choice.view.id.as_str()) {
+                // 同値更新には native 通知が来ない。確認済みの選択は再送しない。
+                // 名前付き profile の再選択も、設定ファイルの再読込とは扱わない。
+                if runtime.preset.as_deref() == Some(choice.view.id.as_str())
+                    || (choice.approval.is_none()
+                        && runtime.profile.as_deref() == Some(choice.profile.as_str()))
+                {
                     return Ok(());
                 }
                 (

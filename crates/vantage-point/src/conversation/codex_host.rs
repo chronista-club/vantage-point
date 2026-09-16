@@ -2480,16 +2480,24 @@ for line in sys.stdin: pass
         }
         let script = r#"import json,sys
 applied=False
+named_applied=False
 def send(v): print(json.dumps(v),flush=True)
 for line in sys.stdin:
     r=json.loads(line)
     if r.get('method')=='initialize': continue
     if r['method']=='permissionProfile/list':
         assert r['params']['cwd']=='/work'
-        send({'id':r['id'],'result':{'data':[{'id':':workspace','allowed':True},{'id':':read-only','allowed':True},{'id':':danger-full-access','allowed':True},{'id':'locked','allowed':False}],'nextCursor':None}})
+        send({'id':r['id'],'result':{'data':[{'id':':workspace','allowed':True},{'id':':read-only','allowed':True},{'id':':danger-full-access','allowed':True},{'id':'locked','allowed':False},{'id':'team','allowed':True}],'nextCursor':None}})
     elif r['method']=='configRequirements/read':
         send({'id':r['id'],'result':{'requirements':{'allowedApprovalPolicies':['on-request'],'allowedApprovalsReviewers':['user','auto_review']}}})
     elif r['method']=='thread/settings/update':
+        if r['params']['permissions']=='team':
+            assert r['params']=={'threadId':'thread','permissions':'team'}, r
+            if not named_applied:
+                send({'method':'thread/settings/updated','params':{'threadId':'thread','threadSettings':{'cwd':'/work','approvalPolicy':'on-request','approvalsReviewer':'auto_review','sandboxPolicy':{'type':'workspaceWrite','networkAccess':False},'activePermissionProfile':{'id':'team'}}}})
+                named_applied=True
+            send({'id':r['id'],'result':{}})
+            continue
         if r['params']['approvalsReviewer']=='user':
             send({'id':r['id'],'error':{'code':-32600,'message':'fixture rejected update'}})
             continue
@@ -2604,6 +2612,21 @@ for line in sys.stdin:
         )
         .await
         .expect("already confirmed choice completes without another update");
+        for _ in 0..2 {
+            host.codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"profile:team"}),
+            )
+            .await
+            .expect("named profile selection and reselection both complete");
+        }
+        {
+            let state = host.inner.state.lock().unwrap();
+            let runtime = state.config.runtime.as_ref().unwrap();
+            assert_eq!(runtime.profile.as_deref(), Some("team"));
+            assert_eq!(runtime.reviewer.as_deref(), Some("auto_review"));
+            assert!(!state.queue_busy);
+        }
         let rejected = host
             .codex_input(
                 "thread",
