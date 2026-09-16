@@ -167,3 +167,29 @@ stdin lock の取得から ACK までに 35 秒の期限を設ける。書込未
   Chat での再検収はアプリと daemon への反映後に行う。
 - 修正後の `mise run test` は成功（主要ライブラリ 1,102 成功・除外 11、失敗 0）。
   workspace の check / Clippy、WebView typecheck、fmt も成功。
+
+## Chat 画像入力（2026-09-15、実機確認済み）
+
+[能力と成功条件](../spec/chat-image-input.md)を正本とする。
+`EngineKind::image_capable` の Claude 限定判定と、Codex 送信経路の text-only 実装が、
+Console では貼れるのに Chat では貼れない原因だった。
+
+Codex app-server の `UserInput::Image { url }` に `data:<MIME>;base64,<data>` を渡す。
+通常送信と起動待ち入力、native Queue / steer の各経路で画像を保持する。
+UI は送信確認まで本文と画像を一組で保持し、失敗時に復元する。
+既存の画像付き Queue 項目の編集制限は維持する。
+実機での貼り付け・画像認識・Queue/steer を確認済み。
+
+### 実機で見つかった画像サイズ検証の抜け
+
+2026-09-15: 通常送信は画像を認識できたが、画像付き steer は
+「入力操作の data が不正です」で拒否された。画像の base64 に、ID / 本文用の
+32 KiB 制限を持つ `field()` を流用していたため。小さな fixture では検出できなかった。
+画像は UI と同じ 1 枚 5 MiB の上限で別に検証し、32 KiB を超えるデータを回帰テストに含める。
+修正後の steer / Queue も実機で画像が届き、内容を認識できることを確認済み。
+
+## Chat の権限メニュー
+
+[design 72](72-codex-permission-menu.md) で、実効権限の表示から選択メニューへ進める。
+初版の候補は「承認を求める」「標準」「代わりに承認」「フルアクセス」と native の名前付き profile。
+自動レビューはユーザーの明示選択だけで有効にする。2026-09-16、組み込み4項目の切り替えと標準の再選択を実機確認済み。名前付き profile と管理制約付き環境の実機確認は含まない。
