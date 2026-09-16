@@ -65,11 +65,11 @@ fn permission_preset(value: &Value) -> Option<&'static str> {
             if sandbox["networkAccess"] == false
                 && sandbox["excludeTmpdirEnvVar"] == false
                 && sandbox["excludeSlashTmp"] == false
-                && sandbox["writableRoots"].as_array().is_some_and(|roots| {
-                    roots
-                        .iter()
-                        .all(|root| value["cwd"].is_string() && root == &value["cwd"])
-                }) =>
+                // native の workspace profile は既存の追加作業フォルダを保持する。
+                // 範囲は詳細に表示し、追加 root だけで profile の確認結果を捨てない。
+                && sandbox["writableRoots"]
+                    .as_array()
+                    .is_some_and(|roots| roots.iter().all(Value::is_string)) =>
         {
             Some(if reviewer == "user" {
                 "standard"

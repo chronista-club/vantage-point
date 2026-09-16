@@ -2446,6 +2446,12 @@ for line in sys.stdin: pass
         assert_eq!(full.preset.as_deref(), Some("full-access"));
         let mut custom = settings.clone();
         custom["sandboxPolicy"]["writableRoots"] = serde_json::json!(["/extra"]);
+        assert_eq!(
+            runtime::parse(&custom).preset.as_deref(),
+            Some("auto-review")
+        );
+        assert_eq!(runtime::parse(&custom).writable_roots, ["/work", "/extra"]);
+        custom["activePermissionProfile"] = serde_json::Value::Null;
         assert!(serde_json::to_value(runtime::parse(&custom)).unwrap()["preset"].is_null());
     }
 
@@ -2468,11 +2474,12 @@ for line in sys.stdin: pass
             st.native_queue.ready = true;
             st.config.runtime = Some(Box::new(runtime::parse(&serde_json::json!({
                 "approvalPolicy":"on-request","approvalsReviewer":"user","cwd":"/work",
-                "sandboxPolicy":{"type":"workspaceWrite","networkAccess":false},
+                "sandboxPolicy":{"type":"workspaceWrite","networkAccess":false,"writableRoots":["/extra"],"excludeTmpdirEnvVar":false,"excludeSlashTmp":false},
                 "activePermissionProfile":{"id":":workspace"}
             }))));
         }
         let script = r#"import json,sys
+applied=False
 def send(v): print(json.dumps(v),flush=True)
 for line in sys.stdin:
     r=json.loads(line)
@@ -2487,7 +2494,10 @@ for line in sys.stdin:
             send({'id':r['id'],'error':{'code':-32600,'message':'fixture rejected update'}})
             continue
         assert r['params']=={'threadId':'thread','permissions':':workspace','approvalPolicy':'on-request','approvalsReviewer':'auto_review'}, r
-        send({'method':'thread/settings/updated','params':{'threadId':'thread','threadSettings':{'cwd':'/work','approvalPolicy':'on-request','approvalsReviewer':'auto_review','sandboxPolicy':{'type':'workspaceWrite','networkAccess':False},'activePermissionProfile':{'id':':workspace'}}}})
+        if applied:
+            raise AssertionError('unchanged permissions must not be resent')
+        applied=True
+        send({'method':'thread/settings/updated','params':{'threadId':'thread','threadSettings':{'cwd':'/work','approvalPolicy':'on-request','approvalsReviewer':'auto_review','sandboxPolicy':{'type':'workspaceWrite','networkAccess':False,'writableRoots':['/extra'],'excludeTmpdirEnvVar':False,'excludeSlashTmp':False},'activePermissionProfile':{'id':':workspace'}}}})
         send({'id':r['id'],'result':{}})
     else: raise AssertionError(r)
 "#;
@@ -2514,6 +2524,12 @@ for line in sys.stdin:
         assert!(loaded.is_ok(), "{loaded:?}");
         let config = serde_json::to_value(&host.inner.state.lock().unwrap().config).unwrap();
         assert_eq!(config["runtime"]["reviewer"], "user");
+        host.codex_input(
+            "thread",
+            &serde_json::json!({"kind":"permissions","choice":"standard"}),
+        )
+        .await
+        .expect("confirmed standard with additional roots is not resent");
         let choices = config["permission_choices"].as_array().unwrap();
         assert!(
             choices.iter().find(|c| c["id"] == "full-access").unwrap()["disabled_reason"]
@@ -2582,6 +2598,12 @@ for line in sys.stdin:
             "auto_review"
         );
         assert!(!host.inner.state.lock().unwrap().queue_busy);
+        host.codex_input(
+            "thread",
+            &serde_json::json!({"kind":"permissions","choice":"auto-review"}),
+        )
+        .await
+        .expect("already confirmed choice completes without another update");
         let rejected = host
             .codex_input(
                 "thread",
