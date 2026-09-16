@@ -1,6 +1,7 @@
 import { changeCodexSelection } from './codex-selection-control'
 import { CodexInteractionCard } from './codex-interactions'
 import { CodexQueuePanel } from './codex-queue'
+import { CodexRuntimePanel } from './codex-runtime'
 import { beginCodexResponse } from './codex-interaction-model'
 /**
  * ChatView (doc 33 C2) — Conversation gui の Console 面 GUI（SolidJS）。
@@ -1613,17 +1614,17 @@ function SessionChatView(props: { lane: string; session: number }) {
   const nowLine = () => deriveNowLine(state())
   const codexInputBusy = () => !!state().codexInput
   const codexTurnActive = () => rosterEntry()?.agent === 'codex' && (state().streaming || !!state().codexQueue?.turn_id)
-  const sendCodexInput = (action: Record<string, unknown>, text = '') => {
+  const sendCodexInput = (action: Record<string, unknown>, text = '', images: Submission['images'] = []) => {
     const queue = state().codexQueue
     if (!queue || (!queue.ready && action.kind !== 'refresh') || codexInputBusy()) return false
     const requestId = nextRequestId('codex-input')
-    lc.set('codexInput', { id: requestId, text, status: 'sending', error: null })
+    lc.set('codexInput', { id: requestId, text, images, status: 'sending', error: null })
     try {
       const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
       if (!ipc) throw new Error('接続がありません。入力は送信されていません。')
       ipc.postMessage(JSON.stringify({ t: 'conversation:codex_input', lane: props.lane,
         session: props.session, thread_id: queue.thread_id, request_id: requestId,
-        action: { ...action, client_id: requestId } }))
+        action: { ...action, images, client_id: requestId } }))
       setTimeout(() => {
         if (lc.state.codexInput?.id === requestId && lc.state.codexInput.status === 'sending') {
           lc.set(produce(s => foldInto(s, { kind: 'codex_queue', queue: null, request_id: requestId,
@@ -1639,7 +1640,8 @@ function SessionChatView(props: { lane: string; session: number }) {
   }
   const queueDraft = () => {
     const text = draft().trim()
-    if (!text || !sendCodexInput({ kind: 'add', text }, text)) return
+    if (!text || !sendCodexInput({ kind: 'add', text }, text, toWirePayload(attachments()))) return
+    clearAttachments()
     setDraft('')
     if (inputRef) autosize(inputRef)
   }
@@ -1649,7 +1651,8 @@ function SessionChatView(props: { lane: string; session: number }) {
     if (!text || lc.state.submission || codexInputBusy()) return
     if (codexTurnActive()) {
       const turn = lc.state.codexQueue?.turn_id
-      if (!turn || !sendCodexInput({ kind: 'steer', text, turn_id: turn }, text)) return
+      if (!turn || !sendCodexInput({ kind: 'steer', text, turn_id: turn }, text, toWirePayload(attachments()))) return
+      clearAttachments()
       setDraft('')
       if (inputRef) autosize(inputRef)
       return
@@ -2129,9 +2132,13 @@ function SessionChatView(props: { lane: string; session: number }) {
           <div class="codex-queue" role="status">
             <div>{state().codexInput?.error}</div>
             <Show when={state().codexInput?.text}>
-              <button disabled={!!draft().trim()} onClick={() => {
-                if (draft().trim()) return
+              <button disabled={!!draft().trim() || attachments().length > 0} onClick={() => {
+                if (draft().trim() || attachments().length) return
                 setDraft(lc.state.codexInput?.text ?? '')
+                setAttachments((lc.state.codexInput?.images ?? []).map((image, index) => ({
+                  id: Date.now() + index, mediaType: image.media_type, dataBase64: image.data,
+                  previewUrl: `data:${image.media_type};base64,${image.data}`, bytes: Math.floor(image.data.length * 3 / 4),
+                })))
                 lc.set('codexInput',null)
                 queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
               }}>入力を戻す</button>
@@ -2268,6 +2275,12 @@ function SessionChatView(props: { lane: string; session: number }) {
           />
           <div class="conversation-actions">
             <Show when={rosterEntry()?.agent === 'codex'}>
+              <CodexRuntimePanel runtime={state().codexConfig?.runtime} busy={codexBusy() || !codexModel()}
+                connected={state().codexQueue?.ready === true}
+                permissionChoices={state().codexConfig?.permission_choices}
+                requestPermissions={() => sendCodexInput({kind:'permission_options'})}
+                changePermissions={(choice, confirmed) => sendCodexInput({kind:'permissions',choice,confirmed})}
+                changeMode={mode => sendCodexInput({kind:'mode',mode})} />
               <Show when={codexModels().length > 0} fallback={<span class="conversation-model-readonly">{state().codexConfig?.error ?? 'モデル候補を取得中…'}</span>}>
                 <select class="conversation-model-select" aria-label="Codex model" title="次の Chat 送信に使うモデル" disabled={codexBusy()}
                   onChange={(e) => changeCodexSelection(e.currentTarget, codexModel(), value => { const model = codexModels().find(m => m.model === value); if (model) setCodexSelection(model.model, model.default_effort) })}>
@@ -2701,6 +2714,24 @@ export const CHATVIEW_CSS = `
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
   color: var(--color-text-secondary,#a8b0c0); font-family:inherit; }
 .conversation-model-select:disabled { opacity:.45; cursor:default; }
+.codex-permission-menu { position:relative; }
+.codex-permission-backdrop { position:fixed; inset:0; z-index:30; }
+.codex-permission-popover { position:fixed; z-index:31;
+  width:min(390px,calc(100vw - 48px)); max-height:60vh; overflow:auto; padding:12px;
+  border:1px solid var(--color-border,#2a3040); border-radius:14px;
+  background:var(--color-bg-elevated,#16191f); color:var(--color-text-secondary,#a8b0c0);
+  box-shadow:0 8px 28px #0006; font-size:12px; white-space:normal;
+  font-family:var(--vp-font-sans),var(--typography-family-sans),sans-serif; }
+.codex-permission-popover button { font:inherit; color:inherit; cursor:pointer; }
+.codex-permission-popover button:not(.codex-permission-choice) { padding:5px 9px;
+  border:1px solid var(--color-border,#2a3040); border-radius:6px; background:transparent; }
+.codex-permission-heading { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+.codex-permission-choice { display:flex; flex-direction:column; gap:4px; width:100%; text-align:left;
+  padding:10px; border:1px solid transparent; border-radius:8px; color:inherit; background:transparent; cursor:pointer; }
+.codex-permission-choice strong { color:var(--color-text-primary,#e4e7ed); font-size:13px; }
+.codex-permission-choice:hover:not(:disabled), .codex-permission-choice[aria-pressed="true"] { background:var(--color-bg-hover,#252a35); }
+.codex-permission-choice:disabled { opacity:.5; cursor:default; }
+.codex-permission-popover p { font-size:11px; line-height:1.5; }
 /* catalog 空 engine の read-only model 表示（select と同じ枠感、押せない見た目 = cursor/border なし）。 */
 .conversation-model-readonly { font-size:10.5px; padding:1px 5px; border-radius:6px;
   color: var(--color-text-secondary,#a8b0c0); opacity:.7; }

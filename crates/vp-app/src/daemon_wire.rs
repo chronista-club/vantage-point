@@ -180,6 +180,14 @@ pub struct DaemonHealthInfo {
     /// ACTIONS の版（内容が変わった時だけ上がる）。旧 daemon / 未取得は 0 = **当てない**印。
     #[serde(default)]
     pub actions_rev: u32,
+    #[serde(default)]
+    pub actions_atlases: Vec<crate::pane::ActionAtlas>,
+    #[serde(default)]
+    pub actions_scope: String,
+    #[serde(default)]
+    pub actions_error: String,
+    #[serde(default)]
+    pub actions_imported: bool,
 }
 
 /// repo の接続 presence 1 件（`/api/health` の `processes[]` 要素の lite subset）。

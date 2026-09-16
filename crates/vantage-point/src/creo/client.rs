@@ -1,44 +1,20 @@
-//! creo-memories（creo-app-server）の REST client — ACTIONS の読み（doc 57 Phase 3）。
-//!
-//! ## なぜ daemon が fetch するのか
-//!
-//! webview から外部 HTTP を叩く前例は VP にゼロで、CORS は相手が決めるし、token を JS に
-//! 渡すことにもなる。**daemon が fetch して `/api/health` で流す**のが唯一の筋 —
-//! hub federation / in-app update と同じ雛形（`hub_client.rs` → `/api/health` →
-//! `spawn_activity_poller` → `SidebarState`）で、写せる完成形がある。
-//!
-//! ## 表示ゲートが tag なのは creo の list API が metadata で絞れないから
-//!
-//! doc 57 §3 は当初ゲートを `metadata.vp.board == "actions"` に置いていたが、creo の
-//! `GET /api/memories` が **server-side で絞れるのは category / tags / conceptIds / atlasId /
-//! status / keyword / 日付だけ**で、metadata を見る条件は 1 つも無い（一次資料:
-//! `creo-memories` の `packages/creo-memories/src/services/memory-list.ts` の WHERE builder）。
-//! 実測 2726 件 / `limit` 上限 100 なので client 側で絞ると **30s ごとに 28 往復**になる。
-//!
-//! そこで **tag [`ACTIONS_TAG`] を唯一のゲート**にした（mako 裁定 2026-08-04）。
-//! metadata.vp は区画（`bucket`）と並び（`order`）だけを持つ。
-//!
-//! ⚠️ **ゲートを 2 本持たない**（tag と `metadata.vp.board` を併記しない）。同じ 1 つの事実を
-//! 指す signal が 2 本あると必ず片方だけ書かれる日が来て、「creo には在るのに VP に出ない」が
-//! 無言で起きる。
-//!
-//! 副次的な利点として、tag は creo の UI から人が付けられる = **既存 memory を手で ACTIONS へ
-//! 引き取れる**（`metadata.vp.board` は人の目に見えないので原理的にできなかった）。区画未設定の
-//! 引き取りは webview の `normalizeActions` が TODOs 末尾へ丸める。
+//! Project-independent ACTIONS: daemon-owned Creo REST boundary (design 71).
+//! Membership uses the user-owned vp-actions label. Atlas is the explicit destination.
+//! Credentials never cross into WebView. Pending writes are scoped and durable.
 
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use std::time::Duration;
+
+#[path = "actions_api.rs"]
+mod api;
 
 /// creo-app-server の base URL の default。
 ///
 /// env `VP_CREO_URL` で上書き可（staging / 別 tenant を試す用）。
 pub const DEFAULT_CREO_URL: &str = "https://app.creo-memories.in";
 
-/// ACTIONS の表示ゲート。**この tag が付いた memory だけ** sidebar に出る。
-///
-/// `:` を含めないのは list API の `tags` が**カンマ区切り**で渡る query param だから
-/// （`,` 以外は通るが、素直な kebab に寄せて query 上で紛れないようにする）。
+/// ACTIONS の表示ラベル名。旧タグからの明示取り込みでも同じ名前を照合する。
 pub const ACTIONS_TAG: &str = "vp-actions";
 
 /// 1 回の取得で引く上限（creo の `limit` は 100 が上限）。
@@ -70,10 +46,18 @@ pub fn creo_base_url() -> String {
 /// 「どちらが正か」が二重になる。
 /// ⚠️ `Deserialize` も要る — 読み（creo → `/api/health`）だけでなく、書き
 /// （sidebar → `daemon-control.actions/save` の [`ActionsWrite`]）でも同じ形を受けるため。
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CreoAction {
     /// creo の memory id（`mem_xxx`）。Action の同一性はこれ 1 本。
     pub id: String,
+    #[serde(default)]
+    pub atlas_id: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub locked: Option<bool>,
+    #[serde(default)]
+    pub client_id: Option<String>,
     /// タイトル + 内容。1 行目がタイトル、2 行目以降が内容（doc 57 §3）。
     #[serde(default)]
     pub text: String,
@@ -92,7 +76,7 @@ pub struct CreoAction {
 }
 
 /// ACTIONS 一覧の snapshot（版つき）。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ActionsSnapshot {
     /// 版。**内容が変わった時だけ**上がる。`0` = 一度も取得していない。
     ///
@@ -100,6 +84,18 @@ pub struct ActionsSnapshot {
     /// （5s ごとに撃ち返すと、編集中の行を書き戻して caret が飛ぶ）。
     pub rev: u32,
     pub items: Vec<CreoAction>,
+    pub atlases: Vec<CreoAtlas>,
+    pub scope: String,
+    pub error: String,
+    pub imported: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CreoAtlas {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub writable: bool,
 }
 
 /// ACTIONS の cache + creo との往復口（doc 57 Phase 3-4）。
@@ -149,48 +145,105 @@ impl CreoActionsCache {
             .clone()
     }
 
-    /// creo から引き直して cache を温める（30s poller が呼ぶ）。
-    ///
-    /// 未ログインなら空にする。失敗なら**据え置き**（直前まで正しかった一覧を消さない）。
-    pub async fn refresh(&self) -> Result<()> {
-        let _gate = self.gate.lock().await;
-        match fetch_actions().await {
-            Ok(Some(fetched)) => {
-                let merged = merge_fetched(fetched, &self.get().items);
-                if self.set(merged) {
-                    tracing::debug!(rev = self.get().rev, "ACTIONS 更新");
-                }
-                Ok(())
+    /// Publish items, catalog and account as one revision.
+    fn replace(&self, mut next: ActionsSnapshot) {
+        let mut current = self.snapshot.write().unwrap_or_else(|e| e.into_inner());
+        next.rev = current.rev;
+        if current.rev != 0 && *current == next {
+            return;
+        }
+        next.rev = current.rev.wrapping_add(1).max(1);
+        *current = next;
+    }
+
+    fn for_account(&self, scope: &str) -> ActionsSnapshot {
+        let current = self.get();
+        if current.scope == scope {
+            current
+        } else {
+            ActionsSnapshot {
+                scope: scope.to_string(),
+                ..Default::default()
             }
-            Ok(None) => {
-                // ⚠️ `warn!` なのは**復旧に user の操作が要る**から（`vp auth login`）。
-                // `set` が変化を返したときだけ通る = edge-triggered なので 30s ごとには鳴らない。
-                // debug のままだと既定の log level では見えず、2026-08-07 は「ACTIONS が空」の
-                // 原因を掴むのに `/api/health` の curl が要った。
-                if self.set(Vec::new()) {
-                    tracing::warn!(
-                        "creo 未ログイン / token 失効 — ACTIONS を空にしました（`vp auth login` で復帰）"
-                    );
-                }
-                Ok(())
-            }
-            Err(e) => Err(e),
         }
     }
 
-    /// webview の編集を creo に書いて、書いた結果で cache を差し替える（write-through）。
-    ///
-    /// **cache を先に更新するのが要点** — 書いた直後の 5s push が古い内容を返すと、
-    /// user の編集が一瞬戻って見える。未ログインなら何も書かない（`Ok(false)`）。
+    /// Fetch every page and resume only this account's durable pending writes.
+    pub async fn refresh(&self) -> Result<()> {
+        let _gate = self.gate.lock().await;
+        let api = match authenticated_api().await {
+            Ok(Some(api)) => api,
+            Ok(None) => {
+                self.replace(ActionsSnapshot::default());
+                return Ok(());
+            }
+            Err(error) => {
+                let mut next = self.get();
+                next.error = error.to_string();
+                self.replace(next);
+                return Err(error);
+            }
+        };
+        let mut next = self.for_account(&api.scope);
+        let result: Result<()> = async {
+            let (atlases, fetched) = tokio::try_join!(api.catalog(), api.read())?;
+            next.atlases = atlases;
+            let (items, error) = api
+                .flush(&ActionsWrite::default(), &fetched, &api.journal_dir())
+                .await?;
+            next.items = items;
+            next.error = error;
+            let imported = api.imported(&api.journal_dir())?;
+            if imported && !next.imported && next.error.is_empty() {
+                next.items = api.read().await?;
+            }
+            next.imported = imported;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = &result {
+            next.error = error.to_string();
+        }
+        self.replace(next);
+        result
+    }
+
+    /// Persist intent before HTTP; keep failed intent visible and retryable.
     pub async fn save(&self, write: &ActionsWrite) -> Result<bool> {
         let _gate = self.gate.lock().await;
-        let prev = self.get().items;
-        match save_actions(write, &prev).await? {
-            Some(saved) => {
-                self.set(merge_saved(saved, write, &prev));
+        let Some(api) = authenticated_api().await? else {
+            self.replace(ActionsSnapshot {
+                error: "Creo にログインしてください".into(),
+                ..Default::default()
+            });
+            return Ok(false);
+        };
+        let mut next = self.for_account(&api.scope);
+        let result = api.flush(write, &next.items, &api.journal_dir()).await;
+        match result {
+            Ok((items, error)) => {
+                next.items = items;
+                next.error = error;
+                match api.imported(&api.journal_dir()) {
+                    Ok(imported) => {
+                        if imported && !next.imported && next.error.is_empty() {
+                            match api.read().await {
+                                Ok(items) => next.items = items,
+                                Err(error) => next.error = error.to_string(),
+                            }
+                        }
+                        next.imported = imported;
+                    }
+                    Err(error) => next.error = error.to_string(),
+                }
+                self.replace(next);
                 Ok(true)
             }
-            None => Ok(false),
+            Err(error) => {
+                next.error = error.to_string();
+                self.replace(next);
+                Err(error)
+            }
         }
     }
 }
@@ -200,9 +253,6 @@ impl CreoActionsCache {
 struct ListResponse {
     #[serde(default)]
     memories: Vec<CreoMemory>,
-    /// filter 後の総件数。`FETCH_LIMIT` を超えたら取りこぼしているので warn を出す。
-    #[serde(default)]
-    total: u32,
 }
 
 /// memory 1 件（ACTIONS に要る field だけ。creo は他にも多数返すが serde が捨てる）。
@@ -210,6 +260,12 @@ struct ListResponse {
 struct CreoMemory {
     #[serde(default)]
     id: String,
+    #[serde(default, alias = "atlasId")]
+    atlas_id: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    locked_at: Option<String>,
     #[serde(default)]
     content: String,
     /// `"active"` | `"done"`。**付いていない memory もある**（IDEAs / EVENTs は付けない設計）。
@@ -223,6 +279,8 @@ struct CreoMemory {
 /// `metadata.vp` — VP の名前空間（doc 57 §3）。他 client が触らないことを名前で示す。
 #[derive(Debug, Default, serde::Deserialize)]
 struct VpMeta {
+    #[serde(default)]
+    client_id: Option<String>,
     #[serde(default)]
     bucket: String,
     #[serde(default)]
@@ -246,6 +304,10 @@ impl CreoMemory {
             .unwrap_or_default();
         Some(CreoAction {
             id: self.id,
+            atlas_id: self.atlas_id.map(|id| api::canonical_atlas_id(&id)),
+            kind: self.kind,
+            locked: self.locked_at.map(|_| true),
+            client_id: vp.client_id,
             text: self.content,
             done: self.status.as_deref() == Some("done"),
             bucket: vp.bucket,
@@ -258,20 +320,11 @@ impl CreoMemory {
 fn parse_actions(body: &str) -> Result<Vec<CreoAction>> {
     let resp: ListResponse =
         serde_json::from_str(body).context("creo /api/memories の JSON を parse できません")?;
-    let dropped = resp.total as usize > resp.memories.len();
     let items: Vec<CreoAction> = resp
         .memories
         .into_iter()
         .filter_map(|m| m.into_action())
         .collect();
-    // ⚠️ 黙って切らない。上限に当たっていることが log に出ないと「全部見えている」と読める。
-    if dropped {
-        tracing::warn!(
-            total = resp.total,
-            fetched = items.len(),
-            "ACTIONS が取得上限（{FETCH_LIMIT}）を超えています — 超過分は sidebar に出ません"
-        );
-    }
     Ok(items)
 }
 
@@ -292,6 +345,13 @@ static WAS_UNRECOVERABLE: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 /// - `Err(_)` — 取得に失敗（network / creo 側）。**cache は据え置く** — 直前まで正しかった
 ///   一覧を消すより、少し古いものを見せる方が嘘が小さい
 pub async fn fetch_actions() -> Result<Option<Vec<CreoAction>>> {
+    match authenticated_api().await? {
+        Some(api) => Ok(Some(api.read().await?)),
+        None => Ok(None),
+    }
+}
+
+async fn authenticated_api() -> Result<Option<api::Api>> {
     use std::sync::atomic::Ordering;
     let audience = crate::commands::auth::creo_audience();
     // 期限が近ければ先に巻き直す（hub 接続が接続直前に同じことをしているのと同型）。
@@ -320,30 +380,15 @@ pub async fn fetch_actions() -> Result<Option<Vec<CreoAction>>> {
             crate::commands::auth::CredentialState::Absent => return Ok(None),
         };
 
-    let url = format!(
-        "{}/api/memories?tags={ACTIONS_TAG}&limit={FETCH_LIMIT}",
-        creo_base_url()
-    );
-    let client = reqwest::Client::builder()
-        .timeout(FETCH_TIMEOUT)
-        .build()
-        .context("HTTP client の構築に失敗")?;
-    let resp = client
-        .get(&url)
-        .header("authorization", format!("Bearer {}", creds.access_token))
-        .send()
-        .await
-        .with_context(|| format!("creo への接続に失敗: {url}"))?;
-
-    let status = resp.status();
-    // 401 = token が通らなかった。**未ログインと同じ扱いにはしない** — 「ログインしているのに
-    // 弾かれている」は user が知るべき状態で、cache を黙って空にすると原因が消える。
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("creo /api/memories が {status} を返しました: {body}");
-    }
-    let body = resp.text().await.context("creo 応答の読み取りに失敗")?;
-    Ok(Some(parse_actions(&body)?))
+    let base = creo_base_url();
+    let scope = api::account_scope(&base, &creds.access_token)?;
+    let client = reqwest::Client::builder().timeout(FETCH_TIMEOUT).build()?;
+    Ok(Some(api::Api {
+        base,
+        scope,
+        token: creds.access_token,
+        client,
+    }))
 }
 
 // =============================================================================
@@ -355,8 +400,12 @@ pub async fn fetch_actions() -> Result<Option<Vec<CreoAction>>> {
 /// ⚠️ **`items` に無い = 消す、ではない**。webview の一覧は起動直後や push 到着前に
 /// 短く見えることがある（⌘b で 1 件だけ捕まえた直後など）ので、**不在から削除を推論すると
 /// 一瞬で memory を全部消す**。消すのは user が明示的に消した [`removed`](Self::removed) だけ。
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ActionsWrite {
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub import_legacy: bool,
     /// 現在の一覧（差分ではなく全件）。
     #[serde(default)]
     pub items: Vec<CreoAction>,
@@ -380,7 +429,11 @@ fn is_local_id(id: &str) -> bool {
 /// （`services/memory.ts` の `mergedMetadata`）。`vp` の中身は**丸ごと置き換わる**ので、
 /// Phase 5 で `lane` を足す時は**ここに必ず載せる**こと（載せ忘れると書くたびに消える）。
 fn vp_metadata(item: &CreoAction) -> serde_json::Value {
-    serde_json::json!({ "vp": { "bucket": item.bucket, "order": item.order } })
+    let mut value = serde_json::json!({ "vp": { "bucket": item.bucket, "order": item.order } });
+    if let Some(client_id) = &item.client_id {
+        value["vp"]["client_id"] = serde_json::json!(client_id);
+    }
+    value
 }
 
 /// 区画 → creo の `status`（doc 57 §3 の線引き）。
@@ -392,6 +445,12 @@ fn vp_metadata(item: &CreoAction) -> serde_json::Value {
 /// `active | done` の enum で、省略 = 変更なし）。NEXTs → IDEAs と移した Action は
 /// `active` を持ったまま残る。新規の IDEAs は綺麗なので、汚れるのは「移した時」だけ。
 fn status_for(item: &CreoAction) -> Option<&'static str> {
+    if item.kind.as_deref() == Some("todo") {
+        return Some(if item.done { "done" } else { "active" });
+    }
+    if item.atlas_id.is_some() && item.kind.as_deref() != Some("todo") {
+        return None;
+    }
     if item.done {
         return Some("done");
     }
@@ -446,108 +505,33 @@ pub async fn save_actions(
     write: &ActionsWrite,
     prev: &[CreoAction],
 ) -> Result<Option<Vec<CreoAction>>> {
-    let audience = crate::commands::auth::creo_audience();
-    let creds =
-        match crate::commands::auth::credentials_refreshed_if_needed(&audience, REFRESH_SKEW_SECS)
-            .await?
-        {
-            crate::commands::auth::CredentialState::Valid(c) => c,
-            // ⚠️ 完全失効 + 巻き直し不能。**HTTP を撃たない**（fetch_actions と同じ理由）。
-            // 遷移 warn は fetch 側が 30s ごとの poll で立てるので、ここでは出さない。
-            crate::commands::auth::CredentialState::ExpiredUnrecoverable => return Ok(None),
-            crate::commands::auth::CredentialState::Absent => return Ok(None),
-        };
-    let client = reqwest::Client::builder()
-        .timeout(FETCH_TIMEOUT)
-        .build()
-        .context("HTTP client の構築に失敗")?;
-    let token = creds.access_token.as_str();
-    let base = creo_base_url();
-
-    let prev_by_id: std::collections::HashMap<&str, &CreoAction> =
-        prev.iter().map(|a| (a.id.as_str(), a)).collect();
-
-    let mut out = Vec::with_capacity(write.items.len());
-    for item in &write.items {
-        match plan_write(item, prev_by_id.get(item.id.as_str()).copied()) {
-            // 上げない枝。**local のまま残す**ので、次に user が書いた時点で Create に移る。
-            WritePlan::KeepLocal | WritePlan::Unchanged => out.push(item.clone()),
-            WritePlan::Create => match create_action(&client, &base, token, item).await {
-                Ok(created) => out.push(created),
-                Err(e) => {
-                    // local id のまま残す = cache に生き残り、次の機会に再試行される。
-                    tracing::warn!("ACTIONS の作成に失敗（次の機会に再試行）: {e}");
-                    out.push(item.clone());
-                }
-            },
-            WritePlan::Update => {
-                if let Err(e) = update_action(&client, &base, token, item).await {
-                    tracing::warn!(id = %item.id, "ACTIONS の更新に失敗: {e}");
-                }
-                out.push(item.clone());
-            }
-        }
-    }
-
-    // 削除は**明示された id だけ**。local id は creo に無いので撃たない。
-    for id in write.removed.iter().filter(|id| !is_local_id(id)) {
-        if let Err(e) = delete_action(&client, &base, token, id).await {
-            tracing::warn!(%id, "ACTIONS の削除に失敗: {e}");
-        }
-    }
-
-    Ok(Some(out))
+    let Some(api) = authenticated_api().await? else {
+        return Ok(None);
+    };
+    let (items, error) = api.flush(write, prev, &api.journal_dir()).await?;
+    anyhow::ensure!(error.is_empty(), "{error}");
+    Ok(Some(items))
 }
 
-/// 新規 memory を作る。**POST は `status` を受け付けない**ので、要るなら PUT で立て直す 2 段。
+#[cfg(test)]
 async fn create_action(
     client: &reqwest::Client,
     base: &str,
     token: &str,
     item: &CreoAction,
 ) -> Result<CreoAction> {
-    let body = serde_json::json!({
-        "content": item.text,
-        // 表示のゲート。**これが無いと次の poll で消えたように見える**（読みは tag で絞る）。
-        "tags": [ACTIONS_TAG],
-        "metadata": vp_metadata(item),
-    });
-    let resp = client
-        .post(format!("{base}/api/memories"))
-        .header("authorization", format!("Bearer {token}"))
-        .json(&body)
-        .send()
-        .await
-        .context("creo への POST に失敗")?;
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        anyhow::bail!("creo POST /api/memories が {status} を返しました: {text}");
-    }
-    #[derive(serde::Deserialize)]
-    struct CreateResponse {
-        memory: CreoMemory,
-    }
-    let created: CreateResponse =
-        serde_json::from_str(&text).context("creo POST の応答を parse できません")?;
-    // **id 以外は手元の値が正**。creo の応答から metadata を取りこぼすと、以降の PUT が
-    // 空の区画で本文を組んで「今書いた区画を消す + status を立てない」を同時にやる。
-    // 採番された id を貰うだけ、と読めるよう 1 つの式に畳んである（下の PUT との順序を
-    // 間違えようがない形にするため）。
-    let action = adopt_local_intent(
-        created
-            .memory
-            .into_action()
-            .context("creo が id を返しませんでした")?,
-        item,
+    anyhow::ensure!(
+        item.atlas_id.as_deref().is_some_and(|s| !s.is_empty()),
+        "保存先 Atlas を選択してください"
     );
-    // POST は `status` を受け付けないので、要るなら PUT で立て直す（doc 57 §4）。
-    if let Some(want) = status_for(&action)
-        && let Err(e) = update_action(client, base, token, &action).await
-    {
-        tracing::warn!(id = %action.id, "作成後の status 設定に失敗（{want} を諦める）: {e}");
-    }
-    Ok(action)
+    let api = api::Api {
+        base: base.into(),
+        token: token.into(),
+        scope: api::account_scope(base, token)?,
+        client: client.clone(),
+    };
+    api.capture(item, &api.journal_dir().join("test-only.json"))
+        .await
 }
 
 /// creo が採番した id に、**user が今持っている形**（本文 / 区画 / 並び / 完了）を載せる。
@@ -556,10 +540,7 @@ async fn create_action(
 fn adopt_local_intent(created: CreoAction, item: &CreoAction) -> CreoAction {
     CreoAction {
         id: created.id,
-        text: item.text.clone(),
-        done: item.done,
-        bucket: item.bucket.clone(),
-        order: item.order.clone(),
+        ..item.clone()
     }
 }
 
@@ -630,6 +611,7 @@ async fn delete_action(client: &reqwest::Client, base: &str, token: &str, id: &s
 /// 置き換えると既存の Action が次の poll まで sidebar から消える。
 ///
 /// `removed`（消す意図）と同じ規律をここにも効かせる: **送られてこなかった id は触らない**。
+#[cfg(test)]
 fn merge_saved(
     saved: Vec<CreoAction>,
     write: &ActionsWrite,
@@ -657,7 +639,80 @@ pub fn merge_fetched(fetched: Vec<CreoAction>, cached: &[CreoAction]) -> Vec<Cre
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn actions_atlas_identity_is_consistent_across_rest_representations() {
+        let items = parse_actions(r#"{"memories":[{"id":"mem-a","atlasId":"atl_1CXK2Q8WPAUUueD7jdRJCt","content":"memo"}],"total":1}"#).unwrap();
+        assert_eq!(
+            items[0].atlas_id.as_deref(),
+            Some("019bdc73-aace-766c-8064-f43e2a8cfcd5")
+        );
+    }
+    #[test]
+    fn rest_response_keeps_camel_case_atlas() {
+        let items = parse_actions(
+            r#"{"memories":[{"id":"mem-a","atlasId":"atl-a","content":"memo"}],"total":1}"#,
+        )
+        .unwrap();
+        assert_eq!(items[0].atlas_id.as_deref(), Some("atl-a"));
+    }
+
+    #[tokio::test]
+    async fn capture_requires_atlas_before_http() {
+        let item = CreoAction {
+            id: "act-a".into(),
+            text: "memo".into(),
+            ..Default::default()
+        };
+        let err = create_action(&reqwest::Client::new(), "invalid-url", "fake-token", &item)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Atlas"), "{err}");
+    }
+    #[test]
+    fn atlas_capture_does_not_infer_kind_from_bucket() {
+        let mut item = CreoAction {
+            id: "act-capture".into(),
+            atlas_id: Some("atlas-personal".into()),
+            bucket: "todos".into(),
+            ..Default::default()
+        };
+        assert_eq!(status_for(&item), None);
+        item.kind = Some("idea".into());
+        item.done = true;
+        assert_eq!(status_for(&item), None);
+        item.kind = Some("todo".into());
+        assert_eq!(status_for(&item), Some("done"));
+        item.bucket = "ideas".into();
+        item.done = false;
+        assert_eq!(status_for(&item), Some("active"));
+    }
+
+    #[test]
+    fn capture_receipt_survives_metadata_roundtrip() {
+        let item = CreoAction {
+            client_id: Some("act-capture".into()),
+            ..Default::default()
+        };
+        assert_eq!(vp_metadata(&item)["vp"]["client_id"], "act-capture");
+    }
     use super::*;
+
+    // mem_1Cf1r1bEcTcknGH3Xk3naa: preserve native ownership/classification at the boundary.
+    #[test]
+    fn capture_keeps_atlas_kind_and_lock() {
+        let items = parse_actions(
+            r#"{"total":1,"memories":[{
+            "id":"mem-note","content":"思いつき","atlas_id":"atlas-personal",
+            "kind":"idea","locked_at":"2026-09-14T00:00:00Z",
+            "metadata":{"vp":{"bucket":"ideas","order":"a"}}
+        }]}"#,
+        )
+        .unwrap();
+        let item = serde_json::to_value(&items[0]).unwrap();
+        assert_eq!(item["atlas_id"], "atlas-personal");
+        assert_eq!(item["kind"], "idea");
+        assert_eq!(item["locked"], true);
+    }
 
     fn act(id: &str, bucket: &str) -> CreoAction {
         CreoAction {
@@ -666,6 +721,7 @@ mod tests {
             done: false,
             bucket: bucket.to_string(),
             order: "a".to_string(),
+            ..Default::default()
         }
     }
 
@@ -693,6 +749,7 @@ mod tests {
                 done: false,
                 bucket: "nexts".to_string(),
                 order: "0|hzzzzz:".to_string(),
+                ..Default::default()
             }
         );
     }
@@ -765,6 +822,7 @@ mod tests {
             done: false,
             bucket: "nexts".into(),
             order: "a".into(),
+            ..Default::default()
         }];
         assert!(cache.set(one.clone()), "初回は変化");
         assert_eq!(cache.get().rev, 1);
@@ -849,6 +907,7 @@ mod tests {
             done: false,
             bucket: "nexts".into(),
             order: "0|h:".into(),
+            ..Default::default()
         };
         assert_eq!(plan_write(&empty, None), WritePlan::KeepLocal);
 
@@ -869,6 +928,7 @@ mod tests {
             done: false,
             bucket: "todos".into(),
             order: "0|h:".into(),
+            ..Default::default()
         };
         assert_eq!(plan_write(&item, Some(&item)), WritePlan::Unchanged);
 
@@ -892,6 +952,7 @@ mod tests {
             done: false,
             bucket: "nexts".into(),
             order: "0|h:".into(),
+            ..Default::default()
         };
         // creo の応答は id だけ（metadata を含まない worst case）。
         let created = CreoAction {
@@ -900,6 +961,7 @@ mod tests {
             done: false,
             bucket: String::new(),
             order: String::new(),
+            ..Default::default()
         };
         let adopted = adopt_local_intent(created, &item);
         assert_eq!(adopted.id, "mem_new", "id だけ creo のものを採る");
@@ -918,6 +980,7 @@ mod tests {
         let write = ActionsWrite {
             items: vec![act("act-fresh", "ideas")],
             removed: Vec::new(),
+            ..Default::default()
         };
         let merged = merge_saved(vec![act("mem_new", "ideas")], &write, &prev);
         assert_eq!(
@@ -934,6 +997,7 @@ mod tests {
         let write = ActionsWrite {
             items: vec![act("mem_1", "nexts")],
             removed: vec!["mem_2".to_string()],
+            ..Default::default()
         };
         let merged = merge_saved(vec![act("mem_1", "nexts")], &write, &prev);
         assert_eq!(

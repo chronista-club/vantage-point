@@ -150,6 +150,10 @@ pub struct DaemonRestart;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionsPersist {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_legacy: Option<bool>,
     pub items: Vec<serde_json::Value>,
     pub removed: Vec<String>,
 }

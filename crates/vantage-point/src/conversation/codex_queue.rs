@@ -7,6 +7,25 @@ use super::super::event::{CodexQueuedInput, ConversationEvent};
 use super::{ReqKind, RpcInner};
 
 pub(super) async fn rpc(inner: &RpcInner, method: &str, params: Value) -> anyhow::Result<Value> {
+    rpc_until(
+        inner,
+        method,
+        params,
+        tokio::time::Instant::now() + std::time::Duration::from_secs(35),
+    )
+    .await
+}
+
+pub(super) async fn rpc_until(
+    inner: &RpcInner,
+    method: &str,
+    params: Value,
+    deadline: tokio::time::Instant,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        tokio::time::Instant::now() < deadline,
+        "操作の確認期限を過ぎました。自動再送はしていません。"
+    );
     let (id, receive) = {
         let mut state = inner.state.lock().expect("rpc state lock");
         anyhow::ensure!(!state.dead, "Codex host は終了しています");
@@ -16,7 +35,7 @@ pub(super) async fn rpc(inner: &RpcInner, method: &str, params: Value) -> anyhow
         (id, receive)
     };
     let mut write_completed = false;
-    let response = tokio::time::timeout(std::time::Duration::from_secs(35), async {
+    let response = tokio::time::timeout_at(deadline, async {
         inner
             .write_line(&json!({"id":id,"method":method,"params":params}).to_string())
             .await
@@ -216,9 +235,45 @@ fn field<'a>(action: &'a Value, key: &str) -> anyhow::Result<&'a str> {
 }
 
 fn input(action: &Value) -> anyhow::Result<Value> {
+    use base64::Engine;
+
     let text = field(action, "text")?;
     anyhow::ensure!(!text.trim().is_empty(), "入力が空です");
-    Ok(json!([{"type":"text","text":text,"text_elements":[]}]))
+    let mut images = Vec::new();
+    if let Some(raw) = action.get("images") {
+        for image in raw
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("画像の形式が不正です"))?
+        {
+            let media_type = field(image, "media_type")?;
+            // Clipboard data is much larger than IDs/text. Match the composer's 5 MiB limit.
+            const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+            let data = image["data"]
+                .as_str()
+                .filter(|data| !data.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("画像データが空または不正です"))?;
+            anyhow::ensure!(
+                data.len() <= MAX_IMAGE_BYTES.div_ceil(3) * 4,
+                "画像は 1 枚 5 MiB 以下にしてください"
+            );
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|_| anyhow::anyhow!("画像の base64 データが不正です"))?;
+            anyhow::ensure!(
+                decoded.len() <= MAX_IMAGE_BYTES,
+                "画像は 1 枚 5 MiB 以下にしてください"
+            );
+            anyhow::ensure!(
+                media_type.starts_with("image/") && !data.is_empty(),
+                "画像の形式が不正です"
+            );
+            images.push(super::super::host::ImageInput {
+                media_type: media_type.to_owned(),
+                data_base64: data.to_owned(),
+            });
+        }
+    }
+    Ok(super::image_input(text, &images))
 }
 
 /// One refresh worker per host; notifications during pagination invalidate the whole read.
@@ -331,4 +386,54 @@ async fn list(inner: &RpcInner, thread: &str) -> anyhow::Result<Vec<CodexQueuedI
         );
     }
     anyhow::bail!("待機一覧が表示上限を超えています。Console で確認してください。")
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    #[test]
+    fn image_limit_checks_decoded_bytes_and_keeps_text_limit() {
+        use base64::Engine;
+        let encode = |size| base64::engine::general_purpose::STANDARD.encode(vec![0; size]);
+        let action =
+            |data| json!({"text":"describe","images":[{"media_type":"image/png","data":data}]});
+        assert!(input(&action(encode(5 * 1024 * 1024))).is_ok());
+        assert!(input(&action(encode(5 * 1024 * 1024 + 1))).is_err());
+        assert!(input(&action("broken base64".to_string())).is_err());
+        assert!(input(&json!({"text":"a".repeat(32769)})).is_err());
+    }
+
+    #[test]
+    fn screenshot_larger_than_text_limit_is_accepted() {
+        let data = "AAAA".repeat(16 * 1024);
+        let result = input(&json!({"text":"describe", "images":[
+            {"media_type":"image/png","data":data}
+        ]}))
+        .expect("48 KiB の画像は文字列用の 32 KiB 上限で拒否しない");
+        assert_eq!(result[1]["url"], format!("data:image/png;base64,{data}"));
+    }
+
+    #[test]
+    fn oversized_image_is_rejected() {
+        let data = "AAAA".repeat(2 * 1024 * 1024);
+        assert!(
+            input(&json!({"text":"describe", "images":[
+                {"media_type":"image/png","data":data}
+            ]}))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn codex_queue_input_preserves_images() {
+        let result = input(&json!({"text":"describe", "images":[
+            {"media_type":"image/png","data":"aGVsbG8="}
+        ]}))
+        .unwrap();
+        assert_eq!(
+            result[1],
+            json!({"type":"image","url":"data:image/png;base64,aGVsbG8="})
+        );
+    }
 }

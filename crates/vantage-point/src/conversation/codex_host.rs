@@ -48,6 +48,10 @@ use super::host::InFlight;
 
 #[path = "codex_queue.rs"]
 mod native_queue;
+#[path = "codex_permission_menu.rs"]
+mod permissions;
+#[path = "codex_runtime.rs"]
+mod runtime;
 
 /// CodexAgentHost の起動設定。
 #[derive(Debug, Clone)]
@@ -82,6 +86,13 @@ enum ReqKind {
     AsyncReplySteer,
 }
 
+/// 起動待ちの本文と添付を一組で保持する。
+struct PendingPrompt {
+    text: String,
+    client_id: Option<String>,
+    images: Vec<super::host::ImageInput>,
+}
+
 /// reader task / host メソッドが共有する可変状態（std Mutex — await を跨がずに触る）。
 struct RpcState {
     native_queue: super::event::CodexQueueView,
@@ -108,7 +119,7 @@ struct RpcState {
     /// turn 実行中か（true の submit は queue へ）。
     turn_active: bool,
     /// thread 未確定 or turn 実行中に来た submit の待ち行列。
-    queue: VecDeque<(String, Option<String>)>,
+    queue: VecDeque<PendingPrompt>,
     /// disk にまだ載っていない増分 + commit 世代（[`super::host`] と同契約）。
     in_flight: InFlight,
     /// app-server 子プロセスの pid。
@@ -393,16 +404,17 @@ impl RpcInner {
                     );
                     return;
                 }
-                let (prompt, client_id) = st.queue.pop_front().expect("non-empty queue");
+                let prompt = st.queue.pop_front().expect("non-empty queue");
                 let thread_id = st.thread_id.clone().expect("thread id");
                 st.turn_active = true;
                 let id = st.alloc(ReqKind::TurnStart);
-                Some(build_configured_turn_start(
+                Some(build_image_turn_start(
                     id,
                     &thread_id,
-                    &prompt,
-                    client_id.as_deref(),
+                    &prompt.text,
+                    prompt.client_id.as_deref(),
                     st.config.selection.as_ref(),
+                    &prompt.images,
                 ))
             }
         };
@@ -424,6 +436,21 @@ impl CodexAgentHost {
         thread: &str,
         action: &serde_json::Value,
     ) -> anyhow::Result<()> {
+        if matches!(
+            action["kind"].as_str(),
+            Some("permissions" | "permission_options")
+        ) {
+            return permissions::control(self.inner.clone(), thread.to_owned(), action.clone())
+                .await;
+        }
+        if action["kind"] == "mode" {
+            return runtime::change_mode(
+                self.inner.clone(),
+                thread.to_owned(),
+                action["mode"].as_str().unwrap_or("").to_owned(),
+            )
+            .await;
+        }
         native_queue::control(self.inner.clone(), thread.to_owned(), action.clone()).await
     }
     /// 回答呼び出し元の切断で送信処理を途中破棄しない。成功確定は stdin 書込後。
@@ -730,12 +757,29 @@ impl CodexAgentHost {
         client_id: Option<&str>,
         activity: Option<&std::sync::atomic::AtomicBool>,
     ) -> anyhow::Result<()> {
+        self.submit_images_with_activity(prompt, &[], client_id, activity)
+            .await
+    }
+
+    pub(crate) async fn submit_images_with_activity(
+        &self,
+        prompt: &str,
+        images: &[super::host::ImageInput],
+        client_id: Option<&str>,
+        activity: Option<&std::sync::atomic::AtomicBool>,
+    ) -> anyhow::Result<()> {
         let line = {
             let mut st = self.inner.state.lock().expect("rpc state lock");
             if st.dead {
                 anyhow::bail!(
                     "codex app-server が利用できません（途絶・起動失敗。再起動で再試行）"
                 );
+            }
+            if st.queue_busy {
+                return Err(CodexSelectionRejected(
+                    "Codex の操作完了後に送信してください。入力は送信されていません。".into(),
+                )
+                .into());
             }
             if let Some(selection) = &st.config.selection {
                 if !st.catalog_ready {
@@ -755,8 +799,11 @@ impl CodexAgentHost {
                 || st.thread_id.is_none()
                 || (st.config.selection.is_some() && !st.catalog_ready)
             {
-                st.queue
-                    .push_back((prompt.to_string(), client_id.map(str::to_owned)));
+                st.queue.push_back(PendingPrompt {
+                    text: prompt.to_owned(),
+                    client_id: client_id.map(str::to_owned),
+                    images: images.to_vec(),
+                });
                 tracing::debug!(
                     "codex submit: {} → queue（depth={}）",
                     if st.turn_active {
@@ -771,12 +818,13 @@ impl CodexAgentHost {
                 let thread_id = st.thread_id.clone().expect("thread id");
                 st.turn_active = true;
                 let id = st.alloc(ReqKind::TurnStart);
-                Some(build_configured_turn_start(
+                Some(build_image_turn_start(
                     id,
                     &thread_id,
                     prompt,
                     client_id,
                     st.config.selection.as_ref(),
+                    images,
                 ))
             }
         };
@@ -950,6 +998,33 @@ fn build_configured_turn_start(
     request.to_string()
 }
 
+/// Image inputs use inline data URLs; VP does not create image files.
+fn image_input(prompt: &str, images: &[super::host::ImageInput]) -> serde_json::Value {
+    let mut input = vec![serde_json::json!({"type":"text","text":prompt,"text_elements":[]})];
+    input.extend(images.iter().map(|image| {
+        serde_json::json!({
+            "type":"image", "url":format!("data:{};base64,{}",image.media_type,image.data_base64)
+        })
+    }));
+    serde_json::Value::Array(input)
+}
+
+fn build_image_turn_start(
+    id: i64,
+    thread_id: &str,
+    prompt: &str,
+    client_id: Option<&str>,
+    selection: Option<&super::event::CodexSelection>,
+    images: &[super::host::ImageInput],
+) -> String {
+    let mut request: serde_json::Value = serde_json::from_str(&build_configured_turn_start(
+        id, thread_id, prompt, client_id, selection,
+    ))
+    .expect("turn request JSON");
+    request["params"]["input"] = image_input(prompt, images);
+    request.to_string()
+}
+
 /// JSON-RPC error object から人間向け message を取り出す（形が崩れていても何か返す）。
 fn error_message(err: &serde_json::Value) -> String {
     err.get("message")
@@ -1103,6 +1178,17 @@ fn process_notification(
                 error: None,
             },
         );
+        return false;
+    }
+    if method == "thread/settings/updated" {
+        if st.thread_id.is_some() && params["threadId"].as_str() == st.thread_id.as_deref() {
+            let settings = &params["threadSettings"];
+            st.config.runtime = Some(Box::new(runtime::parse(settings)));
+            st.config.model = settings["model"].as_str().map(str::to_owned);
+            st.config.effort = settings["effort"].as_str().map(str::to_owned);
+            let event = RpcInner::config_event(&st);
+            inner.emit_locked(&mut st, event);
+        }
         return false;
     }
     if st.interactions.observe(method, params) {
@@ -1440,6 +1526,7 @@ async fn handle_response(
                 let mut st = inner.state.lock().expect("rpc state lock");
                 st.config.model = msg["result"]["model"].as_str().map(str::to_owned);
                 st.config.effort = msg["result"]["reasoningEffort"].as_str().map(str::to_owned);
+                st.config.runtime = Some(Box::new(runtime::parse(&msg["result"])));
             }
             let result = &msg["result"];
             if thread["historyMode"] == "paginated"
@@ -1490,6 +1577,7 @@ async fn handle_response(
                     let mut st = inner.state.lock().expect("rpc state lock");
                     st.config.model = msg["result"]["model"].as_str().map(str::to_owned);
                     st.config.effort = msg["result"]["reasoningEffort"].as_str().map(str::to_owned);
+                    st.config.runtime = Some(Box::new(runtime::parse(&msg["result"])));
                 }
                 inner.adopt_thread(&msg["result"]["thread"], tid).await;
             } else {
@@ -1613,6 +1701,40 @@ async fn handle_response(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn codex_startup_queue_keeps_images_and_request_identity() {
+        let host = response_test_host();
+        let images = vec![super::super::host::ImageInput {
+            media_type: "image/png".into(),
+            data_base64: "aGVsbG8=".into(),
+        }];
+        host.submit_images_with_activity("describe", &images, Some("client"), None)
+            .await
+            .unwrap();
+        let state = host.inner.state.lock().unwrap();
+        let pending = state.queue.front().unwrap();
+        assert_eq!(pending.images, images);
+        let selection = super::super::event::CodexSelection {
+            model: "fixture".into(),
+            effort: "high".into(),
+        };
+        let request: serde_json::Value = serde_json::from_str(&build_image_turn_start(
+            4,
+            "thread",
+            &pending.text,
+            pending.client_id.as_deref(),
+            Some(&selection),
+            &pending.images,
+        ))
+        .unwrap();
+        assert_eq!(request["params"]["clientUserMessageId"], "client");
+        assert_eq!(request["params"]["model"], "fixture");
+        assert_eq!(
+            request["params"]["input"][1]["url"],
+            "data:image/png;base64,aGVsbG8="
+        );
+    }
+
     // mem_1CeySwxuoVc17bGLnU5Np3: native Queue の更新を現在の会話だけに投影する。
     #[tokio::test]
     async fn native_queue_change_invalidates_only_current_thread_view() {
@@ -2245,6 +2367,359 @@ for line in sys.stdin: pass
                 "native の sandbox を上書きしない"
             );
         }
+    }
+
+    // mem_1CeySwxuoVc17bGLnU5Np3: effective permissions and native collaboration mode.
+    #[tokio::test]
+    async fn runtime_pending_operation_rejects_submit_without_retiring_host() {
+        let host = response_test_host();
+        {
+            let mut state = host.inner.state.lock().unwrap();
+            state.thread_id = Some("thread".into());
+            state.queue_busy = true;
+        }
+        let error = host.submit("must not overtake settings").await.unwrap_err();
+        assert!(error.is::<CodexSelectionRejected>());
+        let state = host.inner.state.lock().unwrap();
+        assert!(!state.dead);
+        assert!(!state.turn_active);
+        assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn runtime_settings_follow_only_the_current_thread() {
+        let host = response_test_host();
+        host.inner.state.lock().unwrap().thread_id = Some("thread".into());
+        let mut translator = CodexRpcTranslator::new();
+        let mut params = serde_json::json!({"threadId":"other","threadSettings":{
+            "model":"fixture","effort":"high","approvalPolicy":"on-request",
+            "sandboxPolicy":{"type":"workspaceWrite","writableRoots":["/work"],"networkAccess":false},
+            "activePermissionProfile":{"id":":workspace","extends":null},
+            "collaborationMode":{"mode":"plan","settings":{"developer_instructions":"not for the UI"}}
+        }});
+        process_notification(
+            &host.inner,
+            &mut translator,
+            "thread/settings/updated",
+            &params,
+        );
+        assert!(
+            serde_json::to_value(&host.inner.state.lock().unwrap().config).unwrap()["runtime"]
+                .is_null()
+        );
+        params["threadId"] = "thread".into();
+        process_notification(
+            &host.inner,
+            &mut translator,
+            "thread/settings/updated",
+            &params,
+        );
+        let config = serde_json::to_value(&host.inner.state.lock().unwrap().config).unwrap();
+        assert_eq!(config["runtime"]["mode"], "plan");
+        assert_eq!(config["runtime"]["approval"], "on-request");
+        assert_eq!(config["runtime"]["sandbox"], "workspaceWrite");
+        assert_eq!(config["runtime"]["network_access"], false);
+        assert_eq!(
+            config["runtime"]["writable_roots"],
+            serde_json::json!(["/work"])
+        );
+        assert!(!config.to_string().contains("not for the UI"));
+    }
+
+    #[test]
+    fn permissions_runtime_retains_reviewer_without_guessing_missing_values() {
+        let settings = serde_json::json!({"approvalsReviewer":"auto_review", "approvalPolicy":"on-request",
+            "sandboxPolicy":{"type":"workspaceWrite","networkAccess":false,"writableRoots":[],"excludeTmpdirEnvVar":false,"excludeSlashTmp":false},
+            "activePermissionProfile":{"id":":workspace"},"cwd":"/work"});
+        let runtime = serde_json::to_value(runtime::parse(&settings)).unwrap();
+        assert_eq!(runtime["reviewer"], "auto_review");
+        assert_eq!(runtime["cwd"], "/work");
+        assert_eq!(runtime["preset"], "auto-review");
+        let unknown = serde_json::to_value(runtime::parse(&serde_json::json!({}))).unwrap();
+        assert!(unknown["reviewer"].is_null());
+        assert!(unknown["preset"].is_null());
+        let full = runtime::parse(
+            &serde_json::json!({"approvalsReviewer":"user","approvalPolicy":"never",
+            "sandboxPolicy":{"type":"dangerFullAccess"},"activePermissionProfile":{"id":":danger-full-access"}}),
+        );
+        assert_eq!(full.network_access, Some(true));
+        assert_eq!(full.preset.as_deref(), Some("full-access"));
+        let mut custom = settings.clone();
+        custom["sandboxPolicy"]["writableRoots"] = serde_json::json!(["/extra"]);
+        assert_eq!(
+            runtime::parse(&custom).preset.as_deref(),
+            Some("auto-review")
+        );
+        assert_eq!(runtime::parse(&custom).writable_roots, ["/work", "/extra"]);
+        custom["activePermissionProfile"] = serde_json::Value::Null;
+        assert!(serde_json::to_value(runtime::parse(&custom)).unwrap()["preset"].is_null());
+    }
+
+    #[test]
+    fn runtime_external_sandbox_network_is_not_unknown() {
+        for (value, expected) in [("enabled", true), ("restricted", false)] {
+            let settings = serde_json::json!({"approvalPolicy":"on-request", "sandboxPolicy":{"type":"externalSandbox","networkAccess":value}});
+            assert_eq!(runtime::parse(&settings).network_access, Some(expected));
+        }
+    }
+
+    // mem_1Cf4jdULqRjEXawJPqbxfS: 候補取得と変更を分け、native 通知で確定する。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn permissions_options_are_read_only_and_explicit_change_is_confirmed() {
+        let host = response_test_host();
+        {
+            let mut st = host.inner.state.lock().unwrap();
+            st.thread_id = Some("thread".into());
+            st.native_queue.ready = true;
+            st.config.runtime = Some(Box::new(runtime::parse(&serde_json::json!({
+                "approvalPolicy":"on-request","approvalsReviewer":"user","cwd":"/work",
+                "sandboxPolicy":{"type":"workspaceWrite","networkAccess":false,"writableRoots":["/extra"],"excludeTmpdirEnvVar":false,"excludeSlashTmp":false},
+                "activePermissionProfile":{"id":":workspace"}
+            }))));
+        }
+        let script = r#"import json,sys
+applied=False
+named_applied=False
+def send(v): print(json.dumps(v),flush=True)
+for line in sys.stdin:
+    r=json.loads(line)
+    if r.get('method')=='initialize': continue
+    if r['method']=='permissionProfile/list':
+        assert r['params']['cwd']=='/work'
+        send({'id':r['id'],'result':{'data':[{'id':':workspace','allowed':True},{'id':':read-only','allowed':True},{'id':':danger-full-access','allowed':True},{'id':'locked','allowed':False},{'id':'team','allowed':True}],'nextCursor':None}})
+    elif r['method']=='configRequirements/read':
+        send({'id':r['id'],'result':{'requirements':{'allowedApprovalPolicies':['on-request'],'allowedApprovalsReviewers':['user','auto_review']}}})
+    elif r['method']=='thread/settings/update':
+        if r['params']['permissions']=='team':
+            assert r['params']=={'threadId':'thread','permissions':'team'}, r
+            if not named_applied:
+                send({'method':'thread/settings/updated','params':{'threadId':'thread','threadSettings':{'cwd':'/work','approvalPolicy':'on-request','approvalsReviewer':'auto_review','sandboxPolicy':{'type':'workspaceWrite','networkAccess':False},'activePermissionProfile':{'id':'team'}}}})
+                named_applied=True
+            send({'id':r['id'],'result':{}})
+            continue
+        if r['params']['approvalsReviewer']=='user':
+            send({'id':r['id'],'error':{'code':-32600,'message':'fixture rejected update'}})
+            continue
+        assert r['params']=={'threadId':'thread','permissions':':workspace','approvalPolicy':'on-request','approvalsReviewer':'auto_review'}, r
+        if applied:
+            raise AssertionError('unchanged permissions must not be resent')
+        applied=True
+        send({'method':'thread/settings/updated','params':{'threadId':'thread','threadSettings':{'cwd':'/work','approvalPolicy':'on-request','approvalsReviewer':'auto_review','sandboxPolicy':{'type':'workspaceWrite','networkAccess':False,'writableRoots':['/extra'],'excludeTmpdirEnvVar':False,'excludeSlashTmp':False},'activePermissionProfile':{'id':':workspace'}}}})
+        send({'id':r['id'],'result':{}})
+    else: raise AssertionError(r)
+"#;
+        let mut child = tokio::process::Command::new(if cfg!(target_os = "macos") {
+            "/usr/bin/python3"
+        } else {
+            "python3"
+        })
+        .args(["-u", "-c", script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+        *host.inner.stdin.lock().await = child.stdin.take();
+        let reader = tokio::spawn(run_reader(
+            host.inner.clone(),
+            child.stdout.take().unwrap(),
+            None,
+        ));
+        let loaded = host
+            .codex_input("thread", &serde_json::json!({"kind":"permission_options"}))
+            .await;
+        assert!(loaded.is_ok(), "{loaded:?}");
+        let config = serde_json::to_value(&host.inner.state.lock().unwrap().config).unwrap();
+        assert_eq!(config["runtime"]["reviewer"], "user");
+        host.codex_input(
+            "thread",
+            &serde_json::json!({"kind":"permissions","choice":"standard"}),
+        )
+        .await
+        .expect("confirmed standard with additional roots is not resent");
+        let choices = config["permission_choices"].as_array().unwrap();
+        assert!(
+            choices.iter().find(|c| c["id"] == "full-access").unwrap()["disabled_reason"]
+                .is_string()
+        );
+        assert!(
+            choices
+                .iter()
+                .find(|c| c["id"] == "profile:locked")
+                .unwrap()["disabled_reason"]
+                .is_string()
+        );
+        host.inner.state.lock().unwrap().turn_active = true;
+        assert!(
+            host.codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"auto-review"})
+            )
+            .await
+            .is_err()
+        );
+        host.inner.state.lock().unwrap().turn_active = false;
+        host.inner.state.lock().unwrap().queue_dirty = true;
+        assert!(
+            host.codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"auto-review"})
+            )
+            .await
+            .is_err()
+        );
+        host.inner.state.lock().unwrap().queue_dirty = false;
+        assert!(
+            host.codex_input(
+                "other",
+                &serde_json::json!({"kind":"permissions","choice":"auto-review"})
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            host.codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"full-access"})
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            host.codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"profile:locked"})
+            )
+            .await
+            .is_err()
+        );
+        let changed = host
+            .codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"auto-review"}),
+            )
+            .await;
+        changed.expect("explicit choice succeeds");
+        assert_eq!(
+            serde_json::to_value(&host.inner.state.lock().unwrap().config).unwrap()["runtime"]["reviewer"],
+            "auto_review"
+        );
+        assert!(!host.inner.state.lock().unwrap().queue_busy);
+        host.codex_input(
+            "thread",
+            &serde_json::json!({"kind":"permissions","choice":"auto-review"}),
+        )
+        .await
+        .expect("already confirmed choice completes without another update");
+        for _ in 0..2 {
+            host.codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"profile:team"}),
+            )
+            .await
+            .expect("named profile selection and reselection both complete");
+        }
+        {
+            let state = host.inner.state.lock().unwrap();
+            let runtime = state.config.runtime.as_ref().unwrap();
+            assert_eq!(runtime.profile.as_deref(), Some("team"));
+            assert_eq!(runtime.reviewer.as_deref(), Some("auto_review"));
+            assert!(!state.queue_busy);
+        }
+        let rejected = host
+            .codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"standard"}),
+            )
+            .await;
+        assert!(
+            rejected
+                .unwrap_err()
+                .to_string()
+                .contains("fixture rejected update")
+        );
+        {
+            let state = host.inner.state.lock().unwrap();
+            assert!(state.config.runtime.is_none());
+            assert!(!state.queue_busy && !state.dead);
+        }
+        reader.abort();
+        child.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn runtime_mode_deadline_finishes_before_daemon_timeout() {
+        let host = response_test_host();
+        {
+            let mut st = host.inner.state.lock().unwrap();
+            st.thread_id = Some("thread".into());
+            st.config.model = Some("fixture".into());
+            st.native_queue.ready = true;
+        }
+        let writer = host.inner.stdin.lock().await;
+        let inner = host.inner.clone();
+        let task = tokio::spawn(runtime::change_mode(inner, "thread".into(), "plan".into()));
+        let result = tokio::time::timeout(std::time::Duration::from_secs(29), task)
+            .await
+            .expect("mode operation must finish before daemon's 30-second deadline");
+        assert!(result.unwrap().is_err());
+        assert!(host.inner.state.lock().unwrap().dead);
+        drop(writer);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn runtime_mode_uses_native_settings_without_permission_overrides() {
+        let host = response_test_host();
+        {
+            let mut st = host.inner.state.lock().unwrap();
+            st.thread_id = Some("thread".into());
+            st.config.model = Some("fixture".into());
+            st.native_queue.ready = true;
+            st.native_queue.thread_id = "thread".into();
+        }
+        let script = r#"import json,sys
+def send(v): print(json.dumps(v),flush=True)
+for line in sys.stdin:
+    r=json.loads(line)
+    if r.get('method')=='initialize': continue
+    if r['method']=='collaborationMode/list':
+        send({'id':r['id'],'result':{'data':[{'name':'Plan','mode':'plan','model':None,'reasoning_effort':'medium'}]}})
+    elif r['method']=='thread/settings/update':
+        assert set(r['params'])=={'threadId','collaborationMode'}
+        assert r['params']['collaborationMode']=={'mode':'plan','settings':{'model':'fixture','reasoning_effort':None,'developer_instructions':None}}
+        send({'method':'thread/settings/updated','params':{'threadId':'thread','threadSettings':{'model':'fixture','effort':None,'approvalPolicy':'on-request','sandboxPolicy':{'type':'readOnly','networkAccess':False},'collaborationMode':{'mode':'plan'}}}})
+        send({'id':r['id'],'result':{}})
+    else: raise AssertionError(r)
+"#;
+        let mut child = tokio::process::Command::new(if cfg!(target_os = "macos") {
+            "/usr/bin/python3"
+        } else {
+            "python3"
+        })
+        .args(["-u", "-c", script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+        *host.inner.stdin.lock().await = child.stdin.take();
+        let reader = tokio::spawn(run_reader(
+            host.inner.clone(),
+            child.stdout.take().unwrap(),
+            None,
+        ));
+        let result = host
+            .codex_input("thread", &serde_json::json!({"kind":"mode","mode":"plan"}))
+            .await;
+        reader.abort();
+        child.kill().await.unwrap();
+        result.expect("native mode update succeeds");
+        assert_eq!(
+            serde_json::to_value(&host.inner.state.lock().unwrap().config).unwrap()["runtime"]["mode"],
+            "plan"
+        );
     }
 
     // mem_1CeySwxuoVc17bGLnU5Np3: native JSONL -> card -> typed MCP response.

@@ -68,6 +68,8 @@ export function installIpcBridge(): void {
   setActionPersist((payload) =>
     sendIpc({
       t: 'actions:persist',
+      scope: payload.scope,
+      import_legacy: payload.import_legacy,
       // `readonly` は wire に無い概念なので複製して渡す（schema 生成型は可変配列）。
       items: payload.items.map((i) => ({ ...i })),
       removed: [...payload.removed],
@@ -84,7 +86,7 @@ export function installIpcBridge(): void {
       // 木の書き換えを user 入力が直に行う面なので、Rust の mirror に混ぜると
       // `reconcile` が編集中の行ごと差し戻す。**版が変わった時だけ**取り込む
       // （doc 57 Phase 3、判断は `applyActionsFromDaemon` に閉じている）。
-      applyActionsFromDaemon(next.activity?.actions, next.activity?.actions_rev)
+      applyActionsFromDaemon(next.activity?.actions, next.activity?.actions_rev, next.activity?.actions_scope, next.activity?.actions_imported)
     },
     error: (message) => reportSidebarError(message),
     subCreateResult: (repo_path, name, error) =>

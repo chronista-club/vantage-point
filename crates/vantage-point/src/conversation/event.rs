@@ -333,6 +333,39 @@ pub struct CodexConfigView {
     pub effort: Option<String>,
     pub selection: Option<CodexSelection>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub runtime: Option<Box<CodexRuntime>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub permission_choices: Option<Vec<CodexPermissionChoice>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexPermissionChoice {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub disabled_reason: Option<String>,
+}
+
+/// Whitelisted effective settings. Native developer instructions never leave the host.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexRuntime {
+    pub approval: String,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub reviewer: Option<String>,
+    #[serde(default)]
+    pub preset: Option<String>,
+    pub sandbox: String,
+    pub network_access: Option<bool>,
+    pub writable_roots: Vec<String>,
+    pub profile: Option<String>,
+    pub mode: Option<String>,
 }
 
 /// [`ConversationEvent::SubagentMessage`] の発話種別。

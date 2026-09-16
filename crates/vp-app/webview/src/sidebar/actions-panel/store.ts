@@ -31,6 +31,7 @@ const [actions, setActionsSignal] = createSignal<ActionItem[]>([]);
 
 /** component が読む reactive な現在値。 */
 export { actions };
+export const [actionMoveError, setActionMoveError] = createSignal("");
 
 /** 区画の開閉。component scope を跨ぐので module-scope に置く（`form.ts` と同じ理屈）。 */
 const [openBuckets, setOpenBuckets] = createSignal<ReadonlySet<BucketId>>(
@@ -65,6 +66,8 @@ export function newActionId(): string {
 
 /** 永続 1 回分（doc 57 Phase 4）。Rust の `ActionsWrite` と同形。 */
 export interface ActionsPersistPayload {
+	scope?: string;
+	import_legacy?: boolean;
 	/** 現在の一覧（差分ではなく全件）。 */
 	items: readonly ActionItem[];
 	/** user が明示的に消した id。⚠️ **不在からは決して削除を推論させない**。 */
@@ -124,6 +127,8 @@ function pushPersist(items: readonly ActionItem[]): void {
 	if (!persist) return;
 	const editing = editingId();
 	persist({
+		...(activeScope ? { scope: activeScope } : {}),
+		...(importingLegacy() ? { import_legacy: true } : {}),
 		// ⚠️ **書きかけの新規行は送らない**。送ると creo が id を採番し、次の push で
 		// 編集中の行の id が差し替わる（focus と同一性が飛ぶ）。blur の `endEditing` が
 		// 改めて送るので取りこぼさない。
@@ -168,7 +173,27 @@ export function commitActions(next: readonly ActionItem[]): boolean {
  */
 let appliedRev = 0;
 
-export function applyActionsFromDaemon(items: unknown, rev: unknown): void {
+let activeScope = "";
+export const [importingLegacy, setImportingLegacy] = createSignal(false);
+export function importLegacyActions(): void {
+	setImportingLegacy(true);
+	pushPersist(actions());
+}
+const scopedPending = new Map<string, {items: ActionItem[]; removed: string[]}>();
+
+export function applyActionsFromDaemon(items: unknown, rev: unknown, scope?: string, imported = false): void {
+	if (scope !== undefined && scope !== activeScope) {
+		scopedPending.set(activeScope, {items: actions().filter(i => isLocalId(i.id)), removed: [...pendingRemovals]});
+		activeScope = scope;
+		setImportingLegacy(false);
+		const pending = scopedPending.get(scope);
+		setActionsSignal(pending?.items ?? []);
+		pendingRemovals.clear();
+		for (const id of pending?.removed ?? []) pendingRemovals.add(id);
+		setEditingId(null);
+		appliedRev = 0;
+	}
+	if (imported) setImportingLegacy(false);
 	const r = typeof rev === "number" && Number.isFinite(rev) ? rev : 0;
 	if (r === 0) return; // 未取得 — 触らない
 	if (r === appliedRev) return; // 同じ版 = 内容も同じ。編集中の行を撃ち返さない
@@ -182,6 +207,11 @@ export function applyActionsFromDaemon(items: unknown, rev: unknown): void {
 		if (!incoming.some((i) => i.id === id)) pendingRemovals.delete(id);
 	}
 	const next = incoming.filter((i) => !pendingRemovals.has(i.id));
+	// A capture remains visible until the daemon returns the same capture's native receipt.
+	for (const mine of actions()) {
+		if (isLocalId(mine.id) && mine.atlas_id &&
+			!incoming.some(i => i.id === mine.id || i.client_id === mine.id)) next.push(mine);
+	}
 
 	// 編集中の行だけは**手元を優先**する（往復前の古い text で上書きしない）。
 	// まだ creo に上げていない新規行（payload から外している）はそもそも incoming に居ないので、
@@ -190,8 +220,12 @@ export function applyActionsFromDaemon(items: unknown, rev: unknown): void {
 	if (editing !== null) {
 		const mine = actions().find((i) => i.id === editing);
 		if (mine) {
-			const at = next.findIndex((i) => i.id === editing);
-			if (at >= 0) next[at] = mine;
+			const at = next.findIndex((i) => i.id === editing || i.client_id === editing);
+			if (at >= 0) {
+				const receipt = next[at];
+				next[at] = {...mine, id: receipt.id, client_id: receipt.client_id};
+				setEditingId(receipt.id);
+			}
 			else next.push(mine);
 		}
 	}
@@ -219,19 +253,33 @@ export function appendAction(bucket: BucketId, after?: string): string {
 }
 
 /**
- * 区画内で 1 つ動かす。端なら**同一参照を返す**（= 何も起きない）。
+ * 一覧全体で 1 つ動かす。端なら同一参照を返す。
  *
  * 木の `moveUp` / `moveDown` を使わないのは、あれが「兄弟配列の中の入れ替え」で
  * こちらは `order` の付け替えだから — 並びの持ち主が違う（doc 57 §3）。
  */
 export function moveAction(id: string, dir: -1 | 1): readonly ActionItem[] {
+	setActionMoveError("");
 	const cur = actions();
 	const self = cur.find((i) => i.id === id);
 	if (!self) return cur;
-	const inBucket = itemsIn(cur, self.bucket);
+	const inBucket = [...cur].sort((a,b) => a.order.localeCompare(b.order) || a.id.localeCompare(b.id));
 	const at = inBucket.findIndex((i) => i.id === id);
 	const swapAt = at + dir;
 	if (swapAt < 0 || swapAt >= inBucket.length) return cur; // 端 = 不成立
+	if (inBucket.some((item, index) => index > 0 && item.order === inBucket[index - 1].order)) {
+		if (inBucket.some(item => item.locked)) {
+			setActionMoveError("旧一覧の順序を整理するには、先に Creo でメモのロックを解除してください。");
+			return cur;
+		}
+		[inBucket[at], inBucket[swapAt]] = [inBucket[swapAt], inBucket[at]];
+		let previous: string | null = null;
+		return inBucket.map(item => {
+			const order = orderBetween(previous, null);
+			previous = order;
+			return { ...item, order };
+		});
+	}
 
 	// 移動先の「向こう隣」との間に入る order を作る（2 者の swap ではなく挿入で表す）。
 	const target = inBucket[swapAt];

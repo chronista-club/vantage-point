@@ -410,6 +410,8 @@ pub(crate) fn handle_sidebar_ipc(
             // ACTIONS の編集を creo へ。caller が 400ms coalesce channel に流す。
             // ⚠️ **`out.changed` を立てない**（上の field の注記どおり）。
             out.actions_persist_request = Some(ActionsPersistPayload {
+                scope: m.scope,
+                import_legacy: m.import_legacy,
                 items: m.items,
                 removed: m.removed,
             });

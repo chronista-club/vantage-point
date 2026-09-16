@@ -493,7 +493,7 @@ pub fn run() -> anyhow::Result<()> {
                 on_misc::wire_history_result(&mut ui, &boot, address, payload)
             }
             Event::UserEvent(AppEvent::ActivityUpdate(snap)) => {
-                on_misc::activity_update(&mut ui, &boot, snap)
+                on_misc::activity_update(&mut ui, &boot, *snap)
             }
             Event::UserEvent(AppEvent::UpdateFlowPhase(applying)) => {
                 on_sidebar::update_flow_phase(&mut ui, &boot, applying)

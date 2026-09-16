@@ -33,6 +33,15 @@ const item = (over: Partial<ActionItem> = {}): ActionItem => ({
 	...over,
 });
 
+// mem_1Cf1r1bEcTcknGH3Xk3naa: Atlas belongs to the capture, never the selected Project.
+it("keeps the captured Atlas and Creo kind through daemon normalization", () => {
+    const [capture] = normalizeActions([{
+        id: "mem-note", text: "別件の思いつき", bucket: "ideas", order: "a",
+        atlas_id: "personal-atlas", kind: null, locked: true,
+    }], () => "unused");
+    expect(capture).toMatchObject({ atlas_id: "personal-atlas", kind: null, locked: true });
+});
+
 describe("BUCKETS", () => {
 	it("固定 6 区画で、id が重複しない", () => {
 		expect(BUCKETS).toHaveLength(6);
