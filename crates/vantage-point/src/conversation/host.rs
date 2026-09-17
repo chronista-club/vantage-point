@@ -327,6 +327,10 @@ impl ClaudeHost {
         cmd.env("VP_REPO", &config.repo);
         cmd.env("VP_LANE", &config.lane_label);
         cmd.env("VP_SESSION_KEY", config.session_key.to_string());
+        // Claude Mods（function hooks）を ON にする — tui の agent_spawner と同じ契約。VP plugin の
+        // hooks module（`vp now` 自動化 / wire 受領 ack）は chat でも `-p` 経路で効く（2026-09-17 実測）。
+        // gui は daemon から spawn されるので user の shell env が届かず、ここで焼くしかない。
+        cmd.env(crate::repo::agent_spawner::CLAUDE_FUNCTION_HOOKS_ENV, "1");
         // cwd 空は「継承」（呼び元の cwd を使う）— test / repo_dir 未解決時の防御。
         if !config.cwd.is_empty() {
             cmd.current_dir(&config.cwd);
