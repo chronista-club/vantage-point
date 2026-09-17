@@ -350,6 +350,10 @@ pub fn build_agent_command(agent_name: &str, addr: &LaneAddress, repo_dir: &Path
 ///   （身元を role にすると root 付け替えで再発する — [`crate::daemon::pty_slot::replay_file_path_session_in`]）
 /// - 非 root term も boot で復元される（`lane::reconcile::reconcile_lane`、doc 53 §12）ので読み手が居る
 /// - lane GC / Reset は prefix 掃き（`clear_replay_in`）で session file 群も消す
+/// Claude Mods（function hooks）の有効化 flag。tui（この module）と gui（`ClaudeHost::spawn`）の
+/// 両 spawn 経路が同じ名前で焼くための単一の定義。
+pub const CLAUDE_FUNCTION_HOOKS_ENV: &str = "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS";
+
 pub fn build_agent_command_for_session(
     agent_name: &str,
     addr: &LaneAddress,
@@ -370,6 +374,12 @@ pub fn build_agent_command_for_session(
     if let Some(profile) = vp_paths::vp_profile() {
         env.push(("VP_PROFILE".into(), profile.to_string()));
     }
+    // Claude Mods（function hooks、early access）を VP 配下の claude で常に ON にする。VP plugin
+    // （plugin-vantage-point 0.25.0+）の hooks module = `vp now` 自動化 / wire 受領 ack は、この
+    // flag が無いと読まれない。claude 側の gate は `env ?? GrowthBook` なので、ここで焼けば
+    // rollout の前後に関わらず VP の lane では同じ挙動になる。claude 以外の engine には無意味な
+    // env だが無害。gui（chat）側は `conversation::host::ClaudeHost::spawn` が同じ契約で焼く。
+    env.push((CLAUDE_FUNCTION_HOOKS_ENV.into(), "1".into()));
 
     // mise trust footgun 回避（env-only、 mise は exec しない = 依存境界維持、 PR2 実機検証で発見）:
     // slot の shell = login shell 化により、 user rc の mise activate が新 worktree (`.vp/lanes/*`) の
@@ -667,6 +677,12 @@ mod tests {
                 .is_some_and(|v| v.contains("/work/vp")),
             "lane cwd が mise trust に含まれるはず: {:?}",
             env.get("MISE_TRUSTED_CONFIG_PATHS")
+        );
+        // Claude Mods: VP plugin の hooks module が読まれるための flag（2026-09-17）
+        assert_eq!(
+            env.get(CLAUDE_FUNCTION_HOOKS_ENV).map(String::as_str),
+            Some("1"),
+            "VP 配下の claude は function hooks を常に ON"
         );
     }
 
