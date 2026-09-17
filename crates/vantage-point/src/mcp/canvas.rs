@@ -136,10 +136,16 @@ impl VantageMcp {
             scope,
         };
 
-        self.process_call("show", &msg).await?;
+        let res = self.process_call("show", &msg).await?;
 
+        // 貼った item の id を応答に載せる（repo 側 board.rs が採番して返す）。呼び手はこれで
+        // `read_board` を挟まずに `update` へ進める。旧 repo（id を返さない）相手でも文言は保つ。
+        let text = match res.get("id").and_then(|v| v.as_str()) {
+            Some(id) => format!("Content pinned to the board. id={id}"),
+            None => "Content pinned to the board.".to_string(),
+        };
         Ok(CallToolResult::success(vec![
-            rmcp::model::ContentBlock::text("Content pinned to the board.".to_string()),
+            rmcp::model::ContentBlock::text(text),
         ]))
     }
 
