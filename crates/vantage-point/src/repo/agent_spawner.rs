@@ -328,6 +328,10 @@ pub fn build_agent_command(agent_name: &str, addr: &LaneAddress, repo_dir: &Path
     build_agent_command_for_session(agent_name, addr, repo_dir, None)
 }
 
+/// Claude Mods（function hooks）の有効化 flag。tui（この module）と gui（`ClaudeHost::spawn`）の
+/// 両 spawn 経路が同じ名前で焼くための単一の定義。
+pub const CLAUDE_FUNCTION_HOOKS_ENV: &str = "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS";
+
 /// [`build_agent_command`] の session 明示版（doc 46 P5 — slot は lane に 1 枚ではなく
 /// session ごと）。`session` = **この slot が化身する session**（`None` = root）。
 ///
@@ -350,10 +354,6 @@ pub fn build_agent_command(agent_name: &str, addr: &LaneAddress, repo_dir: &Path
 ///   （身元を role にすると root 付け替えで再発する — [`crate::daemon::pty_slot::replay_file_path_session_in`]）
 /// - 非 root term も boot で復元される（`lane::reconcile::reconcile_lane`、doc 53 §12）ので読み手が居る
 /// - lane GC / Reset は prefix 掃き（`clear_replay_in`）で session file 群も消す
-/// Claude Mods（function hooks）の有効化 flag。tui（この module）と gui（`ClaudeHost::spawn`）の
-/// 両 spawn 経路が同じ名前で焼くための単一の定義。
-pub const CLAUDE_FUNCTION_HOOKS_ENV: &str = "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS";
-
 pub fn build_agent_command_for_session(
     agent_name: &str,
     addr: &LaneAddress,
