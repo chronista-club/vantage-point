@@ -94,3 +94,32 @@ VP 側で L3 が置き換えるもの: `frame-engine.ts` の Scene 層と doc 46
 - 現行 2 系統（frame-engine.ts / PaneLayout）への追加投資 — doc 47 の凍結規律を維持
 - VP 以外の consumer 要件の先取り — Editor Mode と同じく、2nd consumer が現れた時に protocol を広げる
 - L0/L1 の一括置換 — tokens 統合と component 採用は UI フェーズで画面ごとに段階採用
+
+## 8. Lane 内の境界リサイズ
+
+対象: `crates/vp-app/webview/pane-resize.ts`, `lane-panes.ts`。
+起票: `mem_1Cf8LMoTvEnXtru3m1CmW9`。
+
+2枚以上の Pane が並ぶ場合、可視列の各境界に8pxのドラッグ領域を置く。
+3列以上でも境界の左右2列だけが伸縮し、ほかの列の幅・位置は維持する。
+境界のホバー・フォーカス・ドラッグ中は細線を強調する。左右キーでも16pxずつ調整できる。
+
+幅の正本は既存 LayoutEngine の attention。列幅は列内 attention の最大値に比例するため、
+左右の列の attention 全体をそれぞれ同率で増減し、列内の縦比率も維持する。
+別の px 幅状態や DOM 幅の直接書き換えは作らない。非表示列は境界の候補から除外し、
+幅を lock した列を含む境界は操作対象にしない。
+
+通常の最小列幅は120px。すでにそれより狭い列がある場合はドラッグ開始時の狭い方の幅を
+下限にし、操作開始時のジャンプや Pane の消失を防ぐ。lane 往復や Chat / Console 切替では
+既存の scope / renamePane に従って比率を維持する。アプリ再起動をまたぐ永続化は追加しない。
+
+Pointer capture で追跡し、操作終了時に1回 settle する。lane・構成・外部レイアウト変更時は
+現在の操作を解除して、新しい状態へ旧ドラッグを適用しない。iframe の pointer 奪取と
+テキスト選択はドラッグ中だけ抑制する。Pane host や端末を作り直してはならない。
+
+## Status log
+
+- 2026-09-17: Lane 内の境界ドラッグを実装。隣接列の保存則、最小幅、非表示・lock、
+  pointer 操作と lane 切替時の解除を自動テスト。WKWebView での操作感は実機確認待ち。
+- 2026-09-17: app:swap 後、ユーザーより「いいね。動作確認できた」。添付画像で
+  Chat / Console の境界を移動し、Chat を広げた状態を確認。3枚以上の各境界は自動テスト済み。

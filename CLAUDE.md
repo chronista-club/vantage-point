@@ -309,6 +309,10 @@ Claude との会話は mode で経路が違う（`crates/vantage-point/src/conve
 | **gui**（chat） | `conversation/host.rs::ClaudeHost` が `claude -p --input-format stream-json` を常駐 spawn し、stdout を `ConversationEvent` に翻訳して broadcast | doc 32 §3 |
 | **tui**（console） | **lane の PtySlot 直ホスト**。`repo/agent_spawner.rs::build_agent_command` が tui slot（login shell）に `claude --resume … || claude` を type-ahead 注入 | tmux decoupling PR2、`docs/design/tmux-decoupling.md` §13 |
 
+両 mode とも spawn 時に **`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`** を焼く（`agent_spawner::CLAUDE_FUNCTION_HOOKS_ENV`、2026-09-17）。
+VP plugin（plugin-vantage-point 0.25.0+）の hooks module = Claude Mods（`vp now` 自動化 / wire 受領 ack）がこれで読まれる。
+gate は claude 側で `env ?? GrowthBook` なので、VP 配下では rollout に関わらず常に ON。
+
 > 旧 `agent.rs`（`ClaudeAgent` OneShot / `InteractiveClaudeAgent`）は **2026-09 に撤去**。`InteractiveClaudeAgent` は
 > #390 以来一度も `Some` にならない `AppState`（現 `RepoState`）の field で、health の `services.claude` も定数 `"idle"` を返すだけだった。
 > Claude CLI の path 解決（`get_claude_cli_path`）だけが生きていて `conversation/host.rs` の private fn に移した。
