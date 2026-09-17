@@ -106,14 +106,19 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 lane: Some(crate::mcp::SelfLane::detect().lane_name),
                 scope: None,
             };
-            daemon_repo_request_blocking(
+            let res = daemon_repo_request_blocking(
                 crate::cli::daemon_port(),
                 &repo_path,
                 "show",
                 serde_json::to_value(&msg)?,
             )?;
 
-            println!("Content displayed in pane '{}'", pane_id);
+            // 貼った item の id（repo 側が採番して返す）を出す — script / plugin の mod が
+            // これを控えて MCP `update` で 1 枚を差し替える経路。
+            match res.get("id").and_then(|v| v.as_str()) {
+                Some(id) => println!("Content displayed in pane '{}' (id={})", pane_id, id),
+                None => println!("Content displayed in pane '{}'", pane_id),
+            }
             Ok(())
         }
         PaneCommands::Clear { pane_id, target } => {

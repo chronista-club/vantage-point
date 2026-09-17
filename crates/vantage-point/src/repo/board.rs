@@ -155,8 +155,12 @@ pub(crate) async fn handle_canvas_command(
             // 新規 item は updatedAt = createdAt（貼った瞬間が最終更新）。以後 update で stamp し直す
             // （doc 52 §5 — 鮮度の出力元は server の updatedAt 一箇所、額縁が読む）。
             let created_at = chrono::Utc::now().to_rfc3339();
+            // id は応答にも載せる — 貼った側（MCP `show` / CLI `vp pane show` / plugin の mod）が
+            // `read_board` で探し直さずに `board_update` へ進めるように（doc 52 §5 の identity は
+            // 貼った瞬間に要る）。
+            let id = uuid::Uuid::new_v4().to_string();
             let item = serde_json::json!({
-                "id": uuid::Uuid::new_v4().to_string(),
+                "id": id,
                 "content": content_str,
                 "contentType": content_type,
                 "title": title,
@@ -174,7 +178,7 @@ pub(crate) async fn handle_canvas_command(
             .await
             .map_err(|e| format!("board append: {}", e))?;
             broadcast_board(ctx, &board_scope, &lane_name, bc_lane).await?;
-            Ok(serde_json::json!({"status": "ok"}))
+            Ok(serde_json::json!({"status": "ok", "id": id}))
         }
         RepoMessage::Clear { lane, scope, .. } => {
             let (board_scope, lane_name, bc_lane) = board_key(scope.as_deref(), lane.as_deref());
@@ -495,6 +499,37 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "degrade では何も broadcast しない（no-op）"
+        );
+    }
+
+    /// show の応答が貼った item の id を返す — 貼った側が `read_board` で探し直さずに
+    /// `board_update` へ進める（VP plugin の mod が diff を 1 枚に差し替える経路、2026-09-17）。
+    #[tokio::test]
+    async fn show_returns_the_item_id() {
+        use crate::db::VpDb;
+        use crate::repo::state::build_test_app_state_with;
+        use crate::repo::unison_server::dispatch_repo_method;
+        use std::sync::Arc;
+
+        let db = Arc::new(VpDb::connect_mem().await.unwrap());
+        let state = build_test_app_state_with("/repos/vp", Some(db)).await;
+
+        let show = serde_json::json!({
+            "type": "show", "pane_id": "main",
+            "content": { "markdown": "first" }, "append": false, "title": "t"
+        });
+        let res = dispatch_repo_method(&state, "show", show)
+            .await
+            .expect("show");
+        let id = res["id"].as_str().expect("show は貼った item の id を返す");
+        assert_eq!(res["status"], "ok");
+
+        let read = dispatch_repo_method(&state, "read_board", serde_json::json!({}))
+            .await
+            .expect("read_board");
+        assert_eq!(
+            read["items"][0]["id"], id,
+            "返した id は board 上の item と一致する"
         );
     }
 
