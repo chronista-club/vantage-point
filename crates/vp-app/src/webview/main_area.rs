@@ -288,6 +288,14 @@ body.rsb-open #right-sidebar{display:flex;}
   outline:1px solid var(--color-border,#2a3040);outline-offset:-1px;}
 /* 要件 3: フォーカスが**視認できる**。内側 ring なので幅を食わず、区切り線とも干渉しない。 */
 #lane-panes > .pane-focused{box-shadow:inset 0 0 0 1px var(--sb-conn-auto,#22E0FF);}
+#lane-panes > .pane-resizer{inset:0 auto 0 auto;width:8px;transform:translateX(-50%);
+  z-index:20;background:transparent;cursor:col-resize;touch-action:none;outline:none;}
+#lane-panes > .pane-resizer::after{content:"";position:absolute;inset:0 3px;background:transparent;}
+#lane-panes > .pane-resizer:hover::after,
+#lane-panes > .pane-resizer:focus-visible::after,
+#lane-panes > .pane-resizer.dragging::after{background:var(--sb-conn-auto,#22E0FF);}
+body.pane-resizing,body.pane-resizing *{cursor:col-resize!important;user-select:none!important;}
+body.pane-resizing iframe{pointer-events:none;}
 /* Phase 2.5: per-Lane instance container。各 .lane-pane が absolute で重なり active のみ表示。 */
 .lane-pane{position:absolute;inset:0;display:none;}
 .lane-pane.active{display:block;}

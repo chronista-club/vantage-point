@@ -45,6 +45,7 @@ import {
 } from "@chronista-club/creo-ui-layout";
 import { boardKey } from "./board-handler";
 import { layoutEngine } from "./layout-host";
+import { installPaneResizers } from "./pane-resize";
 import { focusedOf } from "./console";
 import { sessionChipPrefix } from "./LaneHeader";
 
@@ -319,6 +320,11 @@ export interface LanePanesDeps {
  */
 export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	let activeLane: string | null = null;
+	const resizers = installPaneResizers(deps.container, next => {
+		if (activeLane) layoutEngine.update(laneScope(activeLane), () => next);
+	}, () => {
+		if (activeLane) layoutEngine.settle(laneScope(activeLane), "human");
+	});
 	/** lane → focus を持つ pane id（LE-20: focus は場の外 = module 状態） */
 	const focusById = new Map<string, string>();
 	/** lane → session 一覧（'vp:conversation-sessions' の鏡。roster は各 session の mode から導出）。
@@ -453,6 +459,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		const scope = laneScope(lane);
 		const resolved = layoutEngine.resolved(scope);
 		const visible = visibleOf(scope, refs);
+		resizers.sync(scope, layoutEngine.current(scope));
 		// focus が消えた Pane を指していたら残った先頭へ（focus を失わせない）
 		const stored = focusById.get(lane);
 		const focused = stored && visible.includes(stored) ? stored : (visible[0] ?? null);
