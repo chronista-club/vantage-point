@@ -1682,6 +1682,20 @@ function SessionChatView(props: { lane: string; session: number }) {
     queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
   }
 
+  const unconfirmedCodexInputs = () => (state().unconfirmedCodexInputs ?? [])
+    .filter(input => input.id !== state().submission?.id)
+  const recoverUnconfirmedCodexInput = (input: Pick<Submission, 'id' | 'text' | 'images'>) => {
+    if (draft().trim() || attachments().length || lc.state.submission) return
+    setDraft(input.text)
+    setAttachments(input.images.map((image, index) => ({
+      id: Date.now() + index, mediaType: image.media_type, dataBase64: image.data,
+      previewUrl: `data:${image.media_type};base64,${image.data}`,
+      bytes: Math.floor(image.data.length * 3 / 4),
+    })))
+    lc.set('unconfirmedCodexInputs', inputs => inputs?.filter(item => item.id !== input.id))
+    queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
+  }
+
   // 送信待ち type-ahead を入力欄へ戻して編集可能にする（dequeue-to-composer, todo 2026-07-14）。
   // composer が空のときだけ有効（下書きを潰さない）。戻した瞬間 pending は空 = 自動送信されない。
   const canEditPending = () => canDequeuePending(draft(), state().pending ?? null)
@@ -1926,6 +1940,20 @@ function SessionChatView(props: { lane: string; session: number }) {
         )}
       </Show>
               <PlanWidget entries={() => state().plan} />
+        <Show when={unconfirmedCodexInputs().length > 0}>
+          <details class="codex-unconfirmed chat-history-notice">
+            <summary>履歴と照合できていない入力（{unconfirmedCodexInputs().length}件）</summary>
+            <p>会話への反映を確認できない入力を保管しています。自動再送はしていません。再送する前に履歴を確認してください。</p>
+            <For each={unconfirmedCodexInputs()}>{input => <div>
+              <MsgBody class="conversation-msg-body" text={input.text} />
+              <Show when={input.images.length > 0}><span>画像 {input.images.length} 枚 · </span></Show>
+              <button onClick={() => recoverUnconfirmedCodexInput(input)}
+                disabled={!!draft().trim() || attachments().length > 0 || !!state().submission}>
+                入力欄に戻す
+              </button>
+            </div>}</For>
+          </details>
+        </Show>
         <div
           class="conversation-stream"
           ref={streamEl}
@@ -2037,7 +2065,9 @@ function SessionChatView(props: { lane: string; session: number }) {
           </Show>
           <Show when={state().submission}>
             {(submission) => <div class="conversation-msg user pending" role="status">
-              <Show when={submission().status === 'failed'}><MsgBody class="conversation-msg-body" text={submission().text} /></Show>
+              <Show when={submission().status === 'failed' || state().unconfirmedCodexInputs?.some(input =>
+                input.id === submission().id
+              )}><MsgBody class="conversation-msg-body" text={submission().text} /></Show>
               <span>{submission().images.length > 0 ? `画像 ${submission().images.length} 枚 · ` : ''}</span>
               <Show when={submission().status === 'failed'} fallback={<span>送信中…</span>}>
                 <div role="alert">{submission().error}</div>
@@ -2400,6 +2430,9 @@ export const CHATVIEW_CSS = `
 .conversation-empty { margin:auto; color: var(--color-text-tertiary, #616b80); font-size:13px; }
 .conversation-stream { flex:1; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:12px; }
 .chat-history-notice { padding:8px 10px; border:1px solid var(--color-border,#2a3040); border-radius:6px; color:var(--color-text-secondary,#a6afc0); font-size:var(--chat-text-meta); line-height:1.6; }
+.codex-unconfirmed { margin:8px 18px 0; max-height:30%; overflow-y:auto; flex-shrink:0; }
+.codex-unconfirmed summary { cursor:pointer; }
+.codex-unconfirmed > div { padding:8px 0; border-top:1px solid var(--color-border,#2a3040); }
 /* スクロールバー常時表示（mako 2026-07-24）: 既定の overlay scrollbar は「スクロール中だけ」
    なので現在地が読めない。custom style を当てると常時表示になる（WebKit 仕様）。細く控えめに。 */
 .conversation-stream::-webkit-scrollbar { width:8px; }
