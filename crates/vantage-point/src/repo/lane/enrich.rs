@@ -93,6 +93,8 @@ fn sessions_view_from_registry(reg: &session_registry::SessionRegistry) -> LaneS
                     chat_capable: kind.is_some_and(EngineKind::chat_capable),
                     image_capable: kind.is_some_and(EngineKind::image_capable),
                     model_choices: kind.map(EngineKind::model_choices).unwrap_or_default(),
+                    effort_choices: kind.map(EngineKind::effort_choices).unwrap_or_default(),
+                    settings: s.settings.clone(),
                     permission_choices: kind
                         .map(EngineKind::permission_choices)
                         .unwrap_or_default(),

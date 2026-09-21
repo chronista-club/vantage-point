@@ -167,6 +167,16 @@ impl EngineKind {
         }
     }
 
+    /// effort picker の選択肢（model と同じ catalog 駆動。**空 = effort の概念なし** — client は
+    /// picker を出さない）。値の語彙は engine が所有する（Claude = [`super::claude_settings`]、
+    /// Codex は model ごとに動的なので roster でなく `codex_config` event で運ぶ）。
+    pub fn effort_choices(self) -> Vec<Choice> {
+        match self {
+            Self::Claude => super::claude_settings::ClaudeSettings::effort_choices(),
+            Self::Codex | Self::Grok | Self::OpenCode | Self::Vpcode => Vec::new(),
+        }
+    }
+
     /// permission picker の選択肢（表記は claude TUI と同一の英語 — mako 裁定 2026-07-27）。
     ///
     /// **空 = 対話承認の概念なし**（[`ChatHost::set_permission_mode`] が bail する engine。
@@ -480,6 +490,21 @@ mod tests {
                 .all(|c| !c.value.is_empty()),
             "vpcode に engine 既定は無いので空 value を載せない"
         );
+
+        // effort の catalog は claude のみ（語彙は claude_settings が所有。Codex は model ごとに
+        // 動的なので roster でなく codex_config で運び、ここは空 = picker を出さない）。
+        assert!(!EngineKind::Claude.effort_choices().is_empty());
+        for k in [
+            EngineKind::Codex,
+            EngineKind::Grok,
+            EngineKind::OpenCode,
+            EngineKind::Vpcode,
+        ] {
+            assert!(
+                k.effort_choices().is_empty(),
+                "{k:?} は effort picker を出さない"
+            );
+        }
 
         // permission mode は claude のみ（他 engine は ChatHost::set_permission_mode が bail）。
         // 表記は TUI と同一（v2.1.200 の manual 改名を反映）、wire 値は互換の "default"。

@@ -1636,16 +1636,17 @@ impl LanePool {
                     .conversation
                     .clone()
                     .filter(|id| crate::lane::cc_session::transcript_has_conversation(id));
-                // gui モデル切替: session に永続された Claude settings の model を `--model` に
+                // gui 設定切替: session に永続された Claude settings（model / effort）を host に
                 // 渡す（None = engine 既定 = 注入しない）。切替（conversation_set_settings）は
                 // registry 書込 → engine 入替で行われ、resume と組むことで会話コンテキストを
-                // 保ったままモデルだけ替わる。settings は session 単位（mako 裁定 2026-07-27 —
+                // 保ったまま設定だけ替わる。settings は session 単位（mako 裁定 2026-07-27 —
                 // doc 50 session=Pane で 1 lane 多 session になり、旧 per-lane file は退役）。
-                let model = resolved
+                let settings = resolved
                     .settings
                     .as_ref()
                     .and_then(crate::conversation::EngineSettings::claude)
-                    .and_then(|s| s.model.clone());
+                    .cloned()
+                    .unwrap_or_default();
                 ChatHost::Claude(crate::conversation::ClaudeHost::spawn(
                     crate::conversation::ClaudeHostConfig {
                         cwd: info.cwd.clone(),
@@ -1654,7 +1655,7 @@ impl LanePool {
                         lane_label: lane_label.clone(),
                         session_key: resolved.key,
                         resume_session_id: resume,
-                        model,
+                        settings,
                         claude_cli_path: None,
                     },
                 )?)
@@ -3484,7 +3485,7 @@ mod tests {
             lane_label: "fake-engine".to_string(),
             session_key: key,
             resume_session_id: None,
-            model: None,
+            settings: Default::default(),
             claude_cli_path: Some("/bin/cat".to_string()),
         })
         .expect("偽 engine の spawn");

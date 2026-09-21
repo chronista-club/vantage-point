@@ -329,6 +329,13 @@ pub struct LaneSessionEntryWire {
     /// 旧 server は送らない → 空（切替なしに倒す）。
     #[serde(default)]
     pub model_choices: Vec<ChoiceWire>,
+    /// effort picker の選択肢（同上）。空 = effort の概念なし。旧 server は送らない → 空。
+    #[serde(default)]
+    pub effort_choices: Vec<ChoiceWire>,
+    /// この session の engine 別設定（registry の intent、engine 所有の形 — vp-app は透過）。
+    #[serde(default)]
+    #[cfg_attr(test, ts(type = "unknown"))]
+    pub settings: Option<serde_json::Value>,
     /// permission picker の選択肢（同上）。空 = 対話承認の概念なし。
     #[serde(default)]
     pub permission_choices: Vec<ChoiceWire>,
