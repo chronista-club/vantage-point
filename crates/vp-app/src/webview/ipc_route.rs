@@ -60,7 +60,7 @@ pub(crate) fn is_main_ipc_tag(body: &str) -> bool {
                 // doc 39 P3: Root 切替 picker（allowlist 漏れは sidebar IPC へ流れて
                 // silent drop = 「picker 無反応」になる — session tab 4 tag と同じ罠）
                 | "console:switch_root"
-                | "conversation:set_model"
+                | "conversation:set_settings"
                 // ink（対話面, doc 52 §3）: 送信の snapshot 要求。漏れると sidebar IPC へ流れて
                 // 「unknown variant ink:snapshot」で silent drop = 送信しても画像が飛ばない
                 | "ink:snapshot"

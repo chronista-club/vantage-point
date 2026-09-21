@@ -260,11 +260,6 @@ pub struct LaneSessionView {
     /// 押しても engine に無視されるだけの行き止まりを作らない）。
     #[serde(default)]
     pub image_capable: bool,
-    /// この session の model 指定（registry の intent。None = engine 既定に委譲）。
-    /// picker の「現在値」は engine 実測（session_init の header.model）が正で、
-    /// こちらは「VP が spawn 時に何を注入するか」の側。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
     /// model picker の選択肢（`EngineKind` catalog、server 導出 — client は並べるだけ）。
     /// **空 = VP からの model 切替なし**（client は read-only 表示 or 非表示に落とす —
     /// chat_capable と同じく「押しても弾かれる行き止まり」を server 表明で根絶する）。

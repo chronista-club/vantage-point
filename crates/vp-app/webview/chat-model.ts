@@ -14,6 +14,7 @@ import type { toWirePayload } from './paste-image'
 import { foldCodexInteractions, type CodexInteractionState } from './codex-interaction-model'
 import type { CodexQuestion } from './src/generated/CodexQuestion'
 import type { CodexQueueView } from './src/generated/CodexQueueView'
+import type { SetStoreFunction } from 'solid-js/store'
 
 // ---------------------------------------------------------------------------
 // 会話モデル — flat item stream（ConversationEvent を UI 単位に畳む）
@@ -187,6 +188,12 @@ export type Submission = {
  * 会話モデリングの肝: message_chunk / thought_chunk は末尾同種 item に append（accumulate）、
  * tool_call_update は id 一致で done 化。ここが gui の描画正しさの中核。
  */
+/** (lane, session) 単位の chat store（chatview が所有、panel / codex-input が借りる）。 */
+export type LaneChat = {
+  state: ChatState
+  set: SetStoreFunction<ChatState>
+}
+
 export function foldInto(s: ChatState, ev: ConversationEvent): void {
   if (ev.kind === 'engine_exited' && s.codexQueue) {
     s.codexQueue.ready = false

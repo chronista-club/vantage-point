@@ -22,7 +22,8 @@ effort の範囲と既定値はモデルによって異なった。固定のモ�
   再取得の状態変更・世代更新・採番は同一 lock 内で行い、旧タイマーを無効にする。
 - `thread/start` / `thread/resume` 応答直下の model / reasoningEffort を保持する。
   paginated resume 後の `thread/read` に同じ値があるとは仮定しない。
-- `SessionEntry.codex_selection` に model / effort のペアを保存する。未設定なら
+- `SessionEntry.settings`（`EngineSettings::Codex`、2026-09-21 に旧 `codex_selection` から畳んだ）に
+  model / effort のペアを保存する。未設定なら
   native の設定を尊重する。初版は明示ペアの選択を提供し、設定解除操作は含めない。
 - host が ready、turn が idle、送信 queue が空の場合にだけ変更を受け付ける。
   同一 lock で候補検証・保存・次送信の設定を更新し、会話を再起動しない。

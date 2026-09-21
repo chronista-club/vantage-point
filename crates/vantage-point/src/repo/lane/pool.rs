@@ -178,10 +178,9 @@ pub struct ResolvedSession {
     /// chat 経路の gate は root の mode ではなく**当該 session の mode** で判定する必要がある
     /// （root で gate すると非 root の chat に replay が届かない。team-b review 2026-07-25）。
     pub mode: SessionMode,
-    /// session の model 指定（registry が SSOT — resolve 時の registry load から同梱。
-    /// host 構築の `--model` 解決が別 store を読み直さないための持ち回り。
-    /// 2026-07-27 に per-lane `engine_model` file から session 紐づけへ移行）。
-    pub model: Option<String>,
+    /// session の engine 別設定（registry が SSOT — resolve 時の registry load から同梱。
+    /// host 構築が別 store を読み直さないための持ち回り。各 host は自分の variant だけ読む）。
+    pub settings: Option<crate::conversation::EngineSettings>,
 }
 
 /// [`LanePool::list_chat_sessions`] の 1 要素 — registry（永続）+ runtime（engine 生死）+
@@ -1099,7 +1098,7 @@ impl LanePool {
             conversation: entry.conversation.clone(),
             // doc 50 §4.6 A6: chat 経路の gate はこの値で行う（root cache では非 root を弾く）。
             mode: entry.mode,
-            model: entry.model.clone(),
+            settings: entry.settings.clone(),
         })
     }
 
@@ -1619,7 +1618,11 @@ impl LanePool {
                         lane_label: lane_label.clone(),
                         session_key: resolved.key,
                         session_id: resolved.conversation.clone(),
-                        model: resolved.model.clone(),
+                        model: resolved
+                            .settings
+                            .as_ref()
+                            .and_then(crate::conversation::EngineSettings::vpcode)
+                            .map(|s| s.model.clone()),
                     },
                 )?)
             }
@@ -1633,12 +1636,16 @@ impl LanePool {
                     .conversation
                     .clone()
                     .filter(|id| crate::lane::cc_session::transcript_has_conversation(id));
-                // gui モデル切替: session に永続された model を `--model` に渡す（None = engine
-                // 既定 = 注入しない）。切替（conversation_set_model）は registry 書込 → engine
-                // 入替で行われ、resume と組むことで会話コンテキストを保ったままモデルだけ替わる。
-                // model は session 単位（mako 裁定 2026-07-27 — doc 50 session=Pane で 1 lane
-                // 多 session になり、旧 per-lane `engine_model` file は退役）。
-                let model = resolved.model.clone();
+                // gui モデル切替: session に永続された Claude settings の model を `--model` に
+                // 渡す（None = engine 既定 = 注入しない）。切替（conversation_set_settings）は
+                // registry 書込 → engine 入替で行われ、resume と組むことで会話コンテキストを
+                // 保ったままモデルだけ替わる。settings は session 単位（mako 裁定 2026-07-27 —
+                // doc 50 session=Pane で 1 lane 多 session になり、旧 per-lane file は退役）。
+                let model = resolved
+                    .settings
+                    .as_ref()
+                    .and_then(crate::conversation::EngineSettings::claude)
+                    .and_then(|s| s.model.clone());
                 ChatHost::Claude(crate::conversation::ClaudeHost::spawn(
                     crate::conversation::ClaudeHostConfig {
                         cwd: info.cwd.clone(),
@@ -1747,7 +1754,7 @@ impl LanePool {
         &self,
         addr: &LaneAddress,
         session: SessionKey,
-        selection: crate::conversation::event::CodexSelection,
+        selection: crate::conversation::codex_settings::CodexSelection,
     ) -> Result<crate::conversation::event::CodexConfigView, String> {
         let slot = self
             .chat_slot(addr, Some(session))

@@ -1,6 +1,43 @@
-//! Codex が公開する model / effort の組合せを扱う。モデル名の固定表は持たない。
+//! Codex の settings — model / effort の組合せ（Codex が所有する語彙）。
+//!
+//! 候補は app-server の `model/list` から動的に引く（モデル名の固定表は持たない）。
+//! 共有側（registry / RPC）は [`super::settings::EngineSettings::Codex`] の variant として
+//! これを運ぶだけで、中身の意味（effort の語彙、model ごとの候補）は本 module が閉じる。
 
-use super::event::{CodexModel, CodexSelection};
+#[cfg(test)]
+use ts_rs::TS;
+
+/// Codex の「次の送信を何で走らせるか」— model と effort の組。
+/// effort の値は app-server が名乗る文字列そのもの（VP 側に列挙は持たない）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexSelection {
+    pub model: String,
+    pub effort: String,
+}
+
+impl CodexSelection {
+    /// 永続前の形式検査（`is_valid_model` は `--model` 引数系と同じ injection 防壁）。
+    pub fn validate_shape(&self) -> Result<(), String> {
+        if !crate::lane::engine_model::is_valid_model(&self.model) {
+            return Err(format!("Codex の model 名が不正: {:?}", self.model));
+        }
+        if self.effort.is_empty() || self.effort.len() > 64 {
+            return Err(format!("Codex の effort が不正: {:?}", self.effort));
+        }
+        Ok(())
+    }
+}
+
+/// `model/list` の 1 候補（GUI の picker に並ぶ形）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexModel {
+    pub model: String,
+    pub label: String,
+    pub efforts: Vec<String>,
+    pub default_effort: String,
+}
 
 pub(super) fn parse_page(
     value: &serde_json::Value,

@@ -1,7 +1,8 @@
-import { changeCodexSelection } from './codex-selection-control'
 import { CodexInteractionCard } from './codex-interactions'
 import { CodexQueuePanel } from './codex-queue'
-import { CodexRuntimePanel } from './codex-runtime'
+import { EngineSettingsPanel } from './engine-settings-panel'
+import { setPermissionMode as setClaudePermissionMode } from './claude-settings-panel'
+import { sendCodexInput as sendCodexInputTo } from './codex-input'
 import { beginCodexResponse } from './codex-interaction-model'
 /**
  * ChatView (doc 33 C2) — Conversation gui の Console 面 GUI（SolidJS）。
@@ -28,7 +29,7 @@ import {
   type Accessor,
   type JSX,
 } from 'solid-js'
-import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
+import { createStore, produce } from 'solid-js/store'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import { isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
 import { renderMermaidBlocks } from './mermaid-post'
@@ -36,7 +37,6 @@ import { Marked } from 'marked'
 import type {
   ConversationEvent,
   ConversationSession,
-  PickerChoice,
   PlanEntry,
   QuestionSpec,
   VpConsole,
@@ -44,7 +44,7 @@ import type {
 // doc 38 Phase 2: focused 判定 / 楽観的 focus 切替は console.ts の per-lane registry を共有する
 // （repo が真実源、ここは view）。session chip の prefix 規則は LaneHeader を SSOT として再利用。
 // doc 47 §6: 共有 bus の相関 id（採番 + 照合）も console.ts が SSOT。
-import { focusedOf, noteFocus, syncHeaderSessionId, nextRequestId } from './console'
+import { focusedOf, noteFocus, syncHeaderSessionId } from './console'
 import { sessionChipPrefix } from './LaneHeader'
 import { isImeKeystroke } from './ime'
 import { applyCompletion, filterSlashCommands, moveSelection, slashQuery } from './slash'
@@ -60,6 +60,7 @@ import {
   type ChatItem,
   type ChatState,
   type SubagentEntry,
+  type LaneChat,
   type Submission,
   type ToolItem,
   beginSubmission,
@@ -90,11 +91,6 @@ export {
   toolGroupStatus,
 } from './chat-model'
 
-
-type LaneChat = {
-  state: ChatState
-  set: SetStoreFunction<ChatState>
-}
 
 /**
  * 会話 store は **(lane, session) 単位**（doc 50 §4.3 #1）。
@@ -1425,7 +1421,7 @@ export function SessionPlate(props: {
 /** 1 枚 = 1 session の chat pane（doc 46 §1.5 session ↔ Pane 1:1）。(lane, session) は mount 時に
  *  固定 — lane 切替は pane host ごと作り直す（lane-panes が dispose → mount）。
  *  doc 50 P2: chat 動詞（submit / respond / perm / interrupt / model）は session を運ぶ =
- *  どの pane からも打てる（model の旧 focused 制限は conversation_set_model の session 化で
+ *  どの pane からも打てる（model の旧 focused 制限は conversation_set_settings（旧 set_model）の session 化で
  *  撤去 — 2026-07-27、mako 裁定「model も permission も session に紐づく」）。 */
 function SessionChatView(props: { lane: string; session: number }) {
   const lc = laneChat(props.lane, props.session)
@@ -1453,80 +1449,15 @@ function SessionChatView(props: { lane: string; session: number }) {
   // 名札まわり（label / root chip / 会話 id / badge / ✕）は `SessionPlate` に移管した
   // （doc 50 §4.6 A6 — term pane と共有するため）。
 
-  // gui モデル切替（spec: セッション進行中でも切替可能）。repo が engine を --resume +
-  // 新 --model で入れ替える = 会話コンテキスト継続でモデル交換。適用の視覚確認は
-  // 新 engine の session_init が header.model を更新することで得る（picker は実測値に追従）。
-  // streaming 中は disable — engine drop が進行中 turn を切るのを UI で抑止する。
-  const currentModel = (): string => state()?.header?.model ?? ''
-  /** この session の roster entry（picker の catalog / intent の供給源 = server 能力表明）。 */
+  /** この session の roster entry（settings panel の catalog / 能力表明の供給源）。 */
   const rosterEntry = (): ConversationSession | undefined =>
     sessionsOf(props.lane)?.sessions.find((s) => s.key === props.session)
-  /** server catalog + 実測 model の動的追加（一覧に無い実測値は option を足して真実を見せる）。
-   *  catalog 空 = この engine は VP から切替不可（picker を出さず read-only 表示に落とす）。 */
   /** engine が画像投入を受けるか（server の能力表明。false なら貼り付け UI を出さない）。 */
   const imageCapable = (): boolean => rosterEntry()?.image_capable === true
-
-  const modelChoices = (): ReadonlyArray<PickerChoice> => {
-    const catalog = rosterEntry()?.model_choices ?? []
-    const m = currentModel()
-    return m && catalog.length > 0 && !catalog.some((c) => c.value === m)
-      ? [...catalog, { value: m, label: m }]
-      : catalog
-  }
-  const permissionChoices = (): ReadonlyArray<PickerChoice> =>
-    rosterEntry()?.permission_choices ?? []
-  const codexModel = () => state().codexConfig?.selection?.model ?? state().codexConfig?.model ?? ''
-  const codexEffort = () => state().codexConfig?.selection?.effort ?? state().codexConfig?.effort ?? ''
-  const codexModels = () => state().codexConfig?.models ?? []
-  const codexBusy = () => state().streaming || state().replaying || !!state().submission || !!state().pending || !!state().codexSettingsRequest
-    || !!state().codexInput || !!state().codexQueue?.turn_id || !!state().codexQueue?.items.length
-    || (!!state().codexQueue && !state().codexQueue?.ready)
-  const setCodexSelection = (model: string, effort: string) => {
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    if (!ipc || codexBusy()) return
-    const requestId = nextRequestId('codex-settings')
-    lc.set('codexSettingsRequest', requestId)
-    lc.set('codexSettingsError', null)
-    ipc.postMessage(JSON.stringify({ t: 'conversation:set_model', lane: props.lane, session: props.session, model, effort, request_id: requestId }))
-    setTimeout(() => {
-      if (lc.state.codexSettingsRequest === requestId) {
-        lc.set('codexSettingsRequest', null)
-        lc.set('codexSettingsError', '設定変更の結果を確認できませんでした。表示を確認して再試行してください。')
-      }
-    }, 30_000)
-  }
-  const setModel = (model: string) => {
-    const lane = props.lane
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    // session 明示（doc 50 session=Pane — model は session 単位、2026-07-27 に root/lane
-    // 単位から移行。focused 制限も同時に消えた = どの pane も自分の session を切替できる）。
-    ipc?.postMessage(
-      JSON.stringify({
-        t: 'conversation:set_model',
-        lane,
-        session: props.session,
-        model: model || null,
-      }),
-    )
-  }
-
-  // doc 35 PR3: permission mode（tool 承認の opt-in）。spawn 既定は bypassPermissions（素通し）。
-  // "default" に切替えると Write/Bash 等が承認要求（PermissionRequest）経由になる。
-  // doc 35 PR3/PR4: permission mode は per-lane（engine の真値 = session_init.permission_mode）。
-  // review #2: 旧実装はグローバル signal で lane 横断共有 + respawn の bypass reset を映さなかった。
-  const currentPermMode = (): string => state()?.permissionMode ?? 'bypassPermissions'
-  const setPermissionMode = (mode: string) => {
-    const lane = props.lane
-    // optimistic: 当該 lane に即反映。engine は set_permission_mode を適用し、respawn 時は
-    // session_init.permission_mode が真値（通常 bypassPermissions）で上書きする。
-    //（旧: notePermissionMode でヘッダ chip にも同期していたが、chip は doc 50 の名札純化で
-    //  撤去済み — 同期先ごと消えた）
-    lc.set(produce((s) => (s.permissionMode = mode)))
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(
-      JSON.stringify({ t: 'conversation:set_permission_mode', lane, session: props.session, mode }),
-    )
-  }
+  // model / effort / permission の picker は engine ごとの panel（engine-settings-panel の表）に
+  // 移した（2026-09-21）。plan 承認で default へ戻す経路だけがここから permission を触る。
+  const setPermissionMode = (mode: string) =>
+    setClaudePermissionMode({ lc, lane: props.lane, session: props.session }, mode)
 
   // context ゲージ（tui statusline の bar :context 相当）。分子分母が揃うまで非表示。
   // 閾値は cc-status の意味論を踏襲: >=60% warn / >=85% critical。
@@ -1614,30 +1545,8 @@ function SessionChatView(props: { lane: string; session: number }) {
   const nowLine = () => deriveNowLine(state())
   const codexInputBusy = () => !!state().codexInput
   const codexTurnActive = () => rosterEntry()?.agent === 'codex' && (state().streaming || !!state().codexQueue?.turn_id)
-  const sendCodexInput = (action: Record<string, unknown>, text = '', images: Submission['images'] = []) => {
-    const queue = state().codexQueue
-    if (!queue || (!queue.ready && action.kind !== 'refresh') || codexInputBusy()) return false
-    const requestId = nextRequestId('codex-input')
-    lc.set('codexInput', { id: requestId, text, images, status: 'sending', error: null })
-    try {
-      const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-      if (!ipc) throw new Error('接続がありません。入力は送信されていません。')
-      ipc.postMessage(JSON.stringify({ t: 'conversation:codex_input', lane: props.lane,
-        session: props.session, thread_id: queue.thread_id, request_id: requestId,
-        action: { ...action, images, client_id: requestId } }))
-      setTimeout(() => {
-        if (lc.state.codexInput?.id === requestId && lc.state.codexInput.status === 'sending') {
-          lc.set(produce(s => foldInto(s, { kind: 'codex_queue', queue: null, request_id: requestId,
-            error: '送信結果を確認できません。自動再送はしていません。待機一覧と会話履歴を確認してください。' })))
-        }
-      }, 45_000)
-    } catch (error) {
-      lc.set(produce(s => foldInto(s, { kind: 'codex_queue', queue: null, request_id: requestId,
-        error: error instanceof Error ? error.message : String(error) })))
-      return false
-    }
-    return true
-  }
+  const sendCodexInput = (action: Record<string, unknown>, text = '', images: Submission['images'] = []) =>
+    sendCodexInputTo(lc, props.lane, props.session, action, text, images)
   const queueDraft = () => {
     const text = draft().trim()
     if (!text || !sendCodexInput({ kind: 'add', text }, text, toWirePayload(attachments()))) return
@@ -2274,82 +2183,8 @@ function SessionChatView(props: { lane: string; session: number }) {
             }}
           />
           <div class="conversation-actions">
-            <Show when={rosterEntry()?.agent === 'codex'}>
-              <CodexRuntimePanel runtime={state().codexConfig?.runtime} busy={codexBusy() || !codexModel()}
-                connected={state().codexQueue?.ready === true}
-                permissionChoices={state().codexConfig?.permission_choices}
-                requestPermissions={() => sendCodexInput({kind:'permission_options'})}
-                changePermissions={(choice, confirmed) => sendCodexInput({kind:'permissions',choice,confirmed})}
-                changeMode={mode => sendCodexInput({kind:'mode',mode})} />
-              <Show when={codexModels().length > 0} fallback={<span class="conversation-model-readonly">{state().codexConfig?.error ?? 'モデル候補を取得中…'}</span>}>
-                <select class="conversation-model-select" aria-label="Codex model" title="次の Chat 送信に使うモデル" disabled={codexBusy()}
-                  onChange={(e) => changeCodexSelection(e.currentTarget, codexModel(), value => { const model = codexModels().find(m => m.model === value); if (model) setCodexSelection(model.model, model.default_effort) })}>
-                  <Show when={!codexModels().some(m => m.model === codexModel())}>
-                    <option value={codexModel()} selected disabled>{codexModel() || 'モデルを選択'}</option>
-                  </Show>
-                  <For each={codexModels()}>{m => <option value={m.model} selected={m.model === codexModel()}>{m.label}</option>}</For>
-                </select>
-                <select class="conversation-model-select" aria-label="Codex effort" title="次の Chat 送信の reasoning effort" disabled={codexBusy() || !codexModels().some(m => m.model === codexModel())}
-                  onChange={(e) => changeCodexSelection(e.currentTarget, codexEffort(), value => setCodexSelection(codexModel(), value))}>
-                  <Show when={!codexModels().find(m => m.model === codexModel())?.efforts.includes(codexEffort())}>
-                    <option value={codexEffort()} selected disabled>{codexEffort() || 'Codex 既定'}</option>
-                  </Show>
-                  <For each={codexModels().find(m => m.model === codexModel())?.efforts ?? []}>{effort => <option value={effort} selected={effort === codexEffort()}>{effort}</option>}</For>
-                </select>
-              </Show>
-              <Show when={state().codexSettingsRequest}><span class="conversation-model-readonly">保存中…</span></Show>
-              <Show when={state().codexSettingsError || (codexModels().length > 0 && state().codexConfig?.error)}>
-                <span role="status" class="conversation-model-readonly">{state().codexSettingsError || state().codexConfig?.error}</span>
-              </Show>
-            </Show>
-            {/* model picker: catalog（server 能力表明）が非空の engine だけ出す。
-                空 + 実測 model あり = read-only 表示（「今どの model か」の情報は保ちつつ、
-                押しても server に弾かれる行き止まりを作らない）。 */}
-            <Show
-              when={modelChoices().length > 0}
-              fallback={
-                <Show when={currentModel()}>
-                  <span
-                    class="conversation-model-readonly"
-                    title="model は engine 側で選択します（VP からは切替不可）"
-                  >
-                    {currentModel()}
-                  </span>
-                </Show>
-              }
-            >
-              <select
-                class="conversation-model-select"
-                disabled={state().streaming}
-                title="model（この session に適用 — 会話は resume で継続したまま入れ替わる）"
-                onChange={(e) => setModel(e.currentTarget.value)}
-              >
-                <For each={modelChoices()}>
-                  {(c) => (
-                    <option value={c.value} selected={c.value === currentModel()}>
-                      {c.label}
-                    </option>
-                  )}
-                </For>
-              </select>
-            </Show>
-            {/* permission picker: 同じく catalog 駆動（claude は TUI と同一表記の英語 4 mode）。
-                空 = 対話承認の概念なし → 出さない。 */}
-            <Show when={permissionChoices().length > 0}>
-              <select
-                class="conversation-model-select"
-                title="permission mode（この session に適用。表記は TUI と同一）"
-                onChange={(e) => setPermissionMode(e.currentTarget.value)}
-              >
-                <For each={permissionChoices()}>
-                  {(c) => (
-                    <option value={c.value} selected={currentPermMode() === c.value}>
-                      {c.label}
-                    </option>
-                  )}
-                </For>
-              </select>
-            </Show>
+            {/* engine 別 settings（model / effort / permission …）: agent → panel の表で引く。 */}
+            <EngineSettingsPanel lane={props.lane} session={props.session} lc={lc} rosterEntry={rosterEntry} />
             <div class="conversation-actions-spacer" />
             <Show when={state().streaming}>
               <button class="conversation-stop" onClick={interrupt} title="turn を中断 (Esc)">

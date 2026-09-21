@@ -273,7 +273,6 @@ pub(super) fn session_list_payload(
                 "mode": s.mode,
                 "chat_capable": s.chat_capable,
                 "image_capable": s.image_capable,
-                "model": s.model,
                 "model_choices": s.model_choices,
                 "permission_choices": s.permission_choices,
             })

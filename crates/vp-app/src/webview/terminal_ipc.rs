@@ -218,27 +218,22 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 });
             }
         }
-        // gui モデル切替（ChatView の model picker）。 lane / session 必須、 model 省略/null =
-        // engine 既定。session を運ばない要求は捨てる（root 決め打ちに丸めない — server 側
-        // `conversation_set_model` と同じ規律）。
-        Some("conversation:set_model") => {
+        // gui 設定切替（ChatView の engine 別 settings panel）。 lane / session 必須、
+        // settings 省略/null = engine 既定。中身は engine 所有の形で vp-app は透過。
+        // session を運ばない要求は捨てる（root 決め打ちに丸めない — server 側
+        // `conversation_set_settings` と同じ規律）。
+        Some("conversation:set_settings") => {
             if let (Some(lane), Some(session)) = (
                 parsed.get("lane").and_then(|v| v.as_str()),
                 parsed.get("session").and_then(|v| v.as_u64()),
             ) {
-                let model = parsed
-                    .get("model")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string);
-                let _ = proxy.send_event(AppEvent::ConversationSetModel {
+                let _ = proxy.send_event(AppEvent::ConversationSetSettings {
                     lane: lane.to_string(),
                     session,
-                    model,
-                    effort: parsed
-                        .get("effort")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_owned),
+                    settings: parsed
+                        .get("settings")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
                     request_id: parsed
                         .get("request_id")
                         .and_then(|v| v.as_str())
