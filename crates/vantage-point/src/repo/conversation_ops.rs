@@ -1,7 +1,7 @@
 //! conversation ops — Unison method の handler で、owner は `lane/state` の facade と `conversation::engine`（doc 61）。
 //!
 //! submit / nudge / respond / interrupt / set_permission_mode / session_*（list / create / focus / remove /
-//! new_root / switch_root）/ session_set_mode / session_now / conversation_set_model。payload を剥がして
+//! new_root / switch_root）/ session_set_mode / session_now / conversation_set_settings。payload を剥がして
 //! owner を呼び JSON を返すだけで、engine の起動と投入（`ensure_and_submit_chat`）と mode 切替
 //! （`apply_session_mode`）はここで束ねる。書き込みは漏斗（doc 40 §4）。受付は `unison_server::dispatch_repo_method`。
 
@@ -666,108 +666,114 @@ pub(crate) async fn handle_session_now(
     Ok(serde_json::json!({ "ok": true, "lane": lane, "session": session }))
 }
 
-/// gui モデル切替: chat engine の `--model` を **session 単位**で切替える（mako 裁定
-/// 2026-07-27 — doc 50 session=Pane で 1 lane 多 session になり、旧 `console_set_model`
-/// （root slot 単位 + per-lane `engine_model` file）は旧前提として退役。記録先は registry の
-/// `SessionEntry.model`）。
+/// gui 設定切替: session の engine 別設定（model / effort 等）を **session 単位**で切替える
+/// （mako 裁定 2026-07-27 — doc 50 session=Pane。記録先は registry の `SessionEntry.settings`）。
 ///
-/// `{lane, session, model: string|null}`。null / 省略 = 記録を消して engine 既定に戻す。
-/// spec「セッション進行中でも切り替えられる」の実体はここ — 稼働中 engine を drop して
-/// `ensure_chat_engine` で即再 spawn すると、`--resume` + 新 `--model` で
-/// **会話コンテキストを保ったままモデルだけ替わる**（CC の `/model` の VP 版）。
-/// engine 不在（tui 中 / chat-idle）は記録のみ = 次 spawn から適用。
-/// ⚠️ 進行中の turn は engine drop で切れる（UI 側は streaming 中 picker を disable して抑止）。
-pub(crate) async fn handle_conversation_set_model(
+/// `{lane, session, settings: EngineSettings | null}`。settings は externally tagged
+/// （`{"claude": {...}}` / `{"codex": {...}}` / `{"vpcode": {...}}`）。null / 省略 = 記録を消して
+/// engine 既定に戻す。
+///
+/// **engine の分岐は variant の match だけ**（mako 2026-09-21「if でエンジンを分けるのはやめよう」）:
+/// - Claude / vpcode: registry に intent を書き、稼働中 engine を drop → `ensure_chat_engine` で
+///   即再 spawn。`--resume` + 新 `--model` で**会話コンテキストを保ったまま**替わる（CC の
+///   `/model` の VP 版）。engine 不在（tui 中 / chat-idle）は記録のみ = 次 spawn から適用。
+///   ⚠️ 進行中の turn は engine drop で切れる（UI 側は streaming 中 picker を disable して抑止）。
+/// - Codex: 稼働中 host の runtime 設定を app-server RPC で変え、host が registry にも書く
+///   （host 不在なら Err — Codex は候補を host から引くため、開いてからでないと検証できない）。
+///
+/// settings の engine と session の agent の不一致は registry 書込（`set_settings`）が弾く。
+pub(crate) async fn handle_conversation_set_settings(
     state: &RepoState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    use crate::conversation::EngineSettings;
+
     let lane = payload.get("lane").and_then(|v| v.as_str()).unwrap_or("");
     if lane.is_empty() {
-        return Err("conversation_set_model: lane 未指定".to_string());
+        return Err("conversation_set_settings: lane 未指定".to_string());
     }
-    let session = super::unison_server::payload_session_key("conversation_set_model", &payload)?
+    let session = super::unison_server::payload_session_key("conversation_set_settings", &payload)?
         .ok_or_else(|| {
-            "conversation_set_model: session 未指定（root 決め打ちにしない）".to_string()
+            "conversation_set_settings: session 未指定（root 決め打ちにしない）".to_string()
         })?;
-    let model = payload
-        .get("model")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    if let Some(ref m) = model
-        && !crate::lane::engine_model::is_valid_model(m)
-    {
-        return Err(format!("conversation_set_model: model 名が不正: {m:?}"));
+    let settings: Option<EngineSettings> = match payload.get("settings") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(
+            serde_json::from_value(v.clone())
+                .map_err(|e| format!("conversation_set_settings: settings が不正: {e}"))?,
+        ),
+    };
+    if let Some(s) = &settings {
+        s.validate_shape()
+            .map_err(|e| format!("conversation_set_settings: {e}"))?;
     }
     let addr = crate::repo::lane::parse_address(lane)
-        .ok_or_else(|| format!("conversation_set_model: lane パース失敗: {lane}"))?;
+        .ok_or_else(|| format!("conversation_set_settings: lane パース失敗: {lane}"))?;
 
-    {
+    let applied = {
         let mut pool = state.lane_pool.write().await;
         let info = pool
             .get(&addr)
-            .ok_or_else(|| format!("conversation_set_model: Lane not found: {lane}"))?;
-        // 切替可否は **当該 session の engine** で判定する（doc 39 P4-A の root-agent 解決の
-        // session 版 — session 明示になったので root への丸めは消えた）。可否の真実は
-        // `EngineKind::model_choices` の空/非空 1 本（旧 `model_switchable` 述語は catalog に
-        // 畳んだ — client にも同じ catalog が LaneSessionView で届くので、UI と server の
-        // 判定が同じ表から出る）。
+            .ok_or_else(|| format!("conversation_set_settings: Lane not found: {lane}"))?;
         let lane_label = crate::repo::agent_spawner::lane_label(&addr).to_string();
         let default_agent = info.agent.clone();
-        let reg = crate::lane::session_registry::load(&addr.repo, &lane_label, &default_agent);
-        let entry_agent = reg
-            .sessions
-            .iter()
-            .find(|s| s.key == session)
-            .map(|s| s.agent.clone())
-            .ok_or_else(|| {
-                format!("conversation_set_model: session が存在しません（lane={lane}, session={session}）")
-            })?;
-        if entry_agent == "codex" {
-            let model = model.ok_or("Codex の model が指定されていません")?;
-            let effort = payload
-                .get("effort")
-                .and_then(|v| v.as_str())
-                .ok_or("Codex の effort が指定されていません")?
-                .to_owned();
-            let config = pool.configure_codex(
-                &addr,
-                session,
-                crate::conversation::event::CodexSelection { model, effort },
-            )?;
-            return Ok(serde_json::json!({"status":"ok","codex_config":config}));
-        }
-        match crate::conversation::EngineKind::from_agent(&entry_agent) {
-            Some(k) if !k.model_choices().is_empty() => {}
-            Some(_) => {
-                return Err(format!(
-                    "{entry_agent} エンジンの model は engine 側で選択します（lane={lane}, session={session}）"
-                ));
+        match settings {
+            Some(EngineSettings::Codex(selection)) => {
+                let config = pool.configure_codex(&addr, session, selection)?;
+                serde_json::json!({"status":"ok","codex_config":config})
             }
-            None => {
-                return Err(format!(
-                    "conversation_set_model は model 切替対応 engine の session のみ（lane={lane}, session={session}, agent={entry_agent}）"
-                ));
+            Some(EngineSettings::Claude(_)) | Some(EngineSettings::Vpcode(_)) | None => {
+                // null（既定へ戻す）は「registry intent + respawn」で設定を運ぶ engine にだけ
+                // 意味がある。Codex（host の runtime 設定）/ Grok / OpenCode（engine 側で選ぶ）の
+                // session に null を送っても消す intent が無く、respawn だけが走ることになる
+                // （Codex なら runtime の mode / permission / queue が飛ぶ）ので弾く。
+                if settings.is_none() {
+                    let reg = crate::lane::session_registry::load(
+                        &addr.repo,
+                        &lane_label,
+                        &default_agent,
+                    );
+                    let agent = reg
+                        .sessions
+                        .iter()
+                        .find(|s| s.key == session)
+                        .map(|s| s.agent.as_str())
+                        .unwrap_or("");
+                    if !crate::conversation::EngineKind::from_agent(agent)
+                        .is_some_and(crate::conversation::EngineKind::takes_model_intent)
+                    {
+                        return Err(format!(
+                            "conversation_set_settings: {agent} の settings は VP からは戻せません（lane={lane}, session={session}）"
+                        ));
+                    }
+                }
+                let changed = crate::lane::session_registry::set_settings(
+                    &addr.repo,
+                    &lane_label,
+                    &default_agent,
+                    session,
+                    settings.clone(),
+                )
+                .map_err(|e| format!("conversation_set_settings: 永続失敗: {e}"))?;
+                // 稼働中 engine の入替（drop → resume 付き eager 再 spawn）。spawn 失敗しても
+                // 記録は成功済みなので mode 切替と同様に成功扱い — 次 submit で self-heal される。
+                // 入替は当該 session の engine のみ（chat_engines は (lane, session) の 2 段 map）。
+                // disk が変わらなかった（同値 / 形式外で書かず）なら engine も触らない。
+                if changed
+                    && pool.drop_chat_engine(&addr, Some(session))
+                    && let Err(e) =
+                        pool.ensure_chat_engine(&addr, Some(session), &state.topic_router)
+                {
+                    tracing::warn!(
+                        "conversation_set_settings: engine 再 spawn 失敗（submit で再試行）: {e}"
+                    );
+                }
+                serde_json::json!({"status": "ok", "lane": lane, "session": session, "settings": settings})
             }
         }
-        crate::lane::session_registry::set_model(
-            &addr.repo,
-            &lane_label,
-            &default_agent,
-            session,
-            model.as_deref(),
-        )
-        .map_err(|e| format!("conversation_set_model: model 永続失敗: {e}"))?;
-        // 稼働中 engine の入替（drop → resume 付き eager 再 spawn）。spawn 失敗しても
-        // 記録は成功済みなので mode 切替と同様に成功扱い — 次 submit で self-heal される。
-        // 入替は当該 session の engine のみ（chat_engines は (lane, session) の 2 段 map）。
-        if pool.drop_chat_engine(&addr, Some(session))
-            && let Err(e) = pool.ensure_chat_engine(&addr, Some(session), &state.topic_router)
-        {
-            tracing::warn!("conversation_set_model: engine 再 spawn 失敗（submit で再試行）: {e}");
-        }
-    }
-    tracing::info!("conversation_set_model: lane={lane} session={session} model={model:?}");
-    Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session, "model": model}))
+    };
+    tracing::info!("conversation_set_settings: lane={lane} session={session}");
+    Ok(applied)
 }
 
 #[cfg(test)]
@@ -995,13 +1001,14 @@ mod tests {
             })
             .await
             .expect("native Queue の再取得完了を待つ");
-            let configure = |effort: &str| serde_json::json!({"lane":"codex-retry-test/main","session":session,"model":"fixture-model","effort":effort});
-            let result = dispatch_repo_method(&state, "conversation_set_model", configure("high"))
-                .await
-                .unwrap();
+            let configure = |effort: &str| serde_json::json!({"lane":"codex-retry-test/main","session":session,"settings":{"codex":{"model":"fixture-model","effort":effort}}});
+            let result =
+                dispatch_repo_method(&state, "conversation_set_settings", configure("high"))
+                    .await
+                    .unwrap();
             assert_eq!(result["codex_config"]["selection"]["effort"], "high");
             assert!(
-                dispatch_repo_method(&state, "conversation_set_model", configure("invalid"))
+                dispatch_repo_method(&state, "conversation_set_settings", configure("invalid"))
                     .await
                     .is_err()
             );
@@ -1011,8 +1018,9 @@ mod tests {
                 .iter()
                 .find(|entry| entry.key == session)
                 .unwrap()
-                .codex_selection
+                .settings
                 .as_ref()
+                .and_then(crate::conversation::EngineSettings::codex)
                 .unwrap();
             assert_eq!(pair.effort, "high");
             assert!(
@@ -1020,7 +1028,7 @@ mod tests {
                     .sessions
                     .iter()
                     .filter(|entry| entry.key != session)
-                    .all(|entry| entry.codex_selection.is_none())
+                    .all(|entry| entry.settings.is_none())
             );
             dispatch_repo_method(&state, "conversation_submit", serde_json::json!({"lane":"codex-retry-test/main","session":session,"prompt":"configured prompt","client_user_message_id":"configured-request"})).await.unwrap();
             loop {
@@ -1375,13 +1383,12 @@ mod tests {
         assert!(err.contains("text"), "エラーが理由を運ぶ: {err}");
     }
 
-    /// conversation_set_model の可否判定は **当該 session の agent** で決まる（旧
-    /// `console_set_model` の root 決め打ちは session 明示化で退役 — doc 50 session=Pane、
-    /// mako 裁定 2026-07-27）。cross-engine lane（#812）で lane agent と食い違っても、
-    /// **同一 lane 内で session ごとに可否が分かれる**ことを固定する。可否の真実は
-    /// Claude の catalog と Codex の native pair 検証を当該 session に適用する。
+    /// conversation_set_settings は **settings の variant と当該 session の agent** で決まる
+    /// （旧 mako 裁定 2026-07-27 の session 単位を継承）。cross-engine lane（#812）で lane agent と
+    /// 食い違っても、**同一 lane 内で session ごとに可否が分かれる**ことを固定する。engine の
+    /// 分岐は文字列でなく variant（2026-09-21）。
     #[tokio::test]
-    async fn conversation_set_model_gates_on_session_agent() {
+    async fn conversation_set_settings_gates_on_session_agent() {
         use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
@@ -1424,11 +1431,11 @@ mod tests {
             .insert(build("mixed", "codex"));
         let lane = LaneAddress::sub("vp", "mixed").to_string();
 
-        // claude session（key=2）は catalog 非空 → 成功。永続先は **当該 session** の registry entry。
+        // claude session（key=2）に claude settings → 成功。永続先は **当該 session** の registry entry。
         dispatch_repo_method(
             &state,
-            "conversation_set_model",
-            serde_json::json!({ "lane": lane.as_str(), "session": 2, "model": "sonnet" }),
+            "conversation_set_settings",
+            serde_json::json!({ "lane": lane.as_str(), "session": 2, "settings": {"claude": {"model": "sonnet"}} }),
         )
         .await
         .expect("claude session は切替可（lane agent=codex に引きずられない）");
@@ -1437,7 +1444,9 @@ mod tests {
             reg.sessions
                 .iter()
                 .find(|s| s.key == 2)
-                .and_then(|s| s.model.as_deref()),
+                .and_then(|s| s.settings.as_ref())
+                .and_then(crate::conversation::EngineSettings::claude)
+                .and_then(|c| c.model.as_deref()),
             Some("sonnet"),
             "model が session 2 の registry entry に永続される"
         );
@@ -1445,29 +1454,48 @@ mod tests {
             reg.sessions
                 .iter()
                 .find(|s| s.key == 1)
-                .and_then(|s| s.model.clone()),
+                .and_then(|s| s.settings.clone()),
             None,
             "他 session は無傷（per-session — 旧 lane 単位との違いの核）"
         );
 
-        // Codex は model / effort のペアが必要。Claude の model-only 設定を流用しない。
+        // codex session（key=1）に claude settings → engine 不一致で Err（誤適用しない）。
+        // ⚠️ Codex の variant は host 経由（configure_codex）なのでこの test では host 不在 Err。
         let err = dispatch_repo_method(
             &state,
-            "conversation_set_model",
-            serde_json::json!({ "lane": lane.as_str(), "session": 1, "model": "sonnet" }),
+            "conversation_set_settings",
+            serde_json::json!({ "lane": lane.as_str(), "session": 1, "settings": {"claude": {"model": "sonnet"}} }),
         )
         .await
-        .expect_err("Codex は effort 未指定を拒否");
-        assert!(
-            err.contains("Codex") && err.contains("effort"),
-            "拒否メッセージは Codex の必須項目を指す: {err}"
-        );
+        .expect_err("codex session に claude settings は書けない");
+        assert!(err.contains("一致しません"), "engine 不一致を指す: {err}");
+
+        // codex session に null（既定へ戻す）→ Codex の settings は VP からは戻せないので Err
+        //（旧実装も Codex に model 無しは Err — respawn だけが走る退行を作らない）。
+        let err = dispatch_repo_method(
+            &state,
+            "conversation_set_settings",
+            serde_json::json!({ "lane": lane.as_str(), "session": 1, "settings": null }),
+        )
+        .await
+        .expect_err("codex session に null は Err");
+        assert!(err.contains("戻せません"), "{err}");
+
+        // 形式外の settings（未知の engine key）は deserialize で Err。
+        let err = dispatch_repo_method(
+            &state,
+            "conversation_set_settings",
+            serde_json::json!({ "lane": lane.as_str(), "session": 2, "settings": {"grok": {"model": "x"}} }),
+        )
+        .await
+        .expect_err("未知 engine の settings は受けない");
+        assert!(err.contains("settings が不正"), "{err}");
 
         // session 未指定は Err（root 決め打ちにしない — session_set_mode と同じ規律）。
         let err = dispatch_repo_method(
             &state,
-            "conversation_set_model",
-            serde_json::json!({ "lane": lane.as_str(), "model": "sonnet" }),
+            "conversation_set_settings",
+            serde_json::json!({ "lane": lane.as_str(), "settings": {"claude": {"model": "sonnet"}} }),
         )
         .await
         .expect_err("session 必須");

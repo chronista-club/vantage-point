@@ -324,9 +324,6 @@ pub struct LaneSessionEntryWire {
     /// 旧 server は送らない → false（貼り付け UI を出さない = 安全側）。
     #[serde(default)]
     pub image_capable: bool,
-    /// この session の model 指定（registry の intent。None = engine 既定）。
-    #[serde(default)]
-    pub model: Option<String>,
     /// model picker の選択肢（server 導出 catalog — client は並べるだけ）。
     /// **空 = VP からの model 切替なし**（picker は read-only 表示 or 非表示に落ちる）。
     /// 旧 server は送らない → 空（切替なしに倒す）。

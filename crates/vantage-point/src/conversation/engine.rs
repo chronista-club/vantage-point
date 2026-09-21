@@ -123,6 +123,15 @@ impl EngineKind {
         matches!(self, Self::Claude | Self::Codex)
     }
 
+    /// VP から「model だけ」の指定を受ける engine か（`vp lane new --model` / config の
+    /// `default-lane-model` / 旧 registry の `model` field の移行）。Codex は model 単独でなく
+    /// effort との組でしか意味を持たず、Grok / OpenCode は engine 側で選ぶ。
+    /// [`super::settings::EngineSettings::from_model`] と `settings_file::agent_accepts_model` が
+    /// 共有する唯一の述語（catalog の空/非空は vpcode で環境依存になるので、ここでは使わない）。
+    pub fn takes_model_intent(self) -> bool {
+        matches!(self, Self::Claude | Self::Vpcode)
+    }
+
     /// VP の model picker に出す選択肢（engine ごとの catalog — server が SSOT、client は
     /// 並べるだけ。mako 裁定 2026-07-27: model は成長し続け多 engine で頻度も増えるため、
     /// client の hardcode を廃してここに一元化）。

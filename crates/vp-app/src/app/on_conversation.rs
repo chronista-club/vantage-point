@@ -565,25 +565,26 @@ pub(super) fn console_switch_root(ui: &mut UiState, boot: &Boot, lane: String, s
     });
 }
 
-/// gui モデル切替: conversation_set_model で repo に forward（fire & forget、
-/// session 単位）。適用の視覚確認は新 engine の session_init が header.model を
-/// 更新することで得る。
-#[allow(clippy::too_many_arguments)]
-pub(super) fn conversation_set_model(
+/// gui 設定切替: conversation_set_settings で repo に forward（session 単位）。
+/// `settings` は engine 所有の形（`{"claude": {...}}` / `{"codex": {...}}` …）で vp-app は透過。
+///
+/// `request_id` 付きの要求は結果を `codex_config` event で webview に返す（Codex の settings
+/// panel が「保存中…」を解くための ack。Claude / vpcode は request_id を送らず、適用の視覚確認は
+/// 新 engine の session_init が header.model を更新することで得る）。
+pub(super) fn conversation_set_settings(
     ui: &mut UiState,
     boot: &Boot,
     proxy: &EventLoopProxy<AppEvent>,
     lane: String,
     session: u64,
-    model: Option<String>,
-    effort: Option<String>,
+    settings: serde_json::Value,
     request_id: Option<String>,
 ) {
     let Ok(session) = u32::try_from(session) else {
         return;
     };
     let Some(path) = resolve_repo_path_for_lane(&ui.sidebar_state, &lane) else {
-        tracing::warn!("conversation:set_model skip — lane の repo 解決失敗 (lane={lane})");
+        tracing::warn!("conversation:set_settings skip — lane の repo 解決失敗 (lane={lane})");
         if let Some(request_id) = request_id {
             let _ = proxy.send_event(AppEvent::ConversationEvent {
                 lane, session,
@@ -595,8 +596,8 @@ pub(super) fn conversation_set_model(
     let conn = boot.daemon_conn.clone();
     let proxy = proxy.clone();
     boot.rt_handle.spawn(async move {
-        let payload = serde_json::json!({ "lane": &lane, "session": session, "model": model, "effort":effort });
-        let result = daemon_repo_request(&conn, &path, "conversation_set_model", payload).await;
+        let payload = serde_json::json!({ "lane": &lane, "session": session, "settings": settings });
+        let result = daemon_repo_request(&conn, &path, "conversation_set_settings", payload).await;
         if let Some(request_id) = request_id {
             let (config, error) = match result {
                 Ok(value) => (value.get("codex_config").cloned(), None),
@@ -607,7 +608,7 @@ pub(super) fn conversation_set_model(
                 event: serde_json::json!({"kind":"codex_config", "config":config, "request_id":request_id, "error":error}),
             });
         } else if let Err(error) = result {
-            tracing::warn!("conversation:set_model 失敗 (lane={lane} session={session}): {error}");
+            tracing::warn!("conversation:set_settings 失敗 (lane={lane} session={session}): {error}");
         }
     });
 }

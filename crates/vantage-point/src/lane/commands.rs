@@ -551,7 +551,7 @@ fn persist_lane_model(repo_root: &Path, lane: &str, model: Option<&str>) -> Resu
 
 /// state base dir 注入版 (テスト用)。
 ///
-/// 記録先は registry の初期 session（key=1）の `SessionEntry.model`（2026-07-27 に per-lane
+/// 記録先は registry の初期 session（key=1）の `SessionEntry.settings`（2026-07-27 に per-lane
 /// `engine_model` file から session 紐づけへ移行）。CLI 作成 lane は既定 agent = claude
 /// （`--agent` を持つのは orchestrated 経路のみ — `agent_store` の書き手が lane_lifecycle 側だけ
 /// であることに対応）。model 未指定なら registry file を作らない（set_model_in が
@@ -656,7 +656,7 @@ fn clear_lane_state_in(base: &Path, repo: &str, lane: &str) {
     if let Err(e) = super::session_registry::clear_in(base, repo, lane) {
         tracing::warn!("lane state GC: session registry の破棄に失敗 (残置): lane={lane} err={e}");
     }
-    // ③ (退役) engine_model — model は registry（SessionEntry.model）に移行済みで ② が併せ消す。
+    // ③ (退役) engine_model — model は registry（SessionEntry.settings）に移行済みで ② が併せ消す。
     // ④ agent (engine 種別 — repo 再起動またぎの spawn agent)
     if let Err(e) = super::agent_store::clear_in(base, repo, lane) {
         tracing::warn!("lane state GC: agent の破棄に失敗 (残置): lane={lane} err={e}");
@@ -2022,7 +2022,7 @@ mod tests {
                 true,
             )
             .expect("registry #2");
-            // ② model は registry（SessionEntry.model）に同居（engine_model file は退役済）
+            // ② model は registry（SessionEntry.settings）に同居（engine_model file は退役済）
             session_registry::set_model_in(base, "vp", lane, "claude", 1, Some("sonnet"))
                 .expect("session model");
             // ③ agent
@@ -2054,8 +2054,8 @@ mod tests {
         assert_eq!(reg.sessions.len(), 1, "①registry が既定形 N=1 に戻る");
         assert_eq!(reg.sessions[0].conversation, None, "①会話 id も消える");
         assert_eq!(
-            reg.sessions[0].model, None,
-            "②model も消える（registry 同居）"
+            reg.sessions[0].settings, None,
+            "②settings も消える（registry 同居）"
         );
         assert_eq!(
             session_registry::root_mode_in(base, "vp", "feat"),
@@ -2122,8 +2122,10 @@ mod tests {
         let repo_root = tmp.path().join("parent").join("vp");
         let model_of = |lane: &str| {
             session_registry::load_in(base, "vp", lane, "claude").sessions[0]
-                .model
-                .clone()
+                .settings
+                .as_ref()
+                .and_then(crate::conversation::EngineSettings::claude)
+                .and_then(|c| c.model.clone())
         };
 
         // None は no-op（未記録のまま = engine 既定）

@@ -33,6 +33,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::conversation::EngineSettings;
+
 use super::session_store::sanitize;
 
 /// session の VP 採番ローカル key（1 始まり、lane 内で単調増加・再利用しない）。
@@ -98,18 +100,15 @@ pub struct SessionEntry {
     /// file/wire 後方互換（conversation 無し = 旧 file はそのまま読める）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
-    /// VP からの model 指定（spawn 時 `--model` 注入の intent。**None = engine 既定に委譲**
-    /// = `--model` を注入しない — doc 54 §8-11「user 設定委譲」）。
+    /// VP からの engine 別設定（spawn / 次送信への intent。**None = engine 既定に委譲**）。
     ///
-    /// 2026-07-27 に per-lane の `engine_model` file store から session 紐づけへ移行
-    /// （mako 裁定 — doc 50 session=Pane で 1 lane 多 session になり、lane 単位は旧前提に
-    /// なった）。旧 file は migration せず初期化（doc 54 §8.1）。serde default + skip で
-    /// file/wire 後方互換（model 無し = 旧 file はそのまま読める）。
+    /// 中身は engine が所有する型（[`EngineSettings`] の variant）で、共有側は「どの engine の
+    /// 設定か」しか知らない（`settings.kind()` と `agent` の一致は [`set_settings_in`] が検査）。
+    /// 2026-09-21 に旧 `model`（Claude / vpcode）+ `codex_selection`（Codex）の 2 field を
+    /// 1 つに畳んだ — 旧 file は [`migrate_legacy_settings`] が読み替える。
+    /// session 紐づけ自体は 2026-07-27 から（doc 50 session=Pane、per-lane store は退役）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    /// Codex Chat の次送信への指定。未設定なら native の設定に委ねる。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub codex_selection: Option<crate::conversation::event::CodexSelection>,
+    pub settings: Option<EngineSettings>,
 }
 
 /// lane の session 一覧 + focused + root（disk に JSON でそのまま永続される形）。
@@ -147,8 +146,7 @@ impl SessionRegistry {
                 agent: default_agent.to_string(),
                 mode: SessionMode::Tui,
                 conversation: None,
-                model: None,
-                codex_selection: None,
+                settings: None,
             }],
         }
     }
@@ -272,11 +270,52 @@ pub fn exists(repo: &str, lane: &str) -> bool {
 
 /// registry を読む。file 不在 / 破損 / 不変条件違反は N=1 の既定形に解決（Err にしない —
 /// 読めない registry で lane 全体を止めるより、既定形で動き続ける方が復旧可能性が高い）。
+/// 旧 registry file の `model` / `codex_selection` を `settings` に読み替える（2026-09-21）。
+///
+/// 読み側の one-shot 変換 — 次の save で新形で書かれる。旧 key は常に捨てる（残すと
+/// 「型を経由しない参照」の温床になる）。`settings` が既にある entry はその値を優先する。
+/// 全 user の registry が新形で書き直された後（1 release 後の目安）に削除してよい。
+fn migrate_legacy_settings(v: &mut serde_json::Value) {
+    let Some(sessions) = v.get_mut("sessions").and_then(|s| s.as_array_mut()) else {
+        return;
+    };
+    for entry in sessions.iter_mut() {
+        let Some(obj) = entry.as_object_mut() else {
+            continue;
+        };
+        let legacy_model = obj.remove("model");
+        let legacy_codex = obj.remove("codex_selection");
+        if obj.contains_key("settings") {
+            continue;
+        }
+        let agent = obj.get("agent").and_then(|a| a.as_str()).unwrap_or("");
+        let kind = crate::conversation::EngineKind::from_agent(agent);
+        let migrated = match (kind, legacy_codex, legacy_model) {
+            (Some(crate::conversation::EngineKind::Codex), Some(sel), _) if !sel.is_null() => {
+                Some(serde_json::json!({ "codex": sel }))
+            }
+            (Some(kind), _, Some(serde_json::Value::String(model))) => {
+                EngineSettings::from_model(kind, model).and_then(|s| serde_json::to_value(s).ok())
+            }
+            _ => None,
+        };
+        if let Some(settings) = migrated {
+            obj.insert("settings".to_string(), settings);
+        }
+    }
+}
+
 pub fn load_in(base: &Path, repo: &str, lane: &str, default_agent: &str) -> SessionRegistry {
     // doc 40 PR-2: 会話 id は registry が唯一の SSOT（旧 engine 別 store からの backfill bridge は
     // 撤去済み — one-shot migration で移設済みのため read-only 補完は不要）。
     match std::fs::read_to_string(registry_file_in(base, repo, lane)) {
-        Ok(raw) => match serde_json::from_str::<SessionRegistry>(&raw) {
+        Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw)
+            .map(|mut v| {
+                migrate_legacy_settings(&mut v);
+                v
+            })
+            .and_then(serde_json::from_value::<SessionRegistry>)
+        {
             Ok(reg) if reg.is_valid() => reg,
             _ => {
                 tracing::warn!(
@@ -333,8 +372,7 @@ pub fn create_in(
         agent: agent.to_string(),
         mode,
         conversation: None,
-        model: None,
-        codex_selection: None,
+        settings: None,
     });
     if focus {
         reg.focused = key;
@@ -364,8 +402,7 @@ pub fn create_root_in(
         agent: agent.to_string(),
         mode,
         conversation: None,
-        model: None,
-        codex_selection: None,
+        settings: None,
     });
     reg.focused = key;
     reg.root = key;
@@ -675,20 +712,22 @@ pub fn set_conversation_in(
     Ok(true)
 }
 
-/// session の model 指定を書く（picker の `conversation_set_model` / lane 作成時の初期指定の
-/// 書き込み口。[`set_conversation_in`] と同じ規律）。
+/// session の engine 別設定を書く（picker の `conversation_set_settings` / Codex host の
+/// selection 保存 / lane 作成の初期指定の書き込み口。[`set_conversation_in`] と同じ規律）。
 ///
-/// - 実在しない key は Err（黙って捨てると「切り替えたつもり」の幻 model になる）
-/// - 形式外 model は**書かずに** Ok(false)（`--model` 引数への injection 防壁）
+/// - 実在しない key は Err（黙って捨てると「切り替えたつもり」の幻設定になる）
+/// - settings の engine が entry の agent と違えば Err（別 engine の設定を誤適用しない —
+///   agent 文字列を [`EngineSettings::kind`] の canonical 名 `agent_name()` と突き合わせる）
+/// - 形式外（`validate_shape`）は**書かずに** Ok(false)（`--model` 引数への injection 防壁）
 /// - 変化なしは save しない。戻り値 = 「disk が変わったか」
-/// - `None` = engine 既定へ戻す（entry.model を None に落とす）
-pub fn set_model_in(
+/// - `None` = engine 既定へ戻す（entry.settings を None に落とす）
+pub fn set_settings_in(
     base: &Path,
     repo: &str,
     lane: &str,
     default_agent: &str,
     key: SessionKey,
-    model: Option<&str>,
+    settings: Option<EngineSettings>,
 ) -> std::io::Result<bool> {
     let _guard = mutation_guard();
     let mut reg = load_in(base, repo, lane, default_agent);
@@ -698,48 +737,97 @@ pub fn set_model_in(
             format!("session が存在しません（repo={repo}, lane={lane}, session={key}）"),
         ));
     };
-    if let Some(m) = model
-        && !crate::lane::engine_model::is_valid_model(m)
-    {
-        tracing::warn!(
-            "model 名が形式外のため書かず（repo={repo}, lane={lane}, session={key}, model={m:?}）"
-        );
+    if let Some(s) = &settings {
+        let expected = s.kind().agent_name();
+        if entry.agent != expected {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "settings の engine が session と一致しません（repo={repo}, lane={lane}, session={key}, agent={}, settings={expected}）",
+                    entry.agent
+                ),
+            ));
+        }
+        if let Err(e) = s.validate_shape() {
+            tracing::warn!(
+                "settings が形式外のため書かず（repo={repo}, lane={lane}, session={key}）: {e}"
+            );
+            return Ok(false);
+        }
+    }
+    if entry.settings == settings {
         return Ok(false);
     }
-    let new = model.map(str::to_string);
-    if entry.model == new {
-        return Ok(false);
-    }
-    entry.model = new;
+    entry.settings = settings;
     save_in(base, repo, lane, &reg)?;
     Ok(true)
 }
 
-/// 検証済みの Codex 設定ペアを一回の registry 書き込みで保存する。
-pub fn set_codex_selection(
+/// 「model だけ」を書く convenience（CLI `--model` / lane 作成の初期指定 / MCP `lane_create`）。
+/// entry の agent から [`EngineSettings::from_model`] で engine の settings を組んで
+/// [`set_settings_in`] に渡す。model 指定を受けない engine（Codex / Grok / OpenCode）は
+/// 書かずに Ok(false)（旧実装は黙って無視される `model` を書いていた）。`None` = 既定へ戻す。
+pub fn set_model_in(
+    base: &Path,
     repo: &str,
     lane: &str,
+    default_agent: &str,
     key: SessionKey,
-    selection: crate::conversation::event::CodexSelection,
-) -> std::io::Result<()> {
-    let _guard = mutation_guard();
-    let base = crate::config::vp_state_dir();
-    let mut reg = load_in(&base, repo, lane, "codex");
-    let entry = reg
-        .sessions
-        .iter_mut()
-        .find(|s| s.key == key && s.agent == "codex")
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Codex session が見つかりません",
-            )
-        })?;
-    if entry.codex_selection.as_ref() == Some(&selection) {
-        return Ok(());
-    }
-    entry.codex_selection = Some(selection);
-    save_in(&base, repo, lane, &reg)
+    model: Option<&str>,
+) -> std::io::Result<bool> {
+    let agent = {
+        let _guard = mutation_guard();
+        load_in(base, repo, lane, default_agent)
+            .sessions
+            .iter()
+            .find(|s| s.key == key)
+            .map(|s| s.agent.clone())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("session が存在しません（repo={repo}, lane={lane}, session={key}）"),
+                )
+            })?
+    };
+    let settings = match model {
+        None => None,
+        Some(m) => {
+            let Some(kind) = crate::conversation::EngineKind::from_agent(&agent) else {
+                tracing::warn!(
+                    "agent {agent:?} は engine を持たないため model を書かず（repo={repo}, lane={lane}, session={key}）"
+                );
+                return Ok(false);
+            };
+            match EngineSettings::from_model(kind, m.to_string()) {
+                Some(s) => Some(s),
+                None => {
+                    tracing::warn!(
+                        "{agent} は VP からの model 指定を受けないため書かず（repo={repo}, lane={lane}, session={key}, model={m:?}）"
+                    );
+                    return Ok(false);
+                }
+            }
+        }
+    };
+    set_settings_in(base, repo, lane, default_agent, key, settings)
+}
+
+/// 本番 base での [`set_settings_in`]。
+pub fn set_settings(
+    repo: &str,
+    lane: &str,
+    default_agent: &str,
+    key: SessionKey,
+    settings: Option<EngineSettings>,
+) -> std::io::Result<bool> {
+    set_settings_in(
+        &crate::config::vp_state_dir(),
+        repo,
+        lane,
+        default_agent,
+        key,
+        settings,
+    )
 }
 
 /// 本番 base での [`set_model_in`]。
@@ -1102,6 +1190,103 @@ pub fn record_conversation(
 mod tests {
     use super::*;
 
+    /// test 用: entry の Claude settings から model を取り出す。
+    fn claude_model(entry: &SessionEntry) -> Option<&str> {
+        entry
+            .settings
+            .as_ref()
+            .and_then(EngineSettings::claude)
+            .and_then(|c| c.model.as_deref())
+    }
+
+    /// 2026-09-21 の `model` / `codex_selection` → `settings` 畳み込み: 旧 file が engine ごとの
+    /// variant に読み替わり、旧 key は捨てられる。
+    #[test]
+    fn legacy_model_and_codex_selection_migrate_into_settings() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file = registry_file_in(tmp.path(), "vp", "legacy");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            serde_json::json!({
+                "focused": 1, "root": 1, "next": 5,
+                "sessions": [
+                    {"key": 1, "agent": "claude", "model": "claude-sonnet-5"},
+                    {"key": 2, "agent": "codex", "codex_selection": {"model": "gpt-5", "effort": "high"}},
+                    {"key": 3, "agent": "vpcode", "model": "openai/gpt-oss-20b"},
+                    {"key": 4, "agent": "grok", "model": "ignored"}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let reg = load_in(tmp.path(), "vp", "legacy", "claude");
+        assert_eq!(claude_model(&reg.sessions[0]), Some("claude-sonnet-5"));
+        assert_eq!(
+            reg.sessions[1]
+                .settings
+                .as_ref()
+                .and_then(EngineSettings::codex),
+            Some(&crate::conversation::codex_settings::CodexSelection {
+                model: "gpt-5".into(),
+                effort: "high".into()
+            })
+        );
+        assert_eq!(
+            reg.sessions[2]
+                .settings
+                .as_ref()
+                .and_then(EngineSettings::vpcode)
+                .map(|v| v.model.as_str()),
+            Some("openai/gpt-oss-20b")
+        );
+        assert_eq!(
+            reg.sessions[3].settings, None,
+            "grok は VP から model 指定を受けない → 旧値は捨てる"
+        );
+        // 新形で書き直され、旧 key が残らない
+        save_in(tmp.path(), "vp", "legacy", &reg).unwrap();
+        let raw = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            !raw.contains("codex_selection"),
+            "旧 key が残っている: {raw}"
+        );
+        assert!(
+            raw.contains("\"settings\""),
+            "新 key で書かれていない: {raw}"
+        );
+    }
+
+    /// settings の engine と entry の agent が違えば Err（別 engine の設定を誤適用しない）。
+    #[test]
+    fn set_settings_rejects_engine_mismatch() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let key = create_in(
+            tmp.path(),
+            "vp",
+            "root",
+            "claude",
+            "codex",
+            SessionMode::Gui,
+            true,
+        )
+        .expect("create codex");
+        let err = set_settings_in(
+            tmp.path(),
+            "vp",
+            "root",
+            "claude",
+            key,
+            Some(EngineSettings::Claude(Default::default())),
+        )
+        .expect_err("codex session に claude settings は書けない");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            !set_model_in(tmp.path(), "vp", "root", "claude", key, Some("gpt-5")).unwrap(),
+            "codex は model 単独の指定を受けない → Ok(false)"
+        );
+    }
+
     #[test]
     fn codex_console_rejects_wrong_session_engine_and_id_without_changing_registry() {
         let dir = tempfile::tempdir().unwrap();
@@ -1158,8 +1343,7 @@ mod tests {
                     agent: "claude".to_string(),
                     mode: SessionMode::Tui,
                     conversation: None,
-                    model: None,
-                    codex_selection: None,
+                    settings: None,
                 }],
             }
         );
@@ -1509,9 +1693,9 @@ mod tests {
             "初回 set は disk 変化あり"
         );
         let reg = load_in(tmp.path(), "vp", "root", "claude");
-        assert_eq!(reg.sessions[1].model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(claude_model(&reg.sessions[1]), Some("claude-sonnet-5"));
         assert_eq!(
-            reg.sessions[0].model, None,
+            reg.sessions[0].settings, None,
             "他 session は無傷（per-session）"
         );
 
@@ -1540,9 +1724,7 @@ mod tests {
             "形式外 model は書かずに Ok(false)（--model injection 防壁）"
         );
         assert_eq!(
-            load_in(tmp.path(), "vp", "root", "claude").sessions[1]
-                .model
-                .as_deref(),
+            claude_model(&load_in(tmp.path(), "vp", "root", "claude").sessions[1]),
             Some("claude-sonnet-5"),
             "形式外 set 後も既存値が守られる"
         );
@@ -1551,7 +1733,7 @@ mod tests {
             "None = engine 既定へ戻す（disk 変化あり）"
         );
         assert_eq!(
-            load_in(tmp.path(), "vp", "root", "claude").sessions[1].model,
+            load_in(tmp.path(), "vp", "root", "claude").sessions[1].settings,
             None
         );
         assert!(

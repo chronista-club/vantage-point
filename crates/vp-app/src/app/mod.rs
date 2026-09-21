@@ -423,20 +423,18 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::ConsoleSwitchRoot { lane, session }) => {
                 on_conversation::console_switch_root(&mut ui, &boot, lane, session)
             }
-            Event::UserEvent(AppEvent::ConversationSetModel {
+            Event::UserEvent(AppEvent::ConversationSetSettings {
                 lane,
                 session,
-                model,
-                effort,
+                settings,
                 request_id,
-            }) => on_conversation::conversation_set_model(
+            }) => on_conversation::conversation_set_settings(
                 &mut ui,
                 &boot,
                 &async_action_proxy,
                 lane,
                 session,
-                model,
-                effort,
+                settings,
                 request_id,
             ),
             Event::UserEvent(AppEvent::ConversationSessionCreate { lane, agent }) => {

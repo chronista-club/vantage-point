@@ -305,7 +305,11 @@ pub(crate) async fn handle_lane_session_changed(
             trigger,
         };
         let lane_label = crate::repo::agent_spawner::lane_label(&addr);
-        if engine == "codex" {
+        // 記録先の writer は engine の variant で選ぶ（文字列比較で分岐しない — 2026-09-21）。
+        if matches!(
+            crate::conversation::EngineKind::from_agent(engine),
+            Some(crate::conversation::EngineKind::Codex)
+        ) {
             let ReportTarget::Session(key) = target else {
                 return Err("lane_session_changed: Codex report requires session".to_string());
             };

@@ -405,7 +405,8 @@ pub fn build_agent_command_for_session(
     // doc 39 P1 → doc 40: resume id / 会話 id は **session registry の entry**（SSOT、doc 40 §5）。
     // 既定（`session=None`）で化身するのは root session（lane の人格）で、doc 46 P5 の producer
     // だけが非 root を名指しする。registry file 不在 = root=1 の N=1 特殊ケースで従来互換。
-    // model も同じ entry の `SessionEntry.model`（session 単位、2026-07-27 に per-lane file から移行）。
+    // model も同じ entry の `SessionEntry.settings`（session 単位、2026-07-27 に per-lane file から
+    // 移行、2026-09-21 に engine 別の settings へ）。
     let reg = crate::lane::session_registry::load(&addr.repo, lane_label(addr), agent_name);
     // A6 の後始末: 旧名 replay file（lane 単位）を現 root の session file へ 1 回だけ移設する。
     // slot の replay_path を決める経路はここ 1 本なので、移設もここに置けば取りこぼさない
@@ -441,11 +442,14 @@ pub fn build_agent_command_for_session(
             let resume_id = conversation
                 .clone()
                 .filter(|id| crate::lane::cc_session::transcript_has_conversation(id));
-            // model は **session の** registry entry を読む（tui/gui 共有の intent。None =
-            // engine 既定 = 注入しない）。respawn（repo restart）でもここで毎回読むため、
-            // 一度指定した model は再起動をまたいで維持される（2026-07-27 に per-lane
+            // model は **session の** registry entry の Claude settings を読む（tui/gui 共有の
+            // intent。None = engine 既定 = 注入しない）。respawn（repo restart）でもここで毎回
+            // 読むため、一度指定した model は再起動をまたいで維持される（2026-07-27 に per-lane
             // `engine_model` file から session 紐づけへ移行 — mako 裁定、doc 50 session=Pane）。
-            let model = entry.and_then(|s| s.model.clone());
+            let model = entry
+                .and_then(|s| s.settings.as_ref())
+                .and_then(crate::conversation::EngineSettings::claude)
+                .and_then(|s| s.model.clone());
             // doc 53 §12.1: 「素で立てるか」は **registry の会話 id の有無だけ**で決まる。
             // 旧実装は `fresh || (key >= 2 && resume_id.is_none())` で、`--continue` 分岐が
             // 起点 lane × id 無しに存在したため「Reset 直後（id を捨てた）」と「初回（まだ

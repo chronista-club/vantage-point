@@ -88,8 +88,6 @@ export type ConversationSession = {
   /** user の投入に画像を混ぜられるか（chat 入力欄への貼り付け）。
    *  旧 server は送らない → undefined = 不可に倒す（貼り付け UI を出さない）。 */
   image_capable?: boolean
-  /** この session の model 指定（registry の intent。null/undefined = engine 既定）。 */
-  model?: string | null
   /** model picker の選択肢（server 導出 catalog — client は並べるだけ、2026-07-27）。
    *  空/undefined = VP からの model 切替なし（picker は read-only 表示 or 非表示に落とす —
    *  chat_capable と同じ「行き止まりを作らない」規律）。 */
