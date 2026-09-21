@@ -49,7 +49,9 @@ mod session_derivation_tests {
             16,
             serde_json::json!([
                 {"key": 16, "agent": "claude", "mode": "gui",
-                 "conversation": "conv-abc", "chat_capable": true, "image_capable": true},
+                 "conversation": "conv-abc", "chat_capable": true, "image_capable": true,
+                 "effort_choices": [{"value": "", "label": "Default"}, {"value": "high", "label": "high"}],
+                 "settings": {"claude": {"effort": "high"}}},
                 {"key": 24, "agent": "shell", "mode": "tui", "chat_capable": false},
             ]),
         );
@@ -80,6 +82,15 @@ mod session_derivation_tests {
         assert_eq!(
             entries[0]["image_capable"], true,
             "画像投入の能力表明も webview へ運ぶ（落とすと貼り付け UI が出ない）"
+        );
+        // 2026-09-21（PR-2）: effort の catalog と registry の intent も同じ写像を通る。
+        assert_eq!(
+            entries[0]["effort_choices"][1]["value"], "high",
+            "effort picker の catalog を運ぶ（落とすと picker が出ない）"
+        );
+        assert_eq!(
+            entries[0]["settings"]["claude"]["effort"], "high",
+            "settings は engine 所有の形のまま透過する（落とすと picker の現在値と carry-over が壊れる）"
         );
 
         assert_eq!(entries[1]["key"], 24);
@@ -274,6 +285,8 @@ pub(super) fn session_list_payload(
                 "chat_capable": s.chat_capable,
                 "image_capable": s.image_capable,
                 "model_choices": s.model_choices,
+                "effort_choices": s.effort_choices,
+                "settings": s.settings,
                 "permission_choices": s.permission_choices,
             })
         })

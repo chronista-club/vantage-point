@@ -1,15 +1,20 @@
 /**
- * Claude の settings panel — model picker + permission mode picker。
+ * Claude の settings panel — model picker + effort picker + permission mode picker。
  *
- * model 切替は `{claude: {model}}` を `conversation:set_settings` で送る（spec: セッション
- * 進行中でも切替可能）。repo が engine を --resume + 新 --model で入れ替える = 会話コンテキスト
- * 継続でモデル交換。適用の視覚確認は新 engine の session_init が header.model を更新することで
- * 得る（picker は実測値に追従）。streaming 中は disable — engine drop が進行中 turn を切るのを
+ * model / effort の切替は `{claude: {model, effort}}` を `conversation:set_settings` で送る
+ * （spec: セッション進行中でも切替可能）。片方を変えるときも他方は roster の intent から
+ * 引き継ぐ（settings は丸ごと置換なので、送らない = 既定に戻る）。
+ *
+ * repo が engine を --resume + 新 flag で入れ替える = 会話コンテキスト継続で設定交換。
+ * model の適用は新 engine の session_init が header.model を更新することで視覚確認できる
+ * （picker は実測値に追従）。effort は VP が engine から実測を受け取っていないので、picker の
+ * 現在値は registry の intent。streaming 中は disable — engine drop が進行中 turn を切るのを
  * UI で抑止する。
  */
 import { For, Show } from 'solid-js'
 import { produce } from 'solid-js/store'
-import type { PickerChoice } from './console'
+import type { ConversationSession, PickerChoice } from './console'
+import type { ClaudeSettings } from './src/generated/ClaudeSettings'
 import { ModelSelect, postIpc, postSettings, type SettingsContext } from './engine-settings-shared'
 
 /**
@@ -26,13 +31,28 @@ export function setPermissionMode(ctx: Pick<SettingsContext, 'lane' | 'session' 
   postIpc({ t: 'conversation:set_permission_mode', lane: ctx.lane, session: ctx.session, mode })
 }
 
+/** roster の intent（registry の `settings.claude`）。未設定 = 既定（何も注入しない）。 */
+function claudeIntent(entry: ConversationSession | undefined): ClaudeSettings {
+  const settings = entry?.settings
+  return settings && 'claude' in settings ? settings.claude : {}
+}
+
 export function ClaudeSettingsPanel(props: SettingsContext) {
   const state = () => props.lc.state
   const observedModel = (): string => state().header?.model ?? ''
+  const intent = (): ClaudeSettings => claudeIntent(props.rosterEntry())
   const modelChoices = (): ReadonlyArray<PickerChoice> => props.rosterEntry()?.model_choices ?? []
+  const effortChoices = (): ReadonlyArray<PickerChoice> => props.rosterEntry()?.effort_choices ?? []
   const permissionChoices = (): ReadonlyArray<PickerChoice> =>
     props.rosterEntry()?.permission_choices ?? []
   const currentPermMode = (): string => state().permissionMode ?? 'bypassPermissions'
+  /** "" = Default → その field を省く（engine 既定 = flag を注入しない）。 */
+  const send = (next: { model?: string; effort?: string }) => {
+    const claude: ClaudeSettings = {}
+    if (next.model) claude.model = next.model
+    if (next.effort) claude.effort = next.effort
+    postSettings(props, { claude })
+  }
   return (
     <>
       {/* catalog 空 = VP からの切替なし（server 能力表明）。空なら描かない。 */}
@@ -42,11 +62,26 @@ export function ClaudeSettingsPanel(props: SettingsContext) {
           current={observedModel()}
           disabled={state().streaming}
           title="model（この session に適用 — 会話は resume で継続したまま入れ替わる）"
-          onChange={(value) =>
-            // "" = Default → model を省く（engine 既定 = --model を注入しない）
-            postSettings(props, { claude: value ? { model: value } : {} })
-          }
+          onChange={(value) => send({ model: value, effort: intent().effort })}
         />
+      </Show>
+      {/* effort: VP は engine から実測を受け取っていないので「現在値」は registry の intent。 */}
+      <Show when={effortChoices().length > 0}>
+        <select
+          class="conversation-model-select"
+          aria-label="Claude effort"
+          disabled={state().streaming}
+          title="effort（この session に適用 — model と同じく resume で継続したまま入れ替わる）"
+          onChange={(e) => send({ model: intent().model, effort: e.currentTarget.value })}
+        >
+          <For each={effortChoices()}>
+            {(c) => (
+              <option value={c.value} selected={(intent().effort ?? '') === c.value}>
+                {c.label}
+              </option>
+            )}
+          </For>
+        </select>
       </Show>
       {/* permission picker: 表記は TUI と同一の英語 4 mode。空 = 対話承認の概念なし → 出さない。 */}
       <Show when={permissionChoices().length > 0}>

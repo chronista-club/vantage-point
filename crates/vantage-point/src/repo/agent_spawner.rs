@@ -224,17 +224,27 @@ fn is_safe_session_id(id: &str) -> bool {
 /// 「今回は素で立てる」という呼び手の 1 bit（旧 `fresh` 引数 / `RespawnMode`）が消える。
 /// 代償: VP の registry を失った状態で起点 lane を開くと以前の会話を継がず新規で始まる。
 ///
-/// `model`（co-evolution #1）: lane 単位の model alias（`engine_model` 由来）。 Some のとき
-/// **全 claude 起動**（fresh / resume / continue の全分岐、`||` fallback 先も含む）に `--model
-/// <alias>` を注入する。 alias は `engine_model::is_valid_model` が `[A-Za-z0-9._-]`（先頭 `-`
-/// 不可）を保証済みなので、 shell metachar / 空白を含まず unquoted 埋め込みで injection 安全。
-fn claude_command(resume_id: Option<&str>, model: Option<&str>) -> String {
-    // `--model <alias> `（末尾 space 込み、None なら空文字）。 全分岐の "claude " 直後に挿す。
-    let model_flag = match model.filter(|m| crate::lane::engine_model::is_valid_model(m)) {
-        Some(m) => format!("--model {} ", m),
-        None => String::new(),
-    };
-    let fresh_cmd = format!("claude {}--settings '{}'", model_flag, WIRE_HOOKS);
+/// `settings`: session の Claude settings（registry 由来、2026-07-27 に lane 単位から session
+/// 紐づけへ）。`--model <alias>` / `--effort <level>` を **全 claude 起動**（fresh / resume の
+/// 全分岐、`||` fallback 先も含む）に注入する。
+///
+/// ⚠️ 値は **unquoted で shell 文字列に埋まる**。安全性の根拠は
+/// [`ClaudeSettings::flag_pairs`](crate::conversation::claude_settings::ClaudeSettings::flag_pairs)
+/// に閉じている: model は `engine_model::is_valid_model`（shell metachar / 空白 / 先頭 `-` を
+/// 弾く charset — 表はそちらが SSOT）、effort は `EFFORTS` の 5 語（英小文字のみ）を通った値
+/// **だけ**が出てくる。gui host も同じ `flag_pairs` を使うので語彙の表は 1 つ。
+fn claude_command(
+    resume_id: Option<&str>,
+    settings: &crate::conversation::claude_settings::ClaudeSettings,
+) -> String {
+    // `--model <alias> --effort <level> `（末尾 space 込み、無ければ空文字）。全分岐の "claude "
+    // 直後に挿す。語彙と検証は ClaudeSettings（gui host と同じ表 — 形式外は flag_pairs が落とす）。
+    let flags: String = settings
+        .flag_pairs()
+        .into_iter()
+        .map(|(flag, value)| format!("{flag} {value} "))
+        .collect();
+    let fresh_cmd = format!("claude {}--settings '{}'", flags, WIRE_HOOKS);
     // `|| vp lane resume-failed '<x>' ||` の 3 連 chain: resume-failed は「記録して常に
     // exit 1」の中継専用コマンドで、失敗を伝播させて次の fresh fallback へ繋ぐ。
     // shell group `{ …; }` を使わないのは fish 互換のため（slot の shell は user の login shell）。
@@ -246,7 +256,7 @@ fn claude_command(resume_id: Option<&str>, model: Option<&str>) -> String {
     match resume_id.filter(|id| is_safe_session_id(id)) {
         Some(id) => format!(
             "claude {}--resume '{}' --settings '{}' || vp lane resume-failed '{}' || {}",
-            model_flag, id, WIRE_HOOKS, id, fresh_cmd
+            flags, id, WIRE_HOOKS, id, fresh_cmd
         ),
         None => fresh_cmd,
     }
@@ -442,20 +452,21 @@ pub fn build_agent_command_for_session(
             let resume_id = conversation
                 .clone()
                 .filter(|id| crate::lane::cc_session::transcript_has_conversation(id));
-            // model は **session の** registry entry の Claude settings を読む（tui/gui 共有の
-            // intent。None = engine 既定 = 注入しない）。respawn（repo restart）でもここで毎回
-            // 読むため、一度指定した model は再起動をまたいで維持される（2026-07-27 に per-lane
+            // model / effort は **session の** registry entry の Claude settings を読む（tui/gui
+            // 共有の intent。None = engine 既定 = 注入しない）。respawn（repo restart）でもここで
+            // 毎回読むため、一度指定した設定は再起動をまたいで維持される（2026-07-27 に per-lane
             // `engine_model` file から session 紐づけへ移行 — mako 裁定、doc 50 session=Pane）。
-            let model = entry
+            let settings = entry
                 .and_then(|s| s.settings.as_ref())
                 .and_then(crate::conversation::EngineSettings::claude)
-                .and_then(|s| s.model.clone());
+                .cloned()
+                .unwrap_or_default();
             // doc 53 §12.1: 「素で立てるか」は **registry の会話 id の有無だけ**で決まる。
             // 旧実装は `fresh || (key >= 2 && resume_id.is_none())` で、`--continue` 分岐が
             // 起点 lane × id 無しに存在したため「Reset 直後（id を捨てた）」と「初回（まだ
             // id が無い）」を区別する 1 bit（`fresh`）が要っていた。`--continue` 退役で
             // 両者は同じ「VP が会話を知らない」に畳まれ、呼び手の 1 bit が消える。
-            let cmd = claude_command(resume_id.as_deref(), model.as_deref());
+            let cmd = claude_command(resume_id.as_deref(), &settings);
             Some(format!("{}\r", cmd))
         }
         Some(crate::conversation::EngineKind::Codex) => {
@@ -885,7 +896,7 @@ mod tests {
     #[test]
     fn claude_command_branches_on_conversation_id_only() {
         // id あり → --resume '<id>' || resume-failed || fresh
-        let resume = claude_command(Some("abc-123"), None);
+        let resume = claude_command(Some("abc-123"), &Default::default());
         assert!(resume.contains("--resume 'abc-123'"), "{resume}");
         assert!(
             resume.contains("||"),
@@ -898,7 +909,7 @@ mod tests {
         );
 
         // id なし → 素の claude（**`--continue` は使わない** — VP が知らない会話は継がない）
-        let fresh = claude_command(None, None);
+        let fresh = claude_command(None, &Default::default());
         assert!(
             !fresh.contains("--continue"),
             "cwd の最新会話を推測で拾わない（doc 53 §12.1）: {fresh}"
@@ -912,7 +923,7 @@ mod tests {
     #[test]
     fn unsafe_session_ids_are_rejected() {
         for bad in ["", "a'b", "x;rm -rf /", "id with space"] {
-            let cmd = claude_command(Some(bad), None);
+            let cmd = claude_command(Some(bad), &Default::default());
             assert!(
                 !cmd.contains("--resume"),
                 "不正 id '{bad}' は resume に使わない: {cmd}"
@@ -920,11 +931,56 @@ mod tests {
         }
     }
 
+    /// test 用: model だけ指定した ClaudeSettings。
+    fn model(m: &str) -> crate::conversation::claude_settings::ClaudeSettings {
+        crate::conversation::claude_settings::ClaudeSettings {
+            model: Some(m.to_string()),
+            effort: None,
+        }
+    }
+
+    /// effort 指定（PR-2、2026-09-21）: model と同じく全分岐の全 claude 起動に `--effort` が乗る。
+    #[test]
+    fn effort_flag_injected_next_to_model() {
+        let s = crate::conversation::claude_settings::ClaudeSettings {
+            model: Some("sonnet".into()),
+            effort: Some("high".into()),
+        };
+        let resume = claude_command(Some("abc-123"), &s);
+        assert_eq!(
+            resume.matches("--model sonnet --effort high ").count(),
+            2,
+            "{resume}"
+        );
+        let only_effort = claude_command(
+            None,
+            &crate::conversation::claude_settings::ClaudeSettings {
+                model: None,
+                effort: Some("max".into()),
+            },
+        );
+        assert_eq!(
+            only_effort,
+            format!("claude --effort max --settings '{WIRE_HOOKS}'")
+        );
+        let bad = claude_command(
+            None,
+            &crate::conversation::claude_settings::ClaudeSettings {
+                model: None,
+                effort: Some("ultra; rm -rf /".into()),
+            },
+        );
+        assert!(
+            !bad.contains("--effort"),
+            "語彙外の effort は注入しない: {bad}"
+        );
+    }
+
     /// model 指定（co-evolution #1）: 全分岐の全 claude 起動に `--model <alias>` が乗る。
     #[test]
     fn model_flag_injected_into_all_claude_invocations() {
         // fresh: 単一 claude に --model
-        let fresh = claude_command(None, Some("sonnet"));
+        let fresh = claude_command(None, &model("sonnet"));
         assert_eq!(
             fresh,
             format!("claude --model sonnet --settings '{WIRE_HOOKS}'"),
@@ -932,7 +988,7 @@ mod tests {
         );
 
         // resume: 主 claude と `||` fallback 先の fresh、 両方に --model が乗る
-        let resume = claude_command(Some("abc-123"), Some("opus"));
+        let resume = claude_command(Some("abc-123"), &model("opus"));
         assert_eq!(
             resume.matches("--model opus").count(),
             2,
@@ -945,7 +1001,7 @@ mod tests {
 
         // id 無し（素の claude）にも --model が乗る。doc 53 §12.1 で `--continue` 枝が
         // 消えたので、ここは fallback を持たない単一 command = 1 回だけ。
-        let bare = claude_command(None, Some("claude-fable-5-1"));
+        let bare = claude_command(None, &model("claude-fable-5-1"));
         assert_eq!(
             bare.matches("--model claude-fable-5-1").count(),
             1,
@@ -957,7 +1013,7 @@ mod tests {
     #[test]
     fn unsafe_models_are_rejected() {
         for bad in ["", "opus --dangerously", "a;rm -rf /", "-x", "mo del"] {
-            let cmd = claude_command(None, Some(bad));
+            let cmd = claude_command(None, &model(bad));
             assert!(
                 !cmd.contains("--model"),
                 "不正 model '{bad}' は --model に使わない: {cmd}"

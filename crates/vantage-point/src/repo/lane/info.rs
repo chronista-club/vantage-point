@@ -265,6 +265,13 @@ pub struct LaneSessionView {
     /// chat_capable と同じく「押しても弾かれる行き止まり」を server 表明で根絶する）。
     #[serde(default)]
     pub model_choices: Vec<crate::conversation::engine::Choice>,
+    /// effort picker の選択肢（同上）。空 = effort の概念なし（picker を出さない）。
+    #[serde(default)]
+    pub effort_choices: Vec<crate::conversation::engine::Choice>,
+    /// この session の engine 別設定（registry の intent。None = engine 既定に委譲）。
+    /// picker の「現在値」のうち engine 実測が無いもの（effort）はこれを見る。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<crate::conversation::EngineSettings>,
     /// permission picker の選択肢（同上）。空 = 対話承認の概念なし（`set_permission_mode`
     /// が bail する engine — codex の approval_policy 等の別語彙は将来 catalog を足すだけ）。
     #[serde(default)]

@@ -34,6 +34,14 @@ image_capable: boolean,
  */
 model_choices: Array<ChoiceWire>, 
 /**
+ * effort picker の選択肢（同上）。空 = effort の概念なし。旧 server は送らない → 空。
+ */
+effort_choices: Array<ChoiceWire>, 
+/**
+ * この session の engine 別設定（registry の intent、engine 所有の形 — vp-app は透過）。
+ */
+settings: unknown, 
+/**
  * permission picker の選択肢（同上）。空 = 対話承認の概念なし。
  */
 permission_choices: Array<ChoiceWire>, 

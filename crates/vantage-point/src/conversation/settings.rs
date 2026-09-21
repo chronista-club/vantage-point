@@ -58,7 +58,10 @@ impl EngineSettings {
     /// test で固定）。
     pub fn from_model(kind: EngineKind, model: String) -> Option<Self> {
         match kind {
-            EngineKind::Claude => Some(Self::Claude(ClaudeSettings { model: Some(model) })),
+            EngineKind::Claude => Some(Self::Claude(ClaudeSettings {
+                model: Some(model),
+                ..Default::default()
+            })),
             EngineKind::Vpcode => Some(Self::Vpcode(VpcodeSettings { model })),
             EngineKind::Codex | EngineKind::Grok | EngineKind::OpenCode => None,
         }
@@ -94,6 +97,7 @@ mod tests {
     fn externally_tagged_by_engine() {
         let s = EngineSettings::Claude(ClaudeSettings {
             model: Some("claude-sonnet-5".into()),
+            effort: None,
         });
         assert_eq!(
             serde_json::to_value(&s).unwrap(),
@@ -133,6 +137,7 @@ mod tests {
     fn validate_shape_is_the_injection_guard() {
         let bad = EngineSettings::Claude(ClaudeSettings {
             model: Some("opus --dangerous".into()),
+            effort: None,
         });
         assert!(bad.validate_shape().is_err());
         let ok = EngineSettings::Claude(ClaudeSettings::default());

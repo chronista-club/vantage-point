@@ -675,7 +675,7 @@ pub(crate) async fn handle_session_now(
 ///
 /// **engine の分岐は variant の match だけ**（mako 2026-09-21「if でエンジンを分けるのはやめよう」）:
 /// - Claude / vpcode: registry に intent を書き、稼働中 engine を drop → `ensure_chat_engine` で
-///   即再 spawn。`--resume` + 新 `--model` で**会話コンテキストを保ったまま**替わる（CC の
+///   即再 spawn。`--resume` + 新 `--model` / `--effort` で**会話コンテキストを保ったまま**替わる（CC の
 ///   `/model` の VP 版）。engine 不在（tui 中 / chat-idle）は記録のみ = 次 spawn から適用。
 ///   ⚠️ 進行中の turn は engine drop で切れる（UI 側は streaming 中 picker を disable して抑止）。
 /// - Codex: 稼働中 host の runtime 設定を app-server RPC で変え、host が registry にも書く
@@ -772,6 +772,11 @@ pub(crate) async fn handle_conversation_set_settings(
             }
         }
     };
+    // settings は roster の一部（panel の effort picker の現在値 / model⇄effort の carry-over が
+    // `LaneSessionView.settings` を読む）ので、書き終えたら知らせる（doc 53 §11: session を変える
+    // 動詞の末尾で撃つ — 撃たないと次の定期 snapshot（5s）まで GUI が古い intent を見続け、
+    // 続けて片方を変えると古い intent で他方が上書きされる）。pool の write guard を離してから。
+    super::lane::lifecycle::emit_lane_update(state, &addr).await;
     tracing::info!("conversation_set_settings: lane={lane} session={session}");
     Ok(applied)
 }

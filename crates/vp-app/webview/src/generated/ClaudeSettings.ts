@@ -7,4 +7,8 @@ export type ClaudeSettings = {
 /**
  * `--model` に渡す id。None = engine 既定（注入しない）。
  */
-model?: string, };
+model?: string, 
+/**
+ * `--effort` に渡す段。None = engine 既定（注入しない）。値は [`EFFORTS`] のいずれか。
+ */
+effort?: string, };
