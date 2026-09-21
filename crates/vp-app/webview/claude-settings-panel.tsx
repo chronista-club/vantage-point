@@ -37,6 +37,24 @@ function claudeIntent(entry: ConversationSession | undefined): ClaudeSettings {
   return settings && 'claude' in settings ? settings.claude : {}
 }
 
+/**
+ * model select の現在値。**VP が指定した intent を優先**し、指定が無いときだけ実測に落とす。
+ *
+ * 実測（session_init の header.model）は claude が **次の turn の最初にしか出さない**ので、
+ * 切替直後の respawn では届かない。実測だけを見ると、選んだ瞬間に select が旧 model に戻り、
+ * 次に投稿するまでそのまま残る（2026-09-21 実機: Sonnet → Opus で Sonnet 表示のまま、
+ * engine は `--model claude-opus-5` で起動済み）。effort の select と同じ規則に揃える。
+ *
+ * - intent に model あり → それ
+ * - intent はあるが model 無し（= Default を選んだ）→ ""（Default）
+ * - intent 無し（VP が何も指定していない）→ 実測
+ */
+export function claudeModelCurrent(entry: ConversationSession | undefined, observed: string): string {
+  const settings = entry?.settings
+  if (settings && 'claude' in settings) return settings.claude.model ?? ''
+  return observed
+}
+
 export function ClaudeSettingsPanel(props: SettingsContext) {
   const state = () => props.lc.state
   const observedModel = (): string => state().header?.model ?? ''
@@ -59,7 +77,7 @@ export function ClaudeSettingsPanel(props: SettingsContext) {
       <Show when={modelChoices().length > 0}>
         <ModelSelect
           choices={modelChoices()}
-          current={observedModel()}
+          current={claudeModelCurrent(props.rosterEntry(), observedModel())}
           disabled={state().streaming}
           title="model（この session に適用 — 会話は resume で継続したまま入れ替わる）"
           onChange={(value) => send({ model: value, effort: intent().effort })}
