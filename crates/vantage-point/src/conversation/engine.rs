@@ -150,9 +150,12 @@ impl EngineKind {
             // Opus 4.8→5 は mako 裁定。Fable 5→5.1 は CC 2.1.257 で `fable` alias の既定が 5.1 に
             // 移ったのに追随、2026-09-02）。Haiku は date suffix 付き full id でなく **alias** —
             // alias は系列の最新を指し続けるので catalog が古びにくい。
+            // Opus 5.5 は 2026-09-23 に登場、id は claude CLI 2.1.280 の `-p --model` で実測
+            // （modelUsage に `claude-opus-5-5` が返る）。Opus 5 は選べる期間を残すため併置。
             Self::Claude => Choice::list(&[
                 ("", "Default"),
                 ("claude-fable-5-1", "Fable 5.1"),
+                ("claude-opus-5-5", "Opus 5.5"),
                 ("claude-opus-5", "Opus 5"),
                 ("claude-sonnet-5", "Sonnet 5"),
                 ("claude-haiku-4-5", "Haiku 4.5"),
