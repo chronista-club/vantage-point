@@ -324,14 +324,18 @@ pub struct LaneSessionEntryWire {
     /// 旧 server は送らない → false（貼り付け UI を出さない = 安全側）。
     #[serde(default)]
     pub image_capable: bool,
-    /// この session の model 指定（registry の intent。None = engine 既定）。
-    #[serde(default)]
-    pub model: Option<String>,
     /// model picker の選択肢（server 導出 catalog — client は並べるだけ）。
     /// **空 = VP からの model 切替なし**（picker は read-only 表示 or 非表示に落ちる）。
     /// 旧 server は送らない → 空（切替なしに倒す）。
     #[serde(default)]
     pub model_choices: Vec<ChoiceWire>,
+    /// effort picker の選択肢（同上）。空 = effort の概念なし。旧 server は送らない → 空。
+    #[serde(default)]
+    pub effort_choices: Vec<ChoiceWire>,
+    /// この session の engine 別設定（registry の intent、engine 所有の形 — vp-app は透過）。
+    #[serde(default)]
+    #[cfg_attr(test, ts(type = "unknown"))]
+    pub settings: Option<serde_json::Value>,
     /// permission picker の選択肢（同上）。空 = 対話承認の概念なし。
     #[serde(default)]
     pub permission_choices: Vec<ChoiceWire>,

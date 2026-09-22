@@ -37,7 +37,7 @@ crates/vantage-point/src/repo/
 │                             replay_with_in_flight / handle_conversation_demand_stop / route_conversation）。owner 不在だった logic
 ├── wire_relay.rs           repo 側の wire relay（normalize_agent_addr / handle_wire_* 7 本）。transport は daemon_wire、store は daemon/wire_ops（7b）
 │  ── _ops（受付の続き。owner は別）──
-├── conversation_ops.rs     submit / nudge / respond / interrupt / permission_mode / session_* / set_mode / now / set_model
+├── conversation_ops.rs     submit / nudge / respond / interrupt / permission_mode / session_* / set_mode / now / set_settings
 │                             （owner = lane/state の facade + conversation::engine）
 ├── terminal_ops.rs         terminal demand / write / resize（owner = terminal_pump + lane/state）
 ├── process_ops.rs          watch_file / unwatch_file / process_* / ruby_*（owner = process_runner + file_watcher）

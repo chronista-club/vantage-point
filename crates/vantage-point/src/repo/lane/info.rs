@@ -260,16 +260,18 @@ pub struct LaneSessionView {
     /// 押しても engine に無視されるだけの行き止まりを作らない）。
     #[serde(default)]
     pub image_capable: bool,
-    /// この session の model 指定（registry の intent。None = engine 既定に委譲）。
-    /// picker の「現在値」は engine 実測（session_init の header.model）が正で、
-    /// こちらは「VP が spawn 時に何を注入するか」の側。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
     /// model picker の選択肢（`EngineKind` catalog、server 導出 — client は並べるだけ）。
     /// **空 = VP からの model 切替なし**（client は read-only 表示 or 非表示に落とす —
     /// chat_capable と同じく「押しても弾かれる行き止まり」を server 表明で根絶する）。
     #[serde(default)]
     pub model_choices: Vec<crate::conversation::engine::Choice>,
+    /// effort picker の選択肢（同上）。空 = effort の概念なし（picker を出さない）。
+    #[serde(default)]
+    pub effort_choices: Vec<crate::conversation::engine::Choice>,
+    /// この session の engine 別設定（registry の intent。None = engine 既定に委譲）。
+    /// picker の「現在値」のうち engine 実測が無いもの（effort）はこれを見る。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<crate::conversation::EngineSettings>,
     /// permission picker の選択肢（同上）。空 = 対話承認の概念なし（`set_permission_mode`
     /// が bail する engine — codex の approval_policy 等の別語彙は将来 catalog を足すだけ）。
     #[serde(default)]

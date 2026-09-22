@@ -309,15 +309,15 @@ pub enum AppEvent {
     /// event loop が `conversation_session_switch_root` で repo に forward（slot は対象 session の
     /// store で Resume respawn）→ session list 再取得 + demand_start で表示を追従させる。
     ConsoleSwitchRoot { lane: String, session: u64 },
-    /// gui モデル切替要求（ChatView の model picker）。 event loop が
-    /// `conversation_set_model` で repo に forward（**session 単位** — doc 50 session=Pane、
-    /// 2026-07-27 に旧 root/lane 単位 `console_set_model` から移行）。
-    /// `model` None = engine 既定に戻す。
-    ConversationSetModel {
+    /// gui 設定切替要求（ChatView の engine 別 settings panel）。 event loop が
+    /// `conversation_set_settings` で repo に forward（**session 単位** — doc 50 session=Pane、
+    /// 2026-07-27 に旧 root/lane 単位 `console_set_model` から移行、2026-09-21 に model 単独
+    /// から engine 別 `settings` へ）。`settings` は engine 所有の形（`{"claude": {...}}` 等）で
+    /// vp-app は中身を解釈しない（透過）。null = engine 既定に戻す。
+    ConversationSetSettings {
         lane: String,
         session: u64,
-        model: Option<String>,
-        effort: Option<String>,
+        settings: serde_json::Value,
         request_id: Option<String>,
     },
     // doc 53 §11: 旧 `ConversationSessionsFetch`（session 一覧の ask 要求）は退役。roster の供給は

@@ -32,6 +32,7 @@ export type SessionMode = 'tui' | 'gui'
 // 生成型に当たる + vitest（`conversation-event-contract.test.ts`）。
 // ---------------------------------------------------------------------------
 
+import type { EngineSettings } from './src/generated/EngineSettings'
 import type { ConversationEvent as EngineConversationEvent } from './src/generated/ConversationEvent'
 import type { PlanEntry } from './src/generated/PlanEntry'
 import type { QuestionOption } from './src/generated/QuestionOption'
@@ -88,12 +89,14 @@ export type ConversationSession = {
   /** user の投入に画像を混ぜられるか（chat 入力欄への貼り付け）。
    *  旧 server は送らない → undefined = 不可に倒す（貼り付け UI を出さない）。 */
   image_capable?: boolean
-  /** この session の model 指定（registry の intent。null/undefined = engine 既定）。 */
-  model?: string | null
   /** model picker の選択肢（server 導出 catalog — client は並べるだけ、2026-07-27）。
    *  空/undefined = VP からの model 切替なし（picker は read-only 表示 or 非表示に落とす —
    *  chat_capable と同じ「行き止まりを作らない」規律）。 */
   model_choices?: PickerChoice[]
+  /** effort picker の選択肢（同上。空/undefined = effort の概念なし → picker を出さない）。 */
+  effort_choices?: PickerChoice[]
+  /** この session の engine 別設定（registry の intent、engine 所有の形）。null/undefined = 既定。 */
+  settings?: EngineSettings | null
   /** permission picker の選択肢（同上。空/undefined = 対話承認の概念なし）。 */
   permission_choices?: PickerChoice[]
 }

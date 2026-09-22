@@ -600,7 +600,7 @@ pub(crate) async fn create_sub_orchestrated(
         crate::lane::engine_model::resolve_default(req.model.as_deref(), default_model.as_deref())
     {
         let lane_label = crate::repo::agent_spawner::lane_label(&addr);
-        // 記録先は registry の初期 session（key=1）の `SessionEntry.model`（session 紐づけ、
+        // 記録先は registry の初期 session（key=1）の `SessionEntry.settings`（session 紐づけ、
         // 2026-07-27）。default_agent = この lane の agent — 早期に registry file が生えても
         // session 1 の agent が spawn 実体と一致する。
         if let Err(e) = crate::lane::session_registry::set_model(

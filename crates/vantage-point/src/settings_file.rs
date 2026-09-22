@@ -172,12 +172,12 @@ pub fn default_lane_pair() -> (String, Option<String>) {
 
 /// その agent は VP から model を渡せるか（doc 59 P4）。
 ///
-/// 判定の源は [`crate::conversation::engine::EngineKind::model_choices`] —
-/// **空 = VP からの切替なし**という既存の能力表明をそのまま使う。ここで独自の一覧を
-/// 持つと、engine 側が model を受けるようになった時に片方だけ古くなる。
+/// 判定の源は [`crate::conversation::engine::EngineKind::takes_model_intent`]（2026-09-21 に
+/// `model_choices` の空/非空から移した — vpcode の catalog は endpoint 不在で空になり、
+/// `EngineSettings::from_model` と食い違っていた）。ここで独自の一覧を持たない。
 pub fn agent_accepts_model(agent: &str) -> bool {
     crate::conversation::engine::EngineKind::from_agent(agent)
-        .is_some_and(|k| !k.model_choices().is_empty())
+        .is_some_and(crate::conversation::engine::EngineKind::takes_model_intent)
 }
 
 /// settings.kdl のパス（`~/.config/vp/settings.kdl`）。

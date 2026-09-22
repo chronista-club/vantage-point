@@ -552,12 +552,18 @@ impl CodexAgentHost {
         let stderr = child.stderr.take();
         let child_pid = child.id();
 
+        // 自分の session の Codex settings だけ読む（他 engine の variant は None に落ちる —
+        // agent の文字列比較でなく variant で選ぶ）。
         let selection =
             crate::lane::session_registry::load(&config.repo, &config.lane_label, "codex")
                 .sessions
                 .into_iter()
-                .find(|entry| entry.key == config.session_key && entry.agent == "codex")
-                .and_then(|entry| entry.codex_selection);
+                .find(|entry| entry.key == config.session_key)
+                .and_then(|entry| entry.settings)
+                .and_then(|settings| match settings {
+                    crate::conversation::EngineSettings::Codex(sel) => Some(sel),
+                    _ => None,
+                });
         let (event_tx, _rx) = broadcast::channel::<ConversationEvent>(256);
         let inner = Arc::new(RpcInner {
             event_tx,
@@ -655,11 +661,14 @@ impl CodexAgentHost {
         }
         super::codex_settings::validate(&st.config.models, &selection)?;
         let (lane, key) = crate::lane::session_registry::parse_session_label(&self.inner.lane);
-        crate::lane::session_registry::set_codex_selection(
+        crate::lane::session_registry::set_settings(
             &self.inner.repo,
             lane,
+            "codex",
             key,
-            selection.clone(),
+            Some(crate::conversation::EngineSettings::Codex(
+                selection.clone(),
+            )),
         )
         .map_err(|error| format!("Codex 設定を保存できませんでした: {error}"))?;
         st.config.selection = Some(selection);
@@ -3065,13 +3074,13 @@ for line in sys.stdin:
     }
 
     #[test]
-    fn codex_selection_survives_registry_roundtrip() {
-        let value = serde_json::json!({"key":2,"agent":"codex","codex_selection":{"model":"two","effort":"high"}});
+    fn codex_settings_survive_registry_roundtrip() {
+        let value = serde_json::json!({"key":2,"agent":"codex","settings":{"codex":{"model":"two","effort":"high"}}});
         let entry: crate::lane::session_registry::SessionEntry =
             serde_json::from_value(value.clone()).unwrap();
         assert_eq!(
-            serde_json::to_value(entry).unwrap()["codex_selection"],
-            value["codex_selection"]
+            serde_json::to_value(entry).unwrap()["settings"],
+            value["settings"]
         );
     }
 

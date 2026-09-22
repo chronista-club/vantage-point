@@ -150,8 +150,8 @@ pub struct ClaudeHostConfig {
     pub session_key: crate::lane::session_registry::SessionKey,
     /// 再開する session id（`--resume`）。tui ⇄ gui 切替 / repo 再起動復帰に使う。
     pub resume_session_id: Option<String>,
-    /// 使用モデル（`--model`）。None = claude default。
-    pub model: Option<String>,
+    /// VP からの注入指定（`--model` / `--effort`）。既定 = 何も注入しない（claude default）。
+    pub settings: super::claude_settings::ClaudeSettings,
     /// claude CLI パス（未指定なら PATH / well-known から解決）。
     pub claude_cli_path: Option<String>,
 }
@@ -373,8 +373,9 @@ impl ClaudeHost {
         // AskUserQuestion だけが逆方向 can_use_tool として飛ぶ → 既定を維持したまま質問だけ拾える。
         cmd.arg("--permission-prompt-tool").arg("stdio");
 
-        if let Some(ref model) = config.model {
-            cmd.arg("--model").arg(model);
+        // model / effort: 語彙と検証は ClaudeSettings が持つ（tui の claude_command と同じ表）。
+        for (flag, value) in config.settings.flag_pairs() {
+            cmd.arg(flag).arg(value);
         }
         // resume: session id 保持で文脈継続（Step 0 Spike C で実証）。
         if let Some(ref sid) = config.resume_session_id {
@@ -1266,7 +1267,10 @@ mod tests {
             lane_label: "spike".to_string(),
             session_key: 1,
             resume_session_id: None,
-            model: Some("haiku".to_string()),
+            settings: crate::conversation::claude_settings::ClaudeSettings {
+                model: Some("haiku".to_string()),
+                effort: None,
+            },
             claude_cli_path: None,
         })
         .expect("spawn host");
@@ -1325,7 +1329,10 @@ mod tests {
             lane_label: "spike-q".to_string(),
             session_key: 1,
             resume_session_id: None,
-            model: Some("haiku".to_string()),
+            settings: crate::conversation::claude_settings::ClaudeSettings {
+                model: Some("haiku".to_string()),
+                effort: None,
+            },
             claude_cli_path: None,
         })
         .expect("spawn host");

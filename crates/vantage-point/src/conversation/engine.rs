@@ -123,6 +123,15 @@ impl EngineKind {
         matches!(self, Self::Claude | Self::Codex)
     }
 
+    /// VP から「model だけ」の指定を受ける engine か（`vp lane new --model` / config の
+    /// `default-lane-model` / 旧 registry の `model` field の移行）。Codex は model 単独でなく
+    /// effort との組でしか意味を持たず、Grok / OpenCode は engine 側で選ぶ。
+    /// [`super::settings::EngineSettings::from_model`] と `settings_file::agent_accepts_model` が
+    /// 共有する唯一の述語（catalog の空/非空は vpcode で環境依存になるので、ここでは使わない）。
+    pub fn takes_model_intent(self) -> bool {
+        matches!(self, Self::Claude | Self::Vpcode)
+    }
+
     /// VP の model picker に出す選択肢（engine ごとの catalog — server が SSOT、client は
     /// 並べるだけ。mako 裁定 2026-07-27: model は成長し続け多 engine で頻度も増えるため、
     /// client の hardcode を廃してここに一元化）。
@@ -141,9 +150,12 @@ impl EngineKind {
             // Opus 4.8→5 は mako 裁定。Fable 5→5.1 は CC 2.1.257 で `fable` alias の既定が 5.1 に
             // 移ったのに追随、2026-09-02）。Haiku は date suffix 付き full id でなく **alias** —
             // alias は系列の最新を指し続けるので catalog が古びにくい。
+            // Opus 5.5 は 2026-09-23 に登場、id は claude CLI 2.1.280 の `-p --model` で実測
+            // （modelUsage に `claude-opus-5-5` が返る）。Opus 5 は選べる期間を残すため併置。
             Self::Claude => Choice::list(&[
                 ("", "Default"),
                 ("claude-fable-5-1", "Fable 5.1"),
+                ("claude-opus-5-5", "Opus 5.5"),
                 ("claude-opus-5", "Opus 5"),
                 ("claude-sonnet-5", "Sonnet 5"),
                 ("claude-haiku-4-5", "Haiku 4.5"),
@@ -155,6 +167,16 @@ impl EngineKind {
             // **先頭 = VP 既定**（session 未指定時の spawn fallback — vpcode_host の解決順）。
             Self::Vpcode => super::vpcode_catalog::choices(),
             Self::Codex | Self::Grok | Self::OpenCode => Vec::new(),
+        }
+    }
+
+    /// effort picker の選択肢（model と同じ catalog 駆動。**空 = effort の概念なし** — client は
+    /// picker を出さない）。値の語彙は engine が所有する（Claude = [`super::claude_settings`]、
+    /// Codex は model ごとに動的なので roster でなく `codex_config` event で運ぶ）。
+    pub fn effort_choices(self) -> Vec<Choice> {
+        match self {
+            Self::Claude => super::claude_settings::ClaudeSettings::effort_choices(),
+            Self::Codex | Self::Grok | Self::OpenCode | Self::Vpcode => Vec::new(),
         }
     }
 
@@ -471,6 +493,21 @@ mod tests {
                 .all(|c| !c.value.is_empty()),
             "vpcode に engine 既定は無いので空 value を載せない"
         );
+
+        // effort の catalog は claude のみ（語彙は claude_settings が所有。Codex は model ごとに
+        // 動的なので roster でなく codex_config で運び、ここは空 = picker を出さない）。
+        assert!(!EngineKind::Claude.effort_choices().is_empty());
+        for k in [
+            EngineKind::Codex,
+            EngineKind::Grok,
+            EngineKind::OpenCode,
+            EngineKind::Vpcode,
+        ] {
+            assert!(
+                k.effort_choices().is_empty(),
+                "{k:?} は effort picker を出さない"
+            );
+        }
 
         // permission mode は claude のみ（他 engine は ChatHost::set_permission_mode が bail）。
         // 表記は TUI と同一（v2.1.200 の manual 改名を反映）、wire 値は互換の "default"。
