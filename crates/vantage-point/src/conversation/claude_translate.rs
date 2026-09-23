@@ -60,6 +60,26 @@ pub struct ClaudeTranslator {
     /// `<synthetic>` という実装詳細に結合しない判定にする。
     /// turn 終端（`result`）で false に戻す。
     saw_text_delta: bool,
+    /// この turn で user が停止した印（`[Request interrupted by user…]`）を見たか。
+    ///
+    /// claude は停止（control request `interrupt`）で turn を閉じるとき、この印を user 行に残して
+    /// から `result` を **`error_during_execution` / `is_error: true`** で返す（2026-09-23 実測、
+    /// 2.1.280）。そのまま翻訳すると自分で止めただけなのに「engine error」になる。印の直後の
+    /// error result は「停止による正常な turn の終わり」= [`ConversationEvent::TurnCompleted`] に
+    /// 読み替える。turn 終端（`result`）で false に戻す。
+    saw_interrupt_marker: bool,
+}
+
+/// claude が停止時に user 行へ残す印の接頭辞（`[Request interrupted by user]` /
+/// `[Request interrupted by user for tool use]`）。
+const INTERRUPT_MARKER: &str = "[Request interrupted by user";
+
+/// user 行に停止の印が含まれるか。
+fn has_interrupt_marker(message: &RawUserMessage) -> bool {
+    message
+        .content
+        .iter()
+        .any(|c| matches!(c, RawUserContent::Text { text } if text.starts_with(INTERRUPT_MARKER)))
 }
 
 /// [`ClaudeTranslator::ingest`] の結果 — 「この行が生んだ event」と「この行が disk に commit したか」。
@@ -138,10 +158,15 @@ impl ClaudeTranslator {
             RawLine::User {
                 message,
                 parent_tool_use_id: None,
-            } => Ingested {
-                events: on_user(message),
-                commits_transcript: true,
-            },
+            } => {
+                if has_interrupt_marker(&message) {
+                    self.saw_interrupt_marker = true;
+                }
+                Ingested {
+                    events: on_user(message),
+                    commits_transcript: true,
+                }
+            }
             RawLine::Assistant {
                 message,
                 parent_tool_use_id: Some(parent),
@@ -281,7 +306,8 @@ impl ClaudeTranslator {
     fn on_result(&mut self, res: RawResult) -> ConversationEvent {
         // turn 終端 — 次 turn のために delta 観測フラグを戻す（[`Self::saw_text_delta`]）。
         self.saw_text_delta = false;
-        if res.is_error {
+        let interrupted = std::mem::take(&mut self.saw_interrupt_marker);
+        if res.is_error && !interrupted {
             ConversationEvent::Error {
                 message: res
                     .result
@@ -785,6 +811,25 @@ mod tests {
         let got = t.ingest(line);
         assert_eq!(got.events.len(), 1);
         assert!(got.commits_transcript);
+    }
+
+    /// 停止（interrupt）で閉じた turn は error でなく TurnCompleted（2026-09-23 実測の行そのまま）。
+    /// 印の無い error result は従来どおり Error。
+    #[test]
+    fn interrupted_turn_closes_as_completed_not_error() {
+        let mut t = ClaudeTranslator::default();
+        t.ingest(r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#);
+        let evs = t.ingest(r#"{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"sid-1","result":null,"errors":["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"]}"#).events;
+        assert!(
+            matches!(evs.as_slice(), [ConversationEvent::TurnCompleted { .. }]),
+            "停止は正常な turn の終わり: {evs:?}"
+        );
+        // 印は turn をまたがない — 次の error result は本物の異常として Error
+        let evs = t.ingest(r#"{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"sid-1","result":"boom"}"#).events;
+        assert!(
+            matches!(evs.as_slice(), [ConversationEvent::Error { message }] if message == "boom"),
+            "{evs:?}"
+        );
     }
 
     /// 実測の init 行から SessionInit を取り出せる。
