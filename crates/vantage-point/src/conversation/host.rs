@@ -132,6 +132,9 @@ fn fold_in_flight(f: &mut InFlight, out: &super::claude_translate::Ingested) {
     }
 }
 
+/// `-p --resume` で中断された turn を続けさせる claude の env（2.1.274+）。
+pub const RESUME_INTERRUPTED_TURN_ENV: &str = "CLAUDE_CODE_RESUME_INTERRUPTED_TURN";
+
 /// ClaudeHost の起動設定。
 #[derive(Debug, Clone)]
 pub struct ClaudeHostConfig {
@@ -331,6 +334,12 @@ impl ClaudeHost {
         // hooks module（`vp now` 自動化 / wire 受領 ack）は chat でも `-p` 経路で効く（2026-09-17 実測）。
         // gui は daemon から spawn されるので user の shell env が届かず、ここで焼くしかない。
         cmd.env(crate::repo::agent_spawner::CLAUDE_FUNCTION_HOOKS_ENV, "1");
+        // 中断された turn を resume で続ける（claude 2.1.274+）。VP は daemon 再起動 / 設定切替 /
+        // repo restart のたびに engine を落として `--resume` で立て直すので、落とした時点で
+        // 進行中だった turn が宙に浮いていた。これを焼くと、入力なしでも resume 直後に turn が
+        // 再開して完了まで走る（2026-09-23 実測: env なしは何も起きず、ありは result まで到達）。
+        // 中断された tool を再実行するかは model の判断（env が保証するのは turn の継続まで）。
+        cmd.env(RESUME_INTERRUPTED_TURN_ENV, "1");
         // cwd 空は「継承」（呼び元の cwd を使う）— test / repo_dir 未解決時の防御。
         if !config.cwd.is_empty() {
             cmd.current_dir(&config.cwd);
@@ -1249,6 +1258,57 @@ mod tests {
         assert_eq!(f["request_id"], INIT_REQUEST_ID);
         assert_eq!(f["request"]["subtype"], "initialize");
         assert!(f["request"]["hooks"].is_null());
+    }
+
+    /// 中断 turn の継続 env が gui engine に焼かれる（2026-09-23）。偽 claude が自分の env を
+    /// file に書き出し、spawn 側が値を渡したことを確かめる。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_sets_resume_interrupted_turn_env() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let out = tmp.path().join("env.txt");
+        let script = tmp.path().join("fake-claude");
+        std::fs::write(
+            &script,
+            // spawn 前の `--forward-subagent-text` 対応 probe も同じ path を叩くので、本体の起動
+            // （`--input-format` を持つ方）だけを記録する。
+            format!(
+                "#!/bin/sh\ncase \"$*\" in *--input-format*) env > '{}' ;; esac\ncat > /dev/null\n",
+                out.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _host = ClaudeHost::spawn(ClaudeHostConfig {
+            cwd: tmp.path().to_string_lossy().to_string(),
+            repo: "vp-test".to_string(),
+            lane: "env".to_string(),
+            lane_label: "env".to_string(),
+            session_key: 1,
+            resume_session_id: None,
+            settings: Default::default(),
+            claude_cli_path: Some(script.to_string_lossy().to_string()),
+        })
+        .expect("spawn");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let env = loop {
+            if let Ok(s) = std::fs::read_to_string(&out)
+                && s.contains("VP_SESSION_KEY")
+            {
+                break s;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "偽 claude が env を書かない"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        assert!(
+            env.lines()
+                .any(|l| l == format!("{RESUME_INTERRUPTED_TURN_ENV}=1")),
+            "中断 turn の継続 env が渡っていない"
+        );
     }
 
     /// 実機統合: headless claude を spawn → submit → ConversationEvent 列を受け取り、
