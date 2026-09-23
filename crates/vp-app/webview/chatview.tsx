@@ -1545,11 +1545,30 @@ function SessionChatView(props: { lane: string; session: number }) {
   const nowLine = () => deriveNowLine(state())
   const codexInputBusy = () => !!state().codexInput
   const codexTurnActive = () => rosterEntry()?.agent === 'codex' && (state().streaming || !!state().codexQueue?.turn_id)
+  /** Claude の turn 中か。この間の送信は 2 択になる（Codex の「今伝える / 次に実行する」と同じ顔）:
+   *  - 今伝える（既定 = Enter）: 即 stdin に送る。headless claude は次の tool の区切りで今の turn に
+   *    差し込む（2026-09-23 実測: tool 実行中に送った指示が同じ turn の返事に反映、result は 1 つ）。
+   *    区切りの無い turn（文章を書いているだけ）では、今の turn の直後に次の turn として走る
+   *    （同日実測: result が 2 つ、2 つ目が指示を反映）。どちらでも取りこぼしは無い
+   *  - 次に実行する: 従来の type-ahead（pending に貯め、turn が閉じてから送る — doc 35 §5.1） */
+  const claudeTurnActive = () => rosterEntry()?.agent === 'claude' && state().streaming
+  /** 次に実行する（Claude）: pending に積む。走行中の複数送信は改行で連結し、turn 閉時に 1 turn で flush。 */
+  const queueClaudeDraft = (text: string) => {
+    lc.set('pending', (p) => (p ? `${p}\n${text}` : text))
+  }
   const sendCodexInput = (action: Record<string, unknown>, text = '', images: Submission['images'] = []) =>
     sendCodexInputTo(lc, props.lane, props.session, action, text, images)
   const queueDraft = () => {
     const text = draft().trim()
-    if (!text || !sendCodexInput({ kind: 'add', text }, text, toWirePayload(attachments()))) return
+    if (!text) return
+    if (claudeTurnActive()) {
+      // Claude の type-ahead は画像を運ばない（従来どおり）— 添付は composer に残す
+      queueClaudeDraft(text)
+      setDraft('')
+      if (inputRef) autosize(inputRef)
+      return
+    }
+    if (!sendCodexInput({ kind: 'add', text }, text, toWirePayload(attachments()))) return
     clearAttachments()
     setDraft('')
     if (inputRef) autosize(inputRef)
@@ -1568,10 +1587,11 @@ function SessionChatView(props: { lane: string; session: number }) {
     }
     setDraft('')
     if (inputRef) autosize(inputRef) // 送信後は 1 行に畳み戻す
-    // doc 35 §5.1: streaming 中は engine へ送らず pending に buffer（items[] を触らない = 順序を汚さない）。
-    // 走行中の複数送信は改行で連結し、単一 draft = 1 turn として turn 閉時に flush する。
-    if (lc.state.streaming) {
-      lc.set('pending', (p) => (p ? `${p}\n${text}` : text))
+    // Claude の turn 中の既定（Enter / 今伝える）は即送信 = 今の turn に差し込む（claudeTurnActive の doc）。
+    // Claude 以外で streaming 中（grok / opencode / vpcode 等）は従来どおり pending に buffer
+    //（doc 35 §5.1: items[] を触らない = 順序を汚さない。turn 閉時に flush する）。
+    if (lc.state.streaming && !claudeTurnActive()) {
+      queueClaudeDraft(text)
       return
     }
     sendSubmission(lane, props.session, text, toWirePayload(attachments()))
@@ -1604,6 +1624,8 @@ function SessionChatView(props: { lane: string; session: number }) {
 
   // doc 35 §5: 実行中 turn を中断する（停止ボタン / Esc）。engine は turn を止め、次の submit を受けられる。
   const interrupt = () => {
+    // 停止は user の操作 = turn の正常な終わり。閉じたとき「停止しました」を出すため覚えておく
+    lc.set('interruptRequested', true)
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(
       JSON.stringify({ t: 'conversation:interrupt', lane: props.lane, session: props.session }),
@@ -2191,16 +2213,35 @@ function SessionChatView(props: { lane: string; session: number }) {
                 <CreoIcon name="ph:stop" size={11} /> 停止
               </button>
             </Show>
+            {/* turn 中の送信 2 択。Claude は「今伝える」（既定 = Enter、強調）を足し、送信ボタンは
+                「次に実行する」になる（mako 2026-09-23）。Codex は従来の並び（送信ボタン = 今伝える）。 */}
+            <Show when={claudeTurnActive()}>
+              <button class="conversation-send" onClick={submit}
+                disabled={!draft().trim() || !!state().submission}
+                title="今の応答に差し込む（次の tool の区切りで効く、Enter）">
+                <CreoIcon name="ph:paper-plane-right" size={12} /> 今伝える
+              </button>
+            </Show>
             <Show when={codexTurnActive()}>
               <button class="conversation-stop" onClick={queueDraft}
+                title="今の応答が終わってから送る"
                 disabled={!draft().trim() || !state().codexQueue?.ready || codexInputBusy()}>
                 次に実行する
               </button>
             </Show>
-            <button class="conversation-send" onClick={submit} disabled={!draft().trim() || !!state().submission || codexInputBusy()
-              || (codexTurnActive() && (!state().codexQueue?.ready || !state().codexQueue?.turn_id))}>
-              <CreoIcon name="ph:paper-plane-right" size={12} /> {codexTurnActive() ? '今伝える' : '送信'}
-            </button>
+            <Show when={claudeTurnActive()} fallback={
+              <button class="conversation-send" onClick={submit} disabled={!draft().trim() || !!state().submission || codexInputBusy()
+                || (codexTurnActive() && (!state().codexQueue?.ready || !state().codexQueue?.turn_id))}
+                title={codexTurnActive() ? '今の応答に差し込む' : undefined}>
+                <CreoIcon name="ph:paper-plane-right" size={12} /> {codexTurnActive() ? '今伝える' : '送信'}
+              </button>
+            }>
+              <button class="conversation-stop" onClick={queueDraft}
+                disabled={!draft().trim()}
+                title="今の応答が終わってから送る">
+                次に実行する
+              </button>
+            </Show>
           </div>
         </div>
     </div>
