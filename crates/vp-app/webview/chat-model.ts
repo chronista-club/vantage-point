@@ -164,6 +164,9 @@ export type ChatState = {
   replaying: boolean
   historyTruncated?: boolean
   historyThreadId?: string
+  /** user が停止（停止ボタン / Esc）を押した turn か。turn が閉じたら「停止しました」を 1 行出して下ろす。
+   *  engine は停止した turn を正常な終わり（turn_completed）で閉じる — 異常ではないので error にしない。 */
+  interruptRequested?: boolean
   codexConfig?: Extract<ConversationEvent, { kind: 'codex_config' }>['config']
   codexSettingsRequest?: string | null
   codexSettingsError?: string | null
@@ -401,8 +404,14 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       s.contextWindow = ev.context_window ?? s.contextWindow
       s.nowLine = null // 契約の「今」は turn より長生きしない（doc 51 §1 A3）
       sealLastAssistant(s) // 次 turn の chunk と融合させない（§5.1）
+      if (s.interruptRequested) {
+        s.interruptRequested = false
+        s.items.push({ kind: 'assistant', text: '_停止しました_' })
+        sealLastAssistant(s)
+      }
       break
     case 'error':
+      s.interruptRequested = false
       s.streaming = false
       s.replaying = false // replay window 中に error が割り込んでも再同期ローダーを固着させない（streaming と同じ防御）
       sealLastAssistant(s) // error バブルを前 turn と分ける（§5.1）
