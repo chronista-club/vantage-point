@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96 # = .mise.toml [tools].rust (基本 stable 追随、 minor pin・patch float)
+        uses: dtolnay/rust-toolchain@1.96 # = rust-toolchain.toml channel (基本 stable 追随、 minor pin・patch float)
         with:
           components: rustfmt
 
@@ -45,7 +45,7 @@ jobs:
         run: brew install protobuf fish
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96 # = .mise.toml [tools].rust (基本 stable 追随、 minor pin・patch float)
+        uses: dtolnay/rust-toolchain@1.96 # = rust-toolchain.toml channel (基本 stable 追随、 minor pin・patch float)
         with:
           # rustfmt は agent_tools_codegen.rs の test が生成物整形に使う（Format job と同じく必要）。
           # 欠落していると rustfmt shim が非ゼロ終了し codegen test がパニック（#625 以来の CI 赤）。
@@ -122,7 +122,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96 # = .mise.toml [tools].rust (基本 stable 追随、 minor pin・patch float)
+        uses: dtolnay/rust-toolchain@1.96 # = rust-toolchain.toml channel (基本 stable 追随、 minor pin・patch float)
 
       - uses: Swatinem/rust-cache@v2
 
