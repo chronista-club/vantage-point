@@ -9,12 +9,20 @@ import type { LaneInfo } from "../generated/LaneInfo";
 import { isMainLaneName } from "../../lane-address";
 
 /**
- * Lane Agent kind → Phosphor icon (default / active=fill weight) のペア。
+ * Lane Agent kind → icon (default / active=fill weight) のペア。
+ *
+ * AI engine（claude / codex / grok）は **ロゴ**で見分ける（mako 2026-09-24「Pane ヘッダや Lane
+ * リストでロゴで分かるように」）。Phosphor には OpenAI しか無いので、3 社が揃う MingCute の
+ * line / fill で統一する（線の太さと角が揃う。creo-ui-icons-web の 9 set に入っている）。
+ * ロゴの無い engine（opencode）と VP 内の component は Phosphor のまま。
  * 旧 SIDEBAR_HTML `STAND_GLYPH` の port。 `-fill` を別 literal で持ち、
  * `IconName` 型に収まるようにする (文字列連結だと型が string に広がるため)。
  */
 const COMPONENT_ICON: Record<string, { default: IconName; active: IconName }> = {
-	claude: { default: "ph:chats-teardrop", active: "ph:chats-teardrop-fill" },
+	claude: { default: "mingcute:claude-line", active: "mingcute:claude-fill" },
+	codex: { default: "mingcute:openai-line", active: "mingcute:openai-fill" },
+	grok: { default: "mingcute:grok-line", active: "mingcute:grok-fill" },
+	opencode: { default: "ph:code", active: "ph:code-fill" },
 	shell: { default: "ph:terminal-window", active: "ph:terminal-window-fill" },
 	tmux: { default: "ph:presentation", active: "ph:presentation-fill" },
 	board: { default: "ph:compass", active: "ph:compass-fill" },
@@ -35,7 +43,13 @@ export function agentDisplayName(agent: string): string {
 	switch (agent) {
 		case "claude":
 		case "hd": // legacy alias (旧 Heaven's Door)
-			return "Conversation";
+			return "Claude";
+		case "codex":
+			return "Codex";
+		case "grok":
+			return "Grok";
+		case "opencode":
+			return "OpenCode";
 		case "shell":
 			return "Shell";
 		case "tmux":

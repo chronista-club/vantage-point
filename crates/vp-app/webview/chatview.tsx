@@ -46,6 +46,7 @@ import type {
 // doc 47 §6: 共有 bus の相関 id（採番 + 照合）も console.ts が SSOT。
 import { focusedOf, noteFocus, syncHeaderSessionId } from './console'
 import { sessionChipPrefix } from './LaneHeader'
+import { agentDisplayName, agentIcon } from './src/sidebar/lane'
 import { isImeKeystroke } from './ime'
 import { applyCompletion, filterSlashCommands, moveSelection, slashQuery } from './slash'
 import {
@@ -1336,6 +1337,14 @@ export function SessionPlate(props: {
   return (
     <div class="conversation-session-plate" classList={{ focused: props.focused }}>
       {props.lamp}
+      {/* engine のロゴ（lane リストと同じ表 — focused は fill）。ロゴで engine が一目で分かる */}
+      <Show when={info()?.agent ? agentIcon(info()!.agent, props.focused) : null}>
+        {(icon) => (
+          <span class="conversation-session-plate-engine" title={agentDisplayName(info()!.agent)}>
+            <CreoIcon name={icon()} size={12} />
+          </span>
+        )}
+      </Show>
       <span class="conversation-session-plate-label">{label()}</span>
       {/* root = lane の代表（mailbox / pid、doc 40 §4-1）。素性なので名札に出す —
           これが無いと「なぜこの pane だけ × が無いのか」（root は close 不可）が読めない。 */}
@@ -2537,6 +2546,7 @@ export const CHATVIEW_CSS = `
   border-bottom: var(--vp-nameplate-border); user-select:none; }
 .conversation-session-plate.focused { color: var(--color-text-secondary,#a8b0c0); }
 .conversation-session-plate-label { font-weight:500; }
+.conversation-session-plate-engine { display:inline-flex; align-items:center; flex:none; }
 .conversation-session-plate-root { display:inline-flex; align-items:center; gap:2px; padding:0 5px;
   border-radius:9999px; border:1px solid var(--color-surface-border-subtle,#2a3040);
   font-size:9.5px; opacity:.8; }
