@@ -45,6 +45,8 @@ mod on_misc;
 mod on_sidebar;
 /// event handler: terminal（PTY 出力 / keystroke / resize / paste）。
 mod on_terminal;
+/// event handler: 音声入力（push-to-talk の録音開始 / 停止 → 認識 → 入力欄へ返す）。
+mod on_voice;
 /// event handler: window（close / resize / move / focus / shell layout / menu / secondary window）。
 mod on_window;
 /// 復元と保存の 1 箇所（`Persist` = SessionState の所有者、doc 60 §8）。
@@ -263,6 +265,17 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::InkSnapshotReady { path, error }) => {
                 on_misc::ink_snapshot_ready(&mut ui, &boot, path, error)
             }
+            Event::UserEvent(AppEvent::VoiceStart { lane, session }) => {
+                on_voice::start(&mut ui, &boot, lane, session)
+            }
+            Event::UserEvent(AppEvent::VoiceStop { lane, session }) => {
+                on_voice::stop(&mut ui, &boot, &async_action_proxy, lane, session)
+            }
+            Event::UserEvent(AppEvent::VoiceResult {
+                lane,
+                session,
+                result,
+            }) => on_voice::result(&boot, lane, session, result),
             Event::UserEvent(AppEvent::ShellLayout {
                 sidebar_width,
                 right_sidebar_width,

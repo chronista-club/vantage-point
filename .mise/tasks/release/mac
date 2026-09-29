@@ -89,12 +89,15 @@ File.write(File.join(app, "Contents", "Info.plist"), <<~PLIST)
     <key>CFBundlePackageType</key><string>APPL</string>#{has_icon ? "\n    <key>CFBundleIconFile</key><string>icon</string>" : ""}
     <key>LSMinimumSystemVersion</key><string>#{MIN_MACOS}</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSMicrophoneUsageDescription</key><string>chat の入力欄の音声入力（🎙を押している間だけ録音し、Mac の中で文字にします）に使います。</string>
   </dict></plist>
 PLIST
 VP.log "#{VP.icon(:build)} assembled #{app}"
 
 # ── 3. codesign (hardened runtime, inside-out) ─────────────────
 # entitlements: WKWebView(wry) の JIT + 子プロセス spawn 用。 notarize は許容、 必要に応じ tighten。
+# audio-input = 音声入力（crates/vp-app/src/voice/）のマイク。hardened runtime の app は、
+# Info.plist の NSMicrophoneUsageDescription に加えてこの entitlement が無いとマイクを使えない。
 ent = File.join(dist, "vp.entitlements")
 File.write(ent, <<~ENT)
   <?xml version="1.0" encoding="UTF-8"?>
@@ -103,6 +106,7 @@ File.write(ent, <<~ENT)
     <key>com.apple.security.cs.allow-jit</key><true/>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
     <key>com.apple.security.cs.disable-library-validation</key><true/>
+    <key>com.apple.security.device.audio-input</key><true/>
   </dict></plist>
 ENT
 sign = ->(path) { VP.sh "codesign --force --options runtime --timestamp --entitlements '#{ent}' -s '#{SIGN_ID}' '#{path}'" }

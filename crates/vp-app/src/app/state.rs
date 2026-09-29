@@ -56,6 +56,16 @@ pub(super) struct UiState {
     pub(super) win: WindowState,
     /// lane ごとの接続（terminal / conversation の session 登録簿）。
     pub(super) sessions: LaneSessions,
+    /// 音声入力: 録音中の 1 本（🎙を押した入力欄の lane + session と、録音の本体）。
+    /// マイクは 1 つなので同時に 1 本だけ。None = 録音していない。
+    pub(super) voice: Option<ActiveVoice>,
+}
+
+/// 録音中の音声入力 1 本。
+pub(super) struct ActiveVoice {
+    pub(super) lane: String,
+    pub(super) session: u32,
+    pub(super) recording: crate::voice::recorder::Recording,
 }
 
 /// 二重発火・購読の dedup と変化検知の指紋。⚠️ daemon 再起動では reset されない
@@ -180,6 +190,7 @@ impl UiState {
                 terminal_sessions: HashMap::new(),
                 conversation_sessions: HashMap::new(),
             },
+            voice: None,
         }
     }
 }

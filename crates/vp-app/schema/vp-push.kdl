@@ -159,6 +159,27 @@ protocol "vp-push" version="1.0.0" {
             field "message" type="string"
         }
 
+        // ===== 音声入力（push-to-talk）— 実装は webview/voice.ts =====
+        //
+        // 要求（`voice:start` / `voice:stop` IPC）の戻り。宛先は🎙を押した入力欄
+        // （lane + session）。ink と同じ理由で成功と失敗を 2 event に分ける
+        // （成功 = 入力欄に文字を入れる / 失敗 = 理由を出して入力欄を戻す）。
+
+        // 認識成功: 認識した文字（何も聞き取れなければ空文字。無音は voice:error で返る）。
+        // 送信はしない — ユーザーが Enter で送る。
+        event "voice:text" {
+            field "lane" type="string"
+            field "session" type="int"
+            field "text" type="string"
+        }
+
+        // 録音・認識の失敗: 理由（モデルが無い / マイクが開けない 等）。
+        event "voice:error" {
+            field "lane" type="string"
+            field "session" type="int"
+            field "message" type="string"
+        }
+
         // ===== code pane（コードブラウザ P1）— 実装は webview/CodePane.tsx =====
         //
         // demand 駆動: webview が pane open 時に `code:list`、file 選択で `code:read` を
