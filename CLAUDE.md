@@ -362,7 +362,7 @@ task 管理は creo-memories に一本化（Linear は不使用、2026-05-19 確
 ### ルール
 
 - **task = memory**: `remember` で起票（atlas は `CLAUDE.local.md` 参照）。`status`（active=TODO/進行中, done=完了）で lifecycle 管理、priority は tag（`priority:high|medium|low`）
-- ブランチ名: `mako/{slug}` 形式（task memory の slug から推論）
+- ブランチ名: **段 = prefix、slug は不変**（`wip/{slug}` → `git next` で `review/{slug}`。branch-step、SSOT は `AGENTS.md`「branch 名 = 段」）。slug は task memory の Branch slug
 - PR: `gh` で作成。関連 task memory の ID を PR 本文に記載
 - 他プロジェクト横断の task は creo-memories の shared context に集約
 
@@ -381,10 +381,10 @@ task 管理は creo-memories に一本化（Linear は不使用、2026-05-19 確
 
 #### lane 作業フロー（lead session = メインセッション向け）
 
-1. `git fetch origin nightly && git checkout -b mako/{slug} origin/nightly` で lane 開始
-2. lane 上で commit、 PR は **base = nightly** で `gh pr create --base nightly` で作る
+1. `git fetch origin nightly && git checkout -b wip/{slug} origin/nightly` で lane 開始
+2. lane 上で commit、 PR は `git next --memory <mem_id>`（`review/{slug}` に昇格 + push + `gh pr create --base nightly`。門 = `branch-step.test` の `mise run check`）
    - commit 前の gate: `cargo fmt --all -- --check` / `mise run check` / `cargo clippy --workspace --all-targets -- -D warnings` / `mise run test` / **`mise run claims`**（散文の主張を実物に当てる）
-3. PR merge / 直 push で nightly が進む
+3. PR merge（`gh pr merge --squash --delete-branch`）/ 直 push で nightly が進む
 4. nightly が一定量積み上がったら release PR (nightly → main) を切って tag cut
 
 > 上記 step 1 の `checkout -b` は **lead checkout を占有する単独セッション専用**。並列 worker（wing / 他 agent）は worktree lane（`vp lane new` or `git worktree add`）を使う — cross-agent な lane 規約（公認入口 / raw-git fallback / discovery）の SSOT は **`AGENTS.md`**。
