@@ -14,6 +14,9 @@ pub mod stt;
 pub fn finish(recording: recorder::Recording) -> Result<String, String> {
     let captured = recording.stop()?;
     let samples = audio::to_whisper_input(&captured.samples, captured.channels, captured.rate);
+    if audio::is_too_short(&samples) {
+        return Err("短すぎます（押している間だけ録音します）".to_string());
+    }
     if audio::is_silent(&samples) {
         return Err(
             "マイクの音が入っていません。システム設定 → プライバシーとセキュリティ → \

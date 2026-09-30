@@ -5,7 +5,6 @@
 //! 止める合図と結果の受け口だけ。
 
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
 
 /// 録音で溜まったもの（機材の形式のまま。16 kHz への変換は [`super::audio`]）。
 pub struct Captured {
@@ -51,6 +50,7 @@ pub fn start() -> Recording {
 #[cfg(target_os = "macos")]
 fn record_until_stopped(stop_rx: &mpsc::Receiver<()>) -> Result<Captured, String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use std::sync::{Arc, Mutex};
 
     let device = cpal::default_host()
         .default_input_device()

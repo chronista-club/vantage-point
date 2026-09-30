@@ -50,9 +50,27 @@ pub fn is_silent(samples: &[f32]) -> bool {
     samples.iter().all(|s| s.abs() < SILENCE_PEAK)
 }
 
+/// 認識に回すには短すぎるか（16 kHz mono で 0.3 秒未満）。
+///
+/// 🎙を押してすぐ離すと、デバイスを開き終える前に止まって sample がほぼ無い。それを
+/// [`is_silent`] に通すと「マイクを許可して」という筋違いの案内になるので、先にこちらで弾く。
+pub fn is_too_short(samples: &[f32]) -> bool {
+    /// 0.3 秒（仮置き — 短い相づちがこれを下回る実測が出たら下げる）
+    const MIN_SAMPLES: usize = (WHISPER_SAMPLE_RATE as usize) * 3 / 10;
+    samples.len() < MIN_SAMPLES
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn under_300ms_is_too_short() {
+        assert!(is_too_short(&[]));
+        assert!(is_too_short(&[0.1; 4_799]));
+        assert!(!is_too_short(&[0.1; 4_800]));
+        assert!(!is_too_short(&[0.0; 16_000])); // 長ければ無音でも「短い」ではない
+    }
 
     #[test]
     fn all_zero_and_empty_are_silent() {

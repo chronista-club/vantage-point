@@ -1499,7 +1499,9 @@ function SessionChatView(props: { lane: string; session: number }) {
         setVoiceError('聞き取れませんでした')
         return
       }
-      setDraft(text)
+      // 認識中に「送信待ち」等を押して入力欄に文字が戻っていることがある（録音中は draft が
+      // 空なのでそれらが押せる）。上書きして消さず、末尾に足す。
+      setDraft(draft() === '' ? text : `${draft()} ${text}`)
       queueMicrotask(() => {
         if (!inputRef) return
         autosize(inputRef)
@@ -1524,6 +1526,12 @@ function SessionChatView(props: { lane: string; session: number }) {
     setVoice('transcribing')
     sendVoice('stop', props.lane, props.session)
   }
+  // 押している最中に session が閉じて unmount されると pointerup が届かず、Rust 側の録音が
+  // 開いたまま残る（次にどこかの🎙が押されるまでマイクが点きっぱなし）。止めてから消える。
+  // 結果の届け先は無いので Rust 側で捨てられる。
+  onCleanup(() => {
+    if (voice() === 'recording') sendVoice('stop', props.lane, props.session)
+  })
 
   // ---- 画像添付（chat 入力欄への貼り付け、2026-08-30）--------------------------
   // ⚠️ VP は保存しない — 送信時に engine へ渡すだけで、transcript / replay にも残さない
@@ -2265,7 +2273,8 @@ function SessionChatView(props: { lane: string; session: number }) {
               title={voice() === 'idle' && draft() !== ''
                 ? '音声入力は入力欄が空のときだけ使えます'
                 : '押している間だけ録音（離すと入力欄に入ります）'}
-              onPointerDown={startVoice} onPointerUp={stopVoice} onPointerCancel={stopVoice}>
+              onPointerDown={startVoice} onPointerUp={stopVoice} onPointerCancel={stopVoice}
+              onLostPointerCapture={stopVoice}>
               <CreoIcon name="ph:microphone" size={12} />
               {voice() === 'recording' ? ' 録音中' : voice() === 'transcribing' ? ' 認識中…' : ''}
             </button>

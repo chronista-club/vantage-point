@@ -4,12 +4,14 @@
 import { expect, it } from 'vitest'
 import { build } from 'esbuild'
 import { solidPlugin } from 'esbuild-plugin-solid'
-import { Window, type HTMLButtonElement, type HTMLTextAreaElement } from 'happy-dom'
+import { Window, type HTMLButtonElement, type HTMLElement, type HTMLTextAreaElement } from 'happy-dom'
 
 type Harness = {
   sent: Array<Record<string, any>>
   voiceText: (lane: string, session: number, text: string) => void
   voiceError: (lane: string, session: number, message: string) => void
+  unmount: () => void
+  emit: (event: unknown, session: number) => void
 }
 
 async function mountChat() {
@@ -24,7 +26,7 @@ async function mountChat() {
     api.showLane('voice-test/main')
     document.dispatchEvent(new CustomEvent('vp:conversation-sessions',{detail:{lane:'voice-test/main',focused:1,sessions:[{key:1,agent:'claude',kind:'chat',root:true,model_choices:[],permission_choices:[]}]}}))
     const mount=document.createElement('div');document.body.append(mount)
-    api.mountSession(mount,'voice-test/main',1)
+    window.unmount=api.mountSession(mount,'voice-test/main',1)
   `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'iife', conditions: ['browser'], plugins: [solidPlugin()] })
   const window = new Window()
   window.eval(result.outputFiles[0].text)
@@ -65,6 +67,41 @@ it('press → voice:start, release → voice:stop, and the recognized text lands
     await window.happyDOM.close()
   }
 }, 20000) // esbuild bundle 込み（codex-queue.test.ts と同じ）
+
+it('text that came back into the composer while transcribing is kept — the result is appended, not overwritten', async () => {
+  // 録音中・認識中は draft が空なので「送信を戻す」等のボタンが押せる。戻した文章を
+  // 認識結果で上書きして消さない（moody-blues #1、2026-09-30）。
+  const { window, h, input, press, release } = await mountChat()
+  try {
+    // Claude の turn 中に「次に実行する」で溜め、認識中に「送信待ち」を押して入力欄に戻す
+    h.emit({ kind: 'message_chunk', text: 'working' }, 1)
+    input.value = '戻した文章'
+    input.dispatchEvent(new window.Event('input', { bubbles: true }))
+    const queue = [...window.document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.includes('次に実行する'))!
+    queue.click()
+    expect(input.value).toBe('')
+    press(); release()
+    window.document.querySelector<HTMLElement>('.conversation-msg.user.pending')!.click()
+    expect(input.value).toBe('戻した文章')
+    h.voiceText('voice-test/main', 1, '続き')
+    expect(input.value).toBe('戻した文章 続き')
+  } finally {
+    await window.happyDOM.close()
+  }
+}, 20000)
+
+it('unmounting while recording sends voice:stop so the mic is not left open', async () => {
+  const { window, h, press, voiceSent } = await mountChat()
+  try {
+    press()
+    expect(voiceSent().at(-1)?.t).toBe('voice:start')
+    // session が閉じると mountSession の戻り値（dispose）で unmount される
+    h.unmount()
+    expect(voiceSent().at(-1)).toEqual({ t: 'voice:stop', lane: 'voice-test/main', session: 1 })
+  } finally {
+    await window.happyDOM.close()
+  }
+}, 20000)
 
 it('the mic is only available while the composer is empty', async () => {
   const { window, input, mic, press, voiceSent } = await mountChat()
