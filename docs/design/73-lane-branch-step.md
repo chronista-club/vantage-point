@@ -33,7 +33,8 @@
 ## 4. 検証
 
 - unit: `lane::config::tests`（`default_branch_is_wip_slug` / `name_is_a_branch_step_slug`）、`daemon::server` の `create_lane_defaults_are_derived`（`wip/sub` を厳密一致で見る）
-- 実機: `vp lane new foo` → `.vp/lanes/foo` が `wip/foo` で origin/nightly から切れる / `vp lane new Foo_bar` は拒否 / 既存 lane（`mako/*`）は `vp lane list` に残る — **未実施**（PR 後、mako の GO 前に lead で確認する）
+- 実機（2026-10-01、この枝の debug build `vp`、使い捨て repo で）: `vp lane new foo` → `.vp/lanes/foo` が `wip/foo` で origin/nightly（HEAD = init）から切れた / `vp lane new Foo_bar` → `invalid sub name … Only [a-z0-9-] are allowed` で exit 1、dir は作られない / `vp lane new bar exp/bar` → 明示 branch はそのまま `exp/bar` / vantage-point 本体で `vp lane list` → 既存 lane `portal`（`mako/portal`）はそのまま
+- 未確認: daemon 経由（MCP `add_sub` / `flow_handoff`、GUI）。導出は同じ `default_branch_for` を通るが、daemon の再起動が要るので merge 後の dogfood で
 
 ## Status log
 
