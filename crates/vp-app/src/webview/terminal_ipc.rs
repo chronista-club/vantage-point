@@ -317,6 +317,21 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 }
             }
         }
+        // 音声入力（push-to-talk）: 🎙を押した / 離した。宛先は押した入力欄の lane + session
+        // （session は必須 — 省略時の「focused に送る」は、押した欄と別の欄に文字が入り得る）。
+        Some(tag @ ("voice:start" | "voice:stop")) => {
+            if let (Some(lane), Some(session)) = (
+                parsed.get("lane").and_then(|v| v.as_str()),
+                parse_session(&parsed),
+            ) {
+                let lane = lane.to_string();
+                let _ = proxy.send_event(if tag == "voice:start" {
+                    AppEvent::VoiceStart { lane, session }
+                } else {
+                    AppEvent::VoiceStop { lane, session }
+                });
+            }
+        }
         // R sidebar の debug log（sidebar view modes、2026-08-01）: tail の購読開始 / 停止。
         // watch は source 必須（"app" | "daemon"）。file への解決と thread 管理は app.rs 側。
         Some("debuglog:watch") => {

@@ -129,6 +129,11 @@ objc2-foundation = { version = "0.3", features = ["NSData"] }
 objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKSnapshotConfiguration", "block2", "objc2-core-foundation", "objc2-app-kit"] }
 objc2-core-foundation = { version = "0.3", features = ["CFCGTypes"] }
 block2 = "0.6"
+# 音声入力（push-to-talk、src/voice/）: cpal = マイク録音（CoreAudio）/ whisper-rs = whisper.cpp を
+# vp-app の中で動かす（外部コマンドに頼らない）。metal = Apple Silicon の GPU で推論。
+# macOS 限定: whisper-rs は build 時に C++ + libclang（bindgen）を要し、Windows CI を巻き込まないため。
+cpal = "0.18"
+whisper-rs = { version = "0.16", features = ["metal", "tracing_backend"] }
 
 [dev-dependencies]
 tempfile = "3"

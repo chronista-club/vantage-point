@@ -87,6 +87,20 @@ pub struct InkSnapshotError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceText {
+    pub lane: String,
+    pub session: i64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceError {
+    pub lane: String,
+    pub session: i64,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodeEntries {
     pub lane: String,
     pub entries: Vec<serde_json::Value>,
@@ -146,6 +160,10 @@ pub enum PushEventEnvelope {
     InkSnapshot(InkSnapshot),
     #[serde(rename = "ink:snapshot_error")]
     InkSnapshotError(InkSnapshotError),
+    #[serde(rename = "voice:text")]
+    VoiceText(VoiceText),
+    #[serde(rename = "voice:error")]
+    VoiceError(VoiceError),
     #[serde(rename = "code:entries")]
     CodeEntries(CodeEntries),
     #[serde(rename = "code:file")]
