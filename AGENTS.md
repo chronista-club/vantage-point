@@ -28,11 +28,12 @@ branch 名は **「今どの段にいるか」だけ**を語る（chronista-styl
 
 ```bash
 bash "$HOME/.claude/plugins/cache/chronista-plugins/chronista-style/<ver>/skills/branch-step/scripts/branch-step" install --local
-# wip → review の門 = VP の標準チェック（CI と同じ mise run check）。
+# wip → review の門 = VP の標準チェック（CI と同じ mise run check）。app:bundle を先に挟むのは、
+# 新しい worktree には webview bundle（生成物、commit しない）が無く vp-app の build.rs が止まるため。
 # ⚠️ env を剥がす形で設定する: git の alias の中で走るため GIT_DIR 等が子プロセスに残り、
 #    テストが一時 repo で git を呼ぶと本物の repo に書き込む（plugin 0.33.0。creo-memories の lane で
 #    起きて巻き戻した、と nexus lane から 2026-10-01 に警告。plugin 側の修正が入るまでの防御）
-git config branch-step.test 'env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_PREFIX -u GIT_CONFIG_PARAMETERS mise run check'
+git config branch-step.test 'env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_PREFIX -u GIT_CONFIG_PARAMETERS sh -c "mise run app:bundle && mise run check"'
 ```
 
 ### 公認入口: `vp lane new`
