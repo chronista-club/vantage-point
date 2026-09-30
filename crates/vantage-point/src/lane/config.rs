@@ -292,20 +292,35 @@ pub fn ensure_vp_gitignored(repo_root: &Path) -> Result<(), String> {
     fs::write(&gi_path, new_content).map_err(|e| format!(".gitignore 書込失敗: {e}"))
 }
 
-/// Validate that a sub name is safe (allowlist: alphanumeric, hyphen, underscore)
+/// lane の既定 branch（branch-step、2026-10-01、docs/design/73-lane-branch-step.md）。
+///
+/// 枝名は「今どの段にいるか」だけを語る — 新しい lane は **`wip/<slug>`**。slug = lane 名
+/// （[`validate_sub_name`] を通った `[a-z0-9-]+`）なので、そのまま結合する。
+/// 旧 `<git-user>/<name>`（`git config user.name` 由来）は廃止 — 誰が切ったかは commit の
+/// author が持つ情報で、枝名に載せると段の昇格（`git next` の rename）と衝突する。
+pub fn default_branch_for(name: &str) -> String {
+    format!("wip/{name}")
+}
+
+/// lane 名（= branch-step の slug）の検証。allowlist は `[a-z0-9-]+`、先頭は英数字。
+///
+/// 旧 `[a-zA-Z0-9_-]` から狭めた（2026-10-01）: lane 名がそのまま枝名 `wip/<slug>` と
+/// worktree dir 名になるので、sanitize で丸めず**拒否**する（丸めると lane 名と枝名が
+/// ずれ、`git branch --list 'wip/*'` と lane 一覧が対応しなくなる）。既存 lane は検証を
+/// 通し直さないので影響しない。
 pub fn validate_sub_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("sub name cannot be empty".into());
     }
     if !name
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
     {
         return Err(format!(
-            "invalid sub name: '{name}'. Only [a-zA-Z0-9_-] are allowed."
+            "invalid sub name: '{name}'. Only [a-z0-9-] are allowed (lane 名 = branch-step の slug。大文字と `_` は不可)."
         ));
     }
-    if name.starts_with('-') || name.starts_with('_') {
+    if name.starts_with('-') {
         return Err(format!(
             "invalid sub name: '{name}'. Must start with an alphanumeric character."
         ));
@@ -356,8 +371,24 @@ mod tests {
     #[test]
     fn valid_sub_names() {
         assert!(validate_sub_name("issue-42").is_ok());
-        assert!(validate_sub_name("feature_login").is_ok());
         assert!(validate_sub_name("my-repo-fix-123").is_ok());
+        assert!(validate_sub_name("a").is_ok());
+    }
+
+    #[test]
+    fn name_is_a_branch_step_slug() {
+        // branch-step（2026-10-01）: lane 名 = slug `[a-z0-9-]+`。枝名 `wip/<slug>` に
+        // そのまま使うので、大文字と `_` は sanitize で丸めず**拒否**する
+        assert!(validate_sub_name("Foo_bar").is_err());
+        assert!(validate_sub_name("feature_login").is_err());
+        assert!(validate_sub_name("Feat").is_err());
+        assert!(validate_sub_name("feat-api").is_ok());
+    }
+
+    #[test]
+    fn default_branch_is_wip_slug() {
+        // 枝名は「今どの段にいるか」だけ: 新しい lane は wip/。git user は載せない
+        assert_eq!(default_branch_for("feat-api"), "wip/feat-api");
     }
 
     #[test]

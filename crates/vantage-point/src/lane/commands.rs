@@ -1515,7 +1515,7 @@ pub(crate) fn is_branch_merged(sub_dir: &std::path::Path, default_branch: &str) 
 /// 別経路で「branch の内容が既に取り込まれたか」を判定する (co-evolution #3):
 ///   1. **gh PR state (内容照合付き)**: この branch を head とする merged PR の head commit
 ///      (`headRefOid`) を取り、 HEAD がその commit に**含まれる** (HEAD がその ancestor) 場合のみ
-///      merged 扱い。 ⚠️ 名前一致だけだと `mako/{slug}` 規約で同名 branch を再利用 (同じ課題を
+///      merged 扱い。 ⚠️ 名前一致だけだと `wip/{slug}` 規約で同名 branch を再利用 (同じ課題を
 ///      再着手) した時に、 過去の merged PR を拾って未 merge の新規 work を `--force` 削除しうる
 ///      (moody 指摘 #1)。 commit ancestry で確認して「HEAD が merged tip より進んでいる = 新規
 ///      work あり」なら keep に倒す。
