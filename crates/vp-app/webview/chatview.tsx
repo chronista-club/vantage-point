@@ -33,6 +33,7 @@ import { createStore, produce } from 'solid-js/store'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import { isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
 import { renderMermaidBlocks } from './mermaid-post'
+import { registerVoiceSink, sendVoice } from './voice'
 import { Marked } from 'marked'
 import type {
   ConversationEvent,
@@ -1484,6 +1485,54 @@ function SessionChatView(props: { lane: string; session: number }) {
   const [draft, setDraft] = createSignal('')
   let inputRef: HTMLTextAreaElement | undefined // dequeue 後に composer へフォーカスを移すため
 
+  // ---- 音声入力（push-to-talk、voice.ts / Rust の voice/）----------------------------
+  // 裁定（creo mem_1CfTjYYiCsiCUgazoGGugP）: 入力欄が空のときだけ録音できる（書きかけは
+  // 消さない）/ 録音中・認識中は入力欄を編集できない / 認識結果は入力欄に入れるだけで、
+  // 送信はユーザーが Enter で行う（誤認識を送る前に直せるように）。
+  const [voice, setVoice] = createSignal<'idle' | 'recording' | 'transcribing'>('idle')
+  const [voiceError, setVoiceError] = createSignal<string | null>(null)
+  const micDisabled = () => voice() === 'transcribing' || (voice() === 'idle' && draft() !== '')
+  onCleanup(registerVoiceSink(props.lane, props.session, {
+    text: (text) => {
+      setVoice('idle')
+      if (!text) {
+        setVoiceError('聞き取れませんでした')
+        return
+      }
+      // 認識中に「送信待ち」等を押して入力欄に文字が戻っていることがある（録音中は draft が
+      // 空なのでそれらが押せる）。上書きして消さず、末尾に足す。
+      setDraft(draft() === '' ? text : `${draft()} ${text}`)
+      queueMicrotask(() => {
+        if (!inputRef) return
+        autosize(inputRef)
+        inputRef.focus()
+      })
+    },
+    error: (message) => {
+      setVoice('idle')
+      setVoiceError(message)
+    },
+  }))
+  const startVoice = (e: PointerEvent) => {
+    if (micDisabled() || voice() !== 'idle') return
+    // 押したままボタンの外で離しても pointerup がこのボタンに届くように
+    try { (e.currentTarget as Element).setPointerCapture(e.pointerId) } catch { /* 未対応環境 */ }
+    setVoiceError(null)
+    setVoice('recording')
+    sendVoice('start', props.lane, props.session)
+  }
+  const stopVoice = () => {
+    if (voice() !== 'recording') return
+    setVoice('transcribing')
+    sendVoice('stop', props.lane, props.session)
+  }
+  // 押している最中に session が閉じて unmount されると pointerup が届かず、Rust 側の録音が
+  // 開いたまま残る（次にどこかの🎙が押されるまでマイクが点きっぱなし）。止めてから消える。
+  // 結果の届け先は無いので Rust 側で捨てられる。
+  onCleanup(() => {
+    if (voice() === 'recording') sendVoice('stop', props.lane, props.session)
+  })
+
   // ---- 画像添付（chat 入力欄への貼り付け、2026-08-30）--------------------------
   // ⚠️ VP は保存しない — 送信時に engine へ渡すだけで、transcript / replay にも残さない
   // （mako 裁定: 痕跡も残さない）。再 attach 後の画面に画像が出ないのはこのため。
@@ -2151,6 +2200,7 @@ function SessionChatView(props: { lane: string; session: number }) {
             rows={1}
             placeholder="メッセージを入力（Enter で送信 / Shift+Enter で改行）"
             value={draft()}
+            disabled={voice() !== 'idle'}
             onInput={(e) => {
               setDraft(e.currentTarget.value)
               autosize(e.currentTarget)
@@ -2217,6 +2267,17 @@ function SessionChatView(props: { lane: string; session: number }) {
             {/* engine 別 settings（model / effort / permission …）: agent → panel の表で引く。 */}
             <EngineSettingsPanel lane={props.lane} session={props.session} lc={lc} rosterEntry={rosterEntry} />
             <div class="conversation-actions-spacer" />
+            {/* 音声入力: 押している間だけ録音し、離すと認識して入力欄に入れる */}
+            <button class="conversation-mic" classList={{ recording: voice() === 'recording' }}
+              disabled={micDisabled()}
+              title={voice() === 'idle' && draft() !== ''
+                ? '音声入力は入力欄が空のときだけ使えます'
+                : '押している間だけ録音（離すと入力欄に入ります）'}
+              onPointerDown={startVoice} onPointerUp={stopVoice} onPointerCancel={stopVoice}
+              onLostPointerCapture={stopVoice}>
+              <CreoIcon name="ph:microphone" size={12} />
+              {voice() === 'recording' ? ' 録音中' : voice() === 'transcribing' ? ' 認識中…' : ''}
+            </button>
             <Show when={state().streaming}>
               <button class="conversation-stop" onClick={interrupt} title="turn を中断 (Esc)">
                 <CreoIcon name="ph:stop" size={11} /> 停止
@@ -2252,6 +2313,9 @@ function SessionChatView(props: { lane: string; session: number }) {
               </button>
             </Show>
           </div>
+          <Show when={voiceError()}>
+            {(message) => <div class="conversation-voice-error">{message()}</div>}
+          </Show>
         </div>
     </div>
   )
@@ -2534,6 +2598,15 @@ export const CHATVIEW_CSS = `
   border-radius:7px; cursor:pointer;
   border:1px solid var(--color-border,#2a3040); background:transparent; color: var(--color-text-secondary,#a8b0c0); }
 .conversation-stop:hover { border-color:#f0a3a3; color:#f0a3a3; }
+/* 音声入力の🎙（押している間だけ録音）。録音中は赤で「今マイクが開いている」を示す。
+   touch-action / user-select は長押しで文字選択やスクロールが始まらないように。 */
+.conversation-mic { display:inline-flex; align-items:center; gap:4px; padding:4px 8px; font-size:12px;
+  border-radius:7px; cursor:pointer; touch-action:none; user-select:none;
+  border:1px solid var(--color-border,#2a3040); background:transparent; color: var(--color-text-secondary,#a8b0c0); }
+.conversation-mic:hover:not(:disabled) { border-color: var(--color-accent,#3b82f6); color: var(--color-text,#e6e9ef); }
+.conversation-mic.recording { border-color:#f07171; background:rgba(240,113,113,.15); color:#f07171; }
+.conversation-mic:disabled { opacity:.4; cursor:default; }
+.conversation-voice-error { padding:0 10px 6px; font-size:11px; color:#f0a3a3; }
 /* Mode 切替（見え方の乗り換え = 避難路）は LaneHeader の root picker「見え方」行へ
    （doc 51 §2 — 旧 lane-level Mode toggle と下端の帯は doc 51 §1 A1 で退役）。 */
 /* session 名札（pane 上端）: この pane = この session の素性。tab strip（doc 38 仮置き）の

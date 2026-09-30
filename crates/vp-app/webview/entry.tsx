@@ -142,6 +142,7 @@ import {
 } from "./board-handler";
 // ink（対話面、doc 52 §3）: board item の上に描いて明示送信で snapshot + 一行を会話へ。
 import { installInk } from "./ink";
+import { deliverVoiceError, deliverVoiceText } from "./voice";
 import { mountHistoryStrip, HISTORY_STRIP_CSS } from "./HistoryStrip";
 import { mountResyncLoader, RESYNC_LOADER_CSS } from "./resync-loader";
 // doc 53 §6.5: 旧 World A（main_area.rs の inline xterm JS 976 行）の移設先。
@@ -1219,6 +1220,9 @@ installDispatch({
 	// （dispatch の表は常に全 arm 揃っている = 網羅性検査が効く形を崩さない）。
 	inkSnapshot: (path) => inkHandlers?.inkSnapshot(path),
 	inkSnapshotError: (message) => inkHandlers?.inkSnapshotError(message),
+	// 音声入力（voice.ts）: 押した入力欄の登録簿へ振り分ける。欄が閉じていれば黙って捨てる。
+	voiceText: deliverVoiceText,
+	voiceError: deliverVoiceError,
 	// R sidebar の debug log（right-sidebar.ts）。mount target 不在なら no-op（ink と同じ流儀）。
 	debugLogLines: (source, reset, lines) =>
 		rightSidebar?.handleLines(source, reset, lines),

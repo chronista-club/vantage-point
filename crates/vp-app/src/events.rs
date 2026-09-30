@@ -134,6 +134,17 @@ pub enum AppEvent {
         path: Option<String>,
         error: Option<String>,
     },
+    /// 音声入力: chat 入力欄の🎙が押された。マイクの録音を始める（同時に 1 本だけ）。
+    VoiceStart { lane: String, session: u32 },
+    /// 音声入力: 🎙が離された。録音を止めて、認識を別 thread で走らせる。
+    VoiceStop { lane: String, session: u32 },
+    /// 音声入力: 認識の結果（別 thread → event loop）。`Ok` = 認識した文字（空もあり得る）、
+    /// `Err` = 失敗の理由（入力欄の下に出す）。
+    VoiceResult {
+        lane: String,
+        session: u32,
+        result: Result<String, String>,
+    },
     /// VP-143: 全 lane の cc session display name (custom-title) を再 resolve する周期 tick。
     /// `tokio::spawn` で 5s 間隔の background task が proxy 経由で send。 main thread は
     /// `sidebar_state.lanes_by_repo` を walk して `session_title::resolve_title_for_cwd` を
