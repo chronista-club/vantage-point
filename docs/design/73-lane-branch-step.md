@@ -1,6 +1,7 @@
 # Design 73: lane のブランチ命名 — prefix が段、`wip/<slug>`（branch-step の適用）
 
-> **Status**: 実装済み（2026-10-01、`wip/lane-branch-wip-prefix`）。規約側（AGENTS.md / CLAUDE.md、`git next` の門）は同日の `review/branch-step-adopt`（PR #1156）。
+> **Status**: Active（2026-10-01 実装、PR #1157。follow-up = 削除経路の検証分離、同日）
+> **対象**: `crates/vantage-point/src/lane/config.rs`（`default_branch_for` / `validate_sub_name` / `validate_existing_sub_name`）、`lane/commands.rs`（`setup_sub` / `remove_sub_in` / `remove_sub`）、`repo/lane/lifecycle.rs`（`create_sub_orchestrated`）、`daemon/control_ops.rs`（`resolve_create_lane_args`）、`vp-cli/src/main.rs`（`lane new` / `fork`）
 > **正本**: 設計と裁定 = creo `mem_1CfZvzMGQyyyQJLqyZMyR8`（[[branch-step-naming]]）、図 = `mem_1CfZz3aDDKfmVm7uRs6w9Z`。skill = chronista-style plugin 0.33.0 `branch-step`（設計 doc は plugin-chronista-style `docs/design/02-branch-step-naming.md`）。この doc は VP 本体への適用だけを書く。
 > **task**: creo `mem_1CfaMskLwpEupufZsHTMxt`（GO: mako 2026-10-01「他のレポにもbranch-step適用しよう」）
 
@@ -15,7 +16,7 @@
 - 導出は 1 か所（`lane::config::default_branch_for`）。呼び手は 4 か所 — daemon の `lanes/create`（`control_ops::resolve_create_lane_args`）、repo の `create_sub_orchestrated`（`repo/lane/lifecycle.rs`）、CLI の `lane new` と `lane fork`（`vp-cli/src/main.rs`）
 - `derive_default_branch` / `sanitize_for_branch`（`repo/lane/lifecycle.rs`）は撤去。git user を読む subprocess も消えた
 - base の解決（`--base` → `.vp/sub-files.kdl` の `base-ref` → origin/HEAD → main）は変えていない
-- **既存 lane は触らない**。検証は作成時にしか走らず、既存の `mako/*` の枝と worktree はそのまま生きる（migration しない）
+- **既存 lane は触らない**。作成用の検証（slug）は新規作成だけに効き、既存の `mako/*` の枝と worktree はそのまま生きる（migration しない）。削除や cwd 付きの操作は旧規約の名前も通す（`validate_existing_sub_name`、下の「やってはいけない」）
 
 ## 2. なぜ
 
@@ -30,6 +31,10 @@
 - **`vp lane new` の第 2 引数が省略可能に**。指定すれば従来どおりその名前で切れる（`exp/` や `hotfix/` を手で切る用途）
 - 見送り: 既存 lane の枝の rename、`train/` / stack 形（branch-step 側で未決）、`git board` を VP の lane 一覧に描く（別 task）
 
+## 3.5 やってはいけない
+
+- **作成用の検証を操作経路で呼ばない**。初版は `validate_sub_name`（slug）を `remove_sub_in` / `remove_sub` でも呼んでいたため、旧規約の lane（`Legacy_Name`）が消せず、`vp lane rm` は「削除:」と成功表示しながら dir を残し、次の起動で bootstrap が無検証で拾い直して復活した（nexus の review が実機再現、同日の follow-up で `validate_existing_sub_name` に分離）。名前の検証は「これから作る名前」と「既にある名前」で別物
+
 ## 4. 検証
 
 - unit: `lane::config::tests`（`default_branch_is_wip_slug` / `name_is_a_branch_step_slug`）、`daemon::server` の `create_lane_defaults_are_derived`（`wip/sub` を厳密一致で見る）
@@ -38,4 +43,5 @@
 
 ## Status log
 
+- 2026-10-01（follow-up）: 削除 / cwd 付き create の検証を `validate_existing_sub_name` に分離（should-1）。lane_smoke に `lane new` 3 ケース。nit: control_ops の trim、MCP 説明の slug 制約、README
 - 2026-10-01: 初版。task `mem_1CfaMskLwpEupufZsHTMxt` の loop B。規約側（loop A）は PR #1156

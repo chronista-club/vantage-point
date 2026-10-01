@@ -399,7 +399,13 @@ pub(crate) async fn create_sub_orchestrated(
     //
     // 入口で全部弾くと、reserve も disk dir も db 行も作らずに済む（下の model 検証を
     // reserve より前に置いているのと同じ理由 — bad input で副作用を残さない）。
-    crate::lane::config::validate_sub_name(req.name.trim())?;
+    // cwd 付き（既存 dir を lane にする = lane watcher の復帰経路）は旧規約の名前も通す。
+    // 新規作成（cwd 無し）だけ slug に絞る（#1157 follow-up）。
+    if req.cwd.is_some() {
+        crate::lane::config::validate_existing_sub_name(req.name.trim())?;
+    } else {
+        crate::lane::config::validate_sub_name(req.name.trim())?;
+    }
     // model 名の検証は reserve / clone より**前**に置く (bad input で reservation も disk dir も
     // 作らない = orphan worktree / placeholder leak を構造的に防ぐ)。永続
     // (session_registry::set_model) は addr が要るので clone 後まで遅らせる。

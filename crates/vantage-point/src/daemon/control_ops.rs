@@ -66,7 +66,7 @@ pub(crate) fn resolve_create_lane_args(
     let branch = branch
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| crate::lane::config::default_branch_for(name));
+        .unwrap_or_else(|| crate::lane::config::default_branch_for(name.trim()));
     // doc 59 P4: 既定 agent は settings.kdl（好みの層）が持つ。
     let agent = agent
         .map(|s| s.to_string())

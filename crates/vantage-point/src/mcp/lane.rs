@@ -46,7 +46,7 @@ fn lane_kind_label(lane: &serde_json::Value) -> &'static str {
 pub struct AddSubParams {
     /// Sub name. Used as the `name` field of the Lane address (`<repo>/sub/<name>`).
     #[schemars(
-        description = "Sub name (人間可読の短い slug、 例: 'feat-api', 'sub'). Lane address の `<repo>/sub/<name>` 部分になる。"
+        description = "Sub name = branch-step の slug `[a-z0-9-]+`（例: 'feat-api', 'sub'。大文字と `_` は拒否）。Lane address の `<repo>/sub/<name>` 部分と branch `wip/<name>` になる。"
     )]
     pub name: String,
     /// Optional branch. If omitted, server derives `wip/<name>` (branch-step).
@@ -112,7 +112,7 @@ pub struct ListLanesParams {
 pub struct FlowHandoffParams {
     /// Sub name (新規作成する sub の slug)
     #[schemars(
-        description = "Sub name (例: 'feat-api', 'sub')。 Lane address の `<repo>/sub/<name>` 部分。"
+        description = "Sub name = branch-step の slug `[a-z0-9-]+`（例: 'feat-api', 'sub'。大文字と `_` は拒否）。Lane address の `<repo>/sub/<name>` 部分と branch `wip/<name>` になる。"
     )]
     pub name: String,
 

@@ -3155,7 +3155,10 @@ mod tests {
         let (branch, agent) = resolve_create_lane_args("sub", Some("feat/x"), Some("shell"));
         assert_eq!((branch.as_str(), agent.as_str()), ("feat/x", "shell"));
         let (branch, _) = resolve_create_lane_args("sub", Some("   "), None);
-        assert!(branch.ends_with("/sub"), "空白 branch は derive に落ちる");
+        assert_eq!(branch, "wip/sub", "空白 branch は導出に落ちる");
+        // name の前後空白は導出前に落とす（旧 sanitize が trim していた挙動を保つ）
+        let (branch, _) = resolve_create_lane_args(" foo ", None, None);
+        assert_eq!(branch, "wip/foo");
     }
 
     #[tokio::test]
