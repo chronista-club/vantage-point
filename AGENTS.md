@@ -8,31 +8,59 @@
 dev trunk は **nightly**（GitHub default の `main` は公開 release 専用・直 push 禁止）。
 並列に作業する agent は lane（= git worktree）単位で隔離する。**並列 lane で作業する agent は lead checkout（この repo 本体）の branch を切り替えない**こと — branch の checkout は自分の worktree 内でのみ行う（lead checkout の branch 操作は lead session だけが行う）。
 
+### branch 名 = 段（branch-step、2026-10-01 適用）
+
+branch 名は **「今どの段にいるか」だけ**を語る（chronista-style plugin の `branch-step` スキル。設計は plugin-chronista-style の `docs/design/02-branch-step-naming.md`）。
+
+| 段 | 名前 | 意味 |
+|---|---|---|
+| 探っている | `spike/<slug>` | **ローカル専用**（pre-push hook が push を拒否）。捨ててよい |
+| 作っている | `wip/<slug>` | lane の既定。origin/nightly 起点 |
+| 見せている | `review/<slug>` | PR が開いている（base nightly） |
+| 生かしておく実験 | `exp/<slug>` | 掃除・停滞検知の対象外 |
+| main 起点の緊急修正 | `hotfix/<slug>` | main へ PR、tag、nightly へ back-merge |
+
+- **slug** = 起票 memory の Branch slug と同じ `[a-z0-9-]+`。**lane 名 = slug**、worktree は `.vp/lanes/<slug>`。type（feat / fix）は commit message の仕事で枝名には載せない
+- 段を進める操作は `git next`（spike/exp → wip、wip → review。review に入る時だけ push + PR）/ `git keep`（spike → exp、初 push）/ `git drop`（spike を削除）/ `git board`（一覧）
+- merge は `gh pr merge --squash --delete-branch` → worktree を畳む（`git worktree remove`）→ `git worktree prune`。`review/` 以降は rename しない（直しは PR の中で）
+
+#### 導入（repo ごとに一度。plugin を更新したら**やり直す** — alias が plugin の版ごとの絶対パスを指すため）
+
+```bash
+bash "$HOME/.claude/plugins/cache/chronista-plugins/chronista-style/<ver>/skills/branch-step/scripts/branch-step" install --local
+# wip → review の門 = VP の標準チェック（CI と同じ mise run check）。app:bundle を先に挟むのは、
+# 新しい worktree には webview bundle（生成物、commit しない）が無く vp-app の build.rs が止まるため。
+# ⚠️ env を剥がす形で設定する: git の alias の中で走るため GIT_DIR 等が子プロセスに残り、
+#    テストが一時 repo で git を呼ぶと本物の repo に書き込む（plugin 0.33.0。creo-memories の lane で
+#    起きて巻き戻した、と nexus lane から 2026-10-01 に警告。plugin 側の修正が入るまでの防御）
+git config branch-step.test 'env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_PREFIX -u GIT_CONFIG_PARAMETERS sh -c "mise run app:bundle && mise run check"'
+```
+
 ### 公認入口: `vp lane new`
 
-lane の作成は `vp lane new <name>` を使う。branch 命名・base 解決・worktree 配置・並列作成時の一意性担保を VP が行う。
+lane の作成は `vp lane new <name>` を使う。branch 命名・base 解決・worktree 配置・並列作成時の一意性担保を VP が行う（`<name>` は slug。branch は `wip/<slug>` — VP 本体側の対応は別 PR、それまでは下の raw-git 手順で `wip/` を切る）。
 
 ### raw-git fallback（`vp` CLI が使えない agent 向け）
 
 `vp` が無い環境で lane 相当を作る場合は以下の規約に従う:
 
-- worktree 配置: `<repo>/.vp/lanes/<name>`（`.vp/` は gitignore 済み）
-- branch 名: `mako/<slug>`
+- worktree 配置: `<repo>/.vp/lanes/<slug>`（`.vp/` は gitignore 済み）
+- branch 名: `wip/<slug>`
 - base: **origin/nightly**（作成前に `git fetch origin nightly`）
 
 ```bash
 git fetch origin nightly
-git worktree add -b mako/<slug> .vp/lanes/<name> origin/nightly
+git worktree add -b wip/<slug> .vp/lanes/<slug> origin/nightly
 ```
 
-- PR は base = **nightly** を明示する: `gh pr create --base nightly`（GitHub default が main のため、省略すると main に向いてしまう）
+- PR は `git next --memory <mem_id>` で開く（`review/<slug>` に昇格し、base = **nightly** で `gh pr create`。body 冒頭に memory ID）。手で開くなら base を明示する: `gh pr create --base nightly`（GitHub default が main のため、省略すると main に向いてしまう）
 
 ### discovery
 
 lane の一覧は git-native に取得する（manifest ファイルは存在しない）:
 
 - `git worktree list` — live registry（worktree lane の全列挙）
-- `git branch --list 'mako/*'` — lane branch の列挙
+- `git branch --list 'wip/*' 'review/*'` — lane branch の列挙（`git board` は段ごとに並べる）
 
 ## wire 規約（inter-agent messaging）
 
