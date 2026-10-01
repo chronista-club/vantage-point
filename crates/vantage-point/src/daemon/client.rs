@@ -471,7 +471,7 @@ impl DaemonControlClient {
     /// sub lane を作成する（daemon-canonical な descriptor を作る）。
     ///
     /// `branch` / `agent` 省略時は daemon 側で default を導出する
-    /// （branch = `<user>/<name>`、agent = config の `default_agent` → `claude`）。
+    /// （branch = `wip/<name>`（branch-step）、agent = config の `default_agent` → `claude`）。
     pub async fn lanes_create(
         &self,
         path: &str,

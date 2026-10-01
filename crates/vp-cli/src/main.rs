@@ -190,10 +190,10 @@ enum Commands {
 enum LaneCommands {
     /// 新しい Sub Lane を作成（worktree add + symlink + setup）
     New {
-        /// Sub 名
+        /// Sub 名（= branch-step の slug `[a-z0-9-]+`）
         name: String,
-        /// 作成するブランチ名
-        branch: String,
+        /// 作成するブランチ名。省略時は `wip/<name>`（branch-step: 枝名 = 段、slug = lane 名）
+        branch: Option<String>,
         /// 既存 sub を上書き
         #[arg(long, short)]
         force: bool,
@@ -212,10 +212,10 @@ enum LaneCommands {
     },
     /// 現在の dirty state を新しい Sub Lane に fork
     Fork {
-        /// Sub 名
+        /// Sub 名（= branch-step の slug `[a-z0-9-]+`）
         name: String,
-        /// 作成するブランチ名
-        branch: String,
+        /// 作成するブランチ名。省略時は `wip/<name>`（branch-step）
+        branch: Option<String>,
         /// 既存 sub を上書き
         #[arg(long, short)]
         force: bool,
@@ -753,6 +753,7 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             base,
             model,
         } => {
+            let branch = branch.unwrap_or_else(|| lane::config::default_branch_for(&name));
             ws::new_sub(
                 &name,
                 &branch,
@@ -772,6 +773,7 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             base,
             model,
         } => {
+            let branch = branch.unwrap_or_else(|| lane::config::default_branch_for(&name));
             ws::fork_sub(
                 &name,
                 &branch,
