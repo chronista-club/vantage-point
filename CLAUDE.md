@@ -362,7 +362,7 @@ task 管理は creo-memories に一本化（Linear は不使用、2026-05-19 確
 ### ルール
 
 - **task = memory**: `remember` で起票（atlas は `CLAUDE.local.md` 参照）。`status`（active=TODO/進行中, done=完了）で lifecycle 管理、priority は tag（`priority:high|medium|low`）
-- ブランチ名: **段 = prefix、slug は不変**（`wip/{slug}` → `git next` で `review/{slug}`。branch-step、SSOT は `AGENTS.md`「branch 名 = 段」）。slug は task memory の Branch slug
+- ブランチ命名: **prefix が段、slug は不変**（`wip/{slug}` → `git next` で `review/{slug}`。branch-step、SSOT は `AGENTS.md`「ブランチ命名」）。slug は task memory の Branch slug
 - PR: `gh` で作成。関連 task memory の ID を PR 本文に記載
 - 他プロジェクト横断の task は creo-memories の shared context に集約
 
