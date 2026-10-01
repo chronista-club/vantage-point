@@ -1615,6 +1615,14 @@ function SessionChatView(props: { lane: string; session: number }) {
   const statusLine = () => deriveStatus(state(), nowMs())
   // 灯 3 状態（doc 51 §1 A2）: status の畳み込み。名札の dot が読む。
   const lamp = () => lampOf(statusLine())
+  // 活動の signal（Pane のしまうモード）: しまっている間の badge の供給元。lamp が点いた
+  // （返答中 / 承認待ち）ときだけ流す。受け手（rail）はしまっている pane 分だけ拾う
+  createEffect(() => {
+    if (lamp() === 'off') return
+    document.dispatchEvent(new CustomEvent('vp:pane-activity', {
+      detail: { lane: props.lane, id: hostIdForMode(props.session, 'gui') },
+    }))
+  })
   // now-line（doc 51 §1 A3）: 名札直下の「今なにを」。null = 行ごと描かない。
   const nowLine = () => deriveNowLine(state())
   const codexInputBusy = () => !!state().codexInput

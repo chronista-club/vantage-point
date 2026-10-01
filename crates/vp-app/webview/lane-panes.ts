@@ -671,8 +671,18 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		).detail;
 		if (!d?.lane || !d.fresh) return;
 		if (!activeLane || boardKeyOf(activeLane) !== d.lane) return;
-		if (refsOf(activeLane).some((p) => p.id === BOARD_PANE_REF.id))
-			controller.focusPane(BOARD_PANE_REF.id);
+		if (!refsOf(activeLane).some((p) => p.id === BOARD_PANE_REF.id)) return;
+		// しまってある board は **戻さない**（AI 起点で reflow を起こさない — doc 55 の規律）。
+		// rail のアイコンに badge を出すだけ
+		if (stowedIds(layoutEngine.current(laneScope(activeLane))).includes(BOARD_PANE_REF.id)) {
+			document.dispatchEvent(
+				new CustomEvent("vp:pane-activity", {
+					detail: { lane: activeLane, id: BOARD_PANE_REF.id },
+				}),
+			);
+			return;
+		}
+		controller.focusPane(BOARD_PANE_REF.id);
 	});
 
 	// 名札（SessionPlate / code / board）の「しまう」と rail の「戻す」。lane 省略は表示 lane。

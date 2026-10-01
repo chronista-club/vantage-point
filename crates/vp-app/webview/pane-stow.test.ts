@@ -72,3 +72,25 @@ it('rail の縦中央に、しまった pane のアイコンが並び、click �
     await window.happyDOM.close()
   }
 }, 20000)
+
+it('chat に動きがあると vp:pane-activity（lane + host id）が流れる — rail の badge の供給元', async () => {
+  const window = await bundle(`
+    import {installChatView} from './chatview'
+    window.ipc={postMessage: ()=>{}}
+    window.activity=[]
+    document.addEventListener('vp:pane-activity', e=>window.activity.push(e.detail))
+    const api=installChatView({attachRenderer:(lane,fn)=>window.emit=fn})
+    api.showLane('act-test/main')
+    document.dispatchEvent(new CustomEvent('vp:conversation-sessions',{detail:{lane:'act-test/main',focused:1,sessions:[{key:1,agent:'claude',kind:'chat',root:true,model_choices:[],permission_choices:[]}]}}))
+    const mount=document.createElement('div');document.body.append(mount)
+    api.mountSession(mount,'act-test/main',1)
+    window.emit({ kind: 'message_chunk', text: 'working' }, 1)
+  `)
+  try {
+    const h = window as unknown as { activity: Array<{ lane: string; id: string }> }
+    expect(h.activity.length).toBeGreaterThan(0)
+    expect(h.activity[0]).toEqual({ lane: 'act-test/main', id: 'chat-session-1' })
+  } finally {
+    await window.happyDOM.close()
+  }
+}, 20000)
