@@ -233,6 +233,39 @@ export function renamePane(layout: Layout, fromId: string, toId: string): Layout
 	return { structure: { columns }, attention };
 }
 
+/**
+ * Pane をしまう（純関数、creo mem_1CfbF4m1sGusje8oMouTu8）。
+ *
+ * attention を 0 にするだけ — 構造（列）は保つので、戻したとき同じ位置に帰る。可視の投影は
+ * 既存の規律（attention 0 = display:none、残りが再配分）に乗る。doc 55 §3「畳む欲求は
+ * layout の関心」: data 層（session / board）には触れない view 層の状態。
+ * 構造に居ない id / 既に 0 の id は layout を返すだけ（冪等）。
+ */
+export function stowPane(layout: Layout, id: string): Layout {
+	if (!layout.structure.columns.some((c) => c.panes.includes(id))) return layout;
+	if ((layout.attention[id] ?? 0) <= 0) return layout;
+	return { ...layout, attention: { ...layout.attention, [id]: 0 } };
+}
+
+/**
+ * しまった Pane を戻す（純関数）。`share` = しまう前の attention（呼び手が覚えている）。
+ * 覚えていなければ入場 share（可視 raw 平均 = 新 pane と同じ規則）。
+ */
+export function unstowPane(layout: Layout, id: string, share: number | undefined): Layout {
+	if (!layout.structure.columns.some((c) => c.panes.includes(id))) return layout;
+	const next = share !== undefined && share > 0 ? share : enterShare(layout);
+	// attention は生の重み — しまう前の値をそのまま戻せば元の比率に帰る（setShare は比率を
+	// 再計算する別の操作なので使わない）
+	return { ...layout, attention: { ...layout.attention, [id]: next } };
+}
+
+/** しまってある Pane の id（構造に居て attention 0 のもの。roster 外は含めない）。 */
+export function stowedIds(layout: Layout): string[] {
+	return layout.structure.columns
+		.flatMap((c) => c.panes)
+		.filter((id) => (layout.attention[id] ?? 0) <= 0);
+}
+
 /** 要件 3: フォーカスの視認 ring（CSS は main_area.rs `#lane-panes > .pane-focused`） */
 export const CLASS_FOCUSED = "pane-focused";
 
