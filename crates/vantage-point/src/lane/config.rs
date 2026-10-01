@@ -302,12 +302,16 @@ pub fn default_branch_for(name: &str) -> String {
     format!("wip/{name}")
 }
 
-/// lane 名（= branch-step の slug）の検証。allowlist は `[a-z0-9-]+`、先頭は英数字。
+/// **作成用**の lane 名（= branch-step の slug）の検証。allowlist は `[a-z0-9-]+`、先頭は英数字。
 ///
 /// 旧 `[a-zA-Z0-9_-]` から狭めた（2026-10-01）: lane 名がそのまま枝名 `wip/<slug>` と
 /// worktree dir 名になるので、sanitize で丸めず**拒否**する（丸めると lane 名と枝名が
-/// ずれ、`git branch --list 'wip/*'` と lane 一覧が対応しなくなる）。既存 lane は検証を
-/// 通し直さないので影響しない。
+/// ずれ、`git branch --list 'wip/*'` と lane 一覧が対応しなくなる）。
+///
+/// ⚠️ **作成経路だけ**で呼ぶ（`setup_sub` / `create_sub_orchestrated` / daemon `lanes/create`）。
+/// 削除や cwd 付きの操作は [`validate_existing_sub_name`] — 旧規約で作られた lane
+/// （`Legacy_Name`）をここで弾くと**消せなくなり、dir が残って次の起動で復活する**
+/// （#1157 の退行、nexus の review で実機再現）。
 pub fn validate_sub_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("sub name cannot be empty".into());
@@ -325,6 +329,36 @@ pub fn validate_sub_name(name: &str) -> Result<(), String> {
             "invalid sub name: '{name}'. Must start with an alphanumeric character."
         ));
     }
+    reject_reserved_sub_name(name)
+}
+
+/// **既存** lane を操作する経路（削除 / cwd 付き create = 既にある dir を lane にする）の
+/// 名前検証。旧規約の allowlist `[a-zA-Z0-9_-]` + 先頭は英数字 + 予約名の拒否。
+///
+/// 作成用（[`validate_sub_name`]）より緩いのは、2026-10-01 より前に作られた lane が
+/// 大文字や `_` を含み得るため。危険文字（`/` `..` 等）と予約名は作成用と同じく拒否する。
+pub fn validate_existing_sub_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("sub name cannot be empty".into());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!(
+            "invalid sub name: '{name}'. Only [a-zA-Z0-9_-] are allowed."
+        ));
+    }
+    if name.starts_with('-') || name.starts_with('_') {
+        return Err(format!(
+            "invalid sub name: '{name}'. Must start with an alphanumeric character."
+        ));
+    }
+    reject_reserved_sub_name(name)
+}
+
+/// 予約名（origin lane の `main` と旧世代の `root` / `conductor`）を拒否する。作成用・操作用で共有。
+fn reject_reserved_sub_name(name: &str) -> Result<(), String> {
     // VP-166: 開発起点 lane の予約名は sub 名として使えない
     // (mailbox box key `<agent>#main` と衝突するため)。
     // 設計: docs/design/16-sub-lane-mailbox-recv.md
@@ -383,6 +417,19 @@ mod tests {
         assert!(validate_sub_name("feature_login").is_err());
         assert!(validate_sub_name("Feat").is_err());
         assert!(validate_sub_name("feat-api").is_ok());
+    }
+
+    #[test]
+    fn existing_lane_names_keep_the_old_allowlist() {
+        // #1157 follow-up（should-1）: 旧規約で作られた lane を操作（削除 / cwd 付き create）
+        // する経路は、slug に狭めた作成用ではなく旧 allowlist で通す。予約名と危険文字は変わらず拒否
+        assert!(validate_existing_sub_name("Legacy_Name").is_ok());
+        assert!(validate_existing_sub_name("feature_login").is_ok());
+        assert!(validate_existing_sub_name("feat-api").is_ok());
+        assert!(validate_existing_sub_name("").is_err());
+        assert!(validate_existing_sub_name("foo/bar").is_err());
+        assert!(validate_existing_sub_name("_leading").is_err());
+        assert!(validate_existing_sub_name("root").is_err());
     }
 
     #[test]
