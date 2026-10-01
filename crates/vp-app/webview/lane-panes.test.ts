@@ -55,7 +55,7 @@ describe("lanePaneRefs（roster = session 一覧 × 各 mode、doc 50 §4.6 A6�
 		).toEqual([
 			{ id: "term-session-1", label: "cc#1", session: 1, kind: "term" },
 			{ id: "chat-session-3", label: "cdx#3", session: 3, kind: "chat" },
-		]);
+		].map((v) => expect.objectContaining(v)));
 	});
 
 	it("全 session が chat（root も chat = 旧 mode==chat 相当）", () => {
@@ -67,7 +67,7 @@ describe("lanePaneRefs（roster = session 一覧 × 各 mode、doc 50 §4.6 A6�
 		).toEqual([
 			{ id: "chat-session-1", label: "cc#1", session: 1, kind: "chat" },
 			{ id: "chat-session-3", label: "cdx#3", session: 3, kind: "chat" },
-		]);
+		].map((v) => expect.objectContaining(v)));
 	});
 
 	it("A6 の核心: 非 root も term になれる（term が 2 枚並ぶ = 旧実装では不可能だった形）", () => {
