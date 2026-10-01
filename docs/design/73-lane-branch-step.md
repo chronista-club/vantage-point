@@ -1,4 +1,4 @@
-# Design 73: lane の枝名 = 段 — `wip/<slug>`（branch-step の適用）
+# Design 73: lane のブランチ命名 — prefix が段、`wip/<slug>`（branch-step の適用）
 
 > **Status**: 実装済み（2026-10-01、`wip/lane-branch-wip-prefix`）。規約側（AGENTS.md / CLAUDE.md、`git next` の門）は同日の `review/branch-step-adopt`（PR #1156）。
 > **正本**: 設計と裁定 = creo `mem_1CfZvzMGQyyyQJLqyZMyR8`（[[branch-step-naming]]）、図 = `mem_1CfZz3aDDKfmVm7uRs6w9Z`。skill = chronista-style plugin 0.33.0 `branch-step`（設計 doc は plugin-chronista-style `docs/design/02-branch-step-naming.md`）。この doc は VP 本体への適用だけを書く。
@@ -9,7 +9,7 @@
 | 前 | 後 |
 |---|---|
 | lane の既定 branch = `<git-user>/<name>`（`git config user.name` を lowercase + sanitize して prefix に） | **`wip/<name>`**（`lane::config::default_branch_for`） |
-| lane 名の allowlist `[a-zA-Z0-9_-]`（枝名側で sanitize） | **`[a-z0-9-]+`**、先頭は英数字（`validate_sub_name`）。外れたら**拒否**（丸めない） |
+| lane 名の allowlist `[a-zA-Z0-9_-]`（ブランチ名側で sanitize） | **`[a-z0-9-]+`**、先頭は英数字（`validate_sub_name`）。外れたら**拒否**（丸めない） |
 | `vp lane new <name> <branch>`（branch 必須） | `vp lane new <name> [branch]`（省略時 `wip/<name>`。`fork` も同じ） |
 
 - 導出は 1 か所（`lane::config::default_branch_for`）。呼び手は 4 か所 — daemon の `lanes/create`（`control_ops::resolve_create_lane_args`）、repo の `create_sub_orchestrated`（`repo/lane/lifecycle.rs`）、CLI の `lane new` と `lane fork`（`vp-cli/src/main.rs`）
@@ -19,9 +19,9 @@
 
 ## 2. なぜ
 
-- **枝名は「今どの段にいるか」だけを語る**（branch-step の原理）。`git next` は `wip/<slug>` → `review/<slug>` と prefix だけを rename する前提なので、prefix に人名（`mako/`）が座っていると段を表せない
-- **誰が切ったかは枝名の仕事ではない**。commit の author が持つ情報で、枝名に載せると同じ課題を別の人が引き継いだときに名前が嘘になる
-- **lane 名 = slug = 枝名の末尾 = worktree dir 名**を一致させる。旧実装は lane 名を枝名側で sanitize（`Feat_API` → `feat_api`）していたので、`git branch --list` と lane 一覧が対応しない余地があった。slug 規約で検証して拒否すれば、変換が要らず、ずれも生まれない
+- **ブランチ名は「今どの段にいるか」だけを語る**（branch-step の原理）。`git next` は `wip/<slug>` → `review/<slug>` と prefix だけを rename する前提なので、prefix に人名（`mako/`）が座っていると段を表せない
+- **誰が切ったかはブランチ名の仕事ではない**。commit の author が持つ情報で、ブランチ名に載せると同じ課題を別の人が引き継いだときに名前が嘘になる
+- **lane 名 = slug = ブランチ名の末尾 = worktree dir 名**を一致させる。旧実装は lane 名をブランチ名側で sanitize（`Feat_API` → `feat_api`）していたので、`git branch --list` と lane 一覧が対応しない余地があった。slug 規約で検証して拒否すれば、変換が要らず、ずれも生まれない
 - 大文字と `_` を落としたのは branch-step の slug 規約（`[a-z0-9-]+`、起票 memory の Branch slug と完全一致で探す）に合わせるため。2026-10-01 に repo を数えた範囲（`setup_sub` / `new_sub_in` / `validate_sub_name` の呼び出しと、docs の `vp lane new` / `flow_handoff` の例）で、`_` や大文字を含む lane 名は `validate_sub_name` の test 入力（`feature_login` / `_leading`）だけだった。実在の lane（`.vp/lanes/`）も slug 形のみ
 
 ## 3. 影響と見送り

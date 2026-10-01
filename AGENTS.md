@@ -8,9 +8,9 @@
 dev trunk は **nightly**（GitHub default の `main` は公開 release 専用・直 push 禁止）。
 並列に作業する agent は lane（= git worktree）単位で隔離する。**並列 lane で作業する agent は lead checkout（この repo 本体）の branch を切り替えない**こと — branch の checkout は自分の worktree 内でのみ行う（lead checkout の branch 操作は lead session だけが行う）。
 
-### branch 名 = 段（branch-step、2026-10-01 適用）
+### ブランチ命名（branch-step、2026-10-01 適用）— prefix が段、slug は不変
 
-branch 名は **「今どの段にいるか」だけ**を語る（chronista-style plugin の `branch-step` スキル。設計は plugin-chronista-style の `docs/design/02-branch-step-naming.md`）。
+ブランチ名は **「今どの段にいるか」だけ**を語る（chronista-style plugin の `branch-step` スキル。設計は plugin-chronista-style の `docs/design/02-branch-step-naming.md`）。
 
 | 段 | 名前 | 意味 |
 |---|---|---|
@@ -20,7 +20,7 @@ branch 名は **「今どの段にいるか」だけ**を語る（chronista-styl
 | 生かしておく実験 | `exp/<slug>` | 掃除・停滞検知の対象外 |
 | main 起点の緊急修正 | `hotfix/<slug>` | main へ PR、tag、nightly へ back-merge |
 
-- **slug** = 起票 memory の Branch slug と同じ `[a-z0-9-]+`。**lane 名 = slug**、worktree は `.vp/lanes/<slug>`。type（feat / fix）は commit message の仕事で枝名には載せない
+- **slug** = 起票 memory の Branch slug と同じ `[a-z0-9-]+`。**lane 名 = slug**、worktree は `.vp/lanes/<slug>`。type（feat / fix）は commit message の仕事でブランチ名には載せない
 - 段を進める操作は `git next`（spike/exp → wip、wip → review。review に入る時だけ push + PR）/ `git keep`（spike → exp、初 push）/ `git drop`（spike を削除）/ `git board`（一覧）
 - merge は `gh pr merge --squash --delete-branch` → worktree を畳む（`git worktree remove`）→ `git worktree prune`。`review/` 以降は rename しない（直しは PR の中で）
 
