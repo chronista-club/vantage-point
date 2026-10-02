@@ -178,6 +178,13 @@ pub struct LaneInfo {
     /// `/api/lanes` 応答時に lazy 取得 (registry には保存しない、 git 状態は volatile)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sub_status: Option<crate::lane::commands::SubStatus>,
+    /// この lane の現在ブランチ（detached HEAD は None）。**root も含む全 lane** で供給する
+    /// （sidebar の各 lane 行と lane ヘッダに出す、mako 2026-10-02）。
+    /// `sub_status` は 5-7 git subprocess で数 100ms かかるため Sub 限定のままにし、
+    /// root は `git branch --show-current` 1 回だけで取る。Sub は `sub_status.branch` の複製
+    /// （供給点は `build_lanes_snapshot` 1 箇所）。registry には保存しない（volatile）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     /// R3-b → doc 39 §3-1: この lane の **root session** の CC session id（wire 配送は常に
     /// root = lane の人格に解決する）。 registry には保存せず `/api/lanes` 応答時に root
     /// session の state file (`lane::cc_session`、 書き手は SessionStart/UserPromptSubmit hook)
@@ -351,6 +358,7 @@ mod tests {
             pid: Some(12345),
             cwd: "/tmp".to_string(),
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -403,6 +411,7 @@ mod tests {
             pid: None,
             cwd: "/tmp".to_string(),
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
