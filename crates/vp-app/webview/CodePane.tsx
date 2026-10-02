@@ -27,7 +27,7 @@
 
 import { For, Show, createMemo, createSignal, onCleanup } from "solid-js";
 import { render } from "solid-js/web";
-import { boardKeyOf } from "./lane-panes";
+import { boardKeyOf, CODE_PANE_REF } from "./lane-panes";
 import { toggleCodeOpen } from "./code-view";
 
 // ============================================================================
@@ -302,6 +302,18 @@ export function mountCodePane(host: HTMLElement): CodePaneController {
 			<div class="code-plate">
 				<span class="code-plate-title">Code</span>
 				<span class="code-plate-path">{openedPath() ?? ""}</span>
+				<button
+					type="button"
+					class="code-plate-btn code-plate-stow"
+					title="この pane をしまう（右の rail に移す）"
+					onClick={() =>
+						document.dispatchEvent(
+							new CustomEvent("vp:pane-stow", { detail: { id: CODE_PANE_REF.id } }),
+						)
+					}
+				>
+					→|
+				</button>
 				<button
 					type="button"
 					class="code-plate-btn"

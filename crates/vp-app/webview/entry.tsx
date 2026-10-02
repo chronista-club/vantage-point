@@ -122,6 +122,7 @@ import type {
 // + New（engine × Mode で新 session）は LaneHeader へ移設済み（doc 51 §1 A1 — 帯の退役）。
 import {
 	boardKeyOf,
+	BOARD_PANE_REF,
 	chatHostId,
 	hostIdForMode,
 	installLanePanes,
@@ -534,7 +535,8 @@ document.head.appendChild(railStyle);
 const edgeRail = (() => {
 	const root = document.getElementById("edge-rail");
 	const host = document.getElementById("edge-rail-new-host");
-	return root && host ? mountEdgeRail(root, host) : null;
+	const stowHost = document.getElementById("edge-rail-stow-host");
+	return root && host && stowHost ? mountEdgeRail(root, host, stowHost) : null;
 })();
 
 // ===== R sidebar（sidebar view modes、2026-08-01）— rail のフル幅形 = debug log =====
@@ -589,6 +591,12 @@ const boardView = (() => {
 })();
 // code pane（コードブラウザ P1）: view 層（open = user 専有、in-memory）+ 中身の mount。
 // roster への反映は lane-panes が 'vp:code-view' を購読して行う（board と同型、float 無し）。
+// board 名札の「しまう」（Pane のしまうモード）。lane は lane-panes が表示 lane で補う。
+document.getElementById("board-stow-btn")?.addEventListener("click", () => {
+	document.dispatchEvent(
+		new CustomEvent("vp:pane-stow", { detail: { id: BOARD_PANE_REF.id } }),
+	);
+});
 const codeView = installCodeView();
 const codePane = (() => {
 	const host = document.getElementById("lane-code");

@@ -48,6 +48,7 @@ import type {
 import { focusedOf, noteFocus, syncHeaderSessionId } from './console'
 import { sessionChipPrefix } from './LaneHeader'
 import { agentDisplayName, agentIcon } from './src/sidebar/lane'
+import { hostIdForMode } from './lane-panes'
 import { isImeKeystroke } from './ime'
 import { applyCompletion, filterSlashCommands, moveSelection, slashQuery } from './slash'
 import {
@@ -1411,6 +1412,21 @@ export function SessionPlate(props: {
           {target() === 'gui' ? 'Chat' : 'Console'}
         </button>
       </Show>
+      {/* しまう（pane 級 = 名札に住む、doc 56）。rail の縦中央に移り、残りが広がる。戻すのは
+          rail のアイコン。中身（会話 / console）には触れない（view 層、doc 55 §3） */}
+      <button
+        type="button"
+        class="conversation-session-plate-stow"
+        title="この pane をしまう（右の rail に移す。戻すのは rail のアイコン）"
+        onClick={(e) => {
+          e.stopPropagation()
+          document.dispatchEvent(new CustomEvent('vp:pane-stow', {
+            detail: { lane: props.lane, id: hostIdForMode(props.session, props.mode) },
+          }))
+        }}
+      >
+        <CreoIcon name="ph:arrow-line-right" size={9} />
+      </button>
       <Show when={canCloseSession(sessionsOf(props.lane)?.sessions.length ?? 0, info()?.root)}>
         <button
           type="button"
@@ -1599,6 +1615,14 @@ function SessionChatView(props: { lane: string; session: number }) {
   const statusLine = () => deriveStatus(state(), nowMs())
   // 灯 3 状態（doc 51 §1 A2）: status の畳み込み。名札の dot が読む。
   const lamp = () => lampOf(statusLine())
+  // 活動の signal（Pane のしまうモード）: しまっている間の badge の供給元。lamp が点いた
+  // （返答中 / 承認待ち）ときだけ流す。受け手（rail）はしまっている pane 分だけ拾う
+  createEffect(() => {
+    if (lamp() === 'off') return
+    document.dispatchEvent(new CustomEvent('vp:pane-activity', {
+      detail: { lane: props.lane, id: hostIdForMode(props.session, 'gui') },
+    }))
+  })
   // now-line（doc 51 §1 A3）: 名札直下の「今なにを」。null = 行ごと描かない。
   const nowLine = () => deriveNowLine(state())
   const codexInputBusy = () => !!state().codexInput
@@ -2628,6 +2652,9 @@ export const CHATVIEW_CSS = `
 .conversation-session-plate-spacer { flex:1; }
 /* 既定 opacity .55 は暗い名札上で沈んで「削除の動線が無い」ように見えた（2026-07-24 実機）。
    常時視認できる濃さに上げ、hover で確定的に立てる。 */
+.conversation-session-plate-stow { flex:none; display:inline-flex; align-items:center; padding:2px 4px;
+  border:none; background:transparent; color: var(--color-text-tertiary,#8b93a7); cursor:pointer; opacity:.6; }
+.conversation-session-plate-stow:hover { opacity:1; color: var(--color-text,#e6e9ef); }
 .conversation-session-plate-close { flex:none; display:inline-flex; align-items:center; padding:2px 4px;
   line-height:1; border:none; border-radius:4px; background:transparent; cursor:pointer;
   color: var(--color-text-secondary,#a8b0c0); opacity:.85; }
