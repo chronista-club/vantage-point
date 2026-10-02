@@ -691,6 +691,13 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		if (!d?.id || (d.lane && d.lane !== activeLane)) return;
 		controller.stowPane(d.id);
 	});
+	// rail からの一覧の要求（lane 切替時）。指紋を消して render で流し直す
+	document.addEventListener("vp:stowed-panes-demand", (e) => {
+		const d = (e as CustomEvent<{ lane: string }>).detail;
+		if (!d?.lane || d.lane !== activeLane) return;
+		lastStowedPush.delete(d.lane);
+		render();
+	});
 	document.addEventListener("vp:pane-unstow", (e) => {
 		const d = (e as CustomEvent<{ lane?: string; id: string }>).detail;
 		if (!d?.id || (d.lane && d.lane !== activeLane)) return;

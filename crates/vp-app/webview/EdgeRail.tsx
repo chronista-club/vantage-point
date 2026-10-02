@@ -210,8 +210,11 @@ export function mountEdgeRail(
     setLane(addr) {
       setLaneSignal(addr)
       setMenu(null) // lane が変われば menu の文脈も失効
-      setStowed([]) // しまった一覧は lane のもの — 次の 'vp:stowed-panes' で埋まる
+      setStowed([]) // しまった一覧は lane のもの — 下の要求への応答で埋まる
       setBadges(new Set<string>())
+      // lane-panes が先に流していると（applyLaneView → setActiveLane の順）、上の lane 不一致で
+      // 捨てている。順序に依存せず埋まるよう、こちらから要求する（応答 = 'vp:stowed-panes'）
+      if (addr) document.dispatchEvent(new CustomEvent('vp:stowed-panes-demand', { detail: { lane: addr } }))
       railRoot.style.display = addr ? '' : 'none'
     },
   }

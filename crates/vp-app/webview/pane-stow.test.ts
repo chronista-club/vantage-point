@@ -64,6 +64,24 @@ it('rail の縦中央に、しまった pane のアイコンが並び、click �
     // 別 lane の一覧は無視する（rail は表示 lane のもの）
     doc.dispatchEvent(new window.CustomEvent('vp:stowed-panes', { detail: { lane: 'other/main', panes: [] } }))
     expect(doc.querySelectorAll('.rail-stowed').length).toBe(2)
+    // lane 切替: rail は自分から一覧を要求する（lane-panes が先に流していても落とさない）。
+    // 2026-10-02 実機: 切り替えて戻ると一覧が消え、しまった pane を戻せなくなった（順序依存）
+    const h2 = window as unknown as { demanded: unknown[]; rail: { setLane(a: string | null): void } }
+    h2.demanded = []
+    doc.addEventListener('vp:stowed-panes-demand', e => h2.demanded.push((e as unknown as CustomEvent).detail))
+    h2.rail.setLane('other/main')
+    expect(h2.demanded).toEqual([{ lane: 'other/main' }])
+    expect(doc.querySelectorAll('.rail-stowed').length).toBe(0)
+    doc.dispatchEvent(new window.CustomEvent('vp:stowed-panes', { detail: { lane: 'other/main', panes: [
+      { id: 'term-session-1', kind: 'term', label: 'cc#1', session: 1, agent: 'claude' },
+    ] } }))
+    expect(doc.querySelectorAll('.rail-stowed').length).toBe(1)
+    h2.rail.setLane('stow-test/main')
+    doc.dispatchEvent(new window.CustomEvent('vp:stowed-panes', { detail: { lane: 'stow-test/main', panes: [
+      { id: 'chat-session-1', kind: 'chat', label: 'claude#1', session: 1, agent: 'claude' },
+      { id: 'lane-code', kind: 'code', label: 'Code' },
+    ] } }))
+    expect(doc.querySelectorAll('.rail-stowed').length).toBe(2)
     // badge: しまった pane に動きがあれば点く
     doc.dispatchEvent(new window.CustomEvent('vp:pane-activity', { detail: { lane: 'stow-test/main', id: 'lane-code' } }))
     expect(doc.querySelectorAll('.rail-stowed')[1]!.classList.contains('has-badge')).toBe(true)
