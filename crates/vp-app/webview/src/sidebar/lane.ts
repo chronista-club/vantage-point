@@ -111,6 +111,15 @@ export function isLaneAlive(lane: LaneInfo): boolean {
 }
 
 /** Lane の表示ラベル。 開発起点はラベルなし、 それ以外は lane 名。 */
+/**
+ * lane の表示用ブランチ（純粋）。`branch`（root 含む全 lane、新 daemon）を優先し、
+ * 欠落時は `sub_status.branch`（Sub のみ、旧 daemon 互換）に fallback。どちらも無ければ null
+ * （detached HEAD / git 外 / 旧 daemon の root）。Rust 側の対 = `app::lane_view::lane_branch`。
+ */
+export function laneBranch(lane: LaneInfo): string | null {
+	return lane.branch ?? lane.sub_status?.branch ?? null;
+}
+
 export function laneLabel(lane: LaneInfo): string {
 	// 地で判別 (A): 開発起点はラベルなし (repo folder 直下 + インデントなしで自明)、
 	// それ以外は name のみ (段下げ + 左罫線で従属関係を示す)。
