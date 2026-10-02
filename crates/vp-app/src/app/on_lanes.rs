@@ -10,7 +10,7 @@
 //! `restore_active_lane` / `observe_daemon_active_lane` / `activate` で頼むだけ。
 //! resource: `boot.webview` / `boot.rt_handle` / `boot.daemon_conn` / `boot.instance_index`。
 
-use tao::event_loop::EventLoopProxy;
+use crate::event_proxy::EventLoopProxy;
 
 use super::boot::Boot;
 use super::lane_view::{

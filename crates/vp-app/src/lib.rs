@@ -62,3 +62,6 @@ pub mod voice;
 /// webview との線（IPC decode / asset / main-area / ink snapshot / code pane）。
 pub mod webview;
 // ws_terminal: Phase 2.x-d で削除 (per-Lane browser-native WebSocket に移行、 Rust 中継経路は不要)
+
+/// Window-addressed delivery over the one native event loop.
+pub mod event_proxy;
