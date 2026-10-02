@@ -1,11 +1,11 @@
-//! App icon — runtime で OS に portal の山アイコンを当てる。
+//! App icon — runtime で OS に Vantage Point のブランドアイコンを当てる。
 //!
 //! ## macOS (dock)
 //!
 //! `vp app start` が起動する bare binary (dev root `~/.local/opt/vp-dev/bin/vp-app` 等) は .app bundle 外なので
 //! bundle の `icon.icns` (release:mac が同梱) が効かず、 dock が generic icon になる。 起動時に
-//! `NSApplication.setApplicationIconImage` で portal favicon (`assets/icon.png`、 portal の
-//! `assets/favicon.svg` 由来の山シルエット) を当て、 dev / cargo 起動でも dock を portal icon にする。
+//! `NSApplication.setApplicationIconImage` で `assets/icon.png` を当て、dev / cargo 起動でも
+//! 同じアイコンを使う。原図は repo root の `assets/brand/source.svg`、生成は `scripts/brand_assets.py`。
 //! .dmg bundle 版は icns と二重掛けになるが冪等。
 //!
 //! ## Windows (taskbar / Alt-Tab)
@@ -16,7 +16,7 @@
 //! - [`set_app_user_model_id`] — taskbar の identity。 pin 留め / grouping が壊れないようにする
 //! - [`icon_rgba`] — window icon (tao) と tray icon が要求する生 RGBA の供給元
 
-/// dock の app icon を portal の山アイコンに設定する。
+/// dock の app icon を Vantage Point のブランドアイコンに設定する。
 ///
 /// **macOS のみ + main thread から呼ぶこと**（AppKit 制約）。 非 macOS は no-op。
 pub fn set_app_icon() {
