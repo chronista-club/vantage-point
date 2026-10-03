@@ -165,6 +165,7 @@ export type ChatState = {
   historyThreadId?: string
   /** Inputs absent from native history stay recoverable, outside the conversation timeline. */
   unconfirmedCodexInputs?: Pick<Submission, 'id' | 'text' | 'images'>[]
+  codexInputCapacityError?: string | null
   codexConfig?: Extract<ConversationEvent, { kind: 'codex_config' }>['config']
   codexSettingsRequest?: string | null
   codexSettingsError?: string | null
@@ -227,7 +228,10 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       s.unconfirmedCodexInputs = s.unconfirmedCodexInputs?.filter(input => input.id !== submission.id)
     } else {
       for (const item of s.items) {
-        if (item.kind === 'user' && item.submissionId === submission.id) delete item.submissionId
+        if (item.kind === 'user' && item.submissionId === submission.id) {
+          delete item.submissionId
+          delete item.images
+        }
       }
       s.submission = null
     }
@@ -239,7 +243,7 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       const included = new Set(ev.user_message_ids)
       const local = new Map((s.unconfirmedCodexInputs ?? []).map(input => [input.id, input]))
       for (const item of s.items) {
-        if (item.kind === 'user' && item.clientId) {
+        if (item.kind === 'user' && item.clientId && !local.has(item.clientId)) {
           local.set(item.clientId, { id: item.clientId, text: item.text, images: item.images ?? [] })
         }
       }
@@ -448,9 +452,23 @@ function sealLastAssistant(s: ChatState): void {
 }
 /** Keep the exact payload in memory until accepted or explicitly recovered. */
 export function beginSubmission(
-  s: ChatState, id: string, text: string, images: Submission['images'],
+  s: ChatState, id: string, text: string, images: Submission['images'], codex = false,
 ): boolean {
   if (s.submission) return false
+  if (codex) {
+    const inputs = s.unconfirmedCodexInputs ?? []
+    // Budget each string by the larger of its UTF-8 and UTF-16 sizes, including base64.
+    // This is a payload bound, not a heap measurement.
+    const stringBytes = (value: string) => Math.max(value.length * 2, new TextEncoder().encode(value).length)
+    const size = (input: Pick<Submission, 'text' | 'images'>) =>
+      stringBytes(input.text) + input.images.reduce((sum, image) => sum + stringBytes(image.data) + stringBytes(image.media_type), 0)
+    if (inputs.length >= 20 || inputs.reduce((sum, input) => sum + size(input), 0) + size({ text, images }) > 32 * 1024 * 1024) {
+      s.codexInputCapacityError = '未確認入力の保管上限（20件 / 32 MiB）に達しました。履歴を確認し、確認済みの入力を保管から外してください。入力は送信せず入力欄に残しています。'
+      return false
+    }
+    s.unconfirmedCodexInputs = [...inputs, { id, text, images }]
+    s.codexInputCapacityError = null
+  }
   s.submission = { id, text, images, status: 'sending', error: null }
   s.items.push({ kind: 'user', text, submissionId: id, clientId: id,
     ...(images.length ? { images } : {}) })

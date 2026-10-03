@@ -16,13 +16,14 @@ it('keeps unmatched input outside the timeline without resending, and restores i
       ]
     }}))
     api.mountSession(document.body, 'unconfirmed/main', 1)
+    window.submit = text => sendSubmission('unconfirmed/main', 1, text, [])
     sendSubmission('unconfirmed/main', 1, '進めていこう', [])
   `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false,
   format: 'iife', conditions: ['browser'], plugins: [solidPlugin()] })
   const window = new Window()
   try {
     window.eval(result.outputFiles[0].text)
-    const app = window as unknown as { sent: any[]; emit: (event: any, session: number) => void }
+    const app = window as unknown as { sent: any[]; submit: (text: string) => void; emit: (event: any, session: number) => void }
     const sent = () => app.sent.filter(m => m.t === 'conversation:submit')
     const id = sent()[0].request_id
     app.emit({ kind: 'submit_result', request_id: id, error: null }, 1)
@@ -45,5 +46,28 @@ it('keeps unmatched input outside the timeline without resending, and restores i
       in_flight: true, truncated: false }, 1)
     // Native history can confirm the input before the independent submit ACK arrives.
     expect(window.document.querySelector('.conversation-stream')?.textContent?.match(/進めていこう/g)).toHaveLength(1)
+    app.emit({ kind: 'submit_result', request_id: sent()[1].request_id, error: null }, 1)
+    app.emit({ kind: 'codex_history', thread_id: 'thread', events: [], user_message_ids: [],
+      in_flight: false, truncated: false }, 1)
+    for (let n = 0; n < 20; n++) {
+      app.submit(`unconfirmed-${n}`)
+      app.emit({ kind: 'submit_result', request_id: sent().at(-1).request_id, error: null }, 1)
+    }
+    const textarea = window.document.querySelector('textarea')!
+    textarea.value = '入力欄に残す'
+    textarea.dispatchEvent(new window.Event('input', { bubbles: true }))
+    const send = window.document.querySelector('button.conversation-send')!
+    send.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+    expect(sent()).toHaveLength(22)
+    expect(textarea.value).toBe('入力欄に残す')
+    expect(window.document.body.textContent).toContain('保管上限')
+    const release = Array.from(window.document.querySelectorAll('.codex-unconfirmed button'))
+      .find(button => button.textContent === '履歴で確認済み')!
+    expect(release).toBeDefined()
+    release.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+    expect(sent()).toHaveLength(22)
+    send.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+    expect(sent()).toHaveLength(23)
+    expect(textarea.value).toBe('')
   } finally { await window.happyDOM.close() }
 }, 20_000)

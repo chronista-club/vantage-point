@@ -315,21 +315,23 @@ function flushPending(lane: string, session: number): void {
   const lc = laneChat(lane, session)
   const text = lc.state.pending
   if (!text || lc.state.submission) return
-  lc.set('pending', null)
-  sendSubmission(lane, session, text, [])
+  if (sendSubmission(lane, session, text, [])) lc.set('pending', null)
 }
 
 
 let submissionSequence = 0
 const submissionEpoch = Date.now()
 
-export function sendSubmission(lane: string, session: number, text: string, images: Submission['images']): void {
+export function sendSubmission(lane: string, session: number, text: string, images: Submission['images']): boolean {
   const lc = laneChat(lane, session)
-  if (lc.state.submission) return
+  if (lc.state.submission) return false
   // Custom-scheme WebViews may not expose crypto.randomUUID. Identity only
   // needs to be unique within this document and across its reloads.
   const id = `submit-${submissionEpoch}-${++submissionSequence}`
-  lc.set(produce((s) => { beginSubmission(s, id, text, images) }))
+  const codex = sessionsOf(lane)?.sessions.find(entry => entry.key === session)?.agent === 'codex'
+  let accepted = false
+  lc.set(produce((s) => { accepted = beginSubmission(s, id, text, images, codex) }))
+  if (!accepted) return false
   try {
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     if (!ipc) throw new Error('接続がありません。入力を戻して再試行してください。')
@@ -341,6 +343,7 @@ export function sendSubmission(lane: string, session: number, text: string, imag
       kind: 'submit_result', request_id: id, error: e instanceof Error ? e.message : String(e),
     }, session)
   }
+  return true
 }
 
 
@@ -1657,15 +1660,17 @@ function SessionChatView(props: { lane: string; session: number }) {
       if (inputRef) autosize(inputRef)
       return
     }
-    setDraft('')
-    if (inputRef) autosize(inputRef) // 送信後は 1 行に畳み戻す
     // doc 35 §5.1: streaming 中は engine へ送らず pending に buffer（items[] を触らない = 順序を汚さない）。
     // 走行中の複数送信は改行で連結し、単一 draft = 1 turn として turn 閉時に flush する。
     if (lc.state.streaming) {
       lc.set('pending', (p) => (p ? `${p}\n${text}` : text))
+      setDraft('')
+      if (inputRef) autosize(inputRef)
       return
     }
-    sendSubmission(lane, props.session, text, toWirePayload(attachments()))
+    if (!sendSubmission(lane, props.session, text, toWirePayload(attachments()))) return
+    setDraft('')
+    if (inputRef) autosize(inputRef)
     clearAttachments()
   }
 
@@ -1693,6 +1698,9 @@ function SessionChatView(props: { lane: string; session: number }) {
       bytes: Math.floor(image.data.length * 3 / 4),
     })))
     lc.set('unconfirmedCodexInputs', inputs => inputs?.filter(item => item.id !== input.id))
+    lc.set('items', items => items.map(item => item.kind === 'user' && item.clientId === input.id
+      ? { kind: 'user' as const, text: item.text } : item))
+    lc.set('codexInputCapacityError', null)
     queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
   }
 
@@ -1951,8 +1959,17 @@ function SessionChatView(props: { lane: string; session: number }) {
                 disabled={!!draft().trim() || attachments().length > 0 || !!state().submission}>
                 入力欄に戻す
               </button>
+              <button onClick={() => {
+                lc.set('unconfirmedCodexInputs', inputs => inputs?.filter(item => item.id !== input.id))
+                lc.set('items', items => items.map(item => item.kind === 'user' && item.clientId === input.id
+                  ? { kind: 'user' as const, text: item.text } : item))
+                lc.set('codexInputCapacityError', null)
+              }}>履歴で確認済み</button>
             </div>}</For>
           </details>
+        </Show>
+        <Show when={state().codexInputCapacityError}>
+          <div class="chat-history-notice" role="alert">{state().codexInputCapacityError}</div>
         </Show>
         <div
           class="conversation-stream"
