@@ -16,6 +16,22 @@
 
 ## 1. 現状の棚卸し（事実、2026-07-22 時点）
 
+### 2026-10-04 — Lane 選択の横タブ
+
+ユーザー承認: 左 aside の選択 Lane が右のメイン領域につながる面として見えること。
+記憶: `mem_1Cffk9CyL6uzCaHqQaT8Pi`。
+
+- `aria-current="page"` を現在地の正本として使う。行を右端まで延ばし、右辺のない輪郭を重ねる。
+  輪郭は疑似要素なので線幅変更で行高は変わらず、pointer-events は none。DnD と境界リサイズを維持する。
+- `--sb-selection-bg` を選択行・メインの地・Chat の `--color-bg` で共有する。
+  Editor の「Lane 選択」で背景色・輪郭色・線幅（0〜3px）を調整する。
+  `sb.selection.bg` / `sb.selection.border` / `sb.selection.width` が MCP の field ID。
+- token は :root に定義し、Editor が書く inline 値をマスクしない。初期値は背景 `#151c27`、
+  輪郭 `#68758b`、線幅 `1px`。state dot と未選択行の色には流用しない。
+- Editor の緑の検査枠とは別の表示。探索値の保存は既存どおり `editor_values` → ソース反映。
+- Xterm の端末テーマは別管理であり変更しない。スクロール、可変行高、スリム表示とリサイズの
+  見た目は実機確認対象。実装時の DOM/CSS 回帰テストは色の共有と選択切替を検証する。
+
 ### できていること
 
 | 部品 | 場所 | 状態 |
