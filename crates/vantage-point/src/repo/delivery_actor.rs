@@ -645,6 +645,7 @@ mod tests {
             pid: None,
             cwd: String::new(),
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             engine_session_id: None,
             agent_name: None,

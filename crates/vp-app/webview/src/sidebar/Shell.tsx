@@ -512,11 +512,15 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* 地 (ground): lane の cwd。 図 (title / state) の後ろに沈める層。 mute-2 / micro / mono =
    git meta と同じ最も引っ込んだ層で、 光らせない (光 = 注意は needs-you の専有)。
    indent は connector slot + icon + gap 分 = title の左端に揃える。 */
-.vp-lane-cwd{flex:0 0 100%;box-sizing:border-box;min-width:0;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap;
-  padding-left:calc(var(--sb-conn-slot,22px) + 18px + 8px);
+.vp-lane-ground{flex:0 0 100%;box-sizing:border-box;min-width:0;display:flex;gap:8px;
+  align-items:center;padding-left:calc(var(--sb-conn-slot,22px) + 18px + 8px);
   font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-size:var(--sb-text-micro,10px);color:var(--lg-mute-2,#38525b);}
+.vp-lane-cwd{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+/* ブランチ (2026-10-02): 地の層に cwd と並べる。 icon + 名前、 長ければ省略。 */
+.vp-lane-branch{flex:0 1 auto;min-width:0;display:inline-flex;align-items:center;gap:3px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.vp-lane-row.active .vp-lane-ground{color:var(--lg-mute,#5C7A85);}
 /* ── 下部 2 段 (doc 58 ③) ──
    creo 段 = cloud scope の器。上辺の hairline で名簿と区切る。 */
 .vp-creo-zone{border-top:1px solid var(--lg-hairline,#12222b);}

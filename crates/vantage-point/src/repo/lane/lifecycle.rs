@@ -133,6 +133,7 @@ pub async fn build_lanes_snapshot(state: &RepoState) -> Vec<LaneInfo> {
             pid: None,
             cwd: entry.path,
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -154,12 +155,17 @@ pub async fn build_lanes_snapshot(state: &RepoState) -> Vec<LaneInfo> {
             .collect()
     };
 
-    // 既存 Sub の git status を populate
+    // 既存 Sub の git status を populate。branch は root も含む全 lane に供給する
+    // （Sub は sub_status の複製、root は `git branch --show-current` 1 回の軽い取得）。
     for lane in lanes.iter_mut() {
-        if !lane.address.is_root() {
-            let path = std::path::Path::new(&lane.cwd);
-            if path.exists() && path.join(".git").exists() {
-                lane.sub_status = Some(crate::lane::commands::sub_status(path));
+        let path = std::path::Path::new(&lane.cwd);
+        if path.exists() && path.join(".git").exists() {
+            if lane.address.is_root() {
+                lane.branch = crate::lane::commands::get_branch(path);
+            } else {
+                let status = crate::lane::commands::sub_status(path);
+                lane.branch = status.branch.clone();
+                lane.sub_status = Some(status);
             }
         }
         // doc 40 §5: chip（engine_session_id）/ channel D（cc_session_id）/ sessions を
@@ -471,6 +477,7 @@ pub(crate) async fn create_sub_orchestrated(
             pid: None,
             cwd: String::new(), // clone 前で未確定。末尾の実 insert で確定 cwd に置換される
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -507,6 +514,7 @@ pub(crate) async fn create_sub_orchestrated(
             pid: None,
             cwd: intended_cwd,
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -742,6 +750,7 @@ pub(crate) async fn create_sub_orchestrated(
         cwd,
         // create 時点では git 状態は registry に保存しない、 GET 時に都度 sub_status() で取得
         sub_status: None,
+        branch: None,
         cc_session_id: None,
         sessions: None,
         engine_session_id: None,
@@ -1300,6 +1309,7 @@ mod core_tests {
                 pid: None,
                 cwd: String::new(),
                 sub_status: None,
+                branch: None,
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
@@ -1431,6 +1441,7 @@ mod core_tests {
             pid: None,
             cwd: "/tmp/vp-intent/.vp/lanes/sub".to_string(), // clone 前の予測値
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -1500,6 +1511,7 @@ mod core_tests {
             pid: None,
             cwd: "/tmp/vp-delete/.vp/lanes/sub".to_string(),
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -1603,6 +1615,7 @@ mod core_tests {
             pid: None,
             cwd: "/tmp/vp-wire-leave/.vp/lanes/sub".to_string(),
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,

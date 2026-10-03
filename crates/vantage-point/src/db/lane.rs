@@ -334,6 +334,7 @@ mod tests {
             pid: Some(1234),
             cwd: "/tmp".to_string(),
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,

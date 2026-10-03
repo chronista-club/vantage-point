@@ -305,6 +305,7 @@ impl LanePool {
             cwd,
             // Main は git workspace 持たない (= repo root が cwd)、 sub_status は None
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -2124,6 +2125,7 @@ mod tests {
             pid: None,
             cwd: "/tmp".to_string(),
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
