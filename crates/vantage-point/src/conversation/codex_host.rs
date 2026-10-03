@@ -1524,9 +1524,14 @@ async fn handle_response(
         }
         ReqKind::ThreadResume => {
             if let Some(err) = error {
+                let reason = error_message(err);
+                let recovery = if reason.contains("active writer") {
+                    "\n同じ会話を開いている Codex Console で処理を完了または中断し、/quit で終了してから再試行してください。更新前の共有 daemon に戻る場合は、Console の shell で codex resume '<元の会話 ID>'（--no-daemon なし）を実行してください。入力は自動再送しません。"
+                } else {
+                    ""
+                };
                 inner.fail_startup(format!(
-                    "Codex の会話を再開できませんでした。元の会話 ID は保持しています: {}",
-                    error_message(err)
+                    "Codex の会話を再開できませんでした。元の会話 ID は保持しています: {reason}{recovery}"
                 ));
                 return;
             }
@@ -3611,6 +3616,7 @@ for line in sys.stdin:
         for reason in [
             "no rollout found",
             "required MCP server failed to initialize",
+            "thread already has an active writer",
         ] {
             let host = response_test_host();
             let mut rx = host.subscribe();
@@ -3643,9 +3649,15 @@ for line in sys.stdin:
                 );
                 assert!(!state.turn_active);
             }
-            assert!(
-                matches!(rx.try_recv().unwrap(), ConversationEvent::Error { message } if message.contains(reason))
-            );
+            let ConversationEvent::Error { message } = rx.try_recv().unwrap() else {
+                panic!("resume failure must be visible");
+            };
+            assert!(message.contains(reason));
+            if reason.contains("active writer") {
+                assert!(message.contains("Console"));
+                assert!(message.contains("/quit"));
+                assert!(message.contains("自動再送しません"));
+            }
             assert!(
                 host.submit("retry by rebuilding the host").await.is_err(),
                 "the existing Chat retry path needs Err, not an indefinitely queued prompt"
