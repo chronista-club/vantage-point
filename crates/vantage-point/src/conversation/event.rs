@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use ts_rs::TS;
 
+pub use super::codex_settings::{CodexModel, CodexSelection};
+
 /// GUI へ配信する構造化イベント（1 engine turn = 複数 ConversationEvent の列）。
 ///
 /// serde 表現は `{"kind":"message_chunk","text":"..."}` の形（`tag = "kind"`）。
@@ -307,22 +309,6 @@ pub struct CodexQuestion {
     pub question: String,
     pub options: Vec<QuestionOption>,
     pub is_secret: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
-pub struct CodexSelection {
-    pub model: String,
-    pub effort: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
-pub struct CodexModel {
-    pub model: String,
-    pub label: String,
-    pub efforts: Vec<String>,
-    pub default_effort: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

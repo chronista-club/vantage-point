@@ -379,7 +379,7 @@ async fn abort_lane_creation(state: &Arc<RepoState>, key: &str, addr: &LaneAddre
 /// 3. cwd 決定:
 ///    - `req.cwd` Some → そのまま使う
 ///    - `req.branch` Some → `vp lane new <name> <branch>` subprocess で sub dir 作成
-///    - 両方 None → `<git-user>/<sanitized-name>` を auto-derive して lane clone
+///    - 両方 None → `wip/<name>` を導出して lane clone（branch-step、`config::default_branch_for`）
 /// 4. PtySlot::spawn で実 PTY 起動 (LaneComponent 別 command builder 経由)
 /// 5. LanePool に insert (state=Running、 pid 付き) + descriptor 確定 / `lifecycle=Ready`
 ///
@@ -399,7 +399,13 @@ pub(crate) async fn create_sub_orchestrated(
     //
     // 入口で全部弾くと、reserve も disk dir も db 行も作らずに済む（下の model 検証を
     // reserve より前に置いているのと同じ理由 — bad input で副作用を残さない）。
-    crate::lane::config::validate_sub_name(req.name.trim())?;
+    // cwd 付き（既存 dir を lane にする = lane watcher の復帰経路）は旧規約の名前も通す。
+    // 新規作成（cwd 無し）だけ slug に絞る（#1157 follow-up）。
+    if req.cwd.is_some() {
+        crate::lane::config::validate_existing_sub_name(req.name.trim())?;
+    } else {
+        crate::lane::config::validate_sub_name(req.name.trim())?;
+    }
     // model 名の検証は reserve / clone より**前**に置く (bad input で reservation も disk dir も
     // 作らない = orphan worktree / placeholder leak を構造的に防ぐ)。永続
     // (session_registry::set_model) は addr が要るので clone 後まで遅らせる。
@@ -516,8 +522,8 @@ pub(crate) async fn create_sub_orchestrated(
     // 理由: UI から name="sub" だけ入力した場合、 silent に Main と同 dir を共有してしまい、
     // 「Sub = 隔離 worktree」の mental model が崩れていた (race condition の温床)。
     //
-    // 新規約: branch が None の時は `git config user.name` から prefix を取り、
-    // `<user>/<sanitized-name>` 形式の branch を auto-derive して必ず lane clone を実行する。
+    // 新規約: branch が None の時は `wip/<name>`（branch-step、2026-10-01。旧 `<user>/<name>`）を
+    // 導出して必ず lane clone を実行する。name は validate_sub_name 通過済の slug。
     // explicit に同 dir を share したい場合は API caller が `cwd` を明示的に指定する。
     // F.8 B Convergent: cwd 決定経路を tag 付き で track。 spawn 失敗時の rollback 可否を判定する。
     // - `lane clone` 経路 (= 自分が作った disk dir): spawn 失敗時 rollback (disk dir 削除)
@@ -529,9 +535,7 @@ pub(crate) async fn create_sub_orchestrated(
             .branch
             .clone()
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| {
-                derive_default_branch(std::path::Path::new(&state.repo_dir), &req.name)
-            });
+            .unwrap_or_else(|| crate::lane::config::default_branch_for(req.name.trim()));
         let repo_dir = state.repo_dir.clone();
         let name = req.name.clone();
         let branch_for_log = branch.clone();
@@ -600,7 +604,7 @@ pub(crate) async fn create_sub_orchestrated(
         crate::lane::engine_model::resolve_default(req.model.as_deref(), default_model.as_deref())
     {
         let lane_label = crate::repo::agent_spawner::lane_label(&addr);
-        // 記録先は registry の初期 session（key=1）の `SessionEntry.model`（session 紐づけ、
+        // 記録先は registry の初期 session（key=1）の `SessionEntry.settings`（session 紐づけ、
         // 2026-07-27）。default_agent = この lane の agent — 早期に registry file が生えても
         // session 1 の agent が spawn 実体と一致する。
         if let Err(e) = crate::lane::session_registry::set_model(
@@ -1145,106 +1149,13 @@ async fn converge_lane(
     Err(last_err.unwrap_or_else(|| "unknown restart failure".to_string()))
 }
 
-/// Sub name から default branch を auto-derive する。
-///
-/// 形式: `<git-user>/<sanitized-name>`。
-///
-/// - `git-user` は `git config user.name` (repo local > global の標準解決) を lowercase + sanitize したもの。
-///   取得失敗・空・sanitize 後 empty なら fallback `sub` prefix を使う。
-/// - `sanitized-name` は `sanitize_for_branch` で git ref 制約に合わせる。
-///
-/// 例: user="Mako", name="sub" → `mako/sub`
-///
-/// branch 未指定時の create で使う。 doc 24 §10 B-create で daemon 側 create
-/// (`daemon/control_ops.rs` の `resolve_create_lane_args` = Unison `lanes/create` の実体) からも
-/// sibling 呼びするため `pub(crate)`。
-pub(crate) fn derive_default_branch(repo_root: &std::path::Path, name: &str) -> String {
-    let prefix = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args(["config", "user.name"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| sanitize_for_branch(&s))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "sub".to_string());
-    format!("{}/{}", prefix, sanitize_for_branch(name))
-}
-
-/// 文字列を git ref として安全な形に変換する。
-///
-/// 規則:
-/// - lowercase
-/// - ASCII alphanumeric + `-` `_` `.` 以外は `-` に置換
-/// - 連続 `-` は 1 つに圧縮
-/// - 先頭/末尾の `-` `.` は trim
-///
-/// ※ 完全な `git check-ref-format` 互換ではないが、 `~^:?*[\\` 等の禁止文字 + 制御文字を確実に除去する。
-fn sanitize_for_branch(s: &str) -> String {
-    let lowered: String = s
-        .trim()
-        .chars()
-        .map(|c| c.to_ascii_lowercase())
-        .map(|c| {
-            // PR #228 review fix (Moody Blues #4): `.` を allowlist から外す。
-            // git check-ref-format は連続 `.` (`..`) を禁止するため、 `v1.2.3` のような
-            // 入力も `v1-2-3` として安全側に倒す。 末尾 `.lock` suffix も同時に予防。
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    // 連続 `-` の圧縮
-    let mut compact = String::with_capacity(lowered.len());
-    let mut prev_dash = false;
-    for c in lowered.chars() {
-        if c == '-' {
-            if !prev_dash {
-                compact.push('-');
-            }
-            prev_dash = true;
-        } else {
-            compact.push(c);
-            prev_dash = false;
-        }
-    }
-    compact.trim_matches(|c| c == '-' || c == '.').to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sanitize_handles_typical_inputs() {
-        assert_eq!(sanitize_for_branch("Mako"), "mako");
-        assert_eq!(sanitize_for_branch("sub"), "sub");
-        assert_eq!(sanitize_for_branch("Feat/API V2"), "feat-api-v2");
-        assert_eq!(sanitize_for_branch("  spaces  "), "spaces");
-        assert_eq!(sanitize_for_branch("multi---dash"), "multi-dash");
-        assert_eq!(
-            sanitize_for_branch("--leading-trailing--"),
-            "leading-trailing"
-        );
-        assert_eq!(sanitize_for_branch("symbols!@#$%"), "symbols");
-        assert_eq!(sanitize_for_branch(""), "");
-        // PR #228 review fix (#4): `..` 連続が git ref として無効になるのを防ぐ
-        assert_eq!(sanitize_for_branch("a..b"), "a-b");
-        assert_eq!(sanitize_for_branch("v1.2.3"), "v1-2-3");
-    }
-}
-
 #[cfg(test)]
 mod core_tests {
     //! VP-13 sub-scope E: lanes.rs core 関数 smoke test。
     //!
     //! lanes portless (doc 27 §3.4.5): 旧 Axum oneshot route test は HTTP route 撤去に伴い
     //! `create_sub_orchestrated` / `build_lanes_snapshot` の直 call test に転換。
-    //! 既存 `mod tests` (= helpers / sanitize_for_branch test 等) とは別 mod で配線。
+    //! helpers の test とは別 mod で配線。
 
     use super::*;
 

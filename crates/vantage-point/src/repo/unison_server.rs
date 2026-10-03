@@ -179,8 +179,8 @@ pub(crate) async fn dispatch_repo_method(
             conversation_ops::handle_conversation_session_remove(state, payload).await
         }
         "session_set_mode" => conversation_ops::handle_session_set_mode(state, payload).await,
-        "conversation_set_model" => {
-            conversation_ops::handle_conversation_set_model(state, payload).await
+        "conversation_set_settings" => {
+            conversation_ops::handle_conversation_set_settings(state, payload).await
         }
         // doc 51 §1 A3b: `vp now` — session の「今なにを」自己申告を now-line に注入
         "session_now" => conversation_ops::handle_session_now(state, payload).await,

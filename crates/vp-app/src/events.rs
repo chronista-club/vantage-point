@@ -134,6 +134,17 @@ pub enum AppEvent {
         path: Option<String>,
         error: Option<String>,
     },
+    /// 音声入力: chat 入力欄の🎙が押された。マイクの録音を始める（同時に 1 本だけ）。
+    VoiceStart { lane: String, session: u32 },
+    /// 音声入力: 🎙が離された。録音を止めて、認識を別 thread で走らせる。
+    VoiceStop { lane: String, session: u32 },
+    /// 音声入力: 認識の結果（別 thread → event loop）。`Ok` = 認識した文字（空もあり得る）、
+    /// `Err` = 失敗の理由（入力欄の下に出す）。
+    VoiceResult {
+        lane: String,
+        session: u32,
+        result: Result<String, String>,
+    },
     /// VP-143: 全 lane の cc session display name (custom-title) を再 resolve する周期 tick。
     /// `tokio::spawn` で 5s 間隔の background task が proxy 経由で send。 main thread は
     /// `sidebar_state.lanes_by_repo` を walk して `session_title::resolve_title_for_cwd` を
@@ -309,15 +320,15 @@ pub enum AppEvent {
     /// event loop が `conversation_session_switch_root` で repo に forward（slot は対象 session の
     /// store で Resume respawn）→ session list 再取得 + demand_start で表示を追従させる。
     ConsoleSwitchRoot { lane: String, session: u64 },
-    /// gui モデル切替要求（ChatView の model picker）。 event loop が
-    /// `conversation_set_model` で repo に forward（**session 単位** — doc 50 session=Pane、
-    /// 2026-07-27 に旧 root/lane 単位 `console_set_model` から移行）。
-    /// `model` None = engine 既定に戻す。
-    ConversationSetModel {
+    /// gui 設定切替要求（ChatView の engine 別 settings panel）。 event loop が
+    /// `conversation_set_settings` で repo に forward（**session 単位** — doc 50 session=Pane、
+    /// 2026-07-27 に旧 root/lane 単位 `console_set_model` から移行、2026-09-21 に model 単独
+    /// から engine 別 `settings` へ）。`settings` は engine 所有の形（`{"claude": {...}}` 等）で
+    /// vp-app は中身を解釈しない（透過）。null = engine 既定に戻す。
+    ConversationSetSettings {
         lane: String,
         session: u64,
-        model: Option<String>,
-        effort: Option<String>,
+        settings: serde_json::Value,
         request_id: Option<String>,
     },
     // doc 53 §11: 旧 `ConversationSessionsFetch`（session 一覧の ask 要求）は退役。roster の供給は

@@ -33,7 +33,7 @@ pub enum FlowCommands {
         /// Task spec の入力元: ファイルパス、 もしくは '-' で stdin
         #[arg(long, short)]
         task_spec: String,
-        /// Lane clone する branch (省略時は repo 側で `<git-user>/<sanitized-name>` を auto-derive)
+        /// Lane clone する branch (省略時は repo 側で `wip/<name>` を導出、branch-step)
         #[arg(long, short)]
         branch: Option<String>,
         /// Lane Agent: 'claude' (default、 Claude CLI) or 'shell'

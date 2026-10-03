@@ -670,7 +670,6 @@ pub(crate) async fn handle_daemon_control(
                 .as_str()
                 .ok_or_else(|| "name is required".to_string())?;
             let (branch, agent) = crate::daemon::control_ops::resolve_create_lane_args(
-                path,
                 name,
                 payload["branch"].as_str(),
                 payload["agent"].as_str(),
@@ -3142,10 +3141,10 @@ mod tests {
     fn create_lane_defaults_are_derived() {
         use crate::daemon::control_ops::resolve_create_lane_args;
 
-        let (branch, agent) = resolve_create_lane_args("/tmp/parity", "sub", None, None);
-        assert!(
-            branch.ends_with("/sub"),
-            "branch 未指定なら `<user>/<name>` を derive する: {branch}"
+        let (branch, agent) = resolve_create_lane_args("sub", None, None);
+        assert_eq!(
+            branch, "wip/sub",
+            "branch 未指定なら `wip/<name>` を導出する（branch-step、旧 `<user>/<name>`）"
         );
         assert!(
             !agent.is_empty(),
@@ -3153,11 +3152,13 @@ mod tests {
         );
 
         // 明示指定はそのまま通る。空白のみの branch は未指定と同じ扱い。
-        let (branch, agent) =
-            resolve_create_lane_args("/tmp/parity", "sub", Some("feat/x"), Some("shell"));
+        let (branch, agent) = resolve_create_lane_args("sub", Some("feat/x"), Some("shell"));
         assert_eq!((branch.as_str(), agent.as_str()), ("feat/x", "shell"));
-        let (branch, _) = resolve_create_lane_args("/tmp/parity", "sub", Some("   "), None);
-        assert!(branch.ends_with("/sub"), "空白 branch は derive に落ちる");
+        let (branch, _) = resolve_create_lane_args("sub", Some("   "), None);
+        assert_eq!(branch, "wip/sub", "空白 branch は導出に落ちる");
+        // name の前後空白は導出前に落とす（旧 sanitize が trim していた挙動を保つ）
+        let (branch, _) = resolve_create_lane_args(" foo ", None, None);
+        assert_eq!(branch, "wip/foo");
     }
 
     #[tokio::test]

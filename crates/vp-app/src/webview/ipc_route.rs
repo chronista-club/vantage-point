@@ -60,7 +60,7 @@ pub(crate) fn is_main_ipc_tag(body: &str) -> bool {
                 // doc 39 P3: Root 切替 picker（allowlist 漏れは sidebar IPC へ流れて
                 // silent drop = 「picker 無反応」になる — session tab 4 tag と同じ罠）
                 | "console:switch_root"
-                | "conversation:set_model"
+                | "conversation:set_settings"
                 // ink（対話面, doc 52 §3）: 送信の snapshot 要求。漏れると sidebar IPC へ流れて
                 // 「unknown variant ink:snapshot」で silent drop = 送信しても画像が飛ばない
                 | "ink:snapshot"
@@ -76,6 +76,10 @@ pub(crate) fn is_main_ipc_tag(body: &str) -> bool {
                 // 流れて silent drop = 「tree が永久に空 / file 無反応」regression
                 | "code:list"
                 | "code:read"
+                // 音声入力（chat 入力欄の🎙、push-to-talk）。漏れると sidebar IPC へ流れて
+                // silent drop = 「押しても録音が始まらない」regression
+                | "voice:start"
+                | "voice:stop"
         )
     )
 }
@@ -117,6 +121,9 @@ mod ipc_tag_tests {
             // 「file を押しても何も出ない」
             "code:list",
             "code:read",
+            // 音声入力（chat 入力欄の🎙）: 漏れは「押しても録音が始まらない / 離しても文字が来ない」
+            "voice:start",
+            "voice:stop",
         ] {
             let msg = format!(r#"{{"t":"{t}","lane":"vp/root"}}"#);
             assert!(

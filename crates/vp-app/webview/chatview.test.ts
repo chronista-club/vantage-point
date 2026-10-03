@@ -1364,3 +1364,23 @@ it('sends once in a WebView without crypto.randomUUID', async () => {
     else Reflect.deleteProperty(globalThis, 'crypto')
   }
 })
+
+describe('停止した turn の表示（2026-09-23）', () => {
+  it('停止を押した turn は turn_completed で閉じ、エラーでなく「停止しました」を 1 行出す', () => {
+    const s = emptyChatState()
+    foldInto(s, { kind: 'message_chunk', text: '作業中' })
+    s.interruptRequested = true
+    foldInto(s, { kind: 'turn_completed', session_id: 'sid' })
+    expect(s.streaming).toBe(false)
+    expect(s.interruptRequested).toBe(false)
+    const texts = s.items.map((i) => ('text' in i ? i.text : ''))
+    expect(texts.some((t) => t.includes('停止しました'))).toBe(true)
+    expect(texts.some((t) => t.includes('engine error'))).toBe(false)
+  })
+  it('停止していない turn の終わりには何も足さない', () => {
+    const s = emptyChatState()
+    foldInto(s, { kind: 'message_chunk', text: '完了' })
+    foldInto(s, { kind: 'turn_completed', session_id: 'sid' })
+    expect(s.items.map((i) => ('text' in i ? i.text : '')).some((t) => t.includes('停止しました'))).toBe(false)
+  })
+})

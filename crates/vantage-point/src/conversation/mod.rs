@@ -32,6 +32,7 @@
 
 pub mod acp_host;
 pub mod acp_translate;
+pub mod claude_settings;
 pub mod claude_translate;
 mod codex_async_questions;
 mod codex_question_session;
@@ -42,12 +43,13 @@ pub mod codex_host;
 mod codex_interactions;
 mod codex_permissions;
 pub mod codex_rpc_translate;
-mod codex_settings;
+pub mod codex_settings;
 pub mod engine;
 pub mod event;
 pub mod host;
 pub mod jsonl_store;
 pub mod replay_log;
+pub mod settings;
 pub mod skill_docs;
 pub mod transcript;
 pub mod vpcode_catalog;
@@ -60,4 +62,5 @@ pub use codex_host::{CodexAgentHost, CodexRpcHostConfig};
 pub use engine::{ChatEngineSlot, ChatHost, EngineKind};
 pub use event::{ConversationEvent, PlanEntry, QuestionOption, QuestionSpec};
 pub use host::{ClaudeHost, ClaudeHostConfig, ImageInput, InFlight, PermissionDecision};
+pub use settings::EngineSettings;
 pub use vpcode_host::{VpcodeHost, VpcodeHostConfig};

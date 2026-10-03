@@ -11,7 +11,7 @@ use crate::generated::push::{
     BoardMessage, CodeEntries, CodeFile, ConsoleAgents, ConsoleEvent, ConsoleModeApplied,
     ConsoleSessionList, DebuglogLines, DevicesRender, InkSnapshot, InkSnapshotError,
     PushEventEnvelope, ShellLayout, TermEnsureLane, TermPaste, TermRemoveLane, TermRemoveSession,
-    TermShowLane,
+    TermShowLane, VoiceError, VoiceText,
 };
 
 /// 生成 envelope を webview の単一受け口 `window.vpDispatch` へ押し込む。
@@ -228,6 +228,30 @@ pub(crate) fn ink_snapshot(main_view: &WebView, path: String) {
     push(
         main_view,
         &PushEventEnvelope::InkSnapshot(InkSnapshot { path }),
+    );
+}
+
+/// 音声入力: 認識した文字を、🎙を押した入力欄（lane + session）へ返す。
+pub(crate) fn voice_text(main_view: &WebView, lane: String, session: u32, text: String) {
+    push(
+        main_view,
+        &PushEventEnvelope::VoiceText(VoiceText {
+            lane,
+            session: session.into(),
+            text,
+        }),
+    );
+}
+
+/// 音声入力: 録音・認識の失敗理由を、🎙を押した入力欄へ返す。
+pub(crate) fn voice_error(main_view: &WebView, lane: String, session: u32, message: String) {
+    push(
+        main_view,
+        &PushEventEnvelope::VoiceError(VoiceError {
+            lane,
+            session: session.into(),
+            message,
+        }),
     );
 }
 

@@ -37,6 +37,10 @@ function recordingHandlers(): { calls: string[]; handlers: PushHandlers } {
 				calls.push(`agents:${lane}:${req}`),
 			inkSnapshot: (path) => calls.push(`ink:${path}`),
 			inkSnapshotError: (message) => calls.push(`inkErr:${message}`),
+			voiceText: (lane, session, text) =>
+				calls.push(`voiceText:${lane}#${session}:${text}`),
+			voiceError: (lane, session, message) =>
+				calls.push(`voiceErr:${lane}#${session}:${message}`),
 			codeEntries: (lane, entries, truncated) =>
 				calls.push(`codeEntries:${lane}:${entries.length}:${truncated}`),
 			codeFile: (lane, relPath, _payload) =>
@@ -169,6 +173,22 @@ describe("dispatch", () => {
 		dispatch({ t: "ink:snapshot", path: "/tmp/a.png" });
 		dispatch({ t: "ink:snapshot_error", message: "書けない" });
 		expect(calls).toEqual(["ink:/tmp/a.png", "inkErr:書けない"]);
+	});
+
+	it("音声入力の結果は、押した入力欄（lane + session）の宛先つきで届く", async () => {
+		// ink と同じく成功（入力欄に入れる）と失敗（理由を出す）を 2 event に分けてある。
+		// session を落とすと別の欄に文字が入るので、宛先の 2 つを両方運ぶことを固定する。
+		const mod = await import("./dispatch");
+		mod.openDispatch();
+		const { calls, handlers } = recordingHandlers();
+		mod.installDispatch(handlers);
+
+		dispatch({ t: "voice:text", lane: "vp/root", session: 2, text: "こんにちは" });
+		dispatch({ t: "voice:error", lane: "vp/root", session: 2, message: "モデルが無い" });
+		expect(calls).toEqual([
+			"voiceText:vp/root#2:こんにちは",
+			"voiceErr:vp/root#2:モデルが無い",
+		]);
 	});
 
 	it("install 前に届いた分は二重に流れない", async () => {
