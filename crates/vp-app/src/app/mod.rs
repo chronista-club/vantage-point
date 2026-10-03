@@ -390,7 +390,8 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             lane,
             session,
             data,
-        } => on_terminal::terminal_output(ui, boot, lane, session, data),
+            live,
+        } => on_terminal::terminal_output(ui, boot, lane, session, data, live),
         AppEvent::TerminalWrite {
             lane,
             session,

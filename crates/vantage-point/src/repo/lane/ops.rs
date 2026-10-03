@@ -1192,7 +1192,7 @@ mod tests {
             command
                 .initial_input
                 .unwrap()
-                .contains(&format!("resume '{thread}'"))
+                .contains(&format!("resume --no-daemon '{thread}'"))
         );
     }
 

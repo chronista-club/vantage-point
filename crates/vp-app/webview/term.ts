@@ -32,6 +32,7 @@ import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
+import { observeConsoleOutput } from "./codex-mode-handoff";
 import type { TermPushHandlers } from "./dispatch";
 
 /** wry が注入する IPC。install 時ではなく **呼ぶ時に** 引く（注入が後の場合があるため）。 */
@@ -750,7 +751,7 @@ export function installTerm(): TermPushHandlers {
 	//  `window.vpTerminal.handleOutput(address, session, base64)` で注入してくる
 	//  (board-handler.ts と同じ wry-IPC edge)。
 	//  doc 50 §4.6 A6: topic は lane 単位で共有されるので、**ここが session の振り分け点**。
-	const handleOutput = (address: string, session: number, b64: string): void => {
+	const handleOutput = (address: string, session: number, b64: string, live = false): void => {
 		const info = laneInstances.get(instKey(address, session));
 		if (!info) return;
 		let bytes: Uint8Array;
@@ -762,6 +763,7 @@ export function installTerm(): TermPushHandlers {
 			return;
 		}
 		info.writeOutput(bytes);
+		observeConsoleOutput(address, session, bytes, live);
 	};
 
 	// Phase 4-paste-fix: Rust 側 arboard で読み取った OS clipboard 内容を active Lane の xterm に inject。
