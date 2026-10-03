@@ -133,6 +133,16 @@ impl Persist {
         self.session.window_geometry()
     }
 
+    /// Application quit preserves open=true, so all still-open windows restore next launch.
+    pub(super) fn save_on_quit(&mut self, window: &tao::window::Window) {
+        self.record_window(window);
+        self.finish_quit();
+    }
+
+    fn finish_quit(&mut self) {
+        self.session.save();
+    }
+
     /// `save_on_close` の window に依らない部分（test 用に分離）。
     fn finish_close(&mut self) {
         self.session.set_open(false);
@@ -378,6 +388,39 @@ mod tests {
         assert!(p.geometry_save_due(t0 + Duration::from_millis(501)));
         // 起点が進んでいる
         assert!(!p.geometry_save_due(t0 + Duration::from_millis(900)));
+    }
+
+    // mem_1Cfd9HUeYqn4iKm5YXvgsj: close is local; quit preserves the remaining windows.
+    #[test]
+    fn three_windows_keep_independent_state_and_only_open_windows_restore_after_quit() {
+        let _env = crate::test_env::state_dir();
+        let mut first = Persist::boot(0);
+        let mut second = Persist::boot(1);
+        let mut third = Persist::boot(2);
+        first.activate("vp/lane/first");
+        second.activate("vp/lane/second");
+        third.activate("vp/lane/third");
+        first.finish_close();
+        second.finish_quit();
+        third.finish_quit();
+        assert!(!saved(0).unwrap().open);
+        assert_eq!(SessionState::open_secondary_indices(), vec![1, 2]);
+        assert_eq!(
+            saved(1).unwrap().active_lane_address.as_deref(),
+            Some("vp/lane/second")
+        );
+        assert_eq!(
+            saved(2).unwrap().active_lane_address.as_deref(),
+            Some("vp/lane/third")
+        );
+        assert_eq!(
+            Persist::boot(1).pending_active_lane(),
+            Some("vp/lane/second")
+        );
+        assert_eq!(
+            Persist::boot(2).pending_active_lane(),
+            Some("vp/lane/third")
+        );
     }
 
     #[test]

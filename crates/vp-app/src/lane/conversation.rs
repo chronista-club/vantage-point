@@ -5,7 +5,7 @@
 //! 購読後の demand は初回も再接続も毎回撃ち、collapse 時は明示 unsubscribe（doc 60 §4）。
 //! app/mod.rs から移設（棚卸し 項目 6 / 6-1 #10、2026-09-08）。
 
-use tao::event_loop::EventLoopProxy;
+use crate::event_proxy::EventLoopProxy;
 
 use crate::daemon::conn::{SharedDaemonConn, SubscriptionOutcome};
 use crate::events::AppEvent;

@@ -9,7 +9,7 @@
 //! ⚠️ `resolve_session_titles` / `resolve_lane_inboxes` は `ui.sidebar_state.lanes_by_repo` を読む
 //! （書き手は LanesLoaded の arm。6-2 PR-7 で `on_lanes` へ）。
 
-use tao::event_loop::EventLoopProxy;
+use crate::event_proxy::EventLoopProxy;
 
 use super::boot::Boot;
 use super::lane_view::lookup_lane_cwd_by_address;

@@ -9,7 +9,7 @@
 //! （`activate_lane` + `ensure_conversation_attach` 経由 = 群を跨ぐ）、`ui.win.is_focused`（read、
 //! Model B の self-filter）。resource: `boot.webview` / `boot.rt_handle` / `boot.daemon_conn`。
 
-use tao::event_loop::EventLoopProxy;
+use crate::event_proxy::EventLoopProxy;
 
 use super::boot::Boot;
 use super::lane_view::{activate_lane, ensure_conversation_attach, mark_lane_canvas_unread};

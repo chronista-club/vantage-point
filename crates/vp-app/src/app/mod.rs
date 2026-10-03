@@ -166,374 +166,408 @@ fn update_pane_bounds(webview: &WebView, window_size: tao::dpi::PhysicalSize<u32
 
 /// App のエントリポイント
 pub fn run() -> anyhow::Result<()> {
-    let instance_index = std::env::var("VP_APP_INSTANCE")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(0);
-    // boot より前に確保する。重複起動では window も session 保存も secondary 復元も行わない。
-    // この guard は run の scope で保持し、GUI process の終了で OS が lock を解放する。
-    let Some(_instance_guard) = instance_guard::acquire(&vp_paths::vp_state_dir(), instance_index)?
-    else {
+    // All legacy instance numbers contend for the same application lock.
+    let Some(_instance_guard) = instance_guard::acquire(&vp_paths::vp_state_dir(), 0)? else {
         return Ok(());
     };
-    // resource（runtime / window / webview / menu / tray / daemon 接続）と初期 state を作る。
-    // `boot` と `ui` は閉包に move し、process の寿命と一致させる（doc 60 §6 6-2）。
-    let (event_loop, boot, mut ui) = boot::boot(instance_index)?;
-
-    let proxy = event_loop.create_proxy();
-    // Phase 2.5 (per-Lane instance): startup の placeholder PTY 接続は撤去。
-    // Lane が出現するまで main area は empty placeholder ("No Lane selected") のみ。
-    // ただし daemon の auto-launch だけは継続 (sidebar の Activity widget や
-    // /api/daemon/repos 取得に必要)。
-    let _ = proxy; // 旧 spawn_shell / connect_daemon_terminal で proxy を消費していた、 互換用に残す
-    // maybe_respawn_dead_lane の async restart_lane が失敗した時に event loop へ
-    // 通知を返し lane_respawn_triggered を解除するための proxy (永続 suppression 回避)。
-    let respawn_proxy = event_loop.create_proxy();
-    // repo:add 等の async 操作で event loop に repo list 再 fetch を kick するための proxy
-    let async_action_proxy = event_loop.create_proxy();
-
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
-
-        // launch settle まで dock icon を再設定 (bare binary 対策)。 settle 後は通常の Wait。
-        if !ui.win.icon_settled {
-            crate::icon::set_app_icon();
-            if ui.win.icon_launch_at.elapsed() < std::time::Duration::from_millis(1500) {
-                *control_flow = ControlFlow::WaitUntil(
-                    std::time::Instant::now() + std::time::Duration::from_millis(150),
-                );
-            } else {
-                ui.win.icon_settled = true;
+    let (event_loop, app) = boot::boot()?;
+    let mut windows = std::collections::HashMap::new();
+    let mut focused = None;
+    let mut indices = crate::session_state::SessionState::open_secondary_indices();
+    if crate::session_state::SessionState::load(0).open || indices.is_empty() {
+        indices.insert(0, 0);
+    }
+    for index in indices {
+        match boot::open_window(&event_loop, app.clone(), index) {
+            Ok((boot, ui)) => {
+                focused = Some(boot.window.id());
+                windows.insert(boot.window.id(), (ui, boot));
             }
+            Err(error) => tracing::error!(index, %error, "window restore failed"),
         }
-
+    }
+    if windows.is_empty() {
+        anyhow::bail!("No Vantage Point window could be opened");
+    }
+    let launch_at = std::time::Instant::now();
+    event_loop.run(move |event, target, control_flow| {
+        *control_flow = ControlFlow::Wait;
+        if launch_at.elapsed() < std::time::Duration::from_millis(1500) {
+            crate::icon::set_app_icon();
+            *control_flow = ControlFlow::WaitUntil(
+                std::time::Instant::now() + std::time::Duration::from_millis(150),
+            );
+        }
         match event {
             Event::WindowEvent {
+                window_id,
                 event: WindowEvent::CloseRequested,
                 ..
-            } => on_window::close_requested(&mut ui, &boot, control_flow),
+            } => {
+                if let Some((mut ui, boot)) = windows.remove(&window_id) {
+                    on_window::close_requested(&mut ui, &boot);
+                }
+                if focused == Some(window_id) {
+                    focused = None;
+                }
+                if !cfg!(target_os = "macos") && windows.is_empty() {
+                    *control_flow = ControlFlow::Exit;
+                }
+            }
             Event::WindowEvent {
-                event: WindowEvent::Resized(size),
-                ..
-            } => on_window::resized(&mut ui, &boot, size),
-            Event::WindowEvent {
-                event: WindowEvent::Moved(_),
-                ..
-            } => on_window::moved(&mut ui, &boot),
-            Event::WindowEvent {
-                event: WindowEvent::Focused(focused),
-                ..
-            } => on_window::focused(&mut ui, &boot, focused),
-            Event::UserEvent(AppEvent::PasteText(text)) => {
-                on_terminal::paste_text(&mut ui, &boot, text)
+                window_id, event, ..
+            } => {
+                // A focus gain supersedes all other windows, regardless of OS loss-event order.
+                if matches!(event, WindowEvent::Focused(true)) {
+                    for (id, (ui, _)) in &mut windows {
+                        ui.win.is_focused = *id == window_id;
+                    }
+                }
+                if let Some((ui, boot)) = windows.get_mut(&window_id) {
+                    match event {
+                        WindowEvent::Resized(size) => on_window::resized(ui, boot, size),
+                        WindowEvent::Moved(_) => on_window::moved(ui, boot),
+                        WindowEvent::Focused(value) => {
+                            if value {
+                                focused = Some(window_id);
+                                boot.open_devtools_item.set_enabled(ui.dev_mode);
+                                boot.reload_webview_item.set_enabled(ui.dev_mode);
+                            }
+                            on_window::focused(ui, boot, value);
+                        }
+                        _ => {}
+                    }
+                }
             }
-            Event::UserEvent(AppEvent::OscNotification { lane, code: _ }) => {
-                on_conversation::osc_notification(&mut ui, &boot, lane)
-            }
-            Event::UserEvent(AppEvent::ResolveSessionTitles) => {
-                on_misc::resolve_session_titles(&mut ui, &boot)
-            }
-            Event::UserEvent(AppEvent::ResolveLaneInboxes) => {
-                on_misc::resolve_lane_inboxes(&mut ui, &boot)
-            }
-            Event::UserEvent(AppEvent::ReposLoaded(repos)) => {
-                on_lanes::repos_loaded(&mut ui, &boot, &async_action_proxy, repos)
-            }
-            Event::UserEvent(AppEvent::LanesLoaded {
-                repo_path,
-                lanes,
-                origin,
-            }) => on_lanes::lanes_loaded(
-                &mut ui,
-                &boot,
-                &respawn_proxy,
-                &async_action_proxy,
-                repo_path,
-                lanes,
-                origin,
-            ),
-            Event::UserEvent(AppEvent::WebviewReady) => catch_up::webview_ready(&mut ui, &boot),
-            Event::UserEvent(AppEvent::LanesError { repo_path, message }) => {
-                on_lanes::lanes_error(&mut ui, &boot, repo_path, message)
-            }
-            Event::UserEvent(AppEvent::LaneRespawnFailed { address }) => {
-                on_lanes::lane_respawn_failed(&mut ui, &boot, address)
-            }
-            Event::UserEvent(AppEvent::InkSnapshot { rect }) => {
-                on_misc::ink_snapshot(&mut ui, &boot, &proxy, rect)
-            }
-            Event::UserEvent(AppEvent::InkSnapshotReady { path, error }) => {
-                on_misc::ink_snapshot_ready(&mut ui, &boot, path, error)
-            }
-            Event::UserEvent(AppEvent::VoiceStart { lane, session }) => {
-                on_voice::start(&mut ui, &boot, lane, session)
-            }
-            Event::UserEvent(AppEvent::VoiceStop { lane, session }) => {
-                on_voice::stop(&mut ui, &boot, &async_action_proxy, lane, session)
-            }
-            Event::UserEvent(AppEvent::VoiceResult {
-                lane,
-                session,
-                result,
-            }) => on_voice::result(&boot, lane, session, result),
-            Event::UserEvent(AppEvent::ShellLayout {
-                sidebar_width,
-                right_sidebar_width,
-                sidebar_form,
-                right_sidebar_open,
-            }) => on_window::shell_layout(
-                &mut ui,
-                &boot,
-                sidebar_width,
-                right_sidebar_width,
-                sidebar_form,
-                right_sidebar_open,
-            ),
-            Event::UserEvent(AppEvent::DebugLogWatch { source }) => {
-                on_misc::debug_log_watch(&mut ui, &boot, &proxy, source)
-            }
-            Event::UserEvent(AppEvent::DebugLogUnwatch) => {
-                on_misc::debug_log_unwatch(&mut ui, &boot)
-            }
-            Event::UserEvent(AppEvent::DebugLogChunk {
-                source,
-                reset,
-                lines,
-                generation,
-            }) => on_misc::debug_log_chunk(&mut ui, &boot, source, reset, lines, generation),
-            Event::UserEvent(AppEvent::DeviceEvent { payload }) => {
-                on_misc::device_event(&mut ui, &boot, payload)
-            }
-            Event::UserEvent(AppEvent::EditorCommand {
-                op,
-                field_id,
-                value,
-                resp,
-            }) => on_board::editor_command(&mut ui, &boot, op, field_id, value, resp),
-            Event::UserEvent(AppEvent::CanvasMessage { repo_path, message }) => {
-                on_board::canvas_message(
-                    &mut ui,
-                    &boot,
-                    &respawn_proxy,
-                    &async_action_proxy,
-                    repo_path,
-                    message,
-                )
-            }
-            Event::UserEvent(AppEvent::TerminalOutput {
-                lane,
-                session,
-                data,
-            }) => on_terminal::terminal_output(&mut ui, &boot, lane, session, data),
-            Event::UserEvent(AppEvent::TerminalWrite {
-                lane,
-                session,
-                data,
-            }) => on_terminal::terminal_write(&mut ui, &boot, lane, session, data),
-            Event::UserEvent(AppEvent::TerminalResize {
-                lane,
-                session,
-                cols,
-                rows,
-            }) => on_terminal::terminal_resize(&mut ui, &boot, lane, session, cols, rows),
-            Event::UserEvent(AppEvent::ConversationEvent {
-                lane,
+            Event::UserEvent(crate::event_proxy::RoutedEvent {
+                window_id,
                 event,
-                session,
-            }) => on_conversation::conversation_event(&mut ui, &boot, lane, event, session),
-            Event::UserEvent(AppEvent::ConversationCodexInput {
-                lane,
-                session,
-                thread_id,
-                request_id,
-                action,
-            }) => on_conversation::conversation_codex_input(
-                &ui,
-                &boot,
-                &async_action_proxy,
-                lane,
-                session,
-                thread_id,
-                request_id,
-                action,
-            ),
-            Event::UserEvent(AppEvent::ConversationSubmit {
-                lane,
-                prompt,
-                session: chat_session,
-                images,
-                request_id,
-            }) => on_conversation::conversation_submit(
-                &mut ui,
-                &boot,
-                &async_action_proxy,
-                lane,
-                prompt,
-                chat_session,
-                images,
-                request_id,
-            ),
-            Event::UserEvent(AppEvent::ConversationRespond {
-                lane,
-                request_id,
-                answers,
-                behavior,
-                message,
-                session: chat_session,
-            }) => on_conversation::conversation_respond(
-                &mut ui,
-                &boot,
-                &async_action_proxy,
-                lane,
-                request_id,
-                answers,
-                behavior,
-                message,
-                chat_session,
-            ),
-            Event::UserEvent(AppEvent::ConversationInterrupt {
-                lane,
-                session: chat_session,
-            }) => on_conversation::conversation_interrupt(&mut ui, &boot, lane, chat_session),
-            Event::UserEvent(AppEvent::ConversationSetPermissionMode {
-                lane,
-                mode,
-                session: chat_session,
-            }) => on_conversation::conversation_set_permission_mode(
-                &mut ui,
-                &boot,
-                lane,
-                mode,
-                chat_session,
-            ),
-            Event::UserEvent(AppEvent::SessionSetMode {
-                lane,
-                session,
-                mode,
-            }) => on_conversation::session_set_mode(
-                &mut ui,
-                &boot,
-                &async_action_proxy,
-                lane,
-                session,
-                mode,
-            ),
-            Event::UserEvent(AppEvent::SessionModeApplied {
-                lane,
-                session,
-                mode,
-            }) => on_conversation::session_mode_applied(
-                &mut ui,
-                &boot,
-                &async_action_proxy,
-                lane,
-                session,
-                mode,
-            ),
-            Event::UserEvent(AppEvent::ConsoleNewSession { lane, engine, mode }) => {
-                on_conversation::console_new_session(&mut ui, &boot, lane, engine, mode)
+                scope,
+            }) => {
+                if let AppEvent::MenuClicked(ref id) = event {
+                    if *id == app.menu_ids.quit {
+                        for (ui, boot) in windows.values_mut() {
+                            ui.persist.save_on_quit(&boot.window);
+                        }
+                        *control_flow = ControlFlow::Exit;
+                        return;
+                    }
+                    if *id == app.menu_ids.new_window {
+                        let index = if windows.is_empty() {
+                            0
+                        } else {
+                            crate::session_state::SessionState::next_free_secondary_index()
+                        };
+                        match boot::open_window(target, app.clone(), index) {
+                            Ok((boot, ui)) => {
+                                focused = Some(boot.window.id());
+                                windows.insert(boot.window.id(), (ui, boot));
+                            }
+                            Err(error) => {
+                                let mut session = crate::session_state::SessionState::load(index);
+                                session.set_open(false);
+                                session.save();
+                                tracing::error!(%error, "new window failed");
+                            }
+                        }
+                        return;
+                    }
+                }
+                if let Some(id) = window_id.or(focused)
+                    && let Some((ui, boot)) = windows.get_mut(&id)
+                    && (window_id.is_none() || boot.proxy.accepts(scope))
+                {
+                    dispatch_window_event(event, ui, boot);
+                }
             }
-            Event::UserEvent(AppEvent::ConsoleSwitchRoot { lane, session }) => {
-                on_conversation::console_switch_root(&mut ui, &boot, lane, session)
+            #[cfg(target_os = "macos")]
+            Event::Reopen { .. } => {
+                if let Some((_, boot)) = focused
+                    .and_then(|id| windows.get(&id))
+                    .or_else(|| windows.values().next())
+                {
+                    boot.window.set_minimized(false);
+                    boot.window.set_focus();
+                } else if let Ok((boot, ui)) = boot::open_window(target, app.clone(), 0) {
+                    focused = Some(boot.window.id());
+                    windows.insert(boot.window.id(), (ui, boot));
+                }
             }
-            Event::UserEvent(AppEvent::ConversationSetSettings {
-                lane,
-                session,
-                settings,
-                request_id,
-            }) => on_conversation::conversation_set_settings(
-                &mut ui,
-                &boot,
-                &async_action_proxy,
-                lane,
-                session,
-                settings,
-                request_id,
-            ),
-            Event::UserEvent(AppEvent::ConversationSessionCreate { lane, agent }) => {
-                on_conversation::conversation_session_create(&mut ui, &boot, lane, agent)
-            }
-            Event::UserEvent(AppEvent::ConversationDemandStart { lane }) => {
-                on_conversation::conversation_demand_start(&mut ui, &boot, lane)
-            }
-            Event::UserEvent(AppEvent::ConversationSessionFocus { lane, session }) => {
-                on_conversation::conversation_session_focus(&mut ui, &boot, lane, session)
-            }
-            Event::UserEvent(AppEvent::ConversationSessionRemove { lane, session }) => {
-                on_conversation::conversation_session_remove(&mut ui, &boot, lane, session)
-            }
-            Event::UserEvent(AppEvent::AgentsFetch { lane, req }) => {
-                on_conversation::agents_fetch(&mut ui, &boot, &async_action_proxy, lane, req)
-            }
-            Event::UserEvent(AppEvent::Agents { lane, payload, req }) => {
-                on_conversation::agents(&mut ui, &boot, lane, payload, req)
-            }
-            Event::UserEvent(AppEvent::BoardMutate { method, body }) => {
-                on_board::board_mutate(&mut ui, &boot, method, body)
-            }
-            Event::UserEvent(AppEvent::ReposError(msg)) => {
-                on_lanes::repos_error(&mut ui, &boot, msg)
-            }
-            Event::UserEvent(AppEvent::SubCreateResult {
-                repo_path,
-                name,
-                error,
-            }) => on_lanes::sub_create_result(&mut ui, &boot, repo_path, name, error),
-            Event::UserEvent(AppEvent::AgentsResult {
-                repo_path,
-                agents,
-                error,
-            }) => on_conversation::agents_result(&mut ui, &boot, repo_path, agents, error),
-            Event::UserEvent(AppEvent::CodeList { lane }) => {
-                on_misc::code_list(&mut ui, &boot, &async_action_proxy, lane)
-            }
-            Event::UserEvent(AppEvent::CodeRead { lane, rel_path }) => {
-                on_misc::code_read(&mut ui, &boot, &async_action_proxy, lane, rel_path)
-            }
-            Event::UserEvent(AppEvent::CodeEntriesResult {
-                lane,
-                entries,
-                truncated,
-            }) => on_misc::code_entries_result(&mut ui, &boot, lane, entries, truncated),
-            Event::UserEvent(AppEvent::CodeFileResult {
-                lane,
-                rel_path,
-                payload,
-            }) => on_misc::code_file_result(&mut ui, &boot, lane, rel_path, payload),
-            Event::UserEvent(AppEvent::WireHistoryResult { address, payload }) => {
-                on_misc::wire_history_result(&mut ui, &boot, address, payload)
-            }
-            Event::UserEvent(AppEvent::ActivityUpdate(snap)) => {
-                on_misc::activity_update(&mut ui, &boot, *snap)
-            }
-            Event::UserEvent(AppEvent::UpdateFlowPhase(applying)) => {
-                on_sidebar::update_flow_phase(&mut ui, &boot, applying)
-            }
-            Event::UserEvent(AppEvent::SettingsRepoRootPicked(path)) => {
-                on_sidebar::settings_repo_root_picked(&mut ui, &boot, path)
-            }
-            Event::UserEvent(AppEvent::SettingsDaemonFetched(fetched)) => {
-                on_sidebar::settings_daemon_fetched(&mut ui, &boot, fetched)
-            }
-            Event::UserEvent(AppEvent::SidebarIpc(msg)) => on_sidebar::sidebar_ipc(
-                &mut ui,
-                &boot,
-                &proxy,
-                &respawn_proxy,
-                &async_action_proxy,
-                msg,
-            ),
-            Event::UserEvent(AppEvent::SlotRect {
-                pane_id,
-                kind,
-                rect,
-            }) => on_window::slot_rect(&mut ui, &boot, pane_id, kind, rect),
-            Event::UserEvent(AppEvent::MenuClicked(id)) => {
-                on_window::menu_clicked(&mut ui, &boot, id)
+            Event::LoopDestroyed => {
+                // OS shutdown / terminate also preserves every still-open window.
+                for (ui, boot) in windows.values_mut() {
+                    ui.persist.save_on_quit(&boot.window);
+                }
+                windows.clear();
             }
             _ => {}
         }
     });
+}
+
+fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::Boot) {
+    let proxy = boot.proxy.clone();
+    let respawn_proxy = proxy.clone();
+    let async_action_proxy = proxy.clone();
+    match event {
+        AppEvent::PasteText(text) => on_terminal::paste_text(ui, boot, text),
+        AppEvent::OscNotification { lane, code: _ } => {
+            on_conversation::osc_notification(ui, boot, lane)
+        }
+        AppEvent::ResolveSessionTitles => on_misc::resolve_session_titles(ui, boot),
+        AppEvent::ResolveLaneInboxes => on_misc::resolve_lane_inboxes(ui, boot),
+        AppEvent::ReposLoaded(repos) => {
+            on_lanes::repos_loaded(ui, boot, &async_action_proxy, repos)
+        }
+        AppEvent::LanesLoaded {
+            repo_path,
+            lanes,
+            origin,
+        } => on_lanes::lanes_loaded(
+            ui,
+            boot,
+            &respawn_proxy,
+            &async_action_proxy,
+            repo_path,
+            lanes,
+            origin,
+        ),
+        AppEvent::WebviewReady => catch_up::webview_ready(ui, boot),
+        AppEvent::LanesError { repo_path, message } => {
+            on_lanes::lanes_error(ui, boot, repo_path, message)
+        }
+        AppEvent::LaneRespawnFailed { address } => on_lanes::lane_respawn_failed(ui, boot, address),
+        AppEvent::InkSnapshot { rect } => on_misc::ink_snapshot(ui, boot, &proxy, rect),
+        AppEvent::InkSnapshotReady { path, error } => {
+            on_misc::ink_snapshot_ready(ui, boot, path, error)
+        }
+        AppEvent::VoiceStart { lane, session } => on_voice::start(ui, boot, lane, session),
+        AppEvent::VoiceStop { lane, session } => {
+            on_voice::stop(ui, boot, &async_action_proxy, lane, session)
+        }
+        AppEvent::VoiceResult {
+            lane,
+            session,
+            result,
+        } => on_voice::result(boot, lane, session, result),
+        AppEvent::ShellLayout {
+            sidebar_width,
+            right_sidebar_width,
+            sidebar_form,
+            right_sidebar_open,
+        } => on_window::shell_layout(
+            ui,
+            boot,
+            sidebar_width,
+            right_sidebar_width,
+            sidebar_form,
+            right_sidebar_open,
+        ),
+        AppEvent::DebugLogWatch { source } => on_misc::debug_log_watch(ui, boot, &proxy, source),
+        AppEvent::DebugLogUnwatch => on_misc::debug_log_unwatch(ui, boot),
+        AppEvent::DebugLogChunk {
+            source,
+            reset,
+            lines,
+            generation,
+        } => on_misc::debug_log_chunk(ui, boot, source, reset, lines, generation),
+        AppEvent::DeviceEvent { payload } => on_misc::device_event(ui, boot, payload),
+        AppEvent::EditorCommand {
+            op,
+            field_id,
+            value,
+            resp,
+        } => on_board::editor_command(ui, boot, op, field_id, value, resp),
+        AppEvent::CanvasMessage { repo_path, message } => on_board::canvas_message(
+            ui,
+            boot,
+            &respawn_proxy,
+            &async_action_proxy,
+            repo_path,
+            message,
+        ),
+        AppEvent::TerminalOutput {
+            lane,
+            session,
+            data,
+        } => on_terminal::terminal_output(ui, boot, lane, session, data),
+        AppEvent::TerminalWrite {
+            lane,
+            session,
+            data,
+        } => on_terminal::terminal_write(ui, boot, lane, session, data),
+        AppEvent::TerminalResize {
+            lane,
+            session,
+            cols,
+            rows,
+        } => on_terminal::terminal_resize(ui, boot, lane, session, cols, rows),
+        AppEvent::ConversationEvent {
+            lane,
+            event,
+            session,
+        } => on_conversation::conversation_event(ui, boot, lane, event, session),
+        AppEvent::ConversationCodexInput {
+            lane,
+            session,
+            thread_id,
+            request_id,
+            action,
+        } => on_conversation::conversation_codex_input(
+            ui,
+            boot,
+            &async_action_proxy,
+            lane,
+            session,
+            thread_id,
+            request_id,
+            action,
+        ),
+        AppEvent::ConversationSubmit {
+            lane,
+            prompt,
+            session: chat_session,
+            images,
+            request_id,
+        } => on_conversation::conversation_submit(
+            ui,
+            boot,
+            &async_action_proxy,
+            lane,
+            prompt,
+            chat_session,
+            images,
+            request_id,
+        ),
+        AppEvent::ConversationRespond {
+            lane,
+            request_id,
+            answers,
+            behavior,
+            message,
+            session: chat_session,
+        } => on_conversation::conversation_respond(
+            ui,
+            boot,
+            &async_action_proxy,
+            lane,
+            request_id,
+            answers,
+            behavior,
+            message,
+            chat_session,
+        ),
+        AppEvent::ConversationInterrupt {
+            lane,
+            session: chat_session,
+        } => on_conversation::conversation_interrupt(ui, boot, lane, chat_session),
+        AppEvent::ConversationSetPermissionMode {
+            lane,
+            mode,
+            session: chat_session,
+        } => on_conversation::conversation_set_permission_mode(ui, boot, lane, mode, chat_session),
+        AppEvent::SessionSetMode {
+            lane,
+            session,
+            mode,
+        } => on_conversation::session_set_mode(ui, boot, &async_action_proxy, lane, session, mode),
+        AppEvent::SessionModeApplied {
+            lane,
+            session,
+            mode,
+        } => on_conversation::session_mode_applied(
+            ui,
+            boot,
+            &async_action_proxy,
+            lane,
+            session,
+            mode,
+        ),
+        AppEvent::ConsoleNewSession { lane, engine, mode } => {
+            on_conversation::console_new_session(ui, boot, lane, engine, mode)
+        }
+        AppEvent::ConsoleSwitchRoot { lane, session } => {
+            on_conversation::console_switch_root(ui, boot, lane, session)
+        }
+        AppEvent::ConversationSetSettings {
+            lane,
+            session,
+            settings,
+            request_id,
+        } => on_conversation::conversation_set_settings(
+            ui,
+            boot,
+            &async_action_proxy,
+            lane,
+            session,
+            settings,
+            request_id,
+        ),
+        AppEvent::ConversationSessionCreate { lane, agent } => {
+            on_conversation::conversation_session_create(ui, boot, lane, agent)
+        }
+        AppEvent::ConversationDemandStart { lane } => {
+            on_conversation::conversation_demand_start(ui, boot, lane)
+        }
+        AppEvent::ConversationSessionFocus { lane, session } => {
+            on_conversation::conversation_session_focus(ui, boot, lane, session)
+        }
+        AppEvent::ConversationSessionRemove { lane, session } => {
+            on_conversation::conversation_session_remove(ui, boot, lane, session)
+        }
+        AppEvent::AgentsFetch { lane, req } => {
+            on_conversation::agents_fetch(ui, boot, &async_action_proxy, lane, req)
+        }
+        AppEvent::Agents { lane, payload, req } => {
+            on_conversation::agents(ui, boot, lane, payload, req)
+        }
+        AppEvent::BoardMutate { method, body } => on_board::board_mutate(ui, boot, method, body),
+        AppEvent::ReposError(msg) => on_lanes::repos_error(ui, boot, msg),
+        AppEvent::SubCreateResult {
+            repo_path,
+            name,
+            error,
+        } => on_lanes::sub_create_result(ui, boot, repo_path, name, error),
+        AppEvent::AgentsResult {
+            repo_path,
+            agents,
+            error,
+        } => on_conversation::agents_result(ui, boot, repo_path, agents, error),
+        AppEvent::CodeList { lane } => on_misc::code_list(ui, boot, &async_action_proxy, lane),
+        AppEvent::CodeRead { lane, rel_path } => {
+            on_misc::code_read(ui, boot, &async_action_proxy, lane, rel_path)
+        }
+        AppEvent::CodeEntriesResult {
+            lane,
+            entries,
+            truncated,
+        } => on_misc::code_entries_result(ui, boot, lane, entries, truncated),
+        AppEvent::CodeFileResult {
+            lane,
+            rel_path,
+            payload,
+        } => on_misc::code_file_result(ui, boot, lane, rel_path, payload),
+        AppEvent::WireHistoryResult { address, payload } => {
+            on_misc::wire_history_result(ui, boot, address, payload)
+        }
+        AppEvent::ActivityUpdate(snap) => on_misc::activity_update(ui, boot, *snap),
+        AppEvent::UpdateFlowPhase(applying) => on_sidebar::update_flow_phase(ui, boot, applying),
+        AppEvent::SettingsRepoRootPicked(path) => {
+            on_sidebar::settings_repo_root_picked(ui, boot, path)
+        }
+        AppEvent::SettingsDaemonFetched(fetched) => {
+            on_sidebar::settings_daemon_fetched(ui, boot, fetched)
+        }
+        AppEvent::SidebarIpc(msg) => {
+            on_sidebar::sidebar_ipc(ui, boot, &proxy, &respawn_proxy, &async_action_proxy, msg)
+        }
+        AppEvent::SlotRect {
+            pane_id,
+            kind,
+            rect,
+        } => on_window::slot_rect(ui, boot, pane_id, kind, rect),
+        AppEvent::MenuClicked(id) => on_window::menu_clicked(ui, boot, id),
+    }
 }
 
 #[cfg(test)]
