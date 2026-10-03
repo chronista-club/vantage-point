@@ -251,6 +251,11 @@ pub struct LaneInfo {
     /// Phase 5-D: Sub Lane のみ有効、 git workspace の状態 snapshot。
     #[serde(default)]
     pub sub_status: Option<SubStatusWire>,
+    /// この lane の現在ブランチ。root も含む全 lane で届く（server `LaneInfo.branch`、
+    /// 2026-10-02）。sidebar の lane 行（地の層）と lane ヘッダに出す。旧 daemon からは欠落 = None
+    /// → Sub は `sub_status.branch` に fallback。
+    #[serde(default)]
+    pub branch: Option<String>,
     /// doc 37: active engine の session id（claude=cc_session / codex=thread id / grok=ACP sessionId、
     /// shell=None）。Conversation 共通ヘッダの session chip 用（表示専用）。旧 SP からは欠落 = None。
     #[serde(default)]
