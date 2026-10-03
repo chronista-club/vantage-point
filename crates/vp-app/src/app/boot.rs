@@ -1,20 +1,8 @@
-//! 起動 = resource の構築（doc 60 §6 6-2、Codex 再レビュー ⑤「boot() は resource の寿命を明示」）。
-//!
-//! `run()` は `boot()` で [`Boot`] を受け取り、event loop の閉包に move して **最後まで所有する**。
-//! `event_loop.run` は `-> !` なので、旧実装では `_rt` / `_tray` / `_log` は `run()` の frame に
-//! 居座るだけで生きていた。struct にして所有者を名前で示す。
-//!
-//! 本 module の関数本体は旧 `run()` 冒頭（app/mod.rs L1047–1340、2026-09-08）を順序保持で移したもの。
-//! 差分は proxy 3 本（`proxy` / `respawn_proxy` / `async_action_proxy`）の生成を `run()` 側に残した
-//! こと（閉包内で `let proxy = …` の shadow が多く、struct field にすると読みにくい。統合は後続）。
-//!
-//! ⚠️ UI thread 専用。`Boot` は `Send` ではない（`muda::MenuItem` / `wry::WebView` / `tao::Window`）。
-//! tao の `EventLoop::run` は `'static + FnMut` しか要求しないので、閉包が値で持てばよい。
-
-use std::time::Duration;
+//! Application resources are shared; Boot owns exactly one native window and WebView.
+use std::{rc::Rc, time::Duration};
 
 use tao::dpi::LogicalSize;
-use tao::event_loop::{EventLoop, EventLoopBuilder};
+use tao::event_loop::{EventLoop, EventLoopBuilder, EventLoopWindowTarget};
 use tao::window::WindowBuilder;
 use wry::{
     Rect, WebView, WebViewBuilder, dpi::LogicalPosition, dpi::LogicalSize as WryLogicalSize,
@@ -34,50 +22,51 @@ use crate::daemon::pollers::{
 };
 use crate::daemon::subscriptions::{spawn_device_subscription, spawn_repos_subscription};
 use crate::events::AppEvent;
-use crate::session_state::SessionState;
 use crate::settings::Settings;
 use crate::webview::editor_bridge::fleet_feedback_payload;
 use crate::webview::ipc_route::is_main_ipc_tag;
 use crate::webview::terminal_ipc;
 
-/// 起動時に構築した resource。`run()` の閉包が値で持ち、process の寿命と一致する。
-///
-/// 宣言順 = drop 順（今は `run()` が戻らないので関係しないが、将来の graceful exit のため）:
-/// webview → window → menu / tray → daemon 接続 → runtime handle → runtime 本体 → log guard
-/// （旧 local の逆順 drop と同じ: runtime を止めてから log を flush する）。
-pub(super) struct Boot {
-    /// sidebar + main を 1 枚に統合した WebView（`build_as_child(&window)`）。
-    pub(super) webview: WebView,
-    /// main window。
-    pub(super) window: tao::window::Window,
-    /// menu の id 表（`MenuClicked` の dispatch 用）。
+use crate::event_proxy::{EventLoopProxy, RoutedEvent};
+
+/// Created once per GUI process, including when no windows are open (macOS).
+pub(super) struct AppResources {
     pub(super) menu_ids: crate::menu::MenuIds,
-    /// View → Open Developer Tools（developer mode で有効化）。
     pub(super) open_devtools_item: muda::MenuItem,
-    /// View → Reload WebView（同上）。
     pub(super) reload_webview_item: muda::MenuItem,
-    /// menu bar 本体（drop すると消えるので保持）。
     _menu: muda::Menu,
-    /// tray icon（初期化失敗時は None、機能は縮退）。
     _tray: Option<tray_icon::TrayIcon>,
-    /// F1b: vp-app → Daemon :32000 の共有 QUIC connection ハンドル（再接続は manager が所有）。
     pub(super) daemon_conn: SharedDaemonConn,
-    /// ACTIONS の永続化要求を 400ms coalesce writer へ流す watch（doc 57 Phase 4）。
-    pub(super) actions_persist_tx: tokio::sync::watch::Sender<Option<ActionsPersistPayload>>,
-    /// 共有 Tokio runtime の Handle。全 async work はここに乗せる（bare `tokio::spawn` は clippy で禁止）。
     pub(super) rt_handle: tokio::runtime::Handle,
-    /// vp-app instance index（0 = primary / N≥1 = secondary、`VP_APP_INSTANCE`）。
-    pub(super) instance_index: usize,
-    /// 共有 Tokio runtime 本体。drop すると全 task が止まる。
+    pub(super) proxy: tao::event_loop::EventLoopProxy<RoutedEvent<AppEvent>>,
     _rt: tokio::runtime::Runtime,
-    /// tracing の guard（drop で appender が flush される）。runtime の後に落とす。
     _log: crate::log_init::LogInitResult,
 }
 
-/// resource を構築し、event loop と初期 [`UiState`] と共に返す。
-///
-/// `EventLoop` は window の構築に借り、`run()` が `.run(self)` で消費するので別に返す。
-pub(super) fn boot(instance_index: usize) -> anyhow::Result<(EventLoop<AppEvent>, Boot, UiState)> {
+/// Per-window resources. WebView drops before its native parent window.
+pub(super) struct Boot {
+    pub(super) webview: WebView,
+    pub(super) window: tao::window::Window,
+    pub(super) proxy: EventLoopProxy<AppEvent>,
+    pub(super) actions_persist_tx: tokio::sync::watch::Sender<Option<ActionsPersistPayload>>,
+    pub(super) instance_index: usize,
+    app: Rc<AppResources>,
+}
+
+impl std::ops::Deref for Boot {
+    type Target = AppResources;
+    fn deref(&self) -> &Self::Target {
+        &self.app
+    }
+}
+
+impl Drop for Boot {
+    fn drop(&mut self) {
+        self.proxy.close();
+    }
+}
+
+pub(super) fn boot() -> anyhow::Result<(EventLoop<RoutedEvent<AppEvent>>, Rc<AppResources>)> {
     let _log = crate::log_init::init_tracing();
 
     // VP-192: 旧 config/data パスからの冪等なデータ移行 (Settings/SessionState 読み込み前)
@@ -91,7 +80,7 @@ pub(super) fn boot(instance_index: usize) -> anyhow::Result<(EventLoop<AppEvent>
     // (既存 window の AUMID は後から変えられない)。 非 Windows は no-op。
     crate::icon::set_app_user_model_id();
 
-    let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
+    let event_loop = EventLoopBuilder::<RoutedEvent<AppEvent>>::with_user_event().build();
 
     // 根治: vp-app 共有 Tokio runtime (multi-thread)。
     //
@@ -128,7 +117,7 @@ pub(super) fn boot(instance_index: usize) -> anyhow::Result<(EventLoop<AppEvent>
     let open_devtools_item = menu_handles.open_devtools_item;
     let reload_webview_item = menu_handles.reload_webview_item;
     let menu_ids = menu_handles.ids;
-    let _tray = match crate::tray::build_tray() {
+    let _tray = match crate::tray::build_tray(&menu_ids) {
         Ok(t) => Some(t),
         Err(e) => {
             tracing::warn!("トレイ初期化失敗 (無効化): {}", e);
@@ -137,7 +126,7 @@ pub(super) fn boot(instance_index: usize) -> anyhow::Result<(EventLoop<AppEvent>
     };
 
     // muda の MenuEvent を main loop に橋渡しする pump を起動
-    spawn_menu_event_pump(event_loop.create_proxy());
+    spawn_menu_event_pump(EventLoopProxy::new(event_loop.create_proxy(), None));
 
     // F1b (doc 27 §3.4.4): vp-app → Daemon :32000 の全 persistent session を 1 QUIC connection に
     // 集約する共有ハンドル。 manager task が connect/reconnect を一手に所有し、 各 session
@@ -145,6 +134,41 @@ pub(super) fn boot(instance_index: usize) -> anyhow::Result<(EventLoop<AppEvent>
     // event loop closure が move capture するので、 closure 内の spawn は `daemon_conn.clone()` を渡す。
     let daemon_conn = spawn_daemon_conn_manager(&rt_handle, crate::daemon::default_daemon_port());
 
+    // Terminal backend: daemon を auto-launch (down なら `vp` binary を spawn)。
+    let node_url = std::env::var("VP_DAEMON_URL")
+        .unwrap_or_else(|_| format!("http://127.0.0.1:{}", crate::daemon::default_daemon_port()));
+    if let Err(e) = crate::daemon::launcher::ensure_daemon_ready(&node_url) {
+        tracing::warn!(
+            "daemon auto-launch 失敗 (continue with offline state): {}",
+            e
+        );
+    }
+
+    let proxy = event_loop.create_proxy();
+    let app = Rc::new(AppResources {
+        menu_ids,
+        open_devtools_item,
+        reload_webview_item,
+        _menu,
+        _tray,
+        daemon_conn,
+        rt_handle,
+        proxy,
+        _rt,
+        _log,
+    });
+    Ok((event_loop, app))
+}
+
+pub(super) fn open_window(
+    event_loop: &EventLoopWindowTarget<RoutedEvent<AppEvent>>,
+    app: Rc<AppResources>,
+    instance_index: usize,
+) -> anyhow::Result<(Boot, UiState)> {
+    let settings = Settings::load();
+    let initial_dev_mode = initial_developer_mode(&settings);
+    let rt_handle = app.rt_handle.clone();
+    let daemon_conn = app.daemon_conn.clone();
     // フィードバック方向 (doc 49 LE-19): webview の場の状態 → daemon-device 上り event。
     // watch = latest-wins (webview が throttle 済みでも Rust 側で自然に coalesce)。
     // 送り手 = ipc_handler の "fleet:feedback" 分岐 / 受け手 = device session の sender task。
@@ -157,23 +181,7 @@ pub(super) fn boot(instance_index: usize) -> anyhow::Result<(EventLoop<AppEvent>
         tokio::sync::watch::channel::<Option<ActionsPersistPayload>>(None);
     spawn_actions_persist_writer(&rt_handle, actions_persist_rx, daemon_conn.clone());
 
-    // DeviceRegistry 🧲 device event を daemon (daemon-device channel) から購読する (daemon に 1 本)。
-    // canvas/lanes は per-repo だが device は machine scope (= daemon singleton) なので起動時 1 回。
-    spawn_device_subscription(
-        &rt_handle,
-        event_loop.create_proxy(),
-        daemon_conn.clone(),
-        fleet_feedback_rx,
-    );
-
-    // b-7: 登録 repo 一覧の変化（並び順 / rename / enabled）を daemon-repo channel の push で受け、
-    // 他 window の操作や CLI `vp repos reorder` を即時に反映する（doc 60 §8、doc 61 §5）。
-    spawn_repos_subscription(&rt_handle, event_loop.create_proxy(), daemon_conn.clone());
-
-    // vp-app instance index 判定 (= multi-window 復元)。 per-instance file load に先立って
-    // 必要なので session file の load より前に確定する。
-    // `VP_APP_INSTANCE` (= "0", "1", ...) が instance 番号。 未設定 / "0" = primary。
-    // run がこの番号の process lock を確保してから渡す。
+    // Stable session slot; no process is spawned for secondary windows.
     let is_primary = instance_index == 0;
     tracing::info!(
         "vp-app boot: instance_index={} (= {})",
@@ -185,7 +193,7 @@ pub(super) fn boot(instance_index: usize) -> anyhow::Result<(EventLoop<AppEvent>
     // position + size + monitor) を起動時に復元できるようにする。 per-instance 分離後は
     // **自分の instance file** (`session.json` / `session.<N>.json`) を読む。 `mut` で keep し、
     // 後段で active_lane_address / repos / currents_order 等の mutate + save にも使う。
-    // 「開いている」印の即 save（次回 primary 起動時の auto-spawn signal）も `Persist::boot` が担う。
+    // 「開いている」印の即 save（次回 app 起動時の window 復元 signal）も `Persist::boot` が担う。
     let persist = Persist::boot(instance_index);
 
     // PR #458: invalid geometry (= MIN 未満 / NaN / Inf) は None に fallback。
@@ -226,7 +234,8 @@ pub(super) fn boot(instance_index: usize) -> anyhow::Result<(EventLoop<AppEvent>
             DEFAULT_WINDOW_HEIGHT,
         ));
     }
-    let window = builder.build(&event_loop)?;
+    let window = builder.build(event_loop)?;
+    let proxy = EventLoopProxy::new(app.proxy.clone(), Some(window.id()));
 
     // 表示モード復元 (doc 30 §6.1): windowed 座標で build した後、 保存が Fullscreen なら全画面化する。
     // windowed frame を base に残すことで全画面解除時に元の窓サイズへ戻せる。 monitor 精密指定は
@@ -243,68 +252,13 @@ pub(super) fn boot(instance_index: usize) -> anyhow::Result<(EventLoop<AppEvent>
         window.set_fullscreen(Some(tao::window::Fullscreen::Borderless(None)));
     }
 
-    // primary 起動時、 前回「開いていた」 secondary instance (= `session.<N>.json` で
-    // open==true、 N≥1) を **child process として auto-spawn** する。 これで「複数 window を
-    // 開いて再起動 → 全 window 復元」 が動く。 明示的に閉じた (= clean close で open=false)
-    // instance は復活しない ─ per-instance file 分離 + open flag 管理によって、 共有 1 file
-    // 時代の「close しても slot が残り再 spawn される」 bug を根治した。
-    //
-    // 子は `VP_APP_INSTANCE=<idx>` で自分の file を read する。
-    // spawn 失敗は warn して continue (= primary 起動は阻害しない)。
-    if is_primary {
-        let to_spawn = SessionState::open_secondary_indices();
-        if !to_spawn.is_empty() {
-            match std::env::current_exe() {
-                Ok(exe) => {
-                    for idx in to_spawn {
-                        match std::process::Command::new(&exe)
-                            .env("VP_APP_INSTANCE", idx.to_string())
-                            .spawn()
-                        {
-                            Ok(child) => tracing::info!(
-                                "auto-spawned secondary instance (pid={}, instance_index={})",
-                                child.id(),
-                                idx
-                            ),
-                            Err(e) => tracing::warn!(
-                                "auto-spawn secondary (instance={}) failed (起動は継続): {}",
-                                idx,
-                                e
-                            ),
-                        }
-                    }
-                }
-                Err(e) => tracing::warn!("current_exe() 失敗 (auto-spawn skip): {}", e),
-            }
-        }
-    }
-
-    // Terminal backend: daemon を auto-launch (down なら `vp` binary を spawn)。
-    let node_url = std::env::var("VP_DAEMON_URL")
-        .unwrap_or_else(|_| format!("http://127.0.0.1:{}", crate::daemon::default_daemon_port()));
-    if let Err(e) = crate::daemon::launcher::ensure_daemon_ready(&node_url) {
-        tracing::warn!(
-            "daemon auto-launch 失敗 (continue with offline state): {}",
-            e
-        );
-    }
-
-    // daemon から repo list を非同期 fetch (起動初回)
-    spawn_processes_fetch(&rt_handle, event_loop.create_proxy(), daemon_conn.clone());
-    // VP-95: Activity widget の定期更新 (5s 間隔)
-    spawn_activity_poller(&rt_handle, event_loop.create_proxy(), daemon_conn.clone());
-    // VP-143: cc session display name (custom-title) の 5s 周期 resolve
-    spawn_session_title_poller(&rt_handle, event_loop.create_proxy());
-    // VP-147 PR-P2-3: per-Lane mailbox inbox 状況の 5s 周期 resolve (sidebar message icon 用 signal)
-    spawn_lane_inbox_poller(&rt_handle, event_loop.create_proxy());
-
     // WebView 統合 (step 3a): sidebar + main を 1 WebView (1 DOM, CSS flex) に統合。
     // sidebar.bundle.js は vp-asset://app/sidebar.bundle.js の外部 script として load される
     // (doc 48 Phase 1 で inline → 外部化。#sidebar-root に mount)。
     // 旧 2 WebView (cross-WebView IPC bridge で keyboard を 2 往復させていた) を廃し、
     // sidebar↔main の event / state が同一 DOM 内で直接流れる。
-    let sidebar_ipc_proxy = event_loop.create_proxy();
-    let ipc_proxy = event_loop.create_proxy();
+    let sidebar_ipc_proxy = proxy.clone();
+    let ipc_proxy = proxy.clone();
     // DevTools は compile 時 always 有効。menu の「Open Developer Tools」から
     // `webview.open_devtools()` を呼ぶかで runtime 制御 (本番ビルドでも切替可)。
     // echo probe trigger (Unison 北極星 step 2/3): VP_UNISON_ECHO_CERT が set なら
@@ -364,26 +318,41 @@ pub(super) fn boot(instance_index: usize) -> anyhow::Result<(EventLoop<AppEvent>
     // 明示同期して初回 paint から content view を全面に張る (Resized handler と idempotent)。
     update_pane_bounds(&webview, window.inner_size(), window.scale_factor());
 
+    // Each window receives device events and sends its own fleet feedback over the shared connection.
+    spawn_device_subscription(
+        &rt_handle,
+        proxy.clone(),
+        daemon_conn.clone(),
+        fleet_feedback_rx,
+    );
+
+    // b-7: 登録 repo 一覧の変化（並び順 / rename / enabled）を daemon-repo channel の push で受け、
+    // 他 window の操作や CLI `vp repos reorder` を即時に反映する（doc 60 §8、doc 61 §5）。
+    spawn_repos_subscription(&rt_handle, proxy.clone(), daemon_conn.clone());
+
+    // daemon から repo list を非同期 fetch (起動初回)
+    spawn_processes_fetch(&rt_handle, proxy.clone(), daemon_conn.clone());
+    // VP-95: Activity widget の定期更新 (5s 間隔)
+    spawn_activity_poller(&rt_handle, proxy.clone(), daemon_conn.clone());
+    // VP-143: cc session display name (custom-title) の 5s 周期 resolve
+    spawn_session_title_poller(&rt_handle, proxy.clone());
+    // VP-147 PR-P2-3: per-Lane mailbox inbox 状況の 5s 周期 resolve (sidebar message icon 用 signal)
+    spawn_lane_inbox_poller(&rt_handle, proxy.clone());
+
     let ui = UiState::new(
         settings,
         persist,
         initial_dev_mode,
         restored_geometry.as_ref().map(|g| (g.width, g.height)),
     );
+
     let boot = Boot {
         webview,
         window,
-        menu_ids,
-        open_devtools_item,
-        reload_webview_item,
-        _menu,
-        _tray,
-        daemon_conn,
+        proxy,
         actions_persist_tx,
-        rt_handle,
         instance_index,
-        _rt,
-        _log,
+        app,
     };
-    Ok((event_loop, boot, ui))
+    Ok((boot, ui))
 }

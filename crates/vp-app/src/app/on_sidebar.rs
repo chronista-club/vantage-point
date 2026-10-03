@@ -13,7 +13,7 @@
 //! = `&mut UiState` が正直な signature。resource: `boot.webview` / `boot.rt_handle` / `boot.daemon_conn` /
 //! `boot.actions_persist_tx` / menu item（developer mode の有効化）。
 
-use tao::event_loop::EventLoopProxy;
+use crate::event_proxy::EventLoopProxy;
 
 use super::boot::Boot;
 use super::developer_mode_env;

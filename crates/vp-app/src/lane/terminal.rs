@@ -5,7 +5,7 @@
 //! `cmd_rx` は再接続を跨いで生きる（切断中の write / resize は次接続で送る、doc 60 §4）。
 //! app/mod.rs から移設（棚卸し 項目 6 / 6-1 #10、2026-09-08）。
 
-use tao::event_loop::EventLoopProxy;
+use crate::event_proxy::EventLoopProxy;
 
 use crate::daemon::conn::{SharedDaemonConn, SubscriptionOutcome};
 use crate::events::AppEvent;
@@ -141,6 +141,7 @@ async fn run_terminal_session(
                                 .and_then(|n| u32::try_from(n).ok())
                                 .unwrap_or(1),
                             data: data.to_string(),
+                            live: payload.get("live").and_then(serde_json::Value::as_bool).unwrap_or(false),
                         })
                         .is_err()
                 {

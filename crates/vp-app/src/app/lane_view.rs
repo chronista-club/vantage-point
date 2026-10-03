@@ -7,7 +7,7 @@
 //! 旧 `app/mod.rs` の lane 系 helper と test module（6-2 PR-2、2026-09-08。本文は順序保持で一致、
 //! 差分は可視性 `pub(super)` のみ）。
 
-use tao::event_loop::EventLoopProxy;
+use crate::event_proxy::EventLoopProxy;
 use wry::WebView;
 
 use super::persist::Persist;

@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use tao::event_loop::EventLoopProxy;
+use crate::event_proxy::EventLoopProxy;
 
 use crate::daemon::HealthProbe;
 use crate::daemon::conn::{BOOT_CONTROL_WAIT, SharedDaemonConn};

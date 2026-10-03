@@ -46,12 +46,12 @@ fn lane_kind_label(lane: &serde_json::Value) -> &'static str {
 pub struct AddSubParams {
     /// Sub name. Used as the `name` field of the Lane address (`<repo>/sub/<name>`).
     #[schemars(
-        description = "Sub name (人間可読の短い slug、 例: 'feat-api', 'sub'). Lane address の `<repo>/sub/<name>` 部分になる。"
+        description = "Sub name = branch-step の slug `[a-z0-9-]+`（例: 'feat-api', 'sub'。大文字と `_` は拒否）。Lane address の `<repo>/sub/<name>` 部分と branch `wip/<name>` になる。"
     )]
     pub name: String,
-    /// Optional branch. If omitted, server auto-derives `<git-user>/<sanitized-name>`.
+    /// Optional branch. If omitted, server derives `wip/<name>` (branch-step).
     #[schemars(
-        description = "Lane clone する branch 名 (省略可)。 省略時は server が `git config user.name` から `<user>/<name>` を auto-derive。"
+        description = "Lane clone する branch 名 (省略可)。 省略時は server が `wip/<name>` を導出（branch-step: 枝名 = 段、slug = lane 名）。"
     )]
     pub branch: Option<String>,
     /// Optional Lane Agent. Defaults to "claude".
@@ -112,11 +112,11 @@ pub struct ListLanesParams {
 pub struct FlowHandoffParams {
     /// Sub name (新規作成する sub の slug)
     #[schemars(
-        description = "Sub name (例: 'feat-api', 'sub')。 Lane address の `<repo>/sub/<name>` 部分。"
+        description = "Sub name = branch-step の slug `[a-z0-9-]+`（例: 'feat-api', 'sub'。大文字と `_` は拒否）。Lane address の `<repo>/sub/<name>` 部分と branch `wip/<name>` になる。"
     )]
     pub name: String,
 
-    /// Optional branch (省略時は repo 側で `<git-user>/<sanitized-name>` を auto-derive)
+    /// Optional branch (省略時は repo 側で `wip/<name>` を導出、branch-step)
     #[schemars(description = "Lane clone する branch (省略時は repo が auto-derive)。")]
     #[serde(default)]
     pub branch: Option<String>,
@@ -201,10 +201,10 @@ impl VantageMcp {
     /// R5: 現 repo の repo に Sub Lane を新規作成 (lane clone + PtySlot spawn)。
     ///
     /// - cwd ベースで自動的に local repo を解決 (`self.process_url`)。
-    /// - branch 省略時は server 側で `<git-user>/<sanitized-name>` を auto-derive。
+    /// - branch 省略時は server 側で `wip/<name>` を導出（branch-step）。
     /// - 名前重複は HTTP 409 CONFLICT、 lane clone 失敗は 500 で返ってくる。
     #[tool(
-        description = "Create a new Sub Lane in the current repo (lane clone + spawn). Resolves the local repo via cwd. If `branch` is omitted, the server auto-derives `<git-user>/<sanitized-name>`. Returns the Lane address `<repo>/sub/<name>` on success. Use this to spawn isolated parallel work (e.g. feature branches, exploratory experiments)."
+        description = "Create a new Sub Lane in the current repo (lane clone + spawn). Resolves the local repo via cwd. If `branch` is omitted, the server derives `wip/<name>` (branch-step: the prefix is the step, the slug is the lane name). Returns the Lane address `<repo>/sub/<name>` on success. Use this to spawn isolated parallel work (e.g. feature branches, exploratory experiments)."
     )]
     async fn add_sub(
         &self,

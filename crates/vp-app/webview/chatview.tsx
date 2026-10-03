@@ -35,6 +35,7 @@ import { isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
 import { renderMermaidBlocks } from './mermaid-post'
 import { registerVoiceSink, sendVoice } from './voice'
 import { Marked } from 'marked'
+import { confirmCodexConsoleHandoff } from './codex-mode-handoff'
 import type {
   ConversationEvent,
   ConversationSession,
@@ -194,11 +195,22 @@ export function requestSessionMode(
   session: number,
   mode: 'tui' | 'gui',
 ): void {
-  document.dispatchEvent(
+  const entry = sessionsOf(lane)?.sessions.find(item => item.key === session)
+  const dispatch = () => document.dispatchEvent(
     new CustomEvent('vp:mode-switch-request', {
       detail: { lane, session, target: mode },
     }),
   )
+  if (mode === 'gui' && entry?.agent === 'codex' && entry.mode !== 'gui') {
+    confirmCodexConsoleHandoff(lane, session, () => {
+      const current = sessionsOf(lane)?.sessions.find(item => item.key === session)
+      // 確認中に別 window で削除・再開・切替された session には送らない。
+      if (current?.agent === 'codex' && current.mode !== 'gui'
+        && current.engine_session_id === entry.engine_session_id) dispatch()
+    })
+    return
+  }
+  dispatch()
 }
 
 // ---------------------------------------------------------------------------
@@ -313,21 +325,23 @@ function flushPending(lane: string, session: number): void {
   const lc = laneChat(lane, session)
   const text = lc.state.pending
   if (!text || lc.state.submission) return
-  lc.set('pending', null)
-  sendSubmission(lane, session, text, [])
+  if (sendSubmission(lane, session, text, [])) lc.set('pending', null)
 }
 
 
 let submissionSequence = 0
 const submissionEpoch = Date.now()
 
-export function sendSubmission(lane: string, session: number, text: string, images: Submission['images']): void {
+export function sendSubmission(lane: string, session: number, text: string, images: Submission['images']): boolean {
   const lc = laneChat(lane, session)
-  if (lc.state.submission) return
+  if (lc.state.submission) return false
   // Custom-scheme WebViews may not expose crypto.randomUUID. Identity only
   // needs to be unique within this document and across its reloads.
   const id = `submit-${submissionEpoch}-${++submissionSequence}`
-  lc.set(produce((s) => { beginSubmission(s, id, text, images) }))
+  const codex = sessionsOf(lane)?.sessions.find(entry => entry.key === session)?.agent === 'codex'
+  let accepted = false
+  lc.set(produce((s) => { accepted = beginSubmission(s, id, text, images, codex) }))
+  if (!accepted) return false
   try {
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     if (!ipc) throw new Error('接続がありません。入力を戻して再試行してください。')
@@ -339,6 +353,7 @@ export function sendSubmission(lane: string, session: number, text: string, imag
       kind: 'submit_result', request_id: id, error: e instanceof Error ? e.message : String(e),
     }, session)
   }
+  return true
 }
 
 
@@ -1643,16 +1658,16 @@ function SessionChatView(props: { lane: string; session: number }) {
       if (inputRef) autosize(inputRef)
       return
     }
-    setDraft('')
-    if (inputRef) autosize(inputRef) // 送信後は 1 行に畳み戻す
-    // Claude の turn 中の既定（Enter / 今伝える）は即送信 = 今の turn に差し込む（claudeTurnActive の doc）。
-    // Claude 以外で streaming 中（grok / opencode / vpcode 等）は従来どおり pending に buffer
-    //（doc 35 §5.1: items[] を触らない = 順序を汚さない。turn 閉時に flush する）。
+    // Claude は実行中の turn へ即送信する。他 engine の type-ahead は pending に残す。
     if (lc.state.streaming && !claudeTurnActive()) {
       queueClaudeDraft(text)
+      setDraft('')
+      if (inputRef) autosize(inputRef)
       return
     }
-    sendSubmission(lane, props.session, text, toWirePayload(attachments()))
+    if (!sendSubmission(lane, props.session, text, toWirePayload(attachments()))) return
+    setDraft('')
+    if (inputRef) autosize(inputRef)
     clearAttachments()
   }
 
@@ -1666,6 +1681,23 @@ function SessionChatView(props: { lane: string; session: number }) {
       bytes: Math.floor(image.data.length * 3 / 4),
     })))
     lc.set('submission', null)
+    queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
+  }
+
+  const unconfirmedCodexInputs = () => (state().unconfirmedCodexInputs ?? [])
+    .filter(input => input.id !== state().submission?.id)
+  const recoverUnconfirmedCodexInput = (input: Pick<Submission, 'id' | 'text' | 'images'>) => {
+    if (draft().trim() || attachments().length || lc.state.submission) return
+    setDraft(input.text)
+    setAttachments(input.images.map((image, index) => ({
+      id: Date.now() + index, mediaType: image.media_type, dataBase64: image.data,
+      previewUrl: `data:${image.media_type};base64,${image.data}`,
+      bytes: Math.floor(image.data.length * 3 / 4),
+    })))
+    lc.set('unconfirmedCodexInputs', inputs => inputs?.filter(item => item.id !== input.id))
+    lc.set('items', items => items.map(item => item.kind === 'user' && item.clientId === input.id
+      ? { kind: 'user' as const, text: item.text } : item))
+    lc.set('codexInputCapacityError', null)
     queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
   }
 
@@ -1915,6 +1947,29 @@ function SessionChatView(props: { lane: string; session: number }) {
         )}
       </Show>
               <PlanWidget entries={() => state().plan} />
+        <Show when={unconfirmedCodexInputs().length > 0}>
+          <details class="codex-unconfirmed chat-history-notice">
+            <summary>履歴と照合できていない入力（{unconfirmedCodexInputs().length}件）</summary>
+            <p>会話への反映を確認できない入力を保管しています。自動再送はしていません。再送する前に履歴を確認してください。</p>
+            <For each={unconfirmedCodexInputs()}>{input => <div>
+              <MsgBody class="conversation-msg-body" text={input.text} />
+              <Show when={input.images.length > 0}><span>画像 {input.images.length} 枚 · </span></Show>
+              <button onClick={() => recoverUnconfirmedCodexInput(input)}
+                disabled={!!draft().trim() || attachments().length > 0 || !!state().submission}>
+                入力欄に戻す
+              </button>
+              <button onClick={() => {
+                lc.set('unconfirmedCodexInputs', inputs => inputs?.filter(item => item.id !== input.id))
+                lc.set('items', items => items.map(item => item.kind === 'user' && item.clientId === input.id
+                  ? { kind: 'user' as const, text: item.text } : item))
+                lc.set('codexInputCapacityError', null)
+              }}>履歴で確認済み</button>
+            </div>}</For>
+          </details>
+        </Show>
+        <Show when={state().codexInputCapacityError}>
+          <div class="chat-history-notice" role="alert">{state().codexInputCapacityError}</div>
+        </Show>
         <div
           class="conversation-stream"
           ref={streamEl}
@@ -2026,7 +2081,9 @@ function SessionChatView(props: { lane: string; session: number }) {
           </Show>
           <Show when={state().submission}>
             {(submission) => <div class="conversation-msg user pending" role="status">
-              <Show when={submission().status === 'failed'}><MsgBody class="conversation-msg-body" text={submission().text} /></Show>
+              <Show when={submission().status === 'failed' || state().unconfirmedCodexInputs?.some(input =>
+                input.id === submission().id
+              )}><MsgBody class="conversation-msg-body" text={submission().text} /></Show>
               <span>{submission().images.length > 0 ? `画像 ${submission().images.length} 枚 · ` : ''}</span>
               <Show when={submission().status === 'failed'} fallback={<span>送信中…</span>}>
                 <div role="alert">{submission().error}</div>
@@ -2349,6 +2406,9 @@ export const CHATVIEW_CSS = `
 .conversation-empty { margin:auto; color: var(--color-text-tertiary, #616b80); font-size:13px; }
 .conversation-stream { flex:1; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:12px; }
 .chat-history-notice { padding:8px 10px; border:1px solid var(--color-border,#2a3040); border-radius:6px; color:var(--color-text-secondary,#a6afc0); font-size:var(--chat-text-meta); line-height:1.6; }
+.codex-unconfirmed { margin:8px 18px 0; max-height:30%; overflow-y:auto; flex-shrink:0; }
+.codex-unconfirmed summary { cursor:pointer; }
+.codex-unconfirmed > div { padding:8px 0; border-top:1px solid var(--color-border,#2a3040); }
 /* スクロールバー常時表示（mako 2026-07-24）: 既定の overlay scrollbar は「スクロール中だけ」
    なので現在地が読めない。custom style を当てると常時表示になる（WebKit 仕様）。細く控えめに。 */
 .conversation-stream::-webkit-scrollbar { width:8px; }

@@ -382,3 +382,11 @@ SessionState {
 - §6.1（表示モード永続化）は本 doc と同 PR で**実装済**。 残る §6.2（monitor 相対復元）/ §6.3（tab の
   per-window 化）/ §6.4（activate → 描画 refresh）の**実装**は別タスク・別 lane。
 - `loading lanes…` バグ自体の**修正**。 本 doc は状態表現の spec 化まで（原因は空 snapshot / `LanesError` 滞留と特定済、§5-3）。
+
+
+## 2026-10-02 単一アプリへの移行
+
+[design 75](75-single-app-windows.md) により、ウィンドウごとにGUIプロセスをspawnする方式を置き換える。
+本書のper-instance保存契約は維持し、instance番号を永続window slotとして扱う。
+起動時はopen slotを同一event loopへ復元し、明示closeだけを `open=false` にする。
+アプリquitは全windowのgeometryを保存し、開いていたslotは次回も復元する。

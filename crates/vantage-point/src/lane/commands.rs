@@ -77,7 +77,8 @@ pub fn new_sub_in(
 /// 変更。 caller (sidebar 経由 DELETE 等) は state.repo_dir を直接渡せる。
 /// PR 4b: legacy global path dual-read 削除、 repo-local 一本に。
 pub fn remove_sub_in(repo_root: &Path, name: &str) -> Result<(), String> {
-    config::validate_sub_name(name)?;
+    // 削除は**操作用**の検証（旧規約の名前も消せる — 作成用で弾くと dir が残って復活する）
+    config::validate_existing_sub_name(name)?;
     let Some(sub_dir) = find_sub_dir(repo_root, name) else {
         // workspace が既に無くても state file だけ残る orphan は掃除する (leak の典型:
         // 手動 rm 済 dir + 残留 console_mode/cc_session)。Err semantics は維持。
@@ -849,7 +850,7 @@ pub fn remove_sub(name: Option<&str>, all: bool, force: bool) -> Result<(), Stri
     }
 
     let name = name.ok_or("パフォーマー名を指定するか --all --force を使用してください")?;
-    config::validate_sub_name(name)?;
+    config::validate_existing_sub_name(name)?; // 削除 = 操作用（旧規約の名前も消せる）
 
     let Some(sub_dir) = find_sub_dir(&repo_root, name) else {
         // workspace が既に無くても state file だけ残る orphan は掃除する (Err semantics は維持)。
@@ -1515,7 +1516,7 @@ pub(crate) fn is_branch_merged(sub_dir: &std::path::Path, default_branch: &str) 
 /// 別経路で「branch の内容が既に取り込まれたか」を判定する (co-evolution #3):
 ///   1. **gh PR state (内容照合付き)**: この branch を head とする merged PR の head commit
 ///      (`headRefOid`) を取り、 HEAD がその commit に**含まれる** (HEAD がその ancestor) 場合のみ
-///      merged 扱い。 ⚠️ 名前一致だけだと `mako/{slug}` 規約で同名 branch を再利用 (同じ課題を
+///      merged 扱い。 ⚠️ 名前一致だけだと `wip/{slug}` 規約で同名 branch を再利用 (同じ課題を
 ///      再着手) した時に、 過去の merged PR を拾って未 merge の新規 work を `--force` 削除しうる
 ///      (moody 指摘 #1)。 commit ancestry で確認して「HEAD が merged tip より進んでいる = 新規
 ///      work あり」なら keep に倒す。
@@ -2910,6 +2911,49 @@ mod tests {
         assert!(
             String::from_utf8_lossy(&out.stdout).contains("mako/feat"),
             "worktree list に branch が出る"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// #1157 の follow-up（should-1）: 作成用の slug 検証を削除経路でも呼んでいたため、旧規約
+    /// （`[a-zA-Z0-9_-]`）で作られた lane が消せず、dir が残って次の起動で復活していた。
+    /// 既存 lane は**操作用**の緩い検証で通す。
+    #[test]
+    fn remove_sub_in_accepts_legacy_name() {
+        let (base, main) = setup_worktree_fixture("remove-legacy-name");
+        let legacy = main.join(".vp").join("lanes").join("Legacy_Name");
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        let out = Cmd::new("git")
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                "mako/Legacy_Name",
+                legacy.to_str().unwrap(),
+            ])
+            .current_dir(&main)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(legacy.exists());
+
+        remove_sub_in(&main, "Legacy_Name").expect("旧名 lane も削除できる");
+        assert!(!legacy.exists(), "dir が消える（残ると次の起動で復活する）");
+        // 作成用の検証は変わらず拒否する
+        assert!(
+            setup_sub(
+                "Legacy_Name",
+                "wip/x",
+                &main,
+                false,
+                Isolation::Worktree,
+                None
+            )
+            .is_err()
         );
         let _ = fs::remove_dir_all(&base);
     }

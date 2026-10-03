@@ -32,14 +32,16 @@ pub(super) fn terminal_output(
     lane: String,
     session: u32,
     data: String,
+    live: bool,
 ) {
     // doc 50 §4.6 A6: 同 lane の複数 xterm に振り分けるため session を第 2 引数で渡す
     // （push envelope `console:event` と同じ形）。
     let script = format!(
-        "window.vpTerminal && window.vpTerminal.handleOutput({}, {}, {})",
+        "window.vpTerminal && window.vpTerminal.handleOutput({}, {}, {}, {})",
         serde_json::to_string(&lane).unwrap_or_else(|_| "\"\"".into()),
         session,
         serde_json::to_string(&data).unwrap_or_else(|_| "\"\"".into()),
+        live,
     );
     if let Err(e) = boot.webview.evaluate_script(&script) {
         tracing::warn!("vpTerminal.handleOutput 失敗 (lane={}): {}", lane, e);
