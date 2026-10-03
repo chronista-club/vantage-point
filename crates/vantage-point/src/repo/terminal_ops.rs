@@ -473,6 +473,7 @@ mod tests {
                         lane: l,
                         session: _,
                         data,
+                        ..
                     },
                 ))) => {
                     assert_eq!(got_topic, topic);

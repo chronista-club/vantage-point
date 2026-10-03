@@ -35,6 +35,7 @@ import { isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
 import { renderMermaidBlocks } from './mermaid-post'
 import { registerVoiceSink, sendVoice } from './voice'
 import { Marked } from 'marked'
+import { confirmCodexConsoleHandoff } from './codex-mode-handoff'
 import type {
   ConversationEvent,
   ConversationSession,
@@ -194,11 +195,22 @@ export function requestSessionMode(
   session: number,
   mode: 'tui' | 'gui',
 ): void {
-  document.dispatchEvent(
+  const entry = sessionsOf(lane)?.sessions.find(item => item.key === session)
+  const dispatch = () => document.dispatchEvent(
     new CustomEvent('vp:mode-switch-request', {
       detail: { lane, session, target: mode },
     }),
   )
+  if (mode === 'gui' && entry?.agent === 'codex' && entry.mode !== 'gui') {
+    confirmCodexConsoleHandoff(lane, session, () => {
+      const current = sessionsOf(lane)?.sessions.find(item => item.key === session)
+      // 確認中に別 window で削除・再開・切替された session には送らない。
+      if (current?.agent === 'codex' && current.mode !== 'gui'
+        && current.engine_session_id === entry.engine_session_id) dispatch()
+    })
+    return
+  }
+  dispatch()
 }
 
 // ---------------------------------------------------------------------------

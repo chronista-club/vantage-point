@@ -17,7 +17,7 @@ VP Chat の履歴復元、GUI host の resume fallback、model/effort、subagent
 3. hook は native JSON の `session_id` と、VP の `repo / lane / session key`、報告元 `engine` を daemon に報告する。
 4. daemon は lane label を address に変換し、報告フィールドを欠落・補完させず repo へ中継する。
 5. repo は Codex 専用の `record_codex_conversation_in` に渡す。明示された session が実在し、engine が Codex で、ID が有効な UUID の場合だけ保存する。宛先不明を root へ丸めない。
-6. 次回の Console 起動は、その session の `conversation` を指定して `codex resume '<id>'` を実行する。ID がない場合は新規起動。
+6. 次回の Console 起動は、その session の `conversation` を指定して `codex resume --no-daemon '<id>'` を実行する。ID がない場合は新規起動。
 
 Claude の報告は既存の記録入口と F1/F2 guard を維持する。`engine` 不在は既存 Claude hook の互換経路。
 Codex の報告に Claude transcript の有無を適用しない。report は engine と宛先の一致を検証し、別 engine の Console への保存を拒否する。
@@ -31,16 +31,32 @@ resume の非ゼロ終了を `|| codex` で新規作成へ変換しない。Code
 
 ```sh
 # 既に VP が記録し損ねた会話を、Codex 自身の一覧から選ぶ
-(VP_HOOK_ENGINE=codex codex resume)
+(VP_HOOK_ENGINE=codex codex resume --no-daemon)
 
 # 明示した会話を再試行する
-(VP_HOOK_ENGINE=codex codex resume '<thread-id>')
+(VP_HOOK_ENGINE=codex codex resume --no-daemon '<thread-id>')
 ```
 
-`--last` や rollout の更新時刻で他の会話を自動選択しない。新規に進む操作は `(VP_HOOK_ENGINE=codex codex)`。
-fish 3.1+ では外側の括弧を付けず、`VP_HOOK_ENGINE=codex codex resume`、`VP_HOOK_ENGINE=codex codex resume '<thread-id>'`、`VP_HOOK_ENGINE=codex codex` を使う。fish の variable override は関数・alias の解決と親環境を保つ（[公式仕様](https://fishshell.com/docs/current/language.html#overriding-variables-for-a-single-command)）。
+`--last` や rollout の更新時刻で他の会話を自動選択しない。新規に進む操作は `(VP_HOOK_ENGINE=codex codex --no-daemon)`。
+fish 3.1+ では外側の括弧を付けず、`VP_HOOK_ENGINE=codex codex resume --no-daemon`、`VP_HOOK_ENGINE=codex codex resume --no-daemon '<thread-id>'`、`VP_HOOK_ENGINE=codex codex --no-daemon` を使う。fish の variable override は関数・alias の解決と親環境を保つ（[公式仕様](https://fishshell.com/docs/current/language.html#overriding-variables-for-a-single-command)）。
 
 VP session 自体の削除（名札の ×）は registry entry を削除する操作であり、TUI の終了や VP の再起動とは区別する。
+
+## Console → Chat の writer 所有権
+
+Console は新規・再開とも `--no-daemon` を指定する。共有 Codex daemon に writer を預けると、PTY 終了後も daemon 内の会話が残り、独立した Chat app-server の `thread/resume` と衝突するため。Console 自身のライフサイクルで writer を解放する。
+
+この起動には `--no-daemon` 対応の Codex CLI が必要（0.160.0 の新規・resume 両方の help で確認）。未対応 CLI の非ゼロ終了を、フラグなし起動や新規会話で隠さない。CLI を更新して同じ ID を再開する。
+
+更新前の Console が既に共有 daemon に会話を残した場合、起動引数の変更だけではその writer を奪取しない。Chat の衝突メッセージは、同じ会話を開いている Codex 側で処理を完了または中断し、`/quit` で終了した後に再試行するよう案内する。更新前の共有 daemon に戻す場合は Console の shell で `VP_HOOK_ENGINE=codex codex resume '<thread-id>'`（`--no-daemon` なし）を使う。専用起動を繰り返しても旧 writer は解放されない。元 ID を保持し、入力は自動再送しない。共有 daemon の強制終了・lock 削除・履歴 DB の編集は行わない。
+
+### 応答完了後の切替
+
+Codex Console → Chat の確認は「今すぐ切り替える」「応答完了後に切り替える」「キャンセル」の3択。完了待ちは現在の window / lane / session に結び、取消・window 終了で予約を捨てる。確認中に session の会話 ID や mode が変わった場合も切替要求を送らない。
+
+起動時に `tui.notifications=["agent-turn-complete"]`、`tui.notification_method="osc9"`、`tui.notification_condition="always"` を指定し、Codex の端末完了通知を受ける（[公式仕様](https://learn.chatgpt.com/docs/config-file/config-advanced#notifications)）。ユーザーの hook / notify 設定や trust は変更しない。Stop hook は別 hook によって処理が継続し得るため、完了扱いしない。
+
+terminal pump は replay と新しい出力を `live` で区別し、WebView の待機処理は新しい出力の OSC 9 だけを受け取る。通知は chunk 境界を跨いでも読む。別 lane / session や replay の通知では切り替えない。旧 sender の `live` 欠落は false とする。既に応答が終了している場合は「今すぐ切り替える」を選ぶ。通知のない旧 Console や失敗した応答を、時間経過だけで完了と推定しない。待機はユーザーが取り消せる。
 
 ## Codex 0.154.0 での実測と前提
 
@@ -76,3 +92,5 @@ VP session 自体の削除（名札の ×）は registry entry を削除する�
 ## Status log
 
 - 2026-09-11: Console を先行する構想に GO。通常 TUI の hook ID を実測し、専用の保存入口と失敗時の ID 保持を実装。自動検証は通過、更新版 VP アプリの再起動は実機検収待ち。
+
+- 2026-10-04: Console を `--no-daemon` で専有起動し、writer 衝突時の復旧案内と切替確認・完了待ちを追加。Codex 0.160.0 と隔離したローカル model fixture で OSC 9、および idle / 応答中の PTY 終了後の同一 thread 再開を実測。実 VP アプリの往復検収は別途行う。

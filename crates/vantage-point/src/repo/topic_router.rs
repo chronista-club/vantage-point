@@ -559,6 +559,7 @@ mod tests {
         // doc 27 §4.1: per-lane terminal 出力。 lane address の '/' は seg3 で '~' に encode、
         // category(seg2)=data なので 非 retained（ephemeral stream）。
         let msg = RepoMessage::LaneTerminalOutput {
+            live: false,
             lane: "vp/sub/foo".to_string(),
             session: 1,
             data: "aGVsbG8=".to_string(),
@@ -572,11 +573,13 @@ mod tests {
     fn test_lane_terminal_topics_are_per_lane() {
         // 別 lane は別 topic（subscriber 数 = lane 別 demand の前提、 S2 で効く）。
         let a = TopicRouter::message_to_topic(&RepoMessage::LaneTerminalOutput {
+            live: false,
             lane: "vp/root".to_string(),
             session: 1,
             data: String::new(),
         });
         let b = TopicRouter::message_to_topic(&RepoMessage::LaneTerminalOutput {
+            live: false,
             lane: "vp/sub/foo".to_string(),
             session: 1,
             data: String::new(),
@@ -590,11 +593,13 @@ mod tests {
         // field で運ぶ。同 lane の別 session は **同一 topic** に流れ、 World A の xterm が
         // session で振り分ける（demand は lane 単位のまま = register_lane_demand 不変の前提）。
         let s1 = TopicRouter::message_to_topic(&RepoMessage::LaneTerminalOutput {
+            live: false,
             lane: "vp/root".to_string(),
             session: 1,
             data: String::new(),
         });
         let s2 = TopicRouter::message_to_topic(&RepoMessage::LaneTerminalOutput {
+            live: false,
             lane: "vp/root".to_string(),
             session: 7,
             data: String::new(),

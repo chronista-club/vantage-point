@@ -141,6 +141,7 @@ async fn run_terminal_session(
                                 .and_then(|n| u32::try_from(n).ok())
                                 .unwrap_or(1),
                             data: data.to_string(),
+                            live: payload.get("live").and_then(serde_json::Value::as_bool).unwrap_or(false),
                         })
                         .is_err()
                 {
