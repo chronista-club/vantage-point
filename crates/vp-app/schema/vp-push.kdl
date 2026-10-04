@@ -89,6 +89,11 @@ protocol "vp-push" version="1.0.0" {
             field "devices" type="array<json>"
         }
 
+        // ウィンドウごとの pane 状態。空の payload も復元完了の合図として送る。
+        event "pane:stow_restore" {
+            field "payload" type="json"
+        }
+
         // shell (L sidebar | main | R sidebar) の形の復元。boot の `ready` replay で 1 回だけ
         // 撃つ。保存が無ければ**撃たない**（webview 側の既定値がそのまま残る = 二重定義しない）。
         //

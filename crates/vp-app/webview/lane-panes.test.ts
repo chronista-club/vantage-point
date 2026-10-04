@@ -8,7 +8,7 @@
  * DOM 反映（installLanePanes の render）は node 環境のため対象外（薄い action 層）。
  */
 
-import { resolve, visibleIds } from "@chronista-club/creo-ui-layout";
+import { resolve, visibleIds, type Layout } from "@chronista-club/creo-ui-layout";
 import { describe, expect, it } from "vitest";
 import {
 	boardKeyOf,
@@ -21,8 +21,11 @@ import {
 	renamePane,
 	sessionOfHostId,
 	hostIdForMode,
+	stowPane,
+	stowedIds,
 	syncPaneColumns,
 	termHostId,
+	unstowPane,
 } from "./lane-panes";
 import { boardKey } from "./board-handler";
 import { layoutEngine } from "./layout-host";
@@ -52,7 +55,7 @@ describe("lanePaneRefs（roster = session 一覧 × 各 mode、doc 50 §4.6 A6�
 		).toEqual([
 			{ id: "term-session-1", label: "cc#1", session: 1, kind: "term" },
 			{ id: "chat-session-3", label: "cdx#3", session: 3, kind: "chat" },
-		]);
+		].map((v) => expect.objectContaining(v)));
 	});
 
 	it("全 session が chat（root も chat = 旧 mode==chat 相当）", () => {
@@ -64,7 +67,7 @@ describe("lanePaneRefs（roster = session 一覧 × 各 mode、doc 50 §4.6 A6�
 		).toEqual([
 			{ id: "chat-session-1", label: "cc#1", session: 1, kind: "chat" },
 			{ id: "chat-session-3", label: "cdx#3", session: 3, kind: "chat" },
-		]);
+		].map((v) => expect.objectContaining(v)));
 	});
 
 	it("A6 の核心: 非 root も term になれる（term が 2 枚並ぶ = 旧実装では不可能だった形）", () => {
@@ -332,5 +335,49 @@ describe("newPaneChoices（doc 46 P2 要件 4: Engine × Mode）", () => {
 	it("chat_capable 未指定は非対応扱い（不明なら行き止まりを作らない側に倒す）", () => {
 		const choices = newPaneChoices([{ name: "unknown" }]);
 		expect(choices.map((c) => c.mode)).toEqual(["tui"]);
+	});
+});
+
+describe("stowPane / unstowPane（Pane のしまうモード — creo mem_1CfbF4m1sGusje8oMouTu8）", () => {
+	// 2 枚並んだ lane から 1 枚をしまう → attention 0（display:none の既存投影）で残りが広がる。
+	// 構造（列）は保つので、戻したときに同じ位置に帰る。
+	const two = (): Layout =>
+		syncPaneColumns(initialLaneLayout(), [TERM, CHAT]);
+
+	it("しまう = attention 0。構造は保ち、残りの 1 枚が全面になる", () => {
+		const l = stowPane(two(), CHAT);
+		expect(l.attention[CHAT]).toBe(0);
+		expect(l.structure.columns.flatMap((c) => c.panes)).toEqual([TERM, CHAT]);
+		expect(visibleIds(l)).toEqual([TERM]);
+		expect(resolve(l)[TERM]?.rect.w).toBeCloseTo(1);
+	});
+
+	it("しまってある pane の一覧 = 構造に居て attention 0 のもの（roster 外は含めない）", () => {
+		const l = stowPane(two(), CHAT);
+		expect(stowedIds(l)).toEqual([CHAT]);
+		expect(stowedIds(two())).toEqual([]);
+	});
+
+	it("戻す = しまう前の share に戻る（2 枚なら等分）。share を忘れていれば入場 share", () => {
+		const before = two();
+		const share = before.attention[CHAT] as number;
+		const back = unstowPane(stowPane(before, CHAT), CHAT, share);
+		expect(back.attention[CHAT]).toBe(share);
+		expect(visibleIds(back)).toEqual([TERM, CHAT]);
+		const fallback = unstowPane(stowPane(before, CHAT), CHAT, undefined);
+		expect(fallback.attention[CHAT]).toBeGreaterThan(0);
+	});
+
+	it("roster 同期（session 増減）をまたいでも、しまった状態は保たれる", () => {
+		const l = stowPane(two(), CHAT);
+		const synced = syncPaneColumns(l, [TERM, CHAT, chatHostId(2)]);
+		expect(synced.attention[CHAT]).toBe(0);
+		expect(stowedIds(synced)).toEqual([CHAT]);
+	});
+
+	it("構造に居ない id / 既にしまってある id は冪等", () => {
+		const l = two();
+		expect(stowPane(l, "nope")).toEqual(l);
+		expect(stowPane(stowPane(l, CHAT), CHAT)).toEqual(stowPane(l, CHAT));
 	});
 });

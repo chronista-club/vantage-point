@@ -32,6 +32,24 @@ import {
   type AgentsDetail,
 } from './console'
 import { newPaneChoices } from './lane-panes'
+import { agentIcon } from './src/sidebar/lane'
+import type { IconName } from '@chronista-club/creo-ui-icons-web'
+
+/** しまってある pane 1 つ（'vp:stowed-panes' の 1 要素。lane-panes が render のたびに流す）。 */
+export type StowedPane = {
+  id: string
+  kind: 'term' | 'chat' | 'board' | 'code'
+  label: string
+  session?: number
+  agent?: string
+}
+
+/** しまった pane のアイコン（engine ロゴ / board / code。名札の kind badge と同じ絵柄）。 */
+export function stowedIconOf(p: StowedPane): IconName {
+  if (p.kind === 'board') return 'ph:compass'
+  if (p.kind === 'code') return 'ph:code'
+  return (p.agent && agentIcon(p.agent, false)) || (p.kind === 'chat' ? 'ph:chat-circle' : 'ph:terminal-window')
+}
 
 /** `vp:conversation-agents` bus が運ぶ agent entry（newPaneChoices の入力と同形）。 */
 type RailStand = { name: string; label?: string; chat_capable?: boolean }
@@ -47,8 +65,53 @@ export interface EdgeRailApi {
  * @param railRoot #edge-rail（帯そのもの。lane 不在時の表示制御に使う）
  * @param mount    #edge-rail-new-host（Solid の render 先）
  */
-export function mountEdgeRail(railRoot: HTMLElement, mount: HTMLElement): EdgeRailApi {
+export function mountEdgeRail(
+  railRoot: HTMLElement,
+  mount: HTMLElement,
+  stowMount: HTMLElement,
+): EdgeRailApi {
   const [lane, setLaneSignal] = createSignal<string | null>(null)
+  // ---- しまった pane（Pane のしまうモード、creo mem_1CfbF4m1sGusje8oMouTu8）----------
+  // 一覧は lane-panes が 'vp:stowed-panes' で流す（表示 lane 分だけ受ける）。badge は
+  // しまっている間に届いた 'vp:pane-activity'（chat の返答 / console の出力 / board の新着）。
+  // 戻すと消灯（戻した pane は一覧から消えるので set からも外す）。
+  const [stowed, setStowed] = createSignal<StowedPane[]>([])
+  const [badges, setBadges] = createSignal<Set<string>>(new Set())
+  document.addEventListener('vp:stowed-panes', (e) => {
+    const d = (e as CustomEvent<{ lane: string; panes: StowedPane[] }>).detail
+    if (!d || d.lane !== lane()) return
+    setStowed(d.panes ?? [])
+    const alive = new Set(d.panes.map((p) => p.id))
+    setBadges((prev) => new Set<string>([...prev].filter((id) => alive.has(id))))
+  })
+  document.addEventListener('vp:pane-activity', (e) => {
+    const d = (e as CustomEvent<{ lane: string; id: string }>).detail
+    if (!d || d.lane !== lane()) return
+    if (!stowed().some((p) => p.id === d.id)) return
+    setBadges((prev) => new Set<string>([...prev, d.id]))
+  })
+  const unstow = (id: string): void => {
+    const addr = lane()
+    if (!addr) return
+    document.dispatchEvent(new CustomEvent('vp:pane-unstow', { detail: { lane: addr, id } }))
+  }
+  const Stowed = () => (
+    <For each={stowed()}>
+      {(p) => (
+        <button
+          type="button"
+          class="rail-btn rail-stowed"
+          classList={{ 'has-badge': badges().has(p.id) }}
+          data-label={`${p.label} — 中央に戻す`}
+          onClick={() => unstow(p.id)}
+        >
+          <CreoIcon name={stowedIconOf(p)} size={14} />
+          <span class="rail-stowed-badge" />
+        </button>
+      )}
+    </For>
+  )
+  render(() => <Stowed />, stowMount)
   // null = 閉。応答（相関 id 照合）で開く — LaneHeader 時代の流儀そのまま。
   const [menu, setMenu] = createSignal<RailStand[] | null>(null)
   const [menuPos, setMenuPos] = createSignal<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -147,6 +210,11 @@ export function mountEdgeRail(railRoot: HTMLElement, mount: HTMLElement): EdgeRa
     setLane(addr) {
       setLaneSignal(addr)
       setMenu(null) // lane が変われば menu の文脈も失効
+      setStowed([]) // しまった一覧は lane のもの — 下の要求への応答で埋まる
+      setBadges(new Set<string>())
+      // lane-panes が先に流していると（applyLaneView → setActiveLane の順）、上の lane 不一致で
+      // 捨てている。順序に依存せず埋まるよう、こちらから要求する（応答 = 'vp:stowed-panes'）
+      if (addr) document.dispatchEvent(new CustomEvent('vp:stowed-panes-demand', { detail: { lane: addr } }))
       railRoot.style.display = addr ? '' : 'none'
     },
   }

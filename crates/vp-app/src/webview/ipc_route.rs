@@ -72,6 +72,7 @@ pub(crate) fn is_main_ipc_tag(body: &str) -> bool {
                 // 確定時に webview が送る。漏れると sidebar IPC へ流れて silent drop =
                 // 「ドラッグしても次回起動で戻る」regression（他の tag と同じ罠）
                 | "shell:layout"
+                | "pane:stow"
                 // code pane（コードブラウザ P1、CodePane.tsx 発）。漏れると sidebar IPC へ
                 // 流れて silent drop = 「tree が永久に空 / file 無反応」regression
                 | "code:list"

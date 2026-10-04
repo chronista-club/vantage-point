@@ -350,6 +350,10 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             session,
             result,
         } => on_voice::result(boot, lane, session, result),
+        AppEvent::PaneStow { lane, state } => {
+            ui.persist.session.pane_stow.insert(lane, state);
+            ui.persist.save();
+        }
         AppEvent::ShellLayout {
             sidebar_width,
             right_sidebar_width,

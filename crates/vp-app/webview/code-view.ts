@@ -17,7 +17,7 @@
  *
  * ## 永続化
  *
- * 無し（in-memory、board と同じ）。doc 50 P5 の lane layout 永続に乗せ替える。
+ * 通常の開閉は in-memory。しまった pane は session.json の snapshot から open を復元する。
  */
 
 import { boardKeyOf } from "./lane-panes";
@@ -86,6 +86,11 @@ export function installCodeView(): CodeViewController {
 		states.set(key, next);
 		dispatchView(key);
 	};
+
+	document.addEventListener("vp:restore-stowed-views", e => {
+		const d = (e as CustomEvent<{ lane: string; ids: string[] }>).detail;
+		if (d?.ids.includes("lane-code")) setOpen(d.lane, { open: true });
+	});
 
 	controller = {
 		setActiveLane(address: string | null): void {
