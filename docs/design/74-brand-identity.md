@@ -26,6 +26,7 @@
 `scripts/brand_assets.py` はPython標準ライブラリとresvgを使用し、以下を決定的に生成する。追加のPythonパッケージは不要。
 
 - `crates/vp-app/assets/icon.svg/png/icns/ico`: 既存のネイティブアプリの読み込み先。PNGは1024角、ICNSは標準/Retina、ICOは16/24/32/48/64/128/256のPNGエントリ。
+- Mac専用の `icon-macos.svg/png` は1024角に824角の原図を中央配置し、四辺に100pxの透明余白を持つ。これは現行ICNS/NSImage経路の表示寸法補正で、Apple全形式共通の規定値ではない。ICNSの全解像度と実行時Dock表示はこの派生画像を使い、Web/Windows/tray用の画像は従来のままにする。
 - `assets/brand/generated/`: 背景なしmark.svg、アプリSVG/PNG、32px favicon、180px touch icon、ライセンス、hash付きmanifest。
 - `--portal <repo>` を指定した時のみ、portalの`public/brand/v1/`と`public/favicon.svg`へ同じデータを同期する。
 
@@ -56,9 +57,11 @@ Macの`release:mac`は生成物の一致を検査してからビルドし、`.ap
 
 - portal、favicon、PNG、ICNS、ICOを個別に描き直さない。
 - 小サイズ向け補正を黙って混ぜない。必要になった時は正本に用途を定義し、生成側へ追加する。
+- ICNSだけ余白を直して実行時Dock PNGを据え置かない。起動時のNSImage設定で大きい画像に戻ってしまう。
 - 検討画像のURLを上書きして過去の会話の参照を変えない。
 - 出典を消して完全に無由来の図案と扱わない。
 
 ## Status log
 
 - 2026-10-02: ユーザー「OKこれでいこう」でv7を正式採用。正本、生成器、派生物、portal同期経路を確定。
+- 2026-10-05: Dockの外形が他アプリより大きいという実機報告から、Mac専用の透明余白を導入。原図・Web・Windows画像は維持。生成検証済み、反映後のDock実機比較は未確認。

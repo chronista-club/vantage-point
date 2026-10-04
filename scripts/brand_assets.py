@@ -28,6 +28,13 @@ def generate():
     metadata.text = 'Vantage Point — Phosphor Mountainsを元に再設計。\n'+license_text
     root.insert(0, copy.deepcopy(metadata))
     app_svg = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+    # Legacy macOS ICNS / NSImage need their own transparent outer canvas.
+    # Keep the canonical artwork and Web/Windows outputs full-bleed.
+    mac_root = ET.Element('{'+NS+'}svg', {'viewBox':'0 0 1024 1024','width':'1024','height':'1024'})
+    mac_artwork = copy.deepcopy(root)
+    mac_artwork.attrib.update({'x':'100','y':'100','width':'824','height':'824'})
+    mac_root.append(mac_artwork)
+    mac_svg = ET.tostring(mac_root, encoding='utf-8', xml_declaration=True)
     logo = ET.Element('{'+NS+'}svg', {'viewBox':'0 0 256 256','width':'256','height':'256'})
     logo.append(metadata)
     logo.append(copy.deepcopy(mark))
@@ -42,10 +49,16 @@ def generate():
             target = tmp/f'{size}.png'
             subprocess.run([renderer,'--width',str(size),str(tmp/'app.svg'),str(target)],check=True)
             images[size] = target.read_bytes()
+        (tmp/'mac.svg').write_bytes(mac_svg)
+        mac_images = {}
+        for size in [16,32,64,128,256,512,1024]:
+            target = tmp/f'mac-{size}.png'
+            subprocess.run([renderer,'--width',str(size),str(tmp/'mac.svg'),str(target)],check=True)
+            mac_images[size] = target.read_bytes()
     # PNG圧縮エントリ: macOSとWindows Vista以降がサポートする形式。
     chunks = []
     for kind,size in [('icp4',16),('icp5',32),('icp6',64),('ic07',128),('ic08',256),('ic09',512),('ic10',1024),('ic11',32),('ic12',64),('ic13',256),('ic14',512)]:
-        payload = images[size]
+        payload = mac_images[size]
         chunks.append(kind.encode()+struct.pack('>I',len(payload)+8)+payload)
     icns_body = b''.join(chunks)
     icns = b'icns'+struct.pack('>I',len(icns_body)+8)+icns_body
@@ -66,6 +79,7 @@ def generate():
                 'files':{name:hashlib.sha256(data).hexdigest() for name,data in web.items()}}
     web['manifest.json']=(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n').encode()
     native = {'icon.svg':app_svg,'icon.png':images[1024],'icon.icns':icns,'icon.ico':ico,
+              'icon-macos.svg':mac_svg,'icon-macos.png':mac_images[1024],
               'PHOSPHOR-LICENSE.txt':license_text.encode()}
     return web,native
 

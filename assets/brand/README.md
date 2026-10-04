@@ -13,3 +13,5 @@ python3 scripts/brand_assets.py --portal /path/to/vantage-point-portal
 採用元: https://vantage-point.app/brand/studies/2026-10-02-v7/app-icon.png
 
 Phosphor Mountainsを出発点として再設計した図案。`PHOSPHOR-LICENSE.txt` の表示を保持する。独占的な図案であることや商標登録可能性を保証するものではない。
+
+Mac用の `crates/vp-app/assets/icon-macos.svg/png` と `icon.icns` は外周に透明余白を加えた派生物。Web/Windows用は原図の外形を保つ。Mac用も同じ生成コマンドで更新する。

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'brand_assets.py'
 
@@ -40,7 +41,17 @@ class BrandAssetsTest(unittest.TestCase):
             self.assertEqual(icns[:4],b'icns')
             self.assertEqual(struct.unpack('>I',icns[4:8])[0],len(icns))
             self.assertIn(b'ic10',icns)
-            self.assertIn(png,icns)
+            # Mac uses an inset canvas; Web/Windows retain the full-bleed image.
+            mac_png = native/'icon-macos.png'
+            self.assertTrue(mac_png.exists(), 'Dock needs a dedicated padded PNG')
+            self.assertNotEqual(mac_png.read_bytes(), png)
+            self.assertIn(mac_png.read_bytes(),icns)
+            self.assertNotIn(png,icns)
+            mac_svg = ET.parse(native/'icon-macos.svg').getroot()
+            artwork = mac_svg.find('{http://www.w3.org/2000/svg}svg')
+            self.assertIsNotNone(artwork)
+            self.assertEqual((artwork.get('x'), artwork.get('y')), ('100', '100'))
+            self.assertEqual((artwork.get('width'), artwork.get('height')), ('824', '824'))
             manifest=json.loads((web/'manifest.json').read_text())
             self.assertEqual(manifest['status'],'adopted')
             self.assertEqual(manifest['source'],'assets/brand/source.svg')
