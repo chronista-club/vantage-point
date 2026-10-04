@@ -10,7 +10,7 @@ import type { LaneInfo } from "../generated/LaneInfo";
 import {
 	laneAddressKey,
 	laneShortcutNumber,
-	shortcutNumberOf, isLaneAlive, laneConnector, laneCwdLabel } from "./lane";
+	shortcutNumberOf, isLaneAlive, laneBranch, laneConnector, laneCwdLabel } from "./lane";
 
 /** 最小の LaneInfo。 テストが着目する field だけ上書きする。 */
 function lane(over: Partial<LaneInfo> = {}): LaneInfo {
@@ -243,5 +243,29 @@ describe("laneAddressKey（daemon 発行の key を運ぶ）", () => {
 			address: { repo: "vp", name: "foo", key: "" },
 		} as Partial<LaneInfo>);
 		expect(laneAddressKey(l)).toBe("vp/foo");
+	});
+});
+
+describe("laneBranch", () => {
+	it("branch（全 lane 供給）を優先する", () => {
+		expect(
+			laneBranch(
+				lane({
+					branch: "nightly",
+					sub_status: { branch: "stale" } as LaneInfo["sub_status"],
+				}),
+			),
+		).toBe("nightly");
+	});
+	it("旧 daemon（branch 欠落）の Sub は sub_status.branch に fallback する", () => {
+		expect(
+			laneBranch(
+				lane({ sub_status: { branch: "mako/x" } as LaneInfo["sub_status"] }),
+			),
+		).toBe("mako/x");
+	});
+	it("どちらも無い root は null（行を出さない）", () => {
+		expect(laneBranch(lane())).toBeNull();
+		expect(laneBranch(lane({ branch: null, sub_status: null }))).toBeNull();
 	});
 });

@@ -307,6 +307,7 @@ export const SHELL_CSS = `
   --sb-photon-period:1800ms;--sb-glow:6px;
   --sb-conn-hitl:#FF4A2D;
   --sb-conn-auto:#FFF76B;
+  --sb-selection-bg:#151c27;--sb-selection-border:#68758b;--sb-selection-width:1px;
   --lg-void:#05070A;--lg-void-2:#080B11;--lg-panel:#0A0E15;
   --lg-grid:#0E2A33;--lg-hairline:#12222b;
   --lg-cyan-dim:#1C6C7C;--lg-hot:#EAFBFF;--lg-mute:#5C7A85;--lg-mute-2:#38525b;}
@@ -339,7 +340,18 @@ html,body{margin:0;height:100%;overflow:hidden;}
 #sidebar-root .creo-sidenav-link:hover{color:inherit;}
 #sidebar-root .creo-sidenav-link[aria-current="page"]{
   color:inherit;font-weight:inherit;
-  background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 92%);}
+  /* repo の右余白 8px + padding 4px を越え、メインの面に届く横タブ。
+     padding を同量増やすので文字の位置と折り返し幅は変えない。 */
+  margin-right:-12px;padding-right:calc(var(--spacing-sm,8px) + 12px);
+  border-radius:8px 0 0 8px;background:var(--sb-selection-bg);}
+#sidebar-root .creo-sidenav-link[aria-current="page"]::after{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  border:var(--sb-selection-width) solid var(--sb-selection-border);border-right:0;
+  border-radius:inherit;}
+/* 面の色は選択行とメインで共有。輪郭は選択状態だけに属し、Editor の検査枠とは別。
+   枠を疑似要素に重ねることで線幅変更・選択切替が行高を変えない。 */
+#host{--color-bg:var(--sb-selection-bg);background:var(--sb-selection-bg);}
+#shell-resizer-left:not(:hover):not(.dragging){background:var(--sb-selection-bg);}
 #sidebar-root{height:100%;position:relative;
   /* Light Grid: 地は void。 sidebar スコープの再スキンはここから下の .vp-* 系にのみ効く。 */
   background:var(--lg-void,#05070A);color:var(--lg-hot,#EAFBFF);
@@ -381,7 +393,8 @@ html,body{margin:0;height:100%;overflow:hidden;}
   color:var(--sb-conn-auto,#FFF76B);}
 /* min-height は ACTIONS（doc 57）が伸びたときの床。scroll container の自動最小サイズは 0 なので、
    これが無いと下の区画が repo list を高さ 0 まで潰せる。 */
-.vp-sidebar-list{flex:1;min-height:96px;overflow-y:auto;padding:0 0 10px;}
+.vp-sidebar-list{flex:1;min-height:96px;overflow-y:auto;padding:0 0 10px;
+  box-shadow:inset calc(-1 * var(--sb-selection-width)) 0 0 var(--sb-selection-border);}
 .vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--lg-mute,#5C7A85);
   font-size:var(--sb-text-meta,11px);}
 .vp-sidebar-empty-cta{margin:var(--spacing-sm,8px);padding:6px 10px;display:inline-flex;
@@ -484,9 +497,8 @@ html,body{margin:0;height:100%;overflow:hidden;}
   border-radius:8px;transition:background .1s ease;}
 /* row 間の旧 border は撤去 — 地は無地 (行を横切る線は作らない)。 */
 .vp-lane-row + .vp-lane-row{border-top:none;}
-/* active (= 選択中) lane — 選択表現は faint tint のみ (mako 019f5114: ブラケット/
-   ブロック/バー等のアクセント要素はゼロ)。 tint は判別性のため僅かに強め (8%)、
-   光り物は増やさない。 「光る」 のは state dot の仕事。 */
+/* active (= 選択中) lane — メイン領域に続く横タブ（2026-10-04 mako 承認）。
+   光や state 色は増やさず、共通の面と右辺を開いた輪郭で現在地を表す。 */
 /* active 背景は bridge の [aria-current="page"] が担う (LaneRow が属性を付与)。
    .active class は shortcut/cwd/icon の従属 selector 用に残る。 */
 .vp-lane-row.inactive{color:var(--lg-mute,#5C7A85);cursor:default;}
@@ -512,11 +524,15 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* 地 (ground): lane の cwd。 図 (title / state) の後ろに沈める層。 mute-2 / micro / mono =
    git meta と同じ最も引っ込んだ層で、 光らせない (光 = 注意は needs-you の専有)。
    indent は connector slot + icon + gap 分 = title の左端に揃える。 */
-.vp-lane-cwd{flex:0 0 100%;box-sizing:border-box;min-width:0;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap;
-  padding-left:calc(var(--sb-conn-slot,22px) + 18px + 8px);
+.vp-lane-ground{flex:0 0 100%;box-sizing:border-box;min-width:0;display:flex;gap:8px;
+  align-items:center;padding-left:calc(var(--sb-conn-slot,22px) + 18px + 8px);
   font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-size:var(--sb-text-micro,10px);color:var(--lg-mute-2,#38525b);}
+.vp-lane-cwd{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+/* ブランチ (2026-10-02): 地の層に cwd と並べる。 icon + 名前、 長ければ省略。 */
+.vp-lane-branch{flex:0 1 auto;min-width:0;display:inline-flex;align-items:center;gap:3px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.vp-lane-row.active .vp-lane-ground{color:var(--lg-mute,#5C7A85);}
 /* ── 下部 2 段 (doc 58 ③) ──
    creo 段 = cloud scope の器。上辺の hairline で名簿と区切る。 */
 .vp-creo-zone{border-top:1px solid var(--lg-hairline,#12222b);}

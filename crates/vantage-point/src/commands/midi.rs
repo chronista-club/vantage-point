@@ -1293,6 +1293,7 @@ mod tests {
             pid: None,
             cwd: "/repos/vp".to_string(),
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
