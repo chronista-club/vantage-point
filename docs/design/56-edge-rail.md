@@ -125,3 +125,24 @@ VP の動詞は「何に効くか」で級が分かれ、**級がそのまま UI
 - **pane 級の恒久の家**（doc 50 §2 の宿題）は本 doc のスコープ外のまま — 名札 hover 召喚を
   継続。rail に持ち込む場合は対象解決（focused pane への暗黙適用）の設計が先
 - 住人が増えたらゾーン分け（生成系 / 面系 / 通知系）を §3 に追記していく
+
+## 8. しまった pane の永続化
+
+`session.json`（secondary window は `session.<N>.json`）の `pane_stow` に、repo を含む
+lane address ごとの version 1 snapshot を保存する。snapshot は列配置・attention と、
+しまった pane を戻すための元の share を持つ。daemon のセッションや会話本文には保存しない。
+
+- しまう・戻す・resize 確定・roster / mode / Board / Code の変更で保存する。同じ snapshot は再送しない。
+- Rust の `ready` replay は `pane:stow_restore` を roster / focus より先に送る。空の通知も
+  保存開始の合図になる。通知前や復元途中の一時的な空状態を保存してはいけない。
+- session 一覧がまだ届いていない lane は snapshot を保留する。一覧到着後に列を復元し、
+  現在の roster と照合する。存在しなくなった session は表示しない。
+- しまった Board / Code は view 所有者の open 状態も復元する。Board は docked とする。
+  通常の Board / Code の開閉、float 座標、Code の開いたファイル、活動バッジの永続化は対象外。
+- lane 切替・起動時の自動 focus はしまった pane を開かない。明示的な復元では元の share に戻す。
+- 保存欄がない旧 session file は従来の既定状態になる。未知の版や不正な lane snapshot は無視する。
+
+### Status log
+
+- 2026-10-04: pane-stow の永続化を追加。WebView 再生成・遅い roster・lane 分離・Board / Code・
+  mode 切替と削除・旧 session file の互換性をテスト対象にした。実アプリ再起動での確認は別途行う。

@@ -357,6 +357,11 @@ export function installBoardView(deps: BoardViewDeps): BoardViewController {
 		if (s.open && s.form === "float" && !liveRect) writeRect(viewRect(s));
 	}).observe(deps.workbench);
 
+	document.addEventListener("vp:restore-stowed-views", e => {
+		const d = (e as CustomEvent<{ lane: string; ids: string[] }>).detail;
+		if (d?.ids.includes("lane-board")) mutate(d.lane, s => ({ ...s, open: true, form: "docked" }));
+	});
+
 	const ctl: BoardViewController = {
 		setActiveLane(key) {
 			if (activeKey === key) return;

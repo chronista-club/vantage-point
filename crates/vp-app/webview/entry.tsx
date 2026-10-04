@@ -122,6 +122,7 @@ import type {
 // + New（engine × Mode で新 session）は LaneHeader へ移設済み（doc 51 §1 A1 — 帯の退役）。
 import {
 	boardKeyOf,
+	BOARD_PANE_REF,
 	chatHostId,
 	hostIdForMode,
 	installLanePanes,
@@ -534,7 +535,8 @@ document.head.appendChild(railStyle);
 const edgeRail = (() => {
 	const root = document.getElementById("edge-rail");
 	const host = document.getElementById("edge-rail-new-host");
-	return root && host ? mountEdgeRail(root, host) : null;
+	const stowHost = document.getElementById("edge-rail-stow-host");
+	return root && host && stowHost ? mountEdgeRail(root, host, stowHost) : null;
 })();
 
 // ===== R sidebar（sidebar view modes、2026-08-01）— rail のフル幅形 = debug log =====
@@ -589,6 +591,12 @@ const boardView = (() => {
 })();
 // code pane（コードブラウザ P1）: view 層（open = user 専有、in-memory）+ 中身の mount。
 // roster への反映は lane-panes が 'vp:code-view' を購読して行う（board と同型、float 無し）。
+// board 名札の「しまう」（Pane のしまうモード）。lane は lane-panes が表示 lane で補う。
+document.getElementById("board-stow-btn")?.addEventListener("click", () => {
+	document.dispatchEvent(
+		new CustomEvent("vp:pane-stow", { detail: { id: BOARD_PANE_REF.id } }),
+	);
+});
 const codeView = installCodeView();
 const codePane = (() => {
 	const host = document.getElementById("lane-code");
@@ -650,7 +658,7 @@ const applyLaneView = (lane: string): void => {
 	// pendingFocus が永久に解決せず、focus ring が挿入順の先頭に誤爆する
 	// （team-b 8 回目 2026-07-25 score 85 — コメントだけ残った実装漏れ）。
 	const focused = focusedOf(lane);
-	lanePanes?.focusPane(hostIdForMode(focused, sessionModeOf(lane, focused)));
+	lanePanes?.focusPane(hostIdForMode(focused, sessionModeOf(lane, focused)), false);
 	// doc 38 §4.3: 再同期ローダー（global fixed 要素）は lane 切替で必ず下ろす。
 	// resync-loader は activeLane の replaying を読むだけなので、stuck した replaying が
 	// 新しい表示の上に居座るのを防ぐ。
@@ -1006,6 +1014,47 @@ function SidebarTokenBinds() {
 				role: "dev",
 			},
 		});
+	});
+
+	// 選択 Lane → メインの共通面。初期値は Shell.tsx の :root と揃える。
+	[
+		{
+			id: "sb.selection.bg",
+			cssVar: "--sb-selection-bg",
+			value: "#151c27",
+			label: "Lane＋メイン背景",
+		},
+		{
+			id: "sb.selection.border",
+			cssVar: "--sb-selection-border",
+			value: "#68758b",
+			label: "選択 Lane の輪郭色",
+		},
+	].forEach((t, i) => {
+		bind<string>({
+			target: cssVarTarget(t.id, t.cssVar, t.value),
+			control: color({ variant: "picker" }),
+			placement: {
+				label: t.label,
+				semantic: "tool",
+				group: "Lane 選択",
+				order: 130 + i,
+				role: "dev",
+			},
+		});
+	});
+	bind<number>({
+		target: cssVarNumberTarget(
+			"sb.selection.width", "--sb-selection-width", 1, "px",
+		),
+		control: number({ min: 0, max: 3, step: 0.5, unit: "px", variant: "slider" }),
+		placement: {
+			label: "選択 Lane の線幅",
+			semantic: "tool",
+			group: "Lane 選択",
+			order: 132,
+			role: "dev",
+		},
 	});
 	return null;
 }

@@ -4,9 +4,8 @@
 //! ショートカットの見た目に使う。 これが無いと generic な白アイコンになる
 //! (mac の `.app` に icon.icns を同梱するのと同じ役割)。
 //!
-//! icon.ico は `assets/icon.png` (1024x1024、 portal favicon 由来の SSOT) から
-//! 生成した 7 解像度 (16/24/32/48/64/128/256) の multi-resolution icon。
-//! icon.png を差し替えたら icon.ico も再生成すること。
+//! icon.ico は repo root の `assets/brand/source.svg` から `scripts/brand_assets.py` で生成する。
+//! 7 解像度 (16/24/32/48/64/128/256) を含む。PNG / ICNS / Web 用 SVG も同じ原図から生成する。
 //!
 //! **mac / Linux では丸ごと no-op**。 target が windows の時だけ resource を compile する
 //! (Windows 対応で mac build を退行させない)。

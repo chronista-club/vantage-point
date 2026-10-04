@@ -34,6 +34,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import { observeConsoleOutput } from "./codex-mode-handoff";
 import type { TermPushHandlers } from "./dispatch";
+import { termHostId } from "./lane-panes";
 
 /** wry が注入する IPC。install 時ではなく **呼ぶ時に** 引く（注入が後の場合があるため）。 */
 const ipc = () =>
@@ -763,7 +764,23 @@ export function installTerm(): TermPushHandlers {
 			return;
 		}
 		info.writeOutput(bytes);
+		notifyActivity(address, session);
 		observeConsoleOutput(address, session, bytes, live);
+	};
+
+	/** 活動の signal（Pane のしまうモード）: PTY 出力は高頻度なので session ごとに 500ms に 1 回。
+	 *  受け手（rail）はしまっている pane 分だけ badge にする。 */
+	const lastActivityAt = new Map<string, number>();
+	const notifyActivity = (address: string, session: number): void => {
+		const key = instKey(address, session);
+		const now = Date.now();
+		if (now - (lastActivityAt.get(key) ?? 0) < 500) return;
+		lastActivityAt.set(key, now);
+		document.dispatchEvent(
+			new CustomEvent("vp:pane-activity", {
+				detail: { lane: address, id: termHostId(session) },
+			}),
+		);
 	};
 
 	// Phase 4-paste-fix: Rust 側 arboard で読み取った OS clipboard 内容を active Lane の xterm に inject。

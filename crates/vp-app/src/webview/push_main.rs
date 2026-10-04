@@ -344,3 +344,16 @@ pub(crate) fn debuglog_lines(main_view: &WebView, source: &str, reset: bool, lin
         }),
     );
 }
+
+/// ウィンドウごとの pane 状態を roster / focus の再送より先に復元する。
+pub(crate) fn pane_stow(
+    main_view: &WebView,
+    lanes: &std::collections::HashMap<String, serde_json::Value>,
+) {
+    push(
+        main_view,
+        &PushEventEnvelope::PaneStowRestore(crate::generated::push::PaneStowRestore {
+            payload: serde_json::json!(lanes),
+        }),
+    );
+}

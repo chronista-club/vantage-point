@@ -134,7 +134,9 @@ xcrun notarytool store-credentials vp-notary \
   --key <AuthKey.p8> --key-id <KEY_ID> --issuer <ISSUER_ID>
 ```
 
-- icon: `crates/vp-app/assets/icon.icns`（自動 embed）
+- **Python 3.9以降とresvg**（`brew install resvg`）: ブランド生成物の一致検査に使用。
+- icon: `crates/vp-app/assets/icon.icns`（自動 embed）。正本は`assets/brand/source.svg`。
+  `python3 scripts/brand_assets.py`で再生成し、生成物もcommitする。詳細は[design 74](../design/74-brand-identity.md)。
 
 ## チェックリスト
 

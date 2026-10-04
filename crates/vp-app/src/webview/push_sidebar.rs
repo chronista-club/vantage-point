@@ -132,6 +132,14 @@ pub(crate) fn settings_result(
     push(sidebar, &IpcEventEnvelope::SettingsResult(result));
 }
 
+/// 手動の更新確認結果を設定画面へ返す。
+pub(crate) fn update_check_result(
+    sidebar: &WebView,
+    result: crate::generated::sidebar_ipc::UpdateCheckResult,
+) {
+    push(sidebar, &IpcEventEnvelope::UpdateCheckResult(result));
+}
+
 /// SidebarState を sidebar webview に push（呼び手が多いので薄い別名を残す）。
 pub(crate) fn push_sidebar_state(sidebar: &WebView, state: &SidebarState) {
     self::state(sidebar, state);

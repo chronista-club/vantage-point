@@ -58,15 +58,21 @@ pub enum AppEvent {
         origin: Option<String>,
     },
     /// Phase A4-3b: Lane fetch 失敗 (repo 未起動 / 接続失敗)
-    LanesError { repo_path: String, message: String },
+    LanesError {
+        repo_path: String,
+        message: String,
+    },
     /// オンデマンド respawn (maybe_respawn_dead_lane) の restart_lane が失敗した通知。
     /// event loop で lane_respawn_triggered から address を除去し、 次の Dead 検出で
     /// 再 respawn できるようにする (失敗が永続 suppression にならないための解除通知)。
-    LaneRespawnFailed { address: String },
+    LaneRespawnFailed {
+        address: String,
+    },
     /// in-app update: 適用フローの進行状態（true = 適用中）。sidebar の「更新する」ボタンを
     /// 「更新中…」表示に切り替える。false = キャンセル / 失敗で通常表示へ戻す
     /// （成功時はプロセスごと終了するので戻し event は来ない）。
     UpdateFlowPhase(bool),
+    UpdateCheckResult(crate::generated::sidebar_ipc::UpdateCheckResult),
     /// Wire inbox (doc 34 §4 V1): Daemon "wire" channel への read-only fetch 結果。
     /// event loop が `window.vpWire.handleResult(payload)` で sidebar に push back する。
     /// payload = `{address, agent, history, unread}` (エラーは `{address, error}`)。
@@ -91,7 +97,10 @@ pub enum AppEvent {
     /// Phase 5-D Sprint C P2.1: Lane HD notification 通知 (OSC 99 final-chunk + a=focus)。
     /// main_area xterm.js が capture → Rust が SidebarState の per-Lane unread count を加算 →
     /// sidebar に push back → badge UI 表示。 active lane への switch で 0 reset。
-    OscNotification { lane: String, code: u32 },
+    OscNotification {
+        lane: String,
+        code: u32,
+    },
     /// R5 Sub create flow: Add Sub form が送信した `lane:add_sub` の結果を sidebar に
     /// push back する。 `error` Some の時 form 下に inline error 表示、 None の時 form を閉じる。
     /// 例: 名前重複 (CONFLICT)、 lane clone 失敗、 repo 未起動 等。
@@ -135,9 +144,15 @@ pub enum AppEvent {
         error: Option<String>,
     },
     /// 音声入力: chat 入力欄の🎙が押された。マイクの録音を始める（同時に 1 本だけ）。
-    VoiceStart { lane: String, session: u32 },
+    VoiceStart {
+        lane: String,
+        session: u32,
+    },
     /// 音声入力: 🎙が離された。録音を止めて、認識を別 thread で走らせる。
-    VoiceStop { lane: String, session: u32 },
+    VoiceStop {
+        lane: String,
+        session: u32,
+    },
     /// 音声入力: 認識の結果（別 thread → event loop）。`Ok` = 認識した文字（空もあり得る）、
     /// `Err` = 失敗の理由（入力欄の下に出す）。
     VoiceResult {
@@ -161,9 +176,14 @@ pub enum AppEvent {
     ResolveLaneInboxes,
     // ===== code pane（コードブラウザ P1）— demand は main webview 発（CodePane.tsx） =====
     /// `code:list` 要求。lane address から cwd を解決して blocking walk へ。
-    CodeList { lane: String },
+    CodeList {
+        lane: String,
+    },
     /// `code:read` 要求。pane 内表示用の raw text 読み（`file_explorer::read_file`）。
-    CodeRead { lane: String, rel_path: String },
+    CodeRead {
+        lane: String,
+        rel_path: String,
+    },
     /// `code:list` の walk 結果 → `push_main::code_entries` で main webview へ push。
     CodeEntriesResult {
         lane: String,
@@ -187,7 +207,9 @@ pub enum AppEvent {
     /// DeviceRegistry 🧲 device event (DeviceConnected / DeviceDisconnected / ControlEvent)。
     /// daemon "daemon-device" Unison channel から受信した `DeviceEvent` の生 JSON。
     /// Phase 1 handler は tracing で log。 Phase 2 で DeviceRegistry pane / sidebar に反映予定。
-    DeviceEvent { payload: serde_json::Value },
+    DeviceEvent {
+        payload: serde_json::Value,
+    },
     /// board モデル (2026-07-15): WebView からの board mutate（thumbnail ✕ / Clear ボタン）。
     /// `method` = "board_delete_item" | "board_clear"、 `body` は IPC payload の生 JSON
     /// (scope / lane / item_id 等)。 active repo の repo に daemon repo-proxy ask で forward し、
@@ -320,7 +342,10 @@ pub enum AppEvent {
     /// doc 39 P3: Root 切替 picker（ヘッダ chip dropdown）からの root 向け替え要求。
     /// event loop が `conversation_session_switch_root` で repo に forward（slot は対象 session の
     /// store で Resume respawn）→ session list 再取得 + demand_start で表示を追従させる。
-    ConsoleSwitchRoot { lane: String, session: u64 },
+    ConsoleSwitchRoot {
+        lane: String,
+        session: u64,
+    },
     /// gui 設定切替要求（ChatView の engine 別 settings panel）。 event loop が
     /// `conversation_set_settings` で repo に forward（**session 単位** — doc 50 session=Pane、
     /// 2026-07-27 に旧 root/lane 単位 `console_set_model` から移行、2026-09-21 に model 単独
@@ -338,24 +363,38 @@ pub enum AppEvent {
     /// doc 38 Phase 2: chat header「+」からの新 session 作成（`agent` 省略 = lane の agent）。
     /// ask `conversation_session_create`（focus は送らない = backend 既定 true）。roster の更新は
     /// server の `emit_lane_update` → lanes snapshot が運ぶ（doc 53 §11）。
-    ConversationSessionCreate { lane: String, agent: Option<String> },
+    ConversationSessionCreate {
+        lane: String,
+        agent: Option<String>,
+    },
     /// replay demand（2026-07-24）: webview の renderer 準備完了後に撃つ消費者主導 demand。
     /// ask `conversation_demand_start` → repo が engine ensure + transcript replay を配送する。
-    ConversationDemandStart { lane: String },
+    ConversationDemandStart {
+        lane: String,
+    },
     /// doc 38 Phase 2: session tab click による focused 切替。ask `conversation_session_focus` →
     /// 一覧再取得 → `conversation_demand_start`（新 focused の transcript replay を発火）。
-    ConversationSessionFocus { lane: String, session: u32 },
+    ConversationSessionFocus {
+        lane: String,
+        session: u32,
+    },
     /// doc 38 Phase 3: session tab の × による close。ask `conversation_session_remove` →
     /// 一覧再取得 → `conversation_demand_start`（除去後の新 focused の会話を replay）。最後の 1 本は
     /// backend が Err で拒否（GUI も × は 2 本以上でしか出さない）。session は lane 名に埋めず
     /// 常に別 field で運ぶ（doc 38 落とし穴①）。
-    ConversationSessionRemove { lane: String, session: u32 },
+    ConversationSessionRemove {
+        lane: String,
+        session: u32,
+    },
     /// doc 38 Phase 2: 「+」menu の engine 選択肢を埋める agents 一覧取得。
     /// ask `agents_list` → `Agents` で push back。
     /// doc 47 §6: `req` = webview が採番した相関 id。`vp:conversation-agents` は複数の「+」menu が
     /// 購読する共有 bus なので、要求元をそのまま往復させて応答側で振り分けさせる
     /// （Rust は中身を解釈しない不透明な札）。
-    AgentsFetch { lane: String, req: Option<String> },
+    AgentsFetch {
+        lane: String,
+        req: Option<String>,
+    },
     // doc 53 §11: 旧 `ConversationSessionList`（ask 結果の push back）は退役。roster は LanesLoaded で
     // snapshot から直接 webview へ渡す（`push_session_list`）。
     /// doc 38 Phase 2: `agents_list` の結果を「+」menu へ push back する内部 event。
@@ -368,7 +407,14 @@ pub enum AppEvent {
     /// R sidebar の debug log（sidebar view modes、2026-08-01）: webview からの tail 購読要求。
     /// `source` = "app" | "daemon"（file への解決は `debug_log::log_path`）。
     /// 最後の watch が勝つ = 単一 tail（source 切替も watch の送り直し）。
-    DebugLogWatch { source: String },
+    DebugLogWatch {
+        source: String,
+    },
+    /// lane ごとの pane 配置と、しまう前の share の保存要求。
+    PaneStow {
+        lane: String,
+        state: serde_json::Value,
+    },
     /// shell (L sidebar | main | R sidebar) の形が確定した（drag 終了 / form 切替 / R 開閉）。
     ///
     /// ⚠️ **確定時のみ**送られる。pointermove ごとに撃つと window resize と同じ頻度で

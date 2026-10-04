@@ -9,3 +9,4 @@ pub mod auth;
 pub mod repo_dialog;
 /// in-app update フロー（`vp update` → daemon restart → GUI relaunch）。
 pub mod update;
+pub mod update_check;

@@ -350,6 +350,10 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             session,
             result,
         } => on_voice::result(boot, lane, session, result),
+        AppEvent::PaneStow { lane, state } => {
+            ui.persist.session.pane_stow.insert(lane, state);
+            ui.persist.save();
+        }
         AppEvent::ShellLayout {
             sidebar_width,
             right_sidebar_width,
@@ -553,6 +557,9 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
         }
         AppEvent::ActivityUpdate(snap) => on_misc::activity_update(ui, boot, *snap),
         AppEvent::UpdateFlowPhase(applying) => on_sidebar::update_flow_phase(ui, boot, applying),
+        AppEvent::UpdateCheckResult(result) => {
+            crate::webview::push_sidebar::update_check_result(&boot.webview, result)
+        }
         AppEvent::SettingsRepoRootPicked(path) => {
             on_sidebar::settings_repo_root_picked(ui, boot, path)
         }

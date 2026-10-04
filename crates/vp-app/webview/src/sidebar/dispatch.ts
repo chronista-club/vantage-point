@@ -28,7 +28,7 @@
  * state は変化のたびに撃ち直されるので、その窓の取りこぼしは次の push で埋まる
  * （main bundle 側の `ready` replay に相当するものは sidebar には無い）。
  */
-import type { IpcEventEnvelope } from '../generated/SidebarIpc'
+import type { IpcEventEnvelope, UpdateCheckResult } from '../generated/SidebarIpc'
 
 /** 受け手が揃うまでの保留箱。install 時に順序どおり流す。 */
 let pending: IpcEventEnvelope[] | null = []
@@ -40,6 +40,7 @@ export interface SidebarPushHandlers {
   subCreateResult(repoPath: string, name: string, error: string | null): void
   agentsResult(repoPath: string, agents: unknown[], error: string | null): void
   wireResult(payload: unknown): void
+  updateCheckResult(result: UpdateCheckResult): void
   /**
    * 設定の確定値（doc 59 P1 + P3）。未設定の値は空文字 / 0 に潰して渡す。
    *
@@ -82,6 +83,9 @@ function apply(msg: IpcEventEnvelope): void {
       break
     case 'wire:result':
       handlers.wireResult(msg.payload)
+      break
+    case 'update:check_result':
+      handlers.updateCheckResult(msg)
       break
     case 'settings:result':
       // optional な path は「未設定」を空文字で表す（受け手の分岐を 1 つ減らす）。

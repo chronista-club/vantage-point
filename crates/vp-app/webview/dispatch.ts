@@ -116,6 +116,9 @@ function apply(msg: PushEventEnvelope): void {
 		case "devices:render":
 			handlers.renderDevices(msg.devices);
 			break;
+		case "pane:stow_restore":
+			document.dispatchEvent(new CustomEvent("vp:pane-stow-restore", { detail: msg.payload }));
+			break;
 		case "shell:layout":
 			handlers.applyShellLayout(msg);
 			break;

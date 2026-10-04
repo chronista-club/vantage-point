@@ -340,6 +340,7 @@ async fn handle_cmd(
         cwd,
         // 起動時点では git 状態取得しない (list_handler 側で必要時に enrich)。
         sub_status: None,
+        branch: None,
         cc_session_id: None,
         sessions: None,
         engine_session_id: None,
@@ -495,6 +496,7 @@ mod tests {
             pid: None,
             cwd: "/nonexistent".to_string(),
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
