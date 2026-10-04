@@ -5,7 +5,7 @@ import { solidPlugin } from 'esbuild-plugin-solid'
 import { Window, type HTMLElement, type HTMLInputElement } from 'happy-dom'
 import { fileURLToPath } from 'node:url'
 
-type Probe = Window & { sent: unknown[]; vpSettings: { open(): void; handleResult(s: unknown): void }; selectLane(lane: string): void; selectDevices(): void; dispose(): void }
+type Probe = Window & { sent: unknown[]; vpSettings: { open(): void; handleResult(s: unknown): void; handleUpdateCheckResult(s: unknown): void }; selectLane(lane: string): void; selectDevices(): void; dispose(): void }
 let bundle: string
 const windows: Window[] = []
 beforeAll(async () => {
@@ -43,6 +43,42 @@ const snapshot = { developerMode: false, developerModeLocked: false, defaultRepo
 afterEach(async () => { for (const win of windows.splice(0)) await win.happyDOM.abort() })
 
 describe('settings in the main area', () => {
+  it('checks now without applying, then offers the confirmed update explicitly', () => {
+    const win = fixture()
+    win.vpSettings.open()
+    win.vpSettings.handleResult(snapshot)
+    const panel = win.document.querySelector('.vp-settings-panel')!
+    expect(panel.textContent).not.toContain('最新版です')
+    const check = [...panel.querySelectorAll('button')].find(b => b.textContent === '今すぐ確認')!
+    expect(check).toBeDefined()
+    check.click()
+    check.click()
+    expect(win.sent.filter((m: any) => m.t === 'update:check')).toHaveLength(1)
+    expect(panel.textContent).toContain('確認中')
+    win.vpSettings.handleUpdateCheckResult({ latest_version: '0.99.0', update_available: true })
+    const update = [...panel.querySelectorAll('button')].find(b => b.textContent.includes('0.99.0 に更新'))!
+    expect(update).toBeDefined()
+    expect(win.sent.filter((m: any) => m.t === 'update:apply')).toHaveLength(0)
+    update.click()
+    expect(win.sent.at(-1)).toEqual({ t: 'update:apply', version: '0.99.0' })
+  })
+  it('distinguishes a failed check from latest and allows retry', () => {
+    const win = fixture()
+    win.vpSettings.open()
+    win.vpSettings.handleResult(snapshot)
+    const panel = win.document.querySelector('.vp-settings-panel')!
+    const check = () => [...panel.querySelectorAll('button')].find(b => b.textContent === '今すぐ確認')!
+    expect(check()).toBeDefined()
+    check().click()
+    win.vpSettings.handleUpdateCheckResult({ error: '接続できません' })
+    expect(panel.textContent).toContain('確認できませんでした')
+    expect(panel.textContent).not.toContain('最新版です')
+    expect(check().disabled).toBe(false)
+    check().click()
+    win.vpSettings.handleUpdateCheckResult({ latest_version: '0.76.0', update_available: false })
+    expect(panel.textContent).toContain('最新版です')
+    expect(panel.textContent).not.toContain('確認できませんでした')
+  })
   it('opens in host and returns to the same workspace DOM, draft and focus', () => {
     const win = fixture()
     const work = win.document.getElementById('work')!

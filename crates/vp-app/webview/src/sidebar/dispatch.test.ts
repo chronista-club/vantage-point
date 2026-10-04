@@ -23,6 +23,7 @@ function recordingHandlers(): { calls: string[]; handlers: SidebarPushHandlers }
       subCreateResult: (p, n, e) => calls.push(`sub:${p}/${n}:${e}`),
       agentsResult: (p, s, e) => calls.push(`agents:${p}:${s.length}:${e}`),
       wireResult: (p) => calls.push(`wire:${(p as { total?: number }).total}`),
+      updateCheckResult: (r) => calls.push(`update:${r.update_available}:${r.latest_version}:${r.error}`),
       settingsResult: (dev, locked, root, resolved, reachable, level, idle, agent, model, takes) =>
         calls.push(
           `settings:${dev}:${locked}:${root}:${resolved}:${reachable}:${level}:${idle}:${agent}:${model}:${takes}`,
@@ -38,6 +39,14 @@ const dispatch = (msg: IpcEventEnvelope): void => {
 }
 
 describe('sidebar dispatch', () => {
+  it('delivers a manual update check result', async () => {
+    const mod = await import('./dispatch')
+    mod.openSidebarDispatch()
+    const { calls, handlers } = recordingHandlers()
+    mod.installSidebarDispatch(handlers)
+    dispatch({ t: 'update:check_result', update_available: true, latest_version: '0.99.0' })
+    expect(calls).toEqual(['update:true:0.99.0:undefined'])
+  })
   beforeEach(() => {
     // vitest の environment は node。dispatch.ts が触るのは `window.vpSidebarDispatch` だけ。
     ;(globalThis as unknown as { window: unknown }).window = globalThis

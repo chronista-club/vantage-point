@@ -107,6 +107,9 @@ pub struct WireAck {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateCheck;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateApply {
     pub version: String,
 }
@@ -190,6 +193,15 @@ pub struct WireResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateCheckResult {
+    pub update_available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsResult {
     pub developer_mode: bool,
     pub developer_mode_locked: bool,
@@ -248,6 +260,8 @@ pub enum IpcEnvelope {
     WireFetch(WireFetch),
     #[serde(rename = "wire:ack")]
     WireAck(WireAck),
+    #[serde(rename = "update:check")]
+    UpdateCheck,
     #[serde(rename = "update:apply")]
     UpdateApply(UpdateApply),
     #[serde(rename = "auth:login")]
@@ -281,6 +295,8 @@ pub enum IpcEventEnvelope {
     AgentsResult(AgentsResult),
     #[serde(rename = "wire:result")]
     WireResult(WireResult),
+    #[serde(rename = "update:check_result")]
+    UpdateCheckResult(UpdateCheckResult),
     #[serde(rename = "settings:result")]
     SettingsResult(SettingsResult),
 }

@@ -19,7 +19,10 @@ use crate::capability::UpdateCapability;
 use crate::daemon::server::DaemonState;
 
 /// GET /api/update/check - 更新をチェック
-pub async fn update_check(State(state): State<Arc<DaemonState>>) -> impl IntoResponse {
+pub async fn update_check(
+    State(state): State<Arc<DaemonState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
     let Some(update) = &state.update else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -28,11 +31,26 @@ pub async fn update_check(State(state): State<Arc<DaemonState>>) -> impl IntoRes
     };
 
     let mut update = update.write().await;
-    match update.check_update().await {
-        Ok(result) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::to_value(result).unwrap_or_default()),
-        ),
+    let fresh_check = params.get("force").is_some_and(|v| v == "true");
+    let result = if fresh_check {
+        let Some(current) = params.get("current_version").filter(|s| !s.is_empty()) else {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(
+                    serde_json::json!({"error": "current_version is required for a forced check"}),
+                ),
+            );
+        };
+        update.check_update_now(current).await
+    } else {
+        update.check_update().await
+    };
+    match result {
+        Ok(result) => {
+            let mut value = serde_json::to_value(result).unwrap_or_default();
+            value["fresh_check"] = serde_json::json!(fresh_check);
+            (axum::http::StatusCode::OK, Json(value))
+        }
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),
