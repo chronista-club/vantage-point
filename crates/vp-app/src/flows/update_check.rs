@@ -77,7 +77,7 @@ mod tests {
             "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
-        let task = tokio::spawn(async move {
+        let task = tokio::runtime::Handle::current().spawn(async move {
             let (mut stream, _) = socket.accept().await.unwrap();
             let mut bytes = Vec::new();
             loop {
