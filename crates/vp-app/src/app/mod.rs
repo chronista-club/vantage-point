@@ -276,6 +276,10 @@ pub fn run() -> anyhow::Result<()> {
                 session,
                 result,
             }) => on_voice::result(&boot, lane, session, result),
+            Event::UserEvent(AppEvent::PaneStow { lane, state }) => {
+                ui.persist.session.pane_stow.insert(lane, state);
+                ui.persist.save();
+            }
             Event::UserEvent(AppEvent::ShellLayout {
                 sidebar_width,
                 right_sidebar_width,

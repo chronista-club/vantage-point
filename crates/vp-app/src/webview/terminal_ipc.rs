@@ -341,6 +341,18 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 });
             }
         }
+        // Instance ごとの pane snapshot を既存の session 保存経路へ運ぶ。
+        Some("pane:stow") => {
+            if let (Some(lane), Some(state)) = (
+                parsed.get("lane").and_then(|v| v.as_str()),
+                parsed.get("state").filter(|v| v.is_object()),
+            ) {
+                let _ = proxy.send_event(AppEvent::PaneStow {
+                    lane: lane.to_owned(),
+                    state: state.clone(),
+                });
+            }
+        }
         // shell layout（L sidebar | main | R sidebar の形）の確定通知。
         // 値の検証（範囲外の clamp）は session_state 側の setter が持つ — ここは運ぶだけ。
         Some("shell:layout") => {

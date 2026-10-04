@@ -658,7 +658,7 @@ const applyLaneView = (lane: string): void => {
 	// pendingFocus が永久に解決せず、focus ring が挿入順の先頭に誤爆する
 	// （team-b 8 回目 2026-07-25 score 85 — コメントだけ残った実装漏れ）。
 	const focused = focusedOf(lane);
-	lanePanes?.focusPane(hostIdForMode(focused, sessionModeOf(lane, focused)));
+	lanePanes?.focusPane(hostIdForMode(focused, sessionModeOf(lane, focused)), false);
 	// doc 38 §4.3: 再同期ローダー（global fixed 要素）は lane 切替で必ず下ろす。
 	// resync-loader は activeLane の replaying を読むだけなので、stuck した replaying が
 	// 新しい表示の上に居座るのを防ぐ。

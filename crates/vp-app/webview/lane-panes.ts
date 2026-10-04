@@ -37,6 +37,7 @@
  * > 制約と lane 単位 mode の概念は消えた。
  */
 
+import { readPaneStowState, type PaneStowState } from "./pane-stow-state";
 import { repoOfAddress, subNameOfAddress } from "./lane-address";
 import {
 	type Layout,
@@ -330,8 +331,9 @@ export interface LanePanesController {
 	/** 表示 lane を切り替え、その lane の配置を DOM へ写し直す（doc 47 §3） */
 	setActiveLane(lane: string): void;
 	/** focus を当てる。消えていた Pane を指したら復元も行う（旧 PaneLayout.focus）。
-	 *  まだ生えていない pane（boot 窓）は保留し、session 一覧の到着時に当て直す */
-	focusPane(paneId: string): void;
+	 *  まだ生えていない pane（boot 窓）は保留し、session 一覧の到着時に当て直す。
+	 *  reveal=false は lane 切替時の自動 focus（しまった pane は開かない）。 */
+	focusPane(paneId: string, reveal?: boolean): void;
 	/** Pane をしまう（rail の縦中央へ。残りが広がる）。'vp:pane-stow' の受け口でもある。 */
 	stowPane(paneId: string): void;
 	/** しまった Pane を中央に戻す（しまう前の share。忘れていれば入場 share）。 */
@@ -362,13 +364,35 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	const resizers = installPaneResizers(deps.container, next => {
 		if (activeLane) layoutEngine.update(laneScope(activeLane), () => next);
 	}, () => {
-		if (activeLane) layoutEngine.settle(laneScope(activeLane), "human");
+		if (activeLane) {
+			layoutEngine.settle(laneScope(activeLane), "human");
+			persistStow();
+		}
 	});
 	/** lane → focus を持つ pane id（LE-20: focus は場の外 = module 状態） */
 	const focusById = new Map<string, string>();
-	/** lane → (pane id → しまう前の attention)。戻すときに同じ比率へ帰るため（in-memory 先行、
-	 *  永続は A7 到着時に乗せ替え — doc 55 §9 と同じ「先行 + 乗せ替え」）。 */
+	/** lane → (pane id → しまう前の attention)。instance ごとの session.json に永続化。 */
 	const stowedShare = new Map<string, Map<string, number>>();
+	const pendingRestore = new Map<string, PaneStowState>();
+	let restoreReady = false;
+	let restoring = false;
+	const lastSaved = new Map<string, string>();
+	const persistStow = (): void => {
+		if (!restoreReady || restoring || !activeLane || pendingRestore.has(activeLane)) return;
+		const layout = layoutEngine.current(laneScope(activeLane));
+		const ids = new Set(stowedIds(layout));
+		const shares = Object.fromEntries(
+			[...(stowedShare.get(activeLane) ?? [])].filter(([id]) => ids.has(id)),
+		);
+		stowedShare.set(activeLane, new Map(Object.entries(shares)));
+		const state: PaneStowState = { version: 1, layout, shares };
+		const serialized = JSON.stringify(state);
+		if (lastSaved.get(activeLane) === serialized) return;
+		const ipc = (globalThis as unknown as { ipc?: { postMessage(m: string): void } }).ipc;
+		if (!ipc) return;
+		ipc.postMessage(JSON.stringify({ t: "pane:stow", lane: activeLane, state }));
+		lastSaved.set(activeLane, serialized);
+	};
 	/** lane → 直近に rail へ流した stowed 一覧の指紋（変化時だけ dispatch）。 */
 	const lastStowedPush = new Map<string, string>();
 	/** lane → session 一覧（'vp:conversation-sessions' の鏡。roster は各 session の mode から導出）。
@@ -431,6 +455,12 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	 *  構造の同期は「人の配置」でも「AI の提案」でもないデータ追従 = author は 'scene' */
 	const syncRoster = (lane: string): void => {
 		const scope = ensure(lane);
+		// roster 未着の空配列で保存済みの列を消さない。
+		const saved = pendingRestore.get(lane);
+		if (saved && sessionsByLane.has(lane)) {
+			pendingRestore.delete(lane);
+			layoutEngine.update(scope, () => saved.layout);
+		}
 		layoutEngine.update(scope, (l) =>
 			syncPaneColumns(
 				l,
@@ -573,6 +603,31 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		if (activeLane && scope === laneScope(activeLane)) render();
 	});
 
+	document.addEventListener("vp:pane-stow-restore", (e) => {
+		const payload = (e as CustomEvent<Record<string, unknown>>).detail;
+		if (!payload || typeof payload !== "object") return;
+		restoring = true;
+		for (const [lane, value] of Object.entries(payload)) {
+			const saved = readPaneStowState(value);
+			if (!saved) continue;
+			pendingRestore.set(lane, saved);
+			const key = boardKeyOf(lane);
+			if (saved.shares[BOARD_PANE_REF.id]) boardViewByLane.set(key, { open: true, form: "docked" });
+			if (saved.shares[CODE_PANE_REF.id]) codeViewByLane.set(key, { open: true });
+			stowedShare.set(lane, new Map(Object.entries(saved.shares)));
+			// 静的 pane の所有者も復元する（次の lane 切替で閉状態に戻されない）。
+			document.dispatchEvent(new CustomEvent("vp:restore-stowed-views", {
+				detail: { lane: boardKeyOf(lane), ids: Object.keys(saved.shares) },
+			}));
+			if (lane === activeLane) {
+				syncRoster(lane);
+				render();
+			}
+		}
+		restoring = false;
+		restoreReady = true;
+	});
+
 	// session 一覧（repo truth の鏡、chatview.installChatView が dispatch）→ pane の顔ぶれを同期。
 	// doc 46 §1.5 の実装点: session が増減すると pane / layout 列が追従する。
 	document.addEventListener("vp:conversation-sessions", (e) => {
@@ -606,6 +661,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 			}
 		}
 		render();
+		persistStow();
 	});
 
 	// session mode（見え方）の変化 → roster を同期（doc 50 §4.6 A6、旧 'vp:console-mode' の後継）。
@@ -628,11 +684,18 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		// syncPaneColumns が「旧 id が消えた / 新 id が入場した」と解釈し、pane が右端の
 		// 細い列に飛ぶ（2026-07-25 実機: chat→tui で「立ち上がっていない」ように見えた真因）。
 		// 位置・幅・並び順を保ってこそ「その場で変身」になる。
+		const shares = stowedShare.get(d.lane);
+		const share = shares?.get(prevId);
+		if (shares && share !== undefined) {
+			shares.delete(prevId);
+			shares.set(nextId, share);
+		}
 		layoutEngine.update(ensure(d.lane), (cur) => renamePane(cur, prevId, nextId));
 		// focus も新しい host へ引き継ぐ（視線の連続性）。
 		if (focusById.get(d.lane) === prevId) focusById.set(d.lane, nextId);
 		syncRoster(d.lane);
 		render();
+		persistStow();
 	});
 
 	// board の view 状態（open / form）の変化 → roster を同期（doc 55 §5.1）。
@@ -648,6 +711,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		if (!activeLane || boardKeyOf(activeLane) !== d.lane) return;
 		syncRoster(activeLane);
 		render();
+		persistStow();
 	});
 
 	// code pane（コードブラウザ）: code-view.ts の open 変化を roster に反映する
@@ -659,6 +723,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		if (!activeLane || boardKeyOf(activeLane) !== d.lane) return;
 		syncRoster(activeLane);
 		render();
+		persistStow();
 	});
 
 	// fresh（live 新着）の純化（doc 55 §5.2）: 表示は起こさない。docked で開いている
@@ -738,6 +803,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 			layoutEngine.update(scope, (l) => stowPane(l, paneId));
 			layoutEngine.settle(scope, "human");
 			render();
+			persistStow();
 		},
 		unstowPane(paneId) {
 			if (!activeLane) return;
@@ -750,13 +816,20 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 			layoutEngine.settle(scope, "human");
 			focusById.set(activeLane, paneId); // 戻した pane に視線を移す
 			render();
+			persistStow();
 		},
-		focusPane(paneId) {
+		focusPane(paneId, reveal = true) {
 			if (!activeLane) return;
 			const scope = ensure(activeLane);
 			if (!paneExists(scope, paneId)) {
 				// まだ生えていない pane（boot 窓）— session 一覧の到着時に当てる
 				pendingFocus = paneId;
+				return;
+			}
+			if (!reveal && (stowedShare.get(activeLane)?.has(paneId) ||
+				(layoutEngine.current(scope).attention[paneId] ?? 0) <= 0)) return;
+			if (stowedShare.get(activeLane)?.has(paneId)) {
+				controller.unstowPane(paneId);
 				return;
 			}
 			if ((layoutEngine.current(scope).attention[paneId] ?? 0) <= 0) {

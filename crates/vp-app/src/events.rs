@@ -368,6 +368,11 @@ pub enum AppEvent {
     /// `source` = "app" | "daemon"（file への解決は `debug_log::log_path`）。
     /// 最後の watch が勝つ = 単一 tail（source 切替も watch の送り直し）。
     DebugLogWatch { source: String },
+    /// lane ごとの pane 配置と、しまう前の share の保存要求。
+    PaneStow {
+        lane: String,
+        state: serde_json::Value,
+    },
     /// shell (L sidebar | main | R sidebar) の形が確定した（drag 終了 / form 切替 / R 開閉）。
     ///
     /// ⚠️ **確定時のみ**送られる。pointermove ごとに撃つと window resize と同じ頻度で

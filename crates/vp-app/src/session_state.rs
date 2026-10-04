@@ -223,6 +223,9 @@ pub struct SessionState {
     /// `window_geometry` の隣。drag / form 切替 / R 開閉のたびに save、起動時に復元。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_layout: Option<ShellLayout>,
+    /// lane address → versioned pane layout / stowed share. Validated by the webview.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub pane_stow: HashMap<String, serde_json::Value>,
     /// この instance window が「開いている / 開くべき」 か。 primary が起動時に
     /// `open==true` の secondary file を auto-spawn する signal。 clean close で false。
     #[serde(default = "default_open")]
@@ -248,6 +251,7 @@ impl Default for SessionState {
             currents_order: None,
             window_geometry: None,
             shell_layout: None,
+            pane_stow: HashMap::new(),
             open: true,
             window_geometries: Vec::new(),
             instance_index: 0,
@@ -857,5 +861,22 @@ mod tests {
         let loaded = SessionState::load(0); // 正常
         assert_eq!(loaded.active_lane_address.as_deref(), Some("vp/lane/root"));
         assert_eq!(count(dir), 0);
+    }
+}
+
+#[cfg(test)]
+mod pane_stow_tests {
+    use super::*;
+    #[test]
+    fn pane_stow_round_trip_and_old_file() {
+        let value = serde_json::json!({"pane_stow": {"repo/root": {
+            "version": 1, "layout": {"structure": {"columns": [{"panes": ["chat-session-1"]}]},
+            "attention": {"chat-session-1": 0}}, "shares": {"chat-session-1": 0.7}
+        }}});
+        let state: SessionState = serde_json::from_value(value.clone()).unwrap();
+        let saved = serde_json::to_value(state).unwrap();
+        assert_eq!(saved["pane_stow"], value["pane_stow"]);
+        let old: SessionState = serde_json::from_str("{}").unwrap();
+        assert!(serde_json::to_value(old).unwrap()["pane_stow"].is_null());
     }
 }
