@@ -14,7 +14,7 @@
 #   - notarytool keychain profile "vp-notary" (App Store Connect API key 推奨):
 #       xcrun notarytool store-credentials vp-notary --key <AuthKey.p8> --key-id <KEY_ID> --issuer <ISSUER_ID>
 #       (ASC API key: https://appstoreconnect.apple.com/access/integrations/api)
-#   - icon: crates/vp-app/assets/icon.icns (portal favicon 由来、 自動 embed)
+#   - icon: crates/vp-app/assets/icon.icns (assets/brand/source.svg 由来、 自動 embed)
 #
 # VP_RELEASE_DRY=1 で notarize + publish を skip (build/sign/dmg だけ local 検証、 creds 不要)。
 require "fileutils"
@@ -33,6 +33,7 @@ NO_PUBLISH = ENV["VP_RELEASE_NO_PUBLISH"] == "1"   # notarize+staple まで (gh 
 
 version = File.read("Cargo.toml")[/^version = "([^"]+)"/, 1] or VP.die("version が Cargo.toml に見つかりません")
 tag = "v#{version}"
+VP.sh "python3 scripts/brand_assets.py --check"
 VP.log "#{VP.icon(:rocket)} release:mac #{tag}#{DRY ? '  (DRY: notarize/publish skip)' : ''}"
 
 # ── 0. cert 前提チェック ────────────────────────────────────────
@@ -74,6 +75,7 @@ FileUtils.cp(File.join(rel, "vp"),     File.join(macos, "vp"))
 icon_src = "crates/vp-app/assets/icon.icns"
 has_icon = File.exist?(icon_src)
 FileUtils.cp(icon_src, File.join(res, "icon.icns")) if has_icon
+FileUtils.cp("assets/brand/PHOSPHOR-LICENSE.txt", File.join(res, "Phosphor-LICENSE.txt"))
 VP.log "#{VP.icon(:warn)} icon 不在 (#{icon_src}) — generic で続行" unless has_icon
 
 File.write(File.join(app, "Contents", "Info.plist"), <<~PLIST)
