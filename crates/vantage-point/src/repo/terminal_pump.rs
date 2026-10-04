@@ -88,6 +88,7 @@ pub fn spawn_lane_terminal_pump(
                         lane: lane.clone(),
                         session,
                         data,
+                        live: false,
                     })
                     .await;
             }
@@ -104,6 +105,7 @@ pub fn spawn_lane_terminal_pump(
                             lane: lane.clone(),
                             session,
                             data,
+                            live: true,
                         })
                         .await;
                 }
@@ -111,6 +113,15 @@ pub fn spawn_lane_terminal_pump(
                     tracing::warn!(
                         "lane terminal pump lagged: {n} chunks dropped (lane={lane}, session={session})"
                     );
+                    // 通知の途中が落ちた場合、受信側の OSC parser を切って誤結合を防ぐ。
+                    topic_router
+                        .route(RepoMessage::LaneTerminalOutput {
+                            lane: lane.clone(),
+                            session,
+                            data: String::new(),
+                            live: false,
+                        })
+                        .await;
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     tracing::debug!(
@@ -327,6 +338,28 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test]
+    async fn terminal_notifications_distinguish_replay_from_live() {
+        let router = Arc::new(TopicRouter::new());
+        let (tx, rx) = broadcast::channel::<Vec<u8>>(16);
+        let (_id, mut received) = router.subscribe("repo/terminal/data/vp~root/out").await;
+        let notification = b"\x1b]9;done\x07".to_vec();
+        tx.send(notification.clone()).unwrap();
+        let task = spawn_lane_terminal_pump("vp/root".into(), 2, notification, rx, router);
+        for expected in [false, true] {
+            let (_, message) = tokio::time::timeout(Duration::from_secs(1), received.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let json = serde_json::to_value(message).unwrap();
+            assert_eq!(
+                json["live"], expected,
+                "only fresh output can trigger a deferred handoff"
+            );
+        }
+        task.abort();
+    }
+
     /// pump が PtySlot 出力を per-lane topic に route し、 subscriber が受け取れる。
     #[tokio::test]
     async fn test_pump_routes_to_per_lane_topic() {
@@ -352,6 +385,7 @@ mod tests {
                 lane,
                 session,
                 data,
+                ..
             } => {
                 assert_eq!(lane, "vp/root");
                 assert_eq!(session, 5, "pump は担当 session を message に stamp する");

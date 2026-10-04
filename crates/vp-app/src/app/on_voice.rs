@@ -3,7 +3,7 @@
 //! webview の🎙は `voice:stop` を送った後「認識中」で待つ。**どの経路でも必ず
 //! `voice:text` か `voice:error` を 1 つ返す**こと — 返さないと入力欄が編集不可のまま残る。
 
-use tao::event_loop::EventLoopProxy;
+use crate::event_proxy::EventLoopProxy;
 
 use super::boot::Boot;
 use super::state::{ActiveVoice, UiState};

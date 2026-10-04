@@ -11,17 +11,15 @@
 //! `boot.rt_handle` / `boot.instance_index`。
 
 use tao::dpi::LogicalSize;
-use tao::event_loop::ControlFlow;
 
 use super::boot::Boot;
 use super::lane_view::resolve_repo_path_for_lane;
 use super::state::UiState;
 use super::update_pane_bounds;
 use super::{DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
-use crate::session_state::SessionState;
 use crate::webview::push_main;
 
-pub(super) fn close_requested(ui: &mut UiState, boot: &Boot, control_flow: &mut ControlFlow) {
+pub(super) fn close_requested(ui: &mut UiState, boot: &Boot) {
     tracing::info!("Window close requested");
     // この window は **明示的に閉じられた** → 次回 primary 起動時に auto-respawn
     // しないよう自 instance file に open=false を記録する。 強制 kill (= SIGTERM /
@@ -40,7 +38,6 @@ pub(super) fn close_requested(ui: &mut UiState, boot: &Boot, control_flow: &mut 
             g.display_mode
         );
     }
-    *control_flow = ControlFlow::Exit;
 }
 
 pub(super) fn resized(ui: &mut UiState, boot: &Boot, size: tao::dpi::PhysicalSize<u32>) {
@@ -174,58 +171,7 @@ pub(super) fn slot_rect(
 /// `settings:save` の arm が担う（両 item の `set_enabled` もそちら）。
 ///  - "Open Developer Tools" → dev_mode == true なら webview.open_devtools()
 pub(super) fn menu_clicked(ui: &mut UiState, boot: &Boot, id: muda::MenuId) {
-    if id == boot.menu_ids.new_window {
-        // Cmd+N: 新規 vp-app process を spawn = 新しい MainWindow が独立 process で立つ。
-        // 同 EventLoop に重ねるのではなく fork-style で別 process 化することで、
-        // state 干渉ゼロ + crash isolation + multi-instance 並行開発が可能に。
-        // daemon (port 32000) は process 横断 shared なので repos 一覧は同期。
-        //
-        // instance index を明示採番する (= 旧 bug 修正)。 採番しないと子は
-        // 全員 instance 0 相当に落ち、 `session.0.json` を共有して per-window state
-        // (active_lane / geometry) を互いに clobber していた。 採番直後に open=true で
-        // 予約 save しておくと、 連打 (= 複数 Cmd+N) でも次の採番が同 index を避ける
-        // (= race 防止)。
-        let new_idx = SessionState::next_free_secondary_index();
-        let mut reserved = SessionState::load(new_idx);
-        reserved.set_open(true);
-        reserved.save();
-        match std::env::current_exe() {
-            Ok(exe) => {
-                match std::process::Command::new(&exe)
-                    // 子 process は auto-select を skip ── 元 vp-app と active_lane
-                    // が衝突して両方の terminal WS が壊れるのを防ぐ。
-                    // 起動後 user が手動で lane 選択するまで main_area は empty。
-                    .env("VP_APP_INSTANCE", new_idx.to_string())
-                    .spawn()
-                {
-                    Ok(child) => {
-                        tracing::info!(
-                            "Cmd+N: spawned new vp-app process (pid={}, instance_index={})",
-                            child.id(),
-                            new_idx
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Cmd+N: failed to spawn new process at {}: {}",
-                            exe.display(),
-                            e
-                        );
-                        // spawn 失敗 → 予約した open=true を解放 (= 次回 primary 起動の
-                        // auto-spawn が存在しない secondary を起こすのを防ぐ)。
-                        reserved.set_open(false);
-                        reserved.save();
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Cmd+N: current_exe() failed: {}", e);
-                // 同上: spawn に至らなかったので予約を解放。
-                reserved.set_open(false);
-                reserved.save();
-            }
-        }
-    } else if id == boot.menu_ids.open_file {
+    if id == boot.menu_ids.open_file {
         // File menu → "Code Browser": code pane の toggle を webview に要求。
         //
         // menu click は OS-level で発火するため、 Pane (terminal / Canvas) focus 中

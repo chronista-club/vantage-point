@@ -223,7 +223,7 @@ pub struct SessionState {
     /// `window_geometry` の隣。drag / form 切替 / R 開閉のたびに save、起動時に復元。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_layout: Option<ShellLayout>,
-    /// lane address → versioned pane layout / stowed share. Validated by the webview.
+    /// lane address → 版付き pane 配置と復元用 share。WebView 側で内容を検証する。
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub pane_stow: HashMap<String, serde_json::Value>,
     /// この instance window が「開いている / 開くべき」 か。 primary が起動時に

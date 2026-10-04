@@ -22,9 +22,13 @@ fn tray_icon_image() -> tray_icon::Icon {
 }
 
 /// トレイアイコンを構築
-pub fn build_tray() -> anyhow::Result<TrayIcon> {
+pub fn build_tray(ids: &crate::menu::MenuIds) -> anyhow::Result<TrayIcon> {
     let menu = TrayMenu::new();
-    let quit = tray_icon::menu::MenuItem::new("Quit", true, None);
+    let quit =
+        tray_icon::menu::MenuItem::with_id(ids.quit.clone(), "Quit Vantage Point", true, None);
+    let new_window =
+        tray_icon::menu::MenuItem::with_id(ids.new_window.clone(), "New Window", true, None);
+    menu.append(&new_window)?;
     menu.append(&quit)?;
 
     let tray = TrayIconBuilder::new()

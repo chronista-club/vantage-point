@@ -209,6 +209,7 @@ pub enum AppEvent {
         lane: String,
         session: u32,
         data: String,
+        live: bool,
     },
     /// terminal S4: WebView (xterm onData) からの入力。 `data` は base64。 event loop が
     /// 当該 lane の terminal session に渡し、 canvas channel 上り request `terminal_write` で repo へ。

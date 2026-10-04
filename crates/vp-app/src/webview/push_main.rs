@@ -345,7 +345,7 @@ pub(crate) fn debuglog_lines(main_view: &WebView, source: &str, reset: bool, lin
     );
 }
 
-/// Restore instance-local pane state before roster / focus catch-up.
+/// ウィンドウごとの pane 状態を roster / focus の再送より先に復元する。
 pub(crate) fn pane_stow(
     main_view: &WebView,
     lanes: &std::collections::HashMap<String, serde_json::Value>,

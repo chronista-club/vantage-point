@@ -21,7 +21,7 @@ import type { SetStoreFunction } from 'solid-js/store'
 // ---------------------------------------------------------------------------
 
 export type ChatItem =
-  | { kind: 'user'; text: string; submissionId?: string; clientId?: string }
+  | { kind: 'user'; text: string; submissionId?: string; clientId?: string; images?: Submission['images'] }
   | { kind: 'assistant'; text: string; sealed?: boolean; codexItemId?: string; codexQuestions?: CodexQuestion[] } // append 先。sealed=turn 境界（§5.1、次 turn は新バブル）
   | { kind: 'thinking'; text: string; at?: number } // thought_chunk を末尾 thinking に append。at = live 受信時刻（doc 57 §4.2、replay では刻まない）
   // tool。input/result は詳細展開の表示源。backend は最初から ToolCall{input} /
@@ -164,6 +164,9 @@ export type ChatState = {
   replaying: boolean
   historyTruncated?: boolean
   historyThreadId?: string
+  /** Inputs absent from native history stay recoverable, outside the conversation timeline. */
+  unconfirmedCodexInputs?: Pick<Submission, 'id' | 'text' | 'images'>[]
+  codexInputCapacityError?: string | null
   /** user が停止（停止ボタン / Esc）を押した turn か。turn が閉じたら「停止しました」を 1 行出して下ろす。
    *  engine は停止した turn を正常な終わり（turn_completed）で閉じる — 異常ではないので error にしない。 */
   interruptRequested?: boolean
@@ -232,9 +235,13 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       submission.error = ev.error
       s.replaying = false
       s.items = s.items.filter((item) => item.kind !== 'user' || item.submissionId !== submission.id)
+      s.unconfirmedCodexInputs = s.unconfirmedCodexInputs?.filter(input => input.id !== submission.id)
     } else {
       for (const item of s.items) {
-        if (item.kind === 'user' && item.submissionId === submission.id) delete item.submissionId
+        if (item.kind === 'user' && item.submissionId === submission.id) {
+          delete item.submissionId
+          delete item.images
+        }
       }
       s.submission = null
     }
@@ -244,9 +251,16 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
   switch (ev.kind) {
     case 'codex_history': {
       const included = new Set(ev.user_message_ids)
-      const local = s.historyThreadId && s.historyThreadId !== ev.thread_id ? [] : s.items.filter(
-        item => item.kind === 'user' && item.clientId && !included.has(item.clientId),
-      )
+      const local = new Map((s.unconfirmedCodexInputs ?? []).map(input => [input.id, input]))
+      for (const item of s.items) {
+        if (item.kind === 'user' && item.clientId && !local.has(item.clientId)) {
+          local.set(item.clientId, { id: item.clientId, text: item.text, images: item.images ?? [] })
+        }
+      }
+      // Missing identity is not evidence of either delivery or failure. Preserve
+      // the input separately instead of presenting it as the latest user turn.
+      s.unconfirmedCodexInputs = s.historyThreadId && s.historyThreadId !== ev.thread_id
+        ? [] : [...local.values()].filter(input => !included.has(input.id))
       foldInto(s, { kind: 'replay_start' })
       for (const event of ev.events) {
         // 表示データのみ。過去の承認・送信・snapshot を再帰実行しない。
@@ -254,7 +268,6 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
           foldInto(s, event)
         }
       }
-      s.items.push(...local)
       foldInto(s, { kind: 'replay_end', in_flight: ev.in_flight })
       s.historyThreadId = ev.thread_id
       s.header = { ...s.header, sessionId: ev.thread_id }
@@ -455,11 +468,26 @@ function sealLastAssistant(s: ChatState): void {
 }
 /** Keep the exact payload in memory until accepted or explicitly recovered. */
 export function beginSubmission(
-  s: ChatState, id: string, text: string, images: Submission['images'],
+  s: ChatState, id: string, text: string, images: Submission['images'], codex = false,
 ): boolean {
   if (s.submission) return false
+  if (codex) {
+    const inputs = s.unconfirmedCodexInputs ?? []
+    // Budget each string by the larger of its UTF-8 and UTF-16 sizes, including base64.
+    // This is a payload bound, not a heap measurement.
+    const stringBytes = (value: string) => Math.max(value.length * 2, new TextEncoder().encode(value).length)
+    const size = (input: Pick<Submission, 'text' | 'images'>) =>
+      stringBytes(input.text) + input.images.reduce((sum, image) => sum + stringBytes(image.data) + stringBytes(image.media_type), 0)
+    if (inputs.length >= 20 || inputs.reduce((sum, input) => sum + size(input), 0) + size({ text, images }) > 32 * 1024 * 1024) {
+      s.codexInputCapacityError = '未確認入力の保管上限（20件 / 32 MiB）に達しました。履歴を確認し、確認済みの入力を保管から外してください。入力は送信せず入力欄に残しています。'
+      return false
+    }
+    s.unconfirmedCodexInputs = [...inputs, { id, text, images }]
+    s.codexInputCapacityError = null
+  }
   s.submission = { id, text, images, status: 'sending', error: null }
-  s.items.push({ kind: 'user', text, submissionId: id, clientId: id })
+  s.items.push({ kind: 'user', text, submissionId: id, clientId: id,
+    ...(images.length ? { images } : {}) })
   return true
 }
 /**

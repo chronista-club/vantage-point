@@ -32,6 +32,7 @@ import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
+import { observeConsoleOutput } from "./codex-mode-handoff";
 import type { TermPushHandlers } from "./dispatch";
 import { termHostId } from "./lane-panes";
 
@@ -751,7 +752,7 @@ export function installTerm(): TermPushHandlers {
 	//  `window.vpTerminal.handleOutput(address, session, base64)` で注入してくる
 	//  (board-handler.ts と同じ wry-IPC edge)。
 	//  doc 50 §4.6 A6: topic は lane 単位で共有されるので、**ここが session の振り分け点**。
-	const handleOutput = (address: string, session: number, b64: string): void => {
+	const handleOutput = (address: string, session: number, b64: string, live = false): void => {
 		const info = laneInstances.get(instKey(address, session));
 		if (!info) return;
 		let bytes: Uint8Array;
@@ -764,6 +765,7 @@ export function installTerm(): TermPushHandlers {
 		}
 		info.writeOutput(bytes);
 		notifyActivity(address, session);
+		observeConsoleOutput(address, session, bytes, live);
 	};
 
 	/** 活動の signal（Pane のしまうモード）: PTY 出力は高頻度なので session ごとに 500ms に 1 回。

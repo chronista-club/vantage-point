@@ -553,6 +553,7 @@ mod tests {
                 pid: None,
                 cwd: std::env::temp_dir().to_string_lossy().to_string(),
                 sub_status: None,
+                branch: None,
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
@@ -613,6 +614,7 @@ mod tests {
                 pid: None,
                 cwd: cwd.clone(),
                 sub_status: None,
+                branch: None,
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
@@ -716,6 +718,7 @@ mod tests {
                 pid: None,
                 cwd: cwd.clone(),
                 sub_status: None,
+                branch: None,
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
@@ -799,6 +802,7 @@ mod tests {
                 pid: None,
                 cwd: cwd.clone(),
                 sub_status: None,
+                branch: None,
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,
@@ -919,6 +923,7 @@ mod tests {
             pid: Some(1),
             cwd: state_dir.path().to_string_lossy().to_string(),
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -978,6 +983,7 @@ mod tests {
             pid: Some(1),
             cwd: state_dir.path().to_string_lossy().to_string(),
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -1052,6 +1058,7 @@ mod tests {
             pid: Some(1),
             cwd: state_dir.path().to_string_lossy().to_string(),
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -1145,6 +1152,7 @@ mod tests {
             pid: Some(1),
             cwd: dir.path().to_string_lossy().into_owned(),
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -1184,7 +1192,7 @@ mod tests {
             command
                 .initial_input
                 .unwrap()
-                .contains(&format!("resume '{thread}'"))
+                .contains(&format!("resume --no-daemon '{thread}'"))
         );
     }
 
@@ -1205,6 +1213,7 @@ mod tests {
             pid: Some(1),
             cwd: dir.path().to_string_lossy().into_owned(),
             sub_status: None,
+            branch: None,
             cc_session_id: None,
             sessions: None,
             engine_session_id: None,
@@ -1334,6 +1343,7 @@ mod tests {
                 pid: None,
                 cwd: cwd.clone(),
                 sub_status: None,
+                branch: None,
                 cc_session_id: None,
                 sessions: None,
                 engine_session_id: None,

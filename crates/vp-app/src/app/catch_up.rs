@@ -34,7 +34,7 @@ use crate::webview::push_sidebar::push_sidebar_state;
 /// 「webview が生まれた」という事実は 1 つなので、signal も 1 本に畳んである。
 /// 新しい面を足したら **ここに replay を 1 行足す**（新しい IPC tag は要らない）。
 pub(super) fn webview_ready(ui: &mut UiState, boot: &Boot) {
-    // Empty is also a readiness signal: JS must not overwrite saved state before this arrives.
+    // 空の通知も復元完了の合図。到着前の JS が保存済み状態を上書きしないようにする。
     push_main::pane_stow(&boot.webview, &ui.persist.session.pane_stow);
     // 0. sidebar の名簿（repos / lanes / activity / devices）。boot 窓で届いた LanesLoaded 等の push は
     //    bundle 評価前で受け口不在だったので、ここで現在の state を丸ごと撃ち直す（b-5、doc 60 §8）。

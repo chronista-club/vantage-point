@@ -1015,6 +1015,47 @@ function SidebarTokenBinds() {
 			},
 		});
 	});
+
+	// 選択 Lane → メインの共通面。初期値は Shell.tsx の :root と揃える。
+	[
+		{
+			id: "sb.selection.bg",
+			cssVar: "--sb-selection-bg",
+			value: "#151c27",
+			label: "Lane＋メイン背景",
+		},
+		{
+			id: "sb.selection.border",
+			cssVar: "--sb-selection-border",
+			value: "#68758b",
+			label: "選択 Lane の輪郭色",
+		},
+	].forEach((t, i) => {
+		bind<string>({
+			target: cssVarTarget(t.id, t.cssVar, t.value),
+			control: color({ variant: "picker" }),
+			placement: {
+				label: t.label,
+				semantic: "tool",
+				group: "Lane 選択",
+				order: 130 + i,
+				role: "dev",
+			},
+		});
+	});
+	bind<number>({
+		target: cssVarNumberTarget(
+			"sb.selection.width", "--sb-selection-width", 1, "px",
+		),
+		control: number({ min: 0, max: 3, step: 0.5, unit: "px", variant: "slider" }),
+		placement: {
+			label: "選択 Lane の線幅",
+			semantic: "tool",
+			group: "Lane 選択",
+			order: 132,
+			role: "dev",
+		},
+	});
 	return null;
 }
 

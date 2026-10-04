@@ -11,7 +11,7 @@
 //! ⚠️ `session_mode_applied` は `ui.sidebar_state.lanes_by_repo` の session.mode を書く
 //! （lanes snapshot の所有者は LanesLoaded の arm。6-2 PR-7 で `on_lanes` へ）。
 
-use tao::event_loop::EventLoopProxy;
+use crate::event_proxy::EventLoopProxy;
 
 use super::boot::Boot;
 use super::lane_view::{

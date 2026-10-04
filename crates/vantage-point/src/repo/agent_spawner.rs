@@ -267,9 +267,13 @@ fn claude_command(
 /// resume 失敗時は shell に戻る。新規会話への自動 fallback で元 ID を失わない。
 fn codex_command(resume_id: Option<&str>, shell: &str) -> String {
     let command = match resume_id.filter(|id| crate::lane::codex_session::is_valid_thread_id(id)) {
-        Some(id) => format!("VP_HOOK_ENGINE=codex codex resume '{}'", id),
-        None => "VP_HOOK_ENGINE=codex codex".to_string(),
+        Some(id) => format!("VP_HOOK_ENGINE=codex codex resume --no-daemon '{}'", id),
+        None => "VP_HOOK_ENGINE=codex codex --no-daemon".to_string(),
     };
+    // 完了待ち用の端末通知。user の notify / hooks / trust は変更しない。
+    let command = format!(
+        "{command} -c 'tui.notifications=[\"agent-turn-complete\"]' -c 'tui.notification_method=\"osc9\"' -c 'tui.notification_condition=\"always\"'"
+    );
     if Path::new(shell)
         .file_name()
         .is_some_and(|name| name == "fish")
@@ -534,6 +538,26 @@ pub fn build_agent_command_for_session(
 mod tests {
     use super::*;
 
+    // Console must own the writer rather than leaving it in the shared daemon.
+    #[cfg(unix)]
+    #[test]
+    fn codex_console_uses_owned_server_for_fresh_and_resume() {
+        for resume in [None, Some("01a08ffe-b1f3-7e52-98f0-830c87a5d4b1")] {
+            let script = format!(
+                "codex() {{ for arg in \"$@\"; do if [ \"$arg\" = --no-daemon ]; then return 0; fi; done; return 73; }}; {}",
+                codex_command(resume, "/bin/sh")
+            );
+            let status = std::process::Command::new("/bin/sh")
+                .args(["-c", &script])
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "Console must opt out of the shared writer: {resume:?}"
+            );
+        }
+    }
+
     // PR #1119 team-b: run with SHELL=fish; CI installs fish and runs this explicitly.
     #[cfg(unix)]
     #[test]
@@ -556,9 +580,12 @@ mod tests {
             let invocation = command.initial_input.unwrap();
             let expected_status = if resume.is_some() { 42 } else { 0 };
             let expected_call = match resume {
-                Some(id) => format!("VP_FISH_CALL:resume:{id}"),
-                None => "VP_FISH_CALL:".into(),
+                Some(id) => format!("VP_FISH_CALL:resume:--no-daemon:{id}"),
+                None => "VP_FISH_CALL:--no-daemon".into(),
             };
+            let expected_call = format!(
+                "{expected_call}:-c:tui.notifications=[\"agent-turn-complete\"]:-c:tui.notification_method=\"osc9\":-c:tui.notification_condition=\"always\""
+            );
             for previous in [None, Some("previous-engine")] {
                 let parent_check = if previous.is_some() {
                     "test \"$VP_HOOK_ENGINE\" = previous-engine"

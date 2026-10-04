@@ -12,7 +12,8 @@ use muda::{
 
 /// MenuEvent dispatch で使う MenuId 群
 pub struct MenuIds {
-    /// File → "New Window" (Cmd+N、 新規 vp-app process を spawn)
+    pub quit: MenuId,
+    /// File → "New Window" (Cmd+N、同じアプリに window を追加)
     pub new_window: MenuId,
     /// File → "Open File..." (Cmd+O、 active lane の File Explorer overlay picker を開く)。
     /// menu accelerator は OS-level で global に動くため、 Pane (terminal/Canvas) focus 中でも発火。
@@ -41,6 +42,12 @@ pub struct MenuHandles {
 pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
     let menu = Menu::new();
 
+    let quit_item = MenuItem::new(
+        "Quit Vantage Point",
+        true,
+        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyQ)),
+    );
+
     // App メニュー (macOS では左端、Windows では File の前に隠れる)
     let app_menu = Submenu::with_items(
         "Vantage Point",
@@ -48,15 +55,13 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
         &[
             &PredefinedMenuItem::about(Some("About Vantage Point"), None),
             &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::quit(Some("Quit Vantage Point")),
+            &quit_item,
         ],
     )
     .expect("Failed to build App menu");
 
     // File メニュー
-    // - "New Window" (Cmd+N): 新規 vp-app process を spawn = 新しい MainWindow が独立 process で立つ
-    //   並行開発時に複数 working session を同時操作する入口。
-    //   実装は app.rs の event_loop で MenuClicked event を捕まえて Command::new(current_exe).spawn()。
+    // Cmd+N creates a window in the existing event loop.
     let new_window_item = MenuItem::new(
         "New Window",
         true,
@@ -131,6 +136,7 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
     menu.append(&view_menu).expect("append View menu");
 
     let ids = MenuIds {
+        quit: quit_item.id().clone(),
         new_window: new_window_item.id().clone(),
         open_file: open_file_item.id().clone(),
         open_devtools: open_devtools_item.id().clone(),

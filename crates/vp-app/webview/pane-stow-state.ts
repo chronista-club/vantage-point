@@ -1,4 +1,4 @@
-/** Instance-local session.json payload. Unknown versions / malformed lanes are ignored. */
+/** ウィンドウごとの session.json の保存形式。未知の版や壊れた lane は無視する。 */
 import type { Layout } from "@chronista-club/creo-ui-layout";
 
 export type PaneStowState = {
@@ -7,7 +7,7 @@ export type PaneStowState = {
 	shares: Record<string, number>;
 };
 
-/** Read only known pane ids and finite weights; never retain aliases to the input. */
+/** 既知の pane id と有限の重みだけを読み、入力と参照を共有しない値を返す。 */
 export function readPaneStowState(value: unknown): PaneStowState | null {
 	if (!value || typeof value !== "object") return null;
 	const s = value as PaneStowState;

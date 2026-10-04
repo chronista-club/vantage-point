@@ -89,7 +89,7 @@ protocol "vp-push" version="1.0.0" {
             field "devices" type="array<json>"
         }
 
-        // Instance-local pane state. Empty payload also signals restoration readiness.
+        // ウィンドウごとの pane 状態。空の payload も復元完了の合図として送る。
         event "pane:stow_restore" {
             field "payload" type="json"
         }
