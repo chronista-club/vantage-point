@@ -1818,6 +1818,22 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn manual_update_check_requires_the_calling_app_version() {
+        let (status, body) = route_json(
+            daemon_router().await,
+            "/api/update/check?force=true",
+            "GET",
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"],
+            "current_version is required for a forced check"
+        );
+    }
+
     /// CORS は router 全体に 1 回掛ける。
     ///
     /// PR-2a / 2b の間は state の違う 2 群を `Router::merge` していたので「両群に掛かる」を

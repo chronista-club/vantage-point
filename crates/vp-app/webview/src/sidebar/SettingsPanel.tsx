@@ -23,6 +23,7 @@ import { sidebar } from "./store";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sendIpc } from "./ipc";
 import { useActivity } from "./DaemonWidget";
+import type { UpdateCheckResult } from "../generated/SidebarIpc";
 
 /** `settings:result` が運ぶ確定値（schema `vp-sidebar.kdl` の event 定義と 1:1）。 */
 export type SettingsSnapshot = {
@@ -52,6 +53,7 @@ declare global {
 		vpSettings?: {
 			open: () => void;
 			handleResult: (s: SettingsSnapshot) => void;
+			handleUpdateCheckResult: (s: UpdateCheckResult) => void;
 		};
 	}
 }
@@ -69,6 +71,20 @@ const [idleMinutes, setIdleMinutes] = createSignal(0);
 const [defaultAgent, setDefaultAgent] = createSignal("");
 const [defaultModel, setDefaultModel] = createSignal("");
 const [agentTakesModel, setAgentTakesModel] = createSignal(false);
+const [checkingUpdate, setCheckingUpdate] = createSignal(false);
+const [updateCheck, setUpdateCheck] = createSignal<UpdateCheckResult>();
+
+function checkUpdate(): void {
+	if (checkingUpdate() || sidebar.activity.update_applying) return;
+	setCheckingUpdate(true);
+	setUpdateCheck(undefined);
+	sendIpc({ t: "update:check" });
+}
+
+function handleUpdateCheckResult(result: UpdateCheckResult): void {
+	setCheckingUpdate(false);
+	setUpdateCheck(result);
+}
 
 function open(): void {
 	setVisible(true);
@@ -199,6 +215,12 @@ function SettingsSurface(props: { children: JSX.Element }) {
 
 export function SettingsPanel() {
 	const v = useActivity();
+	const latestUpdate = () => {
+		if (checkingUpdate() || updateCheck()?.error) return undefined;
+		const checked = updateCheck();
+		return checked ? (checked.update_available ? checked.latest_version : undefined)
+			: (v.updateAvailable() ? v.latestVersion() : undefined);
+	};
 	let selection = workspaceSelection();
 	createEffect(() => {
 		const next = workspaceSelection();
@@ -208,7 +230,7 @@ export function SettingsPanel() {
 	onCleanup(dismiss);
 
 	onMount(() => {
-		window.vpSettings = { open, handleResult };
+		window.vpSettings = { open, handleResult, handleUpdateCheckResult };
 		// Esc で閉じる（WirePanel と同じく document listener、visible 時のみ反応）。
 		const onKeyDown = (e: KeyboardEvent) => {
 			if (visible() && e.key === "Escape") {
@@ -453,27 +475,36 @@ export function SettingsPanel() {
 								<h3 class="vp-settings-h">メンテナンス</h3>
 								<div class="vp-settings-row">
 									<span class="vp-settings-label">アップデート</span>
+									<button type="button" class="vp-settings-btn"
+										disabled={checkingUpdate() || v.updateApplying()} onClick={checkUpdate}>
+										{checkingUpdate() ? "確認中…" : "今すぐ確認"}
+									</button>
 									<Show
-										when={v.updateAvailable()}
+										when={latestUpdate()}
 										fallback={
-											<span class="vp-settings-hint">
-												最新版です。新しい版が出ると、ここに更新ボタンが現れます。
+											<span class="vp-settings-hint" role="status" aria-live="polite">
+												{checkingUpdate() ? "最新版を確認しています。"
+													: updateCheck()?.error ? `確認できませんでした。${updateCheck()!.error}`
+													: updateCheck() ? "最新版です。"
+													: "「今すぐ確認」で新しいバージョンを確認できます。"}
 											</span>
 										}
 									>
 										<span class="vp-settings-hint">
-											新しいバージョン <strong>v{v.latestVersion() ?? "?"}</strong> が
+											新しいバージョン <strong>v{latestUpdate()}</strong> が
 											利用できます。更新すると VP が再起動します。
 										</span>
 										<button
 											type="button"
 											class="vp-settings-btn primary"
+											disabled={v.updateApplying()}
 											onClick={() => {
-												const ver = v.latestVersion();
+												if (v.updateApplying()) return;
+												const ver = latestUpdate();
 												if (ver) sendIpc({ t: "update:apply", version: ver });
 											}}
 										>
-											v{v.latestVersion() ?? "?"} に更新…
+											{v.updateApplying() ? "更新中…" : `v${latestUpdate()} に更新…`}
 										</button>
 									</Show>
 								</div>

@@ -701,6 +701,13 @@ pub(super) fn sidebar_ipc(
     // native 確認ダイアログ → self-update → daemon restart → relaunch を
     // 専用スレッドで起動する（event loop = main thread は塞がない）。
     // on_phase は AppEvent 経由で event loop に戻し、「更新中…」表示に使う。
+    if outcome.update_check_request {
+        let proxy = proxy.clone();
+        boot.rt_handle.spawn(async move {
+            let result = crate::flows::update_check::check_now().await;
+            let _ = proxy.send_event(AppEvent::UpdateCheckResult(result));
+        });
+    }
     if let Some(version) = outcome.update_apply_request {
         let phase_proxy = proxy.clone();
         crate::flows::update::spawn_update_flow(version, move |applying| {

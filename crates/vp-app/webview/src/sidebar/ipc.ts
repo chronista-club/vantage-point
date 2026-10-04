@@ -97,6 +97,7 @@ export function installIpcBridge(): void {
       window.vpWire?.handleResult(
         payload as Parameters<NonNullable<Window['vpWire']>['handleResult']>[0],
       ),
+    updateCheckResult: (result) => window.vpSettings?.handleUpdateCheckResult(result),
     settingsResult: (
       developerMode,
       developerModeLocked,
