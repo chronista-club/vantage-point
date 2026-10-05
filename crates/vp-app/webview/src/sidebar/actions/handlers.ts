@@ -419,6 +419,8 @@ function captureNumberHandler(e: KeyboardEvent): void {
 		// ⚠️ ここだけ `selected` — 下で行に focus を当てるので、畳むと編集中に潰れる。
 		exitCaptureMode(true);
 		// All capture paths use the same explicit Atlas selector.
+		const actions = document.querySelector<HTMLDetailsElement>('details.vp-act-buckets');
+		if (actions) actions.open = true;
 		document.querySelector<HTMLTextAreaElement>('[aria-label="メモ"]')?.focus();
 		return;
 	}

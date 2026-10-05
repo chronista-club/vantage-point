@@ -11,6 +11,7 @@ beforeAll(async () => {
     import { render } from 'solid-js/web';
     import { createComponent } from 'solid-js';
     import { Shell } from './src/sidebar/Shell';
+    import { runCaptureMode } from './src/sidebar/actions/handlers';
     import { applySidebarState, emptyState } from './src/sidebar/store';
     window.sent = [];
     window.ipc = { postMessage: m => window.sent.push(JSON.parse(m)) };
@@ -18,12 +19,13 @@ beforeAll(async () => {
     const base = { ...emptyState(), processes: [{ path: '/project', name: 'Project', state: 'running', expanded: true, port: 123 }], lanes_by_repo: { '/project': [lane('main', 'working'), lane('one', 'working'), lane('two', 'awaiting_user')] }, active_lane_address: 'project/main' };
     window.setRepo = patch => applySidebarState({ ...base, processes: [{ ...base.processes[0], ...patch }] });
     window.setRepo({});
+    window.capture = runCaptureMode;
     window.dispose = render(() => createComponent(Shell, {}), document.getElementById('sidebar-root'));
   `, loader: 'tsx', resolveDir: fileURLToPath(new URL('.', import.meta.url)) }, bundle: true, write: false, format: 'iife', platform: 'browser', plugins: [solidPlugin()], define: { 'process.env.NODE_ENV': '"production"' } })
   bundle = result.outputFiles[0].text
 })
 function fixture() {
-  const win = new Window({ settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } }) as Window & { sent: any[]; setRepo(patch: object): void; dispose(): void }
+  const win = new Window({ settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } }) as Window & { sent: any[]; setRepo(patch: object): void; dispose(): void; capture(): void }
   windows.push(win)
   win.document.body.innerHTML = '<div id="sidebar-root"></div><div id="host"></div>'
   win.eval(bundle)
@@ -84,4 +86,28 @@ it('retains the ACTIONS capture draft across folding and keeps Creo ID out of th
   expect(details.querySelector('textarea')).toBe(input)
   expect(input.value).toBe('未送信のメモ')
   expect(win.document.querySelector('.vp-creo-zone .vp-creo-id')).toBeNull()
+})
+
+it('reveals collapsed ACTIONS before keyboard capture focuses its memo', () => {
+  const win = fixture()
+  const details = win.document.querySelector('details.vp-act-buckets') as any
+  details.open = false
+  win.capture()
+  win.dispatchEvent(new win.KeyboardEvent('keydown', { key: '1', bubbles: true }))
+  expect(details.open).toBe(true)
+  expect(win.document.activeElement).toBe(details.querySelector('textarea'))
+})
+
+it('pauses the whole project and offers resume after it stops', () => {
+  const win = fixture()
+  const pause = win.document.querySelector('[aria-label="Project を停止（sub lane を含む）"]')!
+  expect(pause).not.toBeNull()
+  pause.dispatchEvent(new win.MouseEvent('click', { bubbles: true }))
+  expect(win.sent.at(-1)).toEqual({ t: 'process:stop', path: '/project' })
+  expect(win.sent.some(m => m.t === 'lane:select')).toBe(false)
+  win.setRepo({ state: 'stopped', port: null })
+  const resume = win.document.querySelector('[aria-label="Project を再開"]')!
+  expect(resume.closest('[data-section="stopped"]')).not.toBeNull()
+  resume.dispatchEvent(new win.MouseEvent('click', { bubbles: true }))
+  expect(win.sent.at(-1)).toEqual({ t: 'process:restart', path: '/project' })
 })

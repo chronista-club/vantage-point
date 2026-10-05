@@ -265,10 +265,20 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 				</Show>
 				{/* 停止中 repo の起動 affordance。 Add Sub form の入口は稼働中限定
             なので、 停止中のこの「▶」とは同居しない。 */}
-				<Show when={isPaused()}>
+				<Show when={isPaused()} fallback={
+					<button type="button" class="vp-proj-start"
+						aria-label={`${props.proc.name} を停止（sub lane を含む）`}
+						title="Pause — sub lane を含むプロジェクト全体を停止"
+						disabled={props.proc.state !== "running" || props.proc.port == null}
+						onClick={e => { e.stopPropagation(); sendIpc({ t: "process:stop", path: props.proc.path }); }}>
+						<CreoIcon name="ph:pause" size={12} />
+					</button>
+				}>
 					<button
+						type="button"
 						class="vp-proj-start"
-						title="Start repo"
+						aria-label={`${props.proc.name} を再開`}
+						title="Resume — プロジェクトを再起動"
 						onClick={(e) => {
 							// summary click の <details> toggle を止めて起動だけ行う。
 							e.preventDefault();
