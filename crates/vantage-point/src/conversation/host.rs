@@ -325,6 +325,9 @@ impl ClaudeHost {
         let mut cmd = Command::new(&claude_path);
         // 親（repo）の env を継承 — spawn_env 済みの PATH 等を引き継ぐ。
         cmd.envs(std::env::vars());
+        for key in crate::spawn_env::inherited_agent_host_env_to_strip() {
+            cmd.env_remove(key);
+        }
         // identity env（doc 51 §1 A3b）: tui の agent_spawner と同じ契約を gui にも。
         // engine（とその shell tool の子プロセス）が `vp now` / wire で自分を名乗るための口。
         cmd.env("VP_REPO", &config.repo);

@@ -188,6 +188,9 @@ impl VpcodeHost {
         let last_envelope_id = super::vpcode_transcript::last_id(&config.repo, &config.lane);
 
         let mut cmd = tokio::process::Command::new("vpcode");
+        for key in crate::spawn_env::inherited_agent_host_env_to_strip() {
+            cmd.env_remove(key);
+        }
         cmd.arg("--vcp")
             .current_dir(&config.cwd)
             // identity env（doc 51 §1 A3b）: engine（とその bash tool の子）が `vp now` /
