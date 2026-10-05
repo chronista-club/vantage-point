@@ -333,7 +333,7 @@ export function SettingsPanel() {
 										</button>
 									</div>
 									<div class="vp-settings-authrow">
-										<span class="vp-settings-authname">creo</span>
+										<span class="vp-settings-authname">Creo ID</span>
 										<span class="vp-settings-authstate">
 											{v.authState("creo")}
 										</span>

@@ -1,19 +1,4 @@
-/**
- * sidebar の shell layout component。
- *
- * v1.0 柱 2。 3 段 layout (header / scrollable list / Daemon widget) の骨格と、
- * 全 Repo を 1 リストで accordion + Lane ツリーとして描画する。
- *
- * 旧「稼働中 / 一時停止中」 タブ分割は撤去した (2026-07-10)。 repo presence の再起動フラップで
- * repo がタブ間を移動して見ているタブから消える体感バグを構造的に断つため、 全 repo を
- * 常時 1 リストに出す。 停止中 repo の起動 (▶) は RepoAccordion が per-repo で扱う。
- *
- * - PR-1: shell layout + Solid store の最小可視化。
- * - PR-2: Repo accordion + Lane ツリー
- *   (agent icon / status / awaiting dot / mailbox icon / sub git meta)。
- *   操作 (click 選択・context menu・restart/delete・Add Sub form・DnD) は PR-3。
- *   Daemon widget 本体は後続 increment。
- */
+/** Sidebar: CURRENTs / 停止中, collapsible ACTIONs, settings and machine status. */
 import { For, Show, createEffect, createMemo } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sidebar } from "./store";
@@ -34,8 +19,10 @@ import { WirePanel, WIRE_PANEL_CSS } from "./WirePanel";
 import { SettingsPanel, SETTINGS_PANEL_CSS } from "./SettingsPanel";
 import { LanePicker, LANE_PICKER_CSS } from "./LanePicker";
 import { CommandPalette, COMMAND_PALETTE_CSS } from "./CommandPalette";
+import { isRunningProcess } from "./classify";
 import { RepoAccordion } from "./RepoAccordion";
-import { CreoIdRow, MachineStrip } from "./DaemonWidget";
+import { MachineStrip } from "./DaemonWidget";
+import { ACTIVITY_POINT_CSS } from "./ResponsePoint";
 import { BucketList, ACTIONS_CSS } from "./actions-panel/BucketList";
 import type { RepoPaneState } from "../generated/RepoPaneState";
 
@@ -60,15 +47,7 @@ function flashProject(path: string): void {
 }
 
 export function Shell() {
-	// D&D 並べ替え順 (`currents_order`) を適用した全 Repo を 1 リストで表示する。
-	// `currents_order` は Rust が `process:reorder` で永続化する並び順 — これを読まないと
-	// 並べ替え結果が re-push で消えてしまう (#124)。
-	//
-	// 旧「稼働中 / 一時停止中」 タブ分割は撤去した (2026-07-10)。 repo presence は再起動で
-	// フラップするため、 repo が running↔paused を行き来するたびタブ間を移動し、 見ている
-	// タブから消える (= 「サイドバーから repo が消えた」 体感バグの一因)。 全 repo を
-	// 常時 1 リストに出せば分類フラップが構造的に消える。 停止中 repo の起動 affordance
-	// (▶) は RepoAccordion が per-repo の state で出し分けるので影響しない。
+	// Preserve the saved relative order within both lifecycle sections.
 	const ordered = createMemo(() =>
 		resolveRepoOrder(sidebar.processes, sidebar.currents_order),
 	);
@@ -115,7 +94,7 @@ export function Shell() {
 				fallback={<SlimRail ordered={ordered()} />}
 			>
 				<header class="vp-sidebar-header">
-					<span class="vp-sidebar-title">CURRENTs</span>
+					<span class="vp-sidebar-title"><CreoIcon name="ph:tree-structure" size={12} /> CURRENTs</span>
 					{/* repo 追加: 産む動詞は**親の行**に住む（mako 2026-08-20 — 「repo 増やすのは
 					    CURRENTS に。lane 増やすのは repo に」）。左で産んで右（main area）に
 					    現れる、という操作の流れを生成の系譜と一致させる。
@@ -147,19 +126,24 @@ export function Shell() {
 							</button>
 						}
 					>
-						<For each={ordered()}>
-							{(proc) => <RepoAccordion proc={proc} />}
-						</For>
+						<section data-section="currents" aria-label="CURRENTs">
+							<For each={ordered().filter(isRunningProcess)}>{proc => <RepoAccordion proc={proc} />}</For>
+						</section>
+						<Show when={ordered().some(p => !isRunningProcess(p))}>
+							<details data-section="stopped" aria-label="PAUSED">
+								<summary class="vp-sidebar-section-title"><span class="vp-stopped-caret">›</span>PAUSED {ordered().filter(p => !isRunningProcess(p)).length}</summary>
+								<For each={ordered().filter(p => !isRunningProcess(p))}>{proc => <RepoAccordion proc={proc} />}</For>
+							</details>
+						</Show>
 					</Show>
 				</div>
 
-				{/* creo 段（doc 58 ③ — cloud scope）: ACTIONS（doc 57）+ Creo ID。
+				{/* creo 段（doc 58 ③ — cloud scope）: ACTIONS（doc 57）。Creo ID は設定へ集約。
 				    分け方はアーキテクチャの scope 境界（mako 2026-08-19「daemon と hub と
 				    device / creo(actions)」）。creo 依存はこの段に名札付きで閉じ込める —
 				    offline で dim するのは段 1 つだけで、名簿と machine 帯は常に local。 */}
 				<div class="vp-creo-zone">
 					<BucketList />
-					<CreoIdRow />
 				</div>
 
 				{/* ⚙ 設定（app 級 — doc 56 §7 の予約席。ACTIONS の下・daemon status の直上）。
@@ -378,7 +362,9 @@ html,body{margin:0;height:100%;overflow:hidden;}
    (PR #439 dogfood feedback — 当時は FileExplorer で踏んだ。 picker は code pane 化で退役)。
    (+ Light Grid: ::before の ambience grid より上に content を置く役も担う) */
 .vp-operation-error{color:var(--color-status-error,#f0a3a3);padding:8px;overflow-wrap:anywhere;font-size:12px;}
-.vp-sidebar-shell{position:relative;display:flex;flex-direction:column;height:100%;}
+/* 選択タブへつながる境界線は header / footer を含む全面に引く。 */
+.vp-sidebar-shell{position:relative;display:flex;flex-direction:column;height:100%;
+  box-shadow:inset calc(-1 * var(--sb-selection-width)) 0 0 var(--sb-selection-border);}
 /* 横線ゼロ方針 (mako 019f50fe): 画面に残ってよい横線は session tap だけ。
    header 下線 / Daemon・Devices 上線 / detail 破線は全削除、 区切りは spacing で。 */
 .vp-sidebar-header{flex:0 0 auto;display:flex;align-items:center;gap:6px;
@@ -393,8 +379,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   color:var(--sb-conn-auto,#FFF76B);}
 /* min-height は ACTIONS（doc 57）が伸びたときの床。scroll container の自動最小サイズは 0 なので、
    これが無いと下の区画が repo list を高さ 0 まで潰せる。 */
-.vp-sidebar-list{flex:1;min-height:96px;overflow-y:auto;padding:0 0 10px;
-  box-shadow:inset calc(-1 * var(--sb-selection-width)) 0 0 var(--sb-selection-border);}
+.vp-sidebar-list{flex:1;min-height:96px;overflow-y:auto;padding:0 0 10px;}
 .vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--lg-mute,#5C7A85);
   font-size:var(--sb-text-meta,11px);}
 .vp-sidebar-empty-cta{margin:var(--spacing-sm,8px);padding:6px 10px;display:inline-flex;
@@ -765,9 +750,34 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-slim-foot{margin-top:auto;width:8px;height:8px;flex:none;border-radius:50%;
   background:var(--lg-mute-2,#38525b);}
 .vp-slim-foot.online{background:var(--lg-cyan-dim,#1C6C7C);}
+/* Hierarchy: root is the project header; children stay mounted while folded. */
+.vp-proj-content[hidden]{display:none;}
+.vp-proj-summary{padding:0;display:block;text-transform:none;letter-spacing:normal;}
+.vp-lane-title{flex-basis:0;}
+.vp-lane-ground,.vp-lane-now{padding-left:0;}
+.vp-proj-summary .vp-lane-ground,.vp-proj-summary .vp-lane-now{padding-left:16px;}
+.vp-proj-summary::before{display:none;}
+#sidebar-root .vp-proj-summary .vp-lane-row{margin-left:4px;}
+#sidebar-root .vp-proj-content .vp-lane-row{margin-left:36px;}
+.vp-proj-placeholder{display:flex;align-items:center;gap:6px;padding:8px 10px;}
+.vp-proj-toggle{border:0;background:transparent;color:var(--lg-mute,#5C7A85);cursor:pointer;padding:0;display:inline-flex;flex:none;}
+.vp-sidebar-title{text-transform:none;display:flex;align-items:center;gap:6px;}
+.vp-sidebar-section-title{padding:16px 12px 6px;font-size:var(--sb-text-micro,10px);color:var(--lg-mute,#5C7A85);}
+.vp-sidebar-section-title{list-style:none;display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;}
+.vp-sidebar-section-title::-webkit-details-marker{display:none;}
+.vp-stopped-caret{display:inline-block;}
+[data-section="stopped"][open] > summary .vp-stopped-caret{transform:rotate(90deg);}
+.vp-sub-points{display:flex;flex-wrap:wrap;gap:4px;max-width:64px;align-items:center;}
+.vp-sub-point{width:4px;height:4px;border-radius:50%;background:var(--lg-mute,#5C7A85);}
+.vp-sub-point.conn-auto{background:var(--sb-conn-auto,#FFF76B);}
+.vp-sub-point.conn-hitl{background:var(--sb-conn-hitl,#FF4A2D);}
+.vp-lane-state.conn-auto{color:var(--sb-conn-auto,#FFF76B);}
+.vp-lane-state.conn-hitl{color:var(--sb-conn-hitl,#FF4A2D);}
+.vp-lane-notice{font-size:var(--sb-text-micro,10px);color:var(--lg-hot,#EAFBFF);}
 ${WIRE_PANEL_CSS}
 ${SETTINGS_PANEL_CSS}
 ${LANE_PICKER_CSS}
 ${COMMAND_PALETTE_CSS}
 ${ACTIONS_CSS}
+${ACTIVITY_POINT_CSS}
 `;

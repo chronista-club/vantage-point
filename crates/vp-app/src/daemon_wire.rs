@@ -351,6 +351,9 @@ pub struct LaneSessionEntryWire {
     /// （`ActivitySnapshot.actions_rev` と同型の判断）。
     #[serde(default)]
     pub last_activity_at: Option<f64>,
+    /// 最終応答完了 (epoch ms)。未観測は None。
+    #[serde(default)]
+    pub last_response_at: Option<f64>,
 }
 
 /// picker の選択肢 1 件（server `conversation::engine::Choice` の鏡 — 能力は server が表明し

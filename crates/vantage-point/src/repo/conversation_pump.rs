@@ -70,6 +70,7 @@ pub fn spawn_recovering_conversation_pump(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut tap = replay_log.map(ReplayTap::new);
+        let mut replaying = false;
         loop {
             match rx.recv().await {
                 Ok(event) => {
@@ -82,6 +83,31 @@ pub fn spawn_recovering_conversation_pump(
                             .unwrap_or(0),
                         std::sync::atomic::Ordering::Relaxed,
                     );
+                    match &event {
+                        ConversationEvent::ReplayStart => replaying = true,
+                        ConversationEvent::ReplayEnd { .. } => replaying = false,
+                        _ => {}
+                    }
+                    if matches!(&event, ConversationEvent::TurnCompleted { .. }) && !replaying {
+                        let lane = lane.clone();
+                        let event = event.clone();
+                        let at = activity.load(std::sync::atomic::Ordering::Relaxed);
+                        // registry の load-modify-save を async worker で実行しない。
+                        let result = tokio::task::spawn_blocking(move || {
+                            persist_response_event(
+                                &crate::config::vp_state_dir(),
+                                &lane,
+                                session,
+                                &event,
+                                at,
+                                false,
+                            )
+                        })
+                        .await;
+                        if !matches!(result, Ok(Ok(_))) {
+                            tracing::warn!("response timestamp could not be saved: {result:?}");
+                        }
+                    }
                     if let Some(active) = turn_activity_of(&event) {
                         turn_active.store(active, std::sync::atomic::Ordering::Relaxed);
                     }
@@ -122,6 +148,29 @@ pub fn spawn_recovering_conversation_pump(
             }
         }
     })
+}
+
+/// 履歴や途中の出力では応答時刻を更新しない。base はテストで隔離する。
+fn persist_response_event(
+    base: &Path,
+    lane: &str,
+    session: crate::lane::session_registry::SessionKey,
+    event: &ConversationEvent,
+    at: u64,
+    replaying: bool,
+) -> std::io::Result<bool> {
+    if replaying {
+        return Ok(false);
+    }
+    let ConversationEvent::TurnCompleted { session_id, .. } = event else {
+        return Ok(false);
+    };
+    let Some(addr) = crate::repo::lane::parse_address(lane) else {
+        return Ok(false);
+    };
+    crate::lane::session_registry::record_response_in(
+        base, &addr.repo, &addr.name, session, session_id, at,
+    )
 }
 
 /// この event が turn の進行状態をどう動かすか。`None` = 動かさない（判断材料でない）。
@@ -400,6 +449,69 @@ mod tests {
             }
             other => panic!("想定外の message: {other:?}"),
         }
+    }
+
+    #[test]
+    fn response_time_persists_only_live_completions_for_the_current_session() {
+        use crate::lane::session_registry as registry;
+        let tmp = tempfile::tempdir().unwrap();
+        registry::set_conversation_in(
+            tmp.path(),
+            "test",
+            "main",
+            "claude",
+            1,
+            Some("response-test"),
+        )
+        .unwrap();
+        let event = ConversationEvent::TurnCompleted {
+            session_id: "response-test".into(),
+            cost_usd: None,
+            context_tokens: None,
+            context_window: None,
+        };
+        assert!(
+            !persist_response_event(tmp.path(), "test/lane/main", 1, &event, 1000, true).unwrap()
+        );
+        assert!(
+            persist_response_event(tmp.path(), "test/lane/main", 1, &event, 1000, false).unwrap()
+        );
+        assert!(
+            !persist_response_event(
+                tmp.path(),
+                "test/lane/main",
+                1,
+                &ConversationEvent::MessageChunk {
+                    text: "tool progress".into()
+                },
+                2000,
+                false
+            )
+            .unwrap()
+        );
+        assert!(
+            !persist_response_event(tmp.path(), "test/lane/main", 2, &event, 3000, false).unwrap()
+        );
+        assert_eq!(
+            registry::load_in(tmp.path(), "test", "main", "claude").sessions[0].response_at(),
+            Some(1000)
+        );
+        registry::set_conversation_in(
+            tmp.path(),
+            "test",
+            "main",
+            "claude",
+            1,
+            Some("next-conversation"),
+        )
+        .unwrap();
+        assert!(
+            !persist_response_event(tmp.path(), "test/lane/main", 1, &event, 4000, false).unwrap()
+        );
+        assert_eq!(
+            registry::load_in(tmp.path(), "test", "main", "claude").sessions[0].response_at(),
+            None
+        );
     }
 
     /// idle teardown の guard（`turn_activity_of`）: 作業 event で実行中に倒れ、終端で暇に戻る。
