@@ -64,6 +64,14 @@ it('automatically groups stopped projects and returns starting ones to CURRENTs'
   win.setRepo({ state: 'stopped', port: null })
   expect(win.document.querySelector('[data-section="currents"] .vp-proj')).toBeNull()
   expect(win.document.querySelector('[data-section="stopped"] .vp-proj')).not.toBeNull()
+  const stopped = win.document.querySelector('details[data-section="stopped"]') as any
+  expect(stopped).not.toBeNull()
+  expect(stopped.open).toBe(false)
+  expect(stopped.querySelector('summary').textContent).toContain('PAUSED 1')
+  stopped.open = true
+  expect(stopped.querySelector('[aria-label="Project を再開"]')).not.toBeNull()
+  win.setRepo({ state: 'stopped', port: null })
+  expect(stopped.open).toBe(true)
   win.setRepo({ state: 'starting' })
   expect(win.document.querySelector('[data-section="currents"] .vp-proj')).not.toBeNull()
 })

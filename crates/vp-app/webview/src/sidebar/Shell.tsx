@@ -129,10 +129,10 @@ export function Shell() {
 							<For each={ordered().filter(isRunningProcess)}>{proc => <RepoAccordion proc={proc} />}</For>
 						</section>
 						<Show when={ordered().some(p => !isRunningProcess(p))}>
-							<section data-section="stopped" aria-label="停止中">
-								<div class="vp-sidebar-section-title">停止中</div>
+							<details data-section="stopped" aria-label="PAUSED">
+								<summary class="vp-sidebar-section-title"><span class="vp-stopped-caret">›</span>PAUSED {ordered().filter(p => !isRunningProcess(p)).length}</summary>
 								<For each={ordered().filter(p => !isRunningProcess(p))}>{proc => <RepoAccordion proc={proc} />}</For>
-							</section>
+							</details>
 						</Show>
 					</Show>
 				</div>
@@ -761,6 +761,10 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-proj-toggle{border:0;background:transparent;color:var(--lg-mute,#5C7A85);cursor:pointer;padding:0;display:inline-flex;flex:none;}
 .vp-sidebar-title{text-transform:none;display:flex;align-items:center;gap:6px;}
 .vp-sidebar-section-title{padding:16px 12px 6px;font-size:var(--sb-text-micro,10px);color:var(--lg-mute,#5C7A85);}
+.vp-sidebar-section-title{list-style:none;display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;}
+.vp-sidebar-section-title::-webkit-details-marker{display:none;}
+.vp-stopped-caret{display:inline-block;}
+[data-section="stopped"][open] > summary .vp-stopped-caret{transform:rotate(90deg);}
 .vp-sub-points{display:flex;flex-wrap:wrap;gap:4px;max-width:64px;align-items:center;}
 .vp-sub-point{width:4px;height:4px;border-radius:50%;background:var(--lg-mute,#5C7A85);}
 .vp-sub-point.conn-auto{background:var(--sb-conn-auto,#FFF76B);}
