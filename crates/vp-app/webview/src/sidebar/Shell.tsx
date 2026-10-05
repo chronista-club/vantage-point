@@ -362,7 +362,9 @@ html,body{margin:0;height:100%;overflow:hidden;}
    (PR #439 dogfood feedback — 当時は FileExplorer で踏んだ。 picker は code pane 化で退役)。
    (+ Light Grid: ::before の ambience grid より上に content を置く役も担う) */
 .vp-operation-error{color:var(--color-status-error,#f0a3a3);padding:8px;overflow-wrap:anywhere;font-size:12px;}
-.vp-sidebar-shell{position:relative;display:flex;flex-direction:column;height:100%;}
+/* 選択タブへつながる境界線は header / footer を含む全面に引く。 */
+.vp-sidebar-shell{position:relative;display:flex;flex-direction:column;height:100%;
+  box-shadow:inset calc(-1 * var(--sb-selection-width)) 0 0 var(--sb-selection-border);}
 /* 横線ゼロ方針 (mako 019f50fe): 画面に残ってよい横線は session tap だけ。
    header 下線 / Daemon・Devices 上線 / detail 破線は全削除、 区切りは spacing で。 */
 .vp-sidebar-header{flex:0 0 auto;display:flex;align-items:center;gap:6px;
@@ -377,8 +379,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   color:var(--sb-conn-auto,#FFF76B);}
 /* min-height は ACTIONS（doc 57）が伸びたときの床。scroll container の自動最小サイズは 0 なので、
    これが無いと下の区画が repo list を高さ 0 まで潰せる。 */
-.vp-sidebar-list{flex:1;min-height:96px;overflow-y:auto;padding:0 0 10px;
-  box-shadow:inset calc(-1 * var(--sb-selection-width)) 0 0 var(--sb-selection-border);}
+.vp-sidebar-list{flex:1;min-height:96px;overflow-y:auto;padding:0 0 10px;}
 .vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--lg-mute,#5C7A85);
   font-size:var(--sb-text-meta,11px);}
 .vp-sidebar-empty-cta{margin:var(--spacing-sm,8px);padding:6px 10px;display:inline-flex;
