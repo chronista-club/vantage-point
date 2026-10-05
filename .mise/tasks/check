@@ -5,7 +5,7 @@
 # dev loop の最軽量チェック。 install 系 (app:build / daemon:build) と違い binary を作らず
 # compile 可否だけ見る。 旧 build task (cargo build) を Occam で check に改名 (2026-05-30)。
 #
-# mbx (mr boxington) 経由で走らせる (2026-08-30 採用、version は .mise.toml で固定)。
+# mbx (mr boxington) 経由で走らせる (2026-08-30 採用、`cargo install mbx --locked` で導入)。
 # rustc を shim して checkout 横断の content-addressed キャッシュを引く。
 #
 # 実測 (VP workspace、2026-08-30):

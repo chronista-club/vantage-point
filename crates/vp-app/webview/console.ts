@@ -19,6 +19,7 @@
  * World A（main_area.rs インライン xterm JS）には触れない — 境界規律（doc 33 §8）。
  */
 
+import { emitAgentActivity } from './session-activity-bridge'
 import { emitSessionNow, isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
 
 /** session の mode（SSOT は Rust `lane/session_registry.rs::SessionMode`、`console:mode_applied` / roster で届く）。 */
@@ -395,6 +396,7 @@ export function installConsole(): VpConsole {
         replayingSessions.add(`${lane}\u0000${s}`)
       }
       if (event.kind === 'replay_end') replayingSessions.delete(`${lane}\u0000${s}`)
+      if (!replayingSessions.has(`${lane}\u0000${s}`)) emitAgentActivity(lane, s, event)
       if (!['codex_config', 'codex_interactions', 'codex_interaction_result'].includes(event.kind)) entry.buffer.push({ event, session: s })
       if (entry.buffer.length > BUFFER_CAP) {
         entry.buffer.splice(0, entry.buffer.length - BUFFER_CAP)

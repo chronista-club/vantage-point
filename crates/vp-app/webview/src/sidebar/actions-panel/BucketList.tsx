@@ -1,4 +1,5 @@
 /** Project-independent capture and cross-Atlas list (design 71). */
+import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { For, Show } from "solid-js";
 import { actionsFetchState } from "./model";
 import { sidebar } from "../store";
@@ -15,8 +16,8 @@ export function BucketList() {
     const next = list[list.findIndex(i => i.id === id) + dir];
     if (next) focusActionRow(next.id);
   };
-  return <div class="vp-act-buckets">
-    <div class="vp-act-heading">ACTIONS <span>{actions().length || ""}</span></div>
+  return <details class="vp-act-buckets" open>
+    <summary class="vp-act-heading"><span class="vp-act-caret">›</span><CreoIcon name="ph:tray" size={12} /><span class="vp-act-label">ACTIONs</span><span>{actions().length || ""}</span></summary>
     <Capture atlases={sidebar.activity.actions_atlases ?? []} scope={sidebar.activity.actions_scope ?? ""} />
     <Show when={sidebar.activity.actions_error}><div class="vp-act-status" role="status">{sidebar.activity.actions_error}</div></Show>
     <Show when={actionMoveError()}><div class="vp-act-status" role="status">{actionMoveError()}</div></Show>
@@ -44,7 +45,7 @@ export function BucketList() {
       }}</For>
       <Show when={fetchState() === "ready" && !actions().length}><div class="vp-act-empty">思いついたことを、ここから。</div></Show>
     </div>
-  </div>;
+  </details>;
 }
 
 /**
@@ -52,8 +53,10 @@ export function BucketList() {
  * 色は Light Grid（`--lg-*`）、字は 4 段（`--sb-text-*`）だけを使う。
  */
 export const ACTIONS_CSS = `
-.vp-act-heading{display:flex;justify-content:space-between;padding:8px 12px 4px;
+.vp-act-heading{list-style:none;cursor:pointer;align-items:center;gap:6px;display:flex;justify-content:space-between;padding:8px 12px 4px;
   font-size:var(--sb-text-micro,10px);letter-spacing:.14em;color:var(--lg-mute,#5C7A85);}
+.vp-act-heading::-webkit-details-marker{display:none;}
+.vp-act-buckets[open] > .vp-act-heading .vp-act-caret{transform:rotate(90deg);}
 .vp-act-capture{margin:4px 10px 8px;border:1px solid color-mix(in srgb,var(--lg-mute),transparent 75%);border-radius:6px;}
 .vp-act-capture:focus-within{border-color:var(--lg-cyan-dim,#1C6C7C);}
 .vp-act-capture textarea{display:block;box-sizing:border-box;width:100%;resize:vertical;min-height:48px;max-height:160px;

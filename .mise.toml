@@ -2,12 +2,11 @@
 # https://mise.jdx.dev/
 
 [tools]
-# 基本 stable に追随。 minor を明示 pin (patch は float = "1.96.x" 最新) で local↔CI を揃え、
-# stable drift で突然 clippy lint が増える事故を防ぐ。 stable が上がったら本行 + ci.yml の
-# dtolnay/rust-toolchain@1.96 + Cargo.toml rust-version を一緒に bump する。
-rust = "1.96"
+# rust は mise で管理しない (2026-09-15)。toolchain は rustup、版は rust-toolchain.toml が SSOT。
+# mbx も同様に `cargo install mbx --locked` で ~/.cargo/bin に入れる。mise activate は shims を
+# PATH 先頭に置くため、mise に rust / cargo:mbx があると版未指定のディレクトリで cargo・mbx の
+# shim が「No version is set for shim」で失敗する。
 bun = "latest"
-"cargo:mbx" = "1.0.1"
 # Ruby pin は撤去 (2026-07-11)。 mise の ruby backend は ruby-build でソースから
 # コンパイルするが、 macOS 26.x / arm64 で BUILD FAILED し、 Ruby 製 mise task
 # (daemon/app の build・start・stop・swap 等) を全滅させる。 homebrew 等で入れた

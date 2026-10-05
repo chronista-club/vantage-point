@@ -290,6 +290,9 @@ pub struct LaneSessionView {
     /// GUI は client 時計との差で「quiet N 分」を導く（閾値判定は載せない — 事実だけ運ぶ）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_activity_at: Option<u64>,
+    /// 最終応答完了 (epoch ms)。未観測 / TUI は None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_response_at: Option<u64>,
 }
 
 /// `last_activity_at` を wire に載せる際の量子化粒度 (ms)。GUI の quiet 閾値（分単位）には

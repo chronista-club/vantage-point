@@ -147,9 +147,8 @@ pub(crate) fn handle_sidebar_ipc(
 
     match envelope {
         IpcEnvelope::ProcessToggle(m) => {
-            // VP-101 Phase A1.b: native <details> が IPC で `expanded` の新状態を渡してくる。
-            // DOM は既に user click で toggle 済なので、Rust state を silently sync するだけ。
-            // `out.changed` は立てない (rebuild すると flash する)。
+            // The controlled accordion requests its next state over IPC.
+            // Push the canonical state back so its children and count update immediately.
             //
             // auto-spawn: expand=true で state==stopped の repo は
             // 「user が current として designate した未起動 repo」 として扱い、
@@ -162,11 +161,8 @@ pub(crate) fn handle_sidebar_ipc(
                 let new_state = m.expanded;
                 if p.expanded != new_state {
                     p.expanded = new_state;
-                    tracing::debug!(
-                        "process:toggle {} → expanded={} (silent sync)",
-                        m.path,
-                        p.expanded
-                    );
+                    out.changed = true;
+                    tracing::debug!("process:toggle {} → expanded={}", m.path, p.expanded);
                     // session 永続化: vp-app 再起動時に accordion 状態を復元
                     session.set_repo_expanded(m.path.clone(), new_state);
                     out.session_save = true;
@@ -498,8 +494,8 @@ mod tests {
             saved_session().expect("saved").repo_expanded(REPO),
             Some(true)
         );
-        // DOM は user click で toggle 済なので再 push しない（flash 回避）
-        assert!(!out.changed && !out.active_changed);
+        // Controlled accordion needs the new state pushed back to the WebView.
+        assert!(out.changed && !out.active_changed);
         assert!(out.conversation_reattach);
         assert_eq!(out.repo_spawn_request, None);
         assert_eq!(out.repo_spawn_release, None);

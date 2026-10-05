@@ -1,13 +1,5 @@
-/**
- * Repo (= Runtime Process) 1 件を accordion で描画する component。
- *
- * v1.0 柱 2。 旧 SIDEBAR_HTML の `renderRepoAccordion` を SolidJS に port。
- * native `<details>` で expand/collapse、 開閉時に `process:toggle` IPC を送って
- * Rust 側 state に永続化する。 展開時の内容は repo state に応じた hint、 または Lane 行。
- *
- * lane を産む「+」は repo 見出しに住む（mako 2026-08-20 — 産む動詞は親の行に。
- * repo は CURRENTS 行、lane は repo 行、console は rail の + New）。`n` directive
- * からも同じ form が開く。
+/** Project root row with collapsible sub lanes (design 77).
+ * process:toggle retains the existing persisted expansion state.
  */
 import {
 	For,
@@ -22,8 +14,9 @@ import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
 import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { isRunningProcess } from "./classify";
-import { laneAddressKey, laneConnector } from "./lane";
+import { laneAddressKey, laneConnector, isSubLane } from "./lane";
 import type { LaneInfo } from "../generated/LaneInfo";
+import { ResponsePoint } from "./ResponsePoint";
 import { LaneRow, SessionRow } from "./LaneRow";
 import { AddSub } from "./AddSub";
 import { registerAddSubOpenSetter } from "./directive-state";
@@ -91,6 +84,8 @@ function hintFor(
 
 export function RepoAccordion(props: { proc: RepoPaneState }) {
 	const lanes = () => sidebar.lanes_by_repo[props.proc.path] ?? [];
+	const root = () => lanes().find(l => !isSubLane(l));
+	const subs = () => lanes().filter(isSubLane);
 	const hint = () =>
 		hintFor(
 			props.proc,
@@ -120,17 +115,8 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 		onCleanup(unreg);
 	});
 
-	// native toggle → process:toggle IPC。 store 由来の open 反映で発火した場合は
-	// 値が一致するので IPC を送らない (echo loop 防止)。
-	const onToggle = (e: Event & { currentTarget: HTMLDetailsElement }) => {
-		const open = e.currentTarget.open;
-		if (open !== props.proc.expanded) {
-			sendIpc({ t: "process:toggle", path: props.proc.path, expanded: open });
-		}
-	};
-
 	// 停止中 = repo の Process が無い state (`isRunningProcess` の否定)。 Start ボタン (▶) と
-	// context menu の出し分けに使う (タブ分割は撤去済、 repo は 1 リストに留まる)。
+	// context menu の出し分けに使う (CURRENTs / 停止中の分類と同じ述語)。
 	const isPaused = () => !isRunningProcess(props.proc);
 
 	// lane を産む「+」を出す条件。 isActiveRepo だけだと、 一度 active にした repo を
@@ -143,7 +129,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 	//   - 一時停止中: Start repo (restart_process は dead な repo も起こす)
 	//   - 稼働中: Restart repo + Stop repo (repo が listen 中 = port あり の時のみ)
 	//   - Delete repo: 常時。 破壊的 (repos.kdl から unregister) なので 2-click 確認。
-	const onSummaryContextMenu = (e: MouseEvent) => {
+	const projectMenuItems = (): ContextMenuItem[] => {
 		const proc = props.proc;
 		const items: ContextMenuItem[] = [];
 		if (isPaused()) {
@@ -177,13 +163,17 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 			confirm: { label: "もう一度クリックで削除", icon: "ph:check" },
 			onSelect: () => sendIpc({ t: "repo:delete", path: proc.path }),
 		});
-		openContextMenu(proc.name, items, e.clientX, e.clientY);
+		return items;
+	};
+
+	const onSummaryContextMenu = (e: MouseEvent) => {
+		openContextMenu(props.proc.name, projectMenuItems(), e.clientX, e.clientY);
 	};
 
 	// ── Repo D&D 並べ替え (#124) ──────────────────────────────
-	// draggable は `<details>` 要素に付ける。 `<summary>` を draggable にすると WebKit
+	// draggable は project container 要素に付ける。 header を draggable にすると WebKit
 	// (WKWebView) では disclosure トグルの活性化機構が mousedown を消費して drag が
-	// 開始しない (旧 SIDEBAR_HTML も `<details>` 側に付けて動いていた)。 掴んだ後は
+	// 開始しない (旧 SIDEBAR_HTML も project container 側に付けて動いていた)。 掴んだ後は
 	// summary を他 Repo の手前 / 後ろへ落とすと `process:reorder` を送る。
 	// この Repo を掴んでいるか (= 半透明表示)。
 	const isDragging = () => dragPath() === props.proc.path;
@@ -197,7 +187,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 		return m != null && m.path === props.proc.path && m.pos === "after";
 	};
 
-	// `dragstart` の `target` は draggable 要素 (= `<details>`) に固定で、「実際に掴んだ
+	// `dragstart` の `target` は draggable 要素 (= project container) に固定で、「実際に掴んだ
 	// 子要素」を示さない (HTML 仕様: source node)。 そこで直前の `mousedown` の実 target を
 	// 記録し、 summary 由来のドラッグだけを通す。 これで展開中の Lane 行から repo の
 	// 並べ替えが誤発火しない。
@@ -248,44 +238,13 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 		clearDrag();
 	};
 
-	return (
-		<details
-			class="vp-proj creo-sidenav-group"
-			data-path={props.proc.path}
-			classList={{
-				dragging: isDragging(),
-				"drop-before": dropBefore(),
-				"drop-after": dropAfter(),
-			}}
-			draggable="true"
-			open={props.proc.expanded}
-			onToggle={onToggle}
-			onMouseDown={onMouseDown}
-			onDragStart={onDragStart}
-			onDragOver={onDragOver}
-			onDrop={onDrop}
-			onDragEnd={clearDrag}
-		>
-			<summary
-				class="vp-proj-summary creo-sidenav-title"
-				onContextMenu={onSummaryContextMenu}
-			>
-				<span
-					class="vp-proj-presence-dot"
-					classList={{
-						connected: presence() === "connected",
-						connecting: presence() === "connecting",
-						disconnected: presence() === "disconnected",
-						unregistered: presence() === "unregistered",
-					}}
-					title={`repo presence: ${presence()}`}
-				/>
-				{/* Light Grid course-correction: ラベルは地の目印なので icon も 11px に縮小。 */}
-				<CreoIcon
-					name={props.proc.expanded ? "ph:folder-open" : "ph:folder"}
-					size={11}
-				/>
-				<span class="vp-proj-name">{props.proc.name}</span>
+	const controls = () => <>
+		<Show when={!props.proc.expanded && subs().length > 0}>
+			<span class="vp-sub-points" aria-label={`sub lane ${subs().length}個`}>
+				<For each={subs()}>{lane => <ResponsePoint lane={lane} connectorClass={connectorFor(lane)} compact />}</For>
+			</span>
+		</Show>
+
 				{/* lane 追加: 産む動詞は**親の行**に住む（mako 2026-08-20 — repo の子 = lane を
 				    産む「+」は repo 見出しに）。click で AddSub form（下の accordion 内）開閉。 */}
 				<Show when={showAddSub()}>
@@ -299,6 +258,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 							e.preventDefault();
 							e.stopPropagation();
 							setAddSubOpen((v) => !v);
+							if (!props.proc.expanded) sendIpc({ t: "process:toggle", path: props.proc.path, expanded: true });
 						}}
 					>
 						<CreoIcon name="ph:plus" size={12} />
@@ -306,10 +266,20 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 				</Show>
 				{/* 停止中 repo の起動 affordance。 Add Sub form の入口は稼働中限定
             なので、 停止中のこの「▶」とは同居しない。 */}
-				<Show when={isPaused()}>
+				<Show when={isPaused()} fallback={
+					<button type="button" class="vp-proj-start"
+						aria-label={`${props.proc.name} を停止（sub lane を含む）`}
+						title="Pause — sub lane を含むプロジェクト全体を停止"
+						disabled={props.proc.state !== "running" || props.proc.port == null}
+						onClick={e => { e.stopPropagation(); sendIpc({ t: "process:stop", path: props.proc.path }); }}>
+						<CreoIcon name="ph:pause" size={12} />
+					</button>
+				}>
 					<button
+						type="button"
 						class="vp-proj-start"
-						title="Start repo"
+						aria-label={`${props.proc.name} を再開`}
+						title="Resume — プロジェクトを再起動"
 						onClick={(e) => {
 							// summary click の <details> toggle を止めて起動だけ行う。
 							e.preventDefault();
@@ -320,13 +290,32 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 						<CreoIcon name="ph:play" size={12} />
 					</button>
 				</Show>
-			</summary>
-			<div class="vp-proj-content creo-sidenav-list">
+	</>;
+	const toggle = () => <button type="button" class="vp-proj-toggle"
+		aria-label={`${props.proc.name} を${props.proc.expanded ? "折りたたむ" : "展開する"}`}
+		aria-expanded={props.proc.expanded}
+		onClick={e => { e.stopPropagation(); sendIpc({ t: "process:toggle", path: props.proc.path, expanded: !props.proc.expanded }); }}>
+		<ResponsePoint disabled={props.proc.state !== "running"} lane={root()} connectorClass={root() ? connectorFor(root()!) : undefined} />
+	</button>;
+	return (
+		<div class="vp-proj creo-sidenav-group" data-path={props.proc.path}
+			classList={{ dragging: isDragging(), "drop-before": dropBefore(), "drop-after": dropAfter() }}
+			draggable="true" onMouseDown={onMouseDown} onDragStart={onDragStart}
+			onDragOver={onDragOver} onDrop={onDrop} onDragEnd={clearDrag}>
+			<div class="vp-proj-summary" onContextMenu={onSummaryContextMenu} title={`接続: ${presence()}`}>
+				<Show when={!hint() && root()} fallback={<div class="vp-proj-placeholder">{toggle()}<span class="vp-proj-name">{props.proc.name}</span>{controls()}</div>}>
+					<LaneRow lane={root()!} repoPath={props.proc.path} projectName={props.proc.name} projectMenuItems={projectMenuItems()}
+						connectorClass={connectorFor(root()!)} leading={toggle()} trailing={controls()} />
+				</Show>
+			</div>
+			<div class="vp-proj-content creo-sidenav-list" hidden={!props.proc.expanded}>
+
 				<Show
 					when={hint()}
 					fallback={
 						<>
-							<For each={lanes()}>
+							<For each={root() ? extraSessionsOf(root()!) : []}>{sess => <SessionRow lane={root()!} repoPath={props.proc.path} session={sess} />}</For>
+							<For each={subs()}>
 								{(lane) => (
 									<>
 										<LaneRow
@@ -361,6 +350,6 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 					<div class="vp-proj-hint">{hint()}</div>
 				</Show>
 			</div>
-		</details>
+		</div>
 	);
 }
