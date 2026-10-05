@@ -52,4 +52,8 @@ permission_choices: Array<ChoiceWire>,
  * `u64` にしないのは ts-rs が `bigint` を吐いて JSON number と噛み合わないため
  * （`ActivitySnapshot.actions_rev` と同型の判断）。
  */
-last_activity_at: number | null, };
+last_activity_at: number | null,
+/**
+ * 最終応答完了 (epoch ms)。未観測は None。
+ */
+last_response_at: number | null, };

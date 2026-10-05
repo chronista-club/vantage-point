@@ -13,6 +13,7 @@ import type { LaneInfo } from "../generated/LaneInfo";
 import type { SubStatusWire } from "../generated/SubStatusWire";
 import type { LaneSessionEntryWire } from "../generated/LaneSessionEntryWire";
 import { sidebar } from "./store";
+import { ResponsePoint, createAgentActivity, ACTIVITY_LABEL, ACTIVITY_COLOR } from "./ResponsePoint";
 import { sessionNow } from "./session-now";
 import { clockNow, quietAfterMs, quietLabel } from "./activity-freshness";
 import { sessionNowKey } from "../../session-now-bridge";
@@ -125,11 +126,13 @@ export function SessionRow(props: {
 			class="vp-lane-row vp-session-row creo-sidenav-link"
 			onClick={onSelect}
 		>
+			<ResponsePoint lane={props.lane} session={props.session.key} />
 			{/* fallback は agent 表示名 — 右端の #key と重複させない（実機 2026-08-19）。 */}
 			<span class="vp-lane-title is-session" title={title() ?? undefined}>
 				{title() ?? agentDisplayName(props.session.agent)}
 			</span>
 			<span class="vp-lane-right">
+
 				<span class="vp-lane-shortcut">#{props.session.key}</span>
 			</span>
 			<NowLine
@@ -138,24 +141,6 @@ export function SessionRow(props: {
 			/>
 		</div>
 	);
-}
-
-/**
- * state class (= control surrender FSM の投影) から state 文字を導出する。
- * conn-auto/run = 作業中、 conn-hitl = 確認待ち。
- * idle (conn-dead) は quiet pass (mako 019f5100) で文字を出さない — 「idle はほぼ消える」。
- * conn-root (main) も state を持たない (幹) ので null。
- */
-function stateLabel(connectorClass: string | undefined): string | null {
-	switch (connectorClass) {
-		case "conn-auto":
-		case "conn-run":
-			return "作業中";
-		case "conn-hitl":
-			return "確認待ち";
-		default:
-			return null;
-	}
 }
 
 export function LaneRow(props: {
@@ -200,6 +185,7 @@ export function LaneRow(props: {
 	// この lane の root session key（registry 欠落 = 旧 wire / boot 窓は 1 に倒す —
 	// Rust 側 ResolveSessionTitles の fallback と同じ既定）。
 	const rootKey = () => props.lane.sessions?.root ?? 1;
+	const agentActivity = createAgentActivity(props);
 	// cc `/rename` の custom-title。doc 58 ②-c で鍵が session 単位（`{address}#{session}`、
 	// now-line と同じ sessionNowKey 形）になった。lane 行は root session の分を出す。
 	const sessionTitle = () =>
@@ -409,7 +395,7 @@ export function LaneRow(props: {
 			onDrop={onDrop}
 			onDragEnd={clearLaneDrag}
 		>
-			{props.leading}
+			{props.leading ?? <ResponsePoint lane={props.lane} connectorClass={props.connectorClass} />}
 			<span
 				class="vp-lane-title"
 				classList={{ "is-fallback": !sessionTitle() }}
@@ -419,10 +405,11 @@ export function LaneRow(props: {
 			</span>
 			{/* 右端ブロック: ⑦ state 文字 → ⑤ git meta (dirty/↑↓ のみ) → ⑥ awaiting dot → ③ mailbox → #N (末尾固定) */}
 			<span class="vp-lane-right">
+
 				{/* Light Grid state 言語の文字面 (working / idle / needs you)。 FSM の SSOT は
 				    connectorClass (laneConnector 導出) — 二重導出しない。 */}
-				<Show when={stateLabel(props.connectorClass)}>
-					<span class={`vp-lane-state ${props.connectorClass ?? ""}`}>{stateLabel(props.connectorClass)}</span>
+				<Show when={agentActivity.phase() !== "idle"}>
+					<span class="vp-lane-state" style={{color:ACTIVITY_COLOR[agentActivity.phase()]}}>{agentActivity.phase() === "completed" ? "指示待ち" : ACTIVITY_LABEL[agentActivity.phase()]}</span>
 				</Show>
 				<Show when={isSub() && props.lane.sub_status}>
 					<SubMeta ws={props.lane.sub_status!} />

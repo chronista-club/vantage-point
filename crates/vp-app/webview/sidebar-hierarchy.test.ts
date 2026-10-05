@@ -11,6 +11,7 @@ beforeAll(async () => {
     import { render } from 'solid-js/web';
     import { createComponent } from 'solid-js';
     import { Shell } from './src/sidebar/Shell';
+    import { installConsole } from './console';
     import { runCaptureMode } from './src/sidebar/actions/handlers';
     import { applySidebarState, emptyState } from './src/sidebar/store';
     window.sent = [];
@@ -19,13 +20,15 @@ beforeAll(async () => {
     const base = { ...emptyState(), processes: [{ path: '/project', name: 'Project', state: 'running', expanded: true, port: 123 }], lanes_by_repo: { '/project': [lane('main', 'working'), lane('one', 'working'), lane('two', 'awaiting_user')] }, active_lane_address: 'project/main' };
     window.setRepo = patch => applySidebarState({ ...base, processes: [{ ...base.processes[0], ...patch }] });
     window.setRepo({});
+    window.setResponse = (timestamp) => applySidebarState({ ...base, lanes_by_repo: { '/project': [{ ...base.lanes_by_repo['/project'][0], sessions: { root: 1, focused: 1, sessions: [{key: 1, agent:'codex', last_response_at: timestamp}, {key:2, agent:'codex', last_response_at: timestamp}] } }] } });
+    window.con = installConsole();
     window.capture = runCaptureMode;
     window.dispose = render(() => createComponent(Shell, {}), document.getElementById('sidebar-root'));
   `, loader: 'tsx', resolveDir: fileURLToPath(new URL('.', import.meta.url)) }, bundle: true, write: false, format: 'iife', platform: 'browser', plugins: [solidPlugin()], define: { 'process.env.NODE_ENV': '"production"' } })
   bundle = result.outputFiles[0].text
 })
 function fixture() {
-  const win = new Window({ settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } }) as Window & { sent: any[]; setRepo(patch: object): void; dispose(): void; capture(): void }
+  const win = new Window({ settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } }) as Window & { sent: any[]; setRepo(patch: object): void; dispose(): void; capture(): void; setResponse(timestamp: number | null): void; con: any }
   windows.push(win)
   win.document.body.innerHTML = '<div id="sidebar-root"></div><div id="host"></div>'
   win.eval(bundle)
@@ -118,4 +121,56 @@ it('pauses the whole project and offers resume after it stops', () => {
   expect(resume.closest('[data-section="stopped"]')).not.toBeNull()
   resume.dispatchEvent(new win.MouseEvent('click', { bubbles: true }))
   expect(win.sent.at(-1)).toEqual({ t: 'process:restart', path: '/project' })
+})
+
+it('shows pastel response freshness per session without inventing unknown times', () => {
+  const win = fixture()
+  expect(win.document.querySelectorAll('.vp-response-point')).toHaveLength(0)
+  win.setResponse(Date.now() - 3 * 60_000)
+  const points = win.document.querySelectorAll('.vp-response-point')
+  expect(points).toHaveLength(2)
+  expect(points[0].getAttribute('title')).toMatch(/最終応答から[23]分/)
+  expect(points[0].getAttribute('aria-label')).toBe(points[0].getAttribute('title'))
+  expect(points[0].getAttribute('data-freshness')).toBe('fresh')
+  win.setResponse(Date.now() - 2 * 60 * 60_000)
+  expect(win.document.querySelector('.vp-response-point')!.getAttribute('data-freshness')).toBe('old')
+  win.setResponse(null)
+  expect(win.document.querySelectorAll('.vp-response-point')).toHaveLength(0)
+})
+
+it('replaces the project arrow with an activity point and keeps Result visible', () => {
+  const win = fixture()
+  const point = () => win.document.querySelector('.vp-proj-toggle .vp-activity-point')!
+  expect(point()).not.toBeNull()
+  expect(win.document.querySelector('.vp-proj-toggle iconify-icon')).toBeNull()
+  win.con.handleEvent('project/main', {kind:'thought_chunk', text:'thinking'}, 1)
+  expect(point().getAttribute('data-activity')).toBe('thinking')
+  win.con.handleEvent('project/main', {kind:'tool_call', id:'tool', name:'Read', input:{}}, 1)
+  expect(point().getAttribute('data-activity')).toBe('working')
+  win.con.handleEvent('project/main', {kind:'permission_request', request_id:'ask', tool_name:'Read', input:{}}, 1)
+  expect(point().getAttribute('data-activity')).toBe('waiting')
+  win.con.handleEvent('project/main', {kind:'turn_completed', session_id:'conv'}, 1)
+  expect(point().getAttribute('data-activity')).toBe('completed')
+  expect(point().getAttribute('title')).toContain('応答完了')
+  expect(win.document.querySelector('.vp-proj-summary')!.textContent).not.toContain('作業中')
+  win.con.handleEvent('project/one', {kind:'thought_chunk', text:'background'}, 1)
+  expect(point().getAttribute('data-activity')).toBe('completed')
+  win.con.handleEvent('project/main', {kind:'replay_start'}, 1)
+  win.con.handleEvent('project/main', {kind:'thought_chunk', text:'old thought'}, 1)
+  win.con.handleEvent('project/main', {kind:'replay_end',in_flight:false}, 1)
+  expect(point().getAttribute('data-activity')).toBe('completed')
+  point().parentElement!.dispatchEvent(new win.MouseEvent('click',{bubbles:true}))
+  expect(win.sent.at(-1)).toEqual({t:'process:toggle',path:'/project',expanded:false})
+})
+
+it('keeps actionable Codex requests red through background work and Result', () => {
+  const win = fixture()
+  const point = () => win.document.querySelector('.vp-proj-toggle .vp-activity-point')!
+  win.con.handleEvent('project/main', {kind:'codex_interactions', requests:[{request_id:'q', can_accept:true}]}, 1)
+  win.con.handleEvent('project/main', {kind:'thought_chunk',text:'still thinking'}, 1)
+  expect(point().getAttribute('data-activity')).toBe('waiting')
+  win.con.handleEvent('project/main', {kind:'turn_completed',session_id:'conv'}, 1)
+  expect(point().getAttribute('data-activity')).toBe('waiting')
+  win.con.handleEvent('project/main', {kind:'codex_interactions',requests:[]}, 1)
+  expect(point().getAttribute('data-activity')).toBe('completed')
 })

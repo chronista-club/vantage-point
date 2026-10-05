@@ -16,6 +16,7 @@ import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { isRunningProcess } from "./classify";
 import { laneAddressKey, laneConnector, isSubLane } from "./lane";
 import type { LaneInfo } from "../generated/LaneInfo";
+import { ResponsePoint } from "./ResponsePoint";
 import { LaneRow, SessionRow } from "./LaneRow";
 import { AddSub } from "./AddSub";
 import { registerAddSubOpenSetter } from "./directive-state";
@@ -240,7 +241,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 	const controls = () => <>
 		<Show when={!props.proc.expanded && subs().length > 0}>
 			<span class="vp-sub-points" aria-label={`sub lane ${subs().length}個`}>
-				<For each={subs()}>{lane => <span class={`vp-sub-point ${connectorFor(lane)}`} title={lane.address.name} />}</For>
+				<For each={subs()}>{lane => <ResponsePoint lane={lane} connectorClass={connectorFor(lane)} compact />}</For>
 			</span>
 		</Show>
 
@@ -294,7 +295,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 		aria-label={`${props.proc.name} を${props.proc.expanded ? "折りたたむ" : "展開する"}`}
 		aria-expanded={props.proc.expanded}
 		onClick={e => { e.stopPropagation(); sendIpc({ t: "process:toggle", path: props.proc.path, expanded: !props.proc.expanded }); }}>
-		<CreoIcon name={props.proc.expanded ? "ph:caret-down" : "ph:caret-right"} size={12} />
+		<ResponsePoint disabled={props.proc.state !== "running"} lane={root()} connectorClass={root() ? connectorFor(root()!) : undefined} />
 	</button>;
 	return (
 		<div class="vp-proj creo-sidenav-group" data-path={props.proc.path}

@@ -109,6 +109,26 @@ pub struct SessionEntry {
     /// session 紐づけ自体は 2026-07-27 から（doc 50 session=Pane、per-lane store は退役）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<EngineSettings>,
+    /// 最終応答の完了。会話IDを伴うので新しい会話へ時刻を流用しない。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_response: Option<ResponseStamp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResponseStamp {
+    pub conversation: String,
+    pub at: u64,
+}
+
+impl SessionEntry {
+    pub fn response_at(&self) -> Option<u64> {
+        self.last_response
+            .as_ref()
+            .filter(|stamp| {
+                stamp.at > 0 && self.conversation.as_deref() == Some(stamp.conversation.as_str())
+            })
+            .map(|stamp| stamp.at)
+    }
 }
 
 /// lane の session 一覧 + focused + root（disk に JSON でそのまま永続される形）。
@@ -147,6 +167,7 @@ impl SessionRegistry {
                 mode: SessionMode::Tui,
                 conversation: None,
                 settings: None,
+                last_response: None,
             }],
         }
     }
@@ -373,6 +394,7 @@ pub fn create_in(
         mode,
         conversation: None,
         settings: None,
+        last_response: None,
     });
     if focus {
         reg.focused = key;
@@ -403,6 +425,7 @@ pub fn create_root_in(
         mode,
         conversation: None,
         settings: None,
+        last_response: None,
     });
     reg.focused = key;
     reg.root = key;
@@ -708,6 +731,36 @@ pub fn set_conversation_in(
         return Ok(false);
     }
     entry.conversation = new;
+    save_in(base, repo, lane, &reg)?;
+    Ok(true)
+}
+
+/// 応答完了だけを記録する。消えた session や切替前の会話からの遅延通知は書かない。
+/// 自動休止や daemon 再起動後も session registry とともに保持される。
+pub fn record_response_in(
+    base: &Path,
+    repo: &str,
+    lane: &str,
+    key: SessionKey,
+    conversation: &str,
+    at: u64,
+) -> std::io::Result<bool> {
+    let _guard = mutation_guard();
+    let mut reg = load_in(base, repo, lane, "");
+    let Some(entry) = reg.sessions.iter_mut().find(|s| s.key == key) else {
+        return Ok(false);
+    };
+    if at == 0
+        || conversation.is_empty()
+        || entry.conversation.as_deref() != Some(conversation)
+        || entry.response_at().is_some_and(|previous| previous >= at)
+    {
+        return Ok(false);
+    }
+    entry.last_response = Some(ResponseStamp {
+        conversation: conversation.to_string(),
+        at,
+    });
     save_in(base, repo, lane, &reg)?;
     Ok(true)
 }
@@ -1199,6 +1252,17 @@ mod tests {
             .and_then(|c| c.model.as_deref())
     }
 
+    #[test]
+    fn response_timestamp_survives_registry_roundtrip() {
+        let mut wire = serde_json::to_value(SessionRegistry::single("codex")).unwrap();
+        wire["sessions"][0]["conversation"] = serde_json::json!("thread-1");
+        wire["sessions"][0]["last_response"] =
+            serde_json::json!({"conversation":"thread-1", "at": 123456});
+        let reg: SessionRegistry = serde_json::from_value(wire).unwrap();
+        let restored = serde_json::to_value(reg).unwrap();
+        assert_eq!(restored["sessions"][0]["last_response"]["at"], 123456);
+    }
+
     /// 2026-09-21 の `model` / `codex_selection` → `settings` 畳み込み: 旧 file が engine ごとの
     /// variant に読み替わり、旧 key は捨てられる。
     #[test]
@@ -1344,6 +1408,7 @@ mod tests {
                     mode: SessionMode::Tui,
                     conversation: None,
                     settings: None,
+                    last_response: None,
                 }],
             }
         );

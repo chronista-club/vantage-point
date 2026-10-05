@@ -99,6 +99,7 @@ fn sessions_view_from_registry(reg: &session_registry::SessionRegistry) -> LaneS
                         .map(EngineKind::permission_choices)
                         .unwrap_or_default(),
                     last_activity_at: None,
+                    last_response_at: s.response_at(),
                 }
             })
             .collect(),

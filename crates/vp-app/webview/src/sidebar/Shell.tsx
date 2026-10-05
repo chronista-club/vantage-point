@@ -22,6 +22,7 @@ import { CommandPalette, COMMAND_PALETTE_CSS } from "./CommandPalette";
 import { isRunningProcess } from "./classify";
 import { RepoAccordion } from "./RepoAccordion";
 import { MachineStrip } from "./DaemonWidget";
+import { ACTIVITY_POINT_CSS } from "./ResponsePoint";
 import { BucketList, ACTIONS_CSS } from "./actions-panel/BucketList";
 import type { RepoPaneState } from "../generated/RepoPaneState";
 
@@ -777,4 +778,5 @@ ${SETTINGS_PANEL_CSS}
 ${LANE_PICKER_CSS}
 ${COMMAND_PALETTE_CSS}
 ${ACTIONS_CSS}
+${ACTIVITY_POINT_CSS}
 `;
