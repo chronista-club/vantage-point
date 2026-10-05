@@ -227,10 +227,9 @@ export function shortcutNumberOf(
  * - flow_state 欠落 (旧 daemon) は従来の pid heuristic に fallback。
  */
 export function laneConnector(lane: LaneInfo, awaitingInput: boolean): string {
-	if (!isSubLane(lane)) {
-		return "conn-root"; // main は幹 = spine の頭
-	}
 	const fs = lane.flow_state;
+	// Root is outside the dev-flow FSM. Do not infer work from a live idle TUI.
+	if (!isSubLane(lane) && fs == null && !awaitingInput) return "conn-root";
 	if (fs === "awaiting_user") return "conn-hitl"; // ユーザ本人待ち = needs-you
 	if (awaitingInput) return "conn-hitl"; // console 入力待ち = needs-you
 	if (fs != null) {
