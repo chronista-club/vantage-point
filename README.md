@@ -50,7 +50,7 @@ repo を選び、lane の console で会話や shell を開きます。repo 行�
 CLI で lane を作成する例（repo の作業ディレクトリで実行）:
 
 ```bash
-vp lane new topic mako/topic --base origin/nightly
+vp lane new topic --base origin/nightly   # branch は wip/topic（branch-step）
 vp lane list
 vp lane slots my-project/topic
 ```

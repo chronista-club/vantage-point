@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use ts_rs::TS;
 
+pub use super::codex_settings::{CodexModel, CodexSelection};
+
 /// GUI へ配信する構造化イベント（1 engine turn = 複数 ConversationEvent の列）。
 ///
 /// serde 表現は `{"kind":"message_chunk","text":"..."}` の形（`tag = "kind"`）。
@@ -309,22 +311,6 @@ pub struct CodexQuestion {
     pub is_secret: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
-pub struct CodexSelection {
-    pub model: String,
-    pub effort: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
-pub struct CodexModel {
-    pub model: String,
-    pub label: String,
-    pub efforts: Vec<String>,
-    pub default_effort: String,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct CodexConfigView {
@@ -336,6 +322,18 @@ pub struct CodexConfigView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
     pub runtime: Option<Box<CodexRuntime>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub permission_choices: Option<Vec<CodexPermissionChoice>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct CodexPermissionChoice {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub disabled_reason: Option<String>,
 }
 
 /// Whitelisted effective settings. Native developer instructions never leave the host.
@@ -343,6 +341,12 @@ pub struct CodexConfigView {
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct CodexRuntime {
     pub approval: String,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub reviewer: Option<String>,
+    #[serde(default)]
+    pub preset: Option<String>,
     pub sandbox: String,
     pub network_access: Option<bool>,
     pub writable_roots: Vec<String>,

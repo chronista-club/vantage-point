@@ -12,7 +12,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use std::time::Instant;
 
 use super::on_sidebar::DaemonSettings;
 use super::persist::Persist;
@@ -56,6 +55,16 @@ pub(super) struct UiState {
     pub(super) win: WindowState,
     /// lane ごとの接続（terminal / conversation の session 登録簿）。
     pub(super) sessions: LaneSessions,
+    /// 音声入力: 録音中の 1 本（🎙を押した入力欄の lane + session と、録音の本体）。
+    /// マイクは 1 つなので同時に 1 本だけ。None = 録音していない。
+    pub(super) voice: Option<ActiveVoice>,
+}
+
+/// 録音中の音声入力 1 本。
+pub(super) struct ActiveVoice {
+    pub(super) lane: String,
+    pub(super) session: u32,
+    pub(super) recording: crate::voice::recorder::Recording,
 }
 
 /// 二重発火・購読の dedup と変化検知の指紋。⚠️ daemon 再起動では reset されない
@@ -104,18 +113,7 @@ pub(super) struct WindowState {
     /// ⚠️ 基準は boot で clone した値を持つ — `session.window_geometry()` は直前の `record_window`
     /// で live の frame に上書きされ得るので、log 時に読むと同語反復になる。
     pub(super) restore_first_resized: Option<(f64, f64)>,
-    /// dock app icon (portal favicon) の再アサート用。 bare binary は .app bundle が無いため
-    /// macOS が launch 完了時に generic icon を被せ、 run() 前 (window.build 直後) の
-    /// setApplicationIconImage を上書きする。 event loop 開始後 ~1.5s 間 set_app_icon() を
-    /// 呼び続けて (WaitUntil で loop を起こす) portal icon を定着させる。 .dmg 版は冪等。
-    pub(super) icon_launch_at: Instant,
-    /// 上記の settle 済 flag。
-    pub(super) icon_settled: bool,
-    /// Model B (focus = 操舵ポインタ): この vp-app instance が OS の key window かを追跡する。
-    /// multi-window は別プロセス (VP_APP_INSTANCE = primary 0 / secondary N) なので、ROTO の
-    /// switch_lane broadcast は全 instance の "canvas" 購読に届く。両 window が一斉に切り替わるのを
-    /// 防ぐため、**focused instance だけ**が switch_lane を適用する (B-local self-filter)。
-    /// with_focused(true) で起動するので初期値は true。
+    /// Native key-window state; false until the OS reports focus.
     pub(super) is_focused: bool,
     /// Model B #2: 直近 daemon に報告した active_lane。 focus が高速に flip しても
     /// 同じ lane への重複報告 (= reqwest::Client 新規構築 + 無駄 POST) を抑止する。
@@ -170,9 +168,7 @@ impl UiState {
             win: WindowState {
                 initial_size_clamp_done: restored_geometry.is_some(),
                 restore_first_resized: restored_geometry,
-                icon_launch_at: Instant::now(),
-                icon_settled: false,
-                is_focused: true,
+                is_focused: false,
                 last_focus_reported_lane: None,
                 slot_rects: HashMap::new(),
             },
@@ -180,6 +176,7 @@ impl UiState {
                 terminal_sessions: HashMap::new(),
                 conversation_sessions: HashMap::new(),
             },
+            voice: None,
         }
     }
 }

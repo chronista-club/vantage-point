@@ -3,4 +3,4 @@
 /**
  * Whitelisted effective settings. Native developer instructions never leave the host.
  */
-export type CodexRuntime = { approval: string, sandbox: string, network_access: boolean | null, writable_roots: Array<string>, profile: string | null, mode: string | null, };
+export type CodexRuntime = { approval: string, cwd: string | null, reviewer: string | null, preset: string | null, sandbox: string, network_access: boolean | null, writable_roots: Array<string>, profile: string | null, mode: string | null, };

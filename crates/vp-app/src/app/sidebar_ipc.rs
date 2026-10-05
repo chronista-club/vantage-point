@@ -89,6 +89,7 @@ pub(crate) struct SidebarIpcOutcome {
     /// caller (event loop) が `flows::update::spawn_update_flow` を呼び、native 確認ダイアログ →
     /// self-update → `vp daemon restart` → GUI relaunch を専用スレッドで実行する。
     pub(crate) update_apply_request: Option<String>,
+    pub(crate) update_check_request: bool,
     /// Login ボタン click 要求。値 = token の宛先（"hub" | "creo"）。caller (event loop) が
     /// blocking pool で `flows::auth::run_login_blocking` (`vp auth login --for <target>` spawn) を
     /// 実行し、成功後に `daemon-control.hub/reconnect` で hub 接続へ即反映する。
@@ -372,6 +373,9 @@ pub(crate) fn handle_sidebar_ipc(
             if !m.address.is_empty() && !m.message_id.is_empty() {
                 out.wire_ack_request = Some((m.address, m.message_id));
             }
+        }
+        IpcEnvelope::UpdateCheck => {
+            out.update_check_request = true;
         }
         IpcEnvelope::UpdateApply(m) => {
             // in-app update: sidebar footer の「更新する」ボタン click。version は
@@ -929,6 +933,17 @@ mod tests {
         // repo:add は dispatch 段で picker に分岐済 — ここに来ても何もしない
         let out = apply(r#"{"t":"repo:add"}"#, &mut state, &mut session);
         assert!(!out.changed && out.repo_spawn_request.is_none());
+    }
+
+    #[test]
+    fn manual_update_check_never_requests_apply_or_restart() {
+        let _env = crate::test_env::state_dir();
+        let mut state = SidebarState::default();
+        let mut session = SessionState::default();
+        let out = apply(r#"{"t":"update:check"}"#, &mut state, &mut session);
+        assert!(out.update_check_request);
+        assert!(out.update_apply_request.is_none());
+        assert!(!out.daemon_restart_request);
     }
 
     // ===== wire / update / auth / settings / daemon / actions =====

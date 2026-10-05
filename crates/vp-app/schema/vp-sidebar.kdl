@@ -114,6 +114,7 @@ protocol "sidebar" version="1.0.0" {
         // 確認ダイアログ (rfd) を出し、 OK なら self-update (brew / vp update) →
         // `vp daemon restart` → GUI relaunch を実行する (flows/update.rs)。
         // version = 適用予定の latest version (ダイアログ文言用)。
+        request "update:check" {}
         request "update:apply" {
             field "version" type="string"
         }
@@ -239,6 +240,11 @@ protocol "sidebar" version="1.0.0" {
         // - `resolved_repo_root` = 明示値が無い時に**実際に使われる**パス
         //   （`resolve_default_repo_root` の推定結果）。空欄の入力欄に placeholder として
         //   出し、「空だが実際はここ」を見せる
+        event "update:check_result" {
+            field "update_available" type="bool"
+            field "latest_version" type="string" optional=#true
+            field "error" type="string" optional=#true
+        }
         event "settings:result" {
             field "developer_mode" type="bool"
             field "developer_mode_locked" type="bool"

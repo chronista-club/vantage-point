@@ -320,6 +320,23 @@ impl UpdateCapability {
         })
     }
 
+    /// 手動確認はキャッシュを使わず、呼び出したアプリの版と比較する。
+    pub async fn check_update_now(
+        &mut self,
+        current_version: &str,
+    ) -> CapabilityResult<UpdateCheckResult> {
+        self.last_check = None;
+        let mut result = self.check_update().await?;
+        result.current_version = current_version.to_string();
+        result.update_available = is_newer_version(&result.latest_version, current_version);
+        result.release = if result.update_available {
+            self.cached_release.clone()
+        } else {
+            None
+        };
+        Ok(result)
+    }
+
     /// GitHub Releasesから最新リリースを取得
     async fn fetch_latest_release(&self) -> CapabilityResult<ReleaseInfo> {
         let url = format!(

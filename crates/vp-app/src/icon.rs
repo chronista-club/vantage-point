@@ -1,11 +1,11 @@
-//! App icon — runtime で OS に portal の山アイコンを当てる。
+//! App icon — runtime で OS に Vantage Point のブランドアイコンを当てる。
 //!
 //! ## macOS (dock)
 //!
 //! `vp app start` が起動する bare binary (dev root `~/.local/opt/vp-dev/bin/vp-app` 等) は .app bundle 外なので
 //! bundle の `icon.icns` (release:mac が同梱) が効かず、 dock が generic icon になる。 起動時に
-//! `NSApplication.setApplicationIconImage` で portal favicon (`assets/icon.png`、 portal の
-//! `assets/favicon.svg` 由来の山シルエット) を当て、 dev / cargo 起動でも dock を portal icon にする。
+//! `NSApplication.setApplicationIconImage` で `assets/icon-macos.png` を当て、dev / cargo 起動でも
+//! 同じアイコンを使う。原図は repo root の `assets/brand/source.svg`、生成は `scripts/brand_assets.py`。
 //! .dmg bundle 版は icns と二重掛けになるが冪等。
 //!
 //! ## Windows (taskbar / Alt-Tab)
@@ -16,7 +16,7 @@
 //! - [`set_app_user_model_id`] — taskbar の identity。 pin 留め / grouping が壊れないようにする
 //! - [`icon_rgba`] — window icon (tao) と tray icon が要求する生 RGBA の供給元
 
-/// dock の app icon を portal の山アイコンに設定する。
+/// dock の app icon を Vantage Point のブランドアイコンに設定する。
 ///
 /// **macOS のみ + main thread から呼ぶこと**（AppKit 制約）。 非 macOS は no-op。
 pub fn set_app_icon() {
@@ -30,17 +30,17 @@ pub fn set_app_icon() {
             tracing::warn!(target: "vp_app::icon", "main thread でないため dock icon 設定を skip");
             return;
         };
-        let png: &[u8] = include_bytes!("../assets/icon.png");
+        let png: &[u8] = include_bytes!("../assets/icon-macos.png");
         let data = NSData::with_bytes(png);
         let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
-            tracing::warn!(target: "vp_app::icon", "icon.png から NSImage 生成に失敗");
+            tracing::warn!(target: "vp_app::icon", "icon-macos.png から NSImage 生成に失敗");
             return;
         };
         let app = NSApplication::sharedApplication(mtm);
         // SAFETY: main thread (mtm で保証) から、 有効な NSImage を渡して dock icon を設定する。
         unsafe { app.setApplicationIconImage(Some(&image)) };
         // event loop 開始後 ~1.5s 間 再アサートされるため debug (info だと spam)。
-        tracing::debug!(target: "vp_app::icon", "dock app icon = portal favicon を適用");
+        tracing::debug!(target: "vp_app::icon", "dock app icon = macOS ブランドアイコンを適用");
     }
 }
 

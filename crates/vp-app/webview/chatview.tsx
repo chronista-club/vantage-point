@@ -1,7 +1,8 @@
-import { changeCodexSelection } from './codex-selection-control'
 import { CodexInteractionCard } from './codex-interactions'
 import { CodexQueuePanel } from './codex-queue'
-import { CodexRuntimePanel } from './codex-runtime'
+import { EngineSettingsPanel } from './engine-settings-panel'
+import { setPermissionMode as setClaudePermissionMode } from './claude-settings-panel'
+import { sendCodexInput as sendCodexInputTo } from './codex-input'
 import { beginCodexResponse } from './codex-interaction-model'
 /**
  * ChatView (doc 33 C2) — Conversation gui の Console 面 GUI（SolidJS）。
@@ -28,15 +29,16 @@ import {
   type Accessor,
   type JSX,
 } from 'solid-js'
-import { createStore, produce, type SetStoreFunction } from 'solid-js/store'
+import { createStore, produce } from 'solid-js/store'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import { isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
 import { renderMermaidBlocks } from './mermaid-post'
+import { registerVoiceSink, sendVoice } from './voice'
 import { Marked } from 'marked'
+import { confirmCodexConsoleHandoff } from './codex-mode-handoff'
 import type {
   ConversationEvent,
   ConversationSession,
-  PickerChoice,
   PlanEntry,
   QuestionSpec,
   VpConsole,
@@ -44,8 +46,10 @@ import type {
 // doc 38 Phase 2: focused 判定 / 楽観的 focus 切替は console.ts の per-lane registry を共有する
 // （repo が真実源、ここは view）。session chip の prefix 規則は LaneHeader を SSOT として再利用。
 // doc 47 §6: 共有 bus の相関 id（採番 + 照合）も console.ts が SSOT。
-import { focusedOf, noteFocus, syncHeaderSessionId, nextRequestId } from './console'
+import { focusedOf, noteFocus, syncHeaderSessionId } from './console'
 import { sessionChipPrefix } from './LaneHeader'
+import { agentDisplayName, agentIcon } from './src/sidebar/lane'
+import { hostIdForMode } from './lane-panes'
 import { isImeKeystroke } from './ime'
 import { applyCompletion, filterSlashCommands, moveSelection, slashQuery } from './slash'
 import {
@@ -60,6 +64,7 @@ import {
   type ChatItem,
   type ChatState,
   type SubagentEntry,
+  type LaneChat,
   type Submission,
   type ToolItem,
   beginSubmission,
@@ -90,11 +95,6 @@ export {
   toolGroupStatus,
 } from './chat-model'
 
-
-type LaneChat = {
-  state: ChatState
-  set: SetStoreFunction<ChatState>
-}
 
 /**
  * 会話 store は **(lane, session) 単位**（doc 50 §4.3 #1）。
@@ -196,11 +196,22 @@ export function requestSessionMode(
   session: number,
   mode: 'tui' | 'gui',
 ): void {
-  document.dispatchEvent(
+  const entry = sessionsOf(lane)?.sessions.find(item => item.key === session)
+  const dispatch = () => document.dispatchEvent(
     new CustomEvent('vp:mode-switch-request', {
       detail: { lane, session, target: mode },
     }),
   )
+  if (mode === 'gui' && entry?.agent === 'codex' && entry.mode !== 'gui') {
+    confirmCodexConsoleHandoff(lane, session, () => {
+      const current = sessionsOf(lane)?.sessions.find(item => item.key === session)
+      // 確認中に別 window で削除・再開・切替された session には送らない。
+      if (current?.agent === 'codex' && current.mode !== 'gui'
+        && current.engine_session_id === entry.engine_session_id) dispatch()
+    })
+    return
+  }
+  dispatch()
 }
 
 // ---------------------------------------------------------------------------
@@ -315,21 +326,23 @@ function flushPending(lane: string, session: number): void {
   const lc = laneChat(lane, session)
   const text = lc.state.pending
   if (!text || lc.state.submission) return
-  lc.set('pending', null)
-  sendSubmission(lane, session, text, [])
+  if (sendSubmission(lane, session, text, [])) lc.set('pending', null)
 }
 
 
 let submissionSequence = 0
 const submissionEpoch = Date.now()
 
-export function sendSubmission(lane: string, session: number, text: string, images: Submission['images']): void {
+export function sendSubmission(lane: string, session: number, text: string, images: Submission['images']): boolean {
   const lc = laneChat(lane, session)
-  if (lc.state.submission) return
+  if (lc.state.submission) return false
   // Custom-scheme WebViews may not expose crypto.randomUUID. Identity only
   // needs to be unique within this document and across its reloads.
   const id = `submit-${submissionEpoch}-${++submissionSequence}`
-  lc.set(produce((s) => { beginSubmission(s, id, text, images) }))
+  const codex = sessionsOf(lane)?.sessions.find(entry => entry.key === session)?.agent === 'codex'
+  let accepted = false
+  lc.set(produce((s) => { accepted = beginSubmission(s, id, text, images, codex) }))
+  if (!accepted) return false
   try {
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     if (!ipc) throw new Error('接続がありません。入力を戻して再試行してください。')
@@ -341,6 +354,7 @@ export function sendSubmission(lane: string, session: number, text: string, imag
       kind: 'submit_result', request_id: id, error: e instanceof Error ? e.message : String(e),
     }, session)
   }
+  return true
 }
 
 
@@ -1340,6 +1354,14 @@ export function SessionPlate(props: {
   return (
     <div class="conversation-session-plate" classList={{ focused: props.focused }}>
       {props.lamp}
+      {/* engine のロゴ（lane リストと同じ表 — focused は fill）。ロゴで engine が一目で分かる */}
+      <Show when={info()?.agent ? agentIcon(info()!.agent, props.focused) : null}>
+        {(icon) => (
+          <span class="conversation-session-plate-engine" title={agentDisplayName(info()!.agent)}>
+            <CreoIcon name={icon()} size={12} />
+          </span>
+        )}
+      </Show>
       <span class="conversation-session-plate-label">{label()}</span>
       {/* root = lane の代表（mailbox / pid、doc 40 §4-1）。素性なので名札に出す —
           これが無いと「なぜこの pane だけ × が無いのか」（root は close 不可）が読めない。 */}
@@ -1405,6 +1427,21 @@ export function SessionPlate(props: {
           {target() === 'gui' ? 'Chat' : 'Console'}
         </button>
       </Show>
+      {/* しまう（pane 級 = 名札に住む、doc 56）。rail の縦中央に移り、残りが広がる。戻すのは
+          rail のアイコン。中身（会話 / console）には触れない（view 層、doc 55 §3） */}
+      <button
+        type="button"
+        class="conversation-session-plate-stow"
+        title="この pane をしまう（右の rail に移す。戻すのは rail のアイコン）"
+        onClick={(e) => {
+          e.stopPropagation()
+          document.dispatchEvent(new CustomEvent('vp:pane-stow', {
+            detail: { lane: props.lane, id: hostIdForMode(props.session, props.mode) },
+          }))
+        }}
+      >
+        <CreoIcon name="ph:arrow-line-right" size={9} />
+      </button>
       <Show when={canCloseSession(sessionsOf(props.lane)?.sessions.length ?? 0, info()?.root)}>
         <button
           type="button"
@@ -1425,7 +1462,7 @@ export function SessionPlate(props: {
 /** 1 枚 = 1 session の chat pane（doc 46 §1.5 session ↔ Pane 1:1）。(lane, session) は mount 時に
  *  固定 — lane 切替は pane host ごと作り直す（lane-panes が dispose → mount）。
  *  doc 50 P2: chat 動詞（submit / respond / perm / interrupt / model）は session を運ぶ =
- *  どの pane からも打てる（model の旧 focused 制限は conversation_set_model の session 化で
+ *  どの pane からも打てる（model の旧 focused 制限は conversation_set_settings（旧 set_model）の session 化で
  *  撤去 — 2026-07-27、mako 裁定「model も permission も session に紐づく」）。 */
 function SessionChatView(props: { lane: string; session: number }) {
   const lc = laneChat(props.lane, props.session)
@@ -1453,80 +1490,15 @@ function SessionChatView(props: { lane: string; session: number }) {
   // 名札まわり（label / root chip / 会話 id / badge / ✕）は `SessionPlate` に移管した
   // （doc 50 §4.6 A6 — term pane と共有するため）。
 
-  // gui モデル切替（spec: セッション進行中でも切替可能）。repo が engine を --resume +
-  // 新 --model で入れ替える = 会話コンテキスト継続でモデル交換。適用の視覚確認は
-  // 新 engine の session_init が header.model を更新することで得る（picker は実測値に追従）。
-  // streaming 中は disable — engine drop が進行中 turn を切るのを UI で抑止する。
-  const currentModel = (): string => state()?.header?.model ?? ''
-  /** この session の roster entry（picker の catalog / intent の供給源 = server 能力表明）。 */
+  /** この session の roster entry（settings panel の catalog / 能力表明の供給源）。 */
   const rosterEntry = (): ConversationSession | undefined =>
     sessionsOf(props.lane)?.sessions.find((s) => s.key === props.session)
-  /** server catalog + 実測 model の動的追加（一覧に無い実測値は option を足して真実を見せる）。
-   *  catalog 空 = この engine は VP から切替不可（picker を出さず read-only 表示に落とす）。 */
   /** engine が画像投入を受けるか（server の能力表明。false なら貼り付け UI を出さない）。 */
   const imageCapable = (): boolean => rosterEntry()?.image_capable === true
-
-  const modelChoices = (): ReadonlyArray<PickerChoice> => {
-    const catalog = rosterEntry()?.model_choices ?? []
-    const m = currentModel()
-    return m && catalog.length > 0 && !catalog.some((c) => c.value === m)
-      ? [...catalog, { value: m, label: m }]
-      : catalog
-  }
-  const permissionChoices = (): ReadonlyArray<PickerChoice> =>
-    rosterEntry()?.permission_choices ?? []
-  const codexModel = () => state().codexConfig?.selection?.model ?? state().codexConfig?.model ?? ''
-  const codexEffort = () => state().codexConfig?.selection?.effort ?? state().codexConfig?.effort ?? ''
-  const codexModels = () => state().codexConfig?.models ?? []
-  const codexBusy = () => state().streaming || state().replaying || !!state().submission || !!state().pending || !!state().codexSettingsRequest
-    || !!state().codexInput || !!state().codexQueue?.turn_id || !!state().codexQueue?.items.length
-    || (!!state().codexQueue && !state().codexQueue?.ready)
-  const setCodexSelection = (model: string, effort: string) => {
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    if (!ipc || codexBusy()) return
-    const requestId = nextRequestId('codex-settings')
-    lc.set('codexSettingsRequest', requestId)
-    lc.set('codexSettingsError', null)
-    ipc.postMessage(JSON.stringify({ t: 'conversation:set_model', lane: props.lane, session: props.session, model, effort, request_id: requestId }))
-    setTimeout(() => {
-      if (lc.state.codexSettingsRequest === requestId) {
-        lc.set('codexSettingsRequest', null)
-        lc.set('codexSettingsError', '設定変更の結果を確認できませんでした。表示を確認して再試行してください。')
-      }
-    }, 30_000)
-  }
-  const setModel = (model: string) => {
-    const lane = props.lane
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    // session 明示（doc 50 session=Pane — model は session 単位、2026-07-27 に root/lane
-    // 単位から移行。focused 制限も同時に消えた = どの pane も自分の session を切替できる）。
-    ipc?.postMessage(
-      JSON.stringify({
-        t: 'conversation:set_model',
-        lane,
-        session: props.session,
-        model: model || null,
-      }),
-    )
-  }
-
-  // doc 35 PR3: permission mode（tool 承認の opt-in）。spawn 既定は bypassPermissions（素通し）。
-  // "default" に切替えると Write/Bash 等が承認要求（PermissionRequest）経由になる。
-  // doc 35 PR3/PR4: permission mode は per-lane（engine の真値 = session_init.permission_mode）。
-  // review #2: 旧実装はグローバル signal で lane 横断共有 + respawn の bypass reset を映さなかった。
-  const currentPermMode = (): string => state()?.permissionMode ?? 'bypassPermissions'
-  const setPermissionMode = (mode: string) => {
-    const lane = props.lane
-    // optimistic: 当該 lane に即反映。engine は set_permission_mode を適用し、respawn 時は
-    // session_init.permission_mode が真値（通常 bypassPermissions）で上書きする。
-    //（旧: notePermissionMode でヘッダ chip にも同期していたが、chip は doc 50 の名札純化で
-    //  撤去済み — 同期先ごと消えた）
-    lc.set(produce((s) => (s.permissionMode = mode)))
-    const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-    ipc?.postMessage(
-      JSON.stringify({ t: 'conversation:set_permission_mode', lane, session: props.session, mode }),
-    )
-  }
+  // model / effort / permission の picker は engine ごとの panel（engine-settings-panel の表）に
+  // 移した（2026-09-21）。plan 承認で default へ戻す経路だけがここから permission を触る。
+  const setPermissionMode = (mode: string) =>
+    setClaudePermissionMode({ lc, lane: props.lane, session: props.session }, mode)
 
   // context ゲージ（tui statusline の bar :context 相当）。分子分母が揃うまで非表示。
   // 閾値は cc-status の意味論を踏襲: >=60% warn / >=85% critical。
@@ -1543,6 +1515,54 @@ function SessionChatView(props: { lane: string; session: number }) {
 
   const [draft, setDraft] = createSignal('')
   let inputRef: HTMLTextAreaElement | undefined // dequeue 後に composer へフォーカスを移すため
+
+  // ---- 音声入力（push-to-talk、voice.ts / Rust の voice/）----------------------------
+  // 裁定（creo mem_1CfTjYYiCsiCUgazoGGugP）: 入力欄が空のときだけ録音できる（書きかけは
+  // 消さない）/ 録音中・認識中は入力欄を編集できない / 認識結果は入力欄に入れるだけで、
+  // 送信はユーザーが Enter で行う（誤認識を送る前に直せるように）。
+  const [voice, setVoice] = createSignal<'idle' | 'recording' | 'transcribing'>('idle')
+  const [voiceError, setVoiceError] = createSignal<string | null>(null)
+  const micDisabled = () => voice() === 'transcribing' || (voice() === 'idle' && draft() !== '')
+  onCleanup(registerVoiceSink(props.lane, props.session, {
+    text: (text) => {
+      setVoice('idle')
+      if (!text) {
+        setVoiceError('聞き取れませんでした')
+        return
+      }
+      // 認識中に「送信待ち」等を押して入力欄に文字が戻っていることがある（録音中は draft が
+      // 空なのでそれらが押せる）。上書きして消さず、末尾に足す。
+      setDraft(draft() === '' ? text : `${draft()} ${text}`)
+      queueMicrotask(() => {
+        if (!inputRef) return
+        autosize(inputRef)
+        inputRef.focus()
+      })
+    },
+    error: (message) => {
+      setVoice('idle')
+      setVoiceError(message)
+    },
+  }))
+  const startVoice = (e: PointerEvent) => {
+    if (micDisabled() || voice() !== 'idle') return
+    // 押したままボタンの外で離しても pointerup がこのボタンに届くように
+    try { (e.currentTarget as Element).setPointerCapture(e.pointerId) } catch { /* 未対応環境 */ }
+    setVoiceError(null)
+    setVoice('recording')
+    sendVoice('start', props.lane, props.session)
+  }
+  const stopVoice = () => {
+    if (voice() !== 'recording') return
+    setVoice('transcribing')
+    sendVoice('stop', props.lane, props.session)
+  }
+  // 押している最中に session が閉じて unmount されると pointerup が届かず、Rust 側の録音が
+  // 開いたまま残る（次にどこかの🎙が押されるまでマイクが点きっぱなし）。止めてから消える。
+  // 結果の届け先は無いので Rust 側で捨てられる。
+  onCleanup(() => {
+    if (voice() === 'recording') sendVoice('stop', props.lane, props.session)
+  })
 
   // ---- 画像添付（chat 入力欄への貼り付け、2026-08-30）--------------------------
   // ⚠️ VP は保存しない — 送信時に engine へ渡すだけで、transcript / replay にも残さない
@@ -1610,37 +1630,43 @@ function SessionChatView(props: { lane: string; session: number }) {
   const statusLine = () => deriveStatus(state(), nowMs())
   // 灯 3 状態（doc 51 §1 A2）: status の畳み込み。名札の dot が読む。
   const lamp = () => lampOf(statusLine())
+  // 活動の signal（Pane のしまうモード）: しまっている間の badge の供給元。lamp が点いた
+  // （返答中 / 承認待ち）ときだけ流す。受け手（rail）はしまっている pane 分だけ拾う
+  createEffect(() => {
+    if (lamp() === 'off') return
+    document.dispatchEvent(new CustomEvent('vp:pane-activity', {
+      detail: { lane: props.lane, id: hostIdForMode(props.session, 'gui') },
+    }))
+  })
   // now-line（doc 51 §1 A3）: 名札直下の「今なにを」。null = 行ごと描かない。
   const nowLine = () => deriveNowLine(state())
   const codexInputBusy = () => !!state().codexInput
   const codexTurnActive = () => rosterEntry()?.agent === 'codex' && (state().streaming || !!state().codexQueue?.turn_id)
-  const sendCodexInput = (action: Record<string, unknown>, text = '') => {
-    const queue = state().codexQueue
-    if (!queue || (!queue.ready && action.kind !== 'refresh') || codexInputBusy()) return false
-    const requestId = nextRequestId('codex-input')
-    lc.set('codexInput', { id: requestId, text, status: 'sending', error: null })
-    try {
-      const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
-      if (!ipc) throw new Error('接続がありません。入力は送信されていません。')
-      ipc.postMessage(JSON.stringify({ t: 'conversation:codex_input', lane: props.lane,
-        session: props.session, thread_id: queue.thread_id, request_id: requestId,
-        action: { ...action, client_id: requestId } }))
-      setTimeout(() => {
-        if (lc.state.codexInput?.id === requestId && lc.state.codexInput.status === 'sending') {
-          lc.set(produce(s => foldInto(s, { kind: 'codex_queue', queue: null, request_id: requestId,
-            error: '送信結果を確認できません。自動再送はしていません。待機一覧と会話履歴を確認してください。' })))
-        }
-      }, 45_000)
-    } catch (error) {
-      lc.set(produce(s => foldInto(s, { kind: 'codex_queue', queue: null, request_id: requestId,
-        error: error instanceof Error ? error.message : String(error) })))
-      return false
-    }
-    return true
+  /** Claude の turn 中か。この間の送信は 2 択になる（Codex の「今伝える / 次に実行する」と同じ顔）:
+   *  - 今伝える（既定 = Enter）: 即 stdin に送る。headless claude は次の tool の区切りで今の turn に
+   *    差し込む（2026-09-23 実測: tool 実行中に送った指示が同じ turn の返事に反映、result は 1 つ）。
+   *    区切りの無い turn（文章を書いているだけ）では、今の turn の直後に次の turn として走る
+   *    （同日実測: result が 2 つ、2 つ目が指示を反映）。どちらでも取りこぼしは無い
+   *  - 次に実行する: 従来の type-ahead（pending に貯め、turn が閉じてから送る — doc 35 §5.1） */
+  const claudeTurnActive = () => rosterEntry()?.agent === 'claude' && state().streaming
+  /** 次に実行する（Claude）: pending に積む。走行中の複数送信は改行で連結し、turn 閉時に 1 turn で flush。 */
+  const queueClaudeDraft = (text: string) => {
+    lc.set('pending', (p) => (p ? `${p}\n${text}` : text))
   }
+  const sendCodexInput = (action: Record<string, unknown>, text = '', images: Submission['images'] = []) =>
+    sendCodexInputTo(lc, props.lane, props.session, action, text, images)
   const queueDraft = () => {
     const text = draft().trim()
-    if (!text || !sendCodexInput({ kind: 'add', text }, text)) return
+    if (!text) return
+    if (claudeTurnActive()) {
+      // Claude の type-ahead は画像を運ばない（従来どおり）— 添付は composer に残す
+      queueClaudeDraft(text)
+      setDraft('')
+      if (inputRef) autosize(inputRef)
+      return
+    }
+    if (!sendCodexInput({ kind: 'add', text }, text, toWirePayload(attachments()))) return
+    clearAttachments()
     setDraft('')
     if (inputRef) autosize(inputRef)
   }
@@ -1650,20 +1676,22 @@ function SessionChatView(props: { lane: string; session: number }) {
     if (!text || lc.state.submission || codexInputBusy()) return
     if (codexTurnActive()) {
       const turn = lc.state.codexQueue?.turn_id
-      if (!turn || !sendCodexInput({ kind: 'steer', text, turn_id: turn }, text)) return
+      if (!turn || !sendCodexInput({ kind: 'steer', text, turn_id: turn }, text, toWirePayload(attachments()))) return
+      clearAttachments()
       setDraft('')
       if (inputRef) autosize(inputRef)
       return
     }
-    setDraft('')
-    if (inputRef) autosize(inputRef) // 送信後は 1 行に畳み戻す
-    // doc 35 §5.1: streaming 中は engine へ送らず pending に buffer（items[] を触らない = 順序を汚さない）。
-    // 走行中の複数送信は改行で連結し、単一 draft = 1 turn として turn 閉時に flush する。
-    if (lc.state.streaming) {
-      lc.set('pending', (p) => (p ? `${p}\n${text}` : text))
+    // Claude は実行中の turn へ即送信する。他 engine の type-ahead は pending に残す。
+    if (lc.state.streaming && !claudeTurnActive()) {
+      queueClaudeDraft(text)
+      setDraft('')
+      if (inputRef) autosize(inputRef)
       return
     }
-    sendSubmission(lane, props.session, text, toWirePayload(attachments()))
+    if (!sendSubmission(lane, props.session, text, toWirePayload(attachments()))) return
+    setDraft('')
+    if (inputRef) autosize(inputRef)
     clearAttachments()
   }
 
@@ -1680,6 +1708,23 @@ function SessionChatView(props: { lane: string; session: number }) {
     queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
   }
 
+  const unconfirmedCodexInputs = () => (state().unconfirmedCodexInputs ?? [])
+    .filter(input => input.id !== state().submission?.id)
+  const recoverUnconfirmedCodexInput = (input: Pick<Submission, 'id' | 'text' | 'images'>) => {
+    if (draft().trim() || attachments().length || lc.state.submission) return
+    setDraft(input.text)
+    setAttachments(input.images.map((image, index) => ({
+      id: Date.now() + index, mediaType: image.media_type, dataBase64: image.data,
+      previewUrl: `data:${image.media_type};base64,${image.data}`,
+      bytes: Math.floor(image.data.length * 3 / 4),
+    })))
+    lc.set('unconfirmedCodexInputs', inputs => inputs?.filter(item => item.id !== input.id))
+    lc.set('items', items => items.map(item => item.kind === 'user' && item.clientId === input.id
+      ? { kind: 'user' as const, text: item.text } : item))
+    lc.set('codexInputCapacityError', null)
+    queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
+  }
+
   // 送信待ち type-ahead を入力欄へ戻して編集可能にする（dequeue-to-composer, todo 2026-07-14）。
   // composer が空のときだけ有効（下書きを潰さない）。戻した瞬間 pending は空 = 自動送信されない。
   const canEditPending = () => canDequeuePending(draft(), state().pending ?? null)
@@ -1693,6 +1738,8 @@ function SessionChatView(props: { lane: string; session: number }) {
 
   // doc 35 §5: 実行中 turn を中断する（停止ボタン / Esc）。engine は turn を止め、次の submit を受けられる。
   const interrupt = () => {
+    // 停止は user の操作 = turn の正常な終わり。閉じたとき「停止しました」を出すため覚えておく
+    lc.set('interruptRequested', true)
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(
       JSON.stringify({ t: 'conversation:interrupt', lane: props.lane, session: props.session }),
@@ -1924,6 +1971,29 @@ function SessionChatView(props: { lane: string; session: number }) {
         )}
       </Show>
               <PlanWidget entries={() => state().plan} />
+        <Show when={unconfirmedCodexInputs().length > 0}>
+          <details class="codex-unconfirmed chat-history-notice">
+            <summary>履歴と照合できていない入力（{unconfirmedCodexInputs().length}件）</summary>
+            <p>会話への反映を確認できない入力を保管しています。自動再送はしていません。再送する前に履歴を確認してください。</p>
+            <For each={unconfirmedCodexInputs()}>{input => <div>
+              <MsgBody class="conversation-msg-body" text={input.text} />
+              <Show when={input.images.length > 0}><span>画像 {input.images.length} 枚 · </span></Show>
+              <button onClick={() => recoverUnconfirmedCodexInput(input)}
+                disabled={!!draft().trim() || attachments().length > 0 || !!state().submission}>
+                入力欄に戻す
+              </button>
+              <button onClick={() => {
+                lc.set('unconfirmedCodexInputs', inputs => inputs?.filter(item => item.id !== input.id))
+                lc.set('items', items => items.map(item => item.kind === 'user' && item.clientId === input.id
+                  ? { kind: 'user' as const, text: item.text } : item))
+                lc.set('codexInputCapacityError', null)
+              }}>履歴で確認済み</button>
+            </div>}</For>
+          </details>
+        </Show>
+        <Show when={state().codexInputCapacityError}>
+          <div class="chat-history-notice" role="alert">{state().codexInputCapacityError}</div>
+        </Show>
         <div
           class="conversation-stream"
           ref={streamEl}
@@ -2035,7 +2105,9 @@ function SessionChatView(props: { lane: string; session: number }) {
           </Show>
           <Show when={state().submission}>
             {(submission) => <div class="conversation-msg user pending" role="status">
-              <Show when={submission().status === 'failed'}><MsgBody class="conversation-msg-body" text={submission().text} /></Show>
+              <Show when={submission().status === 'failed' || state().unconfirmedCodexInputs?.some(input =>
+                input.id === submission().id
+              )}><MsgBody class="conversation-msg-body" text={submission().text} /></Show>
               <span>{submission().images.length > 0 ? `画像 ${submission().images.length} 枚 · ` : ''}</span>
               <Show when={submission().status === 'failed'} fallback={<span>送信中…</span>}>
                 <div role="alert">{submission().error}</div>
@@ -2130,9 +2202,13 @@ function SessionChatView(props: { lane: string; session: number }) {
           <div class="codex-queue" role="status">
             <div>{state().codexInput?.error}</div>
             <Show when={state().codexInput?.text}>
-              <button disabled={!!draft().trim()} onClick={() => {
-                if (draft().trim()) return
+              <button disabled={!!draft().trim() || attachments().length > 0} onClick={() => {
+                if (draft().trim() || attachments().length) return
                 setDraft(lc.state.codexInput?.text ?? '')
+                setAttachments((lc.state.codexInput?.images ?? []).map((image, index) => ({
+                  id: Date.now() + index, mediaType: image.media_type, dataBase64: image.data,
+                  previewUrl: `data:${image.media_type};base64,${image.data}`, bytes: Math.floor(image.data.length * 3 / 4),
+                })))
                 lc.set('codexInput',null)
                 queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
               }}>入力を戻す</button>
@@ -2205,6 +2281,7 @@ function SessionChatView(props: { lane: string; session: number }) {
             rows={1}
             placeholder="メッセージを入力（Enter で送信 / Shift+Enter で改行）"
             value={draft()}
+            disabled={voice() !== 'idle'}
             onInput={(e) => {
               setDraft(e.currentTarget.value)
               autosize(e.currentTarget)
@@ -2268,96 +2345,58 @@ function SessionChatView(props: { lane: string; session: number }) {
             }}
           />
           <div class="conversation-actions">
-            <Show when={rosterEntry()?.agent === 'codex'}>
-              <CodexRuntimePanel runtime={state().codexConfig?.runtime} busy={codexBusy() || !codexModel()}
-                connected={state().codexQueue?.ready === true}
-                changeMode={mode => sendCodexInput({kind:'mode',mode})} />
-              <Show when={codexModels().length > 0} fallback={<span class="conversation-model-readonly">{state().codexConfig?.error ?? 'モデル候補を取得中…'}</span>}>
-                <select class="conversation-model-select" aria-label="Codex model" title="次の Chat 送信に使うモデル" disabled={codexBusy()}
-                  onChange={(e) => changeCodexSelection(e.currentTarget, codexModel(), value => { const model = codexModels().find(m => m.model === value); if (model) setCodexSelection(model.model, model.default_effort) })}>
-                  <Show when={!codexModels().some(m => m.model === codexModel())}>
-                    <option value={codexModel()} selected disabled>{codexModel() || 'モデルを選択'}</option>
-                  </Show>
-                  <For each={codexModels()}>{m => <option value={m.model} selected={m.model === codexModel()}>{m.label}</option>}</For>
-                </select>
-                <select class="conversation-model-select" aria-label="Codex effort" title="次の Chat 送信の reasoning effort" disabled={codexBusy() || !codexModels().some(m => m.model === codexModel())}
-                  onChange={(e) => changeCodexSelection(e.currentTarget, codexEffort(), value => setCodexSelection(codexModel(), value))}>
-                  <Show when={!codexModels().find(m => m.model === codexModel())?.efforts.includes(codexEffort())}>
-                    <option value={codexEffort()} selected disabled>{codexEffort() || 'Codex 既定'}</option>
-                  </Show>
-                  <For each={codexModels().find(m => m.model === codexModel())?.efforts ?? []}>{effort => <option value={effort} selected={effort === codexEffort()}>{effort}</option>}</For>
-                </select>
-              </Show>
-              <Show when={state().codexSettingsRequest}><span class="conversation-model-readonly">保存中…</span></Show>
-              <Show when={state().codexSettingsError || (codexModels().length > 0 && state().codexConfig?.error)}>
-                <span role="status" class="conversation-model-readonly">{state().codexSettingsError || state().codexConfig?.error}</span>
-              </Show>
-            </Show>
-            {/* model picker: catalog（server 能力表明）が非空の engine だけ出す。
-                空 + 実測 model あり = read-only 表示（「今どの model か」の情報は保ちつつ、
-                押しても server に弾かれる行き止まりを作らない）。 */}
-            <Show
-              when={modelChoices().length > 0}
-              fallback={
-                <Show when={currentModel()}>
-                  <span
-                    class="conversation-model-readonly"
-                    title="model は engine 側で選択します（VP からは切替不可）"
-                  >
-                    {currentModel()}
-                  </span>
-                </Show>
-              }
-            >
-              <select
-                class="conversation-model-select"
-                disabled={state().streaming}
-                title="model（この session に適用 — 会話は resume で継続したまま入れ替わる）"
-                onChange={(e) => setModel(e.currentTarget.value)}
-              >
-                <For each={modelChoices()}>
-                  {(c) => (
-                    <option value={c.value} selected={c.value === currentModel()}>
-                      {c.label}
-                    </option>
-                  )}
-                </For>
-              </select>
-            </Show>
-            {/* permission picker: 同じく catalog 駆動（claude は TUI と同一表記の英語 4 mode）。
-                空 = 対話承認の概念なし → 出さない。 */}
-            <Show when={permissionChoices().length > 0}>
-              <select
-                class="conversation-model-select"
-                title="permission mode（この session に適用。表記は TUI と同一）"
-                onChange={(e) => setPermissionMode(e.currentTarget.value)}
-              >
-                <For each={permissionChoices()}>
-                  {(c) => (
-                    <option value={c.value} selected={currentPermMode() === c.value}>
-                      {c.label}
-                    </option>
-                  )}
-                </For>
-              </select>
-            </Show>
+            {/* engine 別 settings（model / effort / permission …）: agent → panel の表で引く。 */}
+            <EngineSettingsPanel lane={props.lane} session={props.session} lc={lc} rosterEntry={rosterEntry} />
             <div class="conversation-actions-spacer" />
+            {/* 音声入力: 押している間だけ録音し、離すと認識して入力欄に入れる */}
+            <button class="conversation-mic" classList={{ recording: voice() === 'recording' }}
+              disabled={micDisabled()}
+              title={voice() === 'idle' && draft() !== ''
+                ? '音声入力は入力欄が空のときだけ使えます'
+                : '押している間だけ録音（離すと入力欄に入ります）'}
+              onPointerDown={startVoice} onPointerUp={stopVoice} onPointerCancel={stopVoice}
+              onLostPointerCapture={stopVoice}>
+              <CreoIcon name="ph:microphone" size={12} />
+              {voice() === 'recording' ? ' 録音中' : voice() === 'transcribing' ? ' 認識中…' : ''}
+            </button>
             <Show when={state().streaming}>
               <button class="conversation-stop" onClick={interrupt} title="turn を中断 (Esc)">
                 <CreoIcon name="ph:stop" size={11} /> 停止
               </button>
             </Show>
+            {/* turn 中の送信 2 択。Claude は「今伝える」（既定 = Enter、強調）を足し、送信ボタンは
+                「次に実行する」になる（mako 2026-09-23）。Codex は従来の並び（送信ボタン = 今伝える）。 */}
+            <Show when={claudeTurnActive()}>
+              <button class="conversation-send" onClick={submit}
+                disabled={!draft().trim() || !!state().submission}
+                title="今の応答に差し込む（次の tool の区切りで効く、Enter）">
+                <CreoIcon name="ph:paper-plane-right" size={12} /> 今伝える
+              </button>
+            </Show>
             <Show when={codexTurnActive()}>
               <button class="conversation-stop" onClick={queueDraft}
+                title="今の応答が終わってから送る"
                 disabled={!draft().trim() || !state().codexQueue?.ready || codexInputBusy()}>
                 次に実行する
               </button>
             </Show>
-            <button class="conversation-send" onClick={submit} disabled={!draft().trim() || !!state().submission || codexInputBusy()
-              || (codexTurnActive() && (!state().codexQueue?.ready || !state().codexQueue?.turn_id))}>
-              <CreoIcon name="ph:paper-plane-right" size={12} /> {codexTurnActive() ? '今伝える' : '送信'}
-            </button>
+            <Show when={claudeTurnActive()} fallback={
+              <button class="conversation-send" onClick={submit} disabled={!draft().trim() || !!state().submission || codexInputBusy()
+                || (codexTurnActive() && (!state().codexQueue?.ready || !state().codexQueue?.turn_id))}
+                title={codexTurnActive() ? '今の応答に差し込む' : undefined}>
+                <CreoIcon name="ph:paper-plane-right" size={12} /> {codexTurnActive() ? '今伝える' : '送信'}
+              </button>
+            }>
+              <button class="conversation-stop" onClick={queueDraft}
+                disabled={!draft().trim()}
+                title="今の応答が終わってから送る">
+                次に実行する
+              </button>
+            </Show>
           </div>
+          <Show when={voiceError()}>
+            {(message) => <div class="conversation-voice-error">{message()}</div>}
+          </Show>
         </div>
     </div>
   )
@@ -2391,6 +2430,9 @@ export const CHATVIEW_CSS = `
 .conversation-empty { margin:auto; color: var(--color-text-tertiary, #616b80); font-size:13px; }
 .conversation-stream { flex:1; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:12px; }
 .chat-history-notice { padding:8px 10px; border:1px solid var(--color-border,#2a3040); border-radius:6px; color:var(--color-text-secondary,#a6afc0); font-size:var(--chat-text-meta); line-height:1.6; }
+.codex-unconfirmed { margin:8px 18px 0; max-height:30%; overflow-y:auto; flex-shrink:0; }
+.codex-unconfirmed summary { cursor:pointer; }
+.codex-unconfirmed > div { padding:8px 0; border-top:1px solid var(--color-border,#2a3040); }
 /* スクロールバー常時表示（mako 2026-07-24）: 既定の overlay scrollbar は「スクロール中だけ」
    なので現在地が読めない。custom style を当てると常時表示になる（WebKit 仕様）。細く控えめに。 */
 .conversation-stream::-webkit-scrollbar { width:8px; }
@@ -2640,6 +2682,15 @@ export const CHATVIEW_CSS = `
   border-radius:7px; cursor:pointer;
   border:1px solid var(--color-border,#2a3040); background:transparent; color: var(--color-text-secondary,#a8b0c0); }
 .conversation-stop:hover { border-color:#f0a3a3; color:#f0a3a3; }
+/* 音声入力の🎙（押している間だけ録音）。録音中は赤で「今マイクが開いている」を示す。
+   touch-action / user-select は長押しで文字選択やスクロールが始まらないように。 */
+.conversation-mic { display:inline-flex; align-items:center; gap:4px; padding:4px 8px; font-size:12px;
+  border-radius:7px; cursor:pointer; touch-action:none; user-select:none;
+  border:1px solid var(--color-border,#2a3040); background:transparent; color: var(--color-text-secondary,#a8b0c0); }
+.conversation-mic:hover:not(:disabled) { border-color: var(--color-accent,#3b82f6); color: var(--color-text,#e6e9ef); }
+.conversation-mic.recording { border-color:#f07171; background:rgba(240,113,113,.15); color:#f07171; }
+.conversation-mic:disabled { opacity:.4; cursor:default; }
+.conversation-voice-error { padding:0 10px 6px; font-size:11px; color:#f0a3a3; }
 /* Mode 切替（見え方の乗り換え = 避難路）は LaneHeader の root picker「見え方」行へ
    （doc 51 §2 — 旧 lane-level Mode toggle と下端の帯は doc 51 §1 A1 で退役）。 */
 /* session 名札（pane 上端）: この pane = この session の素性。tab strip（doc 38 仮置き）の
@@ -2652,6 +2703,7 @@ export const CHATVIEW_CSS = `
   border-bottom: var(--vp-nameplate-border); user-select:none; }
 .conversation-session-plate.focused { color: var(--color-text-secondary,#a8b0c0); }
 .conversation-session-plate-label { font-weight:500; }
+.conversation-session-plate-engine { display:inline-flex; align-items:center; flex:none; }
 .conversation-session-plate-root { display:inline-flex; align-items:center; gap:2px; padding:0 5px;
   border-radius:9999px; border:1px solid var(--color-surface-border-subtle,#2a3040);
   font-size:9.5px; opacity:.8; }
@@ -2660,6 +2712,9 @@ export const CHATVIEW_CSS = `
 .conversation-session-plate-spacer { flex:1; }
 /* 既定 opacity .55 は暗い名札上で沈んで「削除の動線が無い」ように見えた（2026-07-24 実機）。
    常時視認できる濃さに上げ、hover で確定的に立てる。 */
+.conversation-session-plate-stow { flex:none; display:inline-flex; align-items:center; padding:2px 4px;
+  border:none; background:transparent; color: var(--color-text-tertiary,#8b93a7); cursor:pointer; opacity:.6; }
+.conversation-session-plate-stow:hover { opacity:1; color: var(--color-text,#e6e9ef); }
 .conversation-session-plate-close { flex:none; display:inline-flex; align-items:center; padding:2px 4px;
   line-height:1; border:none; border-radius:4px; background:transparent; cursor:pointer;
   color: var(--color-text-secondary,#a8b0c0); opacity:.85; }
@@ -2705,6 +2760,24 @@ export const CHATVIEW_CSS = `
   border:1px solid var(--color-border,#2a3040); background: var(--color-bg-elevated,#16191f);
   color: var(--color-text-secondary,#a8b0c0); font-family:inherit; }
 .conversation-model-select:disabled { opacity:.45; cursor:default; }
+.codex-permission-menu { position:relative; }
+.codex-permission-backdrop { position:fixed; inset:0; z-index:30; }
+.codex-permission-popover { position:fixed; z-index:31;
+  width:min(390px,calc(100vw - 48px)); max-height:60vh; overflow:auto; padding:12px;
+  border:1px solid var(--color-border,#2a3040); border-radius:14px;
+  background:var(--color-bg-elevated,#16191f); color:var(--color-text-secondary,#a8b0c0);
+  box-shadow:0 8px 28px #0006; font-size:12px; white-space:normal;
+  font-family:var(--vp-font-sans),var(--typography-family-sans),sans-serif; }
+.codex-permission-popover button { font:inherit; color:inherit; cursor:pointer; }
+.codex-permission-popover button:not(.codex-permission-choice) { padding:5px 9px;
+  border:1px solid var(--color-border,#2a3040); border-radius:6px; background:transparent; }
+.codex-permission-heading { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+.codex-permission-choice { display:flex; flex-direction:column; gap:4px; width:100%; text-align:left;
+  padding:10px; border:1px solid transparent; border-radius:8px; color:inherit; background:transparent; cursor:pointer; }
+.codex-permission-choice strong { color:var(--color-text-primary,#e4e7ed); font-size:13px; }
+.codex-permission-choice:hover:not(:disabled), .codex-permission-choice[aria-pressed="true"] { background:var(--color-bg-hover,#252a35); }
+.codex-permission-choice:disabled { opacity:.5; cursor:default; }
+.codex-permission-popover p { font-size:11px; line-height:1.5; }
 /* catalog 空 engine の read-only model 表示（select と同じ枠感、押せない見た目 = cursor/border なし）。 */
 .conversation-model-readonly { font-size:10.5px; padding:1px 5px; border-radius:6px;
   color: var(--color-text-secondary,#a8b0c0); opacity:.7; }

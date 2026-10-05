@@ -33,6 +33,7 @@ import {
 	isSubLane,
 	shortcutNumberOf,
 	laneAddressKey,
+	laneBranch,
 	laneCwdLabel,
 	laneLabel,
 	agentDisplayName,
@@ -40,7 +41,8 @@ import {
 } from "./lane";
 
 /** Sub Lane の git 状態を右端に小さく表示 (= dirty / ahead-behind の signal のみ、
- *  branch 名 / merged ラベルは noise なので omit)。 ミニマム表示 (2026-05-30)。 */
+ *  merged ラベルは noise なので omit)。 ミニマム表示 (2026-05-30)。
+ *  branch 名は 2026-10-02 に地の行 (`.vp-lane-ground`) へ、root 含む全 lane で復活。 */
 function SubMeta(props: { ws: SubStatusWire }) {
 	const ahead = () => props.ws.ahead | 0;
 	const behind = () => props.ws.behind | 0;
@@ -214,6 +216,8 @@ export function LaneRow(props: {
 	// 地 (ground): cwd を repo root 起点の差分に畳む。 絶対 path は repo が持つので
 	// lane は offset だけを名乗る。 main は差分ゼロ = "" → 行ごと出さない。
 	const cwdLabel = () => laneCwdLabel(props.lane.cwd, props.repoPath);
+	// 地 (ground) の 2 つ目: ブランチ。root も含む全 lane に出す (mako 2026-10-02)。
+	const branch = () => laneBranch(props.lane);
 	// 「今なにを」(doc 58 ②-a): 行 = lane の間は **root session の分**を出す
 	// （代表 = 役職、doc 54。②-b で行 = session に割れたら session ごとになる）。
 	const nowText = () => sessionNow[sessionNowKey(addr(), rootKey())];
@@ -496,9 +500,21 @@ export function LaneRow(props: {
 			{/* 「今なにを」= 進行の本体 (doc 58 §2)。地 (cwd) より 1 段読める色。
 			    無ければ黙る (語ることが無い行は黙る、cwd と同じ流儀)。 */}
 			<NowLine text={nowText()} lastActivityAt={rootActivity()} />
-			<Show when={cwdLabel()}>
-				<span class="vp-lane-cwd" title={props.lane.cwd}>
-					{cwdLabel()}
+			{/* 地 = cwd 差分 + ブランチ (2026-10-02)。root は cwd 差分ゼロなのでブランチだけの行になる。
+			    どちらも無ければ行ごと出さない (語ることが無い行は黙る)。 */}
+			<Show when={cwdLabel() || branch()}>
+				<span class="vp-lane-ground">
+					<Show when={cwdLabel()}>
+						<span class="vp-lane-cwd" title={props.lane.cwd}>
+							{cwdLabel()}
+						</span>
+					</Show>
+					<Show when={branch()}>
+						<span class="vp-lane-branch" title={`git branch: ${branch()}`}>
+							<CreoIcon name="ph:git-branch" size={10} />
+							{branch()}
+						</span>
+					</Show>
 				</span>
 			</Show>
 		</div>

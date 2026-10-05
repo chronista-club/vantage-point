@@ -1,7 +1,7 @@
 //! model 語彙の検証と既定解決（純関数のみ）
 //!
 //! ⚠️ **旧 per-lane file store（`engine_models/<repo>__<lane>`）は 2026-07-27 に退役** —
-//! model の SSOT は registry の [`super::session_registry::SessionEntry::model`]（session
+//! model の SSOT は registry の [`super::session_registry::SessionEntry::settings`]（session
 //! 紐づけ、mako 裁定。doc 50 session=Pane で 1 lane 多 session になり、lane 単位は旧前提に
 //! なった）。旧 file は migration せず初期化（doc 54 §8.1 — 読み手ゼロで自然消滅）。
 //!

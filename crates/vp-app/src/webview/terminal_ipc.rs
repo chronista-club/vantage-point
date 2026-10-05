@@ -16,7 +16,7 @@
 //!
 //! 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane = Session Process)
 
-use tao::event_loop::EventLoopProxy;
+use crate::event_proxy::EventLoopProxy;
 
 use crate::events::AppEvent;
 
@@ -218,27 +218,22 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 });
             }
         }
-        // gui モデル切替（ChatView の model picker）。 lane / session 必須、 model 省略/null =
-        // engine 既定。session を運ばない要求は捨てる（root 決め打ちに丸めない — server 側
-        // `conversation_set_model` と同じ規律）。
-        Some("conversation:set_model") => {
+        // gui 設定切替（ChatView の engine 別 settings panel）。 lane / session 必須、
+        // settings 省略/null = engine 既定。中身は engine 所有の形で vp-app は透過。
+        // session を運ばない要求は捨てる（root 決め打ちに丸めない — server 側
+        // `conversation_set_settings` と同じ規律）。
+        Some("conversation:set_settings") => {
             if let (Some(lane), Some(session)) = (
                 parsed.get("lane").and_then(|v| v.as_str()),
                 parsed.get("session").and_then(|v| v.as_u64()),
             ) {
-                let model = parsed
-                    .get("model")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string);
-                let _ = proxy.send_event(AppEvent::ConversationSetModel {
+                let _ = proxy.send_event(AppEvent::ConversationSetSettings {
                     lane: lane.to_string(),
                     session,
-                    model,
-                    effort: parsed
-                        .get("effort")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_owned),
+                    settings: parsed
+                        .get("settings")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
                     request_id: parsed
                         .get("request_id")
                         .and_then(|v| v.as_str())
@@ -322,12 +317,39 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                 }
             }
         }
+        // 音声入力（push-to-talk）: 🎙を押した / 離した。宛先は押した入力欄の lane + session
+        // （session は必須 — 省略時の「focused に送る」は、押した欄と別の欄に文字が入り得る）。
+        Some(tag @ ("voice:start" | "voice:stop")) => {
+            if let (Some(lane), Some(session)) = (
+                parsed.get("lane").and_then(|v| v.as_str()),
+                parse_session(&parsed),
+            ) {
+                let lane = lane.to_string();
+                let _ = proxy.send_event(if tag == "voice:start" {
+                    AppEvent::VoiceStart { lane, session }
+                } else {
+                    AppEvent::VoiceStop { lane, session }
+                });
+            }
+        }
         // R sidebar の debug log（sidebar view modes、2026-08-01）: tail の購読開始 / 停止。
         // watch は source 必須（"app" | "daemon"）。file への解決と thread 管理は app.rs 側。
         Some("debuglog:watch") => {
             if let Some(source) = parsed.get("source").and_then(|v| v.as_str()) {
                 let _ = proxy.send_event(AppEvent::DebugLogWatch {
                     source: source.to_string(),
+                });
+            }
+        }
+        // Instance ごとの pane snapshot を既存の session 保存経路へ運ぶ。
+        Some("pane:stow") => {
+            if let (Some(lane), Some(state)) = (
+                parsed.get("lane").and_then(|v| v.as_str()),
+                parsed.get("state").filter(|v| v.is_object()),
+            ) {
+                let _ = proxy.send_event(AppEvent::PaneStow {
+                    lane: lane.to_owned(),
+                    state: state.clone(),
                 });
             }
         }

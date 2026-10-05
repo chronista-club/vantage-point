@@ -89,6 +89,11 @@ protocol "vp-push" version="1.0.0" {
             field "devices" type="array<json>"
         }
 
+        // ウィンドウごとの pane 状態。空の payload も復元完了の合図として送る。
+        event "pane:stow_restore" {
+            field "payload" type="json"
+        }
+
         // shell (L sidebar | main | R sidebar) の形の復元。boot の `ready` replay で 1 回だけ
         // 撃つ。保存が無ければ**撃たない**（webview 側の既定値がそのまま残る = 二重定義しない）。
         //
@@ -156,6 +161,27 @@ protocol "vp-push" version="1.0.0" {
 
         // snapshot 失敗: 理由（toast に出す）。
         event "ink:snapshot_error" {
+            field "message" type="string"
+        }
+
+        // ===== 音声入力（push-to-talk）— 実装は webview/voice.ts =====
+        //
+        // 要求（`voice:start` / `voice:stop` IPC）の戻り。宛先は🎙を押した入力欄
+        // （lane + session）。ink と同じ理由で成功と失敗を 2 event に分ける
+        // （成功 = 入力欄に文字を入れる / 失敗 = 理由を出して入力欄を戻す）。
+
+        // 認識成功: 認識した文字（何も聞き取れなければ空文字。無音は voice:error で返る）。
+        // 送信はしない — ユーザーが Enter で送る。
+        event "voice:text" {
+            field "lane" type="string"
+            field "session" type="int"
+            field "text" type="string"
+        }
+
+        // 録音・認識の失敗: 理由（モデルが無い / マイクが開けない 等）。
+        event "voice:error" {
+            field "lane" type="string"
+            field "session" type="int"
             field "message" type="string"
         }
 

@@ -16,7 +16,7 @@
 
 use std::thread;
 
-use tao::event_loop::EventLoopProxy;
+use crate::event_proxy::EventLoopProxy;
 
 use crate::daemon::conn::SharedDaemonConn;
 use crate::events::AppEvent;

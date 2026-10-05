@@ -9,7 +9,7 @@
 //! `spawn_*` の `pub(crate)` のみ）。canvas 購読の editor bridge は op を `AppEvent::EditorCommand` で UI 側に渡す
 //! （JS の組み立ては `app/on_board`。6-2 PR-EX で daemon/ → webview/ の辺を解消、doc 60 §2）。
 
-use tao::event_loop::EventLoopProxy;
+use crate::event_proxy::EventLoopProxy;
 
 use crate::daemon::conn::{SharedDaemonConn, SubscriptionOutcome};
 use crate::events::AppEvent;
@@ -54,7 +54,11 @@ async fn lanes_subscription_loop(
         // だと wait_client が永久ブロックし「loading lanes」が silent 滞留する。 timeout を張って
         // 未接続を LanesError として surface し (UI が stalled 表示 → user が daemon restart できる)、
         // 待ち直す。 App 終了 (sender drop) は None で即抜ける。
-        let client = match tokio::time::timeout(LANES_STALL_TIMEOUT, conn.wait_client()).await {
+        let client = match tokio::select! {
+            biased;
+            _ = proxy.closed() => return,
+            result = tokio::time::timeout(LANES_STALL_TIMEOUT, conn.wait_client()) => result,
+        } {
             Ok(Some(c)) => c,
             Ok(None) => return, // app 終了
             Err(_) => {
@@ -96,16 +100,24 @@ async fn run_lanes_session(
     // F1b: 共有 connection 上に "lanes" stream を開く (旧: session ごと別 connect)。
     // self-heal: open を LANES_STALL_TIMEOUT で括る。 timeout 時は channel 未確立 (recv_task も
     // 未起動) なので、 raw stream の drop = implicit reset で片付く (close 不要)。
-    let channel = tokio::time::timeout(LANES_STALL_TIMEOUT, client.open_channel("lanes"))
+    let channel = tokio::select! {
+        biased;
+        _ = proxy.closed() => return Ok(SubscriptionOutcome::AppClosing),
+        result = async { tokio::time::timeout(LANES_STALL_TIMEOUT, client.open_channel("lanes"))
         .await
         .map_err(|_| "open lanes channel: timeout".to_string())?
-        .map_err(|e| format!("open lanes channel: {}", e))?;
+        .map_err(|e| format!("open lanes channel: {}", e)) } => result?,
+    };
 
     // ここから先の全 early-return は **確立済み channel** を残すため、 内側で結果を作ってから
     // 抜けに 1 度だけ `channel.close()` する (recv_task abort + stream close)。 close せず drop すると
     // recv_task と QUIC stream がリークし、 half-alive 障害の 12.5s retry ごとに積み上がって
     // MAX_STREAMS 枯渇 → この fix が直そうとした症状が再発する (Moody Blues #1)。
-    let outcome = lanes_session_after_open(proxy, repo_path, &channel).await;
+    let outcome = tokio::select! {
+        biased;
+        _ = proxy.closed() => Ok(SubscriptionOutcome::AppClosing),
+        result = lanes_session_after_open(proxy, repo_path, &channel) => result,
+    };
     let _ = channel.close().await;
     outcome
 }
@@ -229,7 +241,11 @@ async fn canvas_subscription_loop(
     mut conn: SharedDaemonConn,
 ) {
     loop {
-        let client = match conn.wait_client().await {
+        let client = match tokio::select! {
+            biased;
+            _ = proxy.closed() => return,
+            client = conn.wait_client() => client,
+        } {
             Some(c) => c,
             None => return, // app 終了
         };
@@ -258,107 +274,121 @@ async fn run_canvas_session(
 
     // F1b: 共有 connection 上に "gui" stream を開く (旧: session ごと別 connect)。
     // doc 52 §6: channel 名は "canvas" → "gui"（board / terminal / conversation / editor の配信バス）。
-    let channel = client
+    let channel = tokio::select! {
+        biased;
+        _ = proxy.closed() => return Ok(SubscriptionOutcome::AppClosing),
+        result = async { client
         .open_channel("gui")
         .await
-        .map_err(|e| format!("open gui channel: {}", e))?;
-    // L0 SP-portless: Daemon "gui" channel は repo 単位なので、 接続後に subscribe handshake で
-    // repo_path を渡す (daemon 側で path_key に正規化され TopicRouter と突合)。 ack 後に当該 repo の
-    // retained board (最新 Show 等) が `send_event("pane", ...)` で初期配信される。
-    channel
-        .request::<serde_json::Value, serde_json::Value>(
-            "subscribe",
-            &serde_json::json!({ "repo_path": repo_path }),
-        )
-        .await
-        .map_err(|e| format!("canvas subscribe handshake: {}", e))?;
-    tracing::info!(
-        "canvas subscription connected (via Daemon): repo={}",
-        repo_path
-    );
+        .map_err(|e| format!("open gui channel: {}", e)) } => result?,
+    };
+    let work = async {
+        // L0 SP-portless: Daemon "gui" channel は repo 単位なので、 接続後に subscribe handshake で
+        // repo_path を渡す (daemon 側で path_key に正規化され TopicRouter と突合)。 ack 後に当該 repo の
+        // retained board (最新 Show 等) が `send_event("pane", ...)` で初期配信される。
+        channel
+            .request::<serde_json::Value, serde_json::Value>(
+                "subscribe",
+                &serde_json::json!({ "repo_path": repo_path }),
+            )
+            .await
+            .map_err(|e| format!("canvas subscribe handshake: {}", e))?;
+        tracing::info!(
+            "canvas subscription connected (via Daemon): repo={}",
+            repo_path
+        );
 
-    loop {
-        let msg = match channel.recv().await {
-            Ok(m) => m,
-            Err(_) => return Ok(SubscriptionOutcome::Disconnected),
-        };
-        // repo 側 "canvas" channel は `send_event("pane", <RepoMessage JSON>)` で push する。
-        if msg.msg_type != MessageType::Event || msg.method != "pane" {
-            continue;
-        }
-        let payload = match msg.payload_as_value() {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("canvas payload parse failed: {}", e);
+        loop {
+            let msg = match channel.recv().await {
+                Ok(m) => m,
+                Err(_) => return Ok(SubscriptionOutcome::Disconnected),
+            };
+            // repo 側 "canvas" channel は `send_event("pane", <RepoMessage JSON>)` で push する。
+            if msg.msg_type != MessageType::Event || msg.method != "pane" {
                 continue;
             }
-        };
-        // doc 48 Phase 2: editor bridge command は board-handler (webview) に流さず、
-        // ここで JS 評価を event loop へ依頼し、結果を同一 channel の `editor_result` で
-        // 返す (request-response。channel は subscribe 済なので repo 束縛も正しい)。
-        // この await 中は当該 repo の canvas event が最大 ~2.5s 待たされるが、editor
-        // 操作は人間スケールの頻度なので許容 (別 task 化は順序/相関の複雑さに見合わない)。
-        if payload.get("type").and_then(|v| v.as_str()) == Some("editor_command") {
-            let request_id = payload
-                .get("request_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            if request_id.is_empty() {
+            let payload = match msg.payload_as_value() {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("canvas payload parse failed: {}", e);
+                    continue;
+                }
+            };
+            // doc 48 Phase 2: editor bridge command は board-handler (webview) に流さず、
+            // ここで JS 評価を event loop へ依頼し、結果を同一 channel の `editor_result` で
+            // 返す (request-response。channel は subscribe 済なので repo 束縛も正しい)。
+            // この await 中は当該 repo の canvas event が最大 ~2.5s 待たされるが、editor
+            // 操作は人間スケールの頻度なので許容 (別 task 化は順序/相関の複雑さに見合わない)。
+            if payload.get("type").and_then(|v| v.as_str()) == Some("editor_command") {
+                let request_id = payload
+                    .get("request_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if request_id.is_empty() {
+                    continue;
+                }
+                // op と引数だけを UI 側へ渡す。JS の組み立て（未知 op の判定含む）は on_board の責務
+                // （doc 60 §2: daemon/ は webview/ を呼ばない — 6-2 PR-EX）。
+                let op = payload
+                    .get("op")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                if proxy
+                    .send_event(AppEvent::EditorCommand {
+                        op,
+                        field_id: payload
+                            .get("field_id")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
+                        value: payload.get("value").cloned(),
+                        resp: tx,
+                    })
+                    .is_err()
+                {
+                    return Ok(SubscriptionOutcome::AppClosing);
+                }
+                // daemon 側の待ち (3s) より短く切る (VP-163 と同じ向き: 内側が先に諦める)
+                let body =
+                    match tokio::time::timeout(std::time::Duration::from_millis(2500), rx.recv())
+                        .await
+                    {
+                        Ok(Some(raw)) => serde_json::from_str::<serde_json::Value>(&raw)
+                            .unwrap_or(serde_json::Value::String(raw)),
+                        _ => serde_json::json!({"error": "webview 評価 timeout"}),
+                    };
+                if let Err(e) = channel
+                    .request::<serde_json::Value, serde_json::Value>(
+                        "editor_result",
+                        &serde_json::json!({ "request_id": request_id, "payload": body }),
+                    )
+                    .await
+                {
+                    tracing::warn!("editor bridge: editor_result 送信失敗: {}", e);
+                }
                 continue;
             }
-            // op と引数だけを UI 側へ渡す。JS の組み立て（未知 op の判定含む）は on_board の責務
-            // （doc 60 §2: daemon/ は webview/ を呼ばない — 6-2 PR-EX）。
-            let op = payload
-                .get("op")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
             if proxy
-                .send_event(AppEvent::EditorCommand {
-                    op,
-                    field_id: payload
-                        .get("field_id")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string),
-                    value: payload.get("value").cloned(),
-                    resp: tx,
+                .send_event(AppEvent::CanvasMessage {
+                    repo_path: repo_path.to_string(),
+                    message: payload,
                 })
                 .is_err()
             {
+                // event loop が閉じた = app 終了。
                 return Ok(SubscriptionOutcome::AppClosing);
             }
-            // daemon 側の待ち (3s) より短く切る (VP-163 と同じ向き: 内側が先に諦める)
-            let body = match tokio::time::timeout(std::time::Duration::from_millis(2500), rx.recv())
-                .await
-            {
-                Ok(Some(raw)) => serde_json::from_str::<serde_json::Value>(&raw)
-                    .unwrap_or(serde_json::Value::String(raw)),
-                _ => serde_json::json!({"error": "webview 評価 timeout"}),
-            };
-            if let Err(e) = channel
-                .request::<serde_json::Value, serde_json::Value>(
-                    "editor_result",
-                    &serde_json::json!({ "request_id": request_id, "payload": body }),
-                )
-                .await
-            {
-                tracing::warn!("editor bridge: editor_result 送信失敗: {}", e);
-            }
-            continue;
         }
-        if proxy
-            .send_event(AppEvent::CanvasMessage {
-                repo_path: repo_path.to_string(),
-                message: payload,
-            })
-            .is_err()
-        {
-            // event loop が閉じた = app 終了。
-            return Ok(SubscriptionOutcome::AppClosing);
-        }
-    }
+    };
+    let outcome = tokio::select! {
+        biased;
+        _ = proxy.closed() => Ok(SubscriptionOutcome::AppClosing),
+        result = work => result,
+    };
+    let _ = channel.close().await;
+    outcome
 }
 
 /// DeviceRegistry 🧲 device event 購読: daemon (32000) の "daemon-device" channel を購読して
@@ -388,7 +418,11 @@ async fn device_subscription_loop(
     let mut failures: u32 = 0;
 
     loop {
-        let client = match conn.wait_client().await {
+        let client = match tokio::select! {
+            biased;
+            _ = proxy.closed() => return,
+            client = conn.wait_client() => client,
+        } {
             Some(c) => c,
             None => return, // app 終了
         };
@@ -427,12 +461,13 @@ async fn run_device_session(
     use unison::network::MessageType;
 
     // F1b: 共有 connection 上に "daemon-device" stream を開く (旧: 専用 connect)。
-    let channel = std::sync::Arc::new(
-        client
-            .open_channel("daemon-device")
-            .await
-            .map_err(|e| format!("open daemon-device channel: {}", e))?,
-    );
+    let channel = tokio::select! {
+        biased;
+        _ = proxy.closed() => return Ok(SubscriptionOutcome::AppClosing),
+        result = client.open_channel("daemon-device") => std::sync::Arc::new(
+            result.map_err(|e| format!("open daemon-device channel: {}", e))?
+        ),
+    };
     tracing::info!("daemon-device subscription connected");
 
     // フィードバック方向 (doc 49 LE-19): webview の場の状態を daemon へ上り event で送る。
@@ -456,27 +491,35 @@ async fn run_device_session(
         }
     });
 
-    let outcome = loop {
-        let msg = match channel.recv().await {
-            Ok(m) => m,
-            Err(_) => break Ok(SubscriptionOutcome::Disconnected),
-        };
-        if msg.msg_type != MessageType::Event || msg.method != "event" {
-            continue;
-        }
-        let payload = match msg.payload_as_value() {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("daemon-device payload parse failed: {}", e);
+    let work = async {
+        loop {
+            let msg = match channel.recv().await {
+                Ok(m) => m,
+                Err(_) => break Ok(SubscriptionOutcome::Disconnected),
+            };
+            if msg.msg_type != MessageType::Event || msg.method != "event" {
                 continue;
             }
-        };
-        if proxy.send_event(AppEvent::DeviceEvent { payload }).is_err() {
-            // event loop が閉じた = app 終了。
-            break Ok(SubscriptionOutcome::AppClosing);
+            let payload = match msg.payload_as_value() {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("daemon-device payload parse failed: {}", e);
+                    continue;
+                }
+            };
+            if proxy.send_event(AppEvent::DeviceEvent { payload }).is_err() {
+                // event loop が閉じた = app 終了。
+                break Ok(SubscriptionOutcome::AppClosing);
+            }
         }
     };
+    let outcome = tokio::select! {
+        biased;
+        _ = proxy.closed() => Ok(SubscriptionOutcome::AppClosing),
+        result = work => result,
+    };
     feedback_task.abort();
+    let _ = channel.close().await;
     outcome
 }
 
@@ -503,7 +546,11 @@ pub(crate) fn spawn_repos_subscription(
 async fn repos_subscription_loop(proxy: EventLoopProxy<AppEvent>, mut conn: SharedDaemonConn) {
     let mut failures: u32 = 0;
     loop {
-        let client = match conn.wait_client().await {
+        let client = match tokio::select! {
+            biased;
+            _ = proxy.closed() => return,
+            client = conn.wait_client() => client,
+        } {
             Some(c) => c,
             None => return, // app 終了
         };
@@ -541,56 +588,70 @@ async fn run_repos_session(
 ) -> Result<SubscriptionOutcome, String> {
     use unison::network::MessageType;
 
-    let channel = client
+    let channel = tokio::select! {
+        biased;
+        _ = proxy.closed() => return Ok(SubscriptionOutcome::AppClosing),
+        result = async { client
         .open_channel("daemon-repo")
         .await
-        .map_err(|e| format!("open daemon-repo channel: {}", e))?;
-    channel
-        .request::<serde_json::Value, serde_json::Value>("subscribe", &serde_json::json!({}))
-        .await
-        .map_err(|e| format!("daemon-repo subscribe: {}", e))?;
-    tracing::info!("daemon-repo subscription connected");
+        .map_err(|e| format!("open daemon-repo channel: {}", e)) } => result?,
+    };
+    let work = async {
+        channel
+            .request::<serde_json::Value, serde_json::Value>("subscribe", &serde_json::json!({}))
+            .await
+            .map_err(|e| format!("daemon-repo subscribe: {}", e))?;
+        tracing::info!("daemon-repo subscription connected");
 
-    loop {
-        let msg = match channel.recv().await {
-            Ok(m) => m,
-            Err(_) => return Ok(SubscriptionOutcome::Disconnected),
-        };
-        if msg.msg_type != MessageType::Event || msg.method != "event" {
-            continue;
-        }
-        let kind = msg
-            .payload_as_value()
-            .ok()
-            .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(String::from));
-        if kind.as_deref() != Some("repos_changed") {
-            continue;
-        }
-        // burst を畳む: 直後に続く event は種類を問わず読み捨てる（Add / Remove は元々無視、
-        // ReposChanged は次の 1 回の fetch に含まれる）。timeout で抜けたら fetch へ。
         loop {
-            match tokio::time::timeout(REPOS_CHANGED_COALESCE, channel.recv()).await {
-                Ok(Ok(_)) => continue,
-                Ok(Err(_)) => return Ok(SubscriptionOutcome::Disconnected),
-                Err(_elapsed) => break,
-            }
-        }
-        // 取り直しは共有 connection の control client で（購読 stream とは別 stream）。
-        let repos = match conn.control().await {
-            Ok(control) => match crate::daemon::pollers::fetch_repos_with_ports(&control).await {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!("ReposChanged 後の repos 再 fetch 失敗: {}", e);
-                    continue;
-                }
-            },
-            Err(e) => {
-                tracing::warn!("ReposChanged 後の control 取得失敗: {}", e);
+            let msg = match channel.recv().await {
+                Ok(m) => m,
+                Err(_) => return Ok(SubscriptionOutcome::Disconnected),
+            };
+            if msg.msg_type != MessageType::Event || msg.method != "event" {
                 continue;
             }
-        };
-        if proxy.send_event(AppEvent::ReposLoaded(repos)).is_err() {
-            return Ok(SubscriptionOutcome::AppClosing);
+            let kind = msg
+                .payload_as_value()
+                .ok()
+                .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(String::from));
+            if kind.as_deref() != Some("repos_changed") {
+                continue;
+            }
+            // burst を畳む: 直後に続く event は種類を問わず読み捨てる（Add / Remove は元々無視、
+            // ReposChanged は次の 1 回の fetch に含まれる）。timeout で抜けたら fetch へ。
+            loop {
+                match tokio::time::timeout(REPOS_CHANGED_COALESCE, channel.recv()).await {
+                    Ok(Ok(_)) => continue,
+                    Ok(Err(_)) => return Ok(SubscriptionOutcome::Disconnected),
+                    Err(_elapsed) => break,
+                }
+            }
+            // 取り直しは共有 connection の control client で（購読 stream とは別 stream）。
+            let repos = match conn.control().await {
+                Ok(control) => match crate::daemon::pollers::fetch_repos_with_ports(&control).await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!("ReposChanged 後の repos 再 fetch 失敗: {}", e);
+                        continue;
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("ReposChanged 後の control 取得失敗: {}", e);
+                    continue;
+                }
+            };
+            if proxy.send_event(AppEvent::ReposLoaded(repos)).is_err() {
+                return Ok(SubscriptionOutcome::AppClosing);
+            }
         }
-    }
+    };
+    let outcome = tokio::select! {
+        biased;
+        _ = proxy.closed() => Ok(SubscriptionOutcome::AppClosing),
+        result = work => result,
+    };
+    let _ = channel.close().await;
+    outcome
 }

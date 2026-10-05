@@ -24,7 +24,7 @@ dev-flow (= Main が複数 Sub に並列 task を渡し、 進捗を集約する
 mcp__vantage-point__flow_handoff {
   "name": "feat-api",                 // 必須: sub slug
   "task_spec": "# mission\n...",      // 必須: worker への markdown 仕様
-  "branch": "mako/feat-api",          // 省略時 `<git-user>/<slug>` を auto-derive
+  "branch": "wip/feat-api",           // 省略時 `wip/<slug>` を導出（branch-step: 枝名 = 段、slug = lane 名）
   "agent": "claude",                  // default "claude" (= Claude CLI)
   "mode": "hitl",                     // "hitl" (default、 nudge 後応答期待) / "auto"
   "nudge": true                       // default true、 false で tmux send-keys を skip
@@ -35,7 +35,7 @@ mcp__vantage-point__flow_handoff {
   "lane_address": "vantage-point/sub/feat-api",
   "wire_msg_id": "019e...",
   "sub_dir": "/.../.vp/lanes/feat-api",
-  "branch": "mako/feat-api",
+  "branch": "wip/feat-api",
   "mode": "hitl",
   "nudge": "sent"
 }
@@ -48,7 +48,7 @@ mcp__vantage-point__flow_handoff {
 echo "# mission..." | vp flow handoff feat-api --task-spec -
 
 # ファイルから
-vp flow handoff feat-api --task-spec /tmp/task.md --branch mako/feat-api
+vp flow handoff feat-api --task-spec /tmp/task.md --branch wip/feat-api
 
 # nudge を skip (= 完全 async、 完了 wire を待つだけ)
 vp flow handoff feat-api --task-spec /tmp/task.md --no-nudge
@@ -87,7 +87,7 @@ mcp__vantage-point__flow_progress {}
     "agent": "claude",
     "cwd": "/.../.vp/lanes/feat-api",
     "sub_status": {
-      "branch": "mako/feat-api",
+      "branch": "wip/feat-api",
       "dirty_count": 2,
       "ahead": 3,
       "behind": 0,
@@ -124,9 +124,9 @@ Repo: vantage-point
   Main unread wire: 2
 
 SUB                STATE      MODE                 AHEAD  BEHIND   DIRTY  UNREAD BRANCH
-feat-api                 Running    🤝 hitl-pending          3       0       2       0 mako/feat-api
-chore-deps               Running    🤖 auto-running          1       0       0       3 mako/chore-deps
-flow-tools               Running    ✅ completed             8       2       0       0 mako/flow-tools
+feat-api                 Running    🤝 hitl-pending          3       0       2       0 wip/feat-api
+chore-deps               Running    🤖 auto-running          1       0       0       3 wip/chore-deps
+flow-tools               Running    ✅ completed             8       2       0       0 wip/flow-tools
 ```
 
 emoji label の意味:

@@ -41,6 +41,11 @@ pub struct DevicesRender {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaneStowRestore {
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellLayout {
     pub sidebar_width: i64,
     pub right_sidebar_width: i64,
@@ -83,6 +88,20 @@ pub struct InkSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InkSnapshotError {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceText {
+    pub lane: String,
+    pub session: i64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceError {
+    pub lane: String,
+    pub session: i64,
     pub message: String,
 }
 
@@ -132,6 +151,8 @@ pub enum PushEventEnvelope {
     TermPaste(TermPaste),
     #[serde(rename = "devices:render")]
     DevicesRender(DevicesRender),
+    #[serde(rename = "pane:stow_restore")]
+    PaneStowRestore(PaneStowRestore),
     #[serde(rename = "shell:layout")]
     ShellLayout(ShellLayout),
     #[serde(rename = "console:session_list")]
@@ -146,6 +167,10 @@ pub enum PushEventEnvelope {
     InkSnapshot(InkSnapshot),
     #[serde(rename = "ink:snapshot_error")]
     InkSnapshotError(InkSnapshotError),
+    #[serde(rename = "voice:text")]
+    VoiceText(VoiceText),
+    #[serde(rename = "voice:error")]
+    VoiceError(VoiceError),
     #[serde(rename = "code:entries")]
     CodeEntries(CodeEntries),
     #[serde(rename = "code:file")]

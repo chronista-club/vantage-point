@@ -55,6 +55,29 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(3);
 /// 動的 catalog の cache。`None` = 未取得（endpoint 不在 / 起動直後）。
 static CACHE: RwLock<Option<Vec<Choice>>> = RwLock::new(None);
 
+#[cfg(test)]
+use ts_rs::TS;
+
+/// vpcode の「次にどう走らせるか」。vpcode に engine 既定は無い（hello.model 必須）ので
+/// model は Option でない — 未指定時の解決順（session > env > catalog 先頭）は
+/// [`super::vpcode_host`] の `resolve_model`。effort の概念は無い（picker も出ない）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct VpcodeSettings {
+    /// `--model` に渡す id（provider 名前空間つき、`openai/gpt-oss-20b` 等）。
+    pub model: String,
+}
+
+impl VpcodeSettings {
+    /// 永続前の形式検査（`--model` 引数への injection 防壁 — catalog の [`is_selectable`] と同じ guard）。
+    pub fn validate_shape(&self) -> Result<(), String> {
+        if !crate::lane::engine_model::is_valid_model(&self.model) {
+            return Err(format!("vpcode の model 名が不正: {:?}", self.model));
+        }
+        Ok(())
+    }
+}
+
 /// vpcode の endpoint（**vpcode 本体と同じ env / 既定値**を使う — `--base-url` の doc 参照）。
 fn base_url() -> String {
     std::env::var("VPCODE_BASE_URL")
@@ -86,7 +109,7 @@ pub fn choices() -> Vec<Choice> {
 ///
 /// **① 下流の guard を通らない id**（[`crate::lane::engine_model::is_valid_model`]）。
 /// これを通さないと、この module を作った動機そのもの — 「選ぶと必ず失敗する行き止まり」
-/// — を供給元次第で再生産する。GUI の選択は `conversation_set_model` で同じ guard を
+/// — を供給元次第で再生産する。GUI の選択は `conversation_set_settings` で同じ guard を
 /// 通るので、**catalog に載せてよい id の定義は guard 1 本**に畳む（doc と実装が乖離
 /// しないよう、判定を持たずに借りる）。⚠️ 実例: Ollama の id は `gpt-oss:20b` のような
 /// `name:tag` 形式が標準だが、guard は `:` を許さない（shell 埋め込みの防壁のため

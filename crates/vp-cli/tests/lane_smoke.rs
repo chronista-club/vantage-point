@@ -345,3 +345,58 @@ fn vp_lane_rm_with_invalid_name_errors() {
         .assert()
         .failure();
 }
+
+// --- lane new / fork（branch-step: 既定 branch = wip/<slug>、#1157 follow-up should-2）---
+
+/// `git -C <dir> branch --show-current`
+fn current_branch(dir: &Path) -> String {
+    let out = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn vp_lane_new_defaults_to_wip_slug() {
+    // origin 無し → base は local main に落ちる（resolve_start_point の fallback）
+    let repo = setup_minimal_repo();
+    Command::cargo_bin("vp")
+        .unwrap()
+        .args(["lane", "new", "foo"])
+        .current_dir(repo.path())
+        .assert()
+        .success();
+    let sub = repo.path().join(".vp/lanes/foo");
+    assert!(sub.exists());
+    assert_eq!(current_branch(&sub), "wip/foo");
+}
+
+#[test]
+fn vp_lane_new_rejects_non_slug_name_without_creating_dir() {
+    let repo = setup_minimal_repo();
+    Command::cargo_bin("vp")
+        .unwrap()
+        .args(["lane", "new", "Foo_bar"])
+        .current_dir(repo.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("[a-z0-9-]"));
+    assert!(!repo.path().join(".vp/lanes/Foo_bar").exists());
+}
+
+#[test]
+fn vp_lane_new_keeps_explicit_branch() {
+    let repo = setup_minimal_repo();
+    Command::cargo_bin("vp")
+        .unwrap()
+        .args(["lane", "new", "bar", "exp/bar"])
+        .current_dir(repo.path())
+        .assert()
+        .success();
+    assert_eq!(
+        current_branch(&repo.path().join(".vp/lanes/bar")),
+        "exp/bar"
+    );
+}

@@ -48,6 +48,8 @@ use super::host::InFlight;
 
 #[path = "codex_queue.rs"]
 mod native_queue;
+#[path = "codex_permission_menu.rs"]
+mod permissions;
 #[path = "codex_runtime.rs"]
 mod runtime;
 
@@ -84,6 +86,13 @@ enum ReqKind {
     AsyncReplySteer,
 }
 
+/// 起動待ちの本文と添付を一組で保持する。
+struct PendingPrompt {
+    text: String,
+    client_id: Option<String>,
+    images: Vec<super::host::ImageInput>,
+}
+
 /// reader task / host メソッドが共有する可変状態（std Mutex — await を跨がずに触る）。
 struct RpcState {
     native_queue: super::event::CodexQueueView,
@@ -110,7 +119,7 @@ struct RpcState {
     /// turn 実行中か（true の submit は queue へ）。
     turn_active: bool,
     /// thread 未確定 or turn 実行中に来た submit の待ち行列。
-    queue: VecDeque<(String, Option<String>)>,
+    queue: VecDeque<PendingPrompt>,
     /// disk にまだ載っていない増分 + commit 世代（[`super::host`] と同契約）。
     in_flight: InFlight,
     /// app-server 子プロセスの pid。
@@ -395,16 +404,17 @@ impl RpcInner {
                     );
                     return;
                 }
-                let (prompt, client_id) = st.queue.pop_front().expect("non-empty queue");
+                let prompt = st.queue.pop_front().expect("non-empty queue");
                 let thread_id = st.thread_id.clone().expect("thread id");
                 st.turn_active = true;
                 let id = st.alloc(ReqKind::TurnStart);
-                Some(build_configured_turn_start(
+                Some(build_image_turn_start(
                     id,
                     &thread_id,
-                    &prompt,
-                    client_id.as_deref(),
+                    &prompt.text,
+                    prompt.client_id.as_deref(),
                     st.config.selection.as_ref(),
+                    &prompt.images,
                 ))
             }
         };
@@ -426,6 +436,13 @@ impl CodexAgentHost {
         thread: &str,
         action: &serde_json::Value,
     ) -> anyhow::Result<()> {
+        if matches!(
+            action["kind"].as_str(),
+            Some("permissions" | "permission_options")
+        ) {
+            return permissions::control(self.inner.clone(), thread.to_owned(), action.clone())
+                .await;
+        }
         if action["kind"] == "mode" {
             return runtime::change_mode(
                 self.inner.clone(),
@@ -535,12 +552,18 @@ impl CodexAgentHost {
         let stderr = child.stderr.take();
         let child_pid = child.id();
 
+        // 自分の session の Codex settings だけ読む（他 engine の variant は None に落ちる —
+        // agent の文字列比較でなく variant で選ぶ）。
         let selection =
             crate::lane::session_registry::load(&config.repo, &config.lane_label, "codex")
                 .sessions
                 .into_iter()
-                .find(|entry| entry.key == config.session_key && entry.agent == "codex")
-                .and_then(|entry| entry.codex_selection);
+                .find(|entry| entry.key == config.session_key)
+                .and_then(|entry| entry.settings)
+                .and_then(|settings| match settings {
+                    crate::conversation::EngineSettings::Codex(sel) => Some(sel),
+                    _ => None,
+                });
         let (event_tx, _rx) = broadcast::channel::<ConversationEvent>(256);
         let inner = Arc::new(RpcInner {
             event_tx,
@@ -638,11 +661,14 @@ impl CodexAgentHost {
         }
         super::codex_settings::validate(&st.config.models, &selection)?;
         let (lane, key) = crate::lane::session_registry::parse_session_label(&self.inner.lane);
-        crate::lane::session_registry::set_codex_selection(
+        crate::lane::session_registry::set_settings(
             &self.inner.repo,
             lane,
+            "codex",
             key,
-            selection.clone(),
+            Some(crate::conversation::EngineSettings::Codex(
+                selection.clone(),
+            )),
         )
         .map_err(|error| format!("Codex 設定を保存できませんでした: {error}"))?;
         st.config.selection = Some(selection);
@@ -740,6 +766,17 @@ impl CodexAgentHost {
         client_id: Option<&str>,
         activity: Option<&std::sync::atomic::AtomicBool>,
     ) -> anyhow::Result<()> {
+        self.submit_images_with_activity(prompt, &[], client_id, activity)
+            .await
+    }
+
+    pub(crate) async fn submit_images_with_activity(
+        &self,
+        prompt: &str,
+        images: &[super::host::ImageInput],
+        client_id: Option<&str>,
+        activity: Option<&std::sync::atomic::AtomicBool>,
+    ) -> anyhow::Result<()> {
         let line = {
             let mut st = self.inner.state.lock().expect("rpc state lock");
             if st.dead {
@@ -771,8 +808,11 @@ impl CodexAgentHost {
                 || st.thread_id.is_none()
                 || (st.config.selection.is_some() && !st.catalog_ready)
             {
-                st.queue
-                    .push_back((prompt.to_string(), client_id.map(str::to_owned)));
+                st.queue.push_back(PendingPrompt {
+                    text: prompt.to_owned(),
+                    client_id: client_id.map(str::to_owned),
+                    images: images.to_vec(),
+                });
                 tracing::debug!(
                     "codex submit: {} → queue（depth={}）",
                     if st.turn_active {
@@ -787,12 +827,13 @@ impl CodexAgentHost {
                 let thread_id = st.thread_id.clone().expect("thread id");
                 st.turn_active = true;
                 let id = st.alloc(ReqKind::TurnStart);
-                Some(build_configured_turn_start(
+                Some(build_image_turn_start(
                     id,
                     &thread_id,
                     prompt,
                     client_id,
                     st.config.selection.as_ref(),
+                    images,
                 ))
             }
         };
@@ -963,6 +1004,33 @@ fn build_configured_turn_start(
         request["params"]["model"] = serde_json::json!(selection.model);
         request["params"]["effort"] = serde_json::json!(selection.effort);
     }
+    request.to_string()
+}
+
+/// Image inputs use inline data URLs; VP does not create image files.
+fn image_input(prompt: &str, images: &[super::host::ImageInput]) -> serde_json::Value {
+    let mut input = vec![serde_json::json!({"type":"text","text":prompt,"text_elements":[]})];
+    input.extend(images.iter().map(|image| {
+        serde_json::json!({
+            "type":"image", "url":format!("data:{};base64,{}",image.media_type,image.data_base64)
+        })
+    }));
+    serde_json::Value::Array(input)
+}
+
+fn build_image_turn_start(
+    id: i64,
+    thread_id: &str,
+    prompt: &str,
+    client_id: Option<&str>,
+    selection: Option<&super::event::CodexSelection>,
+    images: &[super::host::ImageInput],
+) -> String {
+    let mut request: serde_json::Value = serde_json::from_str(&build_configured_turn_start(
+        id, thread_id, prompt, client_id, selection,
+    ))
+    .expect("turn request JSON");
+    request["params"]["input"] = image_input(prompt, images);
     request.to_string()
 }
 
@@ -1456,9 +1524,14 @@ async fn handle_response(
         }
         ReqKind::ThreadResume => {
             if let Some(err) = error {
+                let reason = error_message(err);
+                let recovery = if reason.contains("active writer") {
+                    "\n同じ会話を開いている Codex Console で処理を完了または中断し、/quit で終了してから再試行してください。更新前の共有 daemon に戻る場合は、Console の shell で codex resume '<元の会話 ID>'（--no-daemon なし）を実行してください。入力は自動再送しません。"
+                } else {
+                    ""
+                };
                 inner.fail_startup(format!(
-                    "Codex の会話を再開できませんでした。元の会話 ID は保持しています: {}",
-                    error_message(err)
+                    "Codex の会話を再開できませんでした。元の会話 ID は保持しています: {reason}{recovery}"
                 ));
                 return;
             }
@@ -1642,6 +1715,40 @@ async fn handle_response(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn codex_startup_queue_keeps_images_and_request_identity() {
+        let host = response_test_host();
+        let images = vec![super::super::host::ImageInput {
+            media_type: "image/png".into(),
+            data_base64: "aGVsbG8=".into(),
+        }];
+        host.submit_images_with_activity("describe", &images, Some("client"), None)
+            .await
+            .unwrap();
+        let state = host.inner.state.lock().unwrap();
+        let pending = state.queue.front().unwrap();
+        assert_eq!(pending.images, images);
+        let selection = super::super::event::CodexSelection {
+            model: "fixture".into(),
+            effort: "high".into(),
+        };
+        let request: serde_json::Value = serde_json::from_str(&build_image_turn_start(
+            4,
+            "thread",
+            &pending.text,
+            pending.client_id.as_deref(),
+            Some(&selection),
+            &pending.images,
+        ))
+        .unwrap();
+        assert_eq!(request["params"]["clientUserMessageId"], "client");
+        assert_eq!(request["params"]["model"], "fixture");
+        assert_eq!(
+            request["params"]["input"][1]["url"],
+            "data:image/png;base64,aGVsbG8="
+        );
+    }
+
     // mem_1CeySwxuoVc17bGLnU5Np3: native Queue の更新を現在の会話だけに投影する。
     #[tokio::test]
     async fn native_queue_change_invalidates_only_current_thread_view() {
@@ -2334,11 +2441,225 @@ for line in sys.stdin: pass
     }
 
     #[test]
+    fn permissions_runtime_retains_reviewer_without_guessing_missing_values() {
+        let settings = serde_json::json!({"approvalsReviewer":"auto_review", "approvalPolicy":"on-request",
+            "sandboxPolicy":{"type":"workspaceWrite","networkAccess":false,"writableRoots":[],"excludeTmpdirEnvVar":false,"excludeSlashTmp":false},
+            "activePermissionProfile":{"id":":workspace"},"cwd":"/work"});
+        let runtime = serde_json::to_value(runtime::parse(&settings)).unwrap();
+        assert_eq!(runtime["reviewer"], "auto_review");
+        assert_eq!(runtime["cwd"], "/work");
+        assert_eq!(runtime["preset"], "auto-review");
+        let unknown = serde_json::to_value(runtime::parse(&serde_json::json!({}))).unwrap();
+        assert!(unknown["reviewer"].is_null());
+        assert!(unknown["preset"].is_null());
+        let full = runtime::parse(
+            &serde_json::json!({"approvalsReviewer":"user","approvalPolicy":"never",
+            "sandboxPolicy":{"type":"dangerFullAccess"},"activePermissionProfile":{"id":":danger-full-access"}}),
+        );
+        assert_eq!(full.network_access, Some(true));
+        assert_eq!(full.preset.as_deref(), Some("full-access"));
+        let mut custom = settings.clone();
+        custom["sandboxPolicy"]["writableRoots"] = serde_json::json!(["/extra"]);
+        assert_eq!(
+            runtime::parse(&custom).preset.as_deref(),
+            Some("auto-review")
+        );
+        assert_eq!(runtime::parse(&custom).writable_roots, ["/work", "/extra"]);
+        custom["activePermissionProfile"] = serde_json::Value::Null;
+        assert!(serde_json::to_value(runtime::parse(&custom)).unwrap()["preset"].is_null());
+    }
+
+    #[test]
     fn runtime_external_sandbox_network_is_not_unknown() {
         for (value, expected) in [("enabled", true), ("restricted", false)] {
             let settings = serde_json::json!({"approvalPolicy":"on-request", "sandboxPolicy":{"type":"externalSandbox","networkAccess":value}});
             assert_eq!(runtime::parse(&settings).network_access, Some(expected));
         }
+    }
+
+    // mem_1Cf4jdULqRjEXawJPqbxfS: 候補取得と変更を分け、native 通知で確定する。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn permissions_options_are_read_only_and_explicit_change_is_confirmed() {
+        let host = response_test_host();
+        {
+            let mut st = host.inner.state.lock().unwrap();
+            st.thread_id = Some("thread".into());
+            st.native_queue.ready = true;
+            st.config.runtime = Some(Box::new(runtime::parse(&serde_json::json!({
+                "approvalPolicy":"on-request","approvalsReviewer":"user","cwd":"/work",
+                "sandboxPolicy":{"type":"workspaceWrite","networkAccess":false,"writableRoots":["/extra"],"excludeTmpdirEnvVar":false,"excludeSlashTmp":false},
+                "activePermissionProfile":{"id":":workspace"}
+            }))));
+        }
+        let script = r#"import json,sys
+applied=False
+named_applied=False
+def send(v): print(json.dumps(v),flush=True)
+for line in sys.stdin:
+    r=json.loads(line)
+    if r.get('method')=='initialize': continue
+    if r['method']=='permissionProfile/list':
+        assert r['params']['cwd']=='/work'
+        send({'id':r['id'],'result':{'data':[{'id':':workspace','allowed':True},{'id':':read-only','allowed':True},{'id':':danger-full-access','allowed':True},{'id':'locked','allowed':False},{'id':'team','allowed':True}],'nextCursor':None}})
+    elif r['method']=='configRequirements/read':
+        send({'id':r['id'],'result':{'requirements':{'allowedApprovalPolicies':['on-request'],'allowedApprovalsReviewers':['user','auto_review']}}})
+    elif r['method']=='thread/settings/update':
+        if r['params']['permissions']=='team':
+            assert r['params']=={'threadId':'thread','permissions':'team'}, r
+            if not named_applied:
+                send({'method':'thread/settings/updated','params':{'threadId':'thread','threadSettings':{'cwd':'/work','approvalPolicy':'on-request','approvalsReviewer':'auto_review','sandboxPolicy':{'type':'workspaceWrite','networkAccess':False},'activePermissionProfile':{'id':'team'}}}})
+                named_applied=True
+            send({'id':r['id'],'result':{}})
+            continue
+        if r['params']['approvalsReviewer']=='user':
+            send({'id':r['id'],'error':{'code':-32600,'message':'fixture rejected update'}})
+            continue
+        assert r['params']=={'threadId':'thread','permissions':':workspace','approvalPolicy':'on-request','approvalsReviewer':'auto_review'}, r
+        if applied:
+            raise AssertionError('unchanged permissions must not be resent')
+        applied=True
+        send({'method':'thread/settings/updated','params':{'threadId':'thread','threadSettings':{'cwd':'/work','approvalPolicy':'on-request','approvalsReviewer':'auto_review','sandboxPolicy':{'type':'workspaceWrite','networkAccess':False,'writableRoots':['/extra'],'excludeTmpdirEnvVar':False,'excludeSlashTmp':False},'activePermissionProfile':{'id':':workspace'}}}})
+        send({'id':r['id'],'result':{}})
+    else: raise AssertionError(r)
+"#;
+        let mut child = tokio::process::Command::new(if cfg!(target_os = "macos") {
+            "/usr/bin/python3"
+        } else {
+            "python3"
+        })
+        .args(["-u", "-c", script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+        *host.inner.stdin.lock().await = child.stdin.take();
+        let reader = tokio::spawn(run_reader(
+            host.inner.clone(),
+            child.stdout.take().unwrap(),
+            None,
+        ));
+        let loaded = host
+            .codex_input("thread", &serde_json::json!({"kind":"permission_options"}))
+            .await;
+        assert!(loaded.is_ok(), "{loaded:?}");
+        let config = serde_json::to_value(&host.inner.state.lock().unwrap().config).unwrap();
+        assert_eq!(config["runtime"]["reviewer"], "user");
+        host.codex_input(
+            "thread",
+            &serde_json::json!({"kind":"permissions","choice":"standard"}),
+        )
+        .await
+        .expect("confirmed standard with additional roots is not resent");
+        let choices = config["permission_choices"].as_array().unwrap();
+        assert!(
+            choices.iter().find(|c| c["id"] == "full-access").unwrap()["disabled_reason"]
+                .is_string()
+        );
+        assert!(
+            choices
+                .iter()
+                .find(|c| c["id"] == "profile:locked")
+                .unwrap()["disabled_reason"]
+                .is_string()
+        );
+        host.inner.state.lock().unwrap().turn_active = true;
+        assert!(
+            host.codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"auto-review"})
+            )
+            .await
+            .is_err()
+        );
+        host.inner.state.lock().unwrap().turn_active = false;
+        host.inner.state.lock().unwrap().queue_dirty = true;
+        assert!(
+            host.codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"auto-review"})
+            )
+            .await
+            .is_err()
+        );
+        host.inner.state.lock().unwrap().queue_dirty = false;
+        assert!(
+            host.codex_input(
+                "other",
+                &serde_json::json!({"kind":"permissions","choice":"auto-review"})
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            host.codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"full-access"})
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            host.codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"profile:locked"})
+            )
+            .await
+            .is_err()
+        );
+        let changed = host
+            .codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"auto-review"}),
+            )
+            .await;
+        changed.expect("explicit choice succeeds");
+        assert_eq!(
+            serde_json::to_value(&host.inner.state.lock().unwrap().config).unwrap()["runtime"]["reviewer"],
+            "auto_review"
+        );
+        assert!(!host.inner.state.lock().unwrap().queue_busy);
+        host.codex_input(
+            "thread",
+            &serde_json::json!({"kind":"permissions","choice":"auto-review"}),
+        )
+        .await
+        .expect("already confirmed choice completes without another update");
+        for _ in 0..2 {
+            host.codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"profile:team"}),
+            )
+            .await
+            .expect("named profile selection and reselection both complete");
+        }
+        {
+            let state = host.inner.state.lock().unwrap();
+            let runtime = state.config.runtime.as_ref().unwrap();
+            assert_eq!(runtime.profile.as_deref(), Some("team"));
+            assert_eq!(runtime.reviewer.as_deref(), Some("auto_review"));
+            assert!(!state.queue_busy);
+        }
+        let rejected = host
+            .codex_input(
+                "thread",
+                &serde_json::json!({"kind":"permissions","choice":"standard"}),
+            )
+            .await;
+        assert!(
+            rejected
+                .unwrap_err()
+                .to_string()
+                .contains("fixture rejected update")
+        );
+        {
+            let state = host.inner.state.lock().unwrap();
+            assert!(state.config.runtime.is_none());
+            assert!(!state.queue_busy && !state.dead);
+        }
+        reader.abort();
+        child.kill().await.unwrap();
     }
 
     #[tokio::test]
@@ -2758,13 +3079,13 @@ for line in sys.stdin:
     }
 
     #[test]
-    fn codex_selection_survives_registry_roundtrip() {
-        let value = serde_json::json!({"key":2,"agent":"codex","codex_selection":{"model":"two","effort":"high"}});
+    fn codex_settings_survive_registry_roundtrip() {
+        let value = serde_json::json!({"key":2,"agent":"codex","settings":{"codex":{"model":"two","effort":"high"}}});
         let entry: crate::lane::session_registry::SessionEntry =
             serde_json::from_value(value.clone()).unwrap();
         assert_eq!(
-            serde_json::to_value(entry).unwrap()["codex_selection"],
-            value["codex_selection"]
+            serde_json::to_value(entry).unwrap()["settings"],
+            value["settings"]
         );
     }
 
@@ -3295,6 +3616,7 @@ for line in sys.stdin:
         for reason in [
             "no rollout found",
             "required MCP server failed to initialize",
+            "thread already has an active writer",
         ] {
             let host = response_test_host();
             let mut rx = host.subscribe();
@@ -3327,9 +3649,15 @@ for line in sys.stdin:
                 );
                 assert!(!state.turn_active);
             }
-            assert!(
-                matches!(rx.try_recv().unwrap(), ConversationEvent::Error { message } if message.contains(reason))
-            );
+            let ConversationEvent::Error { message } = rx.try_recv().unwrap() else {
+                panic!("resume failure must be visible");
+            };
+            assert!(message.contains(reason));
+            if reason.contains("active writer") {
+                assert!(message.contains("Console"));
+                assert!(message.contains("/quit"));
+                assert!(message.contains("自動再送しません"));
+            }
             assert!(
                 host.submit("retry by rebuilding the host").await.is_err(),
                 "the existing Chat retry path needs Err, not an indefinitely queued prompt"

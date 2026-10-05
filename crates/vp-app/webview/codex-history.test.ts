@@ -48,22 +48,66 @@ describe('Codex native history', () => {
 
   it('ACK 後も送信 ID を残し、履歴に含まれた同じ送信だけを置き換える', () => {
     const s = emptyChatState()
-    beginSubmission(s, 'request-a', '同じ文', [])
+    beginSubmission(s, 'request-a', '同じ文', [], true)
     foldInto(s, { kind: 'submit_result', request_id: 'request-a', error: null })
     expect(s.items[0]).toMatchObject({ clientId: 'request-a' })
     foldInto(s, snapshot([{ kind: 'user_message', text: '同じ文' }], ['request-a']))
     expect(s.items).toHaveLength(1)
-    beginSubmission(s, 'request-b', '同じ文', [])
+    beginSubmission(s, 'request-b', '同じ文', [], true)
     foldInto(s, snapshot([{ kind: 'user_message', text: '同じ文' }], ['request-a']))
-    expect(s.items).toHaveLength(2)
+    expect(s.items).toHaveLength(1)
+    expect(s.unconfirmedCodexInputs).toMatchObject([{ id: 'request-b', text: '同じ文' }])
     expect(s.submission?.id).toBe('request-b')
   })
 
   it('snapshot に未包含の送信は ACK 後でも消さない', () => {
     const s = emptyChatState()
-    beginSubmission(s, 'request-a', '送った文', [])
+    beginSubmission(s, 'request-a', '送った文', [], true)
     foldInto(s, { kind: 'submit_result', request_id: 'request-a', error: null })
     foldInto(s, snapshot([{ kind: 'user_message', text: '昔の文' }]))
-    expect(s.items.map(i => 'text' in i ? i.text : i.kind)).toEqual(['昔の文', '送った文'])
+    expect(s.items.map(i => 'text' in i ? i.text : i.kind)).toEqual(['昔の文'])
+    expect(s.unconfirmedCodexInputs).toEqual([{ id: 'request-a', text: '送った文', images: [] }])
+  })
+
+  it('照合 ID が欠けても古い発言を新しい発言の後ろに付け直さない', () => {
+    const s = emptyChatState()
+    const images = [{ media_type: 'image/png', data: 'aGVsbG8=' }]
+    beginSubmission(s, 'old', '進めていこう', images, true)
+    foldInto(s, { kind: 'submit_result', request_id: 'old', error: null })
+    for (const text of ['マージして', '次の作業', '状況は？']) {
+      foldInto(s, snapshot([
+        { kind: 'user_message', text: '進めていこう' },
+        { kind: 'user_message', text },
+      ]))
+      expect(s.items.map(i => 'text' in i ? i.text : i.kind)).toEqual(['進めていこう', text])
+      expect(s.unconfirmedCodexInputs).toEqual([{ id: 'old', text: '進めていこう', images }])
+    }
+    foldInto(s, snapshot([{ kind: 'user_message', text: '進めていこう' }], ['old']))
+    expect(s.unconfirmedCodexInputs).toEqual([])
+  })
+
+  it('snapshot が ACK より先でも保持し、拒否時は失敗した送信に一本化する', () => {
+    const s = emptyChatState()
+    beginSubmission(s, 'pending', '入力', [], true)
+    foldInto(s, snapshot([]))
+    expect(s.items).toEqual([])
+    expect(s.unconfirmedCodexInputs).toHaveLength(1)
+    foldInto(s, { kind: 'submit_result', request_id: 'pending', error: 'rejected' })
+    expect(s.unconfirmedCodexInputs).toEqual([])
+    expect(s.submission).toMatchObject({ text: '入力', status: 'failed' })
+  })
+
+  it('同文の別送信はまとめず、別 thread には照合待ちを持ち越さない', () => {
+    const s = emptyChatState()
+    for (const id of ['a', 'b']) {
+      beginSubmission(s, id, '同じ文', [], true)
+      foldInto(s, { kind: 'submit_result', request_id: id, error: null })
+      foldInto(s, snapshot([]))
+    }
+    expect(s.unconfirmedCodexInputs?.map(i => i.id)).toEqual(['a', 'b'])
+    foldInto(s, snapshot([{ kind: 'user_message', text: '同じ文' }], ['b']))
+    expect(s.unconfirmedCodexInputs?.map(i => i.id)).toEqual(['a'])
+    foldInto(s, { ...snapshot([]), thread_id: 'other' } as ConversationEvent)
+    expect(s.unconfirmedCodexInputs).toEqual([])
   })
 })

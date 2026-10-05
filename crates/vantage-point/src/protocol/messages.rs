@@ -209,6 +209,9 @@ pub enum RepoMessage {
         #[serde(default = "default_session_key")]
         session: u32,
         data: String,
+        /// 新しい PTY 出力だけ true。replay / 旧 sender は自動操作を起動しない。
+        #[serde(default)]
+        live: bool,
     },
     /// Conversation gui（構造化会話 GUI）の翻訳済みイベント（per-lane）。doc 32。
     /// `ClaudeHost` が headless claude の stream-json を [`crate::conversation::ConversationEvent`]

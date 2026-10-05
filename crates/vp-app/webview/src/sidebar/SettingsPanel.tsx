@@ -1,5 +1,5 @@
 /**
- * 設定 overlay（doc 59 P1）— app 級の設定を 1 箇所に集める。
+ * 設定ページ（doc 59 / doc 76）— app 級の設定を 1 箇所に集める。
  *
  * `window.vpSettings.open()`（sidebar 下部の ⚙ 行 click）で開き、`settings:fetch` IPC で
  * 現在値を取りに行く。応答は `settings:result` → `window.vpSettings.handleResult` で
@@ -17,10 +17,13 @@
  * `settings:result` で受けて表示に反映する。client 側で先に state を進めないので、
  * 保存失敗時の巻き戻しを持たなくてよい（唯一の真実は vp-app.toml）。
  */
-import { createSignal, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { Portal } from "solid-js/web";
+import { sidebar } from "./store";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sendIpc } from "./ipc";
 import { useActivity } from "./DaemonWidget";
+import type { UpdateCheckResult } from "../generated/SidebarIpc";
 
 /** `settings:result` が運ぶ確定値（schema `vp-sidebar.kdl` の event 定義と 1:1）。 */
 export type SettingsSnapshot = {
@@ -50,6 +53,7 @@ declare global {
 		vpSettings?: {
 			open: () => void;
 			handleResult: (s: SettingsSnapshot) => void;
+			handleUpdateCheckResult: (s: UpdateCheckResult) => void;
 		};
 	}
 }
@@ -67,6 +71,20 @@ const [idleMinutes, setIdleMinutes] = createSignal(0);
 const [defaultAgent, setDefaultAgent] = createSignal("");
 const [defaultModel, setDefaultModel] = createSignal("");
 const [agentTakesModel, setAgentTakesModel] = createSignal(false);
+const [checkingUpdate, setCheckingUpdate] = createSignal(false);
+const [updateCheck, setUpdateCheck] = createSignal<UpdateCheckResult>();
+
+function checkUpdate(): void {
+	if (checkingUpdate() || sidebar.activity.update_applying) return;
+	setCheckingUpdate(true);
+	setUpdateCheck(undefined);
+	sendIpc({ t: "update:check" });
+}
+
+function handleUpdateCheckResult(result: UpdateCheckResult): void {
+	setCheckingUpdate(false);
+	setUpdateCheck(result);
+}
 
 function open(): void {
 	setVisible(true);
@@ -159,11 +177,60 @@ const LOG_LEVELS = ["", "trace", "debug", "info", "warn", "error"];
 /** アイドル判定の既定（分）。daemon が 0 を返した時の表示用。 */
 const DEFAULT_IDLE_MINUTES = 5;
 
+/** app の選択だけを監視する。定期 push や会話の更新は設定を閉じない。 */
+function workspaceSelection(): string {
+	return JSON.stringify([sidebar.active_lane_address ?? null,
+		sidebar.active_component?.repo_path ?? null, sidebar.active_component?.kind ?? null]);
+}
+
+/** pane を unmount / resize せず、一時的に入力対象から外す。 */
+function SettingsSurface(props: { children: JSX.Element }) {
+	const host = document.getElementById("host")!;
+	const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+	const selection = workspaceSelection();
+	let surface!: HTMLDivElement;
+	onMount(() => {
+		const inertBefore = new Map<Element, boolean>();
+		const shield = () => {
+			for (const child of Array.from(host.children)) {
+				if (child.contains(surface) || inertBefore.has(child)) continue;
+				inertBefore.set(child, child.hasAttribute("inert"));
+				child.setAttribute("inert", "");
+			}
+		};
+		shield();
+		const observer = new MutationObserver(shield);
+		observer.observe(host, { childList: true });
+		surface.querySelector<HTMLButtonElement>("button")?.focus();
+		onCleanup(() => {
+			observer.disconnect();
+			for (const [child, wasInert] of inertBefore) {
+				if (!wasInert) child.removeAttribute("inert");
+			}
+			if (workspaceSelection() === selection && previousFocus?.isConnected) previousFocus.focus();
+		});
+	});
+	return <Portal mount={host}><div ref={surface} class="vp-settings-surface">{props.children}</div></Portal>;
+}
+
 export function SettingsPanel() {
 	const v = useActivity();
+	const latestUpdate = () => {
+		if (checkingUpdate() || updateCheck()?.error) return undefined;
+		const checked = updateCheck();
+		return checked ? (checked.update_available ? checked.latest_version : undefined)
+			: (v.updateAvailable() ? v.latestVersion() : undefined);
+	};
+	let selection = workspaceSelection();
+	createEffect(() => {
+		const next = workspaceSelection();
+		if (next !== selection) dismiss();
+		selection = next;
+	});
+	onCleanup(dismiss);
 
 	onMount(() => {
-		window.vpSettings = { open, handleResult };
+		window.vpSettings = { open, handleResult, handleUpdateCheckResult };
 		// Esc で閉じる（WirePanel と同じく document listener、visible 時のみ反応）。
 		const onKeyDown = (e: KeyboardEvent) => {
 			if (visible() && e.key === "Escape") {
@@ -182,19 +249,19 @@ export function SettingsPanel() {
 
 	return (
 		<Show when={visible()}>
-			<div class="vp-settings-backdrop" onClick={dismiss}>
-				<div class="vp-settings-panel" onClick={(e) => e.stopPropagation()}>
+			<SettingsSurface>
+				<div class="vp-settings-panel" role="region" aria-label="設定">
 					<header class="vp-settings-header">
 						<CreoIcon name="ph:gear-six" size={14} />
 						<span class="vp-settings-title">設定</span>
 						<span class="vp-settings-spacer" />
 						<button
 							type="button"
-							class="vp-settings-iconbtn"
-							title="閉じる (Esc)"
+							class="vp-settings-btn"
+							title="作業に戻る (Esc)"
 							onClick={dismiss}
 						>
-							<CreoIcon name="ph:x" size={13} />
+							作業に戻る
 						</button>
 					</header>
 
@@ -408,27 +475,36 @@ export function SettingsPanel() {
 								<h3 class="vp-settings-h">メンテナンス</h3>
 								<div class="vp-settings-row">
 									<span class="vp-settings-label">アップデート</span>
+									<button type="button" class="vp-settings-btn"
+										disabled={checkingUpdate() || v.updateApplying()} onClick={checkUpdate}>
+										{checkingUpdate() ? "確認中…" : "今すぐ確認"}
+									</button>
 									<Show
-										when={v.updateAvailable()}
+										when={latestUpdate()}
 										fallback={
-											<span class="vp-settings-hint">
-												最新版です。新しい版が出ると、ここに更新ボタンが現れます。
+											<span class="vp-settings-hint" role="status" aria-live="polite">
+												{checkingUpdate() ? "最新版を確認しています。"
+													: updateCheck()?.error ? `確認できませんでした。${updateCheck()!.error}`
+													: updateCheck() ? "最新版です。"
+													: "「今すぐ確認」で新しいバージョンを確認できます。"}
 											</span>
 										}
 									>
 										<span class="vp-settings-hint">
-											新しいバージョン <strong>v{v.latestVersion() ?? "?"}</strong> が
+											新しいバージョン <strong>v{latestUpdate()}</strong> が
 											利用できます。更新すると VP が再起動します。
 										</span>
 										<button
 											type="button"
 											class="vp-settings-btn primary"
+											disabled={v.updateApplying()}
 											onClick={() => {
-												const ver = v.latestVersion();
+												if (v.updateApplying()) return;
+												const ver = latestUpdate();
 												if (ver) sendIpc({ t: "update:apply", version: ver });
 											}}
 										>
-											v{v.latestVersion() ?? "?"} に更新…
+											{v.updateApplying() ? "更新中…" : `v${latestUpdate()} に更新…`}
 										</button>
 									</Show>
 								</div>
@@ -450,21 +526,19 @@ export function SettingsPanel() {
 						</Show>
 					</div>
 				</div>
-			</div>
+			</SettingsSurface>
 		</Show>
 	);
 }
 
 /** Shell.tsx の <style> に連結する CSS（WIRE_PANEL_CSS と同じ流儀）。 */
 export const SETTINGS_PANEL_CSS = `
-.vp-settings-backdrop{position:absolute;inset:0;background:rgba(10,12,16,.55);z-index:9000;display:flex;align-items:stretch;}
-.vp-settings-panel{margin:24px 8px;flex:1;display:flex;flex-direction:column;background:var(--vp-bg,#14171d);border:1px solid rgba(255,255,255,.09);border-radius:10px;overflow:hidden;min-height:0;}
-.vp-settings-header{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.08);font-size:12px;}
+.vp-settings-surface{position:absolute;inset:0;z-index:9000;display:flex;align-items:stretch;background:var(--color-surface-bg-base,#14171d);color:var(--color-text-primary,#eafbff);container-type:inline-size;}
+.vp-settings-panel{margin:24px auto;width:calc(100% - 48px);max-width:960px;min-width:0;display:flex;flex-direction:column;background:var(--vp-bg,#14171d);border:1px solid rgba(255,255,255,.09);border-radius:10px;overflow:hidden;min-height:0;}
+.vp-settings-header{display:flex;align-items:center;gap:6px;flex:none;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,.08);font-size:12px;}
 .vp-settings-title{font-weight:600;}
 .vp-settings-spacer{flex:1;}
-.vp-settings-iconbtn{background:none;border:none;color:inherit;opacity:.7;cursor:pointer;padding:2px;display:flex;}
-.vp-settings-iconbtn:hover{opacity:1;}
-.vp-settings-body{flex:1;overflow-y:auto;padding:4px 10px 12px;min-height:0;}
+.vp-settings-body{flex:1;overflow-y:auto;overflow-wrap:anywhere;padding:4px 16px 16px;min-height:0;}
 .vp-settings-section{padding:10px 0;border-bottom:1px solid rgba(255,255,255,.06);}
 .vp-settings-section:last-child{border-bottom:none;}
 .vp-settings-h{margin:0 0 8px;font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--lg-mute,#5C7A85);}
@@ -472,7 +546,7 @@ export const SETTINGS_PANEL_CSS = `
 .vp-settings-label{font-weight:600;color:rgba(255,255,255,.9);}
 .vp-settings-hint{font-size:10.5px;line-height:1.5;color:rgba(255,255,255,.55);}
 .vp-settings-hint code{font-size:10px;padding:0 3px;border-radius:3px;background:rgba(255,255,255,.08);}
-.vp-settings-inputrow{display:flex;gap:6px;margin-top:2px;}
+.vp-settings-inputrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px;}
 .vp-settings-input{flex:1;min-width:0;font:inherit;font-size:11px;padding:4px 7px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);color:inherit;}
 .vp-settings-input:focus{outline:none;border-color:var(--sb-conn-auto,#FFF76B);}
 .vp-settings-btn{flex:0 0 auto;font:inherit;font-size:10.5px;padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);color:inherit;cursor:pointer;}
@@ -484,7 +558,7 @@ export const SETTINGS_PANEL_CSS = `
 select.vp-settings-input{cursor:pointer;}
 .vp-settings-btn.danger{align-self:flex-start;margin-top:4px;border-color:rgba(255,74,45,.45);background:rgba(255,74,45,.1);color:#ff8b73;}
 .vp-settings-btn.danger:hover{background:rgba(255,74,45,.2);}
-.vp-settings-authrow{display:flex;align-items:center;gap:8px;margin-top:4px;}
+.vp-settings-authrow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:4px;}
 .vp-settings-authname{flex:0 0 34px;font-size:11px;color:rgba(255,255,255,.85);}
 .vp-settings-authstate{flex:1;font-size:10.5px;opacity:.6;}
 /* toggle は label の左に置くので row を横並びに上書きする */
@@ -499,6 +573,10 @@ select.vp-settings-input{cursor:pointer;}
 .vp-settings-toggle.on .vp-settings-knob{transform:translateX(13px);}
 .vp-settings-locked{font-size:10px;color:#ffb74d;line-height:1.5;}
 .vp-settings-empty{padding:16px;text-align:center;font-size:11px;opacity:.5;}
+@container (max-width:480px){
+.vp-settings-panel{margin:8px;width:calc(100% - 16px);}
+.vp-settings-inputrow>.vp-settings-input{flex-basis:140px;}
+}
 /* sidebar 下部の ⚙ 入口（daemon status の直上 — doc 56 §7 / doc 59 §4） */
 .vp-settings-entry{display:flex;align-items:center;gap:8px;padding:3px var(--spacing-sm,8px);cursor:pointer;font-size:var(--sb-text-meta,11px);color:var(--lg-mute-2,#38525b);background:none;border:none;width:100%;text-align:left;font-family:inherit;}
 .vp-settings-entry:hover{color:var(--lg-mute,#5C7A85);}

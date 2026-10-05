@@ -7,7 +7,7 @@
 //! 旧 `app/mod.rs` の lane 系 helper と test module（6-2 PR-2、2026-09-08。本文は順序保持で一致、
 //! 差分は可視性 `pub(super)` のみ）。
 
-use tao::event_loop::EventLoopProxy;
+use crate::event_proxy::EventLoopProxy;
 use wry::WebView;
 
 use super::persist::Persist;
@@ -49,7 +49,9 @@ mod session_derivation_tests {
             16,
             serde_json::json!([
                 {"key": 16, "agent": "claude", "mode": "gui",
-                 "conversation": "conv-abc", "chat_capable": true, "image_capable": true},
+                 "conversation": "conv-abc", "chat_capable": true, "image_capable": true,
+                 "effort_choices": [{"value": "", "label": "Default"}, {"value": "high", "label": "high"}],
+                 "settings": {"claude": {"effort": "high"}}},
                 {"key": 24, "agent": "shell", "mode": "tui", "chat_capable": false},
             ]),
         );
@@ -80,6 +82,15 @@ mod session_derivation_tests {
         assert_eq!(
             entries[0]["image_capable"], true,
             "画像投入の能力表明も webview へ運ぶ（落とすと貼り付け UI が出ない）"
+        );
+        // 2026-09-21（PR-2）: effort の catalog と registry の intent も同じ写像を通る。
+        assert_eq!(
+            entries[0]["effort_choices"][1]["value"], "high",
+            "effort picker の catalog を運ぶ（落とすと picker が出ない）"
+        );
+        assert_eq!(
+            entries[0]["settings"]["claude"]["effort"], "high",
+            "settings は engine 所有の形のまま透過する（落とすと picker の現在値と carry-over が壊れる）"
         );
 
         assert_eq!(entries[1]["key"], 24);
@@ -273,8 +284,9 @@ pub(super) fn session_list_payload(
                 "mode": s.mode,
                 "chat_capable": s.chat_capable,
                 "image_capable": s.image_capable,
-                "model": s.model,
                 "model_choices": s.model_choices,
+                "effort_choices": s.effort_choices,
+                "settings": s.settings,
                 "permission_choices": s.permission_choices,
             })
         })
@@ -523,9 +535,7 @@ pub(super) fn push_active_view(main_view: &WebView, state: &SidebarState) {
             // showLane が「xterm 無し = 内容無し」と誤判定し placeholder が ChatView を覆う。
             chat: lane_is_chat(state, addr),
             cwd: lane.map(|l| l.cwd.as_str()).filter(|c| !c.is_empty()),
-            branch: lane
-                .and_then(|l| l.sub_status.as_ref())
-                .and_then(|p| p.branch.as_deref()),
+            branch: lane.and_then(lane_branch),
             // doc 44 P2: 旧 `LaneInfo.name` は複製 field で **常に None** だった（JS は addr
             // 短縮名に fallback していた）。フラット化で `address.name` が唯一の在処になり、
             // 常に実体を持つのでヘッダにそのまま供給できる。
@@ -575,14 +585,15 @@ pub(super) fn header_lane_fields_changed(
         || prev.address.name != next.address.name
         // doc 53 R1: root mode の変化（mode 切替 / root 付け替え）は sessions から導出して比較。
         || root_mode_of(prev) != root_mode_of(next)
-        || prev
-            .sub_status
-            .as_ref()
-            .and_then(|p| p.branch.as_deref())
-            != next
-                .sub_status
-                .as_ref()
-                .and_then(|p| p.branch.as_deref())
+        || lane_branch(prev) != lane_branch(next)
+}
+
+/// lane の表示用ブランチ。`branch`（root 含む全 lane、新 daemon）を優先し、欠落時は
+/// `sub_status.branch`（Sub のみ、旧 daemon 互換）に fallback する。
+fn lane_branch(l: &crate::daemon_wire::LaneInfo) -> Option<&str> {
+    l.branch
+        .as_deref()
+        .or_else(|| l.sub_status.as_ref().and_then(|p| p.branch.as_deref()))
 }
 
 /// Lane address (Display 形 `"<repo>/root"` 等) から所属 repo path を逆引きする。

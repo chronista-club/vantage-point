@@ -48,6 +48,11 @@ export interface DevicesRender {
   devices: any[];
 }
 
+/** Event "pane:stow_restore" */
+export interface PaneStowRestore {
+  payload: any;
+}
+
 /** Event "shell:layout" */
 export interface ShellLayout {
   sidebar_width: number;
@@ -93,6 +98,20 @@ export interface InkSnapshotError {
   message: string;
 }
 
+/** Event "voice:text" */
+export interface VoiceText {
+  lane: string;
+  session: number;
+  text: string;
+}
+
+/** Event "voice:error" */
+export interface VoiceError {
+  lane: string;
+  session: number;
+  message: string;
+}
+
 /** Event "code:entries" */
 export interface CodeEntries {
   lane: string;
@@ -130,6 +149,7 @@ export type PushChannelEventTypes = {
   TermRemoveSession: TermRemoveSession;
   TermPaste: TermPaste;
   DevicesRender: DevicesRender;
+  PaneStowRestore: PaneStowRestore;
   ShellLayout: ShellLayout;
   ConsoleSessionList: ConsoleSessionList;
   ConsoleEvent: ConsoleEvent;
@@ -137,6 +157,8 @@ export type PushChannelEventTypes = {
   ConsoleAgents: ConsoleAgents;
   InkSnapshot: InkSnapshot;
   InkSnapshotError: InkSnapshotError;
+  VoiceText: VoiceText;
+  VoiceError: VoiceError;
   CodeEntries: CodeEntries;
   CodeFile: CodeFile;
   CodeToggle: CodeToggle;
@@ -153,7 +175,7 @@ export const PushChannelMeta = {
   backend: "stream" as const,
   from: "server" as const,
   lifetime: "persistent" as const,
-  events: ["term:ensure_lane", "term:show_lane", "term:remove_lane", "term:remove_session", "term:paste", "devices:render", "shell:layout", "console:session_list", "console:event", "console:mode_applied", "console:agents", "ink:snapshot", "ink:snapshot_error", "code:entries", "code:file", "code:toggle", "board:message", "debuglog:lines"] as const,
+  events: ["term:ensure_lane", "term:show_lane", "term:remove_lane", "term:remove_session", "term:paste", "devices:render", "pane:stow_restore", "shell:layout", "console:session_list", "console:event", "console:mode_applied", "console:agents", "ink:snapshot", "ink:snapshot_error", "voice:text", "voice:error", "code:entries", "code:file", "code:toggle", "board:message", "debuglog:lines"] as const,
   requests: {} as const,
   __types: undefined as unknown as { events: PushChannelEventTypes; requests: PushChannelRequestTypes },
 } as const;
@@ -166,6 +188,7 @@ export type PushEventEnvelope =
   | ({ t: "term:remove_session" } & TermRemoveSession)
   | ({ t: "term:paste" } & TermPaste)
   | ({ t: "devices:render" } & DevicesRender)
+  | ({ t: "pane:stow_restore" } & PaneStowRestore)
   | ({ t: "shell:layout" } & ShellLayout)
   | ({ t: "console:session_list" } & ConsoleSessionList)
   | ({ t: "console:event" } & ConsoleEvent)
@@ -173,6 +196,8 @@ export type PushEventEnvelope =
   | ({ t: "console:agents" } & ConsoleAgents)
   | ({ t: "ink:snapshot" } & InkSnapshot)
   | ({ t: "ink:snapshot_error" } & InkSnapshotError)
+  | ({ t: "voice:text" } & VoiceText)
+  | ({ t: "voice:error" } & VoiceError)
   | ({ t: "code:entries" } & CodeEntries)
   | ({ t: "code:file" } & CodeFile)
   | ({ t: "code:toggle" } & CodeToggle)

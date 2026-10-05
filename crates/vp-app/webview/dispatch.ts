@@ -62,6 +62,9 @@ export interface PushHandlers {
 	consoleAgents(lane: string, payload: unknown, req: string | null): void;
 	inkSnapshot(path: string): void;
 	inkSnapshotError(message: string): void;
+	/** 音声入力（push-to-talk）: 認識結果 / 失敗を、🎙を押した入力欄（lane + session）へ。 */
+	voiceText(lane: string, session: number, text: string): void;
+	voiceError(lane: string, session: number, message: string): void;
 	debugLogLines(source: string, reset: boolean, lines: string[]): void;
 }
 
@@ -113,6 +116,9 @@ function apply(msg: PushEventEnvelope): void {
 		case "devices:render":
 			handlers.renderDevices(msg.devices);
 			break;
+		case "pane:stow_restore":
+			document.dispatchEvent(new CustomEvent("vp:pane-stow-restore", { detail: msg.payload }));
+			break;
 		case "shell:layout":
 			handlers.applyShellLayout(msg);
 			break;
@@ -133,6 +139,12 @@ function apply(msg: PushEventEnvelope): void {
 			break;
 		case "ink:snapshot_error":
 			handlers.inkSnapshotError(msg.message);
+			break;
+		case "voice:text":
+			handlers.voiceText(msg.lane, msg.session, msg.text);
+			break;
+		case "voice:error":
+			handlers.voiceError(msg.lane, msg.session, msg.message);
 			break;
 		case "console:session_list":
 			handlers.consoleSessionList(msg.lane, msg.payload);

@@ -43,6 +43,13 @@ export interface WireResult {
   payload: any;
 }
 
+/** Event "update:check_result" */
+export interface UpdateCheckResult {
+  update_available: boolean;
+  latest_version?: string;
+  error?: string;
+}
+
 /** Event "settings:result" */
 export interface SettingsResult {
   developer_mode: boolean;
@@ -155,6 +162,9 @@ export interface WireAck {
   message_id: string;
 }
 
+/** Request "update:check" — empty payload */
+export interface UpdateCheck {}
+
 /** Request "update:apply" */
 export interface UpdateApply {
   version: string;
@@ -204,6 +214,7 @@ export type IpcChannelEventTypes = {
   SubCreateResult: SubCreateResult;
   AgentsResult: AgentsResult;
   WireResult: WireResult;
+  UpdateCheckResult: UpdateCheckResult;
   SettingsResult: SettingsResult;
 };
 
@@ -226,6 +237,7 @@ export type IpcChannelRequestTypes = {
   StandSelect: { request: StandSelect; response: void };
   WireFetch: { request: WireFetch; response: void };
   WireAck: { request: WireAck; response: void };
+  UpdateCheck: { request: UpdateCheck; response: void };
   UpdateApply: { request: UpdateApply; response: void };
   AuthLogin: { request: AuthLogin; response: void };
   AuthLogout: { request: AuthLogout; response: void };
@@ -242,7 +254,7 @@ export const IpcChannelMeta = {
   backend: "stream" as const,
   from: "client" as const,
   lifetime: "transient" as const,
-  events: ["sidebar:state", "sidebar:error", "sub:create_result", "agents:result", "wire:result", "settings:result"] as const,
+  events: ["sidebar:state", "sidebar:error", "sub:create_result", "agents:result", "wire:result", "update:check_result", "settings:result"] as const,
   requests: {
     ProcessToggle: { request: "process:toggle" as const, response: "void" as const },
     ProcessReorder: { request: "process:reorder" as const, response: "void" as const },
@@ -261,6 +273,7 @@ export const IpcChannelMeta = {
     StandSelect: { request: "stand:select" as const, response: "void" as const },
     WireFetch: { request: "wire:fetch" as const, response: "void" as const },
     WireAck: { request: "wire:ack" as const, response: "void" as const },
+    UpdateCheck: { request: "update:check" as const, response: "void" as const },
     UpdateApply: { request: "update:apply" as const, response: "void" as const },
     AuthLogin: { request: "auth:login" as const, response: "void" as const },
     AuthLogout: { request: "auth:logout" as const, response: "void" as const },
@@ -292,6 +305,7 @@ export type IpcEnvelope =
   | ({ t: "stand:select" } & StandSelect)
   | ({ t: "wire:fetch" } & WireFetch)
   | ({ t: "wire:ack" } & WireAck)
+  | ({ t: "update:check" } & UpdateCheck)
   | ({ t: "update:apply" } & UpdateApply)
   | ({ t: "auth:login" } & AuthLogin)
   | ({ t: "auth:logout" } & AuthLogout)
@@ -308,6 +322,7 @@ export type IpcEventEnvelope =
   | ({ t: "sub:create_result" } & SubCreateResult)
   | ({ t: "agents:result" } & AgentsResult)
   | ({ t: "wire:result" } & WireResult)
+  | ({ t: "update:check_result" } & UpdateCheckResult)
   | ({ t: "settings:result" } & SettingsResult);
 
 

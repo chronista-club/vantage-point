@@ -288,6 +288,14 @@ body.rsb-open #right-sidebar{display:flex;}
   outline:1px solid var(--color-border,#2a3040);outline-offset:-1px;}
 /* 要件 3: フォーカスが**視認できる**。内側 ring なので幅を食わず、区切り線とも干渉しない。 */
 #lane-panes > .pane-focused{box-shadow:inset 0 0 0 1px var(--sb-conn-auto,#22E0FF);}
+#lane-panes > .pane-resizer{inset:0 auto 0 auto;width:8px;transform:translateX(-50%);
+  z-index:20;background:transparent;cursor:col-resize;touch-action:none;outline:none;}
+#lane-panes > .pane-resizer::after{content:"";position:absolute;inset:0 3px;background:transparent;}
+#lane-panes > .pane-resizer:hover::after,
+#lane-panes > .pane-resizer:focus-visible::after,
+#lane-panes > .pane-resizer.dragging::after{background:var(--sb-conn-auto,#22E0FF);}
+body.pane-resizing,body.pane-resizing *{cursor:col-resize!important;user-select:none!important;}
+body.pane-resizing iframe{pointer-events:none;}
 /* Phase 2.5: per-Lane instance container。各 .lane-pane が absolute で重なり active のみ表示。 */
 .lane-pane{position:absolute;inset:0;display:none;}
 .lane-pane.active{display:block;}
@@ -444,6 +452,12 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
    EdgeRail.setLane が inline display を書くため !important でのみ上書きできる。 */
 body.rsb-open #edge-rail{display:none !important;}
 #edge-rail-new-host{display:contents;}
+/* しまった pane の置き場 = 帯の縦中央（残りの高さを取り、中で縦中央寄せ） */
+#edge-rail-stow-host{flex:1 1 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:0;}
+.rail-stowed .rail-stowed-badge{display:none;position:absolute;top:2px;right:2px;width:7px;height:7px;border-radius:50%;background:var(--color-accent,#e2b96f);}
+.rail-stowed.has-badge .rail-stowed-badge{display:block;animation:board-badge-pulse 1.6s ease-in-out infinite;}
+.rail-stowed.has-badge{color:var(--color-text-primary);}
+@media (prefers-reduced-motion:reduce){.rail-stowed.has-badge .rail-stowed-badge{animation:none;}}
 /* rail の住人の共通の見た目（New / board 取っ手 / 将来の lane 級動詞） */
 .rail-btn{position:relative;display:flex;align-items:center;justify-content:center;
   width:28px;height:28px;padding:0;border:1px solid transparent;border-radius:8px;
@@ -659,6 +673,8 @@ body.rsb-open #edge-rail{display:none !important;}
           <span id="board-freshness" class="board-freshness"></span>
           <!-- doc 55 §7: form 切替（float ⇄ dock）。文言は「これから行ける先」を board-view.ts が書く。 -->
           <button class="board-clear-btn" id="board-form-btn" title="float ⇄ dock (Ctrl+Shift+N)">Float</button>
+          <!-- しまう（Pane のしまうモード）: rail の縦中央へ。docked のときだけ意味がある（float は float のまま） -->
+          <button class="board-clear-btn" id="board-stow-btn" title="この pane をしまう（右の rail に移す）">→|</button>
           <button class="board-clear-btn" data-action="clear" data-target="board" title="board を空にする">Clear</button>
         </div>
         <!-- ink（対話面、doc 52 §3）: #board-content の上に透明レイヤーを重ねて描く。renderBoard は
@@ -698,6 +714,10 @@ body.rsb-open #edge-rail{display:none !important;}
     <div id="edge-rail" style="display:none">
       <!-- + New（EdgeRail.tsx が render。machinery は LaneHeader から移設 — 動線一本化） -->
       <div id="edge-rail-new-host"></div>
+      <!-- しまった pane の置き場（Pane のしまうモード、creo mem_1CfbF4m1sGusje8oMouTu8）: 帯の
+           縦中央に kind のアイコンが並ぶ。EdgeRail.tsx が render（'vp:stowed-panes' の鏡）。
+           click で中央へ戻す。中身は view 層の状態だけ（AI は書けない）。 -->
+      <div id="edge-rail-stow-host"></div>
       <!-- board の取っ手（doc 55）— 開閉の入口 + 新着 badge。表示状態は user 専有で
            board-view.ts が持つ（AI は書けない）。lane 不在時は board-view も個別に隠す。 -->
       <button id="board-handle" class="rail-btn" data-label="Board (Ctrl+Shift+B)" title="Board を開く / 閉じる (Ctrl+Shift+B)" style="display:none">
