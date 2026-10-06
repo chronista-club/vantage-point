@@ -144,3 +144,11 @@ pub(crate) fn update_check_result(
 pub(crate) fn push_sidebar_state(sidebar: &WebView, state: &SidebarState) {
     self::state(sidebar, state);
 }
+
+/// URL 操作の応答を要求元のフォームへ返す。
+pub(crate) fn local_urls_result(
+    sidebar: &WebView,
+    result: crate::generated::sidebar_ipc::LocalUrlsResult,
+) {
+    push(sidebar, &IpcEventEnvelope::LocalUrlsResult(result));
+}

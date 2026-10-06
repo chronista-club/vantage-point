@@ -720,10 +720,14 @@ pub(super) fn conversation_session_remove(
     session: u32,
 ) {
     let Some(path) = resolve_repo_path_for_lane(&ui.sidebar_state, &lane) else {
-        tracing::warn!("conversation:session_remove skip — lane の repo 解決失敗 (lane={lane})");
+        crate::webview::push_sidebar::error(
+            &boot.webview,
+            &format!("{lane} #{session}: 終了できませんでした（Lane が見つかりません）"),
+        );
         return;
     };
     let conn = boot.daemon_conn.clone();
+    let proxy = boot.proxy.clone();
     boot.rt_handle.spawn(async move {
         if let Err(e) = daemon_repo_request(
             &conn,
@@ -734,7 +738,9 @@ pub(super) fn conversation_session_remove(
         .await
         {
             // 最後の 1 本の拒否含む（Err）— 一覧はそのまま（GUI は変化なし）。
-            tracing::warn!("conversation_session_remove 失敗 (lane={lane} session={session}): {e}");
+            let _ = proxy.send_event(AppEvent::ReposError(format!(
+                "{lane} #{session}: 終了できませんでした: {e}"
+            )));
             return;
         }
         // 除去後の roster / focused は snapshot が運ぶ（doc 53 §11）。

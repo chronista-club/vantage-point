@@ -162,6 +162,22 @@ pub struct ActionsPersist {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalUrlsRequest {
+    pub req: String,
+    pub path: String,
+    pub address: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalUrlsResult {
+    pub req: String,
+    pub payload: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidebarState {
     pub state: serde_json::Value,
 }
@@ -278,6 +294,8 @@ pub enum IpcEnvelope {
     DaemonRestart,
     #[serde(rename = "actions:persist")]
     ActionsPersist(ActionsPersist),
+    #[serde(rename = "local_urls:request")]
+    LocalUrlsRequest(LocalUrlsRequest),
 }
 
 /// Envelope enum for channel "ipc" — a discriminated union over its
@@ -285,6 +303,8 @@ pub enum IpcEnvelope {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t")]
 pub enum IpcEventEnvelope {
+    #[serde(rename = "local_urls:result")]
+    LocalUrlsResult(LocalUrlsResult),
     #[serde(rename = "sidebar:state")]
     SidebarState(SidebarState),
     #[serde(rename = "sidebar:error")]

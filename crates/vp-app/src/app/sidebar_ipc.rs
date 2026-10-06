@@ -16,6 +16,7 @@ use crate::session_state::SessionState;
 /// sidebar IPC を解釈した結果
 #[derive(Debug, Default)]
 pub(crate) struct SidebarIpcOutcome {
+    pub(crate) local_urls_request: Option<crate::generated::sidebar_ipc::LocalUrlsRequest>,
     /// SidebarState が変化したか (true なら push_sidebar_state を呼ぶ)
     pub(crate) changed: bool,
     /// active Lane/Component が変わったか (true なら push_active_view を呼ぶ)。
@@ -406,6 +407,9 @@ pub(crate) fn handle_sidebar_ipc(
         IpcEnvelope::DaemonRestart => {
             out.daemon_restart_request = true;
         }
+        IpcEnvelope::LocalUrlsRequest(m) => {
+            out.local_urls_request = Some(m);
+        }
         IpcEnvelope::ActionsPersist(m) => {
             // ACTIONS の編集を creo へ。caller が 400ms coalesce channel に流す。
             // ⚠️ **`out.changed` を立てない**（上の field の注記どおり）。
@@ -435,6 +439,24 @@ mod tests {
     use crate::pane::RepoPaneState;
 
     /// 呼び手（`run()` の `SidebarIpc` arm）の模型。解釈 → `session_save` なら file に書く。
+    #[test]
+    fn local_urls_request_preserves_target_and_correlation_without_mutating_selection() {
+        let mut state = SidebarState::default();
+        let mut session = SessionState::default();
+        let out = super::handle_sidebar_ipc(
+            r#"{"t":"local_urls:request","req":"url-1","path":"/repo","address":"vp/lane/demo","payload":{"action":"load"}}"#,
+            &mut state,
+            &mut session,
+        );
+        let request = out
+            .local_urls_request
+            .expect("local URL request must be routed");
+        assert_eq!(request.path, "/repo");
+        assert_eq!(request.address, "vp/lane/demo");
+        assert_eq!(request.req, "url-1");
+        assert!(!out.changed && !out.active_changed && !out.session_save);
+    }
+
     fn apply(msg: &str, state: &mut SidebarState, session: &mut SessionState) -> SidebarIpcOutcome {
         let out = handle_sidebar_ipc(msg, state, session);
         if out.session_save {

@@ -7,12 +7,13 @@
  * main area を当該 Lane に切り替え。 右クリック操作 (restart / delete) は
  * ContextMenu に集約 (VP-204 PR-1)。
  */
-import { Show, type JSX } from "solid-js";
+import { Show, createSignal, type JSX } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import type { LaneInfo } from "../generated/LaneInfo";
 import type { SubStatusWire } from "../generated/SubStatusWire";
 import type { LaneSessionEntryWire } from "../generated/LaneSessionEntryWire";
 import { sidebar } from "./store";
+import { LocalUrls } from "./LocalUrls";
 import { ResponsePoint, createAgentActivity, ACTIVITY_LABEL, ACTIVITY_COLOR } from "./ResponsePoint";
 import { sessionNow } from "./session-now";
 import { clockNow, quietAfterMs, quietLabel } from "./activity-freshness";
@@ -38,6 +39,7 @@ import {
 	laneCwdLabel,
 	laneLabel,
 	agentDisplayName,
+	agentIcon,
 } from "./lane";
 
 /** Sub Lane の git 状態を右端に小さく表示 (= dirty / ahead-behind の signal のみ、
@@ -116,10 +118,14 @@ export function SessionRow(props: {
 	const title = () =>
 		sidebar.session_titles?.[sessionNowKey(addr(), props.session.key)];
 	const nowText = () => sessionNow[sessionNowKey(addr(), props.session.key)];
-	// click は lane ごと select（session 単位の Pane focus は main area 側 roster が担う —
-	// lane を出せば当該 session の Pane も並ぶ、doc 50 session=Pane）。
+	const [confirmClose, setConfirmClose] = createSignal(false);
+	const canClose = () => !!props.lane.sessions &&
+		props.session.key !== props.lane.sessions.root &&
+		props.lane.sessions.sessions.some(s => s.key === props.session.key);
 	const onSelect = () => {
+		document.dispatchEvent(new CustomEvent("vp:session-select", { detail: { lane: addr(), session: props.session.key } }));
 		sendIpc({ t: "lane:select", path: props.repoPath, address: addr() });
+		window.ipc?.postMessage(JSON.stringify({ t: "conversation:session_focus", lane: addr(), session: props.session.key }));
 	};
 	return (
 		<div
@@ -127,14 +133,32 @@ export function SessionRow(props: {
 			onClick={onSelect}
 		>
 			<ResponsePoint lane={props.lane} session={props.session.key} />
+			<span class="vp-agent-icon" title={agentDisplayName(props.session.agent)}>
+				<CreoIcon name={agentIcon(props.session.agent, false) ?? "ph:robot"} size={14} />
+			</span>
 			{/* fallback は agent 表示名 — 右端の #key と重複させない（実機 2026-08-19）。 */}
 			<span class="vp-lane-title is-session" title={title() ?? undefined}>
 				{title() ?? agentDisplayName(props.session.agent)}
 			</span>
 			<span class="vp-lane-right">
 
-				<span class="vp-lane-shortcut">#{props.session.key}</span>
+				<span class="vp-lane-shortcut" title="セッション番号">#{props.session.key}</span>
+				<Show when={canClose()}>
+					<button type="button" class="vp-session-close"
+						title={`${agentDisplayName(props.session.agent)} #${props.session.key} を終了`}
+						aria-label={`${agentDisplayName(props.session.agent)} #${props.session.key} を終了`}
+						onBlur={() => setConfirmClose(false)}
+						onKeyDown={e => { if (e.key === "Escape") setConfirmClose(false); }}
+						onClick={e => {
+							e.stopPropagation();
+							if (!canClose()) return;
+							if (!confirmClose()) { setConfirmClose(true); return; }
+							window.ipc?.postMessage(JSON.stringify({ t: "conversation:session_remove", lane: addr(), session: props.session.key }));
+							setConfirmClose(false);
+						}}>{confirmClose() ? `#${props.session.key} を終了する` : "×"}</button>
+				</Show>
 			</span>
+			<span class="vp-lane-ground">追加セッション · {props.session.mode === "gui" ? "Chat" : "Terminal"}</span>
 			<NowLine
 				text={nowText()}
 				lastActivityAt={props.session.last_activity_at}
@@ -185,6 +209,7 @@ export function LaneRow(props: {
 	// この lane の root session key（registry 欠落 = 旧 wire / boot 窓は 1 に倒す —
 	// Rust 側 ResolveSessionTitles の fallback と同じ既定）。
 	const rootKey = () => props.lane.sessions?.root ?? 1;
+	const rootAgent = () => props.lane.sessions?.sessions.find(s => s.key === rootKey())?.agent ?? props.lane.agent;
 	const agentActivity = createAgentActivity(props);
 	// cc `/rename` の custom-title。doc 58 ②-c で鍵が session 単位（`{address}#{session}`、
 	// now-line と同じ sessionNowKey 形）になった。lane 行は root session の分を出す。
@@ -377,7 +402,7 @@ export function LaneRow(props: {
 	return (
 		<div
 			class="vp-lane-row creo-sidenav-link"
-			title={agentDisplayName(props.lane.agent)}
+			title={agentDisplayName(rootAgent())}
 			aria-current={isActive() ? "page" : undefined}
 			classList={{
 				active: isActive(),
@@ -396,10 +421,13 @@ export function LaneRow(props: {
 			onDragEnd={clearLaneDrag}
 		>
 			{props.leading ?? <ResponsePoint lane={props.lane} connectorClass={props.connectorClass} />}
+			<span class="vp-agent-icon" title={agentDisplayName(rootAgent())}>
+				<CreoIcon name={agentIcon(rootAgent(), isActive()) ?? "ph:robot"} size={14} />
+			</span>
 			<span
 				class="vp-lane-title"
 				classList={{ "is-fallback": !sessionTitle() }}
-				title={`${agentDisplayName(props.lane.agent)} · ${sessionTitle() ?? laneLabel(props.lane)}`}
+				title={`${agentDisplayName(rootAgent())} · ${sessionTitle() ?? laneLabel(props.lane)}`}
 			>
 				{isSub() ? (sessionTitle() ?? laneLabel(props.lane)) : (props.projectName ?? props.lane.address.repo)}
 			</span>
@@ -477,6 +505,7 @@ export function LaneRow(props: {
 					</Show>
 				</span>
 			</Show>
+			<LocalUrls repoPath={props.repoPath} address={addr()} />
 		</div>
 	);
 }

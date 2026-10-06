@@ -179,6 +179,19 @@ protocol "sidebar" version="1.0.0" {
             field "removed" type="array<string>"
         }
 
+        // Lane に明示登録する URL。payload は local_urls::Action が解釈する。
+        request "local_urls:request" {
+            field "req" type="string"
+            field "path" type="string"
+            field "address" type="string"
+            field "payload" type="json"
+        }
+        event "local_urls:result" {
+            field "req" type="string"
+            field "payload" type="json"
+            field "error" type="string" optional=#true
+        }
+
         // ===================================================================
         // server → client（Rust が sidebar bundle へ押し込む）
         // ===================================================================

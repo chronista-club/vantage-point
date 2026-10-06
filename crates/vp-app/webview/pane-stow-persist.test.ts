@@ -83,3 +83,20 @@ it('復元通知より先に roster が届いても保存を上書きせず、�
   expect((w as any).sent).toEqual([])
  } finally {await w.happyDOM.close()}
 },20000)
+
+// mem_1CfkeiUePgFsbYoGtTeDpq — サイドバーから選んだ追加 session を実際に見せる。
+it('追加セッションの選択は対象 Lane の pane だけを戻し、遅い Lane 切替にも追従する', async () => {
+ const w=await boot()
+ try {
+  w.eval(`roster('a/root'); api.setActiveLane('a/root'); api.stowPane('chat-session-2'); document.dispatchEvent(new CustomEvent('vp:session-select',{detail:{lane:'a/root',session:2}}))`)
+  await w.happyDOM.waitUntilComplete()
+  expect((w as any).current('a/root').attention['chat-session-2']).toBeGreaterThan(0)
+  expect(w.document.querySelector('#chat-session-2')?.classList.contains('pane-focused')).toBe(true)
+  w.eval(`api.stowPane('chat-session-2'); roster('b/root'); api.setActiveLane('b/root'); document.dispatchEvent(new CustomEvent('vp:session-select',{detail:{lane:'a/root',session:2}}))`)
+  expect((w as any).current('a/root').attention['chat-session-2']).toBe(0)
+  w.eval(`api.setActiveLane('a/root')`)
+  await w.happyDOM.waitUntilComplete()
+  expect((w as any).current('a/root').attention['chat-session-2']).toBeGreaterThan(0)
+  expect(w.document.querySelector('#chat-session-2')?.classList.contains('pane-focused')).toBe(true)
+ } finally {await w.happyDOM.close()}
+},20000)

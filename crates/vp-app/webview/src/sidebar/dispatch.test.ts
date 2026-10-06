@@ -18,6 +18,7 @@ function recordingHandlers(): { calls: string[]; handlers: SidebarPushHandlers }
   return {
     calls,
     handlers: {
+      localUrlsResult: r => calls.push(`local-urls:${r.req}`),
       state: (s) => calls.push(`state:${(s as { version?: number }).version}`),
       error: (m) => calls.push(`error:${m}`),
       subCreateResult: (p, n, e) => calls.push(`sub:${p}/${n}:${e}`),
@@ -39,6 +40,17 @@ const dispatch = (msg: IpcEventEnvelope): void => {
 }
 
 describe('sidebar dispatch', () => {
+  it('delivers correlated local URL results to the requesting form', async () => {
+    const mod = await import('./dispatch')
+    mod.openSidebarDispatch()
+    const { handlers } = recordingHandlers()
+    const results: unknown[] = []
+    mod.installSidebarDispatch({ ...handlers, localUrlsResult: (r: unknown) => results.push(r) })
+    const result = { t: 'local_urls:result' as const, req: 'request-1', payload: { entries: [] } }
+    dispatch(result)
+    expect(results).toEqual([result])
+  })
+
   it('delivers a manual update check result', async () => {
     const mod = await import('./dispatch')
     mod.openSidebarDispatch()
