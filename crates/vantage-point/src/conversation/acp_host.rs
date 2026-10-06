@@ -278,6 +278,9 @@ impl AcpAgentHost {
     pub fn spawn(config: AcpHostConfig) -> anyhow::Result<Self> {
         let engine = config.engine;
         let mut cmd = tokio::process::Command::new(engine.cli_path());
+        for key in crate::spawn_env::inherited_agent_host_env_to_strip() {
+            cmd.env_remove(key);
+        }
         cmd.args(engine.spawn_args())
             .current_dir(&config.cwd)
             // identity env（doc 51 §1 A3b）: engine（とその shell tool の子）が `vp now` /
