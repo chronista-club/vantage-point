@@ -91,18 +91,12 @@ pub(crate) fn sanitize(part: &str) -> String {
 /// daemon は launchd 起動だと PATH が細く、Rust から直接 exec する経路（codex app-server の
 /// 常駐 spawn 等）は login shell を経由しない（slot の login shell 注入は tui にだけ効く）。
 ///
-/// 1. 現在の PATH で `which <name>` が当たればそれ
+/// 1. 現在の PATH で当たればそれ（unix は `which`、Windows は [`find_windows_executable`]）
 /// 2. `well_known`（インストール先の定番）に実在するものがあればそれ
 /// 3. どちらも無ければ素の name（PATH に委ねる）
 pub(crate) fn resolve_cli(name: &str, well_known: &[PathBuf]) -> String {
-    if let Ok(output) = std::process::Command::new("which").arg(name).output()
-        && output.status.success()
-        && let Ok(path) = String::from_utf8(output.stdout)
-    {
-        let path = path.trim();
-        if !path.is_empty() {
-            return path.to_string();
-        }
+    if let Some(path) = find_on_path(name) {
+        return path;
     }
     for cand in well_known {
         if cand.exists() {
@@ -110,6 +104,40 @@ pub(crate) fn resolve_cli(name: &str, well_known: &[PathBuf]) -> String {
         }
     }
     name.to_string()
+}
+
+#[cfg(not(windows))]
+fn find_on_path(name: &str) -> Option<String> {
+    let output = std::process::Command::new("which")
+        .arg(name)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8(output.stdout).ok()?;
+    let path = path.trim();
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+// Windows で `which` を叩くと Git 付属のものが `/c/Users/...` 形式を返し、そのままでは spawn できない。
+#[cfg(windows)]
+fn find_on_path(name: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    find_windows_executable(name, std::env::split_paths(&path))
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// `dirs` を順に見て `<name>.exe` / `.cmd` / `.bat` の最初の実在を返す。
+/// 拡張子なしの同名（npm global の sh script）は Windows では spawn できないので見ない。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn find_windows_executable(name: &str, dirs: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    dirs.into_iter().find_map(|dir| {
+        ["exe", "cmd", "bat"]
+            .iter()
+            .map(|ext| dir.join(format!("{name}.{ext}")))
+            .find(|p| p.is_file())
+    })
 }
 
 #[cfg(test)]
@@ -218,5 +246,25 @@ mod tests {
             &[PathBuf::from("/nonexistent/xyz")],
         );
         assert_eq!(got, "definitely-not-a-real-cli-név");
+    }
+
+    /// Windows の PATH 探索: npm global が並べる拡張子なし sh script は spawn できないので飛ばし、
+    /// 先に並ぶ dir の実行可能拡張子を取る。
+    #[test]
+    fn windows_path_search_skips_extensionless_and_keeps_path_order() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let npm = tmp.path().join("npm");
+        let later = tmp.path().join("later");
+        std::fs::create_dir_all(&npm).unwrap();
+        std::fs::create_dir_all(&later).unwrap();
+        std::fs::write(npm.join("codex"), "").unwrap();
+        std::fs::write(npm.join("codex.cmd"), "").unwrap();
+        std::fs::write(later.join("codex.exe"), "").unwrap();
+
+        let got = find_windows_executable("codex", [npm.clone(), later.clone()]);
+        assert_eq!(got, Some(npm.join("codex.cmd")));
+        let got = find_windows_executable("codex", [tmp.path().join("missing"), later.clone()]);
+        assert_eq!(got, Some(later.join("codex.exe")));
+        assert_eq!(find_windows_executable("grok", [npm, later]), None);
     }
 }

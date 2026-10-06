@@ -529,7 +529,8 @@ impl CodexAgentHost {
         config: CodexRpcHostConfig,
         question_session: CodexQuestionSession,
     ) -> anyhow::Result<Self> {
-        let mut cmd = tokio::process::Command::new(crate::lane::codex_session::codex_cli_path());
+        let program = crate::lane::codex_session::codex_cli_path();
+        let mut cmd = tokio::process::Command::new(&program);
         for key in crate::spawn_env::inherited_agent_host_env_to_strip() {
             cmd.env_remove(key);
         }
@@ -546,7 +547,7 @@ impl CodexAgentHost {
             .kill_on_drop(true);
         let mut child = cmd
             .spawn()
-            .map_err(|e| anyhow::anyhow!("codex app-server の起動に失敗: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("codex app-server の起動に失敗（{program}）: {e}"))?;
         let stdin = child.stdin.take();
         let stdout = child
             .stdout
