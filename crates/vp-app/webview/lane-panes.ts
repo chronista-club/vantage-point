@@ -361,6 +361,25 @@ export interface LanePanesDeps {
  */
 export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 	let activeLane: string | null = null;
+	let sidebarSelection: { lane: string; session: number } | null = null;
+	const revealSidebarSelection = () => {
+		const selected = sidebarSelection;
+		if (!selected || selected.lane !== activeLane) return;
+		const session = sessionsByLane.get(selected.lane)?.find(s => s.key === selected.session);
+		if (!session) return; // roster がまだ届いていない。
+		sidebarSelection = null;
+		// Lane 切替の既定 focus が済んだ後に、明示選択を適用する。
+		queueMicrotask(() => {
+			if (activeLane === selected.lane) controller.focusPane(hostIdForMode(session.key, session.mode));
+		});
+	};
+	document.addEventListener("vp:session-select", e => {
+		const selected = (e as CustomEvent<{lane: string; session: number}>).detail;
+		if (!selected?.lane || !Number.isInteger(selected.session) || selected.session < 1) return;
+		sidebarSelection = selected;
+		revealSidebarSelection();
+	});
+
 	const resizers = installPaneResizers(deps.container, next => {
 		if (activeLane) layoutEngine.update(laneScope(activeLane), () => next);
 	}, () => {
@@ -636,6 +655,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 		).detail;
 		if (!d?.lane) return;
 		sessionsByLane.set(d.lane, d.sessions ?? []);
+		revealSidebarSelection();
 		if (d.lane !== activeLane) return; // 非表示 lane は一覧だけ更新（DOM は表示時に作る）
 		syncRoster(d.lane);
 		// 保留中の focus を消費する（boot 窓の救済）。保留先が「もう存在しない session の
@@ -788,6 +808,7 @@ export function installLanePanes(deps: LanePanesDeps): LanePanesController {
 			dynDisposers.clear();
 			pendingFocus = null; // 保留は旧 lane の意図 — 新 lane は applyConsoleMode が当て直す
 			activeLane = lane;
+			revealSidebarSelection();
 			lastStowedPush.delete(lane); // rail は lane 切替で空にする — 流し直す
 			syncRoster(lane);
 			render();

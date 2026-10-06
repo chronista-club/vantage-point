@@ -39,6 +39,7 @@ mod on_board;
 mod on_conversation;
 /// event handler: lanes（repo 一覧 / lane snapshot の到着 = model 更新・購読・session reconcile）。
 mod on_lanes;
+mod on_local_urls;
 /// event handler: misc（session title / inbox / ink / debug log / device / code / wire / activity）。
 mod on_misc;
 /// event handler: sidebar（sidebar IPC の効果実行 / update phase / settings overlay）。
@@ -527,6 +528,9 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             on_conversation::agents(ui, boot, lane, payload, req)
         }
         AppEvent::BoardMutate { method, body } => on_board::board_mutate(ui, boot, method, body),
+        AppEvent::LocalUrlsResult(result) => {
+            crate::webview::push_sidebar::local_urls_result(&boot.webview, result)
+        }
         AppEvent::ReposError(msg) => on_lanes::repos_error(ui, boot, msg),
         AppEvent::SubCreateResult {
             repo_path,
