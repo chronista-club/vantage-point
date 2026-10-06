@@ -174,3 +174,11 @@ it('keeps actionable Codex requests red through background work and Result', () 
   win.con.handleEvent('project/main', {kind:'codex_interactions',requests:[]}, 1)
   expect(point().getAttribute('data-activity')).toBe('completed')
 })
+
+it('uses the same adjustable activity token for the point and status text', () => {
+  const win = fixture()
+  const point = win.document.querySelector('[data-activity="working"]')!
+  const label = win.document.querySelector('.vp-proj-summary .vp-lane-state')!
+  expect(point.getAttribute('style')).toContain('--sb-activity-working')
+  expect(label.getAttribute('style')).toContain('--sb-activity-working')
+})

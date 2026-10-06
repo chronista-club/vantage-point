@@ -9,7 +9,7 @@ export const ACTIVITY_LABEL: Record<AgentActivity, string> = {
   thinking: '思考中', working: '作業中', waiting: '確認待ち', completed: '応答完了・次の指示待ち', idle: '停止中・状態未取得', error: 'エラー・対応が必要',
 };
 export const ACTIVITY_COLOR: Record<AgentActivity, string> = {
-  thinking: '#c3b4e8', working: '#a7c9ec', waiting: '#ef777d', completed: '#527ec6', idle: '#8c98a5', error: '#ef777d',
+  thinking: 'var(--sb-activity-thinking, #c3b4e8)', working: 'var(--sb-activity-working, #a7c9ec)', waiting: 'var(--sb-activity-waiting, #ef777d)', completed: 'var(--sb-activity-completed, #527ec6)', idle: 'var(--sb-activity-idle, #8c98a5)', error: 'var(--sb-activity-error, #ef777d)',
 };
 
 /** Subscribe per session, including events that arrived before the sidebar mounted. */
