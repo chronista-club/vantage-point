@@ -345,6 +345,11 @@ impl PtySlot {
         for arg in args {
             cmd.arg(arg);
         }
+        // daemon の起動元が agent のツール shell だった時に継承した env（NO_COLOR 等）を外す。
+        // caller env の注入より前に行うので、 VP が明示で焼く値は巻き込まない。
+        for key in crate::spawn_env::inherited_agent_host_env_to_strip() {
+            cmd.env_remove(key);
+        }
         // doc 11 (PR-B): 起動 command が要求する env（VP_REPO / VP_LANE 等）を子プロセスに渡す。
         for (key, value) in env {
             cmd.env(key, value);

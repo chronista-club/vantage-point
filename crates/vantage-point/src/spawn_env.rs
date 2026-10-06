@@ -5,5 +5,6 @@
 //! 互換のため re-export のみ。 実装・doc・test は `vp_paths::spawn_env` が canonical。
 
 pub use vp_paths::spawn_env::{
-    augment_path, augment_path_env, augmented_spawn_path, resolve_utf8_locale, utf8_locale,
+    augment_path, augment_path_env, augmented_spawn_path, inherited_agent_host_env_to_strip,
+    resolve_utf8_locale, utf8_locale,
 };

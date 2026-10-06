@@ -530,6 +530,9 @@ impl CodexAgentHost {
         question_session: CodexQuestionSession,
     ) -> anyhow::Result<Self> {
         let mut cmd = tokio::process::Command::new(crate::lane::codex_session::codex_cli_path());
+        for key in crate::spawn_env::inherited_agent_host_env_to_strip() {
+            cmd.env_remove(key);
+        }
         cmd.arg("app-server")
             .current_dir(&config.cwd)
             // identity env（doc 51 §1 A3b）: engine（とその shell tool の子）が `vp now` /

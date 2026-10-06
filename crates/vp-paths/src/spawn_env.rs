@@ -144,9 +144,104 @@ fn is_utf8_locale(lang: &str) -> bool {
     lower.ends_with(".utf-8") || lower.ends_with(".utf8")
 }
 
+/// Claude Code のツール shell が注入する、 素の対話端末には無い env（完全一致）。
+/// `NO_COLOR` は lane の claude を無彩色にし、 `GIT_EDITOR=true` は lane の `git commit` の
+/// エディタを無言で素通りさせる。
+const AGENT_HOST_EXACT: &[&str] = &[
+    "CLAUDECODE",
+    "NO_COLOR",
+    "GIT_EDITOR",
+    "AI_AGENT",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_AGENT_SDK_VERSION",
+    "CLAUDE_PREVIEW_CLASSIFIER_FLOOR",
+    "COREPACK_ENABLE_AUTO_PIN",
+];
+
+/// 純関数: 継承 env の key 一覧から、 子プロセスに渡す前に外すべき key を返す。
+///
+/// daemon を Claude Code のツール shell から起動すると（Windows は LaunchAgent が無く手で
+/// 起動するので起きやすい）、 その shell の env が daemon → lane → lane の claude へ継承され、
+/// 色が消える / 親 session の id や messaging socket を名乗る。 lane は新しい対話端末なので、
+/// 起動元が agent のツール shell だったと判定できた時（`CLAUDECODE` 継承）だけ外す。
+/// 判定できない時は user 自身が置いた値（`NO_COLOR` / `CLAUDE_CODE_USE_BEDROCK` 等）として残す。
+/// VP 自身が焼く `CLAUDE_CODE_*` は caller が除去の後に明示注入するので巻き込まない。
+pub fn agent_host_env_to_strip<'a>(keys: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let keys: Vec<&str> = keys.into_iter().collect();
+    if !keys.contains(&"CLAUDECODE") {
+        return Vec::new();
+    }
+    keys.into_iter()
+        .filter(|k| AGENT_HOST_EXACT.contains(k) || k.starts_with("CLAUDE_CODE_"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// 現プロセスの env に [`agent_host_env_to_strip`] を当てた結果。
+pub fn inherited_agent_host_env_to_strip() -> Vec<String> {
+    let keys: Vec<String> = std::env::vars_os()
+        .filter_map(|(k, _)| k.into_string().ok())
+        .collect();
+    agent_host_env_to_strip(keys.iter().map(String::as_str))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── agent host env の除去 (OS 非依存) ──
+
+    fn strip_sorted(keys: &[&str]) -> Vec<String> {
+        let mut v = agent_host_env_to_strip(keys.iter().copied());
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn strips_host_injected_vars_when_launched_from_claude_tool_shell() {
+        let got = strip_sorted(&[
+            "PATH",
+            "CLAUDECODE",
+            "NO_COLOR",
+            "GIT_EDITOR",
+            "AI_AGENT",
+            "CLAUDE_PID",
+            "CLAUDE_EFFORT",
+            "CLAUDE_AGENT_SDK_VERSION",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            // 継承すると lane の claude が子 session と判定し transcript を保存しない（resume 不能）
+            "CLAUDE_CODE_CHILD_SESSION",
+            "COREPACK_ENABLE_AUTO_PIN",
+            "ANTHROPIC_BASE_URL",
+            "HOME",
+        ]);
+        assert_eq!(
+            got,
+            vec![
+                "AI_AGENT",
+                "CLAUDECODE",
+                "CLAUDE_AGENT_SDK_VERSION",
+                "CLAUDE_CODE_CHILD_SESSION",
+                "CLAUDE_CODE_MESSAGING_SOCKET",
+                "CLAUDE_CODE_SESSION_ID",
+                "CLAUDE_EFFORT",
+                "CLAUDE_PID",
+                "COREPACK_ENABLE_AUTO_PIN",
+                "GIT_EDITOR",
+                "NO_COLOR",
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_user_env_when_not_launched_from_claude_tool_shell() {
+        // CLAUDECODE が無い = user 自身の shell / launchd 起動。 user が意図して置いた値は触らない
+        assert!(
+            strip_sorted(&["NO_COLOR", "GIT_EDITOR", "CLAUDE_CODE_USE_BEDROCK", "PATH"]).is_empty()
+        );
+    }
 
     // ── OS 非依存の純粋核テスト (separator / prefixes 注入) ──
 
