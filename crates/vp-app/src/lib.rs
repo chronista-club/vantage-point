@@ -47,6 +47,7 @@ pub mod icon;
 pub mod lane;
 /// lane address の wire 型（`LaneAddressWire`、共有型）。
 pub mod lane_address;
+pub mod local_urls;
 pub mod log_format;
 pub mod log_init;
 pub mod menu;

@@ -15,6 +15,7 @@
  *   ない — bundle 未評価の窓（そちらは `./dispatch` の保留箱が預かる）とは別の話。
  *
  */
+import { receiveLocalUrls } from './local-urls'
 import { reportSidebarError, reportSubCreateResult, reportAgentsResult } from './feedback'
 import { applySidebarState } from './store'
 import { applyActionsFromDaemon, setActionPersist } from './actions-panel/store'
@@ -77,6 +78,7 @@ export function installIpcBridge(): void {
   )
 
   installSidebarDispatch({
+    localUrlsResult: receiveLocalUrls,
     // state の形の持ち主は Rust の `SidebarState`（ts-rs 生成）。envelope は「どの窓口へ
     // 届けるか」だけを型にしているので、中身はここでその 1 つの定義に落とす。
     state: (state) => {

@@ -28,13 +28,14 @@
  * state は変化のたびに撃ち直されるので、その窓の取りこぼしは次の push で埋まる
  * （main bundle 側の `ready` replay に相当するものは sidebar には無い）。
  */
-import type { IpcEventEnvelope, UpdateCheckResult } from '../generated/SidebarIpc'
+import type { IpcEventEnvelope, UpdateCheckResult, LocalUrlsResult } from '../generated/SidebarIpc'
 
 /** 受け手が揃うまでの保留箱。install 時に順序どおり流す。 */
 let pending: IpcEventEnvelope[] | null = []
 
 /** wire 名 → 実処理。`installSidebarDispatch` が受け取る。 */
 export interface SidebarPushHandlers {
+  localUrlsResult(result: LocalUrlsResult): void
   state(state: unknown): void
   error(message: string): void
   subCreateResult(repoPath: string, name: string, error: string | null): void
@@ -68,6 +69,9 @@ function apply(msg: IpcEventEnvelope): void {
   // ⚠️ `switch` の網羅性は TS が見る — schema に event を足して codegen を回すと、
   // ここに arm を足すまで型が通らない。**これが「境界に型が無い」の解消そのもの**。
   switch (msg.t) {
+    case 'local_urls:result':
+      handlers.localUrlsResult(msg)
+      break
     case 'sidebar:state':
       handlers.state(msg.state)
       break

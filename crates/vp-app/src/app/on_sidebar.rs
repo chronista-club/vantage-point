@@ -196,6 +196,9 @@ pub(super) fn sidebar_ipc(
         }
     }
     let outcome = handle_sidebar_ipc(&msg, &mut ui.sidebar_state, &mut ui.persist.session);
+    if let Some(request) = outcome.local_urls_request {
+        super::on_local_urls::request(ui, boot, request);
+    }
     // 解釈は純粋（doc 60 §6 A-2）: session の file 書き込みは要求を見てここで行う。
     // in-memory の更新は handle 側で済んでいるので、他の効果より先に書いて
     // 旧実装（handle 内で save）と同じ順序を保つ。

@@ -12,6 +12,7 @@
 /// Lane terminals は per-Lane の browser-native WebSocket で input/output を扱う。
 #[derive(Debug, Clone)]
 pub enum AppEvent {
+    LocalUrlsResult(crate::generated::sidebar_ipc::LocalUrlsResult),
     /// daemon から Repo list 取得成功 (= `fetch_repos_with_ports` 経由で runtime port 込み)。
     ReposLoaded(Vec<crate::daemon_wire::RepoInfo>),
     /// daemon への接続失敗 (= daemon 未起動 / network エラー)。
