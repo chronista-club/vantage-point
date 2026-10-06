@@ -2,14 +2,18 @@ import { THEME_IDS, THEME_INFO, exportSnapshot, type ComponentFieldResolver, typ
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { themeValues, type ThemeLibrary } from './theme-store'
 
-export type EditorSection = 'COMPONENT' | 'SIDEBAR' | 'THEME'
-const SECTIONS: EditorSection[] = ['THEME', 'SIDEBAR', 'COMPONENT']
-const GROUP_NAMES: Record<string, string> = { Global: '文字・色・間隔', Surface: '背景と面' }
+export type EditorSection = 'COMPONENT' | 'CHAT' | 'SIDEBAR' | 'THEME'
+const SECTIONS: EditorSection[] = ['THEME', 'SIDEBAR', 'CHAT', 'COMPONENT']
+const GROUP_NAMES: Record<string, string> = { Global: '配色・Boardの文字', Surface: '背景と面' }
 const FIELD_NAMES: Record<string, string> = {
-  'typography.scale': '文字全体の倍率', 'color.brand.hue': 'アクセントの色相', 'color.brand.chroma': 'アクセントの鮮やかさ',
+  'sb.text.hint': 'Lane名・メニュー・メモ入力',
+  'sb.text.meta': '空欄の案内・接続情報',
+  'sb.text.micro': 'ブランチ名・状態・見出し',
+  'chat.text.body': '返信の本文', 'chat.text.meta': '接続・ツールの状態', 'chat.text.micro': 'ツール詳細の見出し',
+  'typography.scale': 'Board・共通部品の文字倍率', 'color.brand.hue': 'アクセントの色相', 'color.brand.chroma': 'アクセントの鮮やかさ',
   'color.surface.hue': '背景の色相', 'color.surface.chroma': '背景の鮮やかさ', 'layout.gap.sibling': '部品の間隔',
   'typography.size.xs': '文字サイズ XS', 'typography.size.s': '文字サイズ S', 'typography.size.m': '文字サイズ M',
-  'typography.size.l': '文字サイズ L', 'typography.size.xl': '文字サイズ XL',
+  'typography.size.l': 'Boardの本文（Markdown）', 'typography.size.xl': '文字サイズ XL',
   'color.surface.bg.base': '画面の地', 'color.surface.bg.subtle': '控えめな背景', 'color.surface.bg.emphasis': '強調する背景',
   'color.surface.surface': 'カード・面', 'color.surface.border': '境界線', 'color.surface.border.subtle': '控えめな境界線',
   'color.surface.scrim': '背景の暗幕', 'color.surface.scrim.modal': 'モーダルの暗幕',
@@ -115,8 +119,10 @@ export function EditorPanel(props: PanelProps) {
   const selectedFields = createMemo(() => host.fields().filter(field => host.selection()?.fieldIds.includes(field.id)), undefined, {
     equals: (previous, next) => previous.length === next.length && previous.every((field, index) => field === next[index]),
   })
-  const sidebarFields = () => host.fields().filter(field => field.id.startsWith('sb.'))
-  const themeFields = () => host.fields().filter(field => !field.id.startsWith('sb.') && field.scope !== 'component')
+  const sidebarFields = () => host.fields().filter(field => field.id.startsWith('sb.') && field.id !== 'sb.text.base')
+  const chatFields = () => host.fields().filter(field => field.id.startsWith('chat.'))
+  const themeFields = () => host.fields().filter(field => !field.id.startsWith('sb.') && !field.id.startsWith('chat.') && field.scope !== 'component' &&
+    !['typography.size.xs', 'typography.size.s', 'typography.size.m', 'typography.size.xl', 'layout.gap.sibling'].includes(field.id))
   const custom = () => props.library().custom.find(theme => theme.id === props.library().selected)
   const changed = () => Object.keys(themeValues(props.library())).length > 0
   const chooseTab = (section: EditorSection) => { props.setSection(section); props.setPicking(false); host.setHover(null) }
@@ -150,12 +156,12 @@ export function EditorPanel(props: PanelProps) {
         <header class="vp-editor-header"><div><small>VANTAGE POINT</small><h2>Editor</h2></div>
           <button type="button" aria-label="Editor を閉じる" title="閉じる（Ctrl+Shift+E）" onClick={() => host.disable()}>×</button>
         </header>
-        <div class="vp-editor-tabs" role="tablist" aria-label="調整する範囲" aria-orientation="vertical">
+        <div class="vp-editor-tabs" role="tablist" aria-label="調整する範囲" aria-orientation="horizontal">
           <For each={SECTIONS}>{section => <button type="button" id={`vp-editor-tab-${section}`} role="tab" aria-selected={props.section() === section}
             aria-controls="vp-editor-content" tabIndex={props.section() === section ? 0 : -1} onClick={() => chooseTab(section)}
             onKeyDown={event => {
               const index = SECTIONS.indexOf(section)
-              const next = event.key === 'ArrowDown' ? SECTIONS[(index + 1) % 3] : event.key === 'ArrowUp' ? SECTIONS[(index + 2) % 3] : event.key === 'Home' ? SECTIONS[0] : event.key === 'End' ? SECTIONS[2] : undefined
+              const next = event.key === 'ArrowRight' ? SECTIONS[(index + 1) % SECTIONS.length] : event.key === 'ArrowLeft' ? SECTIONS[(index + SECTIONS.length - 1) % SECTIONS.length] : event.key === 'Home' ? SECTIONS[0] : event.key === 'End' ? SECTIONS[SECTIONS.length - 1] : undefined
               if (next) { event.preventDefault(); chooseTab(next); document.getElementById(`vp-editor-tab-${next}`)?.focus() }
             }}>{section}</button>}</For>
         </div>
@@ -183,8 +189,12 @@ export function EditorPanel(props: PanelProps) {
             <div class="vp-editor-intro"><h3>サイドバー全体</h3><p>選択は不要です。文字、背景、選択行と状態ポイントを調整します。</p></div>
             <FieldGroups fields={sidebarFields()} host={host} />
           </Show>
+          <Show when={props.section() === 'CHAT'}>
+            <div class="vp-editor-intro"><h3>Chatの見た目</h3><p>返信、自分のメッセージ、ツールや状態表示の文字を調整します。すべてのChatに反映します。</p></div>
+            <FieldGroups fields={chatFields()} host={host} />
+          </Show>
           <Show when={props.section() === 'THEME'}>
-            <div class="vp-editor-intro"><h3>アプリ全体のテーマ</h3><p>配色を選び、文字・背景・間隔を調整します。端末の配色は別設定です。</p></div>
+            <div class="vp-editor-intro"><h3>アプリ全体のテーマ</h3><p>配色と、Boardの文字を調整します。端末やBoard内のWebページは対象外です。</p></div>
             <label class="vp-editor-label">テーマ<select aria-label="テーマを選ぶ" value={props.library().selected} onChange={event => props.activate(event.currentTarget.value)}>
               <optgroup label="プリセット"><For each={THEME_IDS}>{id => <option value={id}>{THEME_INFO[id].name}</option>}</For></optgroup>
               <Show when={props.library().custom.length}><optgroup label="カスタム"><For each={props.library().custom}>{theme => <option value={theme.id}>{theme.name}</option>}</For></optgroup></Show>

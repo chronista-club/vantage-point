@@ -30,9 +30,9 @@ export const EDITOR_CSS = `
 .vp-editor-header small { color:var(--ed-muted); letter-spacing:.15em; font-size:9px; }
 .vp-editor-header h2 { margin:0; font-size:22px; font-weight:550; letter-spacing:-.03em; }
 .vp-editor-header button { border:0; background:transparent; color:var(--ed-muted); font-size:24px; padding:0 6px; }
-.vp-editor-tabs { display:flex; flex-direction:column; flex-shrink:0; padding:0 12px 10px; gap:2px; border-bottom:1px solid var(--ed-line); }
-.vp-editor-tabs button { background:transparent; border:0; border-left:2px solid transparent; border-radius:0; padding:7px 12px; text-align:left; color:var(--ed-muted); font-size:11px; letter-spacing:.06em; }
-.vp-editor-tabs button[aria-selected="true"] { color:var(--ed-accent); border-left-color:var(--ed-accent); background:var(--ed-panel); }
+.vp-editor-tabs { display:flex; flex-shrink:0; padding:0 12px; gap:4px; border-bottom:1px solid var(--ed-line); }
+.vp-editor-tabs button { flex:1; background:transparent; border:0; border-bottom:2px solid transparent; border-radius:0; padding:10px 2px; text-align:center; color:var(--ed-muted); font-size:11px; letter-spacing:.06em; }
+.vp-editor-tabs button[aria-selected="true"] { color:var(--ed-accent); border-bottom-color:var(--ed-accent); }
 .vp-editor-content { overflow:auto; padding:0 18px 18px; min-height:0; overscroll-behavior:contain; }
 .vp-editor-intro { margin:18px 0; }
 .vp-editor h3 { font-size:14px; font-weight:550; margin:0 0 5px; }

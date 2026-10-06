@@ -43,23 +43,42 @@ function click(win: Window, el: { dispatchEvent(event: any): boolean }) {
 }
 afterEach(async () => { for (const win of windows.splice(0)) { win.dispose?.(); await win.happyDOM.abort() } })
 
-it('offers vertical THEME / SIDEBAR / COMPONENT with sidebar controls available without selection', async () => {
+it('offers horizontal THEME / SIDEBAR / CHAT / COMPONENT with controls grouped by their target', async () => {
   const win = fixture()
   await tick()
-  expect(Array.from(win.document.querySelectorAll('[role="tab"]')).map(el => el.textContent)).toEqual(['THEME', 'SIDEBAR', 'COMPONENT'])
-  expect(win.document.querySelector('[role=tablist]')?.getAttribute('aria-orientation')).toBe('vertical')
+  expect(Array.from(win.document.querySelectorAll('[role="tab"]')).map(el => el.textContent)).toEqual(['THEME', 'SIDEBAR', 'CHAT', 'COMPONENT'])
+  expect(win.document.querySelector('[role=tablist]')?.getAttribute('aria-orientation')).toBe('horizontal')
   expect(win.document.querySelector('[role=tab][aria-selected=true]')?.textContent).toBe('THEME')
-  button(win, 'THEME').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+  button(win, 'THEME').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
   expect(win.document.querySelector('[role=tab][aria-selected=true]')?.textContent).toBe('SIDEBAR')
   click(win, button(win, 'SIDEBAR'))
   expect(win.vpEditorHost.selection()).toBeNull()
+  expect(win.document.querySelector('[data-field="sb.text.base"]')).toBeNull()
+  expect(win.document.querySelector('[data-field="sb.text.hint"]')).not.toBeNull()
   expect(win.document.querySelector('[data-field="sb.selection.bg"]')).not.toBeNull()
   expect(win.document.querySelector('[data-field="sb.activity.working"]')).not.toBeNull()
   expect(win.vpEditorHost.getField('sb.conn.photon.period')).toBeUndefined()
   click(win, button(win, 'THEME'))
   expect(win.document.querySelector('[data-field="typography.scale"]')).not.toBeNull()
-  expect(win.document.querySelector('[data-field="chat.text.body"]')).not.toBeNull()
+  expect(win.document.querySelector('[data-field="typography.size.l"]')).not.toBeNull()
+  for (const id of ['typography.size.xs', 'typography.size.s', 'typography.size.m', 'typography.size.xl', 'layout.gap.sibling']) {
+    expect(win.document.querySelector(`[data-field="${id}"]`)).toBeNull()
+    expect(win.vpEditorHost.getField(id)).toBeDefined() // Compatibility for existing saved themes.
+  }
+  expect(win.document.querySelector('[data-field="chat.text.body"]')).toBeNull()
   expect(win.document.querySelector('[data-field="shell.resizer.breathe.ms"]')).not.toBeNull()
+  click(win, button(win, 'SIDEBAR'))
+  button(win, 'SIDEBAR').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+  expect(win.document.querySelector('[role=tab][aria-selected=true]')?.textContent).toBe('CHAT')
+  for (const id of ['body', 'user', 'tool', 'meta', 'micro']) {
+    expect(win.document.querySelector(`[data-field="chat.text.${id}"]`)).not.toBeNull()
+  }
+  expect(win.document.querySelector('[data-field="typography.scale"]')).toBeNull()
+  expect(win.document.querySelector('[data-field="sb.text.hint"]')).toBeNull()
+  button(win, 'CHAT').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+  expect(win.document.querySelector('[role=tab][aria-selected=true]')?.textContent).toBe('COMPONENT')
+  button(win, 'COMPONENT').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+  expect(win.document.querySelector('[role=tab][aria-selected=true]')?.textContent).toBe('THEME')
 })
 
 it('saves a named theme, isolates A → B → A, and restores after reload', async () => {
