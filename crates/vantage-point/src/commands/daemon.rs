@@ -220,8 +220,36 @@ fn try_kickstart_launch_agent() -> bool {
         .unwrap_or(false)
 }
 
-/// 非 macOS: LaunchAgent は存在しないため常に false（detached spawn 経路へ）。
-#[cfg(not(target_os = "macos"))]
+/// Windows: LaunchAgent 相当の Task Scheduler task（`vp daemon install` が登録）を
+/// `schtasks /run` で起こす。task 名は profile 分離済み（`\VP\daemon` / `\VP\daemon-dev`）
+/// なので dev でも踏んでよい。未登録なら `/query` で false に落とし detached spawn 経路へ。
+///
+/// detached spawn に落とすと task 外の個体が port を握る「所有権分裂」になり、
+/// 次回以降の task keep-alive が IgnoreNew / bind 衝突で空回りする（mac と同じ敵）。
+#[cfg(windows)]
+fn try_kickstart_launch_agent() -> bool {
+    let task = process::scheduled_task_name();
+    let registered = std::process::Command::new("schtasks")
+        .args(["/query", "/tn", &task])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !registered {
+        return false;
+    }
+    std::process::Command::new("schtasks")
+        .args(["/run", "/tn", &task])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// macOS / Windows 以外: 常駐 supervisor は無いため常に false（detached spawn 経路へ）。
+#[cfg(not(any(target_os = "macos", windows)))]
 fn try_kickstart_launch_agent() -> bool {
     false
 }

@@ -406,11 +406,7 @@ impl UpdateCapability {
 
     /// 現在のプラットフォーム用のアセットを検索
     pub fn find_platform_asset<'a>(&self, release: &'a ReleaseInfo) -> Option<&'a AssetInfo> {
-        let target = current_platform_target();
-        release
-            .assets
-            .iter()
-            .find(move |a| a.name.contains(&target))
+        find_cli_asset(&release.assets, &current_platform_target())
     }
 
     /// 更新を適用（ダウンロード→バックアップ→置換）
@@ -451,6 +447,11 @@ impl UpdateCapability {
             Ok(_) => {
                 // 一時ファイルを削除
                 let _ = tokio::fs::remove_file(&temp_path).await;
+
+                // Windows は GUI（vp-app.exe）が CLI の隣に置かれる配布形態なので一緒に揃える。
+                // macOS の GUI は .app 内で、.app ごとの差し替え（brew / .dmg）が担う。
+                #[cfg(windows)]
+                self.update_sibling_gui(release, &binary_path).await;
 
                 tracing::info!(
                     version = %release.version,
@@ -545,6 +546,11 @@ impl UpdateCapability {
 
     /// バイナリを置換（実行権限を設定）
     async fn replace_binary(&self, src: &PathBuf, dest: &PathBuf) -> CapabilityResult<()> {
+        // Windows は実行中 exe への上書きを拒否する（常駐 daemon / `vp mcp` / 自分自身が
+        // 同じ exe を握っている）。リネームは許されるので、旧 exe を退避してから配置する。
+        #[cfg(windows)]
+        set_aside_running_exe(dest)?;
+
         // コピー（moveだと異なるファイルシステム間で失敗する可能性がある）
         tokio::fs::copy(src, dest)
             .await
@@ -563,6 +569,35 @@ impl UpdateCapability {
         Ok(())
     }
 
+    /// CLI の隣にある vp-app.exe を同じ release の GUI 添付物で差し替える（Windows のみ）。
+    ///
+    /// best-effort: CLI の更新は既に成功しているので、GUI 側の失敗は warn に留めて
+    /// 全体を失敗にしない（GUI は次回の更新で追いつける）。隣に vp-app.exe が無い
+    /// （CLI だけ入れた）環境では何もしない。
+    #[cfg(windows)]
+    async fn update_sibling_gui(&self, release: &ReleaseInfo, cli_path: &std::path::Path) {
+        let gui_path = cli_path.with_file_name(format!("vp-app{}", std::env::consts::EXE_SUFFIX));
+        if !gui_path.exists() {
+            tracing::info!(path = %gui_path.display(), "GUI が隣に無いため GUI 更新は skip");
+            return;
+        }
+        let name = gui_asset_name(&current_platform_target());
+        let Some(asset) = release.assets.iter().find(|a| a.name == name) else {
+            tracing::warn!(asset = %name, "release に GUI 添付物が無いため GUI 更新は skip");
+            return;
+        };
+        let temp_path = gui_path.with_extension("new");
+        if let Err(e) = self.download_binary(asset, &temp_path).await {
+            tracing::warn!(error = %e, "GUI のダウンロードに失敗（CLI は更新済み）");
+            return;
+        }
+        match self.replace_binary(&temp_path, &gui_path).await {
+            Ok(()) => tracing::info!(path = %gui_path.display(), "GUI を更新"),
+            Err(e) => tracing::warn!(error = %e, "GUI の差し替えに失敗（CLI は更新済み）"),
+        }
+        let _ = tokio::fs::remove_file(&temp_path).await;
+    }
+
     /// ロールバックを実行
     pub async fn rollback(&self, backup_path: &str) -> CapabilityResult<()> {
         let backup = PathBuf::from(backup_path);
@@ -571,6 +606,10 @@ impl UpdateCapability {
         }
 
         let binary_path = find_current_binary()?;
+
+        // replace_binary と同じく、実行中 exe は上書きできないので退避してから戻す。
+        #[cfg(windows)]
+        set_aside_running_exe(&binary_path)?;
 
         tokio::fs::copy(&backup, &binary_path)
             .await
@@ -1117,6 +1156,78 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
     }
 }
 
+/// release 添付物の命名（SSOT = `.github/workflows/release-windows.yml`）。
+/// CLI は `vp-<target><exe>`、GUI は `vp-app-<target><exe>`。
+fn cli_asset_name(target: &str) -> String {
+    format!("vp-{target}{}", std::env::consts::EXE_SUFFIX)
+}
+
+#[cfg(windows)]
+fn gui_asset_name(target: &str) -> String {
+    format!("vp-app-{target}{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// CLI 本体の添付物を選ぶ純粋関数。
+///
+/// 完全一致（`vp-<target><exe>`）を優先し、無ければ従来どおり target を含む名前に落とす。
+/// fallback では GUI 添付物（`vp-app-…`）を除外する — 同じ target 名を含むため、
+/// `contains` だけだと GUI の exe を CLI として配置してしまう。
+fn find_cli_asset<'a>(assets: &'a [AssetInfo], target: &str) -> Option<&'a AssetInfo> {
+    let exact = cli_asset_name(target);
+    assets.iter().find(|a| a.name == exact).or_else(|| {
+        assets
+            .iter()
+            .find(|a| a.name.contains(target) && !a.name.starts_with("vp-app-"))
+    })
+}
+
+/// 退避先の path（`<file>.old-<tag>`）を作る純粋関数。tag は退避ごとに一意にする —
+/// 前回退避した exe をまだ旧プロセスが握っていると、同名では上書きも削除もできないため。
+#[cfg(any(windows, test))]
+fn set_aside_path(dest: &std::path::Path, tag: u128) -> PathBuf {
+    let file_name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    dest.with_file_name(format!("{file_name}.old-{tag}"))
+}
+
+/// 実行中かもしれない exe を `<file>.old-<tag>` へ退避する（Windows のみ）。
+///
+/// Windows は実行中 exe の上書き・削除を拒否するがリネームは許す。退避後は空いた
+/// 元の path に新しい exe を置ける。旧プロセスは退避先の image で動き続ける。
+/// ついでに過去の退避物を掃除する（まだ握られている物は消せないので黙って残す）。
+#[cfg(windows)]
+fn set_aside_running_exe(dest: &std::path::Path) -> CapabilityResult<()> {
+    if !dest.exists() {
+        return Ok(());
+    }
+    if let (Some(dir), Some(name)) = (dest.parent(), dest.file_name()) {
+        let prefix = format!("{}.old-", name.to_string_lossy());
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+    let tag = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let aside = set_aside_path(dest, tag);
+    std::fs::rename(dest, &aside).map_err(|e| {
+        CapabilityError::Other(format!(
+            "Failed to set aside running binary {}: {}",
+            dest.display(),
+            e
+        ))
+    })?;
+    tracing::info!(aside = %aside.display(), "実行中の binary を退避");
+    Ok(())
+}
+
 /// 現在のプラットフォームのターゲット名を取得
 fn current_platform_target() -> String {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -1245,5 +1356,81 @@ mod tests {
         // macOS ARM
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         assert_eq!(target, "aarch64-apple-darwin");
+    }
+
+    fn asset(name: &str) -> AssetInfo {
+        AssetInfo {
+            name: name.to_string(),
+            api_url: String::new(),
+            browser_download_url: String::new(),
+            size: 0,
+            content_type: String::new(),
+        }
+    }
+
+    const WIN: &str = "x86_64-pc-windows-msvc";
+
+    #[test]
+    fn find_cli_asset_skips_gui_asset_listed_first() {
+        // GUI 添付物も target 名を含む。並び順が先でも CLI として選ばれてはならない。
+        let assets = vec![
+            asset(&format!("vp-app-{WIN}.exe")),
+            asset(&format!("vp-{WIN}.exe")),
+            asset("VantagePoint-0.79.0-arm64.dmg"),
+        ];
+        let picked = find_cli_asset(&assets, WIN).expect("CLI 添付物が選ばれるべき");
+        assert!(
+            picked.name.starts_with(&format!("vp-{WIN}")),
+            "GUI を CLI と取り違えた: {}",
+            picked.name
+        );
+    }
+
+    #[test]
+    fn find_cli_asset_none_when_only_gui_asset() {
+        // CLI が無く GUI だけ → GUI を CLI として配置しない（None）。
+        let assets = vec![asset(&format!("vp-app-{WIN}.exe"))];
+        assert!(find_cli_asset(&assets, WIN).is_none());
+    }
+
+    #[test]
+    fn find_cli_asset_falls_back_to_contains_for_legacy_names() {
+        // 完全一致が無い場合は従来の「target を含む」判定（mac の既存挙動）を保つ。
+        let assets = vec![asset("vp-v1.2.3-aarch64-apple-darwin.tar.gz")];
+        let picked = find_cli_asset(&assets, "aarch64-apple-darwin").expect("fallback で拾う");
+        assert_eq!(picked.name, "vp-v1.2.3-aarch64-apple-darwin.tar.gz");
+    }
+
+    #[test]
+    fn find_cli_asset_none_for_mac_dmg_only_release() {
+        // 現行 release（.dmg だけ）は target 名を含まないので従来どおり None。
+        let assets = vec![asset("VantagePoint-0.79.0-arm64.dmg")];
+        assert!(find_cli_asset(&assets, "aarch64-apple-darwin").is_none());
+    }
+
+    #[test]
+    fn set_aside_path_keeps_name_and_appends_tag() {
+        let dest = std::path::Path::new("bin").join("vp.exe");
+        let aside = set_aside_path(&dest, 42);
+        assert_eq!(aside, std::path::Path::new("bin").join("vp.exe.old-42"));
+    }
+
+    /// 実行中 exe 相当（開きっぱなしの file handle）でも退避 → 配置が通ること。
+    #[cfg(windows)]
+    #[test]
+    fn set_aside_running_exe_frees_path_while_file_is_open() {
+        let dir = std::env::temp_dir().join(format!("vp-set-aside-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("vp.exe");
+        std::fs::write(&dest, b"old").unwrap();
+        let _held = std::fs::File::open(&dest).unwrap();
+
+        set_aside_running_exe(&dest).expect("退避できるべき");
+        assert!(!dest.exists(), "元の path が空いていない");
+        std::fs::write(&dest, b"new").expect("空いた path に配置できるべき");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new");
+
+        drop(_held);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
