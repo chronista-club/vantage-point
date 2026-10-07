@@ -363,7 +363,7 @@ enum LaneCommands {
         /// 起点にする lane 名 (省略時は現在の起点を表示)
         name: Option<String>,
     },
-    /// lane の claude / shell に text + Enter を注入 (旧 `vp tmux send-keys` / `vp directmsg` の後継)
+    /// lane の claude / shell に text + Enter を注入。宛先が Chat session なら engine に 1 ターンとして送る (旧 `vp tmux send-keys` / `vp directmsg` の後継)
     Nudge {
         /// lane address ("<repo>/root" / "<repo>/sub/<name>")
         lane: String,

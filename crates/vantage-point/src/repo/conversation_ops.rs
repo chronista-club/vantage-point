@@ -493,7 +493,7 @@ fn parse_image_inputs(raw: Option<&serde_json::Value>) -> Vec<crate::conversatio
         .collect()
 }
 
-async fn ensure_and_submit_chat(
+pub(crate) async fn ensure_and_submit_chat(
     state: &RepoState,
     ctx: &str,
     lane: &str,
