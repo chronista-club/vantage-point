@@ -1,8 +1,8 @@
 /** Lane ごとの登録 URL。native の保存結果だけを確定値として表示する。 */
-import { For, Show, createEffect, createSignal, onCleanup } from 'solid-js'
+import { For, Show, createEffect, createSignal, on, onCleanup } from 'solid-js'
 import { requestLocalUrls, probeLabel, type LocalUrlEntry, type UrlAction, type UrlProbe, type UrlResult } from './local-urls'
 
-export function LocalUrls(props: { repoPath: string; address: string }) {
+export function LocalUrls(props: { repoPath: string; address: string; addRequest?: number }) {
   const [entries, setEntries] = createSignal<LocalUrlEntry[]>([])
   const [probes, setProbes] = createSignal<Record<string, UrlProbe>>({})
   const [busy, setBusy] = createSignal(false)
@@ -10,6 +10,7 @@ export function LocalUrls(props: { repoPath: string; address: string }) {
   const [error, setError] = createSignal('')
   const [editing, setEditing] = createSignal<string | null>(null)
   const [url, setUrl] = createSignal('')
+  const [name, setName] = createSignal('')
   const [label, setLabel] = createSignal('')
   let generation = 0
   createEffect(() => {
@@ -39,14 +40,27 @@ export function LocalUrls(props: { repoPath: string; address: string }) {
     setEntries(result.entries); setProbes({}); setEditing(null)
   }
   function edit(entry?: LocalUrlEntry) {
-    setEditing(entry?.id ?? ''); setUrl(entry?.url ?? ''); setLabel(entry?.label ?? ''); setError('')
+    setEditing(entry?.id ?? ''); setName(entry?.id ?? ''); setUrl(entry?.url ?? ''); setLabel(entry?.label ?? ''); if (loaded()) setError('')
   }
-  return <details class="vp-local-urls" onClick={e => e.stopPropagation()} onContextMenu={e => e.stopPropagation()} onDragStart={e => e.stopPropagation()}>
+  // Reload registrations only; never probe automatically or replace an in-progress draft.
+  async function refresh() {
+    if (!loaded() || busy() || editing() !== null || error()) return
+    const result = await act({ action: 'load' })
+    if (result?.entries && editing() === null && JSON.stringify(result.entries) !== JSON.stringify(entries())) {
+      setEntries(result.entries); setProbes({})
+    }
+  }
+  const refreshTimer = window.setInterval(() => void refresh(), 3000)
+  const refreshOnFocus = () => void refresh()
+  window.addEventListener('focus', refreshOnFocus)
+  onCleanup(() => { window.clearInterval(refreshTimer); window.removeEventListener('focus', refreshOnFocus) })
+  createEffect(on(() => props.addRequest, request => { if (request) edit() }))
+  return <><style>{LOCAL_URLS_CSS}</style><Show when={entries().length > 0 || editing() !== null || error()}><details open={editing() !== null || !!error()} class="vp-local-urls" onClick={e => e.stopPropagation()} onContextMenu={e => e.stopPropagation()} onDragStart={e => e.stopPropagation()}>
     <summary>ローカル URL <span>{entries().length || '＋'}</span><Show when={error()}> · 確認が必要</Show></summary>
     <div class="vp-local-url-body">
-      <style>{LOCAL_URLS_CSS}</style>
       <For each={entries()}>{entry => <div class="vp-local-url-entry">
         <button type="button" class="vp-local-url-open" title={`${entry.url} をブラウザで開く`} disabled={busy()} onClick={() => void act({ action: 'open', id: entry.id })}>{entry.label}</button>
+        <span class="vp-local-url-name" title={`登録名: ${entry.id}`}>{entry.id}</span>
         <span class="vp-local-url-address" title={entry.url}>{entry.url}</span>
         <span class="vp-local-url-state" title={probes()[entry.id]?.state === 'failed' ? (probes()[entry.id] as {message: string}).message : undefined}>{probeLabel(probes()[entry.id])}</span>
         <div class="vp-local-url-actions">
@@ -59,17 +73,18 @@ export function LocalUrls(props: { repoPath: string; address: string }) {
       <Show when={editing() !== null} fallback={<button type="button" disabled={busy() || !loaded()} onClick={() => edit()}>URLを追加</button>}>
         <form class="vp-local-url-form" onSubmit={e => {
           e.preventDefault(); e.stopPropagation()
-          const entry = { id: editing() || crypto.randomUUID(), url: url().trim(), label: label().trim() }
+          const entry = { id: editing() || name().trim(), url: url().trim(), label: label().trim() }
           void save(editing() ? entries().map(old => old.id === editing() ? entry : old) : [...entries(), entry])
         }}>
+          <label>名前<input aria-label="名前" required maxlength={64} pattern="[a-z0-9][a-z0-9_-]{0,63}" value={name()} placeholder="preview" onInput={e => setName(e.currentTarget.value)} disabled={busy() || !!editing()} /></label>
           <label>URL<input aria-label="URL" required value={url()} placeholder="http://localhost:12889" onInput={e => setUrl(e.currentTarget.value)} disabled={busy()} /></label>
           <label>用途<input aria-label="用途" required maxlength={120} value={label()} placeholder="Editor preview" onInput={e => setLabel(e.currentTarget.value)} disabled={busy()} /></label>
-          <div class="vp-local-url-actions"><button type="submit" disabled={busy()}>保存</button><button type="button" disabled={busy()} onClick={() => setEditing(null)}>キャンセル</button></div>
+          <div class="vp-local-url-actions"><button type="submit" disabled={busy() || !loaded()}>保存</button><button type="button" disabled={busy()} onClick={() => setEditing(null)}>キャンセル</button></div>
         </form>
       </Show>
       <Show when={busy()}><span role="status">処理中…</span></Show>
     </div>
-  </details>
+  </details></Show></>
 }
 
 export const LOCAL_URLS_CSS = `
@@ -81,6 +96,7 @@ export const LOCAL_URLS_CSS = `
 .vp-local-urls button{font:inherit;color:inherit;border:1px solid var(--color-surface-border,#ffffff20);border-radius:4px;background:transparent;padding:3px 7px;cursor:pointer;text-align:left}
 .vp-local-urls button:hover{background:#ffffff0c}.vp-local-urls button:disabled{opacity:.45;cursor:default}
 .vp-local-urls .vp-local-url-open{border:0;padding:0;color:var(--color-text-primary,#e7edf0);text-decoration:underline;text-underline-offset:3px}
+.vp-local-url-name{font-size:10px;opacity:.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vp-local-url-address{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--typography-family-mono,monospace);font-size:10px}
 .vp-local-url-state{font-size:10px;opacity:.8}.vp-local-url-actions{display:flex;gap:5px;flex-wrap:wrap}
 .vp-local-url-form{display:flex;flex-direction:column;gap:7px}.vp-local-url-form label{display:flex;flex-direction:column;gap:3px}

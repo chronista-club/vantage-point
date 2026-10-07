@@ -9599,6 +9599,7 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
+ "vp-local-urls",
  "vp-paths",
  "vte",
  "webbrowser",
@@ -9672,6 +9673,7 @@ dependencies = [
  "ts-rs",
  "urlencoding",
  "uuid",
+ "vp-local-urls",
  "vp-paths",
  "webbrowser",
  "whisper-rs",
@@ -9695,6 +9697,17 @@ dependencies = [
  "tokio",
  "tracing",
  "vantage-point",
+]
+
+[[package]]
+name = "vp-local-urls"
+version = "0.80.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
