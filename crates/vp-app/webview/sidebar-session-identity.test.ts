@@ -15,7 +15,7 @@ beforeAll(async () => {
       import { LaneRow, SessionRow } from './src/sidebar/LaneRow';
       import { ContextMenu } from './src/sidebar/ContextMenu';
       const sessions = [{ key: 58, agent: 'grok', mode: 'gui' }, { key: 57, agent: 'codex', mode: 'tui' }];
-      const lane = { address: {repo:'vp', name:'demo', key:'vp/lane/demo'}, agent:'claude', cwd:'/repo/demo', pid:1, sessions:{root:58, focused:57, sessions} };
+      const lane = { address: {repo:'vp', name:'demo', key:'vp/lane/demo'}, agent:'claude', cwd:'/repo/.vp/lanes/demo', branch:'wip/demo', sub_status:{ahead:2,behind:1,dirty_count:3}, pid:1, sessions:{root:58, focused:57, sessions} };
       window.sent = [];
       window.ipc = { postMessage: m => window.sent.push(JSON.parse(m)) };
       const host = document.createElement('div'); document.body.append(host);
@@ -37,6 +37,22 @@ function fixture() {
 }
 afterEach(async () => { for (const win of windows.splice(0)) await win.happyDOM.abort() })
 describe('sidebar session identity', () => {
+  it('places the lane path above a separate branch line with its diff metadata', () => {
+    const win=fixture();
+    const row=win.document.querySelector('.vp-lane-row')!;
+    const cwd=row.querySelector('.vp-lane-cwd')!;
+    const branch=row.querySelector('.vp-lane-branch')!;
+    const meta=row.querySelector('.vp-lane-meta')!;
+    expect(cwd.textContent).toBe('lanes/demo');
+    expect(cwd.parentElement).not.toBe(branch.parentElement);
+    expect(cwd.parentElement?.nextElementSibling).toBe(branch.parentElement);
+    expect(meta.parentElement).toBe(branch.parentElement);
+    expect(meta.textContent).toContain('↑2');
+    expect(meta.textContent).toContain('↓1');
+    expect(meta.textContent).toContain('3M');
+    expect(row.querySelector('.vp-lane-right .vp-lane-meta')).toBeNull();
+  })
+
   it('offers first URL registration from the lane context menu without selecting the lane', () => {
     const win=fixture();
     expect(win.document.querySelector('.vp-local-urls')).toBeNull();

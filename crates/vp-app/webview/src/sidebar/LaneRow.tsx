@@ -436,16 +436,13 @@ export function LaneRow(props: {
 			>
 				{isSub() ? (sessionTitle() ?? laneLabel(props.lane)) : (props.projectName ?? props.lane.address.repo)}
 			</span>
-			{/* 右端ブロック: ⑦ state 文字 → ⑤ git meta (dirty/↑↓ のみ) → ⑥ awaiting dot → ③ mailbox → #N (末尾固定) */}
+			{/* 右端ブロック: state 文字 → notice → mailbox → #N (末尾固定) */}
 			<span class="vp-lane-right">
 
 				{/* Light Grid state 言語の文字面 (working / idle / needs you)。 FSM の SSOT は
 				    connectorClass (laneConnector 導出) — 二重導出しない。 */}
 				<Show when={agentActivity.phase() !== "idle"}>
 					<span class="vp-lane-state" style={{color:ACTIVITY_COLOR[agentActivity.phase()]}}>{agentActivity.phase() === "completed" ? "指示待ち" : ACTIVITY_LABEL[agentActivity.phase()]}</span>
-				</Show>
-				<Show when={isSub() && props.lane.sub_status}>
-					<SubMeta ws={props.lane.sub_status!} />
 				</Show>
 				<Show when={canvasUnread()}>
 					<span
@@ -493,20 +490,24 @@ export function LaneRow(props: {
 			{/* 「今なにを」= 進行の本体 (doc 58 §2)。地 (cwd) より 1 段読める色。
 			    無ければ黙る (語ることが無い行は黙る、cwd と同じ流儀)。 */}
 			<NowLine text={nowText()} lastActivityAt={rootActivity()} />
-			{/* 地 = cwd 差分 + ブランチ (2026-10-02)。root は cwd 差分ゼロなのでブランチだけの行になる。
-			    どちらも無ければ行ごと出さない (語ることが無い行は黙る)。 */}
-			<Show when={cwdLabel() || branch()}>
+			{/* パスと git 情報を上下に分ける。diff はブランチと同じ行で読む。 */}
+			<Show when={cwdLabel()}>
 				<span class="vp-lane-ground">
-					<Show when={cwdLabel()}>
-						<span class="vp-lane-cwd" title={props.lane.cwd}>
-							{cwdLabel()}
-						</span>
-					</Show>
+					<span class="vp-lane-cwd" title={props.lane.cwd}>
+						{cwdLabel()}
+					</span>
+				</span>
+			</Show>
+			<Show when={branch() || (isSub() && props.lane.sub_status)}>
+				<span class="vp-lane-ground vp-lane-git">
 					<Show when={branch()}>
 						<span class="vp-lane-branch" title={`git branch: ${branch()}`}>
 							<CreoIcon name="ph:git-branch" size={10} />
 							{branch()}
 						</span>
+					</Show>
+					<Show when={isSub() && props.lane.sub_status}>
+						<SubMeta ws={props.lane.sub_status!} />
 					</Show>
 				</span>
 			</Show>
