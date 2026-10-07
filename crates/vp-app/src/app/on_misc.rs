@@ -333,3 +333,30 @@ pub(super) fn activity_update(ui: &mut UiState, boot: &Boot, snap: crate::pane::
     ui.sidebar_state.activity.update_applying = ui.update_applying;
     push_sidebar_state(&boot.webview, &ui.sidebar_state);
 }
+
+pub(super) fn midi_use_command(
+    boot: &Boot,
+    proxy: &EventLoopProxy<AppEvent>,
+    payload: serde_json::Value,
+) {
+    let connection = boot.daemon_conn.clone();
+    let proxy = proxy.clone();
+    boot.rt_handle.spawn(async move {
+        let result: anyhow::Result<serde_json::Value> = async {
+            let control = connection.control().await?;
+            if let Some(enabled) = payload.get("master_enabled").and_then(|v| v.as_bool()) {
+                control.midi_master(enabled).await?;
+            }
+            control.midi_use(payload).await
+        }
+        .await;
+        let payload =
+            result.unwrap_or_else(|error| serde_json::json!({"request_error": error.to_string()}));
+        let _ = proxy.send_event(AppEvent::MidiUseResult { payload });
+    });
+}
+pub(super) fn midi_use_result(boot: &Boot, payload: serde_json::Value) {
+    let _ = boot
+        .webview
+        .evaluate_script(&format!("window.vpDevices?.renderMidiUse({payload})"));
+}

@@ -89,7 +89,9 @@ impl MachineCapabilities {
         let devices = DeviceRegistry::new(event_bus);
         devices.attach_fleet_inputs().await;
         tracing::info!("devices 🧲 registry ready (hot-plug は Swift agent が報告 / polling 停止)");
-        wc.devices = Some(Arc::new(RwLock::new(devices)));
+        let devices = Arc::new(RwLock::new(devices));
+        crate::midi_use::start(Arc::downgrade(&devices));
+        wc.devices = Some(devices);
 
         wc
     }

@@ -4704,11 +4704,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "midistage-client"
+version = "0.0.1"
+source = "git+https://github.com/chronista-club/midistage.git?rev=0d3c3f5e22dac62c0e701daaa17fcd173f41df18#0d3c3f5e22dac62c0e701daaa17fcd173f41df18"
+dependencies = [
+ "anyhow",
+ "club-unison",
+ "midistage-protocol",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "midistage-profiles"
+version = "0.0.1"
+source = "git+https://github.com/chronista-club/midistage.git?rev=0d3c3f5e22dac62c0e701daaa17fcd173f41df18#0d3c3f5e22dac62c0e701daaa17fcd173f41df18"
+dependencies = [
+ "serde",
+ "sha1 0.11.0",
+]
+
+[[package]]
 name = "midistage-profiles"
 version = "0.80.0"
 dependencies = [
  "serde",
  "sha1 0.11.0",
+]
+
+[[package]]
+name = "midistage-protocol"
+version = "0.0.1"
+source = "git+https://github.com/chronista-club/midistage.git?rev=0d3c3f5e22dac62c0e701daaa17fcd173f41df18#0d3c3f5e22dac62c0e701daaa17fcd173f41df18"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -9560,7 +9593,8 @@ dependencies = [
  "jsonschema",
  "libc",
  "midir",
- "midistage-profiles",
+ "midistage-client",
+ "midistage-profiles 0.0.1",
  "notify",
  "objc2",
  "objc2-app-kit",
