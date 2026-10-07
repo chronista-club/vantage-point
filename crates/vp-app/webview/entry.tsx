@@ -1,3 +1,4 @@
+import { renderMidiUse } from "./midi-use";
 /**
  * vp-app WebView 用 entry point.
  *
@@ -784,9 +785,11 @@ document.addEventListener("vp:mode-switch-request", (e) => {
 	window as unknown as {
 		vpDevices: {
 			renderDevices: typeof renderDeviceList;
+            renderMidiUse: typeof renderMidiUse;
 		};
 	}
 ).vpDevices = {
+    renderMidiUse,
 	renderDevices: renderDeviceList,
 };
 

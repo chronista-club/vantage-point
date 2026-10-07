@@ -30,6 +30,19 @@ pub enum MidiCommands {
     On,
     /// 艦隊スイッチの状態を表示する（VP が握っているか / device 数）
     Status,
+    /// 機材ごとの所有者・使用設定を JSON で表示
+    Devices,
+    /// 機材の使用を切り替える（vp midi devices で見た revision が必要）
+    Use {
+        device: String,
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+        #[arg(long)]
+        revision: u64,
+        /// 別アプリからの切り替えを明示的に許可
+        #[arg(long)]
+        takeover: bool,
+    },
     /// LPD8コントローラー設定
     #[command(subcommand)]
     Lpd8(Lpd8Commands),
@@ -176,6 +189,15 @@ pub fn execute(cmd: MidiCommands) -> Result<()> {
         MidiCommands::Off => set_midi_switch(Some(false)),
         MidiCommands::On => set_midi_switch(Some(true)),
         MidiCommands::Status => set_midi_switch(None),
+        MidiCommands::Devices => midi_use_command(serde_json::json!({})),
+        MidiCommands::Use {
+            device,
+            state,
+            revision,
+            takeover,
+        } => midi_use_command(serde_json::json!({"set": {
+            "device_id": device, "enabled": state == "on", "expected_revision": revision, "takeover": takeover
+        }})),
         MidiCommands::Lpd8(lpd8_cmd) => execute_lpd8(lpd8_cmd),
         MidiCommands::Xtouch(xtouch_cmd) => execute_xtouch(xtouch_cmd),
         MidiCommands::Roto(roto_cmd) => execute_roto(roto_cmd),
@@ -192,6 +214,26 @@ pub fn execute(cmd: MidiCommands) -> Result<()> {
 /// daemon が止まっていても書ける（次に起動した daemon がそれを見て握らない）。
 /// 「daemon が居ないから設定できません」は user から見て理不尽なので、その場合も
 /// 保存だけは通し、**何が起きたかを言葉で分ける**（握っているものは無い、と伝える）。
+fn midi_use_command(payload: serde_json::Value) -> Result<()> {
+    let response = std::thread::spawn(move || -> Result<serde_json::Value> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                let client = crate::daemon::client::DaemonControlClient::connect(
+                    vp_paths::default_daemon_port(),
+                    1,
+                )
+                .await?;
+                client.midi_use(payload).await
+            })
+    })
+    .join()
+    .map_err(|_| anyhow::anyhow!("MIDI request thread failed"))??;
+    println!("{}", serde_json::to_string_pretty(&response)?);
+    Ok(())
+}
+
 fn set_midi_switch(enabled: Option<bool>) -> Result<()> {
     use crate::daemon_client::MidiSwitchCall;
     match (enabled, crate::daemon_client::midi_switch_blocking(enabled)) {
@@ -765,7 +807,11 @@ pub(crate) fn roto_open_async(
         )
         .map_err(|e| anyhow::anyhow!("MIDI input connect failed: {}", e))?;
     let (conn_out, port_name) = crate::midi::open_output(Some(port))?;
-    Ok((conn_in, rx, conn_out, port_name))
+    let display_name = port_name
+        .split_once(" | ")
+        .map_or(port_name.as_str(), |(_, name)| name)
+        .to_owned();
+    Ok((conn_in, rx, conn_out, display_name))
 }
 
 /// local repo に Unison QUIC 接続（mcp.rs の connect_quic と同等、private 再実装）。
@@ -1323,5 +1369,36 @@ mod tests {
     fn parse_daemon_lanes_empty() {
         assert!(parse_node_lanes(&serde_json::json!({})).is_empty());
         assert!(parse_node_lanes(&serde_json::json!({ "repos": [] })).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod midi_use_cli_tests {
+    use super::*;
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Args {
+        #[command(subcommand)]
+        command: MidiCommands,
+    }
+    #[test]
+    fn per_device_change_requires_observed_revision_and_explicit_takeover() {
+        assert!(Args::try_parse_from(["midi", "use", "roto", "on"]).is_err());
+        let parsed =
+            Args::try_parse_from(["midi", "use", "roto", "on", "--revision", "3", "--takeover"])
+                .unwrap();
+        assert!(
+            matches!(parsed.command, MidiCommands::Use { device, state, revision: 3, takeover: true } if device == "roto" && state == "on")
+        );
+        let parsed =
+            Args::try_parse_from(["midi", "use", "roto", "off", "--revision", "4"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            MidiCommands::Use {
+                revision: 4,
+                takeover: false,
+                ..
+            }
+        ));
     }
 }

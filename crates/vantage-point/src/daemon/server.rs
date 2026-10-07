@@ -868,6 +868,26 @@ pub(crate) async fn handle_daemon_control(
         // 同じ機材を開けない。`enabled` 省略 = 現状の読み取りだけ（status）。
         //
         // ⚠️ registry（device 一覧）は OFF でも保つ。**握らなくなるだけで、見えなくならない**。
+        "devices/midi-use" => {
+            #[cfg(feature = "midi")]
+            {
+                let devices = machine_devices
+                    .as_ref()
+                    .ok_or("MIDI registry unavailable")?;
+                if let Some(request) = payload.get("set") {
+                    let request: midistage_client::SetEnabled =
+                        serde_json::from_value(request.clone()).map_err(|e| e.to_string())?;
+                    crate::midi_use::set_device(devices, request)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(devices.read().await.midi_service_status())
+            }
+            #[cfg(not(feature = "midi"))]
+            {
+                Err("MIDI feature is unavailable".into())
+            }
+        }
         "devices/midi" => {
             #[cfg(feature = "midi")]
             {
@@ -2803,6 +2823,40 @@ mod tests {
     // RepoManagerCapability を正しく叩き、 in-memory 状態に反映されることを検証する。
     // (DB 真実源化は PR-C、 ここでは vpdb=None なので persist は repos.kdl no-op)
     // =====================================================================
+
+    #[cfg(feature = "midi")]
+    #[tokio::test]
+    async fn midi_use_reports_disconnected_and_rejects_unconfirmed_device_changes() {
+        let cap = Arc::new(RwLock::new(crate::capability::RepoManagerCapability::new()));
+        let registry = Arc::new(RwLock::new(crate::devices::DeviceRegistry::new(Arc::new(
+            crate::capability::eventbus::EventBus::new(),
+        ))));
+        let devices = Some(Arc::clone(&registry));
+        let actions = crate::creo::client::CreoActionsCache::new();
+        let status = handle_daemon_control(
+            &cap,
+            &actions,
+            &devices,
+            "devices/midi-use",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status["connected"], false);
+        assert!(status["snapshot"].is_null());
+        let invalid = handle_daemon_control(
+            &cap,
+            &actions,
+            &devices,
+            "devices/midi-use",
+            serde_json::json!({"set":{"device_id":"roto","enabled":true}}),
+        )
+        .await;
+        assert!(invalid.unwrap_err().contains("expected_revision"));
+        let disconnected = handle_daemon_control(&cap, &actions, &devices, "devices/midi-use", serde_json::json!({"set":{"device_id":"roto","enabled":true,"expected_revision":3,"takeover":true}})).await;
+        assert!(disconnected.is_err());
+        assert!(registry.read().await.midi_snapshot.is_none());
+    }
 
     fn new_daemon_cap() -> Arc<RwLock<crate::capability::RepoManagerCapability>> {
         Arc::new(RwLock::new(crate::capability::RepoManagerCapability::new()))

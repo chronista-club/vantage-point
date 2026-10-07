@@ -208,6 +208,12 @@ pub enum AppEvent {
     /// DeviceRegistry 🧲 device event (DeviceConnected / DeviceDisconnected / ControlEvent)。
     /// daemon "daemon-device" Unison channel から受信した `DeviceEvent` の生 JSON。
     /// Phase 1 handler は tracing で log。 Phase 2 で DeviceRegistry pane / sidebar に反映予定。
+    MidiUseCommand {
+        payload: serde_json::Value,
+    },
+    MidiUseResult {
+        payload: serde_json::Value,
+    },
     DeviceEvent {
         payload: serde_json::Value,
     },

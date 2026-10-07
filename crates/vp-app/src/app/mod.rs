@@ -376,6 +376,8 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             lines,
             generation,
         } => on_misc::debug_log_chunk(ui, boot, source, reset, lines, generation),
+        AppEvent::MidiUseCommand { payload } => on_misc::midi_use_command(boot, &proxy, payload),
+        AppEvent::MidiUseResult { payload } => on_misc::midi_use_result(boot, payload),
         AppEvent::DeviceEvent { payload } => on_misc::device_event(ui, boot, payload),
         AppEvent::EditorCommand {
             op,

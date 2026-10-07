@@ -19,7 +19,7 @@ pub(crate) fn is_main_ipc_tag(body: &str) -> bool {
             // webview が受け口を全部生やした合図。Rust はこれを受けて現在の状態を丸ごと
             // 撃ち直す（旧 `lanes:ensure-all` / `bastet:devices_fetch` / `board:demand` の
             // 3 本はここに畳んだ）。allowlist 漏れは「起動直後だけ何も出ない」になる。
-            "ready"
+            "midi:use" | "ready"
                 | "term:write"
                 | "term:resize"
                 | "copy"

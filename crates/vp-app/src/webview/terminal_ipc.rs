@@ -46,6 +46,14 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
     };
 
     match parsed.get("t").and_then(|v| v.as_str()) {
+        Some("midi:use") => {
+            let _ = proxy.send_event(AppEvent::MidiUseCommand {
+                payload: parsed
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({})),
+            });
+        }
         Some("ready") => {
             // webview の全 install が済んだ合図（`entry.tsx` が `openDispatch` →
             // `installTerm` → `installSlotRect` の直後に 1 度だけ撃つ）。Rust は現在の状態を
