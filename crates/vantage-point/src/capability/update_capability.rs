@@ -494,9 +494,13 @@ impl UpdateCapability {
     async fn download_binary(&self, asset: &AssetInfo, dest: &PathBuf) -> CapabilityResult<()> {
         tracing::debug!(url = %asset.api_url, "Downloading binary via API");
 
+        // client 既定の 10s timeout は release API の照会用。body 全体に効くため、100MB 超の
+        // binary だと読み途中で切れて "error decoding response body" になる（Windows 実機で確認）。
+        // download だけ上限を延ばす。
         let mut request = self
             .client
             .get(&asset.api_url)
+            .timeout(DOWNLOAD_TIMEOUT)
             .header("Accept", "application/octet-stream");
 
         // GitHub Tokenがあれば認証ヘッダを追加
@@ -1155,6 +1159,9 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
         _ => false,
     }
 }
+
+/// binary download の timeout（release API 照会の 10s とは別枠。100MB 級を遅い回線でも落とせる幅）。
+const DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// release 添付物の命名（SSOT = `.github/workflows/release-windows.yml`）。
 /// CLI は `vp-<target><exe>`、GUI は `vp-app-<target><exe>`。
