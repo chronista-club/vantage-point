@@ -85,6 +85,9 @@ pub(crate) async fn handle_conversation_demand_start(
     // ensure は冪等（既起動なら no-op）。失敗しても replay は続行し、engine は次 submit の
     // self-heal で再試行される。shell / legacy agent 等 gui host を持たない session は skip
     //（能力表 = EngineKind が SSOT。bail を warn で騒がせない）。
+    // 失敗理由は replay まで持ち回る — Codex は履歴を engine から引くので、起動失敗が
+    // 「engine 未起動」に化けて GUI に本当の原因（CLI が見つからない等）が届かなくなる。
+    let mut spawn_error = None;
     if crate::conversation::EngineKind::from_agent(&resolved.agent)
         .is_some_and(crate::conversation::EngineKind::chat_capable)
         && let Err(e) =
@@ -97,6 +100,7 @@ pub(crate) async fn handle_conversation_demand_start(
         tracing::warn!(
             "conversation_demand_start: eager engine spawn 失敗（submit で再試行）: {e}"
         );
+        spawn_error = Some(e.to_string());
     }
 
     // single-flight 化（2026-07-27）: 起動時の 3 重 demand（daemon の購読 0→1 hook /
@@ -115,7 +119,7 @@ pub(crate) async fn handle_conversation_demand_start(
         }));
     }
     loop {
-        let result = replay_once(state, &addr, &lane, &resolved).await;
+        let result = replay_once(state, &addr, &lane, &resolved, spawn_error.as_deref()).await;
         if result.is_err() {
             // エラー中断は予約ごと破棄（次の demand が新規 flight で素直に走れるように）。
             state.replay_flights.abort(&lane, resolved.key);
@@ -138,11 +142,13 @@ pub(crate) async fn handle_conversation_demand_start(
 /// replay 1 本分の配送（[`handle_conversation_demand_start`] の single-flight loop の中身）。
 ///
 /// Codex は host の一括 snapshot、Claude は transcript、他 engine は replay_log を配送する。
+/// `spawn_error` は直前の eager spawn の失敗理由（Codex の履歴取得失敗をこちらで言い換える）。
 async fn replay_once(
     state: &RepoState,
     addr: &crate::repo::lane::LaneAddress,
     lane: &str,
     resolved: &crate::repo::lane::ResolvedSession,
+    spawn_error: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     if crate::conversation::EngineKind::from_agent(&resolved.agent)
         == Some(crate::conversation::EngineKind::Codex)
@@ -153,7 +159,10 @@ async fn replay_once(
             .await
             .request_codex_history(addr, resolved.key);
         if let Err(error) = result {
-            let message = format!("Codex の履歴を復元できません: {error}");
+            let message = match spawn_error {
+                Some(spawn_error) => format!("Codex を起動できません: {spawn_error}"),
+                None => format!("Codex の履歴を復元できません: {error}"),
+            };
             route_conversation(
                 state,
                 lane,
@@ -444,7 +453,7 @@ mod tests {
             .subscribe("repo/conversation/data/history-failure~lane~main/event")
             .await;
         assert!(
-            super::replay_once(&state, &addr, &addr.to_string(), &resolved)
+            super::replay_once(&state, &addr, &addr.to_string(), &resolved, None)
                 .await
                 .is_err()
         );
@@ -454,6 +463,21 @@ mod tests {
         assert!(
             events.try_recv().is_err(),
             "失敗で ReplayStart を送って表示を消さない"
+        );
+
+        // eager spawn の失敗理由があれば「engine 未起動」ではなくそちらを見せる。
+        let error = super::replay_once(
+            &state,
+            &addr,
+            &addr.to_string(),
+            &resolved,
+            Some("codex app-server の起動に失敗（codex）: program not found"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "Codex を起動できません: codex app-server の起動に失敗（codex）: program not found"
         );
     }
 

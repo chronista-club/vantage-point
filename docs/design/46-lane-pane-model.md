@@ -163,7 +163,7 @@ term_attaches: HashMap<LaneAddress, HashMap<SessionKey, TermAttach>>,
 
 - `vp lane capture <lane> --session <N>` — 同居する別 console を読む（省略時 root）
 - `vp lane slots <lane>` — slot 一覧（session / pid / 生死 / root か / attach 有無）。ask は `lane_slots`
-- `vp lane nudge <lane> <text> --session <N>` — 同居人に書く（省略時 root = mailbox の主）
+- `vp lane nudge <lane> <text> --session <N>` — 同居人に書く（省略時 root = mailbox の主）。宛先が Chat session なら engine へ 1 ターンとして注入（受け手の `lane_nudge` が mode で振り分ける）
 - `lanes_list`（= `vp lane ls --detail`）の各 lane に `slots: [key…]` を添えた
   （`LaneInfo` 本体には足さない — descriptor は帳簿の永続形、slot は in-memory な runtime 事実。
   混ぜると「再起動で復元されるべき値」に見える）

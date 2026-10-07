@@ -97,6 +97,14 @@ impl DaemonControl {
             .await
     }
 
+    pub(crate) async fn midi_use(&self, payload: serde_json::Value) -> Result<serde_json::Value> {
+        self.control("devices/midi-use", payload).await
+    }
+    pub(crate) async fn midi_master(&self, enabled: bool) -> Result<serde_json::Value> {
+        self.control("devices/midi", serde_json::json!({"enabled": enabled}))
+            .await
+    }
+
     /// F6 (doc 27 §3.4): vp-app → daemon repo-proxy → repo の one-shot ask（doc 60 §6 B）。
     ///
     /// **1 RPC = 1 stream**: `open_channel("repo-proxy")` → handshake（`subscribe {repo_path}` で

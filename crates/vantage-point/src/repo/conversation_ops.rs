@@ -10,6 +10,10 @@ use std::sync::Arc;
 use super::state::RepoState;
 
 /// Native input controls require an existing host. Unknown delivery is never retried.
+///
+/// 例外は入力（`add` / `steer`）で、idle sweep で寝た engine 宛なら起こして新しい turn として送る。
+/// 寝た engine には native queue も実行中 turn も無い（sweep は turn なしが条件）ので、
+/// 「次に実行する」も「今伝える」も今すぐ始める 1 ターンと同義になる。
 pub(crate) async fn handle_conversation_codex_input(
     state: &RepoState,
     payload: serde_json::Value,
@@ -22,6 +26,32 @@ pub(crate) async fn handle_conversation_codex_input(
         .as_str()
         .filter(|s| !s.is_empty())
         .ok_or("thread 未指定")?;
+    let action = &payload["action"];
+    if matches!(action["kind"].as_str(), Some("add" | "steer"))
+        && !state
+            .lane_pool
+            .read()
+            .await
+            .chat_engine_sessions(&addr)
+            .contains(&session)
+    {
+        let text = action["text"]
+            .as_str()
+            .filter(|text| !text.trim().is_empty())
+            .ok_or("入力が空です")?;
+        let images = parse_image_inputs(action.get("images"));
+        ensure_and_submit_chat(
+            state,
+            "conversation_codex_input",
+            lane,
+            Some(session),
+            text,
+            &images,
+            action["client_id"].as_str(),
+        )
+        .await?;
+        return Ok(serde_json::json!({"status":"ok"}));
+    }
     state
         .lane_pool
         .read()
@@ -493,7 +523,7 @@ fn parse_image_inputs(raw: Option<&serde_json::Value>) -> Vec<crate::conversatio
         .collect()
 }
 
-async fn ensure_and_submit_chat(
+pub(crate) async fn ensure_and_submit_chat(
     state: &RepoState,
     ctx: &str,
     lane: &str,
@@ -1086,6 +1116,54 @@ mod tests {
     /// channel E (doc 34): conversation_nudge dispatch の error 経路 4 種
     /// (lane 未指定 / text 未指定 / parse 失敗 / lane 不在)。happy path は実 engine 要のため
     /// conversation_host_roundtrip (ignored) と実機 dogfood で検証。
+    /// idle sweep で寝た Codex に「次に実行する / 今伝える」が来たら、未起動で弾かず起こして送る。
+    /// engine は存在しない cwd で起動させず、「未起動」で落ちていないこと（= 起こしに行ったこと）を見る。
+    #[tokio::test]
+    async fn codex_input_wakes_sleeping_engine_for_add_and_steer() {
+        use crate::lane::session_registry::{self, SessionMode};
+        use crate::repo::state::{build_test_app_state, insert_test_lane};
+        use crate::repo::unison_server::dispatch_repo_method;
+
+        let _isolated = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let addr = insert_test_lane(&state, "codex-wake", SessionMode::Tui).await;
+        {
+            let mut pool = state.lane_pool.write().await;
+            let mut lane = pool.get(&addr).unwrap().clone();
+            lane.cwd = std::env::temp_dir()
+                .join("vp-absent-engine-cwd")
+                .to_string_lossy()
+                .into_owned();
+            pool.insert(lane);
+        }
+        let key = session_registry::create(
+            &addr.repo,
+            "main",
+            "claude",
+            "codex",
+            SessionMode::Gui,
+            false,
+        )
+        .unwrap();
+
+        for action in [
+            serde_json::json!({"kind":"add","text":"動いてる？","client_id":"c1"}),
+            serde_json::json!({"kind":"steer","text":"動いてる？","client_id":"c2","turn_id":"gone"}),
+        ] {
+            let err = dispatch_repo_method(
+                &state,
+                "conversation_codex_input",
+                serde_json::json!({"lane":addr.to_string(),"session":key,"thread_id":"t","action":action}),
+            )
+            .await
+            .expect_err("engine は起動できないので Err");
+            assert!(
+                !err.contains("未起動"),
+                "寝た engine を起こしていない: {err}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn conversation_nudge_dispatch_error_paths() {
         use crate::repo::state::build_test_app_state;

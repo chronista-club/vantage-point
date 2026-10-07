@@ -288,6 +288,10 @@ impl DaemonControlClient {
         self.call("devices/midi", payload).await
     }
 
+    pub async fn midi_use(&self, payload: serde_json::Value) -> Result<serde_json::Value> {
+        self.call("devices/midi-use", payload).await
+    }
+
     /// 登録 repo 一覧 (RepoInfo の JSON 配列、 ord = sidebar 並び順)。
     pub async fn repos_list(&self) -> Result<Vec<serde_json::Value>> {
         let resp = self.call("repos/list", serde_json::json!({})).await?;

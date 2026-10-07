@@ -49,3 +49,8 @@ pub mod terminal;
 #[cfg(test)]
 pub(crate) mod test_env;
 pub mod trace_log;
+
+#[cfg(feature = "midi")]
+mod midi_access;
+#[cfg(feature = "midi")]
+pub mod midi_use;

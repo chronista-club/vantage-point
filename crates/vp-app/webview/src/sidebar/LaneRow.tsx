@@ -206,6 +206,7 @@ export function LaneRow(props: {
 	// (dead lane に届いた content も気付かせる。awaiting=入力待ちが alive 前提なのとは意味論が違う)。
 	const canvasUnread = () =>
 		!isActive() && (sidebar.canvas_unread?.[addr()] ?? 0) > 0;
+	const [addLocalUrl, setAddLocalUrl] = createSignal(0);
 	// この lane の root session key（registry 欠落 = 旧 wire / boot 窓は 1 に倒す —
 	// Rust 側 ResolveSessionTitles の fallback と同じ既定）。
 	const rootKey = () => props.lane.sessions?.root ?? 1;
@@ -320,7 +321,11 @@ export function LaneRow(props: {
 		const sub = isSubLane(lane);
 		// dim 表示 (isInactive) と同じ述語を使う — 生死判定を 2 箇所に散らさない。
 		const active = isLaneAlive(lane);
-		const items: ContextMenuItem[] = [];
+		const items: ContextMenuItem[] = [{
+			label: "ローカルURLを追加",
+			icon: "ph:link",
+			onSelect: () => setAddLocalUrl(n => n + 1),
+		}];
 		// doc 39 §8.4 提案 1: Restart / Respawn は同一動作（lane:restart、fresh なし = 実体を
 		// 立て直して会話は resume で継続）なのに生死でラベルが割れていた。1 語に統一し、
 		// 「Restart = 新しく始まる」と誤読される語感を（会話は継続）で打ち消す。
@@ -431,16 +436,13 @@ export function LaneRow(props: {
 			>
 				{isSub() ? (sessionTitle() ?? laneLabel(props.lane)) : (props.projectName ?? props.lane.address.repo)}
 			</span>
-			{/* 右端ブロック: ⑦ state 文字 → ⑤ git meta (dirty/↑↓ のみ) → ⑥ awaiting dot → ③ mailbox → #N (末尾固定) */}
+			{/* 右端ブロック: state 文字 → notice → mailbox → #N (末尾固定) */}
 			<span class="vp-lane-right">
 
 				{/* Light Grid state 言語の文字面 (working / idle / needs you)。 FSM の SSOT は
 				    connectorClass (laneConnector 導出) — 二重導出しない。 */}
 				<Show when={agentActivity.phase() !== "idle"}>
 					<span class="vp-lane-state" style={{color:ACTIVITY_COLOR[agentActivity.phase()]}}>{agentActivity.phase() === "completed" ? "指示待ち" : ACTIVITY_LABEL[agentActivity.phase()]}</span>
-				</Show>
-				<Show when={isSub() && props.lane.sub_status}>
-					<SubMeta ws={props.lane.sub_status!} />
 				</Show>
 				<Show when={canvasUnread()}>
 					<span
@@ -488,24 +490,28 @@ export function LaneRow(props: {
 			{/* 「今なにを」= 進行の本体 (doc 58 §2)。地 (cwd) より 1 段読める色。
 			    無ければ黙る (語ることが無い行は黙る、cwd と同じ流儀)。 */}
 			<NowLine text={nowText()} lastActivityAt={rootActivity()} />
-			{/* 地 = cwd 差分 + ブランチ (2026-10-02)。root は cwd 差分ゼロなのでブランチだけの行になる。
-			    どちらも無ければ行ごと出さない (語ることが無い行は黙る)。 */}
-			<Show when={cwdLabel() || branch()}>
+			{/* パスと git 情報を上下に分ける。diff はブランチと同じ行で読む。 */}
+			<Show when={cwdLabel()}>
 				<span class="vp-lane-ground">
-					<Show when={cwdLabel()}>
-						<span class="vp-lane-cwd" title={props.lane.cwd}>
-							{cwdLabel()}
-						</span>
-					</Show>
+					<span class="vp-lane-cwd" title={props.lane.cwd}>
+						{cwdLabel()}
+					</span>
+				</span>
+			</Show>
+			<Show when={branch() || (isSub() && props.lane.sub_status)}>
+				<span class="vp-lane-ground vp-lane-git">
 					<Show when={branch()}>
 						<span class="vp-lane-branch" title={`git branch: ${branch()}`}>
 							<CreoIcon name="ph:git-branch" size={10} />
 							{branch()}
 						</span>
 					</Show>
+					<Show when={isSub() && props.lane.sub_status}>
+						<SubMeta ws={props.lane.sub_status!} />
+					</Show>
 				</span>
 			</Show>
-			<LocalUrls repoPath={props.repoPath} address={addr()} />
+			<LocalUrls repoPath={props.repoPath} address={addr()} addRequest={addLocalUrl()} />
 		</div>
 	);
 }

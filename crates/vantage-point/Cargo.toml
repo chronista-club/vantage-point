@@ -15,9 +15,10 @@ path = "src/lib.rs"
 # 旧 `gui` feature (tao / muda) は 2026-09-02 に撤去 — この crate 内に参照が 0 件の dead feature で、
 # default-on のため `cargo build -p vantage-point` が使わない GUI stack を毎回 compile していた。GUI は vp-app crate。
 default = ["midi"]
-midi = ["dep:midir", "dep:midistage-profiles"]
+midi = ["dep:midir", "dep:midistage-profiles", "dep:midistage-client"]
 
 [dependencies]
+vp-local-urls = { path = "../vp-local-urls" }
 # Async runtime
 tokio = { workspace = true }
 async-trait = { workspace = true }
@@ -26,7 +27,8 @@ async-trait = { workspace = true }
 vp-paths = { path = "../vp-paths" }
 
 # MIDI ランタイム制御プロトコル + 純粋計算 (DeviceProfile / DeviceInput / palette、 I/O なし)
-midistage-profiles = { path = "../midistage-profiles", optional = true }
+midistage-profiles = { git = "https://github.com/chronista-club/midistage.git", rev = "0d3c3f5e22dac62c0e701daaa17fcd173f41df18", optional = true }
+midistage-client = { git = "https://github.com/chronista-club/midistage.git", rev = "0d3c3f5e22dac62c0e701daaa17fcd173f41df18", optional = true }
 
 # Web server
 axum = { workspace = true, features = ["ws"] }

@@ -134,7 +134,7 @@ export function laneLabel(lane: LaneInfo): string {
  * **差分だけ**を名乗る。 こうすると絶対 path が世界に一度しか現れず、 冗長性が構造的にゼロになる。
  *
  * - main (cwd = repo root) → `""` = **語ることが無いので黙る** (呼び手は行ごと出さない)
- * - sub (repo 配下) → `".vp/lanes/x"` 等の相対 path
+ * - sub (repo 配下) → `"lanes/x"`（`.vp/` は表示から省略）等の相対 path
  * - repo の外に居る lane (別所の clone 等) → 差分で表せない = **驚き**なので ~ 短縮した
  *   絶対 path を full で出す (home 推定は mac `/Users/<u>/` / Linux `/home/<u>/`。 外しても
  *   絶対 path がそのまま出るだけで実害は無い — tooltip は常に完全な path)。
@@ -143,7 +143,7 @@ export function laneCwdLabel(cwd: string, repoPath: string): string {
 	if (!cwd) return "";
 	if (cwd === repoPath) return "";
 	if (repoPath && cwd.startsWith(`${repoPath}/`)) {
-		return cwd.slice(repoPath.length + 1);
+		return cwd.slice(repoPath.length + 1).replace(/^\.vp\/(?=lanes\/)/, "");
 	}
 	return cwd.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, "~");
 }

@@ -1,3 +1,4 @@
+import { mountMidiUse } from "./midi-use";
 /**
  * Devices 🧲 — main area の Devices pane に接続中 device 一覧を render する API。
  *
@@ -93,6 +94,7 @@ export function renderDevices(devices: DeviceSnapshot[]): void {
 		);
 		return;
 	}
+	mountMidiUse(target);
 	if (devices.length === 0) {
 		target.innerHTML = '<p class="devices-empty">No devices connected</p>';
 		return;

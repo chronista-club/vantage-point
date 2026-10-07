@@ -29,6 +29,40 @@ pub(crate) async fn handle_lane_nudge(
     };
     // doc 46 P5: `session` 省略 = root（mailbox を名乗る住人）。明示指定で同居する別 slot に届く。
     let session = crate::repo::unison_server::payload_session_key("lane_nudge", &payload)?;
+    // 宛先が chat（gui）session なら PtySlot は無いので engine へ 1 ターンとして注入する
+    //（`conversation_nudge` と同じ sink）。CLI `vp lane nudge --session N` は mode を知らずに
+    // この method を叩くため、振り分けは受け手のここで行う。
+    let target = session.unwrap_or_else(|| {
+        crate::lane::session_registry::root(
+            &addr.repo,
+            crate::repo::agent_spawner::lane_label(&addr),
+        )
+    });
+    let target_mode = state
+        .lane_pool
+        .read()
+        .await
+        .resolve_chat_session(&addr, Some(target))
+        .map(|resolved| resolved.mode);
+    if matches!(
+        target_mode,
+        Ok(crate::lane::session_registry::SessionMode::Gui)
+    ) {
+        if text.is_empty() {
+            return Err("lane_nudge: chat session には text が要る".to_string());
+        }
+        crate::repo::conversation_ops::ensure_and_submit_chat(
+            state,
+            "lane_nudge",
+            lane,
+            Some(target),
+            text,
+            &[],
+            None,
+        )
+        .await?;
+        return Ok(serde_json::json!({"status": "ok", "lane": lane, "session": target}));
+    }
     crate::repo::lane::deliver_nudge(&state.lane_pool, &addr, session, text)
         .await
         .map_err(|e| format!("lane_nudge 失敗: {}", e))?;
@@ -494,6 +528,58 @@ mod tests {
         )
         .await;
         assert!(res.is_err(), "PtySlot 無 lane への nudge は Err: {res:?}");
+    }
+
+    /// 宛先 session が chat（gui）なら PtySlot ではなく engine へ注入する。
+    /// root=tui に同居する chat session（`--session N` 指定）と、root 自体が chat の lane の 2 形。
+    /// engine は存在しない cwd で起動させず、「PtySlot 無」で落ちていないことを見る。
+    #[tokio::test]
+    async fn lane_nudge_routes_chat_session_to_engine() {
+        use crate::lane::session_registry::{self, SessionMode};
+        use crate::repo::state::{build_test_app_state, insert_test_lane};
+        use crate::repo::unison_server::dispatch_repo_method;
+
+        let _isolated = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let absent_cwd = std::env::temp_dir()
+            .join("vp-absent-engine-cwd")
+            .to_string_lossy()
+            .into_owned();
+        let mut addrs = Vec::new();
+        for (repo, root_mode) in [
+            ("nudge-sub", SessionMode::Tui),
+            ("nudge-root", SessionMode::Gui),
+        ] {
+            let addr = insert_test_lane(&state, repo, root_mode).await;
+            let mut pool = state.lane_pool.write().await;
+            let mut lane = pool.get(&addr).unwrap().clone();
+            lane.cwd = absent_cwd.clone();
+            pool.insert(lane);
+            addrs.push(addr);
+        }
+        let chat_key = session_registry::create(
+            "nudge-sub",
+            "main",
+            "claude",
+            "claude",
+            SessionMode::Gui,
+            false,
+        )
+        .unwrap();
+
+        for (addr, session) in [(&addrs[0], Some(chat_key)), (&addrs[1], None)] {
+            let mut payload = serde_json::json!({ "lane": addr.to_string(), "text": "x" });
+            if let Some(key) = session {
+                payload["session"] = serde_json::json!(key);
+            }
+            let err = dispatch_repo_method(&state, "lane_nudge", payload)
+                .await
+                .expect_err("engine は起動できないので Err");
+            assert!(
+                !err.contains("PtySlot"),
+                "chat session を PtySlot へ送った: {err}"
+            );
+        }
     }
 
     /// tmux decoupling PR2 → capture error 明確化（2026-07-19）: lane_capture dispatch の error 経路。

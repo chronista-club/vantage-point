@@ -176,6 +176,8 @@ const DAEMON_CONTROL_OMITTED_BY_DESIGN: &[&str] = &[
     // 読み側は read-safe な `/api/health` の `services.devices`（status = "released" / enabled）
     // に出ているので、agent が「今 VP が握っているか」を知る手段は塞いでいない。
     "devices/midi",
+    // Per-device handoff has the same human-operated boundary as the master switch.
+    "devices/midi-use",
     // ACTIONS の永続化（doc 57 Phase 4、vp-app sidebar 専用）。**agent には露出しない** —
     // 一覧まるごとの書き込み + `removed` の明示削除を持つので、形の違う 1 回の呼び出しが
     // user の memory を消しうる。agent が Action を足したいなら creo の MCP（`remember` 等）で

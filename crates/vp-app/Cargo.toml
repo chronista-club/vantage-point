@@ -15,6 +15,7 @@ name = "vp_app"
 path = "src/lib.rs"
 
 [dependencies]
+vp-local-urls = { path = "../vp-local-urls" }
 # Async runtime
 tokio = { workspace = true }
 

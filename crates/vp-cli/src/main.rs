@@ -188,6 +188,14 @@ enum Commands {
 /// Sub Lane コマンド（lane library への薄い wrapper）
 #[derive(Subcommand)]
 enum LaneCommands {
+    /// Lane に残るローカルリンク集（CLI・MCP・サイドバー共通）
+    Url {
+        /// Lane 名 または repo/Lane。省略時は cwd から解決
+        #[arg(long, global = true)]
+        lane: Option<String>,
+        #[command(subcommand)]
+        operation: lane::urls::Operation,
+    },
     /// 新しい Sub Lane を作成（worktree add + symlink + setup）
     New {
         /// Sub 名（= branch-step の slug `[a-z0-9-]+`）
@@ -363,7 +371,7 @@ enum LaneCommands {
         /// 起点にする lane 名 (省略時は現在の起点を表示)
         name: Option<String>,
     },
-    /// lane の claude / shell に text + Enter を注入 (旧 `vp tmux send-keys` / `vp directmsg` の後継)
+    /// lane の claude / shell に text + Enter を注入。宛先が Chat session なら engine に 1 ターンとして送る (旧 `vp tmux send-keys` / `vp directmsg` の後継)
     Nudge {
         /// lane address ("<repo>/root" / "<repo>/sub/<name>")
         lane: String,
@@ -745,6 +753,13 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
     use lane::commands as ws;
 
     match cmd {
+        LaneCommands::Url { lane, operation } => {
+            let result = tokio::runtime::Runtime::new()?
+                .block_on(lane::urls::run(operation, lane.as_deref()))
+                .map_err(anyhow::Error::msg)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(())
+        }
         LaneCommands::New {
             name,
             branch,
