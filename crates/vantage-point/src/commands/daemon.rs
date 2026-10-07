@@ -239,6 +239,15 @@ fn try_kickstart_launch_agent() -> bool {
     if !registered {
         return false;
     }
+    // 直前に daemon を止めた直後は Task Scheduler が instance をまだ Running と見ていて、
+    // MultipleInstancesPolicy=IgnoreNew で `/run` が黙って無視される（実機で確認、次の毎分
+    // trigger まで最大 1 分 down）。ここに来るのは health 不応答 = 生きた daemon が居ない時
+    // なので、残った instance を `/end` で畳んでから起こす（未稼働なら no-op）。
+    let _ = std::process::Command::new("schtasks")
+        .args(["/end", "/tn", &task])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
     std::process::Command::new("schtasks")
         .args(["/run", "/tn", &task])
         .stdout(std::process::Stdio::null())
