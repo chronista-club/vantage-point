@@ -1158,27 +1158,32 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
 
 /// release 添付物の命名（SSOT = `.github/workflows/release-windows.yml`）。
 /// CLI は `vp-<target><exe>`、GUI は `vp-app-<target><exe>`。
+/// 拡張子は build host ではなく target で決める（mac の CI でも Windows 名を正しく組めるように）。
+fn asset_exe_suffix(target: &str) -> &'static str {
+    if target.contains("windows") {
+        ".exe"
+    } else {
+        ""
+    }
+}
+
 fn cli_asset_name(target: &str) -> String {
-    format!("vp-{target}{}", std::env::consts::EXE_SUFFIX)
+    format!("vp-{target}{}", asset_exe_suffix(target))
 }
 
 #[cfg(windows)]
 fn gui_asset_name(target: &str) -> String {
-    format!("vp-app-{target}{}", std::env::consts::EXE_SUFFIX)
+    format!("vp-app-{target}{}", asset_exe_suffix(target))
 }
 
-/// CLI 本体の添付物を選ぶ純粋関数。
+/// CLI 本体の添付物を選ぶ純粋関数（`vp-<target><exe>` の完全一致のみ）。
 ///
-/// 完全一致（`vp-<target><exe>`）を優先し、無ければ従来どおり target を含む名前に落とす。
-/// fallback では GUI 添付物（`vp-app-…`）を除外する — 同じ target 名を含むため、
-/// `contains` だけだと GUI の exe を CLI として配置してしまう。
+/// 部分一致（旧 `contains(target)`）は、同じ target 名を含む `vp-app-<target>.exe` や
+/// `SHA256SUMS-<target>.txt` を CLI として配置してしまうので使わない。mac の現行 release
+/// （`.dmg` のみ）は旧判定でも何も拾わなかったので挙動は変わらない。
 fn find_cli_asset<'a>(assets: &'a [AssetInfo], target: &str) -> Option<&'a AssetInfo> {
     let exact = cli_asset_name(target);
-    assets.iter().find(|a| a.name == exact).or_else(|| {
-        assets
-            .iter()
-            .find(|a| a.name.contains(target) && !a.name.starts_with("vp-app-"))
-    })
+    assets.iter().find(|a| a.name == exact)
 }
 
 /// 退避先の path（`<file>.old-<tag>`）を作る純粋関数。tag は退避ごとに一意にする —
@@ -1371,6 +1376,15 @@ mod tests {
     const WIN: &str = "x86_64-pc-windows-msvc";
 
     #[test]
+    fn cli_asset_name_suffix_follows_target_not_host() {
+        assert_eq!(cli_asset_name(WIN), "vp-x86_64-pc-windows-msvc.exe");
+        assert_eq!(
+            cli_asset_name("aarch64-apple-darwin"),
+            "vp-aarch64-apple-darwin"
+        );
+    }
+
+    #[test]
     fn find_cli_asset_skips_gui_asset_listed_first() {
         // GUI 添付物も target 名を含む。並び順が先でも CLI として選ばれてはならない。
         let assets = vec![
@@ -1393,12 +1407,24 @@ mod tests {
         assert!(find_cli_asset(&assets, WIN).is_none());
     }
 
+    /// v0.79.0 の実際の添付（SHA256SUMS が先頭）。部分一致だと SHA256SUMS を vp.exe として置く。
     #[test]
-    fn find_cli_asset_falls_back_to_contains_for_legacy_names() {
-        // 完全一致が無い場合は従来の「target を含む」判定（mac の既存挙動）を保つ。
-        let assets = vec![asset("vp-v1.2.3-aarch64-apple-darwin.tar.gz")];
-        let picked = find_cli_asset(&assets, "aarch64-apple-darwin").expect("fallback で拾う");
-        assert_eq!(picked.name, "vp-v1.2.3-aarch64-apple-darwin.tar.gz");
+    fn find_cli_asset_ignores_checksum_file_listed_first() {
+        let assets = vec![
+            asset(&format!("SHA256SUMS-{WIN}.txt")),
+            asset("VantagePoint-0.79.0-arm64.dmg"),
+            asset(&format!("vp-app-{WIN}.exe")),
+            asset(&format!("vp-{WIN}.exe")),
+        ];
+        let picked = find_cli_asset(&assets, WIN).expect("CLI 添付物が選ばれるべき");
+        assert_eq!(picked.name, cli_asset_name(WIN));
+    }
+
+    #[test]
+    fn find_cli_asset_none_without_exact_name() {
+        // 完全一致が無ければ選ばない（target を含むだけの名前を CLI として置かない）。
+        let assets = vec![asset(&format!("SHA256SUMS-{WIN}.txt"))];
+        assert!(find_cli_asset(&assets, WIN).is_none());
     }
 
     #[test]
