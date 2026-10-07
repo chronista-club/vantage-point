@@ -206,6 +206,7 @@ export function LaneRow(props: {
 	// (dead lane に届いた content も気付かせる。awaiting=入力待ちが alive 前提なのとは意味論が違う)。
 	const canvasUnread = () =>
 		!isActive() && (sidebar.canvas_unread?.[addr()] ?? 0) > 0;
+	const [addLocalUrl, setAddLocalUrl] = createSignal(0);
 	// この lane の root session key（registry 欠落 = 旧 wire / boot 窓は 1 に倒す —
 	// Rust 側 ResolveSessionTitles の fallback と同じ既定）。
 	const rootKey = () => props.lane.sessions?.root ?? 1;
@@ -320,7 +321,11 @@ export function LaneRow(props: {
 		const sub = isSubLane(lane);
 		// dim 表示 (isInactive) と同じ述語を使う — 生死判定を 2 箇所に散らさない。
 		const active = isLaneAlive(lane);
-		const items: ContextMenuItem[] = [];
+		const items: ContextMenuItem[] = [{
+			label: "ローカルURLを追加",
+			icon: "ph:link",
+			onSelect: () => setAddLocalUrl(n => n + 1),
+		}];
 		// doc 39 §8.4 提案 1: Restart / Respawn は同一動作（lane:restart、fresh なし = 実体を
 		// 立て直して会話は resume で継続）なのに生死でラベルが割れていた。1 語に統一し、
 		// 「Restart = 新しく始まる」と誤読される語感を（会話は継続）で打ち消す。
@@ -505,7 +510,7 @@ export function LaneRow(props: {
 					</Show>
 				</span>
 			</Show>
-			<LocalUrls repoPath={props.repoPath} address={addr()} />
+			<LocalUrls repoPath={props.repoPath} address={addr()} addRequest={addLocalUrl()} />
 		</div>
 	);
 }

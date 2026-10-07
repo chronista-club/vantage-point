@@ -1,8 +1,8 @@
 /** Lane ごとの登録 URL。native の保存結果だけを確定値として表示する。 */
-import { For, Show, createEffect, createSignal, onCleanup } from 'solid-js'
+import { For, Show, createEffect, createSignal, on, onCleanup } from 'solid-js'
 import { requestLocalUrls, probeLabel, type LocalUrlEntry, type UrlAction, type UrlProbe, type UrlResult } from './local-urls'
 
-export function LocalUrls(props: { repoPath: string; address: string }) {
+export function LocalUrls(props: { repoPath: string; address: string; addRequest?: number }) {
   const [entries, setEntries] = createSignal<LocalUrlEntry[]>([])
   const [probes, setProbes] = createSignal<Record<string, UrlProbe>>({})
   const [busy, setBusy] = createSignal(false)
@@ -39,12 +39,12 @@ export function LocalUrls(props: { repoPath: string; address: string }) {
     setEntries(result.entries); setProbes({}); setEditing(null)
   }
   function edit(entry?: LocalUrlEntry) {
-    setEditing(entry?.id ?? ''); setUrl(entry?.url ?? ''); setLabel(entry?.label ?? ''); setError('')
+    setEditing(entry?.id ?? ''); setUrl(entry?.url ?? ''); setLabel(entry?.label ?? ''); if (loaded()) setError('')
   }
-  return <details class="vp-local-urls" onClick={e => e.stopPropagation()} onContextMenu={e => e.stopPropagation()} onDragStart={e => e.stopPropagation()}>
+  createEffect(on(() => props.addRequest, request => { if (request) edit() }))
+  return <><style>{LOCAL_URLS_CSS}</style><Show when={entries().length > 0 || editing() !== null || error()}><details open={editing() !== null || !!error()} class="vp-local-urls" onClick={e => e.stopPropagation()} onContextMenu={e => e.stopPropagation()} onDragStart={e => e.stopPropagation()}>
     <summary>ローカル URL <span>{entries().length || '＋'}</span><Show when={error()}> · 確認が必要</Show></summary>
     <div class="vp-local-url-body">
-      <style>{LOCAL_URLS_CSS}</style>
       <For each={entries()}>{entry => <div class="vp-local-url-entry">
         <button type="button" class="vp-local-url-open" title={`${entry.url} をブラウザで開く`} disabled={busy()} onClick={() => void act({ action: 'open', id: entry.id })}>{entry.label}</button>
         <span class="vp-local-url-address" title={entry.url}>{entry.url}</span>
@@ -64,12 +64,12 @@ export function LocalUrls(props: { repoPath: string; address: string }) {
         }}>
           <label>URL<input aria-label="URL" required value={url()} placeholder="http://localhost:12889" onInput={e => setUrl(e.currentTarget.value)} disabled={busy()} /></label>
           <label>用途<input aria-label="用途" required maxlength={120} value={label()} placeholder="Editor preview" onInput={e => setLabel(e.currentTarget.value)} disabled={busy()} /></label>
-          <div class="vp-local-url-actions"><button type="submit" disabled={busy()}>保存</button><button type="button" disabled={busy()} onClick={() => setEditing(null)}>キャンセル</button></div>
+          <div class="vp-local-url-actions"><button type="submit" disabled={busy() || !loaded()}>保存</button><button type="button" disabled={busy()} onClick={() => setEditing(null)}>キャンセル</button></div>
         </form>
       </Show>
       <Show when={busy()}><span role="status">処理中…</span></Show>
     </div>
-  </details>
+  </details></Show></>
 }
 
 export const LOCAL_URLS_CSS = `
