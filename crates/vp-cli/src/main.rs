@@ -188,6 +188,14 @@ enum Commands {
 /// Sub Lane コマンド（lane library への薄い wrapper）
 #[derive(Subcommand)]
 enum LaneCommands {
+    /// Lane に残るローカルリンク集（CLI・MCP・サイドバー共通）
+    Url {
+        /// Lane 名 または repo/Lane。省略時は cwd から解決
+        #[arg(long, global = true)]
+        lane: Option<String>,
+        #[command(subcommand)]
+        operation: lane::urls::Operation,
+    },
     /// 新しい Sub Lane を作成（worktree add + symlink + setup）
     New {
         /// Sub 名（= branch-step の slug `[a-z0-9-]+`）
@@ -745,6 +753,13 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
     use lane::commands as ws;
 
     match cmd {
+        LaneCommands::Url { lane, operation } => {
+            let result = tokio::runtime::Runtime::new()?
+                .block_on(lane::urls::run(operation, lane.as_deref()))
+                .map_err(anyhow::Error::msg)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(())
+        }
         LaneCommands::New {
             name,
             branch,

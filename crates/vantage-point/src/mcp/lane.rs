@@ -176,8 +176,32 @@ pub struct FlowProgressParams {
     pub repo: Option<String>,
 }
 
+/// Named local URL operation, with an optional explicit target Lane.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct LaneUrlParams {
+    /// Lane name or repo/Lane. Default: this MCP process's working directory.
+    pub lane: Option<String>,
+    #[serde(flatten)]
+    pub operation: crate::lane::urls::Operation,
+}
+
 #[tool_router(router = lane_router, vis = "pub(crate)")]
 impl VantageMcp {
+    #[tool(
+        description = "Manage persistent local links for a Lane. action: set (name, url, optional label), list, rm (name), probe (name). Same store as vp lane url and the sidebar. name is a stable lowercase key; repeated set updates it, omitted label preserves the old label. Links survive server/agent shutdown and are never copied to new lanes. lane defaults to this process's cwd, or specify a Lane name / repo/Lane. Only credential-free loopback HTTP(S); probe is explicit and does not follow redirects. Does not start services or open browsers."
+    )]
+    async fn lane_url(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<LaneUrlParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let value = crate::lane::urls::run(params.operation, params.lane.as_deref())
+            .await
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(value.to_string()),
+        ]))
+    }
+
     /// vp-app の active Lane を切り替える（B1: Unison-native、per-repo）。
     #[tool(
         description = "Switch the active lane shown in the vp-app board Canvas of the CURRENT repo. `lane` is a lane token: 'root' (the Main lane) or a sub name. Routes over Unison (local repo → canvas channel → vp-app). Primarily for ROTO / CLI driven view control; avoid switching the human's view unsolicited."
@@ -755,5 +779,29 @@ impl VantageMcp {
                 serde_json::to_string_pretty(&result).unwrap_or_default(),
             ),
         ]))
+    }
+}
+
+#[cfg(test)]
+mod local_url_tool_tests {
+    use super::*;
+    #[test]
+    fn lane_url_params_decode_named_actions() {
+        let params: LaneUrlParams = serde_json::from_value(serde_json::json!({"action":"set","name":"preview","url":"http://localhost:5173","lane":"demo"})).unwrap();
+        assert_eq!(params.lane.as_deref(), Some("demo"));
+        assert!(matches!(
+            params.operation,
+            crate::lane::urls::Operation::Set { label: None, .. }
+        ));
+        assert!(
+            serde_json::from_value::<LaneUrlParams>(
+                serde_json::json!({"action":"set","name":"preview"})
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn lane_url_tool_is_registered() {
+        assert!(VantageMcp::lane_router().has_route("lane_url"));
     }
 }

@@ -18,6 +18,7 @@ default = ["midi"]
 midi = ["dep:midir", "dep:midistage-profiles"]
 
 [dependencies]
+vp-local-urls = { path = "../vp-local-urls" }
 # Async runtime
 tokio = { workspace = true }
 async-trait = { workspace = true }

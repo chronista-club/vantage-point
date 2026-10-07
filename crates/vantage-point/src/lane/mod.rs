@@ -33,3 +33,6 @@ pub mod resume_failure;
 pub mod session_registry;
 /// engine session id 永続の共通機構（cc/cursor/codex_session の共通核、doc 37）
 pub(crate) mod session_store;
+
+/// Named persistent local links shared with the sidebar.
+pub mod urls;
