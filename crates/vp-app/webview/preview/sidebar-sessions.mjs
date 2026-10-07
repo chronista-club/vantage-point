@@ -19,6 +19,7 @@ const result = await build({
     const session=(key,agent,mode)=>({key,agent,mode,conversation:null,chat_capable:true,image_capable:false,model_choices:[],effort_choices:[],permission_choices:[],last_activity_at:null,last_response_at:null,settings:{}});
     const lane=(name,root,extra=[])=>({address:{repo:'vantage-point',name,key:'vantage-point/'+name},state:'running',agent:'claude',pid:42,cwd:'/preview'+(name==='main'?'':'/.vp/lanes/'+name),branch:name==='main'?'nightly':'wip/'+name,flow_state:'idle',sub_status:null,sessions:{root:root.key,focused:root.key,sessions:[root,...extra]}});
     let state={...emptyState(),processes:[{path:'/preview',name:'Vantage Point',state:'running',expanded:true,port:123}],lanes_by_repo:{'/preview':[lane('main',session(58,'claude','gui'),[session(57,'codex','tui')]),lane('sidebar-session-identity',session(60,'codex','gui')),lane('grok-study',session(61,'grok','tui'))]},active_lane_address:'vantage-point/sidebar-session-identity'};
+    state.lanes_by_repo['/preview'][1].sub_status={ahead:2,behind:1,dirty_count:3};
     const key='vp-sidebar-session-preview-v1';
     let saved=JSON.parse(localStorage.getItem(key)||'null')||{'vantage-point/sidebar-session-identity':[{id:'editor',label:'Editor preview',url:location.origin+'/'}]};
     function feedback(text){document.getElementById('preview-status').textContent=text}

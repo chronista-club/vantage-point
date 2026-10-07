@@ -157,8 +157,11 @@ describe("laneCwdLabel — 絶対 path は repo が持ち、 lane は差分だ�
 		expect(laneCwdLabel(proj, proj)).toBe("");
 	});
 
-	it("sub は repo root 起点の相対 path", () => {
-		expect(laneCwdLabel(`${proj}/.vp/lanes/act2`, proj)).toBe(".vp/lanes/act2");
+	it("sub は .vp/ だけ省き、通常の repo 内パスは維持する", () => {
+		expect(laneCwdLabel(`${proj}/.vp/lanes/act2`, proj)).toBe("lanes/act2");
+		expect(laneCwdLabel(`${proj}/.vp/lanes/act2/src`, proj)).toBe("lanes/act2/src");
+		expect(laneCwdLabel(`${proj}/src`, proj)).toBe("src");
+		expect(laneCwdLabel(`${proj}/.vp/lanes-old/act2`, proj)).toBe(".vp/lanes-old/act2");
 	});
 
 	it("repo の外に居る lane は絶対 path を full で出す (= 驚きにはインクを払う)", () => {
