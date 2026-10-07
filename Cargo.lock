@@ -4728,7 +4728,7 @@ dependencies = [
 
 [[package]]
 name = "midistage-profiles"
-version = "0.80.0"
+version = "0.81.0"
 dependencies = [
  "serde",
  "sha1 0.11.0",
@@ -9570,7 +9570,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vantage-point"
-version = "0.80.0"
+version = "0.81.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -9666,7 +9666,7 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "vp-app"
-version = "0.80.0"
+version = "0.81.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -9718,7 +9718,7 @@ dependencies = [
 
 [[package]]
 name = "vp-cli"
-version = "0.80.0"
+version = "0.81.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -9735,7 +9735,7 @@ dependencies = [
 
 [[package]]
 name = "vp-local-urls"
-version = "0.80.0"
+version = "0.81.0"
 dependencies = [
  "reqwest",
  "serde",
@@ -9746,7 +9746,7 @@ dependencies = [
 
 [[package]]
 name = "vp-nexus"
-version = "0.80.0"
+version = "0.81.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -9770,7 +9770,7 @@ dependencies = [
 
 [[package]]
 name = "vp-paths"
-version = "0.80.0"
+version = "0.81.0"
 dependencies = [
  "dirs",
  "tempfile",
