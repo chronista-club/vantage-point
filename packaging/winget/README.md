@@ -1,77 +1,64 @@
 # winget packaging — Chronista.VantagePoint
 
 Homebrew cask（`chronista-club/homebrew-tap`）の **Windows 側カウンターパート**。
-Mac の `.dmg` → cask に対して、Windows は `vp.exe`（portable）→ winget manifest で配る。
+Mac の `.dmg` → cask に対して、Windows は zip（`vp.exe` + `vp-app.exe`）→ winget manifest で配る。
 
-現状は **手動 manifest + ローカル検証** の段階（dogfood）。公開 `microsoft/winget-pkgs`
-への提出と Authenticode 署名は後続フェーズ。
+現状は **Release に manifest を添付し、手元で `winget install --manifest`** する段階（dogfood）。
+公開 `microsoft/winget-pkgs` への提出と Authenticode 署名は後続フェーズ。
 
 ## 同梱物
 
-- `vp.exe`（CLI + 常駐 daemon TheWorld）のみ。GUI（vp-app）は未同梱。
-- `InstallerType: portable` — winget が exe を Links dir に置き PATH を通す。MSI 不要。
+- `vp.exe`（CLI + 常駐 daemon）と `vp-app.exe`（GUI）を 1 つの zip に入れる。
+- `InstallerType: zip` + `NestedInstallerType: portable` — winget が zip を展開し、両 exe の
+  symlink を Links dir に置いて PATH を通す（`vp` / `vp-app` が即使える）。MSI 不要。
+  `vp app start` は PATH 上の `vp-app` を見つける（symlink を解決した実体の隣も探す）。
 
-## manifest ファイル（multi-file、ManifestVersion 1.6.0）
+## 生成の流れ（自動）
 
-| file | 役割 |
+Mac で Release を publish すると `.github/workflows/release-windows.yml` が Windows runner で
+同じ tag を build し、次を Release に添付する:
+
+| asset | 用途 |
 |---|---|
-| `Chronista.VantagePoint.yaml` | version manifest（束ねる root） |
-| `Chronista.VantagePoint.installer.yaml` | installer（URL / sha256 / architecture / portable command） |
-| `Chronista.VantagePoint.locale.en-US.yaml` | メタデータ（publisher / license / description） |
+| `vp-x86_64-pc-windows-msvc.exe` / `vp-app-x86_64-pc-windows-msvc.exe` | `vp update` の Windows 経路 |
+| `VantagePoint-<ver>-x86_64-pc-windows-msvc.zip` | winget の installer |
+| `Chronista.VantagePoint*.yaml`（3 枚） | winget manifest（`render.ps1` が zip の sha256 から生成） |
+| `SHA256SUMS-x86_64-pc-windows-msvc.txt` | exe / zip の sha256 |
 
-version を上げるときは **3 ファイルすべての `PackageVersion`** と、installer の
-`InstallerUrl` / `InstallerSha256` を更新する。
+manifest は生成物なので repo には置かない（version ごとの手書き manifest は廃止）。
+`render.ps1` は cask の `mise run release:cask` に当たる。workflow は `render.ps1` を
+**workflow 側の ref** から取るので、`render.ps1` を持たない古い tag にも workflow_dispatch で後付けできる。
 
-## ビルド → sha256
-
-```powershell
-cargo build --release -p vp-cli
-$sha = (Get-FileHash target\release\vp.exe -Algorithm SHA256).Hash
-# installer.yaml の InstallerSha256 に $sha を反映（大文字/小文字どちらでも可）
-```
-
-## schema 検証（オフライン、URL 到達不要）
+## 手元でインストール
 
 ```powershell
-winget validate --manifest packaging\winget
-```
-
-## end-to-end インストール検証（ローカル HTTP でホスト）
-
-公開 release にまだ Windows 資産を添付していないため、`InstallerUrl` の本番 URL は
-到達しない。実インストールを試すときは、ビルドした exe を localhost でホストし、
-`InstallerUrl` を localhost に差し替えた **一時 manifest** で回す:
-
-```powershell
-# 1. exe を temp にコピーして HTTP でホスト（別ターミナル）
-$pub = "$env:TEMP\vp-winget-serve"
-New-Item -ItemType Directory -Force $pub | Out-Null
-Copy-Item target\release\vp.exe "$pub\vp-x86_64-pc-windows-msvc.exe"
-cd $pub; python -m http.server 8099   # or any static server
-
-# 2. manifest を temp にコピーし InstallerUrl を localhost に差し替え
-#    （sha256 は同一ファイルなので変更不要）
-$dst = "$env:TEMP\vp-winget-manifest"
-Copy-Item -Recurse -Force packaging\winget $dst
-(Get-Content $dst\Chronista.VantagePoint.installer.yaml) `
-  -replace 'InstallerUrl:.*', 'InstallerUrl: http://localhost:8099/vp-x86_64-pc-windows-msvc.exe' `
-  | Set-Content $dst\Chronista.VantagePoint.installer.yaml
-
-# 3. インストール（初回のみ管理者で `winget settings --enable LocalManifestFiles` が必要）
-winget install --manifest $dst
+$dir = "$env:TEMP\vp-winget\0.82.0"
+gh release download v0.82.0 -R chronista-club/vantage-point -p "Chronista.VantagePoint*.yaml" -D $dir
+winget install --manifest $dir
 vp --version
-# uninstall: local-manifest 由来は ARP id が `..__DefaultSource` になり ID 一致しないため
-# name 指定で外す（公開 winget source からの install なら `winget uninstall --id ...` が効く）
-winget uninstall --name "Vantage Point"
 ```
 
 > ⚠️ `winget install --manifest` は初回に一度だけ、管理者権限で
 > `winget settings --enable LocalManifestFiles` を有効化する必要がある（`--disable` で戻せる）。
-> 公開 `winget-pkgs` に載せた後の通常の `winget install VantagePoint` ではこのトグルは不要。
+>
+> ⚠️ local manifest 由来は ARP id が `Chronista.VantagePoint__DefaultSource` になり `--id` で
+> 外せない。uninstall は `winget uninstall --name "Vantage Point"`。
+
+## manifest だけ作る / 検証する
+
+```powershell
+# zip の sha256 から 3 枚を書く。-InstallerUrl で localhost 等に差し替えられる（ローカル検証用）
+pwsh packaging\winget\render.ps1 -Version 0.82.0 -ZipSha256 <hex> -OutDir $env:TEMP\vp-manifest
+winget validate --manifest $env:TEMP\vp-manifest
+```
+
+Release 前の zip を試すときは、zip を localhost でホストし `-InstallerUrl` をそこに向けた
+manifest で `winget install --manifest` する（hash 検証は同じ zip なので通る）。
 
 ## 公開フェーズ（後続）
 
-1. GitHub Release に `vp-x86_64-pc-windows-msvc.exe` を添付（`release:win` タスクで自動化予定）。
-2. Authenticode 署名（`signtool`）を release パイプラインに組み込み、SmartScreen 警告を解消。
-3. `wingetcreate` で `microsoft/winget-pkgs` に PR（cask の `release:cask` に相当する
-   `release:winget` タスクで自動 update）。
+1. ~~GitHub Release に Windows 資産を添付~~ → `release-windows.yml` で自動化済み。
+2. ~~manifest の生成~~ → `render.ps1` + `release-windows.yml` で自動化済み。
+3. Authenticode 署名（`signtool`）を release パイプラインに組み込み、SmartScreen 警告を解消。
+4. `wingetcreate` / `komac` で `microsoft/winget-pkgs` に PR（公開 source から `winget install` できるようにする）。
+5. winget で入れた環境での `vp update`（exe を直接差し替える）と winget の管理の折り合い。

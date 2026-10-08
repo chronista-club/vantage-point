@@ -122,6 +122,29 @@ mise run release:cask
 1. **sha256 算出** — ローカルの `target/dist/<dmg>` 優先、無ければ GitHub Release から download
 2. **tap を temp に clone** → `version` / `sha256` の 2 行を差し替え → commit & push（idempotent、既に最新なら push しない）
 
+### 6. Windows 版の添付（自動）
+
+`release:mac` が Release を publish すると、`release: published` イベントで
+`.github/workflows/release-windows.yml` が windows runner 上で走り、同じ tag を build して
+次のファイルを同じ Release に添付する（mac 側の作業は無い）:
+
+| 添付物 | 用途 |
+|---|---|
+| `vp-x86_64-pc-windows-msvc.exe` | CLI + daemon（`vp update` の Windows 経路が完全一致で探す） |
+| `vp-app-x86_64-pc-windows-msvc.exe` | GUI（`vp update` が CLI の隣の `vp-app.exe` を一緒に差し替える） |
+| `VantagePoint-<ver>-x86_64-pc-windows-msvc.zip` | winget の installer（`vp.exe` + `vp-app.exe`） |
+| `Chronista.VantagePoint*.yaml`（3 枚） | winget manifest（`packaging/winget/render.ps1` が zip の sha256 から生成） |
+| `SHA256SUMS-x86_64-pc-windows-msvc.txt` | exe / zip の sha256 |
+
+- tag と binary の version が食い違うと job が落ちる（bump 漏れの検出）。
+- ⚠️ `release` イベントは **tag のコミットにある workflow** を使う。workflow を持たない古い tag や、
+  job が落ちた時の再実行は Actions の **Run workflow（workflow_dispatch、tag を入力）**で行う
+  （`--clobber` なので上書き再添付できる）。dispatch は main にある workflow 定義を使う。
+- ⚠️ `GITHUB_TOKEN` で作られた Release は他の workflow を起動しない。`release:mac` は手元の
+  `gh`（user 認証）で publish するので起動する。
+- 署名（Authenticode）は未導入 — 初回起動の SmartScreen 警告は既知。winget は Release の
+  manifest で手元に入れる段階で、公開 `winget-pkgs` への提出は後続（`packaging/winget/README.md`）。
+
 ## 前提（gate）
 
 `mise run release:mac` には以下が必要:
@@ -146,4 +169,5 @@ xcrun notarytool store-credentials vp-notary \
 - [ ] タグ作成・プッシュ
 - [ ] `mise run release:mac` で `.dmg` build → notarize → publish
 - [ ] Homebrew cask 更新確認（自動 / `mise run release:cask`）
+- [ ] Windows 版の添付確認（Actions の `Release (Windows)` が green / Release に `*-windows-msvc.exe`）
 - [ ] （任意）リリースノート追記（`gh release edit vX.Y.Z --notes "..."`）

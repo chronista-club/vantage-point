@@ -55,6 +55,11 @@ pub fn execute(check: bool) -> Result<()> {
                 }
                 if apply.restart_required {
                     println!("\n新しいバージョンを使用するには再起動してください。");
+                    // Windows の常駐 daemon は退避した旧 exe で動き続けている。
+                    #[cfg(windows)]
+                    println!(
+                        "  daemon: `vp daemon restart`（常駐 task 経由で新しい exe に入れ替え）"
+                    );
                 }
             }
             Err(e) => {
