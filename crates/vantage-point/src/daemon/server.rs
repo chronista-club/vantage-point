@@ -1612,7 +1612,7 @@ fn forward_conversation_report(lane: &str, payload: &serde_json::Value) -> serde
 /// なっていたため、`autostart_enabled_repos`（repo/server.rs）と**並走**していた。先に起動した
 /// repo が新予約名で空の state（`<repo>__lead` の session / lane id）を書くと、migration は
 /// 「衝突時は触らない」規則で旧名を置き去りにし、その repo の会話 id / 安定 id が失われる。
-/// 2026-10-09 の main → lead 実機で `plugin-chronista-style` 1 件がこれを踏んだ（#1004 の時から
+/// 2026-10-09 の main → lead 実機で `plugin-chronista-style` 1 件がこれを踏んだ（#852 の conductor → root の時から
 /// 潜在していた race）。
 pub fn prepare_state_dir_on_boot() {
     // doc 44 P1 の後始末: fold-in で読まれなくなった旧 per-repo DB (`db/sp_*`) を回収する。
