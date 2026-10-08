@@ -384,7 +384,7 @@ async fn thread(message_id: &str) -> Result<()> {
 fn wire_address_from_env(repo: Option<&str>, lane: Option<&str>) -> Option<String> {
     let repo = repo.filter(|s| !s.is_empty())?;
     let lane = lane.filter(|s| !s.is_empty())?;
-    // ⚠️ 旧世代の予約名（`root` / `conductor`）も lead とみなす。env は spawn 時に焼かれる
+    // ⚠️ 旧世代の予約名（`main` / `root` / `conductor`）も lead とみなす。env は spawn 時に焼かれる
     // ため、daemon を更新しても**既に生きている agent の VP_LANE は旧名のまま**。ここで
     // 弾くと更新を跨いだ hook の名乗りが `agent@<repo>/root`（実在しない Sub）になり、
     // 報告が誰にも届かなくなる（session_now と同じ世代混在の入口）。

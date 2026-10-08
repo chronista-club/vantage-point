@@ -110,14 +110,14 @@ mod tests {
     #[test]
     fn test_set_and_get() {
         let mut store = RetainedStore::new();
-        let msg = make_show("lead", "# Hello");
+        let msg = make_show("main", "# Hello");
         store.set("repo/board/command/show/lead", msg);
 
         let retrieved = store.get("repo/board/command/show/lead");
         assert!(retrieved.is_some());
         match retrieved.unwrap() {
             RepoMessage::Show { pane_id, .. } => {
-                assert_eq!(pane_id, "lead");
+                assert_eq!(pane_id, "main");
             }
             _ => panic!("Show メッセージを期待"),
         }
@@ -162,7 +162,7 @@ mod tests {
     fn test_clear() {
         let mut store = RetainedStore::new();
         store.set("repo/terminal/state/ready", RepoMessage::TerminalReady);
-        store.set("repo/board/command/show/lead", make_show("lead", "Hi"));
+        store.set("repo/board/command/show/lead", make_show("main", "Hi"));
         assert_eq!(store.len(), 2);
 
         store.clear();
@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn test_get_matching_exact() {
         let mut store = RetainedStore::new();
-        store.set("repo/board/command/show/lead", make_show("lead", "A"));
+        store.set("repo/board/command/show/lead", make_show("main", "A"));
         store.set("repo/board/command/show/side", make_show("side", "B"));
         store.set("repo/terminal/state/ready", RepoMessage::TerminalReady);
 
@@ -193,7 +193,7 @@ mod tests {
                 active_id: None,
             },
         );
-        store.set("repo/board/command/show/lead", make_show("lead", "X"));
+        store.set("repo/board/command/show/lead", make_show("main", "X"));
 
         // 全 capability の state を取得
         let pattern = TopicPattern::parse("repo/+/state/#");

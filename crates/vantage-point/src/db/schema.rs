@@ -81,7 +81,23 @@ impl VpDb {
                 "SELECT meta::id(id) AS rid, {column} AS address FROM {table}"
             ))
             .await?;
-        let rows: Vec<serde_json::Value> = result.take(0)?;
+        let mut rows: Vec<serde_json::Value> = result.take(0)?;
+        // ⚠️ 旧世代の address が並存する（`vp/lane/root` と `vp/lane/main` が両方残る）時、
+        // 新形は同じ `vp/lane/lead` になり UNIQUE で片方が落ちる。**新しい世代の行を先に**
+        // 通して現役が勝つようにする（state file の migration と同じ向き、#1191 review）。
+        rows.sort_by_key(|row| {
+            let name = row
+                .get("address")
+                .and_then(|v| v.as_str())
+                .and_then(|a| a.rsplit('/').next())
+                .unwrap_or("");
+            std::cmp::Reverse(
+                vp_paths::LEGACY_ROOT_LANE_NAMES
+                    .iter()
+                    .position(|n| *n == name)
+                    .map_or(usize::MAX, |i| i + 1),
+            )
+        });
 
         let mut fixed = 0;
         for row in rows {

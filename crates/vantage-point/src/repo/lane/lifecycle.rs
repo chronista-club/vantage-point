@@ -1227,7 +1227,7 @@ mod core_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// doc 44 P2: 開発起点の予約名 `main` では lane を作れない。
+    /// doc 44 P2: 開発起点の予約名 `lead` では lane を作れない。
     ///
     /// 旧 `kind != "sub"` ガードの後継。明示的に弾かないと既存 lead lane との
     /// address 重複として「already exists」で拒否され、理由がミスリードになる
@@ -1238,10 +1238,10 @@ mod core_tests {
     #[tokio::test]
     async fn create_rejects_reserved_main_name() {
         let state = crate::repo::state::build_test_app_state().await;
-        // ⚠️ 現行予約名（main）に加え**旧世代（root / conductor）も拒否**。旧名で Sub を
+        // ⚠️ 現行予約名（lead）に加え**旧世代（main / root / conductor）も拒否**。旧名で Sub を
         // 作れると `<repo>__root` 等の旧 state と衝突する（migration は衝突時に触らない
         // ため、その lane の会話が永久に取り残される — validate_sub_name の doc 参照）。
-        for reserved in ["lead", "root", "conductor"] {
+        for reserved in ["lead", "main", "root", "conductor"] {
             let err = create_sub_orchestrated(&state, req(reserved))
                 .await
                 .expect_err("予約名は Err");

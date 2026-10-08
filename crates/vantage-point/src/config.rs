@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn test_full_config_kdl_parses() {
         let kdl = r#"
-default-repo-dir "/home/user/repos/lead"
+default-repo-dir "/home/user/repos/main"
 default-port 33001
 claude-cli-path "/opt/claude/bin/claude"
 default-agent "claude"
@@ -480,7 +480,7 @@ startup {
         let config: Config = club_kdl::from_str(kdl).expect("config.kdl parse");
         assert_eq!(
             config.default_repo_dir.as_deref(),
-            Some("/home/user/repos/lead")
+            Some("/home/user/repos/main")
         );
         assert_eq!(config.default_port, 33001);
         assert_eq!(

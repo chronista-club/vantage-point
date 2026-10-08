@@ -135,11 +135,9 @@ fn default_lane_name() -> String {
 /// 同じ写像を 2 度書かないよう、**この関数だけ**が形式を知る（以前は switch_lane と
 /// canvas の 2 箇所に同じ `if root {…} else {…}` がコピーされていた）。
 pub fn address_from_lane_token(repo: &str, token: &str) -> String {
-    let name = if token.is_empty() {
-        ROOT_LANE_NAME
-    } else {
-        token
-    };
+    // 空 / 旧世代の予約名（main / root / conductor）は現予約名へ。旧 client / 古い doc の
+    // `switch_lane("main")` が実在しない `repo/lane/main` を組んで無音で空振りしないため。
+    let name = vp_paths::canonical_lane_name(token);
     format!("{repo}/{LANE_SEGMENT}/{name}")
 }
 

@@ -103,6 +103,21 @@ pub const ROOT_LANE_NAME: &str = "lead";
 /// `root` に移らないまま眠っている machine もありうるので、両方を新名へ寄せる。
 pub const LEGACY_ROOT_LANE_NAMES: &[&str] = &["conductor", "root", "main"];
 
+/// lane 名（token）を現行の予約名へ正規化する。旧世代の予約名（[`LEGACY_ROOT_LANE_NAMES`]）と
+/// 空文字は [`ROOT_LANE_NAME`] に、それ以外（sub 名）はそのまま返す。
+///
+/// address 文字列を持たず **lane 名だけ**が届く入口（board の `show` の `lane`、MCP の
+/// `switch_lane` token、topic の lane segment、ink snapshot の dir 名）で使う。address 形は
+/// server の `parse_address` が同じ救済を持つ — 2 系統あるのは「名前だけ」の入口が address を
+/// 組み立てられない（repo を知らない）ため。
+pub fn canonical_lane_name(name: &str) -> &str {
+    if name.is_empty() || LEGACY_ROOT_LANE_NAMES.contains(&name) {
+        ROOT_LANE_NAME
+    } else {
+        name
+    }
+}
+
 /// 旧予約名で書かれた lane-scoped state file を新予約名へ改名する one-shot migration。
 /// 戻り値は改名した file 数。
 ///
@@ -115,9 +130,15 @@ pub const LEGACY_ROOT_LANE_NAMES: &[&str] = &["conductor", "root", "main"];
 ///
 /// 冪等: 改名後は該当 file が無いので 2 回目以降は 0。衝突（新名が既存）時は**触らない**
 /// — 上書きすると新側の会話 id / 安定 id を失う。
+///
+/// ⚠️ **新しい世代から回す**（`main` → `root` → `conductor`）。前回の migration で衝突して
+/// 残った古い世代の残骸（例: `x__root` が `x__main` と並存）が先に新名を取ると、現役の
+/// `x__main` が衝突で置き去りになり **会話 id が旧世代に戻る**（moody review 2026-10-09 で
+/// mako の実機に `club-unison__root` / `__main` の並存を確認）。順序を逆にすれば現役が勝つ。
 pub fn migrate_root_lane_state_files(base: &std::path::Path) -> usize {
     LEGACY_ROOT_LANE_NAMES
         .iter()
+        .rev()
         .map(|legacy| migrate_one_legacy_lane_name(base, legacy))
         .sum()
 }
@@ -639,6 +660,33 @@ mod tests {
         // ⚠️ **旧名は消さない**。世代を跨いだ state が disk に残るので、両方を新名へ寄せる。
         // ここを削ると「その世代の会話が引けない」= resume が無音で切れる。
         assert_eq!(LEGACY_ROOT_LANE_NAMES, &["conductor", "root", "main"]);
+    }
+
+    /// ⚠️ 世代の残骸が並存する時は **新しい世代が新名を取る**。前回 migration の衝突で残った
+    /// `x__root` と現役の `x__main` が並ぶ環境（mako 実機）で、古い方が先に `x__lead` を取ると
+    /// 現役の会話 id が置き去りになる。
+    #[test]
+    fn migrate_prefers_the_newest_generation_on_collision() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cc = tmp.path().join("cc_sessions");
+        std::fs::create_dir_all(&cc).unwrap();
+        std::fs::write(cc.join("x__root"), "stale-aug").unwrap();
+        std::fs::write(cc.join("x__main"), "current-sep").unwrap();
+        std::fs::write(cc.join("y__conductor"), "oldest").unwrap();
+        std::fs::write(cc.join("y__root"), "newer").unwrap();
+        migrate_root_lane_state_files(tmp.path());
+        assert_eq!(
+            std::fs::read_to_string(cc.join("x__lead")).unwrap(),
+            "current-sep",
+            "現役（main 世代）が lead を取る"
+        );
+        assert!(cc.join("x__root").exists(), "古い残骸は衝突で触らず残る");
+        assert_eq!(
+            std::fs::read_to_string(cc.join("y__lead")).unwrap(),
+            "newer",
+            "root 世代と conductor 世代なら root が勝つ"
+        );
+        assert!(cc.join("y__conductor").exists());
     }
 
     /// ⚠️ **3 世代とも新名へ寄る**こと。`conductor`（2026-07-21 に root へ）/

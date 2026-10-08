@@ -46,9 +46,10 @@ fn board_key(scope: Option<&str>, lane: Option<&str>) -> (String, String, Option
     if scope == Some("proj") {
         return ("proj".to_string(), String::new(), None);
     }
-    // lane 正規化: None/""/予約名 → '' (開発起点 lane)。
+    // lane 正規化: None/""/予約名（旧世代含む）→ '' (開発起点 lane)。
     let lane_name = lane
-        .filter(|s| !s.is_empty() && *s != crate::repo::lane::ROOT_LANE_NAME)
+        .map(vp_paths::canonical_lane_name)
+        .filter(|s| *s != crate::repo::lane::ROOT_LANE_NAME)
         .unwrap_or("")
         .to_string();
     let broadcast_lane = if lane_name.is_empty() {
@@ -460,7 +461,7 @@ mod tests {
         handle_canvas_command(
             ctx,
             serde_json::json!({
-                "type": "show", "pane_id": "lead",
+                "type": "show", "pane_id": "main",
                 "content": { "markdown": "leaf" }, "append": false, "title": "t"
             }),
         )
@@ -515,7 +516,7 @@ mod tests {
         let state = build_test_app_state_with("/repos/vp", Some(db)).await;
 
         let show = serde_json::json!({
-            "type": "show", "pane_id": "lead",
+            "type": "show", "pane_id": "main",
             "content": { "markdown": "first" }, "append": false, "title": "t"
         });
         let res = dispatch_repo_method(&state, "show", show)
@@ -547,7 +548,7 @@ mod tests {
 
         // show で 1 件貼る（lane/scope 省略 = lead lane / scope=lane）。
         let show = serde_json::json!({
-            "type": "show", "pane_id": "lead",
+            "type": "show", "pane_id": "main",
             "content": { "markdown": "original" }, "append": false, "title": "t"
         });
         dispatch_repo_method(&state, "show", show)
@@ -640,7 +641,7 @@ mod tests {
 
         let show = |body: &str| {
             serde_json::json!({
-                "type": "show", "pane_id": "lead",
+                "type": "show", "pane_id": "main",
                 "content": { "markdown": body }, "append": false, "title": body
             })
         };

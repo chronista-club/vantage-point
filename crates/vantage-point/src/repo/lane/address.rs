@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn legacy_lane_address_deserializes() {
         // 旧 main: name 省略 + kind field あり → 予約名に落ちる
-        let main: LaneAddress = serde_json::from_str(r#"{"repo":"vp","kind":"lead"}"#).unwrap();
+        let main: LaneAddress = serde_json::from_str(r#"{"repo":"vp","kind":"main"}"#).unwrap();
         assert_eq!(main, LaneAddress::root("vp"));
         assert!(main.is_root());
 

@@ -32,7 +32,7 @@ fn lane_name_of(lane: &serde_json::Value) -> String {
 /// lane JSON を旧 `kind` 語彙（`"root"` / `"sub"`）に射影する。
 ///
 /// MCP tool の `kind` param は client との契約なので語彙は据え置き、判定だけ名前ベースにした
-/// （開発起点は予約名 `main`、それ以外が旧 sub）。
+/// （開発起点は予約名 `lead`、それ以外が sub）。
 fn lane_kind_label(lane: &serde_json::Value) -> &'static str {
     if lane_name_of(lane) == crate::repo::lane::ROOT_LANE_NAME {
         "root"
@@ -425,11 +425,12 @@ impl VantageMcp {
             // doc 44 P2: lane 名は `address.name` が唯一の在処（旧 `kind` / 複製 `name` は撤去）。
             let lane_label = lane_name_of(&lane);
             // main は `agent@<repo>` (lane 省略 = main)、sub は `agent@<repo>/<name>`
-            let lane_suffix = if lane_label == "root" {
-                String::new()
-            } else {
-                format!("/{}", lane_label)
-            };
+            let lane_suffix =
+                if vp_paths::canonical_lane_name(&lane_label) == vp_paths::ROOT_LANE_NAME {
+                    String::new()
+                } else {
+                    format!("/{}", lane_label)
+                };
             let mailbox = serde_json::json!({
                 "agent": format!("agent@{}{}", repo, lane_suffix),
                 "board": format!("board@{}{}", repo, lane_suffix),

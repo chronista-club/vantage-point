@@ -116,8 +116,8 @@ impl WireMessage {
     /// `local_seq` は 0 で構築し、 [`WiremsgStore::insert_message`] が INSERT 時に採番する。
     /// lead lane の alias 綴りを bare 形へ畳む（調査 = creo mem_1CeXGzBGyzaPXAjTUwZpBK）。
     ///
-    /// `agent@<repo>/main`（+ 旧世代の予約名 `root` / `conductor`）→ `agent@<repo>`。
-    /// 予約名は 2 度改名されており（`conductor` → `root` → `main`）、3 世代とも
+    /// `agent@<repo>/lead`（+ 旧世代の予約名 `main` / `root` / `conductor`）→ `agent@<repo>`。
+    /// 予約名は 3 度改名されており（`conductor` → `root` → `main` → `lead`）、4 世代とも
     /// sub lane 名として **作成禁止**（`validate_sub_name`）— つまりこの suffix は実 sub を
     /// 指し得ないので、無条件に畳んで安全。実 sub（例 `/sampler`）は不変。
     ///
@@ -133,13 +133,16 @@ impl WireMessage {
     /// envelope を素通ししていた。生文字列一致の照合と組み合わさって「ack しても
     /// 再掲示が止まらない」（2026-09-02 creo-ui session、24h で数十回）を起こした。
     pub(crate) fn normalize_wire_addr(addr: &str) -> String {
-        // 現行 = ROOT_LANE_NAME ("lead")。旧 3 世代（conductor / root / main）も畳む — 古い doc 例や他 node の
-        // 旧 binary から届く綴りを弾かないため（federation は version 混在が常態）。
-        const MAIN_ALIASES: [&str; 3] = [vp_paths::ROOT_LANE_NAME, "root", "conductor"];
+        // 現行 = ROOT_LANE_NAME ("lead")。旧世代（LEGACY_ROOT_LANE_NAMES = conductor / root / main）
+        // も畳む — 古い doc 例や他 node の旧 binary から届く綴りを弾かないため（federation は
+        // version 混在が常態）。⚠️ 手書きの一覧にしない — #1191 の rename で `main` が漏れた。
+        fn is_lead_alias(lane: &str) -> bool {
+            lane == vp_paths::ROOT_LANE_NAME || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&lane)
+        }
         if let Some((base, lane)) = addr.rsplit_once('/') {
             // `@` を含む base だけが `agent@<repo>` 形。含まない場合（bare "agent" や
             // 形式外）は wire address ではないので触らない（fail-safe）。
-            if base.contains('@') && MAIN_ALIASES.contains(&lane) {
+            if base.contains('@') && is_lead_alias(lane) {
                 return base.to_string();
             }
         }
@@ -2207,7 +2210,7 @@ mod tests {
         );
     }
 
-    /// 正規化の境界を固定する。⚠️ 予約名 3 世代（conductor → root → main）は
+    /// 正規化の境界を固定する。⚠️ 予約名の全世代（conductor → root → main → lead）は
     /// `validate_sub_name` が作成禁止にしているから畳める — 予約を外すならここも見直すこと。
     #[test]
     fn normalize_wire_addr_folds_only_reserved_aliases() {
@@ -2232,8 +2235,8 @@ mod tests {
         let store = make_test_store().await;
         let cmd = store
             .send_root(
-                "agent@anycreative.tech/lead",
-                &["agent@creo-ui/lead".to_string()],
+                "agent@anycreative.tech/main",
+                &["agent@creo-ui/main".to_string()],
                 serde_json::json!({"category": "command", "text": "task"}),
             )
             .await
@@ -2254,7 +2257,7 @@ mod tests {
         store
             .send_root(
                 "agent@vp",
-                &["agent@creo-ui/lead".to_string()],
+                &["agent@creo-ui/main".to_string()],
                 serde_json::json!({"category": "event", "text": "hi"}),
             )
             .await

@@ -366,7 +366,7 @@ enum LaneCommands {
     ///
     /// 引数なしで現在の起点を表示。lane 名を渡すとその lane を起点に指定する。
     /// 指定は **帳簿のポインタ書き換えだけ** — cwd も active lane も engine も動かない (D5)。
-    /// 未指定なら予約名 `main` が起点（従来挙動）。daemon (Daemon) 稼働が前提。
+    /// 未指定なら予約名 `lead` が起点（従来挙動）。daemon (Daemon) 稼働が前提。
     Origin {
         /// 起点にする lane 名 (省略時は現在の起点を表示)
         name: Option<String>,

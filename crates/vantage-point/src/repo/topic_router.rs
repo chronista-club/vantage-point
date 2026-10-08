@@ -102,10 +102,10 @@ impl TopicRouter {
         }
     }
 
-    /// lane segment の正規化: `None` = lead lane（予約名 `root`）。
+    /// lane segment の正規化: `None` / 旧世代の予約名 = lead lane（予約名 `lead`）。
     /// per-lane board topic の lane 部に使う。
     fn lane_seg(lane: &Option<String>) -> &str {
-        lane.as_deref().unwrap_or(crate::repo::lane::ROOT_LANE_NAME)
+        vp_paths::canonical_lane_name(lane.as_deref().unwrap_or(""))
     }
 
     /// lane address（`vp/sub/foo` 等、 `/` を含む）を topic segment 安全な 1 token に
@@ -127,7 +127,7 @@ impl TopicRouter {
             // lane segment を verb の後に挿入: `.../command/{verb}/{lane}/{pane_id}`。
             // category(seg2)=command は不変なので is_retained は維持され、retained store は
             // lane 別に分離される（root/main と sub-foo/main が別 topic）。
-            // lane=None は lead lane（予約名 `root`）に正規化。
+            // lane=None / 旧世代の予約名は lead lane（予約名 `lead`）に正規化。
             RepoMessage::Show { pane_id, lane, .. } => {
                 format!(
                     "repo/board/command/show/{}/{}",

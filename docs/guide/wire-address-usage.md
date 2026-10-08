@@ -26,7 +26,7 @@ actor                            repo           lane (multi-segment 可)
 (default: agent)
 ```
 
-**最 minimal**: `vantage-point/main` (= `agent@vantage-point/main`)
+**最 minimal**: `vantage-point/lead` (= `agent@vantage-point/lead`)
 **最 verbose**: `agent@mako.chronista.club/vantage-point/sub/objrec`
 
 `@` 1 個 + `/` 階層 + `.` host DNS、 三役直交。 sidebar の lane label をそのまま address として使える。
@@ -41,17 +41,17 @@ actor                            repo           lane (multi-segment 可)
 
 ```bash
 # 同 machine、 vantage-point の lead lane に送信 (default actor = agent)
-vp wire send --to vantage-point/main --body "hello"
+vp wire send --to vantage-point/lead --body "hello"
 
 # 同 machine、 vantage-point の lead lane の agent inbox を watch
 # (受信 message を 1 行 JSON で stdout に出力、 Claude Code Monitor の subscription source 想定)
-vp wire watch --agent agent@vantage-point/main
+vp wire watch --agent agent@vantage-point/lead
 
 # actor 明示 (= notification address)
-vp wire send --to notify@vantage-point/main --body "build done"
+vp wire send --to notify@vantage-point/lead --body "build done"
 
 # repo broadcast (lane 全 actor)
-vp wire send --to '*@vantage-point/main' --body "全員へ通知"
+vp wire send --to '*@vantage-point/lead' --body "全員へ通知"
 ```
 
 ### 2.2 cross-process (= 同 machine 別 repo)
@@ -79,10 +79,10 @@ vp daemon list --lan
 vp daemon add macbook-b
 
 # LAN wire send
-vp wire send --to agent@macbook-b/vantage-point/main --body "hello from macbook-a"
+vp wire send --to agent@macbook-b/vantage-point/lead --body "hello from macbook-a"
 
 # explicit FQDN
-vp wire send --to agent@macbook-b.local/vantage-point/main --body "explicit mDNS"
+vp wire send --to agent@macbook-b.local/vantage-point/lead --body "explicit mDNS"
 ```
 
 ### 2.4 Internet via hub (Phase 4 で valid)
@@ -93,10 +93,10 @@ vp daemon add mako@chronista.club
 # → hub に query、 alias 'mako' の pubkey + endpoint を address book に保存
 
 # Internet wire send
-vp wire send --to agent@mako/vantage-point/main --body "hello via hub"
+vp wire send --to agent@mako/vantage-point/lead --body "hello via hub"
 
 # explicit hub URL
-vp wire send --to agent@mako.chronista.club/vantage-point/main --body "FQDN explicit"
+vp wire send --to agent@mako.chronista.club/vantage-point/lead --body "FQDN explicit"
 ```
 
 ---
@@ -107,16 +107,16 @@ vp wire send --to agent@mako.chronista.club/vantage-point/main --body "FQDN expl
 
 ```ruby
 # self daemon、 lane 指定
-Vp.send_to("vantage-point/main", { hello: "world" })
+Vp.send_to("vantage-point/lead", { hello: "world" })
 
 # actor 明示
-Vp.send_to("notify@vantage-point/main", { type: "build_done" })
+Vp.send_to("notify@vantage-point/lead", { type: "build_done" })
 
 # LAN
-Vp.send_to("agent@macbook-b/vantage-point/main", { msg: "from A" })
+Vp.send_to("agent@macbook-b/vantage-point/lead", { msg: "from A" })
 
 # Internet via hub
-Vp.send_to("agent@mako/vantage-point/main", { msg: "via hub" })
+Vp.send_to("agent@mako/vantage-point/lead", { msg: "via hub" })
 ```
 
 ### 3.2 connection scope (= shorthand、 batch 用途)
@@ -124,7 +124,7 @@ Vp.send_to("agent@mako/vantage-point/main", { msg: "via hub" })
 ```ruby
 # daemon / repo context を fix して address 短縮
 Vp.with_daemon("mako.chronista.club") do |w|
-  w.send_to("agent/vantage-point/main", payload1)
+  w.send_to("agent/vantage-point/lead", payload1)
   w.send_to("agent/vantage-point/sub/objrec", payload2)
   # 同 hub への 2 件、 connection 1 個で済ます
 end
@@ -133,7 +133,7 @@ end
 ### 3.3 subscribe (long-running listener)
 
 ```ruby
-Vp.subscribe("agent@vantage-point/main") do |msg|
+Vp.subscribe("agent@vantage-point/lead") do |msg|
   puts "received from #{msg.from}: #{msg.payload}"
   # at-most-once (default) / at-least-once (manual_ack) は msg metadata で判定
 end
@@ -142,7 +142,7 @@ end
 ### 3.4 broadcast
 
 ```ruby
-Vp.broadcast("*@vantage-point/main", { announce: "release v0.18.0" })
+Vp.broadcast("*@vantage-point/lead", { announce: "release v0.18.0" })
 ```
 
 ### 3.5 discovery
@@ -213,12 +213,12 @@ vp daemon trust remove <alias>
 
 | v1 で使っていた form | v3.1 でも valid? | 推奨 v3.1 form |
 |---------------------|------------------|----------------|
-| `agent@vantage-point` | ✅ そのまま valid (default lane = main) | `vantage-point/main` (lane 明示) または同左 |
-| `*@vantage-point` | ✅ valid | `*@vantage-point/main` (lane 明示) |
-| `notify@vantage-point` | ✅ valid (default lane) | `notify@vantage-point/main` |
-| (なかった) | — | `vantage-point/main` (= actor 省略、 v3.1 新) |
+| `agent@vantage-point` | ✅ そのまま valid (default lane = main) | `vantage-point/lead` (lane 明示) または同左 |
+| `*@vantage-point` | ✅ valid | `*@vantage-point/lead` (lane 明示) |
+| `notify@vantage-point` | ✅ valid (default lane) | `notify@vantage-point/lead` |
+| (なかった) | — | `vantage-point/lead` (= actor 省略、 v3.1 新) |
 | (なかった) | — | `vantage-point/sub/objrec` (= per-lane、 v3.1 新) |
-| (なかった) | — | `mako/vantage-point/main` (= cross-daemon、 v3.1 新) |
+| (なかった) | — | `mako/vantage-point/lead` (= cross-daemon、 v3.1 新) |
 
 **v1 user は何も変更不要**、 v3.1 features は opt-in。
 
@@ -248,21 +248,21 @@ $ vp wire send --to mcp@creo-memories --body "test"
 
 ```bash
 # agent inbox を watch (inter-agent comm の default)
-vp wire watch --agent agent@vantage-point/main
+vp wire watch --agent agent@vantage-point/lead
 
 # notify actor inbox を観察
-vp wire watch --agent notify@vantage-point/main
+vp wire watch --agent notify@vantage-point/lead
 ```
 
 ### gap 3 fix: 2 namespace 統合
 
-**before (旧 msgbox)**: `vantage-point/main` (sidebar lane label) を wire address と誤認 → `actor name contains invalid character` parse error。
+**before (旧 msgbox)**: `vantage-point/lead` (sidebar lane label) を wire address と誤認 → `actor name contains invalid character` parse error。
 
-**after (v3.1)**: `vantage-point/main` を valid address として解釈 (= `agent@vantage-point/main` shorthand)。 sidebar label と address が **同 syntax**。
+**after (v3.1)**: `vantage-point/lead` を valid address として解釈 (= `agent@vantage-point/lead` shorthand)。 sidebar label と address が **同 syntax**。
 
 ```bash
-$ vp wire send --to vantage-point/main --body "hello"
-# → agent@vantage-point/main として解釈される
+$ vp wire send --to vantage-point/lead --body "hello"
+# → agent@vantage-point/lead として解釈される
 ```
 
 ### gap 4 fix: cross-process recv の visualization
@@ -307,7 +307,7 @@ $ vp daemon add macbook-b
 
 **macbook-a**:
 ```bash
-$ vp wire send --to agent@macbook-b/vantage-point/main --body "hello from A"
+$ vp wire send --to agent@macbook-b/vantage-point/lead --body "hello from A"
 Message sent (id: 01h...)
 ```
 
@@ -315,8 +315,8 @@ Message sent (id: 01h...)
 
 **macbook-b**:
 ```bash
-$ vp wire watch --agent agent@vantage-point/main
-[2026-05-08 07:00:01] from agent@macbook-a/vantage-point/main:
+$ vp wire watch --agent agent@vantage-point/lead
+[2026-05-08 07:00:01] from agent@macbook-a/vantage-point/lead:
   payload: "hello from A"
   signed: ed25519:6f3e... (verified ✓)
 ```
@@ -345,7 +345,7 @@ sub lane で実装中の Claude が「lead lane の Claude に lint result を�
 ```bash
 # sub Claude が実行
 $ cargo clippy --workspace 2>&1 | tee /tmp/clippy.txt
-$ vp wire send --to agent@vantage-point/main --body "$(cat /tmp/clippy.txt)"
+$ vp wire send --to agent@vantage-point/lead --body "$(cat /tmp/clippy.txt)"
 ```
 
 > MCP 経由なら sub Claude は `wire_send` tool を直接呼ぶ (CLI 不要)。
@@ -360,14 +360,14 @@ $ vp wire send --to agent@vantage-point/main --body "$(cat /tmp/clippy.txt)"
 
 ```ruby
 # sub
-Vp.send_to("agent@vantage-point/main", {
+Vp.send_to("agent@vantage-point/lead", {
   type: "lint_result",
   output: File.read("/tmp/clippy.txt"),
   ts: Time.now,
 })
 
 # main 側
-Vp.subscribe("agent@vantage-point/main") do |msg|
+Vp.subscribe("agent@vantage-point/lead") do |msg|
   next unless msg.payload[:type] == "lint_result"
   # ... handle lint result ...
 end
@@ -383,7 +383,7 @@ A. **廃止しない**。 v1 `<actor><repo>` は v3.1 で default lane = `lead`�
 
 ### Q. actor 名を省略すると何になる?
 
-A. **`agent`** (= reserved default)。 `vantage-point/main` = `agent@vantage-point/main`。 sidebar lane label をそのまま address として打てる。
+A. **`agent`** (= reserved default)。 `vantage-point/lead` = `agent@vantage-point/lead`。 sidebar lane label をそのまま address として打てる。
 
 ### Q. lane 名と actor 名が衝突した場合は?
 

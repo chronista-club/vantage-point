@@ -103,7 +103,7 @@ pub(crate) fn lane_query_for(addr: &str) -> String {
     let rest = addr.strip_prefix("agent@").unwrap_or(addr);
     match rest.split_once('/') {
         // 既に lane form（main / sub/... / 旧世代の予約名・lead / wing）なら素通し。
-        // ⚠️ 旧予約名（root / conductor）は resolve 側（parse_address）が lead に正規化する。
+        // ⚠️ 旧予約名（main / root / conductor）は resolve 側（parse_address）が lead に正規化する。
         Some((_, tail))
             if tail == crate::repo::lane::ROOT_LANE_NAME
                 || tail == "lead"

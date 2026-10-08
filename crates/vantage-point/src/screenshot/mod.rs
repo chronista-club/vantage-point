@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn pick_window_default_picks_titled_largest() {
         // title 空 + 面積大 vs title 有り + 面積中 → 後者が選ばれる
-        let mut small_titled = sample_window(2, "vp-app", "lead");
+        let mut small_titled = sample_window(2, "vp-app", "main");
         small_titled.width = 800;
         small_titled.height = 600;
         let mut large_untitled = sample_window(1, "vp-app", "");

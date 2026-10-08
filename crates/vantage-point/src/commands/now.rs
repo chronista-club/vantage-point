@@ -48,7 +48,7 @@ pub fn report(
         Some(l) => l.to_string(),
         None => lane_addr_from_env().ok_or_else(|| {
             anyhow::anyhow!(
-                "VP_REPO / VP_LANE が未設定です — lane の外からは `vp now --lane <repo>/main \"...\"` で明示してください"
+                "VP_REPO / VP_LANE が未設定です — lane の外からは `vp now --lane <repo>/lead \"...\"` で明示してください"
             )
         })?,
     };

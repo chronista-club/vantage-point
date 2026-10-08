@@ -233,7 +233,6 @@ mod tests {
     fn lane_key_takes_last_segment_in_every_form() {
         // canonical
         assert_eq!(lane_key_from_address("vp/lane/lead"), "lead");
-        assert_eq!(lane_key_from_address("vp/lane/lead"), "lead");
         assert_eq!(lane_key_from_address("vp/lane/root"), "lead");
         assert_eq!(lane_key_from_address("vp/lane/foo"), "foo");
         // 旧 3 分節
@@ -244,7 +243,6 @@ mod tests {
         assert_eq!(lane_key_from_address("vp/lead"), "lead");
         assert_eq!(lane_key_from_address("vp/foo"), "foo");
         // 旧予約名
-        assert_eq!(lane_key_from_address("vp/lead"), "lead");
     }
 
     /// 取れない形は `main` に倒す（folder 名なので落とさない）。
