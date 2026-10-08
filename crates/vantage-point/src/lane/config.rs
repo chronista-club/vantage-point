@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn main_name_rejected() {
-        // VP-166: `main` は main lane の予約名 (mailbox box key `<agent>#main` と衝突)
+        // VP-166: `main` は lead lane の予約名 (mailbox box key `<agent>#main` と衝突)
         assert!(validate_sub_name("root").is_err());
         // 部分一致や派生名は OK (= `main` 完全一致のみ禁止)
         assert!(validate_sub_name("leader").is_ok());

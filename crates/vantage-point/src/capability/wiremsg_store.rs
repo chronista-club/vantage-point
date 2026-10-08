@@ -114,7 +114,7 @@ impl WireMessage {
     /// 新規 thread の root message を構築 (`prev = None`)
     ///
     /// `local_seq` は 0 で構築し、 [`WiremsgStore::insert_message`] が INSERT 時に採番する。
-    /// main lane の alias 綴りを bare 形へ畳む（調査 = creo mem_1CeXGzBGyzaPXAjTUwZpBK）。
+    /// lead lane の alias 綴りを bare 形へ畳む（調査 = creo mem_1CeXGzBGyzaPXAjTUwZpBK）。
     ///
     /// `agent@<repo>/main`（+ 旧世代の予約名 `root` / `conductor`）→ `agent@<repo>`。
     /// 予約名は 2 度改名されており（`conductor` → `root` → `main`）、3 世代とも
@@ -133,7 +133,7 @@ impl WireMessage {
     /// envelope を素通ししていた。生文字列一致の照合と組み合わさって「ack しても
     /// 再掲示が止まらない」（2026-09-02 creo-ui session、24h で数十回）を起こした。
     pub(crate) fn normalize_wire_addr(addr: &str) -> String {
-        // 現行 = ROOT_LANE_NAME ("main")。旧 2 世代も畳む — 古い doc 例や他 node の
+        // 現行 = ROOT_LANE_NAME ("lead")。旧 3 世代（conductor / root / main）も畳む — 古い doc 例や他 node の
         // 旧 binary から届く綴りを弾かないため（federation は version 混在が常態）。
         const MAIN_ALIASES: [&str; 3] = [vp_paths::ROOT_LANE_NAME, "root", "conductor"];
         if let Some((base, lane)) = addr.rsplit_once('/') {
@@ -147,7 +147,7 @@ impl WireMessage {
     }
 
     pub fn new_root(from: impl Into<String>, to: Vec<String>, body: serde_json::Value) -> Self {
-        // alias 畳み後に同一 agent が 2 回並びうる（["agent@x", "agent@x/main"]）ので
+        // alias 畳み後に同一 agent が 2 回並びうる（["agent@x", "agent@x/lead"]）ので
         // 順序保持で dedup する（to の順序は表示に使われる）。
         let from = Self::normalize_wire_addr(&from.into());
         let mut seen = std::collections::HashSet::new();
@@ -2113,14 +2113,14 @@ mod tests {
         let cmd = store
             .send_root(
                 "agent@vp",
-                &["agent@vpcode/main".to_string(), "agent@vp/gone".to_string()],
+                &["agent@vpcode/lead".to_string(), "agent@vp/gone".to_string()],
                 serde_json::json!({"category": "command", "text": "設計これで進めます"}),
             )
             .await
             .expect("command send");
 
         // 生きている側は ack した。消える側は ack できないまま。
-        store.ack(&cmd.id, "agent@vpcode/main").await.expect("ack");
+        store.ack(&cmd.id, "agent@vpcode/lead").await.expect("ack");
         let pending = store.unacked_commands().await.expect("unacked");
         assert_eq!(
             pending[0].1,
@@ -2213,7 +2213,7 @@ mod tests {
     fn normalize_wire_addr_folds_only_reserved_aliases() {
         let n = WireMessage::normalize_wire_addr;
         // 3 世代の alias は bare へ
-        assert_eq!(n("agent@creo-ui/main"), "agent@creo-ui");
+        assert_eq!(n("agent@creo-ui/lead"), "agent@creo-ui");
         assert_eq!(n("agent@nexus/root"), "agent@nexus");
         assert_eq!(n("agent@vp/conductor"), "agent@vp");
         // 実 sub lane は不変（畳むと誤配送になる）
@@ -2221,7 +2221,7 @@ mod tests {
         // bare / 形式外は不変（fail-safe — `@` の無いものは wire address ではない）
         assert_eq!(n("agent@vp"), "agent@vp");
         assert_eq!(n("agent"), "agent");
-        assert_eq!(n("foo/main"), "foo/main");
+        assert_eq!(n("foo/lead"), "foo/lead");
     }
 
     /// ⚠️ 実バグ再現（2026-09-02、creo-ui session の再掲示ループ / mem_1CeXGzBGyzaPXAjTUwZpBK）:
@@ -2232,8 +2232,8 @@ mod tests {
         let store = make_test_store().await;
         let cmd = store
             .send_root(
-                "agent@anycreative.tech/main",
-                &["agent@creo-ui/main".to_string()],
+                "agent@anycreative.tech/lead",
+                &["agent@creo-ui/lead".to_string()],
                 serde_json::json!({"category": "command", "text": "task"}),
             )
             .await
@@ -2254,7 +2254,7 @@ mod tests {
         store
             .send_root(
                 "agent@vp",
-                &["agent@creo-ui/main".to_string()],
+                &["agent@creo-ui/lead".to_string()],
                 serde_json::json!({"category": "event", "text": "hi"}),
             )
             .await
@@ -2273,7 +2273,7 @@ mod tests {
             .send_root(
                 "agent@vp",
                 // 送信相手 bare + 返信者の alias（federation 経由で混入した形を再現）
-                &["agent@nexus/main".to_string()],
+                &["agent@nexus/lead".to_string()],
                 serde_json::json!({"category": "command", "text": "task"}),
             )
             .await
@@ -2288,7 +2288,7 @@ mod tests {
             .await
             .expect("reply");
         assert!(
-            !reply.to.contains(&"agent@nexus/main".to_string())
+            !reply.to.contains(&"agent@nexus/lead".to_string())
                 && !reply.to.contains(&"agent@nexus".to_string()),
             "送信者は alias 綴りでも to に残らない: {:?}",
             reply.to

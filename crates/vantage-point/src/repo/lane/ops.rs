@@ -524,7 +524,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "lane_nudge",
-            serde_json::json!({ "lane": "vp/main", "text": "x" }),
+            serde_json::json!({ "lane": "vp/lead", "text": "x" }),
         )
         .await;
         assert!(res.is_err(), "PtySlot 無 lane への nudge は Err: {res:?}");
@@ -559,7 +559,7 @@ mod tests {
         }
         let chat_key = session_registry::create(
             "nudge-sub",
-            "main",
+            "lead",
             "claude",
             "claude",
             SessionMode::Gui,
@@ -608,7 +608,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "lane_capture",
-            serde_json::json!({ "lane": "vp/main" }),
+            serde_json::json!({ "lane": "vp/lead" }),
         )
         .await;
         let err = res.expect_err("pool 不在 lane の capture は Err");
@@ -933,9 +933,9 @@ mod tests {
         );
     }
 
-    /// F6②: Main lane は lane_delete で拒否される (architecture rule: repo lifetime 紐付き)。
+    /// F6②: lead lane は lane_delete で拒否される (architecture rule: repo lifetime 紐付き)。
     #[tokio::test]
-    async fn lane_delete_rejects_main() {
+    async fn lane_delete_rejects_lead() {
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
 
@@ -944,13 +944,13 @@ mod tests {
         let err = dispatch_repo_method(
             &state,
             "lane_delete",
-            serde_json::json!({ "address": "vp/main" }),
+            serde_json::json!({ "address": "vp/lead" }),
         )
         .await
-        .expect_err("Main の delete は Err");
+        .expect_err("lead の delete は Err");
         assert!(
-            err.contains("Main"),
-            "Main delete は MainCannotBeDeleted: {err}"
+            err.contains("lead"),
+            "lead delete は LeadCannotBeDeleted: {err}"
         );
     }
 
@@ -1017,14 +1017,14 @@ mod tests {
             flow_state: None,
         });
         // hook 相当の会話 id 記録（記録契機 UserPromptSubmit の後の状態）。doc 40: SSOT は registry。
-        crate::lane::session_registry::set_conversation("vp", "main", "claude", 1, Some("sid-new"))
+        crate::lane::session_registry::set_conversation("vp", "lead", "claude", 1, Some("sid-new"))
             .expect("record conversation");
 
         let mut rx = state.system_event_tx.subscribe();
         let res = dispatch_repo_method(
             &state,
             "lane_session_changed",
-            serde_json::json!({ "lane": "vp/main" }),
+            serde_json::json!({ "lane": "vp/lead" }),
         )
         .await
         .expect("lane_session_changed ok");
@@ -1082,7 +1082,7 @@ mod tests {
             &state,
             "lane_session_changed",
             serde_json::json!({
-                "lane": "vp/main",
+                "lane": "vp/lead",
                 "session_id": "sid-issued",
                 "event": "issued",
             }),
@@ -1091,7 +1091,7 @@ mod tests {
         .expect("lane_session_changed ok");
 
         // registry（SSOT）に記録され、旧 store には書かれない
-        let reg = crate::lane::session_registry::load("vp", "main", "claude");
+        let reg = crate::lane::session_registry::load("vp", "lead", "claude");
         let root_conv = reg
             .sessions
             .iter()
@@ -1154,7 +1154,7 @@ mod tests {
         // root(#1) は発話済み、同居人 #2 が立っている状態。
         crate::lane::session_registry::set_conversation(
             "vp",
-            "main",
+            "lead",
             "claude",
             1,
             Some("sid-root"),
@@ -1162,7 +1162,7 @@ mod tests {
         .expect("root conversation");
         let k2 = crate::lane::session_registry::create(
             "vp",
-            "main",
+            "lead",
             "claude",
             "claude",
             crate::lane::session_registry::SessionMode::Tui,
@@ -1175,7 +1175,7 @@ mod tests {
             &state,
             "lane_session_changed",
             serde_json::json!({
-                "lane": "vp/main",
+                "lane": "vp/lead",
                 "session_id": "sid-roommate",
                 "event": "spoken",
                 "session": k2,
@@ -1184,7 +1184,7 @@ mod tests {
         .await
         .expect("lane_session_changed ok");
 
-        let reg = crate::lane::session_registry::load("vp", "main", "claude");
+        let reg = crate::lane::session_registry::load("vp", "lead", "claude");
         assert_eq!(
             reg.sessions[0].conversation.as_deref(),
             Some("sid-root"),
@@ -1201,7 +1201,7 @@ mod tests {
             &state,
             "lane_session_changed",
             serde_json::json!({
-                "lane": "vp/main",
+                "lane": "vp/lead",
                 "session_id": "sid-ghost",
                 "event": "spoken",
                 "session": 99,
@@ -1209,7 +1209,7 @@ mod tests {
         )
         .await
         .expect("lane_session_changed ok（記録はしないが配線は成功）");
-        let reg = crate::lane::session_registry::load("vp", "main", "claude");
+        let reg = crate::lane::session_registry::load("vp", "lead", "claude");
         assert_eq!(
             reg.sessions[0].conversation.as_deref(),
             Some("sid-root"),
@@ -1245,24 +1245,24 @@ mod tests {
             agent_name: None,
             flow_state: None,
         });
-        session_registry::set_conversation("vp", "main", "claude", 1, Some("claude-original"))
+        session_registry::set_conversation("vp", "lead", "claude", 1, Some("claude-original"))
             .unwrap();
         let key =
-            session_registry::create("vp", "main", "claude", "codex", SessionMode::Tui, false)
+            session_registry::create("vp", "lead", "claude", "codex", SessionMode::Tui, false)
                 .unwrap();
         let thread = "01a08ffe-b1f3-7e52-98f0-830c87a5d4b1";
         dispatch_repo_method(
             &state,
             "lane_session_changed",
             serde_json::json!({
-                "lane": "vp/main", "session": key, "session_id": thread,
+                "lane": "vp/lead", "session": key, "session_id": thread,
                 "event": "issued", "engine": "codex"
             }),
         )
         .await
         .unwrap();
 
-        let reg = session_registry::load("vp", "main", "claude");
+        let reg = session_registry::load("vp", "lead", "claude");
         assert_eq!(
             reg.sessions[0].conversation.as_deref(),
             Some("claude-original")
@@ -1307,8 +1307,8 @@ mod tests {
             flow_state: None,
         });
         let thread = "01a09005-f22f-7dd3-9e7b-0ad53926478b";
-        session_registry::set_conversation("vp", "main", "codex", 1, Some(thread)).unwrap();
-        let original = session_registry::load("vp", "main", "codex");
+        session_registry::set_conversation("vp", "lead", "codex", 1, Some(thread)).unwrap();
+        let original = session_registry::load("vp", "lead", "codex");
         for fields in [
             serde_json::json!({"engine":"codex"}),
             serde_json::json!({"engine":"codex", "session":99}),
@@ -1318,7 +1318,7 @@ mod tests {
             serde_json::json!({"engine":null, "session":1}),
         ] {
             let mut payload = fields;
-            payload["lane"] = "vp/main".into();
+            payload["lane"] = "vp/lead".into();
             payload["session_id"] = "01a09000-d2c2-7392-9214-782dec85a872".into();
             payload["event"] = "issued".into();
             assert!(
@@ -1326,19 +1326,19 @@ mod tests {
                     .await
                     .is_err()
             );
-            assert_eq!(session_registry::load("vp", "main", "codex"), original);
+            assert_eq!(session_registry::load("vp", "lead", "codex"), original);
         }
         // Legacy Claude reports stay on the Claude policy and cannot rewrite a Codex Console.
         dispatch_repo_method(
             &state,
             "lane_session_changed",
             serde_json::json!({
-                "lane":"vp/main", "session":1, "session_id":"claude-report", "event":"spoken"
+                "lane":"vp/lead", "session":1, "session_id":"claude-report", "event":"spoken"
             }),
         )
         .await
         .unwrap();
-        assert_eq!(session_registry::load("vp", "main", "codex"), original);
+        assert_eq!(session_registry::load("vp", "lead", "codex"), original);
     }
 
     /// lanes portless: `lanes_list` dispatch arm が `{lanes:[...]}` 形で返る (build_lanes_snapshot 経由)。

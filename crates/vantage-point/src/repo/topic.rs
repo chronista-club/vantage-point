@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_is_retained_command() {
-        let path = TopicPath::parse("repo/board/command/show/main");
+        let path = TopicPath::parse("repo/board/command/show/lead");
         assert!(path.is_retained());
     }
 
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn test_single_wildcard_does_not_match_multiple() {
         // `+` は1セグメントのみ一致
-        let topic = TopicPath::parse("repo/board/command/show/main");
+        let topic = TopicPath::parse("repo/board/command/show/lead");
         let pattern = TopicPattern::parse("repo/board/command/+");
         assert!(!topic.matches(&pattern));
     }
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_match_multi_wildcard_many_segments() {
-        let topic = TopicPath::parse("repo/board/command/show/main/extra");
+        let topic = TopicPath::parse("repo/board/command/show/lead/extra");
         let pattern = TopicPattern::parse("repo/board/command/#");
         assert!(topic.matches(&pattern));
     }

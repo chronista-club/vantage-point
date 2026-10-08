@@ -141,7 +141,7 @@ describe('lane board の lane 別保持', () => {
 
 describe('board の同一性は (repo, lane) の対', () => {
   it('⚠️ board を持たない repo に切り替えたら空になる（前の repo の board が残らない）', () => {
-    // 全 repo の root lane は同じ 'main' を名乗る。repo 次元を落とすと 13 repo が
+    // 全 repo の root lane は同じ 'lead' を名乗る。repo 次元を落とすと 13 repo が
     // 1 つの箱を奪い合い、**board 行を持たない repo で前の repo の board が出続けた**。
     handleMessage(boardUpdated('lane', null, [{ id: 'vp-item' }], null, 'vantage-point'))
     setActiveBoard('vantage-point', null)

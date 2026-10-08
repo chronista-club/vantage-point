@@ -40,9 +40,9 @@ pub(crate) struct SidebarIpcOutcome {
     /// Phase 4-A: Sub Lane 削除要求 `(repo_path, address)`。
     /// caller が repo port を解決して `client.delete_lane` を呼ぶ。
     pub(crate) delete_lane_request: Option<(String, String)>,
-    /// Lane Main Agent restart 要求 `(repo_path, address, fresh)`。
+    /// Lane lead agent restart 要求 `(repo_path, address, fresh)`。
     /// caller が repo port を解決して `client.restart_lane` を呼ぶ。
-    /// fresh=true は "New Main Session" (resume/continue 回避の fresh 起動)。
+    /// fresh=true は旧 "New Main Session" (resume/continue 回避の fresh 起動)。
     pub(crate) restart_lane_request: Option<(String, String, bool)>,
     /// doc 39 §8.4 提案 2: 「New Root Conversation」要求 `(repo_path, lane_address)`。
     /// caller が repo の `conversation_session_new_root` を呼ぶ（非破壊 — 旧 root の会話は残る）。

@@ -78,12 +78,12 @@ agent @ mako.chronista.club / vantage-point / sub / objrec
 | address | layer | meaning | resolve |
 |---------|-------|---------|---------|
 | `agent` | self process | inbox-local | direct dispatch |
-| `vantage-point/root` | same machine | self daemon、 main lane の agent inbox | daemon registry (port lookup) |
+| `vantage-point/lead` | same machine | self daemon、 lead lane の agent inbox | daemon registry (port lookup) |
 | `notify@vantage-point/root` | same machine | OS notification trigger | local routing |
 | `mako/vantage-point/root` | Internet via hub | mako daemon、 hub-resolved | `hub.chronista.club` query (Phase 4+) |
 | `mako.chronista.club/vantage-point/root` | Internet (explicit hub URL) | full FQDN | hub URL inline |
 | `macbook.local/vantage-point/root` | LAN | mDNS resolve | `_vp._tcp.local` (Phase 3) |
-| `*@vantage-point/root` | broadcast | main lane 全 actor | local fanout |
+| `*@vantage-point/lead` | broadcast | lead lane 全 actor | local fanout |
 | `hermit_purple@machine` | self daemon (system) | daemon の actor | (reserved repo `daemon`) |
 | `hermit_purple@mako/daemon` | Internet | mako daemon's daemon | hub query |
 
@@ -96,7 +96,7 @@ agent @ mako.chronista.club / vantage-point / sub / objrec
 ### email idiom との parallel
 
 - email: `info@example.com` (= info role + example.com domain)
-- VP: `agent@vantage-point/root` (= agent role + location)、 agent 省略可で `vantage-point/root`
+- VP: `agent@vantage-point/root` (= agent role + location)、 agent 省略可で `vantage-point/lead`
 - 役割明示の `notify@<...>` / `mcp@<...>` / `protocol@<...>` は SMTP の `postmaster@` `noreply@` `abuse@` と同 family
 
 ---
@@ -197,7 +197,7 @@ LAN MVP (Phase 0-3) 完成後に Phase 4+ の planning session で sub-issue 化
 | pattern | 意味 |
 |---------|------|
 | `*@vantage-point` | repo broadcast (v1 既存) |
-| `*@vantage-point/root` | repo + lane broadcast |
+| `*@vantage-point/lead` | repo + lane broadcast |
 | `*@macbook.local/vantage-point/root` | LAN machine 内 lane broadcast |
 | `*@mako/vantage-point/root` | user-wide lane broadcast (全 machine、 Phase 4+) |
 

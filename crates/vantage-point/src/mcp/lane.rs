@@ -11,7 +11,7 @@ use super::*;
 pub struct SwitchLaneParams {
     /// Lane token to activate within the current repo
     #[schemars(
-        description = "Lane token to activate in the current repo's vp-app: 'root' (the Main lane) or a sub name (e.g. 'feat-api')."
+        description = "Lane token to activate in the current repo's vp-app: 'lead' (the lead lane) or a sub name (e.g. 'feat-api')."
     )]
     pub lane: String,
 }
@@ -204,7 +204,7 @@ impl VantageMcp {
 
     /// vp-app の active Lane を切り替える（B1: Unison-native、per-repo）。
     #[tool(
-        description = "Switch the active lane shown in the vp-app board Canvas of the CURRENT repo. `lane` is a lane token: 'root' (the Main lane) or a sub name. Routes over Unison (local repo → canvas channel → vp-app). Primarily for ROTO / CLI driven view control; avoid switching the human's view unsolicited."
+        description = "Switch the active lane shown in the vp-app board Canvas of the CURRENT repo. `lane` is a lane token: 'lead' (the lead lane) or a sub name. Routes over Unison (local repo → canvas channel → vp-app). Primarily for ROTO / CLI driven view control; avoid switching the human's view unsolicited."
     )]
     async fn switch_lane(
         &self,
@@ -286,7 +286,7 @@ impl VantageMcp {
     /// (optional) lane workspace dir cleanup。 server-side `delete_lane_orchestrated` への薄い HTTP
     /// wrapper、 cwd ベースで自動的に local repo と repo を解決。
     #[tool(
-        description = "Delete a Sub Lane in the current repo. repo pool removal + child PTY kill + tmux session kill + lane workspace dir cleanup を 1 call で完結 (= 旧来の手動 3 step `vp lane rm` + `tmux kill-session` + `curl -X DELETE` を置換)。 cwd ベースで local repo を自動解決、 cleanup=false で dir 残置 (debug 用途)。 Main Lane は削除不可 (architecture rule、 repo shutdown が path)。"
+        description = "Delete a Sub Lane in the current repo. repo pool removal + child PTY kill + tmux session kill + lane workspace dir cleanup を 1 call で完結 (= 旧来の手動 3 step `vp lane rm` + `tmux kill-session` + `curl -X DELETE` を置換)。 cwd ベースで local repo を自動解決、 cleanup=false で dir 残置 (debug 用途)。 lead lane は削除不可 (architecture rule、 repo shutdown が path)。"
     )]
     async fn delete_sub(
         &self,
@@ -360,11 +360,11 @@ impl VantageMcp {
 
     /// List Lanes in the current repo with comprehensive routing info (VP-124 Phase 1).
     ///
-    /// Main Lane Conversation が「lane を operate するすべての座標」 を 1 call で取得するための tool。
+    /// lead lane Conversation が「lane を operate するすべての座標」 を 1 call で取得するための tool。
     /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Agents の wire address)、
     /// top-level に repo_addresses + machine_addresses を synthesize。
     #[tool(
-        description = "List all Lanes (Main + Subs) in the current repo with comprehensive routing info. Each Lane returns: address, kind, state, agent, pid, cwd, tmux session, sub_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for root or `agent@vantage-point/chore` for sub 'chore') and `board` (= the lane's board / Board inbox, e.g. `board@vantage-point/chore`)。 Top-level also returns repo_addresses (e.g. `runner@<repo>`) and machine_addresses (e.g. `devices@machine`)。 Use this to discover Subs, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + manual lane inspection。"
+        description = "List all Lanes (lead + subs) in the current repo with comprehensive routing info. Each Lane returns: address, kind, state, agent, pid, cwd, tmux session, sub_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for root or `agent@vantage-point/chore` for sub 'chore') and `board` (= the lane's board / Board inbox, e.g. `board@vantage-point/chore`)。 Top-level also returns repo_addresses (e.g. `runner@<repo>`) and machine_addresses (e.g. `devices@machine`)。 Use this to discover Subs, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + manual lane inspection。"
     )]
     async fn list_lanes(
         &self,
@@ -665,8 +665,8 @@ impl VantageMcp {
             .unwrap_or_default();
 
         let mut subs: Vec<serde_json::Value> = Vec::new();
-        let mut main_unread: u64 = 0;
-        let mut main_unread_by_thread = serde_json::Value::Object(Default::default());
+        let mut lead_unread: u64 = 0;
+        let mut lead_unread_by_thread = serde_json::Value::Object(Default::default());
         for lane in lanes_in {
             // doc 44 P2: 名前の在処は `address.name` のみ、開発起点は予約名で判る。
             let lane_label = lane_name_of(&lane);
@@ -695,8 +695,8 @@ impl VantageMcp {
             };
 
             if kind == "root" {
-                main_unread = unread_total;
-                main_unread_by_thread = by_thread;
+                lead_unread = unread_total;
+                lead_unread_by_thread = by_thread;
                 continue;
             }
 
@@ -769,8 +769,8 @@ impl VantageMcp {
             "repo": repo,
             "root": {
                 "address": format!("agent@{}", repo),
-                "unread_wire_count": main_unread,
-                "unread_by_thread": main_unread_by_thread,
+                "unread_wire_count": lead_unread,
+                "unread_by_thread": lead_unread_by_thread,
             },
             "subs": subs,
         });

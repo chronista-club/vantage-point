@@ -565,7 +565,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("vp-farewell-noground-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
 
-        let facts = collect_facts(&tmp, "nonexistent", false, false, "main");
+        let facts = collect_facts(&tmp, "nonexistent", false, false, "lead");
 
         assert!(!facts.has_ground, "ground 不在が事実として出る");
         assert_eq!(facts.name, "nonexistent");
@@ -606,7 +606,7 @@ mod tests {
         // 未コミットの変更を作る
         std::fs::write(lane_dir.join("a.txt"), "two").unwrap();
 
-        let facts = collect_facts(&root, "w1", false, false, "main");
+        let facts = collect_facts(&root, "w1", false, false, "lead");
 
         assert!(facts.has_ground, "ground が見つかる");
         assert_eq!(facts.dirty_count, 1, "未コミット変更 1 件を拾う");
@@ -792,7 +792,7 @@ mod tests {
         git(&["commit", "-qm", "init"]);
 
         // 削除**前**なら引ける = facts に載せられる
-        let facts = collect_facts(&root, "w1", false, false, "main");
+        let facts = collect_facts(&root, "w1", false, false, "lead");
         assert_eq!(
             facts.branch.as_deref(),
             Some("feat-gone"),

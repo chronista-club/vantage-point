@@ -222,7 +222,7 @@ pub(crate) async fn start_repo(
         )),
         topic_router,
         vpdb: vpdb.clone(),
-        // Phase A4-2b: Lane scope の Agent pool — Main Lane 1 つ pre-populate
+        // Phase A4-2b: Lane scope の Agent pool — lead lane 1 つ pre-populate
         // memory rule: 多 scope architecture (App/Repo/Lane/Pane)、HD/TH は Lane scope。
         // Sub Lane の動的 create は A4-4、Agent spawn 連動は A5 で実装。
         //
@@ -343,7 +343,7 @@ pub(crate) async fn start_repo(
             );
         }
 
-        // doc 53 §12: **main lane の実体はここで立つ**（`with_root` は登録だけ）。
+        // doc 53 §12: **lead lane の実体はここで立つ**（`with_root` は登録だけ）。
         //
         // reconcile が registry に従って mode=Tui の全 session に slot を立て、末尾で pump も
         // 合わせる（R2）。旧実装は ①`with_root` が root を spawn ②`restore_term_slots` が
@@ -356,12 +356,12 @@ pub(crate) async fn start_repo(
         //
         // address の repo 名は with_root と同じ解決済の名（`state.repo_name`）を使う —
         // `subs_repo_id`（dir 名）は登録名と異なり得る。
-        let main_addr = super::lane::LaneAddress::root(&state.repo_name);
+        let lead_addr = super::lane::LaneAddress::root(&state.repo_name);
         super::lane::reconcile::reconcile_lane(
             &state.lane_pool,
             &state.terminal_pumps,
             &state.topic_router,
-            &main_addr,
+            &lead_addr,
         )
         .await;
     }
@@ -396,7 +396,7 @@ pub(crate) async fn start_repo(
         // 「別の供給点が publish した直後は起こさない」等の取りこぼしが出る）。
         let mut notifier = LaneChangeNotifier::new(lane_change_tx);
         // 起動直後の現 snapshot を 1 度 publish して retained を seed する
-        // （Main Lane は既に pre-populate 済）。
+        // （lead lane は既に pre-populate 済）。
         // repo-local lane refactor PR 1: build_lanes_snapshot で disk-scan Inactive Sub
         // も含める (= HTTP /api/lanes と同一 logic、 sidebar QUIC 経路でも Inactive 表示)。
         publish_lanes(

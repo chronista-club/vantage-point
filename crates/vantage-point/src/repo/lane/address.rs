@@ -108,7 +108,7 @@ impl LaneAddress {
     /// `key_matches_display` は**実際に食い違った**記録）。
     ///
     /// ⚠️ 分節は 3 つ。読み側 [`parse_address`] は旧形（`<repo>/<name>` /
-    /// `<repo>/sub/<name>` / `<repo>/wing/<name>` / `<repo>/lead`）も受理して救済する。
+    /// `<repo>/sub/<name>` / `<repo>/wing/<name>` / `<repo>/<旧予約名>`）も受理して救済する。
     pub fn canonical(&self) -> String {
         format!("{}/{}/{}", self.repo, LANE_SEGMENT, self.name)
     }
@@ -155,7 +155,7 @@ impl fmt::Display for LaneAddress {
 pub fn parse_address(s: &str) -> Option<LaneAddress> {
     // 旧世代の**予約名**を現行の予約名へ写す（形の救済と直交する、名前の救済）。
     //
-    // 予約名は `conductor` → `root` → `main` と 2 度改名されており、DB / session.json の
+    // 予約名は `conductor` → `root` → `main` → `lead` と 3 度改名されており、DB / session.json の
     // address 文字列に旧名のまま残る。ここで寄せておくと、起動時の
     // `normalize_legacy_lane_addresses`（parse → to_string の差分検知）が**既存行を
     // 自動で新名へ書き換える** = 名前の migration を別途書かなくてよい。
@@ -171,8 +171,6 @@ pub fn parse_address(s: &str) -> Option<LaneAddress> {
     }
     let parts: Vec<&str> = s.splitn(3, '/').collect();
     match parts.as_slice() {
-        // 旧 "lead" は開発起点の旧名 (main rename 前の session.json / wire address 互換)。
-        [repo, "lead"] if !repo.is_empty() => Some(LaneAddress::root(*repo)),
         // 旧 2 分節形 "<repo>/<name>" (doc 44 P2 のフラット化形)。canonical が
         // `<repo>/lane/<name>` になった後も、永続 state / wire に残る旧形として受理する。
         [repo, name] if !repo.is_empty() && !name.is_empty() => Some(name_or_root(repo, name)),
@@ -224,10 +222,10 @@ mod tests {
     fn lane_address_canonical_has_lane_segment() {
         // address の形式は `<repo>/lane/<name>`。⚠️ 定義は `canonical()` の 1 箇所で、
         // Display はそこへ委譲するだけ（人間向け trait を永続形の SSOT にしない）。
-        assert_eq!(LaneAddress::root("vp").canonical(), "vp/lane/main");
+        assert_eq!(LaneAddress::root("vp").canonical(), "vp/lane/lead");
         assert_eq!(LaneAddress::sub("vp", "foo").canonical(), "vp/lane/foo");
         // Display が委譲しているか（片方だけ変わると永続と表示がずれる）。
-        assert_eq!(LaneAddress::root("vp").to_string(), "vp/lane/main");
+        assert_eq!(LaneAddress::root("vp").to_string(), "vp/lane/lead");
     }
 
     /// ⚠️ **wire に `key` が載る**（daemon が発行する側）。載らないと client が
@@ -256,7 +254,7 @@ mod tests {
     #[test]
     fn legacy_lane_address_deserializes() {
         // 旧 main: name 省略 + kind field あり → 予約名に落ちる
-        let main: LaneAddress = serde_json::from_str(r#"{"repo":"vp","kind":"main"}"#).unwrap();
+        let main: LaneAddress = serde_json::from_str(r#"{"repo":"vp","kind":"lead"}"#).unwrap();
         assert_eq!(main, LaneAddress::root("vp"));
         assert!(main.is_root());
 

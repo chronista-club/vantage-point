@@ -1485,9 +1485,13 @@ async fn handle_wire_channel(
         }
         .ok_or_else(|| format!("lane/session-changed: repo '{repo}' の repo が registry に無い"))?;
         // hook env の VP_LANE は label（"root" / sub 名）。repo method は address を取る。
-        // ⚠️ 分岐は要らない — canonical は root を「名前の 1 つ」として扱う。旧 `lead` だけ
-        // 予約名へ寄せる（P2 以前の env が残っている場合の互換）。
-        let label = if label == "lead" { "root" } else { label };
+        // ⚠️ 分岐は要らない — canonical は予約名を「名前の 1 つ」として扱う。旧世代の予約名
+        // （conductor / root / main）だけ現予約名へ寄せる（spawn 済み agent の env は旧名のまま）。
+        let label = if vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&label) {
+            vp_paths::ROOT_LANE_NAME
+        } else {
+            label
+        };
         let display = crate::repo::lane::LaneAddress::new(repo, label).canonical();
         // doc 40 §4: hook の会話報告（session_id + event + 報告者が名乗る session）を repo へ
         // 透過する。無い場合は従来の「変化通知のみ」（re-enrich + push）として振る舞う =
@@ -2801,7 +2805,7 @@ mod tests {
             serde_json::Value::Null,
         ] {
             for session in [serde_json::json!(2), serde_json::json!("invalid")] {
-                let original = serde_json::json!({"repo":"vp", "lane":"main", "session_id":"thread-id", "event":"issued", "engine":engine, "session":session});
+                let original = serde_json::json!({"repo":"vp", "lane":"lead", "session_id":"thread-id", "event":"issued", "engine":engine, "session":session});
                 let fwd = forward_conversation_report("vp/root", &original);
                 assert_eq!(fwd["lane"], "vp/root");
                 for key in ["engine", "session", "session_id", "event"] {
@@ -3039,13 +3043,13 @@ mod tests {
                 "/repos/zeta".to_string(),
                 vec![
                     mk("zeta", "later", "2026-07-02T00:00:00Z", "shell"),
-                    mk("zeta", "main", "2026-07-03T00:00:00Z", "claude"),
+                    mk("zeta", "lead", "2026-07-03T00:00:00Z", "claude"),
                     mk("zeta", "earlier", "2026-07-01T00:00:00Z", "claude"),
                 ],
             );
             registry.insert(
                 "/repos/alpha".to_string(),
-                vec![mk("alpha", "main", "2026-07-01T00:00:00Z", "claude")],
+                vec![mk("alpha", "lead", "2026-07-01T00:00:00Z", "claude")],
             );
         }
 
@@ -3054,17 +3058,17 @@ mod tests {
             (
                 serde_json::json!({}),
                 // alpha/main → zeta/main（開発起点先）→ earlier → later（created_at 昇順）
-                vec!["main", "main", "earlier", "later"],
+                vec!["lead", "lead", "earlier", "later"],
             ),
             (
                 serde_json::json!({"repo": "zeta"}),
-                vec!["main", "earlier", "later"],
+                vec!["lead", "earlier", "later"],
             ),
             (
                 serde_json::json!({"agent": "claude"}),
-                vec!["main", "main", "earlier"],
+                vec!["lead", "lead", "earlier"],
             ),
-            (serde_json::json!({"lane": "main"}), vec!["main", "main"]),
+            (serde_json::json!({"lane": "lead"}), vec!["lead", "lead"]),
             (serde_json::json!({"repo": "nonexistent"}), vec![]),
         ];
 

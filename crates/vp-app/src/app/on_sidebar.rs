@@ -463,7 +463,7 @@ pub(super) fn sidebar_ipc(
             }
         });
     }
-    // Lane Main Agent restart 要求 (sidebar の restart icon → confirm dialog から)
+    // Lane lead agent restart 要求 (sidebar の restart icon → confirm dialog から)
     if let Some((repo_path, address, fresh)) = outcome.restart_lane_request {
         // F6③: 旧 DaemonRpcClient.restart_lane (repo 直結 reqwest) を daemon repo-proxy
         // ask (lane_restart) に移管。 repo port 解決は不要、 repo_path を handshake で渡す。

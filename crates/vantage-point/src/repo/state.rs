@@ -406,7 +406,7 @@ pub(crate) async fn insert_test_lane(
     let addr = LaneAddress::root(repo);
     // doc 53 R1: mode の SSOT は registry（pool cache は退役）。テストも registry に書いて
     // 読み手（root_mode 直読）と同じ経路を通す。
-    crate::lane::session_registry::set_root_mode(repo, "main", "claude", mode)
+    crate::lane::session_registry::set_root_mode(repo, "lead", "claude", mode)
         .expect("test registry へ root mode を書けること");
     state.lane_pool.write().await.insert(LaneInfo {
         id: Default::default(),

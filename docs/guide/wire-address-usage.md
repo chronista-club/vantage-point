@@ -40,10 +40,10 @@ actor                            repo           lane (multi-segment 可)
 ### 2.1 基本: send / watch
 
 ```bash
-# 同 machine、 vantage-point の main lane に送信 (default actor = agent)
+# 同 machine、 vantage-point の lead lane に送信 (default actor = agent)
 vp wire send --to vantage-point/main --body "hello"
 
-# 同 machine、 vantage-point の main lane の agent inbox を watch
+# 同 machine、 vantage-point の lead lane の agent inbox を watch
 # (受信 message を 1 行 JSON で stdout に出力、 Claude Code Monitor の subscription source 想定)
 vp wire watch --agent agent@vantage-point/main
 
@@ -273,7 +273,7 @@ $ vp wire send --to vantage-point/main --body "hello"
 
 ```
 ┌─────────────────────────┐
-│ 💬 Main 📨           ●  │  ← 📨 icon = 未読 message あり
+│ 💬 lead 📨           ●  │  ← 📨 icon = 未読 message あり
 │   sidebar-session-title │     ● = OSC 99 awaiting input (VP-142)
 └─────────────────────────┘
 ```
@@ -326,7 +326,7 @@ $ vp wire watch --agent agent@vantage-point/main
 macbook-b の vp-app sidebar:
 ```
 vantage-point
-├── 💬 Main 📨    ← 📨 (= 未読 1)
+├── 💬 lead 📨    ← 📨 (= 未読 1)
 └── (...)
 ```
 
@@ -338,7 +338,7 @@ vantage-point
 
 ### scenario
 
-sub lane で実装中の Claude が「main lane の Claude に lint result を投げる」 シナリオ。
+sub lane で実装中の Claude が「lead lane の Claude に lint result を投げる」 シナリオ。
 
 ### macbook-a の vantage-point/sub/code-1 lane で
 
@@ -350,9 +350,9 @@ $ vp wire send --to agent@vantage-point/main --body "$(cat /tmp/clippy.txt)"
 
 > MCP 経由なら sub Claude は `wire_send` tool を直接呼ぶ (CLI 不要)。
 
-### 同 machine の vantage-point/main lane で
+### 同 machine の vantage-point/lead lane で
 
-- vp-app sidebar の Main row に 📨 icon 表示
+- vp-app sidebar の lead row に 📨 icon 表示
 - click → tooltip で「from agent@vantage-point/sub/code-1、 2 min ago、 lint result preview」
 - main Claude が `wire_recv` (MCP tool) で取得、 内容に応じて指示
 
@@ -379,7 +379,7 @@ end
 
 ### Q. v1 syntax は廃止される?
 
-A. **廃止しない**。 v1 `<actor><repo>` は v3.1 で default lane = `main`（予約名）に解釈、 forward-compat。 既存 dogfood / Ruby DSL / CLI を書き換える必要なし。
+A. **廃止しない**。 v1 `<actor><repo>` は v3.1 で default lane = `lead`（予約名）に解釈、 forward-compat。 既存 dogfood / Ruby DSL / CLI を書き換える必要なし。
 
 ### Q. actor 名を省略すると何になる?
 
@@ -387,7 +387,7 @@ A. **`agent`** (= reserved default)。 `vantage-point/main` = `agent@vantage-poi
 
 ### Q. lane 名と actor 名が衝突した場合は?
 
-A. 衝突しない設計。 actor は `@` の左、 lane は `/` の中。 構文上 disambiguous (`agent@vantage-point/main` の `main` は lane segment、 `agent` は actor)。 reserved actor 名 (`agent` / `notify` / `mcp` / `protocol` / `daemon` / `*`) は lane segment / repo name でも reject (= validate error)。
+A. 衝突しない設計。 actor は `@` の左、 lane は `/` の中。 構文上 disambiguous (`agent@vantage-point/lead` の `lead` は lane segment、 `agent` は actor)。 reserved actor 名 (`agent` / `notify` / `mcp` / `protocol` / `daemon` / `*`) は lane segment / repo name でも reject (= validate error)。
 
 ### Q. hub.chronista.club が落ちたら何が起きる?
 

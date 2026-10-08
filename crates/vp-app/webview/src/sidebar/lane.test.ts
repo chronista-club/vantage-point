@@ -16,7 +16,7 @@ import {
 function lane(over: Partial<LaneInfo> = {}): LaneInfo {
 	return {
 		id: "",
-		address: { repo: "vp", name: "main", key: "vp/lane/main" },
+		address: { repo: "vp", name: "lead", key: "vp/lane/lead" },
 		state: "running",
 		agent: "claude",
 		created_at: "2026-07-10T00:00:00Z",
@@ -97,8 +97,8 @@ describe("laneConnector (FSM 投影)", () => {
 	// ⚠️ 壊れ方を固定する: #1004 (root → main) で sidebar だけ独自定数 "root" を
 	// 持っていたため、daemon が main を発行した瞬間に全 main lane が Sub 誤判定された
 	// (2026-08-19 実機)。現行 main + 全旧世代の予約名が Main と判定されることを世代網羅で固定。
-	it("予約名は現行 main も旧世代 (root/conductor/lead) も Main = conn-root", () => {
-		for (const name of ["main", "root", "conductor", "lead"]) {
+	it("予約名は現行 lead も旧世代 (conductor/root/main) も lead = conn-root", () => {
+		for (const name of ["lead", "conductor", "root", "main"]) {
 			const l = lane({
 				address: { repo: "vp", name, key: `vp/lane/${name}` },
 			} as Partial<LaneInfo>);

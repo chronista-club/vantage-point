@@ -569,7 +569,7 @@ mod tests {
         for resume in [None, Some(thread)] {
             crate::lane::session_registry::set_conversation(
                 "vp-fish-test",
-                "main",
+                "lead",
                 "codex",
                 1,
                 resume,
@@ -737,7 +737,7 @@ mod tests {
         let addr = LaneAddress::root("vp");
         crate::lane::session_registry::create_root(
             "vp",
-            "main",
+            "lead",
             "claude",
             "claude",
             crate::lane::session_registry::SessionMode::Tui,
@@ -767,7 +767,7 @@ mod tests {
         // root(#1) = conversation に会話 id を持たせる（混入したら判るよう別 id）。
         crate::lane::session_registry::set_conversation(
             "vp",
-            "main",
+            "lead",
             "claude",
             1,
             Some("11111111-1111-1111-1111-111111111111"),
@@ -776,7 +776,7 @@ mod tests {
         // 同居人 #2 = codex（producer が採番するのと同じ形: Mode=Tui / 非 focus）。
         let key = crate::lane::session_registry::create(
             "vp",
-            "main",
+            "lead",
             "claude",
             "codex",
             crate::lane::session_registry::SessionMode::Tui,
@@ -785,7 +785,7 @@ mod tests {
         .expect("create #2");
         crate::lane::session_registry::set_conversation(
             "vp",
-            "main",
+            "lead",
             "claude",
             key,
             Some("01999999-9999-7999-8999-999999999999"),
@@ -868,7 +868,7 @@ mod tests {
         // root を #2（新品、record 無し）へ — tui ✨ New 直後の registry 状態。
         crate::lane::session_registry::create_root(
             "vp",
-            "main",
+            "lead",
             "claude",
             "claude",
             crate::lane::session_registry::SessionMode::Tui,
@@ -1165,7 +1165,7 @@ mod tests {
         // lane agent=conversation だが root(#2) を codex に向ける（picker の cross-engine 切替後の registry）。
         crate::lane::session_registry::create_root(
             "vp",
-            "main",
+            "lead",
             "claude",
             "codex",
             crate::lane::session_registry::SessionMode::Tui,
@@ -1188,7 +1188,7 @@ mod tests {
         // lane agent=conversation だが root(#2) を撤去済み "cursor" に向ける（disk に残る legacy 値の再現）。
         crate::lane::session_registry::create_root(
             "vp",
-            "main",
+            "lead",
             "claude",
             "cursor",
             crate::lane::session_registry::SessionMode::Tui,

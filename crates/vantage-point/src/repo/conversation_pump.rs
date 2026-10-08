@@ -458,7 +458,7 @@ mod tests {
         registry::set_conversation_in(
             tmp.path(),
             "test",
-            "main",
+            "lead",
             "claude",
             1,
             Some("response-test"),
@@ -471,15 +471,15 @@ mod tests {
             context_window: None,
         };
         assert!(
-            !persist_response_event(tmp.path(), "test/lane/main", 1, &event, 1000, true).unwrap()
+            !persist_response_event(tmp.path(), "test/lane/lead", 1, &event, 1000, true).unwrap()
         );
         assert!(
-            persist_response_event(tmp.path(), "test/lane/main", 1, &event, 1000, false).unwrap()
+            persist_response_event(tmp.path(), "test/lane/lead", 1, &event, 1000, false).unwrap()
         );
         assert!(
             !persist_response_event(
                 tmp.path(),
-                "test/lane/main",
+                "test/lane/lead",
                 1,
                 &ConversationEvent::MessageChunk {
                     text: "tool progress".into()
@@ -490,26 +490,26 @@ mod tests {
             .unwrap()
         );
         assert!(
-            !persist_response_event(tmp.path(), "test/lane/main", 2, &event, 3000, false).unwrap()
+            !persist_response_event(tmp.path(), "test/lane/lead", 2, &event, 3000, false).unwrap()
         );
         assert_eq!(
-            registry::load_in(tmp.path(), "test", "main", "claude").sessions[0].response_at(),
+            registry::load_in(tmp.path(), "test", "lead", "claude").sessions[0].response_at(),
             Some(1000)
         );
         registry::set_conversation_in(
             tmp.path(),
             "test",
-            "main",
+            "lead",
             "claude",
             1,
             Some("next-conversation"),
         )
         .unwrap();
         assert!(
-            !persist_response_event(tmp.path(), "test/lane/main", 1, &event, 4000, false).unwrap()
+            !persist_response_event(tmp.path(), "test/lane/lead", 1, &event, 4000, false).unwrap()
         );
         assert_eq!(
-            registry::load_in(tmp.path(), "test", "main", "claude").sessions[0].response_at(),
+            registry::load_in(tmp.path(), "test", "lead", "claude").sessions[0].response_at(),
             None
         );
     }

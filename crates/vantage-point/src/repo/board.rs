@@ -460,7 +460,7 @@ mod tests {
         handle_canvas_command(
             ctx,
             serde_json::json!({
-                "type": "show", "pane_id": "main",
+                "type": "show", "pane_id": "lead",
                 "content": { "markdown": "leaf" }, "append": false, "title": "t"
             }),
         )
@@ -515,7 +515,7 @@ mod tests {
         let state = build_test_app_state_with("/repos/vp", Some(db)).await;
 
         let show = serde_json::json!({
-            "type": "show", "pane_id": "main",
+            "type": "show", "pane_id": "lead",
             "content": { "markdown": "first" }, "append": false, "title": "t"
         });
         let res = dispatch_repo_method(&state, "show", show)
@@ -545,9 +545,9 @@ mod tests {
         let db = Arc::new(VpDb::connect_mem().await.unwrap());
         let state = build_test_app_state_with("/repos/vp", Some(db)).await;
 
-        // show で 1 件貼る（lane/scope 省略 = main lane / scope=lane）。
+        // show で 1 件貼る（lane/scope 省略 = lead lane / scope=lane）。
         let show = serde_json::json!({
-            "type": "show", "pane_id": "main",
+            "type": "show", "pane_id": "lead",
             "content": { "markdown": "original" }, "append": false, "title": "t"
         });
         dispatch_repo_method(&state, "show", show)
@@ -640,7 +640,7 @@ mod tests {
 
         let show = |body: &str| {
             serde_json::json!({
-                "type": "show", "pane_id": "main",
+                "type": "show", "pane_id": "lead",
                 "content": { "markdown": body }, "append": false, "title": body
             })
         };

@@ -497,7 +497,7 @@ mod tests {
             "旧形が残ってはならない（孤児化する）: {addrs:?}"
         );
         assert!(
-            addrs.contains(&"vp/lane/main"),
+            addrs.contains(&"vp/lane/lead"),
             "旧 2 分節 vp/root は canonical + 新予約名（main）へ寄る: {addrs:?}"
         );
     }

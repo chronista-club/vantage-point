@@ -23,7 +23,7 @@ use crate::commands::process_client::daemon_repo_request_blocking;
 use crate::config::Config;
 
 /// env（VP_REPO / VP_LANE）から lane address（Display 形）を導く。
-/// agent_spawner の注入と対の読み手（canonical は `<repo>/lane/<name>`、Main は `main`）。
+/// agent_spawner の注入と対の読み手（canonical は `<repo>/lane/<name>`、lead は `lead`）。
 fn lane_addr_from_env() -> Option<String> {
     let repo = std::env::var("VP_REPO").ok().filter(|s| !s.is_empty())?;
     let label = std::env::var("VP_LANE").ok().filter(|s| !s.is_empty())?;
@@ -34,7 +34,7 @@ fn lane_addr_from_env() -> Option<String> {
 /// 「今なにを」1 行を daemon へ送る（`session_now` method）。
 ///
 /// `lane` / `session` 省略時は env から導出。session が env にも無い場合は None のまま送り、
-/// daemon 側が Main（lane の代表）に読み替える。
+/// daemon 側が lead（lane の代表）に読み替える。
 pub fn report(
     text: &str,
     lane_override: Option<&str>,
