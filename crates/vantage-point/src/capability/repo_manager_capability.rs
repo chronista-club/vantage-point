@@ -2703,14 +2703,14 @@ mod tests {
 
         // 本物の開発起点 descriptor を db に置く（= 破壊対象）。
         let main = crate::repo::lane::LanePool::with_root("reserved", repo_path.clone());
-        let main_info = main.list().into_iter().next().expect("root descriptor");
-        db.upsert_lane(&key, &main_info).await.unwrap();
-        let addr_str = main_info.address.to_string();
-        assert_eq!(addr_str, "reserved/lane/main");
+        let lead_info = main.list().into_iter().next().expect("root descriptor");
+        db.upsert_lane(&key, &lead_info).await.unwrap();
+        let addr_str = lead_info.address.to_string();
+        assert_eq!(addr_str, "reserved/lane/lead");
 
         // dup check の masking は効かない状況（lane_registry は空）。
         let err = cap
-            .create_lane(&repo_path, "main", "test/x", "claude")
+            .create_lane(&repo_path, "lead", "test/x", "claude")
             .await
             .expect_err("予約名は Err");
         assert!(

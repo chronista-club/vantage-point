@@ -435,7 +435,7 @@ mod tests {
         let addr = insert_test_lane(&state, "history-failure", SessionMode::Tui).await;
         let key = session_registry::create(
             &addr.repo,
-            "main",
+            "lead",
             "claude",
             "codex",
             SessionMode::Gui,
@@ -450,7 +450,7 @@ mod tests {
             .unwrap();
         let (_, mut events) = state
             .topic_router
-            .subscribe("repo/conversation/data/history-failure~lane~main/event")
+            .subscribe("repo/conversation/data/history-failure~lane~lead/event")
             .await;
         assert!(
             super::replay_once(&state, &addr, &addr.to_string(), &resolved, None)
@@ -550,7 +550,7 @@ mod tests {
             .expect("create Grok session");
         assert_eq!(k2, 2);
 
-        // #2 の replay 源に会話を仕込む（session label = "main#2"）。
+        // #2 の replay 源に会話を仕込む（session label = "lead#2"）。
         for ev in [
             ConversationEvent::MessageChunk {
                 text: "Grok says hi".to_string(),
@@ -562,18 +562,18 @@ mod tests {
                 context_window: None,
             },
         ] {
-            crate::conversation::replay_log::append("vptest-replaylog", "main#2", &ev)
+            crate::conversation::replay_log::append("vptest-replaylog", "lead#2", &ev)
                 .expect("replay log append");
         }
 
         // conversation topic を購読（非 retained なので dispatch 前に張る）。
-        let topic = "repo/conversation/data/vptest-replaylog~main/event";
+        let topic = "repo/conversation/data/vptest-replaylog~lead/event";
         let (_id, mut srx) = state.topic_router.subscribe(topic).await;
 
         let res = dispatch_repo_method(
             &state,
             "conversation_demand_start",
-            serde_json::json!({ "lane": "vptest-replaylog/main" }),
+            serde_json::json!({ "lane": "vptest-replaylog/lead" }),
         )
         .await
         .expect("demand_start");
@@ -632,15 +632,15 @@ mod tests {
         assert_eq!(k2, 2);
 
         // 進行中 flight を模擬（handler と同じ key = lane display 形 + session key）。
-        assert!(state.replay_flights.begin("vptest-coalesce/main", 2));
+        assert!(state.replay_flights.begin("vptest-coalesce/lead", 2));
 
-        let topic = "repo/conversation/data/vptest-coalesce~main/event";
+        let topic = "repo/conversation/data/vptest-coalesce~lead/event";
         let (_id, mut srx) = state.topic_router.subscribe(topic).await;
 
         let res = dispatch_repo_method(
             &state,
             "conversation_demand_start",
-            serde_json::json!({ "lane": "vptest-coalesce/main" }),
+            serde_json::json!({ "lane": "vptest-coalesce/lead" }),
         )
         .await
         .expect("demand_start");
@@ -652,16 +652,16 @@ mod tests {
             "coalesced の demand は event を 1 つも route しない"
         );
         assert!(
-            state.replay_flights.finish("vptest-coalesce/main", 2),
+            state.replay_flights.finish("vptest-coalesce/lead", 2),
             "合流は rerun 予約として残る（flight 完了側が直列に消化する契約）"
         );
-        assert!(!state.replay_flights.finish("vptest-coalesce/main", 2));
+        assert!(!state.replay_flights.finish("vptest-coalesce/lead", 2));
 
         // flight 終了後の demand は通常配送に戻る（begin → replay → finish で entry が残らない）。
         let res = dispatch_repo_method(
             &state,
             "conversation_demand_start",
-            serde_json::json!({ "lane": "vptest-coalesce/main" }),
+            serde_json::json!({ "lane": "vptest-coalesce/lead" }),
         )
         .await
         .expect("demand_start after flight");
@@ -669,7 +669,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "conversation_demand_start",
-            serde_json::json!({ "lane": "vptest-coalesce/main" }),
+            serde_json::json!({ "lane": "vptest-coalesce/lead" }),
         )
         .await
         .expect("demand_start twice");
@@ -722,20 +722,20 @@ mod tests {
         ] {
             crate::conversation::replay_log::append(
                 "vptest-nonroot-chat",
-                &format!("main#{k2}"),
+                &format!("lead#{k2}"),
                 &ev,
             )
             .expect("replay log append");
         }
 
-        let topic = "repo/conversation/data/vptest-nonroot-chat~main/event";
+        let topic = "repo/conversation/data/vptest-nonroot-chat~lead/event";
         let (_id, mut srx) = state.topic_router.subscribe(topic).await;
 
         // session を明示して demand（client の mode 切替後の明示 demand と同じ形）。
         let res = dispatch_repo_method(
             &state,
             "conversation_demand_start",
-            serde_json::json!({ "lane": "vptest-nonroot-chat/main", "session": k2 }),
+            serde_json::json!({ "lane": "vptest-nonroot-chat/lead", "session": k2 }),
         )
         .await
         .expect("demand_start");

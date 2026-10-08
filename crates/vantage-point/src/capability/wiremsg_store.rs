@@ -114,10 +114,10 @@ impl WireMessage {
     /// 新規 thread の root message を構築 (`prev = None`)
     ///
     /// `local_seq` は 0 で構築し、 [`WiremsgStore::insert_message`] が INSERT 時に採番する。
-    /// main lane の alias 綴りを bare 形へ畳む（調査 = creo mem_1CeXGzBGyzaPXAjTUwZpBK）。
+    /// lead lane の alias 綴りを bare 形へ畳む（調査 = creo mem_1CeXGzBGyzaPXAjTUwZpBK）。
     ///
-    /// `agent@<repo>/main`（+ 旧世代の予約名 `root` / `conductor`）→ `agent@<repo>`。
-    /// 予約名は 2 度改名されており（`conductor` → `root` → `main`）、3 世代とも
+    /// `agent@<repo>/lead`（+ 旧世代の予約名 `main` / `root` / `conductor`）→ `agent@<repo>`。
+    /// 予約名は 3 度改名されており（`conductor` → `root` → `main` → `lead`）、4 世代とも
     /// sub lane 名として **作成禁止**（`validate_sub_name`）— つまりこの suffix は実 sub を
     /// 指し得ないので、無条件に畳んで安全。実 sub（例 `/sampler`）は不変。
     ///
@@ -133,13 +133,16 @@ impl WireMessage {
     /// envelope を素通ししていた。生文字列一致の照合と組み合わさって「ack しても
     /// 再掲示が止まらない」（2026-09-02 creo-ui session、24h で数十回）を起こした。
     pub(crate) fn normalize_wire_addr(addr: &str) -> String {
-        // 現行 = ROOT_LANE_NAME ("main")。旧 2 世代も畳む — 古い doc 例や他 node の
-        // 旧 binary から届く綴りを弾かないため（federation は version 混在が常態）。
-        const MAIN_ALIASES: [&str; 3] = [vp_paths::ROOT_LANE_NAME, "root", "conductor"];
+        // 現行 = ROOT_LANE_NAME ("lead")。旧世代（LEGACY_ROOT_LANE_NAMES = conductor / root / main）
+        // も畳む — 古い doc 例や他 node の旧 binary から届く綴りを弾かないため（federation は
+        // version 混在が常態）。⚠️ 手書きの一覧にしない — #1191 の rename で `main` が漏れた。
+        fn is_lead_alias(lane: &str) -> bool {
+            lane == vp_paths::ROOT_LANE_NAME || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&lane)
+        }
         if let Some((base, lane)) = addr.rsplit_once('/') {
             // `@` を含む base だけが `agent@<repo>` 形。含まない場合（bare "agent" や
             // 形式外）は wire address ではないので触らない（fail-safe）。
-            if base.contains('@') && MAIN_ALIASES.contains(&lane) {
+            if base.contains('@') && is_lead_alias(lane) {
                 return base.to_string();
             }
         }
@@ -147,7 +150,7 @@ impl WireMessage {
     }
 
     pub fn new_root(from: impl Into<String>, to: Vec<String>, body: serde_json::Value) -> Self {
-        // alias 畳み後に同一 agent が 2 回並びうる（["agent@x", "agent@x/main"]）ので
+        // alias 畳み後に同一 agent が 2 回並びうる（["agent@x", "agent@x/lead"]）ので
         // 順序保持で dedup する（to の順序は表示に使われる）。
         let from = Self::normalize_wire_addr(&from.into());
         let mut seen = std::collections::HashSet::new();
@@ -2113,14 +2116,14 @@ mod tests {
         let cmd = store
             .send_root(
                 "agent@vp",
-                &["agent@vpcode/main".to_string(), "agent@vp/gone".to_string()],
+                &["agent@vpcode/lead".to_string(), "agent@vp/gone".to_string()],
                 serde_json::json!({"category": "command", "text": "設計これで進めます"}),
             )
             .await
             .expect("command send");
 
         // 生きている側は ack した。消える側は ack できないまま。
-        store.ack(&cmd.id, "agent@vpcode/main").await.expect("ack");
+        store.ack(&cmd.id, "agent@vpcode/lead").await.expect("ack");
         let pending = store.unacked_commands().await.expect("unacked");
         assert_eq!(
             pending[0].1,
@@ -2207,12 +2210,13 @@ mod tests {
         );
     }
 
-    /// 正規化の境界を固定する。⚠️ 予約名 3 世代（conductor → root → main）は
+    /// 正規化の境界を固定する。⚠️ 予約名の全世代（conductor → root → main → lead）は
     /// `validate_sub_name` が作成禁止にしているから畳める — 予約を外すならここも見直すこと。
     #[test]
     fn normalize_wire_addr_folds_only_reserved_aliases() {
         let n = WireMessage::normalize_wire_addr;
-        // 3 世代の alias は bare へ
+        // 現行 + 旧 3 世代の alias は bare へ
+        assert_eq!(n("agent@creo-ui/lead"), "agent@creo-ui");
         assert_eq!(n("agent@creo-ui/main"), "agent@creo-ui");
         assert_eq!(n("agent@nexus/root"), "agent@nexus");
         assert_eq!(n("agent@vp/conductor"), "agent@vp");
@@ -2221,7 +2225,7 @@ mod tests {
         // bare / 形式外は不変（fail-safe — `@` の無いものは wire address ではない）
         assert_eq!(n("agent@vp"), "agent@vp");
         assert_eq!(n("agent"), "agent");
-        assert_eq!(n("foo/main"), "foo/main");
+        assert_eq!(n("foo/lead"), "foo/lead");
     }
 
     /// ⚠️ 実バグ再現（2026-09-02、creo-ui session の再掲示ループ / mem_1CeXGzBGyzaPXAjTUwZpBK）:
@@ -2273,7 +2277,7 @@ mod tests {
             .send_root(
                 "agent@vp",
                 // 送信相手 bare + 返信者の alias（federation 経由で混入した形を再現）
-                &["agent@nexus/main".to_string()],
+                &["agent@nexus/lead".to_string()],
                 serde_json::json!({"category": "command", "text": "task"}),
             )
             .await
@@ -2288,7 +2292,7 @@ mod tests {
             .await
             .expect("reply");
         assert!(
-            !reply.to.contains(&"agent@nexus/main".to_string())
+            !reply.to.contains(&"agent@nexus/lead".to_string())
                 && !reply.to.contains(&"agent@nexus".to_string()),
             "送信者は alias 綴りでも to に残らない: {:?}",
             reply.to

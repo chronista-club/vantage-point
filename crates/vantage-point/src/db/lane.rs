@@ -343,11 +343,11 @@ mod tests {
         };
 
         // 2 repo に lane を入れる
-        db.upsert_lane("/repos/vp", &mk("vp", "main"))
+        db.upsert_lane("/repos/vp", &mk("vp", "lead"))
             .await
             .unwrap();
         db.upsert_lane("/repos/vp", &mk("vp", "foo")).await.unwrap();
-        db.upsert_lane("/repos/nexus", &mk("nexus", "main"))
+        db.upsert_lane("/repos/nexus", &mk("nexus", "lead"))
             .await
             .unwrap();
 
@@ -359,11 +359,11 @@ mod tests {
             .iter()
             .find(|(p, l)| p == "/repos/vp" && l.address.is_root())
             .expect("vp root が読める");
-        assert_eq!(vp_main.1.address.to_string(), "vp/lane/main");
+        assert_eq!(vp_main.1.address.to_string(), "vp/lane/lead");
         assert_eq!(vp_main.1.agent, "claude");
 
         // 同 address の upsert は置換 (複合 UNIQUE、 件数は増えない)
-        db.upsert_lane("/repos/vp", &mk("vp", "main"))
+        db.upsert_lane("/repos/vp", &mk("vp", "lead"))
             .await
             .unwrap();
         assert_eq!(

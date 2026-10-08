@@ -144,7 +144,7 @@ pub(super) fn ink_snapshot(
         .active_lane_address
         .as_deref()
         .map(crate::webview::ink_snapshot::lane_key_from_address)
-        .unwrap_or_else(|| "main".to_string());
+        .unwrap_or_else(|| vp_paths::ROOT_LANE_NAME.to_string());
     match crate::webview::ink_snapshot::snapshot_path(&lane_key) {
         Ok(out_path) => {
             let ready_proxy = proxy.clone();

@@ -581,7 +581,7 @@ mod tests {
     async fn test_board_state_main_and_sub_independent() {
         let db = make_test_db().await;
 
-        let main_stack = serde_json::json!({
+        let lead_stack = serde_json::json!({
             "items": [{"id":"i1","content":"# root\n","contentType":"markdown","createdAt":"2026-05-28T00:00:00Z"}],
             "cursor": "i1",
             "capacity": 10
@@ -601,7 +601,7 @@ mod tests {
             "markdown",
             "# root\n",
             None,
-            Some(&main_stack),
+            Some(&lead_stack),
             Some(&ui),
         )
         .await

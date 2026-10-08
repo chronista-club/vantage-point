@@ -102,10 +102,10 @@ impl TopicRouter {
         }
     }
 
-    /// lane segment の正規化: `None` = Main lane（予約名 `root`）。
+    /// lane segment の正規化: `None` / 旧世代の予約名 = lead lane（予約名 `lead`）。
     /// per-lane board topic の lane 部に使う。
     fn lane_seg(lane: &Option<String>) -> &str {
-        lane.as_deref().unwrap_or(crate::repo::lane::ROOT_LANE_NAME)
+        vp_paths::canonical_lane_name(lane.as_deref().unwrap_or(""))
     }
 
     /// lane address（`vp/sub/foo` 等、 `/` を含む）を topic segment 安全な 1 token に
@@ -127,7 +127,7 @@ impl TopicRouter {
             // lane segment を verb の後に挿入: `.../command/{verb}/{lane}/{pane_id}`。
             // category(seg2)=command は不変なので is_retained は維持され、retained store は
             // lane 別に分離される（root/main と sub-foo/main が別 topic）。
-            // lane=None は Main lane（予約名 `root`）に正規化。
+            // lane=None / 旧世代の予約名は lead lane（予約名 `lead`）に正規化。
             RepoMessage::Show { pane_id, lane, .. } => {
                 format!(
                     "repo/board/command/show/{}/{}",
@@ -493,24 +493,24 @@ mod tests {
     #[test]
     fn test_message_to_topic_show() {
         // lane=None は main に正規化され lane segment に入る
-        let msg = make_show("main", "# Hello");
+        let msg = make_show("lead", "# Hello");
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "repo/board/command/show/main/main");
+        assert_eq!(topic, "repo/board/command/show/lead/lead");
     }
 
     #[test]
     fn test_message_to_topic_show_sub_lane() {
         // sub lane は lane segment にその名が入り、main と別 topic になる
-        let msg = make_show_lane("main", "# Hi", "feat-api");
+        let msg = make_show_lane("lead", "# Hi", "feat-api");
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "repo/board/command/show/feat-api/main");
+        assert_eq!(topic, "repo/board/command/show/feat-api/lead");
     }
 
     #[test]
     fn test_per_lane_topic_separation() {
         // 同 pane_id でも lane が違えば別 topic（retained 後勝ち上書きが起きない）
-        let main = TopicRouter::message_to_topic(&make_show("main", "a"));
-        let sub = TopicRouter::message_to_topic(&make_show_lane("main", "b", "feat-api"));
+        let main = TopicRouter::message_to_topic(&make_show("lead", "a"));
+        let sub = TopicRouter::message_to_topic(&make_show_lane("lead", "b", "feat-api"));
         assert_ne!(main, sub);
         // category(seg2)=command は不変 → 両方 retained 対象
         assert!(TopicPath::parse(&main).is_retained());
@@ -525,7 +525,7 @@ mod tests {
             scope: None,
         };
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "repo/board/command/clear/main/side");
+        assert_eq!(topic, "repo/board/command/clear/lead/side");
     }
 
     #[test]
@@ -675,11 +675,11 @@ mod tests {
         let router = TopicRouter::new();
 
         // command カテゴリも retained
-        let show = make_show("main", "# Hello");
+        let show = make_show("lead", "# Hello");
         router.route(show).await;
 
         let retained = router.retained.read().await;
-        let msg = retained.get("repo/board/command/show/main/main");
+        let msg = retained.get("repo/board/command/show/lead/lead");
         assert!(msg.is_some());
     }
 
@@ -708,7 +708,7 @@ mod tests {
 
         // 先に retained に保存
         router.route(RepoMessage::TerminalReady).await;
-        router.route(make_show("main", "# Test")).await;
+        router.route(make_show("lead", "# Test")).await;
 
         // state を subscribe → retained から初期配信される
         let (_id, mut rx) = router.subscribe("repo/terminal/state/#").await;

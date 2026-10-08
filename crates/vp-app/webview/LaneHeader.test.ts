@@ -45,14 +45,14 @@ describe('middleEllipsis — 長い path を頭残し末尾厚めで中略', () 
 })
 
 describe('laneShortName — address から表示短名', () => {
-  it('main', () => {
-    expect(laneShortName('vantage-point/root')).toBe('main')
+  it('lead', () => {
+    expect(laneShortName('vantage-point/root')).toBe('lead')
   })
   it('sub は name 部分', () => {
     expect(laneShortName('vantage-point/sub/lane-header')).toBe('lane-header')
   })
   it('legacy lead / wing も受理', () => {
-    expect(laneShortName('vp/lead')).toBe('main')
+    expect(laneShortName('vp/lead')).toBe('lead')
     expect(laneShortName('vp/wing/foo')).toBe('foo')
   })
 })

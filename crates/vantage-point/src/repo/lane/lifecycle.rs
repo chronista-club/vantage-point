@@ -836,9 +836,9 @@ pub struct DeletedLaneInfo {
 /// HTTP handler はこれを 4xx ステータスに mapping。 MCP / CLI も同じ enum を消費。
 #[derive(Debug, thiserror::Error)]
 pub enum DeleteLaneError {
-    /// architecture rule: Main Lane は repo lifetime 紐付きのため削除不可。
-    #[error("Main Lane is fixed per repo and cannot be deleted (use repo shutdown instead)")]
-    MainCannotBeDeleted,
+    /// architecture rule: lead lane は repo lifetime 紐付きのため削除不可。
+    #[error("lead lane is fixed per repo and cannot be deleted (use repo shutdown instead)")]
+    LeadCannotBeDeleted,
     /// LanePool に該当 address の entry なし (idempotent re-call で発生)。
     #[error("Lane not found: {0}")]
     LaneNotFound(LaneAddress),
@@ -852,7 +852,7 @@ pub enum DeleteLaneError {
 ///
 /// ## 動作
 ///
-/// 1. **architecture rule check**: Main は削除拒否 (`DeleteLaneError::MainCannotBeDeleted`)
+/// 1. **architecture rule check**: Main は削除拒否 (`DeleteLaneError::LeadCannotBeDeleted`)
 /// 2. **Phase 1 (in-memory authoritative mutation)**: `LanePool::remove` で LaneInfo + PtySlot を
 ///    drop (PtySlot::Drop で child kill + wait)
 /// 3. **Phase 2a (state file GC)**: `console_mode::clear` + `session_registry::clear` で lane 単位
@@ -877,7 +877,7 @@ pub async fn delete_lane_orchestrated(
 ) -> Result<DeletedLaneInfo, DeleteLaneError> {
     // architecture rule: 開発起点 lane は repo lifetime 紐付きのため削除不可
     if addr.is_root() {
-        return Err(DeleteLaneError::MainCannotBeDeleted);
+        return Err(DeleteLaneError::LeadCannotBeDeleted);
     }
 
     // Phase 1: in-memory authoritative state mutation。
@@ -1227,9 +1227,9 @@ mod core_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// doc 44 P2: 開発起点の予約名 `main` では lane を作れない。
+    /// doc 44 P2: 開発起点の予約名 `lead` では lane を作れない。
     ///
-    /// 旧 `kind != "sub"` ガードの後継。明示的に弾かないと既存 main lane との
+    /// 旧 `kind != "sub"` ガードの後継。明示的に弾かないと既存 lead lane との
     /// address 重複として「already exists」で拒否され、理由がミスリードになる
     /// （結果は安全なので "たまたま安全" に頼らないための固定）。
     ///
@@ -1238,10 +1238,10 @@ mod core_tests {
     #[tokio::test]
     async fn create_rejects_reserved_main_name() {
         let state = crate::repo::state::build_test_app_state().await;
-        // ⚠️ 現行予約名（main）に加え**旧世代（root / conductor）も拒否**。旧名で Sub を
+        // ⚠️ 現行予約名（lead）に加え**旧世代（main / root / conductor）も拒否**。旧名で Sub を
         // 作れると `<repo>__root` 等の旧 state と衝突する（migration は衝突時に触らない
         // ため、その lane の会話が永久に取り残される — validate_sub_name の doc 参照）。
-        for reserved in ["main", "root", "conductor"] {
+        for reserved in ["lead", "main", "root", "conductor"] {
             let err = create_sub_orchestrated(&state, req(reserved))
                 .await
                 .expect_err("予約名は Err");
@@ -1574,12 +1574,12 @@ mod core_tests {
         let cmd = store
             .send_root(
                 "agent@vp-wire-leave",
-                &["agent@vpcode/main".to_string(), doomed.clone()],
+                &["agent@vpcode/lead".to_string(), doomed.clone()],
                 serde_json::json!({"category": "command", "text": "設計これで進めます"}),
             )
             .await
             .expect("command send");
-        store.ack(&cmd.id, "agent@vpcode/main").await.expect("ack");
+        store.ack(&cmd.id, "agent@vpcode/lead").await.expect("ack");
 
         // ② 無関係な未 ack command（離脱が薙ぎ払わないことの対照）。
         let other = store

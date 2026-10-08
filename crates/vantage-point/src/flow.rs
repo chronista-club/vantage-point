@@ -2,7 +2,7 @@
 //!
 //! ## 6-state FSM (= control surrender model、 2026-05-28 main 説示 + 2026-07-11 awaiting_user)
 //!
-//! Main × Sub の interaction 状態を **sub 単体の current FSM state** として derive する。
+//! lead × sub の interaction 状態を **sub 単体の current FSM state** として derive する。
 //! data sources:
 //! - 最新 wire activity (= `latest_msg_for_agent(sub_addr)`) の direction (main↔sub) と
 //!   `body.kind` (= task / question / ack / decision / approve / modify / clarify / complete / request)
@@ -97,7 +97,7 @@ pub enum MsgDirection {
     /// sub → main
     FromSub,
     /// main → sub (= sub が `to_addrs` 含む or sender が sub でない)
-    FromMain,
+    FromLead,
 }
 
 /// latest_msg の最低限 metadata (= derive に必要な部分のみ)
@@ -134,7 +134,7 @@ impl LatestMsgView {
         if self.from_addr == sub_addr {
             MsgDirection::FromSub
         } else {
-            MsgDirection::FromMain
+            MsgDirection::FromLead
         }
     }
 }
@@ -224,12 +224,12 @@ pub fn derive_flow_state(
             (FlowState::Completed, "sub reported complete".to_string())
         }
         // main → sub の task = 作業中 (= 初手 handoff、 まだ sub 着手)
-        (MsgDirection::FromMain, "task", _, _) => (
+        (MsgDirection::FromLead, "task", _, _) => (
             FlowState::Working,
             "root sent task, sub not yet replied".to_string(),
         ),
         // main → sub 指示後 dirty 残り commit 無し = 行き詰まり
-        (MsgDirection::FromMain, _, true, false) => (
+        (MsgDirection::FromLead, _, true, false) => (
             FlowState::Stuck,
             format!(
                 "root {} but sub has dirty changes and no commit",
@@ -242,7 +242,7 @@ pub fn derive_flow_state(
             format!("sub posted {kind}, working autonomously"),
         ),
         // main → sub の approve / modify / clarify = 作業継続指示
-        (MsgDirection::FromMain, "approve" | "modify" | "clarify", _, _) => (
+        (MsgDirection::FromLead, "approve" | "modify" | "clarify", _, _) => (
             FlowState::Working,
             format!("root replied {kind}, sub resumes"),
         ),
@@ -274,7 +274,7 @@ pub fn derive_flow_state(
 mod tests {
     use super::*;
 
-    fn main_msg(kind: &str) -> LatestMsgView {
+    fn lead_msg(kind: &str) -> LatestMsgView {
         LatestMsgView {
             from_addr: "agent@vp".to_string(),
             body_kind: Some(kind.to_string()),
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn working_when_main_task_only() {
-        let m = main_msg("task");
+        let m = lead_msg("task");
         let d = derive_flow_state(Some(&m), SubStatusView::default(), SUB_ADDR, None);
         assert_eq!(d.state, FlowState::Working);
         // main → sub 指示直後 = control はまだ sub に渡っていない (= reply 必要)
@@ -331,7 +331,7 @@ mod tests {
 
     #[test]
     fn stuck_when_main_msg_then_dirty_no_commit() {
-        let m = main_msg("modify");
+        let m = lead_msg("modify");
         let s = SubStatusView {
             dirty: true,
             has_commit: false,
@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn working_when_main_approve_or_modify_or_clarify() {
         for k in ["approve", "modify", "clarify"] {
-            let m = main_msg(k);
+            let m = lead_msg(k);
             // dirty=false なので Stuck path を踏まない
             let d = derive_flow_state(Some(&m), SubStatusView::default(), SUB_ADDR, None);
             assert_eq!(d.state, FlowState::Working, "kind={k}");

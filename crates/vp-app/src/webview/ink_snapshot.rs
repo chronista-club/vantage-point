@@ -45,7 +45,7 @@ fn ink_root() -> PathBuf {
     vp_paths::vp_state_dir().join("ink")
 }
 
-/// lane address → 保存 dir 用の flat key。root/lead → `main` / それ以外 → lane 名。
+/// lane address → 保存 dir 用の flat key。旧予約名（conductor/root/main）/ 空 → 現予約名 `lead` / それ以外 → lane 名。
 ///
 /// ⚠️ **最後の分節が lane 名**（`<repo>/lane/<name>` / 旧 `<repo>/sub/<name>` /
 /// 旧 `<repo>/<name>` のいずれでも成り立つ）。旧実装は `/sub/` `/wing/` を**探して**おり、
@@ -53,10 +53,13 @@ fn ink_root() -> PathBuf {
 /// snapshot を上書きし合う状態になっていた。`ends_with("/root")` は偶然通るので、
 /// **root だけ動いて sub が壊れる**という気づきにくい形だった。
 ///
-/// snapshot を lane ごとに分けるためだけの folder 名なので、取れない形は `main` に倒す。
+/// snapshot を lane ごとに分けるためだけの folder 名なので、取れない形は予約名（lead）に倒す。
 pub fn lane_key_from_address(addr: &str) -> String {
     match addr.rsplit('/').next() {
-        Some("root" | "lead" | "") | None => "main".to_string(),
+        Some("") | None => vp_paths::ROOT_LANE_NAME.to_string(),
+        Some(name) if vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&name) => {
+            vp_paths::ROOT_LANE_NAME.to_string()
+        }
         Some(name) => name.to_string(),
     }
 }
@@ -74,7 +77,7 @@ fn sanitize(s: &str) -> String {
         })
         .collect();
     if cleaned.is_empty() {
-        "main".to_string()
+        vp_paths::ROOT_LANE_NAME.to_string()
     } else {
         cleaned
     }
@@ -229,22 +232,23 @@ mod tests {
     #[test]
     fn lane_key_takes_last_segment_in_every_form() {
         // canonical
-        assert_eq!(lane_key_from_address("vp/lane/root"), "main");
+        assert_eq!(lane_key_from_address("vp/lane/lead"), "lead");
+        assert_eq!(lane_key_from_address("vp/lane/root"), "lead");
         assert_eq!(lane_key_from_address("vp/lane/foo"), "foo");
         // 旧 3 分節
         assert_eq!(lane_key_from_address("vp/sub/foo"), "foo");
         assert_eq!(lane_key_from_address("vp/wing/foo"), "foo");
         // 旧 2 分節
-        assert_eq!(lane_key_from_address("vp/root"), "main");
+        assert_eq!(lane_key_from_address("vp/root"), "lead");
+        assert_eq!(lane_key_from_address("vp/lead"), "lead");
         assert_eq!(lane_key_from_address("vp/foo"), "foo");
         // 旧予約名
-        assert_eq!(lane_key_from_address("vp/lead"), "main");
     }
 
     /// 取れない形は `main` に倒す（folder 名なので落とさない）。
     #[test]
     fn lane_key_falls_back_to_main() {
-        assert_eq!(lane_key_from_address(""), "main");
-        assert_eq!(lane_key_from_address("vp/"), "main");
+        assert_eq!(lane_key_from_address(""), "lead");
+        assert_eq!(lane_key_from_address("vp/"), "lead");
     }
 }

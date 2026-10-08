@@ -155,9 +155,9 @@ mod tests {
             ts: 1,
             payload: serde_json::json!({ "future_field": true }),
         };
-        append_in(tmp.path(), "vp", "main", &odd).expect("a");
-        assert!(load_messages_in(tmp.path(), "vp", "main").is_empty());
-        clear_in(tmp.path(), "vp", "main").expect("clear");
-        clear_in(tmp.path(), "vp", "main").expect("clear 冪等");
+        append_in(tmp.path(), "vp", "lead", &odd).expect("a");
+        assert!(load_messages_in(tmp.path(), "vp", "lead").is_empty());
+        clear_in(tmp.path(), "vp", "lead").expect("clear");
+        clear_in(tmp.path(), "vp", "lead").expect("clear 冪等");
     }
 }

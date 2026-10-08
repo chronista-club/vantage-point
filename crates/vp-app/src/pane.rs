@@ -9,7 +9,7 @@
 //! ## sidebar 描画
 //!
 //! - Repo (= Runtime Process) accordion: `RepoPaneState`
-//! - Lane (= Session Process / Main/Sub): `SidebarState.lanes_by_repo` (repo fetch 結果)
+//! - Lane (= Session Process / lead/sub): `SidebarState.lanes_by_repo` (repo fetch 結果)
 //! - Agent (= Agent process / Conversation/Shell/...): Lane の中身として並列 row
 //!
 //! つまり Pane は廃止、 階層は **Repo → Lane → Agent** に統一。

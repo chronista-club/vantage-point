@@ -222,7 +222,7 @@ pub(crate) async fn start_repo(
         )),
         topic_router,
         vpdb: vpdb.clone(),
-        // Phase A4-2b: Lane scope の Agent pool — Main Lane 1 つ pre-populate
+        // Phase A4-2b: Lane scope の Agent pool — lead lane 1 つ pre-populate
         // memory rule: 多 scope architecture (App/Repo/Lane/Pane)、HD/TH は Lane scope。
         // Sub Lane の動的 create は A4-4、Agent spawn 連動は A5 で実装。
         //
@@ -343,7 +343,7 @@ pub(crate) async fn start_repo(
             );
         }
 
-        // doc 53 §12: **main lane の実体はここで立つ**（`with_root` は登録だけ）。
+        // doc 53 §12: **lead lane の実体はここで立つ**（`with_root` は登録だけ）。
         //
         // reconcile が registry に従って mode=Tui の全 session に slot を立て、末尾で pump も
         // 合わせる（R2）。旧実装は ①`with_root` が root を spawn ②`restore_term_slots` が
@@ -356,12 +356,12 @@ pub(crate) async fn start_repo(
         //
         // address の repo 名は with_root と同じ解決済の名（`state.repo_name`）を使う —
         // `subs_repo_id`（dir 名）は登録名と異なり得る。
-        let main_addr = super::lane::LaneAddress::root(&state.repo_name);
+        let lead_addr = super::lane::LaneAddress::root(&state.repo_name);
         super::lane::reconcile::reconcile_lane(
             &state.lane_pool,
             &state.terminal_pumps,
             &state.topic_router,
-            &main_addr,
+            &lead_addr,
         )
         .await;
     }
@@ -396,7 +396,7 @@ pub(crate) async fn start_repo(
         // 「別の供給点が publish した直後は起こさない」等の取りこぼしが出る）。
         let mut notifier = LaneChangeNotifier::new(lane_change_tx);
         // 起動直後の現 snapshot を 1 度 publish して retained を seed する
-        // （Main Lane は既に pre-populate 済）。
+        // （lead lane は既に pre-populate 済）。
         // repo-local lane refactor PR 1: build_lanes_snapshot で disk-scan Inactive Sub
         // も含める (= HTTP /api/lanes と同一 logic、 sidebar QUIC 経路でも Inactive 表示)。
         publish_lanes(
@@ -1004,6 +1004,10 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // 上のまま動かしていない）。daemon 役の `RepoState` は 9-2 PR-3 で構築ごと消えた —
     // daemon の state は `DaemonState` の 1 本。
     let app = build_daemon_router(daemon_state.clone());
+    // ⚠️ disk state の整え（旧 DB 回収 + 予約 lane 名 migration）は **repo を起動する前に同期で**。
+    // `start_daemon_server` の中に置くと spawn で別タスクになり、下の `autostart_enabled_repos`
+    // と並走して先に起動した repo の会話 id を置き去りにする（2026-10-09 実機で 1 件）。
+    crate::daemon::server::prepare_state_dir_on_boot();
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
         daemon_state,
         port,

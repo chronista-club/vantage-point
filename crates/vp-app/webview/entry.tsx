@@ -209,7 +209,7 @@ let laneHeader: LaneHeaderApi | null = null;
 
 /**
  * lane address（daemon 発行の canonical `<repo>/lane/<name>`）を board-handler が使う
- * flat lane_name に翻訳する。`null` = Main lane、`string` = Sub 名。
+ * flat lane_name に翻訳する。`null` = lead lane、`string` = Sub 名。
  *
  * 語彙は Main/Sub（識別子の予約名は `root`）。永続 state に旧世代の address が残るため
  * legacy 形も受理する（受理の実体は lane-address.ts）:

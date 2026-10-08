@@ -295,7 +295,7 @@ pub async fn process_run_eval(
         content: crate::protocol::Content::Html(display),
         append: false,
         title: Some(params.command.clone()),
-        // process runner 出力は Main lane の Canvas 向け
+        // process runner 出力は lead lane の Canvas 向け
         lane: None,
         scope: None,
     });

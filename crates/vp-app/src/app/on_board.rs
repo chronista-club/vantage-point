@@ -92,15 +92,15 @@ pub(super) fn canvas_message(
     //
     // ⚠️ scope=="lane" のみ buffer する（消費側 board-handler.ts `applyBoardUpdated` の
     //   `if (msg.scope !== 'lane') return` と対称にする）。退役済み scope="proj" の孤児行も
-    //   seed_boards が無条件 broadcast し、board_key() で proj も main lane も
-    //   broadcast_lane=None → lane_key="main" に衝突する。scope guard が無いと、行順
+    //   seed_boards が無条件 broadcast し、board_key() で proj も lead lane も
+    //   broadcast_lane=None → lane_key=予約名（lead）に衝突する。scope guard が無いと、行順
     //   次第で proj 孤児が本物の lane board を上書きし、replay が「JS が捨てる死んだ
     //   message」を配って boot 窓 regression が再発する（team-b review 2026-07-24）。
     if is_board_update && let Some(proj) = msg_repo {
         let lane_key = message
             .get("lane")
             .and_then(|l| l.as_str())
-            .unwrap_or("main")
+            .unwrap_or(vp_paths::ROOT_LANE_NAME)
             .to_string();
         ui.board_snapshots
             .entry(proj.to_string())

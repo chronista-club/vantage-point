@@ -4,12 +4,12 @@
 //!
 //! ## 構造 (memory rule)
 //!
-//! - **Main Lane** (Repo あたり 1 つ固定) ─ 中身は `LaneComponent` (HD default | TH)
+//! - **lead lane** (Repo あたり 1 つ固定) ─ 中身は `LaneComponent` (HD default | TH)
 //! - **Sub Lane** (Repo あたり n 個) ─ lane cloned worktree、中身は `LaneComponent`
 //!
 //! ## 表示形 (人間可読)
 //!
-//! - Main: `"vantage-point/lane/main"`
+//! - lead: `"vantage-point/lane/lead"`
 //! - Sub: `"vantage-point/lane/foo"`
 
 use std::fmt;
@@ -30,7 +30,7 @@ pub use vp_paths::ROOT_LANE_NAME;
 
 /// Lane の address — Pool key として使う 2-tuple
 ///
-/// 表示形 (`Display` 実装): `"<repo>/lane/<name>"`  例: `"vantage-point/lane/main"` / `"vantage-point/lane/foo"`
+/// 表示形 (`Display` 実装): `"<repo>/lane/<name>"`  例: `"vantage-point/lane/lead"` / `"vantage-point/lane/foo"`
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LaneAddress {
     pub repo: String,
@@ -125,7 +125,7 @@ fn default_lane_name() -> String {
     ROOT_LANE_NAME.to_string()
 }
 
-/// 外部から来た lane token（`"root"` / sub 名 / 空）を address 文字列へ復元する。
+/// 外部から来た lane token（`"lead"` / sub 名 / 空）を address 文字列へ復元する。
 ///
 /// ⚠️ **これは復元専用**。通常経路では daemon が発行した [`LaneAddressWire::key`] を
 /// そのまま運ぶ — client が形式を知る必要は無い。ここが要るのは MCP / canvas の
@@ -135,11 +135,9 @@ fn default_lane_name() -> String {
 /// 同じ写像を 2 度書かないよう、**この関数だけ**が形式を知る（以前は switch_lane と
 /// canvas の 2 箇所に同じ `if root {…} else {…}` がコピーされていた）。
 pub fn address_from_lane_token(repo: &str, token: &str) -> String {
-    let name = if token.is_empty() {
-        ROOT_LANE_NAME
-    } else {
-        token
-    };
+    // 空 / 旧世代の予約名（main / root / conductor）は現予約名へ。旧 client / 古い doc の
+    // `switch_lane("main")` が実在しない `repo/lane/main` を組んで無音で空振りしないため。
+    let name = vp_paths::canonical_lane_name(token);
     format!("{repo}/{LANE_SEGMENT}/{name}")
 }
 
@@ -191,7 +189,7 @@ mod tests {
         let main = LaneAddress::root("vantage-point");
         // ⚠️ 2026-08-16 の rename で予約名（識別子）も `main` になった（表示語とは
         // 依然別概念 — 値が偶然一致しただけ）。
-        assert_eq!(main.to_string(), "vantage-point/lane/main");
+        assert_eq!(main.to_string(), "vantage-point/lane/lead");
         assert!(main.is_root());
 
         let sub = LaneAddress::sub("vantage-point", "foo");
@@ -267,7 +265,7 @@ mod tests {
         assert!(!addr.is_root());
     }
 
-    /// P2 以前の payload（`name` を持たない Main lane）が予約名に落ちること。
+    /// P2 以前の payload（`name` を持たない lead lane）が予約名に落ちること。
     #[test]
     fn legacy_wire_without_name_defaults_to_main() {
         let w: LaneAddressWire = serde_json::from_str(r#"{"repo":"vp","kind":"root"}"#).unwrap();
@@ -275,7 +273,7 @@ mod tests {
         // ⚠️ **直書きのまま**にする。ここは wire の contract なので、予約名を変えたら
         // このテストが落ちて気づけるのが正しい（記号にすると黙って追随してしまう）。
         // 2026-08-16 root → main rename で実際に落ち、意識的に更新した（設計どおりの挙動）。
-        assert_eq!(w.key(), "vp/main");
+        assert_eq!(w.key(), "vp/lead");
 
         // 旧 sub payload は name をそのまま引き継ぐ（`kind` は unknown field として無視）
         let p: LaneAddressWire =
@@ -311,11 +309,10 @@ pub(crate) fn lane_key_to_wire_agent(address: &str) -> Option<String> {
     if repo.is_empty() || name.is_empty() {
         return None;
     }
-    // ⚠️ **読む側は旧世代の予約名（`conductor` / `root` / `lead`）も Main とみなす**。
+    // ⚠️ **読む側は旧世代の予約名（`conductor` / `root` / `main`）も lead とみなす**。
     // 永続 state に残っており、ここで弾くとその lane の wire 宛先が引けない
     // （無音で届かなくなる）。
     if name == crate::lane_address::ROOT_LANE_NAME
-        || name == "lead"
         || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&name)
     {
         // 開発起点は lane 部分を省略した形が canonical（`agent@<repo>`）。

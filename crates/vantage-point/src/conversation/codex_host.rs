@@ -3567,7 +3567,7 @@ for line in sys.stdin:
                 question_session: question_session.clone(),
                 event_tx,
                 repo: "codex-resume-test".into(),
-                lane: "main".into(),
+                lane: "lead".into(),
                 cwd: "/workspace".into(),
                 stdin: tokio::sync::Mutex::new(None),
                 state: Mutex::new(RpcState {
@@ -3611,7 +3611,7 @@ for line in sys.stdin:
         let original = "01a08fa2-a700-7f73-9889-bb52a4258923";
         crate::lane::session_registry::set_conversation(
             "codex-resume-test",
-            "main",
+            "lead",
             "codex",
             1,
             Some(original),
@@ -3667,7 +3667,7 @@ for line in sys.stdin:
                 "the existing Chat retry path needs Err, not an indefinitely queued prompt"
             );
             let registry =
-                crate::lane::session_registry::load("codex-resume-test", "main", "codex");
+                crate::lane::session_registry::load("codex-resume-test", "lead", "codex");
             assert_eq!(registry.sessions[0].conversation.as_deref(), Some(original));
         }
     }
@@ -3723,7 +3723,7 @@ for line in sys.stdin:
                 matches!(rx.try_recv().unwrap(), ConversationEvent::SessionInit { session_id, .. } if session_id == thread)
             );
             let registry =
-                crate::lane::session_registry::load("codex-resume-test", "main", "codex");
+                crate::lane::session_registry::load("codex-resume-test", "lead", "codex");
             assert_eq!(registry.sessions[0].conversation.as_deref(), Some(thread));
             assert!(!host.inner.state.lock().unwrap().dead);
         }
@@ -3848,7 +3848,7 @@ for line in sys.stdin:
         assert!(!session_id.is_empty(), "SessionInit（thread id）を観測");
         assert!(text.contains("pong-rpc"), "answer: {text}");
         // registry 直結の書き戻し（doc 40 §4）も実機で確認
-        let reg = crate::lane::session_registry::load("vptest-rpc", "main", "codex");
+        let reg = crate::lane::session_registry::load("vptest-rpc", "lead", "codex");
         assert_eq!(
             reg.sessions[0].conversation.as_deref(),
             Some(session_id.as_str()),

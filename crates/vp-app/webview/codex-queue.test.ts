@@ -10,10 +10,10 @@ it('Codex Enter steers the displayed turn and the separate button queues the nex
     window.sent=[]
     window.ipc={postMessage: m=>window.sent.push(JSON.parse(m))}
     const api=installChatView({attachRenderer:(lane,fn)=>window.emit=fn})
-    api.showLane('queue-test/main')
-    document.dispatchEvent(new CustomEvent('vp:conversation-sessions',{detail:{lane:'queue-test/main',focused:1,sessions:[{key:1,agent:'codex',kind:'chat',root:true,model_choices:[],permission_choices:[]}]}}))
+    api.showLane('queue-test/lead')
+    document.dispatchEvent(new CustomEvent('vp:conversation-sessions',{detail:{lane:'queue-test/lead',focused:1,sessions:[{key:1,agent:'codex',kind:'chat',root:true,model_choices:[],permission_choices:[]}]}}))
     const mount=document.createElement('div');document.body.append(mount)
-    api.mountSession(mount,'queue-test/main',1)
+    api.mountSession(mount,'queue-test/lead',1)
     window.emit({kind:'codex_queue',queue:{thread_id:'thread',turn_id:'turn',ready:true,items:[],error:null},request_id:null,error:null},1)
     window.emit({kind:'message_chunk',text:'working'},1)
   `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'iife', conditions: ['browser'], plugins: [solidPlugin()] })
@@ -26,7 +26,7 @@ it('Codex Enter steers the displayed turn and the separate button queues the nex
     input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     const sent = (window as unknown as { sent: Array<Record<string, any>>; emit: (event: unknown, session: number) => void })
     const steer = sent.sent.find(m => m.t === 'conversation:codex_input')
-    expect(steer).toMatchObject({ lane: 'queue-test/main', session: 1, thread_id: 'thread', action: { kind: 'steer', turn_id: 'turn', text: '今の補足' } })
+    expect(steer).toMatchObject({ lane: 'queue-test/lead', session: 1, thread_id: 'thread', action: { kind: 'steer', turn_id: 'turn', text: '今の補足' } })
     sent.emit({ kind: 'codex_queue', queue: null, request_id: steer!.request_id, error: null }, 1)
     // Native turn continues while a question pauses the visual typing indicator.
     sent.emit({kind:'question',request_id:'question',questions:[]},1)

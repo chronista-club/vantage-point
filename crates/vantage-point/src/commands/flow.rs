@@ -2,7 +2,7 @@
 //!
 //! ## 概要
 //!
-//! Main × Sub × Memory orchestration の core 操作を CLI から呼ぶための薄い wrapper。
+//! lead × sub × Memory orchestration の core 操作を CLI から呼ぶための薄い wrapper。
 //! lanes portless (doc 27 §3.4.5): 全 operation は Daemon :32000 の repo-proxy ask 経由で repo を
 //! 操作する (旧 SP HTTP 直結 `/api/lanes` `/api/tmux/*` `/api/health` を撤去)。 cwd から parent
 //! repo path を auto-resolve し、 Daemon handshake の identifier に使う。
@@ -325,7 +325,7 @@ async fn progress(format: &str) -> Result<()> {
         .unwrap_or_default();
 
     let mut subs: Vec<serde_json::Value> = Vec::new();
-    let mut main_unread: u64 = 0;
+    let mut lead_unread: u64 = 0;
     for lane in lanes_in {
         let kind = lane
             .get("kind")
@@ -358,7 +358,7 @@ async fn progress(format: &str) -> Result<()> {
         };
 
         if kind == "root" {
-            main_unread = unread_total;
+            lead_unread = unread_total;
             continue;
         }
 
@@ -425,7 +425,7 @@ async fn progress(format: &str) -> Result<()> {
         "repo": repo,
         "root": {
             "address": format!("agent@{}", repo),
-            "unread_wire_count": main_unread,
+            "unread_wire_count": lead_unread,
         },
         "subs": subs,
     });
@@ -441,12 +441,12 @@ async fn progress(format: &str) -> Result<()> {
 /// `--format table` の簡易テーブル出力 (機械処理向けじゃない、 human 用)
 fn print_table(view: &serde_json::Value) {
     let repo = view.get("repo").and_then(|v| v.as_str()).unwrap_or("?");
-    let main_unread = view
+    let lead_unread = view
         .pointer("/root/unread_wire_count")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     println!("Repo: {}", repo);
-    println!("  Main unread wire: {}", main_unread);
+    println!("  lead unread wire: {}", lead_unread);
     let mut subs = view
         .get("subs")
         .and_then(|v| v.as_array())

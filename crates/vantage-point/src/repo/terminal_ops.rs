@@ -189,7 +189,7 @@ mod tests {
         let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
         let addr = LaneAddress::root("vp");
-        let lane = addr.to_string(); // "vp/main"
+        let lane = addr.to_string(); // "vp/lead"
 
         // 実 PtySlot を attach (subscribe_output が Some を返す前提を作る)。
         {
@@ -284,7 +284,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "terminal_demand_start",
-            serde_json::json!({ "lane": "vp/main" }),
+            serde_json::json!({ "lane": "vp/lead" }),
         )
         .await
         .expect("demand_start");
@@ -734,7 +734,7 @@ mod tests {
         // root + 2 枚目。どちらも出力を持たせて replay buffer を非空にする。
         {
             let mut pool = state.lane_pool.write().await;
-            let (s0, rx0) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("main");
+            let (s0, rx0) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("lead");
             pool.insert_pty_slot(addr.clone(), None, s0, rx0);
             let (s2, rx2) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("s2");
             pool.insert_pty_slot(addr.clone(), Some(2), s2, rx2);
@@ -866,7 +866,7 @@ mod tests {
         // boot 途中の姿: root slot だけが立った時点で GUI が購読 → demand edge が先に立つ。
         {
             let mut pool = state.lane_pool.write().await;
-            let (s0, rx0) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("main");
+            let (s0, rx0) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("lead");
             pool.insert_pty_slot(addr.clone(), None, s0, rx0);
         }
         let topic = format!("repo/terminal/data/{}/out", lane.replace('/', "~"));
@@ -949,7 +949,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "terminal_write",
-            serde_json::json!({ "lane": "vp/main", "data": data }),
+            serde_json::json!({ "lane": "vp/lead", "data": data }),
         )
         .await;
         assert!(res.is_err(), "PtySlot 無 lane への write は Err");

@@ -6,7 +6,7 @@
  */
 import type { IconName } from "@chronista-club/creo-ui-icons-web";
 import type { LaneInfo } from "../generated/LaneInfo";
-import { isMainLaneName } from "../../lane-address";
+import { isLeadLaneName } from "../../lane-address";
 
 /**
  * Lane Agent kind → icon (default / active=fill weight) のペア。
@@ -73,14 +73,14 @@ export function agentDisplayName(agent: string): string {
  * doc 44 P2: 旧 `kind` field は撤去された。lane は全て対等で、開発起点は予約名で表される
  * ので、判定は名前の比較になった。
  *
- * ⚠️ 判定の実体は `lane-address.ts` の [`isMainLaneName`]（Main 判定の SSOT）。
+ * ⚠️ 判定の実体は `lane-address.ts` の [`isLeadLaneName`]（lead 判定の SSOT）。
  * 以前ここにあった独自定数 `ROOT_LANE_NAME = "root"` は #1004 (root → main) の rename
  * から取り残され、daemon が `main` を発行し始めた瞬間に**全 main lane が Sub 誤判定**
  * された（2026-08-19 実機で発見）。「Rust 側と対で直す」というコメントの警告は
  * 機能しなかった — 対で直す運用ではなく、判定を 1 箇所に畳んで構造で防ぐ。
  */
 export function isSubLane(lane: LaneInfo): boolean {
-	return !isMainLaneName(lane.address.name);
+	return !isLeadLaneName(lane.address.name);
 }
 
 /**

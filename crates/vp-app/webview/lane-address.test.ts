@@ -5,14 +5,14 @@
  * address が `<repo>/lane/<name>` になった瞬間に 3 箇所が同時に外れ:
  *
  * - ヘッダに `vantage-point/lane/sampler` が丸ごと出る
- * - board が全 lane で Main のキーに集約される
+ * - board が全 lane で lead のキーに集約される
  *
  * という壊れ方をした。例外は出ないので、実機で見るまで気づけない。
  */
 import { describe, expect, it } from "vitest";
 import {
-	MAIN_LANE_NAME,
-	isMainAddress,
+	LEAD_LANE_NAME,
+	isLeadAddress,
 	laneNameOfAddress,
 	repoOfAddress,
 	subNameOfAddress,
@@ -38,37 +38,37 @@ describe("laneNameOfAddress（最後の分節）", () => {
 	});
 });
 
-describe("isMainAddress（旧世代の予約名も Main）", () => {
+describe("isLeadAddress（旧世代の予約名も lead）", () => {
 	it("現行の予約名", () => {
-		expect(isMainAddress(`vp/lane/${MAIN_LANE_NAME}`)).toBe(true);
+		expect(isLeadAddress(`vp/lane/${LEAD_LANE_NAME}`)).toBe(true);
 	});
 
-	it("⚠️ 旧予約名（lead / conductor / root）も Main とみなす — 永続 state に残る", () => {
+	it("⚠️ 旧予約名（conductor / root / main）も lead とみなす — 永続 state に残る", () => {
 		for (const addr of [
-			"vp/lead",
-			"vp/lane/lead",
+			"vp/main",
+			"vp/lane/main",
 			"vp/conductor",
 			"vp/root",
 			"vp/lane/root",
 		]) {
-			expect(isMainAddress(addr), addr).toBe(true);
+			expect(isLeadAddress(addr), addr).toBe(true);
 		}
 	});
 
-	it("Sub は Main ではない", () => {
-		expect(isMainAddress("vp/lane/sampler")).toBe(false);
-		expect(isMainAddress("vp/sub/sampler")).toBe(false);
+	it("Sub は lead ではない", () => {
+		expect(isLeadAddress("vp/lane/sampler")).toBe(false);
+		expect(isLeadAddress("vp/sub/sampler")).toBe(false);
 	});
 });
 
-describe("subNameOfAddress（Main は null の流儀）", () => {
-	it("Sub は名前、Main は null", () => {
+describe("subNameOfAddress（lead は null の流儀）", () => {
+	it("Sub は名前、lead は null", () => {
 		expect(subNameOfAddress("vp/lane/sampler")).toBe("sampler");
-		expect(subNameOfAddress(`vp/lane/${MAIN_LANE_NAME}`)).toBeNull();
-		expect(subNameOfAddress("vp/lead")).toBeNull(); // 旧予約名
+		expect(subNameOfAddress(`vp/lane/${LEAD_LANE_NAME}`)).toBeNull();
+		expect(subNameOfAddress("vp/main")).toBeNull(); // 旧予約名
 	});
 
-	it("未知形は null（board は最悪 Main に出す側）", () => {
+	it("未知形は null（board は最悪 lead に出す側）", () => {
 		expect(subNameOfAddress("weird")).toBeNull();
 	});
 });

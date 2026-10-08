@@ -21,11 +21,12 @@
  * DB 行は repo 側に残りうるが、client は scope !== 'lane' を無視するので表示に混ざらない。
  *
  * ⚠️ **キーから repo を落とさない**（2026-08-04 根治）。全 repo の root lane が同じ
- * `'main'` を名乗るので、lane 名だけで持つと 13 repo が 1 つの箱を奪い合い、
+ * `'lead'` を名乗るので、lane 名だけで持つと 13 repo が 1 つの箱を奪い合い、
  * 「board 行を持たない repo に切り替えると前の repo の board が出たまま」になる。
  */
 
 import { renderBoard, clearBoard, type ContentType } from './board-render'
+import { LEAD_LANE_NAME } from './lane-address'
 
 
 /** board の 1 item。 id は repo が一元発行する（webview は自前生成しない）。 */
@@ -55,7 +56,7 @@ interface BoardUpdatedMessage {
    * 送信元 repo（basename）。**vp-app が stamp する**（repo 側の BoardUpdated は持たない）。
    *
    * ⚠️ **board の同一性は `(repo, lane)` の対**であって lane 単独ではない。全 repo の
-   * root lane が同じ `'main'` を名乗るので、repo 次元を落とすと「board 行を持たない
+   * root lane が同じ `'lead'` を名乗るので、repo 次元を落とすと「board 行を持たない
    * repo に切り替えたとき、前の repo の board がそのまま出る」が起きる（2026-08-04 に根治）。
    */
   repo?: string | null
@@ -73,25 +74,25 @@ function emptyBoard(): Board {
 /**
  * board の同一性キー。**`(repo, lane)` の対**（lane 単独ではない）。
  *
- * 全 repo の root lane は同じ `'main'` を名乗るので、repo を落とすと 13 repo が 1 つの
+ * 全 repo の root lane は同じ `'lead'` を名乗るので、repo を落とすと 13 repo が 1 つの
  * 箱を奪い合う。`\u0000` 区切りなのは、repo 名にも lane 名にも現れない文字だから
  * （`/` は lane address に出る）。
  */
 export function boardKey(repo: string | null | undefined, lane: string | null | undefined): string {
-  return `${repo ?? ''}\u0000${lane ?? 'main'}`
+  return `${repo ?? ''}\u0000${lane ?? LEAD_LANE_NAME}`
 }
 
 /** module-local state。 repo truth のミラー（view）。 bundle reload で reset、 再購読で retained 復元。 */
 const canvasState: {
   /** 表示中の board のキー（`boardKey(repo, lane)`）。 */
   activeKey: string
-  /** 表示中の lane 名（`'main'` = lead）。mutate IPC の宛先に要る。 */
+  /** 表示中の lane 名（`'lead'` = 予約名）。mutate IPC の宛先に要る。 */
   activeLane: string
   /** `boardKey()` → board。**全 repo 分**を持ち、表示は active だけ。 */
   boards: Record<string, Board>
 } = {
   activeKey: boardKey(null, null),
-  activeLane: 'main',
+  activeLane: LEAD_LANE_NAME,
   boards: {},
 }
 
@@ -139,7 +140,7 @@ function sendIpc(payload: Record<string, unknown>): void {
 
 /** board mutate 用の lane キー（main は null）。 */
 function boardLaneKey(): string | null {
-  return canvasState.activeLane === 'main' ? null : canvasState.activeLane
+  return canvasState.activeLane === LEAD_LANE_NAME ? null : canvasState.activeLane
 }
 
 // ============================================================================
@@ -154,7 +155,7 @@ function boardLaneKey(): string | null {
  */
 export function setActiveBoard(repo: string | null, lane: string | null): void {
   canvasState.activeKey = boardKey(repo, lane)
-  canvasState.activeLane = lane ?? 'main'
+  canvasState.activeLane = lane ?? LEAD_LANE_NAME
   renderCurrentMain()
   notifyStateChange()
 }
@@ -383,7 +384,7 @@ export function handleMessage(msg: AnyMessage): void {
 /** module-local state をリセットする（**テスト専用**）。 */
 export function _resetForTest(): void {
   canvasState.activeKey = boardKey(null, null)
-  canvasState.activeLane = 'main'
+  canvasState.activeLane = LEAD_LANE_NAME
   canvasState.boards = {}
   stateListeners.clear()
 }
