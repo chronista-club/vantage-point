@@ -26,6 +26,25 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.useRealTimers();
 });
+it("offers an explicit enable action before allowing per-device changes", () => {
+	vi.useFakeTimers();
+	const send = vi.fn();
+	document.body.innerHTML = '<div id="device-list"></div>';
+	mountMidiUse(document.querySelector("#device-list")!, send);
+	renderMidiUse({ ...state(), enabled: false });
+	const enable = document.querySelector<HTMLButtonElement>("button[data-midi-master]");
+	expect(enable?.textContent).toBe("MIDI を有効にする");
+	expect(document.body.textContent).toContain("先に MIDI を有効にしてください");
+	enable!.click();
+	expect(send).toHaveBeenLastCalledWith({ master_enabled: true });
+	expect(document.querySelector<HTMLInputElement>("[data-midi-device]")!.disabled).toBe(true);
+	renderMidiUse(state());
+	expect(document.querySelector<HTMLInputElement>("[data-midi-device]")!.disabled).toBe(false);
+	const stop = document.querySelector<HTMLButtonElement>("button[data-midi-master]")!;
+	expect(stop.textContent).toBe("MIDI を停止する");
+	stop.click();
+	expect(send).toHaveBeenLastCalledWith({ master_enabled: false });
+});
 it("requires explicit takeover and retains the revision the user saw", () => {
 	vi.useFakeTimers();
 	const send = vi.fn();

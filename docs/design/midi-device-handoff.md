@@ -6,7 +6,8 @@ VP の常駐 MIDI I/O は midistage の protocol / profiles / Rust SDK を利用
 
 ## 使用操作
 
-Devices 面で「VP の MIDI 全体」を ON にし、対応機材の「使用」を切り替える。
+Devices 面で「MIDI を有効にする」を押し、対応機材の「使用」を切り替える。
+通常表示は Midistage の機材単位の一覧に統一する。OS の生ポート名と IN/OUT は「接続ポート詳細」に畳み、そこに旧直接接続の使用状態を重ねない。
 別アプリの担当なら切り替え確認が出る。確認した revision を送り、確認後の所有者変更を上書きしない。
 現在の VP の操作対象は ROTO / LPD8 / X-Touch / nanoKONTROL2。nanoKONTROL2 は標準 CC モード（ch1）の入力を扱い、ノブ・フェーダーは pane 比率、S ボタンは Scene 呼び出し／長押し保存に対応する。M/R・transport ボタンと nano の LED フィードバックは未対応。対応していない操作面は一覧に残して切り替えを無効にする。
 CLI は同じ daemon-control の窓口を使う。
