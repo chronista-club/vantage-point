@@ -1,0 +1,93 @@
+# ===========================================
+# Windows 版を GitHub Release に添付する
+#
+# mac のリリース（`mise run release:mac` = 手元で notarize → tag の Release を publish）を
+# 起点に、windows runner が同じ tag を build して exe を同じ Release に upload する。
+# mac 側の手順は変えない（Mac 主軸 / Windows 追随）。
+#
+# 添付物（`vp update` の Windows 経路と winget manifest が参照する名前 = SSOT）:
+#   - vp-x86_64-pc-windows-msvc.exe      （CLI + daemon）
+#   - vp-app-x86_64-pc-windows-msvc.exe  （GUI）
+#
+# 既存 release への後付けは workflow_dispatch で tag を指定する（--clobber で上書き可）。
+# ===========================================
+name: Release (Windows)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "添付先の release tag（例: v0.79.0）"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-windows-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build-upload:
+    name: Build & upload (Windows)
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      # club-unison の build script が protoc を要求（ci.yml の check-windows と同じ）
+      - name: Install protoc (for club-unison build script)
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96 # = rust-toolchain.toml channel
+
+      - uses: Swatinem/rust-cache@v2
+
+      # webview bundle は gitignore の生成物 — vp-app の include_str! が要求
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Build webview bundle
+        working-directory: crates/vp-app/webview
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Build release binaries
+        run: cargo build --release --locked -p vp-cli -p vp-app
+
+      # tag と binary の version が食い違った exe を配らない（tag 打ち間違い / bump 漏れの検出）
+      - name: Verify version matches tag
+        shell: pwsh
+        run: |
+          $v = (& target\release\vp.exe --version).Trim()
+          $expected = "vp $($env:TAG.TrimStart('v'))"
+          if ($v -ne $expected) { throw "version mismatch: binary='$v' tag='$env:TAG'" }
+          Write-Host "OK: $v"
+
+      - name: Stage assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\vp.exe     "dist\vp-$env:TARGET.exe"
+          Copy-Item target\release\vp-app.exe "dist\vp-app-$env:TARGET.exe"
+          Get-ChildItem dist | ForEach-Object {
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            "$h  $($_.Name)"
+          } | Tee-Object -FilePath "dist\SHA256SUMS-$env:TARGET.txt"
+
+      - name: Upload to release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload $env:TAG (Get-ChildItem dist).FullName --clobber -R $env:GITHUB_REPOSITORY

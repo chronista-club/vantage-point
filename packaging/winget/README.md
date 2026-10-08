@@ -71,7 +71,8 @@ winget uninstall --name "Vantage Point"
 
 ## 公開フェーズ（後続）
 
-1. GitHub Release に `vp-x86_64-pc-windows-msvc.exe` を添付（`release:win` タスクで自動化予定）。
+1. ~~GitHub Release に `vp-x86_64-pc-windows-msvc.exe` を添付~~ → `.github/workflows/release-windows.yml`
+   で自動化済み（vp-app と SHA256SUMS も添付。手順は `docs/guide/release.md` §6）。
 2. Authenticode 署名（`signtool`）を release パイプラインに組み込み、SmartScreen 警告を解消。
 3. `wingetcreate` で `microsoft/winget-pkgs` に PR（cask の `release:cask` に相当する
    `release:winget` タスクで自動 update）。

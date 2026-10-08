@@ -102,6 +102,7 @@ fn confirm_message(version: &str) -> String {
 }
 
 /// 現在の .app bundle path を `current_exe` から遡って求める。
+#[cfg(unix)]
 fn current_app_bundle() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     app_bundle_of(&exe)
@@ -111,6 +112,7 @@ fn current_app_bundle() -> Option<PathBuf> {
 ///
 /// macOS の bundle 構造 `Foo.app/Contents/MacOS/<exe>` を前提に、拡張子 `.app` の
 /// 祖先ディレクトリを返す。bundle 外（dev binary 等）では None。
+#[cfg(any(unix, test))]
 fn app_bundle_of(exe: &Path) -> Option<PathBuf> {
     exe.ancestors()
         .find(|p| p.extension().is_some_and(|e| e == "app"))
@@ -164,6 +166,10 @@ fn run_update_flow(version: String) {
 
     let vp = locate_vp_binary();
     let channel = detect_channel();
+    // relaunch 先は差し替え「前」に控える。Windows は `vp update` が実行中の exe を
+    // `.old-*` へ退避するので、差し替え後に current_exe を引くと退避先を指しうる。
+    #[cfg(windows)]
+    let app_exe = std::env::current_exe().ok();
     tracing::info!(
         "in-app update: 適用開始 version={} channel={:?} vp={}",
         version,
@@ -181,7 +187,10 @@ fn run_update_flow(version: String) {
 
     // 3. 後半（Direct の daemon restart + relaunch）は detached helper に委譲して即終了。
     //    GUI 内で完了を待つ設計は GUI の寿命に人質に取られる（module doc 参照）。
+    #[cfg(unix)]
     handoff_to_helper_and_exit(channel, &vp);
+    #[cfg(windows)]
+    handoff_to_helper_and_exit(channel, &vp, app_exe.as_deref());
 }
 
 /// 外部コマンドを 1 ステップ実行し、成否を返す（log 付き）。
@@ -228,12 +237,14 @@ fn notify_failure(msg: &str) {
 }
 
 /// path を POSIX sh の single-quote で安全に囲む純粋関数（`'` は `'\''` に割る）。
+#[cfg(any(unix, test))]
 fn sh_quote(p: &Path) -> String {
     format!("'{}'", p.display().to_string().replace('\'', r"'\''"))
 }
 
 /// 親（旧 GUI）の終了待ちループの上限回数。0.2s × 150 = 30s。
 /// 超えたら諦めて進む（`open` が activate に化けるだけで害はない）。
+#[cfg(any(unix, test))]
 const PARENT_WAIT_MAX_TICKS: u32 = 150;
 
 /// 更新後半を担う detached helper の sh script を組む純粋関数。
@@ -244,6 +255,7 @@ const PARENT_WAIT_MAX_TICKS: u32 = 150;
 ///   のため行わない（v0.57 実機で二重 restart がフローを約 50s に引き延ばした反省）
 /// - app が None（dev binary / Linux 等 bundle 外）は relaunch を省略
 /// - Brew + app None はやる仕事が無いので script 自体不要 = None
+#[cfg(any(unix, test))]
 fn post_update_script(
     channel: UpdateChannel,
     parent_pid: u32,
@@ -340,10 +352,36 @@ fn handoff_to_helper_and_exit(channel: UpdateChannel, vp: &Path) -> ! {
     std::process::exit(0);
 }
 
-/// Windows: sh が無いため従来どおり GUI 内で daemon restart まで行い終了する
-/// （relaunch は元々 `open` 依存 = macOS 専用だったので据え置き）。
+/// 旧 GUI の終了待ちの上限（秒）。unix helper の `PARENT_WAIT_MAX_TICKS`（0.2s × 150）と同じ 30s。
+#[cfg(any(windows, test))]
+const PARENT_WAIT_TIMEOUT_SECS: u32 = 30;
+
+/// path を PowerShell の single-quote で囲む純粋関数（`'` は `''` に重ねる）。
+#[cfg(any(windows, test))]
+fn ps_quote(p: &Path) -> String {
+    format!("'{}'", p.display().to_string().replace('\'', "''"))
+}
+
+/// Windows の relaunch helper（PowerShell 1 行）を組む純粋関数。
+///
+/// 旧 GUI（parent_pid）の終了を待ってから、差し替え済みの vp-app を起動する。
+/// 待つのは、旧 GUI が生きている間に起動すると二重起動になるため（unix の `kill -0` 待ちと同じ役）。
+#[cfg(any(windows, test))]
+fn windows_relaunch_script(parent_pid: u32, app_exe: &Path) -> String {
+    format!(
+        "Wait-Process -Id {parent_pid} -Timeout {PARENT_WAIT_TIMEOUT_SECS} -ErrorAction SilentlyContinue; \
+         Start-Process -FilePath {}",
+        ps_quote(app_exe)
+    )
+}
+
+/// Windows: sh が無いので daemon restart は GUI 内で行い（`vp daemon restart` が常駐 task を
+/// `schtasks /run` で起こす）、relaunch だけ detached な PowerShell helper に渡して終了する。
+/// vp-app.exe 自体は `vp update` が CLI と一緒に差し替え済み。
 #[cfg(windows)]
-fn handoff_to_helper_and_exit(channel: UpdateChannel, vp: &Path) -> ! {
+fn handoff_to_helper_and_exit(channel: UpdateChannel, vp: &Path, app_exe: Option<&Path>) -> ! {
+    use std::os::windows::process::CommandExt;
+
     if channel == UpdateChannel::Direct {
         run_step(
             "daemon-restart",
@@ -351,12 +389,58 @@ fn handoff_to_helper_and_exit(channel: UpdateChannel, vp: &Path) -> ! {
             &["daemon".to_string(), "restart".to_string()],
         );
     }
+    match app_exe {
+        Some(app_exe) => {
+            // 旧 GUI の終了で道連れにならないよう、別 process group + console 無しで切り離す。
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            const DETACHED_PROCESS: u32 = 0x0000_0008;
+            let script = windows_relaunch_script(std::process::id(), app_exe);
+            match Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
+                .spawn()
+            {
+                Ok(child) => tracing::info!(
+                    "in-app update: relaunch を helper に委譲 (pid={}, app={})",
+                    child.id(),
+                    app_exe.display()
+                ),
+                Err(e) => tracing::warn!("in-app update: relaunch helper spawn 失敗: {}", e),
+            }
+        }
+        None => tracing::warn!("in-app update: 自分の exe path 不明 — relaunch 省略"),
+    }
     std::process::exit(0);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ps_quote_escapes_single_quote() {
+        assert_eq!(
+            ps_quote(Path::new(r"C:\Users\o'brien\vp-app.exe")),
+            r"'C:\Users\o''brien\vp-app.exe'"
+        );
+    }
+
+    #[test]
+    fn windows_relaunch_script_waits_parent_then_starts_app() {
+        let s = windows_relaunch_script(1234, Path::new(r"C:\Users\x\.cargo\bin\vp-app.exe"));
+        let wait = s.find("Wait-Process -Id 1234").expect("親 PID 待ちが無い");
+        let start = s
+            .find(r"Start-Process -FilePath 'C:\Users\x\.cargo\bin\vp-app.exe'")
+            .expect("Start-Process が無い");
+        assert!(wait < start, "親の終了を待ってから起動するべき: {s}");
+        assert!(
+            s.contains(&format!("-Timeout {PARENT_WAIT_TIMEOUT_SECS}")),
+            "親待ちに上限が無い: {s}"
+        );
+    }
 
     #[test]
     fn detect_channel_brew_when_caskroom_exists() {
