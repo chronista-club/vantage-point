@@ -29,6 +29,8 @@ revision は `vp midi devices` の最新応答から取得する。`--takeover` 
 別機材の listener とアプリ固有の lane / scene 割り当ては保持する。
 service は物理送信 completion と後始末が終わるまで次の lease を与えない。
 
+`devices/midi-use` の状態応答は `connected` / `enabled` / `snapshot` と、サービス状態を示す nullable な `error` を持つ。この `error` は RPC 失敗ではない。GUI はこの method の状態応答に限ってデータとして受け取り、通常の `{"error": ...}` だけの RPC 失敗（revision 不一致など）はエラーとして扱う。
+
 新窓口 `devices/midi-use` は既存 `devices/midi` と同様、人の GUI/CLI 操作用であり MCP discovery には公開しない。
 既存の前景実機診断コマンド（`vp midi roto demo` など）はこの常駐経路の移行対象外。共有サービス稼働中に直接実行しない。
 
