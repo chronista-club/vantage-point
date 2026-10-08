@@ -6,8 +6,13 @@
 # mac 側の手順は変えない（Mac 主軸 / Windows 追随）。
 #
 # 添付物（`vp update` の Windows 経路と winget manifest が参照する名前 = SSOT）:
-#   - vp-x86_64-pc-windows-msvc.exe      （CLI + daemon）
-#   - vp-app-x86_64-pc-windows-msvc.exe  （GUI）
+#   - vp-x86_64-pc-windows-msvc.exe      （CLI + daemon、`vp update` が使う）
+#   - vp-app-x86_64-pc-windows-msvc.exe  （GUI、同上）
+#   - VantagePoint-<ver>-x86_64-pc-windows-msvc.zip（vp.exe + vp-app.exe、winget の installer）
+#   - Chronista.VantagePoint*.yaml        （winget manifest 3 枚、packaging/winget/render.ps1 が生成）
+#
+# winget の手元インストール: manifest を落として `winget install --manifest <dir>`
+#（packaging/winget/README.md）。公開 winget-pkgs への提出はまだしていない。
 #
 # 既存 release への後付けは workflow_dispatch で tag を指定する（--clobber で上書き可）。
 # ===========================================
@@ -40,6 +45,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG }}
+
+      # manifest 生成器は workflow 側の ref から取る（render.ps1 を持たない古い tag にも後付けできる）
+      - uses: actions/checkout@v4
+        with:
+          path: tooling
+          sparse-checkout: packaging/winget
 
       # club-unison の build script が protoc を要求（ci.yml の check-windows と同じ）
       - name: Install protoc (for club-unison build script)
@@ -81,7 +92,13 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target\release\vp.exe     "dist\vp-$env:TARGET.exe"
           Copy-Item target\release\vp-app.exe "dist\vp-app-$env:TARGET.exe"
-          Get-ChildItem dist | ForEach-Object {
+          # winget installer: zip の中は素の名前（manifest の RelativeFilePath と一致させる）
+          $version = $env:TAG.TrimStart('v')
+          $zip = "dist\VantagePoint-$version-$env:TARGET.zip"
+          Compress-Archive -Path target\release\vp.exe, target\release\vp-app.exe -DestinationPath $zip
+          $zipSha = (Get-FileHash $zip -Algorithm SHA256).Hash
+          & tooling\packaging\winget\render.ps1 -Version $version -ZipSha256 $zipSha -OutDir dist
+          Get-ChildItem dist -File | Where-Object Extension -ne '.yaml' | ForEach-Object {
             $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
             "$h  $($_.Name)"
           } | Tee-Object -FilePath "dist\SHA256SUMS-$env:TARGET.txt"
