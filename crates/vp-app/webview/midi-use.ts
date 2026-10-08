@@ -26,7 +26,7 @@ let failure = "";
 let pending = false;
 let sentAt = 0;
 let timer: ReturnType<typeof setInterval> | undefined;
-const supported = new Set(["roto", "lpd8", "xtouch"]);
+const supported = new Set(["roto", "lpd8", "xtouch", "nanokontrol"]);
 function request(payload: Record<string, unknown>) {
 	pending = true;
 	sentAt = Date.now();
@@ -184,6 +184,7 @@ function draw() {
 		row.className = "midi-use-row";
 		const name = element("div", d.name);
 		const detail = element("span", stateLabel(d));
+		if (d.profile_id === "nanokontrol") detail.append(" · 標準 CC (ch1)、LED 表示は未対応");
 		detail.className = "midi-use-caption";
 		name.append(detail);
 		const label = element("label");

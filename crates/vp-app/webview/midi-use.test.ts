@@ -93,3 +93,19 @@ it("updates the master switch even when a caller reuses its snapshot object", ()
 			.disabled,
 	).toBe(true);
 });
+
+it("allows nanoKONTROL2 takeover through the same revision confirmation", () => {
+	vi.useFakeTimers();
+	const send = vi.fn();
+	document.body.innerHTML = '<div id="device-list"></div>';
+	mountMidiUse(document.querySelector("#device-list")!, send);
+	const next = state();
+	Object.assign(next.snapshot.devices[0], { device_id: "nanokontrol", profile_id: "nanokontrol", name: "nanoKONTROL2" });
+	renderMidiUse(next);
+	const toggle = document.querySelector('[data-midi-device="nanokontrol"]') as HTMLInputElement;
+	expect(toggle.disabled).toBe(false);
+	toggle.click();
+	expect(send.mock.calls.some(([p]) => p.set)).toBe(false);
+	(document.querySelector("[data-midi-confirm]") as HTMLButtonElement).click();
+	expect(send).toHaveBeenLastCalledWith({set:{ device_id:"nanokontrol", enabled:true, expected_revision:3, takeover:true }});
+});
