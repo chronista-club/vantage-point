@@ -1004,6 +1004,10 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // 上のまま動かしていない）。daemon 役の `RepoState` は 9-2 PR-3 で構築ごと消えた —
     // daemon の state は `DaemonState` の 1 本。
     let app = build_daemon_router(daemon_state.clone());
+    // ⚠️ disk state の整え（旧 DB 回収 + 予約 lane 名 migration）は **repo を起動する前に同期で**。
+    // `start_daemon_server` の中に置くと spawn で別タスクになり、下の `autostart_enabled_repos`
+    // と並走して先に起動した repo の会話 id を置き去りにする（2026-10-09 実機で 1 件）。
+    crate::daemon::server::prepare_state_dir_on_boot();
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
         daemon_state,
         port,
