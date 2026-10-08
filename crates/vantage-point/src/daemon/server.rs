@@ -1606,9 +1606,6 @@ fn forward_conversation_report(lane: &str, payload: &serde_json::Value) -> serde
     fwd
 }
 
-/// Daemon の Unison QUIC サーバーを起動する
-///
-/// daemon-repo / events / wire / registry / device 等の live channel ハンドラーを登録し、
 /// 起動時の disk state の整え（同期）。**repo を 1 つも起動する前に、呼び手のタスク上で**済ませる。
 ///
 /// ⚠️ 以前は [`start_daemon_server`] の冒頭にあり、それが `tokio::spawn` で別タスクに
@@ -1637,6 +1634,9 @@ pub fn prepare_state_dir_on_boot() {
     }
 }
 
+/// Daemon の Unison QUIC サーバーを起動する
+///
+/// daemon-repo / events / wire / registry / device 等の live channel ハンドラーを登録し、
 /// 指定ポートで QUIC 接続を待ち受ける。
 ///
 /// ⚠️ disk state の整え（[`prepare_state_dir_on_boot`]）はここでは**やらない** — 呼び手が
