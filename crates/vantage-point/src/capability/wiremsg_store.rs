@@ -2215,8 +2215,9 @@ mod tests {
     #[test]
     fn normalize_wire_addr_folds_only_reserved_aliases() {
         let n = WireMessage::normalize_wire_addr;
-        // 3 世代の alias は bare へ
+        // 現行 + 旧 3 世代の alias は bare へ
         assert_eq!(n("agent@creo-ui/lead"), "agent@creo-ui");
+        assert_eq!(n("agent@creo-ui/main"), "agent@creo-ui");
         assert_eq!(n("agent@nexus/root"), "agent@nexus");
         assert_eq!(n("agent@vp/conductor"), "agent@vp");
         // 実 sub lane は不変（畳むと誤配送になる）

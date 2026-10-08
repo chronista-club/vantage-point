@@ -662,6 +662,21 @@ mod tests {
         assert_eq!(LEGACY_ROOT_LANE_NAMES, &["conductor", "root", "main"]);
     }
 
+    /// 名前だけの入口（board の lane / switch_lane token / topic segment）用の正規化。
+    #[test]
+    fn canonical_lane_name_folds_legacy_and_empty_only() {
+        for legacy in ["", "main", "root", "conductor"] {
+            assert_eq!(canonical_lane_name(legacy), ROOT_LANE_NAME, "{legacy:?}");
+        }
+        assert_eq!(canonical_lane_name("lead"), "lead");
+        assert_eq!(canonical_lane_name("feat-api"), "feat-api");
+        assert_eq!(
+            canonical_lane_name("leader"),
+            "leader",
+            "部分一致は畳まない"
+        );
+    }
+
     /// ⚠️ 世代の残骸が並存する時は **新しい世代が新名を取る**。前回 migration の衝突で残った
     /// `x__root` と現役の `x__main` が並ぶ環境（mako 実機）で、古い方が先に `x__lead` を取ると
     /// 現役の会話 id が置き去りになる。
