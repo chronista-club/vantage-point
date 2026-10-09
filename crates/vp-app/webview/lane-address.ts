@@ -14,7 +14,7 @@
  * `<repo>/lane/<name>` になった瞬間、3 つとも一致しなくなり:
  *
  * - ヘッダに `vantage-point/lane/sampler` が丸ごと出る
- * - board が全 lane で Main のキーに集約される
+ * - board が全 lane で lead のキーに集約される
  *
  * という**無音の劣化**を同時に起こす。分節を探すのではなく **最後の分節が lane 名**という
  * 不変条件で取れば、世代を問わず正しい（`<repo>/lane/<name>` / 旧 `<repo>/sub/<name>` /
@@ -22,35 +22,35 @@
  */
 
 /**
- * Main lane の**予約名（識別子）**。⚠️ Rust `vp_paths::ROOT_LANE_NAME` と同値。
+ * lead lane の**予約名（識別子）**。⚠️ Rust `vp_paths::ROOT_LANE_NAME` と同値。
  *
  * ⚠️ **表示名とは別物**。address / disk / env に出るのはこちらで、UI に出す語は
- * [`MAIN_DISPLAY_NAME`]。混ぜると「識別子を変えたら表示も変わる / その逆」になる。
- * 2026-08-16 の root → main rename で**値は偶然一致した**が、概念は別のまま —
+ * [`LEAD_DISPLAY_NAME`]。混ぜると「識別子を変えたら表示も変わる / その逆」になる。
+ * 2026-08-16 の root → main rename、2026-10-09 の main → lead rename とも**値は偶然一致した**が、概念は別のまま —
  * 次に識別子を変える時（migration が要る）も表示（語彙の問題）は独立に決められる。
  */
-export const MAIN_LANE_NAME = "main";
+export const LEAD_LANE_NAME = "lead";
 
 /**
- * Main lane の**表示名**（Main/Sub の語彙）。
+ * lead lane の**表示名**（Main/Sub の語彙）。
  */
-export const MAIN_DISPLAY_NAME = "main";
+export const LEAD_DISPLAY_NAME = "lead";
 
-/** 旧世代の予約名（conductor → root → main の 2 世代 + lead 形）。
+/** 旧世代の予約名（conductor → root → main の 3 世代）。
  *  address / env / 永続 state に残るので受理する。 */
-const LEGACY_MAIN_NAMES = ["lead", "conductor", "root"];
+const LEGACY_LEAD_NAMES = ["conductor", "root", "main"];
 
 /**
- * その lane **名**は Main（予約名）か。旧世代の予約名も Main とみなす。
+ * その lane **名**は Main（予約名）か。旧世代の予約名も lead とみなす。
  *
- * ⚠️ Main 判定の SSOT はこの 1 関数。sidebar の `isSubLane` も address 判定の
- * [`isMainAddress`] もここへ委譲する — #1004 (root → main) で sidebar の
+ * ⚠️ lead 判定の SSOT はこの 1 関数。sidebar の `isSubLane` も address 判定の
+ * [`isLeadAddress`] もここへ委譲する — #1004 (root → main) で sidebar の
  * `lane.ts` が独自定数 `"root"` を持っていたため rename から取り残され、
  * **全 main lane が Sub と誤判定**された（state 文字が出る / 太字が消える /
  * `#N` shortcut が消える）。判定を 2 箇所に持たないための畳み込み。
  */
-export function isMainLaneName(name: string): boolean {
-	return name === MAIN_LANE_NAME || LEGACY_MAIN_NAMES.includes(name);
+export function isLeadLaneName(name: string): boolean {
+	return name === LEAD_LANE_NAME || LEGACY_LEAD_NAMES.includes(name);
 }
 
 /** address の repo 部（先頭分節）。取れなければ空文字。 */
@@ -72,20 +72,20 @@ export function laneNameOfAddress(address: string): string {
 }
 
 /**
- * その address は Main lane か。旧世代の予約名（`root` / `lead`）も Main とみなす。
+ * その address は lead lane か。旧世代の予約名（`conductor` / `root` / `main`）も lead とみなす。
  */
-export function isMainAddress(address: string): boolean {
-	return isMainLaneName(laneNameOfAddress(address));
+export function isLeadAddress(address: string): boolean {
+	return isLeadLaneName(laneNameOfAddress(address));
 }
 
 /**
- * Sub lane の名前。Main なら `null`。
+ * Sub lane の名前。lead なら `null`。
  *
  * 「Main を `null` で表す」のは board / pane 側の既存の流儀に合わせたもの
- * （`boardKey(repo, null)` が Main のキー）。
+ * （`boardKey(repo, null)` が lead のキー）。
  */
 export function subNameOfAddress(address: string): string | null {
-	if (isMainAddress(address)) return null;
+	if (isLeadAddress(address)) return null;
 	const name = laneNameOfAddress(address);
 	return name === "" ? null : name;
 }

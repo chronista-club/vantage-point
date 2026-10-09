@@ -1352,10 +1352,10 @@ it('sends once in a WebView without crypto.randomUUID', async () => {
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { ipc: { postMessage: (m: string) => sent.push(m) } } })
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: {} })
   try {
-    sendSubmission('webview-test/main', 2, 'hello', [])
-    sendSubmission('webview-test/main', 2, 'duplicate click', [])
+    sendSubmission('webview-test/lead', 2, 'hello', [])
+    sendSubmission('webview-test/lead', 2, 'duplicate click', [])
     expect(sent).toHaveLength(1)
-    expect(JSON.parse(sent[0]!)).toMatchObject({ t: 'conversation:submit', lane: 'webview-test/main', session: 2, prompt: 'hello' })
+    expect(JSON.parse(sent[0]!)).toMatchObject({ t: 'conversation:submit', lane: 'webview-test/lead', session: 2, prompt: 'hello' })
     expect(JSON.parse(sent[0]!).request_id).toBeTruthy()
   } finally {
     if (savedWindow) Object.defineProperty(globalThis, 'window', savedWindow)

@@ -1357,7 +1357,7 @@ mod tests {
         let key = create_in(
             dir.path(),
             "vp",
-            "main",
+            "lead",
             "claude",
             "codex",
             SessionMode::Tui,
@@ -1366,12 +1366,12 @@ mod tests {
         .unwrap();
         let thread = "01a09005-f22f-7dd3-9e7b-0ad53926478b";
         assert!(
-            record_codex_conversation_in(dir.path(), "vp", "main", "claude", key, thread).unwrap()
+            record_codex_conversation_in(dir.path(), "vp", "lead", "claude", key, thread).unwrap()
         );
         assert!(
-            !record_codex_conversation_in(dir.path(), "vp", "main", "claude", key, thread).unwrap()
+            !record_codex_conversation_in(dir.path(), "vp", "lead", "claude", key, thread).unwrap()
         );
-        let original = load_in(dir.path(), "vp", "main", "claude");
+        let original = load_in(dir.path(), "vp", "lead", "claude");
         for (target, id) in [
             (0, thread),
             (99, thread),
@@ -1382,11 +1382,11 @@ mod tests {
             (key, "{01a09005-f22f-7dd3-9e7b-0ad53926478b}"),
         ] {
             assert!(
-                record_codex_conversation_in(dir.path(), "vp", "main", "claude", target, id)
+                record_codex_conversation_in(dir.path(), "vp", "lead", "claude", target, id)
                     .is_err(),
                 "must reject {target}: {id}"
             );
-            assert_eq!(load_in(dir.path(), "vp", "main", "claude"), original);
+            assert_eq!(load_in(dir.path(), "vp", "lead", "claude"), original);
         }
     }
 

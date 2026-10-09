@@ -382,7 +382,7 @@ mod tests {
                 "name": "vp",
                 "path": "/repos/vp",
                 "process_status": "running",
-                "active_lane": "vp:lane:main",
+                "active_lane": "vp:lane:lead",
             },
             { "name": "nexus", "path": "/repos/nexus" },
         ])

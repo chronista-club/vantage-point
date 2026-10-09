@@ -1485,9 +1485,13 @@ async fn handle_wire_channel(
         }
         .ok_or_else(|| format!("lane/session-changed: repo '{repo}' の repo が registry に無い"))?;
         // hook env の VP_LANE は label（"root" / sub 名）。repo method は address を取る。
-        // ⚠️ 分岐は要らない — canonical は root を「名前の 1 つ」として扱う。旧 `lead` だけ
-        // 予約名へ寄せる（P2 以前の env が残っている場合の互換）。
-        let label = if label == "lead" { "root" } else { label };
+        // ⚠️ 分岐は要らない — canonical は予約名を「名前の 1 つ」として扱う。旧世代の予約名
+        // （conductor / root / main）だけ現予約名へ寄せる（spawn 済み agent の env は旧名のまま）。
+        let label = if vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&label) {
+            vp_paths::ROOT_LANE_NAME
+        } else {
+            label
+        };
         let display = crate::repo::lane::LaneAddress::new(repo, label).canonical();
         // doc 40 §4: hook の会話報告（session_id + event + 報告者が名乗る session）を repo へ
         // 透過する。無い場合は従来の「変化通知のみ」（re-enrich + push）として振る舞う =
@@ -1602,11 +1606,15 @@ fn forward_conversation_report(lane: &str, payload: &serde_json::Value) -> serde
     fwd
 }
 
-/// Daemon の Unison QUIC サーバーを起動する
+/// 起動時の disk state の整え（同期）。**repo を 1 つも起動する前に、呼び手のタスク上で**済ませる。
 ///
-/// daemon-repo / events / wire / registry / device 等の live channel ハンドラーを登録し、
-/// 指定ポートで QUIC 接続を待ち受ける。
-pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
+/// ⚠️ 以前は [`start_daemon_server`] の冒頭にあり、それが `tokio::spawn` で別タスクに
+/// なっていたため、`autostart_enabled_repos`（repo/server.rs）と**並走**していた。先に起動した
+/// repo が新予約名で空の state（`<repo>__lead` の session / lane id）を書くと、migration は
+/// 「衝突時は触らない」規則で旧名を置き去りにし、その repo の会話 id / 安定 id が失われる。
+/// 2026-10-09 の main → lead 実機で `plugin-chronista-style` 1 件がこれを踏んだ（#852 の conductor → root の時から
+/// 潜在していた race）。
+pub fn prepare_state_dir_on_boot() {
     // doc 44 P1 の後始末: fold-in で読まれなくなった旧 per-repo DB (`db/sp_*`) を回収する。
     // 撤去されたのは「開くコード」だけで、disk 上の残骸はそのままだった（実機 23 dir / 約 1.2 GB）。
     let reclaimed = crate::db::reclaim_legacy_repo_dbs();
@@ -1614,7 +1622,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
         tracing::info!("旧 repo DB を回収: {reclaimed} dir（doc 44 §5.2 で破棄と確認済み）");
     }
 
-    // 予約 lane 名の改名（`main` → `root`、2026-07-21）に伴う state file の付け替え。
+    // 予約 lane 名の改名（conductor → root → main → lead）に伴う state file の付け替え。
     // lane を spawn する前に済ませる — 先に boot すると新名で空の state を作ってしまい、
     // 旧名の会話 id / 安定 id が「衝突時は上書きしない」規則で永久に取り残される。
     let renamed = vp_paths::migrate_root_lane_state_files(&crate::config::vp_state_dir());
@@ -1624,7 +1632,16 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
             vp_paths::ROOT_LANE_NAME
         );
     }
+}
 
+/// Daemon の Unison QUIC サーバーを起動する
+///
+/// daemon-repo / events / wire / registry / device 等の live channel ハンドラーを登録し、
+/// 指定ポートで QUIC 接続を待ち受ける。
+///
+/// ⚠️ disk state の整え（[`prepare_state_dir_on_boot`]）はここでは**やらない** — 呼び手が
+/// 本関数を `tokio::spawn` するため、repo 起動と並走して race になる。
+pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // [::]: dual-stack (IPv6 + IPv4) bind on all interfaces (WSL2/LAN 経由アクセス対応)
     let addr = format!("[::]:{}", port);
     let server =
@@ -2801,7 +2818,7 @@ mod tests {
             serde_json::Value::Null,
         ] {
             for session in [serde_json::json!(2), serde_json::json!("invalid")] {
-                let original = serde_json::json!({"repo":"vp", "lane":"main", "session_id":"thread-id", "event":"issued", "engine":engine, "session":session});
+                let original = serde_json::json!({"repo":"vp", "lane":"lead", "session_id":"thread-id", "event":"issued", "engine":engine, "session":session});
                 let fwd = forward_conversation_report("vp/root", &original);
                 assert_eq!(fwd["lane"], "vp/root");
                 for key in ["engine", "session", "session_id", "event"] {
@@ -3039,13 +3056,13 @@ mod tests {
                 "/repos/zeta".to_string(),
                 vec![
                     mk("zeta", "later", "2026-07-02T00:00:00Z", "shell"),
-                    mk("zeta", "main", "2026-07-03T00:00:00Z", "claude"),
+                    mk("zeta", "lead", "2026-07-03T00:00:00Z", "claude"),
                     mk("zeta", "earlier", "2026-07-01T00:00:00Z", "claude"),
                 ],
             );
             registry.insert(
                 "/repos/alpha".to_string(),
-                vec![mk("alpha", "main", "2026-07-01T00:00:00Z", "claude")],
+                vec![mk("alpha", "lead", "2026-07-01T00:00:00Z", "claude")],
             );
         }
 
@@ -3054,17 +3071,17 @@ mod tests {
             (
                 serde_json::json!({}),
                 // alpha/main → zeta/main（開発起点先）→ earlier → later（created_at 昇順）
-                vec!["main", "main", "earlier", "later"],
+                vec!["lead", "lead", "earlier", "later"],
             ),
             (
                 serde_json::json!({"repo": "zeta"}),
-                vec!["main", "earlier", "later"],
+                vec!["lead", "earlier", "later"],
             ),
             (
                 serde_json::json!({"agent": "claude"}),
-                vec!["main", "main", "earlier"],
+                vec!["lead", "lead", "earlier"],
             ),
-            (serde_json::json!({"lane": "main"}), vec!["main", "main"]),
+            (serde_json::json!({"lane": "lead"}), vec!["lead", "lead"]),
             (serde_json::json!({"repo": "nonexistent"}), vec![]),
         ];
 

@@ -17,7 +17,7 @@ beforeAll(async () => {
       contents: `
         import { mountLaneHeader, LANE_HEADER_CSS } from './LaneHeader';
         import { noteSessionList } from './console';
-        const lane = 'vp/lane/main';
+        const lane = 'vp/lane/lead';
         noteSessionList(lane, 39, [
           { key: 35, agent: 'claude', root: true, engine_session_id: 'claude-thread' },
           { key: 39, agent: 'codex', root: false, engine_session_id: 'codex-thread' },
@@ -66,7 +66,7 @@ describe('root picker interaction above terminal panes', () => {
     const row = menu.querySelectorAll('button')[1]
     expect(win.getComputedStyle(row).display).toBe('flex')
     row.click()
-    expect(win.sent).toEqual([{ t: 'console:switch_root', lane: 'vp/lane/main', session: 39 }])
+    expect(win.sent).toEqual([{ t: 'console:switch_root', lane: 'vp/lane/lead', session: 39 }])
     expect(win.document.querySelector('.eh-root-picker')).toBeNull()
   })
 

@@ -52,6 +52,6 @@ sessions: LaneSessionsWire | null,
  * FSM 投影 (2026-07-11): dev-flow FSM の現在 state。 "idle" | "working" | "hitl_pending" |
  * "awaiting_user" | "completed" | "stuck"。 daemon が snapshot 送信時に enrich する
  * (source = `vp flow progress` と同一判定)。 欠落 (旧 daemon) = None → sidebar は
- * pid heuristic に fallback。 main lane は常に None (dev-flow FSM の対象外)。
+ * pid heuristic に fallback。 lead lane は常に None (dev-flow FSM の対象外)。
  */
 flow_state: string | null, };

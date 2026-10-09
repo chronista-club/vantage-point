@@ -87,20 +87,36 @@ pub fn app_user_model_id() -> &'static str {
 ///
 /// 置き場が path crate なのは、この名前が state file 名（`<repo>__<lane>`）の一部として
 /// path 生成に入るため。
-pub const ROOT_LANE_NAME: &str = "main";
+pub const ROOT_LANE_NAME: &str = "lead";
 
 /// 旧 予約 lane 名。**migration 専用**で、新規コードから参照しない。
 ///
-/// ⚠️ **世代が 2 つある**。予約名は 2 度改名されており、どちらの形も disk に残りうる:
+/// ⚠️ **世代が 3 つある**。予約名は 3 度改名されており、どの形も disk に残りうる:
 ///
 /// | 世代 | 名前 | 改名 |
 /// |---|---|---|
 /// | 1 | `conductor` | 2026-07-21 に `root` へ（振る舞いの名前は階層ごとに意味がズレる） |
 /// | 2 | `root` | 2026-08-10 に `main` へ（UI 語彙 Main/Sub と揃える、mako 決定） |
+/// | 3 | `main` | 2026-10-09 に `lead` へ（git の `main` branch と同字で衝突、AGENTS.md の「lead checkout / lead session」に lane 側を寄せる。mako 決定） |
 ///
 /// ⚠️ 配列なのは、**世代を跨いだ file が同時に残る**ため。`conductor` 世代の state が
 /// `root` に移らないまま眠っている machine もありうるので、両方を新名へ寄せる。
-pub const LEGACY_ROOT_LANE_NAMES: &[&str] = &["conductor", "root"];
+pub const LEGACY_ROOT_LANE_NAMES: &[&str] = &["conductor", "root", "main"];
+
+/// lane 名（token）を現行の予約名へ正規化する。旧世代の予約名（[`LEGACY_ROOT_LANE_NAMES`]）と
+/// 空文字は [`ROOT_LANE_NAME`] に、それ以外（sub 名）はそのまま返す。
+///
+/// address 文字列を持たず **lane 名だけ**が届く入口（board の `show` の `lane`、MCP の
+/// `switch_lane` token、topic の lane segment、ink snapshot の dir 名）で使う。address 形は
+/// server の `parse_address` が同じ救済を持つ — 2 系統あるのは「名前だけ」の入口が address を
+/// 組み立てられない（repo を知らない）ため。
+pub fn canonical_lane_name(name: &str) -> &str {
+    if name.is_empty() || LEGACY_ROOT_LANE_NAMES.contains(&name) {
+        ROOT_LANE_NAME
+    } else {
+        name
+    }
+}
 
 /// 旧予約名で書かれた lane-scoped state file を新予約名へ改名する one-shot migration。
 /// 戻り値は改名した file 数。
@@ -114,9 +130,15 @@ pub const LEGACY_ROOT_LANE_NAMES: &[&str] = &["conductor", "root"];
 ///
 /// 冪等: 改名後は該当 file が無いので 2 回目以降は 0。衝突（新名が既存）時は**触らない**
 /// — 上書きすると新側の会話 id / 安定 id を失う。
+///
+/// ⚠️ **新しい世代から回す**（`main` → `root` → `conductor`）。前回の migration で衝突して
+/// 残った古い世代の残骸（例: `x__root` が `x__main` と並存）が先に新名を取ると、現役の
+/// `x__main` が衝突で置き去りになり **会話 id が旧世代に戻る**（moody review 2026-10-09 で
+/// mako の実機に `club-unison__root` / `__main` の並存を確認）。順序を逆にすれば現役が勝つ。
 pub fn migrate_root_lane_state_files(base: &std::path::Path) -> usize {
     LEGACY_ROOT_LANE_NAMES
         .iter()
+        .rev()
         .map(|legacy| migrate_one_legacy_lane_name(base, legacy))
         .sum()
 }
@@ -633,23 +655,72 @@ mod tests {
     /// 定義を 1 箇所に畳んだ結果「値を変える = ここ 1 行」になったので、
     /// **意図せず変わらないよう**テストで釘を打っておく（変える時は migration とセット）。
     #[test]
-    fn main_lane_name_value_is_frozen() {
-        assert_eq!(ROOT_LANE_NAME, "main");
+    fn lead_lane_name_value_is_frozen() {
+        assert_eq!(ROOT_LANE_NAME, "lead");
         // ⚠️ **旧名は消さない**。世代を跨いだ state が disk に残るので、両方を新名へ寄せる。
         // ここを削ると「その世代の会話が引けない」= resume が無音で切れる。
-        assert_eq!(LEGACY_ROOT_LANE_NAMES, &["conductor", "root"]);
+        assert_eq!(LEGACY_ROOT_LANE_NAMES, &["conductor", "root", "main"]);
     }
 
-    /// ⚠️ **2 世代とも新名へ寄る**こと。`conductor`（2026-07-21 に root へ）と
-    /// `root`（2026-08-10 に main へ）の state が同時に残りうる。
+    /// 名前だけの入口（board の lane / switch_lane token / topic segment）用の正規化。
+    #[test]
+    fn canonical_lane_name_folds_legacy_and_empty_only() {
+        for legacy in ["", "main", "root", "conductor"] {
+            assert_eq!(canonical_lane_name(legacy), ROOT_LANE_NAME, "{legacy:?}");
+        }
+        assert_eq!(canonical_lane_name("lead"), "lead");
+        assert_eq!(canonical_lane_name("feat-api"), "feat-api");
+        assert_eq!(
+            canonical_lane_name("leader"),
+            "leader",
+            "部分一致は畳まない"
+        );
+    }
+
+    /// ⚠️ 世代の残骸が並存する時は **新しい世代が新名を取る**。前回 migration の衝突で残った
+    /// `x__root` と現役の `x__main` が並ぶ環境（mako 実機）で、古い方が先に `x__lead` を取ると
+    /// 現役の会話 id が置き去りになる。
+    #[test]
+    fn migrate_prefers_the_newest_generation_on_collision() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cc = tmp.path().join("cc_sessions");
+        std::fs::create_dir_all(&cc).unwrap();
+        std::fs::write(cc.join("x__root"), "stale-aug").unwrap();
+        std::fs::write(cc.join("x__main"), "current-sep").unwrap();
+        std::fs::write(cc.join("y__conductor"), "oldest").unwrap();
+        std::fs::write(cc.join("y__root"), "newer").unwrap();
+        migrate_root_lane_state_files(tmp.path());
+        assert_eq!(
+            std::fs::read_to_string(cc.join("x__lead")).unwrap(),
+            "current-sep",
+            "現役（main 世代）が lead を取る"
+        );
+        assert!(cc.join("x__root").exists(), "古い残骸は衝突で触らず残る");
+        assert_eq!(
+            std::fs::read_to_string(cc.join("y__lead")).unwrap(),
+            "newer",
+            "root 世代と conductor 世代なら root が勝つ"
+        );
+        assert!(cc.join("y__conductor").exists());
+    }
+
+    /// ⚠️ **3 世代とも新名へ寄る**こと。`conductor`（2026-07-21 に root へ）/
+    /// `root`（2026-08-10 に main へ）/ `main`（2026-10-09 に lead へ）の state が同時に残りうる。
     #[test]
     fn migrate_covers_every_legacy_generation() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let base = tmp.path();
         let cc = base.join("cc_sessions");
         std::fs::create_dir_all(&cc).unwrap();
-        // 世代 1（conductor）/ 世代 2（root）/ `#n` 付き / 別 lane
-        for f in ["a__conductor", "b__root", "c__root#2", "d__root-old"] {
+        // 世代 1（conductor）/ 世代 2（root）/ 世代 3（main）/ `#n` 付き / 別 lane
+        for f in [
+            "a__conductor",
+            "b__root",
+            "c__root#2",
+            "d__root-old",
+            "g__main",
+            "h__main#3",
+        ] {
             std::fs::write(cc.join(f), "x").unwrap();
         }
         // terminal_replay 流儀の session 区切り（`__<n>`、pty_slot が書く形）。⚠️ 初版の
@@ -662,19 +733,21 @@ mod tests {
 
         let n = migrate_root_lane_state_files(base);
         assert_eq!(
-            n, 5,
-            "cc 3 件 + terminal_replay 2 件（`__x` は数字でないので対象外）"
+            n, 7,
+            "cc 5 件 + terminal_replay 2 件（`__x` は数字でないので対象外）"
         );
-        assert!(cc.join("a__main").exists(), "conductor 世代も main へ");
-        assert!(cc.join("b__main").exists(), "root 世代も main へ");
-        assert!(cc.join("c__main#2").exists(), "#n 付きも移る");
+        assert!(cc.join("a__lead").exists(), "conductor 世代も lead へ");
+        assert!(cc.join("b__lead").exists(), "root 世代も lead へ");
+        assert!(cc.join("g__lead").exists(), "main 世代も lead へ");
+        assert!(cc.join("h__lead#3").exists(), "main 世代の #n 付きも移る");
+        assert!(cc.join("c__lead#2").exists(), "#n 付きも移る");
         assert!(cc.join("d__root-old").exists(), "別 lane は無傷");
         assert!(
-            tr.join("e__main").exists(),
+            tr.join("e__lead").exists(),
             "terminal_replay の root session も移る"
         );
         assert!(
-            tr.join("e__main__13").exists(),
+            tr.join("e__lead__13").exists(),
             "terminal_replay の `__<n>` session も移る"
         );
         assert!(
@@ -698,12 +771,12 @@ mod tests {
         std::fs::write(cc.join("vp__feat"), "keep").unwrap();
         // 衝突ケース: 新名が既にある側は触らない
         std::fs::write(cc.join("other__conductor"), "legacy").unwrap();
-        std::fs::write(cc.join("other__main"), "already-new").unwrap();
+        std::fs::write(cc.join("other__lead"), "already-new").unwrap();
 
         assert_eq!(migrate_root_lane_state_files(base), 2);
 
-        assert!(sessions.join("vp__main.json").exists(), "拡張子ありも改名");
-        assert!(cc.join("vp__main").exists(), "拡張子なしも改名");
+        assert!(sessions.join("vp__lead.json").exists(), "拡張子ありも改名");
+        assert!(cc.join("vp__lead").exists(), "拡張子なしも改名");
         assert!(!cc.join("vp__conductor").exists(), "旧名は残らない");
         assert_eq!(
             std::fs::read_to_string(cc.join("vp__feat")).unwrap(),
@@ -711,7 +784,7 @@ mod tests {
             "他 lane は巻き添えにしない"
         );
         assert_eq!(
-            std::fs::read_to_string(cc.join("other__main")).unwrap(),
+            std::fs::read_to_string(cc.join("other__lead")).unwrap(),
             "already-new",
             "衝突時は新側を上書きしない"
         );
@@ -746,11 +819,11 @@ mod tests {
 
         assert_eq!(migrate_root_lane_state_files(base), 4);
 
-        assert!(cc.join("fleetstage__main").exists(), "素の形も改名");
-        assert!(cc.join("fleetstage__main#2").exists(), "#n 付きも改名");
-        assert!(replay.join("vp__main#10.jsonl").exists(), "#n + 拡張子");
+        assert!(cc.join("fleetstage__lead").exists(), "素の形も改名");
+        assert!(cc.join("fleetstage__lead#2").exists(), "#n 付きも改名");
+        assert!(replay.join("vp__lead#10.jsonl").exists(), "#n + 拡張子");
         assert!(
-            cc.join("x__conductor__main#3").exists(),
+            cc.join("x__conductor__lead#3").exists(),
             "repo 名が予約名で終わっても lane 部だけを切る"
         );
 

@@ -145,22 +145,24 @@ impl EngineKind {
     /// （doc 43 §3 — 二重管理で SSOT が割れるのを避ける）。
     pub fn model_choices(self) -> Vec<Choice> {
         match self {
-            // value = `--model` に渡る id。空文字 = 「engine 既定」（`--model` を注入しない）。
-            // 各系列の最新のみを載せる（2026-07-27 に claude-api skill の model catalog と照合。
-            // Opus 4.8→5 は mako 裁定。Fable 5→5.1 は CC 2.1.257 で `fable` alias の既定が 5.1 に
-            // 移ったのに追随、2026-09-02）。Haiku は date suffix 付き full id でなく **alias** —
-            // alias は系列の最新を指し続けるので catalog が古びにくい。
-            // Opus 5.5 は 2026-09-23 に登場、id は claude CLI 2.1.280 の `-p --model` で実測
-            // （modelUsage に `claude-opus-5-5` が返る）。Opus 5 は選べる期間を残すため併置。
-            // Sonnet 5.5 も同じ扱い（id は claude CLI 2.1.284 で同様に実測、2026-09-29）。
+            // value = `--model` に渡る値。空文字 = 「engine 既定」（`--model` を注入しない）。
+            //
+            // ⚠️ **固有 id（`claude-opus-5-5` 等）は載せず、系列 alias だけを載せる**（2026-10-09、
+            // mako「自動導出にはできないんだっけ」）。alias は claude CLI が常に系列の最新へ解決する
+            // （`-p --model haiku` で modelUsage に `claude-haiku-5-5` が返ることを CC 2.1.295 で実測）ので、
+            // 新 model が出ても VP 側の追随作業が要らない。固有 id の表は Opus 5.5（09-23）/
+            // Sonnet 5.5（09-29）と出るたびに手で足しており、Haiku 5.5 で 3 度目に古びた。
+            // 他の候補源は無い: claude CLI に model 列挙の subcommand は無く、binary の文字列は
+            // legacy（4.x）も migration 用に同居していて「現行」を区別できない。Models API は
+            // API key 前提で VP の経路（CLI / subscription）と合わない。
+            // 特定の版に pin したい user は settings.kdl に固有 id を手で書ける（`is_valid_model`
+            // は形式検証だけ）。
             Self::Claude => Choice::list(&[
                 ("", "Default"),
-                ("claude-fable-5-1", "Fable 5.1"),
-                ("claude-opus-5-5", "Opus 5.5"),
-                ("claude-opus-5", "Opus 5"),
-                ("claude-sonnet-5-5", "Sonnet 5.5"),
-                ("claude-sonnet-5", "Sonnet 5"),
-                ("claude-haiku-4-5", "Haiku 4.5"),
+                ("fable", "Fable (latest)"),
+                ("opus", "Opus (latest)"),
+                ("sonnet", "Sonnet (latest)"),
+                ("haiku", "Haiku (latest)"),
             ]),
             // vpcode に「engine 既定」は無い（hello.model 必須）ので "" は載せない。
             // **候補は engine の endpoint から動的に引く**（[`super::vpcode_catalog`]）—

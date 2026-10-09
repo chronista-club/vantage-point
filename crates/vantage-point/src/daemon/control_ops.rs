@@ -93,7 +93,7 @@ pub(crate) fn resolve_create_lane_args(
 pub struct LanesQuery {
     /// Repo name filter (LaneAddress.repo)
     pub repo: Option<String>,
-    /// Lane name filter — Main は "root"、 Sub は name (例: "sub")
+    /// Lane name filter — lead は "lead"、 sub は name (例: "sub")
     pub lane: Option<String>,
     /// Agent kind filter — "claude" or "shell"
     pub agent: Option<String>,

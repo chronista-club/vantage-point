@@ -103,7 +103,7 @@ pub(crate) fn lane_query_for(addr: &str) -> String {
     let rest = addr.strip_prefix("agent@").unwrap_or(addr);
     match rest.split_once('/') {
         // 既に lane form（main / sub/... / 旧世代の予約名・lead / wing）なら素通し。
-        // ⚠️ 旧予約名（root / conductor）は resolve 側（parse_address）が Main に正規化する。
+        // ⚠️ 旧予約名（main / root / conductor）は resolve 側（parse_address）が lead に正規化する。
         Some((_, tail))
             if tail == crate::repo::lane::ROOT_LANE_NAME
                 || tail == "lead"
@@ -115,7 +115,7 @@ pub(crate) fn lane_query_for(addr: &str) -> String {
         }
         // `agent@<repo>/<name>` → sub lane。
         Some((repo, name)) => format!("{repo}/sub/{name}"),
-        // `agent@<repo>` → main lane。⚠️ 予約名は定数経由（文字列直書きは rename で取り残る）。
+        // `agent@<repo>` → lead lane。⚠️ 予約名は定数経由（文字列直書きは rename で取り残る）。
         None => format!("{rest}/{}", crate::repo::lane::ROOT_LANE_NAME),
     }
 }
@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn lane_query_wire_main_to_lane() {
         // 予約名は定数経由（rename で文字列直書きが取り残された前科の固定）。
-        assert_eq!(lane_query_for("agent@vp"), "vp/main");
+        assert_eq!(lane_query_for("agent@vp"), "vp/lead");
     }
 
     #[test]
@@ -484,7 +484,7 @@ mod tests {
     #[test]
     fn lane_query_bare_lane_form_passthrough() {
         // 既に lane form のものは翻訳せず素通し（probe / test が直接撃てる）。
-        assert_eq!(lane_query_for("vp/main"), "vp/main");
+        assert_eq!(lane_query_for("vp/lead"), "vp/lead");
         assert_eq!(lane_query_for("vp/sub/x"), "vp/sub/x");
         // 旧世代（予約名 root / lead 形 / wing 形）も resolve 側が受理するので素通し。
         assert_eq!(lane_query_for("vp/root"), "vp/root");

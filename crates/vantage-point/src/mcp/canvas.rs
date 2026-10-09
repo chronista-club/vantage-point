@@ -340,7 +340,7 @@ mod show_params_tests {
     /// silent ignore され deserialize が成功すること（= backward compat）。
     #[test]
     fn show_params_silently_ignores_removed_pane_id() {
-        let json = r#"{"content":"test","pane_id":"main","append":false}"#;
+        let json = r#"{"content":"test","pane_id":"lead","append":false}"#;
         let params: ShowParams = serde_json::from_str(json).expect("deserialize 失敗");
         assert_eq!(params.content, "test");
     }

@@ -119,7 +119,7 @@ pub fn slots(lane: &str, config: &Config) -> Result<()> {
 /// 新しい console（slot）を 1 枚立てる（doc 46 P5 producer。閉じるのは [`slot_close`]）。
 ///
 /// 立つのは **新しい session**（doc 46 §1.5「Pane は必ず新しい session id で始まる」）。
-/// Main root session（= lane の代表 / mailbox の主）は動かないので、既存 console はそのまま。
+/// lead の root session（= lane の代表 / mailbox の主）は動かないので、既存 console はそのまま。
 pub fn slot_new(lane: &str, agent: Option<&str>, config: &Config) -> Result<()> {
     let path = repo_path_for_lane(lane, config)?;
     let resp = daemon_repo_request_blocking(

@@ -14,7 +14,7 @@
 
 ## Why — 起点
 
-VP-143 (#304) ship 後の 2026-05-08 dogfood で、 vantage-point/root と creo-memories/root の間で actor msg を相互送受信したところ、 4 件の整合性 gap が判明 (`mem_1CapRAtpCpahQGn8nW2fmT`):
+VP-143 (#304) ship 後の 2026-05-08 dogfood で、 vantage-point/lead と creo-memories/root の間で actor msg を相互送受信したところ、 4 件の整合性 gap が判明 (`mem_1CapRAtpCpahQGn8nW2fmT`):
 
 | # | gap | 結果 |
 |---|-----|------|
@@ -78,25 +78,25 @@ agent @ mako.chronista.club / vantage-point / sub / objrec
 | address | layer | meaning | resolve |
 |---------|-------|---------|---------|
 | `agent` | self process | inbox-local | direct dispatch |
-| `vantage-point/root` | same machine | self daemon、 main lane の agent inbox | daemon registry (port lookup) |
-| `notify@vantage-point/root` | same machine | OS notification trigger | local routing |
-| `mako/vantage-point/root` | Internet via hub | mako daemon、 hub-resolved | `hub.chronista.club` query (Phase 4+) |
-| `mako.chronista.club/vantage-point/root` | Internet (explicit hub URL) | full FQDN | hub URL inline |
-| `macbook.local/vantage-point/root` | LAN | mDNS resolve | `_vp._tcp.local` (Phase 3) |
-| `*@vantage-point/root` | broadcast | main lane 全 actor | local fanout |
+| `vantage-point/lead` | same machine | self daemon、 lead lane の agent inbox | daemon registry (port lookup) |
+| `notify@vantage-point/lead` | same machine | OS notification trigger | local routing |
+| `mako/vantage-point/lead` | Internet via hub | mako daemon、 hub-resolved | `hub.chronista.club` query (Phase 4+) |
+| `mako.chronista.club/vantage-point/lead` | Internet (explicit hub URL) | full FQDN | hub URL inline |
+| `macbook.local/vantage-point/lead` | LAN | mDNS resolve | `_vp._tcp.local` (Phase 3) |
+| `*@vantage-point/lead` | broadcast | lead lane 全 actor | local fanout |
 | `hermit_purple@machine` | self daemon (system) | daemon の actor | (reserved repo `daemon`) |
 | `hermit_purple@mako/daemon` | Internet | mako daemon's daemon | hub query |
 
 ### actor optional の効果
 
 - **default actor = `agent`** で省略可、 sidebar の lane label そのものが address として使える
-- 入力 UX: `vp wire send --to vantage-point/root --body "hello"` → 自動で `agent@vantage-point/root` 解釈
+- 入力 UX: `vp wire send --to vantage-point/lead --body "hello"` → 自動で `agent@vantage-point/lead` 解釈
 - mental model: 「sidebar に出ている文字列 = wire address」 (= 統合)
 
 ### email idiom との parallel
 
 - email: `info@example.com` (= info role + example.com domain)
-- VP: `agent@vantage-point/root` (= agent role + location)、 agent 省略可で `vantage-point/root`
+- VP: `agent@vantage-point/lead` (= agent role + location)、 agent 省略可で `vantage-point/lead`
 - 役割明示の `notify@<...>` / `mcp@<...>` / `protocol@<...>` は SMTP の `postmaster@` `noreply@` `abuse@` と同 family
 
 ---
@@ -197,9 +197,9 @@ LAN MVP (Phase 0-3) 完成後に Phase 4+ の planning session で sub-issue 化
 | pattern | 意味 |
 |---------|------|
 | `*@vantage-point` | repo broadcast (v1 既存) |
-| `*@vantage-point/root` | repo + lane broadcast |
-| `*@macbook.local/vantage-point/root` | LAN machine 内 lane broadcast |
-| `*@mako/vantage-point/root` | user-wide lane broadcast (全 machine、 Phase 4+) |
+| `*@vantage-point/lead` | repo + lane broadcast |
+| `*@macbook.local/vantage-point/lead` | LAN machine 内 lane broadcast |
+| `*@mako/vantage-point/lead` | user-wide lane broadcast (全 machine、 Phase 4+) |
 
 その他の wildcard (`agent@*`、 `*@*`、 glob) は採用しない (v1 仕様継承)。 高度 query は `vp.broadcast(...)` / `vp.find_actors(...)` API で。
 

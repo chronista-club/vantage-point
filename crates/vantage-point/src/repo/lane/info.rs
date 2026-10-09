@@ -322,7 +322,7 @@ mod tests {
             "agent": "claude",
             "created_at": "2026-05-26T00:00:00Z",
             "cwd": "/tmp",
-            "worker_status": {"branch": "main", "ahead": 0, "behind": 0, "is_merged": false, "has_changes": false}
+            "worker_status": {"branch": "lead", "ahead": 0, "behind": 0, "is_merged": false, "has_changes": false}
         }"#;
         let info: LaneInfo = serde_json::from_str(json).expect("パース自体は成功する");
         assert!(
@@ -336,8 +336,8 @@ mod tests {
     #[test]
     fn lane_info_decodes_legacy_payload_with_tmux_field() {
         let legacy = r#"{
-            "address": {"repo": "vp", "kind": "main"},
-            "kind": "main",
+            "address": {"repo": "vp", "kind": "lead"},
+            "kind": "lead",
             "state": "running",
             "agent": "claude",
             "created_at": "2026-05-01T00:00:00Z",

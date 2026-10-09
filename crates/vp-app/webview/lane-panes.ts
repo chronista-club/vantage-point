@@ -152,7 +152,7 @@ export function sessionOfHostId(id: string): number | null {
  *  B でも開いていて、位置まで共有される」になる。 */
 export function boardKeyOf(address: string): string {
 	// ⚠️ 分解は `lane-address.ts` の 1 箇所（旧実装は `/sub/` を探す形で、canonical では
-	// 全 lane が Main のキーに集約されていた）。
+	// 全 lane が lead のキーに集約されていた）。
 	return boardKey(repoOfAddress(address), subNameOfAddress(address));
 }
 

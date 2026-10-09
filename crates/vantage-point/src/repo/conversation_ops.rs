@@ -849,7 +849,7 @@ mod tests {
         }
         let session = session_registry::create(
             &addr.repo,
-            "main",
+            "lead",
             "claude",
             "codex",
             SessionMode::Gui,
@@ -857,9 +857,9 @@ mod tests {
         )
         .unwrap();
         let thread = "01a09005-f22f-7dd3-9e7b-0ad53926478b";
-        session_registry::set_conversation(&addr.repo, "main", "claude", session, Some(thread))
+        session_registry::set_conversation(&addr.repo, "lead", "claude", session, Some(thread))
             .unwrap();
-        let topic = "repo/conversation/data/codex-retry-test~lane~main/event";
+        let topic = "repo/conversation/data/codex-retry-test~lane~lead/event";
         let (_id, mut events) = state.topic_router.subscribe(topic).await;
         let run = async {
             for (attempt, prompt) in [(1, "first unsent prompt"), (2, "explicit retry prompt")] {
@@ -867,7 +867,7 @@ mod tests {
                     &state,
                     "conversation_submit",
                     serde_json::json!({
-                        "lane": "codex-retry-test/main", "session": session, "prompt": prompt,
+                        "lane": "codex-retry-test/lead", "session": session, "prompt": prompt,
                         "client_user_message_id": "retry-request"
                     }),
                 )
@@ -898,7 +898,7 @@ mod tests {
                         }
                     }
                 }
-                let reg = session_registry::load(&addr.repo, "main", "claude");
+                let reg = session_registry::load(&addr.repo, "lead", "claude");
                 assert_eq!(
                     reg.sessions
                         .iter()
@@ -951,7 +951,7 @@ mod tests {
             dispatch_repo_method(
                 &state,
                 "conversation_demand_start",
-                serde_json::json!({"lane":"codex-retry-test/main", "session":session}),
+                serde_json::json!({"lane":"codex-retry-test/lead", "session":session}),
             )
             .await
             .unwrap();
@@ -1036,7 +1036,7 @@ mod tests {
             })
             .await
             .expect("native Queue の再取得完了を待つ");
-            let configure = |effort: &str| serde_json::json!({"lane":"codex-retry-test/main","session":session,"settings":{"codex":{"model":"fixture-model","effort":effort}}});
+            let configure = |effort: &str| serde_json::json!({"lane":"codex-retry-test/lead","session":session,"settings":{"codex":{"model":"fixture-model","effort":effort}}});
             let result =
                 dispatch_repo_method(&state, "conversation_set_settings", configure("high"))
                     .await
@@ -1047,7 +1047,7 @@ mod tests {
                     .await
                     .is_err()
             );
-            let saved = session_registry::load(&addr.repo, "main", "claude");
+            let saved = session_registry::load(&addr.repo, "lead", "claude");
             let pair = saved
                 .sessions
                 .iter()
@@ -1065,7 +1065,7 @@ mod tests {
                     .filter(|entry| entry.key != session)
                     .all(|entry| entry.settings.is_none())
             );
-            dispatch_repo_method(&state, "conversation_submit", serde_json::json!({"lane":"codex-retry-test/main","session":session,"prompt":"configured prompt","client_user_message_id":"configured-request"})).await.unwrap();
+            dispatch_repo_method(&state, "conversation_submit", serde_json::json!({"lane":"codex-retry-test/lead","session":session,"prompt":"configured prompt","client_user_message_id":"configured-request"})).await.unwrap();
             loop {
                 let (_, event) =
                     tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
@@ -1138,7 +1138,7 @@ mod tests {
         }
         let key = session_registry::create(
             &addr.repo,
-            "main",
+            "lead",
             "claude",
             "codex",
             SessionMode::Gui,
@@ -1182,7 +1182,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "conversation_nudge",
-            serde_json::json!({ "lane": "vp/main" }),
+            serde_json::json!({ "lane": "vp/lead" }),
         )
         .await;
         assert!(res.is_err(), "text 未指定は Err: {res:?}");
@@ -1198,7 +1198,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "conversation_nudge",
-            serde_json::json!({ "lane": "vp/main", "text": "x" }),
+            serde_json::json!({ "lane": "vp/lead", "text": "x" }),
         )
         .await;
         assert!(res.is_err(), "不在 lane への nudge は Err: {res:?}");
@@ -1225,7 +1225,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "conversation_respond",
-            serde_json::json!({ "lane": "vp/main" }),
+            serde_json::json!({ "lane": "vp/lead" }),
         )
         .await;
         assert!(res.is_err(), "request_id 未指定は Err: {res:?}");
@@ -1241,7 +1241,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "conversation_respond",
-            serde_json::json!({ "lane": "vp/main", "request_id": "r1", "answers": {} }),
+            serde_json::json!({ "lane": "vp/lead", "request_id": "r1", "answers": {} }),
         )
         .await;
         assert!(res.is_err(), "engine 不在への respond は Err: {res:?}");
@@ -1276,7 +1276,7 @@ mod tests {
             let res = dispatch_repo_method(
                 &state,
                 method,
-                serde_json::json!({ "lane": "vp/main", "session": 1 }),
+                serde_json::json!({ "lane": "vp/lead", "session": 1 }),
             )
             .await;
             assert!(res.is_err(), "{method}: 不在 lane は Err: {res:?}");
@@ -1285,7 +1285,7 @@ mod tests {
         let res = dispatch_repo_method(
             &state,
             "conversation_session_focus",
-            serde_json::json!({ "lane": "vp/main" }),
+            serde_json::json!({ "lane": "vp/lead" }),
         )
         .await;
         assert!(res.is_err(), "session 未指定の focus は Err: {res:?}");
@@ -1387,7 +1387,7 @@ mod tests {
             "✕ で PtySlot が畳まれる（動詞 → reconcile の配線が繋がっている証拠）"
         );
         assert!(
-            !crate::lane::session_registry::load("vp", "main", "shell")
+            !crate::lane::session_registry::load("vp", "lead", "shell")
                 .sessions
                 .iter()
                 .any(|s| s.key == session),
@@ -1419,7 +1419,7 @@ mod tests {
         let state = build_test_app_state().await;
         let (_id, mut srx) = state
             .topic_router
-            .subscribe("repo/conversation/data/vp~lane~main/event")
+            .subscribe("repo/conversation/data/vp~lane~lead/event")
             .await;
 
         // ⚠️ 入力はあえて**旧世代の env 形**（`vp/root`）。session_now は parse で正規化した
@@ -1437,14 +1437,14 @@ mod tests {
             .await
             .expect("timeout")
             .expect("recv");
-        assert_eq!(topic, "repo/conversation/data/vp~lane~main/event");
+        assert_eq!(topic, "repo/conversation/data/vp~lane~lead/event");
         match msg {
             RepoMessage::ConversationEvent {
                 lane,
                 session,
                 event,
             } => {
-                assert_eq!(lane, "vp/lane/main", "route には canonical が流れる");
+                assert_eq!(lane, "vp/lane/lead", "route には canonical が流れる");
                 assert_eq!(session, 3);
                 assert_eq!(
                     event,
@@ -1460,7 +1460,7 @@ mod tests {
         let err = dispatch_repo_method(
             &state,
             "session_now",
-            serde_json::json!({ "lane": "vp/main", "text": "  " }),
+            serde_json::json!({ "lane": "vp/lead", "text": "  " }),
         )
         .await
         .expect_err("空 text は拒否");
@@ -1608,7 +1608,7 @@ mod tests {
             dispatch_repo_method(
                 &state,
                 "conversation_submit",
-                serde_json::json!({ "lane": "vp/main" })
+                serde_json::json!({ "lane": "vp/lead" })
             )
             .await
             .is_err(),
@@ -1619,7 +1619,7 @@ mod tests {
             dispatch_repo_method(
                 &state,
                 "conversation_submit",
-                serde_json::json!({ "lane": "vp/main", "prompt": "hi" })
+                serde_json::json!({ "lane": "vp/lead", "prompt": "hi" })
             )
             .await
             .is_err(),
@@ -1640,7 +1640,7 @@ mod tests {
         let err = dispatch_repo_method(
             &state,
             "conversation_submit",
-            serde_json::json!({ "lane": "vptest-c1-tui/main", "prompt": "hi" }),
+            serde_json::json!({ "lane": "vptest-c1-tui/lead", "prompt": "hi" }),
         )
         .await
         .expect_err("tui mode は Err");
@@ -1670,7 +1670,7 @@ mod tests {
         let _state_dir = crate::test_env::state_dir_async().await;
         let state = build_test_app_state().await;
         let addr = insert_test_lane(&state, "vptest-ssa", SessionMode::Tui).await;
-        let lane = "vptest-ssa/main";
+        let lane = "vptest-ssa/lead";
 
         // session 省略は Err（root 決め打ちにしない = 誤配送を黙って起こさない）。
         assert!(
@@ -1710,7 +1710,7 @@ mod tests {
         // doc 53 R1: 旧 root cache は退役 — 「cache も追従する」の性質は「読み手が SSOT を
         // 直読する」に言い直された（§8.6: テストの消滅 = 性質の消滅にしない）。
         assert_eq!(
-            session_registry::root_mode(&addr.repo, "main"),
+            session_registry::root_mode(&addr.repo, "lead"),
             SessionMode::Gui,
             "root session の mode が registry に永続する"
         );
@@ -1756,12 +1756,12 @@ mod tests {
         let _state_dir = crate::test_env::state_dir_async().await;
         let state = build_test_app_state().await;
         let addr = insert_test_lane(&state, "vptest-cap", SessionMode::Tui).await;
-        let lane = "vptest-cap/main";
+        let lane = "vptest-cap/lead";
 
         // lane の agent は conversation（chat 可能）だが、**非 root に shell の session** を足す。
         let shell = session_registry::create(
             &addr.repo,
-            "main",
+            "lead",
             "claude",
             "shell",
             SessionMode::Tui,
@@ -1814,13 +1814,13 @@ mod tests {
         // conversation data は非 retained なので submit 前に subscribe。
         let (_id, mut srx) = state
             .topic_router
-            .subscribe("repo/conversation/data/vptest-c1-rt~main/event")
+            .subscribe("repo/conversation/data/vptest-c1-rt~lead/event")
             .await;
 
         dispatch_repo_method(
             &state,
             "conversation_submit",
-            serde_json::json!({ "lane": "vptest-c1-rt/main", "prompt": "Reply with exactly: PONG" }),
+            serde_json::json!({ "lane": "vptest-c1-rt/lead", "prompt": "Reply with exactly: PONG" }),
         )
         .await
         .expect("conversation_submit ok");

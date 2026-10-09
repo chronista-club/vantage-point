@@ -1,9 +1,9 @@
 # Guide: dev-flow primitives (`flow_handoff` / `flow_progress`)
 
 > **Status**: MVP + 6-state FSM (2026-05-28 初版 5-state、 2026-07-11 `awaiting_user` 追加で 6-state、 `mako/flow-tools`)
-> **Scope**: Main × Sub × Memory orchestration の core 操作を CLI + MCP 両方から 1 call で。
+> **Scope**: lead × sub × Memory orchestration の core 操作を CLI + MCP 両方から 1 call で。
 
-dev-flow (= Main が複数 Sub に並列 task を渡し、 進捗を集約する開発手順) の頻出操作を atomic primitive 化した。
+dev-flow (= lead が複数 sub に並列 task を渡し、 進捗を集約する開発手順) の頻出操作を atomic primitive 化した。
 
 > messaging 全体（wire store / category / ack 台帳 / federation / flow_state の sidebar 投影）の見取り図は [`messaging.md`](./messaging.md)。 本 doc は dev-flow primitive（`flow_handoff` / `flow_progress`）の tool 詳細に絞る。
 
@@ -121,7 +121,7 @@ vp flow progress --format table
 
 ```
 Repo: vantage-point
-  Main unread wire: 2
+  lead unread wire: 2
 
 SUB                STATE      MODE                 AHEAD  BEHIND   DIRTY  UNREAD BRANCH
 feat-api                 Running    🤝 hitl-pending          3       0       2       0 wip/feat-api

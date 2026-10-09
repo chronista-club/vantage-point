@@ -1499,8 +1499,8 @@ mod tests {
         // production の federate_wire_send を直接叩く（connect → discover で handle→node_id →
         // dial_relay → send）。宛先 daemon は handle "vp-wire-target" で明示（曖昧性回避）。
         let envelope = json!({
-            "from": "agent@vp-wire-source/proj/main",
-            "to": ["agent@nostos/main"],
+            "from": "agent@vp-wire-source/proj/lead",
+            "to": ["agent@nostos/lead"],
             "body": { "kind": "event", "text": "遠方 node からの wire" }
         });
         federate_wire_send(&addr, "vp-wire-target", "vp-wire-source", &envelope)
@@ -1515,7 +1515,7 @@ mod tests {
                 &notifier,
                 &notify,
                 "recv",
-                json!({ "agent": "agent@nostos/main", "timeout": 0 }),
+                json!({ "agent": "agent@nostos/lead", "timeout": 0 }),
             )
             .await
             .expect("wire recv");

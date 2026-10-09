@@ -365,7 +365,7 @@ fn reject_reserved_sub_name(name: &str) -> Result<(), String> {
     //
     // doc 44 P2 以降、予約名の真実源は `ROOT_LANE_NAME` 定数。文字列直書きだと
     // 予約名を変えた時にここだけ古い値で残る (§6.4「型を経由しない文字列」の同型)。
-    // ⚠️ **旧世代の予約名も禁止**。予約名は 2 度改名されており（`conductor` → `root` → `main`）、
+    // ⚠️ **旧世代の予約名も禁止**。予約名は 3 度改名されており（`conductor` → `root` → `main` → `lead`）、
     // 旧名で Sub を作れると `<repo>__root` のような**旧 state と衝突**する
     // （migration は「衝突時は触らない」ので、その lane の会話が永久に取り残される）。
     if name == vp_paths::ROOT_LANE_NAME || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&name) {
@@ -462,8 +462,11 @@ mod tests {
 
     #[test]
     fn main_name_rejected() {
-        // VP-166: `main` は main lane の予約名 (mailbox box key `<agent>#main` と衝突)
-        assert!(validate_sub_name("root").is_err());
+        // VP-166: 予約名は sub 名にできない (mailbox box key `<agent>#<name>` と衝突)。
+        // 現行 `lead` + 旧世代 3 つ（旧名で作ると旧 state と衝突する、#1004）。
+        for reserved in ["lead", "main", "root", "conductor"] {
+            assert!(validate_sub_name(reserved).is_err(), "{reserved} は予約名");
+        }
         // 部分一致や派生名は OK (= `main` 完全一致のみ禁止)
         assert!(validate_sub_name("leader").is_ok());
         assert!(validate_sub_name("my-root").is_ok());

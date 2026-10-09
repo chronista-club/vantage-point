@@ -85,16 +85,16 @@ impl SelfLane {
     /// 4. cwd / config 取得失敗 → root_repo=None (fail-closed)
     pub fn detect() -> Self {
         // identity 解決不能な main (cwd/config 取得失敗) → None で fail-closed
-        let main_unresolved = || SelfLane {
+        let lead_unresolved = || SelfLane {
             lane_name: crate::repo::lane::ROOT_LANE_NAME.to_string(),
             sub_parent: None,
             root_repo: None,
         };
         let Ok(cwd) = std::env::current_dir() else {
-            return main_unresolved();
+            return lead_unresolved();
         };
         let Ok(config) = crate::config::Config::load() else {
-            return main_unresolved();
+            return lead_unresolved();
         };
         // sub 判定: cwd が <repo>/.vp/lanes/<name> 配下、かつ repo が config 登録済
         if let Some((sub_name, repo_root)) = detect_repo_local_sub(&cwd)
@@ -439,7 +439,7 @@ impl VantageMcp {
     }
 
     // =========================================================================
-    // dev-flow primitives (= Main × Sub × Memory orchestration の core 操作)
+    // dev-flow primitives (= lead × sub × Memory orchestration の core 操作)
     //
     // `flow_handoff`: P4 (add_sub + wire_send + nudge) を atomic 1 step。
     // `flow_progress`: P5 (list_lanes + per-lane unread count + git status) を集約 1 view。

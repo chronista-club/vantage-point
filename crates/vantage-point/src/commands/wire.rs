@@ -384,7 +384,7 @@ async fn thread(message_id: &str) -> Result<()> {
 fn wire_address_from_env(repo: Option<&str>, lane: Option<&str>) -> Option<String> {
     let repo = repo.filter(|s| !s.is_empty())?;
     let lane = lane.filter(|s| !s.is_empty())?;
-    // ⚠️ 旧世代の予約名（`root` / `conductor`）も Main とみなす。env は spawn 時に焼かれる
+    // ⚠️ 旧世代の予約名（`main` / `root` / `conductor`）も lead とみなす。env は spawn 時に焼かれる
     // ため、daemon を更新しても**既に生きている agent の VP_LANE は旧名のまま**。ここで
     // 弾くと更新を跨いだ hook の名乗りが `agent@<repo>/root`（実在しない Sub）になり、
     // 報告が誰にも届かなくなる（session_now と同じ世代混在の入口）。
@@ -834,7 +834,7 @@ mod tests {
     fn codex_console_hook_report_preserves_engine_and_session() {
         let payload = hook_conversation_payload(
             "vp",
-            "main",
+            "lead",
             "01a09005-f22f-7dd3-9e7b-0ad53926478b",
             "issued",
             Some(2),
@@ -853,12 +853,12 @@ mod tests {
     fn codex_console_hook_requires_explicit_target_and_known_engine() {
         for session in [None, Some(0)] {
             assert!(
-                hook_conversation_payload("vp", "main", "thread", "issued", session, Some("codex"))
+                hook_conversation_payload("vp", "lead", "thread", "issued", session, Some("codex"))
                     .is_none()
             );
         }
         assert!(
-            hook_conversation_payload("vp", "main", "thread", "issued", Some(2), Some("other"))
+            hook_conversation_payload("vp", "lead", "thread", "issued", Some(2), Some("other"))
                 .is_none()
         );
     }
@@ -866,7 +866,7 @@ mod tests {
     #[test]
     fn legacy_claude_hook_keeps_its_unspecified_target() {
         let payload =
-            hook_conversation_payload("vp", "main", "claude-id", "spoken", None, None).unwrap();
+            hook_conversation_payload("vp", "lead", "claude-id", "spoken", None, None).unwrap();
         assert!(payload.get("engine").is_none());
         assert!(payload.get("session").is_none());
     }
@@ -1017,10 +1017,10 @@ mod tests {
     #[test]
     fn hook_address_from_env_values() {
         assert_eq!(
-            wire_address_from_env(Some("vp"), Some("main")).as_deref(),
+            wire_address_from_env(Some("vp"), Some("lead")).as_deref(),
             Some("agent@vp")
         );
-        // ⚠️ 旧世代 env（daemon 更新前に spawn した agent の VP_LANE）も Main を名乗れること。
+        // ⚠️ 旧世代 env（daemon 更新前に spawn した agent の VP_LANE）も lead を名乗れること。
         assert_eq!(
             wire_address_from_env(Some("vp"), Some("root")).as_deref(),
             Some("agent@vp")

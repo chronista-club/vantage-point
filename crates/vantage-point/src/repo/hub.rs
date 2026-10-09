@@ -155,7 +155,7 @@ mod tests {
         let mut rx = hub.subscribe();
 
         let msg = RepoMessage::Show {
-            pane_id: "main".to_string(),
+            pane_id: "lead".to_string(),
             content: Content::Markdown("# Hello".to_string()),
             append: false,
             title: None,
@@ -167,7 +167,7 @@ mod tests {
         let received = rx.try_recv().unwrap();
         match received {
             RepoMessage::Show { pane_id, .. } => {
-                assert_eq!(pane_id, "main");
+                assert_eq!(pane_id, "lead");
             }
             _ => panic!("Expected Show message"),
         }

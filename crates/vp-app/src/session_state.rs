@@ -308,7 +308,7 @@ impl SessionState {
                     // 旧形を検出したら 1 行残す（復旧は lane を選び直すだけ）。
                     // ⚠️ 検出は「形が旧い」に加えて「**予約名が旧世代**」も見る —
                     // `<repo>/lane/root` は形こそ現行だが、daemon が発行する新名
-                    // （`<repo>/lane/main`）とは一致しないので同じく 1 回外れる。
+                    // （`<repo>/lane/lead`）とは一致しないので同じく 1 回外れる。
                     if let Some(addr) = &state.active_lane_address
                         && (!addr.contains("/lane/")
                             || vp_paths::LEGACY_ROOT_LANE_NAMES

@@ -34,7 +34,7 @@ pub(super) fn repos_loaded(
 ) {
     // 既存 SidebarState とマージ:
     //  - 同じ path があれば既存 state を維持 (expanded / panes / active 保持)
-    //  - 新規は RepoPaneState::new (Main Agent 1 つ)
+    //  - 新規は RepoPaneState::new (lead agent 1 つ)
     //  - サーバから消えた repo は除外
     //
     // VP-101 follow-up: register 後の auto-expand。
@@ -172,7 +172,7 @@ pub(super) fn lanes_loaded(
     }
     // ループする event なので log omit (= LanesLoaded push と pair で noise 源)。
     // Architecture v4: active_lane_address が未設定なら最初の Lane を auto-select。
-    // 「初回起動 → Main Lane が main area に出る」UX を Lane SSOT で保つ。
+    // 「初回起動 → lead lane が main area に出る」UX を Lane SSOT で保つ。
     //
     // 例外: secondary instance (Cmd+N で spawn = `instance_index != 0`) の場合は
     // auto-select を skip。 元 vp-app が既に同 lane の terminal WS を持ってる事が多く、
