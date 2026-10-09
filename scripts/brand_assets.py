@@ -74,7 +74,7 @@ def generate():
            'PHOSPHOR-LICENSE.txt':license_text.encode()}
     manifest = {'version':1,'status':'adopted','source':'assets/brand/source.svg',
                 'sourceSha256':hashlib.sha256(source.read_bytes()).hexdigest(),
-                'approvedStudy':'https://vantage-point.app/brand/studies/2026-10-02-v7/app-icon.png',
+                'design':'docs/design/74-brand-identity.md',
                 'renderer':renderer_version,
                 'files':{name:hashlib.sha256(data).hexdigest() for name,data in web.items()}}
     web['manifest.json']=(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n').encode()

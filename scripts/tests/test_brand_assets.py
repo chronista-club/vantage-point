@@ -55,6 +55,8 @@ class BrandAssetsTest(unittest.TestCase):
             manifest=json.loads((web/'manifest.json').read_text())
             self.assertEqual(manifest['status'],'adopted')
             self.assertEqual(manifest['source'],'assets/brand/source.svg')
+            self.assertNotIn('approvedStudy',manifest, 'old study must not be presented as current approval')
+            self.assertEqual(manifest['design'],'docs/design/74-brand-identity.md')
 
     def test_check_detects_drift_without_rewriting_files(self):
         with tempfile.TemporaryDirectory() as tmp:
