@@ -394,12 +394,23 @@ pub(crate) async fn handle_conversation_session_remove(
             .ok_or_else(|| "conversation_session_remove: session 未指定".to_string())?;
     let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("conversation_session_remove: lane パース失敗: {lane}"))?;
-    let focused = state
-        .lane_pool
-        .read()
-        .await
-        .remove_session(&addr, session)
-        .map_err(|e| format!("conversation_session_remove: {e}"))?;
+    // ✕ は**冪等**: 既に無い session の削除は Err でなく「既に無い（absent）」として成功させ、
+    // 名簿を push し直す。GUI は削除後の名簿 push で行 / tab を消す設計（doc 53 §11）だが、
+    // 何かの理由で push が反映されずに行が残ると、もう一度 ✕ を押した時に server の
+    // 「session が存在しません」がそのまま sidebar のエラーになっていた（2026-10-09 実機、
+    // creo-memories/lead #36: 1 回目の削除は成功、2 回目で Err）。冪等にすれば 2 回目は
+    // 名簿の再 push で取り残しが自己修復し、エラーも出ない。root の削除拒否（InvalidInput）
+    // と lane 不在は従来どおり Err。
+    let focused = match state.lane_pool.read().await.remove_session(&addr, session) {
+        Ok(f) => Some(f),
+        Err(e) if is_session_not_found(&e) => {
+            tracing::info!(
+                "session remove: addr={addr} session={session} は既に無い（冪等に成功、名簿を再 push）"
+            );
+            None
+        }
+        Err(e) => return Err(format!("conversation_session_remove: {e:#}")),
+    };
     // doc 53 §12.4 R3c: registry から消えた session の実体（PtySlot / chat engine）は
     // reconcile が畳む。旧実装は動詞が種類ごとに手で畳んでいて、A6 で term pane に ✕ が
     // 出たとき **chat 側だけ畳んで PTY が孤児**になるバグを出した（doc 50 §4.6）。
@@ -413,7 +424,20 @@ pub(crate) async fn handle_conversation_session_remove(
         .discard_session_traces(&addr, session);
     // doc 53 §11: session が 1 本消えた = roster の変化。
     super::lane::lifecycle::emit_lane_update(state, &addr).await;
-    Ok(serde_json::json!({"status": "ok", "lane": lane, "session": session, "focused": focused}))
+    Ok(serde_json::json!({
+        "status": if focused.is_some() { "ok" } else { "absent" },
+        "lane": lane,
+        "session": session,
+        "focused": focused,
+    }))
+}
+
+/// `remove_session` の Err が「session が既に無い」（registry の `NotFound`）か。
+/// `anyhow` の chain を辿って io::Error の kind で判定する（文言に依存しない）。
+fn is_session_not_found(e: &anyhow::Error) -> bool {
+    e.chain()
+        .filter_map(|c| c.downcast_ref::<std::io::Error>())
+        .any(|io| io.kind() == std::io::ErrorKind::NotFound)
 }
 
 /// doc 39 §4: tui の ✨ New — 新 session を作って root をそれへ向ける。
@@ -1297,6 +1321,81 @@ mod tests {
     /// 繋がっているか**は handler を通してしか見えない（LanePool 単体テストは動詞と reconcile を
     /// テストが手で並べるため、本番で片方を呼び忘れても緑になる）。
     ///
+    /// ✕ は冪等: 既に無い session の削除は Err でなく `status: "absent"` で成功し、root の削除と
+    /// lane 不在は従来どおり Err（2026-10-09 実機の「2 回目の ✕ で session が存在しません」対策）。
+    #[tokio::test]
+    async fn session_remove_is_idempotent_for_absent_session_but_still_rejects_root() {
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::state::build_test_app_state;
+        use crate::repo::unison_server::dispatch_repo_method;
+
+        let _state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let addr = LaneAddress::root("vp");
+        let lane = addr.to_string();
+        {
+            let mut pool = state.lane_pool.write().await;
+            pool.insert(LaneInfo {
+                id: Default::default(),
+                address: addr.clone(),
+                state: LaneState::Running,
+                agent: "shell".to_string(),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                pid: None,
+                cwd: std::env::temp_dir().to_string_lossy().to_string(),
+                sub_status: None,
+                branch: None,
+                cc_session_id: None,
+                sessions: None,
+                engine_session_id: None,
+                agent_name: None,
+                flow_state: None,
+            });
+        }
+        // #2 を作って消す → 2 回目は absent で成功
+        let res = dispatch_repo_method(
+            &state,
+            "lane_slot_new",
+            serde_json::json!({ "lane": lane.clone() }),
+        )
+        .await
+        .expect("lane_slot_new");
+        let session = res["session"].as_u64().expect("session") as u32;
+        let first = dispatch_repo_method(
+            &state,
+            "conversation_session_remove",
+            serde_json::json!({ "lane": lane.clone(), "session": session }),
+        )
+        .await
+        .expect("1 回目は ok");
+        assert_eq!(first["status"], "ok");
+        let second = dispatch_repo_method(
+            &state,
+            "conversation_session_remove",
+            serde_json::json!({ "lane": lane.clone(), "session": session }),
+        )
+        .await
+        .expect("2 回目は Err にしない（冪等）");
+        assert_eq!(second["status"], "absent");
+        assert!(second["focused"].is_null());
+        // root は従来どおり拒否（InvalidInput は NotFound ではない）
+        let root = dispatch_repo_method(
+            &state,
+            "conversation_session_remove",
+            serde_json::json!({ "lane": lane.clone(), "session": 1 }),
+        )
+        .await;
+        assert!(root.is_err(), "root の削除は Err のまま: {root:?}");
+        // lane 不在も Err
+        let missing = dispatch_repo_method(
+            &state,
+            "conversation_session_remove",
+            serde_json::json!({ "lane": "vp/lane/nope", "session": 2 }),
+        )
+        .await;
+        assert!(missing.is_err());
+    }
+
     /// 併せて**順序**も固定する: `PtySlot::drop` は最終 flush で replay を disk に書き戻すので、
     /// replay 破棄が reconcile より前だと消したそばから復活する。ここでは slot に固有の目印を
     /// 出力させ、✕ の後にそれが**残っていない**ことを見る（team-b 指摘 2026-07-26）。
