@@ -1327,9 +1327,14 @@ impl LanePool {
             .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
         let agent = info.agent.clone();
         let lane_label = crate::repo::agent_spawner::lane_label(addr).to_string();
+        // ⚠️ io::Error の kind（NotFound = 既に無い / InvalidInput = root）を**型のまま**残す。
+        // 呼び手（`handle_conversation_session_remove`）が NotFound を「冪等に成功」と扱うため
+        // （文字列照合で判定すると文言変更で静かに壊れる）。
         let new_focused =
             session_registry::remove(&addr.repo, &lane_label, &agent, key).map_err(|e| {
-                anyhow::anyhow!("session remove に失敗（addr={addr}, session={key}）: {e}")
+                anyhow::Error::new(e).context(format!(
+                    "session remove に失敗（addr={addr}, session={key}）"
+                ))
             })?;
         tracing::info!("session remove: addr={addr} session={key} → focused={new_focused}");
         self.codex_question_sessions
