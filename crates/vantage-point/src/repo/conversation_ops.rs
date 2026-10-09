@@ -378,7 +378,8 @@ pub(crate) async fn handle_conversation_session_focus(
 }
 
 /// doc 38 Phase 3: session を取り除く（tab を閉じる）。`{lane, session}` →
-/// `{lane, session, focused}`（focused = 除去後の focus 先。GUI は list 再取得で追随）。
+/// `{status, lane, session, focused}`（focused = 除去後の focus 先。GUI は list 再取得で追随）。
+/// status は `"ok"` / `"absent"`（session が既に無い = 冪等に成功、このとき focused は null）。
 /// root は registry が拒否（doc 39 §6 — 最後の 1 本の拒否を包含。GUI も root タブの × を
 /// 隠す = 多重防御）。lane を素に戻すのは Reset lane（fresh restart）の役目。
 pub(crate) async fn handle_conversation_session_remove(
@@ -1315,12 +1316,6 @@ mod tests {
         assert!(res.is_err(), "session 未指定の focus は Err: {res:?}");
     }
 
-    /// **✕ の end-to-end（dispatch → 動詞 → reconcile → replay 破棄）**（doc 53 §12.4 / R3c-1）。
-    ///
-    /// R3c で「動詞は registry に書くだけ / 実体は reconcile が畳む」に割れたので、**配線が
-    /// 繋がっているか**は handler を通してしか見えない（LanePool 単体テストは動詞と reconcile を
-    /// テストが手で並べるため、本番で片方を呼び忘れても緑になる）。
-    ///
     /// ✕ は冪等: 既に無い session の削除は Err でなく `status: "absent"` で成功し、root の削除と
     /// lane 不在は従来どおり Err（2026-10-09 実機の「2 回目の ✕ で session が存在しません」対策）。
     #[tokio::test]
@@ -1396,6 +1391,12 @@ mod tests {
         assert!(missing.is_err());
     }
 
+    /// **✕ の end-to-end（dispatch → 動詞 → reconcile → replay 破棄）**（doc 53 §12.4 / R3c-1）。
+    ///
+    /// R3c で「動詞は registry に書くだけ / 実体は reconcile が畳む」に割れたので、**配線が
+    /// 繋がっているか**は handler を通してしか見えない（LanePool 単体テストは動詞と reconcile を
+    /// テストが手で並べるため、本番で片方を呼び忘れても緑になる）。
+    ///
     /// 併せて**順序**も固定する: `PtySlot::drop` は最終 flush で replay を disk に書き戻すので、
     /// replay 破棄が reconcile より前だと消したそばから復活する。ここでは slot に固有の目印を
     /// 出力させ、✕ の後にそれが**残っていない**ことを見る（team-b 指摘 2026-07-26）。
