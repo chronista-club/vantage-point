@@ -204,6 +204,55 @@ fn is_safe_session_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
+/// `--settings` に渡す値を決める。**file path**（短い）が基本、書けなければ inline JSON（長いが確実）。
+///
+/// ## なぜ file か（2026-10-09、mako「短くできないかな」）
+///
+/// 旧実装は [`WIRE_HOOKS`] の JSON を**そのまま 1 行に 2 回**（resume 側と fresh 側）埋めていた
+/// ので、console に注入される行が 400 文字超になり、shell の画面に JSON の壁が出ていた。
+/// claude は `--settings <file-or-json>` で path も受けるので、state dir に 1 回書いて path を
+/// 渡す。中身は VP の版で変わりうるので、既存 file が [`WIRE_HOOKS`] と違えば書き直す（冪等）。
+///
+/// fallback が inline なのは「hook が効かない」より「行が長い」方がましだから（hook は
+/// wire の受領 / now-line の実体で、無いと会話が無音で外れる）。path に `'` が入ると shell の
+/// 引用が壊れるのでそれも inline に倒す。
+fn wire_hooks_settings_arg() -> String {
+    wire_hooks_settings_arg_in(&crate::config::vp_state_dir())
+}
+
+/// [`wire_hooks_settings_arg`] の base 注入版（テスト用）。
+fn wire_hooks_settings_arg_in(base: &std::path::Path) -> String {
+    let path = base.join("claude").join("wire-hooks.json");
+    let Some(path_str) = path.to_str().filter(|s| !s.contains('\'')) else {
+        return WIRE_HOOKS.to_string();
+    };
+    let up_to_date = std::fs::read(&path)
+        .map(|b| b == WIRE_HOOKS.as_bytes())
+        .unwrap_or(false);
+    if up_to_date {
+        return path_str.to_string();
+    }
+    // tmp → rename の atomic 書き込み。版上げ直後に複数 lane が同時に respawn すると、書き途中の
+    // file を別の claude が読みうる（`std::fs::write` は truncate してから書く）。tmp 名に pid を
+    // 入れるのは、同名 tmp を 2 writer が取り合って rename 直後に空になる窓を閉じるため。
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let written = path
+        .parent()
+        .map(std::fs::create_dir_all)
+        .unwrap_or(Ok(()))
+        .and_then(|_| std::fs::write(&tmp, WIRE_HOOKS))
+        .and_then(|_| std::fs::rename(&tmp, &path));
+    match written {
+        Ok(()) => path_str.to_string(),
+        Err(e) => {
+            tracing::warn!(
+                "wire hooks の settings file を書けないので inline で渡す: {path:?}: {e}"
+            );
+            WIRE_HOOKS.to_string()
+        }
+    }
+}
+
 /// agent 起動: claude 起動 command line を組み立てる（旧 conversation bash script の CLAUDE_CMD 分岐の移植）。
 ///
 /// CC 2.1 Background Agents insulate: `--continue` は「cwd の最新」を拾うため bg session 在りで
@@ -233,9 +282,13 @@ fn is_safe_session_id(id: &str) -> bool {
 /// に閉じている: model は `engine_model::is_valid_model`（shell metachar / 空白 / 先頭 `-` を
 /// 弾く charset — 表はそちらが SSOT）、effort は `EFFORTS` の 5 語（英小文字のみ）を通った値
 /// **だけ**が出てくる。gui host も同じ `flag_pairs` を使うので語彙の表は 1 つ。
+///
+/// `settings_arg`: `--settings` に渡す値（[`wire_hooks_settings_arg`] が返す file path か inline JSON）。
+/// ⚠️ `'` で囲んで埋めるので、呼び手は `'` を含む値を渡してはならない（file path 側で弾いている）。
 fn claude_command(
     resume_id: Option<&str>,
     settings: &crate::conversation::claude_settings::ClaudeSettings,
+    settings_arg: &str,
 ) -> String {
     // `--model <alias> --effort <level> `（末尾 space 込み、無ければ空文字）。全分岐の "claude "
     // 直後に挿す。語彙と検証は ClaudeSettings（gui host と同じ表 — 形式外は flag_pairs が落とす）。
@@ -244,7 +297,7 @@ fn claude_command(
         .into_iter()
         .map(|(flag, value)| format!("{flag} {value} "))
         .collect();
-    let fresh_cmd = format!("claude {}--settings '{}'", flags, WIRE_HOOKS);
+    let fresh_cmd = format!("claude {}--settings '{}'", flags, settings_arg);
     // `|| vp lane resume-failed '<x>' ||` の 3 連 chain: resume-failed は「記録して常に
     // exit 1」の中継専用コマンドで、失敗を伝播させて次の fresh fallback へ繋ぐ。
     // shell group `{ …; }` を使わないのは fish 互換のため（slot の shell は user の login shell）。
@@ -256,7 +309,7 @@ fn claude_command(
     match resume_id.filter(|id| is_safe_session_id(id)) {
         Some(id) => format!(
             "claude {}--resume '{}' --settings '{}' || vp lane resume-failed '{}' || {}",
-            flags, id, WIRE_HOOKS, id, fresh_cmd
+            flags, id, settings_arg, id, fresh_cmd
         ),
         None => fresh_cmd,
     }
@@ -470,7 +523,7 @@ pub fn build_agent_command_for_session(
             // 起点 lane × id 無しに存在したため「Reset 直後（id を捨てた）」と「初回（まだ
             // id が無い）」を区別する 1 bit（`fresh`）が要っていた。`--continue` 退役で
             // 両者は同じ「VP が会話を知らない」に畳まれ、呼び手の 1 bit が消える。
-            let cmd = claude_command(resume_id.as_deref(), &settings);
+            let cmd = claude_command(resume_id.as_deref(), &settings, &wire_hooks_settings_arg());
             Some(format!("{}\r", cmd))
         }
         Some(crate::conversation::EngineKind::Codex) => {
@@ -888,13 +941,18 @@ mod tests {
     /// conversation は claude を initial_input で注入（wire hook 同梱）。
     #[test]
     fn conversation_injects_claude_via_initial_input() {
+        // `--settings` は state dir の file path（実 dir に書かないよう test env に向ける）
+        let _state = crate::test_env::state_dir();
         let addr = LaneAddress::sub("vp", "w1");
         let cmd = build_agent_command("claude", &addr, Path::new("/tmp"));
         let input = cmd
             .initial_input
             .expect("conversation は initial_input あり");
         assert!(input.starts_with("claude"), "claude 起動 command: {input}");
-        assert!(input.contains("wire hook-check"), "wire hook 同梱: {input}");
+        assert!(
+            input.contains("--settings '") && input.contains("wire-hooks.json"),
+            "wire hook は settings file 経由で同梱: {input}"
+        );
         assert!(input.ends_with('\r'), "Enter (CR) で submit: {input:?}");
     }
 
@@ -923,7 +981,7 @@ mod tests {
     #[test]
     fn claude_command_branches_on_conversation_id_only() {
         // id あり → --resume '<id>' || resume-failed || fresh
-        let resume = claude_command(Some("abc-123"), &Default::default());
+        let resume = claude_command(Some("abc-123"), &Default::default(), WIRE_HOOKS);
         assert!(resume.contains("--resume 'abc-123'"), "{resume}");
         assert!(
             resume.contains("||"),
@@ -936,7 +994,7 @@ mod tests {
         );
 
         // id なし → 素の claude（**`--continue` は使わない** — VP が知らない会話は継がない）
-        let fresh = claude_command(None, &Default::default());
+        let fresh = claude_command(None, &Default::default(), WIRE_HOOKS);
         assert!(
             !fresh.contains("--continue"),
             "cwd の最新会話を推測で拾わない（doc 53 §12.1）: {fresh}"
@@ -950,7 +1008,7 @@ mod tests {
     #[test]
     fn unsafe_session_ids_are_rejected() {
         for bad in ["", "a'b", "x;rm -rf /", "id with space"] {
-            let cmd = claude_command(Some(bad), &Default::default());
+            let cmd = claude_command(Some(bad), &Default::default(), WIRE_HOOKS);
             assert!(
                 !cmd.contains("--resume"),
                 "不正 id '{bad}' は resume に使わない: {cmd}"
@@ -973,7 +1031,7 @@ mod tests {
             model: Some("sonnet".into()),
             effort: Some("high".into()),
         };
-        let resume = claude_command(Some("abc-123"), &s);
+        let resume = claude_command(Some("abc-123"), &s, WIRE_HOOKS);
         assert_eq!(
             resume.matches("--model sonnet --effort high ").count(),
             2,
@@ -985,6 +1043,7 @@ mod tests {
                 model: None,
                 effort: Some("max".into()),
             },
+            WIRE_HOOKS,
         );
         assert_eq!(
             only_effort,
@@ -996,6 +1055,7 @@ mod tests {
                 model: None,
                 effort: Some("ultra; rm -rf /".into()),
             },
+            WIRE_HOOKS,
         );
         assert!(
             !bad.contains("--effort"),
@@ -1007,7 +1067,7 @@ mod tests {
     #[test]
     fn model_flag_injected_into_all_claude_invocations() {
         // fresh: 単一 claude に --model
-        let fresh = claude_command(None, &model("sonnet"));
+        let fresh = claude_command(None, &model("sonnet"), WIRE_HOOKS);
         assert_eq!(
             fresh,
             format!("claude --model sonnet --settings '{WIRE_HOOKS}'"),
@@ -1015,7 +1075,7 @@ mod tests {
         );
 
         // resume: 主 claude と `||` fallback 先の fresh、 両方に --model が乗る
-        let resume = claude_command(Some("abc-123"), &model("opus"));
+        let resume = claude_command(Some("abc-123"), &model("opus"), WIRE_HOOKS);
         assert_eq!(
             resume.matches("--model opus").count(),
             2,
@@ -1028,7 +1088,7 @@ mod tests {
 
         // id 無し（素の claude）にも --model が乗る。doc 53 §12.1 で `--continue` 枝が
         // 消えたので、ここは fallback を持たない単一 command = 1 回だけ。
-        let bare = claude_command(None, &model("claude-fable-5-1"));
+        let bare = claude_command(None, &model("claude-fable-5-1"), WIRE_HOOKS);
         assert_eq!(
             bare.matches("--model claude-fable-5-1").count(),
             1,
@@ -1040,7 +1100,7 @@ mod tests {
     #[test]
     fn unsafe_models_are_rejected() {
         for bad in ["", "opus --dangerously", "a;rm -rf /", "-x", "mo del"] {
-            let cmd = claude_command(None, &model(bad));
+            let cmd = claude_command(None, &model(bad), WIRE_HOOKS);
             assert!(
                 !cmd.contains("--model"),
                 "不正 model '{bad}' は --model に使わない: {cmd}"
@@ -1199,6 +1259,38 @@ mod tests {
             cmd.initial_input.is_none(),
             "未知 root agent は engine を注入せず shell のみ、 got: {:?}",
             cmd.initial_input
+        );
+    }
+
+    /// `--settings` は file path（短い）。無ければ書き、古ければ書き直し、同じなら触らない。
+    #[test]
+    fn wire_hooks_settings_arg_writes_file_once_and_refreshes_stale() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+        let arg = wire_hooks_settings_arg_in(base);
+        let path = base.join("claude").join("wire-hooks.json");
+        assert_eq!(arg, path.to_str().unwrap(), "path を返す");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), WIRE_HOOKS);
+        let mtime1 = std::fs::metadata(&path).unwrap().modified().unwrap();
+        // 同じ中身なら触らない
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(wire_hooks_settings_arg_in(base), arg);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            mtime1
+        );
+        // 古い中身（旧版の hook）は書き直す
+        std::fs::write(&path, "{}").unwrap();
+        assert_eq!(wire_hooks_settings_arg_in(base), arg);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), WIRE_HOOKS);
+        // 注入行が inline JSON より短いこと（本来の目的）
+        let line = claude_command(Some("abc-123"), &Default::default(), &arg);
+        let inline = claude_command(Some("abc-123"), &Default::default(), WIRE_HOOKS);
+        assert!(
+            !line.contains("hook-check") && line.len() < inline.len(),
+            "{} vs {}",
+            line.len(),
+            inline.len()
         );
     }
 }

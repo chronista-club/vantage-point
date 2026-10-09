@@ -300,6 +300,11 @@ pub struct PtySlot {
     /// (= あるバイトは「snapshot に含まれる」か「subscribe 後の rx に届く」の排他二択。
     /// 取りこぼしも二重配送も構造的に起きない)。 spawn 時に disk seed で初期化されうる。
     replay: Arc<Mutex<VecDeque<u8>>>,
+    /// 出力から追った端末 private mode（mouse / focus / bracketed paste）の現在値。
+    ///
+    /// replay の末尾で xterm を「今の本当の状態」に合わせるために使う（[`super::term_modes`]）。
+    /// reader が replay と同じ lock 区間で更新するので snapshot と整合する。
+    modes: Arc<Mutex<super::term_modes::TermModeTracker>>,
     /// replay の disk 永続 path (Some = 永続あり)。 Drop 時の final flush で使う。
     replay_path: Option<PathBuf>,
     /// replay 定期 flush task のハンドル (Drop で abort)。 runtime 不在 / 永続なしなら None。
@@ -434,6 +439,8 @@ impl PtySlot {
         let replay = Arc::new(Mutex::new(seed));
         let replay_seq = Arc::new(AtomicU64::new(0));
         let last_output_at = Arc::new(AtomicU64::new(0));
+        // 新しい pty の端末 mode は全部 OFF（disk seed の中身が何であれ、process は新規）。
+        let modes = Arc::new(Mutex::new(super::term_modes::TermModeTracker::new()));
 
         // reader task 開始 (writer を渡して ConPTY DSR に応答できるようにする)
         let reader_handle = start_reader_task(
@@ -443,6 +450,7 @@ impl PtySlot {
             Arc::clone(&replay),
             Arc::clone(&replay_seq),
             Arc::clone(&last_output_at),
+            Arc::clone(&modes),
         );
 
         // disk 永続がある lane は定期 flush task を起動 (runtime 不在なら None = 永続なし)。
@@ -459,6 +467,7 @@ impl PtySlot {
                 shell_cmd: shell_cmd.to_string(),
                 output_tx,
                 replay,
+                modes,
                 replay_path,
                 flush_handle,
                 _reader_handle: reader_handle,
@@ -513,9 +522,26 @@ impl PtySlot {
     /// caller (terminal pump) は snapshot を先に配送してから receiver の live stream に繋ぐ。
     pub fn attach_output(&self) -> (Vec<u8>, broadcast::Receiver<Vec<u8>>) {
         let guard = self.replay.lock().unwrap_or_else(|p| p.into_inner());
-        let snapshot: Vec<u8> = guard.iter().copied().collect();
+        let raw: Vec<u8> = guard.iter().copied().collect();
         let rx = self.output_tx.subscribe();
+        // mode の現在値も同じ lock 区間で読む（reader が replay と一緒に更新している）。
+        let suffix = self
+            .modes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .replay_suffix();
         drop(guard);
+        // replay は「画面の復元」であって「program の再実行」ではない — 端末への問い合わせ
+        // （DA / DSR 等）は落とし、mode は今の本当の状態に合わせる。落とさないと xterm が
+        // 問い合わせに**応答**して shell の行に `^[[?1;2c` が打たれ、mouse / focus mode が
+        // 再生で ON になって `^[[<35;…M` / `^[[I` が流れ込む（2026-10-09 実機、term_modes の doc）。
+        // 出力ゼロの slot は空のまま（pump の「空 = replay なし」契約を保つ。何も出していない
+        // pty は mode も全部 OFF なので suffix も要らない）。
+        if raw.is_empty() {
+            return (raw, rx);
+        }
+        let mut snapshot = super::term_modes::strip_queries(&raw);
+        snapshot.extend_from_slice(&suffix);
         (snapshot, rx)
     }
 
@@ -590,6 +616,7 @@ fn start_reader_task(
     replay: Arc<Mutex<VecDeque<u8>>>,
     replay_seq: Arc<AtomicU64>,
     last_output_at: Arc<AtomicU64>,
+    modes: Arc<Mutex<super::term_modes::TermModeTracker>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
         // Windows ConPTY DSR gating の回避状態。 起動時の cursor-position query に一度だけ
@@ -646,6 +673,11 @@ fn start_reader_task(
                     // (buffer は劣化してもよい best-effort、 live stream を止めない)。
                     {
                         let mut buf = replay.lock().unwrap_or_else(|p| p.into_inner());
+                        // 端末 mode の追跡も同じ lock 区間で（snapshot と mode の整合）。
+                        modes
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .observe(&chunk);
                         buf.extend(chunk.iter().copied());
                         let overflow = buf.len().saturating_sub(REPLAY_CAP);
                         if overflow > 0 {
