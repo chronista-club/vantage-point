@@ -7,7 +7,7 @@ Branch slug: sidebar-hierarchy
 ## 表示と操作
 
 - CURRENTs は起動中・稼働中・停止処理中のプロジェクトを表示する。停止済み・未起動・エラーは下の「PAUSED」へ自動で移る。両セクションは同じスクロール領域に常時置く。判定は `RepoPaneState.state` と既存の `isRunningProcess` に従い、presence の一時的な通信切断では移動しない。
-- 親行の Pause は sub lane を含むプロジェクト全体を停止する。停止中は Resume に切り替わり、既存のプロジェクト再起動を要求する。左の activity ポイントによる開閉とは別操作とし、起動・停止処理中は Pause を無効にする。
+- 親行の Pause は sub lane を含む repo 全体を停止し、**enabled=false を repos.kdl に永続する**（daemon を再起動しても PAUSED のまま。2026-10-09）。停止中は Resume に切り替わり、enabled=true に戻してから再起動を要求する。左の activity ポイントによる開閉とは別操作とし、起動・停止処理中は Pause を無効にする。
 - 停止中セクションは既定で「PAUSED N」の1行に畳む。見出しを開くと一覧と Resume が現れる。停止中が0件ならセクションを出さない。
 - repo 見出しと lead lane の行を統合する。repo 名を親のラベルにし、選択すると lead lane を開く。セッション名と agent 種類はツールチップ、セッション操作とプロジェクト操作は右クリックで確認できる。
 - 左の開閉矢印を activity ポイントに置き換える。ポイントを押すと子を開閉でき、親行本体は選択を行う。sub lane は一段内側に並び、畳むと sub lane 1本につき点1つを親行に残す。点は各 Lane の Agent activity を示し、ツールチップに lane 名、集合のアクセシブル名に個数を持つ。展開中は点を出さない。

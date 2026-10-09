@@ -52,13 +52,19 @@ pub(crate) struct SidebarIpcOutcome {
     pub(crate) set_origin_request: Option<(String, String)>,
     /// doc 44 §12: lane の並び順の保存要求 (repo_path, lane address の表示順)。
     pub(crate) reorder_lanes_request: Option<(String, Vec<String>)>,
-    /// Phase 5-C: Process restart 要求 `(repo_name)`。
-    /// caller が daemon の Unison `daemon-control.repos/restart` を呼ぶ。
-    pub(crate) restart_process_request: Option<String>,
-    /// Process stop 要求 `(repo_name)`。
-    /// caller が daemon の Unison `daemon-control.repos/stop` を呼ぶ。
+    /// Phase 5-C: Process restart / resume 要求 `(repo_name, repo_path)`。
+    /// caller が `repos/set_enabled(path, true)` → `repos/restart(name)` を呼ぶ
+    /// （sidebar の Resume / Start / Restart は「以後も起動する」意思 = enabled に戻す）。
+    pub(crate) restart_process_request: Option<(String, String)>,
+    /// Process stop / pause 要求 `(repo_name, repo_path)`。
+    /// caller が `repos/set_enabled(path, false)` → `repos/stop(name)` を呼ぶ。
     /// repo は registered のまま (停止しても sidebar リストに残り ▶ 起動が出る)。
-    pub(crate) stop_process_request: Option<String>,
+    ///
+    /// ⚠️ enabled=false を**先に**書くのは、sidebar の Pause が「daemon を再起動しても
+    /// 止まったまま」を意味するため（2026-10-09 mako「PAUSED は永続化されてない？永続化したい」）。
+    /// stop だけだと autostart が enabled な repo を全部起こすので、PAUSED が再起動で消えていた。
+    /// CLI の `vp repos stop` は従来どおり一時停止（enabled 不変）— 永続は `vp repos disable`。
+    pub(crate) stop_process_request: Option<(String, String)>,
     /// Repo delete 要求 `(repo_name, repo_path)`。
     /// caller が repo を stop してから Unison `daemon-control.repos/remove` を呼ぶ。
     /// `repo_name` は stop 用、 `repo_path` は remove 用 (registry key)。
@@ -322,7 +328,7 @@ pub(crate) fn handle_sidebar_ipc(
                 .unwrap_or(m.path.as_str())
                 .to_string();
             tracing::info!("process:restart {} (repo_name={})", m.path, repo_name);
-            out.restart_process_request = Some(repo_name);
+            out.restart_process_request = Some((repo_name, m.path.clone()));
         }
         IpcEnvelope::ProcessStop(m) => {
             // repo を停止する (repo は registered のまま sidebar リストに残る)。
@@ -337,7 +343,7 @@ pub(crate) fn handle_sidebar_ipc(
                 .unwrap_or(m.path.as_str())
                 .to_string();
             tracing::info!("process:stop {} (repo_name={})", m.path, repo_name);
-            out.stop_process_request = Some(repo_name);
+            out.stop_process_request = Some((repo_name, m.path.clone()));
         }
         IpcEnvelope::RepoDelete(m) => {
             // repo を完全に削除 (repo 停止 + repos.kdl から unregister)。
@@ -919,13 +925,19 @@ mod tests {
             &mut state,
             &mut session,
         );
-        assert_eq!(out.restart_process_request.as_deref(), Some("vp"));
+        assert_eq!(
+            out.restart_process_request,
+            Some(("vp".to_string(), REPO.to_string()))
+        );
         let out = apply(
             &format!(r#"{{"t":"process:stop","path":"{REPO}"}}"#),
             &mut state,
             &mut session,
         );
-        assert_eq!(out.stop_process_request.as_deref(), Some("vp"));
+        assert_eq!(
+            out.stop_process_request,
+            Some(("vp".to_string(), REPO.to_string()))
+        );
         let out = apply(
             &format!(r#"{{"t":"repo:delete","path":"{REPO}"}}"#),
             &mut state,
