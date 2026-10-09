@@ -1,7 +1,7 @@
 /**
- * fleet — mapping registry（純 calculation）の検証。
- * wire 形（midistage-profiles の serde tag 形式）→ FleetOp の写像を固定する。
- */
+* fleet — mapping registry（純 calculation）の検証。
+* wire 形（midistage-profiles の serde tag 形式）→ FleetOp の写像を固定する。
+*/
 
 import { describe, expect, it } from "vitest";
 import { computeFeedback, deviceOf, mapControl } from "./fleet";
@@ -160,5 +160,21 @@ describe("computeFeedback — 場 → 機材の投影（LE-19 フィードバッ
 		expect(fb.knobs).toHaveLength(8);
 		expect(fb.knobs[0]).toEqual({ index: 0, value: 0.5 });
 		expect(fb.knobs[1]).toEqual({ index: 1, value: 0 });
+	});
+});
+
+describe("nanoKONTROL2 standard CC controls", () => {
+	it("maps knobs and faders to pane shares", () => {
+		expect(deviceOf("nanoKONTROL2 SLIDER/KNOB")).toBe("nanokontrol");
+		for (const type of ["knob", "fader"]) {
+			expect(mapControl("nanoKONTROL2 SLIDER/KNOB", { type, index: 3, value: 0.5 })).toEqual({op:"share", paneIndex:3, share:0.5});
+			expect(mapControl("nanoKONTROL2 SLIDER/KNOB", { type, index: 7, value: 1 })).toEqual({op:"share", paneIndex:7, share:0.95});
+		}
+	});
+	it("maps only S buttons to Scene press/release", () => {
+		for (const pressed of [true, false]) {
+			expect(mapControl("nanoKONTROL2 SLIDER/KNOB", { type:"button", index:2, pressed })).toEqual({op:"pad", slot:2, pressed});
+		}
+		for (const index of [8, 16, 24]) expect(mapControl("nanoKONTROL2 SLIDER/KNOB", { type:"button", index, pressed:true })).toBeNull();
 	});
 });

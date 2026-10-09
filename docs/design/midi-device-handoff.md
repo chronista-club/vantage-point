@@ -6,9 +6,10 @@ VP の常駐 MIDI I/O は midistage の protocol / profiles / Rust SDK を利用
 
 ## 使用操作
 
-Devices 面で「VP の MIDI 全体」を ON にし、対応機材の「使用」を切り替える。
+Devices 面で「MIDI を有効にする」を押し、対応機材の「使用」を切り替える。
+通常表示は Midistage の機材単位の一覧に統一する。OS の生ポート名と IN/OUT は「接続ポート詳細」に畳み、そこに旧直接接続の使用状態を重ねない。
 別アプリの担当なら切り替え確認が出る。確認した revision を送り、確認後の所有者変更を上書きしない。
-現在の VP の操作対象は ROTO / LPD8 / X-Touch。対応していない操作面は一覧に残して切り替えを無効にする。
+現在の VP の操作対象は ROTO / LPD8 / X-Touch / nanoKONTROL2。nanoKONTROL2 は標準 CC モード（ch1）の入力を扱い、ノブ・フェーダーは pane 比率、S ボタンは Scene 呼び出し／長押し保存に対応する。M/R・transport ボタンと nano の LED フィードバックは未対応。対応していない操作面は一覧に残して切り替えを無効にする。
 CLI は同じ daemon-control の窓口を使う。
 
 ```sh
@@ -28,6 +29,8 @@ revision は `vp midi devices` の最新応答から取得する。`--takeover` 
 入力許可表を先に更新し、旧 listener の abort と join、ROTO セッションの停止・join、旧 output の破棄を終えてから Quiesced を返す。
 別機材の listener とアプリ固有の lane / scene 割り当ては保持する。
 service は物理送信 completion と後始末が終わるまで次の lease を与えない。
+
+`devices/midi-use` の状態応答は `connected` / `enabled` / `snapshot` と、サービス状態を示す nullable な `error` を持つ。この `error` は RPC 失敗ではない。GUI はこの method の状態応答に限ってデータとして受け取り、通常の `{"error": ...}` だけの RPC 失敗（revision 不一致など）はエラーとして扱う。
 
 新窓口 `devices/midi-use` は既存 `devices/midi` と同様、人の GUI/CLI 操作用であり MCP discovery には公開しない。
 既存の前景実機診断コマンド（`vp midi roto demo` など）はこの常駐経路の移行対象外。共有サービス稼働中に直接実行しない。

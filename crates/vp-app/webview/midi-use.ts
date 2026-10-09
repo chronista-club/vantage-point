@@ -26,7 +26,7 @@ let failure = "";
 let pending = false;
 let sentAt = 0;
 let timer: ReturnType<typeof setInterval> | undefined;
-const supported = new Set(["roto", "lpd8", "xtouch"]);
+const supported = new Set(["roto", "lpd8", "xtouch", "nanokontrol"]);
 function request(payload: Record<string, unknown>) {
 	pending = true;
 	sentAt = Date.now();
@@ -123,30 +123,32 @@ function draw() {
 	root.replaceChildren();
 	const css = element(
 		"style",
-		`.midi-use-settings{padding:16px;margin-bottom:18px;border:1px solid var(--border-subtle,#454545);border-radius:8px}.midi-use-settings h3{margin:0 0 12px;font:inherit;font-weight:600}.midi-use-settings p{font-size:12px;opacity:.8;margin:8px 0}.midi-use-row{display:flex;gap:16px;align-items:center;padding:12px 0;border-bottom:1px solid #ffffff18}.midi-use-row label{margin-left:auto;display:flex;gap:6px;align-items:center}.midi-use-caption{display:block;font-size:12px;opacity:.7;margin-top:4px}.midi-use-confirm{padding:12px;background:#8a66152b;border-radius:6px;margin:12px 0}.midi-use-confirm button{margin-right:8px}.midi-use-error{color:#eda47c}`,
+		`.midi-use-settings{padding:16px;margin-bottom:18px;border:1px solid var(--border-subtle,#454545);border-radius:8px}.midi-use-settings h3{margin:0 0 12px;font:inherit;font-weight:600}.midi-use-settings p{font-size:12px;opacity:.8;margin:8px 0}.midi-use-master{display:flex;align-items:center;gap:12px}.midi-use-master button{font:inherit;color:inherit;padding:8px 14px;border:1px solid #809bbd;border-radius:6px;background:#45648b55;cursor:pointer}.midi-use-master button:disabled{opacity:.5;cursor:wait}.midi-use-row{display:flex;gap:16px;align-items:center;padding:12px 0;border-bottom:1px solid #ffffff18}.midi-use-row label{margin-left:auto;display:flex;gap:8px;align-items:center;min-height:36px;cursor:pointer}.midi-use-row input{width:18px;height:18px;accent-color:#80b9e8}.midi-use-row label:has(input:disabled){opacity:.4;cursor:not-allowed}.midi-use-caption{display:block;font-size:12px;opacity:.7;margin-top:4px}.midi-use-confirm{padding:12px;background:#8a66152b;border-radius:6px;margin:12px 0}.midi-use-confirm button{margin-right:8px}.midi-use-error{color:#eda47c}.devices-port-details summary{cursor:pointer;padding:8px 0;opacity:.7}`,
 	);
 	root.append(css, element("h3", "このアプリで使う MIDI 機材"));
-	const master = element("label");
-	const toggle = element("input");
-	toggle.type = "checkbox";
-	toggle.checked = !!status.enabled;
+	const master = element("div");
+	master.className = "midi-use-master";
+	const toggle = element("button", status.enabled ? "MIDI を停止する" : "MIDI を有効にする");
+	toggle.type = "button";
 	toggle.disabled = status.enabled === undefined;
 	toggle.dataset.midiMaster = "";
-	toggle.onchange = () => {
+	toggle.onclick = () => {
 		failure = "";
-		request({ master_enabled: toggle.checked });
+		request({ master_enabled: !status.enabled });
 	};
 	master.append(
 		toggle,
 		document.createTextNode(
-			status.enabled ? " VP の MIDI 全体 ON" : " VP の MIDI 全体 OFF",
+			status.enabled ? "全体 ON" : "全体 OFF",
 		),
 	);
 	root.append(master);
 	root.append(
 		element(
 			"p",
-			"機材ごとに入力・LED・表示更新を切り替えます。別アプリから切り替えるときは確認します。",
+			status.enabled
+				? "使う機材の「使用」を ON にしてください。別アプリから切り替えるときは確認します。"
+				: "機材の「使用」を操作するには、先に MIDI を有効にしてください。",
 		),
 	);
 	if (!status.connected)
@@ -184,6 +186,7 @@ function draw() {
 		row.className = "midi-use-row";
 		const name = element("div", d.name);
 		const detail = element("span", stateLabel(d));
+		if (d.profile_id === "nanokontrol") detail.append(" · 標準 CC (ch1)、LED 表示は未対応");
 		detail.className = "midi-use-caption";
 		name.append(detail);
 		const label = element("label");

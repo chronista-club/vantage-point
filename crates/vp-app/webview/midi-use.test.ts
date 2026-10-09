@@ -26,6 +26,25 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.useRealTimers();
 });
+it("offers an explicit enable action before allowing per-device changes", () => {
+	vi.useFakeTimers();
+	const send = vi.fn();
+	document.body.innerHTML = '<div id="device-list"></div>';
+	mountMidiUse(document.querySelector("#device-list")!, send);
+	renderMidiUse({ ...state(), enabled: false });
+	const enable = document.querySelector<HTMLButtonElement>("button[data-midi-master]");
+	expect(enable?.textContent).toBe("MIDI を有効にする");
+	expect(document.body.textContent).toContain("先に MIDI を有効にしてください");
+	enable!.click();
+	expect(send).toHaveBeenLastCalledWith({ master_enabled: true });
+	expect(document.querySelector<HTMLInputElement>("[data-midi-device]")!.disabled).toBe(true);
+	renderMidiUse(state());
+	expect(document.querySelector<HTMLInputElement>("[data-midi-device]")!.disabled).toBe(false);
+	const stop = document.querySelector<HTMLButtonElement>("button[data-midi-master]")!;
+	expect(stop.textContent).toBe("MIDI を停止する");
+	stop.click();
+	expect(send).toHaveBeenLastCalledWith({ master_enabled: false });
+});
 it("requires explicit takeover and retains the revision the user saw", () => {
 	vi.useFakeTimers();
 	const send = vi.fn();
@@ -92,4 +111,20 @@ it("updates the master switch even when a caller reuses its snapshot object", ()
 		(document.querySelector('[data-midi-device="roto"]') as HTMLInputElement)
 			.disabled,
 	).toBe(true);
+});
+
+it("allows nanoKONTROL2 takeover through the same revision confirmation", () => {
+	vi.useFakeTimers();
+	const send = vi.fn();
+	document.body.innerHTML = '<div id="device-list"></div>';
+	mountMidiUse(document.querySelector("#device-list")!, send);
+	const next = state();
+	Object.assign(next.snapshot.devices[0], { device_id: "nanokontrol", profile_id: "nanokontrol", name: "nanoKONTROL2" });
+	renderMidiUse(next);
+	const toggle = document.querySelector('[data-midi-device="nanokontrol"]') as HTMLInputElement;
+	expect(toggle.disabled).toBe(false);
+	toggle.click();
+	expect(send.mock.calls.some(([p]) => p.set)).toBe(false);
+	(document.querySelector("[data-midi-confirm]") as HTMLButtonElement).click();
+	expect(send).toHaveBeenLastCalledWith({set:{ device_id:"nanokontrol", enabled:true, expected_revision:3, takeover:true }});
 });
