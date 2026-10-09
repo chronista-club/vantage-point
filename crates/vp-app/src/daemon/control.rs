@@ -214,8 +214,8 @@ impl DaemonControl {
 
     /// repo の enabled を書く（`repos.kdl` に永続、daemon の `repos/set_enabled`）。
     ///
-    /// sidebar の Pause / Resume が stop / restart の**前に**呼ぶ — autostart が見るのは
-    /// enabled だけなので、ここを書かない停止は daemon 再起動で生き返る。
+    /// sidebar の Resume は restart の前に（enable）、Pause は stop の**成功後**に（disable）呼ぶ
+    /// — autostart が見るのは enabled だけなので、ここを書かない停止は daemon 再起動で生き返る。
     pub async fn set_repo_enabled(&self, repo_path: &str, enabled: bool) -> Result<()> {
         self.control(
             "repos/set_enabled",
@@ -228,7 +228,7 @@ impl DaemonControl {
     /// repo を停止する (旧 `POST /api/daemon/processes/{name}/stop`)。
     ///
     /// repo は registered のまま (`enabled` 不変) — 稼働だけ落とす。sidebar の Pause は
-    /// この前に [`Self::set_repo_enabled`] で enabled=false を永続する。
+    /// この**成功後**に [`Self::set_repo_enabled`] で enabled=false を永続する。
     pub async fn stop_process(&self, repo_name: &str) -> Result<()> {
         self.control("repos/stop", serde_json::json!({ "name": repo_name }))
             .await?;
