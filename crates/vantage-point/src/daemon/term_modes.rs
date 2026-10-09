@@ -17,7 +17,7 @@
 //! ## 直し方
 //!
 //! 1. [`strip_queries`]: replay snapshot から「応答を要求する」sequence を落とす（DA / DSR /
-//!    XTVERSION / DECRQM / kitty keyboard / window size / OSC color query / DCS DECRQSS）。
+//!    XTVERSION / DECRQM（ANSI / DEC）/ kitty keyboard / window size / OSC 4・10..19 の色 query / DCS DECRQSS・XTGETTCAP）。
 //!    live stream は触らない — live の program が問い合わせたなら応答が要る。
 //! 2. [`TermModeTracker`]: reader が通す出力から private mode の ON/OFF を追跡し、replay の
 //!    末尾で**今の本当の状態**に合わせる sequence（[`TermModeTracker::replay_suffix`]）を足す。
@@ -28,23 +28,35 @@
 //! 追跡するのは**入力の形を変える** mode だけ（mouse 系 / focus / bracketed paste）。画面の
 //! 見た目の mode（alt screen 等）は replay の clear prefix と後続の再描画に任せる。
 
-use std::collections::BTreeSet;
-
 /// 追跡する DEC private mode。入力（pty への書き込み）の形を変えるものに限る。
 ///
-/// - 1000 / 1002 / 1003: マウス報告（click / drag / motion）
-/// - 1004: focus in/out 通知（`ESC[I` / `ESC[O`）
-/// - 1005 / 1006 / 1015 / 1016: マウス報告の encoding（UTF-8 / SGR / urxvt / SGR-pixel）
-/// - 2004: bracketed paste（貼り付けを `ESC[200~ … ESC[201~` で包む）
-pub const TRACKED_MODES: &[u16] = &[1000, 1002, 1003, 1004, 1005, 1006, 1015, 1016, 2004];
+/// xterm.js（`InputHandler.ts` v6）の持ち方に合わせて **2 つの「1 値」+ 2 つの flag** で追う:
+///
+/// - **mouse protocol**（1000 click / 1002 drag / 1003 motion）: set は「最後に set したもの」、
+///   どれを reset しても NONE。独立 flag ではない（`?1003h` の後の `?1000l` で mouse は OFF）
+/// - **mouse encoding**（1006 SGR / 1016 SGR-pixel）: 同じく 1 値。どれを reset しても DEFAULT
+///   （X10 形式）。1005（UTF-8）/ 1015（urxvt）は xterm.js が set も reset も**無視する**ので
+///   追わない（追うと `?1006h` の後の `?1015h` を SGR の上書きと誤認し、suffix で DEFAULT に戻す）
+/// - 1004 focus in/out 通知（`ESC[I` / `ESC[O`）: 独立 flag
+/// - 2004 bracketed paste（貼り付けを `ESC[200~ … ESC[201~` で包む）: 独立 flag
+///
+/// 独立 flag で持って順に `h` / `l` を並べると、`?1006h` の後の `?1016l` が encoding を DEFAULT に
+/// 戻してしまい、live の claude（SGR 前提）に X10 形式の mouse event が届く（moody review）。
+pub const MOUSE_PROTOCOLS: &[u16] = &[1000, 1002, 1003];
+pub const MOUSE_ENCODINGS: &[u16] = &[1006, 1016];
 
 /// 不完全な ESC sequence を次 chunk へ持ち越す上限。CSI は実用上これより短い。
 const CARRY_MAX: usize = 32;
 
 /// 出力 stream から private mode の ON/OFF を追う。chunk 境界で切れた sequence は持ち越す。
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TermModeTracker {
-    on: BTreeSet<u16>,
+    /// 有効な mouse protocol（1000 / 1002 / 1003 のどれか）。None = mouse 報告なし
+    protocol: Option<u16>,
+    /// 有効な mouse encoding（1006 / 1016 のどれか）。None = DEFAULT（X10 形式）
+    encoding: Option<u16>,
+    focus: bool,
+    bracketed_paste: bool,
     carry: Vec<u8>,
 }
 
@@ -53,7 +65,7 @@ impl TermModeTracker {
         Self::default()
     }
 
-    /// 出力 chunk を観測して mode 集合を更新する（`CSI ? Pm h` / `CSI ? Pm l` だけを見る）。
+    /// 出力 chunk を観測して mode を更新する（`CSI ? Pm h` / `CSI ? Pm l` だけを見る）。
     pub fn observe(&mut self, chunk: &[u8]) {
         let mut data = std::mem::take(&mut self.carry);
         data.extend_from_slice(chunk);
@@ -75,13 +87,7 @@ impl TermModeTracker {
                         && matches!(final_byte, b'h' | b'l')
                     {
                         for p in params {
-                            if TRACKED_MODES.contains(p) {
-                                if *final_byte == b'h' {
-                                    self.on.insert(*p);
-                                } else {
-                                    self.on.remove(p);
-                                }
-                            }
+                            self.apply(*p, *final_byte == b'h');
                         }
                     }
                     i += len;
@@ -101,19 +107,47 @@ impl TermModeTracker {
         }
     }
 
-    /// 今 ON の mode（テスト / 診断用）。
-    pub fn enabled(&self) -> impl Iterator<Item = u16> + '_ {
-        self.on.iter().copied()
+    /// 1 つの mode の set / reset を xterm.js と同じ規則で反映する。
+    fn apply(&mut self, mode: u16, set: bool) {
+        if MOUSE_PROTOCOLS.contains(&mode) {
+            self.protocol = if set { Some(mode) } else { None };
+        } else if MOUSE_ENCODINGS.contains(&mode) {
+            self.encoding = if set { Some(mode) } else { None };
+        } else if mode == 1004 {
+            self.focus = set;
+        } else if mode == 2004 {
+            self.bracketed_paste = set;
+        }
+    }
+
+    /// 今の状態（テスト用）: (mouse protocol, mouse encoding, focus, bracketed paste)。
+    #[cfg(test)]
+    pub fn state(&self) -> (Option<u16>, Option<u16>, bool, bool) {
+        (
+            self.protocol,
+            self.encoding,
+            self.focus,
+            self.bracketed_paste,
+        )
     }
 
     /// replay の末尾に足して、xterm の mode を「今の本当の状態」に合わせる sequence。
-    /// 追跡対象の全 mode について ON なら `h`、OFF なら `l` を明示する。
+    ///
+    /// **reset してから set** する: protocol / encoding は 1 値なので、先に代表の reset
+    /// （`?1000l` / `?1006l`、どれを reset しても NONE / DEFAULT）で確実に落とし、ON なら
+    /// その値を set し直す。flag は `h` / `l` を明示。
     pub fn replay_suffix(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(TRACKED_MODES.len() * 10);
-        for m in TRACKED_MODES {
-            let state = if self.on.contains(m) { 'h' } else { 'l' };
-            out.extend_from_slice(format!("\x1b[?{m}{state}").as_bytes());
+        let mut out = Vec::with_capacity(64);
+        out.extend_from_slice(b"\x1b[?1000l\x1b[?1006l");
+        if let Some(p) = self.protocol {
+            out.extend_from_slice(format!("\x1b[?{p}h").as_bytes());
         }
+        if let Some(e) = self.encoding {
+            out.extend_from_slice(format!("\x1b[?{e}h").as_bytes());
+        }
+        let flag = |on: bool| if on { 'h' } else { 'l' };
+        out.extend_from_slice(format!("\x1b[?1004{}", flag(self.focus)).as_bytes());
+        out.extend_from_slice(format!("\x1b[?2004{}", flag(self.bracketed_paste)).as_bytes());
         out
     }
 }
@@ -123,7 +157,7 @@ impl TermModeTracker {
 /// 落とすもの: DA1/2/3（`CSI c` / `CSI > c` / `CSI = c`）、DSR（`CSI 5n` / `CSI 6n` / `CSI ? 6n`）、
 /// XTVERSION（`CSI > q`）、DECRQM（`CSI ? Pm $ p`）、kitty keyboard query（`CSI ? u`）、
 /// window 問い合わせ（`CSI 14/16/18/19/20/21 t`）、DECID（`ESC Z`）、OSC の色問い合わせ
-/// （`OSC 10..19 ; ? ST`）、DCS の DECRQSS / XTGETTCAP（`DCS $ q …` / `DCS + q …`）。
+/// （`OSC 10..19 ; ? ST` / `OSC 4 ; idx ; ? ST`）、DCS の DECRQSS / XTGETTCAP（`DCS $ q …` / `DCS + q …`）。
 /// それ以外（描画・mode 設定・応答そのもの）は無傷で通す。不完全な末尾はそのまま残す。
 pub fn strip_queries(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len());
@@ -186,25 +220,26 @@ impl Seq {
                 (b'n', None | Some(b'?'), []) => true,
                 // XTVERSION（`CSI > q`）
                 (b'q', Some(b'>'), []) => true,
-                // DECRQM（`CSI ? Pm $ p`）
-                (b'p', Some(b'?'), [b'$']) => true,
+                // DECRQM（`CSI Pm $ p` = ANSI mode / `CSI ? Pm $ p` = DEC private mode）
+                (b'p', None | Some(b'?'), [b'$']) => true,
                 // kitty keyboard protocol query（`CSI ? u`）
                 (b'u', Some(b'?'), []) => true,
                 // window 問い合わせ（text area size / size in chars / title 等）
                 (b't', None, []) => matches!(params.first(), Some(14 | 16 | 18 | 19 | 20 | 21)),
                 _ => false,
             },
-            // OSC 10..19 の `;?`（前景 / 背景 / cursor 色の問い合わせ）
+            // OSC 10..19 の `;?`（前景 / 背景 / cursor 色の問い合わせ）と
+            // OSC 4 の `;idx;?`（palette 色の問い合わせ。xterm.js は `ESC]4;idx;rgb:…` で応答する）
             Seq::Osc(body) => {
                 let s = String::from_utf8_lossy(body);
-                let mut it = s.splitn(2, ';');
-                let num = it.next().unwrap_or("");
-                let arg = it.next().unwrap_or("");
-                arg.starts_with('?')
-                    && num
-                        .parse::<u16>()
-                        .map(|n| (10..=19).contains(&n))
-                        .unwrap_or(false)
+                let mut it = s.split(';');
+                let num = it.next().unwrap_or("").parse::<u16>().ok();
+                let rest: Vec<&str> = it.collect();
+                match num {
+                    Some(10..=19) => rest.first().is_some_and(|a| a.starts_with('?')),
+                    Some(4) => rest.contains(&"?"),
+                    _ => false,
+                }
             }
             // DCS: DECRQSS（`$q`）/ XTGETTCAP（`+q`）
             Seq::Dcs(body) => body.starts_with(b"$q") || body.starts_with(b"+q"),
@@ -329,7 +364,7 @@ mod tests {
 
     #[test]
     fn strips_every_query_kind_and_keeps_drawing() {
-        let input = b"\x1b[31mred\x1b[0m\x1b[c\x1b[>c\x1b[=c\x1b[6n\x1b[?6n\x1b[5n\x1b[>q\x1b[?2004$p\x1b[?u\x1b[14t\x1b[18t\x1bZ\x1b]11;?\x07\x1b]10;?\x1b\\\x1bP$qm\x1b\\\x1bP+q544e\x1b\\tail";
+        let input = b"\x1b[31mred\x1b[0m\x1b[c\x1b[>c\x1b[=c\x1b[6n\x1b[?6n\x1b[5n\x1b[>q\x1b[?2004$p\x1b[2$p\x1b[?u\x1b[14t\x1b[18t\x1bZ\x1b]11;?\x07\x1b]10;?\x1b\\\x1b]4;1;?\x07\x1bP$qm\x1b\\\x1bP+q544e\x1b\\tail";
         assert_eq!(strip_queries(input), b"\x1b[31mred\x1b[0mtail");
     }
 
@@ -338,7 +373,7 @@ mod tests {
         // DA の応答そのもの（`?1;2c`）は private が `?` なので DA query とは別 = 残る。
         // mode 設定 / OSC title / `CSI 22 t`（title push）/ DCS の sixel 風は残る。
         let input =
-            b"\x1b[?1;2c\x1b[?1004h\x1b[?1000l\x1b]0;title\x07\x1b[22;0t\x1bPq#0\x1b\\\x1b[2J";
+            b"\x1b[?1;2c\x1b[?1004h\x1b[?1000l\x1b]0;title\x07\x1b]4;1;rgb:00/00/00\x07\x1b[22;0t\x1bPq#0\x1b\\\x1b[2J";
         assert_eq!(strip_queries(input), input);
     }
 
@@ -351,41 +386,48 @@ mod tests {
     }
 
     #[test]
-    fn tracker_follows_set_and_reset_including_multi_param() {
+    fn tracker_models_mouse_protocol_and_encoding_as_single_values() {
         let mut t = TermModeTracker::new();
-        t.observe(b"\x1b[?1004h\x1b[?1000;1006h\x1b[?25l");
-        assert_eq!(t.enabled().collect::<Vec<_>>(), vec![1000, 1004, 1006]);
-        t.observe(b"\x1b[?1000l\x1b[?1004l");
-        assert_eq!(t.enabled().collect::<Vec<_>>(), vec![1006]);
-        // `?25l`（cursor）は追跡外なので集合に入らない
-        assert!(!t.enabled().any(|m| m == 25));
+        // claude の実綴り: 1000/1002/1003 を順に set + SGR
+        t.observe(b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?25l");
+        assert_eq!(t.state(), (Some(1003), Some(1006), false, false));
+        // どれを reset しても protocol は NONE（xterm.js と同じ）
+        t.observe(b"\x1b[?1000l");
+        assert_eq!(t.state(), (None, Some(1006), false, false));
+        t.observe(b"\x1b[?1004;2004h\x1b[?1006l");
+        assert_eq!(t.state(), (None, None, true, true));
+        // 1005 / 1015 は xterm.js が無視する → 追跡しない（SGR の後の `?1015h` で SGR を失わない）
+        t.observe(b"\x1b[?1006h\x1b[?1015h\x1b[?1005l");
+        assert_eq!(t.state().1, Some(1006));
     }
 
     #[test]
     fn tracker_carries_sequence_split_across_chunks() {
         let mut t = TermModeTracker::new();
         t.observe(b"text\x1b[?10");
-        assert!(t.enabled().next().is_none(), "途中では確定しない");
+        assert!(!t.state().2, "途中では確定しない");
         t.observe(b"04h more");
-        assert_eq!(t.enabled().collect::<Vec<_>>(), vec![1004]);
+        assert!(t.state().2);
     }
 
+    /// 回帰: 独立 flag で `h`/`l` を並べると `?1006h` の後の `?1016l` が encoding を DEFAULT に戻す。
+    /// suffix を xterm.js に流した**最終状態**が claude の set と一致すること。
     #[test]
-    fn replay_suffix_states_every_tracked_mode_explicitly() {
+    fn replay_suffix_reproduces_final_state_in_xterm_model() {
         let mut t = TermModeTracker::new();
-        let all_off = t.replay_suffix();
-        for m in TRACKED_MODES {
-            assert!(
-                all_off
-                    .windows(format!("\x1b[?{m}l").len())
-                    .any(|w| w == format!("\x1b[?{m}l").as_bytes()),
-                "{m} は OFF を明示"
-            );
-        }
-        t.observe(b"\x1b[?1003h\x1b[?1006h");
-        let s = t.replay_suffix();
-        let s = String::from_utf8(s).unwrap();
-        assert!(s.contains("\x1b[?1003h") && s.contains("\x1b[?1006h"));
-        assert!(s.contains("\x1b[?1000l") && s.contains("\x1b[?1004l"));
+        t.observe(b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
+        let mut xterm = TermModeTracker::new();
+        xterm.observe(&t.replay_suffix());
+        assert_eq!(xterm.state(), (Some(1003), Some(1006), false, false));
+        // shell が live（全部 OFF）なら、ON だった xterm も OFF に戻る
+        let mut xterm_on = t.clone();
+        xterm_on.observe(&TermModeTracker::new().replay_suffix());
+        assert_eq!(xterm_on.state(), (None, None, false, false));
+        // 1002 だけの TUI も、後続の reset に潰されない
+        let mut t2 = TermModeTracker::new();
+        t2.observe(b"\x1b[?1002h\x1b[?1016h\x1b[?2004h");
+        let mut x2 = TermModeTracker::new();
+        x2.observe(&t2.replay_suffix());
+        assert_eq!(x2.state(), (Some(1002), Some(1016), false, true));
     }
 }

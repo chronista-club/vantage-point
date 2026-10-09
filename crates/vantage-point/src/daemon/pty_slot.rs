@@ -535,6 +535,11 @@ impl PtySlot {
         // （DA / DSR 等）は落とし、mode は今の本当の状態に合わせる。落とさないと xterm が
         // 問い合わせに**応答**して shell の行に `^[[?1;2c` が打たれ、mouse / focus mode が
         // 再生で ON になって `^[[<35;…M` / `^[[I` が流れ込む（2026-10-09 実機、term_modes の doc）。
+        // 出力ゼロの slot は空のまま（pump の「空 = replay なし」契約を保つ。何も出していない
+        // pty は mode も全部 OFF なので suffix も要らない）。
+        if raw.is_empty() {
+            return (raw, rx);
+        }
         let mut snapshot = super::term_modes::strip_queries(&raw);
         snapshot.extend_from_slice(&suffix);
         (snapshot, rx)

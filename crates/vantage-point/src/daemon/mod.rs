@@ -16,6 +16,6 @@ pub mod process;
 pub mod protocol;
 pub mod pty_slot;
 pub mod server;
-pub mod term_modes;
+pub(crate) mod term_modes;
 /// wiremsg の daemon 中央 store（`WiremsgStore`）への 8 操作と method dispatch（7b で repo/routes/wire から）
 pub(crate) mod wire_ops;
