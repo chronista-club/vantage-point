@@ -290,7 +290,7 @@ pub(super) fn sidebar_ipc(
     // 全 async work は shared runtime (rt_handle) 経由 — bare `tokio::spawn` は禁止
     // (.clippy.toml で compile gate)、 tao event loop closure に runtime context が
     // 無いので必ず `rt_handle.spawn` を使う。
-    if let Some(repo_name) = outcome.restart_process_request {
+    if let Some((repo_name, repo_path)) = outcome.restart_process_request {
         let proxy = async_action_proxy.clone();
         let conn = boot.daemon_conn.clone();
         boot.rt_handle.spawn(async move {
@@ -304,6 +304,13 @@ pub(super) fn sidebar_ipc(
                     return;
                 }
             };
+            // Resume / Start / Restart（`r` chord 含む）= 「以後も起動する」意思。Pause で落とした
+            // enabled を戻す（repos.kdl に永続）。失敗しても起動自体は続ける（起動が本命）。
+            // こちらは enable → restart の順でよい: restart が落ちても「enabled だが停止」= 旧挙動で、
+            // 次の autostart が起こす方向に倒れる。
+            if let Err(e) = control.set_repo_enabled(&repo_path, true).await {
+                tracing::warn!("set_repo_enabled(true) failed for {}: {}", repo_path, e);
+            }
             match control.restart_process(&repo_name).await {
                 Ok(()) => {
                     tracing::info!("restart_process OK: {}", repo_name);
@@ -323,7 +330,7 @@ pub(super) fn sidebar_ipc(
         });
     }
     // Process stop 要求 (repo context menu の Stop repo から)。
-    if let Some(repo_name) = outcome.stop_process_request {
+    if let Some((repo_name, repo_path)) = outcome.stop_process_request {
         let proxy = async_action_proxy.clone();
         let conn = boot.daemon_conn.clone();
         boot.rt_handle.spawn(async move {
@@ -334,9 +341,18 @@ pub(super) fn sidebar_ipc(
                     return;
                 }
             };
+            // Pause = 「daemon を再起動しても止まったまま」。stop が**成功してから**
+            // enabled=false を永続する（stop だけだと autostart で生き返り、PAUSED が再起動で消える）。
+            // 順序が stop → disable なのは、2 つの呼び出しが repo を別の鍵で引くため（stop は
+            // 登録名、set_enabled は path）。改名した repo は stop が "Repo not found" で落ちうるので、
+            // 先に disable すると「無効化済みだが稼働中」= UI に出ない半端な状態が残る（moody review）。
+            // stop が落ちた時は何も永続しない = 旧挙動に退化するだけ。
             match control.stop_process(&repo_name).await {
                 Ok(()) => {
                     tracing::info!("stop_process OK: {}", repo_name);
+                    if let Err(e) = control.set_repo_enabled(&repo_path, false).await {
+                        tracing::warn!("set_repo_enabled(false) failed for {}: {}", repo_path, e);
+                    }
                     // 完了 → repos 再 fetch → 停止 state を sidebar に反映。
                     // restart と同じく `fetch_repos_with_ports` 経由で
                     // 他 repo の runtime port を保つ。

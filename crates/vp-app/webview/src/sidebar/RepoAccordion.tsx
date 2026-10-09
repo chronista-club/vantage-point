@@ -269,7 +269,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 				<Show when={isPaused()} fallback={
 					<button type="button" class="vp-proj-start"
 						aria-label={`${props.proc.name} を停止（sub lane を含む）`}
-						title="Pause — sub lane を含むプロジェクト全体を停止"
+						title="Pause — sub lane を含む repo 全体を停止（daemon を再起動しても止まったまま）"
 						disabled={props.proc.state !== "running" || props.proc.port == null}
 						onClick={e => { e.stopPropagation(); sendIpc({ t: "process:stop", path: props.proc.path }); }}>
 						<CreoIcon name="ph:pause" size={12} />
@@ -279,7 +279,7 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 						type="button"
 						class="vp-proj-start"
 						aria-label={`${props.proc.name} を再開`}
-						title="Resume — プロジェクトを再起動"
+						title="Resume — repo を再起動（以後は自動起動に戻る）"
 						onClick={(e) => {
 							// summary click の <details> toggle を止めて起動だけ行う。
 							e.preventDefault();
