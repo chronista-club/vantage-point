@@ -304,8 +304,10 @@ pub(super) fn sidebar_ipc(
                     return;
                 }
             };
-            // Resume / Start / Restart = 「以後も起動する」意思。Pause で落とした enabled を
-            // 戻す（repos.kdl に永続）。失敗しても起動自体は続ける（起動が本命）。
+            // Resume / Start / Restart（`r` chord 含む）= 「以後も起動する」意思。Pause で落とした
+            // enabled を戻す（repos.kdl に永続）。失敗しても起動自体は続ける（起動が本命）。
+            // こちらは enable → restart の順でよい: restart が落ちても「enabled だが停止」= 旧挙動で、
+            // 次の autostart が起こす方向に倒れる。
             if let Err(e) = control.set_repo_enabled(&repo_path, true).await {
                 tracing::warn!("set_repo_enabled(true) failed for {}: {}", repo_path, e);
             }
@@ -339,14 +341,18 @@ pub(super) fn sidebar_ipc(
                     return;
                 }
             };
-            // Pause = 「daemon を再起動しても止まったまま」。enabled=false を**先に**永続して
-            // から止める（stop だけだと autostart で生き返り、PAUSED が再起動で消える）。
-            if let Err(e) = control.set_repo_enabled(&repo_path, false).await {
-                tracing::warn!("set_repo_enabled(false) failed for {}: {}", repo_path, e);
-            }
+            // Pause = 「daemon を再起動しても止まったまま」。stop が**成功してから**
+            // enabled=false を永続する（stop だけだと autostart で生き返り、PAUSED が再起動で消える）。
+            // 順序が stop → disable なのは、2 つの呼び出しが repo を別の鍵で引くため（stop は
+            // 登録名、set_enabled は path）。改名した repo は stop が "Repo not found" で落ちうるので、
+            // 先に disable すると「無効化済みだが稼働中」= UI に出ない半端な状態が残る（moody review）。
+            // stop が落ちた時は何も永続しない = 旧挙動に退化するだけ。
             match control.stop_process(&repo_name).await {
                 Ok(()) => {
                     tracing::info!("stop_process OK: {}", repo_name);
+                    if let Err(e) = control.set_repo_enabled(&repo_path, false).await {
+                        tracing::warn!("set_repo_enabled(false) failed for {}: {}", repo_path, e);
+                    }
                     // 完了 → repos 再 fetch → 停止 state を sidebar に反映。
                     // restart と同じく `fetch_repos_with_ports` 経由で
                     // 他 repo の runtime port を保つ。

@@ -57,12 +57,13 @@ pub(crate) struct SidebarIpcOutcome {
     /// （sidebar の Resume / Start / Restart は「以後も起動する」意思 = enabled に戻す）。
     pub(crate) restart_process_request: Option<(String, String)>,
     /// Process stop / pause 要求 `(repo_name, repo_path)`。
-    /// caller が `repos/set_enabled(path, false)` → `repos/stop(name)` を呼ぶ。
+    /// caller が `repos/stop(name)` → 成功したら `repos/set_enabled(path, false)` を呼ぶ。
     /// repo は registered のまま (停止しても sidebar リストに残り ▶ 起動が出る)。
     ///
-    /// ⚠️ enabled=false を**先に**書くのは、sidebar の Pause が「daemon を再起動しても
-    /// 止まったまま」を意味するため（2026-10-09 mako「PAUSED は永続化されてない？永続化したい」）。
-    /// stop だけだと autostart が enabled な repo を全部起こすので、PAUSED が再起動で消えていた。
+    /// ⚠️ enabled=false を書くのは、sidebar の Pause が「daemon を再起動しても止まったまま」を
+    /// 意味するため（2026-10-09 mako「PAUSED は永続化されてない？永続化したい」）。stop だけだと
+    /// autostart が enabled な repo を全部起こすので、PAUSED が再起動で消えていた。stop の
+    /// 成功後に書くのは、stop（登録名で引く）が改名 repo で落ちた時に disable だけ残さないため。
     /// CLI の `vp repos stop` は従来どおり一時停止（enabled 不変）— 永続は `vp repos disable`。
     pub(crate) stop_process_request: Option<(String, String)>,
     /// Repo delete 要求 `(repo_name, repo_path)`。
