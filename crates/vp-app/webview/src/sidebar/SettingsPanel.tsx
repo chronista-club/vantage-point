@@ -166,10 +166,23 @@ const SELECTABLE_AGENTS = ["", "claude", "codex"];
 /**
  * claude の model 候補。空 = engine 既定に委ねる。
  *
- * ⚠️ ここは表示用の短縮リスト。daemon 側は形式検証（`is_valid_model`）だけ通すので、
- * 手で settings.kdl に別の alias を書くこともできる。
+ * ⚠️ 固有 id でなく**系列 alias**（claude CLI が常に最新へ解決する）。固有 id を並べると
+ * 新 model のたびに古びる（Haiku 5.5 の時点で 4.5 のままだった）。server 側の
+ * `EngineKind::model_choices` と同じ 4 つ。daemon は形式検証（`is_valid_model`）だけ通す
+ * ので、特定の版に pin したい時は settings.kdl に固有 id を手で書ける。
  */
-const CLAUDE_MODELS = ["", "claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"];
+const CLAUDE_MODELS = ["", "fable", "opus", "sonnet", "haiku"];
+
+/**
+ * select に並べる候補。保存値が候補に無ければ**末尾に足す**（chat 側 `ModelSelect` と同じ扱い）。
+ *
+ * ⚠️ これが無いと、alias 化より前にこの面で選んだ固有 id（`claude-opus-5` 等）や、pin のために
+ * settings.kdl に手書きした id が option に無く、DOM の select が空欄 /「engine 既定」に
+ * 見える（実際の lane にはその id が注入されるので表示と実体が食い違う）。
+ */
+function claudeModelOptions(current: string): string[] {
+	return current && !CLAUDE_MODELS.includes(current) ? [...CLAUDE_MODELS, current] : CLAUDE_MODELS;
+}
 
 /** ログ詳細度の選択肢。空 = 未設定（VP の組み込み既定に従う）。 */
 const LOG_LEVELS = ["", "trace", "debug", "info", "warn", "error"];
@@ -397,7 +410,7 @@ export function SettingsPanel() {
 													value={defaultModel()}
 													onChange={(e) => saveDefaultModel(e.currentTarget.value)}
 												>
-													{CLAUDE_MODELS.map((m) => (
+													{claudeModelOptions(defaultModel()).map((m) => (
 														<option value={m}>{m || "（engine 既定）"}</option>
 													))}
 												</select>
