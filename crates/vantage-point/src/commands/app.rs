@@ -16,7 +16,17 @@ pub enum AppCommands {
     /// vp-app を停止 (SIGTERM、 idempotent)
     Stop,
     /// Start Menu に shortcut を置いて OS の「アプリ」として登録 (Windows、 idempotent)
-    Install,
+    ///
+    /// vp-app は Windows で起動するたびに `--target <自分> --if-changed` でこれを呼び、
+    /// shortcut を自動で用意・追従させる（消すときは `vp app uninstall`）。
+    Install {
+        /// shortcut が指す vp-app（省略時は PATH / vp の隣から探す）
+        #[arg(long)]
+        target: Option<PathBuf>,
+        /// 既存の shortcut が既に同じ exe を指していれば何もしない（起動のたびの自動呼び出し用）
+        #[arg(long)]
+        if_changed: bool,
+    },
     /// Start Menu shortcut を除去 (Windows、 idempotent)
     Uninstall,
 }
@@ -25,7 +35,7 @@ pub fn execute(cmd: AppCommands) -> Result<()> {
     match cmd {
         AppCommands::Start => start(),
         AppCommands::Stop => stop(),
-        AppCommands::Install => install(),
+        AppCommands::Install { target, if_changed } => install(target, if_changed),
         AppCommands::Uninstall => uninstall(),
     }
 }
@@ -152,7 +162,7 @@ fn stop() -> Result<()> {
 ///
 /// mac は `.app` bundle 自体が Launchpad / Spotlight の登録単位なので不要 (no-op)。
 #[cfg(not(windows))]
-fn install() -> Result<()> {
+fn install(_target: Option<PathBuf>, _if_changed: bool) -> Result<()> {
     println!("`vp app install` は Windows 専用です (mac は .app bundle が登録単位)。");
     Ok(())
 }
@@ -167,18 +177,37 @@ fn uninstall() -> Result<()> {
 ///
 /// これで検索 (Win キー → "Vantage Point") / ピン留めから起動できるようになる。
 #[cfg(windows)]
-fn install() -> Result<()> {
-    let target = find_vp_app_binary().context(
-        "vp-app binary not found. \
-         Build it first: 'cargo build --release -p vp-app' \
-         or install: 'cargo install --path crates/vp-app'",
-    )?;
+fn install(target: Option<PathBuf>, if_changed: bool) -> Result<()> {
+    let target = match target {
+        Some(t) => t,
+        None => find_vp_app_binary().context(
+            "vp-app binary not found. \
+             Build it first: 'cargo build --release -p vp-app' \
+             or install: 'cargo install --path crates/vp-app'",
+        )?,
+    };
+    // 実体に解決してから焼く。winget の `Links\vp-app.exe` は symlink で、指す先の
+    // package dir が実体（icon resource もそちらから引く）。
+    let target = dunce::canonicalize(&target).unwrap_or(target);
+
+    if if_changed && shortcut::current_target().is_some_and(|t| same_path(&t, &target)) {
+        return Ok(());
+    }
     let lnk = shortcut::install(&target)?;
     println!("📌 Start Menu shortcut を作成しました: {}", lnk.display());
     println!("   target: {}", target.display());
     println!("   AppUserModelID: {}", vp_paths::app_user_model_id());
     println!("   Win キー → \"Vantage Point\" で起動 / タスクバーにピン留めできます。");
     Ok(())
+}
+
+/// Windows の path 比較（大文字小文字を区別しない）。shortcut の読み戻し値は
+/// 保存時と表記が揺れることがあるため、文字列の完全一致では比べない。
+#[cfg(any(windows, test))]
+fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a.as_os_str()
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&b.as_os_str().to_string_lossy())
 }
 
 /// Start Menu shortcut を除去 (Windows、 idempotent)。
@@ -307,8 +336,16 @@ mod shortcut {
         Ok(Some(lnk))
     }
 
-    /// test 用: 保存済み shortcut の target path を読み戻す。
-    #[cfg(test)]
+    /// 今ある shortcut が指している exe。shortcut が無い / 読めない時は `None`。
+    pub fn current_target() -> Option<PathBuf> {
+        let lnk = shortcut_path().ok()?;
+        if !lnk.is_file() {
+            return None;
+        }
+        read_target(&lnk).ok()
+    }
+
+    /// 保存済み shortcut の target path を読み戻す。
     pub fn read_target(lnk: &Path) -> Result<PathBuf> {
         use windows::Win32::System::Com::STGM_READ;
         use windows::Win32::UI::Shell::SLGP_RAWPATH;
@@ -319,7 +356,8 @@ mod shortcut {
             let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
             let persist: IPersistFile = link.cast()?;
             persist.Load(&HSTRING::from(lnk.as_os_str()), STGM_READ)?;
-            let mut buf = [0u16; 260];
+            // winget の package dir 配下は MAX_PATH を超えうるので余裕を持たせる。
+            let mut buf = [0u16; 1024];
             link.GetPath(&mut buf, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32)?;
             let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
             Ok(PathBuf::from(String::from_utf16_lossy(&buf[..end])))
@@ -438,4 +476,23 @@ fn is_shim_dir(dir: &std::path::Path) -> bool {
 /// log 出力先 — XDG state zone 配下 (`vp_log_dir()` = `~/.local/state/vp/log/`)。
 fn log_dir_path() -> PathBuf {
     crate::config::vp_log_dir()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn same_path_ignores_case() {
+        // shortcut の読み戻し値は保存時と大文字小文字が揺れうる（`--if-changed` の判定）
+        assert!(same_path(
+            Path::new(r"C:\Users\x\AppData\Local\vp-app.exe"),
+            Path::new(r"c:\users\x\appdata\local\VP-APP.EXE"),
+        ));
+        assert!(!same_path(
+            Path::new(r"C:\a\vp-app.exe"),
+            Path::new(r"C:\b\vp-app.exe"),
+        ));
+    }
 }

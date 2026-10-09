@@ -79,6 +79,9 @@ pub(super) fn boot() -> anyhow::Result<(EventLoop<RoutedEvent<AppEvent>>, Rc<App
     // Windows taskbar の identity。 **window を作る前**に設定する必要がある
     // (既存 window の AUMID は後から変えられない)。 非 Windows は no-op。
     crate::icon::set_app_user_model_id();
+    // Start Menu shortcut を用意・追従（Windows のみ、別 thread で非同期）。同じ AUMID を焼くので
+    // shortcut から起動した window とピン留めが同一アプリとして結びつく。
+    crate::icon::ensure_start_menu_shortcut();
 
     let event_loop = EventLoopBuilder::<RoutedEvent<AppEvent>>::with_user_event().build();
 

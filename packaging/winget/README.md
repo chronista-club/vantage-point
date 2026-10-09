@@ -12,6 +12,10 @@ Mac の `.dmg` → cask に対して、Windows は zip（`vp.exe` + `vp-app.exe`
 - `InstallerType: zip` + `NestedInstallerType: portable` — winget が zip を展開し、両 exe の
   symlink を Links dir に置いて PATH を通す（`vp` / `vp-app` が即使える）。MSI 不要。
   `vp app start` は PATH 上の `vp-app` を見つける（symlink を解決した実体の隣も探す）。
+- **Start Menu shortcut は winget では作られない**（portable の制約）ので、**vp-app が起動のたびに
+  自分で用意する**（`vp app install --target <自分> --if-changed` を裏で呼ぶ。AUMID 付きなので
+  ピン留めも効く）。初回だけ `vp app start` で GUI を開けば、以後は Win キー →「Vantage Point」。
+  消すのは `vp app uninstall`。dev profile / cargo の build 出力から起動した時は触らない。
 
 ## 生成の流れ（自動）
 
