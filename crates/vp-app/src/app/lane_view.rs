@@ -484,7 +484,10 @@ pub(super) fn ensure_conversation_attach(
     // 畳んだ repo の「今」は名簿ごと見えないので、モデル上これで正しい（mako 裁定）。
     // 副作用: 開き直した直後は now-line が空欄（NowLine は replay 対象外 = 揮発の自己申告、
     // conversation_pump の doc）。次の `vp now` で埋まる。
-    if !repo_is_expanded(sidebar_state, &repo_path) {
+    //
+    // 例外は main area に出している lane（active）— 名簿で畳んでいても会話は画面に見えている。
+    // 判定は [`keeps_conversation_subscription`]。
+    if !keeps_conversation_subscription(sidebar_state, &repo_path, address) {
         if conversation_sessions.remove(address).is_some() {
             tracing::info!("conversation detach (repo collapsed): {}", address);
         }
@@ -620,6 +623,21 @@ pub(super) fn repo_is_expanded(state: &SidebarState, repo_path: &str) -> bool {
         .iter()
         .find(|p| p.path == repo_path)
         .is_none_or(|p| p.expanded)
+}
+
+/// lane の conversation 購読を保つか（= その lane の会話がどこかに見えているか）。
+///
+/// 見えている場所は 2 つ: 名簿（repo の accordion が開いている）と main area（active lane）。
+/// 畳んだ repo でも active lane は Chat が画面に出ているので購読を外さない — 外すと idle
+/// sweep が「購読なし」と判定して表示中の engine を寝かせ、Chat にも event が届かなくなる
+/// （2026-10-10 Windows 実機）。active から外れた lane は、次に全 lane を回す再評価
+/// （LanesLoaded / accordion 開閉）で外れる。
+pub(super) fn keeps_conversation_subscription(
+    state: &SidebarState,
+    repo_path: &str,
+    address: &str,
+) -> bool {
+    repo_is_expanded(state, repo_path) || state.active_lane_address.as_deref() == Some(address)
 }
 
 /// Active Lane を切替える — 全副作用を 1 箇所に集約（Simplicity 原則）。
@@ -821,4 +839,47 @@ pub(super) fn lookup_lane_cwd_by_address(
         .flatten()
         .find(|l| l.address.key() == address)
         .map(|l| std::path::PathBuf::from(&l.cwd))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pane::RepoPaneState;
+
+    const REPO: &str = "/w/vp";
+    const LEAD: &str = "vp/lane/lead";
+    const SUB: &str = "vp/lane/sub-a";
+
+    fn state(expanded: bool, active: Option<&str>) -> SidebarState {
+        let mut p = RepoPaneState::new(REPO, "vp");
+        p.expanded = expanded;
+        SidebarState {
+            processes: vec![p],
+            active_lane_address: active.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn expanded_repo_keeps_every_lane_subscribed() {
+        let s = state(true, None);
+        assert!(keeps_conversation_subscription(&s, REPO, LEAD));
+        assert!(keeps_conversation_subscription(&s, REPO, SUB));
+    }
+
+    /// 畳んだ repo でも、main area に出している lane（active）の会話は見えているので購読を残す。
+    /// 外すと idle sweep が「購読なし」と判定して表示中の chat engine を寝かせ、
+    /// 画面の Chat にも event が届かなくなる（2026-10-10 Windows 実機）。
+    #[test]
+    fn collapsed_repo_keeps_only_the_active_lane_subscribed() {
+        let s = state(false, Some(LEAD));
+        assert!(keeps_conversation_subscription(&s, REPO, LEAD));
+        assert!(!keeps_conversation_subscription(&s, REPO, SUB));
+    }
+
+    #[test]
+    fn collapsed_repo_without_active_lane_drops_subscriptions() {
+        let s = state(false, Some("other/lane/lead"));
+        assert!(!keeps_conversation_subscription(&s, REPO, LEAD));
+    }
 }
