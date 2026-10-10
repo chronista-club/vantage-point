@@ -9,7 +9,7 @@
  *
  * 移設時に振る舞いは変えていない（イベント順・replay の意味・HITL の streaming 停止は据え置き）。
  */
-import type { ConversationEvent, PlanEntry, QuestionSpec } from './console'
+import type { ConversationEvent, PlanEntry, QuestionSpec, SubagentRole } from './console'
 import type { toWirePayload } from './paste-image'
 import { foldCodexInteractions, type CodexInteractionState } from './codex-interaction-model'
 import type { CodexQuestion } from './src/generated/CodexQuestion'
@@ -36,6 +36,8 @@ export type ChatItem =
       input?: unknown
       result?: string
       subagent?: SubagentEntry[]
+      /** subagent の実行状態（subagent_task を畳んだもの）。Agent 行の見出しに出す。 */
+      task?: SubagentTaskView
       /** live 受信/settle 時刻（doc 57 §4.2 経過時間の材料）。replay では刻まない = 偽らない。 */
       at?: number
       doneAt?: number
@@ -58,7 +60,87 @@ export type ChatItem =
  * engine は親子を 1 本の stream に混ぜて流し、`parent_tool_use_id` だけが両者を分ける。
  * ここでは親の tool item にぶら下げて保持する = 「誰の発話か」を構造で保証する。
  */
-export type SubagentEntry = { role: 'prompt' | 'thinking' | 'text'; text: string }
+export type SubagentEntry = { role: SubagentRole; text: string }
+
+/**
+ * subagent の実行状態（`subagent_task` の部分スナップショットを畳んだもの）。
+ *
+ * engine は task_started / progress / updated / notification を別々の行で流し、各行は一部の
+ * field しか持たない。来た field だけ上書きする = 「前に分かったこと」を後の行が消さない。
+ */
+export type SubagentTaskView = {
+  taskId: string
+  status: string
+  description?: string
+  subagentType?: string
+  backgrounded?: boolean
+  lastToolName?: string
+  totalTokens?: number
+  toolUses?: number
+  durationMs?: number
+  summary?: string
+}
+
+/** tokens を tui と同じ粒度（39.2k）で。 */
+function formatTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
+}
+
+/** 経過時間を 1.1s / 1m 2s で。 */
+function formatDuration(ms: number): string {
+  const sec = ms / 1000
+  if (sec < 60) return `${sec.toFixed(1)}s`
+  const total = Math.round(sec)
+  return `${Math.floor(total / 60)}m ${total % 60}s`
+}
+
+/** 進行中の subagent 1 件（会話の流れから独立した float 表示用）。 */
+export type RunningSubagent = { id: string; title: string; task?: SubagentTaskView }
+
+/** subagent を回す tool 名（現行 `Agent`、旧名 `Task`）。 */
+const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
+
+/**
+ * 今走っている subagent を会話順に並べる（純関数 — float の表示源）。
+ *
+ * - task 情報あり: `status === 'running'` の間。foreground は Agent tool が返ったら終わり、
+ *   background（`backgrounded`）は tool が即返るので task の完了まで残す
+ * - task 情報なし（task_* を流さない古い CLI）: Agent tool が返るまで
+ * - `streaming` でない（turn が閉じた / engine が休眠した）なら foreground は出さない —
+ *   engine が途中で死ぬと tool_call_update が来ず、spinner が永遠に回り続けるのを防ぐ
+ */
+export function runningSubagents(items: ChatItem[], streaming: boolean): RunningSubagent[] {
+  const out: RunningSubagent[] = []
+  for (const it of items) {
+    if (it.kind !== 'tool') continue
+    const bg = it.task?.backgrounded === true
+    const running = it.task
+      ? it.task.status === 'running' && (bg || (!it.done && streaming))
+      : AGENT_TOOL_NAMES.has(it.name) && !it.done && streaming
+    if (!running) continue
+    const input = it.input as { description?: unknown } | undefined
+    const title =
+      typeof input?.description === 'string' && input.description ? input.description : it.name
+    out.push({ id: it.id, title, task: it.task })
+  }
+  return out
+}
+
+/**
+ * subagent の状態を 1 行に（tui の Agent 表示と同じ材料: 種別 · 今の作業 · 最後の tool · 回数 · tokens · 時間）。
+ * 無い field は飛ばす。
+ */
+export function subagentTaskLine(t: SubagentTaskView): string {
+  const parts: string[] = []
+  if (t.subagentType) parts.push(t.subagentType)
+  if (t.description) parts.push(t.description)
+  if (t.lastToolName) parts.push(t.lastToolName)
+  if (t.toolUses !== undefined) parts.push(`${t.toolUses} tool${t.toolUses === 1 ? '' : 's'}`)
+  if (t.totalTokens !== undefined) parts.push(`${formatTokens(t.totalTokens)} tok`)
+  if (t.durationMs !== undefined) parts.push(formatDuration(t.durationMs))
+  if (t.backgrounded) parts.push('background')
+  return parts.join(' · ')
+}
 
 /** tool アイテム（accordion 集約の対象）。 */
 export type ToolItem = Extract<ChatItem, { kind: 'tool' }>
@@ -398,8 +480,31 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       const list = (t.subagent ??= [])
       const last = list[list.length - 1]
       // 連続同 role は 1 節に畳む（thinking が細切れに見えない）。delta ではないので改行で継ぐ。
-      if (last && last.role === ev.role) last.text += `\n${ev.text}`
+      // tool_use / tool_result は 1 呼び出し = 1 節（畳むと別々の呼び出しが 1 つに見える）。
+      const mergeable = ev.role !== 'tool_use' && ev.role !== 'tool_result'
+      if (mergeable && last && last.role === ev.role) last.text += `\n${ev.text}`
       else list.push({ role: ev.role, text: ev.text })
+      break
+    }
+    case 'subagent_task': {
+      const t = s.items.find((i) => i.kind === 'tool' && i.id === ev.parent_tool_use_id) as
+        | Extract<ChatItem, { kind: 'tool' }>
+        | undefined
+      if (!t) {
+        console.warn('[chatview] 親 tool の無い subagent_task', ev.parent_tool_use_id)
+        break
+      }
+      // 来た field だけ上書き（部分スナップショット）。undefined/null は「この行が運ばなかった」。
+      const next: SubagentTaskView = { ...(t.task ?? {}), taskId: ev.task_id, status: ev.status }
+      if (ev.description != null) next.description = ev.description
+      if (ev.subagent_type != null) next.subagentType = ev.subagent_type
+      if (ev.backgrounded != null) next.backgrounded = ev.backgrounded
+      if (ev.last_tool_name != null) next.lastToolName = ev.last_tool_name
+      if (ev.total_tokens != null) next.totalTokens = ev.total_tokens
+      if (ev.tool_uses != null) next.toolUses = ev.tool_uses
+      if (ev.duration_ms != null) next.durationMs = ev.duration_ms
+      if (ev.summary != null) next.summary = ev.summary
+      t.task = next
       break
     }
     case 'plan':
