@@ -33,7 +33,31 @@ parent_tool_use_id: string,
 /**
  * 発話の種別。
  */
-role: SubagentRole, text: string, } | { "kind": "plan", entries: Array<PlanEntry>, } | { "kind": "turn_completed", session_id: string, cost_usd?: number, 
+role: SubagentRole, text: string, } | { "kind": "subagent_task", 
+/**
+ * 親の `Agent` [`ConversationEvent::ToolCall`] の `id`。
+ */
+parent_tool_use_id: string, task_id: string, 
+/**
+ * "running" | "completed" | "failed" | "killed" …（claude の status をそのまま運ぶ）。
+ */
+status: string, 
+/**
+ * 今やっていること（started = 親が付けた説明、progress = 子の現在の作業）。
+ */
+description?: string, subagent_type?: string, 
+/**
+ * true = 親の turn と切り離されたバックグラウンド実行。
+ */
+backgrounded?: boolean, 
+/**
+ * 直近に子が回した tool 名。
+ */
+last_tool_name?: string, total_tokens?: number, tool_uses?: number, duration_ms?: number, 
+/**
+ * 完了時の要約（`task_notification` のみ）。
+ */
+summary?: string, } | { "kind": "plan", entries: Array<PlanEntry>, } | { "kind": "turn_completed", session_id: string, cost_usd?: number, 
 /**
  * 現在の会話が占める context tokens（ゲージの分子）。
  */

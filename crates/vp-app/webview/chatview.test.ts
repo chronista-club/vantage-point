@@ -9,6 +9,8 @@ import {
   lampOf,
   deriveNowLine,
   clampNowLine,
+  subagentTaskLine,
+  runningSubagents,
 } from './chat-model'
 import {
   linkOpenPayload,
@@ -865,6 +867,92 @@ describe('subagent_message — Agent の子の発話を親と取り違えない�
     expect(s.items).toEqual([{ kind: 'assistant', text: '本文' }])
   })
 
+  it('tool_use / tool_result は連続しても畳まない（1 呼び出し = 1 節）', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 'toolu_1', name: 'Agent', input: {} },
+      { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'tool_use', text: 'Read\n{"file_path":"/a"}' },
+      { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'tool_use', text: 'Read\n{"file_path":"/b"}' },
+      { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'tool_result', text: 'A' },
+      { kind: 'subagent_message', parent_tool_use_id: 'toolu_1', role: 'tool_result', text: 'B' },
+    ])
+    const t = s.items[0]
+    expect(t.kind === 'tool' && t.subagent?.map((e) => e.role)).toEqual([
+      'tool_use',
+      'tool_use',
+      'tool_result',
+      'tool_result',
+    ])
+  })
+
+  it('subagent_task は親 tool に畳まれ、来た field だけ上書きする（部分スナップショット）', () => {
+    const s = fold([
+      { kind: 'tool_call', id: 'toolu_1', name: 'Agent', input: {} },
+      {
+        kind: 'subagent_task',
+        parent_tool_use_id: 'toolu_1',
+        task_id: 't1',
+        status: 'running',
+        description: 'Summarize',
+        subagent_type: 'general-purpose',
+        backgrounded: false,
+      },
+      {
+        kind: 'subagent_task',
+        parent_tool_use_id: 'toolu_1',
+        task_id: 't1',
+        status: 'running',
+        description: 'Reading /etc/hosts',
+        last_tool_name: 'Read',
+        total_tokens: 39234,
+        tool_uses: 1,
+        duration_ms: 1122,
+      },
+      { kind: 'subagent_task', parent_tool_use_id: 'toolu_1', task_id: 't1', status: 'completed', summary: '要約' },
+    ])
+    const t = s.items[0]
+    expect(t.kind === 'tool' && t.task).toEqual({
+      taskId: 't1',
+      status: 'completed',
+      description: 'Reading /etc/hosts',
+      subagentType: 'general-purpose',
+      backgrounded: false,
+      lastToolName: 'Read',
+      totalTokens: 39234,
+      toolUses: 1,
+      durationMs: 1122,
+      summary: '要約',
+    })
+    // item は増えない
+    expect(s.items).toHaveLength(1)
+  })
+
+  it('親 tool の無い subagent_task は捨てる', () => {
+    const s = fold([
+      { kind: 'message_chunk', text: '本文' },
+      { kind: 'subagent_task', parent_tool_use_id: 'ghost', task_id: 't', status: 'running' },
+    ])
+    expect(s.items).toEqual([{ kind: 'assistant', text: '本文' }])
+  })
+
+  it('subagentTaskLine は tui の Agent 行と同じ粒度で 1 行にする', () => {
+    expect(
+      subagentTaskLine({
+        taskId: 't',
+        status: 'running',
+        subagentType: 'general-purpose',
+        description: 'Reading /etc/hosts',
+        lastToolName: 'Read',
+        toolUses: 3,
+        totalTokens: 39234,
+        durationMs: 61500,
+        backgrounded: true,
+      }),
+    ).toBe('general-purpose · Reading /etc/hosts · Read · 3 tools · 39.2k tok · 1m 2s · background')
+    expect(subagentTaskLine({ taskId: 't', status: 'running', toolUses: 1, totalTokens: 900, durationMs: 1122 })).toBe(
+      '1 tool · 900 tok · 1.1s',
+    )
+  })
+
   it('並行した複数 Agent の発話が互いに混ざらない（parent id で分かれる）', () => {
     const s = fold([
       { kind: 'tool_call', id: 'a', name: 'Agent', input: {} },
@@ -1382,5 +1470,59 @@ describe('停止した turn の表示（2026-09-23）', () => {
     foldInto(s, { kind: 'message_chunk', text: '完了' })
     foldInto(s, { kind: 'turn_completed', session_id: 'sid' })
     expect(s.items.map((i) => ('text' in i ? i.text : '')).some((t) => t.includes('停止しました'))).toBe(false)
+  })
+})
+
+describe('runningSubagents — 進行中の subagent を会話の流れから独立して並べる', () => {
+  const agent = (id: string, description = id): ConversationEvent => ({
+    kind: 'tool_call',
+    id,
+    name: 'Agent',
+    input: { description, subagent_type: 'general-purpose' },
+  })
+  const task = (id: string, status: string, extra: Record<string, unknown> = {}): ConversationEvent =>
+    ({ kind: 'subagent_task', parent_tool_use_id: id, task_id: `t-${id}`, status, ...extra }) as ConversationEvent
+
+  it('走っている Agent だけを出し、終わったものは消える', () => {
+    const s = fold([
+      agent('a', 'A を調べる'),
+      task('a', 'running', { description: 'Reading a', tool_uses: 2 }),
+      agent('b', 'B を調べる'),
+      task('b', 'running'),
+      { kind: 'tool_call_update', tool_use_id: 'b', content: 'done', is_error: false },
+      task('b', 'completed'),
+    ])
+    const r = runningSubagents(s.items, true)
+    expect(r.map((x) => x.id)).toEqual(['a'])
+    expect(r[0].title).toBe('A を調べる')
+    expect(r[0].task?.description).toBe('Reading a')
+  })
+
+  it('background の Agent は tool が返った後も task が running なら残る', () => {
+    const s = fold([
+      agent('a'),
+      task('a', 'running', { backgrounded: true }),
+      { kind: 'tool_call_update', tool_use_id: 'a', content: 'started in background', is_error: false },
+    ])
+    expect(runningSubagents(s.items, false).map((x) => x.id)).toEqual(['a'])
+    // task が完了したら消える
+    foldInto(s, task('a', 'completed'))
+    expect(runningSubagents(s.items, false)).toEqual([])
+  })
+
+  it('task 情報が無い（古い CLI）Agent も、tool が終わるまでは出す', () => {
+    const s = fold([agent('a', '古い CLI')])
+    expect(runningSubagents(s.items, true).map((x) => x.title)).toEqual(['古い CLI'])
+  })
+
+  it('turn が終わっている（streaming でない）なら foreground の取り残しは出さない', () => {
+    // engine が途中で死ぬと tool_call_update が来ず done=false のまま残る — 永遠に回るのを防ぐ
+    const s = fold([agent('a'), task('a', 'running')])
+    expect(runningSubagents(s.items, false)).toEqual([])
+  })
+
+  it('Agent 以外の tool は出さない', () => {
+    const s = fold([{ kind: 'tool_call', id: 'x', name: 'Bash', input: { command: 'ls' } }])
+    expect(runningSubagents(s.items, true)).toEqual([])
   })
 })
