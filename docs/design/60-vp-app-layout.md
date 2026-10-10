@@ -82,7 +82,7 @@ crates/vp-app/src/
 - **再接続は `SharedDaemonConn` の manager だけが所有**。購読 loop は自前の reconnect を持たない。
 - **lane ごとの cmd channel は再接続を跨いで生きる**（切断中に積まれた write / resize は次接続で送る）。
 - **conversation の demand は初回も再接続も毎回撃つ**（前任 GUI の残留購読で edge が立たない事故の対策）。
-- **購読の寿命は accordion の可視性**（1→0 で daemon の demand hook が engine を寝かせる）。
+- **購読の寿命は会話の可視性**（1→0 で daemon の demand hook が engine を寝かせる）。見えている場所は accordion（名簿）と main area（active lane）の 2 つ — 畳んだ repo でも active lane は購読を残す（`keeps_conversation_subscription`、2026-10-10 に表示中の Chat が寝かされた実機事故から）。
 - `lane_key_to_wire_agent` と逆写像 `wire_agent_to_lane_display` は対で動く（doc 44）。逆写像は crate を跨ぐ（`vantage-point::repo::delivery_actor`）ので同居できず、往復は両側の test で固定する。
 
 ## 4. 再接続 loop 6 本の方針（契約。共通化は出荷条件にしない）
@@ -128,7 +128,7 @@ crates/vp-app/src/
 | conversation | 初回・再接続とも demand、collapse で unsubscribe、期限切れ submit は再送しない |
 | repo ask（統合 1 後） | 並行操作で宛先 / 応答が混ざらない。失敗 / timeout 後に stream が残らない |
 | sidebar | toggle / reorder の保存、再描画の抑制、効果の順序 |
-| 再接続 | daemon 再起動で lanes / canvas / device / terminal / chat が全部復帰。accordion 折り畳みで購読解除 |
+| 再接続 | daemon 再起動で lanes / canvas / device / terminal / chat が全部復帰。accordion 折り畳みで購読解除（active lane は残る） |
 
 ## 8. 復元と保存（`app/persist.rs` が所有、6-2b）
 
