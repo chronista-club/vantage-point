@@ -160,6 +160,38 @@ it("keeps a persistent 3D view above the settings and selects without MIDI comma
 	expect(document.querySelector('[data-midi-select="roto"]')?.getAttribute("aria-pressed")).toBe("true");
 });
 
+it("switches the main view and information with bottom tabs, including keyboard and removed devices", () => {
+	vi.useFakeTimers();
+	const send = vi.fn();
+	document.body.innerHTML = '<div id="device-list"></div>';
+	mountMidiUse(document.querySelector("#device-list")!, send);
+	const snapshot = state();
+	snapshot.snapshot.devices.push({ ...snapshot.snapshot.devices[0], device_id: "lpd", profile_id: "lpd8", name: "LPD8" });
+	renderMidiUse(snapshot);
+	const tabs = () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+	expect(tabs().map(t => t.textContent)).toEqual(["全体", "ROTO-CONTROL", "LPD8"]);
+	expect(tabs()[0].closest('[data-device-area="bottom"]')).not.toBeNull();
+	const calls = send.mock.calls.length;
+	tabs()[1].click();
+	expect(tabs()[1].getAttribute("aria-selected")).toBe("true");
+	expect(document.querySelector<HTMLElement>('[data-midi-row="lpd"]')!.hidden).toBe(true);
+	expect(document.querySelector<HTMLElement>('[data-midi-row="roto"]')!.hidden).toBe(false);
+	expect(document.querySelector<HTMLElement>('#device-list')!.hidden).toBe(true);
+	const labels = Array.from(document.querySelectorAll<HTMLButtonElement>('.midi-device-labels button'));
+	expect(labels.map(l => l.hidden)).toEqual([false, true]);
+	tabs()[1].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+	expect(tabs()[2].getAttribute("aria-selected")).toBe("true");
+	expect(document.activeElement).toBe(tabs()[2]);
+	tabs()[2].dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+	expect(tabs()[0].getAttribute("aria-selected")).toBe("true");
+	expect(labels.every(l => !l.hidden)).toBe(true);
+	expect(document.querySelector<HTMLElement>('#device-list')!.hidden).toBe(false);
+	tabs()[2].click();
+	renderMidiUse(state(10));
+	expect(tabs()[0].getAttribute("aria-selected")).toBe("true");
+	expect(send.mock.calls.length).toBe(calls);
+});
+
 it("offers an explicit enable action before allowing per-device changes", () => {
 	vi.useFakeTimers();
 	const send = vi.fn();

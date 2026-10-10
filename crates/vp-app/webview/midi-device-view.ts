@@ -59,7 +59,7 @@ export function createMidiDeviceView(onSelect: (id: string) => void): MidiDevice
 	help.textContent = "ドラッグで回転 · スクロールで拡大・縮小";
 	const reset = document.createElement("button");
 	reset.type = "button";
-	reset.textContent = "全体を見る";
+	reset.textContent = "表示を整える";
 	toolbar.append(help, reset);
 	viewport.append(canvas, labels, notice);
 	element.append(viewport, toolbar);
@@ -91,9 +91,13 @@ export function createMidiDeviceView(onSelect: (id: string) => void): MidiDevice
 	const point = new THREE.Vector2();
 	const projected = new THREE.Vector3();
 	const arrange = () => {
-		const { columns, rows } = deviceGrid(models.size, width / height || 1);
+		const { columns, rows } = deviceGrid(selected === null ? models.size : 1, width / height || 1);
+		fleet.clear();
 		let index = 0;
-		for (const { model, anchor, depth } of models.values()) {
+		for (const [id, { model, label, anchor, depth }] of models) {
+			label.hidden = selected !== null && selected !== id;
+			if (label.hidden) continue;
+			fleet.add(model.group);
 			model.group.position.set((index % columns - (columns - 1) / 2) * 6.9, 0, (Math.floor(index / columns) - (rows - 1) / 2) * 4.5);
 			anchor.copy(model.group.position).add(new THREE.Vector3(0, 0, depth / 2 + 0.42));
 			index++;
@@ -149,9 +153,9 @@ export function createMidiDeviceView(onSelect: (id: string) => void): MidiDevice
 		}
 		if (fitNeeded) fit();
 		renderer.render(scene, camera);
-		for (const { label, anchor } of models.values()) {
+		for (const [id, { label, anchor }] of models) {
 			projected.copy(anchor).project(camera);
-			label.hidden = projected.z < -1 || projected.z > 1;
+			label.hidden = (selected !== null && selected !== id) || projected.z < -1 || projected.z > 1;
 			label.style.left = `${(projected.x * 0.5 + 0.5) * width}px`;
 			label.style.top = `${(-projected.y * 0.5 + 0.5) * height}px`;
 		}
@@ -247,7 +251,15 @@ export function createMidiDeviceView(onSelect: (id: string) => void): MidiDevice
 			appearance();
 			visibility();
 		},
-		select(id) { selected = id; appearance(); },
+		select(id) {
+			const next = id !== null && models.has(id) ? id : null;
+			if (selected !== next) {
+				selected = next;
+				arrange();
+				fitNeeded = true;
+			}
+			appearance();
+		},
 		dispose() {
 			disposed = true;
 			queue.dispose();

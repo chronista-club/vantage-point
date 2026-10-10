@@ -22,6 +22,8 @@ export interface MidiUseStatus {
 type Send = (payload: Record<string, unknown>) => void;
 let root: HTMLElement | null = null;
 let information: HTMLElement | null = null;
+let tabs: HTMLElement | null = null;
+let ports: HTMLElement | null = null;
 let deviceView: MidiDeviceView | undefined;
 let selected: string | null = null;
 let send: Send = () => {};
@@ -53,13 +55,20 @@ export function mountMidiUse(
 	top.dataset.deviceArea = "top";
 	const middle = document.createElement("div");
 	middle.dataset.deviceArea = "middle";
+	middle.id = "midi-device-panel";
+	middle.setAttribute("role", "tabpanel");
 	const bottom = document.createElement("div");
 	bottom.dataset.deviceArea = "bottom";
 	information = document.createElement("div");
 	information.className = "midi-use-information";
 	deviceView = createMidiDeviceView(selectDevice);
 	middle.append(deviceView.element);
-	bottom.append(information, before);
+	tabs = document.createElement("div");
+	tabs.className = "midi-device-tabs";
+	tabs.setAttribute("role", "tablist");
+	tabs.setAttribute("aria-label", "表示する機材");
+	ports = before as HTMLElement;
+	bottom.append(tabs, information, before);
 	root.append(top, middle, bottom);
 	selected = null;
 	send = sender;
@@ -144,9 +153,33 @@ function draw() {
 	const root = information;
 	if (!root) return;
 	root.replaceChildren();
+	const focusedTab = tabs?.contains(document.activeElement)
+		? (document.activeElement as HTMLElement).dataset.midiTab : undefined;
+	tabs?.replaceChildren();
+	for (const [id, name] of [["", "全体"], ...(status.snapshot?.devices ?? []).map(d => [d.device_id, d.name])]) {
+		const tab = element("button", name);
+		tab.type = "button";
+		tab.id = `midi-tab-${encodeURIComponent(id)}`;
+		tab.dataset.midiTab = id;
+		tab.setAttribute("role", "tab");
+		tab.setAttribute("aria-controls", "midi-device-panel");
+		tab.onclick = () => selectDevice(id || null);
+		tab.onkeydown = event => {
+			const buttons = Array.from(tabs!.querySelectorAll<HTMLButtonElement>("button"));
+			const index = buttons.indexOf(tab);
+			const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
+				: event.key === "ArrowRight" ? (index + 1) % buttons.length
+				: event.key === "ArrowLeft" ? (index + buttons.length - 1) % buttons.length : -1;
+			if (next < 0) return;
+			event.preventDefault();
+			buttons[next].click();
+			buttons[next].focus();
+		};
+		tabs?.append(tab);
+	}
 	const css = element(
 		"style",
-		`.midi-use-settings{min-width:0}.midi-use-information{padding:14px 0}.midi-use-settings h3{margin:0 0 12px;font:inherit;font-weight:600}.midi-use-settings p{font-size:12px;opacity:.8;margin:8px 0}.midi-use-row{display:flex;gap:16px;align-items:center;padding:10px 8px;border-bottom:1px solid #ffffff18;border-left:2px solid transparent}.midi-use-row[data-selected=true]{border-left-color:#81e6d9;background:#81e6d911}.midi-use-row label{margin-left:auto;display:flex;gap:8px;align-items:center;min-height:36px;cursor:pointer}.midi-use-master{display:flex;align-items:center;gap:12px}.midi-use-master button{font:inherit;color:inherit;padding:8px 14px;border:1px solid #809bbd;border-radius:6px;background:#45648b55;cursor:pointer}.midi-use-master button:disabled{opacity:.5;cursor:wait}.midi-use-row input{width:18px;height:18px;accent-color:#80b9e8}.midi-use-row label:has(input:disabled){opacity:.4;cursor:not-allowed}.devices-port-details summary{cursor:pointer;padding:8px 0;opacity:.7}.midi-use-name{min-width:0;overflow-wrap:anywhere}.midi-use-name button{font:inherit;color:inherit;background:none;border:0;padding:0;text-align:left;cursor:pointer}.midi-use-name button:focus-visible{outline:2px solid #81e6d9;outline-offset:3px}.midi-use-caption{display:block;font-size:12px;opacity:.7;margin-top:4px}.midi-use-confirm{padding:12px;background:#8a66152b;border-radius:6px;margin:12px 0}.midi-use-confirm button{margin-right:8px}.midi-use-error{color:#eda47c}
+		`.midi-use-settings{min-width:0}.midi-device-tabs{display:flex;gap:4px;overflow-x:auto;border-bottom:1px solid #ffffff24}.midi-device-tabs button{flex-shrink:0;padding:10px 14px;border:0;border-bottom:2px solid transparent;background:none;color:inherit;font:inherit;cursor:pointer}.midi-device-tabs button[aria-selected=true]{color:#81e6d9;border-bottom-color:#81e6d9;background:#81e6d90a}.midi-device-tabs button:focus-visible{outline:2px solid #81e6d9;outline-offset:-3px}.midi-use-row[hidden]{display:none}.midi-use-information{padding:14px 0}.midi-use-settings h3{margin:0 0 12px;font:inherit;font-weight:600}.midi-use-settings p{font-size:12px;opacity:.8;margin:8px 0}.midi-use-row{display:flex;gap:16px;align-items:center;padding:10px 8px;border-bottom:1px solid #ffffff18;border-left:2px solid transparent}.midi-use-row[data-selected=true]{border-left-color:#81e6d9;background:#81e6d911}.midi-use-row label{margin-left:auto;display:flex;gap:8px;align-items:center;min-height:36px;cursor:pointer}.midi-use-master{display:flex;align-items:center;gap:12px}.midi-use-master button{font:inherit;color:inherit;padding:8px 14px;border:1px solid #809bbd;border-radius:6px;background:#45648b55;cursor:pointer}.midi-use-master button:disabled{opacity:.5;cursor:wait}.midi-use-row input{width:18px;height:18px;accent-color:#80b9e8}.midi-use-row label:has(input:disabled){opacity:.4;cursor:not-allowed}.devices-port-details summary{cursor:pointer;padding:8px 0;opacity:.7}.midi-use-name{min-width:0;overflow-wrap:anywhere}.midi-use-name button{font:inherit;color:inherit;background:none;border:0;padding:0;text-align:left;cursor:pointer}.midi-use-name button:focus-visible{outline:2px solid #81e6d9;outline-offset:3px}.midi-use-caption{display:block;font-size:12px;opacity:.7;margin-top:4px}.midi-use-confirm{padding:12px;background:#8a66152b;border-radius:6px;margin:12px 0}.midi-use-confirm button{margin-right:8px}.midi-use-error{color:#eda47c}
 		.midi-device-viewport{position:relative;height:clamp(260px,48vh,520px);overflow:hidden;background:#141b22;border-radius:6px;isolation:isolate}.midi-device-viewport canvas{display:block;width:100%;height:100%;touch-action:none}.midi-device-labels{position:absolute;inset:0;pointer-events:none}.midi-device-labels button{position:absolute;transform:translate(-50%,-50%);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;pointer-events:auto;background:#141b22dc;color:#c6d4df;border:1px solid #44515b;border-radius:4px;padding:4px 7px;font:inherit;font-size:11px;cursor:pointer}.midi-device-labels button[aria-pressed=true]{border-color:#81e6d9;color:#b9f6e8}.midi-device-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;font-size:11px;color:var(--text-secondary,#a1adb8)}.midi-device-toolbar button{flex-shrink:0;font:inherit;color:inherit;background:none;border:1px solid var(--border-subtle,#454545);border-radius:4px;padding:4px 8px;cursor:pointer}.midi-device-notice{position:absolute;inset:45% 16px auto;text-align:center;pointer-events:none}.midi-device-notice:empty{display:none}`,
 	);
 	root.append(css, element("h3", "このアプリで使う MIDI 機材"));
@@ -249,13 +282,30 @@ function draw() {
 	}
 	deviceView?.update(status);
 	selectDevice(selected);
+	if (focusedTab !== undefined) {
+		const buttons = Array.from(tabs?.querySelectorAll<HTMLButtonElement>("button") ?? []);
+		(buttons.find(t => t.dataset.midiTab === focusedTab) ?? buttons[0])?.focus();
+	}
 }
 
 function selectDevice(id: string | null): void {
-	selected = status.snapshot?.devices.some((d) => d.device_id === id) ? id : null;
+	const next = status.snapshot?.devices.some((d) => d.device_id === id) ? id : null;
+	if (selected !== next && confirmation) {
+		confirmation = null;
+		information?.querySelector(".midi-use-confirm")?.remove();
+	}
+	selected = next;
+	for (const tab of tabs?.querySelectorAll<HTMLButtonElement>("[data-midi-tab]") ?? []) {
+		const active = (tab.dataset.midiTab || null) === selected;
+		tab.setAttribute("aria-selected", String(active));
+		tab.tabIndex = active ? 0 : -1;
+		if (active) root?.querySelector('[role="tabpanel"]')?.setAttribute("aria-labelledby", tab.id);
+	}
+	if (ports) ports.hidden = selected !== null;
 	for (const row of root?.querySelectorAll<HTMLElement>("[data-midi-row]") ?? []) {
 		const active = row.dataset.midiRow === selected;
 		row.dataset.selected = String(active);
+		row.hidden = selected !== null && !active;
 		row.querySelector("[data-midi-select]")?.setAttribute("aria-pressed", String(active));
 	}
 	deviceView?.select(selected);
