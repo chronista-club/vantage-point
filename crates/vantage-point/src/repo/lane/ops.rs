@@ -582,6 +582,47 @@ mod tests {
         }
     }
 
+    /// 存在しない session を `--session` で指定した nudge は、console 経路に落として
+    /// 「Lane has no PtySlot」と言わず、無いことと今ある session 番号を返す（2026-10-10 実機:
+    /// 閉じた cdx#3 宛ての nudge が PtySlot エラーになり、原因が読めなかった）。
+    #[tokio::test]
+    async fn lane_nudge_to_missing_session_lists_existing_sessions() {
+        use crate::lane::session_registry::{self, SessionMode};
+        use crate::repo::state::{build_test_app_state, insert_test_lane};
+        use crate::repo::unison_server::dispatch_repo_method;
+
+        let _isolated = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let addr = insert_test_lane(&state, "nudge-missing", SessionMode::Tui).await;
+        let chat_key = session_registry::create(
+            "nudge-missing",
+            "lead",
+            "claude",
+            "codex",
+            SessionMode::Gui,
+            false,
+        )
+        .unwrap();
+
+        let missing = chat_key + 7;
+        let err = dispatch_repo_method(
+            &state,
+            "lane_nudge",
+            serde_json::json!({ "lane": addr.to_string(), "text": "x", "session": missing }),
+        )
+        .await
+        .expect_err("存在しない session は Err");
+        assert!(!err.contains("PtySlot"), "console 経路に落ちた: {err}");
+        assert!(
+            err.contains(&format!("session {missing} はこの lane にありません")),
+            "無いことを言っていない: {err}"
+        );
+        assert!(
+            err.contains(&format!("今ある session: 1, {chat_key}")),
+            "今ある session 番号を並べていない: {err}"
+        );
+    }
+
     /// tmux decoupling PR2 → capture error 明確化（2026-07-19）: lane_capture dispatch の error 経路。
     /// 未指定 / parse 不能 / pool 不在（lane 不在）/ chat mode lane（console 無しが正常）を分岐して返す。
     #[tokio::test]
