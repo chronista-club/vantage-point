@@ -143,6 +143,7 @@ vp update [--check]    # セルフアップデート
 vp restart-all         # daemon を再起動（= 全 repo 再起動。fold-in 後は daemon restart と等価）
                        # ⚠️ 復元されるのは「enabled な repo」で「再起動前に動いていた repo」ではない。
                        #    停止を永続させたいなら vp repos disable（stop だけでは再起動で生き返る）。
+#    GUI sidebar の Pause / Stop repo は stop + disable（= 永続）、Resume / Start / Restart（`r` chord 含む）は enable + restart。
 
 # Daemon / Repo
 vp daemon start|stop|status  # daemon 管理

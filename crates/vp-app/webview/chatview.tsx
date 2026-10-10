@@ -64,6 +64,8 @@ import {
   type ChatItem,
   type ChatState,
   type SubagentEntry,
+  type SubagentTaskView,
+  type RunningSubagent,
   type LaneChat,
   type Submission,
   type ToolItem,
@@ -75,6 +77,8 @@ import {
   emptyChatState,
   foldInto,
   lampOf,
+  runningSubagents,
+  subagentTaskLine,
   toolGroupStatus,
 } from './chat-model'
 export {
@@ -807,14 +811,16 @@ function ToolRow(props: {
   input?: unknown
   result?: string
   subagent?: SubagentEntry[]
+  task?: SubagentTaskView
 }) {
   const [open, setOpen] = createSignal(false)
   const inputText = createMemo(() => formatToolInput(props.input))
   const resultText = createMemo(() => formatToolResult(props.result))
   const subagent = createMemo(() => props.subagent ?? [])
   const oneLiner = createMemo(() => toolOneLiner(props.name, props.input))
+  const taskLine = createMemo(() => (props.task ? subagentTaskLine(props.task) : ''))
   const hasDetail = createMemo(
-    () => inputText() !== null || resultText() !== null || subagent().length > 0,
+    () => inputText() !== null || resultText() !== null || subagent().length > 0 || !!props.task,
   )
   return (
     <div class="conversation-tool" classList={{ done: props.done, error: props.error }}>
@@ -836,6 +842,10 @@ function ToolRow(props: {
         <Show when={oneLiner()}>
           {(t) => <span class="conversation-tool-oneliner">{t()}</span>}
         </Show>
+        {/* subagent の実行状態（tui の Agent 行と同じ材料）。live で書き換わる。 */}
+        <Show when={taskLine()}>
+          {(t) => <span class="conversation-tool-task">{t()}</span>}
+        </Show>
         <span class="conversation-tool-status">
           {props.error ? 'error' : props.done ? '✓' : '実行中…'}
         </span>
@@ -844,6 +854,14 @@ function ToolRow(props: {
         <div class="conversation-tool-body">
           <Show when={inputText()}>{(t) => <ToolDetail label="input" text={t()} />}</Show>
           {/* subagent は Agent 行の中に入れ子で置く = 「誰の発話か」を構造で示す。 */}
+          <Show when={props.task}>
+            {(t) => (
+              <ToolDetail
+                label={`task · ${t().status}`}
+                text={[subagentTaskLine(t()), t().summary].filter(Boolean).join('\n\n')}
+              />
+            )}
+          </Show>
           <Show when={subagent().length > 0}>
             <SubagentBlock entries={subagent()} />
           </Show>
@@ -904,12 +922,54 @@ function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
                 input={t.input}
                 result={t.result}
                 subagent={t.subagent}
+                task={t.task}
               />
             )}
           </For>
         </div>
       </Show>
     </div>
+  )
+}
+
+/**
+ * 進行中の subagent を chat の右に float で並べる（会話の流れから独立）。
+ *
+ * Agent 行は stream の中で塊の木に畳まれ、会話が進むと上へ流れて見えなくなる。走っている間だけ
+ * 「誰が・今なにを・どれだけ」を常に見える場所に置く。終わったら消える（結果は stream の Agent 行）。
+ * 位置は CSS の `.conversation-subagent-dock` 1 か所で決める（右下へ移す場合もそこだけ）。
+ */
+function SubagentDock(props: { agents: Accessor<RunningSubagent[]> }) {
+  return (
+    <Show when={props.agents().length > 0}>
+      <div class="conversation-subagent-dock" role="status" aria-label="実行中の subagent">
+        <For each={props.agents()}>
+          {(a) => {
+            // 見出し（親が付けた説明）と同じなら「今の作業」は重ねない。
+            const now = createMemo(() =>
+              a.task?.description && a.task.description !== a.title ? a.task.description : null,
+            )
+            const meta = createMemo(() =>
+              a.task ? subagentTaskLine({ ...a.task, description: undefined }) : '',
+            )
+            return (
+              <div class="conversation-subagent-card">
+                <div class="conversation-subagent-card-head">
+                  <span class="conversation-tool-spinner" />
+                  <span class="conversation-subagent-card-title">{a.title}</span>
+                </div>
+                <Show when={now()}>
+                  {(t) => <div class="conversation-subagent-card-now">{t()}</div>}
+                </Show>
+                <Show when={meta()}>
+                  {(t) => <div class="conversation-subagent-card-meta">{t()}</div>}
+                </Show>
+              </div>
+            )
+          }}
+        </For>
+      </div>
+    </Show>
   )
 }
 
@@ -997,6 +1057,7 @@ function ActivityTree(props: { run: Accessor<ChatItem[]>; tailStreaming: () => b
                       input={item.input}
                       result={item.result}
                       subagent={item.subagent}
+                      task={item.task}
                     />
                   </Match>
                 </Switch>
@@ -2050,6 +2111,7 @@ function SessionChatView(props: { lane: string; session: number }) {
                             input={item.input}
                             result={item.result}
                             subagent={item.subagent}
+                            task={item.task}
                           />
                         )
                       })()}
@@ -2136,6 +2198,8 @@ function SessionChatView(props: { lane: string; session: number }) {
             </div>
           </Show>
         </div>
+        {/* 進行中の subagent（会話の流れから独立した float）。stream が流れても見失わない。 */}
+        <SubagentDock agents={() => runningSubagents(state().items, state().streaming)} />
         <div style={{ 'max-height': '45vh', overflow: 'auto' }}>
           <Show when={state().codexInteractions?.requests.some(r => r.item_id && r.can_accept)}>
             <button type="button" class="conversation-prompt-opt" onClick={() => {
@@ -2527,6 +2591,22 @@ export const CHATVIEW_CSS = `
 /* 1 ライナー（doc 57 §4.4）: 情報密度の源。幅が尽きたら ellipsis（clamp は CSS の仕事）。 */
 .conversation-tool-oneliner { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   color: var(--color-text-tertiary,#8b93a7); }
+/* 進行中 subagent の float。⚠️ 位置はここ 1 か所（右下へ移すなら top/transform を bottom に替える）。
+   pointer-events は card だけ拾い、隙間は下の stream の操作（scroll / 選択）を邪魔しない。 */
+.conversation-subagent-dock { position:absolute; right:18px; top:50%; transform:translateY(-50%); z-index:5;
+  display:flex; flex-direction:column; gap:6px; width:min(320px, 40%); pointer-events:none; }
+.conversation-subagent-card { pointer-events:auto; padding:8px 10px; border-radius:8px;
+  background: var(--color-bg-elevated,#16191f); border:1px solid var(--color-border,#2a3040);
+  box-shadow: 0 6px 18px rgba(0,0,0,.35); font-size:var(--chat-text-tool,12px); animation: conversation-fade .18s ease-out; }
+.conversation-subagent-card-head { display:flex; align-items:center; gap:8px; min-width:0; }
+.conversation-subagent-card-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color: var(--color-text,#e6e9ef); }
+.conversation-subagent-card-now { margin:3px 0 0 17px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color: var(--color-text-secondary,#a8b0c0); }
+.conversation-subagent-card-meta { margin:2px 0 0 17px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-size:var(--chat-text-meta,11px); color: var(--color-text-tertiary,#616b80); }
+.conversation-tool-task { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-size:var(--chat-text-meta,11px); color: var(--color-text-tertiary,#616b80); }
 .conversation-tool-status { margin-left:auto; flex:none; font-size:var(--chat-text-meta,11px); }
 /* 展開部: thinking-body と同じ左罫線の入れ子表現で input / result を積む。 */
 .conversation-tool-body { display:flex; flex-direction:column; gap:6px; margin:5px 0 0 16px;

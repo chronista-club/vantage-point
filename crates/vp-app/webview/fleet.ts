@@ -42,13 +42,14 @@ export type FleetOp =
 	| { op: "scrub"; t: number }
 	| { op: "pad"; slot: number; pressed: boolean };
 
-export type FleetDevice = "roto" | "xtouch" | "lpd8";
+export type FleetDevice = "roto" | "xtouch" | "lpd8" | "nanokontrol";
 
 /** port 名 → 機材種別（Devices の port pattern と同じ部分一致規約） */
 export function deviceOf(portName: string): FleetDevice | null {
 	if (portName.includes("Roto")) return "roto";
 	if (portName.includes("X-Touch")) return "xtouch";
 	if (portName.includes("LPD8")) return "lpd8";
+	if (portName.toLowerCase().includes("nanokontrol")) return "nanokontrol";
 	return null;
 }
 
@@ -128,6 +129,21 @@ export function mapControl(portName: string, event: FleetControlEvent): FleetOp 
 			}
 			if (event.type === "fader_touch" && event.index === 0) {
 				return { op: "touch", source: "xtouch:fader0", pressed: event.pressed === true };
+			}
+			return null;
+		case "nanokontrol":
+			if (
+				(event.type === "knob" || event.type === "fader") &&
+				event.index >= 0 && event.index < 8 &&
+				typeof event.value === "number"
+			) {
+				return {
+					op: "share", paneIndex: event.index,
+					share: Math.min(clamp01(event.value), MAX_KNOB_SHARE),
+				};
+			}
+			if (event.type === "button" && event.index >= 0 && event.index < 8) {
+				return { op: "pad", slot: event.index, pressed: event.pressed === true };
 			}
 			return null;
 		case "lpd8":

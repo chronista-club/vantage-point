@@ -4,6 +4,9 @@
 # Node — bundle 各所の依存（webview / sidebar-bundle 等）。 どの階層でも除外
 node_modules/
 
+# Python test caches
+__pycache__/
+
 # Xcode
 .build/
 .swiftpm/

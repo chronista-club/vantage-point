@@ -159,6 +159,11 @@ pub fn slot_close(lane: &str, session: u32, config: &Config) -> Result<()> {
         "conversation_session_remove",
         serde_json::json!({ "lane": lane, "session": session }),
     )?;
+    // absent = 既に無い session（動詞は冪等に成功する）。「閉じた」と言うと嘘になるので区別する
+    if resp.get("status").and_then(serde_json::Value::as_str) == Some("absent") {
+        println!("[vp lane slot-close] {lane}: session={session} は既に無い（変化なし）");
+        return Ok(());
+    }
     let focused = resp
         .get("focused")
         .and_then(serde_json::Value::as_u64)

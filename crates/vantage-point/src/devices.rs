@@ -87,6 +87,7 @@ fn compute_diff(
 /// 未対応の機材は None（parser なし = input 監視対象外）。
 fn create_device_input(port_name: &str) -> Option<Box<dyn DeviceInput + Send>> {
     use crate::device_input::lpd8::Lpd8Input;
+    use crate::device_input::nanokontrol::NanoKontrolInput;
     use crate::device_input::roto::RotoInput;
     use crate::device_input::xtouch::XTouchInput;
 
@@ -96,6 +97,8 @@ fn create_device_input(port_name: &str) -> Option<Box<dyn DeviceInput + Send>> {
         Some(Box::new(XTouchInput))
     } else if port_name.contains("LPD8") {
         Some(Box::new(Lpd8Input))
+    } else if port_name.to_ascii_lowercase().contains("nanokontrol") {
+        Some(Box::new(NanoKontrolInput))
     } else {
         None
     }
@@ -1286,6 +1289,28 @@ mod tests {
         assert!(create_device_input("Roto").is_some());
         assert!(create_device_input("X-Touch Compact").is_some());
         assert!(create_device_input("LPD8 mk2").is_some());
+    }
+
+    #[test]
+    fn nanokontrol_factory_decodes_owned_bridge_inputs() {
+        use crate::device_input::ControlEvent;
+        for name in ["nanoKONTROL2 SLIDER/KNOB", "Midistage/vp/nanokontrol/input"] {
+            let mut parser = create_device_input(name).expect("nanoKONTROL2 parser");
+            assert!(
+                matches!(parser.parse(&[0xB0, 0, 127]), Some(ControlEvent::Fader { index: 0, value }) if value == 1.0)
+            );
+            assert!(matches!(
+                parser.parse(&[0xB0, 16, 64]),
+                Some(ControlEvent::Knob { index: 0, .. })
+            ));
+            assert!(matches!(
+                parser.parse(&[0xB0, 32, 127]),
+                Some(ControlEvent::Button {
+                    index: 0,
+                    pressed: true
+                })
+            ));
+        }
     }
 
     #[test]

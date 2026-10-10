@@ -85,7 +85,7 @@ impl DaemonControl {
         let resp = result
             .map_err(|_| anyhow!("{channel_name}.{method}: timeout"))?
             .map_err(|e| anyhow!("{channel_name}.{method}: {e}"))?;
-        if let Some(err) = rpc_error(&resp) {
+        if let Some(err) = control_response_error(channel_name, method, &resp) {
             bail!("{channel_name}.{method}: {err}");
         }
         Ok(resp)
@@ -212,9 +212,23 @@ impl DaemonControl {
         Ok(())
     }
 
+    /// repo の enabled を書く（`repos.kdl` に永続、daemon の `repos/set_enabled`）。
+    ///
+    /// sidebar の Resume は restart の前に（enable）、Pause は stop の**成功後**に（disable）呼ぶ
+    /// — autostart が見るのは enabled だけなので、ここを書かない停止は daemon 再起動で生き返る。
+    pub async fn set_repo_enabled(&self, repo_path: &str, enabled: bool) -> Result<()> {
+        self.control(
+            "repos/set_enabled",
+            serde_json::json!({ "path": repo_path, "enabled": enabled }),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// repo を停止する (旧 `POST /api/daemon/processes/{name}/stop`)。
     ///
-    /// repo は registered のまま (`enabled` 不変) — 稼働だけ落とす。
+    /// repo は registered のまま (`enabled` 不変) — 稼働だけ落とす。sidebar の Pause は
+    /// この**成功後**に [`Self::set_repo_enabled`] で enabled=false を永続する。
     pub async fn stop_process(&self, repo_name: &str) -> Result<()> {
         self.control("repos/stop", serde_json::json!({ "name": repo_name }))
             .await?;
@@ -322,6 +336,26 @@ impl DaemonControl {
     }
 }
 
+/// MIDI status carries `error` as service state, rather than an RPC error frame.
+/// Keep this exception scoped to the MIDI method and its complete status envelope.
+fn control_response_error(channel: &str, method: &str, resp: &serde_json::Value) -> Option<String> {
+    if channel == "daemon-control"
+        && method == "devices/midi-use"
+        && resp
+            .get("connected")
+            .is_some_and(serde_json::Value::is_boolean)
+        && resp
+            .get("enabled")
+            .is_some_and(serde_json::Value::is_boolean)
+        && resp
+            .get("snapshot")
+            .is_some_and(|v| v.is_object() || v.is_null())
+    {
+        return None;
+    }
+    rpc_error(resp)
+}
+
 /// Unison の error 慣習 (VP-163): 専用 error frame が無いので、daemon は失敗を
 /// **成功 frame の `{"error": ...}`** で返す。transport 成功 = 処理成功ではないため、
 /// ここで拾わないと未知 method や validation 失敗が silent success になる
@@ -358,6 +392,50 @@ pub fn decode_processes(resp: serde_json::Value) -> Result<Vec<RunningRepo>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn midi_status_preserves_service_errors_and_rpc_failures() {
+        for error in [
+            serde_json::Value::Null,
+            serde_json::json!("service disconnected"),
+        ] {
+            let status = serde_json::json!({
+                "connected": false, "enabled": true, "snapshot": null, "error": error
+            });
+            assert_eq!(
+                control_response_error("daemon-control", "devices/midi-use", &status),
+                None
+            );
+            assert!(control_response_error("daemon-control", "repos/list", &status).is_some());
+        }
+        for error in [serde_json::json!("stale revision"), serde_json::Value::Null] {
+            let failure = serde_json::json!({"error": error});
+            assert!(
+                control_response_error("daemon-control", "devices/midi-use", &failure).is_some()
+            );
+        }
+    }
+
+    /// Read-only dogfood check against an already running MIDI-enabled daemon.
+    #[tokio::test]
+    #[ignore = "requires running VP daemon and Midistage; read-only"]
+    async fn midi_use_live_status_is_not_an_rpc_error() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let transport = unison::network::quic::QuicClient::builder()
+            .trust_anchors(unison::network::TrustAnchors::SkipVerification)
+            .build()
+            .expect("QUIC client");
+        let client = Arc::new(unison::ProtocolClient::new(transport));
+        client.connect("[::1]:32000").await.expect("running daemon");
+        let control = DaemonControl::new(client);
+        let status = control
+            .midi_use(serde_json::json!({}))
+            .await
+            .expect("MIDI status is data, including its nullable service error");
+        assert!(status["connected"].is_boolean());
+        assert!(status["enabled"].is_boolean());
+        assert!(status.get("snapshot").is_some());
+    }
 
     /// 旧 HTTP `GET /api/daemon/repos` の wire shape (`{"repos": [...]}`)。
     ///

@@ -5,4 +5,4 @@
  *
  * engine の 1 本の stream に親子が混在するため、GUI が「誰が何を言ったか」を復元するのに要る。
  */
-export type SubagentRole = "prompt" | "thinking" | "text";
+export type SubagentRole = "prompt" | "thinking" | "text" | "tool_use" | "tool_result";
