@@ -38,6 +38,11 @@ export type ChatItem =
       subagent?: SubagentEntry[]
       /** subagent の実行状態（subagent_task を畳んだもの）。Agent 行の見出しに出す。 */
       task?: SubagentTaskView
+      /**
+       * 終了を告げずに消えた subagent の印（engine の死 / replay の turn 区切りで立つ）。
+       * task.status は claude の語彙なので書き換えず、「もう走っていない」はこの印で表す。
+       */
+      interrupted?: boolean
       /** live 受信/settle 時刻（doc 57 §4.2 経過時間の材料）。replay では刻まない = 偽らない。 */
       at?: number
       doneAt?: number
@@ -100,6 +105,26 @@ export type RunningSubagent = { id: string; title: string; task?: SubagentTaskVi
 /** subagent を回す tool 名（現行 `Agent`、旧名 `Task`）。 */
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
 
+/** 終了の行がまだ来ていない subagent か（task 情報なし = Agent tool が返っていない）。 */
+function isOpenSubagent(it: ToolItem): boolean {
+  return it.task ? it.task.status === 'running' : AGENT_TOOL_NAMES.has(it.name) && !it.done
+}
+
+/**
+ * 開いたままの subagent を全部「中断」にする（純 mutation）。
+ *
+ * subagent は親 claude プロセスの中で動くので、プロセスをまたいで生き残れない。親が死ぬと
+ * `task_notification`（終了の行）も tool_call_update も来ないまま止まるため、区切りの事実を
+ * 見た側で閉じる。呼ぶのは 2 か所（doc 57 §7）:
+ * - `engine_exited`: 親プロセスの stdout が閉じた = 中の subagent も全部死んだ
+ * - replay の `user_message`: 結果の無い Agent の後に次の人間の発話 = その turn は切れている
+ */
+function closeOpenSubagents(s: ChatState): void {
+  for (const it of s.items) {
+    if (it.kind === 'tool' && !it.interrupted && isOpenSubagent(it)) it.interrupted = true
+  }
+}
+
 /**
  * 今走っている subagent を会話順に並べる（純関数 — float の表示源）。
  *
@@ -108,11 +133,13 @@ const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
  * - task 情報なし（task_* を流さない古い CLI）: Agent tool が返るまで
  * - `streaming` でない（turn が閉じた / engine が休眠した）なら foreground は出さない —
  *   engine が途中で死ぬと tool_call_update が来ず、spinner が永遠に回り続けるのを防ぐ
+ * - `interrupted`（`closeOpenSubagents`）は出さない — background は streaming を見ないので、
+ *   終了の行が来ないまま親が死ぬとこの印が無い限り永遠に「進行中」になる
  */
 export function runningSubagents(items: ChatItem[], streaming: boolean): RunningSubagent[] {
   const out: RunningSubagent[] = []
   for (const it of items) {
-    if (it.kind !== 'tool') continue
+    if (it.kind !== 'tool' || it.interrupted) continue
     const bg = it.task?.backgrounded === true
     const running = it.task
       ? it.task.status === 'running' && (bg || (!it.done && streaming))
@@ -387,6 +414,9 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       break
     case 'user_message':
       // replay 専用（live は submit 時に ChatView が optimistic に足す）。常に新 bubble。
+      // 次の人間の発話 = 前の turn の区切り。replay は subagent_task も turn_completed も運ばないので、
+      // 結果の無い Agent はここで閉じる（live の background は turn をまたぐので live では閉じない）。
+      closeOpenSubagents(s)
       s.items.push({ kind: 'user', text: ev.text })
       break
     case 'session_init':
@@ -505,6 +535,8 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       if (ev.duration_ms != null) next.durationMs = ev.duration_ms
       if (ev.summary != null) next.summary = ev.summary
       t.task = next
+      // task の行が来た = engine は生きている。区切りで閉じた印より新しい事実を優先する。
+      delete t.interrupted
       break
     }
     case 'plan':
@@ -541,6 +573,9 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       s.streaming = false
       s.replaying = false
       sealLastAssistant(s) // 復活後の chunk と前 turn を融合させない（§5.1）
+      // 親プロセスが死んだ = 中の subagent も死んだ。⚠️ session_init は turn ごとに来るので
+      // 区切りに使えない（実測 claude 2.1.296）— 使うと turn をまたぐ background を毎回殺す。
+      closeOpenSubagents(s)
       break
     case 'question':
       // engine が turn を pause して選択を待つ（HITL）。カーソル点滅（streaming）は止める。

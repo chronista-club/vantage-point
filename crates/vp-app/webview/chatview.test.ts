@@ -1526,3 +1526,92 @@ describe('runningSubagents — 進行中の subagent を会話の流れから独
     expect(runningSubagents(s.items, true)).toEqual([])
   })
 })
+
+describe('終了を告げずに消えた subagent — engine の死と replay の区切りで閉じる', () => {
+  // testdata/turn_subagent.jsonl の形（id / task_id / description は実測値）を background にしたもの
+  const AGENT_ID = 'toolu_01Jsj2pNjsT48vbozSnvjpsC'
+  const agentCall: ConversationEvent = {
+    kind: 'tool_call',
+    id: AGENT_ID,
+    name: 'Agent',
+    input: { description: 'Summarize /etc/hosts in one line', subagent_type: 'general-purpose' },
+  }
+  const started = {
+    kind: 'subagent_task',
+    parent_tool_use_id: AGENT_ID,
+    task_id: 'a52d8d217661d822c',
+    status: 'running',
+    description: 'Summarize /etc/hosts in one line',
+    subagent_type: 'general-purpose',
+    backgrounded: true,
+  } as ConversationEvent
+  const launched: ConversationEvent = {
+    kind: 'tool_call_update',
+    tool_use_id: AGENT_ID,
+    content: 'Async agent launched successfully.',
+    is_error: false,
+  }
+
+  it('★ background の subagent は engine_exited で閉じる（task_notification が来なくても）', () => {
+    const s = fold([agentCall, started, launched, { kind: 'turn_completed', session_id: 'sid' }])
+    expect(runningSubagents(s.items, s.streaming).map((x) => x.id)).toEqual([AGENT_ID])
+    foldInto(s, { kind: 'engine_exited', message: '休眠' })
+    expect(runningSubagents(s.items, s.streaming)).toEqual([])
+    // claude の語彙に無い status を発明しない — 最後に分かった status はそのまま
+    const t = s.items.find((i) => i.kind === 'tool')
+    expect(t?.kind === 'tool' && t.task?.status).toBe('running')
+    expect(t?.kind === 'tool' && t.interrupted).toBe(true)
+  })
+
+  it('★ session_init は turn ごとに来るので、turn をまたぐ background subagent を閉じない', () => {
+    // 実測（claude 2.1.296）: 同じプロセスでも user message 1 通ごとに system/init が出る
+    const s = fold([agentCall, started, launched, { kind: 'turn_completed', session_id: 'sid' }])
+    foldInto(s, { kind: 'session_init', session_id: 'sid', model: 'claude-haiku-5-5' })
+    foldInto(s, { kind: 'message_chunk', text: '次の turn' })
+    expect(runningSubagents(s.items, s.streaming).map((x) => x.id)).toEqual([AGENT_ID])
+  })
+
+  it('★ engine が死んだ後の新しい turn で、結果の来ない foreground Agent が蘇らない', () => {
+    // foreground は streaming で隠しているだけなので、次の turn が streaming を立てると回り出していた
+    const s = fold([agentCall, { ...started, backgrounded: false } as ConversationEvent])
+    foldInto(s, { kind: 'engine_exited', message: '休眠' })
+    foldInto(s, { kind: 'session_init', session_id: 'sid', model: 'claude-haiku-5-5' })
+    foldInto(s, { kind: 'message_chunk', text: '再開後の turn' })
+    expect(s.streaming).toBe(true)
+    expect(runningSubagents(s.items, s.streaming)).toEqual([])
+  })
+
+  it('★ replay: 結果の無い Agent の後に次の user 発話があれば、そこで閉じる', () => {
+    // replay は subagent_task を運ばない（transcript.rs は system 行を捨てる）ので、task の無い
+    // Agent 行として再構築される。生成中の turn（in_flight）に着地すると streaming が立つ。
+    const s = fold([
+      { kind: 'replay_start' },
+      { kind: 'user_message', text: 'review して' },
+      agentCall,
+      { kind: 'user_message', text: 'まだ？' },
+      { kind: 'message_chunk', text: '生成中' },
+      { kind: 'replay_end', in_flight: true },
+    ])
+    expect(s.streaming).toBe(true)
+    expect(runningSubagents(s.items, s.streaming)).toEqual([])
+    const t = s.items.find((i) => i.kind === 'tool')
+    expect(t?.kind === 'tool' && t.interrupted).toBe(true)
+  })
+
+  it('replay: 区切りが来ていない末尾の Agent は生きている turn の一部なので出す', () => {
+    // reconnect がちょうど foreground subagent の実行中に着地した場合
+    const s = fold([
+      { kind: 'replay_start' },
+      { kind: 'user_message', text: 'review して' },
+      agentCall,
+      { kind: 'replay_end', in_flight: true },
+    ])
+    expect(runningSubagents(s.items, s.streaming).map((x) => x.id)).toEqual([AGENT_ID])
+  })
+
+  it('閉じた後に task の行が来たら生きている証拠なので開き直す', () => {
+    const s = fold([agentCall, started, launched, { kind: 'engine_exited', message: '休眠' }])
+    foldInto(s, { ...started, tool_uses: 3 } as ConversationEvent)
+    expect(runningSubagents(s.items, s.streaming).map((x) => x.id)).toEqual([AGENT_ID])
+  })
+})
