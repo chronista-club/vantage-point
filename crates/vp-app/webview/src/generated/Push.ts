@@ -59,6 +59,7 @@ export interface ShellLayout {
   right_sidebar_width: number;
   sidebar_form: string;
   right_sidebar_open: boolean;
+  right_sidebar_pct?: number;
 }
 
 /** Event "console:session_list" */
@@ -141,6 +142,12 @@ export interface DebuglogLines {
   lines: string[];
 }
 
+/** Event "lane:prs" */
+export interface LanePrs {
+  lane: string;
+  payload: any;
+}
+
 /** Event name → 生成 interface の map for "push" (= type-narrowing 用) */
 export type PushChannelEventTypes = {
   TermEnsureLane: TermEnsureLane;
@@ -164,6 +171,7 @@ export type PushChannelEventTypes = {
   CodeToggle: CodeToggle;
   BoardMessage: BoardMessage;
   DebuglogLines: DebuglogLines;
+  LanePrs: LanePrs;
 };
 
 /** Request name → { request, response } 生成 interface の map for "push" */
@@ -175,7 +183,7 @@ export const PushChannelMeta = {
   backend: "stream" as const,
   from: "server" as const,
   lifetime: "persistent" as const,
-  events: ["term:ensure_lane", "term:show_lane", "term:remove_lane", "term:remove_session", "term:paste", "devices:render", "pane:stow_restore", "shell:layout", "console:session_list", "console:event", "console:mode_applied", "console:agents", "ink:snapshot", "ink:snapshot_error", "voice:text", "voice:error", "code:entries", "code:file", "code:toggle", "board:message", "debuglog:lines"] as const,
+  events: ["term:ensure_lane", "term:show_lane", "term:remove_lane", "term:remove_session", "term:paste", "devices:render", "pane:stow_restore", "shell:layout", "console:session_list", "console:event", "console:mode_applied", "console:agents", "ink:snapshot", "ink:snapshot_error", "voice:text", "voice:error", "code:entries", "code:file", "code:toggle", "board:message", "debuglog:lines", "lane:prs"] as const,
   requests: {} as const,
   __types: undefined as unknown as { events: PushChannelEventTypes; requests: PushChannelRequestTypes },
 } as const;
@@ -202,6 +210,7 @@ export type PushEventEnvelope =
   | ({ t: "code:file" } & CodeFile)
   | ({ t: "code:toggle" } & CodeToggle)
   | ({ t: "board:message" } & BoardMessage)
-  | ({ t: "debuglog:lines" } & DebuglogLines);
+  | ({ t: "debuglog:lines" } & DebuglogLines)
+  | ({ t: "lane:prs" } & LanePrs);
 
 

@@ -18,6 +18,20 @@
  *
  * ## 層の分離
  *
+ * ## 3 起点（doc 82 §規約）
+ *
+ * 帯の要素は上詰めで積まない — 上 / 中央 / 下の 3 slot（main_area.rs の `.tri-anchor` >
+ * `.anchor-top` / `.anchor-center` / `.anchor-bottom`）に属する: 上 = + New / 中央 = しまった pane /
+ * 下 = board 取っ手 + PR ボタン。R sidebar（伸びた形）でも同じ規約で節が並ぶ。
+ *
+ * ## PR ボタン（doc 82）
+ *
+ * 下の slot。押す = R sidebar を開いて PR 節へ（`vp:right-sidebar-reveal`）。badge は
+ * **最後に取った** open 件数（`vp:lane-prs-count`、取得は R の PR 節が開いている間だけ —
+ * rail は取りに行かない）。gh 不在と分かった lane ではボタンごと出さない。
+ *
+ * ## 層の分離
+ *
  * - **data**: lane signal（entry.tsx の applyActivePane が setLane で注入）+ menu 状態
  * - **calculations**: 選択肢の展開は `newPaneChoices`（lane-panes.ts、vitest 済）に委譲
  * - **actions**: mountEdgeRail（Solid render + IPC 送信 + 相関 id 照合 + 外側 click）
@@ -69,8 +83,45 @@ export function mountEdgeRail(
   railRoot: HTMLElement,
   mount: HTMLElement,
   stowMount: HTMLElement,
+  prMount: HTMLElement | null,
 ): EdgeRailApi {
   const [lane, setLaneSignal] = createSignal<string | null>(null)
+  // ---- PR ボタン（doc 82）---------------------------------------------------------
+  // lane ごとに最後に取れた件数を覚える（戻った lane で即 badge が出る）。
+  const [prCounts, setPrCounts] = createSignal<Map<string, { count: number; available: boolean }>>(
+    new Map(),
+  )
+  document.addEventListener('vp:lane-prs-count', (e) => {
+    const d = (e as CustomEvent<{ lane: string; count: number; available: boolean }>).detail
+    if (!d?.lane) return
+    setPrCounts((prev) => new Map(prev).set(d.lane, { count: d.count, available: d.available }))
+  })
+  const prInfo = () => {
+    const l = lane()
+    return l ? prCounts().get(l) : undefined
+  }
+  const PrButton = () => (
+    <Show when={prInfo()?.available !== false}>
+      <button
+        type="button"
+        class="rail-btn rail-pr"
+        data-label={
+          prInfo() ? `Pull Requests — open ${prInfo()!.count} 件` : 'Pull Requests — この repo の open PR'
+        }
+        onClick={() =>
+          document.dispatchEvent(
+            new CustomEvent('vp:right-sidebar-reveal', { detail: { section: 'prs' } }),
+          )
+        }
+      >
+        <CreoIcon name="ph:git-pull-request" size={14} />
+        <Show when={(prInfo()?.count ?? 0) > 0}>
+          <span class="rail-pr-count">{prInfo()!.count}</span>
+        </Show>
+      </button>
+    </Show>
+  )
+  if (prMount) render(() => <PrButton />, prMount)
   // ---- しまった pane（Pane のしまうモード、creo mem_1CfbF4m1sGusje8oMouTu8）----------
   // 一覧は lane-panes が 'vp:stowed-panes' で流す（表示 lane 分だけ受ける）。badge は
   // しまっている間に届いた 'vp:pane-activity'（chat の返答 / console の出力 / board の新着）。

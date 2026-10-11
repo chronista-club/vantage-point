@@ -744,6 +744,18 @@ pub(crate) async fn handle_daemon_control(
         // user の「好み」設定（doc 59）。環境（config.kdl）ではなく settings.kdl の担当で、
         // キーは重複しない。read は file を都度引く — daemon が唯一の書き手なので、
         // memory に cache を持って「書いたのに古い値が返る」窓を作る必要がない。
+        // doc 82: lane の repo の open PR 一覧（R sidebar の中央の節）。read-only。
+        //
+        // 裏は当面 `gh pr list`（「許容 ≠ 依存」— 不在は `available:false`、失敗は `error`
+        // で返し、どちらも Err にしない = GUI は失敗を表示の一形態として扱える）。
+        // 引数は lane の cwd（path）— repo-proxy を経ずに済む read で、`host/farewell_log` と同じ流儀。
+        "lane/prs" => {
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            let prs = crate::lane::prs::list_open_prs(std::path::Path::new(path)).await;
+            serde_json::to_value(&prs).map_err(|e| e.to_string())
+        }
         "settings/get" => Ok(user_settings_json(
             &crate::settings_file::SettingsFile::load(),
         )),

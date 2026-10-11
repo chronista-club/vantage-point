@@ -20,6 +20,14 @@
  * pointermove ごとに IPC を撃つと、window resize と同じ頻度で session.json を書くことになる。
  * drag 中は DOM だけ動かし、**pointerup で 1 回**送る。
  *
+ * ## R の幅は「shell 幅に対する %」（doc 82）
+ *
+ * R sidebar は edge rail の伸びた形で、既定は **25%（下限 320px は CSS の min-width）**。
+ * drag で変えた値も % で持つので、window を広げれば R も比例して広がる。
+ * ⚠️ 保存 field の正は `right_sidebar_pct`。px の `right_sidebar_width` は旧版向けの写しで
+ * 読まない — 旧版は R を開閉するたびに既定 420px を保存していたので、px を読むと
+ * ほぼ全員が 25% 既定を見ないまま 420 に留まる。
+ *
  * ## ⚠️ slim の幅は保存しない
  *
  * `#sidebar-root.slim` は CSS 固定の 44px。保存するのは **full の幅**だけで、slim 中に
@@ -29,17 +37,23 @@
 /** L sidebar の幅の許容範囲（Rust `SIDEBAR_MIN/MAX_WIDTH` と対の値）。 */
 export const SIDEBAR_MIN = 180;
 export const SIDEBAR_MAX = 640;
-/** R sidebar の幅の許容範囲（Rust `RIGHT_SIDEBAR_MIN/MAX_WIDTH` と対の値）。 */
+/** R sidebar の幅（px）の許容範囲（Rust `RIGHT_SIDEBAR_MIN/MAX_WIDTH` と対の値）。
+ *  互換の写し（`right_sidebar_width`）を送る時の丸めにだけ使う。 */
 export const RIGHT_MIN = 240;
 export const RIGHT_MAX = 900;
+/** R sidebar の幅（%）の許容範囲（Rust `RIGHT_SIDEBAR_MIN/MAX_PCT` と対の値）。 */
+export const RIGHT_MIN_PCT = 15;
+export const RIGHT_MAX_PCT = 60;
+/** R の既定 %（doc 82 — mako「伸びた状態（25%）で使う想定」）。CSS の初期値と揃える。 */
+export const DEFAULT_RIGHT_PCT = 25;
 
-/** 既定値。CSS の初期値（`#sidebar-root{width:280px}` / `#right-sidebar{width:420px}`）と揃える。 */
+/** 既定値。CSS の初期値（`#sidebar-root{width:280px}` / `#right-sidebar{width:25%}`）と揃える。 */
 const DEFAULT_SIDEBAR = 280;
-const DEFAULT_RIGHT = 420;
 
 export interface ShellLayoutState {
 	sidebarWidth: number;
-	rightSidebarWidth: number;
+	/** R の幅（shell 幅に対する %）。 */
+	rightSidebarPct: number;
 	/** `"full" | "slim"`。slim の幅は CSS 固定なので `sidebarWidth` には触らない。 */
 	sidebarForm: string;
 	rightSidebarOpen: boolean;
@@ -47,7 +61,7 @@ export interface ShellLayoutState {
 
 const state: ShellLayoutState = {
 	sidebarWidth: DEFAULT_SIDEBAR,
-	rightSidebarWidth: DEFAULT_RIGHT,
+	rightSidebarPct: DEFAULT_RIGHT_PCT,
 	sidebarForm: "full",
 	rightSidebarOpen: false,
 };
@@ -76,6 +90,21 @@ export function nextWidth(
 		: clampWidth(shellRect.right - pointerX, RIGHT_MIN, RIGHT_MAX);
 }
 
+/**
+ * drag 中の R の新しい幅（%）。窓の右端から境界までの距離を shell 幅で割る。
+ * 小数 1 桁に丸める（保存値が px 単位の揺れで毎回変わらないように）。
+ */
+export function nextRightPct(
+	pointerX: number,
+	shellRect: { left: number; right: number },
+): number {
+	const width = shellRect.right - shellRect.left;
+	if (!(width > 0)) return DEFAULT_RIGHT_PCT;
+	const pct = ((shellRect.right - pointerX) / width) * 100;
+	if (!Number.isFinite(pct)) return DEFAULT_RIGHT_PCT;
+	return Math.round(Math.min(RIGHT_MAX_PCT, Math.max(RIGHT_MIN_PCT, pct)) * 10) / 10;
+}
+
 // ============================================================================
 // actions
 // ============================================================================
@@ -92,7 +121,7 @@ function applyWidths(): void {
 		else left.style.width = `${state.sidebarWidth}px`;
 	}
 	const right = el("#right-sidebar");
-	if (right) right.style.width = `${state.rightSidebarWidth}px`;
+	if (right) right.style.width = `${state.rightSidebarPct}%`;
 	// 取っ手は slim / R 閉のときは出さない（掴めないものに取っ手を見せない）。
 	const lh = el("#shell-resizer-left");
 	if (lh) lh.style.display = state.sidebarForm === "slim" ? "none" : "";
@@ -115,9 +144,15 @@ function persist(): void {
 	sendIpc({
 		t: "shell:layout",
 		sidebar_width: state.sidebarWidth,
-		right_sidebar_width: state.rightSidebarWidth,
+		// 旧版向けの互換の写し（今の幅を px で）。R の幅の正は下の pct。
+		right_sidebar_width: clampWidth(
+			el("#right-sidebar")?.getBoundingClientRect().width || RIGHT_MIN,
+			RIGHT_MIN,
+			RIGHT_MAX,
+		),
 		sidebar_form: state.sidebarForm,
 		right_sidebar_open: state.rightSidebarOpen,
+		right_sidebar_pct: state.rightSidebarPct,
 	});
 }
 
@@ -127,9 +162,14 @@ export function applyShellLayout(l: {
 	right_sidebar_width: number;
 	sidebar_form: string;
 	right_sidebar_open: boolean;
+	right_sidebar_pct?: number;
 }): void {
 	state.sidebarWidth = clampWidth(l.sidebar_width, SIDEBAR_MIN, SIDEBAR_MAX);
-	state.rightSidebarWidth = clampWidth(l.right_sidebar_width, RIGHT_MIN, RIGHT_MAX);
+	// pct が無い = 未 drag（または doc 82 以前の保存）→ 既定 25%。px は読まない（冒頭の注記）
+	state.rightSidebarPct =
+		typeof l.right_sidebar_pct === "number" && Number.isFinite(l.right_sidebar_pct)
+			? Math.min(RIGHT_MAX_PCT, Math.max(RIGHT_MIN_PCT, l.right_sidebar_pct))
+			: DEFAULT_RIGHT_PCT;
 	state.sidebarForm = l.sidebar_form === "slim" ? "slim" : "full";
 	state.rightSidebarOpen = !!l.right_sidebar_open;
 	applyWidths();
@@ -193,9 +233,8 @@ function wireHandle(handle: HTMLElement, side: "left" | "right"): void {
 
 		const onMove = (ev: PointerEvent) => {
 			const rect = shell.getBoundingClientRect();
-			const px = nextWidth(side, ev.clientX, rect);
-			if (side === "left") state.sidebarWidth = px;
-			else state.rightSidebarWidth = px;
+			if (side === "left") state.sidebarWidth = nextWidth(side, ev.clientX, rect);
+			else state.rightSidebarPct = nextRightPct(ev.clientX, rect);
 			applyWidths();
 		};
 		const onUp = () => {

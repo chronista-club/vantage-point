@@ -244,6 +244,14 @@ impl DaemonControl {
         Ok(())
     }
 
+    /// lane の repo の open PR 一覧（doc 82、daemon-control `lane/prs`）。
+    ///
+    /// `path` は lane の cwd。応答は daemon の `LanePrs` そのまま（gh 不在 = `available:false`）。
+    pub async fn lane_prs(&self, path: &str) -> Result<serde_json::Value> {
+        self.control("lane/prs", serde_json::json!({ "path": path }))
+            .await
+    }
+
     /// user の「好み」設定（settings.kdl）を読む（doc 59）。
     ///
     /// 返るのは**書かれている key だけ**の object（未設定は field ごと省略）。

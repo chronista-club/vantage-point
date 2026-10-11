@@ -95,6 +95,7 @@ import { CODE_PANE_CSS, type FilePayload, mountCodePane } from "./CodePane";
 import type { Entry as CodeEntry } from "./CodePane";
 import { mountEdgeRail, EDGE_RAIL_CSS } from "./EdgeRail";
 import { installRightSidebar } from "./right-sidebar";
+import { PR_SECTION_CSS } from "./right-sidebar-prs";
 import { applyShellLayout, installShellLayout } from "./shell-layout";
 import { renderBoard, clearBoard, appendBoard } from "./board-render";
 import { installConsole, focusedOf, sessionModeOf } from "./console";
@@ -261,6 +262,8 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		codePane?.setLane(null);
 		// doc 56 prototype: rail は lane 級動詞の家 — lane が無ければ帯ごと消える。
 		edgeRail?.setLane(null);
+		// doc 82: R sidebar の lane 級の節（Lane / PR）も lane 不在に追従して隠れる。
+		rightSidebar?.setLane(null);
 		return;
 	}
 	// kind=terminal: Lane 切替判定 + 保存済配置の restore + show-subscriber 付替
@@ -317,6 +320,8 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		codeView.setActiveLane(newLane);
 		// doc 56 prototype: rail の + New は lane address（agents_fetch / new_session の宛先）で追従。
 		edgeRail?.setLane(newLane);
+		// doc 82: R sidebar の PR 節は lane address（`lane:prs_fetch` の宛先）で追従。
+		rightSidebar?.setLane(newLane);
 		return;
 	}
 	// kind != terminal (board/runner/Devices/preview click 等): agent pane の**訪問**（一時 view）。
@@ -522,18 +527,42 @@ const edgeRail = (() => {
 	const root = document.getElementById("edge-rail");
 	const host = document.getElementById("edge-rail-new-host");
 	const stowHost = document.getElementById("edge-rail-stow-host");
-	return root && host && stowHost ? mountEdgeRail(root, host, stowHost) : null;
+	const prHost = document.getElementById("rail-pr-host");
+	return root && host && stowHost
+		? mountEdgeRail(root, host, stowHost, prHost)
+		: null;
 })();
 
-// ===== R sidebar（sidebar view modes、2026-08-01）— rail のフル幅形 = debug log =====
+// ===== R sidebar（doc 82）— edge rail の伸びた形。3 起点の縦 accordion =====
 // `Cmd+]`（sidebar bundle の `]` directive → 共有 bus）で rail ⇄ R sidebar を行き来。
-// 行の供給は push envelope `debuglog:lines`（下方 installDispatch で接続）。
+// 開いている間は rail の住人（+ New / しまった pane / board 取っ手）が Lane 節へ付け替わる。
+// 行の供給は push envelope `debuglog:lines` / `lane:prs`（下方 installDispatch で接続）。
+const prStyle = document.createElement("style");
+prStyle.textContent = PR_SECTION_CSS;
+document.head.appendChild(prStyle);
 const rightSidebar = (() => {
-	const log = document.getElementById("rsb-log");
-	const tabs = Array.from(
-		document.querySelectorAll<HTMLElement>("#right-sidebar .rsb-tab"),
-	);
-	return log ? installRightSidebar({ log, tabs }) : null;
+	const byId = (id: string) => document.getElementById(id);
+	const log = byId("rsb-log");
+	const laneBody = byId("rsb-lane-body");
+	const prsBody = byId("rsb-prs-body");
+	if (!log || !laneBody || !prsBody) return null;
+	return installRightSidebar({
+		log,
+		tabs: Array.from(
+			document.querySelectorAll<HTMLElement>("#right-sidebar .rsb-tab"),
+		),
+		sections: Array.from(
+			document.querySelectorAll<HTMLElement>("#right-sidebar .rsb-section"),
+		),
+		laneBody,
+		// rail の上から順（R の Lane 節でも同じ並びで出る）
+		residents: ["edge-rail-new-host", "edge-rail-stow-host", "board-handle"]
+			.map(byId)
+			.filter((el): el is HTMLElement => el !== null),
+		prsBody,
+		prsCount: byId("rsb-prs-count"),
+		prsRefresh: byId("rsb-prs-refresh"),
+	});
 })();
 
 const laneHeaderHost = document.getElementById("lane-header");
@@ -884,6 +913,8 @@ installDispatch({
 	// R sidebar の debug log（right-sidebar.ts）。mount target 不在なら no-op（ink と同じ流儀）。
 	debugLogLines: (source, reset, lines) =>
 		rightSidebar?.handleLines(source, reset, lines),
+	// R sidebar の PR 節（doc 82）。mount target 不在なら no-op（同上）。
+	lanePrs: (lane, payload) => rightSidebar?.handlePrs(lane, payload),
 	// code pane（コードブラウザ P1）。mount target 不在なら no-op（ink と同じ流儀）。
 	// entries の要素の形は Rust `file_explorer::Entry`（未知 kind の skip は CodePane 側）。
 	codeEntries: (lane, entries, truncated) =>

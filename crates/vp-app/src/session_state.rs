@@ -75,6 +75,11 @@ pub const SIDEBAR_MIN_WIDTH: f64 = 180.0;
 pub const SIDEBAR_MAX_WIDTH: f64 = 640.0;
 pub const RIGHT_SIDEBAR_MIN_WIDTH: f64 = 240.0;
 pub const RIGHT_SIDEBAR_MAX_WIDTH: f64 = 900.0;
+/// R sidebar の幅（shell 幅に対する %）の許容範囲（doc 82）。既定 25% は webview 側の値
+/// （保存が無ければ Rust は撃たない = 既定を二重に書かない）。下限 px（320）は CSS の
+/// `min-width` が持つので、ここは比率の端だけを守る。
+pub const RIGHT_SIDEBAR_MIN_PCT: f64 = 15.0;
+pub const RIGHT_SIDEBAR_MAX_PCT: f64 = 60.0;
 
 /// L sidebar の形 (doc 56 / sidebar view modes)。`full` = 一覧、`slim` = icon 幅の帯。
 ///
@@ -109,6 +114,13 @@ pub struct ShellLayout {
     /// R sidebar を開いていたか。
     #[serde(default)]
     pub right_sidebar_open: bool,
+    /// R sidebar の幅（shell 幅に対する %、doc 82）。`None` = 未 drag（webview の既定 25%）。
+    ///
+    /// ⚠️ **R の幅の正はこちら**。`right_sidebar_width`（px）は doc 82 以前の版が読む互換の
+    /// 写しで、webview はもう R の幅に使わない — 旧版は R の開閉のたびに既定の 420px を
+    /// 保存していたので、px を正にすると全員が 25% 既定を見ないまま 420 に留まる。
+    #[serde(default)]
+    pub right_sidebar_pct: Option<f64>,
 }
 
 impl ShellLayout {
@@ -120,6 +132,9 @@ impl ShellLayout {
             && (SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH).contains(&self.sidebar_width)
             && (RIGHT_SIDEBAR_MIN_WIDTH..=RIGHT_SIDEBAR_MAX_WIDTH)
                 .contains(&self.right_sidebar_width)
+            && self
+                .right_sidebar_pct
+                .is_none_or(|p| (RIGHT_SIDEBAR_MIN_PCT..=RIGHT_SIDEBAR_MAX_PCT).contains(&p))
     }
 
     /// 範囲外を端に丸める。webview から届いた値は **信用せず必ず通す**
@@ -137,6 +152,11 @@ impl ShellLayout {
         self.right_sidebar_width = self
             .right_sidebar_width
             .clamp(RIGHT_SIDEBAR_MIN_WIDTH, RIGHT_SIDEBAR_MAX_WIDTH);
+        // 比率は「壊れていたら未 drag に戻す」— 端へ丸めると NaN が 15% の極細を生む
+        self.right_sidebar_pct = self
+            .right_sidebar_pct
+            .filter(|p| p.is_finite())
+            .map(|p| p.clamp(RIGHT_SIDEBAR_MIN_PCT, RIGHT_SIDEBAR_MAX_PCT));
         self
     }
 }
@@ -649,8 +669,10 @@ mod tests {
             right_sidebar_width: 9999.0, // 画面を覆った
             sidebar_form: SidebarForm::Slim,
             right_sidebar_open: true,
+            right_sidebar_pct: Some(99.0),
         });
         let l = s.shell_layout().expect("clamp 後は valid");
+        assert_eq!(l.right_sidebar_pct, Some(RIGHT_SIDEBAR_MAX_PCT));
         assert_eq!(l.sidebar_width, SIDEBAR_MIN_WIDTH);
         assert_eq!(l.right_sidebar_width, RIGHT_SIDEBAR_MAX_WIDTH);
         // 形と開閉は幅と独立に保たれる
@@ -667,8 +689,13 @@ mod tests {
             right_sidebar_width: f64::INFINITY,
             sidebar_form: SidebarForm::Full,
             right_sidebar_open: false,
+            right_sidebar_pct: Some(f64::NAN),
         });
-        assert!(s.shell_layout().is_some(), "NaN でも既定へ倒して valid に");
+        let l = s.shell_layout().expect("NaN でも既定へ倒して valid に");
+        assert_eq!(
+            l.right_sidebar_pct, None,
+            "壊れた比率は未 drag（既定 25%）に戻す"
+        );
     }
 
     /// ⚠️ **slim の 44px を幅として保存しない**ことの根拠 — 形と幅は別 field。
@@ -681,6 +708,7 @@ mod tests {
             right_sidebar_width: 420.0,
             sidebar_form: SidebarForm::Slim,
             right_sidebar_open: false,
+            right_sidebar_pct: None,
         });
         let l = s.shell_layout().expect("valid");
         assert_eq!(l.sidebar_width, 320.0, "slim 中でも full の幅を覚えている");
@@ -696,6 +724,7 @@ mod tests {
                 right_sidebar_width: 5.0,
                 sidebar_form: SidebarForm::Full,
                 right_sidebar_open: false,
+                right_sidebar_pct: None,
             }),
             ..SessionState::default()
         };

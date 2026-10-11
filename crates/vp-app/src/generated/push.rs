@@ -51,6 +51,8 @@ pub struct ShellLayout {
     pub right_sidebar_width: i64,
     pub sidebar_form: String,
     pub right_sidebar_open: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub right_sidebar_pct: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,6 +136,12 @@ pub struct DebuglogLines {
     pub lines: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LanePrs {
+    pub lane: String,
+    pub payload: serde_json::Value,
+}
+
 /// Envelope enum for channel "push" — a discriminated union over its
 /// events, internally tagged by the "t" field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,4 +189,6 @@ pub enum PushEventEnvelope {
     BoardMessage(BoardMessage),
     #[serde(rename = "debuglog:lines")]
     DebuglogLines(DebuglogLines),
+    #[serde(rename = "lane:prs")]
+    LanePrs(LanePrs),
 }

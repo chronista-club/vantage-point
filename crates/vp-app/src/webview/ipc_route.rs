@@ -77,6 +77,9 @@ pub(crate) fn is_main_ipc_tag(body: &str) -> bool {
                 // 流れて silent drop = 「tree が永久に空 / file 無反応」regression
                 | "code:list"
                 | "code:read"
+                // R sidebar の PR 節（doc 82）。漏れると sidebar IPC へ流れて silent drop =
+                // 「PR 節が永久に読み込み中」regression
+                | "lane:prs_fetch"
                 // 音声入力（chat 入力欄の🎙、push-to-talk）。漏れると sidebar IPC へ流れて
                 // silent drop = 「押しても録音が始まらない」regression
                 | "voice:start"
@@ -122,6 +125,8 @@ mod ipc_tag_tests {
             // 「file を押しても何も出ない」
             "code:list",
             "code:read",
+            // R sidebar の PR 節: 漏れは「PR 節が永久に読み込み中」
+            "lane:prs_fetch",
             // 音声入力（chat 入力欄の🎙）: 漏れは「押しても録音が始まらない / 離しても文字が来ない」
             "voice:start",
             "voice:stop",

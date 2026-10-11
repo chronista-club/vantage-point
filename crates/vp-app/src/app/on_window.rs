@@ -129,6 +129,7 @@ pub(super) fn shell_layout(
     right_sidebar_width: f64,
     sidebar_form: String,
     right_sidebar_open: bool,
+    right_sidebar_pct: Option<f64>,
 ) {
     // shell の形（幅 / full-slim / R 開閉）を **この instance の** session file に保存。
     // 「window をどう開いていたか」なので window_geometry と同じ箱に入れる。
@@ -144,6 +145,7 @@ pub(super) fn shell_layout(
             SidebarForm::Full
         },
         right_sidebar_open,
+        right_sidebar_pct,
     });
 }
 
