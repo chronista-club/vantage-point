@@ -118,7 +118,7 @@ user 概念 (前 turn で提示):
 | **`Cmd hold + <directive>`** | 動詞発火 (= Layer A の主要 modifier path) | `Cmd hold f`, `Cmd hold p` |
 | `Ctrl+Shift + <key>` | layout / visual 系 (既存実装) | `Ctrl+Shift+1..4` (Scene), `Ctrl+Shift+] / [` (cyclic) |
 | OS 標準 (muda predefined) | system | `Cmd+C/V/X/Z/A`, `Cmd+W`, `Cmd+Q` |
-| **`Cmd + [ / ]`** (v1.1) | sidebar view modes (layout だが例外的に Cmd 修飾) | `Cmd+[` = 左 sidebar フル⇄スリム, `Cmd+]` = 右 rail⇄R sidebar (debug log) |
+| **`Cmd + [ / ]`** (v1.1) | sidebar view modes (layout だが例外的に Cmd 修飾) | `Cmd+[` = 左 sidebar フル⇄スリム, `Cmd+]` = 右 rail⇄R sidebar (rail の伸びた形 = Lane / PR / Debug Log、doc 82) |
 
 > v1.1 の例外について: sidebar の view mode 変身は semantic としては layout 系だが、
 > mako 指定 (2026-08-01) で `Cmd+[ / ]` に置く。キーの物理位置 (`[` = 左 / `]` = 右) が
@@ -207,7 +207,7 @@ user 概念 (前 turn で提示):
 | `Cmd hold l` | `l` (lane number switcher mode) | focus-transferring (mode) | **mode-based directive**: ⌘ hold l で mode 突入 (= sidebar 下端に hint bar)、 **5 秒以内に modifier なし 1-9 単発キー** で `collectVisibleLanes()` (= expanded project の中の lane を上から flat list) の N 番目を `lane:select`。 Esc / 他キー / timeout で abort。 input フォーカス時は数字入力を妨げない (= mode abort) | PR 447 |
 | `Cmd hold b` | `b` (buffer) | focus-transferring (mode) | **mode-based directive**（`l` と同型）: ⌘ hold b で ACTIONS capture mode に突入 (= sidebar 下端に hint bar)、**5 秒以内に 1-5** で区画 (NEXTs/WAITs/IDEAs/EVENTs/TODOs) を選ぶと空の Action が 1 行足って focus。 Esc / 他キー / timeout で abort。 doc 57 §0 の「差し込みの緩衝」の**本命の入口** — マウスを伸ばした時点で中断なので打鍵だけで完結させる。 ⚠️ 文字が `a` でないのは **⌘A が Select All (§C.4)** だから (capture phase の preventDefault が chat 入力の全選択を奪う)。 `Ctrl+Shift+B` (board 開閉) とは修飾違いで衝突しない | 2026-08-02 |
 | `Cmd+[` | `[` (sidebar form) | layout | 左 sidebar をフル (280px) ⇄ スリム帯 (44px、 repo badge 列 + daemon dot) に変身。 スリム中の badge click = フルへ戻って該当 repo を flash。 symbol キー directive の初例 (§B.1 v1.1) | 2026-08-01 |
-| `Cmd+]` | `]` (R sidebar) | layout | 右を edge rail ⇄ R sidebar (= rail のフル幅形、 debug log viewer: `app.kdl.log` / `daemon.kdl.log` の tail) に変身。 実体は main bundle の right-sidebar.ts (sidebar bundle から共有 bus `vp:right-sidebar-toggle` で依頼) | 2026-08-01 |
+| `Cmd+]` | `]` (R sidebar) | layout | 右を edge rail ⇄ R sidebar (= rail の伸びた形。2026-10-11 の doc 82 で debug log viewer から作り直し — 上 = Lane / 中央 = open PR / 下 = Debug Log: `app.kdl.log` / `daemon.kdl.log` の tail) に変身。 実体は main bundle の right-sidebar.ts (sidebar bundle から共有 bus `vp:right-sidebar-toggle` で依頼) | 2026-08-01 |
 
 > **v0.8 で撤去**: `e` / `g` / `h` (Stand focus、 旧 PR #444) は Scene hotkey `Ctrl+Shift+1..4` (§C.4) と重複のため撤去。 `w` (TheWorld status、 旧 PR #444) は将来の Unison WebView 直結 UI に委ねるため撤去。 `?`→`i` (meta cheatsheet、 旧 PR 447/454) は directive を最小動詞に絞る方針で撤去 (cheatsheet の SSOT は本 doc)。 いずれも #536/#537 で main-view bridge が撤去され no-op 化していたものを、 復活させず正式に削除した。
 

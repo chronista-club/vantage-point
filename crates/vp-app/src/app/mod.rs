@@ -395,6 +395,7 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             right_sidebar_width,
             sidebar_form,
             right_sidebar_open,
+            right_sidebar_pct,
         } => on_window::shell_layout(
             ui,
             boot,
@@ -402,6 +403,7 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             right_sidebar_width,
             sidebar_form,
             right_sidebar_open,
+            right_sidebar_pct,
         ),
         AppEvent::DebugLogWatch { source } => on_misc::debug_log_watch(ui, boot, &proxy, source),
         AppEvent::DebugLogUnwatch => on_misc::debug_log_unwatch(ui, boot),
@@ -593,6 +595,10 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             rel_path,
             payload,
         } => on_misc::code_file_result(ui, boot, lane, rel_path, payload),
+        AppEvent::LanePrsFetch { lane } => {
+            on_misc::lane_prs_fetch(ui, boot, &async_action_proxy, lane)
+        }
+        AppEvent::LanePrsResult { lane, payload } => on_misc::lane_prs_result(boot, lane, payload),
         AppEvent::WireHistoryResult { address, payload } => {
             on_misc::wire_history_result(ui, boot, address, payload)
         }

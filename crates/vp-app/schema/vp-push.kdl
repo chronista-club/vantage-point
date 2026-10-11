@@ -104,6 +104,9 @@ protocol "vp-push" version="1.0.0" {
             field "right_sidebar_width" type="int"
             field "sidebar_form" type="string"
             field "right_sidebar_open" type="bool"
+            // R sidebar の幅（shell 幅に対する %、doc 82）。未 drag なら省略 = webview 既定 25%。
+            // R の幅の正はこちら（`right_sidebar_width` は旧版向けの互換の写し）。
+            field "right_sidebar_pct" type="int" optional=#true
         }
 
         // ===== Conversation の Console 面（doc 33）— 実装は webview/console.ts =====
@@ -239,6 +242,16 @@ protocol "vp-push" version="1.0.0" {
             field "source" type="string"
             field "reset" type="bool"
             field "lines" type="array<string>"
+        }
+
+        // ===== R sidebar の PR 節（doc 82）— 実装は webview/right-sidebar-prs.tsx =====
+        //
+        // `lane:prs_fetch`（開いた時 + 開いている間 60 秒ごと）への応答。payload は daemon の
+        // `LanePrs`（`{available, branch, prs, error?}`）をそのまま運ぶ — 形の持ち主は daemon
+        // （`lane::prs`）で、ここは「どの窓口に届けるか」だけを型にする（board:message と同じ判断）。
+        event "lane:prs" {
+            field "lane" type="string"
+            field "payload" type="json"
         }
     }
 }

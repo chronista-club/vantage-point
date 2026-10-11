@@ -4,7 +4,7 @@
  * DOM / IPC を伴う installRightSidebar 本体は実機 dogfood の領分（board-view と同じ扱い）。
  */
 import { describe, expect, it } from "vitest";
-import { trimToTail } from "./right-sidebar";
+import { DEFAULT_SECTIONS, parseSections, trimToTail } from "./right-sidebar";
 
 describe("trimToTail", () => {
 	it("上限以下はそのまま返す", () => {
@@ -25,5 +25,25 @@ describe("trimToTail", () => {
 
 	it("ちょうど上限は無変換", () => {
 		expect(trimToTail("x\ny", 2)).toBe("x\ny");
+	});
+});
+
+describe("parseSections（accordion の開閉の保持、doc 82）", () => {
+	it("保存が無ければ既定 = Lane 開 / PR 開 / Debug Log 閉", () => {
+		expect(parseSections(null)).toEqual({ lane: true, prs: true, log: false });
+		expect(DEFAULT_SECTIONS).toEqual({ lane: true, prs: true, log: false });
+	});
+	it("保存値を読み、欠けた key は既定で埋める", () => {
+		expect(parseSections('{"log":true}')).toEqual({ lane: true, prs: true, log: true });
+		expect(parseSections('{"prs":false,"lane":false}')).toEqual({
+			lane: false,
+			prs: false,
+			log: false,
+		});
+	});
+	it("壊れた値・型違いは既定に倒す（開けない節を作らない）", () => {
+		expect(parseSections("not json")).toEqual(DEFAULT_SECTIONS);
+		expect(parseSections('{"prs":"yes"}')).toEqual(DEFAULT_SECTIONS);
+		expect(parseSections("null")).toEqual(DEFAULT_SECTIONS);
 	});
 });

@@ -48,6 +48,7 @@ function recordingHandlers(): { calls: string[]; handlers: PushHandlers } {
 			codeToggle: () => calls.push("codeToggle"),
 			debugLogLines: (source, reset, lines) =>
 				calls.push(`debuglog:${source}:${reset}:${lines.length}`),
+			lanePrs: (lane, _payload) => calls.push(`prs:${lane}`),
 			applyShellLayout: (l) =>
 				calls.push(
 					`shell:${l.sidebar_width}:${l.right_sidebar_width}:${l.sidebar_form}:${l.right_sidebar_open}`,

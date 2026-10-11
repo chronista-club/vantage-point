@@ -63,6 +63,16 @@ VP の動詞は「何に効くか」で級が分かれ、**級がそのまま UI
 > doc 18 §B.1 v1.1、実装は right-sidebar.ts / sidebar bundle の form.ts。
 > A 形（浮遊）の設定トグルはこの追記後も未実装のまま（§2 の位置づけ不変）。
 
+> **追記（2026-10-11、[doc 82](./82-r-sidebar-prs.md)）**: R sidebar は debug log viewer から
+> **rail の伸びた形**へ作り直された（幅は shell の 25%・下限 320px、drag で変えて % のまま永続）。
+> rail と R は**同じ住人の見え方切替**で、開いている間は rail の住人（+ New / しまった pane /
+> board 取っ手）が R の Lane 節へ付け替わって label 付きで並ぶ。中身は縦の accordion
+> （上 = Lane / 中央 = 表示中 lane の repo の open PR / 下 = Debug Log）。
+> あわせて **3 起点の規約**が入った — 縦の帯の要素は上詰めで積まず、起点は上・中央・下の
+> 3 箇所で各要素はどれかに属する。rail もこれに従い、上 = + New / 中央 = しまった pane /
+> 下 = board 取っ手 + PR ボタン（open 件数 badge、押す = R の PR 節へ）。§3 の表は
+> 2026-07-30 時点の記録として残す。
+
 ---
 
 ## 3. 住人（2026-07-30 時点、上から）

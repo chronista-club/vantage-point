@@ -153,7 +153,7 @@ body{overflow:hidden;}
    (form.ts) が書き、中身の描画も同 bundle (SlimRail)。ここは幅だけ司る。 */
 #sidebar-root.slim{width:44px;}
 #host{position:relative;flex:1;height:100%;min-width:0;}
-/* R sidebar (`Cmd+]`): 右の帯 (edge rail) のフル幅形 = debug log viewer。既定は閉 (rail 形)。
+/* R sidebar (`Cmd+]`): 右の帯 (edge rail) の伸びた形 (doc 82)。既定は閉 (rail 形)。
    開閉 class (body.rsb-open) は right-sidebar.ts が書く。flex 列なので開くと #host が縮む —
    doc 55 の reflow 規律どおり user 操作起点の reflow のみ。 */
 /* shell layout の取っ手（L|main と main|R の境界、shell-layout.ts が配線）。
@@ -181,14 +181,42 @@ body.shell-resizing{cursor:col-resize;user-select:none;}
   .shell-resizer{transition:none;}
   .shell-resizer.dragging{animation:none;}}
 
-#right-sidebar{display:none;flex:none;width:420px;height:100%;box-sizing:border-box;
-  flex-direction:column;background:var(--color-surface-bg-subtle);
-  border-left:1px solid var(--color-surface-border,#1f2233);}
+/* R sidebar = edge rail の伸びた形 (doc 82)。幅は shell の 25% (min 320px) が既定で、drag で
+   変えた値も % のまま shell-layout.ts が inline で当てて永続化する。中身は 3 起点の縦 accordion
+   (上 = Lane / 中央 = Pull Requests / 下 = Debug Log — .tri-anchor の規約)。 */
+#right-sidebar{display:none;flex:none;width:25%;min-width:320px;height:100%;box-sizing:border-box;
+  background:var(--color-surface-bg-subtle);
+  border-left:1px solid var(--color-surface-border,#1f2233);-webkit-app-region:no-drag;}
 body.rsb-open #right-sidebar{display:flex;}
-.rsb-head{display:flex;align-items:center;gap:8px;padding:8px 12px;flex:none;
-  border-bottom:1px solid var(--color-surface-border,#1f2233);-webkit-app-region:no-drag;}
+.rsb-section.rsb-absent{display:none !important;}
+.rsb-section{display:flex;flex-direction:column;min-height:0;}
+.rsb-sec-head{display:flex;align-items:center;gap:8px;padding:7px 12px;flex:none;cursor:pointer;user-select:none;
+  border-top:1px solid var(--color-surface-border,#1f2233);}
+.anchor-top>.rsb-section:first-child .rsb-sec-head{border-top:0;}
+.rsb-sec-head:hover{background:var(--color-surface-bg-emphasis);}
+.rsb-chevron{flex:none;color:var(--color-text-tertiary);transition:transform .12s ease;}
+.rsb-section.open .rsb-chevron{transform:rotate(90deg);}
 .rsb-title{font-size:11px;letter-spacing:.08em;color:var(--color-text-secondary);text-transform:uppercase;}
-.rsb-tabs{display:flex;gap:4px;margin-left:auto;}
+.rsb-count{font-size:10px;color:var(--color-text-tertiary);font-family:var(--vp-font-mono),var(--typography-family-mono);}
+.rsb-sec-tools{display:flex;gap:4px;margin-left:auto;align-items:center;}
+.rsb-sec-body{display:none;min-height:0;}
+.rsb-section.open>.rsb-sec-body{display:flex;flex-direction:column;}
+/* 中央 (PR) は溢れたら中で scroll。下 (Log) は開いた時に高さを持つ (tail は高さが無いと読めない) */
+#rsb-sec-prs.open{min-height:0;}
+#rsb-prs-body{flex:1 1 auto;min-height:0;overflow:auto;padding:2px 4px 6px;}
+#rsb-sec-log.open>.rsb-sec-body{height:38vh;}
+.rsb-icon-btn{display:flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;
+  border:1px solid transparent;border-radius:5px;background:transparent;color:var(--color-text-tertiary);cursor:pointer;}
+.rsb-icon-btn:hover{color:var(--color-text-primary);border-color:var(--color-surface-border-subtle);}
+/* Lane 節 = rail の住人が付け替わってくる先。同じ .rail-btn を label 付きの行で見せる
+   (hover で滑り出していた data-label を常時の文字にする)。 */
+#rsb-lane-body{padding:4px 8px 8px;gap:2px;max-height:40vh;overflow:auto;}
+#rsb-lane-body #edge-rail-stow-host{align-items:stretch;overflow:visible;}
+#rsb-lane-body .rail-btn{width:100%;height:28px;justify-content:flex-start;gap:8px;padding:0 8px;flex:none;}
+#rsb-lane-body .rail-btn::after{position:static;transform:none;opacity:1;padding:0;border:0;background:none;
+  font-size:11.5px;color:inherit;overflow:hidden;text-overflow:ellipsis;transition:none;}
+#rsb-lane-body .rail-btn:hover::after{transform:none;}
+.rsb-tabs{display:flex;gap:4px;}
 .rsb-tab{padding:2px 10px;border:1px solid var(--color-surface-border-subtle);border-radius:6px;
   background:transparent;color:var(--color-text-tertiary);cursor:pointer;font-size:10.5px;
   font-family:var(--vp-font-mono),var(--typography-family-mono);}
@@ -444,16 +472,31 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 /* edge rail（doc 56 prototype）: 右端の帯 = lane 級動詞の家。B 形（帯）が既定 —
    「lane に対して何ができるか」を初見にも見せ切る（mako 2026-07-30）。占有は静的
    （#lane-panes / #lane-header が 36px 退避）なので reflow イベントは発生しない。 */
+/* 3 起点の規約（doc 82 §規約）: 縦の帯の要素は上詰めで積まない。起点は上 / 中央 / 下の
+   3 箇所で、各要素はどれかの slot に属する。上は上端から下へ、下は下端から上へ伸び、
+   中央は残りの中で中央に置かれる。上下 slot は同じ伸び率（flex-grow 1）で余白を分け合うので、
+   上下の中身が同じ高さなら中央は正確に中央 — 片方が大きく開いても上端 / 下端の anchor は崩れない
+   （中央が押される）。中央だけが縮む（min-height:0）= 中身が溢れたら中央の中で scroll する。 */
+.tri-anchor{display:flex;flex-direction:column;min-height:0;}
+.tri-anchor>.anchor-top{flex:1 0 auto;display:flex;flex-direction:column;justify-content:flex-start;}
+.tri-anchor>.anchor-center{flex:0 1 auto;display:flex;flex-direction:column;justify-content:center;min-height:0;}
+.tri-anchor>.anchor-bottom{flex:1 0 auto;display:flex;flex-direction:column;justify-content:flex-end;}
 #edge-rail{position:absolute;right:0;top:0;bottom:0;width:36px;z-index:25;
-  display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 0;
+  padding:10px 0;box-sizing:border-box;
   background:var(--color-surface-bg-subtle);
   border-left:1px solid var(--color-surface-border,#1f2233);}
-/* R sidebar 展開中は rail を隠す — rail ⇄ R sidebar は同じ「右」の 2 態 (sidebar view modes)。
+#edge-rail .vrail-slot{align-items:center;gap:8px;}
+/* R sidebar 展開中は rail を隠す — rail ⇄ R sidebar は同じ住人の 2 態 (doc 82)。住人は
+   R の Lane 節へ付け替わっているので、帯が消えても動詞は失われない。
    EdgeRail.setLane が inline display を書くため !important でのみ上書きできる。 */
 body.rsb-open #edge-rail{display:none !important;}
 #edge-rail-new-host{display:contents;}
-/* しまった pane の置き場 = 帯の縦中央（残りの高さを取り、中で縦中央寄せ） */
-#edge-rail-stow-host{flex:1 1 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:0;}
+/* しまった pane の置き場 = 帯の中央の slot */
+#edge-rail-stow-host{display:flex;flex-direction:column;align-items:center;gap:6px;min-height:0;overflow:auto;}
+/* PR ボタン（doc 82）: open 件数 badge は右上の小さな数字 */
+.rail-pr .rail-pr-count{position:absolute;top:-3px;right:-4px;min-width:14px;height:14px;padding:0 3px;
+  box-sizing:border-box;border-radius:7px;background:var(--color-brand-primary,#3b82f6);color:#fff;
+  font-size:9px;line-height:14px;text-align:center;font-family:var(--vp-font-mono),var(--typography-family-mono);}
 .rail-stowed .rail-stowed-badge{display:none;position:absolute;top:2px;right:2px;width:7px;height:7px;border-radius:50%;background:var(--color-accent,#e2b96f);}
 .rail-stowed.has-badge .rail-stowed-badge{display:block;animation:board-badge-pulse 1.6s ease-in-out infinite;}
 .rail-stowed.has-badge{color:var(--color-text-primary);}
@@ -711,19 +754,31 @@ body.rsb-open #edge-rail{display:none !important;}
          「動詞の級 = 住所」— New（生成）が上、board 取っ手が続く。pane 級は各 pane の名札、
          app 級（⚙ 設定）はサイドバー下部でここには置かない。B 形（帯）が既定、A 形（浮遊）は
          将来の設定トグル。lane 不在時は EdgeRail.setLane(null) が帯ごと隠す。 -->
-    <div id="edge-rail" style="display:none">
-      <!-- + New（EdgeRail.tsx が render。machinery は LaneHeader から移設 — 動線一本化） -->
-      <div id="edge-rail-new-host"></div>
-      <!-- しまった pane の置き場（Pane のしまうモード、creo mem_1CfbF4m1sGusje8oMouTu8）: 帯の
-           縦中央に kind のアイコンが並ぶ。EdgeRail.tsx が render（'vp:stowed-panes' の鏡）。
-           click で中央へ戻す。中身は view 層の状態だけ（AI は書けない）。 -->
-      <div id="edge-rail-stow-host"></div>
-      <!-- board の取っ手（doc 55）— 開閉の入口 + 新着 badge。表示状態は user 専有で
-           board-view.ts が持つ（AI は書けない）。lane 不在時は board-view も個別に隠す。 -->
-      <button id="board-handle" class="rail-btn" data-label="Board (Ctrl+Shift+B)" title="Board を開く / 閉じる (Ctrl+Shift+B)" style="display:none">
-        <iconify-icon icon="ph:compass"></iconify-icon>
-        <span id="board-handle-badge"></span>
-      </button>
+    <!-- 3 起点（doc 82 §規約）: 帯の要素は上詰めで積まず、上 / 中央 / 下の slot に属する。
+         R sidebar を開いている間、上・中央の host と board 取っ手は R の Lane 節へ付け替わる
+         （right-sidebar.ts — 同じ住人の見え方の切替）。 -->
+    <div id="edge-rail" class="tri-anchor" style="display:none">
+      <div class="anchor-top vrail-slot">
+        <!-- + New（EdgeRail.tsx が render。machinery は LaneHeader から移設 — 動線一本化） -->
+        <div id="edge-rail-new-host"></div>
+      </div>
+      <div class="anchor-center vrail-slot">
+        <!-- しまった pane の置き場（Pane のしまうモード、creo mem_1CfbF4m1sGusje8oMouTu8）: 帯の
+             縦中央に kind のアイコンが並ぶ。EdgeRail.tsx が render（'vp:stowed-panes' の鏡）。
+             click で中央へ戻す。中身は view 層の状態だけ（AI は書けない）。 -->
+        <div id="edge-rail-stow-host"></div>
+      </div>
+      <div class="anchor-bottom vrail-slot">
+        <!-- board の取っ手（doc 55）— 開閉の入口 + 新着 badge。表示状態は user 専有で
+             board-view.ts が持つ（AI は書けない）。lane 不在時は board-view も個別に隠す。 -->
+        <button id="board-handle" class="rail-btn" data-label="Board (Ctrl+Shift+B)" title="Board を開く / 閉じる (Ctrl+Shift+B)" style="display:none">
+          <iconify-icon icon="ph:compass"></iconify-icon>
+          <span id="board-handle-badge"></span>
+        </button>
+        <!-- PR ボタン（doc 82）: 押す = R sidebar を開いて PR 節へ。badge = 最後に取った open 件数。
+             EdgeRail.tsx が render。rail 専用（R 側では PR 節そのものが伸びた形）なので付け替えない。 -->
+        <div id="rail-pr-host"></div>
+      </div>
     </div>
     <!-- doc 33 §9: tui⇄II 切替中の progress overlay (World B)。toggle 押下で .active、
          resume 確定 (session_init) / mode 適用で clear。切替を resume 確定まで見せる + lock。 -->
@@ -809,21 +864,51 @@ body.rsb-open #edge-rail{display:none !important;}
     </main>
   </div>
 </div>
-<!-- sidebar view modes (2026-08-01): R sidebar = 右の帯 (edge rail) のフル幅形。中身は
-     debug log viewer (app.kdl.log / daemon.kdl.log の tail)。開閉 (`Cmd+]`) と tail 購読は
-     right-sidebar.ts、行の供給は push envelope `debuglog:lines`。 -->
+<!-- sidebar view modes (2026-08-01) → doc 82: R sidebar = 右の帯 (edge rail) の伸びた形。
+     開閉 (`Cmd+]`) / 節の開閉 / 住人の付け替え / tail と PR の購読は right-sidebar.ts。 -->
 <!-- shell layout: main と R sidebar の境界。R が閉じている間は shell-layout.ts が隠す。 -->
 <div id="shell-resizer-right" class="shell-resizer" role="separator" aria-orientation="vertical"
-     aria-label="デバッグログの幅"></div>
-<div id="right-sidebar" aria-label="Debug Log">
-  <div class="rsb-head">
-    <span class="rsb-title">Debug Log</span>
-    <div class="rsb-tabs">
-      <button class="rsb-tab active" data-src="app" title="vp-app のログ (app.kdl.log)">App</button>
-      <button class="rsb-tab" data-src="daemon" title="daemon のログ (daemon.kdl.log)">Daemon</button>
-    </div>
+     aria-label="R sidebar の幅"></div>
+<!-- R sidebar（doc 82）= edge rail の伸びた形。3 起点の縦 accordion — 上 = Lane（rail の住人が
+     付け替わってくる）/ 中央 = Pull Requests / 下 = Debug Log。開閉と付け替えは right-sidebar.ts。 -->
+<div id="right-sidebar" class="tri-anchor" aria-label="R sidebar">
+  <div class="anchor-top">
+    <section id="rsb-sec-lane" class="rsb-section" data-section="lane">
+      <div class="rsb-sec-head" role="button" aria-expanded="true">
+        <iconify-icon class="rsb-chevron" icon="ph:caret-right"></iconify-icon>
+        <span class="rsb-title">Lane</span>
+      </div>
+      <div class="rsb-sec-body" id="rsb-lane-body"></div>
+    </section>
   </div>
-  <pre id="rsb-log"></pre>
+  <div class="anchor-center">
+    <section id="rsb-sec-prs" class="rsb-section" data-section="prs">
+      <div class="rsb-sec-head" role="button" aria-expanded="true">
+        <iconify-icon class="rsb-chevron" icon="ph:caret-right"></iconify-icon>
+        <span class="rsb-title">Pull Requests</span>
+        <span class="rsb-count" id="rsb-prs-count"></span>
+        <div class="rsb-sec-tools">
+          <button class="rsb-icon-btn" id="rsb-prs-refresh" title="取り直す">
+            <iconify-icon icon="ph:arrow-clockwise"></iconify-icon>
+          </button>
+        </div>
+      </div>
+      <div class="rsb-sec-body" id="rsb-prs-body"></div>
+    </section>
+  </div>
+  <div class="anchor-bottom">
+    <section id="rsb-sec-log" class="rsb-section" data-section="log">
+      <div class="rsb-sec-head" role="button" aria-expanded="false">
+        <iconify-icon class="rsb-chevron" icon="ph:caret-right"></iconify-icon>
+        <span class="rsb-title">Debug Log</span>
+        <div class="rsb-sec-tools rsb-tabs">
+          <button class="rsb-tab active" data-src="app" title="vp-app のログ (app.kdl.log)">App</button>
+          <button class="rsb-tab" data-src="daemon" title="daemon のログ (daemon.kdl.log)">Daemon</button>
+        </div>
+      </div>
+      <div class="rsb-sec-body"><pre id="rsb-log"></pre></div>
+    </section>
+  </div>
 </div>
 </div><!-- /#app-shell (WebView 統合 step 3a) -->
 <!-- VP-101 Phase A2: creo-ui-editor-host (SolidJS) の mount 先。

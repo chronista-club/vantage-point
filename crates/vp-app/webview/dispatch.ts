@@ -50,6 +50,7 @@ export interface PushHandlers {
 		right_sidebar_width: number;
 		sidebar_form: string;
 		right_sidebar_open: boolean;
+		right_sidebar_pct?: number;
 	}): void;
 	handleBoardMessage(message: unknown): void;
 	/** code pane（コードブラウザ P1）: `code:list` / `code:read` の応答と menu 起点 toggle。 */
@@ -66,6 +67,8 @@ export interface PushHandlers {
 	voiceText(lane: string, session: number, text: string): void;
 	voiceError(lane: string, session: number, message: string): void;
 	debugLogLines(source: string, reset: boolean, lines: string[]): void;
+	/** R sidebar の PR 節（doc 82）: `lane:prs_fetch` の応答。payload は daemon の `LanePrs`。 */
+	lanePrs(lane: string, payload: unknown): void;
 }
 
 /** `ink.ts` が持ち分として返す arm（mount target 不在なら null を返す = 受け手不在）。 */
@@ -161,6 +164,9 @@ function apply(msg: PushEventEnvelope): void {
 			break;
 		case "debuglog:lines":
 			handlers.debugLogLines(msg.source, msg.reset, msg.lines);
+			break;
+		case "lane:prs":
+			handlers.lanePrs(msg.lane, msg.payload);
 			break;
 		default: {
 			// 網羅していれば `never`。Rust 側が新しい event を撃ってきた（= 版ズレ）ときだけ来る。

@@ -9,7 +9,7 @@ use wry::WebView;
 
 use crate::generated::push::{
     BoardMessage, CodeEntries, CodeFile, ConsoleAgents, ConsoleEvent, ConsoleModeApplied,
-    ConsoleSessionList, DebuglogLines, DevicesRender, InkSnapshot, InkSnapshotError,
+    ConsoleSessionList, DebuglogLines, DevicesRender, InkSnapshot, InkSnapshotError, LanePrs,
     PushEventEnvelope, ShellLayout, TermEnsureLane, TermPaste, TermRemoveLane, TermRemoveSession,
     TermShowLane, VoiceError, VoiceText,
 };
@@ -157,6 +157,7 @@ pub(crate) fn shell_layout(main_view: &WebView, l: &crate::session_state::ShellL
                 SidebarForm::Full => "full".to_string(),
             },
             right_sidebar_open: l.right_sidebar_open,
+            right_sidebar_pct: l.right_sidebar_pct.map(|p| p.round() as i64),
         }),
     );
 }
@@ -341,6 +342,20 @@ pub(crate) fn debuglog_lines(main_view: &WebView, source: &str, reset: bool, lin
             source: source.to_string(),
             reset,
             lines,
+        }),
+    );
+}
+
+/// R sidebar の PR 節へ lane の open PR 一覧を渡す（doc 82）。
+///
+/// ⚠️ demand への応答（`lane:prs_fetch`）なので保留箱は持たない — 取りこぼしは
+/// 次の取り直し（開いた時 + 開いている間 60 秒ごと）が埋める。
+pub(crate) fn lane_prs(main_view: &WebView, lane: &str, payload: serde_json::Value) {
+    push(
+        main_view,
+        &PushEventEnvelope::LanePrs(LanePrs {
+            lane: lane.to_string(),
+            payload,
         }),
     );
 }
