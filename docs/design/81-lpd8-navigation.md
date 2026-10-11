@@ -30,7 +30,40 @@ CURRENTs の見出し下に4枠を表示する。空枠クリックで現在の 
 
 [Akai公式のPad番号説明](https://support.akaipro.com/en/support/solutions/articles/69000867341-lpd8-mkii-how-to-program-pads-in-a-daw-or-plugin)に従い上段を5〜8としている。
 
-LPD8 mk2 の RGB LED 更新（model 0x4C）は Program 設定の書き換えとは別。旧 `vp midi lpd8 write`（model 0x75）を mk2 の設定書き換えとして使用してはいけない。
+LPD8 mk2 の RGB LED 更新（model 0x4C）は Program 設定の書き換えとは別。
+
+## mk2 の program と SysEx
+
+初代 LPD8（model 0x75）と mk2（model 0x4C）は program 設定の SysEx が別物。`vp midi lpd8 write` / `switch` は identity request の reply で機種を見分けて経路を選ぶ（`midi::lpd8_identity`）。初代の経路（`midi::lpd8`）は残してある。
+
+mk2 の形（2026-10-12 に実機で probe、`midi::lpd8_mk2`）:
+
+| 用途 | SysEx |
+|---|---|
+| identity request | `F0 7E 7F 06 01 F7` → reply `F0 7E 00 06 02 47 4C …`（manufacturer 0x47 / model 0x4C） |
+| 読み出し要求 | `F0 47 7F 4C 03 00 01 <prog 1-4> F7` |
+| 読み出し応答（173 byte） | `F0 47 7F 4C 03 01 29 <prog> <body 164 byte> F7` |
+| 書き込み | `F0 47 7F 4C 01 01 29 <prog> <body 164 byte> F7`（**応答は無い**） |
+
+body 164 byte の配置:
+
+| 位置 | 長さ | 中身 |
+|---|---|---|
+| head | 4 | 未解読（先頭は channel と思われる）。そのまま持ち回す |
+| pad × 8 | 16 ずつ | note, cc, pc, ch（実機では 0x10）, on-RGB 6, off-RGB 6（R/G/B 各 2 byte = 上位 1 bit + 下位 7 bit） |
+| knob × 8 | 4 ずつ | cc, ch（実機では 0x10）, min, max |
+
+`vp midi lpd8 write`（mk2）の手順:
+
+1. 対象 program を読み出し、`vp_state_dir()/backup/lpd8-mk2-program<N>-<日時>.txt` に保存する（保存できなければ書かない）
+2. 書く body は機材の今の中身に依存させず、`BASE_PROGRAM` に VP の割り当て（pad i の note = 36 + i、knob i の cc = 70 + i）を重ねて作る。4 program のどれに書いても同じ body になる。既に一致していれば書かない
+3. 書いた後に読み戻し、body 164 byte が一致したときだけ「書き込みました（読み戻しで確認）」と表示する。一致しなければ非 0 で終了する
+
+対象は `--program 1-4`（既定 1）、`--all` で 4 つ全部。VP の配置は Program 1 に書くのを基本とする。
+
+`BASE_PROGRAM` は 2026-10-12 時点で機材の Program 1 に入っていた中身（mako 裁定で土台に採用。工場出荷時の値は探さない）。
+
+**Program の切替は本体操作**。mk2 の active program を SysEx で切り替える命令は未確認で、総当たりで探さない。`vp midi lpd8 switch` は mk2 では「PROG SELECT を押しながら pad <N>」と案内して終了コード 2 で終わる。初代の `switch` と `write` は確かめる手段が無いので「送信しました（確認はできません）」と表示する。
 
 ## 検証
 
@@ -42,3 +75,4 @@ Lane 順序・両端・1〜128件の全到達・連続入力抑制、sidebar IPC
 - 実機設定前提: 現行の入力 profile は Note 36〜43 / CC 70〜77 を認識する。Program 1 が実際に送る値は未観測。mk2 の Program EEPROM 書換えは未実装・未実施で、今回の色は VP 接続中の LED 投影である。
 
 - 2026-10-11: 旧 PR #1190 の merge 後、LPD8 差分のみを `wip/lpd8-navigation` に分離し、nightly v0.84.0 へ rebase。アプリ差し替え・daemon 再起動はこの PR の作業に含めない。
+- 2026-10-12: mk2 の program SysEx（0x4C）を実装（`wip/lpd8-mk2-program`）。identity で機種判定、write は `BASE_PROGRAM`（2026-10-12 時点の Program 1）に VP 割り当てを重ねて書き、読み戻しで確認。switch は mk2 では本体操作の案内。初代の嘘の成功表示を「送信しました（確認はできません）」に。実機への書き込みはこの lane では実施せず、merge 後に lead が行う。

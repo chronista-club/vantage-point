@@ -411,8 +411,8 @@ pub mod lpd8 {
     //! 7bit×2 分割で送る。4 色インデックスではないため、lane 色を量子化なしで投影できる
     //! 艦隊唯一の pad。色 command は 8 pad 一括のため shadow state を保持する（X-Touch 同型）。
     //!
-    //! program 構造（note/CC 割当、128 byte entry 型）は flag bit が未確定のため未実装
-    //! （input flow 実装時に config.py / hex_diagram.svg を pin して対応）。
+    //! program 構造（note/CC 割当）の読み書きはこの profile ではなく
+    //! `vantage_point::midi::lpd8_mk2`（design 81「mk2 の program と SysEx」）が持つ。
 
     use super::{DeviceProfile, ParamSpec, Rgb};
 
