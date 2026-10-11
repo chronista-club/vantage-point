@@ -1,5 +1,5 @@
 import { createSignal } from 'solid-js';
-import { assignPin, defaultPins, restorePins, type PinSettings } from '../../midi-pins';
+import { assignPin, defaultPins, restorePins, withPinColor, type PinSettings } from '../../midi-pins';
 import type { LaneTarget } from '../../midi-navigation';
 import { sendIpc } from './ipc';
 
@@ -23,8 +23,6 @@ export function setPin(slot: number, target: LaneTarget | null): void {
 }
 
 export function setPinColor(slot: number, color: string): void {
-  if (!Number.isInteger(slot) || slot < 0 || slot >= 4 || !/^#[0-9a-f]{6}$/i.test(color)) return;
-  const next = { slots: [...pins().slots], colors: [...pins().colors] };
-  next.colors[slot] = color;
-  persist(next);
+  const next = withPinColor(pins(), slot, color);
+  if (next !== pins()) persist(next);
 }

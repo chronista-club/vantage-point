@@ -43,10 +43,10 @@ function click(win: Window, el: { dispatchEvent(event: any): boolean }) {
 }
 afterEach(async () => { for (const win of windows.splice(0)) { win.dispose?.(); await win.happyDOM.abort() } })
 
-it('offers horizontal THEME / SIDEBAR / CHAT / COMPONENT with controls grouped by their target', async () => {
+it('offers horizontal THEME / SIDEBAR / CHAT / MIDI / COMPONENT with controls grouped by their target', async () => {
   const win = fixture()
   await tick()
-  expect(Array.from(win.document.querySelectorAll('[role="tab"]')).map(el => el.textContent)).toEqual(['THEME', 'SIDEBAR', 'CHAT', 'COMPONENT'])
+  expect(Array.from(win.document.querySelectorAll('[role="tab"]')).map(el => el.textContent)).toEqual(['THEME', 'SIDEBAR', 'CHAT', 'MIDI', 'COMPONENT'])
   expect(win.document.querySelector('[role=tablist]')?.getAttribute('aria-orientation')).toBe('horizontal')
   expect(win.document.querySelector('[role=tab][aria-selected=true]')?.textContent).toBe('THEME')
   button(win, 'THEME').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))

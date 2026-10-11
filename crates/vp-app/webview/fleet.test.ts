@@ -73,18 +73,10 @@ describe("mapControl — X-Touch（fader 1 = t の hand driver）", () => {
 	});
 });
 
-describe("mapControl — LPD8（pad = Scene slot、knob = share）", () => {
-	it("pad → slot（velocity > 0 = press / 0 = release）", () => {
-		expect(mapControl("LPD8", { type: "pad", index: 5, velocity: 100 })).toEqual({
-			op: "pad",
-			slot: 5,
-			pressed: true,
-		});
-		expect(mapControl("LPD8", { type: "pad", index: 5, velocity: 0 })).toEqual({
-			op: "pad",
-			slot: 5,
-			pressed: false,
-		});
+describe("mapControl — LPD8（knob = share。pad は Lane ピン）", () => {
+	it("pad は gallery に写さない（pad 1〜8 は sidebar の Lane ピン #1〜#8）", () => {
+		expect(mapControl("LPD8", { type: "pad", index: 0, velocity: 100 })).toBeNull();
+		expect(mapControl("LPD8", { type: "pad", index: 5, velocity: 0 })).toBeNull();
 	});
 
 	it("knob CC → share（ROTO と同型）", () => {

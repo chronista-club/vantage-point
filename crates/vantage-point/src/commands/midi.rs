@@ -1194,10 +1194,7 @@ fn write_original(port: &str, program: u8) -> Result<()> {
             );
             println!();
             println!("PAD設定:");
-            println!("  PAD 1-4 (Note 36-39): repo切り替え (緑LED)");
-            println!("  PAD 5   (Note 40):    チャットキャンセル (赤LED)");
-            println!("  PAD 6   (Note 41):    セッションリセット (橙LED)");
-            println!("  PAD 7-8 (Note 42-43): 未割当");
+            println!("  PAD 1-8 (Note 36-43): Lane ピン #1〜#8（sidebar で割り当て）");
             Ok(())
         }
         Err(e) => {
@@ -1263,7 +1260,7 @@ fn write_mk2(port: &str, program: u8) {
     }
 
     println!(
-        "VP 配置を LPD8 mk2 Program {} に書き込みました（読み戻しで確認）: PAD 1-8 = Note 36-43 / KNOB 1-8 = CC 70-77",
+        "VP 配置を LPD8 mk2 Program {} に書き込みました（読み戻しで確認）: PAD 1-8 = Note 36-43（Lane ピン #1〜#8） / KNOB 1-8 = CC 70-77",
         program
     );
 }

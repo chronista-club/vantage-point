@@ -24,9 +24,12 @@ function activeTarget(): LaneTarget | null {
   return null;
 }
 
+/** LPD8 の物理配置どおり: 上段 = pad 5〜8（ピン #5〜#8）、下段 = pad 1〜4（ピン #1〜#4）。 */
+export const PIN_GRID_ORDER = [4,5,6,7,0,1,2,3];
+
 export function MidiPins() {
   return <div class="vp-midi-pins" aria-label="LPD8 Lane ピン">
-    <For each={[0,1,2,3]}>{slot => {
+    <For each={PIN_GRID_ORDER}>{slot => {
       const pin = () => pins().slots[slot];
       const available = () => !!pin() && sidebar.lanes_by_repo[pin()!.path]?.some(l => laneAddressKey(l) === pin()!.address);
       const label = () => {
@@ -62,8 +65,8 @@ export function MidiPins() {
 }
 
 export const MIDI_PINS_CSS = `
-.vp-midi-pins{display:flex;gap:4px;padding:0 12px 8px;}
-.vp-midi-pin{flex:1;min-width:0;position:relative;}
+.vp-midi-pins{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:2px 4px;padding:0 12px 8px;}
+.vp-midi-pin{min-width:0;position:relative;}
 .vp-midi-pin button{width:100%;display:flex;align-items:center;gap:4px;border:0;border-bottom:2px solid var(--pin-color);background:transparent;color:var(--color-text-secondary);padding:4px 2px;cursor:pointer;font:inherit;font-size:11px;}
 .vp-midi-pin button.selected{color:var(--pin-color);background:var(--color-surface-bg-emphasis);}
 .vp-midi-pin button.unavailable{opacity:.45;}

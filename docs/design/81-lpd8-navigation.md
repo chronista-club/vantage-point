@@ -1,8 +1,8 @@
 # 81. LPD8 の Window・Lane・ピン操作
 
-> **Status**: Implemented; UI・実機検収待ち
-> **Related**: `mem_1Cfq8x3H5HHVsLDmvhYSKf`, design 49
-> **対象**: `crates/vp-app/src/app/midi_target.rs`, `crates/vp-app/src/app/mod.rs`, `crates/vp-app/webview/midi-navigation.ts`, `crates/vp-app/webview/src/sidebar/midi-navigation.ts`
+> **Status**: Implemented; UI・実機確認待ち（8 ピン化・Editor の MIDI タブを含む）
+> **Related**: `mem_1Cfq8x3H5HHVsLDmvhYSKf`, `mem_1CfvxBJqJvVjZk5FEqZ98b`, design 49, design 78
+> **対象**: `crates/vp-app/src/app/midi_target.rs`, `crates/vp-app/src/app/mod.rs`, `crates/vp-app/webview/midi-navigation.ts`, `crates/vp-app/webview/midi-pins.ts`, `crates/vp-app/webview/src/sidebar/midi-navigation.ts`, `crates/vp-app/webview/editor/midi-settings.ts`
 
 LPD8 の操作は、最後にアクティブになった VP Window を対象とする。他アプリにフォーカスが移っても対象を保持する。対象 Window を閉じた後は、別の VP Window がアクティブになるまで操作を止める。MIDI 入力では OS のフォーカスを奪わない。
 
@@ -20,15 +20,26 @@ CURRENTs に属する repo を sidebar の並び順でたどり、各 repo の�
 
 ## Pad とピン・色
 
-ユーザー裁定: 「別のLaneだね。特定のこちらで#1~#4を好きにピンできる」。会話セッションや Lane/Runner 等の画面タブではなく、任意の Lane を4枠へ固定する。
+ユーザー裁定: 「別のLaneだね。特定のこちらで#1~#4を好きにピンできる」→ 2026-10-12「この際ピン１～８にしよう。」。会話セッションや Lane/Runner 等の画面タブではなく、任意の Lane を 8 枠へ固定する。
 
-上段の物理 Pad 5〜8（内部 index 4〜7）がピン #1〜#4 に対応する。押下だけで選択し、release まで再選択しない。未割当・不在の Lane は操作しない。下段の Pad は既存 gallery mapping を維持する。
+物理 Pad 1〜8（内部 index 0〜7、Note 36〜43）がそのままピン #1〜#8 に対応する。押下だけで選択し、release まで再選択しない。未割当・不在の Lane は操作しないが、pad 入力は消費する（gallery へ流さない）。LPD8 の pad は gallery の Scene slot に写さない（`fleet.ts`）。Scene slot は nanoKONTROL の button に残る。knob の gallery mapping は従来どおり。
 
-CURRENTs の見出し下に4枠を表示する。空枠クリックで現在の Lane を固定、割当済み枠クリックで選択。枠の右クリックで現在 Lane への変更・色の変更・解除。Lane 行の右クリックからも固定できる。同じ Lane を別枠へ割り当てると元の枠は空く。
+CURRENTs の見出し下に 8 枠を 4 × 2 で表示する。並びは LPD8 の物理配置と同じ向き: 上段 = pad 5〜8（ピン #5〜#8）、下段 = pad 1〜4（ピン #1〜#4）。空枠クリックで現在の Lane を固定、割当済み枠クリックで選択。枠の右クリックで現在 Lane への変更・色の変更・解除。Lane 行の右クリックからも固定できる。同じ Lane を別枠へ割り当てると元の枠は空く。
 
-ピンと色は `SessionState.midi_navigation` にウィンドウ別で保存する。既定色は teal / blue / violet / amber。選択中は設定色、未選択は25%の明るさ、不在・未割当は消灯。RGB は既存 feedback の optional color として送信し、旧 payload の amber/off 動作を保持する。フィードバックも対象 Window だけを受理し、非対象の watch をクリアする。
+ピン・色・未選択の明るさは `SessionState.midi_navigation` にウィンドウ別で保存する（`{ slots, colors, dimGain }`）。既定色は #1〜#4 が teal / blue / violet / amber、#5〜#8 が lime / coral / green / magenta。選択中は設定色、未選択は `dimGain`（既定 25%）を掛けた明るさ、不在・未割当は消灯。RGB は既存 feedback の optional color として送信する。ピンが有効な間、LPD8 の 8 pad の LED はすべてピンが持つ。フィードバックも対象 Window だけを受理し、非対象の watch をクリアする。
+
+旧 session（4 ピン、`dimGain` なし）は読める: #1〜#4 をそのまま pad 1〜4 に載せ、#5〜#8 は空 + 既定色、`dimGain` は 25%。`dimGain` だけが壊れている（0〜1 の数でない）ときはピンと色を残して 25% に戻す。
 
 [Akai公式のPad番号説明](https://support.akaipro.com/en/support/solutions/articles/69000867341-lpd8-mkii-how-to-program-pads-in-a-daw-or-plugin)に従い上段を5〜8としている。
+
+### Editor の MIDI タブ（design 78）
+
+色と未選択の明るさは Editor（Ctrl+Shift+E）の MIDI タブでも調整できる。各項目に「既定に戻す」がある。保存先は THEME の localStorage ではなく上の session。
+
+経路は一方向: Editor（main bundle）→ IPC `midi:navigation` → Rust が保存し、`vp:midi-settings` で両 bundle に配り直す（`app::push_midi_settings`。起動時の `WebviewReady` と同じ script）→ sidebar の `midi-pin-store` とピン帯・LED が追随する。sidebar の右クリック「色の変更」も同じ IPC なので、Editor 側の表示も同じ配り直しで追随する。Editor は sidebar bundle の store を import しない。
+
+- Editor は保存値（`__vpMidiSettings` / `vp:midi-settings`）が届くまで書かない。既定値で送ると保存済みのピンを上書きする。
+- スライダーを動かしている間に古い値の配り直しが後から届いても巻き戻さない（送信中の値の列を持ち、最新の echo まで待つ）。
 
 LPD8 mk2 の RGB LED 更新（model 0x4C）は Program 設定の書き換えとは別。
 
@@ -67,7 +78,7 @@ body 164 byte の配置:
 
 ## 検証
 
-Lane 順序・両端・1〜128件の全到達・連続入力抑制、sidebar IPC 連携、Window 対象の切替・閉鎖を自動検証する。実機の送信ノート／CC と、複数 Window の操作・Pad 色は別途実機確認する。
+Lane 順序・両端・1〜128件の全到達・連続入力抑制、sidebar IPC 連携、Window 対象の切替・閉鎖、8 ピンの pad 対応と 4 × 2 の並び、旧 4 ピン session の読込み、`dimGain` の LED 反映、Editor → IPC の JSON・配り直しからの復元・遅れた echo の無視を自動検証する。実機の送信ノート／CC と、複数 Window の操作・Pad 色は別途実機確認する。
 
 ## Status log
 
@@ -76,3 +87,4 @@ Lane 順序・両端・1〜128件の全到達・連続入力抑制、sidebar IPC
 
 - 2026-10-11: 旧 PR #1190 の merge 後、LPD8 差分のみを `wip/lpd8-navigation` に分離し、nightly v0.84.0 へ rebase。アプリ差し替え・daemon 再起動はこの PR の作業に含めない。
 - 2026-10-12: mk2 の program SysEx（0x4C）を実装（`wip/lpd8-mk2-program`）。identity で機種判定、write は `BASE_PROGRAM`（2026-10-12 時点の Program 1）に VP 割り当てを重ねて書き、読み戻しで確認。switch は mk2 では本体操作の案内。初代の嘘の成功表示を「送信しました（確認はできません）」に。実機への書き込みはこの lane では実施せず、merge 後に lead が行う。
+- 2026-10-12: ピンを 8 枠に（pad 1〜8 = ピン #1〜#8、LPD8 pad の Scene slot mapping を撤去、sidebar は 4 × 2）。未選択の明るさを `dimGain` として保存し、Editor に MIDI タブ（8 色 + 明るさ）を追加。`midi:navigation` の保存後に Rust が `vp:midi-settings` を配り直す。`vp midi lpd8 write` の PAD 説明を「PAD 1-8 = Lane ピン #1〜#8」に。自動テスト済み、アプリ差し替え・実機確認待ち。

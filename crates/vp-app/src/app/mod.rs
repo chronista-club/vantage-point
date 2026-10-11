@@ -167,6 +167,24 @@ fn update_pane_bounds(webview: &WebView, window_size: tao::dpi::PhysicalSize<u32
 //   メソッドに移管 (G2 解消、 3 重実装の 1 元化)。 caller は `wire.key()` で同等の文字列を取れる。
 
 /// App のエントリポイント
+/// window の MIDI 設定（`SessionState.midi_navigation`）を webview の両 bundle へ配る script。
+///
+/// 1 document に 2 bundle（main / sidebar）が居るので、受け口は `window` の CustomEvent
+/// `vp:midi-settings`。`__vpMidiSettings` は bundle 評価前に撃った分を後から拾うための置き場（doc 81）。
+fn midi_settings_script(settings: &serde_json::Value) -> String {
+    format!(
+        "window.__vpMidiSettings={settings};window.dispatchEvent(new CustomEvent('vp:midi-settings',{{detail:window.__vpMidiSettings}}));"
+    )
+}
+
+/// 起動時と、`midi:navigation` で保存した直後に撃つ。Editor（main）と sidebar のどちらが変えても、
+/// 両方がこの 1 本で同じ値に揃う（片方が他方の store を import しない — doc 81）。
+pub(super) fn push_midi_settings(webview: &WebView, settings: &serde_json::Value) {
+    if let Err(e) = webview.evaluate_script(&midi_settings_script(settings)) {
+        tracing::warn!("vp:midi-settings の配信に失敗: {e}");
+    }
+}
+
 pub fn run() -> anyhow::Result<()> {
     // All legacy instance numbers contend for the same application lock.
     let Some(_instance_guard) = instance_guard::acquire(&vp_paths::vp_state_dir(), 0)? else {
@@ -363,10 +381,7 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             origin,
         ),
         AppEvent::WebviewReady => {
-            let settings = &ui.persist.session.midi_navigation;
-            let _ = boot.webview.evaluate_script(&format!(
-                "window.__vpMidiSettings={settings};window.dispatchEvent(new CustomEvent('vp:midi-settings',{{detail:window.__vpMidiSettings}}));"
-            ));
+            push_midi_settings(&boot.webview, &ui.persist.session.midi_navigation);
             catch_up::webview_ready(ui, boot);
         }
         AppEvent::LanesError { repo_path, message } => {
@@ -679,5 +694,25 @@ mod main_view_asset_tests {
                 "{path} の中身に marker `{marker}` が無い (bundle 生成物が想定と違う)"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod midi_settings_push_tests {
+    use super::midi_settings_script;
+
+    /// 保存値そのもの（JSON literal）を置き場と event の両方へ渡す。null（未設定）も同じ形で配る。
+    #[test]
+    fn script_sets_the_snapshot_and_notifies_both_bundles() {
+        let settings = serde_json::json!({"slots":[null],"colors":["#112233"],"dimGain":0.4});
+        let script = midi_settings_script(&settings);
+        assert!(script.starts_with(&format!("window.__vpMidiSettings={settings};")));
+        assert!(
+            script.contains("new CustomEvent('vp:midi-settings',{detail:window.__vpMidiSettings})")
+        );
+        assert!(
+            midi_settings_script(&serde_json::Value::Null)
+                .starts_with("window.__vpMidiSettings=null;")
+        );
     }
 }
