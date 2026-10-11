@@ -154,6 +154,16 @@ pub(crate) fn handle_sidebar_ipc(
     };
 
     match envelope {
+        IpcEnvelope::MidiNavigation(m) => {
+            // Bounded per-window UI settings. The sidebar validates the versioned shape on restore.
+            if m.settings.len() <= 16_384
+                && let Ok(settings) = serde_json::from_str::<serde_json::Value>(&m.settings)
+                && settings.is_object()
+            {
+                session.midi_navigation = settings;
+                out.session_save = true;
+            }
+        }
         IpcEnvelope::ProcessToggle(m) => {
             // The controlled accordion requests its next state over IPC.
             // Push the canonical state back so its children and count update immediately.
@@ -1065,5 +1075,21 @@ mod tests {
         assert!(!out.changed);
 
         assert!(state.active_lane_address.is_none() && session.repos.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod midi_persistence_tests {
+    use super::*;
+    #[test]
+    fn saves_pins_without_activating_a_lane() {
+        let settings = serde_json::json!({"slots":[null,null,null,null],"colors":["#112233","#112233","#112233","#112233"]});
+        let msg = serde_json::json!({"t":"midi:navigation","settings":settings.to_string()});
+        let mut state = SidebarState::default();
+        let mut session = SessionState::default();
+        let out = handle_sidebar_ipc(&msg.to_string(), &mut state, &mut session);
+        assert!(out.session_save);
+        assert!(!out.changed && !out.active_changed && out.activate_lane.is_none());
+        assert_eq!(session.midi_navigation, settings);
     }
 }

@@ -440,7 +440,9 @@ impl DeviceRegistry {
                 let mut profile = self.lpd8_profile.lock().await;
                 let mut msgs: Vec<Vec<u8>> = Vec::new();
                 for pad in fb.pads.iter().filter(|p| p.index < 8) {
-                    let color = if pad.filled {
+                    let color = if let Some([r, g, b]) = pad.color {
+                        crate::device_profile::Rgb::new(r, g, b)
+                    } else if pad.filled {
                         crate::device_profile::Rgb::new(255, 180, 40)
                     } else {
                         crate::device_profile::Rgb::new(0, 0, 0)

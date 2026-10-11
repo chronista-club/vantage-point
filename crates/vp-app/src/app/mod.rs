@@ -33,6 +33,7 @@ mod catch_up;
 mod instance_guard;
 /// lane の見え方の調整役（activate_lane / conversation attach / roster / 未読印）。
 mod lane_view;
+mod midi_target;
 /// event handler: board / canvas / editor（board snapshot の投影、switch_lane、editor bridge、board mutate）。
 mod on_board;
 /// event handler: conversation（chat の submit / respond / mode / session 操作 / console / agents / OSC）。
@@ -174,6 +175,7 @@ pub fn run() -> anyhow::Result<()> {
     let (event_loop, app) = boot::boot()?;
     let mut windows = std::collections::HashMap::new();
     let mut focused = None;
+    let mut midi_target = midi_target::MidiTarget::new();
     let mut indices = crate::session_state::SessionState::open_secondary_indices();
     if crate::session_state::SessionState::load(0).open || indices.is_empty() {
         indices.insert(0, 0);
@@ -205,6 +207,7 @@ pub fn run() -> anyhow::Result<()> {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
+                midi_target.close(window_id);
                 if let Some((mut ui, boot)) = windows.remove(&window_id) {
                     on_window::close_requested(&mut ui, &boot);
                 }
@@ -220,8 +223,15 @@ pub fn run() -> anyhow::Result<()> {
             } => {
                 // A focus gain supersedes all other windows, regardless of OS loss-event order.
                 if matches!(event, WindowEvent::Focused(true)) {
-                    for (id, (ui, _)) in &mut windows {
+                    midi_target.focus(window_id);
+                    for (id, (ui, boot)) in &mut windows {
+                        if *id != window_id {
+                            let _ = boot.fleet_feedback_tx.send(serde_json::Value::Null);
+                        }
                         ui.win.is_focused = *id == window_id;
+                        let _ = boot
+                            .webview
+                            .evaluate_script(&midi_target::indicator_js(*id == window_id));
                     }
                 }
                 if let Some((ui, boot)) = windows.get_mut(&window_id) {
@@ -278,6 +288,22 @@ pub fn run() -> anyhow::Result<()> {
                     && let Some((ui, boot)) = windows.get_mut(&id)
                     && (window_id.is_none() || boot.proxy.accepts(scope))
                 {
+                    if matches!(event, AppEvent::WebviewReady) {
+                        let _ = boot
+                            .webview
+                            .evaluate_script(&midi_target::indicator_js(midi_target.accepts(id)));
+                    }
+                    // Each window has its own device subscription. Consume only the target's
+                    // copy; forwarding other copies would execute one physical gesture twice.
+                    if let AppEvent::DeviceEvent { ref payload } = event
+                        && payload.get("kind").and_then(|v| v.as_str()) == Some("control_event")
+                        && !midi_target.accepts(id)
+                    {
+                        return;
+                    }
+                    if matches!(event, AppEvent::FleetFeedback(_)) && !midi_target.accepts(id) {
+                        return;
+                    }
                     dispatch_window_event(event, ui, boot);
                 }
             }
@@ -311,6 +337,9 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
     let respawn_proxy = proxy.clone();
     let async_action_proxy = proxy.clone();
     match event {
+        AppEvent::FleetFeedback(feedback) => {
+            let _ = boot.fleet_feedback_tx.send(feedback);
+        }
         AppEvent::PasteText(text) => on_terminal::paste_text(ui, boot, text),
         AppEvent::OscNotification { lane, code: _ } => {
             on_conversation::osc_notification(ui, boot, lane)
@@ -333,7 +362,13 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             lanes,
             origin,
         ),
-        AppEvent::WebviewReady => catch_up::webview_ready(ui, boot),
+        AppEvent::WebviewReady => {
+            let settings = &ui.persist.session.midi_navigation;
+            let _ = boot.webview.evaluate_script(&format!(
+                "window.__vpMidiSettings={settings};window.dispatchEvent(new CustomEvent('vp:midi-settings',{{detail:window.__vpMidiSettings}}));"
+            ));
+            catch_up::webview_ready(ui, boot);
+        }
         AppEvent::LanesError { repo_path, message } => {
             on_lanes::lanes_error(ui, boot, repo_path, message)
         }

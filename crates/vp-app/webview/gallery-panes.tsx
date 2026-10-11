@@ -15,6 +15,7 @@
  * Editor Mode との同居規約（#editor-root z-index）は GALLERY_CSS 側で維持。
  */
 
+import { navigationFeedback, type NavigationFeedback } from './midi-pins';
 import {
 	type ApplyPolicy,
 	type DominanceDirection,
@@ -341,15 +342,23 @@ function applyFleetOp(op: FleetOp): void {
 const FEEDBACK_THROTTLE_MS = 50;
 let feedbackTimer: number | null = null;
 let lastFeedbackJson = "";
+let navigationPads: NavigationFeedback = (window as unknown as {__vpMidiPads?:NavigationFeedback}).__vpMidiPads ?? {enabled:false,pads:[]};
+window.addEventListener('vp:midi-pads', e => {
+  navigationPads = (e as CustomEvent<NavigationFeedback>).detail;
+  lastFeedbackJson = ''; // target changes must repaint even when the values match
+  scheduleFleetFeedback();
+});
 
 function sendFleetFeedback(): void {
-	const fb = computeFeedback({
+	const gallery = computeFeedback({
 		memberOrder: memberIds(engine.current(SCOPE).structure),
 		shares: sharesFrom(engine.resolved(SCOPE)),
 		transitionT: engine.transition(SCOPE)?.t ?? null,
 		filledSlots: new Set(sceneSlots.keys()),
 		touched: fleetTouches,
 	});
+	const fb = navigationFeedback(gallery, navigationPads);
+	if (!fb) return;
 	const json = JSON.stringify(fb);
 	if (json === lastFeedbackJson) return; // 変化なしは送らない（機材への無駄 sysex 防止）
 	lastFeedbackJson = json;

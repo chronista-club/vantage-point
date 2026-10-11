@@ -64,7 +64,7 @@ const clamp01 = (n: number): number => Math.min(1, Math.max(0, n));
 export interface FleetFeedback {
 	knobs: { index: number; value: number }[];
 	fader: number | null;
-	pads: { index: number; filled: boolean }[];
+	pads: { index: number; filled: boolean; color?: number[] }[];
 }
 
 /** LPD8 の pad 数 = Scene slot 数 */

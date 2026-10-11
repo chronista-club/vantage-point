@@ -12,6 +12,8 @@
 /// Lane terminals は per-Lane の browser-native WebSocket で input/output を扱う。
 #[derive(Debug, Clone)]
 pub enum AppEvent {
+    /// Feedback is accepted only from the current MIDI target window.
+    FleetFeedback(serde_json::Value),
     LocalUrlsResult(crate::generated::sidebar_ipc::LocalUrlsResult),
     /// daemon から Repo list 取得成功 (= `fetch_repos_with_ports` 経由で runtime port 込み)。
     ReposLoaded(Vec<crate::daemon_wire::RepoInfo>),

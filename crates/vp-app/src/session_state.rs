@@ -32,6 +32,7 @@
 //! default `~/.local/state/vp/`) 配下。
 
 use std::collections::HashMap;
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -204,6 +205,9 @@ impl WindowGeometry {
 /// 自分の file に書き戻す。 他 instance の file は触らない (= clobber free)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionState {
+    /// Per-window MIDI pins; validated by the sidebar before use.
+    #[serde(default)]
+    pub midi_navigation: serde_json::Value,
     /// repo path → UI state (sidebar accordion 等)
     #[serde(default)]
     pub repos: HashMap<String, RepoUiState>,
@@ -246,6 +250,7 @@ pub struct SessionState {
 impl Default for SessionState {
     fn default() -> Self {
         Self {
+            midi_navigation: serde_json::Value::Null,
             repos: HashMap::new(),
             active_lane_address: None,
             currents_order: None,
@@ -878,5 +883,21 @@ mod pane_stow_tests {
         assert_eq!(saved["pane_stow"], value["pane_stow"]);
         let old: SessionState = serde_json::from_str("{}").unwrap();
         assert!(serde_json::to_value(old).unwrap()["pane_stow"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod midi_navigation_tests {
+    use super::SessionState;
+    #[test]
+    fn midi_navigation_pins_roundtrip_without_changing_another_windows_settings() {
+        let pins = serde_json::json!({"slots":[{"path":"/vp","address":"vp/root"},null,null,null],
+            "colors":["#123456","#639af5","#b78aee","#f0b45a"]});
+        let a: SessionState =
+            serde_json::from_value(serde_json::json!({"midi_navigation":pins})).unwrap();
+        let b: SessionState = serde_json::from_str("{}").unwrap();
+        let saved = serde_json::to_value(a).unwrap();
+        assert_eq!(saved["midi_navigation"], pins);
+        assert!(serde_json::to_value(b).unwrap()["midi_navigation"]["slots"][0].is_null());
     }
 }

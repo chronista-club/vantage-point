@@ -71,6 +71,11 @@ export interface SettingsResult {
   daemon_reachable: boolean;
 }
 
+/** Request "midi:navigation" */
+export interface MidiNavigation {
+  settings: string;
+}
+
 /** Request "process:toggle" */
 export interface ProcessToggle {
   path: string;
@@ -236,6 +241,7 @@ export type IpcChannelEventTypes = {
 
 /** Request name → { request, response } 生成 interface の map for "ipc" */
 export type IpcChannelRequestTypes = {
+  MidiNavigation: { request: MidiNavigation; response: void };
   ProcessToggle: { request: ProcessToggle; response: void };
   ProcessReorder: { request: ProcessReorder; response: void };
   ProcessRestart: { request: ProcessRestart; response: void };
@@ -273,6 +279,7 @@ export const IpcChannelMeta = {
   lifetime: "transient" as const,
   events: ["local_urls:result", "sidebar:state", "sidebar:error", "sub:create_result", "agents:result", "wire:result", "update:check_result", "settings:result"] as const,
   requests: {
+    MidiNavigation: { request: "midi:navigation" as const, response: "void" as const },
     ProcessToggle: { request: "process:toggle" as const, response: "void" as const },
     ProcessReorder: { request: "process:reorder" as const, response: "void" as const },
     ProcessRestart: { request: "process:restart" as const, response: "void" as const },
@@ -306,6 +313,7 @@ export const IpcChannelMeta = {
 
 /** Envelope union for channel "ipc" — discriminated on "t". */
 export type IpcEnvelope =
+  | ({ t: "midi:navigation" } & MidiNavigation)
   | ({ t: "process:toggle" } & ProcessToggle)
   | ({ t: "process:reorder" } & ProcessReorder)
   | ({ t: "process:restart" } & ProcessRestart)

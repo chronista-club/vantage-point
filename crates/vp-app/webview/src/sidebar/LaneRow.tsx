@@ -7,6 +7,7 @@
  * main area を当該 Lane に切り替え。 右クリック操作 (restart / delete) は
  * ContextMenu に集約 (VP-204 PR-1)。
  */
+import { pins, pinsReady, setPin } from './midi-pin-store';
 import { Show, createSignal, type JSX } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import type { LaneInfo } from "../generated/LaneInfo";
@@ -326,6 +327,16 @@ export function LaneRow(props: {
 			icon: "ph:link",
 			onSelect: () => setAddLocalUrl(n => n + 1),
 		}];
+		if (pinsReady()) {
+			for (let slot = 0; slot < 4; slot++) {
+				const assigned = pins().slots[slot]?.address === addr();
+				items.push({
+					label: assigned ? `LPD8 #${slot + 1} の固定を解除` : `LPD8 #${slot + 1} に固定`,
+					icon: "ph:push-pin",
+					onSelect: () => setPin(slot, assigned ? null : {path:props.repoPath,address:addr()}),
+				});
+			}
+		}
 		// doc 39 §8.4 提案 1: Restart / Respawn は同一動作（lane:restart、fresh なし = 実体を
 		// 立て直して会話は resume で継続）なのに生死でラベルが割れていた。1 語に統一し、
 		// 「Restart = 新しく始まる」と誤読される語感を（会話は継続）で打ち消す。

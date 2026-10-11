@@ -239,6 +239,9 @@ pub struct KnobFeedback {
 pub struct PadFeedback {
     pub index: u8,
     pub filled: bool,
+    /// Optional 8-bit RGB override; absent preserves the gallery amber/off behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[u8; 3]>,
 }
 
 /// VP-154 PR-2: Process snapshot 1 entry (= "daemon-repo" list method の応答 payload)
@@ -375,5 +378,17 @@ mod tests {
             ),
             None
         );
+    }
+}
+
+#[cfg(all(test, feature = "midi"))]
+mod midi_color_tests {
+    #[test]
+    fn pad_feedback_preserves_rgb_and_accepts_legacy_payload() {
+        let color = serde_json::json!({"index":4,"filled":true,"color":[12,34,56]});
+        let pad: super::PadFeedback = serde_json::from_value(color.clone()).unwrap();
+        assert_eq!(serde_json::to_value(pad).unwrap(), color);
+        let old: super::PadFeedback = serde_json::from_str(r#"{"index":0,"filled":true}"#).unwrap();
+        assert_eq!(serde_json::to_value(old).unwrap()["filled"], true);
     }
 }
