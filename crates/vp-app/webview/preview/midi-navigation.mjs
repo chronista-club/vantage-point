@@ -19,7 +19,7 @@ const result = await build({
     import shim from '@chronista-club/creo-ui/token-shim.css';
     const style=document.createElement('style');style.textContent=tokens+components+shim+SHELL_CSS;document.head.append(style);
     openSidebarDispatch();installIpcBridge();
-    const pins=defaultPins();pins.slots=[{path:'/preview',address:'vantage-point/main'},{path:'/preview',address:'vantage-point/sidebar-session-identity'},{path:'/preview',address:'vantage-point/grok-study'},null];restoreMidiPins(pins);
+    const pins=defaultPins();pins.slots[0]={path:'/preview',address:'vantage-point/main'};pins.slots[1]={path:'/preview',address:'vantage-point/sidebar-session-identity'};pins.slots[4]={path:'/preview',address:'vantage-point/grok-study'};restoreMidiPins(pins);
     document.documentElement.dataset.midiTarget='true';window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:true}));
     const session=(key,agent,mode)=>({key,agent,mode,conversation:null,chat_capable:true,image_capable:false,model_choices:[],effort_choices:[],permission_choices:[],last_activity_at:null,last_response_at:null,settings:{}});
     const lane=(name,root,extra=[])=>({address:{repo:'vantage-point',name,key:'vantage-point/'+name},state:'running',agent:'claude',pid:42,cwd:'/preview'+(name==='main'?'':'/.vp/lanes/'+name),branch:name==='main'?'nightly':'wip/'+name,flow_state:'idle',sub_status:null,sessions:{root:root.key,focused:root.key,sessions:[root,...extra]}});

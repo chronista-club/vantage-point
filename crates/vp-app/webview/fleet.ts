@@ -8,7 +8,7 @@
  *
  * 型が対応を予言する（LE-19）:
  *   多本の連続値（場）→ knob 群（ROTO / LPD8） / 1 本のスカラー（t）→ fader（X-Touch 1 番）
- *   / 離散の選択肢（Scene）→ pad（LPD8）。構造は演奏対象ではない（画面と AI の領分）。
+ *   / 離散の選択肢（Scene）→ button（nanoKONTROL）。構造は演奏対象ではない（画面と AI の領分）。
  *
  * 机上の 3 台（2026-07-23 mako 確定）: ROTO-CONTROL / X-Touch / LPD8 mk2。
  */
@@ -67,7 +67,7 @@ export interface FleetFeedback {
 	pads: { index: number; filled: boolean; color?: number[] }[];
 }
 
-/** LPD8 の pad 数 = Scene slot 数 */
+/** Scene slot 数（nanoKONTROL の button 8 個。LPD8 の pad は Lane ピン — doc 81） */
 const PAD_COUNT = 8;
 
 /**
@@ -154,9 +154,7 @@ export function mapControl(portName: string, event: FleetControlEvent): FleetOp 
 					share: Math.min(clamp01(event.value), MAX_KNOB_SHARE),
 				};
 			}
-			if (event.type === "pad") {
-				return { op: "pad", slot: event.index, pressed: (event.velocity ?? 0) > 0 };
-			}
+			// pad 1〜8 は sidebar の Lane ピン #1〜#8（doc 81）。gallery の Scene slot には写さない。
 			return null;
 	}
 }

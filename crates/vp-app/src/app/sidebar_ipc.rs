@@ -126,6 +126,9 @@ pub(crate) struct SidebarIpcOutcome {
     /// in-memory の更新（`set_repo_expanded` / `currents_order`）は本 fn が済ませているので、
     /// 呼び手は file 書き込みだけを担う。
     pub(crate) session_save: bool,
+    /// 保存した `midi_navigation` を webview の両 bundle へ `vp:midi-settings` で配り直す要求。
+    /// Editor（main bundle）が変えた値を sidebar のピン帯と LPD8 の LED に届ける唯一の経路（doc 81）。
+    pub(crate) midi_settings_push: bool,
     /// daemon 再起動要求（doc 59 P1）。⚠️ **全 repo = 全 lane の claude が落ちる**
     /// （doc 44 P1 fold-in）。caller が rfd 確認ダイアログ → `vp daemon restart` を
     /// 専用スレッドで実行する（`flows/update.rs` と同じ理由 = event loop を塞がない）。
@@ -162,6 +165,7 @@ pub(crate) fn handle_sidebar_ipc(
             {
                 session.midi_navigation = settings;
                 out.session_save = true;
+                out.midi_settings_push = true;
             }
         }
         IpcEnvelope::ProcessToggle(m) => {
@@ -1091,5 +1095,17 @@ mod midi_persistence_tests {
         assert!(out.session_save);
         assert!(!out.changed && !out.active_changed && out.activate_lane.is_none());
         assert_eq!(session.midi_navigation, settings);
+        // Editor（main bundle）からの変更も sidebar のピン帯へ戻すため、保存した値を webview に配り直す
+        assert!(out.midi_settings_push);
+    }
+
+    #[test]
+    fn rejected_settings_are_neither_saved_nor_pushed() {
+        let msg = serde_json::json!({"t":"midi:navigation","settings":"[1,2]"});
+        let mut state = SidebarState::default();
+        let mut session = SessionState::default();
+        let out = handle_sidebar_ipc(&msg.to_string(), &mut state, &mut session);
+        assert!(!out.session_save && !out.midi_settings_push);
+        assert!(session.midi_navigation.is_null());
     }
 }
