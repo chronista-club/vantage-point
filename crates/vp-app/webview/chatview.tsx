@@ -812,6 +812,8 @@ function ToolRow(props: {
   result?: string
   subagent?: SubagentEntry[]
   task?: SubagentTaskView
+  /** 終了を告げずに消えた subagent（chat-model の `closeOpenSubagents`）。 */
+  interrupted?: boolean
 }) {
   const [open, setOpen] = createSignal(false)
   const inputText = createMemo(() => formatToolInput(props.input))
@@ -847,7 +849,7 @@ function ToolRow(props: {
           {(t) => <span class="conversation-tool-task">{t()}</span>}
         </Show>
         <span class="conversation-tool-status">
-          {props.error ? 'error' : props.done ? '✓' : '実行中…'}
+          {props.error ? 'error' : props.done ? '✓' : props.interrupted ? '中断' : '実行中…'}
         </span>
       </button>
       <Show when={open() && hasDetail()}>
@@ -857,7 +859,7 @@ function ToolRow(props: {
           <Show when={props.task}>
             {(t) => (
               <ToolDetail
-                label={`task · ${t().status}`}
+                label={`task · ${t().status}${props.interrupted ? ' · 中断（engine 終了で停止）' : ''}`}
                 text={[subagentTaskLine(t()), t().summary].filter(Boolean).join('\n\n')}
               />
             )}
@@ -923,6 +925,7 @@ function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
                 result={t.result}
                 subagent={t.subagent}
                 task={t.task}
+                interrupted={t.interrupted}
               />
             )}
           </For>
@@ -1058,6 +1061,7 @@ function ActivityTree(props: { run: Accessor<ChatItem[]>; tailStreaming: () => b
                       result={item.result}
                       subagent={item.subagent}
                       task={item.task}
+                      interrupted={item.interrupted}
                     />
                   </Match>
                 </Switch>
@@ -2112,6 +2116,7 @@ function SessionChatView(props: { lane: string; session: number }) {
                             result={item.result}
                             subagent={item.subagent}
                             task={item.task}
+                            interrupted={item.interrupted}
                           />
                         )
                       })()}
