@@ -48,6 +48,7 @@ pub(super) struct Boot {
     pub(super) webview: WebView,
     pub(super) window: tao::window::Window,
     pub(super) proxy: EventLoopProxy<AppEvent>,
+    pub(super) fleet_feedback_tx: tokio::sync::watch::Sender<serde_json::Value>,
     pub(super) actions_persist_tx: tokio::sync::watch::Sender<Option<ActionsPersistPayload>>,
     pub(super) instance_index: usize,
     app: Rc<AppResources>,
@@ -297,9 +298,9 @@ pub(super) fn open_window(
             // main tag (terminal / pane 系) → terminal、 それ以外 (sidebar IpcEnvelope:
             // repo: / lane: 系) → SidebarIpc。 terminal の fall-through に頼らない。
             let body = req.body();
-            // fleet feedback (LE-19) は event loop を経由せず watch へ直行 (高頻度 + 状態量)
+            // Route through the event loop so inactive windows cannot overwrite hardware feedback.
             if let Some(fb) = fleet_feedback_payload(body) {
-                let _ = fleet_feedback_tx.send(fb);
+                let _ = sidebar_ipc_proxy.send_event(AppEvent::FleetFeedback(fb));
                 return;
             }
             if is_main_ipc_tag(body) {
@@ -354,6 +355,7 @@ pub(super) fn open_window(
         window,
         proxy,
         actions_persist_tx,
+        fleet_feedback_tx,
         instance_index,
         app,
     };

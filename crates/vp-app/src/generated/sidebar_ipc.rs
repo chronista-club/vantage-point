@@ -6,6 +6,11 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MidiNavigation {
+    pub settings: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessToggle {
     pub path: String,
     pub expanded: bool,
@@ -242,6 +247,8 @@ pub struct SettingsResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t")]
 pub enum IpcEnvelope {
+    #[serde(rename = "midi:navigation")]
+    MidiNavigation(MidiNavigation),
     #[serde(rename = "process:toggle")]
     ProcessToggle(ProcessToggle),
     #[serde(rename = "process:reorder")]

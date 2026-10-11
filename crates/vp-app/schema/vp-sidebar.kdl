@@ -18,6 +18,9 @@ protocol "sidebar" version="1.0.0" {
     // channel "ipc": envelope="t" で全 request を束ねる discriminated union
     // (`IpcEnvelope`) を生成する。 transient = request ごとに完結 (response 無し)。
     channel "ipc" from="client" lifetime="transient" envelope="t" {
+        request "midi:navigation" {
+            field "settings" type="string"
+        }
         // Currents セクションの repo accordion 開閉 (+ repo auto-spawn 連動)
         request "process:toggle" {
             field "path" type="string"

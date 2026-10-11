@@ -10,6 +10,7 @@
  * 出力: ../assets/sidebar.bundle.js (vp-app の Rust 側で include_bytes!)
  */
 import { render } from 'solid-js/web'
+import './src/sidebar/midi-navigation'
 // creo-ui 基盤 (doc 58 2b): tokens (CSS 変数のみ) + components (.creo-* class のみ) を
 // 文字列 import (build.mjs の `.css: text` loader)。どちらも body/html への直接スタイルを
 // 持たない = 注入は純増で既存見た目に無害 (2026-08-19 実測)。単一 document だが

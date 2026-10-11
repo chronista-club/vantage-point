@@ -101,7 +101,7 @@ pub(crate) fn fleet_dispatch_js(payload: &serde_json::Value) -> Option<String> {
     // serde_json::to_string の出力はそのまま JS literal として合法 (JSON ⊂ JS)
     let body = serde_json::to_string(payload).ok()?;
     Some(format!(
-        "(()=>{{const f=window.vpFleet;if(f&&f.dispatch)f.dispatch({body})}})()"
+        "(()=>{{const e=new CustomEvent('vp:midi-navigation',{{detail:{body},cancelable:true}});if(!window.dispatchEvent(e))return;const f=window.vpFleet;if(f&&f.dispatch)f.dispatch({body})}})()"
     ))
 }
 
