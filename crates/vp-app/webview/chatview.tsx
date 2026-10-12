@@ -959,6 +959,9 @@ function SubagentDock(props: { agents: Accessor<RunningSubagent[]> }) {
               <div class="conversation-subagent-card">
                 <div class="conversation-subagent-card-head">
                   <span class="conversation-tool-spinner" />
+                  <span class="conversation-subagent-card-icon" aria-hidden="true">
+                    <CreoIcon name="ph:tree-structure" size={13} />
+                  </span>
                   <span class="conversation-subagent-card-title">{a.title}</span>
                 </div>
                 <Show when={now()}>
@@ -2598,12 +2601,15 @@ export const CHATVIEW_CSS = `
   color: var(--color-text-tertiary,#8b93a7); }
 /* 進行中 subagent の float。⚠️ 位置はここ 1 か所（右下へ移すなら top/transform を bottom に替える）。
    pointer-events は card だけ拾い、隙間は下の stream の操作（scroll / 選択）を邪魔しない。 */
-.conversation-subagent-dock { position:absolute; right:18px; top:50%; transform:translateY(-50%); z-index:5;
+/* 右上（上起点）に置く。縦中央だと本文の行に重なる（mako 2026-10-12）。複数あれば上から下へ積む */
+.conversation-subagent-dock { position:absolute; right:18px; top:12px; z-index:5;
   display:flex; flex-direction:column; gap:6px; width:min(320px, 40%); pointer-events:none; }
 .conversation-subagent-card { pointer-events:auto; padding:8px 10px; border-radius:8px;
   background: var(--color-bg-elevated,#16191f); border:1px solid var(--color-border,#2a3040);
   box-shadow: 0 6px 18px rgba(0,0,0,.35); font-size:var(--chat-text-tool,12px); animation: conversation-fade .18s ease-out; }
 .conversation-subagent-card-head { display:flex; align-items:center; gap:8px; min-width:0; }
+/* subagent の印（枝分かれ = 親から生えた子）。spinner と title の間 */
+.conversation-subagent-card-icon { flex:none; display:inline-flex; color: var(--color-text-secondary,#a8b0c0); }
 .conversation-subagent-card-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   color: var(--color-text,#e6e9ef); }
 .conversation-subagent-card-now { margin:3px 0 0 17px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
