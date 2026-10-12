@@ -154,7 +154,8 @@ error:   ▸ ✗ 15 tools · 1 agent · 3m12s（error 色。1 件でも error �
 ## 7. 終了を告げずに消えた subagent（2026-10-12）
 
 進行中の subagent は会話の流れから独立した float（`SubagentDock`、`runningSubagents` が表示源）に
-出す（#1201）。終わりの合図は claude が流す `task_notification` / `task_updated`（終了 status）。
+出す（#1201）。float は pane の**右上**（上起点 — 縦中央だと本文の行に重なる。mako 2026-10-12）、
+card の見出しに枝分かれの印（`ph:tree-structure`）を付けて subagent と分かるようにする。終わりの合図は claude が流す `task_notification` / `task_updated`（終了 status）。
 **この行が来ないまま subagent が消える経路がある**: 親 claude プロセスが落ちると、プロセスの中で
 動く subagent も一緒に死ぬが、終了の行は誰も書かない。
 
