@@ -15,6 +15,8 @@ beforeAll(async () => {
     import { MidiPins } from './src/sidebar/MidiPins';
     window.renderPins = () => { const el = document.createElement('div'); document.body.append(el); render(MidiPins, el); return el; };
     import { applySidebarState, emptyState } from './src/sidebar/store';
+    import { selectLaneByNumber } from './src/sidebar/actions/handlers';
+    window.selectLaneByNumber = selectLaneByNumber;
     window.sent = [];
     window.ipc = {postMessage: m => window.sent.push(JSON.parse(m))};
     const lane = name => ({address:{repo:'vp',name,key:'vp/'+name}});
@@ -61,6 +63,39 @@ it('restores per-window pins and pads 1–8 select the assigned lane through IPC
   expect(w.sent).toHaveLength(2);
   // pad 5〜8 も gallery には流さない（ピン #5〜#8）
   expect(send(4,127)).toBe(false);
+});
+
+it('pad N and ⌘N go to the same pinned lane; an unregistered or missing pin does nothing', () => {
+  const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: unknown[]};
+  windows.push(w);
+  w.eval(bundle);
+  const slots = [{path:'/vp',address:'vp/root'},{path:'/vp',address:'vp/sub'},null,{path:'/gone',address:'gone/root'},null,null,null,null];
+  w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:{slots,colors:Array(8).fill('#123456'),dimGain:0.25}}));
+  const pad = (index:number,velocity:number) => w.dispatchEvent(new w.CustomEvent('vp:midi-navigation', {
+    cancelable:true, detail:{port_name:'LPD8 mk2',event:{type:'pad',index,velocity}},
+  }));
+  const viaPad = (n:number) => { w.sent.length = 0; pad(n - 1, 127); pad(n - 1, 0); return [...w.sent]; };
+  const viaCmd = (n:number) => { w.sent.length = 0; w.eval(`window.selectLaneByNumber(${n})`); return [...w.sent]; };
+  for (const n of [1,2,3,4,8]) expect(viaPad(n)).toEqual(viaCmd(n));
+  expect(viaCmd(2)).toEqual([{t:'process:toggle',path:'/vp',expanded:true},{t:'lane:select',path:'/vp',address:'vp/sub'}]);
+  expect(viaCmd(3)).toEqual([]); // 未登録
+  expect(viaCmd(4)).toEqual([]); // 登録した lane が今いない — 別の lane に振り替えない
+});
+
+it('the strip registers the selected lane on an empty pin and unregisters with the hover ✕', () => {
+  const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: {t:string;settings?:string}[]};
+  windows.push(w);
+  w.eval(bundle);
+  w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:null}));
+  const root = w.eval('window.renderPins()') as HTMLElement;
+  const pinButton = (n:number) => Array.from(root.querySelectorAll('.vp-midi-pin')).find(el => el.querySelector('button > span')?.textContent === `#${n}`)!;
+  expect(pinButton(3).querySelector('.vp-midi-unpin')).toBeNull();
+  (pinButton(3).querySelector('button') as HTMLButtonElement).click(); // active = vp/root
+  expect(JSON.parse(w.sent.at(-1)!.settings!).slots[2]).toEqual({path:'/vp',address:'vp/root'});
+  expect(pinButton(3).querySelector('.vp-midi-pin-label')!.textContent).toBe('vp');
+  (pinButton(3).querySelector('.vp-midi-unpin') as HTMLButtonElement).click();
+  expect(JSON.parse(w.sent.at(-1)!.settings!).slots[2]).toBeNull();
+  expect(pinButton(3).querySelector('.vp-midi-unpin')).toBeNull();
 });
 
 it('the sidebar pin strip and LED feedback follow settings re-broadcast from native', () => {

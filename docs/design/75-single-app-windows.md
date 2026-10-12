@@ -8,6 +8,7 @@
 
 同じ profile の GUI は1プロセス。ウィンドウを3枚開いても Dock / ⌘Tab / メニューバーのトレイは1つにする。
 ⌘N は同じアプリにウィンドウを追加し、各ウィンドウのlane選択・geometry・shell layoutは独立して保存する。
+例外として LPD8 のピン・色・明るさは app 全体で 1 組（`midi-pins.json`、design 81）。
 ⌘W / 赤ボタンは対象ウィンドウだけを閉じる。⌘Q / Quit は全ウィンドウの状態を保存してアプリを終了する。
 macOS は最後のウィンドウを閉じてもアプリを維持し、Dockの再表示・⌘N・トレイの New Window から再度開ける。
 daemon と lane engine の寿命は GUI と独立であり、この移行では変更しない。

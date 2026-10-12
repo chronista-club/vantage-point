@@ -205,8 +205,9 @@ pub(super) fn sidebar_ipc(
     if outcome.session_save {
         ui.persist.save();
     }
-    if outcome.midi_settings_push {
-        super::push_midi_settings(&boot.webview, &ui.persist.session.midi_navigation);
+    // 全 window への配信は event loop が `take_broadcast` で行う（この window だけに撃たない）。
+    if let Some(settings) = outcome.midi_settings_save {
+        boot.midi_pins.borrow_mut().set(settings);
     }
     // Lane activation — activate_lane() が全副作用を処理
     if let Some(addr) = outcome.activate_lane {

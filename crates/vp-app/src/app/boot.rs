@@ -39,6 +39,8 @@ pub(super) struct AppResources {
     pub(super) daemon_conn: SharedDaemonConn,
     pub(super) rt_handle: tokio::runtime::Handle,
     pub(super) proxy: tao::event_loop::EventLoopProxy<RoutedEvent<AppEvent>>,
+    /// LPD8 ピン（app 全体で 1 組、doc 81）。window ごとの `SessionState` には持たない。
+    pub(super) midi_pins: std::cell::RefCell<crate::midi_pins::MidiPins>,
     _rt: tokio::runtime::Runtime,
     _log: crate::log_init::LogInitResult,
 }
@@ -158,6 +160,7 @@ pub(super) fn boot() -> anyhow::Result<(EventLoop<RoutedEvent<AppEvent>>, Rc<App
         daemon_conn,
         rt_handle,
         proxy,
+        midi_pins: std::cell::RefCell::new(crate::midi_pins::MidiPins::load()),
         _rt,
         _log,
     });

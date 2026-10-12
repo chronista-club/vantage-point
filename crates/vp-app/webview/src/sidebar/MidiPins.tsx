@@ -1,19 +1,11 @@
-import { For } from 'solid-js';
+import { For, Show } from 'solid-js';
+import { CreoIcon } from '@chronista-club/creo-ui-icons-web';
 import { pins, pinsReady, setPin, setPinColor } from './midi-pin-store';
 import { sidebar } from './store';
-import { isSubLane, laneAddressKey } from './lane';
-import { sendIpc } from './ipc';
+import { laneAddressKey } from './lane';
 import { openContextMenu, type ContextMenuItem } from './ContextMenu';
+import { pinLabel, selectLaneByNumber } from './actions/handlers';
 import type { LaneTarget } from '../../midi-navigation';
-
-export function selectPinnedLane(pin: LaneTarget): void {
-  const exists = sidebar.lanes_by_repo[pin.path]?.some(l => laneAddressKey(l) === pin.address);
-  if (!exists) return; // Keep the saved pin, but never select a different lane in its place.
-  if (!sidebar.processes.find(p => p.path === pin.path)?.expanded) {
-    sendIpc({ t: 'process:toggle', path: pin.path, expanded: true });
-  }
-  sendIpc({ t: 'lane:select', ...pin });
-}
 
 function activeTarget(): LaneTarget | null {
   for (const [path, lanes] of Object.entries(sidebar.lanes_by_repo)) {
@@ -27,37 +19,42 @@ function activeTarget(): LaneTarget | null {
 /** LPD8 の物理配置どおり: 上段 = pad 5〜8（ピン #5〜#8）、下段 = pad 1〜4（ピン #1〜#4）。 */
 export const PIN_GRID_ORDER = [4,5,6,7,0,1,2,3];
 
+/**
+ * ピン帯。ピン #N が sidebar の #N・⌘N・LPD8 pad N の出どころ（doc 81「番号はピンが出どころ」）。
+ * 空枠 click = 今選んでいる lane を登録 / 登録済み枠 click = ⌘N と同じ関数で開く / hover の ✕ = 解除。
+ */
 export function MidiPins() {
   return <div class="vp-midi-pins" aria-label="LPD8 Lane ピン">
     <For each={PIN_GRID_ORDER}>{slot => {
+      const number = slot + 1;
       const pin = () => pins().slots[slot];
       const available = () => !!pin() && sidebar.lanes_by_repo[pin()!.path]?.some(l => laneAddressKey(l) === pin()!.address);
-      const label = () => {
-        const p = pin();
-        if (!p) return '+';
-        const lane = sidebar.lanes_by_repo[p.path]?.find(l => laneAddressKey(l) === p.address);
-        return lane && !isSubLane(lane)
-          ? sidebar.processes.find(proc => proc.path === p.path)?.name ?? p.address
-          : p.address.split('/').at(-1);
-      };
+      const register = () => { const a = activeTarget(); if (a) setPin(slot, a); };
       let colorInput!: HTMLInputElement;
       return <div class="vp-midi-pin" style={{'--pin-color':pins().colors[slot]}}>
         <button type="button" disabled={!pinsReady()}
           classList={{selected:!!pin() && sidebar.active_lane_address === pin()!.address, unavailable:!!pin() && !available()}}
-          title={pin() ? `${pin()!.address}${available() ? '' : '（現在利用できません）'} — 右クリックで設定` : `#${slot+1} に現在の Lane を固定`}
-          onClick={() => { const p = pin(); if (p) selectPinnedLane(p); else { const a = activeTarget(); if (a) setPin(slot,a); } }}
+          title={pin()
+            ? `#${number}（⌘${number} / pad ${number}）${pin()!.address}${available() ? '' : '（現在利用できません）'} — 右クリックで設定`
+            : `#${number} に今選んでいる Lane を登録`}
+          onClick={() => pin() ? selectLaneByNumber(number) : register()}
           onContextMenu={e => {
             e.preventDefault();
             const items: ContextMenuItem[] = [{label:'色を変更',icon:'ph:palette',onSelect:() => colorInput.click()}];
-            const a = activeTarget();
-            if (a) items.unshift({label:'現在の Lane を固定',icon:'ph:push-pin',onSelect:() => setPin(slot,a)});
-            if (pin()) items.push({label:'固定を解除',icon:'ph:x',onSelect:() => setPin(slot,null)});
-            openContextMenu(`LPD8 #${slot+1}`,items,e.clientX,e.clientY);
+            if (activeTarget()) items.unshift({label:'今選んでいる Lane を登録',icon:'ph:push-pin',onSelect:register});
+            if (pin()) items.push({label:'登録を解除',icon:'ph:x',onSelect:() => setPin(slot,null)});
+            openContextMenu(`LPD8 #${number}`,items,e.clientX,e.clientY);
           }}>
-          <span>#{slot+1}</span>
-          <span class="vp-midi-pin-label">{label()}</span>
+          <span>#{number}</span>
+          <span class="vp-midi-pin-label">{pin() ? pinLabel(pin()!) : '+'}</span>
         </button>
-        <input ref={colorInput} class="vp-midi-color" type="color" aria-label={`LPD8 #${slot+1} の色`}
+        <Show when={pin() && pinsReady()}>
+          <button type="button" class="vp-midi-unpin" title={`#${number} の登録を解除`} aria-label={`#${number} の登録を解除`}
+            onClick={e => { e.stopPropagation(); setPin(slot,null); }}>
+            <CreoIcon name="ph:x" size={10} />
+          </button>
+        </Show>
+        <input ref={colorInput} class="vp-midi-color" type="color" aria-label={`LPD8 #${number} の色`}
           value={pins().colors[slot]} onChange={e => setPinColor(slot,e.currentTarget.value)} />
       </div>;
     }}</For>
@@ -71,5 +68,8 @@ export const MIDI_PINS_CSS = `
 .vp-midi-pin button.selected{color:var(--pin-color);background:var(--color-surface-bg-emphasis);}
 .vp-midi-pin button.unavailable{opacity:.45;}
 .vp-midi-pin-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.vp-midi-unpin{position:absolute;top:1px;right:0;display:flex;align-items:center;justify-content:center;width:14px;height:14px;padding:0;border:0;border-radius:3px;background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);cursor:pointer;opacity:0;transition:opacity .1s;}
+.vp-midi-pin:hover .vp-midi-unpin,.vp-midi-unpin:focus-visible{opacity:1;}
+.vp-midi-unpin:hover{color:var(--color-text-primary);}
 .vp-midi-color{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;}
 `;

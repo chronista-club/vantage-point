@@ -2,11 +2,11 @@ import { createSignal, onCleanup, type Accessor } from 'solid-js'
 import { defaultPins, restorePins, type PinSettings } from '../midi-pins'
 
 /**
- * Editor（main bundle）から見た window の LPD8 ピン設定。
+ * Editor（main bundle）から見た LPD8 ピン設定。
  *
- * 正本は Rust の `SessionState.midi_navigation`（window ごと）。sidebar bundle の
+ * 正本は Rust の `midi_pins`（app 全体で 1 組、`midi-pins.json`）。sidebar bundle の
  * `midi-pin-store` は別 bundle なので import しない（doc 81）。読むのは Rust が両 bundle に配る
- * `vp:midi-settings`、書くのは sidebar と同じ IPC `midi:navigation` — Rust が保存して配り直すので、
+ * `vp:midi-settings`、書くのは sidebar と同じ IPC `midi:navigation` — Rust が保存して全 window に配り直すので、
  * sidebar のピン帯と LPD8 の LED はその 1 本で追随する。
  */
 export interface MidiSettings {

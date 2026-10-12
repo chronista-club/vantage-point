@@ -5,7 +5,7 @@ import type { FleetPayload } from '../../fleet';
 import { sidebar } from './store';
 import { sendIpc } from './ipc';
 import { pins, pinsReady, restoreMidiPins } from './midi-pin-store';
-import { selectPinnedLane } from './MidiPins';
+import { selectLaneByNumber } from './actions/handlers';
 
 const createHandler = () => laneKnobHandler(() => currentLanes(sidebar), target => {
   if (!sidebar.processes.find(p => p.path === target.path)?.expanded) {
@@ -17,11 +17,12 @@ const createHandler = () => laneKnobHandler(() => currentLanes(sidebar), target 
 });
 
 let selectLane = createHandler();
-let selectPin = pinPadHandler(pins, selectPinnedLane);
+// pad N = ⌘N: 宛先は ⌘N と同じ関数で引く（番号の出どころを 2 つ作らない）。
+let selectPin = pinPadHandler(selectLaneByNumber);
 const [target, setTarget] = createSignal(document.documentElement.dataset.midiTarget === 'true');
 window.addEventListener('vp:midi-target', e => {
   selectLane = createHandler();
-  selectPin = pinPadHandler(pins, selectPinnedLane);
+  selectPin = pinPadHandler(selectLaneByNumber);
   setTarget((e as CustomEvent<boolean>).detail);
 });
 

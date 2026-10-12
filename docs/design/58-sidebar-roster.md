@@ -94,7 +94,7 @@ bikeboy-ladyland
 | session title（CC 会話 title） | 2 行目の fallback | ⚠️ 現状 lane address 鍵で 1 本 = 相部屋で破綻。**session 鍵に落とす** |
 | `vp-lane-cwd`（「地」） | **昇格 → 場所ラベル** | cwd-SSOT の実体は既にここに居た |
 | ★ 開発起点マーカー | 消す | 場所ラベル `main` と二重 |
-| `#N`（⌘ hold l） | 残す | 操作 affordance、対象外 |
+| `#N`（ピン #N = ⌘N / ⌘ hold l、design 81） | 残す | 操作 affordance、対象外 |
 | git meta（dirty / ↑↓） | 残す | 場所の進行 |
 | awaiting / canvas unread / mailbox | 残す | 「今どうなっているか」層。3 つで打ち止め |
 | 📁 files-btn | 消す | Cmd+F で足りる（非 active lane は行 click → Cmd+F の 2 手。1-click 動線が欲しくなったら context menu に足す） |

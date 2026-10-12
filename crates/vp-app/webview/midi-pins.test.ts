@@ -25,19 +25,32 @@ it('moves a pin without duplicates, replaces slots, and preserves custom colors 
   expect(pins.assignPin(state,8,a)).toBe(state);
 });
 
-it('pads 1–8 select pins 1–8 once per press', () => {
+it('one source of numbers: pin #N ⇄ lane address (sidebar #N, ⌘N and pad N all read this)', () => {
   const state = pins.assignPin(pins.assignPin(pins.defaultPins(),0,a),7,b);
-  const selected: string[] = [];
-  const handle = pins.pinPadHandler(() => state, p => selected.push(p.address));
+  expect(pins.pinNumberOf(state,'a/root')).toBe(1);
+  expect(pins.pinNumberOf(state,'b/sub')).toBe(8); // sub lane も登録できる
+  expect(pins.pinNumberOf(state,'c/root')).toBeNull(); // 未登録の行は番号を持たない
+  expect(pins.pinTargetOf(state,1)).toEqual(a);
+  expect(pins.pinTargetOf(state,8)).toEqual(b);
+  expect(pins.pinTargetOf(state,2)).toBeNull();
+  for (const n of [0,9,1.5,-1]) expect(pins.pinTargetOf(state,n)).toBeNull();
+  // 登録を動かせば番号も動く（並び順は関係ない）
+  expect(pins.pinNumberOf(pins.assignPin(state,3,a),'a/root')).toBe(4);
+});
+
+it('pads 1–8 ask for numbers 1–8 (= ⌘1–⌘8) once per press', () => {
+  const selected: number[] = [];
+  const handle = pins.pinPadHandler(n => selected.push(n));
   const pad = (index:number,velocity:number) => ({port_name:'LPD8 mk2',event:{type:'pad',index,velocity}});
   expect(handle(pad(0,127))).toBe(true);
   handle(pad(0,100));
   handle(pad(0,0));
-  expect(selected).toEqual(['a/root']);
+  expect(selected).toEqual([1]);
   handle(pad(0,90));
   expect(handle(pad(7,127))).toBe(true);
-  handle(pad(3,127)); // unassigned remains inert and consumed
-  expect(selected).toEqual(['a/root','a/root','b/sub']);
+  // 未登録でも pad は消費する（gallery へ流さない）。何もしないのは ⌘N と同じ関数の責務
+  expect(handle(pad(3,127))).toBe(true);
+  expect(selected).toEqual([1,1,8,4]);
   expect(handle(pad(8,127))).toBe(false);
   expect(handle({port_name:'X-Touch',event:{type:'pad',index:0,velocity:127}})).toBe(false);
 });

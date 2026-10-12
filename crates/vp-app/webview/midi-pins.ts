@@ -60,6 +60,22 @@ export function restorePins(value: unknown): PinSettings {
   };
 }
 
+/**
+ * lane の address → 登録しているピン番号（1〜8）。登録していなければ null。
+ *
+ * ⚠️ **番号の出どころはこの 2 関数だけ**（doc 81「番号はピンが出どころ」）: sidebar の `#N`、⌘N、
+ * LPD8 pad N の三者がここを通る。並び順など別の物差しで数えると「見えている番号と飛び先が違う」になる。
+ */
+export function pinNumberOf(state: PinSettings, address: string): number | null {
+  const i = state.slots.findIndex(pin => pin?.address === address);
+  return i < 0 ? null : i + 1;
+}
+
+/** ピン番号（1〜8）→ 登録している lane。範囲外・未登録は null。 */
+export function pinTargetOf(state: PinSettings, number: number): LaneTarget | null {
+  return isSlot(number - 1) ? state.slots[number - 1] ?? null : null;
+}
+
 /** Pads 1–8 (zero-based indices 0–7). Missing lanes are dark. */
 export function pinFeedback(state: PinSettings, active: string | null, available: Set<string>) {
   return state.slots.map((pin, i) => {
@@ -70,7 +86,8 @@ export function pinFeedback(state: PinSettings, active: string | null, available
   });
 }
 
-export function pinPadHandler(settings: () => PinSettings, select: (target: LaneTarget) => void) {
+/** pad N を押す = ⌘N。`select` には ⌘N と同じ関数（番号で引く）を渡す。押下 1 回につき 1 度。 */
+export function pinPadHandler(select: (number: number) => void) {
   const held = new Set<number>();
   return (payload: FleetPayload): boolean => {
     const e = payload.event;
@@ -79,8 +96,7 @@ export function pinPadHandler(settings: () => PinSettings, select: (target: Lane
     if (!e.velocity || e.velocity < 0) { held.delete(e.index); return true; }
     if (!held.has(e.index)) {
       held.add(e.index);
-      const pin = settings().slots[e.index];
-      if (pin) select(pin);
+      select(e.index + 1);
     }
     return true;
   };
