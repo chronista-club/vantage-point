@@ -126,9 +126,11 @@ pub(crate) struct SidebarIpcOutcome {
     /// in-memory の更新（`set_repo_expanded` / `currents_order`）は本 fn が済ませているので、
     /// 呼び手は file 書き込みだけを担う。
     pub(crate) session_save: bool,
-    /// 保存した `midi_navigation` を webview の両 bundle へ `vp:midi-settings` で配り直す要求。
-    /// Editor（main bundle）が変えた値を sidebar のピン帯と LPD8 の LED に届ける唯一の経路（doc 81）。
-    pub(crate) midi_settings_push: bool,
+    /// MIDI ピンの保存要求（値 = 検証済みの object）。保存先は window の session でなく app 全体の
+    /// [`crate::midi_pins::MidiPins`] — 呼び手が保存し、**開いている全 window** の両 bundle へ
+    /// `vp:midi-settings` で配り直す（doc 81）。Editor（main bundle）が変えた値を sidebar のピン帯と
+    /// LPD8 の LED に届ける唯一の経路でもある。
+    pub(crate) midi_settings_save: Option<serde_json::Value>,
     /// daemon 再起動要求（doc 59 P1）。⚠️ **全 repo = 全 lane の claude が落ちる**
     /// （doc 44 P1 fold-in）。caller が rfd 確認ダイアログ → `vp daemon restart` を
     /// 専用スレッドで実行する（`flows/update.rs` と同じ理由 = event loop を塞がない）。
@@ -158,14 +160,12 @@ pub(crate) fn handle_sidebar_ipc(
 
     match envelope {
         IpcEnvelope::MidiNavigation(m) => {
-            // Bounded per-window UI settings. The sidebar validates the versioned shape on restore.
+            // app 全体で 1 組（doc 81）なので window の session には触れない。形の検証は webview 側。
             if m.settings.len() <= 16_384
                 && let Ok(settings) = serde_json::from_str::<serde_json::Value>(&m.settings)
                 && settings.is_object()
             {
-                session.midi_navigation = settings;
-                out.session_save = true;
-                out.midi_settings_push = true;
+                out.midi_settings_save = Some(settings);
             }
         }
         IpcEnvelope::ProcessToggle(m) => {
@@ -1092,11 +1092,10 @@ mod midi_persistence_tests {
         let mut state = SidebarState::default();
         let mut session = SessionState::default();
         let out = handle_sidebar_ipc(&msg.to_string(), &mut state, &mut session);
-        assert!(out.session_save);
         assert!(!out.changed && !out.active_changed && out.activate_lane.is_none());
-        assert_eq!(session.midi_navigation, settings);
-        // Editor（main bundle）からの変更も sidebar のピン帯へ戻すため、保存した値を webview に配り直す
-        assert!(out.midi_settings_push);
+        // 保存先は app 全体の 1 組。この window の session は書かない
+        assert_eq!(out.midi_settings_save, Some(settings));
+        assert!(!out.session_save && session.midi_navigation.is_null());
     }
 
     #[test]
@@ -1105,7 +1104,6 @@ mod midi_persistence_tests {
         let mut state = SidebarState::default();
         let mut session = SessionState::default();
         let out = handle_sidebar_ipc(&msg.to_string(), &mut state, &mut session);
-        assert!(!out.session_save && !out.midi_settings_push);
-        assert!(session.midi_navigation.is_null());
+        assert!(!out.session_save && out.midi_settings_save.is_none());
     }
 }

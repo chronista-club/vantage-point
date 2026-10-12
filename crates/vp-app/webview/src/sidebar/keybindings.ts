@@ -42,7 +42,7 @@ export function dispatchDirective(key: string): void {
 export function installSidebarKeybindings(): void {
 	installDirectiveHandler({
 		exec: dispatchDirective,
-		// Cmd + 1〜9 — sidebar の `#N` badge が指す root lane へ直接飛ぶ。
+		// Cmd + 1〜8 — ピン #N に登録した lane（= sidebar の `#N` badge）へ直接飛ぶ（doc 81）。
 		selectLane: selectLaneByNumber,
 	});
 }

@@ -49,6 +49,18 @@ fn session_file_name(instance_index: usize) -> String {
     }
 }
 
+/// session file 名 → instance index（`session.json` = 0 / `session.<N>.json` = N）。
+/// `session.json.tmp`（atomic write 中間）や `.corrupt-*` は None。[`session_file_name`] の逆。
+fn session_file_index(name: &str) -> Option<usize> {
+    if name == SESSION_FILE_PRIMARY {
+        return Some(0);
+    }
+    name.strip_prefix("session.")?
+        .strip_suffix(".json")?
+        .parse()
+        .ok()
+}
+
 /// `open` field の serde default。 既存 file (= flag 不在) は「開いていた」 扱いにする
 /// (= load できた file は閉じられていない限り開く対象)。
 fn default_open() -> bool {
@@ -225,8 +237,10 @@ impl WindowGeometry {
 /// 自分の file に書き戻す。 他 instance の file は触らない (= clobber free)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionState {
-    /// Per-window MIDI pins; validated by the sidebar before use.
-    #[serde(default)]
+    /// 旧: window ごとの MIDI ピン（doc 81）。**読み込み専用**の移行元 — 正本は app 全体の
+    /// [`crate::midi_pins`]（`midi-pins.json`）。save では出さない（`skip_serializing`）ので、
+    /// window の file に書き戻す経路は構造的に無い。
+    #[serde(default, skip_serializing)]
     pub midi_navigation: serde_json::Value,
     /// repo path → UI state (sidebar accordion 等)
     #[serde(default)]
@@ -510,13 +524,7 @@ impl SessionState {
             };
             // `session.<N>.json` (N≥1) のみ対象。 `session.json` (= primary) や
             // `session.json.tmp` (= atomic write 中間) は prefix/suffix strip で弾かれる。
-            let Some(rest) = name.strip_prefix("session.") else {
-                continue;
-            };
-            let Some(num) = rest.strip_suffix(".json") else {
-                continue;
-            };
-            let Ok(idx) = num.parse::<usize>() else {
+            let Some(idx) = session_file_index(name) else {
                 continue;
             };
             if idx == 0 {
@@ -528,6 +536,27 @@ impl SessionState {
         }
         out.sort_unstable();
         out
+    }
+
+    /// 旧 window 別 `midi_navigation` から、app 全体のピンへ移す 1 組を選ぶ（doc 81 の移行）。
+    ///
+    /// slot 0（`session.json`）を優先し、無ければ index の小さい順で最初の非 null。
+    /// `open` は問わない（閉じた window の設定も user が作ったピン）。file は raw JSON として読むだけで、
+    /// `load()` の副作用（壊れた file の退避）は起こさない。
+    pub fn legacy_midi_navigation_in(dir: &std::path::Path) -> Option<serde_json::Value> {
+        let mut found: Vec<(usize, serde_json::Value)> = std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .filter_map(|entry| {
+                let idx = session_file_index(entry.file_name().to_str()?)?;
+                let text = std::fs::read_to_string(entry.path()).ok()?;
+                let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+                let pins = value.get("midi_navigation")?.clone();
+                pins.is_object().then_some((idx, pins))
+            })
+            .collect();
+        found.sort_by_key(|(idx, _)| *idx);
+        found.into_iter().next().map(|(_, pins)| pins)
     }
 
     /// Cmd+N で spawn する次の空き secondary instance index (≥1)。
@@ -912,21 +941,5 @@ mod pane_stow_tests {
         assert_eq!(saved["pane_stow"], value["pane_stow"]);
         let old: SessionState = serde_json::from_str("{}").unwrap();
         assert!(serde_json::to_value(old).unwrap()["pane_stow"].is_null());
-    }
-}
-
-#[cfg(test)]
-mod midi_navigation_tests {
-    use super::SessionState;
-    #[test]
-    fn midi_navigation_pins_roundtrip_without_changing_another_windows_settings() {
-        let pins = serde_json::json!({"slots":[{"path":"/vp","address":"vp/root"},null,null,null],
-            "colors":["#123456","#639af5","#b78aee","#f0b45a"]});
-        let a: SessionState =
-            serde_json::from_value(serde_json::json!({"midi_navigation":pins})).unwrap();
-        let b: SessionState = serde_json::from_str("{}").unwrap();
-        let saved = serde_json::to_value(a).unwrap();
-        assert_eq!(saved["midi_navigation"], pins);
-        assert!(serde_json::to_value(b).unwrap()["midi_navigation"]["slots"][0].is_null());
     }
 }

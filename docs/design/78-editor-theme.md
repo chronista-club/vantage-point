@@ -29,8 +29,8 @@ Ctrl+Shift+E で開く Editor を THEME / SIDEBAR / CHAT / MIDI / COMPONENT の�
 - `midi-settings` / `MidiSection`: MIDI タブ。Editor の寿命で 1 つ（テーマ切替で Provider を作り直しても保持）。
 
 MIDI タブの値は EditorField として登録しない。field にすると変更購読がテーマ保存に書き、書き出し JSON にも混ざるため。
-読み書きは window の session（`SessionState.midi_navigation`、design 81）: 書くのは sidebar と同じ IPC `midi:navigation`、
-読むのは Rust が保存後に両 bundle へ配る `vp:midi-settings`。sidebar bundle の store は import しない。
+読み書きは app 全体で 1 組のピン（`midi-pins.json`、design 81）: 書くのは sidebar と同じ IPC `midi:navigation`、
+読むのは Rust が保存後に全 window の両 bundle へ配る `vp:midi-settings`。sidebar bundle の store は import しない。
 保存値が届くまでは入力を無効にし、書かない（既定値で保存済みのピンを上書きしないため）。
 
 Provider 0.8.1 は初期テーマの色相・彩度の基準を生成時に保持する。したがって `data-theme` だけの切替は行わない。

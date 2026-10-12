@@ -167,7 +167,7 @@ fn update_pane_bounds(webview: &WebView, window_size: tao::dpi::PhysicalSize<u32
 //   メソッドに移管 (G2 解消、 3 重実装の 1 元化)。 caller は `wire.key()` で同等の文字列を取れる。
 
 /// App のエントリポイント
-/// window の MIDI 設定（`SessionState.midi_navigation`）を webview の両 bundle へ配る script。
+/// MIDI ピン（app 全体で 1 組 — `crate::midi_pins`）を webview の両 bundle へ配る script。
 ///
 /// 1 document に 2 bundle（main / sidebar）が居るので、受け口は `window` の CustomEvent
 /// `vp:midi-settings`。`__vpMidiSettings` は bundle 評価前に撃った分を後から拾うための置き場（doc 81）。
@@ -177,8 +177,9 @@ fn midi_settings_script(settings: &serde_json::Value) -> String {
     )
 }
 
-/// 起動時と、`midi:navigation` で保存した直後に撃つ。Editor（main）と sidebar のどちらが変えても、
-/// 両方がこの 1 本で同じ値に揃う（片方が他方の store を import しない — doc 81）。
+/// 起動時（その window へ）と、`midi:navigation` で保存した直後（**開いている全 window へ**）に撃つ。
+/// どの window の Editor（main）/ sidebar が変えても、全 window の両 bundle がこの 1 本で同じ値に揃う
+/// （片方が他方の store を import しない — doc 81）。
 pub(super) fn push_midi_settings(webview: &WebView, settings: &serde_json::Value) {
     if let Err(e) = webview.evaluate_script(&midi_settings_script(settings)) {
         tracing::warn!("vp:midi-settings の配信に失敗: {e}");
@@ -324,6 +325,12 @@ pub fn run() -> anyhow::Result<()> {
                     }
                     dispatch_window_event(event, ui, boot);
                 }
+                // ピンは app 全体で 1 組: どの window で保存しても、開いている全 window に配る。
+                if let Some(settings) = app.midi_pins.borrow_mut().take_broadcast() {
+                    for (_, boot) in windows.values() {
+                        push_midi_settings(&boot.webview, settings);
+                    }
+                }
             }
             #[cfg(target_os = "macos")]
             Event::Reopen { .. } => {
@@ -381,7 +388,7 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             origin,
         ),
         AppEvent::WebviewReady => {
-            push_midi_settings(&boot.webview, &ui.persist.session.midi_navigation);
+            push_midi_settings(&boot.webview, boot.midi_pins.borrow().value());
             catch_up::webview_ready(ui, boot);
         }
         AppEvent::LanesError { repo_path, message } => {
