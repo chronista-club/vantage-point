@@ -71,7 +71,7 @@ urlencoding = "2"
 reqwest = { workspace = true }
 
 # MCP (Model Context Protocol)
-rmcp = { version = "3.2", features = ["server", "transport-io"] }
+rmcp = { version = "3.5", features = ["server", "transport-io"] }
 schemars = "1"
 
 # QUIC protocol (crates.io package = club-unison、 Rust 識別子 = unison。 VP-185 で alias)
@@ -114,7 +114,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Hostname
 hostname = "0.4"
-libc = "0.2.189"
+libc = "0.2.190"
 
 # Low-level socket control (IPV6_V6ONLY=0 を Windows でも明示設定するために必要。
 # tokio::net::TcpSocket には set_only_v6 が無いので socket2 経由で setsockopt する)

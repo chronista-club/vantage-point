@@ -88,4 +88,4 @@ ratatui = { version = "0.30", features = ["crossterm"] }
 crossterm = "0.29"
 
 # Database (DB は SurrealDB に一本化、 sqlx / rusqlite は dead dep として撤去 — PR 457)
-surrealdb = { version = "3.2", default-features = false, features = ["kv-mem", "kv-surrealkv"] }
+surrealdb = { version = "3.3", default-features = false, features = ["kv-mem", "kv-surrealkv"] }

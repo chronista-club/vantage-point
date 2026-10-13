@@ -628,11 +628,12 @@ impl VantageMcp {
 // 生成 tool が list_tools/call_tool に乗らない（rebuild Epic L2 第二手の live バグ）。
 #[tool_handler(router = self.tool_router)]
 impl rmcp::ServerHandler for VantageMcp {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         // rmcp 1.6 で ServerInfo は #[non_exhaustive] になり struct expression (= `ServerInfo { ... ..Default::default() }`)
         // が外部 crate から使えなくなった。 `Default::default()` で base instance を作ってから pub field を mutate
         // する pattern で API contract を満たす (= 公式が future-compatible として用意してる upgrade path)。
-        let mut info = ServerInfo::default();
+        // rmcp 3.4 で名前が ServerConfig に変わった（中身は同じ InitializeResult、ServerInfo は deprecated alias）。
+        let mut info = ServerConfig::default();
         info.instructions = Some(
             "Vantage Point Process - Pin rich content (markdown, HTML, images) to the board (Board). \
              Use 'capture_window' to take a PNG screenshot of the GUI window (viewable with Read tool), \
