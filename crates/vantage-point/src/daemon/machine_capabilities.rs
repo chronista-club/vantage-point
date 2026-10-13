@@ -83,6 +83,11 @@ impl MachineCapabilities {
         repo_manager: Arc<RwLock<RepoManagerCapability>>,
         update: Arc<RwLock<UpdateCapability>>,
     ) -> Self {
+        // ⚠️ daemon の MIDI で**最初**に呼ぶ。最初の CoreMIDI client を run loop 付きの
+        // 専用 thread で作らないと、lease ごとに生える midistaged の仮想 port が見えない
+        // （attach_fleet_inputs の列挙より前であることが要）
+        crate::coremidi_notify::start();
+
         let mut wc = Self::new(repo_manager, update);
 
         let event_bus = Arc::new(crate::capability::eventbus::EventBus::new());

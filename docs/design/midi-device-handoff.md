@@ -50,3 +50,32 @@ service は物理送信 completion と後始末が終わるまで次の lease �
 - midistage SDK は `0d3c3f5e22dac62c0e701daaa17fcd173f41df18` に固定。
 
 稼働環境への反映には `CLAUDE.md` の server 更新手順が必要。`VP_SWAP_RESTART_DAEMON=1` は共有 daemon と各 repo/lane のセッションに影響するため、通常のビルド検証と分けて実施する。
+
+## daemon が仮想ポートを見られる条件（2026-10-14）
+
+CoreMIDI は process ごとに endpoint 一覧の cache を持ち、更新の通知を
+**その process で最初に `MIDIClientCreate` した時点の current run loop** にだけ届ける。
+daemon は tokio の worker thread で midir を呼ぶので run loop が回っておらず、
+一覧は最初の client を作った瞬間で止まる。
+
+midistaged は lease を受けるたびに仮想ポートを作り直す（名前に lease token が入る）。
+そのため仮想ポートは毎回 daemon の起動**後**に現れ、止まった一覧には載らない。
+#1185（2026-10-08 JST merge）で daemon が開く先を物理ポートから仮想ポートだけに絞ってから、
+LPD8 の input listener も ROTO も開けていなかった（daemon log では 10/03 が最後の
+`input listener started` / `ROTO connected`、10/08 04:55Z から毎回 `接続失敗`）。
+
+対処: `coremidi_notify::start()` が daemon の MIDI 初期化の先頭（`MachineCapabilities::with_devices`）で
+専用 thread を立て、そこで process 最初の client を作って `CFRunLoopRun()` を回し続ける。
+daemon の MIDI 入口（列挙 / input listener / feedback output / ROTO）は未起動なら 1 度 warn する。
+input listener は、通知が届くまでの数百 ms を吸う短い開き直し（100ms から倍々、上限 2s、5s で断念）を持つ。
+
+実測（midir 0.11 だけの小さな binary。別 process が `create_virtual` した仮想 source を 500ms ごとに列挙）:
+
+| 条件 | 結果 |
+|---|---|
+| 先に main 以外の thread で client を作り、run loop は回さない（daemon と同じ条件） | 10 秒たっても見えない |
+| 仮想ポートができた後で初めて client を作る / 別 process の `vp midi ports` | すぐ見える |
+| process 最初の client を専用 thread で作り、その thread で `CFRunLoopRun()` | 約 600ms で見える |
+| 別 thread で先に client を作った後に、run loop 付きの thread を立てる | 見えない（通知先は最初の client で決まる） |
+
+`vp midi …` CLI は今回の対象外（daemon 経路だけ）。

@@ -109,6 +109,7 @@ fn create_device_input(port_name: &str) -> Option<Box<dyn DeviceInput + Send>> {
 /// pattern 部分一致で MIDI output port を開く。複数候補は "INT" を含む名を優先
 /// （X-Touch INT = MCU の実 port / EXT = 物理 MIDI passthrough の別）。
 fn open_output(pattern: &str) -> Option<midir::MidiOutputConnection> {
+    crate::coremidi_notify::warn_if_not_started("feedback output");
     let midi_out = midir::MidiOutput::new("vp-devices-feedback").ok()?;
     let ports = midi_out.ports();
     let named: Vec<(String, midir::MidiOutputPort)> = ports
@@ -126,6 +127,7 @@ fn open_output(pattern: &str) -> Option<midir::MidiOutputConnection> {
 /// midir で input + output の全 port を enumeration し、displayName → (has_input, has_output) の map を返す。
 /// 物理デバイスは同じ displayName で input/output 両方のポートを持つため、名前で merge する。
 fn enumerate_ports() -> HashMap<String, (bool, bool)> {
+    crate::coremidi_notify::warn_if_not_started("enumerate_ports");
     let mut result: HashMap<String, (bool, bool)> = HashMap::new();
 
     if let Ok(midi_in) = midir::MidiInput::new("vp-devices-scan") {
@@ -217,109 +219,200 @@ pub fn save_midi_enabled(enabled: bool) {
     }
 }
 
+/// input port を開けなかった理由（log を分ける — 1 文に潰すと原因を取り違える）。
+#[derive(Debug)]
+enum OpenError {
+    /// 探した名前が列挙に無い。`candidates` = その時に見えていた仮想 port（`Midistage/…`）
+    NotFound {
+        listed: usize,
+        candidates: Vec<String>,
+    },
+    /// port はあったが midir が開けなかった（再試行しない）
+    Midir(String),
+}
+
+/// 開いた input 接続。`_conn` を drop すると切断されるので listener task が保持する。
+struct OpenedInput {
+    _conn: Box<dyn Send>,
+    rx: mpsc::Receiver<Vec<u8>>,
+}
+
+/// port を開く関数（本番 = midir、test = 「N 回目で現れる」等の差し替え）。
+type PortOpener = Arc<dyn Fn(&str) -> Result<OpenedInput, OpenError> + Send + Sync>;
+
+/// port 不在のときの開き直し方。
+///
+/// CoreMIDI 通知 thread（`coremidi_notify`）が居れば、midistaged が lease で作った仮想 port は
+/// 数百 ms で列挙に現れる（2026-10-14 実測 ~600ms）。その隙間を吸うだけの短い backoff。
+#[derive(Clone, Copy, Debug)]
+struct RetryPolicy {
+    first: Duration,
+    max: Duration,
+    give_up_after: Duration,
+}
+
+const LISTENER_RETRY: RetryPolicy = RetryPolicy {
+    first: Duration::from_millis(100),
+    max: Duration::from_secs(2),
+    give_up_after: Duration::from_secs(5),
+};
+
+/// input listener を張るのに要る持ち物一式（3 経路 + discovery task が clone して共有）。
+#[derive(Clone)]
+struct ListenerDeps {
+    listeners: InputListeners,
+    event_bus: Arc<EventBus>,
+    midi_enabled: Arc<AtomicBool>,
+    access: Arc<std::sync::RwLock<crate::midi_access::MidiAccess>>,
+    opener: PortOpener,
+    retry: RetryPolicy,
+}
+
 /// parser 対応 device の input listener を冪等に張る。
 ///
 /// - **艦隊 OFF の間は張らない**（user が機材を他アプリへ譲っている）。ここが gate の要 —
 ///   agent の hot-plug 報告も discovery もこの 1 本を通るので、抜き差しで握り直さない
 /// - ROTO は専用 loop（`start_roto_control`）が input を独占所有するため対象外
-/// - 生存中の listener が既に居れば no-op（二重接続の防止）
-/// - parser 対応 device なのに接続に失敗したら warn（無音の取り残しを作らない）
-async fn ensure_input_listener(
-    listeners: &InputListeners,
-    event_bus: &Arc<EventBus>,
-    port_name: &str,
-    midi_enabled: &AtomicBool,
-    access: &std::sync::RwLock<crate::midi_access::MidiAccess>,
-) {
-    if !midi_enabled.load(Ordering::Relaxed) {
+/// - 生存中の listener が既に居れば no-op（二重接続の防止）。**開き直し中の task も
+///   同じ map に入る**ので、再試行中に ensure が重なっても 2 本目は立たない
+/// - port がまだ列挙に無ければ短い backoff で開き直す（[`RetryPolicy`]）。lease が変わる /
+///   艦隊 OFF / release で map から外されたら（= abort）そこで止まる
+async fn ensure_input_listener(deps: &ListenerDeps, port_name: &str) {
+    if !deps.midi_enabled.load(Ordering::Relaxed) {
         return;
     }
-    if port_name.contains("Roto") || create_device_input(port_name).is_none() {
+    if port_name.contains("Roto") {
         return;
     }
-    let Some(native_name) = access
+    let Some(parser) = create_device_input(port_name) else {
+        // parser 無し = VP が最初から掴まない機材（unsupported）。通常の状態なので静か
+        return;
+    };
+    let Some(native_name) = deps
+        .access
         .read()
         .expect("MIDI access poisoned")
         .input(port_name)
     else {
         return;
     };
-    let mut map = listeners.write().await;
+    let mut map = deps.listeners.write().await;
     if let Some(handle) = map.get(&native_name)
         && !handle.is_finished()
     {
         return;
     }
-    match spawn_input_listener(&native_name, port_name, Arc::clone(event_bus)) {
-        Some(handle) => {
-            map.insert(native_name, handle);
-        }
-        None => {
-            tracing::warn!(
-                "🧲 input listener 接続失敗（port 不在 or midir error）: {}",
-                port_name
-            );
-        }
-    }
+    let handle = tokio::spawn(run_input_listener(
+        deps.clone(),
+        native_name.clone(),
+        port_name.to_string(),
+        parser,
+    ));
+    map.insert(native_name, handle);
 }
 
-/// 指定 port の MIDI input を listen し、DeviceInput::parse で ControlEvent 化して EventBus に emit する。
-/// parser が未対応 or 接続失敗の場合は None。
-fn spawn_input_listener(
-    port_name: &str,
-    event_name: &str,
-    event_bus: Arc<EventBus>,
-) -> Option<JoinHandle<()>> {
-    let mut parser = create_device_input(port_name)?;
+/// listener task 本体: port を開く（不在なら backoff で開き直す）→ parse して EventBus に emit。
+async fn run_input_listener(
+    deps: ListenerDeps,
+    native_name: String,
+    event_name: String,
+    mut parser: Box<dyn DeviceInput + Send>,
+) {
+    let started = Instant::now();
+    let mut delay = deps.retry.first;
+    let mut attempts = 0u32;
+    let mut opened = loop {
+        // 開き直しの合間に状況が変わっていたら取りやめる（abort が届く前の窓を塞ぐ）
+        let still_ours = deps.midi_enabled.load(Ordering::Relaxed)
+            && deps
+                .access
+                .read()
+                .expect("MIDI access poisoned")
+                .permits_input(&native_name);
+        if !still_ours {
+            tracing::info!("🧲 input listener 取りやめ（lease 変更 / 艦隊 OFF）: {native_name}");
+            return;
+        }
+        attempts += 1;
+        match (deps.opener)(&native_name) {
+            Ok(opened) => break opened,
+            Err(OpenError::Midir(e)) => {
+                tracing::warn!("🧲 input listener 接続失敗（midir error）: {native_name}: {e}");
+                return;
+            }
+            Err(OpenError::NotFound { listed, candidates }) => {
+                if started.elapsed() >= deps.retry.give_up_after {
+                    tracing::warn!(
+                        "🧲 input listener 接続失敗（port 不在、{attempts} 回 / {:?} 試して断念）: \
+                         {native_name} — 列挙 {listed} ports、仮想 port 候補: {candidates:?}",
+                        started.elapsed()
+                    );
+                    return;
+                }
+                tracing::debug!(
+                    "🧲 input listener 待機（port 不在、{attempts} 回目、{delay:?} 後に再試行）: \
+                     {native_name}"
+                );
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(deps.retry.max);
+            }
+        }
+    };
 
-    let midi_in = midir::MidiInput::new("vp-devices-input").ok()?;
+    tracing::info!("🧲 input listener started: {}", event_name);
+
+    while let Some(msg) = opened.rx.recv().await {
+        if let Some(event) = parser.parse(&msg) {
+            tracing::debug!("🧲 control event from {}: {:?}", event_name, event);
+            let cap_event = CapabilityEvent::new("devices.control_event", "devices").with_payload(
+                &serde_json::json!({
+                    "port_name": event_name,
+                    "event": event,
+                }),
+            );
+            deps.event_bus.emit(cap_event).await;
+        }
+    }
+
+    tracing::info!("🧲 input listener stopped: {}", event_name);
+}
+
+/// midir で名前が完全一致する input port を開く（本番の [`PortOpener`]）。
+fn open_midir_input(native_name: &str) -> Result<OpenedInput, OpenError> {
+    crate::coremidi_notify::warn_if_not_started("input listener");
+    let midi_in =
+        midir::MidiInput::new("vp-devices-input").map_err(|e| OpenError::Midir(e.to_string()))?;
     let ports = midi_in.ports();
-    let port_idx = ports.iter().position(|p| {
-        midi_in
-            .port_name(p)
-            .map(|n| n == port_name)
-            .unwrap_or(false)
-    })?;
-    let port = &ports[port_idx];
+    let names: Vec<String> = ports
+        .iter()
+        .map(|p| midi_in.port_name(p).unwrap_or_default())
+        .collect();
+    let Some(port_idx) = names.iter().position(|n| n == native_name) else {
+        return Err(OpenError::NotFound {
+            listed: names.len(),
+            candidates: names
+                .into_iter()
+                .filter(|n| n.starts_with("Midistage/"))
+                .collect(),
+        });
+    };
 
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(256);
-    let port_name_owned = event_name.to_string();
-
-    // midir callback は別スレッドで走る → blocking_send で async 側へ bridge
+    let (tx, rx) = mpsc::channel::<Vec<u8>>(256);
+    // midir callback は別スレッドで走る → try_send で async 側へ bridge
     let connection = midi_in
         .connect(
-            port,
+            &ports[port_idx],
             "vp-devices-input",
             move |_timestamp, message, _| {
                 let _ = tx.try_send(message.to_vec());
             },
             (),
         )
-        .ok()?;
-
-    let handle = tokio::spawn(async move {
-        // connection を move して keep alive（drop = 切断）
-        let _conn = connection;
-        let port = port_name_owned;
-
-        tracing::info!("🧲 input listener started: {}", port);
-
-        while let Some(msg) = rx.recv().await {
-            if let Some(event) = parser.parse(&msg) {
-                tracing::debug!("🧲 control event from {}: {:?}", port, event);
-                let cap_event = CapabilityEvent::new("devices.control_event", "devices")
-                    .with_payload(&serde_json::json!({
-                        "port_name": port,
-                        "event": event,
-                    }));
-                event_bus.emit(cap_event).await;
-            }
-        }
-
-        tracing::info!("🧲 input listener stopped: {}", port);
-    });
-
-    Some(handle)
+        .map_err(|e| OpenError::Midir(e.to_string()))?;
+    Ok(OpenedInput {
+        _conn: Box::new(connection),
+        rx,
+    })
 }
 
 // ─── DeviceRegistry struct ─────────────────────────────────────────
@@ -345,6 +438,8 @@ pub struct DeviceRegistry {
     roto_cancel: Option<CancellationToken>,
     /// input listener 管理（起動時 attach / agent 報告 / polling discovery の 3 経路で共有）
     input_listeners: InputListeners,
+    /// listener を張る持ち物一式（`input_listeners` / `midi_enabled` / `midi_access` と同じ Arc を指す）
+    listener_deps: ListenerDeps,
     /// フィードバック方向（LE-19）の出力接続（port displayName → output conn）。
     /// 必要時に開き、send 失敗で捨てて次回再接続する（X-Touch / LPD8。ROTO は専用 loop 所有）
     outputs: Arc<tokio::sync::Mutex<HashMap<String, midir::MidiOutputConnection>>>,
@@ -374,6 +469,19 @@ pub struct DeviceRegistry {
 impl DeviceRegistry {
     /// 空の registry で構築
     pub fn new(event_bus: Arc<EventBus>) -> Self {
+        let input_listeners: InputListeners = Arc::new(RwLock::new(HashMap::new()));
+        // 保存済みスイッチを初期値にする（daemon 再起動をまたいで OFF を保つ）。
+        let midi_enabled = Arc::new(AtomicBool::new(load_midi_enabled()));
+        let midi_access: Arc<std::sync::RwLock<crate::midi_access::MidiAccess>> =
+            Arc::new(std::sync::RwLock::new(Default::default()));
+        let listener_deps = ListenerDeps {
+            listeners: Arc::clone(&input_listeners),
+            event_bus: Arc::clone(&event_bus),
+            midi_enabled: Arc::clone(&midi_enabled),
+            access: Arc::clone(&midi_access),
+            opener: Arc::new(open_midir_input),
+            retry: LISTENER_RETRY,
+        };
         Self {
             devices: Arc::new(RwLock::new(HashMap::new())),
             active_lane: Arc::new(RwLock::new(None)),
@@ -382,15 +490,15 @@ impl DeviceRegistry {
             cancel_tx: None,
             roto_task: None,
             roto_cancel: None,
-            input_listeners: Arc::new(RwLock::new(HashMap::new())),
+            input_listeners,
+            listener_deps,
             outputs: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             lpd8_profile: Arc::new(tokio::sync::Mutex::new(Default::default())),
             roto_feedback_tx: Arc::new(RwLock::new(None)),
             last_feedback: Arc::new(tokio::sync::Mutex::new(Default::default())),
-            // 保存済みスイッチを初期値にする（daemon 再起動をまたいで OFF を保つ）。
-            midi_enabled: Arc::new(AtomicBool::new(load_midi_enabled())),
+            midi_enabled,
             roto_deps: None,
-            midi_access: Arc::new(std::sync::RwLock::new(Default::default())),
+            midi_access,
             midi_snapshot: None,
             midi_client: None,
             midi_error: None,
@@ -724,8 +832,7 @@ impl DeviceRegistry {
         let event_bus = Arc::clone(&self.event_bus);
         let input_listeners = Arc::clone(&self.input_listeners);
         // 艦隊 OFF の間は listener を張らない（task 側でも同じ 1 つの flag を見る）
-        let midi_enabled = Arc::clone(&self.midi_enabled);
-        let midi_access = Arc::clone(&self.midi_access);
+        let listener_deps = self.listener_deps.clone();
         let (cancel_tx, mut cancel_rx) = mpsc::channel::<()>(1);
         self.cancel_tx = Some(cancel_tx);
 
@@ -768,14 +875,7 @@ impl DeviceRegistry {
                     // input port がある device は共有 map 経由で listener を冪等 ensure
                     // （ROTO 除外 / parser 判定 / 二重接続防止は ensure_input_listener が担う）
                     if *has_in {
-                        ensure_input_listener(
-                            &input_listeners,
-                            &event_bus,
-                            name,
-                            &midi_enabled,
-                            &midi_access,
-                        )
-                        .await;
+                        ensure_input_listener(&listener_deps, name).await;
                     }
                 }
 
@@ -860,6 +960,7 @@ impl DeviceRegistry {
         else {
             return;
         };
+        crate::coremidi_notify::warn_if_not_started("ROTO");
         let child = shutdown.child_token();
         self.roto_cancel = Some(child.clone());
 
@@ -1004,14 +1105,7 @@ impl DeviceRegistry {
                 .map(|d| d.port_name.clone())
                 .collect();
             for name in names {
-                ensure_input_listener(
-                    &self.input_listeners,
-                    &self.event_bus,
-                    &name,
-                    &self.midi_enabled,
-                    &self.midi_access,
-                )
-                .await;
+                ensure_input_listener(&self.listener_deps, &name).await;
             }
             if let Some((cap, shutdown)) = self.roto_deps.clone() {
                 self.start_roto_control(cap, shutdown).await;
@@ -1066,14 +1160,7 @@ impl DeviceRegistry {
         // ⚠️ **emit より先に張る**。逆順にすると `hold_state` が listener を見つけられず、
         // 初回配信の計器が必ず「掴んでいない」になる（次の hot-plug まで直らない）。
         if has_input {
-            ensure_input_listener(
-                &self.input_listeners,
-                &self.event_bus,
-                port_name,
-                &self.midi_enabled,
-                &self.midi_access,
-            )
-            .await;
+            ensure_input_listener(&self.listener_deps, port_name).await;
         }
         if is_new {
             tracing::info!("🧲 device connected (agent report): {}", port_name);
@@ -1323,39 +1410,152 @@ mod tests {
 
     // ─── ensure_input_listener（3 経路共有の spawn 判定）──────
 
-    #[tokio::test]
-    async fn ensure_skips_non_fleet_and_roto() {
-        let bus = Arc::new(EventBus::new());
-        let listeners: InputListeners = Arc::new(RwLock::new(HashMap::new()));
-        let on = AtomicBool::new(true);
-        // parser 対象外 device と ROTO（専用 loop 所有）は map に入らない
-        ensure_input_listener(&listeners, &bus, "Unknown Device", &on, &Default::default()).await;
-        ensure_input_listener(&listeners, &bus, "Roto-Control", &on, &Default::default()).await;
-        assert!(listeners.read().await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn ensure_is_graceful_without_real_port() {
-        let bus = Arc::new(EventBus::new());
-        let listeners: InputListeners = Arc::new(RwLock::new(HashMap::new()));
-        let on = AtomicBool::new(true);
-        // parser 対応 device でも実 port が無ければ warn して no-op（CI = MIDI 無し環境）
+    /// test 用の持ち物一式。`opener` は「何回目で port が現れるか」を差し替える。
+    fn test_deps(opener: PortOpener, native: &str) -> ListenerDeps {
         let mut access = crate::midi_access::MidiAccess::default();
         access.replace(vec![crate::midi_access::OwnedPorts {
             device_id: "lpd8".into(),
-            lease: "test".into(),
-            inputs: vec!["Midistage/test/absent/1 | LPD8 mk2 (absent)".into()],
+            lease: "a".into(),
+            inputs: vec![native.into()],
             outputs: vec![],
         }]);
-        ensure_input_listener(
-            &listeners,
-            &bus,
-            "LPD8 mk2 (absent)",
-            &on,
-            &std::sync::RwLock::new(access),
-        )
-        .await;
-        assert!(listeners.read().await.is_empty());
+        ListenerDeps {
+            listeners: Arc::new(RwLock::new(HashMap::new())),
+            event_bus: Arc::new(EventBus::new()),
+            midi_enabled: Arc::new(AtomicBool::new(true)),
+            access: Arc::new(std::sync::RwLock::new(access)),
+            opener,
+            // 実時間で回すので短く（形は本番と同じ: 倍々 → 上限 → 断念）
+            retry: RetryPolicy {
+                first: Duration::from_millis(5),
+                max: Duration::from_millis(20),
+                give_up_after: Duration::from_millis(400),
+            },
+        }
+    }
+
+    /// `appear_at` 回目の呼び出しで port が現れる opener。呼ばれた回数を数える。
+    fn appearing_opener(appear_at: usize) -> (PortOpener, Arc<std::sync::atomic::AtomicUsize>) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let opener: PortOpener = Arc::new(move |_name: &str| {
+            let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+            if n >= appear_at {
+                let (tx, rx) = mpsc::channel(8);
+                // tx を接続代わりに保持（drop されないので listener は生き続ける）
+                Ok(OpenedInput {
+                    _conn: Box::new(tx),
+                    rx,
+                })
+            } else {
+                Err(OpenError::NotFound {
+                    listed: 0,
+                    candidates: vec![],
+                })
+            }
+        });
+        (opener, calls)
+    }
+
+    const NATIVE: &str = "Midistage/vp/a:1/42 | LPD8 mk2";
+
+    #[tokio::test]
+    async fn ensure_skips_non_fleet_and_roto() {
+        let (opener, calls) = appearing_opener(1);
+        let deps = test_deps(opener, NATIVE);
+        // parser 対象外 device と ROTO（専用 loop 所有）は map に入らない
+        ensure_input_listener(&deps, "Unknown Device").await;
+        ensure_input_listener(&deps, "Roto-Control").await;
+        assert!(deps.listeners.read().await.is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// lease の直後は、仮想 port が通知で列挙に載るまで数百 ms の隙間がある
+    /// （通知自体は `coremidi_notify` の run loop が受ける）。1 回で諦めず、現れるまで
+    /// 開き直して listener を立てる。
+    #[tokio::test]
+    async fn listener_opens_once_port_appears_after_retries() {
+        let (opener, calls) = appearing_opener(4);
+        let deps = test_deps(opener, NATIVE);
+        ensure_input_listener(&deps, "LPD8 mk2").await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 4, "3 回不在 → 4 回目で開く");
+        let map = deps.listeners.read().await;
+        let handle = map.get(NATIVE).expect("listener が map に居る");
+        assert!(!handle.is_finished(), "開けた listener は生きている");
+    }
+
+    #[tokio::test]
+    async fn retry_gives_up_after_deadline() {
+        let (opener, calls) = appearing_opener(usize::MAX);
+        let deps = test_deps(opener, NATIVE);
+        ensure_input_listener(&deps, "LPD8 mk2").await;
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let n = calls.load(Ordering::SeqCst);
+        assert!(n > 1, "諦める前に開き直している（{n} 回）");
+        assert!(
+            deps.listeners.read().await[NATIVE].is_finished(),
+            "期限を過ぎたら task は終わる（次の ensure で再挑戦できる）"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), n, "断念後は叩かない");
+    }
+
+    /// lease が変わったら古い名前の開き直しは止まる（新しい名前を別に張るのは ensure の仕事）。
+    #[tokio::test]
+    async fn retry_stops_when_lease_changes() {
+        let (opener, calls) = appearing_opener(usize::MAX);
+        let deps = test_deps(opener, NATIVE);
+        ensure_input_listener(&deps, "LPD8 mk2").await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        deps.access
+            .write()
+            .unwrap()
+            .replace(vec![crate::midi_access::OwnedPorts {
+                device_id: "lpd8".into(),
+                lease: "b".into(),
+                inputs: vec!["Midistage/vp/b:2/43 | LPD8 mk2".into()],
+                outputs: vec![],
+            }]);
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(
+            deps.listeners.read().await[NATIVE].is_finished(),
+            "古い lease の名前は追わない"
+        );
+        let n = calls.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), n);
+    }
+
+    #[tokio::test]
+    async fn retry_stops_when_switched_off() {
+        let (opener, calls) = appearing_opener(usize::MAX);
+        let deps = test_deps(opener, NATIVE);
+        ensure_input_listener(&deps, "LPD8 mk2").await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        deps.midi_enabled.store(false, Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let n = calls.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), n, "OFF の後は開き直さない");
+    }
+
+    /// 開き直し中に ensure が重なっても（agent 報告と snapshot が同時に来る等）2 本目は立たない。
+    #[tokio::test]
+    async fn concurrent_ensure_does_not_double_spawn() {
+        let (opener, calls) = appearing_opener(3);
+        let deps = test_deps(opener, NATIVE);
+        for _ in 0..5 {
+            ensure_input_listener(&deps, "LPD8 mk2").await;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        // 1 本の task だけが叩いている = 3 回目で開いて止まる（5 本なら 3 回を超える）
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(deps.listeners.read().await.len(), 1);
+        // 開けた後の ensure も no-op
+        ensure_input_listener(&deps, "LPD8 mk2").await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
