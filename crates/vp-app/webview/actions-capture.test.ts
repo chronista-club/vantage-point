@@ -2,7 +2,7 @@
 import { expect, it } from 'vitest'
 import { build } from 'esbuild'
 import { solidPlugin } from 'esbuild-plugin-solid'
-import { Window, type HTMLSelectElement, type HTMLTextAreaElement, type HTMLButtonElement } from 'happy-dom'
+import { Window, type HTMLTextAreaElement, type HTMLButtonElement } from 'happy-dom'
 
 it('requires an explicit Atlas and keeps the draft when Projects change', async () => {
   const bundle = await build({stdin:{contents:`
@@ -30,7 +30,7 @@ it('requires an explicit Atlas and keeps the draft when Projects change', async 
   try {
     window.eval(bundle.outputFiles[0].text)
     const text = window.document.querySelector<HTMLTextAreaElement>('[aria-label="メモ"]')
-    const atlas = window.document.querySelector<HTMLSelectElement>('[aria-label="保存先 Atlas"]')
+    const atlas = window.document.querySelector<HTMLButtonElement>('[aria-label="保存先 Atlas"]')
     expect(text).not.toBeNull()
     expect(atlas).not.toBeNull()
     const legacy = window.document.querySelector<HTMLButtonElement>('[aria-label="以前のACTIONSを取り込む"]')
@@ -40,11 +40,11 @@ it('requires an explicit Atlas and keeps the draft when Projects change', async 
     const save = window.document.querySelector<HTMLButtonElement>('[aria-label="メモを保存"]')!
     text!.value='別件の思いつき';text!.dispatchEvent(new window.Event('input',{bubbles:true}))
     expect(save.disabled).toBe(true)
-    atlas!.value='atlas-other';atlas!.dispatchEvent(new window.Event('change',{bubbles:true}))
+    atlas!.click();window.document.querySelector<HTMLButtonElement>('[data-atlas-id="atlas-other"]')!.click()
     const app=window as unknown as {switchProject:()=>void;sent:Array<{items:unknown[]}>}
     app.switchProject()
     expect(text!.value).toBe('別件の思いつき')
-    expect(atlas!.value).toBe('atlas-other')
+    expect(atlas!.textContent).toContain('/別件')
     expect(save.disabled).toBe(false)
     save.click()
     expect(app.sent.at(-1)?.items).toEqual(expect.arrayContaining([expect.objectContaining({text:'別件の思いつき',atlas_id:'atlas-other',kind:null})]))
@@ -70,6 +70,6 @@ it('requires an explicit Atlas and keeps the draft when Projects change', async 
     text!.value='A の下書き';text!.dispatchEvent(new window.Event('input',{bubbles:true}))
     ;(window as unknown as {changeAccount:()=>void}).changeAccount()
     expect(text!.value).toBe('')
-    expect(atlas!.value).toBe('')
+    expect(atlas!.textContent).toBe('Atlas を選択')
   } finally {await window.happyDOM.close()}
 },20000)

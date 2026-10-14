@@ -14,6 +14,7 @@
 pub enum AppEvent {
     /// Feedback is accepted only from the current MIDI target window.
     FleetFeedback(serde_json::Value),
+    ActionsRefreshResult(crate::generated::sidebar_ipc::ActionsRefreshResult),
     LocalUrlsResult(crate::generated::sidebar_ipc::LocalUrlsResult),
     /// daemon から Repo list 取得成功 (= `fetch_repos_with_ports` 経由で runtime port 込み)。
     ReposLoaded(Vec<crate::daemon_wire::RepoInfo>),

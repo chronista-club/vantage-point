@@ -152,3 +152,11 @@ pub(crate) fn local_urls_result(
 ) {
     push(sidebar, &IpcEventEnvelope::LocalUrlsResult(result));
 }
+
+/// Acknowledge the correlated user reload; data arrives through the activity snapshot.
+pub(crate) fn actions_refresh_result(
+    sidebar: &WebView,
+    result: crate::generated::sidebar_ipc::ActionsRefreshResult,
+) {
+    push(sidebar, &IpcEventEnvelope::ActionsRefreshResult(result));
+}

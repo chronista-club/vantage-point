@@ -16,6 +16,7 @@ use crate::session_state::SessionState;
 /// sidebar IPC を解釈した結果
 #[derive(Debug, Default)]
 pub(crate) struct SidebarIpcOutcome {
+    pub(crate) actions_refresh_request: Option<String>,
     pub(crate) local_urls_request: Option<crate::generated::sidebar_ipc::LocalUrlsRequest>,
     /// SidebarState が変化したか (true なら push_sidebar_state を呼ぶ)
     pub(crate) changed: bool,
@@ -431,6 +432,9 @@ pub(crate) fn handle_sidebar_ipc(
         IpcEnvelope::LocalUrlsRequest(m) => {
             out.local_urls_request = Some(m);
         }
+        IpcEnvelope::ActionsRefresh(m) => {
+            out.actions_refresh_request = Some(m.req);
+        }
         IpcEnvelope::ActionsPersist(m) => {
             // ACTIONS の編集を creo へ。caller が 400ms coalesce channel に流す。
             // ⚠️ **`out.changed` を立てない**（上の field の注記どおり）。
@@ -458,6 +462,20 @@ mod tests {
     use super::*;
     use crate::daemon_wire::LaneInfo;
     use crate::pane::RepoPaneState;
+
+    #[test]
+    fn refresh_routes_one_request_without_changing_selection_or_writes() {
+        let mut state = SidebarState::default();
+        let mut session = SessionState::default();
+        let out = handle_sidebar_ipc(
+            r#"{"t":"actions:refresh","req":"refresh-1"}"#,
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(out.actions_refresh_request.as_deref(), Some("refresh-1"));
+        assert!(out.actions_persist_request.is_none());
+        assert!(!out.changed && !out.active_changed && !out.session_save);
+    }
 
     /// 呼び手（`run()` の `SidebarIpc` arm）の模型。解釈 → `session_save` なら file に書く。
     #[test]

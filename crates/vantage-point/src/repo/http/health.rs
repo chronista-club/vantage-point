@@ -90,6 +90,8 @@ pub struct HealthResponse {
     pub actions_rev: u32,
     pub actions_atlases: Vec<crate::creo::client::CreoAtlas>,
     pub actions_scope: String,
+    pub actions_sidebar_settings: serde_json::Value,
+    pub actions_sidebar_error: String,
     pub actions_error: String,
     pub actions_imported: bool,
     /// アイドルとみなすまでの分数（settings.kdl の `idle-timeout-minutes`、doc 59 P3）。
@@ -192,6 +194,8 @@ pub async fn health_handler(State(state): State<Arc<DaemonState>>) -> Json<Healt
         actions_rev: actions_snapshot.rev,
         actions_atlases: actions_snapshot.atlases,
         actions_scope: actions_snapshot.scope,
+        actions_sidebar_settings: actions_snapshot.sidebar_settings,
+        actions_sidebar_error: actions_snapshot.sidebar_error,
         actions_error: actions_snapshot.error,
         actions_imported: actions_snapshot.imported,
     })
@@ -417,6 +421,8 @@ mod tests {
             "actions",
             "actions_rev",
             "actions_atlases",
+            "actions_sidebar_settings",
+            "actions_sidebar_error",
             "actions_scope",
             "actions_error",
             "actions_imported",

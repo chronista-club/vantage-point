@@ -922,6 +922,18 @@ pub(crate) async fn handle_daemon_control(
                 Ok(serde_json::json!({ "enabled": false, "devices": 0, "feature": false }))
             }
         }
+        // Startup, poll, and manual reload share the same cache refresh boundary.
+        "actions/refresh" => {
+            creo_actions.refresh().await.map_err(|e| e.to_string())?;
+            let snapshot = creo_actions.get();
+            if snapshot.scope.is_empty() {
+                return Err("Creo にログインしてください".into());
+            }
+            if !snapshot.error.is_empty() {
+                return Err(snapshot.error);
+            }
+            Ok(serde_json::json!({"ok":true}))
+        }
         // ACTIONS の永続化（doc 57 Phase 4）。sidebar の編集を creo-memories へ書く。
         //
         // **書き手が cache の持ち主である**ことが要点 — vp-app が creo を直に叩くと、daemon の

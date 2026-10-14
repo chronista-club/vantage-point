@@ -589,6 +589,9 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             on_conversation::agents(ui, boot, lane, payload, req)
         }
         AppEvent::BoardMutate { method, body } => on_board::board_mutate(ui, boot, method, body),
+        AppEvent::ActionsRefreshResult(result) => {
+            crate::webview::push_sidebar::actions_refresh_result(&boot.webview, result)
+        }
         AppEvent::LocalUrlsResult(result) => {
             crate::webview::push_sidebar::local_urls_result(&boot.webview, result)
         }

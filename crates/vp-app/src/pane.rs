@@ -143,6 +143,16 @@ pub struct ActionAtlas {
     pub name: String,
     pub path: String,
     pub writable: bool,
+    #[serde(default, rename = "parentId")]
+    pub parent_id: Option<String>,
+    #[serde(default, rename = "isApps")]
+    pub is_apps: bool,
+    #[serde(default, rename = "createdAt")]
+    pub created_at: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub owner: Option<String>,
 }
 
 /// Activity widget の payload
@@ -219,6 +229,11 @@ pub struct ActivitySnapshot {
     pub actions_atlases: Vec<ActionAtlas>,
     #[serde(default)]
     pub actions_scope: String,
+    #[serde(default)]
+    #[cfg_attr(test, ts(type = "unknown"))]
+    pub actions_sidebar_settings: serde_json::Value,
+    #[serde(default)]
+    pub actions_sidebar_error: String,
     #[serde(default)]
     pub actions_error: String,
     #[serde(default)]
@@ -494,13 +509,25 @@ mod tests {
     fn actions_catalog_survives_sidebar_wire() {
         let mut value = serde_json::to_value(SidebarState::default()).unwrap();
         value["activity"]["actions_atlases"] = serde_json::json!([
-            {"id":"atlas-personal","name":"Personal","path":"/Personal","writable":true}
+            {"id":"atlas-personal","name":"Personal","path":"/Work/Personal","writable":true,
+             "parentId":"atlas-work","isApps":false,"createdAt":"2026-10-14T00:00:00Z",
+             "source":"owned","owner":"account-a"}
         ]);
+        value["activity"]["actions_sidebar_settings"] =
+            serde_json::json!({"version":1,"order":{"root":["atlas-work"]},"hidden":[]});
+        value["activity"]["actions_sidebar_error"] =
+            serde_json::json!("並び設定を確認してください");
         value["activity"]["actions_scope"] = serde_json::json!("account-a");
         value["activity"]["actions_error"] = serde_json::json!("保存先を確認してください");
         let state: SidebarState = serde_json::from_value(value.clone()).unwrap();
         let roundtrip = serde_json::to_value(state).unwrap();
-        for key in ["actions_atlases", "actions_scope", "actions_error"] {
+        for key in [
+            "actions_atlases",
+            "actions_sidebar_settings",
+            "actions_sidebar_error",
+            "actions_scope",
+            "actions_error",
+        ] {
             assert_eq!(roundtrip["activity"][key], value["activity"][key], "{key}");
         }
     }

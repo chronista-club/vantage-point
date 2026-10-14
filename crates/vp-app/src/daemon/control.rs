@@ -267,6 +267,19 @@ impl DaemonControl {
         self.control("settings/set", payload).await
     }
 
+    /// Refresh ACTIONs and both Atlas inputs through the daemon.
+    pub async fn refresh_actions(&self) -> Result<()> {
+        // A full read can span multiple pages. Leave the usual control timeout unchanged.
+        self.call_on(
+            "daemon-control",
+            "actions/refresh",
+            serde_json::json!({}),
+            Duration::from_secs(60),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// ACTIONS を creo-memories へ永続化する (doc 57 Phase 4)。
     ///
     /// **書くのは daemon** — cache の持ち主が書かないと、書いた直後の `/api/health` が

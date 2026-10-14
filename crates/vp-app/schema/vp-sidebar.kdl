@@ -182,6 +182,15 @@ protocol "sidebar" version="1.0.0" {
             field "removed" type="array<string>"
         }
 
+        // One daemon refresh fetches ACTIONs, Atlas catalog and Creo sidebar settings.
+        request "actions:refresh" {
+            field "req" type="string"
+        }
+        event "actions:refresh_result" {
+            field "req" type="string"
+            field "error" type="string" optional=#true
+        }
+
         // Lane に明示登録する URL。payload は local_urls::Action が解釈する。
         request "local_urls:request" {
             field "req" type="string"

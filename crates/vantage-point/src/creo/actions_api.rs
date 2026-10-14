@@ -98,7 +98,33 @@ fn write_journal(path: &Path, journal: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+pub(super) struct ActionsView {
+    pub atlases: Vec<CreoAtlas>,
+    pub items: Vec<CreoAction>,
+    pub sidebar_settings: serde_json::Value,
+    pub sidebar_error: String,
+}
+
 impl Api {
+    /// One read boundary for startup, polling, and user reload. Settings failure is non-fatal.
+    pub async fn view(&self) -> Result<ActionsView> {
+        let (atlases, items, settings) =
+            tokio::join!(self.catalog(), self.read(), self.sidebar_settings());
+        let (sidebar_settings, sidebar_error) = match settings {
+            Ok(settings) => (settings, String::new()),
+            Err(_) => (
+                serde_json::Value::Null,
+                "Creo の並び設定を読めませんでした".into(),
+            ),
+        };
+        Ok(ActionsView {
+            atlases: atlases?,
+            items: items?,
+            sidebar_settings,
+            sidebar_error,
+        })
+    }
+
     pub fn imported(&self, dir: &Path) -> Result<bool> {
         match std::fs::read(dir.join("legacy-import.json")) {
             Ok(bytes) => Ok(serde_json::from_slice::<LegacyImport>(&bytes)?.complete),
@@ -196,6 +222,17 @@ impl Api {
     pub fn journal_dir(&self) -> std::path::PathBuf {
         vp_paths::vp_state_dir().join("actions").join(&self.scope)
     }
+    /// Settings are optional presentation data, never a prerequisite for selecting an Atlas.
+    pub async fn sidebar_settings(&self) -> Result<serde_json::Value> {
+        let value = self
+            .json(
+                self.client
+                    .get(format!("{}/api/app-settings/creo/sidebar", self.base)),
+            )
+            .await?;
+        parse_sidebar_settings(value)
+    }
+
     pub async fn catalog(&self) -> Result<Vec<CreoAtlas>> {
         let value = self
             .json(self.client.get(format!("{}/api/atlas", self.base)))
@@ -221,6 +258,14 @@ impl Api {
                         .filter(|s| !s.is_empty())
                         .unwrap_or(name)
                         .into(),
+                    parent_id: row["parentId"]
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .map(canonical_atlas_id),
+                    is_apps: row["isApps"].as_bool().unwrap_or(false),
+                    created_at: row["createdAt"].as_str().unwrap_or_default().into(),
+                    source: row["source"].as_str().unwrap_or_default().into(),
+                    owner: row["owner"].as_str().map(str::to_owned),
                     writable: row["source"] == "owned"
                         || (row["source"] == "shared"
                             && matches!(row["permission"].as_str(), Some("write" | "admin"))),
@@ -569,6 +614,38 @@ impl Api {
     }
 }
 
+fn parse_sidebar_settings(value: serde_json::Value) -> Result<serde_json::Value> {
+    anyhow::ensure!(value["valid"] == true, "Creo の並び設定を読めませんでした");
+    let settings = value
+        .get("settings")
+        .context("Creo の並び設定を読めませんでした")?;
+    if settings.is_null() {
+        return Ok(serde_json::Value::Null);
+    }
+    anyhow::ensure!(
+        settings.is_object() && settings["version"] == 1,
+        "Creo の並び設定を読めませんでした"
+    );
+    let ids = |value: &serde_json::Value| -> Vec<String> {
+        value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|id| id.as_str())
+            .map(canonical_atlas_id)
+            .collect()
+    };
+    let mut order = serde_json::Map::new();
+    if let Some(entries) = settings["order"].as_object() {
+        for (parent, list) in entries {
+            if list.is_array() {
+                order.insert(canonical_atlas_id(parent), serde_json::json!(ids(list)));
+            }
+        }
+    }
+    Ok(serde_json::json!({"version":1,"order":order,"hidden":ids(&settings["hidden"])}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,6 +658,7 @@ mod tests {
 
     #[derive(Default)]
     struct Server {
+        settings: std::sync::Mutex<Option<serde_json::Value>>,
         posts: AtomicUsize,
         attaches: AtomicUsize,
         lists: AtomicUsize,
@@ -592,8 +670,14 @@ mod tests {
     async fn route(State(state): State<Arc<Server>>, request: Request) -> axum::response::Response {
         let path = request.uri().path().to_string();
         let method = request.method().clone();
+        if path == "/api/app-settings/creo/sidebar" {
+            return match state.settings.lock().unwrap().clone() {
+                Some(value) => Json(value).into_response(),
+                None => axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            };
+        }
         if path == "/api/atlas" {
-            return Json(serde_json::json!({"atlas":[{"id":"atl-owned","name":"Owned","path":"/Owned","source":"owned"},{"id":"atl-shared","name":"Shared","path":"/Shared","source":"shared","permission":"read"}]})).into_response();
+            return Json(serde_json::json!({"atlas":[{"id":"atl-owned","name":"Owned","path":"/Owned","source":"owned","parentId":"parent","isApps":true,"createdAt":"2026-01-01"},{"id":"atl-shared","name":"Shared","path":"/Shared","source":"shared","permission":"read"}]})).into_response();
         }
         if path == "/api/labels" {
             return Json(serde_json::json!({"labels":[{"id":"lbl-actions","name":"vp-actions","userId":"usr-a"}]})).into_response();
@@ -728,13 +812,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn view_fetches_all_data_and_settings_failure_does_not_block_selection() {
+        let (api, state, handle) = server().await;
+        for settings in [
+            None,
+            Some(serde_json::json!({"valid":false,"settings":null})),
+            Some(
+                serde_json::json!({"valid":true,"settings":{"version":1,"order":{"root":["atl-shared"]}}}),
+            ),
+        ] {
+            let valid = settings.as_ref().is_some_and(|s| s["valid"] == true);
+            *state.settings.lock().unwrap() = settings;
+            state.lists.store(0, Ordering::SeqCst);
+            let view = api.view().await.unwrap();
+            assert_eq!(view.atlases.len(), 2);
+            assert_eq!(view.items.len(), 101);
+            assert_eq!(view.sidebar_error.is_empty(), valid);
+            assert_eq!(view.sidebar_settings.is_null(), !valid);
+        }
+        handle.abort();
+    }
+
+    #[tokio::test]
     async fn catalog_includes_destinations_without_project_context() {
         let (api, _, handle) = server().await;
         let catalog = api.catalog().await.unwrap();
         handle.abort();
         assert_eq!(catalog.len(), 2);
         assert!(catalog[0].writable);
+        let row = serde_json::to_value(&catalog[0]).unwrap();
+        assert_eq!(row["parentId"], "parent");
+        assert_eq!(row["isApps"], true);
+        assert_eq!(row["createdAt"], "2026-01-01");
+        assert_eq!(row["source"], "owned");
         assert!(!catalog[1].writable);
+    }
+
+    // mem_1Cg1m3LoeDu62UCKVT5UcA
+    #[test]
+    fn sidebar_settings_accept_default_and_normalize_ids_without_reading_placement() {
+        let default =
+            parse_sidebar_settings(serde_json::json!({"settings":null,"valid":true})).unwrap();
+        assert!(default.is_null());
+        let id = "550e8400-e29b-41d4-a716-446655440000";
+        let record_id = format!("atlas:{id}");
+        let settings = parse_sidebar_settings(serde_json::json!({"valid":true,"settings":{
+            "version":1,"order":{ "root":[record_id], &record_id: ["constructor"], "__proto__":["a"] },
+            "hidden":[record_id], "placement":{"a":"b"}
+        }})).unwrap();
+        assert_eq!(settings["order"]["root"][0], id);
+        assert_eq!(settings["order"][id][0], "constructor");
+        assert_eq!(settings["order"]["__proto__"][0], "a");
+        assert_eq!(settings["hidden"][0], id);
+        assert!(settings.get("placement").is_none());
+    }
+
+    #[test]
+    fn sidebar_settings_reject_invalid_envelopes_but_tolerate_bad_entries() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"valid":false,"settings":null}),
+            serde_json::json!({"valid":true,"settings":{"version":2}}),
+        ] {
+            assert!(parse_sidebar_settings(value).is_err());
+        }
+        let value = parse_sidebar_settings(serde_json::json!({"valid":true,"settings":{
+            "version":1,"order":{"root":["a",42],"b":7},"hidden":[7,"a"]
+        }}))
+        .unwrap();
+        assert_eq!(value["order"]["root"], serde_json::json!(["a"]));
+        assert!(value["order"].get("b").is_none());
+        assert_eq!(value["hidden"], serde_json::json!(["a"]));
     }
 
     #[test]

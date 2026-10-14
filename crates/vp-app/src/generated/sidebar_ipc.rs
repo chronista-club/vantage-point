@@ -167,11 +167,23 @@ pub struct ActionsPersist {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionsRefresh {
+    pub req: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalUrlsRequest {
     pub req: String,
     pub path: String,
     pub address: String,
     pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionsRefreshResult {
+    pub req: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -301,6 +313,8 @@ pub enum IpcEnvelope {
     DaemonRestart,
     #[serde(rename = "actions:persist")]
     ActionsPersist(ActionsPersist),
+    #[serde(rename = "actions:refresh")]
+    ActionsRefresh(ActionsRefresh),
     #[serde(rename = "local_urls:request")]
     LocalUrlsRequest(LocalUrlsRequest),
 }
@@ -310,6 +324,8 @@ pub enum IpcEnvelope {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t")]
 pub enum IpcEventEnvelope {
+    #[serde(rename = "actions:refresh_result")]
+    ActionsRefreshResult(ActionsRefreshResult),
     #[serde(rename = "local_urls:result")]
     LocalUrlsResult(LocalUrlsResult),
     #[serde(rename = "sidebar:state")]
