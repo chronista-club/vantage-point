@@ -14,6 +14,12 @@ export type LanguageCode = string; // ISO 639-1 format
 // Channel: ipc (backend=stream)
 // ════════════════════════════════════════════════
 
+/** Event "actions:refresh_result" */
+export interface ActionsRefreshResult {
+  req: string;
+  error?: string;
+}
+
 /** Event "local_urls:result" */
 export interface LocalUrlsResult {
   req: string;
@@ -219,6 +225,11 @@ export interface ActionsPersist {
   removed: string[];
 }
 
+/** Request "actions:refresh" */
+export interface ActionsRefresh {
+  req: string;
+}
+
 /** Request "local_urls:request" */
 export interface LocalUrlsRequest {
   req: string;
@@ -229,6 +240,7 @@ export interface LocalUrlsRequest {
 
 /** Event name → 生成 interface の map for "ipc" (= type-narrowing 用) */
 export type IpcChannelEventTypes = {
+  ActionsRefreshResult: ActionsRefreshResult;
   LocalUrlsResult: LocalUrlsResult;
   SidebarState: SidebarState;
   SidebarError: SidebarError;
@@ -268,6 +280,7 @@ export type IpcChannelRequestTypes = {
   SettingsPickRepoRoot: { request: SettingsPickRepoRoot; response: void };
   DaemonRestart: { request: DaemonRestart; response: void };
   ActionsPersist: { request: ActionsPersist; response: void };
+  ActionsRefresh: { request: ActionsRefresh; response: void };
   LocalUrlsRequest: { request: LocalUrlsRequest; response: void };
 };
 
@@ -277,7 +290,7 @@ export const IpcChannelMeta = {
   backend: "stream" as const,
   from: "client" as const,
   lifetime: "transient" as const,
-  events: ["local_urls:result", "sidebar:state", "sidebar:error", "sub:create_result", "agents:result", "wire:result", "update:check_result", "settings:result"] as const,
+  events: ["actions:refresh_result", "local_urls:result", "sidebar:state", "sidebar:error", "sub:create_result", "agents:result", "wire:result", "update:check_result", "settings:result"] as const,
   requests: {
     MidiNavigation: { request: "midi:navigation" as const, response: "void" as const },
     ProcessToggle: { request: "process:toggle" as const, response: "void" as const },
@@ -306,6 +319,7 @@ export const IpcChannelMeta = {
     SettingsPickRepoRoot: { request: "settings:pick_repo_root" as const, response: "void" as const },
     DaemonRestart: { request: "daemon:restart" as const, response: "void" as const },
     ActionsPersist: { request: "actions:persist" as const, response: "void" as const },
+    ActionsRefresh: { request: "actions:refresh" as const, response: "void" as const },
     LocalUrlsRequest: { request: "local_urls:request" as const, response: "void" as const },
   } as const,
   __types: undefined as unknown as { events: IpcChannelEventTypes; requests: IpcChannelRequestTypes },
@@ -340,10 +354,12 @@ export type IpcEnvelope =
   | ({ t: "settings:pick_repo_root" } & SettingsPickRepoRoot)
   | ({ t: "daemon:restart" } & DaemonRestart)
   | ({ t: "actions:persist" } & ActionsPersist)
+  | ({ t: "actions:refresh" } & ActionsRefresh)
   | ({ t: "local_urls:request" } & LocalUrlsRequest);
 
 /** Envelope union for channel "ipc" — discriminated on "t". */
 export type IpcEventEnvelope =
+  | ({ t: "actions:refresh_result" } & ActionsRefreshResult)
   | ({ t: "local_urls:result" } & LocalUrlsResult)
   | ({ t: "sidebar:state" } & SidebarState)
   | ({ t: "sidebar:error" } & SidebarError)

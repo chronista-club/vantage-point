@@ -1,6 +1,7 @@
-import { For, createEffect, createSignal, untrack } from 'solid-js'
+import { createEffect, createSignal, untrack } from 'solid-js'
 import { actions, commitActions, newActionId } from './store'
 import { orderBetween } from './model'
+import { AtlasPicker } from './AtlasPicker'
 import type { ActionAtlas } from '../../generated/ActionAtlas'
 
 // App-wide draft. Project selection and sidebar mounting never choose its destination.
@@ -10,7 +11,7 @@ const [selectedAtlas, setSelectedAtlas] = createSignal('')
 const drafts = new Map<string, {text: string; atlas: string}>()
 let activeScope = ''
 
-export function Capture(props: { atlases: ActionAtlas[]; scope: string }) {
+export function Capture(props: { atlases: ActionAtlas[]; scope: string; settings?: unknown }) {
   createEffect(() => {
     const scope = props.scope
     untrack(() => {
@@ -39,13 +40,7 @@ export function Capture(props: { atlases: ActionAtlas[]; scope: string }) {
     <textarea aria-label="メモ" placeholder="思いついたことをメモ" value={draft()}
       onInput={event => setDraft(event.currentTarget.value)} rows={2} />
     <div class="vp-act-capture-controls">
-      <select aria-label="保存先 Atlas" value={selectedAtlas()}
-        onChange={event => setSelectedAtlas(event.currentTarget.value)}>
-        <option value="">Atlas を選択</option>
-        <For each={props.atlases.filter(a => a.writable)}>{atlas =>
-          <option value={atlas.id}>{atlas.path || atlas.name}</option>
-        }</For>
-      </select>
+      <AtlasPicker atlases={props.atlases} settings={props.settings} selected={selectedAtlas()} onSelect={setSelectedAtlas} />
       <button type="button" aria-label="メモを保存" disabled={!canSave()} onClick={save}>保存</button>
     </div>
   </div>

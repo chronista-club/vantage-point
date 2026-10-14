@@ -91,4 +91,4 @@ actions: Array<ActionItem>,
  * 編集中の行が書き戻されて caret が飛ぶ。`u64` にしないのは ts-rs が `bigint` を吐いて
  * JSON の number と噛み合わなくなるため。
  */
-actions_rev: number, actions_atlases: Array<ActionAtlas>, actions_scope: string, actions_error: string, actions_imported: boolean, };
+actions_rev: number, actions_atlases: Array<ActionAtlas>, actions_scope: string, actions_sidebar_settings: unknown, actions_sidebar_error: string, actions_error: string, actions_imported: boolean, };

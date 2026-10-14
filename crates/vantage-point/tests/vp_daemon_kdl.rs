@@ -183,6 +183,8 @@ const DAEMON_CONTROL_OMITTED_BY_DESIGN: &[&str] = &[
     // user の memory を消しうる。agent が Action を足したいなら creo の MCP（`remember` 等）で
     // 正面から書き、tag `vp-actions` を付ければ同じ面に出る（ゲートは tag なので手で付けられる）。
     "actions/save",
+    // UI reload also retries the durable outbox; it is not a read-only agent probe.
+    "actions/refresh",
 ];
 
 /// 5. daemon-control の全 method は「KDL に記述」か「[`DAEMON_CONTROL_OMITTED_BY_DESIGN`]」の

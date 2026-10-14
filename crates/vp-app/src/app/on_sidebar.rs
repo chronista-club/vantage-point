@@ -819,6 +819,19 @@ pub(super) fn sidebar_ipc(
     // 即反映する（= 押した結果が数秒後の health poll で Hub 行に現れる）。
     // ACTIONS の永続化要求（doc 57 Phase 4）。watch は latest-wins なので、
     // 打鍵ごとに来ても debounce task が静まった 1 回だけを daemon へ撃つ。
+    if let Some(req) = outcome.actions_refresh_request {
+        let conn = boot.daemon_conn.clone();
+        let proxy = boot.proxy.clone();
+        boot.rt_handle.spawn(async move {
+            let result = async { conn.control().await?.refresh_actions().await }.await;
+            let _ = proxy.send_event(AppEvent::ActionsRefreshResult(
+                crate::generated::sidebar_ipc::ActionsRefreshResult {
+                    req,
+                    error: result.err().map(|e| e.to_string()),
+                },
+            ));
+        });
+    }
     if let Some(payload) = outcome.actions_persist_request {
         let _ = boot.actions_persist_tx.send(Some(payload));
     }
