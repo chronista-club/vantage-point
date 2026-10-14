@@ -51,13 +51,13 @@ export function createDeviceModel(deviceId: string, profile: string): DeviceMode
 	return {
 		group,
 		setAppearance(state, selected) {
-			const wire = state === "unsupported";
+			const muted = state === "unsupported" || state === "released";
 			const held = state === "held";
 			for (const material of materials) {
-				material.wireframe = wire;
-				material.transparent = state === "released";
-				material.opacity = state === "released" ? 0.38 : 1;
-				material.depthWrite = state !== "released";
+				material.wireframe = false;
+				material.transparent = muted;
+				material.opacity = muted ? 0.38 : 1;
+				material.depthWrite = !muted;
 				material.emissive.setHex(0);
 			}
 			chassis.color.setHex(state === "idle" ? 0x4b5058 : 0x242a32);

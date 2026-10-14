@@ -71,7 +71,7 @@ it("models keep control addresses, update materials, and release their resources
 	expect(meshes.every((m) => (m.material as THREE.MeshStandardMaterial).opacity === 1)).toBe(true);
 	expect(meshes.some((m) => (m.material as THREE.MeshStandardMaterial).emissive.getHex() !== 0)).toBe(true);
 	model.setAppearance("unsupported", false);
-	expect(meshes.every((m) => (m.material as THREE.MeshStandardMaterial).wireframe)).toBe(true);
+	expect(meshes.every((m) => !(m.material as THREE.MeshStandardMaterial).wireframe)).toBe(true);
 	let disposed = 0;
 	const geometries = new Set(meshes.map((m) => m.geometry));
 	for (const geometry of geometries) geometry.addEventListener("dispose", () => { disposed++; });
