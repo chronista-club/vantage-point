@@ -692,6 +692,27 @@ symlink-pattern "**/*.local.*"
     }
 
     #[test]
+    fn load_config_base_ref_between_comments() {
+        // 人が手で書く file なので、VP の checkout にある実物と同じくコメントに挟まれた形で読む
+        let tmp = test_dir("base-ref");
+        let _ = fs::create_dir_all(tmp.join(".vp"));
+        fs::write(
+            tmp.join(".vp/sub-files.kdl"),
+            "// lane 設定（local only）。\n//\n// base-ref: worktree を切る起点。\nbase-ref \"nightly\"\n\n// ⚠️ 末尾のコメント\n",
+        )
+        .unwrap();
+
+        let cfg = load_config(&tmp).unwrap();
+        assert_eq!(cfg.base_ref.as_deref(), Some("nightly"));
+        assert!(
+            cfg.symlinks.is_empty(),
+            "宣言した file は default を merge しない"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn load_config_empty_kdl() {
         let tmp = test_dir("empty-kdl");
         let _ = fs::create_dir_all(tmp.join(".claude"));

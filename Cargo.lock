@@ -1363,32 +1363,29 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42e7a262c2e8e1ecc2c38fb832c222019b30b00121c4b3e8b6a8abcafc066bda"
 dependencies = [
- "club-kdl-derive",
+ "club-kdl-derive 0.12.0",
  "kdl",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "club-kdl"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fb1444af823cb4c6fe4345ca00c85263176b5e2c8285fcca92829d78d513a18"
+dependencies = [
+ "club-kdl-derive 0.14.0",
+ "glob",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "club-kdl-codegen"
-version = "0.12.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33d134722671850c5fb3e36422ab09a2b25a781b8cc09d8e8103c26cf94649d1"
+checksum = "83e08915fff42324e2c9e536cf3e75b21e31d9dd563fa500065a7be96d7e8cea"
 dependencies = [
- "club-kdl",
- "club-kdl-compose",
- "kdl",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "club-kdl-compose"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "442a2020b6b147a1c9ae6a6390fe2113d2aac6196cc62daa09b4a2a23d523a5f"
-dependencies = [
- "club-kdl",
- "glob",
- "kdl",
+ "club-kdl 0.14.0",
  "thiserror 2.0.21",
 ]
 
@@ -1397,6 +1394,17 @@ name = "club-kdl-derive"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ee2a2d5239510b5ddc2465a97178f88891e684da6e254dedae875f5acc82e2e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "club-kdl-derive"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6808fcdb6992084b0784d72e62934509050772a5b9b45cdaafac4799d7b6a3c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1421,7 +1429,7 @@ dependencies = [
  "buffa-build",
  "bytes",
  "chrono",
- "club-kdl",
+ "club-kdl 0.12.0",
  "futures-util",
  "kdl",
  "quinn",
@@ -10304,7 +10312,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "clap",
- "club-kdl",
+ "club-kdl 0.14.0",
  "club-nostos",
  "club-unison",
  "crossterm",
