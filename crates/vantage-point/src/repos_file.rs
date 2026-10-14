@@ -357,6 +357,73 @@ mod tests {
         assert_eq!(back.repos[1].slot, None);
     }
 
+    /// 書式の互換で比べる 3 entry（引用符・バックスラッシュ・非 ASCII・タブ・`enabled` の有無を含む）。
+    fn compat_sample() -> ReposFile {
+        ReposFile {
+            repos: vec![
+                RepoEntry {
+                    name: "vantage-point".into(),
+                    path: "/Users/makoto/repos/vantage-point".into(),
+                    enabled: None,
+                    slot: Some(0),
+                },
+                RepoEntry {
+                    name: "creo \"memories\"".into(),
+                    path: r"C:\Users\mako\repos\creo".into(),
+                    enabled: Some(false),
+                    slot: Some(3),
+                },
+                RepoEntry {
+                    name: "日本語 repo".into(),
+                    path: "/tmp/a b/tab\there".into(),
+                    enabled: Some(true),
+                    slot: None,
+                },
+            ],
+        }
+    }
+
+    /// `compat_sample` の各 field が一致するか（`RepoEntry` は PartialEq を持たないので field で見る）。
+    fn assert_same_repos(got: &ReposFile, want: &ReposFile) {
+        assert_eq!(got.repos.len(), want.repos.len());
+        for (g, w) in got.repos.iter().zip(&want.repos) {
+            assert_eq!(
+                (&g.name, &g.path, g.enabled, g.slot),
+                (&w.name, &w.path, w.enabled, w.slot)
+            );
+        }
+    }
+
+    /// club-kdl 0.12.0 の `to_string_pretty` が `compat_sample` を書き出した実物。
+    ///
+    /// 0.13 で `to_string_pretty` の書式が変わったのは、`{ }` で子を持つ node の字下げと、
+    /// 制御文字の書き方（`\u{7}` と escape する。旧版は不正な KDL を出していた）の 2 点
+    /// （club-kdl の CHANGELOG [0.13.0]）。
+    /// repos.kdl は平らな `repo` node の列なので、0.13 以降の出力も**この文字列と byte 単位で同じ**
+    /// （path のタブは両版とも `\t` と書く。変わるのは `\t` のような短い escape を持たない制御文字）。
+    const WRITTEN_BY_CLUB_KDL_012: &str = concat!(
+        "repo name=vantage-point path=\"/Users/makoto/repos/vantage-point\" slot=0\n",
+        "repo name=\"creo \\\"memories\\\"\" path=\"C:\\\\Users\\\\mako\\\\repos\\\\creo\" enabled=#false slot=3\n",
+        "repo name=\"日本語 repo\" path=\"/tmp/a b/tab\\there\" enabled=#true\n",
+    );
+
+    /// club-kdl 0.12 が書いた repos.kdl を今の版で読める（upgrade 直後の初回読み込み）。
+    #[test]
+    fn reads_repos_kdl_written_by_club_kdl_012() {
+        assert_same_repos(
+            &ReposFile::from_kdl(WRITTEN_BY_CLUB_KDL_012).unwrap(),
+            &compat_sample(),
+        );
+    }
+
+    /// 今の版が書く repos.kdl は 0.12 が書いたものと同じ = VP を 0.12 時代の版へ戻しても読める。
+    ///
+    /// ⚠️ club-kdl を上げてここが赤くなったら、新しい出力を旧版で読めるかを確かめてから更新すること。
+    #[test]
+    fn repos_kdl_output_matches_club_kdl_012() {
+        assert_eq!(compat_sample().to_kdl().unwrap(), WRITTEN_BY_CLUB_KDL_012);
+    }
+
     /// 空 ReposFile の round-trip
     #[test]
     fn empty_repos_file_round_trip() {
