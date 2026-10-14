@@ -51,6 +51,19 @@ pub fn serve(
     extra: &'static [(&'static str, &'static [u8], &'static str)],
 ) -> Response<Cow<'static, [u8]>> {
     let uri = request.uri().to_string();
+    if let Some(path) = uri.strip_prefix("vp-asset://app/gear/") {
+        let asset = super::gear::gear_root().and_then(|root| super::gear::read_asset(&root, path));
+        return match asset {
+            Some((bytes, content_type)) => Response::builder()
+                .status(200)
+                .header("Content-Type", content_type)
+                .header("Access-Control-Allow-Origin", "*")
+                .header("Cache-Control", "no-store")
+                .body(Cow::Owned(bytes)),
+            None => Response::builder().status(404).body(Cow::Borrowed(&[][..])),
+        }
+        .unwrap_or_else(|_| Response::new(Cow::Borrowed(&[][..])));
+    }
 
     // dev HMR (doc 48 Phase 1): `VP_WEBVIEW_DEV=<assets dir>` の時、`*.bundle.js` request を
     // disk の fresh bundle で応える。`bun run dev` (esbuild watch) で bundle を更新 →

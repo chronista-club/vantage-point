@@ -2,6 +2,9 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { deviceAppearance, deviceLayout, deviceGrid } from "./midi-device-layout";
 import { createDeviceModel, fitDeviceCamera, type DeviceModel } from "./midi-device-scene";
+import { loadGear } from "./midi-gear-loader";
+import { gearLayout } from "./midi-gear";
+import { createGearModel } from "./midi-gear-scene";
 import type { MidiUseStatus } from "./midi-use";
 
 /** Static scenes only render on demand. Hiding cancels even an already queued frame. */
@@ -73,7 +76,7 @@ export function createMidiDeviceView(onSelect: (id: string) => void): MidiDevice
 	scene.add(fleet);
 	const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 1000);
 	const bounds = new THREE.Box3();
-	const models = new Map<string, { model: DeviceModel; label: HTMLButtonElement; anchor: THREE.Vector3; depth: number }>();
+	const models = new Map<string, { model: DeviceModel; label: HTMLButtonElement; anchor: THREE.Vector3; depth: number; width: number; profile: string; attempted: boolean }>();
 	let renderer: THREE.WebGLRenderer | undefined;
 	let controls: OrbitControls | undefined;
 	let signature = "";
@@ -81,6 +84,7 @@ export function createMidiDeviceView(onSelect: (id: string) => void): MidiDevice
 	let status: MidiUseStatus = {};
 	let fitNeeded = true;
 	let disposed = false;
+	let loading = false;
 	let failed = false;
 	let contextLost = false;
 	let intersecting = true;
@@ -93,12 +97,15 @@ export function createMidiDeviceView(onSelect: (id: string) => void): MidiDevice
 	const arrange = () => {
 		const { columns, rows } = deviceGrid(selected === null ? models.size : 1, width / height || 1);
 		fleet.clear();
+		const visible = [...models.entries()].filter(([id]) => selected === null || selected === id).map(([, item]) => item);
+		const stepX = Math.max(1, ...visible.map((item) => item.width)) + 0.9;
+		const stepZ = Math.max(1, ...visible.map((item) => item.depth)) + 1;
 		let index = 0;
 		for (const [id, { model, label, anchor, depth }] of models) {
 			label.hidden = selected !== null && selected !== id;
 			if (label.hidden) continue;
 			fleet.add(model.group);
-			model.group.position.set((index % columns - (columns - 1) / 2) * 6.9, 0, (Math.floor(index / columns) - (rows - 1) / 2) * 4.5);
+			model.group.position.set((index % columns - (columns - 1) / 2) * stepX, 0, (Math.floor(index / columns) - (rows - 1) / 2) * stepZ);
 			anchor.copy(model.group.position).add(new THREE.Vector3(0, 0, depth / 2 + 0.42));
 			index++;
 		}
@@ -151,6 +158,7 @@ export function createMidiDeviceView(onSelect: (id: string) => void): MidiDevice
 			arrange();
 			fitNeeded = true;
 		}
+		loadNext();
 		if (fitNeeded) fit();
 		renderer.render(scene, camera);
 		for (const [id, { label, anchor }] of models) {
@@ -160,6 +168,31 @@ export function createMidiDeviceView(onSelect: (id: string) => void): MidiDevice
 			label.style.top = `${(-projected.y * 0.5 + 0.5) * height}px`;
 		}
 	});
+	// One model at a time, only from a visible frame. Hidden tabs never initiate I/O.
+	const loadNext = () => {
+		if (loading || !isVisible()) return;
+		const next = [...models.entries()].find(([id, item]) => !item.attempted && (selected === null || id === selected));
+		if (!next) return;
+		const [id, item] = next;
+		item.attempted = true;
+		loading = true;
+		void loadGear(item.profile).then((asset) => {
+			if (!asset || disposed || models.get(id) !== item) return;
+			const model = createGearModel(id, asset.root, asset.metadata);
+			const layout = gearLayout(asset.metadata);
+			if (!model || !layout) return;
+			item.model.dispose();
+			item.model = model;
+			item.depth = layout.depth;
+			item.width = layout.width;
+			arrange();
+			fitNeeded = true;
+			appearance();
+		}).catch(() => { /* Keep the existing schematic on any decoding/model error. */ }).finally(() => {
+			loading = false;
+			if (!disposed) queue.invalidate();
+		});
+	};
 	const visibility = () => queue.setVisible(isVisible());
 	// VP keeps hidden panes at full size; Resize/IntersectionObserver alone cannot
 	// detect visibility:hidden -> visible. Observe ancestors only, never label styles.
@@ -242,7 +275,7 @@ export function createMidiDeviceView(onSelect: (id: string) => void): MidiDevice
 					label.onclick = () => onSelect(device.device_id);
 					labels.append(label);
 					const anchor = new THREE.Vector3();
-					models.set(device.device_id, { model, label, anchor, depth: deviceLayout(device.profile_id).depth });
+					models.set(device.device_id, { model, label, anchor, depth: deviceLayout(device.profile_id).depth, width: deviceLayout(device.profile_id).width, profile: device.profile_id, attempted: false });
 				});
 				arrange();
 				fitNeeded = true;

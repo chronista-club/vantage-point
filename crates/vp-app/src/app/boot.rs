@@ -282,12 +282,21 @@ pub(super) fn open_window(
             )
         })
         .unwrap_or_default();
+    let asset_runtime = rt_handle.clone();
     let webview = WebViewBuilder::new()
         // 統合 origin fix: with_html (about:blank = 不透明オリジン) だと localStorage が
         // SecurityError を throw し sidebar bundle が boot 中に落ちる。custom protocol で
         // 実オリジン (vp-asset://app) を与え、MAIN_AREA_HTML を app/index.html として配信する。
-        .with_custom_protocol("vp-asset".to_string(), move |id, request| {
-            crate::webview::assets::serve(id, request, MAIN_VIEW_ASSETS)
+        .with_asynchronous_custom_protocol("vp-asset".to_string(), move |id, request, responder| {
+            // Gear I/O and SHA-256 must never block the native window event loop.
+            let id = id.to_owned();
+            asset_runtime.spawn_blocking(move || {
+                responder.respond(crate::webview::assets::serve(
+                    &id,
+                    request,
+                    MAIN_VIEW_ASSETS,
+                ));
+            });
         })
         .with_initialization_script(&echo_init)
         .with_url("vp-asset://app/index.html")

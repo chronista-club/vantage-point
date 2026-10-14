@@ -9,6 +9,8 @@ pub mod assets;
 pub mod editor_bridge;
 /// code pane（コードブラウザ）の file 供給 — lane workdir walk + ファイル読み。
 pub mod file_explorer;
+/// Verified Midistage GLB and metadata distribution.
+pub mod gear;
 /// ink snapshot（WKWebView の PNG capture、macOS のみ実体）。
 pub mod ink_snapshot;
 /// 統合 ipc_handler の dispatch 判定（main IPC の allowlist、`terminal_ipc` の arm と対）。
