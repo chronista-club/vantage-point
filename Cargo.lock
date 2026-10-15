@@ -10506,6 +10506,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "vp-roto-admin"
+version = "0.84.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "plist",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "vsimd"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
