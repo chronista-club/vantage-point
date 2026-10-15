@@ -3,7 +3,7 @@ import { sendIpc } from './ipc'
 
 export type LocalUrlEntry = { id: string; url: string; label: string }
 export type UrlProbe = { state: 'responding'; status: number } | { state: 'refused' } | { state: 'failed'; message: string }
-export type UrlAction = { action: 'load' } | { action: 'save'; expected: LocalUrlEntry[]; entries: LocalUrlEntry[] } | { action: 'open' | 'probe'; id: string }
+export type UrlAction = { action: 'load' } | { action: 'save'; expected: LocalUrlEntry[]; entries: LocalUrlEntry[] } | { action: 'open' | 'probe'; id: string } | { action: 'probe_url'; url: string }
 export type UrlResult = { entries?: LocalUrlEntry[]; probe?: UrlProbe }
 const pending = new Map<string, (result: LocalUrlsResult) => void>()
 

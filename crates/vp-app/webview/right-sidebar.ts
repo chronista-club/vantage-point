@@ -31,7 +31,7 @@
  * - Debug Log: **R が開いていて Log 節も開いている間だけ** `debuglog:watch`、それ以外は
  *   `debuglog:unwatch`。source 切替も watch の送り直しで、Rust 側は**最後の watch が勝つ**単一
  *   tail。応答は毎回 `reset=true` の backlog から始まるので取りこぼしという概念が無い
- * - PR: **R が開いていて PR 節も開いている間だけ**、即 1 回 + 60 秒ごとに `lane:prs_fetch`
+ * - PR: **R が開いていて Lane 節か PR 節が開いている間だけ**、即 1 回 + 60 秒ごとに `lane:prs_fetch`
  *   （pr-list.ts の `createPrPoller`）。閉じたら止める。rail の badge は最後に取った値
  */
 
@@ -39,8 +39,11 @@ import {
 	createPrPoller,
 	type LanePrs,
 	PR_POLL_MS,
+	orderPrs,
 } from "./pr-list";
 import { mountPrSection } from "./right-sidebar-prs";
+import { discoveredLaneUrls } from "./lane-link-discovery";
+import { publishLaneLinksView } from "./lane-links-bridge";
 
 export type DebugLogSource = "app" | "daemon";
 
@@ -130,6 +133,20 @@ export function installRightSidebar(deps: RightSidebarDeps): RightSidebarApi {
 	});
 	/** gh 不在と分かった lane では PR 節ごと出さない（分かるまでは出す）。 */
 	const prsAvailable = (): boolean => prs.current()?.available !== false;
+	const linksHost = document.createElement("div");
+	linksHost.className = "rsb-lane-links";
+	deps.laneBody.appendChild(linksHost);
+	const publishLinks = (): void => {
+		const data = prs.current();
+		publishLaneLinksView({
+			host: linksHost,
+			lane,
+			visible: open && sections.lane && !!lane,
+			urls: lane ? discoveredLaneUrls.get(lane) : [],
+			pr: data?.available ? orderPrs(data.prs, data.branch).pinned : null,
+		});
+	};
+	discoveredLaneUrls.subscribe(changed => { if (changed === lane) publishLinks(); });
 
 	// ---- 住人の付け替え（rail ⇄ Lane 節）---------------------------------------
 	// 家（rail 内の親 + 次の兄弟）を install 時に覚える。戻す時はそこへ insertBefore —
@@ -169,7 +186,9 @@ export function installRightSidebar(deps: RightSidebarDeps): RightSidebarApi {
 			logWatching = wantLog;
 			sendIpc(wantLog ? { t: "debuglog:watch", source } : { t: "debuglog:unwatch" });
 		}
-		poller.update({ active: open && sections.prs && prsAvailable(), lane });
+		// Lane のリンクと PR 一覧は同じ結果を使う。両方開いても poller は 1 本。
+		poller.update({ active: open && (sections.prs || sections.lane) && prsAvailable(), lane });
+		publishLinks();
 	};
 
 	/** R の開閉: body class + 住人の付け替え + shell layout への通知 + 購読。 */

@@ -32,6 +32,7 @@
  * **保留箱 = install 前の窓 / `ready` = bundle 評価前の窓** で役割が分かれている。
  */
 import type { PushEventEnvelope } from "./src/generated/Push";
+import { discoveredLaneUrls } from "./lane-link-discovery";
 
 /** 受け手が揃うまでの保留箱。install 時に順序どおり流す。 */
 let pending: PushEventEnvelope[] | null = [];
@@ -108,6 +109,7 @@ function apply(msg: PushEventEnvelope): void {
 			handlers.showLane(msg.lane ?? null, msg.is_chat);
 			break;
 		case "term:remove_lane":
+			discoveredLaneUrls.remove(msg.lane);
 			handlers.removeLane(msg.lane);
 			break;
 		case "term:remove_session":

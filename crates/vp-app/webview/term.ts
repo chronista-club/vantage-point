@@ -33,6 +33,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import { observeConsoleOutput } from "./codex-mode-handoff";
+import { observeTerminalUrls } from "./lane-link-discovery";
 import type { TermPushHandlers } from "./dispatch";
 import { termHostId } from "./lane-panes";
 
@@ -764,6 +765,7 @@ export function installTerm(): TermPushHandlers {
 			return;
 		}
 		info.writeOutput(bytes);
+		observeTerminalUrls(address, session, bytes);
 		notifyActivity(address, session);
 		observeConsoleOutput(address, session, bytes, live);
 	};
