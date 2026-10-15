@@ -1,10 +1,11 @@
 import { createEffect, createRoot, createSignal } from 'solid-js';
 import { currentLanes, laneKnobHandler } from '../../midi-navigation';
-import { pinFeedback, pinPadHandler } from '../../midi-pins';
+import { pinFeedback, pinPadHandler, pinBlinker } from '../../midi-pins';
 import type { FleetPayload } from '../../fleet';
 import { sidebar } from './store';
+import { laneAddressKey } from './lane';
 import { sendIpc } from './ipc';
-import { pins, pinsReady, restoreMidiPins } from './midi-pin-store';
+import { pins, pinsReady, restoreMidiPins, setPin } from './midi-pin-store';
 import { selectLaneByNumber } from './actions/handlers';
 
 const createHandler = () => laneKnobHandler(() => currentLanes(sidebar), target => {
@@ -17,14 +18,38 @@ const createHandler = () => laneKnobHandler(() => currentLanes(sidebar), target 
 });
 
 let selectLane = createHandler();
-// pad N = ⌘N: 宛先は ⌘N と同じ関数で引く（番号の出どころを 2 つ作らない）。
-let selectPin = pinPadHandler(selectLaneByNumber);
+const [flashes, setFlashes] = createSignal<Record<number, number[]>>({});
+const blink = pinBlinker((slot, color) => setFlashes(previous => {
+  const next = {...previous};
+  if (color) next[slot] = color; else delete next[slot];
+  return next;
+}));
+const selectPin = pinPadHandler(selectLaneByNumber, {
+  settings: pins,
+  active: () => {
+    if (sidebar.active_component || !sidebar.active_lane_address) return null;
+    for (const [path, lanes] of Object.entries(sidebar.lanes_by_repo)) {
+      if (lanes.some(l => laneAddressKey(l) === sidebar.active_lane_address)) {
+        return {path, address: sidebar.active_lane_address};
+      }
+    }
+    return null;
+  },
+  assign: setPin,
+  notify: (slot, notice) => {
+    const configured = pins().colors[slot];
+    const color = notice === 'unavailable' ? '#ff3030' : configured === '#000000' ? '#ffffff' : configured;
+    blink.flash(slot, [1,3,5].map(offset => parseInt(color.slice(offset, offset + 2),16)));
+  },
+});
 const [target, setTarget] = createSignal(document.documentElement.dataset.midiTarget === 'true');
 window.addEventListener('vp:midi-target', e => {
   selectLane = createHandler();
-  selectPin = pinPadHandler(selectLaneByNumber);
+  selectPin.cancel();
+  blink.cancel();
   setTarget((e as CustomEvent<boolean>).detail);
 });
+window.addEventListener('pagehide', () => { selectPin.cancel(); blink.cancel(); });
 
 window.addEventListener('vp:midi-settings', e => restoreMidiPins((e as CustomEvent).detail));
 const restored = (window as unknown as {__vpMidiSettings?:unknown}).__vpMidiSettings;
@@ -33,14 +58,19 @@ if (restored !== undefined) restoreMidiPins(restored);
 // This module belongs to the sidebar bundle, so it reads the same store as CURRENTs.
 window.addEventListener('vp:midi-navigation', event => {
   const payload = (event as CustomEvent<FleetPayload>).detail;
+  if (!target()) { event.preventDefault(); return; }
+  if (!pinsReady() && payload.port_name?.includes('LPD8') && payload.event?.type === 'pad') {
+    event.preventDefault(); return;
+  }
   if (selectLane(payload) || selectPin(payload)) event.preventDefault();
 });
 
-// The main bundle owns the single fleet feedback stream and combines these upper-pad
+// The main bundle owns the single fleet feedback stream and combines these pad
 // colors with the gallery's remaining controls. Retain the latest snapshot across load order.
 createRoot(() => createEffect(() => {
   const pads = pinFeedback(pins(), sidebar.active_lane_address ?? null,
-    new Set(currentLanes(sidebar).map(l => l.address)));
+    new Set(currentLanes(sidebar).map(l => l.address))).map(pad =>
+      flashes()[pad.index] ? {...pad, filled:true, color:flashes()[pad.index]} : pad);
   const enabled = target() && pinsReady();
   (window as unknown as {__vpMidiPads?:unknown}).__vpMidiPads = {enabled,pads};
   window.dispatchEvent(new CustomEvent('vp:midi-pads', {detail:{enabled,pads}}));
