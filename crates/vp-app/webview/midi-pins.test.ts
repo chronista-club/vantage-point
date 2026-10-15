@@ -1,4 +1,5 @@
-import { expect, it } from 'vitest';
+// creo task: mem_1Cg4GtxcwASooxXLizqTJe
+import { afterEach, expect, it, vi } from 'vitest';
 import * as pins from './midi-pins';
 const a = {path:'/a',address:'a/root'};
 const b = {path:'/b',address:'b/sub'};
@@ -38,21 +39,90 @@ it('one source of numbers: pin #N ⇄ lane address (sidebar #N, ⌘N and pad N a
   expect(pins.pinNumberOf(pins.assignPin(state,3,a),'a/root')).toBe(4);
 });
 
-it('pads 1–8 ask for numbers 1–8 (= ⌘1–⌘8) once per press', () => {
-  const selected: number[] = [];
-  const handle = pins.pinPadHandler(n => selected.push(n));
-  const pad = (index:number,velocity:number) => ({port_name:'LPD8 mk2',event:{type:'pad',index,velocity}});
-  expect(handle(pad(0,127))).toBe(true);
-  handle(pad(0,100));
-  handle(pad(0,0));
-  expect(selected).toEqual([1]);
-  handle(pad(0,90));
-  expect(handle(pad(7,127))).toBe(true);
-  // 未登録でも pad は消費する（gallery へ流さない）。何もしないのは ⌘N と同じ関数の責務
-  expect(handle(pad(3,127))).toBe(true);
-  expect(selected).toEqual([1,1,8,4]);
-  expect(handle(pad(8,127))).toBe(false);
-  expect(handle({port_name:'X-Touch',event:{type:'pad',index:0,velocity:127}})).toBe(false);
+const pad = (index:number,velocity:number) => ({port_name:'LPD8 mk2',event:{type:'pad',index,velocity}});
+afterEach(() => vi.useRealTimers());
+function gesture(slots = pins.defaultPins(), active: typeof a | null = b) {
+  vi.useFakeTimers();
+  let state = slots;
+  const select = vi.fn();
+  const assign = vi.fn((slot: number, target: typeof a) => { state = pins.assignPin(state, slot, target); });
+  const notify = vi.fn();
+  const handle = pins.pinPadHandler(select, {settings:() => state, active:() => active, assign, notify});
+  return {handle, select, assign, notify};
+}
+it('registers an empty pad immediately once and never opens it on release', () => {
+  const g = gesture();
+  g.handle(pad(7,127));
+  expect(g.assign).toHaveBeenCalledWith(7,b);
+  g.handle(pad(7,100));
+  vi.advanceTimersByTime(1000);
+  g.handle(pad(7,0));
+  expect(g.assign).toHaveBeenCalledTimes(1);
+  expect(g.select).not.toHaveBeenCalled();
+  expect(g.notify).toHaveBeenCalledWith(7,'registered');
+});
+it('opens a registered pad only on short release, once per press', () => {
+  const g = gesture(pins.assignPin(pins.defaultPins(),0,a));
+  g.handle(pad(0,127));
+  expect(g.select).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(599);
+  g.handle(pad(0,0));
+  g.handle(pad(0,0));
+  vi.advanceTimersByTime(1000);
+  expect(g.select.mock.calls).toEqual([[1]]);
+  expect(g.assign).not.toHaveBeenCalled();
+});
+it('overwrites at the hold threshold and does not open on release', () => {
+  const g = gesture(pins.assignPin(pins.defaultPins(),0,a));
+  g.handle(pad(0,127));
+  vi.advanceTimersByTime(599);
+  expect(g.assign).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(1);
+  expect(g.assign).toHaveBeenCalledWith(0,b);
+  g.handle(pad(0,0));
+  expect(g.select).not.toHaveBeenCalled();
+});
+it('does nothing when a held pin already points at the active lane', () => {
+  const g = gesture(pins.assignPin(pins.defaultPins(),0,a),a);
+  g.handle(pad(0,127));
+  vi.advanceTimersByTime(600);
+  g.handle(pad(0,0));
+  expect(g.assign).not.toHaveBeenCalled();
+  expect(g.select).not.toHaveBeenCalled();
+  expect(g.notify).not.toHaveBeenCalled();
+});
+it('signals unavailable without saving when there is no active lane', () => {
+  const g = gesture(pins.assignPin(pins.defaultPins(),0,a),null);
+  g.handle(pad(7,127));
+  g.handle(pad(0,127));
+  vi.advanceTimersByTime(600);
+  g.handle(pad(0,0));
+  g.handle(pad(7,0));
+  expect(g.assign).not.toHaveBeenCalled();
+  expect(g.select).not.toHaveBeenCalled();
+  expect(g.notify.mock.calls).toEqual([[7,'unavailable'],[0,'unavailable']]);
+});
+it('keeps simultaneous pads independent and ignores unrelated input', () => {
+  const g = gesture(pins.assignPin(pins.assignPin(pins.defaultPins(),0,a),7,b),a);
+  g.handle(pad(7,127));
+  vi.advanceTimersByTime(300);
+  g.handle(pad(0,127));
+  vi.advanceTimersByTime(300);
+  expect(g.assign.mock.calls).toEqual([[7,a]]);
+  g.handle(pad(0,0));
+  g.handle(pad(7,0));
+  expect(g.select.mock.calls).toEqual([[1]]);
+  expect(g.handle(pad(8,127))).toBe(false);
+  expect(g.handle({...pad(0,127),port_name:'X-Touch'})).toBe(false);
+});
+it('cancels pending holds and releases when MIDI target changes', () => {
+  const g = gesture(pins.assignPin(pins.defaultPins(),0,a));
+  g.handle(pad(0,127));
+  g.handle.cancel();
+  vi.advanceTimersByTime(1000);
+  g.handle(pad(0,0));
+  expect(g.assign).not.toHaveBeenCalled();
+  expect(g.select).not.toHaveBeenCalled();
 });
 
 it('restores only valid settings and projects selected, dimmed and empty pad colors', () => {
@@ -111,4 +181,25 @@ it('color and brightness edits return a new state and ignore invalid input', () 
   expect(pins.withPinColor(state,1,'red')).toBe(state);
   expect(pins.withDimGain(state,0.4).dimGain).toBe(0.4);
   expect(pins.withDimGain(state,1.5)).toBe(state);
+});
+it('blinks twice, restores current feedback, and cancels all pending flashes', () => {
+  vi.useFakeTimers();
+  const update = vi.fn();
+  const blink = pins.pinBlinker(update);
+  blink.flash(7,[12,34,56]);
+  expect(update).toHaveBeenLastCalledWith(7,[12,34,56]);
+  vi.advanceTimersByTime(150);
+  expect(update).toHaveBeenLastCalledWith(7,[0,0,0]);
+  vi.advanceTimersByTime(150);
+  expect(update).toHaveBeenLastCalledWith(7,[12,34,56]);
+  vi.advanceTimersByTime(150);
+  expect(update).toHaveBeenLastCalledWith(7,[0,0,0]);
+  vi.advanceTimersByTime(150);
+  expect(update).toHaveBeenLastCalledWith(7,null);
+  blink.flash(0,[255,0,0]);
+  blink.cancel();
+  expect(update).toHaveBeenLastCalledWith(0,null);
+  const count = update.mock.calls.length;
+  vi.advanceTimersByTime(1000);
+  expect(update).toHaveBeenCalledTimes(count);
 });

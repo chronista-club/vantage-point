@@ -86,18 +86,73 @@ export function pinFeedback(state: PinSettings, active: string | null, available
   });
 }
 
-/** pad N を押す = ⌘N。`select` には ⌘N と同じ関数（番号で引く）を渡す。押下 1 回につき 1 度。 */
-export function pinPadHandler(select: (number: number) => void) {
-  const held = new Set<number>();
-  return (payload: FleetPayload): boolean => {
+/** 登録済み pad の長押し判定。空枠は押した瞬間に登録する。 */
+export const PIN_HOLD_MS = 600;
+export type PinNotice = 'registered' | 'unavailable';
+interface PinPadActions {
+  settings: () => PinSettings;
+  active: () => LaneTarget | null;
+  assign: (slot: number, target: LaneTarget) => void;
+  notify: (slot: number, notice: PinNotice) => void;
+}
+
+/** 短押しの宛先は ⌘N と同じ select に任せ、各 pad の押下を独立して扱う。 */
+export function pinPadHandler(select: (number: number) => void, actions: PinPadActions) {
+  const held = new Map<number, {open: boolean; timer?: ReturnType<typeof setTimeout>}>();
+  const register = (slot: number) => {
+    const active = actions.active();
+    if (!active) { actions.notify(slot, 'unavailable'); return; }
+    if (actions.settings().slots[slot]?.address === active.address) return;
+    actions.assign(slot, active);
+    actions.notify(slot, 'registered');
+  };
+  const handle = (payload: FleetPayload): boolean => {
     const e = payload.event;
     if (!payload.port_name?.includes('LPD8') || e?.type !== 'pad' ||
       !Number.isInteger(e.index) || !isSlot(e.index)) return false;
-    if (!e.velocity || e.velocity < 0) { held.delete(e.index); return true; }
-    if (!held.has(e.index)) {
-      held.add(e.index);
-      select(e.index + 1);
+    const press = held.get(e.index);
+    if (!e.velocity || e.velocity < 0) {
+      if (press) {
+        clearTimeout(press.timer);
+        held.delete(e.index);
+        if (press.open) select(e.index + 1);
+      }
+      return true;
     }
+    if (press) return true;
+    const next = {open: !!actions.settings().slots[e.index], timer: undefined as ReturnType<typeof setTimeout> | undefined};
+    held.set(e.index, next);
+    if (!next.open) register(e.index);
+    else next.timer = setTimeout(() => {
+      next.open = false;
+      register(e.index);
+    }, PIN_HOLD_MS);
     return true;
+  };
+  return Object.assign(handle, {cancel: () => {
+    for (const press of held.values()) clearTimeout(press.timer);
+    held.clear();
+  }});
+}
+
+/** 一時色は通常の feedback に重ねる。null で最新の通常色へ戻す。 */
+export function pinBlinker(update: (slot: number, color: number[] | null) => void) {
+  const timers = new Map<number, ReturnType<typeof setTimeout>[]>();
+  const clear = (slot: number) => {
+    for (const timer of timers.get(slot) ?? []) clearTimeout(timer);
+    timers.delete(slot);
+  };
+  return {
+    flash(slot: number, color: number[]) {
+      clear(slot);
+      update(slot, color);
+      timers.set(slot, [150,300,450,600].map((delay, i) => setTimeout(() => {
+        update(slot, i === 3 ? null : i % 2 === 0 ? [0,0,0] : color);
+        if (i === 3) timers.delete(slot);
+      }, delay)));
+    },
+    cancel() {
+      for (const slot of timers.keys()) { clear(slot); update(slot, null); }
+    },
   };
 }
