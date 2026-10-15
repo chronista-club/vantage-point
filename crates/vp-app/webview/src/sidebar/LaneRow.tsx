@@ -487,7 +487,7 @@ export function LaneRow(props: {
 				    一番右 = 行末尾に固定（mako 2026-08-19）— badge 群の増減で位置が揺れない。
 				    ⚠️ 番号の出どころはピン一本（`pinNumberOf`）— handlers.ts の宛先と同じピン。 */}
 				<Show when={shortcut()}>
-					<span class="vp-lane-shortcut" title={`⌘${shortcut()} / LPD8 pad ${shortcut()}`}>
+					<span class="vp-lane-shortcut" style={{color:pins().colors[shortcut()! - 1]}} title={`⌘${shortcut()} / LPD8 pad ${shortcut()} / ROTO ${shortcut()}`}>
 						#{shortcut()}
 					</span>
 				</Show>

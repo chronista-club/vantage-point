@@ -2,10 +2,10 @@ import type { LaneTarget } from './midi-navigation';
 import type { FleetPayload } from './fleet';
 import type { FleetFeedback } from './fleet';
 
-export interface NavigationFeedback { enabled: boolean; pads: {index:number;filled:boolean;color:number[]}[] }
+export interface NavigationFeedback { roto?: import("./roto-pins").RotoSlot[]; enabled: boolean; pads: {index:number;filled:boolean;color:number[]}[] }
 export function navigationFeedback(gallery: FleetFeedback, navigation: NavigationFeedback): FleetFeedback | null {
   // LPD8 の pad 1〜8 はすべてピン。gallery の Scene slot 点灯は投影しない。
-  return navigation.enabled ? {...gallery,pads:[...navigation.pads]} : null;
+  return navigation.enabled ? {...gallery,pads:[...navigation.pads], ...(navigation.roto ? {roto:navigation.roto} : {})} : null;
 }
 
 /** LPD8 の pad 1〜8（内部 index 0〜7）がそのままピン #1〜#8。 */

@@ -90,6 +90,34 @@ body 164 byte の配置:
 
 **Program の切替は本体操作**。mk2 の active program を SysEx で切り替える命令は未確認で、総当たりで探さない。`vp midi lpd8 switch` は mk2 では「PROG SELECT を押しながら pad <N>」と案内して終了コード 2 で終わる。初代の `switch` と `write` は確かめる手段が無いので「送信しました（確認はできません）」と表示する。
 
+## ROTO のピン・session 操作
+
+> **保留（2026-10-16）**: 以下は途中の設計案。mako「ROTOはもうちょい中身とVPの連動をConception。何が欲しいかちゃんと話してない。」により実装を停止。WIP は再検討の材料で、完成済み・合意済みの操作仕様ではない。
+
+関連 task: `mem_1Cg4LYjWJGpLpLx4LQnjDz`。ROTO 列 N = app 全体のピン #N。入力の対象は LPD8 と同じ最後にアクティブになった Window（`midi_target`）。sidebar の lane 行に付く `#N` もピンの設定色を使う。ROTO のノブを gallery の pane 幅へ写す経路と、その逆方向の share → motor を撤去する。LPD8 の knob 2〜8 は従来どおり。
+
+- ボタン 1〜8（CC 20〜27）はピンの選択。LPD8 の押下判定と同じ handler を通す（空枠で今の lane を登録、登録済みは短押し release で開く、600ms 長押しで上書き）。
+- 上段はピン帯と同じ lane 名とピンの色。開発起点 lane は repo 名。空枠は `#N` と黒。色は既存 ROTO profile の `closest_index` で83色 paletteへ写す。track 名は既存 profile に従い ASCII 12文字 + NUL（13 byte）。非 ASCII の置換・drop も profile に任せる。
+- ノブ N はピン #N の lane にある session を生成順に選ぶ。session の key が飛び番でも「配列位置 → key」で引く。刻みは session 数、値は `index / (count - 1)`（0〜1件なら0）。1〜127 sessionを扱い、127件を超えると先頭127件まで。現在の focused session をモーターへ投影する。
+- 下段の parameter 名は `Idle / Think / Work / Ask` と context 使用率。`Ask` はユーザーの操作が必要な状態。未観測の context は `--%`、不在 lane は `Offline --%`。activity は sidebar と同じ `createAgentActivity`、context は conversation の `turn_completed` が運ぶ tokens/window を session 別に保持する。別 session の値を混ぜない。
+- 16 session以下は step label に session 名（無名なら `cc#N`）。17〜127件では機材が stepNames を受けないため、parameter 名13文字へ短い状態・context・選択session名を詰める。ノブを触っている間はその列の parameter/motor を送らず、release 後に最新値へ戻す。
+
+### 表示の経路と再接続
+
+sidebar はピン・session roster・activity・context・色を reactive に読み、`vp:midi-pads` に ROTO の8列を同梱する。main bundle は gallery の fader と合わせ、既存の `fleet:feedback` → 対象 Window の watch → daemon `apply_feedback` に運ぶ。main bundle に sidebar store を複製しない。
+
+ROTO の in/out は引き続き専用 loop が単独所有する。daemon 使用時（control tapあり）は button/knob/touch を `devices.control_event` に転送し、旧 lane 順の直接 switch と定期 LCD 投影は行わない。CLI 前景の lane navigation は従来どおり。handshake、keepalive、自動再接続の nostos bracket は保つ。
+
+feedback は **全 snapshot を watch に置き、hardware loop が実際に送った snapshot と比較する**。producer 側で差分だけ置くと、latest-wins が中間値を捨てた際に別 slot の変更まで失われる。track に変更がある時は既存 profile の shadow と枠付き全 track batch を保つ。parameter は変化した列だけを送る。再接続・MIDI 再取得時は最新 snapshot を再投影する。byte 仕様は [design 20](20-roto-control-sysex-protocol.md) と既存 profile が正本。
+
+### やってはいけない
+
+- daemon loop と Window の両方で同じボタンを処理しない。
+- gallery の share を ROTO の motor に混ぜない。
+- track update を枠なしの単発 SysEx に置き換えない。
+- latest-wins channel に差分だけを置かない。
+- 自動テストを ROTO 実機の表示・モーター・ノブの検収とみなさない。lane から daemon 再起動・app swap は行わず、lead に引き渡す。
+
 ## 検証
 
 Lane 順序・両端・1〜128件の全到達・連続入力抑制、番号 ⇄ ピンの変換と pad N = ⌘N の同一宛先、ピン帯の登録 / hover ✕ 解除、sidebar IPC 連携、Window 対象の切替・閉鎖、8 ピンの pad 対応と 4 × 2 の並び、旧 4 ピン session の読込み、`dimGain` の LED 反映、Editor → IPC の JSON・配り直しからの復元・遅れた echo の無視を自動検証する。実機の送信ノート／CC と、複数 Window の操作・Pad 色は別途実機確認する。
@@ -103,3 +131,5 @@ Lane 順序・両端・1〜128件の全到達・連続入力抑制、番号 ⇄ 
 - 2026-10-12: mk2 の program SysEx（0x4C）を実装（`wip/lpd8-mk2-program`）。identity で機種判定、write は `BASE_PROGRAM`（2026-10-12 時点の Program 1）に VP 割り当てを重ねて書き、読み戻しで確認。switch は mk2 では本体操作の案内。初代の嘘の成功表示を「送信しました（確認はできません）」に。実機への書き込みはこの lane では実施せず、merge 後に lead が行う。
 - 2026-10-12: ピンを 8 枠に（pad 1〜8 = ピン #1〜#8、LPD8 pad の Scene slot mapping を撤去、sidebar は 4 × 2）。未選択の明るさを `dimGain` として保存し、Editor に MIDI タブ（8 色 + 明るさ）を追加。`midi:navigation` の保存後に Rust が `vp:midi-settings` を配り直す。`vp midi lpd8 write` の PAD 説明を「PAD 1-8 = Lane ピン #1〜#8」に。自動テスト済み、アプリ差し替え・実機確認待ち。
 - 2026-10-13: ピン・色・`dimGain` を window ごとから app 全体の 1 組へ（`midi-pins.json`、旧 window 別の値から 1 度だけ移行、保存のたびに全 window へ配る）。番号の出どころをピンに一本化（sidebar `#N` / ⌘N / `⌘ hold l` / pad N、旧 CURRENTs 並び順の番号を撤去）、ピン帯に hover ✕ の解除、文言を「固定」→「登録」に。自動テスト済み、アプリ差し替え・複数 window の実機確認待ち。
+
+- 2026-10-16: ROTO の8列をピンへ対応させる設計を追加（実装・検証進行中）。枠付きtrack batch、12 ASCII + NUL、16件までのstep labelという既存profileの制約を維持する。

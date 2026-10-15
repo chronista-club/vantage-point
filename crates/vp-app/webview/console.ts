@@ -20,6 +20,7 @@
  */
 
 import { emitAgentActivity } from './session-activity-bridge'
+import { emitSessionContext } from './session-context-bridge'
 import { emitSessionNow, isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
 
 /** session の mode（SSOT は Rust `lane/session_registry.rs::SessionMode`、`console:mode_applied` / roster で届く）。 */
@@ -374,6 +375,7 @@ export function installConsole(): VpConsole {
   const api: VpConsole = {
     handleEvent(lane, event, session) {
       const s = normalizeSession(session)
+      emitSessionContext(lane, s, event)
       const entry = laneOf(lane)
       if (event.kind === 'codex_interactions') entry.codexInteractions.set(s, event)
       if (event.kind === 'codex_config' && event.config && !event.request_id) {

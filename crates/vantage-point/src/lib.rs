@@ -12,6 +12,8 @@ pub mod daemon;
 pub mod db;
 #[cfg(feature = "midi")]
 pub mod devices;
+#[cfg(feature = "midi")]
+mod roto_feedback;
 // device_input / device_profile / roto_palette は midistage-profiles に切り出し済み。
 // 既存の crate::device_input::* 等の参照パスを保つため再エクスポートする。
 #[cfg(feature = "midi")]

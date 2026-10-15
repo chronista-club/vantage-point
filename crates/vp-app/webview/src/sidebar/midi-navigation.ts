@@ -1,3 +1,4 @@
+import { createRotoNavigation } from './roto-navigation';
 import { createEffect, createRoot, createSignal } from 'solid-js';
 import { currentLanes, laneKnobHandler } from '../../midi-navigation';
 import { pinFeedback, pinPadHandler } from '../../midi-pins';
@@ -30,10 +31,13 @@ window.addEventListener('vp:midi-settings', e => restoreMidiPins((e as CustomEve
 const restored = (window as unknown as {__vpMidiSettings?:unknown}).__vpMidiSettings;
 if (restored !== undefined) restoreMidiPins(restored);
 
+const roto = createRoot(() => createRotoNavigation());
+
 // This module belongs to the sidebar bundle, so it reads the same store as CURRENTs.
 window.addEventListener('vp:midi-navigation', event => {
   const payload = (event as CustomEvent<FleetPayload>).detail;
-  if (selectLane(payload) || selectPin(payload)) event.preventDefault();
+  if (!target()) return;
+  if (roto.handle(payload) || selectLane(payload) || selectPin(payload)) event.preventDefault();
 });
 
 // The main bundle owns the single fleet feedback stream and combines these upper-pad
@@ -42,6 +46,7 @@ createRoot(() => createEffect(() => {
   const pads = pinFeedback(pins(), sidebar.active_lane_address ?? null,
     new Set(currentLanes(sidebar).map(l => l.address)));
   const enabled = target() && pinsReady();
-  (window as unknown as {__vpMidiPads?:unknown}).__vpMidiPads = {enabled,pads};
-  window.dispatchEvent(new CustomEvent('vp:midi-pads', {detail:{enabled,pads}}));
+  const rotoSlots = roto.feedback();
+  (window as unknown as {__vpMidiPads?:unknown}).__vpMidiPads = {enabled,pads,roto:rotoSlots};
+  window.dispatchEvent(new CustomEvent('vp:midi-pads', {detail:{enabled,pads,roto:rotoSlots}}));
 }));

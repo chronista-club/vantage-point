@@ -216,6 +216,9 @@ pub struct ReportDeviceRequest {
 #[cfg(feature = "midi")]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct FleetFeedback {
+    /// App-wide pin display and session detents, in pin order.
+    #[serde(default)]
+    pub roto: Vec<RotoSlotFeedback>,
     /// knob index（structure 順の member 対応）→ share。touch 保持中の knob は送り手が省く
     #[serde(default)]
     pub knobs: Vec<KnobFeedback>,
@@ -225,6 +228,21 @@ pub struct FleetFeedback {
     /// Scene slot の占有状態（pad LED の点灯判断）
     #[serde(default)]
     pub pads: Vec<PadFeedback>,
+}
+
+#[cfg(feature = "midi")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RotoSlotFeedback {
+    pub index: u8,
+    pub name: String,
+    pub color: [u8; 3],
+    pub id: String,
+    pub status: String,
+    pub steps: u8,
+    pub value: f32,
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub touched: bool,
 }
 
 #[cfg(feature = "midi")]
