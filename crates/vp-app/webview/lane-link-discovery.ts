@@ -2,14 +2,16 @@ import type { ConversationEvent } from './console'
 
 /** console / chat 出力からの URL 抽出と正規化（両方がここだけを通る）。 */
 export function extractLoopbackUrls(text: string): string[] {
-  // OSC（hyperlink/title 等）と CSI（色 / cursor 等）を表示文字から外す。
-  const plain = text.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+  // CSI は区切りにして、cursor 移動の前後にある文字列を結合しない。
+  const plain = text.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ' ')
   const urls = new Set<string>()
   for (const match of plain.matchAll(/https?:\/\/[^\s<>"'`\x00-\x1f]+/gi)) {
     const candidate = match[0].replace(/[),.;!?}]+$/, '').replace(/\](?!.*\])/g, (bracket, offset: number, value: string) => value.includes('://[') && offset === value.indexOf(']') ? bracket : '')
     try {
       const url = new URL(candidate)
       if (url.username || url.password || url.port === '0') continue
+      // 自動表示 / probe に資格情報らしい query を渡さない。明示登録の契約とは独立。
+      if ([...url.searchParams.keys()].some(key => /token|key|secret|password|auth|sig/i.test(key))) continue
       if (url.hostname === '0.0.0.0') url.hostname = '127.0.0.1'
       if (url.hostname !== 'localhost' && url.hostname !== '[::1]' && !/^127(?:\.\d{1,3}){3}$/.test(url.hostname)) continue
       urls.add(url.href)
@@ -29,10 +31,10 @@ export class LoopbackUrlHistory {
     this.lanes.delete(lane)
     this.lanes.set(lane, state)
     if (this.lanes.size > 64) this.lanes.delete(this.lanes.keys().next().value!)
-    const combined = ((state.tails.get(stream) ?? '') + text).slice(-16384)
+    const combined = (state.tails.get(stream) ?? '') + text
     const boundary = complete ? combined.length : Math.max(combined.lastIndexOf('\n'), combined.lastIndexOf(' '), combined.lastIndexOf('\t'), combined.lastIndexOf('\r')) + 1
     state.tails.delete(stream)
-    if (!complete) state.tails.set(stream, combined.slice(boundary))
+    if (!complete) state.tails.set(stream, combined.slice(boundary).slice(-16384))
     if (state.tails.size > 16) state.tails.delete(state.tails.keys().next().value!)
     const previous = state.urls.join('\n')
     for (const url of extractLoopbackUrls(combined.slice(0, boundary))) {
@@ -42,6 +44,15 @@ export class LoopbackUrlHistory {
   }
 
   get(lane: string): string[] { return [...(this.lanes.get(lane)?.urls ?? [])] }
+  remove(lane: string): void {
+    const chunks = terminalChunks.get(this)
+    for (const [key, chunk] of chunks ?? []) {
+      if (!key.startsWith(`${lane}\u0000`)) continue
+      clearTimeout(chunk.timer)
+      chunks!.delete(key)
+    }
+    if (this.lanes.delete(lane)) for (const listener of this.listeners) listener(lane)
+  }
   replace(lane: string, stream: string, text: string): void {
     this.lanes.get(lane)?.tails.delete(stream)
     this.feed(lane, stream, text, true)

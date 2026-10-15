@@ -3,6 +3,19 @@ import { describe, expect, it, vi } from 'vitest'
 import { extractLoopbackUrls, LoopbackUrlHistory, observeConversationUrls, observeTerminalUrls } from './lane-link-discovery'
 
 describe('出力のローカル URL', () => {
+  it.each([false, true])('32 KiB 本文の先頭 URL を捨てない（complete=%s）', complete => {
+    const history = new LoopbackUrlHistory()
+    history.feed('large', 'pty:1', 'Local: http://localhost:5173/\n' + 'x'.repeat(32768) + '\n', complete)
+    expect(history.get('large')).toEqual(['http://localhost:5173/'])
+  })
+  it('秘密情報らしい query key の URL を検出しないが通常の query は保持する', () => {
+    const keys = ['token', 'api_key', 'client_secret', 'password', 'auth', 'X-Amz-Signature', 'accessToken', '%74oken']
+    expect(extractLoopbackUrls(keys.map(key => `http://localhost:8888/?${key}=value`).join(' '))).toEqual([])
+    expect(extractLoopbackUrls('http://localhost:8888/?page=2')).toEqual(['http://localhost:8888/?page=2'])
+  })
+  it('CSI のカーソル移動をまたいで URL と別の文字列を連結しない', () => {
+    expect(extractLoopbackUrls('http://localhost:3000\x1b[2;1H/foo')).toEqual(['http://localhost:3000/'])
+  })
   it('ANSI と句読点を除き、wildcard を接続先に直し、末尾 / と重複を正規化する', () => {
     expect(extractLoopbackUrls('\x1b[32mLocal: http://localhost:5173/\x1b[0m\n(http://localhost:5173), http://0.0.0.0:8080/ http://127.0.0.1:8080 https://[::1]:8443/')).toEqual([
       'http://localhost:5173/', 'http://127.0.0.1:8080/', 'https://[::1]:8443/',

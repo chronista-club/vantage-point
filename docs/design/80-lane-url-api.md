@@ -68,8 +68,13 @@ lane の変更・節を閉じた後に遅れて届く結果は generation で捨
   user 入力と tool 引数は拾わない。追加の daemon 購読・保存・全 lane への取得要求は不要
 - ANSI を除去し、HTTP(S) の `localhost` / `127.0.0.0/8` / `[::1]` のみ採用する。
   出力の `0.0.0.0` は接続先 `127.0.0.1` へ写す。URL パーサーで末尾 `/`、既定 port 等を正規化する
+  - CSI は空白へ置換し、カーソル移動前後の文字列を連結しない
+  - query のキーに token / key / secret / password / auth / sig を含む URL は、大文字小文字を問わず
+    自動検出から除く（URL パーサーによるキーの decode 後）。明示登録は従来どおり扱う
 - 最近 32 URL / lane、64 lane まで保持。未完 token は stream ごとに 16 KiB、16 stream / lane まで。
   PTY の UTF-8 / URL は chunk 間をつなぎ、改行しない末尾は 250 ms の idle 後に確定する
+  - 受信した本文は区切りまで全体を走査し、16 KiB 制限は次回へ持ち越す tail だけに掛ける
+  - 既存の `term:remove_lane` 通知で検出履歴と PTY の確定待ちタイマーを消す。同名 Lane の再作成へ持ち越さない
 - 検出 URL は Lane 節の表示中に順番に probe する。「再確認」で再取得できる。
   UI 専用 `probe_url` は保存を経由せず、既存 `local_urls::probe` と同じ検証・proxy / redirect 拒否を使う。
   CLI / MCP の `probe <name>` は登録名を取る従来の契約のまま
