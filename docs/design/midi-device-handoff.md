@@ -79,3 +79,16 @@ input listener は、通知が届くまでの数百 ms を吸う短い開き直�
 | 別 thread で先に client を作った後に、run loop 付きの thread を立てる | 見えない（通知先は最初の client で決まる） |
 
 `vp midi …` CLI は今回の対象外（daemon 経路だけ）。
+
+## Status log
+
+### 2026-10-16 — 抜線時の listener 解放と接続待ち
+
+対象: `crates/vantage-point/src/devices.rs`。起票: `mem_1CfzdHyAdTrQu89kb7BAtm`。
+
+- discovery と agent の抜線通知は物理名を受け取る。listener map の key は lease 専用の仮想名なので、`MidiAccess::input` で解決し、abort と join が済んでから抜線を配信する。仮想名の文字列形式を呼び元で解釈しない。
+- listener map のロック内で仮想名を解決する。snapshot 更新も同じロック内で許可表を更新し、旧 listener を join する。ロック待ちの前に解決した古い名前を挿入したり、旧接続の解放前に新接続を登録したりしない。
+- task が生きていても port を開けるまでは `held=false / connecting`（接続待ち）。開けたら `held=true / listener`、失敗・終了後は `held=false / idle`。接続結果を既存の device delta で配信し、sidebar の取得台数に反映する。Devices の主表示は従来どおり Midistage の lease 状態を使う。
+- 自動テストでは物理名による停止、接続の drop、再接続後の本数、lease 更新との競合、接続待ちから成功への状態配信を確認する。実機の抜き差し・二重入力の観測は daemon 反映後に別途行う。
+
+修正前は抜線による map 削除が空振りし、lease 更新まで旧 task が残る。通常の snapshot 更新には旧 task の abort/join があるが、join 中に別経路の ensure が新接続を登録できるため、一時的な接続の重なりをコード上は排除できなかった。物理 MIDI が実際に二重配信されたという観測はない。

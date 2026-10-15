@@ -12,7 +12,7 @@ export interface DeviceSnapshot {
 	has_output: boolean;
 	/** VP が今この port を掴んでいるか。旧 daemon は field 不在 → undefined。 */
 	held?: boolean;
-	/** 掴んでいない理由（`released` / `unsupported` / `idle`）。 */
+	/** 掴んでいない理由（`released` / `unsupported` / `connecting` = 接続待ち / `idle`）。 */
 	hold_reason?: string;
 	/** 最後に触られた時刻（ISO 8601 秒精度）。掴んでいる間だけ更新される。 */
 	last_input_at?: string | null;
