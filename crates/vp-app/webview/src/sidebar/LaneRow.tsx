@@ -15,7 +15,6 @@ import type { LaneInfo } from "../generated/LaneInfo";
 import type { SubStatusWire } from "../generated/SubStatusWire";
 import type { LaneSessionEntryWire } from "../generated/LaneSessionEntryWire";
 import { sidebar } from "./store";
-import { LocalUrls } from "./LocalUrls";
 import { ResponsePoint, createAgentActivity, ACTIVITY_LABEL, ACTIVITY_COLOR } from "./ResponsePoint";
 import { sessionNow } from "./session-now";
 import { clockNow, quietAfterMs, quietLabel } from "./activity-freshness";
@@ -199,7 +198,6 @@ export function LaneRow(props: {
 	// (dead lane に届いた content も気付かせる。awaiting=入力待ちが alive 前提なのとは意味論が違う)。
 	const canvasUnread = () =>
 		!isActive() && (sidebar.canvas_unread?.[addr()] ?? 0) > 0;
-	const [addLocalUrl, setAddLocalUrl] = createSignal(0);
 	// この lane の root session key（registry 欠落 = 旧 wire / boot 窓は 1 に倒す —
 	// Rust 側 ResolveSessionTitles の fallback と同じ既定）。
 	const rootKey = () => props.lane.sessions?.root ?? 1;
@@ -314,11 +312,7 @@ export function LaneRow(props: {
 		const sub = isSubLane(lane);
 		// dim 表示 (isInactive) と同じ述語を使う — 生死判定を 2 箇所に散らさない。
 		const active = isLaneAlive(lane);
-		const items: ContextMenuItem[] = [{
-			label: "ローカルURLを追加",
-			icon: "ph:link",
-			onSelect: () => setAddLocalUrl(n => n + 1),
-		}];
+		const items: ContextMenuItem[] = [];
 		if (pinsReady()) {
 			// 登録済みなら解除、未登録なら空いている最初の枠に登録（並べ替えはピン帯の枠 click で）。
 			const number = shortcut();
@@ -522,7 +516,6 @@ export function LaneRow(props: {
 					</Show>
 				</span>
 			</Show>
-			<LocalUrls repoPath={props.repoPath} address={addr()} addRequest={addLocalUrl()} />
 		</div>
 	);
 }

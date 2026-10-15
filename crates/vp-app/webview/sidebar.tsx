@@ -25,6 +25,7 @@ import { installSidebarFormRestore } from './src/sidebar/form'
 import { onSessionNow } from './session-now-bridge'
 import { applySessionNow } from './src/sidebar/session-now'
 import { startFreshnessClock } from './src/sidebar/activity-freshness'
+import { installLaneLinks } from './src/sidebar/lane-links'
 
 // Rust → sidebar の押し込みの受け口を **module 評価の最初に**生やす（実処理の接続は下方
 // `installIpcBridge`）。ここに置くこと自体が保留箱の効き目を決める — `installIpcBridge` の
@@ -51,6 +52,7 @@ function bootLog(msg: string): void {
 try {
   // 押し込みの実処理は component mount より前に繋ぐ（受け口は上方で既に生えている）。
   installIpcBridge()
+  installLaneLinks()
   // Sidebar 専用ショートカット (Cmd+F → File Explorer overlay) を登録。
   installSidebarKeybindings()
   // shell layout の復元（main bundle が `vp:shell-restore` で形を伝えてくる）。
