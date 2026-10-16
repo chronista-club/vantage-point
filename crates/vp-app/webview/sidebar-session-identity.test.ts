@@ -32,7 +32,6 @@ function fixture() {
   const win = new Window({ settings:{enableJavaScriptEvaluation:true, suppressInsecureJavaScriptEnvironmentWarning:true} })
   windows.push(win)
   win.eval(bundle)
-  ;(win as Window & {sent: unknown[]}).sent = [] // mount 時の URL 読取と操作を分ける
   return win as Window & {sent: unknown[]}
 }
 afterEach(async () => { for (const win of windows.splice(0)) await win.happyDOM.abort() })
@@ -53,14 +52,13 @@ describe('sidebar session identity', () => {
     expect(row.querySelector('.vp-lane-right .vp-lane-meta')).toBeNull();
   })
 
-  it('offers first URL registration from the lane context menu without selecting the lane', () => {
+  it('does not mount or request local URLs from a lane row or its context menu', () => {
     const win=fixture();
     expect(win.document.querySelector('.vp-local-urls')).toBeNull();
     win.document.querySelector('.vp-lane-row')!.dispatchEvent(new win.MouseEvent('contextmenu',{bubbles:true}));
     const add=[...win.document.querySelectorAll('.vp-ctx-item')].find(b=>b.textContent?.includes('ローカルURLを追加'));
-    expect(add).toBeDefined();add!.dispatchEvent(new win.MouseEvent('click',{bubbles:true}));
-    expect(win.document.querySelector('.vp-local-url-form')).not.toBeNull();
-    expect(win.document.querySelector('details')?.open).toBe(true);
+    expect(add).toBeUndefined();
+    expect(win.document.querySelector('.vp-local-url-form')).toBeNull();
     expect(win.sent).toEqual([]);
   })
 

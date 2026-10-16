@@ -535,6 +535,7 @@ html[data-midi-target="true"] .vp-midi-target{display:inline}
 /* 相部屋の非 root session 行 (doc 58 ②-b) — 場所ラベル省略、root 行より 1 段静か。
    dot slot は空 span が indent だけ揃える (state データが無いものを描かない)。 */
 .vp-session-row{font-weight:300;}
+.vp-session-close{font:inherit;color:inherit;background:transparent;border:1px solid var(--color-surface-border,#ffffff20);border-radius:4px;cursor:pointer;padding:1px 5px}
 .vp-session-row .vp-lane-title.is-session{color:rgba(234,251,255,.72);}
 
 /* 「今なにを」(doc 58 ②-a) — 進行の本体なので地 (cwd = mute-2) より 1 段読める mute。 */

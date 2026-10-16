@@ -207,6 +207,11 @@ pub(super) fn sidebar_ipc(
     }
     // 全 window への配信は event loop が `take_broadcast` で行う（この window だけに撃たない）。
     if let Some(settings) = outcome.midi_settings_save {
+        tracing::info!(
+            window = ?boot.window.id(),
+            slots = %settings.get("slots").unwrap_or(&serde_json::Value::Null),
+            "midi:navigation save (slots in pin #1..#8 order)"
+        );
         boot.midi_pins.borrow_mut().set(settings);
     }
     // Lane activation — activate_lane() が全副作用を処理

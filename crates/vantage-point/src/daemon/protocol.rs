@@ -124,7 +124,8 @@ pub enum DeviceEvent {
         /// 旧 daemon は field 不在 → `false`（= 掴んでいない扱い、安全側）。
         #[serde(default)]
         held: bool,
-        /// 掴んでいない理由（`"released"` = 譲渡中 / `"unsupported"` = 対応外 / `"idle"`）。
+        /// 掴んでいない理由（`"released"` = 譲渡中 / `"unsupported"` = 対応外 /
+        /// `"connecting"` = 仮想 port の接続待ち / `"idle"`）。
         /// **user への説明が変わる**ので bool に潰さない（`DeviceRegistry::hold_state` 参照）。
         #[serde(default)]
         hold_reason: String,

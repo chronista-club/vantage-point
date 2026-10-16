@@ -35,7 +35,7 @@
 
 | 起点 | 伸びる向き | rail（畳んだ形） | R sidebar（伸びた形） |
 |---|---|---|---|
-| **上** | 上端から下へ | + New | Lane 節（+ New / しまった pane / board） |
+| **上** | 上端から下へ | + New | Lane 節（リンク / + New / しまった pane / board） |
 | **中央** | 残りの中で中央 | しまった pane | Pull Requests 節 |
 | **下** | 下端から上へ | board 取っ手 / PR ボタン | Debug Log 節 |
 
@@ -68,6 +68,20 @@ R sidebar を開いている間、rail の住人（`#edge-rail-new-host` / `#edg
 - click = ブラウザで開く（既存 `open-url` IPC、http(s) 限定は Rust 側）/ 右 click = URL をコピー
 - 空なら「open PR なし」/ 取得失敗は理由を 1 行で出す / **gh 不在なら節ごと出さない**
   （rail の PR ボタンも出さない）
+
+## Lane 節のリンク（design 80 追加裁定）
+
+上起点の Lane 節に、表示中 lane の **検出 URL → この lane の PR → 登録済み URL** を置く。
+左 sidebar の各 lane 行には URL 欄を置かない。lane を切り替えると表示と取得対象も追従する。
+
+- 検出は既存 console/chat stream を使用し、保存は「登録」からの明示操作だけ
+- URL の load / 自動 probe は R sidebar と Lane 節が両方開いている間だけ。失敗は節内の短い一行
+- PR はこの節用に取り直さず、既存 PR 節の cache と poller を共用する
+- PR 応答・検出結果の更新だけでは、登録フォームの draft や load を再初期化しない
+- 描画は保存 IPC を持つ sidebar bundle、節の可視状態・検出 URL・PR は main bundle が所有。
+  `lane-links-bridge.ts` が両者の接点で、評価順が逆でも最後の表示状態を引き継ぐ
+
+保存・正規化・probe 制約と原文は [design 80](80-lane-url-api.md#lane-リンクへの追加裁定) を参照。
 
 ## 契約
 
@@ -104,7 +118,7 @@ response {
 
 ### 取得のタイミング（消費者主導）
 
-- **R が開いていて PR 節も開いている間だけ**、即 1 回 + 60 秒ごと。閉じたら止める
+- **R が開いていて Lane 節または PR 節が開いている間だけ**、即 1 回 + 60 秒ごと。両方閉じたら止める
   （Debug Log の watch / unwatch と同じ型。`pr-list.ts` の `createPrPoller`）
 - lane が変われば新 lane で即取り直す。同じ状態の再通知では撃たない
 - rail の badge は**最後に取った値**（lane ごとに覚える。rail 自身は取りに行かない）

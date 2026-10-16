@@ -22,15 +22,24 @@ CURRENTs に属する repo を sidebar の並び順でたどり、各 repo の�
 
 ユーザー裁定: 「別のLaneだね。特定のこちらで#1~#4を好きにピンできる」→ 2026-10-12「この際ピン１～８にしよう。」。会話セッションや Lane/Runner 等の画面タブではなく、任意の Lane を 8 枠へ固定する。
 
-物理 Pad 1〜8（内部 index 0〜7、Note 36〜43）がそのままピン #1〜#8 に対応する。押下だけで選択し、release まで再選択しない。未割当・不在の Lane は操作しないが、pad 入力は消費する（gallery へ流さない）。LPD8 の pad は gallery の Scene slot に写さない（`fleet.ts`）。Scene slot は nanoKONTROL の button に残る。knob の gallery mapping は従来どおり。
+物理 Pad 1〜8（内部 index 0〜7、Note 36〜43）がそのままピン #1〜#8 に対応する。操作は次のとおり。pad 入力は消費する（gallery へ流さない）。
+
+| ピンの状態 | 押す | 離す（600ms 未満） | 長押し（600ms 到達時） |
+|---|---|---|---|
+| 空 | 今の Lane を即登録 | 何もしない | 何もしない |
+| 登録済み | 判定開始 | ピンの Lane を開く | 今の Lane で上書きし、この押下では開かない |
+
+長押し閾値は `PIN_HOLD_MS`。同じ Lane が既にその枠にある場合は保存も通知もしない。Devices など今の Lane が無い画面では登録・上書きせず、赤 LED を 2 回点滅する。登録・上書き時は設定色（黒の場合は白）を 2 回点滅する（150ms ごとに点灯・消灯、600ms 後に最新の通常色へ復帰）。各 pad の判定は独立し、MIDI 対象 window の変更で保留中の判定と点滅を取り消す。不在の登録先への短押しは何もしない。
+
+LPD8 の pad は gallery の Scene slot に写さない（`fleet.ts`）。Scene slot は nanoKONTROL の button に残る。knob の gallery mapping は従来どおり。
 
 CURRENTs の見出し下に 8 枠を 4 × 2 で表示する。並びは LPD8 の物理配置と同じ向き: 上段 = pad 5〜8（ピン #5〜#8）、下段 = pad 1〜4（ピン #1〜#4）。空枠クリックで今選んでいる Lane を登録、登録済み枠クリックで選択（⌘N と同じ関数）、枠の hover で出る ✕ で解除。枠の右クリックでも登録・色の変更・解除ができる。Lane 行の右クリックからは「空いている最初の枠に登録」/「登録を解除」。同じ Lane を別枠へ登録すると元の枠は空く。sub lane も登録できる。
 
 ### 番号はピンが出どころ（2026-10-13）
 
-**sidebar の `#N` = ⌘N = `⌘ hold l` の N = ピン #N = LPD8 pad N**。番号を決めるのはピンへの登録だけで、ピン #N に登録した lane の行（lead なら親行、sub なら sub の行）に `#N` が出る。登録していない行には番号が出ない。⌘N と pad N はピン #N の lane を開く（畳んだ repo は開いてから選ぶ）。未登録・登録した lane が今いない番号は何もしない（近くの lane に振り替えない）。
+**sidebar の `#N` = ⌘N = `⌘ hold l` の N = ピン #N = LPD8 pad N**。番号を決めるのはピンへの登録だけで、ピン #N に登録した lane の行（lead なら親行、sub なら sub の行）に `#N` が出る。登録していない行には番号が出ない。⌘N と登録済み pad N の短押しはピン #N の lane を開く（畳んだ repo は開いてから選ぶ）。⌘N の未登録番号・登録した lane が今いない番号は何もしない（近くの lane に振り替えない）。
 
-実装の規律: 番号 ⇄ lane の変換は `midi-pins.ts` の `pinNumberOf` / `pinTargetOf` だけが持つ。LaneRow の `#N` は `pinNumberOf`、⌘N / `⌘ hold l` / pad N は `handlers.ts` の `selectLaneByNumber`（中で `pinTargetOf`）を通す。pad の handler は番号を渡すだけで、宛先を自分で引かない。
+実装の規律: 番号 ⇄ lane の変換は `midi-pins.ts` の `pinNumberOf` / `pinTargetOf` だけが持つ。LaneRow の `#N` は `pinNumberOf`、⌘N / `⌘ hold l` / pad N は `handlers.ts` の `selectLaneByNumber`（中で `pinTargetOf`）を通す。pad の選択処理も番号を渡し、宛先を自分で引かない。登録処理は対象 window の `active_lane_address` と `lanes_by_repo` の path を用いる。
 
 経緯: 旧仕様は CURRENTs の並び順で root lane に `#1`〜`#9` を振り（`lane.ts` の `shortcutNumberOf`。⌘N と `⌘ hold l` も同じ番号、design 18）、ピンは別の番号だった。mako「サイドバーと#1−8とcmd+1~8の場所を、サイドバーの番号に合わせるのと、Laneの解除ができないね」→ いったん「並び順から自動で #1〜#8」を検討 → mako「今選択中のLaneを登録でOK。、みたいにしてしたい」で主従を逆にし、番号の出どころをピンにした。番号が 8 までになり、並び順では番号が付かなくなった（⌘9 は何もしない）。解除が見えなかった問題は枠の hover ✕ で解消（旧 Lane 行の右クリックは #1〜#4 にしか効かなかった）。
 
@@ -122,7 +131,7 @@ ROTO は他機材と同じ owned input-only listener を使う。midistage の l
 
 ## 検証
 
-Lane 順序・両端・1〜128件の全到達・連続入力抑制、番号 ⇄ ピンの変換と pad N = ⌘N の同一宛先、ピン帯の登録 / hover ✕ 解除、sidebar IPC 連携、Window 対象の切替・閉鎖、8 ピンの pad 対応と 4 × 2 の並び、旧 4 ピン session の読込み、`dimGain` の LED 反映、Editor → IPC の JSON・配り直しからの復元・遅れた echo の無視を自動検証する。実機の送信ノート／CC と、複数 Window の操作・Pad 色は別途実機確認する。
+Lane 順序・両端・1〜128件の全到達・連続入力抑制、番号 ⇄ ピンの変換と登録済み pad N の短押し = ⌘N の同一宛先、ピン帯の登録 / hover ✕ 解除、sidebar IPC 連携、Window 対象の切替・閉鎖、8 ピンの pad 対応と 4 × 2 の並び、旧 4 ピン session の読込み、`dimGain` の LED 反映、Editor → IPC の JSON・配り直しからの復元・遅れた echo の無視を自動検証する。pad の即登録・短押し・長押し・同時押し・対象切替時の取消し・LED 点滅は fake timer と sidebar IPC 結合テストで検証する。実機の送信ノート／CC と、複数 Window の操作・Pad 色は別途実機確認する。
 
 ## Status log
 
@@ -135,3 +144,4 @@ Lane 順序・両端・1〜128件の全到達・連続入力抑制、番号 ⇄ 
 - 2026-10-13: ピン・色・`dimGain` を window ごとから app 全体の 1 組へ（`midi-pins.json`、旧 window 別の値から 1 度だけ移行、保存のたびに全 window へ配る）。番号の出どころをピンに一本化（sidebar `#N` / ⌘N / `⌘ hold l` / pad N、旧 CURRENTs 並び順の番号を撤去）、ピン帯に hover ✕ の解除、文言を「固定」→「登録」に。自動テスト済み、アプリ差し替え・複数 window の実機確認待ち。
 
 - 2026-10-16: DAW 前提の WIP を MIDI モード入力へ変更。列1〜7 pin jump / 列8 PTT、Serial は midistage 所有で合意。実装済み。fmt / workspace check / Clippy / Rust 全体テスト、Webview 813 tests / 型検査 / bundle 通過。lease 更新・終了時の listener 解放、対象喪失時の PTT 停止を回帰検証。VP setup の実機書き込み・実アプリでの検収は別工程。
+- 2026-10-16: 空 pad の即登録・登録済み pad の離して選択・600ms 長押し上書きと LED 通知を追加。保存要求時に app log へ window ID と slots（#1〜#8 順、path/address/null）を 1 行記録する。保存失敗は既存の warn に残る。実機確認待ち。

@@ -2,7 +2,7 @@
 use super::{boot::Boot, state::UiState};
 use crate::events::AppEvent;
 use crate::generated::sidebar_ipc::{LocalUrlsRequest, LocalUrlsResult};
-use crate::local_urls::{Action, Prepared};
+use crate::local_urls::Prepared;
 
 pub(super) fn request(ui: &UiState, boot: &Boot, request: LocalUrlsRequest) {
     let lane = ui
@@ -15,8 +15,7 @@ pub(super) fn request(ui: &UiState, boot: &Boot, request: LocalUrlsRequest) {
                 .find(|lane| lane.address.key() == request.address)
         })
         .map(|lane| lane.address.name.clone());
-    let action = serde_json::from_value::<Action>(request.payload);
-    let (Some(lane), Ok(action)) = (lane, action) else {
+    let Some(lane) = lane else {
         crate::webview::push_sidebar::local_urls_result(
             &boot.webview,
             LocalUrlsResult {
@@ -32,11 +31,11 @@ pub(super) fn request(ui: &UiState, boot: &Boot, request: LocalUrlsRequest) {
     boot.rt_handle.spawn(async move {
         let result = runtime
             .spawn_blocking(move || {
-                crate::local_urls::prepare(
+                crate::local_urls::prepare_ui(
                     &vp_paths::vp_state_dir().join("lane-local-urls.json"),
                     &request.path,
                     &lane,
-                    action,
+                    request.payload,
                 )
             })
             .await;
