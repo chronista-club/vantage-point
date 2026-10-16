@@ -210,15 +210,12 @@ pub struct ReportDeviceRequest {
 ///
 /// 送り手 = gallery webview の mapping registry（fleet.ts `computeFeedback`、consumer 供給）。
 /// 受け手 = DeviceRegistry `apply_feedback` が各 device の出力 profile に写す:
-/// knobs → ROTO motor（14bit hi-res CC）/ fader → X-Touch fader 1（pitch bend）/
+/// knobs は互換用フィールド（ROTO へ出力しない）/ fader → X-Touch fader 1（pitch bend）/
 /// pads → LPD8 RGB（Scene slot の filled 状態）。
 /// 値は正規化 0.0–1.0。頻度は webview 側 throttle + Rust 側 watch（latest-wins）で抑制。
 #[cfg(feature = "midi")]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct FleetFeedback {
-    /// App-wide pin display and session detents, in pin order.
-    #[serde(default)]
-    pub roto: Vec<RotoSlotFeedback>,
     /// knob index（structure 順の member 対応）→ share。touch 保持中の knob は送り手が省く
     #[serde(default)]
     pub knobs: Vec<KnobFeedback>,
@@ -228,21 +225,6 @@ pub struct FleetFeedback {
     /// Scene slot の占有状態（pad LED の点灯判断）
     #[serde(default)]
     pub pads: Vec<PadFeedback>,
-}
-
-#[cfg(feature = "midi")]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RotoSlotFeedback {
-    pub index: u8,
-    pub name: String,
-    pub color: [u8; 3],
-    pub id: String,
-    pub status: String,
-    pub steps: u8,
-    pub value: f32,
-    pub labels: Vec<String>,
-    #[serde(default)]
-    pub touched: bool,
 }
 
 #[cfg(feature = "midi")]

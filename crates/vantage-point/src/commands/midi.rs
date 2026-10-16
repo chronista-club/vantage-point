@@ -965,7 +965,7 @@ fn execute_roto_control(port: String, daemon_port: u16, secs: u64) -> Result<()>
 
     // CLI 版: self-heal は不要（secs 経過で終了）なので Bracket は被せず、
     // QuicLaneSource(daemon-repo QUIC) + QuicSwitchSink で shared loop を直接回す。
-    // daemon 常駐版（DeviceRegistry::start_roto_control）と loop body を 1 本共有する（重複ゼロ）。
+    // 通常の VP navigation は input-only MIDI mode。この明示的な CLI だけが DAW loop を使う。
     let rt = tokio::runtime::Runtime::new()?;
     let exit = rt.block_on(async move {
         // daemon(ProtocolClient) は daemon_ch を生かすため block 終端まで保持する。
@@ -1005,6 +1005,7 @@ fn execute_roto_control(port: String, daemon_port: u16, secs: u64) -> Result<()>
     match exit {
         LoopExit::Deadline => println!("roto control 終了（{} 秒経過）", secs),
         LoopExit::Disconnected => println!("ROTO 切断で終了"),
+        LoopExit::Fatal(message) => println!("roto control 終了（{message}）"),
         _ => println!("roto control 終了"),
     }
     Ok(())

@@ -62,7 +62,6 @@ const clamp01 = (n: number): number => Math.min(1, Math.max(0, n));
 
 /** wire 形（daemon/protocol.rs `FleetFeedback` と一致 — 正規化 0..1） */
 export interface FleetFeedback {
-	roto?: import("./roto-pins").RotoSlot[];
 	knobs: { index: number; value: number }[];
 	fader: number | null;
 	pads: { index: number; filled: boolean; color?: number[] }[];
@@ -104,7 +103,7 @@ export function mapControl(portName: string, event: FleetControlEvent): FleetOp 
 
 	switch (device) {
 		case "roto":
-			// ROTO belongs to app-wide pin/session navigation.
+			// ROTO belongs to app-wide pin navigation and push-to-talk.
 			return null;
 		case "xtouch":
 			// t は 1 本のスカラー — fader 1 番（index 0）だけが scrub を持つ

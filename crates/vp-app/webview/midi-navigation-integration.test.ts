@@ -15,9 +15,7 @@ beforeAll(async () => {
     import { MidiPins } from './src/sidebar/MidiPins';
     window.renderPins = () => { const el = document.createElement('div'); document.body.append(el); render(MidiPins, el); return el; };
     import { applySidebarState, emptyState } from './src/sidebar/store';
-    import { emitSessionContext } from './session-context-bridge';
     import { emitAgentActivity } from './session-activity-bridge';
-    window.emitSessionContext = emitSessionContext;
     window.emitAgentActivity = emitAgentActivity;
     window.applyTestState = value => applySidebarState({...emptyState(),...value});
     import { selectLaneByNumber } from './src/sidebar/actions/handlers';
@@ -150,42 +148,22 @@ it('the pin strip shows 8 pins in two rows like the pads: #5–#8 above #1–#4'
 });
 
 
-it('ROTO reads pin order and sparse session keys, follows display updates, and ignores non-target windows', () => {
+it('ROTO buttons 1–7 use pinned targets, button 8 is only PTT; knobs never select sessions', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: unknown[]};
-  windows.push(w); w.eval(bundle);
-  w.eval(`
-    window.testState = {processes:[{path:'/vp',name:'vp',state:'running',expanded:true}],
-      lanes_by_repo:{'/vp':[{address:{repo:'vp',name:'sub',key:'vp/sub'},pid:42,
-        sessions:{root:2,focused:2,sessions:[{key:2},{key:9}]}}]},
-      session_titles:{'vp/sub#9':'review'}, active_lane_address:'vp/root'};
-    window.applyTestState(window.testState);
-  `);
-  w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:{
-    slots:[null,null,{path:'/vp',address:'vp/sub'},null,null,null,null,null],
-    colors:Array(8).fill('#123456'),dimGain:0.25,
-  }}));
-  const slots = () => w.eval('window.__vpMidiPads.roto');
-  expect(slots()[2]).toMatchObject({name:'sub',steps:2,value:0,color:[18,52,86],labels:['cc#2','review']});
-  const send = (type:string,index:number,value?:number,pressed?:boolean) => w.dispatchEvent(new w.CustomEvent('vp:midi-navigation', {
-    cancelable:true,detail:{port_name:'Roto',event:{type,index,value,pressed}},
-  }));
-  expect(send('knob',2,1)).toBe(false);
-  expect(w.sent).toEqual([{t:'lane:select',path:'/vp',address:'vp/sub'}, {t:'conversation:session_focus',lane:'vp/sub',session:9}]);
-  w.eval('window.testState=JSON.parse(JSON.stringify(window.testState)); window.testState.lanes_by_repo["/vp"][0].sessions.focused=9; window.applyTestState(window.testState)');
-  expect(slots()[2].value).toBe(1);
-  w.eval(`window.emitSessionContext('vp/sub',9,{kind:'turn_completed',context_tokens:42,context_window:100});
-    window.emitAgentActivity('vp/sub',9,{kind:'question'});`);
-  expect(slots()[2].status).toBe('Ask 42%');
-  send('knob_touch',2,undefined,true);
-  expect(slots()[2].touched).toBe(true);
-  send('knob_touch',2,undefined,false);
-  expect(slots()[2].touched).toBe(false);
-  const count = w.sent.length;
-  send('knob',0,1); // empty pin
-  send('knob',2,1); // already focused
-  expect(w.sent).toHaveLength(count);
-  w.dispatchEvent(new w.CustomEvent('vp:midi-target',{detail:false}));
-  expect(send('knob',2,0)).toBe(true);
-  expect(w.sent).toHaveLength(count);
-  expect(w.eval('window.__vpMidiPads.enabled')).toBe(false);
+  windows.push(w);w.eval(bundle);
+  w.dispatchEvent(new w.CustomEvent('vp:midi-settings',{detail:{slots:[{path:'/vp',address:'vp/sub'},null,null,null,null,null,null,{path:'/vp',address:'vp/root'}],colors:Array(8).fill('#123456')}}));
+  const ptt: boolean[]=[];
+  w.addEventListener('vp:roto-ptt',e=>ptt.push((e as unknown as CustomEvent).detail.pressed));
+  const send=(type:string,index:number,pressed:boolean)=>w.dispatchEvent(new w.CustomEvent('vp:midi-navigation',{cancelable:true,detail:{port_name:'Roto-Control',event:{type,index,pressed,value:1}}}));
+  send('button',0,true);send('button',0,true);send('button',0,false);
+  expect(w.sent).toEqual([{t:'process:toggle',path:'/vp',expanded:true},{t:'lane:select',path:'/vp',address:'vp/sub'}]);
+  w.sent.length=0;
+  send('button',1,true);send('knob',0,true);send('knob_touch',0,true);
+  send('button',7,true);send('button',7,true);send('button',7,false);send('button',7,false);
+  expect(w.sent).toEqual([]);
+  expect(ptt).toEqual([true,false]);
+  expect(w.eval('window.__vpMidiPads.roto')).toBeUndefined();
+  w.eval("window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:false}))");
+  send('button',0,true);send('button',7,true);
+  expect(w.sent).toEqual([]);expect(ptt).toEqual([true,false]);
 });

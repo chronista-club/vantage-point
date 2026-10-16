@@ -12,7 +12,7 @@
 //! - **active Lane track**: repo の「lanes」QUIC channel を購読し cache 更新 (E3)
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -20,18 +20,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 
-use tokio_util::sync::CancellationToken;
-
-use nostos::{AsyncDriver, Outcome};
-
-use crate::capability::RepoManagerCapability;
 use crate::capability::component_service::{LayerScope, Service};
 use crate::capability::core::CapabilityEvent;
 use crate::capability::eventbus::EventBus;
-use crate::commands::roto_control::{
-    InProcessLaneSource, QuicSwitchSink, RotoDescriptor, RotoHealDriver, RotoSessionBracket,
-    RotoView,
-};
 use crate::device_input::DeviceInput;
 use crate::repo::lane::LaneAddress;
 
@@ -88,11 +79,11 @@ fn compute_diff(
 fn create_device_input(port_name: &str) -> Option<Box<dyn DeviceInput + Send>> {
     use crate::device_input::lpd8::Lpd8Input;
     use crate::device_input::nanokontrol::NanoKontrolInput;
-    use crate::device_input::roto::RotoInput;
     use crate::device_input::xtouch::XTouchInput;
+    use crate::roto_midi::RotoMidiInput;
 
     if port_name.contains("Roto") {
-        Some(Box::new(RotoInput::default()))
+        Some(Box::new(RotoMidiInput))
     } else if port_name.contains("X-Touch") {
         Some(Box::new(XTouchInput))
     } else if port_name.contains("LPD8") {
@@ -160,20 +151,12 @@ fn enumerate_ports() -> HashMap<String, (bool, bool)> {
 /// local map に閉じていたせいで Model D 移行後に listener が誰からも張られなくなった）。
 type InputListeners = Arc<RwLock<HashMap<String, JoinHandle<()>>>>;
 
-/// ROTO motor へ注入する byte 列（knob_position の 14bit hi-res CC ペア × N knob）
-pub(crate) type MotorFrames = Vec<Vec<u8>>;
-
-/// motor 注入路の共有 slot（`start_roto_control` が設定、`apply_feedback` が使う）。
-/// watch = 真の latest-wins（mpsc + try_send は満杯時に**新しい方**を落とす drop-newest で
-/// 意味論が逆になる — team-b review。vp-app 側の feedback 経路と同型に揃える）
-type RotoFeedbackTx = Arc<RwLock<Option<tokio::sync::watch::Sender<Option<MotorFrames>>>>>;
-
 // ============================================================================
 // 艦隊スイッチ — VP が MIDI 機材を握るか、他アプリへ譲るか
 // ============================================================================
 //
 // CoreMIDI の物理 port は**単一 owner**なので、daemon が握っている間は他アプリ
-// （ladyland 等）が同じ機材を開けない（`start_roto_control` の ⚠️ も同じ事実）。
+// （ladyland 等）への譲渡は midistage の lease で調停する。
 // user が「今は ladyland で使う」と言えるスイッチを持たせる。
 //
 // ⚠️ OFF は「**握らない**」であって「**見えなくなる**」ではない。registry（device 一覧）は
@@ -272,16 +255,13 @@ struct ListenerDeps {
 ///
 /// - **艦隊 OFF の間は張らない**（user が機材を他アプリへ譲っている）。ここが gate の要 —
 ///   agent の hot-plug 報告も discovery もこの 1 本を通るので、抜き差しで握り直さない
-/// - ROTO は専用 loop（`start_roto_control`）が input を独占所有するため対象外
+/// - ROTO も MIDI-mode の input-only listener（DAW handshake / output は無し）
 /// - 生存中の listener が既に居れば no-op（二重接続の防止）。**開き直し中の task も
 ///   同じ map に入る**ので、再試行中に ensure が重なっても 2 本目は立たない
 /// - port がまだ列挙に無ければ短い backoff で開き直す（[`RetryPolicy`]）。lease が変わる /
 ///   艦隊 OFF / release で map から外されたら（= abort）そこで止まる
 async fn ensure_input_listener(deps: &ListenerDeps, port_name: &str) {
     if !deps.midi_enabled.load(Ordering::Relaxed) {
-        return;
-    }
-    if port_name.contains("Roto") {
         return;
     }
     let Some(parser) = create_device_input(port_name) else {
@@ -432,34 +412,22 @@ pub struct DeviceRegistry {
     discovery_task: Option<JoinHandle<()>>,
     /// discovery cancel signal
     cancel_tx: Option<mpsc::Sender<()>>,
-    /// ROTO 持続セッション task（nostos self-heal driver、Daemon lifecycle に enclose）
-    roto_task: Option<JoinHandle<()>>,
-    /// ROTO セッションの shutdown 子 token
-    roto_cancel: Option<CancellationToken>,
     /// input listener 管理（起動時 attach / agent 報告 / polling discovery の 3 経路で共有）
     input_listeners: InputListeners,
     /// listener を張る持ち物一式（`input_listeners` / `midi_enabled` / `midi_access` と同じ Arc を指す）
     listener_deps: ListenerDeps,
     /// フィードバック方向（LE-19）の出力接続（port displayName → output conn）。
-    /// 必要時に開き、send 失敗で捨てて次回再接続する（X-Touch / LPD8。ROTO は専用 loop 所有）
+    /// 必要時に開き、send 失敗で捨てて次回再接続する（X-Touch / LPD8。ROTO は output を開かない）
     outputs: Arc<tokio::sync::Mutex<HashMap<String, midir::MidiOutputConnection>>>,
     /// LPD8 pad LED の shadow（RGB 一括 sysex は全 pad 分を持つため差分計算に要る）
     lpd8_profile: Arc<tokio::sync::Mutex<crate::device_profile::lpd8::Lpd8Profile>>,
-    /// ROTO motor への注入路（conn_out は roto loop が独占所有するため、byte 列を loop に渡す）。
-    /// `start_roto_control` が設定。buffer 超過は drop（feedback は latest-wins で欠落無害）
-    roto_feedback_tx: RotoFeedbackTx,
     /// 前回 apply した feedback（section 単位の dedupe — 変わらない sysex を機材に投げない）
     last_feedback: Arc<tokio::sync::Mutex<crate::daemon::protocol::FleetFeedback>>,
     /// 艦隊を握るか（`false` = user が `vp midi off` で機材を他アプリへ譲っている）。
     ///
-    /// spawn 済みの discovery task からも読むので `Arc<AtomicBool>`。**hardware を掴む 3 つの
-    /// 入口**（input listener / output 接続 / ROTO セッション）が全部この 1 つを見る。
+    /// spawn 済みの discovery task からも読むので `Arc<AtomicBool>`。**hardware を掴む
+    /// 入口**（input listener / output 接続）がこの 1 つを見る。
     midi_enabled: Arc<AtomicBool>,
-    /// ROTO を**再取得**するための持ち物（`start_roto_control` の引数を初回に控える）。
-    ///
-    /// OFF → ON で ROTO を張り直すのに要る。これが無いと、一度 off にした ROTO は
-    /// daemon を再起動するまで戻らない（= スイッチが片道になる）。
-    roto_deps: Option<(Arc<RwLock<RepoManagerCapability>>, CancellationToken)>,
     pub(crate) midi_access: Arc<std::sync::RwLock<crate::midi_access::MidiAccess>>,
     pub(crate) midi_snapshot: Option<midistage_client::Snapshot>,
     pub(crate) midi_client: Option<Arc<midistage_client::Client>>,
@@ -488,16 +456,12 @@ impl DeviceRegistry {
             event_bus,
             discovery_task: None,
             cancel_tx: None,
-            roto_task: None,
-            roto_cancel: None,
             input_listeners,
             listener_deps,
             outputs: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             lpd8_profile: Arc::new(tokio::sync::Mutex::new(Default::default())),
-            roto_feedback_tx: Arc::new(RwLock::new(None)),
             last_feedback: Arc::new(tokio::sync::Mutex::new(Default::default())),
             midi_enabled,
-            roto_deps: None,
             midi_access,
             midi_snapshot: None,
             midi_client: None,
@@ -517,21 +481,6 @@ impl DeviceRegistry {
             return;
         }
         let mut last = self.last_feedback.lock().await;
-
-        // ROTO motor: knob byte 列を専用 loop に注入（conn_out は loop が独占所有）。
-        // watch send = 最新値の置き換え（未消費の古い frame は自然に消える = latest-wins）
-        if fb.knobs != last.knobs
-            && !fb.knobs.is_empty()
-            && let Some(tx) = self.roto_feedback_tx.read().await.as_ref()
-        {
-            let msgs: MotorFrames = fb
-                .knobs
-                .iter()
-                .filter(|k| k.index < 8)
-                .flat_map(|k| crate::device_profile::roto::knob_position(k.index, k.value))
-                .collect();
-            let _ = tx.send(Some(msgs));
-        }
 
         // X-Touch fader 1（index 0）= t の表示。transition 無し（None）は動かさない
         if fb.fader != last.fader
@@ -649,7 +598,7 @@ impl DeviceRegistry {
     ///
     /// | reason | 意味 | user がすべきこと |
     /// |---|---|---|
-    /// | `"listener"` / `"roto"` | 掴んでいる | — |
+    /// | `"listener"` | 掴んでいる | — |
     /// | `"released"` | user が `vp midi off` で譲っている | `vp midi on` |
     /// | `"unsupported"` | VP に parser が無い機材（最初から掴んでいない） | 何もない（取り合っていない） |
     ///
@@ -663,15 +612,6 @@ impl DeviceRegistry {
         }
         if !self.midi_enabled.load(Ordering::Relaxed) {
             return (false, "released");
-        }
-        // ROTO は listener ではなく専用 loop が in+out を独占所有する。
-        if port_name.contains("Roto") {
-            let live = self.roto_task.as_ref().is_some_and(|t| !t.is_finished());
-            return if live {
-                (true, "roto")
-            } else {
-                (false, "idle")
-            };
         }
         let Some(native_name) = self
             .midi_access
@@ -722,8 +662,8 @@ impl DeviceRegistry {
 
     /// 艦隊スイッチを切り替える。**状態が変わったときだけ `true`**（冪等）。
     ///
-    /// - `false` へ: 握っている port を全部離す（input listener / output 接続 / ROTO）
-    /// - `true` へ: 起動時と同じ手順で握り直す（enumeration + ROTO 再開）
+    /// - `false` へ: 握っている port を全部離す（ROTO を含む input listener / output 接続）
+    /// - `true` へ: 起動時と同じ手順で握り直す（enumeration + input listener）
     ///
     /// 切替は永続する（daemon 再起動をまたぐ）。ladyland 等の開発中に daemon を再起動
     /// （`app:swap` 等）しても port を奪い返さないため。
@@ -752,7 +692,14 @@ impl DeviceRegistry {
     /// 握っている MIDI port を全部離す（艦隊 OFF の実体）。
     ///
     /// registry（device 一覧）は**触らない** — 見えなくなるのではなく、握らなくなるだけ。
-    async fn release_fleet(&mut self) {
+    pub(crate) async fn release_fleet(&mut self) {
+        // Also used during daemon shutdown: close the acquisition gate first.
+        // This is runtime state only; do not persist the user's fleet switch here.
+        self.midi_enabled.store(false, Ordering::Relaxed);
+        self.midi_access
+            .write()
+            .expect("MIDI access poisoned")
+            .replace(vec![]);
         // ① input listener（device ごとに 1 本の CoreMIDI input 接続）
         let handles: Vec<_> = self
             .input_listeners
@@ -768,9 +715,7 @@ impl DeviceRegistry {
         for handle in handles {
             let _ = handle.await;
         }
-        // ② ROTO の in+out（専用 loop が独占所有している）
-        self.stop_roto_control().await;
-        // ③ feedback で開いた output 接続（drop = port を離す）
+        // ② feedback で開いた output 接続（drop = port を離す）
         let outputs = {
             let mut map = self.outputs.lock().await;
             let n = map.len();
@@ -784,14 +729,9 @@ impl DeviceRegistry {
         );
     }
 
-    /// 艦隊を握り直す（OFF → ON）。起動時と同じ 2 段（input 張り直し + ROTO 再開）。
+    /// 艦隊を握り直す（OFF → ON）。ROTO を含めて input listener を張り直す。
     async fn acquire_fleet(&mut self) {
         self.attach_fleet_inputs().await;
-        // ROTO は起動時に控えた持ち物で張り直す。控えが無い = このプロセスで一度も
-        // 起動していない（feature 無し / repo mode）ので何もしない。
-        if let Some((daemon_cap, shutdown)) = self.roto_deps.clone() {
-            self.start_roto_control(daemon_cap, shutdown).await;
-        }
         tracing::info!("🧲 艦隊 ON — MIDI を握り直しました");
     }
 
@@ -873,7 +813,7 @@ impl DeviceRegistry {
                     event_bus.emit(event).await;
 
                     // input port がある device は共有 map 経由で listener を冪等 ensure
-                    // （ROTO 除外 / parser 判定 / 二重接続防止は ensure_input_listener が担う）
+                    // （parser 判定 / 二重接続防止は ensure_input_listener が担う）
                     if *has_in {
                         ensure_input_listener(&listener_deps, name).await;
                     }
@@ -920,112 +860,7 @@ impl DeviceRegistry {
         }
     }
 
-    /// ROTO 持続セッションを開始する。
-    ///
-    /// 前景 `vp midi roto control` が一発でやっていた〔open(in+out) + DAW_START handshake +
-    /// keepalive(autorespond) + LCD projection + track button → switch_lane〕を、daemon 常駐 +
-    /// 自動再接続（抜き差し heal）の持続サービスに昇格させる。nostos `AsyncBracket`/`AsyncDriver`
-    /// で「接続 1 サイクル = enter→control loop→exit」を表し、disconnect は `Reborn` で再接続する。
-    ///
-    /// lane data は `RepoManagerCapability` の Arc を in-process 直読み（QUIC self-loop なし、
-    /// `build_node_lanes` 共有で CLI と並び一致）。switch_lane は L0 portless で repo が listen
-    /// しなくなったため Daemon :32000 の repo-proxy ask 経由で forward する（daemon = daemon への
-    /// self-loop QUIC だが、ボタン押下時のみの低頻度なので lane poll と違い cache 不要）。
-    /// `shutdown` の子 token で Daemon/daemon の shutdown chain に enclose する。
-    ///
-    /// ⚠️ CoreMIDI 物理 port は単一 owner。daemon 常駐中は CLI `vp midi roto control` が
-    /// 同 port を取得できない（想定挙動）。
-    pub async fn start_roto_control(
-        &mut self,
-        daemon_cap: Arc<RwLock<RepoManagerCapability>>,
-        shutdown: CancellationToken,
-    ) {
-        // 二重起動防止（既に走っていれば no-op）
-        if self.roto_task.as_ref().is_some_and(|t| !t.is_finished()) {
-            return;
-        }
-        // ⚠️ 持ち物は **gate より前**に控える。OFF 状態で daemon が起動した回でも控えておかないと、
-        // その後 `vp midi on` しても ROTO だけ戻せない（片道スイッチになる）。
-        self.roto_deps = Some((daemon_cap.clone(), shutdown.clone()));
-        // 艦隊 OFF の間は ROTO の in+out も握らない（ladyland 等に譲っている）。
-        if !self.midi_enabled.load(Ordering::Relaxed) {
-            tracing::info!("🧲 艦隊 OFF のため ROTO 常駐を見送りました（`vp midi on` で開始）");
-            return;
-        }
-        let Some(port_pattern) = self
-            .midi_access
-            .read()
-            .expect("MIDI access poisoned")
-            .roto_prefix()
-        else {
-            return;
-        };
-        crate::coremidi_notify::warn_if_not_started("ROTO");
-        let child = shutdown.child_token();
-        self.roto_cancel = Some(child.clone());
-
-        // RepoManagerCapability から lane data の Arc を取り出す（in-process 直読み）。
-        let (running_repos, lane_registry) = {
-            let pmc = daemon_cap.read().await;
-            (pmc.running_processes_ref(), pmc.lane_registry_ref())
-        };
-        let lane_source = InProcessLaneSource {
-            running_repos,
-            lane_registry: Some(lane_registry),
-            daemon_cap: Some(daemon_cap),
-        };
-        // フィードバック方向: motor byte 列の注入路（conn_out は loop が独占所有するため）。
-        // watch = latest-wins（apply_feedback の連続送信は最新だけが残る）
-        let (feedback_tx, feedback_rx) = tokio::sync::watch::channel::<Option<MotorFrames>>(None);
-        *self.roto_feedback_tx.write().await = Some(feedback_tx);
-
-        let bracket = RotoSessionBracket::new(
-            lane_source,
-            QuicSwitchSink::new(),
-            child.clone(),
-            // knob 系入力を devices.control_event に流す（fleet 配線 — doc 49 LE-19）
-            Some(Arc::clone(&self.event_bus)),
-            feedback_rx,
-        );
-        let mut driver = RotoHealDriver {
-            shutdown: child,
-            backoff: Duration::from_millis(800),
-        };
-
-        let task = tokio::spawn(async move {
-            let initial = RotoDescriptor {
-                port_pattern,
-                view: RotoView::default(),
-            };
-            tracing::info!("🧲 devices: ROTO 持続セッション開始 (self-heal)");
-            match driver.run(&bracket, initial).await {
-                Outcome::Done(()) => {
-                    tracing::info!("🧲 devices: ROTO セッション終了 (graceful)")
-                }
-                Outcome::Reborn(_) => {
-                    tracing::info!("🧲 devices: ROTO セッション離脱 (shutdown)")
-                }
-                Outcome::Failed(msg) => {
-                    tracing::warn!("🧲 devices: ROTO セッション fatal: {}", msg)
-                }
-            }
-        });
-        self.roto_task = Some(task);
-    }
-
-    /// ROTO 持続セッションを停止する（shutdown chain から呼ぶ）。
-    pub async fn stop_roto_control(&mut self) {
-        if let Some(cancel) = self.roto_cancel.take() {
-            cancel.cancel();
-        }
-        *self.roto_feedback_tx.write().await = None;
-        if let Some(task) = self.roto_task.take() {
-            task.abort();
-            let _ = task.await;
-        }
-    }
-
-    /// Revoke ports first, then join the old listeners/ROTO task before acknowledging release.
+    /// Revoke ports first, then join old listeners before acknowledging release.
     pub(crate) async fn apply_midi_snapshot(
         &mut self,
         snapshot: Option<midistage_client::Snapshot>,
@@ -1053,20 +888,26 @@ impl DeviceRegistry {
                     .collect()
             })
             .unwrap_or_default();
-        let released = self
-            .midi_access
-            .write()
-            .expect("MIDI access poisoned")
-            .replace(owned);
+        let revoked_ports: HashSet<String> = {
+            let mut access = self.midi_access.write().expect("MIDI access poisoned");
+            let previous = access.owned.clone();
+            let released = access.replace(owned);
+            previous
+                .into_iter()
+                .filter(|ports| released.contains(&ports.device_id))
+                .flat_map(|ports| ports.inputs.into_iter().chain(ports.outputs))
+                .collect()
+        };
         let mut listeners = self.input_listeners.write().await;
         let old: Vec<_> = listeners
             .keys()
             .filter(|name| {
-                !self
-                    .midi_access
-                    .read()
-                    .expect("MIDI access poisoned")
-                    .permits_input(name)
+                revoked_ports.contains(*name)
+                    || !self
+                        .midi_access
+                        .read()
+                        .expect("MIDI access poisoned")
+                        .permits_input(name)
             })
             .cloned()
             .collect();
@@ -1081,15 +922,19 @@ impl DeviceRegistry {
         for handle in handles {
             let _ = handle.await;
         }
-        if released.iter().any(|id| id == "roto") {
-            self.stop_roto_control().await;
-        }
         self.outputs.lock().await.retain(|name, _| {
-            self.midi_access
-                .read()
-                .expect("MIDI access poisoned")
-                .permits_output(name)
+            !revoked_ports.contains(name)
+                && self
+                    .midi_access
+                    .read()
+                    .expect("MIDI access poisoned")
+                    .permits_output(name)
         });
+        // Publish the interruption before reopening, even if a new lease reuses
+        // the same port name. A held PTT must not survive the input stream reset.
+        if !revoked_ports.is_empty() {
+            self.republish_hold_state().await;
+        }
         let changed = self.midi_snapshot.as_ref().map(|s| &s.devices)
             != snapshot.as_ref().map(|s| &s.devices);
         self.midi_snapshot = snapshot;
@@ -1106,9 +951,6 @@ impl DeviceRegistry {
                 .collect();
             for name in names {
                 ensure_input_listener(&self.listener_deps, &name).await;
-            }
-            if let Some((cap, shutdown)) = self.roto_deps.clone() {
-                self.start_roto_control(cap, shutdown).await;
             }
             self.republish_hold_state().await;
         }
@@ -1460,10 +1302,10 @@ mod tests {
     const NATIVE: &str = "Midistage/vp/a:1/42 | LPD8 mk2";
 
     #[tokio::test]
-    async fn ensure_skips_non_fleet_and_roto() {
+    async fn ensure_skips_unsupported_and_unowned_ports() {
         let (opener, calls) = appearing_opener(1);
         let deps = test_deps(opener, NATIVE);
-        // parser 対象外 device と ROTO（専用 loop 所有）は map に入らない
+        // parser 対象外 device と lease の無い ROTO は map に入らない
         ensure_input_listener(&deps, "Unknown Device").await;
         ensure_input_listener(&deps, "Roto-Control").await;
         assert!(deps.listeners.read().await.is_empty());
@@ -1598,29 +1440,6 @@ mod tests {
         );
     }
 
-    /// ⚠️ **片道スイッチにしない**。ROTO の持ち物（daemon_cap / shutdown）を控えていないと、
-    /// 一度 off にした ROTO は daemon 再起動まで戻らない。
-    #[tokio::test]
-    async fn switch_records_roto_deps_even_when_off() {
-        use crate::capability::RepoManagerCapability;
-        let bus = Arc::new(EventBus::new());
-        let mut devices = DeviceRegistry::new(bus);
-        devices.midi_enabled.store(false, Ordering::Relaxed);
-
-        let cap = Arc::new(RwLock::new(RepoManagerCapability::new()));
-        let token = CancellationToken::new();
-        // OFF 状態で daemon が起動した回でも、持ち物は控える（gate より前で控えるため）
-        devices.start_roto_control(cap, token).await;
-        assert!(
-            devices.roto_deps.is_some(),
-            "OFF 起動でも ROTO の持ち物を控える（そうしないと ON に戻せない）"
-        );
-        assert!(
-            devices.roto_task.is_none(),
-            "OFF の間は ROTO セッションを張らない"
-        );
-    }
-
     /// 同じ値への切替は no-op（冪等）。`vp midi off` を 2 回打っても離し直さない。
     #[tokio::test]
     async fn switch_is_idempotent() {
@@ -1680,10 +1499,13 @@ mod midi_handoff_tests {
         }
         let finished = Arc::new(AtomicBool::new(false));
         let signal = Released(finished.clone());
-        registry.roto_task = Some(tokio::spawn(async move {
-            let _held = signal;
-            std::future::pending::<()>().await;
-        }));
+        registry.input_listeners.write().await.insert(
+            port("roto"),
+            tokio::spawn(async move {
+                let _held = signal;
+                std::future::pending::<()>().await;
+            }),
+        );
         let keep = tokio::spawn(std::future::pending::<()>());
         registry
             .input_listeners
@@ -1703,9 +1525,179 @@ mod midi_handoff_tests {
             finished.load(Ordering::SeqCst),
             "ROTO connection dropped before acknowledgement"
         );
-        assert!(registry.roto_task.is_none());
+        assert!(
+            !registry
+                .input_listeners
+                .read()
+                .await
+                .contains_key(&port("roto"))
+        );
         assert!(!registry.input_listeners.read().await[&port("lpd8")].is_finished());
         registry.apply_midi_snapshot(None).await;
         assert!(registry.input_listeners.read().await.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod roto_midi_tests {
+    use super::*;
+    use crate::device_input::ControlEvent;
+
+    #[test]
+    fn roto_factory_accepts_only_vp_setup_buttons() {
+        let mut input = create_device_input("Roto-Control").unwrap();
+        for index in 0..8 {
+            assert_eq!(
+                input.parse(&[0xbf, 20 + index, 127]),
+                Some(ControlEvent::Button {
+                    index,
+                    pressed: true
+                })
+            );
+            assert_eq!(
+                input.parse(&[0xbf, 20 + index, 0]),
+                Some(ControlEvent::Button {
+                    index,
+                    pressed: false
+                })
+            );
+        }
+        for msg in [
+            vec![0xb0, 20, 127],
+            vec![0xb1, 20, 127],
+            vec![0xbf, 28, 127],
+            vec![0xbf, 52, 127],
+            vec![0xbf, 44, 127],
+            vec![0xbf, 20, 64],
+            vec![0xbf, 20, 255],
+            vec![0xbf, 20],
+            vec![0xbf, 20, 127, 0],
+            vec![0xf0, 0x00, 0x21, 0x37, 0xf7],
+        ] {
+            assert_eq!(input.parse(&msg), None, "not a VP setup button: {msg:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn roto_uses_owned_input_only_listener() {
+        let native = "Midistage/vp/test/1 | Roto-Control";
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = calls.clone();
+        let opened = Arc::new(tokio::sync::Notify::new());
+        let opened_signal = opened.clone();
+        let registry = DeviceRegistry::new(Arc::new(EventBus::new()));
+        let mut deps = registry.listener_deps.clone();
+        deps.midi_enabled.store(true, Ordering::Relaxed);
+        deps.access
+            .write()
+            .unwrap()
+            .replace(vec![crate::midi_access::OwnedPorts {
+                device_id: "roto".into(),
+                lease: "test".into(),
+                inputs: vec![native.into()],
+                outputs: vec![],
+            }]);
+        deps.opener = Arc::new(move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+            opened_signal.notify_one();
+            let (tx, rx) = mpsc::channel(8);
+            Ok(OpenedInput {
+                _conn: Box::new(tx),
+                rx,
+            })
+        });
+        ensure_input_listener(&deps, "Roto-Control").await;
+        tokio::time::timeout(Duration::from_secs(1), opened.notified())
+            .await
+            .expect("input opened");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let mut handles = deps.listeners.write().await;
+        let handle = handles
+            .remove(native)
+            .expect("ROTO uses the input-only listener");
+        handle.abort();
+        let _ = handle.await;
+    }
+}
+
+#[cfg(test)]
+mod roto_lifetime_tests {
+    use super::*;
+    use crate::midi_access::OwnedPorts;
+
+    #[tokio::test]
+    async fn lease_generation_change_closes_roto_even_when_port_name_is_reused() {
+        let mut registry = DeviceRegistry::new(Arc::new(EventBus::new()));
+        registry.midi_enabled.store(true, Ordering::Relaxed);
+        let name = "Midistage/vp/reused/1 | Roto-Control";
+        let mut events = registry
+            .event_bus
+            .subscribe("roto-reset", "devices.device_connected")
+            .await;
+        registry.devices.write().await.insert(
+            "Roto-Control".into(),
+            ConnectedDevice {
+                port_name: "Roto-Control".into(),
+                has_input: true,
+                has_output: false,
+                connected_at: Instant::now(),
+            },
+        );
+        registry.listener_deps.opener = Arc::new(|_| {
+            let (tx, rx) = mpsc::channel(8);
+            Ok(OpenedInput {
+                _conn: Box::new(tx),
+                rx,
+            })
+        });
+        registry
+            .midi_access
+            .write()
+            .unwrap()
+            .replace(vec![OwnedPorts {
+                device_id: "roto".into(),
+                lease: "old".into(),
+                inputs: vec![name.into()],
+                outputs: vec![],
+            }]);
+        let task = tokio::spawn(std::future::pending::<()>());
+        let aborted = task.abort_handle();
+        registry
+            .input_listeners
+            .write()
+            .await
+            .insert(name.into(), task);
+        let snapshot = serde_json::from_value(serde_json::json!({
+            "sequence":2,"protocol_version":1,"server_epoch":"test","session_id":"session",
+            "devices":[{"device_id":"roto","profile_id":"roto","name":"Roto-Control","present":true,
+                "assignment":{"client_id":"vp","revision":1,"expected":true},"phase":"active",
+                "lease":{"session_id":"session","token":"new"},"controls":[],
+                "native_ports":{"inputs":[name],"outputs":[]}}]
+        }))
+        .unwrap();
+        registry.apply_midi_snapshot(Some(snapshot)).await;
+        assert!(
+            aborted.is_finished(),
+            "same port name does not extend a revoked lease"
+        );
+        let unavailable = events.recv().await.unwrap();
+        assert_eq!(
+            unavailable.payload["held"], false,
+            "PTT stops before the replacement stream is acquired"
+        );
+        let acquired = events.recv().await.unwrap();
+        assert_eq!(acquired.payload["held"], true);
+        registry.release_fleet().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_release_closes_the_acquisition_gate() {
+        let mut registry = DeviceRegistry::new(Arc::new(EventBus::new()));
+        registry.midi_enabled.store(true, Ordering::Relaxed);
+        registry.release_fleet().await;
+        assert!(
+            !registry.midi_enabled(),
+            "shutdown cannot reopen ROTO from a late device report"
+        );
     }
 }

@@ -90,33 +90,35 @@ body 164 byte の配置:
 
 **Program の切替は本体操作**。mk2 の active program を SysEx で切り替える命令は未確認で、総当たりで探さない。`vp midi lpd8 switch` は mk2 では「PROG SELECT を押しながら pad <N>」と案内して終了コード 2 で終わる。初代の `switch` と `write` は確かめる手段が無いので「送信しました（確認はできません）」と表示する。
 
-## ROTO のピン・session 操作
+## ROTO の MIDI モード入力
 
-> **保留（2026-10-16）**: 以下は途中の設計案。mako「ROTOはもうちょい中身とVPの連動をConception。何が欲しいかちゃんと話してない。」により実装を停止。WIP は再検討の材料で、完成済み・合意済みの操作仕様ではない。
+2026-10-16 裁定: MIDI モードの「VP」setup を使う。列1〜7のボタンはピン #1〜#7、列8は押している間だけ音声入力。ノブ・touch・transport は未割当。pin #8 は LPD8 pad8 / ⌘8 で使える。番号・色・宛先は既存の app 共通ピン設定が正本で、sidebar の `#N` もその色を使う。
 
-関連 task: `mem_1Cg4LYjWJGpLpLx4LQnjDz`。ROTO 列 N = app 全体のピン #N。入力の対象は LPD8 と同じ最後にアクティブになった Window（`midi_target`）。sidebar の lane 行に付く `#N` もピンの設定色を使う。ROTO のノブを gallery の pane 幅へ写す経路と、その逆方向の share → motor を撤去する。LPD8 の knob 2〜8 は従来どおり。
+### setup との入力契約
 
-- ボタン 1〜8（CC 20〜27）はピンの選択。LPD8 の押下判定と同じ handler を通す（空枠で今の lane を登録、登録済みは短押し release で開く、600ms 長押しで上書き）。
-- 上段はピン帯と同じ lane 名とピンの色。開発起点 lane は repo 名。空枠は `#N` と黒。色は既存 ROTO profile の `closest_index` で83色 paletteへ写す。track 名は既存 profile に従い ASCII 12文字 + NUL（13 byte）。非 ASCII の置換・drop も profile に任せる。
-- ノブ N はピン #N の lane にある session を生成順に選ぶ。session の key が飛び番でも「配列位置 → key」で引く。刻みは session 数、値は `index / (count - 1)`（0〜1件なら0）。1〜127 sessionを扱い、127件を超えると先頭127件まで。現在の focused session をモーターへ投影する。
-- 下段の parameter 名は `Idle / Think / Work / Ask` と context 使用率。`Ask` はユーザーの操作が必要な状態。未観測の context は `--%`、不在 lane は `Offline --%`。activity は sidebar と同じ `createAgentActivity`、context は conversation の `turn_completed` が運ぶ tokens/window を session 別に保持する。別 session の値を混ぜない。
-- 16 session以下は step label に session 名（無名なら `cc#N`）。17〜127件では機材が stepNames を受けないため、parameter 名13文字へ短い状態・context・選択session名を詰める。ノブを触っている間はその列の parameter/motor を送らず、release 後に最新値へ戻す。
+正本は `crates/vantage-point/src/roto_midi.rs` の `VP_ROTO_SETUP: MidiButtonSetup`。1始まりの `channel`、物理列順の `buttons: [u8; 8]`、`press` / `release` をまとめる。暫定値は channel=16、buttons=[20,21,22,23,24,25,26,27]、press=127、release=0。raw MIDI のチャンネル・CC・値をこの境界で検証し、合致したものだけ `ControlEvent::Button {index,pressed}` にする。Webview に CC 定数を複製しない。
 
-### 表示の経路と再接続
+midistage の setup 書き込みとこの定義を合わせること。2026-10-16 の読み取りでは実機には Ladyland の ch1/ch2 setup があり、**VP setup はまだ無い**。暫定値で今の実機が動くとは扱わない。Serial のフレーミング・ポート管理・読み取り・書き込みは midistage の責務（PR #26）。VP の Serial 試作は `a6b2ac27` の履歴のみ保持し、workspace から外す。
 
-sidebar はピン・session roster・activity・context・色を reactive に読み、`vp:midi-pads` に ROTO の8列を同梱する。main bundle は gallery の fader と合わせ、既存の `fleet:feedback` → 対象 Window の watch → daemon `apply_feedback` に運ぶ。main bundle に sidebar store を複製しない。
+### 経路と音声入力
 
-ROTO の in/out は引き続き専用 loop が単独所有する。daemon 使用時（control tapあり）は button/knob/touch を `devices.control_event` に転送し、旧 lane 順の直接 switch と定期 LCD 投影は行わない。CLI 前景の lane navigation は従来どおり。handshake、keepalive、自動再接続の nostos bracket は保つ。
+ROTO は他機材と同じ owned input-only listener を使う。midistage の lease が無ければ取得しない。常駐の DAW handshake / learn / track SysEx / motor feedback は撤去する。明示的な診断用 `vp midi roto control` の DAW CLI は別機能として残すが、VP の通常の MIDI 入力からは呼ばない。
 
-feedback は **全 snapshot を watch に置き、hardware loop が実際に送った snapshot と比較する**。producer 側で差分だけ置くと、latest-wins が中間値を捨てた際に別 slot の変更まで失われる。track に変更がある時は既存 profile の shadow と枠付き全 track batch を保つ。parameter は変化した列だけを送る。再接続・MIDI 再取得時は最新 snapshot を再投影する。byte 仕様は [design 20](20-roto-control-sysex-protocol.md) と既存 profile が正本。
+最後に触った VP window だけが入力を受ける。列1〜7は LPD8 / ⌘N と同じ `selectLaneByNumber` → `pinTargetOf` を使い、押下1回で1回だけ jump する。未登録・不在のピンは何もしない。
+
+列8は main bundle の chat controller へ渡し、既存の🎙と同じ `voice:start` / `voice:stop` の制約を使う。
+
+- active lane の focused chat session を押下時に固定し、release 時の現在地へ送り直さない。
+- 下書きがある／認識中／対象 chat が無い・隠れている／console focus 中は開始しない。理由の表示は見えている chat の入力欄だけでよい。自動で chat に切り替えない。
+- window の MIDI target 喪失、session/lane の変更・unmount、機材切断・所有権喪失時に停止する。release が旧 window に届くことを前提にしない。
+- 認識結果は元の入力欄に置く。自動送信しない。認識中に戻ってきた下書きは既存仕様どおり保持する。
 
 ### やってはいけない
 
-- daemon loop と Window の両方で同じボタンを処理しない。
-- gallery の share を ROTO の motor に混ぜない。
-- track update を枠なしの単発 SysEx に置き換えない。
-- latest-wins channel に差分だけを置かない。
-- 自動テストを ROTO 実機の表示・モーター・ノブの検収とみなさない。lane から daemon 再起動・app swap は行わず、lead に引き渡す。
+- Serial port を VP daemon から開かない。MIDI 物理 port へ所有権チェックを迂回して接続しない。
+- DAW 表示・動的 VU・knob の session 選択を今回の範囲に混ぜない。
+- 他 window へ録音を引き継がない。書きかけを上書き・自動送信しない。
+- 自動テストを ROTO 実機・録音の検収とみなさない。lane から daemon 再起動・app swap は行わない。
 
 ## 検証
 
@@ -132,4 +134,4 @@ Lane 順序・両端・1〜128件の全到達・連続入力抑制、番号 ⇄ 
 - 2026-10-12: ピンを 8 枠に（pad 1〜8 = ピン #1〜#8、LPD8 pad の Scene slot mapping を撤去、sidebar は 4 × 2）。未選択の明るさを `dimGain` として保存し、Editor に MIDI タブ（8 色 + 明るさ）を追加。`midi:navigation` の保存後に Rust が `vp:midi-settings` を配り直す。`vp midi lpd8 write` の PAD 説明を「PAD 1-8 = Lane ピン #1〜#8」に。自動テスト済み、アプリ差し替え・実機確認待ち。
 - 2026-10-13: ピン・色・`dimGain` を window ごとから app 全体の 1 組へ（`midi-pins.json`、旧 window 別の値から 1 度だけ移行、保存のたびに全 window へ配る）。番号の出どころをピンに一本化（sidebar `#N` / ⌘N / `⌘ hold l` / pad N、旧 CURRENTs 並び順の番号を撤去）、ピン帯に hover ✕ の解除、文言を「固定」→「登録」に。自動テスト済み、アプリ差し替え・複数 window の実機確認待ち。
 
-- 2026-10-16: ROTO の8列をピンへ対応させる設計を追加（実装・検証進行中）。枠付きtrack batch、12 ASCII + NUL、16件までのstep labelという既存profileの制約を維持する。
+- 2026-10-16: DAW 前提の WIP を MIDI モード入力へ変更。列1〜7 pin jump / 列8 PTT、Serial は midistage 所有で合意。実装済み。fmt / workspace check / Clippy / Rust 全体テスト、Webview 813 tests / 型検査 / bundle 通過。lease 更新・終了時の listener 解放、対象喪失時の PTT 停止を回帰検証。VP setup の実機書き込み・実アプリでの検収は別工程。

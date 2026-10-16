@@ -46,7 +46,6 @@ createRoot(() => createEffect(() => {
   const pads = pinFeedback(pins(), sidebar.active_lane_address ?? null,
     new Set(currentLanes(sidebar).map(l => l.address)));
   const enabled = target() && pinsReady();
-  const rotoSlots = roto.feedback();
-  (window as unknown as {__vpMidiPads?:unknown}).__vpMidiPads = {enabled,pads,roto:rotoSlots};
-  window.dispatchEvent(new CustomEvent('vp:midi-pads', {detail:{enabled,pads,roto:rotoSlots}}));
+  (window as unknown as {__vpMidiPads?:unknown}).__vpMidiPads = {enabled,pads};
+  window.dispatchEvent(new CustomEvent('vp:midi-pads', {detail:{enabled,pads}}));
 }));
