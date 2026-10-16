@@ -40,6 +40,8 @@ const selectPin = pinPadHandler(selectLaneByNumber, {
   notify: (slot, notice) => {
     const configured = pins().colors[slot];
     const color = notice === 'unavailable' ? '#ff3030' : configured === '#000000' ? '#ffffff' : configured;
+    diagnosePin(slot, notice === 'registered' ? notice : sidebar.active_component ? 'component_active' :
+      !sidebar.active_lane_address ? 'no_active_lane' : 'lane_not_found', color);
     blink.flash(slot, [1,3,5].map(offset => parseInt(color.slice(offset, offset + 2),16)));
   },
 });
@@ -58,9 +60,26 @@ if (restored !== undefined) restoreMidiPins(restored);
 
 const roto = createRoot(() => createRotoNavigation());
 
+// entry.tsx の console bridge → 既存の t=console → Rust tracing (target=webview)。
+function diagnosePin(slot: number, reason: string, color?: string): void {
+  console.info('[midi:pin]', {
+    pin: slot + 1, reason, target: target(), pinsReady: pinsReady(),
+    active_component: sidebar.active_component ? {...sidebar.active_component} : null,
+    active_lane_address: sidebar.active_lane_address ?? null,
+    repo_keys: Object.keys(sidebar.lanes_by_repo),
+    assigned_address: pins().slots[slot]?.address ?? null,
+    ...(color ? {color} : {}),
+  });
+}
+
 // This module belongs to the sidebar bundle, so it reads the same store as CURRENTs.
 window.addEventListener('vp:midi-navigation', event => {
   const payload = (event as CustomEvent<FleetPayload>).detail;
+  const e = payload.event;
+  if (payload.port_name?.includes('LPD8') && e?.type === 'pad' && (e.velocity ?? 0) > 0 &&
+    Number.isInteger(e.index) && e.index >= 0 && e.index < pins().slots.length) {
+    diagnosePin(e.index, !target() ? 'target_inactive' : !pinsReady() ? 'settings_not_ready' : 'press');
+  }
   if (!target()) { event.preventDefault(); return; }
   if (!pinsReady() && payload.port_name?.includes('LPD8') && payload.event?.type === 'pad') {
     event.preventDefault(); return;

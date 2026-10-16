@@ -133,6 +133,14 @@ ROTO は他機材と同じ owned input-only listener を使う。midistage の l
 
 Lane 順序・両端・1〜128件の全到達・連続入力抑制、番号 ⇄ ピンの変換と登録済み pad N の短押し = ⌘N の同一宛先、ピン帯の登録 / hover ✕ 解除、sidebar IPC 連携、Window 対象の切替・閉鎖、8 ピンの pad 対応と 4 × 2 の並び、旧 4 ピン session の読込み、`dimGain` の LED 反映、Editor → IPC の JSON・配り直しからの復元・遅れた echo の無視を自動検証する。pad の即登録・短押し・長押し・同時押し・対象切替時の取消し・LED 点滅は fake timer と sidebar IPC 結合テストで検証する。実機の送信ノート／CC と、複数 Window の操作・Pad 色は別途実機確認する。
 
+## 空 pad が登録できないときの診断
+
+`app.kdl.log` の `[midi:pin]` は既存の console bridge（`t: console` → Rust tracing の `webview` target）を使う。LPD8 pad の押下時に `press`（または `target_inactive` / `settings_not_ready`）、登録通知時に `registered` または拒否理由を記録する。拒否理由は `component_active`（Devices 等の表示中）、`no_active_lane`（選択なし）、`lane_not_found`（選択 address が一覧にない）。各行には pin 番号、target、pinsReady、active_component、active_lane_address、lanes_by_repo のキー一覧、登録済み address を含める。通知行の `color` は点滅に渡す色で、拒否は `#ff3030`、登録は設定色（黒なら白）。
+
+次の実機確認では、子 lane を選択し空 pad を押して `[midi:pin]` と `midi:navigation save` を照合する。`press` 自体がなければ sidebar listener までの入力配送と差し替えた bundle を確認する。`registered` があれば保存要求まで到達している。点滅色は sidebar の feedback への投影を自動テストするが、物理 LED の発光を証明するログではない。daemon の既存ログは `feedback output opened` と送信失敗を記録し、RGB の送信成功は記録しないため、発光色は実機で確認する。
+
+Rust の `SidebarState` を serde で生成した fixture を `midi-sidebar-wire.test.ts` に流し、起動 → settings → lane と Devices → lane の系列で pad 4/8 を検証する。fixture の再生成は `UPDATE_MIDI_WIRE_FIXTURE=1 cargo test -p vp-app --test midi_sidebar_wire`。通常の Rust test は保存済み fixture と比較して型の変更を検出する。
+
 ## Status log
 
 - 2026-10-09: GO。Window 対象管理、Lane ノブ、4つの Lane ピンと色の保存を実装。自動テスト・型検査・bundle 検証済み。UI は Computer Use 接続不可のため目視未確認。アプリ差し替え・daemon 更新・実機検収前。
@@ -145,3 +153,6 @@ Lane 順序・両端・1〜128件の全到達・連続入力抑制、番号 ⇄ 
 
 - 2026-10-16: DAW 前提の WIP を MIDI モード入力へ変更。列1〜7 pin jump / 列8 PTT、Serial は midistage 所有で合意。実装済み。fmt / workspace check / Clippy / Rust 全体テスト、Webview 813 tests / 型検査 / bundle 通過。lease 更新・終了時の listener 解放、対象喪失時の PTT 停止を回帰検証。VP setup の実機書き込み・実アプリでの検収は別工程。
 - 2026-10-16: 空 pad の即登録・登録済み pad の離して選択・600ms 長押し上書きと LED 通知を追加。保存要求時に app log へ window ID と slots（#1〜#8 順、path/address/null）を 1 行記録する。保存失敗は既存の warn に残る。実機確認待ち。
+- 2026-10-16: 空 pad 登録の実機不具合は Rust serde fixture の系列では再現せず、登録判断を変えずに拒否理由と状態の診断を追加（`mem_1Cg5i626zphsJ9iXXXWCTE`）。次回 swap 後のログ・発光色確認待ち。
+
+- 2026-10-16: nightly `ebfe2e93` まで取り込み、#1219 の切断・接続待ち・listener lock 順序と #1222 の診断を保持。並行 ensure を含む同名 lease 更新で、新しい port を開く時点の旧 task 終了と先行 `held=false` 通知を検証。shutdown の `release_fleet` は永続設定保存を呼ばないことをソース確認。fmt / check / Clippy / Rust 全体 1626 passed（0 failed / 25 ignored）/ Webview 847 tests / 型検査 / bundle を再検証。実機検収は引き続き別工程。
