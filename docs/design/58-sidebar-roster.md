@@ -15,6 +15,7 @@ Related: `mem_1Cg7MpHWBdf6u9CYjyEAaf`、board `a0722a1b-b6e0-4e3a-a720-ea0a9c9c4
 
 左端を状態記号、中央を名前と now-line、右端を最終活動からの経過時間の固定列にする。
 経過時間は既存 `last_activity_at` を使用し、1 分未満は `now`、以降は `2m` / `1h` と表示する。
+wire の時刻は分単位に切り捨てられるため、`now` / `1m` の境界には最大 59 秒のずれがある。
 lead と sub は同じ列配置と高さ。`lanes/<name>` の独立行を除き、branch と `↓N`、dirty、
 detached の SHA、PR 番号はコンパクトに同じ行へまとめる。
 現実装の dirty・behind・detached SHA は `sub_status` が供給される sub 行に限る。
@@ -30,6 +31,9 @@ tool 呼び出し・結果を用いる。既存 lane snapshot push へ状態を�
 この状態投影では履歴 replay を無視し、現在の要求や作業状態を上書きしない。TUI の要求検出は今回対象外で、Notification hook の別 task とする。
 
 状態は engine の conversation pump で session ごとの揮発 store に畳み、既存の lane snapshot（約 5 秒周期）へ投影する。再起動後の過去履歴から未回答状態を推定しない。
+engine の破棄時は対象 session を停止にし、lane の削除・reset 時は進行記録を消す。
+pump の世代を照合し、破棄後の遅れた event が旧要求を復活させない。
+表示中の lane も snapshot を優先するため、送信直後の状態・`vp now` の反映には最大約 5 秒かかる。
 
 実機確認では、非表示 lane の質問発生と回答後の解除、repo を畳んだ時の件数、pin の色、
 長い名前・now-line の省略と二行の高さ、tooltip の干渉を確認する。

@@ -220,7 +220,7 @@ pub(crate) async fn start_repo(
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::repo::process_runner::ProcessRegistry::new(),
         )),
-        topic_router,
+        topic_router: topic_router.clone(),
         vpdb: vpdb.clone(),
         // Phase A4-2b: Lane scope の Agent pool — lead lane 1 つ pre-populate
         // memory rule: 多 scope architecture (App/Repo/Lane/Pane)、HD/TH は Lane scope。
@@ -230,10 +230,10 @@ pub(crate) async fn start_repo(
         // lane subs を `LaneCmd::SpawnLane` Cmd 化して `lane-spawn` mailbox に投入する
         // (= concurrency 制御を `Arc<Semaphore::new(N)>` で表現、 N=config.startup.max_concurrent_lane_spawn)。
         // 詳細は run() 内 lane_spawn_actor wiring 参照。
-        lane_pool: Arc::new(RwLock::new(super::lane::LanePool::with_root(
-            repo_name_for_remote.clone(),
-            repo_dir.clone(),
-        ))),
+        lane_pool: Arc::new(RwLock::new(
+            super::lane::LanePool::with_root(repo_name_for_remote.clone(), repo_dir.clone())
+                .with_conversation_progress(topic_router.conversation_progress.clone()),
+        )),
         // Phase 2 (Step E): system 系 lifecycle event の central broadcast bus。
         // capacity 64 = lifecycle 変更が短時間に集中しても drop しない buffer。
         // caller publish (SystemEvent::Lane(LaneDiff::*) 等) + `publish_lanes` subscribe で

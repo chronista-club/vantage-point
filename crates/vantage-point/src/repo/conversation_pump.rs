@@ -68,6 +68,7 @@ pub fn spawn_recovering_conversation_pump(
     turn_active: Arc<std::sync::atomic::AtomicBool>,
     recover: Option<HistoryRecovery>,
 ) -> JoinHandle<()> {
+    let generation = topic_router.conversation_progress.begin(&lane, session);
     tokio::spawn(async move {
         let mut tap = replay_log.map(ReplayTap::new);
         let mut replaying = false;
@@ -77,7 +78,7 @@ pub fn spawn_recovering_conversation_pump(
                     // 履歴を再配送する経路ではなく、実 engine の出力でだけ現在値を進める。
                     topic_router
                         .conversation_progress
-                        .observe(&lane, session, &event);
+                        .observe_engine(&lane, session, generation, &event);
                     // roster `last_activity_at` の gui 側供給源（tui は PtySlot.last_output_at）。
                     // pump は全 chat engine の event が必ず通る唯一の点なので、ここ 1 箇所で足りる。
                     activity.store(

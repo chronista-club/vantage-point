@@ -363,6 +363,7 @@ pub(crate) async fn build_test_app_state_with(
 ) -> Arc<RepoState> {
     use super::lane::LanePool;
 
+    let topic_router = Arc::new(TopicRouter::new());
     Arc::new(RepoState {
         replay_flights: ReplayFlights::default(),
         hub: Hub::new(),
@@ -372,9 +373,11 @@ pub(crate) async fn build_test_app_state_with(
         actor_registry: Arc::new(RwLock::new(ActorRegistry::new())),
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         process_registry: Arc::new(tokio::sync::Mutex::new(ProcessRegistry::new())),
-        topic_router: Arc::new(TopicRouter::new()),
+        topic_router: topic_router.clone(),
         vpdb,
-        lane_pool: Arc::new(RwLock::new(LanePool::new())),
+        lane_pool: Arc::new(RwLock::new(
+            LanePool::new().with_conversation_progress(topic_router.conversation_progress.clone()),
+        )),
         system_event_tx: tokio::sync::broadcast::channel::<super::lane::SystemEvent>(64).0,
         terminal_pumps: Arc::new(RwLock::new(std::collections::HashMap::new())),
         editor_pending: Default::default(),

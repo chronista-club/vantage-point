@@ -171,34 +171,104 @@ impl ConversationProgress {
 
 /// Topic の購読数に依存しない、session ごとの揮発投影。lane snapshot が読み出す。
 #[derive(Default)]
-pub struct ConversationProgressStore(Mutex<HashMap<(String, SessionKey), ConversationProgress>>);
+struct ProgressEntry {
+    generation: u64,
+    active: bool,
+    value: ConversationProgress,
+}
+
+#[derive(Default)]
+pub struct ConversationProgressStore {
+    entries: Mutex<HashMap<(String, SessionKey), ProgressEntry>>,
+    next_generation: std::sync::atomic::AtomicU64,
+}
 
 impl ConversationProgressStore {
+    /// 新しい engine だけが次の世代を開く。abort 済み pump の遅れた event は無効。
+    pub fn begin(&self, lane: &str, session: SessionKey) -> u64 {
+        let generation = self
+            .next_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        self.entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(
+                (lane.to_string(), session),
+                ProgressEntry {
+                    generation,
+                    active: true,
+                    ..Default::default()
+                },
+            );
+        generation
+    }
+
+    pub fn observe_engine(
+        &self,
+        lane: &str,
+        session: SessionKey,
+        generation: u64,
+        event: &ConversationEvent,
+    ) {
+        if let Some(entry) = self
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_mut(&(lane.to_string(), session))
+            && entry.active
+            && entry.generation == generation
+        {
+            entry.value.apply(event);
+        }
+    }
+
+    /// `vp now` は engine の有無に依存しない自己申告。
     pub fn observe(&self, lane: &str, session: SessionKey, event: &ConversationEvent) {
-        self.0
+        self.entries
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .entry((lane.to_string(), session))
             .or_default()
+            .value
             .apply(event);
     }
 
-    pub fn view(&self, lane: &str, session: SessionKey) -> Option<ConversationProgressView> {
-        self.0
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&(lane.to_string(), session))
-            .map(ConversationProgress::view)
-    }
-
-    pub fn respond(&self, lane: &str, session: SessionKey, request_id: &str) {
-        if let Some(progress) = self
-            .0
+    pub fn stop(&self, lane: &str, session: SessionKey) {
+        if let Some(entry) = self
+            .entries
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get_mut(&(lane.to_string(), session))
         {
-            progress.respond(request_id);
+            entry.active = false;
+            entry.value.finish(ProgressPhase::Stopped);
+        }
+    }
+
+    pub fn remove_lane(&self, lane: &str) {
+        self.entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|(key, _), _| key != lane);
+    }
+
+    pub fn view(&self, lane: &str, session: SessionKey) -> Option<ConversationProgressView> {
+        self.entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&(lane.to_string(), session))
+            .map(|entry| entry.value.view())
+    }
+
+    pub fn respond(&self, lane: &str, session: SessionKey, request_id: &str) {
+        if let Some(entry) = self
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_mut(&(lane.to_string(), session))
+        {
+            entry.value.respond(request_id);
         }
     }
 }
@@ -297,6 +367,46 @@ mod tests {
         });
         progress.apply(&ConversationEvent::ReplayEnd { in_flight: false });
         assert_eq!(progress.view(), before);
+    }
+
+    #[test]
+    fn stopped_or_replaced_pump_cannot_restore_old_requests() {
+        let store = ConversationProgressStore::default();
+        let event = tool("q", "AskUserQuestion", json!({}));
+        let old = store.begin("vp/feature", 1);
+        store.observe_engine("vp/feature", 1, old, &event);
+        store.stop("vp/feature", 1);
+        store.observe_engine("vp/feature", 1, old, &event);
+        assert_eq!(
+            store.view("vp/feature", 1).unwrap().phase,
+            ProgressPhase::Stopped
+        );
+        store.remove_lane("vp/feature");
+        store.observe_engine("vp/feature", 1, old, &event);
+        assert!(store.view("vp/feature", 1).is_none());
+        let new = store.begin("vp/feature", 1);
+        store.observe_engine("vp/feature", 1, old, &event);
+        assert_eq!(
+            store.view("vp/feature", 1).unwrap().phase,
+            ProgressPhase::Waiting
+        );
+        store.observe_engine("vp/feature", 1, new, &event);
+        assert_eq!(
+            store.view("vp/feature", 1).unwrap().phase,
+            ProgressPhase::Requesting
+        );
+    }
+
+    #[test]
+    fn sidebar_phase_wire_names_cover_every_variant() {
+        for (phase, wire) in [
+            (ProgressPhase::Requesting, "requesting"),
+            (ProgressPhase::Working, "working"),
+            (ProgressPhase::Waiting, "waiting"),
+            (ProgressPhase::Stopped, "stopped"),
+        ] {
+            assert_eq!(serde_json::to_value(phase).unwrap(), json!(wire));
+        }
     }
 
     #[test]

@@ -24,6 +24,7 @@ beforeAll(async () => {
     window.setRequesting = requesting => applySidebarState({...emptyState(),
       processes:[{path:'/project',name:'Project',state:'running',expanded:true}],
       lanes_by_repo:{'/project':[lane('lead','waiting'),lane('feature',requesting?'requesting':'working')]},
+      lane_inboxes:{'project/lane/feature':{unread_count:0,has_persistent:false}},
       active_lane_address:'project/lane/lead'});
     window.setDetached = () => applySidebarState({...emptyState(),
       processes:[{path:'/project',name:'Project',state:'running',expanded:true}],
@@ -84,4 +85,16 @@ it('shows a PR badge only for the branch reported by the right sidebar',()=>{
   expect(win.document.querySelector('.vp-lane-pr')?.textContent).toBe('#123');
   emit('wip/old');
   expect(win.document.querySelector('.vp-lane-pr')).toBeNull();
+});
+
+
+it('opens wire history even when all messages have been read',()=>{
+  const win=fixture();
+  const opened: string[]=[];
+  (win as unknown as {vpWire:unknown}).vpWire={open:(lane:string)=>opened.push(lane)};
+  const row=win.document.querySelectorAll('.vp-lane-row')[1];
+  const mailbox=row.querySelector('button[title="wire inbox を開く"]');
+  expect(mailbox).not.toBeNull();
+  (mailbox as unknown as {click():void}).click();
+  expect(opened).toEqual(['project/lane/feature']);
 });

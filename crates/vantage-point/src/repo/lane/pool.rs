@@ -80,6 +80,7 @@ pub fn idle_teardown_after_minutes() -> u64 {
 /// 解決先）である点だけで、「端末を持てるのは root だけ」という制約はもう無い。
 #[derive(Default)]
 pub struct LanePool {
+    conversation_progress: std::sync::Arc<crate::conversation::progress::ConversationProgressStore>,
     lanes: HashMap<LaneAddress, LaneInfo>,
     /// A5-2: 各 slot の実 PtySlot (子 process と PTY を保持)
     ///
@@ -254,6 +255,15 @@ type DesiredSizes = HashMap<LaneAddress, HashMap<SessionKey, (u16, u16)>>;
 impl LanePool {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// snapshot の読み手・pump の書き手と、実体破棄の書き手を同じ store に結ぶ。
+    pub(crate) fn with_conversation_progress(
+        mut self,
+        progress: std::sync::Arc<crate::conversation::progress::ConversationProgressStore>,
+    ) -> Self {
+        self.conversation_progress = progress;
+        self
     }
 
     /// Repo 起動時に lead lane を 1 つ pre-populate (Conversation default)
@@ -526,6 +536,7 @@ impl LanePool {
         }
         // doc 33: chat engine も同時に drop（kill_on_drop + pump abort）。
         self.chat_engines.remove(addr);
+        self.conversation_progress.remove_lane(&addr.canonical());
         self.codex_question_sessions
             .lock()
             .expect("question sessions lock")
@@ -728,6 +739,7 @@ impl LanePool {
             desired.remove(addr);
         }
         self.chat_engines.remove(addr);
+        self.conversation_progress.remove_lane(&addr.canonical());
         self.codex_question_sessions
             .lock()
             .expect("question sessions lock")
@@ -1911,6 +1923,7 @@ impl LanePool {
     /// 代表値（pid）の追随はしない — reconcile が `refresh_lane_representation` で
     /// root の実体から導出し直す（doc 53 §3.3）。
     pub fn drop_chat_engine_by_key(&mut self, addr: &LaneAddress, key: SessionKey) -> bool {
+        self.conversation_progress.stop(&addr.canonical(), key);
         let Some(slots) = self.chat_engines.get_mut(addr) else {
             return false;
         };
@@ -1925,13 +1938,7 @@ impl LanePool {
         let Ok(resolved) = self.resolve_chat_session(addr, session) else {
             return false;
         };
-        let Some(slots) = self.chat_engines.get_mut(addr) else {
-            return false;
-        };
-        let dropped = slots.remove(&resolved.key).is_some();
-        if slots.is_empty() {
-            self.chat_engines.remove(addr);
-        }
+        let dropped = self.drop_chat_engine_by_key(addr, resolved.key);
         // pid は focused session の代表値なので、focused を落とした時だけ下ろす。
         if dropped
             && resolved.focused
@@ -3505,6 +3512,67 @@ mod tests {
                 turn_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         );
+    }
+
+    // mem_1Cg7MpHWBdf6u9CYjyEAaf: pump abort だけでは EngineExited は届かない。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sidebar_progress_follows_engine_teardown_and_lane_recreation() {
+        use crate::conversation::{ConversationEvent, progress::ProgressPhase};
+        let _env = crate::test_env::state_dir_async().await;
+        for action in ["stop", "restart", "remove", "reset", "drop_by_key"] {
+            let state = crate::repo::state::build_test_app_state().await;
+            let addr =
+                crate::repo::state::insert_test_lane(&state, "progress-teardown", SessionMode::Gui)
+                    .await;
+            let store = &state.topic_router.conversation_progress;
+            let mut pool = state.lane_pool.write().await;
+            insert_fake_chat_engine(&mut pool, &addr, 1);
+            for key in [1, 2] {
+                store.observe(
+                    &addr.canonical(),
+                    key,
+                    &ConversationEvent::PermissionRequest {
+                        request_id: format!("p{key}"),
+                        tool_name: "Bash".into(),
+                        input: serde_json::json!({}),
+                    },
+                );
+            }
+            match action {
+                "stop" => {
+                    pool.drop_chat_engine(&addr, Some(1));
+                }
+                "restart" => pool.drop_root_entities(&addr),
+                "drop_by_key" => {
+                    pool.drop_chat_engine_by_key(&addr, 1);
+                }
+                "reset" => pool.reset_lane(&addr).unwrap(),
+                "remove" => {
+                    let info = pool.remove(&addr).unwrap();
+                    pool.insert(info);
+                }
+                _ => unreachable!(),
+            }
+            if matches!(action, "remove" | "reset") {
+                assert!(
+                    store.view(&addr.canonical(), 1).is_none(),
+                    "{action}: 新しい lane に持ち越さない"
+                );
+                assert!(store.view(&addr.canonical(), 2).is_none());
+            } else {
+                assert_eq!(
+                    store.view(&addr.canonical(), 1).unwrap().phase,
+                    ProgressPhase::Stopped,
+                    "{action}"
+                );
+                assert_eq!(
+                    store.view(&addr.canonical(), 2).unwrap().phase,
+                    ProgressPhase::Requesting,
+                    "兄弟は保持"
+                );
+            }
+        }
     }
 
     /// `last_activity_at` の gui 側供給路: chat engine の `last_event_at` を

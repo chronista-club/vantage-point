@@ -15,7 +15,7 @@ import type { LaneInfo } from "../generated/LaneInfo";
 import type { SubStatusWire } from "../generated/SubStatusWire";
 import type { LaneSessionEntryWire } from "../generated/LaneSessionEntryWire";
 import { sidebar } from "./store";
-import { ResponsePoint, createAgentActivity, ACTIVITY_LABEL, ACTIVITY_COLOR } from "./ResponsePoint";
+import { ResponsePoint, createAgentActivity } from "./ResponsePoint";
 import { sessionNow } from "./session-now";
 import { activityElapsed, laneDisplayState, rootProgress, LANE_STATE_GLYPH, LANE_STATE_LABEL } from "./lane-progress";
 import { clockNow, quietAfterMs, quietLabel } from "./activity-freshness";
@@ -467,10 +467,10 @@ export function LaneRow(props: {
 						title="Board に新しい内容が届きました"
 					>新着</span>
 				</Show>
-                <Show when={(inbox()?.unread_count ?? 0) > 0}>
-                    <button type="button" class="vp-lane-unread" title="未読の wire inbox を開く"
+                <Show when={inbox()}>
+                    <button type="button" class="vp-lane-unread" title="wire inbox を開く"
                         onClick={e => { e.stopPropagation(); window.vpWire?.open(addr()); }}>
-                        {inbox()!.unread_count}
+                        {inbox()!.unread_count > 0 ? inbox()!.unread_count : "✉"}
                     </button>
                 </Show>
 				{/* Index: ピン #N（= ⌘N / LPD8 pad N）。登録した lane の行だけが持つ（doc 81）。
