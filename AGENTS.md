@@ -84,8 +84,10 @@ spec の頭に `段: A | B | C | 調査` を書く。書き忘れは **B 扱い*
 - 禁止: daemon 再起動 / `app:swap`、merge、他 lane の worktree を触る、実機の書き込み系（MIDI 設定・Serial 書き込み）
 - **repo をまたぐ契約**（コマンド名 / wire の形 / API の口 / mise の task 名）は、相手側の**実物**（`mise tasks ls`、
   実際の JSON、実際のエラー文）で突き合わせてから Ready。spec に書かれた名前を正としない
-  （2026-10-17 に `app:swap-detached` を spec の綴り `app:swap:detached` のまま plugin の guard に焼き、
-  両 repo のレビューを素通りした）
+  （2026-10-17 の実例: lead が `mise tasks ls` の出力だけを見て「task 名は `app:swap-detached` で、guard の
+  `app:swap:detached` と食い違う」と判断し、直しの lane まで出した。実際は task ファイルの `#MISE alias` で
+  `app:swap:detached` が実在し、`mise tasks info` で見れば分かった。**一覧コマンドは alias や別名を隠すことが
+  ある** — 契約の照合は「その名前で実際に呼べるか」まで確かめる）
 - 重い build（cargo）は同じ Mac の他 lane と枠を分け合う — 開始前・終了後に wire で一言、並列に走らせない
 
 lead 側の規則（進行の見張り）:
