@@ -173,6 +173,7 @@ vp lane slots <lane>   # lane が持つ console slot 一覧（doc 46 P5 — slot
 vp lane slot-new <lane> [--agent <agent>]  # console をもう 1 枚立てる（新 session を採番。root は動かない）
 vp lane slot-close <lane> --session N  # console を 1 枚閉じる（= GUI の名札 ✕。root は閉じられない）
 vp lane nudge <lane> <text> [--session N]  # lane の claude に text+Enter を注入。Chat session 宛は engine に 1 ターンとして送る（旧 vp tmux send-keys / directmsg の後継）
+# 存在しない session を指定すると「session N はこの lane にありません」と、今ある session 番号の昇順一覧を返す。
 # ⚠️ `--session` 省略は **root**（lane の代表 slot）。chat 系 API の session 省略が focused なのと既定が違う
 vp now "<一行>"        # session の「今なにを」を GUI の now-line に自己申告（doc 51 §1 A3b）。
                        # **VP の lane で働く AI はサブタスクの切れ目ごとに打つこと**（例:
