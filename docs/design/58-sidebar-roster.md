@@ -17,6 +17,8 @@ Related: `mem_1Cg7MpHWBdf6u9CYjyEAaf`、board `a0722a1b-b6e0-4e3a-a720-ea0a9c9c4
 経過時間は既存 `last_activity_at` を使用し、1 分未満は `now`、以降は `2m` / `1h` と表示する。
 lead と sub は同じ列配置と高さ。`lanes/<name>` の独立行を除き、branch と `↓N`、dirty、
 detached の SHA、PR 番号はコンパクトに同じ行へまとめる。
+現実装の dirty・behind・detached SHA は `sub_status` が供給される sub 行に限る。
+lead は branch のみを取得するため、これらの補助情報は未表示。lead 向けの取得拡張は保留とする。
 
 now-line は要求内容を優先し、通常時は `vp now` の自己申告、無ければ tool 名と引数の要約を表示する。
 自己申告は次の tool 開始または turn 終了で失効する。PR 番号は R sidebar の取得済み情報と branch が一致する場合のみ表示する。
