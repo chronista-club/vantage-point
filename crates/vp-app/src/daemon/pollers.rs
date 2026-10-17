@@ -388,6 +388,8 @@ async fn collect_activity(
         snap.actions_rev = h.actions_rev;
         snap.actions_atlases = h.actions_atlases;
         snap.actions_scope = h.actions_scope;
+        snap.actions_sidebar_settings = h.actions_sidebar_settings;
+        snap.actions_sidebar_error = h.actions_sidebar_error;
         snap.actions_error = h.actions_error;
         snap.actions_imported = h.actions_imported;
         // L1 lifecycle: repo presence map（repo 行の ●◐○ dot 用、path → presence）。

@@ -51,6 +51,7 @@ pub mod local_urls;
 pub mod log_format;
 pub mod log_init;
 pub mod menu;
+pub mod midi_pins;
 pub mod pane;
 pub mod session_state;
 pub mod settings;

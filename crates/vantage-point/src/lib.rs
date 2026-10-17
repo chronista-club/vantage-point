@@ -12,6 +12,8 @@ pub mod daemon;
 pub mod db;
 #[cfg(feature = "midi")]
 pub mod devices;
+#[cfg(feature = "midi")]
+mod roto_midi;
 // device_input / device_profile / roto_palette は midistage-profiles に切り出し済み。
 // 既存の crate::device_input::* 等の参照パスを保つため再エクスポートする。
 #[cfg(feature = "midi")]
@@ -19,6 +21,9 @@ pub use midistage_profiles::device_input;
 #[cfg(feature = "midi")]
 pub use midistage_profiles::device_profile;
 pub mod conversation;
+/// daemon が後から生えた MIDI port を見るための CoreMIDI 通知 thread（2026-10-14）
+#[cfg(feature = "midi")]
+pub mod coremidi_notify;
 pub mod discovery;
 pub mod file_watcher;
 pub mod flow;

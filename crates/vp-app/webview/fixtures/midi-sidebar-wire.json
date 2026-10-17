@@ -1,0 +1,147 @@
+{
+  "devices": {
+    "active_component": {
+      "kind": "devices",
+      "repo_path": "/repos/vantage-point"
+    },
+    "activity": {
+      "actions": [],
+      "actions_atlases": [],
+      "actions_error": "",
+      "actions_imported": false,
+      "actions_rev": 0,
+      "actions_scope": "",
+      "actions_sidebar_error": "",
+      "actions_sidebar_settings": null,
+      "hub": "",
+      "hub_auth": "",
+      "hub_nodes": [],
+      "idle_timeout_minutes": 0,
+      "node_online": false,
+      "presence": {},
+      "repo_count": 0,
+      "running_repo_count": 0,
+      "update_applying": false,
+      "update_available": false
+    },
+    "awaiting_input": {},
+    "canvas_unread": {},
+    "lanes_by_repo": {
+      "/repos/vantage-point": [
+        {
+          "address": {
+            "key": "vantage-point/lane/roto-pins",
+            "name": "roto-pins",
+            "repo": "vantage-point"
+          },
+          "agent": "claude",
+          "agent_name": null,
+          "branch": null,
+          "created_at": "",
+          "cwd": "/repos/vantage-point/.vp/lanes/roto-pins",
+          "engine_session_id": null,
+          "flow_state": null,
+          "pid": null,
+          "sessions": null,
+          "state": "running",
+          "sub_status": null
+        }
+      ]
+    },
+    "processes": [
+      {
+        "expanded": false,
+        "name": "vantage-point",
+        "path": "/repos/vantage-point",
+        "state": "running"
+      }
+    ],
+    "unread_notifications": {},
+    "widget": "activity"
+  },
+  "lane": {
+    "active_lane_address": "vantage-point/lane/roto-pins",
+    "activity": {
+      "actions": [],
+      "actions_atlases": [],
+      "actions_error": "",
+      "actions_imported": false,
+      "actions_rev": 0,
+      "actions_scope": "",
+      "actions_sidebar_error": "",
+      "actions_sidebar_settings": null,
+      "hub": "",
+      "hub_auth": "",
+      "hub_nodes": [],
+      "idle_timeout_minutes": 0,
+      "node_online": false,
+      "presence": {},
+      "repo_count": 0,
+      "running_repo_count": 0,
+      "update_applying": false,
+      "update_available": false
+    },
+    "awaiting_input": {},
+    "canvas_unread": {},
+    "lanes_by_repo": {
+      "/repos/vantage-point": [
+        {
+          "address": {
+            "key": "vantage-point/lane/roto-pins",
+            "name": "roto-pins",
+            "repo": "vantage-point"
+          },
+          "agent": "claude",
+          "agent_name": null,
+          "branch": null,
+          "created_at": "",
+          "cwd": "/repos/vantage-point/.vp/lanes/roto-pins",
+          "engine_session_id": null,
+          "flow_state": null,
+          "pid": null,
+          "sessions": null,
+          "state": "running",
+          "sub_status": null
+        }
+      ]
+    },
+    "processes": [
+      {
+        "expanded": false,
+        "name": "vantage-point",
+        "path": "/repos/vantage-point",
+        "state": "running"
+      }
+    ],
+    "unread_notifications": {},
+    "widget": "activity"
+  },
+  "startup": {
+    "activity": {
+      "actions": [],
+      "actions_atlases": [],
+      "actions_error": "",
+      "actions_imported": false,
+      "actions_rev": 0,
+      "actions_scope": "",
+      "actions_sidebar_error": "",
+      "actions_sidebar_settings": null,
+      "hub": "",
+      "hub_auth": "",
+      "hub_nodes": [],
+      "idle_timeout_minutes": 0,
+      "node_online": false,
+      "presence": {},
+      "repo_count": 0,
+      "running_repo_count": 0,
+      "update_applying": false,
+      "update_available": false
+    },
+    "awaiting_input": {},
+    "canvas_unread": {},
+    "lanes_by_repo": {},
+    "processes": [],
+    "unread_notifications": {},
+    "widget": "activity"
+  }
+}

@@ -39,6 +39,8 @@ pub(super) struct AppResources {
     pub(super) daemon_conn: SharedDaemonConn,
     pub(super) rt_handle: tokio::runtime::Handle,
     pub(super) proxy: tao::event_loop::EventLoopProxy<RoutedEvent<AppEvent>>,
+    /// LPD8 ピン（app 全体で 1 組、doc 81）。window ごとの `SessionState` には持たない。
+    pub(super) midi_pins: std::cell::RefCell<crate::midi_pins::MidiPins>,
     _rt: tokio::runtime::Runtime,
     _log: crate::log_init::LogInitResult,
 }
@@ -48,6 +50,7 @@ pub(super) struct Boot {
     pub(super) webview: WebView,
     pub(super) window: tao::window::Window,
     pub(super) proxy: EventLoopProxy<AppEvent>,
+    pub(super) fleet_feedback_tx: tokio::sync::watch::Sender<serde_json::Value>,
     pub(super) actions_persist_tx: tokio::sync::watch::Sender<Option<ActionsPersistPayload>>,
     pub(super) instance_index: usize,
     app: Rc<AppResources>,
@@ -157,6 +160,7 @@ pub(super) fn boot() -> anyhow::Result<(EventLoop<RoutedEvent<AppEvent>>, Rc<App
         daemon_conn,
         rt_handle,
         proxy,
+        midi_pins: std::cell::RefCell::new(crate::midi_pins::MidiPins::load()),
         _rt,
         _log,
     });
@@ -278,12 +282,21 @@ pub(super) fn open_window(
             )
         })
         .unwrap_or_default();
+    let asset_runtime = rt_handle.clone();
     let webview = WebViewBuilder::new()
         // 統合 origin fix: with_html (about:blank = 不透明オリジン) だと localStorage が
         // SecurityError を throw し sidebar bundle が boot 中に落ちる。custom protocol で
         // 実オリジン (vp-asset://app) を与え、MAIN_AREA_HTML を app/index.html として配信する。
-        .with_custom_protocol("vp-asset".to_string(), move |id, request| {
-            crate::webview::assets::serve(id, request, MAIN_VIEW_ASSETS)
+        .with_asynchronous_custom_protocol("vp-asset".to_string(), move |id, request, responder| {
+            // Gear I/O and SHA-256 must never block the native window event loop.
+            let id = id.to_owned();
+            asset_runtime.spawn_blocking(move || {
+                responder.respond(crate::webview::assets::serve(
+                    &id,
+                    request,
+                    MAIN_VIEW_ASSETS,
+                ));
+            });
         })
         .with_initialization_script(&echo_init)
         .with_url("vp-asset://app/index.html")
@@ -297,9 +310,9 @@ pub(super) fn open_window(
             // main tag (terminal / pane 系) → terminal、 それ以外 (sidebar IpcEnvelope:
             // repo: / lane: 系) → SidebarIpc。 terminal の fall-through に頼らない。
             let body = req.body();
-            // fleet feedback (LE-19) は event loop を経由せず watch へ直行 (高頻度 + 状態量)
+            // Route through the event loop so inactive windows cannot overwrite hardware feedback.
             if let Some(fb) = fleet_feedback_payload(body) {
-                let _ = fleet_feedback_tx.send(fb);
+                let _ = sidebar_ipc_proxy.send_event(AppEvent::FleetFeedback(fb));
                 return;
             }
             if is_main_ipc_tag(body) {
@@ -354,6 +367,7 @@ pub(super) fn open_window(
         window,
         proxy,
         actions_persist_tx,
+        fleet_feedback_tx,
         instance_index,
         app,
     };

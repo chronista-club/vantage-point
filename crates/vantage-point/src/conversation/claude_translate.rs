@@ -68,7 +68,15 @@ pub struct ClaudeTranslator {
     /// error result は「停止による正常な turn の終わり」= [`ConversationEvent::TurnCompleted`] に
     /// 読み替える。turn 終端（`result`）で false に戻す。
     saw_interrupt_marker: bool,
+    /// subagent の task_id → 親の `Agent` tool_use の id。
+    ///
+    /// `task_updated` 行は `tool_use_id` を持たない（実測）ので、`task_started` で覚えた親に結ぶ。
+    /// subagent 以外の task（background Bash 等）は登録しない = 後続行も捨てる。
+    subagent_tasks: HashMap<String, String>,
 }
+
+/// subagent の tool_result を chat に出す上限（文字数）。超えた分は件数だけ添えて切る。
+const SUBAGENT_TOOL_RESULT_MAX_CHARS: usize = 2000;
 
 /// claude が停止時に user 行へ残す印の接頭辞（`[Request interrupted by user]` /
 /// `[Request interrupted by user for tool use]`）。
@@ -142,7 +150,7 @@ impl ClaudeTranslator {
 
     fn translate(&mut self, raw: RawLine) -> Ingested {
         match raw {
-            RawLine::System(sys) => Ingested::events(self.on_system(sys)),
+            RawLine::System(sys) => Ingested::events(self.on_system(*sys)),
             RawLine::StreamEvent { event } => Ingested::events(self.on_stream_event(event)),
             // user(tool_result) / assistant(全文スナップショット) はどちらも transcript の 1 行に
             // 対応する = ここまでが disk に載った合図。 assistant の中身は delta の累積なので捨てる。
@@ -204,9 +212,13 @@ impl ClaudeTranslator {
     }
 
     fn on_system(&mut self, sys: RawSystem) -> Vec<ConversationEvent> {
-        // init 以外の system subtype（hook_started / status / thinking_tokens …）は破棄。
-        if sys.subtype.as_deref() != Some("init") {
-            return Vec::new();
+        match sys.subtype.as_deref() {
+            Some("init") => {}
+            Some("task_started" | "task_progress" | "task_updated" | "task_notification") => {
+                return self.on_task(sys).into_iter().collect();
+            }
+            // 他の system subtype（hook_started / status / thinking_tokens …）は破棄。
+            _ => return Vec::new(),
         }
         let Some(session_id) = sys.session_id else {
             return Vec::new();
@@ -230,6 +242,51 @@ impl ClaudeTranslator {
             // 説明は pump が filesystem から注ぐ（この層は CLI の行を写すだけ）。
             command_docs: Default::default(),
         }]
+    }
+
+    /// `task_*` 行を [`ConversationEvent::SubagentTask`] に写す（subagent 以外の task は None）。
+    ///
+    /// 4 種の行はどれも同じ task の部分的なスナップショット（実測 2026-10-10, 2.1.295）:
+    /// - `task_started`: 親が付けた説明 / subagent_type / is_backgrounded / task_type
+    /// - `task_progress`: 子の現在の作業（description）/ last_tool_name / usage
+    /// - `task_updated`: `patch.status`（**tool_use_id が無い**）
+    /// - `task_notification`: 最終 status / summary / usage
+    fn on_task(&mut self, sys: RawSystem) -> Option<ConversationEvent> {
+        let task_id = sys.task_id?;
+        let subtype = sys.subtype.as_deref();
+        if subtype == Some("task_started") {
+            let is_agent =
+                sys.task_type.as_deref() == Some("local_agent") || sys.subagent_type.is_some();
+            if !is_agent {
+                return None;
+            }
+            self.subagent_tasks
+                .insert(task_id.clone(), sys.tool_use_id.clone()?);
+        }
+        let parent_tool_use_id = self.subagent_tasks.get(&task_id)?.clone();
+        let status = match subtype {
+            Some("task_started" | "task_progress") => "running".to_string(),
+            Some("task_updated") => sys.patch.and_then(|p| p.status)?,
+            _ => sys.status.unwrap_or_else(|| "completed".to_string()),
+        };
+        // 終わった task は表から落とす（以降の行は来ない。来ても捨てて害は無い）。
+        if subtype == Some("task_notification") {
+            self.subagent_tasks.remove(&task_id);
+        }
+        let usage = sys.usage.unwrap_or_default();
+        Some(ConversationEvent::SubagentTask {
+            parent_tool_use_id,
+            task_id,
+            status,
+            description: sys.description,
+            subagent_type: sys.subagent_type,
+            backgrounded: sys.is_backgrounded,
+            last_tool_name: sys.last_tool_name,
+            total_tokens: usage.total_tokens,
+            tool_uses: usage.tool_uses,
+            duration_ms: usage.duration_ms,
+            summary: sys.summary,
+        })
     }
 
     fn on_stream_event(&mut self, event: StreamEventBody) -> Vec<ConversationEvent> {
@@ -380,6 +437,9 @@ fn subagent_assistant_events(parent: &str, message: RawAssistantMessage) -> Vec<
             let (role, text) = match block {
                 RawAssistantContent::Text { text } => (SubagentRole::Text, text),
                 RawAssistantContent::Thinking { thinking } => (SubagentRole::Thinking, thinking),
+                RawAssistantContent::ToolUse { name, input } => {
+                    (SubagentRole::ToolUse, format!("{name}\n{input}"))
+                }
                 RawAssistantContent::Other => return None,
             };
             (!text.is_empty()).then(|| ConversationEvent::SubagentMessage {
@@ -391,25 +451,49 @@ fn subagent_assistant_events(parent: &str, message: RawAssistantMessage) -> Vec<
         .collect()
 }
 
-/// subagent の user 行 = 与えられた指示。
+/// subagent の user 行 = 与えられた指示 / 子が回した tool の結果。
 ///
 /// ⚠️ ここに来る `tool_result` は **subagent 自身が回した tool** のもので、親の tool 列には
-/// 結び先が無い。 親の [`on_user`] に流すと孤児 `ToolCallUpdate` を撃つので、text 以外は捨てる。
+/// 結び先が無い。 親の [`on_user`] に流すと孤児 `ToolCallUpdate` を撃つので、子の発話
+/// （[`SubagentRole::ToolResult`]）として親の Agent 行の中に運ぶ。
 fn subagent_user_events(parent: &str, message: RawUserMessage) -> Vec<ConversationEvent> {
     message
         .content
         .into_iter()
-        .filter_map(|block| match block {
-            RawUserContent::Text { text } if !text.is_empty() => {
-                Some(ConversationEvent::SubagentMessage {
-                    parent_tool_use_id: parent.to_string(),
-                    role: SubagentRole::Prompt,
-                    text,
-                })
-            }
-            _ => None,
+        .filter_map(|block| {
+            let (role, text) = match block {
+                RawUserContent::Text { text } => (SubagentRole::Prompt, text),
+                RawUserContent::ToolResult {
+                    content, is_error, ..
+                } => {
+                    let body =
+                        truncate_chars(&tool_result_text(&content), SUBAGENT_TOOL_RESULT_MAX_CHARS);
+                    let text = if is_error {
+                        format!("[error] {body}")
+                    } else {
+                        body
+                    };
+                    (SubagentRole::ToolResult, text)
+                }
+                RawUserContent::Other => return None,
+            };
+            (!text.is_empty()).then(|| ConversationEvent::SubagentMessage {
+                parent_tool_use_id: parent.to_string(),
+                role,
+                text,
+            })
         })
         .collect()
+}
+
+/// `max` 文字（char 単位 = UTF-8 境界を割らない）で切り、省略した文字数を添える。
+fn truncate_chars(s: &str, max: usize) -> String {
+    let total = s.chars().count();
+    if total <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max).collect();
+    format!("{head}…（{} 文字省略）", total - max)
 }
 
 fn on_user(message: RawUserMessage) -> Vec<ConversationEvent> {
@@ -479,7 +563,8 @@ pub(super) fn plan_from_todowrite(input: &serde_json::Value) -> Option<Conversat
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RawLine {
-    System(RawSystem),
+    // task_* の field を足して大きくなったので Box（clippy::large_enum_variant）。
+    System(Box<RawSystem>),
     StreamEvent {
         event: StreamEventBody,
     },
@@ -531,6 +616,12 @@ enum RawAssistantContent {
         #[serde(default)]
         thinking: String,
     },
+    /// subagent 行でのみ使う（親の tool_use は delta 経由）。
+    ToolUse {
+        name: String,
+        #[serde(default)]
+        input: serde_json::Value,
+    },
     #[serde(other)]
     Other,
 }
@@ -565,6 +656,47 @@ struct RawSystem {
     mcp_servers: Option<Vec<RawMcpServer>>,
     #[serde(default)]
     slash_commands: Option<Vec<String>>,
+    // ↓ task_* 行（[`ClaudeTranslator::on_task`]）の field。
+    #[serde(default)]
+    task_id: Option<String>,
+    #[serde(default)]
+    tool_use_id: Option<String>,
+    #[serde(default)]
+    task_type: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    subagent_type: Option<String>,
+    #[serde(default)]
+    is_backgrounded: Option<bool>,
+    #[serde(default)]
+    last_tool_name: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    usage: Option<RawTaskUsage>,
+    /// `task_updated` の差分（`{"status":"completed","end_time":…}`）。
+    #[serde(default)]
+    patch: Option<RawTaskPatch>,
+}
+
+/// task_* 行の `usage`（子の累計）。
+#[derive(Debug, Default, Deserialize)]
+struct RawTaskUsage {
+    #[serde(default)]
+    total_tokens: Option<u64>,
+    #[serde(default)]
+    tool_uses: Option<u64>,
+    #[serde(default)]
+    duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTaskPatch {
+    #[serde(default)]
+    status: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -790,17 +922,165 @@ mod tests {
     /// ★ subagent 自身が回した tool の結果を、親の ToolCallUpdate にしない。
     ///
     /// 親の item 列には結び先が無いので、流すと孤児 update を撃つ（GUI が warning を出す経路）。
+    /// 子の発話（SubagentMessage / ToolResult）として親の Agent 行の中に運ぶ。
     #[test]
     fn subagent_tool_result_does_not_touch_parent_tools() {
         let mut t = ClaudeTranslator::new();
         let line = r#"{"type":"user","parent_tool_use_id":"toolu_1","message":{"role":"user","content":[{"tool_use_id":"child-tool","type":"tool_result","content":"ok","is_error":false}]}}"#;
         let got = t.ingest(line);
-        assert!(
-            got.events.is_empty(),
-            "子の tool_result は親へ流さない: {:?}",
-            got.events
+        assert_eq!(
+            got.events,
+            vec![ConversationEvent::SubagentMessage {
+                parent_tool_use_id: "toolu_1".into(),
+                role: SubagentRole::ToolResult,
+                text: "ok".into(),
+            }]
         );
         assert!(!got.commits_transcript);
+    }
+
+    /// 子の tool_result が error なら本文の頭に印を付ける（role を増やさず見分けられるように）。
+    #[test]
+    fn subagent_tool_result_error_is_marked() {
+        let mut t = ClaudeTranslator::new();
+        let line = r#"{"type":"user","parent_tool_use_id":"toolu_1","message":{"role":"user","content":[{"tool_use_id":"c","type":"tool_result","content":"boom","is_error":true}]}}"#;
+        assert_eq!(
+            t.ingest(line).events,
+            vec![ConversationEvent::SubagentMessage {
+                parent_tool_use_id: "toolu_1".into(),
+                role: SubagentRole::ToolResult,
+                text: "[error] boom".into(),
+            }]
+        );
+    }
+
+    /// 子の tool_result は長いと chat を埋めるので、文字境界で切り詰める。
+    #[test]
+    fn subagent_tool_result_is_truncated() {
+        let mut t = ClaudeTranslator::new();
+        let body = "あ".repeat(SUBAGENT_TOOL_RESULT_MAX_CHARS + 10);
+        let line = serde_json::json!({
+            "type": "user",
+            "parent_tool_use_id": "toolu_1",
+            "message": {"role": "user", "content": [{"tool_use_id": "c", "type": "tool_result", "content": body}]}
+        })
+        .to_string();
+        let evs = t.ingest(&line).events;
+        let [ConversationEvent::SubagentMessage { text, .. }] = evs.as_slice() else {
+            panic!("1 件の SubagentMessage のはず: {evs:?}");
+        };
+        assert!(text.starts_with(&"あ".repeat(SUBAGENT_TOOL_RESULT_MAX_CHARS)));
+        assert!(text.ends_with("…（10 文字省略）"), "{text}");
+    }
+
+    /// ★ 実測の subagent turn（claude 2.1.295）を通すと、tui の Agent 表示に要るデータが全部出る:
+    /// 子の tool 呼び出し・結果・task の状態（説明 / 消費量 / 完了 / 要約）。
+    #[test]
+    fn golden_subagent_turn() {
+        let raw = include_str!("testdata/turn_subagent.jsonl");
+        let mut t = ClaudeTranslator::new();
+        let evs: Vec<_> = raw.lines().flat_map(|l| t.ingest(l).events).collect();
+        let parent = "toolu_01Jsj2pNjsT48vbozSnvjpsC";
+
+        let roles: Vec<_> = evs
+            .iter()
+            .filter_map(|e| match e {
+                ConversationEvent::SubagentMessage {
+                    parent_tool_use_id,
+                    role,
+                    ..
+                } if parent_tool_use_id == parent => Some(*role),
+                _ => None,
+            })
+            .collect();
+        // thinking は本文が空（署名だけ）なので出ない。
+        assert_eq!(
+            roles,
+            vec![
+                SubagentRole::Prompt,
+                SubagentRole::ToolUse,
+                SubagentRole::ToolResult,
+                SubagentRole::Text,
+            ]
+        );
+        assert!(evs.iter().any(|e| matches!(e,
+            ConversationEvent::SubagentMessage { role: SubagentRole::ToolUse, text, .. }
+                if text == "Read\n{\"file_path\":\"/etc/hosts\"}")));
+
+        let tasks: Vec<_> = evs
+            .iter()
+            .filter(|e| matches!(e, ConversationEvent::SubagentTask { .. }))
+            .cloned()
+            .collect();
+        assert_eq!(
+            tasks,
+            vec![
+                ConversationEvent::SubagentTask {
+                    parent_tool_use_id: parent.into(),
+                    task_id: "a52d8d217661d822c".into(),
+                    status: "running".into(),
+                    description: Some("Summarize /etc/hosts in one line".into()),
+                    subagent_type: Some("general-purpose".into()),
+                    backgrounded: Some(false),
+                    last_tool_name: None,
+                    total_tokens: None,
+                    tool_uses: None,
+                    duration_ms: None,
+                    summary: None,
+                },
+                ConversationEvent::SubagentTask {
+                    parent_tool_use_id: parent.into(),
+                    task_id: "a52d8d217661d822c".into(),
+                    status: "running".into(),
+                    description: Some("Reading /etc/hosts".into()),
+                    subagent_type: Some("general-purpose".into()),
+                    backgrounded: None,
+                    last_tool_name: Some("Read".into()),
+                    total_tokens: Some(39234),
+                    tool_uses: Some(1),
+                    duration_ms: Some(1122),
+                    summary: None,
+                },
+                // task_updated は tool_use_id を持たない → task_started で覚えた親に結ぶ。
+                ConversationEvent::SubagentTask {
+                    parent_tool_use_id: parent.into(),
+                    task_id: "a52d8d217661d822c".into(),
+                    status: "completed".into(),
+                    description: None,
+                    subagent_type: None,
+                    backgrounded: None,
+                    last_tool_name: None,
+                    total_tokens: None,
+                    tool_uses: None,
+                    duration_ms: None,
+                    summary: None,
+                },
+                ConversationEvent::SubagentTask {
+                    parent_tool_use_id: parent.into(),
+                    task_id: "a52d8d217661d822c".into(),
+                    status: "completed".into(),
+                    description: None,
+                    subagent_type: None,
+                    backgrounded: None,
+                    last_tool_name: None,
+                    total_tokens: Some(49763),
+                    tool_uses: Some(1),
+                    duration_ms: Some(3428),
+                    summary: Some("macOS の標準的な /etc/hosts で、ローカルループバック (127.0.0.1 と ::1 の localhost) と broadcasthost の定義だけがあり、独自のホスト登録はない。".into()),
+                },
+            ]
+        );
+    }
+
+    /// subagent 以外の task（background Bash 等）は SubagentTask にしない。
+    /// task_started で subagent と分からなかった task_id の後続行も捨てる。
+    #[test]
+    fn non_agent_task_is_ignored() {
+        let mut t = ClaudeTranslator::new();
+        let started = r#"{"type":"system","subtype":"task_started","task_id":"b1","tool_use_id":"toolu_bash","description":"npm run dev","task_type":"local_bash"}"#;
+        let progress = r#"{"type":"system","subtype":"task_notification","task_id":"b1","tool_use_id":"toolu_bash","status":"completed"}"#;
+        assert!(t.ingest(started).events.is_empty());
+        assert!(t.ingest(progress).events.is_empty());
     }
 
     /// 親の user(tool_result) は従来どおり ToolCallUpdate になる（退行していない）。

@@ -34,6 +34,7 @@ const ENGINE_KINDS = [
   'tool_call',
   'tool_call_update',
   'subagent_message',
+  'subagent_task',
   'plan',
   'turn_completed',
   'now_line',
@@ -65,6 +66,7 @@ const REQUIRED: Record<Kind, Record<string, 'string' | 'boolean' | 'number' | 'o
   tool_call: { id: 'string', name: 'string', input: 'object' },
   tool_call_update: { tool_use_id: 'string', content: 'string', is_error: 'boolean' },
   subagent_message: { parent_tool_use_id: 'string', role: 'string', text: 'string' },
+  subagent_task: { parent_tool_use_id: 'string', task_id: 'string', status: 'string' },
   plan: { entries: 'array' },
   turn_completed: { session_id: 'string' },
   now_line: { text: 'string' },
@@ -114,6 +116,8 @@ describe('ConversationEvent contract (Rust fixture ↔ TS mirror)', () => {
     expect(CONVERSATION_EVENT_FIXTURES.turn_completed_full.context_tokens).toBe(12345)
     expect('active_form' in CONVERSATION_EVENT_FIXTURES.plan.entries[0]).toBe(false)
     expect(CONVERSATION_EVENT_FIXTURES.plan.entries[1].active_form).toBe('直している')
+    expect('description' in CONVERSATION_EVENT_FIXTURES.subagent_task_minimal).toBe(false)
+    expect(CONVERSATION_EVENT_FIXTURES.subagent_task_full.total_tokens).toBe(39234)
   })
 
   it('turn を閉じる kind は union の kind である', () => {

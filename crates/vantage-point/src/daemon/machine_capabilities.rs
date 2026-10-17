@@ -77,12 +77,17 @@ impl MachineCapabilities {
     /// registry に反映する（daemon は midir polling を回さない）。起動前から挿さっている
     /// device は agent 報告が来ない環境があるため、`attach_fleet_inputs` の 1 回
     /// enumeration で input listener を確実に張る（fleet #877/#878）。
-    /// ROTO 持続制御は独立経路（`start_roto_control`、process/server.rs）。
+    /// ROTO も同じ input-only listener を使う（MIDI mode、DAW output 無し）。
     #[cfg(feature = "midi")]
     pub async fn with_devices(
         repo_manager: Arc<RwLock<RepoManagerCapability>>,
         update: Arc<RwLock<UpdateCapability>>,
     ) -> Self {
+        // ⚠️ daemon の MIDI で**最初**に呼ぶ。最初の CoreMIDI client を run loop 付きの
+        // 専用 thread で作らないと、lease ごとに生える midistaged の仮想 port が見えない
+        // （attach_fleet_inputs の列挙より前であることが要）
+        crate::coremidi_notify::start();
+
         let mut wc = Self::new(repo_manager, update);
 
         let event_bus = Arc::new(crate::capability::eventbus::EventBus::new());

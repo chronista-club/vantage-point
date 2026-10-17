@@ -7,19 +7,19 @@
  * main area を当該 Lane に切り替え。 右クリック操作 (restart / delete) は
  * ContextMenu に集約 (VP-204 PR-1)。
  */
+import { pins, pinsReady, setPin } from './midi-pin-store';
+import { PIN_COUNT, pinNumberOf } from '../../midi-pins';
 import { Show, createSignal, type JSX } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import type { LaneInfo } from "../generated/LaneInfo";
 import type { SubStatusWire } from "../generated/SubStatusWire";
 import type { LaneSessionEntryWire } from "../generated/LaneSessionEntryWire";
 import { sidebar } from "./store";
-import { LocalUrls } from "./LocalUrls";
 import { ResponsePoint, createAgentActivity, ACTIVITY_LABEL, ACTIVITY_COLOR } from "./ResponsePoint";
 import { sessionNow } from "./session-now";
 import { clockNow, quietAfterMs, quietLabel } from "./activity-freshness";
 import { sessionNowKey } from "../../session-now-bridge";
 import { sendIpc } from "./ipc";
-import { resolveRepoOrder } from "./dnd";
 import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
 import {
 	clearLaneDrag,
@@ -33,7 +33,6 @@ import {
 import {
 	isLaneAlive,
 	isSubLane,
-	shortcutNumberOf,
 	laneAddressKey,
 	laneBranch,
 	laneCwdLabel,
@@ -183,20 +182,13 @@ export function LaneRow(props: {
 	const isInactive = () => !isLaneAlive(props.lane);
 	const isSub = () => isSubLane(props.lane);
 	/**
-	 * `⌘ hold l` で打つ番号（root lane だけが持つ）。
+	 * この lane を登録しているピン番号 = `⌘N` / `⌘ hold l` / LPD8 pad N の番号（doc 81）。
+	 * 登録していない lane は番号を持たない。sub lane も登録できる。
 	 *
-	 * ⚠️ **`handlers.ts` と同じ `shortcutNumberOf` を通す**。番号の出どころを 2 箇所に持つと、
-	 * 見えている `#N` と飛び先がずれる。並びは user が drag で決めた表示順（`resolveRepoOrder`）。
+	 * ⚠️ **`handlers.ts` の宛先（`pinTargetOf`）と同じピンを引く**。番号の出どころを 2 箇所に持つと、
+	 * 見えている `#N` と飛び先がずれる（旧: CURRENTs の並び順で root lane に振っていた）。
 	 */
-	const shortcut = () =>
-		isSub()
-			? null
-			: shortcutNumberOf(
-					resolveRepoOrder(sidebar.processes, sidebar.currents_order).map(
-						(p) => p.path,
-					),
-					props.repoPath,
-				);
+	const shortcut = () => pinNumberOf(pins(), addr());
 	// mailbox inbox: entry がある Lane のみ icon 表示 (mailbox infra が active)。
 	const inbox = () => sidebar.lane_inboxes?.[addr()];
 	// Canvas (board) 着信 badge (bug: canvas 可観測性 D): 現在 active でない lane に show が
@@ -206,7 +198,6 @@ export function LaneRow(props: {
 	// (dead lane に届いた content も気付かせる。awaiting=入力待ちが alive 前提なのとは意味論が違う)。
 	const canvasUnread = () =>
 		!isActive() && (sidebar.canvas_unread?.[addr()] ?? 0) > 0;
-	const [addLocalUrl, setAddLocalUrl] = createSignal(0);
 	// この lane の root session key（registry 欠落 = 旧 wire / boot 窓は 1 に倒す —
 	// Rust 側 ResolveSessionTitles の fallback と同じ既定）。
 	const rootKey = () => props.lane.sessions?.root ?? 1;
@@ -321,11 +312,25 @@ export function LaneRow(props: {
 		const sub = isSubLane(lane);
 		// dim 表示 (isInactive) と同じ述語を使う — 生死判定を 2 箇所に散らさない。
 		const active = isLaneAlive(lane);
-		const items: ContextMenuItem[] = [{
-			label: "ローカルURLを追加",
-			icon: "ph:link",
-			onSelect: () => setAddLocalUrl(n => n + 1),
-		}];
+		const items: ContextMenuItem[] = [];
+		if (pinsReady()) {
+			// 登録済みなら解除、未登録なら空いている最初の枠に登録（並べ替えはピン帯の枠 click で）。
+			const number = shortcut();
+			const free = pins().slots.findIndex((p) => p === null);
+			if (number !== null) {
+				items.push({
+					label: `LPD8 #${number} の登録を解除`,
+					icon: "ph:x",
+					onSelect: () => setPin(number - 1, null),
+				});
+			} else if (free >= 0 && free < PIN_COUNT) {
+				items.push({
+					label: `LPD8 #${free + 1} に登録`,
+					icon: "ph:push-pin",
+					onSelect: () => setPin(free, { path: props.repoPath, address: addr() }),
+				});
+			}
+		}
 		// doc 39 §8.4 提案 1: Restart / Respawn は同一動作（lane:restart、fresh なし = 実体を
 		// 立て直して会話は resume で継続）なのに生死でラベルが割れていた。1 語に統一し、
 		// 「Restart = 新しく始まる」と誤読される語感を（会話は継続）で打ち消す。
@@ -472,11 +477,11 @@ export function LaneRow(props: {
 						/>
 					</span>
 				</Show>
-				{/* Index: `⌘ hold l` で打つ番号。root lane だけが持つ（mako 2026-08-09）。
+				{/* Index: ピン #N（= ⌘N / LPD8 pad N）。登録した lane の行だけが持つ（doc 81）。
 				    一番右 = 行末尾に固定（mako 2026-08-19）— badge 群の増減で位置が揺れない。
-				    ⚠️ 番号の出どころは `shortcutNumberOf` 一本 — handlers.ts の宛先と同じ関数。 */}
+				    ⚠️ 番号の出どころはピン一本（`pinNumberOf`）— handlers.ts の宛先と同じピン。 */}
 				<Show when={shortcut()}>
-					<span class="vp-lane-shortcut" title={`⌘ hold l → ${shortcut()}`}>
+					<span class="vp-lane-shortcut" style={{color:pins().colors[shortcut()! - 1]}} title={`⌘${shortcut()} / LPD8 pad ${shortcut()} / ROTO ${shortcut()}`}>
 						#{shortcut()}
 					</span>
 				</Show>
@@ -511,7 +516,6 @@ export function LaneRow(props: {
 					</Show>
 				</span>
 			</Show>
-			<LocalUrls repoPath={props.repoPath} address={addr()} addRequest={addLocalUrl()} />
 		</div>
 	);
 }

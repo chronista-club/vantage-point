@@ -18,6 +18,7 @@ function recordingHandlers(): { calls: string[]; handlers: SidebarPushHandlers }
   return {
     calls,
     handlers: {
+      actionsRefreshResult: r => calls.push(`actions-refresh:${r.req}`),
       localUrlsResult: r => calls.push(`local-urls:${r.req}`),
       state: (s) => calls.push(`state:${(s as { version?: number }).version}`),
       error: (m) => calls.push(`error:${m}`),

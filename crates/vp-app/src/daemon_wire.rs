@@ -185,6 +185,10 @@ pub struct DaemonHealthInfo {
     #[serde(default)]
     pub actions_scope: String,
     #[serde(default)]
+    pub actions_sidebar_settings: serde_json::Value,
+    #[serde(default)]
+    pub actions_sidebar_error: String,
+    #[serde(default)]
     pub actions_error: String,
     #[serde(default)]
     pub actions_imported: bool,

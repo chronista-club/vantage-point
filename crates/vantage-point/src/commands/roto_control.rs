@@ -1,58 +1,28 @@
-//! roto_control — ROTO-CONTROL の双方向 control loop（CLI / daemon 共有）
-//!
-//! `vp midi roto control`（前景・secs 制限）と DeviceRegistry 常駐（持続・自動再接続）が
-//! **同一の control loop body を共有**するための module。doc 23 の DeviceRegistry（device 接続所有 @ Daemon）
-//! に control loop を載せる際、loop を二重実装しないための注入境界を定義する。
-//!
-//! ## 構造
-//! - `LaneSource` / `SwitchSink`: loop が外界に触れる 2 点を trait で注入
-//!   - CLI: `QuicLaneSource`(daemon-repo QUIC) + `QuicSwitchSink`(daemon repo-proxy 経由)
-//!   - daemon: `InProcessLaneSource`(build_node_lanes 直読み) + `QuicSwitchSink`(daemon repo-proxy)
-//!     ※ L0 portless: repo は listen しないので switch は CLI/daemon とも Daemon :32000 経由で forward
-//! - `roto_control_loop`: keepalive(autorespond) + LCD projection + nav→switch を回す共有 body
-//! - `RotoSessionBracket`(nostos `AsyncBracket`) + `RotoHealDriver`(`AsyncDriver`):
-//!   enter=open+handshake / exit=control loop / disconnect→Reborn(自動再接続) を表現
-//!
-//! data / calculations / actions 分離: lane 並びの計算は `build_node_lanes`(daemon/server.rs) と
-//! `parse_node_lanes`(midi.rs) の純粋関数に委譲。本 module は配線（orchestration）に集中する。
+//! Explicit DAW-mode diagnostic CLI (`vp midi roto control`).
+//! Normal VP navigation uses devices.rs input-only MIDI listeners instead.
+//! LaneSource / SwitchSink keep CLI I/O separate from lane calculations.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use tokio::sync::{Mutex, RwLock, mpsc::UnboundedReceiver};
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use nostos::{AsyncBracket, AsyncDriver, Outcome};
-
 use crate::capability::core::CapabilityEvent;
 use crate::capability::eventbus::EventBus;
-use crate::capability::{RepoManagerCapability, RunningRepo};
 use crate::device_input::{ControlEvent, DeviceInput, roto::RotoInput};
-use crate::device_profile::{DeviceProfile, Rgb, roto::RotoProfile};
-use crate::repo::lane::LaneInfo;
+use crate::device_profile::{Rgb, roto::RotoProfile};
 
 use super::midi::{
     LaneNav, RotoLane, page_slots, parse_node_lanes, roto_autorespond, roto_lane_nav,
-    roto_open_async, roto_repo_slots, roto_repo_slots_full,
+    roto_repo_slots, roto_repo_slots_full,
 };
 
 // ─── data ──────────────────────────────────────────────────
 
-/// control loop の UI state。reconnect 時に `RotoDescriptor` に退避され、再接続後も
-/// 選択ページ・選択 lane が保たれる（抜き差し後の体験連続）。
-///
-/// ⚠️ `activated` / `lcd_repoed` も **意図的に reconnect 跨ぎで carry-over する**
-/// （false へ reset しない）。一見すると物理セッション local な flag に見えるが、reset は
-/// 退行になる: reconnect 直後は loop 入場時に `poll.tick()` の初回が即時発火し、`lanes` は
-/// 空 Vec 始まりなので非空 poll 結果と `next != lanes` が必ず真 → `if view.activated` gate を
-/// 通って `roto_repo_slots_full` で即再描画される（`activated=true` が必要）。逆に reset
-/// すると次の hello (≤1s) まで LCD 再描画が遅れる。`activated` は任意の SysEx（keepalive
-/// hello 含む）で立つ — daemon 側だけの再起動では session 継続中の ROTO が full handshake を
-/// 再送せず hello しか送らないため、hello を activation 信号に数えないと LCD が永久に沈黙する
-/// （`roto_control_loop` の activation 判定コメント参照）。
+/// DAW CLI control loop の UI state。
 #[derive(Default, Clone)]
 pub(crate) struct RotoView {
     /// 表示ページ（1 ページ = 8 lane）。reconnect で保持。
@@ -75,15 +45,6 @@ pub(crate) enum LoopExit {
     Deadline,
     /// lane source の致命エラー等（→ daemon は Failed）
     Fatal(String),
-}
-
-/// 再接続のための device descriptor。`view` を抱えて reconnect 後の UI を復元する。
-#[derive(Clone)]
-pub(crate) struct RotoDescriptor {
-    /// CoreMIDI port displayName の部分一致パターン（例 "Roto"）
-    pub port_pattern: String,
-    /// reconnect 時に復元する UI state
-    pub view: RotoView,
 }
 
 // ─── 注入 trait（loop が外界に触れる 2 点）─────────────────
@@ -342,29 +303,7 @@ impl LaneSource for QuicLaneSource {
     }
 }
 
-/// daemon 版 lane source: `build_node_lanes` を in-process 直読み（QUIC self-loop なし）。
-/// `parse_node_lanes` を経由するので CLI（QUIC 経由）と lane 並びが完全一致する。
-#[allow(clippy::type_complexity)]
-pub(crate) struct InProcessLaneSource {
-    pub running_repos: Arc<RwLock<HashMap<String, RunningRepo>>>,
-    pub lane_registry: Option<Arc<RwLock<HashMap<String, Vec<LaneInfo>>>>>,
-    pub daemon_cap: Option<Arc<RwLock<RepoManagerCapability>>>,
-}
-
-impl LaneSource for InProcessLaneSource {
-    async fn poll(&mut self) -> Result<Vec<RotoLane>> {
-        let repos = crate::daemon::server::build_node_lanes(
-            &self.running_repos,
-            &self.lane_registry,
-            &self.daemon_cap,
-        )
-        .await;
-        let v = serde_json::json!({ "repos": repos });
-        Ok(parse_node_lanes(&v))
-    }
-}
-
-/// CLI/daemon 共有の switch_lane sink: L0 portless で repo が listen しなくなったため、対象 repo の
+/// CLI の switch_lane sink: L0 portless で repo が listen しなくなったため、対象 repo の
 /// repo_path を使い Daemon :32000 の repo-proxy ask 経由で `switch_lane` を forward する。
 ///
 /// switch_lane は repo scope のまま（各 repo の active lane は各 repo が保持）。daemon = Daemon 本体
@@ -393,171 +332,5 @@ impl SwitchSink for QuicSwitchSink {
         .await
         .map_err(|e| anyhow::anyhow!("switch_lane (repo {}): {}", repo_path, e))?;
         Ok(())
-    }
-}
-
-// ─── self-heal: nostos AsyncBracket / AsyncDriver ──────────
-
-/// 接続中 ROTO セッションの Active state。`enter` で open + handshake 済の handle を抱える。
-/// open 失敗時は `open_failed` marker のみ（exit が即 Reborn して driver が backoff 再試行）。
-pub(crate) struct RotoActive {
-    /// Some = open/handshake 失敗（device 抜け等）→ exit が即 Reborn
-    open_failed: Option<RotoDescriptor>,
-    inner: Option<RotoActiveInner>,
-}
-
-struct RotoActiveInner {
-    // conn_in は drop すると input が切れるため keep alive
-    _conn_in: midir::MidiInputConnection<()>,
-    midi_rx: UnboundedReceiver<Vec<u8>>,
-    conn_out: midir::MidiOutputConnection,
-    profile: RotoProfile,
-    view: RotoView,
-    port_pattern: String,
-    /// open 時に確定した実 port 名（fleet 配線の ControlTap 用。pattern とは別物）
-    port_name: String,
-}
-
-/// ROTO 持続セッションの 1 接続サイクルを表す `AsyncBracket`。
-/// enter = port open(in+out) + DAW_START handshake、exit = control loop を回し
-/// disconnect で `Reborn`（view 退避）/ shutdown で `Done` / 致命で `Failed`。
-/// `lane_source` / `switch_sink` は reconnect を跨いで再利用するため bracket が所有する。
-pub(crate) struct RotoSessionBracket<L: LaneSource, S: SwitchSink> {
-    lane_source: Mutex<L>,
-    switch_sink: Mutex<S>,
-    shutdown: CancellationToken,
-    /// Some = daemon（DeviceRegistry）: knob 系入力を `devices.control_event` に流す（fleet 配線）
-    event_bus: Option<Arc<EventBus>>,
-    /// フィードバック方向（LE-19）: motor byte 列の注入路。reconnect を跨いで再利用する
-    feedback_rx: Mutex<tokio::sync::watch::Receiver<Option<Vec<Vec<u8>>>>>,
-}
-
-impl<L: LaneSource, S: SwitchSink> RotoSessionBracket<L, S> {
-    pub(crate) fn new(
-        lane_source: L,
-        switch_sink: S,
-        shutdown: CancellationToken,
-        event_bus: Option<Arc<EventBus>>,
-        feedback_rx: tokio::sync::watch::Receiver<Option<Vec<Vec<u8>>>>,
-    ) -> Self {
-        Self {
-            lane_source: Mutex::new(lane_source),
-            switch_sink: Mutex::new(switch_sink),
-            shutdown,
-            event_bus,
-            feedback_rx: Mutex::new(feedback_rx),
-        }
-    }
-}
-
-impl<L: LaneSource, S: SwitchSink> AsyncBracket for RotoSessionBracket<L, S> {
-    type Input = RotoDescriptor;
-    type Active = RotoActive;
-    type Done = ();
-    type Reborn = RotoDescriptor;
-    type Failed = String;
-
-    async fn enter(&self, input: RotoDescriptor) -> RotoActive {
-        match roto_open_async(&input.port_pattern) {
-            Ok((conn_in, midi_rx, mut conn_out, port_name)) => {
-                // handshake（DAW_START）。out 送信失敗 = ROTO 抜け → OpenFailed marker。
-                let profile = RotoProfile::default();
-                for msg in profile.handshake() {
-                    if conn_out.send(&msg).is_err() {
-                        return RotoActive {
-                            open_failed: Some(input),
-                            inner: None,
-                        };
-                    }
-                }
-                tracing::info!(
-                    "🧲 ROTO connected: {} (DAW_START handshake sent)",
-                    port_name
-                );
-                RotoActive {
-                    open_failed: None,
-                    inner: Some(RotoActiveInner {
-                        _conn_in: conn_in,
-                        midi_rx,
-                        conn_out,
-                        profile,
-                        view: input.view.clone(),
-                        port_pattern: input.port_pattern,
-                        port_name,
-                    }),
-                }
-            }
-            Err(e) => {
-                // device 不在/抜き差し中。enter は Active を返す契約なので marker に畳む。
-                tracing::debug!("🧲 ROTO open 待機 (port 不在?): {}", e);
-                RotoActive {
-                    open_failed: Some(input),
-                    inner: None,
-                }
-            }
-        }
-    }
-
-    async fn exit(&self, active: RotoActive) -> Outcome<(), RotoDescriptor, String> {
-        // open 失敗 → driver が backoff して再 enter（wait-for-plug）
-        if let Some(desc) = active.open_failed {
-            return Outcome::Reborn(desc);
-        }
-        let mut inner = active.inner.expect("inner present when not open_failed");
-
-        let mut ls = self.lane_source.lock().await;
-        let mut ss = self.switch_sink.lock().await;
-        let mut feedback_rx = self.feedback_rx.lock().await;
-        let tap = self.event_bus.clone().map(|event_bus| ControlTap {
-            event_bus,
-            port_name: inner.port_name.clone(),
-        });
-        let result = roto_control_loop(
-            &mut inner.profile,
-            &mut inner.midi_rx,
-            &mut inner.conn_out,
-            &mut inner.view,
-            &mut *ls,
-            &mut *ss,
-            None, // daemon = 永続（deadline なし）
-            self.shutdown.clone(),
-            tap.as_ref(),
-            &mut feedback_rx,
-        )
-        .await;
-        // conn_in/conn_out は inner drop で閉じる（= ROTO graceful 切断）
-        let reborn = RotoDescriptor {
-            port_pattern: inner.port_pattern.clone(),
-            view: inner.view.clone(),
-        };
-        match result {
-            Ok(LoopExit::Shutdown) => Outcome::Done(()),
-            Ok(LoopExit::Disconnected) | Ok(LoopExit::Deadline) => Outcome::Reborn(reborn),
-            Ok(LoopExit::Fatal(msg)) => Outcome::Failed(msg),
-            Err(e) => {
-                tracing::warn!("🧲 ROTO loop error (再接続を試みる): {}", e);
-                Outcome::Reborn(reborn)
-            }
-        }
-    }
-}
-
-/// reconnect heal driver。disconnect（Reborn）後に backoff sleep して再 enter、
-/// shutdown 中なら打ち切り（`Err` で `AsyncDriver::run` を `Reborn` 終端させる）。
-pub(crate) struct RotoHealDriver {
-    pub shutdown: CancellationToken,
-    pub backoff: Duration,
-}
-
-impl<L: LaneSource, S: SwitchSink> AsyncDriver<RotoSessionBracket<L, S>> for RotoHealDriver {
-    async fn next(&mut self, reborn: RotoDescriptor) -> Result<RotoDescriptor, RotoDescriptor> {
-        if self.shutdown.is_cancelled() {
-            return Err(reborn);
-        }
-        // replug debounce / port 再 enumerate 待ち。shutdown が来たら即打ち切り。
-        tokio::select! {
-            _ = self.shutdown.cancelled() => Err(reborn),
-            _ = tokio::time::sleep(self.backoff) => Ok(reborn),
-        }
     }
 }

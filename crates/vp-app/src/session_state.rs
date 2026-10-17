@@ -32,6 +32,7 @@
 //! default `~/.local/state/vp/`) 配下。
 
 use std::collections::HashMap;
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -46,6 +47,18 @@ fn session_file_name(instance_index: usize) -> String {
     } else {
         format!("session.{instance_index}.json")
     }
+}
+
+/// session file 名 → instance index（`session.json` = 0 / `session.<N>.json` = N）。
+/// `session.json.tmp`（atomic write 中間）や `.corrupt-*` は None。[`session_file_name`] の逆。
+fn session_file_index(name: &str) -> Option<usize> {
+    if name == SESSION_FILE_PRIMARY {
+        return Some(0);
+    }
+    name.strip_prefix("session.")?
+        .strip_suffix(".json")?
+        .parse()
+        .ok()
 }
 
 /// `open` field の serde default。 既存 file (= flag 不在) は「開いていた」 扱いにする
@@ -75,6 +88,11 @@ pub const SIDEBAR_MIN_WIDTH: f64 = 180.0;
 pub const SIDEBAR_MAX_WIDTH: f64 = 640.0;
 pub const RIGHT_SIDEBAR_MIN_WIDTH: f64 = 240.0;
 pub const RIGHT_SIDEBAR_MAX_WIDTH: f64 = 900.0;
+/// R sidebar の幅（shell 幅に対する %）の許容範囲（doc 82）。既定 25% は webview 側の値
+/// （保存が無ければ Rust は撃たない = 既定を二重に書かない）。下限 px（320）は CSS の
+/// `min-width` が持つので、ここは比率の端だけを守る。
+pub const RIGHT_SIDEBAR_MIN_PCT: f64 = 15.0;
+pub const RIGHT_SIDEBAR_MAX_PCT: f64 = 60.0;
 
 /// L sidebar の形 (doc 56 / sidebar view modes)。`full` = 一覧、`slim` = icon 幅の帯。
 ///
@@ -109,6 +127,13 @@ pub struct ShellLayout {
     /// R sidebar を開いていたか。
     #[serde(default)]
     pub right_sidebar_open: bool,
+    /// R sidebar の幅（shell 幅に対する %、doc 82）。`None` = 未 drag（webview の既定 25%）。
+    ///
+    /// ⚠️ **R の幅の正はこちら**。`right_sidebar_width`（px）は doc 82 以前の版が読む互換の
+    /// 写しで、webview はもう R の幅に使わない — 旧版は R の開閉のたびに既定の 420px を
+    /// 保存していたので、px を正にすると全員が 25% 既定を見ないまま 420 に留まる。
+    #[serde(default)]
+    pub right_sidebar_pct: Option<f64>,
 }
 
 impl ShellLayout {
@@ -120,6 +145,9 @@ impl ShellLayout {
             && (SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH).contains(&self.sidebar_width)
             && (RIGHT_SIDEBAR_MIN_WIDTH..=RIGHT_SIDEBAR_MAX_WIDTH)
                 .contains(&self.right_sidebar_width)
+            && self
+                .right_sidebar_pct
+                .is_none_or(|p| (RIGHT_SIDEBAR_MIN_PCT..=RIGHT_SIDEBAR_MAX_PCT).contains(&p))
     }
 
     /// 範囲外を端に丸める。webview から届いた値は **信用せず必ず通す**
@@ -137,6 +165,11 @@ impl ShellLayout {
         self.right_sidebar_width = self
             .right_sidebar_width
             .clamp(RIGHT_SIDEBAR_MIN_WIDTH, RIGHT_SIDEBAR_MAX_WIDTH);
+        // 比率は「壊れていたら未 drag に戻す」— 端へ丸めると NaN が 15% の極細を生む
+        self.right_sidebar_pct = self
+            .right_sidebar_pct
+            .filter(|p| p.is_finite())
+            .map(|p| p.clamp(RIGHT_SIDEBAR_MIN_PCT, RIGHT_SIDEBAR_MAX_PCT));
         self
     }
 }
@@ -204,6 +237,11 @@ impl WindowGeometry {
 /// 自分の file に書き戻す。 他 instance の file は触らない (= clobber free)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionState {
+    /// 旧: window ごとの MIDI ピン（doc 81）。**読み込み専用**の移行元 — 正本は app 全体の
+    /// [`crate::midi_pins`]（`midi-pins.json`）。save では出さない（`skip_serializing`）ので、
+    /// window の file に書き戻す経路は構造的に無い。
+    #[serde(default, skip_serializing)]
+    pub midi_navigation: serde_json::Value,
     /// repo path → UI state (sidebar accordion 等)
     #[serde(default)]
     pub repos: HashMap<String, RepoUiState>,
@@ -246,6 +284,7 @@ pub struct SessionState {
 impl Default for SessionState {
     fn default() -> Self {
         Self {
+            midi_navigation: serde_json::Value::Null,
             repos: HashMap::new(),
             active_lane_address: None,
             currents_order: None,
@@ -485,13 +524,7 @@ impl SessionState {
             };
             // `session.<N>.json` (N≥1) のみ対象。 `session.json` (= primary) や
             // `session.json.tmp` (= atomic write 中間) は prefix/suffix strip で弾かれる。
-            let Some(rest) = name.strip_prefix("session.") else {
-                continue;
-            };
-            let Some(num) = rest.strip_suffix(".json") else {
-                continue;
-            };
-            let Ok(idx) = num.parse::<usize>() else {
+            let Some(idx) = session_file_index(name) else {
                 continue;
             };
             if idx == 0 {
@@ -503,6 +536,27 @@ impl SessionState {
         }
         out.sort_unstable();
         out
+    }
+
+    /// 旧 window 別 `midi_navigation` から、app 全体のピンへ移す 1 組を選ぶ（doc 81 の移行）。
+    ///
+    /// slot 0（`session.json`）を優先し、無ければ index の小さい順で最初の非 null。
+    /// `open` は問わない（閉じた window の設定も user が作ったピン）。file は raw JSON として読むだけで、
+    /// `load()` の副作用（壊れた file の退避）は起こさない。
+    pub fn legacy_midi_navigation_in(dir: &std::path::Path) -> Option<serde_json::Value> {
+        let mut found: Vec<(usize, serde_json::Value)> = std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .filter_map(|entry| {
+                let idx = session_file_index(entry.file_name().to_str()?)?;
+                let text = std::fs::read_to_string(entry.path()).ok()?;
+                let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+                let pins = value.get("midi_navigation")?.clone();
+                pins.is_object().then_some((idx, pins))
+            })
+            .collect();
+        found.sort_by_key(|(idx, _)| *idx);
+        found.into_iter().next().map(|(_, pins)| pins)
     }
 
     /// Cmd+N で spawn する次の空き secondary instance index (≥1)。
@@ -649,8 +703,10 @@ mod tests {
             right_sidebar_width: 9999.0, // 画面を覆った
             sidebar_form: SidebarForm::Slim,
             right_sidebar_open: true,
+            right_sidebar_pct: Some(99.0),
         });
         let l = s.shell_layout().expect("clamp 後は valid");
+        assert_eq!(l.right_sidebar_pct, Some(RIGHT_SIDEBAR_MAX_PCT));
         assert_eq!(l.sidebar_width, SIDEBAR_MIN_WIDTH);
         assert_eq!(l.right_sidebar_width, RIGHT_SIDEBAR_MAX_WIDTH);
         // 形と開閉は幅と独立に保たれる
@@ -667,8 +723,13 @@ mod tests {
             right_sidebar_width: f64::INFINITY,
             sidebar_form: SidebarForm::Full,
             right_sidebar_open: false,
+            right_sidebar_pct: Some(f64::NAN),
         });
-        assert!(s.shell_layout().is_some(), "NaN でも既定へ倒して valid に");
+        let l = s.shell_layout().expect("NaN でも既定へ倒して valid に");
+        assert_eq!(
+            l.right_sidebar_pct, None,
+            "壊れた比率は未 drag（既定 25%）に戻す"
+        );
     }
 
     /// ⚠️ **slim の 44px を幅として保存しない**ことの根拠 — 形と幅は別 field。
@@ -681,6 +742,7 @@ mod tests {
             right_sidebar_width: 420.0,
             sidebar_form: SidebarForm::Slim,
             right_sidebar_open: false,
+            right_sidebar_pct: None,
         });
         let l = s.shell_layout().expect("valid");
         assert_eq!(l.sidebar_width, 320.0, "slim 中でも full の幅を覚えている");
@@ -696,6 +758,7 @@ mod tests {
                 right_sidebar_width: 5.0,
                 sidebar_form: SidebarForm::Full,
                 right_sidebar_open: false,
+                right_sidebar_pct: None,
             }),
             ..SessionState::default()
         };

@@ -1,16 +1,17 @@
 # 78. アプリ共通 Editor とテーマ保存
 
-> **Status**: Draft
-> **Related**: design 48、`mem_1CfjZnPVNMbQrVauwF6W4C`
+> **Status**: Draft（MIDI タブは実機確認待ち）
+> **Related**: design 48、design 81、`mem_1CfjZnPVNMbQrVauwF6W4C`、`mem_1CfvxBJqJvVjZk5FEqZ98b`
 > **対象**: `crates/vp-app/webview/editor/`, `crates/vp-app/webview/entry.tsx`, `crates/vp-app/webview/src/sidebar/ResponsePoint.tsx`
 
 ## 目的と範囲
 
-Ctrl+Shift+E で開く Editor を THEME / SIDEBAR / CHAT / COMPONENT の横並びタブに整理し、初回は THEME を開く。
+Ctrl+Shift+E で開く Editor を THEME / SIDEBAR / CHAT / MIDI / COMPONENT の横並びタブに整理し、初回は THEME を開く。
 部品を選ぶ必要がある操作と、アプリに直接適用する操作を分け、調整を名前付きテーマとして再利用できるようにする。
 
 - COMPONENT は「画面から選ぶ」を入口にする。選択位置を枠で示し、同じ種類の全インスタンスへの変更であることを説明する。DOM の部品ツリーは折りたたんだ補助導線。
 - SIDEBAR は選択不要。文字、背景、選択行、状態ポイントを扱う。現在表示されない旧コネクターの演出ノブは登録しない。現行 CSS で使うアクセントは残す。
+- MIDI は選択不要。LPD8 のピン #1〜#8 の色と、未選択の Lane の LED の明るさ（%）を扱う。各項目に「既定に戻す」。値はテーマに属さず、保存先も下の localStorage ではない（次節）。
 - THEME はプリセット選択と、旧 GLOBAL / SURFACE・Chat・Resizer の有効な調整をまとめる。
 - 各テーマでの調整は自動保存し、名前を付けてカスタムテーマを追加できる。カスタムには保存済みの値と編集中の値がある。
 - daemon、端末テーマ、共有ライブラリの配布、実アプリの入替は対象外。
@@ -25,6 +26,12 @@ Ctrl+Shift+E で開く Editor を THEME / SIDEBAR / CHAT / COMPONENT の横並�
 - `app-fields`: VP の調整項目。既存 Chat / Resizer / Lane 選択 field ID を維持する。
 - `EditorPanel`: 範囲別の入力、明示選択、枠、補助ツリー、JSON 書き出し。
 - `theme-store`: version 付き保存データの検証と旧 field 保存の読込み。
+- `midi-settings` / `MidiSection`: MIDI タブ。Editor の寿命で 1 つ（テーマ切替で Provider を作り直しても保持）。
+
+MIDI タブの値は EditorField として登録しない。field にすると変更購読がテーマ保存に書き、書き出し JSON にも混ざるため。
+読み書きは app 全体で 1 組のピン（`midi-pins.json`、design 81）: 書くのは sidebar と同じ IPC `midi:navigation`、
+読むのは Rust が保存後に全 window の両 bundle へ配る `vp:midi-settings`。sidebar bundle の store は import しない。
+保存値が届くまでは入力を無効にし、書かない（既定値で保存済みのピンを上書きしないため）。
 
 Provider 0.8.1 は初期テーマの色相・彩度の基準を生成時に保持する。したがって `data-theme` だけの切替は行わない。
 切替前に Editor が扱う CSS 変数を解除し、新しいテーマを設定してから Provider を生成する。
@@ -74,6 +81,7 @@ Esc は選択操作中なら取り消し、選択済みなら解除、選択な�
 
 ## 検証
 
+`editor-midi.test.ts` で MIDI タブ（旧 4 ピン session の表示、届く前は書かない、色・明るさ → IPC の JSON、既定に戻す、sidebar からの変更への追随、遅れた echo の無視）を検証する。
 `editor-theme.test.ts` で区分・保存/復元・テーマ分離・旧保存・壊れた保存・遅延 component・明示選択と Esc を検証する。
 `sidebar-hierarchy.test.ts` で状態ポイントと状態文字の共通 token を検証する。
 実ブラウザ用の独立プレビューは [guide](../guide/editor-theme.md) を参照。
@@ -86,3 +94,5 @@ WKWebView 上の見た目・操作は、実アプリ入替を別途行うまで�
 - 2026-10-06: 利用者の追加裁定により横並びタブへ変更。通常 VP 画面の適用先と照合し、SIDEBAR の基準文字と汎用 XS/S/M/XL・間隔を UI から省略。既存値の復元と field API は維持。効く Sidebar/Chat/Board の文字設定は対象名で表示する。
 
 - 2026-10-06: SIDEBAR と COMPONENT の間に CHAT を追加し、Chat の既存5項目を THEME から移動。保存キーは変えず、テーマに含めて保持する。
+
+- 2026-10-12: CHAT と COMPONENT の間に MIDI を追加（LPD8 ピン 8 色 + 未選択の明るさ）。保存は session、テーマ保存には入れない。自動テスト済み、WKWebView 上の実機確認待ち。

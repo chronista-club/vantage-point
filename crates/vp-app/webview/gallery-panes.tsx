@@ -15,6 +15,7 @@
  * Editor Mode との同居規約（#editor-root z-index）は GALLERY_CSS 側で維持。
  */
 
+import { navigationFeedback, type NavigationFeedback } from './midi-pins';
 import {
 	type ApplyPolicy,
 	type DominanceDirection,
@@ -230,9 +231,9 @@ registerLayoutScope(SCOPE, layoutMcp);
 // 読み手: vp-app app.rs `fleet_dispatch_js`（daemon-device channel の control_event 転送）。
 // mapping は fleet.ts（純 calculation）、ここは engine への action だけを持つ。
 // ROTO knob = share（VCA — 1 本上げると他が duck する）/ X-Touch fader 1 = t の hand driver /
-// LPD8 pad = Scene slot（tap = apply / 長押し = capture）。
+// nanoKONTROL button = Scene slot（tap = apply / 長押し = capture）。LPD8 の pad は sidebar の Lane ピン（doc 81）。
 
-/** LPD8 pad の Scene slot（ephemeral — Reload まで。永続化は需要が出たら settle log 側で） */
+/** Scene slot（ephemeral — Reload まで。永続化は需要が出たら settle log 側で） */
 const sceneSlots = new Map<number, Layout>();
 const padPressAt = new Map<number, number>();
 /** pad 押下がこの ms 以上 = capture、未満 = apply */
@@ -335,21 +336,29 @@ function applyFleetOp(op: FleetOp): void {
 // ---------- フィードバック方向（場 → 機材、LE-19） ----------
 // 経路: engine.subscribe → throttle(50ms trailing) + diff → ipc "fleet:feedback"
 // → app.rs watch(latest-wins) → daemon-device 上り event → Devices が各機材に投影。
-// ROTO モーターが share を追い、X-Touch fader が t を示し、LPD8 RGB が Scene slot を灯す —
+// ROTO モーターが share を追い、X-Touch fader が t を示し、LPD8 RGB は Lane ピンを灯す（`vp:midi-pads`、doc 81） —
 // 「正規化の結合が物理で見える」（1 本上げると他のノブが下がる、§9）。
 
 const FEEDBACK_THROTTLE_MS = 50;
 let feedbackTimer: number | null = null;
 let lastFeedbackJson = "";
+let navigationPads: NavigationFeedback = (window as unknown as {__vpMidiPads?:NavigationFeedback}).__vpMidiPads ?? {enabled:false,pads:[]};
+window.addEventListener('vp:midi-pads', e => {
+  navigationPads = (e as CustomEvent<NavigationFeedback>).detail;
+  lastFeedbackJson = ''; // target changes must repaint even when the values match
+  scheduleFleetFeedback();
+});
 
 function sendFleetFeedback(): void {
-	const fb = computeFeedback({
+	const gallery = computeFeedback({
 		memberOrder: memberIds(engine.current(SCOPE).structure),
 		shares: sharesFrom(engine.resolved(SCOPE)),
 		transitionT: engine.transition(SCOPE)?.t ?? null,
 		filledSlots: new Set(sceneSlots.keys()),
 		touched: fleetTouches,
 	});
+	const fb = navigationFeedback(gallery, navigationPads);
+	if (!fb) return;
 	const json = JSON.stringify(fb);
 	if (json === lastFeedbackJson) return; // 変化なしは送らない（機材への無駄 sysex 防止）
 	lastFeedbackJson = json;

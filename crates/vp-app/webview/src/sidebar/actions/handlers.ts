@@ -18,7 +18,10 @@ import {
 	toggleSidebarForm,
 } from "../form";
 import type { SidebarForm } from "../form";
-import { isSubLane, laneAddressKey, laneShortcutNumber } from "../lane";
+import { isSubLane, laneAddressKey } from "../lane";
+import { pinTargetOf } from "../../../midi-pins";
+import type { LaneTarget } from "../../../midi-navigation";
+import { pins } from "../midi-pin-store";
 import { PANEL_BUCKETS } from "../actions-panel/model";
 import {
 	openAddSubFor,
@@ -115,44 +118,47 @@ interface VisibleLane {
 	path: string;
 	address: string;
 	label: string;
-	/** 打つ番号（[`laneShortcutNumber`] 由来 = **repo の位置**）。配列 index とは限らない。 */
+	/** 打つ番号 = **ピン番号**（[`pinTargetOf`]）。配列 index とは限らない。 */
 	number: number;
 }
 
 let laneSelectModeTimer: ReturnType<typeof setTimeout> | null = null;
 let laneSelectModeTargets: VisibleLane[] = [];
 
-/**
- * ショートカットの宛先＝**各 repo の root lane**を repo の並び順で収集（1〜9）。
- *
- * ⚠️ **畳んでいる repo も含める**。番号は repo の位置（[`laneShortcutNumber`]）なので、
- * 展開状態で動かない＝筋肉記憶が付く。畳んだ先を選んだ場合は選択が展開を促す。
- *
- * ⚠️ **sub lane は対象外**（mako 2026-08-09「root lane だけがショートカットを持つ」）。
- * 旧実装は展開中 repo の全 lane を上から数えており、repo を畳むだけで番号が総入れ替えになった。
- */
-function collectVisibleLanes(): VisibleLane[] {
-	const out: VisibleLane[] = [];
-	const map = sidebar.lanes_by_repo ?? {};
-	// ⚠️ 番号は **repo の位置**から出す（積んだ数ではない）。root がまだ立っていない repo を
-	// 飛ばすときに `out.length` で数えると、そこから先が 1 つずつ手前にずれ、sidebar の
-	// `#N` badge（同じ位置から出す）と宛先が食い違う。
-	// ⚠️ **表示順で数える**。`sidebar.processes` の生順ではなく、user が drag で並べ替えた
-	// 順（`resolveRepoOrder`）が画面の順 = badge の番号。ここを揃えないと飛び先がずれる。
-	resolveRepoOrder(sidebar.processes, sidebar.currents_order).forEach(
-		(proc, repoIndex) => {
-		const number = laneShortcutNumber(repoIndex);
-		if (number === null) return; // 10 個目以降は番号を持たない
-		const root = (map[proc.path] ?? []).find((l) => !isSubLane(l));
-		if (!root) return; // root 不在 = その番号は空席のまま（後続を繰り上げない）
-		out.push({
-			path: proc.path,
-			address: laneAddressKey(root),
-			label: proc.path.split("/").pop() ?? proc.path,
-			number,
-		});
-		},
+/** sidebar に出ている lane の名前: root（lead）は repo 名、sub は lane 名。 */
+export function pinLabel(pin: LaneTarget): string {
+	const lane = sidebar.lanes_by_repo[pin.path]?.find(
+		(l) => laneAddressKey(l) === pin.address,
 	);
+	return lane && !isSubLane(lane)
+		? (sidebar.processes.find((p) => p.path === pin.path)?.name ?? pin.address)
+		: (pin.address.split("/").at(-1) ?? pin.address);
+}
+
+/** 登録した lane が今 sidebar に居るか（居なければ番号は空席扱い — 別の lane に振り替えない）。 */
+function pinAvailable(pin: LaneTarget): boolean {
+	return !!sidebar.lanes_by_repo[pin.path]?.some(
+		(l) => laneAddressKey(l) === pin.address,
+	);
+}
+
+/**
+ * ショートカットの宛先 = **LPD8 のピン #1〜#8 に登録した lane**（doc 81「番号はピンが出どころ」）。
+ *
+ * ⚠️ 番号は [`pinTargetOf`] から引く。sidebar の `#N` badge（LaneRow の `pinNumberOf`）と
+ * LPD8 pad N も同じピンを見るので、三者がずれない。旧仕様（CURRENTs の並び順で root lane に 1〜9 を
+ * 振る）は 2026-10-13 に廃止。sub lane も登録できる。
+ *
+ * 不在の lane（repo が落ちた / lane が消えた）は空席のまま — 近くの lane に飛ぶと「押した番号と
+ * 違う所へ行く」になり、番号を覚える意味が消える。
+ */
+export function collectVisibleLanes(): VisibleLane[] {
+	const out: VisibleLane[] = [];
+	for (let number = 1; number <= 8; number++) {
+		const pin = pinTargetOf(pins(), number);
+		if (!pin || !pinAvailable(pin)) continue;
+		out.push({ ...pin, label: pinLabel(pin), number });
+	}
 	return out;
 }
 
@@ -183,12 +189,11 @@ function laneNumberHandler(e: KeyboardEvent): void {
 	}
 	if (e.key >= "1" && e.key <= "9") {
 		e.preventDefault();
-		// ⚠️ 配列 index ではなく **number で引く**。root 不在の repo は空席なので、
-		// `targets[2]` が `#3` とは限らない。
+		// ⚠️ 配列 index ではなく **number で引く**。未登録のピンは空席なので、
+		// `targets[2]` が `#3` とは限らない。選ぶ処理は ⌘N と同じ関数。
 		const n = parseInt(e.key, 10);
-		const sel = laneSelectModeTargets.find((t) => t.number === n);
-		if (sel) {
-			sendIpc({ t: "lane:select", path: sel.path, address: sel.address });
+		if (laneSelectModeTargets.some((t) => t.number === n)) {
+			selectLaneByNumber(n);
 		}
 		exitLaneSelectMode();
 		return;
@@ -205,21 +210,24 @@ function laneNumberHandler(e: KeyboardEvent): void {
 }
 
 /**
- * `Cmd + N` — sidebar の `#N` badge が指す root lane へ**直接**飛ぶ。
+ * `Cmd + N` / LPD8 pad N — ピン #N に登録した lane へ**直接**飛ぶ。
  *
- * ⚠️ 宛先は `⌘ hold l` と**同じ `collectVisibleLanes`** から引く。番号の解決を 2 箇所に
- * 持つと、badge・二段操作・直接 chord の三者がずれる余地が生まれる。
+ * ⚠️ 宛先は `⌘ hold l` と同じく [`pinTargetOf`] から引く。番号の解決を 2 箇所に持つと、
+ * badge・二段操作・直接 chord・pad の四者がずれる余地が生まれる。
  *
- * 空席（root がまだ立っていない repo の番号）は**何もしない** — 近くの lane に飛ぶと
- * 「押した番号と違う所へ行く」になり、番号を覚える意味が消える。
+ * 空席（未登録 / 登録した lane が今いない）は**何もしない**。畳んだ repo の lane は開いてから選ぶ
+ * （sub lane は畳んだままだと行が見えない）。
  */
 export function selectLaneByNumber(n: number): void {
-	const sel = collectVisibleLanes().find((t) => t.number === n);
-	if (!sel) {
-		console.debug(`[lane #${n}] 該当なし（空席 or 範囲外）`);
+	const pin = pinTargetOf(pins(), n);
+	if (!pin || !pinAvailable(pin)) {
+		console.debug(`[lane #${n}] 該当なし（未登録 or 不在）`);
 		return;
 	}
-	sendIpc({ t: "lane:select", path: sel.path, address: sel.address });
+	if (!sidebar.processes.find((p) => p.path === pin.path)?.expanded) {
+		sendIpc({ t: "process:toggle", path: pin.path, expanded: true });
+	}
+	sendIpc({ t: "lane:select", path: pin.path, address: pin.address });
 }
 
 function enterLaneSelectMode(): void {

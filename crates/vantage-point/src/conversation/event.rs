@@ -148,6 +148,50 @@ pub enum ConversationEvent {
         text: String,
     },
 
+    /// subagent の実行状態（何をしているか / 消費量 / 完了）。tui の Agent 表示の一次情報。
+    ///
+    /// 由来は claude の `system` 行 `task_started` / `task_progress` / `task_updated` /
+    /// `task_notification`（実測 2026-10-10, claude 2.1.295）。どれも同じ task の**部分的な**
+    /// スナップショットなので、GUI は `task_id` ごとに「来た field で上書き」して畳む
+    /// （None = その行が運ばなかった = 前の値を保つ）。
+    ///
+    /// 揮発の進捗表示なので replay log には記録しない（[`crate::repo::conversation_pump`]）。
+    SubagentTask {
+        /// 親の `Agent` [`ConversationEvent::ToolCall`] の `id`。
+        parent_tool_use_id: String,
+        task_id: String,
+        /// "running" | "completed" | "failed" | "killed" …（claude の status をそのまま運ぶ）。
+        status: String,
+        /// 今やっていること（started = 親が付けた説明、progress = 子の現在の作業）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(test, ts(optional))]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(test, ts(optional))]
+        subagent_type: Option<String>,
+        /// true = 親の turn と切り離されたバックグラウンド実行。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(test, ts(optional))]
+        backgrounded: Option<bool>,
+        /// 直近に子が回した tool 名。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(test, ts(optional))]
+        last_tool_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(test, ts(optional, type = "number"))]
+        total_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(test, ts(optional, type = "number"))]
+        tool_uses: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(test, ts(optional, type = "number"))]
+        duration_ms: Option<u64>,
+        /// 完了時の要約（`task_notification` のみ）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(test, ts(optional))]
+        summary: Option<String>,
+    },
+
     /// plan（TodoWrite の input から導出）。plan ウィジェット用。
     Plan { entries: Vec<PlanEntry> },
 
@@ -367,6 +411,10 @@ pub enum SubagentRole {
     Thinking,
     /// subagent の出力本文。
     Text,
+    /// subagent が回した tool（text = `name` + 改行 + input の JSON）。
+    ToolUse,
+    /// subagent が回した tool の結果（長いものは翻訳層で切り詰める）。
+    ToolResult,
 }
 
 /// plan の 1 項目（TodoWrite の todo に対応）。

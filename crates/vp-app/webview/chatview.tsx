@@ -34,6 +34,7 @@ import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import { isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
 import { renderMermaidBlocks } from './mermaid-post'
 import { registerVoiceSink, sendVoice } from './voice'
+import { installRotoVoiceInput, registerRotoVoiceControl, stopRotoVoice, visibleVoiceElement } from './roto-voice'
 import { Marked } from 'marked'
 import { confirmCodexConsoleHandoff } from './codex-mode-handoff'
 import type {
@@ -64,6 +65,8 @@ import {
   type ChatItem,
   type ChatState,
   type SubagentEntry,
+  type SubagentTaskView,
+  type RunningSubagent,
   type LaneChat,
   type Submission,
   type ToolItem,
@@ -75,6 +78,8 @@ import {
   emptyChatState,
   foldInto,
   lampOf,
+  runningSubagents,
+  subagentTaskLine,
   toolGroupStatus,
 } from './chat-model'
 export {
@@ -807,14 +812,18 @@ function ToolRow(props: {
   input?: unknown
   result?: string
   subagent?: SubagentEntry[]
+  task?: SubagentTaskView
+  /** 終了を告げずに消えた subagent（chat-model の `closeOpenSubagents`）。 */
+  interrupted?: boolean
 }) {
   const [open, setOpen] = createSignal(false)
   const inputText = createMemo(() => formatToolInput(props.input))
   const resultText = createMemo(() => formatToolResult(props.result))
   const subagent = createMemo(() => props.subagent ?? [])
   const oneLiner = createMemo(() => toolOneLiner(props.name, props.input))
+  const taskLine = createMemo(() => (props.task ? subagentTaskLine(props.task) : ''))
   const hasDetail = createMemo(
-    () => inputText() !== null || resultText() !== null || subagent().length > 0,
+    () => inputText() !== null || resultText() !== null || subagent().length > 0 || !!props.task,
   )
   return (
     <div class="conversation-tool" classList={{ done: props.done, error: props.error }}>
@@ -836,14 +845,26 @@ function ToolRow(props: {
         <Show when={oneLiner()}>
           {(t) => <span class="conversation-tool-oneliner">{t()}</span>}
         </Show>
+        {/* subagent の実行状態（tui の Agent 行と同じ材料）。live で書き換わる。 */}
+        <Show when={taskLine()}>
+          {(t) => <span class="conversation-tool-task">{t()}</span>}
+        </Show>
         <span class="conversation-tool-status">
-          {props.error ? 'error' : props.done ? '✓' : '実行中…'}
+          {props.error ? 'error' : props.done ? '✓' : props.interrupted ? '中断' : '実行中…'}
         </span>
       </button>
       <Show when={open() && hasDetail()}>
         <div class="conversation-tool-body">
           <Show when={inputText()}>{(t) => <ToolDetail label="input" text={t()} />}</Show>
           {/* subagent は Agent 行の中に入れ子で置く = 「誰の発話か」を構造で示す。 */}
+          <Show when={props.task}>
+            {(t) => (
+              <ToolDetail
+                label={`task · ${t().status}${props.interrupted ? ' · 中断（engine 終了で停止）' : ''}`}
+                text={[subagentTaskLine(t()), t().summary].filter(Boolean).join('\n\n')}
+              />
+            )}
+          </Show>
           <Show when={subagent().length > 0}>
             <SubagentBlock entries={subagent()} />
           </Show>
@@ -904,12 +925,58 @@ function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
                 input={t.input}
                 result={t.result}
                 subagent={t.subagent}
+                task={t.task}
+                interrupted={t.interrupted}
               />
             )}
           </For>
         </div>
       </Show>
     </div>
+  )
+}
+
+/**
+ * 進行中の subagent を chat の右に float で並べる（会話の流れから独立）。
+ *
+ * Agent 行は stream の中で塊の木に畳まれ、会話が進むと上へ流れて見えなくなる。走っている間だけ
+ * 「誰が・今なにを・どれだけ」を常に見える場所に置く。終わったら消える（結果は stream の Agent 行）。
+ * 位置は CSS の `.conversation-subagent-dock` 1 か所で決める（右下へ移す場合もそこだけ）。
+ */
+function SubagentDock(props: { agents: Accessor<RunningSubagent[]> }) {
+  return (
+    <Show when={props.agents().length > 0}>
+      <div class="conversation-subagent-dock" role="status" aria-label="実行中の subagent">
+        <For each={props.agents()}>
+          {(a) => {
+            // 見出し（親が付けた説明）と同じなら「今の作業」は重ねない。
+            const now = createMemo(() =>
+              a.task?.description && a.task.description !== a.title ? a.task.description : null,
+            )
+            const meta = createMemo(() =>
+              a.task ? subagentTaskLine({ ...a.task, description: undefined }) : '',
+            )
+            return (
+              <div class="conversation-subagent-card">
+                <div class="conversation-subagent-card-head">
+                  <span class="conversation-tool-spinner" />
+                  <span class="conversation-subagent-card-icon" aria-hidden="true">
+                    <CreoIcon name="ph:tree-structure" size={13} />
+                  </span>
+                  <span class="conversation-subagent-card-title">{a.title}</span>
+                </div>
+                <Show when={now()}>
+                  {(t) => <div class="conversation-subagent-card-now">{t()}</div>}
+                </Show>
+                <Show when={meta()}>
+                  {(t) => <div class="conversation-subagent-card-meta">{t()}</div>}
+                </Show>
+              </div>
+            )
+          }}
+        </For>
+      </div>
+    </Show>
   )
 }
 
@@ -997,6 +1064,8 @@ function ActivityTree(props: { run: Accessor<ChatItem[]>; tailStreaming: () => b
                       input={item.input}
                       result={item.result}
                       subagent={item.subagent}
+                      task={item.task}
+                      interrupted={item.interrupted}
                     />
                   </Match>
                 </Switch>
@@ -1536,7 +1605,11 @@ function SessionChatView(props: { lane: string; session: number }) {
       queueMicrotask(() => {
         if (!inputRef) return
         autosize(inputRef)
-        inputRef.focus()
+        const focused = sessionsOf(props.lane)?.focused ?? focusedOf(props.lane)
+        if (activeLane() === props.lane && focused === props.session &&
+            document.documentElement.dataset.midiTarget !== 'false' && visibleVoiceElement(inputRef)) {
+          inputRef.focus()
+        }
       })
     },
     error: (message) => {
@@ -1544,25 +1617,42 @@ function SessionChatView(props: { lane: string; session: number }) {
       setVoiceError(message)
     },
   }))
-  const startVoice = (e: PointerEvent) => {
-    if (micDisabled() || voice() !== 'idle') return
-    // 押したままボタンの外で離しても pointerup がこのボタンに届くように
-    try { (e.currentTarget as Element).setPointerCapture(e.pointerId) } catch { /* 未対応環境 */ }
+  const beginVoice = (): boolean => {
+    if (voice() !== 'idle') return false
+    if (draft() !== '') {
+      setVoiceError('入力欄を空にしてから録音してください')
+      return false
+    }
     setVoiceError(null)
     setVoice('recording')
     sendVoice('start', props.lane, props.session)
+    return true
+  }
+  const startVoice = (e: PointerEvent) => {
+    if (!beginVoice()) return
+    // 押したままボタンの外で離しても pointerup がこのボタンに届くように
+    try { (e.currentTarget as Element).setPointerCapture(e.pointerId) } catch { /* 未対応環境 */ }
   }
   const stopVoice = () => {
     if (voice() !== 'recording') return
     setVoice('transcribing')
     sendVoice('stop', props.lane, props.session)
   }
+  const rotoVoiceControl = {
+    start: beginVoice,
+    stop: stopVoice,
+    visible: () => visibleVoiceElement(inputRef),
+    reject: (message: string) => setVoiceError(message),
+  }
+  onCleanup(registerRotoVoiceControl(props, rotoVoiceControl))
+  createEffect(() => {
+    const focused = sessionsOf(props.lane)?.focused ?? focusedOf(props.lane)
+    if (activeLane() !== props.lane || focused !== props.session) stopRotoVoice(rotoVoiceControl)
+  })
   // 押している最中に session が閉じて unmount されると pointerup が届かず、Rust 側の録音が
   // 開いたまま残る（次にどこかの🎙が押されるまでマイクが点きっぱなし）。止めてから消える。
   // 結果の届け先は無いので Rust 側で捨てられる。
-  onCleanup(() => {
-    if (voice() === 'recording') sendVoice('stop', props.lane, props.session)
-  })
+  onCleanup(stopVoice)
 
   // ---- 画像添付（chat 入力欄への貼り付け、2026-08-30）--------------------------
   // ⚠️ VP は保存しない — 送信時に engine へ渡すだけで、transcript / replay にも残さない
@@ -2050,6 +2140,8 @@ function SessionChatView(props: { lane: string; session: number }) {
                             input={item.input}
                             result={item.result}
                             subagent={item.subagent}
+                            task={item.task}
+                            interrupted={item.interrupted}
                           />
                         )
                       })()}
@@ -2136,6 +2228,8 @@ function SessionChatView(props: { lane: string; session: number }) {
             </div>
           </Show>
         </div>
+        {/* 進行中の subagent（会話の流れから独立した float）。stream が流れても見失わない。 */}
+        <SubagentDock agents={() => runningSubagents(state().items, state().streaming)} />
         <div style={{ 'max-height': '45vh', overflow: 'auto' }}>
           <Show when={state().codexInteractions?.requests.some(r => r.item_id && r.can_accept)}>
             <button type="button" class="conversation-prompt-opt" onClick={() => {
@@ -2527,6 +2621,25 @@ export const CHATVIEW_CSS = `
 /* 1 ライナー（doc 57 §4.4）: 情報密度の源。幅が尽きたら ellipsis（clamp は CSS の仕事）。 */
 .conversation-tool-oneliner { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   color: var(--color-text-tertiary,#8b93a7); }
+/* 進行中 subagent の float。⚠️ 位置はここ 1 か所（右下へ移すなら top/transform を bottom に替える）。
+   pointer-events は card だけ拾い、隙間は下の stream の操作（scroll / 選択）を邪魔しない。 */
+/* 右上（上起点）に置く。縦中央だと本文の行に重なる（mako 2026-10-12）。複数あれば上から下へ積む */
+.conversation-subagent-dock { position:absolute; right:18px; top:12px; z-index:5;
+  display:flex; flex-direction:column; gap:6px; width:min(320px, 40%); pointer-events:none; }
+.conversation-subagent-card { pointer-events:auto; padding:8px 10px; border-radius:8px;
+  background: var(--color-bg-elevated,#16191f); border:1px solid var(--color-border,#2a3040);
+  box-shadow: 0 6px 18px rgba(0,0,0,.35); font-size:var(--chat-text-tool,12px); animation: conversation-fade .18s ease-out; }
+.conversation-subagent-card-head { display:flex; align-items:center; gap:8px; min-width:0; }
+/* subagent の印（枝分かれ = 親から生えた子）。spinner と title の間 */
+.conversation-subagent-card-icon { flex:none; display:inline-flex; color: var(--color-text-secondary,#a8b0c0); }
+.conversation-subagent-card-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color: var(--color-text,#e6e9ef); }
+.conversation-subagent-card-now { margin:3px 0 0 17px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color: var(--color-text-secondary,#a8b0c0); }
+.conversation-subagent-card-meta { margin:2px 0 0 17px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-size:var(--chat-text-meta,11px); color: var(--color-text-tertiary,#616b80); }
+.conversation-tool-task { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-size:var(--chat-text-meta,11px); color: var(--color-text-tertiary,#616b80); }
 .conversation-tool-status { margin-left:auto; flex:none; font-size:var(--chat-text-meta,11px); }
 /* 展開部: thinking-body と同じ左罫線の入れ子表現で input / result を積む。 */
 .conversation-tool-body { display:flex; flex-direction:column; gap:6px; margin:5px 0 0 16px;
@@ -2834,6 +2947,10 @@ export type ChatViewApi = {
 }
 
 export function installChatView(vpConsole: VpConsole): ChatViewApi {
+  installRotoVoiceInput(() => {
+    const lane = activeLane()
+    return lane ? {lane, session: sessionsOf(lane)?.focused ?? focusedOf(lane)} : null
+  })
   // session 一覧 bus → module signal（全 SessionChatView が共有）。install は起動時 1 回。
   document.addEventListener('vp:conversation-sessions', (e) => {
     const d = (

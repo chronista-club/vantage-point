@@ -176,6 +176,38 @@ export const CONVERSATION_EVENT_FIXTURES = {
     "role": "thinking",
     "text": "子の思考"
   },
+  subagent_message_tool_use: {
+    "kind": "subagent_message",
+    "parent_tool_use_id": "toolu_03",
+    "role": "tool_use",
+    "text": "Read\n{}"
+  },
+  subagent_message_tool_result: {
+    "kind": "subagent_message",
+    "parent_tool_use_id": "toolu_03",
+    "role": "tool_result",
+    "text": "ok"
+  },
+  subagent_task_minimal: {
+    "kind": "subagent_task",
+    "parent_tool_use_id": "toolu_03",
+    "task_id": "t1",
+    "status": "completed"
+  },
+  subagent_task_full: {
+    "kind": "subagent_task",
+    "parent_tool_use_id": "toolu_03",
+    "task_id": "t1",
+    "status": "running",
+    "description": "Reading /etc/hosts",
+    "subagent_type": "general-purpose",
+    "backgrounded": false,
+    "last_tool_name": "Read",
+    "total_tokens": 39234,
+    "tool_uses": 1,
+    "duration_ms": 1122,
+    "summary": "要約"
+  },
   plan: {
     "kind": "plan",
     "entries": [

@@ -380,6 +380,7 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                         .get("right_sidebar_open")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false),
+                    right_sidebar_pct: num("right_sidebar_pct"),
                 });
             }
         }
@@ -509,6 +510,14 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
         Some("code:list") => {
             if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
                 let _ = proxy.send_event(AppEvent::CodeList {
+                    lane: lane.to_string(),
+                });
+            }
+        }
+        // R sidebar の PR 節（doc 82）: lane の open PR 一覧の取り直し要求。
+        Some("lane:prs_fetch") => {
+            if let Some(lane) = parsed.get("lane").and_then(|v| v.as_str()) {
+                let _ = proxy.send_event(AppEvent::LanePrsFetch {
                     lane: lane.to_string(),
                 });
             }

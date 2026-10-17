@@ -12,6 +12,9 @@
 /// Lane terminals は per-Lane の browser-native WebSocket で input/output を扱う。
 #[derive(Debug, Clone)]
 pub enum AppEvent {
+    /// Feedback is accepted only from the current MIDI target window.
+    FleetFeedback(serde_json::Value),
+    ActionsRefreshResult(crate::generated::sidebar_ipc::ActionsRefreshResult),
     LocalUrlsResult(crate::generated::sidebar_ipc::LocalUrlsResult),
     /// daemon から Repo list 取得成功 (= `fetch_repos_with_ports` 経由で runtime port 込み)。
     ReposLoaded(Vec<crate::daemon_wire::RepoInfo>),
@@ -190,6 +193,17 @@ pub enum AppEvent {
         lane: String,
         entries: Vec<crate::webview::file_explorer::Entry>,
         truncated: bool,
+    },
+    /// R sidebar の PR 節（doc 82）: `lane:prs_fetch` 要求。lane address から cwd を解決して
+    /// daemon-control `lane/prs` へ。
+    LanePrsFetch {
+        lane: String,
+    },
+    /// `lane/prs` の応答 → `push_main::lane_prs` で main webview へ push。
+    /// `payload` は daemon の `LanePrs`（`{available, branch, prs, error?}`）。
+    LanePrsResult {
+        lane: String,
+        payload: serde_json::Value,
     },
     /// `code:read` の読み結果 → `push_main::code_file` で main webview へ push。
     /// `payload` は `{"text": string} | {"error": string}` の 2 択（read_file の返り値）。
@@ -432,6 +446,8 @@ pub enum AppEvent {
         /// `"full"` | `"slim"`。未知値は Rust 側で `full` に倒す。
         sidebar_form: String,
         right_sidebar_open: bool,
+        /// R sidebar の幅（shell 幅に対する %、doc 82）。未 drag なら None。
+        right_sidebar_pct: Option<f64>,
     },
     /// tail 購読の停止（R sidebar を閉じた）。見ていない log は読み続けない。
     DebugLogUnwatch,

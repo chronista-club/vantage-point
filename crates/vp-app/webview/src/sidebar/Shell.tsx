@@ -1,4 +1,5 @@
 /** Sidebar: CURRENTs / 停止中, collapsible ACTIONs, settings and machine status. */
+import { MidiPins, MIDI_PINS_CSS } from './MidiPins';
 import { For, Show, createEffect, createMemo } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sidebar } from "./store";
@@ -95,6 +96,7 @@ export function Shell() {
 			>
 				<header class="vp-sidebar-header">
 					<span class="vp-sidebar-title"><CreoIcon name="ph:tree-structure" size={12} /> CURRENTs</span>
+					<span class="vp-midi-target" title="MIDI の操作先 Window">MIDI</span>
 					{/* repo 追加: 産む動詞は**親の行**に住む（mako 2026-08-20 — 「repo 増やすのは
 					    CURRENTS に。lane 増やすのは repo に」）。左で産んで右（main area）に
 					    現れる、という操作の流れを生成の系譜と一致させる。
@@ -107,6 +109,7 @@ export function Shell() {
 						<CreoIcon name="ph:plus" size={13} />
 					</button>
 				</header>
+				<MidiPins />
 
 				<div class="vp-sidebar-list">
 					<Show
@@ -367,6 +370,8 @@ html,body{margin:0;height:100%;overflow:hidden;}
   box-shadow:inset calc(-1 * var(--sb-selection-width)) 0 0 var(--sb-selection-border);}
 /* 横線ゼロ方針 (mako 019f50fe): 画面に残ってよい横線は session tap だけ。
    header 下線 / Daemon・Devices 上線 / detail 破線は全削除、 区切りは spacing で。 */
+.vp-midi-target{display:none;font-size:11px;color:var(--color-text-secondary)}
+html[data-midi-target="true"] .vp-midi-target{display:inline}
 .vp-sidebar-header{flex:0 0 auto;display:flex;align-items:center;gap:6px;
   padding:12px 12px 8px;font-size:var(--sb-text-micro,10px);letter-spacing:.14em;
   text-transform:uppercase;font-weight:var(--typography-weight-semibold,600);
@@ -530,6 +535,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* 相部屋の非 root session 行 (doc 58 ②-b) — 場所ラベル省略、root 行より 1 段静か。
    dot slot は空 span が indent だけ揃える (state データが無いものを描かない)。 */
 .vp-session-row{font-weight:300;}
+.vp-session-close{font:inherit;color:inherit;background:transparent;border:1px solid var(--color-surface-border,#ffffff20);border-radius:4px;cursor:pointer;padding:1px 5px}
 .vp-session-row .vp-lane-title.is-session{color:rgba(234,251,255,.72);}
 
 /* 「今なにを」(doc 58 ②-a) — 進行の本体なので地 (cwd = mute-2) より 1 段読める mute。 */
@@ -777,6 +783,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 ${WIRE_PANEL_CSS}
 ${SETTINGS_PANEL_CSS}
 ${LANE_PICKER_CSS}
+${MIDI_PINS_CSS}
 ${COMMAND_PALETTE_CSS}
 ${ACTIONS_CSS}
 ${ACTIVITY_POINT_CSS}

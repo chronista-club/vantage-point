@@ -296,7 +296,6 @@ impl SettingsFile {
 
 /// 書き出す file の先頭に置く案内。**人が開いたときに「何を書く場所か」が分かる**ように
 /// （この file は VP が書くが、人が手で編集することも許している）。
-#[cfg_attr(test, allow(dead_code))]
 const HEADER: &str = "\
 // VP の user 設定（好み）— VP が読み書きします。手で編集しても構いません。
 //
@@ -444,6 +443,47 @@ mod tests {
         let kdl = f.to_kdl().unwrap();
         assert!(kdl.contains("default-lane"), "kdl: {kdl}");
         assert_eq!(SettingsFile::from_kdl(&kdl).unwrap(), f);
+    }
+
+    /// 書式の互換で比べる、全 field を埋めた settings。
+    fn compat_sample() -> SettingsFile {
+        SettingsFile {
+            log_level: Some("debug".into()),
+            idle_timeout_minutes: Some(7),
+            default_lane: Some(DefaultLane {
+                agent: Some("claude".into()),
+                model: Some("claude-opus-5".into()),
+            }),
+        }
+    }
+
+    /// club-kdl 0.12.0 の `to_string_pretty` が `compat_sample` を書き出した実物（HEADER の前まで）。
+    ///
+    /// 0.13 で `to_string_pretty` の書式が変わったのは、`{ }` で子を持つ node の字下げと、
+    /// 制御文字の書き方（`\u{7}` と escape する。旧版は不正な KDL を出していた）の 2 点
+    /// （club-kdl の CHANGELOG [0.13.0]）。
+    /// settings.kdl は平らな node の列なので、0.13 以降の出力も**この文字列と byte 単位で同じ**。
+    const WRITTEN_BY_CLUB_KDL_012: &str = concat!(
+        "log-level debug\n",
+        "idle-timeout-minutes 7\n",
+        "default-lane agent=claude model=claude-opus-5\n",
+    );
+
+    /// club-kdl 0.12 が書いた settings.kdl（`save` が付ける HEADER のコメント込み）を今の版で読める。
+    #[test]
+    fn reads_settings_kdl_written_by_club_kdl_012() {
+        assert_eq!(
+            SettingsFile::from_kdl(&format!("{HEADER}{WRITTEN_BY_CLUB_KDL_012}")).unwrap(),
+            compat_sample()
+        );
+    }
+
+    /// 今の版が書く settings.kdl は 0.12 が書いたものと同じ = VP を 0.12 時代の版へ戻しても読める。
+    ///
+    /// ⚠️ club-kdl を上げてここが赤くなったら、新しい出力を旧版で読めるかを確かめてから更新すること。
+    #[test]
+    fn settings_kdl_output_matches_club_kdl_012() {
+        assert_eq!(compat_sample().to_kdl().unwrap(), WRITTEN_BY_CLUB_KDL_012);
     }
 
     #[test]

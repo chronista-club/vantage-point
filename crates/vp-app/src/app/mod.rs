@@ -33,6 +33,7 @@ mod catch_up;
 mod instance_guard;
 /// lane の見え方の調整役（activate_lane / conversation attach / roster / 未読印）。
 mod lane_view;
+mod midi_target;
 /// event handler: board / canvas / editor（board snapshot の投影、switch_lane、editor bridge、board mutate）。
 mod on_board;
 /// event handler: conversation（chat の submit / respond / mode / session 操作 / console / agents / OSC）。
@@ -166,6 +167,25 @@ fn update_pane_bounds(webview: &WebView, window_size: tao::dpi::PhysicalSize<u32
 //   メソッドに移管 (G2 解消、 3 重実装の 1 元化)。 caller は `wire.key()` で同等の文字列を取れる。
 
 /// App のエントリポイント
+/// MIDI ピン（app 全体で 1 組 — `crate::midi_pins`）を webview の両 bundle へ配る script。
+///
+/// 1 document に 2 bundle（main / sidebar）が居るので、受け口は `window` の CustomEvent
+/// `vp:midi-settings`。`__vpMidiSettings` は bundle 評価前に撃った分を後から拾うための置き場（doc 81）。
+fn midi_settings_script(settings: &serde_json::Value) -> String {
+    format!(
+        "window.__vpMidiSettings={settings};window.dispatchEvent(new CustomEvent('vp:midi-settings',{{detail:window.__vpMidiSettings}}));"
+    )
+}
+
+/// 起動時（その window へ）と、`midi:navigation` で保存した直後（**開いている全 window へ**）に撃つ。
+/// どの window の Editor（main）/ sidebar が変えても、全 window の両 bundle がこの 1 本で同じ値に揃う
+/// （片方が他方の store を import しない — doc 81）。
+pub(super) fn push_midi_settings(webview: &WebView, settings: &serde_json::Value) {
+    if let Err(e) = webview.evaluate_script(&midi_settings_script(settings)) {
+        tracing::warn!("vp:midi-settings の配信に失敗: {e}");
+    }
+}
+
 pub fn run() -> anyhow::Result<()> {
     // All legacy instance numbers contend for the same application lock.
     let Some(_instance_guard) = instance_guard::acquire(&vp_paths::vp_state_dir(), 0)? else {
@@ -174,6 +194,7 @@ pub fn run() -> anyhow::Result<()> {
     let (event_loop, app) = boot::boot()?;
     let mut windows = std::collections::HashMap::new();
     let mut focused = None;
+    let mut midi_target = midi_target::MidiTarget::new();
     let mut indices = crate::session_state::SessionState::open_secondary_indices();
     if crate::session_state::SessionState::load(0).open || indices.is_empty() {
         indices.insert(0, 0);
@@ -205,6 +226,7 @@ pub fn run() -> anyhow::Result<()> {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
+                midi_target.close(window_id);
                 if let Some((mut ui, boot)) = windows.remove(&window_id) {
                     on_window::close_requested(&mut ui, &boot);
                 }
@@ -220,8 +242,15 @@ pub fn run() -> anyhow::Result<()> {
             } => {
                 // A focus gain supersedes all other windows, regardless of OS loss-event order.
                 if matches!(event, WindowEvent::Focused(true)) {
-                    for (id, (ui, _)) in &mut windows {
+                    midi_target.focus(window_id);
+                    for (id, (ui, boot)) in &mut windows {
+                        if *id != window_id {
+                            let _ = boot.fleet_feedback_tx.send(serde_json::Value::Null);
+                        }
                         ui.win.is_focused = *id == window_id;
+                        let _ = boot
+                            .webview
+                            .evaluate_script(&midi_target::indicator_js(*id == window_id));
                     }
                 }
                 if let Some((ui, boot)) = windows.get_mut(&window_id) {
@@ -278,7 +307,29 @@ pub fn run() -> anyhow::Result<()> {
                     && let Some((ui, boot)) = windows.get_mut(&id)
                     && (window_id.is_none() || boot.proxy.accepts(scope))
                 {
+                    if matches!(event, AppEvent::WebviewReady) {
+                        let _ = boot
+                            .webview
+                            .evaluate_script(&midi_target::indicator_js(midi_target.accepts(id)));
+                    }
+                    // Each window has its own device subscription. Consume only the target's
+                    // copy; forwarding other copies would execute one physical gesture twice.
+                    if let AppEvent::DeviceEvent { ref payload } = event
+                        && payload.get("kind").and_then(|v| v.as_str()) == Some("control_event")
+                        && !midi_target.accepts(id)
+                    {
+                        return;
+                    }
+                    if matches!(event, AppEvent::FleetFeedback(_)) && !midi_target.accepts(id) {
+                        return;
+                    }
                     dispatch_window_event(event, ui, boot);
+                }
+                // ピンは app 全体で 1 組: どの window で保存しても、開いている全 window に配る。
+                if let Some(settings) = app.midi_pins.borrow_mut().take_broadcast() {
+                    for (_, boot) in windows.values() {
+                        push_midi_settings(&boot.webview, settings);
+                    }
                 }
             }
             #[cfg(target_os = "macos")]
@@ -311,6 +362,9 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
     let respawn_proxy = proxy.clone();
     let async_action_proxy = proxy.clone();
     match event {
+        AppEvent::FleetFeedback(feedback) => {
+            let _ = boot.fleet_feedback_tx.send(feedback);
+        }
         AppEvent::PasteText(text) => on_terminal::paste_text(ui, boot, text),
         AppEvent::OscNotification { lane, code: _ } => {
             on_conversation::osc_notification(ui, boot, lane)
@@ -333,7 +387,10 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             lanes,
             origin,
         ),
-        AppEvent::WebviewReady => catch_up::webview_ready(ui, boot),
+        AppEvent::WebviewReady => {
+            push_midi_settings(&boot.webview, boot.midi_pins.borrow().value());
+            catch_up::webview_ready(ui, boot);
+        }
         AppEvent::LanesError { repo_path, message } => {
             on_lanes::lanes_error(ui, boot, repo_path, message)
         }
@@ -360,6 +417,7 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             right_sidebar_width,
             sidebar_form,
             right_sidebar_open,
+            right_sidebar_pct,
         } => on_window::shell_layout(
             ui,
             boot,
@@ -367,6 +425,7 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             right_sidebar_width,
             sidebar_form,
             right_sidebar_open,
+            right_sidebar_pct,
         ),
         AppEvent::DebugLogWatch { source } => on_misc::debug_log_watch(ui, boot, &proxy, source),
         AppEvent::DebugLogUnwatch => on_misc::debug_log_unwatch(ui, boot),
@@ -530,6 +589,9 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             on_conversation::agents(ui, boot, lane, payload, req)
         }
         AppEvent::BoardMutate { method, body } => on_board::board_mutate(ui, boot, method, body),
+        AppEvent::ActionsRefreshResult(result) => {
+            crate::webview::push_sidebar::actions_refresh_result(&boot.webview, result)
+        }
         AppEvent::LocalUrlsResult(result) => {
             crate::webview::push_sidebar::local_urls_result(&boot.webview, result)
         }
@@ -558,6 +620,10 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
             rel_path,
             payload,
         } => on_misc::code_file_result(ui, boot, lane, rel_path, payload),
+        AppEvent::LanePrsFetch { lane } => {
+            on_misc::lane_prs_fetch(ui, boot, &async_action_proxy, lane)
+        }
+        AppEvent::LanePrsResult { lane, payload } => on_misc::lane_prs_result(boot, lane, payload),
         AppEvent::WireHistoryResult { address, payload } => {
             on_misc::wire_history_result(ui, boot, address, payload)
         }
@@ -638,5 +704,25 @@ mod main_view_asset_tests {
                 "{path} の中身に marker `{marker}` が無い (bundle 生成物が想定と違う)"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod midi_settings_push_tests {
+    use super::midi_settings_script;
+
+    /// 保存値そのもの（JSON literal）を置き場と event の両方へ渡す。null（未設定）も同じ形で配る。
+    #[test]
+    fn script_sets_the_snapshot_and_notifies_both_bundles() {
+        let settings = serde_json::json!({"slots":[null],"colors":["#112233"],"dimGain":0.4});
+        let script = midi_settings_script(&settings);
+        assert!(script.starts_with(&format!("window.__vpMidiSettings={settings};")));
+        assert!(
+            script.contains("new CustomEvent('vp:midi-settings',{detail:window.__vpMidiSettings})")
+        );
+        assert!(
+            midi_settings_script(&serde_json::Value::Null)
+                .starts_with("window.__vpMidiSettings=null;")
+        );
     }
 }

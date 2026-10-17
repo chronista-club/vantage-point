@@ -205,6 +205,15 @@ pub(super) fn sidebar_ipc(
     if outcome.session_save {
         ui.persist.save();
     }
+    // 全 window への配信は event loop が `take_broadcast` で行う（この window だけに撃たない）。
+    if let Some(settings) = outcome.midi_settings_save {
+        tracing::info!(
+            window = ?boot.window.id(),
+            slots = %settings.get("slots").unwrap_or(&serde_json::Value::Null),
+            "midi:navigation save (slots in pin #1..#8 order)"
+        );
+        boot.midi_pins.borrow_mut().set(settings);
+    }
     // Lane activation — activate_lane() が全副作用を処理
     if let Some(addr) = outcome.activate_lane {
         activate_lane(
@@ -815,6 +824,19 @@ pub(super) fn sidebar_ipc(
     // 即反映する（= 押した結果が数秒後の health poll で Hub 行に現れる）。
     // ACTIONS の永続化要求（doc 57 Phase 4）。watch は latest-wins なので、
     // 打鍵ごとに来ても debounce task が静まった 1 回だけを daemon へ撃つ。
+    if let Some(req) = outcome.actions_refresh_request {
+        let conn = boot.daemon_conn.clone();
+        let proxy = boot.proxy.clone();
+        boot.rt_handle.spawn(async move {
+            let result = async { conn.control().await?.refresh_actions().await }.await;
+            let _ = proxy.send_event(AppEvent::ActionsRefreshResult(
+                crate::generated::sidebar_ipc::ActionsRefreshResult {
+                    req,
+                    error: result.err().map(|e| e.to_string()),
+                },
+            ));
+        });
+    }
     if let Some(payload) = outcome.actions_persist_request {
         let _ = boot.actions_persist_tx.send(Some(payload));
     }

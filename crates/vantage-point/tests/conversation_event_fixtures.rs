@@ -25,7 +25,7 @@ use vantage_point::conversation::event::{
 
 /// TS 側の union が持つべき kind。variant を足したらここも足す
 /// （fixture の網羅 assert が落ちて気付く）。
-const EXPECTED_KINDS: [&str; 22] = [
+const EXPECTED_KINDS: [&str; 23] = [
     "codex_queue",
     "codex_message",
     "codex_interactions",
@@ -41,6 +41,7 @@ const EXPECTED_KINDS: [&str; 22] = [
     "tool_call",
     "tool_call_update",
     "subagent_message",
+    "subagent_task",
     "plan",
     "turn_completed",
     "now_line",
@@ -223,6 +224,54 @@ fn fixtures() -> Vec<(&'static str, ConversationEvent)> {
                 parent_tool_use_id: "toolu_03".into(),
                 role: SubagentRole::Thinking,
                 text: "子の思考".into(),
+            },
+        ),
+        (
+            "subagent_message_tool_use",
+            ConversationEvent::SubagentMessage {
+                parent_tool_use_id: "toolu_03".into(),
+                role: SubagentRole::ToolUse,
+                text: "Read\n{}".into(),
+            },
+        ),
+        (
+            "subagent_message_tool_result",
+            ConversationEvent::SubagentMessage {
+                parent_tool_use_id: "toolu_03".into(),
+                role: SubagentRole::ToolResult,
+                text: "ok".into(),
+            },
+        ),
+        (
+            "subagent_task_minimal",
+            ConversationEvent::SubagentTask {
+                parent_tool_use_id: "toolu_03".into(),
+                task_id: "t1".into(),
+                status: "completed".into(),
+                description: None,
+                subagent_type: None,
+                backgrounded: None,
+                last_tool_name: None,
+                total_tokens: None,
+                tool_uses: None,
+                duration_ms: None,
+                summary: None,
+            },
+        ),
+        (
+            "subagent_task_full",
+            ConversationEvent::SubagentTask {
+                parent_tool_use_id: "toolu_03".into(),
+                task_id: "t1".into(),
+                status: "running".into(),
+                description: Some("Reading /etc/hosts".into()),
+                subagent_type: Some("general-purpose".into()),
+                backgrounded: Some(false),
+                last_tool_name: Some("Read".into()),
+                total_tokens: Some(39234),
+                tool_uses: Some(1),
+                duration_ms: Some(1122),
+                summary: Some("要約".into()),
             },
         ),
         (

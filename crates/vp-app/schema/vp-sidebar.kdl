@@ -18,6 +18,9 @@ protocol "sidebar" version="1.0.0" {
     // channel "ipc": envelope="t" で全 request を束ねる discriminated union
     // (`IpcEnvelope`) を生成する。 transient = request ごとに完結 (response 無し)。
     channel "ipc" from="client" lifetime="transient" envelope="t" {
+        request "midi:navigation" {
+            field "settings" type="string"
+        }
         // Currents セクションの repo accordion 開閉 (+ repo auto-spawn 連動)
         request "process:toggle" {
             field "path" type="string"
@@ -177,6 +180,15 @@ protocol "sidebar" version="1.0.0" {
             field "import_legacy" type="bool" optional=#true
             field "items" type="array<json>"
             field "removed" type="array<string>"
+        }
+
+        // One daemon refresh fetches ACTIONs, Atlas catalog and Creo sidebar settings.
+        request "actions:refresh" {
+            field "req" type="string"
+        }
+        event "actions:refresh_result" {
+            field "req" type="string"
+            field "error" type="string" optional=#true
         }
 
         // Lane に明示登録する URL。payload は local_urls::Action が解釈する。

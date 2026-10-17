@@ -95,13 +95,30 @@ pub(crate) fn fleet_feedback_payload(body: &str) -> Option<serde_json::Value> {
 }
 
 pub(crate) fn fleet_dispatch_js(payload: &serde_json::Value) -> Option<String> {
-    if payload.get("kind").and_then(|v| v.as_str()) != Some("control_event") {
+    let kind = payload.get("kind").and_then(|v| v.as_str());
+    let roto = payload
+        .get("port_name")
+        .and_then(|v| v.as_str())
+        .is_some_and(|name| name.to_ascii_lowercase().contains("roto"));
+    // Availability events reach every window, including the former MIDI target.
+    // A lease loss is published as device_connected with held=false.
+    if roto
+        && (kind == Some("device_disconnected")
+            || (kind == Some("device_connected")
+                && payload.get("held").and_then(|v| v.as_bool()) != Some(true)))
+    {
+        let body = serde_json::to_string(payload).ok()?;
+        return Some(format!(
+            "window.dispatchEvent(new CustomEvent('vp:midi-unavailable',{{detail:{body}}}))"
+        ));
+    }
+    if kind != Some("control_event") {
         return None;
     }
     // serde_json::to_string の出力はそのまま JS literal として合法 (JSON ⊂ JS)
     let body = serde_json::to_string(payload).ok()?;
     Some(format!(
-        "(()=>{{const f=window.vpFleet;if(f&&f.dispatch)f.dispatch({body})}})()"
+        "(()=>{{const e=new CustomEvent('vp:midi-navigation',{{detail:{body},cancelable:true}});if(!window.dispatchEvent(e))return;const f=window.vpFleet;if(f&&f.dispatch)f.dispatch({body})}})()"
     ))
 }
 
@@ -241,5 +258,29 @@ mod editor_bridge_js_tests {
         assert_eq!(err, serde_json::json!({"error": "未知の editor op: nope"}));
         let js = editor_command_js("fields", None, None).unwrap();
         assert_eq!(Some(js), editor_bridge_js("fields", None, None));
+    }
+}
+
+#[cfg(test)]
+mod roto_availability_tests {
+    use super::fleet_dispatch_js;
+    use serde_json::json;
+
+    #[test]
+    fn roto_disconnect_and_revoke_stop_ptt_in_every_window() {
+        for payload in [
+            json!({"kind":"device_disconnected","port_name":"Roto-Control"}),
+            json!({"kind":"device_connected","port_name":"Roto-Control","held":false}),
+        ] {
+            let js = fleet_dispatch_js(&payload).expect("stop PTT even in a non-target window");
+            assert!(js.contains("vp:midi-unavailable"));
+            assert!(!js.contains("vpFleet"));
+        }
+        assert!(
+            fleet_dispatch_js(
+                &json!({"kind":"device_connected","port_name":"Roto-Control","held":true})
+            )
+            .is_none()
+        );
     }
 }

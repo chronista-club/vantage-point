@@ -21,6 +21,7 @@
 
 import { emitAgentActivity } from './session-activity-bridge'
 import { emitSessionNow, isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
+import { observeConversationUrls } from './lane-link-discovery'
 
 /** session の mode（SSOT は Rust `lane/session_registry.rs::SessionMode`、`console:mode_applied` / roster で届く）。 */
 export type SessionMode = 'tui' | 'gui'
@@ -374,6 +375,7 @@ export function installConsole(): VpConsole {
   const api: VpConsole = {
     handleEvent(lane, event, session) {
       const s = normalizeSession(session)
+      observeConversationUrls(lane, event, s)
       const entry = laneOf(lane)
       if (event.kind === 'codex_interactions') entry.codexInteractions.set(s, event)
       if (event.kind === 'codex_config' && event.config && !event.request_id) {

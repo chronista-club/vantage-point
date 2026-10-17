@@ -15,11 +15,15 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+	DEFAULT_RIGHT_PCT,
 	RIGHT_MAX,
+	RIGHT_MAX_PCT,
 	RIGHT_MIN,
+	RIGHT_MIN_PCT,
 	SIDEBAR_MAX,
 	SIDEBAR_MIN,
 	clampWidth,
+	nextRightPct,
 	nextWidth,
 	retainedShellRestore,
 } from "./shell-layout";
@@ -62,6 +66,29 @@ describe("nextWidth（drag 中の幅）", () => {
 		expect(nextWidth("left", -10, shell)).toBe(SIDEBAR_MIN);
 		expect(nextWidth("right", -10_000, shell)).toBe(RIGHT_MAX);
 		expect(nextWidth("right", 10_000, shell)).toBe(RIGHT_MIN);
+	});
+});
+
+describe("nextRightPct（R の幅は shell 幅に対する %、doc 82）", () => {
+	const shell = { left: 0, right: 1600 };
+
+	it("窓の右端から境界までの距離を shell 幅で割る", () => {
+		// 右端 1600 で pointer が 1200 → 400 / 1600 = 25%
+		expect(nextRightPct(1200, shell)).toBe(25);
+	});
+
+	it("shell の left を差し引いた幅で割る", () => {
+		expect(nextRightPct(1300, { left: 400, right: 1600 })).toBe(25);
+	});
+
+	it("小数 1 桁に丸める（保存値を px の揺れで毎回変えない）", () => {
+		expect(nextRightPct(1199, shell)).toBe(25.1);
+	});
+
+	it("範囲で頭打ち / 幅 0 の shell は既定に倒す", () => {
+		expect(nextRightPct(-10_000, shell)).toBe(RIGHT_MAX_PCT);
+		expect(nextRightPct(10_000, shell)).toBe(RIGHT_MIN_PCT);
+		expect(nextRightPct(0, { left: 0, right: 0 })).toBe(DEFAULT_RIGHT_PCT);
 	});
 });
 

@@ -48,6 +48,7 @@ function recordingHandlers(): { calls: string[]; handlers: PushHandlers } {
 			codeToggle: () => calls.push("codeToggle"),
 			debugLogLines: (source, reset, lines) =>
 				calls.push(`debuglog:${source}:${reset}:${lines.length}`),
+			lanePrs: (lane, _payload) => calls.push(`prs:${lane}`),
 			applyShellLayout: (l) =>
 				calls.push(
 					`shell:${l.sidebar_width}:${l.right_sidebar_width}:${l.sidebar_form}:${l.right_sidebar_open}`,
@@ -63,6 +64,24 @@ const dispatch = (msg: PushEventEnvelope): void => {
 };
 
 describe("dispatch", () => {
+  it("Lane 削除で検出履歴と未確定 PTY を消し、同名の再作成へ持ち越さない", async () => {
+    vi.useFakeTimers();
+    try {
+      const mod = await import("./dispatch");
+      const { discoveredLaneUrls: history, observeTerminalUrls } = await import("./lane-link-discovery");
+      mod.openDispatch();
+      mod.installDispatch(recordingHandlers().handlers);
+      history.feed('vp/reused', 'chat:1', 'http://localhost:3000/', true);
+      history.feed('vp/other', 'chat:1', 'http://localhost:4000/', true);
+      observeTerminalUrls('vp/reused', 1, new TextEncoder().encode('http://localhost:5000/'));
+      dispatch({ t: 'term:remove_lane', lane: 'vp/reused' });
+      expect(history.get('vp/reused')).toEqual([]);
+      vi.runAllTimers();
+      history.feed('vp/reused', 'chat:1', 'http://localhost:6000/', true);
+      expect(history.get('vp/reused')).toEqual(['http://localhost:6000/']);
+      expect(history.get('vp/other')).toEqual(['http://localhost:4000/']);
+    } finally { vi.useRealTimers(); }
+  });
 	beforeEach(() => {
 		// vitest の environment は node（`vitest.config.ts`）。dispatch.ts が触るのは
 		// `window.vpDispatch` だけなので、jsdom を持ち込まず最小の stub で足りる。

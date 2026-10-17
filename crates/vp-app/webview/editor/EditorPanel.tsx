@@ -1,9 +1,11 @@
 import { THEME_IDS, THEME_INFO, exportSnapshot, type ComponentFieldResolver, type ComponentTreeNode, type EditorField, type EditorHost } from '@chronista-club/creo-ui-editor-host'
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { themeValues, type ThemeLibrary } from './theme-store'
+import { MidiSection } from './MidiSection'
+import type { MidiSettings } from './midi-settings'
 
-export type EditorSection = 'COMPONENT' | 'CHAT' | 'SIDEBAR' | 'THEME'
-const SECTIONS: EditorSection[] = ['THEME', 'SIDEBAR', 'CHAT', 'COMPONENT']
+export type EditorSection = 'COMPONENT' | 'CHAT' | 'MIDI' | 'SIDEBAR' | 'THEME'
+const SECTIONS: EditorSection[] = ['THEME', 'SIDEBAR', 'CHAT', 'MIDI', 'COMPONENT']
 const GROUP_NAMES: Record<string, string> = { Global: '配色・Boardの文字', Surface: '背景と面' }
 const FIELD_NAMES: Record<string, string> = {
   'sb.text.hint': 'Lane名・メニュー・メモ入力',
@@ -105,7 +107,7 @@ type PanelProps = {
   picking: () => boolean; setPicking(picking: boolean): void;
   section: () => EditorSection; setSection(section: EditorSection): void;
   storageError: () => boolean; activate(id: string): void; save(name: string): string | undefined;
-  updateSaved(): void; restoreSaved(): void;
+  updateSaved(): void; restoreSaved(): void; midi: MidiSettings;
 }
 export function EditorPanel(props: PanelProps) {
   const { host, resolver } = props
@@ -192,6 +194,9 @@ export function EditorPanel(props: PanelProps) {
           <Show when={props.section() === 'CHAT'}>
             <div class="vp-editor-intro"><h3>Chatの見た目</h3><p>返信、自分のメッセージ、ツールや状態表示の文字を調整します。すべてのChatに反映します。</p></div>
             <FieldGroups fields={chatFields()} host={host} />
+          </Show>
+          <Show when={props.section() === 'MIDI'}>
+            <MidiSection midi={props.midi} />
           </Show>
           <Show when={props.section() === 'THEME'}>
             <div class="vp-editor-intro"><h3>アプリ全体のテーマ</h3><p>配色と、Boardの文字を調整します。端末やBoard内のWebページは対象外です。</p></div>

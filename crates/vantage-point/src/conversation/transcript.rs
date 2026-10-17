@@ -125,10 +125,72 @@ fn drop_orphan_updates(events: &mut Vec<ConversationEvent>) {
 ///
 /// `ReplayStart` は含まない（[`replay_events`] が付ける）。
 pub fn events_from_lines(raw: &str) -> Vec<ConversationEvent> {
-    raw.lines()
+    let entries: Vec<Value> = raw
+        .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .flat_map(|v| line_to_events(&v))
+        .collect();
+    let abandoned = abandoned_branch_indices(&entries);
+    entries
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !abandoned.contains(i))
+        .flat_map(|(_, v)| line_to_events(v))
         .collect()
+}
+
+/// 放棄された枝（replay してはいけない entry）の index 集合。
+///
+/// transcript は `uuid` / `parentUuid` の木で、通常は 1 本の鎖。turn が途中で切られて
+/// 再開（`CLAUDE_CODE_RESUME_INTERRUPTED_TURN`）されると、再開側が **同じ親から**別の枝を伸ばし、
+/// 切られた側は結果の来ない tool_use を抱えたまま取り残される（2026-10-10 実機: daemon 再起動 →
+/// `Agent` が「実行中」のまま残る幽霊 tool 行）。
+///
+/// 判定は保守的に「**生きている鎖**（末尾から親を辿った集合）上のノードから分岐したが鎖に
+/// 乗っていない entry と、その子孫」だけ。compaction で root が別になった古い区間や、uuid を
+/// 持たない行はこれまでどおり残す（鎖の外 ≠ 放棄）。
+fn abandoned_branch_indices(entries: &[Value]) -> std::collections::HashSet<usize> {
+    use std::collections::{HashMap, HashSet};
+    fn uuid_of(v: &Value) -> Option<&str> {
+        v.get("uuid").and_then(Value::as_str)
+    }
+    fn parent_of(v: &Value) -> Option<&str> {
+        v.get("parentUuid").and_then(Value::as_str)
+    }
+    let by_uuid: HashMap<&str, usize> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, v)| uuid_of(v).map(|u| (u, i)))
+        .collect();
+    // 生きている鎖 = 末尾（uuid を持つ最後の entry）から親を辿った集合。
+    let mut alive: HashSet<&str> = HashSet::new();
+    let mut cur = entries.iter().rev().find_map(uuid_of);
+    while let Some(u) = cur {
+        if !alive.insert(u) {
+            break; // 循環防御（壊れた transcript でも止まる）
+        }
+        cur = by_uuid.get(u).and_then(|&i| parent_of(&entries[i]));
+    }
+    let mut abandoned: HashSet<usize> = HashSet::new();
+    let mut abandoned_uuids: HashSet<&str> = HashSet::new();
+    for (i, v) in entries.iter().enumerate() {
+        let Some(u) = uuid_of(v) else { continue };
+        if alive.contains(u) {
+            continue;
+        }
+        let Some(p) = parent_of(v) else { continue };
+        // 親が生きている鎖の上（= ここで分岐した）か、親が既に放棄済み（= 子孫）。
+        if alive.contains(p) || abandoned_uuids.contains(p) {
+            abandoned.insert(i);
+            abandoned_uuids.insert(u);
+        }
+    }
+    if !abandoned.is_empty() {
+        tracing::debug!(
+            "transcript replay: 放棄された枝の entry を {} 件除外",
+            abandoned.len()
+        );
+    }
+    abandoned
 }
 
 /// transcript の 1 行を [`ConversationEvent`] 列へ。 対象外の行は空 Vec。
@@ -341,6 +403,70 @@ mod tests {
                     input: serde_json::json!({"command":"ls"}),
                 },
             ]
+        );
+    }
+
+    /// ★ 中断で放棄された枝を replay しない（2026-10-10 実機: daemon 再起動で turn が切れた直後に
+    /// `Agent` tool_use が記録され、再開（`Continue from where you left off.`）が **同じ親から**
+    /// 別の枝を伸ばした。放棄枝の tool_use には tool_result が永遠に来ないので、直列に読むと
+    /// 「実行中」のまま残る幽霊 tool 行になる）。
+    ///
+    /// transcript は `uuid` / `parentUuid` の木。末尾から親を辿った鎖が「生きている枝」で、
+    /// その鎖上のノードから分岐したが鎖に乗っていない entry（とその子孫）が放棄枝。
+    #[test]
+    fn abandoned_branch_is_not_replayed() {
+        let lines = concat!(
+            r#"{"type":"user","uuid":"u1","parentUuid":null,"message":{"role":"user","content":"調べて"}}"#,
+            "\n",
+            // 放棄枝: 中断直前に出た tool_use（結果は来ない）
+            r#"{"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_ghost","name":"Agent","input":{}}]}}"#,
+            "\n",
+            // 再開: 同じ親 u1 から別の枝（isMeta なので本文は出ない）
+            r#"{"type":"user","uuid":"u2","parentUuid":"u1","isMeta":true,"message":{"role":"user","content":"Continue from where you left off."}}"#,
+            "\n",
+            r#"{"type":"assistant","uuid":"a2","parentUuid":"u2","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_live","name":"Agent","input":{}}]}}"#,
+            "\n",
+            r#"{"type":"user","uuid":"u3","parentUuid":"a2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_live","content":"ok"}]}}"#,
+        );
+        let ev = events_from_lines(lines);
+        let tool_ids: Vec<&str> = ev
+            .iter()
+            .filter_map(|e| match e {
+                ConversationEvent::ToolCall { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tool_ids, vec!["tu_live"], "{ev:?}");
+        assert!(matches!(ev[0], ConversationEvent::UserMessage { .. }));
+    }
+
+    /// compaction で鎖が切れた古い区間（root が別）は従来どおり残す — 放棄枝の除去は
+    /// 「生きている鎖から分岐した entry」だけに限る。uuid の無い行も従来どおり通す。
+    #[test]
+    fn detached_older_segment_and_uuidless_lines_survive() {
+        let lines = concat!(
+            r#"{"type":"user","uuid":"o1","parentUuid":null,"message":{"role":"user","content":"昔の話"}}"#,
+            "\n",
+            r#"{"type":"assistant","uuid":"o2","parentUuid":"o1","message":{"role":"assistant","content":[{"type":"text","text":"昔の返事"}]}}"#,
+            "\n",
+            r#"{"type":"user","uuid":"c1","parentUuid":null,"isCompactSummary":true,"message":{"role":"user","content":"要約"}}"#,
+            "\n",
+            r#"{"type":"assistant","uuid":"n1","parentUuid":"c1","message":{"role":"assistant","content":[{"type":"text","text":"今の返事"}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":"uuid 無し"}}"#,
+        );
+        let ev = events_from_lines(lines);
+        let texts: Vec<String> = ev
+            .iter()
+            .filter_map(|e| match e {
+                ConversationEvent::UserMessage { text, .. } => Some(text.clone()),
+                ConversationEvent::MessageChunk { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["昔の話", "昔の返事", "要約", "今の返事", "uuid 無し"]
         );
     }
 

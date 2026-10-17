@@ -27,6 +27,8 @@ pub mod config;
 pub mod engine_model;
 /// lane 単位の 位置独立 安定 id 永続化 (I1、 doc 24 §7、 address→id を disk に load_or_create)
 pub mod lane_id;
+/// lane の repo の open PR 一覧（doc 82、daemon-control `lane/prs` の実体）
+pub mod prs;
 /// resume 失敗の観測記録（`vp lane resume-failed` の実体、 `||` chain 中継）
 pub mod resume_failure;
 /// lane 単位の Conversation session registry 永続（doc 38 — 1 Lane = N session、key/agent/focused）

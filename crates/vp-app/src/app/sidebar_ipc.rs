@@ -16,6 +16,7 @@ use crate::session_state::SessionState;
 /// sidebar IPC を解釈した結果
 #[derive(Debug, Default)]
 pub(crate) struct SidebarIpcOutcome {
+    pub(crate) actions_refresh_request: Option<String>,
     pub(crate) local_urls_request: Option<crate::generated::sidebar_ipc::LocalUrlsRequest>,
     /// SidebarState が変化したか (true なら push_sidebar_state を呼ぶ)
     pub(crate) changed: bool,
@@ -126,6 +127,11 @@ pub(crate) struct SidebarIpcOutcome {
     /// in-memory の更新（`set_repo_expanded` / `currents_order`）は本 fn が済ませているので、
     /// 呼び手は file 書き込みだけを担う。
     pub(crate) session_save: bool,
+    /// MIDI ピンの保存要求（値 = 検証済みの object）。保存先は window の session でなく app 全体の
+    /// [`crate::midi_pins::MidiPins`] — 呼び手が保存し、**開いている全 window** の両 bundle へ
+    /// `vp:midi-settings` で配り直す（doc 81）。Editor（main bundle）が変えた値を sidebar のピン帯と
+    /// LPD8 の LED に届ける唯一の経路でもある。
+    pub(crate) midi_settings_save: Option<serde_json::Value>,
     /// daemon 再起動要求（doc 59 P1）。⚠️ **全 repo = 全 lane の claude が落ちる**
     /// （doc 44 P1 fold-in）。caller が rfd 確認ダイアログ → `vp daemon restart` を
     /// 専用スレッドで実行する（`flows/update.rs` と同じ理由 = event loop を塞がない）。
@@ -154,6 +160,15 @@ pub(crate) fn handle_sidebar_ipc(
     };
 
     match envelope {
+        IpcEnvelope::MidiNavigation(m) => {
+            // app 全体で 1 組（doc 81）なので window の session には触れない。形の検証は webview 側。
+            if m.settings.len() <= 16_384
+                && let Ok(settings) = serde_json::from_str::<serde_json::Value>(&m.settings)
+                && settings.is_object()
+            {
+                out.midi_settings_save = Some(settings);
+            }
+        }
         IpcEnvelope::ProcessToggle(m) => {
             // The controlled accordion requests its next state over IPC.
             // Push the canonical state back so its children and count update immediately.
@@ -417,6 +432,9 @@ pub(crate) fn handle_sidebar_ipc(
         IpcEnvelope::LocalUrlsRequest(m) => {
             out.local_urls_request = Some(m);
         }
+        IpcEnvelope::ActionsRefresh(m) => {
+            out.actions_refresh_request = Some(m.req);
+        }
         IpcEnvelope::ActionsPersist(m) => {
             // ACTIONS の編集を creo へ。caller が 400ms coalesce channel に流す。
             // ⚠️ **`out.changed` を立てない**（上の field の注記どおり）。
@@ -444,6 +462,20 @@ mod tests {
     use super::*;
     use crate::daemon_wire::LaneInfo;
     use crate::pane::RepoPaneState;
+
+    #[test]
+    fn refresh_routes_one_request_without_changing_selection_or_writes() {
+        let mut state = SidebarState::default();
+        let mut session = SessionState::default();
+        let out = handle_sidebar_ipc(
+            r#"{"t":"actions:refresh","req":"refresh-1"}"#,
+            &mut state,
+            &mut session,
+        );
+        assert_eq!(out.actions_refresh_request.as_deref(), Some("refresh-1"));
+        assert!(out.actions_persist_request.is_none());
+        assert!(!out.changed && !out.active_changed && !out.session_save);
+    }
 
     /// 呼び手（`run()` の `SidebarIpc` arm）の模型。解釈 → `session_save` なら file に書く。
     #[test]
@@ -1065,5 +1097,31 @@ mod tests {
         assert!(!out.changed);
 
         assert!(state.active_lane_address.is_none() && session.repos.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod midi_persistence_tests {
+    use super::*;
+    #[test]
+    fn saves_pins_without_activating_a_lane() {
+        let settings = serde_json::json!({"slots":[null,null,null,null],"colors":["#112233","#112233","#112233","#112233"]});
+        let msg = serde_json::json!({"t":"midi:navigation","settings":settings.to_string()});
+        let mut state = SidebarState::default();
+        let mut session = SessionState::default();
+        let out = handle_sidebar_ipc(&msg.to_string(), &mut state, &mut session);
+        assert!(!out.changed && !out.active_changed && out.activate_lane.is_none());
+        // 保存先は app 全体の 1 組。この window の session は書かない
+        assert_eq!(out.midi_settings_save, Some(settings));
+        assert!(!out.session_save && session.midi_navigation.is_null());
+    }
+
+    #[test]
+    fn rejected_settings_are_neither_saved_nor_pushed() {
+        let msg = serde_json::json!({"t":"midi:navigation","settings":"[1,2]"});
+        let mut state = SidebarState::default();
+        let mut session = SessionState::default();
+        let out = handle_sidebar_ipc(&msg.to_string(), &mut state, &mut session);
+        assert!(!out.session_save && out.midi_settings_save.is_none());
     }
 }
