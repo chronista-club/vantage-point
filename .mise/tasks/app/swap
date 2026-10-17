@@ -252,6 +252,9 @@ def swap_macos(restart_daemon)
   VP.sh "VP_RELEASE_DRY=1 LANG=en_US.UTF-8 mise run release:mac"
   File.directory?(built) or VP.die("build 成果物が無い: #{built}")
 
+  SwapDetached.before_restart if restart_daemon
+  gui_stopped = true
+
   # ── 2. 走っている GUI を止める (差し替え先を掴んだままにしない) ──
   # vp の実体は .app 同梱 CLI。 cargo_bin 決め打ちだと brew 運用の機で不在 → サイレント失敗する
   # (2026-07-14 事故)。 VP.vp_bin は「実行できる物」を選ぶ。
@@ -298,6 +301,21 @@ def swap_macos(restart_daemon)
   wait_app_ready(ready_base)
   swap_epilogue(restart_daemon)
   brew_restore_hint(installed)
+rescue StandardError, SystemExit
+  # Restore a reachable GUI after a post-stop failure; retain the original error.
+  if gui_stopped
+    begin
+      recovery_vp = File.join(installed, "Contents", "MacOS", "vp")
+      if File.executable?(recovery_vp)
+        VP.run(recovery_vp, "app", "start")
+      else
+        VP.sh "open '#{installed}'"
+      end
+    rescue StandardError, SystemExit => recovery_error
+      VP.log "GUI 復旧起動も失敗: #{recovery_error.message}"
+    end
+  end
+  raise
 end
 
 # daemon + SP を新 binary に載せ替える (macOS)。
@@ -318,7 +336,6 @@ end
 #      **daemon の再起動がそのまま全 project の再起動**になったので、この前段は撤去した
 #      (pgrep 'vp sp start' は永久に 0 件マッチ = 空振りするだけだった)。
 def restart_daemon_macos
-  SwapDetached.before_restart
   VP.log "#{VP.icon(:warn)} restarting daemon — 全 project と lane の claude も落ちる (--resume で復帰)"
 
   # VP の lane の中から実行すると、daemon 再起動で自分自身が落ちる (fold-in 後は

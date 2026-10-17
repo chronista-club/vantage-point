@@ -10,20 +10,33 @@ require 'shellwords'
 module SwapDetached
   module_function
 
-  def submit(root:, env: ENV, state: nil, launch: nil, command: nil)
+  def submit(root:, env: ENV, state: nil, launch: nil, command: nil, status: method(:job_status), unload: method(:bootout))
     profile = env.fetch('VP_PROFILE', '')
     raise 'invalid VP_PROFILE' unless profile.match?(/\A[a-zA-Z0-9_-]*\z/)
     state ||= File.join(env.fetch('XDG_STATE_HOME', File.join(Dir.home, '.local/state')), 'vp', 'swap')
     FileUtils.mkdir_p(state, mode: 0o700)
+    # Serialize stale-owner inspection and bootstrap; never unlink this flock file.
+    admission = File.open(File.join(state, 'admission.lock'), File::RDWR | File::CREAT, 0o600)
+    raise 'swap の受付処理中です' unless admission.flock(File::LOCK_EX | File::LOCK_NB)
+    lease = File.open(File.join(state, 'worker.lock'), File::RDWR | File::CREAT, 0o600)
+    raise 'swap の子コマンドが実行中です' unless lease.flock(File::LOCK_EX | File::LOCK_NB)
     lock = File.join(state, 'active.lock')
-    begin
-      Dir.mkdir(lock, 0o700)
-    rescue Errno::EEXIST
-      raise "swap は受付済みです: #{lock}（ログを確認してください）"
+    if File.directory?(lock)
+      owner = JSON.parse(File.read(File.join(lock, 'owner.json')))
+      previous = owner.fetch('label')
+      live = status.call(previous)
+      raise "swap は受付済み、または状態不明です: #{lock}" unless [:absent, :exited].include?(live)
+      raise '終了済み job の解除失敗' if live == :exited && !unload.call(previous)
+      FileUtils.remove_entry(lock)
     end
+    id = "#{Time.now.strftime('%Y%m%d-%H%M%S')}-#{SecureRandom.hex(4)}"
+    label = "club.chronista.vantage-point.swap.#{id}"
+    # Publish owner and directory together, including a crash before worker startup.
+    staging = File.join(state, ".owner-#{id}")
+    Dir.mkdir(staging, 0o700)
+    File.write(File.join(staging, 'owner.json'), JSON.generate(label: label), perm: 0o600)
+    File.rename(staging, lock)
     begin
-      id = "#{Time.now.strftime('%Y%m%d-%H%M%S')}-#{SecureRandom.hex(4)}"
-      label = "club.chronista.vantage-point.swap.#{id}"
       lane = env['VP_LANE']
       repo = env['VP_REPO']
       to = repo && "agent@#{repo}#{lane && !%w[lead root main conductor].include?(lane) ? "/#{lane}" : ''}"
@@ -39,6 +52,7 @@ module SwapDetached
       args = ['/usr/bin/env', '-i', "HOME=#{Dir.home}", "USER=#{ENV.fetch('USER')}",
               'PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
               '/bin/zsh', '-lc', "exec ruby #{Shellwords.escape(script)} #{Shellwords.escape(config)}"]
+      args.insert(5, "TMPDIR=#{env['TMPDIR']}") if env['TMPDIR']
       strings = args.map { |arg| "<string>#{CGI.escapeHTML(arg)}</string>" }.join
       xml = <<~XML
         <?xml version="1.0" encoding="UTF-8"?>
@@ -58,9 +72,25 @@ module SwapDetached
       raise 'launchd 登録失敗' unless launch.call(job['plist'])
       job
     rescue Exception
-      Dir.rmdir(lock)
+      FileUtils.remove_entry(lock) if File.directory?(lock)
       raise
     end
+  ensure
+    lease&.close
+    admission&.close
+  end
+
+  def job_status(label)
+    out, err, result = Open3.capture3('/bin/launchctl', 'print', "gui/#{Process.uid}/#{label}")
+    return :absent if result.exitstatus == 113 && err.include?('Could not find service')
+    return :unknown unless result.success?
+    return :running if out.match?(/^\s*pid = \d+/)
+    return :exited if out.match?(/^\s*state = (?:not running|exited)\s*$/) && out.match?(/^\s*last (?:exit (?:code|status)|terminating signal) =/)
+    :unknown
+  end
+
+  def bootout(label)
+    system('/bin/launchctl', 'bootout', "gui/#{Process.uid}/#{label}")
   end
 
   def capture(*args, **opts)
@@ -70,19 +100,19 @@ module SwapDetached
   end
 
   def send_wire(to, text)
-    capture('vp', 'wire', 'send', '--to', to, '--category', 'event', '--from', 'app:swap:detached', '--body', text)
+    capture('vp', 'wire', 'send', '--to', to, '--category', 'command', '--from', 'app:swap:detached', '--body', text)
   end
 
   # CLI の repo list は name / path を表示する。未知の形式は再起動せず失敗させる。
   def addresses
-    lines = capture('vp', 'repos', 'list').lines
+    lines = capture('vp', 'repos', 'list').lines.map(&:strip).reject(&:empty?)
+    return [] if lines == ['(登録 repo なし)']
+    raise 'repo 一覧が空です' if lines.empty?
     paths = lines.filter_map do |line|
-      next unless line.include?('[running]')
-      match = line.match(/\A● .+ \[running\]  (.+)\n?\z/)
+      match = line.match(/\A[●○] .+?( \[running\])?  (.+)\z/)
       raise "repo 一覧の形式が不明: #{line}" unless match
-      match[1]
+      match[2] if match[1]
     end
-    raise '稼働 repo を列挙できません' if paths.empty?
     paths.flat_map do |path|
       JSON.parse(capture('vp', 'lane', 'ls', '--detail', chdir: path)).fetch('lanes').map do |lane|
         addr = lane.fetch('address')
@@ -109,6 +139,8 @@ module SwapDetached
     success = false
     version = commit = 'unknown'
     begin
+      lease = File.open(File.join(File.dirname(config), 'worker.lock'), File::RDWR | File::CREAT, 0o600)
+      lease.flock(File::LOCK_EX)
       # login startup で再導入された lane identity も子へ渡さない。
       ENV.keys.grep(/\AVP_/).each { |key| ENV.delete(key) }
       ENV['VP_PROFILE'] = job.fetch('profile') unless job.fetch('profile').empty?
@@ -118,7 +150,7 @@ module SwapDetached
       commit = capture('git', 'rev-parse', 'HEAD').strip
       version = File.read('Cargo.toml')[/^version\s*=\s*"([^"]+)"/, 1] || 'unknown'
       puts "swap start version=#{version} commit=#{commit}"
-      success = system(*job.fetch('command'))
+      success = system(*job.fetch('command'), lease.fileno => lease.fileno)
       raise 'swap command failed' unless success
     rescue StandardError => e
       success = false
@@ -131,10 +163,21 @@ module SwapDetached
       rescue StandardError => e
         warn "完了通知失敗: #{e.message}"
       end
-      File.write("#{config}.result", JSON.generate(success: !!success, version: version, commit: commit))
-      Dir.rmdir(job.fetch('lock'))
-      # bootout は自分を終了させるため、ログと結果・lock 解放を先に完了する。
-      system('/bin/launchctl', 'bootout', "gui/#{Process.uid}/#{job.fetch('label')}")
+      begin
+        File.write("#{config}.result", JSON.generate(success: !!success, version: version, commit: commit))
+      rescue StandardError => e
+        warn "結果保存失敗: #{e.message}"
+      ensure
+        begin
+          FileUtils.remove_entry(job.fetch('lock'))
+        rescue StandardError => e
+          warn "lock 解放失敗: #{e.message}"
+        ensure
+          # Even a full disk or failed lock cleanup must not retain the launchd job.
+          lease&.close
+          bootout(job.fetch('label'))
+        end
+      end
     end
   end
 end
