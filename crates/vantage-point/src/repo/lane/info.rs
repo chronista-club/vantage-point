@@ -293,6 +293,9 @@ pub struct LaneSessionView {
     /// 最終応答完了 (epoch ms)。未観測 / TUI は None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_response_at: Option<u64>,
+    /// 会話 stream の揮発投影。本文や承認の原 input は載せない。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<crate::conversation::progress::ConversationProgressView>,
 }
 
 /// `last_activity_at` を wire に載せる際の量子化粒度 (ms)。GUI の quiet 閾値（分単位）には

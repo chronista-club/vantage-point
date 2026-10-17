@@ -9,14 +9,15 @@
  */
 import { pins, pinsReady, setPin } from './midi-pin-store';
 import { PIN_COUNT, pinNumberOf } from '../../midi-pins';
-import { Show, createSignal, type JSX } from "solid-js";
+import { Show, createSignal, onCleanup, type JSX } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import type { LaneInfo } from "../generated/LaneInfo";
 import type { SubStatusWire } from "../generated/SubStatusWire";
 import type { LaneSessionEntryWire } from "../generated/LaneSessionEntryWire";
 import { sidebar } from "./store";
-import { ResponsePoint, createAgentActivity, ACTIVITY_LABEL, ACTIVITY_COLOR } from "./ResponsePoint";
+import { ResponsePoint, createAgentActivity } from "./ResponsePoint";
 import { sessionNow } from "./session-now";
+import { activityElapsed, laneDisplayState, rootProgress, LANE_STATE_GLYPH, LANE_STATE_LABEL } from "./lane-progress";
 import { clockNow, quietAfterMs, quietLabel } from "./activity-freshness";
 import { sessionNowKey } from "../../session-now-bridge";
 import { sendIpc } from "./ipc";
@@ -35,7 +36,6 @@ import {
 	isSubLane,
 	laneAddressKey,
 	laneBranch,
-	laneCwdLabel,
 	laneLabel,
 	agentDisplayName,
 	agentIcon,
@@ -57,7 +57,7 @@ function SubMeta(props: { ws: SubStatusWire }) {
 				<span class="behind">↓{behind()}</span>
 			</Show>
 			<Show when={dirty() > 0}>
-				<span class="dirty">{dirty()}M</span>
+				<span class="dirty">dirty {dirty()}</span>
 			</Show>
 		</span>
 	);
@@ -209,12 +209,25 @@ export function LaneRow(props: {
 		sidebar.session_titles?.[sessionNowKey(addr(), rootKey())];
 	// 地 (ground): cwd を repo root 起点の差分に畳む。 絶対 path は repo が持つので
 	// lane は offset だけを名乗る。 main は差分ゼロ = "" → 行ごと出さない。
-	const cwdLabel = () => laneCwdLabel(props.lane.cwd, props.repoPath);
+
 	// 地 (ground) の 2 つ目: ブランチ。root も含む全 lane に出す (mako 2026-10-02)。
-	const branch = () => laneBranch(props.lane);
+	const branch = () => laneBranch(props.lane) ?? (() => {
+		const sha = props.lane.sub_status?.last_commit?.match(/^[0-9a-f]{7,40}(?=\s|$)/)?.[0];
+		return sha ? `detached @ ${sha}` : null;
+	})();
 	// 「今なにを」(doc 58 ②-a): 行 = lane の間は **root session の分**を出す
 	// （代表 = 役職、doc 54。②-b で行 = session に割れたら session ごとになる）。
-	const nowText = () => sessionNow[sessionNowKey(addr(), rootKey())];
+    const [pr, setPr] = createSignal<{branch: string | null; number?: number}>();
+    const receivePr = (event: Event) => {
+        const detail = (event as CustomEvent).detail;
+        if (detail?.lane === addr()) setPr({branch:detail.branch, number:detail.available ? detail.number : undefined});
+    };
+    document.addEventListener('vp:lane-prs-count', receivePr);
+    onCleanup(() => document.removeEventListener('vp:lane-prs-count', receivePr));
+    const prNumber = () => pr()?.branch === laneBranch(props.lane) ? pr()?.number : undefined;
+	const progress = () => rootProgress(props.lane);
+	const displayState = () => laneDisplayState(props.lane, inbox()?.unread_count ?? 0, agentActivity.phase());
+	const nowText = () => (progress() ? progress()!.now : sessionNow[sessionNowKey(addr(), rootKey())]) ?? LANE_STATE_LABEL[displayState()];
 	// quiet 判定の活動時刻も root session の分（roster の last_activity_at）。
 	const rootActivity = () =>
 		props.lane.sessions?.sessions?.find((s) => s.key === rootKey())
@@ -412,7 +425,6 @@ export function LaneRow(props: {
 	return (
 		<div
 			class="vp-lane-row creo-sidenav-link"
-			title={agentDisplayName(rootAgent())}
 			aria-current={isActive() ? "page" : undefined}
 			classList={{
 				active: isActive(),
@@ -430,8 +442,13 @@ export function LaneRow(props: {
 			onDrop={onDrop}
 			onDragEnd={clearLaneDrag}
 		>
-			{props.leading ?? <ResponsePoint lane={props.lane} connectorClass={props.connectorClass} />}
-			<span class="vp-agent-icon" title={agentDisplayName(rootAgent())}>
+			<span class="vp-lane-status" data-lane-state={displayState()}
+                classList={{ 'has-error': !!progress()?.error }}
+                role="img" aria-label={LANE_STATE_LABEL[displayState()]} title={LANE_STATE_LABEL[displayState()]}>
+                {LANE_STATE_GLYPH[displayState()]}
+            </span>
+            <span class="vp-lane-leading">{props.leading}</span>
+			<span class="vp-agent-icon" aria-label={agentDisplayName(rootAgent())}>
 				<CreoIcon name={agentIcon(rootAgent(), isActive()) ?? "ph:robot"} size={14} />
 			</span>
 			<span
@@ -444,39 +461,18 @@ export function LaneRow(props: {
 			{/* 右端ブロック: state 文字 → notice → mailbox → #N (末尾固定) */}
 			<span class="vp-lane-right">
 
-				{/* Light Grid state 言語の文字面 (working / idle / needs you)。 FSM の SSOT は
-				    connectorClass (laneConnector 導出) — 二重導出しない。 */}
-				<Show when={agentActivity.phase() !== "idle"}>
-					<span class="vp-lane-state" style={{color:ACTIVITY_COLOR[agentActivity.phase()]}}>{agentActivity.phase() === "completed" ? "指示待ち" : ACTIVITY_LABEL[agentActivity.phase()]}</span>
-				</Show>
 				<Show when={canvasUnread()}>
 					<span
 						class="vp-lane-notice"
 						title="Board に新しい内容が届きました"
 					>新着</span>
 				</Show>
-				{/* 📁 files-btn は doc 58 台帳で撤去 — code pane は Cmd+F で足りる。 */}
-				<Show when={inbox()}>
-					{/* mailbox badge は Wire Inbox panel (doc 34 §4 V1) の起動ボタンを兼ねる。 */}
-					<span
-						class="vp-lane-msg"
-						classList={{ unread: (inbox()!.unread_count | 0) > 0 }}
-						title={`wire inbox を開く: ${addr()}`}
-						onClick={(e) => {
-							e.stopPropagation();
-							window.vpWire?.open(addr());
-						}}
-					>
-						<CreoIcon
-							name={
-								(inbox()!.unread_count | 0) > 0
-									? "ph:envelope-fill"
-									: "ph:envelope"
-							}
-							size={13}
-						/>
-					</span>
-				</Show>
+                <Show when={inbox()}>
+                    <button type="button" class="vp-lane-unread" title="wire inbox を開く"
+                        onClick={e => { e.stopPropagation(); window.vpWire?.open(addr()); }}>
+                        {inbox()!.unread_count > 0 ? inbox()!.unread_count : "✉"}
+                    </button>
+                </Show>
 				{/* Index: ピン #N（= ⌘N / LPD8 pad N）。登録した lane の行だけが持つ（doc 81）。
 				    一番右 = 行末尾に固定（mako 2026-08-19）— badge 群の増減で位置が揺れない。
 				    ⚠️ 番号の出どころはピン一本（`pinNumberOf`）— handlers.ts の宛先と同じピン。 */}
@@ -487,23 +483,10 @@ export function LaneRow(props: {
 				</Show>
 				{props.trailing}
 			</span>
-			{/* ⑧ 地 (ground): repo root 起点の cwd 差分。 1 行目が図 (title / state / git meta)、
-			    ここが地。 mute-2 / micro / mono = git meta と同じ最も引っ込んだ層に置き、 光らせない
-			    (光 = 注意は needs-you の専有)。 CSS の flex:0 0 100% で 2 行目へ折り返す。
-			    差分ゼロ (main = repo root) は **行ごと出さない** — 語ることが無い行は黙る。
-			    tooltip には常に完全な絶対 path を出すので情報は落ちない。 */}
-			{/* 「今なにを」= 進行の本体 (doc 58 §2)。地 (cwd) より 1 段読める色。
-			    無ければ黙る (語ることが無い行は黙る、cwd と同じ流儀)。 */}
-			<NowLine text={nowText()} lastActivityAt={rootActivity()} />
-			{/* パスと git 情報を上下に分ける。diff はブランチと同じ行で読む。 */}
-			<Show when={cwdLabel()}>
-				<span class="vp-lane-ground">
-					<span class="vp-lane-cwd" title={props.lane.cwd}>
-						{cwdLabel()}
-					</span>
-				</span>
-			</Show>
-			<Show when={branch() || (isSub() && props.lane.sub_status)}>
+            <span class="vp-lane-elapsed" title="最後の活動からの経過時間">{activityElapsed(rootActivity(), clockNow())}</span>
+            <span class="vp-lane-detail" title={props.lane.cwd}>
+                <span class="vp-lane-summary" title={nowText()}>{nowText()}</span>
+			<Show when={branch() || props.lane.sub_status}>
 				<span class="vp-lane-ground vp-lane-git">
 					<Show when={branch()}>
 						<span class="vp-lane-branch" title={`git branch: ${branch()}`}>
@@ -511,11 +494,13 @@ export function LaneRow(props: {
 							{branch()}
 						</span>
 					</Show>
-					<Show when={isSub() && props.lane.sub_status}>
+                    <Show when={prNumber()}><span class="vp-lane-pr">#{prNumber()}</span></Show>
+					<Show when={props.lane.sub_status}>
 						<SubMeta ws={props.lane.sub_status!} />
 					</Show>
 				</span>
 			</Show>
+            </span>
 		</div>
 	);
 }

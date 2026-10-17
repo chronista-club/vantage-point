@@ -1,5 +1,43 @@
 # doc 58 — sidebar 名簿化: cwd を SSOT に、並列開発の場所と進行を映す
 
+## Lane 行の改訂仕様（2026-10-17、実機確認待ち）
+
+Related: `mem_1Cg7MpHWBdf6u9CYjyEAaf`、board `a0722a1b-b6e0-4e3a-a720-ea0a9c9c477a`。
+以下は 2026-10-17 の確定仕様。session の階層変更は doc 54 の後に別途扱う。
+
+| 状態 | 入る条件 | 出る条件 | 表現 |
+|---|---|---|---|
+| 要求中 | chat の未回答質問・承認要求 | 対応する回答成功、要求の終了、turn 終了・engine 終了 | 最も目立つ色の記号と要求内容 |
+| 作業中 | turn の進行 | 要求、完了、停止 | 回転記号 |
+| 指示待ち | 生存中で実行中の turn・未回答要求・未読報告がない | 新しい活動または停止 | 静かな ● |
+| 完了・未読 | 未読報告あり | 既読化、新しい活動または停止 | ✓ と未読件数 |
+| 停止 | process 停止 | 再開 | 灰色。異常終了は赤を添える |
+
+左端を状態記号、中央を名前と now-line、右端を最終活動からの経過時間の固定列にする。
+経過時間は既存 `last_activity_at` を使用し、1 分未満は `now`、以降は `2m` / `1h` と表示する。
+wire の時刻は分単位に切り捨てられるため、`now` / `1m` の境界には最大 59 秒のずれがある。
+lead と sub は同じ列配置と高さ。`lanes/<name>` の独立行を除き、branch と `↓N`、dirty、
+detached の SHA、PR 番号はコンパクトに同じ行へまとめる。
+現実装の dirty・behind・detached SHA は `sub_status` が供給される sub 行に限る。
+lead は branch のみを取得するため、これらの補助情報は未表示。lead 向けの取得拡張は保留とする。
+
+now-line は要求内容を優先し、通常時は `vp now` の自己申告、無ければ tool 名と引数の要約を表示する。
+自己申告は次の tool 開始または turn 終了で失効する。PR 番号は R sidebar の取得済み情報と branch が一致する場合のみ表示する。
+要求中の件数は repo 行・sidebar 上端へ、色は pin strip にも投影する。repo 行は lane 件数と開閉を持ち、
+lead の pin ラベルは repo 名にする。engine icon と pin の SSOT、三起点の配置規約を保持する。
+
+検出は chat の `ConversationEvent::Question` / `PermissionRequest` と `AskUserQuestion` の
+tool 呼び出し・結果を用いる。既存 lane snapshot push へ状態を投影し、表示中の会話への購読に依存させない。
+この状態投影では履歴 replay を無視し、現在の要求や作業状態を上書きしない。TUI の要求検出は今回対象外で、Notification hook の別 task とする。
+
+状態は engine の conversation pump で session ごとの揮発 store に畳み、既存の lane snapshot（約 5 秒周期）へ投影する。再起動後の過去履歴から未回答状態を推定しない。
+engine の破棄時は対象 session を停止にし、lane の削除・reset 時は進行記録を消す。
+pump の世代を照合し、破棄後の遅れた event が旧要求を復活させない。
+表示中の lane も snapshot を優先するため、送信直後の状態・`vp now` の反映には最大約 5 秒かかる。
+
+実機確認では、非表示 lane の質問発生と回答後の解除、repo を畳んだ時の件数、pin の色、
+長い名前・now-line の省略と二行の高さ、tooltip の干渉を確認する。
+
 **Status**: **設計確定（2026-08-19、mako × Claude の一問一答）。実装未着手。**
 発端 = mako「サイドバーを抜本的に creo-ui 使ってしっかりとしたサイドバーに生まれ変わらせたい。
 見た目の構造から考えたいね」。minimum まで畳み直す議論の到達点。

@@ -135,10 +135,17 @@ describe('settings in the main area', () => {
   it('restores inert state for new panes and cleans up on unmount', async () => {
     const win = fixture()
     win.vpSettings.open()
+    // Iconify の外部取得・再試行が未完了でも、pane の入力遮断だけは確認できる。
+    const iconRetry = win.setTimeout(() => {}, 60_000)
     const pane = win.document.createElement('div')
+    const shielded = new Promise<void>(resolve => {
+      const observer = new win.MutationObserver(() => { observer.disconnect(); resolve() })
+      observer.observe(pane, { attributes: true, attributeFilter: ['inert'] })
+    })
     win.document.getElementById('host')!.append(pane)
-    await win.happyDOM.whenAsyncComplete()
+    await shielded
     expect(pane.hasAttribute('inert')).toBe(true)
+    win.clearTimeout(iconRetry)
     win.dispose()
     expect(pane.hasAttribute('inert')).toBe(false)
     expect(win.document.querySelector('.vp-settings-panel')).toBeNull()

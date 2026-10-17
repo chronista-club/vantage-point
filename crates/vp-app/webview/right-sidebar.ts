@@ -266,7 +266,8 @@ export function installRightSidebar(deps: RightSidebarDeps): RightSidebarApi {
 	const publishCount = (l: string, d: LanePrs): void => {
 		document.dispatchEvent(
 			new CustomEvent("vp:lane-prs-count", {
-				detail: { lane: l, count: d.prs.length, available: d.available },
+				detail: { lane: l, count: d.prs.length, available: d.available,
+                    branch: d.branch, number: d.available && !d.error ? d.prs.find(pr => pr.head === d.branch)?.number : undefined },
 			}),
 		);
 	};

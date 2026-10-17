@@ -1,5 +1,6 @@
 /** Sidebar: CURRENTs / 停止中, collapsible ACTIONs, settings and machine status. */
 import { MidiPins, MIDI_PINS_CSS } from './MidiPins';
+import { requestingLaneCount } from './lane-progress';
 import { For, Show, createEffect, createMemo } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sidebar } from "./store";
@@ -96,6 +97,9 @@ export function Shell() {
 			>
 				<header class="vp-sidebar-header">
 					<span class="vp-sidebar-title"><CreoIcon name="ph:tree-structure" size={12} /> CURRENTs</span>
+					<Show when={requestingLaneCount(Object.values(sidebar.lanes_by_repo).flat()) > 0}>
+						<span class="vp-sidebar-requests" role="status">◆ 要求中 {requestingLaneCount(Object.values(sidebar.lanes_by_repo).flat())}</span>
+					</Show>
 					<span class="vp-midi-target" title="MIDI の操作先 Window">MIDI</span>
 					{/* repo 追加: 産む動詞は**親の行**に住む（mako 2026-08-20 — 「repo 増やすのは
 					    CURRENTS に。lane 増やすのは repo に」）。左で産んで右（main area）に
@@ -787,4 +791,18 @@ ${MIDI_PINS_CSS}
 ${COMMAND_PALETTE_CSS}
 ${ACTIONS_CSS}
 ${ACTIVITY_POINT_CSS}
+.vp-lane-status{width:14px;flex:0 0 14px;text-align:center;font-size:12px;color:var(--lg-mute,#5C7A85);}
+.vp-lane-status[data-lane-state="requesting"],.vp-sidebar-requests,.vp-repo-requests{color:var(--sb-conn-hitl,#f28dd3);}
+.vp-lane-status[data-lane-state="working"]{color:var(--sb-conn-auto,#e8c46c);animation:vp-lane-spin 2s linear infinite;}
+.vp-lane-status[data-lane-state="unread"]{color:var(--sb-activity-completed,#78a7ed);}
+.vp-lane-status.has-error{color:var(--sb-activity-error,#ef777d);}
+.vp-lane-leading{display:inline-flex;align-items:center;width:12px;flex:0 0 12px;}
+.vp-lane-elapsed{width:3ch;flex:0 0 3ch;text-align:right;font:var(--sb-text-micro,10px) monospace;color:var(--lg-mute,#5C7A85);}
+.vp-lane-detail{flex:0 0 100%;min-width:0;display:flex;align-items:center;gap:8px;height:17px;overflow:hidden;}
+.vp-lane-summary{flex:1 1 45%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--sb-text-micro,10px);color:var(--color-text-secondary);}
+.vp-lane-detail .vp-lane-ground{flex:0 1 50%;padding:0;overflow:hidden;white-space:nowrap;}
+.vp-lane-count,.vp-repo-requests,.vp-sidebar-requests{font-size:var(--sb-text-micro,10px);white-space:nowrap;}
+.vp-lane-unread{border:0;border-radius:4px;padding:0 3px;background:var(--color-surface-bg-emphasis);color:var(--sb-activity-completed,#78a7ed);font:inherit;font-size:10px;cursor:pointer;}
+@keyframes vp-lane-spin{to{transform:rotate(360deg);}}
+@media(prefers-reduced-motion:reduce){.vp-lane-status{animation:none!important;}}
 `;

@@ -48,6 +48,7 @@ pub mod engine;
 pub mod event;
 pub mod host;
 pub mod jsonl_store;
+pub mod progress;
 pub mod replay_log;
 pub mod settings;
 pub mod skill_docs;
