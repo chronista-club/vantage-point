@@ -743,21 +743,9 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         }
     };
 
-    // DeviceRegistry 🧲 — ROTO 持続セッションを Daemon lifecycle に enclose して起動する。
-    // 前景 `vp midi roto control` のフル接続（open + handshake + keepalive + LCD/routing）を
-    // daemon 常駐 + 自動再接続に昇格。lane data は daemon_cap(RepoManagerCapability) を
-    // in-process 直読み、switch_lane は repo 越境なので QUIC。shutdown_token の子 token で
-    // graceful 停止する。devices_for_shutdown は cleanup chain 用に Arc を clone しておく。
+    // Input-only fleet listeners share the daemon shutdown boundary.
     #[cfg(feature = "midi")]
     let devices_for_shutdown = machine_capabilities.devices.clone();
-    #[cfg(feature = "midi")]
-    if let Some(devices) = machine_capabilities.devices.as_ref() {
-        devices
-            .write()
-            .await
-            .start_roto_control(daemon_cap.clone(), shutdown_token.clone())
-            .await;
-    }
 
     // Phase A ① / R1: Daemon モードでも wiremsg store を build (= 将来 machine 階層 actor 用)。
     // R1 で `WiremsgStore::new` は async (起動時に local_seq 採番を math::max で復元)。
@@ -1355,10 +1343,10 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     if stopped_repos > 0 {
         tracing::info!("Daemon shutdown: {} repo を停止", stopped_repos);
     }
-    // DeviceRegistry ROTO 持続セッションを停止（子 token は shutdown_token から伝播済だが、明示 abort で確実に畳む）。
+    // Join owned MIDI input tasks and release output handles before shutting down.
     #[cfg(feature = "midi")]
     if let Some(devices) = devices_for_shutdown.as_ref() {
-        devices.write().await.stop_roto_control().await;
+        devices.write().await.release_fleet().await;
     }
     if let Err(e) = daemon_for_shutdown.write().await.shutdown().await {
         tracing::warn!("Error during daemon shutdown: {}", e);

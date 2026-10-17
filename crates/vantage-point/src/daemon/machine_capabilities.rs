@@ -77,7 +77,7 @@ impl MachineCapabilities {
     /// registry に反映する（daemon は midir polling を回さない）。起動前から挿さっている
     /// device は agent 報告が来ない環境があるため、`attach_fleet_inputs` の 1 回
     /// enumeration で input listener を確実に張る（fleet #877/#878）。
-    /// ROTO 持続制御は独立経路（`start_roto_control`、process/server.rs）。
+    /// ROTO も同じ input-only listener を使う（MIDI mode、DAW output 無し）。
     #[cfg(feature = "midi")]
     pub async fn with_devices(
         repo_manager: Arc<RwLock<RepoManagerCapability>>,

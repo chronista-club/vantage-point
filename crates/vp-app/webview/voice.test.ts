@@ -140,3 +140,104 @@ it('an error is shown and the composer is released; empty recognition is reporte
     await window.happyDOM.close()
   }
 }, 20000) // esbuild bundle 込み（codex-queue.test.ts と同じ）
+
+it('ROTO PTT shares the composer gate, is edge triggered and never sends the draft', async () => {
+  const {window,h,input,voiceSent} = await mountChat()
+  const ptt = (pressed:boolean) => window.dispatchEvent(new window.CustomEvent('vp:roto-ptt',{detail:{pressed}}))
+  try {
+    input.value='書きかけ'; input.dispatchEvent(new window.Event('input',{bubbles:true}))
+    ptt(true); ptt(false)
+    expect(voiceSent()).toEqual([])
+    input.value=''; input.dispatchEvent(new window.Event('input',{bubbles:true}))
+    ptt(true); ptt(true)
+    expect(voiceSent()).toEqual([{t:'voice:start',lane:'voice-test/main',session:1}])
+    ptt(false); ptt(false); ptt(true); ptt(false)
+    expect(voiceSent()).toHaveLength(2)
+    expect(voiceSent()[1]).toEqual({t:'voice:stop',lane:'voice-test/main',session:1})
+    h.voiceText('voice-test/main',1,'声のメモ')
+    expect(input.value).toBe('声のメモ')
+    expect(h.sent.some(m=>m.t==='conversation:submit')).toBe(false)
+  } finally { await window.happyDOM.close() }
+},20000)
+
+it('ROTO does not start while console is focused and stops on MIDI target loss', async () => {
+  const {window,voiceSent} = await mountChat()
+  const ptt = (pressed:boolean) => window.dispatchEvent(new window.CustomEvent('vp:roto-ptt',{detail:{pressed}}))
+  try {
+    const term=window.document.createElement('div');term.className='term-session-host pane-focused';
+    const textarea=window.document.createElement('textarea');term.append(textarea);window.document.body.append(term);textarea.focus()
+    ptt(true);ptt(false);expect(voiceSent()).toEqual([])
+    term.remove();ptt(true)
+    expect(voiceSent()).toHaveLength(1)
+    window.eval("window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:false}))")
+    expect(voiceSent().at(-1)).toEqual({t:'voice:stop',lane:'voice-test/main',session:1})
+    ptt(false);expect(voiceSent()).toHaveLength(2)
+  } finally { await window.happyDOM.close() }
+},20000)
+
+it('ROTO stops the original session on focus change and disconnect, never starts the next one on release', async () => {
+  const {window,h,voiceSent} = await mountChat()
+  const ptt = (pressed:boolean) => window.dispatchEvent(new window.CustomEvent('vp:roto-ptt',{detail:{pressed}}))
+  try {
+    ptt(true)
+    window.document.dispatchEvent(new window.CustomEvent('vp:conversation-sessions',{detail:{lane:'voice-test/main',focused:2,sessions:[{key:1},{key:2}]}}))
+    expect(voiceSent()).toEqual([{t:'voice:start',lane:'voice-test/main',session:1},{t:'voice:stop',lane:'voice-test/main',session:1}])
+    ptt(false); expect(voiceSent()).toHaveLength(2)
+    h.voiceText('voice-test/main',1,'')
+    window.document.dispatchEvent(new window.CustomEvent('vp:conversation-sessions',{detail:{lane:'voice-test/main',focused:1,sessions:[{key:1}]}}))
+    ptt(true)
+    window.dispatchEvent(new window.CustomEvent('vp:midi-unavailable',{detail:{port_name:'Roto-Control'}}))
+    expect(voiceSent().at(-1)?.t).toBe('voice:stop')
+    expect(voiceSent()).toHaveLength(4)
+    ptt(false); h.unmount();expect(voiceSent()).toHaveLength(4)
+  } finally { await window.happyDOM.close() }
+},20000)
+
+it('ROTO can start a fresh press after its window loses and regains the MIDI target', async () => {
+  const {window,h,voiceSent} = await mountChat()
+  const ptt = (pressed:boolean) => window.dispatchEvent(new window.CustomEvent('vp:roto-ptt',{detail:{pressed}}))
+  try {
+    ptt(true)
+    window.eval("window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:false}))")
+    h.voiceText('voice-test/main',1,'')
+    // Release was delivered to the new target window, so this window did not see it.
+    window.eval("window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:true}))")
+    ptt(true)
+    expect(voiceSent().map(m=>m.t)).toEqual(['voice:start','voice:stop','voice:start'])
+    ptt(false)
+  } finally { await window.happyDOM.close() }
+},20000)
+
+it('ROTO ignores hidden composers and blocked holds; unmount stops an active recording exactly once', async () => {
+  const {window,h,input,voiceSent} = await mountChat()
+  const ptt = (pressed:boolean) => window.dispatchEvent(new window.CustomEvent('vp:roto-ptt',{detail:{pressed}}))
+  try {
+    const composer = input.parentElement as HTMLElement
+    composer.style.display='none';ptt(true);ptt(false)
+    expect(voiceSent()).toEqual([])
+    composer.style.display=''
+    input.value='draft';input.dispatchEvent(new window.Event('input',{bubbles:true}));ptt(true)
+    input.value='';input.dispatchEvent(new window.Event('input',{bubbles:true}));ptt(true)
+    expect(voiceSent()).toEqual([])
+    ptt(false);ptt(true)
+    expect(voiceSent().map(m=>m.t)).toEqual(['voice:start'])
+    h.unmount()
+    expect(voiceSent().map(m=>m.t)).toEqual(['voice:start','voice:stop'])
+    ptt(false)
+    expect(voiceSent()).toHaveLength(2)
+  } finally { await window.happyDOM.close() }
+},20000)
+
+it('ROTO recognition lands in the pressed composer without stealing focus from the next session', async () => {
+  const {window,h,input,voiceSent} = await mountChat()
+  try {
+    window.dispatchEvent(new window.CustomEvent('vp:roto-ptt',{detail:{pressed:true}}))
+    window.document.dispatchEvent(new window.CustomEvent('vp:conversation-sessions',{detail:{lane:'voice-test/main',focused:2,sessions:[{key:1},{key:2}]}}))
+    const next=window.document.createElement('textarea');window.document.body.append(next);next.focus()
+    h.voiceText('voice-test/main',1,'元の宛先')
+    await Promise.resolve()
+    expect(input.value).toBe('元の宛先')
+    expect(window.document.activeElement).toBe(next)
+    expect(voiceSent().map(m=>m.t)).toEqual(['voice:start','voice:stop'])
+  } finally { await window.happyDOM.close() }
+},20000)

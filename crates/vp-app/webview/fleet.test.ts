@@ -15,40 +15,15 @@ describe("deviceOf", () => {
 	});
 });
 
-describe("mapControl — ROTO（knob = share、touch = 奪取/settle）", () => {
-	it("knob → share（structure 順の pane index 対応、0.95 上限）", () => {
-		expect(mapControl("Roto", { type: "knob", index: 2, value: 0.5 })).toEqual({
-			op: "share",
-			paneIndex: 2,
-			share: 0.5,
-		});
-		expect(mapControl("Roto", { type: "knob", index: 0, value: 1.0 })).toEqual({
-			op: "share",
-			paneIndex: 0,
-			share: 0.95,
-		});
-	});
-
-	it("knob_touch → touch（source = センサー個体 — 複数同時 touch を区別する鍵）", () => {
-		expect(mapControl("Roto", { type: "knob_touch", index: 3, pressed: true })).toEqual({
-			op: "touch",
-			source: "roto:3",
-			pressed: true,
-		});
-		expect(mapControl("Roto", { type: "knob_touch", index: 3, pressed: false })).toEqual({
-			op: "touch",
-			source: "roto:3",
-			pressed: false,
-		});
-		// knob 0 と knob 7 の同時 touch は別 source（action 層の Set が「最後の手放し」を判定できる）
-		expect(mapControl("Roto", { type: "knob_touch", index: 0, pressed: true })).not.toEqual(
-			mapControl("Roto", { type: "knob_touch", index: 7, pressed: true }),
-		);
-	});
-
-	it("button は gallery の対象外（lane-nav の領分）", () => {
-		expect(mapControl("Roto", { type: "button", index: 0, pressed: true })).toBeNull();
-	});
+describe("ROTO belongs to pin navigation, not gallery", () => {
+  it("never resizes panes or takes gallery touch ownership", () => {
+    for (const event of [
+      {type:"knob", index:2, value:0.5},
+      {type:"knob_touch", index:2, pressed:true},
+      {type:"knob_touch", index:2, pressed:false},
+      {type:"button", index:2, pressed:true},
+    ]) expect(mapControl("Roto", event)).toBeNull();
+  });
 });
 
 describe("mapControl — X-Touch（fader 1 = t の hand driver）", () => {
@@ -96,7 +71,7 @@ describe("mapControl — 防御", () => {
 	});
 
 	it("範囲外の値は clamp（wire の壊れた値で場を汚さない）", () => {
-		expect(mapControl("Roto", { type: "knob", index: 0, value: -1 })).toEqual({
+		expect(mapControl("LPD8", { type: "knob", index: 0, value: -1 })).toEqual({
 			op: "share",
 			paneIndex: 0,
 			share: 0,
@@ -119,10 +94,7 @@ describe("computeFeedback — 場 → 機材の投影（LE-19 フィードバッ
 
 	it("knobs = structure 順の member share、pads は 8 slot 全部の占有状態", () => {
 		const fb = computeFeedback({ ...base, filledSlots: new Set([0, 3]) });
-		expect(fb.knobs).toEqual([
-			{ index: 0, value: 0.55 },
-			{ index: 1, value: 0.45 },
-		]);
+		expect(fb.knobs).toEqual([]);
 		expect(fb.pads).toHaveLength(8);
 		expect(fb.pads[0]).toEqual({ index: 0, filled: true });
 		expect(fb.pads[1]).toEqual({ index: 1, filled: false });
@@ -132,7 +104,7 @@ describe("computeFeedback — 場 → 機材の投影（LE-19 フィードバッ
 
 	it("touch 保持中の knob は省く（手とモーターを戦わせない — §9 Touch 中 = 指定）", () => {
 		const fb = computeFeedback({ ...base, touched: new Set(["roto:0"]) });
-		expect(fb.knobs).toEqual([{ index: 1, value: 0.45 }]);
+		expect(fb.knobs).toEqual([]);
 	});
 
 	it("fader = transition の t。fader touch 中（human が握っている）は null", () => {
@@ -149,9 +121,7 @@ describe("computeFeedback — 場 → 機材の投影（LE-19 フィードバッ
 	it("member 9 枚以上は knob 8 本に切り詰め、欠落 share は 0", () => {
 		const many = Array.from({ length: 10 }, (_, i) => `p${i}`);
 		const fb = computeFeedback({ ...base, memberOrder: many, shares: { p0: 0.5 } });
-		expect(fb.knobs).toHaveLength(8);
-		expect(fb.knobs[0]).toEqual({ index: 0, value: 0.5 });
-		expect(fb.knobs[1]).toEqual({ index: 1, value: 0 });
+		expect(fb.knobs).toEqual([]);
 	});
 });
 

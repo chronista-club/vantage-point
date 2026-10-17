@@ -211,7 +211,7 @@ pub struct ReportDeviceRequest {
 ///
 /// 送り手 = gallery webview の mapping registry（fleet.ts `computeFeedback`、consumer 供給）。
 /// 受け手 = DeviceRegistry `apply_feedback` が各 device の出力 profile に写す:
-/// knobs → ROTO motor（14bit hi-res CC）/ fader → X-Touch fader 1（pitch bend）/
+/// knobs は互換用フィールド（ROTO へ出力しない）/ fader → X-Touch fader 1（pitch bend）/
 /// pads → LPD8 RGB（Scene slot の filled 状態）。
 /// 値は正規化 0.0–1.0。頻度は webview 側 throttle + Rust 側 watch（latest-wins）で抑制。
 #[cfg(feature = "midi")]

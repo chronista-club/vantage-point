@@ -15,6 +15,9 @@ beforeAll(async () => {
     import { MidiPins } from './src/sidebar/MidiPins';
     window.renderPins = () => { const el = document.createElement('div'); document.body.append(el); render(MidiPins, el); return el; };
     import { applySidebarState, emptyState, sidebar } from './src/sidebar/store';
+    import { emitAgentActivity } from './session-activity-bridge';
+    window.emitAgentActivity = emitAgentActivity;
+    window.applyTestState = value => applySidebarState({...emptyState(),...value});
     import { selectLaneByNumber } from './src/sidebar/actions/handlers';
     window.selectLaneByNumber = selectLaneByNumber;
     window.clearActiveLane = () => applySidebarState({...sidebar, active_lane_address:null});
@@ -23,6 +26,7 @@ beforeAll(async () => {
     const lane = name => ({address:{repo:'vp',name,key:'vp/'+name}});
     applySidebarState({...emptyState(), processes:[{path:'/vp',name:'vp',state:'running',expanded:false}],
       lanes_by_repo:{'/vp':[lane('root'),lane('sub')]}, active_lane_address:'vp/root'});
+    window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:true}));
   `, resolveDir: fileURLToPath(new URL('.', import.meta.url)) }, bundle:true, write:false,
     plugins:[solidPlugin()], format:'iife', platform:'browser', define:{'process.env.NODE_ENV':'"production"'} });
   bundle = result.outputFiles[0].text;
@@ -156,6 +160,27 @@ it('the pin strip shows 8 pins in two rows like the pads: #5–#8 above #1–#4'
   w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:null}));
   const labels = w.eval(`Array.from(window.renderPins().querySelectorAll('.vp-midi-pin button > span:first-child')).map(s => s.textContent).join(',')`);
   expect(labels).toBe('#5,#6,#7,#8,#1,#2,#3,#4');
+});
+
+
+it('ROTO buttons 1–7 use pinned targets, button 8 is only PTT; knobs never select sessions', () => {
+  const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: unknown[]};
+  windows.push(w);w.eval(bundle);
+  w.dispatchEvent(new w.CustomEvent('vp:midi-settings',{detail:{slots:[{path:'/vp',address:'vp/sub'},null,null,null,null,null,null,{path:'/vp',address:'vp/root'}],colors:Array(8).fill('#123456')}}));
+  const ptt: boolean[]=[];
+  w.addEventListener('vp:roto-ptt',e=>ptt.push((e as unknown as CustomEvent).detail.pressed));
+  const send=(type:string,index:number,pressed:boolean)=>w.dispatchEvent(new w.CustomEvent('vp:midi-navigation',{cancelable:true,detail:{port_name:'Roto-Control',event:{type,index,pressed,value:1}}}));
+  send('button',0,true);send('button',0,true);send('button',0,false);
+  expect(w.sent).toEqual([{t:'process:toggle',path:'/vp',expanded:true},{t:'lane:select',path:'/vp',address:'vp/sub'}]);
+  w.sent.length=0;
+  send('button',1,true);send('knob',0,true);send('knob_touch',0,true);
+  send('button',7,true);send('button',7,true);send('button',7,false);send('button',7,false);
+  expect(w.sent).toEqual([]);
+  expect(ptt).toEqual([true,false]);
+  expect(w.eval('window.__vpMidiPads.roto')).toBeUndefined();
+  w.eval("window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:false}))");
+  send('button',0,true);send('button',7,true);
+  expect(w.sent).toEqual([]);expect(ptt).toEqual([true,false]);
 });
 
 it('holds through real IPC, shows rejection without a lane, and cancels on target loss', () => {

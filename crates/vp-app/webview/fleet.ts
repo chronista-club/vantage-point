@@ -85,12 +85,6 @@ export function computeFeedback(opts: {
 	touched: ReadonlySet<string>;
 }): FleetFeedback {
 	const knobs: { index: number; value: number }[] = [];
-	for (let i = 0; i < Math.min(opts.memberOrder.length, 8); i++) {
-		if (opts.touched.has(`roto:${i}`)) continue;
-		const id = opts.memberOrder[i];
-		if (id === undefined) continue;
-		knobs.push({ index: i, value: clamp01(opts.shares[id] ?? 0) });
-	}
 	const fader =
 		opts.transitionT != null && !opts.touched.has("xtouch:fader0")
 			? clamp01(opts.transitionT)
@@ -109,18 +103,7 @@ export function mapControl(portName: string, event: FleetControlEvent): FleetOp 
 
 	switch (device) {
 		case "roto":
-			if (event.type === "knob" && typeof event.value === "number") {
-				return {
-					op: "share",
-					paneIndex: event.index,
-					share: Math.min(clamp01(event.value), MAX_KNOB_SHARE),
-				};
-			}
-			if (event.type === "knob_touch") {
-				// source = センサー個体の識別子。物理 touch は 8 本独立なので、release の
-				// 「全部手放した」判定（settle の刻み時）は action 層が Set で数える
-				return { op: "touch", source: `roto:${event.index}`, pressed: event.pressed === true };
-			}
+			// ROTO belongs to app-wide pin navigation and push-to-talk.
 			return null;
 		case "xtouch":
 			// t は 1 本のスカラー — fader 1 番（index 0）だけが scrub を持つ
