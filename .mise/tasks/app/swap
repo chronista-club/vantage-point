@@ -32,6 +32,7 @@
 #    その場合 SP の子である lane の claude が全部落ちる (会話は cc_session の --resume で復帰)。
 require "fileutils"
 require "net/http"
+require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/swap_detached.rb")
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
 RESTART_DAEMON = ENV["VP_SWAP_RESTART_DAEMON"] == "1"
@@ -114,6 +115,7 @@ def wait_daemon_ready(timeout: 30)
     if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
       # daemon 不在でも app 自身が spawn を試みるので、 die せず警告に留める。
       VP.log "#{VP.icon(:warn)} daemon が #{timeout}s 以内に health を返さず — app 起動を続行"
+      raise "detached swap: readiness timeout" if ENV["VP_SWAP_JOB"]
       return false
     end
     sleep 0.5
@@ -158,6 +160,7 @@ def wait_app_ready(base, timeout: 30)
     if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
       # 待てなくても致命ではない (人が触る分には数秒で追いつく)。die せず警告に留める。
       VP.log "#{VP.icon(:warn)} webview が #{timeout}s 以内に ready を返さず — 続行"
+      raise "detached swap: readiness timeout" if ENV["VP_SWAP_JOB"]
       return false
     end
     sleep 0.3
@@ -315,6 +318,7 @@ end
 #      **daemon の再起動がそのまま全 project の再起動**になったので、この前段は撤去した
 #      (pgrep 'vp sp start' は永久に 0 件マッチ = 空振りするだけだった)。
 def restart_daemon_macos
+  SwapDetached.before_restart
   VP.log "#{VP.icon(:warn)} restarting daemon — 全 project と lane の claude も落ちる (--resume で復帰)"
 
   # VP の lane の中から実行すると、daemon 再起動で自分自身が落ちる (fold-in 後は
@@ -322,7 +326,7 @@ def restart_daemon_macos
   # 終わるため事前に警告する。
   if ENV["VP_LANE"]
     VP.log "#{VP.icon(:warn)} VP の lane の中から実行しています — この再起動で自分も落ちます。" \
-           " 完全反映は VP 外の terminal (kitty 等) から実行してください"
+           " lane 内では mise run app:swap:detached を使ってください"
   end
 
   # ── daemon を再起動 ──
