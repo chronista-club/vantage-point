@@ -62,6 +62,40 @@ lane の一覧は git-native に取得する（manifest ファイルは存在し
 - `git worktree list` — live registry（worktree lane の全列挙）
 - `git branch --list 'wip/*' 'review/*'` — lane branch の列挙（`git board` は段ごとに並べる）
 
+### sub lane の権限 — task の段（2026-10-17、mako 裁定）
+
+sub lane が「どこまで自分で判断してよいか」は lane ではなく **task ごと**に決まる。lead が handoff の
+spec の頭に `段: A | B | C | 調査` を書く。書き忘れは **B 扱い**（安全側）。lane は段を**上げる**のは
+自由（「触ってみたら daemon に及ぶので C で進めます」と wire で一言）、**下げる**のは lead に聞く。
+
+決め方の軸は 1 つ — **壊れたときに戻せるか、誰を巻き込むか**。
+
+| 段 | 対象の目安 | Ready 前の自己レビュー | PR | merge |
+|---|---|---|---|---|
+| **A: 直し** | 1 か所の bug 修正、doc、設定値。自分の worktree で完結し revert 1 発で戻る | なし（gate と claims で足りる） | `git next` で出す | lead（CI 緑で） |
+| **B: 機能** | 複数ファイル、新しい挙動、UI 変更。他の人が触って初めて分かる | **moody-blues を 1 回**。指摘と対応（直した / 見送った理由）を PR 本文に書く | 出す | lead（lead 側のレビューも残す） |
+| **C: 危ないもの** | daemon の lifecycle、安全装置（guard）、protocol / wire の形、plugin の release、実機まわり、2 repo にまたがるもの。戻すのに他人や再起動が要る | **santa**（moody-blues × sticky-fingers） | **draft** で出し、lead レビュー後に ready へ | lead レビュー後、**mako が可否** |
+| **調査** | 読むだけ・実測だけ・設計案。何も変えない | — | **出さない**。`spike/`（local のみ）か `exp/`（push 可）。報告は wire + creo の annotation | — |
+
+全段で変わらないもの:
+
+- TDD、gate（`cargo fmt` / `mise run check` / clippy `-D warnings` / `mise run test` / `mise run claims`）、
+  Ready は証拠付き（何を検証し、何を未検証で残したか、実機で見るべき手順）
+- 禁止: daemon 再起動 / `app:swap`、merge、他 lane の worktree を触る、実機の書き込み系（MIDI 設定・Serial 書き込み）
+- **repo をまたぐ契約**（コマンド名 / wire の形 / API の口 / mise の task 名）は、相手側の**実物**（`mise tasks ls`、
+  実際の JSON、実際のエラー文）で突き合わせてから Ready。spec に書かれた名前を正としない
+  （2026-10-17 に `app:swap-detached` を spec の綴り `app:swap:detached` のまま plugin の guard に焼き、
+  両 repo のレビューを素通りした）
+- 重い build（cargo）は同じ Mac の他 lane と枠を分け合う — 開始前・終了後に wire で一言、並列に走らせない
+
+lead 側の規則（進行の見張り）:
+
+- **止まり検知**: 作業中の lane から 30 分 wire が無ければ「次の一手」を具体的に 1 つ渡す。60 分で畳んで
+  渡し直す。見るのは `vp lane ls --detail` の最終活動時刻（wire は「来たもの」にしか反応しないので、
+  来ないことは lead が定期に見る。2026-10-16 に着手報告のあと 15 時間止まった lane に気づけなかった）
+- Ready を受けたら lead がレビュー（B / C は sub の自己レビュー結果を読んでから）→ CI → merge → 次の task。
+  C の merge は mako に可否を聞く
+
 ## wire 規約（inter-agent messaging）
 
 wire messaging 全体の見取り図（store / category / ack 台帳 / federation / flow_state 投影）は
