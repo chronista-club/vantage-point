@@ -410,6 +410,33 @@ mod tests {
     }
 
     #[test]
+    fn restarted_idle_engine_and_replay_do_not_start_work() {
+        let store = ConversationProgressStore::default();
+        store.begin("vp/feature", 1);
+        store.stop("vp/feature", 1);
+        let generation = store.begin("vp/feature", 1);
+        let init: ConversationEvent = serde_json::from_value(json!({
+            "kind": "session_init", "session_id": "resumed"
+        }))
+        .unwrap();
+        for event in [
+            init,
+            ConversationEvent::ReplayStart,
+            ConversationEvent::MessageChunk {
+                text: "historical output".into(),
+            },
+            tool("old", "Read", json!({"file_path": "past.rs"})),
+            ConversationEvent::ReplayEnd { in_flight: false },
+        ] {
+            store.observe_engine("vp/feature", 1, generation, &event);
+            assert_eq!(
+                store.view("vp/feature", 1).unwrap().phase,
+                ProgressPhase::Waiting
+            );
+        }
+    }
+
+    #[test]
     fn stop_clears_request_and_error_remains_an_overlay() {
         let mut progress = ConversationProgress::default();
         progress.apply(&tool("q", "AskUserQuestion", json!({})));

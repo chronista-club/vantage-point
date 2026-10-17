@@ -14,6 +14,7 @@ beforeAll(async () => {
     import { Shell } from './src/sidebar/Shell';
     import { applySidebarState, emptyState } from './src/sidebar/store';
     import { clockNow } from './src/sidebar/activity-freshness';
+    import { emitAgentActivity } from './session-activity-bridge';
     import wire from './fixtures/lane-progress-wire.json';
     const lane = (name, phase) => {
       const data = JSON.parse(JSON.stringify(wire[phase]));
@@ -31,6 +32,21 @@ beforeAll(async () => {
       lanes_by_repo:{'/project':[{...lane('lead','waiting'),branch:null,
         sub_status:{branch:null,last_commit:'a1b2c3d fixture',dirty_count:2,behind:4,ahead:0}}]},
       active_lane_address:'project/lane/lead'});
+    window.setRestored = () => {
+      const restored = lane('feature','waiting');
+      restored.flow_state = 'working';
+      restored.pid = null;
+      restored.sessions.sessions.forEach(session => {
+        delete session.progress;
+        delete session.last_response_at;
+      });
+      applySidebarState({...emptyState(),
+        processes:[{path:'/project',name:'Project',state:'running',expanded:true}],
+        lanes_by_repo:{'/project':[lane('lead','waiting'),restored]},
+        active_lane_address:'project/lane/lead'});
+    };
+    window.emitLiveWork = () => emitAgentActivity('project/lane/feature', wire.waiting.sessions.root,
+      {kind:'message_chunk',text:'実際の出力'});
     window.setRequesting(true);
     render(() => createComponent(Shell,{}),document.getElementById('sidebar-root'));
   `, loader:'tsx', resolveDir:fileURLToPath(new URL('.',import.meta.url)) },
@@ -46,6 +62,16 @@ function fixture() {
   return win;
 }
 afterEach(async()=>{for(const win of windows.splice(0)) await win.happyDOM.abort();});
+
+it('keeps a restored GUI lane waiting when only its wire connector implies work', () => {
+  const win = fixture();
+  (win as unknown as {setRestored: () => void}).setRestored();
+  const row = win.document.querySelectorAll('.vp-lane-row')[1];
+  expect(row.querySelector('[data-lane-state="waiting"]')).not.toBeNull();
+  expect(row.querySelector('[data-lane-state="working"]')).toBeNull();
+  (win as unknown as {emitLiveWork: () => void}).emitLiveWork();
+  expect(row.querySelector('[data-lane-state="working"]')).not.toBeNull();
+});
 
 it('shows request, now-line and elapsed time for a lane whose chat is not mounted',()=>{
   const win=fixture();

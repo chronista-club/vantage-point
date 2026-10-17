@@ -39,3 +39,32 @@ describe('activityElapsed',()=>{
 it('prefers a fresh daemon projection over a stale mounted-chat error',()=>{
   expect(laneDisplayState(lane('working'),0,'error')).toBe('working');
 });
+
+it.each(['claude', 'codex'])('does not treat wire workflow as live work after restart (%s)', agent => {
+  const restored = lane('waiting', 'gui', null);
+  restored.agent = agent;
+  restored.flow_state = 'working';
+  const root = restored.sessions!.sessions.find(s => s.key === restored.sessions!.root)!;
+  root.agent = agent;
+  root.progress = undefined;
+  root.last_response_at = 1792251785979;
+  expect(laneDisplayState(restored, 0, 'completed')).toBe('waiting');
+});
+
+it.each(['working', 'hitl_pending', 'stuck'] as const)('keeps %s workflow separate from GUI activity but preserves TUI fallback', flow_state => {
+  const restored = lane('waiting');
+  restored.sessions!.sessions.forEach(session => { session.progress = undefined; });
+  restored.flow_state = flow_state;
+  expect(laneDisplayState(restored, 0, 'idle')).toBe('waiting');
+  expect(laneDisplayState(restored, 2, 'completed')).toBe('unread');
+  expect(requestingLaneCount([restored])).toBe(0);
+  restored.sessions!.sessions.forEach(session => { session.mode = 'tui'; });
+  expect(laneDisplayState(restored, 0, 'idle')).toBe('working');
+});
+
+it.each(['working', 'thinking'] as const)('uses observed live %s activity until GUI progress arrives', activity => {
+  const restored = lane('waiting');
+  restored.sessions!.sessions.forEach(session => { session.progress = undefined; });
+  expect(laneDisplayState(restored, 0, activity)).toBe('working');
+  expect(laneDisplayState(lane('waiting'), 0, activity)).toBe('waiting');
+});

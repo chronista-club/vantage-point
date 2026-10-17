@@ -21,8 +21,10 @@ export function laneDisplayState(lane: LaneInfo, unread = 0, live?: AgentActivit
   if (!isLaneAlive(lane) || progress?.phase === 'stopped' || (!progress && live === 'error')) return 'stopped';
   if (rootModeOf(lane) === 'gui' && progress?.phase === 'requesting') return 'requesting';
   if (progress?.phase === 'working') return 'working';
-  if (!progress && (live === 'working' || live === 'thinking' ||
-    lane.flow_state === 'working' || lane.flow_state === 'hitl_pending' || lane.flow_state === 'stuck')) return 'working';
+  if (!progress && (live === 'working' || live === 'thinking')) return 'working';
+  // wire の開発フローは会話の実行状態ではない。GUI の再接続で progress が無くても推測しない。
+  if (rootModeOf(lane) !== 'gui' &&
+    (lane.flow_state === 'working' || lane.flow_state === 'hitl_pending' || lane.flow_state === 'stuck')) return 'working';
   if (unread > 0) return 'unread';
   return 'waiting';
 }

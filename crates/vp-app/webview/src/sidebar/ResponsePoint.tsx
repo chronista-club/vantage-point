@@ -37,7 +37,9 @@ export function createAgentActivity(props: ActivityProps) {
     if (current) return 'idle';
     return props.connectorClass === 'conn-auto' || props.connectorClass === 'conn-run' ? 'working' : 'idle';
   };
-  return { phase, timestamp };
+  // 会話の実行判定には connector 由来の推測を渡さず、観測した event の phase だけ返す。
+  const observedPhase = () => live()?.phase;
+  return { phase, observedPhase, timestamp };
 }
 
 /** The left-hand activity point also carries response freshness after Result. */
