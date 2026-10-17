@@ -74,6 +74,10 @@ pub fn spawn_recovering_conversation_pump(
         loop {
             match rx.recv().await {
                 Ok(event) => {
+                    // 履歴を再配送する経路ではなく、実 engine の出力でだけ現在値を進める。
+                    topic_router
+                        .conversation_progress
+                        .observe(&lane, session, &event);
                     // roster `last_activity_at` の gui 側供給源（tui は PtySlot.last_output_at）。
                     // pump は全 chat engine の event が必ず通る唯一の点なので、ここ 1 箇所で足りる。
                     activity.store(

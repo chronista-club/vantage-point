@@ -44,7 +44,7 @@ it('keeps one project root, Japanese states and selectable lanes', () => {
   expect(root.textContent).toContain('作業中')
   expect(win.document.querySelectorAll('.vp-lane-row')).toHaveLength(3)
   expect(win.document.querySelectorAll('.vp-lane-dot,.vp-lane-icon')).toHaveLength(0)
-  expect(win.document.querySelector('.vp-proj-content')!.textContent).toContain('確認待ち')
+  expect(win.document.querySelector('.vp-proj-content')!.textContent).toContain('指示待ち')
   root.dispatchEvent(new win.MouseEvent('click', { bubbles: true }))
   expect(win.sent.at(-1)).toEqual({ t: 'lane:select', path: '/project', address: 'project/main' })
 })
@@ -152,7 +152,7 @@ it('replaces the project arrow with an activity point and keeps Result visible',
   win.con.handleEvent('project/main', {kind:'turn_completed', session_id:'conv'}, 1)
   expect(point().getAttribute('data-activity')).toBe('completed')
   expect(point().getAttribute('title')).toContain('応答完了')
-  expect(win.document.querySelector('.vp-proj-summary')!.textContent).not.toContain('作業中')
+  expect(win.document.querySelector('.vp-proj-summary .vp-lane-state')).toBeNull()
   win.con.handleEvent('project/one', {kind:'thought_chunk', text:'background'}, 1)
   expect(point().getAttribute('data-activity')).toBe('completed')
   win.con.handleEvent('project/main', {kind:'replay_start'}, 1)
@@ -175,10 +175,9 @@ it('keeps actionable Codex requests red through background work and Result', () 
   expect(point().getAttribute('data-activity')).toBe('completed')
 })
 
-it('uses the same adjustable activity token for the point and status text', () => {
+it('uses a five-state symbol instead of the legacy status label', () => {
   const win = fixture()
-  const point = win.document.querySelector('[data-activity="working"]')!
-  const label = win.document.querySelector('.vp-proj-summary .vp-lane-state')!
-  expect(point.getAttribute('style')).toContain('--sb-activity-working')
-  expect(label.getAttribute('style')).toContain('--sb-activity-working')
+  const point = win.document.querySelector('.vp-proj-summary [data-lane-state="working"]')!
+  expect(point.getAttribute('aria-label')).toBe('作業中')
+  expect(win.document.querySelector('.vp-proj-summary .vp-lane-state')).toBeNull()
 })

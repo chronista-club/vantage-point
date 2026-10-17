@@ -179,6 +179,7 @@ pub async fn build_lanes_snapshot(state: &RepoState) -> Vec<LaneInfo> {
         if let Some(act) = activity.get(&lane.address.to_string()) {
             super::enrich::apply_session_activity(lane, act);
         }
+        apply_conversation_progress(state, lane);
     }
 
     // doc 44 §12: 帳簿の並び順を最後に適用する（既定順 = 開発起点が先頭 → created_at の上に
@@ -1024,6 +1025,7 @@ pub(crate) async fn emit_lane_update(state: &RepoState, addr: &LaneAddress) {
     super::enrich::refresh_engine_session_id(&mut info);
     // 活動時刻は refresh と対（apply_session_activity の doc ⚠️ — 供給点差は #683 地形）。
     super::enrich::apply_session_activity(&mut info, &activity);
+    apply_conversation_progress(state, &mut info);
     if let Err(e) = state
         .system_event_tx
         .send(SystemEvent::Lane(Diff::Update { payload: info }))
@@ -1033,6 +1035,19 @@ pub(crate) async fn emit_lane_update(state: &RepoState, addr: &LaneAddress) {
             addr,
             e
         );
+    }
+}
+
+/// snapshot と差分通知の両方で、同じ session の現在値を投影する。
+fn apply_conversation_progress(state: &RepoState, lane: &mut LaneInfo) {
+    let address = lane.address.canonical();
+    if let Some(view) = lane.sessions.as_mut() {
+        for session in &mut view.sessions {
+            session.progress = state
+                .topic_router
+                .conversation_progress
+                .view(&address, session.key);
+        }
     }
 }
 
@@ -1194,6 +1209,50 @@ mod core_tests {
         assert!(
             lanes.is_empty(),
             "LanePool 空 + sub worktree 不在なら snapshot は空 (merge は intended sub 限定)"
+        );
+    }
+
+    // mem_1Cg7MpHWBdf6u9CYjyEAaf: 非表示 chat lane でも要求内容を snapshot で読める。
+    #[tokio::test]
+    async fn sidebar_progress_survives_without_conversation_subscribers() {
+        use crate::conversation::ConversationEvent;
+        let _guard = crate::test_env::state_dir_async().await;
+        let state = crate::repo::state::build_test_app_state().await;
+        let addr = crate::repo::state::insert_test_lane(
+            &state,
+            "vp",
+            crate::lane::session_registry::SessionMode::Gui,
+        )
+        .await;
+        let (tx, rx) = tokio::sync::broadcast::channel(4);
+        let pump = crate::repo::conversation_pump::spawn_lane_conversation_pump(
+            addr.canonical(),
+            1,
+            rx,
+            state.topic_router.clone(),
+            None,
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        tx.send(ConversationEvent::PermissionRequest {
+            request_id: "permission-1".into(),
+            tool_name: "Bash".into(),
+            input: serde_json::json!({"command":"cargo test"}),
+        })
+        .unwrap();
+        drop(tx);
+        pump.await.unwrap();
+        let lanes = build_lanes_snapshot(&state).await;
+        let wire = serde_json::to_value(&lanes[0]).unwrap();
+        assert_eq!(
+            wire["sessions"]["sessions"][0]["progress"]["phase"],
+            "requesting"
+        );
+        assert!(
+            wire["sessions"]["sessions"][0]["progress"]["now"]
+                .as_str()
+                .unwrap()
+                .contains("Bash")
         );
     }
 

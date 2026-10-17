@@ -358,6 +358,20 @@ pub struct LaneSessionEntryWire {
     /// 最終応答完了 (epoch ms)。未観測は None。
     #[serde(default)]
     pub last_response_at: Option<f64>,
+    /// daemon が集約した会話の現在値。旧 server は欠落する。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub progress: Option<LaneProgressWire>,
+}
+
+/// 会話本文を持たない sidebar 用の短い状態投影。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct LaneProgressWire {
+    pub phase: String,
+    pub now: Option<String>,
+    #[serde(default)]
+    pub error: bool,
 }
 
 /// picker の選択肢 1 件（server `conversation::engine::Choice` の鏡 — 能力は server が表明し
