@@ -154,7 +154,8 @@ vp repos start|stop <name>  # 単一 repo の起動/停止（doc 44 P1 fold-in �
 #   repo は daemon プロセス内の Arc<RepoState> になったため、**daemon を止めると
 #   全 repo が必ず一緒に落ちる**（= lane claude も全部落ちる）。旧「gentle（daemon だけ
 #   止めて repo は温存）」は repo が別プロセスだった時代の挙動で、fold-in 後は成立しない。
-#   → lane の中から daemon を再起動すると自分が死ぬ。実機検証は VP の外（kitty 等）で行うこと。
+#   lane 内での直接の daemon stop/restart・kill は禁止。外部 terminal で行う。
+#   → lane 内の swap は app:swap:detached で launchd に預ける（30秒予告後に再起動）。
 #   会話は cc_session の `--resume` で次回 spawn 時に継がれる（「プロセスは死ぬがコンテキストは蘇る」）。
 
 # App（GUI）
@@ -226,7 +227,9 @@ mise run claims                            # diff から「数えるべき / 開
 
 # dogfood: 普段使いの .app を作業ツリーの build で差し替えて触る（GUI 変更の実機確認の正）
 mise run app:swap                          # DRY build → /Applications/VantagePoint.app 差し替え → 起動
-VP_SWAP_RESTART_DAEMON=1 mise run app:swap # server (crates/vantage-point) も効かせる（lane が全部落ちる）
+VP_SWAP_RESTART_DAEMON=1 mise run app:swap:detached # lane 内でも受付可。30秒予告後に daemon 再起動
+VP_SWAP_RESTART_DAEMON=1 mise run app:swap  # 外部 terminal 専用の直接実行
+mise run app:swap:detached                  # daemon 再起動なしで launchd に預ける
 
 # webview bundle は生成物（commit しない、2026-07-19 転換 — docs/guide/webview.md が SSOT）
 mise run app:bundle                        # bun install --frozen-lockfile + bun run build（swap / release は内部で自動実行）
@@ -235,6 +238,8 @@ mise run app:bundle                        # bun install --frozen-lockfile + bun
 mise run dev:gc                            # incremental 全消し + cargo-sweep（既定 14 日）
 VP_GC_DRY=1 mise run dev:gc                # 消さずに何がどれだけ減るか見る
 ```
+
+> detached の受付完了は swap 完了ではない。ログは `~/.local/state/vp/swap/`、結果は起動元 lane へ wire command（ack 対象）で届く。詳しくは [detached swap](docs/design/83-swap-detached.md)。
 
 > **`app:swap` を使う理由**: dev profile（`VP_PROFILE=dev`）は state を別 namespace に切るため daemon / repo / GUI を三点セットで立て直す要があり、素の dev binary（`~/.local/opt/vp-dev/bin/vp-app`）は `.app` bundle でないので macOS の app として扱えない（screenshot 許可対象にすらならない）。`app:swap` は本番と同じ `.app` 形のまま notarize の待ち時間だけを落とす（quarantine xattr が付かない自前 build に notarization ticket は不要 — Developer ID 署名で足りる）。
 > ⚠️ **GUI と server で反映タイミングが違う**: `.app` 差し替えで入れ替わるのは GUI（vp-app）だけ。daemon / repo は既に memory 上の旧 binary で走っているので、`crates/vantage-point` を触ったなら `VP_SWAP_RESTART_DAEMON=1` が要る（= repo の子である lane の claude が全部落ちる。会話は `cc_session` の `--resume` で復帰）。

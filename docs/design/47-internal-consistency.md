@@ -469,5 +469,5 @@ console_mode → session act migration: N lane を畳んだ       ← #848（実
 
 - **daemon 再起動は lane を全部落とす**（fold-in 後は project = World 内 `Arc<AppState>`）。
   会話は `cc_session` の `--resume` で復帰するが、**VP の中から再起動すると自分が死ぬ** —
-  実機検証は VP の外（kitty 等）で行う
+  swap は `VP_SWAP_RESTART_DAEMON=1 mise run app:swap:detached` で launchd に預けられる。直接の daemon 操作は外部 terminal で行う
 - `db/sp_*` の回収は**戻せない**（doc 44 §5.2 で破棄と検証済。旧 PP board は引き継がれない）

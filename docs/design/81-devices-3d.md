@@ -58,7 +58,7 @@ WebGL を初期化できない場合や context loss 中も、下部の一覧と
 - profile の control 数・ID・筐体内配置、状態の優先順位、camera の全体 fitting、素材の更新と資源解放を GPU なしでテスト。
 - frame queue の非表示 cancel、再表示時の描画、dispose、on-demand をテスト。
 - 3 エリア、canvas 容器の保持、選択が MIDI 操作を起こさないことと既存 takeover を DOM テスト。
-- fixture ブラウザ観察と実 VP / WKWebView の確認は別の証拠。`app:swap` は lane から実行せず、mako が VP 外のターミナルで行う。
+- fixture ブラウザ観察と実 VP / WKWebView の確認は別の証拠。lane 内での swap は `app:swap:detached` を使える。全 lane を落とす本番の通し確認は lead が mako の合図で行う。
 
 ## Midistage gear の実行時読み込み
 

@@ -32,6 +32,7 @@
 #    その場合 SP の子である lane の claude が全部落ちる (会話は cc_session の --resume で復帰)。
 require "fileutils"
 require "net/http"
+require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/swap_detached.rb")
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
 RESTART_DAEMON = ENV["VP_SWAP_RESTART_DAEMON"] == "1"
@@ -114,6 +115,7 @@ def wait_daemon_ready(timeout: 30)
     if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
       # daemon 不在でも app 自身が spawn を試みるので、 die せず警告に留める。
       VP.log "#{VP.icon(:warn)} daemon が #{timeout}s 以内に health を返さず — app 起動を続行"
+      raise "detached swap: readiness timeout" if ENV["VP_SWAP_JOB"]
       return false
     end
     sleep 0.5
@@ -158,6 +160,7 @@ def wait_app_ready(base, timeout: 30)
     if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
       # 待てなくても致命ではない (人が触る分には数秒で追いつく)。die せず警告に留める。
       VP.log "#{VP.icon(:warn)} webview が #{timeout}s 以内に ready を返さず — 続行"
+      raise "detached swap: readiness timeout" if ENV["VP_SWAP_JOB"]
       return false
     end
     sleep 0.3
@@ -249,6 +252,9 @@ def swap_macos(restart_daemon)
   VP.sh "VP_RELEASE_DRY=1 LANG=en_US.UTF-8 mise run release:mac"
   File.directory?(built) or VP.die("build 成果物が無い: #{built}")
 
+  SwapDetached.before_restart if restart_daemon
+  gui_stopped = true
+
   # ── 2. 走っている GUI を止める (差し替え先を掴んだままにしない) ──
   # vp の実体は .app 同梱 CLI。 cargo_bin 決め打ちだと brew 運用の機で不在 → サイレント失敗する
   # (2026-07-14 事故)。 VP.vp_bin は「実行できる物」を選ぶ。
@@ -295,6 +301,21 @@ def swap_macos(restart_daemon)
   wait_app_ready(ready_base)
   swap_epilogue(restart_daemon)
   brew_restore_hint(installed)
+rescue StandardError, SystemExit
+  # Restore a reachable GUI after a post-stop failure; retain the original error.
+  if gui_stopped
+    begin
+      recovery_vp = File.join(installed, "Contents", "MacOS", "vp")
+      if File.executable?(recovery_vp)
+        VP.run(recovery_vp, "app", "start")
+      else
+        VP.sh "open '#{installed}'"
+      end
+    rescue StandardError, SystemExit => recovery_error
+      VP.log "GUI 復旧起動も失敗: #{recovery_error.message}"
+    end
+  end
+  raise
 end
 
 # daemon + SP を新 binary に載せ替える (macOS)。
@@ -322,7 +343,7 @@ def restart_daemon_macos
   # 終わるため事前に警告する。
   if ENV["VP_LANE"]
     VP.log "#{VP.icon(:warn)} VP の lane の中から実行しています — この再起動で自分も落ちます。" \
-           " 完全反映は VP 外の terminal (kitty 等) から実行してください"
+           " lane 内では mise run app:swap:detached を使ってください"
   end
 
   # ── daemon を再起動 ──
