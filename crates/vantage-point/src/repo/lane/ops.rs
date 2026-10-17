@@ -32,22 +32,33 @@ pub(crate) async fn handle_lane_nudge(
     // 宛先が chat（gui）session なら PtySlot は無いので engine へ 1 ターンとして注入する
     //（`conversation_nudge` と同じ sink）。CLI `vp lane nudge --session N` は mode を知らずに
     // この method を叩くため、振り分けは受け手のここで行う。
-    let target = session.unwrap_or_else(|| {
-        crate::lane::session_registry::root(
+    let (target, target_mode) = {
+        let pool = state.lane_pool.read().await;
+        let info = pool
+            .get(&addr)
+            .ok_or_else(|| format!("lane_nudge 失敗: Lane not found: {addr}"))?;
+        let reg = crate::lane::session_registry::load(
             &addr.repo,
             crate::repo::agent_spawner::lane_label(&addr),
-        )
-    });
-    let target_mode = state
-        .lane_pool
-        .read()
-        .await
-        .resolve_chat_session(&addr, Some(target))
-        .map(|resolved| resolved.mode);
-    if matches!(
-        target_mode,
-        Ok(crate::lane::session_registry::SessionMode::Gui)
-    ) {
+            &info.agent,
+        );
+        let target = session.unwrap_or(reg.root);
+        let entry = reg.sessions.iter().find(|entry| entry.key == target);
+        let Some(entry) = entry else {
+            let mut keys: Vec<_> = reg.sessions.iter().map(|entry| entry.key).collect();
+            keys.sort_unstable();
+            let available = keys
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "session {target} はこの lane にありません。今ある session: {available}"
+            ));
+        };
+        (target, entry.mode)
+    };
+    if matches!(target_mode, crate::lane::session_registry::SessionMode::Gui) {
         if text.is_empty() {
             return Err("lane_nudge: chat session には text が要る".to_string());
         }
@@ -621,6 +632,58 @@ mod tests {
             err.contains(&format!("今ある session: 1, {chat_key}")),
             "今ある session 番号を並べていない: {err}"
         );
+    }
+
+    // mem_1Cg7XsxYCokHoHMyg8z1aL: 閉じた番号を除き、保存順ではなく数値順で案内する。
+    #[tokio::test]
+    async fn lane_nudge_closed_session_lists_sorted_registry() {
+        use crate::lane::session_registry::{self, SessionMode};
+        use crate::repo::state::{build_test_app_state, insert_test_lane};
+        use crate::repo::unison_server::dispatch_repo_method;
+
+        let _isolated = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let addr = insert_test_lane(&state, "nudge-closed", SessionMode::Tui).await;
+        for _ in 2..=10 {
+            session_registry::create(
+                "nudge-closed",
+                "lead",
+                "claude",
+                "codex",
+                SessionMode::Gui,
+                false,
+            )
+            .unwrap();
+        }
+        session_registry::remove("nudge-closed", "lead", "claude", 3).unwrap();
+        let mut reg = session_registry::load("nudge-closed", "lead", "claude");
+        reg.sessions.reverse();
+        session_registry::save_in(&crate::config::vp_state_dir(), "nudge-closed", "lead", &reg)
+            .unwrap();
+
+        let err = dispatch_repo_method(
+            &state,
+            "lane_nudge",
+            serde_json::json!({ "lane": addr.to_string(), "text": "x", "session": 3 }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            err,
+            "session 3 はこの lane にありません。今ある session: 1, 2, 4, 5, 6, 7, 8, 9, 10"
+        );
+
+        // 実在する console session は従来どおり PTY 配送まで進む。
+        for session in [None, Some(1)] {
+            let err = dispatch_repo_method(
+                &state,
+                "lane_nudge",
+                serde_json::json!({ "lane": addr.to_string(), "text": "x", "session": session }),
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains("Lane has no PtySlot"), "{err}");
+        }
     }
 
     /// tmux decoupling PR2 → capture error 明確化（2026-07-19）: lane_capture dispatch の error 経路。
