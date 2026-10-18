@@ -49,6 +49,7 @@ async fn run(registry: &Weak<RwLock<DeviceRegistry>>, enabled: bool) -> anyhow::
     )
     .await?;
     let client = Arc::new(client);
+    let mut setups = crate::roto_setup_sync::Sync::new(client.clone(), &vp_paths::vp_state_dir());
     let mut acknowledged = HashSet::new();
     let result: anyhow::Result<()> = async {
         loop {
@@ -80,12 +81,20 @@ async fn run(registry: &Weak<RwLock<DeviceRegistry>>, enabled: bool) -> anyhow::
                     acknowledged.insert(lease.token.clone());
                 }
             }
+            // Setup requests run separately so a slow configuration RPC never delays
+            // revoking input listeners or acknowledging another device's handoff.
+            if enabled {
+                setups
+                    .tick(&crate::roto_setup_midistage::statuses(&snapshot))
+                    .await;
+            }
             tokio::time::sleep(Duration::from_millis(200)).await;
             snapshot = client.snapshot().await?;
         }
         Ok(())
     }
     .await;
+    drop(setups);
     // Release local work before closing the session; disconnect authorizes the service to drain.
     if let Some(devices) = registry.upgrade() {
         let mut state = devices.write().await;

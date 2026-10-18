@@ -4869,8 +4869,8 @@ dependencies = [
 
 [[package]]
 name = "midistage-client"
-version = "0.0.1"
-source = "git+https://github.com/chronista-club/midistage.git?rev=0d3c3f5e22dac62c0e701daaa17fcd173f41df18#0d3c3f5e22dac62c0e701daaa17fcd173f41df18"
+version = "0.2.0"
+source = "git+https://github.com/chronista-club/midistage.git?rev=03793029fbc726c1b2431ea66862c46cdb398424#03793029fbc726c1b2431ea66862c46cdb398424"
 dependencies = [
  "anyhow",
  "club-unison",
@@ -4883,8 +4883,8 @@ dependencies = [
 
 [[package]]
 name = "midistage-profiles"
-version = "0.0.1"
-source = "git+https://github.com/chronista-club/midistage.git?rev=0d3c3f5e22dac62c0e701daaa17fcd173f41df18#0d3c3f5e22dac62c0e701daaa17fcd173f41df18"
+version = "0.2.0"
+source = "git+https://github.com/chronista-club/midistage.git?rev=03793029fbc726c1b2431ea66862c46cdb398424#03793029fbc726c1b2431ea66862c46cdb398424"
 dependencies = [
  "serde",
  "sha1 0.11.0",
@@ -4900,8 +4900,8 @@ dependencies = [
 
 [[package]]
 name = "midistage-protocol"
-version = "0.0.1"
-source = "git+https://github.com/chronista-club/midistage.git?rev=0d3c3f5e22dac62c0e701daaa17fcd173f41df18#0d3c3f5e22dac62c0e701daaa17fcd173f41df18"
+version = "0.2.0"
+source = "git+https://github.com/chronista-club/midistage.git?rev=03793029fbc726c1b2431ea66862c46cdb398424#03793029fbc726c1b2431ea66862c46cdb398424"
 dependencies = [
  "serde",
  "serde_json",
@@ -10327,7 +10327,7 @@ dependencies = [
  "libc",
  "midir",
  "midistage-client",
- "midistage-profiles 0.0.1",
+ "midistage-profiles 0.2.0",
  "notify",
  "objc2",
  "objc2-app-kit",
