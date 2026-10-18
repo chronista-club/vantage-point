@@ -241,3 +241,76 @@ it('ROTO recognition lands in the pressed composer without stealing focus from t
     expect(voiceSent().map(m=>m.t)).toEqual(['voice:start','voice:stop'])
   } finally { await window.happyDOM.close() }
 },20000)
+
+// mem_1CgANNcfXDjfnXyBQtSCsZ: right Option toggles the shared voice owner.
+it('right Option taps toggle start/stop, wait for recognition and share ROTO ownership', async () => {
+  const {window,h,input,voiceSent} = await mountChat()
+  const tap = () => {
+    window.dispatchEvent(new window.KeyboardEvent('keydown',{code:'AltRight',altKey:true}))
+    window.dispatchEvent(new window.KeyboardEvent('keyup',{code:'AltRight'}))
+  }
+  const ptt = (pressed:boolean) => window.dispatchEvent(new window.CustomEvent('vp:roto-ptt',{detail:{pressed}}))
+  try {
+    tap(); tap(); tap()
+    expect(voiceSent().map(m=>m.t)).toEqual(['voice:start','voice:stop'])
+    h.voiceText('voice-test/main',1,'')
+    ptt(true); tap(); ptt(false)
+    expect(voiceSent().map(m=>m.t)).toEqual(['voice:start','voice:stop','voice:start','voice:stop'])
+    h.voiceText('voice-test/main',1,'')
+    tap(); ptt(true); ptt(false)
+    expect(voiceSent().map(m=>m.t)).toEqual(['voice:start','voice:stop','voice:start','voice:stop','voice:start','voice:stop'])
+    h.voiceText('voice-test/main',1,'入力した声')
+    expect(input.value).toBe('入力した声')
+    expect(h.sent.some(m=>m.t==='conversation:submit')).toBe(false)
+  } finally { await window.happyDOM.close() }
+},20000)
+
+it('right Option respects draft, console and hidden composer gates, then stops on blur', async () => {
+  const {window,input,voiceSent} = await mountChat()
+  const tap = () => {
+    window.dispatchEvent(new window.KeyboardEvent('keydown',{code:'AltRight',altKey:true}))
+    window.dispatchEvent(new window.KeyboardEvent('keyup',{code:'AltRight'}))
+  }
+  try {
+    input.value='書きかけ';input.dispatchEvent(new window.Event('input',{bubbles:true}));tap()
+    expect(voiceSent()).toEqual([])
+    expect(window.document.querySelector('.conversation-voice-error')?.textContent).toContain('入力欄を空に')
+    input.value='';input.dispatchEvent(new window.Event('input',{bubbles:true}))
+    const term=window.document.createElement('div');term.className='term-session-host pane-focused';window.document.body.append(term)
+    tap();expect(voiceSent()).toEqual([]);term.remove()
+    input.parentElement!.setAttribute('hidden','');tap();expect(voiceSent()).toEqual([]);input.parentElement!.removeAttribute('hidden')
+    tap();window.dispatchEvent(new window.Event('blur'))
+    expect(voiceSent().map(m=>m.t)).toEqual(['voice:start','voice:stop'])
+  } finally { await window.happyDOM.close() }
+},20000)
+
+it('right Option ignores chords, left Option, repeats, IME and interrupted gestures', async () => {
+  const {window,voiceSent} = await mountChat()
+  const down = (code:string,extra:Record<string,boolean>={}) => window.dispatchEvent(new window.KeyboardEvent('keydown',{code,...extra}))
+  const up = (code:string,extra:Record<string,boolean>={}) => window.dispatchEvent(new window.KeyboardEvent('keyup',{code,...extra}))
+  try {
+    down('AltLeft');up('AltLeft')
+    down('AltRight');down('ArrowLeft');up('ArrowLeft');up('AltRight')
+    down('KeyA');down('AltRight');up('KeyA');up('AltRight')
+    down('AltRight',{shiftKey:true});up('AltRight')
+    down('AltRight',{isComposing:true});up('AltRight')
+    down('AltRight');up('AltRight',{isComposing:true})
+    down('AltRight');window.dispatchEvent(new window.Event('compositionstart'));window.dispatchEvent(new window.Event('compositionend'));up('AltRight')
+    down('AltRight');window.dispatchEvent(new window.Event('blur'));up('AltRight')
+    expect(voiceSent()).toEqual([])
+    down('AltRight');down('AltRight',{repeat:true});up('AltRight');up('AltRight')
+    expect(voiceSent().map(m=>m.t)).toEqual(['voice:start'])
+  } finally { await window.happyDOM.close() }
+},20000)
+
+it('a recording error releases the shared owner so the next tap starts immediately', async () => {
+  const {window,h,voiceSent} = await mountChat()
+  const tap = () => {
+    window.dispatchEvent(new window.KeyboardEvent('keydown',{code:'AltRight'}))
+    window.dispatchEvent(new window.KeyboardEvent('keyup',{code:'AltRight'}))
+  }
+  try {
+    tap();h.voiceError('voice-test/main',1,'マイクの許可がありません');tap()
+    expect(voiceSent().map(m=>m.t)).toEqual(['voice:start','voice:start'])
+  } finally { await window.happyDOM.close() }
+},20000)

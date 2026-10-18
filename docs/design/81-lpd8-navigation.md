@@ -122,6 +122,20 @@ ROTO は他機材と同じ owned input-only listener を使う。midistage の l
 - window の MIDI target 喪失、session/lane の変更・unmount、機材切断・所有権喪失時に停止する。release が旧 window に届くことを前提にしない。
 - 認識結果は元の入力欄に置く。自動送信しない。認識中に戻ってきた下書きは既存仕様どおり保持する。
 
+#### キーボードからの音声入力（mem_1CgANNcfXDjfnXyBQtSCsZ）
+
+右 Option の単独タップは開始／停止のトグル、ROTO T8 は押している間の hold とする。
+キーは当面固定。VP が前面のときに main WebView の `AltRight` keydown/keyup で検出する。
+左 Option、他キーとの併用、IME 合成中は起動せず、通常の Option ショートカットを消費しない。
+ROTO と同じ registry・録音所有者・入力欄の開始条件を使い、片方で始めた録音をもう片方で止められる。
+右 Option の開始先も active lane の focused chat session に固定する。
+window がフォーカスを失ったときは録音を止め、押下途中のキー状態を捨てる。
+認識中は新しい録音を始めず、録音エラー後は次のタップで再試行できる。
+グローバルホットキー、console 入力、キー設定化は対象外。
+
+実機の受入条件は、前面 chat で右 Option タップ → 録音表示 → 発話 → 再タップ → 元の入力欄へ文字。
+WKWebView のキー到達と音声認識は自動テストと分けて確認する。
+
 ### やってはいけない
 
 - Serial port を VP daemon から開かない。MIDI 物理 port へ所有権チェックを迂回して接続しない。
@@ -156,3 +170,4 @@ Rust の `SidebarState` を serde で生成した fixture を `midi-sidebar-wire
 - 2026-10-16: 空 pad 登録の実機不具合は Rust serde fixture の系列では再現せず、登録判断を変えずに拒否理由と状態の診断を追加（`mem_1Cg5i626zphsJ9iXXXWCTE`）。次回 swap 後のログ・発光色確認待ち。
 
 - 2026-10-16: nightly `ebfe2e93` まで取り込み、#1219 の切断・接続待ち・listener lock 順序と #1222 の診断を保持。並行 ensure を含む同名 lease 更新で、新しい port を開く時点の旧 task 終了と先行 `held=false` 通知を検証。shutdown の `release_fleet` は永続設定保存を呼ばないことをソース確認。fmt / check / Clippy / Rust 全体 1626 passed（0 failed / 25 ignored）/ Webview 847 tests / 型検査 / bundle を再検証。実機検収は引き続き別工程。
+- 2026-10-19: 右 Option 単独タップで音声入力をトグルする経路を追加（`mem_1CgANNcfXDjfnXyBQtSCsZ`）。ROTO の録音所有者と開始条件を共有し、IME・併用キー・フォーカス喪失・録音エラー後の再試行を回帰検証。実機のキー到達と発話の検収は別工程。
