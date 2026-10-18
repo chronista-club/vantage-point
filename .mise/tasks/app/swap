@@ -292,11 +292,12 @@ def swap_macos(restart_daemon)
   # 実体なので同 task で正しい — OS で実体が違うだけ)。
   ready_base = app_log_pos # ⚠️ 起動要求より前に取る (TOCTOU)
   bundled_vp = File.join(installed, "Contents", "MacOS", "vp")
+  # GUI は job より長く生きるため worker.lock を継承させない。
   if File.executable?(bundled_vp)
-    VP.run(bundled_vp, "app", "start")
+    VP.run(bundled_vp, "app", "start", close_others: true)
   else
     VP.log "#{VP.icon(:warn)} bundle 内に vp が無い (#{bundled_vp}) — open にフォールバック"
-    VP.sh "open '#{installed}'"
+    VP.run("open", installed, close_others: true)
   end
   wait_app_ready(ready_base)
   swap_epilogue(restart_daemon)
@@ -307,9 +308,9 @@ rescue StandardError, SystemExit
     begin
       recovery_vp = File.join(installed, "Contents", "MacOS", "vp")
       if File.executable?(recovery_vp)
-        VP.run(recovery_vp, "app", "start")
+        VP.run(recovery_vp, "app", "start", close_others: true)
       else
-        VP.sh "open '#{installed}'"
+        VP.run("open", installed, close_others: true)
       end
     rescue StandardError, SystemExit => recovery_error
       VP.log "GUI 復旧起動も失敗: #{recovery_error.message}"

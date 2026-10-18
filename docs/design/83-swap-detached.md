@@ -19,6 +19,8 @@ VP_SWAP_RESTART_DAEMON=1 mise run app:swap:detached
 
 launchd の環境を `env -i` で捨て、`TMPDIR` は保持して login shell から PATH を構成する。lane identity は環境として継承せず、JSON に wire の宛先だけを保持する。再起動フラグと `VP_PROFILE` は引き継ぎ、既存 swap に渡す。アプリの差し替え先と daemon の選び方は既存 swap に従う（profile を指定しても別の .app を作る機能ではない）。
 
+GUI 起動（通常・復旧の `vp app start` と `open` fallback）は `close_others: true` で worker.lock の fd を渡さず、build・差し替え・daemon 再起動の子コマンドには従来どおり継承させる。
+
 実行側は既存 `mise run app:swap` を呼ぶ。build・署名の後、GUI 停止・差し替えの前に既存 CLI `vp repos list` で稼働 repo を列挙し、それぞれの cwd で `vp lane ls --detail` を読む。全 lane へ wire command（ack 対象） を送り、配信要求が全件成功してから30秒待つ。列挙や配信が失敗したら GUI 停止も差し替えも行わない。稼働 repo が0件なら配信先は空とする。CLI の表示形式が変わり稼働 repo を列挙できなくなった場合も失敗として止まる。
 
 完了・失敗、対象 version / commit、ログの場所を起動元 lane へ送る。daemon / webview readiness の timeout は detached 経路では失敗にする。通知が失敗しても結果保存を試み、結果保存や lock 解放が失敗しても bootout を試みる。GUI 停止後に例外が出た場合は bundle の app start（CLI が無ければ open）を再試行し、元のエラーは失敗として返す。
