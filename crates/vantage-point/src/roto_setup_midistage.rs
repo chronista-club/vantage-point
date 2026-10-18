@@ -85,7 +85,7 @@ mod tests {
     /// devices and never opens CoreMIDI/Serial; the endpoint lives only in TempDir.
     #[tokio::test]
     #[ignore = "requires MIDISTAGE_TEST_SERVER built from the pinned SDK revision"]
-    async fn isolated_sdk_loopback_registers_then_rejects_apply_without_retry_or_cache() {
+    async fn isolated_sdk_loopback_registers_applies_and_caches_confirmed_content() {
         use std::sync::{Arc, Mutex};
         use std::time::Duration;
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -159,22 +159,26 @@ mod tests {
             loop {
                 let snapshot = observed.client.snapshot().await.unwrap();
                 sync.tick(&statuses(&snapshot)).await;
-                if observed.error.lock().unwrap().is_some() {
+                assert_eq!(*observed.error.lock().unwrap(), None, "Apply must succeed");
+                if crate::roto_setup_files::Hashes::load(dir.path())
+                    .get("roto")
+                    .is_some()
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
-        .expect("register and Apply error must complete");
-        assert!(
-            observed
-                .error
-                .lock()
-                .unwrap()
-                .as_deref()
-                .unwrap()
-                .starts_with("not_implemented:")
+        .expect("register, Apply and completion confirmation must finish");
+        let expected = crate::roto_setup::generate(
+            &Value::Null,
+            &std::collections::BTreeMap::new(),
+            &crate::roto_midi::VP_ROTO_SETUP,
+        );
+        assert_eq!(
+            crate::roto_setup_files::Hashes::load(dir.path()).get("roto"),
+            Some(expected.hash)
         );
         for _ in 0..20 {
             let snapshot = observed.client.snapshot().await.unwrap();
@@ -185,10 +189,12 @@ mod tests {
                 .unwrap();
             assert_eq!(roto.setup_owners.get("vp"), Some(&vec![SETUP]));
             assert_eq!(roto.current_setup, Some(SETUP));
+            assert!(!roto.configuring);
+            assert_eq!(roto.config_error, None);
             sync.tick(&statuses(&snapshot)).await;
         }
         assert_eq!(*observed.calls.lock().unwrap(), ["register", "apply"]);
-        assert!(!dir.path().join("roto-setup-hashes.json").exists());
+        assert_eq!(*observed.error.lock().unwrap(), None);
         drop(sync);
         observed.client.close().await.unwrap();
         server.kill().await.unwrap();

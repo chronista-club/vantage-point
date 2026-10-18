@@ -71,9 +71,8 @@ cache を捨てて再適用する場合は、daemon 停止中にこの state zon
 
 ## 制約と実機確認
 
-- SDK は midistage `03793029fbc726c1b2431ea66862c46cdb398424` に固定。
-  この版の Apply は `not_implemented` を返すため、現時点では実機の内容を更新できない。
-  対応版への更新と実機確認は別途必要。
+- SDK は Apply 実装を含む midistage `9bb2536230d85495139ac95354e4a72340422c21` に固定。
+  実機書き込みには、稼働中の midistaged も Apply 対応版である必要がある。
 - 本体 SEL での手動 setup 切替は midistage に見えない。
 - Serial を開いて書き込む間は ROTO の MIDI が止まる。
 - ローカル hash は VP が最後に成功を確認した内容。外部ツールでの書き換えを検出するものではない。
@@ -87,10 +86,12 @@ cache を捨てて再適用する場合は、daemon 停止中にこの state zon
 生成、CC 正本、ラベル・色、hash、2 秒 debounce、lease 喪失、失敗時の再送抑制、
 成功 cache の永続化・無効化を `roto_setup` の unit test で確認する。
 固定 SDK の `protocol_fixture` をビルドすると、架空の ROTO と一時 state directory だけで
-登録・自動選択・Apply の未実装エラーを検証できる。
+登録・自動選択・Apply 成功後の hash 保存と同じ内容の再送抑制を検証できる。
+`not_implemented` の失敗抑制は `unsupported_apply_is_attempted_once_and_never_cached`
+の fake transport unit test で引き続き確認する。
 
 ```sh
-MIDISTAGE_TEST_SERVER=/path/to/0379302/protocol_fixture \
+MIDISTAGE_TEST_SERVER=/path/to/9bb2536/protocol_fixture \
   cargo test -p vantage-point --lib roto_setup -- --include-ignored
 ```
 

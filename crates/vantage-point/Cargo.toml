@@ -27,8 +27,8 @@ async-trait = { workspace = true }
 vp-paths = { path = "../vp-paths" }
 
 # MIDI ランタイム制御プロトコル + 純粋計算 (DeviceProfile / DeviceInput / palette、 I/O なし)
-midistage-profiles = { git = "https://github.com/chronista-club/midistage.git", rev = "03793029fbc726c1b2431ea66862c46cdb398424", optional = true }
-midistage-client = { git = "https://github.com/chronista-club/midistage.git", rev = "03793029fbc726c1b2431ea66862c46cdb398424", optional = true }
+midistage-profiles = { git = "https://github.com/chronista-club/midistage.git", rev = "9bb2536230d85495139ac95354e4a72340422c21", optional = true }
+midistage-client = { git = "https://github.com/chronista-club/midistage.git", rev = "9bb2536230d85495139ac95354e4a72340422c21", optional = true }
 
 # Web server
 axum = { workspace = true, features = ["ws"] }
