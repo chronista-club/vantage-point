@@ -1,0 +1,202 @@
+{
+  "requesting": {
+    "address": {
+      "key": "project/lane/requesting",
+      "name": "requesting",
+      "repo": "project"
+    },
+    "agent": "claude",
+    "agent_name": null,
+    "branch": "wip/requesting",
+    "created_at": "",
+    "cwd": "/project/.vp/lanes/requesting",
+    "engine_session_id": null,
+    "flow_state": null,
+    "pid": 42,
+    "sessions": {
+      "focused": 1,
+      "root": 1,
+      "sessions": [
+        {
+          "agent": "claude",
+          "chat_capable": false,
+          "conversation": null,
+          "effort_choices": [],
+          "image_capable": false,
+          "key": 1,
+          "last_activity_at": 60000.0,
+          "last_response_at": null,
+          "mode": "gui",
+          "model_choices": [],
+          "permission_choices": [],
+          "progress": {
+            "error": false,
+            "now": "Bash の承認をお願いします",
+            "phase": "requesting"
+          },
+          "settings": null
+        }
+      ]
+    },
+    "state": "running",
+    "sub_status": {
+      "ahead": 0,
+      "behind": 4,
+      "branch": "wip/requesting",
+      "dirty_count": 2,
+      "has_upstream": false,
+      "is_merged": false,
+      "last_commit": "a1b2c3d fixture"
+    }
+  },
+  "stopped": {
+    "address": {
+      "key": "project/lane/stopped",
+      "name": "stopped",
+      "repo": "project"
+    },
+    "agent": "claude",
+    "agent_name": null,
+    "branch": "wip/stopped",
+    "created_at": "",
+    "cwd": "/project/.vp/lanes/stopped",
+    "engine_session_id": null,
+    "flow_state": null,
+    "pid": 42,
+    "sessions": {
+      "focused": 1,
+      "root": 1,
+      "sessions": [
+        {
+          "agent": "claude",
+          "chat_capable": false,
+          "conversation": null,
+          "effort_choices": [],
+          "image_capable": false,
+          "key": 1,
+          "last_activity_at": 60000.0,
+          "last_response_at": null,
+          "mode": "gui",
+          "model_choices": [],
+          "permission_choices": [],
+          "progress": {
+            "error": false,
+            "now": "回帰テストを確認中",
+            "phase": "stopped"
+          },
+          "settings": null
+        }
+      ]
+    },
+    "state": "running",
+    "sub_status": {
+      "ahead": 0,
+      "behind": 4,
+      "branch": "wip/stopped",
+      "dirty_count": 2,
+      "has_upstream": false,
+      "is_merged": false,
+      "last_commit": "a1b2c3d fixture"
+    }
+  },
+  "waiting": {
+    "address": {
+      "key": "project/lane/waiting",
+      "name": "waiting",
+      "repo": "project"
+    },
+    "agent": "claude",
+    "agent_name": null,
+    "branch": "wip/waiting",
+    "created_at": "",
+    "cwd": "/project/.vp/lanes/waiting",
+    "engine_session_id": null,
+    "flow_state": null,
+    "pid": 42,
+    "sessions": {
+      "focused": 1,
+      "root": 1,
+      "sessions": [
+        {
+          "agent": "claude",
+          "chat_capable": false,
+          "conversation": null,
+          "effort_choices": [],
+          "image_capable": false,
+          "key": 1,
+          "last_activity_at": 60000.0,
+          "last_response_at": null,
+          "mode": "gui",
+          "model_choices": [],
+          "permission_choices": [],
+          "progress": {
+            "error": false,
+            "now": "回帰テストを確認中",
+            "phase": "waiting"
+          },
+          "settings": null
+        }
+      ]
+    },
+    "state": "running",
+    "sub_status": {
+      "ahead": 0,
+      "behind": 4,
+      "branch": "wip/waiting",
+      "dirty_count": 2,
+      "has_upstream": false,
+      "is_merged": false,
+      "last_commit": "a1b2c3d fixture"
+    }
+  },
+  "working": {
+    "address": {
+      "key": "project/lane/working",
+      "name": "working",
+      "repo": "project"
+    },
+    "agent": "claude",
+    "agent_name": null,
+    "branch": "wip/working",
+    "created_at": "",
+    "cwd": "/project/.vp/lanes/working",
+    "engine_session_id": null,
+    "flow_state": null,
+    "pid": 42,
+    "sessions": {
+      "focused": 1,
+      "root": 1,
+      "sessions": [
+        {
+          "agent": "claude",
+          "chat_capable": false,
+          "conversation": null,
+          "effort_choices": [],
+          "image_capable": false,
+          "key": 1,
+          "last_activity_at": 60000.0,
+          "last_response_at": null,
+          "mode": "gui",
+          "model_choices": [],
+          "permission_choices": [],
+          "progress": {
+            "error": false,
+            "now": "回帰テストを確認中",
+            "phase": "working"
+          },
+          "settings": null
+        }
+      ]
+    },
+    "state": "running",
+    "sub_status": {
+      "ahead": 0,
+      "behind": 4,
+      "branch": "wip/working",
+      "dirty_count": 2,
+      "has_upstream": false,
+      "is_merged": false,
+      "last_commit": "a1b2c3d fixture"
+    }
+  }
+}

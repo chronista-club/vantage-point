@@ -1,0 +1,9 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#MISE alias="app:swap:detached"
+#MISE description="launchd に swap を預けて即 return（全 lane への30秒予告・完了通知付き）"
+require File.join(ENV.fetch('MISE_PROJECT_ROOT'), 'scripts/mise/swap_detached.rb')
+abort 'app:swap:detached は macOS 専用です' unless RUBY_PLATFORM.include?('darwin')
+abort '引数は受け付けません' unless ARGV.empty?
+job = SwapDetached.submit(root: ENV.fetch('MISE_PROJECT_ROOT'))
+puts "swap 受付済み: #{job.fetch('label')} / log=#{job.fetch('log')}"

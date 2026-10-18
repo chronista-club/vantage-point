@@ -441,11 +441,13 @@ mod tests {
             right_sidebar_width: 320.0,
             sidebar_form: crate::session_state::SidebarForm::Slim,
             right_sidebar_open: true,
+            right_sidebar_pct: Some(30.0),
         });
         let s = saved(0).expect("saved");
         let l = s.shell_layout().expect("layout");
         assert_eq!(l.sidebar_width, 300.0);
         assert!(l.right_sidebar_open);
+        assert_eq!(l.right_sidebar_pct, Some(30.0));
     }
 
     /// 危険 E（b-4）: daemon の順は変わった時だけ file に鏡す。同じ順の再 fetch は書かない。

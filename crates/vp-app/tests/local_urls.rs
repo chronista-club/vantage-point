@@ -1,5 +1,52 @@
 // mem_1CfkeiUePgFsbYoGtTeDpq
 use vp_app::local_urls::*;
+
+// mem_1Cg4Mh2158eTTSiPPymwWp
+#[test]
+fn discovered_url_probe_is_validated_without_creating_a_registration() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("urls.json");
+    let payload = serde_json::json!({
+        "action": "probe_url", "url": "http://localhost:5173/"
+    });
+    assert!(
+        matches!(prepare_ui(&path, "/repo", "demo", payload).unwrap(), Prepared::ProbeUrl(url) if url == "http://localhost:5173/")
+    );
+    for url in [
+        "https://example.com/",
+        "http://localhost.evil/",
+        "http://0.0.0.0:5173/",
+        "http://user:secret@localhost/",
+        "http://localhost:0/",
+    ] {
+        assert!(
+            prepare_ui(
+                &path,
+                "/repo",
+                "demo",
+                serde_json::json!({"action":"probe_url","url":url})
+            )
+            .is_err(),
+            "{url}"
+        );
+    }
+    assert!(
+        prepare_ui(
+            &path,
+            "/repo",
+            "demo",
+            serde_json::json!({"action":"probe_url"})
+        )
+        .is_err()
+    );
+    assert!(
+        !path.exists(),
+        "discovery and probing must not persist URLs"
+    );
+    assert!(
+        matches!(prepare_ui(&path, "/repo", "demo", serde_json::json!({"action":"load"})).unwrap(), Prepared::Entries(entries) if entries.is_empty())
+    );
+}
 fn entry(id: &str, url: &str) -> Entry {
     Entry {
         id: id.into(),

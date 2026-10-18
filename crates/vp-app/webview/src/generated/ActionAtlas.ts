@@ -3,4 +3,4 @@
 /**
  * A destination offered by Creo; independent of the active Project.
  */
-export type ActionAtlas = { id: string, name: string, path: string, writable: boolean, };
+export type ActionAtlas = { id: string, name: string, path: string, writable: boolean, parentId: string | null, isApps: boolean, createdAt: string, source: string, owner: string | null, };

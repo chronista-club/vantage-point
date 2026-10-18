@@ -85,6 +85,8 @@ pub struct ActionsSnapshot {
     pub rev: u32,
     pub items: Vec<CreoAction>,
     pub atlases: Vec<CreoAtlas>,
+    pub sidebar_settings: serde_json::Value,
+    pub sidebar_error: String,
     pub scope: String,
     pub error: String,
     pub imported: bool,
@@ -96,6 +98,16 @@ pub struct CreoAtlas {
     pub name: String,
     pub path: String,
     pub writable: bool,
+    #[serde(default, rename = "parentId")]
+    pub parent_id: Option<String>,
+    #[serde(default, rename = "isApps")]
+    pub is_apps: bool,
+    #[serde(default, rename = "createdAt")]
+    pub created_at: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub owner: Option<String>,
 }
 
 /// ACTIONS の cache + creo との往復口（doc 57 Phase 3-4）。
@@ -186,10 +198,12 @@ impl CreoActionsCache {
         };
         let mut next = self.for_account(&api.scope);
         let result: Result<()> = async {
-            let (atlases, fetched) = tokio::try_join!(api.catalog(), api.read())?;
-            next.atlases = atlases;
+            let view = api.view().await?;
+            next.atlases = view.atlases;
+            next.sidebar_settings = view.sidebar_settings;
+            next.sidebar_error = view.sidebar_error;
             let (items, error) = api
-                .flush(&ActionsWrite::default(), &fetched, &api.journal_dir())
+                .flush(&ActionsWrite::default(), &view.items, &api.journal_dir())
                 .await?;
             next.items = items;
             next.error = error;
@@ -1030,5 +1044,53 @@ mod tests {
         unsafe {
             std::env::remove_var("VP_CREO_URL");
         }
+    }
+}
+
+#[cfg(test)]
+mod sidebar_live_test {
+    // mem_1Cg1m3LoeDu62UCKVT5UcA — read-only probe using the daemon's auth boundary.
+    #[tokio::test]
+    #[ignore = "requires local Creo credentials and network"]
+    async fn sidebar_settings_live_auth() {
+        let api = super::authenticated_api()
+            .await
+            .unwrap()
+            .expect("Creo login required");
+        let response = api
+            .client
+            .get(format!("{}/api/app-settings/creo/sidebar", api.base))
+            .bearer_auth(&api.token)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        println!("sidebar HTTP {status}");
+        assert!(status.is_success());
+        let value: serde_json::Value = response.json().await.unwrap();
+        println!(
+            "settings_null={} valid={} order_count={} hidden_count={}",
+            value["settings"].is_null(),
+            value["valid"].as_bool().unwrap_or(false),
+            value["settings"]["order"]
+                .as_object()
+                .map_or(0, |v| v.len()),
+            value["settings"]["hidden"]
+                .as_array()
+                .map_or(0, |v| v.len())
+        );
+        assert!(value.get("settings").is_some());
+        assert!(value["valid"].is_boolean());
+    }
+}
+
+#[cfg(test)]
+mod atlas_contract_tests {
+    #[test]
+    fn catalog_wire_keeps_tree_fields() {
+        let value = serde_json::json!({"id":"a","name":"A","path":"/A","writable":true,
+            "parentId":"p","isApps":true,"createdAt":"2026-01-01","source":"shared","owner":"Owner"});
+        let atlas: super::CreoAtlas = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(atlas).unwrap(), value);
     }
 }

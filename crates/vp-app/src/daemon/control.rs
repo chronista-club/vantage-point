@@ -244,6 +244,14 @@ impl DaemonControl {
         Ok(())
     }
 
+    /// lane の repo の open PR 一覧（doc 82、daemon-control `lane/prs`）。
+    ///
+    /// `path` は lane の cwd。応答は daemon の `LanePrs` そのまま（gh 不在 = `available:false`）。
+    pub async fn lane_prs(&self, path: &str) -> Result<serde_json::Value> {
+        self.control("lane/prs", serde_json::json!({ "path": path }))
+            .await
+    }
+
     /// user の「好み」設定（settings.kdl）を読む（doc 59）。
     ///
     /// 返るのは**書かれている key だけ**の object（未設定は field ごと省略）。
@@ -257,6 +265,19 @@ impl DaemonControl {
     /// 片方の変更が消える。payload に載せた key だけが変わり、空文字は未設定に戻す。
     pub async fn settings_set(&self, payload: serde_json::Value) -> Result<serde_json::Value> {
         self.control("settings/set", payload).await
+    }
+
+    /// Refresh ACTIONs and both Atlas inputs through the daemon.
+    pub async fn refresh_actions(&self) -> Result<()> {
+        // A full read can span multiple pages. Leave the usual control timeout unchanged.
+        self.call_on(
+            "daemon-control",
+            "actions/refresh",
+            serde_json::json!({}),
+            Duration::from_secs(60),
+        )
+        .await?;
+        Ok(())
     }
 
     /// ACTIONS を creo-memories へ永続化する (doc 57 Phase 4)。

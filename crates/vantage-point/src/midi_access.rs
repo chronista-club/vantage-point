@@ -39,15 +39,6 @@ impl MidiAccess {
             })
             .cloned()
     }
-    pub fn roto_prefix(&self) -> Option<String> {
-        let ports = self.owned.iter().find(|p| p.device_id == "roto")?;
-        let prefix = format!("{}/", ports.inputs.first()?.rsplit_once('/')?.0);
-        ports
-            .outputs
-            .iter()
-            .any(|name| name.starts_with(&prefix))
-            .then_some(prefix)
-    }
     pub fn permits_input(&self, name: &str) -> bool {
         self.owned
             .iter()
@@ -108,8 +99,7 @@ mod tests {
         let mut new = old;
         new.lease = "b".into();
         assert_eq!(access.replace(vec![new]), vec!["roto"]);
-        assert_eq!(access.roto_prefix().as_deref(), Some("Midistage/vp/a/"));
         access.replace(vec![]);
-        assert_eq!(access.roto_prefix(), None);
+        assert!(access.owned.is_empty());
     }
 }

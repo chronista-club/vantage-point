@@ -3,6 +3,7 @@ import { Show, createEffect, createSignal, getOwner, onCleanup, onMount, untrack
 import { AppTokenBinds } from './app-fields'
 import { EditorPanel, type EditorSection } from './EditorPanel'
 import { EDITOR_CSS } from './styles'
+import { createMidiSettings, type MidiSettings } from './midi-settings'
 import { RUNTIME_NAMESPACE, clearRuntimeStorage, isThemeId, readThemeLibrary, themeBase, themeValues, writeThemeLibrary, type StoragePort, type ThemeLibrary, type Values } from './theme-store'
 
 const MANAGED_VAR = /^--(?:color-(?:brand|surface)-|typography-|layout-gap-sibling$|_|sb-|lg-|chat-text-|vp-resizer-breathe-)/
@@ -36,6 +37,8 @@ export function VpEditor() {
   const [section, setSection] = createSignal<EditorSection>('THEME')
   const [picking, setPicking] = createSignal(false)
   const [storageError, setStorageError] = createSignal(false)
+  // テーマ切替で Provider を作り直しても、MIDI 設定は Editor の寿命で 1 つ（保存先は session）
+  const midi = createMidiSettings()
   const [mount, setMount] = createSignal({ id: initial.selected, base: themeBase(initial), open: false })
   let activeHost: EditorHost | undefined
 
@@ -87,7 +90,7 @@ export function VpEditor() {
       <AppTokenBinds />
       <EditorSession library={library} persist={persist} picking={picking} setPicking={setPicking}
         section={section} setSection={setSection} storageError={storageError}
-        activate={activate} save={save} updateSaved={updateSaved} restoreSaved={restoreSaved}
+        activate={activate} save={save} updateSaved={updateSaved} restoreSaved={restoreSaved} midi={midi}
         expose={host => { activeHost = host }} />
     </EditorHostProvider>}</Show>
   </>
@@ -98,7 +101,7 @@ type SessionProps = {
   picking: () => boolean; setPicking(picking: boolean): void;
   section: () => EditorSection; setSection(section: EditorSection): void;
   storageError: () => boolean; activate(id: string): void; save(name: string): string | undefined;
-  updateSaved(): void; restoreSaved(): void; expose(host: EditorHost): void;
+  updateSaved(): void; restoreSaved(): void; expose(host: EditorHost): void; midi: MidiSettings;
 }
 
 function EditorSession(props: SessionProps) {

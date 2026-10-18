@@ -34,6 +34,7 @@ import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import { isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
 import { renderMermaidBlocks } from './mermaid-post'
 import { registerVoiceSink, sendVoice } from './voice'
+import { installRotoVoiceInput, registerRotoVoiceControl, stopRotoVoice, visibleVoiceElement } from './roto-voice'
 import { Marked } from 'marked'
 import { confirmCodexConsoleHandoff } from './codex-mode-handoff'
 import type {
@@ -812,6 +813,8 @@ function ToolRow(props: {
   result?: string
   subagent?: SubagentEntry[]
   task?: SubagentTaskView
+  /** 終了を告げずに消えた subagent（chat-model の `closeOpenSubagents`）。 */
+  interrupted?: boolean
 }) {
   const [open, setOpen] = createSignal(false)
   const inputText = createMemo(() => formatToolInput(props.input))
@@ -847,7 +850,7 @@ function ToolRow(props: {
           {(t) => <span class="conversation-tool-task">{t()}</span>}
         </Show>
         <span class="conversation-tool-status">
-          {props.error ? 'error' : props.done ? '✓' : '実行中…'}
+          {props.error ? 'error' : props.done ? '✓' : props.interrupted ? '中断' : '実行中…'}
         </span>
       </button>
       <Show when={open() && hasDetail()}>
@@ -857,7 +860,7 @@ function ToolRow(props: {
           <Show when={props.task}>
             {(t) => (
               <ToolDetail
-                label={`task · ${t().status}`}
+                label={`task · ${t().status}${props.interrupted ? ' · 中断（engine 終了で停止）' : ''}`}
                 text={[subagentTaskLine(t()), t().summary].filter(Boolean).join('\n\n')}
               />
             )}
@@ -923,6 +926,7 @@ function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
                 result={t.result}
                 subagent={t.subagent}
                 task={t.task}
+                interrupted={t.interrupted}
               />
             )}
           </For>
@@ -956,6 +960,9 @@ function SubagentDock(props: { agents: Accessor<RunningSubagent[]> }) {
               <div class="conversation-subagent-card">
                 <div class="conversation-subagent-card-head">
                   <span class="conversation-tool-spinner" />
+                  <span class="conversation-subagent-card-icon" aria-hidden="true">
+                    <CreoIcon name="ph:tree-structure" size={13} />
+                  </span>
                   <span class="conversation-subagent-card-title">{a.title}</span>
                 </div>
                 <Show when={now()}>
@@ -1058,6 +1065,7 @@ function ActivityTree(props: { run: Accessor<ChatItem[]>; tailStreaming: () => b
                       result={item.result}
                       subagent={item.subagent}
                       task={item.task}
+                      interrupted={item.interrupted}
                     />
                   </Match>
                 </Switch>
@@ -1597,7 +1605,11 @@ function SessionChatView(props: { lane: string; session: number }) {
       queueMicrotask(() => {
         if (!inputRef) return
         autosize(inputRef)
-        inputRef.focus()
+        const focused = sessionsOf(props.lane)?.focused ?? focusedOf(props.lane)
+        if (activeLane() === props.lane && focused === props.session &&
+            document.documentElement.dataset.midiTarget !== 'false' && visibleVoiceElement(inputRef)) {
+          inputRef.focus()
+        }
       })
     },
     error: (message) => {
@@ -1605,25 +1617,42 @@ function SessionChatView(props: { lane: string; session: number }) {
       setVoiceError(message)
     },
   }))
-  const startVoice = (e: PointerEvent) => {
-    if (micDisabled() || voice() !== 'idle') return
-    // 押したままボタンの外で離しても pointerup がこのボタンに届くように
-    try { (e.currentTarget as Element).setPointerCapture(e.pointerId) } catch { /* 未対応環境 */ }
+  const beginVoice = (): boolean => {
+    if (voice() !== 'idle') return false
+    if (draft() !== '') {
+      setVoiceError('入力欄を空にしてから録音してください')
+      return false
+    }
     setVoiceError(null)
     setVoice('recording')
     sendVoice('start', props.lane, props.session)
+    return true
+  }
+  const startVoice = (e: PointerEvent) => {
+    if (!beginVoice()) return
+    // 押したままボタンの外で離しても pointerup がこのボタンに届くように
+    try { (e.currentTarget as Element).setPointerCapture(e.pointerId) } catch { /* 未対応環境 */ }
   }
   const stopVoice = () => {
     if (voice() !== 'recording') return
     setVoice('transcribing')
     sendVoice('stop', props.lane, props.session)
   }
+  const rotoVoiceControl = {
+    start: beginVoice,
+    stop: stopVoice,
+    visible: () => visibleVoiceElement(inputRef),
+    reject: (message: string) => setVoiceError(message),
+  }
+  onCleanup(registerRotoVoiceControl(props, rotoVoiceControl))
+  createEffect(() => {
+    const focused = sessionsOf(props.lane)?.focused ?? focusedOf(props.lane)
+    if (activeLane() !== props.lane || focused !== props.session) stopRotoVoice(rotoVoiceControl)
+  })
   // 押している最中に session が閉じて unmount されると pointerup が届かず、Rust 側の録音が
   // 開いたまま残る（次にどこかの🎙が押されるまでマイクが点きっぱなし）。止めてから消える。
   // 結果の届け先は無いので Rust 側で捨てられる。
-  onCleanup(() => {
-    if (voice() === 'recording') sendVoice('stop', props.lane, props.session)
-  })
+  onCleanup(stopVoice)
 
   // ---- 画像添付（chat 入力欄への貼り付け、2026-08-30）--------------------------
   // ⚠️ VP は保存しない — 送信時に engine へ渡すだけで、transcript / replay にも残さない
@@ -2112,6 +2141,7 @@ function SessionChatView(props: { lane: string; session: number }) {
                             result={item.result}
                             subagent={item.subagent}
                             task={item.task}
+                            interrupted={item.interrupted}
                           />
                         )
                       })()}
@@ -2593,12 +2623,15 @@ export const CHATVIEW_CSS = `
   color: var(--color-text-tertiary,#8b93a7); }
 /* 進行中 subagent の float。⚠️ 位置はここ 1 か所（右下へ移すなら top/transform を bottom に替える）。
    pointer-events は card だけ拾い、隙間は下の stream の操作（scroll / 選択）を邪魔しない。 */
-.conversation-subagent-dock { position:absolute; right:18px; top:50%; transform:translateY(-50%); z-index:5;
+/* 右上（上起点）に置く。縦中央だと本文の行に重なる（mako 2026-10-12）。複数あれば上から下へ積む */
+.conversation-subagent-dock { position:absolute; right:18px; top:12px; z-index:5;
   display:flex; flex-direction:column; gap:6px; width:min(320px, 40%); pointer-events:none; }
 .conversation-subagent-card { pointer-events:auto; padding:8px 10px; border-radius:8px;
   background: var(--color-bg-elevated,#16191f); border:1px solid var(--color-border,#2a3040);
   box-shadow: 0 6px 18px rgba(0,0,0,.35); font-size:var(--chat-text-tool,12px); animation: conversation-fade .18s ease-out; }
 .conversation-subagent-card-head { display:flex; align-items:center; gap:8px; min-width:0; }
+/* subagent の印（枝分かれ = 親から生えた子）。spinner と title の間 */
+.conversation-subagent-card-icon { flex:none; display:inline-flex; color: var(--color-text-secondary,#a8b0c0); }
 .conversation-subagent-card-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   color: var(--color-text,#e6e9ef); }
 .conversation-subagent-card-now { margin:3px 0 0 17px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
@@ -2914,6 +2947,10 @@ export type ChatViewApi = {
 }
 
 export function installChatView(vpConsole: VpConsole): ChatViewApi {
+  installRotoVoiceInput(() => {
+    const lane = activeLane()
+    return lane ? {lane, session: sessionsOf(lane)?.focused ?? focusedOf(lane)} : null
+  })
   // session 一覧 bus → module signal（全 SessionChatView が共有）。install は起動時 1 回。
   document.addEventListener('vp:conversation-sessions', (e) => {
     const d = (

@@ -150,3 +150,45 @@ error:   ▸ ✗ 15 tools · 1 agent · 3m12s（error 色。1 件でも error �
 2. **完了 root の文言** = **経過時間も出す**（`✓ 15 tools · 1 agent · 3m12s`）。
    turn の重さが一目で分かる。replay では出さない（§4.2 の偽らない規律）
 3. **thinking 節の 1 ライナー** = **冒頭 1 行を出す**（畳んだまま思考の流れが読める）
+
+## 7. 終了を告げずに消えた subagent（2026-10-12）
+
+進行中の subagent は会話の流れから独立した float（`SubagentDock`、`runningSubagents` が表示源）に
+出す（#1201）。float は pane の**右上**（上起点 — 縦中央だと本文の行に重なる。mako 2026-10-12）、
+card の見出しに枝分かれの印（`ph:tree-structure`）を付けて subagent と分かるようにする。終わりの合図は claude が流す `task_notification` / `task_updated`（終了 status）。
+**この行が来ないまま subagent が消える経路がある**: 親 claude プロセスが落ちると、プロセスの中で
+動く subagent も一緒に死ぬが、終了の行は誰も書かない。
+
+- foreground は「`streaming` でなければ出さない」で隠れていた（隠れていただけで、次の turn が
+  streaming を立てると回り出す）
+- background（`is_backgrounded`）は tool が即返るので streaming を見ない。**終了の行が来ない限り
+  永遠に「進行中」**（2026-10-12 実機: 起動直後に親が落ち `--resume` で復帰、float が 1 時間半残った）
+
+### 7.1 区切りの事実を見た側で閉じる
+
+開いたままの subagent（task が `running`、または task 情報なしで Agent tool が返っていない）を
+`closeOpenSubagents` が tool item の `interrupted` 印で閉じる。呼ぶのは 2 か所:
+
+| 区切り | 何の事実か | 経路 |
+|---|---|---|
+| `engine_exited` | 親プロセスの stdout が閉じた = 中の subagent も全部死んだ | live（host の stdout ポンプが必ず送る） |
+| `user_message` | 結果の無い Agent の後に次の人間の発話 = その turn は切れている | replay 専用 event |
+
+- **`session_init` は区切りに使わない。** claude は同じプロセスでも user message 1 通ごとに
+  `system/init` を出す（実測 claude 2.1.296: 2 通送って init 2 回）。ここで閉じると、turn を
+  またいで正当に走っている background subagent を次の送信のたびに殺す
+- **replay は `subagent_task` を運ばない**（transcript.rs は `system` 行を捨て、in-flight tail は
+  chunk しか持たない）。だから background は replay で蘇らない — tool_result が即返っているので
+  task 無しの done な Agent 行になる。replay で残る穴は「結果の無い foreground Agent」で、生成中の
+  turn に着地すると streaming が立って回り出す。区切りを次の `user_message` に置くのは、replay に
+  turn の区切りとして確実に載るのが人間の発話だけだから（turn_completed は載らない。session_init は
+  host が最後の 1 件を保持して配り直すだけで、turn ごとには並ばない — `conversation_replay.rs`）
+- **live の user 発話では閉じない。** live の user 行は送信時に直接足すもので（chat-model の
+  submit 経路）`user_message` event を通らず、background は turn をまたいで生きるのが正しい
+- **status は書き換えない。** `running` は claude の語彙で、「中断」は claude が言っていない。
+  最後に分かった status はそのまま残し、「もう走っていない」は `interrupted` 印で表す。表示は
+  ToolRow の状態が「中断」、task 詳細の見出しが `task · running · 中断（engine 終了で停止）`
+- 閉じた後に task の行が来たら、生きている証拠として印を外す（新しい事実を優先）
+- **時間で消さない。** 長い background 作業を誤って閉じる。閉じる根拠は「死んだ / 切れた」事実だけ
+- 塊（activity run）の root / ToolGroupRow の spinner は `done` だけを数えるので、親の死で結果の
+  来ない tool（Agent 以外も）は今も「実行中」に数える。本節の範囲外（float の幽霊だけを閉じる）

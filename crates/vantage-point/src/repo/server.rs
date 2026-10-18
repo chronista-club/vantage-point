@@ -220,7 +220,7 @@ pub(crate) async fn start_repo(
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::repo::process_runner::ProcessRegistry::new(),
         )),
-        topic_router,
+        topic_router: topic_router.clone(),
         vpdb: vpdb.clone(),
         // Phase A4-2b: Lane scope の Agent pool — lead lane 1 つ pre-populate
         // memory rule: 多 scope architecture (App/Repo/Lane/Pane)、HD/TH は Lane scope。
@@ -230,10 +230,10 @@ pub(crate) async fn start_repo(
         // lane subs を `LaneCmd::SpawnLane` Cmd 化して `lane-spawn` mailbox に投入する
         // (= concurrency 制御を `Arc<Semaphore::new(N)>` で表現、 N=config.startup.max_concurrent_lane_spawn)。
         // 詳細は run() 内 lane_spawn_actor wiring 参照。
-        lane_pool: Arc::new(RwLock::new(super::lane::LanePool::with_root(
-            repo_name_for_remote.clone(),
-            repo_dir.clone(),
-        ))),
+        lane_pool: Arc::new(RwLock::new(
+            super::lane::LanePool::with_root(repo_name_for_remote.clone(), repo_dir.clone())
+                .with_conversation_progress(topic_router.conversation_progress.clone()),
+        )),
         // Phase 2 (Step E): system 系 lifecycle event の central broadcast bus。
         // capacity 64 = lifecycle 変更が短時間に集中しても drop しない buffer。
         // caller publish (SystemEvent::Lane(LaneDiff::*) 等) + `publish_lanes` subscribe で
@@ -721,43 +721,24 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // device 管理は DeviceRegistry 🧲 に一本化（feature = "midi" 時は `with_devices` で host 化）。
     // 旧 MidiCapability hosting（単一 port の無条件 grab）は退役 — 消費者不在のまま
     // enumeration 先頭 device（実機で LPD8）を掴み、DeviceRegistry listener を沈黙させていた。
-    let machine_capabilities = {
-        #[cfg(feature = "midi")]
-        {
-            Arc::new(
-                crate::daemon::machine_capabilities::MachineCapabilities::with_devices(
-                    daemon_cap.clone(),
-                    update_cap.clone(),
-                )
-                .await,
-            )
-        }
-        #[cfg(not(feature = "midi"))]
-        {
-            Arc::new(
-                crate::daemon::machine_capabilities::MachineCapabilities::new(
-                    daemon_cap.clone(),
-                    update_cap.clone(),
-                ),
-            )
-        }
-    };
-
-    // DeviceRegistry 🧲 — ROTO 持続セッションを Daemon lifecycle に enclose して起動する。
-    // 前景 `vp midi roto control` のフル接続（open + handshake + keepalive + LCD/routing）を
-    // daemon 常駐 + 自動再接続に昇格。lane data は daemon_cap(RepoManagerCapability) を
-    // in-process 直読み、switch_lane は repo 越境なので QUIC。shutdown_token の子 token で
-    // graceful 停止する。devices_for_shutdown は cleanup chain 用に Arc を clone しておく。
     #[cfg(feature = "midi")]
-    let devices_for_shutdown = machine_capabilities.devices.clone();
-    #[cfg(feature = "midi")]
-    if let Some(devices) = machine_capabilities.devices.as_ref() {
-        devices
-            .write()
-            .await
-            .start_roto_control(daemon_cap.clone(), shutdown_token.clone())
+    let (machine_capabilities, midi_task_for_shutdown) = {
+        let mut capabilities =
+            crate::daemon::machine_capabilities::MachineCapabilities::with_devices(
+                daemon_cap.clone(),
+                update_cap.clone(),
+            )
             .await;
-    }
+        let task = capabilities.midi_task.take();
+        (Arc::new(capabilities), task)
+    };
+    #[cfg(not(feature = "midi"))]
+    let machine_capabilities = Arc::new(
+        crate::daemon::machine_capabilities::MachineCapabilities::new(
+            daemon_cap.clone(),
+            update_cap.clone(),
+        ),
+    );
 
     // Phase A ① / R1: Daemon モードでも wiremsg store を build (= 将来 machine 階層 actor 用)。
     // R1 で `WiremsgStore::new` は async (起動時に local_seq 採番を math::max で復元)。
@@ -1322,22 +1303,21 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     });
 
     // Serve with graceful shutdown
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            shutdown_token_clone.cancelled().await;
-            tracing::info!("Daemon graceful shutdown initiated");
-        })
-        .await?;
-
-    // クリーンアップ
-    daemon_handle.abort();
+    serve_with_cleanup(listener, app, shutdown_token_clone, async move {
+        // HTTP の受付・drain が終わってから MIDI を解放し、遅い actor/repo cleanup に進む。
+        daemon_handle.abort();
+        #[cfg(feature = "midi")]
+        if let Some(task) = midi_task_for_shutdown {
+            task.shutdown().await;
+        }
+    })
+    .await?;
 
     // 棚卸し 9-2 段階 3（PR-S3c）: 常駐 task の終了を確認する（token は serve が返った時点で
     // cancel 済み）。repo を畳む前に待つのは、lane watcher が drain 中の repo に `lane_delete` を
     // 撃たないため、そして autostart が起動途中の repo を `shutdown_all` の後に差し込まないため。
     // 先に受付を閉じておくと、待っている間に autostart が新しい repo を起こさない。
-    // 予算は repo 側の 8 秒より短い 2 秒 — Unix の `vp daemon stop` は SIGTERM の 500ms 後に
-    // SIGKILL するので、ここで長く待つほど repo / db の後始末が kill 期限の外へ押し出される。
+    // 予算は repo 側の 8 秒より短い 2 秒。MIDI の解放・close はこの待機より先に済ませる。
     control_channels.close();
     let daemon_tasks = crate::capability::actor_registry::stop_all_with(
         &actor_registry,
@@ -1354,11 +1334,6 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     let stopped_repos = control_channels.shutdown_all().await;
     if stopped_repos > 0 {
         tracing::info!("Daemon shutdown: {} repo を停止", stopped_repos);
-    }
-    // DeviceRegistry ROTO 持続セッションを停止（子 token は shutdown_token から伝播済だが、明示 abort で確実に畳む）。
-    #[cfg(feature = "midi")]
-    if let Some(devices) = devices_for_shutdown.as_ref() {
-        devices.write().await.stop_roto_control().await;
     }
     if let Err(e) = daemon_for_shutdown.write().await.shutdown().await {
         tracing::warn!("Error during daemon shutdown: {}", e);
@@ -1468,9 +1443,60 @@ async fn spawn_lane_lifecycle_monitor(
         .map_err(anyhow::Error::msg)
 }
 
+/// cleanup の待機中に新しい HTTP 操作を受け付けないよう、serve の終了を先に待つ。
+async fn serve_with_cleanup(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    shutdown: CancellationToken,
+    cleanup: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown.cancelled().await;
+            tracing::info!("Daemon graceful shutdown initiated");
+        })
+        .await?;
+    cleanup.await;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn shutdown_closes_http_listener_before_waiting_for_cleanup() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let shutdown = CancellationToken::new();
+        let cleanup_started = Arc::new(tokio::sync::Notify::new());
+        let finish_cleanup = Arc::new(tokio::sync::Notify::new());
+        let (started, finish) = (cleanup_started.clone(), finish_cleanup.clone());
+        let server = tokio::spawn(serve_with_cleanup(
+            listener,
+            Router::new().route("/health", get(|| async { "ok" })),
+            shutdown.clone(),
+            async move {
+                started.notify_one();
+                finish.notified().await;
+            },
+        ));
+        shutdown.cancel();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            cleanup_started.notified(),
+        )
+        .await
+        .expect("cleanup must start");
+        // cleanup が止まっていても、旧 daemon は新しい health/RPC 接続を受け付けない。
+        let accepted_during_cleanup = tokio::net::TcpStream::connect(addr).await.is_ok();
+        finish_cleanup.notify_one();
+        server.await.unwrap().unwrap();
+        assert!(
+            !accepted_during_cleanup,
+            "HTTP listener stayed open while MIDI cleanup was pending"
+        );
+    }
 
     /// 棚卸し 9-2 段階 3（PR-S3b）: `shutdown_repo` は registry に預けた常駐 task の終了を
     /// 待ってから返り、受付を閉じる。

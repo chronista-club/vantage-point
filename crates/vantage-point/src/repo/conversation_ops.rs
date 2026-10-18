@@ -220,13 +220,21 @@ pub(crate) async fn handle_conversation_respond(
     let session = super::unison_server::payload_session_key("conversation_respond", &payload)?;
     let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("conversation_respond: lane パース失敗: {lane}"))?;
-    state
-        .lane_pool
-        .read()
-        .await
-        .respond_permission_chat(&addr, session, request_id, decision)
+    let pool = state.lane_pool.read().await;
+    let session = pool
+        .resolve_chat_session(&addr, session)
+        .map_err(|e| format!("conversation_respond: {e}"))?
+        .key;
+    pool.respond_permission_chat(&addr, Some(session), request_id, decision)
         .await
         .map_err(|e| format!("conversation_respond: {e}"))?;
+    drop(pool);
+    // 書き戻し成功後だけ解除する。失敗時は回答可能な要求を残す。
+    state
+        .topic_router
+        .conversation_progress
+        .respond(&addr.canonical(), session, request_id);
+    super::lane::lifecycle::emit_lane_update(state, &addr).await;
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
@@ -708,6 +716,13 @@ pub(crate) async fn handle_session_now(
         Some(s) => s as crate::lane::session_registry::SessionKey,
         None => crate::lane::session_registry::load(&addr.repo, &addr.name, "claude").root,
     };
+    state.topic_router.conversation_progress.observe(
+        &lane,
+        session,
+        &crate::conversation::ConversationEvent::NowLine {
+            text: text.to_string(),
+        },
+    );
     state
         .topic_router
         .route(crate::protocol::RepoMessage::ConversationEvent {

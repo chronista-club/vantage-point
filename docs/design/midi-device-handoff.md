@@ -50,3 +50,62 @@ service は物理送信 completion と後始末が終わるまで次の lease �
 - midistage SDK は `0d3c3f5e22dac62c0e701daaa17fcd173f41df18` に固定。
 
 稼働環境への反映には `CLAUDE.md` の server 更新手順が必要。`VP_SWAP_RESTART_DAEMON=1` は共有 daemon と各 repo/lane のセッションに影響するため、通常のビルド検証と分けて実施する。
+
+## daemon が仮想ポートを見られる条件（2026-10-14）
+
+CoreMIDI は process ごとに endpoint 一覧の cache を持ち、更新の通知を
+**その process で最初に `MIDIClientCreate` した時点の current run loop** にだけ届ける。
+daemon は tokio の worker thread で midir を呼ぶので run loop が回っておらず、
+一覧は最初の client を作った瞬間で止まる。
+
+midistaged は lease を受けるたびに仮想ポートを作り直す（名前に lease token が入る）。
+そのため仮想ポートは毎回 daemon の起動**後**に現れ、止まった一覧には載らない。
+#1185（2026-10-08 JST merge）で daemon が開く先を物理ポートから仮想ポートだけに絞ってから、
+LPD8 の input listener も ROTO も開けていなかった（daemon log では 10/03 が最後の
+`input listener started` / `ROTO connected`、10/08 04:55Z から毎回 `接続失敗`）。
+
+対処: `coremidi_notify::start()` が daemon の MIDI 初期化の先頭（`MachineCapabilities::with_devices`）で
+専用 thread を立て、そこで process 最初の client を作って `CFRunLoopRun()` を回し続ける。
+daemon の MIDI 入口（列挙 / input listener / feedback output / ROTO）は未起動なら 1 度 warn する。
+input listener は、通知が届くまでの数百 ms を吸う短い開き直し（100ms から倍々、上限 2s、5s で断念）を持つ。
+
+実測（midir 0.11 だけの小さな binary。別 process が `create_virtual` した仮想 source を 500ms ごとに列挙）:
+
+| 条件 | 結果 |
+|---|---|
+| 先に main 以外の thread で client を作り、run loop は回さない（daemon と同じ条件） | 10 秒たっても見えない |
+| 仮想ポートができた後で初めて client を作る / 別 process の `vp midi ports` | すぐ見える |
+| process 最初の client を専用 thread で作り、その thread で `CFRunLoopRun()` | 約 600ms で見える |
+| 別 thread で先に client を作った後に、run loop 付きの thread を立てる | 見えない（通知先は最初の client で決まる） |
+
+`vp midi …` CLI は今回の対象外（daemon 経路だけ）。
+
+## Status log
+
+### 2026-10-16 — 抜線時の listener 解放と接続待ち
+
+対象: `crates/vantage-point/src/devices.rs`。起票: `mem_1CfzdHyAdTrQu89kb7BAtm`。
+
+- discovery と agent の抜線通知は物理名を受け取る。listener map の key は lease 専用の仮想名なので、`MidiAccess::input` で解決し、abort と join が済んでから抜線を配信する。仮想名の文字列形式を呼び元で解釈しない。
+- listener map のロック内で仮想名を解決する。snapshot 更新も同じロック内で許可表を更新し、旧 listener を join する。ロック待ちの前に解決した古い名前を挿入したり、旧接続の解放前に新接続を登録したりしない。
+- task が生きていても port を開けるまでは `held=false / connecting`（接続待ち）。開けたら `held=true / listener`、失敗・終了後は `held=false / idle`。接続結果を既存の device delta で配信し、sidebar の取得台数に反映する。Devices の主表示は従来どおり Midistage の lease 状態を使う。
+- 自動テストでは物理名による停止、接続の drop、再接続後の本数、lease 更新との競合、接続待ちから成功への状態配信を確認する。実機の抜き差し・二重入力の観測は daemon 反映後に別途行う。
+
+修正前は抜線による map 削除が空振りし、lease 更新まで旧 task が残る。通常の snapshot 更新には旧 task の abort/join があるが、join 中に別経路の ensure が新接続を登録できるため、一時的な接続の重なりをコード上は排除できなかった。物理 MIDI が実際に二重配信されたという観測はない。
+
+### 2026-10-18 — daemon 終了時の Midistage session close
+
+対象: `midi_use.rs`、`daemon/machine_capabilities.rs`、`repo/server.rs`、`daemon/process.rs`。
+起票: `mem_1Cg8P1aoBWatWQaaVTMXo5`。
+
+- SIGTERM / SIGINT / HTTP shutdown は同じ cancellation token に合流する。HTTP の受付停止と drain を待ち、daemon handle を abort してから、所有する MIDI 接続 task の終了処理を開始する。MIDI cleanup を axum の signal future に入れると、その完了まで旧 HTTP listener が接続を受け付け続けるため、serve の完了後に置く。常駐 task・repo の終了待ちは MIDI cleanup の後に行う。HTTP drain 自体の上限は追加しておらず、それが長引けば MIDI cleanup へ到達する前に外側の stop 猶予を使い切る場合がある。
+- 接続 task の再接続を止め、task の終了を待つ → `release_fleet` で取得 gate を閉じて input を abort/join、output を drop → client の `close()` を await、の順序にする。通常の fleet OFF は session を監視用に切り替えるので、daemon 終了専用の処理を使う。
+- Snapshot の応答待ちは cancellation で中断する。Hello の途中は安易に abort しない。成功した session が registry に載る前でも、task の戻り値で client を回収して close する。接続 task の回収上限は 12 秒、超過時は abort/join と警告。回収不能な接続の remote close は保証しない。
+- endpoint.json が残ったまま midistaged が停止している場合、SDK の transport 接続待ちの残り（最大 5 秒）が shutdown に加算され得る。公開 API は transport と Hello を分離しないため、接続全体を途中で cancel して session を取り残すことを避け、この待ちを許容する。
+- 固定依存 `midistage-client` revision `0d3c3f5` の実装は、transport 接続 5 秒・channel open 3 秒・Hello の応答待ち 3 秒の上限を持つ。Hello の送信待ちや接続失敗時の cleanup を含む `Client::connect()` 全体の上限ではない。VP の 12 秒は独立した回収期限であり、SDK が 11 秒以内に完了する保証には依存しない。`Client::close()` は channel close 後に transport disconnect を呼ぶ。後者は固定依存 `club-unison 2.0.0` で QUIC `CONNECTION_CLOSE` を要求する。VP 側は close 全体に 2 秒の上限を置き、成功時は `midistage client closed`、失敗・timeout 時は warning を記録する。成功ログは close API の完了を示し、remote 側の受信確認ではない。
+- `vp daemon stop` の Unix 猶予は 500ms から最大 15 秒へ変更する（接続 task 12 秒 + close 2 秒 + 余裕）。PID が終了状態になれば早く戻り、上限では従来どおり強制終了する。Windows の HTTP graceful stop も同じ 15 秒を使う。従来の 500ms は既存の常駐 task の 2 秒・repo task の 8 秒の終了予算より短かった。repo 全体の後始末完了を 15 秒で保証する変更ではない。
+- 生成する LaunchAgent plist に `ExitTimeOut` の指定はない。この Mac の `launchd.plist(5)` は既定値を system-defined とするため、固定 20 秒とは扱わない。VP と無関係の一時 LaunchAgent で `kickstart -k` の SIGTERM 到達を確認した。実際の VP daemon の swap はこの lane では行わない。
+
+自動検証の対象は、loopback の実 QUIC client/server による disconnect、local release が先であること、Snapshot 応答待ち・Hello 途中・未接続での停止、task/close の timeout、隔離した子プロセスの graceful stop、cleanup 待機中に HTTP listener が閉じていること。12 秒の task 回収期限テストは Tokio の仮想時間で進め、実時間の 12 秒待ちを行わない。物理 MIDI は使わない。
+
+実機確認は lead の次回 swap で行う。旧 daemon の `Daemon graceful shutdown initiated` → `midistage client closed` → `Daemon stopped` を確認し、新 daemon の接続時刻と midistaged 側の Hello/session 記録を突き合わせる。`application already has a live session` の拒否が続かないこと、lpd8 / roto の lease を取り直すまでの時刻差を測る。timeout warning が出た場合は成功扱いにしない。Windows の実行検証と実機での再接続時間は未確認。

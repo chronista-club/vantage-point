@@ -34,6 +34,8 @@ type DemandCallback = Arc<dyn Fn(String, bool) + Send + Sync>;
 
 /// Topic ベースのメッセージルーター
 pub struct TopicRouter {
+    /// 会話の短い現在値。非 retained stream を sidebar の既存 snapshot に投影する。
+    pub conversation_progress: Arc<crate::conversation::progress::ConversationProgressStore>,
     /// Retained メッセージストア（state/command の最新値を保持）
     retained: Arc<RwLock<RetainedStore>>,
     /// アクティブな subscriber 一覧
@@ -72,6 +74,7 @@ impl TopicRouter {
     /// 新しいルーターを作成
     pub fn new() -> Self {
         Self {
+            conversation_progress: Default::default(),
             retained: Arc::new(RwLock::new(RetainedStore::new())),
             subscribers: Arc::new(RwLock::new(Vec::new())),
             next_id: AtomicU64::new(0),

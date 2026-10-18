@@ -17,6 +17,7 @@ import { isRunningProcess } from "./classify";
 import { laneAddressKey, laneConnector, isSubLane } from "./lane";
 import type { LaneInfo } from "../generated/LaneInfo";
 import { ResponsePoint } from "./ResponsePoint";
+import { requestingLaneCount } from './lane-progress';
 import { LaneRow, SessionRow } from "./LaneRow";
 import { AddSub } from "./AddSub";
 import { registerAddSubOpenSetter } from "./directive-state";
@@ -239,6 +240,10 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 	};
 
 	const controls = () => <>
+		<span class="vp-lane-count">{lanes().length} lanes</span>
+		<Show when={requestingLaneCount(lanes()) > 0}>
+			<span class="vp-repo-requests" title="要求中の lane">◆ {requestingLaneCount(lanes())}</span>
+		</Show>
 		<Show when={!props.proc.expanded && subs().length > 0}>
 			<span class="vp-sub-points" aria-label={`sub lane ${subs().length}個`}>
 				<For each={subs()}>{lane => <ResponsePoint lane={lane} connectorClass={connectorFor(lane)} compact />}</For>

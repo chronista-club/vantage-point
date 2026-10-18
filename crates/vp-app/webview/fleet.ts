@@ -8,7 +8,7 @@
  *
  * 型が対応を予言する（LE-19）:
  *   多本の連続値（場）→ knob 群（ROTO / LPD8） / 1 本のスカラー（t）→ fader（X-Touch 1 番）
- *   / 離散の選択肢（Scene）→ pad（LPD8）。構造は演奏対象ではない（画面と AI の領分）。
+ *   / 離散の選択肢（Scene）→ button（nanoKONTROL）。構造は演奏対象ではない（画面と AI の領分）。
  *
  * 机上の 3 台（2026-07-23 mako 確定）: ROTO-CONTROL / X-Touch / LPD8 mk2。
  */
@@ -64,10 +64,10 @@ const clamp01 = (n: number): number => Math.min(1, Math.max(0, n));
 export interface FleetFeedback {
 	knobs: { index: number; value: number }[];
 	fader: number | null;
-	pads: { index: number; filled: boolean }[];
+	pads: { index: number; filled: boolean; color?: number[] }[];
 }
 
-/** LPD8 の pad 数 = Scene slot 数 */
+/** Scene slot 数（nanoKONTROL の button 8 個。LPD8 の pad は Lane ピン — doc 81） */
 const PAD_COUNT = 8;
 
 /**
@@ -85,12 +85,6 @@ export function computeFeedback(opts: {
 	touched: ReadonlySet<string>;
 }): FleetFeedback {
 	const knobs: { index: number; value: number }[] = [];
-	for (let i = 0; i < Math.min(opts.memberOrder.length, 8); i++) {
-		if (opts.touched.has(`roto:${i}`)) continue;
-		const id = opts.memberOrder[i];
-		if (id === undefined) continue;
-		knobs.push({ index: i, value: clamp01(opts.shares[id] ?? 0) });
-	}
 	const fader =
 		opts.transitionT != null && !opts.touched.has("xtouch:fader0")
 			? clamp01(opts.transitionT)
@@ -109,18 +103,7 @@ export function mapControl(portName: string, event: FleetControlEvent): FleetOp 
 
 	switch (device) {
 		case "roto":
-			if (event.type === "knob" && typeof event.value === "number") {
-				return {
-					op: "share",
-					paneIndex: event.index,
-					share: Math.min(clamp01(event.value), MAX_KNOB_SHARE),
-				};
-			}
-			if (event.type === "knob_touch") {
-				// source = センサー個体の識別子。物理 touch は 8 本独立なので、release の
-				// 「全部手放した」判定（settle の刻み時）は action 層が Set で数える
-				return { op: "touch", source: `roto:${event.index}`, pressed: event.pressed === true };
-			}
+			// ROTO belongs to app-wide pin navigation and push-to-talk.
 			return null;
 		case "xtouch":
 			// t は 1 本のスカラー — fader 1 番（index 0）だけが scrub を持つ
@@ -154,9 +137,7 @@ export function mapControl(portName: string, event: FleetControlEvent): FleetOp 
 					share: Math.min(clamp01(event.value), MAX_KNOB_SHARE),
 				};
 			}
-			if (event.type === "pad") {
-				return { op: "pad", slot: event.index, pressed: (event.velocity ?? 0) > 0 };
-			}
+			// pad 1〜8 は sidebar の Lane ピン #1〜#8（doc 81）。gallery の Scene slot には写さない。
 			return null;
 	}
 }

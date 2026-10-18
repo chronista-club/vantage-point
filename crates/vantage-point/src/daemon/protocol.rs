@@ -124,7 +124,8 @@ pub enum DeviceEvent {
         /// 旧 daemon は field 不在 → `false`（= 掴んでいない扱い、安全側）。
         #[serde(default)]
         held: bool,
-        /// 掴んでいない理由（`"released"` = 譲渡中 / `"unsupported"` = 対応外 / `"idle"`）。
+        /// 掴んでいない理由（`"released"` = 譲渡中 / `"unsupported"` = 対応外 /
+        /// `"connecting"` = 仮想 port の接続待ち / `"idle"`）。
         /// **user への説明が変わる**ので bool に潰さない（`DeviceRegistry::hold_state` 参照）。
         #[serde(default)]
         hold_reason: String,
@@ -210,7 +211,7 @@ pub struct ReportDeviceRequest {
 ///
 /// 送り手 = gallery webview の mapping registry（fleet.ts `computeFeedback`、consumer 供給）。
 /// 受け手 = DeviceRegistry `apply_feedback` が各 device の出力 profile に写す:
-/// knobs → ROTO motor（14bit hi-res CC）/ fader → X-Touch fader 1（pitch bend）/
+/// knobs は互換用フィールド（ROTO へ出力しない）/ fader → X-Touch fader 1（pitch bend）/
 /// pads → LPD8 RGB（Scene slot の filled 状態）。
 /// 値は正規化 0.0–1.0。頻度は webview 側 throttle + Rust 側 watch（latest-wins）で抑制。
 #[cfg(feature = "midi")]
@@ -239,6 +240,9 @@ pub struct KnobFeedback {
 pub struct PadFeedback {
     pub index: u8,
     pub filled: bool,
+    /// Optional 8-bit RGB override; absent preserves the gallery amber/off behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[u8; 3]>,
 }
 
 /// VP-154 PR-2: Process snapshot 1 entry (= "daemon-repo" list method の応答 payload)
@@ -375,5 +379,17 @@ mod tests {
             ),
             None
         );
+    }
+}
+
+#[cfg(all(test, feature = "midi"))]
+mod midi_color_tests {
+    #[test]
+    fn pad_feedback_preserves_rgb_and_accepts_legacy_payload() {
+        let color = serde_json::json!({"index":4,"filled":true,"color":[12,34,56]});
+        let pad: super::PadFeedback = serde_json::from_value(color.clone()).unwrap();
+        assert_eq!(serde_json::to_value(pad).unwrap(), color);
+        let old: super::PadFeedback = serde_json::from_str(r#"{"index":0,"filled":true}"#).unwrap();
+        assert_eq!(serde_json::to_value(old).unwrap()["filled"], true);
     }
 }

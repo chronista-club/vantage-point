@@ -37,6 +37,8 @@ export function emptyState(): SidebarState {
 			actions: [],
 			actions_rev: 0,
 			actions_atlases: [],
+            actions_sidebar_settings: null,
+            actions_sidebar_error: "",
 			actions_scope: "",
 			actions_error: "",
 			actions_imported: false,

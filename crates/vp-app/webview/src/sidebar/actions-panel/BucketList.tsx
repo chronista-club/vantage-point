@@ -5,6 +5,7 @@ import { actionsFetchState } from "./model";
 import { sidebar } from "../store";
 import { actions, commitActions, moveAction, removeAction, setActionDone, setActionText, importLegacyActions, importingLegacy, actionMoveError } from "./store";
 import { ActionRow, focusActionRow } from "./ActionRow";
+import { actionsRefreshing, actionsRefreshError, refreshActions } from "./refresh";
 import { Capture } from "./Capture";
 
 const fetchState = () => actionsFetchState(sidebar.activity.actions_rev ?? 0, sidebar.activity.auth_targets?.creo);
@@ -17,9 +18,9 @@ export function BucketList() {
     if (next) focusActionRow(next.id);
   };
   return <details class="vp-act-buckets" open>
-    <summary class="vp-act-heading"><span class="vp-act-caret">›</span><CreoIcon name="ph:tray" size={12} /><span class="vp-act-label">ACTIONs</span><span>{actions().length || ""}</span></summary>
-    <Capture atlases={sidebar.activity.actions_atlases ?? []} scope={sidebar.activity.actions_scope ?? ""} />
-    <Show when={sidebar.activity.actions_error}><div class="vp-act-status" role="status">{sidebar.activity.actions_error}</div></Show>
+    <summary class="vp-act-heading"><span class="vp-act-caret">›</span><CreoIcon name="ph:tray" size={12} /><span class="vp-act-label">ACTIONs</span><span>{actions().length || ""}</span><button type="button" class="vp-act-reload" aria-label="ACTIONs を再読み込み" title="一覧と Atlas を再読み込み" disabled={actionsRefreshing()} on:click={e=>{e.preventDefault();e.stopPropagation();refreshActions()}}><span classList={{"is-refreshing":actionsRefreshing()}}><CreoIcon name="ph:arrows-clockwise" size={12}/></span></button></summary>
+    <Capture atlases={sidebar.activity.actions_atlases ?? []} scope={sidebar.activity.actions_scope ?? ""} settings={sidebar.activity.actions_sidebar_settings} />
+    <Show when={actionsRefreshError() || sidebar.activity.actions_error || sidebar.activity.actions_sidebar_error}><div class="vp-act-status" role="status">{actionsRefreshError() || sidebar.activity.actions_error || sidebar.activity.actions_sidebar_error}</div></Show>
     <Show when={actionMoveError()}><div class="vp-act-status" role="status">{actionMoveError()}</div></Show>
     <Show when={!sidebar.activity.actions_imported}>
       <button type="button" class="vp-act-add" aria-label="以前のACTIONSを取り込む"
@@ -55,6 +56,11 @@ export function BucketList() {
 export const ACTIONS_CSS = `
 .vp-act-heading{list-style:none;cursor:pointer;align-items:center;gap:6px;display:flex;justify-content:space-between;padding:8px 12px 4px;
   font-size:var(--sb-text-micro,10px);letter-spacing:.14em;color:var(--lg-mute,#5C7A85);}
+.vp-act-reload{display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:2px;border:0;background:transparent;color:inherit;cursor:pointer;}
+.vp-act-reload:disabled{cursor:default;opacity:.6;}
+.vp-act-reload>span{display:flex;}
+.vp-act-reload .is-refreshing{animation:vp-act-spin 1s linear infinite;}
+@keyframes vp-act-spin{to{transform:rotate(360deg)}}
 .vp-act-heading::-webkit-details-marker{display:none;}
 .vp-act-buckets[open] > .vp-act-heading .vp-act-caret{transform:rotate(90deg);}
 .vp-act-capture{margin:4px 10px 8px;border:1px solid color-mix(in srgb,var(--lg-mute),transparent 75%);border-radius:6px;}
@@ -62,7 +68,7 @@ export const ACTIONS_CSS = `
 .vp-act-capture textarea{display:block;box-sizing:border-box;width:100%;resize:vertical;min-height:48px;max-height:160px;
   border:0;background:transparent;color:var(--lg-hot,#EAFBFF);font:inherit;font-size:var(--sb-text-hint,12px);padding:8px;outline:none;}
 .vp-act-capture-controls{display:flex;gap:6px;align-items:center;padding:0 6px 6px;}
-.vp-act-capture select{min-width:0;flex:1;border:0;background:transparent;color:var(--lg-mute,#5C7A85);font:inherit;font-size:var(--sb-text-micro,10px);}
+.vp-act-capture .vp-atlas-trigger{min-width:0;flex:1;border:0;background:transparent;color:var(--lg-mute,#5C7A85);font:inherit;font-size:var(--sb-text-micro,10px);}
 .vp-act-capture button{border:0;border-radius:4px;padding:3px 8px;background:color-mix(in srgb,var(--lg-cyan-dim,#1C6C7C),transparent 65%);color:var(--lg-hot,#EAFBFF);font:inherit;font-size:var(--sb-text-micro,10px);cursor:pointer;}
 .vp-act-capture button:disabled{opacity:.35;cursor:default;}
 .vp-act-atlas{grid-column:2/-1;grid-row:2;font-size:var(--sb-text-micro,10px);color:var(--lg-mute,#5C7A85);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}

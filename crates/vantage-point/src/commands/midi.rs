@@ -5,6 +5,8 @@
 use anyhow::Result;
 use clap::Subcommand;
 
+use crate::midi::lpd8_identity::Lpd8Model;
+
 /// MIDI サブコマンド
 #[derive(Subcommand)]
 pub enum MidiCommands {
@@ -123,8 +125,11 @@ pub enum Lpd8Commands {
         #[arg(long, default_value = "LPD8")]
         port: String,
         /// 書き込み先プログラム番号（1-4）
-        #[arg(short, long, default_value = "1")]
+        #[arg(short, long, default_value = "1", conflicts_with = "all")]
         program: u8,
+        /// 4 program 全部に書く（mk2 のみ）
+        #[arg(long)]
+        all: bool,
     },
     /// アクティブプログラムを切り替える
     Switch {
@@ -960,7 +965,7 @@ fn execute_roto_control(port: String, daemon_port: u16, secs: u64) -> Result<()>
 
     // CLI 版: self-heal は不要（secs 経過で終了）なので Bracket は被せず、
     // QuicLaneSource(daemon-repo QUIC) + QuicSwitchSink で shared loop を直接回す。
-    // daemon 常駐版（DeviceRegistry::start_roto_control）と loop body を 1 本共有する（重複ゼロ）。
+    // 通常の VP navigation は input-only MIDI mode。この明示的な CLI だけが DAW loop を使う。
     let rt = tokio::runtime::Runtime::new()?;
     let exit = rt.block_on(async move {
         // daemon(ProtocolClient) は daemon_ch を生かすため block 終端まで保持する。
@@ -1000,6 +1005,7 @@ fn execute_roto_control(port: String, daemon_port: u16, secs: u64) -> Result<()>
     match exit {
         LoopExit::Deadline => println!("roto control 終了（{} 秒経過）", secs),
         LoopExit::Disconnected => println!("ROTO 切断で終了"),
+        LoopExit::Fatal(message) => println!("roto control 終了（{message}）"),
         _ => println!("roto control 終了"),
     }
     Ok(())
@@ -1161,33 +1167,151 @@ fn execute_xtouch(cmd: XtouchCommands) -> Result<()> {
     }
 }
 
+/// `vp midi lpd8 switch` が mk2 で「本体操作が要る」ときの終了コード（送信失敗の 1 と区別する）
+const SWITCH_NEEDS_HAND_EXIT: i32 = 2;
+
+/// identity request で機種を判定する。判定できなければ経路を選べないので終了する
+fn detect_model_or_exit(port: &str) -> Lpd8Model {
+    match crate::midi::detect_lpd8_model(port) {
+        Ok(model) => model,
+        Err(e) => {
+            eprintln!("{}", e);
+            eprintln!("ポート確認: vp midi lpd8 ports");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// 初代 LPD8（model 0x75）へ VP 設定を送る。応答を確かめる経路は無いので「送信」と言う
+fn write_original(port: &str, program: u8) -> Result<()> {
+    println!("LPD8 Program {} にVP設定を送信中...", program);
+    let vp_program = crate::midi::lpd8::Program::vp_default();
+    let sysex = vp_program.to_sysex(program - 1);
+    match crate::midi::send_sysex(Some(port), &sysex) {
+        Ok(()) => {
+            println!(
+                "VP設定をLPD8 Program {} に送信しました（確認はできません）",
+                program
+            );
+            println!();
+            println!("PAD設定:");
+            println!("  PAD 1-8 (Note 36-43): Lane ピン #1〜#8（sidebar で割り当て）");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("送信エラー: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// LPD8 mk2（model 0x4C）の program 1 本に VP 配置を書く。失敗したら非 0 で終了する。
+///
+/// 書く中身は機材の今の内容に依存させず、`BASE_PROGRAM` に VP の割り当て
+/// （pad note 36+i / knob CC 70+i）を重ねた定数から組む。読み出しは backup のためだけ。
+/// 書き込みに応答は無いので、読み戻して body 164 byte の一致を確かめるのが唯一の確認手段。
+fn write_mk2(port: &str, program: u8) {
+    use crate::midi::lpd8_mk2;
+
+    let fail = |msg: String| -> ! {
+        eprintln!("{}", msg);
+        std::process::exit(1);
+    };
+
+    println!("LPD8 mk2 Program {} を読み出し中...", program);
+    let before = crate::midi::read_lpd8_mk2_program(port, program)
+        .unwrap_or_else(|e| fail(format!("読み出しエラー: {e}")));
+    let backup = backup_mk2_program(program, &before).unwrap_or_else(|e| {
+        fail(format!(
+            "backup を保存できませんでした（書き込みは中止）: {e}"
+        ))
+    });
+    println!("書き込み前の内容を保存しました: {}", backup.display());
+
+    let target_body = lpd8_mk2::vp_body();
+    let (_, current_body) = lpd8_mk2::parse_read_response(&before).expect("accept 済み");
+    if current_body == target_body.as_slice() {
+        println!(
+            "Program {} は既に VP 配置と一致しています。書き込みません",
+            program
+        );
+        return;
+    }
+
+    println!("VP 配置を書き込み中...");
+    if let Err(e) =
+        crate::midi::send_sysex(Some(port), &lpd8_mk2::write_message(program, &target_body))
+    {
+        fail(format!("書き込みエラー: {e}"));
+    }
+
+    // 書き込みは応答を返さないので、反映を待ってから読み戻す
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let after = crate::midi::read_lpd8_mk2_program(port, program).unwrap_or_else(|e| {
+        fail(format!(
+            "読み戻しエラー（書き込みは確認できていません）: {e}"
+        ))
+    });
+    let (_, after_body) = lpd8_mk2::parse_read_response(&after).expect("accept 済み");
+    if after_body != target_body.as_slice() {
+        fail(format!(
+            "Program {program} の読み戻しが書いた内容と一致しません（書き込み失敗）。元の内容: {}",
+            backup.display()
+        ));
+    }
+
+    println!(
+        "VP 配置を LPD8 mk2 Program {} に書き込みました（読み戻しで確認）: PAD 1-8 = Note 36-43（Lane ピン #1〜#8） / KNOB 1-8 = CC 70-77",
+        program
+    );
+}
+
+/// mk2 の読み出し応答（173 byte）を state zone の backup dir に日時付きで保存する
+fn backup_mk2_program(program: u8, response: &[u8]) -> Result<std::path::PathBuf> {
+    let dir = crate::config::vp_state_dir().join("backup");
+    std::fs::create_dir_all(&dir)?;
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let path = dir.join(format!("lpd8-mk2-program{program}-{stamp}.txt"));
+    let hex: Vec<String> = response.iter().map(|b| format!("{b:02X}")).collect();
+    std::fs::write(
+        &path,
+        format!(
+            "## mk2 program {program}（vp midi lpd8 write の書き込み前）\n  len={}  {}\n",
+            response.len(),
+            hex.join(" ")
+        ),
+    )?;
+    Ok(path)
+}
+
 /// LPD8 サブコマンドを実行
 fn execute_lpd8(cmd: Lpd8Commands) -> Result<()> {
     match cmd {
-        Lpd8Commands::Write { port, program } => {
+        Lpd8Commands::Write { port, program, all } => {
             if !(1..=4).contains(&program) {
                 eprintln!("プログラム番号は1-4の範囲で指定してください");
                 std::process::exit(1);
             }
-            println!("LPD8 Program {} にVP設定を書き込み中...", program);
-            let vp_program = crate::midi::lpd8::Program::vp_default();
-            let sysex = vp_program.to_sysex(program - 1);
-
-            match crate::midi::send_sysex(Some(&port), &sysex) {
-                Ok(()) => {
-                    println!("VP設定をLPD8 Program {} に書き込みました", program);
-                    println!();
-                    println!("PAD設定:");
-                    println!("  PAD 1-4 (Note 36-39): repo切り替え (緑LED)");
-                    println!("  PAD 5   (Note 40):    チャットキャンセル (赤LED)");
-                    println!("  PAD 6   (Note 41):    セッションリセット (橙LED)");
-                    println!("  PAD 7-8 (Note 42-43): 未割当");
+            match detect_model_or_exit(&port) {
+                Lpd8Model::Mk2 => {
+                    let programs: Vec<u8> = if all {
+                        (1..=4).collect()
+                    } else {
+                        vec![program]
+                    };
+                    for program in programs {
+                        write_mk2(&port, program);
+                    }
+                    println!(
+                        "使うには本体の PROG SELECT を押しながら pad <Program 番号> を押して選んでください"
+                    );
                     Ok(())
                 }
-                Err(e) => {
-                    eprintln!("書き込みエラー: {}", e);
+                Lpd8Model::Original if all => {
+                    eprintln!("--all は LPD8 mk2 のみ対応です（初代は --program で 1 つずつ）");
                     std::process::exit(1);
                 }
+                Lpd8Model::Original => write_original(&port, program),
             }
         }
         Lpd8Commands::Switch { program, port } => {
@@ -1195,17 +1319,34 @@ fn execute_lpd8(cmd: Lpd8Commands) -> Result<()> {
                 eprintln!("プログラム番号は1-4の範囲で指定してください");
                 std::process::exit(1);
             }
-            println!("LPD8をProgram {} に切り替え中...", program);
-            let sysex = crate::midi::lpd8::set_active_program(program - 1);
-
-            match crate::midi::send_sysex(Some(&port), &sysex) {
-                Ok(()) => {
-                    println!("LPD8をProgram {} に切り替えました", program);
-                    Ok(())
+            match detect_model_or_exit(&port) {
+                Lpd8Model::Mk2 => {
+                    // mk2 の active program を SysEx で切り替える命令は未確認（総当たりで探さない）
+                    eprintln!(
+                        "LPD8 mk2 は SysEx で Program を切り替えられません（命令が未確認）。"
+                    );
+                    eprintln!(
+                        "本体の PROG SELECT を押しながら pad {} を押してください。",
+                        program
+                    );
+                    std::process::exit(SWITCH_NEEDS_HAND_EXIT);
                 }
-                Err(e) => {
-                    eprintln!("切り替えエラー: {}", e);
-                    std::process::exit(1);
+                Lpd8Model::Original => {
+                    println!("LPD8をProgram {} に切り替え中...", program);
+                    let sysex = crate::midi::lpd8::set_active_program(program - 1);
+                    match crate::midi::send_sysex(Some(&port), &sysex) {
+                        Ok(()) => {
+                            println!(
+                                "Program {} への切り替えを送信しました（確認はできません）",
+                                program
+                            );
+                            Ok(())
+                        }
+                        Err(e) => {
+                            eprintln!("切り替えエラー: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
                 }
             }
         }

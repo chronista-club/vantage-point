@@ -84,6 +84,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # Settings 永続化 (VP-100 follow-up: 開発者モード等)
 toml = "1.1"
 dirs = "6"
+sha2 = "0.11"
 
 # 構造化ログ用 timestamp (KDL 1-line formatter)
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
@@ -148,7 +149,7 @@ ts-rs = { version = "12", features = ["serde-compat"] }  # 12 で export_all() �
 # VP-208 Phase A: sidebar IPC を KDL protocol schema (schema/vp-sidebar.kdl) を
 # SSOT に Rust enum + TS union 生成。 package 名 `club-kdl-codegen` / lib 名 `kdl_codegen`。
 # 生成は `cargo test -p vp-app --test sidebar_ipc_codegen` 経由 (ts-rs と同じ慣習)。
-club-kdl-codegen = "0.12"
+club-kdl-codegen = "0.14"
 
 # AppUserModelID (taskbar identity) の設定に使う。 版は vantage-point と揃える (0.62)。
 [target.'cfg(windows)'.dependencies]

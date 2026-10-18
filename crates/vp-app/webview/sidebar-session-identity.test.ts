@@ -32,42 +32,39 @@ function fixture() {
   const win = new Window({ settings:{enableJavaScriptEvaluation:true, suppressInsecureJavaScriptEnvironmentWarning:true} })
   windows.push(win)
   win.eval(bundle)
-  ;(win as Window & {sent: unknown[]}).sent = [] // mount 時の URL 読取と操作を分ける
   return win as Window & {sent: unknown[]}
 }
 afterEach(async () => { for (const win of windows.splice(0)) await win.happyDOM.abort() })
 describe('sidebar session identity', () => {
-  it('places the lane path above a separate branch line with its diff metadata', () => {
+  it('keeps branch and diff metadata together without a lane path row', () => {
     const win=fixture();
     const row=win.document.querySelector('.vp-lane-row')!;
-    const cwd=row.querySelector('.vp-lane-cwd')!;
+    const cwd=row.querySelector('.vp-lane-cwd');
     const branch=row.querySelector('.vp-lane-branch')!;
     const meta=row.querySelector('.vp-lane-meta')!;
-    expect(cwd.textContent).toBe('lanes/demo');
-    expect(cwd.parentElement).not.toBe(branch.parentElement);
-    expect(cwd.parentElement?.nextElementSibling).toBe(branch.parentElement);
+    expect(cwd).toBeNull();
+    expect(branch.closest('.vp-lane-detail')).not.toBeNull();
     expect(meta.parentElement).toBe(branch.parentElement);
     expect(meta.textContent).toContain('↑2');
     expect(meta.textContent).toContain('↓1');
-    expect(meta.textContent).toContain('3M');
+    expect(meta.textContent).toContain('dirty 3');
     expect(row.querySelector('.vp-lane-right .vp-lane-meta')).toBeNull();
   })
 
-  it('offers first URL registration from the lane context menu without selecting the lane', () => {
+  it('does not mount or request local URLs from a lane row or its context menu', () => {
     const win=fixture();
     expect(win.document.querySelector('.vp-local-urls')).toBeNull();
     win.document.querySelector('.vp-lane-row')!.dispatchEvent(new win.MouseEvent('contextmenu',{bubbles:true}));
     const add=[...win.document.querySelectorAll('.vp-ctx-item')].find(b=>b.textContent?.includes('ローカルURLを追加'));
-    expect(add).toBeDefined();add!.dispatchEvent(new win.MouseEvent('click',{bubbles:true}));
-    expect(win.document.querySelector('.vp-local-url-form')).not.toBeNull();
-    expect(win.document.querySelector('details')?.open).toBe(true);
+    expect(add).toBeUndefined();
+    expect(win.document.querySelector('.vp-local-url-form')).toBeNull();
     expect(win.sent).toEqual([]);
   })
 
   it('uses the registry root agent between the state point and title', () => {
     const win = fixture()
     const row = win.document.querySelector('.vp-lane-row')!
-    expect(row.querySelector('.vp-agent-icon')?.getAttribute('title')).toBe('Grok')
+    expect(row.querySelector('.vp-agent-icon')?.getAttribute('aria-label')).toBe('Grok')
     expect(row.querySelector('.vp-agent-icon')?.nextElementSibling?.classList.contains('vp-lane-title')).toBe(true)
   })
   it('identifies the extra session and selects its exact key', () => {

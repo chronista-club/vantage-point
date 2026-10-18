@@ -715,6 +715,8 @@ mod tests {
         state.topic_router.unsubscribe(sub1).await;
     }
 
+    /// mem_1CfqAr5c32DjRx8N1QV76J: slot 差替で兄弟の pump を張り直さない。
+    /// live 出力の有無は shell の起動速度次第なので、pump task の同一性で測る。
     #[cfg(unix)]
     #[tokio::test]
     async fn reconcile_touches_only_the_swapped_slot_leaving_siblings_alone() {
@@ -723,6 +725,7 @@ mod tests {
         use crate::repo::lane::LaneAddress;
         use crate::repo::state::build_test_app_state;
         use crate::repo::unison_server::dispatch_repo_method;
+        use base64::Engine;
         use std::time::Duration;
 
         let state = build_test_app_state().await;
@@ -731,23 +734,18 @@ mod tests {
         let addr = LaneAddress::sub("vp", "feat-scoped");
         let lane = addr.to_string();
 
-        // root + 2 枚目。どちらも出力を持たせて replay buffer を非空にする。
+        // 実 PTY を 2 本立てる。root の prompt / rc の遅延出力は許容する。
         {
             let mut pool = state.lane_pool.write().await;
-            let (s0, rx0) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("lead");
+            let (s0, rx0) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("root");
             pool.insert_pty_slot(addr.clone(), None, s0, rx0);
             let (s2, rx2) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("s2");
             pool.insert_pty_slot(addr.clone(), Some(2), s2, rx2);
             pool.write_to_lane(&addr, None, b"echo VP_A\n")
                 .expect("w root");
-            pool.write_to_lane(&addr, Some(2), b"echo VP_B\n")
-                .expect("w s2");
         }
         let sessions = state.lane_pool.read().await.slot_sessions(&addr);
         let root_key = *sessions.iter().find(|&&k| k != 2).expect("root key");
-        tokio::time::sleep(Duration::from_millis(600)).await;
-
-        // 初回 demand で両方に pump を張る。
         let topic = format!("repo/terminal/data/{}/out", lane.replace('/', "~"));
         let (_sub, mut srx) = state.topic_router.subscribe(&topic).await;
         dispatch_repo_method(
@@ -757,33 +755,15 @@ mod tests {
         )
         .await
         .expect("demand_start");
-        // 初回 replay を吸い切る（ここまでは両 session に流れて正常）。
-        //
-        // ⚠️ 時間だけで待ってはいけない: login shell は rc 読み込みの分だけ起動が遅れ、root の
-        // 初回出力が後段の観測窓へ漏れる。すると「触っていない root にも流れた」と誤検出して
-        // 間欠的に落ちる（v0.60.0 の release ゲートで顕在化。product は正しく、測り方の race
-        // だった）。まず **両 session の実出力を見る = readiness を待ち**、その後で無音まで
-        // drain する。
-        let mut warmed: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let warm_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while warmed.len() < 2 && tokio::time::Instant::now() < warm_deadline {
-            if let Ok(Some((_t, RepoMessage::LaneTerminalOutput { session, .. }))) =
-                tokio::time::timeout(Duration::from_millis(500), srx.recv()).await
-            {
-                warmed.insert(session);
-            }
-        }
-        assert_eq!(
-            warmed.len(),
-            2,
-            "両 session の初回出力が揃ってから観測に入る (warmed={warmed:?})"
-        );
-        while tokio::time::timeout(Duration::from_millis(400), srx.recv())
-            .await
-            .is_ok()
-        {}
+        let (root_task, sibling_task) = {
+            let pumps = state.terminal_pumps.read().await;
+            let lane_pumps = &pumps[&lane];
+            (
+                lane_pumps[&root_key].handle.id(),
+                lane_pumps[&2].handle.id(),
+            )
+        };
 
-        // 変化が無ければ reconcile は何もしない（= 契機が重なっても pane は無傷）。
         let idle = state.reconcile_terminal_pumps(&lane).await;
         assert_eq!(
             (idle.attached, idle.removed, idle.kept),
@@ -791,52 +771,74 @@ mod tests {
             "無変化の reconcile は全 pump を keep する"
         );
 
-        // session 2 の slot を差し替える（= restart / mode 切替で実際に起きること）。
-        {
-            let mut pool = state.lane_pool.write().await;
-            let (s2b, rx2b) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("s2b");
-            pool.insert_pty_slot(addr.clone(), Some(2), s2b, rx2b);
-            pool.write_to_lane(&addr, Some(2), b"echo VP_B2\n")
-                .expect("w s2b");
-        }
-        let swapped = state.reconcile_terminal_pumps(&lane).await;
-        assert_eq!(
-            (swapped.attached, swapped.kept),
-            (1, 1),
-            "pid 照合で差し替わった session 2 だけ attach、root は keep"
-        );
-
-        // 以後届く出力の session stamp を集める。root が混ざったら兄弟を乱している。
-        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        while tokio::time::Instant::now() < deadline {
-            match tokio::time::timeout(Duration::from_millis(300), srx.recv()).await {
-                Ok(Some((_t, RepoMessage::LaneTerminalOutput { session, .. }))) => {
-                    seen.insert(session);
-                }
-                Ok(Some(_)) => continue,
-                Ok(None) => break,
-                Err(_) => continue,
+        // 旧 slot には無いマーカーを snapshot に入れてから差し替える。
+        // reader の broadcast は replay buffer 更新後なので、受信が readiness になる。
+        // shell 起動完了や無音は待たない（PTY の入力 echo も有効な replay データ）。
+        let (mut s2b, mut rx2b) =
+            PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24, None).expect("s2b");
+        s2b.write(b"echo VP_B2\n").expect("w s2b");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let mut bytes = Vec::new();
+            while !bytes.windows(b"VP_B2".len()).any(|w| w == b"VP_B2") {
+                bytes.extend(rx2b.recv().await.expect("replacement PTY output"));
             }
+        })
+        .await
+        .expect("replacement snapshot contains marker");
+        state
+            .lane_pool
+            .write()
+            .await
+            .insert_pty_slot(addr.clone(), Some(2), s2b, rx2b);
+
+        let swapped = state.reconcile_terminal_pumps(&lane).await;
+        {
+            let pumps = state.terminal_pumps.read().await;
+            let lane_pumps = &pumps[&lane];
+            // slot_pid だけでは同じ PTY への張り直しを検出できない。task ID で確かめる。
+            assert_eq!(
+                lane_pumps[&root_key].handle.id(),
+                root_task,
+                "触っていない root の pump を張り直してはいけない"
+            );
+            assert_ne!(lane_pumps[&2].handle.id(), sibling_task);
+            assert!(!lane_pumps[&root_key].handle.is_finished());
+            assert!(!lane_pumps[&2].handle.is_finished());
+            assert_eq!(lane_pumps.len(), 2);
         }
-        assert!(
-            seen.contains(&2),
-            "差し替わった session 2 には replay が流れる (seen={seen:?})"
-        );
-        assert!(
-            !seen.contains(&root_key),
-            "**触っていない root には何も流れない**（lane 全体を張り直すと clear + 全 replay が \
-             飛んで scroll 位置が消える）(seen={seen:?})"
+        assert_eq!(
+            (swapped.attached, swapped.removed, swapped.kept),
+            (1, 1, 1),
+            "差し替わった session 2 だけ attach、root は keep"
         );
 
-        // 両方の pump が生きている（片方を差し替えても他方を落とさない）。
-        let pumps = state.terminal_pumps.read().await;
-        let lane_pumps = pumps.get(&lane).expect("lane の pump 集合");
-        assert!(
-            lane_pumps.contains_key(&2) && lane_pumps.contains_key(&root_key),
-            "session ごとに 1 本ずつ残る (keys={:?})",
-            lane_pumps.keys().collect::<Vec<_>>()
-        );
+        // 初回 replay や live 出力で誤って成功しないよう、新 slot 固有の replay を見る。
+        // root に通常の出力が届くことは正しい。無音の観測窓を兄弟保護の判定に使わない。
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let mut replay = Vec::new();
+            loop {
+                let (_topic, msg) = srx.recv().await.expect("terminal topic open");
+                if let RepoMessage::LaneTerminalOutput {
+                    session: 2,
+                    data,
+                    live: false,
+                    ..
+                } = msg
+                {
+                    replay.extend(
+                        base64::engine::general_purpose::STANDARD
+                            .decode(data)
+                            .expect("base64 replay"),
+                    );
+                    if replay.windows(b"VP_B2".len()).any(|w| w == b"VP_B2") {
+                        break;
+                    }
+                }
+            }
+            assert!(replay.starts_with(b"\x1b[H\x1b[2J\x1b[3J"));
+        })
+        .await
+        .expect("差し替わった session 2 に clear + replay が届く");
     }
 
     /// doc 53 R2 受け入れ条件①（doc 50 §4.7「直さないと決めた 1 件」の根治）:

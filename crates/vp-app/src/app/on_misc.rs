@@ -271,6 +271,39 @@ pub(super) fn code_list(
     }
 }
 
+/// R sidebar の PR 節（doc 82）: lane の cwd を解決して daemon-control `lane/prs` を引く。
+///
+/// ⚠️ **失敗も応答として返す**（daemon 不在 / RPC 失敗 = `{"available":true,"error":…}`）。
+/// 黙って捨てると GUI は「読み込み中」のまま止まる。gh 不在は daemon 側が `available:false`。
+pub(super) fn lane_prs_fetch(
+    ui: &mut UiState,
+    boot: &Boot,
+    async_action_proxy: &EventLoopProxy<AppEvent>,
+    lane: String,
+) {
+    let Some(cwd) = lookup_lane_cwd_by_address(&ui.sidebar_state, &lane) else {
+        tracing::warn!("lane:prs_fetch: lane cwd unknown for address={lane} (skip)");
+        return;
+    };
+    let connection = boot.daemon_conn.clone();
+    let proxy = async_action_proxy.clone();
+    boot.rt_handle.spawn(async move {
+        let result: anyhow::Result<serde_json::Value> = async {
+            let control = connection.control().await?;
+            control.lane_prs(&cwd.to_string_lossy()).await
+        }
+        .await;
+        let payload = result.unwrap_or_else(|e| {
+            serde_json::json!({"available": true, "branch": null, "prs": [], "error": e.to_string()})
+        });
+        let _ = proxy.send_event(AppEvent::LanePrsResult { lane, payload });
+    });
+}
+
+pub(super) fn lane_prs_result(boot: &Boot, lane: String, payload: serde_json::Value) {
+    push_main::lane_prs(&boot.webview, &lane, payload);
+}
+
 pub(super) fn code_read(
     ui: &mut UiState,
     boot: &Boot,
