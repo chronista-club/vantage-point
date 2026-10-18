@@ -221,6 +221,8 @@ windows = { version = "0.62", features = [
 ] }
 
 [dev-dependencies]
+# shutdown の期限テストを実時間ではなく仮想時間で進める。
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3.27.0"
 # 棚卸し 項目 8 / 8-2: ConversationEvent の TS 型を生成（test 時のみ）。出力先は workspace の
 # `.cargo/config.toml` の TS_RS_EXPORT_DIR（= crates/vp-app）相対で `webview/src/generated/`。

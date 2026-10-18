@@ -183,8 +183,8 @@ mod tests {
                 .iter()
                 .find(|d| d.state.device_id == "roto")
                 .unwrap();
-            assert_eq!(roto.setup_owners.get("vp"), Some(&vec![6]));
-            assert_eq!(roto.current_setup, Some(6));
+            assert_eq!(roto.setup_owners.get("vp"), Some(&vec![SETUP]));
+            assert_eq!(roto.current_setup, Some(SETUP));
             sync.tick(&statuses(&snapshot)).await;
         }
         assert_eq!(*observed.calls.lock().unwrap(), ["register", "apply"]);
@@ -200,7 +200,7 @@ mod tests {
                 "assignment":{"client_id":"vp", "revision":1, "expected":true}, "phase":"active",
                 "lease":{"session_id":"session", "token":"lease"}, "releasing_to":null,
                 "controls":[], "native_ports":{"inputs":[], "outputs":[]}, "error":null,
-                "configuring":true, "current_setup":6, "setup_owners":{"vp":[6]}, "config_error":null}]})
+                "configuring":true, "current_setup":SETUP, "setup_owners":{"vp":[SETUP]}, "config_error":null}]})
     }
 
     #[test]
@@ -211,7 +211,7 @@ mod tests {
         assert_eq!(view[0].lease.as_deref(), Some("lease"));
         assert_eq!(view[0].sequence, 10);
         assert!(view[0].configuring);
-        assert_eq!(view[0].current_setup, Some(6));
+        assert_eq!(view[0].current_setup, Some(SETUP));
     }
 
     #[test]

@@ -186,7 +186,7 @@ mod tests {
             lease: Some("lease".into()),
             sequence,
             configuring,
-            current_setup: Some(6),
+            current_setup: Some(crate::roto_setup::SETUP),
             error: None,
         }
     }

@@ -6,8 +6,9 @@ Task: `mem_1Cg9QiQeVsk7KD3fcwhXqh`、段 C。
 ## 契約
 
 Serial ポートは midistage だけが開く。VP は MIDI モードの入力を受け、
-midistage の lease を持つときだけ setup **6** を登録・適用する。
-setup 名は `VP`。番号は Ladyland の 0–3 および掃除対象 4–5 と重ならない。
+midistage の lease を持つときだけ setup **内部 index 8** を登録・適用する。
+ROTO の画面表示は index + 1 なので、**SETUP 09** に対応する。
+setup 名は `VP`。番号の正本は `roto_setup::SETUP`。
 
 | 本体 | 表示 | MIDI | 色 |
 |---|---|---|---|
@@ -31,7 +32,7 @@ slug も使えなければ `#N`。空 pin は `#N` と暗色にする。
 ## 適用と失敗
 
 1. 起動時を含め、ROTO の active lease が自分の session に属するか確認する。
-2. `SetDeviceSetups([6])` で登録する。
+2. `SetDeviceSetups([SETUP])`（現在は `[8]`）で登録する。
 3. 生成内容の hash が保存済みと違うときだけ `ApplyDeviceSetup` を要求する。
    要求前に古い成功 hash を永続 cache から消す。消せなければ要求しない。
    部分的に失敗した後で元の pin に戻したときも、再適用を省略しないため。
@@ -60,6 +61,8 @@ daemon 起動時にも同じ保存値から復元できる。読み取りは GUI
 保存ファイルが無いときは空 pin と MIC で始める。
 
 cache は state zone の `roto-setup-hashes.json`（version / setup / device ID → hash）。
+setup が `SETUP` と一致する cache だけを読み、hash にも setup 番号を含める。
+旧 index 6（画面 SETUP 07）の cache は再利用せず、実機の旧席の後始末は midistage 側で行う。
 一時ファイルから rename する。成功 hash は `configuring` の解除を確認してから保存する。
 RPC 応答の sequence 以下の snapshot は完了判定に使わず、lease が変わった RPC の結果も捨てる。
 要求は機材ごとに最大 1 本、受付を待つ上限は 4 秒。書き込み自体の完了は snapshot で追う。
@@ -75,8 +78,8 @@ cache を捨てて再適用する場合は、daemon 停止中にこの state zon
 - Serial を開いて書き込む間は ROTO の MIDI が止まる。
 - ローカル hash は VP が最後に成功を確認した内容。外部ツールでの書き換えを検出するものではない。
 - この lane では実機 lease 取得・解放、Serial 書き込み、daemon 再起動、app swap を行わない。
-- midistage の実機検証と mako の GO の後、`vp midi on` → snapshot の `setup_owners.vp=[6]` /
-  `current_setup=6` → ボタン 1–7 の jump / 8 の押下中録音、表示名・色の対応を確認する。
+- midistage の実機検証と mako の GO の後、`vp midi on` → snapshot の `setup_owners.vp=[8]` /
+  `current_setup=8`（画面 SETUP 09）→ ボタン 1–7 の jump / 8 の押下中録音、表示名・色の対応を確認する。
   MIDI 復帰と挿し直しの要否も記録する。
 
 ## 自動検証

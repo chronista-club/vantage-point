@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-pub(crate) const SETUP: u8 = 6;
+pub(crate) const SETUP: u8 = 8;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Generated {
@@ -101,6 +101,22 @@ mod tests {
         json!({"slots":[{"path":"/vp", "address":"vp/roto-vp-setup"}, null, null, null, null, null, null,
             {"path":"/vp", "address":"vp/unused"}],
             "colors":["#44c2b5", "#639af5", "#b78aee", "#f0b45a", "#c4d655", "#ef7b72", "#6fcf7e", "#e47ac9"], "dimGain":0.25})
+    }
+
+    #[test]
+    fn vp_uses_index_eight_and_does_not_reuse_the_retired_index_six_hash() {
+        let generated = generate(&Value::Null, &BTreeMap::new(), &VP_ROTO_SETUP);
+        let mut legacy = Sha256::new();
+        legacy.update(b"vp-roto-setup-v1\0");
+        legacy.update([6]); // Retired internal index, deliberately not SETUP.
+        legacy.update(serde_json::to_vec(&generated.content).unwrap());
+        let legacy_hash: String = legacy
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_ne!(generated.hash, legacy_hash);
+        assert_eq!(SETUP, 8, "VP occupies display SETUP 09 (index + 1)");
     }
 
     #[test]

@@ -182,6 +182,27 @@ mod tests {
     }
 
     #[test]
+    fn retired_index_six_cache_is_ignored_and_new_confirmations_use_index_eight() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roto-setup-hashes.json");
+        std::fs::write(
+            &path,
+            json!({"version":1, "setup":6, "devices":{"roto":"legacy"}}).to_string(),
+        )
+        .unwrap();
+        let mut hashes = Hashes::load(dir.path());
+        assert_eq!(
+            hashes.get("roto"),
+            None,
+            "retired setup must not skip Apply"
+        );
+        hashes.confirm("roto", "new").unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved["setup"], 8);
+        assert_eq!(Hashes::load(dir.path()).get("roto").as_deref(), Some("new"));
+    }
+
+    #[test]
     fn invalidation_survives_restart_without_touching_other_devices() {
         let dir = tempfile::tempdir().unwrap();
         let mut hashes = Hashes::load(dir.path());
