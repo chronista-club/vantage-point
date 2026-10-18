@@ -113,6 +113,7 @@ async fn run(
     )
     .await?;
     let client = Arc::new(client);
+    let mut setups = crate::roto_setup_sync::Sync::new(client.clone(), &vp_paths::vp_state_dir());
     let mut acknowledged = HashSet::new();
     let result: anyhow::Result<()> = async {
         'session: while !shutdown.is_cancelled() {
@@ -146,6 +147,13 @@ async fn run(
                     acknowledged.insert(lease.token.clone());
                 }
             }
+            // Setup requests run separately so a slow configuration RPC never delays
+            // revoking input listeners or acknowledging another device's handoff.
+            if enabled {
+                setups
+                    .tick(&crate::roto_setup_midistage::statuses(&snapshot))
+                    .await;
+            }
             tokio::select! {
                 _ = shutdown.cancelled() => break,
                 _ = tokio::time::sleep(Duration::from_millis(200)) => {}
@@ -158,6 +166,7 @@ async fn run(
         Ok(())
     }
     .await;
+    drop(setups);
     if shutdown.is_cancelled() {
         // The owner joins this task before releasing local ports and closing the session.
         return Ok(Some(client));
