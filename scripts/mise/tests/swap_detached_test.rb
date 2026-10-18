@@ -2,6 +2,7 @@
 require 'minitest/autorun'
 require 'tmpdir'
 require 'json'
+require 'rbconfig'
 # Scoped replacements keep every OS mutation inside the test sandbox.
 module ScopedStub
   def stub(name, replacement)
@@ -260,6 +261,81 @@ class SwapDetachedTest
 end
 
 class SwapDetachedTest
+  %w[cli open recovery_cli recovery_open].each do |route|
+    define_method("test_long_lived_gui_does_not_block_next_submit_#{route}") do
+      Dir.mktmpdir do |dir|
+        # 実 worker と swap task を使い、破壊的な OS 操作だけを置き換える。
+        # GUI 相当の子は `vp app start` 同様に fork し、job 終了後も生存する。
+        probe = File.join(dir, 'swap_probe.rb')
+        pid_path = File.join(dir, 'gui.pid')
+        File.write(probe, <<~'RUBY')
+          require 'rbconfig'
+          root, route, pid_path = ARGV
+          ENV['MISE_PROJECT_ROOT'] = root
+          task = File.read(File.join(root, '.mise/tasks/app/swap'))
+          dispatch = "VP.windows? ? swap_windows(RESTART_DAEMON) : swap_macos(RESTART_DAEMON)\n"
+          raise 'unsafe task loader' unless task.end_with?(dispatch)
+          definitions = Module.new
+          definitions.module_eval(task.delete_suffix(dispatch), 'swap-task-definitions')
+          swap = Object.new.extend(definitions)
+          gui = 'pid = fork { sleep 60 }; File.write(ARGV.fetch(0), pid)'
+          run = VP.method(:run)
+          vp = Module.new
+          vp.define_singleton_method(:run) do |*args, **opts|
+            raise "unexpected command: #{args}" unless args == ['/Applications/VantagePoint.app/Contents/MacOS/vp', 'app', 'start'] || args == ['open', '/Applications/VantagePoint.app']
+            run.call(RbConfig.ruby, '-e', gui, pid_path, **opts)
+          end
+          vp.define_singleton_method(:sh) do |cmd|
+            if cmd.start_with?('open ')
+              run.call(RbConfig.ruby, '-e', gui, pid_path)
+            elsif cmd.start_with?('codesign ') && route.start_with?('recovery_')
+              raise 'simulated post-stop failure'
+            elsif !['VP_RELEASE_DRY=1 ', 'pkill ', 'ditto ', 'codesign '].any? { |prefix| cmd.start_with?(prefix) }
+              raise "unexpected shell command: #{cmd}"
+            end
+          end
+          vp.define_singleton_method(:vp_bin) { nil }
+          vp.define_singleton_method(:log) { |*_| }
+          vp.define_singleton_method(:icon) { |_| '' }
+          definitions.const_set(:VP, vp)
+          File.define_singleton_method(:directory?) { |_| true }
+          File.define_singleton_method(:executable?) { |_| route.end_with?('cli') }
+          FileUtils.define_singleton_method(:rm_rf) { |_| }
+          swap.define_singleton_method(:sleep) { |_| }
+          swap.define_singleton_method(:app_log_pos) { 0 }
+          swap.define_singleton_method(:wait_app_ready) { |_| }
+          swap.define_singleton_method(:brew_restore_hint) { |_| }
+          swap.swap_macos(false)
+        RUBY
+        job = SwapDetached.submit(root: Dir.pwd, state: dir, env: {}, launch: ->(_) { true },
+          command: [RbConfig.ruby, probe, Dir.pwd, route, pid_path])
+        worker = fork do
+          SwapDetached.stub(:bootout, true) { SwapDetached.work(job['config']) }
+          exit! 0
+        end
+        Process.wait(worker)
+        assert_predicate $?, :success?
+        assert_equal !route.start_with?('recovery_'), JSON.parse(File.read("#{job['config']}.result"))['success']
+        gui_pid = Integer(File.read(pid_path))
+        Process.kill(0, gui_pid)
+        begin
+          next_job = SwapDetached.submit(root: Dir.pwd, state: dir, env: {}, launch: ->(_) { true })
+        rescue RuntimeError => e
+          flunk "GUI still holds worker.lock after #{route}: #{e.message}"
+        end
+        refute_equal job['label'], next_job['label']
+      ensure
+        if File.file?(pid_path)
+          begin
+            Process.kill('KILL', Integer(File.read(pid_path)))
+          rescue Errno::ESRCH
+            # 先に終了した模擬 GUI は回収不要。
+          end
+        end
+      end
+    end
+  end
+
   def test_orphan_command_lease_prevents_reclaim
     Dir.mktmpdir do |dir|
       SwapDetached.submit(root: Dir.pwd, state: dir, env: {}, launch: ->(_) { true })
