@@ -97,8 +97,8 @@ impl<T: Transport> Sync<T> {
                         }
                     }
                     other => {
-                        entry.state.failed();
-                        tracing::warn!(device = %status.device, result = ?other, "ROTO setup request failed; waiting for next lease or pin edit");
+                        entry.state.failed(self.start.elapsed());
+                        tracing::warn!(device = %status.device, result = ?other, "ROTO setup request failed; registration retries with backoff, Apply waits for next lease or pin edit");
                     }
                 }
             }
@@ -109,14 +109,13 @@ impl<T: Transport> Sync<T> {
                 continue;
             }
             if status.configuring && !entry.busy_warned {
-                tracing::warn!(device = %status.device, "ROTO setup: configuring; deferring until next idle snapshot");
+                tracing::debug!(device = %status.device, current_setup = ?status.current_setup, "ROTO setup: configuring; deferring until next idle snapshot");
             }
             entry.busy_warned = status.configuring;
             let action = entry.state.observe(Observation {
                 lease: Some(lease),
                 hash: &generated.hash,
                 configuring: status.configuring,
-                current_setup: status.current_setup,
                 error: status.error.is_some(),
                 now: self.start.elapsed(),
             });
@@ -134,7 +133,7 @@ impl<T: Transport> Sync<T> {
                     if matches!(action, Action::Apply(_))
                         && let Err(error) = self.hashes.invalidate(&status.device)
                     {
-                        entry.state.failed();
+                        entry.state.failed(self.start.elapsed());
                         tracing::warn!(%error, "ROTO setup: cannot invalidate old hash; skipping write");
                         continue;
                     }
@@ -266,6 +265,75 @@ mod tests {
         }
         assert_eq!(*fake.calls.lock().unwrap(), vec!["register", "apply"]);
         assert!(!dir.path().join("roto-setup-hashes.json").exists());
+    }
+
+    #[tokio::test]
+    async fn successful_apply_is_cached_even_when_the_selected_setup_is_different_or_unknown() {
+        for selected in [Some(2), None] {
+            let dir = tempfile::tempdir().unwrap();
+            let fake = Arc::new(Fake::default());
+            let mut sync = Sync::new(fake.clone(), dir.path());
+            for sequence in [1, 3, 5] {
+                let mut snapshot = status(sequence, false);
+                snapshot.current_setup = selected;
+                step(&mut sync, snapshot).await;
+            }
+            assert_eq!(*fake.calls.lock().unwrap(), ["register", "apply"]);
+            assert!(
+                Hashes::load(dir.path()).get("roto").is_some(),
+                "Apply completion with selected={selected:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn registration_error_or_join_failure_retries_before_apply_without_pin_edits() {
+        struct RetryFake {
+            calls: Mutex<Vec<&'static str>>,
+            panic_first: bool,
+        }
+        #[async_trait::async_trait]
+        impl Transport for RetryFake {
+            async fn register(&self, _: &str) -> anyhow::Result<Status> {
+                let first = {
+                    let mut calls = self.calls.lock().unwrap();
+                    calls.push("register");
+                    calls.len() == 1
+                };
+                if first {
+                    assert!(!self.panic_first, "simulated registration task panic");
+                    anyhow::bail!("temporary registration failure");
+                }
+                Ok(status(2, false))
+            }
+            async fn apply(&self, _: &str, _: &str, _: Generated) -> anyhow::Result<Status> {
+                self.calls.lock().unwrap().push("apply");
+                Ok(status(4, true))
+            }
+        }
+        for panic_first in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let fake = Arc::new(RetryFake {
+                calls: Mutex::default(),
+                panic_first,
+            });
+            let mut sync = Sync::new(fake.clone(), dir.path());
+            for sequence in 1..=3 {
+                sync.tick(&[status(sequence, false)]).await;
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(*fake.calls.lock().unwrap(), ["register"]);
+            sync.start -= std::time::Duration::from_secs(2);
+            for sequence in 4..=6 {
+                sync.tick(&[status(sequence, false)]).await;
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                *fake.calls.lock().unwrap(),
+                ["register", "register", "apply"]
+            );
+            assert!(Hashes::load(dir.path()).get("roto").is_some());
+        }
     }
 
     #[tokio::test]

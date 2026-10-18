@@ -11,7 +11,7 @@ setup 名は `VP`。番号は Ladyland の 0–3 および掃除対象 4–5 と
 
 | 本体 | 表示 | MIDI | 色 |
 |---|---|---|---|
-| switch 1–7 | pin #1–#7 の lane 名 | `VP_ROTO_SETUP` の channel / buttons / press / release、PUSH | 保存した pin 色の最近傍パレット、消灯は暗くする |
+| switch 1–7 | pin #1–#7 の lane slug | `VP_ROTO_SETUP` の channel / buttons / press / release、PUSH | 保存した pin 色の最近傍パレット、消灯は暗くする |
 | switch 8 | `MIC` | 同じ契約の button 8、PUSH | 点灯は赤、消灯は暗赤 |
 | knobs 全席 | なし | 未設定（CLEAR） | なし |
 | switch 9–32 | なし | 未設定（CLEAR） | なし |
@@ -35,14 +35,19 @@ slug も使えなければ `#N`。空 pin は `#N` と暗色にする。
 3. 生成内容の hash が保存済みと違うときだけ `ApplyDeviceSetup` を要求する。
    要求前に古い成功 hash を永続 cache から消す。消せなければ要求しない。
    部分的に失敗した後で元の pin に戻したときも、再適用を省略しないため。
-4. 受付の `configuring` と、その解除・`config_error`・`current_setup` を観測する。
-   受け付けただけでは成功 hash を保存しない。
+4. 受付の `configuring=true` の後、同じ lease の新しい snapshot で
+   `configuring=false` かつ `config_error` なしを確認して成功 hash を保存する。
+   Apply は選択中の setup を変えないため、`current_setup` は完了条件に使わない。
 5. pin の変更は最新の内容にまとめ、2 秒間変更が止まってから適用する。
    lease を持たない間の変更は次に取得したときに反映する。
 
 RPC は registry lock の外で進め、lease 失効を受けたときの既存の
 入力停止・join・Quiesced の順序を妨げない。
-同じ lease / 内容で失敗した要求を polling のたびに再送しない。
+同じ lease / 内容で失敗した Apply は polling のたびに再送しない。
+Register の失敗（RPC エラー・timeout・task 終了エラー・登録結果の不一致）は
+完了観測時点から 1・2・4・8・16・30 秒、以降は 30 秒間隔で再試行する。
+pin 編集でこの待ち時間を短縮せず、lease を失えば中止し、新しい lease では初期化する。
+登録成功まで Apply は送らない。
 `not_implemented` / サービス不在 / 他の設定処理中でも VP の他の機能を止めない。
 
 ### pin 保存の取り込みと cache
@@ -58,6 +63,8 @@ cache は state zone の `roto-setup-hashes.json`（version / setup / device ID 
 一時ファイルから rename する。成功 hash は `configuring` の解除を確認してから保存する。
 RPC 応答の sequence 以下の snapshot は完了判定に使わず、lease が変わった RPC の結果も捨てる。
 要求は機材ごとに最大 1 本、受付を待つ上限は 4 秒。書き込み自体の完了は snapshot で追う。
+cache を捨てて再適用する場合は、daemon 停止中にこの state zone の
+`roto-setup-hashes.json` を削除する。次回起動時に空の cache として読み込む。
 
 ## 制約と実機確認
 

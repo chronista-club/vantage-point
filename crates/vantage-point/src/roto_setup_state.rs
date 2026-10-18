@@ -2,6 +2,8 @@
 use std::time::Duration;
 
 pub(super) const DEBOUNCE: Duration = Duration::from_secs(2);
+const REGISTER_BACKOFF: Duration = Duration::from_secs(1);
+const MAX_REGISTER_BACKOFF: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Action {
@@ -15,7 +17,6 @@ pub(super) struct Observation<'a> {
     pub lease: Option<&'a str>,
     pub hash: &'a str,
     pub configuring: bool,
-    pub current_setup: Option<u8>,
     pub error: bool,
     pub now: Duration,
 }
@@ -27,6 +28,8 @@ pub(super) struct State {
     due: Duration,
     saved: Option<String>,
     registered: bool,
+    register_retry_at: Duration,
+    register_backoff: Duration,
     pending: Option<Pending>,
     failed_hash: Option<String>,
 }
@@ -54,6 +57,8 @@ impl State {
         if self.lease.as_deref() != o.lease {
             self.lease = o.lease.map(str::to_owned);
             self.registered = false;
+            self.register_retry_at = o.now;
+            self.register_backoff = REGISTER_BACKOFF;
             self.pending = None;
             self.failed_hash = None;
             self.due = o.now;
@@ -64,7 +69,7 @@ impl State {
             if !o.configuring && *busy_seen {
                 let hash = hash.clone();
                 self.pending = None;
-                if o.error || o.current_setup != Some(6) {
+                if o.error {
                     self.failed_hash = Some(hash);
                     return Some(Action::Failed);
                 }
@@ -76,6 +81,9 @@ impl State {
             return None;
         }
         if !self.registered {
+            if o.now < self.register_retry_at {
+                return None;
+            }
             self.pending = Some(Pending::Register);
             return Some(Action::Register);
         }
@@ -103,11 +111,17 @@ impl State {
         }
     }
 
-    pub fn failed(&mut self) {
-        self.failed_hash = Some(match self.pending.take() {
-            Some(Pending::Request(hash) | Pending::Applying { hash, .. }) => hash,
-            _ => self.desired.clone(),
-        });
+    pub fn failed(&mut self, now: Duration) {
+        match self.pending.take() {
+            Some(Pending::Register) => {
+                self.register_retry_at = now + self.register_backoff;
+                self.register_backoff = (self.register_backoff * 2).min(MAX_REGISTER_BACKOFF);
+            }
+            Some(Pending::Request(hash) | Pending::Applying { hash, .. }) => {
+                self.failed_hash = Some(hash);
+            }
+            None => {}
+        }
     }
 }
 
@@ -120,7 +134,6 @@ mod tests {
             lease,
             hash,
             configuring: false,
-            current_setup: Some(6),
             error: false,
             now: Duration::from_millis(ms),
         }
@@ -163,12 +176,60 @@ mod tests {
     }
 
     #[test]
+    fn registration_failure_retries_after_backoff_without_a_pin_edit() {
+        let mut s = State::default();
+        assert_eq!(
+            s.observe(obs(Some("lease"), "a", 0)),
+            Some(Action::Register)
+        );
+        s.failed(Duration::ZERO);
+        assert_eq!(s.observe(obs(Some("lease"), "a", 999)), None);
+        assert_eq!(
+            s.observe(obs(Some("lease"), "a", 1000)),
+            Some(Action::Register)
+        );
+    }
+
+    #[test]
+    fn registration_backoff_is_capped_and_resets_only_for_a_new_lease() {
+        let mut s = State::default();
+        s.observe(obs(Some("lease"), "a", 0));
+        let mut at = 0;
+        for delay in [1000, 2000, 4000, 8000, 16000, 30000, 30000] {
+            at += 100; // 登録要求の完了時点から待つ。
+            s.failed(Duration::from_millis(at));
+            assert_eq!(s.observe(obs(Some("lease"), "edited", at + 1)), None);
+            assert_eq!(
+                s.observe(obs(Some("lease"), "edited", at + delay - 1)),
+                None
+            );
+            at += delay;
+            assert_eq!(
+                s.observe(obs(Some("lease"), "edited", at)),
+                Some(Action::Register)
+            );
+        }
+        s.failed(Duration::from_millis(at));
+        assert_eq!(s.observe(obs(None, "edited", at + 30000)), None);
+        assert_eq!(
+            s.observe(obs(Some("next"), "edited", at + 30001)),
+            Some(Action::Register)
+        );
+        s.failed(Duration::from_millis(at + 30001));
+        assert_eq!(s.observe(obs(Some("next"), "edited", at + 31000)), None);
+        assert_eq!(
+            s.observe(obs(Some("next"), "edited", at + 31001)),
+            Some(Action::Register)
+        );
+    }
+
+    #[test]
     fn editing_away_and_back_allows_retry_after_an_intervening_success() {
         let mut s = State::default();
         s.observe(obs(Some("lease"), "a", 0));
         s.registered();
         s.observe(obs(Some("lease"), "a", 0));
-        s.failed();
+        s.failed(Duration::ZERO);
         s.observe(obs(Some("lease"), "b", 100));
         assert_eq!(
             s.observe(obs(Some("lease"), "b", 2100)),
@@ -216,15 +277,16 @@ mod tests {
     fn failures_never_loop_for_the_same_lease_and_content() {
         let mut s = State::default();
         s.observe(obs(Some("lease"), "a", 0));
-        s.failed();
+        s.registered();
+        assert_eq!(
+            s.observe(obs(Some("lease"), "a", 0)),
+            Some(Action::Apply("a".into()))
+        );
+        s.failed(Duration::ZERO);
         for ms in [200, 2000, 20000] {
             assert_eq!(s.observe(obs(Some("lease"), "a", ms)), None);
         }
-        assert_eq!(
-            s.observe(obs(Some("lease"), "b", 21000)),
-            Some(Action::Register)
-        );
-        s.registered();
+        assert_eq!(s.observe(obs(Some("lease"), "b", 21000)), None);
         assert_eq!(
             s.observe(obs(Some("lease"), "b", 23000)),
             Some(Action::Apply("b".into()))
@@ -269,7 +331,7 @@ mod tests {
             s.observe(obs(Some("lease"), "b", 2100)),
             Some(Action::Apply("b".into()))
         );
-        s.failed();
+        s.failed(Duration::from_millis(2100));
         s.observe(obs(Some("lease"), "a", 2200));
         assert_eq!(
             s.observe(obs(Some("lease"), "a", 4200)),
