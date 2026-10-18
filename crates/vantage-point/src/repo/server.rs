@@ -1303,20 +1303,15 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     });
 
     // Serve with graceful shutdown
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            shutdown_token_clone.cancelled().await;
-            tracing::info!("Daemon graceful shutdown initiated");
-            // Close MIDI before waiting on HTTP requests, actors, or repo cleanup.
-            #[cfg(feature = "midi")]
-            if let Some(task) = midi_task_for_shutdown {
-                task.shutdown().await;
-            }
-        })
-        .await?;
-
-    // クリーンアップ
-    daemon_handle.abort();
+    serve_with_cleanup(listener, app, shutdown_token_clone, async move {
+        // HTTP の受付・drain が終わってから MIDI を解放し、遅い actor/repo cleanup に進む。
+        daemon_handle.abort();
+        #[cfg(feature = "midi")]
+        if let Some(task) = midi_task_for_shutdown {
+            task.shutdown().await;
+        }
+    })
+    .await?;
 
     // 棚卸し 9-2 段階 3（PR-S3c）: 常駐 task の終了を確認する（token は serve が返った時点で
     // cancel 済み）。repo を畳む前に待つのは、lane watcher が drain 中の repo に `lane_delete` を
@@ -1448,9 +1443,60 @@ async fn spawn_lane_lifecycle_monitor(
         .map_err(anyhow::Error::msg)
 }
 
+/// cleanup の待機中に新しい HTTP 操作を受け付けないよう、serve の終了を先に待つ。
+async fn serve_with_cleanup(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    shutdown: CancellationToken,
+    cleanup: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown.cancelled().await;
+            tracing::info!("Daemon graceful shutdown initiated");
+        })
+        .await?;
+    cleanup.await;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn shutdown_closes_http_listener_before_waiting_for_cleanup() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let shutdown = CancellationToken::new();
+        let cleanup_started = Arc::new(tokio::sync::Notify::new());
+        let finish_cleanup = Arc::new(tokio::sync::Notify::new());
+        let (started, finish) = (cleanup_started.clone(), finish_cleanup.clone());
+        let server = tokio::spawn(serve_with_cleanup(
+            listener,
+            Router::new().route("/health", get(|| async { "ok" })),
+            shutdown.clone(),
+            async move {
+                started.notify_one();
+                finish.notified().await;
+            },
+        ));
+        shutdown.cancel();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            cleanup_started.notified(),
+        )
+        .await
+        .expect("cleanup must start");
+        // cleanup が止まっていても、旧 daemon は新しい health/RPC 接続を受け付けない。
+        let accepted_during_cleanup = tokio::net::TcpStream::connect(addr).await.is_ok();
+        finish_cleanup.notify_one();
+        server.await.unwrap().unwrap();
+        assert!(
+            !accepted_during_cleanup,
+            "HTTP listener stayed open while MIDI cleanup was pending"
+        );
+    }
 
     /// 棚卸し 9-2 段階 3（PR-S3b）: `shutdown_repo` は registry に預けた常駐 task の終了を
     /// 待ってから返り、受付を閉じる。

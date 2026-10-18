@@ -299,7 +299,7 @@ async fn client_close_has_a_two_second_budget_and_propagates_errors() {
     assert!(error.to_string().contains("timed out after 2s"));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn unresponsive_task_is_aborted_and_joined_within_shutdown_budget() {
     struct Dropped(Arc<AtomicBool>);
     impl Drop for Dropped {
