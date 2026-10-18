@@ -49,6 +49,9 @@ pub struct MachineCapabilities {
     /// `with_devices` で構築すると起動時 attach（既接続 device の listener）まで済む。
     #[cfg(feature = "midi")]
     pub devices: Option<Arc<RwLock<DeviceRegistry>>>,
+    /// Transferred to run_daemon, which joins it before closing the MIDI session.
+    #[cfg(feature = "midi")]
+    pub(crate) midi_task: Option<crate::midi_use::MidiUseTask>,
 }
 
 impl MachineCapabilities {
@@ -67,6 +70,8 @@ impl MachineCapabilities {
             update,
             #[cfg(feature = "midi")]
             devices: None,
+            #[cfg(feature = "midi")]
+            midi_task: None,
         }
     }
 
@@ -95,7 +100,7 @@ impl MachineCapabilities {
         devices.attach_fleet_inputs().await;
         tracing::info!("devices 🧲 registry ready (hot-plug は Swift agent が報告 / polling 停止)");
         let devices = Arc::new(RwLock::new(devices));
-        crate::midi_use::start(Arc::downgrade(&devices));
+        wc.midi_task = Some(crate::midi_use::start(Arc::downgrade(&devices)));
         wc.devices = Some(devices);
 
         wc

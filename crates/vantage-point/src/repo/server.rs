@@ -721,31 +721,24 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // device 管理は DeviceRegistry 🧲 に一本化（feature = "midi" 時は `with_devices` で host 化）。
     // 旧 MidiCapability hosting（単一 port の無条件 grab）は退役 — 消費者不在のまま
     // enumeration 先頭 device（実機で LPD8）を掴み、DeviceRegistry listener を沈黙させていた。
-    let machine_capabilities = {
-        #[cfg(feature = "midi")]
-        {
-            Arc::new(
-                crate::daemon::machine_capabilities::MachineCapabilities::with_devices(
-                    daemon_cap.clone(),
-                    update_cap.clone(),
-                )
-                .await,
-            )
-        }
-        #[cfg(not(feature = "midi"))]
-        {
-            Arc::new(
-                crate::daemon::machine_capabilities::MachineCapabilities::new(
-                    daemon_cap.clone(),
-                    update_cap.clone(),
-                ),
-            )
-        }
-    };
-
-    // Input-only fleet listeners share the daemon shutdown boundary.
     #[cfg(feature = "midi")]
-    let devices_for_shutdown = machine_capabilities.devices.clone();
+    let (machine_capabilities, midi_task_for_shutdown) = {
+        let mut capabilities =
+            crate::daemon::machine_capabilities::MachineCapabilities::with_devices(
+                daemon_cap.clone(),
+                update_cap.clone(),
+            )
+            .await;
+        let task = capabilities.midi_task.take();
+        (Arc::new(capabilities), task)
+    };
+    #[cfg(not(feature = "midi"))]
+    let machine_capabilities = Arc::new(
+        crate::daemon::machine_capabilities::MachineCapabilities::new(
+            daemon_cap.clone(),
+            update_cap.clone(),
+        ),
+    );
 
     // Phase A ① / R1: Daemon モードでも wiremsg store を build (= 将来 machine 階層 actor 用)。
     // R1 で `WiremsgStore::new` は async (起動時に local_seq 採番を math::max で復元)。
@@ -1314,6 +1307,11 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         .with_graceful_shutdown(async move {
             shutdown_token_clone.cancelled().await;
             tracing::info!("Daemon graceful shutdown initiated");
+            // Close MIDI before waiting on HTTP requests, actors, or repo cleanup.
+            #[cfg(feature = "midi")]
+            if let Some(task) = midi_task_for_shutdown {
+                task.shutdown().await;
+            }
         })
         .await?;
 
@@ -1324,8 +1322,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     // cancel 済み）。repo を畳む前に待つのは、lane watcher が drain 中の repo に `lane_delete` を
     // 撃たないため、そして autostart が起動途中の repo を `shutdown_all` の後に差し込まないため。
     // 先に受付を閉じておくと、待っている間に autostart が新しい repo を起こさない。
-    // 予算は repo 側の 8 秒より短い 2 秒 — Unix の `vp daemon stop` は SIGTERM の 500ms 後に
-    // SIGKILL するので、ここで長く待つほど repo / db の後始末が kill 期限の外へ押し出される。
+    // 予算は repo 側の 8 秒より短い 2 秒。MIDI の解放・close はこの待機より先に済ませる。
     control_channels.close();
     let daemon_tasks = crate::capability::actor_registry::stop_all_with(
         &actor_registry,
@@ -1342,11 +1339,6 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     let stopped_repos = control_channels.shutdown_all().await;
     if stopped_repos > 0 {
         tracing::info!("Daemon shutdown: {} repo を停止", stopped_repos);
-    }
-    // Join owned MIDI input tasks and release output handles before shutting down.
-    #[cfg(feature = "midi")]
-    if let Some(devices) = devices_for_shutdown.as_ref() {
-        devices.write().await.release_fleet().await;
     }
     if let Err(e) = daemon_for_shutdown.write().await.shutdown().await {
         tracing::warn!("Error during daemon shutdown: {}", e);

@@ -92,3 +92,19 @@ input listener は、通知が届くまでの数百 ms を吸う短い開き直�
 - 自動テストでは物理名による停止、接続の drop、再接続後の本数、lease 更新との競合、接続待ちから成功への状態配信を確認する。実機の抜き差し・二重入力の観測は daemon 反映後に別途行う。
 
 修正前は抜線による map 削除が空振りし、lease 更新まで旧 task が残る。通常の snapshot 更新には旧 task の abort/join があるが、join 中に別経路の ensure が新接続を登録できるため、一時的な接続の重なりをコード上は排除できなかった。物理 MIDI が実際に二重配信されたという観測はない。
+
+### 2026-10-18 — daemon 終了時の Midistage session close
+
+対象: `midi_use.rs`、`daemon/machine_capabilities.rs`、`repo/server.rs`、`daemon/process.rs`。
+起票: `mem_1Cg8P1aoBWatWQaaVTMXo5`。
+
+- SIGTERM / SIGINT / HTTP shutdown は同じ cancellation token に合流する。daemon は MIDI 接続 task の所有権を保持し、HTTP の drain・常駐 task・repo の終了待ちより先に MIDI の終了処理を開始する。
+- 接続 task の再接続を止め、task の終了を待つ → `release_fleet` で取得 gate を閉じて input を abort/join、output を drop → client の `close()` を await、の順序にする。通常の fleet OFF は session を監視用に切り替えるので、daemon 終了専用の処理を使う。
+- Snapshot の応答待ちは cancellation で中断する。Hello の途中は安易に abort しない。成功した session が registry に載る前でも、task の戻り値で client を回収して close する。接続 task の回収上限は 12 秒、超過時は abort/join と警告。回収不能な接続の remote close は保証しない。
+- 固定依存 `midistage-client` revision `0d3c3f5` の実装は、transport 接続 5 秒・channel open 3 秒・Hello の応答待ち 3 秒の上限を持つ。Hello の送信待ちや接続失敗時の cleanup を含む `Client::connect()` 全体の上限ではない。VP の 12 秒は独立した回収期限であり、SDK が 11 秒以内に完了する保証には依存しない。`Client::close()` は channel close 後に transport disconnect を呼ぶ。後者は固定依存 `club-unison 2.0.0` で QUIC `CONNECTION_CLOSE` を要求する。VP 側は close 全体に 2 秒の上限を置き、成功時は `midistage client closed`、失敗・timeout 時は warning を記録する。成功ログは close API の完了を示し、remote 側の受信確認ではない。
+- `vp daemon stop` の Unix 猶予は 500ms から最大 15 秒へ変更する（接続 task 12 秒 + close 2 秒 + 余裕）。PID が終了状態になれば早く戻り、上限では従来どおり強制終了する。Windows の HTTP graceful stop も同じ 15 秒を使う。従来の 500ms は既存の常駐 task の 2 秒・repo task の 8 秒の終了予算より短かった。repo 全体の後始末完了を 15 秒で保証する変更ではない。
+- 生成する LaunchAgent plist に `ExitTimeOut` の指定はない。この Mac の `launchd.plist(5)` は既定値を system-defined とするため、固定 20 秒とは扱わない。VP と無関係の一時 LaunchAgent で `kickstart -k` の SIGTERM 到達を確認した。実際の VP daemon の swap はこの lane では行わない。
+
+自動検証の対象は、loopback の実 QUIC client/server による disconnect、local release が先であること、Snapshot 応答待ち・Hello 途中・未接続での停止、task/close の timeout、隔離した子プロセスの graceful stop。物理 MIDI は使わない。
+
+実機確認は lead の次回 swap で行う。旧 daemon の `Daemon graceful shutdown initiated` → `midistage client closed` → `Daemon stopped` を確認し、新 daemon の接続時刻と midistaged 側の Hello/session 記録を突き合わせる。`application already has a live session` の拒否が続かないこと、lpd8 / roto の lease を取り直すまでの時刻差を測る。timeout warning が出た場合は成功扱いにしない。Windows の実行検証と実機での再接続時間は未確認。
