@@ -34,6 +34,9 @@ tool 呼び出し・結果を用いる。既存 lane snapshot push へ状態を�
 engine の破棄時は対象 session を停止にし、lane の削除・reset 時は進行記録を消す。
 pump の世代を照合し、破棄後の遅れた event が旧要求を復活させない。
 表示中の lane も snapshot を優先するため、送信直後の状態・`vp now` の反映には最大約 5 秒かかる。
+GUI で progress が欠落しても、wire の `working` / `hitl_pending` / `stuck` を会話の「作業中」に変換しない。
+live の実行観測がなければ未読または指示待ちとし、TUI の flow fallback は維持する。
+`hitl_pending` は lead 回答待ちで会話の「要求中」と混ぜない。ユーザ本人待ちの `awaiting_user` は既存の needs-you 経路で扱う。
 
 実機確認では、非表示 lane の質問発生と回答後の解除、repo を畳んだ時の件数、pin の色、
 長い名前・now-line の省略と二行の高さ、tooltip の干渉を確認する。

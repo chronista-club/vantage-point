@@ -33,6 +33,7 @@ import {
 } from "./dnd";
 import {
 	isLaneAlive,
+	rootModeOf,
 	isSubLane,
 	laneAddressKey,
 	laneBranch,
@@ -226,7 +227,8 @@ export function LaneRow(props: {
     onCleanup(() => document.removeEventListener('vp:lane-prs-count', receivePr));
     const prNumber = () => pr()?.branch === laneBranch(props.lane) ? pr()?.number : undefined;
 	const progress = () => rootProgress(props.lane);
-	const displayState = () => laneDisplayState(props.lane, inbox()?.unread_count ?? 0, agentActivity.phase());
+	const displayState = () => laneDisplayState(props.lane, inbox()?.unread_count ?? 0,
+        rootModeOf(props.lane) === 'gui' ? agentActivity.observedPhase() : agentActivity.phase());
 	const nowText = () => (progress() ? progress()!.now : sessionNow[sessionNowKey(addr(), rootKey())]) ?? LANE_STATE_LABEL[displayState()];
 	// quiet 判定の活動時刻も root session の分（roster の last_activity_at）。
 	const rootActivity = () =>
