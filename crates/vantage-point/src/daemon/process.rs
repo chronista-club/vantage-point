@@ -7,6 +7,21 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
+// MIDI task recovery (12s) + client close (2s) + scheduling margin.
+pub(crate) const DAEMON_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn wait_until_stopped(timeout: std::time::Duration, mut is_running: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while is_running() {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        std::thread::sleep(remaining.min(std::time::Duration::from_millis(50)));
+    }
+    true
+}
+
 /// Daemon の作業ディレクトリ（PIDファイル等を格納）
 ///
 /// VP_PROFILE 分離: profile ごとに隔離する（brew=`vp` / dev=`vp-dev`、 [`vp_paths::app_dir_name`]）。
@@ -168,15 +183,10 @@ fn try_graceful_shutdown(pid: u32) -> bool {
     }
     tracing::info!("graceful shutdown RPC 送信 (POST {url})、 clean exit を待機");
 
-    // clean exit を最大 5 秒待つ（surrealkv flush + run_daemon 終了）。
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(150));
-        if !crate::platform::process_alive(pid) {
-            return true;
-        }
+    if wait_until_stopped(DAEMON_STOP_TIMEOUT, || crate::platform::process_alive(pid)) {
+        return true;
     }
-    tracing::warn!("graceful shutdown timeout (5s) — hard kill に移行");
+    tracing::warn!("graceful shutdown timeout (15s) — hard kill に移行");
     false
 }
 
@@ -211,9 +221,10 @@ pub fn stop_daemon(pid: u32) -> Result<()> {
     // ただし、Daemonが応答しなかった場合のフォールバック
     // 注: ポートフォールバック（check_daemon_port）は使わない。
     //      シャットダウン中はポートがまだ開いていることがあり、誤検出で SIGKILL を送ってしまうため。
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    if check_pid_file().is_some_and(|running_pid| running_pid == pid) {
-        tracing::warn!("SIGTERM後もDaemonが生存、SIGKILLを送信");
+    if !wait_until_stopped(DAEMON_STOP_TIMEOUT, || {
+        check_pid_file().is_some_and(|running_pid| running_pid == pid)
+    }) {
+        tracing::warn!("SIGTERM後15s経ってもDaemonが生存、SIGKILLを送信");
         if !crate::platform::process_kill(pid) {
             tracing::warn!("SIGKILL 送信失敗 (PID: {})", pid);
         }
@@ -745,5 +756,83 @@ mod tests {
             result.is_err(),
             "オーバーフローPIDの stop_daemon がエラーを返さなかった"
         );
+    }
+
+    // mem_1Cg8P1aoBWatWQaaVTMXo5: only disposable test processes receive signals.
+    #[test]
+    fn graceful_wait_is_bounded_and_returns_early_after_exit() {
+        let mut checks = 0;
+        assert!(wait_until_stopped(
+            std::time::Duration::from_secs(1),
+            || {
+                checks += 1;
+                checks < 2
+            }
+        ));
+        assert_eq!(checks, 2);
+        assert!(!wait_until_stopped(
+            std::time::Duration::from_millis(10),
+            || true
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_daemon_waits_for_graceful_exit() {
+        use std::process::Command;
+        if std::env::var("VP_TEST_GRACEFUL_STOP").as_deref() != Ok("parent") {
+            let temp = tempfile::tempdir().unwrap();
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "daemon::process::tests::stop_daemon_waits_for_graceful_exit",
+                    "--nocapture",
+                ])
+                .env("VP_TEST_GRACEFUL_STOP", "parent")
+                .env("TMPDIR", temp.path())
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated graceful-stop regression failed");
+            return;
+        }
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "daemon::process::tests::graceful_stop_child",
+                "--nocapture",
+            ])
+            .env("VP_TEST_GRACEFUL_STOP", "child")
+            .spawn()
+            .unwrap();
+        let ready = daemon_dir().join("ready");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ready.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if !ready.exists() {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("test child did not install its signal handler");
+        }
+        stop_daemon(child.id()).unwrap();
+        assert!(
+            child.wait().unwrap().success(),
+            "SIGKILL interrupted graceful cleanup after 500ms"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn graceful_stop_child() {
+        if std::env::var("VP_TEST_GRACEFUL_STOP").as_deref() != Ok("child") {
+            return;
+        }
+        let mut signal =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+        write_pid_file().unwrap();
+        std::fs::write(daemon_dir().join("ready"), "ready").unwrap();
+        signal.recv().await;
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        remove_pid_file();
     }
 }
