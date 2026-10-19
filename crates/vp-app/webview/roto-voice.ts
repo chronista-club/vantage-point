@@ -40,7 +40,7 @@ function consoleFocused(): boolean {
     .some(visibleVoiceElement)
 }
 
-/** Shared start gate for ROTO hold and keyboard toggle. */
+/** Start the visible focused composer through its existing voice gate. */
 function startFocusedVoice(target: () => VoiceTarget | null): void {
   if (recording) return
   const destination = target()
@@ -56,37 +56,4 @@ function startFocusedVoice(target: () => VoiceTarget | null): void {
 export function toggleFocusedVoice(target: () => VoiceTarget | null): void {
   if (recording) stopRotoVoice()
   else startFocusedVoice(target)
-}
-
-/** Install once in the main bundle; sidebar sends only target-window button edges. */
-export function installRotoVoiceInput(target: () => VoiceTarget | null): void {
-  let held = false
-  let enabled = document.documentElement.dataset.midiTarget !== 'false'
-  window.addEventListener('vp:roto-ptt', event => {
-    const pressed = (event as CustomEvent<{pressed: boolean}>).detail?.pressed
-    if (pressed === false) {
-      held = false
-      stopRotoVoice()
-      return
-    }
-    if (pressed !== true || held) return
-    held = true
-    if (!enabled) return
-    startFocusedVoice(target)
-  })
-  window.addEventListener('vp:midi-target', event => {
-    enabled = (event as CustomEvent<boolean>).detail === true
-    if (!enabled) {
-      stopRotoVoice()
-      held = false // The release will be routed to the new target window.
-    }
-  })
-  window.addEventListener('vp:midi-unavailable', event => {
-    const port = (event as CustomEvent<{port_name?: string}>).detail?.port_name
-    if (port?.toLowerCase().includes('roto')) {
-      stopRotoVoice()
-      held = false
-    }
-  })
-  window.addEventListener('beforeunload', () => stopRotoVoice())
 }

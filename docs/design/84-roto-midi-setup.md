@@ -1,7 +1,8 @@
 # 84. ROTO MIDI モード連携 — pin から「VP」setup を作る
 
 Status: VP 側を実装。実機書き込み・反映は未検証。
-Task: `mem_1Cg9QiQeVsk7KD3fcwhXqh`、段 C。
+Task: `mem_1Cg9QiQeVsk7KD3fcwhXqh`（setup / lease、段 C）、`mem_1CgAPGP3R4Gf4UNFBCWpTY`（T8 通常化、段 B）。
+裁定: `mem_1CgAPJPpcCwy2s1QohP3Zj`、2026-10-19 のノブ未割当裁定。
 
 ## 契約
 
@@ -12,8 +13,7 @@ setup 名は `VP`。番号の正本は `roto_setup::SETUP`。
 
 | 本体 | 表示 | MIDI | 色 |
 |---|---|---|---|
-| switch 1–7 | pin #1–#7 の lane slug | `VP_ROTO_SETUP` の channel / buttons / press / release、PUSH | 保存した pin 色の最近傍パレット、消灯は暗くする |
-| switch 8 | `MIC` | 同じ契約の button 8、PUSH | 点灯は赤、消灯は暗赤 |
+| switch 1–8 | pin #1–#8 の lane slug | `VP_ROTO_SETUP` の channel / buttons / press / release、PUSH | 保存した pin 色の最近傍パレット、消灯は暗くする |
 | knobs 全席 | なし | 未設定（CLEAR） | なし |
 | switch 9–32 | なし | 未設定（CLEAR） | なし |
 
@@ -25,9 +25,15 @@ slug も使えなければ `#N`。空 pin は `#N` と暗色にする。
 元の色は sidebar / LPD8 と共有する `midi-pins.json` の色を使い、
 `midistage_profiles::roto_palette::closest_index` で 83 色へ写す。
 
-当初の「名前を表示するが何も送らない knob」は相手 schema に表現が無い。
-2026-10-18 の lead 回答（wire `01a14e33-c1ee-7469-ade0-3b5d16f6555c`）により
-今回は `knobs=[]` とし、ノブの役割・表示は次の task で決める。
+knob は未割当（裁定 2026-10-19）。`knobs=[]` とし、全席を CLEAR のままにする。
+
+## T1〜T8 の入力
+
+switch 1–8 は LPD8 / ⌘1–8 と同じ `selectLaneByNumber` を通して pin #1–#8 の lane へ飛ぶ。
+未登録・不在の lane は何もしない。押下1回で1回だけ jump し、release は次の押下に備える。
+T8 の MIC / PTT は廃止し、ノブ・touch・transport は操作に割り当てない。
+ROTO 専用の音声入口を撤去し、キーボードの右 Option 用に録音 registry と開始条件を保持する。
+window 終了時の停止処理はキーボード側で保持する。
 
 ## 適用と失敗
 
@@ -58,7 +64,7 @@ daemon は同じ state zone の `midi-pins.json` を lease の snapshot polling 
 内容が変わったときにだけ再生成する。IPC の契約を増やさず、GUI の再接続や
 daemon 起動時にも同じ保存値から復元できる。読み取りは GUI の上限と同じ 16 KiB に制限する。
 読めない / 壊れた保存値は warn を出して最後の正常値を保持し、未読なら適用しない。
-保存ファイルが無いときは空 pin と MIC で始める。
+保存ファイルが無いときは全8列を空 pin（`#N` / 暗色）として始める。
 
 cache は state zone の `roto-setup-hashes.json`（version / setup / device ID → hash）。
 setup が `SETUP` と一致する cache だけを読み、hash にも setup 番号を含める。
@@ -74,11 +80,12 @@ cache を捨てて再適用する場合は、daemon 停止中にこの state zon
 - SDK は Apply 実装を含む midistage `9bb2536230d85495139ac95354e4a72340422c21` に固定。
   実機書き込みには、稼働中の midistaged も Apply 対応版である必要がある。
 - 本体 SEL での手動 setup 切替は midistage に見えない。
-- Serial を開いて書き込む間は ROTO の MIDI が止まる。
+- Serial を開いて書き込む間は ROTO の MIDI が止まる。T8 の名前・色の変更で hash が変わるため、
+  merge 後の初回 lease で 1 回 Apply する。以後は pin の変更時に反映する。
 - ローカル hash は VP が最後に成功を確認した内容。外部ツールでの書き換えを検出するものではない。
 - この lane では実機 lease 取得・解放、Serial 書き込み、daemon 再起動、app swap を行わない。
 - midistage の実機検証と mako の GO の後、`vp midi on` → snapshot の `setup_owners.vp=[8]` /
-  `current_setup=8`（画面 SETUP 09）→ ボタン 1–7 の jump / 8 の押下中録音、表示名・色の対応を確認する。
+  `current_setup=8`（画面 SETUP 09）→ ボタン 1–8 の lane jump、表示名・色の対応を確認する。
   MIDI 復帰と挿し直しの要否も記録する。
 
 ## 自動検証
@@ -97,3 +104,8 @@ MIDISTAGE_TEST_SERVER=/path/to/9bb2536/protocol_fixture \
 
 fixture の endpoint だけを読み、`native_midi=false` で接続する。
 実サービスや実機の成功をこの結果から推定しない。
+
+## Status log
+
+- 2026-10-19: T8 を pin #8 に揃え、ROTO の MIC / PTT を廃止。ノブは未割当のまま。
+  Apply・ボタン入力・表示の実機確認は lead で行う。

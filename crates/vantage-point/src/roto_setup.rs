@@ -28,16 +28,12 @@ pub(crate) fn generate(
                 .and_then(|v| labels.get(v))
                 .map(String::as_str)
                 .unwrap_or(slug);
-            let name = if i == 7 {
-                "MIC".to_owned()
-            } else if present {
+            let name = if present {
                 control_label(label, slug, i)
             } else {
                 format!("#{}", i + 1)
             };
-            let rgb = if i == 7 {
-                [255, 0, 0]
-            } else if present {
+            let rgb = if present {
                 pins["colors"][i]
                     .as_str()
                     .and_then(parse_color)
@@ -46,11 +42,7 @@ pub(crate) fn generate(
                 [16; 3]
             };
             let color = closest_index(rgb[0], rgb[1], rgb[2]);
-            let off = if i == 7 {
-                [128, 0, 0]
-            } else {
-                rgb.map(|v| ((u16::from(v) + 2) / 4) as u8)
-            };
+            let off = rgb.map(|v| ((u16::from(v) + 2) / 4) as u8);
             json!({"control":i, "mode":"cc7", "channel":midi.channel,
             "param":midi.buttons[i], "nrpn_address":0, "min":midi.release,
             "max":midi.press, "name":name, "color":color, "led_on":color,
@@ -129,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn projection_uses_pin_colors_and_keeps_mic_fixed_and_knobs_clear() {
+    fn projection_uses_all_eight_pin_colors_and_keeps_knobs_clear() {
         let setup = generate(&pins(), &BTreeMap::new(), &VP_ROTO_SETUP);
         assert_eq!(setup.content["name"], "VP");
         assert_eq!(setup.content["knobs"], json!([]));
@@ -139,9 +131,9 @@ mod tests {
         assert_eq!(switches[0]["color"], closest_index(0x44, 0xc2, 0xb5));
         assert_eq!(switches[1]["name"], "#2");
         assert_eq!(switches[1]["color"], closest_index(16, 16, 16));
-        assert_eq!(switches[7]["name"], "MIC");
-        assert_eq!(switches[7]["led_on"], closest_index(255, 0, 0));
-        assert_eq!(switches[7]["led_off"], closest_index(128, 0, 0));
+        assert_eq!(switches[7]["name"], "unused");
+        assert_eq!(switches[7]["led_on"], closest_index(0xe4, 0x7a, 0xc9));
+        assert_eq!(switches[7]["led_off"], closest_index(57, 31, 50));
         for (i, switch) in switches.iter().enumerate() {
             assert_eq!(switch["control"], i);
             assert_eq!(switch["channel"], VP_ROTO_SETUP.channel);
@@ -169,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn hash_tracks_generated_content_not_unused_pin_eight_or_input_key_order() {
+    fn hash_tracks_pin_eight_and_ignores_empty_pin_colors() {
         let mut input = pins();
         let original = generate(&input, &BTreeMap::new(), &VP_ROTO_SETUP);
         assert_eq!(original.hash.len(), 64);
@@ -177,46 +169,31 @@ mod tests {
             original.hash,
             generate(&input, &BTreeMap::new(), &VP_ROTO_SETUP).hash
         );
-        input["slots"][7] = Value::Null;
         input["colors"][7] = json!("#ffffff");
-        assert_eq!(
-            original.hash,
-            generate(&input, &BTreeMap::new(), &VP_ROTO_SETUP).hash
-        );
-        input["colors"][0] = json!("#ff0000");
         assert_ne!(
             original.hash,
             generate(&input, &BTreeMap::new(), &VP_ROTO_SETUP).hash
         );
-        let labels = BTreeMap::from([("vp/roto-vp-setup".to_owned(), "Studio".to_owned())]);
+        input = pins();
+        input["slots"][7] = Value::Null;
+        let removed = generate(&input, &BTreeMap::new(), &VP_ROTO_SETUP);
+        assert_ne!(original.hash, removed.hash);
+        input["colors"][7] = json!("#ffffff");
         assert_eq!(
-            generate(&input, &labels, &VP_ROTO_SETUP).content["switches"][0]["name"],
-            "Studio"
+            removed.hash,
+            generate(&input, &BTreeMap::new(), &VP_ROTO_SETUP).hash
         );
+        let labels = BTreeMap::from([("vp/roto-vp-setup".to_owned(), "Studio".to_owned())]);
+        let content = generate(&input, &labels, &VP_ROTO_SETUP).content;
+        assert_eq!(content["switches"][0]["name"], "Studio");
     }
 
     #[test]
-    fn missing_pins_are_dim_numbered_slots_and_mic() {
+    fn missing_pins_are_eight_dim_numbered_slots() {
         let content = generate(&Value::Null, &BTreeMap::new(), &VP_ROTO_SETUP).content;
-        for i in 0..7 {
+        for i in 0..8 {
             assert_eq!(content["switches"][i]["name"], format!("#{}", i + 1));
             assert_eq!(content["switches"][i]["color"], closest_index(16, 16, 16));
         }
-        assert_eq!(content["switches"][7]["name"], "MIC");
-    }
-
-    #[test]
-    fn mic_off_uses_actual_dark_red_instead_of_quantizing_to_black() {
-        use midistage_profiles::roto_palette::ROTO_PALETTE;
-        let content = generate(&Value::Null, &BTreeMap::new(), &VP_ROTO_SETUP).content;
-        let mic = &content["switches"][7];
-        assert_eq!(
-            ROTO_PALETTE[mic["led_on"].as_u64().unwrap() as usize],
-            0xff0000
-        );
-        assert_eq!(
-            ROTO_PALETTE[mic["led_off"].as_u64().unwrap() as usize],
-            0x800000
-        );
     }
 }

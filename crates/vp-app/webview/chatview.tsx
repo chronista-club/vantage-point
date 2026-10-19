@@ -34,7 +34,7 @@ import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import { isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
 import { renderMermaidBlocks } from './mermaid-post'
 import { registerVoiceSink, sendVoice } from './voice'
-import { installRotoVoiceInput, registerRotoVoiceControl, stopRotoVoice, toggleFocusedVoice, visibleVoiceElement } from './roto-voice'
+import { registerRotoVoiceControl, stopRotoVoice, toggleFocusedVoice, visibleVoiceElement } from './roto-voice'
 import { installVoiceHotkey } from './voice-hotkey'
 import { Marked } from 'marked'
 import { confirmCodexConsoleHandoff } from './codex-mode-handoff'
@@ -2954,7 +2954,6 @@ export function installChatView(vpConsole: VpConsole): ChatViewApi {
     const lane = activeLane()
     return lane ? {lane, session: sessionsOf(lane)?.focused ?? focusedOf(lane)} : null
   }
-  installRotoVoiceInput(voiceTarget)
   installVoiceHotkey(() => toggleFocusedVoice(voiceTarget), () => stopRotoVoice())
   // session 一覧 bus → module signal（全 SessionChatView が共有）。install は起動時 1 回。
   document.addEventListener('vp:conversation-sessions', (e) => {

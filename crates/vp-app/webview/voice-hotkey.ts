@@ -42,6 +42,7 @@ export function installVoiceHotkey(toggle: () => void, stop: () => void): void {
   window.addEventListener('compositionstart', () => { composing = true; tap.reset() }, true)
   window.addEventListener('compositionend', () => { composing = false; tap.reset() }, true)
   window.addEventListener('blur', () => { composing = false; tap.reset(); stop() })
+  window.addEventListener('beforeunload', () => stop())
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { composing = false; tap.reset(); stop() }
   })
