@@ -1,4 +1,4 @@
-// mem_1Cg4Mh2158eTTSiPPymwWp — 実物の 2 bundle と同じ境界で要求数 / lane 追従を確かめる。
+// mem_1CgBHtLEoHBUibQLBU3vbs / mem_1Cg4Mh2158eTTSiPPymwWp — 実物の 2 bundle と同じ境界で要求数 / lane 追従を確かめる。
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { build } from 'esbuild'
 import { solidPlugin } from 'esbuild-plugin-solid'
@@ -66,6 +66,26 @@ describe('Lane リンクの表示購読', () => {
     expect(win.sent.filter(r=>r.t==='local_urls:request')).toHaveLength(2)
     section(win,'lane');await win.happyDOM.waitUntilComplete()
     expect(win.sent.filter(r=>r.t==='local_urls:request').at(-1).address).toBe('vp/three')
+  })
+
+  it('登録済みも表示中 lane だけ自動確認し、節を再表示すると再確認する', async () => {
+    const win = await fixture()
+    win.eval(`const original=window.ipc.postMessage;window.ipc.postMessage=m=>{
+      const request=JSON.parse(m);
+      if(request.t==='local_urls:request'&&['load','probe'].includes(request.payload.action)){
+        window.sent.push(request);
+        queueMicrotask(()=>window.vpSidebarDispatch({t:'local_urls:result',req:request.req,payload:request.payload.action==='probe'?{probe:{state:'responding',status:200}}:{entries:[{id:'preview',label:'preview',url:'http://localhost:5173/'}]}}));
+      }else original(m);
+    };`)
+    expect(win.sent).toEqual([])
+    toggle(win);await win.happyDOM.waitUntilComplete()
+    const probes=()=>win.sent.filter(r=>r.payload?.action==='probe')
+    expect(probes()).toMatchObject([{address:'vp/one',payload:{id:'preview'}}])
+    expect(win.document.querySelector('#lane .vp-link-dot')!.getAttribute('title')).toBe('応答あり · HTTP 200')
+    section(win,'lane');win.rsb.setLane('vp/two');await win.happyDOM.waitUntilComplete()
+    expect(probes()).toHaveLength(1)
+    section(win,'lane');await win.happyDOM.waitUntilComplete()
+    expect(probes().map(r=>r.address)).toEqual(['vp/one','vp/two'])
   })
 
   it('PR poller を両節で共用し、非表示の検出 URL は probe しない', async () => {
