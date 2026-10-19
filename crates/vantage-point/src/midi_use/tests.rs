@@ -67,6 +67,7 @@ impl Service {
                                 server_epoch: "test".into(),
                                 session_id: "test-session".into(),
                                 devices: vec![],
+                                service: Default::default(),
                             }),
                             error: None,
                         };

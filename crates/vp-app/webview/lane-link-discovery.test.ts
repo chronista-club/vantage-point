@@ -3,6 +3,35 @@ import { describe, expect, it, vi } from 'vitest'
 import { extractLoopbackUrls, LoopbackUrlHistory, observeConversationUrls, observeTerminalUrls } from './lane-link-discovery'
 
 describe('出力のローカル URL', () => {
+  it.each([
+    '(http://127.0.0.1:32000/api/health)…',
+    '(http://127.0.0.1:32000/api/health)',
+    '<http://127.0.0.1:32000/api/health>',
+    ...[')', ']', '>', '」', '』', '）', '}', '.', ',', ';', ':', '!', '?', '。', '、', '…', '"', "'", '`', '”', '’'].map(suffix => `http://127.0.0.1:32000/api/health${suffix}`),
+  ])('URL の外側の括弧・句読点・引用符を除く: %s', text => {
+    expect(extractLoopbackUrls(text)).toEqual(['http://127.0.0.1:32000/api/health'])
+  })
+  it.each([
+    ['https://localhost/y_(foo)', 'https://localhost/y_(foo)'],
+    ['(https://localhost/y_(foo))…', 'https://localhost/y_(foo)'],
+    ['https://localhost/y_(foo_(bar))。', 'https://localhost/y_(foo_(bar))'],
+    ['http://[::1]', 'http://[::1]/'],
+    ['[http://[::1]]…', 'http://[::1]/'],
+    ['http://localhost/a[b]。', 'http://localhost/a[b]'],
+    ['http://localhost/a?value=(foo)。', 'http://localhost/a?value=(foo)'],
+    ['http://localhost/a%29%E2%80%A6', 'http://localhost/a%29%E2%80%A6'],
+  ])('URL 内の対応する括弧・エスケープを保持する: %s', (text, expected) => {
+    expect(extractLoopbackUrls(text)).toEqual([expected])
+  })
+  it('外部 URL は対応括弧を含んでも発見対象にしない', () => {
+    expect(extractLoopbackUrls('https://x/y_(foo)')).toEqual([])
+  })
+  it('分割された末尾の括弧と省略記号を履歴に混入させない', () => {
+    const history = new LoopbackUrlHistory()
+    history.feed('trailing', 'pty:1', '(http://127.0.0.1:32000/api/health)')
+    history.feed('trailing', 'pty:1', '…\n')
+    expect(history.get('trailing')).toEqual(['http://127.0.0.1:32000/api/health'])
+  })
   it.each([false, true])('32 KiB 本文の先頭 URL を捨てない（complete=%s）', complete => {
     const history = new LoopbackUrlHistory()
     history.feed('large', 'pty:1', 'Local: http://localhost:5173/\n' + 'x'.repeat(32768) + '\n', complete)

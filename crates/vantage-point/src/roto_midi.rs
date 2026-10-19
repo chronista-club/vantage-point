@@ -1,11 +1,10 @@
-//! VP's MIDI-mode setup contract. Serial programming belongs to midistage.
-//! Temporary until the physical "VP" setup is written; see design 81.
+//! VP の MIDI モード契約（design 84）。Serial 書き込みは midistage が担当する。
 use crate::device_input::{ControlEvent, DeviceInput};
 
 pub(crate) struct MidiButtonSetup {
     /// Human MIDI channel (1..=16).
     pub channel: u8,
-    /// Physical columns, zero-based Button indices; column 8 is PTT.
+    /// 物理列順の switch CC。列1〜8 = pin #1〜#8。
     pub buttons: [u8; 8],
     pub press: u8,
     pub release: u8,

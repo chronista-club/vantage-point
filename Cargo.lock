@@ -4869,8 +4869,8 @@ dependencies = [
 
 [[package]]
 name = "midistage-client"
-version = "0.0.1"
-source = "git+https://github.com/chronista-club/midistage.git?rev=0d3c3f5e22dac62c0e701daaa17fcd173f41df18#0d3c3f5e22dac62c0e701daaa17fcd173f41df18"
+version = "0.2.0"
+source = "git+https://github.com/chronista-club/midistage.git?rev=9bb2536230d85495139ac95354e4a72340422c21#9bb2536230d85495139ac95354e4a72340422c21"
 dependencies = [
  "anyhow",
  "club-unison",
@@ -4883,8 +4883,8 @@ dependencies = [
 
 [[package]]
 name = "midistage-profiles"
-version = "0.0.1"
-source = "git+https://github.com/chronista-club/midistage.git?rev=0d3c3f5e22dac62c0e701daaa17fcd173f41df18#0d3c3f5e22dac62c0e701daaa17fcd173f41df18"
+version = "0.2.0"
+source = "git+https://github.com/chronista-club/midistage.git?rev=9bb2536230d85495139ac95354e4a72340422c21#9bb2536230d85495139ac95354e4a72340422c21"
 dependencies = [
  "serde",
  "sha1 0.11.0",
@@ -4892,7 +4892,7 @@ dependencies = [
 
 [[package]]
 name = "midistage-profiles"
-version = "0.85.0"
+version = "0.86.0"
 dependencies = [
  "serde",
  "sha1 0.11.0",
@@ -4900,8 +4900,8 @@ dependencies = [
 
 [[package]]
 name = "midistage-protocol"
-version = "0.0.1"
-source = "git+https://github.com/chronista-club/midistage.git?rev=0d3c3f5e22dac62c0e701daaa17fcd173f41df18#0d3c3f5e22dac62c0e701daaa17fcd173f41df18"
+version = "0.2.0"
+source = "git+https://github.com/chronista-club/midistage.git?rev=9bb2536230d85495139ac95354e4a72340422c21#9bb2536230d85495139ac95354e4a72340422c21"
 dependencies = [
  "serde",
  "serde_json",
@@ -10303,7 +10303,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vantage-point"
-version = "0.85.0"
+version = "0.86.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -10327,7 +10327,7 @@ dependencies = [
  "libc",
  "midir",
  "midistage-client",
- "midistage-profiles 0.0.1",
+ "midistage-profiles 0.2.0",
  "notify",
  "objc2",
  "objc2-app-kit",
@@ -10393,7 +10393,7 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "vp-app"
-version = "0.85.0"
+version = "0.86.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -10446,7 +10446,7 @@ dependencies = [
 
 [[package]]
 name = "vp-cli"
-version = "0.85.0"
+version = "0.86.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -10463,7 +10463,7 @@ dependencies = [
 
 [[package]]
 name = "vp-local-urls"
-version = "0.85.0"
+version = "0.86.0"
 dependencies = [
  "reqwest 0.13.5",
  "serde",
@@ -10474,7 +10474,7 @@ dependencies = [
 
 [[package]]
 name = "vp-nexus"
-version = "0.85.0"
+version = "0.86.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -10498,7 +10498,7 @@ dependencies = [
 
 [[package]]
 name = "vp-paths"
-version = "0.85.0"
+version = "0.86.0"
 dependencies = [
  "dirs",
  "tempfile",

@@ -1,12 +1,32 @@
 import type { ConversationEvent } from './console'
 
+/** 文の末尾記号だけを除き、path の対応括弧と IPv6 host の角括弧を保つ。 */
+function trimUrlEnd(candidate: string): string {
+  const excess: Record<string, number> = { ')': 0, ']': 0 }
+  for (const char of candidate) {
+    if (char === '(') excess[')']--
+    else if (char === '[') excess[']']--
+    else if (char === ')' || char === ']') excess[char]++
+  }
+  let end = candidate.length
+  while (end > 0) {
+    const char = candidate[end - 1]
+    if (char === ')' || char === ']') {
+      if (excess[char] <= 0) break
+      excess[char]--
+    } else if (!/[>」』）},.;:!?。、…"'`“”‘’]/.test(char)) break
+    end--
+  }
+  return candidate.slice(0, end)
+}
+
 /** console / chat 出力からの URL 抽出と正規化（両方がここだけを通る）。 */
 export function extractLoopbackUrls(text: string): string[] {
   // CSI は区切りにして、cursor 移動の前後にある文字列を結合しない。
   const plain = text.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ' ')
   const urls = new Set<string>()
   for (const match of plain.matchAll(/https?:\/\/[^\s<>"'`\x00-\x1f]+/gi)) {
-    const candidate = match[0].replace(/[),.;!?}]+$/, '').replace(/\](?!.*\])/g, (bracket, offset: number, value: string) => value.includes('://[') && offset === value.indexOf(']') ? bracket : '')
+    const candidate = trimUrlEnd(match[0])
     try {
       const url = new URL(candidate)
       if (url.username || url.password || url.port === '0') continue

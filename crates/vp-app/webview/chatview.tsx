@@ -34,7 +34,8 @@ import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import { isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
 import { renderMermaidBlocks } from './mermaid-post'
 import { registerVoiceSink, sendVoice } from './voice'
-import { installRotoVoiceInput, registerRotoVoiceControl, stopRotoVoice, visibleVoiceElement } from './roto-voice'
+import { registerRotoVoiceControl, stopRotoVoice, toggleFocusedVoice, visibleVoiceElement } from './roto-voice'
+import { installVoiceHotkey } from './voice-hotkey'
 import { Marked } from 'marked'
 import { confirmCodexConsoleHandoff } from './codex-mode-handoff'
 import type {
@@ -1647,7 +1648,9 @@ function SessionChatView(props: { lane: string; session: number }) {
   onCleanup(registerRotoVoiceControl(props, rotoVoiceControl))
   createEffect(() => {
     const focused = sessionsOf(props.lane)?.focused ?? focusedOf(props.lane)
-    if (activeLane() !== props.lane || focused !== props.session) stopRotoVoice(rotoVoiceControl)
+    if (voice() !== 'recording' || activeLane() !== props.lane || focused !== props.session) {
+      stopRotoVoice(rotoVoiceControl)
+    }
   })
   // 押している最中に session が閉じて unmount されると pointerup が届かず、Rust 側の録音が
   // 開いたまま残る（次にどこかの🎙が押されるまでマイクが点きっぱなし）。止めてから消える。
@@ -2947,10 +2950,11 @@ export type ChatViewApi = {
 }
 
 export function installChatView(vpConsole: VpConsole): ChatViewApi {
-  installRotoVoiceInput(() => {
+  const voiceTarget = () => {
     const lane = activeLane()
     return lane ? {lane, session: sessionsOf(lane)?.focused ?? focusedOf(lane)} : null
-  })
+  }
+  installVoiceHotkey(() => toggleFocusedVoice(voiceTarget), () => stopRotoVoice())
   // session 一覧 bus → module signal（全 SessionChatView が共有）。install は起動時 1 回。
   document.addEventListener('vp:conversation-sessions', (e) => {
     const d = (

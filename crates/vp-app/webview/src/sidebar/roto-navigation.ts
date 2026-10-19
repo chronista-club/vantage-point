@@ -15,10 +15,8 @@ export function createRotoNavigation() {
     if (!e || e.type !== 'button' || !Number.isInteger(e.index) || e.index < 0 || e.index >= 8 || typeof e.pressed !== 'boolean') return true;
     if (e.pressed === held.has(e.index)) return true;
     if (e.pressed) held.add(e.index); else held.delete(e.index);
-    if (e.index === 7) {
-      window.dispatchEvent(new CustomEvent('vp:roto-ptt', {detail:{pressed:e.pressed}}));
-    } else if (e.pressed) {
-      // Same pin SSOT and jump action as LPD8 pads / ⌘1…⌘7.
+    if (e.pressed) {
+      // Same pin SSOT and jump action as LPD8 pads / ⌘1…⌘8.
       selectLaneByNumber(e.index + 1);
     }
     return true;
