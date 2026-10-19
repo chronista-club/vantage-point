@@ -9,7 +9,7 @@
 URL は Lane に残るリンク集とする。停止・Agent 終了で消さず、明示削除まで保持する。
 新しい Lane に自動コピーしない。登録と接続状態は区別する。
 CLI/MCP/UI が同じ登録を扱い、外部で登録した変更も R sidebar の Lane 節へ反映する。
-登録 URL の probe は手動、出力から検出した URL は表示中に自動確認する（下記の追加裁定）。
+登録 URL と出力から検出した URL は、Lane 節の表示中に順次自動確認する（下記の追加裁定）。
 
 ## Lane リンクへの追加裁定
 
@@ -33,6 +33,10 @@ UI は各 lane 行から外し、[design 82](82-r-sidebar-prs.md) の R sidebar 
 登録時は名前欄に focus し、フォームへ `scrollIntoView({block:'nearest'})` を呼ぶ。
 検出候補は先頭 5 件を表示し、「さらに N 件」で残りを展開する。lane 切替で展開を閉じる。
 Lane 節には高さ上限があるため、フォームを検出一覧の後ろに戻さない。
+
+登録済みの行は、応答の点・クリックで開く label・省略表示する URL を横に並べる。
+name が label と異なる場合だけ薄い 2 行目を出す。状態文言は点の title / aria-label に置く。
+編集・削除は hover / focus-within で右端に表示し、Tab でも操作できる。
 
 検出だけでは保存しない。URL の点は HTTP 応答の有無であり、アプリの正常動作を保証しない。
 
@@ -80,7 +84,12 @@ lane の変更・節を閉じた後に遅れて届く結果は generation で捨
   PTY の UTF-8 / URL は chunk 間をつなぎ、改行しない末尾は 250 ms の idle 後に確定する
   - 受信した本文は区切りまで全体を走査し、16 KiB 制限は次回へ持ち越す tail だけに掛ける
   - 既存の `term:remove_lane` 通知で検出履歴と PTY の確定待ちタイマーを消す。同名 Lane の再作成へ持ち越さない
-- 検出 URL は Lane 節の表示中に順番に probe する。「再確認」で再取得できる。
+- 登録済み → 検出 URL の順で、一つの列から probe する。登録済みは既存 `probe` action、
+  検出 URL は `probe_url` を使う。登録済みの「確認」ボタンは置かない。
+  表示開始・lane 切替・登録変更で登録済みを再確認し、内容が同じ定期 load では再確認しない。
+  lane の generation と登録一覧の snapshot を照合し、更新前の結果を捨てる。
+  切替時も実行中の要求が返るまで次を待ち、非表示・unmount 後は後続を送らない。
+  検出 URL の「再確認」は検出結果を取り直す。
   UI 専用 `probe_url` は保存を経由せず、既存 `local_urls::probe` と同じ検証・proxy / redirect 拒否を使う。
   CLI / MCP の `probe <name>` は登録名を取る従来の契約のまま
 - PR 取得は既存 `createPrPoller` 1 本。Lane 節または PR 節が表示中なら動き、両方開いても重複しない
@@ -116,3 +125,5 @@ CLIのcwd/明示対象、MCP router/呼出し、UI外部変更反映・draft競�
   CLI/MCP と永続保存形式は維持。native app の差し替え・再起動は lead が担当し、実機確認待ち。
 - 2026-10-19: `mem_1CgB31Xk419PtPkcK6yzLp`。検出候補が多いと登録フォームが下へ押し出されるため、
   フォーム・登録済みを先頭へ移し、候補を 5 件で折りたたむ。実機の表示とスクロールは lead 確認待ち。
+- 2026-10-19: `mem_1CgBHtLEoHBUibQLBU3vbs`。登録済みリンクを 1〜2 行にまとめ、
+  登録・検出共通の順次自動確認へ変更。実機の表示・hover・Tab 操作は lead 確認待ち。
