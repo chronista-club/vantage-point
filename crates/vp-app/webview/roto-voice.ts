@@ -1,4 +1,4 @@
-/** ROTO PTT owns the composer selected at press time, never the one at release. */
+/** Voice inputs own the composer selected at start time, never the one at stop. */
 export interface VoiceTarget { lane: string; session: number }
 export interface RotoVoiceControl {
   start(): boolean
@@ -40,6 +40,24 @@ function consoleFocused(): boolean {
     .some(visibleVoiceElement)
 }
 
+/** Shared start gate for ROTO hold and keyboard toggle. */
+function startFocusedVoice(target: () => VoiceTarget | null): void {
+  if (recording) return
+  const destination = target()
+  const control = destination && controls.get(key(destination))
+  if (!control?.visible()) return
+  if (consoleFocused()) {
+    control.reject('Console にフォーカスがあるため録音を開始できません')
+    return
+  }
+  if (control.start()) recording = control
+}
+
+export function toggleFocusedVoice(target: () => VoiceTarget | null): void {
+  if (recording) stopRotoVoice()
+  else startFocusedVoice(target)
+}
+
 /** Install once in the main bundle; sidebar sends only target-window button edges. */
 export function installRotoVoiceInput(target: () => VoiceTarget | null): void {
   let held = false
@@ -54,14 +72,7 @@ export function installRotoVoiceInput(target: () => VoiceTarget | null): void {
     if (pressed !== true || held) return
     held = true
     if (!enabled) return
-    const destination = target()
-    const control = destination && controls.get(key(destination))
-    if (!control?.visible()) return
-    if (consoleFocused()) {
-      control.reject('Console にフォーカスがあるため録音を開始できません')
-      return
-    }
-    if (control.start()) recording = control
+    startFocusedVoice(target)
   })
   window.addEventListener('vp:midi-target', event => {
     enabled = (event as CustomEvent<boolean>).detail === true
