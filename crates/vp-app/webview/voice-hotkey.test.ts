@@ -1,6 +1,19 @@
 // mem_1CgANNcfXDjfnXyBQtSCsZ
-import { describe, expect, it } from 'vitest'
-import { createRightOptionTap } from './voice-hotkey'
+import { describe, expect, it, vi } from 'vitest'
+import { createRightOptionTap, installVoiceHotkey } from './voice-hotkey'
+
+it('keyboard installation stops recording before the window unloads', () => {
+  const windowTarget = new EventTarget()
+  const documentTarget = new EventTarget()
+  const stop = vi.fn()
+  vi.stubGlobal('window', windowTarget)
+  vi.stubGlobal('document', documentTarget)
+  try {
+    installVoiceHotkey(vi.fn(), stop)
+    windowTarget.dispatchEvent(new Event('beforeunload'))
+    expect(stop).toHaveBeenCalledOnce()
+  } finally { vi.unstubAllGlobals() }
+})
 
 describe('right Option single tap', () => {
   it('emits only on release, accepts consecutive taps and ignores repeat edges', () => {

@@ -81,6 +81,11 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
 
+    fn populated_pins() -> Value {
+        json!({"slots": (0..8).map(|i| json!({"path":"/vp", "address":format!("vp/lane-{i}")})).collect::<Vec<_>>(),
+            "colors":vec!["#44c2b5"; 8], "dimGain":0.25})
+    }
+
     /// Run explicitly with the pinned upstream protocol_fixture. It supplies fake
     /// devices and never opens CoreMIDI/Serial; the endpoint lives only in TempDir.
     #[tokio::test]
@@ -113,6 +118,12 @@ mod tests {
             }
         }
         let dir = tempfile::tempdir().unwrap();
+        let pins = populated_pins();
+        std::fs::write(
+            dir.path().join("midi-pins.json"),
+            serde_json::to_vec(&pins).unwrap(),
+        )
+        .unwrap();
         let binary = std::env::var_os("MIDISTAGE_TEST_SERVER")
             .expect("fixed-revision protocol_fixture path");
         let mut server = tokio::process::Command::new(binary)
@@ -172,7 +183,7 @@ mod tests {
         .await
         .expect("register, Apply and completion confirmation must finish");
         let expected = crate::roto_setup::generate(
-            &Value::Null,
+            &pins,
             &std::collections::BTreeMap::new(),
             &crate::roto_midi::VP_ROTO_SETUP,
         );
@@ -243,7 +254,7 @@ mod tests {
     #[test]
     fn generated_content_roundtrips_through_the_actual_sdk_without_field_loss() {
         let generated = crate::roto_setup::generate(
-            &Value::Null,
+            &populated_pins(),
             &std::collections::BTreeMap::new(),
             &crate::roto_midi::VP_ROTO_SETUP,
         );
@@ -252,6 +263,7 @@ mod tests {
         assert_eq!(serde_json::to_value(&content).unwrap(), generated.content);
         assert!(content.knobs.is_empty());
         assert_eq!(content.switches.len(), 8);
+        assert_eq!(content.switches[7].name, "lane-7");
         assert_eq!(
             content.switches[7].action,
             midistage_client::SwitchAction::Push

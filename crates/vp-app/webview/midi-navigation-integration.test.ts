@@ -163,7 +163,7 @@ it('the pin strip shows 8 pins in two rows like the pads: #5–#8 above #1–#4'
 });
 
 
-it('ROTO buttons 1–7 use pinned targets, button 8 is only PTT; knobs never select sessions', () => {
+it('ROTO buttons 1–8 select pins once per press and never start voice', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: unknown[]};
   windows.push(w);w.eval(bundle);
   w.dispatchEvent(new w.CustomEvent('vp:midi-settings',{detail:{slots:[{path:'/vp',address:'vp/sub'},null,null,null,null,null,null,{path:'/vp',address:'vp/root'}],colors:Array(8).fill('#123456')}}));
@@ -175,12 +175,13 @@ it('ROTO buttons 1–7 use pinned targets, button 8 is only PTT; knobs never sel
   w.sent.length=0;
   send('button',1,true);send('knob',0,true);send('knob_touch',0,true);
   send('button',7,true);send('button',7,true);send('button',7,false);send('button',7,false);
-  expect(w.sent).toEqual([]);
-  expect(ptt).toEqual([true,false]);
+  expect(w.sent).toEqual([{t:'process:toggle',path:'/vp',expanded:true},{t:'lane:select',path:'/vp',address:'vp/root'}]);
+  expect(ptt).toEqual([]);
+  w.sent.length=0;
   expect(w.eval('window.__vpMidiPads.roto')).toBeUndefined();
   w.eval("window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:false}))");
   send('button',0,true);send('button',7,true);
-  expect(w.sent).toEqual([]);expect(ptt).toEqual([true,false]);
+  expect(w.sent).toEqual([]);expect(ptt).toEqual([]);
 });
 
 it('holds through real IPC, shows rejection without a lane, and cancels on target loss', () => {

@@ -101,33 +101,29 @@ body 164 byte の配置:
 
 ## ROTO の MIDI モード入力
 
-2026-10-16 裁定: MIDI モードの「VP」setup を使う。列1〜7のボタンはピン #1〜#7、列8は押している間だけ音声入力。ノブ・touch・transport は未割当。pin #8 は LPD8 pad8 / ⌘8 で使える。番号・色・宛先は既存の app 共通ピン設定が正本で、sidebar の `#N` もその色を使う。
+現行契約は [design 84](84-roto-midi-setup.md) に集約する。
+2026-10-19 の裁定で、switch 1–8 = pin #1–#8 の lane jump に統一。
+旧「列8 = PTT」を置き換え、音声入力はキーボード側へ移す。ノブは未割当。
 
-### setup との入力契約
+正本は `roto_midi::VP_ROTO_SETUP`。ch16、switch CC 20–27（press=127 / release=0）、
+parser と setup 生成が同じ定義を使い、Webview に CC 定数を複製しない。
+setup は内部 index 8（画面 SETUP 09）、ノブは全席 CLEAR。
 
-正本は `crates/vantage-point/src/roto_midi.rs` の `VP_ROTO_SETUP: MidiButtonSetup`。1始まりの `channel`、物理列順の `buttons: [u8; 8]`、`press` / `release` をまとめる。暫定値は channel=16、buttons=[20,21,22,23,24,25,26,27]、press=127、release=0。raw MIDI のチャンネル・CC・値をこの境界で検証し、合致したものだけ `ControlEvent::Button {index,pressed}` にする。Webview に CC 定数を複製しない。
+ROTO は owned input-only listener を使い、midistage の lease が無ければ取得しない。
+最後に触った VP window だけが入力を受ける。Serial と setup 書き込みは midistage の責務。
+常駐の DAW handshake / learn / track SysEx は使わない。明示的な診断用
+`vp midi roto control` の DAW CLI は通常の入力から呼ばない。
+lane から daemon 再起動・app swap は行わない。
 
-midistage の setup 書き込みとこの定義を合わせること。2026-10-16 の読み取りでは実機には Ladyland の ch1/ch2 setup があり、**VP setup はまだ無い**。暫定値で今の実機が動くとは扱わない。Serial のフレーミング・ポート管理・読み取り・書き込みは midistage の責務（PR #26）。VP の Serial 試作は `a6b2ac27` の履歴のみ保持し、workspace から外す。
+### キーボードからの音声入力（mem_1CgANNcfXDjfnXyBQtSCsZ）
 
-### 経路と音声入力
-
-ROTO は他機材と同じ owned input-only listener を使う。midistage の lease が無ければ取得しない。常駐の DAW handshake / learn / track SysEx / motor feedback は撤去する。明示的な診断用 `vp midi roto control` の DAW CLI は別機能として残すが、VP の通常の MIDI 入力からは呼ばない。
-
-最後に触った VP window だけが入力を受ける。列1〜7は LPD8 / ⌘N と同じ `selectLaneByNumber` → `pinTargetOf` を使い、押下1回で1回だけ jump する。未登録・不在のピンは何もしない。
-
-列8は main bundle の chat controller へ渡し、既存の🎙と同じ `voice:start` / `voice:stop` の制約を使う。
-
-- active lane の focused chat session を押下時に固定し、release 時の現在地へ送り直さない。
-- 下書きがある／認識中／対象 chat が無い・隠れている／console focus 中は開始しない。理由の表示は見えている chat の入力欄だけでよい。自動で chat に切り替えない。
-- window の MIDI target 喪失、session/lane の変更・unmount、機材切断・所有権喪失時に停止する。release が旧 window に届くことを前提にしない。
-- 認識結果は元の入力欄に置く。自動送信しない。認識中に戻ってきた下書きは既存仕様どおり保持する。
-
-#### キーボードからの音声入力（mem_1CgANNcfXDjfnXyBQtSCsZ）
-
-右 Option の単独タップは開始／停止のトグル、ROTO T8 は押している間の hold とする。
+右 Option の単独タップは音声入力の開始／停止を切り替える。
 キーは当面固定。VP が前面のときに main WebView の `AltRight` keydown/keyup で検出する。
 左 Option、他キーとの併用、IME 合成中は起動せず、通常の Option ショートカットを消費しない。
-ROTO と同じ registry・録音所有者・入力欄の開始条件を使い、片方で始めた録音をもう片方で止められる。
+共有の registry・録音所有者・入力欄の開始条件を使う。
+下書きがある／認識中／対象 chat が無い・隠れている／console focus 中は開始しない。
+認識結果は元の入力欄に置き、自動送信や他 window への引き継ぎはしない。
+終了・session/lane の変更・unmount 時には元の録音所有者を停止する。
 右 Option の開始先も active lane の focused chat session に固定する。
 window がフォーカスを失ったときは録音を止め、押下途中のキー状態を捨てる。
 認識中は新しい録音を始めず、録音エラー後は次のタップで再試行できる。
@@ -135,13 +131,6 @@ window がフォーカスを失ったときは録音を止め、押下途中の�
 
 実機の受入条件は、前面 chat で右 Option タップ → 録音表示 → 発話 → 再タップ → 元の入力欄へ文字。
 WKWebView のキー到達と音声認識は自動テストと分けて確認する。
-
-### やってはいけない
-
-- Serial port を VP daemon から開かない。MIDI 物理 port へ所有権チェックを迂回して接続しない。
-- DAW 表示・動的 VU・knob の session 選択を今回の範囲に混ぜない。
-- 他 window へ録音を引き継がない。書きかけを上書き・自動送信しない。
-- 自動テストを ROTO 実機・録音の検収とみなさない。lane から daemon 再起動・app swap は行わない。
 
 ## 検証
 
@@ -171,3 +160,5 @@ Rust の `SidebarState` を serde で生成した fixture を `midi-sidebar-wire
 
 - 2026-10-16: nightly `ebfe2e93` まで取り込み、#1219 の切断・接続待ち・listener lock 順序と #1222 の診断を保持。並行 ensure を含む同名 lease 更新で、新しい port を開く時点の旧 task 終了と先行 `held=false` 通知を検証。shutdown の `release_fleet` は永続設定保存を呼ばないことをソース確認。fmt / check / Clippy / Rust 全体 1626 passed（0 failed / 25 ignored）/ Webview 847 tests / 型検査 / bundle を再検証。実機検収は引き続き別工程。
 - 2026-10-19: 右 Option 単独タップで音声入力をトグルする経路を追加（`mem_1CgANNcfXDjfnXyBQtSCsZ`）。ROTO の録音所有者と開始条件を共有し、IME・併用キー・フォーカス喪失・録音エラー後の再試行を回帰検証。実機のキー到達と発話の検収は別工程。
+
+- 2026-10-19: ROTO の T8 を pin #8 に統一し、ノブは未割当のままとする。現行の setup / 入力契約を design 84 に集約。実機確認待ち。
