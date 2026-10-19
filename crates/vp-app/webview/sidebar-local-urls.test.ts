@@ -1,5 +1,5 @@
-// mem_1CfkeiUePgFsbYoGtTeDpq
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+// mem_1CfkeiUePgFsbYoGtTeDpq / mem_1CgB31Xk419PtPkcK6yzLp
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { build } from 'esbuild'
 import { solidPlugin } from 'esbuild-plugin-solid'
 import { Window, type HTMLInputElement } from 'happy-dom'
@@ -45,6 +45,46 @@ function button(win:Window,text:string) {const b=[...win.document.querySelectorA
 function input(win:Window,label:string,value:string){const el=win.document.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;expect(el).not.toBeNull();el.value=value;el.dispatchEvent(new win.Event('input',{bubbles:true}))}
 afterEach(async()=>{for(const w of windows.splice(0))await w.happyDOM.abort()})
 describe('registered local URLs',()=>{
+  it.each([0,2,12])('opens the form before the lists with %s discovered URLs',async count=>{
+    const urls=Array.from({length:count},(_,i)=>`http://localhost:${5100+i}/`);
+    const win=await fixture(true,false,false,urls);
+    if(count) button(win,'登録').click(); else button(win,'URLを追加').click();
+    await flush(win);
+    const form=win.document.querySelector('.vp-local-url-form');
+    expect(form).not.toBeNull();
+    expect(win.document.querySelector<HTMLInputElement>('[aria-label="URL"]')!.value).toBe(urls[0]??'');
+    expect(win.document.querySelector('.vp-local-url-body')!.firstElementChild).toBe(form);
+  })
+  it('focuses the registration name and scrolls the form into view on each registration',async()=>{
+    const win=await fixture(true,false,false,['http://localhost:5173/','http://localhost:5174/']);
+    button(win,'登録').click();
+    const form=win.document.querySelector('.vp-local-url-form')!;
+    const scroll=vi.spyOn(form,'scrollIntoView');
+    await flush(win);
+    const name=win.document.querySelector<HTMLInputElement>('[aria-label="名前"]')!;
+    expect(win.document.activeElement).toBe(name);
+    expect(scroll).toHaveBeenCalledWith({block:'nearest'});
+    button(win,'登録').click();await flush(win);
+    expect(win.document.activeElement).toBe(name);
+    expect(scroll).toHaveBeenCalledTimes(2);
+  })
+  it.each([5,6,12])('shows up to five of %s candidates and resets expansion on lane change',async count=>{
+    const urls=Array.from({length:count},(_,i)=>`http://localhost:${5100+i}/`);
+    const win=await fixture(true,false,false,urls);
+    expect([...win.document.querySelectorAll('.vp-discovered-url .vp-local-url-open')].map(el=>el.textContent)).toEqual(urls.slice(0,5));
+    if(count===5) {
+      expect(win.document.body.textContent).not.toContain('さらに');
+      return;
+    }
+    const expand=button(win,`さらに ${count-5} 件`);
+    expect(expand.getAttribute('aria-expanded')).toBe('false');
+    expand.click();await flush(win);
+    expect(win.document.querySelectorAll('.vp-discovered-url')).toHaveLength(count);
+    expect(button(win,'折りたたむ').getAttribute('aria-expanded')).toBe('true');
+    win.setAddress('vp/second');await flush(win);
+    expect(win.document.querySelectorAll('.vp-discovered-url')).toHaveLength(5);
+    expect(button(win,`さらに ${count-5} 件`).getAttribute('aria-expanded')).toBe('false');
+  })
   it('deduplicates discovered registrations before automatically probing',async()=>{
     const win=await fixture(false,false,false,['http://localhost:12889/']);
     expect(win.document.querySelector('.vp-discovered-url')).toBeNull();
@@ -64,7 +104,7 @@ describe('registered local URLs',()=>{
     win.setAddress('vp/third');await flush(win);
     expect(win.sent).toHaveLength(2);
   })
-  it('shows discovered URL, shared PR and saved entries in order; saves only on registration',async()=>{
+  it('shows saved entries, shared PR and discovered URL in order; saves only on registration',async()=>{
     const win=await fixture();
     win.setDiscovered(['http://localhost:5173/']);
     win.setPr({number:42,title:'Lane links',url:'https://github.com/org/repo/pull/42'});
@@ -72,8 +112,8 @@ describe('registered local URLs',()=>{
     expect(win.entries).toHaveLength(1);
     expect(win.sent.some(r=>r.payload?.action==='save')).toBe(false);
     const text=win.document.body.textContent!;
-    expect(text.indexOf('http://localhost:5173/')).toBeLessThan(text.indexOf('#42'));
-    expect(text.indexOf('#42')).toBeLessThan(text.indexOf('Editor preview'));
+    expect(text.indexOf('Editor preview')).toBeLessThan(text.indexOf('#42'));
+    expect(text.indexOf('#42')).toBeLessThan(text.indexOf('http://localhost:5173/'));
     button(win,'登録').click();input(win,'名前','dev');input(win,'用途','Dev server');button(win,'保存').click();await flush(win);
     expect(win.entries).toHaveLength(2);
     expect(win.entries[1]).toMatchObject({id:'dev',url:'http://localhost:5173/'});
