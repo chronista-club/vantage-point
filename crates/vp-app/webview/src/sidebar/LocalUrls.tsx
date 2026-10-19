@@ -15,6 +15,9 @@ export function LocalUrls(props: { repoPath: string; address: string; active?: b
   const [name, setName] = createSignal('')
   const [label, setLabel] = createSignal('')
   const [discoveredProbes, setDiscoveredProbes] = createSignal<Record<string, UrlProbe>>({})
+  const [expanded, setExpanded] = createSignal(false)
+  let form: HTMLFormElement | undefined
+  let nameInput: HTMLInputElement | undefined
   let generation = 0
   let probingGeneration: number | null = null
   const visible = () => props.active !== false && !!props.repoPath && !!props.address
@@ -23,7 +26,7 @@ export function LocalUrls(props: { repoPath: string; address: string; active?: b
   createEffect(on([() => props.repoPath, () => props.address, () => props.active], () => {
     const path = props.repoPath, address = props.address
     const current = ++generation
-    setEntries([]); setProbes({}); setDiscoveredProbes({}); setEditing(null); setLoaded(false); setError(''); setBusy(false)
+    setEntries([]); setProbes({}); setDiscoveredProbes({}); setExpanded(false); setEditing(null); setLoaded(false); setError(''); setBusy(false)
     if (!visible()) return
     setBusy(true)
     requestLocalUrls(path, address, { action: 'load' }).then(result => {
@@ -57,6 +60,12 @@ export function LocalUrls(props: { repoPath: string; address: string; active?: b
   }
   function edit(entry?: LocalUrlEntry, discovered = '') {
     setEditing(entry?.id ?? ''); setName(entry?.id ?? ''); setUrl(entry?.url ?? discovered); setLabel(entry?.label ?? ''); if (loaded()) setError('')
+    const current = generation
+    queueMicrotask(() => {
+      if (current !== generation || !visible() || editing() === null || !form?.isConnected) return
+      nameInput?.focus({ preventScroll: true })
+      form.scrollIntoView({ block: 'nearest' })
+    })
   }
   // 登録の更新は編集中の draft を置き換えない。probe は検出 URL の独立した列で行う。
   async function refresh() {
@@ -91,16 +100,19 @@ export function LocalUrls(props: { repoPath: string; address: string; active?: b
   return <><style>{LOCAL_URLS_CSS}</style><div class="vp-local-urls" onClick={e => e.stopPropagation()} onContextMenu={e => e.stopPropagation()} onDragStart={e => e.stopPropagation()}>
     <h3>リンク</h3>
     <div class="vp-local-url-body">
-      <div class="vp-link-heading">見つかった URL <Show when={candidates().length}><button type="button" onClick={() => { setDiscoveredProbes({}); void probeDiscovered() }}>再確認</button></Show></div>
-      <For each={candidates()} fallback={<span class="vp-link-empty">まだ見つかっていません</span>}>{url => <div class="vp-discovered-url">
-        <span class="vp-link-dot" data-state={discoveredProbes()[url]?.state ?? 'unknown'} role="img" aria-label={probeLabel(discoveredProbes()[url])} title={probeLabel(discoveredProbes()[url])}>●</span>
-        <button type="button" class="vp-local-url-open" title={url} onClick={() => openLink(url)}>{url}</button>
-        <button type="button" disabled={busy() || !loaded()} onClick={() => edit(undefined, url)}>登録</button>
-      </div>}</For>
-      <Show when={props.pr}>{pr => <>
-        <div class="vp-link-heading">この Lane の PR</div>
-        <button type="button" class="vp-local-url-open" title={pr().url} onClick={() => openLink(pr().url)}>#{pr().number} {pr().title}</button>
-      </>}</Show>
+      <Show when={editing() !== null}>
+        <form ref={form} class="vp-local-url-form" onSubmit={e => {
+          e.preventDefault(); e.stopPropagation()
+          const entry = { id: editing() || name().trim(), url: url().trim(), label: label().trim() }
+          void save(editing() ? entries().map(old => old.id === editing() ? entry : old) : [...entries(), entry])
+        }}>
+          <label>名前<input ref={nameInput} aria-label="名前" required maxlength={64} pattern="[a-z0-9][a-z0-9_-]{0,63}" value={name()} placeholder="preview" onInput={e => setName(e.currentTarget.value)} disabled={busy() || !!editing()} /></label>
+          <label>URL<input aria-label="URL" required value={url()} placeholder="http://localhost:12889" onInput={e => setUrl(e.currentTarget.value)} disabled={busy()} /></label>
+          <label>用途<input aria-label="用途" required maxlength={120} value={label()} placeholder="Editor preview" onInput={e => setLabel(e.currentTarget.value)} disabled={busy()} /></label>
+          <div class="vp-local-url-actions"><button type="submit" disabled={busy() || !loaded()}>保存</button><button type="button" disabled={busy()} onClick={() => setEditing(null)}>キャンセル</button></div>
+        </form>
+      </Show>
+      <Show when={error()}><p class="vp-local-url-error" role="alert" title={error()}>{error()}</p><button type="button" disabled={busy()} onClick={async () => { const result = await act({action:'load'}); if(result?.entries){setEntries(result.entries);setLoaded(true);setProbes({})} }}>再読み込み</button></Show>
       <div class="vp-link-heading">登録済み</div>
       <For each={entries()}>{entry => <div class="vp-local-url-entry">
         <button type="button" class="vp-local-url-open" title={`${entry.url} をブラウザで開く`} disabled={busy()} onClick={() => void act({ action: 'open', id: entry.id })}>{entry.label}</button>
@@ -113,18 +125,19 @@ export function LocalUrls(props: { repoPath: string; address: string; active?: b
           <button type="button" disabled={busy()} onClick={() => void save(entries().filter(e => e.id !== entry.id))}>削除</button>
         </div>
       </div>}</For>
-      <Show when={error()}><p class="vp-local-url-error" role="alert" title={error()}>{error()}</p><button type="button" disabled={busy()} onClick={async () => { const result = await act({action:'load'}); if(result?.entries){setEntries(result.entries);setLoaded(true);setProbes({})} }}>再読み込み</button></Show>
-      <Show when={editing() !== null} fallback={<button type="button" disabled={busy() || !loaded()} onClick={() => edit()}>URLを追加</button>}>
-        <form class="vp-local-url-form" onSubmit={e => {
-          e.preventDefault(); e.stopPropagation()
-          const entry = { id: editing() || name().trim(), url: url().trim(), label: label().trim() }
-          void save(editing() ? entries().map(old => old.id === editing() ? entry : old) : [...entries(), entry])
-        }}>
-          <label>名前<input aria-label="名前" required maxlength={64} pattern="[a-z0-9][a-z0-9_-]{0,63}" value={name()} placeholder="preview" onInput={e => setName(e.currentTarget.value)} disabled={busy() || !!editing()} /></label>
-          <label>URL<input aria-label="URL" required value={url()} placeholder="http://localhost:12889" onInput={e => setUrl(e.currentTarget.value)} disabled={busy()} /></label>
-          <label>用途<input aria-label="用途" required maxlength={120} value={label()} placeholder="Editor preview" onInput={e => setLabel(e.currentTarget.value)} disabled={busy()} /></label>
-          <div class="vp-local-url-actions"><button type="submit" disabled={busy() || !loaded()}>保存</button><button type="button" disabled={busy()} onClick={() => setEditing(null)}>キャンセル</button></div>
-        </form>
+      <Show when={editing() === null}><button type="button" disabled={busy() || !loaded()} onClick={() => edit()}>URLを追加</button></Show>
+      <Show when={props.pr}>{pr => <>
+        <div class="vp-link-heading">この Lane の PR</div>
+        <button type="button" class="vp-local-url-open" title={pr().url} onClick={() => openLink(pr().url)}>#{pr().number} {pr().title}</button>
+      </>}</Show>
+      <div class="vp-link-heading">見つかった URL <Show when={candidates().length}><button type="button" onClick={() => { setDiscoveredProbes({}); void probeDiscovered() }}>再確認</button></Show></div>
+      <For each={expanded() ? candidates() : candidates().slice(0, 5)} fallback={<span class="vp-link-empty">まだ見つかっていません</span>}>{url => <div class="vp-discovered-url">
+        <span class="vp-link-dot" data-state={discoveredProbes()[url]?.state ?? 'unknown'} role="img" aria-label={probeLabel(discoveredProbes()[url])} title={probeLabel(discoveredProbes()[url])}>●</span>
+        <button type="button" class="vp-local-url-open" title={url} onClick={() => openLink(url)}>{url}</button>
+        <button type="button" disabled={busy() || !loaded()} onClick={() => edit(undefined, url)}>登録</button>
+      </div>}</For>
+      <Show when={candidates().length > 5}>
+        <button type="button" aria-expanded={expanded()} onClick={() => setExpanded(value => !value)}>{expanded() ? '折りたたむ' : `さらに ${candidates().length - 5} 件`}</button>
       </Show>
       <Show when={busy()}><span role="status">処理中…</span></Show>
     </div>
