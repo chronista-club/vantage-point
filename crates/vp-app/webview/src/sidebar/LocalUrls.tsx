@@ -13,7 +13,6 @@ export function LocalUrls(props: { repoPath: string; address: string; active?: b
   const [editing, setEditing] = createSignal<string | null>(null)
   const [url, setUrl] = createSignal('')
   const [name, setName] = createSignal('')
-  const [label, setLabel] = createSignal('')
   const [discoveredProbes, setDiscoveredProbes] = createSignal<Record<string, UrlProbe>>({})
   const [expanded, setExpanded] = createSignal(false)
   let form: HTMLFormElement | undefined
@@ -62,7 +61,7 @@ export function LocalUrls(props: { repoPath: string; address: string; active?: b
     setEntries(result.entries); setEditing(null)
   }
   function edit(entry?: LocalUrlEntry, discovered = '') {
-    setEditing(entry?.id ?? ''); setName(entry?.id ?? ''); setUrl(entry?.url ?? discovered); setLabel(entry?.label ?? ''); if (loaded()) setError('')
+    setEditing(entry?.id ?? ''); setName(entry?.id ?? ''); setUrl(entry?.url ?? discovered); if (loaded()) setError('')
     const current = generation
     queueMicrotask(() => {
       if (current !== generation || !visible() || editing() === null || !form?.isConnected) return
@@ -111,12 +110,12 @@ export function LocalUrls(props: { repoPath: string; address: string; active?: b
       <Show when={editing() !== null}>
         <form ref={form} class="vp-local-url-form" onSubmit={e => {
           e.preventDefault(); e.stopPropagation()
-          const entry = { id: editing() || name().trim(), url: url().trim(), label: label().trim() }
+          const id = editing() || name().trim()
+          const entry = { id, url: url().trim(), label: id }
           void save(editing() ? entries().map(old => old.id === editing() ? entry : old) : [...entries(), entry])
         }}>
           <label>名前<input ref={nameInput} aria-label="名前" required maxlength={64} pattern="[a-z0-9][a-z0-9_-]{0,63}" value={name()} placeholder="preview" onInput={e => setName(e.currentTarget.value)} disabled={busy() || !!editing()} /></label>
           <label>URL<input aria-label="URL" required value={url()} placeholder="http://localhost:12889" onInput={e => setUrl(e.currentTarget.value)} disabled={busy()} /></label>
-          <label>用途<input aria-label="用途" required maxlength={120} value={label()} placeholder="Editor preview" onInput={e => setLabel(e.currentTarget.value)} disabled={busy()} /></label>
           <div class="vp-local-url-actions"><button type="submit" disabled={busy() || !loaded()}>保存</button><button type="button" disabled={busy()} onClick={() => setEditing(null)}>キャンセル</button></div>
         </form>
       </Show>
@@ -132,7 +131,6 @@ export function LocalUrls(props: { repoPath: string; address: string; active?: b
             <button type="button" disabled={busy()} onClick={() => void save(entries().filter(e => e.id !== entry.id))}>削除</button>
           </div>
         </div>
-        <Show when={entry.id !== entry.label}><span class="vp-local-url-name" title={`登録名: ${entry.id}`}>{entry.id}</span></Show>
       </div>}</For>
       <Show when={editing() === null}><button type="button" disabled={busy() || !loaded()} onClick={() => edit()}>URLを追加</button></Show>
       <Show when={props.pr}>{pr => <>
@@ -171,7 +169,6 @@ export const LOCAL_URLS_CSS = `
 .vp-local-url-row .vp-local-url-open{flex:0 1 auto;max-width:50%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vp-local-url-row .vp-local-url-actions{position:absolute;right:0;flex-wrap:nowrap;opacity:0;pointer-events:none;background:var(--color-surface-bg-base,#15191d)}
 .vp-local-url-entry:hover .vp-local-url-actions,.vp-local-url-entry:focus-within .vp-local-url-actions{opacity:1;pointer-events:auto}
-.vp-local-url-name{padding-left:15px;font-size:10px;opacity:.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vp-local-url-address{flex:1;min-width:0;color:var(--color-text-tertiary,#88929d);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--typography-family-mono,monospace);font-size:10px}
 .vp-local-url-actions{display:flex;gap:5px;flex-wrap:wrap}
 .vp-local-url-form{display:flex;flex-direction:column;gap:7px}.vp-local-url-form label{display:flex;flex-direction:column;gap:3px}

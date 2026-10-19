@@ -30,12 +30,15 @@ UI は各 lane 行から外し、[design 82](82-r-sidebar-prs.md) の R sidebar 
 3. この lane の PR。PR 一覧の同じ応答と `orderPrs` の先頭固定結果を使う
 4. console / chat 出力で見つかった URL。応答を点で示し、「登録」で登録フォームへ渡す
 
+登録・編集フォームは名前と URL の 2 欄とし、用途欄は置かない。
+GUI での保存時は label に name を入れる。編集時は名前を固定し、URL だけ変更できる。
 登録時は名前欄に focus し、フォームへ `scrollIntoView({block:'nearest'})` を呼ぶ。
 検出候補は先頭 5 件を表示し、「さらに N 件」で残りを展開する。lane 切替で展開を閉じる。
 Lane 節には高さ上限があるため、フォームを検出一覧の後ろに戻さない。
 
 登録済みの行は、応答の点・クリックで開く label・省略表示する URL を横に並べる。
-name が label と異なる場合だけ薄い 2 行目を出す。状態文言は点の title / aria-label に置く。
+旧データの label が name と異なる場合も label をタイトルに使い、名前の別行は出さない。
+状態文言は点の title / aria-label に置く。
 編集・削除は hover / focus-within で右端に表示し、Tab でも操作できる。
 
 検出だけでは保存しない。URL の点は HTTP 応答の有無であり、アプリの正常動作を保証しない。
@@ -49,7 +52,7 @@ name が label と異なる場合だけ薄い 2 行目を出す。状態文言�
 - MCP `lane_url`: `action: set | list | rm | probe` と同じ引数。JSON で結果を返す。
 
 name は Lane 内の安定キー。小文字英数字で始まる英数字・ハイフン・アンダースコア、64文字以内。
-同名 set は URL を更新する。label 省略時は既存用途を維持し、新規なら name を用途にする。
+CLI / MCP の同名 set は URL を更新する。label 省略時は既存タイトルを維持し、新規なら name をタイトルにする。
 rm は未登録でも成功して空振りを許す。probe は登録済みの名前のみ対象。
 既存 UI の UUID はそのまま name として扱い、データを書き換える移行は行わない。
 
@@ -127,3 +130,5 @@ CLIのcwd/明示対象、MCP router/呼出し、UI外部変更反映・draft競�
   フォーム・登録済みを先頭へ移し、候補を 5 件で折りたたむ。実機の表示とスクロールは lead 確認待ち。
 - 2026-10-19: `mem_1CgBHtLEoHBUibQLBU3vbs`。登録済みリンクを 1〜2 行にまとめ、
   登録・検出共通の順次自動確認へ変更。実機の表示・hover・Tab 操作は lead 確認待ち。
+- 2026-10-19: `mem_1CgBLigkfajejEpmcRn3v2`。GUI の用途欄と名前の別行を撤去し、保存時は label = name。
+  既存 label は表示時に維持。保存形式と CLI / MCP 契約は変更せず、実機の表示・操作は lead 確認待ち。

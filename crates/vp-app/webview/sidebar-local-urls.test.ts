@@ -1,4 +1,4 @@
-// mem_1CfkeiUePgFsbYoGtTeDpq / mem_1CgB31Xk419PtPkcK6yzLp / mem_1CgBHtLEoHBUibQLBU3vbs
+// mem_1CgBLigkfajejEpmcRn3v2 / mem_1CfkeiUePgFsbYoGtTeDpq / mem_1CgB31Xk419PtPkcK6yzLp / mem_1CgBHtLEoHBUibQLBU3vbs
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { build } from 'esbuild'
 import { solidPlugin } from 'esbuild-plugin-solid'
@@ -47,7 +47,22 @@ function button(win:Window,text:string) {const b=[...win.document.querySelectorA
 function input(win:Window,label:string,value:string){const el=win.document.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;expect(el).not.toBeNull();el.value=value;el.dispatchEvent(new win.Event('input',{bubbles:true}))}
 afterEach(async()=>{for(const w of windows.splice(0))await w.happyDOM.abort()})
 describe('registered local URLs',()=>{
-  it.each(['preview','Editor preview'])('shows one main row and only a distinct name (%s)',async label=>{
+  it.each([false,true])('offers only name and URL, with an immutable name when editing=%s',async editing=>{
+    const win=await fixture();
+    button(win,editing?'編集':'URLを追加').click();await flush(win);
+    const fields=[...win.document.querySelectorAll<HTMLInputElement>('.vp-local-url-form input')];
+    expect(fields.map(field=>field.getAttribute('aria-label'))).toEqual(['名前','URL']);
+    expect(fields[0].disabled).toBe(editing);
+    expect(fields[0].value).toBe(editing?'a':'');
+    expect(fields[1].disabled).toBe(false);
+  })
+
+  it('saves the fixed name as label when editing an existing custom label',async()=>{
+    const win=await fixture();
+    button(win,'編集').click();input(win,'URL','http://localhost:5175/');button(win,'保存').click();await flush(win);
+    expect(win.entries[0]).toEqual({id:'a',url:'http://localhost:5175/',label:'a'});
+  })
+  it.each(['preview','Editor preview'])('shows the saved label in one row without a separate name (%s)',async label=>{
     const win=await fixture(false,false,false,[],[{id:'preview',url:'http://localhost:5173/',label}]);
     const entry=win.document.querySelector('.vp-local-url-entry')!;
     const row=entry.querySelector('.vp-local-url-row')!;
@@ -55,8 +70,8 @@ describe('registered local URLs',()=>{
     expect(row.querySelector('.vp-link-dot')).not.toBeNull();
     expect(row.querySelector('.vp-local-url-open')!.textContent).toBe(label);
     expect(row.querySelector('.vp-local-url-address')!.getAttribute('title')).toBe('http://localhost:5173/');
-    expect(entry.children).toHaveLength(label==='preview'?1:2);
-    expect(entry.querySelector('.vp-local-url-name')?.textContent??null).toBe(label==='preview'?null:'preview');
+    expect(entry.children).toHaveLength(1);
+    expect(entry.querySelector('.vp-local-url-name')).toBeNull();
     const actions=row.querySelector('.vp-local-url-actions')!;
     expect([...actions.querySelectorAll('button')].map(b=>b.textContent)).toEqual(['編集','削除']);
     button(win,'編集').focus();expect(win.document.activeElement).toBe(button(win,'編集'));
@@ -70,7 +85,7 @@ describe('registered local URLs',()=>{
     win.refreshUrls();await flush(win);expect(probes()).toHaveLength(1);
     win.entries=[{id:'a',url:'http://localhost:5174/',label:'Changed'}];
     win.refreshUrls();await flush(win);expect(probes()).toHaveLength(2);
-    button(win,'編集').click();input(win,'用途','Saved');button(win,'保存').click();await flush(win);
+    button(win,'編集').click();input(win,'URL','http://localhost:5175/');button(win,'保存').click();await flush(win);
     expect(probes()).toHaveLength(3);
     win.setActive(false);win.refreshUrls();await flush(win);expect(probes()).toHaveLength(3);
     win.setActive(true);await flush(win);expect(probes()).toHaveLength(4);
@@ -186,9 +201,9 @@ describe('registered local URLs',()=>{
     const text=win.document.body.textContent!;
     expect(text.indexOf('Editor preview')).toBeLessThan(text.indexOf('#42'));
     expect(text.indexOf('#42')).toBeLessThan(text.indexOf('http://localhost:5173/'));
-    button(win,'登録').click();input(win,'名前','dev');input(win,'用途','Dev server');button(win,'保存').click();await flush(win);
+    button(win,'登録').click();input(win,'名前','dev');button(win,'保存').click();await flush(win);
     expect(win.entries).toHaveLength(2);
-    expect(win.entries[1]).toMatchObject({id:'dev',url:'http://localhost:5173/'});
+    expect(win.entries[1]).toMatchObject({id:'dev',url:'http://localhost:5173/',label:'dev'});
     expect(win.sent.filter(r=>r.t==='lane:prs_fetch')).toHaveLength(0);
   })
   it('reflects external named registrations but preserves a draft and rejects stale saves',async()=>{
@@ -196,10 +211,10 @@ describe('registered local URLs',()=>{
     win.entries=[{id:'preview',url:'http://localhost:5173',label:'From CLI'}];
     win.refreshUrls();await flush(win);
     expect(win.document.body.textContent).toContain('From CLI');
-    button(win,'編集').click();input(win,'用途','draft');
+    button(win,'編集').click();input(win,'URL','http://localhost:5175/draft');
     win.entries=[{id:'preview',url:'http://localhost:5174',label:'From MCP'}];
     win.refreshUrls();await flush(win);
-    expect(win.document.querySelector<HTMLInputElement>('[aria-label="用途"]')!.value).toBe('draft');
+    expect(win.document.querySelector<HTMLInputElement>('[aria-label="URL"]')!.value).toBe('http://localhost:5175/draft');
     button(win,'保存').click();await flush(win);
     expect(win.document.body.textContent).toContain('別の画面で更新');
     expect(win.entries[0].label).toBe('From MCP');
@@ -225,8 +240,8 @@ describe('registered local URLs',()=>{
     expect(win.document.querySelector('.vp-local-url-form')).not.toBeNull();
     button(win,'キャンセル').click();await flush(win);
     expect(win.document.querySelector('.vp-local-url-form')).toBeNull();
-    win.addUrl();input(win,'名前','preview');input(win,'URL','http://localhost:12889');input(win,'用途','First');button(win,'保存').click();await flush(win);
-    expect(win.entries).toHaveLength(1);expect(win.document.body.textContent).toContain('First');
+    win.addUrl();input(win,'名前','preview');input(win,'URL','http://localhost:12889');button(win,'保存').click();await flush(win);
+    expect(win.entries).toHaveLength(1);expect(win.document.body.textContent).toContain('preview');
     button(win,'削除').click();await flush(win);
     expect(win.entries).toHaveLength(0);expect(button(win,'URLを追加').disabled).toBe(false);
     expect(win.sent.every(r=>r.t==='local_urls:request')).toBe(true);
@@ -243,14 +258,14 @@ describe('registered local URLs',()=>{
     expect(win.document.querySelector('.vp-local-url-state')).toBeNull();
   })
   it('adds edits and removes multiple registrations without selecting the lane',async()=>{
-    const win=await fixture();button(win,'URLを追加').click();input(win,'名前','api');input(win,'URL','http://127.0.0.1:12890');input(win,'用途','API preview');button(win,'保存').click();await flush(win);
-    expect(win.entries).toHaveLength(2);expect(win.document.body.textContent).toContain('API preview');
-    button(win,'編集').click();input(win,'用途','New editor');button(win,'保存').click();await flush(win);expect(win.document.body.textContent).toContain('New editor');
-    button(win,'削除').click();await flush(win);expect(win.entries).toHaveLength(1);expect(win.entries[0].label).toBe('API preview');
+    const win=await fixture();button(win,'URLを追加').click();input(win,'名前','api');input(win,'URL','http://127.0.0.1:12890');button(win,'保存').click();await flush(win);
+    expect(win.entries).toHaveLength(2);expect(win.document.body.textContent).toContain('api');
+    button(win,'編集').click();input(win,'URL','http://localhost:12891/');button(win,'保存').click();await flush(win);expect(win.entries[0]).toEqual({id:'a',url:'http://localhost:12891/',label:'a'});
+    button(win,'削除').click();await flush(win);expect(win.entries).toHaveLength(1);expect(win.entries[0].label).toBe('api');
     expect(win.sent.every(r=>r.t==='local_urls:request')).toBe(true)
   })
   it('keeps the form and persisted entries when save fails',async()=>{
-    const win=await fixture();win.failSave=true;button(win,'編集').click();input(win,'用途','unsaved');button(win,'保存').click();await flush(win);
-    expect(win.document.body.textContent).toContain('保存できません');expect(win.entries[0].label).toBe('Editor preview');expect(win.document.querySelector<HTMLInputElement>('[aria-label="用途"]')!.value).toBe('unsaved');
+    const win=await fixture();win.failSave=true;button(win,'編集').click();input(win,'URL','http://localhost:5175/unsaved');button(win,'保存').click();await flush(win);
+    expect(win.document.body.textContent).toContain('保存できません');expect(win.entries[0].label).toBe('Editor preview');expect(win.document.querySelector<HTMLInputElement>('[aria-label="URL"]')!.value).toBe('http://localhost:5175/unsaved');
   })
 })
