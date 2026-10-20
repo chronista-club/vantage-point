@@ -15,16 +15,13 @@
 # creoui / club-unison を同時開発する日は bun link で file 参照に戻せる
 # (docs/guide/webview.md の dev loop 手順を参照)。
 
-ROOT = File.expand_path("../../..", __dir__)
+require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
+
+ROOT = VP.root
 WEBVIEW = File.join(ROOT, "crates", "vp-app", "webview")
 
-def run!(cmd)
-  puts "\e[36m󰅂\e[0m $ (webview) #{cmd}"
-  system(cmd, chdir: WEBVIEW) or abort("app:bundle 失敗: #{cmd}")
-end
-
 # frozen-lockfile: lock と package.json の乖離は「lock 更新し忘れ」なので fail が正。
-run!("bun install --frozen-lockfile")
-run!("bun run build")
+VP.build_run("bun", "install", "--frozen-lockfile", chdir: WEBVIEW)
+VP.build_run("bun", "run", "build", chdir: WEBVIEW)
 
 puts "\e[36m󰅂\e[0m 󰗠 webview bundle 生成完了 (assets/*.bundle.js)"

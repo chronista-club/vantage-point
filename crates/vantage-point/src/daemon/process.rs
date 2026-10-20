@@ -272,6 +272,10 @@ pub fn generate_launch_agent_plist(
     lang: &str,
     log_dir: &Path,
 ) -> String {
+    // Background は daemon と子孫（lane shell / agent / cargo）の QoS を一緒に制約する。
+    // 2026-10-20 実測: daemon / shell は background のみ、utility 指定の rustc も utility=0。
+    // build との競合による応答遅延・watchdog 誤検知のリスクを下げるため、daemon は Standard、
+    // build は scripts/mise/vp.rb で utility に下げる（docs/design/85-build-priority.md）。
     let exec = xml_escape(&vp_binary.to_string_lossy());
     let path_env = xml_escape(path_env);
     let lang = xml_escape(lang);
@@ -305,7 +309,7 @@ pub fn generate_launch_agent_plist(
     <key>KeepAlive</key>
     <true/>
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Standard</string>
     <key>StandardOutPath</key>
     <string>{out}</string>
     <key>StandardErrorPath</key>
@@ -405,7 +409,7 @@ pub fn uninstall_launch_agent() -> Result<()> {
 // system/LocalSystem だと %USERPROFILE% / Creo credential / surrealkv data_dir を見失う。
 //
 // LaunchAgent との対応: LogonTrigger=RunAtLoad / RestartOnFailure=KeepAlive /
-// InteractiveToken+LeastPrivilege=user 実行(admin 不要) / Hidden=ProcessType Background。
+// InteractiveToken+LeastPrivilege=user 実行(admin 不要)。Hidden は task の表示設定で QoS とは別。
 // surrealkv の stale LOCK は Windows では OS が TerminateProcess で自動解放するため
 // 再起動が self-heal する（実測確定 2026-07-05）→ clear_stale_lock の Windows 移植は不要。
 
@@ -620,6 +624,8 @@ mod tests {
         assert!(plist.contains("<string>32000</string>"));
         assert!(plist.contains("<key>RunAtLoad</key>"));
         assert!(plist.contains("<key>KeepAlive</key>"));
+        // daemon と lane の子孫を background QoS に固定しない。
+        assert!(plist.contains("<key>ProcessType</key>\n    <string>Standard</string>"));
         assert!(plist.contains("/opt/homebrew/bin:/usr/bin"));
         // CJK blackout 対策: LANG / LC_CTYPE が UTF-8 ロケールで焼かれている。
         assert!(plist.contains("<key>LANG</key>"));
