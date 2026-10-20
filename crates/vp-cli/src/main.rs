@@ -384,7 +384,7 @@ enum LaneCommands {
 }
 
 /// runtime / tracing の起動前に、CLI と daemon の process-global な設定を分ける。
-fn configure_process(command: &Commands) {
+fn configure_process(command: &Commands) -> cli::TracingRole {
     // daemon server 本体 (`vp daemon start` / `vp daemon` / subcommand 省略) は stdout/stderr が
     // spawn 経路依存で闇に落ちる (daemonize・restart-all の Stdio::null・launchd redirect の混在)
     // ため、VP_DAEMON_LOG_FILE 未設定なら vp_log_dir()/daemon.kdl.log を default にして
@@ -404,6 +404,7 @@ fn configure_process(command: &Commands) {
             // main 冒頭・tokio runtime 起動前の single-thread 区間なので set_var は安全
             unsafe { std::env::set_var("VP_DAEMON_LOG_FILE", &default_log) };
         }
+        cli::TracingRole::Daemon
     } else {
         // daemon → lane → CLI へ継承された file writer を外す。CLI の panic も stderr へ。
         // SAFETY: main 冒頭、他スレッド起動前にだけ呼ぶ。
@@ -414,6 +415,7 @@ fn configure_process(command: &Commands) {
         unsafe {
             libc::signal(libc::SIGPIPE, libc::SIG_DFL);
         }
+        cli::TracingRole::Cli
     }
 }
 
@@ -422,7 +424,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     // 引数なし → vp ps（稼働中インスタンス一覧）
     let command = cli.command.unwrap_or(Commands::Ps);
-    configure_process(&command);
+    let tracing_role = configure_process(&command);
 
     // rustls CryptoProvider を初期化（reqwest/quinn が使う）
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -435,7 +437,7 @@ fn main() -> Result<()> {
 
     // Initialize tracing
     let debug_mode_for_tracing = parse_debug_env().unwrap_or_default();
-    cli::init_tracing(debug_mode_for_tracing, false);
+    cli::init_tracing(debug_mode_for_tracing, false, tracing_role);
 
     match command {
         Commands::RestartAll => commands::restart_all::execute(),
@@ -527,6 +529,9 @@ fn main() -> Result<()> {
 
 #[cfg(all(test, unix))]
 mod startup_tests;
+
+#[cfg(test)]
+mod logging_tests;
 
 /// `vp shot` ── canonical screenshot 機構の薄い wrapper。
 /// 実装本体は `vantage_point::screenshot` module (trait + 各 OS backend)。

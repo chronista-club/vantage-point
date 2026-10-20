@@ -62,6 +62,10 @@ fn terminal_panic_child() {
         return;
     }
     // The hook and subscriber are process-global, so exercise them in a child.
-    vantage_point::cli::init_tracing(vantage_point::cli::DebugMode::None, false);
+    vantage_point::cli::init_tracing(
+        vantage_point::cli::DebugMode::None,
+        false,
+        vantage_point::cli::TracingRole::Cli,
+    );
     assert!(std::panic::catch_unwind(|| panic!("terminal panic probe")).is_err());
 }

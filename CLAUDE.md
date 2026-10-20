@@ -341,11 +341,13 @@ gate は claude 側で `env ?? GrowthBook` なので、VP 配下では rollout �
 
 | 値 | tracing レベル | 用途 |
 |----|---------------|------|
-| （未設定 / `none`） | warn 相当（default EnvFilter） | 本番運用 |
+| （未設定 / `none`） | CLI は warn、daemon は settings の `log-level` または info | 本番運用 |
 | `simple` | `vantage_point=info` | 基本ログ |
 | `detail` | `vantage_point=debug` | 詳細ログ |
 
-`VP_LOG=debug|info|warn|error` が設定されていれば `VANTAGE_DEBUG` より優先。
+`VP_LOG=debug|info|warn|error` → `RUST_LOG` → `VANTAGE_DEBUG` の優先順。
+`settings.kdl` の `log-level` は daemon に適用し、CLI の既定値には使わない。
+tracing 初期化は `RUST_LOG` を書き換えない。ユーザーが明示した値は子プロセスにも継承される。
 （`cli::parse_debug_env` → `init_tracing`）
 
 ### 問題調査フロー

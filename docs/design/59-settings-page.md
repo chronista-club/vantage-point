@@ -85,6 +85,13 @@ env > `settings.kdl` > 組み込み既定。`config.kdl` とはキーを**重複
 既存の `VP_DEVELOPER_MODE` / `VP_LOG` / `VANTAGE_DEBUG` は env として最優先のまま残す
 （`initial_developer_mode` の 1Password 風の優先順を壊さない）。
 
+ログ詳細度の `log-level` は daemon に適用する。daemon は
+`VP_LOG` > `RUST_LOG` > `VANTAGE_DEBUG` > `log-level` > info、CLI は
+`VP_LOG` > `RUST_LOG` > `VANTAGE_DEBUG` > warn とする（`VANTAGE_DEBUG=none` は
+詳細度の上書きなし）。tracing 初期化は環境を書き換えず filter を組むため、daemon 用に
+選んだ詳細度が lane の子プロセスへ `RUST_LOG` として漏れない。
+ユーザーが明示した `RUST_LOG` はそのまま子へ継承する。
+
 ---
 
 ## 4. 住所
