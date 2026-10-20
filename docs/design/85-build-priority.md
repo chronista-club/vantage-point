@@ -76,8 +76,14 @@ Standard 反映後の効果測定は別途必要。
 
 `commands/daemon.rs::install` → `process.rs::install_launch_agent` は既存 plist を
 `std::fs::write` で上書きし、`launchctl bootout` → `bootstrap` で読み直す。
-bootstrap が非ゼロなら警告を出し、配置済み plist を次回 login に読み込む設計なので、
-install の終了コードだけで即時反映を判定しない。
+bootout 後は `launchctl print` で登録解除を 100ms 間隔・上限 30 秒で確認し、
+2 秒経過時に停止待ちの案内を stderr に一度だけ出す。
+bootstrap を最大 3 回（間隔 500ms）試す。最後に指定 port の health を最大 30 秒待ち、
+応答がない場合も失敗として復旧コマンドを返す。install の成功表示は health 確認後に限る。
+`repair_launch_agent` も同じ関数を通る。uninstall は再登録を行わないため、この待機を使わない。
+
+テストでは launchctl・health・時計を差し替える。実機の install は daemon 配下の lane を
+停止させるため、VP の外の terminal で確認する（`mem_1CgDiXr51YQzyg6Hoo4wp7`）。
 
 [homebrew-tap の Cask](https://github.com/chronista-club/homebrew-tap/blob/e3cfe08c0088df92846c047e777c3378eb531082/Casks/vantage-point.rb)
 （2026-10-20 確認、v0.86.0）の postflight は `daemon restart --if-running` を呼び、
@@ -147,3 +153,5 @@ Standard 反映後は daemon / shell が background のみに固定されてい�
 
 - 2026-10-20: 測定後の方式選択を受け、開発 task 用の共通 helper を追加。
 - 2026-10-20: 親の background 制約を実測し、mako GO で LaunchAgent の Standard 化を同梱。
+- 2026-10-21: install の bootout 直後の競合に対し、登録解除待ち・bootstrap 再試行・health 確認を追加。
+- 2026-10-21: lead の停止時間の観測を受け、解除・health 待ちを各 30 秒にし、停止待ちの案内を追加。
