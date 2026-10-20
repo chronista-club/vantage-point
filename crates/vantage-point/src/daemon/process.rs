@@ -7,6 +7,9 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "macos")]
+mod launch_agent;
+
 // MIDI task recovery (12s) + client close (2s) + scheduling margin.
 pub(crate) const DAEMON_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -332,8 +335,8 @@ pub fn launch_agent_plist_path() -> Option<PathBuf> {
 /// LaunchAgent を install する（idempotent）。plist を書き出し、launchctl で即時 load する。
 ///
 /// plist を `~/Library/LaunchAgents/` に置くだけで**次回 login から** `RunAtLoad` が起こすが、
-/// 今すぐ有効化するため bootout(既存)→bootstrap で reload する。bootstrap が非ゼロ（既 load 等）でも
-/// plist は配置済なので install は成功扱い（次回 login で確実に拾う＝degradation 設計）。
+/// 今すぐ有効化するため bootout(既存)→登録解除待ち→bootstrap 再試行→health 確認を行う。
+/// install と restart の repair_launch_agent は、この確認を通った場合だけ成功を報告する。
 #[cfg(target_os = "macos")]
 pub fn install_launch_agent(vp_binary: &Path, port: u16) -> Result<PathBuf> {
     use anyhow::Context;
@@ -360,22 +363,7 @@ pub fn install_launch_agent(vp_binary: &Path, port: u16) -> Result<PathBuf> {
     // launchctl で即時 reload（modern API: bootout→bootstrap、gui/<uid> domain）。
     let uid = unsafe { libc::getuid() };
     let domain = format!("gui/{uid}");
-    let service_target = format!("{domain}/{LAUNCH_AGENT_LABEL}");
-    // 既存 load を bootout（未 load なら error → 無視）してから bootstrap で立て直す。
-    let _ = std::process::Command::new("launchctl")
-        .args(["bootout", &service_target])
-        .output();
-    let out = std::process::Command::new("launchctl")
-        .args(["bootstrap", &domain, &plist_path.to_string_lossy()])
-        .output()
-        .context("launchctl bootstrap 実行失敗")?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        tracing::warn!(
-            "launchctl bootstrap 非ゼロ（plist は配置済、次回 login で RunAtLoad が拾う）: {}",
-            stderr.trim()
-        );
-    }
+    launch_agent::reload(&domain, &plist_path, port)?;
     Ok(plist_path)
 }
 
