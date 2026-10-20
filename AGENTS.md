@@ -89,6 +89,7 @@ spec の頭に `段: A | B | C | 調査` を書く。書き忘れは **B 扱い*
   `app:swap:detached` が実在し、`mise tasks info` で見れば分かった。**一覧コマンドは alias や別名を隠すことが
   ある** — 契約の照合は「その名前で実際に呼べるか」まで確かめる）
 - 重い build（cargo）は同じ Mac の他 lane と枠を分け合う — 開始前・終了後に wire で一言、並列に走らせない
+- lane の build は基本 mise task 経由。cargo / bun build を直接打つ場合も macOS は `taskpolicy -c utility`、他の Unix / taskpolicy 不在時は `nice -n 10` を付ける（Windows は素通し、mise の無効化は `VP_BUILD_PRIORITY=normal`）。
 
 lead 側の規則（進行の見張り）:
 
