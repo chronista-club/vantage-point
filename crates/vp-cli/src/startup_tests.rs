@@ -86,7 +86,7 @@ fn startup_child() {
         .unwrap_or(Commands::Ps);
     let daemon = std::env::var("VP_STARTUP_DAEMON").unwrap() == "true";
     let inherited_log = std::env::var("VP_DAEMON_LOG_FILE").ok();
-    configure_process(&command);
+    let role = configure_process(&command);
 
     // Query without replacing the installed disposition. All process-global changes
     // are confined to this subprocess, not the parent test runner.
@@ -116,7 +116,7 @@ fn startup_child() {
         assert!(std::env::var_os("VP_DAEMON_LOG_FILE").is_none());
     }
     if std::env::var("VP_STARTUP_PANIC").unwrap() == "true" {
-        vantage_point::cli::init_tracing(vantage_point::cli::DebugMode::None, false);
+        vantage_point::cli::init_tracing(vantage_point::cli::DebugMode::None, false, role);
         assert!(std::panic::catch_unwind(|| panic!("startup panic probe")).is_err());
     }
 }

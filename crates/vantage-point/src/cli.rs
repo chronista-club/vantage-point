@@ -137,7 +137,7 @@ pub fn list_instances(config: &crate::config::Config) -> Result<()> {
 /// doc 44 P1 (fold-in): 旧 `protocol::DebugMode` は「-d デバッグパネル」と「VANTAGE_DEBUG
 /// ログ詳細度」の 2 用途を兼ねていた。前者（DebugInfo broadcast / 旧 WebUI パネル）は
 /// end-to-end で dead だったため撤去し、生きている後者（tracing レベル選択）だけを
-/// ここへローカル化した。none→warn / simple→info / detail→debug に対応する。
+/// ここへローカル化した。none は用途別の既定、simple→info / detail→debug に対応する。
 /// wire には乗らないので serde 不要。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DebugMode {
@@ -159,34 +159,26 @@ pub fn parse_debug_env() -> Option<DebugMode> {
         })
 }
 
-/// settings.kdl の `log-level` から `RUST_LOG` の directive を導く（純関数 = テスト可能）。
-///
-/// **env も CLI 引数（`-d`）も無いときだけ**呼ばれる（優先順は
-/// env > CLI 引数 > settings.kdl > 既定）。永続設定より「今回だけ」の指定を優先するのは、
-/// CLI 引数を打った人はその 1 回の実行を変えたいから。
-///
-/// ⚠️ [`init_tracing`] は subscriber を 1 度しか設置できず env も触るため、統合状態のままでは
-/// 単体テストできない。**判定だけを純関数に切り出して**、優先順と綴りの正規化をここで固定する
-/// （actions から calculations を分ける — コーディング規約）。
+/// daemon の settings.kdl の `log-level` から filter の directive を導く。
+/// env と VANTAGE_DEBUG による上書きが無いときに使う。環境変数は変更しない。
 fn rust_log_from_settings(settings: &crate::settings_file::SettingsFile) -> Option<String> {
     settings
         .log_level_valid()
         .map(|level| format!("vantage_point={}", level.to_ascii_lowercase()))
 }
 
-/// Initialize tracing with VP_LOG support
-/// VP_LOG環境変数またはDebugModeに基づいてログレベルを設定
-/// - VP_LOG=debug|info|warn|error が優先
-/// - 未設定の場合、debug_modeに基づいて設定:
-///   - None -> warn（+ settings.kdl の `log-level` があればそれ、doc 59 P2）
-///   - Simple -> info
-///   - Detail -> debug
-///
-/// 優先順は **env(VP_LOG / RUST_LOG) > CLI 引数(-d) > settings.kdl > 既定**。
-///
-/// `tui_mode` が true の場合、ログ出力を stderr ではなくファイルにリダイレクト。
-/// TUI (ratatui) の alternate screen にサーバーログが漏れるのを防ぐ。
-pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool) {
+/// 起動するプロセスの用途。ログ出力先とは独立に既定の詳細度を選ぶ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TracingRole {
+    Cli,
+    Daemon,
+}
+
+/// VP_LOG > RUST_LOG > VANTAGE_DEBUG (debug_mode) > settings.kdl > 既定。
+/// settings.kdl は daemon のみ参照し、既定は daemon が info、CLI が warn。
+/// 環境を書き換えないため、daemon 用の directive は子プロセスへ漏れない。
+/// `tui_mode` は alternate screen を守るため stderr の代わりにファイルへ出す。
+pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool, role: TracingRole) {
     // panic を log に載せる hook。 subscriber より先に install してよい (hook が発火するのは
     // 実行時 = subscriber 設置後)。 tokio task 内 panic が無言で機能を殺す既存問題への
     // 最小の対処 — cf. `crate::panic_hook` の module doc。
@@ -197,54 +189,35 @@ pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool) {
     // 各 crate に複製している。 恒久的には vp-paths へ寄せる候補 = Observability Phase B)。
     const DAEMON_LOG_MAX_BYTES: usize = 10 * 1024 * 1024; // 10 MB
     const DAEMON_LOG_KEEP_FILES: usize = 5;
-    // VP_LOGが設定されていない場合、debug_modeに基づいてRUST_LOGを設定
-    // SAFETY: main()開始直後、他スレッド起動前に呼ばれるため安全
-    if std::env::var("VP_LOG").is_err() && std::env::var("RUST_LOG").is_err() {
-        // DebugMode::None (= 通常運転) は set しない — 後段の default EnvFilter
-        // (vantage_point=info + 依存 crate の chatty log 抑制) に落とす。
-        // 旧実装は None でも `vantage_point=warn` を焼き込んでいたため後段 default が
-        // 到達不能になり、daemon の INFO (DeviceRegistry/QUIC 起動等の運転記録) が全起動経路で
-        // 恒久的に沈黙していた (log 出力先とは独立の第 2 の結線切れ)。
-        match debug_mode {
-            // doc 59 P2: env も CLI 引数も無いときだけ settings.kdl の `log-level` を見る。
-            // **優先順は env > CLI 引数(-d) > settings.kdl > 既定** — 永続設定より「今回だけ」の
-            // 指定を優先する（CLI 引数を打った人は、その 1 回の実行を変えたい）。
-            //
-            // 綴り違いは `log_level_valid` が None に倒すので、ここに不正 directive は来ない
-            // （壊れた directive は EnvFilter ごと沈黙させる = 設定 typo が観測手段を奪う）。
-            DebugMode::None => {
-                if let Some(directive) =
-                    rust_log_from_settings(&crate::settings_file::SettingsFile::load())
-                {
-                    unsafe { std::env::set_var("RUST_LOG", directive) }
-                }
+    // 明示された環境変数は読み取るだけ。VP_LOG による上書きも filter 内に閉じ、
+    // ユーザーが設定した RUST_LOG は子プロセスにそのまま継承させる。
+    let directive = std::env::var("VP_LOG")
+        .map(|level| format!("vantage_point={level}"))
+        .or_else(|_| std::env::var("RUST_LOG"))
+        .ok()
+        .or_else(|| match debug_mode {
+            DebugMode::Simple => Some("vantage_point=info".to_owned()),
+            DebugMode::Detail => Some("vantage_point=debug".to_owned()),
+            DebugMode::None if role == TracingRole::Daemon => {
+                rust_log_from_settings(&crate::settings_file::SettingsFile::load())
             }
-            DebugMode::Simple => unsafe {
-                std::env::set_var("RUST_LOG", "vantage_point=info");
-            },
-            DebugMode::Detail => unsafe {
-                std::env::set_var("RUST_LOG", "vantage_point=debug");
-            },
-        }
-    } else if let Ok(vp_log) = std::env::var("VP_LOG") {
-        // VP_LOG -> RUST_LOG に変換
-        unsafe {
-            std::env::set_var("RUST_LOG", format!("vantage_point={}", vp_log));
-        }
-    }
-
-    // d (log 整理 minimum, mem_1CaSiJkD9HATDY2srrv6D4 Phase B-2 step):
-    // RUST_LOG 未指定時の default を **絞り込み** verbose を削減。
-    // vantage_point=info を残しつつ、 dependency crate の chatty な debug log を抑制。
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        tracing_subscriber::EnvFilter::new(
-            "vantage_point=info,vp_app=info,\
-             hyper=warn,hyper_util=warn,reqwest=warn,h2=warn,\
-             tokio_tungstenite=warn,tungstenite=warn,\
-             quinn=warn,quinn_proto=warn,quinn_udp=warn,\
-             rustls=warn,rustls_post_quantum=warn",
-        )
-    });
+            DebugMode::None => None,
+        });
+    let env_filter = directive
+        .and_then(|value| tracing_subscriber::EnvFilter::try_new(value).ok())
+        .unwrap_or_else(|| {
+            tracing_subscriber::EnvFilter::new(match role {
+                TracingRole::Cli => "warn",
+                // daemon の運転記録と依存 crate の抑制は従来どおり。
+                TracingRole::Daemon => {
+                    "vantage_point=info,vp_app=info,\
+                     hyper=warn,hyper_util=warn,reqwest=warn,h2=warn,\
+                     tokio_tungstenite=warn,tungstenite=warn,\
+                     quinn=warn,quinn_proto=warn,quinn_udp=warn,\
+                     rustls=warn,rustls_post_quantum=warn"
+                }
+            })
+        });
 
     // VP-101 follow-up (Windows daemon support):
     // 環境変数 `VP_DAEMON_LOG_FILE` が指定されていれば、そのパスに直接書き込む。
@@ -399,7 +372,7 @@ mod log_level_tests {
 
     #[test]
     fn unset_yields_no_directive() {
-        // 未設定なら RUST_LOG を触らない = 後段の default EnvFilter（vantage_point=info +
+        // 未設定なら daemon の default EnvFilter（vantage_point=info +
         // 依存 crate の抑制）に落ちる。ここで空文字を返すと default が到達不能になり、
         // 過去に「daemon の INFO が全起動経路で沈黙する」事故が起きている。
         assert_eq!(rust_log_from_settings(&SettingsFile::default()), None);
