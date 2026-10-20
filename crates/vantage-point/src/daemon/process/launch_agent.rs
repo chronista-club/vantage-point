@@ -5,17 +5,18 @@ use std::path::Path;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-const UNLOAD_TIMEOUT: Duration = Duration::from_secs(10);
+const UNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const UNLOAD_INTERVAL: Duration = Duration::from_millis(100);
 const BOOTSTRAP_ATTEMPTS: usize = 3;
 const RETRY_INTERVAL: Duration = Duration::from_millis(500);
-const HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
+const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
 
 trait Runtime {
     fn launchctl(&mut self, args: &[&str]) -> std::io::Result<Output>;
     fn healthy(&mut self, port: u16, timeout: Duration) -> bool;
     fn elapsed(&self) -> Duration;
     fn sleep(&mut self, duration: Duration);
+    fn report(&mut self, message: &str);
 }
 
 struct System {
@@ -44,6 +45,10 @@ impl Runtime for System {
 
     fn sleep(&mut self, duration: Duration) {
         std::thread::sleep(duration);
+    }
+
+    fn report(&mut self, message: &str) {
+        eprintln!("{message}");
     }
 }
 
@@ -75,7 +80,9 @@ fn reload_inner(runtime: &mut impl Runtime, domain: &str, plist: &Path, port: u1
     runtime
         .launchctl(&["bootout", &target])
         .context("launchctl bootout 実行失敗")?;
-    let deadline = runtime.elapsed() + UNLOAD_TIMEOUT;
+    let unload_started = runtime.elapsed();
+    let deadline = unload_started + UNLOAD_TIMEOUT;
+    let mut reported_wait = false;
     loop {
         let out = runtime
             .launchctl(&["print", &target])
@@ -90,7 +97,14 @@ fn reload_inner(runtime: &mut impl Runtime, domain: &str, plist: &Path, port: u1
         }
         let remaining = deadline.saturating_sub(runtime.elapsed());
         if remaining.is_zero() {
-            bail!("LaunchAgent の登録解除が 10s 以内に完了しませんでした: {target}");
+            bail!(
+                "LaunchAgent の登録解除が {}s 以内に完了しませんでした: {target}",
+                UNLOAD_TIMEOUT.as_secs()
+            );
+        }
+        if !reported_wait && runtime.elapsed() - unload_started >= Duration::from_secs(2) {
+            runtime.report("daemon の停止を待っています…");
+            reported_wait = true;
         }
         runtime.sleep(remaining.min(UNLOAD_INTERVAL));
     }
@@ -117,7 +131,10 @@ fn reload_inner(runtime: &mut impl Runtime, domain: &str, plist: &Path, port: u1
     loop {
         let remaining = deadline.saturating_sub(runtime.elapsed());
         if remaining.is_zero() {
-            bail!("daemon が 15s 以内に health 応答しませんでした (port {port})");
+            bail!(
+                "daemon が {}s 以内に health 応答しませんでした (port {port})",
+                HEALTH_TIMEOUT.as_secs()
+            );
         }
         if runtime.healthy(port, remaining) {
             return Ok(());
@@ -143,6 +160,7 @@ mod tests {
         elapsed: Duration,
         sleeps: Vec<Duration>,
         health_calls: usize,
+        notices: Vec<(Duration, String)>,
     }
 
     impl Fake {
@@ -153,6 +171,7 @@ mod tests {
                 elapsed: Duration::ZERO,
                 sleeps: vec![],
                 health_calls: 0,
+                notices: vec![],
             }
         }
 
@@ -200,6 +219,10 @@ mod tests {
             self.elapsed += duration;
             self.sleeps.push(duration);
         }
+
+        fn report(&mut self, message: &str) {
+            self.notices.push((self.elapsed, message.to_owned()));
+        }
     }
 
     fn absent() -> (&'static str, i32, &'static str) {
@@ -222,6 +245,7 @@ mod tests {
         runtime.run().unwrap();
         assert!(runtime.commands.is_empty());
         assert!(runtime.health.is_empty());
+        assert!(runtime.notices.is_empty());
         assert_eq!(
             runtime.sleeps,
             [
@@ -259,11 +283,18 @@ mod tests {
     #[test]
     fn unload_timeout_does_not_bootstrap() {
         let mut commands = vec![("bootout", 0, "")];
-        commands.extend(std::iter::repeat_n(("print", 0, ""), 101));
+        commands.extend(std::iter::repeat_n(("print", 0, ""), 301));
         let mut runtime = Fake::new(commands, vec![]);
         let error = runtime.run().unwrap_err().to_string();
-        assert!(error.contains("登録解除が 10s"), "{error}");
-        assert_eq!(runtime.elapsed, UNLOAD_TIMEOUT);
+        assert!(error.contains("登録解除が 30s"), "{error}");
+        assert_eq!(runtime.elapsed, Duration::from_secs(30));
+        assert_eq!(
+            runtime.notices,
+            [(
+                Duration::from_secs(2),
+                "daemon の停止を待っています…".to_owned()
+            )]
+        );
         assert!(runtime.commands.is_empty());
         assert_eq!(runtime.health_calls, 0);
     }
@@ -303,12 +334,34 @@ mod tests {
     fn successful_bootstrap_without_health_is_an_error() {
         let mut runtime = Fake::new(
             vec![("bootout", 0, ""), absent(), ("bootstrap", 0, "")],
-            vec![false; 30],
+            vec![false; 60],
         );
         let error = runtime.run().unwrap_err().to_string();
         assert!(error.contains("health 応答"), "{error}");
         assert!(error.contains("launchctl bootstrap gui/123"), "{error}");
-        assert_eq!(runtime.elapsed, HEALTH_TIMEOUT);
+        assert!(error.contains("30s 以内"), "{error}");
+        assert_eq!(runtime.elapsed, Duration::from_secs(30));
+        assert!(runtime.health.is_empty());
+    }
+
+    #[test]
+    fn slow_shutdown_and_startup_complete_within_thirty_second_budgets() {
+        let mut commands = vec![("bootout", 0, "")];
+        commands.extend(std::iter::repeat_n(("print", 0, ""), 250));
+        commands.extend([absent(), ("bootstrap", 0, "")]);
+        let mut health = vec![false; 50];
+        health.push(true);
+        let mut runtime = Fake::new(commands, health);
+        runtime.run().unwrap();
+        assert_eq!(runtime.elapsed, Duration::from_secs(50));
+        assert_eq!(
+            runtime.notices,
+            [(
+                Duration::from_secs(2),
+                "daemon の停止を待っています…".to_owned()
+            )]
+        );
+        assert!(runtime.commands.is_empty());
         assert!(runtime.health.is_empty());
     }
 }
