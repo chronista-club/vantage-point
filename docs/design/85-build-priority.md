@@ -27,11 +27,47 @@
 `dev:gc` の cargo sweep。GC の削除判定や build 中の guard は変更しない。
 branch-step の `app:bundle && check` も同じ入口を通る。
 
-macOS の LaunchAgent は `ProcessType=Standard` を前提とする。従来の `Background` では
-daemon とその子孫（lane の shell、claude / codex、cargo）が background に制約され、
-build に utility を指定しても優先度の差を作れなかった。daemon 側の制約を外した上で
-build の子プロセスだけを utility に下げる。これは watchdog の応答遅延リスクを下げるための
-変更であり、誤検知の解消を実機で確認したものではない。
+macOS の LaunchAgent は `ProcessType=Interactive` とする。従来の `Background` では
+daemon と子孫が background に制約され、`Standard` にした後も daemon の CPU 時間は
+約 99% utility だった（2026-10-21、lead 実測）。daemon は入力のエコー、wire 中継、
+lane 表示を担う開発エディタの半身なので、build と同じ制約下に置かない。
+GUI との通信は QUIC であり、XPC の activity に依存する `Adaptive` は使えない。
+`Interactive` は launchd の資源制限の分類で、全 thread を user_interactive に固定する指定ではない。
+
+### QoS の段組み
+
+裁定: `mem_1CgDj663HTMRwEu1BN3N4C`、実装 task: `mem_1CgDj7Ks1Znq41SQqTkUg1`。
+
+| 層 | 指定 / 期待 | 入れ方 |
+|---|---|---|
+| GUI（vp-app） | user_interactive | 既存のアプリ起動経路 |
+| daemon | Interactive（launchd ProcessType） | plist |
+| lane の shell / claude / codex（PTY・chat） | default を期待、反映後に実測 | 通常 spawn、XNU の継承に任せる |
+| build（mise 経由） | utility | 既存の `VP.build_run` |
+
+[XNU の `task_compute_main_thread_qos`](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/osfmk/kern/task_policy.c#L2212-L2251)
+は `DAEMON_INTERACTIVE` の main thread を `THREAD_QOS_LEGACY` にする。
+[`task_policy_create`](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/osfmk/kern/task_policy.c#L734-L746)
+では子が親の app type と clamp を継承する。このコードから、通常 spawn の子は
+default で始まると期待する。`QOS_CLASS_DEFAULT` は
+[libpthread の対応表](https://github.com/apple-oss-distributions/libpthread/blob/42d026df5b07825070f60134b980a1ec2552dfee/src/qos.c#L69-L78)
+では `THREAD_QOS_LEGACY` であり、下記 probe の `legacy` 欄に対応する。
+これは公開ソースからの推論で、使用中の macOS での実効値や、子が後から thread の QoS を
+変更しないことを保証しない。default の強制上限は設けない。
+
+2026-10-21、utility 制約下の lane で C の小実験を行い、次を確認した:
+
+- `posix_spawnattr_set_qos_class_np(DEFAULT)` は `EINVAL(22)`、`UTILITY` は成功。
+  [Apple の実装](https://github.com/apple-oss-distributions/libpthread/blob/42d026df5b07825070f60134b980a1ec2552dfee/src/qos.c#L633-L644)
+  も utility / background / maintenance だけを受理する。`taskpolicy -c default` も拒否された。
+- 親 thread を `pthread_set_qos_class_self_np(DEFAULT, 0)` で変更すると呼び出しは成功し、
+  fork 直後は default だったが、exec 後・通常 posix_spawn の子は utility に戻った。
+- fork 後の子で `pthread_set_qos_class_self_np(DEFAULT, 0)` を呼ぶと `EPERM(1)`。
+  exec 前の一時的な thread 指定を子プロセスの永続 QoS 設定として扱えない。
+
+この結果を受け、PTY / chat engine の spawn に QoS wrapper を追加しない。
+private API や専用 launcher も導入しない。Interactive 反映後の実効値と watchdog の
+誤検知解消は未確認であり、lead の実機検証に残す。
 
 一時的に通常優先度で比較したい場合:
 
@@ -70,7 +106,7 @@ QUIC watchdog の誤検知解消はこの測定では検証していない。
 同じ lane 内の短い CPU probe も通常・utility 指定とも background のみだった。
 lead 側では daemon と lane shell も同様だった。元の比較中には親の QoS を採取していないため、
 上表を「実効 QoS が異なる 4 条件の比較」とは扱えない。utility は方式として採用し、
-Standard 反映後の効果測定は別途必要。
+Interactive 反映後の効果測定は別途必要。
 
 ## 既存インストールへの反映
 
@@ -105,7 +141,7 @@ lane の検証では install / restart / swap を実行していない。
 
 `ruby scripts/mise/tests/build_priority_test.rb`（`mise run test` からも実行）で
 OS ごとの選択、コマンド不在、normal 指定、引数・作業ディレクトリ・失敗伝播を確認する。
-既存の plist 生成テストで `ProcessType=Standard` を固定する。
+既存の plist 生成テストで `ProcessType=Interactive` を固定する。
 Linux / Windows の分岐の単体検証と、各 OS 上の実際の build 成功は区別する。
 
 実機の `taskinfo <pid>` はこの環境では root が必要で利用できなかった。
@@ -146,12 +182,18 @@ background `6023895` / utility `0`、utility 指定 probe PID 95308 は
 background `9249388` / utility `0` だった。
 原ログ・probe・比較測定は測定機の `/tmp/vp-build-priority.cumFlG/` に保存
 （一時領域なので永続保管先ではない）。
-Standard 反映後は daemon / shell が background のみに固定されていないこと、
-新しい `mise run check` の rustc で utility の CPU 時間が増えることを確認する。
+Interactive 反映後は lead が daemon、新しい lane の shell / claude / codex（PTY と chat）、
+`mise run check` の rustc を測る。lane は default（probe の `legacy`）、
+rustc は utility の CPU 時間が増えることを確認する。
+lane の子に user_initiated / user_interactive が観測された場合は別 task で対応を判断する。
+daemon の QoS 分布、同じ build の所要時間、1 週間の watchdog self-heal 件数も記録し、
+plist の単体テスト通過と実機での効果を区別する。
 
 ## Status log
 
 - 2026-10-20: 測定後の方式選択を受け、開発 task 用の共通 helper を追加。
 - 2026-10-20: 親の background 制約を実測し、mako GO で LaunchAgent の Standard 化を同梱。
+- 2026-10-21: Standard の daemon が utility となる実測を受け Interactive に変更。
+  小実験と lead 裁定により、lane の default は XNU の通常 spawn に任せ、強制 wrapper は追加しない。
 - 2026-10-21: install の bootout 直後の競合に対し、登録解除待ち・bootstrap 再試行・health 確認を追加。
 - 2026-10-21: lead の停止時間の観測を受け、解除・health 待ちを各 30 秒にし、停止待ちの案内を追加。

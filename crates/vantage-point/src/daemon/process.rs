@@ -275,10 +275,13 @@ pub fn generate_launch_agent_plist(
     lang: &str,
     log_dir: &Path,
 ) -> String {
-    // Background は daemon と子孫（lane shell / agent / cargo）の QoS を一緒に制約する。
-    // 2026-10-20 実測: daemon / shell は background のみ、utility 指定の rustc も utility=0。
-    // build との競合による応答遅延・watchdog 誤検知のリスクを下げるため、daemon は Standard、
-    // build は scripts/mise/vp.rb で utility に下げる（docs/design/85-build-priority.md）。
+    // daemon は入力・wire・lane 表示を支える開発エディタの半身。Standard では CPU 時間が
+    // 約 99% utility だった（2026-10-21 実測）ため、build と同段にせず Interactive とする。
+    // XNU task_compute_main_thread_qos は DAEMON_INTERACTIVE の main thread を LEGACY
+    // (= default) にするので、lane は通常 spawn に任せる。default の強制上限ではない。
+    // spawn 属性 DEFAULT は EINVAL、fork 後の pthread 指定は EPERM（小実験）。
+    // 出典・実験・反映後の実測手順は docs/design/85-build-priority.md。
+    // build は scripts/mise/vp.rb の utility 指定を維持する。
     let exec = xml_escape(&vp_binary.to_string_lossy());
     let path_env = xml_escape(path_env);
     let lang = xml_escape(lang);
@@ -312,7 +315,7 @@ pub fn generate_launch_agent_plist(
     <key>KeepAlive</key>
     <true/>
     <key>ProcessType</key>
-    <string>Standard</string>
+    <string>Interactive</string>
     <key>StandardOutPath</key>
     <string>{out}</string>
     <key>StandardErrorPath</key>
@@ -612,8 +615,8 @@ mod tests {
         assert!(plist.contains("<string>32000</string>"));
         assert!(plist.contains("<key>RunAtLoad</key>"));
         assert!(plist.contains("<key>KeepAlive</key>"));
-        // daemon と lane の子孫を background QoS に固定しない。
-        assert!(plist.contains("<key>ProcessType</key>\n    <string>Standard</string>"));
+        // mem_1CgDj7Ks1Znq41SQqTkUg1: GUI の応答を支える daemon を build と同段にしない。
+        assert!(plist.contains("<key>ProcessType</key>\n    <string>Interactive</string>"));
         assert!(plist.contains("/opt/homebrew/bin:/usr/bin"));
         // CJK blackout 対策: LANG / LC_CTYPE が UTF-8 ロケールで焼かれている。
         assert!(plist.contains("<key>LANG</key>"));
