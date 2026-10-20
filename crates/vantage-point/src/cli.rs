@@ -306,6 +306,7 @@ pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool) {
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_target(false)
+        .with_writer(std::io::stderr)
         .init();
 }
 

@@ -383,41 +383,55 @@ enum LaneCommands {
     },
 }
 
-fn main() -> Result<()> {
-    // rustls CryptoProvider を最初に初期化（reqwest/quinn が使う）
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-
-    // CLIパース（tracingより先に）
-    let cli = Cli::parse();
-
-    // VP-192: 旧 config/data パスからの冪等なデータ移行 (config 読み込み前に 1 回)
-    vantage_point::config::migrate_legacy_paths();
-
-    // Load config
-    let config = Config::load().unwrap_or_default();
-
-    // 引数なし → vp ps（稼働中インスタンス一覧）
-    let command = cli.command.unwrap_or(Commands::Ps);
-
+/// runtime / tracing の起動前に、CLI と daemon の process-global な設定を分ける。
+fn configure_process(command: &Commands) {
     // daemon server 本体 (`vp daemon start` / `vp daemon` / subcommand 省略) は stdout/stderr が
     // spawn 経路依存で闇に落ちる (daemonize・restart-all の Stdio::null・launchd redirect の混在)
     // ため、VP_DAEMON_LOG_FILE 未設定なら vp_log_dir()/daemon.kdl.log を default にして
     // init_tracing の file appender 分岐 (rotate 付き) へ固定する。spawn 経路非依存の log SSOT。
     // Stop/Status 等の短命 subcommand は対象外 (従来どおり stderr)。
     let is_daemon_server = matches!(
-        &command,
+        command,
         Commands::Daemon { command: None, .. }
             | Commands::Daemon {
                 command: Some(commands::daemon::DaemonCommands::Start { .. }),
                 ..
             }
     );
-    if is_daemon_server && std::env::var("VP_DAEMON_LOG_FILE").map_or(true, |v| v.trim().is_empty())
-    {
-        let default_log = vantage_point::config::vp_log_dir().join("daemon.kdl.log");
-        // main 冒頭・tokio runtime 起動前の single-thread 区間なので set_var は安全
-        unsafe { std::env::set_var("VP_DAEMON_LOG_FILE", &default_log) };
+    if is_daemon_server {
+        if std::env::var("VP_DAEMON_LOG_FILE").map_or(true, |v| v.trim().is_empty()) {
+            let default_log = vantage_point::config::vp_log_dir().join("daemon.kdl.log");
+            // main 冒頭・tokio runtime 起動前の single-thread 区間なので set_var は安全
+            unsafe { std::env::set_var("VP_DAEMON_LOG_FILE", &default_log) };
+        }
+    } else {
+        // daemon → lane → CLI へ継承された file writer を外す。CLI の panic も stderr へ。
+        // SAFETY: main 冒頭、他スレッド起動前にだけ呼ぶ。
+        unsafe { std::env::remove_var("VP_DAEMON_LOG_FILE") };
+        // Rust が無視する SIGPIPE を CLI だけ既定に戻し、head 等の早期切断は静かに終了。
+        // daemon はクライアント切断で死なないよう、Rust の SIG_IGN を維持する。
+        #[cfg(unix)]
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        }
     }
+}
+
+fn main() -> Result<()> {
+    // CLIパース（tracingより先に）
+    let cli = Cli::parse();
+    // 引数なし → vp ps（稼働中インスタンス一覧）
+    let command = cli.command.unwrap_or(Commands::Ps);
+    configure_process(&command);
+
+    // rustls CryptoProvider を初期化（reqwest/quinn が使う）
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+    // VP-192: 旧 config/data パスからの冪等なデータ移行 (config 読み込み前に 1 回)
+    vantage_point::config::migrate_legacy_paths();
+
+    // Load config
+    let config = Config::load().unwrap_or_default();
 
     // Initialize tracing
     let debug_mode_for_tracing = parse_debug_env().unwrap_or_default();
@@ -510,6 +524,9 @@ fn main() -> Result<()> {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+mod startup_tests;
 
 /// `vp shot` ── canonical screenshot 機構の薄い wrapper。
 /// 実装本体は `vantage_point::screenshot` module (trait + 各 OS backend)。
