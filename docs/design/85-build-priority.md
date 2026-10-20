@@ -189,6 +189,39 @@ lane の子に user_initiated / user_interactive が観測された場合は別 
 daemon の QoS 分布、同じ build の所要時間、1 週間の watchdog self-heal 件数も記録し、
 plist の単体テスト通過と実機での効果を区別する。
 
+### Interactive 反映後の実測（2026-10-21）
+
+`vp daemon install`（VP の外の terminal）と GUI の開き直し後、
+`proc_pid_rusage(RUSAGE_INFO_V4)` の CPU 時間の内訳は次のとおり。
+
+| 層 | 2026-10-20（Background） | 2026-10-21（Interactive） |
+|---|---|---|
+| GUI（vp-app） | — | user_interactive 90% |
+| daemon | background 100% | default（legacy）99% |
+| lane の shell | background 100% | default（legacy）100% |
+| codex app-server | background | default（legacy）98% |
+| `mise run check` の mbx / cargo / rustc | background | utility 99〜100% |
+
+daemon は Interactive でも main thread は legacy（default）で、lane の agent と同じ段になる。
+build は helper で utility に下がるので、daemon は build より上にいる。
+
+同じ手順（source `1d2f8578`、依存を温めた seed を APFS clone、
+`cargo build --locked -p vantage-point` で VP 本体だけを 2 本並走、wrapper なし）で
+所要時間を比べた。各条件 1 回の測定。
+
+| 条件 | 再コンパイル（2 本並走） | health p50 / p95 / max（ms） | load1 max |
+|---|---:|---:|---:|
+| 2026-10-20（lane の実効 QoS は background） | 250〜278 秒 | 4.3〜4.7 / 19〜31 / 367〜566 | 10.5〜16.2 |
+| 2026-10-21 default | 41 秒 | 0.6 / 2.9 / 142 | 8.8 |
+| 2026-10-21 utility（helper と同じ指定） | 55 秒 | 0.6 / 1.0 / 8.9 | 10.7 |
+
+依存 691 crate の seed build も 2026-10-21 は約 2 分だった。日も機材の状態も違うので小差は
+誤差として扱うが、5〜7 倍の差は background の制約（効率コアへの寄せと IO の絞り）で説明できる。
+
+utility は default より build が約 3 割遅い代わりに、daemon の health の最大値が小さい。
+エディタと daemon の応答を優先し（mako 2026-10-21）、build の utility 指定は残す。
+急ぐ場合は `VP_BUILD_PRIORITY=normal mise run …` で 1 回だけ default で走らせるか、VP の外の terminal で mise を通さず cargo を直接打つ（外の terminal でも `mise run` は helper が効いて utility になる）。
+
 ## Status log
 
 - 2026-10-20: 測定後の方式選択を受け、開発 task 用の共通 helper を追加。
@@ -197,3 +230,4 @@ plist の単体テスト通過と実機での効果を区別する。
   小実験と lead 裁定により、lane の default は XNU の通常 spawn に任せ、強制 wrapper は追加しない。
 - 2026-10-21: install の bootout 直後の競合に対し、登録解除待ち・bootstrap 再試行・health 確認を追加。
 - 2026-10-21: lead の停止時間の観測を受け、解除・health 待ちを各 30 秒にし、停止待ちの案内を追加。
+- 2026-10-21: Interactive 反映後の QoS と build 所要時間を実測。build の utility 指定を残す裁定を記録。
