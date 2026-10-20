@@ -174,6 +174,18 @@ hub federation 層が既に持っている。生産管理板（Host）を各工�
 **隔壁を外す前に「何が落ちているか」を見えるようにする**（panic hook = `src/panic_hook.rs`、
 P1 露払いで実装済）。これは fold-in の有無に関わらず価値がある。
 
+#### CLI と daemon の出力境界（2026-10-21）
+
+`vp-cli/src/main.rs` の起動設定で、`vp daemon` / `vp daemon start` だけを daemon 本体とする。
+daemon は Rust の SIGPIPE 無視と `VP_DAEMON_LOG_FILE`（未指定時 `daemon.kdl.log`）を保つ。
+CLI は継承した同変数を外して tracing / panic を stderr に出し、Unix では SIGPIPE を
+既定に戻す。`vp … | head` の読み側切断は SIGPIPE 終了となり、panic として記録しない。
+`pipefail` 有効時は signal 終了が非ゼロとして見える。Windows の signal 設定は変更しない。
+
+daemon に CLI 用の SIGPIPE 設定を適用してはいけない。回帰テストは実 CLI の閉管と、
+サブプロセス内での起動設定・SIGPIPE 発生を検証する（daemon サービス自体は起動しない）。
+起票: `mem_1CgDnqNUYT1Z5eWFs9QA1H`。
+
 ### 5.2 DB handle — 単一 `db/world/` + project 列
 
 > **実装済（PR4、2026-07-21）**。以下は設計時の記述で、末尾に実装結果を追記した。
