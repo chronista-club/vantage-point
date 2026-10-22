@@ -280,7 +280,20 @@ fn provision_worktree(
         "{} を worktree add 中 (branch={branch}, base={start_point})...",
         sub_dir.display()
     );
-    worktree_add_with_retry(repo_root, sub_dir, branch, &start_point)
+    worktree_add_with_retry(repo_root, sub_dir, branch, &start_point)?;
+    // submodule（`vendor/agent-chat`、design 86）は worktree add だけでは空のまま = cargo が
+    // path 依存を見つけられず落ちる。best-effort で埋める（`.gitmodules` が無い repo では git が
+    // 何もせず 0 を返す）。取得失敗は lane 作成を止めない — warn を出して、手で
+    // `git submodule update --init --recursive` を流せる状態で返す。
+    if let Err(e) = run_git_in(sub_dir, &["submodule", "update", "--init", "--recursive"]) {
+        tracing::warn!(
+            "submodule update 失敗 (続行、手で git submodule update --init --recursive): {e}"
+        );
+        eprintln!(
+            "⚠ submodule update 失敗 (続行、手で git submodule update --init --recursive): {e}"
+        );
+    }
+    Ok(())
 }
 
 /// clone provisioning (escape hatch `--isolation clone`)。完全独立 .git。
@@ -2889,6 +2902,66 @@ mod tests {
     fn resolve_default_branch_returns_main() {
         let (base, main) = setup_worktree_fixture("resolve-default");
         assert_eq!(resolve_default_branch(&main).as_deref(), Some("main"));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// submodule を持つ repo の lane（`vendor/agent-chat`、design 86）: worktree add だけでは
+    /// `vendor/<x>` が空のままなので、provisioning が `git submodule update --init --recursive` を
+    /// 流して埋める。無いと merge 後の最初の `vp lane new` が必ず「cargo が path 依存を見つけられない」
+    /// で止まる。
+    #[test]
+    fn setup_sub_worktree_initializes_submodules() {
+        let (base, main) = setup_worktree_fixture("submodule");
+        // submodule の upstream は file protocol。git 2.38+ は submodule の clone で file transport を
+        // 既定で拒むので、add 側は `-c protocol.file.allow=always`、provisioning 側（本番の URL は
+        // `../agent-chat.git` = https / ssh なので実装には付けない）は test process の env で許可する。
+        let upstream = base.join("sub-upstream");
+        fs::create_dir_all(&upstream).unwrap();
+        git_init_with_commit(&upstream);
+        let add = Cmd::new("git")
+            .args([
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                upstream.to_str().unwrap(),
+                "vendor/x",
+            ])
+            .current_dir(&main)
+            .output()
+            .unwrap();
+        assert!(
+            add.status.success(),
+            "submodule add: {}",
+            String::from_utf8_lossy(&add.stderr)
+        );
+        for args in [
+            &["commit", "-m", "add submodule"][..],
+            &["push", "origin", "main"][..],
+        ] {
+            let out = Cmd::new("git")
+                .args(args)
+                .current_dir(&main)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {}: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        // SAFETY: test process の env。file（= local path）だけを許可する allowlist なので、他の
+        // test が path 指定で clone / fetch する分も通る（network を使う test は無い）。
+        unsafe {
+            std::env::set_var("GIT_ALLOW_PROTOCOL", "file");
+        }
+        let sub = setup_sub("subm", "wip/subm", &main, false, Isolation::Worktree, None).unwrap();
+        assert!(
+            sub.join("vendor").join("x").join("README.md").is_file(),
+            "worktree 内の submodule が埋まっていること: {}",
+            sub.display()
+        );
         let _ = fs::remove_dir_all(&base);
     }
 

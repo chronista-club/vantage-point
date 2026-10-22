@@ -167,8 +167,8 @@ GFP 側には次の契約実装が必要。
   esbuild 込み test が 20s を超える = 環境起因、基準測定でも同じ）。GFP（nightly 4f2a628 起点の worktree、同じ submodule
   commit）: web-bundle tsc、共有関連 bun test 51、bundle、`cargo test -p gfp-app --lib echoes` 180 成功・7 ignored。
   残: process lifecycle 状態機械 + 永続化 callback、純粋 reducer / ChatLog カードの共有、publish（crates.io / npm か
-  submodule 継続か）、`vp lane new` の worktree で submodule が空のまま（lead へ question、当面は手で
-  `git submodule update --init --recursive`）、実機検収（mako）。
+  submodule 継続か）、実機検収（mako）。`vp lane new` は provisioning で `submodule update --init --recursive` を
+  best-effort で流す（lead 裁定 A、同 PR。失敗は warn で続行）。
 
 - 2026-10-02: Codex 起動契約を `agent-chat-host::codex_process::command` へ移設し、VP/GFP の
   両 process host が使用。stdio endpoint / piped stdio / kill-on-drop を共有側が所有し、
