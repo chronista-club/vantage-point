@@ -33,13 +33,7 @@
 /// 単独では glob も展開も起こさない（展開に要る `*?[]~$` は引き続き不許可）。
 /// **model 値は path の組み立てに使われない**（file 名にしていた旧 per-lane store は
 /// 2026-07-27 に退役 — 上の module doc）ので traversal 面も増えない。
-pub fn is_valid_model(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 64
-        && !s.starts_with('-')
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_' || c == '/')
-}
+pub use agent_chat_protocol::is_valid_model;
 
 /// 明示 model（Some=優先）と既定（config knob）から、session に記録する実効 model を返す。
 ///

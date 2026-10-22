@@ -13,7 +13,7 @@ it.each(['steer', 'add'])('images survive Codex %s rejection', async (kind) => {
     document.dispatchEvent(new CustomEvent('vp:conversation-sessions',{detail:{lane:'images/main',focused:1,sessions:[{key:1,agent:'codex',kind:'chat',root:true,image_capable:true,model_choices:[],permission_choices:[]}]}}))
     api.mountSession(document.body,'images/main',1)
     window.emit({kind:'codex_queue',queue:{thread_id:'thread',turn_id:'turn',ready:true,items:[],error:null},request_id:null,error:null},1)
-  `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],plugins:[solidPlugin()]})
+  `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],preserveSymlinks: true, plugins:[solidPlugin()]})
   const window=new Window()
   try {
     window.eval(result.outputFiles[0].text)

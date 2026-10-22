@@ -33,6 +33,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-chat-host"
+version = "0.1.0"
+dependencies = [
+ "agent-chat-protocol",
+ "base64 0.22.1",
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "agent-chat-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10305,6 +10328,8 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 name = "vantage-point"
 version = "0.86.0"
 dependencies = [
+ "agent-chat-host",
+ "agent-chat-protocol",
  "alacritty_terminal",
  "anyhow",
  "async-trait",
@@ -10323,7 +10348,6 @@ dependencies = [
  "glob",
  "hostname",
  "image",
- "jsonschema",
  "libc",
  "midir",
  "midistage-client",

@@ -19,6 +19,8 @@ type Kind = EngineConversationEvent['kind']
 
 /** TS union の kind 一覧。union に variant を足したら **ここにも足す**（fixture の網羅 assert が落ちる）。 */
 const ENGINE_KINDS = [
+  'codex_permission_state', 'codex_permission_applied', 'codex_requests', 'codex_response',
+  'notice', 'mcp_status', 'permission_cancelled', 'permission_mode',
   'codex_queue',
   'codex_message',
   'codex_interactions',
@@ -51,6 +53,14 @@ void _missing
 
 /** kind ごとの必須 field とその typeof。optional（Rust `skip_serializing_if`）は載せない。 */
 const REQUIRED: Record<Kind, Record<string, 'string' | 'boolean' | 'number' | 'object' | 'array' | 'null'>> = {
+  codex_permission_state: { conversation_key: 'string', selected: 'string', effective: 'null', error: 'null' },
+  codex_permission_applied: { mode: 'string' },
+  codex_requests: { requests: 'array' },
+  codex_response: { request_id: 'string', error: 'null' },
+  notice: { message: 'string' },
+  mcp_status: { server: 'string', status: 'string' },
+  permission_cancelled: { request_id: 'string' },
+  permission_mode: { mode: 'string' },
   codex_queue: { queue: 'object', request_id: 'null', error: 'null' },
   codex_message: { item_id: 'string', text: 'string', questions: 'array', append: 'boolean' },
   codex_interactions: { requests: 'array' },
