@@ -31,7 +31,7 @@ CURRENTs に属する repo を sidebar の並び順でたどり、各 repo の�
 
 長押し閾値は `PIN_HOLD_MS`。同じ Lane が既にその枠にある場合は保存も通知もしない。Devices など今の Lane が無い画面では登録・上書きせず、赤 LED を 2 回点滅する。登録・上書き時は設定色（黒の場合は白）を 2 回点滅する（150ms ごとに点灯・消灯、600ms 後に最新の通常色へ復帰）。各 pad の判定は独立し、MIDI 対象 window の変更で保留中の判定と点滅を取り消す。不在の登録先への短押しは何もしない。
 
-LPD8 の pad は gallery の Scene slot に写さない（`fleet.ts`）。Scene slot は nanoKONTROL の button に残る。knob の gallery mapping は従来どおり。
+LPD8 の pad は gallery の Scene slot に写さない（`fleet.ts`）。nanoKONTROL2 の S ボタンも sidebar で消費し、ROTO と同じピン #1〜#8 の Lane 選択に使う。knob の gallery mapping は従来どおり。
 
 CURRENTs の見出し下に 8 枠を 4 × 2 で表示する。並びは LPD8 の物理配置と同じ向き: 上段 = pad 5〜8（ピン #5〜#8）、下段 = pad 1〜4（ピン #1〜#4）。空枠クリックで今選んでいる Lane を登録、登録済み枠クリックで選択（⌘N と同じ関数）、枠の hover で出る ✕ で解除。枠の右クリックでも登録・色の変更・解除ができる。Lane 行の右クリックからは「空いている最初の枠に登録」/「登録を解除」。同じ Lane を別枠へ登録すると元の枠は空く。sub lane も登録できる。
 

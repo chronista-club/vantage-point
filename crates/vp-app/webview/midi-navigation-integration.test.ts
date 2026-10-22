@@ -184,6 +184,76 @@ it('ROTO buttons 1–8 select pins once per press and never start voice', () => 
   expect(w.sent).toEqual([]);expect(ptt).toEqual([]);
 });
 
+it('nanoKONTROL S1–S8 select the shared pins once per press and reset on disconnect or target loss', () => {
+  const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: unknown[]};
+  windows.push(w); w.eval(bundle);
+  w.eval(`window.applyTestState({processes:[{path:'/vp',name:'vp',state:'running',expanded:false}],
+    lanes_by_repo:{'/vp':Array.from({length:8}, (_,i) => ({address:{repo:'vp',name:'sub'+i,key:'vp/sub'+i}}))}})`);
+  w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:{
+    slots:Array.from({length:8}, (_,i) => ({path:'/vp',address:'vp/sub'+i})), colors:Array(8).fill('#123456'),
+  }}));
+  const port = 'Midistage/vp/nanokontrol/input';
+  const send = (index:number, pressed:boolean, type='button', port_name=port) => w.dispatchEvent(new w.CustomEvent('vp:midi-navigation', {
+    cancelable:true, detail:{port_name,event:{type,index,pressed,value:0.5}},
+  }));
+  const selection = [{t:'process:toggle',path:'/vp',expanded:true},{t:'lane:select',path:'/vp',address:'vp/sub0'}];
+  for (let index=0; index<8; index++) {
+    w.sent.length=0;
+    expect(send(index,true)).toBe(false);
+    send(index,true); send(index,false); send(index,false);
+    expect(w.sent).toEqual([selection[0],{t:'lane:select',path:'/vp',address:'vp/sub'+index}]);
+  }
+  w.sent.length=0;
+  for (const index of [8,16]) expect(send(index,true)).toBe(true); // M/R
+  for (const type of ['knob','fader']) expect(send(0,true,type)).toBe(true);
+  expect(send(0,true,'button','Other controller')).toBe(true);
+  expect(w.sent).toEqual([]);
+  send(0,true);
+  w.dispatchEvent(new w.CustomEvent('vp:midi-unavailable',{detail:{port_name:port}}));
+  send(0,true);
+  expect(w.sent).toEqual([...selection,...selection]);
+  w.sent.length=0;
+  w.eval("window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:false}))");
+  send(0,true);
+  expect(w.sent).toEqual([]);
+  w.eval("window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:true}))");
+  send(0,true,'button','nanoKONTROL2 SLIDER/KNOB');
+  expect(w.sent).toEqual(selection);
+  w.sent.length=0;
+  w.dispatchEvent(new w.CustomEvent('vp:midi-settings',{detail:{slots:Array(8).fill(null),colors:Array(8).fill('#123456')}}));
+  expect(send(7,true)).toBe(false); // Empty pin still consumes S; never falls through to gallery.
+  expect(w.sent).toEqual([]);
+});
+
+it('nanoKONTROL TRACK steps through CURRENTs across repos, stops at edges, and ignores repeats', () => {
+  const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: unknown[]};
+  windows.push(w); w.eval(bundle);
+  const state = (active:string|null, empty=false) => w.eval(`window.applyTestState({
+    processes:${empty ? '[]' : "[{path:'/a',name:'a',state:'running',expanded:true},{path:'/b',name:'b',state:'running',expanded:false}]"},
+    currents_order:['/b','/a'],
+    lanes_by_repo:{'/a':[{address:{repo:'a',name:'root',key:'a/root'}}],
+      '/b':[{address:{repo:'b',name:'root',key:'b/root'}},{address:{repo:'b',name:'sub',key:'b/sub'}}]},
+    active_lane_address:${JSON.stringify(active)}
+  })`);
+  const send = (index:number, pressed:boolean) => w.dispatchEvent(new w.CustomEvent('vp:midi-navigation', {
+    cancelable:true,detail:{port_name:'nanoKONTROL2 SLIDER/KNOB',event:{type:'button',index,pressed}},
+  }));
+  const press = (index:number) => { w.sent.length=0; expect(send(index,true)).toBe(false); send(index,true); send(index,false); };
+  state('b/root'); press(25);
+  expect(w.sent).toEqual([{t:'process:toggle',path:'/b',expanded:true},{t:'lane:select',path:'/b',address:'b/sub'}]);
+  state('b/sub'); press(25);
+  expect(w.sent).toEqual([{t:'lane:select',path:'/a',address:'a/root'}]);
+  state('a/root'); press(24);
+  expect(w.sent).toEqual([{t:'process:toggle',path:'/b',expanded:true},{t:'lane:select',path:'/b',address:'b/sub'}]);
+  state('a/root'); press(25); expect(w.sent).toEqual([]);
+  state('b/root'); press(24); expect(w.sent).toEqual([]);
+  state(null); press(25);
+  expect(w.sent).toEqual([{t:'process:toggle',path:'/b',expanded:true},{t:'lane:select',path:'/b',address:'b/root'}]);
+  state(null); press(24);
+  expect(w.sent).toEqual([{t:'lane:select',path:'/a',address:'a/root'}]);
+  state(null,true); press(25); expect(w.sent).toEqual([]);
+});
+
 it('holds through real IPC, shows rejection without a lane, and cancels on target loss', () => {
   vi.useFakeTimers();
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: {t:string;settings?:string}[]};

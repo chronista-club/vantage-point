@@ -144,6 +144,46 @@ fn enumerate_ports() -> HashMap<String, (bool, bool)> {
     result
 }
 
+/// Display names for ports granted by Midistage, never a physical-port acquisition fallback.
+fn snapshot_ports(snapshot: Option<&midistage_client::Snapshot>) -> HashMap<String, (bool, bool)> {
+    let mut ports = HashMap::new();
+    let Some(snapshot) = snapshot else {
+        return ports;
+    };
+    for device in &snapshot.devices {
+        if device.state.phase != midistage_client::protocol::Phase::Active
+            || device
+                .state
+                .lease
+                .as_ref()
+                .is_none_or(|lease| lease.session_id != snapshot.session_id)
+        {
+            continue;
+        }
+        for (names, input) in [
+            (&device.native_ports.inputs, true),
+            (&device.native_ports.outputs, false),
+        ] {
+            for native in names {
+                // Same display-name suffix used by MidiAccess to resolve the owned bridge.
+                let Some((_, physical)) = native.split_once(" | ") else {
+                    continue;
+                };
+                if physical.is_empty() {
+                    continue;
+                }
+                let flags = ports.entry(physical.to_string()).or_insert((false, false));
+                if input {
+                    flags.0 = true;
+                } else {
+                    flags.1 = true;
+                }
+            }
+        }
+    }
+    ports
+}
+
 /// 共有の input listener 管理 map（port displayName → listener task）。
 ///
 /// listener の起点は 3 経路（起動時 attach / agent 報告 / polling discovery）あるが、
@@ -1003,10 +1043,23 @@ impl DeviceRegistry {
         }
         let changed = self.midi_snapshot.as_ref().map(|s| &s.devices)
             != snapshot.as_ref().map(|s| &s.devices);
+        let previous_ports = snapshot_ports(self.midi_snapshot.as_ref());
+        let next_ports = snapshot_ports(snapshot.as_ref());
         self.midi_snapshot = snapshot;
         if changed {
             *self.last_feedback.lock().await = Default::default();
             *self.lpd8_profile.lock().await = Default::default();
+            // Startup enumeration and the optional Swift agent may never have seen these
+            // devices. Snapshot grants must be sufficient to start (and retire) listeners.
+            for name in previous_ports
+                .keys()
+                .filter(|name| !next_ports.contains_key(*name))
+            {
+                self.report_device_disconnected(name).await;
+            }
+            for (name, (input, output)) in &next_ports {
+                self.report_device_connected(name, *input, *output).await;
+            }
             let names: Vec<_> = self
                 .devices
                 .read()
@@ -1396,6 +1449,83 @@ mod tests {
             })
         });
         (opener, live)
+    }
+
+    #[tokio::test]
+    async fn snapshot_hotplug_registers_ports_and_reconnects_without_agent_reports() {
+        // mem_1CgGt6gxJkCAeRMGg9LKRH: daemon starts empty, then Midistage grants a device.
+        let (opener, live) = tracked_opener();
+        let mut registry = listener_registry(opener);
+        registry.midi_access.write().unwrap().replace(vec![]);
+        let snapshot = |present: bool, generation: u8| -> midistage_client::Snapshot {
+            serde_json::from_value(serde_json::json!({
+                "sequence":generation,"protocol_version":1,"server_epoch":"test","session_id":"session",
+                "devices":[{"device_id":"nanokontrol","profile_id":"nanokontrol","name":"nanoKONTROL2",
+                    "present":present,"assignment":{"client_id":"vp","revision":1,"expected":true},
+                    "phase":if present { "active" } else { "off" },
+                    "lease":if present { serde_json::json!({"session_id":"session","token":generation.to_string()}) } else { serde_json::Value::Null },
+                    "controls":[],"native_ports":{
+                        "inputs":if present { vec![format!("Midistage/vp/{generation}/1 | nanoKONTROL2 SLIDER/KNOB")] } else { vec![] },
+                        "outputs":if present { vec![format!("Midistage/vp/{generation}/2 | nanoKONTROL2 CTRL")] } else { vec![] }
+                    }}]
+            })).unwrap()
+        };
+        registry.apply_midi_snapshot(Some(snapshot(false, 0))).await;
+        assert_eq!(registry.device_count().await, 0);
+        for generation in [1, 2] {
+            let connected = snapshot(true, generation);
+            registry.apply_midi_snapshot(Some(connected.clone())).await;
+            assert_eq!(
+                registry.device_count().await,
+                2,
+                "snapshot alone registers IN and OUT"
+            );
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while live.load(Ordering::SeqCst) != 1 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(registry.hold_state("nanoKONTROL2 SLIDER/KNOB").await.0);
+            registry.apply_midi_snapshot(Some(connected)).await;
+            assert_eq!(
+                registry.input_listeners.read().await.len(),
+                1,
+                "repeated snapshot is idempotent"
+            );
+            registry
+                .apply_midi_snapshot(Some(snapshot(false, generation)))
+                .await;
+            assert_eq!(
+                live.load(Ordering::SeqCst),
+                0,
+                "disconnect joins the old listener"
+            );
+            assert_eq!(
+                registry.device_count().await,
+                0,
+                "disconnected ports leave the registry"
+            );
+        }
+        let mut foreign = snapshot(true, 3);
+        foreign.devices[0].state.lease.as_mut().unwrap().session_id = "other-client".into();
+        registry.apply_midi_snapshot(Some(foreign)).await;
+        assert_eq!(
+            registry.device_count().await,
+            0,
+            "foreign leases do not register owned ports"
+        );
+        assert!(registry.input_listeners.read().await.is_empty());
+        registry.apply_midi_snapshot(Some(snapshot(true, 4))).await;
+        assert_eq!(registry.device_count().await, 2);
+        registry.apply_midi_snapshot(None).await;
+        assert_eq!(
+            registry.device_count().await,
+            0,
+            "service loss clears its ports"
+        );
+        assert!(registry.input_listeners.read().await.is_empty());
     }
 
     #[tokio::test]
