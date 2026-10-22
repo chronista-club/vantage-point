@@ -169,6 +169,14 @@ GFP 側には次の契約実装が必要。
   残: process lifecycle 状態機械 + 永続化 callback、純粋 reducer / ChatLog カードの共有、publish（crates.io / npm か
   submodule 継続か）、実機検収（mako）。`vp lane new` は provisioning で `submodule update --init --recursive` を
   best-effort で流す（lead 裁定 A、同 PR。失敗は warn で続行）。
+  CI の `--ignored` test `codex_chat_resume_retry_roundtrip` が赤になった: 偽 CLI fixture
+  （`tests/fixtures/codex-chat-retry/codex`）が `app-server` 単独の argv しか受けず、共有 builder の
+  `app-server --listen stdio://` で即終了していた（nightly では VP が単独 argv で spawn）。fixture は
+  共有 builder の argv を受ける形に修正（stdio 以外は拒む）。`mise run test` の ignored 13 件に含まれ
+  手元では見えなかった — ignored test は CI と同じ形で単独実行する。
+  watch（lead）: daemon（launchd）が flow_handoff / add_sub で作る lane は ssh 鍵が無いと
+  `submodule update` が失敗し vendor が空のまま warn で続行する。実機検収項目に追加。逃げ道は
+  agent-chat だけ https に向ける insteadOf か `.gitmodules` の絶対 https（別 PR）。
 
 - 2026-10-02: Codex 起動契約を `agent-chat-host::codex_process::command` へ移設し、VP/GFP の
   両 process host が使用。stdio endpoint / piped stdio / kill-on-drop を共有側が所有し、

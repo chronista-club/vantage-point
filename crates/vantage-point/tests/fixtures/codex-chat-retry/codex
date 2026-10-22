@@ -4,8 +4,11 @@ import json
 import sys
 from pathlib import Path
 
-if sys.argv[1:] != ["app-server"]:
-    raise SystemExit("this fixture only serves app-server")
+# 共有 builder（agent-chat-host::codex_process::command、design 86）は `app-server --listen stdio://` で
+# 起動する（stdio は codex の既定値と同じ）。旧 VP の `app-server` 単独も受け、それ以外（unix:// 等）は拒む。
+args = sys.argv[1:]
+if args not in (["app-server"], ["app-server", "--listen", "stdio://"]):
+    raise SystemExit("this fixture only serves app-server over stdio")
 root = Path.cwd()
 if not (root / "codex-retry-fixture").is_file():
     raise SystemExit("fixture requires the test's isolated working directory")
