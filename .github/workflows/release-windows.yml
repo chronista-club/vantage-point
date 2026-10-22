@@ -42,12 +42,11 @@ jobs:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       TARGET: x86_64-pc-windows-msvc
     steps:
-      # vendor/agent-chat（submodule）を含めて取得する（ci.yml と同じ形）。
+      # vendor/agent-chat（submodule、public）を含めて取得する（ci.yml と同じ形）。
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG }}
           submodules: recursive
-          token: ${{ secrets.AGENT_CHAT_TOKEN || github.token }}
           persist-credentials: false
 
       # manifest 生成器は workflow 側の ref から取る（render.ps1 を持たない古い tag にも後付けできる）
@@ -55,9 +54,6 @@ jobs:
         with:
           path: tooling
           sparse-checkout: packaging/winget
-          submodules: recursive
-          token: ${{ secrets.AGENT_CHAT_TOKEN || github.token }}
-          persist-credentials: false
 
       # club-unison の build script が protoc を要求（ci.yml の check-windows と同じ）
       - name: Install protoc (for club-unison build script)

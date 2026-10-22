@@ -73,3 +73,43 @@ pub(crate) fn state_dir() -> StateDirGuard {
 pub(crate) async fn state_dir_async() -> StateDirGuard {
     StateDirGuard::enter(STATE_DIR_LOCK.lock().await)
 }
+
+/// `XDG_STATE_HOME` 以外の env var を差し替える test を直列化する crate 唯一のロック。
+///
+/// var ごとに分けない（分けると「module ごとの static」と同じ落とし穴 = 名前が同じでも排他しない）。
+/// 差し替える test は少ないので 1 本で足りる。
+static ENV_VAR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 任意の env var を差し替えている間だけ生きる guard（sync test 用）。drop で元に戻す。
+///
+/// 例: `GIT_ALLOW_PROTOCOL` は allowlist なので、残すと以降の test の https / ssh を塞ぐ。
+pub(crate) struct EnvVarGuard {
+    key: &'static str,
+    prev: Option<OsString>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        // SAFETY: ENV_VAR_LOCK 保持中（_lock は field 宣言順で後に drop）= この var を触るのは本 guard だけ。
+        unsafe {
+            match self.prev.take() {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
+
+/// sync test 用。`key` を `value` に差し替え、guard の drop で復元する。
+pub(crate) fn set_var(key: &'static str, value: &str) -> EnvVarGuard {
+    let lock = ENV_VAR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let prev = std::env::var_os(key);
+    // SAFETY: ENV_VAR_LOCK 保持中 = この経路で env を触るのは本 guard だけ。
+    unsafe { std::env::set_var(key, value) };
+    EnvVarGuard {
+        key,
+        prev,
+        _lock: lock,
+    }
+}

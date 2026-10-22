@@ -1,8 +1,9 @@
 /**
  * ConversationEvent の Rust ↔ TS 契約 test（棚卸し 項目 8 / 8-1）。
  *
- * fixture は Rust が実際に serialize した送信形（`src/generated/ConversationEventFixtures.ts`、
- * `cargo test -p vantage-point --test conversation_event_fixtures` で再生成）。型検査（`satisfies`）は
+ * fixture は Rust が実際に serialize した送信形（`src/generated/ConversationEventFixtures.ts` = 共有
+ * package の re-export。再生成は agent-chat で `cargo test -p agent-chat-protocol --test fixtures`。
+ * VP の `tests/conversation_event_fixtures.rs` は型の同一性 1 本だけ）。型検査（`satisfies`）は
  * tsc が担うので、ここでは
  *   1. kind の網羅（TS union の kind 集合 = fixture の kind 集合）
  *   2. 実行時 shape（kind ごとの必須 field と型）を any / 型断言を経由せずに検査

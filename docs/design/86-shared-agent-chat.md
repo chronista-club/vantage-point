@@ -135,7 +135,7 @@ GFP 側には次の契約実装が必要。
 - MCP status / Claude permission suggestions / GFP Codex session permission を往復する
   3 テストで現行 VP の RED を確認し、共有 crate と VP 接続後に GREEN を確認。
 - MCP の旧 string 形式の読取と旧 request の `can_remember=false` を回帰テストで保持。
-- 30 kind の Rust serde fixture と ts-rs 生成型は共有 repo が所有。VP の旧 generated path は
+- 31 kind（2026-10-22 に `subagent_task` を追加、当初 30）の Rust serde fixture と ts-rs 生成型は共有 repo が所有。VP の旧 generated path は
   package を指す shim。GFP も同じ event 型と fixture を使う。
 - モデル名検証は条件を変えず共有関数へ移設。VP `EngineSettings` の TS 生成は
   Codex 型だけ package の型を参照し、consumer が共有型を再生成しない。
@@ -177,6 +177,14 @@ GFP 側には次の契約実装が必要。
   watch（lead）: daemon（launchd）が flow_handoff / add_sub で作る lane は ssh 鍵が無いと
   `submodule update` が失敗し vendor が空のまま warn で続行する。実機検収項目に追加。逃げ道は
   agent-chat だけ https に向ける insteadOf か `.gitmodules` の絶対 https（別 PR）。
+  独立 review（2026-10-23）の注記: 共有 builder の `--listen stdio://` は codex-cli 0.163.0 で既定値と同じ、
+  GFP は 0.160.0 から本番で使用 = 確認済みの最低 version ≥ 0.160。`CodexHistory::from_thread` が空 /
+  重複 ID の履歴を拒むのは 10-02 の意図した変更（検収項目「既存の Codex thread の resume が拒まれない」を
+  追加）。MCP ツール承認が `turn/completed` で消えるのは GFP 由来の意図（nightly の VP は残していた）。
+  同 review の修正: 共有 crate の test と生成物 drift を VP CI に追加（workspace の `exclude` で素通りして
+  いた）、VP 射影で権限要求 × 選択なしの許可を nightly と同じ Err に戻す（共有台帳の `Allow{answers:None}`
+  は GFP が UI で明示する「turn 一括許可」で、設定省略を full access と読み替えない）、`--isolation clone`
+  側にも submodule 初期化、test の env は RAII guard で復元。
 
 - 2026-10-02: Codex 起動契約を `agent-chat-host::codex_process::command` へ移設し、VP/GFP の
   両 process host が使用。stdio endpoint / piped stdio / kill-on-drop を共有側が所有し、

@@ -51,6 +51,12 @@ impl Interactions {
             .kind;
         let decision = match decision {
             PermissionDecision::Deny { .. } => Decision::Deny,
+            // 権限要求に選択なしの許可は受けない（nightly の VP `codex_permissions::response` と同じ Err）。
+            // 共有台帳の `Allow{answers:None}` は「要求した権限を turn 一括で許可」= GFP が UI で明示する
+            // 経路で、VP の UI は必ず選択を送る。設定省略を full access の選択と読み替えない（design 86）。
+            PermissionDecision::Allow { answers: None } if kind == InteractionKind::Permissions => {
+                return Err("権限の選択がありません".into());
+            }
             // MCP 手続きの UI は中断を `{"action":"cancel"}` の回答として送る。
             PermissionDecision::Allow { answers }
                 if kind.is_mcp() && answers.as_ref() == Some(&json!({"action":"cancel"})) =>
@@ -279,6 +285,41 @@ mod tests {
                 json!({"id":9,"result":{"action":action}})
             );
         }
+    }
+
+    /// 権限要求に選択なしの許可（`answers: None`）は受けない — nightly の VP（`codex_permissions::response`）
+    /// と同じ Err。共有台帳の `Allow{answers:None}` は「要求した権限を turn 一括で許可」（GFP が UI で
+    /// 明示する経路）なので、VP の射影で止めないと設定省略が full access の選択に化ける（design 86）。
+    #[test]
+    fn interactions_permissions_reject_allow_without_selection() {
+        let mut pending = Interactions::default();
+        pending
+            .receive(
+                &json!(1),
+                "item/permissions/requestApproval",
+                &json!({"threadId":"thread","turnId":"turn","permissions":{"fileSystem":{
+                    "read":null,"write":null,
+                    "entries":[{"access":"write","path":{"type":"path","path":"/data"}}]}}}),
+                Some("thread"),
+                Some("turn"),
+            )
+            .unwrap();
+        let id = requests(&pending)[0].request_id.clone();
+        let err = pending
+            .begin_response(&id, &PermissionDecision::Allow { answers: None })
+            .expect_err("選択なしの許可は Err");
+        assert!(err.contains("権限の選択がありません"), "{err}");
+        // 検証で止めた要求は消費されず、明示の選択で改めて応答できる。
+        assert_eq!(
+            reply(
+                &mut pending,
+                &id,
+                PermissionDecision::Allow {
+                    answers: Some(json!({"p0":"allow"}))
+                }
+            )["result"]["scope"],
+            json!("turn")
+        );
     }
 
     /// 一般の MCP 手続きは型付きの値と中断を従来の形で返す。未対応形式は理由を見せる。

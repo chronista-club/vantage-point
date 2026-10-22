@@ -281,10 +281,17 @@ fn provision_worktree(
         sub_dir.display()
     );
     worktree_add_with_retry(repo_root, sub_dir, branch, &start_point)?;
-    // submodule（`vendor/agent-chat`、design 86）は worktree add だけでは空のまま = cargo が
-    // path 依存を見つけられず落ちる。best-effort で埋める（`.gitmodules` が無い repo では git が
-    // 何もせず 0 を返す）。取得失敗は lane 作成を止めない — warn を出して、手で
-    // `git submodule update --init --recursive` を流せる状態で返す。
+    init_submodules_best_effort(sub_dir);
+    Ok(())
+}
+
+/// submodule（`vendor/agent-chat`、design 86）を best-effort で埋める。
+///
+/// worktree add / clone だけでは submodule が空のまま = cargo が path 依存を見つけられず落ちる。
+/// `.gitmodules` が無い repo では git が何もせず 0 を返す。取得失敗（daemon 環境で ssh 鍵が
+/// 使えない等）は lane 作成を止めない — warn を出して、手で `git submodule update --init --recursive`
+/// を流せる状態で返す。
+fn init_submodules_best_effort(sub_dir: &Path) {
     if let Err(e) = run_git_in(sub_dir, &["submodule", "update", "--init", "--recursive"]) {
         tracing::warn!(
             "submodule update 失敗 (続行、手で git submodule update --init --recursive): {e}"
@@ -293,7 +300,6 @@ fn provision_worktree(
             "⚠ submodule update 失敗 (続行、手で git submodule update --init --recursive): {e}"
         );
     }
-    Ok(())
 }
 
 /// clone provisioning (escape hatch `--isolation clone`)。完全独立 .git。
@@ -309,7 +315,10 @@ fn provision_clone(repo_root: &Path, sub_dir: &Path, branch: &str) -> Result<(),
     run_git(&["clone", "--depth", "1", repo_root_str, sub_dir_str])?;
     // clone の origin は main repo path になるので GitHub URL に張り替える (= 旧挙動)。
     run_git_in(sub_dir, &["remote", "set-url", "origin", &remote_url])?;
-    run_git_in(sub_dir, &["checkout", "-b", branch])
+    run_git_in(sub_dir, &["checkout", "-b", branch])?;
+    // worktree 側と対称（escape hatch でも vendor/agent-chat を空のままにしない）。
+    init_submodules_best_effort(sub_dir);
+    Ok(())
 }
 
 /// worktree lane の base branch (= dev trunk) を解決。
@@ -2951,11 +2960,8 @@ mod tests {
                 String::from_utf8_lossy(&out.stderr)
             );
         }
-        // SAFETY: test process の env。file（= local path）だけを許可する allowlist なので、他の
-        // test が path 指定で clone / fetch する分も通る（network を使う test は無い）。
-        unsafe {
-            std::env::set_var("GIT_ALLOW_PROTOCOL", "file");
-        }
+        // allowlist なので残すと以降の test の https / ssh を塞ぐ — guard で直列化 + 復元。
+        let _protocol = crate::test_env::set_var("GIT_ALLOW_PROTOCOL", "file");
         let sub = setup_sub("subm", "wip/subm", &main, false, Isolation::Worktree, None).unwrap();
         assert!(
             sub.join("vendor").join("x").join("README.md").is_file(),
