@@ -1655,7 +1655,7 @@ function SessionChatView(props: { lane: string; session: number }) {
   // ---- 画像添付（chat 入力欄への貼り付け、2026-08-30）--------------------------
   // ⚠️ VP は保存しない — 送信時に engine へ渡すだけで、transcript / replay にも残さない
   // （mako 裁定: 痕跡も残さない）。再 attach 後の画面に画像が出ないのはこのため。
-  // 状態・貼り付け判定・objectURL の解放は共有 `createImageAttachments`（design 74）。
+  // 状態・貼り付け判定・objectURL の解放は共有 `createImageAttachments`（design 86）。
   // ⚠️ 貼り付け / drop の判定と preventDefault は同期（`take` が同期で File を確定する）。
   const images = createImageAttachments(imageCapable)
   const attachments = images.attachments

@@ -1,4 +1,4 @@
-/** 入力欄の画像添付（共有 `@chronista-club/agent-chat/images`、design 74）。VP / GFP とも保存しない。 */
+/** 入力欄の画像添付（共有 `@chronista-club/agent-chat/images`、design 86）。VP / GFP とも保存しない。 */
 export {
   bytesToBase64,
   createImageAttachments,

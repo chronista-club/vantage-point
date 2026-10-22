@@ -1,6 +1,6 @@
 /**
  * Codex の settings panel — runtime（mode / permission）+ model + effort。
- * 表示は共有 `CodexSettingsControls`（design 74）。権限欄は VP が所有する native の権限メニューを差し込む。
+ * 表示は共有 `CodexSettingsControls`（design 86）。権限欄は VP が所有する native の権限メニューを差し込む。
  *
  * 候補は host が app-server の `model/list` から引いて `codex_config` event で届ける
  * （effort は model ごとに違う）。選択は `{codex: {model, effort}}` を request_id 付きで送り、

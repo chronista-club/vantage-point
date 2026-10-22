@@ -17,7 +17,15 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
+      # vendor/agent-chat（submodule、共有チャット基盤）を含めて取得する。token は submodule の
+      # 取得にも使われる（public なら github.token で足りる。private の間は AGENT_CHAT_TOKEN）。
+      # persist-credentials: false — token を checkout の間だけ使い、.git/config に残さない
+      # （残すと後続の依存の build.rs や install script から読めてしまう）。GFP と同じ形。
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.AGENT_CHAT_TOKEN || github.token }}
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.96 # = rust-toolchain.toml channel (基本 stable 追随、 minor pin・patch float)
@@ -36,7 +44,15 @@ jobs:
     steps:
       # font (.ttf) は通常 git blob 管理に移行済 (LFS budget 超過のため)。
       # checkout はデフォルトで font 実体がそのまま取れる (lfs フェッチ不要)。
+      # vendor/agent-chat（submodule、共有チャット基盤）を含めて取得する。token は submodule の
+      # 取得にも使われる（public なら github.token で足りる。private の間は AGENT_CHAT_TOKEN）。
+      # persist-credentials: false — token を checkout の間だけ使い、.git/config に残さない
+      # （残すと後続の依存の build.rs や install script から読めてしまう）。GFP と同じ形。
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.AGENT_CHAT_TOKEN || github.token }}
+          persist-credentials: false
 
       # VP-180 (2026-05-15) で導入: club-unison v0.7.0+ の build script が protoc を要求
       # (= buffa::Message / ProtoCodec を生成するため、 v0.9 の wire format pivot 以降は
@@ -113,7 +129,15 @@ jobs:
       github.ref == 'refs/heads/main' ||
       github.ref == 'refs/heads/nightly'
     steps:
+      # vendor/agent-chat（submodule、共有チャット基盤）を含めて取得する。token は submodule の
+      # 取得にも使われる（public なら github.token で足りる。private の間は AGENT_CHAT_TOKEN）。
+      # persist-credentials: false — token を checkout の間だけ使い、.git/config に残さない
+      # （残すと後続の依存の build.rs や install script から読めてしまう）。GFP と同じ形。
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.AGENT_CHAT_TOKEN || github.token }}
+          persist-credentials: false
 
       # VP-180 で導入: club-unison v0.7.0+ の build script が protoc を要求 (buffa-build 経由)
       - name: Install protoc (for club-unison build script)
@@ -149,7 +173,15 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
+      # vendor/agent-chat（submodule、共有チャット基盤）を含めて取得する。token は submodule の
+      # 取得にも使われる（public なら github.token で足りる。private の間は AGENT_CHAT_TOKEN）。
+      # persist-credentials: false — token を checkout の間だけ使い、.git/config に残さない
+      # （残すと後続の依存の build.rs や install script から読めてしまう）。GFP と同じ形。
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.AGENT_CHAT_TOKEN || github.token }}
+          persist-credentials: false
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked

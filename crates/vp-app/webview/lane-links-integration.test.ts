@@ -9,7 +9,7 @@ let main: string, sidebar: string
 const windows: Window[] = []
 beforeAll(async () => {
   async function bundle(contents: string) {
-    const result = await build({ stdin: { contents, loader: 'tsx', resolveDir: fileURLToPath(new URL('.', import.meta.url)) }, bundle: true, write: false, format: 'iife', platform: 'browser', plugins: [solidPlugin()], define: { 'process.env.NODE_ENV': '"production"' } })
+    const result = await build({ stdin: { contents, loader: 'tsx', resolveDir: fileURLToPath(new URL('.', import.meta.url)) }, bundle: true, write: false, format: 'iife', platform: 'browser', preserveSymlinks: true, plugins: [solidPlugin()], define: { 'process.env.NODE_ENV': '"production"' } })
     return result.outputFiles[0].text
   }
   main = await bundle(`

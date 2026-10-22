@@ -118,6 +118,8 @@ vantage-point/
 │   ├── vp-cli/          # CLI binary (vp、 lane lib も内包)
 │   ├── midistage-profiles/ # MIDI デバイス profile
 │   └── vp-nexus/        # 認証・同期等のサービス
+├── vendor/
+│   └── agent-chat/      # 共有チャット基盤 (submodule、chronista-club/agent-chat。VP / GFP が同じ revision を指す、design 86)
 ├── docs/
 │   ├── spec/            # 仕様書
 │   ├── design/          # 設計書

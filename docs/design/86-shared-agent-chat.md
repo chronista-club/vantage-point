@@ -1,6 +1,8 @@
-# 74. VP / GFP の共有チャット基盤
+# 86. VP / GFP の共有チャット基盤
 
-> **Status**: Draft — protocol・engine翻訳・Codex要求台帳・起動契約は共有済み。Codex履歴は共有実装へVPを接続済み。process lifecycle / reducer / UI の移行は未完了
+> 旧番号 74。nightly に `74-brand-identity.md` が先に入ったため 86 へ繰り下げ（2026-10-22）。
+
+> **Status**: Draft — protocol・engine 翻訳・Codex 要求台帳・起動契約・Codex 履歴・subagent task 翻訳は共有済み。VP は nightly に追随し `vendor/agent-chat` submodule で GFP と同じ revision を指す（2026-10-22、移行単位 5 の依存固定）。process lifecycle / reducer / UI の移行（単位 3〜5 の続き）と publish は未完了
 > **Related**: design 32、40、41、65、67、69、70、72、`mem_1CfcoK3QjHurVQ173tZDuA`
 > **対象**: `crates/vantage-point/src/conversation/`, `crates/vp-app/webview/chat-model.ts`, `crates/vp-app/webview/chatview.tsx`、GFP `crates/gfp-app/src/echoes/`, `web-bundle/src/echoes.ts`, `web-bundle/src/components/ChatLog.tsx`
 
@@ -146,6 +148,27 @@ GFP 側には次の契約実装が必要。
   lead の状態を開始時の39項目に戻した。初回の型エラーは正しい worktree の基準として使わない。
 
 ## Status log
+
+- 2026-10-22: VP 側を nightly（8febd2ad）に追随させ、依存を `vendor/agent-chat` submodule で固定（task `mem_1CgHKDoqQYVjXcmz92CZdG`）。
+  lane の 6 commit を 1 つに squash して rebase、衝突 9 file。shim 系（event / claude_translate /
+  conversation_event_fixtures / generated TS 3 本）は lane 側を採り、nightly #1201 の subagent task_* 翻訳
+  （`SubagentTask` event、`SubagentRole::{ToolUse, ToolResult}`、golden testdata）は **agent-chat PR #1** へ移植
+  （共有 71 成功。LICENSE MIT / Apache dual と license metadata も同梱、mako 裁定で public 化予定）。
+  codex_host は nightly の 4 修正（継承 env の剥がし / 起動失敗 message に program / active writer の recovery 文 /
+  main → lead）を保持したまま共有 `codex_process::command` を使う。chatview は nightly の subagent float と
+  未確認入力の復元を保持し、画像添付は共有 `createImageAttachments` の `restore` へ。
+  nightly 以降に増えた esbuild 込み test 15 file に `preserveSymlinks: true` を揃えた（symlink 越しの共有部品から
+  solid-js を解決できず落ちる）。`PermissionRequest` を組み立てる test 4 箇所に共有 protocol の optional field を補った。
+  submodule: `.gitmodules` url `../agent-chat.git`、root `exclude = ["vendor"]`、Cargo path と Bun `file:` を vendor 相対へ。
+  CI は全 checkout を `submodules: recursive` + `token: AGENT_CHAT_TOKEN || github.token` + `persist-credentials: false`（GFP と同形）。
+  README / setup.md / AGENTS.md に `--recurse-submodules` と `submodule update --init`。設計書は 74 → 86 に繰り下げ。
+  検証（VP）: `cargo check --tests`、lib conversation 192 成功・6 ignored、契約 3 + fixture 1、`cargo clippy --workspace
+  --all-targets -D warnings`、webview typecheck / build、vitest 938 成功（順次実行。並列 worker は load 13 の機械で
+  esbuild 込み test が 20s を超える = 環境起因、基準測定でも同じ）。GFP（nightly 4f2a628 起点の worktree、同じ submodule
+  commit）: web-bundle tsc、共有関連 bun test 51、bundle、`cargo test -p gfp-app --lib echoes` 180 成功・7 ignored。
+  残: process lifecycle 状態機械 + 永続化 callback、純粋 reducer / ChatLog カードの共有、publish（crates.io / npm か
+  submodule 継続か）、`vp lane new` の worktree で submodule が空のまま（lead へ question、当面は手で
+  `git submodule update --init --recursive`）、実機検収（mako）。
 
 - 2026-10-02: Codex 起動契約を `agent-chat-host::codex_process::command` へ移設し、VP/GFP の
   両 process host が使用。stdio endpoint / piped stdio / kill-on-drop を共有側が所有し、

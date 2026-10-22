@@ -533,8 +533,7 @@ impl CodexAgentHost {
         let program = crate::lane::codex_session::codex_cli_path();
         // 起動契約（app-server 引数 / piped stdio / kill-on-drop）は共有 codex_process が所有。
         // CLI 探索・cwd・identity env・継承 env の剥がしはアプリ側（design 86）。
-        let mut cmd =
-            agent_chat_host::codex_process::command(std::ffi::OsStr::new(&program), &[]);
+        let mut cmd = agent_chat_host::codex_process::command(std::ffi::OsStr::new(&program), &[]);
         for key in crate::spawn_env::inherited_agent_host_env_to_strip() {
             cmd.env_remove(key);
         }

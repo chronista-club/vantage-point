@@ -35,7 +35,7 @@ beforeAll(async () => {
     const [pr,setPr]=createSignal(null); window.setPr=setPr;
     const [addRequest,setAddRequest]=createSignal(0); window.addUrl=()=>setAddRequest(n=>n+1);
     window.dispose=render(()=>createComponent(LocalUrls,{repoPath:'/repo',get address(){return address()},get active(){return active()},get discovered(){return discovered()},get pr(){return pr()},get addRequest(){return addRequest()}}),document.body);
-  `,loader:'ts',resolveDir:fileURLToPath(new URL('.',import.meta.url))},bundle:true,write:false,format:'iife',platform:'browser',plugins:[solidPlugin()],define:{'process.env.NODE_ENV':'"production"'}})
+  `,loader:'ts',resolveDir:fileURLToPath(new URL('.',import.meta.url))},bundle:true,write:false,format:'iife',platform:'browser',preserveSymlinks:true,plugins:[solidPlugin()],define:{'process.env.NODE_ENV':'"production"'}})
   bundle=result.outputFiles[0].text
 })
 async function fixture(empty=false,failLoad=false,hidden=false,discovered:string[]=[],entries?:any[]) {

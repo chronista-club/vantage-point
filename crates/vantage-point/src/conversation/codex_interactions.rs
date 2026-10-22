@@ -1,5 +1,5 @@
 //! Codex の未回答 server request（design 67）。台帳（受理・許可可否・応答の形）は共有
-//! `agent-chat-host`（design 74）。ここは VP の表示語彙への射影と回答の読み替えだけを持つ。
+//! `agent-chat-host`（design 86）。ここは VP の表示語彙への射影と回答の読み替えだけを持つ。
 use agent_chat_host::codex_interactions::{
     self as shared, Decision, Interaction, InteractionKind, Notice,
 };
