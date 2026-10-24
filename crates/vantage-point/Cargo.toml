@@ -18,6 +18,10 @@ default = ["midi"]
 midi = ["dep:midir", "dep:midistage-profiles", "dep:midistage-client"]
 
 [dependencies]
+# VP / GFP 共有のチャット基盤（chronista-club/agent-chat を vendor/agent-chat に submodule で固定、design 86）。
+# 両 consumer が同じ revision を指すのが gate。clone は `git clone --recurse-submodules`。
+agent-chat-host = { path = "../../vendor/agent-chat/crates/host" }
+agent-chat-protocol = { path = "../../vendor/agent-chat/crates/protocol" }
 vp-local-urls = { path = "../vp-local-urls" }
 # Async runtime
 tokio = { workspace = true }
@@ -37,7 +41,6 @@ tower-http = { workspace = true, features = ["fs", "cors"] }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
-jsonschema = { version = "0.56", default-features = false }
 
 # Logging
 tracing = { workspace = true }

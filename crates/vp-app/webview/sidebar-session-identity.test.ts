@@ -23,7 +23,7 @@ beforeAll(async () => {
       const root = document.createElement('div'); root.id='root-session'; document.body.append(root);
       render(() => createComponent(SessionRow,{lane,repoPath:'/repo',session:sessions[0]}),root);
     `, resolveDir: fileURLToPath(new URL('.', import.meta.url)), loader:'tsx' },
-    bundle:true, write:false, format:'iife', platform:'browser', plugins:[solidPlugin()],
+    bundle:true, write:false, format:'iife', platform:'browser', preserveSymlinks:true,plugins:[solidPlugin()],
     define:{'process.env.NODE_ENV':'"production"'},
   })
   bundle = result.outputFiles[0].text

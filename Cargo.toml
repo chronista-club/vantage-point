@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# vendor/agent-chat（submodule）の crate は path 依存として読む。workspace member にはしない
+# （member にすると version / lints を VP が握ることになり、GFP と同じ revision を指す意味が崩れる）。
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.86.0"

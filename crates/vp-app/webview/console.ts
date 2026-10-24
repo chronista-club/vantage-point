@@ -27,9 +27,11 @@ import { observeConversationUrls } from './lane-link-discovery'
 export type SessionMode = 'tui' | 'gui'
 
 // ---------------------------------------------------------------------------
-// ConversationEvent 型 — SSOT は Rust `crates/vantage-point/src/conversation/event.rs`。
-// 8-2（棚卸し 項目 8）で ts-rs が `src/generated/ConversationEvent.ts` に生成する形になり、
-// 手書きの mirror は無くなった（再生成: `cargo test -p vantage-point --lib conversation::event::ts_export`）。
+// ConversationEvent 型 — SSOT は共有 agent-chat の Rust `vendor/agent-chat/crates/protocol/src/event.rs`
+// （design 86）。ts-rs が package 側 `packages/chat/src/generated/ConversationEvent.ts` に生成し、VP の
+// `src/generated/ConversationEvent.ts` はそれを re-export する shim（手書きの mirror は無い）。
+// 再生成は agent-chat で: `cargo test -p agent-chat-protocol --test fixtures`（送信形 fixture）+
+// `cargo run -p agent-chat-protocol --features typescript --example export-types`（型）。
 // 契約の検査は `src/generated/ConversationEventFixtures.ts`（Rust の送信形）が `satisfies` で
 // 生成型に当たる + vitest（`conversation-event-contract.test.ts`）。
 // ---------------------------------------------------------------------------

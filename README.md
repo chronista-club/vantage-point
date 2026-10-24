@@ -27,7 +27,7 @@ DMG を開き、`VantagePoint.app` を `/Applications` にコピーします。
 ソースから CLI のみインストールする場合:
 
 ```bash
-git clone https://github.com/chronista-club/vantage-point.git
+git clone --recurse-submodules https://github.com/chronista-club/vantage-point.git
 cd vantage-point
 cargo install --path crates/vp-cli --locked
 ```

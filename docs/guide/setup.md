@@ -17,11 +17,20 @@ tmux や外部 DB サーバーは不要です。AI CLI の導入と認証は各 
 ## ソースを用意する
 
 ```bash
-git clone --branch nightly https://github.com/chronista-club/vantage-point.git
+git clone --recurse-submodules --branch nightly https://github.com/chronista-club/vantage-point.git
 cd vantage-point
 mise install
 rustup component add rustfmt clippy
 brew install protobuf
+```
+
+`vendor/agent-chat`（VP / GFP 共有のチャット基盤、submodule）が空だと `cargo` が path 依存を
+見つけられません。`--recurse-submodules` を付けずに clone した checkout や、以前から持っている
+checkout では次を一度実行してください（`vp lane new` の worktree は作成時に自動で流します。raw-git で
+`git worktree add` した場合は同様に一度流してください）。
+
+```bash
+git submodule update --init --recursive
 ```
 
 この repo の開発 trunk は `nightly`、`main` は公開 release 用です。

@@ -38,7 +38,7 @@ beforeAll(async () => {
     write: false,
     format: 'iife',
     platform: 'browser',
-    plugins: [solidPlugin()],
+    preserveSymlinks: true, plugins: [solidPlugin()],
     define: { 'process.env.NODE_ENV': '"production"' },
   })
   bundle = result.outputFiles[0].text

@@ -3536,6 +3536,10 @@ mod tests {
                         request_id: format!("p{key}"),
                         tool_name: "Bash".into(),
                         input: serde_json::json!({}),
+                        display_name: None,
+                        description: None,
+                        tool_use_id: None,
+                        suggestions: Vec::new(),
                     },
                 );
             }

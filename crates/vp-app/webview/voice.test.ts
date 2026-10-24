@@ -27,7 +27,7 @@ async function mountChat() {
     document.dispatchEvent(new CustomEvent('vp:conversation-sessions',{detail:{lane:'voice-test/main',focused:1,sessions:[{key:1,agent:'claude',kind:'chat',root:true,model_choices:[],permission_choices:[]}]}}))
     const mount=document.createElement('div');document.body.append(mount)
     window.unmount=api.mountSession(mount,'voice-test/main',1)
-  `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'iife', conditions: ['browser'], plugins: [solidPlugin()] })
+  `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'iife', conditions: ['browser'], preserveSymlinks: true, plugins: [solidPlugin()] })
   const window = new Window()
   window.eval(result.outputFiles[0].text)
   const h = window as unknown as Harness

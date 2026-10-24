@@ -51,7 +51,10 @@ lane の作成は `vp lane new <name>` を使う。branch 命名・base 解決�
 ```bash
 git fetch origin nightly
 git worktree add -b wip/<slug> .vp/lanes/<slug> origin/nightly
+git -C .vp/lanes/<slug> submodule update --init --recursive   # vendor/agent-chat（共有チャット基盤）を埋める
 ```
+
+- submodule: `vendor/agent-chat` は worktree add だけでは空のまま（`cargo` が path 依存を見つけられず落ちる）。raw-git で作ったら上の `submodule update --init --recursive` を一度流す。`vp lane new` は作成時に自動で流す（失敗は warn で続行、その時は手で）
 
 - PR は `git next --memory <mem_id>` で開く（`review/<slug>` に昇格し、base = **nightly** で `gh pr create`。body 冒頭に memory ID）。手で開くなら base を明示する: `gh pr create --base nightly`（GitHub default が main のため、省略すると main に向いてしまう）
 

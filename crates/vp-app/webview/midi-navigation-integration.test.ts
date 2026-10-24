@@ -28,7 +28,7 @@ beforeAll(async () => {
       lanes_by_repo:{'/vp':[lane('root'),lane('sub')]}, active_lane_address:'vp/root'});
     window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:true}));
   `, resolveDir: fileURLToPath(new URL('.', import.meta.url)) }, bundle:true, write:false,
-    plugins:[solidPlugin()], format:'iife', platform:'browser', define:{'process.env.NODE_ENV':'"production"'} });
+    preserveSymlinks:true,plugins:[solidPlugin()], format:'iife', platform:'browser', define:{'process.env.NODE_ENV':'"production"'} });
   bundle = result.outputFiles[0].text;
 });
 afterEach(async () => { vi.useRealTimers(); for (const w of windows.splice(0)) await w.happyDOM.abort(); });

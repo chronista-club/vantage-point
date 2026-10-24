@@ -29,7 +29,13 @@ use ts_rs::TS;
 #[serde(rename_all = "snake_case")]
 pub enum EngineSettings {
     Claude(ClaudeSettings),
-    Codex(CodexSelection),
+    Codex(
+        #[cfg_attr(
+            test,
+            ts(type = "import('@chronista-club/agent-chat/protocol').CodexSelection")
+        )]
+        CodexSelection,
+    ),
     Vpcode(VpcodeSettings),
 }
 

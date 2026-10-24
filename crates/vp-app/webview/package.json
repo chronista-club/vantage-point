@@ -30,7 +30,8 @@
     "marked": "^18.0.11",
     "mermaid": "^11.17.2",
     "solid-js": "^1.9.15",
-    "three": "^0.185.1"
+    "three": "^0.185.1",
+    "@chronista-club/agent-chat": "file:../../../vendor/agent-chat/packages/chat"
   },
   "devDependencies": {
     "@types/three": "^0.185.4",

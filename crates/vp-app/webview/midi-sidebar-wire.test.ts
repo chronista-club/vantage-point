@@ -16,7 +16,7 @@ beforeAll(async () => {
     import { applySidebarState } from './src/sidebar/store';
     window.applySidebarState = applySidebarState;
   `,resolveDir:fileURLToPath(new URL('.', import.meta.url))},bundle:true,write:false,
-    plugins:[solidPlugin()],format:'iife',platform:'browser',define:{'process.env.NODE_ENV':'"production"'}});
+    preserveSymlinks:true,plugins:[solidPlugin()],format:'iife',platform:'browser',define:{'process.env.NODE_ENV':'"production"'}});
   bundle = result.outputFiles[0].text;
 });
 

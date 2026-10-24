@@ -536,6 +536,10 @@ fn translate_line(v: &serde_json::Value) -> Translated {
             request_id: s("request_id"),
             tool_name: s("tool_name"),
             input: v.get("input").cloned().unwrap_or(serde_json::Value::Null),
+            display_name: None,
+            description: None,
+            tool_use_id: None,
+            suggestions: Vec::new(),
         }),
         "turn_completed" => Translated::Event(ConversationEvent::TurnCompleted {
             session_id: s("session_id"),

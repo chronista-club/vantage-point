@@ -50,7 +50,7 @@ beforeAll(async () => {
     window.setRequesting(true);
     render(() => createComponent(Shell,{}),document.getElementById('sidebar-root'));
   `, loader:'tsx', resolveDir:fileURLToPath(new URL('.',import.meta.url)) },
-    bundle:true,write:false,format:'iife',platform:'browser',plugins:[solidPlugin()],
+    bundle:true,write:false,format:'iife',platform:'browser',preserveSymlinks:true,plugins:[solidPlugin()],
     define:{'process.env.NODE_ENV':'"production"'} });
   bundle = result.outputFiles[0].text;
 });

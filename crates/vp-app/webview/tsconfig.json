@@ -6,6 +6,7 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "jsx": "preserve",
     "jsxImportSource": "solid-js",
+    "preserveSymlinks": true,
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,

@@ -1,0 +1,3 @@
+[submodule "vendor/agent-chat"]
+	path = vendor/agent-chat
+	url = ../agent-chat.git

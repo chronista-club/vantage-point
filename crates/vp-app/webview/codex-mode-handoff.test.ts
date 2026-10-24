@@ -17,7 +17,7 @@ it('Codex Console の切替は確認まで送らず、キャンセルと他の s
       {key:2,agent:'claude',mode:'tui',root:false},
       {key:3,agent:'codex',mode:'gui',root:false}
     ]}}))
-  `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],plugins:[solidPlugin()]})
+  `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],preserveSymlinks:true,plugins:[solidPlugin()]})
   const window = new Window()
   try {
     window.eval(result.outputFiles[0].text)
