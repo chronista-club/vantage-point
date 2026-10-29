@@ -1,11 +1,10 @@
-import { EditorHostProvider, createComponentFieldResolver, useEditorHost, type EditorField, type EditorHost, type ThemeId } from '@chronista-club/creo-ui-editor-host'
+import { EditorHostProvider, createComponentFieldResolver, useEditorHost, useEditorPicking, type EditorField, type EditorHost, type ThemeId } from '@chronista-club/creo-ui-editor-host'
 import { Show, createEffect, createSignal, getOwner, onCleanup, onMount, untrack } from 'solid-js'
 import { AppTokenBinds } from './app-fields'
 import { EditorPanel, type EditorSection } from './EditorPanel'
 import { EDITOR_CSS } from './styles'
 import { createMidiSettings, type MidiSettings } from './midi-settings'
 import { linkOptionsFromWindow } from './link-config'
-import { installPicker } from './pick'
 import { RUNTIME_NAMESPACE, clearRuntimeStorage, isThemeId, readThemeLibrary, themeBase, themeValues, writeThemeLibrary, type StoragePort, type ThemeLibrary, type Values } from './theme-store'
 
 const MANAGED_VAR = /^--(?:color-(?:brand|surface)-|typography-|layout-gap-sibling$|_|sb-|lg-|chat-text-|vp-resizer-breathe-)/
@@ -87,8 +86,8 @@ export function VpEditor() {
       // Editor Link (doc 86): Rust が置いた __VP_LINK__ があれば daemon の hub に面として繋ぐ。
       // MCP の editor_* と机の機材はこの線で届く（旧 window.vpEditorHost 経由の JS 評価は撤去）
       link: linkOptionsFromWindow(),
-      // editor-host 0.9.0+: provider 自身の click 捕捉は内部の picking（EditorLayer 専用、未 export）が
-      // gate していて vp-app からは起こせない。「画面から選ぶ」は EditorSession の installPicker が担う
+      // editor-host 0.9.0+: click の捕捉は provider 内部の picking が gate する（切替は useEditorPicking、
+      // 0.11.0 で export）。旧 0.8.x では selectionRoot を null に切替えて捕捉を止めていたが、その役は provider に移った
     }}>
       <AppTokenBinds />
       <EditorSession library={library} persist={persist}
@@ -108,16 +107,15 @@ type SessionProps = {
 
 function EditorSession(props: SessionProps) {
   const host = useEditorHost()
-  // 「画面から選ぶ」の状態と picker（editor/pick.ts）。picking 中だけ Content の click を奪って選び、
-  // 選び終えたら解除する。panel（#editor-root）は選択対象にしない
-  const [picking, setPicking] = createSignal(false)
+  // 「画面から選ぶ」の主語は provider の picking（editor-host 0.9.0+、useEditorPicking は 0.11.0 で export）。
+  // toggle は選択と hover も消し、選び終えると provider 側が自動で解除する（onSelected: cancelPicking）
+  const pick = useEditorPicking()
+  const picking = pick.active
+  const setPicking = (on: boolean) => {
+    if (on) { if (!pick.active()) pick.toggle() }
+    else pick.cancel()
+  }
   const resolver = createComponentFieldResolver({ host, owner: getOwner(), root: () => document.body })
-  onMount(() => onCleanup(installPicker({
-    host, resolver,
-    root: () => picking() ? document.body : null,
-    onSelected: () => setPicking(false),
-    isChrome: el => el.id === 'editor-root',
-  })))
   // window.vpEditorHost — DevTools と test（editor-theme.test.ts / editor-midi.test.ts）が host を触る手掛かり。
   // Rust 側はこれを読まなくなった（doc 86: MCP editor_* は daemon の Link hub から WebSocket で届く）
   const bridgeWindow = window as unknown as { vpEditorHost?: EditorHost }

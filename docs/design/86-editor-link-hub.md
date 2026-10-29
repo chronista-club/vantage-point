@@ -76,8 +76,9 @@ MCP が `surface` を省略したときの届け先。順位は **(今 Editor ON
 
 ### 2.4 読みと書き
 
-- **`editor_set`**: 対象 field の `constraints.min / max` に収めてから送る（number だけ。文字列や
-  bool はそのまま）。知らない id は面が黙って捨てる契約なので **hub が先に言う**（error）。応答は
+- **`editor_set`**: number field は値を数に直し（MCP client が union 型の引数を `"99"` のように文字列で
+  送る実例が実機で出た。そのまま流すと doc 48 の「`"1.75"` が焼き付く」の再演）、`constraints.min / max`
+  に収めてから送る。color / select / bool はそのまま。知らない id は面が黙って捨てる契約なので **hub が先に言う**（error）。応答は
   `{ ok, surface, id, value（適用した値）, clamped }`
 - **`editor_fields` / `editor_values`**: `get` を面に送り、面が `values` を返した瞬間の cache を返す
   （= authoritative、3s で timeout）。面は `get` に `mode → fields → selection → values` の順で答える
@@ -99,8 +100,10 @@ MCP が `surface` を省略したときの届け先。順位は **(今 Editor ON
   VP_PROFILE の分離（#643）がそのまま効く。面の id は `vp-app#<instance>`、名札は `Vantage Point`
 - webview（`editor/link-config.ts`）がそれを `LinkOptions` に落とし、`EditorHostProvider` の
   `config.link` に渡す。無ければ Link を張らない（preview / test / 旧 Rust）
-- editor-host は `^0.10.0`（Link 入りの最初の npm 版、creo-ui #179 / #180）。旧 `window.vpEditorHost`
-  の expose と、それを叩く JS builder の editor 系 arm は撤去
+- editor-host は `^0.11.0`（Link は 0.10.0 で、`useEditorPicking` の export は 0.11.0 で乗った。creo-ui #178 /
+  #184）。0.9.0 で click 捕捉の主語が provider 内部の picking に移ったので、vp-app の「画面から選ぶ」は
+  `useEditorPicking` の toggle / cancel で provider を動かす。旧 `window.vpEditorHost` を叩く JS builder の
+  editor 系 arm は撤去（`window.vpEditorHost` 自体は DevTools / test の手掛かりとして残る）
 
 ## 3. 切ったこと
 
@@ -134,5 +137,6 @@ MCP が `surface` を省略したときの届け先。順位は **(今 Editor ON
 
 ## Status log
 
+- 2026-10-30: 実機確認 — swap 後に `services.link` に vp-app の面 2 つ（window ごと）、MCP の fields / values / set が hub 経由で通った。set の値が文字列で届く欠陥を見つけて hub 側で数に直す形に。editor-host 0.11.0 で `useEditorPicking` が export されたので自前 picker を撤去。
 - 2026-10-30: 起草と実装（1 PR）。mako 裁定: VP daemon を hub に / URL 固定 / token 当面なし /
   creo-ui を先に release して VP は 1 PR に。path 名 `/link` 確定（creo-ui 側の変更不要）。

@@ -554,7 +554,13 @@ fn clamp_to_constraints(field: &Value, value: Value) -> (Value, bool) {
     if field.get("type").and_then(Value::as_str) != Some("number") {
         return (value, false);
     }
-    let Some(n) = value.as_f64() else {
+    // number field には**数で**届ける。MCP client が union 型の引数を文字列で送ってくる実例があり
+    // （2026-10-30 実機: editor_set 99 が "99" で届いた）、そのまま面へ流すと doc 48 の「"1.75" が
+    // source に焼き付く」が再演する。数値文字列は数に直し、数でも文字列でもなければ触らない。
+    let Some(n) = value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+    else {
         return (value, false);
     };
     let constraints = field.get("constraints");
@@ -572,7 +578,8 @@ fn clamp_to_constraints(field: &Value, value: Value) -> (Value, bool) {
         out = out.min(max);
     }
     if out == n {
-        (value, false)
+        // 範囲内でも文字列で来た数は数に直して返す（clamped は範囲の話なので false のまま）
+        (if value.is_number() { value } else { json!(n) }, false)
     } else {
         (json!(out), true)
     }
@@ -956,8 +963,18 @@ mod tests {
         assert_eq!(clamp_to_constraints(&f, json!(5)), (json!(5), false));
         assert_eq!(
             clamp_to_constraints(&f, json!("5")),
-            (json!("5"), false),
-            "文字列は触らない（型の責任は呼び手）"
+            (json!(5.0), false),
+            "数値文字列は数に直す（MCP client が union を文字列で送る実例）"
+        );
+        assert_eq!(
+            clamp_to_constraints(&f, json!("99")),
+            (json!(10.0), true),
+            "数値文字列も clamp の対象"
+        );
+        assert_eq!(
+            clamp_to_constraints(&f, json!("#fff")),
+            (json!("#fff"), false),
+            "数に読めない文字列は触らない"
         );
         let unbounded = json!({"id": "y", "type": "number"});
         assert_eq!(
