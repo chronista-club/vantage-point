@@ -108,12 +108,10 @@ pub(crate) async fn dispatch_repo_method(
         "board_update" => board::handle_board_update(state.board(), payload).await,
         // doc 52 §4/§5: 呼び出し元 lane の board を id 付き全文で返す（中継台 + identity lookup）
         "read_board" => board::handle_board_read(state.board(), payload).await,
-        // doc 48 Phase 2: editor bridge (MCP → GUI request-response)
-        "editor_fields" | "editor_values" | "editor_set" => {
-            editor_bridge::handle_editor_command(state.editor(), method, payload).await
-        }
-        // doc 49 LE-P2 PR2: layout bridge (LE-15)。editor bridge と同じ配管を op を変えて共用
-        // (method に editor_ prefix が無いので op = method のまま vp-app に届く)
+        // doc 49 LE-P2 PR2: layout bridge (LE-15) — GUI 評価 RPC（op = method のまま vp-app に届く）。
+        // `editor_fields` / `editor_values` / `editor_set` は doc 86 で daemon の Editor Link hub
+        // （"link" channel）へ移った。面が vp-app の webview 1 つではなくなったため、repo 単位の
+        // この経路には来ない（来ても下の unknown method）。
         "layout_get" | "layout_set" | "layout_history" => {
             editor_bridge::handle_editor_command(state.editor(), method, payload).await
         }

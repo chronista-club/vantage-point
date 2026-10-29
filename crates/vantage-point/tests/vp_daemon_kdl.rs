@@ -44,6 +44,8 @@ const DAEMON_CHANNELS: &[&str] = &[
     "events",
     "daemon-control",
     "wire",
+    // doc 86: Editor Link hub（MCP editor_* の着地点）
+    "link",
 ];
 
 /// daemon server の実ソース。`DAEMON_CHANNELS` の突き合わせ相手。

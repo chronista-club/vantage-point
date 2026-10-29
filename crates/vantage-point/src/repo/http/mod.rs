@@ -3,4 +3,5 @@
 //! Router は `repo/server.rs::build_daemon_router` が組む。
 
 pub mod health;
+pub mod link;
 pub mod update;

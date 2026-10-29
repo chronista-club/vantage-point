@@ -181,6 +181,11 @@ pub struct DaemonState {
     /// handler の依存ではない。`run_daemon` が delivery actor を spawn するのと同じ実体。
     /// 最終的には段階 3 の task 所有側へ動かす（doc 63 §5.1）。
     pub actor_registry: Arc<RwLock<crate::capability::ActorRegistry>>,
+    /// Editor Link hub（doc 86）— `/link` WS に繋いだ面（creo-ui site / vp-app webview）の registry と調停。
+    ///
+    /// writer = `repo/http/link.rs` の接続 task（hello / fields / values …）、reader = "link" channel
+    /// （MCP editor_* の着地点）と `/api/health` の `services.link`。daemon に 1 つ、外部の結線は無い。
+    pub(crate) link: Arc<crate::daemon::link::LinkHub>,
 }
 
 impl Default for DaemonState {
@@ -214,6 +219,7 @@ impl Default for DaemonState {
             hub_auth: crate::daemon::hub_client::HubAuthStatus::new(),
             shutdown_token: tokio_util::sync::CancellationToken::new(),
             actor_registry: Arc::new(RwLock::new(crate::capability::ActorRegistry::new())),
+            link: Arc::new(crate::daemon::link::LinkHub::new()),
         }
     }
 }
@@ -316,6 +322,7 @@ impl DaemonState {
             hub_auth: a.hub_auth,
             shutdown_token: a.shutdown_token,
             actor_registry: a.actor_registry,
+            link: Arc::new(crate::daemon::link::LinkHub::new()),
         }
     }
 }
@@ -2689,6 +2696,58 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                             // ここでは無視してよい。
                             let _ = channel.send_response(request_id, &method, &response).await;
                         });
+                    }
+                    Ok(())
+                }
+            }
+        })
+        .await;
+
+    // =========================================================================
+    // Link Channel (doc 86): MCP `editor_fields` / `editor_values` / `editor_set` の着地点。
+    //
+    // 面（creo-ui site / vp-app webview）は HTTP `/link` の WebSocket で daemon に繋がり、AI は
+    // この channel から active な面（`surface` 指定も可）へ届く。data plane = `DaemonState::link`。
+    // 旧経路（repo "process" channel の editor_* → EditorCommand broadcast → vp-app が JS 評価）は
+    // 面が vp-app 1 つという前提の上に在ったので撤去し、layout_* だけがそこに残る。
+    // =========================================================================
+    server
+        .register_channel("link", {
+            let state = state.clone();
+            move |_ctx, stream| {
+                let state = state.clone();
+                async move {
+                    let channel = UnisonChannel::new(stream);
+                    loop {
+                        let msg = match channel.recv().await {
+                            Ok(msg) => msg,
+                            Err(_) => break, // 切断
+                        };
+                        if msg.msg_type != MessageType::Request {
+                            continue;
+                        }
+                        let payload = msg.payload_as_value().unwrap_or_default();
+                        let method = msg.method.clone();
+                        let request_id = msg.id;
+                        // 成功時 result JSON、失敗時は success frame に {"error": ...} を詰める
+                        // (Unison は専用 error frame を持たない、VP-163 慣習)。
+                        let response = match crate::daemon::link::handle_link_channel(
+                            &state.link,
+                            &method,
+                            payload,
+                        )
+                        .await
+                        {
+                            Ok(v) => v,
+                            Err(e) => serde_json::json!({ "error": e }),
+                        };
+                        if channel
+                            .send_response(request_id, &method, &response)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
                     Ok(())
                 }

@@ -282,6 +282,16 @@ pub(super) fn open_window(
             )
         })
         .unwrap_or_default();
+    // Editor Link (doc 86): webview の editor-host が daemon の `/link` に面として繋ぐための URL
+    // （自分が使う daemon の port — brew 32000 / dev 32100）と面の id (`vp-app#<instance>`) を、
+    // bundle の読み込み前に `window.__VP_LINK__` へ置く。読み手は webview `editor/link-config.ts`。
+    let init_script = format!(
+        "{echo_init}{}",
+        crate::webview::editor_bridge::link_init_script(
+            crate::daemon::default_daemon_port(),
+            instance_index,
+        )
+    );
     let asset_runtime = rt_handle.clone();
     let webview = WebViewBuilder::new()
         // 統合 origin fix: with_html (about:blank = 不透明オリジン) だと localStorage が
@@ -298,7 +308,7 @@ pub(super) fn open_window(
                 ));
             });
         })
-        .with_initialization_script(&echo_init)
+        .with_initialization_script(&init_script)
         .with_url("vp-asset://app/index.html")
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
