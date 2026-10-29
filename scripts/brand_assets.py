@@ -84,6 +84,30 @@ def generate():
     return web,native
 
 
+def renderer_only_differs(path,data):
+    """manifest.json の差が `renderer`（生成に使った resvg の版）だけなら drift ではない。
+
+    renderer は「どの版で生成したか」の記録で、生成物そのものではない。全 file の hash が一致して
+    いるのに resvg の版だけが違う（brew upgrade 直後の Mac で起きる）とき、--check がそれを DRIFT と
+    呼ぶと release:mac / app:swap が止まる。出力が同一なら通し、版の違いは NOTE として見せる
+    （記録を更新したければ --check 無しで生成し直す）。生成物が 1 byte でも違えば従来どおり DRIFT。
+    """
+    if path.name!='manifest.json' or not path.exists():
+        return False
+    try:
+        committed=json.loads(path.read_bytes())
+        regenerated=json.loads(data)
+    except (ValueError,UnicodeDecodeError):
+        return False
+    committed_renderer=committed.pop('renderer',None)
+    regenerated_renderer=regenerated.pop('renderer',None)
+    if committed!=regenerated or committed_renderer==regenerated_renderer:
+        return False
+    print(f'NOTE: renderer {regenerated_renderer} (local) != {committed_renderer} (manifest); '
+          f'outputs identical, not drift. `python3 scripts/brand_assets.py` to record the new version.')
+    return True
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check',action='store_true',help='差分を報告するだけで書き換えない')
@@ -99,6 +123,8 @@ def main():
     changed=[]
     for path,data in outputs.items():
         if path.exists() and path.read_bytes()==data:
+            continue
+        if args.check and renderer_only_differs(path,data):
             continue
         changed.append(path)
         if not args.check:
