@@ -50,6 +50,26 @@ ignore = [
     # rust_decimal が rkyv 0.8 に上がったら cargo update して本エントリを削除する。
     "RUSTSEC-2026-0235", # rkyv Rc/Arc archive の out-of-bounds read
 
+    # === zstd 0.13 / zstd-safe 7 (club-unison 経由、根治は club-unison の zstd 0.14 化、2026-10-30) ===
+    # 0.13.3 / 7.3.0 ← club-unison 2.x（自作 lib。最新 2.2.0 も `zstd = "^0.13"`）。修正版は zstd >=0.14.3 /
+    # zstd-safe >=8.2.0 で semver を跨ぐため VP の `cargo update` では上がらない。club-unison の使い方は
+    # `unison-protocol/src/packet/serialization.rs` の `encode_all` / `decode_all` だけ:
+    # - 0391 は `raw::{Encoder,Decoder}::with_context`（context 再利用）、0398 は `seekable` — どちらも未使用
+    # - **0403 は到達しうる**: `decode_all` は `DCtx::decompress_stream` を通り、zstd の既定 feature に legacy が
+    #   入るので、壊れた legacy frame を受けると未初期化メモリが出力に混ざる。受信元は loopback の自 daemon と
+    #   hub federation の peer
+    # 橋渡しの ignore。club-unison を zstd 0.14 に上げた版が出たら VP で bump して本 3 件を削除する。
+    "RUSTSEC-2026-0391", # zstd: 放棄した stream のデータが再利用 context の次 stream に漏れる
+    "RUSTSEC-2026-0398", # zstd-safe: Seekable::decompress の Vec 長が capacity を超える
+    "RUSTSEC-2026-0403", # zstd-safe: legacy frame の streaming 解凍失敗で未初期化メモリが露出
+
+    # === crypto-bigint 0.5 timing (jsonwebtoken 経由、上流の修正版なし、2026-10-30) ===
+    # 0.5.5 ← elliptic-curve 0.13 ← p256 / p384 ← jsonwebtoken 11.1.0（最新）の `rust_crypto` feature ← vp-nexus。
+    # 修正版 >=0.7.6 は elliptic-curve 0.14 系で、jsonwebtoken 11.1.0 は p256 / p384 0.13 に固定のため上げ先が無い。
+    # vp-nexus は RS256 の verify / sign しか使わず（`Algorithm::RS256` のみ、ES256/ES384 は未使用）、
+    # ECDSA の秘密値を扱う経路が無い。jsonwebtoken が elliptic-curve 0.14 に上がったら cargo update して削除する。
+    "RUSTSEC-2026-0387", # crypto-bigint: 定数時間のはずの演算が secret 依存の分岐を持ちうる
+
     # === unmaintained な transitive 依存 (VP から直接制御不可) ===
     "RUSTSEC-2023-0089", # atomic-polyfill (transitive、portable-atomic へ未移行)
     "RUSTSEC-2024-0320", # yaml-rust ← syntect ← tui-markdown
