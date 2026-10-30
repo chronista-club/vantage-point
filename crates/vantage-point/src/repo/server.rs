@@ -3,7 +3,7 @@
 //! Process サーバーのエントリーポイント。`run()` と `run_daemon()` でサーバーを起動する。
 //! HTTP handler は `http/`（health / shutdown / update）に分離されている。Router は `build_daemon_router`。
 
-use std::net::{Ipv6Addr, SocketAddrV6};
+use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 
-use super::http::{health, update};
+use super::http::{health, link, update};
 use super::hub::Hub;
 use super::state::RepoState;
 use super::topic_router::TopicRouter;
@@ -583,6 +583,9 @@ pub(crate) async fn shutdown_repo(state: &Arc<RepoState>) {
 ///   失わないよう HTTP に置く。`.mise/tasks/app/swap`（Ruby）と `apple/VantagePointAgent`
 ///   （Swift）という **VP 外の消費者**もいて、彼らに Unison client を持たせる理由がない。
 /// - `/api/update/*` — self-update（doc 45 §3 で「churn が低いので後回しでよい」と判断）。
+/// - `/link` — Editor Link の WebSocket（doc 86）。consumer がブラウザ（creo-ui site / vp-app の
+///   webview）で Unison を話せないため HTTP 外殻に乗せる 2 つ目の例外。守りは `daemon::link::admit`
+///   （loopback peer + Origin allowlist）で、upgrade の前に 403 で断る。新しい listener は作らない。
 ///
 /// `run_daemon` から関数として切り出してあるのは、**route 登録そのものをテストで固定する**ため
 /// （撤去の巻き添えで health / shutdown を落とすと、診断手段と緊急停止を同時に失う）。
@@ -615,6 +618,8 @@ fn build_daemon_router(daemon_state: Arc<DaemonState>) -> Router {
         // slot 割当 route (set_slot / unassign_slot) は `vp port` 退役とともに撤去。
         // repo は portless（port=0）になり、slot が解決する listen port が存在しない。
         .route("/api/shutdown", post(health::shutdown_handler))
+        // doc 86: Editor Link。peer address は serve 側の `into_make_service_with_connect_info` が載せる
+        .route("/link", get(link::link_handler))
         // Update API routes (vp CLI)
         .route("/api/update/check", get(update::update_check))
         .route("/api/update/apply", post(update::update_apply))
@@ -1450,12 +1455,16 @@ async fn serve_with_cleanup(
     shutdown: CancellationToken,
     cleanup: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            shutdown.cancelled().await;
-            tracing::info!("Daemon graceful shutdown initiated");
-        })
-        .await?;
+    // `/link`（doc 86）が peer address で loopback を判定するため ConnectInfo を全 route に載せる
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        shutdown.cancelled().await;
+        tracing::info!("Daemon graceful shutdown initiated");
+    })
+    .await?;
     cleanup.await;
     Ok(())
 }
@@ -1740,6 +1749,79 @@ mod tests {
             route_status("/api/shutdown", "POST").await,
             axum::http::StatusCode::OK,
             "POST /api/shutdown は HTTP に残す（doc 45 §2）"
+        );
+    }
+
+    /// doc 86: `/link` は居て、守り（loopback peer + Origin allowlist）が WebSocket upgrade より先に
+    /// 働くこと。存在しない route（404）とも区別できること。
+    #[tokio::test]
+    async fn daemon_router_guards_link_before_upgrade() {
+        use axum::extract::connect_info::ConnectInfo;
+        use axum::http::StatusCode;
+        use tower::ServiceExt;
+        async fn status(peer: &str, origin: Option<&str>) -> StatusCode {
+            let mut builder = axum::http::Request::builder().method("GET").uri("/link");
+            if let Some(origin) = origin {
+                builder = builder.header("origin", origin);
+            }
+            let mut req = builder.body(axum::body::Body::empty()).expect("request");
+            // 本番は serve 側の `into_make_service_with_connect_info` が載せる extension
+            req.extensions_mut()
+                .insert(ConnectInfo::<SocketAddr>(peer.parse().expect("peer")));
+            daemon_router()
+                .await
+                .oneshot(req)
+                .await
+                .expect("oneshot")
+                .status()
+        }
+        // loopback: 守りは通り、upgrade header が無いので WebSocket の段で弾かれる（= route は居る）
+        let lo = status("127.0.0.1:50000", None).await;
+        assert!(
+            lo.is_client_error() && lo != StatusCode::NOT_FOUND && lo != StatusCode::FORBIDDEN,
+            "loopback の素の GET は upgrade の段で弾かれるはず: {lo}"
+        );
+        assert_eq!(
+            status("192.168.1.9:50000", None).await,
+            StatusCode::FORBIDDEN,
+            "LAN peer は 403"
+        );
+        assert_eq!(
+            status("127.0.0.1:50000", Some("https://evil.example")).await,
+            StatusCode::FORBIDDEN,
+            "allowlist 外の Origin は 403"
+        );
+        assert_eq!(
+            status("127.0.0.1:50000", Some("null")).await,
+            StatusCode::FORBIDDEN,
+            "opaque origin は 403"
+        );
+        assert_eq!(
+            route_status("/link-nope", "GET").await,
+            StatusCode::NOT_FOUND,
+            "無い route は 404 のまま"
+        );
+    }
+
+    /// doc 86: `/api/health` の `services.link` — 面が無ければ idle、一覧は空。
+    #[tokio::test]
+    async fn health_reports_link_service() {
+        use tower::ServiceExt;
+        let req = axum::http::Request::builder()
+            .uri("/api/health")
+            .body(axum::body::Body::empty())
+            .expect("request");
+        let resp = daemon_router().await.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(json["services"]["link"]["status"], "idle", "{json}");
+        assert_eq!(
+            json["services"]["link"]["detail"]["surfaces"],
+            serde_json::json!([]),
+            "{json}"
         );
     }
 

@@ -185,6 +185,9 @@ pub struct VantageMcp {
     process_port: Arc<Mutex<u16>>,
     /// Unison "repo-proxy" チャネル（lazy 接続、canvas 操作も含む）
     process_channel: Arc<Mutex<Option<Arc<unison::network::channel::UnisonChannel>>>>,
+    /// Unison "link" チャネル（doc 86、lazy 接続）。daemon 直結で repo-proxy の handshake は要らない
+    /// — editor_* は repo ではなく「面」に届くもので、この MCP がどの repo の lane に居るかと無関係。
+    link_channel: Arc<Mutex<Option<Arc<unison::network::channel::UnisonChannel>>>>,
     /// L0 SP-portless: この MCP が操作対象とする repo の path（Daemon "repo-proxy" の
     /// handshake に渡す stable な repo 識別子）。 port と違い reshuffle で揺れない。
     repo_path: Arc<String>,
@@ -200,6 +203,7 @@ impl Clone for VantageMcp {
             process_url: self.process_url.clone(),
             process_port: self.process_port.clone(),
             process_channel: self.process_channel.clone(),
+            link_channel: self.link_channel.clone(),
             repo_path: self.repo_path.clone(),
             self_lane: self.self_lane.clone(),
             tool_router: Self::tool_router()
@@ -220,6 +224,7 @@ impl VantageMcp {
             process_url: Arc::new(Mutex::new(format!("http://[::1]:{}", process_port))),
             process_port: Arc::new(Mutex::new(process_port)),
             process_channel: Arc::new(Mutex::new(None)),
+            link_channel: Arc::new(Mutex::new(None)),
             repo_path: Arc::new(repo_path),
             self_lane: SelfLane::detect(),
             tool_router: Self::tool_router()
@@ -743,6 +748,79 @@ async fn resolve_repo_path() -> String {
 /// Process(repo) port と Daemon port(`cli::daemon_port()`、fetch_canvas_panes 等)の両方で
 /// 使われる。`QUIC_PORT_OFFSET` は両者共通の前提 — repo/daemon でオフセットを分ける時は
 /// この関数を分割すること。
+impl VantageMcp {
+    /// Unison "link" チャネルを取得（lazy 接続、doc 86）。
+    ///
+    /// `get_quic_channel` と違い repo-proxy の `subscribe` handshake は踏まない — Editor Link の面は
+    /// daemon 直下の資源で、repo の識別子を要しない。
+    async fn get_link_channel(
+        &self,
+    ) -> Result<Arc<unison::network::channel::UnisonChannel>, McpError> {
+        let mut guard = self.link_channel.lock().await;
+        if let Some(ch) = guard.as_ref() {
+            return Ok(Arc::clone(ch));
+        }
+        let client = connect_quic(&quic_addr(crate::cli::daemon_port())).await?;
+        let channel = Arc::new(
+            client
+                .open_channel("link")
+                .await
+                .map_err(|e| {
+                    McpError::internal_error(format!("Unison link channel error: {}", e), None)
+                })?
+                // server は `get` の往復を最長 3s 待つ（`link::GET_TIMEOUT`）。unison 内部 timeout は
+                // それより長く取る（先に unison 側が発火すると channel reset になる、VP-163）
+                .with_request_timeout(Duration::from_secs(10)),
+        );
+        *guard = Some(Arc::clone(&channel));
+        Ok(channel)
+    }
+
+    /// daemon "link" channel の method 呼び出し（outer timeout = 5s、doc 86）。
+    ///
+    /// 失敗 / timeout は channel を reset して 1 回だけやり直す（`quic_call` と同じ作法）。
+    /// server handler の Err は success frame の `{"error": ...}` で返るので `McpError` に変換する（VP-163）。
+    pub(crate) async fn link_call(
+        &self,
+        method: &str,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, McpError> {
+        let timeout = Duration::from_secs(5);
+        let mut last_err = String::new();
+        for retry in [false, true] {
+            if retry {
+                *self.link_channel.lock().await = None;
+            }
+            let channel = self.get_link_channel().await?;
+            match tokio::time::timeout(
+                timeout,
+                channel.request::<serde_json::Value, serde_json::Value>(method, &payload),
+            )
+            .await
+            {
+                Ok(Ok(resp)) => {
+                    if let Some(err_msg) = rpc_response_error(&resp) {
+                        return Err(McpError::internal_error(
+                            format!("link.{}: {}", method, err_msg),
+                            None,
+                        ));
+                    }
+                    return Ok(resp);
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!("QUIC link.{} failed (retry={}): {}", method, retry, e);
+                    last_err = format!("QUIC link.{} failed: {}", method, e);
+                }
+                Err(_) => {
+                    tracing::warn!("QUIC link.{} timed out (retry={})", method, retry);
+                    last_err = format!("QUIC link.{} timed out", method);
+                }
+            }
+        }
+        Err(McpError::internal_error(last_err, None))
+    }
+}
+
 fn quic_addr(http_port: u16) -> String {
     format!(
         "[::1]:{}",

@@ -11,6 +11,8 @@ pub(crate) mod delegation_ops;
 pub mod dialer;
 pub mod event_log;
 pub mod hub_client;
+/// Editor Link hub（doc 86）— `/link` に繋いだ面の registry と調停、MCP editor_* の着地点
+pub(crate) mod link;
 pub mod machine_capabilities;
 pub mod process;
 pub mod protocol;
