@@ -77,7 +77,7 @@ cache を捨てて再適用する場合は、daemon 停止中にこの state zon
 
 ## 制約と実機確認
 
-- SDK は midistage v0.3.0（`7dd38b905234675f69f0369144f7b56daff33777`）に固定。⚠️ **service 側（midistaged）も v0.3.0 以上が要る** — `ApplyDeviceSetup` は v0.3.0 で初めて midistaged に入った。0.2.0 の service では Apply が通らない（2026-11-04 に、この Mac の midistaged が 0.2.0 のままで実機未検証だったことを確認）。版は `/Applications/midistage.app/Contents/MacOS/midistaged --version`。
+- SDK は midistage v0.3.0（`7dd38b905234675f69f0369144f7b56daff33777`）に固定。service 側（midistaged）にも `ApplyDeviceSetup` が要る（tag 上の初出は v0.3.0）。この Mac では 10-27 と 10-29 に `ROTO VP setup completed` が出ていて、SETUP 09 の書き込みは実機で成功している（当時の midistage.app は 0.2.0 を名乗る nightly build で、Apply を含んでいた）。版は `/Applications/midistage.app/Contents/MacOS/midistaged --version`。
   実機書き込みには、稼働中の midistaged も Apply 対応版である必要がある。
 - 本体 SEL での手動 setup 切替は midistage に見えない。
 - Serial を開いて書き込む間は ROTO の MIDI が止まる。T8 の名前・色の変更で hash が変わるため、
