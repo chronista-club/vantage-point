@@ -77,7 +77,7 @@ cache を捨てて再適用する場合は、daemon 停止中にこの state zon
 
 ## 制約と実機確認
 
-- SDK は Apply 実装を含む midistage `9bb2536230d85495139ac95354e4a72340422c21` に固定。
+- SDK は midistage v0.3.0（`7dd38b905234675f69f0369144f7b56daff33777`）に固定。⚠️ **service 側（midistaged）も v0.3.0 以上が要る** — `ApplyDeviceSetup` は v0.3.0 で初めて midistaged に入った。0.2.0 の service では Apply が通らない（2026-11-04 に、この Mac の midistaged が 0.2.0 のままで実機未検証だったことを確認）。版は `/Applications/midistage.app/Contents/MacOS/midistaged --version`。
   実機書き込みには、稼働中の midistaged も Apply 対応版である必要がある。
 - 本体 SEL での手動 setup 切替は midistage に見えない。
 - Serial を開いて書き込む間は ROTO の MIDI が止まる。T8 の名前・色の変更で hash が変わるため、
