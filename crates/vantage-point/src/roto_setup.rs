@@ -23,7 +23,7 @@ pub(crate) fn generate(
             let pin = &pins["slots"][i];
             let address = pin["address"].as_str().filter(|v| !v.is_empty());
             let present = address.is_some() && pin["path"].as_str().is_some_and(|v| !v.is_empty());
-            let slug = address.and_then(|v| v.rsplit('/').next()).unwrap_or("");
+            let slug = address.map(pin_name).unwrap_or("");
             let label = address
                 .and_then(|v| labels.get(v))
                 .map(String::as_str)
@@ -72,6 +72,20 @@ fn parse_color(value: &str) -> Option<[u8; 3]> {
     Some([0, 2, 4].map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("validated hex")))
 }
 
+/// pin の address（`<repo>/lane/<lane>`）から ROTO に出す名前を決める。
+///
+/// lead lane（旧予約名 `root` も）は lane 名が全 repo で同じ「lead」になり区別できないので、**repo 名**を
+/// 名乗る — sidebar で lead lane が repo の行として見えるのと同じ。sub lane は lane 名のまま。
+/// `lane` 区切りの無い旧形式は末尾を使う。
+fn pin_name(address: &str) -> &str {
+    let mut parts = address.split('/');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(repo), Some("lane"), Some("lead" | "root"), None) => repo,
+        (Some(_), Some("lane"), Some(lane), None) => lane,
+        _ => address.rsplit('/').next().unwrap_or(""),
+    }
+}
+
 fn control_label(label: &str, slug: &str, slot: usize) -> String {
     [label, slug]
         .into_iter()
@@ -109,6 +123,37 @@ mod tests {
             .collect();
         assert_ne!(generated.hash, legacy_hash);
         assert_eq!(SETUP, 8, "VP occupies display SETUP 09 (index + 1)");
+    }
+
+    /// lead lane の pin は repo 名を名乗る（全部「lead」では区別できない）。sub lane は lane 名のまま。
+    /// 落ちるべき壊し方: address の末尾をそのまま使う（旧挙動）と 8 個とも "lead" になる。
+    #[test]
+    fn lead_lane_pins_show_the_repo_name_and_sub_lanes_keep_their_lane_name() {
+        assert_eq!(pin_name("vantage-point/lane/lead"), "vantage-point");
+        assert_eq!(pin_name("midistage/lane/lead"), "midistage");
+        assert_eq!(
+            pin_name("creo-ui/lane/root"),
+            "creo-ui",
+            "旧予約名 root も lead と同じ扱い"
+        );
+        assert_eq!(pin_name("vantage-point/lane/editor-hub"), "editor-hub");
+        assert_eq!(
+            pin_name("vp/roto-vp-setup"),
+            "roto-vp-setup",
+            "lane 区切りの無い旧形式は末尾"
+        );
+        assert_eq!(pin_name(""), "");
+        let pins = json!({"slots":[
+            {"path":"/a", "address":"creo-memories/lane/lead"},
+            {"path":"/b", "address":"vantage-point/lane/lead"},
+            {"path":"/c", "address":"vantage-point/lane/editor-hub"},
+            null, null, null, null, null]});
+        let content = generate(&pins, &BTreeMap::new(), &crate::roto_midi::VP_ROTO_SETUP).content;
+        let names: Vec<&str> = (0..3)
+            .map(|i| content["switches"][i]["name"].as_str().expect("name"))
+            .collect();
+        // ROTO の LCD は 12 字。長い repo 名は頭 12 字に切れる
+        assert_eq!(names, ["creo-memorie", "vantage-poin", "editor-hub"]);
     }
 
     #[test]
