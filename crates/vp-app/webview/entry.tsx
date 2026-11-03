@@ -866,7 +866,7 @@ if (root) {
 }
 
 // Component Gallery mode（doc 48 Phase 3 → doc 49 LE-P2 で creo-ui-layout の pane 化）。
-// EditorHostProvider とは独立に生きる（gallery 中も Ctrl+Shift+E / editor_set が効く）。
+// EditorHostProvider とは独立に生きる（gallery 中も Ctrl+Shift+E / Link 経由の editor_set が効く）。
 installGallery();
 
 // ===== 旧 World A（main_area.rs inline xterm JS）の install =====

@@ -111,14 +111,16 @@ pub struct HealthResponse {
 // Daemon channel / mailbox query (`devices@machine` 等) 経由で再設計する。
 
 pub async fn health_handler(State(state): State<Arc<DaemonState>>) -> Json<HealthResponse> {
-    // services — DeviceRegistry 🧲 のみ報告（machine 階層に host される唯一の observable Agent）。
+    // services — machine 階層で観測できる service を報告する。
+    //   devices = DeviceRegistry 🧲（midi feature の build だけ）
+    //   link    = Editor Link hub（doc 86: 面が繋がっているか、どれが active か）
     //
     // 棚卸し 9-2 PR-2c: 旧 repo 分岐（board / runner / devices の per-repo 報告 + `service_status`
     // table への書き込み）は削除した。`/api/health` は daemon 役にしか mount されないので、
     // その分岐は production で一度も通っていなかった（`terminal_token` の sentinel で分けていた）。
-    #[cfg(feature = "midi")]
     let services = {
         let mut map = std::collections::HashMap::new();
+        #[cfg(feature = "midi")]
         if let Some(devices) = state.devices.as_ref() {
             let b = devices.read().await;
             let count = b.device_count().await;
@@ -142,10 +144,16 @@ pub async fn health_handler(State(state): State<Arc<DaemonState>>) -> Json<Healt
                 },
             );
         }
-        if map.is_empty() { None } else { Some(map) }
+        let (status, detail) = state.link.health();
+        map.insert(
+            "link".to_string(),
+            ServiceStatus {
+                status,
+                detail: Some(detail),
+            },
+        );
+        Some(map)
     };
-    #[cfg(not(feature = "midi"))]
-    let services = None;
 
     // L1 lifecycle: daemon mode は配下 repo の presence 一覧を expose（vp-app sidebar の ●◐○ 用）。
     // `daemon_cap` 不在（test の `DaemonState::new()`）は None — production の daemon では常に Some。

@@ -121,3 +121,12 @@ server を触るのは 2 だけ（deploy 時に daemon 再起動 = lane 巻き�
 - creo-ui protocol の先行拡張 — 必要が固まったら後追いで upstream
 - gallery の pane 化・story の網羅主義 — pane 化は LayoutEngine 後（doc 49）、story は
   「調整したい component から順に」で足す
+
+## Status log
+
+- 2026-10-30: D-C の「webview への配送路」（MCP → daemon → vp-app が `window.vpEditorHost` を
+  JS 評価）は **doc 86 で Editor Link hub に置き換えた**。面が vp-app の webview 1 つではなくなり
+  （Chrome の creo-ui site も同じ契約で繋がる）、`editor_fields` / `editor_values` / `editor_set` は
+  daemon の "link" channel から active な面へ WebSocket で届く。表 §3 の **2**（MCP bridge）の
+  受け入れ基準（CC が `editor_set` → 画面が変わる / `editor_values` で読む）はそのまま。旧配管
+  （`EditorCommand` / `editor_result`）は doc 49 LE-15 の layout_* だけが使う。

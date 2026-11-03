@@ -1,9 +1,10 @@
-import { EditorHostProvider, createComponentFieldResolver, useEditorHost, type EditorField, type EditorHost, type ThemeId } from '@chronista-club/creo-ui-editor-host'
+import { EditorHostProvider, createComponentFieldResolver, useEditorHost, useEditorPicking, type EditorField, type EditorHost, type ThemeId } from '@chronista-club/creo-ui-editor-host'
 import { Show, createEffect, createSignal, getOwner, onCleanup, onMount, untrack } from 'solid-js'
 import { AppTokenBinds } from './app-fields'
 import { EditorPanel, type EditorSection } from './EditorPanel'
 import { EDITOR_CSS } from './styles'
 import { createMidiSettings, type MidiSettings } from './midi-settings'
+import { linkOptionsFromWindow } from './link-config'
 import { RUNTIME_NAMESPACE, clearRuntimeStorage, isThemeId, readThemeLibrary, themeBase, themeValues, writeThemeLibrary, type StoragePort, type ThemeLibrary, type Values } from './theme-store'
 
 const MANAGED_VAR = /^--(?:color-(?:brand|surface)-|typography-|layout-gap-sibling$|_|sb-|lg-|chat-text-|vp-resizer-breathe-)/
@@ -35,7 +36,6 @@ export function VpEditor() {
   const initial = readThemeLibrary(storage, isThemeId(current) ? current : 'contrast-dark')
   const [library, setLibrary] = createSignal(initial)
   const [section, setSection] = createSignal<EditorSection>('THEME')
-  const [picking, setPicking] = createSignal(false)
   const [storageError, setStorageError] = createSignal(false)
   // テーマ切替で Provider を作り直しても、MIDI 設定は Editor の寿命で 1 つ（保存先は session）
   const midi = createMidiSettings()
@@ -58,7 +58,6 @@ export function VpEditor() {
     const next = { ...library(), selected: id }
     if (!isThemeId(id) && !next.custom.some(theme => theme.id === id)) return
     const open = activeHost?.mode() === 'on'
-    setPicking(false)
     persist(next)
     prepare(themeBase(next))
     setMount({ id, base: themeBase(next), open })
@@ -84,11 +83,14 @@ export function VpEditor() {
   return <>
     <Show when={mount()} keyed>{profile => <EditorHostProvider config={{
       initialMode: profile.open ? 'on' : 'off', localStorageNamespace: RUNTIME_NAMESPACE,
-      // The provider's picker is active only during an explicit pick gesture.
-      selectionRoot: () => picking() ? document.body : null,
+      // Editor Link (doc 86): Rust が置いた __VP_LINK__ があれば daemon の hub に面として繋ぐ。
+      // MCP の editor_* と机の機材はこの線で届く（旧 window.vpEditorHost 経由の JS 評価は撤去）
+      link: linkOptionsFromWindow(),
+      // editor-host 0.9.0+: click の捕捉は provider 内部の picking が gate する（切替は useEditorPicking、
+      // 0.11.0 で export）。旧 0.8.x では selectionRoot を null に切替えて捕捉を止めていたが、その役は provider に移った
     }}>
       <AppTokenBinds />
-      <EditorSession library={library} persist={persist} picking={picking} setPicking={setPicking}
+      <EditorSession library={library} persist={persist}
         section={section} setSection={setSection} storageError={storageError}
         activate={activate} save={save} updateSaved={updateSaved} restoreSaved={restoreSaved} midi={midi}
         expose={host => { activeHost = host }} />
@@ -98,7 +100,6 @@ export function VpEditor() {
 
 type SessionProps = {
   library: () => ThemeLibrary; persist(library: ThemeLibrary): void;
-  picking: () => boolean; setPicking(picking: boolean): void;
   section: () => EditorSection; setSection(section: EditorSection): void;
   storageError: () => boolean; activate(id: string): void; save(name: string): string | undefined;
   updateSaved(): void; restoreSaved(): void; expose(host: EditorHost): void; midi: MidiSettings;
@@ -106,7 +107,17 @@ type SessionProps = {
 
 function EditorSession(props: SessionProps) {
   const host = useEditorHost()
+  // 「画面から選ぶ」の主語は provider の picking（editor-host 0.9.0+、useEditorPicking は 0.11.0 で export）。
+  // toggle は選択と hover も消し、選び終えると provider 側が自動で解除する（onSelected: cancelPicking）
+  const pick = useEditorPicking()
+  const picking = pick.active
+  const setPicking = (on: boolean) => {
+    if (on) { if (!pick.active()) pick.toggle() }
+    else pick.cancel()
+  }
   const resolver = createComponentFieldResolver({ host, owner: getOwner(), root: () => document.body })
+  // window.vpEditorHost — DevTools と test（editor-theme.test.ts / editor-midi.test.ts）が host を触る手掛かり。
+  // Rust 側はこれを読まなくなった（doc 86: MCP editor_* は daemon の Link hub から WebSocket で届く）
   const bridgeWindow = window as unknown as { vpEditorHost?: EditorHost }
   bridgeWindow.vpEditorHost = host
   props.expose(host)
@@ -174,23 +185,23 @@ function EditorSession(props: SessionProps) {
     onCleanup(() => observer.disconnect())
   })
   createEffect(() => {
-    if (host.mode() === 'off') props.setPicking(false)
+    if (host.mode() === 'off') setPicking(false)
     if (host.selection()) {
-      props.setPicking(false)
+      setPicking(false)
       host.setHover(null)
     }
   })
   onMount(() => {
     const cancelPick = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && props.picking()) {
+      if (event.key === 'Escape' && picking()) {
         event.preventDefault()
         event.stopImmediatePropagation()
-        props.setPicking(false)
+        setPicking(false)
         host.setHover(null)
       }
     }
     window.addEventListener('keydown', cancelPick, true)
     onCleanup(() => window.removeEventListener('keydown', cancelPick, true))
   })
-  return <EditorPanel {...props} host={host} resolver={resolver} />
+  return <EditorPanel {...props} picking={picking} setPicking={setPicking} host={host} resolver={resolver} />
 }

@@ -1,4 +1,8 @@
-//! editor bridge / fleet の **JS 式 builder**（純 calculation、webview で評価する文字列を作るだけ）。
+//! editor bridge / fleet / Editor Link の **JS 式 builder**（純 calculation、webview で評価する文字列を作るだけ）。
+//!
+//! doc 86: editor 系 op（fields / values / set）はここから消えた。vp-app の webview は editor-host の
+//! `config.link` で daemon の `/link` に面として繋がり、MCP editor_* は daemon の hub から WebSocket で
+//! 届く。Rust 側に残る Editor の仕事は `link_init_script`（接続先と面の id を webview に渡す）だけ。
 //!
 //! 旧 `app.rs` から移設（棚卸し 項目 6 / 6-1 #2、2026-09-08。本文は順序付き diff で一致、差分は
 //! `fn` → `pub(crate) fn` の 3 箇所）。呼び手は `app/on_board::editor_command`（購読側は op だけを
@@ -17,22 +21,18 @@ pub(crate) fn editor_command_js(
         .ok_or_else(|| serde_json::json!({"error": format!("未知の editor op: {op}")}))
 }
 
-/// doc 48 Phase 2: `EditorCommand` op → webview で評価する JS 式 (純 calculation)。
+/// doc 49 LE-15: `EditorCommand` op → webview で評価する JS 式 (純 calculation)。
 ///
 /// 式は object を返し、wry (`evaluate_script_with_callback`) がそれを JSON 文字列化して
-/// callback に渡す。editor host は webview 側 `ExposeEditorHostForBridge` (entry.tsx) が
-/// `window.vpEditorHost` に明示 expose したものを `mcp` API (editor-mode.md D-10、
-/// listFields / getValue / setValue) 経由で叩く — `creoEditor` console API は localhost
-/// hostname heuristic 依存で vp-asset:// origin では当てにならないため使わない。
+/// callback に渡す。今乗るのは layout 系 op だけ（editor 系は doc 86 で Link hub へ。
+/// `window.vpEditorHost` の expose もそれと共に消えた）。
 /// host 不在 (bundle 未 mount 等) は `{error}` object を返す JS にして Rust 側は透過。
-/// 未知 op / set の引数欠落は None。
+/// 未知 op / layout_set の value 欠落は None。
 pub(crate) fn editor_bridge_js(
     op: &str,
-    field_id: Option<&str>,
+    _field_id: Option<&str>,
     value: Option<&serde_json::Value>,
 ) -> Option<String> {
-    // h = EditorHostMcpApi
-    const PRELUDE: &str = "const h=window.vpEditorHost&&window.vpEditorHost.mcp;if(!h)return{error:\"editor host not available\"};";
     // h = layout bridge（doc 49 LE-P2 PR2 → P4 PR3: layout-mcp.ts の scope dispatcher が
     // window.vpLayoutHost を所有。gallery-panes.tsx は 1 scope handler として登録される）
     const LAYOUT_PRELUDE: &str = "const h=window.vpLayoutHost&&window.vpLayoutHost.mcp;if(!h)return{error:\"layout host not available\"};";
@@ -58,22 +58,48 @@ pub(crate) fn editor_bridge_js(
                 "(()=>{{{LAYOUT_PRELUDE}return h.history({body})}})()"
             ))
         }
-        "fields" => Some(format!(
-            "(()=>{{{PRELUDE}return{{fields:h.listFields().map(f=>({{id:f.id,label:f.label,type:f.type,semantic:f.semantic,group:f.group??null,cssVar:f.cssVar??null,initial:f.initial??null,constraints:f.constraints??null,role:f.role??null}}))}}}})()"
-        )),
-        "values" => Some(format!(
-            "(()=>{{{PRELUDE}return{{values:Object.fromEntries(h.listFields().map(f=>[f.id,h.getValue(f.id)]))}}}})()"
-        )),
-        "set" => {
-            // serde_json::to_string の出力はそのまま JS literal として合法 (JSON ⊂ JS)。
-            // field_id/value の必須検証は daemon 側 handler 済みだが、欠落は防御的に None。
-            let id = serde_json::to_string(field_id?).ok()?;
-            let value = serde_json::to_string(value?).ok()?;
-            Some(format!(
-                "(()=>{{{PRELUDE}h.setValue({id},{value});return{{ok:true,id:{id}}}}})()"
-            ))
-        }
         _ => None,
+    }
+}
+
+/// Editor Link（doc 86）: webview の editor-host が繋ぐ hub の URL と、この window の面の id を
+/// `window.__VP_LINK__` に置く初期化 JS（`WebViewBuilder::with_initialization_script`、bundle 読み込み前）。
+///
+/// creo-ui 側の既定 URL は 32000 固定だが、vp-app は**自分が使う daemon の port**（brew 32000 /
+/// dev 32100）を渡すので VP_PROFILE の分離（#643）がそのまま効く。面の id は `vp-app#<instance>`
+/// （window ごとに固定。tab ごとに UUID を振る site と違い、再起動しても同じ名で登録される）。
+/// 名札 `app` は面の一覧（`/api/health` の `services.link`、MCP の `surface` 指名）に出る。
+pub(crate) fn link_init_script(daemon_port: u16, instance_index: usize) -> String {
+    let config = serde_json::json!({
+        "url": format!("ws://127.0.0.1:{daemon_port}/link"),
+        "surface": format!("vp-app#{instance_index}"),
+        "app": "Vantage Point",
+    });
+    format!("window.__VP_LINK__ = {config};")
+}
+
+#[cfg(test)]
+mod link_init_script_tests {
+    use super::link_init_script;
+
+    /// 置くのは JSON 1 個 — url は渡した port、surface は instance 番号、app は名札。
+    #[test]
+    fn init_script_carries_port_instance_and_label() {
+        let js = link_init_script(32100, 2);
+        let json = js
+            .strip_prefix("window.__VP_LINK__ = ")
+            .and_then(|rest| rest.strip_suffix(';'))
+            .expect("形: window.__VP_LINK__ = {...};");
+        let v: serde_json::Value = serde_json::from_str(json).expect("JSON");
+        assert_eq!(v["url"], "ws://127.0.0.1:32100/link");
+        assert_eq!(v["surface"], "vp-app#2");
+        assert_eq!(v["app"], "Vantage Point");
+    }
+
+    /// brew 既定の 32000 は creo-ui の DEFAULT_LINK_URL と一致する（URL 固定の裁定と整合）。
+    #[test]
+    fn brew_port_matches_creo_ui_default_link_url() {
+        assert!(link_init_script(32000, 0).contains("\"ws://127.0.0.1:32000/link\""));
     }
 }
 
@@ -166,40 +192,27 @@ mod fleet_dispatch_js_tests {
 mod editor_bridge_js_tests {
     use super::{editor_bridge_js, editor_command_js};
 
-    /// fields / values は bridge global (`vpEditorHost.mcp`) を経由する。
+    /// editor 系 op（fields / values / set）はもう JS にならない（doc 86: Link hub が WebSocket で届ける）。
+    /// 旧 `window.vpEditorHost` 経由の式が復活していないことも同時に見る。
     #[test]
-    fn read_ops_use_bridge_global() {
-        for op in ["fields", "values"] {
+    fn editor_ops_are_gone_from_the_js_bridge() {
+        for op in ["fields", "values", "enter"] {
+            assert!(
+                editor_bridge_js(op, None, None).is_none(),
+                "{op} は未知 op のはず"
+            );
+        }
+        assert!(
+            editor_bridge_js("set", Some("sb.text.base"), Some(&serde_json::json!(13.5))).is_none(),
+            "set は Link hub の仕事"
+        );
+        for op in ["layout_get", "layout_history"] {
             let js = editor_bridge_js(op, None, None).expect(op);
             assert!(
-                js.contains("window.vpEditorHost"),
-                "{op}: bridge global 不使用"
+                !js.contains("vpEditorHost"),
+                "{op}: 旧 editor global に触っている: {js}"
             );
-            assert!(js.contains("listFields"), "{op}: mcp API 不使用");
         }
-    }
-
-    /// set は id / value を JS literal として埋め込む (quote は escape される)。
-    #[test]
-    fn set_encodes_arguments_as_js_literals() {
-        let js = editor_bridge_js("set", Some("sb.text.base"), Some(&serde_json::json!(13.5)))
-            .expect("set");
-        assert!(js.contains(r#"h.setValue("sb.text.base",13.5)"#), "js={js}");
-
-        let tricky = serde_json::json!("#FF3DAE\"</script>");
-        let js = editor_bridge_js("set", Some("sb.conn.hitl"), Some(&tricky)).expect("set");
-        assert!(
-            js.contains(r##""#FF3DAE\"</script>""##),
-            "escape されていない: {js}"
-        );
-    }
-
-    /// 未知 op / set の引数欠落は None (daemon 側で {error} 応答に変換される)。
-    #[test]
-    fn unknown_op_and_missing_args_are_none() {
-        assert!(editor_bridge_js("enter", None, None).is_none());
-        assert!(editor_bridge_js("set", None, Some(&serde_json::json!(1))).is_none());
-        assert!(editor_bridge_js("set", Some("id"), None).is_none());
     }
 
     /// layout 系 op は layout bridge global (`vpLayoutHost.mcp`) を経由する（LE-P2 PR2）。
@@ -256,8 +269,8 @@ mod editor_bridge_js_tests {
     fn editor_command_js_maps_unknown_op_to_error_json() {
         let err = editor_command_js("nope", None, None).unwrap_err();
         assert_eq!(err, serde_json::json!({"error": "未知の editor op: nope"}));
-        let js = editor_command_js("fields", None, None).unwrap();
-        assert_eq!(Some(js), editor_bridge_js("fields", None, None));
+        let js = editor_command_js("layout_get", None, None).unwrap();
+        assert_eq!(Some(js), editor_bridge_js("layout_get", None, None));
     }
 }
 
