@@ -13,7 +13,7 @@ setup 名は `VP`。番号の正本は `roto_setup::SETUP`。
 
 | 本体 | 表示 | MIDI | 色 |
 |---|---|---|---|
-| switch 1–8 | pin #1–#8 の lane slug | `VP_ROTO_SETUP` の channel / buttons / press / release、PUSH | 保存した pin 色の最近傍パレット、消灯は暗くする |
+| switch 1–8 | pin #1–#8 の名前（lead lane は repo 名、sub lane は lane 名） | `VP_ROTO_SETUP` の channel / buttons / press / release、PUSH | 保存した pin 色の最近傍パレット、消灯は暗くする |
 | knobs 全席 | なし | 未設定（CLEAR） | なし |
 | switch 9–32 | なし | 未設定（CLEAR） | なし |
 
@@ -21,7 +21,7 @@ CC・チャンネル・押下/解放値の正本は `roto_midi::VP_ROTO_SETUP`�
 入力 parser と setup 生成が同じ定数を参照する。
 表示名は印刷可能な ASCII の先頭 12 字。非 ASCII / 制御文字のある名前は slug、
 slug も使えなければ `#N`。空 pin は `#N` と暗色にする。
-現在の保存 pin は表示名を持たないため、本番では address 末尾の lane slug を使う。
+現在の保存 pin は表示名を持たないため、address（`<repo>/lane/<lane>`）から名前を作る。lead lane（旧予約名 `root` も）は lane 名が全 repo で「lead」になり区別できないので **repo 名**を、sub lane は lane 名を使う（2026-11-04、`roto_setup::pin_name`）。12 字を超える repo 名は頭 12 字に切れる（`vantage-point` → `vantage-poin`）。
 元の色は sidebar / LPD8 と共有する `midi-pins.json` の色を使い、
 `midistage_profiles::roto_palette::closest_index` で 83 色へ写す。
 
