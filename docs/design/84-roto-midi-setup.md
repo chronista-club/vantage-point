@@ -1,6 +1,6 @@
 # 84. ROTO MIDI モード連携 — pin から「VP」setup を作る
 
-Status: VP 側を実装。SETUP 09 の書き込みは実機で成功（§制約と実機確認）。LED（§LED、needs-you を赤で示す）は実機確認待ち。
+Status: VP 側を実装。SETUP 09 の書き込みは実機で成功（§制約と実機確認）。LED（§LED、needs-you を赤で示す）は実機で赤の点灯を確認（2026-11-05）。
 Task: `mem_1Cg9QiQeVsk7KD3fcwhXqh`（setup / lease、段 C）、`mem_1CgAPGP3R4Gf4UNFBCWpTY`（T8 通常化、段 B）。
 裁定: `mem_1CgAPJPpcCwy2s1QohP3Zj`、2026-10-19 のノブ未割当裁定。
 
@@ -138,4 +138,7 @@ fixture の endpoint だけを読み、`native_midi=false` で接続する。
 - 2026-10-19: T8 を pin #8 に揃え、ROTO の MIC / PTT を廃止。ノブは未割当のまま。
   Apply・ボタン入力・表示の実機確認は lead で行う。
 - 2026-11-05: needs-you を switch の LED（赤）で示す（§LED）。LED が受信 CC に追従することを実機で確かめ、
-  daemon に `roto_surface`（望む姿 / 写した姿の reconcile）を置いた。実機確認待ち。
+  daemon に `roto_surface`（望む姿 / 写した姿の reconcile）を置いた。
+- 2026-11-05: 実機確認 — swap（0.86.0、e85dceae）の後、ROTO 本体で SETUP 09 を選び直し、lnx（pin #4）の
+  chat が AskUserQuestion を出した瞬間にボタン 4 が赤く点灯（mako 目視。sidebar の「要求中 1」と同時）。
+  解消で暗い pin 色に戻るかは確認中。
