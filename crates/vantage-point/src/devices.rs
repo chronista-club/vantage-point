@@ -513,11 +513,18 @@ fn open_midir_input(native_name: &str) -> Result<OpenedInput, OpenError> {
 ///
 /// key = CoreMIDI port の displayName（背骨 mem 準拠、doc 23 §5.2）。
 /// 旧 `MidiCapability`（single-device monitor、撤去済）を multi-device registry に発展させたもの。
+/// daemon の lane_registry（repo path_key → その repo の lanes）の購読 handle。SSOT は
+/// RepoManagerCapability（`lane_registry_ref`）で、devices は読むだけ（ROTO surface の needs-you 照合）
+pub(crate) type LaneRegistryHandle = Arc<RwLock<HashMap<String, Vec<crate::repo::lane::LaneInfo>>>>;
+
 pub struct DeviceRegistry {
     /// 接続中 device を port displayName で引く（polling task と共有）
     devices: Arc<RwLock<HashMap<String, ConnectedDevice>>>,
     /// active Lane の購読 cache（SSOT は repo の lanes_state、DeviceRegistry は購読側。doc 23 Q-1）
     active_lane: Arc<RwLock<Option<LaneAddress>>>,
+    /// daemon の lane_registry（repo path_key → lanes）の購読 handle。ROTO surface（`roto_surface`）が
+    /// needs-you を読む。None = 未注入（test / 単体利用）。SSOT は RepoManagerCapability、ここは読むだけ
+    lane_registry: Option<LaneRegistryHandle>,
     /// Capability event bus（接続/切断イベント配信用）
     event_bus: Arc<EventBus>,
     /// hot-plug polling task handle
@@ -529,7 +536,8 @@ pub struct DeviceRegistry {
     /// listener を張る持ち物一式（`input_listeners` / `midi_enabled` / `midi_access` と同じ Arc を指す）
     listener_deps: ListenerDeps,
     /// フィードバック方向（LE-19）の出力接続（port displayName → output conn）。
-    /// 必要時に開き、send 失敗で捨てて次回再接続する（X-Touch / LPD8。ROTO は output を開かない）
+    /// 必要時に開き、send 失敗で捨てて次回再接続する（X-Touch / LPD8 / ROTO の LED — ROTO は lease 中に
+    /// service が作る仮想 port だけ、`roto_surface`）
     outputs: Arc<tokio::sync::Mutex<HashMap<String, midir::MidiOutputConnection>>>,
     /// LPD8 pad LED の shadow（RGB 一括 sysex は全 pad 分を持つため差分計算に要る）
     lpd8_profile: Arc<tokio::sync::Mutex<crate::device_profile::lpd8::Lpd8Profile>>,
@@ -567,6 +575,7 @@ impl DeviceRegistry {
         Self {
             devices,
             active_lane: Arc::new(RwLock::new(None)),
+            lane_registry: None,
             event_bus,
             discovery_task: None,
             cancel_tx: None,
@@ -631,7 +640,7 @@ impl DeviceRegistry {
 
     /// 出力接続を必要時に開いて送る。send 失敗は接続を捨てる（次回再接続）。
     /// port は displayName の部分一致（複数候補は "INT" 優先 — X-Touch INT/EXT の別）
-    async fn send_output(&self, pattern: &str, msgs: &[Vec<u8>]) {
+    pub(crate) async fn send_output(&self, pattern: &str, msgs: &[Vec<u8>]) {
         if msgs.is_empty() {
             return;
         }
@@ -856,6 +865,16 @@ impl DeviceRegistry {
     }
 
     /// active Lane cache の read handle（Device I/O dispatch / 外部クエリ用）
+    /// daemon の lane_registry を繋ぐ（assemble 時に 1 回）。ROTO surface の needs-you 照合に使う
+    pub(crate) fn set_lane_registry(&mut self, handle: LaneRegistryHandle) {
+        self.lane_registry = Some(handle);
+    }
+
+    /// lane_registry の購読 handle（未注入なら None）
+    pub(crate) fn lane_registry(&self) -> Option<LaneRegistryHandle> {
+        self.lane_registry.clone()
+    }
+
     pub fn active_lane(&self) -> &Arc<RwLock<Option<LaneAddress>>> {
         &self.active_lane
     }

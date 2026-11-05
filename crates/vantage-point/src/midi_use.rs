@@ -1,11 +1,13 @@
 //! Machine-scoped connection to midistaged. A disabled VP observes without taking leases.
 use crate::devices::DeviceRegistry;
+use crate::roto_setup_sync::Status;
+use crate::roto_surface::{RotoSurface, leds_for_pins, ready};
 use midistage_client::{
     Client, Endpoint, Hello, Quiesced, SetEnabled,
     protocol::{PROTOCOL_VERSION, Phase},
 };
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     path::PathBuf,
     sync::{Arc, Weak},
     time::Duration,
@@ -89,6 +91,48 @@ fn start_with_path(registry: Weak<RwLock<DeviceRegistry>>, path: Option<PathBuf>
     }
 }
 
+/// ROTO surface を実機に合わせる 1 tick。望む姿は daemon の lane_registry（全 repo の lane）から、
+/// 送り先は lease 中に service が作った仮想 port（`midi_access.outputs_for`）から引く。port が無い
+/// （lease 外）なら ready でない扱いにして、写した姿を忘れる。
+async fn project_needs_you(
+    registry: &Weak<RwLock<DeviceRegistry>>,
+    surfaces: &mut BTreeMap<String, RotoSurface>,
+    statuses: &[Status],
+    addresses: &[Option<String>; 8],
+) {
+    surfaces.retain(|id, _| statuses.iter().any(|s| s.device == *id));
+    let Some(devices) = registry.upgrade() else {
+        return;
+    };
+    let lanes = devices.read().await.lane_registry();
+    let desired = match lanes {
+        Some(lanes) => {
+            let lanes = lanes.read().await;
+            leds_for_pins(addresses, lanes.values().flatten())
+        }
+        None => [false; 8],
+    };
+    for status in statuses {
+        let port = devices
+            .read()
+            .await
+            .midi_access
+            .read()
+            .expect("MIDI access poisoned")
+            .outputs_for(&status.device)
+            .into_iter()
+            .next();
+        let surface = surfaces.entry(status.device.clone()).or_default();
+        let msgs = surface.reconcile(ready(status) && port.is_some(), desired);
+        if let Some(port) = port
+            && !msgs.is_empty()
+        {
+            let msgs: Vec<Vec<u8>> = msgs.iter().map(|m| m.to_vec()).collect();
+            devices.read().await.send_output(&port, &msgs).await;
+        }
+    }
+}
+
 async fn run(
     registry: &Weak<RwLock<DeviceRegistry>>,
     enabled: bool,
@@ -114,6 +158,8 @@ async fn run(
     .await?;
     let client = Arc::new(client);
     let mut setups = crate::roto_setup_sync::Sync::new(client.clone(), &vp_paths::vp_state_dir());
+    // ROTO surface（design 84 §LED）: device id → 実機に写した LED 姿
+    let mut surfaces: BTreeMap<String, RotoSurface> = BTreeMap::new();
     let mut acknowledged = HashSet::new();
     let result: anyhow::Result<()> = async {
         'session: while !shutdown.is_cancelled() {
@@ -150,9 +196,10 @@ async fn run(
             // Setup requests run separately so a slow configuration RPC never delays
             // revoking input listeners or acknowledging another device's handoff.
             if enabled {
-                setups
-                    .tick(&crate::roto_setup_midistage::statuses(&snapshot))
-                    .await;
+                let statuses = crate::roto_setup_midistage::statuses(&snapshot);
+                setups.tick(&statuses).await;
+                // ROTO surface: needs-you を LED に写す（design 84 §LED）。setup 同期と同じ tick に相乗り
+                project_needs_you(registry, &mut surfaces, &statuses, setups.pin_addresses()).await;
             }
             tokio::select! {
                 _ = shutdown.cancelled() => break,

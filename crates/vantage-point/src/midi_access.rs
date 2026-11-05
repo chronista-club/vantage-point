@@ -39,6 +39,14 @@ impl MidiAccess {
             })
             .cloned()
     }
+    /// device の出力 port（lease 中に service が作る仮想 port の名）。lease 外 / 未知の device は空
+    pub fn outputs_for(&self, device_id: &str) -> Vec<String> {
+        self.owned
+            .iter()
+            .filter(|p| p.device_id == device_id)
+            .flat_map(|p| p.outputs.iter().cloned())
+            .collect()
+    }
     pub fn permits_input(&self, name: &str) -> bool {
         self.owned
             .iter()
@@ -54,6 +62,21 @@ impl MidiAccess {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn outputs_for_lists_only_the_leased_device_ports() {
+        let mut access = MidiAccess::default();
+        access.replace(vec![OwnedPorts {
+            device_id: "roto".into(),
+            lease: "t".into(),
+            inputs: vec!["Midistage/vp/x:3/1 | Roto-Control".into()],
+            outputs: vec!["Midistage/vp/x:3/2 | Roto-Control".into()],
+        }]);
+        assert_eq!(
+            access.outputs_for("roto"),
+            vec!["Midistage/vp/x:3/2 | Roto-Control".to_string()]
+        );
+        assert!(access.outputs_for("lpd8").is_empty());
+    }
     #[test]
     fn ownership_is_exact_and_release_does_not_affect_other_devices() {
         let mut access = MidiAccess::default();

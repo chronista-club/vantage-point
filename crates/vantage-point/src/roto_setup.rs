@@ -1,4 +1,6 @@
 //! Deterministic VP setup projection; Serial I/O belongs to midistage.
+//! LED は `led_off` = pin 色を暗く（待機）/ `led_on` = 赤（needs-you、design 84 §LED）。点け消しは
+//! `roto_surface` が CC で行い、setup は色だけを焼く。
 use crate::roto_midi::MidiButtonSetup;
 use midistage_profiles::roto_palette::closest_index;
 use serde_json::{Value, json};
@@ -18,11 +20,13 @@ pub(crate) fn generate(
     labels: &BTreeMap<String, String>,
     midi: &MidiButtonSetup,
 ) -> Generated {
+    // 点灯 = needs-you の赤。pin 色は LCD と待機 LED に使い、点灯色は全席で同じ
+    let red = closest_index(255, 0, 0);
     let switches: Vec<Value> = (0..8)
         .map(|i| {
             let pin = &pins["slots"][i];
-            let address = pin["address"].as_str().filter(|v| !v.is_empty());
-            let present = address.is_some() && pin["path"].as_str().is_some_and(|v| !v.is_empty());
+            let address = present_address(pin);
+            let present = address.is_some();
             let slug = address.map(pin_name).unwrap_or("");
             let label = address
                 .and_then(|v| labels.get(v))
@@ -45,7 +49,7 @@ pub(crate) fn generate(
             let off = rgb.map(|v| ((u16::from(v) + 2) / 4) as u8);
             json!({"control":i, "mode":"cc7", "channel":midi.channel,
             "param":midi.buttons[i], "nrpn_address":0, "min":midi.release,
-            "max":midi.press, "name":name, "color":color, "led_on":color,
+            "max":midi.press, "name":name, "color":color, "led_on":red,
             "led_off":closest_index(off[0], off[1], off[2]), "action":"push", "step_names":[]})
         })
         .collect();
@@ -62,6 +66,21 @@ pub(crate) fn generate(
             .map(|byte| format!("{byte:02x}"))
             .collect(),
     }
+}
+
+/// pin ごとの lane address（`<repo>/lane/<name>`）。setup 生成と同じ「在る」規則
+/// （address と path が両方非空）で判定する。無い席は None。
+pub(crate) fn pin_addresses(pins: &Value) -> [Option<String>; 8] {
+    std::array::from_fn(|i| present_address(&pins["slots"][i]).map(str::to_owned))
+}
+
+/// pin が「在る」= address と path が両方非空。表示名・色・LED の全てがこの 1 規則を見る
+fn present_address(pin: &Value) -> Option<&str> {
+    let address = pin["address"].as_str().filter(|v| !v.is_empty())?;
+    pin["path"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .map(|_| address)
 }
 
 fn parse_color(value: &str) -> Option<[u8; 3]> {
@@ -177,8 +196,14 @@ mod tests {
         assert_eq!(switches[1]["name"], "#2");
         assert_eq!(switches[1]["color"], closest_index(16, 16, 16));
         assert_eq!(switches[7]["name"], "unused");
-        assert_eq!(switches[7]["led_on"], closest_index(0xe4, 0x7a, 0xc9));
+        // 点灯 = needs-you の赤（design 84 §LED）。消灯は pin 色を暗くしたもの（従来どおり）
+        assert_eq!(switches[7]["led_on"], closest_index(255, 0, 0));
         assert_eq!(switches[7]["led_off"], closest_index(57, 31, 50));
+        assert!(
+            switches
+                .iter()
+                .all(|s| s["led_on"] == closest_index(255, 0, 0))
+        );
         for (i, switch) in switches.iter().enumerate() {
             assert_eq!(switch["control"], i);
             assert_eq!(switch["channel"], VP_ROTO_SETUP.channel);
@@ -187,6 +212,22 @@ mod tests {
             assert_eq!(switch["max"], VP_ROTO_SETUP.press);
             assert_eq!(switch["action"], "push");
         }
+    }
+
+    #[test]
+    fn pin_addresses_follow_the_same_presence_rule_as_the_projection() {
+        let addresses = pin_addresses(&pins());
+        assert_eq!(addresses[0].as_deref(), Some("vp/roto-vp-setup"));
+        assert_eq!(addresses[1], None);
+        assert_eq!(addresses[7].as_deref(), Some("vp/unused"));
+        let mut no_path = pins();
+        no_path["slots"][7]["path"] = json!("");
+        assert_eq!(
+            pin_addresses(&no_path)[7],
+            None,
+            "path が空の pin は不在（generate の present と同じ規則）"
+        );
+        assert!(pin_addresses(&Value::Null).iter().all(Option::is_none));
     }
 
     #[test]
