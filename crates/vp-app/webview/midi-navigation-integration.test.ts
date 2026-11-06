@@ -12,7 +12,8 @@ beforeAll(async () => {
     import { setPinColor } from './src/sidebar/midi-pin-store';
     window.setPinColor = setPinColor;
     import { render } from 'solid-js/web';
-    import { MidiPins } from './src/sidebar/MidiPins';
+    import { MidiPins, MIDI_PINS_CSS } from './src/sidebar/MidiPins';
+    window.MIDI_PINS_CSS = MIDI_PINS_CSS;
     window.renderPins = () => { const el = document.createElement('div'); document.body.append(el); render(MidiPins, el); return el; };
     import { applySidebarState, emptyState, sidebar } from './src/sidebar/store';
     import { emitAgentActivity } from './session-activity-bridge';
@@ -112,7 +113,12 @@ it('the strip registers the selected lane on an empty pin and unregisters with t
   w.sent.length = 0;
   (pinButton(3).querySelector('button') as HTMLButtonElement).click();
   expect(w.sent).toEqual([{t:'process:toggle',path:'/vp',expanded:true},{t:'lane:select',path:'/vp',address:'vp/root'}]);
-  (pinButton(3).querySelector('.vp-midi-unpin') as HTMLButtonElement).click();
+  // ✕ は chip の装飾（幅 100% / 下線 / padding）を継がない — 右上の小さな角だけ（mako 2026-11-06「バツのエリアが右端で」）。
+  // CSS の selector を 1 つずつ ✕ に当て、✕ 自身の rule 以外が当たっていたら漏れ。
+  const unpin = pinButton(3).querySelector('.vp-midi-unpin') as HTMLButtonElement;
+  const selectors = (w.eval('window.MIDI_PINS_CSS') as string).split('}').map(r => r.split('{')[0]).flatMap(s => s.split(',')).map(s => s.trim()).filter(Boolean);
+  expect(selectors.filter(s => !s.includes('vp-midi-unpin') && unpin.matches(s))).toEqual([]);
+  unpin.click();
   expect(JSON.parse(w.sent.at(-1)!.settings!).slots[2]).toBeNull();
   expect(pinButton(3).querySelector('.vp-midi-unpin')).toBeNull();
 });

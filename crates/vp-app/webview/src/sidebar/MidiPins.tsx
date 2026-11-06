@@ -38,7 +38,7 @@ export function MidiPins() {
       const register = () => { const a = activeTarget(); if (a) setPin(slot, a); };
       let colorInput!: HTMLInputElement;
       return <div class="vp-midi-pin" style={{'--pin-color':pins().colors[slot]}}>
-        <button type="button" disabled={!pinsReady()}
+        <button type="button" class="vp-midi-pin-button" disabled={!pinsReady()}
           classList={{selected:!!pin() && sidebar.active_lane_address === pin()!.address, unavailable:!!pin() && !available(), requesting:requesting()}}
           title={pin()
             ? `#${number}（⌘${number} / pad ${number}）${pin()!.address}${available() ? '' : '（現在利用できません）'} — 右クリックで設定`
@@ -70,10 +70,10 @@ export function MidiPins() {
 export const MIDI_PINS_CSS = `
 .vp-midi-pins{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:2px 4px;padding:0 12px 8px;}
 .vp-midi-pin{min-width:0;position:relative;}
-.vp-midi-pin button{width:100%;display:flex;align-items:center;gap:4px;border:0;border-bottom:2px solid var(--pin-color);background:transparent;color:var(--color-text-secondary);padding:4px 2px;cursor:pointer;font:inherit;font-size:11px;}
-.vp-midi-pin button.selected{color:var(--pin-color);background:var(--color-surface-bg-emphasis);}
-.vp-midi-pin button.unavailable{opacity:.45;}
-.vp-midi-pin button.requesting{color:var(--sb-conn-hitl,#f28dd3);border-color:var(--sb-conn-hitl,#f28dd3);}
+.vp-midi-pin-button{width:100%;display:flex;align-items:center;gap:4px;border:0;border-bottom:2px solid var(--pin-color);background:transparent;color:var(--color-text-secondary);padding:4px 2px;cursor:pointer;font:inherit;font-size:11px;}
+.vp-midi-pin-button.selected{color:var(--pin-color);background:var(--color-surface-bg-emphasis);}
+.vp-midi-pin-button.unavailable{opacity:.45;}
+.vp-midi-pin-button.requesting{color:var(--sb-conn-hitl,#f28dd3);border-color:var(--sb-conn-hitl,#f28dd3);}
 .vp-midi-pin-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .vp-midi-unpin{position:absolute;top:0;right:0;display:flex;align-items:center;justify-content:center;width:10px;height:10px;padding:0;border:0;border-radius:3px;background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);cursor:pointer;opacity:0;transition:opacity .1s;}
 .vp-midi-pin:hover .vp-midi-unpin,.vp-midi-unpin:focus-visible{opacity:1;}
