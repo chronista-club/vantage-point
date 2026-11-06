@@ -17,12 +17,13 @@ function activeTarget(): LaneTarget | null {
   return null;
 }
 
-/** LPD8 の物理配置どおり: 上段 = pad 5〜8（ピン #5〜#8）、下段 = pad 1〜4（ピン #1〜#4）。 */
-export const PIN_GRID_ORDER = [4,5,6,7,0,1,2,3];
+/** 上段 = ピン #1〜#4、下段 = ピン #5〜#8（mako 2026-11-06「上から 1〜4、二段目 5〜8」）。LPD8 の物理配置（上段 = pad 5〜8）とは上下が逆だが、番号の読みやすさを取る。 */
+export const PIN_GRID_ORDER = [0,1,2,3,4,5,6,7];
 
 /**
  * ピン帯。ピン #N が sidebar の #N・⌘N・LPD8 pad N の出どころ（doc 81「番号はピンが出どころ」）。
- * 空枠 click = 今選んでいる lane を登録 / 登録済み枠 click = ⌘N と同じ関数で開く / hover の ✕ = 解除。
+ * 空枠 click = 今選んでいる lane を登録 / 登録済み枠 click = ⌘N と同じ関数で開く（Center が切り替わり、
+ * sidebar の行も見える位置へ寄る）/ hover で右上に出る小さな ✕ = 解除。
  */
 export function MidiPins() {
   return <div class="vp-midi-pins" aria-label="LPD8 Lane ピン">
@@ -56,7 +57,7 @@ export function MidiPins() {
         <Show when={pin() && pinsReady()}>
           <button type="button" class="vp-midi-unpin" title={`#${number} の登録を解除`} aria-label={`#${number} の登録を解除`}
             onClick={e => { e.stopPropagation(); setPin(slot,null); }}>
-            <CreoIcon name="ph:x" size={10} />
+            <CreoIcon name="ph:x" size={8} />
           </button>
         </Show>
         <input ref={colorInput} class="vp-midi-color" type="color" aria-label={`LPD8 #${number} の色`}
@@ -74,7 +75,7 @@ export const MIDI_PINS_CSS = `
 .vp-midi-pin button.unavailable{opacity:.45;}
 .vp-midi-pin button.requesting{color:var(--sb-conn-hitl,#f28dd3);border-color:var(--sb-conn-hitl,#f28dd3);}
 .vp-midi-pin-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.vp-midi-unpin{position:absolute;top:1px;right:0;display:flex;align-items:center;justify-content:center;width:14px;height:14px;padding:0;border:0;border-radius:3px;background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);cursor:pointer;opacity:0;transition:opacity .1s;}
+.vp-midi-unpin{position:absolute;top:0;right:0;display:flex;align-items:center;justify-content:center;width:10px;height:10px;padding:0;border:0;border-radius:3px;background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);cursor:pointer;opacity:0;transition:opacity .1s;}
 .vp-midi-pin:hover .vp-midi-unpin,.vp-midi-unpin:focus-visible{opacity:1;}
 .vp-midi-unpin:hover{color:var(--color-text-primary);}
 .vp-midi-color{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;}
