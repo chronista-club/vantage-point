@@ -45,6 +45,9 @@ const common = {
   bundle: true,
   format: 'iife',
   target: 'es2022',
+  // 共有 package（@chronista-club/agent-chat）は file: 依存でファイル単位の symlink。
+  // 置かれた場所（node_modules）から solid-js を解決し、Solid を 1 つに保つ。
+  preserveSymlinks: true,
   plugins: [solidPlugin()],
   minify: !isDev,
   sourcemap: isDev ? 'inline' : false,

@@ -134,4 +134,49 @@ protocol "vp-daemon" version="0.2.0" {
             }
         }
     }
+
+    // link channel: Editor Link hub（doc 86）。面（creo-ui editor-host を載せた画面 = vp-app の webview /
+    // Chrome の creo-ui site）は HTTP `/link` の WebSocket で daemon に繋がり、この channel はその面を
+    // AI から読み書きする口。MCP editor_* の着地点。
+    // handler: server.rs register_channel("link", ...) → daemon::link::handle_link_channel
+    // （match method: surfaces / editor_fields / editor_values / editor_set）。
+    channel "link" from="client" lifetime="persistent" {
+        request "surfaces" description="繋がっている Editor Link の面の一覧と active な面を返す read-only 照会。active = 最後に Editor Mode を ON にした面（無ければ最後に繋いだ面）。引数なし。" {
+            returns "LinkSurfaces" {
+                field "surfaces" type="json" required=#true description="面の配列。各要素は { surface, app, mode: on|off, fields: 件数, active: bool }。surface 名の昇順。"
+                field "active" type="string" description="active な面の surface id。面が無ければ null。"
+            }
+        }
+        request "editor_fields" description="面の Editor Mode field 一覧を返す。面に get を送り、面が values を返した時点の全量（authoritative）。3 秒で timeout。" {
+            field "surface" type="string" description="面の id か名札（hello.app、大文字小文字無視）。省略 = active な面。"
+            returns "EditorFields" {
+                field "surface" type="string" required=#true description="解決した面の id。"
+                field "app" type="string" required=#true description="面の名札（hello.app）。"
+                field "mode" type="string" required=#true description="面の Editor Mode（on|off）。"
+                field "fields" type="json" required=#true description="LinkField の配列（id / label / type / semantic / constraints / initial / cssVar など、creo-ui docs/design/editor-link.md の形そのまま）。"
+            }
+        }
+        request "editor_values" description="面の Editor Mode field の現在値と selection を返す。editor_fields と同じ get の往復。" {
+            field "surface" type="string" description="面の id か名札。省略 = active な面。"
+            returns "EditorValues" {
+                field "surface" type="string" required=#true description="解決した面の id。"
+                field "app" type="string" required=#true description="面の名札。"
+                field "mode" type="string" required=#true description="面の Editor Mode（on|off）。"
+                field "selection" type="json" description="選択中なら { targetId, fieldIds, componentId? }、無ければ null。"
+                field "values" type="json" required=#true description="field id → 値 の map（型は field.type のまま、数は数で返る）。"
+            }
+        }
+        request "editor_set" description="面の field に値を書く（画面に即時反映、永続はしない）。number は field の constraints.min / max に収めてから送り、適用した値を返す。面が知らない id はエラー。" {
+            field "id" type="string" required=#true description="field id（editor_fields が列挙する id）。"
+            field "value" type="json" required=#true description="新しい値（number / bool / string）。文字列化しない。"
+            field "surface" type="string" description="面の id か名札。省略 = active な面。"
+            returns "EditorSetAck" {
+                field "ok" type="bool" required=#true description="常に true（失敗は error で返る）。"
+                field "surface" type="string" required=#true description="書いた面の id。"
+                field "id" type="string" required=#true description="書いた field id。"
+                field "value" type="json" required=#true description="適用した値（clamp 後）。"
+                field "clamped" type="bool" required=#true description="constraints に収めるために値が変わったか。"
+            }
+        }
+    }
 }

@@ -25,7 +25,7 @@ it('requires an explicit Atlas and keeps the draft when Projects change', async 
     window.captureShortcut=runCaptureMode
     window.changeAccount=()=>applySidebarState({...base,activity:{...base.activity,actions_scope:'account-b'}})
     render(()=>BucketList(),document.body)
-  `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],plugins:[solidPlugin()]})
+  `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],preserveSymlinks: true, plugins:[solidPlugin()]})
   const window = new Window()
   try {
     window.eval(bundle.outputFiles[0].text)

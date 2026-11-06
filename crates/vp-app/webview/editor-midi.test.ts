@@ -17,7 +17,7 @@ beforeAll(async () => {
     import { createComponent } from 'solid-js';
     import { VpEditor } from './editor/VpEditor';
     window.dispose = render(() => createComponent(VpEditor, {}), document.getElementById('editor-root'));
-  `, loader: 'tsx', resolveDir: fileURLToPath(new URL('.', import.meta.url)) }, bundle: true, write: false, format: 'iife', platform: 'browser', plugins: [solidPlugin()], define: { 'process.env.NODE_ENV': '"production"' } })
+  `, loader: 'tsx', resolveDir: fileURLToPath(new URL('.', import.meta.url)) }, bundle: true, write: false, format: 'iife', platform: 'browser', preserveSymlinks: true, plugins: [solidPlugin()], define: { 'process.env.NODE_ENV': '"production"' } })
   bundle = result.outputFiles[0].text
 })
 afterEach(async () => { for (const win of windows.splice(0)) { win.dispose?.(); await win.happyDOM.abort() } })

@@ -9,6 +9,10 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 
+#[cfg(target_os = "macos")]
+#[path = "app_launch.rs"]
+mod launch;
+
 #[derive(Subcommand)]
 pub enum AppCommands {
     /// vp-app GUI を起動 (background spawn、 即 exit)
@@ -40,11 +44,11 @@ pub fn execute(cmd: AppCommands) -> Result<()> {
     }
 }
 
-/// vp-app を background spawn + 親即 exit。
+/// macOS の bundle は LaunchServices 経由、それ以外は background spawn で起動する。
 ///
-/// 設計判断: `Command::status()` (= `wait()` 相当の blocking) ではなく `spawn()` で
-/// child handle を drop することで、 parent (= `vp app start`) は child の終了を
-/// 待たない。 stdout/stderr は log file に redirect、 unix では `process_group(0)`
+/// bundle は `open` の受付終了だけを待ち、GUI の終了は待たない。
+/// 直接起動は `spawn()` の child handle を drop し、GUI の終了を待たない。
+/// stdout/stderr は log file に redirect、直接起動の unix では `process_group(0)`
 /// (`setsid` 相当) で child を新しい process group に分離 ── parent shell が
 /// SIGHUP / exit しても child は生存し続ける (D12: daemon lifecycle 独立性)。
 fn start() -> Result<()> {
@@ -76,6 +80,18 @@ fn start() -> Result<()> {
     println!("🚀 Launching vp-app: {}", bin.display());
     println!("   daemon log: {}", daemon_log.display());
     println!("   stdout log: {}", stdout_log.display());
+
+    #[cfg(target_os = "macos")]
+    if let Some(mut cmd) = launch::launch_services_command(&bin, &stdout_log, &daemon_log)
+        .context("Failed to resolve vp-app bundle")?
+    {
+        let status = cmd.status().context("Failed to invoke LaunchServices")?;
+        anyhow::ensure!(status.success(), "LaunchServices request failed: {status}");
+        // open の PID は GUI の PID ではない。受付成功と起動完了を混同しない。
+        println!("✅ vp-app launch requested (LaunchServices)");
+        println!("   logs: vp logs (or `tail -F {}`)", log_dir.display());
+        return Ok(());
+    }
 
     let mut cmd = std::process::Command::new(&bin);
     cmd.env("VP_DAEMON_LOG_FILE", &daemon_log);

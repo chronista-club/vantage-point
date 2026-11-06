@@ -16,7 +16,7 @@ it('Codex Enter steers the displayed turn and the separate button queues the nex
     api.mountSession(mount,'queue-test/lead',1)
     window.emit({kind:'codex_queue',queue:{thread_id:'thread',turn_id:'turn',ready:true,items:[],error:null},request_id:null,error:null},1)
     window.emit({kind:'message_chunk',text:'working'},1)
-  `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'iife', conditions: ['browser'], plugins: [solidPlugin()] })
+  `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'iife', conditions: ['browser'], preserveSymlinks: true, plugins: [solidPlugin()] })
   const window = new Window()
   try {
     window.eval(result.outputFiles[0].text)

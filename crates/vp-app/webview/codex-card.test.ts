@@ -12,7 +12,7 @@ it('MCP の空文字の選択肢と未回答を区別し、任意の選択を取
     render(() => createComponent(CodexInteractionCard,{sending:false,request:{request_id:'enum',kind:'mcp_elicitation',title:'MCP',details:'',questions:[],can_accept:true,blocking:true,
       elicitation:{server_name:'test',message:'選択',url:null,fields:[{id:'field:choice',title:'選択',description:'',kind:'string',required:false,default_value:null,options:[{value:'',label:'空文字'},{value:'b',label:'B'}]}]}},
       respond:(id,behavior,answers)=>window.answers.push(answers)}),document.body)
-  `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],plugins:[solidPlugin()]})
+  `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],preserveSymlinks: true, plugins:[solidPlugin()]})
   const window = new Window()
   try {
     window.eval(result.outputFiles[0].text)
@@ -40,7 +40,7 @@ it('MCP の任意項目と false を区別し、URL を開いただけでは完�
         {id:'field:note',title:'メモ',description:'',kind:'string',required:false,options:[],default_value:null}
       ]}}}), document.body)
       render(() => createComponent(CodexInteractionCard, {sending:false,respond,request:{...base,request_id:'url',elicitation:{server_name:'auth',message:'認証',url:'https://example.com/verify',fields:[]}}}), document.body)
-    `, resolveDir:process.cwd(),loader:'tsx'}, bundle:true,write:false,format:'iife',conditions:['browser'],plugins:[solidPlugin()],
+    `, resolveDir:process.cwd(),loader:'tsx'}, bundle:true,write:false,format:'iife',conditions:['browser'],preserveSymlinks: true, plugins:[solidPlugin()],
   })
   const window = new Window()
   try {
@@ -81,7 +81,7 @@ it('独立権限は未選択から項目と期間を選び、明示送信する'
           {id:'scope', header:'', question:'許可の期間', options:[], is_secret:false}]
       }, respond: (id, behavior, answers) => window.answers.push({id, behavior, answers}) }), document.body)
     `, resolveDir: process.cwd(), loader: 'tsx' },
-    bundle: true, write: false, format: 'iife', conditions: ['browser'], plugins: [solidPlugin()],
+    bundle: true, write: false, format: 'iife', conditions: ['browser'], preserveSymlinks: true, plugins: [solidPlugin()],
   })
   const window = new Window()
   try {
@@ -113,7 +113,7 @@ it('拒否が turn 中断になる承認は、操作の意味を明示する', a
         can_accept: true, blocking: true, questions: [], cancel_on_deny: true
       }, respond: (id, behavior) => window.answers.push({id, behavior}) }), document.body)
     `, resolveDir: process.cwd(), loader: 'tsx' },
-    bundle: true, write: false, format: 'iife', conditions: ['browser'], plugins: [solidPlugin()],
+    bundle: true, write: false, format: 'iife', conditions: ['browser'], preserveSymlinks: true, plugins: [solidPlugin()],
   })
   const window = new Window()
   try {
@@ -138,7 +138,7 @@ it('生成した質問カードは選択・自由入力を保持し、送信操�
           options: [{label:'A',description:''},{label:'B',description:''}] }]
       }, respond: (id, behavior, answers) => window.answers.push({id, behavior, answers}) }), document.body)
     `, resolveDir: process.cwd(), loader: 'tsx' },
-    bundle: true, write: false, format: 'iife', conditions: ['browser'], plugins: [solidPlugin()],
+    bundle: true, write: false, format: 'iife', conditions: ['browser'], preserveSymlinks: true, plugins: [solidPlugin()],
   })
   const window = new Window()
   try {

@@ -22,7 +22,7 @@ window.current=lane=>layoutEngine.current(laneScope(lane))
 window.seed=(lane,layout)=>layoutEngine.update(laneScope(lane),()=>layout)
 `
 async function boot(saved?: unknown) {
- const r=await build({stdin:{contents:setup,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],plugins:[solidPlugin()]})
+ const r=await build({stdin:{contents:setup,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],preserveSymlinks:true,plugins:[solidPlugin()]})
  const w=new Window(); w.addEventListener('error', e => { throw (e as ErrorEvent).error }); w.eval(r.outputFiles[0].text)
  if (saved !== false) (w as any).vpDispatch({ t: 'pane:stow_restore', payload: saved ?? {} })
  return w

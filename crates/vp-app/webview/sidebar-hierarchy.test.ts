@@ -20,15 +20,16 @@ beforeAll(async () => {
     const base = { ...emptyState(), processes: [{ path: '/project', name: 'Project', state: 'running', expanded: true, port: 123 }], lanes_by_repo: { '/project': [lane('main', 'working'), lane('one', 'working'), lane('two', 'awaiting_user')] }, active_lane_address: 'project/main' };
     window.setRepo = patch => applySidebarState({ ...base, processes: [{ ...base.processes[0], ...patch }] });
     window.setRepo({});
+    window.setState = patch => applySidebarState({ ...base, ...patch, processes: patch.processes ? patch.processes.map(p => ({ ...base.processes[0], ...p })) : base.processes });
     window.setResponse = (timestamp) => applySidebarState({ ...base, lanes_by_repo: { '/project': [{ ...base.lanes_by_repo['/project'][0], sessions: { root: 1, focused: 1, sessions: [{key: 1, agent:'codex', last_response_at: timestamp}, {key:2, agent:'codex', last_response_at: timestamp}] } }] } });
     window.con = installConsole();
     window.capture = runCaptureMode;
     window.dispose = render(() => createComponent(Shell, {}), document.getElementById('sidebar-root'));
-  `, loader: 'tsx', resolveDir: fileURLToPath(new URL('.', import.meta.url)) }, bundle: true, write: false, format: 'iife', platform: 'browser', plugins: [solidPlugin()], define: { 'process.env.NODE_ENV': '"production"' } })
+  `, loader: 'tsx', resolveDir: fileURLToPath(new URL('.', import.meta.url)) }, bundle: true, write: false, format: 'iife', platform: 'browser', preserveSymlinks: true, plugins: [solidPlugin()], define: { 'process.env.NODE_ENV': '"production"' } })
   bundle = result.outputFiles[0].text
 })
 function fixture() {
-  const win = new Window({ settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } }) as Window & { sent: any[]; setRepo(patch: object): void; dispose(): void; capture(): void; setResponse(timestamp: number | null): void; con: any }
+  const win = new Window({ settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } }) as Window & { sent: any[]; setRepo(patch: object): void; setState(patch: object): void; dispose(): void; capture(): void; setResponse(timestamp: number | null): void; con: any }
   windows.push(win)
   win.document.body.innerHTML = '<div id="sidebar-root"></div><div id="host"></div>'
   win.eval(bundle)
@@ -180,4 +181,25 @@ it('uses a five-state symbol instead of the legacy status label', () => {
   const point = win.document.querySelector('.vp-proj-summary [data-lane-state="working"]')!
   expect(point.getAttribute('aria-label')).toBe('作業中')
   expect(win.document.querySelector('.vp-proj-summary .vp-lane-state')).toBeNull()
+})
+
+it('scrolls the newly active lane row into view — once per change, again when its repo unfolds', () => {
+  const win = fixture()
+  const calls: (string | null)[] = []
+  win.HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) { calls.push(this.getAttribute('data-address')) }
+  // 折りたたみ中に選ぶ（ピン / pad / ⌘N は画面外の lane も選ぶ）→ 行を寄せる
+  win.setState({ processes: [{ expanded: false }], active_lane_address: 'project/two' })
+  expect(calls).toEqual(['project/two'])
+  // 同じ選択のまま配り直し（progress の更新など）では寄せ直さない — user の scroll 位置を奪わない
+  win.setState({ processes: [{ expanded: false }], active_lane_address: 'project/two' })
+  expect(calls).toEqual(['project/two'])
+  // 展開が届いたらもう 1 度寄せる（hidden の間は寄せられない）
+  win.setState({ processes: [{ expanded: true }], active_lane_address: 'project/two' })
+  expect(calls).toEqual(['project/two', 'project/two'])
+})
+
+it('carries no MIDI target marker in the header (mako 2026-11-06「MIDI は消して」)', () => {
+  const win = fixture()
+  expect(win.document.querySelector('.vp-sidebar-header')).not.toBeNull()
+  expect(win.document.querySelector('.vp-midi-target')).toBeNull()
 })

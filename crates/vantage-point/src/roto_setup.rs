@@ -1,4 +1,6 @@
 //! Deterministic VP setup projection; Serial I/O belongs to midistage.
+//! LED は `led_off` = pin 色を暗く（待機）/ `led_on` = 赤（needs-you、design 84 §LED）。点け消しは
+//! `roto_surface` が CC で行い、setup は色だけを焼く。
 use crate::roto_midi::MidiButtonSetup;
 use midistage_profiles::roto_palette::closest_index;
 use serde_json::{Value, json};
@@ -18,12 +20,14 @@ pub(crate) fn generate(
     labels: &BTreeMap<String, String>,
     midi: &MidiButtonSetup,
 ) -> Generated {
+    // 点灯 = needs-you の赤。pin 色は LCD と待機 LED に使い、点灯色は全席で同じ
+    let red = closest_index(255, 0, 0);
     let switches: Vec<Value> = (0..8)
         .map(|i| {
             let pin = &pins["slots"][i];
-            let address = pin["address"].as_str().filter(|v| !v.is_empty());
-            let present = address.is_some() && pin["path"].as_str().is_some_and(|v| !v.is_empty());
-            let slug = address.and_then(|v| v.rsplit('/').next()).unwrap_or("");
+            let address = present_address(pin);
+            let present = address.is_some();
+            let slug = address.map(pin_name).unwrap_or("");
             let label = address
                 .and_then(|v| labels.get(v))
                 .map(String::as_str)
@@ -45,7 +49,7 @@ pub(crate) fn generate(
             let off = rgb.map(|v| ((u16::from(v) + 2) / 4) as u8);
             json!({"control":i, "mode":"cc7", "channel":midi.channel,
             "param":midi.buttons[i], "nrpn_address":0, "min":midi.release,
-            "max":midi.press, "name":name, "color":color, "led_on":color,
+            "max":midi.press, "name":name, "color":color, "led_on":red,
             "led_off":closest_index(off[0], off[1], off[2]), "action":"push", "step_names":[]})
         })
         .collect();
@@ -64,12 +68,41 @@ pub(crate) fn generate(
     }
 }
 
+/// pin ごとの lane address（`<repo>/lane/<name>`）。setup 生成と同じ「在る」規則
+/// （address と path が両方非空）で判定する。無い席は None。
+pub(crate) fn pin_addresses(pins: &Value) -> [Option<String>; 8] {
+    std::array::from_fn(|i| present_address(&pins["slots"][i]).map(str::to_owned))
+}
+
+/// pin が「在る」= address と path が両方非空。表示名・色・LED の全てがこの 1 規則を見る
+fn present_address(pin: &Value) -> Option<&str> {
+    let address = pin["address"].as_str().filter(|v| !v.is_empty())?;
+    pin["path"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .map(|_| address)
+}
+
 fn parse_color(value: &str) -> Option<[u8; 3]> {
     let hex = value.strip_prefix('#')?;
     if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     Some([0, 2, 4].map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("validated hex")))
+}
+
+/// pin の address（`<repo>/lane/<lane>`）から ROTO に出す名前を決める。
+///
+/// lead lane（旧予約名 `root` も）は lane 名が全 repo で同じ「lead」になり区別できないので、**repo 名**を
+/// 名乗る — sidebar で lead lane が repo の行として見えるのと同じ。sub lane は lane 名のまま。
+/// `lane` 区切りの無い旧形式は末尾を使う。
+fn pin_name(address: &str) -> &str {
+    let mut parts = address.split('/');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(repo), Some("lane"), Some("lead" | "root"), None) => repo,
+        (Some(_), Some("lane"), Some(lane), None) => lane,
+        _ => address.rsplit('/').next().unwrap_or(""),
+    }
 }
 
 fn control_label(label: &str, slug: &str, slot: usize) -> String {
@@ -111,6 +144,37 @@ mod tests {
         assert_eq!(SETUP, 8, "VP occupies display SETUP 09 (index + 1)");
     }
 
+    /// lead lane の pin は repo 名を名乗る（全部「lead」では区別できない）。sub lane は lane 名のまま。
+    /// 落ちるべき壊し方: address の末尾をそのまま使う（旧挙動）と 8 個とも "lead" になる。
+    #[test]
+    fn lead_lane_pins_show_the_repo_name_and_sub_lanes_keep_their_lane_name() {
+        assert_eq!(pin_name("vantage-point/lane/lead"), "vantage-point");
+        assert_eq!(pin_name("midistage/lane/lead"), "midistage");
+        assert_eq!(
+            pin_name("creo-ui/lane/root"),
+            "creo-ui",
+            "旧予約名 root も lead と同じ扱い"
+        );
+        assert_eq!(pin_name("vantage-point/lane/editor-hub"), "editor-hub");
+        assert_eq!(
+            pin_name("vp/roto-vp-setup"),
+            "roto-vp-setup",
+            "lane 区切りの無い旧形式は末尾"
+        );
+        assert_eq!(pin_name(""), "");
+        let pins = json!({"slots":[
+            {"path":"/a", "address":"creo-memories/lane/lead"},
+            {"path":"/b", "address":"vantage-point/lane/lead"},
+            {"path":"/c", "address":"vantage-point/lane/editor-hub"},
+            null, null, null, null, null]});
+        let content = generate(&pins, &BTreeMap::new(), &crate::roto_midi::VP_ROTO_SETUP).content;
+        let names: Vec<&str> = (0..3)
+            .map(|i| content["switches"][i]["name"].as_str().expect("name"))
+            .collect();
+        // ROTO の LCD は 12 字。長い repo 名は頭 12 字に切れる
+        assert_eq!(names, ["creo-memorie", "vantage-poin", "editor-hub"]);
+    }
+
     #[test]
     fn labels_are_printable_ascii_twelve_bytes_with_slug_then_slot_fallback() {
         assert_eq!(control_label("long-lane-name", "slug", 0), "long-lane-na");
@@ -132,8 +196,14 @@ mod tests {
         assert_eq!(switches[1]["name"], "#2");
         assert_eq!(switches[1]["color"], closest_index(16, 16, 16));
         assert_eq!(switches[7]["name"], "unused");
-        assert_eq!(switches[7]["led_on"], closest_index(0xe4, 0x7a, 0xc9));
+        // 点灯 = needs-you の赤（design 84 §LED）。消灯は pin 色を暗くしたもの（従来どおり）
+        assert_eq!(switches[7]["led_on"], closest_index(255, 0, 0));
         assert_eq!(switches[7]["led_off"], closest_index(57, 31, 50));
+        assert!(
+            switches
+                .iter()
+                .all(|s| s["led_on"] == closest_index(255, 0, 0))
+        );
         for (i, switch) in switches.iter().enumerate() {
             assert_eq!(switch["control"], i);
             assert_eq!(switch["channel"], VP_ROTO_SETUP.channel);
@@ -142,6 +212,22 @@ mod tests {
             assert_eq!(switch["max"], VP_ROTO_SETUP.press);
             assert_eq!(switch["action"], "push");
         }
+    }
+
+    #[test]
+    fn pin_addresses_follow_the_same_presence_rule_as_the_projection() {
+        let addresses = pin_addresses(&pins());
+        assert_eq!(addresses[0].as_deref(), Some("vp/roto-vp-setup"));
+        assert_eq!(addresses[1], None);
+        assert_eq!(addresses[7].as_deref(), Some("vp/unused"));
+        let mut no_path = pins();
+        no_path["slots"][7]["path"] = json!("");
+        assert_eq!(
+            pin_addresses(&no_path)[7],
+            None,
+            "path が空の pin は不在（generate の present と同じ規則）"
+        );
+        assert!(pin_addresses(&Value::Null).iter().all(Option::is_none));
     }
 
     #[test]

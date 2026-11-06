@@ -56,6 +56,10 @@ impl<T: Transport> Sync<T> {
             start: Instant::now(),
         }
     }
+    /// 今の pin の lane address（直近の `tick` で読んだ midi-pins.json 由来）。ROTO surface の照合に使う
+    pub fn pin_addresses(&self) -> &[Option<String>; 8] {
+        self.pins.addresses()
+    }
     pub async fn tick(&mut self, statuses: &[Status]) {
         // Revocation is processed even when pin input is unavailable. Dropping an entry
         // cancels its request; the server remains responsible for validating the token.

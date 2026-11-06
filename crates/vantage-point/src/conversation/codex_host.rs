@@ -32,6 +32,7 @@
 //! - actions: プロセス spawn / stdin 書き込み / reader loop の応答処理 / registry 書き込み / broadcast
 
 use std::collections::{HashMap, VecDeque};
+#[cfg(test)]
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
@@ -530,21 +531,18 @@ impl CodexAgentHost {
         question_session: CodexQuestionSession,
     ) -> anyhow::Result<Self> {
         let program = crate::lane::codex_session::codex_cli_path();
-        let mut cmd = tokio::process::Command::new(&program);
+        // 起動契約（app-server 引数 / piped stdio / kill-on-drop）は共有 codex_process が所有。
+        // CLI 探索・cwd・identity env・継承 env の剥がしはアプリ側（design 86）。
+        let mut cmd = agent_chat_host::codex_process::command(std::ffi::OsStr::new(&program), &[]);
         for key in crate::spawn_env::inherited_agent_host_env_to_strip() {
             cmd.env_remove(key);
         }
-        cmd.arg("app-server")
-            .current_dir(&config.cwd)
+        cmd.current_dir(&config.cwd)
             // identity env（doc 51 §1 A3b）: engine（とその shell tool の子）が `vp now` /
             // wire で自分を名乗る口。tui の agent_spawner / claude host と同じ契約。
             .env("VP_REPO", &config.repo)
             .env("VP_LANE", &config.lane_label)
-            .env("VP_SESSION_KEY", config.session_key.to_string())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .env("VP_SESSION_KEY", config.session_key.to_string());
         let mut child = cmd
             .spawn()
             .map_err(|e| anyhow::anyhow!("codex app-server の起動に失敗（{program}）: {e}"))?;

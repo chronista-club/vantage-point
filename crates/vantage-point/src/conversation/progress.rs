@@ -294,6 +294,10 @@ mod tests {
             request_id: "p1".into(),
             tool_name: "Bash".into(),
             input: json!({}),
+            display_name: None,
+            description: None,
+            tool_use_id: None,
+            suggestions: Vec::new(),
         });
         progress.apply(&ConversationEvent::MessageChunk {
             text: "補足".into(),
@@ -344,6 +348,10 @@ mod tests {
             request_id: "p".into(),
             tool_name: "Write".into(),
             input: json!({}),
+            display_name: None,
+            description: None,
+            tool_use_id: None,
+            suggestions: Vec::new(),
         });
         progress.apply(&ConversationEvent::NowLine {
             text: "自己申告".into(),

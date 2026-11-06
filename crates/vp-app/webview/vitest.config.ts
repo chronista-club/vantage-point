@@ -22,6 +22,9 @@ export default defineConfig({
   },
   resolve: {
     conditions: solidConditions,
+    // 共有 package（@chronista-club/agent-chat）は file: 依存でファイル単位の symlink。
+    // 実体の場所でなく node_modules に置かれた場所から solid-js を解決する。
+    preserveSymlinks: true,
     // solid-js の多重解決を防ぐ (HistoryStrip.test.ts の "multiple instances" warning 対策)
     alias: {
       'solid-js': resolve('./node_modules/solid-js'),

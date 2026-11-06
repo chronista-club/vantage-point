@@ -20,7 +20,7 @@ it('loads choices without changing permissions and waits for native confirmation
     window.emit({kind:'codex_config',config:window.config,request_id:null,error:null},1)
     window.queue={thread_id:'thread',turn_id:null,ready:true,items:[],error:null}
     window.emit({kind:'codex_queue',queue:window.queue,request_id:null,error:null},1)
-  `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],plugins:[solidPlugin()]})
+  `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],preserveSymlinks: true, plugins:[solidPlugin()]})
   const window = new Window()
   try {
     window.eval(result.outputFiles[0].text)

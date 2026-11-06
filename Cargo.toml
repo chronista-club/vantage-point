@@ -1,9 +1,12 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# vendor/agent-chat（submodule）の crate は path 依存として読む。workspace member にはしない
+# （member にすると version / lints を VP が握ることになり、GFP と同じ revision を指す意味が崩れる）。
+exclude = ["vendor"]
 
 [workspace.package]
-version = "0.86.0"
+version = "0.87.0"
 edition = "2024"
 rust-version = "1.96" # = rust-toolchain.toml channel (基本 stable 追随、 minor pin)
 authors = ["Chronista Club"]
@@ -69,7 +72,7 @@ tokio-stream = "0.1"
 # 2.0.0 (2026-09-06): 呼び手の無い public API の一掃だけの major。wire bytes は不変
 # (golden fixture 同一、TS / Swift client は 1.x のまま)。VP 側の追随は `spawn_listen` →
 # `listener(addr).spawn()` の 1 箇所（ignored の federation e2e test）のみ。
-unison = { package = "club-unison", version = "2.0.0" }
+unison = { package = "club-unison", version = "2.2.0" }
 
 # Lifecycle / Outcome / drive primitives。 crates.io package = `club-nostos`、 Rust 識別子は
 # `nostos` に alias (unison と同じ package rename 方針)。 doc 24 §4.6 lifecycle co-evolution:
@@ -78,7 +81,7 @@ unison = { package = "club-unison", version = "2.0.0" }
 nostos = { package = "club-nostos", version = "0.2" }
 
 # KDL parsing (club-kdl、 旧 unison-kdl。 v0.5.0 で rename + crates.io 移行)
-club-kdl = "0.14"
+club-kdl = "0.17"
 
 # Glob patterns (lane / Stone Free)
 glob = "0.3"

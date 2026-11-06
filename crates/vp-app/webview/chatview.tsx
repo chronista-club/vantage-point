@@ -54,12 +54,7 @@ import { agentDisplayName, agentIcon } from './src/sidebar/lane'
 import { hostIdForMode } from './lane-panes'
 import { isImeKeystroke } from './ime'
 import { applyCompletion, filterSlashCommands, moveSelection, slashQuery } from './slash'
-import {
-  type PastedImage,
-  pickImageFiles,
-  readImageFile,
-  toWirePayload,
-} from './paste-image'
+import { createImageAttachments, ImageAttachmentList, toWirePayload } from './paste-image'
 // 会話モデル（型・reducer・導出）は chat-model.ts に分離（棚卸し 項目 4）。
 // 外部からの import 互換のため、公開していたものはここから再 export する。
 import {
@@ -1660,38 +1655,10 @@ function SessionChatView(props: { lane: string; session: number }) {
   // ---- 画像添付（chat 入力欄への貼り付け、2026-08-30）--------------------------
   // ⚠️ VP は保存しない — 送信時に engine へ渡すだけで、transcript / replay にも残さない
   // （mako 裁定: 痕跡も残さない）。再 attach 後の画面に画像が出ないのはこのため。
-  const [attachments, setAttachments] = createSignal<PastedImage[]>([])
-  const clearAttachments = () => {
-    // objectURL は明示 revoke しないと leak する（プレビュー用に作った分）。
-    for (const a of attachments()) URL.revokeObjectURL(a.previewUrl)
-    setAttachments([])
-  }
-  const dropAttachment = (id: number) => {
-    setAttachments((prev) => {
-      const hit = prev.find((a) => a.id === id)
-      if (hit) URL.revokeObjectURL(hit.previewUrl)
-      return prev.filter((a) => a.id !== id)
-    })
-  }
-  /**
-   * 貼り付け / drop から画像を拾う。**同期で** File を確定し、読み取りだけ非同期にする。
-   *
-   * ⚠️ **判定と `preventDefault` は同期でなければならない**。paste イベントは同期に完了する
-   * ので、`await` の後で `preventDefault()` しても手遅れ（既定動作が走り終わっている）。
-   * 実機 2026-08-30: 非同期で止めようとして、clipboard の `furl`（ファイル参照）が
-   * **テキストとして textarea に貼られた**（画像 PNG も同時に載っていたのに）。
-   *
-   * 戻り値 = 拾った File 群（空 = 画像なし → 既定動作に任せて text を貼らせる）。
-   */
-  const takeImageFiles = (list: DataTransfer | null): File[] => {
-    if (!imageCapable()) return []
-    return pickImageFiles(list)
-  }
-  /** 拾った File を base64 化して添付に積む（読み取りは非同期でよい）。 */
-  const attachFiles = async (files: File[]): Promise<void> => {
-    const added = await Promise.all(files.map(readImageFile))
-    setAttachments((prev) => [...prev, ...added.filter((a): a is PastedImage => a !== null)])
-  }
+  // 状態・貼り付け判定・objectURL の解放は共有 `createImageAttachments`（design 86）。
+  // ⚠️ 貼り付け / drop の判定と preventDefault は同期（`take` が同期で File を確定する）。
+  const images = createImageAttachments(imageCapable)
+  const attachments = images.attachments
 
   // ---- slash command 補完（判断は slash.ts、ここは配線だけ）-------------------
   /** 候補一覧。空 = palette を出さない（行頭が `/` でない / 引数を打ち始めた / 一致なし）。 */
@@ -1759,7 +1726,7 @@ function SessionChatView(props: { lane: string; session: number }) {
       return
     }
     if (!sendCodexInput({ kind: 'add', text }, text, toWirePayload(attachments()))) return
-    clearAttachments()
+    images.clear()
     setDraft('')
     if (inputRef) autosize(inputRef)
   }
@@ -1770,7 +1737,7 @@ function SessionChatView(props: { lane: string; session: number }) {
     if (codexTurnActive()) {
       const turn = lc.state.codexQueue?.turn_id
       if (!turn || !sendCodexInput({ kind: 'steer', text, turn_id: turn }, text, toWirePayload(attachments()))) return
-      clearAttachments()
+      images.clear()
       setDraft('')
       if (inputRef) autosize(inputRef)
       return
@@ -1785,18 +1752,14 @@ function SessionChatView(props: { lane: string; session: number }) {
     if (!sendSubmission(lane, props.session, text, toWirePayload(attachments()))) return
     setDraft('')
     if (inputRef) autosize(inputRef)
-    clearAttachments()
+    images.clear()
   }
 
   const recoverSubmission = () => {
     const submission = lc.state.submission
     if (!submission || submission.status !== 'failed' || draft().trim() || attachments().length) return
     setDraft(submission.text)
-    setAttachments(submission.images.map((image, index) => ({
-      id: Date.now() + index, mediaType: image.media_type, dataBase64: image.data,
-      previewUrl: `data:${image.media_type};base64,${image.data}`,
-      bytes: Math.floor(image.data.length * 3 / 4),
-    })))
+    images.restore(submission.images)
     lc.set('submission', null)
     queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
   }
@@ -1806,11 +1769,7 @@ function SessionChatView(props: { lane: string; session: number }) {
   const recoverUnconfirmedCodexInput = (input: Pick<Submission, 'id' | 'text' | 'images'>) => {
     if (draft().trim() || attachments().length || lc.state.submission) return
     setDraft(input.text)
-    setAttachments(input.images.map((image, index) => ({
-      id: Date.now() + index, mediaType: image.media_type, dataBase64: image.data,
-      previewUrl: `data:${image.media_type};base64,${image.data}`,
-      bytes: Math.floor(image.data.length * 3 / 4),
-    })))
+    images.restore(input.images)
     lc.set('unconfirmedCodexInputs', inputs => inputs?.filter(item => item.id !== input.id))
     lc.set('items', items => items.map(item => item.kind === 'user' && item.clientId === input.id
       ? { kind: 'user' as const, text: item.text } : item))
@@ -2302,10 +2261,7 @@ function SessionChatView(props: { lane: string; session: number }) {
               <button disabled={!!draft().trim() || attachments().length > 0} onClick={() => {
                 if (draft().trim() || attachments().length) return
                 setDraft(lc.state.codexInput?.text ?? '')
-                setAttachments((lc.state.codexInput?.images ?? []).map((image, index) => ({
-                  id: Date.now() + index, mediaType: image.media_type, dataBase64: image.data,
-                  previewUrl: `data:${image.media_type};base64,${image.data}`, bytes: Math.floor(image.data.length * 3 / 4),
-                })))
+                images.restore(lc.state.codexInput?.images ?? [])
                 lc.set('codexInput',null)
                 queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
               }}>入力を戻す</button>
@@ -2351,25 +2307,7 @@ function SessionChatView(props: { lane: string; session: number }) {
           {/* 添付画像のチップ（2026-08-30）。⚠️ slash 候補と同じく**入力欄の上**に出す
               （下は model / permission の操作列で、被せると押す物が入れ替わる）。
               VP は保存しないので、送信するとその場で消える（履歴には残らない）。 */}
-          <Show when={attachments().length > 0}>
-            <div class="conversation-attachments">
-              <For each={attachments()}>
-                {(a) => (
-                  <span class="conversation-attachment">
-                    <img src={a.previewUrl} alt="添付画像" />
-                    <button
-                      type="button"
-                      class="conversation-attachment-x"
-                      title="添付を外す"
-                      onClick={() => dropAttachment(a.id)}
-                    >
-                      ✕
-                    </button>
-                  </span>
-                )}
-              </For>
-            </div>
-          </Show>
+          <ImageAttachmentList attachments={attachments()} onRemove={images.drop} />
           {/* 既定は **1 行**。打った分だけ scrollHeight に合わせて伸び、max-height で頭打ち
               （CSS だけでは textarea は内容に追随しないので、伸縮はここで行う）。 */}
           <textarea
@@ -2387,19 +2325,19 @@ function SessionChatView(props: { lane: string; session: number }) {
                — text の貼り付けは今まで通り textarea に入る。 */
             onPaste={(e) => {
               // ⚠️ 同期で判定して同期で止める（`await` を挟むと既定動作に負ける）。
-              const files = takeImageFiles(e.clipboardData)
+              const files = images.take(e.clipboardData)
               if (files.length === 0) return // 画像なし = text の貼り付けは従来どおり
               e.preventDefault()
-              void attachFiles(files)
+              void images.attach(files)
             }}
             onDragOver={(e) => {
               if (imageCapable()) e.preventDefault() // drop を受け付ける合図
             }}
             onDrop={(e) => {
-              const files = takeImageFiles(e.dataTransfer)
+              const files = images.take(e.dataTransfer)
               if (files.length === 0) return
               e.preventDefault()
-              void attachFiles(files)
+              void images.attach(files)
             }}
             onKeyDown={(e) => {
               // ⚠️ **IME の判定を最初に**置く。palette も送信も、変換中の打鍵に反応しては

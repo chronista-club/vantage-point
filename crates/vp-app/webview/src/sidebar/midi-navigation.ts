@@ -1,4 +1,5 @@
 import { createRotoNavigation } from './roto-navigation';
+import { createNanoKontrolNavigation } from './nanokontrol-navigation';
 import { createEffect, createRoot, createSignal } from 'solid-js';
 import { currentLanes, laneKnobHandler } from '../../midi-navigation';
 import { pinFeedback, pinPadHandler, pinBlinker } from '../../midi-pins';
@@ -59,6 +60,7 @@ const restored = (window as unknown as {__vpMidiSettings?:unknown}).__vpMidiSett
 if (restored !== undefined) restoreMidiPins(restored);
 
 const roto = createRoot(() => createRotoNavigation());
+const nanoKontrol = createRoot(() => createNanoKontrolNavigation());
 
 // entry.tsx の console bridge → 既存の t=console → Rust tracing (target=webview)。
 function diagnosePin(slot: number, reason: string, color?: string): void {
@@ -84,7 +86,7 @@ window.addEventListener('vp:midi-navigation', event => {
   if (!pinsReady() && payload.port_name?.includes('LPD8') && payload.event?.type === 'pad') {
     event.preventDefault(); return;
   }
-  if (roto.handle(payload) || selectLane(payload) || selectPin(payload)) event.preventDefault();
+  if (roto.handle(payload) || nanoKontrol.handle(payload) || selectLane(payload) || selectPin(payload)) event.preventDefault();
 });
 
 // The main bundle owns the single fleet feedback stream and combines these pad

@@ -903,6 +903,10 @@ fn handle_control_frame(
                     request_id,
                     tool_name,
                     input,
+                    display_name: None,
+                    description: None,
+                    tool_use_id: None,
+                    suggestions: Vec::new(),
                 });
             }
         }

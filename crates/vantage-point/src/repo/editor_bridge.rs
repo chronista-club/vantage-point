@@ -1,10 +1,14 @@
-//! Editor bridge (doc 48 Phase 2) — MCP → GUI Editor Mode の request-response。
+//! Editor bridge（doc 48 Phase 2 → doc 49 LE-15）— MCP → GUI（vp-app webview）の評価 RPC 配管。
 //!
-//! `editor_fields` / `editor_values` / `editor_set`（doc 48）と `layout_get` / `layout_set` /
-//! `layout_history`（doc 49 LE-15）は同じ配管: request_id を発行して `RepoState::editor_pending` に
-//! oneshot を登録し、`RepoMessage::EditorCommand` を broadcast、GUI（vp-app）が `editor_result` で
-//! 返した payload で解決する。往路（`handle_editor_command`）と復路（`handle_editor_result`）は
-//! 同じ `editor_pending` を触るのでここに同居する。
+//! 今ここを通るのは `layout_get` / `layout_set` / `layout_history`（doc 49 LE-15）だけ。
+//! `editor_fields` / `editor_values` / `editor_set` は **doc 86 で daemon の Editor Link hub**
+//! （`daemon/link.rs`、"link" channel）へ移った — 面が vp-app の webview 1 つではなくなり、repo 単位の
+//! broadcast では届け先を選べないため。配管の名（`EditorCommand` / `editor_result` / この module）は
+//! wire と vp-app を跨ぐ rename になるので据え置き、layout への改名は doc 86 §4 の後続とする。
+//!
+//! 配管: request_id を発行して `RepoState::editor_pending` に oneshot を登録し、
+//! `RepoMessage::EditorCommand` を broadcast、GUI（vp-app）が `editor_result` で返した payload で解決する。
+//! 往路（`handle_editor_command`）と復路（`handle_editor_result`）は同じ `editor_pending` を触るのでここに同居する。
 //!
 //! 棚卸し 9-2 段階 2（doc 63 §2、PR-S2b）: handler は `RepoState` を受け取らず、要る 2 つ
 //! （`editor_pending` / `hub`）だけを束ねた [`EditorContext`] を受け取る。呼び手は
@@ -79,28 +83,21 @@ pub(crate) struct EditorContext<'a> {
 /// (VP-163: server が client より長く待つと channel reset → 空振りリトライになる)。
 const EDITOR_BRIDGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// MCP の editor_fields / editor_values / editor_set を GUI に転送して応答を待つ。
+/// MCP の layout_get / layout_set / layout_history を GUI に転送して応答を待つ（op = method）。
 ///
 /// request_id を発行して `editor_pending` に oneshot を登録し、`EditorCommand` を
 /// broadcast (canvas channel、非 retained event topic)。vp-app が webview で評価した
 /// 結果を `editor_result` で返すと oneshot が解決する。timeout = GUI 不在 / 対象
-/// repo 未表示 / Editor Mode 未 mount。
+/// repo 未表示 / layout host 未 mount。引数の検証は vp-app 側の JS builder（value 欠落は None →
+/// `{error}`）に任せる。
 pub(crate) async fn handle_editor_command(
     ctx: EditorContext<'_>,
     method: &str,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let op = method.strip_prefix("editor_").unwrap_or(method).to_string();
+    let op = method.to_string();
     let field_id = payload.get("id").and_then(|v| v.as_str()).map(String::from);
     let value = payload.get("value").cloned();
-    if op == "set" {
-        if field_id.as_deref().unwrap_or("").is_empty() {
-            return Err("editor_set: id 必須".to_string());
-        }
-        if value.is_none() {
-            return Err("editor_set: value 必須".to_string());
-        }
-    }
 
     let request_id = crate::trace_log::new_trace_id();
     let (tx, rx) = tokio::sync::oneshot::channel::<serde_json::Value>();
@@ -203,13 +200,13 @@ mod tests {
         let mut hub_rx = state.hub.subscribe();
 
         let (cmd_res, ()) = tokio::join!(
-            handle_editor_command(state.editor(), "editor_values", serde_json::json!({})),
+            handle_editor_command(state.editor(), "layout_get", serde_json::json!({})),
             async {
                 let msg = hub_rx.recv().await.expect("EditorCommand broadcast");
                 let RepoMessage::EditorCommand { request_id, op, .. } = msg else {
                     panic!("EditorCommand 以外が broadcast された");
                 };
-                assert_eq!(op, "values");
+                assert_eq!(op, "layout_get", "op は method のまま届く");
                 handle_editor_result(
                     state.editor(),
                     serde_json::json!({
@@ -242,28 +239,6 @@ mod tests {
         assert!(r.is_ok());
     }
 
-    /// editor_set は id / value 必須 (broadcast 前に弾く = pending を作らない)。
-    #[tokio::test]
-    async fn editor_set_requires_id_and_value() {
-        use super::handle_editor_command;
-        use crate::repo::state::build_test_app_state;
-
-        let state = build_test_app_state().await;
-        for payload in [
-            serde_json::json!({}),
-            serde_json::json!({"id": "x"}),
-            serde_json::json!({"value": 1}),
-        ] {
-            assert!(
-                handle_editor_command(state.editor(), "editor_set", payload.clone())
-                    .await
-                    .is_err(),
-                "payload {payload} が弾かれていない"
-            );
-        }
-        assert!(state.editor_pending.lock().unwrap().is_empty());
-    }
-
     /// 棚卸し 9-2 段階 3（doc 63 §8 穴 ②）: 往路の future が応答も timeout も待たずに drop されても
     /// pending は残らない（Codex の probe `pending_after_future_drop_and_3_1s=1` の再現を test に）。
     ///
@@ -284,7 +259,7 @@ mod tests {
 
         let mut command = Box::pin(handle_editor_command(
             ctx,
-            "editor_values",
+            "layout_get",
             serde_json::json!({}),
         ));
         // GUI の応答は来ない。broadcast が届いた時点で往路は pending を登録して待っている。

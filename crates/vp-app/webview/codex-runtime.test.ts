@@ -15,7 +15,7 @@ it('shows effective permissions and confirms mode only from native settings', as
     window.config={models:[],model:'fixture',effort:null,selection:null,error:null,runtime:{approval:'on-request',sandbox:'workspaceWrite',network_access:false,writable_roots:['/project'],profile:':workspace',mode:null}}
     window.emit({kind:'codex_config',config:window.config,request_id:null,error:null},1)
     window.emit({kind:'codex_queue',queue:{thread_id:'thread',turn_id:null,ready:true,items:[],error:null},request_id:null,error:null},1)
-  `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],plugins:[solidPlugin()]})
+  `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],preserveSymlinks: true, plugins:[solidPlugin()]})
   const window = new Window()
   try {
     window.eval(result.outputFiles[0].text)

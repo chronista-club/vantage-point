@@ -28,7 +28,7 @@ beforeAll(async () => {
       `,
       resolveDir: fileURLToPath(new URL('.', import.meta.url)), loader: 'tsx',
     }, bundle: true, write: false, format: 'iife', platform: 'browser',
-    plugins: [solidPlugin()], define: { 'process.env.NODE_ENV': '"production"' },
+    preserveSymlinks: true, plugins: [solidPlugin()], define: { 'process.env.NODE_ENV': '"production"' },
   })
   bundle = result.outputFiles[0].text
 })

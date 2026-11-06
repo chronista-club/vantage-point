@@ -9,7 +9,8 @@ VP の常駐 MIDI I/O は midistage の protocol / profiles / Rust SDK を利用
 Devices 面で「MIDI を有効にする」を押し、対応機材の「使用」を切り替える。
 通常表示は Midistage の機材単位の一覧に統一する。OS の生ポート名と IN/OUT は「接続ポート詳細」に畳み、そこに旧直接接続の使用状態を重ねない。
 別アプリの担当なら切り替え確認が出る。確認した revision を送り、確認後の所有者変更を上書きしない。
-現在の VP の操作対象は ROTO / LPD8 / X-Touch / nanoKONTROL2。nanoKONTROL2 は標準 CC モード（ch1）の入力を扱い、ノブ・フェーダーは pane 比率、S ボタンは Scene 呼び出し／長押し保存に対応する。M/R・transport ボタンと nano の LED フィードバックは未対応。対応していない操作面は一覧に残して切り替えを無効にする。
+現在の VP の操作対象は ROTO / LPD8 / X-Touch / nanoKONTROL2。nanoKONTROL2 は標準 CC モード（ch1）の入力を扱い、ノブ・フェーダーは pane 比率、S1〜S8 は ROTO と同じサイドバーのピン #1〜#8 の Lane 選択に対応する。S は押した瞬間に一度だけ選択し、未登録・不在の Lane は何もせず、Scene 操作には流さない。M/R・transport ボタンと nano の LED フィードバックは未対応。対応していない操作面は一覧に残して切り替えを無効にする。
+nanoKONTROL2 の TRACK ◀／▶（標準 CC58／59）は CURRENTs 順の前／次の Lane を選ぶ。畳まれた repo の Lane も対象で、選択時に repo を開く。先頭・末尾では停止し、選択中の Lane が一覧にない場合は ▶ で先頭、◀ で末尾を選ぶ。一押し一移動で、S1〜S8 のピン割当は変えない。
 CLI は同じ daemon-control の窓口を使う。
 
 ```sh
@@ -81,6 +82,21 @@ input listener は、通知が届くまでの数百 ms を吸う短い開き直�
 `vp midi …` CLI は今回の対象外（daemon 経路だけ）。
 
 ## Status log
+
+### 2026-10-22 — Midistage snapshot と入力 registry の同期
+
+起票: `mem_1CgGt6gxJkCAeRMGg9LKRH`。daemon 起動時に機材が無く、後から接続すると、
+Midistage の使用権が active でも VP の registry が空のままで入力監視が始まらなかった。
+`vp midi off` → `on` の再列挙で復旧することを実機で確認した。
+
+active な自 session の `native_ports` から registry のポート情報も同期する。
+消えたポートは登録から外し、新しいポートは入力監視を開始する。同じ snapshot は二重接続しない。
+旧 lease の接続を abort/join してから新接続を許可する順序と、MIDI OFF の取得禁止は維持する。
+Swift agent の報告や定期的な物理ポート列挙を、後付け機材の入力開始の必須条件にしない。
+
+再現テストは空 registry への初回接続、同じ snapshot の再送、切断と再接続、他 session の
+lease、サービス切断を扱う。修正前は初回接続で登録数が 0 のまま失敗し、修正後は通過した。
+daemon への反映後、ユーザーから実機確認済みの報告を受けた（2026-10-22）。
 
 ### 2026-10-16 — 抜線時の listener 解放と接続待ち
 

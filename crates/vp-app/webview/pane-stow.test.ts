@@ -7,7 +7,7 @@ import { Window, type HTMLButtonElement } from 'happy-dom'
 
 async function bundle(contents: string) {
   const result = await build({ stdin: { contents, resolveDir: process.cwd(), loader: 'tsx' },
-    bundle: true, write: false, format: 'iife', conditions: ['browser'], plugins: [solidPlugin()] })
+    bundle: true, write: false, format: 'iife', conditions: ['browser'], preserveSymlinks: true, plugins: [solidPlugin()] })
   const window = new Window()
   window.eval(result.outputFiles[0].text)
   return window

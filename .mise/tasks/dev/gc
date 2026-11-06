@@ -100,7 +100,7 @@ end
 # ⚠️ 未導入でも **die しない**。incremental だけでも大半が回収できる事が多く、ここで
 # 止めると「道具が無いから 1 バイトも減らない」になる。導線だけ出して続行する。
 if VP.try("sh", "-c", "command -v cargo-sweep", out: File::NULL, err: File::NULL)
-  VP.sh("cargo sweep --time #{DAYS}#{DRY ? ' --dry-run' : ''}")
+  VP.build_run("cargo", "sweep", "--time", DAYS.to_s, *(DRY ? ["--dry-run"] : []))
 else
   VP.log "#{VP.icon(:warn)} cargo-sweep 未導入 — deps/ は手つかず (incremental のみ回収)"
   warn "    cargo install cargo-sweep     # 導入後もう一度回すと deps/ も GC される"

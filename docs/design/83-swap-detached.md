@@ -1,8 +1,8 @@
 # 83. lane からの detached swap
 
 > **Status**: Draft — 本番の通し確認待ち
-> **Related**: `mem_1Cg5ZMy8oPgcvmM1oq8X5W`
-> **対象**: `.mise/tasks/app/swap-detached`, `.mise/tasks/app/swap`, `scripts/mise/swap_detached.rb`
+> **Related**: `mem_1Cg5ZMy8oPgcvmM1oq8X5W`, `mem_1CgDrXvGhTr9k3kqbV4M2N`
+> **対象**: `.mise/tasks/app/swap-detached`, `.mise/tasks/app/swap`, `scripts/mise/swap_detached.rb`, `crates/vantage-point/src/commands/app.rs`, `crates/vantage-point/src/commands/app_launch.rs`
 
 lane の session は daemon の子なので、再起動を自分で最後まで実行できない。macOS の GUI domain に一回きりの launchd job を登録し、受付側は即 return する。
 
@@ -20,6 +20,8 @@ VP_SWAP_RESTART_DAEMON=1 mise run app:swap:detached
 launchd の環境を `env -i` で捨て、`TMPDIR` は保持して login shell から PATH を構成する。lane identity は環境として継承せず、JSON に wire の宛先だけを保持する。再起動フラグと `VP_PROFILE` は引き継ぎ、既存 swap に渡す。アプリの差し替え先と daemon の選び方は既存 swap に従う（profile を指定しても別の .app を作る機能ではない）。
 
 GUI 起動（通常・復旧の `vp app start` と `open` fallback）は `close_others: true` で worker.lock の fd を渡さず、build・差し替え・daemon 再起動の子コマンドには従来どおり継承させる。
+
+macOS の `vp app start` は、選んだ実行ファイルが `.app/Contents/MacOS/` 内なら symlink を解決し、`open -a <bundle> --stdout <log> --stderr <log>` で LaunchServices に起動を頼む。親の job の QoS clamp を GUI へ継承させないためで、job の ProcessType は変えない。stdout/stderr は `app.stdout.log` へ追記し、環境（`VP_DAEMON_LOG_FILE`、`VP_PROFILE`、`XDG_*` 等）を保持する。`open` の非 0 はエラーとし、直接 spawn へ戻さない。受付成功は GUI ready の証拠ではなく、既存の `app.kdl.log` の ready 判定を続ける。bundle 外の開発用 `VP_APP_BIN` と他 OS は従来の直接 spawn を維持する。
 
 実行側は既存 `mise run app:swap` を呼ぶ。build・署名の後、GUI 停止・差し替えの前に既存 CLI `vp repos list` で稼働 repo を列挙し、それぞれの cwd で `vp lane ls --detail` を読む。全 lane へ wire command（ack 対象） を送り、配信要求が全件成功してから30秒待つ。列挙や配信が失敗したら GUI 停止も差し替えも行わない。稼働 repo が0件なら配信先は空とする。CLI の表示形式が変わり稼働 repo を列挙できなくなった場合も失敗として止まる。
 
@@ -40,3 +42,4 @@ GUI 起動（通常・復旧の `vp app start` と `open` fallback）は `close_
 ## Status log
 
 - 2026-10-17: detached 受付と既存 swap 接続を追加。dummy と配信を確認。本番 swap は未実行。
+- 2026-10-21: `vp app start` の bundle 起動を LaunchServices に変更（`mem_1CgDrXvGhTr9k3kqbV4M2N`）。コマンド構築の単体テストと一時アプリのログ追記・環境継承 probe を用意。本番 swap 後の GUI QoS は lead が `~/.local/state/vp/tools/qos_probe.py app=<vp-app pid>` で測り、user_interactive が中心になることを確認する。

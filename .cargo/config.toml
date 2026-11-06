@@ -11,9 +11,11 @@
 # `export_to` を `webview/src/generated/...` と crate-root 相対で書ける。
 #
 # NOTE: ts-rs export を行うのは vp-app crate と、 vantage-point crate の
-# `conversation/event.rs`（ConversationEvent の TS 型、 棚卸し 項目 8 / 8-2）。 後者も
-# 出力先は webview なので、 vp-app 配下固定のままで正しい。 webview 以外へ出す crate が
+# `conversation/settings.rs` / `claude_settings.rs` / `vpcode_catalog.rs`（EngineSettings 等の VP 固有型）。
+# 後者も出力先は webview なので、 vp-app 配下固定のままで正しい。 webview 以外へ出す crate が
 # 現れたら per-crate な解決方法に見直すこと。
+# ConversationEvent の TS 型は共有 agent-chat（vendor/agent-chat、 design 86）が自分の package 内に
+# 生成し、 VP の generated/ConversationEvent.ts はその re-export。 この env の影響を受けない。
 #
 # `relative = true` は本 file の位置 (= workspace root) 相対の意味。
 [env]

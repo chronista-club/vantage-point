@@ -18,6 +18,10 @@ default = ["midi"]
 midi = ["dep:midir", "dep:midistage-profiles", "dep:midistage-client"]
 
 [dependencies]
+# VP / GFP 共有のチャット基盤（chronista-club/agent-chat を vendor/agent-chat に submodule で固定、design 86）。
+# 両 consumer が同じ revision を指すのが gate。clone は `git clone --recurse-submodules`。
+agent-chat-host = { path = "../../vendor/agent-chat/crates/host" }
+agent-chat-protocol = { path = "../../vendor/agent-chat/crates/protocol" }
 vp-local-urls = { path = "../vp-local-urls" }
 # Async runtime
 tokio = { workspace = true }
@@ -27,8 +31,8 @@ async-trait = { workspace = true }
 vp-paths = { path = "../vp-paths" }
 
 # MIDI ランタイム制御プロトコル + 純粋計算 (DeviceProfile / DeviceInput / palette、 I/O なし)
-midistage-profiles = { git = "https://github.com/chronista-club/midistage.git", rev = "9bb2536230d85495139ac95354e4a72340422c21", optional = true }
-midistage-client = { git = "https://github.com/chronista-club/midistage.git", rev = "9bb2536230d85495139ac95354e4a72340422c21", optional = true }
+midistage-profiles = { git = "https://github.com/chronista-club/midistage.git", rev = "7dd38b905234675f69f0369144f7b56daff33777", optional = true }
+midistage-client = { git = "https://github.com/chronista-club/midistage.git", rev = "7dd38b905234675f69f0369144f7b56daff33777", optional = true }
 
 # Web server
 axum = { workspace = true, features = ["ws"] }
@@ -37,7 +41,6 @@ tower-http = { workspace = true, features = ["fs", "cors"] }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
-jsonschema = { version = "0.56", default-features = false }
 
 # Logging
 tracing = { workspace = true }

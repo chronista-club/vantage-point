@@ -24,6 +24,9 @@ mod roto_setup_midistage;
 mod roto_setup_state;
 #[cfg(feature = "midi")]
 mod roto_setup_sync;
+/// ROTO の surface（daemon が持つ見え方の正本。needs-you → LED、design 84）
+#[cfg(feature = "midi")]
+mod roto_surface;
 // device_input / device_profile / roto_palette は midistage-profiles に切り出し済み。
 // 既存の crate::device_input::* 等の参照パスを保つため再エクスポートする。
 #[cfg(feature = "midi")]

@@ -277,13 +277,12 @@ def swap_macos(restart_daemon)
   # ── 5. 起動 (daemon は app が必要に応じて spawn する) ──
   #
   # ⚠️ 生の `open` ではなく **差し替えた bundle 自身の `vp app start`** を使う。
-  # `open` は LaunchServices 経由なので **GUI の stdout/stderr が捨てられる** —
-  # 起動直後に吐いたものがどこにも残らず、まさに「起動直後の不具合」を追うときに
-  # 手掛かりが無い状態になる。`vp app start` は:
+  # `vp app start` は bundle を LaunchServices 経由で起動し、job の QoS clamp を
+  # GUI へ継承させない。単なる `open` と違って次のログ設定も行う:
   #   - stdout/stderr を `app.stdout.log` に redirect
   #   - `VP_DAEMON_LOG_FILE` を渡す
-  #   - ghost project の除去 (`notify_world_sync`)
-  #   - PID の報告
+  #   - ghost repo の除去 (`notify_daemon_sync`)
+  #   - LaunchServices 受付の成否報告 (GUI ready は下で別途待つ)
   # をしてくれる。bundle 内の `vp` から呼べば隣の `vp-app` を見つける
   # (`find_vp_app_binary` の「自分の隣」候補、canonicalize 込み)。
   #

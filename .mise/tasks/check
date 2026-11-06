@@ -21,4 +21,4 @@
 #    効かない上に、壊してはいけない経路にリスクを持ち込まない (mako 裁定 2026-08-30)。
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
-VP.sh "mbx check"
+VP.build_run "mbx", "check"

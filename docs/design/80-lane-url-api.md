@@ -9,7 +9,7 @@
 URL は Lane に残るリンク集とする。停止・Agent 終了で消さず、明示削除まで保持する。
 新しい Lane に自動コピーしない。登録と接続状態は区別する。
 CLI/MCP/UI が同じ登録を扱い、外部で登録した変更も R sidebar の Lane 節へ反映する。
-登録 URL の probe は手動、出力から検出した URL は表示中に自動確認する（下記の追加裁定）。
+登録 URL と出力から検出した URL は、Lane 節の表示中に順次自動確認する（下記の追加裁定）。
 
 ## Lane リンクへの追加裁定
 
@@ -25,9 +25,21 @@ loopback URL の自動検出**を加える。ポート範囲の走査は行わ�
 UI は各 lane 行から外し、[design 82](82-r-sidebar-prs.md) の R sidebar 上起点「Lane」節に
 置く。表示中 lane の 1 件分だけ、次の順に並べる。
 
-1. console / chat 出力で見つかった URL。応答を点で示し、「登録」で登録フォームへ渡す
-2. この lane の PR。PR 一覧の同じ応答と `orderPrs` の先頭固定結果を使う
-3. 手で登録した URL。追加・編集・削除と保存の競合検出を維持する
+1. 編集中の登録フォーム。「リンク」見出しの直下に置く
+2. 手で登録した URL。追加・編集・削除と保存の競合検出を維持する
+3. この lane の PR。PR 一覧の同じ応答と `orderPrs` の先頭固定結果を使う
+4. console / chat 出力で見つかった URL。応答を点で示し、「登録」で登録フォームへ渡す
+
+登録・編集フォームは名前と URL の 2 欄とし、用途欄は置かない。
+GUI での保存時は label に name を入れる。編集時は名前を固定し、URL だけ変更できる。
+登録時は名前欄に focus し、フォームへ `scrollIntoView({block:'nearest'})` を呼ぶ。
+検出候補は先頭 5 件を表示し、「さらに N 件」で残りを展開する。lane 切替で展開を閉じる。
+Lane 節には高さ上限があるため、フォームを検出一覧の後ろに戻さない。
+
+登録済みの行は、応答の点・クリックで開く label・省略表示する URL を横に並べる。
+旧データの label が name と異なる場合も label をタイトルに使い、名前の別行は出さない。
+状態文言は点の title / aria-label に置く。
+編集・削除は hover / focus-within で右端に表示し、Tab でも操作できる。
 
 検出だけでは保存しない。URL の点は HTTP 応答の有無であり、アプリの正常動作を保証しない。
 
@@ -40,7 +52,7 @@ UI は各 lane 行から外し、[design 82](82-r-sidebar-prs.md) の R sidebar 
 - MCP `lane_url`: `action: set | list | rm | probe` と同じ引数。JSON で結果を返す。
 
 name は Lane 内の安定キー。小文字英数字で始まる英数字・ハイフン・アンダースコア、64文字以内。
-同名 set は URL を更新する。label 省略時は既存用途を維持し、新規なら name を用途にする。
+CLI / MCP の同名 set は URL を更新する。label 省略時は既存タイトルを維持し、新規なら name をタイトルにする。
 rm は未登録でも成功して空振りを許す。probe は登録済みの名前のみ対象。
 既存 UI の UUID はそのまま name として扱い、データを書き換える移行は行わない。
 
@@ -75,7 +87,12 @@ lane の変更・節を閉じた後に遅れて届く結果は generation で捨
   PTY の UTF-8 / URL は chunk 間をつなぎ、改行しない末尾は 250 ms の idle 後に確定する
   - 受信した本文は区切りまで全体を走査し、16 KiB 制限は次回へ持ち越す tail だけに掛ける
   - 既存の `term:remove_lane` 通知で検出履歴と PTY の確定待ちタイマーを消す。同名 Lane の再作成へ持ち越さない
-- 検出 URL は Lane 節の表示中に順番に probe する。「再確認」で再取得できる。
+- 登録済み → 検出 URL の順で、一つの列から probe する。登録済みは既存 `probe` action、
+  検出 URL は `probe_url` を使う。登録済みの「確認」ボタンは置かない。
+  表示開始・lane 切替・登録変更で登録済みを再確認し、内容が同じ定期 load では再確認しない。
+  lane の generation と登録一覧の snapshot を照合し、更新前の結果を捨てる。
+  切替時も実行中の要求が返るまで次を待ち、非表示・unmount 後は後続を送らない。
+  検出 URL の「再確認」は検出結果を取り直す。
   UI 専用 `probe_url` は保存を経由せず、既存 `local_urls::probe` と同じ検証・proxy / redirect 拒否を使う。
   CLI / MCP の `probe <name>` は登録名を取る従来の契約のまま
 - PR 取得は既存 `createPrPoller` 1 本。Lane 節または PR 節が表示中なら動き、両方開いても重複しない
@@ -109,3 +126,9 @@ CLIのcwd/明示対象、MCP router/呼出し、UI外部変更反映・draft競�
 
 - 2026-10-16: `wip/lane-links` で UI を R sidebar の Lane 節へ移し、出力 URL の自動検出と PR 共用を追加。
   CLI/MCP と永続保存形式は維持。native app の差し替え・再起動は lead が担当し、実機確認待ち。
+- 2026-10-19: `mem_1CgB31Xk419PtPkcK6yzLp`。検出候補が多いと登録フォームが下へ押し出されるため、
+  フォーム・登録済みを先頭へ移し、候補を 5 件で折りたたむ。実機の表示とスクロールは lead 確認待ち。
+- 2026-10-19: `mem_1CgBHtLEoHBUibQLBU3vbs`。登録済みリンクを 1〜2 行にまとめ、
+  登録・検出共通の順次自動確認へ変更。実機の表示・hover・Tab 操作は lead 確認待ち。
+- 2026-10-19: `mem_1CgBLigkfajejEpmcRn3v2`。GUI の用途欄と名前の別行を撤去し、保存時は label = name。
+  既存 label は表示時に維持。保存形式と CLI / MCP 契約は変更せず、実機の表示・操作は lead 確認待ち。

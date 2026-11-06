@@ -12,7 +12,8 @@ beforeAll(async () => {
     import { setPinColor } from './src/sidebar/midi-pin-store';
     window.setPinColor = setPinColor;
     import { render } from 'solid-js/web';
-    import { MidiPins } from './src/sidebar/MidiPins';
+    import { MidiPins, MIDI_PINS_CSS } from './src/sidebar/MidiPins';
+    window.MIDI_PINS_CSS = MIDI_PINS_CSS;
     window.renderPins = () => { const el = document.createElement('div'); document.body.append(el); render(MidiPins, el); return el; };
     import { applySidebarState, emptyState, sidebar } from './src/sidebar/store';
     import { emitAgentActivity } from './session-activity-bridge';
@@ -28,7 +29,7 @@ beforeAll(async () => {
       lanes_by_repo:{'/vp':[lane('root'),lane('sub')]}, active_lane_address:'vp/root'});
     window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:true}));
   `, resolveDir: fileURLToPath(new URL('.', import.meta.url)) }, bundle:true, write:false,
-    plugins:[solidPlugin()], format:'iife', platform:'browser', define:{'process.env.NODE_ENV':'"production"'} });
+    preserveSymlinks:true,plugins:[solidPlugin()], format:'iife', platform:'browser', define:{'process.env.NODE_ENV':'"production"'} });
   bundle = result.outputFiles[0].text;
 });
 afterEach(async () => { vi.useRealTimers(); for (const w of windows.splice(0)) await w.happyDOM.abort(); });
@@ -108,7 +109,16 @@ it('the strip registers the selected lane on an empty pin and unregisters with t
   (pinButton(3).querySelector('button') as HTMLButtonElement).click(); // active = vp/root
   expect(JSON.parse(w.sent.at(-1)!.settings!).slots[2]).toEqual({path:'/vp',address:'vp/root'});
   expect(pinButton(3).querySelector('.vp-midi-pin-label')!.textContent).toBe('vp');
-  (pinButton(3).querySelector('.vp-midi-unpin') as HTMLButtonElement).click();
+  // 登録済みの枠の空いた所を押す = ⌘3 と同じ（Center がその lane に切り替わる）。✕ は別の button。
+  w.sent.length = 0;
+  (pinButton(3).querySelector('button') as HTMLButtonElement).click();
+  expect(w.sent).toEqual([{t:'process:toggle',path:'/vp',expanded:true},{t:'lane:select',path:'/vp',address:'vp/root'}]);
+  // ✕ は chip の装飾（幅 100% / 下線 / padding）を継がない — 右上の小さな角だけ（mako 2026-11-06「バツのエリアが右端で」）。
+  // CSS の selector を 1 つずつ ✕ に当て、✕ 自身の rule 以外が当たっていたら漏れ。
+  const unpin = pinButton(3).querySelector('.vp-midi-unpin') as HTMLButtonElement;
+  const selectors = (w.eval('window.MIDI_PINS_CSS') as string).split('}').map(r => r.split('{')[0]).flatMap(s => s.split(',')).map(s => s.trim()).filter(Boolean);
+  expect(selectors.filter(s => !s.includes('vp-midi-unpin') && unpin.matches(s))).toEqual([]);
+  unpin.click();
   expect(JSON.parse(w.sent.at(-1)!.settings!).slots[2]).toBeNull();
   expect(pinButton(3).querySelector('.vp-midi-unpin')).toBeNull();
 });
@@ -152,14 +162,14 @@ it('initializes new windows when native settings arrive before the sidebar bundl
   expect(w.eval('window.__vpMidiPads.enabled')).toBe(true);
 });
 
-it('the pin strip shows 8 pins in two rows like the pads: #5–#8 above #1–#4', () => {
+it('the pin strip shows 8 pins in two rows: #1–#4 above #5–#8 (mako 2026-11-06「上から 1〜4、二段目 5〜8」)', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}});
   windows.push(w);
   w.eval('document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
   w.eval(bundle);
   w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:null}));
   const labels = w.eval(`Array.from(window.renderPins().querySelectorAll('.vp-midi-pin button > span:first-child')).map(s => s.textContent).join(',')`);
-  expect(labels).toBe('#5,#6,#7,#8,#1,#2,#3,#4');
+  expect(labels).toBe('#1,#2,#3,#4,#5,#6,#7,#8');
 });
 
 
@@ -182,6 +192,76 @@ it('ROTO buttons 1–8 select pins once per press and never start voice', () => 
   w.eval("window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:false}))");
   send('button',0,true);send('button',7,true);
   expect(w.sent).toEqual([]);expect(ptt).toEqual([]);
+});
+
+it('nanoKONTROL S1–S8 select the shared pins once per press and reset on disconnect or target loss', () => {
+  const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: unknown[]};
+  windows.push(w); w.eval(bundle);
+  w.eval(`window.applyTestState({processes:[{path:'/vp',name:'vp',state:'running',expanded:false}],
+    lanes_by_repo:{'/vp':Array.from({length:8}, (_,i) => ({address:{repo:'vp',name:'sub'+i,key:'vp/sub'+i}}))}})`);
+  w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:{
+    slots:Array.from({length:8}, (_,i) => ({path:'/vp',address:'vp/sub'+i})), colors:Array(8).fill('#123456'),
+  }}));
+  const port = 'Midistage/vp/nanokontrol/input';
+  const send = (index:number, pressed:boolean, type='button', port_name=port) => w.dispatchEvent(new w.CustomEvent('vp:midi-navigation', {
+    cancelable:true, detail:{port_name,event:{type,index,pressed,value:0.5}},
+  }));
+  const selection = [{t:'process:toggle',path:'/vp',expanded:true},{t:'lane:select',path:'/vp',address:'vp/sub0'}];
+  for (let index=0; index<8; index++) {
+    w.sent.length=0;
+    expect(send(index,true)).toBe(false);
+    send(index,true); send(index,false); send(index,false);
+    expect(w.sent).toEqual([selection[0],{t:'lane:select',path:'/vp',address:'vp/sub'+index}]);
+  }
+  w.sent.length=0;
+  for (const index of [8,16]) expect(send(index,true)).toBe(true); // M/R
+  for (const type of ['knob','fader']) expect(send(0,true,type)).toBe(true);
+  expect(send(0,true,'button','Other controller')).toBe(true);
+  expect(w.sent).toEqual([]);
+  send(0,true);
+  w.dispatchEvent(new w.CustomEvent('vp:midi-unavailable',{detail:{port_name:port}}));
+  send(0,true);
+  expect(w.sent).toEqual([...selection,...selection]);
+  w.sent.length=0;
+  w.eval("window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:false}))");
+  send(0,true);
+  expect(w.sent).toEqual([]);
+  w.eval("window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:true}))");
+  send(0,true,'button','nanoKONTROL2 SLIDER/KNOB');
+  expect(w.sent).toEqual(selection);
+  w.sent.length=0;
+  w.dispatchEvent(new w.CustomEvent('vp:midi-settings',{detail:{slots:Array(8).fill(null),colors:Array(8).fill('#123456')}}));
+  expect(send(7,true)).toBe(false); // Empty pin still consumes S; never falls through to gallery.
+  expect(w.sent).toEqual([]);
+});
+
+it('nanoKONTROL TRACK steps through CURRENTs across repos, stops at edges, and ignores repeats', () => {
+  const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: unknown[]};
+  windows.push(w); w.eval(bundle);
+  const state = (active:string|null, empty=false) => w.eval(`window.applyTestState({
+    processes:${empty ? '[]' : "[{path:'/a',name:'a',state:'running',expanded:true},{path:'/b',name:'b',state:'running',expanded:false}]"},
+    currents_order:['/b','/a'],
+    lanes_by_repo:{'/a':[{address:{repo:'a',name:'root',key:'a/root'}}],
+      '/b':[{address:{repo:'b',name:'root',key:'b/root'}},{address:{repo:'b',name:'sub',key:'b/sub'}}]},
+    active_lane_address:${JSON.stringify(active)}
+  })`);
+  const send = (index:number, pressed:boolean) => w.dispatchEvent(new w.CustomEvent('vp:midi-navigation', {
+    cancelable:true,detail:{port_name:'nanoKONTROL2 SLIDER/KNOB',event:{type:'button',index,pressed}},
+  }));
+  const press = (index:number) => { w.sent.length=0; expect(send(index,true)).toBe(false); send(index,true); send(index,false); };
+  state('b/root'); press(25);
+  expect(w.sent).toEqual([{t:'process:toggle',path:'/b',expanded:true},{t:'lane:select',path:'/b',address:'b/sub'}]);
+  state('b/sub'); press(25);
+  expect(w.sent).toEqual([{t:'lane:select',path:'/a',address:'a/root'}]);
+  state('a/root'); press(24);
+  expect(w.sent).toEqual([{t:'process:toggle',path:'/b',expanded:true},{t:'lane:select',path:'/b',address:'b/sub'}]);
+  state('a/root'); press(25); expect(w.sent).toEqual([]);
+  state('b/root'); press(24); expect(w.sent).toEqual([]);
+  state(null); press(25);
+  expect(w.sent).toEqual([{t:'process:toggle',path:'/b',expanded:true},{t:'lane:select',path:'/b',address:'b/root'}]);
+  state(null); press(24);
+  expect(w.sent).toEqual([{t:'lane:select',path:'/a',address:'a/root'}]);
+  state(null,true); press(25); expect(w.sent).toEqual([]);
 });
 
 it('holds through real IPC, shows rejection without a lane, and cancels on target loss', () => {

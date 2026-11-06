@@ -16,6 +16,8 @@
 # 設計方針 (CLAUDE.md): data / calculations / actions を分離。
 #   - calculations = 純粋関数 (path 計算のみ、 副作用なし)
 #   - actions      = sh / exec / die / log (副作用あり)
+require "rbconfig"
+
 module VP
   # ── コンソール annotation の semantic icon registry ──────────────────────────
   #
@@ -153,6 +155,31 @@ module VP
 
   # semantic icon glyph を返す (task 側: `VP.log "#{VP.icon(:build)} Building…"`)。
   def icon(name) = Icon[name]
+
+  # build の優先度を選ぶ。macOS は utility、他の Unix / taskpolicy 不在時は nice。
+  # 2026-10-20 の各条件 1 回の測定差は誤差範囲で、load 30 は未再現。
+  # 「速くなる」とは主張しない。条件・留保は docs/design/85-build-priority.md。
+  def build_prefix(host_os: RbConfig::CONFIG.fetch("host_os"), priority: ENV["VP_BUILD_PRIORITY"],
+                   path: ENV.fetch("PATH", ""))
+    return [] if priority == "normal" || host_os.match?(/mswin|mingw|cygwin/i)
+
+    find = lambda do |name|
+      path.split(File::PATH_SEPARATOR).map { |dir| File.expand_path(File.join(dir, name)) }
+          .find { |file| File.file?(file) && File.executable?(file) }
+    end
+    if host_os.include?("darwin") && (policy = find.call("taskpolicy"))
+      [policy, "-c", "utility"]
+    elsif (nice = find.call("nice"))
+      [nice, "-n", "10"]
+    else
+      [] # tool の無い環境でも build 自体は継続できる。
+    end
+  end
+
+  # argv のまま実行し、chdir 等の spawn option と失敗時の終了コードを run に委ねる。
+  def build_run(*argv, **opts)
+    run(*build_prefix, *argv, **opts)
+  end
 
   # mac の daemon:* / app:* task は dev root の binary を **dev profile 専用**で走らせる
   # (dev binary を brew namespace :32000 = LaunchAgent の daemon が居る側で起こす経路を残さない)。

@@ -1,6 +1,6 @@
 //! 非同期質問は発話であり server request ではない（design 69）。
 //! 履歴の質問と live の回答権限を分離し、turn 終了だけでは未回答を消さない。
-use super::event::{CodexInteraction, CodexQuestion, ConversationEvent, QuestionOption};
+use super::event::{CodexInteraction, ConversationEvent};
 use super::host::PermissionDecision;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -8,55 +8,7 @@ use std::collections::BTreeMap;
 const MAX_BYTES: usize = 64 * 1024;
 const MAX_PENDING: usize = 32;
 
-pub(super) fn item_key(params: &Value) -> String {
-    format!(
-        "{}/{}",
-        params["turnId"].as_str().unwrap_or_default(),
-        params["itemId"]
-            .as_str()
-            .or_else(|| params["item"]["id"].as_str())
-            .unwrap_or_default()
-    )
-}
-
-pub(super) fn questions(item: &Value) -> Option<Vec<CodexQuestion>> {
-    if item["type"] != "agentMessage" || item["delivery"] != "async" {
-        return None;
-    }
-    let rows = item["questions"].as_array()?;
-    if rows.is_empty() || rows.len() > 16 || item.to_string().len() > MAX_BYTES {
-        return None;
-    }
-    rows.iter()
-        .enumerate()
-        .map(|(index, row)| {
-            let title = row["title"].as_str()?.trim();
-            if title.is_empty() {
-                return None;
-            }
-            let options = match &row["options"] {
-                Value::Null => Vec::new(),
-                Value::Array(options) => options
-                    .iter()
-                    .map(|option| {
-                        Some(QuestionOption {
-                            label: option.as_str()?.into(),
-                            description: String::new(),
-                        })
-                    })
-                    .collect::<Option<Vec<_>>>()?,
-                _ => return None,
-            };
-            Some(CodexQuestion {
-                id: index.to_string(),
-                header: String::new(),
-                question: title.into(),
-                options,
-                is_secret: false,
-            })
-        })
-        .collect()
-}
+pub(super) use agent_chat_host::codex_rpc_translate::{async_questions as questions, item_key};
 
 #[derive(Clone)]
 struct Pending {

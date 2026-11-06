@@ -30,7 +30,7 @@ it('shows the Creo tree in a keyboard popover and refreshes once without losing 
     window.failed=()=>applySidebarState({...base,activity:{...base.activity,actions_error:"同じ失敗",actions_sidebar_error:"設定も失敗"}})
     window.rows=actions
     render(()=>BucketList(),document.body)
-  `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],plugins:[solidPlugin()]})
+  `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],preserveSymlinks:true,plugins:[solidPlugin()]})
   const w=new Window()
   try {
     w.eval(bundle.outputFiles[0].text)

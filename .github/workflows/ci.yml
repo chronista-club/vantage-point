@@ -17,7 +17,13 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
+      # vendor/agent-chat（submodule、共有チャット基盤。public repo）を含めて取得する。
+      # persist-credentials: false — 既定の token を checkout の間だけ使い、.git/config に残さない
+      # （残すと後続の依存の build.rs や install script から読めてしまう）。
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.96 # = rust-toolchain.toml channel (基本 stable 追随、 minor pin・patch float)
@@ -36,7 +42,13 @@ jobs:
     steps:
       # font (.ttf) は通常 git blob 管理に移行済 (LFS budget 超過のため)。
       # checkout はデフォルトで font 実体がそのまま取れる (lfs フェッチ不要)。
+      # vendor/agent-chat（submodule、共有チャット基盤。public repo）を含めて取得する。
+      # persist-credentials: false — 既定の token を checkout の間だけ使い、.git/config に残さない
+      # （残すと後続の依存の build.rs や install script から読めてしまう）。
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
 
       # VP-180 (2026-05-15) で導入: club-unison v0.7.0+ の build script が protoc を要求
       # (= buffa::Message / ProtoCodec を生成するため、 v0.9 の wire format pivot 以降は
@@ -87,6 +99,18 @@ jobs:
       - name: Test Codex Chat resume retry
         run: PATH="$PWD/crates/vantage-point/tests/fixtures/codex-chat-retry:$PATH" cargo test -p vantage-point --lib codex_chat_resume_retry_roundtrip -- --ignored
 
+      # vendor/agent-chat（submodule）は root Cargo.toml の `exclude = ["vendor"]` で workspace の外
+      # なので、上の `cargo test --workspace` では回らない。共有 crate の test（Claude translator /
+      # Codex 台帳 / protocol）と、生成物（ts-rs 型 / serde fixture）の drift をここで止める
+      # （独立 review 指摘 A、2026-10-23）。target は workspace の target/ 配下に置き rust-cache に乗せる。
+      - name: Test shared agent-chat crates
+        run: |
+          cargo test --manifest-path vendor/agent-chat/Cargo.toml --all-features --locked --target-dir target/agent-chat
+          cargo run --manifest-path vendor/agent-chat/Cargo.toml -p agent-chat-protocol --features typescript --locked --target-dir target/agent-chat --example export-types
+
+      - name: Check shared generated files are committed
+        run: git -C vendor/agent-chat diff --exit-code
+
       # Tests regenerate KDL and ts-rs bindings. Any drift invalidates the bundle
       # built above; fail instead of accepting a build made from stale contracts.
       - name: Check generated files are committed
@@ -113,7 +137,13 @@ jobs:
       github.ref == 'refs/heads/main' ||
       github.ref == 'refs/heads/nightly'
     steps:
+      # vendor/agent-chat（submodule、共有チャット基盤。public repo）を含めて取得する。
+      # persist-credentials: false — 既定の token を checkout の間だけ使い、.git/config に残さない
+      # （残すと後続の依存の build.rs や install script から読めてしまう）。
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
 
       # VP-180 で導入: club-unison v0.7.0+ の build script が protoc を要求 (buffa-build 経由)
       - name: Install protoc (for club-unison build script)
@@ -149,7 +179,13 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
+      # vendor/agent-chat（submodule、共有チャット基盤。public repo）を含めて取得する。
+      # persist-credentials: false — 既定の token を checkout の間だけ使い、.git/config に残さない
+      # （残すと後続の依存の build.rs や install script から読めてしまう）。
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked

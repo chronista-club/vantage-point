@@ -19,7 +19,7 @@ it('keeps unmatched input outside the timeline without resending, and restores i
     window.submit = text => sendSubmission('unconfirmed/main', 1, text, [])
     sendSubmission('unconfirmed/main', 1, '進めていこう', [])
   `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false,
-  format: 'iife', conditions: ['browser'], plugins: [solidPlugin()] })
+  format: 'iife', conditions: ['browser'], preserveSymlinks: true, plugins: [solidPlugin()] })
   const window = new Window()
   try {
     window.eval(result.outputFiles[0].text)

@@ -427,6 +427,7 @@ export function LaneRow(props: {
 	return (
 		<div
 			class="vp-lane-row creo-sidenav-link"
+			data-address={addr()}
 			aria-current={isActive() ? "page" : undefined}
 			classList={{
 				active: isActive(),

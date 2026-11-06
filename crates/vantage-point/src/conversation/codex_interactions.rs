@@ -1,82 +1,30 @@
-//! Codex の未回答 server request（design 67）。native ID と表示用 ID は別の名前空間。
-use std::collections::{BTreeMap, HashMap, HashSet};
+//! Codex の未回答 server request（design 67）。台帳（受理・許可可否・応答の形）は共有
+//! `agent-chat-host`（design 86）。ここは VP の表示語彙への射影と回答の読み替えだけを持つ。
+use agent_chat_host::codex_interactions::{
+    self as shared, Decision, Interaction, InteractionKind, Notice,
+};
+use serde_json::{Map, Value, json};
 
-use serde_json::{Value, json};
-
-use super::event::{CodexInteraction, CodexQuestion, ConversationEvent, QuestionOption};
+use super::event::{CodexInteraction, ConversationEvent};
 use super::host::PermissionDecision;
 
-const MAX_DETAIL_BYTES: usize = 64 * 1024;
-const MAX_PENDING: usize = 8;
-
-struct Pending {
-    elicitation: Option<super::codex_elicitation::Elicitation>,
-    permissions: Option<super::codex_permissions::Permissions>,
-    native_id: Value,
-    turn: String,
-    view: CodexInteraction,
-    responding: bool,
-}
-
-pub(super) struct Interactions {
-    generation: uuid::Uuid,
-    next_id: u64,
-    pending: BTreeMap<String, Pending>,
-    file_changes: HashMap<String, Value>,
-}
-
-impl Default for Interactions {
-    fn default() -> Self {
-        Self {
-            generation: uuid::Uuid::new_v4(),
-            next_id: 0,
-            pending: BTreeMap::new(),
-            file_changes: HashMap::new(),
-        }
-    }
-}
+#[derive(Default)]
+pub(super) struct Interactions(shared::Interactions);
 
 impl Interactions {
     pub fn snapshot(&self) -> ConversationEvent {
         ConversationEvent::CodexInteractions {
-            requests: self.pending.values().map(|p| p.view.clone()).collect(),
+            requests: self.0.snapshot().iter().map(project).collect(),
         }
     }
 
     pub fn clear(&mut self) {
-        self.pending.clear();
-        self.file_changes.clear();
+        self.0.clear();
     }
 
-    /// fileChange の詳細は approval request より前の item/started が供給する。
+    /// 未回答が減ったら true（snapshot の再送が要る）。
     pub fn observe(&mut self, method: &str, params: &Value) -> bool {
-        if method == "item/started"
-            && params["item"]["type"] == "fileChange"
-            && let (Some(turn), Some(id)) =
-                (params["turnId"].as_str(), params["item"]["id"].as_str())
-        {
-            let changes = &params["item"]["changes"];
-            if changes.is_array()
-                && changes.to_string().len() <= MAX_DETAIL_BYTES
-                && self.file_changes.len() < MAX_PENDING
-            {
-                self.file_changes
-                    .insert(format!("{turn}/{id}"), changes.clone());
-            }
-        }
-        let before = self.pending.len();
-        if method == "serverRequest/resolved" {
-            self.pending
-                .retain(|_, p| p.native_id != params["requestId"]);
-        } else if method == "turn/completed"
-            && let Some(turn) = params["turn"]["id"].as_str()
-        {
-            self.pending
-                .retain(|_, p| p.view.kind == "mcp_elicitation" || p.turn != turn);
-            self.file_changes
-                .retain(|key, _| !key.starts_with(&format!("{turn}/")));
-        }
-        before != self.pending.len()
+        self.0.observe(method, params)
     }
 
     pub fn receive(
@@ -87,210 +35,7 @@ impl Interactions {
         thread: Option<&str>,
         turn: Option<&str>,
     ) -> Result<(), String> {
-        if !(id.is_string() || id.as_i64().is_some()) {
-            return Err("不正な request ID".into());
-        }
-        let is_mcp = method == "mcpServer/elicitation/request";
-        let valid_turn = if is_mcp {
-            params
-                .get("turnId")
-                .is_some_and(|id| id.is_null() || id.as_str().is_some_and(|s| !s.is_empty()))
-        } else {
-            turn.is_some() && params["turnId"].as_str() == turn
-        };
-        if thread.is_none() || params["threadId"].as_str() != thread || !valid_turn {
-            return Err("質問・承認の対象会話または turn が一致しません".into());
-        }
-        if self.pending.values().any(|p| p.native_id == *id) {
-            return Err("重複した未回答 request ID".into());
-        }
-        if self.pending.len() >= MAX_PENDING || params.to_string().len() > MAX_DETAIL_BYTES {
-            return Err("質問・承認が表示可能な上限を超えています".into());
-        }
-        let (kind, title) = match method {
-            "item/tool/requestUserInput" => ("question", "Codex からの質問"),
-            "mcpServer/elicitation/request" => ("mcp_elicitation", "MCP サーバーからの手続き"),
-            "item/permissions/requestApproval" => ("permissions", "追加権限の承認"),
-            "item/commandExecution/requestApproval"
-                if params["networkApprovalContext"].is_object() =>
-            {
-                ("command", "ネットワーク接続の承認")
-            }
-            "item/commandExecution/requestApproval" => ("command", "コマンド実行の承認"),
-            "item/fileChange/requestApproval" => ("file_change", "ファイル変更の承認"),
-            _ => return Err(format!("VP はこの要求に未対応です: {method}")),
-        };
-        let mut questions = Vec::new();
-        let mut detail = serde_json::Map::new();
-        let mut can_accept = true;
-        let mut cancel_on_deny = false;
-        let elicitation = if is_mcp {
-            match super::codex_elicitation::Elicitation::parse(params) {
-                Ok(request) => Some(request),
-                Err(message) => {
-                    can_accept = false;
-                    detail.insert("回答できない理由".into(), json!(message));
-                    detail.insert("MCP サーバー".into(), params["serverName"].clone());
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        let permissions = if kind == "permissions" {
-            match super::codex_permissions::Permissions::parse(&params["permissions"]) {
-                Ok(permissions) => Some(permissions),
-                Err(message) => {
-                    can_accept = false;
-                    detail.insert("許可できない理由".into(), json!(message));
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        if is_mcp {
-            // The specialized view carries the server identity and validated form fields.
-        } else if kind == "permissions" {
-            if let Some(permissions) = &permissions {
-                questions = permissions.questions();
-            }
-            for (key, label) in [
-                ("environmentId", "実行環境"),
-                ("cwd", "作業ディレクトリ"),
-                ("reason", "理由"),
-            ] {
-                if let Some(value) = params.get(key).filter(|v| !v.is_null()) {
-                    detail.insert(label.into(), value.clone());
-                }
-            }
-        } else if kind == "question" {
-            let rows = params["questions"]
-                .as_array()
-                .filter(|rows| !rows.is_empty() && rows.len() <= 16)
-                .ok_or("質問がありません")?;
-            let mut ids = HashSet::new();
-            for q in rows {
-                let id = q["id"]
-                    .as_str()
-                    .filter(|id| !id.is_empty())
-                    .ok_or("質問 ID がありません")?;
-                if !ids.insert(id) {
-                    return Err("質問 ID が重複しています".into());
-                }
-                let options = match &q["options"] {
-                    Value::Null => Vec::new(),
-                    Value::Array(options) => options
-                        .iter()
-                        .map(|o| {
-                            Ok(QuestionOption {
-                                label: o["label"]
-                                    .as_str()
-                                    .ok_or("選択肢 label がありません")?
-                                    .into(),
-                                description: o["description"].as_str().unwrap_or_default().into(),
-                            })
-                        })
-                        .collect::<Result<Vec<_>, String>>()?,
-                    _ => return Err("不正な質問選択肢".into()),
-                };
-                questions.push(CodexQuestion {
-                    id: id.into(),
-                    header: q["header"].as_str().unwrap_or_default().into(),
-                    question: q["question"].as_str().ok_or("質問文がありません")?.into(),
-                    options,
-                    is_secret: q["isSecret"].as_bool().unwrap_or(false),
-                });
-            }
-        } else {
-            for key in [
-                "command",
-                "cwd",
-                "reason",
-                "networkApprovalContext",
-                "additionalPermissions",
-                "grantRoot",
-            ] {
-                if let Some(value) = params.get(key).filter(|v| !v.is_null()) {
-                    detail.insert(key.into(), value.clone());
-                }
-            }
-            if kind == "command" {
-                if let Some(choices) = params.get("availableDecisions").filter(|v| !v.is_null()) {
-                    let choices = choices.as_array().ok_or("不正な承認選択肢")?;
-                    can_accept = choices.contains(&json!("accept"));
-                    if !choices.contains(&json!("decline")) {
-                        if !choices.contains(&json!("cancel")) {
-                            return Err("拒否または中断をサポートしない承認要求".into());
-                        }
-                        cancel_on_deny = true;
-                    }
-                }
-                let has_target = params["command"]
-                    .as_str()
-                    .is_some_and(|s| !s.trim().is_empty())
-                    || params["networkApprovalContext"]["host"]
-                        .as_str()
-                        .is_some_and(|s| !s.trim().is_empty())
-                    || params["additionalPermissions"]
-                        .as_object()
-                        .is_some_and(|p| !p.is_empty());
-                if !has_target {
-                    can_accept = false;
-                    detail.insert(
-                        "notice".into(),
-                        json!("承認対象を取得できないため許可できません。"),
-                    );
-                }
-            } else {
-                let key = format!(
-                    "{}/{}",
-                    turn.unwrap_or_default(),
-                    params["itemId"].as_str().unwrap_or_default()
-                );
-                if let Some(changes) = self.file_changes.remove(&key) {
-                    detail.insert("changes".into(), changes);
-                } else {
-                    can_accept = false;
-                    detail.insert(
-                        "notice".into(),
-                        json!(
-                            "変更内容を取得できないため許可できません。拒否して再試行してください。"
-                        ),
-                    );
-                }
-            }
-        }
-        self.next_id += 1;
-        let request_id = format!("codex:{}:{}", self.generation, self.next_id);
-        let view = CodexInteraction {
-            elicitation: elicitation.as_ref().map(|e| e.view.clone()),
-            cancel_on_deny: cancel_on_deny.then_some(true),
-            item_id: None,
-            request_id: request_id.clone(),
-            kind: kind.into(),
-            title: title.into(),
-            details: if detail.is_empty() {
-                String::new()
-            } else {
-                serde_json::to_string_pretty(&detail).unwrap_or_default()
-            },
-            questions,
-            blocking: kind != "question" || params["isBlocking"].as_bool().unwrap_or(true),
-            can_accept,
-        };
-        self.pending.insert(
-            request_id,
-            Pending {
-                elicitation,
-                permissions,
-                native_id: id.clone(),
-                turn: turn.unwrap_or_default().into(),
-                view,
-                responding: false,
-            },
-        );
-        Ok(())
+        self.0.receive(id, method, params, thread, turn).map(|_| ())
     }
 
     /// 検証を終えるまでは要求を消費しない。回答本文は保存しない。
@@ -299,598 +44,155 @@ impl Interactions {
         request_id: &str,
         decision: &PermissionDecision,
     ) -> Result<String, String> {
-        let pending = self
-            .pending
-            .get_mut(request_id)
-            .ok_or("この質問・承認はすでに終了しています")?;
-        if pending.responding {
-            return Err("回答を送信中です".into());
-        }
-        let result = match decision {
-            PermissionDecision::Deny { .. } if pending.view.kind == "mcp_elicitation" => {
-                super::codex_elicitation::response("decline", Value::Null)
+        let kind = self
+            .0
+            .get(request_id)
+            .ok_or("この質問・承認はすでに終了しています")?
+            .kind;
+        let decision = match decision {
+            PermissionDecision::Deny { .. } => Decision::Deny,
+            // 権限要求に選択なしの許可は受けない（nightly の VP `codex_permissions::response` と同じ Err）。
+            // 共有台帳の `Allow{answers:None}` は「要求した権限を turn 一括で許可」= GFP が UI で明示する
+            // 経路で、VP の UI は必ず選択を送る。設定省略を full access の選択と読み替えない（design 86）。
+            PermissionDecision::Allow { answers: None } if kind == InteractionKind::Permissions => {
+                return Err("権限の選択がありません".into());
             }
-            PermissionDecision::Allow { answers } if pending.view.kind == "mcp_elicitation" => {
-                if answers.as_ref() == Some(&json!({"action":"cancel"})) {
-                    super::codex_elicitation::response("cancel", Value::Null)
-                } else {
-                    pending
-                        .elicitation
-                        .as_ref()
-                        .ok_or("この MCP 手続きには回答できません")?
-                        .accept(answers.as_ref())?
-                }
+            // MCP 手続きの UI は中断を `{"action":"cancel"}` の回答として送る。
+            PermissionDecision::Allow { answers }
+                if kind.is_mcp() && answers.as_ref() == Some(&json!({"action":"cancel"})) =>
+            {
+                Decision::Cancel
             }
-            PermissionDecision::Deny { .. } if pending.view.kind == "permissions" => {
-                json!({"permissions":{},"scope":"turn"})
-            }
-            PermissionDecision::Allow { answers } if pending.permissions.is_some() => pending
-                .permissions
-                .as_ref()
-                .unwrap()
-                .response(answers.as_ref())?,
-            PermissionDecision::Deny { .. } if pending.view.kind == "question" => {
-                json!({"answers":{}})
-            }
-            PermissionDecision::Deny { .. } if pending.view.cancel_on_deny == Some(true) => {
-                json!({"decision":"cancel"})
-            }
-            PermissionDecision::Deny { .. } => json!({"decision":"decline"}),
-            PermissionDecision::Allow { answers } => {
-                if !pending.view.can_accept {
-                    return Err("この要求は許可できません。内容を確認し拒否してください。".into());
-                }
-                if pending.view.kind == "question" {
-                    let input = answers
-                        .as_ref()
-                        .and_then(Value::as_object)
-                        .ok_or("質問への回答がありません")?;
-                    if input.len() != pending.view.questions.len() {
-                        return Err("質問と回答の数が一致しません".into());
-                    }
-                    let mut mapped = serde_json::Map::new();
-                    for q in &pending.view.questions {
-                        let answer = input
-                            .get(&q.id)
-                            .and_then(Value::as_str)
-                            .filter(|a| !a.trim().is_empty() && a.len() <= MAX_DETAIL_BYTES)
-                            .ok_or("未回答または長すぎる回答があります")?;
-                        mapped.insert(q.id.clone(), json!({"answers":[answer]}));
-                    }
-                    json!({"answers":mapped})
-                } else {
-                    json!({"decision":"accept"})
-                }
-            }
+            PermissionDecision::Allow { answers } => Decision::Allow {
+                answers: answers.clone(),
+            },
         };
-        pending.responding = true;
-        Ok(json!({"id":pending.native_id,"result":result}).to_string())
+        self.0
+            .begin_response(request_id, &decision)
+            .map(|reply| reply.to_string())
     }
 
     pub fn finish_response(&mut self, request_id: &str) {
-        self.pending.remove(request_id);
+        self.0.finish_response(request_id);
     }
 }
 
+fn copy(detail: &mut Map<String, Value>, view: &Interaction, keys: &[(&str, &str)]) {
+    for (key, label) in keys {
+        if let Some(value) = view.detail.get(*key) {
+            detail.insert((*label).into(), value.clone());
+        }
+    }
+}
+
+/// 共有台帳の要求を VP のカード（`codex_interactions` の語彙）へ写す。
+fn project(view: &Interaction) -> CodexInteraction {
+    // MCP のツール実行承認は、VP の UI では項目の無い MCP 手続きとして見せる（会話内許可は未表示）。
+    let (kind, title) = match view.kind {
+        InteractionKind::Question => ("question", "Codex からの質問"),
+        InteractionKind::McpApproval | InteractionKind::McpElicitation => {
+            ("mcp_elicitation", "MCP サーバーからの手続き")
+        }
+        InteractionKind::Permissions => ("permissions", "追加権限の承認"),
+        InteractionKind::Network => ("command", "ネットワーク接続の承認"),
+        InteractionKind::Command => ("command", "コマンド実行の承認"),
+        InteractionKind::FileChange => ("file_change", "ファイル変更の承認"),
+    };
+    let mut detail = Map::new();
+    match view.kind {
+        // 専用の表示がサーバー名と検証済みの項目を持つ。
+        InteractionKind::Question | InteractionKind::McpApproval => {}
+        InteractionKind::McpElicitation => {
+            if let Some(Notice::UnsupportedMcp(message)) = &view.notice {
+                detail.insert("回答できない理由".into(), json!(message));
+                copy(&mut detail, view, &[("serverName", "MCP サーバー")]);
+            }
+        }
+        InteractionKind::Permissions => {
+            copy(
+                &mut detail,
+                view,
+                &[
+                    ("environmentId", "実行環境"),
+                    ("cwd", "作業ディレクトリ"),
+                    ("reason", "理由"),
+                ],
+            );
+            if let Some(Notice::InvalidPermissions(message)) = &view.notice {
+                detail.insert("許可できない理由".into(), json!(message));
+            }
+        }
+        InteractionKind::Command | InteractionKind::Network | InteractionKind::FileChange => {
+            copy(
+                &mut detail,
+                view,
+                &[
+                    ("command", "command"),
+                    ("cwd", "cwd"),
+                    ("reason", "reason"),
+                    ("networkApprovalContext", "networkApprovalContext"),
+                    ("additionalPermissions", "additionalPermissions"),
+                    ("grantRoot", "grantRoot"),
+                    ("changes", "changes"),
+                ],
+            );
+            let notice = match view.notice {
+                Some(Notice::MissingTarget) => Some("承認対象を取得できないため許可できません。"),
+                Some(Notice::MissingChanges) => {
+                    Some("変更内容を取得できないため許可できません。拒否して再試行してください。")
+                }
+                _ => None,
+            };
+            if let Some(notice) = notice {
+                detail.insert("notice".into(), json!(notice));
+            }
+        }
+    }
+    CodexInteraction {
+        elicitation: view.elicitation.clone(),
+        cancel_on_deny: view.cancel_on_deny.then_some(true),
+        item_id: None,
+        request_id: view.request_id.clone(),
+        kind: kind.into(),
+        title: title.into(),
+        details: if detail.is_empty() {
+            String::new()
+        } else {
+            serde_json::to_string_pretty(&detail).unwrap_or_default()
+        },
+        questions: view.questions.clone(),
+        blocking: view.blocking,
+        can_accept: view.can_accept,
+    }
+}
+
+// 台帳の判断（受理・許可可否・応答の形）は共有 crate のテストが持つ。ここは射影と読み替え。
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn question() -> Value {
-        json!({"threadId":"thread","turnId":"turn","isBlocking":false,"questions":[
-            {"id":"one","question":"同じ文面","header":"一つ目","isSecret":true},
-            {"id":"two","question":"同じ文面","header":"二つ目","options":[{"label":"A","description":"候補"}]}
-        ]})
-    }
-
-    // mem_1CeySwxuoVc17bGLnU5Np3: MCP requests have their own identity and typed replies.
-    #[test]
-    fn interactions_mcp_turn_is_correlation_not_authority() {
-        let mut pending = Interactions::default();
-        let mut params = json!({"threadId":"thread","turnId":"finished-turn","serverName":"test","mode":"url","url":"https://example.com/"});
-        pending
-            .receive(
-                &json!(1),
-                "mcpServer/elicitation/request",
-                &params,
-                Some("thread"),
-                Some("new-turn"),
-            )
-            .expect("同じ会話の MCP 要求は古い turn の相関情報でも受ける");
-        assert!(!pending.observe("turn/completed", &json!({"turn":{"id":"finished-turn"}})));
-        assert!(
-            pending
-                .receive(
-                    &json!(2),
-                    "mcpServer/elicitation/request",
-                    &params,
-                    Some("other"),
-                    None
-                )
-                .is_err()
-        );
-        params["turnId"] = json!(123);
-        assert!(
-            pending
-                .receive(
-                    &json!(2),
-                    "mcpServer/elicitation/request",
-                    &params,
-                    Some("thread"),
-                    None
-                )
-                .is_err()
-        );
-        pending.clear();
-        assert!(pending.pending.is_empty());
-    }
-
-    #[test]
-    fn interactions_mcp_form_preserves_types_and_validates_before_reply() {
-        let mut pending = Interactions::default();
-        let params = json!({"threadId":"thread","turnId":null,"serverName":"documents","mode":"form","message":"設定してください",
-            "requestedSchema":{"type":"object","properties":{
-                "count":{"type":"integer","minimum":1,"maximum":5},
-                "enabled":{"type":"boolean"}, "note":{"type":"string"}},"required":["count","enabled"]}});
-        pending
-            .receive(
-                &json!("mcp-1"),
-                "mcpServer/elicitation/request",
-                &params,
-                Some("thread"),
-                None,
-            )
-            .expect("turn がない MCP form を表示する");
-        let id = pending.pending.keys().next().unwrap().clone();
-        assert!(!pending.observe("turn/completed", &json!({"turn":{"id":"turn"}})));
-        for answers in [
-            json!({"field:count":"9","field:enabled":"false"}),
-            json!({"field:count":"2"}),
-            json!({"field:count":"2","field:enabled":"false","injected":"yes"}),
-        ] {
-            assert!(
-                pending
-                    .begin_response(
-                        &id,
-                        &PermissionDecision::Allow {
-                            answers: Some(answers)
-                        }
-                    )
-                    .is_err()
-            );
-        }
-        let response: Value = serde_json::from_str(
-            &pending
-                .begin_response(
-                    &id,
-                    &PermissionDecision::Allow {
-                        answers: Some(json!({"field:count":"2","field:enabled":"false"})),
-                    },
-                )
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            response,
-            json!({"id":"mcp-1","result":{"action":"accept","content":{"count":2,"enabled":false},"_meta":null}})
-        );
-        assert!(pending.observe("serverRequest/resolved", &json!({"requestId":"mcp-1"})));
-    }
-
-    #[test]
-    fn interactions_mcp_url_decline_cancel_and_unsupported_schema() {
-        for (mode, url, decision, action) in [
-            (
-                "url",
-                "https://example.com/verify",
-                PermissionDecision::Allow {
-                    answers: Some(json!({"action":"accept"})),
-                },
-                "accept",
-            ),
-            (
-                "url",
-                "https://example.com/verify",
-                PermissionDecision::Allow {
-                    answers: Some(json!({"action":"cancel"})),
-                },
-                "cancel",
-            ),
-            (
-                "url",
-                "javascript:alert(1)",
-                PermissionDecision::Deny {
-                    message: String::new(),
-                },
-                "decline",
-            ),
-            (
-                "openai/userVerification",
-                "",
-                PermissionDecision::Deny {
-                    message: String::new(),
-                },
-                "decline",
-            ),
-        ] {
-            let mut pending = Interactions::default();
-            let params = json!({"threadId":"thread","turnId":null,"serverName":"test","mode":mode,"url":url,"message":"手続き"});
-            assert!(
-                pending
-                    .receive(
-                        &json!(1),
-                        "mcpServer/elicitation/request",
-                        &params,
-                        Some("other"),
-                        None
-                    )
-                    .is_err()
-            );
-            pending
-                .receive(
-                    &json!(1),
-                    "mcpServer/elicitation/request",
-                    &params,
-                    Some("thread"),
-                    None,
-                )
-                .unwrap();
-            let id = pending.pending.keys().next().unwrap().clone();
-            if !url.starts_with("https://") {
-                assert!(!pending.pending[&id].view.can_accept);
-            }
-            let response: Value =
-                serde_json::from_str(&pending.begin_response(&id, &decision).unwrap()).unwrap();
-            assert_eq!(
-                response["result"],
-                json!({"action":action,"content":null,"_meta":null})
-            );
-        }
-    }
-
-    // mem_1CeySwxuoVc17bGLnU5Np3: independent permissions stay within the request.
-    #[test]
-    fn interactions_permissions_preserve_constraints_and_reject_unknown_formats() {
-        let files = json!({"read":null,"write":null,"globScanMaxDepth":3,"entries":[
-            {"access":"write","path":{"type":"path","path":"/data"}},
-            {"access":"deny","path":{"type":"glob_pattern","pattern":"/data/secrets/**"}}
-        ]});
-        let mut pending = Interactions::default();
-        let mut params =
-            json!({"threadId":"thread","turnId":"turn","permissions":{"fileSystem":files}});
-        pending
-            .receive(
-                &json!(1),
-                "item/permissions/requestApproval",
-                &params,
-                Some("thread"),
-                Some("turn"),
-            )
-            .unwrap();
-        let id = pending.pending.keys().next().unwrap().clone();
-        assert!(
-            pending.pending[&id].view.questions[0]
-                .question
-                .contains("アクセス禁止")
-        );
-        let result: Value = serde_json::from_str(
-            &pending
-                .begin_response(
-                    &id,
-                    &PermissionDecision::Allow {
-                        answers: Some(json!({"p0":"allow"})),
-                    },
-                )
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            result["result"],
-            json!({"permissions":{"fileSystem":files},"scope":"turn"})
-        );
-        pending.clear();
-        params["permissions"]["fileSystem"]["entries"][0]["path"]["futureRestriction"] =
-            json!("unknown");
-        pending
-            .receive(
-                &json!(2),
-                "item/permissions/requestApproval",
-                &params,
-                Some("thread"),
-                Some("turn"),
-            )
-            .expect("未対応形式も説明して辞退できる");
-        let id = pending.pending.keys().next().unwrap().clone();
-        assert!(!pending.pending[&id].view.can_accept);
-        assert!(
-            pending
-                .begin_response(
-                    &id,
-                    &PermissionDecision::Allow {
-                        answers: Some(json!({"p0":"allow"}))
-                    }
-                )
-                .is_err()
-        );
-        assert!(pending.observe("turn/completed", &json!({"turn":{"id":"turn"}})));
-        assert!(
-            pending
-                .begin_response(
-                    &id,
-                    &PermissionDecision::Deny {
-                        message: String::new()
-                    }
-                )
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn interactions_permissions_select_subset_and_scope() {
-        let params = json!({"threadId":"thread","turnId":"turn","itemId":"p",
-            "cwd":"/work","environmentId":"local","reason":"資料の参照",
-            "permissions":{"network":{"enabled":true},"fileSystem":{"read":["/docs"],"write":["/out"]}}});
-        let mut pending = Interactions::default();
-        pending
-            .receive(
-                &json!(42),
-                "item/permissions/requestApproval",
-                &params,
-                Some("thread"),
-                Some("turn"),
-            )
-            .expect("独立権限を表示できる");
-        let id = pending.pending.keys().next().unwrap().clone();
-        assert_eq!(pending.pending[&id].view.kind, "permissions");
-        assert!(
-            pending
-                .begin_response(
-                    &id,
-                    &PermissionDecision::Allow {
-                        answers: Some(json!({"scope":"forever","p1":"allow"}))
-                    }
-                )
-                .is_err()
-        );
-        assert!(
-            pending
-                .begin_response(
-                    &id,
-                    &PermissionDecision::Allow {
-                        answers: Some(json!({"scope":"turn","unrequested":"allow"}))
-                    }
-                )
-                .is_err()
-        );
-        let reply: Value = serde_json::from_str(
-            &pending
-                .begin_response(
-                    &id,
-                    &PermissionDecision::Allow {
-                        answers: Some(json!({"scope":"session","p1":"allow"})),
-                    },
-                )
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            reply,
-            json!({"id":42,"result":{"permissions":{"fileSystem":{"read":["/docs"],"write":null}},"scope":"session"}})
-        );
-        pending.clear();
-        pending
-            .receive(
-                &json!(43),
-                "item/permissions/requestApproval",
-                &params,
-                Some("thread"),
-                Some("turn"),
-            )
-            .unwrap();
-        let id = pending.pending.keys().next().unwrap().clone();
-        let reply: Value = serde_json::from_str(
-            &pending
-                .begin_response(
-                    &id,
-                    &PermissionDecision::Deny {
-                        message: String::new(),
-                    },
-                )
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(reply["result"], json!({"permissions":{},"scope":"turn"}));
-    }
-
-    #[test]
-    fn interactions_answers_use_question_ids_and_preserve_native_id_type() {
-        let mut pending = Interactions::default();
-        pending
-            .receive(
-                &json!(7),
-                "item/tool/requestUserInput",
-                &question(),
-                Some("thread"),
-                Some("turn"),
-            )
-            .unwrap();
-        pending
-            .receive(
-                &json!("7"),
-                "item/tool/requestUserInput",
-                &question(),
-                Some("thread"),
-                Some("turn"),
-            )
-            .unwrap();
-        let ids: Vec<_> = pending.pending.keys().cloned().collect();
-        let invalid = PermissionDecision::Allow {
-            answers: Some(json!({"同じ文面":"lost"})),
+    fn requests(pending: &Interactions) -> Vec<CodexInteraction> {
+        let ConversationEvent::CodexInteractions { requests } = pending.snapshot() else {
+            unreachable!()
         };
-        assert!(pending.begin_response(&ids[0], &invalid).is_err());
-        let response: Value = serde_json::from_str(
-            &pending
-                .begin_response(
-                    &ids[0],
-                    &PermissionDecision::Allow {
-                        answers: Some(json!({"one":"secret","two":"A"})),
-                    },
-                )
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            response,
-            json!({"id":7,"result":{"answers":{"one":{"answers":["secret"]},"two":{"answers":["A"]}}}})
-        );
-        assert!(pending.begin_response(&ids[0], &invalid).is_err());
-        assert!(
-            !serde_json::to_string(&pending.snapshot())
-                .unwrap()
-                .contains("\"secret\"")
-        );
-        assert!(pending.observe("serverRequest/resolved", &json!({"requestId":7})));
-        assert_eq!(pending.pending.len(), 1);
-        let response: Value = serde_json::from_str(
-            &pending
-                .begin_response(
-                    &ids[1],
-                    &PermissionDecision::Deny {
-                        message: String::new(),
-                    },
-                )
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(response, json!({"id":"7","result":{"answers":{}}}));
+        requests
+    }
+
+    fn reply(pending: &mut Interactions, id: &str, decision: PermissionDecision) -> Value {
+        serde_json::from_str(&pending.begin_response(id, &decision).unwrap()).unwrap()
     }
 
     #[test]
-    fn interactions_command_accept_cancel_is_answerable() {
-        for (decision, expected) in [
-            (PermissionDecision::Allow { answers: None }, "accept"),
-            (
-                PermissionDecision::Deny {
-                    message: String::new(),
-                },
-                "cancel",
-            ),
-        ] {
-            let mut pending = Interactions::default();
-            pending
-                .receive(
-                    &json!("approval"),
-                    "item/commandExecution/requestApproval",
-                    &json!({"threadId":"thread","turnId":"turn","command":"printf test",
-                    "availableDecisions":["accept","acceptForSession","cancel"]}),
-                    Some("thread"),
-                    Some("turn"),
-                )
-                .expect("cancel を提示する承認もカードにする");
-            let id = pending.pending.keys().next().unwrap().clone();
-            let reply: Value =
-                serde_json::from_str(&pending.begin_response(&id, &decision).unwrap()).unwrap();
-            assert_eq!(
-                reply,
-                json!({"id":"approval","result":{"decision":expected}})
-            );
-        }
-    }
-
-    #[test]
-    fn interactions_approval_requires_visible_changes_and_offered_decisions() {
+    fn interactions_project_titles_and_details_in_vp_vocabulary() {
         let mut pending = Interactions::default();
-        let params = json!({"threadId":"thread","turnId":"turn","itemId":"file","reason":"修正"});
-        pending
-            .receive(
-                &json!(1),
-                "item/fileChange/requestApproval",
-                &params,
-                Some("thread"),
-                Some("turn"),
-            )
-            .unwrap();
-        let id = pending.pending.keys().next().unwrap().clone();
-        assert!(
-            pending
-                .begin_response(&id, &PermissionDecision::Allow { answers: None })
-                .is_err()
-        );
-        pending.clear();
-        pending.observe("item/started", &json!({"turnId":"turn","item":{"id":"file","type":"fileChange","changes":[{"path":"a.txt","diff":"+new"}]}}));
-        pending
-            .receive(
-                &json!(2),
-                "item/fileChange/requestApproval",
-                &params,
-                Some("thread"),
-                Some("turn"),
-            )
-            .unwrap();
-        let id = pending.pending.keys().next().unwrap().clone();
-        assert!(pending.pending[&id].view.details.contains("+new"));
-        assert_eq!(
-            serde_json::from_str::<Value>(
-                &pending
-                    .begin_response(&id, &PermissionDecision::Allow { answers: None })
-                    .unwrap()
-            )
-            .unwrap(),
-            json!({"id":2,"result":{"decision":"accept"}})
-        );
-        let params = json!({"threadId":"thread","turnId":"turn","command":"ls","availableDecisions":["decline"]});
-        pending
-            .receive(
-                &json!(3),
-                "item/commandExecution/requestApproval",
-                &params,
-                Some("thread"),
-                Some("turn"),
-            )
-            .unwrap();
-        let id = pending
-            .pending
-            .iter()
-            .find(|(_, p)| p.native_id == 3)
-            .unwrap()
-            .0
-            .clone();
-        assert!(
-            pending
-                .begin_response(&id, &PermissionDecision::Allow { answers: None })
-                .is_err()
-        );
-        assert_eq!(
-            serde_json::from_str::<Value>(
-                &pending
-                    .begin_response(
-                        &id,
-                        &PermissionDecision::Deny {
-                            message: String::new()
-                        }
-                    )
-                    .unwrap()
-            )
-            .unwrap()["result"],
-            json!({"decision":"decline"})
-        );
-    }
-
-    #[test]
-    fn interactions_approval_identifies_target_and_releases_file_previews() {
-        let mut pending = Interactions::default();
-        for (id, params, title, acceptable) in [
+        for (id, params) in [
             (
                 1,
                 json!({"networkApprovalContext":{"host":"example.com","protocol":"https"}}),
-                "ネットワーク接続の承認",
-                true,
             ),
             (
                 2,
-                json!({"reason":"必要です","cwd":"/work"}),
-                "コマンド実行の承認",
-                false,
+                json!({"reason":"必要です","cwd":"/work","environmentId":"local"}),
             ),
         ] {
             let mut params = params;
@@ -905,79 +207,150 @@ mod tests {
                     Some("turn"),
                 )
                 .unwrap();
-            let view = &pending
-                .pending
-                .values()
-                .find(|p| p.native_id == id)
-                .unwrap()
-                .view;
-            assert_eq!(view.title, title);
-            assert_eq!(view.can_accept, acceptable);
         }
+        let views = requests(&pending);
+        assert_eq!(views[0].kind, "command");
+        assert_eq!(views[0].title, "ネットワーク接続の承認");
+        assert!(views[0].can_accept);
+        assert_eq!(views[1].title, "コマンド実行の承認");
+        assert!(!views[1].can_accept);
+        assert!(views[1].details.contains("承認対象を取得できない"));
+        // コマンド承認の詳細は従来どおり native の項目名。実行環境は出さない
+        assert!(views[1].details.contains("\"cwd\""));
+        assert!(!views[1].details.contains("environmentId"));
+
         pending.clear();
-        for id in 0..12 {
-            let item = format!("file-{id}");
-            pending.observe("item/started", &json!({"turnId":"turn","item":{"id":item,"type":"fileChange","changes":[{"path":"a.txt","diff":"+new"}]}}));
+        pending
+            .receive(
+                &json!(3),
+                "item/permissions/requestApproval",
+                &json!({"threadId":"thread","turnId":"turn","cwd":"/work","environmentId":"local",
+                    "permissions":{"network":{"enabled":true}}}),
+                Some("thread"),
+                Some("turn"),
+            )
+            .unwrap();
+        let view = &requests(&pending)[0];
+        assert_eq!(view.title, "追加権限の承認");
+        assert!(view.details.contains("作業ディレクトリ") && view.details.contains("実行環境"));
+        assert!(!view.details.contains("network"));
+        assert_eq!(view.questions.len(), 2);
+    }
+
+    /// ツール実行承認は VP では項目の無い MCP 手続きとして見せ、従来の回答で応答できる。
+    #[test]
+    fn interactions_tool_call_approval_keeps_the_mcp_card_and_answers() {
+        let params = json!({"threadId":"thread","turnId":"turn","serverName":"docs",
+            "mode":"form","message":"Allow Search?",
+            "requestedSchema":{"type":"object","properties":{}},
+            "_meta":{"codex_approval_kind":"mcp_tool_call","persist":["session"]}});
+        for (decision, action) in [
+            (
+                PermissionDecision::Allow {
+                    answers: Some(json!({})),
+                },
+                "accept",
+            ),
+            (
+                PermissionDecision::Allow {
+                    answers: Some(json!({"action":"cancel"})),
+                },
+                "cancel",
+            ),
+            (
+                PermissionDecision::Deny {
+                    message: String::new(),
+                },
+                "decline",
+            ),
+        ] {
+            let mut pending = Interactions::default();
             pending
                 .receive(
-                    &json!(id),
-                    "item/fileChange/requestApproval",
-                    &json!({"threadId":"thread","turnId":"turn","itemId":item}),
+                    &json!(9),
+                    "mcpServer/elicitation/request",
+                    &params,
                     Some("thread"),
                     Some("turn"),
                 )
                 .unwrap();
-            let view = &pending.pending.values().next().unwrap().view;
-            assert!(view.can_accept, "sequential approval {id}");
-            let request_id = view.request_id.clone();
-            pending.finish_response(&request_id);
+            let view = requests(&pending).remove(0);
+            assert_eq!(view.kind, "mcp_elicitation");
+            assert!(view.details.is_empty());
+            let elicitation = view.elicitation.unwrap();
+            assert_eq!(elicitation.server_name, "docs");
+            assert!(elicitation.fields.is_empty());
+            assert_eq!(
+                reply(&mut pending, &view.request_id, decision),
+                json!({"id":9,"result":{"action":action}})
+            );
         }
     }
 
+    /// 権限要求に選択なしの許可（`answers: None`）は受けない — nightly の VP（`codex_permissions::response`）
+    /// と同じ Err。共有台帳の `Allow{answers:None}` は「要求した権限を turn 一括で許可」（GFP が UI で
+    /// 明示する経路）なので、VP の射影で止めないと設定省略が full access の選択に化ける（design 86）。
     #[test]
-    fn interactions_reject_wrong_thread_and_expire_by_turn_and_host_generation() {
+    fn interactions_permissions_reject_allow_without_selection() {
         let mut pending = Interactions::default();
-        assert!(
-            pending
-                .receive(
-                    &json!(1),
-                    "item/tool/requestUserInput",
-                    &question(),
-                    Some("other"),
-                    Some("turn")
-                )
-                .is_err()
-        );
         pending
             .receive(
                 &json!(1),
-                "item/tool/requestUserInput",
-                &question(),
+                "item/permissions/requestApproval",
+                &json!({"threadId":"thread","turnId":"turn","permissions":{"fileSystem":{
+                    "read":null,"write":null,
+                    "entries":[{"access":"write","path":{"type":"path","path":"/data"}}]}}}),
                 Some("thread"),
                 Some("turn"),
             )
             .unwrap();
-        let id = pending.pending.keys().next().unwrap().clone();
-        assert!(!pending.observe("turn/completed", &json!({"turn":{"id":"other"}})));
-        assert!(pending.observe("turn/completed", &json!({"turn":{"id":"turn"}})));
+        let id = requests(&pending)[0].request_id.clone();
+        let err = pending
+            .begin_response(&id, &PermissionDecision::Allow { answers: None })
+            .expect_err("選択なしの許可は Err");
+        assert!(err.contains("権限の選択がありません"), "{err}");
+        // 検証で止めた要求は消費されず、明示の選択で改めて応答できる。
+        assert_eq!(
+            reply(
+                &mut pending,
+                &id,
+                PermissionDecision::Allow {
+                    answers: Some(json!({"p0":"allow"}))
+                }
+            )["result"]["scope"],
+            json!("turn")
+        );
+    }
+
+    /// 一般の MCP 手続きは型付きの値と中断を従来の形で返す。未対応形式は理由を見せる。
+    #[test]
+    fn interactions_mcp_form_answers_and_unsupported_reason() {
+        let mut pending = Interactions::default();
+        pending
+            .receive(
+                &json!("mcp-1"),
+                "mcpServer/elicitation/request",
+                &json!({"threadId":"thread","turnId":null,"serverName":"documents","mode":"form",
+                    "message":"設定してください","requestedSchema":{"type":"object",
+                    "properties":{"count":{"type":"integer"}},"required":["count"]}}),
+                Some("thread"),
+                None,
+            )
+            .unwrap();
+        let id = requests(&pending)[0].request_id.clone();
+        assert_eq!(
+            reply(
+                &mut pending,
+                &id,
+                PermissionDecision::Allow {
+                    answers: Some(json!({"field:count":"2"}))
+                }
+            ),
+            json!({"id":"mcp-1","result":{"action":"accept","content":{"count":2},"_meta":null}})
+        );
+        // 送信中は二重回答を受けない
         assert!(
             pending
-                .begin_response(&id, &PermissionDecision::Allow { answers: None })
-                .is_err()
-        );
-        let mut fresh = Interactions::default();
-        fresh
-            .receive(
-                &json!(1),
-                "item/tool/requestUserInput",
-                &question(),
-                Some("thread"),
-                Some("turn"),
-            )
-            .unwrap();
-        assert_ne!(id, *fresh.pending.keys().next().unwrap());
-        assert!(
-            fresh
                 .begin_response(
                     &id,
                     &PermissionDecision::Deny {
@@ -985,6 +358,31 @@ mod tests {
                     }
                 )
                 .is_err()
+        );
+
+        let mut unsupported = Interactions::default();
+        unsupported
+            .receive(
+                &json!(1),
+                "mcpServer/elicitation/request",
+                &json!({"threadId":"thread","turnId":null,"serverName":"test","mode":"url",
+                    "url":"javascript:alert(1)"}),
+                Some("thread"),
+                None,
+            )
+            .unwrap();
+        let view = requests(&unsupported).remove(0);
+        assert!(!view.can_accept);
+        assert!(view.details.contains("回答できない理由") && view.details.contains("MCP サーバー"));
+        assert_eq!(
+            reply(
+                &mut unsupported,
+                &view.request_id,
+                PermissionDecision::Allow {
+                    answers: Some(json!({"action":"cancel"}))
+                }
+            )["result"],
+            json!({"action":"cancel","content":null,"_meta":null})
         );
     }
 }

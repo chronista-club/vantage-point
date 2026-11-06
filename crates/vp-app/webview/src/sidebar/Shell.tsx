@@ -1,7 +1,7 @@
 /** Sidebar: CURRENTs / 停止中, collapsible ACTIONs, settings and machine status. */
 import { MidiPins, MIDI_PINS_CSS } from './MidiPins';
 import { requestingLaneCount } from './lane-progress';
-import { For, Show, createEffect, createMemo } from "solid-js";
+import { For, Show, createEffect, createMemo, on } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
@@ -54,6 +54,29 @@ export function Shell() {
 		resolveRepoOrder(sidebar.processes, sidebar.currents_order),
 	);
 
+	// 選んだ lane の行を見える位置へ寄せる（mako 2026-11-06「サイドバーも、表示されるように追随する」）。
+	// ピン / pad / ⌘N は画面外の lane も選ぶ。key は文字列の memo なので、同じ選択のままの配り直し
+	// （progress の更新など）では値が変わらず、user が別の repo を見に scroll した位置を奪わない。
+	// owner の展開を key に含めるのは、折りたたみ中に選ぶと行が hidden で寄せられず、展開が届いた時に
+	// もう 1 度寄せるため。path は特殊文字を含むので属性セレクタでなく走査で引く（flashProject と同じ）。
+	const followKey = createMemo(() => {
+		const addr = sidebar.active_lane_address;
+		if (!addr) return "";
+		const owner = sidebar.processes.find((p) =>
+			sidebar.lanes_by_repo[p.path]?.some((l) => laneAddressKey(l) === addr),
+		);
+		return `${addr}|${owner?.expanded ? 1 : 0}`;
+	});
+	createEffect(
+		on(followKey, (key) => {
+			if (!key) return;
+			const addr = key.slice(0, key.lastIndexOf("|"));
+			Array.from(document.querySelectorAll<HTMLElement>(".vp-lane-row"))
+				.find((el) => el.getAttribute("data-address") === addr)
+				?.scrollIntoView?.({ block: "nearest" });
+		}),
+	);
+
 	// 新規追加 repo の discoverability: セッション途中で追加された repo を flash して
 	// 見失わせない (タブが無くなったので tab 切替は不要、 scroll + highlight だけ)。
 	//
@@ -100,7 +123,6 @@ export function Shell() {
 					<Show when={requestingLaneCount(Object.values(sidebar.lanes_by_repo).flat()) > 0}>
 						<span class="vp-sidebar-requests" role="status">◆ 要求中 {requestingLaneCount(Object.values(sidebar.lanes_by_repo).flat())}</span>
 					</Show>
-					<span class="vp-midi-target" title="MIDI の操作先 Window">MIDI</span>
 					{/* repo 追加: 産む動詞は**親の行**に住む（mako 2026-08-20 — 「repo 増やすのは
 					    CURRENTS に。lane 増やすのは repo に」）。左で産んで右（main area）に
 					    現れる、という操作の流れを生成の系譜と一致させる。
@@ -374,8 +396,6 @@ html,body{margin:0;height:100%;overflow:hidden;}
   box-shadow:inset calc(-1 * var(--sb-selection-width)) 0 0 var(--sb-selection-border);}
 /* 横線ゼロ方針 (mako 019f50fe): 画面に残ってよい横線は session tap だけ。
    header 下線 / Daemon・Devices 上線 / detail 破線は全削除、 区切りは spacing で。 */
-.vp-midi-target{display:none;font-size:11px;color:var(--color-text-secondary)}
-html[data-midi-target="true"] .vp-midi-target{display:inline}
 .vp-sidebar-header{flex:0 0 auto;display:flex;align-items:center;gap:6px;
   padding:12px 12px 8px;font-size:var(--sb-text-micro,10px);letter-spacing:.14em;
   text-transform:uppercase;font-weight:var(--typography-weight-semibold,600);

@@ -1238,6 +1238,10 @@ mod core_tests {
             request_id: "permission-1".into(),
             tool_name: "Bash".into(),
             input: serde_json::json!({"command":"cargo test"}),
+            display_name: None,
+            description: None,
+            tool_use_id: None,
+            suggestions: Vec::new(),
         })
         .unwrap();
         drop(tx);
