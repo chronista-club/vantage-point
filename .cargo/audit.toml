@@ -70,6 +70,18 @@ ignore = [
     # ECDSA の秘密値を扱う経路が無い。jsonwebtoken が elliptic-curve 0.14 に上がったら cargo update して削除する。
     "RUSTSEC-2026-0387", # crypto-bigint: 定数時間のはずの演算が secret 依存の分岐を持ちうる
 
+    # === surrealdb 3.x 系 (embedded DB、根治は surrealdb 4.0 への移行、2026-11-07) ===
+    # VP の DB は daemon 内の embedded surrealdb（`db/mod.rs` の `surrealkv://<data_dir>`）。3.x の最新 3.3.5 も
+    # surrealkv ^0.21.4 / reblessive ^0.4.3 のままで、修正版は surrealdb 4.0 側にしか無い（major）:
+    # - 0454: reblessive 0.4.3 が無条件に Send/Sync を名乗り、driver future を複製して別 thread で poll すると
+    #   data race / double free。surrealdb-core の Executor 内部の型で、VP は reblessive を直接使わない。
+    #   reblessive 自体に修正版は無く、surrealdb-core 4.0.0 が依存から外して解消
+    # - 0452: surrealkv 0.21 の `InternalKeyRef::from_encoded` が 16 byte 未満の key を release build で
+    #   範囲外読み。入力は surrealkv 自身が書いた encoded key。修正版 surrealkv >=1.2.0 は surrealdb 4.0 が引く
+    # 橋渡しの ignore。surrealdb 4.0 へ上げたら本 2 件を削除する（task mem_1Cgn1DyWaN2yNsNGJRTSTM）。
+    "RUSTSEC-2026-0454", # reblessive (← surrealdb-core 3.3): unsound Send/Sync による data race / double free
+    "RUSTSEC-2026-0452", # surrealkv 0.21: 16 byte 未満の internal key の decode で out-of-bounds read
+
     # === unmaintained な transitive 依存 (VP から直接制御不可) ===
     "RUSTSEC-2023-0089", # atomic-polyfill (transitive、portable-atomic へ未移行)
     "RUSTSEC-2024-0320", # yaml-rust ← syntect ← tui-markdown
