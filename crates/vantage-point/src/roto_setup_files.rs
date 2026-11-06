@@ -1,7 +1,7 @@
 //! Shared state-zone input and confirmed-content cache. Never opens a device.
 use crate::{
     roto_midi::VP_ROTO_SETUP,
-    roto_setup::{Generated, SETUP, generate},
+    roto_setup::{Generated, SETUP, generate, pin_addresses},
 };
 use serde_json::{Value, json};
 use std::{
@@ -14,6 +14,8 @@ pub(super) struct Pins {
     path: PathBuf,
     last_bytes: Option<Vec<u8>>,
     last_good: Option<Generated>,
+    /// 直近の正常な pins の lane address（`roto_surface` が lane と照合する）。`last_good` と同時に更新
+    addresses: [Option<String>; 8],
     read_error: bool,
 }
 
@@ -23,8 +25,14 @@ impl Pins {
             path: dir.join("midi-pins.json"),
             last_bytes: None,
             last_good: None,
+            addresses: std::array::from_fn(|_| None),
             read_error: false,
         }
+    }
+
+    /// 直近の正常な pins の lane address（席順、無い席は None）
+    pub fn addresses(&self) -> &[Option<String>; 8] {
+        &self.addresses
     }
     pub fn refresh(&mut self) -> Option<Generated> {
         let read = (|| -> std::io::Result<Vec<u8>> {
@@ -45,6 +53,7 @@ impl Pins {
                         .ok()
                         .filter(|v| bytes.len() <= 16_384 && valid_pins(v));
                     if let Some(pins) = parsed {
+                        self.addresses = pin_addresses(&pins);
                         self.last_good = Some(generate(&pins, &BTreeMap::new(), &VP_ROTO_SETUP));
                     } else {
                         tracing::warn!(

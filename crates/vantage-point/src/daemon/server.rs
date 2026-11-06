@@ -290,6 +290,12 @@ impl DaemonState {
             Some(d) => (Some(d.clone()), Some(d.read().await.event_bus().clone())),
             None => (None, None),
         };
+        // ROTO surface（needs-you → LED、design 84 §LED）が lane の状態を読めるよう、lane_registry の
+        // 購読 handle を渡す。SSOT は repo_manager のまま（devices は読むだけ）
+        #[cfg(feature = "midi")]
+        if let Some(d) = devices.as_ref() {
+            d.write().await.set_lane_registry(lane_registry.clone());
+        }
         #[cfg(not(feature = "midi"))]
         let devices_event_bus = None;
         // daemon が所有する側の bus（capability は組み立て後に同じ Sender を受け取る）

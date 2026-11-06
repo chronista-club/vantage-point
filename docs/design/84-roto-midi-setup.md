@@ -1,6 +1,6 @@
 # 84. ROTO MIDI モード連携 — pin から「VP」setup を作る
 
-Status: VP 側を実装。実機書き込み・反映は未検証。
+Status: VP 側を実装。SETUP 09 の書き込みは実機で成功（§制約と実機確認）。LED（§LED、needs-you を赤で示す）は実機で赤の点灯を確認（2026-11-05）。
 Task: `mem_1Cg9QiQeVsk7KD3fcwhXqh`（setup / lease、段 C）、`mem_1CgAPGP3R4Gf4UNFBCWpTY`（T8 通常化、段 B）。
 裁定: `mem_1CgAPJPpcCwy2s1QohP3Zj`、2026-10-19 のノブ未割当裁定。
 
@@ -13,7 +13,7 @@ setup 名は `VP`。番号の正本は `roto_setup::SETUP`。
 
 | 本体 | 表示 | MIDI | 色 |
 |---|---|---|---|
-| switch 1–8 | pin #1–#8 の名前（lead lane は repo 名、sub lane は lane 名） | `VP_ROTO_SETUP` の channel / buttons / press / release、PUSH | 保存した pin 色の最近傍パレット、消灯は暗くする |
+| switch 1–8 | pin #1–#8 の名前（lead lane は repo 名、sub lane は lane 名） | `VP_ROTO_SETUP` の channel / buttons / press / release、PUSH | LCD = 保存した pin 色の最近傍パレット。LED = 消灯は pin 色を暗く、点灯は赤（needs-you、§LED） |
 | knobs 全席 | なし | 未設定（CLEAR） | なし |
 | switch 9–32 | なし | 未設定（CLEAR） | なし |
 
@@ -34,6 +34,34 @@ switch 1–8 は LPD8 / ⌘1–8 と同じ `selectLaneByNumber` を通して pin
 T8 の MIC / PTT は廃止し、ノブ・touch・transport は操作に割り当てない。
 ROTO 専用の音声入口を撤去し、キーボードの右 Option 用に録音 registry と開始条件を保持する。
 window 終了時の停止処理はキーボード側で保持する。
+
+## LED — needs-you を赤で示す
+
+mako（2026-11-05）「NEED YOU になったときに、ボタンの色を赤色っぽくできる？」「daemon に ROTO の
+Surface 的なエンティティがあって、そこと ROTO が繋がるイメージ」。
+
+- **実測**: ROTO は MIDI mode でも、switch に割り当てた CC を受信すると値で LED の色を切り替える
+  （`press` = `led_on` 色 / `release` = `led_off` 色。2026-11-05、`BF 14 7F` / `BF 14 00` を 0.5 秒
+  間隔で送って点滅を目視、`mem_1CgjSvYj7p3jAE7zKLhMgR`）。Ladyland の「LED は実機ローカル、外から CC を
+  送っても動かない（2026-08-12）」は条件付きの否定だった。
+- **契約**: `roto_midi::switch_led(index, on)` が bytes を組む。入力 parser と同じ定数なので、送った
+  bytes を parser に通すと同じ index の press / release に戻る。setup は `led_on` = 赤
+  （`closest_index(255, 0, 0)`）、`led_off` = pin 色を暗く（従来）。push 動作の LED は押下中も `led_on`
+  なので、ボタンを押すと一瞬赤く光る（受容した副作用）。
+- **surface**: daemon の `roto_surface::RotoSurface` が ROTO の見え方の正本。望む姿（pin ごとの LED）と
+  実機に写した姿を持ち、食い違う分だけ CC を送る。望む姿は lane_registry の lane を pin の address
+  （`<repo>/lane/<name>`）で照合し、`needs_you` = `flow_state == awaiting_user`（未 ack の needs_user）
+  または session の `progress.phase == requesting`（chat の承認 / 回答要求）。sidebar の needs-you と同じ
+  述語の daemon 側の形。
+- **送る条件**（`roto_surface::ready`）: 自分の lease が active、`current_setup == 8`、`configuring` でない。
+  崩れたら写した姿を忘れ、戻った最初の tick で 8 本全部を送り直す（setup 切替・書き込みで実機の LED は
+  初期化されうる）。tick は lease loop（midistage snapshot の polling、200 ms）に相乗りする。
+- **出力 port**: midistage が lease 中に作る仮想 port（`… | Roto-Control`、`midi_access.outputs_for`）。
+  物理 port は開かない（lease の外では送れない、が構造で保たれる）。
+- **拾えないもの**: TUI の OSC 通知（vp-app の `awaiting_input`）は daemon に届かない。後続。
+- **赤が出る条件**: ROTO が `led_on` の変更を含む setup を再ロードした後（本体で SETUP 09 を選び直す、
+  または midistage の再ロード修正）。再ロード前は旧 `led_on`（明るい pin 色）で点く。
+- LCD 上部（ノブ席）に文字を出す案は、ノブ未割当の裁定（2026-10-19）を変えるので別に扱う。
 
 ## 適用と失敗
 
@@ -109,3 +137,8 @@ fixture の endpoint だけを読み、`native_midi=false` で接続する。
 
 - 2026-10-19: T8 を pin #8 に揃え、ROTO の MIC / PTT を廃止。ノブは未割当のまま。
   Apply・ボタン入力・表示の実機確認は lead で行う。
+- 2026-11-05: needs-you を switch の LED（赤）で示す（§LED）。LED が受信 CC に追従することを実機で確かめ、
+  daemon に `roto_surface`（望む姿 / 写した姿の reconcile）を置いた。
+- 2026-11-05: 実機確認 — swap（0.86.0、e85dceae）の後、ROTO 本体で SETUP 09 を選び直し、lnx（pin #4）の
+  chat が AskUserQuestion を出した瞬間にボタン 4 が赤く点灯（mako 目視。sidebar の「要求中 1」と同時）。
+  解消で暗い pin 色に戻るかは確認中。
