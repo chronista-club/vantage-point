@@ -283,166 +283,132 @@ export function SettingsPanel() {
 							when={loaded()}
 							fallback={<div class="vp-settings-empty">読み込み中…</div>}
 						>
-							{/* ── repo ─────────────────────────────────────────── */}
-							<section class="vp-settings-section">
-								<h3 class="vp-settings-h">repo</h3>
-								<label class="vp-settings-row" for="vp-set-reporoot">
-									<span class="vp-settings-label">Add Repo の初期フォルダ</span>
-									<span class="vp-settings-hint">
-										repo を追加するときに picker が最初に開く場所。空にすると
-										既存 repo の位置から推定します。
-									</span>
-									<div class="vp-settings-inputrow">
-										<input
-											id="vp-set-reporoot"
-											type="text"
-											class="vp-settings-input"
-											value={repoRoot()}
-											placeholder={resolvedRoot() || "~/repos"}
-											onChange={(e) => saveRepoRoot(e.currentTarget.value)}
-										/>
-										<button
-											type="button"
-											class="vp-settings-btn"
-											title="フォルダを選ぶ"
-											onClick={() => sendIpc({ t: "settings:pick_repo_root" })}
-										>
-											参照…
-										</button>
-									</div>
-									<Show when={!repoRoot() && resolvedRoot()}>
-										<span class="vp-settings-hint">
-											現在は <code>{resolvedRoot()}</code> が使われています（推定）。
-										</span>
-									</Show>
-								</label>
-							</section>
-
-							{/* ── アカウント ───────────────────────────────────── */}
-							<section class="vp-settings-section">
-								<h3 class="vp-settings-h">アカウント</h3>
-								<div class="vp-settings-row">
-									<span class="vp-settings-label">Creo ID</span>
-									<span class="vp-settings-hint">
-										identity は 1 つですが、token は宛先ごとに 1 本ずつ要ります。
-									</span>
-									<div class="vp-settings-authrow">
-										<span class="vp-settings-authname">hub</span>
-										<span class="vp-settings-authstate">
-											{v.authState("hub")}
-										</span>
-										<button
-											type="button"
-											class="vp-settings-btn"
-											onClick={() =>
-												sendIpc(
-													v.authState("hub") === "valid"
-														? { t: "auth:logout", target: "hub" }
-														: { t: "auth:login", target: "hub" },
-												)
-											}
-										>
-											{v.authState("hub") === "valid" ? "ログアウト" : "ログイン"}
-										</button>
-									</div>
-									<div class="vp-settings-authrow">
-										<span class="vp-settings-authname">Creo ID</span>
-										<span class="vp-settings-authstate">
-											{v.authState("creo")}
-										</span>
-										<button
-											type="button"
-											class="vp-settings-btn"
-											onClick={() =>
-												sendIpc(
-													v.creoValid()
-														? { t: "auth:logout", target: "creo" }
-														: { t: "auth:login", target: "creo" },
-												)
-											}
-										>
-											{v.creoValid() ? "ログアウト" : "ログイン"}
-										</button>
-									</div>
+							{/* 1 枚の平たいリスト: 行 = ラベル + 入力だけ（mako 2026-11-07「ミニマムにしよう」）。
+							    節見出しと hint は置かない — 説明は doc 59 §5 にある。状態（更新結果 / daemon 未接続）
+							    だけは入力の隣に短く出す。 */}
+							<label class="vp-settings-row" for="vp-set-reporoot">
+								<span class="vp-settings-label">Add Repo の初期フォルダ</span>
+								<div class="vp-settings-inputrow">
+									<input
+										id="vp-set-reporoot"
+										type="text"
+										class="vp-settings-input"
+										value={repoRoot()}
+										placeholder={resolvedRoot() || "~/repos"}
+										onChange={(e) => saveRepoRoot(e.currentTarget.value)}
+									/>
+									<button
+										type="button"
+										class="vp-settings-btn"
+										title="フォルダを選ぶ"
+										onClick={() => sendIpc({ t: "settings:pick_repo_root" })}
+									>
+										参照…
+									</button>
 								</div>
-							</section>
+							</label>
 
-							{/* ── 動作（daemon 側 = settings.kdl）──────────────── */}
-							<section class="vp-settings-section">
-								<h3 class="vp-settings-h">動作</h3>
-								<Show
-									when={daemonReachable()}
-									fallback={
-										<div class="vp-settings-hint">
-											daemon に接続すると編集できます。
-										</div>
-									}
-								>
-									<label class="vp-settings-row" for="vp-set-agent">
-										<span class="vp-settings-label">新しい lane の既定</span>
-										<span class="vp-settings-hint">
-											lane を作るときに最初から選ばれている agent と model です。
-										</span>
-										<div class="vp-settings-inputrow">
+							<div class="vp-settings-row">
+								<span class="vp-settings-label">hub</span>
+								<div class="vp-settings-inputrow">
+									<span class="vp-settings-status">{v.authState("hub")}</span>
+									<button
+										type="button"
+										class="vp-settings-btn"
+										onClick={() =>
+											sendIpc(
+												v.authState("hub") === "valid"
+													? { t: "auth:logout", target: "hub" }
+													: { t: "auth:login", target: "hub" },
+											)
+										}
+									>
+										{v.authState("hub") === "valid" ? "ログアウト" : "ログイン"}
+									</button>
+								</div>
+							</div>
+							<div class="vp-settings-row">
+								<span class="vp-settings-label">Creo ID</span>
+								<div class="vp-settings-inputrow">
+									<span class="vp-settings-status">{v.authState("creo")}</span>
+									<button
+										type="button"
+										class="vp-settings-btn"
+										onClick={() =>
+											sendIpc(
+												v.creoValid()
+													? { t: "auth:logout", target: "creo" }
+													: { t: "auth:login", target: "creo" },
+											)
+										}
+									>
+										{v.creoValid() ? "ログアウト" : "ログイン"}
+									</button>
+								</div>
+							</div>
+
+							{/* daemon 側（settings.kdl）。未接続の間は入力を出さず状態だけ見せる。 */}
+							<label class="vp-settings-row" for="vp-set-agent">
+								<span class="vp-settings-label">新しい lane の既定</span>
+								<Show when={daemonReachable()} fallback={<span class="vp-settings-status">daemon 未接続</span>}>
+									<div class="vp-settings-inputrow">
+										<select
+											id="vp-set-agent"
+											class="vp-settings-input"
+											value={defaultAgent()}
+											onChange={(e) => saveDefaultAgent(e.currentTarget.value)}
+										>
+											{SELECTABLE_AGENTS.map((a) => (
+												<option value={a}>{a || "（既定: claude）"}</option>
+											))}
+										</select>
+										{/* ⚠️ model 欄は **その agent が受け付ける時だけ** 出す。
+										    codex は VP から model を渡さないので、出すと
+										    「選べるのに効かない」欄になる。 */}
+										<Show
+											when={agentTakesModel()}
+											fallback={
+												<span class="vp-settings-unit">
+													model は {defaultAgent() || "claude"} 側で選択
+												</span>
+											}
+										>
 											<select
-												id="vp-set-agent"
 												class="vp-settings-input"
-												value={defaultAgent()}
-												onChange={(e) => saveDefaultAgent(e.currentTarget.value)}
+												value={defaultModel()}
+												onChange={(e) => saveDefaultModel(e.currentTarget.value)}
 											>
-												{SELECTABLE_AGENTS.map((a) => (
-													<option value={a}>{a || "（既定: claude）"}</option>
+												{claudeModelOptions(defaultModel()).map((m) => (
+													<option value={m}>{m || "（engine 既定）"}</option>
 												))}
 											</select>
-											{/* ⚠️ model 欄は **その agent が受け付ける時だけ** 出す。
-											    codex は VP から model を渡さないので、出すと
-											    「選べるのに効かない」欄になる。 */}
-											<Show
-												when={agentTakesModel()}
-												fallback={
-													<span class="vp-settings-unit">
-														model は {defaultAgent() || "claude"} 側で選択
-													</span>
-												}
-											>
-												<select
-													class="vp-settings-input"
-													value={defaultModel()}
-													onChange={(e) => saveDefaultModel(e.currentTarget.value)}
-												>
-													{claudeModelOptions(defaultModel()).map((m) => (
-														<option value={m}>{m || "（engine 既定）"}</option>
-													))}
-												</select>
-											</Show>
-										</div>
-									</label>
+										</Show>
+									</div>
+								</Show>
+							</label>
 
-									<label class="vp-settings-row" for="vp-set-idle">
-										<span class="vp-settings-label">アイドルとみなす時間</span>
-										<span class="vp-settings-hint">
-											この時間だけ動きが無い session は now-line が「⏸N分」に沈み、
-											開いていない lane は engine を停止してメモリを返します。
-										</span>
-										<div class="vp-settings-inputrow">
-											<input
-												id="vp-set-idle"
-												type="number"
-												min="1"
-												class="vp-settings-input vp-settings-num"
-												value={idleMinutes() || ""}
-												placeholder={String(DEFAULT_IDLE_MINUTES)}
-												onChange={(e) => saveIdleMinutes(e.currentTarget.value)}
-											/>
-											<span class="vp-settings-unit">分</span>
-										</div>
-									</label>
+							<label class="vp-settings-row" for="vp-set-idle">
+								<span class="vp-settings-label">アイドルとみなす時間</span>
+								<Show when={daemonReachable()} fallback={<span class="vp-settings-status">daemon 未接続</span>}>
+									<div class="vp-settings-inputrow">
+										<input
+											id="vp-set-idle"
+											type="number"
+											min="1"
+											class="vp-settings-input vp-settings-num"
+											value={idleMinutes() || ""}
+											placeholder={String(DEFAULT_IDLE_MINUTES)}
+											onChange={(e) => saveIdleMinutes(e.currentTarget.value)}
+										/>
+										<span class="vp-settings-unit">分</span>
+									</div>
+								</Show>
+							</label>
 
-									<label class="vp-settings-row" for="vp-set-loglevel">
-										<span class="vp-settings-label">ログの詳細度</span>
-										<span class="vp-settings-hint">
-											不具合を追うときだけ上げます。⚠️ 反映には daemon の再起動が要ります。
-										</span>
+							<label class="vp-settings-row" for="vp-set-loglevel">
+								<span class="vp-settings-label">ログの詳細度</span>
+								<Show when={daemonReachable()} fallback={<span class="vp-settings-status">daemon 未接続</span>}>
+									<div class="vp-settings-inputrow">
 										<select
 											id="vp-set-loglevel"
 											class="vp-settings-input"
@@ -453,41 +419,33 @@ export function SettingsPanel() {
 												<option value={lv}>{lv || "（既定）"}</option>
 											))}
 										</select>
-									</label>
+										<span class="vp-settings-unit">反映は daemon 再起動後</span>
+									</div>
 								</Show>
-							</section>
+							</label>
 
-							{/* ── 開発者 ──────────────────────────────────────── */}
-							<section class="vp-settings-section">
-								<h3 class="vp-settings-h">開発者</h3>
-								<div class="vp-settings-row">
+							<div class="vp-settings-row">
+								<span class="vp-settings-label">Developer Mode</span>
+								<div class="vp-settings-inputrow">
 									<button
 										type="button"
 										class="vp-settings-toggle"
 										classList={{ on: devMode(), locked: devLocked() }}
 										disabled={devLocked()}
+										title={devLocked() ? "環境変数 VP_DEVELOPER_MODE で固定" : "View → Open Developer Tools と Reload WebView"}
 										onClick={toggleDevMode}
 									>
 										<span class="vp-settings-knob" />
 									</button>
-									<span class="vp-settings-label">Developer Mode</span>
-									<span class="vp-settings-hint">
-										View → Open Developer Tools と Reload WebView を有効にします。
-									</span>
 									<Show when={devLocked()}>
-										<span class="vp-settings-locked">
-											環境変数 <code>VP_DEVELOPER_MODE</code> で固定されているため、
-											ここからは変更できません。
-										</span>
+										<span class="vp-settings-unit">VP_DEVELOPER_MODE で固定</span>
 									</Show>
 								</div>
-							</section>
+							</div>
 
-							{/* ── メンテナンス ─────────────────────────────────── */}
-							<section class="vp-settings-section">
-								<h3 class="vp-settings-h">メンテナンス</h3>
-								<div class="vp-settings-row">
-									<span class="vp-settings-label">アップデート</span>
+							<div class="vp-settings-row">
+								<span class="vp-settings-label">アップデート</span>
+								<div class="vp-settings-inputrow">
 									<button type="button" class="vp-settings-btn"
 										disabled={checkingUpdate() || v.updateApplying()} onClick={checkUpdate}>
 										{checkingUpdate() ? "確認中…" : "今すぐ確認"}
@@ -495,22 +453,19 @@ export function SettingsPanel() {
 									<Show
 										when={latestUpdate()}
 										fallback={
-											<span class="vp-settings-hint" role="status" aria-live="polite">
+											<span class="vp-settings-status" role="status" aria-live="polite">
 												{checkingUpdate() ? "最新版を確認しています。"
 													: updateCheck()?.error ? `確認できませんでした。${updateCheck()!.error}`
 													: updateCheck() ? "最新版です。"
-													: "「今すぐ確認」で新しいバージョンを確認できます。"}
+													: ""}
 											</span>
 										}
 									>
-										<span class="vp-settings-hint">
-											新しいバージョン <strong>v{latestUpdate()}</strong> が
-											利用できます。更新すると VP が再起動します。
-										</span>
 										<button
 											type="button"
 											class="vp-settings-btn primary"
 											disabled={v.updateApplying()}
+											title="更新すると VP が再起動します"
 											onClick={() => {
 												if (v.updateApplying()) return;
 												const ver = latestUpdate();
@@ -521,21 +476,21 @@ export function SettingsPanel() {
 										</button>
 									</Show>
 								</div>
-								<div class="vp-settings-row">
-									<span class="vp-settings-label">daemon の再起動</span>
-									<span class="vp-settings-hint">
-										⚠️ <strong>すべての lane のプロセスが落ちます</strong>。
-										会話は次に開いたときに復帰します。
-									</span>
+							</div>
+
+							<div class="vp-settings-row">
+								<span class="vp-settings-label">daemon の再起動</span>
+								<div class="vp-settings-inputrow">
 									<button
 										type="button"
 										class="vp-settings-btn danger"
+										title="すべての lane のプロセスが落ちます。会話は次に開いたときに復帰します"
 										onClick={() => sendIpc({ t: "daemon:restart" })}
 									>
 										daemon を再起動…
 									</button>
 								</div>
-							</section>
+							</div>
 						</Show>
 					</div>
 				</div>
@@ -552,42 +507,32 @@ export const SETTINGS_PANEL_CSS = `
 .vp-settings-title{font-weight:600;}
 .vp-settings-spacer{flex:1;}
 .vp-settings-body{flex:1;overflow-y:auto;overflow-wrap:anywhere;padding:4px 16px 16px;min-height:0;}
-.vp-settings-section{padding:10px 0;border-bottom:1px solid rgba(255,255,255,.06);}
-.vp-settings-section:last-child{border-bottom:none;}
-.vp-settings-h{margin:0 0 8px;font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--lg-mute,#5C7A85);}
-.vp-settings-row{display:flex;flex-direction:column;gap:4px;font-size:11.5px;}
+/* 行 = ラベル（左、固定幅）+ 入力（右）。節も hint も無い 1 枚のリスト。 */
+.vp-settings-row{display:grid;grid-template-columns:180px minmax(0,1fr);align-items:center;gap:8px 12px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:11.5px;}
+.vp-settings-row:last-child{border-bottom:none;}
 .vp-settings-label{font-weight:600;color:rgba(255,255,255,.9);}
-.vp-settings-hint{font-size:10.5px;line-height:1.5;color:rgba(255,255,255,.55);}
-.vp-settings-hint code{font-size:10px;padding:0 3px;border-radius:3px;background:rgba(255,255,255,.08);}
-.vp-settings-inputrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px;}
+.vp-settings-status{font-size:10.5px;opacity:.6;align-self:center;}
+.vp-settings-inputrow{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0;}
 .vp-settings-input{flex:1;min-width:0;font:inherit;font-size:11px;padding:4px 7px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);color:inherit;}
 .vp-settings-input:focus{outline:none;border-color:var(--sb-conn-auto,#FFF76B);}
 .vp-settings-btn{flex:0 0 auto;font:inherit;font-size:10.5px;padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);color:inherit;cursor:pointer;}
 .vp-settings-btn:hover{background:rgba(255,255,255,.11);}
-.vp-settings-btn.primary{align-self:flex-start;margin-top:4px;border-color:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 55%);background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 88%);}
+.vp-settings-btn.primary{border-color:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 55%);background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 88%);}
 .vp-settings-btn.primary:hover{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 78%);}
 .vp-settings-num{max-width:88px;}
 .vp-settings-unit{align-self:center;font-size:10.5px;opacity:.6;}
 select.vp-settings-input{cursor:pointer;}
-.vp-settings-btn.danger{align-self:flex-start;margin-top:4px;border-color:rgba(255,74,45,.45);background:rgba(255,74,45,.1);color:#ff8b73;}
+.vp-settings-btn.danger{border-color:rgba(255,74,45,.45);background:rgba(255,74,45,.1);color:#ff8b73;}
 .vp-settings-btn.danger:hover{background:rgba(255,74,45,.2);}
-.vp-settings-authrow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:4px;}
-.vp-settings-authname{flex:0 0 34px;font-size:11px;color:rgba(255,255,255,.85);}
-.vp-settings-authstate{flex:1;font-size:10.5px;opacity:.6;}
-/* toggle は label の左に置くので row を横並びに上書きする */
-.vp-settings-row:has(> .vp-settings-toggle){display:grid;grid-template-columns:auto 1fr;gap:2px 8px;align-items:center;}
-.vp-settings-row > .vp-settings-toggle{grid-row:1 / span 1;}
-.vp-settings-row:has(> .vp-settings-toggle) > .vp-settings-hint,
-.vp-settings-row:has(> .vp-settings-toggle) > .vp-settings-locked{grid-column:2;}
 .vp-settings-toggle{width:30px;height:17px;flex:0 0 auto;padding:0;border-radius:9px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.07);cursor:pointer;position:relative;transition:background .12s;}
 .vp-settings-toggle.on{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 62%);border-color:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 45%);}
 .vp-settings-toggle.locked{opacity:.45;cursor:not-allowed;}
 .vp-settings-knob{position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;background:rgba(255,255,255,.75);transition:transform .12s;}
 .vp-settings-toggle.on .vp-settings-knob{transform:translateX(13px);}
-.vp-settings-locked{font-size:10px;color:#ffb74d;line-height:1.5;}
 .vp-settings-empty{padding:16px;text-align:center;font-size:11px;opacity:.5;}
 @container (max-width:480px){
 .vp-settings-panel{margin:8px;width:calc(100% - 16px);}
+.vp-settings-row{grid-template-columns:1fr;gap:4px;}
 .vp-settings-inputrow>.vp-settings-input{flex-basis:140px;}
 }
 /* sidebar 下部の ⚙ 入口（daemon status の直上 — doc 56 §7 / doc 59 §4） */
