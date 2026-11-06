@@ -12,7 +12,8 @@ beforeAll(async () => {
     import { setPinColor } from './src/sidebar/midi-pin-store';
     window.setPinColor = setPinColor;
     import { render } from 'solid-js/web';
-    import { MidiPins } from './src/sidebar/MidiPins';
+    import { MidiPins, MIDI_PINS_CSS } from './src/sidebar/MidiPins';
+    window.MIDI_PINS_CSS = MIDI_PINS_CSS;
     window.renderPins = () => { const el = document.createElement('div'); document.body.append(el); render(MidiPins, el); return el; };
     import { applySidebarState, emptyState, sidebar } from './src/sidebar/store';
     import { emitAgentActivity } from './session-activity-bridge';
@@ -108,7 +109,16 @@ it('the strip registers the selected lane on an empty pin and unregisters with t
   (pinButton(3).querySelector('button') as HTMLButtonElement).click(); // active = vp/root
   expect(JSON.parse(w.sent.at(-1)!.settings!).slots[2]).toEqual({path:'/vp',address:'vp/root'});
   expect(pinButton(3).querySelector('.vp-midi-pin-label')!.textContent).toBe('vp');
-  (pinButton(3).querySelector('.vp-midi-unpin') as HTMLButtonElement).click();
+  // 登録済みの枠の空いた所を押す = ⌘3 と同じ（Center がその lane に切り替わる）。✕ は別の button。
+  w.sent.length = 0;
+  (pinButton(3).querySelector('button') as HTMLButtonElement).click();
+  expect(w.sent).toEqual([{t:'process:toggle',path:'/vp',expanded:true},{t:'lane:select',path:'/vp',address:'vp/root'}]);
+  // ✕ は chip の装飾（幅 100% / 下線 / padding）を継がない — 右上の小さな角だけ（mako 2026-11-06「バツのエリアが右端で」）。
+  // CSS の selector を 1 つずつ ✕ に当て、✕ 自身の rule 以外が当たっていたら漏れ。
+  const unpin = pinButton(3).querySelector('.vp-midi-unpin') as HTMLButtonElement;
+  const selectors = (w.eval('window.MIDI_PINS_CSS') as string).split('}').map(r => r.split('{')[0]).flatMap(s => s.split(',')).map(s => s.trim()).filter(Boolean);
+  expect(selectors.filter(s => !s.includes('vp-midi-unpin') && unpin.matches(s))).toEqual([]);
+  unpin.click();
   expect(JSON.parse(w.sent.at(-1)!.settings!).slots[2]).toBeNull();
   expect(pinButton(3).querySelector('.vp-midi-unpin')).toBeNull();
 });
@@ -152,14 +162,14 @@ it('initializes new windows when native settings arrive before the sidebar bundl
   expect(w.eval('window.__vpMidiPads.enabled')).toBe(true);
 });
 
-it('the pin strip shows 8 pins in two rows like the pads: #5–#8 above #1–#4', () => {
+it('the pin strip shows 8 pins in two rows: #1–#4 above #5–#8 (mako 2026-11-06「上から 1〜4、二段目 5〜8」)', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}});
   windows.push(w);
   w.eval('document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
   w.eval(bundle);
   w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:null}));
   const labels = w.eval(`Array.from(window.renderPins().querySelectorAll('.vp-midi-pin button > span:first-child')).map(s => s.textContent).join(',')`);
-  expect(labels).toBe('#5,#6,#7,#8,#1,#2,#3,#4');
+  expect(labels).toBe('#1,#2,#3,#4,#5,#6,#7,#8');
 });
 
 
