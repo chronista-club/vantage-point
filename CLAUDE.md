@@ -1,5 +1,13 @@
 # CLAUDE.md
 
+@AGENTS.md
+
+> ↑ `AGENTS.md`（lane / ブランチ / wire の規約の正本）を Claude Code に読み込ませる import。Claude Code は
+> `CLAUDE.md` がある repo では `AGENTS.md` を自動では読まない（`CLAUDE.md` だけを読む）。この 1 行が無いと、
+> Claude の agent には `AGENTS.md` の規約が届かず、Codex など `AGENTS.md` を読む agent とで知っている規則が
+> 食い違う（2026-11-15 に lead の session で確認）。`AGENTS.md` 1 本へまとめるまでの橋渡し
+> （action mem_1Ch3caZ29bQSTk1EMhjNGm）。
+
 ## repo 概要
 
 Vantage Point（`vp`）は Rust製の **AI ネイティブ開発環境**。
