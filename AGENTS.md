@@ -24,15 +24,22 @@ dev trunk は **nightly**（GitHub default の `main` は公開 release 専用�
 - 段を進める操作は `git next`（spike/exp → wip、wip → review。review に入る時だけ push + PR）/ `git keep`（spike → exp、初 push）/ `git drop`（spike を削除）/ `git board`（一覧）
 - merge は `gh pr merge --squash --delete-branch` → worktree を畳む（`git worktree remove`）→ `git worktree prune`。`review/` 以降は rename しない（直しは PR の中で）
 
-#### 導入（repo ごとに一度。plugin を更新したら**やり直す** — alias が plugin の版ごとの絶対パスを指すため）
+#### 呼び方と導入 — 正本は plugin の skill
+
+`git next` などの呼び方と、新しい clone での導入（`branch-step install`）は、chronista-style plugin の
+`branch-step` skill（「呼び方」「導入」の節）に従う。**ここには写さない** — 写しは plugin が変わっても
+古いまま残る（実例: 0.36.0 で入口が git alias から plugin の `bin/` に移り、ここにあった
+「plugin を更新したら install をやり直す」が誤りになった）。Codex など plugin の `bin/` が PATH に入らない
+engine での呼び方も、同じ skill にある。理由と経緯は plugin-chronista-style の
+`docs/design/02-branch-step-naming.md`。
+
+この repo に固有なのは、wip → review の門の設定だけ:
 
 ```bash
-bash "$HOME/.claude/plugins/cache/chronista-plugins/chronista-style/<ver>/skills/branch-step/scripts/branch-step" install --local
-# wip → review の門 = VP の標準チェック（CI と同じ mise run check）。app:bundle を先に挟むのは、
-# 新しい worktree には webview bundle（生成物、commit しない）が無く vp-app の build.rs が止まるため。
-# ⚠️ env を剥がす形で設定する: git の alias の中で走るため GIT_DIR 等が子プロセスに残り、
-#    テストが一時 repo で git を呼ぶと本物の repo に書き込む（plugin 0.33.0。creo-memories の lane で
-#    起きて巻き戻した、と nexus lane から 2026-10-01 に警告。plugin 側の修正が入るまでの防御）
+# 門 = VP の標準チェック（CI と同じ mise run check）。app:bundle を先に挟むのは、新しい worktree には
+# webview bundle（生成物、commit しない）が無く vp-app の build.rs が止まるため。
+# env -u は、git が子プロセスに渡す GIT_DIR 等を剥がす防御（2026-10-01、テストが一時 repo で git を呼ぶと
+# 本物の repo に書き込んだ）。plugin の script も 1.0.1 から自分で剥がすが、設定はそのまま残している。
 git config branch-step.test 'env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_PREFIX -u GIT_CONFIG_PARAMETERS sh -c "mise run app:bundle && mise run check"'
 ```
 
