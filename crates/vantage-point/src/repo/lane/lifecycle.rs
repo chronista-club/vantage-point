@@ -142,17 +142,27 @@ pub async fn build_lanes_snapshot(state: &RepoState) -> Vec<LaneInfo> {
         });
     }
 
-    // session 活動時刻（in-memory 実体）を 1 lock で先に集める。下の loop は git subprocess を
-    // 含み長い（sub_status 数 100ms）ので、lock 保持と enrich 適用を分離する。
-    let activity: std::collections::HashMap<
-        String,
-        std::collections::HashMap<crate::lane::session_registry::SessionKey, u64>,
-    > = {
+    // session 活動時刻と ACP 設定面（in-memory 実体）を 1 lock で先に集める。下の loop は git
+    // subprocess を含み長い（sub_status 数 100ms）ので、lock 保持と enrich 適用を分離する。
+    type PerSession<T> = std::collections::HashMap<crate::lane::session_registry::SessionKey, T>;
+    let (activity, acp_configs): (
+        std::collections::HashMap<String, PerSession<u64>>,
+        std::collections::HashMap<
+            String,
+            PerSession<crate::conversation::acp_config::AcpConfigView>,
+        >,
+    ) = {
         let pool = state.lane_pool.read().await;
-        lanes
-            .iter()
-            .map(|l| (l.address.to_string(), pool.session_activity(&l.address)))
-            .collect()
+        (
+            lanes
+                .iter()
+                .map(|l| (l.address.to_string(), pool.session_activity(&l.address)))
+                .collect(),
+            lanes
+                .iter()
+                .map(|l| (l.address.to_string(), pool.acp_configs(&l.address)))
+                .collect(),
+        )
     };
 
     // 既存 Sub の git status を populate。branch は root も含む全 lane に供給する
@@ -178,6 +188,9 @@ pub async fn build_lanes_snapshot(state: &RepoState) -> Vec<LaneInfo> {
         // 活動時刻は refresh と対（apply_session_activity の doc ⚠️ — 供給点差は #683 地形）。
         if let Some(act) = activity.get(&lane.address.to_string()) {
             super::enrich::apply_session_activity(lane, act);
+        }
+        if let Some(configs) = acp_configs.get(&lane.address.to_string()) {
+            super::enrich::apply_acp_configs(lane, configs);
         }
         apply_conversation_progress(state, lane);
     }
@@ -1015,16 +1028,17 @@ const RESTART_BACKOFF_MS: [u64; 2] = [200, 500]; // attempt 0→1: 200ms、 atte
 /// なったので、これが「roster が変わった」を知らせる唯一の経路 — 撃たない動詞の変化は
 /// 次の定期 snapshot まで GUI に出ない）。R2 の「動詞の末尾で reconcile」と同型の規律。
 pub(crate) async fn emit_lane_update(state: &RepoState, addr: &LaneAddress) {
-    let (mut info, activity) = {
+    let (mut info, activity, acp_configs) = {
         let pool = state.lane_pool.read().await;
         let Some(info) = pool.get(addr).cloned() else {
             return;
         };
-        (info, pool.session_activity(addr))
+        (info, pool.session_activity(addr), pool.acp_configs(addr))
     };
     super::enrich::refresh_engine_session_id(&mut info);
-    // 活動時刻は refresh と対（apply_session_activity の doc ⚠️ — 供給点差は #683 地形）。
+    // 活動時刻と ACP 設定面は refresh と対（apply_session_activity の doc ⚠️ — 供給点差は #683 地形）。
     super::enrich::apply_session_activity(&mut info, &activity);
+    super::enrich::apply_acp_configs(&mut info, &acp_configs);
     apply_conversation_progress(state, &mut info);
     if let Err(e) = state
         .system_event_tx

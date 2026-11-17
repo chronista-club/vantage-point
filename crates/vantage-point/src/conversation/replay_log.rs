@@ -3,8 +3,8 @@
 //! ## なぜ要るか（dogfood で発見した穴）
 //!
 //! gui の会話復元（replay-on-attach）は claude では transcript(jsonl) を SSOT に再生する。
-//! grok / opencode は ACP で会話 store を公開しない — opencode は `session/load` が全履歴を
-//! replay するが VP は採らず replay_log に揃える（doc 43 §5）。結果、これらの engine では
+//! grok / opencode / agy は ACP で会話 store を公開しない — opencode・agy は `session/load` が全履歴を
+//! replay するが VP は採らず replay_log に揃える（doc 43 §5・doc 88 §5）。結果、これらの engine では
 //! demand_start の no_session path で `ReplayStart` の冪等 clear だけが走り、**復元材料が無い**
 //! （lane 切替で会話が消える）。
 //!
@@ -18,7 +18,7 @@
 //!   `<lane>#<n>`）で、他 store（cc_sessions / conversation_sessions）と file 名規約が揃う
 //! - **1 行 1 event の JSONL**（[`ConversationEvent`] を serde でそのまま）。壊れた行は読み時に skip
 //!   （session_store の「壊れた値を渡さない」原則。partial 末尾行 = クラッシュ時の書きかけも黙って落とす）
-//! - **Claude / Codex は書かない**: native 履歴が SSOT（Codex は app-server 経由、design 65）。tap は grok/opencode/vpcode
+//! - **Claude / Codex は書かない**: native 履歴が SSOT（Codex は app-server 経由、design 65）。tap は grok/opencode/agy/vpcode
 //!   のみ Some。vpcode の resume 正本は別 store [`super::vpcode_transcript`] — こちらは GUI replay 用。
 //! - 上限は turn 境界でのみ制御（[`truncate_if_needed_in`]、末尾側の完全な行を残して先頭から捨てる）
 //! - 書き手 = `process::conversation_pump` の tap / user 発話は `process::unison_server` の submit 成功後。
@@ -35,8 +35,8 @@ pub const MAX_BYTES: u64 = 2 * 1024 * 1024;
 /// pump tap の宛先（transcript を持たない engine の replay 源への書き手）。
 ///
 /// `label` は session の store label（[`crate::lane::session_registry::session_label`] の結果 =
-/// #1 は素の lane 名、#2 以降 `<lane>#<n>`）。tap は codex / grok / opencode の session にのみ付く
-/// （claude は None — module doc「claude は書かない」）。
+/// #1 は素の lane 名、#2 以降 `<lane>#<n>`）。tap は grok / opencode / agy / vpcode の session にのみ付く
+/// （claude / codex は None — module doc「Claude / Codex は書かない」）。
 #[derive(Debug, Clone)]
 pub struct ReplayLogTap {
     pub repo: String,

@@ -77,7 +77,7 @@ export function laneShortName(addr: string): string {
 /**
  * session chip の engine 別 prefix（doc 37: engine = session 束縛の identity なので、
  * chip 自体が「どの engine の session か」を兼ねる）。
- * claude は歴史的な `cc`（Claude Code）を維持、未知 engine（撤去済み cursor / agy 含む）は
+ * claude は歴史的な `cc`（Claude Code）を維持、未知 engine（撤去済み cursor 含む）は
  * 中立の `sid`。
  */
 export function sessionChipPrefix(agent: string | null | undefined): string {
@@ -91,6 +91,8 @@ export function sessionChipPrefix(agent: string | null | undefined): string {
       return 'grok'
     case 'opencode':
       return 'oc'
+    case 'agy':
+      return 'agy'
     default:
       return 'sid'
   }

@@ -1,20 +1,20 @@
-//! ACP `session/update` → [`ConversationEvent`] 翻訳（doc 42 §3）
+//! ACP `session/update` → [`ConversationEvent`] 翻訳（doc 42 §3・doc 43・doc 88）
 //!
-//! [`super::acp_host::AcpAgentHost`]（grok / opencode の常駐 ACP host — ACP は engine 非依存な
-//! ので本翻訳器も両 engine 共有、doc 43）の update 層翻訳。lifecycle
+//! [`super::acp_host::AcpAgentHost`]（grok / opencode / agy の常駐 ACP host — ACP は engine
+//! 非依存なので本翻訳器も全 ACP engine 共有）の update 層翻訳。lifecycle
 //! （SessionInit / TurnCompleted / Error / permission 自動応答）は host 側が扱い、本 module は
 //! **`session/update` notification の update object だけ**を純翻訳する（data / calculations 分離）。
 //!
-//! ## 方針（doc 42 §1 の実測 wire + ACP 標準形で固定）
+//! ## 方針（doc 42 §1 / doc 88 §1 の実測 wire + ACP 標準形で固定）
 //!
 //! | update.sessionUpdate | ConversationEvent |
 //! |----------------------|-------------|
 //! | `agent_message_chunk`（content.type=text） | `MessageChunk`（実測） |
 //! | `agent_thought_chunk` | `ThoughtChunk`（実測） |
 //! | `tool_call` | `ToolCall`（ACP 標準形 {toolCallId, title, kind, rawInput}） |
-//! | `tool_call_update` | `ToolCallUpdate`（status=failed → is_error。started 未観測なら ToolCall 補完） |
+//! | `tool_call_update` | `ToolCallUpdate`（status=failed → is_error。started 未観測なら ToolCall 補完。`content` は text / diff 両対応） |
 //! | `plan` | `Plan`（{entries: [{content, status}]}） |
-//! | その他（available_commands_update / x.ai 拡張等） | 無視（protocol drift 吸収 — doc 41 §5 と同じ寛容規律） |
+//! | その他（user_message_chunk / usage_update / session_info_update / available_commands_update / x.ai 拡張等） | 無視（メタ情報は host 側で処理、未知通知は protocol drift 吸収 — doc 41 §5 と同じ寛容規律） |
 
 use std::collections::HashSet;
 
@@ -29,6 +29,42 @@ fn content_text(content: &serde_json::Value) -> Option<String> {
             .filter(|s| !s.is_empty())
             .map(str::to_string),
         _ => None,
+    }
+}
+
+/// `tool_call_update` の content 配列 1 要素をテキスト化する。
+///
+/// - `{type: "content", content: {type: "text", text}}`: 標準 ACP テキスト出力
+/// - `{type: "diff", path, oldText?, newText?}`: agy 等の編集系 tool 結果（doc 88 §1 実測）
+fn tool_result_block_text(block: &serde_json::Value) -> Option<String> {
+    match block.get("type").and_then(|v| v.as_str()) {
+        Some("content") => block.get("content").and_then(content_text),
+        Some("diff") => {
+            let path = block.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let old_text = block
+                .get("oldText")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty());
+            let new_text = block
+                .get("newText")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty());
+            match (path.is_empty(), old_text, new_text) {
+                (true, None, None) => None,
+                (false, None, None) => Some(path.to_string()),
+                (true, None, Some(new_s)) => Some(new_s.to_string()),
+                (false, None, Some(new_s)) => Some(format!("{path}\n{new_s}")),
+                (true, Some(old_s), None) => Some(format!("--- old\n{old_s}")),
+                (false, Some(old_s), None) => Some(format!("{path}\n--- old\n{old_s}")),
+                (true, Some(old_s), Some(new_s)) => {
+                    Some(format!("--- old\n{old_s}\n+++ new\n{new_s}"))
+                }
+                (false, Some(old_s), Some(new_s)) => {
+                    Some(format!("{path}\n--- old\n{old_s}\n+++ new\n{new_s}"))
+                }
+            }
+        }
+        _ => block.get("content").and_then(content_text),
     }
 }
 
@@ -108,7 +144,7 @@ impl AcpTranslator {
                     .map(|blocks| {
                         blocks
                             .iter()
-                            .filter_map(|b| b.get("content").and_then(content_text))
+                            .filter_map(tool_result_block_text)
                             .collect::<Vec<_>>()
                             .join("\n")
                     })
@@ -251,5 +287,56 @@ mod tests {
         )
         .unwrap();
         assert_eq!(tr.ingest(&hook), Vec::new());
+    }
+
+    /// doc 88 §1 の実測 wire（agy 1.5.9）: write_file の diff 結果と未知 update（user_message_chunk /
+    /// usage_update / session_info_update）の扱い。
+    #[test]
+    fn agy_real_wire_diff_tool_result_and_ignored_updates() {
+        let mut tr = AcpTranslator::new();
+        // user_message_chunk は translator では無視（ChatView の optimistic bubble と二重にしない）
+        let user_echo: serde_json::Value = serde_json::from_str(
+            r#"{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"Create hello.txt"}}"#,
+        )
+        .unwrap();
+        assert_eq!(tr.ingest(&user_echo), Vec::new());
+
+        let usage: serde_json::Value =
+            serde_json::from_str(r#"{"sessionUpdate":"usage_update","used":9461,"size":1048576}"#)
+                .unwrap();
+        assert_eq!(tr.ingest(&usage), Vec::new());
+
+        let info: serde_json::Value = serde_json::from_str(
+            r#"{"sessionUpdate":"session_info_update","title":"Create Hello Txt File"}"#,
+        )
+        .unwrap();
+        assert_eq!(tr.ingest(&info), Vec::new());
+
+        // write_file tool_call → tool_call_update (content type="diff")
+        let call: serde_json::Value = serde_json::from_str(
+            r#"{"sessionUpdate":"tool_call","toolCallId":"call_7800946240387568052","name":"write_file","status":"in_progress","kind":"edit","title":"File hello.txt","locations":[{"path":"/tmp/hello.txt"}],"rawInput":{"Content":"hi","Overwrite":true,"Path":"/tmp/hello.txt"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            tr.ingest(&call),
+            vec![ConversationEvent::ToolCall {
+                id: "call_7800946240387568052".into(),
+                name: "File hello.txt".into(),
+                input: serde_json::json!({"Content":"hi","Overwrite":true,"Path":"/tmp/hello.txt"}),
+            }]
+        );
+
+        let update: serde_json::Value = serde_json::from_str(
+            r#"{"sessionUpdate":"tool_call_update","toolCallId":"call_7800946240387568052","name":"write_file","status":"completed","kind":"edit","title":"File hello.txt","content":[{"type":"diff","path":"/tmp/hello.txt","newText":"hi"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            tr.ingest(&update),
+            vec![ConversationEvent::ToolCallUpdate {
+                tool_use_id: "call_7800946240387568052".into(),
+                content: "/tmp/hello.txt\nhi".into(),
+                is_error: false,
+            }]
+        );
     }
 }

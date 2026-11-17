@@ -844,6 +844,44 @@ impl LanePool {
         out
     }
 
+    /// lane 内の各 chat session の ACP 設定面（engine が出した configOptions、doc 88 §6）。
+    ///
+    /// 読み手は roster enrich の 2 供給点（`build_lanes_snapshot` / `emit_lane_update`）—
+    /// [`Self::session_activity`] と同じく in-memory 実体からの enrich。configOptions を出さない
+    /// engine（ACP 以外 / 出さない ACP engine）と実体の無い session は entry なし。
+    pub fn acp_configs(
+        &self,
+        addr: &LaneAddress,
+    ) -> HashMap<SessionKey, crate::conversation::acp_config::AcpConfigView> {
+        self.chat_engines
+            .get(addr)
+            .into_iter()
+            .flatten()
+            .filter_map(|(key, slot)| slot.host.acp_config().map(|view| (*key, view)))
+            .collect()
+    }
+
+    /// agy session の設定切替の口（doc 88 §6）。応答待ちは pool の lock を離してから行うので、
+    /// host から切り離した handle を返す。chat engine が動いていなければ Err（候補は engine が
+    /// 出すので、開いてからでないと検証できない — Codex の `configure_codex` と同じ規律）。
+    pub fn agy_config_handle(
+        &self,
+        addr: &LaneAddress,
+        session: SessionKey,
+    ) -> Result<crate::conversation::AcpConfigHandle, String> {
+        let slot = self
+            .chat_engines
+            .get(addr)
+            .and_then(|m| m.get(&session))
+            .ok_or_else(|| {
+                format!("agy の chat が起動していません（chat を開いてから切り替えてください、session={session}）")
+            })?;
+        match &slot.host {
+            ChatHost::Agy(h) => Ok(h.config_handle()),
+            _ => Err(format!("session {session} は agy ではありません")),
+        }
+    }
+
     /// lane の session ごとの最終活動時刻 (epoch ms) を実体から集める。
     ///
     /// 供給源は 2 系統: tui = `PtySlot::last_output_at_ms`（出力バイト）/
@@ -1606,6 +1644,7 @@ impl LanePool {
                         lane_label: lane_label.clone(),
                         session_key: resolved.key,
                         session_id: resolved.conversation.clone(),
+                        config_intent: Vec::new(),
                     },
                 )?)
             }
@@ -1621,6 +1660,29 @@ impl LanePool {
                         lane_label: lane_label.clone(),
                         session_key: resolved.key,
                         session_id: resolved.conversation.clone(),
+                        config_intent: Vec::new(),
+                    },
+                )?)
+            }
+            Some(EngineKind::Agy) => {
+                // agy: 常駐 AcpAgentHost（`agy acp --dangerously-skip-permissions` = 同 ACP、doc 88）。
+                // sessionId は registry の会話 id（registry-native）。Model / Thinking Level / Mode の
+                // 意図は session 確定後に host が当て直す（agy は load 後に既定へ戻る — doc 88 §6）。
+                ChatHost::Agy(crate::conversation::AcpAgentHost::spawn(
+                    crate::conversation::AcpHostConfig {
+                        engine: crate::conversation::AcpEngine::Agy,
+                        cwd: info.cwd.clone(),
+                        repo: addr.repo.clone(),
+                        lane: label.clone(),
+                        lane_label: lane_label.clone(),
+                        session_key: resolved.key,
+                        session_id: resolved.conversation.clone(),
+                        config_intent: resolved
+                            .settings
+                            .as_ref()
+                            .and_then(crate::conversation::EngineSettings::agy)
+                            .map(crate::conversation::agy_settings::AgySettings::config_pairs)
+                            .unwrap_or_default(),
                     },
                 )?)
             }
@@ -1696,12 +1758,12 @@ impl LanePool {
         // （doc — engine 非依存 replay log）。⚠️ この判定は unison_server の reader / writer と
         // replay_log.rs の doc と 4 点セット（片側更新は dead-write を生む、#807 教訓 / doc 43 §5）。
         let replay_tap = match EngineKind::from_agent(&resolved.agent) {
-            Some(EngineKind::Grok | EngineKind::OpenCode | EngineKind::Vpcode) => {
-                Some(crate::conversation::replay_log::ReplayLogTap {
-                    repo: addr.repo.clone(),
-                    label: label.clone(),
-                })
-            }
+            Some(
+                EngineKind::Grok | EngineKind::OpenCode | EngineKind::Agy | EngineKind::Vpcode,
+            ) => Some(crate::conversation::replay_log::ReplayLogTap {
+                repo: addr.repo.clone(),
+                label: label.clone(),
+            }),
             _ => None,
         };
         // 活動時刻 / turn 状態の共有 atomic（書き手 = pump、読み手 = roster enrich と

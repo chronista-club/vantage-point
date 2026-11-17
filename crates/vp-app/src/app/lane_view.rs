@@ -53,6 +53,10 @@ mod session_derivation_tests {
                  "effort_choices": [{"value": "", "label": "Default"}, {"value": "high", "label": "high"}],
                  "settings": {"claude": {"effort": "high"}}},
                 {"key": 24, "agent": "shell", "mode": "tui", "chat_capable": false},
+                {"key": 25, "agent": "agy", "mode": "gui", "chat_capable": true,
+                 "acp_config": {"options": [{"id": "thought_level", "name": "Thinking Level",
+                   "current_value": "low", "choices": [{"value": "low", "name": "Low"}]}],
+                   "error": "mode を plan にできません"}},
             ]),
         );
         let sessions = lane.sessions.as_ref().expect("roster");
@@ -61,7 +65,7 @@ mod session_derivation_tests {
         assert_eq!(payload["lane"], "vp/root");
         assert_eq!(payload["focused"], 16, "focused は top-level にも出す");
         let entries = payload["sessions"].as_array().expect("sessions array");
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 3);
 
         // root / focused は **entry ごとの bool** に展開する（webview はこの形で読む）。
         assert_eq!(entries[0]["key"], 16);
@@ -102,6 +106,21 @@ mod session_derivation_tests {
             "会話 id 未発番（Draft / shell）は null"
         );
         assert_eq!(entries[1]["chat_capable"], false);
+        assert!(
+            entries[1]["acp_config"].is_null(),
+            "設定面を持たない session は null"
+        );
+
+        // 2026-11-17（doc 88 §6）: agy の設定面（engine が出した候補と現在値、失敗の文）は
+        // vp-app が透過して運ぶ。落とすと agy の panel が何も描けない。
+        assert_eq!(
+            entries[2]["acp_config"]["options"][0]["current_value"], "low",
+            "ACP の設定面を webview へ運ぶ"
+        );
+        assert_eq!(
+            entries[2]["acp_config"]["error"], "mode を plan にできません",
+            "切替の失敗の文も運ぶ（panel に出す）"
+        );
     }
 
     /// doc 53 §11: 定期 snapshot で roster を撃ち直さない指紋 gate の意味論。
@@ -288,6 +307,7 @@ pub(super) fn session_list_payload(
                 "effort_choices": s.effort_choices,
                 "settings": s.settings,
                 "permission_choices": s.permission_choices,
+                "acp_config": s.acp_config,
             })
         })
         .collect();

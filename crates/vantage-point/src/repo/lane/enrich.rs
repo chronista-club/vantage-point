@@ -74,6 +74,22 @@ pub(crate) fn apply_session_activity(info: &mut LaneInfo, activity: &HashMap<Ses
     }
 }
 
+/// ACP engine の設定面（[`super::pool::LanePool::acp_configs`]）を roster に投影する。
+///
+/// [`apply_session_activity`] と同じく in-memory 実体からの enrich で、2 供給点
+/// （`build_lanes_snapshot` / `emit_lane_update`）が refresh の後に必ず対で呼ぶ。
+/// 実体の無い session は None に戻す（停止した engine の古い候補を残さない）。
+pub(crate) fn apply_acp_configs(
+    info: &mut LaneInfo,
+    configs: &HashMap<SessionKey, crate::conversation::acp_config::AcpConfigView>,
+) {
+    if let Some(view) = info.sessions.as_mut() {
+        for s in view.sessions.iter_mut() {
+            s.acp_config = configs.get(&s.key).cloned();
+        }
+    }
+}
+
 /// disk の registry から wire view を作る（導出値はここで 1 回だけ計算する）。
 fn sessions_view_from_registry(reg: &session_registry::SessionRegistry) -> LaneSessionsView {
     LaneSessionsView {
@@ -101,6 +117,7 @@ fn sessions_view_from_registry(reg: &session_registry::SessionRegistry) -> LaneS
                     last_activity_at: None,
                     last_response_at: s.response_at(),
                     progress: None,
+                    acp_config: None,
                 }
             })
             .collect(),

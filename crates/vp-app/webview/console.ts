@@ -36,6 +36,7 @@ export type SessionMode = 'tui' | 'gui'
 // 生成型に当たる + vitest（`conversation-event-contract.test.ts`）。
 // ---------------------------------------------------------------------------
 
+import type { AcpConfigView } from './src/generated/AcpConfigView'
 import type { EngineSettings } from './src/generated/EngineSettings'
 import type { ConversationEvent as EngineConversationEvent } from './src/generated/ConversationEvent'
 import type { PlanEntry } from './src/generated/PlanEntry'
@@ -103,6 +104,9 @@ export type ConversationSession = {
   settings?: EngineSettings | null
   /** permission picker の選択肢（同上。空/undefined = 対話承認の概念なし）。 */
   permission_choices?: PickerChoice[]
+  /** ACP engine の設定面（engine が出した configOptions + 直近の失敗、doc 88 §6）。
+   *  engine 未起動 / 設定面を持たない engine / 旧 server は undefined。agy の panel が並べる。 */
+  acp_config?: AcpConfigView | null
 }
 
 /** picker の選択肢 1 件（Rust `ChoiceWire` の手書き mirror）。 */

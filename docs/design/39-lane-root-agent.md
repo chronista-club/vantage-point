@@ -238,9 +238,9 @@ root 切替を許すと「選んだ会話と別 engine の新品」が無言で�
 | **1** | codex | **app-server 常駐** | mako「turn じゃない方で」確定。thread/turn API（steer/fork 含む）をソース確認済 |
 | **2** | grok | **ACP 常駐**（新規 engine） | xai-org/grok-build ソース確認: ACP がネイティブ中核（TUI 自身が ACP client）、`xai-acp-lib` に session/new・prompt + load 機構。VP に `protocol/acp.rs` の下地あり。旧「ACP 不採用」は claude 専用統合の判断であり、grok では ACP こそが専用統合 |
 | — | cursor | **撤去済み**（2026-07-18 sweep 6.5、再導入時は新規実装 — 旧実装は git history #773/#776） | Composer 2.5 は魅力（`composer-2.5` / `-fast` を CLI 実物確認）だが、cursor-agent に入力 stream が無く turn-scoped しか組めない = 常駐一枚岩の方針に反する。**CLI が入力 stream / ACP を積んだら Composer 枠として再検討**（将来素材） |
-| — | agy | **撤去済み**（2026-07-18 sweep 6.5、再導入時は新規実装 — 旧実装は git history #773/#776） | 会話 id 供給なし・常駐路なし |
+| — | agy | **ACP 常駐で復帰**（2026-11-17、doc 88。旧実装は 2026-07-18 sweep 6.5 で一度撤去） | 7 月時点は会話 id 供給なし・常駐路なしだったが、agy 1.5.0+ で `agy acp`（ACP pv1）と `--conversation <id>` が揃い、AcpAgentHost で統合 |
 
-**帰結 — 対応 engine は常駐型のみ（claude / codex / grok / opencode）の一枚岩**:
+**帰結 — 対応 engine は常駐型のみ（claude / codex / grok / opencode / agy）の一枚岩**:
 
 > 追記（2026-07-24）: §7-1 route B の OpenCode は**実装済み**（acp_host 経由、session chip
 > prefix `oc`）。ACP 常駐なので一枚岩の方針にそのまま適合する。本行の一覧が

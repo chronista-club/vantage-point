@@ -22,6 +22,7 @@
 //! - `"grok"`: [`grok_command`]、registry の会話 id を `-r '<id>'` で指名 resume（doc 42）
 //! - `"opencode"`: [`opencode_command`]、registry の会話 id を `-s '<id>'` で指名 resume（doc 43。
 //!   model は opencode config が SSOT — VP は注入しない）
+//! - `"agy"`: [`agy_command`]、registry の会話 id を `--conversation '<id>'` で指名 resume（doc 88）
 //! - resume id は spawn 前に Rust が各 `lane::*_session`（または registry）を直読み
 //!   （旧: bash が `vp lane last-session` を子→親 CLI 呼び出し = 層の逆転、解消）
 //!
@@ -376,12 +377,24 @@ fn opencode_command(resume_id: Option<&str>) -> String {
     }
 }
 
+/// agy の tui 起動 command（doc 88 §4 — TUI は `--conversation '<id>'` で ACP sessionId を指名 resume）。
+///
+/// - `Some(id)`（[`is_safe_session_id`] 検証済 = injection 防壁）: `agy --conversation '<id>' || agy`
+///   （session 消失時は素の agy に fallback、shell の `||` が native 処理）
+/// - `None`: `agy`（新規会話）
+fn agy_command(resume_id: Option<&str>) -> String {
+    match resume_id.filter(|id| is_safe_session_id(id)) {
+        Some(id) => format!("agy --conversation '{}' || agy", id),
+        None => "agy".to_string(),
+    }
+}
+
 /// agent 名に応じた spawn command を構築する（tmux decoupling PR2: Rust-native、 script 層なし）。
 ///
 /// - `"claude"`（+ 旧名 `"hd"`）: slot + claude 注入（`fresh` / cc_session により resume 分岐）
-/// - `"codex"` / `"grok"` / `"opencode"`: slot + engine CLI 注入（`fresh` / registry の会話 id により resume 分岐）
+/// - `"codex"` / `"grok"` / `"opencode"` / `"agy"`: slot + engine CLI 注入（`fresh` / registry の会話 id により resume 分岐）
 /// - `"shell"`: shell のみ
-/// - `"tmux"`（退役 agent）/ 未知名（撤去済み `"cursor"` / `"agy"` 含む）: shell のみ + warn
+/// - `"tmux"`（退役 agent）/ 未知名（撤去済み `"cursor"` 含む）: shell のみ + warn
 ///   （DB descriptor の legacy 値を graceful 吸収）
 ///
 /// doc 53 §12.1: 旧 `fresh` 引数（resume/continue を回避して素で立てる指示）は退役した。
@@ -546,6 +559,10 @@ pub fn build_agent_command_for_session(
             // 元から素の `opencode` を返すので、呼び手の 1 bit は何も足していなかった。
             Some(format!("{}\r", opencode_command(conversation.as_deref())))
         }
+        Some(crate::conversation::EngineKind::Agy) => {
+            // doc 88 §4: resume 先は registry の会話 id 1 本（None = 素の `agy` で立つ）。
+            Some(format!("{}\r", agy_command(conversation.as_deref())))
+        }
         Some(crate::conversation::EngineKind::Vpcode) => {
             // vpcode は TUI を持たない（gui 専用 engine — VCP §3 の -p oneshot は対話でない）。
             // tui slot は素の login shell に倒す = そこで `vpcode -p` を手打ちできる場所になる。
@@ -553,7 +570,7 @@ pub fn build_agent_command_for_session(
         }
         None if effective_agent == "shell" => None,
         None => {
-            // "tmux"（PR2 で退役）/ 撤去済み "cursor"・"agy"（sweep 6.5）/ 未知 agent の
+            // "tmux"（PR2 で退役）/ 撤去済み "cursor"（sweep 6.5）/ 未知 agent の
             // DB descriptor を shell 層で受ける（graceful degradation）。effective_agent は
             // root session の agent（cross-engine root で lane 固定 agent と食い違い得る）。
             tracing::warn!(
@@ -1192,6 +1209,45 @@ mod tests {
         // fresh も素の opencode（registry-native なので clear 対象の旧 store が無い）。
         let fresh = build_agent_command("opencode", &addr, Path::new("/tmp"));
         assert_eq!(fresh.initial_input.as_deref(), Some("opencode\r"));
+    }
+
+    /// agy の tui 起動（doc 88 §4）: id 有りは `--conversation '<id>' || agy` 指名 resume、
+    /// id 無しは素の agy。injection 形の id は resume に採らない。
+    #[test]
+    fn agy_command_variants() {
+        let resume = agy_command(Some("29fa9ed4-cd23-429f-9a63-a5d490b0d9b3"));
+        assert_eq!(
+            resume, "agy --conversation '29fa9ed4-cd23-429f-9a63-a5d490b0d9b3' || agy",
+            "id 有りは指名 resume + 素の agy fallback: {resume}"
+        );
+        assert_eq!(agy_command(None), "agy");
+        for bad in ["bad'; rm", "ses_089ead04", ""] {
+            let cmd = agy_command(Some(bad));
+            assert_eq!(cmd, "agy", "不正 id '{bad}' は素の agy: {cmd}");
+        }
+    }
+
+    /// build_agent_command（agy agent）: 会話 id 未記録は素の agy、記録済みは `--conversation` resume。
+    #[test]
+    fn build_stand_command_agy_arm() {
+        let _state = crate::test_env::state_dir();
+        let addr = LaneAddress::root("vp-agy");
+        let cmd = build_agent_command("agy", &addr, Path::new("/tmp"));
+        assert_eq!(cmd.initial_input.as_deref(), Some("agy\r"));
+
+        crate::lane::session_registry::set_conversation(
+            "vp-agy",
+            "lead",
+            "agy",
+            1,
+            Some("29fa9ed4-cd23-429f-9a63-a5d490b0d9b3"),
+        )
+        .expect("set agy conversation");
+        let resumed = build_agent_command("agy", &addr, Path::new("/tmp"));
+        assert_eq!(
+            resumed.initial_input.as_deref(),
+            Some("agy --conversation '29fa9ed4-cd23-429f-9a63-a5d490b0d9b3' || agy\r")
+        );
     }
 
     /// 撤去済み agent（`"cursor"` — sweep 6.5）の DB descriptor は slot の login shell で graceful に

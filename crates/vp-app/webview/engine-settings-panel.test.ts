@@ -4,8 +4,8 @@ import { ENGINE_SETTINGS_PANELS } from './engine-settings-panel'
 import { postSettings } from './engine-settings-shared'
 
 describe('engine settings panel table', () => {
-  it('panel を持つ engine は claude / codex / vpcode の 3 つ（grok / opencode は read-only に落ちる）', () => {
-    expect(Object.keys(ENGINE_SETTINGS_PANELS).sort()).toEqual(['claude', 'codex', 'vpcode'])
+  it('panel を持つ engine は agy / claude / codex / vpcode の 4 つ（grok / opencode は read-only に落ちる）', () => {
+    expect(Object.keys(ENGINE_SETTINGS_PANELS).sort()).toEqual(['agy', 'claude', 'codex', 'vpcode'])
   })
 })
 
