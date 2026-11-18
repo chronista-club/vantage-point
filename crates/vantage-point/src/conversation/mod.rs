@@ -15,23 +15,26 @@
 //! - [`host`]: [`ClaudeHost`] — headless claude を lane 単位で**常駐**駆動（stream-json stdin 連投）
 //! - [`codex_rpc_translate`] + [`codex_host`]: codex — **常駐 RpcHost**（`codex app-server`
 //!   JSONL JSON-RPC、doc 41）
-//! - [`acp_translate`] + [`acp_host`]: grok / opencode — **常駐 AcpAgentHost**（`grok agent stdio`
-//!   = ACP、doc 42 / `opencode acp` = 同 ACP、doc 43。engine 差分は [`AcpEngine`] に集約）
+//! - [`acp_translate`] + [`acp_host`]: grok / opencode / agy — **常駐 AcpAgentHost**
+//!   （`grok agent stdio` = ACP、doc 42 / `opencode acp` = 同 ACP、doc 43 / `agy acp` = 同 ACP、
+//!   doc 88。engine 差分は [`AcpEngine`] に集約）
 //! - [`translate`] / [`transcript`]: claude stream / transcript → [`ConversationEvent`] 翻訳層
-//! - [`replay_log`]: transcript を持たない engine（codex / grok / opencode）の per-session 会話ログ
-//!   （disk 永続、gui の replay 源）。claude は transcript が SSOT なので使わない
+//! - [`replay_log`]: transcript を持たない engine（grok / opencode / agy / vpcode）の per-session 会話ログ
+//!   （disk 永続、gui の replay 源）。claude は transcript、codex は app-server 履歴が SSOT なので使わない
 //!
-//! 対応 engine は**常駐型のみの一枚岩**（doc 39 §7: claude / codex / grok / opencode — doc 41・42・43）。
+//! 対応 engine は**常駐型のみの一枚岩**（doc 39 §7: claude / codex / grok / opencode / agy — doc 41・42・43・88）。
 //! 旧 turn-scoped 系（TurnHost / cursor_host / cursor_translate）は step 4 で撤去済み、
-//! cursor / agy は sweep 6.5 で agent ごと完全撤去（再導入時は新規実装 — 旧実装は
+//! cursor は sweep 6.5 で agent ごと完全撤去（再導入時は新規実装 — 旧実装は
 //! git history #773/#776。Composer の CLI 進化待ちの再検討方針は doc 39 §7）。
 //!
 //! Unison 配信は `process::conversation_pump`（terminal_pump と同型）が担う。GUI 語彙 [`ConversationEvent`] は
 //! engine 非依存なので、新 engine は「翻訳器 + 常駐 host」を足すだけで乗る
 //! （chatview / topic 配線は無改修）。
 
+pub mod acp_config;
 pub mod acp_host;
 pub mod acp_translate;
+pub mod agy_settings;
 pub mod claude_settings;
 pub mod claude_translate;
 mod codex_async_questions;
@@ -55,7 +58,7 @@ pub mod vpcode_catalog;
 pub mod vpcode_host;
 pub mod vpcode_transcript;
 
-pub use acp_host::{AcpAgentHost, AcpEngine, AcpHostConfig};
+pub use acp_host::{AcpAgentHost, AcpConfigHandle, AcpEngine, AcpHostConfig};
 pub use claude_translate::ClaudeTranslator;
 pub use codex_host::{CodexAgentHost, CodexRpcHostConfig};
 pub use engine::{ChatEngineSlot, ChatHost, EngineKind};

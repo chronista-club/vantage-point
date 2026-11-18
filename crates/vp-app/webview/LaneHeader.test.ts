@@ -99,15 +99,15 @@ describe('sessionChipPrefix — session chip の engine 別 prefix（doc 37）',
     expect(sessionChipPrefix('claude')).toBe('cc')
     expect(sessionChipPrefix('hd')).toBe('cc')
   })
-  it('codex / grok / opencode は engine 別 prefix（chip が engine indicator を兼ねる）', () => {
+  it('codex / grok / opencode / agy は engine 別 prefix（chip が engine indicator を兼ねる）', () => {
     expect(sessionChipPrefix('codex')).toBe('cdx')
     expect(sessionChipPrefix('grok')).toBe('grok')
     expect(sessionChipPrefix('opencode')).toBe('oc')
+    expect(sessionChipPrefix('agy')).toBe('agy')
   })
-  it('撤去済み engine（cursor / agy）と未知 / 欠落 agent は中立の sid（graceful degradation）', () => {
-    // sweep 6.5: cursor / agy は engine として撤去。disk / wire に残る旧 agent 文字列は sid に倒れる。
+  it('撤去済み engine（cursor）と未知 / 欠落 agent は中立の sid（graceful degradation）', () => {
+    // sweep 6.5: cursor は engine として撤去。disk / wire に残る旧 agent 文字列は sid に倒れる。
     expect(sessionChipPrefix('cursor')).toBe('sid')
-    expect(sessionChipPrefix('agy')).toBe('sid')
     expect(sessionChipPrefix('shell')).toBe('sid')
     expect(sessionChipPrefix(null)).toBe('sid')
     expect(sessionChipPrefix(undefined)).toBe('sid')

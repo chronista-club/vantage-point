@@ -11,9 +11,11 @@ import { isLeadLaneName } from "../../lane-address";
 /**
  * Lane Agent kind → icon (default / active=fill weight) のペア。
  *
- * AI engine（claude / codex / grok）は **ロゴ**で見分ける（mako 2026-09-24「Pane ヘッダや Lane
+ * AI engine（claude / codex / grok / agy）は **ロゴ**で見分ける（mako 2026-09-24「Pane ヘッダや Lane
  * リストでロゴで分かるように」）。Phosphor には OpenAI しか無いので、3 社が揃う MingCute の
  * line / fill で統一する（線の太さと角が揃う。creo-ui-icons-web の 9 set に入っている）。
+ * agy（Antigravity）は MingCute に無いので Material Symbols の outline / fill（9 set の外。
+ * `iconify-icon` が API から引くので表示はされる — doc 88 §2）。
  * ロゴの無い engine（opencode）と VP 内の component は Phosphor のまま。
  * 旧 SIDEBAR_HTML `STAND_GLYPH` の port。 `-fill` を別 literal で持ち、
  * `IconName` 型に収まるようにする (文字列連結だと型が string に広がるため)。
@@ -23,6 +25,10 @@ const COMPONENT_ICON: Record<string, { default: IconName; active: IconName }> = 
 	codex: { default: "mingcute:openai-line", active: "mingcute:openai-fill" },
 	grok: { default: "mingcute:grok-line", active: "mingcute:grok-fill" },
 	opencode: { default: "ph:code", active: "ph:code-fill" },
+	agy: {
+		default: "material-symbols:antigravity-outline",
+		active: "material-symbols:antigravity",
+	},
 	shell: { default: "ph:terminal-window", active: "ph:terminal-window-fill" },
 	tmux: { default: "ph:presentation", active: "ph:presentation-fill" },
 	board: { default: "ph:compass", active: "ph:compass-fill" },
@@ -50,6 +56,8 @@ export function agentDisplayName(agent: string): string {
 			return "Grok";
 		case "opencode":
 			return "OpenCode";
+		case "agy":
+			return "Antigravity";
 		case "shell":
 			return "Shell";
 		case "tmux":

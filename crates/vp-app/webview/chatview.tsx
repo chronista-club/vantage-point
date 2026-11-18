@@ -2832,6 +2832,8 @@ export const CHATVIEW_CSS = `
 .codex-permission-choice:hover:not(:disabled), .codex-permission-choice[aria-pressed="true"] { background:var(--color-bg-hover,#252a35); }
 .codex-permission-choice:disabled { opacity:.5; cursor:default; }
 .codex-permission-popover p { font-size:11px; line-height:1.5; }
+/* engine 別 panel の切替失敗（全文は title）。read-only 表示の枠に警告色だけ足す。 */
+.conversation-settings-error { color: var(--color-status-error,#d4444c); opacity:1; cursor:help; }
 /* catalog 空 engine の read-only model 表示（select と同じ枠感、押せない見た目 = cursor/border なし）。 */
 .conversation-model-readonly { font-size:10.5px; padding:1px 5px; border-radius:6px;
   color: var(--color-text-secondary,#a8b0c0); opacity:.7; }

@@ -71,7 +71,7 @@ daemon ⚙️ (Process Manager / 常駐デーモン)
   ├── devices 🧲 (machine scope / device registry)
   └── device_io 🌫️ (lane scope / device I/O)
 
-軸: agent（claude/codex/grok/opencode/vpcode/shell）× mode（tui/gui）。GUI 容器 = Pane（app 専用語）。
+軸: agent（claude/codex/grok/opencode/agy/vpcode/shell）× mode（tui/gui）。GUI 容器 = Pane（app 専用語）。
 vpcode は自前 engine（VCP protocol、#1014〜#1016 で 5 番目の engine として統合、2026-08-27）。
 部品 = component（lane に host）/ 常駐 = service。総称「Stand」は廃止（義ごとに分解）。
 ```

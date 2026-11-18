@@ -3,11 +3,13 @@ import { describe, expect, it } from 'vitest'
 import { agentDisplayName, agentIcon } from './lane'
 
 describe('engine のロゴ', () => {
-  it('AI engine は MingCute のロゴ（focused / active は fill）', () => {
+  it('AI engine は専用ロゴ（focused / active は fill）', () => {
     expect(agentIcon('claude', false)).toBe('mingcute:claude-line')
     expect(agentIcon('claude', true)).toBe('mingcute:claude-fill')
     expect(agentIcon('codex', false)).toBe('mingcute:openai-line')
     expect(agentIcon('grok', true)).toBe('mingcute:grok-fill')
+    expect(agentIcon('agy', false)).toBe('material-symbols:antigravity-outline')
+    expect(agentIcon('agy', true)).toBe('material-symbols:antigravity')
   })
   it('ロゴの無い engine は汎用 icon、未知は null', () => {
     expect(agentIcon('opencode', false)).toBe('ph:code')
@@ -19,5 +21,6 @@ describe('engine のロゴ', () => {
     expect(agentDisplayName('codex')).toBe('Codex')
     expect(agentDisplayName('grok')).toBe('Grok')
     expect(agentDisplayName('opencode')).toBe('OpenCode')
+    expect(agentDisplayName('agy')).toBe('Antigravity')
   })
 })

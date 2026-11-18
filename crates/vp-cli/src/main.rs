@@ -346,7 +346,7 @@ enum LaneCommands {
     SlotNew {
         /// lane address ("<repo>/root" / "<repo>/sub/<name>")
         lane: String,
-        /// engine (agent 名: conversation / codex / grok / opencode / shell。省略時は現 root の engine)
+        /// engine (agent 名: claude / codex / grok / opencode / agy / shell。省略時は現 root の engine)
         #[arg(long)]
         agent: Option<String>,
     },

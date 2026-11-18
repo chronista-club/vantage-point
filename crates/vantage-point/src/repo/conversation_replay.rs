@@ -197,6 +197,7 @@ async fn replay_once(
             Some(
                 crate::conversation::EngineKind::Grok
                     | crate::conversation::EngineKind::OpenCode
+                    | crate::conversation::EngineKind::Agy
                     | crate::conversation::EngineKind::Vpcode
             )
         ) {
