@@ -126,16 +126,11 @@ async fn record_user_message_if_transcriptless(
     let Ok(resolved) = resolved else {
         return;
     };
-    // 記録対象は pump の tap と揃える。Claude / Codex は native 履歴を読む。
-    if !matches!(
-        crate::conversation::EngineKind::from_agent(&resolved.agent),
-        Some(
-            crate::conversation::EngineKind::Grok
-                | crate::conversation::EngineKind::OpenCode
-                | crate::conversation::EngineKind::Agy
-                | crate::conversation::EngineKind::Vpcode
-        )
-    ) {
+    // 記録対象は pump の tap と揃える（replay_log を使うのは vpcode だけ）。Claude / Codex は
+    // native 履歴を読み、ACP engine（grok / opencode / agy）は host の控えが発話を持つ。
+    if crate::conversation::EngineKind::from_agent(&resolved.agent)
+        != Some(crate::conversation::EngineKind::Vpcode)
+    {
         return;
     }
     let lane_label = crate::repo::agent_spawner::lane_label(&addr).to_string();

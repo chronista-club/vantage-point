@@ -334,6 +334,48 @@ impl ChatHost {
         }
     }
 
+    /// engine が終了していて、作り直すしかない host か（ACP engine — agent-chat 設計書 01
+    /// 「呼び手の規則」）。他の engine は false（Claude / Codex / vpcode は、次の送信の自己修復と
+    /// 各 host の作りで扱う）。
+    pub fn exited(&self) -> bool {
+        match self {
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.exited(),
+            ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => false,
+        }
+    }
+
+    /// 履歴を host から受け取る口（ACP engine だけが持つ）。pump の起動時に 1 度だけ取り出す。
+    pub fn take_replay_port(&self) -> Option<super::replay_source::ReplayPort> {
+        match self {
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.take_replay_port(),
+            ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => None,
+        }
+    }
+
+    /// 履歴の配り直しを pump に頼む（ACP engine）。頼めたら true。ACP 以外は false
+    /// （Claude は transcript、Codex は `request_history`、vpcode は replay_log）。
+    pub fn request_replay(&self) -> bool {
+        match self {
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.request_replay(),
+            ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => false,
+        }
+    }
+
+    /// engine の process を立て直して履歴を読み直す（ACP engine。他の書き手が会話を進めた後の口、
+    /// agent-chat 設計書 01「呼び手の規則」）。turn の最中は Err。
+    ///
+    /// ⚠️ 呼び手はまだ無い（[`super::acp_host::AcpAgentHost::restart`] の doc）。
+    pub async fn restart_engine(&self) -> anyhow::Result<()> {
+        match self {
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => {
+                h.restart().await.map_err(anyhow::Error::msg)
+            }
+            ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => {
+                anyhow::bail!("このエンジンは立て直しの口を持ちません")
+            }
+        }
+    }
+
     pub fn commit_seq(&self) -> u64 {
         match self {
             ChatHost::Claude(h) => h.commit_seq(),
@@ -401,8 +443,9 @@ impl ChatHost {
         }
     }
 
-    /// 明示 teardown（[`ChatEngineSlot`] Drop から呼ぶ）。codex / grok / opencode / agy は host kill、
-    /// claude は Child kill_on_drop に委ねる（host drop 時に停止）。
+    /// 明示 teardown（[`ChatEngineSlot`] Drop から呼ぶ）。codex / vpcode は host kill、
+    /// claude は Child kill_on_drop に委ねる（host drop 時に停止）。grok / opencode / agy は共有 host に
+    /// 停止を命じる（会話の確定を待っている最中でも、すぐに process を止める）。
     pub fn stop(&mut self) {
         match self {
             // ClaudeHost の Child は kill_on_drop(true) なので host drop で停止する。

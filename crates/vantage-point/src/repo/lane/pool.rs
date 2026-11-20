@@ -1569,10 +1569,13 @@ impl LanePool {
         topic_router: &std::sync::Arc<crate::repo::topic_router::TopicRouter>,
     ) -> anyhow::Result<()> {
         let resolved = self.resolve_chat_session(addr, session)?;
-        let info = self
+        // cwd だけ写して、lane の借用はここで離す（下で終了した engine を畳む時に pool を書き換える）。
+        let cwd = self
             .lanes
             .get(addr)
-            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
+            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?
+            .cwd
+            .clone();
         if resolved.mode != SessionMode::Gui {
             // 呼び元は conversation_submit / conversation_nudge の両方（doc 34 channel E）— method 名は
             // 呼び元の ctx が名乗るので、ここでは要件だけ述べる。
@@ -1599,12 +1602,26 @@ impl LanePool {
                 resolved.key
             );
         }
-        if self
+        match self
             .chat_engines
             .get(addr)
-            .is_some_and(|m| m.contains_key(&resolved.key))
+            .and_then(|m| m.get(&resolved.key))
+            .map(|slot| slot.host.exited())
         {
-            return Ok(());
+            Some(false) => return Ok(()),
+            // 終了した host（ACP engine）は履歴も渡せず発話も受けない。残したままだと、chat を
+            // 開き直すたびに履歴の取得が失敗する。畳んで、下で作り直す（load で履歴が戻る）。
+            Some(true) => {
+                tracing::info!(
+                    "終了した chat engine を作り直す: addr={addr} session={}",
+                    resolved.key
+                );
+                // 畳む口は他と同じものを使う（進みの投影を止め、focused なら lane の pid を下ろす）。
+                // 直接 slot を外すと、作り直しの起動に失敗した時に、死んだ process の pid と
+                // 古い「作業中」が名簿に残る。
+                self.drop_chat_engine(addr, Some(resolved.key));
+            }
+            None => {}
         }
 
         let lane_label = crate::repo::agent_spawner::lane_label(addr).to_string();
@@ -1621,7 +1638,7 @@ impl LanePool {
                 ChatHost::Codex(
                     crate::conversation::CodexAgentHost::spawn_with_question_session(
                         crate::conversation::CodexRpcHostConfig {
-                            cwd: info.cwd.clone(),
+                            cwd: cwd.clone(),
                             repo: addr.repo.clone(),
                             lane: label.clone(),
                             lane_label: lane_label.clone(),
@@ -1638,7 +1655,7 @@ impl LanePool {
                 ChatHost::Grok(crate::conversation::AcpAgentHost::spawn(
                     crate::conversation::AcpHostConfig {
                         engine: crate::conversation::AcpEngine::Grok,
-                        cwd: info.cwd.clone(),
+                        cwd: cwd.clone(),
                         repo: addr.repo.clone(),
                         lane: label.clone(),
                         lane_label: lane_label.clone(),
@@ -1654,7 +1671,7 @@ impl LanePool {
                 ChatHost::OpenCode(crate::conversation::AcpAgentHost::spawn(
                     crate::conversation::AcpHostConfig {
                         engine: crate::conversation::AcpEngine::OpenCode,
-                        cwd: info.cwd.clone(),
+                        cwd: cwd.clone(),
                         repo: addr.repo.clone(),
                         lane: label.clone(),
                         lane_label: lane_label.clone(),
@@ -1671,7 +1688,7 @@ impl LanePool {
                 ChatHost::Agy(crate::conversation::AcpAgentHost::spawn(
                     crate::conversation::AcpHostConfig {
                         engine: crate::conversation::AcpEngine::Agy,
-                        cwd: info.cwd.clone(),
+                        cwd: cwd.clone(),
                         repo: addr.repo.clone(),
                         lane: label.clone(),
                         lane_label: lane_label.clone(),
@@ -1692,7 +1709,7 @@ impl LanePool {
                 // resume 材料は vpcode_transcript store（封筒 side-car、pump 非経由）。
                 ChatHost::Vpcode(crate::conversation::VpcodeHost::spawn(
                     crate::conversation::VpcodeHostConfig {
-                        cwd: info.cwd.clone(),
+                        cwd: cwd.clone(),
                         repo: addr.repo.clone(),
                         lane: label.clone(),
                         lane_label: lane_label.clone(),
@@ -1729,7 +1746,7 @@ impl LanePool {
                     .unwrap_or_default();
                 ChatHost::Claude(crate::conversation::ClaudeHost::spawn(
                     crate::conversation::ClaudeHostConfig {
-                        cwd: info.cwd.clone(),
+                        cwd: cwd.clone(),
                         repo: addr.repo.clone(),
                         lane: label.clone(),
                         lane_label: lane_label.clone(),
@@ -1752,15 +1769,15 @@ impl LanePool {
                 );
             }
         };
-        // replay-log tap: native 履歴を使わない engine の session にだけ
-        // 付ける。claude は transcript が SSOT なので None（二重化しない）。tap は配信 event を
-        // per-session に disk 記録し、demand_start の no_session path がそれを replay 源にする
-        // （doc — engine 非依存 replay log）。⚠️ この判定は unison_server の reader / writer と
-        // replay_log.rs の doc と 4 点セット（片側更新は dead-write を生む、#807 教訓 / doc 43 §5）。
+        // replay-log tap: 履歴を自分で持たない engine（vpcode）の session にだけ付ける。claude は
+        // transcript、codex は app-server、ACP engine（grok / opencode / agy）は engine の
+        // `session/load` が SSOT なので None（二重化しない）。tap は配信 event を per-session に
+        // disk 記録し、demand_start の no_session path がそれを replay 源にする。
+        // ⚠️ この判定は 4 点セット（片側更新は dead-write を生む、#807 教訓 / doc 43 §5）:
+        // ここ / `conversation_replay::replay_once` の読み手 / `conversation_ops` の user 発話の
+        // 記録 / `replay_log.rs` の doc。
         let replay_tap = match EngineKind::from_agent(&resolved.agent) {
-            Some(
-                EngineKind::Grok | EngineKind::OpenCode | EngineKind::Agy | EngineKind::Vpcode,
-            ) => Some(crate::conversation::replay_log::ReplayLogTap {
+            Some(EngineKind::Vpcode) => Some(crate::conversation::replay_log::ReplayLogTap {
                 repo: addr.repo.clone(),
                 label: label.clone(),
             }),
@@ -1785,6 +1802,8 @@ impl LanePool {
             std::sync::Arc::clone(&last_event_at),
             std::sync::Arc::clone(&turn_active),
             history_recovery,
+            // ACP engine: 履歴は host の控えから pump が配る（replay_source）。
+            host.take_replay_port(),
         );
         let pid = host.pid();
         // LaneInfo.pid / state は lane の代表 = focused session に紐づける（非 focused の
@@ -1877,6 +1896,37 @@ impl LanePool {
                 Ok(())
             }
             _ => anyhow::bail!("Codex の chat host がありません"),
+        }
+    }
+
+    /// テスト用: chat engine の slot を直接差し込む（偽の host で pool の動きを確かめる）。
+    #[cfg(test)]
+    pub(crate) fn insert_chat_engine_for_test(
+        &mut self,
+        addr: &LaneAddress,
+        session: SessionKey,
+        slot: ChatEngineSlot,
+    ) {
+        self.chat_engines
+            .entry(addr.clone())
+            .or_default()
+            .insert(session, slot);
+    }
+
+    /// ACP engine の履歴の配り直しを pump に頼む（chat を開いた時）。
+    ///
+    /// 配るのは pump（engine の出力と履歴を topic に流すのは pump だけ）— 控えと続きの event を抜けも重なりも無く並べる
+    /// ため（`conversation::replay_source`）。engine が居ない / ACP でなければ Err。
+    pub fn request_acp_replay(
+        &self,
+        addr: &LaneAddress,
+        session: SessionKey,
+    ) -> anyhow::Result<()> {
+        let slot = self.chat_slot(addr, Some(session))?;
+        if slot.host.request_replay() {
+            Ok(())
+        } else {
+            anyhow::bail!("履歴を配れる chat host がありません")
         }
     }
 

@@ -2,6 +2,10 @@
 
 # doc 43 — OpenCode AcpHost（local LLM 正式化 = dev path step 7）
 
+> **2026-11-20 更新**: §5 の「将来素材」（ACP 系を engine-native replay に寄せて replay_log を退役させる。
+> その時は grok も同時に移す）を実施した。host は共有 crate `agent-chat-acp` の `AcpClientHost` に替わり、
+> opencode の履歴は `session/load` から戻る。今の作りは doc 88 §8。以下の本文は当時の記録として残す。
+
 > **status**: 設計確定（2026-07-19、実測 de-risk 全 PASS → 本 doc → 実装）
 > **発端**: dev path step 7（local LLM 正式化）。doc 39 §7-1 の 4 route から **B = OpenCode を
 > AcpHost に挿す**を mako 選択（2026-07-19。「codex の設定複雑化を避け、local 専用の常駐 engine を
