@@ -5,7 +5,8 @@
 > **2026-11-20 更新**: host の実装は、VP の手書きから共有 crate `agent-chat-acp` の `AcpClientHost`
 > （公式 SDK）に替わった。**`session/load` の replay 列は捨てずに履歴の正にし、`replay_log` は grok では
 > 使わない**（§1 の resume、§2・§3 の「replay 列を無視」「replay_log tap」は当時の設計）。今の作りは
-> doc 88 §8。grok 1.0.89 の実測（load が流すもの、書き手が 2 人の時）も doc 88 §8.4 と PR に書いた。
+> doc 88 §8。grok 1.0.89 の実測は、書き手が 2 人の時を doc 88 §8.4 に、load が流すものを切り替えの PR と
+> agent-chat の設計書 01 に書いた。
 > 以下の本文は当時（grok の版は本文のとおり）の記録として残す。
 
 > 2026-07-18、mako + Fable 5 conductor session。doc 39 §7「常駐型のみの一枚岩

@@ -180,7 +180,9 @@ mod tests {
         let mut legacy = Sha256::new();
         legacy.update(b"vp-roto-setup-v1\0");
         legacy.update([6]); // Retired internal index, deliberately not SETUP.
-        legacy.update(serde_json::to_vec(&generated.content).unwrap());
+        // 昔の hash と同じ bytes（辞書順）で計算する。並べ直さないと、存在したことの無い値と
+        // 比べることになり、index に関係なく常に通る。
+        legacy.update(serde_json::to_vec(&canonical(&generated.content)).unwrap());
         let legacy_hash: String = legacy
             .finalize()
             .iter()

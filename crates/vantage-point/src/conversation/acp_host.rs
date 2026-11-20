@@ -26,14 +26,23 @@
 //!
 //! stderr: 1 行ずつ daemon の log に出す（`on_stderr`）。末尾は共有 host が持ち、終了の文に付く。
 //!
-//! 途絶の自己修復: engine が終了すると `submit` が Err を返し、`ensure_and_submit_chat` が
-//! drop → 再 ensure → retry する。
+//! 途絶の自己修復: engine が終了した後の `submit` は Err を返し、`ensure_and_submit_chat` が
+//! drop → 再 ensure → retry する。chat を開き直した時は、終了した host（[`AcpAgentHost::exited`]）を
+//! pool が作り直す（agent-chat 設計書 01「呼び手の規則」— 終了した host はもう使えない）。
+//!
+//! ⚠️ 共有 host の今の作り（revision `6e93984`）に残る窓（agent-chat に直しを頼んである、2026-11-20）:
+//! - engine の終了から最大 1 秒（stderr の読み切り）の間と、会話の確定の前に送った発話は、`submit` が
+//!   Ok を返したまま捨てられる。理由は `EngineExited` の文に載るだけなので、daemon の log にも出す
+//! - 会話の確定の前（と設定の当て直しの最中）の [`AcpAgentHost::stop`] は、確定が済むまで process を
+//!   止めない（確定の上限 30 秒 + 当て直しの上限 15 秒）
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_chat_acp::{
-    AcpClientHost, HostOptions, LaunchContext, LoadFallback, PermissionDecision, PromptImage,
+    AcpClientHost, HostError, HostOptions, LaunchContext, LoadFallback, PermissionDecision,
+    PromptImage,
 };
 use agent_client_protocol::v1::schema::RequestPermissionRequest;
 use tokio::sync::broadcast;
@@ -212,6 +221,8 @@ pub struct AcpAgentHost {
     replay: ReplayRequester,
     /// pump に渡す口（pump の起動時に 1 度だけ取り出す）。
     port: Mutex<Option<ReplayPort>>,
+    /// engine が終了したか（`EngineExited` を見たら立つ。[`Self::exited`]）。
+    exited: Arc<AtomicBool>,
 }
 
 impl AcpAgentHost {
@@ -222,7 +233,7 @@ impl AcpAgentHost {
     pub fn spawn(config: AcpHostConfig) -> anyhow::Result<Self> {
         let engine = config.engine;
         let host = AcpClientHost::spawn(launch_context(&config), host_options(&config))
-            .map_err(|e| anyhow::anyhow!("{} の起動に失敗: {e}", engine.name()))?;
+            .map_err(|e| spawn_error(engine, e))?;
         tracing::info!(
             "AcpAgentHost spawn（常駐 {} ACP、repo={}, lane={}, resume={}）",
             engine.name(),
@@ -242,15 +253,18 @@ impl AcpAgentHost {
         let engine = config.engine;
         let host =
             AcpClientHost::spawn_with(connector, PathBuf::from(&config.cwd), host_options(&config))
-                .map_err(|e| anyhow::anyhow!("{} の起動に失敗: {e}", engine.name()))?;
+                .map_err(|e| spawn_error(engine, e))?;
         Ok(Self::wrap(engine, host))
     }
 
     fn wrap(engine: AcpEngine, host: AcpClientHost) -> Self {
         let host = Arc::new(host);
         let (replay, requests) = ReplayRequester::channel();
+        let exited = Arc::new(AtomicBool::new(false));
+        tokio::spawn(watch_exit(engine, host.subscribe(), Arc::clone(&exited)));
         Self {
             engine,
+            exited,
             replay,
             port: Mutex::new(Some(ReplayPort {
                 source: Arc::new(AcpReplaySource(Arc::clone(&host))),
@@ -262,6 +276,15 @@ impl AcpAgentHost {
 
     pub fn subscribe(&self) -> broadcast::Receiver<ConversationEvent> {
         self.host.subscribe()
+    }
+
+    /// engine が終了したか（process の終了、接続が切れた、会話を確定できなかった）。
+    ///
+    /// 終了した host は履歴も渡せず、発話も受けない。chat を開き直す時に pool がこれを見て作り直す。
+    /// 明示の [`Self::stop`] と立て直し（[`Self::restart`]）では立たない（共有 host はその時
+    /// `EngineExited` を出さない）。
+    pub fn exited(&self) -> bool {
+        self.exited.load(Ordering::Relaxed)
     }
 
     /// pump に渡す履歴の口。1 度だけ取り出せる（2 度目は None）。
@@ -361,9 +384,44 @@ impl AcpAgentHost {
     }
 
     /// 明示 teardown（[`super::engine::ChatEngineSlot`] Drop から呼ぶ）。
+    ///
+    /// ⚠️ 会話の確定の前に呼ぶと、process が止まるのは確定の後になる（module doc の「残る窓」）。
     pub fn stop(&mut self) {
         self.host.stop();
         tracing::info!("AcpAgentHost stop（{}）", self.engine.name());
+    }
+}
+
+/// 起動の失敗の文。共有 host の文（「engine を起動できません: …」）の中身だけを取り出して、
+/// engine の名前を 1 回だけ付ける。
+fn spawn_error(engine: AcpEngine, error: HostError) -> anyhow::Error {
+    let detail = match error {
+        HostError::Spawn(detail) => detail,
+        other => other.to_string(),
+    };
+    anyhow::anyhow!("{} を起動できません: {detail}", engine.name())
+}
+
+/// engine の終了を見張る。終了の理由を daemon の log に残し、[`AcpAgentHost::exited`] を立てる。
+///
+/// 理由は `EngineExited` の文にしか載らず、GUI はその文を出さない（「休眠」とだけ出る）。会話を
+/// 確定できなかった時（認証切れ、CLI の不調など）に、送った発話が捨てられた理由を追えるようにする。
+/// 受け口だけを持つ（host を握らない）ので、host が落とされれば終わる。
+async fn watch_exit(
+    engine: AcpEngine,
+    mut events: broadcast::Receiver<ConversationEvent>,
+    exited: Arc<AtomicBool>,
+) {
+    loop {
+        match events.recv().await {
+            Ok(ConversationEvent::EngineExited { message }) => {
+                tracing::warn!("{} が終了しました: {message}", engine.name());
+                exited.store(true, Ordering::Relaxed);
+                return;
+            }
+            Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+            Err(broadcast::error::RecvError::Closed) => return,
+        }
     }
 }
 
@@ -516,21 +574,23 @@ mod tests {
     /// 出さない engine で、tool の実行が取り消される。
     #[test]
     fn permission_policy_allows_and_falls_back_to_the_first_option() {
+        // 注入した方針そのものを呼ぶ（`auto_allow` を直接呼ぶと、注入を外した壊し方で落ちない）。
+        let policy = host_options(&config(AcpEngine::OpenCode)).permission;
         assert_eq!(
-            auto_allow(&permission_request(serde_json::json!([
+            policy(&permission_request(serde_json::json!([
                 {"optionId": "rej", "name": "No", "kind": "reject_once"},
                 {"optionId": "yes", "name": "Yes", "kind": "allow_once"},
             ]))),
             PermissionDecision::Select("yes".into())
         );
         assert_eq!(
-            auto_allow(&permission_request(serde_json::json!([
+            policy(&permission_request(serde_json::json!([
                 {"optionId": "first", "name": "No", "kind": "reject_once"},
             ]))),
             PermissionDecision::Select("first".into())
         );
         assert_eq!(
-            auto_allow(&permission_request(serde_json::json!([]))),
+            policy(&permission_request(serde_json::json!([]))),
             PermissionDecision::Cancelled
         );
     }
@@ -550,11 +610,14 @@ mod tests {
         }
     }
 
-    /// opencode 2.3.0 が出す設定面の形（実測 2026-11-20: model / effort / mode の 3 軸）。
+    /// opencode 2.3.0 が出す設定面の形（実測 2026-11-20、既定の model `lmstudio/…` の時:
+    /// model / effort / mode の 3 軸。model を `opencode/big-pickle` に替えると effort の軸が消えて
+    /// 2 軸になる — 軸の数は model による）。
     fn opencode_like_config() -> Vec<serde_json::Value> {
         serde_json::from_value(serde_json::json!([
-            {"id": "model", "name": "Model", "type": "select", "currentValue": "opencode/big-pickle",
-             "options": [{"value": "opencode/big-pickle", "name": "Big Pickle"}]},
+            {"id": "model", "name": "Model", "type": "select",
+             "currentValue": "lmstudio/qwen/qwen2.5-coder-14b",
+             "options": [{"value": "lmstudio/qwen/qwen2.5-coder-14b", "name": "Qwen"}]},
             {"id": "effort", "name": "Effort", "type": "select", "currentValue": "default",
              "options": [{"value": "low", "name": "low"}, {"value": "default", "name": "default"}]},
             {"id": "mode", "name": "Mode", "type": "select", "currentValue": "build",
@@ -611,7 +674,7 @@ mod tests {
                 .map(|o| (o.id.as_str(), o.current_value.as_str()))
                 .collect::<Vec<_>>(),
             [
-                ("model", "opencode/big-pickle"),
+                ("model", "lmstudio/qwen/qwen2.5-coder-14b"),
                 ("effort", "default"),
                 ("mode", "build")
             ]
@@ -663,6 +726,35 @@ mod tests {
         assert!(
             matches!(notice, ConversationEvent::Notice { .. }),
             "{notice:?}"
+        );
+    }
+
+    /// engine が終了したら `exited()` が立つ（pool が chat を開き直す時に作り直す合図）。終了した
+    /// host は履歴を渡せない。
+    /// 落ちるべき壊し方: `watch_exit` を起こさない — 終了した host が slot に残り続け、開き直すたびに
+    /// 履歴の取得が失敗する。
+    #[tokio::test]
+    async fn exited_is_raised_when_the_engine_goes_away() {
+        let _state = crate::test_env::state_dir_async().await;
+        let (agent, connector) = FakeAgent::new(Script::default());
+        let host = AcpAgentHost::spawn_with(
+            fake_config(AcpEngine::Grok, "vptest-acp-exit", None),
+            connector,
+        )
+        .expect("起動");
+        let port = host.take_replay_port().expect("履歴の口");
+        port.source.attach().await.expect("会話は確定する");
+        assert!(!host.exited());
+
+        agent.close();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !host.exited() {
+            assert!(tokio::time::Instant::now() < deadline, "exited が立たない");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(
+            port.source.attach().await.is_err(),
+            "終了した host は履歴を渡せない"
         );
     }
 
@@ -719,7 +811,15 @@ mod tests {
     ///
     /// 2 回目の host は VP の `replay_log` を一切読まない（そもそも書いていない）。戻ってくる発話と
     /// 答えは、engine の `session/load` が流したもの。
-    async fn e2e_new_send_respawn_history(engine: AcpEngine, intent: Vec<(String, String)>) {
+    ///
+    /// `with_tool`: 発話で file を 1 つ作らせる。控えに `ToolCall` と `ToolCallUpdate` が同じ数だけ
+    /// 入ることを見る（engine によって load の流れの形が違う: agy / grok は結果まで入った
+    /// `tool_call` 1 件、opencode は `tool_call`（pending）+ `tool_call_update` の 2 段）。
+    async fn e2e_new_send_respawn_history(
+        engine: AcpEngine,
+        intent: Vec<(String, String)>,
+        with_tool: bool,
+    ) {
         let _state = crate::test_env::state_dir_async().await;
         let tmp = tempfile::tempdir().expect("tempdir");
         let repo = format!("vptest-acp-e2e-{}", engine.name());
@@ -737,9 +837,13 @@ mod tests {
         // 1. 新規の会話で 1 turn。
         let mut host = AcpAgentHost::spawn(config(None)).expect("spawn");
         let mut rx = host.subscribe();
-        host.submit("Reply with exactly: pong-acp. Nothing else.")
-            .await
-            .expect("submit");
+        let prompt = if with_tool {
+            "Create a file named hello.txt containing the text hi in the current directory \
+             using your file tool, then reply with exactly: pong-acp"
+        } else {
+            "Reply with exactly: pong-acp. Nothing else."
+        };
+        host.submit(prompt).await.expect("submit");
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
         let mut answer = String::new();
         loop {
@@ -813,6 +917,16 @@ mod tests {
             "答えが履歴に戻る: {answered}"
         );
         assert!(!attached.in_flight);
+        if with_tool {
+            assert!(
+                tmp.path().join("hello.txt").exists(),
+                "tool が file を作った"
+            );
+            let calls = kinds.get("ToolCall").copied().unwrap_or(0);
+            let updates = kinds.get("ToolCallUpdate").copied().unwrap_or(0);
+            assert!(calls >= 1, "tool の呼び出しが履歴に戻る: {kinds:?}");
+            assert_eq!(calls, updates, "呼び出しと結果が対で戻る: {kinds:?}");
+        }
         assert_eq!(
             crate::lane::session_registry::load(&repo, "lead", engine.name()).sessions[0]
                 .conversation
@@ -826,19 +940,38 @@ mod tests {
     #[tokio::test]
     #[ignore = "実機 agy CLI + auth が必要（ローカル E2E 専用）"]
     async fn e2e_real_agy_new_send_respawn_history() {
-        e2e_new_send_respawn_history(AcpEngine::Agy, e2e_intent("VP_AGY_E2E_MODEL")).await;
+        e2e_new_send_respawn_history(AcpEngine::Agy, e2e_intent("VP_AGY_E2E_MODEL"), false).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "実機 agy CLI + auth が必要（ローカル E2E 専用）"]
+    async fn e2e_real_agy_tool_turn_history() {
+        e2e_new_send_respawn_history(AcpEngine::Agy, e2e_intent("VP_AGY_E2E_MODEL"), true).await;
     }
 
     #[tokio::test]
     #[ignore = "実機 grok CLI + auth が必要（ローカル E2E 専用）"]
     async fn e2e_real_grok_new_send_respawn_history() {
-        e2e_new_send_respawn_history(AcpEngine::Grok, Vec::new()).await;
+        e2e_new_send_respawn_history(AcpEngine::Grok, Vec::new(), false).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "実機 grok CLI + auth が必要（ローカル E2E 専用）"]
+    async fn e2e_real_grok_tool_turn_history() {
+        e2e_new_send_respawn_history(AcpEngine::Grok, Vec::new(), true).await;
     }
 
     #[tokio::test]
     #[ignore = "実機 opencode CLI + 接続先が必要（ローカル E2E 専用）"]
     async fn e2e_real_opencode_new_send_respawn_history() {
-        e2e_new_send_respawn_history(AcpEngine::OpenCode, e2e_intent("VP_OPENCODE_E2E_MODEL"))
-            .await;
+        let intent = e2e_intent("VP_OPENCODE_E2E_MODEL");
+        e2e_new_send_respawn_history(AcpEngine::OpenCode, intent, false).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "実機 opencode CLI + 接続先が必要（ローカル E2E 専用）"]
+    async fn e2e_real_opencode_tool_turn_history() {
+        let intent = e2e_intent("VP_OPENCODE_E2E_MODEL");
+        e2e_new_send_respawn_history(AcpEngine::OpenCode, intent, true).await;
     }
 }

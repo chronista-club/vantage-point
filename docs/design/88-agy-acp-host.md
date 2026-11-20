@@ -4,7 +4,8 @@
 > permission の要求の形（§1-6）は未実測
 > **2026-11-20 更新**: host の実装を、VP の手書き（JSON-RPC を手で組む）から共有 crate
 > `agent-chat-acp` の `AcpClientHost`（公式 SDK）に切り替えた（§8）。§1〜§6 の実測は当時の記録として
-> 残す。実装の置き場と履歴の扱いが変わった所には「→ §8」と書いてある
+> 残す。履歴の扱いが変わった所（§0、§1-5、§5 の見出し）には §8 への案内を、§6.2 の表の当て直しの行には
+> 今の置き場を書いてある
 > **関連 memory**: `mem_1Ch7Ka5RWFt8kdRtvyqprD`（指示書）/ `mem_1Ch7JP6WKoFk7BprEUzqrM`（事前調査）
 
 ## 0. 一言で
@@ -223,9 +224,20 @@ VP は pump が engine の出力を topic に流している。`conversation_rep
 - 配送は別の task に預けて終わりまで待つ。pump は engine を畳む時に abort されるので、直接流すと
   `ReplayStart` の後で止められて `ReplayEnd` が出ないことがある（長い履歴では tokio が途中で譲らせる）
 - pump が取りこぼした時（broadcast の lag）も、同じ口で控えから配り直す
-- 履歴を取れなかった時（会話を確定できなかった）は `ReplayStart` → `Error` → `ReplayEnd`
-- engine を起動できなかった時は、`replay_once` が `ReplayStart` →（理由の `Error`）→ `ReplayEnd` を流す
-- 控えが上限で切られた時は、省いた旨の `Notice` を足す（GUI での見え方は未確認）
+- 溜まった依頼は 1 回の配り直しにまとめる（起動時に demand が 3 つ重なっても、全量を 3 回は配らない）
+- 配り直しの後、turn の状態（idle の判定に使う）を控えの `in_flight` に合わせる。受け口を差し替える
+  時に、控えに入らない event（`TurnCompleted` など）を古い受け口と一緒に落とすことがあるため
+  （最後に読んでから控えを取るまでの間に出た分。daemon は multi-thread の runtime）
+- **履歴を取れなかった時（会話を確定できなかった）と、engine を起動できなかった時は、`Error` だけを
+  流す。`ReplayStart` は送らない** — GUI はあれを見て会話表示を消すので、出ている会話まで消して
+  しまう（Codex の履歴の失敗と同じ規律）
+- **engine が終了した後に chat を開き直した時は、終了した host を畳んで作り直す**
+  （`ensure_chat_engine` が `ChatHost::exited` を見る。agent-chat 設計書 01「呼び手の規則」— 終了した
+  host はもう使えない）。作り直した host の load で履歴が戻る。今までは `replay_log` から戻っていた場面
+- 控えが上限で切られた時は、省いた旨の `Notice` を足す。**ただし VP の GUI は `Notice` を描かない**
+  （`chat-model.ts` の fold に `notice` の case が無い。既存の「省いた」表示は `codex_history` の時に
+  しか立たない）。長い会話では古い turn が黙って落ちる。load に失敗して新規に替えた時の `Notice` も
+  同じく見えない。webview の側の対応は別の task（creo `mem_1ChDPjq74fG87DYtSn3ns3`）
 - `ChatHost::in_flight()` / `commit_seq()` は Claude の transcript replay だけが読むので、ACP は既定値
 
 控えの上限は共有 crate の既定（1 MiB / 800 event / 1 件 32 KiB）のまま。今までの `replay_log` の
@@ -237,7 +249,7 @@ VP は pump が engine の出力を topic に流している。`conversation_rep
 | 注入 | 値 | 手書きの host との関係 |
 |---|---|---|
 | load に失敗した時 | `LoadFallback::NewSession`（新規の会話にし、新しい id が registry を上書きする） | 同じ。共有 host は加えて `Notice` を 1 件出す |
-| permission | 許可の option（`allow_once` → `allow_always`）、無ければ先頭の option | 同じ向き。違いは、許可の option が複数ある時に、並び順でなく kind で選ぶこと |
+| permission | 許可の option（`allow_once` → `allow_always`）、無ければ先頭の option | 同じ向き。違いは 2 つ: 許可の option が複数ある時に、並び順でなく kind で選ぶ。option が 1 つも無い時は取り消す（手書きの host は `optionId: null` の「選んだ」を返していた） |
 | 会話 id の永続 | 会話が確定したら registry に書く | 同じ |
 | 設定の意図 | agy だけ（`AgySettings::config_pairs`）。会話中の切替が成功したら、host がその値を今の意図として覚える | 同じ（立て直しの後の当て直しが、起動の時の値でなく今の値になる点は新しい） |
 | stderr | 1 行ずつ `tracing::warn!` | 同じ |
@@ -246,16 +258,36 @@ VP は pump が engine の出力を topic に流している。`conversation_rep
 変わった所:
 
 - **engine が終了した時の文**: 「`<engine>` が休眠しました。次の送信で再開します。」から、共有 host の
-  文（「engine は終了しています: …」+ stderr の末尾）に変わった。自己修復（`submit` が Err → 再 ensure →
-  retry）は同じ
+  文（「engine は終了しています: …」）に変わった。stderr の末尾が付くのは今までと同じで、取り方が
+  「最後の 5 行」から「最後の 4096 bytes」になった。自己修復（`submit` が Err → 再 ensure → retry）は同じ
 - **会話中に、host が出していない発話が engine から来た時**: `UserMessage` として流す（今までは
   翻訳器が捨てていた）。stdio の 1 接続では起きないはずの場面
 - **結果まで入った `tool_call`**（load の流れ）: `ToolCall` と `ToolCallUpdate` の 2 つにする
+- 細かい違い: slash command の一覧が同じでも `SessionInit` を出し直す（今までは変わった時だけ。turn の
+  最中は終わりまで保留するのは同じ）/ `SessionInit` が出るのが設定の当て直しの後になった / 当て直しに
+  失敗した時の文から「（選び直すと解消します）」が消えた / 会話の確定の前の設定切替が、すぐ Err を
+  返す代わりに確定を待つ / engine が終了した後の `interrupt` が Err を返す / engine の終了後は `pid` が None
+
+共有 host に残る窓（revision `6e93984`。agent-chat に直しを頼んである、2026-11-20。読んで確かめた指摘で、
+実行して再現はしていない）:
+
+- **会話の確定の前（と設定の当て直しの最中）の `stop()` が、process を止めない**。確定が済むまで
+  （上限 30 秒 + 当て直しの上限 15 秒）process が生きる。chat を開いた直後に mode や engine を切り替えると、
+  その間に同じ会話 id で別の process が立ち得る。確定の前に発話が積まれていると、止めたはずの engine に
+  prompt を送ってから止める。手書きの host は `stop()` の中でその場で kill していた
+- **`submit` が Ok を返したまま発話が捨てられる窓が 2 つ**: engine の終了から最大 1 秒（stderr の読み切り
+  の間）と、会話を確定できなかった時に待っていた発話。理由は `EngineExited` の文にしか載らず、GUI は
+  その文を出さない（「休眠」とだけ出る）。VP の側では、その文を daemon の log に出している
 
 ### 8.4 `restart()` の口（呼び手はまだ無い）
 
-生きている engine は、他の書き手（console）が進めた分を知らない。engine ごとの実測（2026-11-20、
-試験用の会話、**1 回ずつ**。2 人目は headless の 1 turn）:
+生きている engine は、他の書き手（console）が進めた分を知らない。engine ごとの実測（試験用の会話。
+2 人目は headless の 1 turn）。**列ごとに出どころが違う**:
+
+- agy: agent-chat の設計書 01 の実測（2026-11-18）。生きた process で 1 turn → 別 process で 1 turn →
+  生きた方に戻る。2 回測って同じ結果
+- grok / opencode: lane acp-stage2 の実測（2026-11-20）。生きた process で 2 turn → 別 process で
+  1 turn → 生きた方に戻る。**1 回ずつ**
 
 | 確かめたこと | agy 1.5.11 | grok 1.0.89 | opencode 2.3.0 |
 |---|---|---|---|
@@ -263,8 +295,9 @@ VP は pump が engine の出力を topic に流している。`conversation_rep
 | 生きた process で「覚えた合言葉を全部挙げて」 | 2 人目の分を答えない | 2 人目の分を答えない | **全部答える** |
 | その後、新しい process で load | **2 人目の turn が消えている** | 残っている | 残っている |
 
-（agy は agent-chat の設計書 01 の実測。grok と opencode は lane acp-stage2 の実測。opencode が知って
-いる理由は「process が共有の background service につなぐ作りだから」と考えられるが、確かめていない。）
+（grok の「答えない」は 1 回の測定で、「知らない」のか「model が挙げなかっただけ」かは切り分けていない。
+opencode が知っている理由は「process が共有の background service につなぐ作りだから」と考えられるが、
+確かめていない。）
 
 共有 host の `restart()`（process を立て直して load し直す）を `ChatHost::restart_engine` として
 通してある。**いつ呼ぶかは決めていない** — 別の task（creo `mem_1ChA3fZy2Kq7tb3qaLSmpe`、直し方が未決）。
@@ -274,17 +307,20 @@ VP は pump が engine の出力を topic に流している。`conversation_rep
 - 偽の ACP agent（`conversation/acp_host/testing.rs` — SDK の `Channel::duplex()` の片側で生の
   JSON-RPC を返す。turn の中身をテストが 1 手ずつ進める）で、host の adapter と pump を通す
 - 実機 E2E（`#[ignore]`）: 新規 → 送信 → engine を止める → 同じ会話 id で立て直す → 履歴が engine
-  から戻る。3 engine に 1 本ずつ
+  から戻る。3 engine に 2 本ずつ（答えるだけの turn / file を 1 つ作らせる turn）
 
 ```sh
-VP_AGY_E2E_MODEL=gemini-3.8-flash cargo test -p vantage-point --lib e2e_real_agy_new_send -- --ignored --nocapture
-cargo test -p vantage-point --lib e2e_real_grok_new_send -- --ignored --nocapture
-VP_OPENCODE_E2E_MODEL=opencode/big-pickle cargo test -p vantage-point --lib e2e_real_opencode_new_send -- --ignored --nocapture
+VP_AGY_E2E_MODEL=gemini-3.8-flash cargo test -p vantage-point --lib e2e_real_agy -- --ignored --nocapture --test-threads=1
+cargo test -p vantage-point --lib e2e_real_grok -- --ignored --nocapture --test-threads=1
+VP_OPENCODE_E2E_MODEL=opencode/big-pickle cargo test -p vantage-point --lib e2e_real_opencode -- --ignored --nocapture --test-threads=1
 ```
 
-2026-11-20 に 1 回ずつ回した結果（agy 1.5.11 / grok 1.0.89 / opencode 2.3.0）: 3 つとも通過。
-立て直しで pid が替わり、発話と答えが控えに戻った。設定面の軸は agy = model / thought_level / mode、
-grok = model / reasoning_effort、opencode = model / mode（`opencode/big-pickle` の時）。
+2026-11-20 に 1 回ずつ回した結果（agy 1.5.11 / grok 1.0.89 / opencode 2.3.0）: 6 本とも通過。
+立て直しで pid が替わり、発話と答えが控えに戻った。tool を使う turn では、3 つとも控えに `ToolCall` 1 件と
+`ToolCallUpdate` 1 件が入った（load の流れの形は engine で違う — agy / grok は結果まで入った `tool_call`
+1 件、opencode は `tool_call`（pending）+ `tool_call_update` の 2 段 — が、控えでは同じ 1 組になる）。設定面の軸は agy = model / thought_level / mode、
+grok = model / reasoning_effort、opencode = model / mode（`opencode/big-pickle` の時。既定の model
+`lmstudio/…` の時は model / effort / mode の 3 軸 — 軸の数は model による）。
 
 実機の GUI で見る手順（未確認）:
 

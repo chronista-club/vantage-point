@@ -17,6 +17,8 @@ pub(crate) enum Step {
     Update(Value),
     /// 待たせている `session/prompt` に応答する（turn の終わり）。
     EndTurn,
+    /// 接続を閉じる（engine が終了した）。
+    Close,
 }
 
 /// 接続の台本。
@@ -63,6 +65,10 @@ impl FakeAgent {
 
     pub(crate) fn end_turn(&self) {
         self.steps.send(Step::EndTurn).expect("偽の agent");
+    }
+
+    pub(crate) fn close(&self) {
+        self.steps.send(Step::Close).expect("偽の agent");
     }
 
     /// `method` の要求か通知が届くまで待つ（turn が始まる前に update を流さないため）。
@@ -160,6 +166,7 @@ async fn run(
             },
             Some(step) = steps.recv() => {
                 match step {
+                    Step::Close => return,
                     Step::Update(update) => send_update(&peer, &session, &update),
                     Step::EndTurn => {
                         if let Some(id) = pending_prompt.take() {

@@ -334,6 +334,16 @@ impl ChatHost {
         }
     }
 
+    /// engine が終了していて、作り直すしかない host か（ACP engine — agent-chat 設計書 01
+    /// 「呼び手の規則」）。他の engine は false（Claude / Codex / vpcode は、次の送信の自己修復と
+    /// 各 host の作りで扱う）。
+    pub fn exited(&self) -> bool {
+        match self {
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.exited(),
+            ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => false,
+        }
+    }
+
     /// 履歴を host から受け取る口（ACP engine だけが持つ）。pump の起動時に 1 度だけ取り出す。
     pub fn take_replay_port(&self) -> Option<super::replay_source::ReplayPort> {
         match self {
@@ -433,8 +443,9 @@ impl ChatHost {
         }
     }
 
-    /// 明示 teardown（[`ChatEngineSlot`] Drop から呼ぶ）。codex / grok / opencode / agy は host kill、
-    /// claude は Child kill_on_drop に委ねる（host drop 時に停止）。
+    /// 明示 teardown（[`ChatEngineSlot`] Drop から呼ぶ）。codex / vpcode は host kill、
+    /// claude は Child kill_on_drop に委ねる（host drop 時に停止）。grok / opencode / agy は共有 host に
+    /// 停止を命じる（会話の確定の前だと、process が止まるのは確定の後 — `acp_host` の module doc）。
     pub fn stop(&mut self) {
         match self {
             // ClaudeHost の Child は kill_on_drop(true) なので host drop で停止する。

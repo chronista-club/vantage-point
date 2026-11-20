@@ -63,7 +63,9 @@ pub fn spawn_lane_conversation_pump(
 ///   流してから、受け口を差し替える（[`deliver_replay`]）。topic への書き手が 1 人なので、
 ///   控えと続きの event が抜けも重なりも無く並ぶ。
 ///
-/// Host drop で終了する。lag 時は warn し、Codex は recover で、ACP は配り直しで最新履歴を再配送する。
+/// host の受け口が閉じたら終了する（ACP は pump が履歴の口を通して host を握っているので、
+/// engine を畳む時の abort か、依頼の口が落ちることで終わる）。lag 時は warn し、Codex は recover で、
+/// ACP は配り直しで最新履歴を再配送する。
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_recovering_conversation_pump(
     lane: String,
@@ -89,8 +91,12 @@ pub fn spawn_recovering_conversation_pump(
                 biased;
                 received = rx.recv() => received,
                 request = next_replay_request(&mut replay), if attaching.is_none() => {
-                    match (request, replay.as_ref()) {
-                        (Some(()), Some(port)) => attaching = Some(port.source.attach()),
+                    match (request, replay.as_mut()) {
+                        (Some(()), Some(port)) => {
+                            // 溜まっていた依頼は、この 1 回で足りる（控えはこれから取る）。
+                            while port.requests.try_recv().is_ok() {}
+                            attaching = Some(port.source.attach());
+                        }
                         // 頼む側（host）が居なくなった。受け口の Closed で pump も終わる。
                         _ => replay = None,
                     }
@@ -98,11 +104,23 @@ pub fn spawn_recovering_conversation_pump(
                 }
                 attached = poll_attach(&mut attaching), if attaching.is_some() => {
                     attaching = None;
+                    // 控えを待つ間に来た依頼も、今から配る 1 回で足りる。
+                    if let Some(port) = replay.as_mut() {
+                        while port.requests.try_recv().is_ok() {}
+                    }
                     let init = replay.as_ref().and_then(|port| port.source.session_init());
+                    let in_flight = attached.as_ref().ok().map(|attached| attached.in_flight);
                     if let Some(next) =
                         deliver_replay(&topic_router, &lane, session, init, attached).await
                     {
                         rx = next;
+                        // 古い受け口と一緒に、控えに入らない event（`TurnCompleted` 等）を落とした
+                        // かもしれない（最後に読んでから控えを取るまでの間に出た分）。turn の状態は
+                        // 控えの真値に合わせる — 終わった turn を「実行中」のまま残すと、idle の
+                        // engine が寝かされない。
+                        if let Some(in_flight) = in_flight {
+                            turn_active.store(in_flight, std::sync::atomic::Ordering::Relaxed);
+                        }
                     }
                     continue;
                 }
@@ -211,8 +229,11 @@ async fn poll_attach(attaching: &mut Option<AttachFuture>) -> Result<ReplayAttac
 /// 控えを `ReplayStart` 〜 `ReplayEnd` で包んで topic に流し、続きの受け口を返す。
 ///
 /// 並び: `ReplayStart` → `SessionInit`（あれば）→ 省いた旨の `Notice`（控えが上限で切られた時）→
-/// 控え → `ReplayEnd { in_flight }`。`attach()` が失敗した時は `ReplayStart` → `Error` →
-/// `ReplayEnd { in_flight: false }` を流し、受け口は替えない（None を返す）。
+/// 控え → `ReplayEnd { in_flight }`。
+///
+/// `attach()` が失敗した時は **`Error` だけ**を流し、受け口は替えない（None を返す）。
+/// `ReplayStart` は送らない — GUI はあれを見て会話表示を消すので、履歴を取れなかった時に、
+/// 出ている会話まで消してしまう（Codex の履歴の失敗と同じ規律）。
 ///
 /// ⚠️ **流す処理は別の task に預けて、終わりまで待つ**。pump は engine を畳む時に abort される
 /// （[`crate::conversation::ChatEngineSlot`] の Drop）。この関数の中で直接 route すると、
@@ -240,13 +261,9 @@ async fn deliver_replay(
                 "conversation replay: 履歴を取れません (lane={lane}#{session}): {message}"
             );
             (
-                vec![
-                    ConversationEvent::ReplayStart,
-                    ConversationEvent::Error {
-                        message: format!("会話の履歴を復元できません: {message}"),
-                    },
-                    ConversationEvent::ReplayEnd { in_flight: false },
-                ],
+                vec![ConversationEvent::Error {
+                    message: format!("会話の履歴を復元できません: {message}"),
+                }],
                 None,
             )
         }
@@ -895,8 +912,9 @@ mod tests {
     /// turn の最中に何度配り直しても、画面に見える会話に抜けも重なりも無い（lead の条件 a）。
     ///
     /// 本物の `AcpClientHost` に偽の agent をつなぎ、pump を通して topic で見る。過去の会話 2 件を
-    /// load で流し、turn の途中（本文を 1 文字ずつ 10 回）に配り直しを 4 回頼む。頼む時機と本文の
-    /// 到着の前後はわざと決めていない — どの順になっても成り立つことを見る。
+    /// load で流し、配り直しを計 4 回頼む（発話を送る前に 1 回、turn の途中 = 本文を 1 文字ずつ
+    /// 10 回流す間に 3 回）。頼む時機と本文の到着の前後はわざと決めていない — どの順になっても
+    /// 成り立つことを見る。実際に何回配り直されるかも決めていない（1 回以上、とだけ確かめる）。
     ///
     /// この test は時機を決めていないので、「受け口を差し替えない」壊し方は捉えない（実際に壊して
     /// 緑のままだった）。その壊し方は `event_between_the_last_read_and_the_snapshot_appears_once` が
@@ -1114,10 +1132,11 @@ mod tests {
         assert_eq!(seen.len(), 302, "ReplayStart + 300 件 + ReplayEnd");
     }
 
-    /// 履歴を取れなかった時（engine が会話を確定できなかった）は、空の chat と理由を配る。
-    /// `ReplayStart` と `ReplayEnd` は対で出る。
+    /// 履歴を取れなかった時（engine が会話を確定できなかった）は、理由だけを配る。`ReplayStart` は
+    /// 送らない（出ている会話を消さない）。
+    /// 落ちるべき壊し方: `ReplayStart` → `Error` → `ReplayEnd` で包む — GUI が会話表示を消す。
     #[tokio::test]
-    async fn failed_attach_delivers_an_error_between_replay_markers() {
+    async fn failed_attach_delivers_only_the_error_without_clearing_the_display() {
         let router = Arc::new(TopicRouter::new());
         let (_id, mut topic) = router.subscribe(TOPIC).await;
         let source = FakeSource::new(Some("会話を確定できません: session/new: 認証が要ります"));
@@ -1137,16 +1156,59 @@ mod tests {
             }),
         );
         assert!(requester.request());
-        assert_eq!(next_event(&mut topic).await, ConversationEvent::ReplayStart);
         let error = next_event(&mut topic).await;
         assert!(
             matches!(&error, ConversationEvent::Error { message } if message.contains("認証が要ります")),
             "{error:?}"
         );
-        assert_eq!(
-            next_event(&mut topic).await,
-            ConversationEvent::ReplayEnd { in_flight: false }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), topic.recv())
+                .await
+                .is_err(),
+            "ReplayStart も ReplayEnd も送らない"
         );
+    }
+
+    /// 溜まった依頼は 1 回の配り直しにまとめる（起動時に demand が 3 つ重なっても、全量を 3 回は
+    /// 配らない）。配り直しの後は、turn の状態を控えの真値に合わせる。
+    /// 落ちるべき壊し方: 依頼を 1 件ずつ取り出して、そのたびに配る — `ReplayStart` が 3 回出る。
+    #[tokio::test]
+    async fn queued_requests_collapse_into_one_delivery_and_turn_state_follows_the_history() {
+        let router = Arc::new(TopicRouter::new());
+        let (_id, mut topic) = router.subscribe(TOPIC).await;
+        let source = FakeSource::new(None);
+        source.emit(chunk("a"));
+        let (requester, requests) = ReplayRequester::channel();
+        // pump が起きる前に 3 つ溜める。
+        for _ in 0..3 {
+            assert!(requester.request());
+        }
+        let turn_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _pump = spawn_recovering_conversation_pump(
+            "vp/root".into(),
+            2,
+            source.tx.subscribe(),
+            router.clone(),
+            None,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            turn_active.clone(),
+            None,
+            Some(ReplayPort {
+                source: source.clone(),
+                requests,
+            }),
+        );
+        let mut starts = 0;
+        while let Ok(Some((_, RepoMessage::ConversationEvent { event, .. }))) =
+            tokio::time::timeout(Duration::from_millis(300), topic.recv()).await
+        {
+            if event == ConversationEvent::ReplayStart {
+                starts += 1;
+            }
+        }
+        assert_eq!(starts, 1);
+        // 偽の出どころは in_flight = true を返す。
+        assert!(turn_active.load(std::sync::atomic::Ordering::Relaxed));
     }
 
     /// pump が最後に受け口を読んでから控えを取るまでの間に出た event は、控えに入っていて、

@@ -198,15 +198,19 @@ async fn replay_once(
                 "status": "requested", "lane": lane, "session": resolved.key
             }));
         }
-        // engine が居ない（起動に失敗した）。空の chat に収束させ、理由があれば見せる。
-        let mut events = vec![crate::conversation::ConversationEvent::ReplayStart];
+        // engine が居ない（起動に失敗した）。理由だけを見せる。`ReplayStart` は送らない — GUI は
+        // あれを見て会話表示を消すので、出ている会話まで消してしまう（Codex の履歴の失敗と同じ規律）。
         if let Some(spawn_error) = spawn_error {
-            events.push(crate::conversation::ConversationEvent::Error {
-                message: format!("{} を起動できません: {spawn_error}", resolved.agent),
-            });
+            route_conversation(
+                state,
+                lane,
+                resolved.key,
+                vec![crate::conversation::ConversationEvent::Error {
+                    message: spawn_error.to_string(),
+                }],
+            )
+            .await;
         }
-        events.push(crate::conversation::ConversationEvent::ReplayEnd { in_flight: false });
-        route_conversation(state, lane, resolved.key, events).await;
         return Ok(serde_json::json!({
             "status": "no_engine", "lane": lane, "session": resolved.key
         }));
@@ -790,7 +794,7 @@ mod tests {
     }
 
     /// ACP engine（grok / opencode / agy）は replay_log を読まない。engine を起動できなかった時は、
-    /// 空の chat と理由を配る（`ReplayStart` → `Error` → `ReplayEnd`）。古い replay_log の file が
+    /// 理由だけを配る（`ReplayStart` は送らない = 出ている会話を消さない）。古い replay_log の file が
     /// 残っていても、その中身は出さない（切り替えの前に記録された会話。正は engine の側）。
     ///
     /// 落ちるべき壊し方: ACP engine を replay_log の読み手に残す — 仕込んだ本文が配られる
@@ -834,32 +838,133 @@ mod tests {
         .expect("demand_start");
         assert_eq!(res["status"], "no_engine");
 
-        let mut got = Vec::new();
-        for _ in 0..3 {
-            let (_t, msg) = tokio::time::timeout(Duration::from_secs(2), srx.recv())
-                .await
-                .expect("replay event timeout")
-                .expect("topic closed");
-            match msg {
-                RepoMessage::ConversationEvent { session, event, .. } => {
-                    assert_eq!(session, k2);
-                    got.push(event);
-                }
-                other => panic!("想定外の message: {other:?}"),
+        let (_t, msg) = tokio::time::timeout(Duration::from_secs(2), srx.recv())
+            .await
+            .expect("event timeout")
+            .expect("topic closed");
+        match msg {
+            RepoMessage::ConversationEvent { session, event, .. } => {
+                assert_eq!(session, k2);
+                assert!(
+                    matches!(&event, ConversationEvent::Error { message } if message.starts_with("grok を起動できません")),
+                    "{event:?}"
+                );
             }
+            other => panic!("想定外の message: {other:?}"),
         }
-        assert_eq!(got[0], ConversationEvent::ReplayStart);
-        assert!(
-            matches!(&got[1], ConversationEvent::Error { message } if message.starts_with("grok を起動できません")),
-            "{:?}",
-            got[1]
-        );
-        assert_eq!(got[2], ConversationEvent::ReplayEnd { in_flight: false });
         assert!(
             tokio::time::timeout(Duration::from_millis(200), srx.recv())
                 .await
                 .is_err(),
-            "replay_log の中身は配らない"
+            "ReplayStart も、replay_log の中身も配らない"
+        );
+    }
+
+    /// engine が終了した後に chat を開き直すと、終了した host は畳まれて作り直される
+    /// （agent-chat 設計書 01「呼び手の規則」）。残したままだと、開き直すたびに履歴の取得が失敗する。
+    ///
+    /// ここでは作り直しの起動を存在しない cwd で失敗させ、「終了した slot が残っていない」ことと
+    /// 「`ReplayStart` を送らない」ことを見る。
+    /// 落ちるべき壊し方: `ensure_chat_engine` が slot の有無しか見ない — 終了した host が残る。
+    #[tokio::test]
+    async fn reopening_chat_replaces_an_exited_acp_host() {
+        use crate::conversation::acp_host::testing::{FakeAgent, Script};
+        use crate::conversation::acp_host::{AcpAgentHost, AcpEngine, AcpHostConfig};
+        use crate::conversation::{ChatEngineSlot, ChatHost, ConversationEvent};
+        use crate::lane::session_registry::SessionMode;
+        use crate::protocol::RepoMessage;
+        use crate::repo::state::build_test_app_state;
+        use crate::repo::unison_server::dispatch_repo_method;
+        use std::time::Duration;
+
+        let _state_guard = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let addr = insert_test_lane(&state, "vptest-acp-exited", SessionMode::Gui).await;
+        prevent_engine_spawn(&state, &addr, _state_guard.path()).await;
+        let k2 = state
+            .lane_pool
+            .write()
+            .await
+            .create_chat_session(&addr, Some("grok"), true)
+            .expect("create grok session");
+
+        // 偽の agent につないだ host を slot に差し、engine を終了させる。
+        let (agent, connector) = FakeAgent::new(Script::default());
+        let host = AcpAgentHost::spawn_with(
+            AcpHostConfig {
+                engine: AcpEngine::Grok,
+                cwd: "/tmp/vp-acp".into(),
+                repo: "vptest-acp-exited".into(),
+                lane: format!("lead#{k2}"),
+                lane_label: "lead".into(),
+                session_key: k2,
+                session_id: None,
+                config_intent: Vec::new(),
+            },
+            connector,
+        )
+        .expect("起動");
+        let port = host.take_replay_port().expect("履歴の口");
+        port.source.attach().await.expect("会話は確定する");
+        agent.close();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !host.exited() {
+            assert!(tokio::time::Instant::now() < deadline, "exited が立たない");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        state.lane_pool.write().await.insert_chat_engine_for_test(
+            &addr,
+            k2,
+            ChatEngineSlot {
+                host: ChatHost::Grok(host),
+                pump: tokio::spawn(async {}),
+                last_event_at: Default::default(),
+                turn_active: Default::default(),
+            },
+        );
+        assert_eq!(
+            state.lane_pool.read().await.chat_engine_sessions(&addr),
+            [k2]
+        );
+
+        let topic = "repo/conversation/data/vptest-acp-exited~lead/event";
+        let (_id, mut srx) = state.topic_router.subscribe(topic).await;
+        let res = dispatch_repo_method(
+            &state,
+            "conversation_demand_start",
+            serde_json::json!({ "lane": "vptest-acp-exited/lead" }),
+        )
+        .await
+        .expect("demand_start");
+        assert_eq!(res["status"], "no_engine", "作り直しの起動は失敗させてある");
+        assert!(
+            state
+                .lane_pool
+                .read()
+                .await
+                .chat_engine_sessions(&addr)
+                .is_empty(),
+            "終了した host は畳まれている"
+        );
+        let (_t, msg) = tokio::time::timeout(Duration::from_secs(2), srx.recv())
+            .await
+            .expect("event timeout")
+            .expect("topic closed");
+        assert!(
+            matches!(
+                msg,
+                RepoMessage::ConversationEvent {
+                    event: ConversationEvent::Error { .. },
+                    ..
+                }
+            ),
+            "起動の失敗の理由だけが出る"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), srx.recv())
+                .await
+                .is_err(),
+            "ReplayStart は送らない"
         );
     }
 }

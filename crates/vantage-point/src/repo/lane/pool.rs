@@ -1599,12 +1599,25 @@ impl LanePool {
                 resolved.key
             );
         }
-        if self
+        match self
             .chat_engines
             .get(addr)
-            .is_some_and(|m| m.contains_key(&resolved.key))
+            .and_then(|m| m.get(&resolved.key))
+            .map(|slot| slot.host.exited())
         {
-            return Ok(());
+            Some(false) => return Ok(()),
+            // 終了した host（ACP engine）は履歴も渡せず発話も受けない。残したままだと、chat を
+            // 開き直すたびに履歴の取得が失敗する。畳んで、下で作り直す（load で履歴が戻る）。
+            Some(true) => {
+                tracing::info!(
+                    "終了した chat engine を作り直す: addr={addr} session={}",
+                    resolved.key
+                );
+                if let Some(engines) = self.chat_engines.get_mut(addr) {
+                    engines.remove(&resolved.key);
+                }
+            }
+            None => {}
         }
 
         let lane_label = crate::repo::agent_spawner::lane_label(addr).to_string();
@@ -1880,6 +1893,20 @@ impl LanePool {
             }
             _ => anyhow::bail!("Codex の chat host がありません"),
         }
+    }
+
+    /// テスト用: chat engine の slot を直接差し込む（偽の host で pool の動きを確かめる）。
+    #[cfg(test)]
+    pub(crate) fn insert_chat_engine_for_test(
+        &mut self,
+        addr: &LaneAddress,
+        session: SessionKey,
+        slot: ChatEngineSlot,
+    ) {
+        self.chat_engines
+            .entry(addr.clone())
+            .or_default()
+            .insert(session, slot);
     }
 
     /// ACP engine の履歴の配り直しを pump に頼む（chat を開いた時）。
