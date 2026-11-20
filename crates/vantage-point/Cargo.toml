@@ -21,6 +21,9 @@ midi = ["dep:midir", "dep:midistage-profiles", "dep:midistage-client"]
 # VP / GFP 共有のチャット基盤（chronista-club/agent-chat を vendor/agent-chat に submodule で固定、design 86）。
 # 両 consumer が同じ revision を指すのが gate。clone は `git clone --recurse-submodules`。
 agent-chat-host = { path = "../../vendor/agent-chat/crates/host" }
+# ACP の client host（公式 SDK agent-client-protocol。grok / opencode / agy の chat engine、doc 88）。
+# ⚠️ SDK が serde_json の `preserve_order` を有効にする — binary 全体で Value の key が「入れた順」になる。
+agent-chat-acp = { path = "../../vendor/agent-chat/crates/acp" }
 agent-chat-protocol = { path = "../../vendor/agent-chat/crates/protocol" }
 vp-local-urls = { path = "../vp-local-urls" }
 # Async runtime
