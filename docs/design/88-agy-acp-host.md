@@ -194,7 +194,7 @@ text の後ろに ACP の image block `{type: "image", mimeType, data}` を並�
 ## 8. host を共有 crate に切り替えた（2026-11-20、Stage 2）
 
 task `mem_1ChDFn6LxUfPDFsqeXvcyr`。設計の正は agent-chat の `docs/design/01-acp-client-host.md`
-（`vendor/agent-chat`、revision `8ec120e`）。ここには VP の側で決めたことだけを書く。grok と opencode
+（`vendor/agent-chat`、revision `9516b29`）。ここには VP の側で決めたことだけを書く。grok と opencode
 も同じ host なので、同時に切り替えた（doc 43 §5 の「片方だけは作らない」）。
 
 ### 8.1 何が変わったか
@@ -282,8 +282,14 @@ VP は pump が engine の出力を topic に流している（同じ topic に�
   返す代わりに確定を待つ / engine が終了した後の `interrupt` が Err を返す / engine の終了後は `pid` が None
 
 共有 host の側で直してもらったもの（VP の自己レビューで見つけ、agent-chat に頼んだ。どれも
-agent-chat の側で落ちる test を先に書いて確かめてある、PR #7 → revision `8ec120e`）:
+agent-chat の側で落ちる test を先に書いて確かめてある、PR #7 → `8ec120e`、PR #8 → `9516b29`）:
 
+- **受け取ってまだ送っていない発話も、控えの末尾に入れる**（PR #8）。直す前は、会話の確定の前
+  （engine が立ち上がる 1.5〜2 秒ほどの間）に送った発話が控えに無く、配り直しの `ReplayStart` が
+  GUI の仮の吹き出しを消して、発話が画面から消えていた（答えの本文は前の答えの吹き出しに
+  つながって出た）。待ちの発話がある間は `in_flight` が true（これから turn が走る）。VP の側は
+  `prompt_sent_right_after_opening_survives_the_redelivery`（adapter + pump + 偽の agent。
+  `8ec120e` では赤）と、実機の agy（設定の意図あり）で確かめた
 - **`stop()` は、会話の確定や設定の当て直しを待っている最中でも、すぐに process を止める**。先に
   積んであった発話は送らない。直す前は、確定が済むまで（上限 30 秒 + 15 秒）process が生き、
   止めたはずの engine に prompt を送ってから止めていた（chat を開いた直後に mode や engine を
@@ -294,6 +300,10 @@ agent-chat の側で落ちる test を先に書いて確かめてある、PR #7 
   発話があれば件数も）。engine が終了して、送られなかった発話があった時も `Error` が出る。
   `EngineExited` の文は GUI に出ない（「休眠」とだけ出る）ので、VP はその文を daemon の log にも出す
 - `is_finished()`: host が終了したかを待たずに読む口（`ChatHost::exited` の実体）
+
+残る違い: 会話の確定の前に送って、すぐ中断した時は、発話は engine に送られてから中断される
+（手書きの host は、その場で待ちを捨てていたので送らなかった）。「chat を開いて 2 秒ほどの間に送って、
+すぐ止めた」時だけ起きる。
 
 残る窓: turn の最中に engine が終了した時、送ってしまった発話（答えが来ないまま）は「送られなかった
 発話」に数えない。`EngineExited` だけが出る（`TurnCompleted` は出ないことがある。VP の pump は
@@ -351,8 +361,11 @@ cargo test -p vantage-point --lib e2e_real_grok -- --ignored --nocapture --test-
 VP_OPENCODE_E2E_MODEL=opencode/big-pickle cargo test -p vantage-point --lib e2e_real_opencode -- --ignored --nocapture --test-threads=1
 ```
 
-2026-11-20 に回した結果（agy 1.5.11 / grok 1.0.89 / opencode 2.3.0。revision `6e93984` と `8ec120e` で
-1 回ずつ）: 6 本とも通過。
+agy には、立て直した直後（会話の確定の前）に送った発話が控えの末尾に入ることを見る 1 本もある
+（`e2e_real_agy_prompt_right_after_respawn_is_in_history`）。
+
+2026-11-20 に回した結果（agy 1.5.11 / grok 1.0.89 / opencode 2.3.0。revision `6e93984`・`8ec120e`・
+`9516b29` で 1 回ずつ）: 6 本とも通過。
 立て直しで pid が替わり、発話と答えが控えに戻った。tool を使う turn では、3 つとも控えに `ToolCall` 1 件と
 `ToolCallUpdate` 1 件が入った（load の流れの形は engine で違う — agy / grok は結果まで入った `tool_call`
 1 件、opencode は `tool_call`（pending）+ `tool_call_update` の 2 段 — が、控えでは同じ 1 組になる）。設定面の軸は agy = model / thought_level / mode、

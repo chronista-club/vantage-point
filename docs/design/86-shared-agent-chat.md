@@ -157,7 +157,7 @@ GFP 側には次の契約実装が必要。
   VP が渡し、stdio・protocol・履歴の控え・設定面は共有 host が持つ。「resume 失敗を新規会話へ変換しない」に
   ついては、共有 host の既定は失敗として返し、VP は方針として新規を選ぶ（今までと同じ動き。変えた事実は
   `Notice` で出る）。
-  submodule は `a4d55e3` → `8ec120e`（途中で VP の切り替えのために頼んだ変更 3 つ = agent-chat PR #5・#6・#7 を含む）。GFP は「VP が先に進めてよい、後から追う」（lead 経由、2026-11-20）。
+  submodule は `a4d55e3` → `9516b29`（途中で VP の切り替えのために頼んだ変更 4 つ = agent-chat PR #5・#6・#7・#8 を含む）。GFP は「VP が先に進めてよい、後から追う」（lead 経由、2026-11-20）。
   **両 consumer が同じ revision を指す gate は、GFP が追うまで一時的に外れている。**
   依存の注意: 公式 SDK が `serde_json` の `preserve_order` を有効にする（binary 全体で `Value` の key が
   「入れた順」になる）。VP で実害があったのは ROTO の setup の hash で、同じ PR で止めた（design 88 §8.5 と PR）。

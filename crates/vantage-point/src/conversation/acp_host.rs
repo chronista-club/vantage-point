@@ -935,6 +935,106 @@ mod tests {
         host.stop();
     }
 
+    /// engine を立て直した直後（会話の確定の前）に送った発話が、控えの末尾に入っている。
+    ///
+    /// `VP_AGY_E2E_MODEL` を指定して回す（設定の意図があると、確定の後に当て直しが走り、
+    /// 「控えを取る → その後で発話が送られる」順になる = 発話が画面から消えていた形）。
+    #[tokio::test]
+    #[ignore = "実機 agy CLI + auth が必要（ローカル E2E 専用）"]
+    async fn e2e_real_agy_prompt_right_after_respawn_is_in_history() {
+        let _state = crate::test_env::state_dir_async().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let intent = e2e_intent("VP_AGY_E2E_MODEL");
+        let config = |resume: Option<String>| AcpHostConfig {
+            engine: AcpEngine::Agy,
+            cwd: tmp.path().to_string_lossy().into_owned(),
+            repo: "vptest-acp-e2e-early".into(),
+            lane: "lead".into(),
+            lane_label: "lead".into(),
+            session_key: 1,
+            session_id: resume,
+            config_intent: intent.clone(),
+        };
+        async fn until_turn_end(rx: &mut broadcast::Receiver<ConversationEvent>) -> String {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
+            let mut answer = String::new();
+            loop {
+                match tokio::time::timeout_at(deadline, rx.recv())
+                    .await
+                    .expect("180 秒以内に turn が終わる")
+                    .expect("recv")
+                {
+                    ConversationEvent::MessageChunk { text } => answer.push_str(&text),
+                    ConversationEvent::TurnCompleted { .. } => return answer,
+                    ConversationEvent::Error { message } => panic!("engine error: {message}"),
+                    ConversationEvent::EngineExited { message } => {
+                        panic!("engine exited: {message}")
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // 1. 会話を作る。
+        let mut host = AcpAgentHost::spawn(config(None)).expect("spawn");
+        let mut rx = host.subscribe();
+        host.submit("Reply with exactly: pong-one. Nothing else.")
+            .await
+            .expect("submit");
+        assert!(until_turn_end(&mut rx).await.contains("pong-one"));
+        let session_id = crate::lane::session_registry::load("vptest-acp-e2e-early", "lead", "agy")
+            .sessions[0]
+            .conversation
+            .clone()
+            .expect("会話 id");
+        host.stop();
+        drop(host);
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // 2. 立て直して、確定を待たずに送る。
+        let mut host = AcpAgentHost::spawn(config(Some(session_id))).expect("respawn");
+        let mut rx = host.subscribe();
+        host.submit("Reply with exactly: pong-two. Nothing else.")
+            .await
+            .expect("submit");
+        let attached = host
+            .take_replay_port()
+            .expect("履歴の口")
+            .source
+            .attach()
+            .await
+            .expect("attach");
+        let users: Vec<&str> = attached
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                ConversationEvent::UserMessage { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        println!(
+            "E2E agy（開いた直後に送る）: 控えの発話 {} 件 / 末尾は発話か {} / in_flight={} / 設定の意図 {intent:?}",
+            users.len(),
+            matches!(
+                attached.events.last(),
+                Some(ConversationEvent::UserMessage { .. })
+            ),
+            attached.in_flight
+        );
+        assert_eq!(users.len(), 2, "前の発話と、今送った発話: {users:?}");
+        assert!(users[0].contains("pong-one") && users[1].contains("pong-two"));
+        assert!(
+            matches!(
+                attached.events.last(),
+                Some(ConversationEvent::UserMessage { text }) if text.contains("pong-two")
+            ),
+            "今送った発話が控えの末尾にある"
+        );
+        assert!(attached.in_flight, "これから turn が走る");
+        assert!(until_turn_end(&mut rx).await.contains("pong-two"));
+        host.stop();
+    }
+
     #[tokio::test]
     #[ignore = "実機 agy CLI + auth が必要（ローカル E2E 専用）"]
     async fn e2e_real_agy_new_send_respawn_history() {

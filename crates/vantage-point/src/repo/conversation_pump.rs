@@ -1063,6 +1063,105 @@ mod tests {
         );
     }
 
+    /// chat を開いた直後（engine が会話を確定する前）に送った発話は、配り直しの後も画面に残り、
+    /// その答えは前の答えにつながらない。
+    ///
+    /// 設定の当て直しを待たせて、必ず「控えを配る → その後で発話が engine に送られる」順にする
+    /// （agy で model などを選んだ session の形）。GUI は送信の時に仮の吹き出しを出すが、
+    /// `ReplayStart` でそれを消すので、控えに発話が入っていないと画面に戻る道が無い。
+    ///
+    /// 落ちるべき壊し方: 共有 host が、まだ送っていない発話を控えに含めない（agent-chat `8ec120e`
+    /// までの動き）— 配り直しに発話が出ず、答えが「前の答え」の吹き出しにつながる。
+    #[tokio::test]
+    async fn prompt_sent_right_after_opening_survives_the_redelivery() {
+        let _state = crate::test_env::state_dir_async().await;
+        let (agent, connector) = FakeAgent::new(Script {
+            replay: vec![user_text("前の発話"), agent_text("前の答え")],
+            config: serde_json::from_value(serde_json::json!([
+                {"id": "mode", "name": "Mode", "type": "select", "currentValue": "build",
+                 "options": [{"value": "build", "name": "build"}, {"value": "plan", "name": "plan"}]}
+            ]))
+            .unwrap(),
+            hold_config: true,
+            ..Script::default()
+        });
+        let host = AcpAgentHost::spawn_with(
+            AcpHostConfig {
+                engine: AcpEngine::Agy,
+                cwd: "/tmp/vp-acp".into(),
+                repo: "vptest-acp-early".into(),
+                lane: "lead".into(),
+                lane_label: "lead".into(),
+                session_key: 1,
+                session_id: Some("sess-1".into()),
+                // 選んである設定 = 会話の確定の後に当て直しが走る。
+                config_intent: vec![("mode".into(), "plan".into())],
+            },
+            connector,
+        )
+        .expect("起動");
+        let router = Arc::new(TopicRouter::new());
+        let (_id, mut topic) = router.subscribe(TOPIC).await;
+        let _pump = spawn_recovering_conversation_pump(
+            "vp/root".into(),
+            2,
+            host.subscribe(),
+            router.clone(),
+            None,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            None,
+            host.take_replay_port(),
+        );
+
+        // chat を開いて（配り直しを頼んで）、会話の確定の前に送る。
+        assert!(host.request_replay());
+        host.submit("開いた直後の発話").await.expect("submit");
+
+        // 当て直しの応答を待たせている間に、控えが配られる。
+        let mut screen = Screen::default();
+        let in_flight = loop {
+            let event = next_event(&mut topic).await;
+            screen.apply(&event);
+            if let ConversationEvent::ReplayEnd { in_flight } = event {
+                break in_flight;
+            }
+        };
+        assert_eq!(
+            screen.lines.last(),
+            Some(&('U', "開いた直後の発話".to_string())),
+            "配り直しに、まだ送っていない発話が出る: {:?}",
+            screen.lines
+        );
+        assert!(in_flight, "これから turn が走るので「応答中」のまま");
+        assert!(
+            !agent.methods().iter().any(|m| m == "session/prompt"),
+            "この時点では、発話はまだ engine に送られていない"
+        );
+
+        // 当て直しが済んで、発話が送られ、答えが返る。
+        agent.release_config();
+        agent.wait_for("session/prompt").await;
+        agent.update(agent_text("今の答え"));
+        agent.end_turn();
+        loop {
+            let event = next_event(&mut topic).await;
+            screen.apply(&event);
+            if matches!(event, ConversationEvent::TurnCompleted { .. }) {
+                break;
+            }
+        }
+        assert_eq!(
+            screen.lines,
+            [
+                ('U', "前の発話".to_string()),
+                ('A', "前の答え".to_string()),
+                ('U', "開いた直後の発話".to_string()),
+                ('A', "今の答え".to_string()),
+            ]
+        );
+    }
+
     /// 偽の履歴の出どころ（`attach()` の契約だけを持つ）。
     struct FakeSource {
         tx: broadcast::Sender<ConversationEvent>,

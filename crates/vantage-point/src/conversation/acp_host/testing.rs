@@ -19,6 +19,8 @@ pub(crate) enum Step {
     EndTurn,
     /// 接続を閉じる（engine が終了した）。
     Close,
+    /// 待たせている `session/set_config_option` に応答する（[`Script::hold_config`]）。
+    ReleaseConfig,
 }
 
 /// 接続の台本。
@@ -30,6 +32,9 @@ pub(crate) struct Script {
     pub config: Vec<Value>,
     /// `session/load` を失敗させる。
     pub load_error: bool,
+    /// `session/set_config_option` の応答を、テストの [`Step::ReleaseConfig`] まで待たせる
+    /// （設定の当て直しに時間がかかる engine）。
+    pub hold_config: bool,
 }
 
 /// 偽の agent が受けた要求と通知（method, params）。
@@ -69,6 +74,10 @@ impl FakeAgent {
 
     pub(crate) fn close(&self) {
         self.steps.send(Step::Close).expect("偽の agent");
+    }
+
+    pub(crate) fn release_config(&self) {
+        self.steps.send(Step::ReleaseConfig).expect("偽の agent");
     }
 
     /// `method` の要求か通知が届くまで待つ（turn が始まる前に update を流さないため）。
@@ -158,6 +167,7 @@ async fn run(
     let mut steps = steps.lock().await;
     let mut session = "new-1".to_string();
     let mut pending_prompt = None;
+    let mut pending_config = None;
     loop {
         let frame = tokio::select! {
             frame = peer.rx.next() => match frame {
@@ -167,6 +177,17 @@ async fn run(
             Some(step) = steps.recv() => {
                 match step {
                     Step::Close => return,
+                    Step::ReleaseConfig => {
+                        if let Some(id) = pending_config.take() {
+                            send(
+                                &peer,
+                                RawJsonRpcMessage::response(
+                                    id,
+                                    Ok(json!({"configOptions": script.config})),
+                                ),
+                            );
+                        }
+                    }
                     Step::Update(update) => send_update(&peer, &session, &update),
                     Step::EndTurn => {
                         if let Some(id) = pending_prompt.take() {
@@ -212,6 +233,10 @@ async fn run(
                             if option["id"] == p["configId"] {
                                 option["currentValue"] = p["value"].clone();
                             }
+                        }
+                        if script.hold_config {
+                            pending_config = Some(request.id.clone());
+                            continue;
                         }
                         Ok(json!({"configOptions": script.config}))
                     }
