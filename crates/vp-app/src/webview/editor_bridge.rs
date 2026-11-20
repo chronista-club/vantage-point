@@ -243,8 +243,16 @@ mod editor_bridge_js_tests {
     fn layout_set_encodes_body_and_requires_value() {
         let body = serde_json::json!({"notation": "a | b ~ c", "attention": {"a": 0.5}});
         let js = editor_bridge_js("layout_set", None, Some(&body)).expect("layout_set");
-        assert!(
-            js.contains(r#"h.set({"attention":{"a":0.5},"notation":"a | b ~ c"})"#),
+        // object の key の並びは決めない（`serde_json` の `preserve_order` の有無で変わる。JS の
+        // object literal なので、受け手は並びに依らない）。literal を JSON として読み戻して比べる。
+        let literal = js
+            .split_once("h.set(")
+            .and_then(|(_, rest)| rest.rsplit_once(")})()"))
+            .map(|(literal, _)| literal)
+            .unwrap_or_else(|| panic!("h.set(...) の形でない: js={js}"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(literal).expect("JSON literal"),
+            body,
             "js={js}"
         );
         assert!(editor_bridge_js("layout_set", None, None).is_none());
