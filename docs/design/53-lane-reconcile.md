@@ -952,20 +952,56 @@ restart（生きた slot を意図的に殺して立て直す）は **intent の
 
 ```
 reconcile_lane(addr):
-  ① 読み（read lock + registry load）→ desired と actual の差分を**計算だけ**する
+  ① 読み + 止める（write lock + registry load）→ 立てるべき slot を計算する。
+     立てる slot がある時は、同じ読みで、chat でなくなった session の engine を畳む
+     → lock 外で、止めた process の終了を確かめる（上限 2 秒）
   ② lock 外で spawn（spawn_blocking、800ms×N を lock 下に置かない）
-  ③ write lock で insert + race 再検査（他の動詞が先に立てていたら捨てる）
+  ③ write lock で insert + race 再検査（他の動詞が先に立てていたら捨てる）、
+     desired に無い slot と engine を畳む
   末尾で pump reconcile（R2）
 ```
 
 `lane_spawn_actor` が既にこの形（読み → `spawn_blocking` → `pool.write()` で race 再検査）。
 **新しい規律ではなく、既に採っている形を lane 内へ持ち込む**。
 
+① で engine を畳むようにしたのは 2026-11-21（mako「移動前を止めてから移動先を起動じゃないんだ」）。
+それまでは engine を畳むのが ③ だけで、chat → console の切替は「console の slot を立ててから chat の
+engine を止める」順だった。今は **移る前を止めてから、移る先を立てる** — 同じ会話を 2 つの process が
+同時に持たない。engine の種類では分けない。
+
+- 「立てる slot」と「先に止める engine」は、同じ lock の中の 1 回の registry の読みから決め、
+  止める方はその lock の中で適用する（決めてから適用までに intent が動く隙を作らない）。
+  ③ は、その時点の registry をもう一度読んで同じ規則を引く
+- 終了の確認が上限を過ぎたら、warn を出して slot を立てる（kill は出してある）。確認は pid が
+  居なくなること = 終了が回収されることで見ている
+- ① から ③ の間、その session は「engine も slot も無い」。mode が gui でない session には
+  `ensure_chat_engine` が engine を立てないので、この間に engine が戻る道は無い
+- この間、lane の state は動かさない（導出し直すと root が「tui で slot 無し」= Dead と出る）。
+  代表の pid が止めた engine のものなら下ろす。③ の導出が最後に決める
+- slot の spawn が失敗した時は、engine はもう無く、intent は tui のまま残る（次の reconcile が
+  立て直す）。engine を畳むのは spawn の成否に依らない — ここは以前から同じ
+- 逆向き（console → chat）は、③ が slot を畳んだ後に動詞が engine を起こす。順は元から
+  「止めてから立てる」だが、slot の process の終了は待っていない
+
+**残る窓**（直していない）: reconcile は lane ごとに直列ではない。終了を確かめるのは、同じ
+reconcile が止めた engine だけ。
+
+- reconcile A が engine を止めて終了を待っている間に、同じ lane で reconcile B が走ると、B からは
+  engine がもう見えないので、待たずに slot を立て始める
+- chat → console → chat を、最初の reconcile の ② の間（800ms）に往復すると、2 回目の動詞が
+  起こした engine と、1 回目の slot に流し込まれた console が、1 回目の ③ が slot を捨てるまで並ぶ
+  （流し込みは ② の終わりなので、③ までの短い間。以前の順でも同じ）
+
+1 つ目は、slot の spawn が command を流し込むのは 800ms の後で、kill から終了までは実測で数 ms
+（doc 88 §8.4）なので、console の engine が起動する頃には止めた process は居ない、という見込み
+（この並びを作って測ってはいない）。塞ぐなら、止めている最中の pid を pool が lane ごとに持ち、
+どの reconcile もそれを待つ。
+
 ### 12.6 歩行検証（この地図で 5 場面を歩く）
 
 | 場面 | 起きること |
 |---|---|
-| chat lane を tui に切替 | registry に act=Tui → reconcile が engine を畳み、conversation 有りなので `--resume` で slot が立つ |
+| chat lane を tui に切替 | registry に act=Tui → reconcile が engine を畳み（①。process の終了を確かめる）、その後に conversation 有りなので `--resume` で slot が立つ |
 | Reset | registry clear → reconcile が全 slot / engine を畳み、root が **bare** で立つ（id が無い = 継がない） |
 | New root | 新 session が root に → reconcile が新 root の slot を bare で立てる。**旧 root の pane はそのまま残る**（会話は無傷） |
 | boot（daemon 再起動） | registry の act=Tui 全員に slot、Chat は engine-less、末尾で pump — **今の 3 経路（with_root / lane_spawn_actor / restore_term_slots）が 1 本になる** |

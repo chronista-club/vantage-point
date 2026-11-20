@@ -384,8 +384,8 @@ impl AcpAgentHost {
     /// turn の最中は Err。
     /// 成功したら履歴を配り直す。
     ///
-    /// ⚠️ **呼び手はまだ無い**（2026-11-20）。いつ呼ぶかは別の task（creo `mem_1ChA3fZy2Kq7tb3qaLSmpe`、
-    /// 直し方が未決）で決める。
+    /// ⚠️ **呼び手は無い**。VP は console に切り替える時に chat の engine を止めるので
+    /// （`repo::lane::reconcile` の ①）、生きたまま他の書き手に進められる場面が無い（doc 88 §8.4）。
     pub async fn restart(&self) -> Result<(), String> {
         self.host.restart().await.map_err(|e| e.to_string())?;
         self.replay.request();

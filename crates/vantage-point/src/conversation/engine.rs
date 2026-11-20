@@ -364,7 +364,7 @@ impl ChatHost {
     /// engine の process を立て直して履歴を読み直す（ACP engine。他の書き手が会話を進めた後の口、
     /// agent-chat 設計書 01「呼び手の規則」）。turn の最中は Err。
     ///
-    /// ⚠️ 呼び手はまだ無い（[`super::acp_host::AcpAgentHost::restart`] の doc）。
+    /// ⚠️ 呼び手は無い（[`super::acp_host::AcpAgentHost::restart`] の doc）。
     pub async fn restart_engine(&self) -> anyhow::Result<()> {
         match self {
             ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => {
