@@ -120,6 +120,9 @@ pub fn spawn_recovering_conversation_pump(
                         // engine が寝かされない。
                         if let Some(in_flight) = in_flight {
                             turn_active.store(in_flight, std::sync::atomic::Ordering::Relaxed);
+                            if !in_flight {
+                                settle_progress(&topic_router, &lane, session, generation);
+                            }
                         }
                     }
                     continue;
@@ -291,6 +294,44 @@ async fn deliver_replay(
         "conversation replay（host の控え）: {count} events を配送 (lane={lane}#{session})"
     );
     next
+}
+
+/// turn が終わっているのに進みの投影（sidebar の「作業中」）が作業中のままなら、終端に合わせる。
+///
+/// 受け口の差し替えで `TurnCompleted` を落とした時のための後始末（呼ぶのは、配り直した控えが
+/// 「turn の最中ではない」と言った時だけ）。投影に `TurnCompleted` を当てるだけで、topic には流さない。
+/// すでに終端（待ち / 停止）なら触らない — turn の後に届いた `vp now` の自己申告を消さないため。
+///
+/// ⚠️ 応答の時刻（`persist_response_event`）はここでは書かない。落とした `TurnCompleted` が
+/// 本当にあったかは分からない（控えが言うのは「今 turn の最中ではない」だけ）。その turn の
+/// 応答の時刻は 1 回抜けることがある。
+fn settle_progress(
+    topic_router: &Arc<TopicRouter>,
+    lane: &str,
+    session: crate::lane::session_registry::SessionKey,
+    generation: u64,
+) {
+    use crate::conversation::progress::ProgressPhase;
+    let phase = topic_router
+        .conversation_progress
+        .view(lane, session)
+        .map(|view| view.phase);
+    if matches!(
+        phase,
+        Some(ProgressPhase::Working | ProgressPhase::Requesting)
+    ) {
+        topic_router.conversation_progress.observe_engine(
+            lane,
+            session,
+            generation,
+            &ConversationEvent::TurnCompleted {
+                session_id: String::new(),
+                cost_usd: None,
+                context_tokens: None,
+                context_window: None,
+            },
+        );
+    }
 }
 
 /// 控えを replay の 1 本に包む（純関数）。
@@ -1030,6 +1071,8 @@ mod tests {
         /// 次の `attach()` が控えを取る**直前**に出す event（pump が最後に受け口を読んでから
         /// 控えを取るまでの間に、engine が event を出した場面を作る）。
         just_before_snapshot: Arc<std::sync::Mutex<Option<ConversationEvent>>>,
+        /// `attach()` が返す `in_flight`（既定は true = turn の最中）。
+        in_flight: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl FakeSource {
@@ -1039,6 +1082,7 @@ mod tests {
                 history: Arc::default(),
                 fail: fail.map(str::to_string),
                 just_before_snapshot: Arc::default(),
+                in_flight: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             })
         }
 
@@ -1060,11 +1104,12 @@ mod tests {
 
     impl ReplaySource for FakeSource {
         fn attach(&self) -> AttachFuture {
-            let (tx, history, fail, late) = (
+            let (tx, history, fail, late, in_flight) = (
                 self.tx.clone(),
                 Arc::clone(&self.history),
                 self.fail.clone(),
                 Arc::clone(&self.just_before_snapshot),
+                Arc::clone(&self.in_flight),
             );
             // 控えを取るのは poll された時（本物の host と同じ — 呼んだ時ではない）。
             Box::pin(async move {
@@ -1077,7 +1122,7 @@ mod tests {
                 let history = history.lock().unwrap();
                 Ok(ReplayAttach {
                     events: history.clone(),
-                    in_flight: true,
+                    in_flight: in_flight.load(std::sync::atomic::Ordering::Relaxed),
                     truncated: false,
                     rx: tx.subscribe(),
                 })
@@ -1256,6 +1301,70 @@ mod tests {
             screen.apply(&event);
         }
         assert_eq!(screen.answers(), "abc", "{:?}", screen.lines);
+    }
+
+    /// 受け口の差し替えで `TurnCompleted` を落としても（最後に読んでから控えを取るまでの間に turn が
+    /// 終わった）、進みの投影（sidebar の「作業中」）と turn の状態は、控えの真値（turn は終わって
+    /// いる）に合う。
+    ///
+    /// 落ちるべき壊し方: 配り直しの後に何もしない — 進みが working のまま、次の event が来るまで残る。
+    #[tokio::test]
+    async fn turn_end_lost_at_the_swap_still_settles_progress_and_turn_state() {
+        use crate::conversation::progress::ProgressPhase;
+        let router = Arc::new(TopicRouter::new());
+        let (_id, mut topic) = router.subscribe(TOPIC).await;
+        let source = FakeSource::new(None);
+        let (requester, requests) = ReplayRequester::channel();
+        let turn_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _pump = spawn_recovering_conversation_pump(
+            "vp/root".into(),
+            2,
+            source.tx.subscribe(),
+            router.clone(),
+            None,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            turn_active.clone(),
+            None,
+            Some(ReplayPort {
+                source: source.clone(),
+                requests,
+            }),
+        );
+        // turn の最中: 本文が流れて、進みは working。
+        source.emit(chunk("a"));
+        assert_eq!(next_event(&mut topic).await, chunk("a"));
+        assert_eq!(
+            router
+                .conversation_progress
+                .view("vp/root", 2)
+                .map(|v| v.phase),
+            Some(ProgressPhase::Working)
+        );
+        assert!(turn_active.load(std::sync::atomic::Ordering::Relaxed));
+
+        // pump が `TurnCompleted` を見ないまま turn が終わり、配り直しが来る。
+        source
+            .in_flight
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        assert!(requester.request());
+        loop {
+            if matches!(
+                next_event(&mut topic).await,
+                ConversationEvent::ReplayEnd { in_flight: false }
+            ) {
+                break;
+            }
+        }
+        // 配送の後の後始末が済むのを待つ。
+        tokio::task::yield_now().await;
+        assert!(!turn_active.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(
+            router
+                .conversation_progress
+                .view("vp/root", 2)
+                .map(|v| v.phase),
+            Some(ProgressPhase::Waiting)
+        );
     }
 
     /// pump が取りこぼした（broadcast の lag）時は、host の控えから配り直す。画面は欠けない。
