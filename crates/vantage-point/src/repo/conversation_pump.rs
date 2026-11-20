@@ -60,8 +60,8 @@ pub fn spawn_lane_conversation_pump(
 /// - `replay`: `Some` = 履歴を host の控えから配る engine（ACP — grok / opencode / agy）。
 ///   「配り直して」の依頼（chat を開いた時 / lag）を受けたら、host の `attach()` で控えと続きの
 ///   受け口を一緒に取り、`ReplayStart` → `SessionInit` → 控え → `ReplayEnd` を**この pump が**
-///   流してから、受け口を差し替える（[`deliver_replay`]）。topic への書き手が 1 人なので、
-///   控えと続きの event が抜けも重なりも無く並ぶ。
+///   流してから、受け口を差し替える（[`deliver_replay`]）。engine の出力と履歴を topic に流すのが
+///   この pump だけなので、控えと続きの event が抜けも重なりも無く並ぶ。
 ///
 /// host の受け口が閉じたら終了する（ACP は pump が履歴の口を通して host を握っているので、
 /// engine を畳む時の abort か、依頼の口が落ちることで終わる）。lag 時は warn し、Codex は recover で、
@@ -86,8 +86,10 @@ pub fn spawn_recovering_conversation_pump(
         let mut attaching: Option<AttachFuture> = None;
         loop {
             let received = tokio::select! {
-                // engine の出力を先に読む。`attach()` が済んだ時に古い受け口に残っているのは、
-                // 控えに入っている event か、新しい受け口にも出る event だけになる。
+                // engine の出力を先に読む。`attach()` が済んだ時に古い受け口に残っている本文や tool は、
+                // 控えに入っているか、新しい受け口にも出る。控えに入らない event（`TurnCompleted` /
+                // `SessionInit` / `Error` 等）は、最後に読んでから控えを取るまでの間に出た分だけ、
+                // 古い受け口と一緒に落ちることがある（下の後始末で turn の状態と進みを合わせる）。
                 biased;
                 received = rx.recv() => received,
                 request = next_replay_request(&mut replay), if attaching.is_none() => {
@@ -951,8 +953,8 @@ mod tests {
     /// turn の最中に何度配り直しても、画面に見える会話に抜けも重なりも無い（lead の条件 a）。
     ///
     /// 本物の `AcpClientHost` に偽の agent をつなぎ、pump を通して topic で見る。過去の会話 2 件を
-    /// load で流し、配り直しを計 4 回頼む（発話を送る前に 1 回、turn の途中 = 本文を 1 文字ずつ
-    /// 10 回流す間に 3 回）。頼む時機と本文の到着の前後はわざと決めていない — どの順になっても
+    /// load で流し、turn の終わりまでに配り直しを 4 回頼む（発話を送る前に 1 回、turn の途中 =
+    /// 本文を 1 文字ずつ 10 回流す間に 3 回。turn の後にもう 1 回頼むので、test 全体では 5 回）。頼む時機と本文の到着の前後はわざと決めていない — どの順になっても
     /// 成り立つことを見る。実際に何回配り直されるかも決めていない（1 回以上、とだけ確かめる）。
     ///
     /// この test は時機を決めていないので、「受け口を差し替えない」壊し方は捉えない（実際に壊して
@@ -1355,16 +1357,25 @@ mod tests {
                 break;
             }
         }
-        // 配送の後の後始末が済むのを待つ。
-        tokio::task::yield_now().await;
-        assert!(!turn_active.load(std::sync::atomic::Ordering::Relaxed));
-        assert_eq!(
+        // 配送の後の後始末が済むのを、期限つきで待つ（pump の task がいつ進むかに依らない）。
+        let phase = || {
             router
                 .conversation_progress
                 .view("vp/root", 2)
-                .map(|v| v.phase),
-            Some(ProgressPhase::Waiting)
-        );
+                .map(|v| v.phase)
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while turn_active.load(std::sync::atomic::Ordering::Relaxed)
+            || phase() != Some(ProgressPhase::Waiting)
+        {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "turn の状態と進みが終端にならない: turn_active={} progress={:?}",
+                turn_active.load(std::sync::atomic::Ordering::Relaxed),
+                phase()
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 
     /// pump が取りこぼした（broadcast の lag）時は、host の控えから配り直す。画面は欠けない。

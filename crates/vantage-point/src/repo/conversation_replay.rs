@@ -118,16 +118,33 @@ pub(crate) async fn handle_conversation_demand_start(
             "status": "coalesced", "lane": lane, "session": resolved.key
         }));
     }
+    run_replay_flight(state, &addr, &lane, &resolved, spawn_error).await
+}
+
+/// 始めた flight を走らせる: replay を 1 本配り、合流した demand があればもう 1 周する。
+///
+/// 呼ぶ前に `replay_flights.begin` で flight を始めておく（終わりはこの関数が下ろす）。
+async fn run_replay_flight(
+    state: &RepoState,
+    addr: &crate::repo::lane::LaneAddress,
+    lane: &str,
+    resolved: &crate::repo::lane::ResolvedSession,
+    mut spawn_error: Option<String>,
+) -> Result<serde_json::Value, String> {
     loop {
-        let result = replay_once(state, &addr, &lane, &resolved, spawn_error.as_deref()).await;
+        let result = replay_once(state, addr, lane, resolved, spawn_error.as_deref()).await;
         if result.is_err() {
             // エラー中断は予約ごと破棄（次の demand が新規 flight で素直に走れるように）。
-            state.replay_flights.abort(&lane, resolved.key);
+            state.replay_flights.abort(lane, resolved.key);
             return result;
         }
-        if !state.replay_flights.finish(&lane, resolved.key) {
+        if !state.replay_flights.finish(lane, resolved.key) {
             return result;
         }
+        // 起動の失敗の理由は 1 回だけ見せる。合流した demand の rerun でもう 1 回流すと、同じ
+        // 「起動できません」が並ぶ（起動時は demand が 3 つ重なる）。成功した replay と違って、
+        // `Error` は `ReplayStart` で消えないので、重ねて流すと画面に残る。
+        spawn_error = None;
         // 合流分の rerun: 直列にもう 1 周だけ全量を配送し直す（連続配送なら clear-prefix で
         // 収束する = 元の設計前提に戻る）。進行中 replay の途中から購読した consumer の
         // prefix 取りこぼしもこの 1 周で回復する。`resolved` は初回 resolve の snapshot
@@ -966,5 +983,61 @@ mod tests {
                 .is_err(),
             "ReplayStart は送らない"
         );
+    }
+
+    /// engine を起動できなかった理由は、合流した demand の rerun でもう 1 回は出さない
+    /// （起動時は demand が 3 つ重なる。同じ「起動できません」が並ぶ）。
+    ///
+    /// 落ちるべき壊し方: rerun でも同じ `spawn_error` を渡す — `Error` が 2 件出る。
+    #[tokio::test]
+    async fn spawn_failure_is_reported_once_across_a_coalesced_rerun() {
+        use crate::conversation::ConversationEvent;
+        use crate::lane::session_registry::SessionMode;
+        use crate::protocol::RepoMessage;
+        use crate::repo::state::build_test_app_state;
+        use std::time::Duration;
+
+        let _state_guard = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let addr = insert_test_lane(&state, "vptest-acp-once", SessionMode::Gui).await;
+        prevent_engine_spawn(&state, &addr, _state_guard.path()).await;
+        let k2 = state
+            .lane_pool
+            .write()
+            .await
+            .create_chat_session(&addr, Some("grok"), true)
+            .expect("create grok session");
+        let resolved = state
+            .lane_pool
+            .read()
+            .await
+            .resolve_chat_session(&addr, Some(k2))
+            .unwrap();
+        let lane = addr.to_string();
+        let topic = "repo/conversation/data/vptest-acp-once~lane~lead/event";
+        let (_id, mut srx) = state.topic_router.subscribe(topic).await;
+
+        // flight を始め、もう 1 つの demand が合流した状態を作る（rerun が 1 周予約される）。
+        assert!(state.replay_flights.begin(&lane, k2));
+        assert!(!state.replay_flights.begin(&lane, k2));
+        super::run_replay_flight(
+            &state,
+            &addr,
+            &lane,
+            &resolved,
+            Some("grok を起動できません: 見つかりません".to_string()),
+        )
+        .await
+        .expect("flight");
+
+        let mut errors = 0;
+        while let Ok(Some((_, RepoMessage::ConversationEvent { event, .. }))) =
+            tokio::time::timeout(Duration::from_millis(200), srx.recv()).await
+        {
+            if matches!(event, ConversationEvent::Error { .. }) {
+                errors += 1;
+            }
+        }
+        assert_eq!(errors, 1);
     }
 }

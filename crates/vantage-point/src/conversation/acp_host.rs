@@ -372,8 +372,10 @@ impl AcpAgentHost {
 
     /// process を立て直して load し直す（agent-chat 設計書 01「呼び手の規則」）。
     ///
-    /// 他の書き手（console）が会話を進めた後、次の発話の前に呼ぶための口。生きている engine は
-    /// 他の書き手の分を知らない（agy 1.5.11 では保存からも消える、実測）。turn の最中は Err。
+    /// 他の書き手（console）が会話を進めた後、次の発話の前に呼ぶための口。生きている engine が
+    /// 他の書き手の分を知っているかは engine による（実測: agy 1.5.11 は知らず、保存からも消える。
+    /// grok 1.0.89 は 1 回の測定で答えなかった。opencode 2.3.0 は知っていた — doc 88 §8.4）。
+    /// turn の最中は Err。
     /// 成功したら履歴を配り直す。
     ///
     /// ⚠️ **呼び手はまだ無い**（2026-11-20）。いつ呼ぶかは別の task（creo `mem_1ChA3fZy2Kq7tb3qaLSmpe`、
@@ -455,8 +457,10 @@ impl AcpConfigHandle {
     /// `config_timeout`、既定 15 秒）。
     ///
     /// 成功で configOptions（候補を含む全体）が更新され、それを返す（model を替えると他の軸の
-    /// 候補が変わるため、呼び手が意図を整えるのに使う）。失敗は engine のエラー文を返し、
-    /// roster の `acp_config.error` にも残る。永続（registry）は呼び手の仕事（engine 別の形）。
+    /// 候補が変わるため、呼び手が意図を整えるのに使う）。engine が断った時は engine のエラー文を
+    /// 返し、roster の `acp_config.error` にも残る。応答が上限までに来なかった時は Err を返すだけで、
+    /// `acp_config.error` には残らない（手書きの host は残していた）。遅れて届いた応答は共有 host が
+    /// 設定面と意図に取り込む。永続（registry）は呼び手の仕事（engine 別の形）。
     pub async fn set(&self, config_id: &str, value: &str) -> Result<Vec<AcpConfigOption>, String> {
         self.host
             .set_config(config_id, value)
@@ -786,8 +790,8 @@ mod tests {
 
     // ---- 実機 E2E（CI では走らない。実 CLI + auth + model の使用枠が要る）----
     //
-    // 回し方（1 本ずつ）:
-    //   cargo test -p vantage-point --lib e2e_real_agy -- --ignored --nocapture
+    // engine ごとに 2 本（答えるだけの turn / file を 1 つ作らせる turn）。回し方（engine ごと、直列に）:
+    //   cargo test -p vantage-point --lib e2e_real_agy -- --ignored --nocapture --test-threads=1
     // model を指定する（使用枠は model ごとに別）:
     //   VP_AGY_E2E_MODEL=gemini-3.8-flash / VP_OPENCODE_E2E_MODEL=opencode/big-pickle
 

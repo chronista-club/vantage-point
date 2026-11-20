@@ -359,8 +359,8 @@ gate は claude 側で `env ?? GrowthBook` なので、VP 配下では rollout �
 | 値 | tracing レベル | 用途 |
 |----|---------------|------|
 | （未設定 / `none`） | CLI は warn、daemon は settings の `log-level` または info | 本番運用 |
-| `simple` | `vantage_point=info` | 基本ログ |
-| `detail` | `vantage_point=debug` | 詳細ログ |
+| `simple` | `vantage_point=info,agent_chat_acp=info` | 基本ログ |
+| `detail` | `vantage_point=debug,agent_chat_acp=debug` | 詳細ログ |
 
 `VP_LOG=debug|info|warn|error` → `RUST_LOG` → `VANTAGE_DEBUG` の優先順。
 `settings.kdl` の `log-level` は daemon に適用し、CLI の既定値には使わない。

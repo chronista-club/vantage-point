@@ -160,7 +160,7 @@ GFP 側には次の契約実装が必要。
   submodule は `a4d55e3` → `8ec120e`（途中で VP の切り替えのために頼んだ変更 3 つ = agent-chat PR #5・#6・#7 を含む）。GFP は「VP が先に進めてよい、後から追う」（lead 経由、2026-11-20）。
   **両 consumer が同じ revision を指す gate は、GFP が追うまで一時的に外れている。**
   依存の注意: 公式 SDK が `serde_json` の `preserve_order` を有効にする（binary 全体で `Value` の key が
-  「入れた順」になる）。VP で実害があったのは ROTO の setup の hash で、同じ PR で止めた（design 88 §8 と PR）。
+  「入れた順」になる）。VP で実害があったのは ROTO の setup の hash で、同じ PR で止めた（design 88 §8.5 と PR）。
   GFP が `agent-chat-acp` に依存する時は、GFP の側で同じ調べが要る。SDK の版は consumer の lock で
   agent-chat が検証した版（5.3.0 / schema 1.18.0）に揃える — path 依存は agent-chat の lock を連れてこない。
 

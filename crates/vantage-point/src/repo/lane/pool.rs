@@ -1911,7 +1911,7 @@ impl LanePool {
 
     /// ACP engine の履歴の配り直しを pump に頼む（chat を開いた時）。
     ///
-    /// 配るのは pump（topic への唯一の書き手）— 控えと続きの event を抜けも重なりも無く並べる
+    /// 配るのは pump（engine の出力と履歴を topic に流すのは pump だけ）— 控えと続きの event を抜けも重なりも無く並べる
     /// ため（`conversation::replay_source`）。engine が居ない / ACP でなければ Err。
     pub fn request_acp_replay(
         &self,

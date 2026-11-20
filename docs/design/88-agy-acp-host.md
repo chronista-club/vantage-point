@@ -135,8 +135,12 @@ ACP 側で採番・記録された `sessionId`（UUID v4）を `session_registry
 - **当て直しの失敗は registry から消さない**。使える model は契約や枠で変わり得る
   （`initialize` の `_meta.antigravity.tier`）ので、一時的に出ない値を自動で消すと user の選択が黙って
   失われる。⚠ に「選び直すと解消します」と出し、選び直しで上書きする
+  （**2026-11-20 から**: ⚠ の文は共有 host の `<軸>=<値>: <engine の文>` で、「選び直すと解消します」は
+  付かない → §8.3）
 - user の切替が 15 秒以内に返らなければ失敗として返し、遅れて届いた応答は捨てる（registry に書かずに
   engine だけ進む食い違いを作らない。engine が実際に変えた値は `config_option_update` で roster に出る）
+  （**2026-11-20 から**: 失敗として返すのは同じ。遅れて届いた応答は、共有 host が設定面と意図に
+  取り込む。時間切れは `acp_config.error` に残らない → §8.3）
 - panel の「送信中」は、この session の設定面の**中身**が変わった時に解く（roster は全 lane 共有の
   signal なので、別 lane の更新で解かない）。中身が変わらない失敗の繰り返しは 20 秒で解く
 - roster の供給は既存の 2 点（`build_lanes_snapshot` / `emit_lane_update`）。どちらも
@@ -150,7 +154,8 @@ ACP 側で採番・記録された `sessionId`（UUID v4）を `session_registry
 「engine が立った」合図として扱い、活動表示を idle に戻す（`session-activity-bridge.ts`、
 `console.ts` の `vp:console-ready`）。新しい lane の最初の送信では、溜めた prompt を送った直後に
 この通知が来る。そこで **turn の途中に来た変更は保留し、`TurnCompleted` の直前に 1 回だけ出す**
-（`AcpState::note_commands` / `take_deferred_init`）。実機の E2E で、event の並びが
+（当時は `AcpState::note_commands` / `take_deferred_init`。2026-11-20 からは共有 host が同じ保留を持つ。
+一覧が変わらなくても出し直す点が違う → §8.3）。実機の E2E で、event の並びが
 SessionInit → MessageChunk → SessionInit（保留分）→ TurnCompleted になることを確かめた。
 
 ### 6.4 画像
@@ -174,7 +179,7 @@ text の後ろに ACP の image block `{type: "image", mimeType, data}` を並�
 > `e2e_real_agy_config_set_and_reapply`）と grok の `e2e_real_grok_acp_turn_roundtrip` の計 4 本は、
 > 手書きの host と一緒に 2026-11-20 に消えた。agy の場面は
 > 共有 crate の側の実機 E2E（`vendor/agent-chat/crates/acp/tests/agy_e2e.rs` — 新規 → load →
-> 立て直し / 中断 / tool / 設定と画像）が持つ。VP の側に残したのは §8.5 の 1 本ずつ。
+> 立て直し / 中断 / tool / 設定と画像）が持つ。VP の側に残したのは §8.6 の、engine ごとに 2 本ずつ。
 
 ## 7. 実機で見る手順（dev build）
 
@@ -205,12 +210,13 @@ task `mem_1ChDFn6LxUfPDFsqeXvcyr`。設計の正は agent-chat の `docs/design/
 結果として、**console（TUI）で進めた分が chat の画面に出る**（今までは `replay_log` に載らないので
 出なかった。mako が 2026-11-17 に実機で確認した症状）。
 
-### 8.2 履歴の配り方 — pump が唯一の書き手
+### 8.2 履歴の配り方 — engine の出力と履歴は pump だけが流す
 
 共有 host の `attach()` は「控え」と「その続きの受け口」を同じ lock の中で返す。控えに入った event は
 受け口に出ず、控えに無い event は必ず受け口に出る。
 
-VP は pump が engine の出力を topic に流している。`conversation_replay` が横から控えを読んで topic に
+VP は pump が engine の出力を topic に流している（同じ topic には、`vp now` の自己申告と、起動の失敗の
+`Error` も別の経路から流れるが、会話の本文と履歴を流すのは pump だけ）。`conversation_replay` が横から控えを読んで topic に
 流すと、控えを取ってから `ReplayStart` が届くまでの間に pump が流した event が、消えるか重なる。
 そこで **配り直しも pump がやる**（`repo/conversation_pump.rs`、型は `conversation/replay_source.rs`）:
 
@@ -267,6 +273,9 @@ VP は pump が engine の出力を topic に流している。`conversation_rep
 - **会話中に、host が出していない発話が engine から来た時**: `UserMessage` として流す（今までは
   翻訳器が捨てていた）。stdio の 1 接続では起きないはずの場面
 - **結果まで入った `tool_call`**（load の流れ）: `ToolCall` と `ToolCallUpdate` の 2 つにする
+- 設定の切替の応答が上限（15 秒）までに来なかった時: Err を返すのは同じ。`acp_config.error` には
+  残らない（手書きの host は残していた）。遅れて届いた応答は、共有 host が設定面と意図に取り込む
+  （手書きの host は捨てていた）
 - 細かい違い: slash command の一覧が同じでも `SessionInit` を出し直す（今までは変わった時だけ。turn の
   最中は終わりまで保留するのは同じ）/ `SessionInit` が出るのが設定の当て直しの後になった / 当て直しに
   失敗した時の文から「（選び直すと解消します）」が消えた / 会話の確定の前の設定切替が、すぐ Err を
@@ -292,8 +301,8 @@ agent-chat の側で落ちる test を先に書いて確かめてある、PR #7 
 
 ### 8.4 `restart()` の口（呼び手はまだ無い）
 
-生きている engine は、他の書き手（console）が進めた分を知らない。engine ごとの実測（試験用の会話。
-2 人目は headless の 1 turn）。**列ごとに出どころが違う**:
+生きている engine が、他の書き手（console）が進めた分を知っているかは、engine による。engine ごとの
+実測（試験用の会話。2 人目は headless の 1 turn）。**列ごとに出どころが違う**:
 
 - agy: agent-chat の設計書 01 の実測（2026-11-18）。生きた process で 1 turn → 別 process で 1 turn →
   生きた方に戻る。2 回測って同じ結果
@@ -313,7 +322,23 @@ opencode が知っている理由は「process が共有の background service �
 共有 host の `restart()`（process を立て直して load し直す）を `ChatHost::restart_engine` として
 通してある。**いつ呼ぶかは決めていない** — 別の task（creo `mem_1ChA3fZy2Kq7tb3qaLSmpe`、直し方が未決）。
 
-### 8.5 検証
+### 8.5 共有 crate の log と、`serde_json` の `preserve_order`
+
+host を共有 crate に替えた時に、host の外で効いた 2 つ。
+
+- **log の target**: 共有 host の警告は target `agent_chat_acp` で出る（`session/load` の失敗で新規の
+  会話に替えた、未対応の要求を断った、など）。daemon の log の filter は `vantage_point=…` しか
+  持たなかったので、何もしないと log から消える（EnvFilter は、合う directive の無い target を出さない）。
+  filter に `agent_chat_acp` を足した（`cli::vp_log_directive`、既定・`VP_LOG`・`VANTAGE_DEBUG`・
+  settings.kdl の全経路）
+- **`preserve_order`**: 公式 SDK が `serde_json` のこの feature を有効にする。binary 全体で
+  `serde_json::Value` の object の key が「辞書順」から「入れた順」になる（release は vp-app と vp-cli を
+  1 回で build するので、vp-app にも付く）。実害があったのは ROTO の setup の hash
+  （`roto_setup.rs` — `Value` を bytes にして hash にかけ、保存値と比べて「書き直すか」を決める。並びが
+  変わると、同じ setup でも実機への書き込みが 1 回走る）。hash にかける前に key を辞書順に並べ直して
+  止めた（`roto_setup::canonical`）。調べた範囲と見ていない範囲は切り替えの PR（#1271）に書いた
+
+### 8.6 検証
 
 - 偽の ACP agent（`conversation/acp_host/testing.rs` — SDK の `Channel::duplex()` の片側で生の
   JSON-RPC を返す。turn の中身をテストが 1 手ずつ進める）で、host の adapter と pump を通す

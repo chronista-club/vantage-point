@@ -5,7 +5,7 @@
 //! `attach()` で「控え」と「その続きの受け口」を**同じ lock の中で**渡す。控えに入った event は
 //! 受け口に出ず、控えに無い event は必ず受け口に出る。
 //!
-//! VP は pump が topic への唯一の書き手なので、配り直しも pump がやる
+//! VP では engine の出力を topic に流すのが pump だけなので、配り直しも pump がやる
 //! （`repo::conversation_pump`）。横から控えを読んで topic に流すと、控えを取ってから
 //! `ReplayStart` が届くまでの間に pump が流した event が消えるか重なる。
 //!
