@@ -182,13 +182,17 @@ mod tests {
     /// 選んでいない軸は触らない。engine に軸が無い時は残す（model によって軸ごと消える）。
     #[test]
     fn follow_engine_tracks_side_effects_of_a_switch() {
-        let options = crate::conversation::acp_config::parse_config_options(&serde_json::json!([
-            {"id": "model", "type": "select", "currentValue": "gemini-3.8-flash",
-             "options": [{"value": "gemini-3.8-flash"}]},
-            {"id": "thought_level", "type": "select", "currentValue": "medium",
-             "options": [{"value": "low"}, {"value": "medium"}]}
-        ]))
-        .unwrap();
+        let options: Vec<crate::conversation::acp_config::AcpConfigOption> =
+            agent_chat_acp::config::parse_config_options(&serde_json::json!([
+                {"id": "model", "type": "select", "currentValue": "gemini-3.8-flash",
+                 "options": [{"value": "gemini-3.8-flash"}]},
+                {"id": "thought_level", "type": "select", "currentValue": "medium",
+                 "options": [{"value": "low"}, {"value": "medium"}]}
+            ]))
+            .unwrap()
+            .into_iter()
+            .map(Into::into)
+            .collect();
         assert_eq!(
             s(Some("gemini-3.8-flash"), Some("low"), Some("plan")).follow_engine(&options),
             s(Some("gemini-3.8-flash"), Some("medium"), Some("plan")),

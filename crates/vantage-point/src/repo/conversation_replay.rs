@@ -141,8 +141,9 @@ pub(crate) async fn handle_conversation_demand_start(
 
 /// replay 1 本分の配送（[`handle_conversation_demand_start`] の single-flight loop の中身）。
 ///
-/// Codex は host の一括 snapshot、Claude は transcript、他 engine は replay_log を配送する。
-/// `spawn_error` は直前の eager spawn の失敗理由（Codex の履歴取得失敗をこちらで言い換える）。
+/// Codex は host の一括 snapshot、ACP engine（grok / opencode / agy）は host の控え（pump が配る）、
+/// Claude は transcript、vpcode は replay_log を配送する。
+/// `spawn_error` は直前の eager spawn の失敗理由（engine から履歴を引く経路で、こちらで言い換える）。
 async fn replay_once(
     state: &RepoState,
     addr: &crate::repo::lane::LaneAddress,
@@ -176,13 +177,46 @@ async fn replay_once(
         }
         return Ok(serde_json::json!({"status":"ok", "lane":lane, "session":resolved.key}));
     }
+    // ACP engine: 履歴の正は engine（`session/load` が流す過去の会話を host が控えに持つ）。
+    // 配るのは pump — topic への書き手を 1 人にして、控えと続きの event を抜けも重なりも無く
+    // 並べる（`conversation::replay_source`）。ここは頼むだけで、配送は待たない。
+    if matches!(
+        crate::conversation::EngineKind::from_agent(&resolved.agent),
+        Some(
+            crate::conversation::EngineKind::Grok
+                | crate::conversation::EngineKind::OpenCode
+                | crate::conversation::EngineKind::Agy
+        )
+    ) {
+        let requested = state
+            .lane_pool
+            .read()
+            .await
+            .request_acp_replay(addr, resolved.key);
+        if requested.is_ok() {
+            return Ok(serde_json::json!({
+                "status": "requested", "lane": lane, "session": resolved.key
+            }));
+        }
+        // engine が居ない（起動に失敗した）。空の chat に収束させ、理由があれば見せる。
+        let mut events = vec![crate::conversation::ConversationEvent::ReplayStart];
+        if let Some(spawn_error) = spawn_error {
+            events.push(crate::conversation::ConversationEvent::Error {
+                message: format!("{} を起動できません: {spawn_error}", resolved.agent),
+            });
+        }
+        events.push(crate::conversation::ConversationEvent::ReplayEnd { in_flight: false });
+        route_conversation(state, lane, resolved.key, events).await;
+        return Ok(serde_json::json!({
+            "status": "no_engine", "lane": lane, "session": resolved.key
+        }));
+    }
     let lane_label = crate::repo::agent_spawner::lane_label(addr).to_string();
     let label = crate::lane::session_registry::session_label(&lane_label, resolved.key);
     // transcript replay は claude 専用（jsonl の SSOT を持つのは claude のみ）。会話 id は
     // registry が SSOT（doc 40 §5 reader #6 — resolve 時の registry load から持ち回った
-    // `resolved.conversation`。旧 cc_session store 直読みは PR-2 で退役）。grok /
-    // opencode session は claude transcript を持たないため None に倒し、必ず下の no_session
-    // path（replay_log）を通す。
+    // `resolved.conversation`。旧 cc_session store 直読みは PR-2 で退役）。vpcode の session は
+    // claude transcript を持たないため None に倒し、必ず下の no_session path（replay_log）を通す。
     let session_id = match crate::conversation::EngineKind::from_agent(&resolved.agent) {
         Some(crate::conversation::EngineKind::Claude) => resolved.conversation.clone(),
         _ => None,
@@ -192,15 +226,9 @@ async fn replay_once(
         // 記録した replay log を replay 源にする（engine 非依存 replay log。判定は lanes_state の
         // replay_tap と同じ判定）。それ以外（claude で会話未開始 等）は log を読まず
         // 空 chat に収束させる。
-        let buffered = if matches!(
-            crate::conversation::EngineKind::from_agent(&resolved.agent),
-            Some(
-                crate::conversation::EngineKind::Grok
-                    | crate::conversation::EngineKind::OpenCode
-                    | crate::conversation::EngineKind::Agy
-                    | crate::conversation::EngineKind::Vpcode
-            )
-        ) {
+        let buffered = if crate::conversation::EngineKind::from_agent(&resolved.agent)
+            == Some(crate::conversation::EngineKind::Vpcode)
+        {
             crate::conversation::replay_log::load(&addr.repo, &label)
         } else {
             Vec::new()
@@ -524,11 +552,12 @@ mod tests {
         assert!(matches!(ev[0], ConversationEvent::SessionInit { .. }));
     }
 
-    /// engine 非依存 replay log: Grok session に会話を仕込むと、demand_start が replay_log を
-    /// 読み `ReplayStart → 記録 events → ReplayEnd` を配送する（transcript を持たない engine の
-    /// replay 源）。外部 engine は存在しない cwd により起動させない。
+    /// replay log: vpcode session に会話を仕込むと、demand_start が replay_log を読み
+    /// `ReplayStart → 記録 events → ReplayEnd` を配送する（履歴を自分で持たない engine の replay 源。
+    /// 2026-11-20 まで grok / opencode / agy もこの経路だった — 今は engine の履歴を host の控えから
+    /// 配る）。外部 engine は存在しない cwd により起動させない。
     #[tokio::test]
-    async fn conversation_demand_start_replays_buffered_log_for_grok_session() {
+    async fn conversation_demand_start_replays_buffered_log_for_vpcode_session() {
         use crate::conversation::ConversationEvent;
         use crate::lane::session_registry::SessionMode;
         use crate::protocol::RepoMessage;
@@ -542,19 +571,19 @@ mod tests {
         let addr = insert_test_lane(&state, "vptest-replaylog", SessionMode::Gui).await;
         prevent_engine_spawn(&state, &addr, _state_guard.path()).await;
 
-        // focused な Grok session #2 を作る（session=None がこれに解決される）。
+        // focused な vpcode session #2 を作る（session=None がこれに解決される）。
         let k2 = state
             .lane_pool
             .write()
             .await
-            .create_chat_session(&addr, Some("grok"), true)
-            .expect("create Grok session");
+            .create_chat_session(&addr, Some("vpcode"), true)
+            .expect("create vpcode session");
         assert_eq!(k2, 2);
 
         // #2 の replay 源に会話を仕込む（session label = "lead#2"）。
         for ev in [
             ConversationEvent::MessageChunk {
-                text: "Grok says hi".to_string(),
+                text: "vpcode says hi".to_string(),
             },
             ConversationEvent::TurnCompleted {
                 session_id: "s".to_string(),
@@ -600,7 +629,7 @@ mod tests {
         assert_eq!(
             got[1],
             ConversationEvent::MessageChunk {
-                text: "Grok says hi".to_string()
+                text: "vpcode says hi".to_string()
             }
         );
         assert!(matches!(got[2], ConversationEvent::TurnCompleted { .. }));
@@ -623,13 +652,13 @@ mod tests {
         let addr = insert_test_lane(&state, "vptest-coalesce", SessionMode::Gui).await;
         prevent_engine_spawn(&state, &addr, _state_guard.path()).await;
 
-        // focused な Grok session #2（session 省略の demand がこれに解決される）。
+        // focused な vpcode session #2（session 省略の demand がこれに解決される）。
         let k2 = state
             .lane_pool
             .write()
             .await
-            .create_chat_session(&addr, Some("grok"), true)
-            .expect("create Grok session");
+            .create_chat_session(&addr, Some("vpcode"), true)
+            .expect("create vpcode session");
         assert_eq!(k2, 2);
 
         // 進行中 flight を模擬（handler と同じ key = lane display 形 + session key）。
@@ -666,7 +695,7 @@ mod tests {
         )
         .await
         .expect("demand_start after flight");
-        assert_eq!(res["status"], "no_session", "Grok は replay_log path");
+        assert_eq!(res["status"], "no_session", "vpcode は replay_log path");
         let res = dispatch_repo_method(
             &state,
             "conversation_demand_start",
@@ -706,7 +735,7 @@ mod tests {
             .lane_pool
             .write()
             .await
-            .create_chat_session(&addr, Some("grok"), true)
+            .create_chat_session(&addr, Some("vpcode"), true)
             .expect("create chat session");
 
         // その session の replay 源に会話を仕込む。
@@ -758,5 +787,79 @@ mod tests {
             }
             other => panic!("想定外の message: {other:?}"),
         }
+    }
+
+    /// ACP engine（grok / opencode / agy）は replay_log を読まない。engine を起動できなかった時は、
+    /// 空の chat と理由を配る（`ReplayStart` → `Error` → `ReplayEnd`）。古い replay_log の file が
+    /// 残っていても、その中身は出さない（切り替えの前に記録された会話。正は engine の側）。
+    ///
+    /// 落ちるべき壊し方: ACP engine を replay_log の読み手に残す — 仕込んだ本文が配られる
+    /// （engine から戻る履歴と二重になる）。
+    #[tokio::test]
+    async fn conversation_demand_start_for_acp_session_ignores_the_replay_log() {
+        use crate::conversation::ConversationEvent;
+        use crate::lane::session_registry::SessionMode;
+        use crate::protocol::RepoMessage;
+        use crate::repo::state::build_test_app_state;
+        use crate::repo::unison_server::dispatch_repo_method;
+        use std::time::Duration;
+
+        let _state_guard = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let addr = insert_test_lane(&state, "vptest-acp-replay", SessionMode::Gui).await;
+        prevent_engine_spawn(&state, &addr, _state_guard.path()).await;
+        let k2 = state
+            .lane_pool
+            .write()
+            .await
+            .create_chat_session(&addr, Some("grok"), true)
+            .expect("create grok session");
+        crate::conversation::replay_log::append(
+            "vptest-acp-replay",
+            &format!("lead#{k2}"),
+            &ConversationEvent::MessageChunk {
+                text: "切り替えの前に記録した本文".to_string(),
+            },
+        )
+        .expect("replay log append");
+
+        let topic = "repo/conversation/data/vptest-acp-replay~lead/event";
+        let (_id, mut srx) = state.topic_router.subscribe(topic).await;
+        let res = dispatch_repo_method(
+            &state,
+            "conversation_demand_start",
+            serde_json::json!({ "lane": "vptest-acp-replay/lead" }),
+        )
+        .await
+        .expect("demand_start");
+        assert_eq!(res["status"], "no_engine");
+
+        let mut got = Vec::new();
+        for _ in 0..3 {
+            let (_t, msg) = tokio::time::timeout(Duration::from_secs(2), srx.recv())
+                .await
+                .expect("replay event timeout")
+                .expect("topic closed");
+            match msg {
+                RepoMessage::ConversationEvent { session, event, .. } => {
+                    assert_eq!(session, k2);
+                    got.push(event);
+                }
+                other => panic!("想定外の message: {other:?}"),
+            }
+        }
+        assert_eq!(got[0], ConversationEvent::ReplayStart);
+        assert!(
+            matches!(&got[1], ConversationEvent::Error { message } if message.starts_with("grok を起動できません")),
+            "{:?}",
+            got[1]
+        );
+        assert_eq!(got[2], ConversationEvent::ReplayEnd { in_flight: false });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), srx.recv())
+                .await
+                .is_err(),
+            "replay_log の中身は配らない"
+        );
     }
 }

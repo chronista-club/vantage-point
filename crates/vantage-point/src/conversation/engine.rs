@@ -334,6 +334,38 @@ impl ChatHost {
         }
     }
 
+    /// 履歴を host から受け取る口（ACP engine だけが持つ）。pump の起動時に 1 度だけ取り出す。
+    pub fn take_replay_port(&self) -> Option<super::replay_source::ReplayPort> {
+        match self {
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.take_replay_port(),
+            ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => None,
+        }
+    }
+
+    /// 履歴の配り直しを pump に頼む（ACP engine）。頼めたら true。ACP 以外は false
+    /// （Claude は transcript、Codex は `request_history`、vpcode は replay_log）。
+    pub fn request_replay(&self) -> bool {
+        match self {
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.request_replay(),
+            ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => false,
+        }
+    }
+
+    /// engine の process を立て直して履歴を読み直す（ACP engine。他の書き手が会話を進めた後の口、
+    /// agent-chat 設計書 01「呼び手の規則」）。turn の最中は Err。
+    ///
+    /// ⚠️ 呼び手はまだ無い（[`super::acp_host::AcpAgentHost::restart`] の doc）。
+    pub async fn restart_engine(&self) -> anyhow::Result<()> {
+        match self {
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => {
+                h.restart().await.map_err(anyhow::Error::msg)
+            }
+            ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => {
+                anyhow::bail!("このエンジンは立て直しの口を持ちません")
+            }
+        }
+    }
+
     pub fn commit_seq(&self) -> u64 {
         match self {
             ChatHost::Claude(h) => h.commit_seq(),

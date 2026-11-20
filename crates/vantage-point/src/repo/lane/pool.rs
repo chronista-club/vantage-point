@@ -1752,15 +1752,15 @@ impl LanePool {
                 );
             }
         };
-        // replay-log tap: native 履歴を使わない engine の session にだけ
-        // 付ける。claude は transcript が SSOT なので None（二重化しない）。tap は配信 event を
-        // per-session に disk 記録し、demand_start の no_session path がそれを replay 源にする
-        // （doc — engine 非依存 replay log）。⚠️ この判定は unison_server の reader / writer と
-        // replay_log.rs の doc と 4 点セット（片側更新は dead-write を生む、#807 教訓 / doc 43 §5）。
+        // replay-log tap: 履歴を自分で持たない engine（vpcode）の session にだけ付ける。claude は
+        // transcript、codex は app-server、ACP engine（grok / opencode / agy）は engine の
+        // `session/load` が SSOT なので None（二重化しない）。tap は配信 event を per-session に
+        // disk 記録し、demand_start の no_session path がそれを replay 源にする。
+        // ⚠️ この判定は 4 点セット（片側更新は dead-write を生む、#807 教訓 / doc 43 §5）:
+        // ここ / `conversation_replay::replay_once` の読み手 / `conversation_ops` の user 発話の
+        // 記録 / `replay_log.rs` の doc。
         let replay_tap = match EngineKind::from_agent(&resolved.agent) {
-            Some(
-                EngineKind::Grok | EngineKind::OpenCode | EngineKind::Agy | EngineKind::Vpcode,
-            ) => Some(crate::conversation::replay_log::ReplayLogTap {
+            Some(EngineKind::Vpcode) => Some(crate::conversation::replay_log::ReplayLogTap {
                 repo: addr.repo.clone(),
                 label: label.clone(),
             }),
@@ -1785,6 +1785,8 @@ impl LanePool {
             std::sync::Arc::clone(&last_event_at),
             std::sync::Arc::clone(&turn_active),
             history_recovery,
+            // ACP engine: 履歴は host の控えから pump が配る（replay_source）。
+            host.take_replay_port(),
         );
         let pid = host.pid();
         // LaneInfo.pid / state は lane の代表 = focused session に紐づける（非 focused の
@@ -1877,6 +1879,23 @@ impl LanePool {
                 Ok(())
             }
             _ => anyhow::bail!("Codex の chat host がありません"),
+        }
+    }
+
+    /// ACP engine の履歴の配り直しを pump に頼む（chat を開いた時）。
+    ///
+    /// 配るのは pump（topic への唯一の書き手）— 控えと続きの event を抜けも重なりも無く並べる
+    /// ため（`conversation::replay_source`）。engine が居ない / ACP でなければ Err。
+    pub fn request_acp_replay(
+        &self,
+        addr: &LaneAddress,
+        session: SessionKey,
+    ) -> anyhow::Result<()> {
+        let slot = self.chat_slot(addr, Some(session))?;
+        if slot.host.request_replay() {
+            Ok(())
+        } else {
+            anyhow::bail!("履歴を配れる chat host がありません")
         }
     }
 
