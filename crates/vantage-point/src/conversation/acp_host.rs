@@ -30,14 +30,12 @@
 //! drop → 再 ensure → retry する。chat を開き直した時は、終了した host（[`AcpAgentHost::exited`]）を
 //! pool が作り直す（agent-chat 設計書 01「呼び手の規則」— 終了した host はもう使えない）。
 //!
-//! ⚠️ 共有 host の今の作り（revision `6e93984`）に残る窓（agent-chat に直しを頼んである、2026-11-20）:
-//! - engine の終了から最大 1 秒（stderr の読み切り）の間と、会話の確定の前に送った発話は、`submit` が
-//!   Ok を返したまま捨てられる。理由は `EngineExited` の文に載るだけなので、daemon の log にも出す
-//! - 会話の確定の前（と設定の当て直しの最中）の [`AcpAgentHost::stop`] は、確定が済むまで process を
-//!   止めない（確定の上限 30 秒 + 当て直しの上限 15 秒）
+//! 会話を確定できなかった時（認証切れ、CLI の不調など）は、共有 host が理由を `Error` で出してから
+//! `EngineExited` を出す。engine が終了して、送られなかった発話があった時も `Error` が出る。
+//! `EngineExited` の文（stderr の末尾つき）は GUI に出ない（「休眠」とだけ出る）ので、daemon の log
+//! にも出す（[`watch_exit`]）。
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_chat_acp::{
@@ -162,8 +160,12 @@ fn launch_context(config: &AcpHostConfig) -> LaunchContext {
 
 /// permission の方針: 自動で許可する（bypass parity、doc 42 §2）。
 ///
-/// 許可の option（`allow_once` → `allow_always`）を選ぶ。許可の option が無ければ先頭の option
-/// （手書きの host と同じ。共有 crate の既定は「無ければ取り消す」）。
+/// 許可の option（`allow_once` → `allow_always`）を選ぶ。許可の option が無ければ先頭の option。
+///
+/// 手書きの host（`build_permission_allow`）との関係: 「無ければ先頭」は同じ（共有 crate の既定は
+/// 「無ければ取り消す」）。違いは 2 つ — 許可の option が複数ある時、手書きは**並びの先頭**の
+/// allow を選んでいたが、今は kind の順で狭い方（`allow_once`）を選ぶ。option が 1 つも無い時、
+/// 手書きは `optionId: null` の「選んだ」を返していたが、今は取り消す。
 fn auto_allow(request: &RequestPermissionRequest) -> PermissionDecision {
     match agent_chat_acp::permission::allow(request) {
         PermissionDecision::Cancelled => request
@@ -221,8 +223,6 @@ pub struct AcpAgentHost {
     replay: ReplayRequester,
     /// pump に渡す口（pump の起動時に 1 度だけ取り出す）。
     port: Mutex<Option<ReplayPort>>,
-    /// engine が終了したか（`EngineExited` を見たら立つ。[`Self::exited`]）。
-    exited: Arc<AtomicBool>,
 }
 
 impl AcpAgentHost {
@@ -260,11 +260,9 @@ impl AcpAgentHost {
     fn wrap(engine: AcpEngine, host: AcpClientHost) -> Self {
         let host = Arc::new(host);
         let (replay, requests) = ReplayRequester::channel();
-        let exited = Arc::new(AtomicBool::new(false));
-        tokio::spawn(watch_exit(engine, host.subscribe(), Arc::clone(&exited)));
+        tokio::spawn(watch_exit(engine, host.subscribe()));
         Self {
             engine,
-            exited,
             replay,
             port: Mutex::new(Some(ReplayPort {
                 source: Arc::new(AcpReplaySource(Arc::clone(&host))),
@@ -278,13 +276,16 @@ impl AcpAgentHost {
         self.host.subscribe()
     }
 
-    /// engine が終了したか（process の終了、接続が切れた、会話を確定できなかった）。
+    /// host が終了したか（process の終了、接続が切れた、会話を確定できなかった、[`Self::stop`]）。
     ///
     /// 終了した host は履歴も渡せず、発話も受けない。chat を開き直す時に pool がこれを見て作り直す。
-    /// 明示の [`Self::stop`] と立て直し（[`Self::restart`]）では立たない（共有 host はその時
-    /// `EngineExited` を出さない）。
+    /// 立て直し（[`Self::restart`]）の途中は false。
+    ///
+    /// `stop()` で止めた host でも true になるが、止めるのは slot を畳む時だけ
+    /// （[`super::engine::ChatEngineSlot`] の Drop が唯一の呼び手）なので、pool が見る slot に
+    /// 止めた host が残ることは無い。
     pub fn exited(&self) -> bool {
-        self.exited.load(Ordering::Relaxed)
+        self.host.is_finished()
     }
 
     /// pump に渡す履歴の口。1 度だけ取り出せる（2 度目は None）。
@@ -383,9 +384,8 @@ impl AcpAgentHost {
         Ok(())
     }
 
-    /// 明示 teardown（[`super::engine::ChatEngineSlot`] Drop から呼ぶ）。
-    ///
-    /// ⚠️ 会話の確定の前に呼ぶと、process が止まるのは確定の後になる（module doc の「残る窓」）。
+    /// 明示 teardown（[`super::engine::ChatEngineSlot`] Drop から呼ぶ）。会話の確定や設定の当て直しを
+    /// 待っている最中でも、すぐに process を止める。先に積んであった発話は送らない。
     pub fn stop(&mut self) {
         self.host.stop();
         tracing::info!("AcpAgentHost stop（{}）", self.engine.name());
@@ -402,21 +402,15 @@ fn spawn_error(engine: AcpEngine, error: HostError) -> anyhow::Error {
     anyhow::anyhow!("{} を起動できません: {detail}", engine.name())
 }
 
-/// engine の終了を見張る。終了の理由を daemon の log に残し、[`AcpAgentHost::exited`] を立てる。
+/// engine の終了の理由を daemon の log に残す。
 ///
-/// 理由は `EngineExited` の文にしか載らず、GUI はその文を出さない（「休眠」とだけ出る）。会話を
-/// 確定できなかった時（認証切れ、CLI の不調など）に、送った発話が捨てられた理由を追えるようにする。
-/// 受け口だけを持つ（host を握らない）ので、host が落とされれば終わる。
-async fn watch_exit(
-    engine: AcpEngine,
-    mut events: broadcast::Receiver<ConversationEvent>,
-    exited: Arc<AtomicBool>,
-) {
+/// 理由（stderr の末尾つき）は `EngineExited` の文にしか載らず、GUI はその文を出さない（「休眠」と
+/// だけ出る）。受け口だけを持つ（host を握らない）ので、host が落とされれば終わる。
+async fn watch_exit(engine: AcpEngine, mut events: broadcast::Receiver<ConversationEvent>) {
     loop {
         match events.recv().await {
             Ok(ConversationEvent::EngineExited { message }) => {
                 tracing::warn!("{} が終了しました: {message}", engine.name());
-                exited.store(true, Ordering::Relaxed);
                 return;
             }
             Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
@@ -731,8 +725,8 @@ mod tests {
 
     /// engine が終了したら `exited()` が立つ（pool が chat を開き直す時に作り直す合図）。終了した
     /// host は履歴を渡せない。
-    /// 落ちるべき壊し方: `watch_exit` を起こさない — 終了した host が slot に残り続け、開き直すたびに
-    /// 履歴の取得が失敗する。
+    /// 落ちるべき壊し方: `exited()` が常に false を返す — 終了した host が slot に残り続け、開き直す
+    /// たびに履歴の取得が失敗する。
     #[tokio::test]
     async fn exited_is_raised_when_the_engine_goes_away() {
         let _state = crate::test_env::state_dir_async().await;

@@ -189,7 +189,7 @@ text の後ろに ACP の image block `{type: "image", mimeType, data}` を並�
 ## 8. host を共有 crate に切り替えた（2026-11-20、Stage 2）
 
 task `mem_1ChDFn6LxUfPDFsqeXvcyr`。設計の正は agent-chat の `docs/design/01-acp-client-host.md`
-（`vendor/agent-chat`、revision `6e93984`）。ここには VP の側で決めたことだけを書く。grok と opencode
+（`vendor/agent-chat`、revision `8ec120e`）。ここには VP の側で決めたことだけを書く。grok と opencode
 も同じ host なので、同時に切り替えた（doc 43 §5 の「片方だけは作らない」）。
 
 ### 8.1 何が変わったか
@@ -228,12 +228,16 @@ VP は pump が engine の出力を topic に流している。`conversation_rep
 - 配り直しの後、turn の状態（idle の判定に使う）を控えの `in_flight` に合わせる。受け口を差し替える
   時に、控えに入らない event（`TurnCompleted` など）を古い受け口と一緒に落とすことがあるため
   （最後に読んでから控えを取るまでの間に出た分。daemon は multi-thread の runtime）
-- **履歴を取れなかった時（会話を確定できなかった）と、engine を起動できなかった時は、`Error` だけを
-  流す。`ReplayStart` は送らない** — GUI はあれを見て会話表示を消すので、出ている会話まで消して
-  しまう（Codex の履歴の失敗と同じ規律）
+- **履歴を取れなかった時（会話を確定できなかった）と、engine を起動できなかった時は、`ReplayStart` を
+  送らない** — GUI はあれを見て会話表示を消すので、出ている会話まで消してしまう（Codex の履歴の
+  失敗と同じ規律）。理由の `Error` は、確定の失敗なら共有 host が自分で出し（pump は engine の出力と
+  して流すだけで、同じ理由をもう 1 件足さない）、起動の失敗なら `replay_once` が出す
+- 配り直した控えが「turn の最中ではない」と言うのに、進みの投影（sidebar の「作業中」）が作業中の
+  ままなら、終端に合わせる（上の「turn の状態」と同じ理由。応答の時刻は書かないので、その turn の
+  応答の時刻が 1 回抜けることがある）
 - **engine が終了した後に chat を開き直した時は、終了した host を畳んで作り直す**
-  （`ensure_chat_engine` が `ChatHost::exited` を見る。agent-chat 設計書 01「呼び手の規則」— 終了した
-  host はもう使えない）。作り直した host の load で履歴が戻る。今までは `replay_log` から戻っていた場面
+  （`ensure_chat_engine` が `ChatHost::exited` = 共有 host の `is_finished()` を見る。agent-chat 設計書 01
+  「呼び手の規則」— 終了した host はもう使えない）。作り直した host の load で履歴が戻る。今までは `replay_log` から戻っていた場面
 - 控えが上限で切られた時は、省いた旨の `Notice` を足す。**ただし VP の GUI は `Notice` を描かない**
   （`chat-model.ts` の fold に `notice` の case が無い。既存の「省いた」表示は `codex_history` の時に
   しか立たない）。長い会話では古い turn が黙って落ちる。load に失敗して新規に替えた時の `Notice` も
@@ -268,16 +272,23 @@ VP は pump が engine の出力を topic に流している。`conversation_rep
   失敗した時の文から「（選び直すと解消します）」が消えた / 会話の確定の前の設定切替が、すぐ Err を
   返す代わりに確定を待つ / engine が終了した後の `interrupt` が Err を返す / engine の終了後は `pid` が None
 
-共有 host に残る窓（revision `6e93984`。agent-chat に直しを頼んである、2026-11-20。読んで確かめた指摘で、
-実行して再現はしていない）:
+共有 host の側で直してもらったもの（VP の自己レビューで見つけ、agent-chat に頼んだ。どれも
+agent-chat の側で落ちる test を先に書いて確かめてある、PR #7 → revision `8ec120e`）:
 
-- **会話の確定の前（と設定の当て直しの最中）の `stop()` が、process を止めない**。確定が済むまで
-  （上限 30 秒 + 当て直しの上限 15 秒）process が生きる。chat を開いた直後に mode や engine を切り替えると、
-  その間に同じ会話 id で別の process が立ち得る。確定の前に発話が積まれていると、止めたはずの engine に
-  prompt を送ってから止める。手書きの host は `stop()` の中でその場で kill していた
-- **`submit` が Ok を返したまま発話が捨てられる窓が 2 つ**: engine の終了から最大 1 秒（stderr の読み切り
-  の間）と、会話を確定できなかった時に待っていた発話。理由は `EngineExited` の文にしか載らず、GUI は
-  その文を出さない（「休眠」とだけ出る）。VP の側では、その文を daemon の log に出している
+- **`stop()` は、会話の確定や設定の当て直しを待っている最中でも、すぐに process を止める**。先に
+  積んであった発話は送らない。直す前は、確定が済むまで（上限 30 秒 + 15 秒）process が生き、
+  止めたはずの engine に prompt を送ってから止めていた（chat を開いた直後に mode や engine を
+  切り替えると、同じ会話 id で process が 2 つ立ち得た）
+- **engine の終了を見た時点で、`submit` は Err を返す**（VP の自己修復に入る）。直す前は、stderr の
+  読み切りが済むまで（最大 1 秒）Ok を返して、発話を捨てていた
+- **会話を確定できなかった時は、理由を `Error` で出してから `EngineExited` を出す**（待っていた
+  発話があれば件数も）。engine が終了して、送られなかった発話があった時も `Error` が出る。
+  `EngineExited` の文は GUI に出ない（「休眠」とだけ出る）ので、VP はその文を daemon の log にも出す
+- `is_finished()`: host が終了したかを待たずに読む口（`ChatHost::exited` の実体）
+
+残る窓: turn の最中に engine が終了した時、送ってしまった発話（答えが来ないまま）は「送られなかった
+発話」に数えない。`EngineExited` だけが出る（`TurnCompleted` は出ないことがある。VP の pump は
+`EngineExited` で turn の状態を下ろす）。
 
 ### 8.4 `restart()` の口（呼び手はまだ無い）
 
@@ -315,7 +326,8 @@ cargo test -p vantage-point --lib e2e_real_grok -- --ignored --nocapture --test-
 VP_OPENCODE_E2E_MODEL=opencode/big-pickle cargo test -p vantage-point --lib e2e_real_opencode -- --ignored --nocapture --test-threads=1
 ```
 
-2026-11-20 に 1 回ずつ回した結果（agy 1.5.11 / grok 1.0.89 / opencode 2.3.0）: 6 本とも通過。
+2026-11-20 に回した結果（agy 1.5.11 / grok 1.0.89 / opencode 2.3.0。revision `6e93984` と `8ec120e` で
+1 回ずつ）: 6 本とも通過。
 立て直しで pid が替わり、発話と答えが控えに戻った。tool を使う turn では、3 つとも控えに `ToolCall` 1 件と
 `ToolCallUpdate` 1 件が入った（load の流れの形は engine で違う — agy / grok は結果まで入った `tool_call`
 1 件、opencode は `tool_call`（pending）+ `tool_call_update` の 2 段 — が、控えでは同じ 1 組になる）。設定面の軸は agy = model / thought_level / mode、

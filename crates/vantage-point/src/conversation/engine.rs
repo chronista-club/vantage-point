@@ -445,7 +445,7 @@ impl ChatHost {
 
     /// 明示 teardown（[`ChatEngineSlot`] Drop から呼ぶ）。codex / vpcode は host kill、
     /// claude は Child kill_on_drop に委ねる（host drop 時に停止）。grok / opencode / agy は共有 host に
-    /// 停止を命じる（会話の確定の前だと、process が止まるのは確定の後 — `acp_host` の module doc）。
+    /// 停止を命じる（会話の確定を待っている最中でも、すぐに process を止める）。
     pub fn stop(&mut self) {
         match self {
             // ClaudeHost の Child は kill_on_drop(true) なので host drop で停止する。

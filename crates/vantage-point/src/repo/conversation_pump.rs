@@ -234,9 +234,12 @@ async fn poll_attach(attaching: &mut Option<AttachFuture>) -> Result<ReplayAttac
 /// 並び: `ReplayStart` → `SessionInit`（あれば）→ 省いた旨の `Notice`（控えが上限で切られた時）→
 /// 控え → `ReplayEnd { in_flight }`。
 ///
-/// `attach()` が失敗した時は **`Error` だけ**を流し、受け口は替えない（None を返す）。
-/// `ReplayStart` は送らない — GUI はあれを見て会話表示を消すので、履歴を取れなかった時に、
-/// 出ている会話まで消してしまう（Codex の履歴の失敗と同じ規律）。
+/// `attach()` が失敗した時は**何も流さず**、受け口は替えない（None を返す）。
+/// - `ReplayStart` は送らない — GUI はあれを見て会話表示を消すので、履歴を取れなかった時に、
+///   出ている会話まで消してしまう（Codex の履歴の失敗と同じ規律）
+/// - 理由の `Error` もここでは出さない — 会話を確定できなかった時は、共有 host が自分で `Error` を
+///   出してから `EngineExited` を出す（この pump が engine の出力として流す）。ここでも出すと、
+///   同じ理由が 2 件並ぶ
 ///
 /// ⚠️ **流す処理は別の task に預けて、終わりまで待つ**。pump は engine を畳む時に abort される
 /// （[`crate::conversation::ChatEngineSlot`] の Drop）。この関数の中で直接 route すると、
@@ -263,12 +266,7 @@ async fn deliver_replay(
             tracing::warn!(
                 "conversation replay: 履歴を取れません (lane={lane}#{session}): {message}"
             );
-            (
-                vec![ConversationEvent::Error {
-                    message: format!("会話の履歴を復元できません: {message}"),
-                }],
-                None,
-            )
+            return None;
         }
     };
     let count = batch.len();
@@ -1177,11 +1175,12 @@ mod tests {
         assert_eq!(seen.len(), 302, "ReplayStart + 300 件 + ReplayEnd");
     }
 
-    /// 履歴を取れなかった時（engine が会話を確定できなかった）は、理由だけを配る。`ReplayStart` は
-    /// 送らない（出ている会話を消さない）。
+    /// 履歴を取れなかった時（engine が会話を確定できなかった）は、pump からは何も足さない。
+    /// `ReplayStart` を送らず（出ている会話を消さない）、理由の `Error` は共有 host が engine の出力と
+    /// して出したものだけが流れる（pump が同じ理由をもう 1 件足さない）。
     /// 落ちるべき壊し方: `ReplayStart` → `Error` → `ReplayEnd` で包む — GUI が会話表示を消す。
     #[tokio::test]
-    async fn failed_attach_delivers_only_the_error_without_clearing_the_display() {
+    async fn failed_attach_adds_nothing_and_the_hosts_own_error_flows_through() {
         let router = Arc::new(TopicRouter::new());
         let (_id, mut topic) = router.subscribe(TOPIC).await;
         let source = FakeSource::new(Some("会話を確定できません: session/new: 認証が要ります"));
@@ -1201,17 +1200,18 @@ mod tests {
             }),
         );
         assert!(requester.request());
-        let error = next_event(&mut topic).await;
-        assert!(
-            matches!(&error, ConversationEvent::Error { message } if message.contains("認証が要ります")),
-            "{error:?}"
-        );
         assert!(
             tokio::time::timeout(Duration::from_millis(200), topic.recv())
                 .await
                 .is_err(),
-            "ReplayStart も ReplayEnd も送らない"
+            "ReplayStart も ReplayEnd も、pump からの Error も送らない"
         );
+        // 共有 host が出した Error は、engine の出力としてそのまま流れる。
+        let own = ConversationEvent::Error {
+            message: "会話を確定できませんでした（session/new: 認証が要ります）".into(),
+        };
+        source.tx.send(own.clone()).unwrap();
+        assert_eq!(next_event(&mut topic).await, own);
     }
 
     /// 溜まった依頼は 1 回の配り直しにまとめる（起動時に demand が 3 つ重なっても、全量を 3 回は
