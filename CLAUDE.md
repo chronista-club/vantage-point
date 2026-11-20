@@ -333,7 +333,14 @@ gate は claude 側で `env ?? GrowthBook` なので、VP 配下では rollout �
 > 旧 `agent.rs`（`ClaudeAgent` OneShot / `InteractiveClaudeAgent`）は **2026-09 に撤去**。`InteractiveClaudeAgent` は
 > #390 以来一度も `Some` にならない `AppState`（現 `RepoState`）の field で、health の `services.claude` も定数 `"idle"` を返すだけだった。
 > Claude CLI の path 解決（`get_claude_cli_path`）だけが生きていて `conversation/host.rs` の private fn に移した。
-> 他 engine（codex / acp / vpcode）の host も同 dir。
+> 他 engine（codex / acp / vpcode）の host も同 dir。ACP engine（grok / opencode / agy）の host は、
+> 共有 crate `agent-chat-acp`（`vendor/agent-chat`、公式 SDK `agent-client-protocol`）の `AcpClientHost` を
+> 包む薄い adapter（`acp_host.rs`、doc 88 §8）。履歴は engine の `session/load` が正で、pump が host の
+> 控えから配る — `replay_log` は使わない。
+> ⚠️ この SDK が `serde_json` の `preserve_order` を有効にする。**`serde_json::Value` の object の key は
+> 「入れた順」で出る**（辞書順ではない）。`Value` を文字列や bytes にして hash・保存値と比べる時は、
+> 並びを自分で決める（実例: `roto_setup::canonical`）。`cargo tree -p vp-app` 単体では付かないが、
+> release は `-p vp-app -p vp-cli` を 1 回で build するので vp-app にも付く。
 
 ## コーディング規約
 
