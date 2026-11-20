@@ -385,7 +385,7 @@ impl AcpAgentHost {
     /// 成功したら履歴を配り直す。
     ///
     /// ⚠️ **呼び手は無い**。VP は console に切り替える時に chat の engine を止めるので
-    /// （`repo::lane::reconcile` の ①′）、生きたまま他の書き手に進められる場面が無い（doc 88 §8.4）。
+    /// （`repo::lane::reconcile` の ①）、生きたまま他の書き手に進められる場面が無い（doc 88 §8.4）。
     pub async fn restart(&self) -> Result<(), String> {
         self.host.restart().await.map_err(|e| e.to_string())?;
         self.replay.request();

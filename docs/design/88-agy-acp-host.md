@@ -355,8 +355,9 @@ process が load で読み直す。creo `mem_1ChA3fZy2Kq7tb3qaLSmpe`）。生き
 #### 切替の順（2026-11-21）
 
 chat → console の切替は、**chat の engine を止めて、process の終了を確かめてから、console の slot を
-立てる**（`repo/lane/reconcile.rs` の ①′、doc 53 §12.5）。それまでは slot を立てた後に engine を
-止めていた。engine の種類では分けない（claude / codex / vpcode も同じ順）。
+立てる**（`repo/lane/reconcile.rs` の ①、doc 53 §12.5）。それまでは slot を立てた後に engine を
+止めていた。engine の種類では分けない（claude / codex / vpcode も同じ順）。終了を確かめるのは、
+同じ reconcile が止めた engine について（別の reconcile が並んで走った時の窓は doc 53 §12.5）。
 
 実測（lane acp-stage2、2026-11-21、agy 1.5.13、試験用の会話、**各 1 回** — 1 行目だけ 2 回流し、
 1 回目は console の発話が folder の信頼の確認に食われて turn が起きなかったので数えていない。VP の daemon は通さず、
