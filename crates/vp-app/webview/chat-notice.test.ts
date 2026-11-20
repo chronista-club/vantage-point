@@ -7,6 +7,17 @@ const start = { kind: 'replay_start' as const }
 const end = { kind: 'replay_end' as const, in_flight: false }
 
 describe('chat notices', () => {
+  it('engine が replay の途中で終了しても、次の接続の知らせを再配信で消さない', () => {
+    const s = model.emptyChatState()
+    model.foldInto(s, start)
+    model.foldInto(s, { kind: 'engine_exited', message: '接続が終了しました' })
+    model.foldInto(s, notice('新しい会話を始めました'))
+    model.foldInto(s, start)
+    model.foldInto(s, end)
+    expect(s.liveNotices).toEqual(['新しい会話を始めました'])
+    expect(s.replayNotices).toEqual([])
+  })
+
   it.each(['error', 'loader cleared'] as const)('再同期ローダーが %s で下りても、replay の通知は次の配信で消す', reason => {
     const s = model.emptyChatState()
     model.foldInto(s, start)

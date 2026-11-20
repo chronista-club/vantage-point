@@ -247,10 +247,15 @@ VP は pump が engine の出力を topic に流している（同じ topic に�
 - **engine が終了した後に chat を開き直した時は、終了した host を畳んで作り直す**
   （`ensure_chat_engine` が `ChatHost::exited` = 共有 host の `is_finished()` を見る。agent-chat 設計書 01
   「呼び手の規則」— 終了した host はもう使えない）。作り直した host の load で履歴が戻る。今までは `replay_log` から戻っていた場面
-- 控えが上限で切られた時は、省いた旨の `Notice` を足す。**ただし VP の GUI は `Notice` を描かない**
-  （`chat-model.ts` の fold に `notice` の case が無い。既存の「省いた」表示は `codex_history` の時に
-  しか立たない）。長い会話では古い turn が黙って落ちる。load に失敗して新規に替えた時の `Notice` も
-  同じく見えない。webview の側の対応は別の task（creo `mem_1ChDPjq74fG87DYtSn3ns3`）
+- 控えが上限で切られた時は、省いた旨の `Notice` を足す。GUI は届いた `notice` を帯として描く
+  （`chat-model.ts` / `chatview.tsx`、creo `mem_1ChDPjq74fG87DYtSn3ns3`）。`replay_start`〜`replay_end`
+  の中で届いた通知は会話の先頭に置き、次の `replay_start` で消す。外で届いた通知は会話の外に置き、
+  利用者が閉じるまで残す。同文が内外で届いた時は、閉じるまで残す側に揃えて重複させない。
+  受信区間は再同期ローダーとは独立して持つ。`error` や focus・watchdog によるローダー解除では
+  区間を閉じず、`engine_exited` では閉じる（`replay_end` 未達でも次の接続へ持ち越さない）。
+  状態は GUI の session 単位で、アプリを再生成した後の復元はしない。Codex の既存の省略帯は別のまま。
+  **届かなかった通知は表示できない**。接続時の通知は控えに残らず、購読前や受け口の差替え境界で
+  欠ける可能性がある。配送の保証は別 task（creo `mem_1ChEnsFzeLhCWybLFfH85B`）で扱う。
 - `ChatHost::in_flight()` / `commit_seq()` は Claude の transcript replay だけが読むので、ACP は既定値
 
 控えの上限は共有 crate の既定（1 MiB / 800 event / 1 件 32 KiB）のまま。今までの `replay_log` の

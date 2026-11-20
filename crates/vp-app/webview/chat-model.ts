@@ -271,7 +271,7 @@ export type ChatState = {
   /** transcript replay（attach/reconnect 時の過去会話再送）進行中か。replay_start→true /
    *  replay_end→false。コーナーの再同期ローディングアニメ（resync-loader）の可視条件。 */
   replaying: boolean
-  /** notice の受信区間。ローダーの解除とは独立し、replay の開始・終了で切り替える。 */
+  /** notice の受信区間。ローダーから独立し、replay の開始・終了と engine 終了で切り替える。 */
   noticeReplayActive: boolean
   /** 配り直しの中の知らせ。次の replay_start で作り直す。 */
   replayNotices: string[]
@@ -597,6 +597,8 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       // ヘッダの 💤 休眠 / status で出す）。streaming / replaying は下ろす（error と同じ防御）。
       s.streaming = false
       s.replaying = false
+      // replay_end 未達でも、終了した engine の区間を次の接続へ持ち越さない。
+      s.noticeReplayActive = false
       sealLastAssistant(s) // 復活後の chunk と前 turn を融合させない（§5.1）
       // 親プロセスが死んだ = 中の subagent も死んだ。⚠️ session_init は turn ごとに来るので
       // 区切りに使えない（実測 claude 2.1.296）— 使うと turn をまたぐ background を毎回殺す。
