@@ -24,6 +24,9 @@ agent-chat-host = { path = "../../vendor/agent-chat/crates/host" }
 # ACP の client host（公式 SDK agent-client-protocol。grok / opencode / agy の chat engine、doc 88）。
 # ⚠️ SDK が serde_json の `preserve_order` を有効にする — binary 全体で Value の key が「入れた順」になる。
 agent-chat-acp = { path = "../../vendor/agent-chat/crates/acp" }
+# agent-chat-acp と同じ SDK。permission の要求の型（注入する方針の引数）と、テストの偽の agent の接続に使う。
+# 版は agent-chat が検証した 5.3.0 に Cargo.lock で揃えてある（path 依存は相手の lock を連れてこない）。
+agent-client-protocol = "5.3"
 agent-chat-protocol = { path = "../../vendor/agent-chat/crates/protocol" }
 vp-local-urls = { path = "../vp-local-urls" }
 # Async runtime

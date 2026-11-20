@@ -10586,6 +10586,7 @@ dependencies = [
  "agent-chat-acp",
  "agent-chat-host",
  "agent-chat-protocol",
+ "agent-client-protocol",
  "alacritty_terminal",
  "anyhow",
  "async-trait",
