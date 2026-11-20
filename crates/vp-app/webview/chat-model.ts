@@ -271,6 +271,12 @@ export type ChatState = {
   /** transcript replay（attach/reconnect 時の過去会話再送）進行中か。replay_start→true /
    *  replay_end→false。コーナーの再同期ローディングアニメ（resync-loader）の可視条件。 */
   replaying: boolean
+  /** notice の受信区間。ローダーの解除とは独立し、replay の開始・終了で切り替える。 */
+  noticeReplayActive: boolean
+  /** 配り直しの中の知らせ。次の replay_start で作り直す。 */
+  replayNotices: string[]
+  /** 配り直しの外の知らせ。利用者が閉じるまで、この session の画面に残す。 */
+  liveNotices: string[]
   historyTruncated?: boolean
   historyThreadId?: string
   /** Inputs absent from native history stay recoverable, outside the conversation timeline. */
@@ -307,6 +313,11 @@ export type Submission = {
 export type LaneChat = {
   state: ChatState
   set: SetStoreFunction<ChatState>
+}
+
+/** 閉じる操作は会話・他の知らせに触れない。再度届けば改めて表示する。 */
+export function dismissNotice(s: ChatState, message: string): void {
+  s.liveNotices = s.liveNotices.filter(notice => notice !== message)
 }
 
 export function foldInto(s: ChatState, ev: ConversationEvent): void {
@@ -384,6 +395,17 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       s.lastEvent = ev.kind
       break
     }
+    case 'notice':
+      if (s.noticeReplayActive) {
+        if (!s.liveNotices.includes(ev.message) && !s.replayNotices.includes(ev.message)) {
+          s.replayNotices.push(ev.message)
+        }
+      } else {
+        // 同文が内外で届いた場合は、閉じるまで残す側に揃える。
+        s.replayNotices = s.replayNotices.filter(message => message !== ev.message)
+        if (!s.liveNotices.includes(ev.message)) s.liveNotices.push(ev.message)
+      }
+      break
     case 'replay_start':
       // 以降は transcript replay（過去会話の再送）。会話を一度クリアしてから畳み直す。
       // backend は「新規 attach」と「reconnect / demand 再発火」を区別できないため、reset せず
@@ -399,12 +421,15 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       // 新バブルが立つことはない）。tail が streaming を立て直すのでカーソルも戻る。
       s.items = []
       s.historyTruncated = false
+      s.replayNotices = []
+      s.noticeReplayActive = true
       s.plan = []
       s.streaming = false
       s.cost = null
       s.replaying = true // 再同期ローディング表示 ON（replay_end で OFF）
       break
     case 'replay_end':
+      s.noticeReplayActive = false
       s.replaying = false // 再同期完了 → ローディング表示 OFF
       // replay 終端で streaming の真値を確定する。replay は過去の assistant 発話も message_chunk で
       // 送るため fold で streaming が立つが、replay 列は turn_completed を運ばない。生成中 turn が
@@ -660,6 +685,9 @@ export function emptyChatState(): ChatState {
     lastEvent: null,
     lastEventAt: null,
     replaying: false,
+    noticeReplayActive: false,
+    replayNotices: [],
+    liveNotices: [],
     nowLine: null,
   }
 }
