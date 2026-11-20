@@ -57,7 +57,8 @@ pub(crate) fn generate(
     let mut digest = Sha256::new();
     digest.update(b"vp-roto-setup-v1\0");
     digest.update([SETUP]);
-    digest.update(serde_json::to_vec(&content).expect("setup contains only JSON values"));
+    digest
+        .update(serde_json::to_vec(&canonical(&content)).expect("setup contains only JSON values"));
     Generated {
         content,
         hash: digest
@@ -65,6 +66,28 @@ pub(crate) fn generate(
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect(),
+    }
+}
+
+/// object の key を辞書順に並べ直した写しを返す（hash にかける bytes を build に依らず同じにする）。
+///
+/// `serde_json` の `Value` の object は、`preserve_order` が無ければ辞書順、有れば「入れた順」で
+/// 直列化される。feature は build 全体で 1 つにまとまるので、依存が 1 つ増えるだけで並びが変わる
+/// （2026-11-20、`agent-chat-acp` の SDK が有効にした）。hash は保存値と比べるので、並びを
+/// ここで決めて feature に預けない。辞書順に入れ直せば、どちらの build でも辞書順で出る。
+fn canonical(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            Value::Object(
+                keys.into_iter()
+                    .map(|key| (key.clone(), canonical(&map[key])))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonical).collect()),
+        other => other.clone(),
     }
 }
 
@@ -126,6 +149,29 @@ mod tests {
         json!({"slots":[{"path":"/vp", "address":"vp/roto-vp-setup"}, null, null, null, null, null, null,
             {"path":"/vp", "address":"vp/unused"}],
             "colors":["#44c2b5", "#639af5", "#b78aee", "#f0b45a", "#c4d655", "#ef7b72", "#6fcf7e", "#e47ac9"], "dimGain":0.25})
+    }
+
+    /// hash は保存値（`roto-setup-hashes.json`）と比べて「書き直すか」を決める。同じ setup の hash が
+    /// build の違いで変わると、実機への書き込みが 1 回余計に走る。
+    ///
+    /// 固定している 2 つの値は、依存を足す前の構成（nightly `504859ba`、`preserve_order` 無し）で、
+    /// 並べ直さない元の式（`content` をそのまま `to_vec`）が出した実物（2026-11-20 に回して取った）。
+    /// `agent-chat-acp` の SDK が `preserve_order` を有効にすると `json!` の object は「入れた順」で
+    /// 出るので、並べ直さずに hash にかけるとこの値から外れる（pins 無しで `8ebdaa79…` になった）。
+    /// pins ありの入力は、switch ごとの入れ子の object の並びも通す。
+    /// 落ちるべき壊し方: `canonical` を通さずに `content` をそのまま `to_vec` する。
+    #[test]
+    fn hash_does_not_depend_on_the_key_order_serde_json_emits() {
+        let empty = generate(&Value::Null, &BTreeMap::new(), &VP_ROTO_SETUP);
+        assert_eq!(
+            empty.hash,
+            "c1b90c1f08d33336d3bd46700beb0fd2ab83b2e1bda82f17c3500b94e5255c8d"
+        );
+        let pinned = generate(&pins(), &BTreeMap::new(), &VP_ROTO_SETUP);
+        assert_eq!(
+            pinned.hash,
+            "71d4acd941633e1e8e58f1b14f6ce7ecc7bbc3a4616101008cb9831a46c4e5f6"
+        );
     }
 
     #[test]
