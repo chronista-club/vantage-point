@@ -462,6 +462,22 @@ impl LanePool {
         keys
     }
 
+    /// その session の chat engine の pid（engine が居ない・pid を持たない時は `None`）。
+    ///
+    /// reconcile が、畳んだ engine の process の終了を待つために読む。
+    pub fn chat_engine_pid(&self, addr: &LaneAddress, key: SessionKey) -> Option<u32> {
+        self.chat_engines.get(addr)?.get(&key)?.host.pid()
+    }
+
+    /// lane の代表の pid が `pids` のどれかなら下ろす（止めた engine の pid を名簿に残さない）。
+    pub fn clear_lane_pid_if(&mut self, addr: &LaneAddress, pids: &[u32]) {
+        if let Some(info) = self.lanes.get_mut(addr)
+            && info.pid.is_some_and(|pid| pids.contains(&pid))
+        {
+            info.pid = None;
+        }
+    }
+
     /// [`Self::drop_slot`] の外部入口（doc 53 §12 — reconcile が「desired に無い slot」を畳む）。
     ///
     /// 動詞は自分で slot を畳まなくなるので、外から畳むのは reconcile だけになる。

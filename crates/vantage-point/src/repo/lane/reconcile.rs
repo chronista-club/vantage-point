@@ -19,16 +19,26 @@
 //! 課金と context を消費する。**畳む方向は eager**（mode が Tui になった session の engine は
 //! 即座に落とす = 1 session 2 エンジンの法を守る）。
 //!
-//! ## 3 段構造（doc 53 §12.5 — §6「やってはいけない」を満たす形）
+//! ## 段の構造（doc 53 §12.5 — §6「やってはいけない」を満たす形）
 //!
 //! ```text
-//! ① 読み     read lock + registry load → desired と actual の差分を **計算だけ**
+//! ① 読み     read lock + registry load → 立てるべき slot を **計算だけ**
+//! ①′ 止める  立てる slot がある時だけ。write lock で、chat でなくなった session の engine を
+//!            畳む → lock の外で、その process の終了を上限つきで確かめる
 //! ② spawn    lock 外（spawn_blocking）で 800ms×N を回す
-//! ③ 適用     write lock で insert + race 再検査（他の動詞が先に立てていたら捨てる）
+//! ③ 適用     write lock で insert + race 再検査（他の動詞が先に立てていたら捨てる）、
+//!            desired に無い slot と engine を畳む
 //! ```
 //!
-//! `lane/spawn_actor` が既にこの形（読み → `spawn_blocking` → `pool.write()` で race 再検査）。
-//! 新しい規律ではなく、**既に採っている形を lane の中へ持ち込む**。
+//! ①・②・③ は `lane/spawn_actor` が既に採っている形（読み → `spawn_blocking` → `pool.write()` で
+//! race 再検査）を lane の中へ持ち込んだもの。
+//!
+//! ①′ は順のための段（2026-11-21）。chat → console の切替では **移る前（chat の engine）を
+//! 止めてから、移る先（console の slot）を立てる** — 同じ会話を 2 つの process が同時に持たない。
+//! ③ だけで畳むと、slot を立てた後に engine を止める順になる。①′ と ③ は同じ規則
+//!（[`drop_engines_outside`]）を、それぞれの時点の intent で引く。
+//! 逆向き（console → chat）は、③ が slot を畳み、その後に動詞が engine を起こすので、元から
+//! 止めてから立てる順（こちらは slot の process の終了を待ってはいない）。
 //!
 //! ## 失敗の意味論（doc 53 §12.2、mako 判断）
 //!
@@ -38,8 +48,9 @@
 
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 
+use crate::daemon::pty_slot::PtySlot;
 use crate::lane::session_registry::{self, SessionKey, SessionMode};
 use crate::repo::lane::{LaneAddress, LanePool, LaneState};
 use crate::repo::terminal_pump::TerminalPumps;
@@ -97,11 +108,49 @@ fn want_chat_sessions(addr: &LaneAddress, lane_component: &str) -> Vec<SessionKe
 }
 
 /// 1 session ぶんの spawn 指示（① で計算し ② で実行する）。
-struct SpawnPlan {
-    session: SessionKey,
+pub(crate) struct SpawnPlan {
+    pub(crate) session: SessionKey,
     /// この session の engine（agent）。lane 固定の agent ではない（cross-engine root）。
-    lane_component: String,
-    cwd: String,
+    pub(crate) lane_component: String,
+    pub(crate) cwd: String,
+}
+
+type SpawnedSlot = (PtySlot, broadcast::Receiver<Vec<u8>>);
+type SpawnFn = dyn Fn(&LaneAddress, &SpawnPlan) -> anyhow::Result<SpawnedSlot> + Send + Sync;
+
+/// reconcile が pool の外に触る所（process を立てる・process の生死を見る）。test で差し替える。
+#[derive(Clone)]
+pub(crate) struct ReconcileHooks {
+    /// console の slot を 1 枚立てる。`spawn_blocking` の中で呼ぶ（800ms の sync sleep を含む）。
+    pub(crate) spawn: Arc<SpawnFn>,
+    /// その pid の process がまだ居るか。
+    pub(crate) alive: fn(u32) -> bool,
+    /// 止めた chat engine の終了を待つ上限。
+    pub(crate) stop_wait: std::time::Duration,
+}
+
+/// 止めた chat engine の終了を待つ上限。kill を出した後の待ちで、agy の実測では kill から終了まで
+/// 数 ms（doc 88 §8.4）。上限は「終了の回収が遅れても console を立てる」ための歯止め。
+const ENGINE_STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+/// 終了を確かめる間隔。
+const ENGINE_STOP_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
+impl ReconcileHooks {
+    fn real() -> Self {
+        Self {
+            spawn: Arc::new(|addr, plan| {
+                let cmd = crate::repo::agent_spawner::build_agent_command_for_session(
+                    &plan.lane_component,
+                    addr,
+                    std::path::Path::new(&plan.cwd),
+                    Some(plan.session),
+                );
+                crate::repo::agent_spawner::spawn_agent(&cmd, 120, 48)
+            }),
+            alive: crate::platform::process_alive,
+            stop_wait: ENGINE_STOP_WAIT,
+        }
+    }
 }
 
 /// lane の実体を intent（registry）に合わせる（doc 53 §12）。
@@ -116,6 +165,24 @@ pub async fn reconcile_lane(
     terminal_pumps: &RwLock<TerminalPumps>,
     topic_router: &Arc<TopicRouter>,
     addr: &LaneAddress,
+) -> LaneReconcile {
+    reconcile_lane_with(
+        lane_pool,
+        terminal_pumps,
+        topic_router,
+        addr,
+        &ReconcileHooks::real(),
+    )
+    .await
+}
+
+/// [`reconcile_lane`] の本体。pool の外に触る所を `hooks` で受ける。
+pub(crate) async fn reconcile_lane_with(
+    lane_pool: &Arc<RwLock<LanePool>>,
+    terminal_pumps: &RwLock<TerminalPumps>,
+    topic_router: &Arc<TopicRouter>,
+    addr: &LaneAddress,
+    hooks: &ReconcileHooks,
 ) -> LaneReconcile {
     let mut result = LaneReconcile::default();
 
@@ -145,18 +212,32 @@ pub async fn reconcile_lane(
             .collect()
     };
 
+    // ── ①′ 止める: console の slot を立てる前に、chat でなくなった session の engine を畳む ──
+    //
+    // 移る前を止めてから、移る先を立てる（mako 2026-11-21）。③ だけで畳むと、slot を立ててから
+    // engine を止める順になり、同じ会話を 2 つの process が同時に持つ時間ができる。
+    // 判断は ③ と同じ規則を、この時点の intent で引く（① の読みを持ち越さない）。
+    let stopped_pids = if plans.is_empty() {
+        Vec::new() // 立てる slot が無ければ ③ がすぐ続く。先に畳む理由が無い
+    } else {
+        let mut pool = lane_pool.write().await;
+        let Some(info) = pool.get(addr) else {
+            return result;
+        };
+        let want_chat = want_chat_sessions(addr, &info.agent.clone());
+        drop_engines_outside(&mut pool, addr, &want_chat, &mut result)
+    };
+    // 止めた process の終了を確かめる（lock の外）。`stop` は kill を出すだけで、終了の回収は
+    // 各 host の別の task がする。
+    wait_until_gone(addr, &stopped_pids, hooks).await;
+
     // ── ② spawn: lock の外で回す（1 枚 800ms の sync sleep を lock 下に置かない）──────
     let mut spawned = Vec::new();
     for plan in plans {
         let addr_for_spawn = addr.clone();
+        let spawn = Arc::clone(&hooks.spawn);
         let built = tokio::task::spawn_blocking(move || {
-            let cmd = crate::repo::agent_spawner::build_agent_command_for_session(
-                &plan.lane_component,
-                &addr_for_spawn,
-                std::path::Path::new(&plan.cwd),
-                Some(plan.session),
-            );
-            crate::repo::agent_spawner::spawn_agent(&cmd, 120, 48).map(|s| (plan.session, s))
+            spawn(&addr_for_spawn, &plan).map(|s| (plan.session, s))
         })
         .await;
         match built {
@@ -218,18 +299,9 @@ pub async fn reconcile_lane(
                 result.dropped_slots += 1;
             }
         }
-        // engine は **registry を引かない経路**で畳む（`drop_chat_engine` は
-        // `resolve_chat_session` を通すので、registry から消えた session を畳めない）。
-        for session in pool
-            .chat_engine_sessions(addr)
-            .into_iter()
-            .filter(|k| !want_chat.contains(k))
-            .collect::<Vec<_>>()
-        {
-            if pool.drop_chat_engine_by_key(addr, session) {
-                result.dropped_engines += 1;
-            }
-        }
+        // engine も畳む。slot を立てる時は ①′ で済んでいるので、ここに残るのは、立てる slot が
+        // 無かった時（registry から消えた session の後始末など）と、② の間に intent が動いた分。
+        drop_engines_outside(&mut pool, addr, &want_chat, &mut result);
         // LaneInfo の代表値（pid / state）は root の実体から**導出**する（doc 53 §3.3 —
         // 派生値を動詞ごとに手で更新しない）。
         pool.refresh_lane_representation(addr);
@@ -254,6 +326,70 @@ pub async fn reconcile_lane(
         );
     }
     result
+}
+
+/// `want_chat` に無い session の chat engine を畳み、止めた process の pid を返す。
+///
+/// engine は **registry を引かない経路**で畳む（`drop_chat_engine` は `resolve_chat_session` を
+/// 通すので、registry から消えた session を畳めない）。
+///
+/// lane の代表の pid が止めた engine のものなら、ここで下ろす。state は動かさない — slot が
+/// 立つまでの間に導出し直すと、root が「tui で slot 無し」= Dead と出る。slot が立った後
+///（立たなかった時も）③ の `refresh_lane_representation` が決める。
+fn drop_engines_outside(
+    pool: &mut LanePool,
+    addr: &LaneAddress,
+    want_chat: &[SessionKey],
+    result: &mut LaneReconcile,
+) -> Vec<u32> {
+    let mut stopped = Vec::new();
+    for session in pool
+        .chat_engine_sessions(addr)
+        .into_iter()
+        .filter(|k| !want_chat.contains(k))
+        .collect::<Vec<_>>()
+    {
+        let pid = pool.chat_engine_pid(addr, session);
+        if pool.drop_chat_engine_by_key(addr, session) {
+            result.dropped_engines += 1;
+            stopped.extend(pid);
+        }
+    }
+    if !stopped.is_empty() {
+        pool.clear_lane_pid_if(addr, &stopped);
+    }
+    stopped
+}
+
+/// 止めた engine の process が居なくなるまで待つ。上限（[`ReconcileHooks::stop_wait`]）を過ぎたら
+/// 待ちをやめる — kill は出してあるので、console を立てないままにはしない。
+async fn wait_until_gone(addr: &LaneAddress, pids: &[u32], hooks: &ReconcileHooks) {
+    if pids.is_empty() {
+        return;
+    }
+    let started = tokio::time::Instant::now();
+    loop {
+        let left: Vec<u32> = pids
+            .iter()
+            .copied()
+            .filter(|pid| (hooks.alive)(*pid))
+            .collect();
+        if left.is_empty() {
+            tracing::debug!(
+                "reconcile: chat engine の終了を確かめた: addr={addr} pids={pids:?} ({:?})",
+                started.elapsed()
+            );
+            return;
+        }
+        if started.elapsed() >= hooks.stop_wait {
+            tracing::warn!(
+                "reconcile: chat engine の終了を {:?} 待っても確かめられない（console は立てる）: addr={addr} pids={left:?}",
+                hooks.stop_wait
+            );
+            return;
+        }
+        tokio::time::sleep(ENGINE_STOP_POLL).await;
+    }
 }
 
 /// [`LaneState`] を root の実体から決める純関数（`refresh_lane_representation` の判断部）。
@@ -335,6 +471,243 @@ mod tests {
         assert!(
             !want_chat.contains(&2) && !want_slot.contains(&2),
             "registry に居ない session の実体は残さない（1 session 2 エンジンの法）"
+        );
+    }
+
+    // ── 畳む順（creo mem_1ChA3fZy2Kq7tb3qaLSmpe「畳む順を直す」）────────────────────────
+
+    use crate::conversation::acp_host::testing::{FakeAgent, Script};
+    use crate::conversation::acp_host::{AcpAgentHost, AcpEngine, AcpHostConfig};
+    use crate::conversation::{ChatEngineSlot, ChatHost};
+    use crate::repo::state::{RepoState, build_test_app_state, insert_test_lane};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    /// 偽の ACP agent につないだ chat engine を、その session に差し込む（pid は 4242）。
+    /// 戻り値の [`FakeAgent`] は、接続を生かしておくために test が持つ。
+    async fn insert_fake_engine(
+        state: &RepoState,
+        addr: &LaneAddress,
+        key: SessionKey,
+    ) -> FakeAgent {
+        let (agent, connector) = FakeAgent::new(Script::default());
+        let host = AcpAgentHost::spawn_with(
+            AcpHostConfig {
+                engine: AcpEngine::Agy,
+                cwd: "/tmp/vp-acp".into(),
+                repo: addr.repo.clone(),
+                lane: format!("lead#{key}"),
+                lane_label: "lead".into(),
+                session_key: key,
+                session_id: None,
+                config_intent: Vec::new(),
+            },
+            connector,
+        )
+        .expect("起動");
+        state.lane_pool.write().await.insert_chat_engine_for_test(
+            addr,
+            key,
+            ChatEngineSlot {
+                host: ChatHost::Agy(host),
+                pump: tokio::spawn(async {}),
+                last_event_at: Default::default(),
+                turn_active: Default::default(),
+            },
+        );
+        agent
+    }
+
+    /// slot を立てようとした時点の様子を控えて、立てずに失敗を返す spawn。
+    /// 控えるもの: (立てようとした session, その時点で lane に居る chat engine, lane の pid)。
+    type Seen = Arc<Mutex<Vec<(SessionKey, Vec<SessionKey>, Option<u32>)>>>;
+    fn recording_spawn(state: &RepoState, seen: &Seen) -> Arc<SpawnFn> {
+        let pool = Arc::clone(&state.lane_pool);
+        let seen = Arc::clone(seen);
+        Arc::new(move |addr, plan| {
+            let pool = pool.blocking_read();
+            seen.lock().unwrap().push((
+                plan.session,
+                pool.chat_engine_sessions(addr),
+                pool.get(addr).and_then(|lane| lane.pid),
+            ));
+            anyhow::bail!("test では slot を立てない")
+        })
+    }
+
+    async fn run(state: &RepoState, addr: &LaneAddress, hooks: &ReconcileHooks) -> LaneReconcile {
+        reconcile_lane_with(
+            &state.lane_pool,
+            &state.terminal_pumps,
+            &state.topic_router,
+            addr,
+            hooks,
+        )
+        .await
+    }
+
+    /// chat → console の切替では、**chat の engine を止めてから** console の slot を立てる。
+    /// 逆だと、同じ会話を 2 つの process が同時に持つ（mako 2026-11-21「移動前を止めてから
+    /// 移動先を起動じゃないんだ」）。
+    ///
+    /// 落ちるべき壊し方: engine を畳むのが ③（slot を立てた後）だけ — spawn の時点で engine が居る。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn chat_engine_is_gone_before_the_console_slot_starts_to_spawn() {
+        let _state = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let addr = insert_test_lane(&state, "vptest-handover-order", SessionMode::Gui).await;
+        let root = want_chat_sessions(&addr, "claude")[0];
+        let _agent = insert_fake_engine(&state, &addr, root).await;
+        {
+            // 名簿の pid は chat の engine のもの（focused の engine を立てた時に載る）。
+            let mut pool = state.lane_pool.write().await;
+            let mut lane = pool.get(&addr).unwrap().clone();
+            lane.pid = Some(4242);
+            pool.insert(lane);
+        }
+
+        // 動詞がやること: intent を tui に書いて reconcile を呼ぶ。
+        session_registry::set_root_mode(&addr.repo, "lead", "claude", SessionMode::Tui)
+            .expect("root を tui に");
+        let seen = Seen::default();
+        let hooks = ReconcileHooks {
+            spawn: recording_spawn(&state, &seen),
+            alive: |_| false,
+            stop_wait: Duration::from_secs(2),
+        };
+        let result = run(&state, &addr, &hooks).await;
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [(root, Vec::new(), None)],
+            "slot を立て始める時点で、chat の engine も、その pid も残っていない"
+        );
+        assert_eq!(result.dropped_engines, 1);
+        // slot の spawn が失敗しても intent は tui のまま残り、次の reconcile がもう一度立てる。
+        assert_eq!(result.failed, 1);
+        assert_eq!(want_slot_sessions(&addr, "claude"), [root]);
+        assert_eq!(run(&state, &addr, &hooks).await.failed, 1);
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            2,
+            "次の reconcile で立て直しに行く"
+        );
+    }
+
+    /// 止めた engine の process が終わるのを確かめてから、slot を立てる。
+    ///
+    /// 落ちるべき壊し方: 終了を待たない — process がまだ居るうちに spawn が始まる。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn slot_spawn_waits_until_the_stopped_engine_process_is_gone() {
+        static PROBES: AtomicUsize = AtomicUsize::new(0);
+        static PROBES_AT_SPAWN: AtomicUsize = AtomicUsize::new(usize::MAX);
+        /// 3 回目の確認まで「まだ居る」と答える。
+        fn alive(pid: u32) -> bool {
+            assert_eq!(pid, 4242, "待つのは畳んだ engine の pid");
+            PROBES.fetch_add(1, Ordering::SeqCst) < 3
+        }
+
+        let _state = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let addr = insert_test_lane(&state, "vptest-handover-wait", SessionMode::Gui).await;
+        let root = want_chat_sessions(&addr, "claude")[0];
+        let _agent = insert_fake_engine(&state, &addr, root).await;
+        session_registry::set_root_mode(&addr.repo, "lead", "claude", SessionMode::Tui)
+            .expect("root を tui に");
+
+        let hooks = ReconcileHooks {
+            spawn: Arc::new(|_, _| {
+                PROBES_AT_SPAWN.store(PROBES.load(Ordering::SeqCst), Ordering::SeqCst);
+                anyhow::bail!("test では slot を立てない")
+            }),
+            alive,
+            stop_wait: Duration::from_secs(2),
+        };
+        run(&state, &addr, &hooks).await;
+
+        assert_eq!(
+            PROBES_AT_SPAWN.load(Ordering::SeqCst),
+            4,
+            "「もう居ない」と分かった確認（4 回目）の後に spawn が始まる"
+        );
+    }
+
+    /// process の終了が確かめられなくても、上限で待ちをやめて slot を立てる
+    /// （kill は出してある。console が立たないままにしない）。
+    ///
+    /// 落ちるべき壊し方: 上限なしで待つ — reconcile が返らない。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn slot_spawn_proceeds_after_the_wait_limit() {
+        let _state = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let addr = insert_test_lane(&state, "vptest-handover-limit", SessionMode::Gui).await;
+        let root = want_chat_sessions(&addr, "claude")[0];
+        let _agent = insert_fake_engine(&state, &addr, root).await;
+        session_registry::set_root_mode(&addr.repo, "lead", "claude", SessionMode::Tui)
+            .expect("root を tui に");
+
+        let seen = Seen::default();
+        let hooks = ReconcileHooks {
+            spawn: recording_spawn(&state, &seen),
+            alive: |_| true,
+            stop_wait: Duration::from_millis(60),
+        };
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(Duration::from_secs(5), run(&state, &addr, &hooks))
+            .await
+            .expect("上限で待ちをやめる");
+
+        assert!(
+            started.elapsed() >= Duration::from_millis(60),
+            "上限までは待つ"
+        );
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "上限の後に slot を立てに行く"
+        );
+        assert_eq!(result.dropped_engines, 1);
+    }
+
+    /// 畳むのは「今の intent が chat でない session」の engine だけ。chat のままの session の
+    /// engine は、隣の session が console に切り替わっても動いたままにする。
+    ///
+    /// 落ちるべき壊し方: slot を立てる前に lane の engine を全部畳む。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn engine_of_a_session_that_stays_chat_survives_the_handover() {
+        let _state = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let addr = insert_test_lane(&state, "vptest-handover-other", SessionMode::Gui).await;
+        let root = want_chat_sessions(&addr, "claude")[0];
+        let other = state
+            .lane_pool
+            .write()
+            .await
+            .create_chat_session(&addr, Some("agy"), false)
+            .expect("2 つ目の session");
+        let _a = insert_fake_engine(&state, &addr, root).await;
+        let _b = insert_fake_engine(&state, &addr, other).await;
+        session_registry::set_root_mode(&addr.repo, "lead", "claude", SessionMode::Tui)
+            .expect("root を tui に");
+
+        let seen = Seen::default();
+        let hooks = ReconcileHooks {
+            spawn: recording_spawn(&state, &seen),
+            alive: |_| false,
+            stop_wait: Duration::from_secs(2),
+        };
+        let result = run(&state, &addr, &hooks).await;
+
+        assert_eq!(
+            seen.lock().unwrap()[0].1,
+            [other],
+            "spawn の時点で居るのは chat のままの方"
+        );
+        assert_eq!(result.dropped_engines, 1);
+        assert_eq!(
+            state.lane_pool.read().await.chat_engine_sessions(&addr),
+            [other]
         );
     }
 }

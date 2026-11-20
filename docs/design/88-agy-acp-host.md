@@ -326,7 +326,7 @@ agent-chat の側で落ちる test を先に書いて確かめてある、PR #7 
 発話」に数えない。`EngineExited` だけが出る（`TurnCompleted` は出ないことがある。VP の pump は
 `EngineExited` で turn の状態を下ろす）。
 
-### 8.4 `restart()` の口（呼び手はまだ無い）
+### 8.4 `restart()` の口（呼び手は無い）と、切替の順
 
 生きている engine が、他の書き手（console）が進めた分を知っているかは、engine による。engine ごとの
 実測（試験用の会話。2 人目は headless の 1 turn）。**列ごとに出どころが違う**:
@@ -347,7 +347,44 @@ opencode が知っている理由は「process が共有の background service �
 確かめていない。）
 
 共有 host の `restart()`（process を立て直して load し直す）を `ChatHost::restart_engine` として
-通してある。**いつ呼ぶかは決めていない** — 別の task（creo `mem_1ChA3fZy2Kq7tb3qaLSmpe`、直し方が未決）。
+通してある。**呼び手は無いまま**。VP は「同じ会話を 2 つの process が同時に持たない」で守る
+（mako の裁定 2026-11-20 — console に切り替えたら chat の engine を止め、chat に戻ったら新しい
+process が load で読み直す。creo `mem_1ChA3fZy2Kq7tb3qaLSmpe`）。生きたまま他の書き手に進められる
+場面を作らないので、`restart()` を呼ぶ場面が VP の中には無い。
+
+#### 切替の順（2026-11-21）
+
+chat → console の切替は、**chat の engine を止めて、process の終了を確かめてから、console の slot を
+立てる**（`repo/lane/reconcile.rs` の ①′、doc 53 §12.5）。それまでは slot を立てた後に engine を
+止めていた。engine の種類では分けない（claude / codex / vpcode も同じ順）。
+
+実測（lane acp-stage2、2026-11-21、agy 1.5.13、試験用の会話、**各 1 回** — 1 行目だけ 2 回流し、
+1 回目は console の発話が folder の信頼の確認に食われて turn が起きなかったので数えていない。VP の daemon は通さず、
+process の段で同じ段取りを再現した: `agy acp` で turn 1 を終える → login shell の pty を立てて 0.8 秒後に
+`agy --conversation '<id>' || agy` を流し込む → console で 1 turn → console を畳む → 新しい
+`agy acp` で load して数える）:
+
+| 順 | chat 側の様子 | load の後に残った発話（turn 1 / chat の turn 2 / console の turn） |
+|---|---|---|
+| 以前の順（流し込んだ直後に kill、終了は待たない） | idle | 残る / — / 残る |
+| 今の順（kill → 終了を確かめる → shell を立てる） | idle | 残る / — / 残る |
+| 以前の順 | turn 2 の答えが流れている最中 | 残る / 残る（答えは途中まで） / 残る |
+| 今の順 | turn 2 の答えが流れている最中 | 残る / 残る（答えは途中まで） / 残る |
+| 重なりを 5 秒に広げた（VP の順ではない。console が読み込んだ後に kill） | turn 2 の最中 | 残る / 残る（答えは途中まで） / 残る |
+
+- **どの順でも会話は欠けなかった**。順の直しは、実測で見つけた欠けを塞いだものではなく、原則に
+  合わせたもの
+- 以前の順でも、重なりは短かった: slot の spawn の 800ms は login shell が落ちないかを見る待ちで、
+  command を流し込むのはその後。engine を止めるのは流し込んだ直後なので、console の agy が
+  起動する頃には chat の process はもう居ない。重なりが伸びるのは、1 回の reconcile で slot を
+  2 枚以上立てる時（後の slot の 800ms の間、先に流し込んだ agy と engine が並ぶ）
+- kill から終了までは 3.5 ms と 8.8 ms（2 回）
+- turn の最中に切り替えると、その turn の答えは途中で切れる（発話と、そこまでの答えは残る）。
+  これは順に依らない
+- §8.4 の表の「2 人目の turn が消える」は、生きた process が**他の書き手の後にもう 1 turn 送った**時の
+  もの。止められた process は書かないので、上の 5 通りでは起きない
+- 測っていないこと: VP の daemon を通した切替、grok / opencode / claude / codex / vpcode、
+  tool の実行の最中の切替、繰り返した時のばらつき
 
 ### 8.5 共有 crate の log と、`serde_json` の `preserve_order`
 

@@ -948,24 +948,43 @@ restart（生きた slot を意図的に殺して立て直す）は **intent の
 | focus | focused 変更 | reconcile（chat engine の eager は demand 側） |
 | restart | — | 動詞が slot を drop → reconcile |
 
-### 12.5 reconcile_lane の構造（§6「やってはいけない」を満たす 3 段）
+### 12.5 reconcile_lane の構造（§6「やってはいけない」を満たす段）
 
 ```
 reconcile_lane(addr):
-  ① 読み（read lock + registry load）→ desired と actual の差分を**計算だけ**する
+  ① 読み（read lock + registry load）→ 立てるべき slot を**計算だけ**する
+  ①′ 立てる slot がある時だけ: write lock で、chat でなくなった session の engine を畳む
+     → lock 外で、止めた process の終了を確かめる（上限 2 秒）
   ② lock 外で spawn（spawn_blocking、800ms×N を lock 下に置かない）
-  ③ write lock で insert + race 再検査（他の動詞が先に立てていたら捨てる）
+  ③ write lock で insert + race 再検査（他の動詞が先に立てていたら捨てる）、
+     desired に無い slot と engine を畳む
   末尾で pump reconcile（R2）
 ```
 
-`lane_spawn_actor` が既にこの形（読み → `spawn_blocking` → `pool.write()` で race 再検査）。
-**新しい規律ではなく、既に採っている形を lane 内へ持ち込む**。
+①・②・③ は `lane_spawn_actor` が既に採っている形（読み → `spawn_blocking` → `pool.write()` で
+race 再検査）。**新しい規律ではなく、既に採っている形を lane 内へ持ち込む**。
+
+①′ は 2026-11-21 に足した（mako「移動前を止めてから移動先を起動じゃないんだ」）。それまでは
+engine を畳むのが ③ だけで、chat → console の切替は「console の slot を立ててから chat の engine を
+止める」順だった。今は **移る前を止めてから、移る先を立てる** — 同じ会話を 2 つの process が
+同時に持たない。engine の種類では分けない。
+
+- ①′ の判断は ③ と同じ規則を、その時点の registry で引く（① の読みを持ち越さない）
+- 終了の確認が上限を過ぎたら、warn を出して slot を立てる（kill は出してある）
+- ①′ から ③ の間、その session は「engine も slot も無い」。mode が gui でない session には
+  `ensure_chat_engine` が engine を立てないので、この間に engine が戻る道は無い
+- この間、lane の state は動かさない（導出し直すと root が「tui で slot 無し」= Dead と出る）。
+  代表の pid が止めた engine のものなら下ろす。③ の導出が最後に決める
+- slot の spawn が失敗した時は、engine はもう無く、intent は tui のまま残る（次の reconcile が
+  立て直す）。engine を畳むのは spawn の成否に依らない — ここは以前から同じ
+- 逆向き（console → chat）は、③ が slot を畳んだ後に動詞が engine を起こす。順は元から
+  「止めてから立てる」だが、slot の process の終了は待っていない
 
 ### 12.6 歩行検証（この地図で 5 場面を歩く）
 
 | 場面 | 起きること |
 |---|---|
-| chat lane を tui に切替 | registry に act=Tui → reconcile が engine を畳み、conversation 有りなので `--resume` で slot が立つ |
+| chat lane を tui に切替 | registry に act=Tui → reconcile が engine を畳み（①′。process の終了を確かめる）、その後に conversation 有りなので `--resume` で slot が立つ |
 | Reset | registry clear → reconcile が全 slot / engine を畳み、root が **bare** で立つ（id が無い = 継がない） |
 | New root | 新 session が root に → reconcile が新 root の slot を bare で立てる。**旧 root の pane はそのまま残る**（会話は無傷） |
 | boot（daemon 再起動） | registry の act=Tui 全員に slot、Chat は engine-less、末尾で pump — **今の 3 経路（with_root / lane_spawn_actor / restore_term_slots）が 1 本になる** |
