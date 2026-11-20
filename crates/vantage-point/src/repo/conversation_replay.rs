@@ -943,6 +943,13 @@ mod tests {
             state.lane_pool.read().await.chat_engine_sessions(&addr),
             [k2]
         );
+        // 名簿には、終了した process の pid が載っている。
+        {
+            let mut pool = state.lane_pool.write().await;
+            let mut lane = pool.get(&addr).unwrap().clone();
+            lane.pid = Some(4242);
+            pool.insert(lane);
+        }
 
         let topic = "repo/conversation/data/vptest-acp-exited~lead/event";
         let (_id, mut srx) = state.topic_router.subscribe(topic).await;
@@ -962,6 +969,11 @@ mod tests {
                 .chat_engine_sessions(&addr)
                 .is_empty(),
             "終了した host は畳まれている"
+        );
+        assert_eq!(
+            state.lane_pool.read().await.get(&addr).unwrap().pid,
+            None,
+            "作り直しに失敗しても、終了した process の pid は名簿に残さない"
         );
         let (_t, msg) = tokio::time::timeout(Duration::from_secs(2), srx.recv())
             .await

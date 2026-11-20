@@ -1569,10 +1569,13 @@ impl LanePool {
         topic_router: &std::sync::Arc<crate::repo::topic_router::TopicRouter>,
     ) -> anyhow::Result<()> {
         let resolved = self.resolve_chat_session(addr, session)?;
-        let info = self
+        // cwd だけ写して、lane の借用はここで離す（下で終了した engine を畳む時に pool を書き換える）。
+        let cwd = self
             .lanes
             .get(addr)
-            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
+            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?
+            .cwd
+            .clone();
         if resolved.mode != SessionMode::Gui {
             // 呼び元は conversation_submit / conversation_nudge の両方（doc 34 channel E）— method 名は
             // 呼び元の ctx が名乗るので、ここでは要件だけ述べる。
@@ -1613,9 +1616,10 @@ impl LanePool {
                     "終了した chat engine を作り直す: addr={addr} session={}",
                     resolved.key
                 );
-                if let Some(engines) = self.chat_engines.get_mut(addr) {
-                    engines.remove(&resolved.key);
-                }
+                // 畳む口は他と同じものを使う（進みの投影を止め、focused なら lane の pid を下ろす）。
+                // 直接 slot を外すと、作り直しの起動に失敗した時に、死んだ process の pid と
+                // 古い「作業中」が名簿に残る。
+                self.drop_chat_engine(addr, Some(resolved.key));
             }
             None => {}
         }
@@ -1634,7 +1638,7 @@ impl LanePool {
                 ChatHost::Codex(
                     crate::conversation::CodexAgentHost::spawn_with_question_session(
                         crate::conversation::CodexRpcHostConfig {
-                            cwd: info.cwd.clone(),
+                            cwd: cwd.clone(),
                             repo: addr.repo.clone(),
                             lane: label.clone(),
                             lane_label: lane_label.clone(),
@@ -1651,7 +1655,7 @@ impl LanePool {
                 ChatHost::Grok(crate::conversation::AcpAgentHost::spawn(
                     crate::conversation::AcpHostConfig {
                         engine: crate::conversation::AcpEngine::Grok,
-                        cwd: info.cwd.clone(),
+                        cwd: cwd.clone(),
                         repo: addr.repo.clone(),
                         lane: label.clone(),
                         lane_label: lane_label.clone(),
@@ -1667,7 +1671,7 @@ impl LanePool {
                 ChatHost::OpenCode(crate::conversation::AcpAgentHost::spawn(
                     crate::conversation::AcpHostConfig {
                         engine: crate::conversation::AcpEngine::OpenCode,
-                        cwd: info.cwd.clone(),
+                        cwd: cwd.clone(),
                         repo: addr.repo.clone(),
                         lane: label.clone(),
                         lane_label: lane_label.clone(),
@@ -1684,7 +1688,7 @@ impl LanePool {
                 ChatHost::Agy(crate::conversation::AcpAgentHost::spawn(
                     crate::conversation::AcpHostConfig {
                         engine: crate::conversation::AcpEngine::Agy,
-                        cwd: info.cwd.clone(),
+                        cwd: cwd.clone(),
                         repo: addr.repo.clone(),
                         lane: label.clone(),
                         lane_label: lane_label.clone(),
@@ -1705,7 +1709,7 @@ impl LanePool {
                 // resume 材料は vpcode_transcript store（封筒 side-car、pump 非経由）。
                 ChatHost::Vpcode(crate::conversation::VpcodeHost::spawn(
                     crate::conversation::VpcodeHostConfig {
-                        cwd: info.cwd.clone(),
+                        cwd: cwd.clone(),
                         repo: addr.repo.clone(),
                         lane: label.clone(),
                         lane_label: lane_label.clone(),
@@ -1742,7 +1746,7 @@ impl LanePool {
                     .unwrap_or_default();
                 ChatHost::Claude(crate::conversation::ClaudeHost::spawn(
                     crate::conversation::ClaudeHostConfig {
-                        cwd: info.cwd.clone(),
+                        cwd: cwd.clone(),
                         repo: addr.repo.clone(),
                         lane: label.clone(),
                         lane_label: lane_label.clone(),

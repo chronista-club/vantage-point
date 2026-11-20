@@ -4,8 +4,8 @@
 > permission の要求の形（§1-6）は未実測
 > **2026-11-20 更新**: host の実装を、VP の手書き（JSON-RPC を手で組む）から共有 crate
 > `agent-chat-acp` の `AcpClientHost`（公式 SDK）に切り替えた（§8）。§1〜§6 の実測は当時の記録として
-> 残す。履歴の扱いが変わった所（§0、§1-5、§5 の見出し）には §8 への案内を、§6.2 の表の当て直しの行には
-> 今の置き場を書いてある
+> 残す。実装の置き場が変わった所（§0 の翻訳、§6.2 の表の当て直しの行と細部、§6.3）と、履歴の扱いが
+> 変わった所（§1-5、§5 の見出し）には、§8 への案内か今の置き場を書いてある
 > **関連 memory**: `mem_1Ch7Ka5RWFt8kdRtvyqprD`（指示書）/ `mem_1Ch7JP6WKoFk7BprEUzqrM`（事前調査）
 
 ## 0. 一言で
@@ -179,7 +179,7 @@ text の後ろに ACP の image block `{type: "image", mimeType, data}` を並�
 > `e2e_real_agy_config_set_and_reapply`）と grok の `e2e_real_grok_acp_turn_roundtrip` の計 4 本は、
 > 手書きの host と一緒に 2026-11-20 に消えた。agy の場面は
 > 共有 crate の側の実機 E2E（`vendor/agent-chat/crates/acp/tests/agy_e2e.rs` — 新規 → load →
-> 立て直し / 中断 / tool / 設定と画像）が持つ。VP の側に残したのは §8.6 の、engine ごとに 2 本ずつ。
+> 立て直し / 中断 / tool / 設定と画像）が持つ。VP の側には §8.6 の実機 E2E を新しく足した（engine ごとに 2 本 + agy に 1 本、計 7 本）。
 
 ## 7. 実機で見る手順（dev build）
 
@@ -207,8 +207,11 @@ task `mem_1ChDFn6LxUfPDFsqeXvcyr`。設計の正は agent-chat の `docs/design/
 | **履歴** | `session/load` の流れを捨て、VP の `replay_log` から戻す | `session/load` の流れを host が控えに持ち、pump が配る（§8.2）。`replay_log` は使わない |
 | VP の `acp_host.rs` | host の本体（1948 行） | 注入だけの薄い adapter: engine の表（CLI の path・引数・名乗り）、identity env、registry への会話 id の書き込み、load の失敗の方針、permission の方針、設定の意図、stderr の log |
 
-結果として、**console（TUI）で進めた分が chat の画面に出る**（今までは `replay_log` に載らないので
-出なかった。mako が 2026-11-17 に実機で確認した症状）。
+結果として、**console（TUI）で進めた分が chat の画面に出る**作りになった（今までは `replay_log` に
+載らないので出なかった。mako が 2026-11-17 に実機で確認した症状）。出るのは、chat の engine が
+立ち直って `session/load` する時 — 同じ session で chat → console → chat と切り替えると、console に
+替えた時に chat の engine が畳まれ（`repo/lane/reconcile.rs`）、chat に戻った時に立ち直る。
+**実機の GUI では未確認**（§8.6 の手順 1）。
 
 ### 8.2 履歴の配り方 — engine の出力と履歴は pump だけが流す
 
@@ -260,7 +263,7 @@ VP は pump が engine の出力を topic に流している（同じ topic に�
 |---|---|---|
 | load に失敗した時 | `LoadFallback::NewSession`（新規の会話にし、新しい id が registry を上書きする） | 同じ。共有 host は加えて `Notice` を 1 件出す |
 | permission | 許可の option（`allow_once` → `allow_always`）、無ければ先頭の option | 同じ向き。違いは 2 つ: 許可の option が複数ある時に、並び順でなく kind で選ぶ。option が 1 つも無い時は取り消す（手書きの host は `optionId: null` の「選んだ」を返していた） |
-| 会話 id の永続 | 会話が確定したら registry に書く | 同じ |
+| 会話 id の永続 | 会話が確定したら registry に書く | 書くのは同じ。保存に失敗した時は `Error` が出る（手書きの host は log の warn だけ）。保存に失敗すると次の再開で会話を失うので、表に出す |
 | 設定の意図 | agy だけ（`AgySettings::config_pairs`）。会話中の切替が成功したら、host がその値を今の意図として覚える | 同じ（立て直しの後の当て直しが、起動の時の値でなく今の値になる点は新しい） |
 | stderr | 1 行ずつ `tracing::warn!` | 同じ |
 | 中断 | `session/cancel` を送り、待たせていた発話も捨てる | 同じ（共有 crate を VP に合わせて直した、agent-chat PR #6） |
@@ -276,6 +279,20 @@ VP は pump が engine の出力を topic に流している（同じ topic に�
 - 設定の切替の応答が上限（15 秒）までに来なかった時: Err を返すのは同じ。`acp_config.error` には
   残らない（手書きの host は残していた）。遅れて届いた応答は、共有 host が設定面と意図に取り込む
   （手書きの host は捨てていた）
+- **履歴が出るのは、engine が会話を確定した後**（実測で 1.5〜2 秒）。今までは `replay_log` を engine と
+  無関係にすぐ流していた。idle で寝かされた後に開き直すたびに、この待ちが入る
+- **engine を起動できない・会話を確定できない時は、過去の会話が出ない**（理由の `Error` だけ）。
+  今までは、engine が立たなくても `replay_log` から出ていた
+- **会話の確定に上限が付いた**（共有 host の `establish_timeout`、既定 30 秒。手書きの host に上限は
+  無かった）。超えると host は終了する（load の失敗の方針 = 新規の会話、には入らない）。load が
+  30 秒を超える会話があるかは測っていない
+- **turn の最中に、待ちの発話がある状態で配り直すと**、控えは「今の turn の途中までの答え → 待ちの
+  発話」の並びになり、その後に届く今の turn の続きは、待ちの発話の下に別の吹き出しとして出る
+  （次の配り直しで正しい順に戻る）。GUI からの送信は turn が閉じてから送られるので、起きるのは
+  wire の nudge などで発話が積まれた時に、chat を開いたり lag が起きたりした場合
+- **log**: 共有 host の警告（load の失敗で新規に替えた、など）には repo と lane が付かない（engine の
+  終了と stop の log には VP が付ける）。設定の当て直し・切替の失敗は log に出ず、roster の
+  `acp_config.error` にだけ残る（手書きの host は warn も出していた）
 - 細かい違い: slash command の一覧が同じでも `SessionInit` を出し直す（今までは変わった時だけ。turn の
   最中は終わりまで保留するのは同じ）/ `SessionInit` が出るのが設定の当て直しの後になった / 当て直しに
   失敗した時の文から「（選び直すと解消します）」が消えた / 会話の確定の前の設定切替が、すぐ Err を

@@ -219,6 +219,8 @@ fn host_options(config: &AcpHostConfig) -> HostOptions {
 /// [`AcpEngine`] パラメータ（cli_path / spawn_args / name）で共有する。
 pub struct AcpAgentHost {
     engine: AcpEngine,
+    /// log 用の名乗り（`repo=…, lane=…`）。
+    whom: String,
     host: Arc<AcpClientHost>,
     replay: ReplayRequester,
     /// pump に渡す口（pump の起動時に 1 度だけ取り出す）。
@@ -241,7 +243,7 @@ impl AcpAgentHost {
             config.lane,
             config.session_id.as_deref().unwrap_or("new"),
         );
-        Ok(Self::wrap(engine, host))
+        Ok(Self::wrap(&config, host))
     }
 
     /// 接続の作り方を差し替えて起動する（テストが偽の agent をつなぐ）。
@@ -254,15 +256,19 @@ impl AcpAgentHost {
         let host =
             AcpClientHost::spawn_with(connector, PathBuf::from(&config.cwd), host_options(&config))
                 .map_err(|e| spawn_error(engine, e))?;
-        Ok(Self::wrap(engine, host))
+        Ok(Self::wrap(&config, host))
     }
 
-    fn wrap(engine: AcpEngine, host: AcpClientHost) -> Self {
+    fn wrap(config: &AcpHostConfig, host: AcpClientHost) -> Self {
+        let engine = config.engine;
         let host = Arc::new(host);
         let (replay, requests) = ReplayRequester::channel();
-        tokio::spawn(watch_exit(engine, host.subscribe()));
+        // log に「どの lane の engine か」を残す（同じ engine が複数の lane で動く）。
+        let whom = format!("repo={}, lane={}", config.repo, config.lane);
+        tokio::spawn(watch_exit(engine, whom.clone(), host.subscribe()));
         Self {
             engine,
+            whom,
             replay,
             port: Mutex::new(Some(ReplayPort {
                 source: Arc::new(AcpReplaySource(Arc::clone(&host))),
@@ -390,7 +396,7 @@ impl AcpAgentHost {
     /// 待っている最中でも、すぐに process を止める。先に積んであった発話は送らない。
     pub fn stop(&mut self) {
         self.host.stop();
-        tracing::info!("AcpAgentHost stop（{}）", self.engine.name());
+        tracing::info!("AcpAgentHost stop（{}、{}）", self.engine.name(), self.whom);
     }
 }
 
@@ -408,11 +414,15 @@ fn spawn_error(engine: AcpEngine, error: HostError) -> anyhow::Error {
 ///
 /// 理由（stderr の末尾つき）は `EngineExited` の文にしか載らず、GUI はその文を出さない（「休眠」と
 /// だけ出る）。受け口だけを持つ（host を握らない）ので、host が落とされれば終わる。
-async fn watch_exit(engine: AcpEngine, mut events: broadcast::Receiver<ConversationEvent>) {
+async fn watch_exit(
+    engine: AcpEngine,
+    whom: String,
+    mut events: broadcast::Receiver<ConversationEvent>,
+) {
     loop {
         match events.recv().await {
             Ok(ConversationEvent::EngineExited { message }) => {
-                tracing::warn!("{} が終了しました: {message}", engine.name());
+                tracing::warn!("{} が終了しました（{whom}）: {message}", engine.name());
                 return;
             }
             Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
