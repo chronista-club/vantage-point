@@ -323,15 +323,29 @@ method / payload を変えず runtime dispatcher に渡し、元の ID / method 
 path_key を使う（後続 payload に別の `repo_path` があっても宛先は変わらない）。
 共有の subscribe helper と gui / gui-ingest / lanes の呼び出しは変更しない。
 
-payload の `repo_path` は残す。公開する `session_set_mode` は lane / session / mode を個別に
-読み、`lanes_list` は payload を使わない。どちらも追加 key を拒否しないので、取り除く
+payload の `repo_path` は残す。公開する session 操作は必要な field を個別に
+読み、`lanes_list` は payload を使わない。いずれも追加 key を拒否しないので、取り除く
 変換は不要。既存 method の引数解釈は repo dispatcher が引き続き所有する。
 
-KDL は protocol v0.3.0 とし、`session_set_mode` と `lanes_list` のみを公開する。
+KDL は protocol v0.4.0 とし、`session_set_mode`、`lanes_list`、
+`conversation_session_create`、`conversation_session_remove` の 4 method を公開する。
 repo の全 method を omission list に複製せず、この集合との完全一致と実 dispatcher の
 arm・引数制約を drift test で固定する。新しい repo method は既定で KDL に露出しない。
 公開を増やす時は allowlist と説明・テストを同じ変更で更新する。
 これは discovery の公開範囲であり、repo-proxy の認可リストではない。
+
+作成・削除の追加は `mem_1ChFgpJVBonF3gXXbZhwxs`。実装の正本は
+`crates/vantage-point/src/repo/conversation_ops.rs` と
+`crates/vantage-point/src/repo/lane/pool.rs`。
+作成は chat（gui）の Draft session を追加し、作成操作そのものは engine を起動しない。
+発言時に起動するが、GUI の pane attach や注視では発言前にも起動することがある
+（`crates/vantage-point/src/repo/conversation_replay.rs` の demand と focus handler）。
+`agent` 省略時は lane の agent、`focus` 省略時は true（新 session に注視を移す）。
+`focus: false` は作成操作では注視を保つが、GUI 側の操作で後から注視が移ることがある。
+削除は root を拒否し、既に無い session は `status: "absent", focused: null` で成功する。
+通常の削除は `status: "ok"` と削除後の focused key を返す。`focused` は key または null
+なので KDL では `json` とし、description で値域を明記する。
+console 作成と `conversation_session_focus` など他の method は引き続き公開しない。
 
 やってはいけないこと: 暗黙 bind を共通 subscribe helper に入れない。既存の購読 channel は
 最初の `subscribe` を待つという別の契約を持つ。また、channel の途中で repo_path を
@@ -342,3 +356,5 @@ arm・引数制約を drift test で固定する。新しい repo method は既�
 - 2026-11-21: repo-proxy の暗黙 bind と KDL の限定公開を追加。回帰テストは一時 loopback
   server と空の runtime registry で routing / 応答を確認する。実際の session 切替は
   merge 後の daemon 更新を伴う実機確認に分ける。
+- 2026-11-21: protocol v0.4.0 で chat session の作成・削除を discovery に追加。
+  handler は変更せず、4 method の完全一致・入出力の型と制約を drift test で固定する。
