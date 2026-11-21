@@ -1418,11 +1418,10 @@ fn register_lane_demand(
 
 /// L0 SP-portless: repo 単位 channel 共通の subscribe handshake を待つ。
 ///
-/// client (repo canvas-ingest / repo control / vp-app lanes・canvas / MCP repo-proxy) は接続後に
+/// lanes / gui / gui-ingest の client は接続後に
 /// `request("subscribe", {repo_path})` を送る。 repo_path を path_key に正規化して返す。
-/// canvas / lanes / control / repo-proxy の 4 系統が同一 handshake protocol を共有する
-/// (= 将来 channel 固有 field を足すなら、 その channel は本 helper から分離すること)。
-/// 接続断 / 不正 payload で `None`。
+/// repo-proxy は最初の method request でも bind できる専用 handler に分離している。
+/// 接続断で `None`。
 async fn recv_subscribe_handshake(channel: &UnisonChannel) -> Option<String> {
     recv_subscribe_handshake_with_pattern(channel)
         .await
@@ -1457,6 +1456,72 @@ async fn recv_subscribe_handshake_with_pattern(
             .send_response(msg.id, "subscribe", &serde_json::json!({"status": "ok"}))
             .await;
         return Some((path_key, pattern));
+    }
+}
+
+/// 明示 subscribe、または最初の method の repo_path で宛先を固定する。
+/// gui/lanes と異なり、単発の呼び手は subscribe の往復が不要。
+async fn handle_repo_proxy(channel: &UnisonChannel, control_channels: &ControlChannels) {
+    let mut path_key = None;
+
+    loop {
+        let msg = match channel.recv().await {
+            Ok(m) => m,
+            Err(_) => break, // client 切断
+        };
+        if msg.msg_type != MessageType::Request {
+            continue;
+        }
+        let id = msg.id;
+        let method = msg.method.clone();
+        let payload = msg.payload_as_value().unwrap_or_default();
+
+        if path_key.is_none() {
+            let repo_path = payload
+                .get("repo_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            // 明示 subscribe の入力解釈は既存の契約を維持する。
+            // 新しい暗黙 bind だけ、宛先を決める前に空でない文字列を要求する。
+            if method != "subscribe" && repo_path.is_empty() {
+                let _ = channel
+                    .send_response(
+                        id,
+                        &method,
+                        &serde_json::json!({
+                            "error": "repo-proxy: non-empty repo_path required on first request"
+                        }),
+                    )
+                    .await;
+                break;
+            }
+            path_key = Some(crate::capability::normalize_path_key(std::path::Path::new(
+                repo_path,
+            )));
+            if method == "subscribe" {
+                if channel
+                    .send_response(id, &method, &serde_json::json!({"status": "ok"}))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                continue;
+            }
+        }
+
+        // repo_path を含む元の payload を保つ。引数検証は repo handler が所有し、
+        // この channel の宛先は最初の値に固定する。
+        let response = forward_to_sp_control(
+            control_channels,
+            path_key.as_deref().unwrap(),
+            &method,
+            &payload,
+        )
+        .await;
+        if channel.send_response(id, &method, &response).await.is_err() {
+            break;
+        }
     }
 }
 
@@ -1691,8 +1756,8 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // drift 検出は tests/vp_daemon_kdl.rs。start_daemon_server は () 返しのため `?` は使えず、失敗は
     // log で握る（discovery 有効化の失敗は致命ではない = 既存 channel は無影響で動く。KDL 破損時に
     // 起動ログで気付ける。健全性は上記 drift テストが CI で先取りする）。
-    // starter は registry + events のみ。repo-proxy は subscribe handshake 前提で無改造
-    // unison-mcp から駆動不可（ハング）＋要 repo 起動のため follow-up（creo mem_1CcuR73WSNFkyAgzVJvWyF）。
+    // repo-proxy も最初の request の repo_path で bind できる。KDL に記述するのは
+    // session_set_mode / lanes_list のみ（mem_1ChFcDcS19UU6vAiWpq6x8）。
     if let Err(e) = server
         .enable_discovery(include_str!("../../schema/vp-daemon.kdl"))
         .await
@@ -2191,11 +2256,8 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     // =========================================================================
     // "repo-proxy" Channel（L0 SP-portless control slice — 外部 client → Daemon → repo reverse）
     // =========================================================================
-    // MCP/CLI は repo listen port ではなく本 channel に繋ぎ、 handshake {repo_path} 後に
-    // process method (show/clear/tmux/process/wire 等) を request する。 daemon は当該 repo の
-    // control channel を逆用して forward し、 応答を client に relay する。 repo "process" channel と
-    // 同一 method・同一 dispatch (repo 側 `dispatch_repo_method`) なので、 client から見た挙動は
-    // repo 直結と不変 (= repo portless 化しても透過)。
+    // MCP/CLI は subscribe {repo_path}、または最初の method payload の repo_path で bind。
+    // daemon は当該 repo の dispatch_repo_method を直接呼び、応答を client に返す。
     {
         let control_channels = state.control_channels.clone();
         server
@@ -2204,34 +2266,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                     let control_channels = control_channels.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
-                        let Some(path_key) = recv_subscribe_handshake(&channel).await else {
-                            return Ok(());
-                        };
-
-                        loop {
-                            let msg = match channel.recv().await {
-                                Ok(m) => m,
-                                Err(_) => break, // client 切断
-                            };
-                            if msg.msg_type != MessageType::Request {
-                                continue;
-                            }
-                            let id = msg.id;
-                            let method = msg.method.clone();
-                            let payload = msg.payload_as_value().unwrap_or_default();
-
-                            // 当該 repo の control channel を逆用して forward (= Daemon→repo reverse)。
-                            let response = forward_to_sp_control(
-                                &control_channels,
-                                &path_key,
-                                &method,
-                                &payload,
-                            )
-                            .await;
-                            if channel.send_response(id, &method, &response).await.is_err() {
-                                break;
-                            }
-                        }
+                        handle_repo_proxy(&channel, &control_channels).await;
                         Ok(())
                     }
                 }
@@ -3666,3 +3701,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "repo_proxy_tests.rs"]
+mod repo_proxy_tests;
