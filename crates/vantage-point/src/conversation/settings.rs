@@ -6,12 +6,14 @@
 //! - **文字列で engine を分岐するのは最小限に**（`if agent == "codex"` を散らさない）。基本は
 //!   variant の `match` で dispatch し、engine を足す / 消すときは compiler が網羅性で全分岐を指す。
 //! - **engine の code は engine の module に閉じる**。中身の型は
-//!   [`super::claude_settings`] / [`super::codex_settings`] / [`super::vpcode_catalog`] が所有し、
+//!   [`super::claude_settings`] / [`super::codex_settings`] / [`super::vpcode_catalog`] /
+//!   [`super::agy_settings`] が所有し、
 //!   本 module はそれを束ねて registry / RPC / GUI に運ぶ。
 //!
 //! settings 層で「engine X を消す」= X の settings module を消して variant を 1 つ消す。
 //! 共有側に残るのは match の腕だけ（compiler が指す）。
 
+use super::agy_settings::AgySettings;
 use super::claude_settings::ClaudeSettings;
 use super::codex_settings::CodexSelection;
 use super::engine::EngineKind;
@@ -21,7 +23,8 @@ use ts_rs::TS;
 
 /// session に永続される engine 別の設定（registry の `SessionEntry::settings`）。
 ///
-/// serde は externally tagged（`{"claude": {...}}` / `{"codex": {...}}` / `{"vpcode": {...}}`）
+/// serde は externally tagged（`{"claude": {...}}` / `{"codex": {...}}` / `{"vpcode": {...}}` /
+/// `{"agy": {...}}`）
 /// — wire / disk 上で「どの engine の設定か」が key に出るので、engine を跨いだ誤適用が
 /// 型で弾ける（[`Self::kind`] と entry の agent の一致検査）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -37,6 +40,8 @@ pub enum EngineSettings {
         CodexSelection,
     ),
     Vpcode(VpcodeSettings),
+    /// agy の Model / Thinking Level / Mode の意図（doc 88 §6 — host が session 確定後に当て直す）。
+    Agy(AgySettings),
 }
 
 impl EngineSettings {
@@ -46,6 +51,7 @@ impl EngineSettings {
             Self::Claude(_) => EngineKind::Claude,
             Self::Codex(_) => EngineKind::Codex,
             Self::Vpcode(_) => EngineKind::Vpcode,
+            Self::Agy(_) => EngineKind::Agy,
         }
     }
 
@@ -55,6 +61,7 @@ impl EngineSettings {
             Self::Claude(s) => s.validate_shape(),
             Self::Codex(s) => s.validate_shape(),
             Self::Vpcode(s) => s.validate_shape(),
+            Self::Agy(s) => s.validate_shape(),
         }
     }
 
@@ -69,7 +76,7 @@ impl EngineSettings {
                 ..Default::default()
             })),
             EngineKind::Vpcode => Some(Self::Vpcode(VpcodeSettings { model })),
-            EngineKind::Codex | EngineKind::Grok | EngineKind::OpenCode => None,
+            EngineKind::Codex | EngineKind::Grok | EngineKind::OpenCode | EngineKind::Agy => None,
         }
     }
 
@@ -90,6 +97,13 @@ impl EngineSettings {
     pub fn vpcode(&self) -> Option<&VpcodeSettings> {
         match self {
             Self::Vpcode(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn agy(&self) -> Option<&AgySettings> {
+        match self {
+            Self::Agy(s) => Some(s),
             _ => None,
         }
     }
@@ -121,6 +135,19 @@ mod tests {
             serde_json::from_value(serde_json::json!({"vpcode": {"model": "openai/gpt-oss-20b"}}))
                 .unwrap();
         assert_eq!(back.kind(), EngineKind::Vpcode);
+        // agy: 選んだ軸だけが載る（未選択の軸は engine 既定 — doc 88 §6）。
+        let s = EngineSettings::Agy(AgySettings {
+            thought_level: Some("low".into()),
+            ..Default::default()
+        });
+        assert_eq!(
+            serde_json::to_value(&s).unwrap(),
+            serde_json::json!({"agy": {"thought_level": "low"}})
+        );
+        let back: EngineSettings =
+            serde_json::from_value(serde_json::json!({"agy": {"mode": "plan"}})).unwrap();
+        assert_eq!(back.kind(), EngineKind::Agy);
+        assert_eq!(back.agy().and_then(|a| a.mode.as_deref()), Some("plan"));
     }
 
     #[test]
@@ -148,6 +175,14 @@ mod tests {
         assert!(bad.validate_shape().is_err());
         let ok = EngineSettings::Claude(ClaudeSettings::default());
         assert!(ok.validate_shape().is_ok());
+        let bad_agy = EngineSettings::Agy(AgySettings {
+            mode: Some("plan'; rm".into()),
+            ..Default::default()
+        });
+        assert!(
+            bad_agy.validate_shape().is_err(),
+            "agy も各 module の検査に委譲"
+        );
     }
 
     /// TS 型（webview が IPC で組む `settings` の形）を export する。

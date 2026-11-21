@@ -118,6 +118,15 @@ describe('settings in the main area', () => {
     win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     expect(win.document.querySelector('.vp-settings-panel')).toBeNull()
   })
+  it('is one flat list: label + control per row, no section headings and no hints (mako 2026-11-07「ミニマムにしよう」)', () => {
+    const win = fixture()
+    win.vpSettings.open()
+    win.vpSettings.handleResult(snapshot)
+    const panel = win.document.querySelector('.vp-settings-panel')!
+    expect(panel.querySelectorAll('.vp-settings-h, .vp-settings-section, .vp-settings-hint')).toHaveLength(0)
+    const labels = Array.from(panel.querySelectorAll('.vp-settings-row > .vp-settings-label')).map(el => el.textContent)
+    expect(labels).toEqual(['Add Repo の初期フォルダ', 'hub', 'Creo ID', '新しい lane の既定', 'アイドルとみなす時間', 'ログの詳細度', 'Developer Mode', 'アップデート', 'daemon の再起動'])
+  })
   it('keeps existing settings save messages and authoritative result updates', () => {
     const win = fixture()
     win.vpSettings.open()

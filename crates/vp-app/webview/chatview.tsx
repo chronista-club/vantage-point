@@ -71,6 +71,7 @@ import {
   classifyToolRun,
   deriveNowLine,
   deriveStatus,
+  dismissNotice,
   emptyChatState,
   foldInto,
   lampOf,
@@ -2046,6 +2047,13 @@ function SessionChatView(props: { lane: string; session: number }) {
         <Show when={state().codexInputCapacityError}>
           <div class="chat-history-notice" role="alert">{state().codexInputCapacityError}</div>
         </Show>
+        <For each={state().liveNotices}>{message =>
+          <div class="chat-history-notice chat-live-notice" role="status">
+            <span>{message}</span>
+            <button type="button" aria-label="知らせを閉じる"
+              onClick={() => lc.set(produce(s => dismissNotice(s, message)))}>閉じる</button>
+          </div>
+        }</For>
         <div
           class="conversation-stream"
           ref={streamEl}
@@ -2056,6 +2064,9 @@ function SessionChatView(props: { lane: string; session: number }) {
           <Show when={state().historyTruncated}>
             <div class="chat-history-notice" role="status">直近の履歴を表示しています。一部の履歴・入力・出力は省略されています。</div>
           </Show>
+          <For each={state().replayNotices}>{message =>
+            <div class="chat-history-notice" role="status">{message}</div>
+          }</For>
           <For each={state().items}>
             {(item, index) => {
               if (item.kind === 'thinking' || item.kind === 'tool') {
@@ -2465,6 +2476,9 @@ export const CHATVIEW_CSS = `
 .conversation-empty { margin:auto; color: var(--color-text-tertiary, #616b80); font-size:13px; }
 .conversation-stream { flex:1; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:12px; }
 .chat-history-notice { padding:8px 10px; border:1px solid var(--color-border,#2a3040); border-radius:6px; color:var(--color-text-secondary,#a6afc0); font-size:var(--chat-text-meta); line-height:1.6; }
+.chat-live-notice { display:flex; align-items:flex-start; gap:10px; }
+.chat-live-notice > span { flex:1; min-width:0; overflow-wrap:anywhere; }
+.chat-live-notice > button { flex-shrink:0; }
 .codex-unconfirmed { margin:8px 18px 0; max-height:30%; overflow-y:auto; flex-shrink:0; }
 .codex-unconfirmed summary { cursor:pointer; }
 .codex-unconfirmed > div { padding:8px 0; border-top:1px solid var(--color-border,#2a3040); }
@@ -2832,6 +2846,8 @@ export const CHATVIEW_CSS = `
 .codex-permission-choice:hover:not(:disabled), .codex-permission-choice[aria-pressed="true"] { background:var(--color-bg-hover,#252a35); }
 .codex-permission-choice:disabled { opacity:.5; cursor:default; }
 .codex-permission-popover p { font-size:11px; line-height:1.5; }
+/* engine 別 panel の切替失敗（全文は title）。read-only 表示の枠に警告色だけ足す。 */
+.conversation-settings-error { color: var(--color-status-error,#d4444c); opacity:1; cursor:help; }
 /* catalog 空 engine の read-only model 表示（select と同じ枠感、押せない見た目 = cursor/border なし）。 */
 .conversation-model-readonly { font-size:10.5px; padding:1px 5px; border-radius:6px;
   color: var(--color-text-secondary,#a8b0c0); opacity:.7; }

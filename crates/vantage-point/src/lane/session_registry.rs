@@ -88,7 +88,7 @@ impl SessionMode {
 pub struct SessionEntry {
     /// VP 採番のローカル key。
     pub key: SessionKey,
-    /// engine 種別（agent 名: "claude" / "codex" / "grok" / "opencode"。legacy/未知値は shell のみで graceful 吸収）。
+    /// engine 種別（agent 名: "claude" / "codex" / "grok" / "opencode" / "agy" / "vpcode"。legacy/未知値は shell のみで graceful 吸収）。
     pub agent: String,
     /// この session の Mode（doc 47 §4 で lane から移設）。serde default = Tui で
     /// file/wire 後方互換（mode 無しの旧 file は従来どおり tui として読む）。
@@ -240,9 +240,9 @@ fn is_valid_conversation(agent: &str, id: &str) -> bool {
     match EngineKind::from_agent(agent) {
         Some(EngineKind::Claude) => super::cc_session::is_valid_session_id(id),
         Some(EngineKind::Codex) => super::codex_session::is_valid_thread_id(id),
-        // grok = ACP sessionId（UUID v7 形 — 英数+ハイフン、doc 42 §1。registry-native なので
-        // engine 別 store module を持たない = 検証だけここに置く）。
-        Some(EngineKind::Grok) => {
+        // grok / agy = ACP sessionId（UUID 形 — 英数+ハイフン、doc 42 §1・doc 88 §1。
+        // registry-native なので engine 別 store module を持たない = 検証だけここに置く）。
+        Some(EngineKind::Grok | EngineKind::Agy) => {
             !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         }
         // opencode = ACP sessionId（`ses_` prefix + 英数字。実測 `ses_089ead04bffe5oIJcQTHwwTZo8`、
@@ -256,7 +256,7 @@ fn is_valid_conversation(agent: &str, id: &str) -> bool {
         Some(EngineKind::Vpcode) => {
             !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         }
-        // engine を持たない agent（shell / 未知 / 撤去済み cursor・agy）は会話 id を持たない。
+        // engine を持たない agent（shell / 未知 / 撤去済み cursor）は会話 id を持たない。
         None => false,
     }
 }
@@ -782,6 +782,22 @@ pub fn set_settings_in(
     key: SessionKey,
     settings: Option<EngineSettings>,
 ) -> std::io::Result<bool> {
+    update_settings_in(base, repo, lane, default_agent, key, |_| settings)
+}
+
+/// 今の settings を読んで書き換える（読みと書きを 1 回の mutation guard の中で行う）。
+///
+/// agy の設定切替（doc 88 §6）は 1 軸ずつ意図に足すので、「読む → engine の応答を待つ → 書く」
+/// を分けると、並んだ 2 本の切替で先の軸が消える。`f` は今の settings（無ければ None）を受け、
+/// 書く settings を返す。検査は [`set_settings_in`] の doc と同じ（engine の一致・形式・同値）。
+pub fn update_settings_in(
+    base: &Path,
+    repo: &str,
+    lane: &str,
+    default_agent: &str,
+    key: SessionKey,
+    f: impl FnOnce(Option<&EngineSettings>) -> Option<EngineSettings>,
+) -> std::io::Result<bool> {
     let _guard = mutation_guard();
     let mut reg = load_in(base, repo, lane, default_agent);
     let Some(entry) = reg.sessions.iter_mut().find(|s| s.key == key) else {
@@ -790,6 +806,7 @@ pub fn set_settings_in(
             format!("session が存在しません（repo={repo}, lane={lane}, session={key}）"),
         ));
     };
+    let settings = f(entry.settings.as_ref());
     if let Some(s) = &settings {
         let expected = s.kind().agent_name();
         if entry.agent != expected {
@@ -880,6 +897,24 @@ pub fn set_settings(
         default_agent,
         key,
         settings,
+    )
+}
+
+/// 本番 base での [`update_settings_in`]。
+pub fn update_settings(
+    repo: &str,
+    lane: &str,
+    default_agent: &str,
+    key: SessionKey,
+    f: impl FnOnce(Option<&EngineSettings>) -> Option<EngineSettings>,
+) -> std::io::Result<bool> {
+    update_settings_in(
+        &crate::config::vp_state_dir(),
+        repo,
+        lane,
+        default_agent,
+        key,
+        f,
     )
 }
 
@@ -1349,6 +1384,55 @@ mod tests {
             !set_model_in(tmp.path(), "vp", "root", "claude", key, Some("gpt-5")).unwrap(),
             "codex は model 単独の指定を受けない → Ok(false)"
         );
+    }
+
+    /// 今の settings を読んで書き換える（agy の設定切替、doc 88 §6）。読みと書きを 1 回の
+    /// mutation guard の中で行うので、2 本の切替が並んでも片方の軸が消えない。検査（engine の
+    /// 一致・形式）は set_settings_in と同じ。
+    #[test]
+    fn update_settings_reads_current_and_keeps_other_axes() {
+        use crate::conversation::agy_settings::AgySettings;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let key = create_in(
+            tmp.path(),
+            "vp",
+            "root",
+            "claude",
+            "agy",
+            SessionMode::Gui,
+            true,
+        )
+        .expect("create agy");
+        let set_axis = |id: &'static str, value: &'static str| {
+            update_settings_in(tmp.path(), "vp", "root", "claude", key, |cur| {
+                let intent = cur
+                    .and_then(EngineSettings::agy)
+                    .cloned()
+                    .unwrap_or_default();
+                intent.with_value(id, value).map(EngineSettings::Agy)
+            })
+        };
+        assert!(set_axis("mode", "plan").unwrap());
+        assert!(set_axis("thought_level", "low").unwrap());
+        let reg = load_in(tmp.path(), "vp", "root", "claude");
+        assert_eq!(
+            reg.sessions
+                .iter()
+                .find(|s| s.key == key)
+                .and_then(|s| s.settings.clone()),
+            Some(EngineSettings::Agy(AgySettings {
+                thought_level: Some("low".into()),
+                mode: Some("plan".into()),
+                ..Default::default()
+            })),
+            "先に書いた mode が後の thought_level で消えない"
+        );
+        assert!(!set_axis("mode", "plan").unwrap(), "同値は書かない");
+        let err = update_settings_in(tmp.path(), "vp", "root", "claude", key, |_| {
+            Some(EngineSettings::Claude(Default::default()))
+        })
+        .expect_err("agy session に claude settings は書けない");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]
@@ -1835,9 +1919,15 @@ mod tests {
             !is_valid_conversation("opencode", "ses_bad'; rm"),
             "quote 破りは reject（single-quote 埋め込み防壁）"
         );
-        // grok は英数 + ハイフン（opencode の underscore 付き id は grok では不可 = 別ルール）。
+        // grok / agy は英数 + ハイフン（opencode の underscore 付き id は不可 = 別ルール）。
         assert!(is_valid_conversation("grok", "0199a2ff-eeee-7abc"));
         assert!(!is_valid_conversation("grok", "ses_089ead04"));
+        assert!(is_valid_conversation(
+            "agy",
+            "29fa9ed4-cd23-429f-9a63-a5d490b0d9b3"
+        ));
+        assert!(!is_valid_conversation("agy", "ses_089ead04"));
+        assert!(!is_valid_conversation("agy", "bad'; rm"));
         // engine を持たない agent（shell / 撤去済み）は会話 id を持たない。
         assert!(!is_valid_conversation("shell", "ses_089ead04"));
     }
@@ -2246,14 +2336,14 @@ mod tests {
     #[test]
     fn default_mode_for_agent_is_gui_for_engines_tui_for_shell() {
         // 旧名 "hd" の alias は命名エピック 6/9 で撤去 — 未知値として Tui に落ちる（下で検証）
-        for engine in ["claude", "codex", "grok", "opencode"] {
+        for engine in ["claude", "codex", "grok", "opencode", "agy"] {
             assert_eq!(
                 default_mode_for_agent(engine),
                 SessionMode::Gui,
                 "engine {engine} の既定レンズは Chat（われわれの ChatView）"
             );
         }
-        for non_engine in ["shell", "tmux", "cursor", "agy", "unknown-agent", ""] {
+        for non_engine in ["shell", "tmux", "cursor", "unknown-agent", ""] {
             assert_eq!(
                 default_mode_for_agent(non_engine),
                 SessionMode::Tui,

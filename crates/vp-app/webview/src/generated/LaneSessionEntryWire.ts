@@ -61,4 +61,10 @@ last_response_at: number | null,
 /**
  * daemon が集約した会話の現在値。旧 server は欠落する。
  */
-progress?: LaneProgressWire, };
+progress?: LaneProgressWire, 
+/**
+ * ACP engine の設定面（engine が出した configOptions + 直近の失敗、doc 88 §6）。
+ * 形は server の `AcpConfigView` が所有し vp-app は透過する（`settings` と同じ規律）。
+ * 設定面を持たない session / 旧 server は欠落 → None。
+ */
+acp_config?: unknown, };

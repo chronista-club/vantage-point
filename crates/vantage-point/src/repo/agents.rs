@@ -82,7 +82,10 @@ mod tests {
     fn list_stands_returns_builtin() {
         let agents = list_agents();
         let names: Vec<&str> = agents.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["claude", "codex", "grok", "opencode", "shell"]);
+        assert_eq!(
+            names,
+            vec!["claude", "codex", "grok", "opencode", "agy", "shell"]
+        );
         assert!(agents.iter().all(|s| !s.description.is_empty()));
     }
 
@@ -99,6 +102,7 @@ mod tests {
             cap("opencode"),
             "opencode は grok と同じ常駐 AcpAgentHost（doc 43）"
         );
+        assert!(cap("agy"), "agy は常駐 AcpAgentHost（doc 88）");
         assert!(!cap("shell"), "shell は engine なし（shell のみ）");
     }
 

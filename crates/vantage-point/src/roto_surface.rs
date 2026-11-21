@@ -130,6 +130,7 @@ mod tests {
                     permission_choices: vec![],
                     last_activity_at: None,
                     last_response_at: None,
+                    acp_config: None,
                     progress: Some(ConversationProgressView {
                         phase,
                         now: None,

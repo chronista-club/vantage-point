@@ -57,6 +57,8 @@ R sidebar を開いている間、rail の住人（`#edge-rail-new-host` / `#edg
 - 住人を 2 つ描かないので、menu / badge / board の開閉などの状態は 1 つのまま
   （board-view.ts は id 依存だけなので配線は変わらない — doc 56 §3 と同じ配当）
 - 旧 `body.rsb-open #edge-rail{display:none}` の排他は残る。帯は消えるが、住人は R 側に居る
+- 帯が消えている間は、帯のための 36px の退避（`#lane-header` / `#lane-panes` の `right:36px`）も
+  外す。残すと main と R の間に空の帯が残り、rail の中身だけが消えたように見える（2026-11-14）
 - PR ボタンは rail 専用（R 側では PR 節そのものが伸びた形）なので付け替えない
 
 ## PR 節
@@ -140,7 +142,8 @@ response {
 ## やらないこと
 
 - lane panes（`lane-panes.ts`）/ 中央のレイアウトには触らない（reflow 規律、doc 55 / 56）。
-  R の開閉で `#host` が縮むのは従来どおり user 操作起点の reflow のみ
+  R の開閉で `#host` が縮むのは従来どおり user 操作起点の reflow のみ。R を開いている間に rail の
+  36px の退避を外すのも、同じ開閉の操作の中で起きる（§住人の付け替え）
 - `gh` を product の必須依存にしない
 - Debug Log の移設・撤去（別起票）
 

@@ -1,6 +1,6 @@
 # Chat の画像入力
 
-Status: Codex 対応を実装・実機確認済み（2026-09-15）
+Status: Codex 対応を実装・実機確認済み（2026-09-15）。agy 対応を実装・engine の実機確認済み（2026-11-17）
 
 Chat の入力欄に画像を貼り付け、本文と一緒に対応エンジンへ渡せるようにする。
 エンジンごとの能力表は `EngineKind::image_capable` を正本とし、session roster を通じて UI へ配信する。
@@ -10,6 +10,7 @@ Console 自体が画像を受け取れることと、VP Chat の画像対応は�
 |---|---|---|
 | Claude | 対応済み | stream-json の image content block |
 | Codex | 対応・実機確認済み | app-server の image input（data URL） |
+| agy | 実装済み・engine の実機確認済み（Gemini 3.8 Flash。GUI は未確認、doc 88 §6.4）。host を共有 crate に替えた後（2026-11-20、doc 88 §8）の実機の確認は、共有 crate の側の E2E（`vendor/agent-chat/crates/acp/tests/agy_e2e.rs` の `e2e_config_switch_and_image_prompt`。agent-chat の lane が revision `8ec120e` の中身で回して通過、と報告）。VP の adapter 経由では回していない | ACP の image content block |
 | Grok / OpenCode / vpcode | 未対応 | — |
 
 ## 成功条件

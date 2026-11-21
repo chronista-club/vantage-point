@@ -308,7 +308,8 @@ body.rsb-open #right-sidebar{display:flex;}
    解決 (LTR) で right/bottom が無視され、inline の rect が勝つ。 */
 /* 下端の帯（#pane-tabs）は退役（doc 51 §1 A1）— pane chip は tiling 既定で存在理由が
    消え、+ New / Mode 切替は LaneHeader（lane の名札）へ移設した。 */
-/* right:36px = edge rail の静的退避（doc 56 prototype）。rail は常設なので reflow は起きない。 */
+/* right:36px = edge rail の退避（doc 56 prototype）。rail が出ている間は静的で reflow は起きない。
+   R sidebar を開いている間は rail が消えるので退避も外す（下の body.rsb-open の規則）。 */
 #lane-panes{position:absolute;top:var(--lane-header-h);left:0;right:36px;
   bottom:0;background:var(--color-border,#2a3040);}
 /* outline は隣接 Pane との区切り線 (旧 flex gap:1px の後継 — layout に影響しない描画のみの線)。 */
@@ -471,7 +472,8 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 .board-rs-se{right:-4px;bottom:-4px;width:18px;height:18px;cursor:nwse-resize;}
 /* edge rail（doc 56 prototype）: 右端の帯 = lane 級動詞の家。B 形（帯）が既定 —
    「lane に対して何ができるか」を初見にも見せ切る（mako 2026-07-30）。占有は静的
-   （#lane-panes / #lane-header が 36px 退避）なので reflow イベントは発生しない。 */
+   （#lane-panes / #lane-header が 36px 退避）なので、rail が出ている間 reflow イベントは
+   発生しない。R sidebar を開いている間だけ退避を外す（body.rsb-open の規則）。 */
 /* 3 起点の規約（doc 82 §規約）: 縦の帯の要素は上詰めで積まない。起点は上 / 中央 / 下の
    3 箇所で、各要素はどれかの slot に属する。上は上端から下へ、下は下端から上へ伸び、
    中央は残りの中で中央に置かれる。上下 slot は同じ伸び率（flex-grow 1）で余白を分け合うので、
@@ -490,6 +492,10 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
    R の Lane 節へ付け替わっているので、帯が消えても動詞は失われない。
    EdgeRail.setLane が inline display を書くため !important でのみ上書きできる。 */
 body.rsb-open #edge-rail{display:none !important;}
+/* rail が消えている間は、rail のための 36px の退避も外す。残すと main と R の間に
+   アイコンの無い空の帯が残り、rail の中身だけが消えたように見える。R の開閉は user 操作
+   起点で #host の幅も同時に変わるので、reflow 規律 (doc 55) の範囲内。 */
+body.rsb-open #lane-header,body.rsb-open #lane-panes{right:0;}
 #edge-rail-new-host{display:contents;}
 /* しまった pane の置き場 = 帯の中央の slot */
 #edge-rail-stow-host{display:flex;flex-direction:column;align-items:center;gap:6px;min-height:0;overflow:auto;}

@@ -37,6 +37,9 @@ pub enum EngineKind {
     /// doc 43）+ opencode TUI（tui、`-s <id>` resume）。model / provider は opencode config が
     /// SSOT（local LLM 等 — VP は注入しない、doc 43 §3）。
     OpenCode,
+    /// agent=`"agy"` — Google Antigravity CLI。常駐 AcpAgentHost（gui、`agy acp` = ACP —
+    /// doc 88）+ agy TUI（tui、`--conversation <id>` resume）。
+    Agy,
     /// agent=`"vpcode"` — VP 自前 engine（常駐 VpcodeHost、`vpcode --vcp` = VCP JSONL）。
     /// **gui 専用**（TUI を持たない — tui slot では素の login shell に倒れる）。
     /// permission は無政策 engine（毎 tool 実行前に request、判定は VP 側 — VCP §8）。
@@ -49,17 +52,18 @@ impl EngineKind {
     /// 新 engine は [`Self::from_agent`] / [`Self::agent_name`] と併せてここにも足す —
     /// roundtrip テストが片側だけの追加（= GUI dropdown からの取りこぼし、moody 指摘）を
     /// コンパイル時 match 網羅性 + テストで検知する。
-    pub const ALL: [EngineKind; 5] = [
+    pub const ALL: [EngineKind; 6] = [
         Self::Claude,
         Self::Codex,
         Self::Grok,
         Self::OpenCode,
+        Self::Agy,
         Self::Vpcode,
     ];
 
     /// agent 名 → engine。対応表の SSOT（新 engine はここに 1 行足す）。
     ///
-    /// 撤去済み engine（`"cursor"` / `"agy"` — sweep 6.5、doc 39 §7）は `None` に倒れる。
+    /// 撤去済み engine（`"cursor"` — sweep 6.5、doc 39 §7）は `None` に倒れる。
     /// disk / wire に残る旧 agent 文字列は shell（login shell）のみで graceful に受ける。
     pub fn from_agent(agent: &str) -> Option<Self> {
         match agent {
@@ -67,6 +71,7 @@ impl EngineKind {
             "codex" => Some(Self::Codex),
             "grok" => Some(Self::Grok),
             "opencode" => Some(Self::OpenCode),
+            "agy" => Some(Self::Agy),
             "vpcode" => Some(Self::Vpcode),
             _ => None,
         }
@@ -79,6 +84,7 @@ impl EngineKind {
             Self::Codex => "codex",
             Self::Grok => "grok",
             Self::OpenCode => "opencode",
+            Self::Agy => "agy",
             Self::Vpcode => "vpcode",
         }
     }
@@ -92,6 +98,7 @@ impl EngineKind {
             Self::OpenCode => {
                 "VP Agent: OpenCode 🧩 — tui slot（login shell）+ opencode 自動起動（model は opencode config）"
             }
+            Self::Agy => "VP Agent: Antigravity 🚀 — tui slot（login shell）+ agy 自動起動",
             Self::Vpcode => {
                 "VP Agent: vpcode 🔬 — VP 自前 engine（Chat 専用、local LLM。VCP 常駐）"
             }
@@ -100,12 +107,12 @@ impl EngineKind {
 
     /// gui（chat GUI）の host を持つか = console mode Chat を許すか。
     ///
-    /// 常駐型のみ（doc 39 §7 の一枚岩: claude / codex / grok / opencode — doc 41・42・43）。
+    /// 常駐型のみ（doc 39 §7 の一枚岩: claude / codex / grok / opencode / agy — doc 41・42・43・88）。
     /// 全 engine が chat 対応だが、engine を持たない agent（shell / 未知）は host を持たない。
     pub fn chat_capable(self) -> bool {
         matches!(
             self,
-            Self::Claude | Self::Codex | Self::Grok | Self::OpenCode | Self::Vpcode
+            Self::Claude | Self::Codex | Self::Grok | Self::OpenCode | Self::Agy | Self::Vpcode
         )
     }
 
@@ -117,10 +124,11 @@ impl EngineKind {
     ///
     /// **能力表明**（`model_choices` の空/非空と同じ規律）: client はこれが false の lane で
     /// 貼り付け UI を出さない。押しても engine に無視されるだけの行き止まりを作らないため。
-    /// Codex は app-server の image input（data URL）へ変換する。
+    /// Codex は app-server の image input（data URL）へ変換する。agy は ACP の image content
+    /// block（`promptCapabilities.image: true`、doc 88 §6）。
     /// 対応範囲: docs/spec/chat-image-input.md。他 engine が対応したらここに足す。
     pub fn image_capable(self) -> bool {
-        matches!(self, Self::Claude | Self::Codex)
+        matches!(self, Self::Claude | Self::Codex | Self::Agy)
     }
 
     /// VP から「model だけ」の指定を受ける engine か（`vp lane new --model` / config の
@@ -170,7 +178,7 @@ impl EngineKind {
             // 実証: 静的 3 択のうち 1 つが消され、catalog に無い model が増えた）。
             // **先頭 = VP 既定**（session 未指定時の spawn fallback — vpcode_host の解決順）。
             Self::Vpcode => super::vpcode_catalog::choices(),
-            Self::Codex | Self::Grok | Self::OpenCode => Vec::new(),
+            Self::Codex | Self::Grok | Self::OpenCode | Self::Agy => Vec::new(),
         }
     }
 
@@ -180,7 +188,7 @@ impl EngineKind {
     pub fn effort_choices(self) -> Vec<Choice> {
         match self {
             Self::Claude => super::claude_settings::ClaudeSettings::effort_choices(),
-            Self::Codex | Self::Grok | Self::OpenCode | Self::Vpcode => Vec::new(),
+            Self::Codex | Self::Grok | Self::OpenCode | Self::Agy | Self::Vpcode => Vec::new(),
         }
     }
 
@@ -210,7 +218,7 @@ impl EngineKind {
             // tool_call event は別に流れるので実行の可視性は保たれる）。mako 要望 2026-08-23
             // 「全てに承認がいるね」。将来の allowlist 自動裁定もこの catalog に足すだけ。
             Self::Vpcode => Choice::list(&[("manual", "manual"), ("auto", "auto approve")]),
-            Self::Codex | Self::Grok | Self::OpenCode => Vec::new(),
+            Self::Codex | Self::Grok | Self::OpenCode | Self::Agy => Vec::new(),
         }
     }
 }
@@ -269,6 +277,7 @@ impl Drop for ChatEngineSlot {
 /// - [`ChatHost::Grok`]: 常駐 ACP host（`grok agent stdio`、doc 42）。
 /// - [`ChatHost::OpenCode`]: 常駐 ACP host（`opencode acp`、doc 43。grok と同じ AcpAgentHost で、
 ///   [`AcpEngine`] パラメタだけが違う）。
+/// - [`ChatHost::Agy`]: 常駐 ACP host（`agy acp`、doc 88。同じ AcpAgentHost）。
 ///
 /// GUI 語彙 [`ConversationEvent`] は全 engine 共通なので、pump / topic 配線・chatview は engine
 /// 非依存のまま。variant 名は engine 名（doc 37 当時の語彙: Echoes = namespace、claude = engine —
@@ -278,6 +287,7 @@ pub enum ChatHost {
     Codex(CodexAgentHost),
     Grok(AcpAgentHost),
     OpenCode(AcpAgentHost),
+    Agy(AcpAgentHost),
     /// vpcode（VCP 常駐、doc = vpcode_host）。
     Vpcode(VpcodeHost),
 }
@@ -287,7 +297,7 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.subscribe(),
             ChatHost::Codex(h) => h.subscribe(),
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.subscribe(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.subscribe(),
             ChatHost::Vpcode(h) => h.subscribe(),
         }
     }
@@ -296,23 +306,73 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.in_flight(),
             ChatHost::Codex(h) => h.in_flight(),
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.in_flight(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.in_flight(),
             ChatHost::Vpcode(h) => h.in_flight(),
         }
     }
 
     /// 最後に観測した `SessionInit`（replay で配り直す用）。
     ///
-    /// ⚠️ **ACP 系（codex / grok / opencode）は `None`**。あちらの `SessionInit` は
-    /// `slash_commands` を空で出すので配り直す中身が無く、header/model の復元は今も
-    /// 効いていない（= 退行にはならない）。要るようになったら claude 側と同じ保持を足す。
+    /// Claude / ACP 系（grok / opencode / agy）は host が保持する最新の `SessionInit`
+    /// （model / permission_mode / slash_commands / command_docs）を返す。
     pub fn session_init(&self) -> Option<ConversationEvent> {
         match self {
             ChatHost::Claude(h) => h.session_init(),
-            ChatHost::Codex(_)
-            | ChatHost::Grok(_)
-            | ChatHost::OpenCode(_)
-            | ChatHost::Vpcode(_) => None,
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.session_init(),
+            ChatHost::Codex(_) | ChatHost::Vpcode(_) => None,
+        }
+    }
+
+    /// ACP engine の設定面（engine が出した configOptions + 直近の失敗、doc 88 §6）。
+    ///
+    /// roster（`LaneSessionView.acp_config`）の供給源。ACP 以外と、configOptions を出さない
+    /// ACP engine は `None`（GUI は engine 別 panel の有無で描き分ける — 今 panel を持つのは agy）。
+    pub fn acp_config(&self) -> Option<super::acp_config::AcpConfigView> {
+        match self {
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.config_view(),
+            ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => None,
+        }
+    }
+
+    /// engine が終了していて、作り直すしかない host か（ACP engine — agent-chat 設計書 01
+    /// 「呼び手の規則」）。他の engine は false（Claude / Codex / vpcode は、次の送信の自己修復と
+    /// 各 host の作りで扱う）。
+    pub fn exited(&self) -> bool {
+        match self {
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.exited(),
+            ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => false,
+        }
+    }
+
+    /// 履歴を host から受け取る口（ACP engine だけが持つ）。pump の起動時に 1 度だけ取り出す。
+    pub fn take_replay_port(&self) -> Option<super::replay_source::ReplayPort> {
+        match self {
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.take_replay_port(),
+            ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => None,
+        }
+    }
+
+    /// 履歴の配り直しを pump に頼む（ACP engine）。頼めたら true。ACP 以外は false
+    /// （Claude は transcript、Codex は `request_history`、vpcode は replay_log）。
+    pub fn request_replay(&self) -> bool {
+        match self {
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.request_replay(),
+            ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => false,
+        }
+    }
+
+    /// engine の process を立て直して履歴を読み直す（ACP engine。他の書き手が会話を進めた後の口、
+    /// agent-chat 設計書 01「呼び手の規則」）。turn の最中は Err。
+    ///
+    /// ⚠️ 呼び手は無い（[`super::acp_host::AcpAgentHost::restart`] の doc）。
+    pub async fn restart_engine(&self) -> anyhow::Result<()> {
+        match self {
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => {
+                h.restart().await.map_err(anyhow::Error::msg)
+            }
+            ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => {
+                anyhow::bail!("このエンジンは立て直しの口を持ちません")
+            }
         }
     }
 
@@ -320,7 +380,7 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.commit_seq(),
             ChatHost::Codex(h) => h.commit_seq(),
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.commit_seq(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.commit_seq(),
             ChatHost::Vpcode(h) => h.commit_seq(),
         }
     }
@@ -329,7 +389,7 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.pid(),
             ChatHost::Codex(h) => h.pid(),
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.pid(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.pid(),
             ChatHost::Vpcode(h) => h.pid(),
         }
     }
@@ -340,7 +400,7 @@ impl ChatHost {
 
     /// 画像を添えて投入する（chat 入力欄への貼り付け）。
     ///
-    /// ⚠️ **画像を運べるのは Claude / Codex**（[`EngineKind::image_capable`]）。他 engine には
+    /// ⚠️ **画像を運べるのは Claude / Codex / agy**（[`EngineKind::image_capable`]）。他 engine には
     /// 画像を渡す先が無いので **text だけを投入する**（黙って捨てる）。client は
     /// `image_capable` が false の lane で貼り付け UI を出さないので、ここに画像が
     /// 来るのは異常系（新 engine 追加時の取り残し等）— log で気付けるようにする。
@@ -355,6 +415,7 @@ impl ChatHost {
                 h.submit_images_with_activity(prompt, images, None, None)
                     .await
             }
+            ChatHost::Agy(h) => h.submit_with_images(prompt, images).await,
             other => {
                 if !images.is_empty() {
                     tracing::warn!(
@@ -365,7 +426,9 @@ impl ChatHost {
                 match other {
                     ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.submit(prompt).await,
                     ChatHost::Vpcode(h) => h.submit(prompt).await,
-                    ChatHost::Claude(_) | ChatHost::Codex(_) => unreachable!("上の arm で処理済み"),
+                    ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Agy(_) => {
+                        unreachable!("上の arm で処理済み")
+                    }
                 }
             }
         }
@@ -375,19 +438,20 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.interrupt().await,
             ChatHost::Codex(h) => h.interrupt().await,
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.interrupt().await,
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.interrupt().await,
             ChatHost::Vpcode(h) => h.interrupt().await,
         }
     }
 
-    /// 明示 teardown（[`ChatEngineSlot`] Drop から呼ぶ）。codex / grok / opencode は host kill、
-    /// claude は Child kill_on_drop に委ねる（host drop 時に停止）。
+    /// 明示 teardown（[`ChatEngineSlot`] Drop から呼ぶ）。codex / vpcode は host kill、
+    /// claude は Child kill_on_drop に委ねる（host drop 時に停止）。grok / opencode / agy は共有 host に
+    /// 停止を命じる（会話の確定を待っている最中でも、すぐに process を止める）。
     pub fn stop(&mut self) {
         match self {
             // ClaudeHost の Child は kill_on_drop(true) なので host drop で停止する。
             ChatHost::Claude(_) => {}
             ChatHost::Codex(h) => h.stop(),
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.stop(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.stop(),
             ChatHost::Vpcode(h) => h.stop(),
         }
     }
@@ -404,7 +468,7 @@ impl ChatHost {
             // vpcode は無政策 engine（VCP §8）— 毎 tool の permission_request にここで答える。
             // 既存 PromptCard / conversation_respond 経路がそのまま使える（handoff の要点）。
             ChatHost::Vpcode(h) => h.respond_permission(request_id, decision).await,
-            ChatHost::Grok(_) | ChatHost::OpenCode(_) => {
+            ChatHost::Grok(_) | ChatHost::OpenCode(_) | ChatHost::Agy(_) => {
                 anyhow::bail!("このエンジンは対話承認/permission mode を持ちません")
             }
         }
@@ -415,7 +479,7 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.set_permission_mode(mode).await,
             ChatHost::Vpcode(h) => h.set_permission_mode(mode),
-            ChatHost::Codex(_) | ChatHost::Grok(_) | ChatHost::OpenCode(_) => {
+            ChatHost::Codex(_) | ChatHost::Grok(_) | ChatHost::OpenCode(_) | ChatHost::Agy(_) => {
                 anyhow::bail!("このエンジンは対話承認/permission mode を持ちません")
             }
         }
@@ -427,6 +491,12 @@ mod tests {
     #[test]
     fn codex_advertises_image_input() {
         assert!(super::EngineKind::Codex.image_capable());
+        // agy: `promptCapabilities.image: true`（doc 88 §1）→ ACP の image content block で運ぶ。
+        assert!(super::EngineKind::Agy.image_capable());
+        assert!(
+            !super::EngineKind::Grok.image_capable(),
+            "grok は未対応のまま"
+        );
     }
     use super::*;
 
@@ -455,6 +525,7 @@ mod tests {
             EngineKind::from_agent("opencode"),
             Some(EngineKind::OpenCode)
         );
+        assert_eq!(EngineKind::from_agent("agy"), Some(EngineKind::Agy));
         assert_eq!(EngineKind::from_agent("shell"), None);
         assert_eq!(
             EngineKind::from_agent("tmux"),
@@ -464,12 +535,11 @@ mod tests {
         assert_eq!(EngineKind::from_agent(""), None);
     }
 
-    /// graceful degradation: 撤去済み engine（cursor / agy — sweep 6.5）の旧 agent 文字列は
+    /// graceful degradation: 撤去済み engine（cursor — sweep 6.5）の旧 agent 文字列は
     /// `None` に倒れる（disk / wire に残っても shell のみで受け、chat 不可・中立 chip）。
     #[test]
     fn removed_engines_degrade_to_none() {
         assert_eq!(EngineKind::from_agent("cursor"), None, "cursor は撤去済み");
-        assert_eq!(EngineKind::from_agent("agy"), None, "agy は撤去済み");
     }
 
     /// 能力表: 全 engine が chat 対応。model / permission の catalog は claude と vpcode が
@@ -480,12 +550,14 @@ mod tests {
         assert!(EngineKind::Codex.chat_capable());
         assert!(EngineKind::Grok.chat_capable());
         assert!(EngineKind::OpenCode.chat_capable());
+        assert!(EngineKind::Agy.chat_capable());
 
         assert!(!EngineKind::Claude.model_choices().is_empty());
         assert!(EngineKind::Grok.model_choices().is_empty());
         assert!(EngineKind::Codex.model_choices().is_empty());
         // opencode の model は opencode config が SSOT（VP は注入しない、doc 43 §3）。
         assert!(EngineKind::OpenCode.model_choices().is_empty());
+        assert!(EngineKind::Agy.model_choices().is_empty());
         // vpcode の catalog は **engine endpoint から動的**（vpcode_catalog）。テスト環境に
         // LM Studio は居ないので空になる = 「VP から切替不可」に倒れるのが正しい挙動。
         // 中身の検証は vpcode_catalog の単体テスト（parse の純関数）が持つ。
@@ -505,6 +577,7 @@ mod tests {
             EngineKind::Codex,
             EngineKind::Grok,
             EngineKind::OpenCode,
+            EngineKind::Agy,
             EngineKind::Vpcode,
         ] {
             assert!(
@@ -533,6 +606,7 @@ mod tests {
         assert!(EngineKind::Codex.permission_choices().is_empty());
         assert!(EngineKind::Grok.permission_choices().is_empty());
         assert!(EngineKind::OpenCode.permission_choices().is_empty());
+        assert!(EngineKind::Agy.permission_choices().is_empty());
         // vpcode の permission 政策は host 側（manual = 毎カード / auto = host 即 allow）。
         // wire 値は VpcodeHost::set_permission_mode の受理語彙と対（片側更新を検知する固定）。
         assert_eq!(

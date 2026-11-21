@@ -7,8 +7,8 @@
 # 方針: 定期的に `cargo update` し、解消できた advisory は本リストから削除する。
 # ここに残すのは「修正版が無い (vuln)」か「unmaintained だが transitive で VP からは
 # 直接制御できない (upstream / 自作 lib 側の対応待ち)」もののみ。
-# 全エントリは更新時点 (2026-06-23、cargo update 後) で実際に依存ツリーに存在する
-# advisory と 1:1 対応する (cargo audit を flag 無しで回して確認済)。
+# 全エントリは更新時点 (2026-11-15) で Cargo.lock に対して実際に報告される advisory と
+# 1:1 対応する (本ファイルを外して `cargo audit --json` を回し、報告された ID と突き合わせた)。
 
 [advisories]
 ignore = [
@@ -17,19 +17,11 @@ ignore = [
     # 影響軽微、かつ patch 未提供のため許容。修正版が出たら削除する。
     "RUSTSEC-2023-0071",
 
-    # === GTK3 / glib (tao の Linux GUI 依存、macOS では未コンパイル) ===
-    # tao (window lib) が Linux で gtk3-rs に依存。gtk-rs の GTK3 binding はメンテ終了。
-    # VP は macOS 主軸で該当コードは動かない。tao が gtk4 へ移行すれば解消する。
-    "RUSTSEC-2024-0411", # gdkwayland-sys
-    "RUSTSEC-2024-0412", # gdk
-    "RUSTSEC-2024-0413", # atk
-    "RUSTSEC-2024-0414", # gdkx11-sys
-    "RUSTSEC-2024-0415", # gtk
-    "RUSTSEC-2024-0416", # atk-sys
-    "RUSTSEC-2024-0417", # gdkx11
-    "RUSTSEC-2024-0418", # gdk-sys
-    "RUSTSEC-2024-0419", # gtk3-macros
-    "RUSTSEC-2024-0420", # gtk-sys
+    # === glib (tao の Linux GUI 依存、macOS では未コンパイル) ===
+    # tao (window lib) が Linux で gtk3-rs に依存し、glib 0.18 を引く。VP は macOS 主軸で該当コードは
+    # 動かない。tao が gtk4 へ移行すれば解消する。
+    # （GTK3 binding の unmaintained 10 件 RUSTSEC-2024-0411〜0420 は advisory 側が 2026-08-14 に
+    #   withdrawn したので、2026-11-15 に本リストから削除した。gtk 0.18.2 は Cargo.lock に残っている）
     "RUSTSEC-2024-0429", # glib VariantStrIter unsoundness
 
     # === quick-xml DoS 系 (修正版 >=0.41 への semver 互換 upgrade 経路なし、2026-07-02) ===
@@ -40,35 +32,24 @@ ignore = [
     "RUSTSEC-2026-0194", # quick-xml NsReader memory-exhaustion DoS
     "RUSTSEC-2026-0195", # quick-xml 重複属性チェックの quadratic time
 
-    # === rkyv OOB read (semver 互換の upgrade 経路なし + macOS では未コンパイル、2026-08-05) ===
-    # 0.7.46 ← rust_decimal 1.42.1 ← revision/surrealdb-core (embedded DB)。修正版は >=0.8.17 だが
-    # rust_decimal 1.x は rkyv 0.7 系に固定で、`cargo update -p rust_decimal` は 0 packages
-    # (= semver 互換の上げ先が無い)。さらに **host target の依存木に rkyv は現れない**
-    # (`cargo tree -i rkyv --target aarch64-apple-darwin` が空 = feature 未有効でビルドに入らない)。
-    # cargo audit は build graph ではなく Cargo.lock を走査するため当たっているだけ。
-    # 顕在化は advisory DB 更新のタイミング (v0.61.0 の run は緑、その 17h 後に赤)。
-    # rust_decimal が rkyv 0.8 に上がったら cargo update して本エントリを削除する。
-    "RUSTSEC-2026-0235", # rkyv Rc/Arc archive の out-of-bounds read
-
-    # === zstd 0.13 / zstd-safe 7 (club-unison 経由、根治は club-unison の zstd 0.14 化、2026-10-30) ===
-    # 0.13.3 / 7.3.0 ← club-unison 2.x（自作 lib。最新 2.2.0 も `zstd = "^0.13"`）。修正版は zstd >=0.14.3 /
-    # zstd-safe >=8.2.0 で semver を跨ぐため VP の `cargo update` では上がらない。club-unison の使い方は
-    # `unison-protocol/src/packet/serialization.rs` の `encode_all` / `decode_all` だけ:
-    # - 0391 は `raw::{Encoder,Decoder}::with_context`（context 再利用）、0398 は `seekable` — どちらも未使用
-    # - **0403 は到達しうる**: `decode_all` は `DCtx::decompress_stream` を通り、zstd の既定 feature に legacy が
-    #   入るので、壊れた legacy frame を受けると未初期化メモリが出力に混ざる。受信元は loopback の自 daemon と
-    #   hub federation の peer
-    # 橋渡しの ignore。club-unison を zstd 0.14 に上げた版が出たら VP で bump して本 3 件を削除する。
-    "RUSTSEC-2026-0391", # zstd: 放棄した stream のデータが再利用 context の次 stream に漏れる
-    "RUSTSEC-2026-0398", # zstd-safe: Seekable::decompress の Vec 長が capacity を超える
-    "RUSTSEC-2026-0403", # zstd-safe: legacy frame の streaming 解凍失敗で未初期化メモリが露出
-
     # === crypto-bigint 0.5 timing (jsonwebtoken 経由、上流の修正版なし、2026-10-30) ===
     # 0.5.5 ← elliptic-curve 0.13 ← p256 / p384 ← jsonwebtoken 11.1.0（最新）の `rust_crypto` feature ← vp-nexus。
     # 修正版 >=0.7.6 は elliptic-curve 0.14 系で、jsonwebtoken 11.1.0 は p256 / p384 0.13 に固定のため上げ先が無い。
     # vp-nexus は RS256 の verify / sign しか使わず（`Algorithm::RS256` のみ、ES256/ES384 は未使用）、
     # ECDSA の秘密値を扱う経路が無い。jsonwebtoken が elliptic-curve 0.14 に上がったら cargo update して削除する。
     "RUSTSEC-2026-0387", # crypto-bigint: 定数時間のはずの演算が secret 依存の分岐を持ちうる
+
+    # === surrealdb 3.x 系 (embedded DB、根治は surrealdb 4.0 への移行、2026-11-07) ===
+    # VP の DB は daemon 内の embedded surrealdb（`db/mod.rs` の `surrealkv://<data_dir>`）。3.x の最新 3.3.5 も
+    # surrealkv ^0.21.4 / reblessive ^0.4.3 のままで、修正版は surrealdb 4.0 側にしか無い（major）:
+    # - 0454: reblessive 0.4.3 が無条件に Send/Sync を名乗り、driver future を複製して別 thread で poll すると
+    #   data race / double free。surrealdb-core の Executor 内部の型で、VP は reblessive を直接使わない。
+    #   reblessive 自体に修正版は無く、surrealdb-core 4.0.0 が依存から外して解消
+    # - 0452: surrealkv 0.21 の `InternalKeyRef::from_encoded` が 16 byte 未満の key を release build で
+    #   範囲外読み。入力は surrealkv 自身が書いた encoded key。修正版 surrealkv >=1.2.0 は surrealdb 4.0 が引く
+    # 橋渡しの ignore。surrealdb 4.0 へ上げたら本 2 件を削除する（task mem_1Cgn1DyWaN2yNsNGJRTSTM）。
+    "RUSTSEC-2026-0454", # reblessive (← surrealdb-core 3.3): unsound Send/Sync による data race / double free
+    "RUSTSEC-2026-0452", # surrealkv 0.21: 16 byte 未満の internal key の decode で out-of-bounds read
 
     # === unmaintained な transitive 依存 (VP から直接制御不可) ===
     "RUSTSEC-2023-0089", # atomic-polyfill (transitive、portable-atomic へ未移行)
@@ -77,4 +58,10 @@ ignore = [
     "RUSTSEC-2024-0436", # paste ← image/rav1e ← arboard / ratatui-image
     "RUSTSEC-2025-0134", # rustls-pemfile ← club-unison (自作 lib、将来 root-fix 可)
     "RUSTSEC-2025-0141", # bincode (transitive、1.x→2.x 未移行)
+    # 以下 4 件は修正版なし (2026-11-15)。どれも `cargo tree -i <crate> --target aarch64-apple-darwin` が
+    # 空 = macOS の build には入らない。cargo audit が Cargo.lock を走査するので当たっている。
+    "RUSTSEC-2026-0441", # pin-utils ← wasmtimer ← surrealdb 3.3 (wasm 向け)
+    "RUSTSEC-2026-0371", # zbus_names ← zbus ← notify-rust ← vp-app (Linux の D-Bus 通知)
+    "RUSTSEC-2026-0370", # zvariant ← zbus ← notify-rust ← vp-app (同上)
+    "RUSTSEC-2026-0372", # zvariant_derive ← zvariant (同上)
 ]

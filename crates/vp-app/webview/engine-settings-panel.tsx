@@ -2,7 +2,7 @@
  * engine 別 settings panel の束ね役 — **agent 名 → panel の表**で引く。
  *
  * 原則（mako 2026-09-21）: 共通の器は作らない・if で engine を分けない・engine の code は
- * engine の file に閉じる。Claude / Codex / vpcode はそれぞれ自分の panel を持ち、ここは
+ * engine の file に閉じる。Claude / Codex / vpcode / agy はそれぞれ自分の panel を持ち、ここは
  * 表を引いて描くだけ。表に無い engine（grok / opencode = model を engine 側で選ぶ）は
  * 実測 model の read-only 表示に落とす（押しても server に弾かれる行き止まりを作らない）。
  *
@@ -10,6 +10,7 @@
  */
 import { Show, type Component } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
+import { AgySettingsPanel } from './agy-settings-panel'
 import { ClaudeSettingsPanel } from './claude-settings-panel'
 import { CodexSettingsPanel } from './codex-settings-panel'
 import { VpcodeSettingsPanel } from './vpcode-settings-panel'
@@ -21,6 +22,7 @@ export const ENGINE_SETTINGS_PANELS: Readonly<Record<string, Component<SettingsC
   claude: ClaudeSettingsPanel,
   codex: CodexSettingsPanel,
   vpcode: VpcodeSettingsPanel,
+  agy: AgySettingsPanel,
 }
 
 export function EngineSettingsPanel(props: SettingsContext) {

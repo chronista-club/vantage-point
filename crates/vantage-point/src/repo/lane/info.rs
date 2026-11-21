@@ -296,6 +296,12 @@ pub struct LaneSessionView {
     /// 会話 stream の揮発投影。本文や承認の原 input は載せない。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<crate::conversation::progress::ConversationProgressView>,
+    /// ACP engine の設定面（engine が出した configOptions + 直近の失敗、doc 88 §6）。
+    /// 候補は engine が正なので catalog（`model_choices` 等）と違い **in-memory 実体からの
+    /// enrich**（[`super::pool::LanePool::acp_configs`]）— 実体の無い session と configOptions を
+    /// 出さない engine は None。GUI は engine 別 panel（今は agy）がこれを並べる。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_config: Option<crate::conversation::acp_config::AcpConfigView>,
 }
 
 /// `last_activity_at` を wire に載せる際の量子化粒度 (ms)。GUI の quiet 閾値（分単位）には

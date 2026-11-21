@@ -1,5 +1,13 @@
 # CLAUDE.md
 
+@AGENTS.md
+
+> ↑ `AGENTS.md`（lane / ブランチ / wire の規約の正本）を Claude Code に読み込ませる import。Claude Code は
+> `CLAUDE.md` がある repo では `AGENTS.md` を自動では読まない（`CLAUDE.md` だけを読む）。この 1 行が無いと、
+> Claude の agent には `AGENTS.md` の規約が届かず、Codex など `AGENTS.md` を読む agent とで知っている規則が
+> 食い違う（2026-11-15 に lead の session で確認）。`AGENTS.md` 1 本へまとめるまでの橋渡し
+> （action mem_1Ch3caZ29bQSTk1EMhjNGm）。
+
 ## repo 概要
 
 Vantage Point（`vp`）は Rust製の **AI ネイティブ開発環境**。
@@ -63,7 +71,7 @@ daemon ⚙️ (Process Manager / 常駐デーモン)
   ├── devices 🧲 (machine scope / device registry)
   └── device_io 🌫️ (lane scope / device I/O)
 
-軸: agent（claude/codex/grok/opencode/vpcode/shell）× mode（tui/gui）。GUI 容器 = Pane（app 専用語）。
+軸: agent（claude/codex/grok/opencode/agy/vpcode/shell）× mode（tui/gui）。GUI 容器 = Pane（app 専用語）。
 vpcode は自前 engine（VCP protocol、#1014〜#1016 で 5 番目の engine として統合、2026-08-27）。
 部品 = component（lane に host）/ 常駐 = service。総称「Stand」は廃止（義ごとに分解）。
 ```
@@ -325,7 +333,14 @@ gate は claude 側で `env ?? GrowthBook` なので、VP 配下では rollout �
 > 旧 `agent.rs`（`ClaudeAgent` OneShot / `InteractiveClaudeAgent`）は **2026-09 に撤去**。`InteractiveClaudeAgent` は
 > #390 以来一度も `Some` にならない `AppState`（現 `RepoState`）の field で、health の `services.claude` も定数 `"idle"` を返すだけだった。
 > Claude CLI の path 解決（`get_claude_cli_path`）だけが生きていて `conversation/host.rs` の private fn に移した。
-> 他 engine（codex / acp / vpcode）の host も同 dir。
+> 他 engine（codex / acp / vpcode）の host も同 dir。ACP engine（grok / opencode / agy）の host は、
+> 共有 crate `agent-chat-acp`（`vendor/agent-chat`、公式 SDK `agent-client-protocol`）の `AcpClientHost` を
+> 包む薄い adapter（`acp_host.rs`、doc 88 §8）。履歴は engine の `session/load` が正で、pump が host の
+> 控えから配る — `replay_log` は使わない。
+> ⚠️ この SDK が `serde_json` の `preserve_order` を有効にする。**`serde_json::Value` の object の key は
+> 「入れた順」で出る**（辞書順ではない）。`Value` を文字列や bytes にして hash・保存値と比べる時は、
+> 並びを自分で決める（実例: `roto_setup::canonical`）。`cargo tree -p vp-app` 単体では付かないが、
+> release は `-p vp-app -p vp-cli` を 1 回で build するので vp-app にも付く。
 
 ## コーディング規約
 
@@ -344,8 +359,8 @@ gate は claude 側で `env ?? GrowthBook` なので、VP 配下では rollout �
 | 値 | tracing レベル | 用途 |
 |----|---------------|------|
 | （未設定 / `none`） | CLI は warn、daemon は settings の `log-level` または info | 本番運用 |
-| `simple` | `vantage_point=info` | 基本ログ |
-| `detail` | `vantage_point=debug` | 詳細ログ |
+| `simple` | `vantage_point=info,agent_chat_acp=info` | 基本ログ |
+| `detail` | `vantage_point=debug,agent_chat_acp=debug` | 詳細ログ |
 
 `VP_LOG=debug|info|warn|error` → `RUST_LOG` → `VANTAGE_DEBUG` の優先順。
 `settings.kdl` の `log-level` は daemon に適用し、CLI の既定値には使わない。
@@ -432,54 +447,6 @@ main    ───●──────────────────●─
 
 MARU（ESP32-S3物理コントローラ）との連携開発。設計・経緯は creo-memories に記録（`category: "cross-project"` + `from: "vp"`）。
 
-## GitNexus index 更新コマンド（正）
+## code の影響確認
 
-> ⚠️ index 更新は **`bunx gitnexus analyze`** を使う（この repo / mako 環境の JS runtime は bun。 node・npm・npx は使わない）。
-> 下の `<!-- gitnexus:start -->` ブロックは `gitnexus analyze` が**毎回再生成**するため `node .gitnexus/run.cjs analyze` 表記に戻るが、 それは tool 自動生成なので無視してよい。 **正はこの行（`bunx gitnexus analyze`）**。 関連: memory `js-runtime-bun`。
->
-> **symbol 数などの volatile な統計は `.gitnexusrc`（`analyze.stats: false`）で md から外してある**（gitnexus #1706 の正規機能。 コマンドに `--no-stats` を足す必要は無い）。 数字は index には正しく入るので MCP tools の精度は落ちない。 これが無いと analyze のたびに AGENTS.md / CLAUDE.md が書き換わり、 branch 間で無価値な diff / conflict を生む。 `.gitnexusrc` は **fail closed**（未知キー・型違いは即エラー）なので typo が silent no-op にならない。
-
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
-
-This project is indexed by GitNexus as **vantage-point**. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
-
-> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
-
-## Always Do
-
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
-- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
-
-## Never Do
-
-- NEVER edit a function, class, or method without first running `impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
-- NEVER commit changes without running `detect_changes()` to check affected scope.
-
-## Resources
-
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/vantage-point/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/vantage-point/clusters` | All functional areas |
-| `gitnexus://repo/vantage-point/processes` | All execution flows |
-| `gitnexus://repo/vantage-point/process/{name}` | Step-by-step execution trace |
-
-## CLI
-
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-
-<!-- gitnexus:end -->
+影響確認の道具（gitnexus）は 2026-11-17 に外した。今の決まりは `AGENTS.md`「code の影響確認」。

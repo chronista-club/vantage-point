@@ -149,6 +149,21 @@ GFP 側には次の契約実装が必要。
 
 ## Status log
 
+- 2026-11-20: **ACP engine（agy / grok / opencode）の host を共有 crate `agent-chat-acp` に切り替えた**
+  （task `mem_1ChDFn6LxUfPDFsqeXvcyr`、Stage 2。設計は agent-chat `docs/design/01-acp-client-host.md`、
+  VP の側の決めごとは design 88 §8）。process を共有側が持つ最初の host で、本書の残りに挙げていた
+  「process lifecycle 状態機械 + 永続化 callback」の ACP の分に当たる（Claude / Codex の host は未着手のまま）。
+  注入契約は本書「責務と注入契約」の形: 起動の文脈・会話の紐付け・永続化 callback・permission の方針は
+  VP が渡し、stdio・protocol・履歴の控え・設定面は共有 host が持つ。「resume 失敗を新規会話へ変換しない」に
+  ついては、共有 host の既定は失敗として返し、VP は方針として新規を選ぶ（今までと同じ動き。変えた事実は
+  `Notice` で出る）。
+  submodule は `a4d55e3` → `9516b29`（途中で VP の切り替えのために頼んだ変更 4 つ = agent-chat PR #5・#6・#7・#8 を含む）。GFP は「VP が先に進めてよい、後から追う」（lead 経由、2026-11-20）。
+  **両 consumer が同じ revision を指す gate は、GFP が追うまで一時的に外れている。**
+  依存の注意: 公式 SDK が `serde_json` の `preserve_order` を有効にする（binary 全体で `Value` の key が
+  「入れた順」になる）。VP で実害があったのは ROTO の setup の hash で、同じ PR で止めた（design 88 §8.5 と PR）。
+  GFP が `agent-chat-acp` に依存する時は、GFP の側で同じ調べが要る。SDK の版は consumer の lock で
+  agent-chat が検証した版（5.3.0 / schema 1.18.0）に揃える — path 依存は agent-chat の lock を連れてこない。
+
 - 2026-10-22: VP 側を nightly（8febd2ad）に追随させ、依存を `vendor/agent-chat` submodule で固定（task `mem_1CgHKDoqQYVjXcmz92CZdG`）。
   lane の 6 commit を 1 つに squash して rebase、衝突 9 file。shim 系（event / claude_translate /
   conversation_event_fixtures / generated TS 3 本）は lane 側を採り、nightly #1201 の subagent task_* 翻訳

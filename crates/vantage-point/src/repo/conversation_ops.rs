@@ -126,15 +126,11 @@ async fn record_user_message_if_transcriptless(
     let Ok(resolved) = resolved else {
         return;
     };
-    // 記録対象は pump の tap と揃える。Claude / Codex は native 履歴を読む。
-    if !matches!(
-        crate::conversation::EngineKind::from_agent(&resolved.agent),
-        Some(
-            crate::conversation::EngineKind::Grok
-                | crate::conversation::EngineKind::OpenCode
-                | crate::conversation::EngineKind::Vpcode
-        )
-    ) {
+    // 記録対象は pump の tap と揃える（replay_log を使うのは vpcode だけ）。Claude / Codex は
+    // native 履歴を読み、ACP engine（grok / opencode / agy）は host の控えが発話を持つ。
+    if crate::conversation::EngineKind::from_agent(&resolved.agent)
+        != Some(crate::conversation::EngineKind::Vpcode)
+    {
         return;
     }
     let lane_label = crate::repo::agent_spawner::lane_label(&addr).to_string();
@@ -780,6 +776,18 @@ pub(crate) async fn handle_conversation_set_settings(
     let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("conversation_set_settings: lane パース失敗: {lane}"))?;
 
+    // agy: 稼働中 host に set_config_option を送り、engine の応答を待ってから registry に意図を
+    // 残す（doc 88 §6）。応答待ちの間 pool の lock を握らないよう、write lock を取る下の腕より
+    // 前で分ける。成否どちらでも roster（候補と現在値、失敗の文）を知らせる。
+    if let Some(EngineSettings::Agy(desired)) = &settings {
+        let result = apply_agy_settings(state, &addr, session, desired).await;
+        super::lane::lifecycle::emit_lane_update(state, &addr).await;
+        tracing::info!("conversation_set_settings: lane={lane} session={session} (agy)");
+        return result
+            .map(|()| serde_json::json!({"status": "ok", "lane": lane, "session": session}))
+            .map_err(|e| format!("conversation_set_settings: {e}"));
+    }
+
     let applied = {
         let mut pool = state.lane_pool.write().await;
         let info = pool
@@ -792,6 +800,7 @@ pub(crate) async fn handle_conversation_set_settings(
                 let config = pool.configure_codex(&addr, session, selection)?;
                 serde_json::json!({"status":"ok","codex_config":config})
             }
+            Some(EngineSettings::Agy(_)) => unreachable!("agy は lock の前で処理済み"),
             Some(EngineSettings::Claude(_)) | Some(EngineSettings::Vpcode(_)) | None => {
                 // null（既定へ戻す）は「registry intent + respawn」で設定を運ぶ engine にだけ
                 // 意味がある。Codex（host の runtime 設定）/ Grok / OpenCode（engine 側で選ぶ）の
@@ -849,6 +858,57 @@ pub(crate) async fn handle_conversation_set_settings(
     super::lane::lifecycle::emit_lane_update(state, &addr).await;
     tracing::info!("conversation_set_settings: lane={lane} session={session}");
     Ok(applied)
+}
+
+/// agy の設定切替（doc 88 §6）: 軸ごとに engine へ当て、成功した軸だけを registry の意図に足す。
+///
+/// - model を先に当てる（[`AgySettings::config_pairs`] の順 — thought_level の候補は model で変わる）
+/// - 当てるたびに、選んである軸を engine の現在値に揃える（[`AgySettings::follow_engine`] —
+///   model の切替で thought_level が既定に戻ることがある、実測）
+/// - registry は 1 軸ごとに今の値を読んで書く（[`update_settings`] — 並んだ切替で軸を失わない）
+/// - 途中で弾かれたら、そこまでの成功は残して Err（engine の現在値と registry を食い違わせない）
+///
+/// [`AgySettings::config_pairs`]: crate::conversation::agy_settings::AgySettings::config_pairs
+/// [`AgySettings::follow_engine`]: crate::conversation::agy_settings::AgySettings::follow_engine
+/// [`update_settings`]: crate::lane::session_registry::update_settings
+async fn apply_agy_settings(
+    state: &RepoState,
+    addr: &crate::repo::lane::LaneAddress,
+    session: crate::lane::session_registry::SessionKey,
+    desired: &crate::conversation::agy_settings::AgySettings,
+) -> Result<(), String> {
+    use crate::conversation::EngineSettings;
+
+    let lane_label = crate::repo::agent_spawner::lane_label(addr).to_string();
+    let (handle, default_agent) = {
+        let pool = state.lane_pool.read().await;
+        let info = pool
+            .get(addr)
+            .ok_or_else(|| format!("Lane not found: {addr}"))?;
+        (pool.agy_config_handle(addr, session)?, info.agent.clone())
+    };
+    for (config_id, value) in desired.config_pairs() {
+        let options = handle.set(&config_id, &value).await?;
+        crate::lane::session_registry::update_settings(
+            &addr.repo,
+            &lane_label,
+            &default_agent,
+            session,
+            |current| {
+                let intent = current
+                    .and_then(EngineSettings::agy)
+                    .cloned()
+                    .unwrap_or_default();
+                match intent.with_value(&config_id, &value) {
+                    Some(next) => Some(EngineSettings::Agy(next.follow_engine(&options))),
+                    // 知らない軸は意図に残さない（今の値をそのまま書き戻す = 変化なし）
+                    None => current.cloned(),
+                }
+            },
+        )
+        .map_err(|e| format!("永続失敗: {e}"))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

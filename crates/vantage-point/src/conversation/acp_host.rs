@@ -1,54 +1,70 @@
-//! AcpAgentHost — ACP engine（grok / opencode）を lane 単位で**常駐**駆動する host（gui、doc 42・43）
+//! AcpAgentHost — ACP engine（grok / opencode / agy）を lane 単位で**常駐**駆動する host（gui、doc 42・43・88）
 //!
-//! `grok agent stdio`（doc 42）と `opencode acp`（doc 43）はどちらも **ACP（Agent Client
-//! Protocol、protocolVersion 1）**を実装しており（各 doc §1 実測）、wire が同一なので本 host が
-//! そのまま 2 engine を駆動する。engine 別に変わるのは spawn command と名乗り（registry / ログ /
-//! エラー文言）だけで、[`AcpEngine`] に集約する。host のロジックは engine 非依存で、
-//! [`super::codex_host::CodexAgentHost`]（RpcHost）と同型の per-session 常駐:
+//! `grok agent stdio`（doc 42）・`opencode acp`（doc 43）・`agy acp`（doc 88）はいずれも
+//! **ACP（Agent Client Protocol、protocolVersion 1）**を実装している。接続・型・順序の管理と、
+//! `session/update` の翻訳、設定面、履歴の控えは、共有 crate `agent-chat-acp` の
+//! [`AcpClientHost`]（公式 SDK `agent-client-protocol`）が持つ（agent-chat 設計書 01、VP design 86）。
+//! 2026-11-20 に、VP の手書きの host（JSON-RPC を手で組んでいた）からこれに切り替えた。
 //!
-//! - JSONL だが **`jsonrpc: "2.0"` field を含む**標準 JSON-RPC（codex は省略形）
-//! - 会話確立 = `session/new` | `session/load`（load error → new へ self-heal）
-//! - **turn 終了 = `session/prompt` request の response**（`{stopReason}`。codex の
-//!   turn/completed notification と違い response 駆動）
-//! - 中断 = `session/cancel` **notification**（応答なし — prompt response が cancelled で畳む）
-//! - **`session/request_permission`（server→client request）を host が自動 allow**
-//!   （claude bypassPermissions / codex approvalPolicy=never と同じ tui/gui parity。grok は
-//!   spawn flag `--always-approve` と二段防御、opencode は自動 allow の一段のみ — doc 43 §6）
-//! - `session/load` の replay 列（過去会話の session/update）は**翻訳しない** — VP 自前の
-//!   replay_log 経由 replay と二重になるため、load 完了まで translator を繋がない（doc 42 §3）
+//! 本 module は VP 固有のものを注入する薄い adapter:
 //!
-//! 会話 id（ACP sessionId）は registry 直結（doc 40 §4）— grok / opencode に旧 store は存在しない
-//! （**registry-native** = backfill bridge の対象外という正しい欠如）。
-//! 途絶の自己修復配線（dead flag → submit Err → ensure_and_submit_chat の drop→再ensure→retry）と
-//! stderr 診断は PR #802 の moody 教訓を最初から実装。
+//! - **どの CLI をどう起動するか**（[`AcpEngine`] — CLI の path、引数、名乗り）と identity env
+//!   （`VP_REPO` / `VP_LANE` / `VP_SESSION_KEY`、doc 51 §1 A3b）
+//! - **会話 id の永続**: 会話が確定したら registry に書く（doc 40 §4 — grok / opencode / agy は
+//!   registry-native で、旧 store が最初から無い）
+//! - **`session/load` に失敗した時の方針**: 新規の会話にする（[`LoadFallback::NewSession`]）。
+//!   新しい id が registry を上書きする。手書きの host と同じ動き
+//! - **permission の方針**: 自動で許可する（claude bypassPermissions / codex approvalPolicy=never と
+//!   同じ tui/gui parity。grok は spawn flag `--always-approve`、agy は
+//!   `--dangerously-skip-permissions` と二段防御、opencode は自動の許可の一段のみ — doc 43 §6・doc 88 §2）
+//! - **設定の意図**: session の確定の後に当て直す `(config id, 値)`（agy は切り替えた値を
+//!   `session/load` の後に保たない — doc 88 §6）
+//!
+//! 履歴: `session/load` が流す過去の会話は host が控えに持ち、pump が [`ReplaySource::attach`] で
+//! 受け取って `ReplayStart` 〜 `ReplayEnd` で包んで配る（[`super::replay_source`]）。VP の
+//! `replay_log` は ACP engine では使わない — console で進めた分も engine から戻る。
+//!
+//! stderr: 1 行ずつ daemon の log に出す（`on_stderr`）。末尾は共有 host が持ち、終了の文に付く。
+//!
+//! 途絶の自己修復: engine が終了した後の `submit` は Err を返し、`ensure_and_submit_chat` が
+//! drop → 再 ensure → retry する。chat を開き直した時は、終了した host（[`AcpAgentHost::exited`]）を
+//! pool が作り直す（agent-chat 設計書 01「呼び手の規則」— 終了した host はもう使えない）。
+//!
+//! 会話を確定できなかった時（認証切れ、CLI の不調など）は、共有 host が理由を `Error` で出してから
+//! `EngineExited` を出す。engine が終了して、送られなかった発話があった時も `Error` が出る。
+//! `EngineExited` の文（stderr の末尾つき）は GUI に出ない（「休眠」とだけ出る）ので、daemon の log
+//! にも出す（[`watch_exit`]）。
 
-use std::collections::{HashMap, VecDeque};
-use std::process::Stdio;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin};
+use agent_chat_acp::{
+    AcpClientHost, HostError, HostOptions, LaunchContext, LoadFallback, PermissionDecision,
+    PromptImage,
+};
+use agent_client_protocol::v1::schema::RequestPermissionRequest;
 use tokio::sync::broadcast;
-use tokio::task::JoinHandle;
 
-use super::acp_translate::AcpTranslator;
+use super::acp_config::{AcpConfigOption, AcpConfigView};
 use super::event::ConversationEvent;
-use super::host::InFlight;
+use super::host::{ImageInput, InFlight};
+use super::replay_source::{AttachFuture, ReplayAttach, ReplayPort, ReplayRequester, ReplaySource};
 
 /// AcpAgentHost が駆動する ACP engine の種別（spawn command + 名乗りの差分だけを持つ）。
 ///
-/// host のロジック（session/new|load self-heal / prompt-response turn / session/cancel /
-/// request_permission 自動 allow / dead flag 自己修復 / stderr 診断 / load replay 列破棄）は
-/// engine 非依存。engine 別に変わるのは「どの CLI をどう起動するか」と「registry / ログ /
-/// エラー文言の名乗り」だけなので、その差分をここに集約する（doc 43 §2）。
+/// host のロジックは engine 非依存（共有 crate）。engine 別に変わるのは「どの CLI をどう起動するか」と
+/// 「registry / ログ / エラー文言の名乗り」だけなので、その差分をここに集約する（doc 43 §2・doc 88 §2）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcpEngine {
     /// `grok agent stdio --always-approve`（xAI Grok CLI、doc 42）。CLI パス = PATH → `~/.grok/bin/grok`。
     Grok,
     /// `opencode acp`（opencode、doc 43）。CLI パス = PATH → `/opt/homebrew/bin/opencode`（brew）。
-    /// approve 相当 flag は無い（request_permission 自動 allow の一段のみ）。model / provider は
+    /// approve 相当 flag は無い（permission の自動の許可の一段のみ）。model / provider は
     /// opencode config が SSOT で、VP は spawn に env も flag も注入しない（doc 43 §3）。
     OpenCode,
+    /// `agy acp --dangerously-skip-permissions`（Google Antigravity CLI、doc 88）。
+    /// CLI パス = PATH → `/opt/homebrew/bin/agy`（brew）。permission 二段防御（flag + 自動の許可）。
+    Agy,
 }
 
 impl AcpEngine {
@@ -57,6 +73,7 @@ impl AcpEngine {
         match self {
             Self::Grok => "grok",
             Self::OpenCode => "opencode",
+            Self::Agy => "agy",
         }
     }
 
@@ -67,17 +84,21 @@ impl AcpEngine {
                 let home = std::env::var("HOME").unwrap_or_default();
                 crate::lane::session_store::resolve_cli(
                     "grok",
-                    &[std::path::PathBuf::from(home).join(".grok/bin/grok")],
+                    &[PathBuf::from(home).join(".grok/bin/grok")],
                 )
             }
             Self::OpenCode => crate::lane::session_store::resolve_cli(
                 "opencode",
-                &[std::path::PathBuf::from("/opt/homebrew/bin/opencode")],
+                &[PathBuf::from("/opt/homebrew/bin/opencode")],
+            ),
+            Self::Agy => crate::lane::session_store::resolve_cli(
+                "agy",
+                &[PathBuf::from("/opt/homebrew/bin/agy")],
             ),
         }
     }
 
-    /// spawn 時の固定引数（cwd / stdio piping は spawn 側で付ける）。
+    /// spawn 時の固定引数（cwd / stdio piping は共有 host が付ける）。
     fn spawn_args(self) -> &'static [&'static str] {
         match self {
             // grok: agent サブコマンド + `--always-approve`（permission 二段防御、doc 42）。
@@ -85,6 +106,8 @@ impl AcpEngine {
             // opencode: `acp` サブコマンドのみ（flag / env / config 注入なし — model は opencode
             //  config が SSOT、doc 43 §3）。
             Self::OpenCode => &["acp"],
+            // agy: `acp` サブコマンド + `--dangerously-skip-permissions`（permission 二段防御、doc 88）。
+            Self::Agy => &["acp", "--dangerously-skip-permissions"],
         }
     }
 }
@@ -94,7 +117,7 @@ impl AcpEngine {
 pub struct AcpHostConfig {
     /// 駆動する ACP engine（spawn command + 名乗りの差分）。
     pub engine: AcpEngine,
-    /// 会話の作業ディレクトリ（lane の repo dir）。
+    /// 会話の作業ディレクトリ（lane の repo dir、絶対 path）。
     pub cwd: String,
     /// registry 書き込みキー（repo 名）。
     pub repo: String,
@@ -107,735 +130,380 @@ pub struct AcpHostConfig {
     pub session_key: crate::lane::session_registry::SessionKey,
     /// 再開する ACP sessionId（doc 40 registry の `conversation`）。None = 新規 session。
     pub session_id: Option<String>,
+    /// session 確定後に `set_config_option` で当て直す `(config id, 値)` 列（registry の意図、
+    /// doc 88 §6）。agy は切り替えた値を `session/load` の後に保たない（実測）ので、spawn の
+    /// たびに戻す。engine 別の意図の形は pool が engine settings から組む（host は engine 非依存）。
+    pub config_intent: Vec<(String, String)>,
 }
 
-/// 送信済み request の種別（response 到着時の分岐）。
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum ReqKind {
-    Initialize,
-    SessionLoad,
-    SessionNew,
-    /// session/prompt — response 到着 = turn 終了（doc 42 §2 の response 駆動）。
-    Prompt,
-}
-
-/// reader task / host メソッドが共有する可変状態（std Mutex — await を跨がずに触る）。
-struct AcpState {
-    /// 確定した ACP sessionId（handshake 完了まで None）。
-    session_id: Option<String>,
-    /// turn 実行中か（true の submit は queue へ）。
-    turn_active: bool,
-    /// `session/load` の replay 列を捨てている最中か（load response で解除 — doc 42 §3）。
-    loading: bool,
-    /// session 未確定 or turn 実行中に来た submit の待ち行列。
-    queue: VecDeque<String>,
-    /// disk にまだ載っていない増分 + commit 世代（[`super::host`] と同契約）。
-    in_flight: InFlight,
-    child_pid: Option<u32>,
-    next_id: i64,
-    pending: HashMap<i64, ReqKind>,
-    /// 明示 stop 中か（途絶 Error の抑止）。
-    stopping: bool,
-    /// 途絶を観測したか。true の submit は Err（自己修復への配線 — doc 42 冒頭）。
-    dead: bool,
-    /// stderr の末尾数行（途絶 Error の診断材料 — auth 失効等の原因表示）。
-    stderr_tail: VecDeque<String>,
-}
-
-impl AcpState {
-    fn alloc(&mut self, kind: ReqKind) -> i64 {
-        self.next_id += 1;
-        self.pending.insert(self.next_id, kind);
-        self.next_id
+/// 起動の文脈（どの CLI を、どの引数・cwd・env で起動するか）。純関数。
+fn launch_context(config: &AcpHostConfig) -> LaunchContext {
+    LaunchContext {
+        program: PathBuf::from(config.engine.cli_path()),
+        args: config
+            .engine
+            .spawn_args()
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect(),
+        cwd: PathBuf::from(&config.cwd),
+        // identity env（doc 51 §1 A3b）: engine（とその shell tool の子）が `vp now` /
+        // wire で自分を名乗る口。tui の agent_spawner / claude host と同じ契約。
+        env: vec![
+            ("VP_REPO".to_string(), config.repo.clone()),
+            ("VP_LANE".to_string(), config.lane_label.clone()),
+            ("VP_SESSION_KEY".to_string(), config.session_key.to_string()),
+        ],
+        env_remove: crate::spawn_env::inherited_agent_host_env_to_strip(),
     }
 }
 
-struct AcpInner {
-    engine: AcpEngine,
-    event_tx: broadcast::Sender<ConversationEvent>,
-    repo: String,
-    lane: String,
-    cwd: String,
-    stdin: tokio::sync::Mutex<Option<ChildStdin>>,
-    state: Mutex<AcpState>,
-    child: Mutex<Option<Child>>,
-}
-
-impl AcpInner {
-    /// JSONL 1 行を書く（Err = 途絶。submit 経路は自己修復に繋ぐため握り潰さない）。
-    async fn write_line(&self, line: &str) -> std::io::Result<()> {
-        let mut guard = self.stdin.lock().await;
-        let Some(stdin) = guard.as_mut() else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "stdin が閉じています",
-            ));
-        };
-        let mut buf = line.as_bytes().to_vec();
-        buf.push(b'\n');
-        stdin.write_all(&buf).await?;
-        stdin.flush().await
-    }
-
-    /// reader task 内からの write（失敗は log のみ — 途絶は stdout close 検知に収束）。
-    async fn write_line_logged(&self, line: &str) {
-        if let Err(e) = self.write_line(line).await {
-            tracing::warn!(
-                "{} acp stdin write 失敗（途絶疑い）: {e}",
-                self.engine.name()
-            );
-        }
-    }
-
-    fn emit(&self, event: ConversationEvent) {
-        {
-            let mut st = self.state.lock().expect("acp state lock");
-            match &event {
-                ConversationEvent::MessageChunk { .. } | ConversationEvent::ThoughtChunk { .. } => {
-                    st.in_flight.tail.push(event.clone());
-                }
-                ConversationEvent::SessionInit { .. }
-                | ConversationEvent::TurnCompleted { .. }
-                | ConversationEvent::Error { .. }
-                | ConversationEvent::EngineExited { .. } => {
-                    st.in_flight.tail.clear();
-                    st.in_flight.seq = st.in_flight.seq.wrapping_add(1);
-                }
-                _ => {}
-            }
-        }
-        let _ = self.event_tx.send(event);
-    }
-
-    /// sessionId 確定（new/load の response）: registry 書き込み + SessionInit + queue 排出。
-    async fn adopt_session(&self, session_id: &str) {
-        {
-            let mut st = self.state.lock().expect("acp state lock");
-            st.session_id = Some(session_id.to_string());
-            st.loading = false;
-        }
-        // doc 40 §4: registry 直結（grok / opencode は registry-native — 旧 store が最初から無い）。
-        let (lane_label, key) = crate::lane::session_registry::parse_session_label(&self.lane);
-        if let Err(e) = crate::lane::session_registry::set_conversation(
-            &self.repo,
-            lane_label,
-            self.engine.name(),
-            key,
-            Some(session_id),
-        ) {
-            tracing::warn!(
-                "{} sessionId の registry 記録失敗（repo={}, lane={}）: {e}",
-                self.engine.name(),
-                self.repo,
-                self.lane
-            );
-        }
-        self.emit(ConversationEvent::SessionInit {
-            session_id: session_id.to_string(),
-            model: None,
-            permission_mode: None,
-            cwd: Some(self.cwd.clone()),
-            tools: Vec::new(),
-            mcp_servers: Vec::new(),
-            slash_commands: Vec::new(),
-            command_docs: Default::default(),
-        });
-        self.drain_queue().await;
-    }
-
-    /// queue の先頭を session/prompt として送る（session 確定済み && idle の時だけ）。
-    async fn drain_queue(&self) {
-        let line = {
-            let mut st = self.state.lock().expect("acp state lock");
-            if st.turn_active || st.session_id.is_none() || st.queue.is_empty() {
-                None
-            } else {
-                let prompt = st.queue.pop_front().expect("non-empty queue");
-                let session_id = st.session_id.clone().expect("session id");
-                st.turn_active = true;
-                let id = st.alloc(ReqKind::Prompt);
-                Some(build_prompt(id, &session_id, &prompt))
-            }
-        };
-        if let Some(line) = line {
-            self.write_line_logged(&line).await;
-        }
+/// permission の方針: 自動で許可する（bypass parity、doc 42 §2）。
+///
+/// 許可の option（`allow_once` → `allow_always`）を選ぶ。許可の option が無ければ先頭の option。
+///
+/// 手書きの host（`build_permission_allow`）との関係: 「無ければ先頭」は同じ（共有 crate の既定は
+/// 「無ければ取り消す」）。違いは 2 つ — 許可の option が複数ある時、手書きは**並びの先頭**の
+/// allow を選んでいたが、今は kind の順で狭い方（`allow_once`）を選ぶ。option が 1 つも無い時、
+/// 手書きは `optionId: null` の「選んだ」を返していたが、今は取り消す。
+fn auto_allow(request: &RequestPermissionRequest) -> PermissionDecision {
+    match agent_chat_acp::permission::allow(request) {
+        PermissionDecision::Cancelled => request
+            .options
+            .first()
+            .map_or(PermissionDecision::Cancelled, |option| {
+                PermissionDecision::Select(option.option_id.to_string())
+            }),
+        selected => selected,
     }
 }
 
-/// lane 単位の常駐 ACP host（gui、doc 42・43）。grok / opencode の 2 engine を
-/// [`AcpEngine`] パラメータ（cli_path / spawn_args / name）で共有する — host ロジックは
-/// engine 非依存。
+/// 共有 host への注入（会話の紐付け・永続・permission・設定の意図）。
+fn host_options(config: &AcpHostConfig) -> HostOptions {
+    let engine = config.engine;
+    let repo = config.repo.clone();
+    let lane = config.lane.clone();
+    HostOptions {
+        resume: config.session_id.clone(),
+        // load 空振り → 新規の会話（新 sessionId が registry を上書き）。手書きの host と同じ。
+        on_load_failed: LoadFallback::NewSession,
+        config_intent: config.config_intent.clone(),
+        permission: Arc::new(auto_allow),
+        // stderr は daemon の log に 1 行ずつ出す（auth の失効の前触れ、provider の接続失敗など、
+        // engine が生きたまま書く警告を拾う）。末尾は共有 host が持ち、終了の文に付く。
+        on_stderr: Arc::new(move |line| tracing::warn!("{} stderr: {line}", engine.name())),
+        // doc 40 §4: registry 直結（grok / opencode / agy は registry-native — 旧 store が最初から無い）。
+        on_session: Arc::new(move |session_id| {
+            let (lane_label, key) = crate::lane::session_registry::parse_session_label(&lane);
+            crate::lane::session_registry::set_conversation(
+                &repo,
+                lane_label,
+                engine.name(),
+                key,
+                Some(session_id),
+            )
+            .map(|_| ())
+            .map_err(|e| {
+                tracing::warn!(
+                    "{} sessionId の registry 記録失敗（repo={repo}, lane={lane}）: {e}",
+                    engine.name()
+                );
+                e.to_string()
+            })
+        }),
+        ..HostOptions::default()
+    }
+}
+
+/// lane 単位の常駐 ACP host（gui、doc 42・43・88）。grok / opencode / agy の 3 engine を
+/// [`AcpEngine`] パラメータ（cli_path / spawn_args / name）で共有する。
 pub struct AcpAgentHost {
-    inner: Arc<AcpInner>,
-    reader: Option<JoinHandle<()>>,
+    engine: AcpEngine,
+    /// log 用の名乗り（`repo=…, lane=…`）。
+    whom: String,
+    host: Arc<AcpClientHost>,
+    replay: ReplayRequester,
+    /// pump に渡す口（pump の起動時に 1 度だけ取り出す）。
+    port: Mutex<Option<ReplayPort>>,
 }
 
 impl AcpAgentHost {
     /// engine の ACP プロセス（grok = `grok agent --always-approve stdio` / opencode =
-    /// `opencode acp`）を起動し、handshake（initialize → session/load|new）を開始する。
-    /// 完了前の submit は queue に積まれ自動送出される。
+    /// `opencode acp` / agy = `agy acp --dangerously-skip-permissions`）を起動し、
+    /// handshake（initialize → session/load|new）を開始する。
+    /// 完了前の submit は queue に積まれ自動送出される。tokio の runtime の中で呼ぶ。
     pub fn spawn(config: AcpHostConfig) -> anyhow::Result<Self> {
         let engine = config.engine;
-        let mut cmd = tokio::process::Command::new(engine.cli_path());
-        for key in crate::spawn_env::inherited_agent_host_env_to_strip() {
-            cmd.env_remove(key);
-        }
-        cmd.args(engine.spawn_args())
-            .current_dir(&config.cwd)
-            // identity env（doc 51 §1 A3b）: engine（とその shell tool の子）が `vp now` /
-            // wire で自分を名乗る口。tui の agent_spawner / claude host と同じ契約。
-            .env("VP_REPO", &config.repo)
-            .env("VP_LANE", &config.lane_label)
-            .env("VP_SESSION_KEY", config.session_key.to_string())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("{} の起動に失敗: {e}", engine.name()))?;
-        let stdin = child.stdin.take();
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("{} の stdout が取れません", engine.name()))?;
-        let stderr = child.stderr.take();
-        let child_pid = child.id();
-
-        let (event_tx, _rx) = broadcast::channel::<ConversationEvent>(256);
-        let inner = Arc::new(AcpInner {
-            engine,
-            event_tx,
-            repo: config.repo,
-            lane: config.lane,
-            cwd: config.cwd,
-            stdin: tokio::sync::Mutex::new(stdin),
-            state: Mutex::new(AcpState {
-                session_id: None,
-                turn_active: false,
-                loading: false,
-                queue: VecDeque::new(),
-                in_flight: InFlight::default(),
-                child_pid,
-                next_id: 0,
-                pending: HashMap::new(),
-                stopping: false,
-                dead: false,
-                stderr_tail: VecDeque::new(),
-            }),
-            child: Mutex::new(Some(child)),
-        });
-        if let Some(stderr) = stderr {
-            let drain = inner.clone();
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if line.trim().is_empty() {
-                        continue;
-                    }
-                    tracing::warn!("{} stderr: {line}", drain.engine.name());
-                    let mut st = drain.state.lock().expect("acp state lock");
-                    if st.stderr_tail.len() >= 5 {
-                        st.stderr_tail.pop_front();
-                    }
-                    st.stderr_tail.push_back(line);
-                }
-            });
-        }
-        let resume_target = config.session_id;
+        let host = AcpClientHost::spawn(launch_context(&config), host_options(&config))
+            .map_err(|e| spawn_error(engine, e))?;
         tracing::info!(
-            "AcpAgentHost spawn（常駐 {} ACP、repo={}, lane={}, resume={:?}, pid={:?}）",
+            "AcpAgentHost spawn（常駐 {} ACP、repo={}, lane={}, resume={}）",
             engine.name(),
-            inner.repo,
-            inner.lane,
-            resume_target.as_deref().unwrap_or("new"),
-            child_pid
+            config.repo,
+            config.lane,
+            config.session_id.as_deref().unwrap_or("new"),
         );
-        let reader = tokio::spawn(run_reader(inner.clone(), stdout, resume_target));
-        Ok(Self {
-            inner,
-            reader: Some(reader),
-        })
+        Ok(Self::wrap(&config, host))
+    }
+
+    /// 接続の作り方を差し替えて起動する（テストが偽の agent をつなぐ）。
+    #[cfg(test)]
+    pub(crate) fn spawn_with<C: agent_chat_acp::Connector>(
+        config: AcpHostConfig,
+        connector: C,
+    ) -> anyhow::Result<Self> {
+        let engine = config.engine;
+        let host =
+            AcpClientHost::spawn_with(connector, PathBuf::from(&config.cwd), host_options(&config))
+                .map_err(|e| spawn_error(engine, e))?;
+        Ok(Self::wrap(&config, host))
+    }
+
+    fn wrap(config: &AcpHostConfig, host: AcpClientHost) -> Self {
+        let engine = config.engine;
+        let host = Arc::new(host);
+        let (replay, requests) = ReplayRequester::channel();
+        // log に「どの lane の engine か」を残す（同じ engine が複数の lane で動く）。
+        let whom = format!("repo={}, lane={}", config.repo, config.lane);
+        tokio::spawn(watch_exit(engine, whom.clone(), host.subscribe()));
+        Self {
+            engine,
+            whom,
+            replay,
+            port: Mutex::new(Some(ReplayPort {
+                source: Arc::new(AcpReplaySource(Arc::clone(&host))),
+                requests,
+            })),
+            host,
+        }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<ConversationEvent> {
-        self.inner.event_tx.subscribe()
+        self.host.subscribe()
     }
 
+    /// host が終了したか（process の終了、接続が切れた、会話を確定できなかった、[`Self::stop`]）。
+    ///
+    /// 終了した host は履歴も渡せず、発話も受けない。chat を開き直す時に pool がこれを見て作り直す。
+    /// 立て直し（[`Self::restart`]）の途中は false。
+    ///
+    /// `stop()` で止めた host でも true になるが、止めるのは slot を畳む時だけ
+    /// （[`super::engine::ChatEngineSlot`] の Drop が唯一の呼び手）なので、pool が見る slot に
+    /// 止めた host が残ることは無い。
+    pub fn exited(&self) -> bool {
+        self.host.is_finished()
+    }
+
+    /// pump に渡す履歴の口。1 度だけ取り出せる（2 度目は None）。
+    pub fn take_replay_port(&self) -> Option<ReplayPort> {
+        self.port
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
+    /// 履歴の配り直しを pump に頼む（chat を開いた時）。pump が居なければ false。
+    pub fn request_replay(&self) -> bool {
+        self.replay.request()
+    }
+
+    /// engine の設定面（roster の `acp_config` の供給源、doc 88 §6）。
+    pub fn config_view(&self) -> Option<AcpConfigView> {
+        self.host.config_view().map(Into::into)
+    }
+
+    /// user の設定切替の口（pool の lock を離してから応答を待つため、host の外へ clone して持ち出す）。
+    pub fn config_handle(&self) -> AcpConfigHandle {
+        AcpConfigHandle {
+            engine: self.engine,
+            host: Arc::clone(&self.host),
+        }
+    }
+
+    pub fn session_init(&self) -> Option<ConversationEvent> {
+        self.host.session_init()
+    }
+
+    /// transcript に載っていない増分。ACP engine は transcript を使わない（履歴は host の控えから
+    /// 配る）ので、常に空。読み手は Claude の transcript replay だけ。
     pub fn in_flight(&self) -> InFlight {
-        self.inner
-            .state
-            .lock()
-            .expect("acp state lock")
-            .in_flight
-            .clone()
+        InFlight::default()
     }
 
+    /// [`Self::in_flight`] の commit 世代。ACP engine では意味を持たない。
     pub fn commit_seq(&self) -> u64 {
-        self.inner
-            .state
-            .lock()
-            .expect("acp state lock")
-            .in_flight
-            .seq
+        0
     }
 
+    /// engine の process id（roster の `LaneInfo.pid`）。立て直しで替わり、engine が終了したら None。
     pub fn pid(&self) -> Option<u32> {
-        self.inner.state.lock().expect("acp state lock").child_pid
+        self.host.pid()
     }
 
     /// ユーザープロンプトを投入する（idle なら即 session/prompt、それ以外は queue）。
     /// 途絶時は Err（`ensure_and_submit_chat` の自己修復に繋ぐ — doc 42 冒頭）。
     pub async fn submit(&self, prompt: &str) -> anyhow::Result<()> {
-        let line = {
-            let mut st = self.inner.state.lock().expect("acp state lock");
-            if st.dead {
-                anyhow::bail!(
-                    "{} が終了しています（engine 再起動で復旧）",
-                    self.inner.engine.name()
-                );
-            }
-            if st.turn_active || st.session_id.is_none() {
-                st.queue.push_back(prompt.to_string());
-                None
-            } else {
-                let session_id = st.session_id.clone().expect("session id");
-                st.turn_active = true;
-                let id = st.alloc(ReqKind::Prompt);
-                Some(build_prompt(id, &session_id, prompt))
-            }
-        };
-        if let Some(line) = line
-            && let Err(e) = self.inner.write_line(&line).await
-        {
-            let mut st = self.inner.state.lock().expect("acp state lock");
-            st.dead = true;
-            st.turn_active = false;
-            anyhow::bail!("{} への送信に失敗（途絶）: {e}", self.inner.engine.name());
-        }
-        Ok(())
+        self.submit_with_images(prompt, &[]).await
+    }
+
+    /// 画像を添えて投入する（ACP の image content block、doc 88 §6）。画像を運べるかは
+    /// engine の能力（[`super::EngineKind::image_capable`]）で、呼び手（ChatHost）が gate する。
+    pub async fn submit_with_images(
+        &self,
+        prompt: &str,
+        images: &[ImageInput],
+    ) -> anyhow::Result<()> {
+        let images: Vec<PromptImage> = images
+            .iter()
+            .map(|image| PromptImage {
+                media_type: image.media_type.clone(),
+                data: image.data_base64.clone(),
+            })
+            .collect();
+        self.host.submit(prompt, &images).map_err(|e| {
+            anyhow::anyhow!(
+                "{} へ送れません（engine 再起動で復旧）: {e}",
+                self.engine.name()
+            )
+        })
     }
 
     /// 実行中 turn を中断する（`session/cancel` notification — プロセスは殺さない）。
     /// prompt response が stopReason=cancelled で返り、通常の完了経路で streaming が畳まれる。
     pub async fn interrupt(&self) -> anyhow::Result<()> {
-        let line = {
-            let mut st = self.inner.state.lock().expect("acp state lock");
-            st.queue.clear();
-            match (&st.session_id, st.turn_active) {
-                (Some(session_id), true) => Some(build_cancel(session_id)),
-                _ => None,
-            }
-        };
-        if let Some(line) = line {
-            self.inner.write_line_logged(&line).await;
-        }
+        self.host
+            .interrupt()
+            .map_err(|e| anyhow::anyhow!("{} を中断できません: {e}", self.engine.name()))
+    }
+
+    /// process を立て直して load し直す（agent-chat 設計書 01「呼び手の規則」）。
+    ///
+    /// 他の書き手（console）が会話を進めた後、次の発話の前に呼ぶための口。生きている engine が
+    /// 他の書き手の分を知っているかは engine による（実測: agy 1.5.11 は知らず、保存からも消える。
+    /// grok 1.0.89 は 1 回の測定で答えなかった。opencode 2.3.0 は知っていた — doc 88 §8.4）。
+    /// turn の最中は Err。
+    /// 成功したら履歴を配り直す。
+    ///
+    /// ⚠️ **呼び手は無い**。VP は console に切り替える時に chat の engine を止めるので
+    /// （`repo::lane::reconcile` の ①）、生きたまま他の書き手に進められる場面が無い（doc 88 §8.4）。
+    pub async fn restart(&self) -> Result<(), String> {
+        self.host.restart().await.map_err(|e| e.to_string())?;
+        self.replay.request();
         Ok(())
     }
 
-    /// 明示 teardown（[`super::engine::ChatEngineSlot`] Drop から呼ぶ）。
+    /// 明示 teardown（[`super::engine::ChatEngineSlot`] Drop から呼ぶ）。会話の確定や設定の当て直しを
+    /// 待っている最中でも、すぐに process を止める。先に積んであった発話は送らない。
     pub fn stop(&mut self) {
-        {
-            let mut st = self.inner.state.lock().expect("acp state lock");
-            st.stopping = true;
-            st.queue.clear();
-        }
-        if let Some(mut child) = self.inner.child.lock().expect("child lock").take() {
-            let _ = child.start_kill();
-        }
-        if let Some(reader) = self.reader.take() {
-            reader.abort();
-        }
-        tracing::info!(
-            "AcpAgentHost stop（repo={}, lane={}）",
-            self.inner.repo,
-            self.inner.lane
-        );
+        self.host.stop();
+        tracing::info!("AcpAgentHost stop（{}、{}）", self.engine.name(), self.whom);
     }
 }
 
-// =============================================================================
-// calculations — JSON-RPC line 組み立て（純関数、単体テスト対象）
-// =============================================================================
+/// 起動の失敗の文。共有 host の文（「engine を起動できません: …」）の中身だけを取り出して、
+/// engine の名前を 1 回だけ付ける。
+fn spawn_error(engine: AcpEngine, error: HostError) -> anyhow::Error {
+    let detail = match error {
+        HostError::Spawn(detail) => detail,
+        other => other.to_string(),
+    };
+    anyhow::anyhow!("{} を起動できません: {detail}", engine.name())
+}
 
-fn build_initialize(id: i64) -> String {
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": 1,
-            // fs capability は宣言しない（agent 自前の tool で読む — VP は console/chat 面のみ）。
-            "clientCapabilities": { "fs": { "readTextFile": false, "writeTextFile": false } },
+/// engine の終了の理由を daemon の log に残す。
+///
+/// 理由（stderr の末尾つき）は `EngineExited` の文にしか載らず、GUI はその文を出さない（「休眠」と
+/// だけ出る）。受け口だけを持つ（host を握らない）ので、host が落とされれば終わる。
+async fn watch_exit(
+    engine: AcpEngine,
+    whom: String,
+    mut events: broadcast::Receiver<ConversationEvent>,
+) {
+    loop {
+        match events.recv().await {
+            Ok(ConversationEvent::EngineExited { message }) => {
+                tracing::warn!("{} が終了しました（{whom}）: {message}", engine.name());
+                return;
+            }
+            Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+            Err(broadcast::error::RecvError::Closed) => return,
         }
-    })
-    .to_string()
+    }
 }
 
-fn build_session_new(id: i64, cwd: &str) -> String {
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": "session/new",
-        "params": { "cwd": cwd, "mcpServers": [] }
-    })
-    .to_string()
-}
+/// pump に渡す履歴の出どころ（共有 host の `attach()`）。
+struct AcpReplaySource(Arc<AcpClientHost>);
 
-fn build_session_load(id: i64, session_id: &str, cwd: &str) -> String {
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": "session/load",
-        "params": { "sessionId": session_id, "cwd": cwd, "mcpServers": [] }
-    })
-    .to_string()
-}
-
-fn build_prompt(id: i64, session_id: &str, prompt: &str) -> String {
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": "session/prompt",
-        "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": prompt }] }
-    })
-    .to_string()
-}
-
-fn build_cancel(session_id: &str) -> String {
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "session/cancel",
-        "params": { "sessionId": session_id }
-    })
-    .to_string()
-}
-
-/// `session/request_permission` への自動 allow 応答（doc 42 §2 — bypass parity）。
-/// allow 系 option（kind が "allow" 始まり）を優先、無ければ先頭 option。
-fn build_permission_allow(id: &serde_json::Value, params: &serde_json::Value) -> String {
-    let options = params
-        .get("options")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let chosen = options
-        .iter()
-        .find(|o| {
-            o.get("kind")
-                .and_then(|k| k.as_str())
-                .is_some_and(|k| k.starts_with("allow"))
+impl ReplaySource for AcpReplaySource {
+    fn attach(&self) -> AttachFuture {
+        let host = Arc::clone(&self.0);
+        Box::pin(async move {
+            let (history, rx) = host.attach().await.map_err(|e| e.to_string())?;
+            Ok(ReplayAttach {
+                events: history.events,
+                in_flight: history.in_flight,
+                truncated: history.truncated,
+                rx,
+            })
         })
-        .or_else(|| options.first());
-    let option_id = chosen
-        .and_then(|o| o.get("optionId"))
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "result": { "outcome": { "outcome": "selected", "optionId": option_id } }
-    })
-    .to_string()
-}
-
-fn error_message(err: &serde_json::Value) -> String {
-    err.get("message")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| err.to_string())
-}
-
-// =============================================================================
-// actions — reader loop（handshake 状態機械 + notification 配信）
-// =============================================================================
-
-async fn run_reader(
-    inner: Arc<AcpInner>,
-    stdout: tokio::process::ChildStdout,
-    resume_target: Option<String>,
-) {
-    let mut translator = AcpTranslator::new();
-    let mut lines = BufReader::new(stdout).lines();
-
-    let init_line = {
-        let mut st = inner.state.lock().expect("acp state lock");
-        let id = st.alloc(ReqKind::Initialize);
-        build_initialize(id)
-    };
-    inner.write_line_logged(&init_line).await;
-
-    while let Ok(Some(line)) = lines.next_line().await {
-        let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        // server → client request（id + method）: permission は自動 allow、他は未対応 error。
-        if let (Some(id), Some(method)) =
-            (msg.get("id"), msg.get("method").and_then(|m| m.as_str()))
-        {
-            let params = msg.get("params").cloned().unwrap_or_default();
-            if method == "session/request_permission" {
-                // 自動 allow（bypass parity）。grok は `--always-approve` と二段防御、opencode は
-                // この一段のみ（flag で来なくなるかは未実測 — doc 42 §6 / doc 43 §6）。
-                inner
-                    .write_line_logged(&build_permission_allow(id, &params))
-                    .await;
-            } else {
-                let resp = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": -32601, "message": "not supported by VP AcpAgentHost" }
-                });
-                inner.write_line_logged(&resp.to_string()).await;
-            }
-            continue;
-        }
-        // response
-        if let Some(id) = msg.get("id").and_then(|v| v.as_i64()) {
-            handle_response(&inner, id, &msg, &resume_target).await;
-            continue;
-        }
-        // notification
-        let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
-        if method == "session/update" {
-            // load 中の replay 列は捨てる（VP 自前 replay との二重化防止 — doc 42 §3）。
-            if inner.state.lock().expect("acp state lock").loading {
-                continue;
-            }
-            if let Some(update) = msg.pointer("/params/update") {
-                for event in translator.ingest(update) {
-                    inner.emit(event);
-                }
-            }
-        }
-        // `_x.ai/*` 拡張・その他の notification は無視（doc 42 §1 で会話成立を実測確認）。
     }
 
-    // stdout close = 途絶。dead を立てて submit を Err に倒す（自己修復への配線）。
-    let (stopping, stderr_tail) = {
-        let mut st = inner.state.lock().expect("acp state lock");
-        st.dead = true;
-        st.turn_active = false;
-        (
-            st.stopping,
-            st.stderr_tail
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
-    };
-    if !stopping {
-        tracing::warn!(
-            "{} 途絶（repo={}, lane={}）",
-            inner.engine.name(),
-            inner.repo,
-            inner.lane
-        );
-        let detail = if stderr_tail.is_empty() {
-            String::new()
-        } else {
-            format!("\n{stderr_tail}")
-        };
-        inner.emit(ConversationEvent::EngineExited {
-            message: format!(
-                "{} が休眠しました。次の送信で再開します。{detail}",
-                inner.engine.name()
-            ),
-        });
+    fn session_init(&self) -> Option<ConversationEvent> {
+        self.0.session_init()
     }
 }
 
-async fn handle_response(
-    inner: &Arc<AcpInner>,
-    id: i64,
-    msg: &serde_json::Value,
-    resume_target: &Option<String>,
-) {
-    let kind = {
-        let mut st = inner.state.lock().expect("acp state lock");
-        st.pending.remove(&id)
-    };
-    let Some(kind) = kind else {
-        return;
-    };
-    let error = msg.get("error").filter(|v| !v.is_null());
-    match kind {
-        ReqKind::Initialize => {
-            if let Some(err) = error {
-                inner.emit(ConversationEvent::Error {
-                    message: format!(
-                        "{} initialize 失敗: {}",
-                        inner.engine.name(),
-                        error_message(err)
-                    ),
-                });
-                return;
-            }
-            let line = {
-                let mut st = inner.state.lock().expect("acp state lock");
-                match resume_target {
-                    Some(sid) => {
-                        st.loading = true; // load の replay 列を捨てる窓を開く
-                        let id = st.alloc(ReqKind::SessionLoad);
-                        build_session_load(id, sid, &inner.cwd)
-                    }
-                    None => {
-                        let id = st.alloc(ReqKind::SessionNew);
-                        build_session_new(id, &inner.cwd)
-                    }
-                }
-            };
-            inner.write_line_logged(&line).await;
-        }
-        ReqKind::SessionLoad => {
-            if let Some(err) = error {
-                // load 空振り → new へ self-heal（新 sessionId が registry を上書き）。
-                tracing::warn!(
-                    "{} session/load 失敗 → session/new へ self-heal（repo={}, lane={}）: {}",
-                    inner.engine.name(),
-                    inner.repo,
-                    inner.lane,
-                    error_message(err)
-                );
-                let line = {
-                    let mut st = inner.state.lock().expect("acp state lock");
-                    st.loading = false;
-                    let id = st.alloc(ReqKind::SessionNew);
-                    build_session_new(id, &inner.cwd)
-                };
-                inner.write_line_logged(&line).await;
-                return;
-            }
-            // load 成功: sessionId は指名したものがそのまま有効。
-            if let Some(sid) = resume_target.as_deref() {
-                inner.adopt_session(sid).await;
-            }
-        }
-        ReqKind::SessionNew => {
-            if let Some(err) = error {
-                inner.emit(ConversationEvent::Error {
-                    message: format!(
-                        "{} session/new 失敗: {}",
-                        inner.engine.name(),
-                        error_message(err)
-                    ),
-                });
-                return;
-            }
-            if let Some(sid) = msg.pointer("/result/sessionId").and_then(|v| v.as_str()) {
-                inner.adopt_session(sid).await;
-            }
-        }
-        ReqKind::Prompt => {
-            // response 到着 = turn 終了（stopReason 問わず — cancelled も完了、doc 42 §2）。
-            let session_id = {
-                let mut st = inner.state.lock().expect("acp state lock");
-                st.turn_active = false;
-                st.session_id.clone().unwrap_or_default()
-            };
-            if let Some(err) = error {
-                inner.emit(ConversationEvent::Error {
-                    message: format!("{} turn 失敗: {}", inner.engine.name(), error_message(err)),
-                });
-            }
-            inner.emit(ConversationEvent::TurnCompleted {
-                session_id,
-                cost_usd: None,
-                context_tokens: None,
-                context_window: None,
-            });
-            inner.drain_queue().await;
-        }
+/// user の設定切替の口（[`AcpAgentHost::config_handle`]）。host を共有する薄い clone。
+///
+/// pool の lock を握ったまま engine の応答を待たないために、host から切り離して持ち出す。
+#[derive(Clone)]
+pub struct AcpConfigHandle {
+    engine: AcpEngine,
+    host: Arc<AcpClientHost>,
+}
+
+impl AcpConfigHandle {
+    /// `session/set_config_option` を送り、engine の応答まで待つ（上限は共有 host の
+    /// `config_timeout`、既定 15 秒）。
+    ///
+    /// 成功で configOptions（候補を含む全体）が更新され、それを返す（model を替えると他の軸の
+    /// 候補が変わるため、呼び手が意図を整えるのに使う）。engine が断った時は engine のエラー文を
+    /// 返し、roster の `acp_config.error` にも残る。応答が上限までに来なかった時は Err を返すだけで、
+    /// `acp_config.error` には残らない（手書きの host は残していた）。遅れて届いた応答は共有 host が
+    /// 設定面と意図に取り込む。永続（registry）は呼び手の仕事（engine 別の形）。
+    pub async fn set(&self, config_id: &str, value: &str) -> Result<Vec<AcpConfigOption>, String> {
+        self.host
+            .set_config(config_id, value)
+            .await
+            .map(|options| options.into_iter().map(Into::into).collect())
+            .map_err(|e| format!("{}: {e}", self.engine.name()))
     }
 }
+
+#[cfg(test)]
+pub(crate) mod testing;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// request line の形を doc 42 §1 の実測 wire に固定（ACP は jsonrpc field を含む）。
-    #[test]
-    fn request_lines_match_acp_wire_shapes() {
-        let init: serde_json::Value = serde_json::from_str(&build_initialize(1)).unwrap();
-        assert_eq!(
-            init["jsonrpc"], "2.0",
-            "ACP は jsonrpc field を含む（codex と違う）"
-        );
-        assert_eq!(init["method"], "initialize");
-        assert_eq!(init["params"]["protocolVersion"], 1);
-        assert_eq!(
-            init["params"]["clientCapabilities"]["fs"]["readTextFile"],
-            false
-        );
-
-        let new: serde_json::Value = serde_json::from_str(&build_session_new(2, "/w")).unwrap();
-        assert_eq!(new["method"], "session/new");
-        assert_eq!(new["params"]["cwd"], "/w");
-
-        let load: serde_json::Value =
-            serde_json::from_str(&build_session_load(3, "019f-abc", "/w")).unwrap();
-        assert_eq!(load["method"], "session/load");
-        assert_eq!(load["params"]["sessionId"], "019f-abc");
-
-        let prompt: serde_json::Value =
-            serde_json::from_str(&build_prompt(4, "019f-abc", "hi")).unwrap();
-        assert_eq!(prompt["method"], "session/prompt");
-        assert_eq!(prompt["params"]["prompt"][0]["type"], "text");
-        assert_eq!(prompt["params"]["prompt"][0]["text"], "hi");
-
-        let cancel: serde_json::Value = serde_json::from_str(&build_cancel("019f-abc")).unwrap();
-        assert_eq!(cancel["method"], "session/cancel");
-        assert!(
-            cancel.get("id").is_none(),
-            "cancel は notification（id なし）"
-        );
-    }
-
-    /// permission 自動 allow: allow 系 kind を優先、無ければ先頭。id は verbatim echo。
-    #[test]
-    fn permission_allow_picks_allow_kind_option() {
-        let params: serde_json::Value = serde_json::from_str(
-            r#"{"options":[{"optionId":"rej","kind":"reject_once"},{"optionId":"ok","kind":"allow_once"}]}"#,
-        )
-        .unwrap();
-        let resp: serde_json::Value =
-            serde_json::from_str(&build_permission_allow(&serde_json::json!(7), &params)).unwrap();
-        assert_eq!(resp["id"], 7);
-        assert_eq!(resp["result"]["outcome"]["outcome"], "selected");
-        assert_eq!(
-            resp["result"]["outcome"]["optionId"], "ok",
-            "allow 系を優先"
-        );
-
-        // allow 系が無い場合は先頭 option（防御的 — 実測では allow 系が常在）
-        let params2: serde_json::Value =
-            serde_json::from_str(r#"{"options":[{"optionId":"first","kind":"reject_once"}]}"#)
-                .unwrap();
-        let resp2: serde_json::Value =
-            serde_json::from_str(&build_permission_allow(&serde_json::json!(8), &params2)).unwrap();
-        assert_eq!(resp2["result"]["outcome"]["optionId"], "first");
-    }
-
-    /// JSONL 1 行 = 1 message（改行を含まない）。
-    #[test]
-    fn built_lines_are_single_line() {
-        for line in [
-            build_initialize(1),
-            build_session_new(2, "/w"),
-            build_session_load(3, "s", "/w"),
-            build_prompt(4, "s", "複数\n行"),
-            build_cancel("s"),
-        ] {
-            assert!(!line.contains('\n'), "JSONL 1 行: {line}");
+    fn config(engine: AcpEngine) -> AcpHostConfig {
+        AcpHostConfig {
+            engine,
+            cwd: "/tmp/vp-acp".into(),
+            repo: "vptest-acp".into(),
+            lane: "lead#2".into(),
+            lane_label: "lead".into(),
+            session_key: 2,
+            session_id: Some("sess-1".into()),
+            config_intent: vec![("model".into(), "gemini-3.8-flash".into())],
         }
     }
 
-    /// engine パラメタ化（doc 43 §2）: spawn 引数と名乗りが engine 別に切り替わる。
-    /// grok = `agent --always-approve stdio`（permission 二段防御）、opencode = `acp` のみ
-    /// （flag 注入なし — model は opencode config が SSOT）。名乗りは registry / ログ / エラー
-    /// 文言に載る agent 名（EngineKind::agent_name と一致）。
+    /// AcpEngine ごとに spawn_args / name が変わる（host 共有の engine 差分）。grok =
+    /// `agent --always-approve stdio`（二段防御）、opencode = `acp` のみ
+    /// （flag 注入なし — model は opencode config が SSOT）、agy = `acp --dangerously-skip-permissions`
+    /// （permission 二段防御）。名乗りは registry / ログ / エラー文言に載る agent 名（EngineKind::agent_name と一致）。
     #[test]
     fn acp_engine_spawn_args_and_name_are_engine_specific() {
         assert_eq!(
@@ -848,8 +516,11 @@ mod tests {
             &["acp"],
             "opencode は acp サブコマンドのみ（flag なし — doc 43 §3）"
         );
-        assert_eq!(AcpEngine::Grok.name(), "grok");
-        assert_eq!(AcpEngine::OpenCode.name(), "opencode");
+        assert_eq!(
+            AcpEngine::Agy.spawn_args(),
+            &["acp", "--dangerously-skip-permissions"],
+            "agy は acp サブコマンド + 二段防御 flag（doc 88 §2）"
+        );
         // agent 名（EngineKind）と registry / ログの名乗り（AcpEngine）が一致する不変条件。
         assert_eq!(
             AcpEngine::Grok.name(),
@@ -859,57 +530,556 @@ mod tests {
             AcpEngine::OpenCode.name(),
             super::super::EngineKind::OpenCode.agent_name()
         );
+        assert_eq!(
+            AcpEngine::Agy.name(),
+            super::super::EngineKind::Agy.agent_name()
+        );
     }
 
-    /// 実機 E2E: 本物の `grok agent stdio` と handshake → session/new → prompt →
-    /// TurnCompleted + registry 書き戻しまで。CI では走らない（grok CLI + auth +
-    /// トークン消費）— ローカルで `cargo test -p vantage-point --lib e2e_real_grok -- --ignored`。
+    /// 起動の文脈: 引数は engine の表、cwd は lane の dir、identity env は 3 つ。
+    /// `VP_LANE` は素の lane label（session label `lead#2` ではない）。
+    /// 落ちるべき壊し方: `VP_LANE` に `config.lane`（session label）を渡す。
+    #[test]
+    fn launch_context_carries_engine_args_cwd_and_identity_env() {
+        let launch = launch_context(&config(AcpEngine::Agy));
+        assert_eq!(launch.args, ["acp", "--dangerously-skip-permissions"]);
+        assert_eq!(launch.cwd, PathBuf::from("/tmp/vp-acp"));
+        assert_eq!(
+            launch.env,
+            [
+                ("VP_REPO".to_string(), "vptest-acp".to_string()),
+                ("VP_LANE".to_string(), "lead".to_string()),
+                ("VP_SESSION_KEY".to_string(), "2".to_string()),
+            ]
+        );
+    }
+
+    /// 注入: 再開する id、load に失敗したら新規、設定の意図。
+    /// 落ちるべき壊し方: `on_load_failed` を既定（`Fail`）のままにする — 消えた会話 id を持つ
+    /// session で chat が開けなくなる。
+    #[test]
+    fn host_options_resume_fall_back_to_new_session_and_carry_intent() {
+        let options = host_options(&config(AcpEngine::Agy));
+        assert_eq!(options.resume.as_deref(), Some("sess-1"));
+        assert_eq!(options.on_load_failed, LoadFallback::NewSession);
+        assert_eq!(
+            options.config_intent,
+            [("model".to_string(), "gemini-3.8-flash".to_string())]
+        );
+    }
+
+    fn permission_request(options: serde_json::Value) -> RequestPermissionRequest {
+        serde_json::from_value(serde_json::json!({
+            "sessionId": "s",
+            "toolCall": {"toolCallId": "t1"},
+            "options": options,
+        }))
+        .expect("permission の要求")
+    }
+
+    /// permission は自動で許可する。許可の option が無ければ先頭（手書きの host と同じ）。
+    /// 落ちるべき壊し方: 共有 crate の既定（`permission::allow`）をそのまま渡す — 許可の option を
+    /// 出さない engine で、tool の実行が取り消される。
+    #[test]
+    fn permission_policy_allows_and_falls_back_to_the_first_option() {
+        // 注入した方針そのものを呼ぶ（`auto_allow` を直接呼ぶと、注入を外した壊し方で落ちない）。
+        let policy = host_options(&config(AcpEngine::OpenCode)).permission;
+        assert_eq!(
+            policy(&permission_request(serde_json::json!([
+                {"optionId": "rej", "name": "No", "kind": "reject_once"},
+                {"optionId": "yes", "name": "Yes", "kind": "allow_once"},
+            ]))),
+            PermissionDecision::Select("yes".into())
+        );
+        assert_eq!(
+            policy(&permission_request(serde_json::json!([
+                {"optionId": "first", "name": "No", "kind": "reject_once"},
+            ]))),
+            PermissionDecision::Select("first".into())
+        );
+        assert_eq!(
+            policy(&permission_request(serde_json::json!([]))),
+            PermissionDecision::Cancelled
+        );
+    }
+
+    use super::testing::{FakeAgent, Script, agent_text, user_text};
+
+    fn fake_config(engine: AcpEngine, repo: &str, resume: Option<&str>) -> AcpHostConfig {
+        AcpHostConfig {
+            engine,
+            cwd: "/tmp/vp-acp".into(),
+            repo: repo.into(),
+            lane: "lead".into(),
+            lane_label: "lead".into(),
+            session_key: 1,
+            session_id: resume.map(str::to_string),
+            config_intent: Vec::new(),
+        }
+    }
+
+    /// opencode 2.3.0 が出す設定面の形（実測 2026-11-20、既定の model `lmstudio/…` の時:
+    /// model / effort / mode の 3 軸。model を `opencode/big-pickle` に替えると effort の軸が消えて
+    /// 2 軸になる — 軸の数は model による）。
+    fn opencode_like_config() -> Vec<serde_json::Value> {
+        serde_json::from_value(serde_json::json!([
+            {"id": "model", "name": "Model", "type": "select",
+             "currentValue": "lmstudio/qwen/qwen2.5-coder-14b",
+             "options": [{"value": "lmstudio/qwen/qwen2.5-coder-14b", "name": "Qwen"}]},
+            {"id": "effort", "name": "Effort", "type": "select", "currentValue": "default",
+             "options": [{"value": "low", "name": "low"}, {"value": "default", "name": "default"}]},
+            {"id": "mode", "name": "Mode", "type": "select", "currentValue": "build",
+             "options": [{"value": "build", "name": "build"}, {"value": "plan", "name": "plan"}]}
+        ]))
+        .unwrap()
+    }
+
+    /// `session/load` が流した過去の会話が、履歴の口（pump が読む）から出る。会話 id は registry に
+    /// 書かれ、engine が出した設定面は roster 用の view に載り、pid も読める。
+    /// 落ちるべき壊し方: 手書きの host のように load の流れを捨てる — `events` が空になる
+    /// （= console で進めた分が chat に出ない、の元の症状）。
     #[tokio::test]
-    #[ignore = "実機 grok CLI + auth が必要（ローカル E2E 専用）"]
-    async fn e2e_real_grok_acp_turn_roundtrip() {
+    async fn load_replay_reaches_the_replay_port_with_registry_config_and_pid() {
+        let _state = crate::test_env::state_dir_async().await;
+        let (agent, connector) = FakeAgent::new(Script {
+            replay: vec![user_text("前の発話"), agent_text("前の答え")],
+            config: opencode_like_config(),
+            ..Script::default()
+        });
+        let host = AcpAgentHost::spawn_with(
+            // opencode の会話 id は `ses_` + 英数字（registry が形式を検査する、doc 43 §1）。
+            fake_config(
+                AcpEngine::OpenCode,
+                "vptest-acp-load",
+                Some("ses_e097a9a7affeaFoxUCE8kUecOO"),
+            ),
+            connector,
+        )
+        .expect("起動");
+
+        let port = host.take_replay_port().expect("履歴の口");
+        assert!(host.take_replay_port().is_none(), "口は 1 度だけ取り出せる");
+        let attached = port.source.attach().await.expect("attach");
+        assert_eq!(
+            attached.events,
+            [
+                ConversationEvent::UserMessage {
+                    text: "前の発話".into()
+                },
+                ConversationEvent::MessageChunk {
+                    text: "前の答え".into()
+                },
+            ]
+        );
+        assert!(!attached.in_flight && !attached.truncated);
+        assert_eq!(agent.methods(), ["initialize", "session/load"]);
+
+        // roster の `acp_config`: grok / opencode が出す設定面も、agy と同じく載る。
+        let view = host.config_view().expect("設定面");
+        assert_eq!(
+            view.options
+                .iter()
+                .map(|o| (o.id.as_str(), o.current_value.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("model", "lmstudio/qwen/qwen2.5-coder-14b"),
+                ("effort", "default"),
+                ("mode", "build")
+            ]
+        );
+        assert_eq!(host.pid(), Some(4242));
+
+        let registry = crate::lane::session_registry::load("vptest-acp-load", "lead", "opencode");
+        assert_eq!(
+            registry.sessions[0].conversation.as_deref(),
+            Some("ses_e097a9a7affeaFoxUCE8kUecOO")
+        );
+    }
+
+    /// `session/load` に失敗したら新規の会話になり、新しい id が registry を上書きする
+    /// （手書きの host と同じ動き）。履歴は空で、変えた事実が `Notice` で出る。
+    /// 落ちるべき壊し方: `LoadFallback::Fail` のまま — attach が Err になり、chat が開けない。
+    #[tokio::test]
+    async fn failed_load_falls_back_to_a_new_session_and_overwrites_the_registry() {
+        let _state = crate::test_env::state_dir_async().await;
+        let (agent, connector) = FakeAgent::new(Script {
+            load_error: true,
+            ..Script::default()
+        });
+        let host = AcpAgentHost::spawn_with(
+            fake_config(AcpEngine::Grok, "vptest-acp-fallback", Some("gone")),
+            connector,
+        )
+        .expect("起動");
+        let mut events = host.subscribe();
+
+        let attached = host
+            .take_replay_port()
+            .expect("履歴の口")
+            .source
+            .attach()
+            .await
+            .expect("新規の会話で確定する");
+        assert!(attached.events.is_empty());
+        assert_eq!(
+            agent.methods(),
+            ["initialize", "session/load", "session/new"]
+        );
+        let registry = crate::lane::session_registry::load("vptest-acp-fallback", "lead", "grok");
+        assert_eq!(registry.sessions[0].conversation.as_deref(), Some("new-1"));
+        let notice = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+            .await
+            .expect("Notice")
+            .expect("broadcast");
+        assert!(
+            matches!(notice, ConversationEvent::Notice { .. }),
+            "{notice:?}"
+        );
+    }
+
+    /// engine が終了したら `exited()` が立つ（pool が chat を開き直す時に作り直す合図）。終了した
+    /// host は履歴を渡せない。
+    /// 落ちるべき壊し方: `exited()` が常に false を返す — 終了した host が slot に残り続け、開き直す
+    /// たびに履歴の取得が失敗する。
+    #[tokio::test]
+    async fn exited_is_raised_when_the_engine_goes_away() {
+        let _state = crate::test_env::state_dir_async().await;
+        let (agent, connector) = FakeAgent::new(Script::default());
+        let host = AcpAgentHost::spawn_with(
+            fake_config(AcpEngine::Grok, "vptest-acp-exit", None),
+            connector,
+        )
+        .expect("起動");
+        let port = host.take_replay_port().expect("履歴の口");
+        port.source.attach().await.expect("会話は確定する");
+        assert!(!host.exited());
+
+        agent.close();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !host.exited() {
+            assert!(tokio::time::Instant::now() < deadline, "exited が立たない");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(
+            port.source.attach().await.is_err(),
+            "終了した host は履歴を渡せない"
+        );
+    }
+
+    /// user の設定切替は engine に届き、返った設定面（VP の wire 型）に現在値が出る。
+    #[tokio::test]
+    async fn config_handle_switches_an_axis_and_returns_the_wire_view() {
+        let _state = crate::test_env::state_dir_async().await;
+        let (_agent, connector) = FakeAgent::new(Script {
+            config: opencode_like_config(),
+            ..Script::default()
+        });
+        let host = AcpAgentHost::spawn_with(
+            fake_config(AcpEngine::OpenCode, "vptest-acp-config", None),
+            connector,
+        )
+        .expect("起動");
+        let options = host
+            .config_handle()
+            .set("mode", "plan")
+            .await
+            .expect("切替");
+        let mode = options.iter().find(|o| o.id == "mode").expect("mode の軸");
+        assert_eq!(mode.current_value, "plan");
+        assert_eq!(
+            host.config_view()
+                .expect("設定面")
+                .options
+                .iter()
+                .find(|o| o.id == "mode")
+                .map(|o| o.current_value.clone())
+                .as_deref(),
+            Some("plan")
+        );
+    }
+
+    // ---- 実機 E2E（CI では走らない。実 CLI + auth + model の使用枠が要る）----
+    //
+    // engine ごとに 2 本（答えるだけの turn / file を 1 つ作らせる turn）。回し方（engine ごと、直列に）:
+    //   cargo test -p vantage-point --lib e2e_real_agy -- --ignored --nocapture --test-threads=1
+    // model を指定する（使用枠は model ごとに別）:
+    //   VP_AGY_E2E_MODEL=gemini-3.8-flash / VP_OPENCODE_E2E_MODEL=opencode/big-pickle
+
+    /// 実機 E2E で使う model（未設定 = engine の既定）。registry の意図と同じ経路
+    /// （spawn 後の当て直し）で当てる。
+    fn e2e_intent(var: &str) -> Vec<(String, String)> {
+        std::env::var(var)
+            .ok()
+            .filter(|model| !model.is_empty())
+            .map(|model| vec![("model".to_string(), model)])
+            .unwrap_or_default()
+    }
+
+    /// 新規 → 送信 → engine を止める → 同じ会話 id で立て直す → 履歴が engine から戻る。
+    ///
+    /// 2 回目の host は VP の `replay_log` を一切読まない（そもそも書いていない）。戻ってくる発話と
+    /// 答えは、engine の `session/load` が流したもの。
+    ///
+    /// `with_tool`: 発話で file を 1 つ作らせる。控えに `ToolCall` と `ToolCallUpdate` が同じ数だけ
+    /// 入ることを見る（engine によって load の流れの形が違う: agy / grok は結果まで入った
+    /// `tool_call` 1 件、opencode は `tool_call`（pending）+ `tool_call_update` の 2 段）。
+    async fn e2e_new_send_respawn_history(
+        engine: AcpEngine,
+        intent: Vec<(String, String)>,
+        with_tool: bool,
+    ) {
         let _state = crate::test_env::state_dir_async().await;
         let tmp = tempfile::tempdir().expect("tempdir");
-        let mut host = AcpAgentHost::spawn(AcpHostConfig {
-            engine: AcpEngine::Grok,
+        let repo = format!("vptest-acp-e2e-{}", engine.name());
+        let config = |resume: Option<String>| AcpHostConfig {
+            engine,
             cwd: tmp.path().to_string_lossy().into_owned(),
-            repo: "vptest-acp".into(),
-            lane: "root".into(),
-            lane_label: "root".into(),
+            repo: repo.clone(),
+            lane: "lead".into(),
+            lane_label: "lead".into(),
             session_key: 1,
-            session_id: None,
-        })
-        .expect("spawn grok agent stdio");
-        let mut rx = host.subscribe();
-        host.submit("Reply with exactly: pong-acp. Nothing else.")
-            .await
-            .expect("submit");
+            session_id: resume,
+            config_intent: intent.clone(),
+        };
 
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
-        let mut session_id = String::new();
-        let mut text = String::new();
+        // 1. 新規の会話で 1 turn。
+        let mut host = AcpAgentHost::spawn(config(None)).expect("spawn");
+        let mut rx = host.subscribe();
+        let prompt = if with_tool {
+            "Create a file named hello.txt containing the text hi in the current directory \
+             using your file tool, then reply with exactly: pong-acp"
+        } else {
+            "Reply with exactly: pong-acp. Nothing else."
+        };
+        host.submit(prompt).await.expect("submit");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
+        let mut answer = String::new();
         loop {
-            let ev = tokio::time::timeout_at(deadline, rx.recv())
+            let event = tokio::time::timeout_at(deadline, rx.recv())
                 .await
-                .expect("120s 以内に完了する")
+                .expect("180 秒以内に turn が終わる")
                 .expect("recv");
-            match ev {
-                ConversationEvent::SessionInit {
-                    session_id: sid, ..
-                } => session_id = sid,
-                ConversationEvent::MessageChunk { text: t } => text.push_str(&t),
+            match event {
+                ConversationEvent::MessageChunk { text } => answer.push_str(&text),
                 ConversationEvent::TurnCompleted { .. } => break,
                 ConversationEvent::Error { message } => panic!("engine error: {message}"),
+                ConversationEvent::EngineExited { message } => panic!("engine exited: {message}"),
                 _ => {}
             }
         }
-        assert!(!session_id.is_empty(), "SessionInit（ACP sessionId）を観測");
-        assert!(text.contains("pong-acp"), "answer: {text}");
-        let reg = crate::lane::session_registry::load("vptest-acp", "lead", "grok");
+        assert!(answer.contains("pong-acp"), "answer: {answer}");
+        let pid = host.pid();
+        assert!(pid.is_some(), "engine の pid が読める");
+        let axes: Vec<String> = host
+            .config_view()
+            .map(|view| view.options.into_iter().map(|o| o.id).collect())
+            .unwrap_or_default();
+        let session_id = crate::lane::session_registry::load(&repo, "lead", engine.name()).sessions
+            [0]
+        .conversation
+        .clone()
+        .expect("会話 id が registry に記録される（registry-native）");
+        host.stop();
+        drop(host);
+        // engine が会話を保存し終えるのを待つ（止めた直後の load で欠けないように）。
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // 2. 同じ会話 id で立て直す。履歴は engine から来る。
+        let mut host = AcpAgentHost::spawn(config(Some(session_id.clone()))).expect("respawn");
+        let attached = host
+            .take_replay_port()
+            .expect("履歴の口")
+            .source
+            .attach()
+            .await
+            .expect("attach");
+        let mut kinds = std::collections::BTreeMap::<&str, usize>::new();
+        let (mut said, mut answered) = (String::new(), String::new());
+        for event in &attached.events {
+            let kind = match event {
+                ConversationEvent::UserMessage { text } => {
+                    said.push_str(text);
+                    "UserMessage"
+                }
+                ConversationEvent::MessageChunk { text } => {
+                    answered.push_str(text);
+                    "MessageChunk"
+                }
+                ConversationEvent::ThoughtChunk { .. } => "ThoughtChunk",
+                ConversationEvent::ToolCall { .. } => "ToolCall",
+                ConversationEvent::ToolCallUpdate { .. } => "ToolCallUpdate",
+                _ => "other",
+            };
+            *kinds.entry(kind).or_default() += 1;
+        }
+        println!(
+            "E2E {}: pid {pid:?} → {:?} / 設定面の軸 {axes:?} / 立て直しの後の控え {kinds:?} / in_flight={} truncated={}",
+            engine.name(),
+            host.pid(),
+            attached.in_flight,
+            attached.truncated
+        );
+        assert!(said.contains("pong-acp"), "発話が履歴に戻る: {said}");
+        assert!(
+            answered.contains("pong-acp"),
+            "答えが履歴に戻る: {answered}"
+        );
+        assert!(!attached.in_flight);
+        if with_tool {
+            assert!(
+                tmp.path().join("hello.txt").exists(),
+                "tool が file を作った"
+            );
+            let calls = kinds.get("ToolCall").copied().unwrap_or(0);
+            let updates = kinds.get("ToolCallUpdate").copied().unwrap_or(0);
+            assert!(calls >= 1, "tool の呼び出しが履歴に戻る: {kinds:?}");
+            assert_eq!(calls, updates, "呼び出しと結果が対で戻る: {kinds:?}");
+        }
         assert_eq!(
-            reg.sessions[0].conversation.as_deref(),
+            crate::lane::session_registry::load(&repo, "lead", engine.name()).sessions[0]
+                .conversation
+                .as_deref(),
             Some(session_id.as_str()),
-            "sessionId が registry に記録される（registry-native）"
+            "load に成功した時は会話 id が変わらない"
         );
         host.stop();
+    }
+
+    /// engine を立て直した直後（会話の確定の前）に送った発話が、控えの末尾に入っている。
+    ///
+    /// `VP_AGY_E2E_MODEL` を指定して回す（設定の意図があると、確定の後に当て直しが走り、
+    /// 「控えを取る → その後で発話が送られる」順になる = 発話が画面から消えていた形）。
+    #[tokio::test]
+    #[ignore = "実機 agy CLI + auth が必要（ローカル E2E 専用）"]
+    async fn e2e_real_agy_prompt_right_after_respawn_is_in_history() {
+        let _state = crate::test_env::state_dir_async().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let intent = e2e_intent("VP_AGY_E2E_MODEL");
+        let config = |resume: Option<String>| AcpHostConfig {
+            engine: AcpEngine::Agy,
+            cwd: tmp.path().to_string_lossy().into_owned(),
+            repo: "vptest-acp-e2e-early".into(),
+            lane: "lead".into(),
+            lane_label: "lead".into(),
+            session_key: 1,
+            session_id: resume,
+            config_intent: intent.clone(),
+        };
+        async fn until_turn_end(rx: &mut broadcast::Receiver<ConversationEvent>) -> String {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
+            let mut answer = String::new();
+            loop {
+                match tokio::time::timeout_at(deadline, rx.recv())
+                    .await
+                    .expect("180 秒以内に turn が終わる")
+                    .expect("recv")
+                {
+                    ConversationEvent::MessageChunk { text } => answer.push_str(&text),
+                    ConversationEvent::TurnCompleted { .. } => return answer,
+                    ConversationEvent::Error { message } => panic!("engine error: {message}"),
+                    ConversationEvent::EngineExited { message } => {
+                        panic!("engine exited: {message}")
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // 1. 会話を作る。
+        let mut host = AcpAgentHost::spawn(config(None)).expect("spawn");
+        let mut rx = host.subscribe();
+        host.submit("Reply with exactly: pong-one. Nothing else.")
+            .await
+            .expect("submit");
+        assert!(until_turn_end(&mut rx).await.contains("pong-one"));
+        let session_id = crate::lane::session_registry::load("vptest-acp-e2e-early", "lead", "agy")
+            .sessions[0]
+            .conversation
+            .clone()
+            .expect("会話 id");
+        host.stop();
+        drop(host);
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // 2. 立て直して、確定を待たずに送る。
+        let mut host = AcpAgentHost::spawn(config(Some(session_id))).expect("respawn");
+        let mut rx = host.subscribe();
+        host.submit("Reply with exactly: pong-two. Nothing else.")
+            .await
+            .expect("submit");
+        let attached = host
+            .take_replay_port()
+            .expect("履歴の口")
+            .source
+            .attach()
+            .await
+            .expect("attach");
+        let users: Vec<&str> = attached
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                ConversationEvent::UserMessage { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        println!(
+            "E2E agy（開いた直後に送る）: 控えの発話 {} 件 / 末尾は発話か {} / in_flight={} / 設定の意図 {intent:?}",
+            users.len(),
+            matches!(
+                attached.events.last(),
+                Some(ConversationEvent::UserMessage { .. })
+            ),
+            attached.in_flight
+        );
+        assert_eq!(users.len(), 2, "前の発話と、今送った発話: {users:?}");
+        assert!(users[0].contains("pong-one") && users[1].contains("pong-two"));
+        assert!(
+            matches!(
+                attached.events.last(),
+                Some(ConversationEvent::UserMessage { text }) if text.contains("pong-two")
+            ),
+            "今送った発話が控えの末尾にある"
+        );
+        assert!(attached.in_flight, "これから turn が走る");
+        assert!(until_turn_end(&mut rx).await.contains("pong-two"));
+        host.stop();
+    }
+
+    #[tokio::test]
+    #[ignore = "実機 agy CLI + auth が必要（ローカル E2E 専用）"]
+    async fn e2e_real_agy_new_send_respawn_history() {
+        e2e_new_send_respawn_history(AcpEngine::Agy, e2e_intent("VP_AGY_E2E_MODEL"), false).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "実機 agy CLI + auth が必要（ローカル E2E 専用）"]
+    async fn e2e_real_agy_tool_turn_history() {
+        e2e_new_send_respawn_history(AcpEngine::Agy, e2e_intent("VP_AGY_E2E_MODEL"), true).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "実機 grok CLI + auth が必要（ローカル E2E 専用）"]
+    async fn e2e_real_grok_new_send_respawn_history() {
+        e2e_new_send_respawn_history(AcpEngine::Grok, Vec::new(), false).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "実機 grok CLI + auth が必要（ローカル E2E 専用）"]
+    async fn e2e_real_grok_tool_turn_history() {
+        e2e_new_send_respawn_history(AcpEngine::Grok, Vec::new(), true).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "実機 opencode CLI + 接続先が必要（ローカル E2E 専用）"]
+    async fn e2e_real_opencode_new_send_respawn_history() {
+        let intent = e2e_intent("VP_OPENCODE_E2E_MODEL");
+        e2e_new_send_respawn_history(AcpEngine::OpenCode, intent, false).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "実機 opencode CLI + 接続先が必要（ローカル E2E 専用）"]
+    async fn e2e_real_opencode_tool_turn_history() {
+        let intent = e2e_intent("VP_OPENCODE_E2E_MODEL");
+        e2e_new_send_respawn_history(AcpEngine::OpenCode, intent, true).await;
     }
 }

@@ -159,12 +159,31 @@ pub fn parse_debug_env() -> Option<DebugMode> {
         })
 }
 
+/// VP の code が出す log の target に、同じ詳細度を当てる directive。
+///
+/// `vantage_point` と、VP の process の中で動く共有 crate `agent_chat_acp`（ACP engine の host —
+/// `vendor/agent-chat`）。EnvFilter は、合う directive の無い target の event を出さない。
+/// 共有 crate を足し忘れると、その警告（`session/load` の失敗で新規の会話に替えた、未対応の要求を
+/// 断った、など）が daemon の log から消える — 手書きの host の時は `vantage_point` の target で
+/// 出ていたもの（2026-11-20 に host を共有 crate へ切り替えた時に見つけた）。
+/// 依存 crate（quinn / rustls 等）は含めない（chatty な log まで同じ詳細度に落とさない）。
+fn vp_log_directive(level: &str) -> String {
+    format!("vantage_point={level},agent_chat_acp={level}")
+}
+
+/// daemon の既定の filter: VP の運転記録（info）と、依存 crate の抑制。
+const DAEMON_DEFAULT_FILTER: &str = "vantage_point=info,agent_chat_acp=info,vp_app=info,\
+     hyper=warn,hyper_util=warn,reqwest=warn,h2=warn,\
+     tokio_tungstenite=warn,tungstenite=warn,\
+     quinn=warn,quinn_proto=warn,quinn_udp=warn,\
+     rustls=warn,rustls_post_quantum=warn";
+
 /// daemon の settings.kdl の `log-level` から filter の directive を導く。
 /// env と VANTAGE_DEBUG による上書きが無いときに使う。環境変数は変更しない。
 fn rust_log_from_settings(settings: &crate::settings_file::SettingsFile) -> Option<String> {
     settings
         .log_level_valid()
-        .map(|level| format!("vantage_point={}", level.to_ascii_lowercase()))
+        .map(|level| vp_log_directive(&level.to_ascii_lowercase()))
 }
 
 /// 起動するプロセスの用途。ログ出力先とは独立に既定の詳細度を選ぶ。
@@ -192,12 +211,12 @@ pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool, role: TracingRole) {
     // 明示された環境変数は読み取るだけ。VP_LOG による上書きも filter 内に閉じ、
     // ユーザーが設定した RUST_LOG は子プロセスにそのまま継承させる。
     let directive = std::env::var("VP_LOG")
-        .map(|level| format!("vantage_point={level}"))
+        .map(|level| vp_log_directive(&level))
         .or_else(|_| std::env::var("RUST_LOG"))
         .ok()
         .or_else(|| match debug_mode {
-            DebugMode::Simple => Some("vantage_point=info".to_owned()),
-            DebugMode::Detail => Some("vantage_point=debug".to_owned()),
+            DebugMode::Simple => Some(vp_log_directive("info")),
+            DebugMode::Detail => Some(vp_log_directive("debug")),
             DebugMode::None if role == TracingRole::Daemon => {
                 rust_log_from_settings(&crate::settings_file::SettingsFile::load())
             }
@@ -209,13 +228,7 @@ pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool, role: TracingRole) {
             tracing_subscriber::EnvFilter::new(match role {
                 TracingRole::Cli => "warn",
                 // daemon の運転記録と依存 crate の抑制は従来どおり。
-                TracingRole::Daemon => {
-                    "vantage_point=info,vp_app=info,\
-                     hyper=warn,hyper_util=warn,reqwest=warn,h2=warn,\
-                     tokio_tungstenite=warn,tungstenite=warn,\
-                     quinn=warn,quinn_proto=warn,quinn_udp=warn,\
-                     rustls=warn,rustls_post_quantum=warn"
-                }
+                TracingRole::Daemon => DAEMON_DEFAULT_FILTER,
             })
         });
 
@@ -380,11 +393,11 @@ mod log_level_tests {
 
     #[test]
     fn valid_level_becomes_crate_scoped_directive() {
-        // scope を `vantage_point=` に限るのは、依存 crate（quinn / rustls 等）の
-        // chatty log まで debug に落とさないため。
+        // scope を VP の code の target（`vantage_point` と共有 crate `agent_chat_acp`）に限るのは、
+        // 依存 crate（quinn / rustls 等）の chatty log まで debug に落とさないため。
         assert_eq!(
             rust_log_from_settings(&with_level("debug")).as_deref(),
-            Some("vantage_point=debug")
+            Some("vantage_point=debug,agent_chat_acp=debug")
         );
     }
 
@@ -394,7 +407,7 @@ mod log_level_tests {
         // 受理（log_level_valid）と正規化（ここ）を分けてある。
         assert_eq!(
             rust_log_from_settings(&with_level("DEBUG")).as_deref(),
-            Some("vantage_point=debug")
+            Some("vantage_point=debug,agent_chat_acp=debug")
         );
     }
 
@@ -411,9 +424,38 @@ mod log_level_tests {
         for level in ["trace", "debug", "info", "warn", "error"] {
             assert_eq!(
                 rust_log_from_settings(&with_level(level)).as_deref(),
-                Some(format!("vantage_point={level}").as_str()),
+                Some(format!("vantage_point={level},agent_chat_acp={level}").as_str()),
                 "level={level}"
             );
         }
+    }
+
+    /// ACP engine の host は共有 crate（target `agent_chat_acp`）の中で警告を出す。daemon の filter の
+    /// どの経路でも、その target が通る。
+    ///
+    /// 落ちるべき壊し方: directive を `vantage_point=…` だけにする（2026-11-20 までの形）—
+    /// EnvFilter は合う directive の無い target を出さないので、共有 crate の警告が log から消える。
+    #[test]
+    fn shared_acp_host_warnings_pass_every_daemon_filter() {
+        use tracing_subscriber::prelude::*;
+        // directive を実際の filter にして、共有 host の target の warn が通るかを訊く。
+        let enabled = |directive: &str| {
+            let filter = tracing_subscriber::EnvFilter::try_new(directive).expect("directive");
+            let subscriber = tracing_subscriber::registry().with(filter);
+            tracing::subscriber::with_default(
+                subscriber,
+                || tracing::enabled!(target: "agent_chat_acp::host", tracing::Level::WARN),
+            )
+        };
+        assert!(
+            !enabled("vantage_point=info"),
+            "この訊き方は、target の無い directive を見分ける"
+        );
+        assert!(enabled(DAEMON_DEFAULT_FILTER), "既定");
+        assert!(enabled(&vp_log_directive("warn")), "VP_LOG / VANTAGE_DEBUG");
+        assert!(
+            enabled(&rust_log_from_settings(&with_level("warn")).expect("directive")),
+            "settings.kdl"
+        );
     }
 }

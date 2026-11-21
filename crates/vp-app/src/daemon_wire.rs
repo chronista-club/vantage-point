@@ -362,6 +362,12 @@ pub struct LaneSessionEntryWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
     pub progress: Option<LaneProgressWire>,
+    /// ACP engine の設定面（engine が出した configOptions + 直近の失敗、doc 88 §6）。
+    /// 形は server の `AcpConfigView` が所有し vp-app は透過する（`settings` と同じ規律）。
+    /// 設定面を持たない session / 旧 server は欠落 → None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional, type = "unknown"))]
+    pub acp_config: Option<serde_json::Value>,
 }
 
 /// 会話本文を持たない sidebar 用の短い状態投影。
