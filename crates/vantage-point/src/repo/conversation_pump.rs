@@ -254,16 +254,13 @@ async fn deliver_replay(
     session_init: Option<ConversationEvent>,
     attached: Result<ReplayAttach, String>,
 ) -> Option<broadcast::Receiver<ConversationEvent>> {
-    let (batch, next) = match attached {
-        Ok(attached) => (
-            replay_batch(
-                session_init,
-                attached.events,
-                attached.in_flight,
-                attached.truncated,
-            ),
-            Some(attached.rx),
-        ),
+    let ReplayAttach {
+        events,
+        in_flight,
+        truncated,
+        rx,
+    } = match attached {
+        Ok(attached) => attached,
         Err(message) => {
             tracing::warn!(
                 "conversation replay: 履歴を取れません (lane={lane}#{session}): {message}"
@@ -271,7 +268,8 @@ async fn deliver_replay(
             return None;
         }
     };
-    let count = batch.len();
+    let batch = replay_batch(session_init, events, in_flight, truncated);
+    let batch_events = batch.len();
     let router = Arc::clone(topic_router);
     let target = lane.to_string();
     let delivery = tokio::spawn(async move {
@@ -291,9 +289,9 @@ async fn deliver_replay(
         );
     }
     tracing::info!(
-        "conversation replay（host の控え）: {count} events を配送 (lane={lane}#{session})"
+        "conversation replay（host の控え）: 配送 batch_events={batch_events} truncated={truncated} in_flight={in_flight} lane={lane}#{session}"
     );
-    next
+    Some(rx)
 }
 
 /// turn が終わっているのに進みの投影（sidebar の「作業中」）が作業中のままなら、終端に合わせる。
