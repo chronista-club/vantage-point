@@ -13,12 +13,54 @@
 //!      （method レベル drift 検出 = 文字列一致しない request は dead tool になる）
 //!   5. daemon-control の全 method は「KDL に記述」か「意図的な omission」のどちらかに属する
 //!      （doc 45 段 1 で追加。4 の逆方向 = 記述漏れの検出）
+//!   6. repo-proxy は明示した 2 method のみを公開し、実 dispatcher と引数の契約に一致する
 //!
 //! SSOT: crates/vantage-point/src/daemon/server.rs の register_channel(...) と各 match method。
 //! channel 名と daemon-control の method は source から抽出して突き合わせる（自動）。
 //! registry / events の method だけは小さく安定なので手動 const（コメント参照）。
 
 use unison::network::{ProtocolCache, SchemaRegistry};
+
+// mem_1ChFcDcS19UU6vAiWpq6x8: repo-proxy の公開面は明示した allowlist に限る。
+// repo の全 method は複製せず、この契約を変えるまで新 method も非公開のままにする。
+#[test]
+fn repo_proxy_exposes_only_mode_switch_and_lane_read() {
+    let reg = registry();
+    let channel = reg.channel("repo-proxy").expect("repo-proxy missing");
+    let names: std::collections::BTreeSet<_> =
+        channel.requests.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["lanes_list", "session_set_mode"].into());
+    let source = include_str!("../src/repo/unison_server.rs");
+    for request in &channel.requests {
+        assert!(source.contains(&format!("\"{}\" =>", request.name)));
+        let expected: &[(&str, &str)] = match request.name.as_str() {
+            "lanes_list" => &[("repo_path", "string")],
+            "session_set_mode" => &[
+                ("repo_path", "string"),
+                ("lane", "string"),
+                ("session", "int"),
+                ("mode", "string"),
+            ],
+            _ => unreachable!(),
+        };
+        assert_eq!(request.fields.len(), expected.len());
+        for (name, ty) in expected {
+            let field = request.fields.iter().find(|f| f.name == *name).unwrap();
+            assert_eq!(field.field_type_str, *ty);
+            assert!(field.required, "{}.{name} must be required", request.name);
+            match *name {
+                "repo_path" => assert_eq!(field.min_length, Some(1)),
+                "session" => {
+                    assert_eq!(field.min, Some(1));
+                    assert_eq!(field.max, Some(i64::from(u32::MAX)));
+                }
+                "mode" => assert_eq!(field.pattern.as_deref(), Some("^(tui|gui)$")),
+                _ => {}
+            }
+        }
+        assert_eq!(request.readonly, Some(request.name == "lanes_list"));
+    }
+}
 
 /// vp-daemon channel の wire protocol KDL（enable_discovery が配信する SSOT）。
 const VP_DAEMON_KDL: &str = include_str!("../schema/vp-daemon.kdl");
