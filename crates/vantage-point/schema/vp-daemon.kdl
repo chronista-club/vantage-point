@@ -25,19 +25,41 @@
 //   handshake なしの純 request/response ＝ 無改造 unison-mcp で即 round-trip 可能な channel を採用。
 // 2026-11-21 拡張: repo-proxy は最初の request の repo_path で暗黙 bind できる。
 //   subscribe を送らない unison-mcp からも利用可（対象 repo の起動は必要）。既存の
-//   subscribe 方式も維持する。公開は session_set_mode / lanes_list に限定する。
+//   subscribe 方式も維持する。公開は session_set_mode / lanes_list と chat session の作成・削除に限定する。
 // 2026-07-12 拡張: daemon-control の read-safe subset（hub/discover）を追加 — hub registry の
 //   nodes 一覧 + connected liveness（hub protocol v0.7.0）を MCP から照会可能にする。
 //   repos/* mutation は手で叩くと repos.kdl 状態を壊すため記述しない（registry と同じ方針）。
 
-protocol "vp-daemon" version="0.3.0" {
+protocol "vp-daemon" version="0.4.0" {
     namespace "club.chronista.vantage-point"
 
     // repo-proxy: channel ごとに最初の repo_path に固定し、repo dispatcher へ渡す。
-    // この 2 method だけを allowlist として tests/vp_daemon_kdl.rs で固定する。
+    // この 4 method だけを allowlist として tests/vp_daemon_kdl.rs で固定する。
     // 他の repo method は既定で非公開。追加する時に露出の判断と test を一緒に変更する。
     // handler のエラーは既存の response payload {error: string} で返る。
     channel "repo-proxy" from="client" lifetime="persistent" {
+        request "conversation_session_create" readonly=#false description="起動済み repo の lane に chat（gui）の session を作る。console の作成ではない。作成の操作そのものは engine を起動しない。発言時に起動するが、GUI が開いていると pane の attach や注視で発言前に起動することがある。agent 省略時は lane の agent を使い、focus 省略時は true（新 session に lane の注視を移す）。lane は lanes_list で確認する。subscribe は不要。" {
+            field "repo_path" type="string" required=#true min_length=1 description="対象 repo の絶対 path。最初の request で channel の宛先を固定する。"
+            field "lane" type="string" required=#true min_length=1 description="lane address（例 vantage-point/lane/lead）。lanes_list の address.repo/address.name でも指定できる。"
+            field "agent" type="string" pattern="^(claude|codex|grok|opencode|agy|vpcode)$" description="claude / codex / grok / opencode / agy / vpcode。省略時は lane の agent。shell など未対応の agent は、省略時に引き継いだ場合もエラー。"
+            field "focus" type="bool" default="true" description="true は新 session に lane の注視を移す。false は作成操作では元の注視先を保つが、GUI 側の操作で後から注視が移ることがある。省略時は true。"
+            returns "SessionCreateAck" {
+                field "status" type="string" required=#true description="成功時は ok。"
+                field "lane" type="string" required=#true description="指定した lane address。"
+                field "session" type="int" required=#true description="作成した session key。削除や表示切替ではこの値を指定する。"
+            }
+        }
+        request "conversation_session_remove" readonly=#false description="起動済み repo の lane から指定 session を閉じ、稼働中の engine / terminal も停止する。root session の削除と lane 不在は error を返す。既に無い session は status=absent、focused=null で冪等に成功する。通常は status=ok と削除後の focused key を返す。注視中の session を閉じると残りの先頭へ注視を移す。subscribe は不要。" {
+            field "repo_path" type="string" required=#true min_length=1 description="対象 repo の絶対 path。最初の request で channel の宛先を固定する。"
+            field "lane" type="string" required=#true min_length=1 description="lane address（例 vantage-point/lane/lead）。lanes_list の address.repo/address.name でも指定できる。"
+            field "session" type="int" required=#true min=1 max=4294967295 description="閉じる session key。作成応答の session または lanes_list の sessions.sessions[].key。sessions.root は削除できない。"
+            returns "SessionRemoveAck" {
+                field "status" type="string" required=#true description="削除時は ok、既に無い session は absent。"
+                field "lane" type="string" required=#true description="指定した lane address。"
+                field "session" type="int" required=#true description="削除を指定した session key。"
+                field "focused" type="json" required=#true description="ok 時は削除後の注視先 session key（1〜4294967295 の整数）。absent 時は null（注視先の不在を意味しない。現在の注視先は lanes_list で確認する）。"
+            }
+        }
         request "session_set_mode" readonly=#false description="指定 session の表示を console（tui）または chat（gui）に切り替える。対象 repo は起動済みであること。lane と session は lanes_list の address / sessions.sessions から選ぶ。切替は現在の engine や terminal の起動・停止を伴う。subscribe は不要。" {
             field "repo_path" type="string" required=#true min_length=1 description="対象 repo の絶対 path。最初の request で channel の宛先を固定する。"
             field "lane" type="string" required=#true description="lane address（例 vantage-point/lead）。lanes_list の address.repo と address.name を / で結ぶ。"
