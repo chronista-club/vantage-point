@@ -54,6 +54,8 @@ it('切替全体の完了まで待ち、補正と失敗を engine の現在値�
     expect(select('Effort').value).toBe('high')
     expect(win.document.body.textContent).not.toContain('切替結果を確認できません')
     expect(win.document.body.textContent).toContain('effort を xhigh → high に揃えました')
+    expect(win.document.querySelector('time')?.getAttribute('datetime')).toBe('1970-01-01T00:00:00.001Z')
+    expect(win.document.querySelector('time')?.textContent).toBe(new Date(1).toLocaleTimeString())
     change('Model','model-a')
     const failed = app.current()
     failed.error = 'engine rejected model'

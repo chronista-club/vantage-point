@@ -169,7 +169,7 @@ app の応答は互換のため `codex_config` event の形で届き、console �
 35 秒後に未着なら「切替結果を確認できません」と出し、遅れて同じ要求の ACK が来れば解除する。
 
 補正は engine 共通の `acp_config.notice`（文と発生時刻）に載せる。失敗は既存の `error` に載せ、
-いずれも host と同じ寿命の揮発状態。補正成功は「effort を xhigh → high に揃えました」と表示し、
+いずれも host と同じ寿命の揮発状態。補正成功は「effort を xhigh → high に揃えました」とローカル時刻を表示し、
 失敗時は最新の engine の現在値と失敗理由を表示する。model 適用後に effort が失敗しても model の成功を取り消さない。
 
 ### load / attach と外から変更された値
