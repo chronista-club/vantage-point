@@ -75,8 +75,8 @@ pub async fn daemon_repo_request_with_timeout(
             .request::<serde_json::Value, serde_json::Value>(method, &payload)
             .await
             .map_err(|e| anyhow::anyhow!("repo-proxy {} 失敗: {}", method, e))?;
-        // unison は専用 error frame を持たず、 server Err を成功フレームに {"error":..} で
-        // 詰めて返す（mcp.rs quic_call と同じ扱い）。 Err に変換する。
+        // 旧 server の成功フレームに入る {"error":..} も Err に変換する。
+        // Error frame は request() が理由を含む Err に変換する。
         if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
             bail!("daemon repo-proxy error ({}): {}", method, err);
         }

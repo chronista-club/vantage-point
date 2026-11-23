@@ -2,6 +2,8 @@
 
 # doc 45 — control plane transport の Unison 統一（HTTP route の棚卸し）
 
+> **追補**: repo-proxy の handshake 省略は末尾の「repo-proxy の暗黙 bind」を参照。
+
 > **status**: 段 1〜段 5 すべて着地（2026-07-22、§5.5）。残るは `/api/update/*` 7 本（優先度低）のみ。doc 44 P1（fold-in）の dogfood 中に
 > 「HTTP と Unison が二重化したままでは」という mako の指摘で顕在化した。
 > **doc 44 とは独立**（fold-in の後始末ではなく transport 層の設計判断）。
@@ -303,3 +305,56 @@ dev profile（`VP_PROFILE=dev` = 32100）は追わない — この agent は br
 見る相手は常に brew namespace の World。
 
 これで doc 45 は **段 1〜5 すべて着地**。残るは `/api/update/*` 7 本（優先度低）のみ。
+
+## repo-proxy の暗黙 bind（2026-11-21）
+
+関連: `mem_1ChFcDcS19UU6vAiWpq6x8`、`crates/vantage-point/src/daemon/server.rs`、
+`crates/vantage-point/schema/vp-daemon.kdl`、[実機確認手順](../guide/repo-proxy.md)。
+
+unison-mcp 2.2.1 は呼び出しごとに channel を開いて method を送るため、先行する
+`subscribe` を要求すると最初の request が捨てられ、応答が来ない。repo-proxy 専用の
+`handle_repo_proxy` で、最初の Request の `repo_path` を正規化して channel の宛先を決める。
+`subscribe` なら従来の `{status: "ok"}` を返して次を待つ。それ以外なら、その request を
+method / payload を変えず runtime dispatcher に渡し、元の ID / method で結果を応答する。
+
+暗黙 bind の `repo_path` は空でない文字列を必須とする。欠落・空文字・型不正は
+`{error: "repo-proxy: non-empty repo_path required on first request"}` を返し、handler を終える。
+明示 `subscribe` の入力解釈は従来どおり。非 Request は無視し、2 回目以降は最初の
+path_key を使う（後続 payload に別の `repo_path` があっても宛先は変わらない）。
+共有の subscribe helper と gui / gui-ingest / lanes の呼び出しは変更しない。
+
+payload の `repo_path` は残す。公開する session 操作は必要な field を個別に
+読み、`lanes_list` は payload を使わない。いずれも追加 key を拒否しないので、取り除く
+変換は不要。既存 method の引数解釈は repo dispatcher が引き続き所有する。
+
+KDL は protocol v0.4.0 とし、`session_set_mode`、`lanes_list`、
+`conversation_session_create`、`conversation_session_remove` の 4 method を公開する。
+repo の全 method を omission list に複製せず、この集合との完全一致と実 dispatcher の
+arm・引数制約を drift test で固定する。新しい repo method は既定で KDL に露出しない。
+公開を増やす時は allowlist と説明・テストを同じ変更で更新する。
+これは discovery の公開範囲であり、repo-proxy の認可リストではない。
+
+作成・削除の追加は `mem_1ChFgpJVBonF3gXXbZhwxs`。実装の正本は
+`crates/vantage-point/src/repo/conversation_ops.rs` と
+`crates/vantage-point/src/repo/lane/pool.rs`。
+作成は chat（gui）の Draft session を追加し、作成操作そのものは engine を起動しない。
+発言時に起動するが、GUI の pane attach や注視では発言前にも起動することがある
+（`crates/vantage-point/src/repo/conversation_replay.rs` の demand と focus handler）。
+`agent` 省略時は lane の agent、`focus` 省略時は true（新 session に注視を移す）。
+`focus: false` は作成操作では注視を保つが、GUI 側の操作で後から注視が移ることがある。
+削除は root を拒否し、既に無い session は `status: "absent", focused: null` で成功する。
+通常の削除は `status: "ok"` と削除後の focused key を返す。`focused` は key または null
+なので KDL では `json` とし、description で値域を明記する。
+console 作成と `conversation_session_focus` など他の method は引き続き公開しない。
+
+やってはいけないこと: 暗黙 bind を共通 subscribe helper に入れない。既存の購読 channel は
+最初の `subscribe` を待つという別の契約を持つ。また、channel の途中で repo_path を
+読み直して宛先を変えない。
+
+### Status log
+
+- 2026-11-21: repo-proxy の暗黙 bind と KDL の限定公開を追加。回帰テストは一時 loopback
+  server と空の runtime registry で routing / 応答を確認する。実際の session 切替は
+  merge 後の daemon 更新を伴う実機確認に分ける。
+- 2026-11-21: protocol v0.4.0 で chat session の作成・削除を discovery に追加。
+  handler は変更せず、4 method の完全一致・入出力の型と制約を drift test で固定する。

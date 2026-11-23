@@ -49,6 +49,7 @@ pub mod codex_rpc_translate;
 pub mod codex_settings;
 pub mod engine;
 pub mod event;
+pub mod grok_settings;
 pub mod host;
 pub mod jsonl_store;
 pub mod progress;

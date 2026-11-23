@@ -222,6 +222,7 @@ pub struct AcpAgentHost {
     /// log 用の名乗り（`repo=…, lane=…`）。
     whom: String,
     host: Arc<AcpClientHost>,
+    grok: Arc<super::grok_settings::GrokConfigState>,
     replay: ReplayRequester,
     /// pump に渡す口（pump の起動時に 1 度だけ取り出す）。
     port: Mutex<Option<ReplayPort>>,
@@ -266,15 +267,22 @@ impl AcpAgentHost {
         // log に「どの lane の engine か」を残す（同じ engine が複数の lane で動く）。
         let whom = format!("repo={}, lane={}", config.repo, config.lane);
         tokio::spawn(watch_exit(engine, whom.clone(), host.subscribe()));
+        let grok = Arc::default();
+        let handle = AcpConfigHandle {
+            engine,
+            host: Arc::clone(&host),
+            grok: Arc::clone(&grok),
+        };
         Self {
             engine,
             whom,
             replay,
             port: Mutex::new(Some(ReplayPort {
-                source: Arc::new(AcpReplaySource(Arc::clone(&host))),
+                source: Arc::new(AcpReplaySource(handle)),
                 requests,
             })),
             host,
+            grok,
         }
     }
 
@@ -309,7 +317,28 @@ impl AcpAgentHost {
 
     /// engine の設定面（roster の `acp_config` の供給源、doc 88 §6）。
     pub fn config_view(&self) -> Option<AcpConfigView> {
-        self.host.config_view().map(Into::into)
+        self.host.config_view().map(|v| {
+            let mut view = AcpConfigView::from(v);
+            if self.engine == AcpEngine::Grok {
+                let feedback = self.grok.feedback.lock().unwrap();
+                view.notice = feedback.notice.clone();
+                if feedback.error.is_some() {
+                    view.error.clone_from(&feedback.error);
+                }
+                drop(feedback);
+                if view.options.iter().any(|o| {
+                    o.id == "reasoning_effort"
+                        && !o.choices.iter().any(|c| c.value == o.current_value)
+                }) {
+                    let handle = self.config_handle();
+                    // roster を待たせずに観測時の正規化。結果は次の snapshot に載る。
+                    tokio::spawn(async move {
+                        let _ = handle.normalize_grok().await;
+                    });
+                }
+            }
+            view
+        })
     }
 
     /// user の設定切替の口（pool の lock を離してから応答を待つため、host の外へ clone して持ち出す）。
@@ -317,6 +346,7 @@ impl AcpAgentHost {
         AcpConfigHandle {
             engine: self.engine,
             host: Arc::clone(&self.host),
+            grok: Arc::clone(&self.grok),
         }
     }
 
@@ -432,13 +462,14 @@ async fn watch_exit(
 }
 
 /// pump に渡す履歴の出どころ（共有 host の `attach()`）。
-struct AcpReplaySource(Arc<AcpClientHost>);
+struct AcpReplaySource(AcpConfigHandle);
 
 impl ReplaySource for AcpReplaySource {
     fn attach(&self) -> AttachFuture {
-        let host = Arc::clone(&self.0);
+        let handle = self.0.clone();
         Box::pin(async move {
-            let (history, rx) = host.attach().await.map_err(|e| e.to_string())?;
+            let (history, rx) = handle.host.attach().await.map_err(|e| e.to_string())?;
+            let _ = handle.normalize_grok().await;
             Ok(ReplayAttach {
                 events: history.events,
                 in_flight: history.in_flight,
@@ -449,7 +480,7 @@ impl ReplaySource for AcpReplaySource {
     }
 
     fn session_init(&self) -> Option<ConversationEvent> {
-        self.0.session_init()
+        self.0.host.session_init()
     }
 }
 
@@ -460,9 +491,35 @@ impl ReplaySource for AcpReplaySource {
 pub struct AcpConfigHandle {
     engine: AcpEngine,
     host: Arc<AcpClientHost>,
+    grok: Arc<super::grok_settings::GrokConfigState>,
 }
 
 impl AcpConfigHandle {
+    pub(super) fn options(&self) -> Option<Vec<AcpConfigOption>> {
+        self.host
+            .config_view()
+            .map(|v| v.options.into_iter().map(Into::into).collect())
+    }
+
+    /// Grok の候補外 effort を一度だけそろえる。
+    pub(crate) async fn normalize_grok(&self) -> Result<(), String> {
+        if self.engine != AcpEngine::Grok {
+            return Ok(());
+        }
+        self.grok.normalize(self).await
+    }
+
+    /// Grok の model → effort の適用を host 単位で直列化する。
+    pub(crate) async fn apply_grok(
+        &self,
+        desired: &super::grok_settings::GrokSettings,
+    ) -> Result<(), String> {
+        if self.engine != AcpEngine::Grok {
+            return Err("grok 以外の host には適用できません".into());
+        }
+        self.grok.apply(self, desired).await
+    }
+
     /// `session/set_config_option` を送り、engine の応答まで待つ（上限は共有 host の
     /// `config_timeout`、既定 15 秒）。
     ///
@@ -616,6 +673,56 @@ mod tests {
             session_id: resume.map(str::to_string),
             config_intent: Vec::new(),
         }
+    }
+
+    // mem_1ChKFMEwUYWj5Qs6VLVkU4: 8×8 は Grok に弾かれたため、実測済みの 256×256 を使う。
+    fn red_image_256() -> ImageInput {
+        use base64::Engine as _;
+        let image = image::RgbImage::from_pixel(256, 256, image::Rgb([255, 0, 0]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image
+            .write_to(&mut png, image::ImageFormat::Png)
+            .expect("PNG");
+        ImageInput {
+            media_type: "image/png".into(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(png.into_inner()),
+        }
+    }
+
+    /// ChatHost の分岐から ACP の実際の要求まで画像を運ぶ。能力表だけ true にしても落ちる。
+    #[tokio::test]
+    async fn grok_chat_host_sends_image_content_block() {
+        let _state = crate::test_env::state_dir_async().await;
+        let (agent, connector) = FakeAgent::new(Script::default());
+        let adapter = AcpAgentHost::spawn_with(
+            fake_config(AcpEngine::Grok, "vptest-grok-image", None),
+            connector,
+        )
+        .expect("起動");
+        let mut host = super::super::ChatHost::Grok(adapter);
+        let image = red_image_256();
+        host.submit_with_images("Describe the image.", std::slice::from_ref(&image))
+            .await
+            .expect("送信");
+        agent.wait_for("session/prompt").await;
+        let prompt = agent
+            .log
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(method, _)| method == "session/prompt")
+            .expect("prompt")
+            .1["prompt"]
+            .clone();
+        host.stop();
+        assert_eq!(
+            prompt,
+            serde_json::json!([
+                {"type": "text", "text": "Describe the image."},
+                {"type": "image", "mimeType": "image/png", "data": image.data_base64}
+            ]),
+            "Grok へ text と image の両方を渡す"
+        );
     }
 
     /// opencode 2.3.0 が出す設定面の形（実測 2026-11-20、既定の model `lmstudio/…` の時:
@@ -1067,6 +1174,83 @@ mod tests {
     #[ignore = "実機 grok CLI + auth が必要（ローカル E2E 専用）"]
     async fn e2e_real_grok_tool_turn_history() {
         e2e_new_send_respawn_history(AcpEngine::Grok, Vec::new(), true).await;
+    }
+
+    /// VP の ChatHost → ACP adapter → 実 Grok で 256×256 の画像を読む（1 turn）。
+    /// VP_GROK_E2E_MODEL で model を指定できる。画像の色は prompt に含めない。
+    #[tokio::test]
+    #[ignore = "実機 grok CLI + auth + model の使用枠が必要（ローカル E2E 専用）"]
+    async fn e2e_real_grok_image_prompt() {
+        let _state = crate::test_env::state_dir_async().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = "vptest-grok-image-e2e";
+        let adapter = AcpAgentHost::spawn(AcpHostConfig {
+            engine: AcpEngine::Grok,
+            cwd: tmp.path().to_string_lossy().into_owned(),
+            repo: repo.into(),
+            lane: "lead".into(),
+            lane_label: "lead".into(),
+            session_key: 1,
+            session_id: None,
+            config_intent: e2e_intent("VP_GROK_E2E_MODEL"),
+        })
+        .expect("spawn");
+        let mut rx = adapter.subscribe();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            adapter
+                .take_replay_port()
+                .expect("履歴の口")
+                .source
+                .attach(),
+        )
+        .await
+        .expect("60 秒以内に会話が確定する")
+        .expect("attach");
+        let model = adapter
+            .config_view()
+            .expect("設定面")
+            .options
+            .into_iter()
+            .find(|option| option.id == "model")
+            .expect("model")
+            .current_value;
+        let session = crate::lane::session_registry::load(repo, "lead", "grok").sessions[0]
+            .conversation
+            .clone()
+            .expect("試験用の会話 id");
+        println!(
+            "Grok image E2E: model={model}, session={session}, cwd={:?}, image=256x256 PNG, turns=1",
+            tmp.path()
+        );
+        let mut host = super::super::ChatHost::Grok(adapter);
+        host.submit_with_images(
+            "What is the dominant color in this image? Reply with only one English word. Do not use tools.",
+            &[red_image_256()],
+        )
+        .await
+        .expect("submit");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
+        let mut answer = String::new();
+        loop {
+            let event = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("180 秒以内に turn が終わる")
+                .expect("recv");
+            match event {
+                ConversationEvent::MessageChunk { text } => answer.push_str(&text),
+                ConversationEvent::TurnCompleted { .. } => break,
+                ConversationEvent::Error { message } => panic!("engine error: {message}"),
+                ConversationEvent::EngineExited { message } => panic!("engine exited: {message}"),
+                _ => {}
+            }
+        }
+        host.stop();
+        assert_eq!(
+            answer.trim().trim_end_matches('.').to_ascii_lowercase(),
+            "red",
+            "画像の色を読めた: {answer}"
+        );
     }
 
     #[tokio::test]

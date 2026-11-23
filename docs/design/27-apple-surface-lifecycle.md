@@ -183,6 +183,36 @@ route し Response を correlation で返す。Unison の pending-map 機構で�
 - **実装順序**: ① L1 portless（単一 endpoint）→ ② **connection 共有**（N conn → 1 conn × N streams、概念
   不変の perf 勝ち筋・QUIC multiplex の回収）→ ③ **protocol 統一**（= S5、topic-addressed ask）。
 
+### 3.4.6 送信後の失敗と接続回復（2026-11-23）
+
+関連: `mem_1ChK5jmvVJTbLbZqvQawgk`。対象: `mcp.rs` / `mcp/rpc.rs`、
+`daemon/dialer.rs` / `daemon/hub_client.rs`。server の Error frame 移行に先行する client の契約。
+
+- MCP の process / link は、業務 `request()` を呼んだ後の失敗・内側/外側 timeout を
+  呼び手に返し、同じ request を自動再送しない。method の許可一覧は設けない。
+- QUIC 接続は再利用し、**stream は業務 call ごとに開く**。open_ack と repo-proxy の
+  subscribe 応答を受け取ってから業務 request を送る。接続の死活確認だけでは、正常な終了通知を
+  伴わない再起動で古い接続が生存中と見える場合を扱えないため。
+- connect / open_ack / subscribe の準備全体は **1試行1秒、最大2試行**。失敗・timeout は
+  業務 request の発行前なので、接続を作り直して準備を試せる。準備の期限は業務 request の
+  outer timeout と別であり、wire_recv 等の long-poll 待機を短縮しない。
+- 各 call が自分の stream を閉じる。準備の cancel / timeout にも所有ハンドルの drop で対処し、
+  接続は進行中の call が持つ間は切断しない。共有 stream の世代管理は不要。
+- federation の direct は毎回新しい接続を使う。dial / channel open の失敗だけを
+  `BeforeSend` として relay に回す。`request()` の失敗と旧 `{"error": ...}` の拒否は
+  `AfterSend` とし、別経路で再送しない。
+- 新しい Error frame は `request()` の Err として理由を返す。旧 server の success frame に
+  入る `{"error": ...}` も従来どおり Err として読み、混在期間を保つ。
+
+**保証の境界:** 準備が成功した直後に切断される競合までは排除できない。業務 request を
+発行した後の失敗は、未実行と断定せず理由を返す。接続の回復と、同じ要求の再送は別の契約とする。
+
+club-unison 2.3.0 の `is_connected()` は QUIC の `close_reason()` を読むが、channel の
+受信タスクの生死までは分からない。相手の Error frame と受信タスクの切断も両方 `Protocol` に
+変換されるため、文面で判定しない。upstream に必要な情報は、この区別と channel の生死、
+型を保った接続終了理由。正常終了を伴わない再起動については、loopback の別プロセスを終了し、
+同 port で起動した server へ最初の call が有界時間で届くことを検証する。実機の再起動確認は別途行う。
+
 ## 4. terminal = Unison stream channel（最後の holdout）
 
 terminal は単一 topic 空間の**唯一の raw WebSocket holdout**。vp-app の Lane terminal が

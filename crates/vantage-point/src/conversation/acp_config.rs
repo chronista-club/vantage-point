@@ -1,9 +1,9 @@
 //! ACP Session Config Options の wire 型（doc 88 §6）— engine が出す「切り替えられる軸と候補」。
 //!
 //! 解釈（`configOptions` → 型、当て直しの要否）は共有 crate `agent-chat-acp` の `config` が持つ
-//! （2026-11-20 に VP の純関数をそちらへ寄せた）。ここに残すのは **roster に載せる wire の型**だけ:
+//! （2026-11-20 に VP の純関数をそちらへ寄せた）。ここには **roster に載せる wire の型**と VP が補足する通知を置く:
 //! webview の型（`webview/src/generated/`）を ts-rs で生成するには、derive を型の定義に付ける必要が
-//! あり、他 crate の型には付けられない。形は crate の型と同じで、[`From`] で写す。
+//! あり、他 crate の型には付けられない。engine が返す形は crate の型と同じで、[`From`] で写す。通知は VP host が足す。
 //!
 //! 候補の表は**engine が正**（VP は固定の表を持たない）。roster（`LaneSessionView.acp_config`）で
 //! GUI に運び、engine 別の panel が並べる。engine 別の意図の形は [`super::agy_settings`]。
@@ -47,6 +47,19 @@ pub struct AcpConfigView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
     pub error: Option<String>,
+    /// 自動補正など、設定面に添える通知（VP host 内の揮発状態）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub notice: Option<AcpConfigNotice>,
+}
+
+/// engine 共通の設定通知。日時は通知を作った時だけ更新する。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
+pub struct AcpConfigNotice {
+    pub message: String,
+    #[cfg_attr(test, ts(type = "number"))]
+    pub occurred_at_ms: u64,
 }
 
 impl From<agent_chat_acp::AcpConfigChoice> for AcpConfigChoice {
@@ -75,6 +88,7 @@ impl From<agent_chat_acp::AcpConfigView> for AcpConfigView {
         Self {
             options: v.options.into_iter().map(Into::into).collect(),
             error: v.error,
+            notice: None,
         }
     }
 }

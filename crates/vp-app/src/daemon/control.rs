@@ -377,7 +377,7 @@ fn control_response_error(channel: &str, method: &str, resp: &serde_json::Value)
     rpc_error(resp)
 }
 
-/// Unison の error 慣習 (VP-163): 専用 error frame が無いので、daemon は失敗を
+/// 旧 daemon の error 慣習 (VP-163): Error frame への移行前は失敗を
 /// **成功 frame の `{"error": ...}`** で返す。transport 成功 = 処理成功ではないため、
 /// ここで拾わないと未知 method や validation 失敗が silent success になる
 /// (`daemon_repo_request` が同じ理由で同じ処理をしている)。

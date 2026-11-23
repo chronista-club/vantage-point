@@ -13,12 +13,110 @@
 //!      （method レベル drift 検出 = 文字列一致しない request は dead tool になる）
 //!   5. daemon-control の全 method は「KDL に記述」か「意図的な omission」のどちらかに属する
 //!      （doc 45 段 1 で追加。4 の逆方向 = 記述漏れの検出）
+//!   6. repo-proxy は明示した 4 method のみを公開し、実 dispatcher と入出力の契約に一致する
 //!
 //! SSOT: crates/vantage-point/src/daemon/server.rs の register_channel(...) と各 match method。
 //! channel 名と daemon-control の method は source から抽出して突き合わせる（自動）。
 //! registry / events の method だけは小さく安定なので手動 const（コメント参照）。
 
 use unison::network::{ProtocolCache, SchemaRegistry};
+
+// mem_1ChFgpJVBonF3gXXbZhwxs: repo-proxy の公開面は明示した allowlist に限る。
+// repo の全 method は複製せず、この契約を変えるまで新 method も非公開のままにする。
+#[test]
+fn repo_proxy_exposes_only_session_create_remove_mode_switch_and_lane_read() {
+    let reg = registry();
+    let channel = reg.channel("repo-proxy").expect("repo-proxy missing");
+    let names: std::collections::BTreeSet<_> =
+        channel.requests.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "conversation_session_create",
+            "conversation_session_remove",
+            "lanes_list",
+            "session_set_mode",
+        ]
+        .into()
+    );
+    assert_eq!(channel.requests.len(), names.len());
+    let source = include_str!("../src/repo/unison_server.rs");
+    for request in &channel.requests {
+        assert!(source.contains(&format!("\"{}\" =>", request.name)));
+        let expected: &[(&str, &str, bool)] = match request.name.as_str() {
+            "lanes_list" => &[("repo_path", "string", true)],
+            "session_set_mode" => &[
+                ("repo_path", "string", true),
+                ("lane", "string", true),
+                ("session", "int", true),
+                ("mode", "string", true),
+            ],
+            "conversation_session_create" => &[
+                ("repo_path", "string", true),
+                ("lane", "string", true),
+                ("agent", "string", false),
+                ("focus", "bool", false),
+            ],
+            "conversation_session_remove" => &[
+                ("repo_path", "string", true),
+                ("lane", "string", true),
+                ("session", "int", true),
+            ],
+            _ => unreachable!(),
+        };
+        assert_eq!(request.fields.len(), expected.len());
+        for (name, ty, required) in expected {
+            let field = request.fields.iter().find(|f| f.name == *name).unwrap();
+            assert_eq!(field.field_type_str, *ty);
+            assert_eq!(field.required, *required, "{}.{name}", request.name);
+            match *name {
+                "repo_path" => assert_eq!(field.min_length, Some(1)),
+                "session" => {
+                    assert_eq!(field.min, Some(1));
+                    assert_eq!(field.max, Some(i64::from(u32::MAX)));
+                }
+                "mode" => assert_eq!(field.pattern.as_deref(), Some("^(tui|gui)$")),
+                "agent" => assert_eq!(
+                    field.pattern.as_deref(),
+                    Some("^(claude|codex|grok|opencode|agy|vpcode)$")
+                ),
+                "focus" => assert_eq!(field.default_str.as_deref(), Some("true")),
+                "lane" if request.name.starts_with("conversation_session_") => {
+                    assert_eq!(field.min_length, Some(1));
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(request.readonly, Some(request.name == "lanes_list"));
+        let returns = request.returns.as_ref().expect("returns missing");
+        let expected_returns: &[(&str, &str)] = match request.name.as_str() {
+            "lanes_list" => &[("lanes", "json")],
+            "session_set_mode" => &[
+                ("status", "string"),
+                ("lane", "string"),
+                ("session", "int"),
+                ("mode", "string"),
+            ],
+            "conversation_session_create" => {
+                &[("status", "string"), ("lane", "string"), ("session", "int")]
+            }
+            // focused は session key または null。KDL の json で表す。
+            "conversation_session_remove" => &[
+                ("status", "string"),
+                ("lane", "string"),
+                ("session", "int"),
+                ("focused", "json"),
+            ],
+            _ => unreachable!(),
+        };
+        assert_eq!(returns.fields.len(), expected_returns.len());
+        for (name, ty) in expected_returns {
+            let field = returns.fields.iter().find(|f| f.name == *name).unwrap();
+            assert_eq!(field.field_type_str, *ty);
+            assert!(field.required, "{}.returns.{name}", request.name);
+        }
+    }
+}
 
 /// vp-daemon channel の wire protocol KDL（enable_discovery が配信する SSOT）。
 const VP_DAEMON_KDL: &str = include_str!("../schema/vp-daemon.kdl");

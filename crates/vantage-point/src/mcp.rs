@@ -33,6 +33,10 @@ mod canvas;
 mod editor;
 mod lane;
 mod layout;
+mod rpc;
+
+#[cfg(test)]
+mod no_resend_tests;
 
 /// Parameters for the restart tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -74,17 +78,18 @@ pub struct SelfLane {
 }
 
 impl SelfLane {
-    /// cwd から SelfLane を判定。
+    /// cwd（および未登録 cwd 時は `VP_REPO` / `VP_LANE` env）から SelfLane を判定。
     ///
     /// 1. cwd ancestors を walk して `.vp/lanes/<name>` pattern を探す
     ///    (= [`detect_repo_local_sub`] の純粋関数で test 可能)
     /// 2. 見つかり repo_root が config 登録済なら sub (parent = config 名)
-    /// 3. それ以外は main。自 repo 名を `registered_repo_name_for_cwd`
+    /// 3. それ以外は main。自 repo 名を `match_repo_name_for_path`
     ///    (config-only / repo 非依存) で解決。登録 repo なら `Some(name)` = canonical
-    ///    identity、未登録 cwd なら `None` = wire op fail-closed (誤 identity を送らない)。
-    /// 4. cwd / config 取得失敗 → root_repo=None (fail-closed)
+    ///    identity。
+    /// 4. cwd がどの登録 repo にも該当しない場合（Antigravity がプラグイン dir を cwd にして
+    ///    `vp mcp` を spawn した場合等）、`VP_REPO` env が登録 repo 名に一致すれば env から
+    ///    lead または sub (`VP_LANE`) を解決する。それ以外は `None` = fail-closed。
     pub fn detect() -> Self {
-        // identity 解決不能な main (cwd/config 取得失敗) → None で fail-closed
         let lead_unresolved = || SelfLane {
             lane_name: crate::repo::lane::ROOT_LANE_NAME.to_string(),
             sub_parent: None,
@@ -96,8 +101,20 @@ impl SelfLane {
         let Ok(config) = crate::config::Config::load() else {
             return lead_unresolved();
         };
-        // sub 判定: cwd が <repo>/.vp/lanes/<name> 配下、かつ repo が config 登録済
-        if let Some((sub_name, repo_root)) = detect_repo_local_sub(&cwd)
+        let env_repo = std::env::var("VP_REPO").ok();
+        let env_lane = std::env::var("VP_LANE").ok();
+        Self::detect_from(&cwd, &config, env_repo.as_deref(), env_lane.as_deref())
+    }
+
+    /// 純関数版 `detect`: `cwd` を優先し、未登録 cwd のときだけ `env_repo` / `env_lane` に fallback する。
+    pub fn detect_from(
+        cwd: &std::path::Path,
+        config: &crate::config::Config,
+        env_repo: Option<&str>,
+        env_lane: Option<&str>,
+    ) -> Self {
+        // 1. sub 判定: cwd が <repo>/.vp/lanes/<name> 配下、かつ repo が config 登録済
+        if let Some((sub_name, repo_root)) = detect_repo_local_sub(cwd)
             && let Some(p) = config
                 .repos
                 .iter()
@@ -109,15 +126,45 @@ impl SelfLane {
                 root_repo: None, // identity は sub_parent が持つ
             };
         }
-        // main: 自 repo 名を config-only で解決 (未登録 cwd は None = fail-closed)。
-        // cwd は上で取得済みのものを正規化して渡す (二重取得を避ける)。
+        // 2. main (cwd): 自 repo 名を config-only で解決
+        if let Some(repo) = crate::resolve::match_repo_name_for_path(
+            &crate::config::Config::normalize_path(cwd),
+            config,
+        ) {
+            return SelfLane {
+                lane_name: crate::repo::lane::ROOT_LANE_NAME.to_string(),
+                sub_parent: None,
+                root_repo: Some(repo),
+            };
+        }
+        // 3. env fallback: cwd がどの登録 repo にも該当しないとき、VP_REPO が config に登録されていれば採用
+        if let Some(repo_name) = env_repo.map(str::trim).filter(|s| !s.is_empty())
+            && let Some(p) = config.repos.iter().find(|p| p.name == repo_name)
+        {
+            let lane = env_lane
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(crate::repo::lane::ROOT_LANE_NAME);
+            if lane == crate::repo::lane::ROOT_LANE_NAME
+                || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&lane)
+            {
+                return SelfLane {
+                    lane_name: crate::repo::lane::ROOT_LANE_NAME.to_string(),
+                    sub_parent: None,
+                    root_repo: Some(p.name.clone()),
+                };
+            } else {
+                return SelfLane {
+                    lane_name: lane.to_string(),
+                    sub_parent: Some(p.name.clone()),
+                    root_repo: None,
+                };
+            }
+        }
         SelfLane {
             lane_name: crate::repo::lane::ROOT_LANE_NAME.to_string(),
             sub_parent: None,
-            root_repo: crate::resolve::match_repo_name_for_path(
-                &crate::config::Config::normalize_path(&cwd),
-                &config,
-            ),
+            root_repo: None,
         }
     }
 
@@ -174,20 +221,22 @@ fn detect_repo_local_sub(cwd: &std::path::Path) -> Option<(String, std::path::Pa
 }
 
 /// Unison QUIC で Process と通信する。
-/// process チャネルは lazy 接続し、persistent に保持。
+/// QUIC 接続は lazy に保持し、stream は call ごとに開く。
 /// Ruby / capture 等の未対応メソッドは HTTP フォールバック。
 pub struct VantageMcp {
+    #[cfg(test)]
+    test_quic_addr: Option<String>,
     /// HTTP クライアント（QUIC 未対応の API 用フォールバック）
     client: reqwest::Client,
     /// Process の HTTP ベース URL
     process_url: Arc<Mutex<String>>,
     /// Process の HTTP ポート番号（QUIC = port + QUIC_PORT_OFFSET）
     process_port: Arc<Mutex<u16>>,
-    /// Unison "repo-proxy" チャネル（lazy 接続、canvas 操作も含む）
-    process_channel: Arc<Mutex<Option<Arc<unison::network::channel::UnisonChannel>>>>,
-    /// Unison "link" チャネル（doc 86、lazy 接続）。daemon 直結で repo-proxy の handshake は要らない
+    /// Unison "repo-proxy" の接続（stream は call ごと、canvas 操作も含む）
+    process_connection: Arc<Mutex<rpc::ConnectionCache>>,
+    /// Unison "link" の接続（doc 86、stream は call ごと）。repo-proxy の handshake は要らない
     /// — editor_* は repo ではなく「面」に届くもので、この MCP がどの repo の lane に居るかと無関係。
-    link_channel: Arc<Mutex<Option<Arc<unison::network::channel::UnisonChannel>>>>,
+    link_connection: Arc<Mutex<rpc::ConnectionCache>>,
     /// L0 SP-portless: この MCP が操作対象とする repo の path（Daemon "repo-proxy" の
     /// handshake に渡す stable な repo 識別子）。 port と違い reshuffle で揺れない。
     repo_path: Arc<String>,
@@ -199,11 +248,13 @@ pub struct VantageMcp {
 impl Clone for VantageMcp {
     fn clone(&self) -> Self {
         Self {
+            #[cfg(test)]
+            test_quic_addr: self.test_quic_addr.clone(),
             client: self.client.clone(),
             process_url: self.process_url.clone(),
             process_port: self.process_port.clone(),
-            process_channel: self.process_channel.clone(),
-            link_channel: self.link_channel.clone(),
+            process_connection: self.process_connection.clone(),
+            link_connection: self.link_connection.clone(),
             repo_path: self.repo_path.clone(),
             self_lane: self.self_lane.clone(),
             tool_router: Self::tool_router()
@@ -220,11 +271,13 @@ impl Clone for VantageMcp {
 impl VantageMcp {
     pub fn new(process_port: u16, repo_path: String) -> Self {
         Self {
+            #[cfg(test)]
+            test_quic_addr: None,
             client: reqwest::Client::new(),
             process_url: Arc::new(Mutex::new(format!("http://[::1]:{}", process_port))),
             process_port: Arc::new(Mutex::new(process_port)),
-            process_channel: Arc::new(Mutex::new(None)),
-            link_channel: Arc::new(Mutex::new(None)),
+            process_connection: Arc::new(Mutex::new(rpc::ConnectionCache::default())),
+            link_connection: Arc::new(Mutex::new(rpc::ConnectionCache::default())),
             repo_path: Arc::new(repo_path),
             self_lane: SelfLane::detect(),
             tool_router: Self::tool_router()
@@ -238,58 +291,27 @@ impl VantageMcp {
 
     /// Unison QUIC チャネルを取得（lazy 接続）
     ///
-    /// チャネルが未接続または切断済みの場合、新規接続して返す。
-    async fn get_quic_channel(
-        &self,
-        channel_slot: &Arc<Mutex<Option<Arc<unison::network::channel::UnisonChannel>>>>,
-        _channel_name: &str,
-    ) -> Result<Arc<unison::network::channel::UnisonChannel>, McpError> {
-        let mut guard = channel_slot.lock().await;
-
-        // 既存チャネルがあれば再利用
-        if let Some(ch) = guard.as_ref() {
-            return Ok(Arc::clone(ch));
-        }
-
-        // L0 SP-portless: repo 直結 (process_port) ではなく Daemon :32000 の "repo-proxy"
-        // channel に繋ぐ。 daemon が repo_path から repo の "control" channel を逆引きして
-        // process method を forward する (reverse-routing)。 daemon は常駐 daemon で port は
-        // 固定なので、 旧来の stale-port self-heal は不要。
-        let client = connect_quic(&quic_addr(crate::cli::daemon_port())).await?;
-        // unison 内部の request timeout は default 30s。 outer timeout (wire_recv 等で
-        // server_timeout + buffer = 最大 35s) より長く取らないと unison 側が先に発火するので
-        // 60s に引き上げる (VP-163)。
-        let channel = Arc::new(
-            client
-                .open_channel("repo-proxy")
-                .await
-                .map_err(|e| {
-                    McpError::internal_error(
-                        format!("Unison repo-proxy channel error: {}", e),
-                        None,
-                    )
-                })?
-                .with_request_timeout(std::time::Duration::from_secs(60)),
-        );
-
-        // handshake: repo_path を渡す (daemon が path_key に正規化して control channel を逆引き)。
-        channel
-            .request::<serde_json::Value, serde_json::Value>(
-                "subscribe",
-                &serde_json::json!({ "repo_path": self.repo_path.as_str() }),
+    /// 新しい stream の open/subscribe が失敗した場合、業務送信前に接続を張り直す。
+    async fn get_quic_channel(&self) -> Result<rpc::Channel, McpError> {
+        let addr = quic_addr(crate::cli::daemon_port());
+        #[cfg(test)]
+        let addr = self.test_quic_addr.clone().unwrap_or(addr);
+        // wire_recv の outer timeout（最大 35s）より内部 timeout を長く取る。
+        self.process_connection
+            .lock()
+            .await
+            .get(
+                &addr,
+                "repo-proxy",
+                &self.repo_path,
+                Duration::from_secs(60),
             )
             .await
-            .map_err(|e| {
-                McpError::internal_error(format!("repo-proxy handshake error: {}", e), None)
-            })?;
-
-        *guard = Some(Arc::clone(&channel));
-        Ok(channel)
     }
 
     /// Unison QUIC の "process" チャネルでメソッドを呼び出す（outer timeout = 5s）
     ///
-    /// 接続失敗 / タイムアウト時はチャネルをリセットして1回リトライする。
+    /// 送信後の失敗は理由を返し、同じ request を送り直さない。
     async fn quic_call(
         &self,
         method: &str,
@@ -301,15 +323,9 @@ impl VantageMcp {
 
     /// Unison QUIC の "process" チャネル呼び出し（outer timeout 指定可）
     ///
-    /// `wire_recv` のように **server 側が長時間ブロックする** method では、 outer timeout を
-    /// server 側 timeout より長く取らないと client が先に諦め、 チャネルを reset → 空振り
-    /// リトライ → 同一 thread の recv 二重発火 → msg ロスにつながる (VP-163)。 そういう
-    /// method は呼び出し側で `server_timeout + buffer` を渡すこと。
-    ///
-    /// また、 server ハンドラが `Err(e)` を返した場合、 unison は専用 error frame を持たない
-    /// ため `unison_server.rs` の dispatch loop が **成功フレームに `{"error": "<msg>"}` を詰めて**
-    /// 返してくる。 これをそのまま素通しすると 呼び出し側が「成功」と誤報するので (VP-163)、
-    /// その形のレスポンスは `McpError` に変換する。
+    /// `wire_recv` のような long-poll では `server_timeout + buffer` を指定する。
+    /// timeout / request error は成否不明なので再送せず、次回用の stream を開き直す。
+    /// 旧 server の success frame に入った `{"error": "<msg>"}` も Err に変換する。
     async fn quic_call_with_timeout(
         &self,
         method: &str,
@@ -331,72 +347,8 @@ impl VantageMcp {
             .with_data(payload.clone()),
         );
 
-        let channel = self
-            .get_quic_channel(&self.process_channel, "process")
-            .await?;
-
-        // タイムアウト付きリクエスト（Process 再起動時のハング防止）
-        let result = tokio::time::timeout(
-            timeout,
-            channel.request::<serde_json::Value, serde_json::Value>(method, &payload),
-        )
-        .await;
-
-        let resp = match result {
-            Ok(Ok(resp)) => resp,
-            Ok(Err(e)) => {
-                // チャネルエラー: リセットしてリトライ
-                tracing::warn!("QUIC process.{} failed, retrying: {}", method, e);
-                *self.process_channel.lock().await = None;
-
-                let channel = self
-                    .get_quic_channel(&self.process_channel, "process")
-                    .await?;
-                tokio::time::timeout(
-                    timeout,
-                    channel.request::<serde_json::Value, serde_json::Value>(method, &payload),
-                )
-                .await
-                .map_err(|_| {
-                    McpError::internal_error(
-                        format!("QUIC process.{} retry timed out", method),
-                        None,
-                    )
-                })?
-                .map_err(|e| {
-                    McpError::internal_error(
-                        format!("QUIC process.{} retry failed: {}", method, e),
-                        None,
-                    )
-                })?
-            }
-            Err(_) => {
-                // タイムアウト: 古い接続をリセットしてリトライ
-                tracing::warn!("QUIC process.{} timed out, resetting channel", method);
-                *self.process_channel.lock().await = None;
-
-                let channel = self
-                    .get_quic_channel(&self.process_channel, "process")
-                    .await?;
-                tokio::time::timeout(
-                    timeout,
-                    channel.request::<serde_json::Value, serde_json::Value>(method, &payload),
-                )
-                .await
-                .map_err(|_| {
-                    McpError::internal_error(
-                        format!("QUIC process.{} retry timed out", method),
-                        None,
-                    )
-                })?
-                .map_err(|e| {
-                    McpError::internal_error(
-                        format!("QUIC process.{} retry failed: {}", method, e),
-                        None,
-                    )
-                })?
-            }
-        };
+        let channel = self.get_quic_channel().await?;
+        let resp = rpc::request_once(channel, "process", method, &payload, timeout).await?;
 
         // server ハンドラの Err は `{"error": "<msg>"}` の単一キー object で返ってくる (VP-163)
         if let Some(err_msg) = rpc_response_error(&resp) {
@@ -523,7 +475,7 @@ impl VantageMcp {
                 })?;
 
         // QUIC チャネルをリセットして再接続を強制（新 repo に張り直す）
-        *self.process_channel.lock().await = None;
+        *self.process_connection.lock().await = rpc::ConnectionCache::default();
 
         Ok(CallToolResult::success(vec![
             rmcp::model::ContentBlock::text(format!(
@@ -658,12 +610,26 @@ impl rmcp::ServerHandler for VantageMcp {
 /// sub context のとき parent repo の path を config から引く（VP-165 (A)）。
 ///
 /// main context（`sub_parent = None`）or parent が config に無い なら `None`。
+#[cfg(test)]
 fn sub_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -> Option<String> {
     let parent_name = self_lane.sub_parent.as_ref()?;
     config
         .repos
         .iter()
         .find(|p| &p.name == parent_name)
+        .map(|p| p.path.clone())
+}
+
+/// SelfLane（sub の `sub_parent` または lead の `root_repo`）が指す登録 repo の path を config から引く。
+fn target_repo_path(self_lane: &SelfLane, config: &crate::config::Config) -> Option<String> {
+    let repo_name = self_lane
+        .sub_parent
+        .as_ref()
+        .or(self_lane.root_repo.as_ref())?;
+    config
+        .repos
+        .iter()
+        .find(|p| &p.name == repo_name)
         .map(|p| p.path.clone())
 }
 
@@ -676,10 +642,7 @@ fn sub_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -> Opti
 /// 優先度:
 /// 1. 明示的なポート引数（Some で指定された場合）
 /// 2. discovery:
-///    - sub context（cwd = `vp_data_dir()/lanes/<parent>-<name>`）→ parent repo の path を
-///      config から引いて `find_by_repo`。sub の cwd は登録 repo path 配下でないので
-///      `find_for_cwd` は効かない
-///    - main context → `find_for_cwd`（cwd 一致 or 配下の running repo）
+///    - SelfLane から解決した登録 repo path で `find_by_repo`、無ければ `find_for_cwd`
 /// 3. デフォルトポート 33000
 async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
     // 1. 明示的なポート指定
@@ -689,24 +652,18 @@ async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
 
     // 2. discovery で live port を引く
     let self_lane = SelfLane::detect();
-    match &self_lane.sub_parent {
-        Some(_) => {
-            // sub: parent repo の repo を discovery で解決
-            if let Some(parent_path) = crate::config::Config::load()
-                .ok()
-                .as_ref()
-                .and_then(|c| sub_parent_path(&self_lane, c))
-                && let Some(info) = crate::discovery::find_by_repo(&parent_path).await
-            {
-                return info.port;
-            }
-        }
-        None => {
-            // main: cwd 一致（or 配下）の running repo
-            if let Some(info) = crate::discovery::find_for_cwd().await {
-                return info.port;
-            }
-        }
+    if let Some(repo_path) = crate::config::Config::load()
+        .ok()
+        .as_ref()
+        .and_then(|c| target_repo_path(&self_lane, c))
+        && let Some(info) = crate::discovery::find_by_repo(&repo_path).await
+    {
+        return info.port;
+    }
+    if self_lane.sub_parent.is_none()
+        && let Some(info) = crate::discovery::find_for_cwd().await
+    {
+        return info.port;
     }
 
     // 3. フォールバック
@@ -715,26 +672,23 @@ async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
 
 /// L0 SP-portless: Daemon "repo-proxy" の addressing 用に、 この MCP が属する repo の
 /// path（正規化済 path_key と同形）を解決する。 `resolve_process_port` と同じ discovery 経路
-/// (sub→parent / main→cwd) で running repo の `repo_dir` を引く。 repo 未起動などで
-/// 引けない場合は cwd の正規化 path に fallback（daemon 側で normalize_path_key 再正規化される）。
+/// で running repo の `repo_dir` を引く。 repo 未起動などで引けない場合は config 上の
+/// 登録 repo path（さらに未登録なら cwd の正規化 path）に fallback。
 async fn resolve_repo_path() -> String {
     let self_lane = SelfLane::detect();
-    let info = match &self_lane.sub_parent {
-        Some(_) => {
-            if let Some(parent_path) = crate::config::Config::load()
-                .ok()
-                .as_ref()
-                .and_then(|c| sub_parent_path(&self_lane, c))
-            {
-                crate::discovery::find_by_repo(&parent_path).await
-            } else {
-                None
-            }
-        }
+    let configured_path = crate::config::Config::load()
+        .ok()
+        .as_ref()
+        .and_then(|c| target_repo_path(&self_lane, c));
+    let info = match &configured_path {
+        Some(repo_path) => crate::discovery::find_by_repo(repo_path).await,
         None => crate::discovery::find_for_cwd().await,
     };
     if let Some(info) = info {
         return info.repo_dir;
+    }
+    if let Some(repo_path) = configured_path {
+        return crate::config::Config::normalize_path(std::path::Path::new(&repo_path));
     }
     // fallback: cwd の正規化 path（running repo が無くても repo を addressing できる）。
     std::env::current_dir()
@@ -753,71 +707,34 @@ impl VantageMcp {
     ///
     /// `get_quic_channel` と違い repo-proxy の `subscribe` handshake は踏まない — Editor Link の面は
     /// daemon 直下の資源で、repo の識別子を要しない。
-    async fn get_link_channel(
-        &self,
-    ) -> Result<Arc<unison::network::channel::UnisonChannel>, McpError> {
-        let mut guard = self.link_channel.lock().await;
-        if let Some(ch) = guard.as_ref() {
-            return Ok(Arc::clone(ch));
-        }
-        let client = connect_quic(&quic_addr(crate::cli::daemon_port())).await?;
-        let channel = Arc::new(
-            client
-                .open_channel("link")
-                .await
-                .map_err(|e| {
-                    McpError::internal_error(format!("Unison link channel error: {}", e), None)
-                })?
-                // server は `get` の往復を最長 3s 待つ（`link::GET_TIMEOUT`）。unison 内部 timeout は
-                // それより長く取る（先に unison 側が発火すると channel reset になる、VP-163）
-                .with_request_timeout(Duration::from_secs(10)),
-        );
-        *guard = Some(Arc::clone(&channel));
-        Ok(channel)
+    async fn get_link_channel(&self) -> Result<rpc::Channel, McpError> {
+        let addr = quic_addr(crate::cli::daemon_port());
+        #[cfg(test)]
+        let addr = self.test_quic_addr.clone().unwrap_or(addr);
+        self.link_connection
+            .lock()
+            .await
+            .get(&addr, "link", &self.repo_path, Duration::from_secs(10))
+            .await
     }
 
-    /// daemon "link" channel の method 呼び出し（outer timeout = 5s、doc 86）。
-    ///
-    /// 失敗 / timeout は channel を reset して 1 回だけやり直す（`quic_call` と同じ作法）。
-    /// server handler の Err は success frame の `{"error": ...}` で返るので `McpError` に変換する（VP-163）。
+    /// daemon "link" channel の呼び出し（outer timeout = 5s、doc 86）。
+    /// 送信後は再送せず、Error frame と旧 error envelope の理由をそのまま返す。
     pub(crate) async fn link_call(
         &self,
         method: &str,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, McpError> {
-        let timeout = Duration::from_secs(5);
-        let mut last_err = String::new();
-        for retry in [false, true] {
-            if retry {
-                *self.link_channel.lock().await = None;
-            }
-            let channel = self.get_link_channel().await?;
-            match tokio::time::timeout(
-                timeout,
-                channel.request::<serde_json::Value, serde_json::Value>(method, &payload),
-            )
-            .await
-            {
-                Ok(Ok(resp)) => {
-                    if let Some(err_msg) = rpc_response_error(&resp) {
-                        return Err(McpError::internal_error(
-                            format!("link.{}: {}", method, err_msg),
-                            None,
-                        ));
-                    }
-                    return Ok(resp);
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!("QUIC link.{} failed (retry={}): {}", method, retry, e);
-                    last_err = format!("QUIC link.{} failed: {}", method, e);
-                }
-                Err(_) => {
-                    tracing::warn!("QUIC link.{} timed out (retry={})", method, retry);
-                    last_err = format!("QUIC link.{} timed out", method);
-                }
-            }
+        let channel = self.get_link_channel().await?;
+        let resp =
+            rpc::request_once(channel, "link", method, &payload, Duration::from_secs(5)).await?;
+        if let Some(error) = rpc_response_error(&resp) {
+            return Err(McpError::internal_error(
+                format!("link.{method}: {error}"),
+                None,
+            ));
         }
-        Err(McpError::internal_error(last_err, None))
+        Ok(resp)
     }
 }
 
@@ -828,17 +745,19 @@ fn quic_addr(http_port: u16) -> String {
     )
 }
 
-/// QUIC transport を組み立て、 `addr` へ接続済みの [`unison::ProtocolClient`] を返す。
+/// QUIC 接続を組み立てる。途中で cancel されても所有ハンドルの drop が切断する。
 ///
 /// VP-184: QuicClient builder。 dev default (= SkipVerification) を明示的に渡す。
 /// PR-3 で trust_anchors を InternalMeshKeypair の client 半分に差し替える。
-async fn connect_quic(addr: &str) -> Result<unison::ProtocolClient, McpError> {
+async fn connect_quic(addr: &str) -> Result<Arc<rpc::Connection>, McpError> {
     let transport = unison::network::quic::QuicClient::builder()
         .trust_anchors(unison::network::TrustAnchors::SkipVerification)
         .build()
         .map_err(|e| McpError::internal_error(format!("Unison client error: {}", e), None))?;
-    let client = unison::ProtocolClient::new(transport);
-    client.connect(addr).await.map_err(|e| {
+    let client = Arc::new(rpc::Connection(Arc::new(unison::ProtocolClient::new(
+        transport,
+    ))));
+    client.0.connect(addr).await.map_err(|e| {
         McpError::internal_error(format!("Unison connect error ({}): {}", addr, e), None)
     })?;
     Ok(client)
@@ -874,8 +793,8 @@ pub async fn run_mcp_server(process_port: Option<u16>) -> anyhow::Result<()> {
 
 /// QUIC "process" チャネルのレスポンスが server ハンドラの Err かどうか判定する (VP-163)。
 ///
-/// unison は専用の error frame を持たないため、 `unison_server.rs` の dispatch loop は
-/// ハンドラの `Err(e)` を **成功フレームに `{"error": "<msg>"}` を詰めて** 返す。
+/// 旧 server はハンドラの `Err(e)` を成功フレームの `{"error": "<msg>"}` で返す。
+/// Error frame は request() が Err に変換するため、ここは旧形式との互換用。
 /// その形 (= 単一キー `"error"` で値が string) なら err message を返す。 それ以外は `None`。
 /// (`{"error": ..., "to": ...}` のような複数キーや非 string は対象外 — 通常の payload)
 fn rpc_response_error(resp: &serde_json::Value) -> Option<&str> {
@@ -1087,6 +1006,63 @@ mod tests {
             root_repo: None,
         };
         assert_eq!(sub_parent_path(&unknown, &cfg), None);
+    }
+
+    #[test]
+    fn test_self_lane_detect_with_env_fallback() {
+        use crate::config::{Config, RepoConfig};
+        use std::path::Path;
+        let mut cfg = Config::default();
+        cfg.repos.push(RepoConfig {
+            name: "go-fast-packing".to_string(),
+            path: "/Users/x/repos/go-fast-packing".to_string(),
+            port: None,
+            enabled: true,
+            slot: None,
+        });
+        cfg.repos.push(RepoConfig {
+            name: "vantage-point".to_string(),
+            path: "/Users/x/repos/vantage-point".to_string(),
+            port: None,
+            enabled: true,
+            slot: None,
+        });
+
+        // 1. プラグインディレクトリ等の未登録 cwd + VP_REPO / VP_LANE あり (lead) → root_repo に fallback
+        let plugin_cwd = Path::new("/Users/x/.gemini/config/plugins/vantage-point");
+        let lane = SelfLane::detect_from(plugin_cwd, &cfg, Some("go-fast-packing"), Some("lead"));
+        assert_eq!(lane.lane_name, crate::repo::lane::ROOT_LANE_NAME);
+        assert_eq!(lane.sub_parent, None);
+        assert_eq!(lane.root_repo.as_deref(), Some("go-fast-packing"));
+        assert_eq!(
+            target_repo_path(&lane, &cfg).as_deref(),
+            Some("/Users/x/repos/go-fast-packing")
+        );
+
+        // 2. 未登録 cwd + VP_REPO / VP_LANE あり (sub lane) → sub_parent に fallback
+        let sub_lane =
+            SelfLane::detect_from(plugin_cwd, &cfg, Some("go-fast-packing"), Some("cad"));
+        assert_eq!(sub_lane.lane_name, "cad");
+        assert_eq!(sub_lane.sub_parent.as_deref(), Some("go-fast-packing"));
+        assert_eq!(sub_lane.root_repo, None);
+        assert_eq!(
+            target_repo_path(&sub_lane, &cfg).as_deref(),
+            Some("/Users/x/repos/go-fast-packing")
+        );
+
+        // 3. 登録 repo の cwd 内にいる場合は、env より cwd が優先される
+        let repo_cwd = Path::new("/Users/x/repos/vantage-point");
+        let by_cwd = SelfLane::detect_from(repo_cwd, &cfg, Some("go-fast-packing"), Some("cad"));
+        assert_eq!(by_cwd.lane_name, crate::repo::lane::ROOT_LANE_NAME);
+        assert_eq!(by_cwd.sub_parent, None);
+        assert_eq!(by_cwd.root_repo.as_deref(), Some("vantage-point"));
+
+        // 4. 未登録 cwd + 未登録の VP_REPO 名 → fail-closed (None)
+        let unknown_env =
+            SelfLane::detect_from(plugin_cwd, &cfg, Some("not-registered"), Some("lead"));
+        assert_eq!(unknown_env.sub_parent, None);
+        assert_eq!(unknown_env.root_repo, None);
+        assert_eq!(target_repo_path(&unknown_env, &cfg), None);
     }
 
     #[test]
