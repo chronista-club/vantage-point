@@ -222,6 +222,7 @@ pub struct AcpAgentHost {
     /// log 用の名乗り（`repo=…, lane=…`）。
     whom: String,
     host: Arc<AcpClientHost>,
+    grok: Arc<super::grok_settings::GrokConfigState>,
     replay: ReplayRequester,
     /// pump に渡す口（pump の起動時に 1 度だけ取り出す）。
     port: Mutex<Option<ReplayPort>>,
@@ -266,15 +267,22 @@ impl AcpAgentHost {
         // log に「どの lane の engine か」を残す（同じ engine が複数の lane で動く）。
         let whom = format!("repo={}, lane={}", config.repo, config.lane);
         tokio::spawn(watch_exit(engine, whom.clone(), host.subscribe()));
+        let grok = Arc::default();
+        let handle = AcpConfigHandle {
+            engine,
+            host: Arc::clone(&host),
+            grok: Arc::clone(&grok),
+        };
         Self {
             engine,
             whom,
             replay,
             port: Mutex::new(Some(ReplayPort {
-                source: Arc::new(AcpReplaySource(Arc::clone(&host))),
+                source: Arc::new(AcpReplaySource(handle)),
                 requests,
             })),
             host,
+            grok,
         }
     }
 
@@ -309,7 +317,28 @@ impl AcpAgentHost {
 
     /// engine の設定面（roster の `acp_config` の供給源、doc 88 §6）。
     pub fn config_view(&self) -> Option<AcpConfigView> {
-        self.host.config_view().map(Into::into)
+        self.host.config_view().map(|v| {
+            let mut view = AcpConfigView::from(v);
+            if self.engine == AcpEngine::Grok {
+                let feedback = self.grok.feedback.lock().unwrap();
+                view.notice = feedback.notice.clone();
+                if feedback.error.is_some() {
+                    view.error.clone_from(&feedback.error);
+                }
+                drop(feedback);
+                if view.options.iter().any(|o| {
+                    o.id == "reasoning_effort"
+                        && !o.choices.iter().any(|c| c.value == o.current_value)
+                }) {
+                    let handle = self.config_handle();
+                    // roster を待たせずに観測時の正規化。結果は次の snapshot に載る。
+                    tokio::spawn(async move {
+                        let _ = handle.normalize_grok().await;
+                    });
+                }
+            }
+            view
+        })
     }
 
     /// user の設定切替の口（pool の lock を離してから応答を待つため、host の外へ clone して持ち出す）。
@@ -317,6 +346,7 @@ impl AcpAgentHost {
         AcpConfigHandle {
             engine: self.engine,
             host: Arc::clone(&self.host),
+            grok: Arc::clone(&self.grok),
         }
     }
 
@@ -432,13 +462,14 @@ async fn watch_exit(
 }
 
 /// pump に渡す履歴の出どころ（共有 host の `attach()`）。
-struct AcpReplaySource(Arc<AcpClientHost>);
+struct AcpReplaySource(AcpConfigHandle);
 
 impl ReplaySource for AcpReplaySource {
     fn attach(&self) -> AttachFuture {
-        let host = Arc::clone(&self.0);
+        let handle = self.0.clone();
         Box::pin(async move {
-            let (history, rx) = host.attach().await.map_err(|e| e.to_string())?;
+            let (history, rx) = handle.host.attach().await.map_err(|e| e.to_string())?;
+            let _ = handle.normalize_grok().await;
             Ok(ReplayAttach {
                 events: history.events,
                 in_flight: history.in_flight,
@@ -449,7 +480,7 @@ impl ReplaySource for AcpReplaySource {
     }
 
     fn session_init(&self) -> Option<ConversationEvent> {
-        self.0.session_init()
+        self.0.host.session_init()
     }
 }
 
@@ -460,9 +491,35 @@ impl ReplaySource for AcpReplaySource {
 pub struct AcpConfigHandle {
     engine: AcpEngine,
     host: Arc<AcpClientHost>,
+    grok: Arc<super::grok_settings::GrokConfigState>,
 }
 
 impl AcpConfigHandle {
+    pub(super) fn options(&self) -> Option<Vec<AcpConfigOption>> {
+        self.host
+            .config_view()
+            .map(|v| v.options.into_iter().map(Into::into).collect())
+    }
+
+    /// Grok の候補外 effort を一度だけそろえる。
+    pub(crate) async fn normalize_grok(&self) -> Result<(), String> {
+        if self.engine != AcpEngine::Grok {
+            return Ok(());
+        }
+        self.grok.normalize(self).await
+    }
+
+    /// Grok の model → effort の適用を host 単位で直列化する。
+    pub(crate) async fn apply_grok(
+        &self,
+        desired: &super::grok_settings::GrokSettings,
+    ) -> Result<(), String> {
+        if self.engine != AcpEngine::Grok {
+            return Err("grok 以外の host には適用できません".into());
+        }
+        self.grok.apply(self, desired).await
+    }
+
     /// `session/set_config_option` を送り、engine の応答まで待つ（上限は共有 host の
     /// `config_timeout`、既定 15 秒）。
     ///

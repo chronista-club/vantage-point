@@ -35,6 +35,12 @@ pub(crate) struct Script {
     /// `session/set_config_option` の応答を、テストの [`Step::ReleaseConfig`] まで待たせる
     /// （設定の当て直しに時間がかかる engine）。
     pub hold_config: bool,
+    /// model の切替で返す別の設定面（Grok の候補依存を再現）。
+    pub config_after_model: Option<Vec<Value>>,
+    /// 指定軸の切替を拒否する。
+    pub reject_config: Option<String>,
+    /// 成功応答でも現在値を変えない engine を再現する。
+    pub ignore_config: bool,
 }
 
 /// 偽の agent が受けた要求と通知（method, params）。
@@ -228,9 +234,19 @@ async fn run(
                         }
                         Ok(json!({"configOptions": script.config}))
                     }
+                    "session/set_config_option"
+                        if script.reject_config.as_deref() == p["configId"].as_str() =>
+                    {
+                        Err(agent_client_protocol::Error::invalid_params())
+                    }
                     "session/set_config_option" => {
+                        if p["configId"] == "model"
+                            && let Some(options) = &script.config_after_model
+                        {
+                            script.config = options.clone();
+                        }
                         for option in &mut script.config {
-                            if option["id"] == p["configId"] {
+                            if option["id"] == p["configId"] && !script.ignore_config {
                                 option["currentValue"] = p["value"].clone();
                             }
                         }

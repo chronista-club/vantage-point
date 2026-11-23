@@ -17,14 +17,15 @@ use super::agy_settings::AgySettings;
 use super::claude_settings::ClaudeSettings;
 use super::codex_settings::CodexSelection;
 use super::engine::EngineKind;
+use super::grok_settings::GrokSettings;
 use super::vpcode_catalog::VpcodeSettings;
 #[cfg(test)]
 use ts_rs::TS;
 
-/// session に永続される engine 別の設定（registry の `SessionEntry::settings`）。
+/// engine 別の設定。Grok は実行時要求、他は registry の `SessionEntry::settings` でも使う。
 ///
 /// serde は externally tagged（`{"claude": {...}}` / `{"codex": {...}}` / `{"vpcode": {...}}` /
-/// `{"agy": {...}}`）
+/// `{"agy": {...}}` / `{"grok": {...}}`）
 /// — wire / disk 上で「どの engine の設定か」が key に出るので、engine を跨いだ誤適用が
 /// 型で弾ける（[`Self::kind`] と entry の agent の一致検査）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -42,6 +43,8 @@ pub enum EngineSettings {
     Vpcode(VpcodeSettings),
     /// agy の Model / Thinking Level / Mode の意図（doc 88 §6 — host が session 確定後に当て直す）。
     Agy(AgySettings),
+    /// Grok への実行時要求（intent の永続・再適用はしない）。
+    Grok(GrokSettings),
 }
 
 impl EngineSettings {
@@ -52,6 +55,7 @@ impl EngineSettings {
             Self::Codex(_) => EngineKind::Codex,
             Self::Vpcode(_) => EngineKind::Vpcode,
             Self::Agy(_) => EngineKind::Agy,
+            Self::Grok(_) => EngineKind::Grok,
         }
     }
 
@@ -62,6 +66,7 @@ impl EngineSettings {
             Self::Codex(s) => s.validate_shape(),
             Self::Vpcode(s) => s.validate_shape(),
             Self::Agy(s) => s.validate_shape(),
+            Self::Grok(s) => s.validate_shape(),
         }
     }
 
@@ -112,6 +117,16 @@ impl EngineSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Task mem_1ChKFNBY7VQYSwFseyxUs9
+    #[test]
+    fn grok_settings_accept_engine_values_without_a_fixed_catalog() {
+        let wire = serde_json::json!({"grok": {"model": "future-model", "reasoning_effort": "future-effort"}});
+        let settings: EngineSettings = serde_json::from_value(wire.clone()).expect("Grok settings");
+        assert_eq!(settings.kind(), EngineKind::Grok);
+        assert!(settings.validate_shape().is_ok());
+        assert_eq!(serde_json::to_value(settings).unwrap(), wire);
+    }
 
     #[test]
     fn externally_tagged_by_engine() {

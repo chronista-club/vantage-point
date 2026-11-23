@@ -898,6 +898,23 @@ impl LanePool {
         }
     }
 
+    /// Grok の実行時設定の口。host の種別を確認し、別 session への誤適用を防ぐ。
+    pub fn grok_config_handle(
+        &self,
+        addr: &LaneAddress,
+        session: SessionKey,
+    ) -> Result<crate::conversation::AcpConfigHandle, String> {
+        let slot = self
+            .chat_engines
+            .get(addr)
+            .and_then(|m| m.get(&session))
+            .ok_or_else(|| format!("grok の chat が起動していません（session={session}）"))?;
+        match &slot.host {
+            ChatHost::Grok(host) => Ok(host.config_handle()),
+            _ => Err(format!("session {session} は grok ではありません")),
+        }
+    }
+
     /// lane の session ごとの最終活動時刻 (epoch ms) を実体から集める。
     ///
     /// 供給源は 2 系統: tui = `PtySlot::last_output_at_ms`（出力バイト）/
@@ -2246,6 +2263,140 @@ mod tests {
         assert_eq!(pool.codex_question_sessions.lock().unwrap().len(), 1);
         pool.remove(&other);
         assert!(pool.codex_question_sessions.lock().unwrap().is_empty());
+    }
+
+    // Task mem_1ChKFNBY7VQYSwFseyxUs9 — 実 RPC → session ごとの host → roster の接続。
+    #[tokio::test]
+    async fn grok_settings_rpc_reaches_only_the_selected_live_host() {
+        use crate::conversation::acp_host::testing::{FakeAgent, Script};
+        use crate::conversation::{AcpAgentHost, AcpEngine, AcpHostConfig};
+        use crate::repo::state::{build_test_app_state, insert_test_lane};
+        use crate::repo::unison_server::dispatch_repo_method;
+        use serde_json::json;
+        let _state = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let addr = insert_test_lane(&state, "vptest-grok-rpc", SessionMode::Tui).await;
+        let session = session_registry::create(
+            &addr.repo,
+            "lead",
+            "claude",
+            "grok",
+            SessionMode::Gui,
+            false,
+        )
+        .unwrap();
+        let model = |value: &str| {
+            json!({"id":"model","name":"Model","type":"select","currentValue":value,
+            "options":[{"value":"old","name":"Old"},{"value":"new","name":"New"}]})
+        };
+        let effort = |values: &[&str]| {
+            json!({"id":"reasoning_effort","name":"Effort","type":"select","currentValue":"xhigh",
+            "options":values.iter().map(|v|json!({"value":v,"name":v})).collect::<Vec<_>>()})
+        };
+        let (agent, connector) = FakeAgent::new(Script {
+            config: vec![model("old"), effort(&["xhigh", "high"])],
+            config_after_model: Some(vec![model("new"), effort(&["high"])]),
+            ..Default::default()
+        });
+        let host = AcpAgentHost::spawn_with(
+            AcpHostConfig {
+                engine: AcpEngine::Grok,
+                cwd: "/tmp".into(),
+                repo: addr.repo.clone(),
+                lane: format!("lead#{session}"),
+                lane_label: "lead".into(),
+                session_key: session,
+                session_id: None,
+                config_intent: vec![],
+            },
+            connector,
+        )
+        .unwrap();
+        host.take_replay_port()
+            .unwrap()
+            .source
+            .attach()
+            .await
+            .unwrap();
+        state
+            .lane_pool
+            .write()
+            .await
+            .chat_engines
+            .entry(addr.clone())
+            .or_default()
+            .insert(
+                session,
+                ChatEngineSlot {
+                    host: ChatHost::Grok(host),
+                    pump: tokio::spawn(async {}),
+                    last_event_at: Default::default(),
+                    turn_active: Default::default(),
+                },
+            );
+        dispatch_repo_method(
+            &state,
+            "conversation_set_settings",
+            json!({
+                "lane":addr.to_string(),"session":session,"settings":{"grok":{"model":"new"}}
+            }),
+        )
+        .await
+        .unwrap();
+        let view = state.lane_pool.read().await.acp_configs(&addr);
+        assert_eq!(
+            view.get(&session).unwrap().notice.as_ref().unwrap().message,
+            "effort を xhigh → high に揃えました"
+        );
+        assert_eq!(
+            agent
+                .methods()
+                .iter()
+                .filter(|m| *m == "session/set_config_option")
+                .count(),
+            2
+        );
+        // 外部で候補外になった値を、roster 構築時に見てそろえる。
+        let handle = state
+            .lane_pool
+            .read()
+            .await
+            .grok_config_handle(&addr, session)
+            .unwrap();
+        handle.set("reasoning_effort", "xhigh").await.unwrap();
+        crate::repo::lane::lifecycle::build_lanes_snapshot(&state).await;
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let observed = state.lane_pool.read().await.acp_configs(&addr);
+                if observed.get(&session).unwrap().options[1].current_value == "high" {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let saved = session_registry::load(&addr.repo, "lead", "claude");
+        assert!(saved.sessions.iter().all(|s| s.settings.is_none()));
+        assert!(
+            dispatch_repo_method(
+                &state,
+                "conversation_set_settings",
+                json!({
+                    "lane":addr.to_string(),"session":1,"settings":{"grok":{"model":"new"}}
+                })
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            agent
+                .methods()
+                .iter()
+                .filter(|m| *m == "session/set_config_option")
+                .count(),
+            4
+        );
     }
 
     /// lane を PTY / engine 無しで pool に置く（restart_lane の chat 分岐は早期 return する

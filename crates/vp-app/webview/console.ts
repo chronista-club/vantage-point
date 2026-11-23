@@ -381,6 +381,13 @@ export function installConsole(): VpConsole {
   const api: VpConsole = {
     handleEvent(lane, event, session) {
       const s = normalizeSession(session)
+      // conversation:set_settings の request ACK（transport 名は旧 codex_config）。
+      // engine panel 共通の完了通知へ投影し、roster の到着順に依存させない。
+      if (event.kind === 'codex_config' && event.request_id) {
+        window.dispatchEvent(new CustomEvent('vp:conversation-settings-result', {
+          detail: { lane, session: s, request_id: event.request_id, error: event.error },
+        }))
+      }
       observeConversationUrls(lane, event, s)
       const entry = laneOf(lane)
       if (event.kind === 'codex_interactions') entry.codexInteractions.set(s, event)

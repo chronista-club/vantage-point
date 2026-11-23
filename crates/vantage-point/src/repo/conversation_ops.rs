@@ -788,6 +788,17 @@ pub(crate) async fn handle_conversation_set_settings(
             .map_err(|e| format!("conversation_set_settings: {e}"));
     }
 
+    if let Some(EngineSettings::Grok(desired)) = &settings {
+        let handle = state
+            .lane_pool
+            .read()
+            .await
+            .grok_config_handle(&addr, session)?;
+        let result = handle.apply_grok(desired).await;
+        super::lane::lifecycle::emit_lane_update(state, &addr).await;
+        return result.map(|()| serde_json::json!({"status":"ok", "lane":lane, "session":session}));
+    }
+
     let applied = {
         let mut pool = state.lane_pool.write().await;
         let info = pool
@@ -800,7 +811,9 @@ pub(crate) async fn handle_conversation_set_settings(
                 let config = pool.configure_codex(&addr, session, selection)?;
                 serde_json::json!({"status":"ok","codex_config":config})
             }
-            Some(EngineSettings::Agy(_)) => unreachable!("agy は lock の前で処理済み"),
+            Some(EngineSettings::Agy(_) | EngineSettings::Grok(_)) => {
+                unreachable!("ACP の設定は lock の前で処理済み")
+            }
             Some(EngineSettings::Claude(_)) | Some(EngineSettings::Vpcode(_)) | None => {
                 // null（既定へ戻す）は「registry intent + respawn」で設定を運ぶ engine にだけ
                 // 意味がある。Codex（host の runtime 設定）/ Grok / OpenCode（engine 側で選ぶ）の
@@ -1745,11 +1758,20 @@ mod tests {
         let err = dispatch_repo_method(
             &state,
             "conversation_set_settings",
-            serde_json::json!({ "lane": lane.as_str(), "session": 2, "settings": {"grok": {"model": "x"}} }),
+            serde_json::json!({ "lane": lane.as_str(), "session": 2, "settings": {"unknown_engine": {"model": "x"}} }),
         )
         .await
         .expect_err("未知 engine の settings は受けない");
         assert!(err.contains("settings が不正"), "{err}");
+
+        let err = dispatch_repo_method(
+            &state,
+            "conversation_set_settings",
+            serde_json::json!({"lane":lane.as_str(),"session":2,"settings":{"grok":{"model":"x"}}}),
+        )
+        .await
+        .expect_err("Grok の実 host が無ければ registry には書かない");
+        assert!(err.contains("grok の chat が起動していません"), "{err}");
 
         // session 未指定は Err（root 決め打ちにしない — session_set_mode と同じ規律）。
         let err = dispatch_repo_method(
