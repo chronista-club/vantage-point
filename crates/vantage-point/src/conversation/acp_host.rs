@@ -618,6 +618,56 @@ mod tests {
         }
     }
 
+    // mem_1ChKFMEwUYWj5Qs6VLVkU4: 8×8 は Grok に弾かれたため、実測済みの 256×256 を使う。
+    fn red_image_256() -> ImageInput {
+        use base64::Engine as _;
+        let image = image::RgbImage::from_pixel(256, 256, image::Rgb([255, 0, 0]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image
+            .write_to(&mut png, image::ImageFormat::Png)
+            .expect("PNG");
+        ImageInput {
+            media_type: "image/png".into(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(png.into_inner()),
+        }
+    }
+
+    /// ChatHost の分岐から ACP の実際の要求まで画像を運ぶ。能力表だけ true にしても落ちる。
+    #[tokio::test]
+    async fn grok_chat_host_sends_image_content_block() {
+        let _state = crate::test_env::state_dir_async().await;
+        let (agent, connector) = FakeAgent::new(Script::default());
+        let adapter = AcpAgentHost::spawn_with(
+            fake_config(AcpEngine::Grok, "vptest-grok-image", None),
+            connector,
+        )
+        .expect("起動");
+        let mut host = super::super::ChatHost::Grok(adapter);
+        let image = red_image_256();
+        host.submit_with_images("Describe the image.", std::slice::from_ref(&image))
+            .await
+            .expect("送信");
+        agent.wait_for("session/prompt").await;
+        let prompt = agent
+            .log
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(method, _)| method == "session/prompt")
+            .expect("prompt")
+            .1["prompt"]
+            .clone();
+        host.stop();
+        assert_eq!(
+            prompt,
+            serde_json::json!([
+                {"type": "text", "text": "Describe the image."},
+                {"type": "image", "mimeType": "image/png", "data": image.data_base64}
+            ]),
+            "Grok へ text と image の両方を渡す"
+        );
+    }
+
     /// opencode 2.3.0 が出す設定面の形（実測 2026-11-20、既定の model `lmstudio/…` の時:
     /// model / effort / mode の 3 軸。model を `opencode/big-pickle` に替えると effort の軸が消えて
     /// 2 軸になる — 軸の数は model による）。
@@ -1067,6 +1117,83 @@ mod tests {
     #[ignore = "実機 grok CLI + auth が必要（ローカル E2E 専用）"]
     async fn e2e_real_grok_tool_turn_history() {
         e2e_new_send_respawn_history(AcpEngine::Grok, Vec::new(), true).await;
+    }
+
+    /// VP の ChatHost → ACP adapter → 実 Grok で 256×256 の画像を読む（1 turn）。
+    /// VP_GROK_E2E_MODEL で model を指定できる。画像の色は prompt に含めない。
+    #[tokio::test]
+    #[ignore = "実機 grok CLI + auth + model の使用枠が必要（ローカル E2E 専用）"]
+    async fn e2e_real_grok_image_prompt() {
+        let _state = crate::test_env::state_dir_async().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = "vptest-grok-image-e2e";
+        let adapter = AcpAgentHost::spawn(AcpHostConfig {
+            engine: AcpEngine::Grok,
+            cwd: tmp.path().to_string_lossy().into_owned(),
+            repo: repo.into(),
+            lane: "lead".into(),
+            lane_label: "lead".into(),
+            session_key: 1,
+            session_id: None,
+            config_intent: e2e_intent("VP_GROK_E2E_MODEL"),
+        })
+        .expect("spawn");
+        let mut rx = adapter.subscribe();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            adapter
+                .take_replay_port()
+                .expect("履歴の口")
+                .source
+                .attach(),
+        )
+        .await
+        .expect("60 秒以内に会話が確定する")
+        .expect("attach");
+        let model = adapter
+            .config_view()
+            .expect("設定面")
+            .options
+            .into_iter()
+            .find(|option| option.id == "model")
+            .expect("model")
+            .current_value;
+        let session = crate::lane::session_registry::load(repo, "lead", "grok").sessions[0]
+            .conversation
+            .clone()
+            .expect("試験用の会話 id");
+        println!(
+            "Grok image E2E: model={model}, session={session}, cwd={:?}, image=256x256 PNG, turns=1",
+            tmp.path()
+        );
+        let mut host = super::super::ChatHost::Grok(adapter);
+        host.submit_with_images(
+            "What is the dominant color in this image? Reply with only one English word. Do not use tools.",
+            &[red_image_256()],
+        )
+        .await
+        .expect("submit");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
+        let mut answer = String::new();
+        loop {
+            let event = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("180 秒以内に turn が終わる")
+                .expect("recv");
+            match event {
+                ConversationEvent::MessageChunk { text } => answer.push_str(&text),
+                ConversationEvent::TurnCompleted { .. } => break,
+                ConversationEvent::Error { message } => panic!("engine error: {message}"),
+                ConversationEvent::EngineExited { message } => panic!("engine exited: {message}"),
+                _ => {}
+            }
+        }
+        host.stop();
+        assert_eq!(
+            answer.trim().trim_end_matches('.').to_ascii_lowercase(),
+            "red",
+            "画像の色を読めた: {answer}"
+        );
     }
 
     #[tokio::test]
