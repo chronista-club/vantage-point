@@ -908,7 +908,7 @@ pub async fn relay_send_to_node(
 /// SSOT 原則（hub と話すのは daemon のみ）に従い、CLI ではなく **daemon の wire channel handler**
 /// （`handle_wire_channel` の `wire/federate` method）から呼ぶ。MVP は短命接続:
 /// connect → `discover` で `target_node_handle` → entry（node_id + endpoints）解決 →
-/// **direct 試行（§S6 HEv2 race）→ 全滅で relay floor（§S4）** — ADR-020 degrade ladder の
+/// **direct 試行（§S6 HEv2 race）→ 送信前の失敗だけ relay floor（§S4）** — ADR-020 degrade ladder の
 /// consume 側。受信 node はどちらの経路でも `dispatch_wire("send")` でローカル配送する
 /// （direct = wire channel 直、relay = hub 経由 inbound handler、payload 形は同一）。
 /// `from_label` は relay の `open{from}` に載るが受信側は envelope の `from` を使うため
@@ -922,23 +922,40 @@ pub async fn federate_wire_send(
     let client = HubClient::connect(hub_addr, 3)
         .await
         .context("federate-send: hub 接続に失敗")?;
-    let entry = discover_entry_by_handle(&client, target_node_handle)
+    federate_wire_send_on(
+        &client,
+        target_node_handle,
+        from_label,
+        envelope,
+        super::dialer::direct_enabled(),
+    )
+    .await
+}
+
+async fn federate_wire_send_on(
+    client: &HubClient,
+    target_node_handle: &str,
+    from_label: &str,
+    envelope: &Value,
+    direct_enabled: bool,
+) -> Result<()> {
+    let entry = discover_entry_by_handle(client, target_node_handle)
         .await
         .context("federate-send")?;
-    // §S6: direct 試行（endpoints あり && kill-switch 有効）。全滅は relay floor に degrade
-    // — direct の失敗は「エラー」でなく ladder の一段（warn でなく info）。
-    if super::dialer::direct_enabled() && !entry.endpoints.is_empty() {
+    // §S6: 接続 / channel open の失敗なら relay floor。送信後は理由を返す。
+    if direct_enabled && !entry.endpoints.is_empty() {
         match super::dialer::wire_send_direct(&entry, envelope).await {
             Ok(()) => {
                 tracing::info!(node_id = %entry.node_id, "federation send via=direct");
                 return Ok(());
             }
-            Err(e) => {
-                tracing::info!(node_id = %entry.node_id, "direct 全滅 → relay floor へ: {e:#}");
+            Err(super::dialer::DirectSendError::BeforeSend(e)) => {
+                tracing::info!(node_id = %entry.node_id, "direct 送信前の失敗 → relay floor へ: {e:#}");
             }
+            Err(super::dialer::DirectSendError::AfterSend(e)) => return Err(e),
         }
     }
-    relay_send_on(&client, &entry.node_id, from_label, envelope)
+    relay_send_on(client, &entry.node_id, from_label, envelope)
         .await
         .context("federate-send")?;
     tracing::info!(node_id = %entry.node_id, "federation send via=relay");
@@ -1601,3 +1618,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "federation_no_resend_tests.rs"]
+mod no_resend_tests;

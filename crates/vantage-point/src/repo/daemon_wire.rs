@@ -145,8 +145,8 @@ pub(crate) async fn call(
             .await
         {
             Ok(resp) => {
-                // unison は専用 error frame を持たず、 server Err を success frame に {"error":..}
-                // で詰める (= 旧 HTTP handler の `{status:error, error}` と同じく、 ここで Err に変換)。
+                // 旧 server の success frame に入る {"error":..} も Err に変換する。
+                // Error frame は request() 自体が理由を含む Err を返す。
                 if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
                     return Err(err.to_string());
                 }
