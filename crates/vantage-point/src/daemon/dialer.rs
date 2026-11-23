@@ -3,9 +3,9 @@
 //! chronista-hub の `nodes.Discover` が返す direct 到達候補
 //! （[`NodeEntry::endpoints`]、`["[GUA]:port", ..]`）を club-unison の Happy Eyeballs v2
 //! dialer（`ProtocolClient::connect_race`、RFC 8305 staggered race）で並行 dial し、勝った
-//! 接続の `wire` channel に envelope を送る。全滅は `Err` — caller
+//! 接続の `wire` channel に envelope を送る。送信前の失敗だけを caller
 //! （[`super::hub_client::federate_wire_send`]）が relay floor（§S4）に落とす。
-//! この「direct 試行 → 全滅で relay」が ADR-020 degrade ladder の consume 側。
+//! 送信後の失敗は成否不明なので、relay で同じ envelope を送り直さない。
 //!
 //! ## trust（現状と将来）
 //!
@@ -107,29 +107,41 @@ pub async fn dial_direct(entry: &NodeEntry) -> Result<unison::ProtocolClient> {
     Ok(client)
 }
 
-/// direct 経由で wire envelope を 1 本送る（dial → `wire` channel → `wire/send`）。
-///
-/// MVP は短命接続（`federate_wire_send` の relay 経路と同型、永続接続の再利用は後の最適化）。
-/// 成否に関わらず disconnect でリソースを解放する。受信側 daemon の wire channel はエラーを
-/// success frame の `{"error": ...}` で返す（VP-163 慣習）ため、response の `error` key を検査。
-pub async fn wire_send_direct(entry: &NodeEntry, envelope: &Value) -> Result<()> {
-    let client = dial_direct(entry).await?;
+/// 業務 request の発行前と発行後を区別する。NetworkError の種類では送信済みか分からない。
+#[derive(Debug, thiserror::Error)]
+pub enum DirectSendError {
+    #[error("{0:#}")]
+    BeforeSend(#[source] anyhow::Error),
+    #[error("{0:#}")]
+    AfterSend(#[source] anyhow::Error),
+}
+
+/// direct 経由で wire envelope を送る（dial → `wire` channel → `wire/send`）。
+/// `request` を呼んだ後の失敗は成否不明。旧 error envelope の拒否も relay 対象にしない。
+pub async fn wire_send_direct(entry: &NodeEntry, envelope: &Value) -> Result<(), DirectSendError> {
+    let client = dial_direct(entry)
+        .await
+        .map_err(DirectSendError::BeforeSend)?;
     let result = async {
         let channel = client
             .open_channel("wire")
             .await
-            .context("direct: wire channel open 失敗")?;
+            .context("direct: wire channel open 失敗")
+            .map_err(DirectSendError::BeforeSend)?;
         let resp: Value = channel
             .request("wire/send", envelope)
             .await
-            .context("direct: wire/send request 失敗")?;
+            .context("direct: wire/send request 失敗")
+            .map_err(DirectSendError::AfterSend)?;
         if let Some(err) = resp.get("error") {
-            anyhow::bail!("direct: 受信側 wire/send がエラー: {err}");
+            return Err(DirectSendError::AfterSend(anyhow::anyhow!(
+                "direct: 受信側 wire/send がエラー: {err}"
+            )));
         }
         Ok(())
     }
     .await;
-    // 短命接続: leak 防止のため Ok/Err 共通で必ず disconnect（module doc の罠参照）。
+    // 短命接続は成功・失敗とも明示的に閉じる。
     let _ = client.disconnect().await;
     result
 }

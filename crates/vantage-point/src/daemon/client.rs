@@ -263,7 +263,7 @@ impl DaemonControlClient {
     }
 
     /// daemon-control method を呼ぶ。 Unison の error 慣習 (VP-163) に従い、 success frame の
-    /// `{"error": ...}` を `Err` 化する (= Unison は専用 error frame を持たない)。
+    /// `{"error": ...}` も `Err` 化する。Error frame は request() が理由を含む Err に変換する。
     async fn call(&self, method: &str, payload: serde_json::Value) -> Result<serde_json::Value> {
         let resp = self
             .ch
