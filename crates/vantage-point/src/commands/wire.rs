@@ -414,11 +414,15 @@ fn session_key_from_env(raw: Option<&str>) -> Option<crate::lane::session_regist
         .filter(|k| *k >= 1)
 }
 
-/// 未読件数から hookSpecificOutput JSON を作る (純関数、 R2-c)。 未読 0 は None (出力なし)。
+/// 未読件数から hook 出力 JSON を作る (純関数、 R2-c)。
+///
+/// - Claude Code / Codex (`is_agy = false`): 未読 0 は `None` (出力なし)、未読ありは `hookSpecificOutput`。
+/// - Antigravity (`is_agy = true`): 未読 0 は `Some("{}")`、未読ありは `injectSteps`。
 fn build_hook_output(
     event_name: &str,
     total: u64,
     deleg_summary: Option<String>,
+    is_agy: bool,
 ) -> Option<String> {
     // wire 未読 + 委譲 pull の両断面を 1 つの additionalContext に合流する。
     let mut parts: Vec<String> = Vec::new();
@@ -432,17 +436,43 @@ fn build_hook_output(
         parts.push(s);
     }
     if parts.is_empty() {
-        return None;
+        return if is_agy { Some("{}".to_string()) } else { None };
     }
-    Some(
-        serde_json::json!({
-            "hookSpecificOutput": {
-                "hookEventName": event_name,
-                "additionalContext": parts.join("\n"),
-            }
-        })
-        .to_string(),
-    )
+    let text = parts.join("\n");
+    if is_agy {
+        Some(
+            serde_json::json!({
+                "injectSteps": [
+                    {
+                        "systemMessage": {
+                            "systemMessage": text,
+                        }
+                    }
+                ]
+            })
+            .to_string(),
+        )
+    } else {
+        Some(
+            serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": event_name,
+                    "additionalContext": text,
+                }
+            })
+            .to_string(),
+        )
+    }
+}
+
+/// hook の stdin JSON が Antigravity (agy) 形式（camelCase フィールド）か判定する（純関数）。
+fn is_agy_hook_event(parsed: Option<&serde_json::Value>) -> bool {
+    let Some(obj) = parsed.and_then(|v| v.as_object()) else {
+        return false;
+    };
+    obj.contains_key("hookEventName")
+        || obj.contains_key("conversationId")
+        || obj.contains_key("workspacePaths")
 }
 
 /// pull-hook（C、doc 28 §3-2 の at-next-turn tier）: poll で得た undelivered 委譲のうち、
@@ -622,9 +652,19 @@ async fn hook_check() -> Result<()> {
     use std::io::Read;
     let _ = std::io::stdin().read_to_string(&mut input);
     let parsed = serde_json::from_str::<serde_json::Value>(&input).ok();
+    let is_agy = is_agy_hook_event(parsed.as_ref());
+    let emit_empty = || {
+        if is_agy {
+            println!("{{}}");
+        }
+    };
     let event_name = parsed
         .as_ref()
-        .and_then(|v| v.get("hook_event_name").and_then(|e| e.as_str()))
+        .and_then(|v| {
+            v.get("hook_event_name")
+                .or_else(|| v.get("hookEventName"))
+                .and_then(|e| e.as_str())
+        })
         .unwrap_or("UserPromptSubmit")
         .to_string();
 
@@ -667,6 +707,7 @@ async fn hook_check() -> Result<()> {
                 session_key,
                 std::env::var("VP_HOOK_ENGINE").ok().as_deref(),
             ) else {
+                emit_empty();
                 return Ok(());
             };
             let _ = tokio::time::timeout(
@@ -678,6 +719,7 @@ async fn hook_check() -> Result<()> {
     }
 
     let Some(agent) = wire_address_from_env(repo.as_deref(), lane.as_deref()) else {
+        emit_empty();
         return Ok(()); // VP 外で起動された claude — 何もしない
     };
 
@@ -692,7 +734,10 @@ async fn hook_check() -> Result<()> {
     .await
     {
         Ok(Ok(v)) => v.get("total").and_then(|t| t.as_u64()).unwrap_or(0),
-        _ => return Ok(()), // timeout / transport 失敗 — fail-open
+        _ => {
+            emit_empty();
+            return Ok(()); // timeout / transport 失敗 — fail-open
+        }
     };
 
     // pull-hook（C、doc 28 §3-2）: daemon の undelivered 委譲を poll してターン頭に surface。
@@ -713,7 +758,7 @@ async fn hook_check() -> Result<()> {
         _ => None,
     };
 
-    if let Some(out) = build_hook_output(&event_name, total, deleg_summary) {
+    if let Some(out) = build_hook_output(&event_name, total, deleg_summary, is_agy) {
         println!("{out}");
     }
     Ok(())
@@ -1060,12 +1105,16 @@ mod tests {
         assert_eq!(session_key_from_env(Some("-1")), None);
     }
 
-    /// R2-c: 未読ありのときだけ hookSpecificOutput JSON を作る
+    /// R2-c: 未読ありのときだけ hookSpecificOutput JSON を作る（Antigravity は空でも {}、未読ありは injectSteps）
     #[test]
     fn hook_output_only_when_unread() {
-        // wire 0 件 + 委譲 0 件 → None。
-        assert_eq!(build_hook_output("SessionStart", 0, None), None);
-        let out = build_hook_output("UserPromptSubmit", 3, None).expect("3 件未読なら出力");
+        // wire 0 件 + 委譲 0 件 → Claude/Codex は None、agy は Some("{}")
+        assert_eq!(build_hook_output("SessionStart", 0, None, false), None);
+        assert_eq!(
+            build_hook_output("SessionStart", 0, None, true).as_deref(),
+            Some("{}")
+        );
+        let out = build_hook_output("UserPromptSubmit", 3, None, false).expect("3 件未読なら出力");
         let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
         assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
         let ctx = v["hookSpecificOutput"]["additionalContext"]
@@ -1073,13 +1122,28 @@ mod tests {
             .expect("additionalContext");
         assert!(ctx.contains("3 件"), "件数を含む: {ctx}");
         assert!(ctx.contains("wire_recv"), "受信導線を含む: {ctx}");
+
+        let agy_out =
+            build_hook_output("SessionStart", 2, None, true).expect("agy も未読ありで出力");
+        let agy_v: serde_json::Value = serde_json::from_str(&agy_out).expect("valid JSON");
+        let agy_msg = agy_v["injectSteps"][0]["systemMessage"]["systemMessage"]
+            .as_str()
+            .expect("injectSteps systemMessage");
+        assert!(agy_msg.contains("2 件"), "件数を含む: {agy_msg}");
+        assert!(is_agy_hook_event(Some(
+            &serde_json::json!({"hookEventName": "SessionStart"})
+        )));
+        assert!(!is_agy_hook_event(Some(
+            &serde_json::json!({"hook_event_name": "SessionStart"})
+        )));
     }
 
     /// C: wire 0 件でも委譲 pull があれば hook 出力する（合流）。
     #[test]
     fn hook_output_includes_delegation_pull() {
         let summary = Some("📋 未配達の委譲 1 件:\n委譲 dlg-x → Done: R。".to_string());
-        let out = build_hook_output("UserPromptSubmit", 0, summary).expect("委譲 pull で出力");
+        let out =
+            build_hook_output("UserPromptSubmit", 0, summary, false).expect("委譲 pull で出力");
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         let ctx = v["hookSpecificOutput"]["additionalContext"]
             .as_str()

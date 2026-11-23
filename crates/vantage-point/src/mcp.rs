@@ -78,17 +78,18 @@ pub struct SelfLane {
 }
 
 impl SelfLane {
-    /// cwd から SelfLane を判定。
+    /// cwd（および未登録 cwd 時は `VP_REPO` / `VP_LANE` env）から SelfLane を判定。
     ///
     /// 1. cwd ancestors を walk して `.vp/lanes/<name>` pattern を探す
     ///    (= [`detect_repo_local_sub`] の純粋関数で test 可能)
     /// 2. 見つかり repo_root が config 登録済なら sub (parent = config 名)
-    /// 3. それ以外は main。自 repo 名を `registered_repo_name_for_cwd`
+    /// 3. それ以外は main。自 repo 名を `match_repo_name_for_path`
     ///    (config-only / repo 非依存) で解決。登録 repo なら `Some(name)` = canonical
-    ///    identity、未登録 cwd なら `None` = wire op fail-closed (誤 identity を送らない)。
-    /// 4. cwd / config 取得失敗 → root_repo=None (fail-closed)
+    ///    identity。
+    /// 4. cwd がどの登録 repo にも該当しない場合（Antigravity がプラグイン dir を cwd にして
+    ///    `vp mcp` を spawn した場合等）、`VP_REPO` env が登録 repo 名に一致すれば env から
+    ///    lead または sub (`VP_LANE`) を解決する。それ以外は `None` = fail-closed。
     pub fn detect() -> Self {
-        // identity 解決不能な main (cwd/config 取得失敗) → None で fail-closed
         let lead_unresolved = || SelfLane {
             lane_name: crate::repo::lane::ROOT_LANE_NAME.to_string(),
             sub_parent: None,
@@ -100,8 +101,20 @@ impl SelfLane {
         let Ok(config) = crate::config::Config::load() else {
             return lead_unresolved();
         };
-        // sub 判定: cwd が <repo>/.vp/lanes/<name> 配下、かつ repo が config 登録済
-        if let Some((sub_name, repo_root)) = detect_repo_local_sub(&cwd)
+        let env_repo = std::env::var("VP_REPO").ok();
+        let env_lane = std::env::var("VP_LANE").ok();
+        Self::detect_from(&cwd, &config, env_repo.as_deref(), env_lane.as_deref())
+    }
+
+    /// 純関数版 `detect`: `cwd` を優先し、未登録 cwd のときだけ `env_repo` / `env_lane` に fallback する。
+    pub fn detect_from(
+        cwd: &std::path::Path,
+        config: &crate::config::Config,
+        env_repo: Option<&str>,
+        env_lane: Option<&str>,
+    ) -> Self {
+        // 1. sub 判定: cwd が <repo>/.vp/lanes/<name> 配下、かつ repo が config 登録済
+        if let Some((sub_name, repo_root)) = detect_repo_local_sub(cwd)
             && let Some(p) = config
                 .repos
                 .iter()
@@ -113,15 +126,45 @@ impl SelfLane {
                 root_repo: None, // identity は sub_parent が持つ
             };
         }
-        // main: 自 repo 名を config-only で解決 (未登録 cwd は None = fail-closed)。
-        // cwd は上で取得済みのものを正規化して渡す (二重取得を避ける)。
+        // 2. main (cwd): 自 repo 名を config-only で解決
+        if let Some(repo) = crate::resolve::match_repo_name_for_path(
+            &crate::config::Config::normalize_path(cwd),
+            config,
+        ) {
+            return SelfLane {
+                lane_name: crate::repo::lane::ROOT_LANE_NAME.to_string(),
+                sub_parent: None,
+                root_repo: Some(repo),
+            };
+        }
+        // 3. env fallback: cwd がどの登録 repo にも該当しないとき、VP_REPO が config に登録されていれば採用
+        if let Some(repo_name) = env_repo.map(str::trim).filter(|s| !s.is_empty())
+            && let Some(p) = config.repos.iter().find(|p| p.name == repo_name)
+        {
+            let lane = env_lane
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(crate::repo::lane::ROOT_LANE_NAME);
+            if lane == crate::repo::lane::ROOT_LANE_NAME
+                || vp_paths::LEGACY_ROOT_LANE_NAMES.contains(&lane)
+            {
+                return SelfLane {
+                    lane_name: crate::repo::lane::ROOT_LANE_NAME.to_string(),
+                    sub_parent: None,
+                    root_repo: Some(p.name.clone()),
+                };
+            } else {
+                return SelfLane {
+                    lane_name: lane.to_string(),
+                    sub_parent: Some(p.name.clone()),
+                    root_repo: None,
+                };
+            }
+        }
         SelfLane {
             lane_name: crate::repo::lane::ROOT_LANE_NAME.to_string(),
             sub_parent: None,
-            root_repo: crate::resolve::match_repo_name_for_path(
-                &crate::config::Config::normalize_path(&cwd),
-                &config,
-            ),
+            root_repo: None,
         }
     }
 
@@ -567,12 +610,26 @@ impl rmcp::ServerHandler for VantageMcp {
 /// sub context のとき parent repo の path を config から引く（VP-165 (A)）。
 ///
 /// main context（`sub_parent = None`）or parent が config に無い なら `None`。
+#[cfg(test)]
 fn sub_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -> Option<String> {
     let parent_name = self_lane.sub_parent.as_ref()?;
     config
         .repos
         .iter()
         .find(|p| &p.name == parent_name)
+        .map(|p| p.path.clone())
+}
+
+/// SelfLane（sub の `sub_parent` または lead の `root_repo`）が指す登録 repo の path を config から引く。
+fn target_repo_path(self_lane: &SelfLane, config: &crate::config::Config) -> Option<String> {
+    let repo_name = self_lane
+        .sub_parent
+        .as_ref()
+        .or(self_lane.root_repo.as_ref())?;
+    config
+        .repos
+        .iter()
+        .find(|p| &p.name == repo_name)
         .map(|p| p.path.clone())
 }
 
@@ -585,10 +642,7 @@ fn sub_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -> Opti
 /// 優先度:
 /// 1. 明示的なポート引数（Some で指定された場合）
 /// 2. discovery:
-///    - sub context（cwd = `vp_data_dir()/lanes/<parent>-<name>`）→ parent repo の path を
-///      config から引いて `find_by_repo`。sub の cwd は登録 repo path 配下でないので
-///      `find_for_cwd` は効かない
-///    - main context → `find_for_cwd`（cwd 一致 or 配下の running repo）
+///    - SelfLane から解決した登録 repo path で `find_by_repo`、無ければ `find_for_cwd`
 /// 3. デフォルトポート 33000
 async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
     // 1. 明示的なポート指定
@@ -598,24 +652,18 @@ async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
 
     // 2. discovery で live port を引く
     let self_lane = SelfLane::detect();
-    match &self_lane.sub_parent {
-        Some(_) => {
-            // sub: parent repo の repo を discovery で解決
-            if let Some(parent_path) = crate::config::Config::load()
-                .ok()
-                .as_ref()
-                .and_then(|c| sub_parent_path(&self_lane, c))
-                && let Some(info) = crate::discovery::find_by_repo(&parent_path).await
-            {
-                return info.port;
-            }
-        }
-        None => {
-            // main: cwd 一致（or 配下）の running repo
-            if let Some(info) = crate::discovery::find_for_cwd().await {
-                return info.port;
-            }
-        }
+    if let Some(repo_path) = crate::config::Config::load()
+        .ok()
+        .as_ref()
+        .and_then(|c| target_repo_path(&self_lane, c))
+        && let Some(info) = crate::discovery::find_by_repo(&repo_path).await
+    {
+        return info.port;
+    }
+    if self_lane.sub_parent.is_none()
+        && let Some(info) = crate::discovery::find_for_cwd().await
+    {
+        return info.port;
     }
 
     // 3. フォールバック
@@ -624,26 +672,23 @@ async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
 
 /// L0 SP-portless: Daemon "repo-proxy" の addressing 用に、 この MCP が属する repo の
 /// path（正規化済 path_key と同形）を解決する。 `resolve_process_port` と同じ discovery 経路
-/// (sub→parent / main→cwd) で running repo の `repo_dir` を引く。 repo 未起動などで
-/// 引けない場合は cwd の正規化 path に fallback（daemon 側で normalize_path_key 再正規化される）。
+/// で running repo の `repo_dir` を引く。 repo 未起動などで引けない場合は config 上の
+/// 登録 repo path（さらに未登録なら cwd の正規化 path）に fallback。
 async fn resolve_repo_path() -> String {
     let self_lane = SelfLane::detect();
-    let info = match &self_lane.sub_parent {
-        Some(_) => {
-            if let Some(parent_path) = crate::config::Config::load()
-                .ok()
-                .as_ref()
-                .and_then(|c| sub_parent_path(&self_lane, c))
-            {
-                crate::discovery::find_by_repo(&parent_path).await
-            } else {
-                None
-            }
-        }
+    let configured_path = crate::config::Config::load()
+        .ok()
+        .as_ref()
+        .and_then(|c| target_repo_path(&self_lane, c));
+    let info = match &configured_path {
+        Some(repo_path) => crate::discovery::find_by_repo(repo_path).await,
         None => crate::discovery::find_for_cwd().await,
     };
     if let Some(info) = info {
         return info.repo_dir;
+    }
+    if let Some(repo_path) = configured_path {
+        return crate::config::Config::normalize_path(std::path::Path::new(&repo_path));
     }
     // fallback: cwd の正規化 path（running repo が無くても repo を addressing できる）。
     std::env::current_dir()
@@ -961,6 +1006,63 @@ mod tests {
             root_repo: None,
         };
         assert_eq!(sub_parent_path(&unknown, &cfg), None);
+    }
+
+    #[test]
+    fn test_self_lane_detect_with_env_fallback() {
+        use crate::config::{Config, RepoConfig};
+        use std::path::Path;
+        let mut cfg = Config::default();
+        cfg.repos.push(RepoConfig {
+            name: "go-fast-packing".to_string(),
+            path: "/Users/x/repos/go-fast-packing".to_string(),
+            port: None,
+            enabled: true,
+            slot: None,
+        });
+        cfg.repos.push(RepoConfig {
+            name: "vantage-point".to_string(),
+            path: "/Users/x/repos/vantage-point".to_string(),
+            port: None,
+            enabled: true,
+            slot: None,
+        });
+
+        // 1. プラグインディレクトリ等の未登録 cwd + VP_REPO / VP_LANE あり (lead) → root_repo に fallback
+        let plugin_cwd = Path::new("/Users/x/.gemini/config/plugins/vantage-point");
+        let lane = SelfLane::detect_from(plugin_cwd, &cfg, Some("go-fast-packing"), Some("lead"));
+        assert_eq!(lane.lane_name, crate::repo::lane::ROOT_LANE_NAME);
+        assert_eq!(lane.sub_parent, None);
+        assert_eq!(lane.root_repo.as_deref(), Some("go-fast-packing"));
+        assert_eq!(
+            target_repo_path(&lane, &cfg).as_deref(),
+            Some("/Users/x/repos/go-fast-packing")
+        );
+
+        // 2. 未登録 cwd + VP_REPO / VP_LANE あり (sub lane) → sub_parent に fallback
+        let sub_lane =
+            SelfLane::detect_from(plugin_cwd, &cfg, Some("go-fast-packing"), Some("cad"));
+        assert_eq!(sub_lane.lane_name, "cad");
+        assert_eq!(sub_lane.sub_parent.as_deref(), Some("go-fast-packing"));
+        assert_eq!(sub_lane.root_repo, None);
+        assert_eq!(
+            target_repo_path(&sub_lane, &cfg).as_deref(),
+            Some("/Users/x/repos/go-fast-packing")
+        );
+
+        // 3. 登録 repo の cwd 内にいる場合は、env より cwd が優先される
+        let repo_cwd = Path::new("/Users/x/repos/vantage-point");
+        let by_cwd = SelfLane::detect_from(repo_cwd, &cfg, Some("go-fast-packing"), Some("cad"));
+        assert_eq!(by_cwd.lane_name, crate::repo::lane::ROOT_LANE_NAME);
+        assert_eq!(by_cwd.sub_parent, None);
+        assert_eq!(by_cwd.root_repo.as_deref(), Some("vantage-point"));
+
+        // 4. 未登録 cwd + 未登録の VP_REPO 名 → fail-closed (None)
+        let unknown_env =
+            SelfLane::detect_from(plugin_cwd, &cfg, Some("not-registered"), Some("lead"));
+        assert_eq!(unknown_env.sub_parent, None);
+        assert_eq!(unknown_env.root_repo, None);
+        assert_eq!(target_repo_path(&unknown_env, &cfg), None);
     }
 
     #[test]
