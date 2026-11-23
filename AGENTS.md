@@ -109,6 +109,21 @@ lead 側の規則（進行の見張り）:
 - Ready を受けたら lead がレビュー（B / C は sub の自己レビュー結果を読んでから）→ CI → merge → 次の task。
   C の merge は mako に可否を聞く
 
+### VP の外の session が VP の code を変える時（2026-11-23、mako 裁定）
+
+VP の lead 以外の session（他の repo の lead、VP の外で動く Claude / codex / agy など）が VP の code を
+変える時も、**merge は VP の lead が行う**。その session がやるのは PR（base nightly）を出すところまで。
+
+- PR を出したら VP の lead（`agent@vantage-point`）に wire で知らせる（`vp wire send`）。段は上の表で決め、
+  C は lead のレビューの後に mako が可否を決める
+- `.vp/lanes/` の下に worktree を作ると、VP の daemon がそれを lane として拾い、engine を立ち上げる
+  （上の raw-git fallback の配置）。作ったら VP の lead に wire で一言。lane にしない作業用の worktree は
+  `.vp/lanes/` の外に置く
+- 経緯: 2026-11-23、VP の外の session が `.vp/lanes/` に worktree を直接作り、PR #1282 を出して、作成の
+  36 秒後（06:12:26 → 06:13:02 UTC。CI が走り始める前で、CI は merge の後に走って緑）に自分で merge した。中身に問題は無かったが、
+  VP の lead も mako も把握していなかった
+  （裁定 `mem_1ChKYWCiFg8dHNLDSf6RbG`）
+
 ## wire 規約（inter-agent messaging）
 
 wire messaging 全体の見取り図（store / category / ack 台帳 / federation / flow_state 投影）は
