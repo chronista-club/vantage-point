@@ -131,3 +131,65 @@ ACP は標準 protocol（Zed 発、agentclientprotocol.com）。AcpAgentHost の
   （doc 41 moody #2 の機構を流用）で観測可能にしておく
 - **update 語彙の拡張**: `_x.ai/session_notification` の `turn_completed` は将来 usage/
   timing 素材（`_meta.totalTokens` も流れている — codex の tokenUsage と同型の将来素材）
+
+## 7. Grok の設定 panel
+
+関連: task `mem_1ChKFNBY7VQYSwFseyxUs9`、実測 `mem_1ChEhaHVsXPkjVuqpuadCZ` の「B の前提」。
+対象: `conversation/grok_settings.rs`、`repo/conversation_ops.rs`、`webview/grok-settings-panel.tsx`。
+
+Grok の chat header に model と reasoning effort の select を出す。候補・表示名・現在値は
+engine の `configOptions` → roster の `acp_config` が正で、model の固定表は作らない。
+外部の CLI 操作で現在値が候補外になっていても、その値を「候補外」と表示する。
+
+切替要求は `EngineSettings::Grok`（選んだ軸）で既存の `conversation_set_settings` に
+送り、稼働中の Grok host に適用する。model を先に送り、その応答で得た候補を使って effort を
+整える。host ごとに要求全体を直列化し、pool の lock は engine の応答待ちの前に離す。
+Grok は値を自身の会話に保存する。VP の registry に intent を保存せず、load 後に以前の選択を
+再適用しない（agy の doc 88 §6 とは保存主体が異なる）。ただし候補外の effort は下記の規則で正規化する。
+
+### effort をそろえる規則
+
+`low < medium < high < xhigh` は Grok の effort の意味順（上記実測を根拠に、Grok の純関数に
+閉じる）。候補そのものは engine の応答を使う。
+
+1. 現値が候補内なら維持する。
+2. 候補外なら、現値より低い候補のうち最も近いものを選ぶ。
+3. 低い候補が無ければ、現値より高い候補のうち最も近いものを選ぶ。
+4. 現値が未知の名前なら、engine 提示順の先頭を使う。既知の現値に対して未知の候補しか無い時は、順位を推測せず失敗として通知する。
+5. 軸が無ければ自動補正を送らない。軸はあるが候補が空なら失敗として通知する。
+
+例: `xhigh` のまま grok-4.5 に替えて候補から xhigh が消えた時は `high` にそろえる。
+engine に default の field が無いので、提示順の先頭を「既定値」とは呼ばない。
+直接 effort を選んだ時はその値を engine に送り、engine が断ったら失敗を表示する。
+
+完了は既存の `conversation:set_settings` の `request_id` と RPC 応答で識別する。
+app の応答は互換のため `codex_config` event の形で届き、console で engine 共通の
+`vp:conversation-settings-result` に投影する。panel は lane / session / request_id が一致した
+応答だけで送信中を解く。model だけの中間 roster や他の要求の完了では解除しない。
+35 秒後に未着なら「切替結果を確認できません」と出し、遅れて同じ要求の ACK が来れば解除する。
+
+補正は engine 共通の `acp_config.notice`（文と発生時刻）に載せる。失敗は既存の `error` に載せ、
+いずれも host と同じ寿命の揮発状態。補正成功は「effort を xhigh → high に揃えました」と表示し、
+失敗時は最新の engine の現在値と失敗理由を表示する。model 適用後に effort が失敗しても model の成功を取り消さない。
+
+### load / attach と外から変更された値
+
+2026-11-23、Grok 1.0.92 で、補正応答の直後に VP host を止めると別 process の load で
+`model=grok-4.5 / effort=xhigh` に戻った（1会話、0 turn、2 process）。生 ACP の追加切り分けでは
+10秒待ち / effort 単独 / effort→model の順の3ケースは high を保持した（各1回、0 turn）。
+保存タイミングの違いは未確定であり、常に両軸が残るとは主張しない。
+
+lead の裁定により、attach 完了時と roster 構築で観測した候補外 effort も同じ規則で一度そろえる。
+roster は engine 応答を待たず、結果を次の snapshot に載せる。model は変更せず、以前の intent は使わない。
+切替全体と正規化は同じ host の gate で排他する。補正後も候補外、または拒否されたら、同じ設定面には
+自動再送せずエラーを残す。設定面が変わるか、ユーザーが再試行すれば改めて扱う。
+
+### 境界と未使用経路
+
+共有 host は `set_config` 成功時に自身の揮発 intent も更新する。未使用の `restart_engine` 経路を
+将来使う場合は、この intent が再適用されることに注意する。今回の panel は registry の保存も
+再適用経路も追加しない。通常の chat の閉じる / 開くでは host を作り直し、Grok の保存値を load する。
+
+## Status log
+
+- 2026-11-23: Grok の設定 panel と effort の候補合わせを追加。実機 GUI の確認は PR の手順で行う。
