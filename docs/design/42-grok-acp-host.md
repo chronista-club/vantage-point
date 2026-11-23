@@ -9,6 +9,12 @@
 > agent-chat の設計書 01 に書いた。
 > 以下の本文は当時（grok の版は本文のとおり）の記録として残す。
 
+> **2026-11-23 画像入力**: grok 1.0.89 の `promptCapabilities.image: true` と 256×256 PNG の
+> 実測を根拠に、`EngineKind::image_capable` で Grok を有効にする。`ChatHost::submit_with_images`
+> の Grok 分岐も agy と同じ ACP adapter に画像を渡す（能力表だけの変更では text-only に落ちる）。
+> roster を受ける UI、fake ACP の受信内容、ignored の実機 E2E で各境界を検証する。
+> 小画像の拒否と model の認識誤り、GUI の実機確認状況は `docs/spec/chat-image-input.md` を参照。
+
 > 2026-07-18、mako + Fable 5 conductor session。doc 39 §7「常駐型のみの一枚岩
 > （claude / codex / **grok=ACP**）」の grok 実装編。doc 41（codex RpcHost）と同じ進行:
 > 実測 de-risk（§1、全 PASS）→ 設計固定 → 実装。

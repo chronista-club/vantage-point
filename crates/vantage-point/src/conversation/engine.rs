@@ -125,10 +125,11 @@ impl EngineKind {
     /// **能力表明**（`model_choices` の空/非空と同じ規律）: client はこれが false の lane で
     /// 貼り付け UI を出さない。押しても engine に無視されるだけの行き止まりを作らないため。
     /// Codex は app-server の image input（data URL）へ変換する。agy は ACP の image content
-    /// block（`promptCapabilities.image: true`、doc 88 §6）。
+    /// block（`promptCapabilities.image: true`、doc 88 §6）。Grok も ACP image block を受ける
+    /// （grok 1.0.89、2026-11-23 実測: 256×256 PNG を認識。8×8 は小さすぎるとして拒否）。
     /// 対応範囲: docs/spec/chat-image-input.md。他 engine が対応したらここに足す。
     pub fn image_capable(self) -> bool {
-        matches!(self, Self::Claude | Self::Codex | Self::Agy)
+        matches!(self, Self::Claude | Self::Codex | Self::Grok | Self::Agy)
     }
 
     /// VP から「model だけ」の指定を受ける engine か（`vp lane new --model` / config の
@@ -400,7 +401,7 @@ impl ChatHost {
 
     /// 画像を添えて投入する（chat 入力欄への貼り付け）。
     ///
-    /// ⚠️ **画像を運べるのは Claude / Codex / agy**（[`EngineKind::image_capable`]）。他 engine には
+    /// ⚠️ **画像を運べるのは Claude / Codex / Grok / agy**（[`EngineKind::image_capable`]）。他 engine には
     /// 画像を渡す先が無いので **text だけを投入する**（黙って捨てる）。client は
     /// `image_capable` が false の lane で貼り付け UI を出さないので、ここに画像が
     /// 来るのは異常系（新 engine 追加時の取り残し等）— log で気付けるようにする。
@@ -415,7 +416,7 @@ impl ChatHost {
                 h.submit_images_with_activity(prompt, images, None, None)
                     .await
             }
-            ChatHost::Agy(h) => h.submit_with_images(prompt, images).await,
+            ChatHost::Grok(h) | ChatHost::Agy(h) => h.submit_with_images(prompt, images).await,
             other => {
                 if !images.is_empty() {
                     tracing::warn!(
@@ -424,9 +425,12 @@ impl ChatHost {
                     );
                 }
                 match other {
-                    ChatHost::Grok(h) | ChatHost::OpenCode(h) => h.submit(prompt).await,
+                    ChatHost::OpenCode(h) => h.submit(prompt).await,
                     ChatHost::Vpcode(h) => h.submit(prompt).await,
-                    ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Agy(_) => {
+                    ChatHost::Claude(_)
+                    | ChatHost::Codex(_)
+                    | ChatHost::Grok(_)
+                    | ChatHost::Agy(_) => {
                         unreachable!("上の arm で処理済み")
                     }
                 }
@@ -489,14 +493,18 @@ impl ChatHost {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn codex_advertises_image_input() {
-        assert!(super::EngineKind::Codex.image_capable());
-        // agy: `promptCapabilities.image: true`（doc 88 §1）→ ACP の image content block で運ぶ。
-        assert!(super::EngineKind::Agy.image_capable());
-        assert!(
-            !super::EngineKind::Grok.image_capable(),
-            "grok は未対応のまま"
-        );
+    fn image_input_capability_table() {
+        // mem_1ChKFMEwUYWj5Qs6VLVkU4: roster 経由で貼り付け UI を開く能力表。
+        for (engine, expected) in [
+            (EngineKind::Claude, true),
+            (EngineKind::Codex, true),
+            (EngineKind::Grok, true),
+            (EngineKind::OpenCode, false),
+            (EngineKind::Agy, true),
+            (EngineKind::Vpcode, false),
+        ] {
+            assert_eq!(engine.image_capable(), expected, "{engine:?}");
+        }
     }
     use super::*;
 
