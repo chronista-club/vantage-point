@@ -81,7 +81,11 @@ impl EngineSettings {
                 ..Default::default()
             })),
             EngineKind::Vpcode => Some(Self::Vpcode(VpcodeSettings { model })),
-            EngineKind::Codex | EngineKind::Grok | EngineKind::OpenCode | EngineKind::Agy => None,
+            EngineKind::Agy => Some(Self::Agy(AgySettings {
+                model: Some(model),
+                ..Default::default()
+            })),
+            EngineKind::Codex | EngineKind::Grok | EngineKind::OpenCode => None,
         }
     }
 
@@ -169,6 +173,13 @@ mod tests {
     fn from_model_only_for_engines_that_take_a_model_intent() {
         assert!(EngineSettings::from_model(EngineKind::Claude, "m".into()).is_some());
         assert!(EngineSettings::from_model(EngineKind::Vpcode, "m".into()).is_some());
+        assert_eq!(
+            EngineSettings::from_model(EngineKind::Agy, "gemini-4-neon".into()),
+            Some(EngineSettings::Agy(AgySettings {
+                model: Some("gemini-4-neon".into()),
+                ..Default::default()
+            }))
+        );
         assert!(EngineSettings::from_model(EngineKind::Codex, "m".into()).is_none());
         assert!(EngineSettings::from_model(EngineKind::Grok, "m".into()).is_none());
         // 述語と match が食い違わない（全 engine で一致）

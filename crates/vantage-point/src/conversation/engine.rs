@@ -138,7 +138,7 @@ impl EngineKind {
     /// [`super::settings::EngineSettings::from_model`] と `settings_file::agent_accepts_model` が
     /// 共有する唯一の述語（catalog の空/非空は vpcode で環境依存になるので、ここでは使わない）。
     pub fn takes_model_intent(self) -> bool {
-        matches!(self, Self::Claude | Self::Vpcode)
+        matches!(self, Self::Claude | Self::Vpcode | Self::Agy)
     }
 
     /// VP の model picker に出す選択肢（engine ごとの catalog — server が SSOT、client は

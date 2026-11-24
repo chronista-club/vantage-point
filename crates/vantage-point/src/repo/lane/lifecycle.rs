@@ -615,13 +615,13 @@ pub(crate) async fn create_sub_orchestrated(
     // 委ねる — 旧「未設定なら Opus 強制」は撤去）。CLI (persist_lane_model) と同じ既定規則を
     // 共有し、tui/gui 両方に効く（model は per-lane 単一真実源）。
     //
-    // ⚠️ doc 59 P4: **この lane の agent が model を受け付ける時だけ**既定を当てる。
+    // ⚠️ doc 59 P4: **この lane の agent が既定 agent と一致し、かつ model を受け付ける時だけ**既定を当てる。
     // 旧実装は agent を見ずに `default-lane-model` を返してから agent と組にしていたため、
-    // `default-agent "codex"` + `default-lane-model "claude-opus-5"` のような
-    // **意味のない組み合わせ**が registry に載った（silent no-op で気づけない）。
-    let default_model = crate::settings_file::default_lane_pair()
-        .1
-        .filter(|_| crate::settings_file::agent_accepts_model(&agent));
+    // `default-agent "claude"` + `default-lane-model "opus"` の下で別 agent（`agy` や `vpcode`）の
+    // lane を作ったときにも `"opus"` が載り得た。
+    let (default_agent, default_model) = crate::settings_file::default_lane_pair();
+    let default_model = default_model
+        .filter(|_| agent == default_agent && crate::settings_file::agent_accepts_model(&agent));
     if let Some(model) =
         crate::lane::engine_model::resolve_default(req.model.as_deref(), default_model.as_deref())
     {
