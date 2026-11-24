@@ -118,6 +118,10 @@ protocol "sidebar" version="1.0.0" {
         // `vp daemon restart` → GUI relaunch を実行する (flows/update.rs)。
         // version = 適用予定の latest version (ダイアログ文言用)。
         request "update:check" {}
+        // engine usage meter（spec mem_1ChMLKCMUvC73JHTLjG3xg）: MachineStrip の「更新」ボタン。
+        // Rust が daemon "daemon-usage" channel に `refresh` event を上げる（tray の Refresh Usage と
+        // 同じ口）。結果は daemon の push（snapshot）で届くので戻り値は無い。連打は daemon がまとめる。
+        request "usage:refresh" {}
         request "update:apply" {
             field "version" type="string"
         }

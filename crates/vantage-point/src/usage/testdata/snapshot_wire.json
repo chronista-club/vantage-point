@@ -1,0 +1,48 @@
+{
+  "engines": [
+    {
+      "engine": "claude",
+      "plan": "Ultra",
+      "tier": "default_claude_max_20x",
+      "windows": [
+        { "id": "weekly", "label": "weekly", "used_pct": 88.0, "resets_at_ms": 1795654799983, "severity": "warning", "scope": null },
+        { "id": "model:fable", "label": "weekly · Fable", "used_pct": 100.0, "resets_at_ms": 1795654799983, "severity": "critical", "scope": "Fable" }
+      ],
+      "fetched_at_ms": 1795502717111,
+      "source": "cache",
+      "error": null
+    },
+    {
+      "engine": "codex",
+      "plan": "pro",
+      "tier": null,
+      "windows": [
+        { "id": "weekly", "label": "weekly", "used_pct": 95.0, "resets_at_ms": 1795986631000, "severity": "critical", "scope": null }
+      ],
+      "fetched_at_ms": 1795502800000,
+      "source": "event",
+      "error": null
+    },
+    {
+      "engine": "agy",
+      "plan": null,
+      "tier": null,
+      "windows": [
+        { "id": "gemini-5h", "label": "Gemini · 5h", "used_pct": 17.5, "resets_at_ms": 1795474554000, "severity": "normal", "scope": null }
+      ],
+      "fetched_at_ms": 1795502800000,
+      "source": "poll",
+      "error": null
+    },
+    {
+      "engine": "grok",
+      "plan": null,
+      "tier": null,
+      "windows": [],
+      "fetched_at_ms": null,
+      "source": "none",
+      "error": "grok が見つかりません（未インストール）"
+    }
+  ],
+  "updated_at_ms": 1795502800001
+}

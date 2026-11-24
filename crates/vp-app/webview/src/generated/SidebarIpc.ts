@@ -183,6 +183,9 @@ export interface WireAck {
 /** Request "update:check" — empty payload */
 export interface UpdateCheck {}
 
+/** Request "usage:refresh" — empty payload */
+export interface UsageRefresh {}
+
 /** Request "update:apply" */
 export interface UpdateApply {
   version: string;
@@ -272,6 +275,7 @@ export type IpcChannelRequestTypes = {
   WireFetch: { request: WireFetch; response: void };
   WireAck: { request: WireAck; response: void };
   UpdateCheck: { request: UpdateCheck; response: void };
+  UsageRefresh: { request: UsageRefresh; response: void };
   UpdateApply: { request: UpdateApply; response: void };
   AuthLogin: { request: AuthLogin; response: void };
   AuthLogout: { request: AuthLogout; response: void };
@@ -311,6 +315,7 @@ export const IpcChannelMeta = {
     WireFetch: { request: "wire:fetch" as const, response: "void" as const },
     WireAck: { request: "wire:ack" as const, response: "void" as const },
     UpdateCheck: { request: "update:check" as const, response: "void" as const },
+    UsageRefresh: { request: "usage:refresh" as const, response: "void" as const },
     UpdateApply: { request: "update:apply" as const, response: "void" as const },
     AuthLogin: { request: "auth:login" as const, response: "void" as const },
     AuthLogout: { request: "auth:logout" as const, response: "void" as const },
@@ -346,6 +351,7 @@ export type IpcEnvelope =
   | ({ t: "wire:fetch" } & WireFetch)
   | ({ t: "wire:ack" } & WireAck)
   | ({ t: "update:check" } & UpdateCheck)
+  | ({ t: "usage:refresh" } & UsageRefresh)
   | ({ t: "update:apply" } & UpdateApply)
   | ({ t: "auth:login" } & AuthLogin)
   | ({ t: "auth:logout" } & AuthLogout)

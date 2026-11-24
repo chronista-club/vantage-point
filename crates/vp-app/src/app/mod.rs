@@ -274,7 +274,21 @@ pub fn run() -> anyhow::Result<()> {
                 event,
                 scope,
             }) => {
+                // engine usage meter: app 全体の event。tray と**全** window に配る（focused だけに
+                // 送ると、他の window の MachineStrip / engine 選択が古いまま残る）。
+                if let AppEvent::UsageUpdated(snapshot) = event {
+                    on_misc::usage_updated(&app, &mut windows, snapshot);
+                    return;
+                }
                 if let AppEvent::MenuClicked(ref id) = event {
+                    if app
+                        .tray
+                        .as_ref()
+                        .is_some_and(|tray| *id == tray.refresh_usage_id)
+                    {
+                        app.request_usage_refresh();
+                        return;
+                    }
                     if *id == app.menu_ids.quit {
                         for (ui, boot) in windows.values_mut() {
                             ui.persist.save_on_quit(&boot.window);
@@ -438,6 +452,9 @@ fn dispatch_window_event(event: AppEvent, ui: &mut state::UiState, boot: &boot::
         AppEvent::MidiUseCommand { payload } => on_misc::midi_use_command(boot, &proxy, payload),
         AppEvent::MidiUseResult { payload } => on_misc::midi_use_result(boot, payload),
         AppEvent::DeviceEvent { payload } => on_misc::device_event(ui, boot, payload),
+        // 通常は event loop が window へ振り分ける前に拾って全 window + tray に配る（app 全体の
+        // event）。ここに来るのは window 宛てに送られた時だけ — その window にだけ反映する。
+        AppEvent::UsageUpdated(snapshot) => on_misc::usage_window(ui, boot, snapshot),
         AppEvent::EditorCommand {
             op,
             field_id,

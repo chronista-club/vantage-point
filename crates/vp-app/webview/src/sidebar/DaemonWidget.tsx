@@ -10,12 +10,25 @@
  *
  * `ActivitySnapshot`（Rust が 5s 周期で push）を消費する。旧 DaemonWidget
  * （11 行 ≈ 340px 常時表示）はこの 2 export に分解されて退役。
+ *
+ * engine usage meter（spec mem_1ChMLKCMUvC73JHTLjG3xg）も machine scope の住人なので MachineStrip に
+ * 置く: 畳んだ 1 行には最も逼迫しているエンジンの % だけ（`Cdx 95%`、severity で色）、展開すると
+ * 4 エンジンのゲージ・窓ごとの %・リセットまでの時間・「更新」ボタン。値は `SidebarState.engine_usage`。
  */
 import { For, Show, createSignal, onCleanup } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
+import type { EngineUsage } from "../generated/EngineUsage";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
 import { agentDisplayName, agentIcon } from "./lane";
+import {
+	formatResetIn,
+	pctText,
+	severityOf,
+	summaryWindow,
+	usageShortName,
+	worstGauge,
+} from "./usage";
 
 /** ISO 8601 の `started_at` から相対 uptime 文字列を作る。 */
 function formatUptime(iso: string | null | undefined, nowMs: number): string {
@@ -197,6 +210,16 @@ export function MachineStrip() {
 						<CreoIcon name="ph:arrow-circle-up" size={12} />
 					</span>
 				</Show>
+				<Show when={worstGauge(sidebar.engine_usage)}>
+					{(g) => (
+						<span
+							class={`vp-usage-chip ${g().severity}`}
+							title="最も逼迫しているエンジンの使用率（展開で 4 エンジンの内訳）"
+						>
+							{g().short} {pctText(g().pct ?? 0)}%
+						</span>
+					)}
+				</Show>
 			</summary>
 
 			<div class="vp-daemon-detail">
@@ -221,6 +244,8 @@ export function MachineStrip() {
 					<span class="v">{v.a().running_repo_count}</span>
 				</div>
 			</div>
+
+			<UsagePanel now={now()} />
 
 			<Show when={v.online() && v.updateAvailable()}>
 				<div
@@ -331,5 +356,96 @@ export function MachineStrip() {
 				</div>
 			</div>
 		</details>
+	);
+}
+
+/**
+ * engine usage meter の展開部 — 4 エンジンのゲージと窓ごとの内訳、「更新」ボタン。
+ *
+ * 「更新」は daemon に refresh を上げるだけ（結果は push で届く）。grok は MCP server まで立ち上がる
+ * ので daemon はこのボタン（と tray の Refresh Usage）の時だけ問い合わせる。連打は daemon がまとめる。
+ */
+function UsagePanel(props: { now: number }) {
+	const snapshot = () => sidebar.engine_usage ?? null;
+	return (
+		<div class="vp-usage">
+			<div class="vp-usage-head">
+				<span class="k">usage</span>
+				<button
+					type="button"
+					class="vp-hub-auth-btn vp-usage-refresh"
+					title="4 エンジンの usage を取り直す（grok はこのボタンの時だけ問い合わせる）"
+					onClick={(e) => {
+						e.stopPropagation();
+						sendIpc({ t: "usage:refresh" });
+					}}
+				>
+					更新
+				</button>
+			</div>
+			<Show
+				when={snapshot()}
+				fallback={<div class="vp-usage-empty">— daemon から未着</div>}
+			>
+				{(snap) => (
+					<For each={snap().engines}>
+						{(usage) => <UsageEngineRow usage={usage} now={props.now} />}
+					</For>
+				)}
+			</Show>
+		</div>
+	);
+}
+
+/** 1 エンジン分: 代表の枠のゲージ + 窓ごとの行（部分枠は 1 段静かに）+ 取得失敗の理由。 */
+function UsageEngineRow(props: { usage: EngineUsage; now: number }) {
+	const main = () => summaryWindow(props.usage);
+	const severity = () => {
+		const w = main();
+		return w ? severityOf(w) : "normal";
+	};
+	const title = () =>
+		[
+			props.usage.engine,
+			props.usage.plan ? `plan: ${props.usage.plan}` : null,
+			props.usage.tier ? `tier: ${props.usage.tier}` : null,
+			`取得: ${props.usage.source}`,
+			props.usage.error ? `直近の失敗: ${props.usage.error}` : null,
+		]
+			.filter(Boolean)
+			.join(" · ");
+	return (
+		<div class="vp-usage-engine">
+			<div class="vp-usage-row" title={title()}>
+				<span class="vp-usage-name">{usageShortName(props.usage.engine)}</span>
+				<span class="vp-usage-bar">
+					<span
+						class={`vp-usage-fill ${severity()}`}
+						style={{ width: `${main()?.used_pct ?? 0}%` }}
+					/>
+				</span>
+				<span class={`vp-usage-pct ${severity()}`}>
+					{main() ? `${pctText(main()!.used_pct)}%` : "—"}
+				</span>
+			</div>
+			<For each={props.usage.windows}>
+				{(w) => (
+					<div class="vp-usage-window" classList={{ scoped: w.scope !== null }}>
+						<span class="k">{w.label}</span>
+						<span class={`v ${severityOf(w)}`}>
+							{pctText(w.used_pct)}%
+							{w.resets_at_ms !== null ? ` · ${formatResetIn(w.resets_at_ms, props.now)}` : ""}
+						</span>
+					</div>
+				)}
+			</For>
+			<Show when={props.usage.windows.length === 0 && props.usage.error}>
+				{(error) => (
+					<div class="vp-usage-error" title={error()}>
+						{error()}
+					</div>
+				)}
+			</Show>
+		</div>
 	);
 }

@@ -115,6 +115,9 @@ pub struct WireAck {
 pub struct UpdateCheck;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageRefresh;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateApply {
     pub version: String,
 }
@@ -297,6 +300,8 @@ pub enum IpcEnvelope {
     WireAck(WireAck),
     #[serde(rename = "update:check")]
     UpdateCheck,
+    #[serde(rename = "usage:refresh")]
+    UsageRefresh,
     #[serde(rename = "update:apply")]
     UpdateApply(UpdateApply),
     #[serde(rename = "auth:login")]
