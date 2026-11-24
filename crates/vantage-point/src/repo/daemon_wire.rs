@@ -117,10 +117,12 @@ async fn invalidate(link: &Arc<WireLink>) {
 /// path から `/api/` prefix を剥いだ残り (= `"wire/send"` / `"delegation/create"`) を unison "wire"
 /// channel の method として daemon (QUIC) に request する。
 ///
-/// エラー規約 (HTTP 版と不変):
+/// エラー規約:
 /// - transport 失敗 → `Err("daemon unreachable ...")`
-/// - 応答 JSON に `error` field → その内容を Err として relay
-///   (daemon 側 channel handler は server Err を success frame の `{"error": <msg>}` で返す)
+/// - daemon が断った → Err。daemon は Error frame で断り（doc 27 §3.4.7）、`request()` の Err の
+///   文面（`wire channel request (<method>) 失敗: Protocol error: Request error: {"error":…}`）に
+///   理由が入る。Error frame 移行前の daemon は成功の frame に `{"error": <msg>}` を詰めるので、
+///   その文字列を Err にする
 pub(crate) async fn call(
     path: &str,
     payload: serde_json::Value,

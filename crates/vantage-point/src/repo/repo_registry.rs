@@ -273,8 +273,9 @@ impl RepoRuntimes {
     /// 当該 repo の [`dispatch_repo_method`] を **直接呼ぶ**。
     ///
     /// 旧 `forward_to_sp_control`（Daemon → QUIC control channel → repo）の後継。
-    /// 戻り値の形（成功は生の JSON、失敗は `{"error": ...}`）は caller が
-    /// `send_response` でそのまま client に relay するため互換に保つ。
+    /// 成功は生の JSON、失敗は `Err(理由)`（repo 未起動 / [`dispatch_repo_method`] の Err）。
+    /// channel の caller は Error frame にして client に返し（doc 27 §3.4.7）、in-process の
+    /// caller は `Ok` / `Err` で分岐する。
     ///
     /// [`dispatch_repo_method`]: super::unison_server::dispatch_repo_method
     pub async fn dispatch(
@@ -282,18 +283,13 @@ impl RepoRuntimes {
         path_key: &str,
         method: &str,
         payload: &serde_json::Value,
-    ) -> serde_json::Value {
+    ) -> Result<serde_json::Value, String> {
         let Some(state) = self.get(path_key).await else {
-            return serde_json::json!({
-                "error": format!("repo 未起動 (key={})", path_key)
-            });
+            return Err(format!("repo 未起動 (key={})", path_key));
         };
-        match super::unison_server::dispatch_repo_method(&state, method, payload.clone()).await {
-            Ok(v) => v,
-            Err(e) => serde_json::json!({
-                "error": format!("repo dispatch 失敗 (key={}): {}", path_key, e)
-            }),
-        }
+        super::unison_server::dispatch_repo_method(&state, method, payload.clone())
+            .await
+            .map_err(|e| format!("repo dispatch 失敗 (key={}): {}", path_key, e))
     }
 }
 
@@ -346,17 +342,11 @@ mod tests {
     #[tokio::test]
     async fn dispatch_on_unknown_repo_reports_not_started() {
         let runtimes = RepoRuntimes::new();
-        let res = runtimes
+        let err = runtimes
             .dispatch("/no/such/repo", "lanes_list", &serde_json::json!({}))
-            .await;
-        let err = res
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        assert!(
-            err.contains("repo 未起動"),
-            "未起動 repo は error JSON を返すべき: {res}"
-        );
+            .await
+            .expect_err("未起動 repo は Err");
+        assert!(err.contains("repo 未起動"), "理由を含む: {err}");
     }
 
     #[tokio::test]

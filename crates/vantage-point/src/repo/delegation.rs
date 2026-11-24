@@ -233,7 +233,7 @@ pub(crate) async fn handle_complete(
         })?;
 
     // Daemon store で transition。返り = 更新後 record（{id, requester, doer, task, state, outcome}）。
-    // 未知 id は Daemon handler が `{error}` を返す → daemon_wire::call が Err にする。
+    // 未知 id は Daemon handler が Error frame で断る → daemon_wire::call が Err にする。
     let rec = super::daemon_wire::call(
         "/api/delegation/complete",
         serde_json::json!({ "id": id, "outcome": outcome }),
@@ -424,14 +424,15 @@ async fn reconcile_pulse(
         let root_mode = super::delivery_actor::lane_identity_from_agent(&target)
             .map(|(p, l)| crate::lane::session_registry::root_mode(&p, &l))
             .unwrap_or_default();
-        let resp = crate::daemon::server::forward_to_sp_control(
+        // 失敗（Err）は delivered を立てない = 次 tick で再通知（pending 保持）。
+        let forwarded = crate::daemon::server::forward_to_sp_control(
             control_channels,
             &nudge.path_key,
             super::delivery_actor::nudge_method_for(root_mode),
             &serde_json::json!({ "lane": nudge.lane_display, "text": text }),
         )
         .await;
-        if resp.get("error").is_none() {
+        if forwarded.is_ok() {
             store.mark_delivered(&d.id, true).await?;
             tracing::info!(
                 "delegation reconcile: re-nudge delivered (id={}, target={})",

@@ -1,7 +1,7 @@
 # repo-proxy から session を作成・削除し、表示を切り替える
 
 `repo-proxy` は、最初の request に `repo_path` を入れると `subscribe` なしで利用できる。
-対象 repo は daemon 内で起動済みであること。protocol v0.4.0 の KDL 公開面は
+対象 repo は daemon 内で起動済みであること。protocol v0.5.0 の KDL 公開面は
 `lanes_list`、`session_set_mode`、`conversation_session_create`、
 `conversation_session_remove`。既存 client の `subscribe {repo_path}` 方式も利用できる。
 
@@ -22,7 +22,7 @@
 - 削除: `conversation_session_remove {repo_path, lane, session}`。作成応答の `session` を使う。
   session key は 1〜4294967295 の整数。成功応答は `{status: "ok", lane, session, focused}`。
   稼働中の engine / terminal も閉じる。`focused` は削除後の注視先 key で、注視中の session を
-  閉じると残りの先頭へ移る。root session の削除と lane 不在は `error` を返す。
+  閉じると残りの先頭へ移る。root session の削除と lane 不在は Error frame で断られる（理由は payload の `error`）。
 - 既に無い session の削除は `{status: "absent", lane, session, focused: null}` で冪等に成功する。
   この null は lane に注視先が無いという意味ではない。現在の注視先は `lanes_list` で読む。
 
@@ -58,7 +58,7 @@
 4. chat 対応 agent の lane で `agent` と `focus` を省略して作成し、lane の agent を引き継ぎ、
    新 session が注視されることを確認する。GUI attach または発言に応じた engine の起動を確かめ、
    作成した session を削除する。元の注視先と違えば GUI で元に戻す。
-5. 控えた root key が現在も root であることを一覧で読み直し、その削除が `error` を返して
+5. 控えた root key が現在も root であることを一覧で読み直し、その削除が Error frame で断られて
    root が残ることを確認する。実機確認は lead が管理する検証用 lane / session で行う。
 
 CLI の単発呼び出しでも同じ入口を確認できる（`unison call --help` で確認済みの形）。
@@ -69,7 +69,7 @@ unison call 'quic://[::1]:32000' --channel repo-proxy --method lanes_list \
   --payload '{"repo_path":"/absolute/path/to/repo"}' --timeout 5000
 ```
 
-`repo_path` を省略した場合は、無言で待たずに `error` を返す。typed MCP tool は必須引数を
+`repo_path` を省略した場合は、無言で待たずに Error frame で断る。typed MCP tool は必須引数を
 先に検証することがあるため、daemon 側のエラーは次の直接呼び出しで確認する。
 
 ```bash
@@ -77,7 +77,10 @@ unison call 'quic://[::1]:32000' --channel repo-proxy --method lanes_list \
   --payload '{}' --timeout 5000
 ```
 
-空文字・文字列以外も同じエラーになる。未起動 repo は `repo 未起動` を返す。
-成功応答と、response payload 内の `error` を区別すること。
+空文字・文字列以外も同じエラーになる。未起動 repo は `repo 未起動` で断る。
+repo の handler が Err で返した失敗（未起動 repo、引数の誤り、未知の method など）は Error frame で
+返る（payload は `{error: "理由"}`。protocol v0.5.0 から。それより前の daemon は成功応答に `error` を
+詰めていた）。ただし `layout_get` / `layout_set` / `layout_history` は vp-app の webview の評価結果を
+そのまま成功応答として返すので、評価の timeout 等では成功応答の中に `error` が入ることがある。
 永続 channel では最初の repo_path に宛先が固定される。別 repo を操作する場合は
 新しい channel を開く。

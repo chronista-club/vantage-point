@@ -113,9 +113,12 @@ impl DaemonControl {
     /// 各段の上限は [`REPO_ASK_TIMEOUT`]（`RPC_TIMEOUT` とは別）。
     ///
     /// **自動再送しない**: 応答を失った更新 / 削除を勝手に再送すると二重実行になる。失敗は
-    /// 呼び手に返し、user 操作で再試行する。repo が dispatch の Err を `{"error"}` の正常応答
-    /// として返す場合は [`rpc_error`] で Err に戻す（transport 成功 = 処理成功ではない）。
-    /// transport 障害は `repo-proxy <段>: …`、repo 側の失敗は `repo-proxy <method>: <error>` で区別できる。
+    /// 呼び手に返し、user 操作で再試行する。daemon は dispatch の Err を Error frame で返し、
+    /// `request()` が理由を含む Err にする。Error frame 移行前の daemon は `{"error"}` の正常応答
+    /// として返すので、[`rpc_error`] で Err に戻す（transport 成功 = 処理成功ではない）。
+    /// 文面は段ごとに `repo-proxy <段>: …` / `repo-proxy <method>: …`。request の段の transport 障害と
+    /// repo 側の失敗はどちらも `repo-proxy <method>: …` で、repo の拒否は中身が `Protocol error: Request
+    /// error: …` になる（判定には使わない — 受信 loop が合成する切断も同じ形、doc 27 §3.4.6）。
     pub async fn repo_request(
         &self,
         repo_path: &str,
@@ -377,10 +380,11 @@ fn control_response_error(channel: &str, method: &str, resp: &serde_json::Value)
     rpc_error(resp)
 }
 
-/// 旧 daemon の error 慣習 (VP-163): Error frame への移行前は失敗を
+/// 旧 daemon の error 慣習 (VP-163): Error frame への移行前（doc 27 §3.4.7 より前）は失敗を
 /// **成功 frame の `{"error": ...}`** で返す。transport 成功 = 処理成功ではないため、
 /// ここで拾わないと未知 method や validation 失敗が silent success になる
-/// (`daemon_repo_request` が同じ理由で同じ処理をしている)。
+/// (`daemon_repo_request` が同じ理由で同じ処理をしている)。新しい daemon の Error frame は
+/// `request()` が Err にするので、ここには来ない。
 pub fn rpc_error(resp: &serde_json::Value) -> Option<String> {
     resp.get("error").map(|e| match e.as_str() {
         Some(s) => s.to_string(),
