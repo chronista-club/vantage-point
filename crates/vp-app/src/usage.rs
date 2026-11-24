@@ -3,7 +3,8 @@
 //! 写し（`UsageSnapshot` / `EngineUsage` / `UsageWindow`）は daemon の
 //! `vantage_point::usage::model` と同じ JSON 形（vp-app は vantage-point crate に依存しないので
 //! `daemon_wire.rs` と同じく手で写す）。`severity` / `source` は文字列で受ける — daemon が
-//! 値を増やしても vp-app が decode で落ちない（知らない値は normal 扱いで表示される）。
+//! 値を増やしても vp-app が decode で落ちない（知らない severity は webview の `severityOf` が
+//! % から決め直す。tray は severity を使わない）。
 //!
 //! ts-rs で webview にも同じ型を出す（`SidebarState.engine_usage` 経由で sidebar store に入る）。
 //! epoch ms は JSON 上ただの number なので `ts(type = "number")`（既定の bigint にしない）。
@@ -71,7 +72,7 @@ pub struct UsageWindow {
     pub scope: Option<String>,
 }
 
-/// menu bar に出す短い名前（MachineStrip の `CC 88% · Cdx 95% …` と同じ）。
+/// menu bar に出す短い名前（MachineStrip のチップ・ゲージと同じ — `usage.ts::usageShortName`）。
 pub fn short_name(engine: &str) -> &str {
     match engine {
         "claude" => "CC",
@@ -94,16 +95,24 @@ pub fn display_name(engine: &str) -> &str {
 }
 
 /// その engine の代表の枠 = **engine 全体の枠（scope なし）の中で最も使っているもの**。
-/// 全体の枠が 1 つも無い時だけ、部分枠の最悪値に倒す。
+/// 全体の枠が 1 つも無い時だけ、部分枠の最悪値に倒す。同率は先に並んでいる方
+/// （webview の `summaryWindow` と同じ規則 — 違うと tray と MachineStrip で別の窓を出す）。
 pub fn summary_window(usage: &EngineUsage) -> Option<&UsageWindow> {
     let worst = |scoped: bool| {
-        usage
-            .windows
-            .iter()
-            .filter(|w| w.scope.is_some() == scoped)
-            .max_by(|a, b| a.used_pct.total_cmp(&b.used_pct))
+        first_max(
+            usage.windows.iter().filter(|w| w.scope.is_some() == scoped),
+            |w| w.used_pct,
+        )
     };
     worst(false).or_else(|| worst(true))
+}
+
+/// 最大値のうち**最初の 1 つ**（`Iterator::max_by` は同率で最後を返すので使わない）。
+fn first_max<T>(items: impl Iterator<Item = T>, key: impl Fn(&T) -> f32) -> Option<T> {
+    items.fold(None, |best, item| match best {
+        Some(b) if key(&b) >= key(&item) => Some(b),
+        _ => Some(item),
+    })
 }
 
 /// `88.0` → `88`、`17.3` → `17`（menu bar / 一覧は整数で足りる）。
@@ -115,12 +124,14 @@ fn pct_text(used_pct: f32) -> String {
 /// （`Cdx 95%`）。4 つ並べると menu bar を食いすぎるので、一覧はメニューの中に置く。
 /// まだどれも取れていなければ None（icon だけにする）。
 pub fn tray_title(snapshot: &UsageSnapshot) -> Option<String> {
-    snapshot
-        .engines
-        .iter()
-        .filter_map(|e| summary_window(e).map(|w| (e, w)))
-        .max_by(|(_, a), (_, b)| a.used_pct.total_cmp(&b.used_pct))
-        .map(|(e, w)| format!("{} {}%", short_name(&e.engine), pct_text(w.used_pct)))
+    first_max(
+        snapshot
+            .engines
+            .iter()
+            .filter_map(|e| summary_window(e).map(|w| (e, w))),
+        |(_, w)| w.used_pct,
+    )
+    .map(|(e, w)| format!("{} {}%", short_name(&e.engine), pct_text(w.used_pct)))
 }
 
 /// epoch ms → 表示用の時刻（`11/26 09:59`、`offset` の時刻帯で）。
@@ -269,6 +280,22 @@ mod tests {
         );
         assert_eq!(summary_window(&only_scoped).unwrap().id, "b");
         assert!(summary_window(&engine("grok", vec![])).is_none());
+    }
+
+    /// sticky-fingers #4: 同率の時は**先に並んでいる方**（TS の `summaryWindow` / `worstGauge` と
+    /// 同じ規則）。違うと tray と MachineStrip で別のエンジン・別のリセット時刻を出す。
+    #[test]
+    fn ties_pick_the_first_like_the_webview() {
+        let claude = engine(
+            "claude",
+            vec![window("5h", 100.0, None), window("weekly", 100.0, None)],
+        );
+        assert_eq!(summary_window(&claude).unwrap().id, "5h");
+        let snapshot = UsageSnapshot {
+            engines: vec![claude, engine("codex", vec![window("weekly", 100.0, None)])],
+            updated_at_ms: 1,
+        };
+        assert_eq!(tray_title(&snapshot).as_deref(), Some("CC 100%"));
     }
 
     #[test]

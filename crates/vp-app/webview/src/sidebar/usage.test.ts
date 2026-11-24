@@ -56,6 +56,14 @@ describe("summaryWindow — 代表の枠は engine 全体の枠の最悪値", ()
 	it("agy は Gemini 群の最悪値（Claude/GPT 群は部分枠）", () => {
 		expect(summaryWindow(SNAPSHOT.engines[2]!)?.id).toBe("gemini-5h");
 	});
+	it("同率は先に並んでいる方（Rust の summary_window / tray_title と同じ）", () => {
+		expect(summaryWindow(eng("claude", [win("5h", 100), win("weekly", 100)]))?.id).toBe("5h");
+		const tie: UsageSnapshot = {
+			engines: [eng("claude", [win("weekly", 100)]), eng("codex", [win("weekly", 100)])],
+			updated_at_ms: 1,
+		};
+		expect(worstGauge(tie)?.short).toBe("CC");
+	});
 	it("全体の枠が無ければ部分枠の最悪値に倒す / 窓なしは null", () => {
 		expect(summaryWindow(eng("x", [win("a", 3, "A"), win("b", 9, "B")]))?.id).toBe("b");
 		expect(summaryWindow(eng("grok", []))).toBeNull();

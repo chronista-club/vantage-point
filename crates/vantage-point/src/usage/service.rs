@@ -37,6 +37,9 @@ use super::probe::{InertProbe, UsageProbe};
 /// 周期 loop の刻み。claude の file 読みの間隔でもある。
 pub const TICK: Duration = Duration::from_secs(60);
 
+/// 定期 poll の間隔に持たせる余裕（tick の揺れの吸収、[`due_engines`]）。
+const PERIODIC_SLACK: Duration = Duration::from_secs(30);
+
 /// 何がきっかけの refresh か。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
@@ -103,8 +106,12 @@ pub fn due_engines(
             let elapsed = |gap: Duration| since.is_none_or(|s| s >= gap.as_millis() as u64);
             match trigger {
                 Trigger::Startup => c.startup,
+                // 周期 loop の tick は数 ms 揺れるので、間隔に半 tick の余裕を持たせる
+                // （ちょうど 1 ms 足りないだけで次の tick = 60 秒後まで遅れないように）。
                 Trigger::Periodic { watched } => {
-                    (watched || c.cheap) && c.periodic.is_some_and(|p| elapsed(p))
+                    (watched || c.cheap)
+                        && c.periodic
+                            .is_some_and(|p| elapsed(p.saturating_sub(PERIODIC_SLACK)))
                 }
                 Trigger::Manual => elapsed(c.manual_gap),
             }
@@ -118,7 +125,12 @@ pub fn due_engines(
 ///   plan / tier は取れていれば更新する（Claude は cache が無くても plan は読める）
 /// - 取得時刻が今の値より古い（Claude の file cache が、受動 event で得た値より古い）: 今の値を保つ
 /// - それ以外: 置き換える。取得時刻が無ければ `now_ms`
+///
+/// どの場合も、incoming のうち**リセット時刻を過ぎた窓は先に落とす**。CC が cache を書き直すまで
+/// `~/.claude.json` は同じ値を返し続けるので、落とさないと expire → 再読で復活 → expire … と
+/// 毎 tick チラつき、古い % が出続ける。
 pub fn merge_poll(current: &EngineUsage, incoming: EngineUsage, now_ms: u64) -> EngineUsage {
+    let incoming = drop_expired(&incoming, now_ms);
     if incoming.windows.is_empty() && incoming.error.is_some() {
         return EngineUsage {
             plan: incoming.plan.or_else(|| current.plan.clone()),
@@ -205,6 +217,9 @@ pub struct UsageService {
     in_flight: Mutex<HashSet<UsageEngine>>,
     /// 保存先（state zone）。None = 保存しない（test）。
     persist_path: Option<PathBuf>,
+    /// 保存の直列化。受動通知（chat の stdout ポンプ）と poll は別 thread から同時に来るので、
+    /// lock の中で**その時点の最新**を書く（古い snapshot が後から書かれて勝つことを防ぐ）。
+    persist_lock: Mutex<()>,
 }
 
 impl UsageService {
@@ -222,6 +237,7 @@ impl UsageService {
             last_probe: Mutex::new(HashMap::new()),
             in_flight: Mutex::new(HashSet::new()),
             persist_path,
+            persist_lock: Mutex::new(()),
         }
     }
 
@@ -323,8 +339,7 @@ impl UsageService {
     }
 
     fn update(&self, engine: UsageEngine, f: impl FnOnce(&EngineUsage) -> EngineUsage) {
-        let mut changed_snapshot = None;
-        self.tx.send_if_modified(|snapshot| {
+        let changed = self.tx.send_if_modified(|snapshot| {
             let current = snapshot
                 .engine(engine)
                 .cloned()
@@ -335,11 +350,12 @@ impl UsageService {
             }
             snapshot.put(next);
             snapshot.updated_at_ms = now_ms();
-            changed_snapshot = Some(snapshot.clone());
             true
         });
-        if let (Some(snapshot), Some(path)) = (changed_snapshot, self.persist_path.as_ref()) {
-            persist(path, &snapshot);
+        if let (true, Some(path)) = (changed, self.persist_path.as_ref()) {
+            let _guard = self.persist_lock.lock().expect("persist_lock");
+            let latest = self.tx.borrow().clone();
+            persist(path, &latest);
         }
     }
 
@@ -354,7 +370,12 @@ impl UsageService {
                 _ = shutdown.cancelled() => break,
                 _ = tick.tick() => {
                     self.expire();
-                    self.refresh(Trigger::Periodic { watched: self.watched() }).await;
+                    // probe（codex は最大 25 秒）の途中でも shutdown を待たせない。捨てた probe の
+                    // 子は kill_on_drop / process group の kill で道連れになる。
+                    tokio::select! {
+                        _ = shutdown.cancelled() => break,
+                        _ = self.refresh(Trigger::Periodic { watched: self.watched() }) => {}
+                    }
                 }
             }
         }
@@ -526,6 +547,63 @@ mod tests {
         assert_eq!(merged.error, None);
     }
 
+    /// moody-blues #2: リセット時刻を過ぎた窓は、同じ cache を読み直しても戻らない
+    /// （CC が cache を書き直すまで、expire → 再読で復活 → expire … とチラつかない）。
+    #[test]
+    fn expired_windows_in_a_poll_result_do_not_come_back() {
+        let cache = usage_with(UsageEngine::Claude, 100.0, Some(1_000)); // resets_at 9_000
+        let after_expire = drop_expired(&cache, 10_000);
+        let merged = merge_poll(&after_expire, cache, 10_000);
+        assert!(merged.windows.is_empty(), "{:?}", merged.windows);
+        assert_eq!(merged, after_expire, "変化なし = 配らない・保存しない");
+    }
+
+    /// moody-blues #4: 周期 loop の tick は数 ms 揺れる。間隔ちょうどに 1 ms 足りないだけで
+    /// 1 tick（60 秒）遅れないこと。
+    #[test]
+    fn periodic_tolerates_tick_jitter() {
+        let now = 100 * MIN;
+        let recent = last(&[
+            (UsageEngine::Claude, now - MIN + 10),
+            (UsageEngine::Codex, now - 15 * MIN + 10),
+            (UsageEngine::Agy, now - 10 * MIN + 10),
+        ]);
+        assert_eq!(
+            due_engines(Trigger::Periodic { watched: true }, now, &recent),
+            vec![UsageEngine::Claude, UsageEngine::Codex, UsageEngine::Agy]
+        );
+    }
+
+    /// moody-blues #5: 受動通知（chat の stdout ポンプ）と poll が同時に保存しても、file は
+    /// 壊れず最後の値になる。⚠️ 競合の再現は確率的（lock を外しても毎回は赤くならない）—
+    /// 守っているのは「lock の中でその時点の最新を書く」構造で、この test はその smoke。
+    #[test]
+    fn concurrent_saves_leave_the_latest_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usage-snapshot.json");
+        let service = Arc::new(UsageService::new(Arc::new(InertProbe), Some(path.clone())));
+        let workers: Vec<_> = (0..8)
+            .map(|n| {
+                let service = service.clone();
+                std::thread::spawn(move || {
+                    for i in 0..40 {
+                        service.apply_partial(
+                            UsageEngine::Codex,
+                            vec![UsageWindow::new(format!("w{n}"), "x", f64::from(i), None)],
+                            None,
+                        );
+                    }
+                })
+            })
+            .collect();
+        for w in workers {
+            w.join().unwrap();
+        }
+        let saved: UsageSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).expect("壊れていない");
+        assert_eq!(saved, service.snapshot(), "最後に書かれたのが最新");
+    }
+
     #[test]
     fn expired_windows_are_dropped() {
         let mut usage = usage_with(UsageEngine::Grok, 12.0, Some(1_000));
@@ -546,7 +624,11 @@ mod tests {
         saved.put(grok);
         saved.put(usage_with(UsageEngine::Codex, 50.0, Some(1_000)));
         saved.engines[1].windows[0].resets_at_ms = Some(10); // 期限切れ
-        saved.engines.push(EngineUsage::empty(UsageEngine::Grok)); // 重複・未知は無視
+        saved.engines.push(EngineUsage::empty(UsageEngine::Grok)); // 重複は最初の 1 件を正とする
+        saved.engines.push(EngineUsage {
+            engine: "someday-new".into(), // 未知の engine は捨てる
+            ..usage_with(UsageEngine::Claude, 1.0, None)
+        });
         let restored = restore_cached(saved, 100);
         assert_eq!(restored.engines.len(), 4);
         let grok = restored.engine(UsageEngine::Grok).unwrap();
@@ -565,7 +647,11 @@ mod tests {
     impl UsageProbe for CountingProbe {
         async fn probe(&self, engine: UsageEngine) -> EngineUsage {
             self.calls.lock().unwrap().push(engine);
-            usage_with(engine, 42.0, None)
+            // リセット時刻なし（`usage_with` の 9_000 = 1970 年は実時刻では期限切れで落ちる）
+            EngineUsage {
+                windows: vec![UsageWindow::new("weekly", "weekly", 42.0, None)],
+                ..EngineUsage::empty(engine)
+            }
         }
     }
 

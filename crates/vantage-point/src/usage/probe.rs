@@ -10,7 +10,7 @@
 //! |---|---|---|
 //! | claude | `~/.claude.json` を読むだけ（**spawn しない**。mtime が同じなら読まない） | file 1 枚 |
 //! | codex | `codex app-server` → `initialize` → `account/rateLimits/read` → kill | 数秒 |
-//! | agy | `agy -p "/usage" --output-format json`（turn も会話も作らない、実測 0 秒） | 一瞬 |
+//! | agy | `agy -p "/usage" --output-format json`（turn を起こさない — 実測 `num_turns` 0・token 0・0 秒） | 一瞬 |
 //! | grok | `grok agent stdio` → ACP `initialize` → `_x.ai/billing` → kill | MCP server まで立つので重い |
 //!
 //! いつ・どの engine を問い合わせるか（grok は手動の時だけ、等）は [`super::service`] の方針が決める。
@@ -66,7 +66,10 @@ impl CliProbe {
             Err(_) => {
                 return EngineUsage::failed(
                     UsageEngine::Claude,
-                    format!("{} がありません（Claude Code 未ログイン）", path.display()),
+                    format!(
+                        "{} がありません（Claude Code 未ログイン）",
+                        display_path(&path)
+                    ),
                 );
             }
         };
@@ -80,12 +83,12 @@ impl CliProbe {
                 Ok(config) => parse::claude_from_config(&config),
                 Err(e) => EngineUsage::failed(
                     UsageEngine::Claude,
-                    format!("{} を JSON として読めません: {e}", path.display()),
+                    format!("{} を JSON として読めません: {e}", display_path(&path)),
                 ),
             },
             Err(e) => EngineUsage::failed(
                 UsageEngine::Claude,
-                format!("{} を読めません: {e}", path.display()),
+                format!("{} を読めません: {e}", display_path(&path)),
             ),
         };
         *self.claude_cache.lock().expect("claude cache") = Some((mtime, usage.clone()));
@@ -99,9 +102,17 @@ impl CliProbe {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        let output = match tokio::time::timeout(QUICK_TIMEOUT, cmd.output()).await {
+        let child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => return EngineUsage::failed(UsageEngine::Agy, spawn_error("agy", &e)),
+        };
+        // timeout で wait を捨てた時も、agy が起こした子まで process group ごと落とす。
+        let _group = GroupKill(child.id());
+        let output = match tokio::time::timeout(QUICK_TIMEOUT, child.wait_with_output()).await {
             Ok(Ok(o)) => o,
-            Ok(Err(e)) => return EngineUsage::failed(UsageEngine::Agy, spawn_error("agy", &e)),
+            Ok(Err(e)) => {
+                return EngineUsage::failed(UsageEngine::Agy, format!("agy の待機に失敗: {e}"));
+            }
             Err(_) => {
                 return EngineUsage::failed(UsageEngine::Agy, "agy /usage が時間内に返りません");
             }
@@ -214,11 +225,15 @@ fn claude_config_path() -> PathBuf {
 /// probe 用の子プロセスの共通設定。
 ///
 /// - cwd = temp dir: repo の中で起動すると project 単位の設定（MCP server / hook）まで拾うため
-/// - 継承 env の剥がし: daemon が lane の中から起動された時の `VP_*` / `CLAUDE_CODE_*` で、
-///   子が「自分は lane の engine だ」と誤認しないように（host と同じ規約）
-/// - kill_on_drop: timeout で future を捨てたら子も道連れにする（孤児を残さない）
-/// - unix は自前の process group で起こす: grok は MCP server を孫として立ち上げるので、親だけ
-///   kill すると孫が孤児で残る。[`stdio_rpc`] は終わる時にグループごと落とす（[`GroupKill`]）
+/// - 継承 env の剥がし: (1) daemon 自体が Claude Code の中から起動された時に継承する
+///   `CLAUDECODE` / `CLAUDE_CODE_*` 等（host と同じ `inherited_agent_host_env_to_strip`）と、
+///   (2) VP の identity env（[`IDENTITY_ENV`]）。daemon が lane の shell から起動されていると
+///   これを継承していて、probe の子（とその hook）が「自分はその lane の engine だ」と名乗って
+///   `vp now` / wire を撃ちうる
+/// - kill_on_drop: timeout で future を捨てたら子も道連れにする
+/// - unix は自前の process group で起こし、終わる時に [`GroupKill`] でグループごと落とす: grok は
+///   MCP server を孫として立ち上げるので、親だけ kill すると孫が孤児で残る。Windows は group を
+///   作らないので直接の子しか落とせない（Windows の整備は Windows 上で、CLAUDE.md の方針）
 fn base_command(program: &str) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(program);
     cmd.current_dir(std::env::temp_dir())
@@ -229,7 +244,39 @@ fn base_command(program: &str) -> tokio::process::Command {
     for key in crate::spawn_env::inherited_agent_host_env_to_strip() {
         cmd.env_remove(key);
     }
+    for key in IDENTITY_ENV {
+        cmd.env_remove(key);
+    }
     cmd
+}
+
+/// VP が engine に焼く identity env（`conversation/codex_host.rs` 等の spawn と同じ 3 つ）。
+/// probe の子は lane の engine ではないので持たせない。
+const IDENTITY_ENV: [&str; 3] = ["VP_REPO", "VP_LANE", "VP_SESSION_KEY"];
+
+/// エラー文に出す path。home は `~` にする（error は wire と state zone の file に乗るので、
+/// user 名を含む絶対 path を残さない）。
+fn display_path(path: &std::path::Path) -> String {
+    match dirs::home_dir().and_then(|home| path.strip_prefix(home).ok().map(PathBuf::from)) {
+        Some(rel) => format!("~/{}", rel.display()),
+        None => path.display().to_string(),
+    }
+}
+
+/// 相手（codex / grok）が返したエラー文から、メールアドレスらしき語を伏せる。
+/// エラー文は wire と state zone の file に乗るので、念のため（ログイン状態のエラーは
+/// account を名指しすることがある）。
+fn redact_emails(text: &str) -> String {
+    text.split(' ')
+        .map(|word| {
+            if word.contains('@') && word.contains('.') {
+                "<redacted>"
+            } else {
+                word
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// drop で子の process group ごと SIGKILL する（正常終了・timeout・future の破棄のどれでも）。
@@ -246,6 +293,9 @@ impl Drop for GroupKill {
                 libc::killpg(pid, libc::SIGKILL);
             }
         }
+        // Windows は process group を作っていない（直接の子は kill_on_drop が落とす）。
+        #[cfg(not(unix))]
+        let _ = self.0;
     }
 }
 
@@ -320,7 +370,7 @@ async fn stdio_rpc(
                 }
                 if let Some(err) = msg.get("error") {
                     let text = err["message"].as_str().unwrap_or("不明なエラー");
-                    return Err(text.to_string());
+                    return Err(redact_emails(text));
                 }
                 break msg["result"].clone();
             };
@@ -469,6 +519,39 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         assert!(!alive, "孫（pid {pid}）が残っている");
+    }
+
+    #[test]
+    fn error_text_hides_home_and_email() {
+        let home = dirs::home_dir().expect("home");
+        assert_eq!(display_path(&home.join(".claude.json")), "~/.claude.json");
+        assert_eq!(
+            display_path(std::path::Path::new("/etc/x.json")),
+            "/etc/x.json"
+        );
+        assert_eq!(
+            redact_emails("Not logged in as someone@example.com (run login)"),
+            "Not logged in as <redacted> (run login)"
+        );
+        assert_eq!(redact_emails("Method not found"), "Method not found");
+    }
+
+    /// identity env（`VP_LANE` 等）を probe の子に渡さない。
+    #[test]
+    fn probe_children_do_not_inherit_lane_identity() {
+        let cmd = base_command("/bin/sh");
+        let removed: Vec<String> = cmd
+            .as_std()
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_string_lossy().to_string())
+            .collect();
+        for key in IDENTITY_ENV {
+            assert!(
+                removed.iter().any(|k| k == key),
+                "{key} を剥がしていない: {removed:?}"
+            );
+        }
     }
 
     #[test]

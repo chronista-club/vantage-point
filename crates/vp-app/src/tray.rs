@@ -6,7 +6,8 @@
 //! （[`Tray::apply_usage`]、event loop の `AppEvent::UsageUpdated` から）。
 //!
 //! 表示文字列の組み立ては [`crate::usage`] の純関数（test はそちら）。ここは muda / tray-icon の
-//! handle を持って差し替えるだけ。`set_title` は macOS 以外では no-op（tray-icon の仕様）。
+//! handle を持って差し替えるだけ。`set_title` の文字は macOS と Linux で出て、Windows は
+//! 非対応（tray-icon 0.24 の仕様 — Windows では icon とメニューだけになる）。
 
 use tray_icon::menu::{Menu as TrayMenu, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder};

@@ -7,6 +7,7 @@
  *
  * - engine 全体の枠（`scope === null`）の中で最も使っているもの
  * - 全体の枠が無い時だけ、部分枠（モデル別・グループ別）の最悪値
+ * - 同率は先に並んでいる方
  *
  * 部分枠を混ぜない理由: 「Fable の枠だけ使い切った」「agy の中の Claude/GPT 枠が 0」で
  * エンジン全体が 100% に見えると、どのエンジンで作業するかの判断を誤らせる。
@@ -23,7 +24,7 @@ export type UsageSeverity = "normal" | "warning" | "critical";
 export const WARNING_PCT = 80;
 export const CRITICAL_PCT = 95;
 
-/** MachineStrip / tray の短い名前（`CC 88% · Cdx 95% · Gem 16% · Grk 12%`）。 */
+/** MachineStrip のチップ・ゲージと tray の短い名前（`CC` / `Cdx` / `Gem` / `Grk`）。 */
 export function usageShortName(engine: string): string {
 	switch (engine) {
 		case "claude":
@@ -93,7 +94,7 @@ export function agentOptionLabel(
 	return window ? `${name} (${pctText(window.used_pct)}%)` : name;
 }
 
-/** 選択肢の tooltip に添える 1 行（`weekly 88% · 11/26 09:59 にリセット`）。無ければ null。 */
+/** 選択肢の tooltip に添える 1 行（`weekly 88% 使用 · あと 1d 18h でリセット`）。無ければ null。 */
 export function agentOptionDetail(
 	name: string,
 	snapshot: UsageSnapshot | null | undefined,

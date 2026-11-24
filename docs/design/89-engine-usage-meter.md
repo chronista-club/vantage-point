@@ -47,8 +47,11 @@ event loop が window へ振り分ける前に拾い、tray と全 window の `S
 
 - **claude は一度も spawn しない**（`claude -p` は hook が 8 本走る）。Keychain の OAuth token で
   `/api/oauth/usage` を直接叩くこともしない（refresh token の回転で CC のログインを壊しうる）
-- probe の子プロセスは cwd = temp dir（project 単位の MCP / hook を拾わない）、`VP_*` などの継承 env を
-  剥がし、timeout（codex / agy 25 秒、grok 45 秒）で kill する
+- probe の子プロセスは cwd = temp dir（project 単位の MCP / hook を拾わない）。継承 env は、daemon が
+  Claude Code の中から起動された時の `CLAUDECODE` / `CLAUDE_CODE_*` 等（host と同じ
+  `inherited_agent_host_env_to_strip`）と、VP の identity env（`VP_REPO` / `VP_LANE` / `VP_SESSION_KEY`）を
+  剥がす。timeout（codex / agy 25 秒、grok 45 秒）を過ぎるか、応答を受け取ったら、unix では
+  **process group ごと** kill する（grok が孫として立てる MCP server を孤児にしない）。Windows は直接の子だけ
 - test は本物の CLI を起動しない（probe は trait、`DaemonState` の test 用は `UsageService::inert()`）。
   本物に当てる smoke は `#[ignore]` + env gate（`usage::probe::tests::real_cli_probe_smoke`）
 
@@ -62,6 +65,7 @@ event loop が window へ振り分ける前に拾い、tray と全 window の `S
 | grok | しない | しない | 60 秒以内の連打はまとめる |
 
 - 受動の通知が来た engine は、定期 poll の時計を進める（通知で足りている間は spawn しない）
+- 定期の間隔には 30 秒の余裕を持たせる（tick が数 ms 揺れただけで 1 tick = 60 秒遅れないように）
 - snapshot は `~/.local/state/vp/usage-snapshot.json`（dev は `vp-dev`）に保存し、daemon 再起動後は
   cache として出す。grok は手動の時しか問い合わせないので、これが無いと再起動のたびに `—` に戻る
 
@@ -69,7 +73,12 @@ event loop が window へ振り分ける前に拾い、tray と全 window の `S
 
 - 能動の結果は置き換える。ただし**失敗した時は前回の窓を残して** error だけ付ける（古い値でも無いよりよい）
 - 取得時刻が今の値より古い結果（Claude の file cache が、受動 event で得た値より古い）は捨てる
-- リセット時刻を過ぎた窓は落とす（過ぎた後の使用率は分からない — その値はもう事実でない）
+- リセット時刻を過ぎた窓は落とす（過ぎた後の使用率は分からない — その値はもう事実でない）。毎 tick の
+  掃除だけでなく、**能動の結果からも先に落とす** — CC が cache を書き直すまで `~/.claude.json` は同じ値を
+  返し続けるので、落とさないと毎 tick 復活してチラつく
+- Codex の `account/rateLimits/updated` は主 limit（`codex`）以外なら部分枠として重ねる（read 側の
+  `rateLimitsByLimitId` と同じ id / scope）
+- 保存は lock の中で「その時点の最新」を書く（受動通知と poll は別 thread から同時に来る）
 
 ## 正規化（単位の罠）
 
@@ -85,14 +94,16 @@ event loop が window へ振り分ける前に拾い、tray と全 window の `S
 severity は `< 80` normal / `>= 80` warning / `>= 95` critical。
 
 個人情報（account id / email / team id）は parse が読む field を名指しで拾うので model に入る経路が無い
-（`claude_cache_never_leaks_account_identifiers` 等で固定）。
+（`claude_cache_never_leaks_account_identifiers` 等で固定）。取得失敗の理由（`error`）は wire と保存 file に
+乗るので、path の home は `~` にし、相手が返したエラー文のメールアドレスらしき語は伏せる。
 
 ## 代表の枠（サマリの %）
 
 窓には `scope` がある。None = engine 全体の枠、Some = モデル別・グループ別の部分枠
 （Claude の Fable 枠、agy の Claude/GPT 群、Codex の別 limit）。
 
-**サマリの % は engine 全体の枠の最悪値**で、全体の枠が無い時だけ部分枠の最悪値に倒す。
+**サマリの % は engine 全体の枠の最悪値**で、全体の枠が無い時だけ部分枠の最悪値に倒す（同率は先に
+並んでいる方）。
 「Fable だけ使い切った」「agy の中の Claude/GPT 枠が 0」でエンジン全体が 100% に見えると、
 どのエンジンで作業するかの判断を誤らせるため。規則は Rust（`vp-app/src/usage.rs::summary_window`、
 tray 用）と TS（`webview/src/sidebar/usage.ts::summaryWindow`）の 2 か所にあり、同じ形の test を持つ。

@@ -144,6 +144,8 @@ const DAEMON_CHANNELS: &[&str] = &[
     "wire",
     // doc 86: Editor Link hub（MCP editor_* の着地点）
     "link",
+    // doc 89: engine usage meter（4 エンジンのサブスク usage を vp-app へ push）
+    "daemon-usage",
 ];
 
 /// daemon server の実ソース。`DAEMON_CHANNELS` の突き合わせ相手。

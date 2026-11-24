@@ -195,6 +195,17 @@ fn codex_snapshot_windows(snapshot: &Value, scope: Option<&str>) -> Vec<UsageWin
     out
 }
 
+/// 主 limit の id（2026-11-24 実測で `codex`）。これ以外の limit（model 別の枠）は部分枠にする。
+const CODEX_MAIN_LIMIT: &str = "codex";
+
+/// limit の名乗り: `limitName` → `normalModelSlug` → limit id の順（read / update で同じ）。
+fn codex_limit_name<'a>(snapshot: &'a Value, limit_id: &'a str) -> &'a str {
+    snapshot["limitName"]
+        .as_str()
+        .or_else(|| snapshot["normalModelSlug"].as_str())
+        .unwrap_or(limit_id)
+}
+
 /// `account/rateLimits/read` の result → Codex の usage（能動 poll の全量）。
 ///
 /// `rateLimits` が engine 全体の枠。`rateLimitsByLimitId` に別の limit（model 別の枠）が
@@ -216,10 +227,7 @@ pub fn codex_from_rate_limits_read(result: &Value) -> EngineUsage {
             if Some(limit_id.as_str()) == main_id {
                 continue;
             }
-            let name = snap["limitName"]
-                .as_str()
-                .or_else(|| snap["normalModelSlug"].as_str())
-                .unwrap_or(limit_id);
+            let name = codex_limit_name(snap, limit_id);
             usage
                 .windows
                 .extend(codex_snapshot_windows(snap, Some(name)));
@@ -232,12 +240,20 @@ pub fn codex_from_rate_limits_read(result: &Value) -> EngineUsage {
 ///
 /// 通知は **sparse**（codex の型 doc: 「直前の read の結果に merge せよ。null の metadata は
 /// 以前の値を消さない」）。なので返すのは「在った窓」と「在った plan」だけ。
+///
+/// 主 limit（[`CODEX_MAIN_LIMIT`]、`limitId` 無しも主とみなす）以外の通知は、read 側の
+/// `rateLimitsByLimitId` と同じ id / scope の部分枠にする — engine 全体の `weekly` を別 limit の
+/// 値で上書きしない。
 pub fn codex_rate_limits_update(params: &Value) -> Option<(Vec<UsageWindow>, Option<String>)> {
     let snapshot = &params["rateLimits"];
     if !snapshot.is_object() {
         return None;
     }
-    let windows = codex_snapshot_windows(snapshot, None);
+    let scope = match snapshot["limitId"].as_str() {
+        None | Some(CODEX_MAIN_LIMIT) => None,
+        Some(limit_id) => Some(codex_limit_name(snapshot, limit_id)),
+    };
+    let windows = codex_snapshot_windows(snapshot, scope);
     let plan = str_field(snapshot, "planType");
     if windows.is_empty() && plan.is_none() {
         return None;
@@ -479,7 +495,7 @@ mod tests {
 
     #[test]
     fn claude_rate_limit_event_without_utilization_is_ignored() {
-        // testdata/turn_plain.jsonl の実物（status だけで割合が無い）
+        // testdata/turn_plain.jsonl:37 と同じ形（uuid / session_id は短縮。status だけで割合が無い）
         let event: Value = serde_json::from_str(
             r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1783546200,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false},"uuid":"ad6d04cc","session_id":"2f2020bf"}"#,
         )
@@ -548,6 +564,32 @@ mod tests {
             "null の planType は「今回は無い」で、以前の値を消さない"
         );
         assert_eq!(codex_rate_limits_update(&serde_json::json!({})), None);
+    }
+
+    /// moody-blues #3: 主 limit（`codex`）以外の limit の通知は部分枠として重ねる — read 側の
+    /// `rateLimitsByLimitId` と同じ id / scope になり、engine 全体の `weekly` を上書きしない。
+    #[test]
+    fn codex_update_for_another_limit_is_scoped() {
+        let params = serde_json::json!({
+            "rateLimits": {
+                "limitId": "codex_spark",
+                "limitName": "Spark",
+                "primary": { "usedPercent": 70, "windowDurationMins": 10080, "resetsAt": 300 },
+                "planType": null
+            }
+        });
+        let (windows, _) = codex_rate_limits_update(&params).expect("update");
+        assert_eq!(windows[0].id, "Spark:weekly");
+        assert_eq!(windows[0].scope.as_deref(), Some("Spark"));
+
+        // limitName が無ければ normalModelSlug → limitId の順で名乗る（read 側と同じ）
+        let unnamed = serde_json::json!({
+            "rateLimits": { "limitId": "codex_x", "primary": { "usedPercent": 1, "windowDurationMins": 300 } }
+        });
+        assert_eq!(
+            codex_rate_limits_update(&unnamed).unwrap().0[0].id,
+            "codex_x:5h"
+        );
     }
 
     #[test]
