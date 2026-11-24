@@ -235,7 +235,18 @@ pub(crate) async fn handle_conversation_respond(
 }
 
 /// doc 35 §5: 実行中 turn の中断（stop ボタン / Esc）。`{lane}` → `LanePool::interrupt_chat`。
-/// engine は turn を止めるだけでプロセスは生存し、次の submit を受けられる。
+/// engine が中断に答えれば turn を止めるだけで process は生きたまま、次の submit を受けられる
+/// （中断に答えない ACP engine は共有 host が止める — [`crate::conversation::acp_host`]）。
+///
+/// **停止が engine に届かない時も Ok を返す**（2026-11-24）。`interrupt_chat` が Err になるのは、
+/// engine が居ない（未起動 / 寝かせた / 畳んだ）か、停止を受け取れない（ACP の host が終了済み、
+/// Claude の stdin に書けない）時で、どちらも turn は走っていない（Codex / vpcode の interrupt は
+/// 終了済みでも Ok を返すので、ここには来ない）。それでも GUI が「応答中」のまま残っていることが
+/// ある（終了を見逃した等）。GUI は応答中の間（Claude と Codex 以外の engine）、次の発話を
+/// 送信待ちに溜めて turn の終わりまで送らないので、残ったままだと停止も効かず次の発話も
+/// 送れない。そこで押された session の topic に `EngineExited` を流して下ろす（GUI は
+/// streaming を下ろし、送信待ちの発話を流す → その submit が engine を起こす）。
+/// 存在しない lane / session は従来どおり Err（どの会話を下ろすか決まらない）。
 pub(crate) async fn handle_conversation_interrupt(
     state: &RepoState,
     payload: serde_json::Value,
@@ -247,13 +258,30 @@ pub(crate) async fn handle_conversation_interrupt(
     let session = super::unison_server::payload_session_key("conversation_interrupt", &payload)?;
     let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("conversation_interrupt: lane パース失敗: {lane}"))?;
-    state
-        .lane_pool
-        .read()
-        .await
-        .interrupt_chat(&addr, session)
-        .await
-        .map_err(|e| format!("conversation_interrupt: {e}"))?;
+    let pool = state.lane_pool.read().await;
+    // 押された session を先に決める（engine が居なくても、どの会話の「応答中」を下ろすかは決まる）。
+    let session = pool
+        .resolve_chat_session(&addr, session)
+        .map_err(|e| format!("conversation_interrupt: {e}"))?
+        .key;
+    let interrupted = pool.interrupt_chat(&addr, Some(session)).await;
+    drop(pool);
+    if let Err(e) = interrupted {
+        tracing::info!(
+            "conversation_interrupt: 停止が engine に届かない（{e}）→ EngineExited で応答中を下ろす"
+        );
+        // route には pump と同じ canonical を流す（GUI はこの lane 名の topic を購読している）。
+        state
+            .topic_router
+            .route(crate::protocol::RepoMessage::ConversationEvent {
+                lane: addr.canonical(),
+                session,
+                event: crate::conversation::ConversationEvent::EngineExited {
+                    message: format!("停止の時に engine が動いていませんでした: {e}"),
+                },
+            })
+            .await;
+    }
     Ok(serde_json::json!({"status": "ok", "lane": lane}))
 }
 
@@ -1590,6 +1618,272 @@ mod tests {
             !ghost,
             "閉じた session の画面が残っている（replay 破棄が reconcile より前だと \
              PtySlot::drop の最終 flush が書き戻す）: {replay:?}"
+        );
+    }
+
+    /// 停止を押した session に chat engine が居ない（未起動 / 寝かせた / 畳んだ）時は、その
+    /// session の conversation topic に `EngineExited` を流して Ok を返す。GUI に取り残された
+    /// 「応答中」を停止 1 回で下ろし、送信待ちの発話を流せるようにする（2026-11-24、agy の chat が
+    /// 止まらず次の発話も送れなくなった件。GUI は `engine_exited` で streaming を下ろし pending を流す）。
+    #[tokio::test]
+    async fn interrupt_without_engine_releases_the_streaming_left_in_the_gui() {
+        use crate::conversation::ConversationEvent;
+        use crate::protocol::RepoMessage;
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::state::build_test_app_state;
+        use crate::repo::unison_server::dispatch_repo_method;
+
+        let _state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let address = LaneAddress::sub("vp", "stuck");
+        state.lane_pool.write().await.insert(LaneInfo {
+            id: Default::default(),
+            address: address.clone(),
+            state: LaneState::Running,
+            agent: "agy".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            pid: None,
+            cwd: std::env::temp_dir().to_string_lossy().to_string(),
+            sub_status: None,
+            branch: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            agent_name: None,
+            flow_state: None,
+        });
+        let (_id, mut srx) = state
+            .topic_router
+            .subscribe("repo/conversation/data/vp~lane~stuck/event")
+            .await;
+        let lane = address.to_string();
+
+        // ⚠️ 入力はあえて**旧 3 分節形**（`vp/sub/stuck`）。route には parse で正規化した canonical を
+        // 流す契約（session_now と同じ）。生の入力を流すと GUI が購読する topic に届かない。
+        let resp = dispatch_repo_method(
+            &state,
+            "conversation_interrupt",
+            serde_json::json!({ "lane": "vp/sub/stuck", "session": 1 }),
+        )
+        .await
+        .expect("engine が居なくても停止は Ok");
+        assert_eq!(resp["status"], "ok");
+
+        let (topic, msg) = tokio::time::timeout(std::time::Duration::from_secs(1), srx.recv())
+            .await
+            .expect("EngineExited が流れない")
+            .expect("recv");
+        assert_eq!(topic, "repo/conversation/data/vp~lane~stuck/event");
+        match msg {
+            RepoMessage::ConversationEvent {
+                lane: routed,
+                session,
+                event,
+            } => {
+                assert_eq!(routed, lane, "pump と同じ canonical の lane");
+                assert_eq!(session, 1, "押された session に流す");
+                assert!(
+                    matches!(event, ConversationEvent::EngineExited { .. }),
+                    "{event:?}"
+                );
+            }
+            other => panic!("想定外の message: {other:?}"),
+        }
+
+        // 存在しない session は従来どおり Err。どの会話を下ろすか決まらないので何も流さない。
+        let err = dispatch_repo_method(
+            &state,
+            "conversation_interrupt",
+            serde_json::json!({ "lane": lane.as_str(), "session": 9 }),
+        )
+        .await
+        .expect_err("存在しない session は Err");
+        assert!(err.contains("session"), "{err}");
+        assert!(
+            srx.try_recv().is_err(),
+            "存在しない session には何も流さない"
+        );
+    }
+
+    /// slot は残っているが engine が終了している（ACP の host が終了済みで、停止を受け取れない）時も、
+    /// 押された session の topic に `EngineExited` を流して Ok を返す。
+    /// 落ちるべき壊し方: slot が無い時だけ流し、`host.interrupt()` の Err を Err のまま返す。
+    #[tokio::test]
+    async fn interrupt_to_an_exited_engine_also_releases_the_streaming() {
+        use crate::conversation::acp_host::testing::{FakeAgent, Script};
+        use crate::conversation::acp_host::{AcpAgentHost, AcpEngine, AcpHostConfig};
+        use crate::conversation::{ChatEngineSlot, ChatHost, ConversationEvent};
+        use crate::protocol::RepoMessage;
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::state::build_test_app_state;
+        use crate::repo::unison_server::dispatch_repo_method;
+        use std::time::Duration;
+
+        let _state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let address = LaneAddress::sub("vp", "exited");
+        state.lane_pool.write().await.insert(LaneInfo {
+            id: Default::default(),
+            address: address.clone(),
+            state: LaneState::Running,
+            agent: "agy".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            pid: None,
+            cwd: std::env::temp_dir().to_string_lossy().to_string(),
+            sub_status: None,
+            branch: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            agent_name: None,
+            flow_state: None,
+        });
+
+        // 偽の agent につないだ host を確定させてから、engine を終了させる。
+        let (agent, connector) = FakeAgent::new(Script::default());
+        let host = AcpAgentHost::spawn_with(
+            AcpHostConfig {
+                engine: AcpEngine::Agy,
+                cwd: "/tmp/vp-acp".into(),
+                repo: "vp".into(),
+                lane: "exited".into(),
+                lane_label: "exited".into(),
+                session_key: 1,
+                session_id: None,
+                config_intent: Vec::new(),
+            },
+            connector,
+        )
+        .expect("起動");
+        let port = host.take_replay_port().expect("履歴の口");
+        port.source.attach().await.expect("会話は確定する");
+        agent.close();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !host.exited() {
+            assert!(tokio::time::Instant::now() < deadline, "exited が立たない");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        state.lane_pool.write().await.insert_chat_engine_for_test(
+            &address,
+            1,
+            ChatEngineSlot {
+                host: ChatHost::Agy(host),
+                // pump は持たない（topic に出るのは handler が流す分だけ）。
+                pump: tokio::spawn(async {}),
+                last_event_at: Default::default(),
+                turn_active: Default::default(),
+            },
+        );
+        let (_id, mut srx) = state
+            .topic_router
+            .subscribe("repo/conversation/data/vp~lane~exited/event")
+            .await;
+
+        dispatch_repo_method(
+            &state,
+            "conversation_interrupt",
+            serde_json::json!({ "lane": address.to_string(), "session": 1 }),
+        )
+        .await
+        .expect("終了した engine への停止も Ok");
+
+        let (_, msg) = tokio::time::timeout(Duration::from_secs(1), srx.recv())
+            .await
+            .expect("EngineExited が流れない")
+            .expect("recv");
+        match msg {
+            RepoMessage::ConversationEvent { session, event, .. } => {
+                assert_eq!(session, 1);
+                assert!(
+                    matches!(event, ConversationEvent::EngineExited { .. }),
+                    "{event:?}"
+                );
+            }
+            other => panic!("想定外の message: {other:?}"),
+        }
+    }
+
+    /// 生きている engine が停止を受け取った時（`interrupt_chat` が Ok）は、topic に何も流さない。
+    /// turn の終わりは engine が出す（普通の停止のたびに `EngineExited` を流すと、GUI が 💤 休眠を出し、
+    /// subagent を閉じ、送信待ちの発話を turn の終わりより先に流してしまう）。
+    /// 落ちるべき壊し方: `interrupt_chat` の結果を見ずに `EngineExited` を流す。
+    #[tokio::test]
+    async fn interrupt_to_a_live_engine_routes_nothing() {
+        use crate::conversation::acp_host::testing::{FakeAgent, Script};
+        use crate::conversation::acp_host::{AcpAgentHost, AcpEngine, AcpHostConfig};
+        use crate::conversation::{ChatEngineSlot, ChatHost};
+        use crate::repo::lane::{LaneAddress, LaneInfo, LaneState};
+        use crate::repo::state::build_test_app_state;
+        use crate::repo::unison_server::dispatch_repo_method;
+        use std::time::Duration;
+
+        let _state_dir = crate::test_env::state_dir_async().await;
+        let state = build_test_app_state().await;
+        let address = LaneAddress::sub("vp", "live");
+        state.lane_pool.write().await.insert(LaneInfo {
+            id: Default::default(),
+            address: address.clone(),
+            state: LaneState::Running,
+            agent: "agy".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            pid: None,
+            cwd: std::env::temp_dir().to_string_lossy().to_string(),
+            sub_status: None,
+            branch: None,
+            cc_session_id: None,
+            sessions: None,
+            engine_session_id: None,
+            agent_name: None,
+            flow_state: None,
+        });
+
+        // 偽の agent につないだ host を確定させ、生かしたまま slot に差す。
+        let (_agent, connector) = FakeAgent::new(Script::default());
+        let host = AcpAgentHost::spawn_with(
+            AcpHostConfig {
+                engine: AcpEngine::Agy,
+                cwd: "/tmp/vp-acp".into(),
+                repo: "vp".into(),
+                lane: "live".into(),
+                lane_label: "live".into(),
+                session_key: 1,
+                session_id: None,
+                config_intent: Vec::new(),
+            },
+            connector,
+        )
+        .expect("起動");
+        let port = host.take_replay_port().expect("履歴の口");
+        port.source.attach().await.expect("会話は確定する");
+        assert!(!host.exited());
+        state.lane_pool.write().await.insert_chat_engine_for_test(
+            &address,
+            1,
+            ChatEngineSlot {
+                host: ChatHost::Agy(host),
+                pump: tokio::spawn(async {}),
+                last_event_at: Default::default(),
+                turn_active: Default::default(),
+            },
+        );
+        let (_id, mut srx) = state
+            .topic_router
+            .subscribe("repo/conversation/data/vp~lane~live/event")
+            .await;
+
+        dispatch_repo_method(
+            &state,
+            "conversation_interrupt",
+            serde_json::json!({ "lane": address.to_string(), "session": 1 }),
+        )
+        .await
+        .expect("生きている engine への停止は Ok");
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), srx.recv())
+                .await
+                .is_err(),
+            "生きている engine への停止では topic に何も流さない"
         );
     }
 
