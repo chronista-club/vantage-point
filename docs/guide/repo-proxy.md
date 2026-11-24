@@ -78,7 +78,9 @@ unison call 'quic://[::1]:32000' --channel repo-proxy --method lanes_list \
 ```
 
 空文字・文字列以外も同じエラーになる。未起動 repo は `repo 未起動` で断る。
-失敗は Error frame で返る（payload は `{error: "理由"}`）。成功応答の payload に `error` を入れて失敗を
-返すことは無い（protocol v0.5.0 から。それより前の daemon は成功応答に `error` を詰めていた）。
+repo の handler が Err で返した失敗（未起動 repo、引数の誤り、未知の method など）は Error frame で
+返る（payload は `{error: "理由"}`。protocol v0.5.0 から。それより前の daemon は成功応答に `error` を
+詰めていた）。ただし `layout_get` / `layout_set` / `layout_history` は vp-app の webview の評価結果を
+そのまま成功応答として返すので、評価の timeout 等では成功応答の中に `error` が入ることがある。
 永続 channel では最初の repo_path に宛先が固定される。別 repo を操作する場合は
 新しい channel を開く。

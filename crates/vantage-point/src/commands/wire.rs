@@ -334,7 +334,7 @@ async fn recv(agent: &str, timeout_secs: u64) -> Result<()> {
 
 /// 1 回の long-poll。 受信した wire message の配列を返す (timeout 時は空 vec)。
 ///
-/// `daemon_wire::call` が server Err (`{"error":..}` frame) を既に Err に変換するので、 ここでは
+/// `daemon_wire::call` が server Err（Error frame、移行前の daemon の `{"error":..}` も）を既に Err に変換するので、 ここでは
 /// `messages` 配列の取り出しだけ行う。
 async fn poll_recv(agent: &str, timeout_secs: u64) -> Result<Vec<serde_json::Value>> {
     let resp = call_daemon(

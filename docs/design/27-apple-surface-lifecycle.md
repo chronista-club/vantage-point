@@ -236,9 +236,10 @@ club-unison 2.3.0 の `is_connected()` は QUIC の `close_reason()` を読む�
 **新旧混在:**
 
 - 新しい client × 旧 server: §3.4.6 のとおり、旧形式の `{"error"}` も Err として読む。
-- federation の古い相手（v0.88 以前）× 新しい server: 古い相手の direct 送信は、`request()` の Err も
-  旧形式の `{"error"}` も、どちらも relay に回す（unison 2.0 / 2.2 も Error frame を `Err(Protocol)`
-  にする）。形式を変えても古い相手の動きは変わらない。受信側の `wire/send` が断るのは保存の前だけ
+- federation の古い相手（direct 送信を持つ v0.42.0〜v0.88.0。#715 で入った形から #1279 の前まで同じ）×
+  新しい server: 古い相手の direct 送信は、`request()` の Err も旧形式の `{"error"}` も、どちらも relay
+  に回す（それらの版が使う unison 1.6 / 1.8 / 1.9 / 2.0 / 2.2 も Error frame を `Err(Protocol)` に
+  する）。形式を変えても古い相手の動きは変わらない。受信側の `wire/send` が断るのは保存の前だけ
   （store / notifier / delivery_notify の未初期化、from / to / body の検証、返信先の読み込みと宛先の
   展開、CREATE 1 文の失敗）なので、relay で届いた同じ envelope は、断られるか、初めて 1 回だけ保存
   される。どちらでも二重配送にはならない。`daemon/send_error_tests.rs` の

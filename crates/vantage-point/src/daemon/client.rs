@@ -262,8 +262,9 @@ impl DaemonControlClient {
         anyhow::bail!("daemon 接続失敗: {}", addr)
     }
 
-    /// daemon-control method を呼ぶ。 Unison の error 慣習 (VP-163) に従い、 success frame の
-    /// `{"error": ...}` も `Err` 化する。Error frame は request() が理由を含む Err に変換する。
+    /// daemon-control method を呼ぶ。daemon の失敗は Error frame で届き、request() が理由を含む
+    /// Err に変換する（doc 27 §3.4.7）。Error frame 移行前の daemon（VP-163）は失敗を success frame の
+    /// `{"error": ...}` で返すので、それも `Err` 化する。
     async fn call(&self, method: &str, payload: serde_json::Value) -> Result<serde_json::Value> {
         let resp = self
             .ch

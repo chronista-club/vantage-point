@@ -1567,8 +1567,10 @@ async fn handle_repo_proxy(channel: &UnisonChannel, control_channels: &ControlCh
 /// "repo-proxy" channel (MCP/CLI) と bidirectional "canvas" channel の upstream request
 /// (S3 terminal_write/terminal_resize) が共有する。 repo 未起動 / dispatch 失敗は `Err(理由)` で
 /// 返し、channel の caller は [`send_result`] で Error frame にして client に relay する。
-/// in-process の caller（lane demand / `lane/session-changed` / wire の配送 / delegation）は
-/// `Ok` / `Err` で分岐する。
+/// in-process の caller（`lane/session-changed` / wire の配送 / delegation）は `Ok` / `Err` で
+/// 分岐する（lane demand は [`RepoRuntimes::dispatch`] を直接呼ぶ）。
+///
+/// [`RepoRuntimes::dispatch`]: crate::repo::repo_registry::RepoRuntimes::dispatch
 pub(crate) async fn forward_to_sp_control(
     runtimes: &ControlChannels,
     path_key: &str,
