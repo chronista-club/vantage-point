@@ -361,7 +361,11 @@ impl UsageService {
 
     /// daemon 起動時に 1 本 spawn する周期 loop。`shutdown` で畳む。
     pub async fn run(self: Arc<Self>, shutdown: tokio_util::sync::CancellationToken) {
-        self.refresh(Trigger::Startup).await;
+        // 起動時の probe（codex / agy は最大 25 秒）の途中でも shutdown を待たせない。
+        tokio::select! {
+            _ = shutdown.cancelled() => return,
+            _ = self.refresh(Trigger::Startup) => {}
+        }
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         tick.tick().await; // interval の初回は即時なので捨てる（Startup で済んでいる）
@@ -720,6 +724,34 @@ mod tests {
             "usage の取得は無効です",
         ));
         assert!(!rx.has_changed().unwrap());
+    }
+
+    /// 返ってこない probe（codex が固まった時を写す）。
+    struct HangingProbe;
+
+    #[async_trait]
+    impl UsageProbe for HangingProbe {
+        async fn probe(&self, _engine: UsageEngine) -> EngineUsage {
+            std::future::pending().await
+        }
+    }
+
+    /// sticky-fingers: 起動時の refresh（codex / agy は最大 25 秒）の途中でも shutdown で畳める。
+    #[tokio::test]
+    async fn shutdown_does_not_wait_for_a_hanging_probe() {
+        let service = Arc::new(UsageService::new(Arc::new(HangingProbe), None));
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let task = tokio::spawn(service.clone().run(shutdown.clone()));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        shutdown.cancel();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("shutdown を待たせている")
+            .unwrap();
+        assert!(
+            service.in_flight.lock().unwrap().is_empty(),
+            "捨てた probe の印は外れる"
+        );
     }
 
     #[tokio::test]

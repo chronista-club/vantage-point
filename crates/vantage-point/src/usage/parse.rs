@@ -495,7 +495,7 @@ mod tests {
 
     #[test]
     fn claude_rate_limit_event_without_utilization_is_ignored() {
-        // testdata/turn_plain.jsonl:37 と同じ形（uuid / session_id は短縮。status だけで割合が無い）
+        // testdata/turn_plain.jsonl:37 と同じ形（uuid / session_id は仮の値。status だけで割合が無い）
         let event: Value = serde_json::from_str(
             r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1783546200,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false},"uuid":"ad6d04cc","session_id":"2f2020bf"}"#,
         )

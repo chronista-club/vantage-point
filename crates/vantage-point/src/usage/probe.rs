@@ -327,7 +327,8 @@ async fn stdio_rpc(
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    let program = cmd.as_std().get_program().to_string_lossy().to_string();
+    // エラー文に出すので home は `~` に（grok の既定は `~/.grok/bin/grok` のような絶対 path）。
+    let program = display_path(std::path::Path::new(cmd.as_std().get_program()));
     let mut child = cmd.spawn().map_err(|e| spawn_error(&program, &e))?;
     let group = GroupKill(child.id());
     let mut stdin = child.stdin.take().ok_or("stdin が取れません")?;
