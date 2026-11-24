@@ -1109,6 +1109,8 @@ async fn run_reader(
         // notification
         let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
         let params = msg.get("params").cloned().unwrap_or_default();
+        // usage meter（受動）: `account/rateLimits/updated` を daemon の集約へ（translator は無視する）。
+        crate::usage::passive::observe_codex_notification(method, &params);
         if process_notification(&inner, &mut translator, method, &params) {
             inner.drain_queue().await;
         }

@@ -231,6 +231,10 @@ pub enum AppEvent {
     DeviceEvent {
         payload: serde_json::Value,
     },
+    /// engine usage meter: daemon "daemon-usage" channel の snapshot（全量）。**app 全体**の event —
+    /// 購読は app に 1 本（tray が app に 1 つなので）。event loop が window へ振り分ける前に拾い、
+    /// tray と全 window の sidebar state に配る（`app::mod` の UserEvent 分岐）。
+    UsageUpdated(crate::usage::UsageSnapshot),
     /// board モデル (2026-07-15): WebView からの board mutate（thumbnail ✕ / Clear ボタン）。
     /// `method` = "board_delete_item" | "board_clear"、 `body` は IPC payload の生 JSON
     /// (scope / lane / item_id 等)。 active repo の repo に daemon repo-proxy ask で forward し、

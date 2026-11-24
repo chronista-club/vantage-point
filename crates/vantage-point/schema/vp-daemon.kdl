@@ -29,14 +29,18 @@
 // 2026-07-12 拡張: daemon-control の read-safe subset（hub/discover）を追加 — hub registry の
 //   nodes 一覧 + connected liveness（hub protocol v0.7.0）を MCP から照会可能にする。
 //   repos/* mutation は手で叩くと repos.kdl 状態を壊すため記述しない（registry と同じ方針）。
+// 2026-11-24 v0.5.0: handler の失敗は Error frame（UnisonChannel::send_error、payload は
+//   {error: string}）で返す。失敗を成功の response payload の {error} で返す旧形式は使わない
+//   （lane/prs の error のような、成功応答の中の状態データは別。
+//   docs/design/27-apple-surface-lifecycle.md §3.4.7）。
 
-protocol "vp-daemon" version="0.4.0" {
+protocol "vp-daemon" version="0.5.0" {
     namespace "club.chronista.vantage-point"
 
     // repo-proxy: channel ごとに最初の repo_path に固定し、repo dispatcher へ渡す。
     // この 4 method だけを allowlist として tests/vp_daemon_kdl.rs で固定する。
     // 他の repo method は既定で非公開。追加する時に露出の判断と test を一緒に変更する。
-    // handler のエラーは既存の response payload {error: string} で返る。
+    // handler のエラーは Error frame（payload は {error: string}）で返る。
     channel "repo-proxy" from="client" lifetime="persistent" {
         request "conversation_session_create" readonly=#false description="起動済み repo の lane に chat（gui）の session を作る。console の作成ではない。作成の操作そのものは engine を起動しない。発言時に起動するが、GUI が開いていると pane の attach や注視で発言前に起動することがある。agent 省略時は lane の agent を使い、focus 省略時は true（新 session に lane の注視を移す）。lane は lanes_list で確認する。subscribe は不要。" {
             field "repo_path" type="string" required=#true min_length=1 description="対象 repo の絶対 path。最初の request で channel の宛先を固定する。"

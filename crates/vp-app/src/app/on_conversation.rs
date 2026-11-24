@@ -208,10 +208,15 @@ pub(super) fn conversation_respond(
 }
 
 /// doc 35 §5 / PR2: 実行中 turn の中断を当該 lane の conversation session に渡す。
-/// interrupt は走行中 turn 前提なので session が居るはず（lazy spawn しない）。
+/// interrupt は走行中 turn 前提なので session が居るはず（lazy spawn しない — 購読を張ると
+/// demand が engine を起こしてしまう）。
+///
+/// 居ない時は、この lane の会話を購読していない = 停止は送れず、turn もこちらから見えない。
+/// それでも chat に「応答中」が残っていると停止も次の発話も効かないので、送れなかった理由を出して
+/// 表示を下ろす（2026-11-24）。turn の終わりで送信待ちの発話が流れ、その submit が購読を張り直す。
 pub(super) fn conversation_interrupt(
     ui: &mut UiState,
-    _boot: &Boot,
+    boot: &Boot,
     lane: String,
     chat_session: Option<u32>,
 ) {
@@ -220,7 +225,18 @@ pub(super) fn conversation_interrupt(
             session: chat_session,
         });
     } else {
-        tracing::warn!("conversation:interrupt skip — session 未起動 (lane={lane})");
+        tracing::warn!("conversation:interrupt — session 未起動 (lane={lane})。表示だけ下ろす");
+        // 停止の request が失敗した時（lane/conversation.rs）と同じく、受信した event と同じ道を通す
+        // （sidebar の awaiting の印も同じに付く）。
+        conversation_event(
+            ui,
+            boot,
+            lane,
+            crate::lane::conversation::interrupt_undelivered_event(
+                "この lane の会話を購読していません",
+            ),
+            chat_session.unwrap_or(1),
+        );
     }
 }
 

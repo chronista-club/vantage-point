@@ -348,9 +348,26 @@ impl VantageMcp {
         );
 
         let channel = self.get_quic_channel().await?;
-        let resp = rpc::request_once(channel, "process", method, &payload, timeout).await?;
+        // server ハンドラの Err は Error frame で届き、request_once が Err にする（doc 27 §3.4.7）。
+        // 旧形式で断られていた時と同じく、失敗の response も trace に残す。
+        let resp = match rpc::request_once(channel, "process", method, &payload, timeout).await {
+            Ok(resp) => resp,
+            Err(error) => {
+                write_trace(
+                    &TraceEntry::new(
+                        "quic",
+                        &tid,
+                        "response",
+                        "ERROR",
+                        format!("process.{} error: {}", method, error.message),
+                    )
+                    .with_elapsed(start.elapsed().as_millis() as u64),
+                );
+                return Err(error);
+            }
+        };
 
-        // server ハンドラの Err は `{"error": "<msg>"}` の単一キー object で返ってくる (VP-163)
+        // Error frame 移行前の server は `{"error": "<msg>"}` の単一キー object を成功の frame で返す (VP-163)
         if let Some(err_msg) = rpc_response_error(&resp) {
             write_trace(
                 &TraceEntry::new(

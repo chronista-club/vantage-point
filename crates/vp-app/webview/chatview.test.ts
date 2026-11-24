@@ -1471,6 +1471,50 @@ describe('停止した turn の表示（2026-09-23）', () => {
     foldInto(s, { kind: 'turn_completed', session_id: 'sid' })
     expect(s.items.map((i) => ('text' in i ? i.text : '')).some((t) => t.includes('停止しました'))).toBe(false)
   })
+  // 2026-11-24: 停止を押しても engine が居なかった（repo が engine_exited を流して「応答中」を下ろす）時。
+  // 停止の印を残すと、次の turn の終わりに「停止しました」が誤って出る。
+  const stopped = (s: ReturnType<typeof emptyChatState>) =>
+    s.items.map((i) => ('text' in i ? i.text : '')).filter((t) => t.includes('停止しました')).length
+  it('停止を押した turn が engine_exited で閉じても「停止しました」を 1 行出し、次の turn に持ち越さない', () => {
+    const s = emptyChatState()
+    foldInto(s, { kind: 'message_chunk', text: '考え中' })
+    s.interruptRequested = true
+    foldInto(s, { kind: 'engine_exited', message: 'engine 未起動' })
+    expect(s.streaming).toBe(false)
+    expect(s.interruptRequested).toBe(false)
+    expect(stopped(s)).toBe(1)
+    foldInto(s, { kind: 'message_chunk', text: '次の答え' })
+    foldInto(s, { kind: 'turn_completed', session_id: 'sid' })
+    expect(stopped(s)).toBe(1)
+  })
+  it('中断に答えない engine を host が止めた時（turn_completed → engine_exited）も「停止しました」は 1 行', () => {
+    const s = emptyChatState()
+    foldInto(s, { kind: 'message_chunk', text: '考え中' })
+    s.interruptRequested = true
+    foldInto(s, { kind: 'turn_completed', session_id: 'sid' })
+    foldInto(s, { kind: 'engine_exited', message: '中断（session/cancel）に 3s 答えがありませんでした' })
+    expect(s.streaming).toBe(false)
+    expect(stopped(s)).toBe(1)
+  })
+  it('停止が届かなかった時（vp-app が理由つきの error を出す）は応答中と印を下ろし、「停止しました」は出さない', () => {
+    const s = emptyChatState()
+    foldInto(s, { kind: 'message_chunk', text: '考え中' })
+    s.interruptRequested = true
+    foldInto(s, { kind: 'error', message: '停止を engine に届けられませんでした（この lane の会話を購読していません）' })
+    expect(s.streaming).toBe(false)
+    expect(s.interruptRequested).toBe(false)
+    expect(stopped(s)).toBe(0)
+    expect(s.items.some((i) => 'text' in i && i.text.includes('届けられませんでした'))).toBe(true)
+    foldInto(s, { kind: 'message_chunk', text: '次の答え' })
+    foldInto(s, { kind: 'turn_completed', session_id: 'sid' })
+    expect(stopped(s)).toBe(0)
+  })
+  it('停止を押していない engine_exited（休眠）には何も足さない', () => {
+    const s = emptyChatState()
+    foldInto(s, { kind: 'message_chunk', text: '完了' })
+    foldInto(s, { kind: 'engine_exited', message: 'idle' })
+    expect(stopped(s)).toBe(0)
+  })
 })
 
 describe('runningSubagents — 進行中の subagent を会話の流れから独立して並べる', () => {

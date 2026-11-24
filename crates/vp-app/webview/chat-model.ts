@@ -594,12 +594,22 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       break
     case 'engine_exited':
       // engine の休眠（途絶 = 回復可能）。error と違い会話バブルは足さない（休眠は会話本文ではなく
-      // ヘッダの 💤 休眠 / status で出す）。streaming / replaying は下ろす（error と同じ防御）。
+      // ヘッダの 💤 休眠 / status で出す。停止を押した turn の「停止しました」だけは下で足す）。
+      // streaming / replaying は下ろす（error と同じ防御）。
       s.streaming = false
       s.replaying = false
       // replay_end 未達でも、終了した engine の区間を次の接続へ持ち越さない。
       s.noticeReplayActive = false
       sealLastAssistant(s) // 復活後の chunk と前 turn を融合させない（§5.1）
+      // 停止を押した turn が engine の終了で閉じた（停止の時に engine が居なかったので repo が流した /
+      // 中断の待ちの間に engine が終了した）。turn は止まったので turn_completed と同じく 1 行出し、
+      // 印を次の turn へ持ち越さない（残すと次の turn の終わりに「停止しました」が誤って出る。2026-11-24）。
+      // 中断に答えない engine を host が止めた時は、先に来る turn_completed の枝が印を下ろしている。
+      if (s.interruptRequested) {
+        s.interruptRequested = false
+        s.items.push({ kind: 'assistant', text: '_停止しました_' })
+        sealLastAssistant(s)
+      }
       // 親プロセスが死んだ = 中の subagent も死んだ。⚠️ session_init は turn ごとに来るので
       // 区切りに使えない（実測 claude 2.1.296）— 使うと turn をまたぐ background を毎回殺す。
       closeOpenSubagents(s)

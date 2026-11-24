@@ -655,3 +655,122 @@ async fn run_repos_session(
     let _ = channel.close().await;
     outcome
 }
+
+/// engine usage meter（spec mem_1ChMLKCMUvC73JHTLjG3xg）: daemon の "daemon-usage" channel を購読し、
+/// snapshot（全量）が来るたびに `AppEvent::UsageUpdated` を emit する。**app に 1 本**（tray が app に
+/// 1 つなので window ごとには張らない）— `proxy` は window を持たない app 全体の proxy。
+///
+/// 上り: `refresh_rx`（MachineStrip の「更新」/ tray の Refresh Usage が値を進める watch）が動いたら
+/// `refresh` event を daemon に上げる。device の feedback と同じ latest-wins の形で、連打は自然に畳まれる。
+pub(crate) fn spawn_usage_subscription(
+    rt_handle: &tokio::runtime::Handle,
+    proxy: EventLoopProxy<AppEvent>,
+    conn: SharedDaemonConn,
+    refresh_rx: tokio::sync::watch::Receiver<u64>,
+) {
+    rt_handle.spawn(usage_subscription_loop(proxy, conn, refresh_rx));
+}
+
+/// "daemon-usage" の購読 → 再購読ループ。古い daemon（channel 未提供）に繋いだ時は device と同じく
+/// 指数 backoff のうえ `MAX_FAILURES` で諦める（usage が出ないだけで app は動く = fail-open）。
+async fn usage_subscription_loop(
+    proxy: EventLoopProxy<AppEvent>,
+    mut conn: SharedDaemonConn,
+    refresh_rx: tokio::sync::watch::Receiver<u64>,
+) {
+    const MAX_FAILURES: u32 = 10;
+    let mut failures: u32 = 0;
+    loop {
+        let client = match tokio::select! {
+            biased;
+            _ = proxy.closed() => return,
+            client = conn.wait_client() => client,
+        } {
+            Some(c) => c,
+            None => return, // app 終了
+        };
+        match run_usage_session(&proxy, &client, refresh_rx.clone()).await {
+            Ok(SubscriptionOutcome::AppClosing) => return,
+            Ok(SubscriptionOutcome::Disconnected) => failures = 0,
+            Err(e) => {
+                failures += 1;
+                if failures >= MAX_FAILURES {
+                    tracing::warn!("daemon-usage subscription giving up (古い daemon?): {}", e);
+                    return;
+                }
+                let delay_ms = std::cmp::min(500u64 << (failures - 1), 16_000);
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
+}
+
+/// 1 回の "daemon-usage" 接続セッション。接続即購読（daemon が繋いだ直後に snapshot を送る）。
+async fn run_usage_session(
+    proxy: &EventLoopProxy<AppEvent>,
+    client: &unison::ProtocolClient,
+    mut refresh_rx: tokio::sync::watch::Receiver<u64>,
+) -> Result<SubscriptionOutcome, String> {
+    use unison::network::MessageType;
+
+    let channel = tokio::select! {
+        biased;
+        _ = proxy.closed() => return Ok(SubscriptionOutcome::AppClosing),
+        result = client.open_channel("daemon-usage") => std::sync::Arc::new(
+            result.map_err(|e| format!("open daemon-usage channel: {}", e))?
+        ),
+    };
+    tracing::info!("daemon-usage subscription connected");
+
+    // 切断中に押された Refresh は持ち越さない（繋ぎ直した daemon は起動時に自分で集め直す）。
+    refresh_rx.borrow_and_update();
+    let refresh_channel = channel.clone();
+    let refresh_task = tokio::runtime::Handle::current().spawn(async move {
+        while refresh_rx.changed().await.is_ok() {
+            refresh_rx.borrow_and_update();
+            if refresh_channel
+                .send_event("refresh", &serde_json::json!({}))
+                .await
+                .is_err()
+            {
+                return; // 切断 — session ごと作り直される
+            }
+        }
+    });
+
+    let work = async {
+        loop {
+            let msg = match channel.recv().await {
+                Ok(m) => m,
+                Err(_) => break Ok(SubscriptionOutcome::Disconnected),
+            };
+            if msg.msg_type != MessageType::Event || msg.method != "snapshot" {
+                continue;
+            }
+            let snapshot = match msg
+                .payload_as_value()
+                .map_err(|e| e.to_string())
+                .and_then(|v| {
+                    serde_json::from_value::<crate::usage::UsageSnapshot>(v)
+                        .map_err(|e| e.to_string())
+                }) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("daemon-usage snapshot decode failed: {}", e);
+                    continue;
+                }
+            };
+            if proxy.send_event(AppEvent::UsageUpdated(snapshot)).is_err() {
+                break Ok(SubscriptionOutcome::AppClosing);
+            }
+        }
+    };
+    let outcome = tokio::select! {
+        biased;
+        _ = proxy.closed() => Ok(SubscriptionOutcome::AppClosing),
+        result = work => result,
+    };
+    refresh_task.abort();
+    let _ = channel.close().await;
+    outcome
+}

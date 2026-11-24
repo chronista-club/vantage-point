@@ -956,6 +956,16 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     //   養子縁組不能 / 生産者ゼロで永久沈黙
     // - creo_actions: 書き（actions/save）が読み（poller → health）と別実体だと「書いたのに戻る」
     // - wiremsg_store 等: "wire" channel が旧 `/api/wire/*` を同じ中央 store で serve する
+    // - usage: 周期 loop・会話 host の受動通知（passive）・"daemon-usage" channel が同じ集約点を見る
+    //
+    // engine usage meter（spec mem_1ChMLKCMUvC73JHTLjG3xg）: 本物の CLI に当たる probe はここでだけ作る。
+    // 前回の snapshot（state zone）を cache として読み直して始め、周期 loop は shutdown で畳む。
+    let usage = std::sync::Arc::new(crate::usage::UsageService::new(
+        std::sync::Arc::new(crate::usage::probe::CliProbe::new()),
+        Some(crate::usage::UsageService::default_persist_path()),
+    ));
+    crate::usage::passive::install(&usage);
+    tokio::spawn(usage.clone().run(shutdown_token.clone()));
     let daemon_state = std::sync::Arc::new(
         crate::daemon::server::DaemonState::assemble(crate::daemon::server::DaemonAssembly {
             machine_capabilities: machine_capabilities.clone(),
@@ -974,6 +984,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
             wire_notifier: wire_notifier.clone(),
             delivery_notify: delivery_notify.clone(),
             delegation_store: delegation_store.clone(),
+            usage,
         })
         .await,
     );

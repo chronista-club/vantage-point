@@ -30,16 +30,25 @@ async fn fixture() -> (ServerHandle, ProtocolClient) {
     (handle, client)
 }
 
-async fn request(channel: &UnisonChannel, method: &str, payload: Value) -> Value {
-    tokio::time::timeout(Duration::from_secs(2), channel.request(method, &payload))
+/// 成功は `Ok(応答)`、断られたら `Err(Error frame の文面)`（doc 27 §3.4.7）。
+async fn request(channel: &UnisonChannel, method: &str, payload: Value) -> Result<Value, String> {
+    match tokio::time::timeout(Duration::from_secs(2), channel.request(method, &payload))
         .await
         .expect("request was silently discarded instead of answered")
-        .expect("request must receive a decodable response")
+    {
+        Ok(value) => Ok(value),
+        Err(unison::network::NetworkError::Protocol(message)) => Err(message),
+        Err(e) => panic!("request must be answered or refused with an Error frame: {e}"),
+    }
 }
 
-fn expected_dispatch_error(path: &std::path::Path) -> Value {
+fn refusal(reason: &str) -> Result<Value, String> {
+    Err(format!("Request error: {}", json!({"error": reason})))
+}
+
+fn expected_dispatch_error(path: &std::path::Path) -> Result<Value, String> {
     let key = crate::capability::normalize_path_key(path);
-    json!({"error": format!("repo 未起動 (key={key})")})
+    refusal(&format!("repo 未起動 (key={key})"))
 }
 
 #[tokio::test]
@@ -99,7 +108,7 @@ async fn repo_proxy_missing_or_invalid_initial_path_gets_error() {
         let response = request(&channel, "lanes_list", payload).await;
         assert_eq!(
             response,
-            json!({"error": "repo-proxy: non-empty repo_path required on first request"})
+            refusal("repo-proxy: non-empty repo_path required on first request")
         );
     }
     client.disconnect().await.unwrap();
@@ -114,7 +123,7 @@ async fn repo_proxy_explicit_subscribe_still_acks_then_dispatches() {
     let channel = client.open_channel("test").await.unwrap();
     assert_eq!(
         request(&channel, "subscribe", json!({"repo_path": repo.path()})).await,
-        json!({"status": "ok"})
+        Ok(json!({"status": "ok"}))
     );
     let expected = expected_dispatch_error(repo.path());
     assert_eq!(request(&channel, "lanes_list", json!({})).await, expected);

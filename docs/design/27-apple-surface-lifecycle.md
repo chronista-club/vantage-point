@@ -213,6 +213,46 @@ club-unison 2.3.0 の `is_connected()` は QUIC の `close_reason()` を読む�
 型を保った接続終了理由。正常終了を伴わない再起動については、loopback の別プロセスを終了し、
 同 port で起動した server へ最初の call が有界時間で届くことを検証する。実機の再起動確認は別途行う。
 
+### 3.4.7 server の失敗は Error frame で返す（2026-11-24）
+
+関連: `mem_1ChM9ambsYeZTn6gHmuMEt`（§3.4.6 の後段）。対象: `daemon/server.rs` の channel handler、
+`repo/repo_registry.rs` の `RepoRuntimes::dispatch`、`forward_to_sp_control`、in-process の consumer。
+
+- daemon の handler の失敗は、成功の frame に `{"error": …}` を詰めず、`UnisonChannel::send_error`
+  の Error frame で返す。payload は `{"error": 理由}`。旧形式の成功の frame と同じ JSON で、unison
+  自身の Error（`channel-not-found`、受信 loop が合成する `connection closed`）と同じく `error` key を
+  持つ。client の
+  `request()` は `NetworkError::Protocol("Request error: {\"error\":…}")` を受ける。
+- 対象の channel: device / registry / events / daemon-control / wire / link / repo-proxy / gui の上り /
+  daemon-repo。未知の method にも理由を返す。method の許可一覧は作らない。断った後も、同じ channel は
+  次の request に応える（例外は repo-proxy の最初の request に `repo_path` が無い時だけで、断って
+  handler を終える。従来と同じ）。
+- `RepoRuntimes::dispatch` と `forward_to_sp_control` は `Result<Value, String>` を返す。in-process の
+  consumer（lane の demand、`lane/session-changed`、wire の配送、delegation の再通知）は `Ok` / `Err`
+  で分岐する。「失敗なら台帳を進めず、後の pulse で再通知する」配送の約束は変えない。
+- 対象外: HTTP の error JSON、Codex の JSON-RPC の error、GUI の表示用 error、成功応答の中の
+  状態データとしての `error`（`devices/midi-use`、`lane/prs`）。
+
+**新旧混在:**
+
+- 新しい client × 旧 server: §3.4.6 のとおり、旧形式の `{"error"}` も Err として読む。
+- federation の古い相手（direct 送信を持つ v0.42.0〜v0.88.0。#715 で入った形から #1279 の前まで同じ）×
+  新しい server: 古い相手の direct 送信は、`request()` の Err も旧形式の `{"error"}` も、どちらも relay
+  に回す（それらの版が使う unison 1.6 / 1.8 / 1.9 / 2.0 / 2.2 も Error frame を `Err(Protocol)` に
+  する）。形式を変えても古い相手の動きは変わらない。受信側の `wire/send` が断るのは保存の前だけ
+  （store / notifier / delivery_notify の未初期化、from / to / body の検証、返信先の読み込みと宛先の
+  展開、CREATE 1 文の失敗）なので、relay で届いた同じ envelope は、断られるか、初めて 1 回だけ保存
+  される。どちらでも二重配送にはならない。`daemon/send_error_tests.rs` の
+  `refused_wire_send_leaves_nothing_in_the_store` は、このうち 4 種類の拒否（bare な from / to、from
+  欠落、返信先の不在）で何も保存されないことを固定する。保存の後に条件付きで失敗する段を足した時は
+  捕まえられないので、`handle_wire_channel` の ⚠️ を読み直すこと。
+- 変わらず残る危険: 古い相手が「保存は成功 → 応答の前に切断 / timeout」で relay に回す二重配送は、
+  この変更の前後で同じ。message id は受信側で採番するので、id で重複を捨てる仕組みを足しても古い相手は
+  守れない。
+- VP の外で動く v0.89.0 より前の `vp mcp` は、Error frame を受けると同じ request を送り直す。
+  旧形式は成功の frame で届くので送り直しの経路に入らず、`rpc_response_error` で Err にして返して
+  いた。lane の中の MCP は daemon と一緒に生まれ直すので新しい。
+
 ## 4. terminal = Unison stream channel（最後の holdout）
 
 terminal は単一 topic 空間の**唯一の raw WebSocket holdout**。vp-app の Lane terminal が

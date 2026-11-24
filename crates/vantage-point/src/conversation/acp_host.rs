@@ -78,7 +78,8 @@ impl AcpEngine {
     }
 
     /// CLI 実行パスの解決（launchd 起動 daemon の細い PATH 対策 — `session_store::resolve_cli`）。
-    fn cli_path(self) -> String {
+    /// usage meter の probe（`usage::probe`）も同じ解決を使う。
+    pub(crate) fn cli_path(self) -> String {
         match self {
             Self::Grok => {
                 let home = std::env::var("HOME").unwrap_or_default();
@@ -398,8 +399,15 @@ impl AcpAgentHost {
         })
     }
 
-    /// 実行中 turn を中断する（`session/cancel` notification — プロセスは殺さない）。
+    /// 実行中 turn を中断する（`session/cancel` notification）。engine が答えれば process は止めない。
     /// prompt response が stopReason=cancelled で返り、通常の完了経路で streaming が畳まれる。
+    ///
+    /// engine が中断に答えない時（agy が thinking のまま固まった、2026-11-24）は、共有 host が
+    /// 待ち切り（`HostOptions::cancel_grace`、既定 3 秒）で process を止めて終了し（[`Self::exited`]）、
+    /// `TurnCompleted` → `EngineExited` を出す（stderr の読み切りを最大 1 秒待つので、中断から 3〜4 秒）。
+    /// 次の submit で pool が作り直し、registry の会話 id で `session/load` する（止めた engine の会話を
+    /// load し直せるかは実機で確かめていない。load に失敗すると `LoadFallback::NewSession` で新しい
+    /// 会話になる）。
     pub async fn interrupt(&self) -> anyhow::Result<()> {
         self.host
             .interrupt()

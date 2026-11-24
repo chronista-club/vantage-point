@@ -20,7 +20,9 @@ use crate::daemon::pollers::{
     spawn_lane_inbox_poller, spawn_menu_event_pump, spawn_processes_fetch,
     spawn_session_title_poller,
 };
-use crate::daemon::subscriptions::{spawn_device_subscription, spawn_repos_subscription};
+use crate::daemon::subscriptions::{
+    spawn_device_subscription, spawn_repos_subscription, spawn_usage_subscription,
+};
 use crate::events::AppEvent;
 use crate::settings::Settings;
 use crate::webview::editor_bridge::fleet_feedback_payload;
@@ -35,7 +37,12 @@ pub(super) struct AppResources {
     pub(super) open_devtools_item: muda::MenuItem,
     pub(super) reload_webview_item: muda::MenuItem,
     _menu: muda::Menu,
-    _tray: Option<tray_icon::TrayIcon>,
+    /// 常駐トレイ（engine usage meter の表示先でもある — app に 1 つ）。
+    pub(super) tray: Option<crate::tray::Tray>,
+    /// engine usage meter: daemon から届いた最新の snapshot（新しく開く window の初期値に使う）。
+    pub(super) usage: std::cell::RefCell<Option<crate::usage::UsageSnapshot>>,
+    /// engine usage meter: 手動 Refresh の要求（値を進めると購読 session が daemon に `refresh` を上げる）。
+    usage_refresh_tx: tokio::sync::watch::Sender<u64>,
     pub(super) daemon_conn: SharedDaemonConn,
     pub(super) rt_handle: tokio::runtime::Handle,
     pub(super) proxy: tao::event_loop::EventLoopProxy<RoutedEvent<AppEvent>>,
@@ -43,6 +50,15 @@ pub(super) struct AppResources {
     pub(super) midi_pins: std::cell::RefCell<crate::midi_pins::MidiPins>,
     _rt: tokio::runtime::Runtime,
     _log: crate::log_init::LogInitResult,
+}
+
+impl AppResources {
+    /// engine usage meter の手動 Refresh（MachineStrip の「更新」/ tray の Refresh Usage）。
+    /// daemon に繋がっていなければ黙って落ちる（繋ぎ直した daemon は自分で集め直す）。
+    pub(super) fn request_usage_refresh(&self) {
+        self.usage_refresh_tx
+            .send_modify(|n| *n = n.wrapping_add(1));
+    }
 }
 
 /// Per-window resources. WebView drops before its native parent window.
@@ -123,7 +139,7 @@ pub(super) fn boot() -> anyhow::Result<(EventLoop<RoutedEvent<AppEvent>>, Rc<App
     let open_devtools_item = menu_handles.open_devtools_item;
     let reload_webview_item = menu_handles.reload_webview_item;
     let menu_ids = menu_handles.ids;
-    let _tray = match crate::tray::build_tray(&menu_ids) {
+    let tray = match crate::tray::build_tray(&menu_ids) {
         Ok(t) => Some(t),
         Err(e) => {
             tracing::warn!("トレイ初期化失敗 (無効化): {}", e);
@@ -150,13 +166,25 @@ pub(super) fn boot() -> anyhow::Result<(EventLoop<RoutedEvent<AppEvent>>, Rc<App
         );
     }
 
+    // engine usage meter: "daemon-usage" の購読は app に 1 本（tray が app に 1 つ）。window を持たない
+    // proxy で送り、event loop が tray と全 window に振り分ける（`AppEvent::UsageUpdated`）。
+    let (usage_refresh_tx, usage_refresh_rx) = tokio::sync::watch::channel(0u64);
+    spawn_usage_subscription(
+        &rt_handle,
+        EventLoopProxy::new(event_loop.create_proxy(), None),
+        daemon_conn.clone(),
+        usage_refresh_rx,
+    );
+
     let proxy = event_loop.create_proxy();
     let app = Rc::new(AppResources {
         menu_ids,
         open_devtools_item,
         reload_webview_item,
         _menu,
-        _tray,
+        tray,
+        usage: std::cell::RefCell::new(None),
+        usage_refresh_tx,
         daemon_conn,
         rt_handle,
         proxy,
@@ -365,12 +393,14 @@ pub(super) fn open_window(
     // VP-147 PR-P2-3: per-Lane mailbox inbox 状況の 5s 周期 resolve (sidebar message icon 用 signal)
     spawn_lane_inbox_poller(&rt_handle, proxy.clone());
 
-    let ui = UiState::new(
+    let mut ui = UiState::new(
         settings,
         persist,
         initial_dev_mode,
         restored_geometry.as_ref().map(|g| (g.width, g.height)),
     );
+    // engine usage meter: 後から開いた window も、届き済みの snapshot から始める（次の push を待たない）。
+    ui.sidebar_state.engine_usage = app.usage.borrow().clone();
 
     let boot = Boot {
         webview,

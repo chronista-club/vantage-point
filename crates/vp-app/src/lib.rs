@@ -59,6 +59,8 @@ pub mod settings;
 #[cfg(test)]
 mod test_env;
 pub mod tray;
+/// engine usage meter の写しと表示文字列（tray / sidebar が共用）。
+pub mod usage;
 /// 音声入力（マイク録音 + whisper.cpp 認識。push-to-talk の本体）。
 pub mod voice;
 /// webview との線（IPC decode / asset / main-area / ink snapshot / code pane）。

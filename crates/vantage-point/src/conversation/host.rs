@@ -465,6 +465,9 @@ impl ClaudeHost {
                     handle_control_frame(frame, &tx, &pump_pending);
                     continue;
                 }
+                // usage meter（受動）: rate_limit_event の使用率を daemon の集約へ。translator は
+                // この行を破棄するので、ここで先に覗く（関係ない行は文字列の包含だけで素通し）。
+                crate::usage::passive::observe_claude_line(&line);
                 let out = translator.ingest(&line);
                 // tail 更新は broadcast より先。 replay handler が「配信済みだが tail に無い」
                 // 増分を取りこぼさない順序（tail ⊇ 配信済み未 commit 分 を保つ）。

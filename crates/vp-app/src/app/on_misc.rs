@@ -360,6 +360,30 @@ pub(super) fn wire_history_result(
     push_sidebar::wire_result(&boot.webview, payload);
 }
 
+/// engine usage meter: daemon から届いた snapshot を tray と全 window の sidebar に配る。
+///
+/// 値は app に 1 つ（`AppResources::usage`）。window ごとの `sidebar_state.engine_usage` は
+/// その写しで、`sidebar:state` の全量 push に乗って MachineStrip / AddSub に届く。
+pub(super) fn usage_updated<K>(
+    app: &super::boot::AppResources,
+    windows: &mut std::collections::HashMap<K, (UiState, Boot)>,
+    snapshot: crate::usage::UsageSnapshot,
+) {
+    if let Some(tray) = app.tray.as_ref() {
+        tray.apply_usage(&snapshot);
+    }
+    for (ui, boot) in windows.values_mut() {
+        usage_window(ui, boot, snapshot.clone());
+    }
+    *app.usage.borrow_mut() = Some(snapshot);
+}
+
+/// 1 window の sidebar に usage を反映する（[`usage_updated`] が全 window に対して呼ぶ）。
+pub(super) fn usage_window(ui: &mut UiState, boot: &Boot, snapshot: crate::usage::UsageSnapshot) {
+    ui.sidebar_state.engine_usage = Some(snapshot);
+    push_sidebar_state(&boot.webview, &ui.sidebar_state);
+}
+
 pub(super) fn activity_update(ui: &mut UiState, boot: &Boot, snap: crate::pane::ActivitySnapshot) {
     ui.sidebar_state.activity = snap;
     // 適用中フラグは GUI local（health 由来ではない）ので poll 上書きから守る。

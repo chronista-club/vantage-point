@@ -5,6 +5,7 @@ import type { DeviceSnapshot } from "./DeviceSnapshot";
 import type { LaneInfo } from "./LaneInfo";
 import type { MessageState } from "./MessageState";
 import type { RepoPaneState } from "./RepoPaneState";
+import type { UsageSnapshot } from "./UsageSnapshot";
 import type { WidgetKind } from "./WidgetKind";
 
 /**
@@ -114,6 +115,12 @@ lane_inboxes?: { [key in string]: MessageState },
  * JS 側は DeviceRegistry pane に device list を render する。 disk persist 不要 (起動時 0)。
  */
 devices?: Array<DeviceSnapshot>, 
+/**
+ * engine usage meter（spec mem_1ChMLKCMUvC73JHTLjG3xg）: daemon "daemon-usage" の最新 snapshot。
+ * MachineStrip のゲージと sub lane 作成の engine 選択が読む。未取得 = None（UI は従来の表示に
+ * 倒れる = fail-open）。app 全体で 1 つの値を全 window に配る（`AppEvent::UsageUpdated`）。
+ */
+engine_usage?: UsageSnapshot, 
 /**
  * doc 30 §5-3 / lanes 購読 self-heal: per-repo の Daemon "lanes" channel 購読フェーズ。
  * Key: repo_path。 Value は 3 値モデル (entry 有無 + 2 文字列):

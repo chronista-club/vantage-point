@@ -13,7 +13,8 @@
 //! - `delegation/poll`           — pull-hook: agent 関与の undelivered 委譲を返す（`vp wire hook-check`）
 //! - `delegation/list`           — 観測: 全委譲を created_at 昇順で返す read-only（Canvas 表示用）
 //!
-//! 未知 id は `{ "error": ... }` を返す（`daemon_wire::call` が Err に変換 → repo handler が Err）。
+//! 未知 id は Err で断る（channel handler が Error frame で返し、`daemon_wire::call` が Err に変換 →
+//! repo handler が Err）。
 
 use crate::capability::DelegationStore;
 use crate::repo::delegation::Outcome;
@@ -39,7 +40,7 @@ fn record_json(d: &crate::repo::delegation::Delegation) -> serde_json::Value {
 /// (= `"create"` / `"complete"` / `"respond"` / `"poll"` / `"mark_delivered"` / `"list"`)。
 ///
 /// store への CRUD/遷移のみ（wake = 誰を起こすか は repo-local の責務）。エラーは Err(String) で返り、
-/// channel handler が `{"error": ...}` フレームに詰める（未知 id も Err → repo handler が Err 化、旧挙動を保持）。
+/// channel handler が Error frame で断る（doc 27 §3.4.7。未知 id も Err → repo handler が Err 化、旧挙動を保持）。
 pub(crate) async fn dispatch_delegation(
     store: &DelegationStore,
     method: &str,

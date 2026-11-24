@@ -555,6 +555,34 @@ html,body{margin:0;height:100%;overflow:hidden;}
   font-size:var(--sb-text-micro,10px);letter-spacing:.04em;text-transform:uppercase;
   color:var(--sb-conn-hitl,#FF4A2D);}
 .vp-machine-flag.update{color:var(--sb-conn-auto,#FFF76B);display:inline-flex;align-items:center;}
+/* engine usage meter (spec mem_1ChMLKCMUvC73JHTLjG3xg) — 畳んだ 1 行の「最も逼迫しているエンジン」。
+   normal は地の muted、warning (>=80%) は auto の黄、critical (>=95%) は hitl の赤。 */
+.vp-usage-chip{flex:0 0 auto;font-family:var(--vp-font-mono),var(--typography-family-mono);
+  font-size:var(--sb-text-micro,10px);letter-spacing:.02em;font-variant-numeric:tabular-nums;
+  color:var(--lg-mute,#5C7A85);}
+.vp-usage-chip.warning,.vp-usage-pct.warning,.vp-usage-window .v.warning{color:var(--sb-conn-auto,#FFF76B);}
+.vp-usage-chip.critical,.vp-usage-pct.critical,.vp-usage-window .v.critical{color:var(--sb-conn-hitl,#FF4A2D);}
+.vp-usage{padding:2px var(--spacing-sm,8px) 6px;font-family:var(--vp-font-mono),var(--typography-family-mono);
+  font-size:var(--sb-text-meta,11px);}
+.vp-usage-head{display:flex;align-items:center;justify-content:space-between;padding:1px 0 3px;}
+.vp-usage-head .k{color:var(--lg-mute-2,#38525b);}
+.vp-usage-empty{color:var(--lg-mute-2,#38525b);}
+.vp-usage-engine{padding:2px 0;}
+.vp-usage-row{display:flex;align-items:center;gap:6px;}
+.vp-usage-name{flex:0 0 28px;color:var(--lg-mute,#5C7A85);}
+.vp-usage-bar{flex:1 1 auto;height:4px;border-radius:2px;overflow:hidden;
+  background:color-mix(in srgb,var(--lg-mute-2,#38525b),transparent 60%);}
+.vp-usage-fill{display:block;height:100%;background:var(--lg-mute,#5C7A85);}
+.vp-usage-fill.warning{background:var(--sb-conn-auto,#FFF76B);}
+.vp-usage-fill.critical{background:var(--sb-conn-hitl,#FF4A2D);}
+.vp-usage-pct{flex:0 0 34px;text-align:right;color:var(--lg-mute,#5C7A85);font-variant-numeric:tabular-nums;}
+.vp-usage-window{display:flex;justify-content:space-between;gap:6px;padding-left:34px;
+  font-size:var(--sb-text-micro,10px);}
+.vp-usage-window .k{color:var(--lg-mute-2,#38525b);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.vp-usage-window .v{flex:0 0 auto;color:var(--lg-mute,#5C7A85);font-variant-numeric:tabular-nums;}
+.vp-usage-window.scoped{opacity:.7;}
+.vp-usage-error{padding-left:34px;font-size:var(--sb-text-micro,10px);color:var(--lg-mute-2,#38525b);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
 /* 相部屋の非 root session 行 (doc 58 ②-b) — 場所ラベル省略、root 行より 1 段静か。
    dot slot は空 span が indent だけ揃える (state データが無いものを描かない)。 */
