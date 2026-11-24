@@ -155,7 +155,32 @@ ChatView（`chatview.tsx`、586 行）の `foldInto` switch（`chatview.tsx:64`�
 
 - host `interrupt()`（§2.3）を新 IPC `echoes:interrupt {lane}` → SP dispatch → 呼ぶだけ。
 - ChatView に**停止ボタン**（送信ボタン `chatview.tsx:451` の隣、turn 実行中のみ活性）。キーは Esc 相当（pane-level の `onDocKey`（`chatview.tsx:335`）に Esc を追加。作文中の textarea では抑制 — 既存 Home/End の textarea 抑制（`:340`）と同じ扱い。Escape の既存 handler は無いので新設）。
-- 中断後、engine は次 submit を受けられる（turn は終わるが engine プロセスは生存）。
+- 中断後、engine は次 submit を受けられる（engine が中断に答えれば、turn は終わるが engine プロセスは生存。答えない ACP engine は下のとおり止める）。
+- **停止の経路が途切れても「応答中」を下ろす**（2026-11-24、agy の chat が thinking のまま固まり、停止も次の発話も効かなくなった件）。
+  GUI は応答中の間（Claude と Codex 以外の engine）、次の発話を送信待ちに溜め、turn の終わりでしか流さない（§5.1。
+  契機の kind の正本は `session-now-bridge.ts` の `TURN_CLOSING_KINDS` = `turn_completed` / `error` / `engine_exited`）。
+  turn の終わりが来ないと、停止も次の発話も効かない。そこで次の途切れ方では終わりを出す:
+  - engine が中断に答えない（ACP）: 共有 host が待ち切り（既定 3 秒）で process を止めて終了し、`TurnCompleted` →
+    `EngineExited` を出す（stderr の読み切りを最大 1 秒待つので、中断から 3〜4 秒。doc 88 §8.3 の表、agent-chat
+    設計書 01）。次の submit で engine を作り直す
+  - engine が居ない / 停止を受け取れない（ACP の host が終了済み、Claude の stdin に書けない）: repo
+    （`handle_conversation_interrupt`）が押された session の topic に `EngineExited` を流して Ok を返す。
+    存在しない lane / session は従来どおり Err
+  - 停止の request が失敗した（request の最中の切断、存在しない lane / session、repo が居ない。Error frame 移行前の
+    daemon の `{"error"}` も含む）: GUI が理由つきの `error` をその session の chat に出す。GUI がその lane の会話を
+    購読していない時も同じ `error` を出す（購読を張ると engine を起こすので、停止のためには張らない。送信待ちの発話が
+    流れれば、その submit が張り直す）。⚠️ 再接続を待っている間の停止は request にならず溜まり、再接続の後に送られる
+    （`error` は出ない。再接続の replay の `ReplayEnd` の `in_flight` が真の状態を戻す）
+  - GUI は `engine_exited` でも、停止を押した turn なら「停止しました」を 1 行出して停止の印を下ろす（`error` と同じく
+    印を次の turn に持ち越さない。`error` は停止が届いていないので「停止しました」は出さない）
+  - **範囲の外**: Claude / Codex / vpcode の interrupt は送りっぱなしで、engine が生きているのに turn を閉じない時の
+    待ち切りは無い（Codex は turn の始まりの直後の短い窓では何も送らずに Ok、vpcode は終了済みでも Ok）。
+    この時の「応答中」は、engine が turn を閉じるか、購読し直しの replay（`ReplayEnd` / `CodexHistory` の
+    `in_flight`）が真の状態を戻すまで残る。ACP でも、host が生きていて turn の最中でない（GUI だけが turn の
+    終わりを取りこぼした）時は、`interrupt` は cancel も期限も立てずに Ok を返し、repo も何も流さないので、下りない
+  - **範囲の外**: engine が最初の出力の前に固まると、`streaming` が立たない（立つのは本文・thought・tool の event）。
+    停止ボタンも Esc も `streaming` の時だけなので、停止そのものを出せない。続けて送った発話は engine の側の待ちに積まれる。
+    chat を開き直すと、replay の `ReplayEnd` の `in_flight: true` が `streaming` を立てるので、停止ボタンが出る
 
 ### 5.1 type-ahead バッファリング（送信と応答の処理順を保つ）
 

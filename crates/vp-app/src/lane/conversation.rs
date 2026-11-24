@@ -45,6 +45,35 @@ pub(crate) enum ConversationCmd {
     SetPermissionMode { mode: String, session: Option<u32> },
 }
 
+/// 停止（`conversation_interrupt`）が repo に届かなかった時に、その session の chat へ出す event
+/// （ConversationEvent の wire 形）。「応答中」を下ろし、届かなかった理由を見せる。
+///
+/// webview は応答中の間（Claude と Codex 以外の engine）、次の発話を送信待ちに溜めて turn の
+/// 終わりまで送らない。停止が届かずに応答中が残ると、停止も次の発話も効かなくなる（2026-11-24）。
+/// `error` は turn の終わりの kind なので、停止の印も下ろす（「停止しました」は出さない — 停止は
+/// 届いていない）。購読している時は、engine が実は動いていれば続きの event が streaming を立て直す
+/// （購読していない時は、張り直すまで event は来ない）。
+pub(crate) fn interrupt_undelivered_event(reason: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "error",
+        "message": format!("停止を engine に届けられませんでした（{reason}）"),
+    })
+}
+
+/// `conversation_interrupt` の応答から、届かなかった理由を読む（届いたなら None）。
+///
+/// 失敗は 2 つの形で届く: daemon の Error frame（#1286 以降、request の Err）と、それより前の
+/// daemon の成功の frame の `{"error": …}`（[`crate::daemon::control::rpc_error`]）。GUI だけ
+/// 先に更新した時（`app:swap` で daemon を立て直さなかった等）も、どちらも失敗として読む。
+pub(crate) fn interrupt_failure<E: std::fmt::Display>(
+    response: Result<serde_json::Value, E>,
+) -> Option<String> {
+    match response {
+        Ok(value) => crate::daemon::control::rpc_error(&value),
+        Err(e) => Some(e.to_string()),
+    }
+}
+
 /// 1 lane の conversation session handle (event loop が保持)。map から remove で cmd_tx drop → 停止。
 pub(crate) struct LaneConversation {
     pub(crate) cmd_tx: tokio::sync::mpsc::UnboundedSender<ConversationCmd>,
@@ -225,12 +254,31 @@ async fn run_conversation_session(
                             .await;
                     }
                     Some(ConversationCmd::Interrupt { session }) => {
-                        let _ = channel
+                        // engine が居ない時は repo が EngineExited を流して Ok を返す。失敗が返るのは
+                        // 届かなかった時（request の最中の切断 / 存在しない lane・session / repo が
+                        // 居ない）。黙って捨てると「応答中」が残るので、理由を添えて turn を閉じる。
+                        // 再接続を待っている間の停止は、この loop が cmd_rx を読まないので溜まり、
+                        // 再接続の後に送られる（再接続の replay が真の状態を戻す）。
+                        let response = channel
                             .request::<serde_json::Value, serde_json::Value>(
                                 "conversation_interrupt",
                                 &serde_json::json!({ "lane": lane_key, "session": session }),
                             )
                             .await;
+                        if let Some(reason) = interrupt_failure(response) {
+                            tracing::warn!("conversation_interrupt 失敗: lane={lane_key}: {reason}");
+                            if proxy
+                                .send_event(AppEvent::ConversationEvent {
+                                    lane: lane_key.to_string(),
+                                    // submit の結果と同じ既定（webview は session を必ず付けて送る）。
+                                    session: session.unwrap_or(1),
+                                    event: interrupt_undelivered_event(&reason),
+                                })
+                                .is_err()
+                            {
+                                return Ok(SubscriptionOutcome::AppClosing);
+                            }
+                        }
                     }
                     Some(ConversationCmd::SetPermissionMode { mode, session }) => {
                         let _ = channel
@@ -265,5 +313,63 @@ async fn run_conversation_session(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 停止が repo に届かない時に chat へ出す event は、webview が「turn の終わり」として畳む kind で、
+    /// ConversationEvent の wire 形（`kind` + `message`）。turn の終わりの kind でないと、
+    /// 「応答中」も送信待ちの発話も残ったままになる（2026-11-24）。
+    #[test]
+    fn interrupt_fallback_event_closes_the_turn_in_the_webview() {
+        // webview の判定の正本（`session-now-bridge.ts` の TURN_CLOSING_KINDS）と突き合わせる。
+        let closing = include_str!("../../webview/session-now-bridge.ts")
+            .lines()
+            .find(|line| line.contains("export const TURN_CLOSING_KINDS"))
+            .expect("TURN_CLOSING_KINDS の定義");
+
+        let event = interrupt_undelivered_event("connection lost");
+        assert_eq!(event["kind"], "error", "届かなかった理由を見せる");
+        assert!(
+            event["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("connection lost")),
+            "{event}"
+        );
+        assert!(
+            closing.contains(r#""error""#),
+            "error は turn を閉じる kind ではない: {closing}"
+        );
+    }
+
+    /// 停止の失敗は 2 つの形で届く: 新しい daemon（#1286 以降）は Error frame（request の Err）、
+    /// それより前の daemon は成功の frame の `{"error": …}`。GUI だけ先に更新した時も
+    /// 「応答中」が残らないよう、どちらも失敗として読む。
+    #[test]
+    fn interrupt_failure_reads_both_daemon_error_forms() {
+        // Error frame の Err の Display の実物の形（`app/on_sidebar.rs` の lanes/create の例から、呼び手が
+        // 足した `daemon-control.lanes/create: ` を除いた部分）。
+        const ERROR_FRAME: &str = r#"Protocol error: Request error: {"error":"conversation_interrupt: session が存在しません（addr=vp/lane/x, session=9）"}"#;
+        assert_eq!(
+            interrupt_failure(Err::<serde_json::Value, _>(ERROR_FRAME)).as_deref(),
+            Some(ERROR_FRAME)
+        );
+        assert_eq!(
+            interrupt_failure(Ok::<_, String>(
+                serde_json::json!({ "error": "conversation_interrupt: Lane not found" })
+            ))
+            .as_deref(),
+            Some("conversation_interrupt: Lane not found")
+        );
+        assert_eq!(
+            interrupt_failure(Ok::<_, String>(
+                serde_json::json!({ "status": "ok", "lane": "vp/lane/x" })
+            )),
+            None,
+            "届いた停止は失敗にしない"
+        );
     }
 }

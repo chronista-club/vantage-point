@@ -271,7 +271,7 @@ VP は pump が engine の出力を topic に流している（同じ topic に�
 | 会話 id の永続 | 会話が確定したら registry に書く | 書くのは同じ。保存に失敗した時は `Error` が出る（手書きの host は log の warn だけ）。保存に失敗すると次の再開で会話を失うので、表に出す |
 | 設定の意図 | agy だけ（`AgySettings::config_pairs`）。会話中の切替が成功したら、host がその値を今の意図として覚える | 同じ（立て直しの後の当て直しが、起動の時の値でなく今の値になる点は新しい） |
 | stderr | 1 行ずつ `tracing::warn!` | 同じ |
-| 中断 | `session/cancel` を送り、待たせていた発話も捨てる | 同じ（共有 crate を VP に合わせて直した、agent-chat PR #6） |
+| 中断 | `session/cancel` を送り、待たせていた発話も捨てる | 同じ（共有 crate を VP に合わせて直した、agent-chat PR #6）。加えて、engine が中断に待ち切り（既定 3 秒）まで答えなければ、process を止めて host を終了し、`TurnCompleted` → `EngineExited` を出す（2026-11-24、agy が thinking のまま固まって停止が効かなかった件。agent-chat PR #9。手書きの host にも無かった） |
 
 変わった所:
 
