@@ -9,10 +9,15 @@
  * （SSOT = `EngineKind::ALL` + shell）の結果を repo ごとの購読で受けて populate
  * する。 選択値は IPC の `agent` に載る（未選択 = repo-side default = claude）。
  * fetch 前 / 失敗時は dropdown を出さず、 従来どおり default engine で作成できる（fail-open）。
+ *
+ * engine usage meter（spec mem_1ChMLKCMUvC73JHTLjG3xg）: 選択肢に現在の使用率を添える
+ * （`claude (88%)`）。usage が未着・取れていない engine は名前だけ（従来どおり）。
  */
 import { createEffect, createSignal, onCleanup, onMount, For, Show } from 'solid-js'
 import { sendIpc } from './ipc'
 import { createLaneCreation, subscribeAgents } from './feedback'
+import { sidebar } from './store'
+import { agentOptionDetail, agentOptionLabel } from './usage'
 
 /** Daemon `agents_list` の 1 entry（`crate::client::AgentInfo` の wire shape）。 */
 type AgentInfo = { name: string; description: string }
@@ -88,8 +93,13 @@ export function AddSub(props: { repoPath: string; onClose: () => void; onPending
         >
           <For each={agents()}>
             {(s) => (
-              <option value={s.name} title={s.description}>
-                {s.name}
+              <option
+                value={s.name}
+                title={[s.description, agentOptionDetail(s.name, sidebar.engine_usage, Date.now())]
+                  .filter(Boolean)
+                  .join('\n')}
+              >
+                {agentOptionLabel(s.name, sidebar.engine_usage)}
               </option>
             )}
           </For>

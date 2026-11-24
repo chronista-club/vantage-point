@@ -1,0 +1,67 @@
+{
+  "numStartups": 42,
+  "oauthAccount": {
+    "accountUuid": "11111111-2222-3333-4444-555555555555",
+    "emailAddress": "someone@example.com",
+    "organizationUuid": "66666666-7777-8888-9999-000000000000",
+    "displayName": "Someone",
+    "organizationName": "Example Org",
+    "organizationRateLimitTier": "default_claude_max_20x",
+    "planDisplayName": "Ultra",
+    "billingType": "stripe_subscription"
+  },
+  "cachedUsageUtilization": {
+    "fetchedAtMs": 1795502717111,
+    "accountUuid": "11111111-2222-3333-4444-555555555555",
+    "utilization": {
+      "five_hour": null,
+      "seven_day": {
+        "utilization": 88,
+        "resets_at": "2026-11-26T00:59:59.983079+00:00",
+        "limit_dollars": null,
+        "used_dollars": null,
+        "remaining_dollars": null,
+        "locked_reason": null
+      },
+      "seven_day_oauth_apps": null,
+      "seven_day_opus": null,
+      "seven_day_sonnet": null,
+      "cinder_cove": null,
+      "copper_kite": null,
+      "extra_usage": {
+        "is_enabled": false,
+        "monthly_limit": 10000,
+        "used_credits": 0,
+        "utilization": 0,
+        "currency": "USD",
+        "decimal_places": 2,
+        "disabled_reason": "out_of_credits"
+      },
+      "limits": [
+        {
+          "kind": "weekly_all",
+          "group": "weekly",
+          "percent": 88,
+          "severity": "warning",
+          "resets_at": "2026-11-26T00:59:59.983079+00:00",
+          "scope": null,
+          "is_active": false
+        },
+        {
+          "kind": "weekly_scoped",
+          "group": "weekly",
+          "percent": 100,
+          "severity": "critical",
+          "resets_at": "2026-11-26T00:59:59.983231+00:00",
+          "scope": { "model": { "id": null, "display_name": "Fable" }, "surface": null },
+          "is_active": true
+        }
+      ],
+      "spend": { "percent": 0, "severity": "normal", "enabled": false },
+      "seven_day_breakdown": {
+        "as_of": "2026-11-24T06:45:17.027523+00:00",
+        "rows": [{ "key": "claude_code", "display_name": "Claude Code", "percent": 99, "percent_of_limit": 87 }]
+      }
+    }
+  }
+}

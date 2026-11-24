@@ -99,6 +99,9 @@ pub(crate) struct SidebarIpcOutcome {
     /// self-update → `vp daemon restart` → GUI relaunch を専用スレッドで実行する。
     pub(crate) update_apply_request: Option<String>,
     pub(crate) update_check_request: bool,
+    /// engine usage meter: MachineStrip の「更新」click。caller が daemon "daemon-usage" に
+    /// `refresh` を上げる（`AppResources::request_usage_refresh`、tray の Refresh Usage と同じ口）。
+    pub(crate) usage_refresh_request: bool,
     /// Login ボタン click 要求。値 = token の宛先（"hub" | "creo"）。caller (event loop) が
     /// blocking pool で `flows::auth::run_login_blocking` (`vp auth login --for <target>` spawn) を
     /// 実行し、成功後に `daemon-control.hub/reconnect` で hub 接続へ即反映する。
@@ -395,6 +398,9 @@ pub(crate) fn handle_sidebar_ipc(
         }
         IpcEnvelope::UpdateCheck => {
             out.update_check_request = true;
+        }
+        IpcEnvelope::UsageRefresh => {
+            out.usage_refresh_request = true;
         }
         IpcEnvelope::UpdateApply(m) => {
             // in-app update: sidebar footer の「更新する」ボタン click。version は
@@ -1007,6 +1013,20 @@ mod tests {
         assert!(out.update_check_request);
         assert!(out.update_apply_request.is_none());
         assert!(!out.daemon_restart_request);
+    }
+
+    #[test]
+    fn usage_refresh_requests_only_a_refresh() {
+        let _env = crate::test_env::state_dir();
+        let mut state = SidebarState::default();
+        let mut session = SessionState::default();
+        let out = apply(r#"{"t":"usage:refresh"}"#, &mut state, &mut session);
+        assert!(out.usage_refresh_request);
+        assert!(
+            !out.changed,
+            "sidebar state は変えない（結果は daemon の push で届く）"
+        );
+        assert!(!out.update_check_request && !out.daemon_restart_request);
     }
 
     // ===== wire / update / auth / settings / daemon / actions =====

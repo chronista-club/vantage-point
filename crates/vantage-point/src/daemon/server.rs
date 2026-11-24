@@ -186,6 +186,12 @@ pub struct DaemonState {
     /// writer = `repo/http/link.rs` の接続 task（hello / fields / values …）、reader = "link" channel
     /// （MCP editor_* の着地点）と `/api/health` の `services.link`。daemon に 1 つ、外部の結線は無い。
     pub(crate) link: Arc<crate::daemon::link::LinkHub>,
+    /// engine usage meter（4 エンジンのサブスク usage、machine scope）— "daemon-usage" channel の data plane。
+    ///
+    /// writer = `UsageService::run`（周期 loop）/ 手動 refresh / 会話 host の受動通知
+    /// （`usage::passive`）、reader = "daemon-usage" channel の購読者（vp-app）。`run_daemon` が作った
+    /// **その 1 本**を受け取る（passive の install 先と同一 Arc）。test は何も起動しない `inert()`。
+    pub usage: Arc<crate::usage::UsageService>,
 }
 
 impl Default for DaemonState {
@@ -220,6 +226,7 @@ impl Default for DaemonState {
             shutdown_token: tokio_util::sync::CancellationToken::new(),
             actor_registry: Arc::new(RwLock::new(crate::capability::ActorRegistry::new())),
             link: Arc::new(crate::daemon::link::LinkHub::new()),
+            usage: Arc::new(crate::usage::UsageService::inert()),
         }
     }
 }
@@ -255,6 +262,8 @@ pub(crate) struct DaemonAssembly {
     pub wire_notifier: crate::capability::WireNotifier,
     pub delivery_notify: Arc<tokio::sync::Notify>,
     pub delegation_store: Option<crate::capability::DelegationStore>,
+    /// engine usage meter の集約点（`run_daemon` が probe 付きで作り、周期 loop と passive に渡したもの）。
+    pub usage: Arc<crate::usage::UsageService>,
 }
 
 impl DaemonState {
@@ -329,6 +338,7 @@ impl DaemonState {
             shutdown_token: a.shutdown_token,
             actor_registry: a.actor_registry,
             link: Arc::new(crate::daemon::link::LinkHub::new()),
+            usage: a.usage,
         }
     }
 }
@@ -390,6 +400,8 @@ pub(crate) async fn build_test_daemon_state_with_wire_store(
             wire_notifier: crate::capability::WireNotifier::new(),
             delivery_notify: Arc::new(tokio::sync::Notify::new()),
             delegation_store: None,
+            // 本物の CLI を起動しない（spec の副作用ガード 6）
+            usage: Arc::new(crate::usage::UsageService::inert()),
         })
         .await,
     )
@@ -1882,6 +1894,63 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     }
 }
 
+// =========================================================================
+// Daemon-Usage Channel（engine usage meter、spec mem_1ChMLKCMUvC73JHTLjG3xg）
+// =========================================================================
+
+/// "daemon-usage" channel を登録する。`daemon-device` と同じく **接続 = 購読**（method 分岐なし）:
+///
+/// - 下り: 繋いだ直後に現在の snapshot を `snapshot` event で 1 回、以後は変わるたびに**全量**を
+///   送り直す（冪等 — 取りこぼしても次の 1 通で追いつく。`lanes` channel と同じ方針）
+/// - 上り: client の `refresh` event（MachineStrip / tray の Refresh）で手動 refresh を起動する。
+///   応答は返さない — 結果は下りの snapshot で届く。連打は service 側がまとめる（codex 30 秒 /
+///   grok 60 秒）ので、ここでは数えない
+///
+/// 購読者がいる間だけ service の定期 poll が spawn を伴う engine を起こす（`UsageService::watched`）。
+pub(crate) async fn register_usage_channel(
+    server: &ProtocolServer,
+    usage: Arc<crate::usage::UsageService>,
+) {
+    server
+        .register_channel("daemon-usage", move |_ctx, stream| {
+            let usage = usage.clone();
+            async move {
+                handle_usage_channel(Arc::new(UnisonChannel::new(stream)), usage).await;
+                Ok(())
+            }
+        })
+        .await;
+}
+
+async fn handle_usage_channel(channel: Arc<UnisonChannel>, usage: Arc<crate::usage::UsageService>) {
+    let mut rx = usage.subscribe();
+    let first = serde_json::to_value(&*rx.borrow_and_update()).unwrap_or_default();
+    if channel.send_event("snapshot", &first).await.is_err() {
+        return; // client 切断
+    }
+    // 下りは別 task（daemon-device と同じ full-duplex の形 — recv と send を 1 本の select に混ぜない）。
+    let push_channel = channel.clone();
+    let pusher = tokio::spawn(async move {
+        while rx.changed().await.is_ok() {
+            let snapshot = serde_json::to_value(&*rx.borrow_and_update()).unwrap_or_default();
+            if push_channel
+                .send_event("snapshot", &snapshot)
+                .await
+                .is_err()
+            {
+                break; // client 切断
+            }
+        }
+    });
+    while let Ok(msg) = channel.recv().await {
+        if msg.msg_type == MessageType::Event && msg.method == "refresh" {
+            let usage = usage.clone();
+            tokio::spawn(async move { usage.refresh(crate::usage::Trigger::Manual).await });
+        }
+    }
+    pusher.abort();
+}
+
 /// daemon の Unison channel を `server` に全部登録する（listen はしない）。
 ///
 /// [`start_daemon_server`] から切り出した。test が本物の handler を loopback の server に載せ、
@@ -2480,6 +2549,9 @@ pub(crate) async fn register_daemon_channels(server: &ProtocolServer, state: &Ar
             })
             .await;
     }
+
+    // Daemon-Usage Channel（engine usage meter — 4 エンジンのサブスク usage を vp-app へ）
+    register_usage_channel(server, state.usage.clone()).await;
 
     // =========================================================================
     // Device Channel（agent → daemon: CoreMIDI hot-plug 報告、doc 26 §2 channel_id=2）
@@ -3453,6 +3525,7 @@ mod tests {
             .expect("WiremsgStore::new");
         let delegation_store =
             crate::capability::DelegationStore::new(Arc::new(vpdb.inner().clone()));
+        let usage = Arc::new(crate::usage::UsageService::inert());
 
         let state = DaemonState::assemble(DaemonAssembly {
             machine_capabilities,
@@ -3471,8 +3544,12 @@ mod tests {
             wire_notifier: wire_notifier.clone(),
             delivery_notify: delivery_notify.clone(),
             delegation_store: Some(delegation_store),
+            usage: usage.clone(),
         })
         .await;
+
+        // usage meter: 渡した集約点そのもの（別実体だと passive / 周期 loop の値が channel に出ない）
+        assert!(Arc::ptr_eq(&state.usage, &usage), "usage");
 
         // ── 渡した側を非初期値へ動かし、state 側から同じ値が見える ─────────
         hub_status.set(HubFederationState::Connected);
@@ -3631,6 +3708,7 @@ mod tests {
             wire_notifier: Default::default(),
             delivery_notify: Arc::new(tokio::sync::Notify::new()),
             delegation_store: None,
+            usage: Arc::new(crate::usage::UsageService::inert()),
         })
         .await;
 
@@ -3734,3 +3812,7 @@ mod repo_proxy_tests;
 #[cfg(test)]
 #[path = "send_error_tests.rs"]
 mod send_error_tests;
+
+#[cfg(test)]
+#[path = "usage_channel_tests.rs"]
+mod usage_channel_tests;

@@ -78,7 +78,8 @@ impl AcpEngine {
     }
 
     /// CLI 実行パスの解決（launchd 起動 daemon の細い PATH 対策 — `session_store::resolve_cli`）。
-    fn cli_path(self) -> String {
+    /// usage meter の probe（`usage::probe`）も同じ解決を使う。
+    pub(crate) fn cli_path(self) -> String {
         match self {
             Self::Grok => {
                 let home = std::env::var("HOME").unwrap_or_default();

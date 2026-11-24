@@ -67,6 +67,8 @@ pub mod terminal;
 #[cfg(test)]
 pub(crate) mod test_env;
 pub mod trace_log;
+/// engine usage meter（4 エンジンのサブスク usage を machine scope で集約、spec mem_1ChMLKCMUvC73JHTLjG3xg）。
+pub mod usage;
 
 #[cfg(feature = "midi")]
 mod midi_access;

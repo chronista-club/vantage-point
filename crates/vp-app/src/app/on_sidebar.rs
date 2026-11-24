@@ -730,6 +730,10 @@ pub(super) fn sidebar_ipc(
     // native 確認ダイアログ → self-update → daemon restart → relaunch を
     // 専用スレッドで起動する（event loop = main thread は塞がない）。
     // on_phase は AppEvent 経由で event loop に戻し、「更新中…」表示に使う。
+    // engine usage meter: MachineStrip の「更新」。daemon に refresh を上げるだけ（結果は push で届く）。
+    if outcome.usage_refresh_request {
+        boot.request_usage_refresh();
+    }
     if outcome.update_check_request {
         let proxy = proxy.clone();
         boot.rt_handle.spawn(async move {
