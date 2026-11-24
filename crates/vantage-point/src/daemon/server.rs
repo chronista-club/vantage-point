@@ -1005,8 +1005,8 @@ pub(crate) async fn send_result(
 
 /// request を理由付きで断る（`UnisonChannel::send_error`）。
 ///
-/// payload は `{"error": 理由}`。旧形式の成功の frame と同じ JSON で、unison 自身の
-/// `channel-not-found` や受信 loop が合成する `connection closed` とも同じ形。client の
+/// payload は `{"error": 理由}`。旧形式の成功の frame と同じ JSON で、unison 自身の Error
+/// （`channel-not-found`、受信 loop が合成する `connection closed`）と同じく `error` key を持つ。client の
 /// `request()` は `NetworkError::Protocol("Request error: {\"error\":…}")` で理由を受ける。
 pub(crate) async fn send_refusal(
     channel: &UnisonChannel,
@@ -1593,7 +1593,9 @@ pub(crate) async fn forward_to_sp_control(
 ///
 /// ⚠️ `wire/send` の Err は「保存していない」時だけにする。federation の古い相手（v0.88 以前）は
 /// 断られると同じ envelope を relay でもう一度送るので、保存の後に Err を返す段を足すと二重配送に
-/// なる（`send_error_tests::refused_wire_send_leaves_nothing_in_the_store` が落ちる）。
+/// なる。`send_error_tests::refused_wire_send_leaves_nothing_in_the_store` が固定するのは 4 種類の
+/// 拒否（bare な from / to、from 欠落、返信先の不在）だけで、保存の後に条件付きで失敗する段は
+/// 捕まえられない。段を足す時はここを読み直すこと。
 async fn handle_wire_channel(
     state: &DaemonState,
     method: &str,
@@ -1882,7 +1884,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
 ///
 /// [`start_daemon_server`] から切り出した。test が本物の handler を loopback の server に載せ、
 /// 応答の形（成功 = Response / 失敗 = Error frame）を client 側から確かめるため
-/// （`send_error_tests`）。登録する channel と handler の中身は切り出し前と同じ。
+/// （`send_error_tests`）。切り出しそのものは挙動を変えない（登録する channel の集合と順序は同じ）。
 pub(crate) async fn register_daemon_channels(server: &ProtocolServer, state: &Arc<DaemonState>) {
     // =========================================================================
     // daemon-repo Channel (VP-154 PR-2)

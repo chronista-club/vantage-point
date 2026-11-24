@@ -233,7 +233,7 @@ pub(crate) async fn handle_complete(
         })?;
 
     // Daemon store で transition。返り = 更新後 record（{id, requester, doer, task, state, outcome}）。
-    // 未知 id は Daemon handler が `{error}` を返す → daemon_wire::call が Err にする。
+    // 未知 id は Daemon handler が Error frame で断る → daemon_wire::call が Err にする。
     let rec = super::daemon_wire::call(
         "/api/delegation/complete",
         serde_json::json!({ "id": id, "outcome": outcome }),

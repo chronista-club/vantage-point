@@ -590,7 +590,7 @@ fn clamp_to_constraints(field: &Value, value: Value) -> (Value, bool) {
 // =========================================================================
 
 /// "link" channel の method を hub に振る。戻りは成功時 result JSON、失敗時 `Err(String)`
-/// （呼び手が Unison の慣習 VP-163 で `{"error": ...}` に詰める）。
+/// （呼び手が Error frame で断る。doc 27 §3.4.7）。
 ///
 /// payload の `surface`（任意）は面の id か名札。省略は active な面。
 pub(crate) async fn handle_link_channel(

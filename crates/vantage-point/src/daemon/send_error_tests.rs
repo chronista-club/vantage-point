@@ -76,8 +76,7 @@ async fn refused(channel: &UnisonChannel, method: &str, payload: Value) -> Strin
     }
 }
 
-/// Error frame の payload は `{"error": 理由}`（旧形式の成功の frame と同じ JSON、unison 自身の
-/// `channel-not-found` / `connection closed` と同じ形）。
+/// Error frame の payload は `{"error": 理由}`（旧形式の成功の frame と同じ JSON）。
 fn error_frame_text(reason: &str) -> String {
     format!("Request error: {}", json!({ "error": reason }))
 }
@@ -250,8 +249,9 @@ async fn stored_messages(store: &crate::capability::WiremsgStore) -> usize {
 /// 受信側の `wire/send` が断るのは「保存していない」時だけ。
 ///
 /// federation の古い相手（v0.88 以前）は、断られると同じ envelope を relay でもう一度送る。
-/// それが二重配送にならないのは、断った時点で store に何も残っていないから。保存の後に
-/// 失敗し得る段を足すと、ここが落ちる。
+/// それが二重配送にならないのは、断った時点で store に何も残っていないから。ここで固定するのは
+/// 下の 4 種類の拒否だけ（保存の後に条件付きで失敗する段は捕まえられない —
+/// `handle_wire_channel` の ⚠️）。
 #[tokio::test]
 async fn refused_wire_send_leaves_nothing_in_the_store() {
     let store = mem_wire_store().await;

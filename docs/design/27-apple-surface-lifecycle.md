@@ -220,7 +220,8 @@ club-unison 2.3.0 の `is_connected()` は QUIC の `close_reason()` を読む�
 
 - daemon の handler の失敗は、成功の frame に `{"error": …}` を詰めず、`UnisonChannel::send_error`
   の Error frame で返す。payload は `{"error": 理由}`。旧形式の成功の frame と同じ JSON で、unison
-  自身の `channel-not-found` や受信 loop が合成する `connection closed` とも同じ形。client の
+  自身の Error（`channel-not-found`、受信 loop が合成する `connection closed`）と同じく `error` key を
+  持つ。client の
   `request()` は `NetworkError::Protocol("Request error: {\"error\":…}")` を受ける。
 - 対象の channel: device / registry / events / daemon-control / wire / link / repo-proxy / gui の上り /
   daemon-repo。未知の method にも理由を返す。method の許可一覧は作らない。断った後も、同じ channel は
@@ -238,15 +239,18 @@ club-unison 2.3.0 の `is_connected()` は QUIC の `close_reason()` を読む�
 - federation の古い相手（v0.88 以前）× 新しい server: 古い相手の direct 送信は、`request()` の Err も
   旧形式の `{"error"}` も、どちらも relay に回す（unison 2.0 / 2.2 も Error frame を `Err(Protocol)`
   にする）。形式を変えても古い相手の動きは変わらない。受信側の `wire/send` が断るのは保存の前だけ
-  （store / notifier の未初期化、from / to / body の検証、返信先の読み込みと宛先の展開、CREATE 1 文の
-  失敗）なので、relay で届いた同じ envelope は、断られるか、初めて 1 回だけ保存される。どちらでも
-  二重配送にはならない。この性質は
-  `daemon/send_error_tests.rs` の `refused_wire_send_leaves_nothing_in_the_store` で固定する。
+  （store / notifier / delivery_notify の未初期化、from / to / body の検証、返信先の読み込みと宛先の
+  展開、CREATE 1 文の失敗）なので、relay で届いた同じ envelope は、断られるか、初めて 1 回だけ保存
+  される。どちらでも二重配送にはならない。`daemon/send_error_tests.rs` の
+  `refused_wire_send_leaves_nothing_in_the_store` は、このうち 4 種類の拒否（bare な from / to、from
+  欠落、返信先の不在）で何も保存されないことを固定する。保存の後に条件付きで失敗する段を足した時は
+  捕まえられないので、`handle_wire_channel` の ⚠️ を読み直すこと。
 - 変わらず残る危険: 古い相手が「保存は成功 → 応答の前に切断 / timeout」で relay に回す二重配送は、
   この変更の前後で同じ。message id は受信側で採番するので、id で重複を捨てる仕組みを足しても古い相手は
   守れない。
-- VP の外で動く v0.89.0 より前の `vp mcp` は、Error frame を受けると同じ request を送り直す
-  （旧形式は成功として読んでいた）。lane の中の MCP は daemon と一緒に生まれ直すので新しい。
+- VP の外で動く v0.89.0 より前の `vp mcp` は、Error frame を受けると同じ request を送り直す。
+  旧形式は成功の frame で届くので送り直しの経路に入らず、`rpc_response_error` で Err にして返して
+  いた。lane の中の MCP は daemon と一緒に生まれ直すので新しい。
 
 ## 4. terminal = Unison stream channel（最後の holdout）
 

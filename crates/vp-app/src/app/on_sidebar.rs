@@ -648,9 +648,10 @@ pub(super) fn sidebar_ipc(
                 }
                 Err(e) => {
                     // R5: 失敗通知を sidebar に push back (form 下に inline error 表示)。
-                    // doc 45 段 3 以降は Unison の error 慣習 (VP-163) に従い
-                    // "daemon-control.lanes/create: <daemon 側の理由>" が返る
-                    // (旧 HTTP の "... HTTP 500: {json}" より読める)。 そのまま流す。
+                    // daemon は失敗を Error frame で返す (doc 27 §3.4.7) ので
+                    // "daemon-control.lanes/create: Protocol error: Request error: {"error":"<daemon 側の理由>"}"
+                    // が返る (Error frame 移行前の daemon は "daemon-control.lanes/create: <理由>")。
+                    // 理由は文面に入っているので、そのまま流す。
                     let msg = format!("{}", e);
                     tracing::warn!(
                         "create_sub_lane failed: repo={} name={}: {}",
