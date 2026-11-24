@@ -23,7 +23,7 @@ use vantage_point::daemon::hub_client::NodeEntry;
 
 /// target daemon 相当の QUIC server を `[::1]:0` に立てる。daemon の wire channel 慣習を
 /// ミラー: `wire/send` request の payload を `tx` へ流し、`{"ok": true}` を返す
-/// （エラー時は success frame に `{"error": ...}` — VP-163 慣習）。
+/// （未知の method は Error frame で断る — daemon と同じ、doc 27 §3.4.7）。
 async fn start_wire_target(tx: mpsc::Sender<Value>) -> anyhow::Result<(ServerHandle, u16)> {
     let server = ProtocolServer::with_identity("direct-e2e-target", "1.0.0", "test");
     server
@@ -40,17 +40,18 @@ async fn start_wire_target(tx: mpsc::Sender<Value>) -> anyhow::Result<(ServerHan
                         continue;
                     }
                     let payload = msg.payload_as_value().unwrap_or_default();
-                    let response = if msg.method == "wire/send" {
+                    let sent = if msg.method == "wire/send" {
                         let _ = tx.send(payload).await;
-                        json!({ "ok": true })
+                        channel
+                            .send_response(msg.id, &msg.method, &json!({ "ok": true }))
+                            .await
                     } else {
-                        json!({ "error": format!("unknown method: {}", msg.method) })
+                        let reason = format!("unknown method: {}", msg.method);
+                        channel
+                            .send_error(msg.id, &msg.method, &json!({ "error": reason }))
+                            .await
                     };
-                    if channel
-                        .send_response(msg.id, &msg.method, &response)
-                        .await
-                        .is_err()
-                    {
+                    if sent.is_err() {
                         break;
                     }
                 }

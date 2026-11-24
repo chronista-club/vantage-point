@@ -346,6 +346,17 @@ impl DaemonState {
 /// - DB 系（`vpdb` / `wiremsg_store` / `delegation_store`）は `None`
 #[cfg(test)]
 pub(crate) async fn build_test_daemon_state() -> Arc<DaemonState> {
+    build_test_daemon_state_with_wire_store(None).await
+}
+
+/// [`build_test_daemon_state`] に中央 wire store だけを差し込む版。
+///
+/// `wire` channel の handler を store 込みで動かす test 用（`send_error_tests`）。
+/// store は呼び手が kv-mem の `VpDb` の上に作って渡す。
+#[cfg(test)]
+pub(crate) async fn build_test_daemon_state_with_wire_store(
+    wiremsg_store: Option<crate::capability::WiremsgStore>,
+) -> Arc<DaemonState> {
     use crate::capability::{ActorRegistry, RepoManagerCapability, UpdateCapability};
 
     let repo_manager = Arc::new(RwLock::new(RepoManagerCapability::new()));
@@ -375,7 +386,7 @@ pub(crate) async fn build_test_daemon_state() -> Arc<DaemonState> {
             control_channels: Arc::new(crate::repo::repo_registry::RepoRuntimes::new()),
             canvas_routers: Default::default(),
             lane_change_tx,
-            wiremsg_store: None,
+            wiremsg_store,
             wire_notifier: crate::capability::WireNotifier::new(),
             delivery_notify: Arc::new(tokio::sync::Notify::new()),
             delegation_store: None,
@@ -408,8 +419,8 @@ pub(crate) async fn registry_process_snapshot(
 
 /// "daemon-control" channel の method を `RepoManagerCapability` に dispatch する。
 ///
-/// 戻り値は成功時 result JSON、失敗時は `Err(String)`。 caller は Unison の慣習 (VP-163) に
-/// 従い success frame に `{"error": ...}` を詰めて返す (= Unison は専用 error frame を持たない)。
+/// 戻り値は成功時 result JSON、失敗時は `Err(String)`。 caller は [`send_result`] で返す
+/// （失敗は Error frame、doc 27 §3.4.7）。
 ///
 /// ## doc 45 — control plane の唯一の入口
 ///
@@ -975,10 +986,39 @@ pub(crate) async fn handle_daemon_control(
 // チャネルレスポンス送信ヘルパー
 // =========================================================================
 
-/// ChannelMessage を UnisonChannel 経由で送信する
+/// handler の結果を client に返す。成功は Response、失敗は Error frame（[`send_refusal`]）。
 ///
-/// ChannelMessage::Response は send_response() で、
-/// ChannelMessage::Error は send_response() でエラーペイロードとして送信する。
+/// daemon の channel handler は、失敗をすべてここ（か [`send_refusal`]）で返す。失敗を成功の
+/// frame に `{"error": …}` で詰める旧形式は使わない — 受け取る側は成功の形として decode しようと
+/// して理由を取りこぼす（doc 27 §3.4.7）。
+pub(crate) async fn send_result(
+    channel: &UnisonChannel,
+    request_id: u64,
+    method: &str,
+    result: Result<serde_json::Value, String>,
+) -> Result<(), NetworkError> {
+    match result {
+        Ok(value) => channel.send_response(request_id, method, &value).await,
+        Err(reason) => send_refusal(channel, request_id, method, &reason).await,
+    }
+}
+
+/// request を理由付きで断る（`UnisonChannel::send_error`）。
+///
+/// payload は `{"error": 理由}`。旧形式の成功の frame と同じ JSON で、unison 自身の
+/// `channel-not-found` や受信 loop が合成する `connection closed` とも同じ形。client の
+/// `request()` は `NetworkError::Protocol("Request error: {\"error\":…}")` で理由を受ける。
+pub(crate) async fn send_refusal(
+    channel: &UnisonChannel,
+    request_id: u64,
+    method: &str,
+    reason: &str,
+) -> Result<(), NetworkError> {
+    channel
+        .send_error(request_id, method, &serde_json::json!({ "error": reason }))
+        .await
+}
+
 /// device.report_device: agent (Swift menu bar) からの CoreMIDI hot-plug 報告を DeviceRegistry registry に反映する。
 ///
 /// doc 26 §2 `ReportDevice` request。`state` = "connected" | "disconnected" で分岐し、
@@ -1010,6 +1050,9 @@ async fn handle_device_report(
     ChannelMessage::ok(id, serde_json::json!({ "ok": true }))
 }
 
+/// ChannelMessage を UnisonChannel 経由で送信する（device channel）。
+///
+/// `ChannelMessage::Response` は Response、`ChannelMessage::Error` は Error frame（[`send_refusal`]）。
 async fn send_channel_response(
     channel: &UnisonChannel,
     method: &str,
@@ -1019,11 +1062,7 @@ async fn send_channel_response(
         ChannelMessage::Response { id, payload } => {
             channel.send_response(id, method, &payload).await
         }
-        ChannelMessage::Error { id, message } => {
-            channel
-                .send_response(id, method, &serde_json::json!({"error": message}))
-                .await
-        }
+        ChannelMessage::Error { id, message } => send_refusal(channel, id, method, &message).await,
         // Event やその他の型はそのまま送信
         _ => Ok(()),
     }
@@ -1400,10 +1439,10 @@ fn register_lane_demand(
         // 「購読が立った時点で repo が居るか」だけが条件になり、 channel 接続状態と
         // 購読状態が別々に揺れることによるレースが構造的に消える。
         tokio::spawn(async move {
-            let resp = control_channels
+            if let Err(err) = control_channels
                 .dispatch(&path_key, method, &serde_json::json!({ "lane": lane }))
-                .await;
-            if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+                .await
+            {
                 tracing::warn!(
                     "lane demand dispatch 失敗 (key={}, lane={}, {}): {}",
                     path_key,
@@ -1484,15 +1523,13 @@ async fn handle_repo_proxy(channel: &UnisonChannel, control_channels: &ControlCh
             // 明示 subscribe の入力解釈は既存の契約を維持する。
             // 新しい暗黙 bind だけ、宛先を決める前に空でない文字列を要求する。
             if method != "subscribe" && repo_path.is_empty() {
-                let _ = channel
-                    .send_response(
-                        id,
-                        &method,
-                        &serde_json::json!({
-                            "error": "repo-proxy: non-empty repo_path required on first request"
-                        }),
-                    )
-                    .await;
+                let _ = send_refusal(
+                    channel,
+                    id,
+                    &method,
+                    "repo-proxy: non-empty repo_path required on first request",
+                )
+                .await;
                 break;
             }
             path_key = Some(crate::capability::normalize_path_key(std::path::Path::new(
@@ -1512,14 +1549,14 @@ async fn handle_repo_proxy(channel: &UnisonChannel, control_channels: &ControlCh
 
         // repo_path を含む元の payload を保つ。引数検証は repo handler が所有し、
         // この channel の宛先は最初の値に固定する。
-        let response = forward_to_sp_control(
+        let result = forward_to_sp_control(
             control_channels,
             path_key.as_deref().unwrap(),
             &method,
             &payload,
         )
         .await;
-        if channel.send_response(id, &method, &response).await.is_err() {
+        if send_result(channel, id, &method, result).await.is_err() {
             break;
         }
     }
@@ -1528,14 +1565,16 @@ async fn handle_repo_proxy(channel: &UnisonChannel, control_channels: &ControlCh
 /// L0 SP-portless: 外部 client の process method を当該 repo の control channel を逆用して forward する。
 ///
 /// "repo-proxy" channel (MCP/CLI) と bidirectional "canvas" channel の upstream request
-/// (S3 terminal_write/terminal_resize) が共有する。 repo 未接続 / forward 失敗は error JSON で
-/// 返し、 caller が `send_response` でそのまま client に relay する。
+/// (S3 terminal_write/terminal_resize) が共有する。 repo 未起動 / dispatch 失敗は `Err(理由)` で
+/// 返し、channel の caller は [`send_result`] で Error frame にして client に relay する。
+/// in-process の caller（lane demand / `lane/session-changed` / wire の配送 / delegation）は
+/// `Ok` / `Err` で分岐する。
 pub(crate) async fn forward_to_sp_control(
     runtimes: &ControlChannels,
     path_key: &str,
     method: &str,
     payload: &serde_json::Value,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, String> {
     // doc 44 P1 (fold-in): 旧実装は path_key で repo の QUIC control channel を逆引きし
     // request を投げていた。repo プロセスが daemon に畳み込まれた今、同じ dispatch
     // (`dispatch_repo_method`) を **同一プロセス内で直接呼ぶ**。
@@ -1550,7 +1589,11 @@ pub(crate) async fn forward_to_sp_control(
 /// `"delegation/create"` 等) にして本 channel に投げてくる。prefix で wire / delegation を切り分け、
 /// `daemon::{wire_ops,delegation_ops}::dispatch_*` に委譲する。store は `assemble` で plumb された
 /// daemon 中央 store の Arc。未初期化 (test の `DaemonState::new()` / DB 接続失敗) は Err を返し、channel
-/// handler が `{"error": ...}` フレームに詰める (旧 HTTP handler の error JSON と等価)。
+/// handler が Error frame で断る（[`send_result`]、doc 27 §3.4.7）。
+///
+/// ⚠️ `wire/send` の Err は「保存していない」時だけにする。federation の古い相手（v0.88 以前）は
+/// 断られると同じ envelope を relay でもう一度送るので、保存の後に Err を返す段を足すと二重配送に
+/// なる（`send_error_tests::refused_wire_send_leaves_nothing_in_the_store` が落ちる）。
 async fn handle_wire_channel(
     state: &DaemonState,
     method: &str,
@@ -1600,17 +1643,13 @@ async fn handle_wire_channel(
         // 新旧 binary 混在に安全。`session` 不在時は repo 側が engine ごとの policy で扱う
         // （daemon は routing のみ — ここで欠けた値を補完しない）。
         let fwd = forward_conversation_report(&display, &payload);
-        let resp = forward_to_sp_control(
+        return forward_to_sp_control(
             &state.control_channels,
             &path_key,
             "lane_session_changed",
             &fwd,
         )
         .await;
-        if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
-            return Err(err.to_string());
-        }
-        return Ok(resp);
     }
     if let Some(sub) = method.strip_prefix("wire/") {
         // flow ③: federation 送信。宛先 daemon が remote なら relay 経由で送る（ローカル store は使わない）。
@@ -1809,6 +1848,42 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
         });
     }
 
+    register_daemon_channels(&server, &state).await;
+
+    // サーバー起動
+    // VP-185: listen は内部で QuicServer::new() (= cert なし固定) を使うため、
+    // CertSource を明示するには QuicServer::builder 経由が必須。 daemon は shutdown
+    // 連携を持たない (= listen が永久 block する設計) ため start() を使う。
+    // PR-3 で cert_source を InternalMeshKeypair の server 半分に差し替える。
+    tracing::info!("Daemon Unison QUIC サーバー起動: {}", addr);
+    let server = Arc::new(server);
+    let mut quic = QuicServer::builder(server)
+        .cert_source(CertSource::dev_localhost())
+        .build();
+    if let Err(e) = quic.bind(&addr).await {
+        tracing::error!("Daemon Unison サーバー bind 失敗: {}", e);
+        return;
+    }
+    tracing::info!("Daemon Unison QUIC listening on {:?}", quic.local_addr());
+    // QUIC 面 liveness watchdog を起動 (self-heal、 mem_1CcvYA5TRF4EcFafbyKqPg)。
+    // quic.start() は永久 block するため、 watchdog は別 task で並走させる。
+    tokio::spawn(quic_liveness_watchdog(port));
+    // vpcode の model catalog を engine endpoint から周期取得する (2026-08-26)。
+    // local LLM は user が落として消すので静的表は必ず現実と乖離する — 詳細は
+    // `conversation::vpcode_catalog` の module doc。endpoint 不在でも fail-open
+    // (catalog が空 = 「VP から切替不可」に倒れるだけで daemon は無影響)。
+    tokio::spawn(crate::conversation::vpcode_catalog::refresh_loop());
+    if let Err(e) = quic.start().await {
+        tracing::error!("Daemon Unison サーバーエラー: {}", e);
+    }
+}
+
+/// daemon の Unison channel を `server` に全部登録する（listen はしない）。
+///
+/// [`start_daemon_server`] から切り出した。test が本物の handler を loopback の server に載せ、
+/// 応答の形（成功 = Response / 失敗 = Error frame）を client 側から確かめるため
+/// （`send_error_tests`）。登録する channel と handler の中身は切り出し前と同じ。
+pub(crate) async fn register_daemon_channels(server: &ProtocolServer, state: &Arc<DaemonState>) {
     // =========================================================================
     // daemon-repo Channel (VP-154 PR-2)
     //
@@ -1966,18 +2041,13 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     break;
                                 }
                                 _ => {
-                                    let _ = channel
-                                        .send_response(
-                                            request_id,
-                                            &method,
-                                            &serde_json::json!({
-                                                "error": format!(
-                                                    "不明なメソッド: daemon-repo.{}",
-                                                    method
-                                                )
-                                            }),
-                                        )
-                                        .await;
+                                    let _ = send_refusal(
+                                        &channel,
+                                        request_id,
+                                        &method,
+                                        &format!("不明なメソッド: daemon-repo.{}", method),
+                                    )
+                                    .await;
                                 }
                             }
                         }
@@ -2222,14 +2292,14 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     .await;
                                 break; // 購読を降りた = この channel の役目は終わり
                             }
-                            let response = forward_to_sp_control(
+                            let result = forward_to_sp_control(
                                 &control_channels,
                                 &path_key,
                                 &method,
                                 &payload,
                             )
                             .await;
-                            if channel.send_response(id, &method, &response).await.is_err() {
+                            if send_result(&channel, id, &method, result).await.is_err() {
                                 break;
                             }
                         }
@@ -2501,8 +2571,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
 
                             match method.as_str() {
                                 "list" => {
-                                    let list =
-                                        registry_process_snapshot(&running_repos).await;
+                                    let list = registry_process_snapshot(&running_repos).await;
                                     if channel
                                         .send_response(
                                             request_id,
@@ -2516,15 +2585,13 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     }
                                 }
                                 _ => {
-                                    let _ = channel
-                                        .send_response(
-                                            request_id,
-                                            &method,
-                                            &serde_json::json!({
-                                                "error": format!("不明なメソッド: registry.{}", method)
-                                            }),
-                                        )
-                                        .await;
+                                    let _ = send_refusal(
+                                        &channel,
+                                        request_id,
+                                        &method,
+                                        &format!("不明なメソッド: registry.{}", method),
+                                    )
+                                    .await;
                                 }
                             }
                         }
@@ -2571,13 +2638,13 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .cloned()
                                         .unwrap_or(serde_json::Value::Null);
                                     if kind.is_empty() {
-                                        let _ = channel
-                                            .send_response(
-                                                request_id,
-                                                "emit",
-                                                &serde_json::json!({"error": "kind は必須"}),
-                                            )
-                                            .await;
+                                        let _ = send_refusal(
+                                            &channel,
+                                            request_id,
+                                            "emit",
+                                            "kind は必須",
+                                        )
+                                        .await;
                                         continue;
                                     }
                                     let seq = event_log.emit(kind, source, data).await;
@@ -2610,15 +2677,13 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     }
                                 }
                                 other => {
-                                    let _ = channel
-                                        .send_response(
-                                            request_id,
-                                            other,
-                                            &serde_json::json!({
-                                                "error": format!("不明なメソッド: events.{}", other)
-                                            }),
-                                        )
-                                        .await;
+                                    let _ = send_refusal(
+                                        &channel,
+                                        request_id,
+                                        other,
+                                        &format!("不明なメソッド: events.{}", other),
+                                    )
+                                    .await;
                                 }
                             }
                         }
@@ -2662,22 +2727,16 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                             let payload = msg.payload_as_value().unwrap_or_default();
                             let method = msg.method.clone();
                             let request_id = msg.id;
-                            // 成功時 result JSON、 失敗時は success frame に {"error": ...}
-                            // を詰める (= Unison は専用 error frame を持たない、 VP-163 慣習)。
-                            let response = match handle_daemon_control(
+                            // 成功時 result JSON、失敗時は Error frame（send_result、doc 27 §3.4.7）。
+                            let result = handle_daemon_control(
                                 &daemon_cap,
                                 &creo_actions,
                                 &machine_devices,
                                 &method,
                                 payload,
                             )
-                            .await
-                            {
-                                Ok(v) => v,
-                                Err(e) => serde_json::json!({ "error": e }),
-                            };
-                            if channel
-                                .send_response(request_id, &method, &response)
+                            .await;
+                            if send_result(&channel, request_id, &method, result)
                                 .await
                                 .is_err()
                             {
@@ -2726,16 +2785,14 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                         let state = state.clone();
                         let channel = Arc::clone(&channel);
                         tokio::spawn(async move {
-                            // 成功時 result JSON、 失敗時は success frame に {"error": ...} を詰める
-                            // (Unison は専用 error frame を持たない、 VP-163 慣習)。
-                            let response = match handle_wire_channel(&state, &method, payload).await
-                            {
-                                Ok(v) => v,
-                                Err(e) => serde_json::json!({ "error": e }),
-                            };
+                            // 成功時 result JSON、失敗時は Error frame（send_result、doc 27 §3.4.7）。
+                            // federation の受け口でもあるが例外は作らない — 古い相手は旧形式でも
+                            // Error frame でも同じく relay に回し、断る wire/send は何も保存して
+                            // いない（handle_wire_channel の ⚠️）。
+                            let result = handle_wire_channel(&state, &method, payload).await;
                             // 送信失敗 = 接続断。 loop 側の recv Err で channel ごと終了するため
                             // ここでは無視してよい。
-                            let _ = channel.send_response(request_id, &method, &response).await;
+                            let _ = send_result(&channel, request_id, &method, result).await;
                         });
                     }
                     Ok(())
@@ -2770,20 +2827,11 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                         let payload = msg.payload_as_value().unwrap_or_default();
                         let method = msg.method.clone();
                         let request_id = msg.id;
-                        // 成功時 result JSON、失敗時は success frame に {"error": ...} を詰める
-                        // (Unison は専用 error frame を持たない、VP-163 慣習)。
-                        let response = match crate::daemon::link::handle_link_channel(
-                            &state.link,
-                            &method,
-                            payload,
-                        )
-                        .await
-                        {
-                            Ok(v) => v,
-                            Err(e) => serde_json::json!({ "error": e }),
-                        };
-                        if channel
-                            .send_response(request_id, &method, &response)
+                        // 成功時 result JSON、失敗時は Error frame（send_result、doc 27 §3.4.7）。
+                        let result =
+                            crate::daemon::link::handle_link_channel(&state.link, &method, payload)
+                                .await;
+                        if send_result(&channel, request_id, &method, result)
                             .await
                             .is_err()
                         {
@@ -2795,33 +2843,6 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
             }
         })
         .await;
-
-    // サーバー起動
-    // VP-185: listen は内部で QuicServer::new() (= cert なし固定) を使うため、
-    // CertSource を明示するには QuicServer::builder 経由が必須。 daemon は shutdown
-    // 連携を持たない (= listen が永久 block する設計) ため start() を使う。
-    // PR-3 で cert_source を InternalMeshKeypair の server 半分に差し替える。
-    tracing::info!("Daemon Unison QUIC サーバー起動: {}", addr);
-    let server = Arc::new(server);
-    let mut quic = QuicServer::builder(server)
-        .cert_source(CertSource::dev_localhost())
-        .build();
-    if let Err(e) = quic.bind(&addr).await {
-        tracing::error!("Daemon Unison サーバー bind 失敗: {}", e);
-        return;
-    }
-    tracing::info!("Daemon Unison QUIC listening on {:?}", quic.local_addr());
-    // QUIC 面 liveness watchdog を起動 (self-heal、 mem_1CcvYA5TRF4EcFafbyKqPg)。
-    // quic.start() は永久 block するため、 watchdog は別 task で並走させる。
-    tokio::spawn(quic_liveness_watchdog(port));
-    // vpcode の model catalog を engine endpoint から周期取得する (2026-08-26)。
-    // local LLM は user が落として消すので静的表は必ず現実と乖離する — 詳細は
-    // `conversation::vpcode_catalog` の module doc。endpoint 不在でも fail-open
-    // (catalog が空 = 「VP から切替不可」に倒れるだけで daemon は無影響)。
-    tokio::spawn(crate::conversation::vpcode_catalog::refresh_loop());
-    if let Err(e) = quic.start().await {
-        tracing::error!("Daemon Unison サーバーエラー: {}", e);
-    }
 }
 
 /// QUIC 面 liveness watchdog + self-heal (2026-07-12、 mem_1CcvYA5TRF4EcFafbyKqPg)。
@@ -3705,3 +3726,7 @@ mod tests {
 #[cfg(test)]
 #[path = "repo_proxy_tests.rs"]
 mod repo_proxy_tests;
+
+#[cfg(test)]
+#[path = "send_error_tests.rs"]
+mod send_error_tests;

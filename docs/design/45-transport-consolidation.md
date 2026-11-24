@@ -318,7 +318,7 @@ unison-mcp 2.2.1 は呼び出しごとに channel を開いて method を送る�
 method / payload を変えず runtime dispatcher に渡し、元の ID / method で結果を応答する。
 
 暗黙 bind の `repo_path` は空でない文字列を必須とする。欠落・空文字・型不正は
-`{error: "repo-proxy: non-empty repo_path required on first request"}` を返し、handler を終える。
+Error frame（payload は `{error: "repo-proxy: non-empty repo_path required on first request"}`）で断り、handler を終える。
 明示 `subscribe` の入力解釈は従来どおり。非 Request は無視し、2 回目以降は最初の
 path_key を使う（後続 payload に別の `repo_path` があっても宛先は変わらない）。
 共有の subscribe helper と gui / gui-ingest / lanes の呼び出しは変更しない。
@@ -327,7 +327,7 @@ payload の `repo_path` は残す。公開する session 操作は必要な fiel
 読み、`lanes_list` は payload を使わない。いずれも追加 key を拒否しないので、取り除く
 変換は不要。既存 method の引数解釈は repo dispatcher が引き続き所有する。
 
-KDL は protocol v0.4.0 とし、`session_set_mode`、`lanes_list`、
+KDL は protocol v0.4.0（v0.5.0 で error を Error frame に変更、公開面は同じ）とし、`session_set_mode`、`lanes_list`、
 `conversation_session_create`、`conversation_session_remove` の 4 method を公開する。
 repo の全 method を omission list に複製せず、この集合との完全一致と実 dispatcher の
 arm・引数制約を drift test で固定する。新しい repo method は既定で KDL に露出しない。
@@ -358,3 +358,5 @@ console 作成と `conversation_session_focus` など他の method は引き続�
   merge 後の daemon 更新を伴う実機確認に分ける。
 - 2026-11-21: protocol v0.4.0 で chat session の作成・削除を discovery に追加。
   handler は変更せず、4 method の完全一致・入出力の型と制約を drift test で固定する。
+- 2026-11-24: protocol v0.5.0。handler の失敗を成功の frame の `{error}` でなく Error frame で
+  返す（`mem_1ChM9ambsYeZTn6gHmuMEt`、doc 27 §3.4.7）。公開する method は変えない。

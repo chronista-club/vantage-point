@@ -18,7 +18,8 @@ use crate::resolve::{self, ResolvedTarget};
 /// ask する helper。 L0 portless 後の CLI → repo 操作の唯一の入口 (旧来の repo 直結 port QUIC は撤去)。
 /// daemon が repo_path から path_key を正規化して当該 repo の
 /// "control" channel を逆引きし、 dispatch_repo_method へ forward する (repo 直結 HTTP/QUIC を撤去)。
-/// 戻り値は repo の応答 JSON (unison error frame `{"error":..}` は Err に変換)。
+/// 戻り値は repo の応答 JSON。daemon が断った時は Err（Error frame、移行前の daemon が成功の
+/// frame に詰める `{"error":..}` のどちらも）。
 ///
 /// 既定 outer timeout = 35s (delete は tmux kill 等を含むが ≤35s)。 lane clone のような長い
 /// operation は [`daemon_repo_request_with_timeout`] で個別に伸ばす。

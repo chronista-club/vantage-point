@@ -497,44 +497,47 @@ async fn pulse(
                     // 所有 repo の control channel へ forward。method は root の mode で分岐
                     // （Tui = lane_nudge → PtySlot 直書き / Chat = conversation_nudge → engine 注入、
                     // doc 34 §3。payload は共通 {lane, text}）。
-                    let resp = crate::daemon::server::forward_to_sp_control(
+                    let forwarded = crate::daemon::server::forward_to_sp_control(
                         control_channels,
                         &t.path_key,
                         nudge_method_for(root_mode),
                         &serde_json::json!({ "lane": t.lane_display, "text": text }),
                     )
                     .await;
-                    if resp.get("error").is_none() {
-                        tracing::info!(
-                            "wire delivery: nudge 送出 (msg={}, agent={}, lane={}, method={}, count={}, activity={})",
-                            msg.id,
-                            agent,
-                            t.lane_display,
-                            nudge_method_for(root_mode),
-                            count + 1,
-                            // degraded か精密 (poll 成功) かを後から判別できるように
-                            if activity.is_some() {
-                                "precise"
-                            } else {
-                                "degraded"
-                            }
-                        );
-                        ledger.insert(
-                            key,
-                            NudgeRecord {
-                                count: count + 1,
-                                last_at: now,
-                            },
-                        );
-                    } else {
-                        // best-effort: 送出失敗は台帳を進めない (次 pulse で再試行)
-                        tracing::warn!(
-                            "wire delivery: nudge 失敗 (msg={}, agent={}, lane={}): {}",
-                            msg.id,
-                            agent,
-                            t.lane_display,
-                            resp
-                        );
+                    match forwarded {
+                        Ok(_) => {
+                            tracing::info!(
+                                "wire delivery: nudge 送出 (msg={}, agent={}, lane={}, method={}, count={}, activity={})",
+                                msg.id,
+                                agent,
+                                t.lane_display,
+                                nudge_method_for(root_mode),
+                                count + 1,
+                                // degraded か精密 (poll 成功) かを後から判別できるように
+                                if activity.is_some() {
+                                    "precise"
+                                } else {
+                                    "degraded"
+                                }
+                            );
+                            ledger.insert(
+                                key,
+                                NudgeRecord {
+                                    count: count + 1,
+                                    last_at: now,
+                                },
+                            );
+                        }
+                        Err(err) => {
+                            // best-effort: 送出失敗は台帳を進めない (次 pulse で再試行)
+                            tracing::warn!(
+                                "wire delivery: nudge 失敗 (msg={}, agent={}, lane={}): {}",
+                                msg.id,
+                                agent,
+                                t.lane_display,
+                                err
+                            );
+                        }
                     }
                 }
                 NudgeDecision::Wait | NudgeDecision::Exhausted => {}

@@ -404,7 +404,7 @@ async fn abort_lane_creation(state: &Arc<RepoState>, key: &str, addr: &LaneAddre
 /// 5. LanePool に insert (state=Running、 pid 付き) + descriptor 確定 / `lifecycle=Ready`
 ///
 /// 戻り値: 成功 `LaneInfo` / 失敗 `String`（旧 HTTP の CONFLICT="already exists" 等 error message
-/// を保持。 unison error frame `{"error":..}` 経由で caller に Err 化される）。
+/// を保持。 daemon の Error frame 経由で caller に Err 化される）。
 ///
 /// 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane = Session Process + lane clone 連動)
 pub(crate) async fn create_sub_orchestrated(

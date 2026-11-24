@@ -402,8 +402,7 @@ pub(crate) async fn wire_ack_store(
 /// (= `"send"` / `"recv"` / `"thread"` / `"unread-count"` / `"latest-msg"` / `"ack"`)。
 ///
 /// store / notifier / delivery_notify は `DaemonState::assemble` で plumb された daemon 中央の Arc。
-/// エラーは Err(String) で返り、channel handler が `{"error": ...}` フレームに詰める
-/// (unison 慣習 — 専用 error frame なし)。
+/// エラーは Err(String) で返り、channel handler が Error frame で断る（doc 27 §3.4.7）。
 pub(crate) async fn dispatch_wire(
     store: &WiremsgStore,
     notifier: &WireNotifier,
