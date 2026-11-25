@@ -285,6 +285,7 @@ export function mountEdgeRail(
       // lane-panes が先に流していると（applyLaneView → setActiveLane の順）、上の lane 不一致で
       // 捨てている。順序に依存せず埋まるよう、こちらから要求する（応答 = 'vp:stowed-panes'）
       if (addr) document.dispatchEvent(new CustomEvent('vp:stowed-panes-demand', { detail: { lane: addr } }))
+      // lane の right track は auto。帯を隠すと center が自然に全幅へ広がる（doc 87 §8.4）。
       railRoot.style.display = addr ? '' : 'none'
     },
   }

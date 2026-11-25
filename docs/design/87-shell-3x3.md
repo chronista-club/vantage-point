@@ -1,6 +1,6 @@
 # 87. 額縁を creo-ui の 3x3 に載せる — Shell / Layout / Frame と 2 つの Scene
 
-> **Status**: Conception 確定（2026-11-05、mako × lead の一問一答）。slice 1 を実装（2026-11-25、§8.1）。左 edge は consumer 側の仮実装で始め、要望が creo-ui 0.31.0 に入ったので同じ PR の中で本物の `CURail` に差し替えた。slice 2 を実装（2026-11-25、§8.2）— 増やせる部品 3 か所を registry（pure data + 導出の純関数）に揃え、`APP_PANE_IDS` と kind の表 2 枚を撤去。slice 3 を実装（2026-11-25、§8.3）— Editor の field に region を持たせ、左右の幅を Editor / MCP から動かせるようにし、registry の行が field を同梱できるようにした。左 edge の補助色を Light Grid の token に畳んだ
+> **Status**: Slice 1〜4 実装済（実機確認待ち、§8.4）。Conception 確定（2026-11-05、mako × lead の一問一答）。slice 1 を実装（2026-11-25、§8.1）。左 edge は consumer 側の仮実装で始め、要望が creo-ui 0.31.0 に入ったので同じ PR の中で本物の `CURail` に差し替えた。slice 2 を実装（2026-11-25、§8.2）— 増やせる部品 3 か所を registry（pure data + 導出の純関数）に揃え、`APP_PANE_IDS` と kind の表 2 枚を撤去。slice 3 を実装（2026-11-25、§8.3）— Editor の field に region を持たせ、左右の幅を Editor / MCP から動かせるようにし、registry の行が field を同梱できるようにした。左 edge の補助色を Light Grid の token に畳んだ
 > **Related**: doc 49（LayoutEngine の creo-ui 基盤化、層 L0〜L5）/ doc 46・50（pane の額縁の縦軸）/ doc 51（表象の共有）/ doc 56（edge rail = 動詞の級 = 住所）/ doc 58（名簿）/ doc 59（設定ページ）/ doc 82（R sidebar）/ doc 86（Editor Link hub）/ creo-ui `docs/design/principal-layout.md`（PL-1〜PL-8）/ `layout-engine.md`（LE-1〜LE-21）/ `frame-system.md`（P-6 = VP 統合）
 > **Task**: creo todo `mem_1CgjWv9eG4T1bkF8z2xrGo`（Epic）/ Conception の帳簿 `mem_1CgieMq1PCG68haZ3zACmZ`（handoff）
 > **対象**: `crates/vp-app/webview/`（`src/sidebar/Shell.tsx` / `shell-layout.ts` / `right-sidebar.ts` / `EdgeRail.tsx` / `app-panes.ts` / `lane-panes.ts` / `LaneHeader.tsx`、slice 2 で `app-pane-registry.ts` / `edge-residents.ts`、slice 3 で `editor/` と `src/sidebar/shell-rails.ts`）、`crates/vp-app/src/webview/main_area.rs`（静的 DOM）
@@ -35,7 +35,7 @@ doc 49 §5 が 2026-07-22 に「新 engine は layout と呼び、frame は moti
 
 ## 2. あるべき姿 — Edge Ring の自己相似
 
-doc 50 が app の Edge Ring の縦軸を pane に再適用したので、VP の画面は既に「同じ形の入れ子」になっている。primitive を共通にすると 1 種類の部品で書ける。
+doc 50 が app の Edge Ring の縦軸を pane に再適用したので、VP の画面は既に「同じ形の入れ子」になっている。primitive を共通にすると 1 種類の部品で書ける。slice 4 で app（`#app-shell`）と lane（`#pane-lane`）の両方に同じ area 名の grid と `data-region` を適用した（§8.4）。
 
 ```
 CUEdgeShell（app）
@@ -46,7 +46,7 @@ CUEdgeShell（app）
   downEdge  = 空（描かない）
     └ lane pane = CUEdgeShell（lane）
         upEdge    = 名札（lane 名 / cwd / branch / session chip）+ now-line の 2 段 = 今の LaneHeader
-        center    = creo-ui-layout（lane scope: session pane + board）
+        center    = creo-ui-layout（lane scope: session pane + board + code）
         rightEdge = lane 級動詞（上 = + New / 中央 = しまった pane / 下 = board 取っ手 + PR）= 今の EdgeRail
         left / down = 空
 ```
@@ -311,6 +311,36 @@ task `mem_1ChNy9mAis1qBxN6Rzr74W`。
   色の literal（`Shell.tsx` は palette の宣言と上の 4 つを除く）。白の rgba は alpha の段が多く（.02〜.9）、重ねと文字色の両方に
   使われているので、`--lg-veil` に寄せるか段を足すかは別に決める
 
+### 8.4 slice 4 の実装で決めたこと（2026-11-25）— lane の額縁、自己相似の完結
+
+Slice 1〜4 の実装が揃い、app / lane の 2 階層が Principal Layout の位置語彙を共有する。
+`CUEdgeShell` component で既存 DOM を包み直すのではなく、slice 1 と同じく静的 HTML に grid と属性を載せる（R1）。
+
+| lane の直下 | data-region | grid-area |
+|---|---|---|
+| `#lane-header` | upEdge | up |
+| `#lane-panes` | center | center |
+| `#edge-rail` | rightEdge | right |
+
+- `#pane-lane` の area は `"up up right" "left center right" "down down right"`。
+  既存の右レールが上端から下端まで占めていた形を保つ。列・行とも `auto minmax(0,1fr) auto`。
+  left / down は空なので DOM を描かない。名札は `.lane-header-active` 時に共有の `--vp-nameplate-h`、不在時は高さ 0。
+- 右レールは幅 36px の grid item。R sidebar 展開中 / lane 不在時に `display:none` となり、right track が畳まれる。
+  `#lane-header` / `#lane-panes` の `right:36px` と R 展開時の `right:0` を撤去した。
+- `#lane-panes` は `position:relative; min-width:0; min-height:0`。子の absolute rect の基準を保ち、
+  `#pane-lane` / `#lane-panes` とその子を reparent しない。`#console-switching` / `#lane-empty` は
+  `grid-area:center; position:absolute; inset:0` で center だけに重ね、名札とレールを覆わず track サイズにも寄与しない。
+- **edge resident は引き続き `EDGE_RESIDENT_REGISTRY` と 3 起点の slot を使う**。route を選ぶ `CURail` と仕事が違い、
+  右レールを grid に載せるための置換は不要。R の Lane 節への住人の付け替えは既存のまま。
+- `shell-frame.dom.test.ts` は app / lane **それぞれの直下**の region を検査する。
+  happy-dom は CSS Grid の実寸を計算しないため、DOM test の主張は region・area・表示・退避の撤去まで。
+  Headless Chrome で 800×600 / 320×160 の各 6 状態（不在 → active → R 開 → R 閉 → 名札 42px → 再び不在）を実測し、
+  track の折り畳み・右レールの全高・overlay と center の矩形一致を確認した。
+  native WebView の見た目・xterm resize は実機確認待ち。
+
+**やってはいけない**: document 全体の `[data-region="center"]` を単一要素とみなすこと。
+同じ位置語彙が各スケールで繰り返されるので、対象 shell の直下で解決する。
+
 ## 9. 切ったこと
 
 - creo-ui-frame の採用（3D morph）。optional の遷移実行系として後から載せられる
@@ -339,3 +369,6 @@ task `mem_1ChNy9mAis1qBxN6Rzr74W`。
   shell-layout の書き口経由で Editor / MCP から動かせるようにした（テーマの外）。3 つの registry の行が field を同梱できるようにし、
   lane 行に端末の 3 本を同梱。`Shell.tsx` の直書きと左 edge の白い重ねを Light Grid の token に畳んだ（既定の見た目は不変）。
   決めたことは §8.3
+
+- 2026-11-25: slice 4 実装（task `mem_1ChP3kQTUGaY6sF5fNDDj7`）。lane の名札・中身・右レールを
+  3x3 grid と `data-region` に載せ、手書きの退避を撤去。Slice 1〜4 の実装が揃った。実機確認待ち（§8.4）。

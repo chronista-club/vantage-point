@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /**
- * 額縁 = Principal Layout の 3x3（doc 87 §2 / §7 / §8 slice 1）— 実物の静的 DOM で確かめる。
+ * 額縁 = Principal Layout の 3x3（doc 87 §2 / §7 / §8 slices 1・4; mem_1ChP3kQTUGaY6sF5fNDDj7）— 実物の静的 DOM で確かめる。
  *
  * 額縁は Rust の静的 HTML（`src/webview/main_area.rs` の `MAIN_AREA_HTML`）にある。ここでは
  * その `<body>` と app の `<style>` を**ファイルからそのまま**読み込み、region の名札と
@@ -10,7 +10,7 @@
  *
  * - region は位置語彙の `data-region`（PL-2）で名乗る。`vp shot` / DOM 検査で 3x3 が読める
  *   （AI の address、doc 51）
- * - 中身の無い edge（upEdge / downEdge）は **DOM を描かない**（PL: CUEdgeShell の `<Show>` と同じ）
+ * - 各スケールで中身の無い edgeは **DOM を描かない**（PL: CUEdgeShell の `<Show>` と同じ）
  * - `#host` の中身は動かさない（doc 49 R1 — xterm は再生成できない）。額縁の改修は属性と CSS だけ
  * - 旧 frame-engine の語彙 `data-frame-id` は残っていない（doc 87 §1.1）
  */
@@ -32,6 +32,7 @@ const appCss = rs.match(/r#"\n(html,body\{[\s\S]*?)<\/style>/)![1];
 let unsubscribe: (() => void) | null = null;
 
 beforeEach(() => {
+	document.body.className = "";
 	document.head.innerHTML = `<style>${appCss}</style>`;
 	// bundle の <script> は読み込まない（DOM と CSS だけを見る）
 	document.body.innerHTML = body.replace(/<script[\s\S]*?<\/script>/g, "");
@@ -43,7 +44,7 @@ afterEach(() => {
 	unsubscribe = null;
 });
 
-const region = (name: string) => document.querySelectorAll(`[data-region="${name}"]`);
+const region = (name: string) => document.querySelectorAll(`#app-shell > [data-region="${name}"]`);
 
 describe("3x3 の region（PL-2 位置語彙）", () => {
 	it("leftEdge = #sidebar-root / center = #host / rightEdge = #right-sidebar", () => {
@@ -83,6 +84,71 @@ describe("3x3 の region（PL-2 位置語彙）", () => {
 			expect(document.getElementById(domId)!.parentElement, domId).toBe(host);
 		}
 		expect(document.getElementById("lane-panes")!.parentElement!.id).toBe("pane-lane");
+	});
+});
+
+describe("lane の 3x3 額縁（app の center 内で自己相似）", () => {
+	const el = (id: string) => document.getElementById(id)!;
+	const style = (id: string) => getComputedStyle(el(id));
+
+	it("lane の直下だけが upEdge / center / rightEdge を名乗り、空の left / down は描かない", () => {
+		expect(Array.from(document.querySelectorAll("#pane-lane > [data-region]"))
+			.map((node) => [node.id, node.getAttribute("data-region")])).toEqual([
+			["lane-header", "upEdge"], ["lane-panes", "center"], ["edge-rail", "rightEdge"],
+		]);
+		expect(el("pane-lane").parentElement).toBe(el("host"));
+	});
+
+	it("lane の grid は右レールを全高に保ち、空の edge は auto track で畳む", () => {
+		expect(style("pane-lane").display).toBe("grid");
+		expect(style("pane-lane").gridTemplateAreas.replace(/\s+/g, " "))
+			.toBe('"up up right" "left center right" "down down right"');
+		expect(style("pane-lane").gridTemplateColumns).toBe("auto minmax(0,1fr) auto");
+		expect(style("pane-lane").gridTemplateRows).toBe("auto minmax(0,1fr) auto");
+		for (const [id, area] of [["lane-header", "up"], ["lane-panes", "center"], ["edge-rail", "right"]]) {
+			expect(style(id).gridArea, id).toBe(area);
+			expect(style(id).position, id).not.toBe("absolute");
+		}
+		expect(style("lane-panes").position).toBe("relative");
+		expect(style("lane-panes").minWidth).toBe("0");
+		expect(style("lane-panes").minHeight).toBe("0");
+	});
+
+	it("header は lane がある時だけ共有の名札の高さを持つ", () => {
+		expect(style("lane-header").height).toBe("0px");
+		el("pane-lane").classList.add("lane-header-active");
+		expect(style("lane-header").height).toBe("28px");
+		el("pane-lane").style.setProperty("--vp-nameplate-h", "42px");
+		expect(style("lane-header").height).toBe("42px");
+		el("pane-lane").classList.remove("lane-header-active");
+		expect(style("lane-header").height).toBe("0px");
+	});
+
+	it.each(["lane 無し", "lane 有り", "R 開", "R 閉"])("%s: rail の表示だけで auto track を切り替え、手書き退避を持たない", (state) => {
+		const rail = el("edge-rail");
+		if (state !== "lane 無し") rail.style.display = "";
+		if (state === "R 開" || state === "R 閉") document.body.classList.add("rsb-open");
+		if (state === "R 閉") document.body.classList.remove("rsb-open");
+		expect(style("edge-rail").display).toBe(state === "lane 無し" || state === "R 開" ? "none" : "flex");
+		for (const id of ["lane-header", "lane-panes"]) {
+			// happy-dom は track の px 計算をしない。ここは退避を持たず grid に任せる契約を検査。
+			expect(["", "auto"]).toContain(style(id).right);
+			expect(["", "auto"]).toContain(style(id).top);
+		}
+		expect(el("lane-panes").parentElement).toBe(el("pane-lane"));
+		for (const id of ["lane-board", "lane-code"]) {
+			expect(el(id).parentElement, id).toBe(el("lane-panes"));
+		}
+	});
+
+	it("switching / empty は center に重なり、header と rail の track を覆わない", () => {
+		for (const id of ["console-switching", "lane-empty"]) {
+			el(id).classList.add("active");
+			expect(style(id).gridArea, id).toBe("center");
+			expect(style(id).position, id).toBe("absolute");
+			expect(style(id).inset, id).toBe("0");
+			expect(el(id).parentElement).toBe(el("pane-lane"));
+		}
 	});
 });
 
