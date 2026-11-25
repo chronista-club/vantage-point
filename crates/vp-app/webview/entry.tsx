@@ -95,6 +95,7 @@ import { CODE_PANE_CSS, type FilePayload, mountCodePane } from "./CodePane";
 import type { Entry as CodeEntry } from "./CodePane";
 import { mountEdgeRail, EDGE_RAIL_CSS } from "./EdgeRail";
 import { installRightSidebar } from "./right-sidebar";
+import { EDGE_RESIDENT_REGISTRY, relocatedResidentHostIds } from "./edge-residents";
 import { PR_SECTION_CSS } from "./right-sidebar-prs";
 import { applyShellLayout, installShellLayout } from "./shell-layout";
 import { renderBoard, clearBoard, appendBoard } from "./board-render";
@@ -140,6 +141,7 @@ import { installTerm } from "./term";
 import { installDispatch, openDispatch } from "./dispatch";
 import {
 	type ActivePaneInfo,
+	activePaneRouteOf,
 	applyPaneSwitch,
 	installBundleProbe,
 	installSlotRect,
@@ -166,11 +168,9 @@ openDispatch();
 // 集約され、ここは購読の install と `setActivePane`（下方 `applyActivePane`）だけを持つ。
 //
 // data-app-pane 規約 (main_area.rs HTML 側で付与、旧 data-frame-id — doc 87 §1.1 で改名):
-//   lane    → pane-lane          (lane workbench。console/chat/board の tiling を内包)
-//   runner  → pane-runner        (Runner 🌿)
-//   devices → pane-devices        (Devices 🧲 / device 一覧)
-//   preview → pane-preview        (iframe preview)
-//   empty   → pane-empty          (no selection)
+//   住所（data-app-pane）/ DOM id / kind / 場の対応は pane kind registry（app-pane-registry.ts、
+//   doc 87 §8.2）1 枚が持つ — lane（lane workbench。console/chat/board の tiling を内包）/
+//   runner / devices / preview / empty。
 //   doc 52 §10 wave 0: pp（Board）は app pane を退役 → lane tiling の board pane (#lane-board)
 // 注: data-pane-id (active-pane.ts が Lane address 等に書き換える native overlay sync 用)
 // と attribute を分離。 同名にすると Lane click で legacy 側が hijack して配置 lookup が
@@ -185,21 +185,9 @@ attachKeybindings(window);
 // 直接捕捉する。 IPC 往復 bridge を残すと 1 回の Cmd hold + key で二重発火する。
 
 // ===== setActivePane（Rust `push_active_view` の受け口）=====
-// 本体は下方の `applyActivePane`。
-//
-// ⚠️ この表は `active-pane.ts` の同名の表と**別の写像**で、統合してはいけない — こちらは
-// 配置の住所 `data-app-pane`（"lane" 等 = 配置の座標系）、あちらは DOM element id
-// （"pane-lane" 等 = 可視性の gate）。同じ kind から別の軸を引いている。
-const KIND_TO_PANE: Record<string, string> = {
-	terminal: "lane",
-	runner: "runner",
-	devices: "devices",
-	preview: "preview",
-	empty: "empty",
-	// doc 52 §10 wave 0: board → pp は退役（board pane = lane tiling へ移設）。
-	// LE-P4 PR1: DOM 不在の幽霊 entry を落とし、DOM に居た devices → bs を補充
-	// （旧体系では unknown kind → empty に落ちて Devices pane が見えなかった）
-};
+// 本体は下方の `applyActivePane`。kind → 行き先の解決は `activePaneRouteOf`（active-pane.ts の
+// 純関数、pane kind registry から引く）。旧形はここに kind → 住所の表を、active-pane.ts に
+// kind → DOM id の表を別々に持ち、旧名 "terminal" の解決が両者で食い違っていた。
 
 /** 現 active Lane の address (Lane 跨ぎの save+restore base). null = まだ Lane click していない. */
 let activeLaneAddress: string | null = null;
@@ -237,10 +225,10 @@ function laneNameFromAddress(addr: string | null): string | null {
  * 載せられる（早く載るほど、Rust からの呼びを取りこぼす窓が狭い）。
  *
  * per-Lane 配置の記憶 (VP-141 follow-up の後継):
- * - kind=terminal Lane 切替時に旧 Lane の配置 snapshot を save、新 Lane の保存済 snapshot
- *   (or default lane-focus) を restore する → user が Lane を跨いでも Side Review / board Overlay 等の
- *   選択 + share 調整の形が記憶される（app-panes.ts 所有）
- * - kind != terminal (board/runner/Devices click 等) は Lane を跨がない fixed-Pane focus、記憶は更新しない
+ * - lane の切替時（kind = lane + address。旧名 terminal も同じ）に旧 Lane の配置 snapshot を save、
+ *   新 Lane の保存済 snapshot (or default lane-focus) を restore する → user が Lane を跨いでも
+ *   Side Review / board Overlay 等の選択 + share 調整の形が記憶される（app-panes.ts 所有）
+ * - lane 以外 (runner/Devices/preview click 等) は Lane を跨がない fixed-Pane focus（訪問）、記憶は更新しない
  */
 const applyActivePane = (info: ActivePaneInfo | null): void => {
 	// ① DOM の可視性（pane の active 切替 / preview iframe / showLane / slot rect）
@@ -249,8 +237,10 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 	} catch (e) {
 		console.warn("[app-panes] pane switch error", e);
 	}
-	// ② app-panes に配置を発火
-	if (!info || !info.kind || info.kind === "empty") {
+	// ② app-panes に配置を発火（行き先の解決は pane kind registry — activePaneRouteOf）
+	const route = activePaneRouteOf(info);
+	// `!info` は型の絞り込みのため（info 無しは route も empty）
+	if (route.to === "empty" || !info) {
 		applyAppScene("empty");
 		// lane 無し = Conversation 共通ヘッダも空へ（chips は presence-driven）。
 		laneHeader?.setLane(null);
@@ -266,9 +256,9 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		rightSidebar?.setLane(null);
 		return;
 	}
-	// kind=terminal: Lane 切替判定 + 保存済配置の restore + show-subscriber 付替
-	if (info.kind === "lane" && info.pane_id) {
-		const newLane = info.pane_id;
+	// lane の切替: Lane 切替判定 + 保存済配置の restore + show-subscriber 付替
+	if (route.to === "lane") {
+		const newLane = route.address;
 		// ⚠️ restore は **lane が本当に変わった時だけ**。header refresh（engine_session_id /
 		// branch 変化等）は同一 lane に setActivePane を再送してくるため、無条件 restore だと
 		// hotkey で選んだ配置（save 未経由）が黙って巻き戻る（team-b review #1）。
@@ -278,8 +268,8 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 			saveAppStateFor(activeLaneAddress);
 		}
 		activeLaneAddress = newLane;
-		// Conversation 共通ヘッダを当該 lane の文脈に更新（kind != terminal では触らない =
-		// board 等を眺めている間も直前の lane 文脈が載り続ける）。
+		// Conversation 共通ヘッダを当該 lane の文脈に更新（lane の切替以外 = 訪問 / 表に無い kind では
+		// 触らない = runner 等を眺めている間も直前の lane 文脈が載り続ける）。
 		laneHeader?.setLane({
 			addr: newLane,
 			name: info.lane_name ?? null,
@@ -324,15 +314,15 @@ const applyActivePane = (info: ActivePaneInfo | null): void => {
 		rightSidebar?.setLane(newLane);
 		return;
 	}
-	// kind != terminal (board/runner/Devices/preview click 等): agent pane の**訪問**（一時 view）。
-	// Lane の配置記憶には焼き込まず、✕（close-pane）で出発点の配置に戻れる
-	const paneId = KIND_TO_PANE[info.kind];
-	if (!paneId) {
-	console.warn("[app-panes] unknown kind for setActivePane:", info.kind);
-	applyAppScene("empty");
-	return;
+	// 表に無い kind（退役した board 等）: 警告して empty に倒す（①も empty の pane に落としている）
+	if (route.to === "unknown") {
+		console.warn("[app-panes] unknown kind for setActivePane:", route.kind);
+		applyAppScene("empty");
+		return;
 	}
-	visitAppPane(paneId);
+	// lane 以外 (runner/Devices/preview click 等): agent pane の**訪問**（一時 view）。
+	// Lane の配置記憶には焼き込まず、✕（close-pane）で出発点の配置に戻れる
+	visitAppPane(route.paneId);
 };
 
 // DOM 未 ready の間に来た呼びは buffer して DOMContentLoaded で流す。
@@ -523,14 +513,10 @@ document.head.appendChild(headerStyle);
 const railStyle = document.createElement("style");
 railStyle.textContent = EDGE_RAIL_CSS;
 document.head.appendChild(railStyle);
+// 住人（+ New / しまった pane / board 取っ手 / PR）と各 host は edge-residents.ts の表が持つ（doc 87 §8.2）。
 const edgeRail = (() => {
 	const root = document.getElementById("edge-rail");
-	const host = document.getElementById("edge-rail-new-host");
-	const stowHost = document.getElementById("edge-rail-stow-host");
-	const prHost = document.getElementById("rail-pr-host");
-	return root && host && stowHost
-		? mountEdgeRail(root, host, stowHost, prHost)
-		: null;
+	return root ? mountEdgeRail(root, (id) => document.getElementById(id)) : null;
 })();
 
 // ===== R sidebar（doc 82）— edge rail の伸びた形。3 起点の縦 accordion =====
@@ -555,8 +541,8 @@ const rightSidebar = (() => {
 			document.querySelectorAll<HTMLElement>("#right-sidebar .rsb-section"),
 		),
 		laneBody,
-		// rail の上から順（R の Lane 節でも同じ並びで出る）
-		residents: ["edge-rail-new-host", "edge-rail-stow-host", "board-handle"]
+		// 付け替える住人は表が決める（relocateToRightSidebar）。並びは rail の上から = Lane 節での並び
+		residents: relocatedResidentHostIds(EDGE_RESIDENT_REGISTRY)
 			.map(byId)
 			.filter((el): el is HTMLElement => el !== null),
 		prsBody,

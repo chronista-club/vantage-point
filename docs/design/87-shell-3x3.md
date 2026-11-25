@@ -1,9 +1,9 @@
 # 87. 額縁を creo-ui の 3x3 に載せる — Shell / Layout / Frame と 2 つの Scene
 
-> **Status**: Conception 確定（2026-11-05、mako × lead の一問一答）。slice 1 を実装（2026-11-25、§8.1）。左 edge は consumer 側の仮実装で始め、要望が creo-ui 0.31.0 に入ったので同じ PR の中で本物の `CURail` に差し替えた
+> **Status**: Conception 確定（2026-11-05、mako × lead の一問一答）。slice 1 を実装（2026-11-25、§8.1）。左 edge は consumer 側の仮実装で始め、要望が creo-ui 0.31.0 に入ったので同じ PR の中で本物の `CURail` に差し替えた。slice 2 を実装（2026-11-25、§8.2）— 増やせる部品 3 か所を registry（pure data + 導出の純関数）に揃え、`APP_PANE_IDS` と kind の表 2 枚を撤去
 > **Related**: doc 49（LayoutEngine の creo-ui 基盤化、層 L0〜L5）/ doc 46・50（pane の額縁の縦軸）/ doc 51（表象の共有）/ doc 56（edge rail = 動詞の級 = 住所）/ doc 58（名簿）/ doc 59（設定ページ）/ doc 82（R sidebar）/ doc 86（Editor Link hub）/ creo-ui `docs/design/principal-layout.md`（PL-1〜PL-8）/ `layout-engine.md`（LE-1〜LE-21）/ `frame-system.md`（P-6 = VP 統合）
 > **Task**: creo todo `mem_1CgjWv9eG4T1bkF8z2xrGo`（Epic）/ Conception の帳簿 `mem_1CgieMq1PCG68haZ3zACmZ`（handoff）
-> **対象**: `crates/vp-app/webview/`（`src/sidebar/Shell.tsx` / `shell-layout.ts` / `right-sidebar.ts` / `EdgeRail.tsx` / `app-panes.ts` / `lane-panes.ts` / `LaneHeader.tsx`）、`crates/vp-app/src/webview/main_area.rs`（静的 DOM）
+> **対象**: `crates/vp-app/webview/`（`src/sidebar/Shell.tsx` / `shell-layout.ts` / `right-sidebar.ts` / `EdgeRail.tsx` / `app-panes.ts` / `lane-panes.ts` / `LaneHeader.tsx`、slice 2 で `app-pane-registry.ts` / `edge-residents.ts`）、`crates/vp-app/src/webview/main_area.rs`（静的 DOM）
 
 ## 1. 何を決めたか
 
@@ -83,13 +83,17 @@ lane の rightEdge は「rail 列だけで peek 無し」。PR を押すと **�
 
 primitive は意味づけせず、app が registry を渡す（PL-3）。VP の 3 か所を同じ形に揃える。
 
-| registry | 中身（最初） | 今の形 |
-|---|---|---|
-| Rail（左 edge の相） | Lanes / Actions / Settings | sidebar に直書き（`Shell.tsx`） |
-| edge resident（右 edge の lane 級動詞） | + New / しまった pane / board 取っ手 / PR。entry は上・中央・下の 3 起点 slot を持つ（doc 82 の規約） | `EdgeRail.tsx` に 4 住人が直書き |
-| pane kind（center の種類） | lane / runner / devices / preview / gallery | `APP_PANE_IDS` の const が main_area.rs の静的 HTML と 1:1。1 種類足すのに Rust と TS の両方を触る |
+| registry | 中身（最初） | 起票時（2026-11-05）の形 | slice 2 後の形（§8.2） |
+|---|---|---|---|
+| Rail（左 edge の相） | Lanes / Actions / Settings | sidebar に直書き（`Shell.tsx`） | `SHELL_RAILS`（`src/sidebar/route.ts`）+ 描画の `SHELL_RAIL_REGISTRY`（`Shell.tsx`）— slice 1 で作った |
+| edge resident（右 edge の lane 級動詞） | + New / しまった pane / board 取っ手 / PR。entry は上・中央・下の 3 起点 slot を持つ（doc 82 の規約） | `EdgeRail.tsx` に 4 住人が直書き | `EDGE_RESIDENT_REGISTRY`（`edge-residents.ts`） |
+| pane kind（center の種類） | lane / runner / devices / preview / empty | `APP_PANE_IDS` の const が main_area.rs の静的 HTML と 1:1。1 種類足すのに Rust と TS の両方を触る | `APP_PANE_REGISTRY`（`app-pane-registry.ts`）。静的 HTML は Rust のまま（doc 49 R1）で、表との 1:1 を test が固定する |
 
-右 edge と lane の rightEdge は、同じ `RailDef` 型で「起点か道具か」だけ違う。
+起票時は pane kind の中身に gallery を数えていたが、gallery（`#gallery` hash の dev surface、`gallery-panes.tsx`）は
+app pane ではなく、slice 2 の表にも入れていない。
+
+右 edge と lane の rightEdge は、同じ `RailDef` 型で「起点か道具か」だけ違う（あるべき姿）。slice 2 の edge resident は
+まだ `RailDef` ではない（§8.2）。
 
 ## 5. Editor との統合
 
@@ -167,6 +171,64 @@ slice 1 の mako 裁定（2026-11-05、GO）: 左 sidebar は Rail + peek の形
 - **改名**: `data-frame-id` → `data-app-pane`（`data-pane-id` は active-pane.ts が lane address を書く動的
   属性で、寄せると VP-141 の衝突が再発する）。`--frame-transition-ms` は motion の token なので残す
 
+### 8.2 slice 2 の実装で決めたこと（2026-11-25）— 3 つの registry
+
+task `mem_1ChNtFpUyeEstk7sXoUB4x`。VP の増やせる部品 3 か所を、同じ形の registry に揃えた。
+
+| registry | 表（pure data） | 1 行の型 | 描画の口（id で引く） | 契約 test |
+|---|---|---|---|---|
+| rail（左 edge の相） | `SHELL_RAILS`（`src/sidebar/route.ts`） | `ShellRailSpec`（id / route / order / label / anchor） | `Shell.tsx` の `RAIL_VIEW: Record<ShellRailId, …>` → `SHELL_RAIL_REGISTRY`（creo-ui の `RailDef[]`） | `route.test.ts`（表を反復）/ `shell-rail-integration.dom.test.ts`（本物の Shell の列と 1:1） |
+| edge resident（lane の右 edge の住人） | `EDGE_RESIDENT_REGISTRY`（`edge-residents.ts`） | `EdgeResidentDef`（id / anchor / order / hostId / relocateToRightSidebar / content） | `EdgeRail.tsx` の `views: Record<SolidEdgeResidentId, …>` | `edge-residents.test.ts` |
+| pane kind（center の種類） | `APP_PANE_REGISTRY`（`app-pane-registry.ts`） | `AppPaneDef`（id / domId / kinds / scene / inCycle / order） | 無し（pane の DOM は main_area.rs の静的 HTML） | `app-pane-registry.test.ts` / `active-pane.dom.test.ts` |
+
+3 つを並べた契約は `shell-registries.dom.test.ts`: 表 ⇄ 実物（`#host` の静的 pane / `#edge-rail` の 3 起点の slot と
+EdgeRail の描画・R sidebar への付け替え / CURail の列と peek）を、**表を反復して**確かめる（PL §5.2 — 行を足すと検査も
+増える）。rail は表に 1 行足した版でも同じ検査を回す。
+
+**共通の形**:
+
+- 表は `as const satisfies readonly XxxDef[]`（rail は slice 1 の型のまま）。行の literal 型が残るので、`pane.id === "lane"` の
+  比較や描画表の key が表に無い名前なら tsc が落とす
+- 導出は**表を引数に取る純関数**（`appScenesOf` / `presetCycleOf` / `appPaneOfKind` / `edgeResidentsInRailOrder` /
+  `relocatedResidentHostIds` など）。表に 1 行足した版を test で作り、場・巡回・kind 解決・並び・付け替えに出ることを
+  確かめている（open-closed）
+- 描画の component は tsx 側が id で引く表に足す（PL の pure / component 分離）。key の型は表から導くので、行を足して
+  描き手を書き忘れると tsc が止める
+
+**行の足し方**:
+
+- **pane kind**: `APP_PANE_REGISTRY` に 1 行 + main_area.rs の `#host` 直下に `.pane`（`id` = domId、`data-kind` = kinds の
+  先頭、`data-app-pane` = id）を置く。`APP_SCENES`（独占の場）・`PRESET_CYCLE`（`inCycle`）・`Ctrl+Shift+数字`（巡回の順に
+  9 まで）・`setActivePane` の kind 解決（DOM の可視性と配置の両方）は表から導かれる。Rust 側が送る kind（sidebar の
+  `stand:select` → `ActiveComponent.kind`）は `kinds` のどれかに合わせる
+- **edge resident**: `EDGE_RESIDENT_REGISTRY` に 1 行 + main_area.rs の `#edge-rail` の `.anchor-<anchor>` に host を置く
+  （`content: "solid"` なら空の `<div id=hostId>`）。solid なら `EdgeRail.tsx` の `views` に描き手を足す（足さないと tsc が
+  止める）。R sidebar の Lane 節への付け替えは `relocateToRightSidebar` から導かれる
+- **rail**: `SHELL_RAILS` に 1 行 + `ShellRailId` に id + `Shell.tsx` の `RAIL_VIEW` に icon / peek（`Record` なので
+  書き忘れると tsc が止める）
+
+**決めたこと**:
+
+- **静的 HTML は表から生成しない**。pane と住人の DOM は Rust の静的 HTML に置いたまま（doc 49 R1 — xterm / iframe は
+  作り直せない）、表との 1:1 を test で固定した。生成にするには Rust が TS の表を読むか、その逆が要る
+- **kind の表 2 枚（`entry.tsx` の kind → 住所、`active-pane.ts` の kind → DOM id）は 1 枚の表の 2 列になった**。旧注記の
+  「別の写像なので統合してはいけない」の通り、列（住所 `id` と DOM の `domId`）は分けたまま。違っていたのは kind の受け口（表の key）で、
+  旧名 `terminal` を `entry.tsx` は lane の場への訪問に、`active-pane.ts` は `pane-empty` に解決していた。今は両方 lane で、address が
+  あれば lane の切替になる。Rust の `push_active_view`（`lane_view.rs`）が今送るのは `lane` か component の kind か null で、
+  `terminal` は送っていない。表には旧名の受け口として残した
+- `entry.tsx` の分岐は純関数 `activePaneRouteOf`（`active-pane.ts`）に出した: empty / lane の切替 / pane の訪問 / 表に無い
+  kind の 4 つ。address の無い `lane` は lane pane の訪問になる（旧形は `entry.tsx` が empty の場に、`active-pane.ts` が
+  `pane-lane` に解決していた。Rust はこの形を送らない）
+- 訪問の場の id は表の `scene.id` から引く（旧形は `${paneId}-focus` の命名規約）。表に無い pane の訪問は何も動かさない
+  （旧形は訪問中なら訪問を終わらせていた）。命名規約から外れていた empty も訪問できるようになった（旧形は `empty-focus` が
+  無く失敗）が、empty の kind は `activePaneRouteOf` が empty の分岐へ送るので、今は誰も empty を訪問しない
+- `Ctrl+Shift+数字` の表（`keybindings.ts`）も巡回から導く。旧形は巡回と同じ 4 つを直書きしていた
+- **edge resident はまだ `RailDef` にしない**。住人は route を持たない動詞で（§2 の「内側は動詞、外側は面」）、起点も 3 つ
+  （creo-ui の `RailAnchor` は top / bottom の 2 つ）。lane の額縁を CUEdgeShell に載せる slice 4 で、右 edge の Rail と
+  揃えるかを決める
+- `content: "static"` は board 取っ手だけ: 中身は静的 HTML、開閉と badge の配線は `board-view.ts`（doc 55 の user 専有の
+  表示状態）。EdgeRail は描かない
+
 ## 9. 切ったこと
 
 - creo-ui-frame の採用（3D morph）。optional の遷移実行系として後から載せられる
@@ -189,3 +251,5 @@ slice 1 の mako 裁定（2026-11-05、GO）: 左 sidebar は Rail + peek の形
   設定 Scene、3x3 grid + `data-region`、`data-frame-id` → `data-app-pane`。決めたことは §8.1
 - 2026-11-25: 要望（peekOpen / anchor / 列の slot / peekFooter / keepPeeksMounted / region / peekWidth / resizing）が
   creo-ui 0.31.0 に入り（creo-ui#188 + #204、release は #205）、同じ PR #1291 の中で仮実装を本物の `CURail` に差し替えた
+- 2026-11-25: slice 2 実装（task `mem_1ChNtFpUyeEstk7sXoUB4x`）。pane kind / edge resident の registry を新設し、rail と並べて
+  3 つの registry の契約 test を整えた。`APP_PANE_IDS` と kind の表 2 枚を撤去。決めたことは §8.2

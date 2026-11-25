@@ -18,7 +18,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { APP_PANE_IDS, _resetForTest, applyAppScene, installAppPanes } from "./app-panes";
+import { APP_PANE_REGISTRY } from "./app-pane-registry";
+import { _resetForTest, applyAppScene, installAppPanes } from "./app-panes";
 
 // ⚠️ happy-dom 環境では global の URL が happy-dom 製になり readFileSync が受け付けないので、
 // 文字列の import.meta.url から path を組む。
@@ -78,8 +79,8 @@ describe("3x3 の region（PL-2 位置語彙）", () => {
 
 	it("⚠️ #host の中身（pane 群）は #host の直下のまま（doc 49 R1）", () => {
 		const host = document.getElementById("host")!;
-		for (const id of ["pane-lane", "pane-preview", "pane-runner", "pane-devices", "pane-empty"]) {
-			expect(document.getElementById(id)!.parentElement, id).toBe(host);
+		for (const { domId } of APP_PANE_REGISTRY) {
+			expect(document.getElementById(domId)!.parentElement, domId).toBe(host);
 		}
 		expect(document.getElementById("lane-panes")!.parentElement!.id).toBe("pane-lane");
 	});
@@ -92,12 +93,7 @@ describe("pane の住所（旧 data-frame-id → data-app-pane）", () => {
 		expect(appCss.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain("data-frame-id");
 	});
 
-	it("app pane の住所は APP_PANE_IDS と 1:1", () => {
-		const ids = Array.from(document.querySelectorAll<HTMLElement>(".pane[data-app-pane]")).map(
-			(el) => el.dataset.appPane,
-		);
-		expect([...ids].sort()).toEqual([...APP_PANE_IDS].sort());
-	});
+	// 住所と pane kind registry の 1:1 は shell-registries.dom.test.ts（3 つの registry を並べて固定）
 
 	it("配置の投影は data-app-pane を引く（lane-focus で lane だけが見える）", () => {
 		unsubscribe = installAppPanes(document);

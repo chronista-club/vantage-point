@@ -11,11 +11,13 @@
  *   Cmd 修飾は明示的に reject (`!e.metaKey`) して Mac native shortcut の誤発火も防ぐ。
  */
 
-import { applyAppScene, cycleAppScene } from "./app-panes";
+import { sceneHotkeysOf } from "./app-pane-registry";
+import { PRESET_CYCLE, applyAppScene, cycleAppScene } from "./app-panes";
 import { toggleBoardForm, toggleBoardOpen } from "./board-view";
 
 /**
- * Ctrl+Shift+N → Scene id mapping。
+ * Ctrl+Shift+N → Scene id mapping。巡回（`PRESET_CYCLE`）の順に Digit1 から（doc 87 §8.2 —
+ * pane kind registry の inCycle の pane が数字キーにも出る。旧形は巡回と同じ 4 つを直書きしていた）。
  *
  * `event.code`（= 物理キー位置、layout 独立）で照合する。`event.key` は Shift 押下時に
  * "1" → "!", "3" → "#" 等の symbol に変わるため hotkey 判定に使えない（US/JIS 両方該当）。
@@ -23,12 +25,7 @@ import { toggleBoardForm, toggleBoardOpen } from "./board-view";
 // doc 52 §10 wave 0: pp scene（side-review / pp-overlay / pp-focus）退役後、Digit2-4 は残る
 // agent focus（runner / Devices / Preview）へ。Digit1 = lane workbench（board も console も chat も
 // この中の tiling）。
-const SCENE_HOTKEY_BY_CODE: Record<string, string> = {
-	Digit1: "lane-focus",
-	Digit2: "runner-focus",
-	Digit3: "devices-focus",
-	Digit4: "preview-focus",
-};
+const SCENE_HOTKEY_BY_CODE: Record<string, string> = sceneHotkeysOf(PRESET_CYCLE);
 
 /**
  * window 等の EventTarget に Scene hotkey listener を attach。

@@ -61,6 +61,45 @@ describe("rail の導出（route = 唯一の SSOT、PL-4）", () => {
 	});
 });
 
+describe("rail registry の契約 — 表を反復する（PL §5.2: 表に 1 行足すと、その行の検査も増える）", () => {
+	it("id / route / order は表の中で重複しない（選択が 1 つに決まる）", () => {
+		for (const values of [
+			SHELL_RAILS.map((r) => r.id),
+			SHELL_RAILS.map((r) => r.route),
+			SHELL_RAILS.map((r) => String(r.order)),
+		]) {
+			expect(new Set(values).size, values.join(",")).toBe(values.length);
+		}
+	});
+
+	for (const rail of SHELL_RAILS) {
+		it(`${rail.id}: 主 route とその下位で選ばれる`, () => {
+			expect(railOf(rail.route)).toBe(rail.id);
+			expect(railOf(`${rail.route}/x/y`)).toBe(rail.id);
+			expect(normalizeRoute(rail.route)).toBe(rail.route);
+		});
+
+		it(`${rail.id}: Scene は Settings rail の下だけが設定`, () => {
+			expect(sceneOf(rail.route)).toBe(rail.id === "settings" ? "settings" : "dev");
+		});
+
+		it(`${rail.id}: 別の rail から押すとこの rail へ移り、peek を開く`, () => {
+			const from = SHELL_RAILS.find((r) => r.id !== rail.id)!;
+			const start = navigate(initialRouteState(), from.route);
+			const { state, form } = railClick(start, "slim", rail.id, "vp/lane/lead");
+			expect(railOf(state.route)).toBe(rail.id);
+			expect(form).toBe("full");
+		});
+
+		it(`${rail.id}: 選択中に押すと peek の開閉だけ（route は動かない）`, () => {
+			const start = navigate(initialRouteState(), rail.route);
+			const once = railClick(start, "full", rail.id, null);
+			expect(once).toEqual({ state: start, form: "slim" });
+			expect(railClick(once.state, once.form, rail.id, null).form).toBe("full");
+		});
+	}
+});
+
 describe("Scene の導出（開発 ⇄ 設定）", () => {
 	it("Settings rail の下は設定、それ以外は開発", () => {
 		expect(sceneOf("/settings")).toBe("settings");

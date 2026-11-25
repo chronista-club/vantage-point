@@ -16,13 +16,15 @@
  * 一本化した。機構は移設そのまま: click → `conversation:agents_fetch`（相関 id）→
  * `vp:conversation-agents` 応答で menu が開く（同期では開かない）。menu は帯の左横に開く。
  *
- * ## 層の分離
- *
- * ## 3 起点（doc 82 §規約）
+ * ## 3 起点（doc 82 §規約）と住人の表（doc 87 §8.2）
  *
  * 帯の要素は上詰めで積まない — 上 / 中央 / 下の 3 slot（main_area.rs の `.tri-anchor` >
  * `.anchor-top` / `.anchor-center` / `.anchor-bottom`）に属する: 上 = + New / 中央 = しまった pane /
  * 下 = board 取っ手 + PR ボタン。R sidebar（伸びた形）でも同じ規約で節が並ぶ。
+ *
+ * 誰がどの slot に居るかは `edge-residents.ts` の `EDGE_RESIDENT_REGISTRY` が持つ。ここは表を反復して
+ * 「中身を Solid で描く住人」（`content: "solid"`）を各 host に描くだけ — 描画表 `views` の key は
+ * `SolidEdgeResidentId` なので、表に住人を足して描き手を書き忘れると tsc が止める。
  *
  * ## PR ボタン（doc 82）
  *
@@ -37,7 +39,7 @@
  * - **actions**: mountEdgeRail（Solid render + IPC 送信 + 相関 id 照合 + 外側 click）
  */
 import { render } from 'solid-js/web'
-import { createSignal, For, Show } from 'solid-js'
+import { createSignal, For, Show, type JSX } from 'solid-js'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import {
   isMyResponse,
@@ -48,6 +50,11 @@ import {
 import { newPaneChoices } from './lane-panes'
 import { agentIcon } from './src/sidebar/lane'
 import type { IconName } from '@chronista-club/creo-ui-icons-web'
+import {
+  EDGE_RESIDENT_REGISTRY,
+  edgeResidentsInRailOrder,
+  type SolidEdgeResidentId,
+} from './edge-residents'
 
 /** しまってある pane 1 つ（'vp:stowed-panes' の 1 要素。lane-panes が render のたびに流す）。 */
 export type StowedPane = {
@@ -74,16 +81,14 @@ export interface EdgeRailApi {
 }
 
 /**
- * rail の Solid 部（New ボタン + menu）を mount する。
+ * rail の Solid 部（+ New と menu / しまった pane / PR ボタン）を、住人の表が指す host に mount する。
  *
  * @param railRoot #edge-rail（帯そのもの。lane 不在時の表示制御に使う）
- * @param mount    #edge-rail-new-host（Solid の render 先）
+ * @param hostOf   DOM id → 要素（`document.getElementById` を渡す）。住人の host id は表が持つ
  */
 export function mountEdgeRail(
   railRoot: HTMLElement,
-  mount: HTMLElement,
-  stowMount: HTMLElement,
-  prMount: HTMLElement | null,
+  hostOf: (id: string) => HTMLElement | null,
 ): EdgeRailApi {
   const [lane, setLaneSignal] = createSignal<string | null>(null)
   // ---- PR ボタン（doc 82）---------------------------------------------------------
@@ -121,7 +126,6 @@ export function mountEdgeRail(
       </button>
     </Show>
   )
-  if (prMount) render(() => <PrButton />, prMount)
   // ---- しまった pane（Pane のしまうモード、creo mem_1CfbF4m1sGusje8oMouTu8）----------
   // 一覧は lane-panes が 'vp:stowed-panes' で流す（表示 lane 分だけ受ける）。badge は
   // しまっている間に届いた 'vp:pane-activity'（chat の返答 / console の出力 / board の新着）。
@@ -162,7 +166,6 @@ export function mountEdgeRail(
       )}
     </For>
   )
-  render(() => <Stowed />, stowMount)
   // null = 閉。応答（相関 id 照合）で開く — LaneHeader 時代の流儀そのまま。
   const [menu, setMenu] = createSignal<RailStand[] | null>(null)
   const [menuPos, setMenuPos] = createSignal<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -255,7 +258,23 @@ export function mountEdgeRail(
     </>
   )
 
-  render(() => <Rail />, mount)
+  // ---- 住人の表 → host へ描く（doc 87 §8.2）-------------------------------------------
+  // key が SolidEdgeResidentId なので、表に `content: "solid"` の住人を足すとここが型で欠ける。
+  const views: Record<SolidEdgeResidentId, () => JSX.Element> = {
+    new: Rail,
+    stowed: Stowed,
+    prs: PrButton,
+  }
+  for (const r of edgeResidentsInRailOrder(EDGE_RESIDENT_REGISTRY)) {
+    // static の住人（board 取っ手）は静的 HTML が中身ごと持ち、配線は別 module（board-view.ts）
+    if (r.content !== 'solid') continue
+    const host = hostOf(r.hostId)
+    if (!host) {
+      console.warn(`[edge-rail] 住人 ${r.id} の host #${r.hostId} が見つかりません — 描画をスキップ`)
+      continue
+    }
+    render(views[r.id], host)
+  }
 
   return {
     setLane(addr) {

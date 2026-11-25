@@ -14,6 +14,12 @@
  * 形で、World A が消えた（#921）時点で意味を失っていた。2 段は wrap 側の install を
  * DOMContentLoaded まで遅らせる必要（= 被 wrap 側が後から定義される順序依存）も生んでいた。
  */
+import {
+	APP_PANE_REGISTRY,
+	type AppPaneId,
+	EMPTY_APP_PANE,
+	appPaneOfKind,
+} from "./app-pane-registry";
 
 /**
  * Rust `push_active_view` が運ぶ payload。
@@ -55,16 +61,36 @@ function post(payload: unknown): void {
 // VP-142 cleanup: legacy "canvas" kind 削除 (pane-canvas placeholder 廃止に伴い)。
 // doc 52 §10 wave 0: board は app pane を退役（board pane = lane tiling へ）。
 //
-// ⚠️ entry.tsx にも同じ kind を引く表があるが**別の写像**で、統合してはいけない —
-// あちらは app scope の配置の住所 `data-app-pane`（"lane" 等 = 配置の座標系）、こちらは DOM
-// element id（"pane-lane" 等 = 可視性の gate）。同じ kind から**別の軸**を引いている。
-const KIND_TO_PANE: Record<string, string> = {
-	lane: "pane-lane",
-	preview: "pane-preview",
-	runner: "pane-runner",
-	devices: "pane-devices",
-	empty: "pane-empty",
-};
+// kind の解決は pane kind registry（app-pane-registry.ts、doc 87 §8.2）1 枚から引く。
+// 旧形はここと entry.tsx が kind の表を別々に持っていた。写像は今も別の軸 — ここが読むのは
+// `domId`（"pane-lane" 等 = 可視性の gate）、entry.tsx の配置が読むのは `id`（"lane" 等 =
+// `data-app-pane` = 配置の座標系）— だが、顔ぶれは同じ表の同じ行から引くので食い違わない
+// （旧名 "terminal" をここは empty、entry.tsx は lane に解決していた）。
+
+/**
+ * setActivePane の行き先（純関数。entry.tsx の `applyActivePane` が分岐に使う）。
+ *
+ * - `empty`: 何も選んでいない（info 無し / kind 無し / empty）
+ * - `lane`: lane の切替（lane pane の kind + lane address）。配置の記憶と LaneHeader が追従する
+ * - `visit`: lane 以外の pane の訪問（一時 view。✕ で出発点の配置へ戻る）。address の無い lane も
+ *   ここ — lane pane を出し、lane が無い時の placeholder を見せる
+ * - `unknown`: 表に無い kind（退役した board 等）。呼び手が警告して empty に倒す
+ */
+export type ActivePaneRoute =
+	| { to: "empty" }
+	| { to: "lane"; address: string }
+	| { to: "visit"; paneId: AppPaneId }
+	| { to: "unknown"; kind: string };
+
+export function activePaneRouteOf(info: ActivePaneInfo | null): ActivePaneRoute {
+	const kind = info?.kind;
+	if (!kind) return { to: "empty" };
+	const pane = appPaneOfKind(APP_PANE_REGISTRY, kind);
+	if (!pane) return { to: "unknown", kind };
+	if (pane.id === "empty") return { to: "empty" };
+	if (pane.id === "lane" && info?.pane_id) return { to: "lane", address: info.pane_id };
+	return { to: "visit", paneId: pane.id };
+}
 
 /** 現在 active な pane の info (slot:rect 送出時の pane_id 補完用)。 */
 let activePaneInfo: ActivePaneInfo | null = null;
@@ -90,8 +116,9 @@ function sendSlotRect(): void {
  */
 export function applyPaneSwitch(info: ActivePaneInfo | null): void {
 	activePaneInfo = info || null;
-	const kind = info?.kind ? info.kind : "empty";
-	const targetId = KIND_TO_PANE[kind] || "pane-empty";
+	// kind 無し・表に無い kind は empty の pane に落ちる（DOM は「何か 1 枚」が active である必要がある）
+	const pane = appPaneOfKind(APP_PANE_REGISTRY, info?.kind) ?? EMPTY_APP_PANE;
+	const targetId = pane.domId;
 	for (const el of document.querySelectorAll(".pane")) {
 		const isActive = el.id === targetId;
 		el.classList.toggle("active", isActive);
@@ -105,14 +132,14 @@ export function applyPaneSwitch(info: ActivePaneInfo | null): void {
 			el.removeAttribute("data-pane-id");
 		}
 	}
-	if (kind === "preview") {
+	if (pane.id === "preview") {
 		const frame = document.getElementById("preview-frame");
 		const url = info?.preview_url || "about:blank";
 		if (frame && frame.getAttribute("src") !== url) {
 			frame.setAttribute("src", url);
 		}
 	}
-	if (kind === "lane") {
+	if (pane.id === "lane") {
 		// per-(lane, session) instance を切替 (= showLane(address))。 pane_id は Lane address。
 		// showLane が空なら lane-empty placeholder を出す。 chat (gui) lane は xterm を
 		// 持たない (ChatView が内容) ので、 その旨を渡して placeholder 抑止させる。
