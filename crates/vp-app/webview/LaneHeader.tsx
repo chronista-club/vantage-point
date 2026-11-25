@@ -376,7 +376,7 @@ export function mountLaneHeader(mount: HTMLElement, vpConsole: VpConsole): LaneH
       setSessions(next ? sessionListOf(next.addr) : [])
       // strip の開閉（World A の DOM に触れる唯一の接点）: lane 文脈がある時だけ
       // #pane-lane に .lane-header-active を付け、main_area.rs の --lane-header-h を
-      // 0→30px にして strip を開く。無い時は高さ 0 = xterm/chat が全面（regression なし）。
+      // 0→共有の名札の高さにして grid の up track を開く。無い時は track が畳まれる（doc 87 §8.4）。
       // これが無いと strip は #lane-header の overflow:hidden で永遠に高さ 0 = 不可視になる。
       document
         .getElementById('pane-lane')

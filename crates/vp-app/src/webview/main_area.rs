@@ -319,9 +319,14 @@ body.rsb-open #right-sidebar{display:flex;}
    その分だけ押し下げる
    (= xterm 表示領域を header 分だけ譲る。押し下げ後の container 縮小を ResizeObserver が
    捕捉して fitAddon.fit() が再計算する — 「xterm を圧迫しない」検証点)。 */
-#pane-lane{--lane-header-h:0px;}
+/* doc 87 §8.4: lane も CUEdgeShell と同じ位置語彙の 3x3。right は名札の横まで全高。
+   空の left/down と、非表示の header/rail は auto track が畳む。DOM の親は変えない (R1)。 */
+#pane-lane{--lane-header-h:0px;display:grid;
+  grid-template-areas:"up up right" "left center right" "down down right";
+  grid-template-columns:auto minmax(0,1fr) auto;
+  grid-template-rows:auto minmax(0,1fr) auto;}
 #pane-lane.lane-header-active{--lane-header-h:var(--vp-nameplate-h);}
-#lane-header{position:absolute;top:0;left:0;right:36px;height:var(--lane-header-h);
+#lane-header{grid-area:up;min-width:0;height:var(--lane-header-h);
   overflow:hidden;z-index:2;}
 /* doc 49 LE-P4 PR2: lane 内 tiling は creo-ui-layout の lane scope が担い、JS
    (lane-panes.ts) が resolved rect を inline style (left/top/width/height %) で書く。
@@ -330,10 +335,9 @@ body.rsb-open #right-sidebar{display:flex;}
    解決 (LTR) で right/bottom が無視され、inline の rect が勝つ。 */
 /* 下端の帯（#pane-tabs）は退役（doc 51 §1 A1）— pane chip は tiling 既定で存在理由が
    消え、+ New / Mode 切替は LaneHeader（lane の名札）へ移設した。 */
-/* right:36px = edge rail の退避（doc 56 prototype）。rail が出ている間は静的で reflow は起きない。
-   R sidebar を開いている間は rail が消えるので退避も外す（下の body.rsb-open の規則）。 */
-#lane-panes{position:absolute;top:var(--lane-header-h);left:0;right:36px;
-  bottom:0;background:var(--color-border,#2a3040);}
+/* center が header / rail の残りを受け持ち、子 pane の absolute rect の基準になる。 */
+#lane-panes{grid-area:center;position:relative;min-width:0;min-height:0;
+  background:var(--color-border,#2a3040);}
 /* outline は隣接 Pane との区切り線 (旧 flex gap:1px の後継 — layout に影響しない描画のみの線)。 */
 #lane-panes > *{position:absolute;inset:0;background:var(--color-bg,#0f1115);
   outline:1px solid var(--color-border,#2a3040);outline-offset:-1px;}
@@ -358,9 +362,9 @@ body.pane-resizing iframe{pointer-events:none;}
 .has-term-plate > .lane-pane{top:var(--vp-nameplate-h);}
 .term-plate{position:absolute;top:0;left:0;right:0;height:var(--vp-nameplate-h);
   z-index:1;overflow:hidden;}
-/* doc 33 §9: 切替 progress overlay。pane 全面 (header 下) を覆い、resume 確定まで表示 (= switch lock)。
-   header は switch 中も lane identity を見せ続けたいので overlay の上に残す (top を header 分下げる)。 */
-#console-switching{position:absolute;top:var(--lane-header-h);left:0;right:0;bottom:0;display:none;z-index:20;
+/* doc 33 §9: 切替 progress overlay。center を覆い、resume 確定まで表示 (= switch lock)。
+   grid-area で header / rail を避け、switch 中も lane identity を見せ続ける（doc 87 §8.4）。 */
+#console-switching{grid-area:center;position:absolute;inset:0;display:none;z-index:20;
   align-items:center;justify-content:center;
   background:color-mix(in srgb, var(--color-bg,#0f1115) 82%, transparent);backdrop-filter:blur(2px);}
 #console-switching.active{display:flex;}
@@ -374,8 +378,8 @@ body.pane-resizing iframe{pointer-events:none;}
 @media (prefers-reduced-motion:reduce){.console-switching-spinner{animation-duration:1.6s;}}
 .lane-pane .lane-term{padding:0;height:100%;width:100%;box-sizing:border-box;}
 /* どの Lane も無い時の placeholder (active class で表示制御、 default は表示)。
-   header 分 (var) 押し下げ — header 不在時は 0 なので従来通り全面。 */
-#lane-empty{position:absolute;top:var(--lane-header-h);left:0;right:0;bottom:0;display:none;place-items:center;color:var(--color-text-tertiary);text-align:center;}
+   center に重ねる — header / rail 不在時は空の track が畳まれて全面になる。 */
+#lane-empty{grid-area:center;position:absolute;inset:0;display:none;place-items:center;color:var(--color-text-tertiary);text-align:center;}
 #lane-empty.active{display:grid;}
 #lane-empty .lane-empty-icon{width:44px;height:44px;display:block;margin:0 auto .75rem;opacity:.55;}
 #lane-empty h1{font-weight:400;font-size:1.1rem;margin:0;}
@@ -493,9 +497,8 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 .board-rs-sw{left:-4px;bottom:-4px;width:18px;height:18px;cursor:nesw-resize;}
 .board-rs-se{right:-4px;bottom:-4px;width:18px;height:18px;cursor:nwse-resize;}
 /* edge rail（doc 56 prototype）: 右端の帯 = lane 級動詞の家。B 形（帯）が既定 —
-   「lane に対して何ができるか」を初見にも見せ切る（mako 2026-07-30）。占有は静的
-   （#lane-panes / #lane-header が 36px 退避）なので、rail が出ている間 reflow イベントは
-   発生しない。R sidebar を開いている間だけ退避を外す（body.rsb-open の規則）。 */
+   「lane に対して何ができるか」を初見にも見せ切る（mako 2026-07-30）。grid の right track を
+   占有し、R sidebar 展開時 / lane 不在時は display:none で track ごと畳む（doc 87 §8.4）。 */
 /* 3 起点の規約（doc 82 §規約）: 縦の帯の要素は上詰めで積まない。起点は上 / 中央 / 下の
    3 箇所で、各要素はどれかの slot に属する。上は上端から下へ、下は下端から上へ伸び、
    中央は残りの中で中央に置かれる。上下 slot は同じ伸び率（flex-grow 1）で余白を分け合うので、
@@ -505,7 +508,7 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
 .tri-anchor>.anchor-top{flex:1 0 auto;display:flex;flex-direction:column;justify-content:flex-start;}
 .tri-anchor>.anchor-center{flex:0 1 auto;display:flex;flex-direction:column;justify-content:center;min-height:0;}
 .tri-anchor>.anchor-bottom{flex:1 0 auto;display:flex;flex-direction:column;justify-content:flex-end;}
-#edge-rail{position:absolute;right:0;top:0;bottom:0;width:36px;z-index:25;
+#edge-rail{grid-area:right;position:relative;width:36px;z-index:25;
   padding:10px 0;box-sizing:border-box;
   background:var(--color-surface-bg-subtle);
   border-left:1px solid var(--color-surface-border,#1f2233);}
@@ -514,10 +517,6 @@ iconify-icon{display:inline-flex;align-items:center;flex-shrink:0;vertical-align
    R の Lane 節へ付け替わっているので、帯が消えても動詞は失われない。
    EdgeRail.setLane が inline display を書くため !important でのみ上書きできる。 */
 body.rsb-open #edge-rail{display:none !important;}
-/* rail が消えている間は、rail のための 36px の退避も外す。残すと main と R の間に
-   アイコンの無い空の帯が残り、rail の中身だけが消えたように見える。R の開閉は user 操作
-   起点で #host の幅も同時に変わるので、reflow 規律 (doc 55) の範囲内。 */
-body.rsb-open #lane-header,body.rsb-open #lane-panes{right:0;}
 #edge-rail-new-host{display:contents;}
 /* しまった pane の置き場 = 帯の中央の slot */
 #edge-rail-stow-host{display:flex;flex-direction:column;align-items:center;gap:6px;min-height:0;overflow:auto;}
@@ -725,7 +724,7 @@ body.rsb-open #lane-header,body.rsb-open #lane-panes{right:0;}
     <!-- Conversation 共通ヘッダ (操縦席) の mount 点。器だけ World A が置き、editor-host bundle の
          LaneHeader が中身を render する。lane 切替で内容だけ差し替わる (帰属は lane の Conversation、
          tui/gui を跨いで同一 header が載り続ける)。default 高さ 0、内容がある時だけ開く。 -->
-    <div id="lane-header"></div>
+    <div id="lane-header" data-region="upEdge"></div>
     <!-- doc 46 P1 → doc 49 LE-P4 PR2 → doc 50 P1: lane の表示領域 = N 枚の Pane を並べる
          tiling の器。配置は creo-ui-layout の lane scope (lane-panes.ts) が resolved rect を
          inline で書く。子は **session ごとの host 群**を動的に生やす:
@@ -735,7 +734,7 @@ body.rsb-open #lane-header,body.rsb-open #lane-panes{right:0;}
          host の身元を role でなく session に紐づけた（doc 50 §4.6 A6、`ensureTermHost`）。
          下端の帯 (#pane-tabs) は doc 51 §1 A1 で退役 — 表示は既定 tiling、
          + New / Mode 切替は LaneHeader (lane の名札) へ移設。 -->
-    <div id="lane-panes">
+    <div id="lane-panes" data-region="center">
       <!-- board (board) pane — doc 52 §10 wave 0: app 層の #pane-board から lane tiling へ
            引っ越した「貼る台」。**lane に 1 枚の静的 host**（board は lane-scoped、
            表示 lane は常に 1 つ = xterm と同じ性質）。roster に載るのは board 非空のときだけで、
@@ -792,7 +791,7 @@ body.rsb-open #lane-header,body.rsb-open #lane-panes{right:0;}
          （right-sidebar.ts — 同じ住人の見え方の切替）。
          住人の顔ぶれ・起点・並び・付け替えの有無は edge-residents.ts の EDGE_RESIDENT_REGISTRY が持つ。
          住人を足す時は表とここの両方に置く（shell-registries.dom.test.ts が 1:1 を固定、doc 87 §8.2）。 -->
-    <div id="edge-rail" class="tri-anchor" style="display:none">
+    <div id="edge-rail" data-region="rightEdge" class="tri-anchor" style="display:none">
       <div class="anchor-top vrail-slot">
         <!-- + New（EdgeRail.tsx が render。machinery は LaneHeader から移設 — 動線一本化） -->
         <div id="edge-rail-new-host"></div>
