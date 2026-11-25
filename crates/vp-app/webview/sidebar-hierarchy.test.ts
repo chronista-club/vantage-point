@@ -79,6 +79,14 @@ it('automatically groups stopped projects and returns starting ones to CURRENTs'
   win.setRepo({ state: 'starting' })
   expect(win.document.querySelector('[data-section="currents"] .vp-proj')).not.toBeNull()
 })
+it('uses the same caret icon for the PAUSED header as the project fold caret (mem_1ChNtdQKHrSB78Ppek2etg)', () => {
+  const win = fixture()
+  win.setRepo({ state: 'stopped', port: null })
+  const caret = win.document.querySelector('details[data-section="stopped"] > summary .vp-stopped-caret') as any
+  expect(caret).not.toBeNull()
+  expect(caret.icon).toBe('ph:caret-right')
+  expect(win.document.querySelector('.vp-proj-toggle .vp-proj-caret') as any).toHaveProperty('icon', 'ph:caret-right')
+})
 it('keeps both session and project operations on the unified root menu', () => {
   const win = fixture()
   win.document.querySelector('.vp-proj-summary .vp-lane-row')!.dispatchEvent(new win.MouseEvent('contextmenu', { bubbles: true }))

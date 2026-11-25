@@ -218,7 +218,26 @@ describe("hint の行（repo 停止中など）", () => {
 		expect(q(win, ".vp-proj-placeholder .vp-proj-toggle .vp-proj-caret")).not.toBeNull();
 		expect(q(win, ".vp-proj-placeholder .vp-proj-toggle .vp-activity-point")).toBeNull();
 		expect(q(win, ".vp-proj-placeholder > .vp-activity-point")).not.toBeNull();
-		// hint の 1 行が中身なので控えめにはしない
+	});
+
+	it("停止中・起動処理中など、hint の間は sub のドットを出さない（畳んで隠れている lane は無い）", () => {
+		// 停止しても lanes_by_repo は残る。旧形はここでドットが「N lanes」の下へ折り返した（moody-blues 指摘）
+		for (const state of ["stopped", "stopping", "starting", "error"]) {
+			const win = fixture({ expanded: false, subs: 2, state });
+			expect(q(win, ".vp-proj")!.classList.contains("folded")).toBe(false);
+			expect(q(win, ".vp-sub-points")).toBeNull();
+		}
+	});
+
+	it("停止中の repo の caret は控えめ — 開くと起動要求が飛ぶので宣伝しない（再開は ▷）", () => {
+		// sidebar_ipc.rs: stopped の repo を展開すると repo_spawn_request（Resume を通らない起動）
+		const win = fixture({ expanded: false, subs: 2, state: "stopped" });
+		expect(toggle(win).classList.contains("is-empty")).toBe(true);
+		expect(toggle(win).getAttribute("title")).toContain("▷");
+	});
+
+	it("稼働中の hint（repo error など）は 1 行の案内が中身なので控えめにしない", () => {
+		const win = fixture({ expanded: true, state: "error" });
 		expect(toggle(win).classList.contains("is-empty")).toBe(false);
 	});
 });

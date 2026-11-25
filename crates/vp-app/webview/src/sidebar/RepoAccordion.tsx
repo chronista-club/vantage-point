@@ -137,7 +137,11 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 		sessions: [...(root() ? [root()!] : []), ...subs()].reduce((n, l) => n + extraSessionsOf(l).length, 0),
 		form: addSubOpen(),
 	});
-	const foldable = () => foldItemCount(foldContent()) > 0;
+	// 停止中（hint が「repo stopped — ▷ で起動」）の repo は控えめに: 中身は ▷ への案内 1 行だけで、
+	// しかも開くと vp-app が起動を要求する（sidebar_ipc.rs → on_sidebar.rs の auto-spawn。Resume の
+	// enabled=true を通らない）。挙動は変えず、caret で「開く」を宣伝しない（再開の入口は ▷）。
+	const isStoppedRepo = () => !props.proc.state || props.proc.state === "stopped";
+	const foldable = () => !isStoppedRepo() && foldItemCount(foldContent()) > 0;
 	// 畳んでいて、隠れている lane / セッション / フォームがある時だけ内訳を語る（hint だけなら null）。
 	const foldedNote = () => (props.proc.expanded ? null : foldedSummary(foldContent()));
 
@@ -259,7 +263,9 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 		    （.vp-proj.folded の CSS）。title が内訳を語る。 */}
 		<span class="vp-lane-count" title={foldedNote() ?? undefined}>
 			{lanes().length} lanes
-			<Show when={!props.proc.expanded && subs().length > 0}>
+			{/* chip（.folded）と同じ条件。hint の間（停止中など）は lane 行を描かない = 畳んで隠れている
+			    lane は無いので出さない（素の span の中だと「N lanes」の下へ折り返す）。 */}
+			<Show when={foldedNote() != null && subs().length > 0}>
 				<span class="vp-sub-points" aria-label={`sub lane ${subs().length}個`}>
 					<For each={subs()}>{lane => <ResponsePoint lane={lane} connectorClass={connectorFor(lane)} compact />}</For>
 				</span>
@@ -317,13 +323,15 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 	</>;
 	// 開閉 caret（mem_1ChNtdQKHrSB78Ppek2etg）。旧形は中身が活動ドットだけで、押せることも
 	// 開閉の状態も見えなかった（隠しボタン）。caret = 開閉、活動ドット = lane の状態、と役割を
-	// 分け、caret は行の最左（木の開閉の定位置）に置く。回転は aria-expanded を CSS が読む
-	// （R sidebar の .rsb-chevron と同じ ph:caret-right + 90°）。畳む中身が無い時は .is-empty で控えめに。
+	// 分け、caret は行の最左（木の開閉の定位置）に置く。icon と 90° 回転は R sidebar の .rsb-chevron と
+	// 同じで、回転の契機は aria-expanded="true"（CSS が読む）。畳む中身が無い時は .is-empty で控えめに。
 	const toggle = () => <button type="button" class="vp-proj-toggle"
 		classList={{ "is-empty": !foldable() }}
 		aria-label={`${props.proc.name} を${props.proc.expanded ? "折りたたむ" : "展開する"}`}
 		aria-expanded={props.proc.expanded}
-		title={!foldable() ? "畳む中身はありません（lead 1 本だけ）" : props.proc.expanded ? "配下を畳む" : (foldedNote() ?? "配下を開く")}
+		title={isStoppedRepo() ? "停止中 — 再開は ▷（ここで開くと起動を要求します）"
+			: !foldable() ? "畳む中身はありません（lead 1 本だけ）"
+			: props.proc.expanded ? "配下を畳む" : (foldedNote() ?? "配下を開く")}
 		onClick={e => { e.stopPropagation(); sendIpc({ t: "process:toggle", path: props.proc.path, expanded: !props.proc.expanded }); }}>
 		<CreoIcon name="ph:caret-right" size={12} class="vp-proj-caret" />
 	</button>;
