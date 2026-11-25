@@ -378,7 +378,23 @@ export const SHELL_CSS = `
    適用は #sidebar-root 以下に封じ込める (定義が :root なのは Editor Mode の書き込み先と
    揃えるため。 定義自体は inert)。 視覚仕様の SSOT = artifact c203944c (mako 承認済)。
    2026-07-22: conn 2 hue を magenta/cyan → coral/yellow に更新 (doc 48 editor bridge の
-   初回 dogfood で mako × CC が live 調整して確定 — auto=mako picker / hitl=CC editor_set)。 */
+   初回 dogfood で mako × CC が live 調整して確定 — auto=mako picker / hitl=CC editor_set)。
+
+   補助色も palette の token から引く (doc 87 §8.3 — 直書きは Editor で地や文字の色を変えても動かず、
+   それだけが浮いて残る):
+   - --lg-veil = 地に重ねる薄い光の素 (Light Grid では白)。 --lg-veil-1〜4 はそれを旧 #ffffff04 / 06 /
+     08 / 0c と同じ alpha で混ぜた段 (8 bit に丸めると旧値と同じ = 既定の見た目は変わらない)。
+     1 = repo の地、 2 = 静かな hover、 3 = hover・輪郭・badge の地、 4 = 一段強い hover (URL ボタン、
+     Atlas の候補のカーソル位置 = 矢印キー・pointer が指している行)。 creo-ui の
+     --surface-veil-* (components.css) と同じ考え方で、 Light Grid 以外のプリセットでは文字の色に従う
+     (editor/styles.ts — 明るい地では暗い重ねになる)
+   - --lg-cyan-deep = 切れた接続の丸の地 (旧 #123039)
+   - --lg-shadow = context menu の影 (旧 rgba(0,0,0,.4))。 creo-ui の --color-shadow-base を直に引かないのは、
+     起動時の data-theme が mint-dark (sidebar.tsx が書く) で、 そこでは 0.3 になるため
+   - --lg-cyan = 選んでいる Atlas の明るい cyan (AtlasPicker が未定義のまま引いていて、 fallback の
+     #40d9ec が描かれていた。 定義して同じ色のまま palette に入れた)
+   literal の色を持つ --lg-* は editor/styles.ts でプリセットの creo-ui token に写す
+   (src/sidebar/sidebar-palette.test.ts が写し忘れを止める)。 */
 :root{--sb-text-base:13px;--sb-text-hint:12px;--sb-text-meta:11px;--sb-text-micro:10px;
   --sb-conn-width:2px;--sb-conn-slot:22px;--sb-conn-dash:4px;--sb-conn-flow-beat:0.7255s;
   --sb-photon-period:1800ms;--sb-glow:6px;
@@ -387,7 +403,13 @@ export const SHELL_CSS = `
   --sb-selection-bg:#151c27;--sb-selection-border:#68758b;--sb-selection-width:1px;
   --lg-void:#05070A;--lg-void-2:#080B11;--lg-panel:#0A0E15;
   --lg-grid:#0E2A33;--lg-hairline:#12222b;
-  --lg-cyan-dim:#1C6C7C;--lg-hot:#EAFBFF;--lg-mute:#5C7A85;--lg-mute-2:#38525b;}
+  --lg-cyan-dim:#1C6C7C;--lg-hot:#EAFBFF;--lg-mute:#5C7A85;--lg-mute-2:#38525b;
+  --lg-cyan-deep:#123039;--lg-cyan:#40d9ec;--lg-shadow:rgba(0,0,0,.4);
+  --lg-veil:#fff;
+  --lg-veil-1:color-mix(in srgb,var(--lg-veil) 1.5686%,transparent);
+  --lg-veil-2:color-mix(in srgb,var(--lg-veil) 2.3529%,transparent);
+  --lg-veil-3:color-mix(in srgb,var(--lg-veil) 3.1373%,transparent);
+  --lg-veil-4:color-mix(in srgb,var(--lg-veil) 4.7059%,transparent);}
 html,body{margin:0;height:100%;overflow:hidden;}
 /* SolidJS mount point。 height chain (html→body→#sidebar-root→shell) を繋ぐ。
    この規則が無いと shell が content 高さに collapse し、 window 下部に gap が出る。
@@ -403,7 +425,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
    - hover / current の文字色変化 → 光り物は state dot の専有 (色は inherit 固定)。 */
 #sidebar-root{
   --color-brand-primary:var(--sb-conn-auto,#FFF76B);
-  --color-surface-bg-subtle:#ffffff06;
+  --color-surface-bg-subtle:var(--lg-veil-2);
   --_sidenav__indicator-width:0px;
   --_sidenav__link-radius:8px;
   /* ⚠️ 0px にしない: creo の .creo-sidenav-group + .creo-sidenav-group は (0,2,0) で
@@ -468,7 +490,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-sidebar-add{margin-left:auto;display:inline-flex;align-items:center;padding:2px;
   border:none;background:transparent;color:var(--lg-mute,#5C7A85);cursor:pointer;
   border-radius:3px;flex:0 0 auto;transition:background .12s ease,color .12s ease;}
-.vp-sidebar-add:hover{background:#ffffff08;
+.vp-sidebar-add:hover{background:var(--lg-veil-3);
   color:var(--sb-conn-auto,#FFF76B);}
 /* min-height は ACTIONS（doc 57）が伸びたときの床。scroll container の自動最小サイズは 0 なので、
    これが無いと下の区画が repo list を高さ 0 まで潰せる。 */
@@ -483,13 +505,13 @@ html,body{margin:0;height:100%;overflow:hidden;}
   border-color:var(--lg-mute-2,#38525b);}
 
 /* Repo accordion — Light Grid: repo = 地 (ground)。 発光させず void に沈む静かな地形。
-   faint fill (#ffffff04) + inset hairline ring のみ (course-correction 2026-07-11:
+   faint fill (--lg-veil-1) + inset hairline ring (--lg-veil-3) のみ (course-correction 2026-07-11:
    カード上の grid テクスチャは行が透明なため文字を横切る scanline ノイズになる → 撤去、
    ambience は #sidebar-root::before の 1 枚に集約)。
    glow なし — 図 (= session の state dot) を引き立てるため必ず後退させる。 */
 .vp-proj{margin:8px 8px 0;border-radius:11px;
-  background:#ffffff04;
-  box-shadow:inset 0 0 0 1px #ffffff08;
+  background:var(--lg-veil-1);
+  box-shadow:inset 0 0 0 1px var(--lg-veil-3);
   padding:2px 4px 6px;}
 /* spine (repo 所有の縦ライン) と photon は doc 58 台帳で撤去 — 場所の包含は
    proj 見出しが語るので、線で繋がない。state の視覚は行頭の .vp-lane-dot に集約。 */
@@ -520,9 +542,9 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-proj.dragging{opacity:.4;}
 /* drop marker は cyan。 ground の inset ring (box-shadow 単一 property) を失わないよう併記。 */
 .vp-proj.drop-before{box-shadow:inset 0 2px 0 0 var(--sb-conn-auto,#FFF76B),
-  inset 0 0 0 1px #ffffff08;}
+  inset 0 0 0 1px var(--lg-veil-3);}
 .vp-proj.drop-after{box-shadow:inset 0 -2px 0 0 var(--sb-conn-auto,#FFF76B),
-  inset 0 0 0 1px #ffffff08;}
+  inset 0 0 0 1px var(--lg-veil-3);}
 
 /* Lane 行 */
 /* ミニマム 1 行 (2026-05-30): icon + session title + 右端 block (meta/awaiting/files/mailbox)。
@@ -545,7 +567,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-dot.conn-run::after{width:6px;height:6px;margin-top:-3px;
   background:var(--sb-conn-auto,#FFF76B);}
 /* idle = ほぼ消える (quiet pass): 中空 dot。 */
-.vp-lane-dot.conn-dead::after{background:#123039;
+.vp-lane-dot.conn-dead::after{background:var(--lg-cyan-deep);
   border:1px solid color-mix(in srgb,var(--lg-cyan-dim,#1C6C7C),transparent 40%);}
 /* needs-you / HITL = diamond。 唯一 glow を許される状態 (quiet pass)。
    pulse は「needs-you に入った瞬間に 1 回だけ」 (one-shot、 常時 pulse 禁止 019f50ff)。
@@ -656,7 +678,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
    dot slot は空 span が indent だけ揃える (state データが無いものを描かない)。 */
 .vp-session-row{font-weight:300;}
 .vp-session-close{font:inherit;color:inherit;background:transparent;border:1px solid var(--color-surface-border,#ffffff20);border-radius:4px;cursor:pointer;padding:1px 5px}
-.vp-session-row .vp-lane-title.is-session{color:rgba(234,251,255,.72);}
+.vp-session-row .vp-lane-title.is-session{color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 28%);}
 
 /* 「今なにを」(doc 58 ②-a) — 進行の本体なので地 (cwd = mute-2) より 1 段読める mute。 */
 .vp-lane-now{flex:0 0 100%;box-sizing:border-box;min-width:0;overflow:hidden;
@@ -720,7 +742,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   cursor:pointer;border-radius:3px;flex:0 0 auto;
   transition:background .12s ease,color .12s ease;}
 .vp-proj-addsub:hover,.vp-proj-addsub.open,.vp-proj-start:hover{
-  background:#ffffff08;color:var(--sb-conn-auto,#FFF76B);}
+  background:var(--lg-veil-3);color:var(--sb-conn-auto,#FFF76B);}
 /* Start ▶ も quiet: 定常は muted、 hover 時のみ cyan (interaction feedback)。 */
 .vp-proj-start{color:var(--lg-mute,#5C7A85);}
 .vp-add-sub-form{display:flex;flex-direction:column;gap:5px;
@@ -740,7 +762,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   border:1px solid var(--lg-hairline,#12222b);background:transparent;
   color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 25%);border-radius:var(--radius-sm,6px);cursor:pointer;
   font-size:var(--sb-text-micro,10px);font-family:inherit;transition:background .12s ease,color .12s ease;}
-.vp-add-sub-actions button:hover{background:#ffffff08;
+.vp-add-sub-actions button:hover{background:var(--lg-veil-3);
   color:var(--lg-hot,#EAFBFF);}
 .vp-add-sub-actions button.primary{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 92%);
   color:var(--sb-conn-auto,#FFF76B);border-color:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 82%);}
@@ -823,14 +845,14 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-agent-row{position:relative;display:flex;align-items:center;gap:6px;
   padding:5px var(--spacing-sm,10px);cursor:pointer;font-size:var(--sb-text-hint,12px);
   color:var(--lg-mute,#5C7A85);}
-.vp-agent-row:hover{background:#ffffff06;}
+.vp-agent-row:hover{background:var(--lg-veil-2);}
 .vp-agent-row.active{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 94%);
   color:var(--sb-conn-auto,#FFF76B);}
 .vp-agent-icon{display:flex;align-items:center;flex:0 0 auto;}
 .vp-agent-title{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;}
 .vp-agent-badge{flex:0 0 auto;font-size:var(--sb-text-micro,10px);padding:1px 6px;border-radius:8px;
-  background:#ffffff08;color:var(--lg-mute,#5C7A85);
+  background:var(--lg-veil-3);color:var(--lg-mute,#5C7A85);
   font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-variant-numeric:tabular-nums;}
 /* 艦隊スイッチ OFF（vp midi off）— 機材を他アプリへ譲っている状態。
@@ -844,7 +866,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-ctx-menu{position:fixed;z-index:9999;min-width:180px;
   background:var(--lg-panel,#0A0E15);
   border:1px solid var(--lg-hairline,#12222b);
-  border-radius:var(--radius-md,6px);box-shadow:0 8px 24px rgba(0,0,0,.4);
+  border-radius:var(--radius-md,6px);box-shadow:0 8px 24px var(--lg-shadow);
   padding:4px 0;font-size:var(--sb-text-hint,12px);user-select:none;}
 .vp-ctx-header{padding:4px 14px 6px;font-size:var(--sb-text-micro,10px);
   color:var(--lg-mute,#5C7A85);
@@ -853,7 +875,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-ctx-item{padding:6px 14px;cursor:pointer;display:flex;align-items:center;
   gap:8px;color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 25%);
   transition:background .1s ease,color .1s ease;}
-.vp-ctx-item:hover{background:#ffffff08;
+.vp-ctx-item:hover{background:var(--lg-veil-3);
   color:var(--lg-hot,#EAFBFF);}
 .vp-ctx-item.danger:hover{background:var(--color-status-error,#d4444c);color:#fff;}
 .vp-ctx-item.danger.confirming{background:var(--color-status-error,#d4444c);

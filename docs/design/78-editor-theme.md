@@ -10,9 +10,9 @@ Ctrl+Shift+E で開く Editor を THEME / SIDEBAR / CHAT / MIDI / COMPONENT の�
 部品を選ぶ必要がある操作と、アプリに直接適用する操作を分け、調整を名前付きテーマとして再利用できるようにする。
 
 - COMPONENT は「画面から選ぶ」を入口にする。選択位置を枠で示し、同じ種類の全インスタンスへの変更であることを説明する。DOM の部品ツリーは折りたたんだ補助導線。
-- SIDEBAR は選択不要。文字、背景、選択行、状態ポイントを扱う。現在表示されない旧コネクターの演出ノブは登録しない。現行 CSS で使うアクセントは残す。
+- SIDEBAR は選択不要。左右の edge（左 = Lanes / Actions / 設定の peek、右 = 道具）の幅と、左の文字、背景、選択行、状態ポイントを扱う。現在表示されない旧コネクターの演出ノブは登録しない。現行 CSS で使うアクセントは残す。どのタブに出るかは field の region から決まる（design 87 §8.3）。
 - MIDI は選択不要。LPD8 のピン #1〜#8 の色と、未選択の Lane の LED の明るさ（%）を扱う。各項目に「既定に戻す」。値はテーマに属さず、保存先も下の localStorage ではない（次節）。
-- THEME はプリセット選択と、旧 GLOBAL / SURFACE・Chat・Resizer の有効な調整をまとめる。
+- THEME はプリセット選択と、旧 GLOBAL / SURFACE・Resizer の有効な調整、center（pane の名札、Lane の端末の文字）をまとめる。
 - 各テーマでの調整は自動保存し、名前を付けてカスタムテーマを追加できる。カスタムには保存済みの値と編集中の値がある。
 - daemon、端末テーマ、共有ライブラリの配布、実アプリの入替は対象外。
 
@@ -23,10 +23,16 @@ Ctrl+Shift+E で開く Editor を THEME / SIDEBAR / CHAT / MIDI / COMPONENT の�
 
 - `VpEditor`: テーマ選択と Provider の寿命。テーマを切り替えると Editor だけを再生成する。Sidebar / Chat / pane はこの Provider の外にあり、再マウントしない。
 - `EditorSession`: field 復元、変更購読、`window.vpEditorHost` の公開、遅延 component の復元。
-- `app-fields`: VP の調整項目。既存 Chat / Resizer / Lane 選択 field ID を維持する。
+- `app-fields`: VP の調整項目。既存 Chat / Resizer / Lane 選択 field ID を維持する。3 つの registry（rail / edge resident / pane kind）の行が同梱した field もここで集める（design 87 §8.3）。
+- `field-spec`: field の宣言の型と純関数（registry の同梱 field の収集、region → semantic / タブ、テーマ切替で消す変数）。
 - `EditorPanel`: 範囲別の入力、明示選択、枠、補助ツリー、JSON 書き出し。
 - `theme-store`: version 付き保存データの検証と旧 field 保存の読込み。
 - `midi-settings` / `MidiSection`: MIDI タブ。Editor の寿命で 1 つ（テーマ切替で Provider を作り直しても保持）。
+
+左右の edge の幅（`shell.leftEdge.peek.width` / `shell.rightEdge.width`）は EditorField として登録するが、テーマ保存からは外す。
+幅は shell の形で、持ち主は `shell-layout.ts`（drag・復元・`session.json`）。field にするのは MCP の `editor_set` と Link hub が
+field しか知らないため。値は `:root` に書かず shell-layout の書き口を通り（`#sidebar-root` / `#app-shell` の inline が同じ変数を持つ）、
+テーマの復元・切替は幅に触れない。書き出し JSON には、既定（280px / 25%）から動かした幅が入る（その時点の実際の値）。
 
 MIDI タブの値は EditorField として登録しない。field にすると変更購読がテーマ保存に書き、書き出し JSON にも混ざるため。
 読み書きは app 全体で 1 組のピン（`midi-pins.json`、design 81）: 書くのは sidebar と同じ IPC `midi:navigation`、
@@ -94,5 +100,11 @@ WKWebView 上の見た目・操作は、実アプリ入替を別途行うまで�
 - 2026-10-06: 利用者の追加裁定により横並びタブへ変更。通常 VP 画面の適用先と照合し、SIDEBAR の基準文字と汎用 XS/S/M/XL・間隔を UI から省略。既存値の復元と field API は維持。効く Sidebar/Chat/Board の文字設定は対象名で表示する。
 
 - 2026-10-06: SIDEBAR と COMPONENT の間に CHAT を追加し、Chat の既存5項目を THEME から移動。保存キーは変えず、テーマに含めて保持する。
+
+- 2026-11-25: design 87 slice 3。SIDEBAR に左右の幅（テーマ保存の外、持ち主は shell-layout）、THEME に pane の名札の高さと
+  Lane の端末の文字（pane kind の registry の lane 行が同梱）を追加。左の配色に「重ねる光」（`--lg-veil`）を追加。タブの振り分けは
+  id の頭から field の region に変えた（並びと既存 field の置き場は同じ）。テーマ切替で消す変数は手書きの正規表現から field の宣言の
+  導出に変えた。既存 field ID・保存キーは不変。数の欄は、打っている途中は範囲の内の値だけ当て、確定（change）で範囲に丸める
+  ように変えた（毎打鍵で丸めると、min の大きい欄で打てなかった）。
 
 - 2026-10-12: CHAT と COMPONENT の間に MIDI を追加（LPD8 ピン 8 色 + 未選択の明るさ）。保存は session、テーマ保存には入れない。自動テスト済み、WKWebView 上の実機確認待ち。

@@ -15,6 +15,9 @@
  * - `content`: 中身を誰が持つか。`"solid"` = `EdgeRail.tsx` が host に描く / `"static"` = 静的 HTML が
  *   中身ごと持ち、配線は別 module（board 取っ手 = board-view.ts、doc 55 の user 専有の表示状態）
  *
+ * - `fields`（任意）: この住人が同梱する Editor field（doc 87 §8.3）。id は `resident.<id>.<key>`、region は
+ *   rightEdge で Editor の SIDEBAR タブに出る。⚠️ cssVar は `:root` に既定値の宣言がある token に限る
+ *
  * ## 静的 DOM との約束
  *
  * 表に 1 行足したら、`#edge-rail` の該当する `.anchor-*` に host を置く（`content: "solid"` なら空の
@@ -26,6 +29,8 @@
  * この module は **data + calculations だけ**（DOM を持たない、vitest 対象）。導出は表を引数に取る
  * 純関数 — 表に 1 行足した時の振る舞いを test で確かめられるように（PL §5.2 の open-closed）。
  */
+
+import type { BundledFieldSpec } from "./editor/field-spec";
 
 /** 縦の帯の 3 起点（doc 82）。並びはこの配列の順（上 → 中央 → 下）。 */
 export const EDGE_ANCHORS = ["top", "center", "bottom"] as const;
@@ -42,6 +47,8 @@ export interface EdgeResidentDef {
 	readonly relocateToRightSidebar: boolean;
 	/** 中身の持ち主: `"solid"` = EdgeRail.tsx が描く / `"static"` = 静的 HTML（配線は別 module）。 */
 	readonly content: "solid" | "static";
+	/** この住人が同梱する Editor field（任意）。 */
+	readonly fields?: readonly BundledFieldSpec[];
 }
 
 export const EDGE_RESIDENT_REGISTRY = [

@@ -13,7 +13,8 @@
  *
  * - **data**: `state`（幅 2 つ + form + R 開閉）。この module が持つ
  * - **calculations**: `clampWidth` / `nextWidth` — 純関数（vitest 対象）
- * - **actions**: `installShellLayout`（境界の取っ手 + drag 配線 + IPC 送信 + 復元の受け口）
+ * - **actions**: `installShellLayout`（境界の取っ手 + drag 配線 + IPC 送信 + 復元の受け口）/
+ *   `setPeekWidth` / `setRightPct`（Editor・MCP からの書き口）/ `onShellLayoutChange`（形の購読）
  *
  * ## ⚠️ 保存は「確定時」だけ
  *
@@ -41,6 +42,15 @@
  * drag はできない（取っ手を出さない）。混ぜると「slim で終了 → 次回 peek が下限（180px）に潰れる」になる
  * （列の 48 が保存され、SIDEBAR_MIN で clamp される）。
  *
+ * ## Editor / MCP からの書き口（doc 87 §8.3）
+ *
+ * Editor の field は値を `:root` の inline style に書くが、幅の変数は `#sidebar-root` / `#app-shell` が
+ * 自分の inline style で持つので、`:root` に書いても届かない（子の宣言が勝つ）。そこで幅の field は cssVar を
+ * 持たず、`setPeekWidth` / `setRightPct` を通る（`editor/app-fields.ts`）。drag と同じ箱（`state`）を動かし、
+ * 同じ場所に当て、同じ IPC で保存する — 幅の持ち主はこの module の 1 つのまま。保存は drag の「確定時だけ」と
+ * 同じ規律で、slider を動かし続けている間は撃たず、落ち着いてから 1 回送る。Editor の表示は
+ * `onShellLayoutChange` で追従する（drag・復元の後も Editor の値が今の幅を指す）。
+ *
  * ## R の幅は track に当てる
  *
  * grid item の % 幅は container でなく track に対して解決され、auto の track では循環して効かない。
@@ -63,7 +73,10 @@ export const RIGHT_MAX_PCT = 60;
 export const DEFAULT_RIGHT_PCT = 25;
 
 /** 既定値。CSS の初期値（`#sidebar-root{--vp-peek-w:280px}` / `--vp-rsb-pct` の既定 25%）と揃える。 */
-const DEFAULT_SIDEBAR = 280;
+export const DEFAULT_SIDEBAR = 280;
+
+/** 書き口（Editor / MCP）から来た変更を保存するまでの待ち。動かし続けている間は撃たない。 */
+const PERSIST_DELAY_MS = 300;
 
 /** rail 列の幅（CSS `--vp-rail-w` の既定と揃える）。drag 中に列が測れない時の代わり。 */
 export const RAIL_WIDTH = 48;
@@ -88,6 +101,11 @@ const state: ShellLayoutState = {
 // ============================================================================
 // calculations（純関数 — vitest 対象）
 // ============================================================================
+
+/** R の % を範囲に丸め、小数 1 桁にする（保存値が細かい揺れで毎回変わらないように）。 */
+export function clampRightPct(pct: number): number {
+	return Math.round(Math.min(RIGHT_MAX_PCT, Math.max(RIGHT_MIN_PCT, pct)) * 10) / 10;
+}
 
 /** 範囲に丸める。⚠️ Rust 側の clamp と**同じ端**を持つ（片方だけ変えるとずれる）。 */
 export function clampWidth(px: number, min: number, max: number): number {
@@ -124,7 +142,7 @@ export function nextRightPct(
 	if (!(width > 0)) return DEFAULT_RIGHT_PCT;
 	const pct = ((shellRect.right - pointerX) / width) * 100;
 	if (!Number.isFinite(pct)) return DEFAULT_RIGHT_PCT;
-	return Math.round(Math.min(RIGHT_MAX_PCT, Math.max(RIGHT_MIN_PCT, pct)) * 10) / 10;
+	return clampRightPct(pct);
 }
 
 // ============================================================================
@@ -160,8 +178,10 @@ function sendIpc(payload: Record<string, unknown>): void {
 	}
 }
 
-/** 形が確定した（drag 終了 / form 切替 / R 開閉）。**ここだけ**が保存を起こす。 */
+/** 形が確定した（drag 終了 / form 切替 / R 開閉 / 書き口の待ちが明けた）。**ここだけ**が保存を起こす。 */
 function persist(): void {
+	clearTimeout(persistTimer);
+	persistTimer = undefined;
 	sendIpc({
 		t: "shell:layout",
 		sidebar_width: state.sidebarWidth,
@@ -175,6 +195,58 @@ function persist(): void {
 		right_sidebar_open: state.rightSidebarOpen,
 		right_sidebar_pct: state.rightSidebarPct,
 	});
+}
+
+let persistTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** 書き口からの保存は、続けて来る間は待ち、落ち着いてから 1 回だけ撃つ。 */
+function persistSoon(): void {
+	clearTimeout(persistTimer);
+	persistTimer = setTimeout(persist, PERSIST_DELAY_MS);
+}
+
+type ShellLayoutListener = (state: Readonly<ShellLayoutState>) => void;
+const listeners = new Set<ShellLayoutListener>();
+
+/** 幅が変わったことを購読者（Editor の幅の field）に知らせる。 */
+function notify(): void {
+	for (const fn of [...listeners]) fn(state);
+}
+
+/**
+ * 形の変化を購読する（書き口・復元・drag の確定のたび、今の形を渡す）。返り値で解除する。
+ * Editor の幅の field が、Editor の外（drag / 復元）で変わった幅に表示を合わせるための口。
+ */
+export function onShellLayoutChange(fn: ShellLayoutListener): () => void {
+	listeners.add(fn);
+	return () => {
+		listeners.delete(fn);
+	};
+}
+
+/**
+ * peek の幅を変える（Editor / MCP の書き口）。drag と同じ端に丸め、`#sidebar-root` に当て、落ち着いてから
+ * 保存する。不正値と今と同じ値は何もしない（Editor へ写し返した値が戻ってきても輪にならない）。
+ */
+export function setPeekWidth(px: number): void {
+	if (!Number.isFinite(px)) return;
+	const next = clampWidth(px, SIDEBAR_MIN, SIDEBAR_MAX);
+	if (next === state.sidebarWidth) return;
+	state.sidebarWidth = next;
+	applyWidths();
+	notify();
+	persistSoon();
+}
+
+/** R の幅（shell 幅に対する %）を変える（Editor / MCP の書き口）。規則は `setPeekWidth` と同じ。 */
+export function setRightPct(pct: number): void {
+	if (!Number.isFinite(pct)) return;
+	const next = clampRightPct(pct);
+	if (next === state.rightSidebarPct) return;
+	state.rightSidebarPct = next;
+	applyWidths();
+	notify();
+	persistSoon();
 }
 
 /** Rust からの復元 push を当てる（`shell:layout` event）。保存が無ければ呼ばれない。 */
@@ -194,6 +266,7 @@ export function applyShellLayout(l: {
 	state.sidebarForm = l.sidebar_form === "slim" ? "slim" : "full";
 	state.rightSidebarOpen = !!l.right_sidebar_open;
 	applyWidths();
+	notify();
 	// 形と開閉は持ち主（form.ts / right-sidebar.ts）に反映させる。復元は**こちらから**
 	// 伝える向き（起動時は向こうが既定値で立ち上がっているので、黙っていると食い違う）。
 	publishRestore();
@@ -269,6 +342,7 @@ function wireHandle(handle: HTMLElement, side: "left" | "right"): void {
 			handle.classList.remove("dragging");
 			// 確定 = ここで 1 回だけ保存する（move ごとには撃たない）。
 			persist();
+			notify();
 		};
 		handle.addEventListener("pointermove", onMove);
 		handle.addEventListener("pointerup", onUp);

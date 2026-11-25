@@ -605,6 +605,6 @@ select.vp-settings-input{cursor:pointer;}
 .vp-settings-index-item{display:block;width:calc(100% - 16px);margin:0 8px;padding:6px 10px;border:0;border-radius:8px;
   background:transparent;color:var(--lg-mute,#5C7A85);font:inherit;font-size:var(--sb-text-hint,12px);text-align:left;cursor:pointer;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.vp-settings-index-item:hover{color:var(--lg-hot,#EAFBFF);background:#ffffff06;}
+.vp-settings-index-item:hover{color:var(--lg-hot,#EAFBFF);background:var(--lg-veil-2);}
 .vp-settings-index-item[aria-current="page"]{color:var(--lg-hot,#EAFBFF);background:var(--sb-selection-bg);}
 `;

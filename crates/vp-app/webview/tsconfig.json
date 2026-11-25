@@ -16,5 +16,5 @@
     "forceConsistentCasingInFileNames": true,
     "noEmit": true
   },
-  "include": ["entry.tsx", "sidebar.tsx", "*.ts", "*.tsx", "src/**/*"]
+  "include": ["entry.tsx", "sidebar.tsx", "*.ts", "*.tsx", "src/**/*", "editor/**/*"]
 }

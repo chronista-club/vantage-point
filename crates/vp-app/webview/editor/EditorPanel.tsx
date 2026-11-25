@@ -1,6 +1,8 @@
 import { THEME_IDS, THEME_INFO, exportSnapshot, type ComponentFieldResolver, type ComponentTreeNode, type EditorField, type EditorHost } from '@chronista-club/creo-ui-editor-host'
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { themeValues, type ThemeLibrary } from './theme-store'
+import { editorSectionOf } from './field-spec'
+import { appFieldRegion } from './app-fields'
 import { MidiSection } from './MidiSection'
 import type { MidiSettings } from './midi-settings'
 
@@ -25,11 +27,18 @@ function FieldControl(props: { field: EditorField; host: EditorHost }) {
   const field = () => props.field
   const value = createMemo(() => props.host.getValue(field().id))
   const label = () => FIELD_NAMES[field().id] ?? field().label
-  const setNumber = (raw: string) => {
-    if (!raw.trim()) return
+  // 打っている途中（input）は範囲の内の値だけ当て、確定（change）で範囲に丸める。毎打鍵で丸めると、制御された
+  // value が欄を書き換えて打てない（min 180 の欄で「4」が 180 に化け、続けて打つと 1800 → 640 になる）
+  const setNumber = (raw: string, commit: boolean) => {
+    if (!raw.trim()) return undefined
     const n = Number(raw)
-    if (!Number.isFinite(n)) return
-    props.host.setValue(field().id, Math.min(field().constraints?.max ?? Infinity, Math.max(field().constraints?.min ?? -Infinity, n)))
+    if (!Number.isFinite(n)) return undefined
+    const min = field().constraints?.min ?? -Infinity
+    const max = field().constraints?.max ?? Infinity
+    if (!commit && (n < min || n > max)) return undefined
+    const next = Math.min(max, Math.max(min, n))
+    props.host.setValue(field().id, next)
+    return next
   }
   const [invalid, setInvalid] = createSignal(false)
   const setColor = (raw: string) => {
@@ -60,9 +69,10 @@ function FieldControl(props: { field: EditorField; host: EditorHost }) {
     <Show when={field().type === 'number'}>
       <div class="vp-editor-number">
         <input type="range" aria-label={`${label()}のスライダー`} min={field().constraints?.min ?? 0} max={field().constraints?.max ?? 100}
-          step={field().constraints?.step ?? 'any'} value={Number(value())} onInput={event => setNumber(event.currentTarget.value)} />
+          step={field().constraints?.step ?? 'any'} value={Number(value())} onInput={event => setNumber(event.currentTarget.value, true)} />
         <input id={`vp-field-${field().id}`} type="number" min={field().constraints?.min} max={field().constraints?.max}
-          step={field().constraints?.step ?? 'any'} value={Number(value())} onInput={event => setNumber(event.currentTarget.value)} />
+          step={field().constraints?.step ?? 'any'} value={Number(value())} onInput={event => setNumber(event.currentTarget.value, false)}
+          onChange={event => { setNumber(event.currentTarget.value, true); event.currentTarget.value = String(Number(value())) }} />
         <span>{field().constraints?.unit}</span>
       </div>
     </Show>
@@ -121,10 +131,12 @@ export function EditorPanel(props: PanelProps) {
   const selectedFields = createMemo(() => host.fields().filter(field => host.selection()?.fieldIds.includes(field.id)), undefined, {
     equals: (previous, next) => previous.length === next.length && previous.every((field, index) => field === next[index]),
   })
-  const sidebarFields = () => host.fields().filter(field => field.id.startsWith('sb.') && field.id !== 'sb.text.base')
-  const chatFields = () => host.fields().filter(field => field.id.startsWith('chat.'))
-  const themeFields = () => host.fields().filter(field => !field.id.startsWith('sb.') && !field.id.startsWith('chat.') && field.scope !== 'component' &&
-    !['typography.size.xs', 'typography.size.s', 'typography.size.m', 'typography.size.xl', 'layout.gap.sibling'].includes(field.id))
+  // タブは field の region から導く（field-spec.ts の editorSectionOf — 左右の edge = SIDEBAR / chat.* = CHAT /
+  // 全体・center・境界 = THEME）。registry の行が同梱した field も、region に従って自分のタブに出る
+  const sectionOf = (field: EditorField) => editorSectionOf(field, appFieldRegion(field.id))
+  const sidebarFields = () => host.fields().filter(field => sectionOf(field) === 'SIDEBAR')
+  const chatFields = () => host.fields().filter(field => sectionOf(field) === 'CHAT')
+  const themeFields = () => host.fields().filter(field => sectionOf(field) === 'THEME')
   const custom = () => props.library().custom.find(theme => theme.id === props.library().selected)
   const changed = () => Object.keys(themeValues(props.library())).length > 0
   const chooseTab = (section: EditorSection) => { props.setSection(section); props.setPicking(false); host.setHover(null) }
@@ -188,7 +200,7 @@ export function EditorPanel(props: PanelProps) {
             </details>
           </Show>
           <Show when={props.section() === 'SIDEBAR'}>
-            <div class="vp-editor-intro"><h3>サイドバー全体</h3><p>選択は不要です。文字、背景、選択行と状態ポイントを調整します。</p></div>
+            <div class="vp-editor-intro"><h3>左右の edge</h3><p>選択は不要です。左（Lanes・Actions・設定）と右の幅、左の文字、背景、選択行と状態ポイントを調整します。</p></div>
             <FieldGroups fields={sidebarFields()} host={host} />
           </Show>
           <Show when={props.section() === 'CHAT'}>
@@ -199,7 +211,7 @@ export function EditorPanel(props: PanelProps) {
             <MidiSection midi={props.midi} />
           </Show>
           <Show when={props.section() === 'THEME'}>
-            <div class="vp-editor-intro"><h3>アプリ全体のテーマ</h3><p>配色と、Boardの文字を調整します。端末やBoard内のWebページは対象外です。</p></div>
+            <div class="vp-editor-intro"><h3>アプリ全体のテーマ</h3><p>配色と、Board・pane の名札・Lane の端末の文字を調整します。配色は端末と Board 内の Web ページには及びません。</p></div>
             <label class="vp-editor-label">テーマ<select aria-label="テーマを選ぶ" value={props.library().selected} onChange={event => props.activate(event.currentTarget.value)}>
               <optgroup label="プリセット"><For each={THEME_IDS}>{id => <option value={id}>{THEME_INFO[id].name}</option>}</For></optgroup>
               <Show when={props.library().custom.length}><optgroup label="カスタム"><For each={props.library().custom}>{theme => <option value={theme.id}>{theme.name}</option>}</For></optgroup></Show>
