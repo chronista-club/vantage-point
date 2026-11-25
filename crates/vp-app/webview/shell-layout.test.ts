@@ -61,6 +61,12 @@ describe("nextWidth（drag 中の幅）", () => {
 		expect(nextWidth("left", 500, { left: 100, right: 1600 })).toBe(400);
 	});
 
+	it("L は rail 列の幅を引いた残り = peek の幅（doc 87 slice 1 — 保存値は peek の幅）", () => {
+		// 列 48px + peek 300px → 境界は x = 348
+		expect(nextWidth("left", 348, shell, 48)).toBe(300);
+		expect(nextWidth("left", 448, { left: 100, right: 1600 }, 48)).toBe(300);
+	});
+
 	it("それぞれの範囲で頭打ちになる", () => {
 		expect(nextWidth("left", 10_000, shell)).toBe(SIDEBAR_MAX);
 		expect(nextWidth("left", -10, shell)).toBe(SIDEBAR_MIN);

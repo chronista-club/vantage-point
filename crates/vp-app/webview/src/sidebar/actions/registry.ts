@@ -32,7 +32,7 @@ const DIRECTIVE_TITLES: Record<string, string> = {
 	d: "Delete（2-click 確認）",
 	l: "Lane を番号で切替",
 	b: "ACTIONS に思いつきを置く（バッファ）",
-	"[": "左 sidebar をフル ⇄ スリム",
+	"[": "左の peek を開く ⇄ 畳む（rail 列だけ）",
 	"]": "右を rail ⇄ debug log に変身",
 };
 

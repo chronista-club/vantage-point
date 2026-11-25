@@ -1,15 +1,17 @@
 /**
- * 左 sidebar の view 形（フル ⇄ スリム帯）— sidebar view modes（2026-08-01）。
+ * 左 edge の view 形（full ⇄ slim）— sidebar view modes（2026-08-01）→ doc 87 slice 1。
  *
- * `Cmd+[`（directive `[`）で行き来する 2 態。スリム = 右端の edge rail と対になる
- * icon 幅の帯（repo badge 列 + daemon ドット、描画は Shell.tsx の SlimRail）。
+ * `Cmd+[`（directive `[`）で行き来する 2 態。左 edge は rail 列 + peek（ShellRail.tsx）で、
+ * full = peek を開く / slim = rail 列だけ（peek を畳む。列には repo badge と daemon ドットが
+ * 残る、描画は Shell.tsx の SlimBadges と列の下端 slot）。rail の icon click（選択中の rail を押す）も同じ
+ * 2 態を行き来する（route-store.ts の `clickRail`）。
  *
  * - **data**: `sidebarForm` signal（この module が SSOT）
  * - **calculations**: `formToRestoreOnExit`（一時展開を戻すか — 純関数）
  * - **actions**: `toggleSidebarForm` / `expandSidebar` / `collapseSidebar`（signal と
  *   `#sidebar-root` の幅 class を常に同時に書く — 片方だけ動く状態を作らない）
  *
- * 幅そのもの（280px / 44px）は webview/main_area.rs の `#sidebar-root` CSS が司る。
+ * 幅そのもの（rail 列 48px + peek / 列だけ）は webview/main_area.rs の `#sidebar-root` CSS が司る。
  * 形の**永続**は `shell-layout.ts`（main bundle）が持つ — ここは形を変えたことを
  * `vp:sidebar-form` で伝え、復元は `vp:shell-restore` / 保留箱で受け取る側。
  */

@@ -1,12 +1,12 @@
-/** Sidebar: CURRENTs / 停止中, collapsible ACTIONs, settings and machine status. */
+/** 左 edge（doc 87）: Rail 列（Lanes / Actions / 設定）+ peek（名簿 / ACTIONS / 設定の索引）+ machine 帯。 */
 import { MidiPins, MIDI_PINS_CSS } from './MidiPins';
 import { requestingLaneCount } from './lane-progress';
-import { For, Show, createEffect, createMemo, on } from "solid-js";
+import { For, Show, createEffect, createMemo, on, type Component } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
 import { sidebarError, reportSidebarError } from "./feedback";
-import { expandSidebar, sidebarForm } from "./form";
+import { sidebarForm } from "./form";
 import { laneAddressKey } from "./lane";
 import { resolveRepoOrder } from "./dnd";
 import { ContextMenu } from "./ContextMenu";
@@ -18,7 +18,7 @@ import {
 } from "./keybindings";
 import { captureHintLabel, captureHintVisible } from "./directive-state";
 import { WirePanel, WIRE_PANEL_CSS } from "./WirePanel";
-import { SettingsPanel, SETTINGS_PANEL_CSS } from "./SettingsPanel";
+import { SettingsPanel, SettingsPeek, SETTINGS_PANEL_CSS } from "./SettingsPanel";
 import { LanePicker, LANE_PICKER_CSS } from "./LanePicker";
 import { CommandPalette, COMMAND_PALETTE_CSS } from "./CommandPalette";
 import { isRunningProcess } from "./classify";
@@ -27,6 +27,9 @@ import { MachineStrip } from "./DaemonWidget";
 import { ACTIVITY_POINT_CSS } from "./ResponsePoint";
 import { BucketList, ACTIONS_CSS } from "./actions-panel/BucketList";
 import type { RepoPaneState } from "../generated/RepoPaneState";
+import { ShellRail, SHELL_RAIL_CSS, type ShellRailDef } from "./ShellRail";
+import { SHELL_RAILS, type ShellRailId } from "./route";
+import { clickRail, currentRoute, showRail, useRouteSync } from "./route-store";
 
 /**
  * 指定 path の repo accordion を view にスクロールして一瞬 flash させる。
@@ -49,6 +52,9 @@ function flashProject(path: string): void {
 }
 
 export function Shell() {
+	// pseudo-route を作業の選択に追随させ、#app-shell に場面を映す（doc 87 §3）。
+	useRouteSync();
+
 	// Preserve the saved relative order within both lifecycle sections.
 	const ordered = createMemo(() =>
 		resolveRepoOrder(sidebar.processes, sidebar.currents_order),
@@ -110,87 +116,37 @@ export function Shell() {
           <button aria-label="エラーを閉じる" onClick={() => reportSidebarError(null)}>×</button>
         </div>
       </Show>
-			{/* sidebar view modes (2026-08-01): フル形 3 段 (header / list / daemon) と
-			    スリム帯 (SlimRail) の 2 態を `[` directive で行き来する。overlay 群
-			    (ContextMenu / ⌘K 等) は形に依らず常時 mount — 形は
+			{/* 左 edge = Rail 列 + peek（doc 87 §2 / §8 slice 1）。旧 sidebar のフル形 3 段は
+			    Lanes rail の peek（名簿）と Actions rail の peek（ACTIONS）に分かれ、⚙ 設定は
+			    列の下起点の歯車になった。`[` の full / slim は「peek を開いているか」に写る —
+			    slim = 列だけ（旧 slim 帯の repo badge と daemon dot は列の中に残す）。
+			    overlay 群（ContextMenu / ⌘K 等）は形に依らず常時 mount — 形は
 			    「一覧の見せ方」であって機能の有効/無効ではない。 */}
-			<Show
-				when={sidebarForm() === "full"}
-				fallback={<SlimRail ordered={ordered()} />}
-			>
-				<header class="vp-sidebar-header">
-					<span class="vp-sidebar-title"><CreoIcon name="ph:tree-structure" size={12} /> CURRENTs</span>
-					<Show when={requestingLaneCount(Object.values(sidebar.lanes_by_repo).flat()) > 0}>
-						<span class="vp-sidebar-requests" role="status">◆ 要求中 {requestingLaneCount(Object.values(sidebar.lanes_by_repo).flat())}</span>
+			<ShellRail
+				registry={SHELL_RAIL_REGISTRY}
+				pathname={currentRoute()}
+				peekOpen={sidebarForm() === "full"}
+				onSelect={(id) => clickRail(id as ShellRailId)}
+				columnCenter={
+					<Show when={sidebarForm() === "slim"}>
+						<SlimBadges ordered={ordered()} />
 					</Show>
-					{/* repo 追加: 産む動詞は**親の行**に住む（mako 2026-08-20 — 「repo 増やすのは
-					    CURRENTS に。lane 増やすのは repo に」）。左で産んで右（main area）に
-					    現れる、という操作の流れを生成の系譜と一致させる。
-					    repo:add IPC → Rust 側 native folder picker → 登録 (VP-203)。 */}
-					<button
-						class="vp-sidebar-add"
-						title="repo を登録"
-						onClick={() => sendIpc({ t: "repo:add" })}
-					>
-						<CreoIcon name="ph:plus" size={13} />
-					</button>
-				</header>
-				<MidiPins />
-
-				<div class="vp-sidebar-list">
-					<Show
-						when={sidebar.processes.length > 0}
-						fallback={
-							/* ⚠️ lane 非依存の最後の逃げ道（moody-blues 指摘 2026-08-20）:
-							   「repo を登録」の常設入口は edge rail の + New menu に移ったが、
-							   rail は lane 不在（= repo 0 件）で帯ごと隠れる。この CTA が無いと
-							   新規 install 直後 / 全 repo 削除後に GUI から復帰できない
-							   （scope-cut-reachable-states — X で代替と言うには X が消えない条件が要る）。 */
-							<button
-								type="button"
-								class="vp-sidebar-empty-cta"
-								onClick={() => sendIpc({ t: "repo:add" })}
-							>
-								+ repo を登録
-							</button>
-						}
-					>
-						<section data-section="currents" aria-label="CURRENTs">
-							<For each={ordered().filter(isRunningProcess)}>{proc => <RepoAccordion proc={proc} />}</For>
-						</section>
-						<Show when={ordered().some(p => !isRunningProcess(p))}>
-							<details data-section="stopped" aria-label="PAUSED">
-								<summary class="vp-sidebar-section-title"><span class="vp-stopped-caret">›</span>PAUSED {ordered().filter(p => !isRunningProcess(p)).length}</summary>
-								<For each={ordered().filter(p => !isRunningProcess(p))}>{proc => <RepoAccordion proc={proc} />}</For>
-							</details>
-						</Show>
+				}
+				columnBottom={
+					<Show when={sidebarForm() === "slim"}>
+						<div
+							class="vp-slim-foot"
+							classList={{ online: sidebar.activity.node_online }}
+							title={`daemon: ${sidebar.activity.node_online ? "online" : "offline"}`}
+						/>
 					</Show>
-				</div>
-
-				{/* creo 段（doc 58 ③ — cloud scope）: ACTIONS（doc 57）。Creo ID は設定へ集約。
-				    分け方はアーキテクチャの scope 境界（mako 2026-08-19「daemon と hub と
-				    device / creo(actions)」）。creo 依存はこの段に名札付きで閉じ込める —
-				    offline で dim するのは段 1 つだけで、名簿と machine 帯は常に local。 */}
-				<div class="vp-creo-zone">
-					<BucketList />
-				</div>
-
-				{/* ⚙ 設定（app 級 — doc 56 §7 の予約席。ACTIONS の下・daemon status の直上）。
-				    住所は「動詞の級」で決まる: 設定は app 全体に効くので rail でなくここ。 */}
-				<button
-					type="button"
-					class="vp-settings-entry"
-					title="設定を開く"
-					onClick={() => window.vpSettings?.open()}
-				>
-					<CreoIcon name="ph:gear-six" size={12} />
-					<span>設定</span>
-				</button>
-
-				{/* machine 帯（doc 58 ③ — machine scope）: daemon ⚙️ + hub + devices 🧲。
-				    健康なら 1 行、詳細は click で展開。 */}
-				<MachineStrip />
-			</Show>
+				}
+				peekFooter={
+					/* machine 帯（doc 58 ③ — machine scope）: daemon ⚙️ + hub + devices 🧲。
+					   健康なら 1 行、詳細は click で展開。どの rail でも peek の下端に残る。 */
+					<MachineStrip />
+				}
+			/>
 
 			{/* 右クリック context menu (Lane 行 / repo ヘッダ 共通、 singleton、 VP-204 PR-1)。 */}
 			<ContextMenu />
@@ -200,8 +156,8 @@ export function Shell() {
           window.vpWire.open(address) が呼ばれ、 選択 lane の wire 履歴 (read-only) + ack を表示する。 */}
 			<WirePanel />
 
-			{/* 設定 overlay (doc 59 P1、singleton)。sidebar 下部の ⚙ 行から
-          window.vpSettings.open() で出現する。 */}
+			{/* 設定面 (doc 59 / doc 87 §3、singleton)。route が `/settings` の間だけ center
+          (#host) に出る — 開閉の SSOT は route（入口は rail の歯車）。 */}
 			<SettingsPanel />
 
 			{/* PR 445 `s` directive: Lane / repo switcher picker overlay (singleton)。
@@ -244,49 +200,151 @@ export function Shell() {
 	);
 }
 
+/** Lanes rail の peek — 名簿（CURRENTs / PAUSED、doc 58）+ MIDI pins。旧 sidebar フル形の上 2 段。 */
+function LanesPeek() {
+	const ordered = createMemo(() =>
+		resolveRepoOrder(sidebar.processes, sidebar.currents_order),
+	);
+	return (
+		<>
+			<header class="vp-sidebar-header">
+				<span class="vp-sidebar-title"><CreoIcon name="ph:tree-structure" size={12} /> CURRENTs</span>
+				<Show when={requestingLaneCount(Object.values(sidebar.lanes_by_repo).flat()) > 0}>
+					<span class="vp-sidebar-requests" role="status">◆ 要求中 {requestingLaneCount(Object.values(sidebar.lanes_by_repo).flat())}</span>
+				</Show>
+				{/* repo 追加: 産む動詞は**親の行**に住む（mako 2026-08-20 — 「repo 増やすのは
+				    CURRENTS に。lane 増やすのは repo に」）。左で産んで右（main area）に
+				    現れる、という操作の流れを生成の系譜と一致させる。
+				    repo:add IPC → Rust 側 native folder picker → 登録 (VP-203)。 */}
+				<button
+					class="vp-sidebar-add"
+					title="repo を登録"
+					onClick={() => sendIpc({ t: "repo:add" })}
+				>
+					<CreoIcon name="ph:plus" size={13} />
+				</button>
+			</header>
+			<MidiPins />
+
+			<div class="vp-sidebar-list">
+				<Show
+					when={sidebar.processes.length > 0}
+					fallback={
+						/* ⚠️ lane 非依存の最後の逃げ道（moody-blues 指摘 2026-08-20）:
+						   「repo を登録」の常設入口は edge rail の + New menu に移ったが、
+						   rail は lane 不在（= repo 0 件）で帯ごと隠れる。この CTA が無いと
+						   新規 install 直後 / 全 repo 削除後に GUI から復帰できない
+						   （scope-cut-reachable-states — X で代替と言うには X が消えない条件が要る）。 */
+						<button
+							type="button"
+							class="vp-sidebar-empty-cta"
+							onClick={() => sendIpc({ t: "repo:add" })}
+						>
+							+ repo を登録
+						</button>
+					}
+				>
+					<section data-section="currents" aria-label="CURRENTs">
+						<For each={ordered().filter(isRunningProcess)}>{proc => <RepoAccordion proc={proc} />}</For>
+					</section>
+					<Show when={ordered().some(p => !isRunningProcess(p))}>
+						<details data-section="stopped" aria-label="PAUSED">
+							<summary class="vp-sidebar-section-title"><span class="vp-stopped-caret">›</span>PAUSED {ordered().filter(p => !isRunningProcess(p)).length}</summary>
+							<For each={ordered().filter(p => !isRunningProcess(p))}>{proc => <RepoAccordion proc={proc} />}</For>
+						</details>
+					</Show>
+				</Show>
+			</div>
+		</>
+	);
+}
+
 /**
- * スリム帯（sidebar view modes、`[` directive）— icon 幅の repo badge 列。
+ * Actions rail の peek — ACTIONS（doc 57、creo 段 = cloud scope）。旧 sidebar フル形の下段。
+ * creo 依存（cloud scope）はこの peek に閉じ込める — 名簿と machine 帯は常に local（doc 58 ③）。
+ */
+function ActionsPeek() {
+	return (
+		<div class="vp-creo-zone vp-actions-peek">
+			<BucketList />
+		</div>
+	);
+}
+
+/** Lanes rail の icon。input 待ちの lane が在る間は用事 dot を付ける（peek を見ていなくても届く）。 */
+function LanesRailIcon() {
+	const needsYou = () => {
+		const lanes = Object.values(sidebar.lanes_by_repo).flat();
+		return (
+			requestingLaneCount(lanes) > 0 ||
+			lanes.some((l) => sidebar.awaiting_input[laneAddressKey(l)])
+		);
+	};
+	return (
+		<>
+			<CreoIcon name="ph:tree-structure" size={16} />
+			<Show when={needsYou()}>
+				<span class="vp-rail-flag" aria-hidden="true" />
+			</Show>
+		</>
+	);
+}
+
+/**
+ * 左 edge の rail registry（doc 87 §4 — 増やせる部品の 1 つ目）。route / 順 / 起点は
+ * `route.ts` の `SHELL_RAILS`（純データ）が SSOT で、ここは描画用の component を足すだけ。
+ */
+const RAIL_VIEW: Record<ShellRailId, { icon: Component; peek: Component }> = {
+	lanes: { icon: LanesRailIcon, peek: LanesPeek },
+	actions: { icon: () => <CreoIcon name="ph:tray" size={16} />, peek: ActionsPeek },
+	settings: { icon: () => <CreoIcon name="ph:gear-six" size={16} />, peek: SettingsPeek },
+};
+
+export const SHELL_RAIL_REGISTRY: readonly ShellRailDef[] = SHELL_RAILS.map((r) => ({
+	id: r.id,
+	route: r.route,
+	order: r.order,
+	labelKey: r.label,
+	anchor: r.anchor,
+	...RAIL_VIEW[r.id],
+}));
+
+/**
+ * slim の列に並ぶ repo badge（旧 SlimRail、sidebar view modes `[`）。
  *
  * 情報は「repo の存在 / presence / 用事（awaiting）」の 3 点に圧縮する。操作は
- * 「badge click = フルに戻って該当 repo を flash」の 1 動詞だけ — スリムは監視の形で、
- * 操作を続けたくなったらフルに帰るのが正（右の edge rail が「lane 級動詞の家」なのと
- * 対照的に、この帯は動詞を持たない）。
+ * 「badge click = Lanes の peek を開いて該当 repo を flash」の 1 動詞だけ — slim は監視の形で、
+ * 操作を続けたくなったら peek を開くのが正（右の edge rail が「lane 級動詞の家」なのと
+ * 対照的に、この列は動詞を持たない）。
  */
-function SlimRail(props: { ordered: RepoPaneState[] }) {
+function SlimBadges(props: { ordered: RepoPaneState[] }) {
 	// repo 内のどれかの lane が input 待ち（フル形の黄 dot と同じ源 = awaiting_input）。
 	const awaiting = (path: string): boolean => {
 		const lanes = sidebar.lanes_by_repo[path] ?? [];
 		return lanes.some((l) => sidebar.awaiting_input[laneAddressKey(l)]);
 	};
 	return (
-		<div class="vp-slim-rail">
-			<For each={props.ordered}>
-				{(proc) => (
-					<button
-						class="vp-slim-badge"
-						classList={{
-							connected:
-								(sidebar.activity.presence?.[proc.path] ?? "unregistered") ===
-								"connected",
-							awaiting: awaiting(proc.path),
-						}}
-						title={proc.name}
-						onClick={() => {
-							expandSidebar();
-							flashProject(proc.path);
-						}}
-					>
-						{/* 頭 1 文字。spread は surrogate pair (絵文字名の repo) を割らないため。 */}
-						{([...proc.name.trim()][0] ?? "?").toUpperCase()}
-					</button>
-				)}
-			</For>
-			<div
-				class="vp-slim-foot"
-				classList={{ online: sidebar.activity.node_online }}
-				title={`daemon: ${sidebar.activity.node_online ? "online" : "offline"}`}
-			/>
-		</div>
+		<For each={props.ordered}>
+			{(proc) => (
+				<button
+					class="vp-slim-badge"
+					classList={{
+						connected:
+							(sidebar.activity.presence?.[proc.path] ?? "unregistered") ===
+							"connected",
+						awaiting: awaiting(proc.path),
+					}}
+					title={proc.name}
+					onClick={() => {
+						showRail("lanes");
+						flashProject(proc.path);
+					}}
+				>
+					{/* 頭 1 文字。spread は surrogate pair (絵文字名の repo) を割らないため。 */}
+					{([...proc.name.trim()][0] ?? "?").toUpperCase()}
+				</button>
+			)}
+		</For>
 	);
 }
 
@@ -550,6 +608,10 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* ── 下部 2 段 (doc 58 ③) ──
    creo 段 = cloud scope の器。上辺の hairline で名簿と区切る。 */
 .vp-creo-zone{border-top:1px solid var(--lg-hairline,#12222b);}
+/* Actions rail の peek では ACTIONS が peek の全高を使う（名簿と分け合わない）。上の区切り線は
+   名簿との境界の線なので、ここでは引かない。 */
+.vp-actions-peek{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;border-top:none;}
+.vp-actions-peek > .vp-act-buckets{flex:1 1 auto;}
 /* machine 帯のサマリ行に出す非健康 signal (畳んでいても見える) */
 .vp-machine-flag{flex:0 0 auto;font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-size:var(--sb-text-micro,10px);letter-spacing:.04em;text-transform:uppercase;
@@ -791,10 +853,8 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-ctx-item.danger.confirming{background:var(--color-status-error,#d4444c);
   color:#fff;}
 
-/* sidebar view modes (2026-08-01): スリム帯。幅 (280px⇄44px) は webview/main_area.rs の
-   #sidebar-root / #sidebar-root.slim が司り、ここは帯の中身だけ定義する。 */
-.vp-slim-rail{display:flex;flex-direction:column;align-items:center;gap:6px;
-  padding:10px 0;height:100%;box-sizing:border-box;overflow-y:auto;overflow-x:hidden;}
+/* slim（[ directive、peek を畳んだ形）の列の中身: 中央 slot の repo badge と下端 slot の daemon dot。
+   幅（列 48px / full = 列 + peek）は webview/main_area.rs の #sidebar-root が司る。 */
 .vp-slim-badge{position:relative;width:28px;height:28px;flex:none;border-radius:8px;
   border:1px solid var(--lg-hairline,#12222b);background:var(--lg-panel,#0A0E15);
   color:var(--lg-mute,#5C7A85);cursor:pointer;
@@ -805,7 +865,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* 用事 dot: フル形の awaiting 黄 dot (--sb-conn-hitl) と同じ語彙で「repo 内に input 待ちの lane」。 */
 .vp-slim-badge.awaiting::after{content:"";position:absolute;top:-2px;right:-2px;
   width:7px;height:7px;border-radius:50%;background:var(--sb-conn-hitl,#FF4A2D);}
-.vp-slim-foot{margin-top:auto;width:8px;height:8px;flex:none;border-radius:50%;
+.vp-slim-foot{width:8px;height:8px;flex:none;border-radius:50%;margin:4px 0;
   background:var(--lg-mute-2,#38525b);}
 .vp-slim-foot.online{background:var(--lg-cyan-dim,#1C6C7C);}
 /* Hierarchy: root is the project header; children stay mounted while folded. */
@@ -839,6 +899,7 @@ ${MIDI_PINS_CSS}
 ${COMMAND_PALETTE_CSS}
 ${ACTIONS_CSS}
 ${ACTIVITY_POINT_CSS}
+${SHELL_RAIL_CSS}
 .vp-lane-status{width:14px;flex:0 0 14px;text-align:center;font-size:12px;color:var(--lg-mute,#5C7A85);}
 .vp-lane-status[data-lane-state="requesting"],.vp-sidebar-requests,.vp-repo-requests{color:var(--sb-conn-hitl,#f28dd3);}
 .vp-lane-status[data-lane-state="working"]{color:var(--sb-conn-auto,#e8c46c);animation:vp-lane-spin 2s linear infinite;}

@@ -84,6 +84,7 @@ pub const GEOMETRY_MIN_HEIGHT: f64 = 480.0;
 
 /// L / R sidebar の幅の許容範囲 (LogicalPixel)。破損 file や暴走 drag で
 /// 「幅 0 で二度と掴めない」「画面全部が sidebar」を構造的に防ぐ。
+/// L は **peek の幅**（doc 87 slice 1 — 左 edge = rail 列 48px + peek。列の幅は含まない）。
 pub const SIDEBAR_MIN_WIDTH: f64 = 180.0;
 pub const SIDEBAR_MAX_WIDTH: f64 = 640.0;
 pub const RIGHT_SIDEBAR_MIN_WIDTH: f64 = 240.0;
@@ -94,10 +95,12 @@ pub const RIGHT_SIDEBAR_MAX_WIDTH: f64 = 900.0;
 pub const RIGHT_SIDEBAR_MIN_PCT: f64 = 15.0;
 pub const RIGHT_SIDEBAR_MAX_PCT: f64 = 60.0;
 
-/// L sidebar の形 (doc 56 / sidebar view modes)。`full` = 一覧、`slim` = icon 幅の帯。
+/// L sidebar の形 (doc 56 / sidebar view modes → doc 87 slice 1)。`full` = rail 列 + peek、
+/// `slim` = rail 列だけ (peek を畳む)。
 ///
-/// ⚠️ **slim の幅 (44px) は [`ShellLayout::sidebar_width`] に含めない**。含めると
-/// 「slim のまま終了 → 次回 full に戻したら 44px」になる。drag が決めるのは **full の幅**だけで、
+/// ⚠️ **slim の幅 (rail 列 48px) は [`ShellLayout::sidebar_width`] に含めない**。含めると
+/// 「slim のまま終了 → 次回 full に戻したら peek が下限（180px）に潰れる」になる
+/// （48 は SIDEBAR_MIN_WIDTH で clamp される）。drag が決めるのは **peek の幅**だけで、
 /// slim は CSS 側 (`#sidebar-root.slim`) の固定値が司る。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -105,7 +108,7 @@ pub enum SidebarForm {
     /// 一覧を出すフル形 (既定)
     #[default]
     Full,
-    /// icon 幅のスリム帯
+    /// rail 列だけ (peek を畳む)
     Slim,
 }
 
@@ -116,7 +119,7 @@ pub enum SidebarForm {
 /// R の開閉**も持つ。旧実装は毎回 full × R 閉で始まっていた。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellLayout {
-    /// L sidebar の **full 時の**幅 (LogicalPixel)。slim は CSS 固定値なので含めない。
+    /// L の **peek の**幅 (LogicalPixel、doc 87 slice 1)。rail 列 (48px) と slim は CSS 固定値なので含めない。
     pub sidebar_width: f64,
     /// R sidebar の幅 (LogicalPixel)。閉じていても最後の幅を覚えておく
     /// (次に開いたとき前回の幅で出る — 開くたびに既定幅へ戻らない)。
@@ -732,8 +735,8 @@ mod tests {
         );
     }
 
-    /// ⚠️ **slim の 44px を幅として保存しない**ことの根拠 — 形と幅は別 field。
-    /// 同じ field に畳むと「slim で終了 → 次回 full に戻したら 44px」になる。
+    /// ⚠️ **slim の幅（rail 列）を幅として保存しない**ことの根拠 — 形と幅は別 field。
+    /// 同じ field に畳むと「slim で終了 → 次回 full に戻したら peek が下限に潰れる」になる。
     #[test]
     fn shell_layout_keeps_full_width_while_slim() {
         let mut s = SessionState::default();

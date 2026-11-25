@@ -56,7 +56,7 @@ function post(payload: unknown): void {
 // doc 52 §10 wave 0: board は app pane を退役（board pane = lane tiling へ）。
 //
 // ⚠️ entry.tsx にも同じ kind を引く表があるが**別の写像**で、統合してはいけない —
-// あちらは Frame Engine の `data-frame-id`（"lane" 等 = 配置の座標系）、こちらは DOM
+// あちらは app scope の配置の住所 `data-app-pane`（"lane" 等 = 配置の座標系）、こちらは DOM
 // element id（"pane-lane" 等 = 可視性の gate）。同じ kind から**別の軸**を引いている。
 const KIND_TO_PANE: Record<string, string> = {
 	lane: "pane-lane",
@@ -96,9 +96,9 @@ export function applyPaneSwitch(info: ActivePaneInfo | null): void {
 		const isActive = el.id === targetId;
 		el.classList.toggle("active", isActive);
 		// 動的に data-pane-id を設定 (γ-light: native overlay が pane_id で照合する想定)。
-		// 注: Frame Engine の static `data-frame-id` (= "lane" / "runner" 等の Scene lookup key) とは
-		// 別 attribute。 同名にすると Lane click でこの動的書き換えが Frame Engine の attribute を
-		// hijack して Scene lookup undefined → HIDDEN_TRANSFORM で pane が見えなくなる (VP-141 fix)。
+		// 注: 配置の住所 `data-app-pane` (= "lane" / "runner" 等の静的な pane id) とは別 attribute。
+		// 同名にすると Lane click でこの動的書き換えが静的な住所を hijack して配置の lookup が
+		// undefined → 非表示投影で pane が見えなくなる (VP-141 fix)。
 		if (isActive && info?.pane_id) {
 			el.setAttribute("data-pane-id", info.pane_id);
 		} else if (isActive) {
@@ -170,7 +170,7 @@ export function installBundleProbe(): void {
 			showLaneDefined: typeof w.showLane === "function",
 			laneInstancesSize:
 				w.__vpLanes instanceof Map ? w.__vpLanes.size : "no __vpLanes",
-			paneCount: document.querySelectorAll("[data-frame-id]").length,
+			paneCount: document.querySelectorAll("[data-app-pane]").length,
 			paneTerminalOpacity: paneTerminal
 				? getComputedStyle(paneTerminal).opacity
 				: null,

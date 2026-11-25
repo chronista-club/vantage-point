@@ -12,12 +12,13 @@ import { resolveRepoOrder } from "../dnd";
 import { sendIpc } from "../ipc";
 import {
 	collapseSidebar,
-	expandSidebar,
 	formToRestoreOnExit,
 	sidebarForm,
 	toggleSidebarForm,
 } from "../form";
 import type { SidebarForm } from "../form";
+import type { RouteState } from "../route";
+import { restoreRoute, routeSnapshot, showRail } from "../route-store";
 import { isSubLane, laneAddressKey } from "../lane";
 import { pinTargetOf } from "../../../midi-pins";
 import type { LaneTarget } from "../../../midi-navigation";
@@ -296,6 +297,10 @@ export function runNewSub(): void {
 		console.warn("[directive n] active repo 不明、 form open skip");
 		return;
 	}
+	// form は Lanes rail の peek（名簿の repo 行）に住む。Actions / 設定 / slim にいても
+	// 見える場所で開くよう、先に Lanes の peek を出す（mount が要る — RepoAccordion が
+	// mount 時に setter を登録するので、slim のままだと登録が無い）。
+	showRail("lanes");
 	const opened = openAddSubFor(path);
 	if (!opened) {
 		console.warn("[directive n] AddSub setter not registered for", path);
@@ -358,7 +363,7 @@ export function runLaneSelectMode(): void {
 	enterLaneSelectMode();
 }
 
-/** `[` — 左 sidebar をフル ⇄ スリム帯に変身（sidebar view modes）。 */
+/** `[` — 左 edge の peek を開く ⇄ 畳む（full ⇄ slim、sidebar view modes → doc 87）。 */
 export function runSidebarForm(): void {
 	toggleSidebarForm();
 }
@@ -386,6 +391,13 @@ let captureModeTimer: ReturnType<typeof setTimeout> | null = null;
 let formBeforeCapture: SidebarForm | null = null;
 
 /**
+ * 一時遷移する前の route（doc 87 §3）。ACTIONS は Actions rail の peek に住むので、capture は
+ * route を `/actions` へ移す。取り消して抜けたら元の route（Lanes / 設定）に戻す。
+ * [`formBeforeCapture`] と同じく、入るときだけ書き、抜けるときに必ず `null` へ戻す。
+ */
+let routeBeforeCapture: RouteState | null = null;
+
+/**
  * capture mode を抜ける。**離脱経路 5 本（Escape / 数字選択 / 無関係キー / 5 秒 timeout /
  * 入力欄への focus）がすべてここを通る**ので、一時展開の後始末もここ 1 箇所で足りる。
  *
@@ -402,7 +414,11 @@ function exitCaptureMode(selected = false): void {
 	window.removeEventListener("keydown", captureNumberHandler, true);
 	// 一時展開の後始末。⚠️ 記録を**先に**消す（畳む側が何かの拍子に再入しても二度走らない）。
 	const next = formToRestoreOnExit(formBeforeCapture, selected);
+	// route も同じ規則: 区画を選んだ（これから打ち込む）なら Actions に留まり、取り消しなら戻す。
+	const routeBack = selected ? null : routeBeforeCapture;
 	formBeforeCapture = null;
+	routeBeforeCapture = null;
+	if (routeBack) restoreRoute(routeBack);
 	if (next === "slim") collapseSidebar();
 }
 
@@ -418,6 +434,10 @@ function captureNumberHandler(e: KeyboardEvent): void {
 	}
 	if (e.key === "Escape") {
 		e.preventDefault();
+		// ⚠️ 取り消しの Esc は mode が消費する。ここは window の capture 段で、この後 document の
+		// bubble 段に SettingsPanel の Esc（設定を閉じる）が居る — 設定から `b` を打って取り消すと、
+		// exitCaptureMode が設定へ戻した直後に同じ Esc で閉じてしまう（doc 87 slice 1 で発見）。
+		e.stopPropagation();
 		exitCaptureMode();
 		return;
 	}
@@ -445,11 +465,16 @@ function captureNumberHandler(e: KeyboardEvent): void {
 
 /** `b` — ACTIONS の捕捉 mode に突入（1-5 で区画を選ぶ）。 */
 export function runCaptureMode(): void {
-	// スリム帯だと行が描画されないので、**一時的に**フルへ広げる。取り消して抜けたら
-	// `exitCaptureMode` が畳んで戻す（形の変更は永続化されるので、戻さないと slim が消える）。
+	// slim だと行が描画されないので、**一時的に**フルへ広げる（Actions rail の peek を開く）。
+	// 取り消して抜けたら `exitCaptureMode` が route と形を戻す（形の変更は永続化されるので、
+	// 戻さないと slim が消える）。
 	// ⚠️ 連打で上書きしない — 2 回目に「展開後の full」を覚えると戻す先を失う。
-	if (formBeforeCapture === null) formBeforeCapture = sidebarForm();
-	expandSidebar();
+	if (formBeforeCapture === null) {
+		formBeforeCapture = sidebarForm();
+		routeBeforeCapture = routeSnapshot();
+	}
+	// ACTIONS は Actions rail の peek に住む（doc 87 §3）— rail を移して peek を開く。
+	showRail("actions");
 	setCaptureHintLabel(
 		PANEL_BUCKETS.map((b, i) => `${i + 1}. ${b.label}`).join("   "),
 	);
