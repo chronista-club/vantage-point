@@ -165,14 +165,14 @@ openDispatch();
 // 旧 FrameEngine（VP-140 の Scene engine）の後継。preset / DOM 反映は app-panes.ts に
 // 集約され、ここは購読の install と `setActivePane`（下方 `applyActivePane`）だけを持つ。
 //
-// data-frame-id 規約 (main_area.rs HTML 側で付与):
-//   conversation  → pane-lane      (Conversation Agent = lane workbench。console/chat/board の tiling を内包)
+// data-app-pane 規約 (main_area.rs HTML 側で付与、旧 data-frame-id — doc 87 §1.1 で改名):
+//   lane    → pane-lane          (lane workbench。console/chat/board の tiling を内包)
 //   runner  → pane-runner        (Runner 🌿)
 //   devices → pane-devices        (Devices 🧲 / device 一覧)
 //   preview → pane-preview        (iframe preview)
 //   empty   → pane-empty          (no selection)
 //   doc 52 §10 wave 0: pp（Board）は app pane を退役 → lane tiling の board pane (#lane-board)
-// 注: 旧 data-pane-id (main_area.rs inline JS が Lane address 等に書き換える native overlay sync 用)
+// 注: data-pane-id (active-pane.ts が Lane address 等に書き換える native overlay sync 用)
 // と attribute を分離。 同名にすると Lane click で legacy 側が hijack して配置 lookup が
 // undefined → 非表示投影で pane が見えなくなる回帰を起こすため (VP-141 fix)。
 
@@ -188,7 +188,7 @@ attachKeybindings(window);
 // 本体は下方の `applyActivePane`。
 //
 // ⚠️ この表は `active-pane.ts` の同名の表と**別の写像**で、統合してはいけない — こちらは
-// Frame Engine の `data-frame-id`（"lane" 等 = 配置の座標系）、あちらは DOM element id
+// 配置の住所 `data-app-pane`（"lane" 等 = 配置の座標系）、あちらは DOM element id
 // （"pane-lane" 等 = 可視性の gate）。同じ kind から別の軸を引いている。
 const KIND_TO_PANE: Record<string, string> = {
 	terminal: "lane",
@@ -413,8 +413,8 @@ document.head.appendChild(ppFontStyle);
 //   被 wrap 側の定義を待つ必要があってここに居た）
 const applyDefaultScene = (): void => {
 	const ok = applyAppScene("lane-focus");
-	const paneCount = document.querySelectorAll("[data-frame-id]").length;
-	// 診断 log: 配置が apply された事実と、 data-frame-id 要素の存在を確認できるようにする。
+	const paneCount = document.querySelectorAll("[data-app-pane]").length;
+	// 診断 log: 配置が apply された事実と、 data-app-pane 要素の存在を確認できるようにする。
 	// user 環境で 「画面が黒い」 等の issue 時に DevTools console で path を即時切り分けできるよう常時出力。
 	console.info(
 		`[app-panes] applied default scene = lane-focus (ok=${ok}); panes detected = ${paneCount}`,

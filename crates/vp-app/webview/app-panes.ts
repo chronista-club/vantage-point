@@ -9,7 +9,7 @@
  *
  * - **data**: `APP_SCENES` — preset の Layout 群。DOM を知らない
  * - **calculations**: `primaryAppPane` ほか純関数（vitest で固定）
- * - **actions**: `installAppPanes` — engine 購読 → 既存 `.pane[data-frame-id]` への
+ * - **actions**: `installAppPanes` — engine 購読 → 既存 `.pane[data-app-pane]` への
  *   inline style 書き込みだけを行う（R1: DOM を reparent しない — xterm は再生成不可）
  *
  * ## 投影規則（DOM の縁の作法、engine の意味論ではない）
@@ -33,7 +33,8 @@ import { layoutEngine } from "./layout-host";
 
 export const APP_SCOPE = "app";
 
-/** data-frame-id と 1:1 の pane id 群（main_area.rs の静的 DOM が SSOT）。
+/** data-app-pane と 1:1 の pane id 群（main_area.rs の静的 DOM が SSOT）。
+ *  旧名 data-frame-id（frame-engine の語彙）は doc 87 §1.1 で改名した — 「frame」は motion 層の語に残す。
  *  doc 52 §10 wave 0: pp（Board）は app pane を退役し、lane tiling の board pane
  *  （#lane-board、lane-panes.ts）へ移った。lane pane（= lane workbench 全体）の中に board が並ぶ。 */
 export const APP_PANE_IDS = ["lane", "runner", "devices", "preview", "empty"] as const;
@@ -267,7 +268,7 @@ export function _resetForTest(): void {
 const ABSENT = { rect: { x: 0, y: 0, w: 0, h: 0 }, attention: 0, floating: false } as const;
 
 /**
- * engine 購読 → 既存 `.pane[data-frame-id]` 要素への inline style 書き込み（純 action）。
+ * engine 購読 → 既存 `.pane[data-app-pane]` 要素への inline style 書き込み（純 action）。
  * 返り値は unsubscribe。
  */
 export function installAppPanes(root: ParentNode = document): () => void {
@@ -278,9 +279,9 @@ export function installAppPanes(root: ParentNode = document): () => void {
 
 function renderAppPanes(root: ParentNode, resolved: ResolvedMap): void {
 	const primary = primaryAppPane(resolved);
-	const elements = root.querySelectorAll<HTMLElement>(".pane[data-frame-id]");
+	const elements = root.querySelectorAll<HTMLElement>(".pane[data-app-pane]");
 	elements.forEach((el) => {
-		const id = el.dataset.frameId;
+		const id = el.dataset.appPane;
 		if (!id) return;
 		const p = resolved[id] ?? ABSENT;
 		const visible = p.rect.w > 0 && p.rect.h > 0;

@@ -1,6 +1,6 @@
 # 87. 額縁を creo-ui の 3x3 に載せる — Shell / Layout / Frame と 2 つの Scene
 
-> **Status**: Conception 確定（2026-11-05、mako × lead の一問一答）。実装未着手。slice 1 は creo-ui への要望 ①〜③（§6）の着地を待つが、consumer 側の仮実装で先行してもよい
+> **Status**: Conception 確定（2026-11-05、mako × lead の一問一答）。slice 1 を実装（2026-11-25、§8.1）。左 edge は consumer 側の仮実装で始め、要望が creo-ui 0.31.0 に入ったので同じ PR の中で本物の `CURail` に差し替えた
 > **Related**: doc 49（LayoutEngine の creo-ui 基盤化、層 L0〜L5）/ doc 46・50（pane の額縁の縦軸）/ doc 51（表象の共有）/ doc 56（edge rail = 動詞の級 = 住所）/ doc 58（名簿）/ doc 59（設定ページ）/ doc 82（R sidebar）/ doc 86（Editor Link hub）/ creo-ui `docs/design/principal-layout.md`（PL-1〜PL-8）/ `layout-engine.md`（LE-1〜LE-21）/ `frame-system.md`（P-6 = VP 統合）
 > **Task**: creo todo `mem_1CgjWv9eG4T1bkF8z2xrGo`（Epic）/ Conception の帳簿 `mem_1CgieMq1PCG68haZ3zACmZ`（handoff）
 > **対象**: `crates/vp-app/webview/`（`src/sidebar/Shell.tsx` / `shell-layout.ts` / `right-sidebar.ts` / `EdgeRail.tsx` / `app-panes.ts` / `lane-panes.ts` / `LaneHeader.tsx`）、`crates/vp-app/src/webview/main_area.rs`（静的 DOM）
@@ -129,6 +129,44 @@ creo-memories（creo-web）も GFP（desktop / portal）も creo-ui 0.30.0 を�
 
 slice 1 の mako 裁定（2026-11-05、GO）: 左 sidebar は Rail + peek の形に寄せる。slim 44px が rail 列、full が peek になるだけで操作は変わらない。
 
+### 8.1 slice 1 の実装で決めたこと（2026-11-25、lead 承認）
+
+- **左 edge は creo-ui の `CURail`（0.31.0〜）**。最初は同じ DOM 契約の仮実装で始め、下の要望が入った 0.31.0
+  （creo-ui#188 の region / peekWidth / resizing と #204 の peekOpen / anchor / slot / keepPeeksMounted を
+  #205 で release）に、同じ PR（#1291）の中で差し替えた。`src/sidebar/ShellRail.tsx` は click → rail id の変換・
+  `keepPeeksMounted`・`peekWidth`（`--vp-peek-w`）・`resizing`（`body.shell-resizing`）を繋ぐ薄い wrapper。
+  DOM の契約（`[data-region="leftEdge"]` / `nav[aria-label="Rail"]` / `button[data-rail][aria-current]` /
+  peek `[data-expanded]` / `section[data-peek][hidden]`）は仮実装の時と同じで、`ShellRail.dom.test.ts` が固定している。
+  選択の導出は creo-ui の `selectRailId` / `railsByOrder`。仮実装の時点の記録: CURail 0.30.0 を直に使えなかった理由は
+  3 つ — peek 幅 240px 固定（要望②）、選択中は peek が必ず開く（slim を表せない）、列に registry の icon
+  しか置けない（slim の repo badge と daemon dot、下起点の歯車の置き場が無い）。差し替えは、
+  `ShellRail.dom.test.ts` の契約の assert を変えずに wrapper を書き換えるだけで済んだ（test を足したのは drag 中と
+  peek 幅の 2 本、fixture は creo-ui の CSS の注入と mount 先を本番に合わせた）
+- CURail に無い口として足したもの（= 追加の要望。0.31.0 で全部入った）: `peekOpen`（選択と別に peek を畳む）、rail ごとの
+  `anchor`（列の上 / 下の起点）、列の `columnCenter` / `columnBottom` slot、peek の `peekFooter` slot
+  （machine 帯）、**peek は全 rail 分を mount したまま選択外を `hidden`**（rail を行き来しても component の
+  中の状態 — AddSub form の開閉と入力、`n` directive の登録、PAUSED の開閉、一覧の scroll 位置 — が消えない）
+- **pseudo-route** は `src/sidebar/route.ts`（純関数）+ `route-store.ts`（signal 1 本）。`#app-shell` の
+  `data-route` / `data-scene` に映すので DOM 検査で場面が読める。設定中に作業（lane / component）を選ぶと
+  設定を抜ける（旧 SettingsPanel の dismiss と同じ意味）。Actions にいる間の lane 選択は route を動かさない
+- **設定 Scene は既存の `SettingsSurface`**（#host に Portal + inert）を route で開閉する。layout engine に
+  触れないので、解けば前の settle がそのまま見える（solo pane 化は pane kind の registry = slice 2 の領分）。
+  Settings rail の peek は設定面の行への索引（節見出しは置かない — mako 2026-11-07「ミニマム」）
+- **rail 列は 48px**（上の mako 裁定の「slim 44px」から 4px 広げた）: CURail の列幅（48px）と同じにした。
+  slim は列だけなので slim の幅も 48px になる
+- **directive**: `b`（ACTIONS capture）は `/actions` へ一時遷移し、取り消し（Esc / 無関係なキー / 5 秒）で
+  入る前の route と形に戻す。区画を選んだ・ACTIONS の入力欄に打ち始めた時は留まる。間に user が別の場所へ
+  移っていたら戻さず、間に作業の選択が変わっていたら戻り先にも上の規則を当てる（`restoreAfterTransient`）。
+  `n`（New Sub）は form が Lanes の peek に住むので、先に Lanes の peek を開く
+- **幅**: 保存値 `sidebar_width`（180〜640）は **peek の幅**。leftEdge = rail 列 48px + peek（`--vp-peek-w` を
+  CURail の `peekWidth` に渡す）、slim = 列だけ。`#sidebar-root` は中身の幅で、幅の動きは CURail の peek だけが持つ。R の % は grid の right track に当てる（`--vp-rsb-pct`）—
+  grid item の % 幅は track に対して解決され、auto の track では効かないため
+- **3x3**: `#app-shell` を CUEdgeShell と同じ area 名の grid にし、`data-region` を #sidebar-root / #host /
+  #right-sidebar に付けた。CUEdgeShell の component 自体は mount しない（#host を Solid の中へ移すと
+  doc 49 R1 を破る）。upEdge は track だけで DOM は描かない
+- **改名**: `data-frame-id` → `data-app-pane`（`data-pane-id` は active-pane.ts が lane address を書く動的
+  属性で、寄せると VP-141 の衝突が再発する）。`--frame-transition-ms` は motion の token なので残す
+
 ## 9. 切ったこと
 
 - creo-ui-frame の採用（3D morph）。optional の遷移実行系として後から載せられる
@@ -147,3 +185,7 @@ slice 1 の mako 裁定（2026-11-05、GO）: 左 sidebar は Rail + peek の形
 
 - 2026-11-05: Conception 確定 + 起草。mako 裁定: Principal Layout の 3x3 + creo-ui-layout / 語彙 Shell・Layout・Frame /
   Scene 2 つ（開発・設定）/ Editor は float か別 Window / slice 1 は Rail + peek。creo-ui への要望 5 点を wire で送付。
+- 2026-11-25: slice 1 実装（task `mem_1ChNmWC2c12iRHNmGTtgHZ`）。左 edge = CURail と同じ DOM 契約の仮実装、pseudo-route、
+  設定 Scene、3x3 grid + `data-region`、`data-frame-id` → `data-app-pane`。決めたことは §8.1
+- 2026-11-25: 要望（peekOpen / anchor / 列の slot / peekFooter / keepPeeksMounted / region / peekWidth / resizing）が
+  creo-ui 0.31.0 に入り（creo-ui#188 + #204、release は #205）、同じ PR #1291 の中で仮実装を本物の `CURail` に差し替えた

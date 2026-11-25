@@ -5,7 +5,7 @@ import { solidPlugin } from 'esbuild-plugin-solid'
 import { Window, type HTMLElement, type HTMLInputElement } from 'happy-dom'
 import { fileURLToPath } from 'node:url'
 
-type Probe = Window & { sent: unknown[]; vpSettings: { open(): void; handleResult(s: unknown): void; handleUpdateCheckResult(s: unknown): void }; selectLane(lane: string): void; selectDevices(): void; dispose(): void }
+type Probe = Window & { SETTINGS_ITEMS: { id: string; label: string }[]; sent: unknown[]; vpSettings: { open(): void; handleResult(s: unknown): void; handleUpdateCheckResult(s: unknown): void }; selectLane(lane: string): void; selectDevices(): void; dispose(): void }
 let bundle: string
 const windows: Window[] = []
 beforeAll(async () => {
@@ -14,8 +14,10 @@ beforeAll(async () => {
       contents: `
         import { render } from 'solid-js/web';
         import { createComponent } from 'solid-js';
-        import { SettingsPanel, SETTINGS_PANEL_CSS } from './src/sidebar/SettingsPanel';
+        import { SettingsPanel, SETTINGS_ITEMS, SETTINGS_PANEL_CSS } from './src/sidebar/SettingsPanel';
         import { applySidebarState, emptyState } from './src/sidebar/store';
+        import { useRouteSync } from './src/sidebar/route-store';
+        window.SETTINGS_ITEMS = SETTINGS_ITEMS;
         window.sent = [];
         window.ipc = { postMessage: m => window.sent.push(JSON.parse(m)) };
         window.selectLane = lane => applySidebarState({ ...emptyState(), active_lane_address: lane });
@@ -24,7 +26,9 @@ beforeAll(async () => {
         const style = document.createElement('style');
         style.textContent = SETTINGS_PANEL_CSS;
         document.head.append(style);
-        window.dispose = render(() => createComponent(SettingsPanel, {}), document.getElementById('sidebar-root'));
+        // 開閉の SSOT は route（doc 87 §3）。作業の選択で閉じる配線は Shell が useRouteSync で張るので、
+        // SettingsPanel 単体の fixture でも同じ配線を張る。
+        window.dispose = render(() => { useRouteSync(); return createComponent(SettingsPanel, {}) }, document.getElementById('sidebar-root'));
       `,
       resolveDir: fileURLToPath(new URL('.', import.meta.url)), loader: 'tsx',
     }, bundle: true, write: false, format: 'iife', platform: 'browser',
@@ -126,6 +130,14 @@ describe('settings in the main area', () => {
     expect(panel.querySelectorAll('.vp-settings-h, .vp-settings-section, .vp-settings-hint')).toHaveLength(0)
     const labels = Array.from(panel.querySelectorAll('.vp-settings-row > .vp-settings-label')).map(el => el.textContent)
     expect(labels).toEqual(['Add Repo の初期フォルダ', 'hub', 'Creo ID', '新しい lane の既定', 'アイドルとみなす時間', 'ログの詳細度', 'Developer Mode', 'アップデート', 'daemon の再起動'])
+  })
+  it('the Settings rail index (doc 87 §3) lists exactly the rows, in order, with the same labels', () => {
+    const win = fixture()
+    win.vpSettings.open()
+    win.vpSettings.handleResult(snapshot)
+    const rows = Array.from(win.document.querySelectorAll('.vp-settings-row'))
+    expect(rows.map(r => r.getAttribute('data-setting'))).toEqual(win.SETTINGS_ITEMS.map(i => i.id))
+    expect(rows.map(r => r.querySelector(':scope > .vp-settings-label')!.textContent)).toEqual(win.SETTINGS_ITEMS.map(i => i.label))
   })
   it('keeps existing settings save messages and authoritative result updates', () => {
     const win = fixture()

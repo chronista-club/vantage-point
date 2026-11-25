@@ -1,9 +1,10 @@
 /**
  * 設定ページ（doc 59 / doc 76）— app 級の設定を 1 箇所に集める。
  *
- * `window.vpSettings.open()`（sidebar 下部の ⚙ 行 click）で開き、`settings:fetch` IPC で
- * 現在値を取りに行く。応答は `settings:result` → `window.vpSettings.handleResult` で
- * push back される（`WirePanel` と同じ流儀 — 常時 push はしない）。
+ * 左 edge の歯車（Settings rail）か `window.vpSettings.open()` で route が `/settings` に入ると
+ * center に出て（doc 87 §3 の設定 Scene）、`settings:fetch` IPC で現在値を取りに行く。
+ * 応答は `settings:result` → `window.vpSettings.handleResult` で push back される
+ * （`WirePanel` と同じ流儀 — 常時 push はしない）。
  *
  * ## P1 に載っているものの性格
  *
@@ -17,13 +18,21 @@
  * `settings:result` で受けて表示に反映する。client 側で先に state を進めないので、
  * 保存失敗時の巻き戻しを持たなくてよい（唯一の真実は vp-app.toml）。
  */
-import { createEffect, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createEffect, createSignal, on, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { sidebar } from "./store";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sendIpc } from "./ipc";
 import { useActivity } from "./DaemonWidget";
 import type { UpdateCheckResult } from "../generated/SidebarIpc";
+import {
+	currentRoute,
+	currentScene,
+	leaveSettings,
+	navigateTo,
+	workspaceSelection,
+} from "./route-store";
+import { sectionOf, settingsRoute } from "./route";
 
 /** `settings:result` が運ぶ確定値（schema `vp-sidebar.kdl` の event 定義と 1:1）。 */
 export type SettingsSnapshot = {
@@ -59,7 +68,10 @@ declare global {
 }
 
 // module スコープに置き、onMount で window.vpSettings に attach する（WirePanel と同じ）。
-const [visible, setVisible] = createSignal(false);
+// ⚠️ 開閉は signal で持たない — route（`route-store.ts`）が `/settings` の間だけ開いている。
+// 入口は rail の歯車（`clickRail`）。`window.vpSettings.open()` も route を動かすだけの口として残すが、
+// 2026-11-25 時点で本番の呼び手は無い（旧 sidebar 下部の ⚙ 行が唯一の呼び手だった — test は使う）。
+const visible = () => currentScene() === "settings";
 const [loaded, setLoaded] = createSignal(false);
 const [devMode, setDevMode] = createSignal(false);
 const [devLocked, setDevLocked] = createSignal(false);
@@ -87,13 +99,64 @@ function handleUpdateCheckResult(result: UpdateCheckResult): void {
 }
 
 function open(): void {
-	setVisible(true);
-	// 開くたびに引き直す（手で vp-app.toml を編集した後でも現実に追いつく）。
-	sendIpc({ t: "settings:fetch" });
+	navigateTo(settingsRoute());
 }
 
+/** 設定を閉じて直前の開発 route に戻る（Esc / 「作業に戻る」）。 */
 function dismiss(): void {
-	setVisible(false);
+	leaveSettings();
+}
+
+/**
+ * 設定の項目の索引（Settings rail の peek、doc 87 §3）。順と label は設定面の行と 1:1 —
+ * 行に `data-setting` で同じ id を振り、`settings-main-area.test.ts` が食い違いを止める。
+ * 節見出しは置かない（mako 2026-11-07「ミニマムにしよう」）— 索引は行への近道で、分類ではない。
+ */
+export const SETTINGS_ITEMS: readonly { id: string; label: string }[] = [
+	{ id: "repo-root", label: "Add Repo の初期フォルダ" },
+	{ id: "hub", label: "hub" },
+	{ id: "creo-id", label: "Creo ID" },
+	{ id: "default-agent", label: "新しい lane の既定" },
+	{ id: "idle", label: "アイドルとみなす時間" },
+	{ id: "log-level", label: "ログの詳細度" },
+	{ id: "developer-mode", label: "Developer Mode" },
+	{ id: "update", label: "アップデート" },
+	{ id: "daemon-restart", label: "daemon の再起動" },
+];
+
+/** 設定面の行（`data-setting`）へ寄せる。行は読み込み後にしか無いので、無ければ何もしない。 */
+function scrollToSetting(id: string): void {
+	Array.from(document.querySelectorAll<HTMLElement>("[data-setting]"))
+		.find((el) => el.dataset.setting === id)
+		?.scrollIntoView?.({ block: "nearest" });
+}
+
+/** Settings rail の peek — 設定面の行への索引。押すと route に section が載り、設定面がその行へ寄る。 */
+export function SettingsPeek() {
+	const section = () => sectionOf(currentRoute());
+	return (
+		<nav class="vp-settings-index" aria-label="設定の項目">
+			<header class="vp-sidebar-header">
+				<span class="vp-sidebar-title"><CreoIcon name="ph:gear-six" size={12} /> 設定</span>
+			</header>
+			{SETTINGS_ITEMS.map((item) => (
+				<button
+					type="button"
+					class="vp-settings-index-item"
+					data-setting-link={item.id}
+					aria-current={section() === item.id ? "page" : undefined}
+					onClick={() => {
+						navigateTo(settingsRoute(item.id));
+						// ⚠️ 同じ項目をもう一度押した時は route が変わらず（signal も動かず）下の effect が
+						// 走らない。手で scroll して離れた後の戻り道として、click でも直に寄せる。
+						scrollToSetting(item.id);
+					}}
+				>
+					{item.label}
+				</button>
+			))}
+		</nav>
+	);
 }
 
 function handleResult(s: SettingsSnapshot): void {
@@ -190,11 +253,6 @@ const LOG_LEVELS = ["", "trace", "debug", "info", "warn", "error"];
 /** アイドル判定の既定（分）。daemon が 0 を返した時の表示用。 */
 const DEFAULT_IDLE_MINUTES = 5;
 
-/** app の選択だけを監視する。定期 push や会話の更新は設定を閉じない。 */
-function workspaceSelection(): string {
-	return JSON.stringify([sidebar.active_lane_address ?? null,
-		sidebar.active_component?.repo_path ?? null, sidebar.active_component?.kind ?? null]);
-}
 
 /** pane を unmount / resize せず、一時的に入力対象から外す。 */
 function SettingsSurface(props: { children: JSX.Element }) {
@@ -234,12 +292,19 @@ export function SettingsPanel() {
 		return checked ? (checked.update_available ? checked.latest_version : undefined)
 			: (v.updateAvailable() ? v.latestVersion() : undefined);
 	};
-	let selection = workspaceSelection();
+	// 設定 Scene に入るたびに現在値を引き直す（手で vp-app.toml を編集した後でも現実に追いつく）。
+	// 入口に依らず（歯車 / 索引 / `b` の取り消しで戻る時も）、route が設定に入った瞬間 1 回だけ撃つ。
+	createEffect(on(visible, (v) => {
+		if (v) sendIpc({ t: "settings:fetch" });
+	}));
+	// 索引（Settings rail の peek）で選んだ行へ寄せる。行は読み込み後にしか無いので loaded も待つ。
 	createEffect(() => {
-		const next = workspaceSelection();
-		if (next !== selection) dismiss();
-		selection = next;
+		const id = sectionOf(currentRoute());
+		if (!visible() || !loaded() || !id) return;
+		scrollToSetting(id);
 	});
+	// ⚠️ 作業の選択（lane / component）が変わったら閉じる、は route-store の
+	// `onWorkspaceSelected` が持つ（設定の開閉は route の 1 本で決まる）。
 	onCleanup(dismiss);
 
 	onMount(() => {
@@ -286,7 +351,7 @@ export function SettingsPanel() {
 							{/* 1 枚の平たいリスト: 行 = ラベル + 入力だけ（mako 2026-11-07「ミニマムにしよう」）。
 							    節見出しと hint は置かない — 説明は doc 59 §5 にある。状態（更新結果 / daemon 未接続）
 							    だけは入力の隣に短く出す。 */}
-							<label class="vp-settings-row" for="vp-set-reporoot">
+							<label class="vp-settings-row" data-setting="repo-root" for="vp-set-reporoot">
 								<span class="vp-settings-label">Add Repo の初期フォルダ</span>
 								<div class="vp-settings-inputrow">
 									<input
@@ -308,7 +373,7 @@ export function SettingsPanel() {
 								</div>
 							</label>
 
-							<div class="vp-settings-row">
+							<div class="vp-settings-row" data-setting="hub">
 								<span class="vp-settings-label">hub</span>
 								<div class="vp-settings-inputrow">
 									<span class="vp-settings-status">{v.authState("hub")}</span>
@@ -327,7 +392,7 @@ export function SettingsPanel() {
 									</button>
 								</div>
 							</div>
-							<div class="vp-settings-row">
+							<div class="vp-settings-row" data-setting="creo-id">
 								<span class="vp-settings-label">Creo ID</span>
 								<div class="vp-settings-inputrow">
 									<span class="vp-settings-status">{v.authState("creo")}</span>
@@ -348,7 +413,7 @@ export function SettingsPanel() {
 							</div>
 
 							{/* daemon 側（settings.kdl）。未接続の間は入力を出さず状態だけ見せる。 */}
-							<label class="vp-settings-row" for="vp-set-agent">
+							<label class="vp-settings-row" data-setting="default-agent" for="vp-set-agent">
 								<span class="vp-settings-label">新しい lane の既定</span>
 								<Show when={daemonReachable()} fallback={<span class="vp-settings-status">daemon 未接続</span>}>
 									<div class="vp-settings-inputrow">
@@ -387,7 +452,7 @@ export function SettingsPanel() {
 								</Show>
 							</label>
 
-							<label class="vp-settings-row" for="vp-set-idle">
+							<label class="vp-settings-row" data-setting="idle" for="vp-set-idle">
 								<span class="vp-settings-label">アイドルとみなす時間</span>
 								<Show when={daemonReachable()} fallback={<span class="vp-settings-status">daemon 未接続</span>}>
 									<div class="vp-settings-inputrow">
@@ -405,7 +470,7 @@ export function SettingsPanel() {
 								</Show>
 							</label>
 
-							<label class="vp-settings-row" for="vp-set-loglevel">
+							<label class="vp-settings-row" data-setting="log-level" for="vp-set-loglevel">
 								<span class="vp-settings-label">ログの詳細度</span>
 								<Show when={daemonReachable()} fallback={<span class="vp-settings-status">daemon 未接続</span>}>
 									<div class="vp-settings-inputrow">
@@ -424,7 +489,7 @@ export function SettingsPanel() {
 								</Show>
 							</label>
 
-							<div class="vp-settings-row">
+							<div class="vp-settings-row" data-setting="developer-mode">
 								<span class="vp-settings-label">Developer Mode</span>
 								<div class="vp-settings-inputrow">
 									<button
@@ -443,7 +508,7 @@ export function SettingsPanel() {
 								</div>
 							</div>
 
-							<div class="vp-settings-row">
+							<div class="vp-settings-row" data-setting="update">
 								<span class="vp-settings-label">アップデート</span>
 								<div class="vp-settings-inputrow">
 									<button type="button" class="vp-settings-btn"
@@ -478,7 +543,7 @@ export function SettingsPanel() {
 								</div>
 							</div>
 
-							<div class="vp-settings-row">
+							<div class="vp-settings-row" data-setting="daemon-restart">
 								<span class="vp-settings-label">daemon の再起動</span>
 								<div class="vp-settings-inputrow">
 									<button
@@ -535,7 +600,11 @@ select.vp-settings-input{cursor:pointer;}
 .vp-settings-row{grid-template-columns:1fr;gap:4px;}
 .vp-settings-inputrow>.vp-settings-input{flex-basis:140px;}
 }
-/* sidebar 下部の ⚙ 入口（daemon status の直上 — doc 56 §7 / doc 59 §4） */
-.vp-settings-entry{display:flex;align-items:center;gap:8px;padding:3px var(--spacing-sm,8px);cursor:pointer;font-size:var(--sb-text-meta,11px);color:var(--lg-mute-2,#38525b);background:none;border:none;width:100%;text-align:left;font-family:inherit;}
-.vp-settings-entry:hover{color:var(--lg-mute,#5C7A85);}
+/* Settings rail の peek = 行への索引（doc 87 §3）。旧 sidebar 下部の ⚙ 行は rail の歯車に移った。 */
+.vp-settings-index{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;padding-bottom:8px;}
+.vp-settings-index-item{display:block;width:calc(100% - 16px);margin:0 8px;padding:6px 10px;border:0;border-radius:8px;
+  background:transparent;color:var(--lg-mute,#5C7A85);font:inherit;font-size:var(--sb-text-hint,12px);text-align:left;cursor:pointer;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.vp-settings-index-item:hover{color:var(--lg-hot,#EAFBFF);background:#ffffff06;}
+.vp-settings-index-item[aria-current="page"]{color:var(--lg-hot,#EAFBFF);background:var(--sb-selection-bg);}
 `;

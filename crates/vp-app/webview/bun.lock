@@ -6,7 +6,7 @@
       "name": "vp-app-web-bundle",
       "dependencies": {
         "@chronista-club/agent-chat": "file:../../../vendor/agent-chat/packages/chat",
-        "@chronista-club/creo-ui": "^0.30.0",
+        "@chronista-club/creo-ui": "^0.31.0",
         "@chronista-club/creo-ui-editor-host": "^0.11.0",
         "@chronista-club/creo-ui-icons-web": "^0.0.1",
         "@chronista-club/creo-ui-layout": "^0.3.0",
@@ -102,7 +102,7 @@
 
     "@chronista-club/agent-chat": ["@chronista-club/agent-chat@file:../../../vendor/agent-chat/packages/chat", { "peerDependencies": { "solid-js": "^1.9.0" } }],
 
-    "@chronista-club/creo-ui": ["@chronista-club/creo-ui@0.30.0", "", { "peerDependencies": { "solid-js": "^1.9.0" } }, "sha512-EkbvfUhMx+KnoqjZP/UVqCpL5/simKTkreSMLJZFvGowT2sMbx66M5tUf4OrAFS9teYuyVrAmg5GWMX9OfUQhg=="],
+    "@chronista-club/creo-ui": ["@chronista-club/creo-ui@0.31.0", "", { "peerDependencies": { "solid-js": "^1.9.0" } }, "sha512-Rds2K159Bz8cZtKlH699dZ50zAg9gHOorg4d6h+vNYAUra1Cqj/ltRIdsNEDBHYxdeecm9XpXc/KUte+yfsGPA=="],
 
     "@chronista-club/creo-ui-editor-host": ["@chronista-club/creo-ui-editor-host@0.11.0", "", { "peerDependencies": { "solid-js": "^1.9.0" } }, "sha512-9R7XhSWxyXJTLYfgUtCb0Eh+hTeU1u/65bIZaZfScxj5hhrs/YPL49jTy5RJ4YOY/y/jUQqtenJqkAixLqTqTQ=="],
 

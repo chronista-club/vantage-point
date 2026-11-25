@@ -145,16 +145,34 @@ pub const MAIN_AREA_HTML: &str = concat!(
     r#"
 html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:var(--vp-font-sans),var(--typography-family-sans);font-weight:300;}
 body{overflow:hidden;}
-/* WebView 統合 (step 3a): sidebar + main を 1 DOM に CSS flex で同居。
-   app-shell が [sidebar-root | host] を横並び、editor-root は別 (floating overlay)。 */
-#app-shell{display:flex;width:100%;height:100%;}
-#sidebar-root{width:280px;flex:none;height:100%;overflow:hidden;transition:width .15s ease;}
-/* sidebar view modes (2026-08-01): 左 sidebar のスリム帯 (`Cmd+[`)。class は sidebar bundle
-   (form.ts) が書き、中身の描画も同 bundle (SlimRail)。ここは幅だけ司る。 */
-#sidebar-root.slim{width:44px;}
-#host{position:relative;flex:1;height:100%;min-width:0;}
+/* 額縁 = Principal Layout の 3x3（doc 87 §2 / §7）。creo-ui の CUEdgeShell と同じ area 名の grid に
+   region を載せる（位置語彙 data-region、PL-2）: leftEdge = #sidebar-root / center = #host /
+   rightEdge = #right-sidebar。up / down の track は枠だけ用意し、**中身の無い edge は DOM を描かない**
+   （CUEdgeShell の <Show> と同じ — auto の track は 0 に畳まれる）。境界の取っ手（.shell-resizer）は
+   region ではないので、left と center / center と right の間に専用の track を持つ。
+   ⚠️ CUEdgeShell の component 自体は mount しない — それには #host を Solid の中へ移す（reparent）
+   必要があり、doc 49 R1（DOM を reparent しない — xterm は再生成できず、iframe は読み直しになる）を破る。額縁は属性と CSS だけで揃える。
+   editor-root は額縁の外（floating overlay）。 */
+#app-shell{display:grid;width:100%;height:100%;
+  grid-template-columns:auto auto minmax(0,1fr) auto auto;
+  grid-template-rows:auto minmax(0,1fr) auto;
+  grid-template-areas:
+    "up up up up up"
+    "left left-handle center right-handle right"
+    "down down down down down";}
+/* 左 edge = rail 列 + peek（doc 87 §8 slice 1）。中身は sidebar bundle の ShellRail.tsx（creo-ui の
+   CURail）が描き、#sidebar-root は**中身の幅**（列 48px + peek）になる。peek の幅は shell-layout.ts が
+   drag / 復元で --vp-peek-w に書き（180〜640px、永続）、CURail が peekWidth で受ける。slim (`Cmd+[`) は
+   CURail が peek を畳む（幅 0）ので列だけになる。⚠️ ここで width を決めない — 幅の動き（slim ⇄ full の
+   transition）は CURail の peek の 1 か所が持つ（#sidebar-root にも transition を置くと 2 つの動きが
+   ずれて、peek が一瞬はみ出す / 隙間が出る）。min-width は sidebar bundle が描く前の列の席。 */
+#sidebar-root{grid-area:left;--vp-rail-w:48px;--vp-peek-w:280px;min-width:var(--vp-rail-w);
+  height:100%;overflow:hidden;}
+#host{grid-area:center;position:relative;height:100%;min-width:0;min-height:0;}
+#shell-resizer-left{grid-area:left-handle;}
+#shell-resizer-right{grid-area:right-handle;}
 /* R sidebar (`Cmd+]`): 右の帯 (edge rail) の伸びた形 (doc 82)。既定は閉 (rail 形)。
-   開閉 class (body.rsb-open) は right-sidebar.ts が書く。flex 列なので開くと #host が縮む —
+   開閉 class (body.rsb-open) は right-sidebar.ts が書く。開くと right の track が幅を持ち #host が縮む —
    doc 55 の reflow 規律どおり user 操作起点の reflow のみ。 */
 /* shell layout の取っ手（L|main と main|R の境界、shell-layout.ts が配線）。
    幅 5px の帯。VS Code / Finder と同じく「境界そのものを掴む」作法にした（専用グリップを
@@ -182,9 +200,13 @@ body.shell-resizing{cursor:col-resize;user-select:none;}
   .shell-resizer.dragging{animation:none;}}
 
 /* R sidebar = edge rail の伸びた形 (doc 82)。幅は shell の 25% (min 320px) が既定で、drag で
-   変えた値も % のまま shell-layout.ts が inline で当てて永続化する。中身は 3 起点の縦 accordion
-   (上 = Lane / 中央 = Pull Requests / 下 = Debug Log — .tri-anchor の規約)。 */
-#right-sidebar{display:none;flex:none;width:25%;min-width:320px;height:100%;box-sizing:border-box;
+   変えた値も % のまま shell-layout.ts が --vp-rsb-pct に書いて永続化する。中身は 3 起点の縦 accordion
+   (上 = Lane / 中央 = Pull Requests / 下 = Debug Log — .tri-anchor の規約)。
+   ⚠️ 幅は item の width ではなく **right の track** に持たせる。grid item の % 幅は container ではなく
+   track に対して解決され、auto の track では循環して効かない（flex 時代の width:25% は使えない）。
+   track の % は grid container（= shell）の幅に対して解決されるので、旧来と同じ「shell の 25%」になる。 */
+body.rsb-open #app-shell{grid-template-columns:auto auto minmax(0,1fr) auto max(320px, var(--vp-rsb-pct, 25%));}
+#right-sidebar{grid-area:right;display:none;min-width:0;height:100%;box-sizing:border-box;
   background:var(--color-surface-bg-subtle);
   border-left:1px solid var(--color-surface-border,#1f2233);-webkit-app-region:no-drag;}
 body.rsb-open #right-sidebar{display:flex;}
@@ -673,20 +695,23 @@ body.rsb-open #lane-header,body.rsb-open #lane-panes{right:0;}
 <div id="app-shell">
 <!-- WebView 統合 (step 3a): sidebar bundle (SolidJS) の mount 先。bundle は外部 script
      (sidebar.bundle.js、doc 48 Phase 1 で inline → 外部化) が mount する。 -->
-<div id="sidebar-root"></div>
+<div id="sidebar-root" data-region="leftEdge"></div>
 <!-- shell layout: L sidebar と main の境界。掴んで幅を変える（shell-layout.ts が配線）。
      slim のときは shell-layout.ts が display:none にする（掴めないものに取っ手を見せない）。 -->
 <div id="shell-resizer-left" class="shell-resizer" role="separator" aria-orientation="vertical"
      aria-label="サイドバーの幅"></div>
-<div id="host">
+<div id="host" data-region="center">
   <!-- 各 .pane の attribute 規約 (VP-141 で 2 attribute に分離):
-       - data-kind="..."    : 静的 (HTML hardcode、 「terminal」「board」 等の kind classification)
-       - data-frame-id="..." : 静的 (HTML hardcode、 Frame Engine の Scene lookup key、 「conversation」「pp」 等)
-       - data-pane-id="..." : 動的 (active pane 切替時に main_area inline JS `setActiveImpl` が Lane address
-                              等で setAttribute、 VP-100 γ-light native overlay sync 用 / Phase 4+ 同期 target)
-       Frame Engine と legacy native overlay sync の attribute を分離しているのは、 Lane click で
-       legacy 側 setAttribute が Frame Engine の static attribute を hijack して Scene lookup undefined
-       → HIDDEN_TRANSFORM 適用 → pane が見えなくなる回帰を防ぐため (VP-141 fix)。
+       - data-kind="..."     : 静的 (HTML hardcode、 「lane」「preview」 等の kind classification)
+       - data-app-pane="..." : 静的 (HTML hardcode、 app scope の creo-ui-layout が配置を引く pane id、
+                               app-panes.ts の APP_PANE_IDS と 1:1。旧 frame-engine の data-frame-id を
+                               doc 87 §1.1 で改名 — 「frame」は motion 層の語に残す、doc 49 §5)
+       - data-pane-id="..."  : 動的 (active pane 切替時に active-pane.ts が Lane address 等で
+                               setAttribute、 VP-100 γ-light native overlay sync 用 / Phase 4+ 同期 target)
+       配置の住所と legacy native overlay sync の attribute を分離しているのは、 Lane click で
+       legacy 側 setAttribute が静的な住所を hijack して配置の lookup が undefined
+       → 非表示投影 → pane が見えなくなる回帰を防ぐため (VP-141 fix)。 ⚠️ だから data-app-pane を
+       data-pane-id に寄せてはいけない。
        VP-100 γ-light: ResizeObserver が slot rect を IPC で送る (Phase 4+ で native overlay 同期に使う)。 -->
   <!-- Phase 2.5 (per-Lane instance) → doc 50 §4.6 A6: pane-lane 内の #lane-panes に
        (lane, session) ごとの xterm.js instance を mount。 active な instance だけ display:block。 -->
@@ -694,7 +719,7 @@ body.rsb-open #lane-header,body.rsb-open #lane-panes{right:0;}
        inline opacity:1 を CSS .pane{opacity:0} default より優先させ、 Frame Engine 不在 / 起動失敗時も
        少なくとも Conversation terminal は見える状態を保つ (= conversation が default visible 約束)。
        Frame Engine 起動後は inline style.opacity を engine が上書きする (main-focus:1 / pp-focus:0)。 -->
-  <div class="pane terminal" id="pane-lane" data-kind="lane" data-frame-id="lane" style="opacity:1;pointer-events:auto;visibility:visible;">
+  <div class="pane terminal" id="pane-lane" data-kind="lane" data-app-pane="lane" style="opacity:1;pointer-events:auto;visibility:visible;">
     <!-- Conversation 共通ヘッダ (操縦席) の mount 点。器だけ World A が置き、editor-host bundle の
          LaneHeader が中身を render する。lane 切替で内容だけ差し替わる (帰属は lane の Conversation、
          tui/gui を跨いで同一 header が載り続ける)。default 高さ 0、内容がある時だけ開く。 -->
@@ -813,7 +838,7 @@ body.rsb-open #lane-header,body.rsb-open #lane-panes{right:0;}
        (`pane-board` 内 `<div id="board-content">`) が Smart Canvas surface を物理化
        したため vestigial。 doc 13 §10 Q-3 (= Smart Canvas 配置) も PR-ε-3 で確定済。 -->
 
-  <div class="pane preview" id="pane-preview" data-kind="preview" data-frame-id="preview">
+  <div class="pane preview" id="pane-preview" data-kind="preview" data-app-pane="preview">
     <div class="pane-header">
       <div class="pane-title">
         <span class="pane-icon"><iconify-icon icon="ph:magnifying-glass"></iconify-icon></span>
@@ -827,7 +852,7 @@ body.rsb-open #lane-header,body.rsb-open #lane-panes{right:0;}
   </div>
   <!-- doc 52 §10 wave 0: Board は app 層の pane を退役し、lane tiling の board pane
        （#lane-board、上方 #lane-panes 内）へ引っ越した。runner / Devices / Preview は app pane のまま。 -->
-  <div class="pane agent" id="pane-runner" data-kind="runner" data-frame-id="runner">
+  <div class="pane agent" id="pane-runner" data-kind="runner" data-app-pane="runner">
     <div class="pane-header">
       <div class="pane-title">
         <span class="pane-icon"><iconify-icon icon="ph:plant"></iconify-icon></span>
@@ -845,7 +870,7 @@ body.rsb-open #lane-header,body.rsb-open #lane-panes{right:0;}
       </main>
     </div>
   </div>
-  <div class="pane agent" id="pane-devices" data-kind="devices" data-frame-id="devices">
+  <div class="pane agent" id="pane-devices" data-kind="devices" data-app-pane="devices">
     <div class="pane-header">
       <div class="pane-title">
         <span class="pane-icon"><iconify-icon icon="ph:magnet"></iconify-icon></span>
@@ -863,7 +888,7 @@ body.rsb-open #lane-header,body.rsb-open #lane-panes{right:0;}
     </div>
   </div>
   <!-- VP-140: 旧 active class を削除 (Frame Engine の empty Scene が opacity 制御するため)。 -->
-  <div class="pane empty" id="pane-empty" data-kind="empty" data-frame-id="empty">
+  <div class="pane empty" id="pane-empty" data-kind="empty" data-app-pane="empty">
     <main>
       <h1>No pane selected</h1>
       <p>sidebar から pane を選択してください</p>
@@ -877,7 +902,7 @@ body.rsb-open #lane-header,body.rsb-open #lane-panes{right:0;}
      aria-label="R sidebar の幅"></div>
 <!-- R sidebar（doc 82）= edge rail の伸びた形。3 起点の縦 accordion — 上 = Lane（rail の住人が
      付け替わってくる）/ 中央 = Pull Requests / 下 = Debug Log。開閉と付け替えは right-sidebar.ts。 -->
-<div id="right-sidebar" class="tri-anchor" aria-label="R sidebar">
+<div id="right-sidebar" class="tri-anchor" data-region="rightEdge" aria-label="R sidebar">
   <div class="anchor-top">
     <section id="rsb-sec-lane" class="rsb-section" data-section="lane">
       <div class="rsb-sec-head" role="button" aria-expanded="true">

@@ -1,10 +1,10 @@
 /**
- * shell layout — L sidebar | main | R sidebar の**形**（幅 / full-slim / R 開閉）。
+ * shell layout — leftEdge | center | rightEdge の**形**（幅 / full-slim / R 開閉）。
  *
  * ## この module が SSOT である理由
  *
- * shell は 1 document の flex 行（`#app-shell`）で、`#sidebar-root` と `#right-sidebar` の
- * 幅がその形を決める。`sidebarForm`（full/slim）は sidebar bundle の `form.ts` が、R の開閉は
+ * shell は 1 document の 3x3 grid（`#app-shell`、doc 87 — creo-ui CUEdgeShell と同じ area 名）で、
+ * `#sidebar-root`（leftEdge）と `#right-sidebar`（rightEdge）の幅がその形を決める。`sidebarForm`（full/slim）は sidebar bundle の `form.ts` が、R の開閉は
  * `right-sidebar.ts` が持っているが、**「window をどう開いていたか」を 1 つの箱で永続化する**
  * ため、形の集約はここに置く。両者からは CustomEvent で「変わった」とだけ伝わる
  * （`vp:board-view` / `vp:board-presence` と同じ bus の流儀）。
@@ -28,13 +28,28 @@
  * 読まない — 旧版は R を開閉するたびに既定 420px を保存していたので、px を読むと
  * ほぼ全員が 25% 既定を見ないまま 420 に留まる。
  *
+ * ## L の保存値は **peek の幅**（doc 87 §8 slice 1）
+ *
+ * leftEdge は rail 列（48px）+ peek。保存・drag するのは **peek の幅**（180〜640px、Rust
+ * `SIDEBAR_MIN/MAX_WIDTH` と同じ端）で、DOM には `#sidebar-root` の `--vp-peek-w` として当てる。
+ * creo-ui の `CURail` がそれを `peekWidth` で受け、`#sidebar-root` は中身（列 + peek）の幅になる。
+ * ⚠️ inline の `width` を書かない — slim（CURail が peek を畳む）でも幅が残ってしまう。
+ *
  * ## ⚠️ slim の幅は保存しない
  *
- * `#sidebar-root.slim` は CSS 固定の 44px。保存するのは **full の幅**だけで、slim 中に
- * drag はできない（取っ手を出さない）。混ぜると「slim で終了 → 次回 full が 44px」になる。
+ * slim は rail 列だけ（CURail が peek を幅 0 に畳む）。保存するのは **peek の幅**だけで、slim 中に
+ * drag はできない（取っ手を出さない）。混ぜると「slim で終了 → 次回 peek が下限（180px）に潰れる」になる
+ * （列の 48 が保存され、SIDEBAR_MIN で clamp される）。
+ *
+ * ## R の幅は track に当てる
+ *
+ * grid item の % 幅は container でなく track に対して解決され、auto の track では循環して効かない。
+ * そこで R の % は `#app-shell` の `--vp-rsb-pct` に書き、main_area.rs の
+ * `body.rsb-open #app-shell{grid-template-columns:… max(320px, var(--vp-rsb-pct, 25%))}` が読む
+ * （track の % は shell 幅に対して解決される = 旧来の「shell の 25%」と同じ意味）。
  */
 
-/** L sidebar の幅の許容範囲（Rust `SIDEBAR_MIN/MAX_WIDTH` と対の値）。 */
+/** L の peek の幅の許容範囲（Rust `SIDEBAR_MIN/MAX_WIDTH` と対の値）。 */
 export const SIDEBAR_MIN = 180;
 export const SIDEBAR_MAX = 640;
 /** R sidebar の幅（px）の許容範囲（Rust `RIGHT_SIDEBAR_MIN/MAX_WIDTH` と対の値）。
@@ -47,10 +62,14 @@ export const RIGHT_MAX_PCT = 60;
 /** R の既定 %（doc 82 — mako「伸びた状態（25%）で使う想定」）。CSS の初期値と揃える。 */
 export const DEFAULT_RIGHT_PCT = 25;
 
-/** 既定値。CSS の初期値（`#sidebar-root{width:280px}` / `#right-sidebar{width:25%}`）と揃える。 */
+/** 既定値。CSS の初期値（`#sidebar-root{--vp-peek-w:280px}` / `--vp-rsb-pct` の既定 25%）と揃える。 */
 const DEFAULT_SIDEBAR = 280;
 
+/** rail 列の幅（CSS `--vp-rail-w` の既定と揃える）。drag 中に列が測れない時の代わり。 */
+export const RAIL_WIDTH = 48;
+
 export interface ShellLayoutState {
+	/** L の peek の幅（px）。rail 列の幅は含まない。 */
 	sidebarWidth: number;
 	/** R の幅（shell 幅に対する %）。 */
 	rightSidebarPct: number;
@@ -77,16 +96,19 @@ export function clampWidth(px: number, min: number, max: number): number {
 }
 
 /**
- * drag 中の新しい幅。`side` で符号が反転する — L は「境界の x がそのまま幅」、
- * R は「窓の右端から境界までの距離」。
+ * drag 中の新しい幅。`side` で符号が反転する — L は「境界の x から rail 列の幅を引いた残り」
+ * （= peek の幅）、R は「窓の右端から境界までの距離」。
+ *
+ * @param railWidth L の rail 列の幅。peek の幅を出すために引く（R では使わない）
  */
 export function nextWidth(
 	side: "left" | "right",
 	pointerX: number,
 	shellRect: { left: number; right: number },
+	railWidth = 0,
 ): number {
 	return side === "left"
-		? clampWidth(pointerX - shellRect.left, SIDEBAR_MIN, SIDEBAR_MAX)
+		? clampWidth(pointerX - shellRect.left - railWidth, SIDEBAR_MIN, SIDEBAR_MAX)
 		: clampWidth(shellRect.right - pointerX, RIGHT_MIN, RIGHT_MAX);
 }
 
@@ -113,15 +135,14 @@ function el<T extends HTMLElement>(sel: string): T | null {
 	return document.querySelector<T>(sel);
 }
 
-/** 幅を DOM に当てる。form が slim のときは L の inline 幅を外す（CSS の 44px に譲る）。 */
+/**
+ * 幅を DOM に当てる。L は peek の幅を `--vp-peek-w` に、R は % を `#app-shell` の `--vp-rsb-pct` に
+ * 書く（冒頭の注記）。slim の幅は CSS が決めるので、form に依らず peek の幅は持ち続ける。
+ */
 function applyWidths(): void {
 	const left = el("#sidebar-root");
-	if (left) {
-		if (state.sidebarForm === "slim") left.style.removeProperty("width");
-		else left.style.width = `${state.sidebarWidth}px`;
-	}
-	const right = el("#right-sidebar");
-	if (right) right.style.width = `${state.rightSidebarPct}%`;
+	if (left) left.style.setProperty("--vp-peek-w", `${state.sidebarWidth}px`);
+	el("#app-shell")?.style.setProperty("--vp-rsb-pct", `${state.rightSidebarPct}%`);
 	// 取っ手は slim / R 閉のときは出さない（掴めないものに取っ手を見せない）。
 	const lh = el("#shell-resizer-left");
 	if (lh) lh.style.display = state.sidebarForm === "slim" ? "none" : "";
@@ -231,9 +252,12 @@ function wireHandle(handle: HTMLElement, side: "left" | "right"): void {
 		document.body.classList.add("shell-resizing");
 		handle.classList.add("dragging");
 
+		// rail 列の幅は drag の始めに 1 回測る（列は drag 中に変わらない）。
+		const railWidth =
+			el('#sidebar-root nav[aria-label="Rail"]')?.getBoundingClientRect().width || RAIL_WIDTH;
 		const onMove = (ev: PointerEvent) => {
 			const rect = shell.getBoundingClientRect();
-			if (side === "left") state.sidebarWidth = nextWidth(side, ev.clientX, rect);
+			if (side === "left") state.sidebarWidth = nextWidth(side, ev.clientX, rect, railWidth);
 			else state.rightSidebarPct = nextRightPct(ev.clientX, rect);
 			applyWidths();
 		};
