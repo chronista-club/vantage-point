@@ -20,6 +20,7 @@ import { ResponsePoint } from "./ResponsePoint";
 import { requestingLaneCount } from './lane-progress';
 import { LaneRow, SessionRow } from "./LaneRow";
 import { AddSub } from "./AddSub";
+import { foldItemCount, foldedSummary, type FoldContent } from "./repo-fold";
 import { registerAddSubOpenSetter } from "./directive-state";
 import {
 	clearDrag,
@@ -125,6 +126,20 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 	// されない) ため、 停止中でも true になりうる。 稼働中であることを明示的に AND して、
 	// 停止中 repo に「+」と Start「▶」が同居する / 失敗する Add Sub を開けるのを防ぐ。
 	const showAddSub = () => isActiveRepo() && !isPaused();
+
+	// 折りたたみ（mem_1ChNtdQKHrSB78Ppek2etg）: `.vp-proj-content` に畳まれる物の内訳。
+	// 中身の数で caret の濃さ（0 = lead 1 本だけ = 控えめ）を、畳んでいる間の内訳で
+	// lane 数の chip の見え方を決める。数え方は repo-fold.ts の純関数。
+	const foldContent = (): FoldContent => ({
+		hint: hint() != null,
+		subs: subs().length,
+		// 下の `.vp-proj-content` が描く物と同じ集合を数える（root の追加セッション + sub ごとの追加セッション）
+		sessions: [...(root() ? [root()!] : []), ...subs()].reduce((n, l) => n + extraSessionsOf(l).length, 0),
+		form: addSubOpen(),
+	});
+	const foldable = () => foldItemCount(foldContent()) > 0;
+	// 畳んでいて、隠れている lane / セッション / フォームがある時だけ内訳を語る（hint だけなら null）。
+	const foldedNote = () => (props.proc.expanded ? null : foldedSummary(foldContent()));
 
 	// 📁 repo ヘッダの右クリック → repo context menu。
 	//   - 一時停止中: Start repo (restart_process は dead な repo も起こす)
@@ -240,14 +255,18 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 	};
 
 	const controls = () => <>
-		<span class="vp-lane-count">{lanes().length} lanes</span>
+		{/* 畳んでいる間は lane 数を chip にし、隠れている sub の状態ドットを中に並べる
+		    （.vp-proj.folded の CSS）。title が内訳を語る。 */}
+		<span class="vp-lane-count" title={foldedNote() ?? undefined}>
+			{lanes().length} lanes
+			<Show when={!props.proc.expanded && subs().length > 0}>
+				<span class="vp-sub-points" aria-label={`sub lane ${subs().length}個`}>
+					<For each={subs()}>{lane => <ResponsePoint lane={lane} connectorClass={connectorFor(lane)} compact />}</For>
+				</span>
+			</Show>
+		</span>
 		<Show when={requestingLaneCount(lanes()) > 0}>
 			<span class="vp-repo-requests" title="要求中の lane">◆ {requestingLaneCount(lanes())}</span>
-		</Show>
-		<Show when={!props.proc.expanded && subs().length > 0}>
-			<span class="vp-sub-points" aria-label={`sub lane ${subs().length}個`}>
-				<For each={subs()}>{lane => <ResponsePoint lane={lane} connectorClass={connectorFor(lane)} compact />}</For>
-			</span>
 		</Show>
 
 				{/* lane 追加: 産む動詞は**親の行**に住む（mako 2026-08-20 — repo の子 = lane を
@@ -296,21 +315,29 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 					</button>
 				</Show>
 	</>;
+	// 開閉 caret（mem_1ChNtdQKHrSB78Ppek2etg）。旧形は中身が活動ドットだけで、押せることも
+	// 開閉の状態も見えなかった（隠しボタン）。caret = 開閉、活動ドット = lane の状態、と役割を
+	// 分け、caret は行の最左（木の開閉の定位置）に置く。回転は aria-expanded を CSS が読む
+	// （R sidebar の .rsb-chevron と同じ ph:caret-right + 90°）。畳む中身が無い時は .is-empty で控えめに。
 	const toggle = () => <button type="button" class="vp-proj-toggle"
+		classList={{ "is-empty": !foldable() }}
 		aria-label={`${props.proc.name} を${props.proc.expanded ? "折りたたむ" : "展開する"}`}
 		aria-expanded={props.proc.expanded}
+		title={!foldable() ? "畳む中身はありません（lead 1 本だけ）" : props.proc.expanded ? "配下を畳む" : (foldedNote() ?? "配下を開く")}
 		onClick={e => { e.stopPropagation(); sendIpc({ t: "process:toggle", path: props.proc.path, expanded: !props.proc.expanded }); }}>
-		<ResponsePoint disabled={props.proc.state !== "running"} lane={root()} connectorClass={root() ? connectorFor(root()!) : undefined} />
+		<CreoIcon name="ph:caret-right" size={12} class="vp-proj-caret" />
 	</button>;
+	// lead lane の活動ドット（鮮度つき）。toggle の外、LaneRow の leading スロットに置く。
+	const point = () => <ResponsePoint disabled={props.proc.state !== "running"} lane={root()} connectorClass={root() ? connectorFor(root()!) : undefined} />;
 	return (
 		<div class="vp-proj creo-sidenav-group" data-path={props.proc.path}
-			classList={{ dragging: isDragging(), "drop-before": dropBefore(), "drop-after": dropAfter() }}
+			classList={{ dragging: isDragging(), "drop-before": dropBefore(), "drop-after": dropAfter(), folded: foldedNote() != null }}
 			draggable="true" onMouseDown={onMouseDown} onDragStart={onDragStart}
 			onDragOver={onDragOver} onDrop={onDrop} onDragEnd={clearDrag}>
 			<div class="vp-proj-summary" onContextMenu={onSummaryContextMenu} title={`接続: ${presence()}`}>
-				<Show when={!hint() && root()} fallback={<div class="vp-proj-placeholder">{toggle()}<span class="vp-proj-name">{props.proc.name}</span>{controls()}</div>}>
+				<Show when={!hint() && root()} fallback={<div class="vp-proj-placeholder">{toggle()}{point()}<span class="vp-proj-name">{props.proc.name}</span>{controls()}</div>}>
 					<LaneRow lane={root()!} repoPath={props.proc.path} projectName={props.proc.name} projectMenuItems={projectMenuItems()}
-						connectorClass={connectorFor(root()!)} leading={toggle()} trailing={controls()} />
+						connectorClass={connectorFor(root()!)} disclosure={toggle()} leading={point()} trailing={controls()} />
 				</Show>
 			</div>
 			<div class="vp-proj-content creo-sidenav-list" hidden={!props.proc.expanded}>

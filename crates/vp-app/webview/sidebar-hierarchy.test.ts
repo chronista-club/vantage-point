@@ -139,11 +139,15 @@ it('shows pastel response freshness per session without inventing unknown times'
   expect(win.document.querySelectorAll('.vp-response-point')).toHaveLength(0)
 })
 
-it('replaces the project arrow with an activity point and keeps Result visible', () => {
+// 2026-11-25（mem_1ChNtdQKHrSB78Ppek2etg）: 開閉は caret に戻し、activity ポイントは lead 行の leading に
+// 残して状態表示だけを受け持つ（旧 #1172: ポイント自体が開閉ボタンで、押せることも開閉の状態も見えなかった。
+// mako 実機「折り畳み、、、実装されてたね。見やすくできたらいいなぁ。」）。
+it('keeps the project activity point beside the fold caret and keeps Result visible', () => {
   const win = fixture()
-  const point = () => win.document.querySelector('.vp-proj-toggle .vp-activity-point')!
+  const point = () => win.document.querySelector('.vp-proj-summary .vp-lane-leading .vp-activity-point')!
   expect(point()).not.toBeNull()
-  expect(win.document.querySelector('.vp-proj-toggle iconify-icon')).toBeNull()
+  expect(win.document.querySelector('.vp-proj-toggle .vp-activity-point')).toBeNull()
+  expect(win.document.querySelector('.vp-proj-toggle iconify-icon.vp-proj-caret')).not.toBeNull()
   win.con.handleEvent('project/main', {kind:'thought_chunk', text:'thinking'}, 1)
   expect(point().getAttribute('data-activity')).toBe('thinking')
   win.con.handleEvent('project/main', {kind:'tool_call', id:'tool', name:'Read', input:{}}, 1)
@@ -160,13 +164,16 @@ it('replaces the project arrow with an activity point and keeps Result visible',
   win.con.handleEvent('project/main', {kind:'thought_chunk', text:'old thought'}, 1)
   win.con.handleEvent('project/main', {kind:'replay_end',in_flight:false}, 1)
   expect(point().getAttribute('data-activity')).toBe('completed')
-  point().parentElement!.dispatchEvent(new win.MouseEvent('click',{bubbles:true}))
+  win.document.querySelector('.vp-proj-toggle')!.dispatchEvent(new win.MouseEvent('click',{bubbles:true}))
   expect(win.sent.at(-1)).toEqual({t:'process:toggle',path:'/project',expanded:false})
+  // ポイントは開閉ボタンではない — 押すと親行本体と同じく lead lane の選択になる
+  point().dispatchEvent(new win.MouseEvent('click',{bubbles:true}))
+  expect(win.sent.at(-1)).toEqual({t:'lane:select',path:'/project',address:'project/main'})
 })
 
 it('keeps actionable Codex requests red through background work and Result', () => {
   const win = fixture()
-  const point = () => win.document.querySelector('.vp-proj-toggle .vp-activity-point')!
+  const point = () => win.document.querySelector('.vp-proj-summary .vp-lane-leading .vp-activity-point')!
   win.con.handleEvent('project/main', {kind:'codex_interactions', requests:[{request_id:'q', can_accept:true}]}, 1)
   win.con.handleEvent('project/main', {kind:'thought_chunk',text:'still thinking'}, 1)
   expect(point().getAttribute('data-activity')).toBe('waiting')

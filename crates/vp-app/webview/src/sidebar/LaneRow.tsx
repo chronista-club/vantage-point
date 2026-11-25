@@ -9,7 +9,7 @@
  */
 import { pins, pinsReady, setPin } from './midi-pin-store';
 import { PIN_COUNT, pinNumberOf } from '../../midi-pins';
-import { Show, createSignal, onCleanup, type JSX } from "solid-js";
+import { Show, children, createSignal, onCleanup, type JSX } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import type { LaneInfo } from "../generated/LaneInfo";
 import type { SubStatusWire } from "../generated/SubStatusWire";
@@ -174,9 +174,14 @@ export function LaneRow(props: {
 	connectorClass?: string;
 	projectName?: string;
 	projectMenuItems?: ContextMenuItem[];
+	/** 行の最左に置く開閉 caret（lead 行 = RepoAccordion だけが渡す）。sub 行は持たない。 */
+	disclosure?: JSX.Element;
 	leading?: JSX.Element;
 	trailing?: JSX.Element;
 }) {
+	// ⚠️ JSX の prop は読むたびに getter が評価される（`disclosure={toggle()}` は読むたびに
+	// button を作り直す）。Show の条件と本体で 2 回読まないよう、children() で 1 回に解決する。
+	const disclosure = children(() => props.disclosure);
 	const addr = () => laneAddressKey(props.lane);
 	const isActive = () => sidebar.active_lane_address === addr();
 	// F.8 B Convergent: Pane (Conversation) 不在 = pid:null は Dead Lane (spawn 失敗)、 dim 表示。
@@ -445,6 +450,9 @@ export function LaneRow(props: {
 			onDrop={onDrop}
 			onDragEnd={clearLaneDrag}
 		>
+			<Show when={disclosure()}>
+				<span class="vp-lane-disclosure">{disclosure()}</span>
+			</Show>
 			<span class="vp-lane-status" data-lane-state={displayState()}
                 classList={{ 'has-error': !!progress()?.error }}
                 role="img" aria-label={LANE_STATE_LABEL[displayState()]} title={LANE_STATE_LABEL[displayState()]}>

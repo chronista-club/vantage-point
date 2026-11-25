@@ -884,7 +884,41 @@ html,body{margin:0;height:100%;overflow:hidden;}
 #sidebar-root .vp-proj-summary .vp-lane-row{margin-left:4px;}
 #sidebar-root .vp-proj-content .vp-lane-row{margin-left:36px;}
 .vp-proj-placeholder{display:flex;align-items:center;gap:6px;padding:8px 10px;}
-.vp-proj-toggle{border:0;background:transparent;color:var(--lg-mute,#5C7A85);cursor:pointer;padding:0;display:inline-flex;flex:none;}
+/* lead 行の開閉 caret (mem_1ChNtdQKHrSB78Ppek2etg)。旧形は 8px の活動ドットだけが toggle で、
+   押せることも開閉の状態も見えなかった。caret は行の最左 (.vp-lane-disclosure = 木の開閉の定位置)、
+   16×18px のヒットエリア + hover で面を僅かに起こして「押せる」を伝える。回転は R sidebar の
+   .rsb-chevron と同じ語彙 (ph:caret-right が aria-expanded="true" で 90°)。 */
+/* 280px 既定の peek では lead 名の幅が効くので、caret の溝を少しでも名前に返す:
+   左 -4px = 行の左 padding に寄せる (glyph は箱の内側 2px の位置)。上下 -2px = 18px 高の箱で
+   行が高くならないように (ヒットエリアは 18px のまま、行の高さは従来どおり)。 */
+.vp-lane-disclosure{display:inline-flex;align-items:center;flex:0 0 auto;margin:-2px 0 -2px -4px;}
+/* hint の行 (repo 停止中など) も同じ箱。左は placeholder の padding 10px に対して -2px で、lead 行の caret と列を揃える。 */
+.vp-proj-placeholder > .vp-proj-toggle{margin:-2px 0 -2px -2px;}
+.vp-proj-toggle{border:0;background:transparent;color:var(--lg-mute,#5C7A85);cursor:pointer;padding:0;
+  display:inline-flex;align-items:center;justify-content:center;flex:none;
+  width:16px;height:18px;border-radius:5px;
+  transition:color .12s ease,background-color .12s ease,opacity .12s ease;}
+.vp-proj-toggle:hover{color:var(--lg-hot,#EAFBFF);
+  background:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 90%);}
+.vp-proj-toggle:focus-visible{outline:1px solid var(--lg-cyan-dim,#1C6C7C);outline-offset:1px;}
+.vp-proj-caret{transition:transform .12s ease;}
+.vp-proj-toggle[aria-expanded="true"] .vp-proj-caret{transform:rotate(90deg);}
+/* 畳む中身が無い (lead 1 本だけ) 時は控えめに — 押しても何も変わらない caret でノイズを作らない。
+   消しはしない (hover で戻る): 次に sub を産んだ時に場所が動かない。 */
+.vp-proj-toggle.is-empty{opacity:.35;}
+.vp-proj-toggle.is-empty:hover{opacity:.8;}
+@media (prefers-reduced-motion:reduce){.vp-proj-caret,.vp-proj-toggle{transition:none;}}
+/* lead 行の 2 段目 (now / branch) は caret の溝 (16px + 行の gap 4px - 寄せた 4px) だけ下げ、status 列に揃える。 */
+.vp-proj-summary .vp-lane-detail{box-sizing:border-box;padding-left:16px;}
+/* 畳んでいる間 (.vp-proj.folded = 隠れている lane / セッションがある): lane 数を hairline の chip にして
+   「中に畳まれている」を読ませ、sub の状態ドットを chip の中に並べる。光らせない (注意の光は needs-you の専有)。
+   余白は最小限 (0 5px) — 右端の block は縮まないので、chip の幅はそのまま lead 名の幅から引かれる。
+   ⚠️ sub が 9 本以上だとドットが 2 段に折り返す (5px + 間隔 3px で 64px に入るのは 8 個。max-width は従来どおり)。 */
+.vp-proj.folded .vp-lane-count{display:inline-flex;align-items:center;gap:4px;padding:0 5px;
+  border-radius:999px;border:1px solid var(--lg-mute-2,#38525b);
+  color:var(--lg-mute,#5C7A85);font-weight:400;}
+.vp-proj.folded .vp-lane-count .vp-sub-points{gap:3px;}
+.vp-proj.folded .vp-lane-count .vp-sub-point{width:5px;height:5px;}
 .vp-sidebar-title{text-transform:none;display:flex;align-items:center;gap:6px;}
 .vp-sidebar-section-title{padding:16px 12px 6px;font-size:var(--sb-text-micro,10px);color:var(--lg-mute,#5C7A85);}
 .vp-sidebar-section-title{list-style:none;display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;}
