@@ -14,12 +14,14 @@ import { collapseSidebar, expandSidebar, sidebarForm } from "./form";
 import {
 	type RouteState,
 	type ShellRailId,
+	type ShellScene,
 	closeSettings,
 	initialRouteState,
 	navigate,
 	onWorkspaceSelected,
 	railClick,
 	railOf,
+	restoreAfterTransient,
 	sceneOf,
 } from "./route";
 import { sidebar } from "./store";
@@ -32,7 +34,7 @@ export function currentRoute(): string {
 }
 
 /** 今の Scene（reactive）。`settings` の間、center は設定面を表示している。 */
-export function currentScene(): "dev" | "settings" {
+export function currentScene(): ShellScene {
 	return sceneOf(routeState().route);
 }
 
@@ -81,18 +83,40 @@ export function showRail(rail: ShellRailId): void {
 	expandSidebar();
 }
 
-/** 一時遷移（`b` の ACTIONS capture）の退避用。 */
-export function routeSnapshot(): RouteState {
-	return routeState();
+/** 一時遷移の控え。入る前の状態・置いた route・入った時の作業の選択。 */
+export interface TransientRoute {
+	saved: RouteState;
+	placed: string;
+	selection: string;
 }
 
-/** [`routeSnapshot`] で退避した状態に戻す。 */
-export function restoreRoute(saved: RouteState): void {
-	setRouteState(saved);
+/** 一時遷移に入る（`b` の ACTIONS capture）— rail を見せ、戻るための控えを返す。 */
+export function enterTransientRoute(rail: ShellRailId): TransientRoute {
+	const saved = routeState();
+	const selection = workspaceSelection();
+	showRail(rail);
+	return { saved, placed: routeState().route, selection };
 }
 
-/** 作業の選択（Rust から配られた active lane / component）。同じ選択の配り直しでは値が変わらない。 */
-function workspaceSelection(): string {
+/**
+ * 一時遷移を取り消して戻る（規則は `route.ts` の [`restoreAfterTransient`]）。
+ *
+ * @returns 戻したか。user が間に別の場所へ移っていて**戻さなかった**なら false — 呼び手は
+ *   形（full / slim）の後始末もしない（user の今の形を打ち消さない）
+ */
+export function leaveTransientRoute(t: TransientRoute): boolean {
+	const current = routeState();
+	const changed = workspaceSelection() !== t.selection;
+	setRouteState(restoreAfterTransient(current, t.saved, t.placed, activeLane(), changed));
+	return current.route === t.placed;
+}
+
+/**
+ * 作業の選択（Rust から配られた active lane / component）。同じ選択の配り直しでは値が変わらない。
+ * route の追随（ここ）と設定面の focus 復帰（`SettingsPanel.tsx`）が同じ値で判断する — 片方だけ
+ * field が増えて 2 つの判断がずれないよう、定義はここ 1 か所。
+ */
+export function workspaceSelection(): string {
 	return JSON.stringify([
 		sidebar.active_lane_address ?? null,
 		sidebar.active_component?.repo_path ?? null,
@@ -122,7 +146,3 @@ export function useRouteSync(): void {
 	});
 }
 
-/** テスト用: module 状態を初期化する。 */
-export function _resetRouteForTest(): void {
-	setRouteState(initialRouteState());
-}

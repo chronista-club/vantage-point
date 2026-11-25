@@ -25,8 +25,10 @@
  * - `columnCenter` / `columnBottom`: 列の中央と下端に consumer の要素を置く slot
  * - `peekFooter`: peek の下端に、どの rail でも同じ位置に残る帯を置く slot（machine 帯）
  * - peek は **全 rail 分を mount したまま**、選択外を `hidden` で隠す。CURail は選択中の
- *   1 枚だけを描く（切り替えると unmount）が、VP では rail を行き来するたびに ACTIONS の
- *   下書き・名簿の展開状態・`n` directive の登録（RepoAccordion の mount 時）が消えてしまう
+ *   1 枚だけを描く（切り替えると unmount）が、VP では rail を行き来するたびに component の中の
+ *   状態が消えてしまう — 名簿の AddSub form の開閉と入力中の内容（RepoAccordion の local signal）、
+ *   `n` directive の登録（RepoAccordion の mount 時）、PAUSED の `<details>` の開閉、一覧の scroll 位置。
+ *   （ACTIONS の下書きと repo の展開は module / Rust 側が持つので unmount では消えない）
  * - peek の幅は親（`#sidebar-root`）の幅から決まる（flex で残りを埋める）。幅の SSOT は
  *   `shell-layout.ts`
  */

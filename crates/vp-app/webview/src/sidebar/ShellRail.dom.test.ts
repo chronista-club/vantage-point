@@ -36,7 +36,10 @@ beforeAll(async () => {
 			contents: `
         import { render } from 'solid-js/web';
         import { createComponent, createSignal } from 'solid-js';
-        import { ShellRail } from './ShellRail';
+        import { ShellRail, SHELL_RAIL_CSS } from './ShellRail';
+        const style = document.createElement('style');
+        style.textContent = SHELL_RAIL_CSS;
+        document.head.append(style);
         const [path, setPath] = createSignal('/lanes');
         const [peekOpen, setPeekOpen] = createSignal(true);
         window.setPath = setPath;
@@ -166,7 +169,18 @@ describe("peek（選択中 rail の中身）", () => {
 		expect(visiblePeeks(win)).toEqual(["actions"]);
 	});
 
-	it("⚠️ rail を移っても他の peek は mount されたまま（下書き・展開状態を失わない）", () => {
+	it("⚠️ 選択外の peek は CSS でも消えている（hidden 属性だけでなく、表示が none）", () => {
+		// `.vp-rail-peek-body{display:flex}` は UA の `[hidden]{display:none}` に勝つので、
+		// `[hidden]` の規則 1 行が消えると 3 枚が縦に並んだまま属性だけ正しい状態になる
+		const win = fixture();
+		const display = (id: string) =>
+			win.getComputedStyle(win.document.querySelector(`[data-peek="${id}"]`)!).display;
+		expect(display("lanes")).not.toBe("none");
+		expect(display("actions")).toBe("none");
+		expect(display("settings")).toBe("none");
+	});
+
+	it("⚠️ rail を移っても他の peek は mount されたまま（展開状態・入力中の form を失わない）", () => {
 		const win = fixture();
 		const lanes = win.document.querySelector(".peek-lanes");
 		win.setPath("/actions");

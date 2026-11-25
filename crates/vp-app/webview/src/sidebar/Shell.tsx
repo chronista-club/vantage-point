@@ -29,7 +29,7 @@ import { BucketList, ACTIONS_CSS } from "./actions-panel/BucketList";
 import type { RepoPaneState } from "../generated/RepoPaneState";
 import { ShellRail, SHELL_RAIL_CSS, type ShellRailDef } from "./ShellRail";
 import { SHELL_RAILS, type ShellRailId } from "./route";
-import { clickRail, currentRoute, showRail, useRouteSync } from "./route-store";
+import { clickRail, currentRail, currentRoute, showRail, useRouteSync } from "./route-store";
 
 /**
  * 指定 path の repo accordion を view にスクロールして一瞬 flash させる。
@@ -64,19 +64,24 @@ export function Shell() {
 	// ピン / pad / ⌘N は画面外の lane も選ぶ。key は文字列の memo なので、同じ選択のままの配り直し
 	// （progress の更新など）では値が変わらず、user が別の repo を見に scroll した位置を奪わない。
 	// owner の展開を key に含めるのは、折りたたみ中に選ぶと行が hidden で寄せられず、展開が届いた時に
-	// もう 1 度寄せるため。path は特殊文字を含むので属性セレクタでなく走査で引く（flashProject と同じ）。
+	// もう 1 度寄せるため。名簿が見えているか（Lanes rail の peek が開いているか）も同じ理由で含める —
+	// Actions / 設定 / slim の間に選んだ lane へ、名簿が見えた瞬間に寄せる（doc 87 slice 1 で peek が
+	// 隠れる経路が増えた）。path は特殊文字を含むので属性セレクタでなく走査で引く（flashProject と同じ）。
 	const followKey = createMemo(() => {
 		const addr = sidebar.active_lane_address;
 		if (!addr) return "";
 		const owner = sidebar.processes.find((p) =>
 			sidebar.lanes_by_repo[p.path]?.some((l) => laneAddressKey(l) === addr),
 		);
-		return `${addr}|${owner?.expanded ? 1 : 0}`;
+		const rosterShown = currentRail() === "lanes" && sidebarForm() === "full";
+		return `${addr}|${owner?.expanded ? 1 : 0}|${rosterShown ? 1 : 0}`;
 	});
 	createEffect(
 		on(followKey, (key) => {
-			if (!key) return;
-			const addr = key.slice(0, key.lastIndexOf("|"));
+			// 名簿が見えていない間は寄せない（寄せても hidden の中で何も起きない）
+			if (!key || key.endsWith("|0")) return;
+			// 接尾辞は常に `|展開|名簿` の 4 文字。address 側を split しない（`|` を含んでも割れない）
+			const addr = key.slice(0, -4);
 			Array.from(document.querySelectorAll<HTMLElement>(".vp-lane-row"))
 				.find((el) => el.getAttribute("data-address") === addr)
 				?.scrollIntoView?.({ block: "nearest" });

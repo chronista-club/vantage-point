@@ -25,7 +25,13 @@ import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sendIpc } from "./ipc";
 import { useActivity } from "./DaemonWidget";
 import type { UpdateCheckResult } from "../generated/SidebarIpc";
-import { currentRoute, currentScene, leaveSettings, navigateTo } from "./route-store";
+import {
+	currentRoute,
+	currentScene,
+	leaveSettings,
+	navigateTo,
+	workspaceSelection,
+} from "./route-store";
 import { sectionOf, settingsRoute } from "./route";
 
 /** `settings:result` が運ぶ確定値（schema `vp-sidebar.kdl` の event 定義と 1:1）。 */
@@ -118,6 +124,13 @@ export const SETTINGS_ITEMS: readonly { id: string; label: string }[] = [
 	{ id: "daemon-restart", label: "daemon の再起動" },
 ];
 
+/** 設定面の行（`data-setting`）へ寄せる。行は読み込み後にしか無いので、無ければ何もしない。 */
+function scrollToSetting(id: string): void {
+	Array.from(document.querySelectorAll<HTMLElement>("[data-setting]"))
+		.find((el) => el.dataset.setting === id)
+		?.scrollIntoView?.({ block: "nearest" });
+}
+
 /** Settings rail の peek — 設定面の行への索引。押すと route に section が載り、設定面がその行へ寄る。 */
 export function SettingsPeek() {
 	const section = () => sectionOf(currentRoute());
@@ -132,7 +145,12 @@ export function SettingsPeek() {
 					class="vp-settings-index-item"
 					data-setting-link={item.id}
 					aria-current={section() === item.id ? "page" : undefined}
-					onClick={() => navigateTo(settingsRoute(item.id))}
+					onClick={() => {
+						navigateTo(settingsRoute(item.id));
+						// ⚠️ 同じ項目をもう一度押した時は route が変わらず（signal も動かず）下の effect が
+						// 走らない。手で scroll して離れた後の戻り道として、click でも直に寄せる。
+						scrollToSetting(item.id);
+					}}
 				>
 					{item.label}
 				</button>
@@ -235,11 +253,6 @@ const LOG_LEVELS = ["", "trace", "debug", "info", "warn", "error"];
 /** アイドル判定の既定（分）。daemon が 0 を返した時の表示用。 */
 const DEFAULT_IDLE_MINUTES = 5;
 
-/** app の選択だけを監視する。定期 push や会話の更新は設定を閉じない。 */
-function workspaceSelection(): string {
-	return JSON.stringify([sidebar.active_lane_address ?? null,
-		sidebar.active_component?.repo_path ?? null, sidebar.active_component?.kind ?? null]);
-}
 
 /** pane を unmount / resize せず、一時的に入力対象から外す。 */
 function SettingsSurface(props: { children: JSX.Element }) {
@@ -288,9 +301,7 @@ export function SettingsPanel() {
 	createEffect(() => {
 		const id = sectionOf(currentRoute());
 		if (!visible() || !loaded() || !id) return;
-		Array.from(document.querySelectorAll<HTMLElement>("[data-setting]"))
-			.find((el) => el.dataset.setting === id)
-			?.scrollIntoView?.({ block: "nearest" });
+		scrollToSetting(id);
 	});
 	// ⚠️ 作業の選択（lane / component）が変わったら閉じる、は route-store の
 	// `onWorkspaceSelected` が持つ（設定の開閉は route の 1 本で決まる）。

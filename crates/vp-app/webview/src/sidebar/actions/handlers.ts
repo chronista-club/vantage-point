@@ -17,8 +17,12 @@ import {
 	toggleSidebarForm,
 } from "../form";
 import type { SidebarForm } from "../form";
-import type { RouteState } from "../route";
-import { restoreRoute, routeSnapshot, showRail } from "../route-store";
+import {
+	type TransientRoute,
+	enterTransientRoute,
+	leaveTransientRoute,
+	showRail,
+} from "../route-store";
 import { isSubLane, laneAddressKey } from "../lane";
 import { pinTargetOf } from "../../../midi-pins";
 import type { LaneTarget } from "../../../midi-navigation";
@@ -391,11 +395,12 @@ let captureModeTimer: ReturnType<typeof setTimeout> | null = null;
 let formBeforeCapture: SidebarForm | null = null;
 
 /**
- * 一時遷移する前の route（doc 87 §3）。ACTIONS は Actions rail の peek に住むので、capture は
- * route を `/actions` へ移す。取り消して抜けたら元の route（Lanes / 設定）に戻す。
+ * 一時遷移の控え（doc 87 §8.1）。ACTIONS は Actions rail の peek に住むので、capture は route を
+ * `/actions` へ移す。取り消して抜けたら元の route（Lanes / 設定）に戻す — ただし user が間に別の
+ * 場所へ移っていたら戻さない（`route.ts` の `restoreAfterTransient`）。
  * [`formBeforeCapture`] と同じく、入るときだけ書き、抜けるときに必ず `null` へ戻す。
  */
-let routeBeforeCapture: RouteState | null = null;
+let captureRoute: TransientRoute | null = null;
 
 /**
  * capture mode を抜ける。**離脱経路 5 本（Escape / 数字選択 / 無関係キー / 5 秒 timeout /
@@ -414,12 +419,13 @@ function exitCaptureMode(selected = false): void {
 	window.removeEventListener("keydown", captureNumberHandler, true);
 	// 一時展開の後始末。⚠️ 記録を**先に**消す（畳む側が何かの拍子に再入しても二度走らない）。
 	const next = formToRestoreOnExit(formBeforeCapture, selected);
-	// route も同じ規則: 区画を選んだ（これから打ち込む）なら Actions に留まり、取り消しなら戻す。
-	const routeBack = selected ? null : routeBeforeCapture;
+	const transient = captureRoute;
 	formBeforeCapture = null;
-	routeBeforeCapture = null;
-	if (routeBack) restoreRoute(routeBack);
-	if (next === "slim") collapseSidebar();
+	captureRoute = null;
+	// route も同じ規則: 区画を選んだ（これから打ち込む）なら Actions に留まり、取り消しなら戻す。
+	// ⚠️ user が間に別の場所へ移っていたら route を戻さず、形も畳まない（後から打ち消さない）。
+	const restored = !selected && transient !== null && leaveTransientRoute(transient);
+	if (restored && next === "slim") collapseSidebar();
 }
 
 function captureNumberHandler(e: KeyboardEvent): void {
@@ -428,7 +434,9 @@ function captureNumberHandler(e: KeyboardEvent): void {
 		const tag = target.tagName;
 		// 入力中なら数字入力を妨げない（mode を黙って抜ける）。
 		if (tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable) {
-			exitCaptureMode();
+			// ACTIONS の入力欄に打ち始めた = 区画を選んだのと同じく「これから打ち込む」。打っている面
+			// （Actions の peek）を奪わないよう、取り消しではなく選択として抜ける。
+			exitCaptureMode(target.closest('[data-peek="actions"]') !== null);
 			return;
 		}
 	}
@@ -469,12 +477,13 @@ export function runCaptureMode(): void {
 	// 取り消して抜けたら `exitCaptureMode` が route と形を戻す（形の変更は永続化されるので、
 	// 戻さないと slim が消える）。
 	// ⚠️ 連打で上書きしない — 2 回目に「展開後の full」を覚えると戻す先を失う。
+	// ACTIONS は Actions rail の peek に住む（doc 87 §2 / §8.1）— rail を移して peek を開く。
 	if (formBeforeCapture === null) {
 		formBeforeCapture = sidebarForm();
-		routeBeforeCapture = routeSnapshot();
+		captureRoute = enterTransientRoute("actions");
+	} else {
+		showRail("actions");
 	}
-	// ACTIONS は Actions rail の peek に住む（doc 87 §3）— rail を移して peek を開く。
-	showRail("actions");
 	setCaptureHintLabel(
 		PANEL_BUCKETS.map((b, i) => `${i + 1}. ${b.label}`).join("   "),
 	);

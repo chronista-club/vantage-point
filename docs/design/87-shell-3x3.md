@@ -139,14 +139,20 @@ slice 1 の mako 裁定（2026-11-05、GO）: 左 sidebar は Rail + peek の形
   `ShellRail.dom.test.ts` が固定しているので、要望の着地後は差し替えるだけで済む
 - CURail に無い口として足したもの（= 追加の要望候補）: `peekOpen`（選択と別に peek を畳む）、rail ごとの
   `anchor`（列の上 / 下の起点）、列の `columnCenter` / `columnBottom` slot、peek の `peekFooter` slot
-  （machine 帯）、**peek は全 rail 分を mount したまま選択外を `hidden`**（rail を行き来しても ACTIONS の
-  下書き・名簿の展開・`n` directive の登録が消えない）
+  （machine 帯）、**peek は全 rail 分を mount したまま選択外を `hidden`**（rail を行き来しても component の
+  中の状態 — AddSub form の開閉と入力、`n` directive の登録、PAUSED の開閉、一覧の scroll 位置 — が消えない）
 - **pseudo-route** は `src/sidebar/route.ts`（純関数）+ `route-store.ts`（signal 1 本）。`#app-shell` の
   `data-route` / `data-scene` に映すので DOM 検査で場面が読める。設定中に作業（lane / component）を選ぶと
   設定を抜ける（旧 SettingsPanel の dismiss と同じ意味）。Actions にいる間の lane 選択は route を動かさない
 - **設定 Scene は既存の `SettingsSurface`**（#host に Portal + inert）を route で開閉する。layout engine に
   触れないので、解けば前の settle がそのまま見える（solo pane 化は pane kind の registry = slice 2 の領分）。
   Settings rail の peek は設定面の行への索引（節見出しは置かない — mako 2026-11-07「ミニマム」）
+- **rail 列は 48px**（上の mako 裁定の「slim 44px」から 4px 広げた）: CURail の列幅（48px）と同じにした。
+  slim は列だけなので slim の幅も 48px になる
+- **directive**: `b`（ACTIONS capture）は `/actions` へ一時遷移し、取り消し（Esc / 無関係なキー / 5 秒）で
+  入る前の route と形に戻す。区画を選んだ・ACTIONS の入力欄に打ち始めた時は留まる。間に user が別の場所へ
+  移っていたら戻さず、間に作業の選択が変わっていたら戻り先にも上の規則を当てる（`restoreAfterTransient`）。
+  `n`（New Sub）は form が Lanes の peek に住むので、先に Lanes の peek を開く
 - **幅**: 保存値 `sidebar_width`（180〜640）は **peek の幅**。leftEdge = rail 列 48px（`--vp-rail-w`）+
   peek（`--vp-peek-w`）、slim = 列だけ。R の % は grid の right track に当てる（`--vp-rsb-pct`）—
   grid item の % 幅は track に対して解決され、auto の track では効かないため

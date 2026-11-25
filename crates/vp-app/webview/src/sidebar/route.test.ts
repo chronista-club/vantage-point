@@ -25,6 +25,7 @@ import {
 	onWorkspaceSelected,
 	railClick,
 	railOf,
+	restoreAfterTransient,
 	sceneOf,
 	sectionOf,
 	settingsRoute,
@@ -169,6 +170,12 @@ describe("作業の選択（lane / component）が route に及ぼすもの", ()
 		expect(s.route).toBe("/actions");
 	});
 
+	it("⚠️ 設定中に lane 以外を選んで Lanes に戻る時は、古い lane を route に残さない", () => {
+		const inSettings = navigate(navigate(initialRouteState(), "/lanes/vp/root"), "/settings");
+		const s = onWorkspaceSelected(inSettings, null);
+		expect(s.route).toBe("/lanes");
+	});
+
 	it("Actions にいる間は lane を選んでも Actions のまま（peek を奪わない）", () => {
 		const onActions = navigate(initialRouteState(), "/actions");
 		expect(onActions).toBe(onWorkspaceSelected(onActions, "vp/root"));
@@ -219,5 +226,32 @@ describe("rail の icon click（route と peek の開閉）", () => {
 		const r = railClick(inSettings, "full", "actions", "vp/root");
 		expect(r.state.route).toBe("/actions");
 		expect(sceneOf(r.state.route)).toBe("dev");
+	});
+});
+
+describe("一時遷移（`b` の capture）からの戻り", () => {
+	const lanes = navigate(initialRouteState(), "/lanes/vp/root");
+	const placed = navigate(lanes, "/actions");
+
+	it("capture が置いた route のままなら、入る前に戻す", () => {
+		expect(restoreAfterTransient(placed, lanes, "/actions", null, false)).toBe(lanes);
+	});
+
+	it("⚠️ その間に user が別の場所へ移っていたら、戻さない（後から打ち消さない）", () => {
+		const moved = navigate(placed, "/settings");
+		expect(restoreAfterTransient(moved, lanes, "/actions", null, false)).toBe(moved);
+	});
+
+	it("⚠️ その間に作業の選択が変わっていたら、戻り先にも同じ規則を当てる", () => {
+		// Lanes から入った → 選んだ lane が route に載る
+		expect(restoreAfterTransient(placed, lanes, "/actions", "vp/sub/x", true).route).toBe(
+			"/lanes/vp/sub/x",
+		);
+		// 設定から入った → 作業を選んだので設定は開き直さない
+		const inSettings = navigate(lanes, "/settings");
+		const fromSettings = navigate(inSettings, "/actions");
+		const back = restoreAfterTransient(fromSettings, inSettings, "/actions", "vp/sub/x", true);
+		expect(sceneOf(back.route)).toBe("dev");
+		expect(back.route).toBe("/lanes/vp/sub/x");
 	});
 });

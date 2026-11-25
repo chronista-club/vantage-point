@@ -12,6 +12,7 @@ import { Window } from "happy-dom";
 import { fileURLToPath } from "node:url";
 
 type Probe = Window & {
+	vpSettings: { handleResult(s: unknown): void };
 	runCaptureMode(): void;
 	runNewSub(): void;
 	sent: { t: string }[];
@@ -159,6 +160,24 @@ describe("設定 Scene（doc 87 §3）", () => {
 		expect(items[1].getAttribute("aria-current")).toBe("page");
 	});
 
+	it("索引の同じ項目をもう一度押しても、その行へ寄せ直す（手で scroll して離れた後の戻り道）", () => {
+		const win = fixture();
+		const calls: string[] = [];
+		(win as unknown as { HTMLElement: { prototype: { scrollIntoView(): void } } }).HTMLElement.prototype.scrollIntoView =
+			function (this: { dataset: { setting?: string } }) {
+				if (this.dataset?.setting) calls.push(this.dataset.setting);
+			};
+		click(win, "settings");
+		win.vpSettings.handleResult({ developerMode: false, developerModeLocked: false, defaultRepoRoot: "", resolvedRepoRoot: "/repos", daemonReachable: true, logLevel: "", idleTimeoutMinutes: 5, defaultAgent: "", defaultModel: "", defaultAgentTakesModel: true });
+		const item = q(win, '[data-setting-link="update"]')!;
+		const count = () => calls.filter((id) => id === "update").length;
+		item.click();
+		const first = count();
+		expect(first).toBeGreaterThan(0);
+		item.click(); // route は同じ（signal は変わらない）
+		expect(count()).toBeGreaterThan(first);
+	});
+
 	it("設定中に lane を選ぶと設定を抜けてその lane へ", () => {
 		const win = fixture();
 		click(win, "settings");
@@ -215,6 +234,23 @@ describe("slim（peek を畳む）", () => {
 	});
 });
 
+describe("選択行への追随（mako 2026-11-06「サイドバーも、表示されるように追随する」）", () => {
+	it("⚠️ Actions を見ている間に選んだ lane へ、Lanes に戻った時に寄せる", () => {
+		const win = fixture();
+		const calls: string[] = [];
+		(win as unknown as { HTMLElement: { prototype: { scrollIntoView(): void } } }).HTMLElement.prototype.scrollIntoView =
+			function (this: { getAttribute(n: string): string | null }) {
+				const addr = this.getAttribute("data-address");
+				if (addr) calls.push(addr);
+			};
+		click(win, "actions");
+		win.selectLane("vp/lane/lead");
+		calls.length = 0;
+		click(win, "lanes");
+		expect(calls).toContain("vp/lane/lead");
+	});
+});
+
 describe("Lanes rail の用事 dot", () => {
 	it("input 待ちの lane が在る間だけ Lanes の icon に dot が付く", () => {
 		const win = fixture();
@@ -261,6 +297,44 @@ describe("directive が rail に追随する", () => {
 		expect(current(win)).toBe("settings");
 		// ⚠️ 取り消しの Esc は capture mode が消費する — 戻した設定を同じ Esc で閉じない
 		expect(q(win, "#host .vp-settings-panel")).not.toBeNull();
+	});
+
+	it("⚠️ capture 中に user が別の rail へ移ったら、取り消し（timeout / Esc）で巻き戻さない", () => {
+		const win = fixture();
+		win.runCaptureMode();
+		click(win, "settings");
+		key(win, "Escape");
+		expect(current(win)).toBe("settings");
+		expect(q(win, "#host .vp-settings-panel")).not.toBeNull();
+	});
+
+	it("⚠️ 設定から capture に入り、その間に lane を選んで取り消すと、設定ではなくその lane へ", () => {
+		const win = fixture();
+		click(win, "settings");
+		win.runCaptureMode();
+		win.selectLane("vp/lane/other");
+		key(win, "Escape");
+		expect(current(win)).toBe("lanes");
+		expect(q(win, ".vp-settings-panel")).toBeNull();
+		expect(q(win, "#app-shell")!.dataset.route).toBe("/lanes/vp/lane/other");
+	});
+
+	it("Lanes から capture に入り、その間に lane を選んで取り消すと、route は今の lane", () => {
+		const win = fixture();
+		win.runCaptureMode();
+		win.selectLane("vp/lane/other");
+		key(win, "Escape");
+		expect(q(win, "#app-shell")!.dataset.route).toBe("/lanes/vp/lane/other");
+	});
+
+	it("capture 中に ACTIONS の入力欄へ打ち始めたら、Actions に留まる（打っている面を奪わない）", () => {
+		const win = fixture();
+		win.runCaptureMode();
+		// happy-dom の要素と event で揃える（q() は DOM 型に寄せて返すので、ここは素の querySelector）
+		const memo = win.document.querySelector('[data-peek="actions"] textarea')!;
+		memo.dispatchEvent(new win.KeyboardEvent("keydown", { key: "x", bubbles: true }));
+		expect(current(win)).toBe("actions");
+		expect(shown(win)).toEqual(["actions"]);
 	});
 
 	it("`n`（New Sub）は Actions にいても Lanes の peek を開いてから form を出す", () => {

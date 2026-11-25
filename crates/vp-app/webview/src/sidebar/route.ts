@@ -24,6 +24,7 @@
  * `ShellRail.tsx` 冒頭）。
  */
 import { type RailDef, selectRailId } from "@chronista-club/creo-ui/shells";
+import type { SidebarForm } from "./form";
 
 export type ShellRailId = "lanes" | "actions" | "settings";
 export type ShellScene = "dev" | "settings";
@@ -156,7 +157,8 @@ export function closeSettings(state: RouteState): RouteState {
  * 作業（lane / component）が選ばれた — Rust から active lane / component が配られた時。
  *
  * - 設定中: 設定を抜ける（旧 `SettingsPanel` の「選択が変わったら閉じる」と同じ意味）。
- *   lane なら その lane へ、lane 以外（devices 等）なら直前の開発 route へ
+ *   lane なら その lane へ、lane 以外（devices 等）なら直前の開発 route へ。戻り先が Lanes なら
+ *   lane は今の選択に合わせ直す（古い lane を route に残さない — route は AI の address でもある）
  * - Lanes にいる: 選んだ lane を route に載せる
  * - Actions にいる: 動かない（user が見ている peek を奪わない）
  *
@@ -164,17 +166,39 @@ export function closeSettings(state: RouteState): RouteState {
  */
 export function onWorkspaceSelected(state: RouteState, addr: string | null): RouteState {
 	if (sceneOf(state.route) === "settings") {
-		return addr ? navigate(state, laneRoute(addr)) : closeSettings(state);
+		if (addr) return navigate(state, laneRoute(addr));
+		const back = closeSettings(state);
+		return railOf(back.route) === "lanes" ? navigate(back, laneRoute(null)) : back;
 	}
 	if (railOf(state.route) === "lanes") return navigate(state, laneRoute(addr));
 	return state;
 }
 
-/** peek の開閉（`sidebarForm` と同じ語。slim = rail 列だけ、full = peek を開く）。 */
-export type PeekForm = "full" | "slim";
+/**
+ * 一時遷移（`b` の ACTIONS capture）からの戻り先。
+ *
+ * - capture が置いた route（`placed`）のままなら、入る前（`saved`）へ戻す
+ * - ⚠️ その間に user が別の場所へ移っていたら**戻さない** — 後から（timeout / Esc で）user の操作を
+ *   打ち消さない
+ * - ⚠️ その間に作業の選択が変わっていたら、戻り先にも [`onWorkspaceSelected`] を当てる — 設定から
+ *   入って lane を選んだなら設定は開き直さず、Lanes から入ったなら route に今の lane を載せる
+ *
+ * @param activeLane 今の active lane（lane 以外の選択は null）
+ * @param selectionChanged capture の間に作業の選択が変わったか
+ */
+export function restoreAfterTransient(
+	current: RouteState,
+	saved: RouteState,
+	placed: string,
+	activeLane: string | null,
+	selectionChanged: boolean,
+): RouteState {
+	if (current.route !== placed) return current;
+	return selectionChanged ? onWorkspaceSelected(saved, activeLane) : saved;
+}
 
 /**
- * rail の icon click。
+ * rail の icon click。form は peek の開閉（`form.ts` の語。slim = rail 列だけ、full = peek を開く）。
  *
  * - 別の rail → その rail へ移り、peek を開く
  * - 選択中の rail → peek の開閉だけ toggle（route は動かない）
@@ -183,10 +207,10 @@ export type PeekForm = "full" | "slim";
  */
 export function railClick(
 	state: RouteState,
-	form: PeekForm,
+	form: SidebarForm,
 	rail: ShellRailId,
 	activeLane: string | null | undefined,
-): { state: RouteState; form: PeekForm } {
+): { state: RouteState; form: SidebarForm } {
 	if (railOf(state.route) === rail) {
 		return { state, form: form === "full" ? "slim" : "full" };
 	}

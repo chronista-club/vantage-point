@@ -71,6 +71,9 @@ describe("3x3 の region（PL-2 位置語彙）", () => {
 		expect(area("sidebar-root")).toMatch(/^left\b/);
 		expect(area("host")).toMatch(/^center\b/);
 		expect(area("right-sidebar")).toMatch(/^right\b/);
+		// 境界の取っ手は region ではないが、専用の track に載る（無いと自動配置で up の行に落ちる）
+		expect(area("shell-resizer-left")).toMatch(/^left-handle\b/);
+		expect(area("shell-resizer-right")).toMatch(/^right-handle\b/);
 	});
 
 	it("⚠️ #host の中身（pane 群）は #host の直下のまま（doc 49 R1）", () => {
