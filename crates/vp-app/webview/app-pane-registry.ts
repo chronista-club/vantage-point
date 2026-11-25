@@ -35,6 +35,7 @@
  * （PL §5.2 の open-closed）。
  */
 import type { Layout, Scene } from "@chronista-club/creo-ui-layout";
+import type { BundledFieldSpec } from "./editor/field-spec";
 
 export interface AppPaneSceneSpec {
 	/** Scene id（hotkey / 巡回 / `window.vpAppLayout.applyScene` が名指す） */
@@ -59,6 +60,11 @@ export interface AppPaneDef {
 	readonly inCycle: boolean;
 	/** 並び（場の構造の列順 = 同格の主役の後勝ち順、巡回の順、数字キーの順）。 */
 	readonly order: number;
+	/**
+	 * この pane が同梱する Editor field（任意、doc 87 §8.3）。id は `pane.<id>.<key>`、region は center で
+	 * Editor の THEME タブに出る。⚠️ cssVar は `:root` に既定値の宣言がある token に限る（field-spec.ts）。
+	 */
+	readonly fields?: readonly BundledFieldSpec[];
 }
 
 /**
@@ -79,6 +85,34 @@ export const APP_PANE_REGISTRY = [
 		},
 		inCycle: true,
 		order: 0,
+		// Conversation の端末（xterm）の文字。既定値は main_area.rs の :root と同じ。term.ts が
+		// documentElement の style を見張っていて、全 lane の端末へ即時に当て直す
+		fields: [
+			{
+				key: "terminal.font.size",
+				label: "端末の文字サイズ",
+				group: "Lane の端末",
+				cssVar: "--terminal-font-size",
+				initial: 16,
+				constraints: { min: 10, max: 24, step: 0.5 },
+			},
+			{
+				key: "terminal.line.height",
+				label: "端末の行の高さ",
+				group: "Lane の端末",
+				cssVar: "--terminal-line-height",
+				initial: 1.27,
+				constraints: { min: 1, max: 1.8, step: 0.01 },
+			},
+			{
+				key: "terminal.letter.spacing",
+				label: "端末の文字の間隔",
+				group: "Lane の端末",
+				cssVar: "--terminal-letter-spacing",
+				initial: 0,
+				constraints: { min: 0, max: 4, step: 1, unit: "px" },
+			},
+		],
 	},
 	{
 		id: "runner",

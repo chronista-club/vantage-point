@@ -87,7 +87,7 @@ const PICKER_CSS=`
 .vp-atlas-popover{font-family:var(--vp-font-sans,var(--typography-family-sans,system-ui));letter-spacing:normal;position:fixed;z-index:10000;box-sizing:border-box;overflow-y:auto;padding:8px 0;border:1px solid var(--lg-mute-2,#38525b);border-radius:6px;background:var(--lg-panel,#0A0E15);color:var(--lg-hot,#EAFBFF);box-shadow:0 6px 24px #0005;outline:none}
 .vp-atlas-option{display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:12px;line-height:16px;border-radius:6px;color:var(--lg-mute,#5C7A85);cursor:pointer}
 .vp-atlas-option>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.vp-atlas-option.is-active{background:var(--lg-hover,#ffffff0c);color:var(--lg-hot,#EAFBFF)}
+.vp-atlas-option.is-active{background:var(--lg-veil-4);color:var(--lg-hot,#EAFBFF)}
 .vp-atlas-option.is-selected{background:color-mix(in srgb,var(--lg-cyan,#40d9ec) 14%,transparent);color:var(--lg-cyan,#40d9ec);font-weight:500}
 .vp-atlas-option[aria-disabled=true]{opacity:.5;cursor:default}
 .vp-atlas-option small{font-size:10px;letter-spacing:.05em;white-space:nowrap}

@@ -1,16 +1,17 @@
 import { EditorHostProvider, createComponentFieldResolver, useEditorHost, useEditorPicking, type EditorField, type EditorHost, type ThemeId } from '@chronista-club/creo-ui-editor-host'
 import { Show, createEffect, createSignal, getOwner, onCleanup, onMount, untrack } from 'solid-js'
-import { AppTokenBinds } from './app-fields'
+import { AppTokenBinds, isEditorManagedVar, isShellLayoutField } from './app-fields'
 import { EditorPanel, type EditorSection } from './EditorPanel'
 import { EDITOR_CSS } from './styles'
 import { createMidiSettings, type MidiSettings } from './midi-settings'
 import { linkOptionsFromWindow } from './link-config'
 import { RUNTIME_NAMESPACE, clearRuntimeStorage, isThemeId, readThemeLibrary, themeBase, themeValues, writeThemeLibrary, type StoragePort, type ThemeLibrary, type Values } from './theme-store'
 
-const MANAGED_VAR = /^--(?:color-(?:brand|surface)-|typography-|layout-gap-sibling$|_|sb-|lg-|chat-text-|vp-resizer-breathe-)/
+// Editor が :root に書いた変数を消す（テーマの切替で前のテーマの調整を持ち越さない）。app の分は field の宣言から
+// 導く（app-fields.ts）— registry の行が同梱した field の変数も、行を足すだけで対象に入る（doc 87 §8.3）
 function clearEditorStyles(): void {
   const style = document.documentElement.style
-  for (const name of Array.from(style)) if (MANAGED_VAR.test(name)) style.removeProperty(name)
+  for (const name of Array.from(style)) if (isEditorManagedVar(name)) style.removeProperty(name)
 }
 
 function validValue(field: EditorField, value: unknown): boolean {
@@ -130,7 +131,9 @@ function EditorSession(props: SessionProps) {
       const values = themeValues(props.library())
       restoring = true
       try {
-        const added = fields.filter(field => !seen.has(field.id))
+        // 幅（shell.leftEdge.* / shell.rightEdge.*）はテーマではない — 持ち主は shell-layout で、Editor の値は
+        // bindShellLayoutFields が今の幅に合わせている。ここで初期値・保存値を当てると復元済みの幅を潰す
+        const added = fields.filter(field => !seen.has(field.id) && !isShellLayoutField(field.id))
         // Initialize the whole family first: a default surface field removes its inline color.
         // Doing this between saved hue/color writes would erase an earlier restored value.
         for (const field of added) {
@@ -146,7 +149,7 @@ function EditorSession(props: SessionProps) {
   }
   createEffect(restoreFields)
   onCleanup(host.onAnyChange((id, value) => {
-    if (restoring) return
+    if (restoring || isShellLayoutField(id)) return
     const field = host.getField(id)
     if (!field || !validValue(field, value)) return
     const library = props.library()

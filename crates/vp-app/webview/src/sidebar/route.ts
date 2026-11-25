@@ -22,36 +22,14 @@
  * 最長 prefix 一致・segment 境界の判定は creo-ui の Principal Layout が持つ規則。VP 側で
  * 書き直さず、そのまま借りる（左 edge の描画も creo-ui の `CURail` — `ShellRail.tsx`）。
  */
-import { type RailAnchor, type RailDef, selectRailId } from "@chronista-club/creo-ui/shells";
+import { type RailDef, selectRailId } from "@chronista-club/creo-ui/shells";
 import type { SidebarForm } from "./form";
+import { SHELL_RAILS, type ShellRailId } from "./shell-rails";
 
-export type ShellRailId = "lanes" | "actions" | "settings";
+// 表（pure data）は shell-rails.ts に置いた（Editor の main bundle からも読むため — 同 module の冒頭）。
+// 既存の import 先を変えないよう、ここからも引ける。
+export { SHELL_RAILS, type ShellRailId, type ShellRailSpec } from "./shell-rails";
 export type ShellScene = "dev" | "settings";
-
-/** 左 edge の rail（registry の component を除いた部分 — route の計算に要る分だけ）。 */
-export interface ShellRailSpec {
-	id: ShellRailId;
-	route: string;
-	order: number;
-	/** 表示名（aria-label / title）。i18n 層は無いので日本語 UI の語をそのまま持つ。 */
-	label: string;
-	/** rail 列の中の起点（creo-ui の `RailAnchor`。上 = 起点、下 = app 級の予約席）。 */
-	anchor: RailAnchor;
-}
-
-/**
- * rail の registry（PL-3: primitive は rail を hardcode しない — app が渡す）。
- * 描画用の component（icon / peek）は `Shell.tsx` の `SHELL_RAIL_REGISTRY` が同じ id で足す。
- *
- * VP の「増やせる部品」3 つの registry の 1 つ（他は center の種類 = `app-pane-registry.ts`、
- * lane の右 edge の住人 = `edge-residents.ts`）。行の足し方は doc 87 §8.2。
- */
-export const SHELL_RAILS: readonly ShellRailSpec[] = [
-	{ id: "lanes", route: "/lanes", order: 0, label: "Lanes", anchor: "top" },
-	{ id: "actions", route: "/actions", order: 1, label: "Actions", anchor: "top" },
-	// 下起点の歯車（app 級の設定。doc 56 §7 の予約席を rail に移した形）
-	{ id: "settings", route: "/settings", order: 2, label: "設定", anchor: "bottom" },
-];
 
 export const DEFAULT_ROUTE = "/lanes";
 

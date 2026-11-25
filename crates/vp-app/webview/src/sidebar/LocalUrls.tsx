@@ -163,7 +163,7 @@ export const LOCAL_URLS_CSS = `
 .vp-local-url-body{display:flex;flex-direction:column;gap:8px;padding:6px 0}
 .vp-local-url-entry{display:flex;flex-direction:column;gap:3px;min-width:0}
 .vp-local-urls button{font:inherit;color:inherit;border:1px solid var(--color-surface-border,#ffffff20);border-radius:4px;background:transparent;padding:3px 7px;cursor:pointer;text-align:left}
-.vp-local-urls button:hover{background:#ffffff0c}.vp-local-urls button:disabled{opacity:.45;cursor:default}
+.vp-local-urls button:hover{background:var(--lg-veil-4)}.vp-local-urls button:disabled{opacity:.45;cursor:default}
 .vp-local-urls .vp-local-url-open{border:0;padding:0;color:var(--color-text-primary,#e7edf0);text-decoration:underline;text-underline-offset:3px}
 .vp-local-url-row{position:relative;min-height:23px}
 .vp-local-url-row .vp-local-url-open{flex:0 1 auto;max-width:50%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

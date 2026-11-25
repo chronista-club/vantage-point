@@ -98,7 +98,7 @@ export const SHELL_RAIL_CSS = `
 #sidebar-root button[data-rail]{position:relative;width:36px;height:36px;flex:none;
   border:1px solid transparent;border-radius:8px;background:transparent;color:var(--lg-mute,#5C7A85);
   transition:background .12s ease,color .12s ease,border-color .12s ease;}
-#sidebar-root button[data-rail]:hover{color:var(--lg-hot,#EAFBFF);background:#ffffff08;}
+#sidebar-root button[data-rail]:hover{color:var(--lg-hot,#EAFBFF);background:var(--lg-veil-3);}
 /* 選択中の rail は選択行（横タブ）と同じ面の色で示す — 光らせない（光 = 注意は needs-you の専有）。 */
 #sidebar-root button[data-rail][aria-current="page"]{color:var(--lg-hot,#EAFBFF);
   background:var(--sb-selection-bg);border-color:var(--sb-selection-border);}
