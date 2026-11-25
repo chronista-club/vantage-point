@@ -18,6 +18,7 @@ type Probe = Window & {
 	sent: { t: string }[];
 	selectLane(addr: string): void;
 	setAwaiting(addr: string): void;
+	SHELL_RAILS: { id: string; label: string; order: number; anchor: string }[];
 };
 
 let bundle: string;
@@ -32,6 +33,8 @@ beforeAll(async () => {
         import { Shell } from './src/sidebar/Shell';
         import { applySidebarState, emptyState } from './src/sidebar/store';
         import { runCaptureMode, runNewSub } from './src/sidebar/actions/handlers';
+        import { SHELL_RAILS } from './src/sidebar/route';
+        window.SHELL_RAILS = SHELL_RAILS;
         window.runCaptureMode = runCaptureMode;
         window.runNewSub = runNewSub;
         window.sent = [];
@@ -92,6 +95,27 @@ const shown = (win: Probe) =>
 	Array.from(win.document.querySelectorAll("[data-peek]"))
 		.filter((el) => !el.hasAttribute("hidden"))
 		.map((el) => el.getAttribute("data-peek"));
+
+describe("rail registry（doc 87 §8.2）— 本物の Shell の列は SHELL_RAILS と 1:1", () => {
+	it("列の icon は表の order 順で、各 rail は自分の起点に label 付きで居る", () => {
+		const win = fixture();
+		const rails = [...win.SHELL_RAILS].sort((a, b) => a.order - b.order);
+		const buttons = Array.from(win.document.querySelectorAll("nav[aria-label=\"Rail\"] button[data-rail]"));
+		expect(buttons.map((b) => b.getAttribute("data-rail"))).toEqual(rails.map((r) => r.id));
+		for (const r of rails) {
+			const btn = q(win, `nav[aria-label="Rail"] .anchor-${r.anchor} button[data-rail="${r.id}"]`);
+			expect(btn, `${r.id} が ${r.anchor} 起点に無い`).not.toBeNull();
+			expect(btn!.getAttribute("aria-label")).toBe(r.label);
+		}
+	});
+
+	it("peek は表の rail ごとに 1 枚（keepPeeksMounted — 選択外は hidden で残る）", () => {
+		const win = fixture();
+		expect(
+			Array.from(win.document.querySelectorAll("[data-peek]")).map((el) => el.getAttribute("data-peek")),
+		).toEqual([...win.SHELL_RAILS].sort((a, b) => a.order - b.order).map((r) => r.id));
+	});
+});
 
 describe("開発 Scene — Lanes / Actions", () => {
 	it("起動直後は Lanes が選ばれ、peek に名簿、route に active lane が載る", () => {

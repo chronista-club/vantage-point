@@ -42,6 +42,9 @@ export interface ShellRailSpec {
 /**
  * rail の registry（PL-3: primitive は rail を hardcode しない — app が渡す）。
  * 描画用の component（icon / peek）は `Shell.tsx` の `SHELL_RAIL_REGISTRY` が同じ id で足す。
+ *
+ * VP の「増やせる部品」3 つの registry の 1 つ（他は center の種類 = `app-pane-registry.ts`、
+ * lane の右 edge の住人 = `edge-residents.ts`）。行の足し方は doc 87 §8.2。
  */
 export const SHELL_RAILS: readonly ShellRailSpec[] = [
 	{ id: "lanes", route: "/lanes", order: 0, label: "Lanes", anchor: "top" },

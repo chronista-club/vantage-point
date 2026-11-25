@@ -42,9 +42,11 @@ it('rail の縦中央に、しまった pane のアイコンが並び、click �
   const window = await bundle(`
     import {mountEdgeRail} from './EdgeRail'
     const root=document.createElement('div'); root.id='edge-rail'
-    const newHost=document.createElement('div'); const stowHost=document.createElement('div'); stowHost.id='edge-rail-stow-host'
+    const newHost=document.createElement('div'); newHost.id='edge-rail-new-host'
+    const stowHost=document.createElement('div'); stowHost.id='edge-rail-stow-host'
     root.append(newHost, stowHost); document.body.append(root)
-    window.rail=mountEdgeRail(root,newHost,stowHost)
+    // 住人の host は表（edge-residents.ts）の id で引く。PR の host はこの台に無い（描画を飛ばす）
+    window.rail=mountEdgeRail(root,(id)=>document.getElementById(id))
     window.rail.setLane('stow-test/main')
     window.unstowed=[]
     document.addEventListener('vp:pane-unstow', e=>window.unstowed.push(e.detail))

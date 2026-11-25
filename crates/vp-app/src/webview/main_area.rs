@@ -704,8 +704,10 @@ body.rsb-open #lane-header,body.rsb-open #lane-panes{right:0;}
   <!-- 各 .pane の attribute 規約 (VP-141 で 2 attribute に分離):
        - data-kind="..."     : 静的 (HTML hardcode、 「lane」「preview」 等の kind classification)
        - data-app-pane="..." : 静的 (HTML hardcode、 app scope の creo-ui-layout が配置を引く pane id、
-                               app-panes.ts の APP_PANE_IDS と 1:1。旧 frame-engine の data-frame-id を
-                               doc 87 §1.1 で改名 — 「frame」は motion 層の語に残す、doc 49 §5)
+                               app-pane-registry.ts の APP_PANE_REGISTRY と 1:1 — id / data-kind も同じ行が持つ。
+                               pane を足す時は表とここの両方に置く (shell-registries.dom.test.ts が 1:1 を固定、
+                               doc 87 §8.2)。旧 frame-engine の data-frame-id を doc 87 §1.1 で改名 —
+                               「frame」は motion 層の語に残す、doc 49 §5)
        - data-pane-id="..."  : 動的 (active pane 切替時に active-pane.ts が Lane address 等で
                                setAttribute、 VP-100 γ-light native overlay sync 用 / Phase 4+ 同期 target)
        配置の住所と legacy native overlay sync の attribute を分離しているのは、 Lane click で
@@ -787,7 +789,9 @@ body.rsb-open #lane-header,body.rsb-open #lane-panes{right:0;}
          将来の設定トグル。lane 不在時は EdgeRail.setLane(null) が帯ごと隠す。 -->
     <!-- 3 起点（doc 82 §規約）: 帯の要素は上詰めで積まず、上 / 中央 / 下の slot に属する。
          R sidebar を開いている間、上・中央の host と board 取っ手は R の Lane 節へ付け替わる
-         （right-sidebar.ts — 同じ住人の見え方の切替）。 -->
+         （right-sidebar.ts — 同じ住人の見え方の切替）。
+         住人の顔ぶれ・起点・並び・付け替えの有無は edge-residents.ts の EDGE_RESIDENT_REGISTRY が持つ。
+         住人を足す時は表とここの両方に置く（shell-registries.dom.test.ts が 1:1 を固定、doc 87 §8.2）。 -->
     <div id="edge-rail" class="tri-anchor" style="display:none">
       <div class="anchor-top vrail-slot">
         <!-- + New（EdgeRail.tsx が render。machinery は LaneHeader から移設 — 動線一本化） -->
