@@ -4,9 +4,9 @@
  *
  * ## ⚠️ 守るもの
  *
- * - L の保存値は **peek の幅**。DOM には `#sidebar-root` の `--vp-peek-w` として当て、全体の幅
- *   （rail 列 + peek）と slim（列だけ）は main_area.rs の CSS が決める。inline の `width` を
- *   書くと `.slim` の CSS に勝ってしまい、slim でも peek 分の幅が残る
+ * - L の保存値は **peek の幅**。DOM には `#sidebar-root` の `--vp-peek-w` として当て、creo-ui の
+ *   `CURail` が `peekWidth` で受ける（`#sidebar-root` は中身の幅）。inline の `width` を書くと、
+ *   slim（CURail が peek を畳む）でも peek 分の幅が残る
  * - R の幅（%）は `#app-shell` の `--vp-rsb-pct` に当てる（grid の right track が読む）。
  *   grid item の % 幅は track に対して解決され auto の track では効かないので、`#right-sidebar` の
  *   inline `width` には書かない

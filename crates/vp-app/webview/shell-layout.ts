@@ -30,14 +30,14 @@
  *
  * ## L の保存値は **peek の幅**（doc 87 §8 slice 1）
  *
- * leftEdge は rail 列（`--vp-rail-w`、48px）+ peek。保存・drag するのは **peek の幅**
- * （180〜640px、Rust `SIDEBAR_MIN/MAX_WIDTH` と同じ端）で、DOM には `#sidebar-root` の
- * `--vp-peek-w` として当てる。全体の幅（列 + peek）は main_area.rs の CSS が `calc` で出す。
- * ⚠️ inline の `width` を書かない — `.slim`（列だけ）の CSS に勝ってしまう。
+ * leftEdge は rail 列（48px）+ peek。保存・drag するのは **peek の幅**（180〜640px、Rust
+ * `SIDEBAR_MIN/MAX_WIDTH` と同じ端）で、DOM には `#sidebar-root` の `--vp-peek-w` として当てる。
+ * creo-ui の `CURail` がそれを `peekWidth` で受け、`#sidebar-root` は中身（列 + peek）の幅になる。
+ * ⚠️ inline の `width` を書かない — slim（CURail が peek を畳む）でも幅が残ってしまう。
  *
  * ## ⚠️ slim の幅は保存しない
  *
- * `#sidebar-root.slim` は CSS 固定（rail 列の幅）。保存するのは **peek の幅**だけで、slim 中に
+ * slim は rail 列だけ（CURail が peek を幅 0 に畳む）。保存するのは **peek の幅**だけで、slim 中に
  * drag はできない（取っ手を出さない）。混ぜると「slim で終了 → 次回 peek が下限（180px）に潰れる」になる
  * （列の 48 が保存され、SIDEBAR_MIN で clamp される）。
  *

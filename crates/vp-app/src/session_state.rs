@@ -101,7 +101,7 @@ pub const RIGHT_SIDEBAR_MAX_PCT: f64 = 60.0;
 /// ⚠️ **slim の幅 (rail 列 48px) は [`ShellLayout::sidebar_width`] に含めない**。含めると
 /// 「slim のまま終了 → 次回 full に戻したら peek が下限（180px）に潰れる」になる
 /// （48 は SIDEBAR_MIN_WIDTH で clamp される）。drag が決めるのは **peek の幅**だけで、
-/// slim は CSS 側 (`#sidebar-root.slim`) の固定値が司る。
+/// slim の幅は webview 側 (creo-ui の CURail が peek を畳み、rail 列だけが残る) が決める。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SidebarForm {
@@ -119,7 +119,7 @@ pub enum SidebarForm {
 /// R の開閉**も持つ。旧実装は毎回 full × R 閉で始まっていた。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellLayout {
-    /// L の **peek の**幅 (LogicalPixel、doc 87 slice 1)。rail 列 (48px) と slim は CSS 固定値なので含めない。
+    /// L の **peek の**幅 (LogicalPixel、doc 87 slice 1)。rail 列 (48px) と slim は webview 側の固定値なので含めない。
     pub sidebar_width: f64,
     /// R sidebar の幅 (LogicalPixel)。閉じていても最後の幅を覚えておく
     /// (次に開いたとき前回の幅で出る — 開くたびに既定幅へ戻らない)。

@@ -117,10 +117,10 @@ describe("開発 Scene — Lanes / Actions", () => {
 
 	it("machine 帯はどの rail でも peek の下端に居る", () => {
 		const win = fixture();
-		const strip = q(win, ".vp-rail-peek > .vp-machine-strip");
+		const strip = q(win, "[data-expanded] > .vp-machine-strip");
 		expect(strip).not.toBeNull();
 		click(win, "actions");
-		expect(q(win, ".vp-rail-peek > .vp-machine-strip")).toBe(strip);
+		expect(q(win, "[data-expanded] > .vp-machine-strip")).toBe(strip);
 	});
 
 	it("旧 sidebar 下部の ⚙ 行は無い（rail の歯車が入口）", () => {

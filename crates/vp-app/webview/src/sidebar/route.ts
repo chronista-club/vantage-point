@@ -20,16 +20,13 @@
  * ## rail の導出は creo-ui の `selectRailId` を使う
  *
  * 最長 prefix 一致・segment 境界の判定は creo-ui の Principal Layout が持つ規則。VP 側で
- * 書き直さず、そのまま借りる（左 edge は creo-ui の `CURail` と同じ DOM 契約の仮実装 —
- * `ShellRail.tsx` 冒頭）。
+ * 書き直さず、そのまま借りる（左 edge の描画も creo-ui の `CURail` — `ShellRail.tsx`）。
  */
-import { type RailDef, selectRailId } from "@chronista-club/creo-ui/shells";
+import { type RailAnchor, type RailDef, selectRailId } from "@chronista-club/creo-ui/shells";
 import type { SidebarForm } from "./form";
 
 export type ShellRailId = "lanes" | "actions" | "settings";
 export type ShellScene = "dev" | "settings";
-/** rail 列の中の起点（doc 82 の 3 起点の規約。中央はまだ住人が居ないので持たない）。 */
-export type RailAnchor = "top" | "bottom";
 
 /** 左 edge の rail（registry の component を除いた部分 — route の計算に要る分だけ）。 */
 export interface ShellRailSpec {
@@ -38,6 +35,7 @@ export interface ShellRailSpec {
 	order: number;
 	/** 表示名（aria-label / title）。i18n 層は無いので日本語 UI の語をそのまま持つ。 */
 	label: string;
+	/** rail 列の中の起点（creo-ui の `RailAnchor`。上 = 起点、下 = app 級の予約席）。 */
 	anchor: RailAnchor;
 }
 

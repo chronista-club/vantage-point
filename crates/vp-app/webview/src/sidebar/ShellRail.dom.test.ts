@@ -1,7 +1,11 @@
 /**
- * 左 edge の Rail（doc 87 §2 / §8 slice 1）— creo-ui `CURail` と同じ DOM 契約の仮実装。
+ * 左 edge の Rail（doc 87 §2 / §8 slice 1）— creo-ui `CURail`（0.31.0〜）を VP に繋ぐ薄い wrapper。
  *
- * ## ⚠️ ここで守るのは「CURail に差し替えられる形」であること
+ * ## ⚠️ ここで守るのは「VP が頼っている DOM 契約」
+ *
+ * 0.30.0 の時点では CURail が VP の左 edge を表せず、同じ DOM 契約の仮実装を置いていた
+ * （doc 87 §8.1）。要望が 0.31.0 に入ったので本物に差し替えた。契約はこのテストが引き続き固定する
+ * — creo-ui 側が形を変えたら、VP の CSS / directive / AI の address が頼る所がここで落ちる。
  *
  * creo-ui 0.30.0 の `CURail` は peek 幅 240px 固定（doc 87 §6 要望②）・slim（選んだまま peek だけ畳む）不可・
  * 列に registry の icon 以外を置けない、の 3 点で VP の左 edge を表せない（後の 2 点は slice 1 の実装で
@@ -37,8 +41,10 @@ beforeAll(async () => {
         import { render } from 'solid-js/web';
         import { createComponent, createSignal } from 'solid-js';
         import { ShellRail, SHELL_RAIL_CSS } from './ShellRail';
+        import shellsCss from '@chronista-club/creo-ui/shells/index.css';
+        // 本番と同じ順（creo-ui の shells → VP の上書き、sidebar.tsx）で CSS を当てる
         const style = document.createElement('style');
-        style.textContent = SHELL_RAIL_CSS;
+        style.textContent = [shellsCss, SHELL_RAIL_CSS].join(' ');
         document.head.append(style);
         const [path, setPath] = createSignal('/lanes');
         const [peekOpen, setPeekOpen] = createSignal(true);
@@ -60,7 +66,7 @@ beforeAll(async () => {
           get columnCenter() { const d = document.createElement('div'); d.className = 'slot-center'; return d; },
           get columnBottom() { const d = document.createElement('div'); d.className = 'slot-bottom'; return d; },
           get peekFooter() { const d = document.createElement('div'); d.className = 'slot-footer'; return d; },
-        }), document.getElementById('root'));
+        }), document.getElementById('sidebar-root'));
       `,
 			resolveDir: fileURLToPath(new URL(".", import.meta.url)),
 			loader: "tsx",
@@ -71,6 +77,7 @@ beforeAll(async () => {
 		platform: "browser",
 		preserveSymlinks: true,
 		plugins: [solidPlugin()],
+		loader: { ".css": "text" },
 		define: { "process.env.NODE_ENV": '"production"' },
 	});
 	bundle = result.outputFiles[0].text;
@@ -84,7 +91,8 @@ function fixture(): Probe {
 		},
 	}) as unknown as Probe;
 	windows.push(win);
-	win.document.body.innerHTML = '<div id="root"></div>';
+	// 本番と同じ mount 先（VP の上書き CSS は #sidebar-root 配下に効く）
+	win.document.body.innerHTML = '<div id="sidebar-root"></div>';
 	win.eval(bundle);
 	return win;
 }
@@ -170,8 +178,9 @@ describe("peek（選択中 rail の中身）", () => {
 	});
 
 	it("⚠️ 選択外の peek は CSS でも消えている（hidden 属性だけでなく、表示が none）", () => {
-		// `.vp-rail-peek-body{display:flex}` は UA の `[hidden]{display:none}` に勝つので、
-		// `[hidden]` の規則 1 行が消えると 3 枚が縦に並んだまま属性だけ正しい状態になる
+		// peek の section は author CSS で display:flex を持ち、UA の `[hidden]{display:none}` に勝つ。
+		// creo-ui の `[hidden]` の規則か、それを VP の上書きが打ち消すと、3 枚が縦に並んだまま
+		// 属性だけ正しい状態になる（属性だけ見るテストでは落ちない）
 		const win = fixture();
 		const display = (id: string) =>
 			win.getComputedStyle(win.document.querySelector(`[data-peek="${id}"]`)!).display;
@@ -237,5 +246,27 @@ describe("peek の下端 slot（machine 帯の置き場 — どの rail でも�
 		const win = fixture();
 		win.setPeekOpen(false);
 		expect(win.document.querySelector(".slot-footer")).toBeNull();
+	});
+});
+
+describe("drag 中は peek の幅の transition を止める（creo-ui の resizing）", () => {
+	it("shell の取っ手を掴んでいる間（body.shell-resizing）だけ data-resizing が付く", async () => {
+		const win = fixture();
+		const peek = () => win.document.querySelector("[data-expanded]")!;
+		expect(peek().getAttribute("data-resizing")).toBeNull();
+		win.document.body.classList.add("shell-resizing");
+		await new Promise((r) => win.setTimeout(r, 0));
+		expect(peek().getAttribute("data-resizing")).toBe("true");
+		win.document.body.classList.remove("shell-resizing");
+		await new Promise((r) => win.setTimeout(r, 0));
+		expect(peek().getAttribute("data-resizing")).toBeNull();
+	});
+
+	it("peek の幅は VP の保存値（--vp-peek-w）を creo-ui の口に渡す", () => {
+		const win = fixture();
+		const root = win.document.querySelector('[data-region="leftEdge"]') as unknown as {
+			style: { getPropertyValue(n: string): string };
+		};
+		expect(root.style.getPropertyValue("--cu-rail-peek-width")).toContain("--vp-peek-w");
 	});
 });

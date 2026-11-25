@@ -160,13 +160,14 @@ body{overflow:hidden;}
     "up up up up up"
     "left left-handle center right-handle right"
     "down down down down down";}
-/* 左 edge = rail 列 + peek（doc 87 §8 slice 1）。幅 = 列（--vp-rail-w）+ peek（--vp-peek-w）。
-   peek の幅は shell-layout.ts が drag / 復元で --vp-peek-w に書く（180〜640px、永続）。
-   中身（Rail と peek）は sidebar bundle の ShellRail.tsx が描く。 */
-#sidebar-root{grid-area:left;--vp-rail-w:48px;--vp-peek-w:280px;
-  width:calc(var(--vp-rail-w) + var(--vp-peek-w));height:100%;overflow:hidden;transition:width .15s ease;}
-/* slim (`Cmd+[`) = rail 列だけ（peek を畳む）。class は sidebar bundle (form.ts) が書く。 */
-#sidebar-root.slim{width:var(--vp-rail-w);}
+/* 左 edge = rail 列 + peek（doc 87 §8 slice 1）。中身は sidebar bundle の ShellRail.tsx（creo-ui の
+   CURail）が描き、#sidebar-root は**中身の幅**（列 48px + peek）になる。peek の幅は shell-layout.ts が
+   drag / 復元で --vp-peek-w に書き（180〜640px、永続）、CURail が peekWidth で受ける。slim (`Cmd+[`) は
+   CURail が peek を畳む（幅 0）ので列だけになる。⚠️ ここで width を決めない — 幅の動き（slim ⇄ full の
+   transition）は CURail の peek の 1 か所が持つ（#sidebar-root にも transition を置くと 2 つの動きが
+   ずれて、peek が一瞬はみ出す / 隙間が出る）。min-width は sidebar bundle が描く前の列の席。 */
+#sidebar-root{grid-area:left;--vp-rail-w:48px;--vp-peek-w:280px;min-width:var(--vp-rail-w);
+  height:100%;overflow:hidden;}
 #host{grid-area:center;position:relative;height:100%;min-width:0;min-height:0;}
 #shell-resizer-left{grid-area:left-handle;}
 #shell-resizer-right{grid-area:right-handle;}

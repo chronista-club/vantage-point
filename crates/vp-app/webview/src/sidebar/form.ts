@@ -11,7 +11,8 @@
  * - **actions**: `toggleSidebarForm` / `expandSidebar` / `collapseSidebar`（signal と
  *   `#sidebar-root` の幅 class を常に同時に書く — 片方だけ動く状態を作らない）
  *
- * 幅そのもの（rail 列 48px + peek / 列だけ）は webview/main_area.rs の `#sidebar-root` CSS が司る。
+ * 幅そのものは creo-ui の `CURail`（ShellRail.tsx）が持つ — full = 列 48px + peek（peekWidth）、
+ * slim = peek を畳んで列だけ。`#sidebar-root` は中身の幅になる（main_area.rs）。
  * 形の**永続**は `shell-layout.ts`（main bundle）が持つ — ここは形を変えたことを
  * `vp:sidebar-form` で伝え、復元は `vp:shell-restore` / 保留箱で受け取る側。
  */
@@ -24,7 +25,7 @@ const [sidebarForm, setSidebarForm] = createSignal<SidebarForm>("full");
 /** Shell.tsx が読む reactive な現在形。 */
 export { sidebarForm };
 
-/** 形の反映: signal（Solid 側の描画分岐）と root class（CSS 幅）の 2 点セット。 */
+/** 形の反映: signal（Solid 側の描画分岐）と root class（`.slim` = DOM で形が読める名札）の 2 点セット。 */
 function applyForm(next: SidebarForm): void {
 	setSidebarForm(next);
 	document

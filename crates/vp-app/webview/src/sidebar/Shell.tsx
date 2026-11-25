@@ -27,7 +27,8 @@ import { MachineStrip } from "./DaemonWidget";
 import { ACTIVITY_POINT_CSS } from "./ResponsePoint";
 import { BucketList, ACTIONS_CSS } from "./actions-panel/BucketList";
 import type { RepoPaneState } from "../generated/RepoPaneState";
-import { ShellRail, SHELL_RAIL_CSS, type ShellRailDef } from "./ShellRail";
+import type { RailDef } from "@chronista-club/creo-ui/shells";
+import { ShellRail, SHELL_RAIL_CSS } from "./ShellRail";
 import { SHELL_RAILS, type ShellRailId } from "./route";
 import { clickRail, currentRail, currentRoute, showRail, useRouteSync } from "./route-store";
 
@@ -305,7 +306,7 @@ const RAIL_VIEW: Record<ShellRailId, { icon: Component; peek: Component }> = {
 	settings: { icon: () => <CreoIcon name="ph:gear-six" size={16} />, peek: SettingsPeek },
 };
 
-export const SHELL_RAIL_REGISTRY: readonly ShellRailDef[] = SHELL_RAILS.map((r) => ({
+export const SHELL_RAIL_REGISTRY: readonly RailDef[] = SHELL_RAILS.map((r) => ({
 	id: r.id,
 	route: r.route,
 	order: r.order,

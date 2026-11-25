@@ -13,7 +13,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@chronista-club/creo-ui": "^0.30.0",
+    "@chronista-club/creo-ui": "^0.31.0",
     "@chronista-club/creo-ui-editor-host": "^0.11.0",
     "@chronista-club/creo-ui-icons-web": "^0.0.1",
     "@chronista-club/creo-ui-layout": "^0.3.0",
