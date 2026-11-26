@@ -1145,7 +1145,10 @@ async fn converge_lane(
             };
             if is_chat {
                 let mut pool = state.lane_pool.write().await;
-                if let Err(e) = pool.ensure_chat_engine(&addr, None, &state.topic_router) {
+                if let Err(e) = pool
+                    .ensure_chat_engine_reported(&addr, None, &state.topic_router)
+                    .await
+                {
                     tracing::warn!(
                         "restart_lane: chat engine eager spawn 失敗（次 submit で再試行）: {e}"
                     );
@@ -1196,6 +1199,40 @@ mod core_tests {
     //! helpers の test とは別 mod で配線。
 
     use super::*;
+
+    // mem_1CeKURXkyMrGuvGzkzzfzE: restart の収束成功でも host 起動の失敗理由は届ける。
+    #[tokio::test]
+    async fn spawn_failure_after_restart_reaches_the_conversation_topic() {
+        use crate::conversation::ConversationEvent;
+        use crate::lane::session_registry::SessionMode;
+        use crate::protocol::RepoMessage;
+
+        let isolated = crate::test_env::state_dir_async().await;
+        let state = crate::repo::state::build_test_app_state().await;
+        let addr =
+            crate::repo::state::insert_test_lane(&state, "spawn-restart", SessionMode::Gui).await;
+        {
+            let mut pool = state.lane_pool.write().await;
+            let mut lane = pool.get(&addr).unwrap().clone();
+            lane.cwd = isolated
+                .path()
+                .join("missing-cwd")
+                .to_string_lossy()
+                .into_owned();
+            pool.insert(lane);
+        }
+        let (_, mut rx) = state
+            .topic_router
+            .subscribe("repo/conversation/data/spawn-restart~lane~lead/event")
+            .await;
+        converge_lane(&state, addr.clone()).await.unwrap();
+        assert!(
+            matches!(rx.try_recv(), Ok((_, RepoMessage::ConversationEvent {
+            lane, session: 1, event: ConversationEvent::Error { message },
+        })) if lane == addr.canonical() && !message.is_empty())
+        );
+        assert!(rx.try_recv().is_err());
+    }
 
     /// テスト用の最小 `CreateLaneReq` builder（validation だけ叩く時に使う）。
     fn req(name: &str) -> CreateLaneReq {

@@ -28,6 +28,15 @@ use crate::conversation::{ChatEngineSlot, ChatHost, EngineKind};
 // 「状態の供給を 1 系統に」の原則。読みは毎回 registry file、書きは registry module 経由）。
 use crate::lane::session_registry::{self, SessionKey, SessionMode};
 
+/// host の起動失敗。session / mode / PTY のガード拒否とは区別して会話に通知する。
+#[derive(Debug, thiserror::Error)]
+#[error("{error}")]
+struct ChatEngineSpawnError {
+    session: SessionKey,
+    #[source]
+    error: anyhow::Error,
+}
+
 /// idle teardown の猶予 (ms)。**settings.kdl の `idle-timeout-minutes` から起動時に確定**する
 /// （doc 59 P3。既定 5 分 = mako 裁定 2026-08-28）。
 ///
@@ -1579,6 +1588,31 @@ impl LanePool {
             .clone()
     }
 
+    /// 通常操作の起動口。host を作れず pump が無い時も、失敗を会話 topic へ届ける。
+    /// ガード拒否は通知しない。replay は末尾へ通知するため [`Self::ensure_chat_engine`] を使う。
+    pub(crate) async fn ensure_chat_engine_reported(
+        &mut self,
+        addr: &LaneAddress,
+        session: Option<SessionKey>,
+        topic_router: &std::sync::Arc<crate::repo::topic_router::TopicRouter>,
+    ) -> anyhow::Result<()> {
+        let result = self.ensure_chat_engine(addr, session, topic_router);
+        if let Err(error) = &result
+            && let Some(spawn) = error.downcast_ref::<ChatEngineSpawnError>()
+        {
+            topic_router
+                .route(crate::protocol::RepoMessage::ConversationEvent {
+                    lane: addr.canonical(),
+                    session: spawn.session,
+                    event: crate::conversation::ConversationEvent::Error {
+                        message: error.to_string(),
+                    },
+                })
+                .await;
+        }
+        result
+    }
+
     /// chat engine を確保する（無ければ spawn + pump 起動）。`session=None` は focused。
     ///
     /// **法の番人**（doc 38 で session 粒度 → doc 46 P5 で slot 側も session 粒度）:
@@ -1595,6 +1629,9 @@ impl LanePool {
     /// > だから）。逆に非 focused は素通りしていた。session ごとに mode を持つ今は、focused の
     /// > 特例（doc 38 落とし穴③ = lane 単位ガードが副 session を縛る問題への対処）も不要 —
     /// > 自分の mode で判定すれば「Tui 中は副 session が動けない」は構造的に起きない。
+    ///
+    /// この口は失敗を配送しない。replay は順序を決めて通知し、通常操作は
+    /// [`Self::ensure_chat_engine_reported`] を使う。
     pub fn ensure_chat_engine(
         &mut self,
         addr: &LaneAddress,
@@ -1662,6 +1699,10 @@ impl LanePool {
         // `<lane>#<n>`）。host の config.lane にもこれを渡す = record-from-init が同じ per-session
         // slot に会話 id を書き戻す（session_store の key 拡張はこの 1 点で全 engine に効く）。
         let label = session_registry::session_label(&lane_label, resolved.key);
+        let spawn_error = |error| ChatEngineSpawnError {
+            session: resolved.key,
+            error,
+        };
         // engine ごとに host を組む（対応表は EngineKind が SSOT。engine は **session の** agent —
         // lane と異なる engine の session を持てる、doc 38 §1）。
         let host = match EngineKind::from_agent(&resolved.agent) {
@@ -1679,14 +1720,15 @@ impl LanePool {
                             thread_id: resolved.conversation.clone(),
                         },
                         self.codex_question_session(addr, resolved.key),
-                    )?,
+                    )
+                    .map_err(spawn_error)?,
                 )
             }
             Some(EngineKind::Grok) => {
                 // grok: 常駐 AcpAgentHost（`grok agent stdio` = ACP、doc 42）。sessionId は
                 // registry の会話 id（registry-native — 旧 store なし）。
-                ChatHost::Grok(crate::conversation::AcpAgentHost::spawn(
-                    crate::conversation::AcpHostConfig {
+                ChatHost::Grok(
+                    crate::conversation::AcpAgentHost::spawn(crate::conversation::AcpHostConfig {
                         engine: crate::conversation::AcpEngine::Grok,
                         cwd: cwd.clone(),
                         repo: addr.repo.clone(),
@@ -1695,14 +1737,15 @@ impl LanePool {
                         session_key: resolved.key,
                         session_id: resolved.conversation.clone(),
                         config_intent: Vec::new(),
-                    },
-                )?)
+                    })
+                    .map_err(spawn_error)?,
+                )
             }
             Some(EngineKind::OpenCode) => {
                 // opencode: grok と同じ常駐 AcpAgentHost（`opencode acp` = 同 ACP、doc 43）。
                 // engine パラメタだけが違う。sessionId は registry の会話 id（registry-native）。
-                ChatHost::OpenCode(crate::conversation::AcpAgentHost::spawn(
-                    crate::conversation::AcpHostConfig {
+                ChatHost::OpenCode(
+                    crate::conversation::AcpAgentHost::spawn(crate::conversation::AcpHostConfig {
                         engine: crate::conversation::AcpEngine::OpenCode,
                         cwd: cwd.clone(),
                         repo: addr.repo.clone(),
@@ -1711,15 +1754,16 @@ impl LanePool {
                         session_key: resolved.key,
                         session_id: resolved.conversation.clone(),
                         config_intent: Vec::new(),
-                    },
-                )?)
+                    })
+                    .map_err(spawn_error)?,
+                )
             }
             Some(EngineKind::Agy) => {
                 // agy: 常駐 AcpAgentHost（`agy acp --dangerously-skip-permissions` = 同 ACP、doc 88）。
                 // sessionId は registry の会話 id（registry-native）。Model / Thinking Level / Mode の
                 // 意図は session 確定後に host が当て直す（agy は load 後に既定へ戻る — doc 88 §6）。
-                ChatHost::Agy(crate::conversation::AcpAgentHost::spawn(
-                    crate::conversation::AcpHostConfig {
+                ChatHost::Agy(
+                    crate::conversation::AcpAgentHost::spawn(crate::conversation::AcpHostConfig {
                         engine: crate::conversation::AcpEngine::Agy,
                         cwd: cwd.clone(),
                         repo: addr.repo.clone(),
@@ -1733,15 +1777,16 @@ impl LanePool {
                             .and_then(crate::conversation::EngineSettings::agy)
                             .map(crate::conversation::agy_settings::AgySettings::config_pairs)
                             .unwrap_or_default(),
-                    },
-                )?)
+                    })
+                    .map_err(spawn_error)?,
+                )
             }
             Some(EngineKind::Vpcode) => {
                 // vpcode: 常駐 VpcodeHost（`vpcode --vcp` = VCP JSONL、doc = vpcode_host）。
                 // 会話 id は VP 発行（VCP R3）— None なら host が採番して registry へ書く。
                 // resume 材料は vpcode_transcript store（封筒 side-car、pump 非経由）。
-                ChatHost::Vpcode(crate::conversation::VpcodeHost::spawn(
-                    crate::conversation::VpcodeHostConfig {
+                ChatHost::Vpcode(
+                    crate::conversation::VpcodeHost::spawn(crate::conversation::VpcodeHostConfig {
                         cwd: cwd.clone(),
                         repo: addr.repo.clone(),
                         lane: label.clone(),
@@ -1753,8 +1798,9 @@ impl LanePool {
                             .as_ref()
                             .and_then(crate::conversation::EngineSettings::vpcode)
                             .map(|s| s.model.clone()),
-                    },
-                )?)
+                    })
+                    .map_err(spawn_error)?,
+                )
             }
             Some(EngineKind::Claude) => {
                 // claude: 常駐 stream-json host。resume は registry の会話 id（doc 40 §5）。
@@ -1777,8 +1823,8 @@ impl LanePool {
                     .and_then(crate::conversation::EngineSettings::claude)
                     .cloned()
                     .unwrap_or_default();
-                ChatHost::Claude(crate::conversation::ClaudeHost::spawn(
-                    crate::conversation::ClaudeHostConfig {
+                ChatHost::Claude(
+                    crate::conversation::ClaudeHost::spawn(crate::conversation::ClaudeHostConfig {
                         cwd: cwd.clone(),
                         repo: addr.repo.clone(),
                         lane: label.clone(),
@@ -1787,8 +1833,9 @@ impl LanePool {
                         resume_session_id: resume,
                         settings,
                         claude_cli_path: None,
-                    },
-                )?)
+                    })
+                    .map_err(spawn_error)?,
+                )
             }
             None => {
                 // engine を持たない agent（shell / 撤去済み cursor・agy / 未知）。focused は
