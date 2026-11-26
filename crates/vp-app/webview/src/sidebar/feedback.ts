@@ -1,4 +1,4 @@
-import { createSignal } from 'solid-js'
+import { createSignal, flush } from 'solid-js'
 import type { IpcEnvelope } from '../generated/SidebarIpc'
 
 export const [sidebarError, reportSidebarError] = createSignal<string | null>(null)
@@ -21,6 +21,7 @@ export function createLaneCreation(
     if (!pending() || path !== repo || name !== submittedName) return
     setPending(false)
     setError(reason)
+    flush()
     if (reason === null) close()
   }
   results.add(receive)
@@ -31,11 +32,14 @@ export function createLaneCreation(
       submittedName = input.name.trim()
       setError(null)
       setPending(true)
+      // 同期 transport が応答・再入する前に、要求中の guard を確定する。
+      flush()
       try {
         send({ ...input, t: 'lane:add_sub', path: repo, name: submittedName })
       } catch (e) {
         setPending(false)
         setError(e instanceof Error ? e.message : String(e))
+        flush()
       }
     },
     dispose: () => { results.delete(receive) },

@@ -1,5 +1,5 @@
 /** R sidebar の Lane リンク。検出 URL と PR は一時表示、登録は native の保存結果だけを確定値にする。 */
-import { For, Show, createEffect, createSignal, on, onCleanup } from 'solid-js'
+import { For, Show, createEffect, createSignal, onCleanup } from 'solid-js'
 import { requestLocalUrls, probeLabel, type LocalUrlEntry, type UrlAction, type UrlProbe, type UrlResult } from './local-urls'
 import { extractLoopbackUrls } from '../../lane-link-discovery'
 import type { Pr } from '../../pr-list'
@@ -25,7 +25,7 @@ export function LocalUrls(props: { repoPath: string; address: string; active?: b
   const registeredProbe = (id: string) => Object.hasOwn(probes(), id) ? probes()[id] : undefined
   const openLink = (url: string) => window.ipc?.postMessage(JSON.stringify({ t: 'open-url', url }))
   const candidates = () => (props.discovered ?? []).filter(url => !entries().some(entry => extractLoopbackUrls(entry.url)[0] === url))
-  createEffect(on([() => props.repoPath, () => props.address, () => props.active], () => {
+  createEffect(() => [props.repoPath, props.address, props.active], () => {
     const path = props.repoPath, address = props.address
     const current = ++generation
     setEntries([]); setProbes({}); setDiscoveredProbes({}); setExpanded(false); setEditing(null); setLoaded(false); setError(''); setBusy(false)
@@ -39,12 +39,12 @@ export function LocalUrls(props: { repoPath: string; address: string; active?: b
     const refreshTimer = window.setInterval(() => void refresh(), 3000)
     const refreshOnFocus = () => void refresh()
     window.addEventListener('focus', refreshOnFocus)
-    onCleanup(() => {
+    return () => {
       generation++
       window.clearInterval(refreshTimer)
       window.removeEventListener('focus', refreshOnFocus)
-    })
-  }))
+    }
+  })
   async function act(action: UrlAction): Promise<UrlResult | null> {
     if (!visible() || busy()) return null
     const current = generation
@@ -98,12 +98,15 @@ export function LocalUrls(props: { repoPath: string; address: string; active?: b
         if (current !== generation || snapshot !== entries()) continue
         if (entry) setProbes(previous => ({ ...previous, [entry.id]: probe }))
         else setDiscoveredProbes(previous => ({ ...previous, [url]: probe }))
+        // 次の反復では、いま記録した結果を読めるようにする。
+        await Promise.resolve()
       }
     } finally { probing = false }
   }
-  createEffect(on(entries, () => setProbes({})))
-  createEffect(on([() => props.discovered, () => props.address, () => props.repoPath, () => props.active, loaded, entries], () => { void probeDiscovered() }))
-  createEffect(on(() => props.addRequest, request => { if (request) edit() }))
+  createEffect(entries, () => { setProbes({}) })
+  // 結果のリセットもバッチ反映なので、確定したリセットを購読して再開する。
+  createEffect(() => [props.discovered, props.address, props.repoPath, props.active, loaded(), entries(), probes(), discoveredProbes()], () => { void probeDiscovered() })
+  createEffect(() => props.addRequest, request => { if (request) edit() })
   return <><style>{LOCAL_URLS_CSS}</style><div class="vp-local-urls" onClick={e => e.stopPropagation()} onContextMenu={e => e.stopPropagation()} onDragStart={e => e.stopPropagation()}>
     <h3>リンク</h3>
     <div class="vp-local-url-body">
@@ -144,7 +147,7 @@ export function LocalUrls(props: { repoPath: string; address: string; active?: b
         <button type="button" disabled={busy() || !loaded()} onClick={() => edit(undefined, url)}>登録</button>
       </div>}</For>
       <Show when={candidates().length > 5}>
-        <button type="button" aria-expanded={expanded()} onClick={() => setExpanded(value => !value)}>{expanded() ? '折りたたむ' : `さらに ${candidates().length - 5} 件`}</button>
+        <button type="button" aria-expanded={String(expanded()) as 'true' | 'false'} onClick={() => setExpanded(value => !value)}>{expanded() ? '折りたたむ' : `さらに ${candidates().length - 5} 件`}</button>
       </Show>
       <Show when={busy()}><span role="status">処理中…</span></Show>
     </div>

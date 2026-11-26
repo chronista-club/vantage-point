@@ -9,7 +9,7 @@
  * form は「peek を開いているか」で、別の問い。rail の click は両方を動かすので、ここで
  * `route.ts` の `railClick` が返した形を `form.ts` に渡す。
  */
-import { createEffect, createSignal, on } from "solid-js";
+import { createEffect, createSignal, flush } from 'solid-js'
 import { collapseSidebar, expandSidebar, sidebarForm } from "./form";
 import {
 	type RouteState,
@@ -81,6 +81,8 @@ export function showRail(rail: ShellRailId): void {
 		setRouteState(railClick(routeState(), "full", rail, activeLane()).state);
 	}
 	expandSidebar();
+	// 呼び手が直後に表示された rail を検索・focus するため、ここで確定する。
+	flush();
 }
 
 /** 一時遷移の控え。入る前の状態・置いた route・入った時の作業の選択。 */
@@ -133,16 +135,14 @@ export function workspaceSelection(): string {
  *   読める（AI の address、doc 51）
  */
 export function useRouteSync(): void {
-	createEffect(
-		on(workspaceSelection, () =>
-			setRouteState((s) => onWorkspaceSelected(s, activeLane())),
-		),
-	);
-	createEffect(() => {
+	createEffect(workspaceSelection, () => {
+		setRouteState((s) => onWorkspaceSelected(s, activeLane()));
+	});
+	createEffect(() => ({ route: currentRoute(), scene: currentScene() }), ({ route, scene }) => {
 		const shell = document.getElementById("app-shell");
 		if (!shell) return;
-		shell.dataset.route = currentRoute();
-		shell.dataset.scene = currentScene();
+		shell.dataset.route = route;
+		shell.dataset.scene = scene;
 	});
 }
 

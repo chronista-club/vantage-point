@@ -1,12 +1,12 @@
 // mem_1Cf1r1bEcTcknGH3Xk3naa — capture belongs to its chosen Atlas, not the active Project.
 import { expect, it } from 'vitest'
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window, type HTMLTextAreaElement, type HTMLButtonElement } from 'happy-dom'
 
 it('requires an explicit Atlas and keeps the draft when Projects change', async () => {
   const bundle = await build({stdin:{contents:`
-    import {render} from 'solid-js/web'
+    import {render} from '@solidjs/web'
     import {BucketList} from './src/sidebar/actions-panel/BucketList'
     import {emptyState,applySidebarState} from './src/sidebar/store'
     import {setActionPersist,commitActions,applyActionsFromDaemon} from './src/sidebar/actions-panel/store'
@@ -28,25 +28,25 @@ it('requires an explicit Atlas and keeps the draft when Projects change', async 
   `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],preserveSymlinks: true, plugins:[solidPlugin()]})
   const window = new Window()
   try {
-    window.eval(bundle.outputFiles[0].text)
+    evalDom(window, bundle.outputFiles[0].text)
     const text = window.document.querySelector<HTMLTextAreaElement>('[aria-label="メモ"]')
     const atlas = window.document.querySelector<HTMLButtonElement>('[aria-label="保存先 Atlas"]')
     expect(text).not.toBeNull()
     expect(atlas).not.toBeNull()
     const legacy = window.document.querySelector<HTMLButtonElement>('[aria-label="以前のACTIONSを取り込む"]')
     expect(legacy).not.toBeNull()
-    legacy!.click()
+    clickDom(legacy!)
     expect((window as unknown as {sent:unknown[]}).sent.at(-1)).toMatchObject({scope:'account-a',import_legacy:true})
     const save = window.document.querySelector<HTMLButtonElement>('[aria-label="メモを保存"]')!
-    text!.value='別件の思いつき';text!.dispatchEvent(new window.Event('input',{bubbles:true}))
+    text!.value='別件の思いつき';dispatchDom(text!, new window.Event('input',{bubbles:true}))
     expect(save.disabled).toBe(true)
-    atlas!.click();window.document.querySelector<HTMLButtonElement>('[data-atlas-id="atlas-other"]')!.click()
+    clickDom(atlas!);clickDom(window.document.querySelector<HTMLButtonElement>('[data-atlas-id="atlas-other"]')!)
     const app=window as unknown as {switchProject:()=>void;sent:Array<{items:unknown[]}>}
-    app.switchProject()
+    callDom(app, () => app.switchProject())
     expect(text!.value).toBe('別件の思いつき')
     expect(atlas!.textContent).toContain('/別件')
     expect(save.disabled).toBe(false)
-    save.click()
+    clickDom(save)
     expect(app.sent.at(-1)?.items).toEqual(expect.arrayContaining([expect.objectContaining({text:'別件の思いつき',atlas_id:'atlas-other',kind:null})]))
     const row = window.document.querySelector('[data-vp-act-row]')
     expect(row).not.toBeNull()
@@ -56,7 +56,7 @@ it('requires an explicit Atlas and keeps the draft when Projects change', async 
     ;(window as unknown as {showRows:()=>void}).showRows()
     const original = window.document.querySelector<HTMLTextAreaElement>('[data-vp-act-row="mem-a"] textarea')!
     original.focus()
-    original.dispatchEvent(new window.KeyboardEvent('keydown',{key:'ArrowDown',altKey:true,shiftKey:true,bubbles:true}))
+    dispatchDom(original, new window.KeyboardEvent('keydown',{key:'ArrowDown',altKey:true,shiftKey:true,bubbles:true}))
     await Promise.resolve()
     expect(window.document.activeElement).toBe(original)
     expect(original.closest('[data-vp-act-row]')?.getAttribute('data-vp-act-row')).toBe('mem-a')
@@ -64,10 +64,10 @@ it('requires an explicit Atlas and keeps the draft when Projects change', async 
     expect(window.document.querySelector<HTMLTextAreaElement>('.vp-act-text')?.readOnly).toBe(true)
     expect(window.document.querySelector<HTMLButtonElement>('.vp-act-check')?.disabled).toBe(true)
     ;(window as unknown as {captureShortcut:()=>void}).captureShortcut()
-    window.dispatchEvent(new window.KeyboardEvent('keydown',{key:'1',bubbles:true}))
+    dispatchDom(window, new window.KeyboardEvent('keydown',{key:'1',bubbles:true}))
     await Promise.resolve()
     expect(window.document.activeElement).toBe(text)
-    text!.value='A の下書き';text!.dispatchEvent(new window.Event('input',{bubbles:true}))
+    text!.value='A の下書き';dispatchDom(text!, new window.Event('input',{bubbles:true}))
     ;(window as unknown as {changeAccount:()=>void}).changeAccount()
     expect(text!.value).toBe('')
     expect(atlas!.textContent).toBe('Atlas を選択')

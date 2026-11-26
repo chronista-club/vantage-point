@@ -1,7 +1,7 @@
 // mem_1ChDPjq74fG87DYtSn3ns3 — 実 ChatView の帯の位置・閉じる操作。
 import { expect, it } from 'vitest'
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window } from 'happy-dom'
 import type { ConversationEvent } from './console'
 
@@ -21,9 +21,9 @@ it('知らせを内外の帯に描き、閉じる操作と再配信を反映す�
   format: 'iife', conditions: ['browser'], preserveSymlinks: true, plugins: [solidPlugin()] })
   const window = new Window()
   try {
-    window.eval(result.outputFiles[0].text)
+    evalDom(window, result.outputFiles[0].text)
     const app = window as unknown as { emit: (event: ConversationEvent, session: number) => void }
-    const emit = (event: ConversationEvent) => app.emit(event, 1)
+    const emit = (event: ConversationEvent) => callDom(app, () => app.emit(event, 1))
     const notices = () => Array.from(window.document.querySelectorAll('.chat-history-notice'))
     const live = '新しい会話を始めました: <b>そのまま表示</b>'
     emit({ kind: 'notice', message: live })
@@ -45,7 +45,7 @@ it('知らせを内外の帯に描き、閉じる操作と再配信を反映す�
     expect(stream.querySelector('.chat-history-notice button')).toBeNull()
     const button = window.document.querySelector('.chat-live-notice button')!
     expect(button.getAttribute('aria-label')).toBe('知らせを閉じる')
-    button.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+    dispatchDom(button, new window.MouseEvent('click', { bubbles: true }))
     expect(notices()).toHaveLength(1)
     expect(window.document.body.textContent).not.toContain(live)
     emit({ kind: 'replay_start' })

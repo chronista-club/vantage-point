@@ -96,6 +96,8 @@ createRoot(() => createEffect(() => {
     new Set(currentLanes(sidebar).map(l => l.address))).map(pad =>
       flashes()[pad.index] ? {...pad, filled:true, color:flashes()[pad.index]} : pad);
   const enabled = target() && pinsReady();
+  return { enabled, pads };
+}, ({ enabled, pads }) => {
   (window as unknown as {__vpMidiPads?:unknown}).__vpMidiPads = {enabled,pads};
   window.dispatchEvent(new CustomEvent('vp:midi-pads', {detail:{enabled,pads}}));
 }));

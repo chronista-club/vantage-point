@@ -15,21 +15,10 @@ import { beginCodexResponse } from './codex-interaction-model'
  * 再 replay しない）。renderer は lane 初出時に一度だけ attach（console.ts が buffer を replay）。
  */
 
-import { render } from 'solid-js/web'
-import {
-  createSignal,
-  createMemo,
-  createEffect,
-  onMount,
-  onCleanup,
-  For,
-  Show,
-  Switch,
-  Match,
-  type Accessor,
-  type JSX,
-} from 'solid-js'
-import { createStore, produce } from 'solid-js/store'
+import { render } from '@solidjs/web'
+import { createSignal, createMemo, createEffect, flush, onSettled, onCleanup, For, Show, Switch, Match, type Accessor } from 'solid-js'
+import type { JSX } from '@solidjs/web'
+import { createStore } from 'solid-js'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import { isTurnClosingKind, REPLAY_WATCHDOG_MS } from './session-now-bridge'
 import { renderMermaidBlocks } from './mermaid-post'
@@ -267,7 +256,7 @@ function armReplayWatchdog(lane: string, session: number): void {
         console.warn(
           `[chatview] resync watchdog: replay_end 未達で再同期ローダーを強制解除 (lane=${lane} session=${session})`,
         )
-        lc.set('replaying', false)
+        lc.set(s => { s['replaying'] = false })
       }
     }, REPLAY_WATCHDOG_MS),
   )
@@ -284,7 +273,7 @@ function clearReplaying(lane: string): void {
       clearTimeout(t)
       replayWatchdogs.delete(k)
     }
-    if (lc.state.replaying) lc.set('replaying', false)
+    if (lc.state.replaying) lc.set(s => { s['replaying'] = false })
   }
 }
 
@@ -298,8 +287,8 @@ function clearReplaying(lane: string): void {
  *  session は console.ts で正規化済み（未指定 = focused = 1、旧 SP 互換）。 */
 function foldEvent(lane: string, ev: ConversationEvent, session: number): void {
   const lc = laneChat(lane, session)
-  lc.set(produce((s) => foldInto(s, ev)))
-  lc.set('lastEventAt', Date.now()) // 全イベントで時刻を同期（hang 検出の時間軸）
+  lc.set((s) => foldInto(s, ev))
+  lc.set(s => { s['lastEventAt'] = Date.now() }) // 全イベントで時刻を同期（hang 検出の時間軸）
   // doc 38 §4.3: replay window の watchdog を張り替える。replay_start で arm、replay_end / error で
   // 解除（foldInto は既に replaying を下ろしている — ここは timer の後始末）。10s 無応答なら強制解除。
   if (ev.kind === 'replay_start') armReplayWatchdog(lane, session)
@@ -310,7 +299,11 @@ function foldEvent(lane: string, ev: ConversationEvent, session: number): void {
     clearReplayWatchdog(lane, session) // engine 途絶 = 続きの replay はもう来ない → watchdog を固着させない
   // doc 35 §5.1: turn が閉じた event を契機に pending を flush。派生状態 streaming===false は見ない
   //（replay_start / question / permission_request も false にするため — それらで流すと順序が壊れる）。
-  if (isTurnClosingEvent(ev.kind)) flushPending(lane, session)
+  if (isTurnClosingEvent(ev.kind)) {
+    // 終了イベントによる送信状態の解除を確定してから、待機入力を送る。
+    flush()
+    flushPending(lane, session)
+  }
 }
 
 /** turn が閉じた（= pending flush を発火してよい）event か（doc 35 §5.1、vitest 対象）。
@@ -328,7 +321,7 @@ function flushPending(lane: string, session: number): void {
   const lc = laneChat(lane, session)
   const text = lc.state.pending
   if (!text || lc.state.submission) return
-  if (sendSubmission(lane, session, text, [])) lc.set('pending', null)
+  if (sendSubmission(lane, session, text, [])) lc.set(s => { s['pending'] = null })
 }
 
 
@@ -343,7 +336,7 @@ export function sendSubmission(lane: string, session: number, text: string, imag
   const id = `submit-${submissionEpoch}-${++submissionSequence}`
   const codex = sessionsOf(lane)?.sessions.find(entry => entry.key === session)?.agent === 'codex'
   let accepted = false
-  lc.set(produce((s) => { accepted = beginSubmission(s, id, text, images, codex) }))
+  lc.set((s) => { accepted = beginSubmission(s, id, text, images, codex) })
   if (!accepted) return false
   try {
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
@@ -495,9 +488,9 @@ chatMarked.use({
  */
 function MsgBody(props: { class: string; text: string; final?: boolean }) {
   let el!: HTMLDivElement
-  createEffect(() => {
-    el.innerHTML = mdToHtml(props.text)
-    void renderMermaidBlocks(el, { showErrors: props.final !== false })
+  createEffect(() => ({ html: mdToHtml(props.text), showErrors: props.final !== false }), ({ html, showErrors }) => {
+    el.innerHTML = html
+    void renderMermaidBlocks(el, { showErrors })
   })
   return <div class={props.class} ref={el} />
 }
@@ -527,11 +520,11 @@ function ThinkingBlock(props: { text: string; active: () => boolean; liner?: boo
   return (
     <div class="conversation-thinking">
       <button
-        class="conversation-thinking-toggle"
-        classList={{ live: props.active() }}
+        class={["conversation-thinking-toggle", { live: props.active() }]}
+
         onClick={() => setOpen(!open())}
       >
-        <span class="conversation-thinking-caret" classList={{ open: open() }}>
+        <span class={["conversation-thinking-caret", { open: open() }]} >
           ▸
         </span>
         {/* active 中はラベルを shimmer で光らせる（考え中の質感）。 */}
@@ -781,7 +774,7 @@ function SubagentBlock(props: { entries: SubagentEntry[] }) {
         {(e) => {
           const clamped = createMemo(() => clampToolDetail(e.text))
           return (
-            <div class="conversation-subagent-entry" classList={{ [e.role]: true }}>
+            <div class={["conversation-subagent-entry", { [e.role]: true }]} >
               <span class="conversation-subagent-role">{e.role}</span>
               <pre class="conversation-tool-detail-body">{clamped().text}</pre>
               <Show when={clamped().omitted > 0}>
@@ -823,14 +816,14 @@ function ToolRow(props: {
     () => inputText() !== null || resultText() !== null || subagent().length > 0 || !!props.task,
   )
   return (
-    <div class="conversation-tool" classList={{ done: props.done, error: props.error }}>
+    <div class={["conversation-tool", { done: props.done, error: props.error }]} >
       <button
-        class="conversation-tool-head"
-        classList={{ clickable: hasDetail() }}
+        class={["conversation-tool-head", { clickable: hasDetail() }]}
+
         onClick={() => hasDetail() && setOpen(!open())}
       >
         <Show when={hasDetail()}>
-          <span class="conversation-thinking-caret" classList={{ open: open() }}>
+          <span class={["conversation-thinking-caret", { open: open() }]} >
             ▸
           </span>
         </Show>
@@ -891,11 +884,11 @@ function ToolGroupRow(props: { name: string; tools: Accessor<ToolItem[]> }) {
   })
   return (
     <div
-      class="conversation-toolgroup"
-      classList={{ done: !status().running && !anyError(), error: !status().running && anyError() }}
+      class={["conversation-toolgroup", { done: !status().running && !anyError(), error: !status().running && anyError() }]}
+
     >
       <button class="conversation-toolgroup-toggle" onClick={() => setOpen(!open())}>
-        <span class="conversation-thinking-caret" classList={{ open: open() }}>
+        <span class={["conversation-thinking-caret", { open: open() }]} >
           ▸
         </span>
         <Show when={status().running}>
@@ -1007,14 +1000,14 @@ function ActivityTree(props: { run: Accessor<ChatItem[]>; tailStreaming: () => b
   }
   return (
     <div
-      class="conversation-activity"
-      classList={{
+      class={["conversation-activity", {
         done: !st().running && !st().anyError,
         error: !st().running && st().anyError,
-      }}
+      }]}
+
     >
       <button class="conversation-activity-head" onClick={() => setOpen(!open())}>
-        <span class="conversation-thinking-caret" classList={{ open: open() }}>
+        <span class={["conversation-thinking-caret", { open: open() }]} >
           ▸
         </span>
         <Show
@@ -1082,7 +1075,7 @@ function PlanWidget(props: { entries: Accessor<PlanEntry[]> }) {
         <div class="conversation-plan-title">Plan</div>
         <For each={props.entries()}>
           {(e) => (
-            <div class="conversation-plan-item" classList={{ [e.status]: true }}>
+            <div class={["conversation-plan-item", { [e.status]: true }]} >
               <span class="conversation-plan-dot" />
               <span class="conversation-plan-text">
                 {e.status === 'in_progress' ? (e.active_form ?? e.content) : e.content}
@@ -1187,7 +1180,7 @@ function PromptCard(props: {
   }
 
   return (
-    <div class="conversation-prompt" classList={{ answered: props.item.answered }}>
+    <div class={["conversation-prompt", { answered: props.item.answered }]} >
       <Show
         when={!props.item.answered}
         fallback={
@@ -1218,8 +1211,8 @@ function PromptCard(props: {
                 <For each={q.options}>
                   {(opt) => (
                     <button
-                      class="conversation-prompt-opt"
-                      classList={{ selected: isSelected(q, opt.label) }}
+                      class={["conversation-prompt-opt", { selected: isSelected(q, opt.label) }]}
+
                       onClick={() => toggle(q, opt.label)}
                     >
                       <span class="conversation-prompt-opt-label">{opt.label}</span>
@@ -1232,8 +1225,8 @@ function PromptCard(props: {
                 </For>
                 {/* Other = 自由記述（cc 本体と同じ末尾配置）。選ぶと下に入力欄が開く。 */}
                 <button
-                  class="conversation-prompt-opt other"
-                  classList={{ selected: isSelected(q, OTHER_LABEL) }}
+                  class={["conversation-prompt-opt other", { selected: isSelected(q, OTHER_LABEL) }]}
+
                   onClick={() => toggle(q, OTHER_LABEL)}
                 >
                   <span class="conversation-prompt-opt-label">Other</span>
@@ -1294,7 +1287,7 @@ function PermissionCard(props: {
     }
   }
   return (
-    <div class="conversation-prompt" classList={{ answered: props.item.answered }}>
+    <div class={["conversation-prompt", { answered: props.item.answered }]} >
       <Show
         when={!props.item.answered}
         fallback={
@@ -1346,7 +1339,7 @@ function PlanCard(props: {
     }
   }
   return (
-    <div class="conversation-prompt conversation-plan-card" classList={{ answered: props.item.answered }}>
+    <div class={["conversation-prompt conversation-plan-card", { answered: props.item.answered }]} >
       <Show
         when={!props.item.answered}
         fallback={
@@ -1418,7 +1411,7 @@ export function SessionPlate(props: {
   const canSwitchMode = (): boolean => canSwitchTo(target(), info()?.chat_capable)
 
   return (
-    <div class="conversation-session-plate" classList={{ focused: props.focused }}>
+    <div class={["conversation-session-plate", { focused: props.focused }]} >
       {props.lamp}
       {/* engine のロゴ（lane リストと同じ表 — focused は fill）。ロゴで engine が一目で分かる */}
       <Show when={info()?.agent ? agentIcon(info()!.agent, props.focused) : null}>
@@ -1533,19 +1526,19 @@ export function SessionPlate(props: {
 function SessionChatView(props: { lane: string; session: number }) {
   const lc = laneChat(props.lane, props.session)
   const state = (): ChatState => lc.state
-  const setCodexAnswer = (id: string, question: string, text: string) => lc.set(produce(s => {
+  const setCodexAnswer = (id: string, question: string, text: string) => lc.set(s => {
     if (!s.codexInteractions) return
     const drafts = s.codexInteractions.drafts ??= {}
     drafts[id] = { ...(drafts[id] ?? {}), [question]: text }
-  }))
+  })
   const respondCodex = (id: string, behavior: 'allow' | 'deny', answers?: Record<string, string>) => {
     let started = false
-    lc.set(produce(s => { started = beginCodexResponse(s, id) }))
+    lc.set(s => { started = beginCodexResponse(s, id) })
     if (!started) return
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     if (!ipc) {
-      lc.set(produce(s => foldInto(s, { kind: 'codex_interaction_result', request_id: id,
-        error: '接続がありません。再接続後に回答してください。' })))
+      lc.set(s => foldInto(s, { kind: 'codex_interaction_result', request_id: id,
+        error: '接続がありません。再接続後に回答してください。' }))
       return
     }
     ipc.postMessage(JSON.stringify({ t: 'conversation:respond', lane: props.lane,
@@ -1587,10 +1580,13 @@ function SessionChatView(props: { lane: string; session: number }) {
   // 消さない）/ 録音中・認識中は入力欄を編集できない / 認識結果は入力欄に入れるだけで、
   // 送信はユーザーが Enter で行う（誤認識を送る前に直せるように）。
   const [voice, setVoice] = createSignal<'idle' | 'recording' | 'transcribing'>('idle')
+  // dispose 中は signal の反映前に両方の音声 cleanup が呼ばれるため、同期フラグで閉じる。
+  let voiceRecording = false
   const [voiceError, setVoiceError] = createSignal<string | null>(null)
   const micDisabled = () => voice() === 'transcribing' || (voice() === 'idle' && draft() !== '')
   onCleanup(registerVoiceSink(props.lane, props.session, {
     text: (text) => {
+      voiceRecording = false
       setVoice('idle')
       if (!text) {
         setVoiceError('聞き取れませんでした')
@@ -1610,17 +1606,19 @@ function SessionChatView(props: { lane: string; session: number }) {
       })
     },
     error: (message) => {
+      voiceRecording = false
       setVoice('idle')
       setVoiceError(message)
     },
   }))
   const beginVoice = (): boolean => {
-    if (voice() !== 'idle') return false
+    if (voiceRecording || voice() !== 'idle') return false
     if (draft() !== '') {
       setVoiceError('入力欄を空にしてから録音してください')
       return false
     }
     setVoiceError(null)
+    voiceRecording = true
     setVoice('recording')
     sendVoice('start', props.lane, props.session)
     return true
@@ -1631,7 +1629,8 @@ function SessionChatView(props: { lane: string; session: number }) {
     try { (e.currentTarget as Element).setPointerCapture(e.pointerId) } catch { /* 未対応環境 */ }
   }
   const stopVoice = () => {
-    if (voice() !== 'recording') return
+    if (!voiceRecording) return
+    voiceRecording = false
     setVoice('transcribing')
     sendVoice('stop', props.lane, props.session)
   }
@@ -1642,9 +1641,8 @@ function SessionChatView(props: { lane: string; session: number }) {
     reject: (message: string) => setVoiceError(message),
   }
   onCleanup(registerRotoVoiceControl(props, rotoVoiceControl))
-  createEffect(() => {
-    const focused = sessionsOf(props.lane)?.focused ?? focusedOf(props.lane)
-    if (voice() !== 'recording' || activeLane() !== props.lane || focused !== props.session) {
+  createEffect(() => ({ focused: sessionsOf(props.lane)?.focused ?? focusedOf(props.lane), voice: voice(), active: activeLane(), lane: props.lane, session: props.session }), ({ focused, voice, active, lane, session }) => {
+    if (voice !== 'recording' || active !== lane || focused !== session) {
       stopRotoVoice(rotoVoiceControl)
     }
   })
@@ -1684,19 +1682,19 @@ function SessionChatView(props: { lane: string; session: number }) {
   }
   // history 最下部の常時 status バー。全イベント同期 + 無反応(hang)検出のため 1s 毎に now を更新。
   const [nowMs, setNowMs] = createSignal(Date.now())
-  onMount(() => {
+  onSettled(() => {
     const id = setInterval(() => setNowMs(Date.now()), 1000)
-    onCleanup(() => clearInterval(id))
+    return () => clearInterval(id)
   })
   const statusLine = () => deriveStatus(state(), nowMs())
   // 灯 3 状態（doc 51 §1 A2）: status の畳み込み。名札の dot が読む。
   const lamp = () => lampOf(statusLine())
   // 活動の signal（Pane のしまうモード）: しまっている間の badge の供給元。lamp が点いた
   // （返答中 / 承認待ち）ときだけ流す。受け手（rail）はしまっている pane 分だけ拾う
-  createEffect(() => {
-    if (lamp() === 'off') return
+  createEffect(() => ({ lamp: lamp(), lane: props.lane, session: props.session }), ({ lamp, lane, session }) => {
+    if (lamp === 'off') return
     document.dispatchEvent(new CustomEvent('vp:pane-activity', {
-      detail: { lane: props.lane, id: hostIdForMode(props.session, 'gui') },
+      detail: { lane, id: hostIdForMode(session, 'gui') },
     }))
   })
   // now-line（doc 51 §1 A3）: 名札直下の「今なにを」。null = 行ごと描かない。
@@ -1712,7 +1710,7 @@ function SessionChatView(props: { lane: string; session: number }) {
   const claudeTurnActive = () => rosterEntry()?.agent === 'claude' && state().streaming
   /** 次に実行する（Claude）: pending に積む。走行中の複数送信は改行で連結し、turn 閉時に 1 turn で flush。 */
   const queueClaudeDraft = (text: string) => {
-    lc.set('pending', (p) => (p ? `${p}\n${text}` : text))
+    lc.set(s => { s['pending'] = ((p) => (p ? `${p}\n${text}` : text))(s['pending']) })
   }
   const sendCodexInput = (action: Record<string, unknown>, text = '', images: Submission['images'] = []) =>
     sendCodexInputTo(lc, props.lane, props.session, action, text, images)
@@ -1761,7 +1759,7 @@ function SessionChatView(props: { lane: string; session: number }) {
     if (!submission || submission.status !== 'failed' || draft().trim() || attachments().length) return
     setDraft(submission.text)
     images.restore(submission.images)
-    lc.set('submission', null)
+    lc.set(s => { s['submission'] = null })
     queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
   }
 
@@ -1771,10 +1769,10 @@ function SessionChatView(props: { lane: string; session: number }) {
     if (draft().trim() || attachments().length || lc.state.submission) return
     setDraft(input.text)
     images.restore(input.images)
-    lc.set('unconfirmedCodexInputs', inputs => inputs?.filter(item => item.id !== input.id))
-    lc.set('items', items => items.map(item => item.kind === 'user' && item.clientId === input.id
-      ? { kind: 'user' as const, text: item.text } : item))
-    lc.set('codexInputCapacityError', null)
+    lc.set(s => { s['unconfirmedCodexInputs'] = (inputs => inputs?.filter(item => item.id !== input.id))(s['unconfirmedCodexInputs']) })
+    lc.set(s => { s['items'] = (items => items.map(item => item.kind === 'user' && item.clientId === input.id
+      ? { kind: 'user' as const, text: item.text } : item))(s['items']) })
+    lc.set(s => { s['codexInputCapacityError'] = null })
     queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
   }
 
@@ -1784,7 +1782,7 @@ function SessionChatView(props: { lane: string; session: number }) {
   const editPending = () => {
     if (!canDequeuePending(draft(), lc.state.pending)) return
     const text = lc.state.pending as string
-    lc.set('pending', null) // 先に空にする → 以降の turn_completed が flush しない（レース消滅）
+    lc.set(s => { s['pending'] = null }) // 先に空にする → 以降の turn_completed が flush しない（レース消滅）
     setDraft(text)
     queueMicrotask(() => inputRef?.focus()) // すぐ編集できるよう composer にカーソルを移す
   }
@@ -1792,7 +1790,7 @@ function SessionChatView(props: { lane: string; session: number }) {
   // doc 35 §5: 実行中 turn を中断する（停止ボタン / Esc）。engine は turn を止め、次の submit を受けられる。
   const interrupt = () => {
     // 停止は user の操作 = turn の正常な終わり。閉じたとき「停止しました」を出すため覚えておく
-    lc.set('interruptRequested', true)
+    lc.set(s => { s['interruptRequested'] = true })
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(
       JSON.stringify({ t: 'conversation:interrupt', lane: props.lane, session: props.session }),
@@ -1804,13 +1802,13 @@ function SessionChatView(props: { lane: string; session: number }) {
   const answerPrompt = (requestId: string, answers: Record<string, string>) => {
     const lane = props.lane
     lc.set(
-      produce((s) => {
+      (s) => {
         const it = s.items.find((i) => i.kind === 'prompt' && i.requestId === requestId)
         if (it && it.kind === 'prompt') {
           it.answered = true
           it.answers = answers
         }
-      }),
+      },
     )
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(
@@ -1826,13 +1824,13 @@ function SessionChatView(props: { lane: string; session: number }) {
   const cancelPrompt = (requestId: string) => {
     const lane = props.lane
     lc.set(
-      produce((s) => {
+      (s) => {
         const it = s.items.find((i) => i.kind === 'prompt' && i.requestId === requestId)
         if (it && it.kind === 'prompt') {
           it.answered = true
           it.decision = 'deny'
         }
-      }),
+      },
     )
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(
@@ -1848,13 +1846,13 @@ function SessionChatView(props: { lane: string; session: number }) {
   const decidePrompt = (requestId: string, behavior: 'allow' | 'deny') => {
     const lane = props.lane
     lc.set(
-      produce((s) => {
+      (s) => {
         const it = s.items.find((i) => i.kind === 'prompt' && i.requestId === requestId)
         if (it && it.kind === 'prompt') {
           it.answered = true
           it.decision = behavior
         }
-      }),
+      },
     )
     const ipc = (window as unknown as { ipc?: { postMessage(m: string): void } }).ipc
     ipc?.postMessage(
@@ -1954,9 +1952,9 @@ function SessionChatView(props: { lane: string; session: number }) {
     if ((key === 'Home' || key === 'End') && inTextarea) return // 作文中の caret 移動を尊重
     if (scrollByKey(key)) e.preventDefault()
   }
-  onMount(() => {
+  onSettled(() => {
     document.addEventListener('keydown', onDocKey)
-    onCleanup(() => document.removeEventListener('keydown', onDocKey))
+    return () => document.removeEventListener('keydown', onDocKey)
   })
 
   // 新着で下端に追従（sticky）。streaming の chunk 追記（末尾 item の text 伸長 = items.length は
@@ -1967,7 +1965,9 @@ function SessionChatView(props: { lane: string; session: number }) {
     if (!s) return
     const last = s.items[s.items.length - 1]
     const rev = s.items.length + (last && 'text' in last ? last.text.length : 0)
-    if (rev >= 0 && stuckToBottom) {
+    return rev
+  }, rev => {
+    if (rev !== undefined && rev >= 0 && stuckToBottom) {
       // DOM patch 後の実寸で scroll するため rAF に載せる（markdown/font の layout 確定待ち）。
       requestAnimationFrame(() => {
         if (streamEl && stuckToBottom) streamEl.scrollTop = streamEl.scrollHeight
@@ -1976,7 +1976,7 @@ function SessionChatView(props: { lane: string; session: number }) {
   })
 
   // mount 時は「この session の最新（下端）」を見せる（履歴の途中で開かない）。
-  onMount(() => {
+  onSettled(() => {
     stuckToBottom = true
     requestAnimationFrame(() => {
       if (streamEl) streamEl.scrollTop = streamEl.scrollHeight
@@ -1985,8 +1985,8 @@ function SessionChatView(props: { lane: string; session: number }) {
 
   return (
     <div
-      class="chat-view"
-      classList={{ focused: isFocused() }}
+      class={["chat-view", { focused: isFocused() }]}
+
       onClick={() => {
         if (!isFocused()) focusChatSession(props.lane, props.session)
       }}
@@ -2008,8 +2008,8 @@ function SessionChatView(props: { lane: string; session: number }) {
              細かい状態語は下段の status 行が持つ（灯は横目の認知、文字は精読の認知）。
              term pane はこの供給（ConversationEvent stream）を持たないので灯を出さない。 */
           <span
-            class="conversation-lamp"
-            classList={{ run: lamp() === 'run', need: lamp() === 'need' }}
+            class={["conversation-lamp", { run: lamp() === 'run', need: lamp() === 'need' }]}
+
             title={statusLine().label}
           />
         }
@@ -2036,10 +2036,10 @@ function SessionChatView(props: { lane: string; session: number }) {
                 入力欄に戻す
               </button>
               <button onClick={() => {
-                lc.set('unconfirmedCodexInputs', inputs => inputs?.filter(item => item.id !== input.id))
-                lc.set('items', items => items.map(item => item.kind === 'user' && item.clientId === input.id
-                  ? { kind: 'user' as const, text: item.text } : item))
-                lc.set('codexInputCapacityError', null)
+                lc.set(s => { s['unconfirmedCodexInputs'] = (inputs => inputs?.filter(item => item.id !== input.id))(s['unconfirmedCodexInputs']) })
+                lc.set(s => { s['items'] = (items => items.map(item => item.kind === 'user' && item.clientId === input.id
+                  ? { kind: 'user' as const, text: item.text } : item))(s['items']) })
+                lc.set(s => { s['codexInputCapacityError'] = null })
               }}>履歴で確認済み</button>
             </div>}</For>
           </details>
@@ -2051,7 +2051,7 @@ function SessionChatView(props: { lane: string; session: number }) {
           <div class="chat-history-notice chat-live-notice" role="status">
             <span>{message}</span>
             <button type="button" aria-label="知らせを閉じる"
-              onClick={() => lc.set(produce(s => dismissNotice(s, message)))}>閉じる</button>
+              onClick={() => lc.set(s => dismissNotice(s, message))}>閉じる</button>
           </div>
         }</For>
         <div
@@ -2155,7 +2155,7 @@ function SessionChatView(props: { lane: string; session: number }) {
                 )
               }
               return (
-                <div class="conversation-msg" classList={{ user: item.kind === 'user' }}>
+                <div class={["conversation-msg", { user: item.kind === 'user' }]} >
                   <MsgBody
                     class="conversation-msg-body"
                     text={item.text}
@@ -2185,8 +2185,8 @@ function SessionChatView(props: { lane: string; session: number }) {
           </Show>
           <Show when={state().pending}>
             <div
-              class="conversation-msg user pending"
-              classList={{ editable: canEditPending(), locked: !canEditPending() }}
+              class={["conversation-msg user pending", { editable: canEditPending(), locked: !canEditPending() }]}
+
               onClick={editPending}
               title={
                 canEditPending()
@@ -2224,8 +2224,8 @@ function SessionChatView(props: { lane: string; session: number }) {
         {/* status bar — **入力の上**（stream に隣接）。engine が今何をしているかの読み取り専用の
             計器で、操作は持たない。context 残量も「読み取り」なのでここ。 */}
         <div
-          class={`conversation-status s-${statusLine().kind}`}
-          classList={{ stalled: statusLine().stalled }}
+          class={[`conversation-status s-${statusLine().kind}`, { stalled: statusLine().stalled }]}
+
         >
           <span class="conversation-status-dot" />
           <span class="conversation-status-label">{statusLine().label}</span>
@@ -2245,8 +2245,8 @@ function SessionChatView(props: { lane: string; session: number }) {
           </Show>
           <Show when={ctxPct() !== null}>
             <span
-              class="conversation-context"
-              classList={{ warn: ctxPct()! >= 60, crit: ctxPct()! >= 85 }}
+              class={["conversation-context", { warn: ctxPct()! >= 60, crit: ctxPct()! >= 85 }]}
+
               title={ctxTitle()}
             >
               <span class="conversation-context-bar">
@@ -2260,11 +2260,11 @@ function SessionChatView(props: { lane: string; session: number }) {
             model / permission も「送る前に決める操作」なのでここ（読み取りの status とは分ける）。 */}
         <Show when={state().codexQueue}>{queue => <CodexQueuePanel queue={queue()} busy={codexInputBusy()}
           edits={state().codexQueueEdits ?? {}} act={sendCodexInput}
-          edit={(id,text) => lc.set(produce(s => {
+          edit={(id,text) => lc.set(s => {
             const edits = s.codexQueueEdits ??= {}
             if (text === undefined) delete edits[id]
             else edits[id] = text
-          }))} />}</Show>
+          })} />}</Show>
         <Show when={state().codexInput?.status === 'failed'}>
           <div class="codex-queue" role="status">
             <div>{state().codexInput?.error}</div>
@@ -2273,11 +2273,11 @@ function SessionChatView(props: { lane: string; session: number }) {
                 if (draft().trim() || attachments().length) return
                 setDraft(lc.state.codexInput?.text ?? '')
                 images.restore(lc.state.codexInput?.images ?? [])
-                lc.set('codexInput',null)
+                lc.set(s => { s['codexInput'] = null })
                 queueMicrotask(() => { inputRef?.focus(); if (inputRef) autosize(inputRef) })
               }}>入力を戻す</button>
             </Show>
-            <button onClick={() => lc.set('codexInput',null)}>閉じる</button>
+            <button onClick={() => lc.set(s => { s['codexInput'] = null })}>閉じる</button>
           </div>
         </Show>
         <div class="conversation-composer">
@@ -2290,8 +2290,8 @@ function SessionChatView(props: { lane: string; session: number }) {
                 {(name, i) => (
                   <button
                     type="button"
-                    class="conversation-slash-item"
-                    classList={{ at: i() === Math.min(slashAt(), slashHits().length - 1) }}
+                    class={["conversation-slash-item", { at: i() === Math.min(slashAt(), slashHits().length - 1) }]}
+
                     // ⚠️ mousedown で拾う。click だと先に textarea の blur が走り、
                     // 選ぶ前に palette が閉じて空振りする。
                     onMouseDown={(e) => {
@@ -2395,7 +2395,7 @@ function SessionChatView(props: { lane: string; session: number }) {
             <EngineSettingsPanel lane={props.lane} session={props.session} lc={lc} rosterEntry={rosterEntry} />
             <div class="conversation-actions-spacer" />
             {/* 音声入力: 押している間だけ録音し、離すと認識して入力欄に入れる */}
-            <button class="conversation-mic" classList={{ recording: voice() === 'recording' }}
+            <button class={["conversation-mic", { recording: voice() === 'recording' }]}
               disabled={micDisabled()}
               title={voice() === 'idle' && draft() !== ''
                 ? '音声入力は入力欄が空のときだけ使えます'

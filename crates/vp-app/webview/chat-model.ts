@@ -14,7 +14,7 @@ import type { toWirePayload } from './paste-image'
 import { foldCodexInteractions, type CodexInteractionState } from './codex-interaction-model'
 import type { CodexQuestion } from './src/generated/CodexQuestion'
 import type { CodexQueueView } from './src/generated/CodexQueueView'
-import type { SetStoreFunction } from 'solid-js/store'
+import type { StoreSetter } from 'solid-js'
 
 // ---------------------------------------------------------------------------
 // 会話モデル — flat item stream（ConversationEvent を UI 単位に畳む）
@@ -312,7 +312,7 @@ export type Submission = {
 /** (lane, session) 単位の chat store（chatview が所有、panel / codex-input が借りる）。 */
 export type LaneChat = {
   state: ChatState
-  set: SetStoreFunction<ChatState>
+  set: StoreSetter<ChatState>
 }
 
 /** 閉じる操作は会話・他の知らせに触れない。再度届けば改めて表示する。 */

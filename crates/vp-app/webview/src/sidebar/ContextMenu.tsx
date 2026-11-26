@@ -96,8 +96,8 @@ export function ContextMenu() {
                     isConfirming() && item.confirm ? item.confirm.icon : item.icon
                   return (
                     <div
-                      class="vp-ctx-item"
-                      classList={{ danger: !!item.danger, confirming: isConfirming() }}
+                      class={["vp-ctx-item", { danger: !!item.danger, confirming: isConfirming() }]}
+
                       onClick={() => onItem(item, idx())}
                     >
                       <CreoIcon name={icon()} size={13} />

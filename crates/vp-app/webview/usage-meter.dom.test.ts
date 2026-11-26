@@ -2,7 +2,7 @@
 // sidebar store の `engine_usage` を実際に描くこと（純関数の test は src/sidebar/usage.test.ts）。
 import { expect, it } from 'vitest'
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window, type HTMLSelectElement } from 'happy-dom'
 
 /** 2026-11-24 の実測に近い形（Fable 枠だけ 100%、grok は未取得で理由あり）。 */
@@ -24,7 +24,7 @@ const SNAPSHOT = {
 
 async function mount(component: string, props: string) {
   const result = await build({ stdin: { contents: `
-    import { render } from 'solid-js/web'
+    import { render } from '@solidjs/web'
     import { ${component} } from './src/sidebar/${component === 'MachineStrip' ? 'DaemonWidget' : component}'
     import { applySidebarState, emptyState } from './src/sidebar/store'
     import { reportAgentsResult } from './src/sidebar/feedback'
@@ -35,7 +35,7 @@ async function mount(component: string, props: string) {
   `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'iife',
     conditions: ['browser'], preserveSymlinks: true, plugins: [solidPlugin()] })
   const win = new Window()
-  win.eval(result.outputFiles[0]!.text)
+  evalDom(win, result.outputFiles[0]!.text)
   return win as unknown as Window & {
     sent: any[]; setUsage: (u: unknown) => void; reportAgents: (p: unknown) => void
   }
@@ -48,7 +48,7 @@ it('MachineStrip: 畳んだ行に最も逼迫しているエンジン、展開�
     expect(doc.querySelector('.vp-usage-chip'), '未着の間はチップを出さない').toBeNull()
     expect(doc.querySelector('.vp-usage-empty')?.textContent).toContain('未着')
 
-    win.setUsage(SNAPSHOT)
+    callDom(win, () => win.setUsage(SNAPSHOT))
     const chip = doc.querySelector('.vp-usage-chip')!
     expect(chip.textContent).toBe('Cdx 95%')
     expect(chip.className).toContain('critical')
@@ -60,7 +60,7 @@ it('MachineStrip: 畳んだ行に最も逼迫しているエンジン、展開�
     expect(fable).toEqual(['weekly · Fable100%'])
     expect(doc.querySelector('.vp-usage-error')?.textContent).toBe('grok が見つかりません（未インストール）')
 
-    ;(doc.querySelector('.vp-usage-refresh') as unknown as { click(): void }).click()
+    ;clickDom((doc.querySelector('.vp-usage-refresh') as unknown as { click(): void }))
     expect(win.sent).toEqual([{ t: 'usage:refresh' }])
   } finally {
     await win.happyDOM.close()
@@ -76,12 +76,12 @@ it('AddSub: engine の選択肢に使用率を添え、未取得の engine は�
       { name: 'grok', description: 'Grok' },
       { name: 'shell', description: 'login shell' },
     ]
-    win.reportAgents({ repo_path: '/r', agents })
+    callDom(win, () => win.reportAgents({ repo_path: '/r', agents }))
     const labels = () =>
       [...win.document.querySelector<HTMLSelectElement>('.vp-add-sub-agent')!.options].map((o) => o.textContent)
     expect(labels(), 'usage 未着は従来どおり').toEqual(['claude', 'agy', 'grok', 'shell'])
 
-    win.setUsage(SNAPSHOT)
+    callDom(win, () => win.setUsage(SNAPSHOT))
     expect(labels()).toEqual(['claude (88%)', 'agy (17%)', 'grok', 'shell'])
   } finally {
     await win.happyDOM.close()

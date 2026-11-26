@@ -14,8 +14,8 @@
  * 関連 doc: docs/design/19-canvas-stack-model.md
  */
 
-import { For, Show, createSignal, onCleanup, onMount } from 'solid-js'
-import { render } from 'solid-js/web'
+import { For, Show, createSignal, onCleanup, onSettled } from 'solid-js'
+import { render } from '@solidjs/web'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import type { IconName } from '@chronista-club/creo-ui-icons-web'
 import {
@@ -56,9 +56,9 @@ function HistoryStrip() {
   // board-handler の state を SolidJS signal に bridge。 listener で再 read して reactivity 化。
   const [state, setState] = createSignal(getCanvasState())
 
-  onMount(() => {
+  onSettled(() => {
     const unsub = subscribeCanvasState(() => setState(getCanvasState()))
-    onCleanup(unsub)
+    return unsub
   })
 
   return (
@@ -71,8 +71,8 @@ function HistoryStrip() {
           const isUnread = () => state().unread.has(item.id)
           return (
             <div
-              class="board-history-cell"
-              classList={{ active: isActive(), unread: isUnread() }}
+              class={["board-history-cell", { active: isActive(), unread: isUnread() }]}
+
               onClick={() => setCursor(item.id)}
               title={alias}
             >

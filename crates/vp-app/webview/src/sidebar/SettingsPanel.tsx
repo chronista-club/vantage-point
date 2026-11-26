@@ -18,8 +18,9 @@
  * `settings:result` で受けて表示に反映する。client 側で先に state を進めないので、
  * 保存失敗時の巻き戻しを持たなくてよい（唯一の真実は vp-app.toml）。
  */
-import { createEffect, createSignal, on, onCleanup, onMount, Show, type JSX } from "solid-js";
-import { Portal } from "solid-js/web";
+import { createEffect, createSignal, onCleanup, onSettled, Show } from 'solid-js'
+import type { JSX } from '@solidjs/web'
+import { Portal } from "@solidjs/web";
 import { sidebar } from "./store";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sendIpc } from "./ipc";
@@ -67,7 +68,7 @@ declare global {
 	}
 }
 
-// module スコープに置き、onMount で window.vpSettings に attach する（WirePanel と同じ）。
+// module スコープに置き、onSettled で window.vpSettings に attach する（WirePanel と同じ）。
 // ⚠️ 開閉は signal で持たない — route（`route-store.ts`）が `/settings` の間だけ開いている。
 // 入口は rail の歯車（`clickRail`）。`window.vpSettings.open()` も route を動かすだけの口として残すが、
 // 2026-11-25 時点で本番の呼び手は無い（旧 sidebar 下部の ⚙ 行が唯一の呼び手だった — test は使う）。
@@ -260,7 +261,7 @@ function SettingsSurface(props: { children: JSX.Element }) {
 	const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 	const selection = workspaceSelection();
 	let surface!: HTMLDivElement;
-	onMount(() => {
+	onSettled(() => {
 		const inertBefore = new Map<Element, boolean>();
 		const shield = () => {
 			for (const child of Array.from(host.children)) {
@@ -273,13 +274,13 @@ function SettingsSurface(props: { children: JSX.Element }) {
 		const observer = new MutationObserver(shield);
 		observer.observe(host, { childList: true });
 		surface.querySelector<HTMLButtonElement>("button")?.focus();
-		onCleanup(() => {
+		return () => {
 			observer.disconnect();
 			for (const [child, wasInert] of inertBefore) {
 				if (!wasInert) child.removeAttribute("inert");
 			}
 			if (workspaceSelection() === selection && previousFocus?.isConnected) previousFocus.focus();
-		});
+		};
 	});
 	return <Portal mount={host}><div ref={surface} class="vp-settings-surface">{props.children}</div></Portal>;
 }
@@ -294,20 +295,19 @@ export function SettingsPanel() {
 	};
 	// 設定 Scene に入るたびに現在値を引き直す（手で vp-app.toml を編集した後でも現実に追いつく）。
 	// 入口に依らず（歯車 / 索引 / `b` の取り消しで戻る時も）、route が設定に入った瞬間 1 回だけ撃つ。
-	createEffect(on(visible, (v) => {
+	createEffect(visible, (v) => {
 		if (v) sendIpc({ t: "settings:fetch" });
-	}));
+	});
 	// 索引（Settings rail の peek）で選んだ行へ寄せる。行は読み込み後にしか無いので loaded も待つ。
-	createEffect(() => {
-		const id = sectionOf(currentRoute());
-		if (!visible() || !loaded() || !id) return;
+	createEffect(() => ({ id: sectionOf(currentRoute()), visible: visible(), loaded: loaded() }), ({ id, visible, loaded }) => {
+		if (!visible || !loaded || !id) return;
 		scrollToSetting(id);
 	});
 	// ⚠️ 作業の選択（lane / component）が変わったら閉じる、は route-store の
 	// `onWorkspaceSelected` が持つ（設定の開閉は route の 1 本で決まる）。
 	onCleanup(dismiss);
 
-	onMount(() => {
+	onSettled(() => {
 		window.vpSettings = { open, handleResult, handleUpdateCheckResult };
 		// Esc で閉じる（WirePanel と同じく document listener、visible 時のみ反応）。
 		const onKeyDown = (e: KeyboardEvent) => {
@@ -317,12 +317,12 @@ export function SettingsPanel() {
 			}
 		};
 		document.addEventListener("keydown", onKeyDown);
-		onCleanup(() => {
+		return () => {
 			document.removeEventListener("keydown", onKeyDown);
 			if (window.vpSettings?.handleResult === handleResult) {
 				window.vpSettings = undefined;
 			}
-		});
+		};
 	});
 
 	return (
@@ -494,8 +494,8 @@ export function SettingsPanel() {
 								<div class="vp-settings-inputrow">
 									<button
 										type="button"
-										class="vp-settings-toggle"
-										classList={{ on: devMode(), locked: devLocked() }}
+										class={["vp-settings-toggle", { on: devMode(), locked: devLocked() }]}
+
 										disabled={devLocked()}
 										title={devLocked() ? "環境変数 VP_DEVELOPER_MODE で固定" : "View → Open Developer Tools と Reload WebView"}
 										onClick={toggleDevMode}

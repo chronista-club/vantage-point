@@ -1,8 +1,8 @@
 /**
  * LaneHeader — 共通ヘッダの純関数 + console.ts の header summary 畳み込みのテスト。
  *
- * component 本体（mountLaneHeader）は solid-js/web の render を呼ぶため vitest(node) では
- * 対象外。ここは presence-driven / copy 表示 / 途絶検知の判定を支える純関数だけを固める。
+ * component 本体の DOM 操作は LaneHeader.interaction.test.ts で確かめる。
+ * ここは presence-driven / copy 表示 / 途絶検知の判定を支える純関数だけを固める。
  */
 import { describe, it, expect } from 'vitest'
 import {

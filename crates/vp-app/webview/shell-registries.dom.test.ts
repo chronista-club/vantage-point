@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { solidPlugin } from "esbuild-plugin-solid";
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window } from "happy-dom";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { APP_PANE_REGISTRY, appPaneIdsOf } from "./app-pane-registry";
@@ -53,7 +53,7 @@ beforeAll(async () => {
 	const result = await build({
 		stdin: {
 			contents: `
-        import { render } from 'solid-js/web';
+        import { render } from '@solidjs/web';
         import { createComponent, createSignal } from 'solid-js';
         import { ShellRail } from './src/sidebar/ShellRail';
         import { SHELL_RAILS } from './src/sidebar/route';
@@ -126,7 +126,7 @@ function fixture(html: string): Probe {
 	}) as unknown as Probe;
 	windows.push(win);
 	win.document.body.innerHTML = html;
-	win.eval(bundle);
+	evalDom(win, bundle);
 	return win;
 }
 
@@ -205,17 +205,15 @@ describe("edge resident registry ⇄ EdgeRail の描画と R sidebar の付け�
 	const LANE = "vp/lane/lead";
 	const mounted = (): Probe => {
 		const win = fixture(staticBody);
-		win.mountEdge(LANE);
+		callDom(win, () => win.mountEdge(LANE));
 		// しまった pane は lane-panes が流す一覧の鏡 — 1 枚しまってあることにする
-		win.document.dispatchEvent(
-			new win.CustomEvent("vp:stowed-panes", {
+		dispatchDom(win.document, new win.CustomEvent("vp:stowed-panes", {
 				detail: { lane: LANE, panes: [{ id: "board", kind: "board", label: "Board" }] },
-			}),
-		);
+			}));
 		return win;
 	};
 	const toggle = (win: Probe) =>
-		win.document.dispatchEvent(new win.CustomEvent("vp:right-sidebar-toggle"));
+		dispatchDom(win.document, new win.CustomEvent("vp:right-sidebar-toggle"));
 
 	for (const r of EDGE_RESIDENT_REGISTRY.filter((x) => x.content === "solid")) {
 		it(`${r.id}: EdgeRail が #${r.hostId} に描く`, () => {
@@ -258,7 +256,7 @@ describe.each([
 ])("rail registry ⇄ CURail（$name）", ({ extra, rails }) => {
 	const mounted = (): Probe => {
 		const win = fixture('<div id="sidebar-root"></div>');
-		win.mountRails(extra);
+		callDom(win, () => win.mountRails(extra));
 		return win;
 	};
 	const byOrder = [...rails].sort((a, b) => a.order - b.order);
@@ -284,7 +282,7 @@ describe.each([
 		it(`${rail.id}: route（とその下位）で選ばれ、peek に自分の中身が出る`, () => {
 			const win = mounted();
 			for (const path of [rail.route, `${rail.route}/sub`]) {
-				win.setPath(path);
+				callDom(win, () => win.setPath(path));
 				expect(
 					attrOf(win.document.querySelectorAll('button[data-rail][aria-current="page"]'), "data-rail"),
 					path,
@@ -299,7 +297,7 @@ describe.each([
 
 		it(`${rail.id}: click は rail id を呼び手に渡す`, () => {
 			const win = mounted();
-			(win.document.querySelector(`button[data-rail="${rail.id}"]`) as unknown as HTMLElement).click();
+			clickDom((win.document.querySelector(`button[data-rail="${rail.id}"]`) as unknown as HTMLElement));
 			expect(win.clicked).toEqual([rail.id]);
 		});
 	}

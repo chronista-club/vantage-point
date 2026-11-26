@@ -18,7 +18,7 @@ export function BucketList() {
     if (next) focusActionRow(next.id);
   };
   return <details class="vp-act-buckets" open>
-    <summary class="vp-act-heading"><span class="vp-act-caret">›</span><CreoIcon name="ph:tray" size={12} /><span class="vp-act-label">ACTIONs</span><span>{actions().length || ""}</span><button type="button" class="vp-act-reload" aria-label="ACTIONs を再読み込み" title="一覧と Atlas を再読み込み" disabled={actionsRefreshing()} on:click={e=>{e.preventDefault();e.stopPropagation();refreshActions()}}><span classList={{"is-refreshing":actionsRefreshing()}}><CreoIcon name="ph:arrows-clockwise" size={12}/></span></button></summary>
+    <summary class="vp-act-heading"><span class="vp-act-caret">›</span><CreoIcon name="ph:tray" size={12} /><span class="vp-act-label">ACTIONs</span><span>{actions().length || ""}</span><button type="button" class="vp-act-reload" aria-label="ACTIONs を再読み込み" title="一覧と Atlas を再読み込み" disabled={actionsRefreshing()} ref={el => el.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); refreshActions() })}><span class={{"is-refreshing":actionsRefreshing()}}><CreoIcon name="ph:arrows-clockwise" size={12}/></span></button></summary>
     <Capture atlases={sidebar.activity.actions_atlases ?? []} scope={sidebar.activity.actions_scope ?? ""} settings={sidebar.activity.actions_sidebar_settings} />
     <Show when={actionsRefreshError() || sidebar.activity.actions_error || sidebar.activity.actions_sidebar_error}><div class="vp-act-status" role="status">{actionsRefreshError() || sidebar.activity.actions_error || sidebar.activity.actions_sidebar_error}</div></Show>
     <Show when={actionMoveError()}><div class="vp-act-status" role="status">{actionMoveError()}</div></Show>

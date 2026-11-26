@@ -1,3 +1,4 @@
+import { testPath } from './test-utils/paths'
 /**
  * `shell-layout.ts` の純関数（幅の clamp と drag の計算）。
  *
@@ -107,7 +108,7 @@ describe("nextRightPct（R の幅は shell 幅に対する %、doc 82）", () =>
  */
 describe("shell の CustomEvent bus（送り手と受け口の対）", async () => {
 	const read = async (p: string) =>
-		await (await import("node:fs/promises")).readFile(new URL(p, import.meta.url), "utf8");
+		await (await import("node:fs/promises")).readFile(testPath(import.meta.url, p), "utf8");
 
 	const sources = Object.fromEntries(
 		await Promise.all(

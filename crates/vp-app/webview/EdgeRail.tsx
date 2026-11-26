@@ -38,8 +38,9 @@
  * - **calculations**: 選択肢の展開は `newPaneChoices`（lane-panes.ts、vitest 済）に委譲
  * - **actions**: mountEdgeRail（Solid render + IPC 送信 + 相関 id 照合 + 外側 click）
  */
-import { render } from 'solid-js/web'
-import { createSignal, For, Show, type JSX } from 'solid-js'
+import { render } from '@solidjs/web'
+import { createSignal, For, Show } from 'solid-js'
+import type { JSX } from '@solidjs/web'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import {
   isMyResponse,
@@ -155,8 +156,8 @@ export function mountEdgeRail(
       {(p) => (
         <button
           type="button"
-          class="rail-btn rail-stowed"
-          classList={{ 'has-badge': badges().has(p.id) }}
+          class={["rail-btn rail-stowed", { 'has-badge': badges().has(p.id) }]}
+
           data-label={`${p.label} — 中央に戻す`}
           onClick={() => unstow(p.id)}
         >

@@ -1,7 +1,7 @@
 /** 左 edge（doc 87）: Rail 列（Lanes / Actions / 設定）+ peek（名簿 / ACTIONS / 設定の索引）+ machine 帯。 */
 import { MidiPins, MIDI_PINS_CSS } from './MidiPins';
 import { requestingLaneCount } from './lane-progress';
-import { For, Show, createEffect, createMemo, on, type Component } from "solid-js";
+import { For, Show, createEffect, createMemo, type Component } from 'solid-js'
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
@@ -77,8 +77,7 @@ export function Shell() {
 		const rosterShown = currentRail() === "lanes" && sidebarForm() === "full";
 		return `${addr}|${owner?.expanded ? 1 : 0}|${rosterShown ? 1 : 0}`;
 	});
-	createEffect(
-		on(followKey, (key) => {
+	createEffect(followKey, (key) => {
 			// 名簿が見えていない間は寄せない（寄せても hidden の中で何も起きない）
 			if (!key || key.endsWith("|0")) return;
 			// 接尾辞は常に `|展開|名簿` の 4 文字。address 側を split しない（`|` を含んでも割れない）
@@ -86,8 +85,7 @@ export function Shell() {
 			Array.from(document.querySelectorAll<HTMLElement>(".vp-lane-row"))
 				.find((el) => el.getAttribute("data-address") === addr)
 				?.scrollIntoView?.({ block: "nearest" });
-		}),
-	);
+		});
 
 	// 新規追加 repo の discoverability: セッション途中で追加された repo を flash して
 	// 見失わせない (タブが無くなったので tab 切替は不要、 scroll + highlight だけ)。
@@ -97,8 +95,7 @@ export function Shell() {
 	// させ、 それ以降の push で現れた差分だけを「追加」と見なす。
 	let prevPaths = new Set<string>();
 	let sawProjects = false;
-	createEffect(() => {
-		const procs = sidebar.processes;
+	createEffect(() => sidebar.processes.map(p => ({ path: p.path })), procs => {
 		const cur = new Set(procs.map((p) => p.path));
 		if (!sawProjects) {
 			// 初回ロード確定は「非空の push を初めて受けた時」。 それまで (mount 直後の空 state
@@ -141,8 +138,8 @@ export function Shell() {
 				columnBottom={
 					<Show when={sidebarForm() === "slim"}>
 						<div
-							class="vp-slim-foot"
-							classList={{ online: sidebar.activity.node_online }}
+							class={["vp-slim-foot", { online: sidebar.activity.node_online }]}
+
 							title={`daemon: ${sidebar.activity.node_online ? "online" : "offline"}`}
 						/>
 					</Show>
@@ -333,13 +330,13 @@ function SlimBadges(props: { ordered: RepoPaneState[] }) {
 		<For each={props.ordered}>
 			{(proc) => (
 				<button
-					class="vp-slim-badge"
-					classList={{
+					class={["vp-slim-badge", {
 						connected:
 							(sidebar.activity.presence?.[proc.path] ?? "unregistered") ===
 							"connected",
 						awaiting: awaiting(proc.path),
-					}}
+					}]}
+
 					title={proc.name}
 					onClick={() => {
 						showRail("lanes");

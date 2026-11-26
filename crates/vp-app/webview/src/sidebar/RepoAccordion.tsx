@@ -6,7 +6,7 @@ import {
 	Show,
 	createSignal,
 	onCleanup,
-	onMount,
+	onSettled,
 } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import type { RepoPaneState } from "../generated/RepoPaneState";
@@ -110,11 +110,11 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 	// PR 445 `n` directive: keyboard で AddSub form を open するため、 RepoAccordion 内 local
 	// signal を **module-scope registry** に export する。 directive 発火時に registry から
 	// setter を引いて open する経路 (= directive-state.ts::openAddSubFor)。
-	onMount(() => {
+	onSettled(() => {
 		const unreg = registerAddSubOpenSetter(props.proc.path, (open) =>
 			setAddSubOpen(open),
 		);
-		onCleanup(unreg);
+		return unreg;
 	});
 
 	// 停止中 = repo の Process が無い state (`isRunningProcess` の否定)。 Start ボタン (▶) と
@@ -279,8 +279,8 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 				    産む「+」は repo 見出しに）。click で AddSub form（下の accordion 内）開閉。 */}
 				<Show when={showAddSub()}>
 					<button
-						class="vp-proj-addsub"
-						classList={{ open: addSubOpen() }}
+						class={["vp-proj-addsub", { open: addSubOpen() }]}
+
 						disabled={addSubPending()}
 						title="lane を作る"
 						onClick={(e) => {
@@ -325,10 +325,10 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 	// 開閉の状態も見えなかった（隠しボタン）。caret = 開閉、活動ドット = lane の状態、と役割を
 	// 分け、caret は行の最左（木の開閉の定位置）に置く。icon と 90° 回転は R sidebar の .rsb-chevron と
 	// 同じで、回転の契機は aria-expanded="true"（CSS が読む）。畳む中身が無い時は .is-empty で控えめに。
-	const toggle = () => <button type="button" class="vp-proj-toggle"
-		classList={{ "is-empty": !foldable() }}
+	const toggle = () => <button type="button" class={["vp-proj-toggle", { "is-empty": !foldable() }]}
+
 		aria-label={`${props.proc.name} を${props.proc.expanded ? "折りたたむ" : "展開する"}`}
-		aria-expanded={props.proc.expanded}
+		aria-expanded={String(props.proc.expanded) as 'true' | 'false'}
 		title={isStoppedRepo() ? "停止中 — 再開は ▷（ここで開くと起動を要求します）"
 			: !foldable() ? "畳む中身はありません（lead 1 本だけ）"
 			: props.proc.expanded ? "配下を畳む" : (foldedNote() ?? "配下を開く")}
@@ -338,8 +338,8 @@ export function RepoAccordion(props: { proc: RepoPaneState }) {
 	// lead lane の活動ドット（鮮度つき）。toggle の外、LaneRow の leading スロットに置く。
 	const point = () => <ResponsePoint disabled={props.proc.state !== "running"} lane={root()} connectorClass={root() ? connectorFor(root()!) : undefined} />;
 	return (
-		<div class="vp-proj creo-sidenav-group" data-path={props.proc.path}
-			classList={{ dragging: isDragging(), "drop-before": dropBefore(), "drop-after": dropAfter(), folded: foldedNote() != null }}
+		<div class={["vp-proj creo-sidenav-group", { dragging: isDragging(), "drop-before": dropBefore(), "drop-after": dropAfter(), folded: foldedNote() != null }]} data-path={props.proc.path}
+
 			draggable="true" onMouseDown={onMouseDown} onDragStart={onDragStart}
 			onDragOver={onDragOver} onDrop={onDrop} onDragEnd={clearDrag}>
 			<div class="vp-proj-summary" onContextMenu={onSummaryContextMenu} title={`接続: ${presence()}`}>

@@ -1,3 +1,4 @@
+import { testPath } from './test-utils/paths'
 /**
  * 左 edge = Rail + peek の結線（doc 87 §8 slice 1、task mem_1ChNmWC2c12iRHNmGTtgHZ）。
  *
@@ -7,7 +8,7 @@
  */
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { build } from "esbuild";
-import { solidPlugin } from "esbuild-plugin-solid";
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window } from "happy-dom";
 import { fileURLToPath } from "node:url";
 
@@ -28,7 +29,7 @@ beforeAll(async () => {
 	const result = await build({
 		stdin: {
 			contents: `
-        import { render } from 'solid-js/web';
+        import { render } from '@solidjs/web';
         import { createComponent } from 'solid-js';
         import { Shell } from './src/sidebar/Shell';
         import { applySidebarState, emptyState } from './src/sidebar/store';
@@ -54,7 +55,7 @@ beforeAll(async () => {
         window.selectLane('vp/lane/lead');
         render(() => createComponent(Shell, {}), document.getElementById('sidebar-root'));
       `,
-			resolveDir: fileURLToPath(new URL(".", import.meta.url)),
+			resolveDir: testPath(import.meta.url),
 			loader: "tsx",
 		},
 		bundle: true,
@@ -79,7 +80,7 @@ function fixture(): Probe {
 	win.document.body.innerHTML =
 		'<div id="app-shell"><div id="sidebar-root" data-region="leftEdge"></div>' +
 		'<div id="host" data-region="center"><div id="work"></div></div></div>';
-	win.eval(bundle);
+	evalDom(win, bundle);
 	return win;
 }
 
@@ -88,7 +89,7 @@ afterEach(async () => {
 });
 
 const q = (win: Probe, sel: string) => win.document.querySelector(sel) as unknown as HTMLElement | null;
-const click = (win: Probe, rail: string) => q(win, `button[data-rail="${rail}"]`)!.click();
+const click = (win: Probe, rail: string) => clickDom(q(win, `button[data-rail="${rail}"]`)!);
 const current = (win: Probe) =>
 	q(win, 'button[data-rail][aria-current="page"]')?.getAttribute("data-rail") ?? null;
 const shown = (win: Probe) =>
@@ -164,7 +165,7 @@ describe("設定 Scene（doc 87 §3）", () => {
 		expect(q(win, "#host .vp-settings-panel")).not.toBeNull();
 		expect(win.sent.filter((m) => m.t === "settings:fetch")).toHaveLength(1);
 		expect(shown(win)).toEqual(["settings"]);
-		win.document.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		dispatchDom(win.document, new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(q(win, ".vp-settings-panel")).toBeNull();
 		expect(current(win)).toBe("actions");
 		expect(q(win, "#app-shell")!.dataset.scene).toBe("dev");
@@ -177,7 +178,7 @@ describe("設定 Scene（doc 87 §3）", () => {
 			win.document.querySelectorAll('[data-peek="settings"] [data-setting-link]'),
 		) as unknown as HTMLElement[];
 		expect(items.length).toBeGreaterThan(0);
-		items[1].click();
+		clickDom(items[1]);
 		expect(q(win, "#app-shell")!.dataset.route).toBe(
 			`/settings/${items[1].getAttribute("data-setting-link")}`,
 		);
@@ -192,20 +193,20 @@ describe("設定 Scene（doc 87 §3）", () => {
 				if (this.dataset?.setting) calls.push(this.dataset.setting);
 			};
 		click(win, "settings");
-		win.vpSettings.handleResult({ developerMode: false, developerModeLocked: false, defaultRepoRoot: "", resolvedRepoRoot: "/repos", daemonReachable: true, logLevel: "", idleTimeoutMinutes: 5, defaultAgent: "", defaultModel: "", defaultAgentTakesModel: true });
+		callDom(win, () => win.vpSettings.handleResult({ developerMode: false, developerModeLocked: false, defaultRepoRoot: "", resolvedRepoRoot: "/repos", daemonReachable: true, logLevel: "", idleTimeoutMinutes: 5, defaultAgent: "", defaultModel: "", defaultAgentTakesModel: true }));
 		const item = q(win, '[data-setting-link="update"]')!;
 		const count = () => calls.filter((id) => id === "update").length;
-		item.click();
+		clickDom(item);
 		const first = count();
 		expect(first).toBeGreaterThan(0);
-		item.click(); // route は同じ（signal は変わらない）
+		clickDom(item); // route は同じ（signal は変わらない）
 		expect(count()).toBeGreaterThan(first);
 	});
 
 	it("設定中に lane を選ぶと設定を抜けてその lane へ", () => {
 		const win = fixture();
 		click(win, "settings");
-		win.selectLane("vp/lane/other");
+		callDom(win, () => win.selectLane("vp/lane/other"));
 		expect(q(win, ".vp-settings-panel")).toBeNull();
 		expect(current(win)).toBe("lanes");
 		expect(q(win, "#app-shell")!.dataset.route).toBe("/lanes/vp/lane/other");
@@ -244,7 +245,7 @@ describe("slim（peek を畳む）", () => {
 		click(win, "actions");
 		click(win, "actions");
 		expect(q(win, "#sidebar-root")!.classList.contains("slim")).toBe(true);
-		(win.document.querySelectorAll(".vp-slim-badge")[0] as unknown as HTMLElement).click();
+		clickDom((win.document.querySelectorAll(".vp-slim-badge")[0] as unknown as HTMLElement));
 		expect(q(win, "#sidebar-root")!.classList.contains("slim")).toBe(false);
 		expect(current(win)).toBe("lanes");
 	});
@@ -268,7 +269,7 @@ describe("選択行への追随（mako 2026-11-06「サイドバーも、表示�
 				if (addr) calls.push(addr);
 			};
 		click(win, "actions");
-		win.selectLane("vp/lane/lead");
+		callDom(win, () => win.selectLane("vp/lane/lead"));
 		calls.length = 0;
 		click(win, "lanes");
 		expect(calls).toContain("vp/lane/lead");
@@ -279,7 +280,7 @@ describe("Lanes rail の用事 dot", () => {
 	it("input 待ちの lane が在る間だけ Lanes の icon に dot が付く", () => {
 		const win = fixture();
 		expect(q(win, 'button[data-rail="lanes"] .vp-rail-flag')).toBeNull();
-		win.setAwaiting("vp/lane/lead");
+		callDom(win, () => win.setAwaiting("vp/lane/lead"));
 		expect(q(win, 'button[data-rail="lanes"] .vp-rail-flag')).not.toBeNull();
 	});
 });
@@ -288,12 +289,12 @@ describe("directive が rail に追随する", () => {
 	// ⚠️ 実際の打鍵と同じく body から撃つ — window の capture 段（mode の handler）と document の
 	// bubble 段（SettingsPanel の Esc）の**両方**を通る。window に直接撃つと後者を踏めない。
 	const key = (win: Probe, k: string) =>
-		win.document.body.dispatchEvent(new win.KeyboardEvent("keydown", { key: k, bubbles: true }));
+		dispatchDom(win.document.body, new win.KeyboardEvent("keydown", { key: k, bubbles: true }));
 
 	it("`b`（ACTIONS capture）は Actions の peek を開き、取り消すと元の rail と形に戻る", () => {
 		const win = fixture();
 		click(win, "lanes"); // slim にしておく
-		win.runCaptureMode();
+		callDom(win, () => win.runCaptureMode());
 		expect(current(win)).toBe("actions");
 		expect(shown(win)).toEqual(["actions"]);
 		expect(q(win, "#sidebar-root")!.classList.contains("slim")).toBe(false);
@@ -305,7 +306,7 @@ describe("directive が rail に追随する", () => {
 
 	it("`b` で区画を選んだら Actions に留まる（これから打ち込むので畳まない）", () => {
 		const win = fixture();
-		win.runCaptureMode();
+		callDom(win, () => win.runCaptureMode());
 		key(win, "1");
 		expect(current(win)).toBe("actions");
 		expect(shown(win)).toEqual(["actions"]);
@@ -314,7 +315,7 @@ describe("directive が rail に追随する", () => {
 	it("`b` を設定から打つと設定を抜け、取り消すと設定に戻る", () => {
 		const win = fixture();
 		click(win, "settings");
-		win.runCaptureMode();
+		callDom(win, () => win.runCaptureMode());
 		expect(current(win)).toBe("actions");
 		expect(q(win, ".vp-settings-panel")).toBeNull();
 		key(win, "Escape");
@@ -325,7 +326,7 @@ describe("directive が rail に追随する", () => {
 
 	it("⚠️ capture 中に user が別の rail へ移ったら、取り消し（timeout / Esc）で巻き戻さない", () => {
 		const win = fixture();
-		win.runCaptureMode();
+		callDom(win, () => win.runCaptureMode());
 		click(win, "settings");
 		key(win, "Escape");
 		expect(current(win)).toBe("settings");
@@ -335,8 +336,8 @@ describe("directive が rail に追随する", () => {
 	it("⚠️ 設定から capture に入り、その間に lane を選んで取り消すと、設定ではなくその lane へ", () => {
 		const win = fixture();
 		click(win, "settings");
-		win.runCaptureMode();
-		win.selectLane("vp/lane/other");
+		callDom(win, () => win.runCaptureMode());
+		callDom(win, () => win.selectLane("vp/lane/other"));
 		key(win, "Escape");
 		expect(current(win)).toBe("lanes");
 		expect(q(win, ".vp-settings-panel")).toBeNull();
@@ -345,18 +346,18 @@ describe("directive が rail に追随する", () => {
 
 	it("Lanes から capture に入り、その間に lane を選んで取り消すと、route は今の lane", () => {
 		const win = fixture();
-		win.runCaptureMode();
-		win.selectLane("vp/lane/other");
+		callDom(win, () => win.runCaptureMode());
+		callDom(win, () => win.selectLane("vp/lane/other"));
 		key(win, "Escape");
 		expect(q(win, "#app-shell")!.dataset.route).toBe("/lanes/vp/lane/other");
 	});
 
 	it("capture 中に ACTIONS の入力欄へ打ち始めたら、Actions に留まる（打っている面を奪わない）", () => {
 		const win = fixture();
-		win.runCaptureMode();
+		callDom(win, () => win.runCaptureMode());
 		// happy-dom の要素と event で揃える（q() は DOM 型に寄せて返すので、ここは素の querySelector）
 		const memo = win.document.querySelector('[data-peek="actions"] textarea')!;
-		memo.dispatchEvent(new win.KeyboardEvent("keydown", { key: "x", bubbles: true }));
+		dispatchDom(memo, new win.KeyboardEvent("keydown", { key: "x", bubbles: true }));
 		expect(current(win)).toBe("actions");
 		expect(shown(win)).toEqual(["actions"]);
 	});
@@ -364,7 +365,7 @@ describe("directive が rail に追随する", () => {
 	it("`n`（New Sub）は Actions にいても Lanes の peek を開いてから form を出す", () => {
 		const win = fixture();
 		click(win, "actions");
-		win.runNewSub();
+		callDom(win, () => win.runNewSub());
 		expect(current(win)).toBe("lanes");
 		expect(shown(win)).toEqual(["lanes"]);
 		expect(q(win, '[data-peek="lanes"] .vp-add-sub-form')).not.toBeNull();

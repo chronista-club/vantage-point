@@ -1,11 +1,11 @@
 import { expect, it } from 'vitest'
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidTestPlugin as solidPlugin, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window, type HTMLButtonElement, type HTMLInputElement } from 'happy-dom'
 
 it('MCP の空文字の選択肢と未回答を区別し、任意の選択を取り消せる', async () => {
   const result = await build({stdin:{contents:`
-    import {render} from 'solid-js/web'
+    import {render} from '@solidjs/web'
     import {createComponent} from 'solid-js'
     import {CodexInteractionCard} from './codex-interactions'
     window.answers=[]
@@ -15,11 +15,11 @@ it('MCP の空文字の選択肢と未回答を区別し、任意の選択を取
   `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],preserveSymlinks: true, plugins:[solidPlugin()]})
   const window = new Window()
   try {
-    window.eval(result.outputFiles[0].text)
+    evalDom(window, result.outputFiles[0].text)
     const select = window.document.querySelector('select')!
     const send = window.document.querySelector<HTMLButtonElement>('.conversation-prompt-confirm')!
-    select.value='0'; select.dispatchEvent(new window.Event('change',{bubbles:true})); send.click()
-    select.value='-1'; select.dispatchEvent(new window.Event('change',{bubbles:true})); send.click()
+    select.value='0'; dispatchDom(select, new window.Event('change',{bubbles:true})); clickDom(send)
+    select.value='-1'; dispatchDom(select, new window.Event('change',{bubbles:true})); clickDom(send)
     expect((window as unknown as {answers:unknown[]}).answers).toEqual([{'field:choice':''},{}])
   } finally {await window.happyDOM.close()}
 },15000)
@@ -27,7 +27,7 @@ it('MCP の空文字の選択肢と未回答を区別し、任意の選択を取
 it('MCP の任意項目と false を区別し、URL を開いただけでは完了しない', async () => {
   const result = await build({
     stdin: { contents: `
-      import { render } from 'solid-js/web'
+      import { render } from '@solidjs/web'
       import { createComponent } from 'solid-js'
       import { CodexInteractionCard } from './codex-interactions'
       window.answers = []
@@ -44,26 +44,26 @@ it('MCP の任意項目と false を区別し、URL を開いただけでは完�
   })
   const window = new Window()
   try {
-    window.eval(result.outputFiles[0].text)
+    evalDom(window, result.outputFiles[0].text)
     const form = window.document.querySelector('#form')!
     expect(form.textContent).toContain('documents')
     const confirm = form.querySelector<HTMLButtonElement>('.conversation-prompt-confirm')!
     expect(confirm.disabled).toBe(true)
     const select = form.querySelector('select')!
     select.value = 'false'
-    select.dispatchEvent(new window.Event('change',{bubbles:true}))
-    confirm.click()
+    dispatchDom(select, new window.Event('change',{bubbles:true}))
+    clickDom(confirm)
     expect((window as unknown as {answers:unknown[]}).answers).toEqual([{id:'form',behavior:'allow',answers:{'field:enabled':'false'}}])
     const url = window.document.querySelector('#url')!
     const done = url.querySelector<HTMLButtonElement>('.conversation-prompt-confirm')!
     expect(done.disabled).toBe(true)
-    url.querySelector('a')!.click()
+    clickDom(url.querySelector('a')!)
     expect((window as unknown as {opened:unknown[]}).opened).toEqual([{t:'open-url',url:'https://example.com/verify'}])
     expect((window as unknown as {answers:unknown[]}).answers).toHaveLength(1)
-    url.querySelector<HTMLInputElement>('input[type=checkbox]')!.click()
-    done.click()
+    clickDom(url.querySelector<HTMLInputElement>('input[type=checkbox]')!)
+    clickDom(done)
     expect((window as unknown as {answers:unknown[]}).answers[1]).toEqual({id:'url',behavior:'allow',answers:{action:'accept'}})
-    url.querySelector<HTMLButtonElement>('[data-mcp-cancel]')!.click()
+    clickDom(url.querySelector<HTMLButtonElement>('[data-mcp-cancel]')!)
     expect((window as unknown as {answers:unknown[]}).answers[2]).toEqual({id:'url',behavior:'allow',answers:{action:'cancel'}})
   } finally {await window.happyDOM.close()}
 },15000)
@@ -71,7 +71,7 @@ it('MCP の任意項目と false を区別し、URL を開いただけでは完�
 it('独立権限は未選択から項目と期間を選び、明示送信する', async () => {
   const result = await build({
     stdin: { contents: `
-      import { render } from 'solid-js/web'
+      import { render } from '@solidjs/web'
       import { createComponent } from 'solid-js'
       import { CodexInteractionCard } from './codex-interactions'
       window.answers = []
@@ -85,18 +85,18 @@ it('独立権限は未選択から項目と期間を選び、明示送信する'
   })
   const window = new Window()
   try {
-    window.eval(result.outputFiles[0].text)
+    evalDom(window, result.outputFiles[0].text)
     const doc = window.document
     const checkbox = doc.querySelector<HTMLInputElement>('input[type=checkbox]')
     expect(checkbox).not.toBeNull()
     expect(checkbox!.checked).toBe(false)
     const confirm = doc.querySelector<HTMLButtonElement>('.conversation-prompt-confirm')!
     expect(confirm.disabled).toBe(true)
-    checkbox!.click()
+    clickDom(checkbox!)
     expect((window as unknown as {answers:unknown[]}).answers).toEqual([])
     expect(doc.querySelector<HTMLInputElement>('input[value=turn]')!.checked).toBe(true)
-    doc.querySelector<HTMLInputElement>('input[value=session]')!.click()
-    confirm.click()
+    clickDom(doc.querySelector<HTMLInputElement>('input[value=session]')!)
+    clickDom(confirm)
     expect((window as unknown as {answers:unknown[]}).answers).toEqual([{id:'p',behavior:'allow',answers:{p0:'allow',scope:'session'}}])
   } finally { await window.happyDOM.close() }
 }, 15000)
@@ -104,7 +104,7 @@ it('独立権限は未選択から項目と期間を選び、明示送信する'
 it('拒否が turn 中断になる承認は、操作の意味を明示する', async () => {
   const result = await build({
     stdin: { contents: `
-      import { render } from 'solid-js/web'
+      import { render } from '@solidjs/web'
       import { createComponent } from 'solid-js'
       import { CodexInteractionCard } from './codex-interactions'
       window.answers = []
@@ -117,10 +117,10 @@ it('拒否が turn 中断になる承認は、操作の意味を明示する', a
   })
   const window = new Window()
   try {
-    window.eval(result.outputFiles[0].text)
+    evalDom(window, result.outputFiles[0].text)
     const button = window.document.querySelector<HTMLButtonElement>('.conversation-prompt-cancel')!
     expect(button.textContent).toBe('許可せずターンを中断')
-    button.click()
+    clickDom(button)
     expect((window as unknown as { answers: unknown[] }).answers).toEqual([{id: 'approval', behavior: 'deny'}])
   } finally { await window.happyDOM.close() }
 }, 15000)
@@ -128,7 +128,7 @@ it('拒否が turn 中断になる承認は、操作の意味を明示する', a
 it('生成した質問カードは選択・自由入力を保持し、送信操作だけで回答する', async () => {
   const result = await build({
     stdin: { contents: `
-      import { render } from 'solid-js/web'
+      import { render } from '@solidjs/web'
       import { createComponent } from 'solid-js'
       import { CodexInteractionCard } from './codex-interactions'
       window.answers = []
@@ -142,19 +142,19 @@ it('生成した質問カードは選択・自由入力を保持し、送信操�
   })
   const window = new Window()
   try {
-    window.eval(result.outputFiles[0].text)
+    evalDom(window, result.outputFiles[0].text)
     const doc = window.document
     const confirm = doc.querySelector<HTMLButtonElement>('.conversation-prompt-confirm')!
     expect(confirm.disabled).toBe(true)
-    doc.querySelector<HTMLButtonElement>('.conversation-prompt-opt')!.click()
+    clickDom(doc.querySelector<HTMLButtonElement>('.conversation-prompt-opt')!)
     expect((window as unknown as { answers: unknown[] }).answers).toEqual([])
     expect(doc.querySelector<HTMLInputElement>('input')!.value).toBe('A')
-    confirm.click()
+    clickDom(confirm)
     expect((window as unknown as { answers: unknown[] }).answers).toEqual([{ id: 'q', behavior: 'allow', answers: { '0': 'A' } }])
     const input = doc.querySelector<HTMLInputElement>('input')!
     input.value = '自由な回答'
-    input.dispatchEvent(new window.Event('input', { bubbles: true }))
-    confirm.click()
+    dispatchDom(input, new window.Event('input', { bubbles: true }))
+    clickDom(confirm)
     expect((window as unknown as { answers: unknown[] }).answers[1]).toEqual({ id: 'q', behavior: 'allow', answers: { '0': '自由な回答' } })
   } finally {
     await window.happyDOM.close()

@@ -1,6 +1,7 @@
+import { testPath } from './test-utils/paths'
 import { afterEach, beforeAll, expect, it } from 'vitest'
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window } from 'happy-dom'
 import { fileURLToPath } from 'node:url'
 
@@ -8,7 +9,7 @@ let bundle: string
 const windows: Window[] = []
 beforeAll(async () => {
   const result = await build({ stdin: { contents: `
-    import { render } from 'solid-js/web';
+    import { render } from '@solidjs/web';
     import { createComponent } from 'solid-js';
     import { Shell } from './src/sidebar/Shell';
     import { installConsole } from './console';
@@ -25,14 +26,14 @@ beforeAll(async () => {
     window.con = installConsole();
     window.capture = runCaptureMode;
     window.dispose = render(() => createComponent(Shell, {}), document.getElementById('sidebar-root'));
-  `, loader: 'tsx', resolveDir: fileURLToPath(new URL('.', import.meta.url)) }, bundle: true, write: false, format: 'iife', platform: 'browser', preserveSymlinks: true, plugins: [solidPlugin()], define: { 'process.env.NODE_ENV': '"production"' } })
+  `, loader: 'tsx', resolveDir: testPath(import.meta.url) }, bundle: true, write: false, format: 'iife', platform: 'browser', preserveSymlinks: true, plugins: [solidPlugin()], define: { 'process.env.NODE_ENV': '"production"' } })
   bundle = result.outputFiles[0].text
 })
 function fixture() {
   const win = new Window({ settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } }) as Window & { sent: any[]; setRepo(patch: object): void; setState(patch: object): void; dispose(): void; capture(): void; setResponse(timestamp: number | null): void; con: any }
   windows.push(win)
   win.document.body.innerHTML = '<div id="sidebar-root"></div><div id="host"></div>'
-  win.eval(bundle)
+  evalDom(win, bundle)
   return win
 }
 afterEach(async () => { for (const win of windows.splice(0)) await win.happyDOM.abort() })
@@ -46,26 +47,26 @@ it('keeps one project root, Japanese states and selectable lanes', () => {
   expect(win.document.querySelectorAll('.vp-lane-row')).toHaveLength(3)
   expect(win.document.querySelectorAll('.vp-lane-dot,.vp-lane-icon')).toHaveLength(0)
   expect(win.document.querySelector('.vp-proj-content')!.textContent).toContain('指示待ち')
-  root.dispatchEvent(new win.MouseEvent('click', { bubbles: true }))
+  dispatchDom(root, new win.MouseEvent('click', { bubbles: true }))
   expect(win.sent.at(-1)).toEqual({ t: 'lane:select', path: '/project', address: 'project/main' })
 })
 it('collapses children into one point per sub lane and preserves root selection', () => {
   const win = fixture()
   const toggle = win.document.querySelector('[aria-label="Project を折りたたむ"]')!
   expect(toggle).not.toBeNull()
-  toggle.dispatchEvent(new win.MouseEvent('click', { bubbles: true }))
+  dispatchDom(toggle, new win.MouseEvent('click', { bubbles: true }))
   expect(win.sent.at(-1)).toEqual({ t: 'process:toggle', path: '/project', expanded: false })
-  win.setRepo({ expanded: false })
+  callDom(win, () => win.setRepo({ expanded: false }))
   expect(win.document.querySelector('.vp-proj-content')!.hasAttribute('hidden')).toBe(true)
   expect(win.document.querySelectorAll('.vp-sub-point')).toHaveLength(2)
   expect(win.document.querySelector('.vp-sub-points')!.getAttribute('aria-label')).toBe('sub lane 2個')
-  win.setRepo({ expanded: true })
+  callDom(win, () => win.setRepo({ expanded: true }))
   expect(win.document.querySelectorAll('.vp-sub-point')).toHaveLength(0)
 })
 it('automatically groups stopped projects and returns starting ones to CURRENTs', () => {
   const win = fixture()
   expect(win.document.querySelector('[data-section="currents"] .vp-proj')).not.toBeNull()
-  win.setRepo({ state: 'stopped', port: null })
+  callDom(win, () => win.setRepo({ state: 'stopped', port: null }))
   expect(win.document.querySelector('[data-section="currents"] .vp-proj')).toBeNull()
   expect(win.document.querySelector('[data-section="stopped"] .vp-proj')).not.toBeNull()
   const stopped = win.document.querySelector('details[data-section="stopped"]') as any
@@ -74,14 +75,14 @@ it('automatically groups stopped projects and returns starting ones to CURRENTs'
   expect(stopped.querySelector('summary').textContent).toContain('PAUSED 1')
   stopped.open = true
   expect(stopped.querySelector('[aria-label="Project を再開"]')).not.toBeNull()
-  win.setRepo({ state: 'stopped', port: null })
+  callDom(win, () => win.setRepo({ state: 'stopped', port: null }))
   expect(stopped.open).toBe(true)
-  win.setRepo({ state: 'starting' })
+  callDom(win, () => win.setRepo({ state: 'starting' }))
   expect(win.document.querySelector('[data-section="currents"] .vp-proj')).not.toBeNull()
 })
 it('uses the same caret icon for the PAUSED header as the project fold caret (mem_1ChNtdQKHrSB78Ppek2etg)', () => {
   const win = fixture()
-  win.setRepo({ state: 'stopped', port: null })
+  callDom(win, () => win.setRepo({ state: 'stopped', port: null }))
   const caret = win.document.querySelector('details[data-section="stopped"] > summary .vp-stopped-caret') as any
   expect(caret).not.toBeNull()
   expect(caret.icon).toBe('ph:caret-right')
@@ -89,7 +90,7 @@ it('uses the same caret icon for the PAUSED header as the project fold caret (me
 })
 it('keeps both session and project operations on the unified root menu', () => {
   const win = fixture()
-  win.document.querySelector('.vp-proj-summary .vp-lane-row')!.dispatchEvent(new win.MouseEvent('contextmenu', { bubbles: true }))
+  dispatchDom(win.document.querySelector('.vp-proj-summary .vp-lane-row')!, new win.MouseEvent('contextmenu', { bubbles: true }))
   const menu = win.document.querySelector('.vp-ctx-menu')!
   expect(menu.textContent).toContain('Restart Session')
   expect(menu.textContent).toContain('Stop repo')
@@ -100,7 +101,7 @@ it('retains the ACTIONS capture draft across folding and keeps Creo ID out of th
   expect(details).not.toBeNull()
   const input = details.querySelector('textarea')
   input.value = '未送信のメモ'
-  input.dispatchEvent(new win.Event('input', { bubbles: true }))
+  dispatchDom(input, new win.Event('input', { bubbles: true }))
   details.open = false
   details.open = true
   expect(details.querySelector('textarea')).toBe(input)
@@ -112,8 +113,8 @@ it('reveals collapsed ACTIONS before keyboard capture focuses its memo', () => {
   const win = fixture()
   const details = win.document.querySelector('details.vp-act-buckets') as any
   details.open = false
-  win.capture()
-  win.dispatchEvent(new win.KeyboardEvent('keydown', { key: '1', bubbles: true }))
+  callDom(win, () => win.capture())
+  dispatchDom(win, new win.KeyboardEvent('keydown', { key: '1', bubbles: true }))
   expect(details.open).toBe(true)
   expect(win.document.activeElement).toBe(details.querySelector('textarea'))
 })
@@ -122,28 +123,28 @@ it('pauses the whole project and offers resume after it stops', () => {
   const win = fixture()
   const pause = win.document.querySelector('[aria-label="Project を停止（sub lane を含む）"]')!
   expect(pause).not.toBeNull()
-  pause.dispatchEvent(new win.MouseEvent('click', { bubbles: true }))
+  dispatchDom(pause, new win.MouseEvent('click', { bubbles: true }))
   expect(win.sent.at(-1)).toEqual({ t: 'process:stop', path: '/project' })
   expect(win.sent.some(m => m.t === 'lane:select')).toBe(false)
-  win.setRepo({ state: 'stopped', port: null })
+  callDom(win, () => win.setRepo({ state: 'stopped', port: null }))
   const resume = win.document.querySelector('[aria-label="Project を再開"]')!
   expect(resume.closest('[data-section="stopped"]')).not.toBeNull()
-  resume.dispatchEvent(new win.MouseEvent('click', { bubbles: true }))
+  dispatchDom(resume, new win.MouseEvent('click', { bubbles: true }))
   expect(win.sent.at(-1)).toEqual({ t: 'process:restart', path: '/project' })
 })
 
 it('shows pastel response freshness per session without inventing unknown times', () => {
   const win = fixture()
   expect(win.document.querySelectorAll('.vp-response-point')).toHaveLength(0)
-  win.setResponse(Date.now() - 3 * 60_000)
+  callDom(win, () => win.setResponse(Date.now() - 3 * 60_000))
   const points = win.document.querySelectorAll('.vp-response-point')
   expect(points).toHaveLength(2)
   expect(points[0].getAttribute('title')).toMatch(/最終応答から[23]分/)
   expect(points[0].getAttribute('aria-label')).toBe(points[0].getAttribute('title'))
   expect(points[0].getAttribute('data-freshness')).toBe('fresh')
-  win.setResponse(Date.now() - 2 * 60 * 60_000)
+  callDom(win, () => win.setResponse(Date.now() - 2 * 60 * 60_000))
   expect(win.document.querySelector('.vp-response-point')!.getAttribute('data-freshness')).toBe('old')
-  win.setResponse(null)
+  callDom(win, () => win.setResponse(null))
   expect(win.document.querySelectorAll('.vp-response-point')).toHaveLength(0)
 })
 
@@ -156,38 +157,38 @@ it('keeps the project activity point beside the fold caret and keeps Result visi
   expect(point()).not.toBeNull()
   expect(win.document.querySelector('.vp-proj-toggle .vp-activity-point')).toBeNull()
   expect(win.document.querySelector('.vp-proj-toggle iconify-icon.vp-proj-caret')).not.toBeNull()
-  win.con.handleEvent('project/main', {kind:'thought_chunk', text:'thinking'}, 1)
+  callDom(win, () => win.con.handleEvent('project/main', {kind:'thought_chunk', text:'thinking'}, 1))
   expect(point().getAttribute('data-activity')).toBe('thinking')
-  win.con.handleEvent('project/main', {kind:'tool_call', id:'tool', name:'Read', input:{}}, 1)
+  callDom(win, () => win.con.handleEvent('project/main', {kind:'tool_call', id:'tool', name:'Read', input:{}}, 1))
   expect(point().getAttribute('data-activity')).toBe('working')
-  win.con.handleEvent('project/main', {kind:'permission_request', request_id:'ask', tool_name:'Read', input:{}}, 1)
+  callDom(win, () => win.con.handleEvent('project/main', {kind:'permission_request', request_id:'ask', tool_name:'Read', input:{}}, 1))
   expect(point().getAttribute('data-activity')).toBe('waiting')
-  win.con.handleEvent('project/main', {kind:'turn_completed', session_id:'conv'}, 1)
+  callDom(win, () => win.con.handleEvent('project/main', {kind:'turn_completed', session_id:'conv'}, 1))
   expect(point().getAttribute('data-activity')).toBe('completed')
   expect(point().getAttribute('title')).toContain('応答完了')
   expect(win.document.querySelector('.vp-proj-summary .vp-lane-state')).toBeNull()
-  win.con.handleEvent('project/one', {kind:'thought_chunk', text:'background'}, 1)
+  callDom(win, () => win.con.handleEvent('project/one', {kind:'thought_chunk', text:'background'}, 1))
   expect(point().getAttribute('data-activity')).toBe('completed')
-  win.con.handleEvent('project/main', {kind:'replay_start'}, 1)
-  win.con.handleEvent('project/main', {kind:'thought_chunk', text:'old thought'}, 1)
-  win.con.handleEvent('project/main', {kind:'replay_end',in_flight:false}, 1)
+  callDom(win, () => win.con.handleEvent('project/main', {kind:'replay_start'}, 1))
+  callDom(win, () => win.con.handleEvent('project/main', {kind:'thought_chunk', text:'old thought'}, 1))
+  callDom(win, () => win.con.handleEvent('project/main', {kind:'replay_end',in_flight:false}, 1))
   expect(point().getAttribute('data-activity')).toBe('completed')
-  win.document.querySelector('.vp-proj-toggle')!.dispatchEvent(new win.MouseEvent('click',{bubbles:true}))
+  dispatchDom(win.document.querySelector('.vp-proj-toggle')!, new win.MouseEvent('click',{bubbles:true}))
   expect(win.sent.at(-1)).toEqual({t:'process:toggle',path:'/project',expanded:false})
   // ポイントは開閉ボタンではない — 押すと親行本体と同じく lead lane の選択になる
-  point().dispatchEvent(new win.MouseEvent('click',{bubbles:true}))
+  dispatchDom(point(), new win.MouseEvent('click',{bubbles:true}))
   expect(win.sent.at(-1)).toEqual({t:'lane:select',path:'/project',address:'project/main'})
 })
 
 it('keeps actionable Codex requests red through background work and Result', () => {
   const win = fixture()
   const point = () => win.document.querySelector('.vp-proj-summary .vp-lane-leading .vp-activity-point')!
-  win.con.handleEvent('project/main', {kind:'codex_interactions', requests:[{request_id:'q', can_accept:true}]}, 1)
-  win.con.handleEvent('project/main', {kind:'thought_chunk',text:'still thinking'}, 1)
+  callDom(win, () => win.con.handleEvent('project/main', {kind:'codex_interactions', requests:[{request_id:'q', can_accept:true}]}, 1))
+  callDom(win, () => win.con.handleEvent('project/main', {kind:'thought_chunk',text:'still thinking'}, 1))
   expect(point().getAttribute('data-activity')).toBe('waiting')
-  win.con.handleEvent('project/main', {kind:'turn_completed',session_id:'conv'}, 1)
+  callDom(win, () => win.con.handleEvent('project/main', {kind:'turn_completed',session_id:'conv'}, 1))
   expect(point().getAttribute('data-activity')).toBe('waiting')
-  win.con.handleEvent('project/main', {kind:'codex_interactions',requests:[]}, 1)
+  callDom(win, () => win.con.handleEvent('project/main', {kind:'codex_interactions',requests:[]}, 1))
   expect(point().getAttribute('data-activity')).toBe('completed')
 })
 
@@ -203,13 +204,13 @@ it('scrolls the newly active lane row into view — once per change, again when 
   const calls: (string | null)[] = []
   win.HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) { calls.push(this.getAttribute('data-address')) }
   // 折りたたみ中に選ぶ（ピン / pad / ⌘N は画面外の lane も選ぶ）→ 行を寄せる
-  win.setState({ processes: [{ expanded: false }], active_lane_address: 'project/two' })
+  callDom(win, () => win.setState({ processes: [{ expanded: false }], active_lane_address: 'project/two' }))
   expect(calls).toEqual(['project/two'])
   // 同じ選択のまま配り直し（progress の更新など）では寄せ直さない — user の scroll 位置を奪わない
-  win.setState({ processes: [{ expanded: false }], active_lane_address: 'project/two' })
+  callDom(win, () => win.setState({ processes: [{ expanded: false }], active_lane_address: 'project/two' }))
   expect(calls).toEqual(['project/two'])
   // 展開が届いたらもう 1 度寄せる（hidden の間は寄せられない）
-  win.setState({ processes: [{ expanded: true }], active_lane_address: 'project/two' })
+  callDom(win, () => win.setState({ processes: [{ expanded: true }], active_lane_address: 'project/two' }))
   expect(calls).toEqual(['project/two', 'project/two'])
 })
 

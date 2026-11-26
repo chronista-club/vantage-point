@@ -9,7 +9,7 @@
  *   cd crates/vp-app/webview && bun run build
  * 出力: ../assets/sidebar.bundle.js (vp-app の Rust 側で include_bytes!)
  */
-import { render } from 'solid-js/web'
+import { render } from '@solidjs/web'
 import './src/sidebar/midi-navigation'
 // creo-ui 基盤 (doc 58 2b): tokens (CSS 変数のみ) + components (.creo-* class のみ) を
 // 文字列 import (build.mjs の `.css: text` loader)。どちらも body/html への直接スタイルを

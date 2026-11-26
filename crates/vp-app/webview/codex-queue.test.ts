@@ -1,7 +1,7 @@
 // mem_1CeySwxuoVc17bGLnU5Np3 — 実行中 Enter は今伝える、Queue は明示操作。
 import { expect, it } from 'vitest'
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window, type HTMLButtonElement } from 'happy-dom'
 
 it('Codex Enter steers the displayed turn and the separate button queues the next input', async () => {
@@ -19,62 +19,62 @@ it('Codex Enter steers the displayed turn and the separate button queues the nex
   `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'iife', conditions: ['browser'], preserveSymlinks: true, plugins: [solidPlugin()] })
   const window = new Window()
   try {
-    window.eval(result.outputFiles[0].text)
+    evalDom(window, result.outputFiles[0].text)
     const input = window.document.querySelector('textarea')!
     input.value = '今の補足'
-    input.dispatchEvent(new window.Event('input', { bubbles: true }))
-    input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    dispatchDom(input, new window.Event('input', { bubbles: true }))
+    dispatchDom(input, new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     const sent = (window as unknown as { sent: Array<Record<string, any>>; emit: (event: unknown, session: number) => void })
     const steer = sent.sent.find(m => m.t === 'conversation:codex_input')
     expect(steer).toMatchObject({ lane: 'queue-test/lead', session: 1, thread_id: 'thread', action: { kind: 'steer', turn_id: 'turn', text: '今の補足' } })
-    sent.emit({ kind: 'codex_queue', queue: null, request_id: steer!.request_id, error: null }, 1)
+    callDom(window, () => sent.emit({ kind: 'codex_queue', queue: null, request_id: steer!.request_id, error: null }, 1))
     // Native turn continues while a question pauses the visual typing indicator.
-    sent.emit({kind:'question',request_id:'question',questions:[]},1)
+    callDom(window, () => sent.emit({kind:'question',request_id:'question',questions:[]},1))
     expect(window.document.querySelector('.conversation-send')!.textContent).toContain('今伝える')
     input.value = '次の仕事'
-    input.dispatchEvent(new window.Event('input', { bubbles: true }))
+    dispatchDom(input, new window.Event('input', { bubbles: true }))
     const queueButton = [...window.document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.includes('次に実行する'))
     expect(queueButton).toBeDefined()
-    queueButton!.click()
+    clickDom(queueButton!)
     expect(sent.sent.filter(m => m.t === 'conversation:codex_input').at(-1)).toMatchObject({ action: { kind: 'add', text: '次の仕事' } })
     const added = sent.sent.filter(m => m.t === 'conversation:codex_input').at(-1)!
-    sent.emit({kind:'codex_queue',queue:null,request_id:added.request_id,error:null},1)
-    sent.emit({kind:'codex_queue',queue:{thread_id:'thread',turn_id:null,ready:true,items:[
+    callDom(window, () => sent.emit({kind:'codex_queue',queue:null,request_id:added.request_id,error:null},1))
+    callDom(window, () => sent.emit({kind:'codex_queue',queue:{thread_id:'thread',turn_id:null,ready:true,items:[
       {id:'q1',client_id:'c1',text:'FIRST',editable:true},
-      {id:'q2',client_id:'c2',text:'SECOND',editable:true}],error:null},request_id:null,error:null},1)
-    sent.emit({kind:'turn_completed',session_id:'thread'},1)
-    sent.emit({kind:'codex_config',config:{models:[{model:'test',label:'Test',efforts:['high'],default_effort:'high'}],model:'test',effort:'high',selection:null,error:null},request_id:null,error:null},1)
+      {id:'q2',client_id:'c2',text:'SECOND',editable:true}],error:null},request_id:null,error:null},1))
+    callDom(window, () => sent.emit({kind:'turn_completed',session_id:'thread'},1))
+    callDom(window, () => sent.emit({kind:'codex_config',config:{models:[{model:'test',label:'Test',efforts:['high'],default_effort:'high'}],model:'test',effort:'high',selection:null,error:null},request_id:null,error:null},1))
     expect(window.document.querySelector<HTMLButtonElement>('[aria-label="Codex model"]')!.disabled).toBe(true)
     const row = window.document.querySelector('[data-queued-id="q1"]')!
     expect(row).not.toBeNull()
     const edit = row.querySelector<HTMLButtonElement>('[data-queue-edit]')!
-    edit.click()
+    clickDom(edit)
     const queuedText = row.querySelector('textarea')!
     queuedText.value='EDITED'
-    queuedText.dispatchEvent(new window.Event('input',{bubbles:true}))
-    row.querySelector<HTMLButtonElement>('[data-queue-save]')!.click()
+    dispatchDom(queuedText, new window.Event('input',{bubbles:true}))
+    clickDom(row.querySelector<HTMLButtonElement>('[data-queue-save]')!)
     expect(sent.sent.at(-1)).toMatchObject({action:{kind:'update',id:'q1',text:'EDITED'}})
-    sent.emit({kind:'codex_queue',queue:null,request_id:sent.sent.at(-1)!.request_id,error:null},1)
-    row.querySelector<HTMLButtonElement>('[data-queue-down]')!.click()
+    callDom(window, () => sent.emit({kind:'codex_queue',queue:null,request_id:sent.sent.at(-1)!.request_id,error:null},1))
+    clickDom(row.querySelector<HTMLButtonElement>('[data-queue-down]')!)
     expect(sent.sent.at(-1)).toMatchObject({action:{kind:'reorder',ids:['q2','q1']}})
-    sent.emit({kind:'codex_queue',queue:null,request_id:sent.sent.at(-1)!.request_id,error:null},1)
-    row.querySelector<HTMLButtonElement>('[data-queue-delete]')!.click()
+    callDom(window, () => sent.emit({kind:'codex_queue',queue:null,request_id:sent.sent.at(-1)!.request_id,error:null},1))
+    clickDom(row.querySelector<HTMLButtonElement>('[data-queue-delete]')!)
     expect(sent.sent.at(-1)).toMatchObject({action:{kind:'delete',id:'q1'}})
-    sent.emit({kind:'codex_queue',queue:null,request_id:sent.sent.at(-1)!.request_id,error:null},1)
-    window.document.querySelector<HTMLButtonElement>('[data-queue-start]')!.click()
+    callDom(window, () => sent.emit({kind:'codex_queue',queue:null,request_id:sent.sent.at(-1)!.request_id,error:null},1))
+    clickDom(window.document.querySelector<HTMLButtonElement>('[data-queue-start]')!)
     expect(sent.sent.at(-1)).toMatchObject({action:{kind:'start',id:'q1'}})
-    sent.emit({kind:'codex_queue',queue:null,request_id:sent.sent.at(-1)!.request_id,error:null},1)
-    sent.emit({kind:'codex_queue',queue:{thread_id:'thread',turn_id:null,ready:false,items:[],error:'一覧を取得できませんでした'},request_id:null,error:null},1)
+    callDom(window, () => sent.emit({kind:'codex_queue',queue:null,request_id:sent.sent.at(-1)!.request_id,error:null},1))
+    callDom(window, () => sent.emit({kind:'codex_queue',queue:{thread_id:'thread',turn_id:null,ready:false,items:[],error:'一覧を取得できませんでした'},request_id:null,error:null},1))
     const refresh = window.document.querySelector<HTMLButtonElement>('[data-queue-refresh]')
     expect(refresh).not.toBeNull()
-    refresh!.click()
+    clickDom(refresh!)
     expect(sent.sent.at(-1)).toMatchObject({action:{kind:'refresh'},thread_id:'thread',session:1})
-    sent.emit({kind:'codex_queue',queue:null,request_id:sent.sent.at(-1)!.request_id,error:null},1)
-    sent.emit({kind:'codex_queue',queue:{thread_id:'thread',turn_id:'lost-turn',ready:true,items:[],error:null},request_id:null,error:null},1)
-    sent.emit({kind:'engine_exited',message:'disconnected'},1)
+    callDom(window, () => sent.emit({kind:'codex_queue',queue:null,request_id:sent.sent.at(-1)!.request_id,error:null},1))
+    callDom(window, () => sent.emit({kind:'codex_queue',queue:{thread_id:'thread',turn_id:'lost-turn',ready:true,items:[],error:null},request_id:null,error:null},1))
+    callDom(window, () => sent.emit({kind:'engine_exited',message:'disconnected'},1))
     input.value = '再開する'
-    input.dispatchEvent(new window.Event('input', { bubbles: true }))
-    input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    dispatchDom(input, new window.Event('input', { bubbles: true }))
+    dispatchDom(input, new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     expect(sent.sent.at(-1)).toMatchObject({t:'conversation:submit',session:1,prompt:'再開する'})
   } finally { await window.happyDOM.close() }
 }, 20000)

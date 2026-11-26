@@ -1,3 +1,4 @@
+import { testPath } from '../../test-utils/paths'
 /**
  * 左 edge の Rail（doc 87 §2 / §8 slice 1）— creo-ui `CURail`（0.31.0〜）を VP に繋ぐ薄い wrapper。
  *
@@ -21,7 +22,7 @@
  */
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { build } from "esbuild";
-import { solidPlugin } from "esbuild-plugin-solid";
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from '../../test-utils/solid'
 import { Window } from "happy-dom";
 import { fileURLToPath } from "node:url";
 
@@ -38,7 +39,7 @@ beforeAll(async () => {
 	const result = await build({
 		stdin: {
 			contents: `
-        import { render } from 'solid-js/web';
+        import { render } from '@solidjs/web';
         import { createComponent, createSignal } from 'solid-js';
         import { ShellRail, SHELL_RAIL_CSS } from './ShellRail';
         import shellsCss from '@chronista-club/creo-ui/shells/index.css';
@@ -68,7 +69,7 @@ beforeAll(async () => {
           get peekFooter() { const d = document.createElement('div'); d.className = 'slot-footer'; return d; },
         }), document.getElementById('sidebar-root'));
       `,
-			resolveDir: fileURLToPath(new URL(".", import.meta.url)),
+			resolveDir: testPath(import.meta.url),
 			loader: "tsx",
 		},
 		bundle: true,
@@ -93,7 +94,7 @@ function fixture(): Probe {
 	windows.push(win);
 	// 本番と同じ mount 先（VP の上書き CSS は #sidebar-root 配下に効く）
 	win.document.body.innerHTML = '<div id="sidebar-root"></div>';
-	win.eval(bundle);
+	evalDom(win, bundle);
 	return win;
 }
 
@@ -146,15 +147,15 @@ describe("選択 = route（PL-4）", () => {
 		const current = () =>
 			ids(win.document.querySelectorAll('button[data-rail][aria-current="page"]'));
 		expect(current()).toEqual(["lanes"]);
-		win.setPath("/settings/updates");
+		callDom(win, () => win.setPath("/settings/updates"));
 		expect(current()).toEqual(["settings"]);
-		win.setPath("/nowhere");
+		callDom(win, () => win.setPath("/nowhere"));
 		expect(current()).toEqual([]);
 	});
 
 	it("click は選択を自分で変えず、呼び手に rail を渡すだけ", () => {
 		const win = fixture();
-		(win.document.querySelector('button[data-rail="actions"]') as unknown as HTMLElement).click();
+		clickDom((win.document.querySelector('button[data-rail="actions"]') as unknown as HTMLElement));
 		expect(win.clicked).toEqual(["actions"]);
 		expect(
 			win.document.querySelector('button[data-rail="lanes"]')!.getAttribute("aria-current"),
@@ -173,7 +174,7 @@ describe("peek（選択中 rail の中身）", () => {
 		const peek = win.document.querySelector("[data-expanded]")!;
 		expect(peek.getAttribute("data-expanded")).toBe("true");
 		expect(visiblePeeks(win)).toEqual(["lanes"]);
-		win.setPath("/actions");
+		callDom(win, () => win.setPath("/actions"));
 		expect(visiblePeeks(win)).toEqual(["actions"]);
 	});
 
@@ -183,7 +184,7 @@ describe("peek（選択中 rail の中身）", () => {
 		// 属性だけ正しい状態になる（属性だけ見るテストでは落ちない）
 		const win = fixture();
 		const display = (id: string) =>
-			win.getComputedStyle(win.document.querySelector(`[data-peek="${id}"]`)!).display;
+			callDom(win, () => win.getComputedStyle(win.document.querySelector(`[data-peek="${id}"]`)!)).display;
 		expect(display("lanes")).not.toBe("none");
 		expect(display("actions")).toBe("none");
 		expect(display("settings")).toBe("none");
@@ -192,14 +193,14 @@ describe("peek（選択中 rail の中身）", () => {
 	it("⚠️ rail を移っても他の peek は mount されたまま（展開状態・入力中の form を失わない）", () => {
 		const win = fixture();
 		const lanes = win.document.querySelector(".peek-lanes");
-		win.setPath("/actions");
-		win.setPath("/lanes");
+		callDom(win, () => win.setPath("/actions"));
+		callDom(win, () => win.setPath("/lanes"));
 		expect(win.document.querySelector(".peek-lanes")).toBe(lanes);
 	});
 
 	it("slim（peekOpen=false）では選んだまま peek を畳む", () => {
 		const win = fixture();
-		win.setPeekOpen(false);
+		callDom(win, () => win.setPeekOpen(false));
 		const peek = win.document.querySelector("[data-expanded]")!;
 		expect(peek.getAttribute("data-expanded")).toBe("false");
 		expect(win.document.querySelector(".peek-lanes")).toBeNull();
@@ -210,7 +211,7 @@ describe("peek（選択中 rail の中身）", () => {
 
 	it("どの rail も選ばれていなければ peek は閉じる（CURail と同じ）", () => {
 		const win = fixture();
-		win.setPath("/nowhere");
+		callDom(win, () => win.setPath("/nowhere"));
 		expect(
 			win.document.querySelector("[data-expanded]")!.getAttribute("data-expanded"),
 		).toBe("false");
@@ -238,13 +239,13 @@ describe("peek の下端 slot（machine 帯の置き場 — どの rail でも�
 		const footer = peek.querySelector(":scope > .slot-footer");
 		expect(footer).not.toBeNull();
 		expect(peek.lastElementChild).toBe(footer);
-		win.setPath("/actions");
+		callDom(win, () => win.setPath("/actions"));
 		expect(peek.querySelector(":scope > .slot-footer")).toBe(footer);
 	});
 
 	it("slim では描かない", () => {
 		const win = fixture();
-		win.setPeekOpen(false);
+		callDom(win, () => win.setPeekOpen(false));
 		expect(win.document.querySelector(".slot-footer")).toBeNull();
 	});
 });

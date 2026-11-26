@@ -13,10 +13,10 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@chronista-club/creo-ui": "^0.31.0",
-    "@chronista-club/creo-ui-editor-host": "^0.11.0",
-    "@chronista-club/creo-ui-icons-web": "^0.0.1",
-    "@chronista-club/creo-ui-layout": "^0.3.0",
+    "@chronista-club/creo-ui": "^0.32.0",
+    "@chronista-club/creo-ui-editor-host": "^0.12.0",
+    "@chronista-club/creo-ui-icons-web": "^0.1.0",
+    "@chronista-club/creo-ui-layout": "^0.4.0",
     "@chronista-club/unison-client": "^1.2.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-progress": "^0.2.0",
@@ -29,16 +29,20 @@
     "iconify-icon": "^3.0.2",
     "marked": "^18.0.11",
     "mermaid": "^11.17.2",
-    "solid-js": "^1.9.15",
+    "solid-js": "^2.0.4",
     "three": "^0.185.1",
-    "@chronista-club/agent-chat": "file:../../../vendor/agent-chat/packages/chat"
+    "@chronista-club/agent-chat": "file:../../../vendor/agent-chat/packages/chat",
+    "@solidjs/web": "^2.0.4"
   },
   "devDependencies": {
+    "@ampproject/remapping": "^2.3.0",
+    "@solidjs/compiler": "^2.0.3",
+    "@solidjs/vite-plugin": "^3.0.1",
     "@types/three": "^0.185.4",
     "esbuild": "^0.28.2",
-    "esbuild-plugin-solid": "^0.6.0",
     "happy-dom": "^20.13.0",
     "typescript": "^7.0.2",
+    "vite": "^8.4.0",
     "vitest": "^4.1.11"
   }
 }
