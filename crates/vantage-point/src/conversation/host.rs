@@ -1356,9 +1356,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn spawn_exit_drains_stderr_after_stdout_eof() {
-        let message =
-            exit_message_from_script("exec 1>&-\nsleep 0.02\nprintf 'late diagnostic\\n' >&2")
-                .await;
+        // 外部 sleep の起動・復帰時間を drain の期限に含めず、pipe を閉じる順序を検証する。
+        let message = exit_message_from_script("exec 1>&-\nprintf 'late diagnostic\\n' >&2").await;
         assert_eq!(
             message,
             "エンジンが休眠しました（メッセージ送信で再開します）\nlate diagnostic"
