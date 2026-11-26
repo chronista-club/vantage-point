@@ -141,10 +141,15 @@ async fn run_replay_flight(
         if !state.replay_flights.finish(lane, resolved.key) {
             return result;
         }
-        // 起動の失敗の理由は 1 回だけ見せる。合流した demand の rerun でもう 1 回流すと、同じ
-        // 「起動できません」が並ぶ（起動時は demand が 3 つ重なる）。成功した replay と違って、
-        // `Error` は `ReplayStart` で消えないので、重ねて流すと画面に残る。
-        spawn_error = None;
+        // Claude / vpcode は rerun の ReplayStart でエラーカードも消すため、各 replay の末尾に
+        // 理由を付け直す（最終表示は 1 枚）。ACP は起動失敗時に ReplayStart を送らないので、
+        // 初回のカードを残して重複配送しない。Codex の失敗は上の abort で終了する。
+        if !matches!(
+            crate::conversation::EngineKind::from_agent(&resolved.agent),
+            Some(crate::conversation::EngineKind::Claude | crate::conversation::EngineKind::Vpcode)
+        ) {
+            spawn_error = None;
+        }
         // 合流分の rerun: 直列にもう 1 周だけ全量を配送し直す（連続配送なら clear-prefix で
         // 収束する = 元の設計前提に戻る）。進行中 replay の途中から購読した consumer の
         // prefix 取りこぼしもこの 1 周で回復する。`resolved` は初回 resolve の snapshot
@@ -160,7 +165,7 @@ async fn run_replay_flight(
 ///
 /// Codex は host の一括 snapshot、ACP engine（grok / opencode / agy）は host の控え（pump が配る）、
 /// Claude は transcript、vpcode は replay_log を配送する。
-/// `spawn_error` は直前の eager spawn の失敗理由（engine から履歴を引く経路で、こちらで言い換える）。
+/// `spawn_error` は直前の eager spawn の失敗理由。ローカルの履歴には ReplayEnd 後に付ける。
 async fn replay_once(
     state: &RepoState,
     addr: &crate::repo::lane::LaneAddress,
@@ -262,6 +267,11 @@ async fn replay_once(
         events.push(crate::conversation::ConversationEvent::ReplayStart);
         events.extend(buffered);
         events.push(crate::conversation::ConversationEvent::ReplayEnd { in_flight: false });
+        if let Some(message) = spawn_error {
+            events.push(crate::conversation::ConversationEvent::Error {
+                message: message.to_string(),
+            });
+        }
         splice_session_init(
             &mut events,
             state
@@ -289,6 +299,11 @@ async fn replay_once(
     events.push(crate::conversation::ConversationEvent::ReplayEnd {
         in_flight: tail_len > 0,
     });
+    if let Some(message) = spawn_error {
+        events.push(crate::conversation::ConversationEvent::Error {
+            message: message.to_string(),
+        });
+    }
     splice_session_init(
         &mut events,
         state
@@ -474,6 +489,152 @@ mod tests {
             .to_string_lossy()
             .into_owned();
         pool.insert(lane);
+    }
+
+    // mem_1CeKURXkyMrGuvGzkzzfzE: 起動失敗は履歴を消さず replay の末尾へ届ける。
+    #[tokio::test]
+    async fn spawn_failure_follows_replay_end_for_claude_and_vpcode() {
+        use crate::lane::session_registry::{self, SessionMode};
+        use crate::protocol::RepoMessage;
+        use crate::repo::unison_server::dispatch_repo_method;
+
+        let isolated = crate::test_env::state_dir_async().await;
+        let state = crate::repo::state::build_test_app_state().await;
+        let addr = insert_test_lane(&state, "spawn-replay", SessionMode::Tui).await;
+        prevent_engine_spawn(&state, &addr, isolated.path()).await;
+        for (agent, conversation) in [
+            ("claude", None),
+            ("claude", Some("missing-spawn-error-transcript")),
+            ("vpcode", None),
+        ] {
+            let key = session_registry::create(
+                &addr.repo,
+                "lead",
+                "claude",
+                agent,
+                SessionMode::Gui,
+                false,
+            )
+            .unwrap();
+            session_registry::set_conversation(&addr.repo, "lead", "claude", key, conversation)
+                .unwrap();
+            if agent == "vpcode" {
+                crate::conversation::replay_log::append(
+                    &addr.repo,
+                    &format!("lead#{key}"),
+                    &ConversationEvent::MessageChunk {
+                        text: "saved history".into(),
+                    },
+                )
+                .unwrap();
+            }
+            let (_, mut rx) = state
+                .topic_router
+                .subscribe("repo/conversation/data/spawn-replay~lane~lead/event")
+                .await;
+            dispatch_repo_method(
+                &state,
+                "conversation_demand_start",
+                serde_json::json!({"lane": addr.canonical(), "session": key}),
+            )
+            .await
+            .unwrap();
+
+            let mut events = Vec::new();
+            while let Ok((
+                _,
+                RepoMessage::ConversationEvent {
+                    lane,
+                    session,
+                    event,
+                },
+            )) = rx.try_recv()
+            {
+                assert_eq!(lane, addr.canonical());
+                assert_eq!(session, key);
+                events.push(event);
+            }
+            assert_eq!(events.first(), Some(&ConversationEvent::ReplayStart));
+            assert!(
+                matches!(events.last(), Some(ConversationEvent::Error { message }) if !message.is_empty()),
+                "{agent} must deliver the spawn failure after replay: {events:?}"
+            );
+            assert!(matches!(
+                events.get(events.len() - 2),
+                Some(ConversationEvent::ReplayEnd { in_flight: false })
+            ));
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| matches!(e, ConversationEvent::Error { .. }))
+                    .count(),
+                1
+            );
+            if agent == "vpcode" {
+                assert!(events.contains(&ConversationEvent::MessageChunk {
+                    text: "saved history".into()
+                }));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_failure_survives_local_history_coalesced_rerun() {
+        use crate::lane::session_registry::{self, SessionMode};
+        use crate::protocol::RepoMessage;
+
+        let _isolated = crate::test_env::state_dir_async().await;
+        let state = crate::repo::state::build_test_app_state().await;
+        let addr = insert_test_lane(&state, "spawn-rerun", SessionMode::Tui).await;
+        for agent in ["claude", "vpcode"] {
+            let key = session_registry::create(
+                &addr.repo,
+                "lead",
+                "claude",
+                agent,
+                SessionMode::Gui,
+                false,
+            )
+            .unwrap();
+            let resolved = state
+                .lane_pool
+                .read()
+                .await
+                .resolve_chat_session(&addr, Some(key))
+                .unwrap();
+            let lane = addr.canonical();
+            let (_, mut rx) = state
+                .topic_router
+                .subscribe("repo/conversation/data/spawn-rerun~lane~lead/event")
+                .await;
+            assert!(state.replay_flights.begin(&lane, key));
+            assert!(!state.replay_flights.begin(&lane, key));
+            super::run_replay_flight(&state, &addr, &lane, &resolved, Some("spawn failed".into()))
+                .await
+                .unwrap();
+            let mut last_replay = Vec::new();
+            let mut starts = 0;
+            while let Ok((_, RepoMessage::ConversationEvent { event, .. })) = rx.try_recv() {
+                if event == ConversationEvent::ReplayStart {
+                    // GUI の clear-prefix と同じく、次の replay は前のカードも消す。
+                    last_replay.clear();
+                    starts += 1;
+                }
+                last_replay.push(event);
+            }
+            assert_eq!(starts, 2);
+            assert_eq!(
+                last_replay,
+                vec![
+                    ConversationEvent::ReplayStart,
+                    ConversationEvent::ReplayEnd { in_flight: false },
+                    ConversationEvent::Error {
+                        message: "spawn failed".into()
+                    },
+                ],
+                "{agent}: final replay must retain one error card"
+            );
+        }
     }
 
     #[tokio::test]

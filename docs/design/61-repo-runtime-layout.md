@@ -167,6 +167,8 @@ arm の形は `"show" | "clear" => board::handle_canvas_command(state, payload).
 
 ## Status log
 
+- 2026-11-26: chat host の起動失敗を会話 topic に配送する（`mem_1CeKURXkyMrGuvGzkzzfzE`）。`LanePool` は host spawn の失敗を session key 付きの内部エラーで区別し、通常操作は `ensure_chat_engine_reported` から通知する。mode / host 能力のガード拒否は通知しない。demand は通知しない `ensure_chat_engine` で理由を保持し、Claude / Vpcode の replay では `ReplayEnd` の後へ `Error` を積む。合流 rerun は `ReplayStart` で前のカードも消すため、末尾に付け直して最終表示に 1 枚残す。Codex / ACP の既存の失敗配送は維持し、clear-prefix を送らない ACP の rerun では再通知しない。
+
 - 2026-09-08: 設計確定（mako）。決定 3 点は §0。次は PR-1（editor_bridge）。
 - 2026-09-09: 9-1d 着地。`LaneId` の型を `crate::lane::lane_id`（永続の実装がある側）へ移し、`crate::lane` の `ROOT_LANE_NAME` 参照 4 箇所を定義元の `vp_paths` 直参照に。**`crate::lane` → `repo::lane` の code 依存が 0 本**になり循環が切れた（doc link は残る）。**9-1 完了**。
 - 2026-09-09: 9-1c 着地。値 module から disk / engine を切り離した: `LaneInfo::refresh_engine_session_id` / `LaneSessionsView::from_registry` / `apply_session_activity` を `enrich.rs` の自由関数へ（対で呼ぶ契約を module doc に）、`LanePool::parse_address`（`&self` を取らない純パーサ）を `address.rs` へ（呼び手 53）。値（address / info）は disk / engine / lock を触らない状態になった。
