@@ -38,8 +38,8 @@ export function MidiPins() {
       const register = () => { const a = activeTarget(); if (a) setPin(slot, a); };
       let colorInput!: HTMLInputElement;
       return <div class="vp-midi-pin" style={{'--pin-color':pins().colors[slot]}}>
-        <button type="button" class="vp-midi-pin-button" disabled={!pinsReady()}
-          classList={{selected:!!pin() && sidebar.active_lane_address === pin()!.address, unavailable:!!pin() && !available(), requesting:requesting()}}
+        <button type="button" class={["vp-midi-pin-button", {selected:!!pin() && sidebar.active_lane_address === pin()!.address, unavailable:!!pin() && !available(), requesting:requesting()}]} disabled={!pinsReady()}
+
           title={pin()
             ? `#${number}（⌘${number} / pad ${number}）${pin()!.address}${available() ? '' : '（現在利用できません）'} — 右クリックで設定`
             : `#${number} に今選んでいる Lane を登録`}

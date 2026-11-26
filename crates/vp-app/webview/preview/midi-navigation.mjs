@@ -1,7 +1,7 @@
 // セッションや daemon に接続しない表示・操作用 fixture。
 // bun preview/sidebar-sessions.mjs 12891
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidPlugin } from '../solid-plugin.mjs'
 import { fileURLToPath } from 'node:url'
 const result = await build({
   stdin: { contents: `
@@ -9,7 +9,7 @@ const result = await build({
     import { restoreMidiPins } from './src/sidebar/midi-pin-store';
     import { defaultPins } from './midi-pins';
     import { createComponent } from 'solid-js';
-    import { render } from 'solid-js/web';
+    import { render } from '@solidjs/web';
     import { Shell, SHELL_CSS } from './src/sidebar/Shell';
     import { applySidebarState, emptyState } from './src/sidebar/store';
     import { installIpcBridge } from './src/sidebar/ipc';

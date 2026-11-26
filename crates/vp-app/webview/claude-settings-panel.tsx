@@ -12,7 +12,7 @@
  * UI で抑止する。
  */
 import { For, Show } from 'solid-js'
-import { produce } from 'solid-js/store'
+
 import type { ConversationSession, PickerChoice } from './console'
 import type { ClaudeSettings } from './src/generated/ClaudeSettings'
 import { ModelSelect, postIpc, postSettings, type SettingsContext } from './engine-settings-shared'
@@ -27,7 +27,7 @@ import { ModelSelect, postIpc, postSettings, type SettingsContext } from './engi
  * panel 外（plan 承認で default へ戻す経路）からも呼ぶので export。
  */
 export function setPermissionMode(ctx: Pick<SettingsContext, 'lane' | 'session' | 'lc'>, mode: string): void {
-  ctx.lc.set(produce((s) => (s.permissionMode = mode)))
+  ctx.lc.set((s) => { s.permissionMode = mode })
   postIpc({ t: 'conversation:set_permission_mode', lane: ctx.lane, session: ctx.session, mode })
 }
 

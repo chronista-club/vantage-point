@@ -12,7 +12,7 @@ import {
 	createMemo,
 	createSignal,
 	onCleanup,
-	onMount,
+	onSettled,
 } from "solid-js";
 import { ACTIONS } from "./actions/registry";
 import type { Action } from "./actions/types";
@@ -99,7 +99,7 @@ export function CommandPalette() {
 		}
 	};
 
-	onMount(() => {
+	onSettled(() => {
 		window.vpCommandPalette = { open };
 		window.addEventListener("keydown", onGlobalKey, true);
 	});
@@ -109,14 +109,13 @@ export function CommandPalette() {
 		window.removeEventListener("keydown", onGlobalKey, true);
 	});
 
-	createEffect(() => {
-		if (!visible()) return;
+	createEffect(visible, visible => {
+		if (!visible) return;
 		setTimeout(() => inputRef?.focus(), 0);
 	});
 
-	createEffect(() => {
-		selectedIndex();
-		if (!visible() || !bodyRef) return;
+	createEffect(() => [selectedIndex(), visible()] as const, ([, visible]) => {
+		if (!visible || !bodyRef) return;
 		const sel = bodyRef.querySelector(
 			".vp-cp-row.selected",
 		) as HTMLElement | null;
@@ -184,8 +183,8 @@ export function CommandPalette() {
 						<For each={view()}>
 							{(a, idx) => (
 								<div
-									class="vp-cp-row"
-									classList={{ selected: idx() === selectedIndex() }}
+									class={["vp-cp-row", { selected: idx() === selectedIndex() }]}
+
 									onClick={() => {
 										setSelectedIndex(idx());
 										activate(a);

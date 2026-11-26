@@ -1,9 +1,10 @@
+import { testPath } from '../../test-utils/paths'
 /** mem_1Cffk9CyL6uzCaHqQaT8Pi — 選択タブとメインの色を Editor から調整する。 */
 import { readFileSync } from "node:fs";
 import { Window } from "happy-dom";
 import { describe, expect, it } from "vitest";
 
-const source = readFileSync(new URL("./Shell.tsx", import.meta.url), "utf8");
+const source = readFileSync(testPath(import.meta.url, "./Shell.tsx"), "utf8");
 const css = source.match(/export const SHELL_CSS = `([\s\S]*)`;/)![1];
 
 describe("Lane の選択面", () => {

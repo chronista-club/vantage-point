@@ -11,7 +11,7 @@
  * 供給元は editor-host bundle の chatview（`session-now-bridge` 経由の tee）。
  * 鍵は `sessionNowKey(lane, session)` = `<address>#<session>`。
  */
-import { createStore } from "solid-js/store";
+import { createStore } from "solid-js";
 import { sessionNowKey } from "../../session-now-bridge";
 
 const [sessionNow, setSessionNow] = createStore<
@@ -30,5 +30,5 @@ export function applySessionNow(
 	session: number,
 	text: string | null,
 ): void {
-	setSessionNow(sessionNowKey(lane, session), text ?? undefined);
+	setSessionNow(s => { s[sessionNowKey(lane, session)] = text ?? undefined });
 }

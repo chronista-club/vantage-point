@@ -22,16 +22,16 @@ export function CodexSettingsPanel(props: SettingsContext) {
   const setSelection = (model: string, effort: string) => {
     if (busy()) return
     const requestId = nextRequestId('codex-settings')
-    props.lc.set('codexSettingsRequest', requestId)
-    props.lc.set('codexSettingsError', null)
+    props.lc.set(s => { s['codexSettingsRequest'] = requestId })
+    props.lc.set(s => { s['codexSettingsError'] = null })
     if (!postSettings(props, { codex: { model, effort } }, requestId)) {
-      props.lc.set('codexSettingsRequest', null)
+      props.lc.set(s => { s['codexSettingsRequest'] = null })
       return
     }
     setTimeout(() => {
       if (props.lc.state.codexSettingsRequest === requestId) {
-        props.lc.set('codexSettingsRequest', null)
-        props.lc.set('codexSettingsError', '設定変更の結果を確認できませんでした。表示を確認して再試行してください。')
+        props.lc.set(s => { s['codexSettingsRequest'] = null })
+        props.lc.set(s => { s['codexSettingsError'] = '設定変更の結果を確認できませんでした。表示を確認して再試行してください。' })
       }
     }, 30_000)
   }

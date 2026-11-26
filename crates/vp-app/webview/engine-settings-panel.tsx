@@ -9,7 +9,7 @@
  * engine を足す = panel を 1 file 書いて表に 1 行。消す = file を消して行を消す。
  */
 import { Show, type Component } from 'solid-js'
-import { Dynamic } from 'solid-js/web'
+import { Dynamic } from '@solidjs/web'
 import { GrokSettingsPanel } from './grok-settings-panel'
 import { AgySettingsPanel } from './agy-settings-panel'
 import { ClaudeSettingsPanel } from './claude-settings-panel'

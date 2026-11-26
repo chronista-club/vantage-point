@@ -25,8 +25,8 @@
  * symbol は別 event で届く予定なので、この component の受け口は増える方向で拡張する。
  */
 
-import { For, Show, createMemo, createSignal, onCleanup } from "solid-js";
-import { render } from "solid-js/web";
+import { For, Show, createMemo, createSignal, flush, onCleanup } from "solid-js";
+import { render } from "@solidjs/web";
 import { boardKeyOf, CODE_PANE_REF } from "./lane-panes";
 import { toggleCodeOpen } from "./code-view";
 
@@ -271,6 +271,8 @@ export function mountCodePane(host: HTMLElement): CodePaneController {
 			setSelectedIndex(0);
 			setOpenedPath(null);
 			setPayload(null);
+			// entry の直後の codeView.setActiveLane が同期で demand を通知する。
+			flush();
 		},
 		handleEntries(evLane: string, evEntries: Entry[], evTruncated: boolean) {
 			if (evLane !== lane()) return; // 他 lane の遅延到着は捨てる
@@ -346,8 +348,8 @@ export function mountCodePane(host: HTMLElement): CodePaneController {
 							<For each={view()}>
 								{(item, i) => (
 									<div
-										class="code-row"
-										classList={{ selected: i() === selectedIndex() }}
+										class={["code-row", { selected: i() === selectedIndex() }]}
+
 										data-idx={i()}
 										style={{ "padding-left": `${8 + item.depth * 14}px` }}
 										onClick={() => {

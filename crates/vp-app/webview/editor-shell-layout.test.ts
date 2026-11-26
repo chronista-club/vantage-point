@@ -1,3 +1,4 @@
+import { testPath } from './test-utils/paths'
 /**
  * Editor の region の幅（doc 87 §8.3）— 本物の VpEditor と shell-layout を 1 つの document で動かす。
  *
@@ -10,7 +11,7 @@
  */
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { solidPlugin } from "esbuild-plugin-solid";
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window } from "happy-dom";
 import { afterEach, beforeAll, expect, it } from "vitest";
 
@@ -30,7 +31,7 @@ beforeAll(async () => {
 	const result = await build({
 		stdin: {
 			contents: `
-        import { render } from 'solid-js/web';
+        import { render } from '@solidjs/web';
         import { createComponent } from 'solid-js';
         import { VpEditor } from './editor/VpEditor';
         import { applyShellLayout, installShellLayout, shellLayoutState } from './shell-layout';
@@ -40,7 +41,7 @@ beforeAll(async () => {
         window.boot = () => { window.dispose = render(() => createComponent(VpEditor, {}), document.getElementById('editor-root')); };
       `,
 			loader: "tsx",
-			resolveDir: fileURLToPath(new URL(".", import.meta.url)),
+			resolveDir: testPath(import.meta.url),
 		},
 		bundle: true,
 		write: false,
@@ -67,10 +68,11 @@ function fixture(opts: { storage?: Record<string, string>; restoreFirst?: Record
 	for (const [k, v] of Object.entries(opts.storage ?? {})) win.localStorage.setItem(k, v);
 	win.document.documentElement.dataset.theme = "contrast-dark";
 	win.document.body.innerHTML = `${SHELL}<div id="editor-root"></div>`;
-	win.eval(bundle);
-	if (opts.restoreFirst) win.applyShellLayout(opts.restoreFirst);
-	win.boot();
-	win.vpEditorHost.enable();
+	evalDom(win, bundle);
+	const restoreFirst = opts.restoreFirst;
+	if (restoreFirst) callDom(win, () => win.applyShellLayout(restoreFirst));
+	callDom(win, () => win.boot());
+	callDom(win, () => win.vpEditorHost.enable());
 	return win;
 }
 const layout = (over: Record<string, unknown> = {}) => ({
@@ -86,17 +88,17 @@ const peekW = (win: Win) => (win.document.getElementById("sidebar-root") as unkn
 const rsbPct = (win: Win) => (win.document.getElementById("app-shell") as unknown as HTMLElement).style.getPropertyValue("--vp-rsb-pct");
 const click = (win: Win, text: string) => {
 	const el = Array.from(win.document.querySelectorAll("button")).find((b) => b.textContent?.trim() === text)!;
-	el.dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+	dispatchDom(el, new win.MouseEvent("click", { bubbles: true }));
 };
 const changeTheme = async (win: Win, id: string) => {
 	const select = win.document.querySelector('[aria-label="テーマを選ぶ"]') as any;
 	select.value = id;
-	select.dispatchEvent(new win.Event("change", { bubbles: true }));
+	dispatchDom(select, new win.Event("change", { bubbles: true }));
 	await tick();
 };
 afterEach(async () => {
 	for (const win of windows.splice(0)) {
-		win.dispose?.();
+		callDom(win, () => win.dispose?.());
 		await win.happyDOM.abort();
 	}
 });
@@ -118,21 +120,21 @@ it("SIDEBAR タブの先頭に左右の幅、THEME に pane の名札と Lane �
 it("Editor / MCP で幅を変えると #sidebar-root / #app-shell に効き、:root には書かない", async () => {
 	const win = fixture();
 	await tick();
-	win.vpEditorHost.setValue("shell.leftEdge.peek.width", 400);
-	win.vpEditorHost.setValue("shell.rightEdge.width", 40);
+	callDom(win, () => win.vpEditorHost.setValue("shell.leftEdge.peek.width", 400));
+	callDom(win, () => win.vpEditorHost.setValue("shell.rightEdge.width", 40));
 	expect(peekW(win)).toBe("400px");
 	expect(rsbPct(win)).toBe("40%");
 	expect(win.document.documentElement.style.getPropertyValue("--vp-peek-w")).toBe("");
 	expect(win.document.documentElement.style.getPropertyValue("--vp-rsb-pct")).toBe("");
-	expect(win.shellLayoutState()).toMatchObject({ sidebarWidth: 400, rightSidebarPct: 40 });
+	expect(callDom(win, () => win.shellLayoutState())).toMatchObject({ sidebarWidth: 400, rightSidebarPct: 40 });
 });
 
 it("範囲の外は shell-layout が丸め、Editor の値も丸めた値に戻る", async () => {
 	const win = fixture();
 	await tick();
-	win.vpEditorHost.setValue("shell.leftEdge.peek.width", 5000);
+	callDom(win, () => win.vpEditorHost.setValue("shell.leftEdge.peek.width", 5000));
 	expect(peekW(win)).toBe("640px");
-	expect(win.vpEditorHost.getValue("shell.leftEdge.peek.width")).toBe(640);
+	expect(callDom(win, () => win.vpEditorHost.getValue("shell.leftEdge.peek.width"))).toBe(640);
 });
 
 it("Editor の変更は shell-layout の IPC で 1 回保存し、テーマの保存には入らない", async () => {
@@ -140,8 +142,8 @@ it("Editor の変更は shell-layout の IPC で 1 回保存し、テーマの�
 	const sent: Array<Record<string, unknown>> = [];
 	win.ipc = { postMessage: (m: string) => sent.push(JSON.parse(m)) };
 	await tick();
-	for (const w of [300, 320, 340]) win.vpEditorHost.setValue("shell.leftEdge.peek.width", w);
-	win.vpEditorHost.setValue("sb.selection.bg", "#334455");
+	for (const w of [300, 320, 340]) callDom(win, () => win.vpEditorHost.setValue("shell.leftEdge.peek.width", w));
+	callDom(win, () => win.vpEditorHost.setValue("sb.selection.bg", "#334455"));
 	await new Promise((r) => setTimeout(r, 400));
 	expect(sent.filter((m) => m.t === "shell:layout")).toEqual([expect.objectContaining({ sidebar_width: 340 })]);
 	const themes = JSON.parse(win.localStorage.getItem("vp:editor:themes:v1")!);
@@ -159,27 +161,27 @@ it("先に復元された幅を、Editor の登録とテーマの復元が初期
 	await tick();
 	expect(peekW(win)).toBe("420px");
 	expect(rsbPct(win)).toBe("35%");
-	expect(win.vpEditorHost.getValue("shell.leftEdge.peek.width")).toBe(420);
-	expect(win.vpEditorHost.getValue("shell.rightEdge.width")).toBe(35);
+	expect(callDom(win, () => win.vpEditorHost.getValue("shell.leftEdge.peek.width"))).toBe(420);
+	expect(callDom(win, () => win.vpEditorHost.getValue("shell.rightEdge.width"))).toBe(35);
 });
 
 it("Editor の後に来た復元（起動順のもう片方）にも、Editor の値が追従する", async () => {
 	const win = fixture();
 	await tick();
-	expect(win.vpEditorHost.getValue("shell.leftEdge.peek.width")).toBe(280);
-	win.applyShellLayout(layout({ sidebar_width: 360 }));
-	expect(win.vpEditorHost.getValue("shell.leftEdge.peek.width")).toBe(360);
+	expect(callDom(win, () => win.vpEditorHost.getValue("shell.leftEdge.peek.width"))).toBe(280);
+	callDom(win, () => win.applyShellLayout(layout({ sidebar_width: 360 })));
+	expect(callDom(win, () => win.vpEditorHost.getValue("shell.leftEdge.peek.width"))).toBe(360);
 	expect(peekW(win)).toBe("360px");
 });
 
 it("テーマを切り替えても幅は変わらない（幅はテーマではない）", async () => {
 	const win = fixture({ restoreFirst: layout() });
 	await tick();
-	win.vpEditorHost.setValue("shell.leftEdge.peek.width", 500);
+	callDom(win, () => win.vpEditorHost.setValue("shell.leftEdge.peek.width", 500));
 	click(win, "THEME");
 	await changeTheme(win, "mint-light");
 	expect(peekW(win)).toBe("500px");
-	expect(win.vpEditorHost.getValue("shell.leftEdge.peek.width")).toBe(500);
+	expect(callDom(win, () => win.vpEditorHost.getValue("shell.leftEdge.peek.width"))).toBe(500);
 	await changeTheme(win, "contrast-dark");
 	expect(peekW(win)).toBe("500px");
 });
@@ -187,16 +189,16 @@ it("テーマを切り替えても幅は変わらない（幅はテーマでは�
 it("registry 同梱の端末の field は :root に書き、初期値に戻すと inline を消す", async () => {
 	const win = fixture();
 	await tick();
-	win.vpEditorHost.setValue("pane.lane.terminal.font.size", 18);
+	callDom(win, () => win.vpEditorHost.setValue("pane.lane.terminal.font.size", 18));
 	expect(win.document.documentElement.style.getPropertyValue("--terminal-font-size")).toBe("18");
-	win.vpEditorHost.setValue("pane.lane.terminal.font.size", 16);
+	callDom(win, () => win.vpEditorHost.setValue("pane.lane.terminal.font.size", 16));
 	expect(win.document.documentElement.style.getPropertyValue("--terminal-font-size")).toBe("");
 });
 
 it("テーマの切替で、registry 同梱の field が :root に書いた値も消える（テーマごとに隔離）", async () => {
 	const win = fixture();
 	await tick();
-	win.vpEditorHost.setValue("pane.lane.terminal.font.size", 20);
+	callDom(win, () => win.vpEditorHost.setValue("pane.lane.terminal.font.size", 20));
 	click(win, "THEME");
 	await changeTheme(win, "mint-light");
 	expect(win.document.documentElement.style.getPropertyValue("--terminal-font-size")).toBe("");
@@ -206,37 +208,37 @@ it("テーマの切替で、registry 同梱の field が :root に書いた値�
 
 it("境界の drag を確定すると、Editor の値も確定した幅に追従する", async () => {
 	const win = fixture();
-	win.installShellLayout();
+	callDom(win, () => win.installShellLayout());
 	await tick();
 	const handle = win.document.getElementById("shell-resizer-left") as unknown as HTMLElement & { setPointerCapture(id: number): void };
 	handle.setPointerCapture = () => {};
 	const pointer = (type: string, clientX: number) =>
-		handle.dispatchEvent(new win.PointerEvent(type, { clientX, pointerId: 1, bubbles: true }) as unknown as Event);
+		dispatchDom(handle, new win.PointerEvent(type, { clientX, pointerId: 1, bubbles: true }) as unknown as Event);
 	pointer("pointerdown", 300);
 	pointer("pointermove", 400);
 	pointer("pointerup", 400);
 	// rect は happy-dom で 0、rail 列は測れないので既定の 48px を引く: 400 - 48
-	expect(win.shellLayoutState().sidebarWidth).toBe(352);
-	expect(win.vpEditorHost.getValue("shell.leftEdge.peek.width")).toBe(352);
+	expect(callDom(win, () => win.shellLayoutState()).sidebarWidth).toBe(352);
+	expect(callDom(win, () => win.vpEditorHost.getValue("shell.leftEdge.peek.width"))).toBe(352);
 });
 
 it("書き口が丸めた値が今の幅と同じでも、Editor の値は今の幅に戻る（MCP が端数を送った時）", async () => {
 	const win = fixture({ restoreFirst: layout({ sidebar_width: 300, right_sidebar_pct: 30 }) });
 	await tick();
-	win.vpEditorHost.setValue("shell.leftEdge.peek.width", 300.4);
-	expect(win.vpEditorHost.getValue("shell.leftEdge.peek.width")).toBe(300);
-	win.vpEditorHost.setValue("shell.rightEdge.width", 33.33);
-	win.vpEditorHost.setValue("shell.rightEdge.width", 33.33);
-	expect(win.vpEditorHost.getValue("shell.rightEdge.width")).toBe(33.3);
+	callDom(win, () => win.vpEditorHost.setValue("shell.leftEdge.peek.width", 300.4));
+	expect(callDom(win, () => win.vpEditorHost.getValue("shell.leftEdge.peek.width"))).toBe(300);
+	callDom(win, () => win.vpEditorHost.setValue("shell.rightEdge.width", 33.33));
+	callDom(win, () => win.vpEditorHost.setValue("shell.rightEdge.width", 33.33));
+	expect(callDom(win, () => win.vpEditorHost.getValue("shell.rightEdge.width"))).toBe(33.3);
 });
 
 it("drag・復元から Editor への写し返しは silent — 変更通知（テーマ保存・Link への送信の口）を起こさない", async () => {
 	const win = fixture();
 	await tick();
 	const changes: string[] = [];
-	win.vpEditorHost.onAnyChange((id: string) => changes.push(id));
-	win.applyShellLayout(layout({ sidebar_width: 360 }));
-	expect(win.vpEditorHost.getValue("shell.leftEdge.peek.width")).toBe(360);
+	callDom(win, () => win.vpEditorHost.onAnyChange((id: string) => changes.push(id)));
+	callDom(win, () => win.applyShellLayout(layout({ sidebar_width: 360 })));
+	expect(callDom(win, () => win.vpEditorHost.getValue("shell.leftEdge.peek.width"))).toBe(360);
 	expect(changes).toEqual([]);
 });
 
@@ -247,15 +249,15 @@ it("数の欄に打っている途中の値（範囲の外）は当てず、確�
 	const input = win.document.getElementById("vp-field-shell.leftEdge.peek.width") as any;
 	for (const typed of ["4", "40", "400"]) {
 		input.value = typed;
-		input.dispatchEvent(new win.Event("input", { bubbles: true }));
+		dispatchDom(input, new win.Event("input", { bubbles: true }));
 		// 打っている途中（4 / 40）は範囲の外 — 幅は 300 のまま、180 にも 640 にも跳ねない
 		if (typed !== "400") expect(peekW(win), typed).toBe("300px");
 	}
 	expect(peekW(win)).toBe("400px");
 	input.value = "9999";
-	input.dispatchEvent(new win.Event("input", { bubbles: true }));
+	dispatchDom(input, new win.Event("input", { bubbles: true }));
 	expect(peekW(win)).toBe("400px");
-	input.dispatchEvent(new win.Event("change", { bubbles: true }));
+	dispatchDom(input, new win.Event("change", { bubbles: true }));
 	expect(peekW(win)).toBe("640px");
 	expect(input.value).toBe("640");
 });

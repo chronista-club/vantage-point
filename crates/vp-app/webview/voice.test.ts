@@ -3,7 +3,7 @@
 // 認識結果は入力欄に入れるだけ（送信はユーザーが Enter）。
 import { expect, it } from 'vitest'
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window, type HTMLButtonElement, type HTMLElement, type HTMLTextAreaElement } from 'happy-dom'
 
 type Harness = {
@@ -29,12 +29,12 @@ async function mountChat() {
     window.unmount=api.mountSession(mount,'voice-test/main',1)
   `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'iife', conditions: ['browser'], preserveSymlinks: true, plugins: [solidPlugin()] })
   const window = new Window()
-  window.eval(result.outputFiles[0].text)
+  evalDom(window, result.outputFiles[0].text)
   const h = window as unknown as Harness
   const input = window.document.querySelector<HTMLTextAreaElement>('textarea')!
   const mic = () => window.document.querySelector<HTMLButtonElement>('button.conversation-mic')!
-  const press = () => mic().dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true }))
-  const release = () => mic().dispatchEvent(new window.PointerEvent('pointerup', { bubbles: true }))
+  const press = () => dispatchDom(mic(), new window.PointerEvent('pointerdown', { bubbles: true }))
+  const release = () => dispatchDom(mic(), new window.PointerEvent('pointerup', { bubbles: true }))
   const voiceSent = () => h.sent.filter(m => String(m.t).startsWith('voice:'))
   return { window, h, input, mic, press, release, voiceSent }
 }
@@ -55,10 +55,10 @@ it('press → voice:start, release → voice:stop, and the recognized text lands
     expect(mic().disabled).toBe(true) // 認識が返るまで次を録らない
 
     // 別の session 宛ての結果は、この入力欄に入らない
-    h.voiceText('voice-test/main', 2, '別の欄')
+    callDom(h, () => h.voiceText('voice-test/main', 2, '別の欄'))
     expect(input.value).toBe('')
 
-    h.voiceText('voice-test/main', 1, 'board に今の差分を貼って')
+    callDom(h, () => h.voiceText('voice-test/main', 1, 'board に今の差分を貼って'))
     expect(input.value).toBe('board に今の差分を貼って')
     expect(input.disabled).toBe(false)
     // 入れるだけ — 送信はしない
@@ -74,16 +74,16 @@ it('text that came back into the composer while transcribing is kept — the res
   const { window, h, input, press, release } = await mountChat()
   try {
     // Claude の turn 中に「次に実行する」で溜め、認識中に「送信待ち」を押して入力欄に戻す
-    h.emit({ kind: 'message_chunk', text: 'working' }, 1)
+    callDom(h, () => h.emit({ kind: 'message_chunk', text: 'working' }, 1))
     input.value = '戻した文章'
-    input.dispatchEvent(new window.Event('input', { bubbles: true }))
+    dispatchDom(input, new window.Event('input', { bubbles: true }))
     const queue = [...window.document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.includes('次に実行する'))!
-    queue.click()
+    clickDom(queue)
     expect(input.value).toBe('')
     press(); release()
-    window.document.querySelector<HTMLElement>('.conversation-msg.user.pending')!.click()
+    clickDom(window.document.querySelector<HTMLElement>('.conversation-msg.user.pending')!)
     expect(input.value).toBe('戻した文章')
-    h.voiceText('voice-test/main', 1, '続き')
+    callDom(h, () => h.voiceText('voice-test/main', 1, '続き'))
     expect(input.value).toBe('戻した文章 続き')
   } finally {
     await window.happyDOM.close()
@@ -96,7 +96,7 @@ it('unmounting while recording sends voice:stop so the mic is not left open', as
     press()
     expect(voiceSent().at(-1)?.t).toBe('voice:start')
     // session が閉じると mountSession の戻り値（dispose）で unmount される
-    h.unmount()
+    callDom(h, () => h.unmount())
     expect(voiceSent().at(-1)).toEqual({ t: 'voice:stop', lane: 'voice-test/main', session: 1 })
   } finally {
     await window.happyDOM.close()
@@ -107,7 +107,7 @@ it('the mic is only available while the composer is empty', async () => {
   const { window, input, mic, press, voiceSent } = await mountChat()
   try {
     input.value = '書きかけ'
-    input.dispatchEvent(new window.Event('input', { bubbles: true }))
+    dispatchDom(input, new window.Event('input', { bubbles: true }))
     expect(mic().disabled).toBe(true)
     expect(mic().title).toContain('空')
     press()
@@ -123,7 +123,7 @@ it('an error is shown and the composer is released; empty recognition is reporte
   const error = () => window.document.querySelector('.conversation-voice-error')?.textContent ?? ''
   try {
     press(); release()
-    h.voiceError('voice-test/main', 1, '認識モデルがありません')
+    callDom(h, () => h.voiceError('voice-test/main', 1, '認識モデルがありません'))
     expect(error()).toContain('認識モデルがありません')
     expect(input.disabled).toBe(false)
     expect(mic().disabled).toBe(false)
@@ -133,7 +133,7 @@ it('an error is shown and the composer is released; empty recognition is reporte
     expect(error()).toBe('')
     release()
     // 無音などで何も認識できなかった
-    h.voiceText('voice-test/main', 1, '')
+    callDom(h, () => h.voiceText('voice-test/main', 1, ''))
     expect(input.value).toBe('')
     expect(error()).toContain('聞き取れませんでした')
   } finally {
@@ -144,18 +144,18 @@ it('an error is shown and the composer is released; empty recognition is reporte
 // mem_1CgAPJPpcCwy2s1QohP3Zj: ROTO no longer owns a voice input.
 it('retired ROTO events cannot start or stop keyboard voice; unload stops its owner once', async () => {
   const {window,h,voiceSent} = await mountChat()
-  const ptt = (pressed:boolean) => window.dispatchEvent(new window.CustomEvent('vp:roto-ptt',{detail:{pressed}}))
+  const ptt = (pressed:boolean) => dispatchDom(window, new window.CustomEvent('vp:roto-ptt',{detail:{pressed}}))
   try {
     ptt(true);ptt(false)
     expect(voiceSent()).toEqual([])
-    window.dispatchEvent(new window.KeyboardEvent('keydown',{code:'AltRight'}))
-    window.dispatchEvent(new window.KeyboardEvent('keyup',{code:'AltRight'}))
+    dispatchDom(window, new window.KeyboardEvent('keydown',{code:'AltRight'}))
+    dispatchDom(window, new window.KeyboardEvent('keyup',{code:'AltRight'}))
     ptt(false)
-    window.eval("window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:false}))")
-    window.dispatchEvent(new window.CustomEvent('vp:midi-unavailable',{detail:{port_name:'Roto-Control'}}))
+    evalDom(window, "window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:false}))")
+    dispatchDom(window, new window.CustomEvent('vp:midi-unavailable',{detail:{port_name:'Roto-Control'}}))
     expect(voiceSent().map(m=>m.t)).toEqual(['voice:start'])
-    window.dispatchEvent(new window.Event('beforeunload'))
-    h.unmount()
+    dispatchDom(window, new window.Event('beforeunload'))
+    callDom(h, () => h.unmount())
     expect(voiceSent().map(m=>m.t)).toEqual(['voice:start','voice:stop'])
   } finally { await window.happyDOM.close() }
 },20000)
@@ -163,12 +163,12 @@ it('retired ROTO events cannot start or stop keyboard voice; unload stops its ow
 it('keyboard voice stops its original session on focus change and recognition does not steal focus', async () => {
   const {window,h,input,voiceSent} = await mountChat()
   try {
-    window.dispatchEvent(new window.KeyboardEvent('keydown',{code:'AltRight'}))
-    window.dispatchEvent(new window.KeyboardEvent('keyup',{code:'AltRight'}))
-    window.document.dispatchEvent(new window.CustomEvent('vp:conversation-sessions',{detail:{lane:'voice-test/main',focused:2,sessions:[{key:1},{key:2}]}}))
+    dispatchDom(window, new window.KeyboardEvent('keydown',{code:'AltRight'}))
+    dispatchDom(window, new window.KeyboardEvent('keyup',{code:'AltRight'}))
+    dispatchDom(window.document, new window.CustomEvent('vp:conversation-sessions',{detail:{lane:'voice-test/main',focused:2,sessions:[{key:1},{key:2}]}}))
     expect(voiceSent()).toEqual([{t:'voice:start',lane:'voice-test/main',session:1},{t:'voice:stop',lane:'voice-test/main',session:1}])
     const next=window.document.createElement('textarea');window.document.body.append(next);next.focus()
-    h.voiceText('voice-test/main',1,'元の宛先')
+    callDom(h, () => h.voiceText('voice-test/main',1,'元の宛先'))
     await Promise.resolve()
     expect(input.value).toBe('元の宛先')
     expect(window.document.activeElement).toBe(next)
@@ -178,10 +178,10 @@ it('keyboard voice stops its original session on focus change and recognition do
 it('unmount stops the active keyboard recording exactly once', async () => {
   const {window,h,voiceSent} = await mountChat()
   try {
-    window.dispatchEvent(new window.KeyboardEvent('keydown',{code:'AltRight'}))
-    window.dispatchEvent(new window.KeyboardEvent('keyup',{code:'AltRight'}))
-    h.unmount()
-    window.dispatchEvent(new window.Event('beforeunload'))
+    dispatchDom(window, new window.KeyboardEvent('keydown',{code:'AltRight'}))
+    dispatchDom(window, new window.KeyboardEvent('keyup',{code:'AltRight'}))
+    callDom(h, () => h.unmount())
+    dispatchDom(window, new window.Event('beforeunload'))
     expect(voiceSent().map(m=>m.t)).toEqual(['voice:start','voice:stop'])
   } finally { await window.happyDOM.close() }
 },20000)
@@ -190,16 +190,16 @@ it('unmount stops the active keyboard recording exactly once', async () => {
 it('right Option taps toggle start/stop and wait for recognition without sending the draft', async () => {
   const {window,h,input,voiceSent} = await mountChat()
   const tap = () => {
-    window.dispatchEvent(new window.KeyboardEvent('keydown',{code:'AltRight',altKey:true}))
-    window.dispatchEvent(new window.KeyboardEvent('keyup',{code:'AltRight'}))
+    dispatchDom(window, new window.KeyboardEvent('keydown',{code:'AltRight',altKey:true}))
+    dispatchDom(window, new window.KeyboardEvent('keyup',{code:'AltRight'}))
   }
   try {
     tap(); tap(); tap()
     expect(voiceSent().map(m=>m.t)).toEqual(['voice:start','voice:stop'])
-    h.voiceText('voice-test/main',1,'')
+    callDom(h, () => h.voiceText('voice-test/main',1,''))
     tap();tap()
     expect(voiceSent().map(m=>m.t)).toEqual(['voice:start','voice:stop','voice:start','voice:stop'])
-    h.voiceText('voice-test/main',1,'入力した声')
+    callDom(h, () => h.voiceText('voice-test/main',1,'入力した声'))
     expect(input.value).toBe('入力した声')
     expect(h.sent.some(m=>m.t==='conversation:submit')).toBe(false)
   } finally { await window.happyDOM.close() }
@@ -208,26 +208,26 @@ it('right Option taps toggle start/stop and wait for recognition without sending
 it('right Option respects draft, console and hidden composer gates, then stops on blur', async () => {
   const {window,input,voiceSent} = await mountChat()
   const tap = () => {
-    window.dispatchEvent(new window.KeyboardEvent('keydown',{code:'AltRight',altKey:true}))
-    window.dispatchEvent(new window.KeyboardEvent('keyup',{code:'AltRight'}))
+    dispatchDom(window, new window.KeyboardEvent('keydown',{code:'AltRight',altKey:true}))
+    dispatchDom(window, new window.KeyboardEvent('keyup',{code:'AltRight'}))
   }
   try {
-    input.value='書きかけ';input.dispatchEvent(new window.Event('input',{bubbles:true}));tap()
+    input.value='書きかけ';dispatchDom(input, new window.Event('input',{bubbles:true}));tap()
     expect(voiceSent()).toEqual([])
     expect(window.document.querySelector('.conversation-voice-error')?.textContent).toContain('入力欄を空に')
-    input.value='';input.dispatchEvent(new window.Event('input',{bubbles:true}))
+    input.value='';dispatchDom(input, new window.Event('input',{bubbles:true}))
     const term=window.document.createElement('div');term.className='term-session-host pane-focused';window.document.body.append(term)
     tap();expect(voiceSent()).toEqual([]);term.remove()
     input.parentElement!.setAttribute('hidden','');tap();expect(voiceSent()).toEqual([]);input.parentElement!.removeAttribute('hidden')
-    tap();window.dispatchEvent(new window.Event('blur'))
+    tap();dispatchDom(window, new window.Event('blur'))
     expect(voiceSent().map(m=>m.t)).toEqual(['voice:start','voice:stop'])
   } finally { await window.happyDOM.close() }
 },20000)
 
 it('right Option ignores chords, left Option, repeats, IME and interrupted gestures', async () => {
   const {window,voiceSent} = await mountChat()
-  const down = (code:string,extra:Record<string,boolean>={}) => window.dispatchEvent(new window.KeyboardEvent('keydown',{code,...extra}))
-  const up = (code:string,extra:Record<string,boolean>={}) => window.dispatchEvent(new window.KeyboardEvent('keyup',{code,...extra}))
+  const down = (code:string,extra:Record<string,boolean>={}) => dispatchDom(window, new window.KeyboardEvent('keydown',{code,...extra}))
+  const up = (code:string,extra:Record<string,boolean>={}) => dispatchDom(window, new window.KeyboardEvent('keyup',{code,...extra}))
   try {
     down('AltLeft');up('AltLeft')
     down('AltRight');down('ArrowLeft');up('ArrowLeft');up('AltRight')
@@ -235,8 +235,8 @@ it('right Option ignores chords, left Option, repeats, IME and interrupted gestu
     down('AltRight',{shiftKey:true});up('AltRight')
     down('AltRight',{isComposing:true});up('AltRight')
     down('AltRight');up('AltRight',{isComposing:true})
-    down('AltRight');window.dispatchEvent(new window.Event('compositionstart'));window.dispatchEvent(new window.Event('compositionend'));up('AltRight')
-    down('AltRight');window.dispatchEvent(new window.Event('blur'));up('AltRight')
+    down('AltRight');dispatchDom(window, new window.Event('compositionstart'));dispatchDom(window, new window.Event('compositionend'));up('AltRight')
+    down('AltRight');dispatchDom(window, new window.Event('blur'));up('AltRight')
     expect(voiceSent()).toEqual([])
     down('AltRight');down('AltRight',{repeat:true});up('AltRight');up('AltRight')
     expect(voiceSent().map(m=>m.t)).toEqual(['voice:start'])
@@ -246,11 +246,11 @@ it('right Option ignores chords, left Option, repeats, IME and interrupted gestu
 it('a recording error releases the shared owner so the next tap starts immediately', async () => {
   const {window,h,voiceSent} = await mountChat()
   const tap = () => {
-    window.dispatchEvent(new window.KeyboardEvent('keydown',{code:'AltRight'}))
-    window.dispatchEvent(new window.KeyboardEvent('keyup',{code:'AltRight'}))
+    dispatchDom(window, new window.KeyboardEvent('keydown',{code:'AltRight'}))
+    dispatchDom(window, new window.KeyboardEvent('keyup',{code:'AltRight'}))
   }
   try {
-    tap();h.voiceError('voice-test/main',1,'マイクの許可がありません');tap()
+    tap();callDom(h, () => h.voiceError('voice-test/main',1,'マイクの許可がありません'));tap()
     expect(voiceSent().map(m=>m.t)).toEqual(['voice:start','voice:start'])
   } finally { await window.happyDOM.close() }
 },20000)

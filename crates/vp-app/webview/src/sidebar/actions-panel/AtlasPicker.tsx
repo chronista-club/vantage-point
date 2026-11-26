@@ -1,5 +1,5 @@
 import { createMemo, createSignal, createUniqueId, For, onCleanup, Show } from 'solid-js'
-import { Portal } from 'solid-js/web'
+import { Portal } from '@solidjs/web'
 import type { ActionAtlas } from '../../generated/ActionAtlas'
 import { buildAtlasTree } from './atlas-tree'
 
@@ -59,7 +59,7 @@ export function AtlasPicker(props: { atlases: Atlas[]; settings?: unknown; selec
   return <>
     <style>{PICKER_CSS}</style>
     <button ref={trigger} type="button" class="vp-atlas-trigger" aria-label="保存先 Atlas" aria-haspopup="listbox"
-      aria-expanded={open()} aria-controls={open()?uid:undefined}
+      aria-expanded={String(open()) as 'true' | 'false'} aria-controls={open()?uid:undefined}
       onClick={()=>open()?close():show()} onKeyDown={e=>{if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();show()}}}>
       {selected()?.path || selected()?.name || (props.selected?'Atlas 未確認':'Atlas を選択')}
     </button>
@@ -70,8 +70,8 @@ export function AtlasPicker(props: { atlases: Atlas[]; settings?: unknown; selec
         style={{left:`${position().left}px`,top:`${position().top}px`,width:`${position().width}px`,'max-height':`${position().height}px`}}
         onKeyDown={key}>
         <For each={rows()}>{(row,index)=><div id={`${uid}-${index()}`} role="option" data-atlas-id={row.node.id}
-          aria-selected={row.node.id===props.selected} aria-disabled={!row.node.writable}
-          class="vp-atlas-option" classList={{'is-active':index()===active(),'is-selected':row.node.id===props.selected}}
+          aria-selected={String(row.node.id===props.selected) as 'true' | 'false'} aria-disabled={String(!row.node.writable) as 'true' | 'false'}
+          class={["vp-atlas-option", {'is-active':index()===active(),'is-selected':row.node.id===props.selected}]}
           style={{'padding-left':`${12+row.depth*16}px`}}
           title={[row.node.source==='shared'?`共有${row.node.owner?` · ${row.node.owner}`:''}`:row.node.path,!row.node.writable?'読み取り専用':null].filter(Boolean).join(' · ')}
           onPointerMove={()=>setActive(index())} onClick={()=>select(index())}>

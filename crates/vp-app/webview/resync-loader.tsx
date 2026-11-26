@@ -17,8 +17,8 @@
 
 import * as THREE from 'three'
 import { animate } from 'animejs'
-import { onMount, onCleanup, createEffect, createSignal } from 'solid-js'
-import { render } from 'solid-js/web'
+import { onSettled, onCleanup, createEffect, createSignal } from 'solid-js'
+import { render } from '@solidjs/web'
 import { activeLaneReplaying } from './chatview'
 
 /** canvas の論理サイズ（px）。DPR は renderer 側で掛ける。 */
@@ -171,7 +171,7 @@ export function ResyncLoader() {
     })
   }
 
-  onMount(() => {
+  onSettled(() => {
     wrapEl.style.opacity = '0'
     wrapEl.style.visibility = 'hidden'
     if (reduced) return // WebGL は張らず CSS pulse に委ねる
@@ -202,7 +202,7 @@ export function ResyncLoader() {
   })
 
   // active lane の replaying に追従して出入り。単一 signal 駆動なので canvas は再生成されない。
-  createEffect(() => (activeLaneReplaying() ? show() : hide()))
+  createEffect(activeLaneReplaying, active => { if (active) show(); else hide() })
 
   onCleanup(() => {
     stopLoop()
@@ -211,7 +211,7 @@ export function ResyncLoader() {
   })
 
   return (
-    <div ref={wrapEl} class="vp-resync" classList={{ 'no-webgl': reduced || !webglOk() }}>
+    <div ref={wrapEl} class={["vp-resync", { 'no-webgl': reduced || !webglOk() }]} >
       <canvas ref={canvasEl} class="vp-resync-canvas" />
       <span class="vp-resync-dot" />
       <span class="vp-resync-label">再同期中</span>

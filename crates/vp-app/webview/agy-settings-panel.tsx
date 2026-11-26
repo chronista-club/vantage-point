@@ -8,7 +8,7 @@
  * 残し、roster を push し直す（成否どちらでも）— 現在値は engine の実測なので、Claude のような
  * 「intent 優先」は要らない。失敗は roster の `acp_config.error` に載り、ここで ⚠ として出す。
  */
-import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
 import { ReadonlyModel, postSettings, type SettingsContext } from './engine-settings-shared'
 import type { AcpConfigOption } from './src/generated/AcpConfigOption'
 import type { AcpConfigView } from './src/generated/AcpConfigView'
@@ -64,7 +64,7 @@ export function AgySettingsPanel(props: SettingsContext) {
   // update_settings で軸を失わないが、engine に順不同で届く）。同じ失敗の繰り返し等で中身が
   // 変わらない時は timeout で解く。
   const viewContent = createMemo(() => JSON.stringify(view()))
-  createEffect(on(viewContent, clearPending, { defer: true }))
+  createEffect(viewContent, clearPending, { defer: true })
   onCleanup(clearPending)
   const busy = () => props.lc.state.streaming || pending() !== null
 

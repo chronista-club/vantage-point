@@ -11,15 +11,7 @@
  * (既存機構) ため、 panel 表示中に sidebar の lanes が更新されたら再 fetch する —
  * 専用の push 購読なしで「wire が動くと panel が追従する」。
  */
-import {
-	For,
-	Show,
-	createEffect,
-	createSignal,
-	on,
-	onCleanup,
-	onMount,
-} from "solid-js";
+import { For, Show, createEffect, createSignal, onCleanup, onSettled } from 'solid-js'
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
@@ -58,7 +50,7 @@ declare global {
 }
 
 // Panel は singleton (sidebar 全体に 1 つの overlay)。 FileExplorer と同じく state は
-// module スコープに置き、 onMount で window.vpWire に attach する。
+// module スコープに置き、 onSettled で window.vpWire に attach する。
 const [visible, setVisible] = createSignal(false);
 const [targetAddress, setTargetAddress] = createSignal("");
 const [loading, setLoading] = createSignal(false);
@@ -180,7 +172,7 @@ function shortAddr(a: string): string {
 }
 
 export function WirePanel() {
-	onMount(() => {
+	onSettled(() => {
 		window.vpWire = { open, handleResult };
 		// Esc で閉じる (他 overlay は検索 input の onKeyDown だが、 本 panel は input を
 		// 持たないため document listener を張る。 visible 時のみ反応)。
@@ -191,24 +183,18 @@ export function WirePanel() {
 			}
 		};
 		document.addEventListener("keydown", onKeyDown);
-		onCleanup(() => {
+		return () => {
 			document.removeEventListener("keydown", onKeyDown);
 			if (window.vpWire?.handleResult === handleResult) {
 				window.vpWire = undefined;
 			}
-		});
+		};
 	});
 
 	// wire 活動 → daemon が lanes snapshot を再 push (既存) → 表示中なら追従 fetch。
-	createEffect(
-		on(
-			() => sidebar.lanes_by_repo,
-			() => {
+	createEffect(() => sidebar.lanes_by_repo, () => {
 				if (visible() && targetAddress()) fetchInbox(targetAddress());
-			},
-			{ defer: true },
-		),
-	);
+			}, { defer: true });
 
 	return (
 		<Show when={visible()}>
@@ -247,8 +233,8 @@ export function WirePanel() {
 						<For each={messages()}>
 							{(m) => (
 								<div
-									class="vp-wire-card"
-									classList={{ inbound: m.inbound, unacked: needsAck(m) }}
+									class={["vp-wire-card", { inbound: m.inbound, unacked: needsAck(m) }]}
+
 								>
 									<div class="vp-wire-meta">
 										<span class="vp-wire-dir" title={m.inbound ? "受信" : "送信"}>
@@ -282,8 +268,8 @@ export function WirePanel() {
 										</Show>
 									</div>
 									<div
-										class="vp-wire-body"
-										classList={{ open: expanded().has(m.id) }}
+										class={["vp-wire-body", { open: expanded().has(m.id) }]}
+
 										onClick={() => toggleExpand(m.id)}
 									>
 										{preview(m)}

@@ -1,7 +1,8 @@
+import { testPath } from './test-utils/paths'
 // mem_1CfkeiUePgFsbYoGtTeDpq
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidTestPlugin as solidPlugin, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window } from 'happy-dom'
 import { fileURLToPath } from 'node:url'
 
@@ -10,7 +11,7 @@ const windows: Window[] = []
 beforeAll(async () => {
   const result = await build({
     stdin: { contents: `
-      import { render } from 'solid-js/web';
+      import { render } from '@solidjs/web';
       import { createComponent } from 'solid-js';
       import { LaneRow, SessionRow } from './src/sidebar/LaneRow';
       import { ContextMenu } from './src/sidebar/ContextMenu';
@@ -22,7 +23,7 @@ beforeAll(async () => {
       render(() => [createComponent(ContextMenu,{}),createComponent(LaneRow,{lane,repoPath:'/repo'}),createComponent(SessionRow,{lane,repoPath:'/repo',session:sessions[1]})],host);
       const root = document.createElement('div'); root.id='root-session'; document.body.append(root);
       render(() => createComponent(SessionRow,{lane,repoPath:'/repo',session:sessions[0]}),root);
-    `, resolveDir: fileURLToPath(new URL('.', import.meta.url)), loader:'tsx' },
+    `, resolveDir: testPath(import.meta.url), loader:'tsx' },
     bundle:true, write:false, format:'iife', platform:'browser', preserveSymlinks:true,plugins:[solidPlugin()],
     define:{'process.env.NODE_ENV':'"production"'},
   })
@@ -31,7 +32,7 @@ beforeAll(async () => {
 function fixture() {
   const win = new Window({ settings:{enableJavaScriptEvaluation:true, suppressInsecureJavaScriptEnvironmentWarning:true} })
   windows.push(win)
-  win.eval(bundle)
+  evalDom(win, bundle)
   return win as Window & {sent: unknown[]}
 }
 afterEach(async () => { for (const win of windows.splice(0)) await win.happyDOM.abort() })
@@ -54,7 +55,7 @@ describe('sidebar session identity', () => {
   it('does not mount or request local URLs from a lane row or its context menu', () => {
     const win=fixture();
     expect(win.document.querySelector('.vp-local-urls')).toBeNull();
-    win.document.querySelector('.vp-lane-row')!.dispatchEvent(new win.MouseEvent('contextmenu',{bubbles:true}));
+    dispatchDom(win.document.querySelector('.vp-lane-row')!, new win.MouseEvent('contextmenu',{bubbles:true}));
     const add=[...win.document.querySelectorAll('.vp-ctx-item')].find(b=>b.textContent?.includes('ローカルURLを追加'));
     expect(add).toBeUndefined();
     expect(win.document.querySelector('.vp-local-url-form')).toBeNull();
@@ -72,7 +73,7 @@ describe('sidebar session identity', () => {
     const row = win.document.querySelector('.vp-session-row')!
     expect(row.querySelector('.vp-agent-icon')?.getAttribute('title')).toBe('Codex')
     expect(row.textContent).toContain('追加セッション')
-    row.dispatchEvent(new win.MouseEvent('click', {bubbles:true}))
+    dispatchDom(row, new win.MouseEvent('click', {bubbles:true}))
     expect(win.sent).toEqual([
       {t:'lane:select', path:'/repo', address:'vp/lane/demo'},
       {t:'conversation:session_focus', lane:'vp/lane/demo', session:57},
@@ -82,9 +83,9 @@ describe('sidebar session identity', () => {
     const win = fixture()
     const close = win.document.querySelector('.vp-session-close')
     expect(close).not.toBeNull()
-    close!.dispatchEvent(new win.MouseEvent('click', {bubbles:true}))
+    dispatchDom(close!, new win.MouseEvent('click', {bubbles:true}))
     expect(win.sent).toEqual([])
-    close!.dispatchEvent(new win.MouseEvent('click', {bubbles:true}))
+    dispatchDom(close!, new win.MouseEvent('click', {bubbles:true}))
     expect(win.sent).toEqual([{t:'conversation:session_remove',lane:'vp/lane/demo',session:57}])
     expect(win.document.querySelector('#root-session .vp-session-close')).toBeNull()
   })

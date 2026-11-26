@@ -76,7 +76,7 @@ window.addEventListener("unhandledrejection", (e) => {
 });
 
 import { subNameOfAddress } from "./lane-address";
-import { render } from "solid-js/web";
+import { render } from "@solidjs/web";
 import { VpEditor } from "./editor/VpEditor";
 import {
 	applyAppScene,

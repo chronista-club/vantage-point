@@ -1,6 +1,7 @@
+import { testPath } from './test-utils/paths'
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window, type HTMLElement as DomHTMLElement } from 'happy-dom'
 import type { LaneHeaderApi } from './LaneHeader'
 import { fileURLToPath } from 'node:url'
@@ -31,7 +32,7 @@ beforeAll(async () => {
         window.header = mountLaneHeader(document.getElementById('lane-header'), { headerState: () => ({}) });
         window.header.setLane({ addr: lane, sessionId: 'claude-thread', agent: 'claude' });
       `,
-      resolveDir: fileURLToPath(new URL('.', import.meta.url)),
+      resolveDir: testPath(import.meta.url),
       loader: 'tsx',
     },
     bundle: true,
@@ -48,8 +49,8 @@ function fixture() {
   const win = new Window({ settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } }) as ProbeWindow
   windows.push(win)
   win.document.body.innerHTML = '<div id="pane-lane"><div id="lane-header" style="height:30px;overflow:hidden"></div><canvas id="terminal"></canvas></div>'
-  win.eval(bundle)
-  win.document.querySelector<DomHTMLElement>('.eh-session')!.click()
+  evalDom(win, bundle)
+  clickDom(win.document.querySelector<DomHTMLElement>('.eh-session')!)
   return win
 }
 
@@ -64,28 +65,29 @@ describe('root picker interaction above terminal panes', () => {
     expect(menu.closest('#lane-header')).toBeNull()
     expect(menu.closest('#pane-lane')).not.toBeNull()
     const row = menu.querySelectorAll('button')[1]
-    expect(win.getComputedStyle(row).display).toBe('flex')
-    row.click()
+    expect(callDom(win, () => win.getComputedStyle(row)).display).toBe('flex')
+    clickDom(row)
     expect(win.sent).toEqual([{ t: 'console:switch_root', lane: 'vp/lane/lead', session: 39 }])
     expect(win.document.querySelector('.eh-root-picker')).toBeNull()
   })
 
   it('does not send a switch for an unknown engine or the current root', () => {
     const win = fixture()
-    win.document.querySelectorAll('.eh-rp-row')[2].dispatchEvent(new win.MouseEvent('click', { bubbles: true }))
+    dispatchDom(win.document.querySelectorAll('.eh-rp-row')[2], new win.MouseEvent('click', { bubbles: true }))
     expect(win.sent).toEqual([])
     expect(win.document.querySelector('.eh-root-picker')).not.toBeNull()
-    win.document.querySelector<DomHTMLElement>('.eh-rp-row')!.click()
+    clickDom(win.document.querySelector<DomHTMLElement>('.eh-rp-row')!)
     expect(win.sent).toEqual([])
     expect(win.document.querySelector('.eh-root-picker')).toBeNull()
   })
 
   it('removes the detached menu on outside click and when leaving the lane', () => {
     const win = fixture()
-    win.document.getElementById('terminal')!.dispatchEvent(new win.MouseEvent('click', { bubbles: true }))
+    dispatchDom(win.document.getElementById('terminal')!, new win.MouseEvent('click', { bubbles: true }))
     expect(win.document.querySelector('.eh-root-picker')).toBeNull()
-    win.document.querySelector<DomHTMLElement>('.eh-session')!.click()
-    win.header.setLane(null)
+    clickDom(win.document.querySelector<DomHTMLElement>('.eh-session')!)
+    callDom(win, () => win.header.setLane(null))
+    flushDom(win)
     expect(win.document.querySelector('.eh-root-picker')).toBeNull()
     expect(win.sent).toEqual([])
   })

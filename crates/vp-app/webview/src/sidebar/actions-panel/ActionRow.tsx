@@ -107,8 +107,7 @@ export function ActionRow(props: ActionRowProps) {
 	// model → DOM の一方向同期。**自分の打鍵で起きた変化は既に一致している**ので書かない
 	// （書くと caret が末尾へ飛ぶ）。IME 変換中も触らない。
 	// 実際に書き込まれるのは、行の入替や外からの push で item が差し替わったときだけ。
-	createEffect(() => {
-		const text = props.item.text;
+	createEffect(() => props.item.text, text => {
 		if (!composing && el.value !== text) {
 			el.value = text;
 			autoSize(el, document.activeElement === el);
@@ -221,7 +220,7 @@ export function ActionRow(props: ActionRowProps) {
 				class="vp-act-check"
 				disabled={props.item.locked || (!!props.item.atlas_id && props.item.kind !== "todo")}
 				role="checkbox"
-				aria-checked={props.item.done ?? false}
+				aria-checked={String(props.item.done ?? false) as 'true' | 'false'}
 				title={props.item.done ? "未完了に戻す（⌘Enter）" : "完了にする（⌘Enter）"}
 				onClick={() => props.onToggleDone()}
 			/>
@@ -231,7 +230,7 @@ export function ActionRow(props: ActionRowProps) {
 			    未 focus では 1 行に畳んでタイトルだけ見せる（doc 57 §2）。 */}
 			<textarea
 				ref={el}
-				readOnly={props.item.locked}
+				readonly={props.item.locked}
 				class="vp-act-text"
 				rows={1}
 				placeholder="やること"
@@ -276,8 +275,8 @@ export function ActionRow(props: ActionRowProps) {
 			{/* 出口①: pasteboard（doc 57 §0）。行 hover で現れる。 */}
 			<button
 				type="button"
-				class="vp-act-copy"
-				classList={{ copied: copied() }}
+				class={["vp-act-copy", { copied: copied() }]}
+
 				title="コピー — 区切りがついたら貼る"
 				onClick={copy}
 			>

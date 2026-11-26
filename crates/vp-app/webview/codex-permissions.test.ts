@@ -1,7 +1,7 @@
 // mem_1Cf4jdULqRjEXawJPqbxfS — 明示選択だけで権限を変更する。
 import { expect, it } from 'vitest'
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window, type HTMLButtonElement } from 'happy-dom'
 
 it('loads choices without changing permissions and waits for native confirmation', async () => {
@@ -23,38 +23,38 @@ it('loads choices without changing permissions and waits for native confirmation
   `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],preserveSymlinks: true, plugins:[solidPlugin()]})
   const window = new Window()
   try {
-    window.eval(result.outputFiles[0].text)
+    evalDom(window, result.outputFiles[0].text)
     const app=window as unknown as {sent:any[];config:any;queue:any;emit:(event:any,session:number)=>void}
     const button=(label:string)=>Array.from(window.document.querySelectorAll('button')).find(b=>b.textContent?.includes(label))!
     const requests=()=>app.sent.filter(m=>m.t==='conversation:codex_input')
-    const ack=()=>app.emit({kind:'codex_queue',queue:null,request_id:requests().at(-1).request_id,error:null},1)
+    const ack=()=>callDom(app, () => app.emit({kind:'codex_queue',queue:null,request_id:requests().at(-1).request_id,error:null},1))
     expect(requests()).toHaveLength(0)
     const badge=window.document.querySelector<HTMLButtonElement>('[aria-label="Codex permissions"]')!
     expect(badge).not.toBeNull()
     expect(badge.textContent).toContain('標準')
-    badge.click()
+    clickDom(badge)
     expect(requests().at(-1).action.kind).toBe('permission_options')
     expect(requests().some(m=>m.action.kind==='permissions')).toBe(false)
     ack()
     expect(button('locked').disabled).toBe(true)
-    button('代わりに承認').click()
+    clickDom(button('代わりに承認'))
     expect(requests().at(-1)).toMatchObject({session:1,thread_id:'thread',action:{kind:'permissions',choice:'auto-review'}})
     expect(badge.textContent).toContain('標準')
     const next={...app.config,runtime:{...app.config.runtime,reviewer:'auto_review',preset:'auto-review'}}
-    app.emit({kind:'codex_config',config:next,request_id:null,error:null},2)
+    callDom(app, () => app.emit({kind:'codex_config',config:next,request_id:null,error:null},2))
     expect(badge.textContent).toContain('標準')
-    app.emit({kind:'codex_config',config:next,request_id:null,error:null},1)
+    callDom(app, () => app.emit({kind:'codex_config',config:next,request_id:null,error:null},1))
     expect(badge.textContent).toContain('代わりに承認')
     ack()
-    badge.click(); ack()
+    clickDom(badge); ack()
     const before=requests().length
-    button('フルアクセス').click()
+    clickDom(button('フルアクセス'))
     expect(requests()).toHaveLength(before)
     expect(window.document.body.textContent).toContain('この会話')
-    button('フルアクセスに切り替える').click()
+    clickDom(button('フルアクセスに切り替える'))
     expect(requests().at(-1).action).toMatchObject({kind:'permissions',choice:'full-access',confirmed:true})
     ack()
-    app.emit({kind:'codex_queue',queue:{...app.queue,items:[{id:'q',text:'next',client_id:'c',editable:true}]},request_id:null,error:null},1)
+    callDom(app, () => app.emit({kind:'codex_queue',queue:{...app.queue,items:[{id:'q',text:'next',client_id:'c',editable:true}]},request_id:null,error:null},1))
     expect(badge.disabled).toBe(true)
   } finally {await window.happyDOM.close()}
 },20000)

@@ -1,5 +1,5 @@
 import { createSignal, onCleanup, type Accessor } from 'solid-js'
-import { defaultPins, restorePins, type PinSettings } from '../midi-pins'
+import { restorePins, type PinSettings } from '../midi-pins'
 
 /**
  * Editor（main bundle）から見た LPD8 ピン設定。
@@ -19,8 +19,8 @@ export interface MidiSettings {
 type MidiWindow = Window & { __vpMidiSettings?: unknown; ipc?: { postMessage(message: string): void } }
 
 export function createMidiSettings(win: MidiWindow = window as MidiWindow): MidiSettings {
-  const [settings, setSettings] = createSignal<PinSettings>(defaultPins())
-  const [ready, setReady] = createSignal(false)
+  const [settings, setSettings] = createSignal<PinSettings>(restorePins(win.__vpMidiSettings))
+  const [ready, setReady] = createSignal(win.__vpMidiSettings !== undefined)
   // 送ったが配り直しがまだ戻っていない値（正規化した JSON）。スライダーを動かし続けている間に
   // 古い値の echo が後から届いても、手元の新しい値へ巻き戻さない。
   let inflight: string[] = []
@@ -38,7 +38,6 @@ export function createMidiSettings(win: MidiWindow = window as MidiWindow): Midi
   const onSettings = (event: Event) => receive((event as CustomEvent).detail)
   win.addEventListener('vp:midi-settings', onSettings)
   onCleanup(() => win.removeEventListener('vp:midi-settings', onSettings))
-  if (win.__vpMidiSettings !== undefined) receive(win.__vpMidiSettings)
 
   return {
     settings,

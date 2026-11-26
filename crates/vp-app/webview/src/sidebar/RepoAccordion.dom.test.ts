@@ -1,3 +1,4 @@
+import { testPath } from '../../test-utils/paths'
 /**
  * lead 行（RepoAccordion）の折りたたみ — 開閉 caret と、畳んでいる間の見え方（mem_1ChNtdQKHrSB78Ppek2etg）。
  *
@@ -13,7 +14,7 @@
  */
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { build } from "esbuild";
-import { solidPlugin } from "esbuild-plugin-solid";
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from '../../test-utils/solid'
 import { Window } from "happy-dom";
 import { fileURLToPath } from "node:url";
 
@@ -35,7 +36,7 @@ beforeAll(async () => {
 	const result = await build({
 		stdin: {
 			contents: `
-        import { render } from 'solid-js/web';
+        import { render } from '@solidjs/web';
         import { createComponent } from 'solid-js';
         import { RepoAccordion } from './RepoAccordion';
         import { SHELL_CSS } from './Shell';
@@ -65,7 +66,7 @@ beforeAll(async () => {
         render(() => createComponent(RepoAccordion, { get proc() { return sidebar.processes[0]; } }),
           document.getElementById('root'));
       `,
-			resolveDir: fileURLToPath(new URL(".", import.meta.url)),
+			resolveDir: testPath(import.meta.url),
 			loader: "tsx",
 		},
 		bundle: true,
@@ -88,8 +89,8 @@ function fixture(s: Setup): Probe {
 	}) as unknown as Probe;
 	windows.push(win);
 	win.document.body.innerHTML = '<div id="sidebar-root"><div id="root"></div></div>';
-	win.eval(bundle);
-	win.setup(s);
+	evalDom(win, bundle);
+	callDom(win, () => win.setup(s));
 	return win;
 }
 
@@ -101,7 +102,7 @@ const q = (win: Probe, sel: string) =>
 	win.document.querySelector(sel) as unknown as HTMLElement | null;
 // q は DOM lib の HTMLElement を返す（読みやすさ優先）。happy-dom の getComputedStyle へ渡す時だけ型を戻す
 const css = (win: Probe, el: HTMLElement) =>
-	win.getComputedStyle(el as unknown as Parameters<Window["getComputedStyle"]>[0]);
+	callDom(win, () => win.getComputedStyle(el as unknown as Parameters<Window["getComputedStyle"]>[0]));
 const toggle = (win: Probe) => q(win, ".vp-proj-summary .vp-proj-toggle")!;
 const caret = (win: Probe) => q(win, ".vp-proj-toggle .vp-proj-caret");
 
@@ -125,7 +126,7 @@ describe("開閉 caret — 押せることと、今の開閉が見える", () =>
 		const win = fixture({ expanded: true, subs: 2 });
 		expect(toggle(win).getAttribute("aria-expanded")).toBe("true");
 		expect(css(win, caret(win)!).transform).toBe("rotate(90deg)");
-		win.setup({ expanded: false, subs: 2 });
+		callDom(win, () => win.setup({ expanded: false, subs: 2 }));
 		expect(toggle(win).getAttribute("aria-expanded")).toBe("false");
 		expect(css(win, caret(win)!).transform).not.toBe("rotate(90deg)");
 	});
@@ -133,17 +134,17 @@ describe("開閉 caret — 押せることと、今の開閉が見える", () =>
 	it("aria-label は従来どおり（開閉の動詞を名乗る）", () => {
 		const win = fixture({ expanded: true, subs: 1 });
 		expect(toggle(win).getAttribute("aria-label")).toBe("vantage-point を折りたたむ");
-		win.setup({ expanded: false, subs: 1 });
+		callDom(win, () => win.setup({ expanded: false, subs: 1 }));
 		expect(toggle(win).getAttribute("aria-label")).toBe("vantage-point を展開する");
 	});
 
 	it("click は process:toggle を送り、行の選択（lane:select）にはならない", () => {
 		const win = fixture({ expanded: true, subs: 2 });
-		toggle(win).click();
+		clickDom(toggle(win));
 		expect(win.sent).toEqual([{ t: "process:toggle", path: "/vp", expanded: false }]);
 		win.sent.length = 0;
-		win.setup({ expanded: false, subs: 2 });
-		toggle(win).click();
+		callDom(win, () => win.setup({ expanded: false, subs: 2 }));
+		clickDom(toggle(win));
 		expect(win.sent).toEqual([{ t: "process:toggle", path: "/vp", expanded: true }]);
 	});
 

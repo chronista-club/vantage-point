@@ -1,7 +1,27 @@
 # webview（vp-app GUI の JS 層）開発ガイド
 
-vp-app の GUI は `crates/vp-app/webview/` の SolidJS + xterm.js を esbuild で bundle し、
+vp-app の GUI は `crates/vp-app/webview/` の SolidJS 2 + xterm.js を esbuild で bundle し、
 `crates/vp-app/assets/*.bundle.js` として **cargo build 時に binary へ embed**（`include_str!`）する。
+
+## Solid 2 の compiler と更新タイミング
+
+`solid-plugin.mjs` は esbuild で TypeScript の型を除去し、`@solidjs/compiler` で JSX を
+DOM コードへ変換する。両段の source map を合成する。app bundle・preview・esbuild を使う
+DOM テストはこの plugin を共用し、Vitest の直接 import は `@solidjs/vite-plugin` を使う。
+DOM API と `JSX` 型は `@solidjs/web`、signal と store は `solid-js` から import する。
+
+`createEffect(compute, apply)` の購読は compute に置き、DOM 操作や IPC は apply に置く。
+`onSettled` と effect の後始末は callback から関数を返す。store の setter は draft を受ける
+関数で更新する。`Show keyed` は profile ごとの再マウントを保つため継続使用する。
+
+signal の更新はバッチ反映される。native callback や送信 guard が同じイベント内で更新後の
+状態を読む API は、その境界で `flush()` する。テストのイベント間では `test-utils/solid.ts`
+の helper で各 bundle の scheduler を反映する。別 bundle へ配る非同期通知は応答まで待つ。
+fixture のファイルパスは `test-utils/paths.ts` で解決し、Vite のブラウザ URL 変換を避ける。
+
+`@chronista-club/agent-chat` は `vendor/agent-chat` submodule の `packages/chat` を参照する。
+新しい worktree では submodule を初期化してから `bun install --frozen-lockfile` を実行する。
+型チェック・DOM テスト・bundle 生成の成功と、WKWebView 上の実機確認は別に記録する。
 
 ## bundle は生成物（commit しない — 2026-07-19 転換）
 

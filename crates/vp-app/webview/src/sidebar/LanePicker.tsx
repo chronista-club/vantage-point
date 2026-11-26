@@ -15,7 +15,7 @@ import {
 	createMemo,
 	createSignal,
 	onCleanup,
-	onMount,
+	onSettled,
 } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sidebar } from "./store";
@@ -127,7 +127,7 @@ export function LanePicker() {
 	let inputRef: HTMLInputElement | undefined;
 	let bodyRef: HTMLDivElement | undefined;
 
-	onMount(() => {
+	onSettled(() => {
 		window.vpLanePicker = { open };
 	});
 	onCleanup(() => {
@@ -135,15 +135,14 @@ export function LanePicker() {
 	});
 
 	// visible になったら input に focus
-	createEffect(() => {
-		if (!visible()) return;
+	createEffect(visible, visible => {
+		if (!visible) return;
 		setTimeout(() => inputRef?.focus(), 0);
 	});
 
 	// selectedIndex 変化に追従して selected row を viewport に
-	createEffect(() => {
-		selectedIndex();
-		if (!visible() || !bodyRef) return;
+	createEffect(() => [selectedIndex(), visible()] as const, ([, visible]) => {
+		if (!visible || !bodyRef) return;
 		const sel = bodyRef.querySelector(
 			".vp-lp-row.selected",
 		) as HTMLElement | null;
@@ -216,12 +215,12 @@ export function LanePicker() {
 						<For each={view()}>
 							{(entry, idx) => (
 								<div
-									class="vp-lp-row"
-									classList={{
+									class={["vp-lp-row", {
 										selected: idx() === selectedIndex(),
 										lane: entry.kind === "lane",
 										repo: entry.kind === "repo",
-									}}
+									}]}
+
 									onClick={() => {
 										setSelectedIndex(idx());
 										activate(entry);

@@ -2,7 +2,8 @@
  * Codex の native 入力（queue / mode / permission）を `conversation:codex_input` で送る。
  * chatview と codex-settings-panel の両方から呼ぶので store 操作ごと関数にしてある。
  */
-import { produce } from 'solid-js/store'
+
+import { flush } from 'solid-js'
 import { foldInto, type LaneChat, type Submission } from './chat-model'
 import { nextRequestId } from './console'
 
@@ -25,7 +26,8 @@ export function sendCodexInput(
   const queue = lc.state.codexQueue
   if (!queue || (!queue.ready && action.kind !== 'refresh') || codexInputBusy(lc)) return false
   const requestId = nextRequestId('codex-input')
-  lc.set('codexInput', { id: requestId, text, images, status: 'sending', error: null })
+  lc.set(s => { s['codexInput'] = { id: requestId, text, images, status: 'sending', error: null } })
+  flush() // 同期 transport の再入に備え、送信中の guard を先に確定する。
   try {
     const ipc = (globalThis as unknown as { ipc?: Ipc }).ipc
     if (!ipc) throw new Error('接続がありません。入力は送信されていません。')
@@ -34,13 +36,13 @@ export function sendCodexInput(
       action: { ...action, images, client_id: requestId } }))
     setTimeout(() => {
       if (lc.state.codexInput?.id === requestId && lc.state.codexInput.status === 'sending') {
-        lc.set(produce(s => foldInto(s, { kind: 'codex_queue', queue: null, request_id: requestId,
-          error: '送信結果を確認できません。自動再送はしていません。待機一覧と会話履歴を確認してください。' })))
+        lc.set(s => foldInto(s, { kind: 'codex_queue', queue: null, request_id: requestId,
+          error: '送信結果を確認できません。自動再送はしていません。待機一覧と会話履歴を確認してください。' }))
       }
     }, 45_000)
   } catch (error) {
-    lc.set(produce(s => foldInto(s, { kind: 'codex_queue', queue: null, request_id: requestId,
-      error: error instanceof Error ? error.message : String(error) })))
+    lc.set(s => foldInto(s, { kind: 'codex_queue', queue: null, request_id: requestId,
+      error: error instanceof Error ? error.message : String(error) }))
     return false
   }
   return true

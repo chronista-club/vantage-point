@@ -1,7 +1,8 @@
+import { testPath } from './test-utils/paths'
 // mem_1Cfgup9xPfPHvwJU2gSDUM — 中央の設定から作業へ戻る。
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window, type HTMLElement, type HTMLInputElement } from 'happy-dom'
 import { fileURLToPath } from 'node:url'
 
@@ -12,7 +13,7 @@ beforeAll(async () => {
   const result = await build({
     stdin: {
       contents: `
-        import { render } from 'solid-js/web';
+        import { render } from '@solidjs/web';
         import { createComponent } from 'solid-js';
         import { SettingsPanel, SETTINGS_ITEMS, SETTINGS_PANEL_CSS } from './src/sidebar/SettingsPanel';
         import { applySidebarState, emptyState } from './src/sidebar/store';
@@ -30,7 +31,7 @@ beforeAll(async () => {
         // SettingsPanel 単体の fixture でも同じ配線を張る。
         window.dispose = render(() => { useRouteSync(); return createComponent(SettingsPanel, {}) }, document.getElementById('sidebar-root'));
       `,
-      resolveDir: fileURLToPath(new URL('.', import.meta.url)), loader: 'tsx',
+      resolveDir: testPath(import.meta.url), loader: 'tsx',
     }, bundle: true, write: false, format: 'iife', platform: 'browser',
     preserveSymlinks: true, plugins: [solidPlugin()], define: { 'process.env.NODE_ENV': '"production"' },
   })
@@ -40,7 +41,7 @@ function fixture() {
   const win = new Window({ settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } }) as Probe
   windows.push(win)
   win.document.body.innerHTML = '<div id="sidebar-root"></div><div id="host"><div id="work"><textarea>draft</textarea></div><div id="already-inert" inert></div></div>'
-  win.eval(bundle)
+  evalDom(win, bundle)
   return win
 }
 const snapshot = { developerMode: false, developerModeLocked: false, defaultRepoRoot: '/repos', resolvedRepoRoot: '/repos', daemonReachable: true, logLevel: 'info', idleTimeoutMinutes: 5, defaultAgent: 'claude', defaultModel: '', defaultAgentTakesModel: true }
@@ -49,37 +50,37 @@ afterEach(async () => { for (const win of windows.splice(0)) await win.happyDOM.
 describe('settings in the main area', () => {
   it('checks now without applying, then offers the confirmed update explicitly', () => {
     const win = fixture()
-    win.vpSettings.open()
-    win.vpSettings.handleResult(snapshot)
+    callDom(win, () => win.vpSettings.open())
+    callDom(win, () => win.vpSettings.handleResult(snapshot))
     const panel = win.document.querySelector('.vp-settings-panel')!
     expect(panel.textContent).not.toContain('最新版です')
     const check = [...panel.querySelectorAll('button')].find(b => b.textContent === '今すぐ確認')!
     expect(check).toBeDefined()
-    check.click()
-    check.click()
+    clickDom(check)
+    clickDom(check)
     expect(win.sent.filter((m: any) => m.t === 'update:check')).toHaveLength(1)
     expect(panel.textContent).toContain('確認中')
-    win.vpSettings.handleUpdateCheckResult({ latest_version: '0.99.0', update_available: true })
+    callDom(win, () => win.vpSettings.handleUpdateCheckResult({ latest_version: '0.99.0', update_available: true }))
     const update = [...panel.querySelectorAll('button')].find(b => b.textContent.includes('0.99.0 に更新'))!
     expect(update).toBeDefined()
     expect(win.sent.filter((m: any) => m.t === 'update:apply')).toHaveLength(0)
-    update.click()
+    clickDom(update)
     expect(win.sent.at(-1)).toEqual({ t: 'update:apply', version: '0.99.0' })
   })
   it('distinguishes a failed check from latest and allows retry', () => {
     const win = fixture()
-    win.vpSettings.open()
-    win.vpSettings.handleResult(snapshot)
+    callDom(win, () => win.vpSettings.open())
+    callDom(win, () => win.vpSettings.handleResult(snapshot))
     const panel = win.document.querySelector('.vp-settings-panel')!
     const check = () => [...panel.querySelectorAll('button')].find(b => b.textContent === '今すぐ確認')!
     expect(check()).toBeDefined()
-    check().click()
-    win.vpSettings.handleUpdateCheckResult({ error: '接続できません' })
+    clickDom(check())
+    callDom(win, () => win.vpSettings.handleUpdateCheckResult({ error: '接続できません' }))
     expect(panel.textContent).toContain('確認できませんでした')
     expect(panel.textContent).not.toContain('最新版です')
     expect(check().disabled).toBe(false)
-    check().click()
-    win.vpSettings.handleUpdateCheckResult({ latest_version: '0.76.0', update_available: false })
+    clickDom(check())
+    callDom(win, () => win.vpSettings.handleUpdateCheckResult({ latest_version: '0.76.0', update_available: false }))
     expect(panel.textContent).toContain('最新版です')
     expect(panel.textContent).not.toContain('確認できませんでした')
   })
@@ -88,7 +89,7 @@ describe('settings in the main area', () => {
     const work = win.document.getElementById('work')!
     const input = win.document.querySelector('textarea')!
     input.focus()
-    win.vpSettings.open()
+    callDom(win, () => win.vpSettings.open())
     const panel = win.document.querySelector('.vp-settings-panel')!
     expect(panel.closest('#host')).not.toBeNull()
     expect(work.hasAttribute('inert')).toBe(true)
@@ -96,7 +97,7 @@ describe('settings in the main area', () => {
     expect(win.sent).toEqual([{ t: 'settings:fetch' }])
     const back = [...panel.querySelectorAll('button')].find(b => b.textContent.includes('作業に戻る'))!
     expect(back).toBeDefined()
-    back.click()
+    clickDom(back)
     expect(win.document.querySelector('.vp-settings-panel')).toBeNull()
     expect(win.document.getElementById('work')).toBe(work)
     expect(input.value).toBe('draft')
@@ -108,24 +109,24 @@ describe('settings in the main area', () => {
     const win = fixture()
     const input = win.document.querySelector('textarea')!
     input.focus()
-    win.vpSettings.open()
-    win.selectLane('vp/root')
+    callDom(win, () => win.vpSettings.open())
+    callDom(win, () => win.selectLane('vp/root'))
     expect(win.document.querySelector('.vp-settings-panel')).not.toBeNull()
-    win.selectLane('vp/other')
+    callDom(win, () => win.selectLane('vp/other'))
     expect(win.document.activeElement).not.toBe(input)
     expect(win.document.querySelector('.vp-settings-panel')).toBeNull()
     expect(win.document.getElementById('work')!.hasAttribute('inert')).toBe(false)
-    win.vpSettings.open()
-    win.selectDevices()
+    callDom(win, () => win.vpSettings.open())
+    callDom(win, () => win.selectDevices())
     expect(win.document.querySelector('.vp-settings-panel')).toBeNull()
-    win.vpSettings.open()
-    win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    callDom(win, () => win.vpSettings.open())
+    dispatchDom(win.document, new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     expect(win.document.querySelector('.vp-settings-panel')).toBeNull()
   })
   it('is one flat list: label + control per row, no section headings and no hints (mako 2026-11-07「ミニマムにしよう」)', () => {
     const win = fixture()
-    win.vpSettings.open()
-    win.vpSettings.handleResult(snapshot)
+    callDom(win, () => win.vpSettings.open())
+    callDom(win, () => win.vpSettings.handleResult(snapshot))
     const panel = win.document.querySelector('.vp-settings-panel')!
     expect(panel.querySelectorAll('.vp-settings-h, .vp-settings-section, .vp-settings-hint')).toHaveLength(0)
     const labels = Array.from(panel.querySelectorAll('.vp-settings-row > .vp-settings-label')).map(el => el.textContent)
@@ -133,29 +134,29 @@ describe('settings in the main area', () => {
   })
   it('the Settings rail index (doc 87 §3) lists exactly the rows, in order, with the same labels', () => {
     const win = fixture()
-    win.vpSettings.open()
-    win.vpSettings.handleResult(snapshot)
+    callDom(win, () => win.vpSettings.open())
+    callDom(win, () => win.vpSettings.handleResult(snapshot))
     const rows = Array.from(win.document.querySelectorAll('.vp-settings-row'))
-    expect(rows.map(r => r.getAttribute('data-setting'))).toEqual(win.SETTINGS_ITEMS.map(i => i.id))
-    expect(rows.map(r => r.querySelector(':scope > .vp-settings-label')!.textContent)).toEqual(win.SETTINGS_ITEMS.map(i => i.label))
+    expect(rows.map(r => r.getAttribute('data-setting'))).toEqual(callDom(win, () => win.SETTINGS_ITEMS.map(i => i.id)))
+    expect(rows.map(r => r.querySelector(':scope > .vp-settings-label')!.textContent)).toEqual(callDom(win, () => win.SETTINGS_ITEMS.map(i => i.label)))
   })
   it('keeps existing settings save messages and authoritative result updates', () => {
     const win = fixture()
-    win.vpSettings.open()
-    win.vpSettings.handleResult(snapshot)
+    callDom(win, () => win.vpSettings.open())
+    callDom(win, () => win.vpSettings.handleResult(snapshot))
     const input = win.document.querySelector<HTMLInputElement>('#vp-set-reporoot')!
     expect(input.closest('#host')).not.toBeNull()
     input.value = ' /new/repos '
-    input.dispatchEvent(new win.Event('change', { bubbles: true }))
+    dispatchDom(input, new win.Event('change', { bubbles: true }))
     expect(win.sent.at(-1)).toEqual({ t: 'settings:save', default_repo_root: '/new/repos' })
-    win.vpSettings.handleResult({ ...snapshot, defaultRepoRoot: '/confirmed' })
+    callDom(win, () => win.vpSettings.handleResult({ ...snapshot, defaultRepoRoot: '/confirmed' }))
     expect(input.value).toBe('/confirmed')
-    win.document.querySelector<HTMLElement>('.vp-settings-toggle')!.click()
+    clickDom(win.document.querySelector<HTMLElement>('.vp-settings-toggle')!)
     expect(win.sent.at(-1)).toEqual({ t: 'settings:save', developer_mode: true })
   })
   it('restores inert state for new panes and cleans up on unmount', async () => {
     const win = fixture()
-    win.vpSettings.open()
+    callDom(win, () => win.vpSettings.open())
     // Iconify の外部取得・再試行が未完了でも、pane の入力遮断だけは確認できる。
     const iconRetry = win.setTimeout(() => {}, 60_000)
     const pane = win.document.createElement('div')
@@ -167,7 +168,7 @@ describe('settings in the main area', () => {
     await shielded
     expect(pane.hasAttribute('inert')).toBe(true)
     win.clearTimeout(iconRetry)
-    win.dispose()
+    callDom(win, () => win.dispose())
     expect(pane.hasAttribute('inert')).toBe(false)
     expect(win.document.querySelector('.vp-settings-panel')).toBeNull()
     expect(win.vpSettings).toBeUndefined()

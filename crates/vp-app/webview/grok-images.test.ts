@@ -1,7 +1,7 @@
 // mem_1ChKFMEwUYWj5Qs6VLVkU4 — Grok の roster 能力表から貼り付け・通常送信まで。
 import { expect, it } from 'vitest'
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidTestPlugin as solidPlugin, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window } from 'happy-dom'
 
 it.each([true, false])('Grok image paste follows roster capability %s', async (capable) => {
@@ -22,20 +22,20 @@ it.each([true, false])('Grok image paste follows roster capability %s', async (c
   })
   const window = new Window()
   try {
-    window.eval(result.outputFiles[0].text)
+    evalDom(window, result.outputFiles[0].text)
     const input = window.document.querySelector('textarea')!
     const file = new window.File(['hello'], 'test.png', { type: 'image/png' })
     const event = new window.Event('paste', { bubbles: true, cancelable: true })
     Object.defineProperty(event, 'clipboardData', { value: {
       items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }],
     } })
-    input.dispatchEvent(event)
+    dispatchDom(input, event)
     await expect.poll(() => window.document.querySelectorAll('.conversation-attachment').length)
       .toBe(capable ? 1 : 0)
     expect(event.defaultPrevented).toBe(capable)
     input.value = 'describe'
-    input.dispatchEvent(new window.Event('input', { bubbles: true }))
-    input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    dispatchDom(input, new window.Event('input', { bubbles: true }))
+    dispatchDom(input, new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     const app = window as unknown as { sent: unknown[] }
     expect(app.sent.at(-1)).toMatchObject({
       t: 'conversation:submit', lane: 'images/grok', session: 1, prompt: 'describe',

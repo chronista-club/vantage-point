@@ -21,7 +21,8 @@
  * - **drag 中**（`body.shell-resizing`、main bundle の `shell-layout.ts` が付ける）は `resizing` で
  *   peek の transition を止める — 止めないと境界の drag に幅が遅れて付いてくる
  */
-import { createSignal, onCleanup, onMount, type Component, type JSX } from "solid-js";
+import { createSignal, onCleanup, onSettled, type Component } from 'solid-js'
+import type { JSX } from '@solidjs/web'
 import { CURail, type RailDef } from "@chronista-club/creo-ui/shells";
 
 interface ShellRailProps {
@@ -47,12 +48,12 @@ interface ShellRailProps {
  */
 function useShellResizing(): () => boolean {
 	const [resizing, setResizing] = createSignal(false);
-	onMount(() => {
+	onSettled(() => {
 		const sync = () => setResizing(document.body.classList.contains("shell-resizing"));
 		sync();
 		const observer = new MutationObserver(sync);
 		observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
-		onCleanup(() => observer.disconnect());
+		return () => observer.disconnect();
 	});
 	return resizing;
 }

@@ -90,7 +90,7 @@ export function GrokSettingsPanel(props: SettingsContext) {
       <Show when={pending()}><span class="conversation-model-readonly" role="status">切替中…</span></Show>
       <Show when={!pending() && view()?.notice}>{(notice) => (
         <span class="conversation-model-readonly" role="status">{notice().message}（<time
-          dateTime={new Date(notice().occurred_at_ms).toISOString()}
+          datetime={new Date(notice().occurred_at_ms).toISOString()}
           title={new Date(notice().occurred_at_ms).toLocaleString()}
         >{new Date(notice().occurred_at_ms).toLocaleTimeString()}</time>）</span>
       )}</Show>

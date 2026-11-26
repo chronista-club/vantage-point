@@ -1,4 +1,4 @@
-import { createSignal, onCleanup, onMount } from 'solid-js';
+import { createSignal, onCleanup, onSettled } from 'solid-js';
 import type { LaneInfo } from '../generated/LaneInfo';
 import { clockNow } from './activity-freshness';
 import { laneAddressKey } from './lane';
@@ -17,11 +17,11 @@ export function createAgentActivity(props: ActivityProps) {
   const [revision, setRevision] = createSignal(0);
   const key = () => props.session ?? props.lane?.sessions?.root ?? 1;
   const addr = () => props.lane ? laneAddressKey(props.lane) : '';
-  onMount(() => {
+  onSettled(() => {
     setRevision(v => v + 1);
-    onCleanup(onAgentActivity(d => {
+    return onAgentActivity(d => {
       if (d.lane === addr() && d.session === key()) setRevision(v => v + 1);
-    }));
+    });
   });
   const live = () => { revision(); return readAgentActivity(addr(), key()); };
   const timestamp = () => {
@@ -53,7 +53,7 @@ export function ResponsePoint(props: ActivityProps) {
     const elapsed = minutes < 1 ? '1分未満' : minutes < 60 ? `${minutes}分` : minutes < 1440 ? `${Math.floor(minutes / 60)}時間` : `${Math.floor(minutes / 1440)}日`;
     return `応答完了・次の指示待ち — 最終応答から${elapsed}`;
   };
-  return <span class="vp-activity-point" classList={{ 'vp-response-point': activity.phase() === 'completed', 'vp-sub-point': props.compact }}
+  return <span class={["vp-activity-point", { 'vp-response-point': activity.phase() === 'completed', 'vp-sub-point': props.compact }]}
     role="img" data-activity={activity.phase()} data-freshness={activity.phase() === 'completed' ? freshness() : undefined}
     title={props.compact ? `${props.lane?.address.name} — ${label()}` : label()} aria-label={label()}
     style={{ background: ACTIVITY_COLOR[activity.phase()], opacity: activity.phase() === 'completed' ? (freshness() === 'fresh' ? 1 : freshness() === 'recent' ? 0.8 : 0.55) : undefined }} />;
