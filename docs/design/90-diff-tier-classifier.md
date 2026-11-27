@@ -1,6 +1,6 @@
 # 90. 実物の diff による出荷時の段
 
-> **Status**: Draft
+> **Status**: Active (shipped in v0.91.0)
 > **Related**: `mem_1ChSjZ8945Y4MsvU4F2qEf`、[dev-flow guide](../guide/dev-flow-primitives.md)
 > **対象**: `crates/vantage-point/src/flow.rs`, `crates/vantage-point/src/lane/commands.rs`, `crates/vantage-point/src/commands/flow.rs`
 
