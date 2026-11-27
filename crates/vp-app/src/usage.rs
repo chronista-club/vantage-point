@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use ts_rs::TS;
 
-/// daemon が配る全体像（`engines` は claude / codex / agy / grok の固定順）。
+/// daemon が配る全体像（`engines` は claude / codex / agy / grok / muse の固定順）。
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct UsageSnapshot {
@@ -34,7 +34,7 @@ pub struct UsageSnapshot {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS), ts(export, export_to = "webview/src/generated/"))]
 pub struct EngineUsage {
-    /// `claude` / `codex` / `agy` / `grok`（lane の agent 名と同じ）。
+    /// `claude` / `codex` / `agy` / `grok` / `muse`（lane の agent 名と同じ）。
     pub engine: String,
     #[serde(default)]
     pub plan: Option<String>,
@@ -79,6 +79,7 @@ pub fn short_name(engine: &str) -> &str {
         "codex" => "Cdx",
         "agy" => "Gem",
         "grok" => "Grk",
+        "muse" => "Muse",
         other => other,
     }
 }
@@ -90,6 +91,7 @@ pub fn display_name(engine: &str) -> &str {
         "codex" => "Codex",
         "agy" => "Gemini (agy)",
         "grok" => "Grok",
+        "muse" => "Muse",
         other => other,
     }
 }
@@ -175,6 +177,12 @@ fn truncate(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn muse_uses_its_display_name() {
+        assert_eq!(short_name("muse"), "Muse");
+        assert_eq!(display_name("muse"), "Muse");
+    }
+
     fn window(id: &str, pct: f32, scope: Option<&str>) -> UsageWindow {
         UsageWindow {
             id: id.into(),
@@ -238,7 +246,14 @@ mod tests {
         let fixture: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let snapshot: UsageSnapshot = serde_json::from_value(fixture.clone()).unwrap();
-        assert_eq!(snapshot.engines.len(), 4);
+        assert_eq!(snapshot.engines.len(), 5);
+        let muse = snapshot
+            .engines
+            .iter()
+            .find(|e| e.engine == "muse")
+            .unwrap();
+        assert!(tray_line(muse, chrono::FixedOffset::east_opt(0).unwrap()).starts_with("Muse"));
+        assert_eq!(summary_window(muse).unwrap().used_pct, 70.0);
         assert_eq!(
             tray_title(&snapshot).as_deref(),
             Some("Cdx 95%"),

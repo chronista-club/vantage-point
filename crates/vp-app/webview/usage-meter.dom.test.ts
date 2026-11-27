@@ -18,6 +18,8 @@ const SNAPSHOT = {
     { engine: 'agy', plan: null, tier: null, fetched_at_ms: 1, source: 'poll', error: null,
       windows: [{ id: 'gemini-5h', label: 'Gemini · 5h', used_pct: 17.3, resets_at_ms: null, severity: 'normal', scope: null }] },
     { engine: 'grok', plan: null, tier: null, fetched_at_ms: null, source: 'none', error: 'grok が見つかりません（未インストール）', windows: [] },
+    { engine: 'muse', plan: 'Muse Code Everyday Usage', tier: null, fetched_at_ms: 1, source: 'poll', error: null,
+      windows: [{ id: '5h', label: '5h', used_pct: 70, resets_at_ms: null, severity: 'normal', scope: null }] },
   ],
   updated_at_ms: 1,
 }
@@ -41,7 +43,7 @@ async function mount(component: string, props: string) {
   }
 }
 
-it('MachineStrip: 畳んだ行に最も逼迫しているエンジン、展開部に 4 エンジンと「更新」', async () => {
+it('MachineStrip: 畳んだ行に最も逼迫しているエンジン、展開部に 5 エンジンと「更新」', async () => {
   const win = await mount('MachineStrip', '')
   try {
     const doc = win.document
@@ -54,7 +56,7 @@ it('MachineStrip: 畳んだ行に最も逼迫しているエンジン、展開�
     expect(chip.className).toContain('critical')
 
     const rows = [...doc.querySelectorAll('.vp-usage-row')].map((r) => r.textContent)
-    expect(rows).toEqual(['CC88%', 'Cdx95%', 'Gem17%', 'Grk—'])
+    expect(rows).toEqual(['CC88%', 'Cdx95%', 'Gem17%', 'Grk—', 'Muse70%'])
     // Fable 100% は部分枠として 1 段静かに出す（Claude 全体の % にはしない）
     const fable = [...doc.querySelectorAll('.vp-usage-window.scoped')].map((w) => w.textContent)
     expect(fable).toEqual(['weekly · Fable100%'])
@@ -74,15 +76,16 @@ it('AddSub: engine の選択肢に使用率を添え、未取得の engine は�
       { name: 'claude', description: 'Claude Code' },
       { name: 'agy', description: 'Antigravity' },
       { name: 'grok', description: 'Grok' },
+      { name: 'muse', description: 'Muse Code' },
       { name: 'shell', description: 'login shell' },
     ]
     callDom(win, () => win.reportAgents({ repo_path: '/r', agents }))
     const labels = () =>
       [...win.document.querySelector<HTMLSelectElement>('.vp-add-sub-agent')!.options].map((o) => o.textContent)
-    expect(labels(), 'usage 未着は従来どおり').toEqual(['claude', 'agy', 'grok', 'shell'])
+    expect(labels(), 'usage 未着は従来どおり').toEqual(['claude', 'agy', 'grok', 'muse', 'shell'])
 
     callDom(win, () => win.setUsage(SNAPSHOT))
-    expect(labels()).toEqual(['claude (88%)', 'agy (17%)', 'grok', 'shell'])
+    expect(labels()).toEqual(['claude (88%)', 'agy (17%)', 'grok', 'muse (70%)', 'shell'])
   } finally {
     await win.happyDOM.close()
   }

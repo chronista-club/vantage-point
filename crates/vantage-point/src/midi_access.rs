@@ -95,10 +95,7 @@ mod tests {
                 outputs: vec![],
             },
         ]);
-        assert_eq!(
-            access.input("LPD8").as_deref(),
-            Some("Lnx/vp/a/1 | LPD8")
-        );
+        assert_eq!(access.input("LPD8").as_deref(), Some("Lnx/vp/a/1 | LPD8"));
         assert_eq!(access.input("Lnx/ladyland/c/1 | LPD8"), None);
         assert_eq!(access.input("LPD"), None);
         let mut next = access.owned.clone();

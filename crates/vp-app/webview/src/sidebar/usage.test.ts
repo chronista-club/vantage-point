@@ -45,6 +45,7 @@ const SNAPSHOT: UsageSnapshot = {
 		eng("codex", [win("weekly", 95)]),
 		eng("agy", [win("gemini-weekly", 10), win("gemini-5h", 17.3), win("3p-5h", 100, "Claude/GPT")]),
 		eng("grok", []),
+		eng("muse", [win("5h", 70), win("weekly", 23)]),
 	],
 	updated_at_ms: 1,
 };
@@ -71,12 +72,13 @@ describe("summaryWindow — 代表の枠は engine 全体の枠の最悪値", ()
 });
 
 describe("usageGauges / worstGauge — MachineStrip", () => {
-	it("4 エンジンを固定順・短い名前で並べ、未取得は pct=null", () => {
+	it("5 エンジンを固定順・短い名前で並べ、未取得は pct=null", () => {
 		expect(usageGauges(SNAPSHOT)).toEqual([
 			{ engine: "claude", short: "CC", pct: 88, severity: "warning" },
 			{ engine: "codex", short: "Cdx", pct: 95, severity: "critical" },
 			{ engine: "agy", short: "Gem", pct: 17.3, severity: "normal" },
 			{ engine: "grok", short: "Grk", pct: null, severity: "normal" },
+			{ engine: "muse", short: "Muse", pct: 70, severity: "normal" },
 		]);
 	});
 	it("畳んだ 1 行には最も逼迫しているエンジン", () => {
@@ -90,6 +92,7 @@ describe("agentOptionLabel — sub lane 作成の engine 選択", () => {
 	it("取れていれば % を添える", () => {
 		expect(agentOptionLabel("claude", SNAPSHOT)).toBe("claude (88%)");
 		expect(agentOptionLabel("agy", SNAPSHOT)).toBe("agy (17%)");
+		expect(agentOptionLabel("muse", SNAPSHOT)).toBe("muse (70%)");
 	});
 	it("未取得・snapshot 未着・usage の無い engine は名前だけ（fail-open）", () => {
 		expect(agentOptionLabel("grok", SNAPSHOT)).toBe("grok");

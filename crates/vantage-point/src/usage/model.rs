@@ -1,6 +1,6 @@
 //! usage の正規化済みデータ（data 層）。
 //!
-//! 4 エンジンの「単位の罠」（使用率 0–100 / 0–1 / 残量の割合 0–1、epoch 秒 / ISO 8601）は
+//! 5 エンジンの「単位の罠」（使用率 0–100 / 0–1 / 残量の割合 0–1、epoch 秒 / ISO 8601）は
 //! [`super::parse`] がここへ写す時に吸収する。この型に入った時点で:
 //!
 //! - `used_pct` は **使用率 %**（`0.0..=100.0`、小数 1 桁に丸め済み）。残枠 % は `100 - used_pct`
@@ -19,11 +19,13 @@ pub enum UsageEngine {
     Codex,
     Agy,
     Grok,
+    Muse,
 }
 
 impl UsageEngine {
     /// 表示順。snapshot の `engines` もこの順に並ぶ。
-    pub const ALL: [UsageEngine; 4] = [Self::Claude, Self::Codex, Self::Agy, Self::Grok];
+    pub const ALL: [UsageEngine; 5] =
+        [Self::Claude, Self::Codex, Self::Agy, Self::Grok, Self::Muse];
 
     /// wire 上の名前（lane の agent 名と一致させる — sub lane 作成の picker が名前で引くため）。
     pub fn name(self) -> &'static str {
@@ -32,6 +34,7 @@ impl UsageEngine {
             Self::Codex => "codex",
             Self::Agy => "agy",
             Self::Grok => "grok",
+            Self::Muse => "muse",
         }
     }
 
@@ -181,7 +184,7 @@ impl EngineUsage {
     }
 }
 
-/// daemon が配る全体像。`engines` は常に [`UsageEngine::ALL`] の 4 件・同じ順。
+/// daemon が配る全体像。`engines` は常に [`UsageEngine::ALL`] の 5 件・同じ順。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageSnapshot {
     pub engines: Vec<EngineUsage>,
@@ -222,6 +225,15 @@ mod tests {
     /// wire 契約: daemon が送る JSON の形を fixture に固定する。vp-app の写し
     /// （`crates/vp-app/src/usage.rs`）は同じ fixture を decode する test を持つので、どちらかの
     /// field 名・型・enum の綴りが変わると片方が赤くなる（crate 依存が無いので型では繋がらない）。
+    #[test]
+    fn muse_is_a_known_usage_engine() {
+        assert_eq!(
+            UsageEngine::from_name("muse").map(UsageEngine::name),
+            Some("muse")
+        );
+        assert_eq!(UsageSnapshot::default().engines.len(), 5);
+    }
+
     #[test]
     fn snapshot_wire_shape_is_pinned() {
         let mut snapshot = UsageSnapshot::default();
@@ -269,6 +281,16 @@ mod tests {
             UsageEngine::Grok,
             "grok が見つかりません（未インストール）",
         ));
+        snapshot.put(EngineUsage {
+            plan: Some("Muse Code Everyday Usage".into()),
+            windows: vec![
+                UsageWindow::new("5h", "5h", 70.0, Some(1795792190000)),
+                UsageWindow::new("weekly", "weekly", 23.0, Some(1795996800000)),
+            ],
+            fetched_at_ms: Some(1795775207653),
+            source: UsageSource::Poll,
+            ..EngineUsage::empty(UsageEngine::Muse)
+        });
         snapshot.updated_at_ms = 1_795_502_800_001;
 
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

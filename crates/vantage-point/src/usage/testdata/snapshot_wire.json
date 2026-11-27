@@ -42,6 +42,18 @@
       "fetched_at_ms": null,
       "source": "none",
       "error": "grok が見つかりません（未インストール）"
+    },
+    {
+      "engine": "muse",
+      "plan": "Muse Code Everyday Usage",
+      "tier": null,
+      "windows": [
+        { "id": "5h", "label": "5h", "used_pct": 70.0, "resets_at_ms": 1795792190000, "severity": "normal", "scope": null },
+        { "id": "weekly", "label": "weekly", "used_pct": 23.0, "resets_at_ms": 1795996800000, "severity": "normal", "scope": null }
+      ],
+      "fetched_at_ms": 1795775207653,
+      "source": "poll",
+      "error": null
     }
   ],
   "updated_at_ms": 1795502800001

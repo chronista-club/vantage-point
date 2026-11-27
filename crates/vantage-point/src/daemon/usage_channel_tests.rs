@@ -65,7 +65,7 @@ async fn subscribe_gets_snapshot_and_refresh_event_runs_probe() {
 
     let channel = client.open_channel("daemon-usage").await.unwrap();
     let first = next_snapshot(&channel).await;
-    assert_eq!(first.engines.len(), 4, "繋いだ直後に現在の全量が来る");
+    assert_eq!(first.engines.len(), 5, "繋いだ直後に現在の全量が来る");
     assert!(first.engines.iter().all(|e| e.windows.is_empty()));
     assert!(
         usage.watched(),
@@ -76,7 +76,7 @@ async fn subscribe_gets_snapshot_and_refresh_event_runs_probe() {
         .send_event("refresh", &serde_json::json!({}))
         .await
         .unwrap();
-    // 4 engine 分が順に反映される — 最後の 1 通まで待つ
+    // 5 engine 分が順に反映される — 最後の 1 通まで待つ
     let mut latest = next_snapshot(&channel).await;
     while latest.engines.iter().any(|e| e.windows.is_empty()) {
         latest = next_snapshot(&channel).await;
@@ -88,7 +88,7 @@ async fn subscribe_gets_snapshot_and_refresh_event_runs_probe() {
             "{engine:?}"
         );
     }
-    assert_eq!(probe.calls.lock().unwrap().len(), 4);
+    assert_eq!(probe.calls.lock().unwrap().len(), 5);
 
     channel.close().await.ok();
     client.disconnect().await.unwrap();
@@ -105,7 +105,7 @@ async fn daemon_registers_usage_channel() {
     let names: Vec<&str> = first.engines.iter().map(|e| e.engine.as_str()).collect();
     assert_eq!(
         names,
-        vec!["claude", "codex", "agy", "grok"],
+        vec!["claude", "codex", "agy", "grok", "muse"],
         "表示順の固定"
     );
     channel.close().await.ok();

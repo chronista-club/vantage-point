@@ -1,7 +1,7 @@
 //! tray-icon — 常駐トレイアイコン
 //!
 //! engine usage meter（spec creo `mem_1ChMLKCMUvC73JHTLjG3xg`）: macOS の menu bar に
-//! **最も逼迫している engine の使用率**（`Cdx 95%`）を出し、メニューに 4 エンジンの使用率と
+//! **最も逼迫している engine の使用率**（`Cdx 95%`）を出し、メニューに 5 エンジンの使用率と
 //! リセット時刻、`Refresh Usage` を並べる。値は daemon "daemon-usage" の push で live 更新
 //! （[`Tray::apply_usage`]、event loop の `AppEvent::UsageUpdated` から）。
 //!
@@ -15,7 +15,7 @@ use tray_icon::{TrayIcon, TrayIconBuilder};
 use crate::usage::UsageSnapshot;
 
 /// usage 行を並べる engine（daemon の snapshot と同じ順）。
-const USAGE_ENGINES: [&str; 4] = ["claude", "codex", "agy", "grok"];
+const USAGE_ENGINES: [&str; 5] = ["claude", "codex", "agy", "grok", "muse"];
 
 /// トレイ用のアイコン (portal の山アイコン)。
 ///

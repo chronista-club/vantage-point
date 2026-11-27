@@ -985,10 +985,7 @@ impl DeviceRegistry {
     }
 
     /// Revoke ports first, then join old listeners before acknowledging release.
-    pub(crate) async fn apply_midi_snapshot(
-        &mut self,
-        snapshot: Option<lnx_client::Snapshot>,
-    ) {
+    pub(crate) async fn apply_midi_snapshot(&mut self, snapshot: Option<lnx_client::Snapshot>) {
         use crate::midi_access::OwnedPorts;
         let owned = snapshot
             .as_ref()
@@ -1060,8 +1057,8 @@ impl DeviceRegistry {
         if !revoked_ports.is_empty() {
             self.republish_hold_state().await;
         }
-        let changed = self.midi_snapshot.as_ref().map(|s| &s.gears)
-            != snapshot.as_ref().map(|s| &s.gears);
+        let changed =
+            self.midi_snapshot.as_ref().map(|s| &s.gears) != snapshot.as_ref().map(|s| &s.gears);
         let previous_ports = snapshot_ports(self.midi_snapshot.as_ref());
         let next_ports = snapshot_ports(snapshot.as_ref());
         self.midi_snapshot = snapshot;

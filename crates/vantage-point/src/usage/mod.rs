@@ -1,4 +1,4 @@
-//! engine usage meter — 4 エンジン（claude / codex / agy / grok）のサブスク usage
+//! engine usage meter — 5 エンジン（claude / codex / agy / grok / muse）のサブスク usage
 //! （使用率 %・リセット時刻・plan / tier）を **machine scope** で集約する。
 //!
 //! usage は repo にも lane にも依らないアカウント単位の事実なので daemon が 1 つ持ち、
@@ -12,7 +12,7 @@
 //! - actions: [`probe`]（CLI / file に問い合わせる）/ [`service::UsageService`]（集約・配信・保存）/
 //!   [`passive`]（会話中の通知を流し込む口）
 //!
-//! **副作用ガード**: turn を起こさない（枠を使わない）/ claude は spawn しない / grok は
+//! **副作用ガード**: turn を起こさない（枠を使わない）/ claude の hook は無効 / grok は
 //! 手動の時だけ / test は本物の CLI を起動しない。詳細は [`probe`] と [`service`] の module doc。
 
 pub mod model;

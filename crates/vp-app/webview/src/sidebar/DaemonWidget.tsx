@@ -13,7 +13,7 @@
  *
  * engine usage meter（spec mem_1ChMLKCMUvC73JHTLjG3xg）も machine scope の住人なので MachineStrip に
  * 置く: 畳んだ 1 行には最も逼迫しているエンジンの % だけ（`Cdx 95%`、severity で色）、展開すると
- * 4 エンジンのゲージ・窓ごとの %・リセットまでの時間・「更新」ボタン。値は `SidebarState.engine_usage`。
+ * 5 エンジンのゲージ・窓ごとの %・リセットまでの時間・「更新」ボタン。値は `SidebarState.engine_usage`。
  */
 import { For, Show, createSignal, onCleanup } from "solid-js";
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
@@ -214,7 +214,7 @@ export function MachineStrip() {
 					{(g) => (
 						<span
 							class={`vp-usage-chip ${g().severity}`}
-							title="最も逼迫しているエンジンの使用率（展開で 4 エンジンの内訳）"
+							title="最も逼迫しているエンジンの使用率（展開で 5 エンジンの内訳）"
 						>
 							{g().short} {pctText(g().pct ?? 0)}%
 						</span>
@@ -360,7 +360,7 @@ export function MachineStrip() {
 }
 
 /**
- * engine usage meter の展開部 — 4 エンジンのゲージと窓ごとの内訳、「更新」ボタン。
+ * engine usage meter の展開部 — 5 エンジンのゲージと窓ごとの内訳、「更新」ボタン。
  *
  * 「更新」は daemon に refresh を上げるだけ（結果は push で届く）。grok は MCP server まで立ち上がる
  * ので daemon はこのボタン（と tray の Refresh Usage）の時だけ問い合わせる。連打は daemon がまとめる。
@@ -374,7 +374,7 @@ function UsagePanel(props: { now: number }) {
 				<button
 					type="button"
 					class="vp-hub-auth-btn vp-usage-refresh"
-					title="4 エンジンの usage を取り直す（grok はこのボタンの時だけ問い合わせる）"
+					title="5 エンジンの usage を取り直す（grok はこのボタンの時だけ問い合わせる）"
 					onClick={(e) => {
 						e.stopPropagation();
 						sendIpc({ t: "usage:refresh" });
