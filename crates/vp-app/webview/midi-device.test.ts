@@ -7,10 +7,10 @@ import { createVisibleFrame } from "./midi-device-view";
 import type { Device, MidiUseStatus } from "./midi-use";
 
 const device: Device = {
-	device_id: "xtouch-1", profile_id: "xtouch", name: "X-Touch", present: true,
+	gear_id: "xtouch-1", profile_id: "xtouch", name: "X-Touch", present: true,
 	phase: "active", assignment: { client_id: "vp", revision: 1 }, lease: { session_id: "vp-1" },
 };
-const status: MidiUseStatus = { connected: true, enabled: true, snapshot: { sequence: 1, session_id: "vp-1", devices: [device] } };
+const status: MidiUseStatus = { connected: true, enabled: true, snapshot: { sequence: 1, session_id: "vp-1", gears: [device] } };
 
 describe("ownership appearance", () => {
 	it("lights only the current VP lease", () => {

@@ -240,12 +240,12 @@ export function createMidiDeviceView(onSelect: (id: string) => void): MidiDevice
 		if (object?.userData.deviceId) onSelect(object.userData.deviceId);
 	}, { signal: events.signal });
 	const appearance = () => {
-		for (const device of status.snapshot?.devices ?? []) {
-			const item = models.get(device.device_id);
+		for (const device of status.snapshot?.gears ?? []) {
+			const item = models.get(device.gear_id);
 			if (!item) continue;
-			item.model.setAppearance(deviceAppearance(device, status), selected === device.device_id);
+			item.model.setAppearance(deviceAppearance(device, status), selected === device.gear_id);
 			item.label.textContent = device.name;
-			item.label.setAttribute("aria-pressed", String(selected === device.device_id));
+			item.label.setAttribute("aria-pressed", String(selected === device.gear_id));
 		}
 		queue.invalidate();
 	};
@@ -259,8 +259,8 @@ export function createMidiDeviceView(onSelect: (id: string) => void): MidiDevice
 				observingAncestors = true;
 			}
 			status = next;
-			const devices = status.snapshot?.devices ?? [];
-			const nextSignature = JSON.stringify(devices.map((d) => [d.device_id, d.profile_id]));
+			const devices = status.snapshot?.gears ?? [];
+			const nextSignature = JSON.stringify(devices.map((d) => [d.gear_id, d.profile_id]));
 			if (signature !== nextSignature) {
 				signature = nextSignature;
 				for (const { model } of models.values()) model.dispose();
@@ -268,14 +268,14 @@ export function createMidiDeviceView(onSelect: (id: string) => void): MidiDevice
 				fleet.clear();
 				labels.replaceChildren();
 				devices.forEach((device) => {
-					const model = createDeviceModel(device.device_id, device.profile_id);
+					const model = createDeviceModel(device.gear_id, device.profile_id);
 					fleet.add(model.group);
 					const label = document.createElement("button");
 					label.type = "button";
-					label.onclick = () => onSelect(device.device_id);
+					label.onclick = () => onSelect(device.gear_id);
 					labels.append(label);
 					const anchor = new THREE.Vector3();
-					models.set(device.device_id, { model, label, anchor, depth: deviceLayout(device.profile_id).depth, width: deviceLayout(device.profile_id).width, profile: device.profile_id, attempted: false });
+					models.set(device.gear_id, { model, label, anchor, depth: deviceLayout(device.profile_id).depth, width: deviceLayout(device.profile_id).width, profile: device.profile_id, attempted: false });
 				});
 				arrange();
 				fitNeeded = true;

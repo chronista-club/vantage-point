@@ -68,12 +68,12 @@ mod tests {
         access.replace(vec![OwnedPorts {
             device_id: "roto".into(),
             lease: "t".into(),
-            inputs: vec!["Midistage/vp/x:3/1 | Roto-Control".into()],
-            outputs: vec!["Midistage/vp/x:3/2 | Roto-Control".into()],
+            inputs: vec!["Lnx/vp/x:3/1 | Roto-Control".into()],
+            outputs: vec!["Lnx/vp/x:3/2 | Roto-Control".into()],
         }]);
         assert_eq!(
             access.outputs_for("roto"),
-            vec!["Midistage/vp/x:3/2 | Roto-Control".to_string()]
+            vec!["Lnx/vp/x:3/2 | Roto-Control".to_string()]
         );
         assert!(access.outputs_for("lpd8").is_empty());
     }
@@ -85,21 +85,21 @@ mod tests {
             OwnedPorts {
                 device_id: "lpd8".into(),
                 lease: "a".into(),
-                inputs: vec!["Midistage/vp/a/1 | LPD8".into()],
-                outputs: vec!["Midistage/vp/a/2 | LPD8".into()],
+                inputs: vec!["Lnx/vp/a/1 | LPD8".into()],
+                outputs: vec!["Lnx/vp/a/2 | LPD8".into()],
             },
             OwnedPorts {
                 device_id: "xtouch".into(),
                 lease: "b".into(),
-                inputs: vec!["Midistage/vp/b/3 | X-Touch INT".into()],
+                inputs: vec!["Lnx/vp/b/3 | X-Touch INT".into()],
                 outputs: vec![],
             },
         ]);
         assert_eq!(
             access.input("LPD8").as_deref(),
-            Some("Midistage/vp/a/1 | LPD8")
+            Some("Lnx/vp/a/1 | LPD8")
         );
-        assert_eq!(access.input("Midistage/ladyland/c/1 | LPD8"), None);
+        assert_eq!(access.input("Lnx/ladyland/c/1 | LPD8"), None);
         assert_eq!(access.input("LPD"), None);
         let mut next = access.owned.clone();
         next.retain(|p| p.device_id != "lpd8");
@@ -113,8 +113,8 @@ mod tests {
         let old = OwnedPorts {
             device_id: "roto".into(),
             lease: "a".into(),
-            inputs: vec!["Midistage/vp/a/1 | Roto".into()],
-            outputs: vec!["Midistage/vp/a/2 | Roto".into()],
+            inputs: vec!["Lnx/vp/a/1 | Roto".into()],
+            outputs: vec!["Lnx/vp/a/2 | Roto".into()],
         };
         let mut access = MidiAccess::default();
         assert!(access.replace(vec![old.clone()]).is_empty());

@@ -1,17 +1,17 @@
-//! Adapter to the midistage setup contract; no physical port access.
+//! Adapter to the lnx setup contract; no physical port access.
 use crate::{
     roto_setup::{Generated, SETUP},
     roto_setup_sync::{Status, Transport},
 };
-use midistage_client::{ApplyDeviceSetup, Client, SetDeviceSetups, Snapshot, protocol::Phase};
+use lnx_client::{ApplyGearSetup, Client, SetGearSetups, Snapshot, protocol::Phase};
 
 pub(super) fn statuses(snapshot: &Snapshot) -> Vec<Status> {
     snapshot
-        .devices
+        .gears
         .iter()
         .filter(|device| device.state.profile_id == "roto")
         .map(|device| Status {
-            device: device.state.device_id.clone(),
+            device: device.state.gear_id.clone(),
             lease: device
                 .state
                 .lease
@@ -41,13 +41,13 @@ fn reply_status(snapshot: &Snapshot, device: &str) -> anyhow::Result<Status> {
 impl Transport for Client {
     async fn register(&self, device: &str) -> anyhow::Result<Status> {
         let reply = self
-            .set_device_setups(&SetDeviceSetups {
-                device_id: device.to_owned(),
+            .set_gear_setups(&SetGearSetups {
+                gear_id: device.to_owned(),
                 setups: vec![SETUP],
             })
             .await?;
         anyhow::ensure!(
-            reply.devices.iter().any(|d| d.state.device_id == device
+            reply.gears.iter().any(|d| d.state.gear_id == device
                 && d.setup_owners
                     .get("vp")
                     .is_some_and(|seats| seats.contains(&SETUP))),
@@ -65,8 +65,8 @@ impl Transport for Client {
         // KDL's content is JSON; decode with the upstream SDK before crossing the boundary.
         let content = serde_json::from_value(generated.content)?;
         let reply = self
-            .apply_device_setup(&ApplyDeviceSetup {
-                device_id: device.to_owned(),
+            .apply_gear_setup(&ApplyGearSetup {
+                gear_id: device.to_owned(),
                 lease_token: lease.to_owned(),
                 setup: SETUP,
                 content,
@@ -86,10 +86,10 @@ mod tests {
             "colors":vec!["#44c2b5"; 8], "dimGain":0.25})
     }
 
-    /// Run explicitly with the pinned upstream protocol_fixture. It supplies fake
+    /// Run explicitly with the pinned upstream gear_fixture. It supplies fake
     /// devices and never opens CoreMIDI/Serial; the endpoint lives only in TempDir.
     #[tokio::test]
-    #[ignore = "requires MIDISTAGE_TEST_SERVER built from the pinned SDK revision"]
+    #[ignore = "requires LNX_TEST_SERVER built from the pinned SDK revision"]
     async fn isolated_sdk_loopback_registers_applies_and_caches_confirmed_content() {
         use std::sync::{Arc, Mutex};
         use std::time::Duration;
@@ -124,8 +124,8 @@ mod tests {
             serde_json::to_vec(&pins).unwrap(),
         )
         .unwrap();
-        let binary = std::env::var_os("MIDISTAGE_TEST_SERVER")
-            .expect("fixed-revision protocol_fixture path");
+        let binary = std::env::var_os("LNX_TEST_SERVER")
+            .expect("fixed-revision gear_fixture path");
         let mut server = tokio::process::Command::new(binary)
             .arg(dir.path())
             .kill_on_drop(true)
@@ -136,7 +136,7 @@ mod tests {
         let endpoint = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if let Ok(bytes) = std::fs::read(dir.path().join("endpoint.json")) {
-                    break serde_json::from_slice::<midistage_client::Endpoint>(&bytes).unwrap();
+                    break serde_json::from_slice::<lnx_client::Endpoint>(&bytes).unwrap();
                 }
                 assert!(
                     server.try_wait().unwrap().is_none(),
@@ -149,8 +149,8 @@ mod tests {
         .unwrap();
         let (client, _) = Client::connect(
             &endpoint,
-            midistage_client::Hello {
-                protocol_version: midistage_client::protocol::PROTOCOL_VERSION,
+            lnx_client::Hello {
+                protocol_version: lnx_client::protocol::PROTOCOL_VERSION,
                 client_id: "vp".into(),
                 display_name: "VP isolated test".into(),
                 auth_token: String::new(),
@@ -194,9 +194,9 @@ mod tests {
         for _ in 0..20 {
             let snapshot = observed.client.snapshot().await.unwrap();
             let roto = snapshot
-                .devices
+                .gears
                 .iter()
-                .find(|d| d.state.device_id == "roto")
+                .find(|d| d.state.gear_id == "roto")
                 .unwrap();
             assert_eq!(roto.setup_owners.get("vp"), Some(&vec![SETUP]));
             assert_eq!(roto.current_setup, Some(SETUP));
@@ -213,7 +213,7 @@ mod tests {
     }
     fn snapshot() -> Value {
         json!({"sequence":10, "protocol_version":1, "server_epoch":"epoch", "session_id":"session",
-            "devices":[{"device_id":"roto", "profile_id":"roto", "name":"ROTO", "present":true,
+            "gears":[{"gear_id":"roto", "profile_id":"roto", "name":"ROTO", "present":true,
                 "assignment":{"client_id":"vp", "revision":1, "expected":true}, "phase":"active",
                 "lease":{"session_id":"session", "token":"lease"}, "releasing_to":null,
                 "controls":[], "native_ports":{"inputs":[], "outputs":[]}, "error":null,
@@ -240,14 +240,14 @@ mod tests {
             ("lease", Value::Null),
         ] {
             let mut value_json = snapshot();
-            value_json["devices"][0][field] = value;
+            value_json["gears"][0][field] = value;
             let snap: Snapshot = serde_json::from_value(value_json).unwrap();
             let view = statuses(&snap);
             assert_eq!(view.len(), 1);
             assert_eq!(view[0].lease, None, "{field}");
         }
         let mut value = snapshot();
-        value["devices"][0]["profile_id"] = json!("lpd8");
+        value["gears"][0]["profile_id"] = json!("lpd8");
         assert!(statuses(&serde_json::from_value(value).unwrap()).is_empty());
     }
 
@@ -258,7 +258,7 @@ mod tests {
             &std::collections::BTreeMap::new(),
             &crate::roto_midi::VP_ROTO_SETUP,
         );
-        let content: midistage_client::SetupContent =
+        let content: lnx_client::SetupContent =
             serde_json::from_value(generated.content.clone()).unwrap();
         assert_eq!(serde_json::to_value(&content).unwrap(), generated.content);
         assert!(content.knobs.is_empty());
@@ -266,7 +266,7 @@ mod tests {
         assert_eq!(content.switches[7].name, "lane-7");
         assert_eq!(
             content.switches[7].action,
-            midistage_client::SwitchAction::Push
+            lnx_client::SwitchAction::Push
         );
     }
 }

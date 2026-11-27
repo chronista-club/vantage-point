@@ -1,8 +1,8 @@
-//! Deterministic VP setup projection; Serial I/O belongs to midistage.
+//! Deterministic VP setup projection; Serial I/O belongs to lnx-server.
 //! LED は `led_off` = pin 色を暗く（待機）/ `led_on` = 赤（needs-you、design 84 §LED）。点け消しは
 //! `roto_surface` が CC で行い、setup は色だけを焼く。
 use crate::roto_midi::MidiButtonSetup;
-use midistage_profiles::roto_palette::closest_index;
+use lnx_gear::roto_palette::closest_index;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -142,7 +142,7 @@ mod tests {
     // Task: mem_1Cg9QiQeVsk7KD3fcwhXqh
     use super::*;
     use crate::roto_midi::VP_ROTO_SETUP;
-    use midistage_profiles::roto_palette::closest_index;
+    use lnx_gear::roto_palette::closest_index;
     use serde_json::json;
 
     fn pins() -> Value {

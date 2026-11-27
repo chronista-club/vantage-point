@@ -4795,6 +4795,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
+name = "lnx-client"
+version = "0.1.0-alpha3"
+source = "git+https://github.com/chronista-club/lnx.git?rev=8dc6c71a82d78e5ed8773907e58a93a8377c34b8#8dc6c71a82d78e5ed8773907e58a93a8377c34b8"
+dependencies = [
+ "anyhow",
+ "club-unison",
+ "lnx-protocol",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "lnx-gear"
+version = "0.1.0-alpha3"
+source = "git+https://github.com/chronista-club/lnx.git?rev=8dc6c71a82d78e5ed8773907e58a93a8377c34b8#8dc6c71a82d78e5ed8773907e58a93a8377c34b8"
+dependencies = [
+ "serde",
+ "sha1 0.11.0",
+]
+
+[[package]]
+name = "lnx-protocol"
+version = "0.1.0-alpha3"
+source = "git+https://github.com/chronista-club/lnx.git?rev=8dc6c71a82d78e5ed8773907e58a93a8377c34b8#8dc6c71a82d78e5ed8773907e58a93a8377c34b8"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5051,47 +5084,6 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "windows 0.62.2",
-]
-
-[[package]]
-name = "midistage-client"
-version = "0.3.0"
-source = "git+https://github.com/chronista-club/midistage.git?rev=7dd38b905234675f69f0369144f7b56daff33777#7dd38b905234675f69f0369144f7b56daff33777"
-dependencies = [
- "anyhow",
- "club-unison",
- "midistage-protocol",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
-name = "midistage-profiles"
-version = "0.3.0"
-source = "git+https://github.com/chronista-club/midistage.git?rev=7dd38b905234675f69f0369144f7b56daff33777#7dd38b905234675f69f0369144f7b56daff33777"
-dependencies = [
- "serde",
- "sha1 0.11.0",
-]
-
-[[package]]
-name = "midistage-profiles"
-version = "0.91.0"
-dependencies = [
- "serde",
- "sha1 0.11.0",
-]
-
-[[package]]
-name = "midistage-protocol"
-version = "0.3.0"
-source = "git+https://github.com/chronista-club/midistage.git?rev=7dd38b905234675f69f0369144f7b56daff33777#7dd38b905234675f69f0369144f7b56daff33777"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -10564,9 +10556,9 @@ dependencies = [
  "hostname",
  "image",
  "libc",
+ "lnx-client",
+ "lnx-gear",
  "midir",
- "midistage-client",
- "midistage-profiles 0.3.0",
  "notify",
  "objc2",
  "objc2-app-kit",

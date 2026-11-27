@@ -201,7 +201,7 @@ pub fn execute(cmd: MidiCommands) -> Result<()> {
             revision,
             takeover,
         } => midi_use_command(serde_json::json!({"set": {
-            "device_id": device, "enabled": state == "on", "expected_revision": revision, "takeover": takeover
+            "gear_id": device, "enabled": state == "on", "expected_revision": revision, "takeover": takeover
         }})),
         MidiCommands::Lpd8(lpd8_cmd) => execute_lpd8(lpd8_cmd),
         MidiCommands::Xtouch(xtouch_cmd) => execute_xtouch(xtouch_cmd),
@@ -341,7 +341,7 @@ pub(crate) fn roto_autorespond(
     const QUERY_0C: [u8; 8] = [0xF0, 0x00, 0x22, 0x03, 0x02, 0x0A, 0x0C, 0xF7];
     const METER_THRESHOLD: [u8; 10] = [0xF0, 0x00, 0x22, 0x03, 0x02, 0x0C, 0x0B, 0x2F, 0x73, 0xF7];
     if bytes == HELLO {
-        conn_out.send(&crate::device_profile::roto::ping())?;
+        conn_out.send(&crate::gear_profile::roto::ping())?;
         conn_out.send(&METER_THRESHOLD)?;
         return Ok(true);
     }
@@ -396,7 +396,7 @@ fn roto_sysex_label(bytes: &[u8]) -> Option<String> {
 
 /// ROTO-CONTROL サブコマンドを実行
 fn execute_roto(cmd: RotoCommands) -> Result<()> {
-    use crate::device_profile::{DeviceProfile, ParamSpec, Rgb, roto::RotoProfile};
+    use crate::gear_profile::{GearProfile, ParamSpec, Rgb, roto::RotoProfile};
     use std::time::{Duration, Instant};
 
     // demo / anim 共通の虹 8 色（83 色パレットへの量子化を通る）
@@ -472,7 +472,7 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
             Ok(())
         }
         RotoCommands::Anim { port, bpm, secs } => {
-            use crate::device_profile::roto::knob_position;
+            use crate::gear_profile::roto::knob_position;
             use std::f32::consts::{PI, TAU};
 
             let (_conn_in, rx, mut conn_out, port_name) = roto_open(&port)?;
@@ -646,7 +646,7 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
             Ok(())
         }
         RotoCommands::Watch { port, secs } => {
-            use crate::device_input::{DeviceInput, roto::RotoInput};
+            use crate::gear_input::{GearInput, roto::RotoInput};
 
             let (_conn_in, rx, mut conn_out, port_name) = roto_open(&port)?;
 
@@ -665,7 +665,7 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
                 projection = profile.project_track(
                     i,
                     &format!("Lane {}", i + 1),
-                    crate::device_profile::Rgb::new(0, 200, 255),
+                    crate::gear_profile::Rgb::new(0, 200, 255),
                     false,
                 );
             }
@@ -948,7 +948,7 @@ fn execute_roto_control(port: String, daemon_port: u16, secs: u64) -> Result<()>
     use crate::commands::roto_control::{
         LoopExit, QuicLaneSource, QuicSwitchSink, RotoView, roto_control_loop,
     };
-    use crate::device_profile::{DeviceProfile, roto::RotoProfile};
+    use crate::gear_profile::{GearProfile, roto::RotoProfile};
     use std::time::Duration;
 
     let (_conn_in, mut midi_rx, mut conn_out, port_name) = roto_open_async(&port)?;
@@ -1034,12 +1034,12 @@ pub(crate) fn page_slots(
 /// shadow 更新は全 slot で行うが **送信は最後の 1 バッチのみ**（完全な state を含む）。
 /// `learn_parameter` は初回のみ必要（knob activation 用）。
 pub(crate) fn roto_repo_slots(
-    profile: &mut crate::device_profile::roto::RotoProfile,
+    profile: &mut crate::gear_profile::roto::RotoProfile,
     slots: &[(String, bool)],
-    color_active: crate::device_profile::Rgb,
-    color_inactive: crate::device_profile::Rgb,
+    color_active: crate::gear_profile::Rgb,
+    color_inactive: crate::gear_profile::Rgb,
 ) -> Vec<Vec<u8>> {
-    use crate::device_profile::DeviceProfile;
+    use crate::gear_profile::GearProfile;
 
     // 全 slot の shadow を更新し、最後の batch だけ保持する
     let mut last_batch = Vec::new();
@@ -1052,7 +1052,7 @@ pub(crate) fn roto_repo_slots(
             };
             (label.as_str(), c)
         } else {
-            ("", crate::device_profile::Rgb::new(0, 0, 0))
+            ("", crate::gear_profile::Rgb::new(0, 0, 0))
         };
         last_batch = profile.project_track(i, name, color, false);
     }
@@ -1062,12 +1062,12 @@ pub(crate) fn roto_repo_slots(
 /// 初回接続時の完全 projection（track 表示 + knob activation）。
 /// `learn_parameter` は knob を active にするために初回のみ必要。
 pub(crate) fn roto_repo_slots_full(
-    profile: &mut crate::device_profile::roto::RotoProfile,
+    profile: &mut crate::gear_profile::roto::RotoProfile,
     slots: &[(String, bool)],
-    color_active: crate::device_profile::Rgb,
-    color_inactive: crate::device_profile::Rgb,
+    color_active: crate::gear_profile::Rgb,
+    color_inactive: crate::gear_profile::Rgb,
 ) -> Vec<Vec<u8>> {
-    use crate::device_profile::{DeviceProfile, ParamSpec};
+    use crate::gear_profile::{GearProfile, ParamSpec};
 
     let mut msgs = roto_repo_slots(profile, slots, color_active, color_inactive);
     // learn_parameter で knob を active にする（入力が来るようになる）
@@ -1081,7 +1081,7 @@ pub(crate) fn roto_repo_slots_full(
 
 /// X-Touch サブコマンドを実行
 fn execute_xtouch(cmd: XtouchCommands) -> Result<()> {
-    use crate::device_profile::{DeviceProfile, ParamSpec, Rgb, xtouch::XTouchProfile};
+    use crate::gear_profile::{GearProfile, ParamSpec, Rgb, xtouch::XTouchProfile};
 
     match cmd {
         XtouchCommands::Demo { port } => {
@@ -1133,7 +1133,7 @@ fn execute_xtouch(cmd: XtouchCommands) -> Result<()> {
             }
         }
         XtouchCommands::Wave { port, secs } => {
-            use crate::device_profile::xtouch::fader_position;
+            use crate::gear_profile::xtouch::fader_position;
             use std::f32::consts::TAU;
 
             let (mut conn, port_name) = crate::midi::open_output(Some(&port))?;
@@ -1355,7 +1355,7 @@ fn execute_lpd8(cmd: Lpd8Commands) -> Result<()> {
             Ok(())
         }
         Lpd8Commands::Demo { port } => {
-            use crate::device_profile::{DeviceProfile, Rgb, lpd8::Lpd8Profile};
+            use crate::gear_profile::{GearProfile, Rgb, lpd8::Lpd8Profile};
 
             // mk2 はフル RGB LED — 虹 8 色を pad に投影して色再現を確認する
             let demo_colors = [

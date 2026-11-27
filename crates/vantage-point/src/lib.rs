@@ -27,12 +27,11 @@ mod roto_setup_sync;
 /// ROTO の surface（daemon が持つ見え方の正本。needs-you → LED、design 84）
 #[cfg(feature = "midi")]
 mod roto_surface;
-// device_input / device_profile / roto_palette は midistage-profiles に切り出し済み。
-// 既存の crate::device_input::* 等の参照パスを保つため再エクスポートする。
+// gear_input / gear_profile / roto_palette は lnx-gear に集約。
 #[cfg(feature = "midi")]
-pub use midistage_profiles::device_input;
+pub use lnx_gear::gear_input;
 #[cfg(feature = "midi")]
-pub use midistage_profiles::device_profile;
+pub use lnx_gear::gear_profile;
 pub mod conversation;
 /// daemon が後から生えた MIDI port を見るための CoreMIDI 通知 thread（2026-10-14）
 #[cfg(feature = "midi")]
@@ -57,7 +56,7 @@ pub mod resolve;
 /// user の「好み」の SSOT (`~/.config/vp/settings.kdl`)。daemon が書く。doc 59。
 pub mod settings_file;
 #[cfg(feature = "midi")]
-pub use midistage_profiles::roto_palette;
+pub use lnx_gear::roto_palette;
 pub mod daemon_client;
 pub mod node;
 pub mod screenshot;

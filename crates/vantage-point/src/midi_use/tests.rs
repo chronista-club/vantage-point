@@ -1,7 +1,7 @@
 //! Regression coverage for mem_1Cg8P1aoBWatWQaaVTMXo5.
 use super::*;
 use crate::{capability::eventbus::EventBus, midi_access::OwnedPorts};
-use midistage_client::{Snapshot, protocol::wire::Reply};
+use lnx_client::{Snapshot, protocol::wire::Reply};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Notify;
 use unison::network::{
@@ -40,7 +40,7 @@ impl Service {
             released_at_close.clone(),
         );
         server
-            .register_channel("midistage", move |_ctx, stream| {
+            .register_channel("gear", move |_ctx, stream| {
                 let (seen, reply, snapshot, released, registry) = (
                     seen.clone(),
                     reply.clone(),
@@ -66,7 +66,7 @@ impl Service {
                                 protocol_version: PROTOCOL_VERSION,
                                 server_epoch: "test".into(),
                                 session_id: "test-session".into(),
-                                devices: vec![],
+                                gears: vec![],
                                 service: Default::default(),
                             }),
                             error: None,
