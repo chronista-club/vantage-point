@@ -37,8 +37,8 @@ async-trait = { workspace = true }
 vp-paths = { path = "../vp-paths" }
 
 # MIDI ランタイム制御プロトコル + 純粋計算 (GearProfile / GearInput / palette、 I/O なし)
-lnx-gear = { git = "https://github.com/chronista-club/lnx.git", rev = "8dc6c71a82d78e5ed8773907e58a93a8377c34b8", optional = true }
-lnx-client = { git = "https://github.com/chronista-club/lnx.git", rev = "8dc6c71a82d78e5ed8773907e58a93a8377c34b8", optional = true }
+lnx-gear = { git = "https://github.com/chronista-club/lnx.git", tag = "v0.2.0", optional = true }
+lnx-client = { git = "https://github.com/chronista-club/lnx.git", tag = "v0.2.0", optional = true }
 
 # Web server
 axum = { workspace = true, features = ["ws"] }
