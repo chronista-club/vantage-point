@@ -23,7 +23,7 @@ use tokio::task::JoinHandle;
 use crate::capability::component_service::{LayerScope, Service};
 use crate::capability::core::CapabilityEvent;
 use crate::capability::eventbus::EventBus;
-use crate::device_input::DeviceInput;
+use crate::gear_input::GearInput;
 use crate::repo::lane::LaneAddress;
 
 /// hot-plug polling 間隔（doc 23 Q-4: 2〜3s、体感重視）
@@ -74,12 +74,12 @@ fn compute_diff(
     DiscoveryDiff { added, removed }
 }
 
-/// port name から対応する DeviceInput parser を生成する factory。
+/// port name から対応する GearInput parser を生成する factory。
 /// 未対応の機材は None（parser なし = input 監視対象外）。
-fn create_device_input(port_name: &str) -> Option<Box<dyn DeviceInput + Send>> {
-    use crate::device_input::lpd8::Lpd8Input;
-    use crate::device_input::nanokontrol::NanoKontrolInput;
-    use crate::device_input::xtouch::XTouchInput;
+fn create_device_input(port_name: &str) -> Option<Box<dyn GearInput + Send>> {
+    use crate::gear_input::lpd8::Lpd8Input;
+    use crate::gear_input::nanokontrol::NanoKontrolInput;
+    use crate::gear_input::xtouch::XTouchInput;
     use crate::roto_midi::RotoMidiInput;
 
     if port_name.contains("Roto") {
@@ -124,7 +124,7 @@ fn enumerate_ports() -> HashMap<String, (bool, bool)> {
     if let Ok(midi_in) = midir::MidiInput::new("vp-devices-scan") {
         for port in midi_in.ports() {
             if let Ok(name) = midi_in.port_name(&port)
-                && !name.starts_with("Midistage/")
+                && !name.starts_with("Lnx/")
             {
                 result.entry(name).or_insert((false, false)).0 = true;
             }
@@ -134,7 +134,7 @@ fn enumerate_ports() -> HashMap<String, (bool, bool)> {
     if let Ok(midi_out) = midir::MidiOutput::new("vp-devices-scan") {
         for port in midi_out.ports() {
             if let Ok(name) = midi_out.port_name(&port)
-                && !name.starts_with("Midistage/")
+                && !name.starts_with("Lnx/")
             {
                 result.entry(name).or_insert((false, false)).1 = true;
             }
@@ -144,14 +144,14 @@ fn enumerate_ports() -> HashMap<String, (bool, bool)> {
     result
 }
 
-/// Display names for ports granted by Midistage, never a physical-port acquisition fallback.
-fn snapshot_ports(snapshot: Option<&midistage_client::Snapshot>) -> HashMap<String, (bool, bool)> {
+/// Display names for ports granted by lnx-server, never a physical-port acquisition fallback.
+fn snapshot_ports(snapshot: Option<&lnx_client::Snapshot>) -> HashMap<String, (bool, bool)> {
     let mut ports = HashMap::new();
     let Some(snapshot) = snapshot else {
         return ports;
     };
-    for device in &snapshot.devices {
-        if device.state.phase != midistage_client::protocol::Phase::Active
+    for device in &snapshot.gears {
+        if device.state.phase != lnx_client::protocol::Phase::Active
             || device
                 .state
                 .lease
@@ -399,7 +399,7 @@ async fn run_input_listener(
     deps: ListenerDeps,
     native_name: String,
     event_name: String,
-    mut parser: Box<dyn DeviceInput + Send>,
+    mut parser: Box<dyn GearInput + Send>,
     connected: Arc<AtomicBool>,
 ) {
     publish_listener_hold_state(&deps, &event_name, false, "connecting").await;
@@ -484,7 +484,7 @@ fn open_midir_input(native_name: &str) -> Result<OpenedInput, OpenError> {
             listed: names.len(),
             candidates: names
                 .into_iter()
-                .filter(|n| n.starts_with("Midistage/"))
+                .filter(|n| n.starts_with("Lnx/"))
                 .collect(),
         });
     };
@@ -540,7 +540,7 @@ pub struct DeviceRegistry {
     /// service が作る仮想 port だけ、`roto_surface`）
     outputs: Arc<tokio::sync::Mutex<HashMap<String, midir::MidiOutputConnection>>>,
     /// LPD8 pad LED の shadow（RGB 一括 sysex は全 pad 分を持つため差分計算に要る）
-    lpd8_profile: Arc<tokio::sync::Mutex<crate::device_profile::lpd8::Lpd8Profile>>,
+    lpd8_profile: Arc<tokio::sync::Mutex<crate::gear_profile::lpd8::Lpd8Profile>>,
     /// 前回 apply した feedback（section 単位の dedupe — 変わらない sysex を機材に投げない）
     last_feedback: Arc<tokio::sync::Mutex<crate::daemon::protocol::FleetFeedback>>,
     /// 艦隊を握るか（`false` = user が `vp midi off` で機材を他アプリへ譲っている）。
@@ -549,8 +549,8 @@ pub struct DeviceRegistry {
     /// 入口**（input listener / output 接続）がこの 1 つを見る。
     midi_enabled: Arc<AtomicBool>,
     pub(crate) midi_access: Arc<std::sync::RwLock<crate::midi_access::MidiAccess>>,
-    pub(crate) midi_snapshot: Option<midistage_client::Snapshot>,
-    pub(crate) midi_client: Option<Arc<midistage_client::Client>>,
+    pub(crate) midi_snapshot: Option<lnx_client::Snapshot>,
+    pub(crate) midi_client: Option<Arc<lnx_client::Client>>,
     pub(crate) midi_error: Option<String>,
 }
 
@@ -609,23 +609,23 @@ impl DeviceRegistry {
         if fb.fader != last.fader
             && let Some(t) = fb.fader
         {
-            let msg = crate::device_profile::xtouch::fader_position(0, t);
+            let msg = crate::gear_profile::xtouch::fader_position(0, t);
             self.send_output("X-Touch INT", &[msg]).await;
         }
 
         // LPD8 pad RGB: Scene slot の filled 状態（filled = 琥珀 / empty = 消灯）
         if fb.pads != last.pads && !fb.pads.is_empty() {
             let msgs = {
-                use crate::device_profile::DeviceProfile;
+                use crate::gear_profile::GearProfile;
                 let mut profile = self.lpd8_profile.lock().await;
                 let mut msgs: Vec<Vec<u8>> = Vec::new();
                 for pad in fb.pads.iter().filter(|p| p.index < 8) {
                     let color = if let Some([r, g, b]) = pad.color {
-                        crate::device_profile::Rgb::new(r, g, b)
+                        crate::gear_profile::Rgb::new(r, g, b)
                     } else if pad.filled {
-                        crate::device_profile::Rgb::new(255, 180, 40)
+                        crate::gear_profile::Rgb::new(255, 180, 40)
                     } else {
-                        crate::device_profile::Rgb::new(0, 0, 0)
+                        crate::gear_profile::Rgb::new(0, 0, 0)
                     };
                     // project_track は shadow 更新 + LED 一括 sysex を返す — 最後の 1 回分で足りる
                     msgs = profile.project_track(pad.index, "", color, false);
@@ -987,24 +987,24 @@ impl DeviceRegistry {
     /// Revoke ports first, then join old listeners before acknowledging release.
     pub(crate) async fn apply_midi_snapshot(
         &mut self,
-        snapshot: Option<midistage_client::Snapshot>,
+        snapshot: Option<lnx_client::Snapshot>,
     ) {
         use crate::midi_access::OwnedPorts;
         let owned = snapshot
             .as_ref()
             .filter(|_| self.midi_enabled())
             .map(|s| {
-                s.devices
+                s.gears
                     .iter()
                     .filter(|d| {
-                        d.state.phase == midistage_client::protocol::Phase::Active
+                        d.state.phase == lnx_client::protocol::Phase::Active
                             && d.state
                                 .lease
                                 .as_ref()
                                 .is_some_and(|l| l.session_id == s.session_id)
                     })
                     .map(|d| OwnedPorts {
-                        device_id: d.state.device_id.clone(),
+                        device_id: d.state.gear_id.clone(),
                         lease: d.state.lease.as_ref().unwrap().token.clone(),
                         inputs: d.native_ports.inputs.clone(),
                         outputs: d.native_ports.outputs.clone(),
@@ -1060,8 +1060,8 @@ impl DeviceRegistry {
         if !revoked_ports.is_empty() {
             self.republish_hold_state().await;
         }
-        let changed = self.midi_snapshot.as_ref().map(|s| &s.devices)
-            != snapshot.as_ref().map(|s| &s.devices);
+        let changed = self.midi_snapshot.as_ref().map(|s| &s.gears)
+            != snapshot.as_ref().map(|s| &s.gears);
         let previous_ports = snapshot_ports(self.midi_snapshot.as_ref());
         let next_ports = snapshot_ports(snapshot.as_ref());
         self.midi_snapshot = snapshot;
@@ -1117,7 +1117,7 @@ impl DeviceRegistry {
         has_input: bool,
         has_output: bool,
     ) {
-        if port_name.starts_with("Midistage/") {
+        if port_name.starts_with("Lnx/") {
             return;
         }
         let is_new = {
@@ -1359,8 +1359,8 @@ mod tests {
 
     #[test]
     fn nanokontrol_factory_decodes_owned_bridge_inputs() {
-        use crate::device_input::ControlEvent;
-        for name in ["nanoKONTROL2 SLIDER/KNOB", "Midistage/vp/nanokontrol/input"] {
+        use crate::gear_input::ControlEvent;
+        for name in ["nanoKONTROL2 SLIDER/KNOB", "Lnx/vp/nanokontrol/input"] {
             let mut parser = create_device_input(name).expect("nanoKONTROL2 parser");
             assert!(
                 matches!(parser.parse(&[0xB0, 0, 127]), Some(ControlEvent::Fader { index: 0, value }) if value == 1.0)
@@ -1435,7 +1435,7 @@ mod tests {
         (opener, calls)
     }
 
-    const NATIVE: &str = "Midistage/vp/a:1/42 | LPD8 mk2";
+    const NATIVE: &str = "Lnx/vp/a:1/42 | LPD8 mk2";
 
     // mem_1CfzdHyAdTrQu89kb7BAtm: 抜線と接続待ちを実機なしで再現する。
     fn listener_registry(opener: PortOpener) -> DeviceRegistry {
@@ -1472,20 +1472,20 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_hotplug_registers_ports_and_reconnects_without_agent_reports() {
-        // mem_1CgGt6gxJkCAeRMGg9LKRH: daemon starts empty, then Midistage grants a device.
+        // mem_1CgGt6gxJkCAeRMGg9LKRH: daemon starts empty, then lnx-server grants a device.
         let (opener, live) = tracked_opener();
         let mut registry = listener_registry(opener);
         registry.midi_access.write().unwrap().replace(vec![]);
-        let snapshot = |present: bool, generation: u8| -> midistage_client::Snapshot {
+        let snapshot = |present: bool, generation: u8| -> lnx_client::Snapshot {
             serde_json::from_value(serde_json::json!({
                 "sequence":generation,"protocol_version":1,"server_epoch":"test","session_id":"session",
-                "devices":[{"device_id":"nanokontrol","profile_id":"nanokontrol","name":"nanoKONTROL2",
+                "gears":[{"gear_id":"nanokontrol","profile_id":"nanokontrol","name":"nanoKONTROL2",
                     "present":present,"assignment":{"client_id":"vp","revision":1,"expected":true},
                     "phase":if present { "active" } else { "off" },
                     "lease":if present { serde_json::json!({"session_id":"session","token":generation.to_string()}) } else { serde_json::Value::Null },
                     "controls":[],"native_ports":{
-                        "inputs":if present { vec![format!("Midistage/vp/{generation}/1 | nanoKONTROL2 SLIDER/KNOB")] } else { vec![] },
-                        "outputs":if present { vec![format!("Midistage/vp/{generation}/2 | nanoKONTROL2 CTRL")] } else { vec![] }
+                        "inputs":if present { vec![format!("Lnx/vp/{generation}/1 | nanoKONTROL2 SLIDER/KNOB")] } else { vec![] },
+                        "outputs":if present { vec![format!("Lnx/vp/{generation}/2 | nanoKONTROL2 CTRL")] } else { vec![] }
                     }}]
             })).unwrap()
         };
@@ -1528,7 +1528,7 @@ mod tests {
             );
         }
         let mut foreign = snapshot(true, 3);
-        foreign.devices[0].state.lease.as_mut().unwrap().session_id = "other-client".into();
+        foreign.gears[0].state.lease.as_mut().unwrap().session_id = "other-client".into();
         registry.apply_midi_snapshot(Some(foreign)).await;
         assert_eq!(
             registry.device_count().await,
@@ -1594,7 +1594,7 @@ mod tests {
         let map = deps.listeners.write().await;
         let mut ensure = Box::pin(ensure_input_listener(&deps, "LPD8 mk2"));
         assert!(futures::poll!(ensure.as_mut()).is_pending());
-        let next = "Midistage/vp/b:2/43 | LPD8 mk2";
+        let next = "Lnx/vp/b:2/43 | LPD8 mk2";
         deps.access.write().unwrap().owned[0].inputs = vec![next.into()];
         drop(map);
         ensure.await;
@@ -1622,10 +1622,10 @@ mod tests {
         .await
         .unwrap();
         let deps = registry.listener_deps.clone();
-        let next = "Midistage/vp/b:2/43 | LPD8 mk2";
+        let next = "Lnx/vp/b:2/43 | LPD8 mk2";
         let snapshot = serde_json::from_value(serde_json::json!({
             "sequence":2,"protocol_version":1,"server_epoch":"test","session_id":"session",
-            "devices":[{"device_id":"lpd8","profile_id":"lpd8","name":"LPD8 mk2","present":true,
+            "gears":[{"gear_id":"lpd8","profile_id":"lpd8","name":"LPD8 mk2","present":true,
                 "assignment":{"client_id":"vp","revision":1,"expected":true},"phase":"active",
                 "lease":{"session_id":"session","token":"b"},"controls":[],
                 "native_ports":{"inputs":[next],"outputs":[]}}]
@@ -1735,7 +1735,7 @@ mod tests {
             .replace(vec![crate::midi_access::OwnedPorts {
                 device_id: "lpd8".into(),
                 lease: "b".into(),
-                inputs: vec!["Midistage/vp/b:2/43 | LPD8 mk2".into()],
+                inputs: vec!["Lnx/vp/b:2/43 | LPD8 mk2".into()],
                 outputs: vec![],
             }]);
         tokio::time::sleep(Duration::from_millis(60)).await;
@@ -1858,7 +1858,7 @@ mod midi_handoff_tests {
     async fn release_joins_only_revoked_device_tasks_before_acknowledgement() {
         let mut registry = DeviceRegistry::new(Arc::new(EventBus::new()));
         registry.midi_enabled.store(true, Ordering::Relaxed);
-        let port = |id: &str| format!("Midistage/vp/{id}/1 | {id}");
+        let port = |id: &str| format!("Lnx/vp/{id}/1 | {id}");
         registry.midi_access.write().unwrap().replace(
             ["roto", "lpd8"]
                 .into_iter()
@@ -1896,9 +1896,9 @@ mod midi_handoff_tests {
                 connected: Arc::new(AtomicBool::new(true)),
             },
         );
-        let snapshot: midistage_client::Snapshot = serde_json::from_value(serde_json::json!({
+        let snapshot: lnx_client::Snapshot = serde_json::from_value(serde_json::json!({
             "sequence":2,"protocol_version":1,"server_epoch":"test","session_id":"session",
-            "devices":[{"device_id":"lpd8","profile_id":"lpd8","name":"LPD8","present":true,
+            "gears":[{"gear_id":"lpd8","profile_id":"lpd8","name":"LPD8","present":true,
                 "assignment":{"client_id":"vp","revision":1,"expected":true},"phase":"active",
                 "lease":{"session_id":"session","token":"lpd8"},"controls":[],
                 "native_ports":{"inputs":[port("lpd8")],"outputs":[]}}]
@@ -1925,7 +1925,7 @@ mod midi_handoff_tests {
 #[cfg(test)]
 mod roto_midi_tests {
     use super::*;
-    use crate::device_input::ControlEvent;
+    use crate::gear_input::ControlEvent;
 
     #[test]
     fn roto_factory_accepts_only_vp_setup_buttons() {
@@ -1964,7 +1964,7 @@ mod roto_midi_tests {
 
     #[tokio::test]
     async fn roto_uses_owned_input_only_listener() {
-        let native = "Midistage/vp/test/1 | Roto-Control";
+        let native = "Lnx/vp/test/1 | Roto-Control";
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count = calls.clone();
         let opened = Arc::new(tokio::sync::Notify::new());
@@ -2013,7 +2013,7 @@ mod roto_lifetime_tests {
     async fn lease_generation_change_closes_roto_even_when_port_name_is_reused() {
         let mut registry = DeviceRegistry::new(Arc::new(EventBus::new()));
         registry.midi_enabled.store(true, Ordering::Relaxed);
-        let name = "Midistage/vp/reused/1 | Roto-Control";
+        let name = "Lnx/vp/reused/1 | Roto-Control";
         let mut events = registry
             .event_bus
             .subscribe("roto-reset", "devices.device_connected")
@@ -2075,7 +2075,7 @@ mod roto_lifetime_tests {
         );
         let snapshot = serde_json::from_value(serde_json::json!({
             "sequence":2,"protocol_version":1,"server_epoch":"test","session_id":"session",
-            "devices":[{"device_id":"roto","profile_id":"roto","name":"Roto-Control","present":true,
+            "gears":[{"gear_id":"roto","profile_id":"roto","name":"Roto-Control","present":true,
                 "assignment":{"client_id":"vp","revision":1,"expected":true},"phase":"active",
                 "lease":{"session_id":"session","token":"new"},"controls":[],
                 "native_ports":{"inputs":[name],"outputs":[]}}]

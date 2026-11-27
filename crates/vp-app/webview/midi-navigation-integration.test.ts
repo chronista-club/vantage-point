@@ -203,7 +203,7 @@ it('nanoKONTROL S1–S8 select the shared pins once per press and reset on disco
   dispatchDom(w, new w.CustomEvent('vp:midi-settings', {detail:{
     slots:Array.from({length:8}, (_,i) => ({path:'/vp',address:'vp/sub'+i})), colors:Array(8).fill('#123456'),
   }}));
-  const port = 'Midistage/vp/nanokontrol/input';
+  const port = 'Lnx/vp/nanokontrol/input';
   const send = (index:number, pressed:boolean, type='button', port_name=port) => dispatchDom(w, new w.CustomEvent('vp:midi-navigation', {
     cancelable:true, detail:{port_name,event:{type,index,pressed,value:0.5}},
   }));

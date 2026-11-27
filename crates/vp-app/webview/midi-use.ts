@@ -3,7 +3,7 @@ import { createMidiDeviceView, type MidiDeviceView } from "./midi-device-view";
 
 /** Per-device use settings. The daemon owns the client and all MIDI I/O. */
 export interface Device {
-	device_id: string;
+	gear_id: string;
 	profile_id: string;
 	name: string;
 	present: boolean;
@@ -17,7 +17,7 @@ export interface MidiUseStatus {
 	connected?: boolean;
 	error?: string | null;
 	request_error?: string;
-	snapshot?: { sequence: number; session_id: string; devices: Device[] } | null;
+	snapshot?: { sequence: number; session_id: string; gears: Device[] } | null;
 }
 type Send = (payload: Record<string, unknown>) => void;
 let root: HTMLElement | null = null;
@@ -141,7 +141,7 @@ function change(device: Device, enabled: boolean, takeover = false) {
 	failure = "";
 	request({
 		set: {
-			device_id: device.device_id,
+			gear_id: device.gear_id,
 			enabled,
 			expected_revision: device.assignment.revision,
 			takeover,
@@ -156,7 +156,7 @@ function draw() {
 	const focusedTab = tabs?.contains(document.activeElement)
 		? (document.activeElement as HTMLElement).dataset.midiTab : undefined;
 	tabs?.replaceChildren();
-	for (const [id, name] of [["", "全体"], ...(status.snapshot?.devices ?? []).map(d => [d.device_id, d.name])]) {
+	for (const [id, name] of [["", "全体"], ...(status.snapshot?.gears ?? []).map(d => [d.gear_id, d.name])]) {
 		const tab = element("button", name);
 		tab.type = "button";
 		tab.id = `midi-tab-${encodeURIComponent(id)}`;
@@ -238,18 +238,18 @@ function draw() {
 		box.append(confirm, cancel);
 		root.append(box);
 	}
-	for (const d of status.snapshot?.devices ?? []) {
+	for (const d of status.snapshot?.gears ?? []) {
 		const row = element("div");
 		row.className = "midi-use-row";
-		row.dataset.midiRow = d.device_id;
+		row.dataset.midiRow = d.gear_id;
 		row.onclick = (event) => {
-			if (!(event.target as Element).closest("input,label")) selectDevice(d.device_id);
+			if (!(event.target as Element).closest("input,label")) selectDevice(d.gear_id);
 		};
 		const name = element("div");
 		name.className = "midi-use-name";
 		const select = element("button", d.name);
 		select.type = "button";
-		select.dataset.midiSelect = d.device_id;
+		select.dataset.midiSelect = d.gear_id;
 		name.append(select);
 		const detail = element("span", stateLabel(d));
 		if (d.profile_id === "nanokontrol") detail.append(" · 標準 CC (ch1)、LED 表示は未対応");
@@ -259,7 +259,7 @@ function draw() {
 		const input = element("input");
 		input.type = "checkbox";
 		input.checked = d.assignment.client_id === "vp";
-		input.dataset.midiDevice = d.device_id;
+		input.dataset.midiDevice = d.gear_id;
 		input.setAttribute("aria-label", `${d.name} を VP で使用`);
 		input.disabled =
 			!status.enabled ||
@@ -289,7 +289,7 @@ function draw() {
 }
 
 function selectDevice(id: string | null): void {
-	const next = status.snapshot?.devices.some((d) => d.device_id === id) ? id : null;
+	const next = status.snapshot?.gears.some((d) => d.gear_id === id) ? id : null;
 	if (selected !== next && confirmation) {
 		confirmation = null;
 		information?.querySelector(".midi-use-confirm")?.remove();

@@ -1,5 +1,5 @@
-//! VP の MIDI モード契約（design 84）。Serial 書き込みは midistage が担当する。
-use crate::device_input::{ControlEvent, DeviceInput};
+//! VP の MIDI モード契約（design 84）。Serial 書き込みは lnx-server が担当する。
+use crate::gear_input::{ControlEvent, GearInput};
 
 pub(crate) struct MidiButtonSetup {
     /// Human MIDI channel (1..=16).
@@ -37,7 +37,7 @@ pub(crate) fn switch_led(index: usize, on: bool) -> [u8; 3] {
 
 /// Input only: no handshake, mode switching, learning or feedback frames.
 pub(crate) struct RotoMidiInput;
-impl DeviceInput for RotoMidiInput {
+impl GearInput for RotoMidiInput {
     fn parse(&mut self, msg: &[u8]) -> Option<ControlEvent> {
         let [status, cc, value] = *msg else {
             return None;

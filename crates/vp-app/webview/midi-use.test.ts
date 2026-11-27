@@ -7,9 +7,9 @@ const state = (revision = 3) => ({
 	snapshot: {
 		sequence: revision,
 		session_id: "vp-session",
-		devices: [
+		gears: [
 			{
-				device_id: "roto",
+				gear_id: "roto",
 				profile_id: "roto",
 				name: "ROTO-CONTROL",
 				present: true,
@@ -68,7 +68,7 @@ it("requires explicit takeover and retains the revision the user saw", () => {
 	(document.querySelector("[data-midi-confirm]") as HTMLButtonElement).click();
 	expect(send).toHaveBeenLastCalledWith({
 		set: {
-			device_id: "roto",
+			gear_id: "roto",
 			enabled: true,
 			expected_revision: 3,
 			takeover: true,
@@ -81,8 +81,8 @@ it("keeps per-device settings disabled when the master or service is unavailable
 	mountMidiUse(document.querySelector("#device-list")!, vi.fn());
 	const off = state();
 	off.enabled = false;
-	off.snapshot.devices[0].assignment.client_id = "vp";
-	off.snapshot.devices[0].lease.session_id = "vp-session";
+	off.snapshot.gears[0].assignment.client_id = "vp";
+	off.snapshot.gears[0].lease.session_id = "vp-session";
 	renderMidiUse(off);
 	expect(document.body.textContent).not.toContain("VP で使用中");
 	expect(
@@ -103,8 +103,8 @@ it("marks a previous active lease as unverified after service disconnection", ()
 	document.body.innerHTML = '<div id="device-list"></div>';
 	mountMidiUse(document.querySelector("#device-list")!, vi.fn());
 	const previous = state();
-	previous.snapshot.devices[0].assignment.client_id = "vp";
-	previous.snapshot.devices[0].lease.session_id = "vp-session";
+	previous.snapshot.gears[0].assignment.client_id = "vp";
+	previous.snapshot.gears[0].lease.session_id = "vp-session";
 	renderMidiUse(previous);
 	expect(document.body.textContent).toContain("VP で使用中");
 	renderMidiUse({ ...previous, connected: false });
@@ -166,7 +166,7 @@ it("switches the main view and information with bottom tabs, including keyboard 
 	document.body.innerHTML = '<div id="device-list"></div>';
 	mountMidiUse(document.querySelector("#device-list")!, send);
 	const snapshot = state();
-	snapshot.snapshot.devices.push({ ...snapshot.snapshot.devices[0], device_id: "lpd", profile_id: "lpd8", name: "LPD8" });
+	snapshot.snapshot.gears.push({ ...snapshot.snapshot.gears[0], gear_id: "lpd", profile_id: "lpd8", name: "LPD8" });
 	renderMidiUse(snapshot);
 	const tabs = () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
 	expect(tabs().map(t => t.textContent)).toEqual(["全体", "ROTO-CONTROL", "LPD8"]);
@@ -218,12 +218,12 @@ it("allows nanoKONTROL2 takeover through the same revision confirmation", () => 
 	document.body.innerHTML = '<div id="device-list"></div>';
 	mountMidiUse(document.querySelector("#device-list")!, send);
 	const next = state();
-	Object.assign(next.snapshot.devices[0], { device_id: "nanokontrol", profile_id: "nanokontrol", name: "nanoKONTROL2" });
+	Object.assign(next.snapshot.gears[0], { gear_id: "nanokontrol", profile_id: "nanokontrol", name: "nanoKONTROL2" });
 	renderMidiUse(next);
 	const toggle = document.querySelector('[data-midi-device="nanokontrol"]') as HTMLInputElement;
 	expect(toggle.disabled).toBe(false);
 	toggle.click();
 	expect(send.mock.calls.some(([p]) => p.set)).toBe(false);
 	(document.querySelector("[data-midi-confirm]") as HTMLButtonElement).click();
-	expect(send).toHaveBeenLastCalledWith({set:{ device_id:"nanokontrol", enabled:true, expected_revision:3, takeover:true }});
+	expect(send).toHaveBeenLastCalledWith({set:{ gear_id:"nanokontrol", enabled:true, expected_revision:3, takeover:true }});
 });

@@ -923,7 +923,7 @@ pub(crate) async fn handle_daemon_control(
                     .as_ref()
                     .ok_or("MIDI registry unavailable")?;
                 if let Some(request) = payload.get("set") {
-                    let request: midistage_client::SetEnabled =
+                    let request: lnx_client::SetEnabled =
                         serde_json::from_value(request.clone()).map_err(|e| e.to_string())?;
                     crate::midi_use::set_device(devices, request)
                         .await
@@ -3087,11 +3087,11 @@ mod tests {
             &actions,
             &devices,
             "devices/midi-use",
-            serde_json::json!({"set":{"device_id":"roto","enabled":true}}),
+            serde_json::json!({"set":{"gear_id":"roto","enabled":true}}),
         )
         .await;
         assert!(invalid.unwrap_err().contains("expected_revision"));
-        let disconnected = handle_daemon_control(&cap, &actions, &devices, "devices/midi-use", serde_json::json!({"set":{"device_id":"roto","enabled":true,"expected_revision":3,"takeover":true}})).await;
+        let disconnected = handle_daemon_control(&cap, &actions, &devices, "devices/midi-use", serde_json::json!({"set":{"gear_id":"roto","enabled":true,"expected_revision":3,"takeover":true}})).await;
         assert!(disconnected.is_err());
         assert!(registry.read().await.midi_snapshot.is_none());
     }

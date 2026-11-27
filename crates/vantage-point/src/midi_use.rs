@@ -1,8 +1,8 @@
-//! Machine-scoped connection to midistaged. A disabled VP observes without taking leases.
+//! Machine-scoped connection to lnx-server. A disabled VP observes without taking leases.
 use crate::devices::DeviceRegistry;
 use crate::roto_setup_sync::Status;
 use crate::roto_surface::{RotoSurface, leds_for_pins, ready};
-use midistage_client::{
+use lnx_client::{
     Client, Endpoint, Hello, Quiesced, SetEnabled,
     protocol::{PROTOCOL_VERSION, Phase},
 };
@@ -48,9 +48,7 @@ impl MidiUseTask {
 }
 
 pub(crate) fn start(registry: Weak<RwLock<DeviceRegistry>>) -> MidiUseTask {
-    let path = std::env::var_os("HOME").map(|home| {
-        PathBuf::from(home).join("Library/Application Support/Midistage/endpoint.json")
-    });
+    let path = Client::default_endpoint_path();
     start_with_path(registry, path)
 }
 
@@ -176,14 +174,14 @@ async fn run(
                 state.apply_midi_snapshot(Some(snapshot.clone())).await;
             }
             drop(devices);
-            for device in &snapshot.devices {
+            for device in &snapshot.gears {
                 if device.state.phase == Phase::Releasing
                     && let Some(lease) = &device.state.lease
                     && lease.session_id == snapshot.session_id
                     && !acknowledged.contains(&lease.token)
                 {
                     let request = Quiesced {
-                        device_id: device.state.device_id.clone(),
+                        gear_id: device.state.gear_id.clone(),
                         lease_token: lease.token.clone(),
                     };
                     tokio::select! {

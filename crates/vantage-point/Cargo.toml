@@ -15,7 +15,7 @@ path = "src/lib.rs"
 # 旧 `gui` feature (tao / muda) は 2026-09-02 に撤去 — この crate 内に参照が 0 件の dead feature で、
 # default-on のため `cargo build -p vantage-point` が使わない GUI stack を毎回 compile していた。GUI は vp-app crate。
 default = ["midi"]
-midi = ["dep:midir", "dep:midistage-profiles", "dep:midistage-client"]
+midi = ["dep:midir", "dep:lnx-gear", "dep:lnx-client"]
 
 [dependencies]
 # VP / GFP 共有のチャット基盤（chronista-club/agent-chat を vendor/agent-chat に submodule で固定、design 86）。
@@ -36,9 +36,9 @@ async-trait = { workspace = true }
 # Path / zone 解決 (XDG SSOT、 vp-app と共有。 Stage 3 で config.rs から抽出)
 vp-paths = { path = "../vp-paths" }
 
-# MIDI ランタイム制御プロトコル + 純粋計算 (DeviceProfile / DeviceInput / palette、 I/O なし)
-midistage-profiles = { git = "https://github.com/chronista-club/midistage.git", rev = "7dd38b905234675f69f0369144f7b56daff33777", optional = true }
-midistage-client = { git = "https://github.com/chronista-club/midistage.git", rev = "7dd38b905234675f69f0369144f7b56daff33777", optional = true }
+# MIDI ランタイム制御プロトコル + 純粋計算 (GearProfile / GearInput / palette、 I/O なし)
+lnx-gear = { git = "https://github.com/chronista-club/lnx.git", rev = "8dc6c71a82d78e5ed8773907e58a93a8377c34b8", optional = true }
+lnx-client = { git = "https://github.com/chronista-club/lnx.git", rev = "8dc6c71a82d78e5ed8773907e58a93a8377c34b8", optional = true }
 
 # Web server
 axum = { workspace = true, features = ["ws"] }

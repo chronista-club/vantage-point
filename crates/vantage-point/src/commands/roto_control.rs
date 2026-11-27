@@ -12,8 +12,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::capability::core::CapabilityEvent;
 use crate::capability::eventbus::EventBus;
-use crate::device_input::{ControlEvent, DeviceInput, roto::RotoInput};
-use crate::device_profile::{Rgb, roto::RotoProfile};
+use crate::gear_input::{ControlEvent, GearInput, roto::RotoInput};
+use crate::gear_profile::{Rgb, roto::RotoProfile};
 
 use super::midi::{
     LaneNav, RotoLane, page_slots, parse_node_lanes, roto_autorespond, roto_lane_nav,

@@ -1,4 +1,4 @@
-//! Verified Midistage gear assets. No caller-supplied filesystem paths.
+//! Verified lnx gear assets. No caller-supplied filesystem paths.
 use sha2::{Digest, Sha256};
 use std::{io::Read, path::Path};
 
@@ -75,7 +75,7 @@ pub fn read_asset(root: &Path, request: &str) -> Option<(Vec<u8>, &'static str)>
 }
 
 pub fn gear_root() -> Option<std::path::PathBuf> {
-    Some(dirs::data_dir()?.join("Midistage").join("gear"))
+    Some(dirs::data_dir()?.join("club.chronista.lnx-server").join("gear"))
 }
 
 #[cfg(test)]
