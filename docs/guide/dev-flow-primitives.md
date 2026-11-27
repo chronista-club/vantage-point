@@ -260,15 +260,19 @@ JSON は `tier`, `reasons`, `review_required`, `pr_mode`, `merge_authority`, `ch
 `origin/HEAD`。未取得の ref はあらかじめ fetch する。
 
 基準 ref との merge-base から committed + staged + unstaged + untracked の全体を集計する。
-C の危険な境界が最優先。その他は docs / テスト専用のみ、または実装 1 ファイル・80 行以内なら A、残りは B。
-行数不明の binary 実装は B。rename は削除と追加を別々に数える（危険な旧パスを見落とさないため）。
+危険な境界に触れる変更、実装 6 ファイル以上、または実装の追加削除合計が 300 行超なら C。
+規模の集計には docs / テスト専用ファイルを含めない。C でなく、サポートファイルのみ、または非 binary の
+実装 1 ファイル・80 行以内なら A、残りは B（危険パスを含まない実装 1〜5 ファイル・300 行以下の中規模変更や binary）。
+rename は削除と追加を別々に数える（危険な旧パスを見落とさないため）。
 詳しい境界は [design 90](../design/90-diff-tier-classifier.md) と `flow.rs`。
 
 `flow_progress` / `vp flow progress --format json` の各 `sub_status` に `diff_tier` / `tier_reasons` が入り、
 テーブルの `TIER` 列は `A` / `B` / `C` / `-` を表示する。段なしは空 diff または取得不可。
 取得不可は `tier_reasons` に理由を残すため、`-` を A と解釈しない。
 
-handoff の段は初期目安で、実物の判定による引き下げも引き上げも許す。A は gate + claims、B は moody-blues、
-C は Santa + Draft PR。Ready の wire（`kind: "ready"` または `"complete"`）には `tier` と
+handoff の段は初期目安で、実物の判定による引き下げも引き上げも許す。A は gate + claims。
+B は moody-blues の指摘 0（COMMIT READY）まで修正と再レビューを繰り返し、3〜4 巡で収束しなければ lead に相談する。
+C は Santa の moody-blues × sticky-fingers が両方 PASS するまで収束 loop を回し、Draft PR で提出する。
+レビュー履歴は PR 本文に残す。CLI の text も収束手順を案内する。Ready の wire（`kind: "ready"` または `"complete"`）には `tier` と
 `tier_reasons`（classify JSON の `reasons`）を添える。C の merge は lead レビュー後、`needs_user` で
 mako の可否を確認する。CLI は案内を出すだけで、wire 送信や承認は行わない。

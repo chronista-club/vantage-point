@@ -86,9 +86,11 @@ spec の頭に `段: A | B | C | 調査` を書く。書き忘れは **B 扱い*
 | 段 | 対象の目安 | Ready 前の自己レビュー | PR | merge |
 |---|---|---|---|---|
 | **A: 直し** | 1 か所の bug 修正、doc、設定値。自分の worktree で完結し revert 1 発で戻る | なし（gate と claims で足りる） | `git next` で出す | lead（CI 緑で） |
-| **B: 機能** | 複数ファイル、新しい挙動、UI 変更。他の人が触って初めて分かる | **moody-blues を 1 回**。指摘と対応（直した / 見送った理由）を PR 本文に書く | 出す | lead（lead 側のレビューも残す） |
-| **C: 危ないもの** | daemon の lifecycle、安全装置（guard）、protocol / wire の形、plugin の release、実機まわり、2 repo にまたがるもの。戻すのに他人や再起動が要る | **santa**（moody-blues × sticky-fingers） | **draft** で出し、lead レビュー後に ready へ | lead レビュー後、**mako が可否** |
+| **B: 機能** | 複数ファイル、新しい挙動、UI 変更。他の人が触って初めて分かる | **moody-blues（COMMIT READY まで収束 loop）**。指摘が出たら修正後に再レビューし、指摘 0 に収束させる（履歴を PR 本文に書く） | 出す | lead（lead 側のレビューも残す） |
+| **C: 危ないもの** | daemon の lifecycle、安全装置（guard）、protocol / wire の形、plugin の release、実機まわり、2 repo にまたがるもの、大規模変更（実装 6 ファイル以上 or 300 行超）。戻すのに他人や再起動が要るものを含む | **santa**（moody-blues × sticky-fingers が両方 PASS するまで収束 loop） | **draft** で出し、lead レビュー後に ready へ | lead レビュー後、**mako が可否** |
 | **調査** | 読むだけ・実測だけ・設計案。何も変えない | — | **出さない**。`spike/`（local のみ）か `exp/`（push 可）。報告は wire + creo の annotation | — |
+
+段 B の収束 loop は、3〜4 巡で指摘 0（COMMIT READY）に至らなければ lead に相談する。
 
 全段で変わらないもの:
 

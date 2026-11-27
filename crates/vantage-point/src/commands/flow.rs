@@ -658,6 +658,29 @@ mod diff_output_tests {
         }
     }
     #[test]
+    fn classification_text_explains_review_convergence() {
+        for (lines, terms) in [
+            (
+                120,
+                vec!["COMMIT READY", "指摘 0", "再レビュー", "3〜4", "lead"],
+            ),
+            (301, vec!["santa", "両方 PASS", "再レビュー"]),
+        ] {
+            let c = crate::flow::classify_diff(&[crate::flow::DiffFileStat {
+                path: "src/a.rs".into(),
+                insertions: lines,
+                deletions: 0,
+                binary: false,
+            }])
+            .unwrap();
+            let text = render_classification(Some(&c));
+            for term in terms {
+                assert!(text.contains(term), "missing {term}: {text}");
+            }
+        }
+    }
+
+    #[test]
     fn classification_text_explains_c_gate_and_empty_diff() {
         let c = crate::flow::classify_diff(&[crate::flow::DiffFileStat {
             path: "AGENTS.md".into(),
@@ -690,6 +713,11 @@ fn render_classification(c: Option<&crate::flow::DiffClassification>) -> String 
     );
     for reason in &c.reasons {
         text.push_str(&format!("- {reason}\n"));
+    }
+    match c.tier {
+        crate::flow::DiffTier::A => {}
+        crate::flow::DiffTier::B => text.push_str("moody-blues: 指摘 0（COMMIT READY）まで修正と再レビューを繰り返す。3〜4 巡で収束しなければ lead に相談してください。\n"),
+        crate::flow::DiffTier::C => text.push_str("santa: moody-blues × sticky-fingers が両方 PASS するまで修正と再レビューを繰り返してください。\n"),
     }
     text.push_str("Ready wire に tier と tier_reasons を添えて lead へ報告してください。\n");
     if c.tier == crate::flow::DiffTier::C {

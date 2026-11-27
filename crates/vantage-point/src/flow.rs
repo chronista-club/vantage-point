@@ -85,6 +85,13 @@ pub fn classify_diff(files: &[DiffFileStat]) -> Option<DiffClassification> {
         .iter()
         .map(|f| f.insertions + f.deletions)
         .sum();
+    if implementation.len() >= 6 || impl_lines > 300 {
+        reasons.push(format!(
+            "大規模な実装変更 ({} impl files, {} lines)",
+            implementation.len(),
+            impl_lines
+        ));
+    }
     let tier = if !reasons.is_empty() {
         DiffTier::C
     } else if implementation.is_empty() {

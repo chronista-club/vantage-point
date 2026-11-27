@@ -119,3 +119,58 @@ fn midi_feedback_output_changes_require_c() {
     assert_eq!(c.tier, DiffTier::C);
     assert!(c.reasons[0].contains("devices.rs"));
 }
+
+#[test]
+fn five_implementation_files_and_300_lines_remain_b() {
+    let files: Vec<_> = (0..5)
+        .map(|i| stat(&format!("src/{i}.rs"), 40, 20))
+        .collect();
+    assert_eq!(classify_diff(&files).unwrap().tier, DiffTier::B);
+}
+
+#[test]
+fn six_implementation_files_require_c_even_with_60_lines() {
+    let files: Vec<_> = (0..6).map(|i| stat(&format!("src/{i}.rs"), 5, 5)).collect();
+    let c = classify_diff(&files).unwrap();
+    assert_eq!(c.tier, DiffTier::C);
+    assert!(
+        c.reasons
+            .contains(&"大規模な実装変更 (6 impl files, 60 lines)".into())
+    );
+    assert_eq!(
+        (
+            c.review_required.as_str(),
+            c.pr_mode.as_str(),
+            c.merge_authority.as_str()
+        ),
+        ("santa", "draft", "user")
+    );
+}
+
+#[test]
+fn one_implementation_file_with_301_lines_requires_c() {
+    let c = classify_diff(&[stat("src/a.rs", 151, 150)]).unwrap();
+    assert_eq!(c.tier, DiffTier::C);
+    assert!(
+        c.reasons
+            .contains(&"大規模な実装変更 (1 impl files, 301 lines)".into())
+    );
+}
+
+#[test]
+fn many_support_files_do_not_raise_small_implementation_tier() {
+    let mut files = vec![stat("src/a.rs", 20, 10)];
+    for i in 0..100 {
+        files.push(stat(&format!("docs/{i}.md"), 1000, 1000));
+        files.push(stat(&format!("tests/{i}.rs"), 1000, 1000));
+    }
+    assert_eq!(classify_diff(&files).unwrap().tier, DiffTier::A);
+}
+
+#[test]
+fn risky_path_and_large_change_keep_both_reasons() {
+    let c = classify_diff(&[stat("AGENTS.md", 1, 0), stat("src/a.rs", 301, 0)]).unwrap();
+    assert_eq!(c.tier, DiffTier::C);
+    assert!(c.reasons.iter().any(|r| r.contains("AGENTS.md")));
+    assert!(c.reasons.iter().any(|r| r.contains("大規模な実装変更")));
+}
