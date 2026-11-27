@@ -635,7 +635,7 @@ impl VantageMcp {
 
     /// flow_progress: parallel work 集約 view (read-only)
     #[tool(
-        description = "Parallel work 集約 view: 現 repo の全 Lane (root + subs) の sub_status (git ahead/behind/dirty/merged) と per-lane 未読 wire 数を 1 view で返す。 read-only (= cursor は触らない)、 cache OK。 dev-flow P5 (= 並列追跡) で list_lanes + wire_recv + tmux_capture を別々に叩く代替。"
+        description = "Parallel work 集約 view: 現 repo の全 Lane (root + subs) の sub_status (git ahead/behind/dirty/merged + diff_tier A/B/C・tier_reasons) と per-lane 未読 wire 数を 1 view で返す。 read-only (= cursor は触らない)、 cache OK。 dev-flow P5 (= 並列追跡) で list_lanes + wire_recv + tmux_capture を別々に叩く代替。"
     )]
     async fn flow_progress(
         &self,

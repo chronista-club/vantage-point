@@ -72,11 +72,14 @@ lane の一覧は git-native に取得する（manifest ファイルは存在し
 - `git worktree list` — live registry（worktree lane の全列挙）
 - `git branch --list 'wip/*' 'review/*'` — lane branch の列挙（`git board` は段ごとに並べる）
 
-### sub lane の権限 — task の段（2026-10-17、mako 裁定）
+### sub lane の権限 — task の段（2026-10-17 / 2026-11-27、mako 裁定）
 
 sub lane が「どこまで自分で判断してよいか」は lane ではなく **task ごと**に決まる。lead が handoff の
-spec の頭に `段: A | B | C | 調査` を書く。書き忘れは **B 扱い**（安全側）。lane は段を**上げる**のは
-自由（「触ってみたら daemon に及ぶので C で進めます」と wire で一言）、**下げる**のは lead に聞く。
+spec の頭に `段: A | B | C | 調査` を書く。書き忘れは **B 扱い**（安全側）。これは着手時の初期目安。
+**出荷（Ready / PR）時は実物の diff を `vp flow classify` で分類した段を使う**
+（`flow_progress` / `vp flow progress --format table` でも確認できる）。段を**下げることも上げることも許す**。
+実物が A なら moody-blues を省略して gate + claims で出せる。C の境界に触れたら Santa + Draft PR に上げる。
+分類の取得失敗を A や変更なしとして扱わず、原因を解消してから出荷する。調査は引き続き変更・PR なし。
 
 決め方の軸は 1 つ — **壊れたときに戻せるか、誰を巻き込むか**。
 
@@ -89,6 +92,9 @@ spec の頭に `段: A | B | C | 調査` を書く。書き忘れは **B 扱い*
 
 全段で変わらないもの:
 
+- Ready の wire（`kind: "ready"` または `"complete"`）には、最新の `vp flow classify --format json` の
+  `tier: "A" | "B" | "C"` と `tier_reasons`（出力の `reasons`）を添える。
+  C は lead レビュー後に `needs_user` で mako の merge 可否を確認する
 - TDD、gate（`cargo fmt` / `mise run check` / clippy `-D warnings` / `mise run test` / `mise run claims`）、
   Ready は証拠付き（何を検証し、何を未検証で残したか、実機で見るべき手順）
 - 禁止: daemon 再起動 / `app:swap`、merge、他 lane の worktree を触る、実機の書き込み系（MIDI 設定・Serial 書き込み）

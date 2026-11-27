@@ -415,6 +415,10 @@ pub struct SubStatusWire {
     pub last_commit: String,
     #[serde(default)]
     pub is_merged: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tier_reasons: Vec<String>,
 }
 
 /// doc 11 PR-C: daemon repo-proxy ask `agents_list` 応答 (`{agents:[...]}`) の 1 entry。
@@ -462,5 +466,26 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""state":"running""#), "got: {json}");
         assert!(!json.contains("process_status"), "got: {json}");
+    }
+}
+
+#[cfg(test)]
+mod diff_tier_tests {
+    use super::*;
+    #[test]
+    fn sub_status_retains_diff_classification_and_accepts_old_producer() {
+        let old: SubStatusWire = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(
+            serde_json::to_value(old)
+                .unwrap()
+                .get("diff_tier")
+                .is_none()
+        );
+        let new: SubStatusWire =
+            serde_json::from_value(serde_json::json!({"diff_tier":"C", "tier_reasons":["wire"]}))
+                .unwrap();
+        let json = serde_json::to_value(new).unwrap();
+        assert_eq!(json["diff_tier"], "C");
+        assert_eq!(json["tier_reasons"], serde_json::json!(["wire"]));
     }
 }

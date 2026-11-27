@@ -244,3 +244,31 @@ supporting method (= cursor 不触り、 read-only、 daemon "wire" channel):
 - pane_persist (canvas 永続化) = 別 sub 担当 (`pp-content-persist`)
 - 詳細 mcp/cli pair audit = 別 sub 担当 (`mcp-cli-audit`)
 - 真の state transition tracking (= 各遷移の timestamp/reason を独立して保存) = metadata table が必要、 MVP は latest wmsg の `created_at` を proxy として返す
+
+## 6. `vp flow classify` — 出荷時の段を実物の diff から決める
+
+```bash
+vp flow classify
+vp flow classify --path /path/to/worktree --format json
+vp flow progress --format table
+```
+
+`classify` は daemon 不要。既定は text で、段・根拠・必要な自己レビュー・PR の出し方・merge 権限を表示する。
+JSON は `tier`, `reasons`, `review_required`, `pr_mode`, `merge_authority`, `changed_files`,
+`insertions`, `deletions` を返す。空 diff は JSON `null` / text「変更なし」。基準 ref や git 収集に失敗すれば
+コマンドはエラーで終了する。基準は共通 repo の `sub-files.kdl` の `base-ref` を優先し、なければローカルの
+`origin/HEAD`。未取得の ref はあらかじめ fetch する。
+
+基準 ref との merge-base から committed + staged + unstaged + untracked の全体を集計する。
+C の危険な境界が最優先。その他は docs / テスト専用のみ、または実装 1 ファイル・80 行以内なら A、残りは B。
+行数不明の binary 実装は B。rename は削除と追加を別々に数える（危険な旧パスを見落とさないため）。
+詳しい境界は [design 90](../design/90-diff-tier-classifier.md) と `flow.rs`。
+
+`flow_progress` / `vp flow progress --format json` の各 `sub_status` に `diff_tier` / `tier_reasons` が入り、
+テーブルの `TIER` 列は `A` / `B` / `C` / `-` を表示する。段なしは空 diff または取得不可。
+取得不可は `tier_reasons` に理由を残すため、`-` を A と解釈しない。
+
+handoff の段は初期目安で、実物の判定による引き下げも引き上げも許す。A は gate + claims、B は moody-blues、
+C は Santa + Draft PR。Ready の wire（`kind: "ready"` または `"complete"`）には `tier` と
+`tier_reasons`（classify JSON の `reasons`）を添える。C の merge は lead レビュー後、`needs_user` で
+mako の可否を確認する。CLI は案内を出すだけで、wire 送信や承認は行わない。

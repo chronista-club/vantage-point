@@ -180,7 +180,7 @@ pub struct LaneInfo {
     pub sub_status: Option<crate::lane::commands::SubStatus>,
     /// この lane の現在ブランチ（detached HEAD は None）。**root も含む全 lane** で供給する
     /// （sidebar の各 lane 行と lane ヘッダに出す、mako 2026-10-02）。
-    /// `sub_status` は 5-7 git subprocess で数 100ms かかるため Sub 限定のままにし、
+    /// `sub_status` は git 状態・diff 分類の収集を伴うため Sub 限定のままにし、
     /// root は `git branch --show-current` 1 回だけで取る。Sub は `sub_status.branch` の複製
     /// （供給点は `build_lanes_snapshot` 1 箇所）。registry には保存しない（volatile）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
