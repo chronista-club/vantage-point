@@ -3,14 +3,15 @@
 //! ## 概要
 //!
 //! lead × sub × Memory orchestration の core 操作を CLI から呼ぶための薄い wrapper。
-//! lanes portless (doc 27 §3.4.5): 全 operation は Daemon :32000 の repo-proxy ask 経由で repo を
+//! lanes portless (doc 27 §3.4.5): handoff / progress は Daemon :32000 の repo-proxy ask 経由で repo を
 //! 操作する (旧 SP HTTP 直結 `/api/lanes` `/api/tmux/*` `/api/health` を撤去)。 cwd から parent
 //! repo path を auto-resolve し、 Daemon handshake の identifier に使う。
 //!
 //! `vp flow handoff <name> --task-spec <file or '-'>` で新規 sub への atomic 手渡し、
 //! `vp flow progress` で parallel work 集約 view を表示。
+//! `vp flow classify` は local git のみで実物の diff を分類する（daemon 不要）。
 //!
-//! MCP tool (`mcp__vantage-point__flow_handoff` / `flow_progress`) と同じ semantics、
+//! handoff / progress は MCP tool (`mcp__vantage-point__flow_handoff` / `flow_progress`) と同じ semantics、
 //! 両者は同 dispatch method (`lane_create` / `lanes_list` / `lane_delete` / `tmux_*`) を共有する。
 
 use anyhow::{Context, Result, anyhow};
@@ -54,6 +55,13 @@ pub enum FlowCommands {
         #[arg(long)]
         no_nudge: bool,
     },
+    /// 実物の diff から出荷時の段とレビュー・PR・merge 手順を表示（daemon 不要）
+    Classify {
+        #[arg(long)]
+        path: Option<std::path::PathBuf>,
+        #[arg(long, default_value = "text", value_parser = ["json", "text"])]
+        format: String,
+    },
     /// 現 repo の parallel work 集約 view (= 各 sub の git status + 未読 wire 数)
     Progress {
         /// 出力フォーマット: 'json' (default) / 'table'
@@ -81,6 +89,21 @@ pub async fn run(cmd: FlowCommands) -> Result<()> {
             .await
         }
         FlowCommands::Progress { format } => progress(&format).await,
+        FlowCommands::Classify { path, format } => {
+            let path = path.map(Ok).unwrap_or_else(std::env::current_dir)?;
+            let classification = tokio::task::spawn_blocking(move || {
+                crate::lane::commands::classify_worktree(&path)
+            })
+            .await
+            .context("classify task join")?
+            .map_err(anyhow::Error::msg)?;
+            if format == "json" {
+                println!("{}", serde_json::to_string_pretty(&classification)?);
+            } else {
+                print!("{}", render_classification(classification.as_ref()));
+            }
+            Ok(())
+        }
     }
 }
 
@@ -440,21 +463,27 @@ async fn progress(format: &str) -> Result<()> {
 
 /// `--format table` の簡易テーブル出力 (機械処理向けじゃない、 human 用)
 fn print_table(view: &serde_json::Value) {
+    print!("{}", render_table(view));
+}
+
+fn render_table(view: &serde_json::Value) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
     let repo = view.get("repo").and_then(|v| v.as_str()).unwrap_or("?");
     let lead_unread = view
         .pointer("/root/unread_wire_count")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    println!("Repo: {}", repo);
-    println!("  lead unread wire: {}", lead_unread);
+    writeln!(out, "Repo: {}", repo).unwrap();
+    writeln!(out, "  lead unread wire: {}", lead_unread).unwrap();
     let mut subs = view
         .get("subs")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
     if subs.is_empty() {
-        println!("  (no subs)");
-        return;
+        writeln!(out, "  (no subs)").unwrap();
+        return out;
     }
     // needs-you (awaiting_user) を先頭に浮かせる (= ユーザが見るべき行を最初に。 stable sort
     // なので残りの順序は不変)
@@ -464,13 +493,20 @@ fn print_table(view: &serde_json::Value) {
         .filter(|w| w.get("flow_state").and_then(|v| v.as_str()) == Some("awaiting_user"))
         .count();
     if needs_you > 0 {
-        println!("  🙋 needs-you: {} sub(s) がユーザの回答待ち", needs_you);
+        writeln!(
+            out,
+            "  🙋 needs-you: {} sub(s) がユーザの回答待ち",
+            needs_you
+        )
+        .unwrap();
     }
-    println!();
-    println!(
-        "{:<24} {:<10} {:<18} {:>7} {:>7} {:>7} {:>7} BRANCH",
-        "SUB", "STATE", "MODE", "AHEAD", "BEHIND", "DIRTY", "UNREAD"
-    );
+    writeln!(out).unwrap();
+    writeln!(
+        out,
+        "{:<24} {:<10} {:<18} {:<4} {:>7} {:>7} {:>7} {:>7} BRANCH",
+        "SUB", "STATE", "MODE", "TIER", "AHEAD", "BEHIND", "DIRTY", "UNREAD"
+    )
+    .unwrap();
     for w in subs {
         let name = w.get("name").and_then(|v| v.as_str()).unwrap_or("?");
         let state = w.get("state").and_then(|v| v.as_str()).unwrap_or("?");
@@ -490,6 +526,10 @@ fn print_table(view: &serde_json::Value) {
             .pointer("/sub_status/dirty_count")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+        let tier = w
+            .pointer("/sub_status/diff_tier")
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
         let branch = w
             .pointer("/sub_status/branch")
             .and_then(|v| v.as_str())
@@ -502,11 +542,14 @@ fn print_table(view: &serde_json::Value) {
             .and_then(|v| serde_json::from_value::<crate::flow::FlowState>(v).ok())
             .map(|s| s.label())
             .unwrap_or("-");
-        println!(
-            "{:<24} {:<10} {:<18} {:>7} {:>7} {:>7} {:>7} {}",
-            name, state, mode_label, ahead, behind, dirty, unread, branch
-        );
+        writeln!(
+            out,
+            "{:<24} {:<10} {:<18} {:<4} {:>7} {:>7} {:>7} {:>7} {}",
+            name, state, mode_label, tier, ahead, behind, dirty, unread, branch
+        )
+        .unwrap();
     }
+    out
 }
 
 #[cfg(test)]
@@ -575,4 +618,110 @@ mod tests {
         });
         print_table(&v);
     }
+}
+
+#[cfg(test)]
+mod diff_cli_tests {
+    use super::*;
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: FlowCommands,
+    }
+    #[test]
+    fn classify_cli_accepts_default_and_explicit_path() {
+        assert!(Cli::try_parse_from(["flow", "classify"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["flow", "classify", "--path", "/tmp", "--format", "json"]).is_ok()
+        );
+        assert!(Cli::try_parse_from(["flow", "classify", "--format", "yaml"]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod diff_output_tests {
+    use super::*;
+    #[test]
+    fn table_includes_tier_and_preserves_needs_user_order() {
+        let view = serde_json::json!({"repo":"demo", "subs":[
+            {"name":"normal", "sub_status":{"diff_tier":"B"}},
+            {"name":"waiting", "flow_state":"awaiting_user", "sub_status":{"diff_tier":"C"}},
+            {"name":"old", "sub_status":{}}
+        ]});
+        let text = render_table(&view);
+        assert!(text.contains("TIER"));
+        assert!(text.find("waiting").unwrap() < text.find("normal").unwrap());
+        for (name, tier) in [("normal", "B"), ("waiting", "C"), ("old", "-")] {
+            let line = text.lines().find(|l| l.starts_with(name)).unwrap();
+            assert!(line.split_whitespace().any(|word| word == tier), "{line}");
+        }
+    }
+    #[test]
+    fn classification_text_explains_review_convergence() {
+        for (lines, terms) in [
+            (
+                120,
+                vec!["COMMIT READY", "指摘 0", "再レビュー", "3〜4", "lead"],
+            ),
+            (301, vec!["santa", "両方 PASS", "再レビュー"]),
+        ] {
+            let c = crate::flow::classify_diff(&[crate::flow::DiffFileStat {
+                path: "src/a.rs".into(),
+                insertions: lines,
+                deletions: 0,
+                binary: false,
+            }])
+            .unwrap();
+            let text = render_classification(Some(&c));
+            for term in terms {
+                assert!(text.contains(term), "missing {term}: {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn classification_text_explains_c_gate_and_empty_diff() {
+        let c = crate::flow::classify_diff(&[crate::flow::DiffFileStat {
+            path: "AGENTS.md".into(),
+            insertions: 1,
+            deletions: 0,
+            binary: false,
+        }])
+        .unwrap();
+        let text = render_classification(Some(&c));
+        for term in ["C", "AGENTS.md", "santa", "draft", "needs_user"] {
+            assert!(text.contains(term), "{term}");
+        }
+        assert!(render_classification(None).contains("変更なし"));
+    }
+}
+
+fn render_classification(c: Option<&crate::flow::DiffClassification>) -> String {
+    let Some(c) = c else {
+        return "変更なし (tier: -)\n".into();
+    };
+    let mut text = format!(
+        "Tier: {:?}\nReview: {}\nPR: {}\nMerge: {}\nFiles: {} (+{} / -{})\n",
+        c.tier,
+        c.review_required,
+        c.pr_mode,
+        c.merge_authority,
+        c.changed_files,
+        c.insertions,
+        c.deletions
+    );
+    for reason in &c.reasons {
+        text.push_str(&format!("- {reason}\n"));
+    }
+    match c.tier {
+        crate::flow::DiffTier::A => {}
+        crate::flow::DiffTier::B => text.push_str("moody-blues: 指摘 0（COMMIT READY）まで修正と再レビューを繰り返す。3〜4 巡で収束しなければ lead に相談してください。\n"),
+        crate::flow::DiffTier::C => text.push_str("santa: moody-blues × sticky-fingers が両方 PASS するまで修正と再レビューを繰り返してください。\n"),
+    }
+    text.push_str("Ready wire に tier と tier_reasons を添えて lead へ報告してください。\n");
+    if c.tier == crate::flow::DiffTier::C {
+        text.push_str("Lead レビュー後、needs_user で mako に merge 可否を確認してください。\n");
+    }
+    text
 }

@@ -4,4 +4,4 @@
  * Phase 5-D: vantage-point 側 `lane::commands::SubStatus` の wire shape。
  * sidebar Sub row に branch / dirty / ahead / behind / merge 状態を表示。
  */
-export type SubStatusWire = { branch: string | null, dirty_count: number, ahead: number, behind: number, has_upstream: boolean, last_commit: string, is_merged: boolean, };
+export type SubStatusWire = { branch: string | null, dirty_count: number, ahead: number, behind: number, has_upstream: boolean, last_commit: string, is_merged: boolean, diff_tier?: string | null, tier_reasons?: Array<string>, };
