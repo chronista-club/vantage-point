@@ -15,17 +15,17 @@
 //! - [`host`]: [`ClaudeHost`] — headless claude を lane 単位で**常駐**駆動（stream-json stdin 連投）
 //! - [`codex_rpc_translate`] + [`codex_host`]: codex — **常駐 RpcHost**（`codex app-server`
 //!   JSONL JSON-RPC、doc 41）
-//! - [`acp_host`]: grok / opencode / agy — **常駐 AcpAgentHost**
+//! - [`acp_host`]: grok / opencode / agy / muse — **常駐 AcpAgentHost**
 //!   （`grok agent stdio` = ACP、doc 42 / `opencode acp` = 同 ACP、doc 43 / `agy acp` = 同 ACP、
-//!   doc 88。engine 差分は [`AcpEngine`] に集約）。接続・翻訳・設定面・履歴の控えは共有 crate
+//!   doc 88 / `muse acp` = 同 ACP、doc 91。engine 差分は [`AcpEngine`] に集約）。接続・翻訳・設定面・履歴の控えは共有 crate
 //!   `agent-chat-acp` が持ち、ここは VP 固有の注入だけ
 //! - [`replay_source`]: 履歴を host から受け取って配り直す口（ACP engine — pump が使う）
 //! - [`translate`] / [`transcript`]: claude stream / transcript → [`ConversationEvent`] 翻訳層
 //! - [`replay_log`]: 履歴を自分で持たない engine（vpcode）の per-session 会話ログ
 //!   （disk 永続、gui の replay 源）。claude は transcript、codex は app-server 履歴、
-//!   ACP engine（grok / opencode / agy）は engine の `session/load` が SSOT なので使わない
+//!   ACP engine（grok / opencode / agy / muse）は engine の `session/load` が SSOT なので使わない
 //!
-//! 対応 engine は**常駐型のみの一枚岩**（doc 39 §7: claude / codex / grok / opencode / agy — doc 41・42・43・88）。
+//! 対応 engine は**常駐型のみの一枚岩**（doc 39 §7: claude / codex / grok / opencode / agy / muse — doc 41・42・43・88・91）。
 //! 旧 turn-scoped 系（TurnHost / cursor_host / cursor_translate）は step 4 で撤去済み、
 //! cursor は sweep 6.5 で agent ごと完全撤去（再導入時は新規実装 — 旧実装は
 //! git history #773/#776。Composer の CLI 進化待ちの再検討方針は doc 39 §7）。
@@ -41,6 +41,7 @@ pub mod claude_settings;
 pub mod claude_translate;
 mod codex_async_questions;
 mod codex_question_session;
+pub mod muse_settings;
 pub(crate) use codex_question_session::CodexQuestionSession;
 mod codex_history;
 pub mod codex_host;

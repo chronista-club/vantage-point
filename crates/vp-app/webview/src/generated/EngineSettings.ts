@@ -2,14 +2,15 @@
 import type { AgySettings } from "./AgySettings";
 import type { ClaudeSettings } from "./ClaudeSettings";
 import type { GrokSettings } from "./GrokSettings";
+import type { MuseSettings } from "./MuseSettings";
 import type { VpcodeSettings } from "./VpcodeSettings";
 
 /**
  * engine 別の設定。Grok は実行時要求、他は registry の `SessionEntry::settings` でも使う。
  *
  * serde は externally tagged（`{"claude": {...}}` / `{"codex": {...}}` / `{"vpcode": {...}}` /
- * `{"agy": {...}}` / `{"grok": {...}}`）
+ * `{"agy": {...}}` / `{"muse": {...}}` / `{"grok": {...}}`）
  * — wire / disk 上で「どの engine の設定か」が key に出るので、engine を跨いだ誤適用が
  * 型で弾ける（[`Self::kind`] と entry の agent の一致検査）。
  */
-export type EngineSettings = { "claude": ClaudeSettings } | { "codex": import('@chronista-club/agent-chat/protocol').CodexSelection } | { "vpcode": VpcodeSettings } | { "agy": AgySettings } | { "grok": GrokSettings };
+export type EngineSettings = { "claude": ClaudeSettings } | { "codex": import('@chronista-club/agent-chat/protocol').CodexSelection } | { "vpcode": VpcodeSettings } | { "agy": AgySettings } | { "muse": MuseSettings } | { "grok": GrokSettings };

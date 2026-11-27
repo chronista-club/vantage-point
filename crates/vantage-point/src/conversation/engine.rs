@@ -40,6 +40,8 @@ pub enum EngineKind {
     /// agent=`"agy"` — Google Antigravity CLI。常駐 AcpAgentHost（gui、`agy acp` = ACP —
     /// doc 88）+ agy TUI（tui、`--conversation <id>` resume）。
     Agy,
+    /// Meta Muse Code: TUI + ACP stdio (doc 91).
+    Muse,
     /// agent=`"vpcode"` — VP 自前 engine（常駐 VpcodeHost、`vpcode --vcp` = VCP JSONL）。
     /// **gui 専用**（TUI を持たない — tui slot では素の login shell に倒れる）。
     /// permission は無政策 engine（毎 tool 実行前に request、判定は VP 側 — VCP §8）。
@@ -52,12 +54,13 @@ impl EngineKind {
     /// 新 engine は [`Self::from_agent`] / [`Self::agent_name`] と併せてここにも足す —
     /// roundtrip テストが片側だけの追加（= GUI dropdown からの取りこぼし、moody 指摘）を
     /// コンパイル時 match 網羅性 + テストで検知する。
-    pub const ALL: [EngineKind; 6] = [
+    pub const ALL: [EngineKind; 7] = [
         Self::Claude,
         Self::Codex,
         Self::Grok,
         Self::OpenCode,
         Self::Agy,
+        Self::Muse,
         Self::Vpcode,
     ];
 
@@ -72,6 +75,7 @@ impl EngineKind {
             "grok" => Some(Self::Grok),
             "opencode" => Some(Self::OpenCode),
             "agy" => Some(Self::Agy),
+            "muse" => Some(Self::Muse),
             "vpcode" => Some(Self::Vpcode),
             _ => None,
         }
@@ -85,6 +89,7 @@ impl EngineKind {
             Self::Grok => "grok",
             Self::OpenCode => "opencode",
             Self::Agy => "agy",
+            Self::Muse => "muse",
             Self::Vpcode => "vpcode",
         }
     }
@@ -98,6 +103,7 @@ impl EngineKind {
             Self::OpenCode => {
                 "VP Agent: OpenCode 🧩 — tui slot（login shell）+ opencode 自動起動（model は opencode config）"
             }
+            Self::Muse => "VP Agent: Muse — Meta Muse Code CLI（TUI / ACP chat）",
             Self::Agy => "VP Agent: Antigravity 🚀 — tui slot（login shell）+ agy 自動起動",
             Self::Vpcode => {
                 "VP Agent: vpcode 🔬 — VP 自前 engine（Chat 専用、local LLM。VCP 常駐）"
@@ -112,7 +118,13 @@ impl EngineKind {
     pub fn chat_capable(self) -> bool {
         matches!(
             self,
-            Self::Claude | Self::Codex | Self::Grok | Self::OpenCode | Self::Agy | Self::Vpcode
+            Self::Claude
+                | Self::Codex
+                | Self::Grok
+                | Self::OpenCode
+                | Self::Agy
+                | Self::Muse
+                | Self::Vpcode
         )
     }
 
@@ -129,7 +141,10 @@ impl EngineKind {
     /// （grok 1.0.89、2026-11-23 実測: 256×256 PNG を認識。8×8 は小さすぎるとして拒否）。
     /// 対応範囲: docs/spec/chat-image-input.md。他 engine が対応したらここに足す。
     pub fn image_capable(self) -> bool {
-        matches!(self, Self::Claude | Self::Codex | Self::Grok | Self::Agy)
+        matches!(
+            self,
+            Self::Claude | Self::Codex | Self::Grok | Self::Agy | Self::Muse
+        )
     }
 
     /// VP から「model だけ」の指定を受ける engine か（`vp lane new --model` / config の
@@ -138,7 +153,7 @@ impl EngineKind {
     /// [`super::settings::EngineSettings::from_model`] と `settings_file::agent_accepts_model` が
     /// 共有する唯一の述語（catalog の空/非空は vpcode で環境依存になるので、ここでは使わない）。
     pub fn takes_model_intent(self) -> bool {
-        matches!(self, Self::Claude | Self::Vpcode | Self::Agy)
+        matches!(self, Self::Claude | Self::Vpcode | Self::Agy | Self::Muse)
     }
 
     /// VP の model picker に出す選択肢（engine ごとの catalog — server が SSOT、client は
@@ -179,7 +194,7 @@ impl EngineKind {
             // 実証: 静的 3 択のうち 1 つが消され、catalog に無い model が増えた）。
             // **先頭 = VP 既定**（session 未指定時の spawn fallback — vpcode_host の解決順）。
             Self::Vpcode => super::vpcode_catalog::choices(),
-            Self::Codex | Self::Grok | Self::OpenCode | Self::Agy => Vec::new(),
+            Self::Codex | Self::Grok | Self::OpenCode | Self::Agy | Self::Muse => Vec::new(),
         }
     }
 
@@ -189,7 +204,9 @@ impl EngineKind {
     pub fn effort_choices(self) -> Vec<Choice> {
         match self {
             Self::Claude => super::claude_settings::ClaudeSettings::effort_choices(),
-            Self::Codex | Self::Grok | Self::OpenCode | Self::Agy | Self::Vpcode => Vec::new(),
+            Self::Codex | Self::Grok | Self::OpenCode | Self::Agy | Self::Muse | Self::Vpcode => {
+                Vec::new()
+            }
         }
     }
 
@@ -219,7 +236,7 @@ impl EngineKind {
             // tool_call event は別に流れるので実行の可視性は保たれる）。mako 要望 2026-08-23
             // 「全てに承認がいるね」。将来の allowlist 自動裁定もこの catalog に足すだけ。
             Self::Vpcode => Choice::list(&[("manual", "manual"), ("auto", "auto approve")]),
-            Self::Codex | Self::Grok | Self::OpenCode | Self::Agy => Vec::new(),
+            Self::Codex | Self::Grok | Self::OpenCode | Self::Agy | Self::Muse => Vec::new(),
         }
     }
 }
@@ -289,6 +306,7 @@ pub enum ChatHost {
     Grok(AcpAgentHost),
     OpenCode(AcpAgentHost),
     Agy(AcpAgentHost),
+    Muse(AcpAgentHost),
     /// vpcode（VCP 常駐、doc = vpcode_host）。
     Vpcode(VpcodeHost),
 }
@@ -298,7 +316,9 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.subscribe(),
             ChatHost::Codex(h) => h.subscribe(),
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.subscribe(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) | ChatHost::Muse(h) => {
+                h.subscribe()
+            }
             ChatHost::Vpcode(h) => h.subscribe(),
         }
     }
@@ -307,7 +327,9 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.in_flight(),
             ChatHost::Codex(h) => h.in_flight(),
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.in_flight(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) | ChatHost::Muse(h) => {
+                h.in_flight()
+            }
             ChatHost::Vpcode(h) => h.in_flight(),
         }
     }
@@ -319,7 +341,9 @@ impl ChatHost {
     pub fn session_init(&self) -> Option<ConversationEvent> {
         match self {
             ChatHost::Claude(h) => h.session_init(),
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.session_init(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) | ChatHost::Muse(h) => {
+                h.session_init()
+            }
             ChatHost::Codex(_) | ChatHost::Vpcode(_) => None,
         }
     }
@@ -327,10 +351,12 @@ impl ChatHost {
     /// ACP engine の設定面（engine が出した configOptions + 直近の失敗、doc 88 §6）。
     ///
     /// roster（`LaneSessionView.acp_config`）の供給源。ACP 以外と、configOptions を出さない
-    /// ACP engine は `None`（GUI は engine 別 panel の有無で描き分ける — 今 panel を持つのは agy）。
+    /// ACP engine は `None`（GUI は engine 別 panel の有無で描き分ける — Model / Mode の panel を持つのは agy / muse）。
     pub fn acp_config(&self) -> Option<super::acp_config::AcpConfigView> {
         match self {
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.config_view(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) | ChatHost::Muse(h) => {
+                h.config_view()
+            }
             ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => None,
         }
     }
@@ -340,7 +366,9 @@ impl ChatHost {
     /// 各 host の作りで扱う）。
     pub fn exited(&self) -> bool {
         match self {
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.exited(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) | ChatHost::Muse(h) => {
+                h.exited()
+            }
             ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => false,
         }
     }
@@ -348,7 +376,9 @@ impl ChatHost {
     /// 履歴を host から受け取る口（ACP engine だけが持つ）。pump の起動時に 1 度だけ取り出す。
     pub fn take_replay_port(&self) -> Option<super::replay_source::ReplayPort> {
         match self {
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.take_replay_port(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) | ChatHost::Muse(h) => {
+                h.take_replay_port()
+            }
             ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => None,
         }
     }
@@ -357,7 +387,9 @@ impl ChatHost {
     /// （Claude は transcript、Codex は `request_history`、vpcode は replay_log）。
     pub fn request_replay(&self) -> bool {
         match self {
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.request_replay(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) | ChatHost::Muse(h) => {
+                h.request_replay()
+            }
             ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => false,
         }
     }
@@ -368,7 +400,7 @@ impl ChatHost {
     /// ⚠️ 呼び手は無い（[`super::acp_host::AcpAgentHost::restart`] の doc）。
     pub async fn restart_engine(&self) -> anyhow::Result<()> {
         match self {
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => {
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) | ChatHost::Muse(h) => {
                 h.restart().await.map_err(anyhow::Error::msg)
             }
             ChatHost::Claude(_) | ChatHost::Codex(_) | ChatHost::Vpcode(_) => {
@@ -381,7 +413,9 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.commit_seq(),
             ChatHost::Codex(h) => h.commit_seq(),
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.commit_seq(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) | ChatHost::Muse(h) => {
+                h.commit_seq()
+            }
             ChatHost::Vpcode(h) => h.commit_seq(),
         }
     }
@@ -390,7 +424,9 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.pid(),
             ChatHost::Codex(h) => h.pid(),
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.pid(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) | ChatHost::Muse(h) => {
+                h.pid()
+            }
             ChatHost::Vpcode(h) => h.pid(),
         }
     }
@@ -401,7 +437,7 @@ impl ChatHost {
 
     /// 画像を添えて投入する（chat 入力欄への貼り付け）。
     ///
-    /// ⚠️ **画像を運べるのは Claude / Codex / Grok / agy**（[`EngineKind::image_capable`]）。他 engine には
+    /// ⚠️ **画像を運べるのは Claude / Codex / Grok / agy / Muse**（[`EngineKind::image_capable`]）。他 engine には
     /// 画像を渡す先が無いので **text だけを投入する**（黙って捨てる）。client は
     /// `image_capable` が false の lane で貼り付け UI を出さないので、ここに画像が
     /// 来るのは異常系（新 engine 追加時の取り残し等）— log で気付けるようにする。
@@ -416,7 +452,9 @@ impl ChatHost {
                 h.submit_images_with_activity(prompt, images, None, None)
                     .await
             }
-            ChatHost::Grok(h) | ChatHost::Agy(h) => h.submit_with_images(prompt, images).await,
+            ChatHost::Grok(h) | ChatHost::Agy(h) | ChatHost::Muse(h) => {
+                h.submit_with_images(prompt, images).await
+            }
             other => {
                 if !images.is_empty() {
                     tracing::warn!(
@@ -430,7 +468,8 @@ impl ChatHost {
                     ChatHost::Claude(_)
                     | ChatHost::Codex(_)
                     | ChatHost::Grok(_)
-                    | ChatHost::Agy(_) => {
+                    | ChatHost::Agy(_)
+                    | ChatHost::Muse(_) => {
                         unreachable!("上の arm で処理済み")
                     }
                 }
@@ -442,7 +481,9 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.interrupt().await,
             ChatHost::Codex(h) => h.interrupt().await,
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.interrupt().await,
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) | ChatHost::Muse(h) => {
+                h.interrupt().await
+            }
             ChatHost::Vpcode(h) => h.interrupt().await,
         }
     }
@@ -455,7 +496,9 @@ impl ChatHost {
             // ClaudeHost の Child は kill_on_drop(true) なので host drop で停止する。
             ChatHost::Claude(_) => {}
             ChatHost::Codex(h) => h.stop(),
-            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) => h.stop(),
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) | ChatHost::Muse(h) => {
+                h.stop()
+            }
             ChatHost::Vpcode(h) => h.stop(),
         }
     }
@@ -472,7 +515,7 @@ impl ChatHost {
             // vpcode は無政策 engine（VCP §8）— 毎 tool の permission_request にここで答える。
             // 既存 PromptCard / conversation_respond 経路がそのまま使える（handoff の要点）。
             ChatHost::Vpcode(h) => h.respond_permission(request_id, decision).await,
-            ChatHost::Grok(_) | ChatHost::OpenCode(_) | ChatHost::Agy(_) => {
+            ChatHost::Grok(_) | ChatHost::OpenCode(_) | ChatHost::Agy(_) | ChatHost::Muse(_) => {
                 anyhow::bail!("このエンジンは対話承認/permission mode を持ちません")
             }
         }
@@ -483,7 +526,11 @@ impl ChatHost {
         match self {
             ChatHost::Claude(h) => h.set_permission_mode(mode).await,
             ChatHost::Vpcode(h) => h.set_permission_mode(mode),
-            ChatHost::Codex(_) | ChatHost::Grok(_) | ChatHost::OpenCode(_) | ChatHost::Agy(_) => {
+            ChatHost::Codex(_)
+            | ChatHost::Grok(_)
+            | ChatHost::OpenCode(_)
+            | ChatHost::Agy(_)
+            | ChatHost::Muse(_) => {
                 anyhow::bail!("このエンジンは対話承認/permission mode を持ちません")
             }
         }
@@ -492,6 +539,23 @@ impl ChatHost {
 
 #[cfg(test)]
 mod tests {
+    // mem_1ChTGsc5BoJHRTqsjN5M4p
+    #[test]
+    fn muse_registration_and_model_intent() {
+        let kind = EngineKind::from_agent("muse").expect("Muse must be registered");
+        assert!(EngineKind::ALL.contains(&kind));
+        assert!(kind.chat_capable());
+        assert!(kind.image_capable());
+        assert!(kind.takes_model_intent());
+        assert!(kind.model_choices().is_empty());
+        let settings =
+            super::super::settings::EngineSettings::from_model(kind, "muse-wonder-1.0".into())
+                .unwrap();
+        assert_eq!(
+            serde_json::to_value(settings).unwrap(),
+            serde_json::json!({"muse": {"model": "muse-wonder-1.0"}})
+        );
+    }
     #[test]
     fn image_input_capability_table() {
         // mem_1ChKFMEwUYWj5Qs6VLVkU4: roster 経由で貼り付け UI を開く能力表。

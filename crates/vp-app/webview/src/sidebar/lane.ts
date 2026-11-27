@@ -23,6 +23,7 @@ import { isLeadLaneName } from "../../lane-address";
 const COMPONENT_ICON: Record<string, { default: IconName; active: IconName }> = {
 	claude: { default: "mingcute:claude-line", active: "mingcute:claude-fill" },
 	codex: { default: "mingcute:openai-line", active: "mingcute:openai-fill" },
+	muse: { default: "ph:meta-logo", active: "ph:meta-logo-fill" },
 	grok: { default: "mingcute:grok-line", active: "mingcute:grok-fill" },
 	opencode: { default: "ph:code", active: "ph:code-fill" },
 	agy: {
@@ -56,6 +57,8 @@ export function agentDisplayName(agent: string): string {
 			return "Grok";
 		case "opencode":
 			return "OpenCode";
+		case "muse":
+			return "Muse";
 		case "agy":
 			return "Antigravity";
 		case "shell":

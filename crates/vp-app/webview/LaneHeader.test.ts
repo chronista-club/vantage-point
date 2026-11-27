@@ -104,6 +104,7 @@ describe('sessionChipPrefix — session chip の engine 別 prefix（doc 37）',
     expect(sessionChipPrefix('grok')).toBe('grok')
     expect(sessionChipPrefix('opencode')).toBe('oc')
     expect(sessionChipPrefix('agy')).toBe('agy')
+    expect(sessionChipPrefix('muse')).toBe('muse')
   })
   it('撤去済み engine（cursor）と未知 / 欠落 agent は中立の sid（graceful degradation）', () => {
     // sweep 6.5: cursor は engine として撤去。disk / wire に残る旧 agent 文字列は sid に倒れる。

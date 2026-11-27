@@ -377,6 +377,23 @@ fn opencode_command(resume_id: Option<&str>) -> String {
     }
 }
 
+/// Muse の resume 引数を shell / option の解釈から守る。
+fn is_valid_muse_session_id(id: &str) -> bool {
+    is_safe_session_id(id) && !id.starts_with('-')
+}
+
+/// Muse は共通 flag を resume の前に置く。再開に失敗したら同じ model で新規起動する。
+fn muse_command(resume_id: Option<&str>, model: Option<&str>) -> String {
+    let mut fresh = "muse --yolo".to_string();
+    if let Some(model) = model.filter(|m| crate::lane::engine_model::is_valid_model(m)) {
+        fresh.push_str(&format!(" --model '{model}'"));
+    }
+    match resume_id.filter(|id| is_valid_muse_session_id(id)) {
+        Some(id) => format!("{fresh} resume '{id}' || {fresh}"),
+        None => fresh,
+    }
+}
+
 /// agy の tui 起動 command（doc 88 §4 — TUI は `--conversation '<id>'` で ACP sessionId を指名 resume）。
 ///
 /// - `Some(id)`（[`is_safe_session_id`] 検証済 = injection 防壁）: `agy --conversation '<id>' || agy`
@@ -559,6 +576,16 @@ pub fn build_agent_command_for_session(
             // 元から素の `opencode` を返すので、呼び手の 1 bit は何も足していなかった。
             Some(format!("{}\r", opencode_command(conversation.as_deref())))
         }
+        Some(crate::conversation::EngineKind::Muse) => {
+            let model = entry
+                .and_then(|s| s.settings.as_ref())
+                .and_then(crate::conversation::EngineSettings::muse)
+                .and_then(|s| s.model.as_deref());
+            Some(format!(
+                "{}\r",
+                muse_command(conversation.as_deref(), model)
+            ))
+        }
         Some(crate::conversation::EngineKind::Agy) => {
             // doc 88 §4: resume 先は registry の会話 id 1 本（None = 素の `agy` で立つ）。
             Some(format!("{}\r", agy_command(conversation.as_deref())))
@@ -606,6 +633,59 @@ pub fn build_agent_command_for_session(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn muse_tui_model_and_untrusted_values() {
+        let id = "01a21c8b-8008-7091-aa5d-2dafd79b8b0b";
+        assert_eq!(
+            muse_command(Some(id), Some("muse-ember-1.0")),
+            format!(
+                "muse --yolo --model 'muse-ember-1.0' resume '{id}' || muse --yolo --model 'muse-ember-1.0'"
+            )
+        );
+        for bad in ["", "bad'; echo BAD", "x$(id)", "ses_123", "--help"] {
+            assert_eq!(muse_command(Some(bad), None), "muse --yolo");
+        }
+        for bad in ["", "bad'; echo BAD", "$(id)", "--help"] {
+            assert_eq!(muse_command(None, Some(bad)), "muse --yolo");
+        }
+    }
+
+    #[test]
+    fn muse_tui_fresh_and_resume() {
+        let _state = crate::test_env::state_dir();
+        let addr = LaneAddress::root("vp-muse");
+        let cmd = build_agent_command("muse", &addr, Path::new("/tmp"));
+        assert_eq!(cmd.initial_input.as_deref(), Some("muse --yolo\r"));
+        crate::lane::session_registry::set_conversation(
+            "vp-muse",
+            "lead",
+            "muse",
+            1,
+            Some("01a21c8b-8008-7091-aa5d-2dafd79b8b0b"),
+        )
+        .unwrap();
+        crate::lane::session_registry::set_model(
+            "vp-muse",
+            "lead",
+            "muse",
+            1,
+            Some("muse-ember-1.0"),
+        )
+        .unwrap();
+        let modeled = build_agent_command("muse", &addr, Path::new("/tmp"));
+        assert_eq!(
+            modeled.initial_input.as_deref(),
+            Some(
+                "muse --yolo --model 'muse-ember-1.0' resume '01a21c8b-8008-7091-aa5d-2dafd79b8b0b' || muse --yolo --model 'muse-ember-1.0'\r"
+            )
+        );
+        crate::lane::session_registry::set_model("vp-muse", "lead", "muse", 1, None).unwrap();
+        let resumed = build_agent_command("muse", &addr, Path::new("/tmp"));
+        assert_eq!(
+            resumed.initial_input.as_deref(),
+            Some("muse --yolo resume '01a21c8b-8008-7091-aa5d-2dafd79b8b0b' || muse --yolo\r")
+        );
+    }
     use super::*;
 
     // Console must own the writer rather than leaving it in the shared daemon.

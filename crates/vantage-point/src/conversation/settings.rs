@@ -18,6 +18,7 @@ use super::claude_settings::ClaudeSettings;
 use super::codex_settings::CodexSelection;
 use super::engine::EngineKind;
 use super::grok_settings::GrokSettings;
+use super::muse_settings::MuseSettings;
 use super::vpcode_catalog::VpcodeSettings;
 #[cfg(test)]
 use ts_rs::TS;
@@ -25,7 +26,7 @@ use ts_rs::TS;
 /// engine 別の設定。Grok は実行時要求、他は registry の `SessionEntry::settings` でも使う。
 ///
 /// serde は externally tagged（`{"claude": {...}}` / `{"codex": {...}}` / `{"vpcode": {...}}` /
-/// `{"agy": {...}}` / `{"grok": {...}}`）
+/// `{"agy": {...}}` / `{"muse": {...}}` / `{"grok": {...}}`）
 /// — wire / disk 上で「どの engine の設定か」が key に出るので、engine を跨いだ誤適用が
 /// 型で弾ける（[`Self::kind`] と entry の agent の一致検査）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -43,6 +44,8 @@ pub enum EngineSettings {
     Vpcode(VpcodeSettings),
     /// agy の Model / Thinking Level / Mode の意図（doc 88 §6 — host が session 確定後に当て直す）。
     Agy(AgySettings),
+    /// Muse の Model / Mode の意図（doc 91）。
+    Muse(MuseSettings),
     /// Grok への実行時要求（intent の永続・再適用はしない）。
     Grok(GrokSettings),
 }
@@ -55,6 +58,7 @@ impl EngineSettings {
             Self::Codex(_) => EngineKind::Codex,
             Self::Vpcode(_) => EngineKind::Vpcode,
             Self::Agy(_) => EngineKind::Agy,
+            Self::Muse(_) => EngineKind::Muse,
             Self::Grok(_) => EngineKind::Grok,
         }
     }
@@ -66,6 +70,7 @@ impl EngineSettings {
             Self::Codex(s) => s.validate_shape(),
             Self::Vpcode(s) => s.validate_shape(),
             Self::Agy(s) => s.validate_shape(),
+            Self::Muse(s) => s.validate_shape(),
             Self::Grok(s) => s.validate_shape(),
         }
     }
@@ -81,6 +86,10 @@ impl EngineSettings {
                 ..Default::default()
             })),
             EngineKind::Vpcode => Some(Self::Vpcode(VpcodeSettings { model })),
+            EngineKind::Muse => Some(Self::Muse(MuseSettings {
+                model: Some(model),
+                ..Default::default()
+            })),
             EngineKind::Agy => Some(Self::Agy(AgySettings {
                 model: Some(model),
                 ..Default::default()
@@ -110,6 +119,13 @@ impl EngineSettings {
         }
     }
 
+    pub fn muse(&self) -> Option<&MuseSettings> {
+        match self {
+            Self::Muse(s) => Some(s),
+            _ => None,
+        }
+    }
+
     pub fn agy(&self) -> Option<&AgySettings> {
         match self {
             Self::Agy(s) => Some(s),
@@ -121,6 +137,18 @@ impl EngineSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn muse_settings_roundtrip_and_validation() {
+        let wire = serde_json::json!({"muse": {"model": "muse-spark-1.3", "mode": "onRequest"}});
+        let settings: EngineSettings = serde_json::from_value(wire.clone()).expect("Muse settings");
+        assert_eq!(settings.kind().agent_name(), "muse");
+        assert!(settings.validate_shape().is_ok());
+        assert_eq!(serde_json::to_value(settings).unwrap(), wire);
+        let bad: EngineSettings =
+            serde_json::from_value(serde_json::json!({"muse": {"model": "x'; echo BAD"}})).unwrap();
+        assert!(bad.validate_shape().is_err());
+    }
 
     // Task mem_1ChKFNBY7VQYSwFseyxUs9
     #[test]

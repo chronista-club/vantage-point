@@ -12,6 +12,7 @@ Console 自体が画像を受け取れることと、VP Chat の画像対応は�
 | Codex | 対応・実機確認済み | app-server の image input（data URL） |
 | agy | 実装済み・engine の実機確認済み（Gemini 3.8 Flash。GUI は未確認、doc 88 §6.4）。host を共有 crate に替えた後（2026-11-20、doc 88 §8）の実機の確認は、共有 crate の側の E2E（`vendor/agent-chat/crates/acp/tests/agy_e2e.rs` の `e2e_config_switch_and_image_prompt`。agent-chat の lane が revision `8ec120e` の中身で回して通過、と報告）。VP の adapter 経由では回していない | ACP の image content block |
 | Grok | 実装済み・VP adapter 経由で実機確認済み（grok 1.0.92 / grok-4.7、256×256 PNG、1 turn）。`e2e_real_grok_image_prompt`（普段は ignored）を 1 回実行し、赤を認識。GUI は実機確認待ち | ACP の image content block |
+| Muse | 実装済み・fake ACP で image content を検証。実 CLI / GUI は実機確認待ち（design 91） | ACP の image content block |
 | OpenCode / vpcode | 未対応 | — |
 
 Grok の事前実測（2026-11-23、grok 1.0.89、`mem_1ChEhaHVsXPkjVuqpuadCZ` の結果 C）:

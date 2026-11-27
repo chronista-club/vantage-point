@@ -1,4 +1,4 @@
-//! AcpAgentHost — ACP engine（grok / opencode / agy）を lane 単位で**常駐**駆動する host（gui、doc 42・43・88）
+//! AcpAgentHost — ACP engine（grok / opencode / agy / muse）を lane 単位で**常駐**駆動する host（gui、doc 42・43・88・91）
 //!
 //! `grok agent stdio`（doc 42）・`opencode acp`（doc 43）・`agy acp`（doc 88）はいずれも
 //! **ACP（Agent Client Protocol、protocolVersion 1）**を実装している。接続・型・順序の管理と、
@@ -65,6 +65,8 @@ pub enum AcpEngine {
     /// `agy acp --dangerously-skip-permissions`（Google Antigravity CLI、doc 88）。
     /// CLI パス = PATH → `/opt/homebrew/bin/agy`（brew）。permission 二段防御（flag + 自動の許可）。
     Agy,
+    /// Meta Muse Code (`muse acp`), PATH then ~/.local/bin/muse.
+    Muse,
 }
 
 impl AcpEngine {
@@ -74,6 +76,7 @@ impl AcpEngine {
             Self::Grok => "grok",
             Self::OpenCode => "opencode",
             Self::Agy => "agy",
+            Self::Muse => "muse",
         }
     }
 
@@ -81,6 +84,13 @@ impl AcpEngine {
     /// usage meter の probe（`usage::probe`）も同じ解決を使う。
     pub(crate) fn cli_path(self) -> String {
         match self {
+            Self::Muse => {
+                let home = std::env::var("HOME").unwrap_or_default();
+                crate::lane::session_store::resolve_cli(
+                    "muse",
+                    &[PathBuf::from(home).join(".local/bin/muse")],
+                )
+            }
             Self::Grok => {
                 let home = std::env::var("HOME").unwrap_or_default();
                 crate::lane::session_store::resolve_cli(
@@ -109,6 +119,7 @@ impl AcpEngine {
             Self::OpenCode => &["acp"],
             // agy: `acp` サブコマンド + `--dangerously-skip-permissions`（permission 二段防御、doc 88）。
             Self::Agy => &["acp", "--dangerously-skip-permissions"],
+            Self::Muse => &["acp", "--disable-sandbox", "--trust-workspace"],
         }
     }
 }
@@ -216,7 +227,7 @@ fn host_options(config: &AcpHostConfig) -> HostOptions {
     }
 }
 
-/// lane 単位の常駐 ACP host（gui、doc 42・43・88）。grok / opencode / agy の 3 engine を
+/// lane 単位の常駐 ACP host（gui、doc 42・43・88・91）。grok / opencode / agy / muse の 4 engine を
 /// [`AcpEngine`] パラメータ（cli_path / spawn_args / name）で共有する。
 pub struct AcpAgentHost {
     engine: AcpEngine,
@@ -697,6 +708,103 @@ mod tests {
         }
     }
 
+    #[test]
+    fn muse_launch_contract() {
+        assert_eq!(AcpEngine::Muse.name(), "muse");
+        assert_eq!(
+            launch_context(&config(AcpEngine::Muse)).args,
+            ["acp", "--disable-sandbox", "--trust-workspace"]
+        );
+    }
+
+    // mem_1ChTGsc5BoJHRTqsjN5M4p: real Muse is never launched by unit tests.
+    #[tokio::test]
+    async fn muse_acp_new_load_intent_images_and_replay() {
+        use crate::conversation::muse_settings::MuseSettings;
+        let _state = crate::test_env::state_dir_async().await;
+        let intent = MuseSettings {
+            model: Some("muse-spark-1.3".into()),
+            mode: Some("allowAll".into()),
+        };
+        for resume in [None, Some("01a21c8b-8008-7091-aa5d-2dafd79b8b0b")] {
+            let (agent, connector) = FakeAgent::new(Script {
+                config: serde_json::from_value(serde_json::json!([
+                    {"id":"model","name":"Model","type":"select","currentValue":"muse-wonder-1.0",
+                     "options":[{"value":"muse-wonder-1.0","name":"muse-wonder-1.0"},{"value":"muse-spark-1.3","name":"muse-spark-1.3"}]},
+                    {"id":"mode","name":"Mode","type":"select","currentValue":"onRequest",
+                     "options":[{"value":"onRequest","name":"onRequest"},{"value":"allowAll","name":"allowAll"}]}
+                ]))
+                .unwrap(),
+                replay: vec![user_text("earlier prompt"), agent_text("earlier answer")],
+                ..Script::default()
+            });
+            let mut cfg = fake_config(AcpEngine::Muse, "vptest-muse-acp", resume);
+            cfg.config_intent = intent.config_pairs();
+            let adapter = AcpAgentHost::spawn_with(cfg, connector).unwrap();
+            let mut host = super::super::ChatHost::Muse(adapter);
+            let replay = host
+                .take_replay_port()
+                .unwrap()
+                .source
+                .attach()
+                .await
+                .unwrap();
+            if resume.is_some() {
+                assert!(replay.events.iter().any(|event| matches!(event,
+                    ConversationEvent::UserMessage { text } if text == "earlier prompt")));
+            }
+            let view = host.acp_config().expect("roster config");
+            assert_eq!(
+                view.options
+                    .iter()
+                    .map(|o| (o.id.as_str(), o.current_value.as_str()))
+                    .collect::<Vec<_>>(),
+                [("model", "muse-spark-1.3"), ("mode", "allowAll")]
+            );
+            let image = red_image_256();
+            host.submit_with_images("Describe.", std::slice::from_ref(&image))
+                .await
+                .unwrap();
+            agent.wait_for("session/prompt").await;
+            {
+                let log = agent.log.lock().unwrap();
+                let configs: Vec<_> = log
+                    .iter()
+                    .filter(|(m, _)| m == "session/set_config_option")
+                    .map(|(_, p)| {
+                        (
+                            p["configId"].as_str().unwrap(),
+                            p["value"].as_str().unwrap(),
+                        )
+                    })
+                    .collect();
+                assert_eq!(configs, [("model", "muse-spark-1.3"), ("mode", "allowAll")]);
+                assert_eq!(
+                    log[1].0,
+                    if resume.is_some() {
+                        "session/load"
+                    } else {
+                        "session/new"
+                    }
+                );
+                let prompt = &log.iter().find(|(m, _)| m == "session/prompt").unwrap().1["prompt"];
+                assert_eq!(
+                    *prompt,
+                    serde_json::json!([
+                        {"type":"text","text":"Describe."},
+                        {"type":"image","mimeType":"image/png","data":image.data_base64}
+                    ])
+                );
+            }
+            let registry = crate::lane::session_registry::load("vptest-muse-acp", "lead", "muse");
+            assert_eq!(
+                registry.sessions[0].conversation.as_deref(),
+                Some(resume.unwrap_or("new-1"))
+            );
+            host.stop();
+        }
+    }
+
     /// ChatHost の分岐から ACP の実際の要求まで画像を運ぶ。能力表だけ true にしても落ちる。
     #[tokio::test]
     async fn grok_chat_host_sends_image_content_block() {
@@ -730,6 +838,41 @@ mod tests {
                 {"type": "image", "mimeType": "image/png", "data": image.data_base64}
             ]),
             "Grok へ text と image の両方を渡す"
+        );
+    }
+
+    #[tokio::test]
+    async fn muse_chat_host_sends_image_content_block() {
+        let _state = crate::test_env::state_dir_async().await;
+        let (agent, connector) = FakeAgent::new(Script::default());
+        let adapter = AcpAgentHost::spawn_with(
+            fake_config(AcpEngine::Muse, "vptest-muse-image", None),
+            connector,
+        )
+        .expect("起動");
+        let mut host = super::super::ChatHost::Muse(adapter);
+        let image = red_image_256();
+        host.submit_with_images("Describe the image.", std::slice::from_ref(&image))
+            .await
+            .expect("送信");
+        agent.wait_for("session/prompt").await;
+        let prompt = agent
+            .log
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(method, _)| method == "session/prompt")
+            .expect("prompt")
+            .1["prompt"]
+            .clone();
+        host.stop();
+        assert_eq!(
+            prompt,
+            serde_json::json!([
+                {"type": "text", "text": "Describe the image."},
+                {"type": "image", "mimeType": "image/png", "data": image.data_base64}
+            ]),
+            "Muse へ text と image の両方を渡す"
         );
     }
 

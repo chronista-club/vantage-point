@@ -886,11 +886,12 @@ impl LanePool {
             .collect()
     }
 
-    /// agy session の設定切替の口（doc 88 §6）。応答待ちは pool の lock を離してから行うので、
+    /// agy / Muse session の設定切替の口（doc 88 §6・doc 91）。応答待ちは pool の lock を離してから行うので、
     /// host から切り離した handle を返す。chat engine が動いていなければ Err（候補は engine が
     /// 出すので、開いてからでないと検証できない — Codex の `configure_codex` と同じ規律）。
-    pub fn agy_config_handle(
+    pub fn intent_config_handle(
         &self,
+        kind: EngineKind,
         addr: &LaneAddress,
         session: SessionKey,
     ) -> Result<crate::conversation::AcpConfigHandle, String> {
@@ -899,11 +900,15 @@ impl LanePool {
             .get(addr)
             .and_then(|m| m.get(&session))
             .ok_or_else(|| {
-                format!("agy の chat が起動していません（chat を開いてから切り替えてください、session={session}）")
+                format!("{} の chat が起動していません（chat を開いてから切り替えてください、session={session}）", kind.agent_name())
             })?;
         match &slot.host {
-            ChatHost::Agy(h) => Ok(h.config_handle()),
-            _ => Err(format!("session {session} は agy ではありません")),
+            ChatHost::Agy(h) if kind == EngineKind::Agy => Ok(h.config_handle()),
+            ChatHost::Muse(h) if kind == EngineKind::Muse => Ok(h.config_handle()),
+            _ => Err(format!(
+                "session {session} は {} ではありません",
+                kind.agent_name()
+            )),
         }
     }
 
@@ -1781,6 +1786,24 @@ impl LanePool {
                     .map_err(spawn_error)?,
                 )
             }
+            Some(EngineKind::Muse) => ChatHost::Muse(
+                crate::conversation::AcpAgentHost::spawn(crate::conversation::AcpHostConfig {
+                    engine: crate::conversation::AcpEngine::Muse,
+                    cwd: cwd.clone(),
+                    repo: addr.repo.clone(),
+                    lane: label.clone(),
+                    lane_label: lane_label.clone(),
+                    session_key: resolved.key,
+                    session_id: resolved.conversation.clone(),
+                    config_intent: resolved
+                        .settings
+                        .as_ref()
+                        .and_then(crate::conversation::EngineSettings::muse)
+                        .map(crate::conversation::muse_settings::MuseSettings::config_pairs)
+                        .unwrap_or_default(),
+                })
+                .map_err(spawn_error)?,
+            ),
             Some(EngineKind::Vpcode) => {
                 // vpcode: 常駐 VpcodeHost（`vpcode --vcp` = VCP JSONL、doc = vpcode_host）。
                 // 会話 id は VP 発行（VCP R3）— None なら host が採番して registry へ書く。

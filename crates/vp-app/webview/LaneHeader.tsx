@@ -91,6 +91,8 @@ export function sessionChipPrefix(agent: string | null | undefined): string {
       return 'grok'
     case 'opencode':
       return 'oc'
+    case 'muse':
+      return 'muse'
     case 'agy':
       return 'agy'
     default:

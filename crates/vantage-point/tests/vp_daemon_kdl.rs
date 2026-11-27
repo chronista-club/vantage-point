@@ -76,10 +76,19 @@ fn repo_proxy_exposes_only_session_create_remove_mode_switch_and_lane_read() {
                     assert_eq!(field.max, Some(i64::from(u32::MAX)));
                 }
                 "mode" => assert_eq!(field.pattern.as_deref(), Some("^(tui|gui)$")),
-                "agent" => assert_eq!(
-                    field.pattern.as_deref(),
-                    Some("^(claude|codex|grok|opencode|agy|vpcode)$")
-                ),
+                "agent" => {
+                    // mem_1ChTGsc5BoJHRTqsjN5M4p: discovery must accept every chat engine.
+                    let names = vantage_point::conversation::EngineKind::ALL
+                        .into_iter()
+                        .filter(|kind| kind.chat_capable())
+                        .map(|kind| kind.agent_name())
+                        .collect::<Vec<_>>()
+                        .join("|");
+                    assert_eq!(
+                        field.pattern.as_deref(),
+                        Some(format!("^({names})$").as_str())
+                    );
+                }
                 "focus" => assert_eq!(field.default_str.as_deref(), Some("true")),
                 "lane" if request.name.starts_with("conversation_session_") => {
                     assert_eq!(field.min_length, Some(1));

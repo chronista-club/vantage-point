@@ -811,13 +811,16 @@ pub(crate) async fn handle_conversation_set_settings(
     let addr = crate::repo::lane::parse_address(lane)
         .ok_or_else(|| format!("conversation_set_settings: lane パース失敗: {lane}"))?;
 
-    // agy: 稼働中 host に set_config_option を送り、engine の応答を待ってから registry に意図を
+    // agy / Muse: 稼働中 host に set_config_option を送り、engine の応答を待ってから registry に意図を
     // 残す（doc 88 §6）。応答待ちの間 pool の lock を握らないよう、write lock を取る下の腕より
     // 前で分ける。成否どちらでも roster（候補と現在値、失敗の文）を知らせる。
-    if let Some(EngineSettings::Agy(desired)) = &settings {
-        let result = apply_agy_settings(state, &addr, session, desired).await;
+    if let Some(desired @ (EngineSettings::Agy(_) | EngineSettings::Muse(_))) = &settings {
+        let result = apply_acp_intent_settings(state, &addr, session, desired).await;
         super::lane::lifecycle::emit_lane_update(state, &addr).await;
-        tracing::info!("conversation_set_settings: lane={lane} session={session} (agy)");
+        tracing::info!(
+            "conversation_set_settings: lane={lane} session={session} ({})",
+            desired.kind().agent_name()
+        );
         return result
             .map(|()| serde_json::json!({"status": "ok", "lane": lane, "session": session}))
             .map_err(|e| format!("conversation_set_settings: {e}"));
@@ -846,7 +849,7 @@ pub(crate) async fn handle_conversation_set_settings(
                 let config = pool.configure_codex(&addr, session, selection)?;
                 serde_json::json!({"status":"ok","codex_config":config})
             }
-            Some(EngineSettings::Agy(_) | EngineSettings::Grok(_)) => {
+            Some(EngineSettings::Agy(_) | EngineSettings::Muse(_) | EngineSettings::Grok(_)) => {
                 unreachable!("ACP の設定は lock の前で処理済み")
             }
             Some(EngineSettings::Claude(_)) | Some(EngineSettings::Vpcode(_)) | None => {
@@ -909,7 +912,7 @@ pub(crate) async fn handle_conversation_set_settings(
     Ok(applied)
 }
 
-/// agy の設定切替（doc 88 §6）: 軸ごとに engine へ当て、成功した軸だけを registry の意図に足す。
+/// agy / Muse の設定切替（doc 88 §6・doc 91）: 軸ごとに engine へ当て、成功した軸だけを registry の意図に足す。
 ///
 /// - model を先に当てる（[`AgySettings::config_pairs`] の順 — thought_level の候補は model で変わる）
 /// - 当てるたびに、選んである軸を engine の現在値に揃える（[`AgySettings::follow_engine`] —
@@ -920,11 +923,11 @@ pub(crate) async fn handle_conversation_set_settings(
 /// [`AgySettings::config_pairs`]: crate::conversation::agy_settings::AgySettings::config_pairs
 /// [`AgySettings::follow_engine`]: crate::conversation::agy_settings::AgySettings::follow_engine
 /// [`update_settings`]: crate::lane::session_registry::update_settings
-async fn apply_agy_settings(
+async fn apply_acp_intent_settings(
     state: &RepoState,
     addr: &crate::repo::lane::LaneAddress,
     session: crate::lane::session_registry::SessionKey,
-    desired: &crate::conversation::agy_settings::AgySettings,
+    desired: &crate::conversation::EngineSettings,
 ) -> Result<(), String> {
     use crate::conversation::EngineSettings;
 
@@ -934,9 +937,17 @@ async fn apply_agy_settings(
         let info = pool
             .get(addr)
             .ok_or_else(|| format!("Lane not found: {addr}"))?;
-        (pool.agy_config_handle(addr, session)?, info.agent.clone())
+        (
+            pool.intent_config_handle(desired.kind(), addr, session)?,
+            info.agent.clone(),
+        )
     };
-    for (config_id, value) in desired.config_pairs() {
+    let pairs = match desired {
+        EngineSettings::Agy(s) => s.config_pairs(),
+        EngineSettings::Muse(s) => s.config_pairs(),
+        _ => return Err("ACP intent settings required".into()),
+    };
+    for (config_id, value) in pairs {
         let options = handle.set(&config_id, &value).await?;
         crate::lane::session_registry::update_settings(
             &addr.repo,
@@ -944,6 +955,16 @@ async fn apply_agy_settings(
             &default_agent,
             session,
             |current| {
+                if matches!(desired, EngineSettings::Muse(_)) {
+                    let intent = current
+                        .and_then(EngineSettings::muse)
+                        .cloned()
+                        .unwrap_or_default();
+                    return intent
+                        .with_value(&config_id, &value)
+                        .map(|next| EngineSettings::Muse(next.follow_engine(&options)))
+                        .or_else(|| current.cloned());
+                }
                 let intent = current
                     .and_then(EngineSettings::agy)
                     .cloned()
@@ -963,6 +984,120 @@ async fn apply_agy_settings(
 #[cfg(test)]
 mod tests {
     use crate::repo::state::insert_test_lane;
+
+    // mem_1ChTGsc5BoJHRTqsjN5M4p: apply only successful axes to the correct session.
+    #[tokio::test]
+    async fn muse_settings_apply_and_partial_failure_preserve_registry() {
+        use crate::conversation::acp_host::testing::{FakeAgent, Script};
+        use crate::conversation::{
+            AcpAgentHost, AcpEngine, AcpHostConfig, ChatEngineSlot, ChatHost,
+        };
+        use crate::lane::session_registry::{self, SessionMode};
+        use crate::repo::unison_server::dispatch_repo_method;
+        use serde_json::json;
+        let _isolated = crate::test_env::state_dir_async().await;
+        let state = crate::repo::state::build_test_app_state().await;
+        let addr = insert_test_lane(&state, "muse-settings", SessionMode::Tui).await;
+        let key = session_registry::create(
+            &addr.repo,
+            "lead",
+            "claude",
+            "muse",
+            SessionMode::Gui,
+            false,
+        )
+        .unwrap();
+        session_registry::set_settings(
+            &addr.repo,
+            "lead",
+            "claude",
+            key,
+            Some(serde_json::from_value(json!({"muse":{"mode":"onRequest"}})).unwrap()),
+        )
+        .unwrap();
+        let (agent, connector) = FakeAgent::new(Script {
+            config: serde_json::from_value(json!([
+                {"id":"model","name":"Model","type":"select","currentValue":"muse-wonder-1.0",
+                 "options":[{"value":"muse-wonder-1.0","name":"muse-wonder-1.0"},{"value":"muse-ember-1.0","name":"muse-ember-1.0"}]},
+                {"id":"mode","name":"Mode","type":"select","currentValue":"onRequest",
+                 "options":[{"value":"onRequest","name":"onRequest"},{"value":"allowAll","name":"allowAll"}]}
+            ]))
+            .unwrap(),
+            reject_config: Some("mode".into()),
+            ..Script::default()
+        });
+        let host = AcpAgentHost::spawn_with(
+            AcpHostConfig {
+                engine: AcpEngine::Muse,
+                cwd: "/tmp".into(),
+                repo: addr.repo.clone(),
+                lane: session_registry::session_label("lead", key),
+                lane_label: "lead".into(),
+                session_key: key,
+                session_id: None,
+                config_intent: vec![],
+            },
+            connector,
+        )
+        .unwrap();
+        host.take_replay_port()
+            .unwrap()
+            .source
+            .attach()
+            .await
+            .unwrap();
+        state.lane_pool.write().await.insert_chat_engine_for_test(
+            &addr,
+            key,
+            ChatEngineSlot {
+                host: ChatHost::Muse(host),
+                pump: tokio::spawn(async {}),
+                last_event_at: Default::default(),
+                turn_active: Default::default(),
+            },
+        );
+        let request = |settings| json!({"lane":addr.canonical(),"session":key,"settings":settings});
+        let wrong = dispatch_repo_method(
+            &state,
+            "conversation_set_settings",
+            request(json!({"agy":{"model":"muse-ember-1.0"}})),
+        )
+        .await;
+        assert!(wrong.unwrap_err().contains("agy ではありません"));
+        assert!(
+            !agent
+                .methods()
+                .iter()
+                .any(|m| m == "session/set_config_option")
+        );
+        let result = dispatch_repo_method(
+            &state,
+            "conversation_set_settings",
+            request(json!({"muse":{"model":"muse-ember-1.0","mode":"allowAll"}})),
+        )
+        .await;
+        assert!(result.is_err(), "mode rejection must be reported");
+        let reg = session_registry::load(&addr.repo, "lead", "claude");
+        let entry = reg.sessions.iter().find(|s| s.key == key).unwrap();
+        assert_eq!(
+            serde_json::to_value(&entry.settings).unwrap(),
+            json!({"muse":{"model":"muse-ember-1.0","mode":"onRequest"}})
+        );
+        assert!(
+            reg.sessions
+                .iter()
+                .find(|s| s.key == 1)
+                .unwrap()
+                .settings
+                .is_none()
+        );
+        let pool = state.lane_pool.read().await;
+        let view = pool.acp_configs(&addr);
+        assert!(
+            view.get(&key).unwrap().error.is_some(),
+            "roster carries the failure"
+        );
+    }
 
     // mem_1CeKURXkyMrGuvGzkzzfzE: RPC の成否とは別に起動失敗を対象 session へ配送する。
     #[tokio::test]

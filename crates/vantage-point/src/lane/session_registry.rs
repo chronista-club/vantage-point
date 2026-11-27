@@ -240,9 +240,9 @@ fn is_valid_conversation(agent: &str, id: &str) -> bool {
     match EngineKind::from_agent(agent) {
         Some(EngineKind::Claude) => super::cc_session::is_valid_session_id(id),
         Some(EngineKind::Codex) => super::codex_session::is_valid_thread_id(id),
-        // grok / agy = ACP sessionId（UUID 形 — 英数+ハイフン、doc 42 §1・doc 88 §1。
+        // grok / agy / muse = ACP sessionId（UUID 形 — 英数+ハイフン、doc 42 §1・doc 88 §1・doc 91。
         // registry-native なので engine 別 store module を持たない = 検証だけここに置く）。
-        Some(EngineKind::Grok | EngineKind::Agy) => {
+        Some(EngineKind::Grok | EngineKind::Agy | EngineKind::Muse) => {
             !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         }
         // opencode = ACP sessionId（`ses_` prefix + 英数字。実測 `ses_089ead04bffe5oIJcQTHwwTZo8`、

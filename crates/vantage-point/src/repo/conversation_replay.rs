@@ -208,6 +208,7 @@ async fn replay_once(
             crate::conversation::EngineKind::Grok
                 | crate::conversation::EngineKind::OpenCode
                 | crate::conversation::EngineKind::Agy
+                | crate::conversation::EngineKind::Muse
         )
     ) {
         let requested = state
@@ -987,55 +988,57 @@ mod tests {
         use std::time::Duration;
 
         let _state_guard = crate::test_env::state_dir_async().await;
-        let state = build_test_app_state().await;
-        let addr = insert_test_lane(&state, "vptest-acp-replay", SessionMode::Gui).await;
-        prevent_engine_spawn(&state, &addr, _state_guard.path()).await;
-        let k2 = state
-            .lane_pool
-            .write()
-            .await
-            .create_chat_session(&addr, Some("grok"), true)
-            .expect("create grok session");
-        crate::conversation::replay_log::append(
-            "vptest-acp-replay",
-            &format!("lead#{k2}"),
-            &ConversationEvent::MessageChunk {
-                text: "切り替えの前に記録した本文".to_string(),
-            },
-        )
-        .expect("replay log append");
-
-        let topic = "repo/conversation/data/vptest-acp-replay~lead/event";
-        let (_id, mut srx) = state.topic_router.subscribe(topic).await;
-        let res = dispatch_repo_method(
-            &state,
-            "conversation_demand_start",
-            serde_json::json!({ "lane": "vptest-acp-replay/lead" }),
-        )
-        .await
-        .expect("demand_start");
-        assert_eq!(res["status"], "no_engine");
-
-        let (_t, msg) = tokio::time::timeout(Duration::from_secs(2), srx.recv())
-            .await
-            .expect("event timeout")
-            .expect("topic closed");
-        match msg {
-            RepoMessage::ConversationEvent { session, event, .. } => {
-                assert_eq!(session, k2);
-                assert!(
-                    matches!(&event, ConversationEvent::Error { message } if message.starts_with("grok を起動できません")),
-                    "{event:?}"
-                );
-            }
-            other => panic!("想定外の message: {other:?}"),
-        }
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), srx.recv())
+        for agent in ["grok", "muse"] {
+            let state = build_test_app_state().await;
+            let addr = insert_test_lane(&state, "vptest-acp-replay", SessionMode::Gui).await;
+            prevent_engine_spawn(&state, &addr, _state_guard.path()).await;
+            let k2 = state
+                .lane_pool
+                .write()
                 .await
-                .is_err(),
-            "ReplayStart も、replay_log の中身も配らない"
-        );
+                .create_chat_session(&addr, Some(agent), true)
+                .expect("create ACP session");
+            crate::conversation::replay_log::append(
+                "vptest-acp-replay",
+                &format!("lead#{k2}"),
+                &ConversationEvent::MessageChunk {
+                    text: "切り替えの前に記録した本文".to_string(),
+                },
+            )
+            .expect("replay log append");
+
+            let topic = "repo/conversation/data/vptest-acp-replay~lead/event";
+            let (_id, mut srx) = state.topic_router.subscribe(topic).await;
+            let res = dispatch_repo_method(
+                &state,
+                "conversation_demand_start",
+                serde_json::json!({ "lane": "vptest-acp-replay/lead" }),
+            )
+            .await
+            .expect("demand_start");
+            assert_eq!(res["status"], "no_engine");
+
+            let (_t, msg) = tokio::time::timeout(Duration::from_secs(2), srx.recv())
+                .await
+                .expect("event timeout")
+                .expect("topic closed");
+            match msg {
+                RepoMessage::ConversationEvent { session, event, .. } => {
+                    assert_eq!(session, k2);
+                    assert!(
+                        matches!(&event, ConversationEvent::Error { message } if message.starts_with(&format!("{agent} を起動できません"))),
+                        "{event:?}"
+                    );
+                }
+                other => panic!("想定外の message: {other:?}"),
+            }
+            assert!(
+                tokio::time::timeout(Duration::from_millis(200), srx.recv())
+                    .await
+                    .is_err(),
+                "ReplayStart も、replay_log の中身も配らない"
+            );
+        }
     }
 
     /// engine が終了した後に chat を開き直すと、終了した host は畳まれて作り直される
