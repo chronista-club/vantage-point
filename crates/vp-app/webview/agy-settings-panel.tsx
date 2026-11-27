@@ -1,10 +1,10 @@
 /**
- * agy（Antigravity CLI）の settings panel — Model / Thinking Level / Mode（doc 88 §6）。
+ * ACP settings panel — Agy: Model / Thinking Level / Mode、Muse: Model / Mode（design 88・91）。
  *
  * 候補と現在値は **engine が出す configOptions が正**（roster の `acp_config`、server が host から
  * enrich）。thought_level の候補は model で変わるので VP は固定の表を持たない。
  *
- * 切替は 1 軸ずつ `{agy: {<軸>: 値}}` を送る。server は engine の応答を待ってから registry に意図を
+ * 切替は 1 軸ずつ `{agy: {<軸>: 値}}` / `{muse: {<軸>: 値}}` を送る。server は engine の応答を待ってから registry に意図を
  * 残し、roster を push し直す（成否どちらでも）— 現在値は engine の実測なので、Claude のような
  * 「intent 優先」は要らない。失敗は roster の `acp_config.error` に載り、ここで ⚠ として出す。
  */
@@ -41,15 +41,16 @@ export function agyAxes(view: AcpConfigView | null | undefined): AcpConfigOption
 }
 
 /** 切り替えた 1 軸だけの settings（他の軸は server が registry の意図を保つ）。 */
-export function agySettingsFor(axis: AgyAxis, value: string): EngineSettings {
-  return { agy: { [axis]: value } }
+export function agySettingsFor(axis: AgyAxis, value: string, engine: 'agy' | 'muse' = 'agy'): EngineSettings {
+  return engine === 'muse' ? { muse: { [axis]: value } } : { agy: { [axis]: value } }
 }
 
 const isAgyAxis = (id: string): id is AgyAxis => (AGY_AXES as ReadonlyArray<string>).includes(id)
 
-export function AgySettingsPanel(props: SettingsContext) {
+export function AgySettingsPanel(props: SettingsContext & { engine?: 'agy' | 'muse' }) {
+  const engine = () => props.engine ?? 'agy'
   const view = () => props.rosterEntry()?.acp_config ?? null
-  const axes = () => agyAxes(view())
+  const axes = () => agyAxes(view()).filter((opt) => engine() === 'agy' || opt.id !== 'thought_level')
   /** 送信中の軸（応答の roster が届くまで select を止める — 連打で順序が崩れないように）。 */
   const [pending, setPending] = createSignal<string | null>(null)
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -71,7 +72,7 @@ export function AgySettingsPanel(props: SettingsContext) {
   const change = (opt: AcpConfigOption, select: HTMLSelectElement) => {
     const value = select.value
     if (!isAgyAxis(opt.id) || value === opt.current_value) return
-    if (!postSettings(props, agySettingsFor(opt.id, value))) {
+    if (!postSettings(props, agySettingsFor(opt.id, value, engine()))) {
       select.value = opt.current_value
       return
     }
@@ -89,7 +90,7 @@ export function AgySettingsPanel(props: SettingsContext) {
         {(opt) => (
           <select
             class="conversation-model-select"
-            aria-label={`agy ${opt.name}`}
+            aria-label={`${engine()} ${opt.name}`}
             disabled={busy()}
             title={`${opt.name}（この session に適用 — 会話は続いたまま切り替わる）`}
             onChange={(e) => change(opt, e.currentTarget)}
@@ -113,4 +114,9 @@ export function AgySettingsPanel(props: SettingsContext) {
       </Show>
     </Show>
   )
+}
+
+/** Muse uses the same ACP config view, with its own settings tag and Model / Mode axes. */
+export function MuseSettingsPanel(props: SettingsContext) {
+  return <AgySettingsPanel {...props} engine="muse" />
 }

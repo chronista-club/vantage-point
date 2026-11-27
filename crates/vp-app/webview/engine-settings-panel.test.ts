@@ -5,7 +5,7 @@ import { postSettings } from './engine-settings-shared'
 
 describe('engine settings panel table', () => {
   it('grok にも設定 panel があり、opencode は read-only に落ちる', () => {
-    expect(Object.keys(ENGINE_SETTINGS_PANELS).sort()).toEqual(['agy', 'claude', 'codex', 'grok', 'vpcode'])
+    expect(Object.keys(ENGINE_SETTINGS_PANELS).sort()).toEqual(['agy', 'claude', 'codex', 'grok', 'muse', 'vpcode'])
   })
 })
 

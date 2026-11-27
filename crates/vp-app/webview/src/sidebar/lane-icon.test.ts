@@ -3,6 +3,11 @@ import { describe, expect, it } from 'vitest'
 import { agentDisplayName, agentIcon } from './lane'
 
 describe('engine のロゴ', () => {
+  it('Muse has an icon and its own display name', () => {
+    expect(agentIcon('muse', false)).toBe('ph:meta-logo')
+    expect(agentIcon('muse', true)).toBe('ph:meta-logo-fill')
+    expect(agentDisplayName('muse')).toBe('Muse')
+  })
   it('AI engine は専用ロゴ（focused / active は fill）', () => {
     expect(agentIcon('claude', false)).toBe('mingcute:claude-line')
     expect(agentIcon('claude', true)).toBe('mingcute:claude-fill')

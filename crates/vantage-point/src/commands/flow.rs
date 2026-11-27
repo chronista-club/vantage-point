@@ -37,14 +37,14 @@ pub enum FlowCommands {
         /// Lane clone する branch (省略時は repo 側で `wip/<name>` を導出、branch-step)
         #[arg(long, short)]
         branch: Option<String>,
-        /// Lane Agent: 'claude' (default、 Claude CLI) or 'shell'
+        /// Lane Agent: claude (default) / codex / grok / opencode / agy / muse / shell
         #[arg(long, short)]
         agent: Option<String>,
         /// worktree の分岐元 ref（未 push の local branch も可）。省略時は
         /// sub-files.kdl の base-ref → origin/HEAD → main
         #[arg(long)]
         base: Option<String>,
-        /// worker の claude model alias（例: 'opus' / 'sonnet' / 'haiku'）。task 難度に
+        /// worker の model（Muse の model ID または Claude alias。例: 'opus' / 'sonnet' / 'haiku'）。task 難度に
         /// 合わせて指定。省略時は config の default-lane-model（既定 Opus）
         #[arg(long)]
         model: Option<String>,

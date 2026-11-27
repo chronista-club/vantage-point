@@ -45,7 +45,7 @@ protocol "vp-daemon" version="0.5.0" {
         request "conversation_session_create" readonly=#false description="起動済み repo の lane に chat（gui）の session を作る。console の作成ではない。作成の操作そのものは engine を起動しない。発言時に起動するが、GUI が開いていると pane の attach や注視で発言前に起動することがある。agent 省略時は lane の agent を使い、focus 省略時は true（新 session に lane の注視を移す）。lane は lanes_list で確認する。subscribe は不要。" {
             field "repo_path" type="string" required=#true min_length=1 description="対象 repo の絶対 path。最初の request で channel の宛先を固定する。"
             field "lane" type="string" required=#true min_length=1 description="lane address（例 vantage-point/lane/lead）。lanes_list の address.repo/address.name でも指定できる。"
-            field "agent" type="string" pattern="^(claude|codex|grok|opencode|agy|vpcode)$" description="claude / codex / grok / opencode / agy / vpcode。省略時は lane の agent。shell など未対応の agent は、省略時に引き継いだ場合もエラー。"
+            field "agent" type="string" pattern="^(claude|codex|grok|opencode|agy|muse|vpcode)$" description="claude / codex / grok / opencode / agy / muse / vpcode。省略時は lane の agent。shell など未対応の agent は、省略時に引き継いだ場合もエラー。"
             field "focus" type="bool" default="true" description="true は新 session に lane の注視を移す。false は作成操作では元の注視先を保つが、GUI 側の操作で後から注視が移ることがある。省略時は true。"
             returns "SessionCreateAck" {
                 field "status" type="string" required=#true description="成功時は ok。"

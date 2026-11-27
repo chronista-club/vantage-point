@@ -11,7 +11,7 @@
 import { Show, type Component } from 'solid-js'
 import { Dynamic } from '@solidjs/web'
 import { GrokSettingsPanel } from './grok-settings-panel'
-import { AgySettingsPanel } from './agy-settings-panel'
+import { AgySettingsPanel, MuseSettingsPanel } from './agy-settings-panel'
 import { ClaudeSettingsPanel } from './claude-settings-panel'
 import { CodexSettingsPanel } from './codex-settings-panel'
 import { VpcodeSettingsPanel } from './vpcode-settings-panel'
@@ -24,6 +24,7 @@ export const ENGINE_SETTINGS_PANELS: Readonly<Record<string, Component<SettingsC
   codex: CodexSettingsPanel,
   vpcode: VpcodeSettingsPanel,
   agy: AgySettingsPanel,
+  muse: MuseSettingsPanel,
   grok: GrokSettingsPanel,
 }
 

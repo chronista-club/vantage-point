@@ -84,7 +84,9 @@ mod tests {
         let names: Vec<&str> = agents.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["claude", "codex", "grok", "opencode", "agy", "shell"]
+            vec![
+                "claude", "codex", "grok", "opencode", "agy", "muse", "shell"
+            ]
         );
         assert!(agents.iter().all(|s| !s.description.is_empty()));
     }

@@ -56,7 +56,7 @@ pub struct AddSubParams {
     pub branch: Option<String>,
     /// Optional Lane Agent. Defaults to "claude".
     #[schemars(
-        description = "Lane Agent 種類 (engine): 'claude' (default、 claude) / 'codex' (OpenAI Codex CLI) / 'grok' (xAI Grok CLI) / 'opencode' (opencode、 model は opencode config) / 'agy' (Antigravity CLI) / 'shell'。"
+        description = "Lane Agent 種類 (engine): 'claude' (default、 claude) / 'codex' (OpenAI Codex CLI) / 'grok' (xAI Grok CLI) / 'opencode' (opencode、 model は opencode config) / 'agy' (Antigravity CLI) / 'muse' (Meta Muse Code) / 'shell'。"
     )]
     pub agent: Option<String>,
     /// Optional base ref for the worktree fork point (co-evolution #2).
@@ -123,7 +123,7 @@ pub struct FlowHandoffParams {
 
     /// Optional Lane Agent (default: "claude")
     #[schemars(
-        description = "Lane Agent (engine): 'claude' (default、 claude) / 'codex' / 'grok' / 'opencode' / 'agy' / 'shell'。"
+        description = "Lane Agent (engine): 'claude' (default、 claude) / 'codex' / 'grok' / 'opencode' / 'agy' / 'muse' / 'shell'。"
     )]
     #[serde(default)]
     pub agent: Option<String>,
