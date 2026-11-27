@@ -2,14 +2,14 @@
 // 裁定（mako 2026-10-01）: しまう動詞は名札（pane 級）/ 戻すは rail のアイコン（しまった一覧 = lane 級）。
 import { expect, it } from 'vitest'
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window, type HTMLButtonElement } from 'happy-dom'
 
 async function bundle(contents: string) {
   const result = await build({ stdin: { contents, resolveDir: process.cwd(), loader: 'tsx' },
     bundle: true, write: false, format: 'iife', conditions: ['browser'], preserveSymlinks: true, plugins: [solidPlugin()] })
   const window = new Window()
-  window.eval(result.outputFiles[0].text)
+  evalDom(window, result.outputFiles[0].text)
   return window
 }
 
@@ -29,7 +29,7 @@ it('名札の「しまう」ボタンは、その pane の host id を vp:pane-s
   try {
     const btn = window.document.querySelector<HTMLButtonElement>('button.conversation-session-plate-stow')!
     expect(btn).not.toBeNull()
-    btn.click()
+    clickDom(btn)
     const h = window as unknown as { stowed: unknown[]; sent: Array<{ t: string }> }
     expect(h.stowed).toEqual([{ lane: 'stow-test/main', id: 'chat-session-1' }])
     expect(h.sent.some(m => m.t === 'conversation:session_remove')).toBe(false)
@@ -42,9 +42,11 @@ it('rail の縦中央に、しまった pane のアイコンが並び、click �
   const window = await bundle(`
     import {mountEdgeRail} from './EdgeRail'
     const root=document.createElement('div'); root.id='edge-rail'
-    const newHost=document.createElement('div'); const stowHost=document.createElement('div'); stowHost.id='edge-rail-stow-host'
+    const newHost=document.createElement('div'); newHost.id='edge-rail-new-host'
+    const stowHost=document.createElement('div'); stowHost.id='edge-rail-stow-host'
     root.append(newHost, stowHost); document.body.append(root)
-    window.rail=mountEdgeRail(root,newHost,stowHost)
+    // 住人の host は表（edge-residents.ts）の id で引く。PR の host はこの台に無い（描画を飛ばす）
+    window.rail=mountEdgeRail(root,(id)=>document.getElementById(id))
     window.rail.setLane('stow-test/main')
     window.unstowed=[]
     document.addEventListener('vp:pane-unstow', e=>window.unstowed.push(e.detail))
@@ -52,38 +54,38 @@ it('rail の縦中央に、しまった pane のアイコンが並び、click �
   try {
     const doc = window.document
     expect(doc.querySelectorAll('.rail-stowed').length).toBe(0)
-    doc.dispatchEvent(new window.CustomEvent('vp:stowed-panes', { detail: { lane: 'stow-test/main', panes: [
+    dispatchDom(doc, new window.CustomEvent('vp:stowed-panes', { detail: { lane: 'stow-test/main', panes: [
       { id: 'chat-session-1', kind: 'chat', label: 'claude#1', session: 1, agent: 'claude' },
       { id: 'lane-code', kind: 'code', label: 'Code' },
     ] } }))
     const items = doc.querySelectorAll<HTMLButtonElement>('.rail-stowed')
     expect(items.length).toBe(2)
     expect(items[0]!.getAttribute('data-label')).toContain('claude#1')
-    items[0]!.click()
+    clickDom(items[0]!)
     expect((window as unknown as { unstowed: unknown[] }).unstowed).toEqual([{ lane: 'stow-test/main', id: 'chat-session-1' }])
     // 別 lane の一覧は無視する（rail は表示 lane のもの）
-    doc.dispatchEvent(new window.CustomEvent('vp:stowed-panes', { detail: { lane: 'other/main', panes: [] } }))
+    dispatchDom(doc, new window.CustomEvent('vp:stowed-panes', { detail: { lane: 'other/main', panes: [] } }))
     expect(doc.querySelectorAll('.rail-stowed').length).toBe(2)
     // lane 切替: rail は自分から一覧を要求する（lane-panes が先に流していても落とさない）。
     // 2026-10-02 実機: 切り替えて戻ると一覧が消え、しまった pane を戻せなくなった（順序依存）
     const h2 = window as unknown as { demanded: unknown[]; rail: { setLane(a: string | null): void } }
     h2.demanded = []
     doc.addEventListener('vp:stowed-panes-demand', e => h2.demanded.push((e as unknown as CustomEvent).detail))
-    h2.rail.setLane('other/main')
+    callDom(window, () => h2.rail.setLane('other/main'))
     expect(h2.demanded).toEqual([{ lane: 'other/main' }])
     expect(doc.querySelectorAll('.rail-stowed').length).toBe(0)
-    doc.dispatchEvent(new window.CustomEvent('vp:stowed-panes', { detail: { lane: 'other/main', panes: [
+    dispatchDom(doc, new window.CustomEvent('vp:stowed-panes', { detail: { lane: 'other/main', panes: [
       { id: 'term-session-1', kind: 'term', label: 'cc#1', session: 1, agent: 'claude' },
     ] } }))
     expect(doc.querySelectorAll('.rail-stowed').length).toBe(1)
-    h2.rail.setLane('stow-test/main')
-    doc.dispatchEvent(new window.CustomEvent('vp:stowed-panes', { detail: { lane: 'stow-test/main', panes: [
+    callDom(window, () => h2.rail.setLane('stow-test/main'))
+    dispatchDom(doc, new window.CustomEvent('vp:stowed-panes', { detail: { lane: 'stow-test/main', panes: [
       { id: 'chat-session-1', kind: 'chat', label: 'claude#1', session: 1, agent: 'claude' },
       { id: 'lane-code', kind: 'code', label: 'Code' },
     ] } }))
     expect(doc.querySelectorAll('.rail-stowed').length).toBe(2)
     // badge: しまった pane に動きがあれば点く
-    doc.dispatchEvent(new window.CustomEvent('vp:pane-activity', { detail: { lane: 'stow-test/main', id: 'lane-code' } }))
+    dispatchDom(doc, new window.CustomEvent('vp:pane-activity', { detail: { lane: 'stow-test/main', id: 'lane-code' } }))
     expect(doc.querySelectorAll('.rail-stowed')[1]!.classList.contains('has-badge')).toBe(true)
     expect(doc.querySelectorAll('.rail-stowed')[0]!.classList.contains('has-badge')).toBe(false)
   } finally {

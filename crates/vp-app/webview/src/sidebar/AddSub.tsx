@@ -13,7 +13,7 @@
  * engine usage meter（spec mem_1ChMLKCMUvC73JHTLjG3xg）: 選択肢に現在の使用率を添える
  * （`claude (88%)`）。usage が未着・取れていない engine は名前だけ（従来どおり）。
  */
-import { createEffect, createSignal, onCleanup, onMount, For, Show } from 'solid-js'
+import { createEffect, createSignal, onCleanup, onSettled, For, Show } from 'solid-js'
 import { sendIpc } from './ipc'
 import { createLaneCreation, subscribeAgents } from './feedback'
 import { sidebar } from './store'
@@ -32,9 +32,9 @@ export function AddSub(props: { repoPath: string; onClose: () => void; onPending
     if (!window.ipc) throw new Error('接続がありません。しばらくしてから再試行してください。')
     sendIpc(message)
   }, props.onClose)
-  createEffect(() => props.onPendingChange(creation.pending()))
+  createEffect(creation.pending, pending => { props.onPendingChange(pending) })
   onCleanup(() => { creation.dispose(); props.onPendingChange(false) })
-  onMount(() => {
+  onSettled(() => {
     const unsubscribe = subscribeAgents((p) => {
       if (p.repo_path !== props.repoPath) return
       const list = (p.agents ?? []).filter((a): a is AgentInfo =>
@@ -43,7 +43,7 @@ export function AddSub(props: { repoPath: string; onClose: () => void; onPending
       setAgents(list)
       if (list.length > 0 && !agent()) setAgent(list[0]!.name)
     })
-    onCleanup(unsubscribe)
+    return unsubscribe
     sendIpc({ t: 'agents:fetch', path: props.repoPath })
   })
 

@@ -1,12 +1,12 @@
 // Local, daemon-free preview. Run: bun editor/preview.mjs [port]
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidPlugin } from '../solid-plugin.mjs'
 import { fileURLToPath } from 'node:url'
 
 const result = await build({
   stdin: { contents: `
     import { createComponent } from 'solid-js';
-    import { render } from 'solid-js/web';
+    import { render } from '@solidjs/web';
     import { VpEditor } from './editor/VpEditor';
     import { Shell, SHELL_CSS } from './src/sidebar/Shell';
     import { applySidebarState, emptyState } from './src/sidebar/store';

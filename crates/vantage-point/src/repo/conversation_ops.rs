@@ -400,7 +400,10 @@ pub(crate) async fn handle_conversation_session_focus(
         // 先に起こすと同じ lock 区間の外で畳まれ得る。順序は「intent を合わせる → 注視に応じて
         // 起こす」（engine の eager は demand 側の判断 = reconcile の仕事ではない）。
         let mut pool = state.lane_pool.write().await;
-        if let Err(e) = pool.ensure_chat_engine(&addr, Some(session), &state.topic_router) {
+        if let Err(e) = pool
+            .ensure_chat_engine_reported(&addr, Some(session), &state.topic_router)
+            .await
+        {
             tracing::debug!("conversation_session_focus: eager spawn せず（{e}）");
         }
     }
@@ -597,7 +600,8 @@ pub(crate) async fn ensure_and_submit_chat(
         .lane_pool
         .write()
         .await
-        .ensure_chat_engine(&addr, session, &state.topic_router)
+        .ensure_chat_engine_reported(&addr, session, &state.topic_router)
+        .await
         .map_err(|e| format!("{ctx}: {e}"))?;
 
     // submit（read lock — 他 lane の操作をブロックしない）。
@@ -618,7 +622,8 @@ pub(crate) async fn ensure_and_submit_chat(
         {
             let mut pool = state.lane_pool.write().await;
             pool.drop_chat_engine(&addr, session);
-            pool.ensure_chat_engine(&addr, session, &state.topic_router)
+            pool.ensure_chat_engine_reported(&addr, session, &state.topic_router)
+                .await
                 .map_err(|e| format!("{ctx}: engine 再起動失敗: {e}"))?;
         }
         state
@@ -667,7 +672,9 @@ async fn apply_session_mode(
         // reconcile の後（`conversation_session_focus` と同じ「intent → 注視」の順序）。
         let mut pool = state.lane_pool.write().await;
         if mode == crate::lane::session_registry::SessionMode::Gui
-            && let Err(e) = pool.ensure_chat_engine(addr, Some(session), &state.topic_router)
+            && let Err(e) = pool
+                .ensure_chat_engine_reported(addr, Some(session), &state.topic_router)
+                .await
         {
             tracing::warn!(
                 "session_set_mode: eager chat engine spawn 失敗（submit で再試行）: {e}"
@@ -881,8 +888,9 @@ pub(crate) async fn handle_conversation_set_settings(
                 // disk が変わらなかった（同値 / 形式外で書かず）なら engine も触らない。
                 if changed
                     && pool.drop_chat_engine(&addr, Some(session))
-                    && let Err(e) =
-                        pool.ensure_chat_engine(&addr, Some(session), &state.topic_router)
+                    && let Err(e) = pool
+                        .ensure_chat_engine_reported(&addr, Some(session), &state.topic_router)
+                        .await
                 {
                     tracing::warn!(
                         "conversation_set_settings: engine 再 spawn 失敗（submit で再試行）: {e}"
@@ -955,6 +963,212 @@ async fn apply_agy_settings(
 #[cfg(test)]
 mod tests {
     use crate::repo::state::insert_test_lane;
+
+    // mem_1CeKURXkyMrGuvGzkzzfzE: RPC の成否とは別に起動失敗を対象 session へ配送する。
+    #[tokio::test]
+    async fn spawn_failure_from_chat_operations_reaches_the_conversation_topic() {
+        use crate::conversation::ConversationEvent;
+        use crate::lane::session_registry::{self, SessionMode};
+        use crate::protocol::RepoMessage;
+        use crate::repo::unison_server::dispatch_repo_method;
+
+        let isolated = crate::test_env::state_dir_async().await;
+        let state = crate::repo::state::build_test_app_state().await;
+        let addr = insert_test_lane(&state, "spawn-ops", SessionMode::Tui).await;
+        {
+            let mut pool = state.lane_pool.write().await;
+            let mut lane = pool.get(&addr).unwrap().clone();
+            lane.cwd = isolated
+                .path()
+                .join("missing-cwd")
+                .to_string_lossy()
+                .into_owned();
+            pool.insert(lane);
+        }
+        for agent in ["claude", "vpcode", "codex", "grok", "opencode", "agy"] {
+            let key = session_registry::create(
+                &addr.repo,
+                "lead",
+                "claude",
+                agent,
+                SessionMode::Gui,
+                false,
+            )
+            .unwrap();
+            for method in [
+                "conversation_submit",
+                "conversation_nudge",
+                "conversation_codex_input",
+                "conversation_session_focus",
+                "session_set_mode",
+            ] {
+                if method == "conversation_nudge" {
+                    // wire nudge は session payload ではなく root を解決する。
+                    session_registry::set_root(&addr.repo, "lead", "claude", key).unwrap();
+                }
+                if method == "session_set_mode" {
+                    state
+                        .lane_pool
+                        .read()
+                        .await
+                        .set_session_mode(&addr, key, SessionMode::Tui)
+                        .unwrap();
+                }
+                let (_, mut rx) = state
+                    .topic_router
+                    .subscribe("repo/conversation/data/spawn-ops~lane~lead/event")
+                    .await;
+                let result = dispatch_repo_method(
+                    &state,
+                    method,
+                    serde_json::json!({
+                        "lane": addr.canonical(), "session": key,
+                        "prompt": "hello", "text": "hello", "mode": "gui",
+                        "thread_id": "sleeping-thread", "action": {"kind": "add", "text": "hello"}
+                    }),
+                )
+                .await;
+                if matches!(method, "conversation_session_focus" | "session_set_mode") {
+                    assert!(result.is_ok(), "{method}: {result:?}");
+                } else {
+                    assert!(result.is_err(), "{method} must fail to spawn");
+                }
+                let (_, message) = rx
+                    .try_recv()
+                    .unwrap_or_else(|e| panic!("{agent}/{method}: missing error event: {e}"));
+                assert!(matches!(message, RepoMessage::ConversationEvent {
+                    lane, session, event: ConversationEvent::Error { message },
+                } if lane == addr.canonical() && session == key && !message.is_empty()));
+                assert!(
+                    rx.try_recv().is_err(),
+                    "{agent}/{method}: duplicate error event"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn focusing_tui_or_non_chat_session_does_not_report_spawn_failure() {
+        use crate::lane::session_registry::{self, SessionMode};
+        use crate::repo::unison_server::dispatch_repo_method;
+
+        let isolated = crate::test_env::state_dir_async().await;
+        let state = crate::repo::state::build_test_app_state().await;
+        let addr = insert_test_lane(&state, "spawn-guards", SessionMode::Tui).await;
+        {
+            let mut pool = state.lane_pool.write().await;
+            let mut lane = pool.get(&addr).unwrap().clone();
+            lane.cwd = isolated
+                .path()
+                .join("missing-cwd")
+                .to_string_lossy()
+                .into_owned();
+            pool.insert(lane);
+        }
+        let (_, mut rx) = state
+            .topic_router
+            .subscribe("repo/conversation/data/spawn-guards~lane~lead/event")
+            .await;
+        for (agent, mode) in [("claude", SessionMode::Tui), ("shell", SessionMode::Gui)] {
+            let key =
+                session_registry::create(&addr.repo, "lead", "claude", agent, mode, false).unwrap();
+            dispatch_repo_method(
+                &state,
+                "conversation_session_focus",
+                serde_json::json!({
+                    "lane": addr.canonical(), "session": key,
+                }),
+            )
+            .await
+            .unwrap();
+            assert!(
+                rx.try_recv().is_err(),
+                "guard rejection is not a host spawn failure"
+            );
+        }
+    }
+
+    // 実 engine の代わりに即終了するプロセスを置き、再 spawn だけを不在 cwd で失敗させる。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_failure_on_settings_change_and_submit_retry_is_reported_once() {
+        use crate::conversation::{
+            ChatEngineSlot, ChatHost, ClaudeHost, ClaudeHostConfig, ConversationEvent,
+        };
+        use crate::lane::session_registry::SessionMode;
+        use crate::protocol::RepoMessage;
+        use crate::repo::unison_server::dispatch_repo_method;
+
+        let isolated = crate::test_env::state_dir_async().await;
+        let state = crate::repo::state::build_test_app_state().await;
+        let addr = insert_test_lane(&state, "spawn-retry", SessionMode::Gui).await;
+        {
+            let mut pool = state.lane_pool.write().await;
+            let mut lane = pool.get(&addr).unwrap().clone();
+            lane.cwd = isolated
+                .path()
+                .join("missing-cwd")
+                .to_string_lossy()
+                .into_owned();
+            pool.insert(lane);
+        }
+        for method in ["conversation_set_settings", "conversation_submit"] {
+            let host = ClaudeHost::spawn(ClaudeHostConfig {
+                cwd: isolated.path().to_string_lossy().into_owned(),
+                repo: addr.repo.clone(),
+                lane: "lead".into(),
+                lane_label: "lead".into(),
+                session_key: 1,
+                resume_session_id: None,
+                settings: Default::default(),
+                claude_cli_path: Some("/usr/bin/true".into()),
+            })
+            .unwrap();
+            let mut host_events = host.subscribe();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !matches!(
+                    host_events.recv().await.unwrap(),
+                    ConversationEvent::EngineExited { .. }
+                ) {}
+            })
+            .await
+            .expect("fixture process exits");
+            state.lane_pool.write().await.insert_chat_engine_for_test(
+                &addr,
+                1,
+                ChatEngineSlot {
+                    host: ChatHost::Claude(host),
+                    pump: tokio::spawn(async {}),
+                    last_event_at: Default::default(),
+                    turn_active: Default::default(),
+                },
+            );
+            let (_, mut rx) = state
+                .topic_router
+                .subscribe("repo/conversation/data/spawn-retry~lane~lead/event")
+                .await;
+            let result = dispatch_repo_method(
+                &state,
+                method,
+                serde_json::json!({
+                    "lane": addr.canonical(), "session": 1, "prompt": "retry me",
+                    "settings": {"claude": {"model": "sonnet"}},
+                }),
+            )
+            .await;
+            if method == "conversation_set_settings" {
+                assert!(result.is_ok(), "settings intent is saved: {result:?}");
+            } else {
+                assert!(result.unwrap_err().contains("engine 再起動失敗"));
+            }
+            assert!(
+                matches!(rx.try_recv(), Ok((_, RepoMessage::ConversationEvent {
+                lane, session: 1, event: ConversationEvent::Error { message },
+            })) if lane == addr.canonical() && message.contains("headless claude の起動に失敗"))
+            );
+            assert!(rx.try_recv().is_err(), "respawn failure is reported once");
+        }
+    }
 
     /// Task mem_1Cex2VPFy3gQnXtpYqF1in: tests/fixtures/codex-chat-retry を PATH の
     /// 先頭に置き、単独実行する。テスト用 peer は Codex の外部 JSONL 境界だけを置き換える。

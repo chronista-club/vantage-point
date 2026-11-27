@@ -7,6 +7,10 @@ export const EDITOR_CSS = `
   --lg-hairline:var(--color-surface-border); --lg-grid:var(--color-surface-border);
   --lg-cyan-dim:var(--color-brand-primary); --sb-conn-auto:var(--color-brand-primary);
   --sb-selection-bg:var(--color-surface-bg-emphasis); --sb-selection-border:var(--color-text-tertiary);
+  /* 補助色（doc 87 §8.3）。veil は文字の色に従う — 明るい地では暗い重ねになる（creo-ui の --surface-veil-* と
+     同じ考え方）。literal の色を持つ --lg-* はここで全部写す（src/sidebar/sidebar-palette.test.ts） */
+  --lg-veil:var(--lg-hot); --lg-cyan:var(--color-brand-primary); --lg-shadow:var(--color-shadow-base);
+  --lg-cyan-deep:color-mix(in srgb,var(--lg-cyan-dim) 40%,var(--lg-void));
 }
 :root[data-vp-editor-theme$="-light"] {
   --sb-activity-thinking:#73529d; --sb-activity-working:#35638d; --sb-activity-waiting:#b63845;

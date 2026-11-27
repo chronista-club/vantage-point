@@ -1,9 +1,9 @@
 // mem_1Cg7MpHWBdf6u9CYjyEAaf — daemon に接続しない lane 行の表示 fixture。
 import { build } from 'esbuild';
-import { solidPlugin } from 'esbuild-plugin-solid';
+import { solidPlugin } from '../solid-plugin.mjs';
 import { fileURLToPath } from 'node:url';
 const result = await build({stdin:{contents:`
-import {render} from 'solid-js/web';
+import {render} from '@solidjs/web';
 import {createComponent} from 'solid-js';
 import {Shell,SHELL_CSS} from './src/sidebar/Shell';
 import {applySidebarState,emptyState} from './src/sidebar/store';

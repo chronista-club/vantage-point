@@ -1,5 +1,5 @@
 import { createMemo, createSignal, createUniqueId, For, onCleanup, Show } from 'solid-js'
-import { Portal } from 'solid-js/web'
+import { Portal } from '@solidjs/web'
 import type { ActionAtlas } from '../../generated/ActionAtlas'
 import { buildAtlasTree } from './atlas-tree'
 
@@ -59,7 +59,7 @@ export function AtlasPicker(props: { atlases: Atlas[]; settings?: unknown; selec
   return <>
     <style>{PICKER_CSS}</style>
     <button ref={trigger} type="button" class="vp-atlas-trigger" aria-label="保存先 Atlas" aria-haspopup="listbox"
-      aria-expanded={open()} aria-controls={open()?uid:undefined}
+      aria-expanded={String(open()) as 'true' | 'false'} aria-controls={open()?uid:undefined}
       onClick={()=>open()?close():show()} onKeyDown={e=>{if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();show()}}}>
       {selected()?.path || selected()?.name || (props.selected?'Atlas 未確認':'Atlas を選択')}
     </button>
@@ -70,8 +70,8 @@ export function AtlasPicker(props: { atlases: Atlas[]; settings?: unknown; selec
         style={{left:`${position().left}px`,top:`${position().top}px`,width:`${position().width}px`,'max-height':`${position().height}px`}}
         onKeyDown={key}>
         <For each={rows()}>{(row,index)=><div id={`${uid}-${index()}`} role="option" data-atlas-id={row.node.id}
-          aria-selected={row.node.id===props.selected} aria-disabled={!row.node.writable}
-          class="vp-atlas-option" classList={{'is-active':index()===active(),'is-selected':row.node.id===props.selected}}
+          aria-selected={String(row.node.id===props.selected) as 'true' | 'false'} aria-disabled={String(!row.node.writable) as 'true' | 'false'}
+          class={["vp-atlas-option", {'is-active':index()===active(),'is-selected':row.node.id===props.selected}]}
           style={{'padding-left':`${12+row.depth*16}px`}}
           title={[row.node.source==='shared'?`共有${row.node.owner?` · ${row.node.owner}`:''}`:row.node.path,!row.node.writable?'読み取り専用':null].filter(Boolean).join(' · ')}
           onPointerMove={()=>setActive(index())} onClick={()=>select(index())}>
@@ -87,7 +87,7 @@ const PICKER_CSS=`
 .vp-atlas-popover{font-family:var(--vp-font-sans,var(--typography-family-sans,system-ui));letter-spacing:normal;position:fixed;z-index:10000;box-sizing:border-box;overflow-y:auto;padding:8px 0;border:1px solid var(--lg-mute-2,#38525b);border-radius:6px;background:var(--lg-panel,#0A0E15);color:var(--lg-hot,#EAFBFF);box-shadow:0 6px 24px #0005;outline:none}
 .vp-atlas-option{display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:12px;line-height:16px;border-radius:6px;color:var(--lg-mute,#5C7A85);cursor:pointer}
 .vp-atlas-option>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.vp-atlas-option.is-active{background:var(--lg-hover,#ffffff0c);color:var(--lg-hot,#EAFBFF)}
+.vp-atlas-option.is-active{background:var(--lg-veil-4);color:var(--lg-hot,#EAFBFF)}
 .vp-atlas-option.is-selected{background:color-mix(in srgb,var(--lg-cyan,#40d9ec) 14%,transparent);color:var(--lg-cyan,#40d9ec);font-weight:500}
 .vp-atlas-option[aria-disabled=true]{opacity:.5;cursor:default}
 .vp-atlas-option small{font-size:10px;letter-spacing:.05em;white-space:nowrap}

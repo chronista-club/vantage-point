@@ -150,8 +150,8 @@ export function CreoIdRow() {
 				title="Creo ID — VP の identity。token は宛先ごとに 1 本ずつ持つ"
 			>
 				<span
-					class="vp-daemon-dot"
-					classList={{ offline: !v.signedIn() }}
+					class={["vp-daemon-dot", { offline: !v.signedIn() }]}
+
 					title={`hub: ${v.authState("hub")} / creo: ${v.authState("creo")}`}
 				/>
 				<span class="vp-daemon-line">
@@ -196,7 +196,7 @@ export function MachineStrip() {
 	return (
 		<details class="vp-daemon vp-machine-strip">
 			<summary class="vp-daemon-summary">
-				<span class="vp-daemon-dot" classList={{ offline: !v.online() }} />
+				<span class={["vp-daemon-dot", { offline: !v.online() }]}  />
 				<span class="vp-daemon-line">{v.summary()}</span>
 				{/* 非健康 signal は畳んでいても見える（サマリ行の右端に集約） */}
 				<Show when={v.showHub() && !v.hubConnected()}>
@@ -249,8 +249,8 @@ export function MachineStrip() {
 
 			<Show when={v.online() && v.updateAvailable()}>
 				<div
-					class="vp-daemon-update"
-					classList={{ applying: v.updateApplying() }}
+					class={["vp-daemon-update", { applying: v.updateApplying() }]}
+
 					title={
 						v.updateApplying()
 							? "更新を適用しています…"
@@ -277,7 +277,7 @@ export function MachineStrip() {
 					class="vp-daemon-summary"
 					title={`chronista-hub federation: ${v.hub()}`}
 				>
-					<span class="vp-daemon-dot" classList={{ offline: !v.hubConnected() }} />
+					<span class={["vp-daemon-dot", { offline: !v.hubConnected() }]}  />
 					<span class="vp-daemon-line">{v.hubLabel()}</span>
 					<button
 						type="button"
@@ -308,8 +308,8 @@ export function MachineStrip() {
 									title={`${w.node_id ? `${w.handle} (${w.node_id})` : w.handle} — ${w.connected ? "connected" : "offline (stale registry entry)"}`}
 								>
 									<span
-										class="vp-hub-daemon-dot"
-										classList={{ offline: !w.connected }}
+										class={["vp-hub-daemon-dot", { offline: !w.connected }]}
+
 									/>
 									<span class="k">{w.handle}</span>
 									<Show when={w.endpoints_count > 0}>
@@ -324,8 +324,8 @@ export function MachineStrip() {
 
 			<div class="vp-devices">
 				<div
-					class="vp-agent-row"
-					classList={{ active: v.devicesActive() }}
+					class={["vp-agent-row", { active: v.devicesActive() }]}
+
 					onClick={() =>
 						sendIpc({ t: "stand:select", path: "", kind: "devices" })
 					}
@@ -430,7 +430,7 @@ function UsageEngineRow(props: { usage: EngineUsage; now: number }) {
 			</div>
 			<For each={props.usage.windows}>
 				{(w) => (
-					<div class="vp-usage-window" classList={{ scoped: w.scope !== null }}>
+					<div class={["vp-usage-window", { scoped: w.scope !== null }]} >
 						<span class="k">{w.label}</span>
 						<span class={`v ${severityOf(w)}`}>
 							{pctText(w.used_pct)}%

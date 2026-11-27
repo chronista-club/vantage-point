@@ -1,16 +1,17 @@
 import { EditorHostProvider, createComponentFieldResolver, useEditorHost, useEditorPicking, type EditorField, type EditorHost, type ThemeId } from '@chronista-club/creo-ui-editor-host'
-import { Show, createEffect, createSignal, getOwner, onCleanup, onMount, untrack } from 'solid-js'
-import { AppTokenBinds } from './app-fields'
+import { Show, createEffect, createSignal, getOwner, onCleanup, onSettled, untrack } from 'solid-js'
+import { AppTokenBinds, isEditorManagedVar, isShellLayoutField } from './app-fields'
 import { EditorPanel, type EditorSection } from './EditorPanel'
 import { EDITOR_CSS } from './styles'
 import { createMidiSettings, type MidiSettings } from './midi-settings'
 import { linkOptionsFromWindow } from './link-config'
 import { RUNTIME_NAMESPACE, clearRuntimeStorage, isThemeId, readThemeLibrary, themeBase, themeValues, writeThemeLibrary, type StoragePort, type ThemeLibrary, type Values } from './theme-store'
 
-const MANAGED_VAR = /^--(?:color-(?:brand|surface)-|typography-|layout-gap-sibling$|_|sb-|lg-|chat-text-|vp-resizer-breathe-)/
+// Editor が :root に書いた変数を消す（テーマの切替で前のテーマの調整を持ち越さない）。app の分は field の宣言から
+// 導く（app-fields.ts）— registry の行が同梱した field の変数も、行を足すだけで対象に入る（doc 87 §8.3）
 function clearEditorStyles(): void {
   const style = document.documentElement.style
-  for (const name of Array.from(style)) if (MANAGED_VAR.test(name)) style.removeProperty(name)
+  for (const name of Array.from(style)) if (isEditorManagedVar(name)) style.removeProperty(name)
 }
 
 function validValue(field: EditorField, value: unknown): boolean {
@@ -42,8 +43,8 @@ export function VpEditor() {
   const [mount, setMount] = createSignal({ id: initial.selected, base: themeBase(initial), open: false })
   let activeHost: EditorHost | undefined
 
-  const persist = (next: ThemeLibrary) => {
-    setLibrary(next)
+  const persist = (update: ThemeLibrary | ((current: ThemeLibrary) => ThemeLibrary)) => {
+    const next = setLibrary(update)
     setStorageError(!writeThemeLibrary(storage, next))
   }
   const prepare = (base: ThemeId) => {
@@ -54,8 +55,8 @@ export function VpEditor() {
   }
   prepare(themeBase(initial))
 
-  const activate = (id: string) => {
-    const next = { ...library(), selected: id }
+  const activate = (id: string, source = library()) => {
+    const next = { ...source, selected: id }
     if (!isThemeId(id) && !next.custom.some(theme => theme.id === id)) return
     const open = activeHost?.mode() === 'on'
     persist(next)
@@ -69,16 +70,14 @@ export function VpEditor() {
     const id = `custom:${crypto.randomUUID()}`
     const values = { ...themeValues(library()) }
     const custom = { id, name: trimmed, base: themeBase(library()), values }
-    persist({ ...library(), custom: [...library().custom, custom], drafts: { ...library().drafts, [id]: values } })
-    activate(id)
+    activate(id, { ...library(), custom: [...library().custom, custom], drafts: { ...library().drafts, [id]: values } })
     return undefined
   }
   const updateSaved = () => persist({ ...library(), custom: library().custom.map(theme => theme.id === library().selected ? { ...theme, values: { ...themeValues(library()) } } : theme) })
   const restoreSaved = () => {
     const id = library().selected
     const values = library().custom.find(theme => theme.id === id)?.values ?? {}
-    persist({ ...library(), drafts: { ...library().drafts, [id]: { ...values } } })
-    activate(id)
+    activate(id, { ...library(), drafts: { ...library().drafts, [id]: { ...values } } })
   }
   return <>
     <Show when={mount()} keyed>{profile => <EditorHostProvider config={{
@@ -99,7 +98,7 @@ export function VpEditor() {
 }
 
 type SessionProps = {
-  library: () => ThemeLibrary; persist(library: ThemeLibrary): void;
+  library: () => ThemeLibrary; persist(update: ThemeLibrary | ((current: ThemeLibrary) => ThemeLibrary)): void;
   section: () => EditorSection; setSection(section: EditorSection): void;
   storageError: () => boolean; activate(id: string): void; save(name: string): string | undefined;
   updateSaved(): void; restoreSaved(): void; expose(host: EditorHost): void; midi: MidiSettings;
@@ -124,13 +123,14 @@ function EditorSession(props: SessionProps) {
   onCleanup(() => { if (bridgeWindow.vpEditorHost === host) delete bridgeWindow.vpEditorHost })
   const seen = new Set<string>()
   let restoring = false
-  const restoreFields = () => {
-    const fields = host.fields()
+  const restoreFields = (fields: ReturnType<typeof host.fields>) => {
     untrack(() => {
       const values = themeValues(props.library())
       restoring = true
       try {
-        const added = fields.filter(field => !seen.has(field.id))
+        // 幅（shell.leftEdge.* / shell.rightEdge.*）はテーマではない — 持ち主は shell-layout で、Editor の値は
+        // bindShellLayoutFields が今の幅に合わせている。ここで初期値・保存値を当てると復元済みの幅を潰す
+        const added = fields.filter(field => !seen.has(field.id) && !isShellLayoutField(field.id))
         // Initialize the whole family first: a default surface field removes its inline color.
         // Doing this between saved hue/color writes would erase an earlier restored value.
         for (const field of added) {
@@ -144,34 +144,36 @@ function EditorSession(props: SessionProps) {
       } finally { restoring = false }
     })
   }
-  createEffect(restoreFields)
+  createEffect(() => host.fields().slice(), restoreFields)
   onCleanup(host.onAnyChange((id, value) => {
-    if (restoring) return
+    if (restoring || isShellLayoutField(id)) return
     const field = host.getField(id)
     if (!field || !validValue(field, value)) return
-    const library = props.library()
-    const values: Values = { ...themeValues(library) }
-    if (value === field.initial) delete values[id]
-    else values[id] = value as Values[string]
-    if (id.startsWith('color.surface.')) {
-      // Hue/chroma and individual surface controls share CSS properties. Capture their
-      // effective colors so either edit order (including a per-color reset) round-trips.
-      const adjusted = ['color.surface.hue', 'color.surface.chroma'].some(key => host.getValue(key) !== host.getField(key)?.initial)
-      const computed = getComputedStyle(document.documentElement)
-      const colors = host.fields().filter(item => item.id.startsWith('color.surface.') && item.type === 'color')
-        .map(item => ({ field: item, value: computed.getPropertyValue(`--${item.id.replaceAll('.', '-')}`).trim() }))
-      for (const color of colors) {
-        if (!color.value) continue
-        host.setValue(color.field.id, color.value, { silent: true })
-        if (!adjusted && color.value === color.field.initial) delete values[color.field.id]
-        else values[color.field.id] = color.value
+    // 同じ native patch 内の更新を、まだ未反映の draft にも積み重ねる。
+    props.persist(library => {
+      const values: Values = { ...themeValues(library) }
+      if (value === field.initial) delete values[id]
+      else values[id] = value as Values[string]
+      if (id.startsWith('color.surface.')) {
+        // Hue/chroma and individual surface controls share CSS properties. Capture their
+        // effective colors so either edit order (including a per-color reset) round-trips.
+        const adjusted = ['color.surface.hue', 'color.surface.chroma'].some(key => host.getValue(key) !== host.getField(key)?.initial)
+        const computed = getComputedStyle(document.documentElement)
+        const colors = host.fields().filter(item => item.id.startsWith('color.surface.') && item.type === 'color')
+          .map(item => ({ field: item, value: computed.getPropertyValue(`--${item.id.replaceAll('.', '-')}`).trim() }))
+        for (const color of colors) {
+          if (!color.value) continue
+          host.setValue(color.field.id, color.value, { silent: true })
+          if (!adjusted && color.value === color.field.initial) delete values[color.field.id]
+          else values[color.field.id] = color.value
+        }
       }
-    }
-    props.persist({ ...library, drafts: { ...library.drafts, [library.selected]: values } })
+      return { ...library, drafts: { ...library.drafts, [library.selected]: values } }
+    })
   }))
 
   // Restore lazy component fields as their elements appear, without requiring a pick first.
-  onMount(() => {
+  onSettled(() => {
     const restoreComponents = () => {
       const values = themeValues(props.library())
       const pending = resolver.knobs().filter(knob => Object.hasOwn(values, knob.id) && !host.getField(knob.id))
@@ -182,16 +184,16 @@ function EditorSession(props: SessionProps) {
     restoreComponents()
     const observer = new MutationObserver(restoreComponents)
     observer.observe(document.body, { childList: true, subtree: true })
-    onCleanup(() => observer.disconnect())
+    return () => observer.disconnect()
   })
-  createEffect(() => {
-    if (host.mode() === 'off') setPicking(false)
-    if (host.selection()) {
+  createEffect(() => ({ mode: host.mode(), selection: host.selection() }), ({ mode, selection }) => {
+    if (mode === 'off') setPicking(false)
+    if (selection) {
       setPicking(false)
       host.setHover(null)
     }
   })
-  onMount(() => {
+  onSettled(() => {
     const cancelPick = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && picking()) {
         event.preventDefault()
@@ -201,7 +203,7 @@ function EditorSession(props: SessionProps) {
       }
     }
     window.addEventListener('keydown', cancelPick, true)
-    onCleanup(() => window.removeEventListener('keydown', cancelPick, true))
+    return () => window.removeEventListener('keydown', cancelPick, true)
   })
   return <EditorPanel {...props} picking={picking} setPicking={setPicking} host={host} resolver={resolver} />
 }

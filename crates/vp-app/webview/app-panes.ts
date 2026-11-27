@@ -7,9 +7,10 @@
  *
  * ## 層の分離（CLAUDE.md: data / calculations / actions）
  *
- * - **data**: `APP_SCENES` — preset の Layout 群。DOM を知らない
+ * - **data**: `APP_SCENES` / `PRESET_CYCLE` — pane kind registry（app-pane-registry.ts）から導く
+ *   preset の Layout 群と巡回。DOM を知らない
  * - **calculations**: `primaryAppPane` ほか純関数（vitest で固定）
- * - **actions**: `installAppPanes` — engine 購読 → 既存 `.pane[data-frame-id]` への
+ * - **actions**: `installAppPanes` — engine 購読 → 既存 `.pane[data-app-pane]` への
  *   inline style 書き込みだけを行う（R1: DOM を reparent しない — xterm は再生成不可）
  *
  * ## 投影規則（DOM の縁の作法、engine の意味論ではない）
@@ -29,67 +30,27 @@ import {
 	cloneLayout,
 	resolve,
 } from "@chronista-club/creo-ui-layout";
+import { APP_PANE_REGISTRY, appPaneById, appScenesOf, presetCycleOf } from "./app-pane-registry";
 import { layoutEngine } from "./layout-host";
 
 export const APP_SCOPE = "app";
 
-/** data-frame-id と 1:1 の pane id 群（main_area.rs の静的 DOM が SSOT）。
- *  doc 52 §10 wave 0: pp（Board）は app pane を退役し、lane tiling の board pane
- *  （#lane-board、lane-panes.ts）へ移った。lane pane（= lane workbench 全体）の中に board が並ぶ。 */
-export const APP_PANE_IDS = ["lane", "runner", "devices", "preview", "empty"] as const;
-export type AppPaneId = (typeof APP_PANE_IDS)[number];
+// ---------- data: 表から導く preset Scene 群（旧 scenes.ts の後継） ----------
+// pane の顔ぶれ（配置の住所 / DOM id / kind / 場 / 巡回）は pane kind registry
+// （app-pane-registry.ts、doc 87 §8.2）1 枚が持つ。旧 `APP_PANE_IDS` / 直書きの `APP_SCENES` と
+// `PRESET_CYCLE` はそこから導く — 表に 1 行足せば場・巡回・数字キー・kind の解決に出る。
+// pane の DOM そのものは main_area.rs の静的 HTML にあり、作り直さない（doc 49 R1）。表との 1:1 は
+// `shell-registries.dom.test.ts` が固定する。doc 52 §10 wave 0: pp（Board）は app pane を退役し、
+// lane tiling の board pane（#lane-board、lane-panes.ts）へ移った。
 
-// ---------- data: preset Scene 群（旧 scenes.ts の後継） ----------
-
-/** 基本構造 = 全 pane が 1 列ずつ（横並び）。可視性・大小は場（attention）が決める */
-function baseStructure(exclude?: AppPaneId) {
-	return {
-		columns: APP_PANE_IDS.filter((id) => id !== exclude).map((id) => ({ panes: [id] })),
-	};
-}
-
-/** 場の指定（未指定 pane は 0 = 非表示） */
-function fieldOf(values: Partial<Record<AppPaneId, number>>): Record<string, number> {
-	const attention: Record<string, number> = {};
-	for (const id of APP_PANE_IDS) attention[id] = values[id] ?? 0;
-	return attention;
-}
-
-/** 単独 focus（旧 generateFocusScene）: 対象が独占、他は非表示 */
-function focusLayout(id: AppPaneId): Layout {
-	return { structure: baseStructure(), attention: fieldOf({ [id]: 1 }) };
-}
-
-export const APP_SCENES: readonly Scene[] = [
-	{
-		id: "lane-focus",
-		name: "Lead Focus",
-		description: "集中 coding — lane workbench（Conversation）独占",
-		layout: focusLayout("lane"),
-	},
-	// kind → `${pane}-focus` bridge（entry.tsx）が使う単独 focus 群。pp は退役（doc 52 §10
-	// wave 0 — board は lane workbench 内の pane に移り、app scene の関心事から外れた）。
-	{ id: "runner-focus", name: "runner Focus", description: "Runner 単独", layout: focusLayout("runner") },
-	{ id: "devices-focus", name: "Devices Focus", description: "Devices 単独", layout: focusLayout("devices") },
-	{
-		id: "preview-focus",
-		name: "Preview Focus",
-		description: "Preview 単独",
-		layout: focusLayout("preview"),
-	},
-	{
-		id: "empty",
-		name: "Empty",
-		description: "何も選択していない — placeholder のみ",
-		layout: focusLayout("empty"),
-	},
-];
+/** pane ごとの独占の場（構造は全 pane が 1 列ずつ、可視性・大小は attention が決める）。 */
+export const APP_SCENES: readonly Scene[] = appScenesOf(APP_PANE_REGISTRY);
 
 const APP_SCENE_BY_ID = new Map(APP_SCENES.map((s) => [s.id, s]));
 
-/** Ctrl+Shift+]/[ で巡る preset（doc 52 §10 wave 0: pp scene 退役後は 4 つの agent focus を巡る。
- *  empty は巡回に入れない）。lane-focus = lane workbench（board も console も chat もこの中の tiling）。 */
-export const PRESET_CYCLE = ["lane-focus", "runner-focus", "devices-focus", "preview-focus"] as const;
+/** Ctrl+Shift+]/[ で巡る preset（表の inCycle — empty は巡回に入れない）。
+ *  lane-focus = lane workbench（board も console も chat もこの中の tiling）。 */
+export const PRESET_CYCLE: readonly string[] = presetCycleOf(APP_PANE_REGISTRY);
 
 // ---------- calculations ----------
 
@@ -165,17 +126,24 @@ let transientVisit = false;
 let beforeVisit: { layout: Layout; sceneId: string | null } | null = null;
 
 /**
- * agent pane を訪問する（bridge の kind≠terminal 経路用）。
+ * agent pane を訪問する（entry.tsx の訪問経路 = `activePaneRouteOf` の `visit` 用）。
  * 訪問の入れ子（Devices → runner）は最初の出発点を保つ。
  */
 export function visitAppPane(paneId: string): boolean {
+	// 場の id は表の scene から引く（旧形は `${paneId}-focus` の命名規約に頼っていた）。
+	// 表に無い pane は何も動かさない — 訪問中なら訪問はそのまま（✕ で出発点に戻れる）
+	const sceneId = appPaneById(APP_PANE_REGISTRY, paneId)?.scene.id;
+	if (!sceneId) {
+		console.warn(`[app-panes] unknown pane to visit: ${paneId}`);
+		return false;
+	}
 	if (!transientVisit) {
 		beforeVisit = {
 			layout: cloneLayout(layoutEngine.current(APP_SCOPE)),
 			sceneId: currentSceneId,
 		};
 	}
-	const ok = applyAppScene(`${paneId}-focus`);
+	const ok = applyAppScene(sceneId);
 	transientVisit = ok;
 	return ok;
 }
@@ -200,7 +168,7 @@ export function closeAppPaneVisit(): void {
 
 /** preset の cyclic 切替（direction = 1 で next、-1 で prev） */
 export function cycleAppScene(direction: 1 | -1): boolean {
-	const idx = currentSceneId ? (PRESET_CYCLE as readonly string[]).indexOf(currentSceneId) : -1;
+	const idx = currentSceneId ? PRESET_CYCLE.indexOf(currentSceneId) : -1;
 	const next = PRESET_CYCLE[(idx + direction + PRESET_CYCLE.length) % PRESET_CYCLE.length];
 	return applyAppScene(next);
 }
@@ -267,7 +235,7 @@ export function _resetForTest(): void {
 const ABSENT = { rect: { x: 0, y: 0, w: 0, h: 0 }, attention: 0, floating: false } as const;
 
 /**
- * engine 購読 → 既存 `.pane[data-frame-id]` 要素への inline style 書き込み（純 action）。
+ * engine 購読 → 既存 `.pane[data-app-pane]` 要素への inline style 書き込み（純 action）。
  * 返り値は unsubscribe。
  */
 export function installAppPanes(root: ParentNode = document): () => void {
@@ -278,9 +246,9 @@ export function installAppPanes(root: ParentNode = document): () => void {
 
 function renderAppPanes(root: ParentNode, resolved: ResolvedMap): void {
 	const primary = primaryAppPane(resolved);
-	const elements = root.querySelectorAll<HTMLElement>(".pane[data-frame-id]");
+	const elements = root.querySelectorAll<HTMLElement>(".pane[data-app-pane]");
 	elements.forEach((el) => {
-		const id = el.dataset.frameId;
+		const id = el.dataset.appPane;
 		if (!id) return;
 		const p = resolved[id] ?? ABSENT;
 		const visible = p.rect.w > 0 && p.rect.h > 0;

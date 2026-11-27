@@ -36,8 +36,8 @@ import {
 	settleRelease,
 } from "@chronista-club/creo-ui-layout";
 import { PaneStage, useEngineResolved } from "@chronista-club/creo-ui-layout/solid";
-import { onCleanup, onMount } from "solid-js";
-import { render } from "solid-js/web";
+import { onCleanup, onSettled } from "solid-js";
+import { render } from "@solidjs/web";
 import { type FleetOp, type FleetPayload, computeFeedback, mapControl } from "./fleet";
 import { layoutEngine } from "./layout-host";
 import { registerLayoutScope } from "./layout-mcp";
@@ -109,7 +109,7 @@ function GalleryPanes() {
 		engine.settle(SCOPE, "human");
 	};
 
-	onMount(() => {
+	onSettled(() => {
 		const onKeydown = (e: KeyboardEvent) => {
 			if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
 			if (isEditableTarget(e.target)) return;
@@ -123,7 +123,7 @@ function GalleryPanes() {
 			}
 		};
 		window.addEventListener("keydown", onKeydown);
-		onCleanup(() => window.removeEventListener("keydown", onKeydown));
+		return () => window.removeEventListener("keydown", onKeydown);
 	});
 
 	return (

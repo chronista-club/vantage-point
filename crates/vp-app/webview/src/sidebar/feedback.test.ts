@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { flush } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { createLaneCreation, reportSubCreateResult, reportSidebarError, sidebarError } from './feedback'
 
@@ -41,7 +42,7 @@ describe('lane creation feedback', () => {
     form.submit({ name: 'topic' })
     expect(form.pending()).toBe(false)
     expect(form.error()).toBe('offline')
-    reportSidebarError('repo registration failed')
+    reportSidebarError('repo registration failed'); flush()
     expect(sidebarError()).toBe('repo registration failed')
     form.dispose()
   })
@@ -55,7 +56,7 @@ it('connects native sidebar dispatch to visible error and the matching form', as
   const close = vi.fn()
   const form = createLaneCreation('/repo', vi.fn(), close)
   form.submit({ name: 'topic' })
-  ;(window as unknown as { vpSidebarDispatch: (m: unknown) => void }).vpSidebarDispatch({ t: 'sidebar:error', message: 'native failure' })
+  ;(window as unknown as { vpSidebarDispatch: (m: unknown) => void }).vpSidebarDispatch({ t: 'sidebar:error', message: 'native failure' }); flush()
   expect(sidebarError()).toBe('native failure')
   ;(window as unknown as { vpSidebarDispatch: (m: unknown) => void }).vpSidebarDispatch({ t: 'sub:create_result', repo_path: '/repo', name: 'topic' })
   expect(close).toHaveBeenCalledOnce()

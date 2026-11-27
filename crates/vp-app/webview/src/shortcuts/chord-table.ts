@@ -79,7 +79,7 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
   //   規則の例外として mako 指定で Cmd 修飾に置く (doc 18 Layer B v1.1)。
   //   `[` = 左 / `]` = 右、キーの物理位置と対象の側が一致する。
   '[': {
-    description: '左 sidebar をフル ⇄ スリム帯に変身',
+    description: '左 edge の peek を開く ⇄ 畳む（slim = rail 列だけ）',
     semantic: 'layout',
   },
   ']': {

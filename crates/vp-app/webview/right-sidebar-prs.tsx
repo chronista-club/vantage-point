@@ -14,8 +14,8 @@
  * - **calculations**: pr-list.ts（parse / 先頭固定 / 2 段目の語彙、vitest 済）
  * - **actions**: mountPrSection（Solid render + open / copy）
  */
-import { render } from "solid-js/web";
-import { createSignal, For, Show } from "solid-js";
+import { render } from "@solidjs/web";
+import { createSignal, flush, For, Show } from "solid-js";
 import { copyText } from "./clipboard";
 import { type LanePrs, orderPrs, parseLanePrs, type Pr, prMeta } from "./pr-list";
 
@@ -51,8 +51,8 @@ export function mountPrSection(host: HTMLElement): PrSectionApi {
 	const Row = (p: { pr: Pr; pinned: boolean }) => (
 		<button
 			type="button"
-			class="pr-row"
-			classList={{ pinned: p.pinned }}
+			class={["pr-row", { pinned: p.pinned }]}
+
 			title={`${p.pr.url}\nclick = ブラウザで開く / 右 click = URL をコピー`}
 			onClick={() => open(p.pr.url)}
 			onContextMenu={(ev) => {
@@ -70,7 +70,7 @@ export function mountPrSection(host: HTMLElement): PrSectionApi {
 				</Show>
 				<For each={prMeta(p.pr)}>
 					{(c) => (
-						<span class={`pr-chip tone-${c.tone}`} classList={{ "pr-head": c.kind === "head" }}>
+						<span class={[`pr-chip tone-${c.tone}`, { "pr-head": c.kind === "head" }]} >
 							{c.label}
 						</span>
 					)}
@@ -108,10 +108,13 @@ export function mountPrSection(host: HTMLElement): PrSectionApi {
 	return {
 		setLane(addr) {
 			setLane(addr);
+			flush();
 		},
 		handle(l, payload) {
 			const parsed = parseLanePrs(payload);
 			setByLane((prev) => new Map(prev).set(l, parsed));
+			// 呼び手は戻った直後に current() を別の欄へ配る。
+			flush();
 			return parsed;
 		},
 		current: data,

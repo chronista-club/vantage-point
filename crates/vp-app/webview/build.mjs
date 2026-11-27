@@ -1,7 +1,7 @@
 // vp-app web bundle builder.
 //
-// SolidJS の JSX は通常の jsx-automatic では不十分なため、esbuild-plugin-solid を
-// 使って Babel SolidJS plugin 経由で compile する。
+// SolidJS の JSX は通常の jsx-automatic では不十分なため、共通 solid-plugin.mjs で
+// TypeScript の型を除去し、@solidjs/compiler で DOM コードへ変換する。
 //
 // 2 entry / 2 output:
 //   entry.tsx   → ../assets/editor-host.bundle.js
@@ -22,7 +22,7 @@
 import { copyFileSync } from 'node:fs'
 
 import { build, context } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidPlugin } from './solid-plugin.mjs'
 
 // xterm.css を npm package から assets へ複写する。
 //

@@ -7,7 +7,7 @@
  *
  * 型は `src/generated/` の ts-rs 生成物をそのまま使う (手書き 1:1 の drift を排除)。
  */
-import { createStore, reconcile } from "solid-js/store";
+import { createStore, reconcile, flush } from "solid-js";
 import type { SidebarState } from "../generated/SidebarState";
 
 /**
@@ -63,6 +63,8 @@ export { sidebar };
  */
 export function applySidebarState(next: SidebarState): void {
 	setSidebarStore(reconcile(next));
+	// native dispatch が同じイベント内で snapshot を再読する前に確定する。
+	flush();
 }
 
 /**
@@ -74,5 +76,5 @@ export function applySidebarState(next: SidebarState): void {
  * 次の push 時には値が一致し reconcile が no-op になる (flash しない)。
  */
 export function setCurrentsOrder(order: string[]): void {
-	setSidebarStore("currents_order", order);
+	setSidebarStore(s => { s["currents_order"] = order });
 }

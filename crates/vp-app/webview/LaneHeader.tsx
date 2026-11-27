@@ -32,7 +32,7 @@
  */
 
 import { LEAD_DISPLAY_NAME, subNameOfAddress } from './lane-address'
-import { Portal, render } from 'solid-js/web'
+import { Portal, render } from '@solidjs/web'
 import { createSignal, For, Show } from 'solid-js'
 import { CreoIcon } from '@chronista-club/creo-ui-icons-web'
 import {
@@ -234,7 +234,7 @@ export function mountLaneHeader(mount: HTMLElement, vpConsole: VpConsole): LaneH
   })
 
   const Header = () => (
-    <div class="eh-root" classList={{ 'eh-empty': !ctx() }}>
+    <div class={["eh-root", { 'eh-empty': !ctx() }]} >
       <Show when={ctx()}>
         {(c) => (
           <>
@@ -245,8 +245,8 @@ export function mountLaneHeader(mount: HTMLElement, vpConsole: VpConsole): LaneH
             <Show when={c().cwd}>
               <button
                 type="button"
-                class="eh-chip eh-cwd"
-                classList={{ copied: copiedKey() === 'cwd' }}
+                class={["eh-chip eh-cwd", { copied: copiedKey() === 'cwd' }]}
+
                 title={`${c().cwd}（click で full path を copy）`}
                 onClick={() => copy('cwd', c().cwd!)}
               >
@@ -298,8 +298,8 @@ export function mountLaneHeader(mount: HTMLElement, vpConsole: VpConsole): LaneH
                     {(item) => (
                       <button
                         type="button"
-                        class="eh-rp-row"
-                        classList={{ 'eh-rp-root': item.isRoot, 'eh-rp-disabled': item.disabled }}
+                        class={["eh-rp-row", { 'eh-rp-root': item.isRoot, 'eh-rp-disabled': item.disabled }]}
+
                         title={
                           item.isRoot
                             ? '今の slot（root）'
@@ -376,7 +376,7 @@ export function mountLaneHeader(mount: HTMLElement, vpConsole: VpConsole): LaneH
       setSessions(next ? sessionListOf(next.addr) : [])
       // strip の開閉（World A の DOM に触れる唯一の接点）: lane 文脈がある時だけ
       // #pane-lane に .lane-header-active を付け、main_area.rs の --lane-header-h を
-      // 0→30px にして strip を開く。無い時は高さ 0 = xterm/chat が全面（regression なし）。
+      // 0→共有の名札の高さにして grid の up track を開く。無い時は track が畳まれる（doc 87 §8.4）。
       // これが無いと strip は #lane-header の overflow:hidden で永遠に高さ 0 = 不可視になる。
       document
         .getElementById('pane-lane')

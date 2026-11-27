@@ -13,7 +13,7 @@
  * Phase 4 で、UI 側の変更はその 1 行だけで済む。こうしておくと Phase 1 は Rust に一切
  * 触らず単独でマージでき、しかも**永続を持たないので migration が一度も発生しない**。
  */
-import { createSignal } from "solid-js";
+import { createSignal, flush } from "solid-js";
 import {
 	type ActionItem,
 	type BucketId,
@@ -98,6 +98,7 @@ const [editingId, setEditingId] = createSignal<string | null>(null);
 /** 行が focus を得た。 */
 export function beginEditing(id: string): void {
 	setEditingId(id);
+	flush();
 }
 
 /**
@@ -109,6 +110,7 @@ export function beginEditing(id: string): void {
 export function endEditing(id: string): void {
 	if (editingId() !== id) return; // 既に別の行へ移っている
 	setEditingId(null);
+	flush();
 	pushPersist(actions());
 }
 
@@ -148,6 +150,8 @@ export function commitActions(next: readonly ActionItem[]): boolean {
 	if (next === actions()) return false;
 	const items = next as ActionItem[];
 	setActionsSignal(items);
+	// 永続化と後続の native callback が同期で読む前に、モデルを確定する。
+	flush();
 	pushPersist(items);
 	return true;
 }
@@ -177,6 +181,7 @@ let activeScope = "";
 export const [importingLegacy, setImportingLegacy] = createSignal(false);
 export function importLegacyActions(): void {
 	setImportingLegacy(true);
+	flush();
 	pushPersist(actions());
 }
 const scopedPending = new Map<string, {items: ActionItem[]; removed: string[]}>();
@@ -188,9 +193,11 @@ export function applyActionsFromDaemon(items: unknown, rev: unknown, scope?: str
 		setImportingLegacy(false);
 		const pending = scopedPending.get(scope);
 		setActionsSignal(pending?.items ?? []);
+	flush();
 		pendingRemovals.clear();
 		for (const id of pending?.removed ?? []) pendingRemovals.add(id);
 		setEditingId(null);
+	flush();
 		appliedRev = 0;
 	}
 	if (imported) setImportingLegacy(false);
@@ -230,6 +237,7 @@ export function applyActionsFromDaemon(items: unknown, rev: unknown, scope?: str
 		}
 	}
 	setActionsSignal(next);
+	flush();
 }
 
 /**

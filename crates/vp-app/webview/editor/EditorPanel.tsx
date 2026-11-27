@@ -1,6 +1,8 @@
 import { THEME_IDS, THEME_INFO, exportSnapshot, type ComponentFieldResolver, type ComponentTreeNode, type EditorField, type EditorHost } from '@chronista-club/creo-ui-editor-host'
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { themeValues, type ThemeLibrary } from './theme-store'
+import { editorSectionOf } from './field-spec'
+import { appFieldRegion } from './app-fields'
 import { MidiSection } from './MidiSection'
 import type { MidiSettings } from './midi-settings'
 
@@ -25,11 +27,18 @@ function FieldControl(props: { field: EditorField; host: EditorHost }) {
   const field = () => props.field
   const value = createMemo(() => props.host.getValue(field().id))
   const label = () => FIELD_NAMES[field().id] ?? field().label
-  const setNumber = (raw: string) => {
-    if (!raw.trim()) return
+  // 打っている途中（input）は範囲の内の値だけ当て、確定（change）で範囲に丸める。毎打鍵で丸めると、制御された
+  // value が欄を書き換えて打てない（min 180 の欄で「4」が 180 に化け、続けて打つと 1800 → 640 になる）
+  const setNumber = (raw: string, commit: boolean) => {
+    if (!raw.trim()) return undefined
     const n = Number(raw)
-    if (!Number.isFinite(n)) return
-    props.host.setValue(field().id, Math.min(field().constraints?.max ?? Infinity, Math.max(field().constraints?.min ?? -Infinity, n)))
+    if (!Number.isFinite(n)) return undefined
+    const min = field().constraints?.min ?? -Infinity
+    const max = field().constraints?.max ?? Infinity
+    if (!commit && (n < min || n > max)) return undefined
+    const next = Math.min(max, Math.max(min, n))
+    props.host.setValue(field().id, next)
+    return next
   }
   const [invalid, setInvalid] = createSignal(false)
   const setColor = (raw: string) => {
@@ -60,23 +69,24 @@ function FieldControl(props: { field: EditorField; host: EditorHost }) {
     <Show when={field().type === 'number'}>
       <div class="vp-editor-number">
         <input type="range" aria-label={`${label()}のスライダー`} min={field().constraints?.min ?? 0} max={field().constraints?.max ?? 100}
-          step={field().constraints?.step ?? 'any'} value={Number(value())} onInput={event => setNumber(event.currentTarget.value)} />
+          step={field().constraints?.step ?? 'any'} value={Number(value())} onInput={event => setNumber(event.currentTarget.value, true)} />
         <input id={`vp-field-${field().id}`} type="number" min={field().constraints?.min} max={field().constraints?.max}
-          step={field().constraints?.step ?? 'any'} value={Number(value())} onInput={event => setNumber(event.currentTarget.value)} />
+          step={field().constraints?.step ?? 'any'} value={Number(value())} onInput={event => setNumber(event.currentTarget.value, false)}
+          onChange={event => { const next = setNumber(event.currentTarget.value, true); event.currentTarget.value = String(next ?? Number(value())) }} />
         <span>{field().constraints?.unit}</span>
       </div>
     </Show>
     <Show when={field().type === 'color'}>
       <div class="vp-editor-color">
         <input type="color" aria-label={`${label()}のカラーピッカー`} value={hex()} onInput={event => setColor(event.currentTarget.value)} />
-        <input id={`vp-field-${field().id}`} type="text" value={String(value() ?? '')} spellcheck={false} aria-invalid={invalid()}
+        <input id={`vp-field-${field().id}`} type="text" value={String(value() ?? '')} spellcheck={false} aria-invalid={(invalid()) ? 'true' : 'false'}
           onInput={event => setColor(event.currentTarget.value)} />
       </div>
       <Show when={invalid()}><small role="alert">有効な色を入力してください。</small></Show>
     </Show>
     <Show when={field().type === 'boolean'}><input id={`vp-field-${field().id}`} type="checkbox" checked={Boolean(value())} onChange={event => props.host.setValue(field().id, event.currentTarget.checked)} /></Show>
     <Show when={field().type === 'select'}><select id={`vp-field-${field().id}`} value={String(value())} onChange={event => props.host.setValue(field().id, event.currentTarget.value)}><For each={field().constraints?.options}>{option => <option value={option}>{option}</option>}</For></select></Show>
-    <Show when={field().type === 'string' || field().type === 'readonly-text'}><input id={`vp-field-${field().id}`} value={String(value() ?? '')} readOnly={field().type === 'readonly-text'} onChange={event => props.host.setValue(field().id, event.currentTarget.value)} /></Show>
+    <Show when={field().type === 'string' || field().type === 'readonly-text'}><input id={`vp-field-${field().id}`} value={String(value() ?? '')} readonly={field().type === 'readonly-text'} onChange={event => props.host.setValue(field().id, event.currentTarget.value)} /></Show>
   </div>
 }
 
@@ -118,13 +128,15 @@ export function EditorPanel(props: PanelProps) {
   const [rect, setRect] = createSignal<DOMRect | null>(null)
   const highlighted = () => props.picking() ? host.hover() : host.selection()
   // ResizeObserver refreshes selection geometry; keep controls mounted while typing.
-  const selectedFields = createMemo(() => host.fields().filter(field => host.selection()?.fieldIds.includes(field.id)), undefined, {
+  const selectedFields = createMemo(() => host.fields().filter(field => host.selection()?.fieldIds.includes(field.id)), {
     equals: (previous, next) => previous.length === next.length && previous.every((field, index) => field === next[index]),
   })
-  const sidebarFields = () => host.fields().filter(field => field.id.startsWith('sb.') && field.id !== 'sb.text.base')
-  const chatFields = () => host.fields().filter(field => field.id.startsWith('chat.'))
-  const themeFields = () => host.fields().filter(field => !field.id.startsWith('sb.') && !field.id.startsWith('chat.') && field.scope !== 'component' &&
-    !['typography.size.xs', 'typography.size.s', 'typography.size.m', 'typography.size.xl', 'layout.gap.sibling'].includes(field.id))
+  // タブは field の region から導く（field-spec.ts の editorSectionOf — 左右の edge = SIDEBAR / chat.* = CHAT /
+  // 全体・center・境界 = THEME）。registry の行が同梱した field も、region に従って自分のタブに出る
+  const sectionOf = (field: EditorField) => editorSectionOf(field, appFieldRegion(field.id))
+  const sidebarFields = () => host.fields().filter(field => sectionOf(field) === 'SIDEBAR')
+  const chatFields = () => host.fields().filter(field => sectionOf(field) === 'CHAT')
+  const themeFields = () => host.fields().filter(field => sectionOf(field) === 'THEME')
   const custom = () => props.library().custom.find(theme => theme.id === props.library().selected)
   const changed = () => Object.keys(themeValues(props.library())).length > 0
   const chooseTab = (section: EditorSection) => { props.setSection(section); props.setPicking(false); host.setHover(null) }
@@ -132,22 +144,21 @@ export function EditorPanel(props: PanelProps) {
     const fields = resolver.register(resolver.match(node.element), node.element)
     host.select({ targetId: node.label, componentId: node.componentId, fieldIds: fields, element: node.element, rect: node.element.getBoundingClientRect() })
   }
-  createEffect(() => {
-    const selection = highlighted()
+  createEffect(highlighted, selection => {
     const update = () => setRect(selection?.element?.isConnected ? selection.element.getBoundingClientRect() : null)
     update()
     const observer = new ResizeObserver(update)
     if (selection?.element) observer.observe(selection.element)
     window.addEventListener('resize', update)
     window.addEventListener('scroll', update, true)
-    onCleanup(() => { observer.disconnect(); window.removeEventListener('resize', update); window.removeEventListener('scroll', update, true) })
+    return () => { observer.disconnect(); window.removeEventListener('resize', update); window.removeEventListener('scroll', update, true) }
   })
   let panel: HTMLElement | undefined
-  createEffect(() => {
-    if (host.mode() !== 'on') return
+  createEffect(() => host.mode(), mode => {
+    if (mode !== 'on') return
     const previous = document.activeElement as HTMLElement | null
     queueMicrotask(() => panel?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus())
-    onCleanup(() => { if (previous?.isConnected && panel?.contains(document.activeElement)) previous.focus() })
+    return () => { if (previous?.isConnected && panel?.contains(document.activeElement)) previous.focus() }
   })
   return <Show when={host.mode() === 'on'}>
     <div data-editor-layer class="vp-editor-overlay">
@@ -159,8 +170,8 @@ export function EditorPanel(props: PanelProps) {
           <button type="button" aria-label="Editor を閉じる" title="閉じる（Ctrl+Shift+E）" onClick={() => host.disable()}>×</button>
         </header>
         <div class="vp-editor-tabs" role="tablist" aria-label="調整する範囲" aria-orientation="horizontal">
-          <For each={SECTIONS}>{section => <button type="button" id={`vp-editor-tab-${section}`} role="tab" aria-selected={props.section() === section}
-            aria-controls="vp-editor-content" tabIndex={props.section() === section ? 0 : -1} onClick={() => chooseTab(section)}
+          <For each={SECTIONS}>{section => <button type="button" id={`vp-editor-tab-${section}`} role="tab" aria-selected={String(props.section() === section) as 'true' | 'false'}
+            aria-controls="vp-editor-content" tabindex={props.section() === section ? 0 : -1} onClick={() => chooseTab(section)}
             onKeyDown={event => {
               const index = SECTIONS.indexOf(section)
               const next = event.key === 'ArrowRight' ? SECTIONS[(index + 1) % SECTIONS.length] : event.key === 'ArrowLeft' ? SECTIONS[(index + SECTIONS.length - 1) % SECTIONS.length] : event.key === 'Home' ? SECTIONS[0] : event.key === 'End' ? SECTIONS[SECTIONS.length - 1] : undefined
@@ -170,7 +181,7 @@ export function EditorPanel(props: PanelProps) {
         <div class="vp-editor-content" id="vp-editor-content" role="tabpanel" aria-labelledby={`vp-editor-tab-${props.section()}`}>
           <Show when={props.section() === 'COMPONENT'}>
             <div class="vp-editor-intro"><h3>画面の部品を調整</h3><p>調整したい場所を画面から選びます。</p>
-              <button type="button" class="vp-editor-primary" aria-pressed={props.picking()} onClick={() => {
+              <button type="button" class="vp-editor-primary" aria-pressed={String(props.picking()) as 'true' | 'false'} onClick={() => {
                 if (props.picking()) { props.setPicking(false); host.setHover(null) }
                 else { host.clearSelection(); props.setPicking(true) }
               }}>{props.picking() ? '選択をやめる' : '画面から選ぶ'}</button>
@@ -188,7 +199,7 @@ export function EditorPanel(props: PanelProps) {
             </details>
           </Show>
           <Show when={props.section() === 'SIDEBAR'}>
-            <div class="vp-editor-intro"><h3>サイドバー全体</h3><p>選択は不要です。文字、背景、選択行と状態ポイントを調整します。</p></div>
+            <div class="vp-editor-intro"><h3>左右の edge</h3><p>選択は不要です。左（Lanes・Actions・設定）と右の幅、左の文字、背景、選択行と状態ポイントを調整します。</p></div>
             <FieldGroups fields={sidebarFields()} host={host} />
           </Show>
           <Show when={props.section() === 'CHAT'}>
@@ -199,7 +210,7 @@ export function EditorPanel(props: PanelProps) {
             <MidiSection midi={props.midi} />
           </Show>
           <Show when={props.section() === 'THEME'}>
-            <div class="vp-editor-intro"><h3>アプリ全体のテーマ</h3><p>配色と、Boardの文字を調整します。端末やBoard内のWebページは対象外です。</p></div>
+            <div class="vp-editor-intro"><h3>アプリ全体のテーマ</h3><p>配色と、Board・pane の名札・Lane の端末の文字を調整します。配色は端末と Board 内の Web ページには及びません。</p></div>
             <label class="vp-editor-label">テーマ<select aria-label="テーマを選ぶ" value={props.library().selected} onChange={event => props.activate(event.currentTarget.value)}>
               <optgroup label="プリセット"><For each={THEME_IDS}>{id => <option value={id}>{THEME_INFO[id].name}</option>}</For></optgroup>
               <Show when={props.library().custom.length}><optgroup label="カスタム"><For each={props.library().custom}>{theme => <option value={theme.id}>{theme.name}</option>}</For></optgroup></Show>
@@ -207,7 +218,7 @@ export function EditorPanel(props: PanelProps) {
             <div class="vp-editor-save">
               <p>このテーマでの調整は自動で保持します。名前を付けると、選び直して使えます。</p>
               <form onSubmit={event => { event.preventDefault(); const error = props.save(name()); setSaveError(error ?? ''); if (!error) { setName(''); setNotice('カスタムテーマを保存しました。') } }}>
-                <input aria-label="カスタムテーマ名" placeholder="例：夜の作業台" maxLength={80} value={name()} onInput={event => setName(event.currentTarget.value)} />
+                <input aria-label="カスタムテーマ名" placeholder="例：夜の作業台" maxlength={80} value={name()} onInput={event => setName(event.currentTarget.value)} />
                 <button type="submit" disabled={!name().trim()}>名前を付けて保存</button>
               </form>
               <Show when={custom()}><button type="button" onClick={() => { props.updateSaved(); setNotice('変更を保存しました。') }}>変更を保存</button></Show>
@@ -216,7 +227,7 @@ export function EditorPanel(props: PanelProps) {
             </div>
             <FieldGroups fields={themeFields()} host={host} />
           </Show>
-          <details class="vp-editor-export"><summary>調整値を書き出す</summary><p>AI への受け渡しやソースへの反映に使えます。</p><textarea aria-label="調整値 JSON" readOnly value={exportSnapshot(host, { format: 'json', onlyChanged: true })} /></details>
+          <details class="vp-editor-export"><summary>調整値を書き出す</summary><p>AI への受け渡しやソースへの反映に使えます。</p><textarea aria-label="調整値 JSON" readonly value={exportSnapshot(host, { format: 'json', onlyChanged: true })} /></details>
         </div>
         <footer><span>Ctrl+Shift+E · 開閉</span><span>Esc · 選択解除／閉じる</span></footer>
         <Show when={props.storageError()}><p class="vp-editor-storage-error" role="alert">保存先を利用できません。この画面を閉じる前に調整値を書き出してください。</p></Show>

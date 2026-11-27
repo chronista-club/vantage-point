@@ -1,3 +1,4 @@
+import { testPath } from '../../test-utils/paths'
 /**
  * `form.ts` の純関数 — 一時展開（`b` の ACTIONS 捕捉 mode）を戻すかの判定。
  *
@@ -47,7 +48,7 @@ describe("formToRestoreOnExit（一時展開を戻すか）", () => {
 describe("capture mode の一時展開が配線されている", async () => {
 	const src = await (
 		await import("node:fs/promises")
-	).readFile(new URL("./actions/handlers.ts", import.meta.url), "utf8");
+	).readFile(testPath(import.meta.url, "./actions/handlers.ts"), "utf8");
 
 	it("入り口で展開前の形を記録する（連打で上書きしない guard 付き）", () => {
 		expect(src).toContain("formBeforeCapture === null");

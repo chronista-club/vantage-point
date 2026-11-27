@@ -36,7 +36,7 @@ export function McpElicitationPanel(props: {
     </>}</Show>
     <fieldset disabled={props.sending} style={{border:'none',padding:'0',margin:'0'}}>
       <Show when={model()?.url}>{url => <>
-        <a href={url()} rel="noopener noreferrer" aria-disabled={props.sending} onClick={event => {
+        <a href={url()} rel="noopener noreferrer" aria-disabled={String(props.sending) as 'true' | 'false'} onClick={event => {
           event.preventDefault()
           event.stopPropagation()
           if (props.sending || !/^https?:\/\//i.test(url())) return

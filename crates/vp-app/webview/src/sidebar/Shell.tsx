@@ -1,12 +1,12 @@
-/** Sidebar: CURRENTs / 停止中, collapsible ACTIONs, settings and machine status. */
+/** 左 edge（doc 87）: Rail 列（Lanes / Actions / 設定）+ peek（名簿 / ACTIONS / 設定の索引）+ machine 帯。 */
 import { MidiPins, MIDI_PINS_CSS } from './MidiPins';
 import { requestingLaneCount } from './lane-progress';
-import { For, Show, createEffect, createMemo, on } from "solid-js";
+import { For, Show, createEffect, createMemo, type Component } from 'solid-js'
 import { CreoIcon } from "@chronista-club/creo-ui-icons-web";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
 import { sidebarError, reportSidebarError } from "./feedback";
-import { expandSidebar, sidebarForm } from "./form";
+import { sidebarForm } from "./form";
 import { laneAddressKey } from "./lane";
 import { resolveRepoOrder } from "./dnd";
 import { ContextMenu } from "./ContextMenu";
@@ -18,7 +18,7 @@ import {
 } from "./keybindings";
 import { captureHintLabel, captureHintVisible } from "./directive-state";
 import { WirePanel, WIRE_PANEL_CSS } from "./WirePanel";
-import { SettingsPanel, SETTINGS_PANEL_CSS } from "./SettingsPanel";
+import { SettingsPanel, SettingsPeek, SETTINGS_PANEL_CSS } from "./SettingsPanel";
 import { LanePicker, LANE_PICKER_CSS } from "./LanePicker";
 import { CommandPalette, COMMAND_PALETTE_CSS } from "./CommandPalette";
 import { isRunningProcess } from "./classify";
@@ -27,6 +27,10 @@ import { MachineStrip } from "./DaemonWidget";
 import { ACTIVITY_POINT_CSS } from "./ResponsePoint";
 import { BucketList, ACTIONS_CSS } from "./actions-panel/BucketList";
 import type { RepoPaneState } from "../generated/RepoPaneState";
+import type { RailDef } from "@chronista-club/creo-ui/shells";
+import { ShellRail, SHELL_RAIL_CSS } from "./ShellRail";
+import { SHELL_RAILS, type ShellRailId } from "./route";
+import { clickRail, currentRail, currentRoute, showRail, useRouteSync } from "./route-store";
 
 /**
  * 指定 path の repo accordion を view にスクロールして一瞬 flash させる。
@@ -49,6 +53,9 @@ function flashProject(path: string): void {
 }
 
 export function Shell() {
+	// pseudo-route を作業の選択に追随させ、#app-shell に場面を映す（doc 87 §3）。
+	useRouteSync();
+
 	// Preserve the saved relative order within both lifecycle sections.
 	const ordered = createMemo(() =>
 		resolveRepoOrder(sidebar.processes, sidebar.currents_order),
@@ -58,24 +65,27 @@ export function Shell() {
 	// ピン / pad / ⌘N は画面外の lane も選ぶ。key は文字列の memo なので、同じ選択のままの配り直し
 	// （progress の更新など）では値が変わらず、user が別の repo を見に scroll した位置を奪わない。
 	// owner の展開を key に含めるのは、折りたたみ中に選ぶと行が hidden で寄せられず、展開が届いた時に
-	// もう 1 度寄せるため。path は特殊文字を含むので属性セレクタでなく走査で引く（flashProject と同じ）。
+	// もう 1 度寄せるため。名簿が見えているか（Lanes rail の peek が開いているか）も同じ理由で含める —
+	// Actions / 設定 / slim の間に選んだ lane へ、名簿が見えた瞬間に寄せる（doc 87 slice 1 で peek が
+	// 隠れる経路が増えた）。path は特殊文字を含むので属性セレクタでなく走査で引く（flashProject と同じ）。
 	const followKey = createMemo(() => {
 		const addr = sidebar.active_lane_address;
 		if (!addr) return "";
 		const owner = sidebar.processes.find((p) =>
 			sidebar.lanes_by_repo[p.path]?.some((l) => laneAddressKey(l) === addr),
 		);
-		return `${addr}|${owner?.expanded ? 1 : 0}`;
+		const rosterShown = currentRail() === "lanes" && sidebarForm() === "full";
+		return `${addr}|${owner?.expanded ? 1 : 0}|${rosterShown ? 1 : 0}`;
 	});
-	createEffect(
-		on(followKey, (key) => {
-			if (!key) return;
-			const addr = key.slice(0, key.lastIndexOf("|"));
+	createEffect(followKey, (key) => {
+			// 名簿が見えていない間は寄せない（寄せても hidden の中で何も起きない）
+			if (!key || key.endsWith("|0")) return;
+			// 接尾辞は常に `|展開|名簿` の 4 文字。address 側を split しない（`|` を含んでも割れない）
+			const addr = key.slice(0, -4);
 			Array.from(document.querySelectorAll<HTMLElement>(".vp-lane-row"))
 				.find((el) => el.getAttribute("data-address") === addr)
 				?.scrollIntoView?.({ block: "nearest" });
-		}),
-	);
+		});
 
 	// 新規追加 repo の discoverability: セッション途中で追加された repo を flash して
 	// 見失わせない (タブが無くなったので tab 切替は不要、 scroll + highlight だけ)。
@@ -85,8 +95,7 @@ export function Shell() {
 	// させ、 それ以降の push で現れた差分だけを「追加」と見なす。
 	let prevPaths = new Set<string>();
 	let sawProjects = false;
-	createEffect(() => {
-		const procs = sidebar.processes;
+	createEffect(() => sidebar.processes.map(p => ({ path: p.path })), procs => {
 		const cur = new Set(procs.map((p) => p.path));
 		if (!sawProjects) {
 			// 初回ロード確定は「非空の push を初めて受けた時」。 それまで (mount 直後の空 state
@@ -110,87 +119,37 @@ export function Shell() {
           <button aria-label="エラーを閉じる" onClick={() => reportSidebarError(null)}>×</button>
         </div>
       </Show>
-			{/* sidebar view modes (2026-08-01): フル形 3 段 (header / list / daemon) と
-			    スリム帯 (SlimRail) の 2 態を `[` directive で行き来する。overlay 群
-			    (ContextMenu / ⌘K 等) は形に依らず常時 mount — 形は
+			{/* 左 edge = Rail 列 + peek（doc 87 §2 / §8 slice 1）。旧 sidebar のフル形 3 段は
+			    Lanes rail の peek（名簿）と Actions rail の peek（ACTIONS）に分かれ、⚙ 設定は
+			    列の下起点の歯車になった。`[` の full / slim は「peek を開いているか」に写る —
+			    slim = 列だけ（旧 slim 帯の repo badge と daemon dot は列の中に残す）。
+			    overlay 群（ContextMenu / ⌘K 等）は形に依らず常時 mount — 形は
 			    「一覧の見せ方」であって機能の有効/無効ではない。 */}
-			<Show
-				when={sidebarForm() === "full"}
-				fallback={<SlimRail ordered={ordered()} />}
-			>
-				<header class="vp-sidebar-header">
-					<span class="vp-sidebar-title"><CreoIcon name="ph:tree-structure" size={12} /> CURRENTs</span>
-					<Show when={requestingLaneCount(Object.values(sidebar.lanes_by_repo).flat()) > 0}>
-						<span class="vp-sidebar-requests" role="status">◆ 要求中 {requestingLaneCount(Object.values(sidebar.lanes_by_repo).flat())}</span>
+			<ShellRail
+				registry={SHELL_RAIL_REGISTRY}
+				pathname={currentRoute()}
+				peekOpen={sidebarForm() === "full"}
+				onSelect={(id) => clickRail(id as ShellRailId)}
+				columnCenter={
+					<Show when={sidebarForm() === "slim"}>
+						<SlimBadges ordered={ordered()} />
 					</Show>
-					{/* repo 追加: 産む動詞は**親の行**に住む（mako 2026-08-20 — 「repo 増やすのは
-					    CURRENTS に。lane 増やすのは repo に」）。左で産んで右（main area）に
-					    現れる、という操作の流れを生成の系譜と一致させる。
-					    repo:add IPC → Rust 側 native folder picker → 登録 (VP-203)。 */}
-					<button
-						class="vp-sidebar-add"
-						title="repo を登録"
-						onClick={() => sendIpc({ t: "repo:add" })}
-					>
-						<CreoIcon name="ph:plus" size={13} />
-					</button>
-				</header>
-				<MidiPins />
+				}
+				columnBottom={
+					<Show when={sidebarForm() === "slim"}>
+						<div
+							class={["vp-slim-foot", { online: sidebar.activity.node_online }]}
 
-				<div class="vp-sidebar-list">
-					<Show
-						when={sidebar.processes.length > 0}
-						fallback={
-							/* ⚠️ lane 非依存の最後の逃げ道（moody-blues 指摘 2026-08-20）:
-							   「repo を登録」の常設入口は edge rail の + New menu に移ったが、
-							   rail は lane 不在（= repo 0 件）で帯ごと隠れる。この CTA が無いと
-							   新規 install 直後 / 全 repo 削除後に GUI から復帰できない
-							   （scope-cut-reachable-states — X で代替と言うには X が消えない条件が要る）。 */
-							<button
-								type="button"
-								class="vp-sidebar-empty-cta"
-								onClick={() => sendIpc({ t: "repo:add" })}
-							>
-								+ repo を登録
-							</button>
-						}
-					>
-						<section data-section="currents" aria-label="CURRENTs">
-							<For each={ordered().filter(isRunningProcess)}>{proc => <RepoAccordion proc={proc} />}</For>
-						</section>
-						<Show when={ordered().some(p => !isRunningProcess(p))}>
-							<details data-section="stopped" aria-label="PAUSED">
-								<summary class="vp-sidebar-section-title"><span class="vp-stopped-caret">›</span>PAUSED {ordered().filter(p => !isRunningProcess(p)).length}</summary>
-								<For each={ordered().filter(p => !isRunningProcess(p))}>{proc => <RepoAccordion proc={proc} />}</For>
-							</details>
-						</Show>
+							title={`daemon: ${sidebar.activity.node_online ? "online" : "offline"}`}
+						/>
 					</Show>
-				</div>
-
-				{/* creo 段（doc 58 ③ — cloud scope）: ACTIONS（doc 57）。Creo ID は設定へ集約。
-				    分け方はアーキテクチャの scope 境界（mako 2026-08-19「daemon と hub と
-				    device / creo(actions)」）。creo 依存はこの段に名札付きで閉じ込める —
-				    offline で dim するのは段 1 つだけで、名簿と machine 帯は常に local。 */}
-				<div class="vp-creo-zone">
-					<BucketList />
-				</div>
-
-				{/* ⚙ 設定（app 級 — doc 56 §7 の予約席。ACTIONS の下・daemon status の直上）。
-				    住所は「動詞の級」で決まる: 設定は app 全体に効くので rail でなくここ。 */}
-				<button
-					type="button"
-					class="vp-settings-entry"
-					title="設定を開く"
-					onClick={() => window.vpSettings?.open()}
-				>
-					<CreoIcon name="ph:gear-six" size={12} />
-					<span>設定</span>
-				</button>
-
-				{/* machine 帯（doc 58 ③ — machine scope）: daemon ⚙️ + hub + devices 🧲。
-				    健康なら 1 行、詳細は click で展開。 */}
-				<MachineStrip />
-			</Show>
+				}
+				peekFooter={
+					/* machine 帯（doc 58 ③ — machine scope）: daemon ⚙️ + hub + devices 🧲。
+					   健康なら 1 行、詳細は click で展開。どの rail でも peek の下端に残る。 */
+					<MachineStrip />
+				}
+			/>
 
 			{/* 右クリック context menu (Lane 行 / repo ヘッダ 共通、 singleton、 VP-204 PR-1)。 */}
 			<ContextMenu />
@@ -200,8 +159,8 @@ export function Shell() {
           window.vpWire.open(address) が呼ばれ、 選択 lane の wire 履歴 (read-only) + ack を表示する。 */}
 			<WirePanel />
 
-			{/* 設定 overlay (doc 59 P1、singleton)。sidebar 下部の ⚙ 行から
-          window.vpSettings.open() で出現する。 */}
+			{/* 設定面 (doc 59 / doc 87 §3、singleton)。route が `/settings` の間だけ center
+          (#host) に出る — 開閉の SSOT は route（入口は rail の歯車）。 */}
 			<SettingsPanel />
 
 			{/* PR 445 `s` directive: Lane / repo switcher picker overlay (singleton)。
@@ -244,49 +203,151 @@ export function Shell() {
 	);
 }
 
+/** Lanes rail の peek — 名簿（CURRENTs / PAUSED、doc 58）+ MIDI pins。旧 sidebar フル形の上 2 段。 */
+function LanesPeek() {
+	const ordered = createMemo(() =>
+		resolveRepoOrder(sidebar.processes, sidebar.currents_order),
+	);
+	return (
+		<>
+			<header class="vp-sidebar-header">
+				<span class="vp-sidebar-title"><CreoIcon name="ph:tree-structure" size={12} /> CURRENTs</span>
+				<Show when={requestingLaneCount(Object.values(sidebar.lanes_by_repo).flat()) > 0}>
+					<span class="vp-sidebar-requests" role="status">◆ 要求中 {requestingLaneCount(Object.values(sidebar.lanes_by_repo).flat())}</span>
+				</Show>
+				{/* repo 追加: 産む動詞は**親の行**に住む（mako 2026-08-20 — 「repo 増やすのは
+				    CURRENTS に。lane 増やすのは repo に」）。左で産んで右（main area）に
+				    現れる、という操作の流れを生成の系譜と一致させる。
+				    repo:add IPC → Rust 側 native folder picker → 登録 (VP-203)。 */}
+				<button
+					class="vp-sidebar-add"
+					title="repo を登録"
+					onClick={() => sendIpc({ t: "repo:add" })}
+				>
+					<CreoIcon name="ph:plus" size={13} />
+				</button>
+			</header>
+			<MidiPins />
+
+			<div class="vp-sidebar-list">
+				<Show
+					when={sidebar.processes.length > 0}
+					fallback={
+						/* ⚠️ lane 非依存の最後の逃げ道（moody-blues 指摘 2026-08-20）:
+						   「repo を登録」の常設入口は edge rail の + New menu に移ったが、
+						   rail は lane 不在（= repo 0 件）で帯ごと隠れる。この CTA が無いと
+						   新規 install 直後 / 全 repo 削除後に GUI から復帰できない
+						   （scope-cut-reachable-states — X で代替と言うには X が消えない条件が要る）。 */
+						<button
+							type="button"
+							class="vp-sidebar-empty-cta"
+							onClick={() => sendIpc({ t: "repo:add" })}
+						>
+							+ repo を登録
+						</button>
+					}
+				>
+					<section data-section="currents" aria-label="CURRENTs">
+						<For each={ordered().filter(isRunningProcess)}>{proc => <RepoAccordion proc={proc} />}</For>
+					</section>
+					<Show when={ordered().some(p => !isRunningProcess(p))}>
+						<details data-section="stopped" aria-label="PAUSED">
+							<summary class="vp-sidebar-section-title"><CreoIcon name="ph:caret-right" size={10} class="vp-stopped-caret" />PAUSED {ordered().filter(p => !isRunningProcess(p)).length}</summary>
+							<For each={ordered().filter(p => !isRunningProcess(p))}>{proc => <RepoAccordion proc={proc} />}</For>
+						</details>
+					</Show>
+				</Show>
+			</div>
+		</>
+	);
+}
+
 /**
- * スリム帯（sidebar view modes、`[` directive）— icon 幅の repo badge 列。
+ * Actions rail の peek — ACTIONS（doc 57、creo 段 = cloud scope）。旧 sidebar フル形の下段。
+ * creo 依存（cloud scope）はこの peek に閉じ込める — 名簿と machine 帯は常に local（doc 58 ③）。
+ */
+function ActionsPeek() {
+	return (
+		<div class="vp-creo-zone vp-actions-peek">
+			<BucketList />
+		</div>
+	);
+}
+
+/** Lanes rail の icon。input 待ちの lane が在る間は用事 dot を付ける（peek を見ていなくても届く）。 */
+function LanesRailIcon() {
+	const needsYou = () => {
+		const lanes = Object.values(sidebar.lanes_by_repo).flat();
+		return (
+			requestingLaneCount(lanes) > 0 ||
+			lanes.some((l) => sidebar.awaiting_input[laneAddressKey(l)])
+		);
+	};
+	return (
+		<>
+			<CreoIcon name="ph:tree-structure" size={16} />
+			<Show when={needsYou()}>
+				<span class="vp-rail-flag" aria-hidden="true" />
+			</Show>
+		</>
+	);
+}
+
+/**
+ * 左 edge の rail registry（doc 87 §4 — 増やせる部品の 1 つ目）。route / 順 / 起点は
+ * `route.ts` の `SHELL_RAILS`（純データ）が SSOT で、ここは描画用の component を足すだけ。
+ */
+const RAIL_VIEW: Record<ShellRailId, { icon: Component; peek: Component }> = {
+	lanes: { icon: LanesRailIcon, peek: LanesPeek },
+	actions: { icon: () => <CreoIcon name="ph:tray" size={16} />, peek: ActionsPeek },
+	settings: { icon: () => <CreoIcon name="ph:gear-six" size={16} />, peek: SettingsPeek },
+};
+
+export const SHELL_RAIL_REGISTRY: readonly RailDef[] = SHELL_RAILS.map((r) => ({
+	id: r.id,
+	route: r.route,
+	order: r.order,
+	labelKey: r.label,
+	anchor: r.anchor,
+	...RAIL_VIEW[r.id],
+}));
+
+/**
+ * slim の列に並ぶ repo badge（旧 SlimRail、sidebar view modes `[`）。
  *
  * 情報は「repo の存在 / presence / 用事（awaiting）」の 3 点に圧縮する。操作は
- * 「badge click = フルに戻って該当 repo を flash」の 1 動詞だけ — スリムは監視の形で、
- * 操作を続けたくなったらフルに帰るのが正（右の edge rail が「lane 級動詞の家」なのと
- * 対照的に、この帯は動詞を持たない）。
+ * 「badge click = Lanes の peek を開いて該当 repo を flash」の 1 動詞だけ — slim は監視の形で、
+ * 操作を続けたくなったら peek を開くのが正（右の edge rail が「lane 級動詞の家」なのと
+ * 対照的に、この列は動詞を持たない）。
  */
-function SlimRail(props: { ordered: RepoPaneState[] }) {
+function SlimBadges(props: { ordered: RepoPaneState[] }) {
 	// repo 内のどれかの lane が input 待ち（フル形の黄 dot と同じ源 = awaiting_input）。
 	const awaiting = (path: string): boolean => {
 		const lanes = sidebar.lanes_by_repo[path] ?? [];
 		return lanes.some((l) => sidebar.awaiting_input[laneAddressKey(l)]);
 	};
 	return (
-		<div class="vp-slim-rail">
-			<For each={props.ordered}>
-				{(proc) => (
-					<button
-						class="vp-slim-badge"
-						classList={{
-							connected:
-								(sidebar.activity.presence?.[proc.path] ?? "unregistered") ===
-								"connected",
-							awaiting: awaiting(proc.path),
-						}}
-						title={proc.name}
-						onClick={() => {
-							expandSidebar();
-							flashProject(proc.path);
-						}}
-					>
-						{/* 頭 1 文字。spread は surrogate pair (絵文字名の repo) を割らないため。 */}
-						{([...proc.name.trim()][0] ?? "?").toUpperCase()}
-					</button>
-				)}
-			</For>
-			<div
-				class="vp-slim-foot"
-				classList={{ online: sidebar.activity.node_online }}
-				title={`daemon: ${sidebar.activity.node_online ? "online" : "offline"}`}
-			/>
-		</div>
+		<For each={props.ordered}>
+			{(proc) => (
+				<button
+					class={["vp-slim-badge", {
+						connected:
+							(sidebar.activity.presence?.[proc.path] ?? "unregistered") ===
+							"connected",
+						awaiting: awaiting(proc.path),
+					}]}
+
+					title={proc.name}
+					onClick={() => {
+						showRail("lanes");
+						flashProject(proc.path);
+					}}
+				>
+					{/* 頭 1 文字。spread は surrogate pair (絵文字名の repo) を割らないため。 */}
+					{([...proc.name.trim()][0] ?? "?").toUpperCase()}
+				</button>
+			)}
+		</For>
 	);
 }
 
@@ -314,7 +375,23 @@ export const SHELL_CSS = `
    適用は #sidebar-root 以下に封じ込める (定義が :root なのは Editor Mode の書き込み先と
    揃えるため。 定義自体は inert)。 視覚仕様の SSOT = artifact c203944c (mako 承認済)。
    2026-07-22: conn 2 hue を magenta/cyan → coral/yellow に更新 (doc 48 editor bridge の
-   初回 dogfood で mako × CC が live 調整して確定 — auto=mako picker / hitl=CC editor_set)。 */
+   初回 dogfood で mako × CC が live 調整して確定 — auto=mako picker / hitl=CC editor_set)。
+
+   補助色も palette の token から引く (doc 87 §8.3 — 直書きは Editor で地や文字の色を変えても動かず、
+   それだけが浮いて残る):
+   - --lg-veil = 地に重ねる薄い光の素 (Light Grid では白)。 --lg-veil-1〜4 はそれを旧 #ffffff04 / 06 /
+     08 / 0c と同じ alpha で混ぜた段 (8 bit に丸めると旧値と同じ = 既定の見た目は変わらない)。
+     1 = repo の地、 2 = 静かな hover、 3 = hover・輪郭・badge の地、 4 = 一段強い hover (URL ボタン、
+     Atlas の候補のカーソル位置 = 矢印キー・pointer が指している行)。 creo-ui の
+     --surface-veil-* (components.css) と同じ考え方で、 Light Grid 以外のプリセットでは文字の色に従う
+     (editor/styles.ts — 明るい地では暗い重ねになる)
+   - --lg-cyan-deep = 切れた接続の丸の地 (旧 #123039)
+   - --lg-shadow = context menu の影 (旧 rgba(0,0,0,.4))。 creo-ui の --color-shadow-base を直に引かないのは、
+     起動時の data-theme が mint-dark (sidebar.tsx が書く) で、 そこでは 0.3 になるため
+   - --lg-cyan = 選んでいる Atlas の明るい cyan (AtlasPicker が未定義のまま引いていて、 fallback の
+     #40d9ec が描かれていた。 定義して同じ色のまま palette に入れた)
+   literal の色を持つ --lg-* は editor/styles.ts でプリセットの creo-ui token に写す
+   (src/sidebar/sidebar-palette.test.ts が写し忘れを止める)。 */
 :root{--sb-text-base:13px;--sb-text-hint:12px;--sb-text-meta:11px;--sb-text-micro:10px;
   --sb-conn-width:2px;--sb-conn-slot:22px;--sb-conn-dash:4px;--sb-conn-flow-beat:0.7255s;
   --sb-photon-period:1800ms;--sb-glow:6px;
@@ -323,7 +400,13 @@ export const SHELL_CSS = `
   --sb-selection-bg:#151c27;--sb-selection-border:#68758b;--sb-selection-width:1px;
   --lg-void:#05070A;--lg-void-2:#080B11;--lg-panel:#0A0E15;
   --lg-grid:#0E2A33;--lg-hairline:#12222b;
-  --lg-cyan-dim:#1C6C7C;--lg-hot:#EAFBFF;--lg-mute:#5C7A85;--lg-mute-2:#38525b;}
+  --lg-cyan-dim:#1C6C7C;--lg-hot:#EAFBFF;--lg-mute:#5C7A85;--lg-mute-2:#38525b;
+  --lg-cyan-deep:#123039;--lg-cyan:#40d9ec;--lg-shadow:rgba(0,0,0,.4);
+  --lg-veil:#fff;
+  --lg-veil-1:color-mix(in srgb,var(--lg-veil) 1.5686%,transparent);
+  --lg-veil-2:color-mix(in srgb,var(--lg-veil) 2.3529%,transparent);
+  --lg-veil-3:color-mix(in srgb,var(--lg-veil) 3.1373%,transparent);
+  --lg-veil-4:color-mix(in srgb,var(--lg-veil) 4.7059%,transparent);}
 html,body{margin:0;height:100%;overflow:hidden;}
 /* SolidJS mount point。 height chain (html→body→#sidebar-root→shell) を繋ぐ。
    この規則が無いと shell が content 高さに collapse し、 window 下部に gap が出る。
@@ -339,7 +422,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
    - hover / current の文字色変化 → 光り物は state dot の専有 (色は inherit 固定)。 */
 #sidebar-root{
   --color-brand-primary:var(--sb-conn-auto,#FFF76B);
-  --color-surface-bg-subtle:#ffffff06;
+  --color-surface-bg-subtle:var(--lg-veil-2);
   --_sidenav__indicator-width:0px;
   --_sidenav__link-radius:8px;
   /* ⚠️ 0px にしない: creo の .creo-sidenav-group + .creo-sidenav-group は (0,2,0) で
@@ -404,7 +487,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-sidebar-add{margin-left:auto;display:inline-flex;align-items:center;padding:2px;
   border:none;background:transparent;color:var(--lg-mute,#5C7A85);cursor:pointer;
   border-radius:3px;flex:0 0 auto;transition:background .12s ease,color .12s ease;}
-.vp-sidebar-add:hover{background:#ffffff08;
+.vp-sidebar-add:hover{background:var(--lg-veil-3);
   color:var(--sb-conn-auto,#FFF76B);}
 /* min-height は ACTIONS（doc 57）が伸びたときの床。scroll container の自動最小サイズは 0 なので、
    これが無いと下の区画が repo list を高さ 0 まで潰せる。 */
@@ -419,13 +502,13 @@ html,body{margin:0;height:100%;overflow:hidden;}
   border-color:var(--lg-mute-2,#38525b);}
 
 /* Repo accordion — Light Grid: repo = 地 (ground)。 発光させず void に沈む静かな地形。
-   faint fill (#ffffff04) + inset hairline ring のみ (course-correction 2026-07-11:
+   faint fill (--lg-veil-1) + inset hairline ring (--lg-veil-3) のみ (course-correction 2026-07-11:
    カード上の grid テクスチャは行が透明なため文字を横切る scanline ノイズになる → 撤去、
    ambience は #sidebar-root::before の 1 枚に集約)。
    glow なし — 図 (= session の state dot) を引き立てるため必ず後退させる。 */
 .vp-proj{margin:8px 8px 0;border-radius:11px;
-  background:#ffffff04;
-  box-shadow:inset 0 0 0 1px #ffffff08;
+  background:var(--lg-veil-1);
+  box-shadow:inset 0 0 0 1px var(--lg-veil-3);
   padding:2px 4px 6px;}
 /* spine (repo 所有の縦ライン) と photon は doc 58 台帳で撤去 — 場所の包含は
    proj 見出しが語るので、線で繋がない。state の視覚は行頭の .vp-lane-dot に集約。 */
@@ -456,9 +539,9 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-proj.dragging{opacity:.4;}
 /* drop marker は cyan。 ground の inset ring (box-shadow 単一 property) を失わないよう併記。 */
 .vp-proj.drop-before{box-shadow:inset 0 2px 0 0 var(--sb-conn-auto,#FFF76B),
-  inset 0 0 0 1px #ffffff08;}
+  inset 0 0 0 1px var(--lg-veil-3);}
 .vp-proj.drop-after{box-shadow:inset 0 -2px 0 0 var(--sb-conn-auto,#FFF76B),
-  inset 0 0 0 1px #ffffff08;}
+  inset 0 0 0 1px var(--lg-veil-3);}
 
 /* Lane 行 */
 /* ミニマム 1 行 (2026-05-30): icon + session title + 右端 block (meta/awaiting/files/mailbox)。
@@ -481,7 +564,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-lane-dot.conn-run::after{width:6px;height:6px;margin-top:-3px;
   background:var(--sb-conn-auto,#FFF76B);}
 /* idle = ほぼ消える (quiet pass): 中空 dot。 */
-.vp-lane-dot.conn-dead::after{background:#123039;
+.vp-lane-dot.conn-dead::after{background:var(--lg-cyan-deep);
   border:1px solid color-mix(in srgb,var(--lg-cyan-dim,#1C6C7C),transparent 40%);}
 /* needs-you / HITL = diamond。 唯一 glow を許される状態 (quiet pass)。
    pulse は「needs-you に入った瞬間に 1 回だけ」 (one-shot、 常時 pulse 禁止 019f50ff)。
@@ -550,6 +633,10 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* ── 下部 2 段 (doc 58 ③) ──
    creo 段 = cloud scope の器。上辺の hairline で名簿と区切る。 */
 .vp-creo-zone{border-top:1px solid var(--lg-hairline,#12222b);}
+/* Actions rail の peek では ACTIONS が peek の全高を使う（名簿と分け合わない）。上の区切り線は
+   名簿との境界の線なので、ここでは引かない。 */
+.vp-actions-peek{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;border-top:none;}
+.vp-actions-peek > .vp-act-buckets{flex:1 1 auto;}
 /* machine 帯のサマリ行に出す非健康 signal (畳んでいても見える) */
 .vp-machine-flag{flex:0 0 auto;font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-size:var(--sb-text-micro,10px);letter-spacing:.04em;text-transform:uppercase;
@@ -588,7 +675,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
    dot slot は空 span が indent だけ揃える (state データが無いものを描かない)。 */
 .vp-session-row{font-weight:300;}
 .vp-session-close{font:inherit;color:inherit;background:transparent;border:1px solid var(--color-surface-border,#ffffff20);border-radius:4px;cursor:pointer;padding:1px 5px}
-.vp-session-row .vp-lane-title.is-session{color:rgba(234,251,255,.72);}
+.vp-session-row .vp-lane-title.is-session{color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 28%);}
 
 /* 「今なにを」(doc 58 ②-a) — 進行の本体なので地 (cwd = mute-2) より 1 段読める mute。 */
 .vp-lane-now{flex:0 0 100%;box-sizing:border-box;min-width:0;overflow:hidden;
@@ -652,7 +739,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   cursor:pointer;border-radius:3px;flex:0 0 auto;
   transition:background .12s ease,color .12s ease;}
 .vp-proj-addsub:hover,.vp-proj-addsub.open,.vp-proj-start:hover{
-  background:#ffffff08;color:var(--sb-conn-auto,#FFF76B);}
+  background:var(--lg-veil-3);color:var(--sb-conn-auto,#FFF76B);}
 /* Start ▶ も quiet: 定常は muted、 hover 時のみ cyan (interaction feedback)。 */
 .vp-proj-start{color:var(--lg-mute,#5C7A85);}
 .vp-add-sub-form{display:flex;flex-direction:column;gap:5px;
@@ -672,7 +759,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
   border:1px solid var(--lg-hairline,#12222b);background:transparent;
   color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 25%);border-radius:var(--radius-sm,6px);cursor:pointer;
   font-size:var(--sb-text-micro,10px);font-family:inherit;transition:background .12s ease,color .12s ease;}
-.vp-add-sub-actions button:hover{background:#ffffff08;
+.vp-add-sub-actions button:hover{background:var(--lg-veil-3);
   color:var(--lg-hot,#EAFBFF);}
 .vp-add-sub-actions button.primary{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 92%);
   color:var(--sb-conn-auto,#FFF76B);border-color:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 82%);}
@@ -755,14 +842,14 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-agent-row{position:relative;display:flex;align-items:center;gap:6px;
   padding:5px var(--spacing-sm,10px);cursor:pointer;font-size:var(--sb-text-hint,12px);
   color:var(--lg-mute,#5C7A85);}
-.vp-agent-row:hover{background:#ffffff06;}
+.vp-agent-row:hover{background:var(--lg-veil-2);}
 .vp-agent-row.active{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 94%);
   color:var(--sb-conn-auto,#FFF76B);}
 .vp-agent-icon{display:flex;align-items:center;flex:0 0 auto;}
 .vp-agent-title{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;}
 .vp-agent-badge{flex:0 0 auto;font-size:var(--sb-text-micro,10px);padding:1px 6px;border-radius:8px;
-  background:#ffffff08;color:var(--lg-mute,#5C7A85);
+  background:var(--lg-veil-3);color:var(--lg-mute,#5C7A85);
   font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-variant-numeric:tabular-nums;}
 /* 艦隊スイッチ OFF（vp midi off）— 機材を他アプリへ譲っている状態。
@@ -776,7 +863,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-ctx-menu{position:fixed;z-index:9999;min-width:180px;
   background:var(--lg-panel,#0A0E15);
   border:1px solid var(--lg-hairline,#12222b);
-  border-radius:var(--radius-md,6px);box-shadow:0 8px 24px rgba(0,0,0,.4);
+  border-radius:var(--radius-md,6px);box-shadow:0 8px 24px var(--lg-shadow);
   padding:4px 0;font-size:var(--sb-text-hint,12px);user-select:none;}
 .vp-ctx-header{padding:4px 14px 6px;font-size:var(--sb-text-micro,10px);
   color:var(--lg-mute,#5C7A85);
@@ -785,16 +872,14 @@ html,body{margin:0;height:100%;overflow:hidden;}
 .vp-ctx-item{padding:6px 14px;cursor:pointer;display:flex;align-items:center;
   gap:8px;color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 25%);
   transition:background .1s ease,color .1s ease;}
-.vp-ctx-item:hover{background:#ffffff08;
+.vp-ctx-item:hover{background:var(--lg-veil-3);
   color:var(--lg-hot,#EAFBFF);}
 .vp-ctx-item.danger:hover{background:var(--color-status-error,#d4444c);color:#fff;}
 .vp-ctx-item.danger.confirming{background:var(--color-status-error,#d4444c);
   color:#fff;}
 
-/* sidebar view modes (2026-08-01): スリム帯。幅 (280px⇄44px) は webview/main_area.rs の
-   #sidebar-root / #sidebar-root.slim が司り、ここは帯の中身だけ定義する。 */
-.vp-slim-rail{display:flex;flex-direction:column;align-items:center;gap:6px;
-  padding:10px 0;height:100%;box-sizing:border-box;overflow-y:auto;overflow-x:hidden;}
+/* slim（[ directive、peek を畳んだ形）の列の中身: 中央 slot の repo badge と下端 slot の daemon dot。
+   幅（列 48px / full = 列 + peek）は webview/main_area.rs の #sidebar-root が司る。 */
 .vp-slim-badge{position:relative;width:28px;height:28px;flex:none;border-radius:8px;
   border:1px solid var(--lg-hairline,#12222b);background:var(--lg-panel,#0A0E15);
   color:var(--lg-mute,#5C7A85);cursor:pointer;
@@ -805,7 +890,7 @@ html,body{margin:0;height:100%;overflow:hidden;}
 /* 用事 dot: フル形の awaiting 黄 dot (--sb-conn-hitl) と同じ語彙で「repo 内に input 待ちの lane」。 */
 .vp-slim-badge.awaiting::after{content:"";position:absolute;top:-2px;right:-2px;
   width:7px;height:7px;border-radius:50%;background:var(--sb-conn-hitl,#FF4A2D);}
-.vp-slim-foot{margin-top:auto;width:8px;height:8px;flex:none;border-radius:50%;
+.vp-slim-foot{width:8px;height:8px;flex:none;border-radius:50%;margin:4px 0;
   background:var(--lg-mute-2,#38525b);}
 .vp-slim-foot.online{background:var(--lg-cyan-dim,#1C6C7C);}
 /* Hierarchy: root is the project header; children stay mounted while folded. */
@@ -818,12 +903,46 @@ html,body{margin:0;height:100%;overflow:hidden;}
 #sidebar-root .vp-proj-summary .vp-lane-row{margin-left:4px;}
 #sidebar-root .vp-proj-content .vp-lane-row{margin-left:36px;}
 .vp-proj-placeholder{display:flex;align-items:center;gap:6px;padding:8px 10px;}
-.vp-proj-toggle{border:0;background:transparent;color:var(--lg-mute,#5C7A85);cursor:pointer;padding:0;display:inline-flex;flex:none;}
+/* lead 行の開閉 caret (mem_1ChNtdQKHrSB78Ppek2etg)。旧形は 8px の活動ドットだけが toggle で、
+   押せることも開閉の状態も見えなかった。caret は行の最左 (.vp-lane-disclosure = 木の開閉の定位置)、
+   16×18px のヒットエリア + hover で面を僅かに起こして「押せる」を伝える。icon と 90° 回転は R sidebar の
+   .rsb-chevron と同じ (回転の契機はこちらは aria-expanded="true")。PAUSED 見出しの .vp-stopped-caret も同じ icon。 */
+/* 280px 既定の peek では lead 名の幅が効くので、caret の溝を少しでも名前に返す:
+   左 -4px = 行の左 padding に寄せる (glyph は箱の内側 2px の位置)。上下 -2px = 18px 高の箱で
+   行が高くならないように (ヒットエリアは 18px のまま、行の高さは従来どおり)。 */
+.vp-lane-disclosure{display:inline-flex;align-items:center;flex:0 0 auto;margin:-2px 0 -2px -4px;}
+/* hint の行 (repo 停止中など) も同じ箱。左は placeholder の padding 10px に対して -2px で、lead 行の caret と列を揃える。 */
+.vp-proj-placeholder > .vp-proj-toggle{margin:-2px 0 -2px -2px;}
+.vp-proj-toggle{border:0;background:transparent;color:var(--lg-mute,#5C7A85);cursor:pointer;padding:0;
+  display:inline-flex;align-items:center;justify-content:center;flex:none;
+  width:16px;height:18px;border-radius:5px;
+  transition:color .12s ease,background-color .12s ease,opacity .12s ease;}
+.vp-proj-toggle:hover{color:var(--lg-hot,#EAFBFF);
+  background:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 90%);}
+.vp-proj-toggle:focus-visible{outline:1px solid var(--lg-cyan-dim,#1C6C7C);outline-offset:1px;}
+.vp-proj-caret{transition:transform .12s ease;}
+.vp-proj-toggle[aria-expanded="true"] .vp-proj-caret{transform:rotate(90deg);}
+/* 畳む中身が無い (lead 1 本だけ) 時は控えめに — 押しても何も変わらない caret でノイズを作らない。
+   消しはしない (hover で戻る): 次に sub を産んだ時に場所が動かない。 */
+.vp-proj-toggle.is-empty{opacity:.35;}
+.vp-proj-toggle.is-empty:hover{opacity:.8;}
+@media (prefers-reduced-motion:reduce){.vp-proj-caret,.vp-proj-toggle,.vp-stopped-caret{transition:none;}}
+/* lead 行の 2 段目 (now / branch) は caret の溝 (16px + 行の gap 4px - 寄せた 4px) だけ下げ、status 列に揃える。 */
+.vp-proj-summary .vp-lane-detail{box-sizing:border-box;padding-left:16px;}
+/* 畳んでいる間 (.vp-proj.folded = 隠れている lane / セッションがある): lane 数を hairline の chip にして
+   「中に畳まれている」を読ませ、sub の状態ドットを chip の中に並べる。光らせない (注意の光は needs-you の専有)。
+   余白は最小限 (0 5px) — 右端の block は縮まないので、chip の幅はそのまま lead 名の幅から引かれる。
+   ⚠️ sub が 9 本以上だとドットが 2 段に折り返す (5px + 間隔 3px で 64px に入るのは 8 個。max-width は従来どおり)。 */
+.vp-proj.folded .vp-lane-count{display:inline-flex;align-items:center;gap:4px;padding:0 5px;
+  border-radius:999px;border:1px solid var(--lg-mute-2,#38525b);
+  color:var(--lg-mute,#5C7A85);font-weight:400;}
+.vp-proj.folded .vp-lane-count .vp-sub-points{gap:3px;}
+.vp-proj.folded .vp-lane-count .vp-sub-point{width:5px;height:5px;}
 .vp-sidebar-title{text-transform:none;display:flex;align-items:center;gap:6px;}
 .vp-sidebar-section-title{padding:16px 12px 6px;font-size:var(--sb-text-micro,10px);color:var(--lg-mute,#5C7A85);}
 .vp-sidebar-section-title{list-style:none;display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;}
 .vp-sidebar-section-title::-webkit-details-marker{display:none;}
-.vp-stopped-caret{display:inline-block;}
+.vp-stopped-caret{display:inline-block;transition:transform .12s ease;}
 [data-section="stopped"][open] > summary .vp-stopped-caret{transform:rotate(90deg);}
 .vp-sub-points{display:flex;flex-wrap:wrap;gap:4px;max-width:64px;align-items:center;}
 .vp-sub-point{width:4px;height:4px;border-radius:50%;background:var(--lg-mute,#5C7A85);}
@@ -839,6 +958,7 @@ ${MIDI_PINS_CSS}
 ${COMMAND_PALETTE_CSS}
 ${ACTIONS_CSS}
 ${ACTIVITY_POINT_CSS}
+${SHELL_RAIL_CSS}
 .vp-lane-status{width:14px;flex:0 0 14px;text-align:center;font-size:12px;color:var(--lg-mute,#5C7A85);}
 .vp-lane-status[data-lane-state="requesting"],.vp-sidebar-requests,.vp-repo-requests{color:var(--sb-conn-hitl,#f28dd3);}
 .vp-lane-status[data-lane-state="working"]{color:var(--sb-conn-auto,#e8c46c);animation:vp-lane-spin 2s linear infinite;}

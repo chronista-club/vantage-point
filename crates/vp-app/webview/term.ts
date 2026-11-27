@@ -818,7 +818,7 @@ export function installTerm(): TermPushHandlers {
 		vpTerminal: { handleOutput },
 		// DevTools console から laneInstances を手動検査できるよう露出
 		__vpLanes: laneInstances,
-		// `active-pane.ts` の `applyPaneSwitch` が kind=terminal で呼ぶ。TS 内の呼び出しなので
+		// `active-pane.ts` の `applyPaneSwitch` が lane pane の kind（lane / 旧名 terminal）で呼ぶ。TS 内の呼び出しなので
 		// 本来は直 import が筋だが、`showLane` は `installTerm` の closure にあるため今は window
 		// 経由のまま（両方 TS になった今、次段で直参照に畳める）。
 		showLane,

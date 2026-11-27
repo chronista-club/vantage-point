@@ -38,6 +38,151 @@
 
 use serde::{Deserialize, Serialize};
 
+/// 実物の変更に基づく出荷時の段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum DiffTier {
+    A,
+    B,
+    C,
+}
+
+/// git から収集したファイル単位の変更。binary は行数不明。
+#[derive(Debug, Clone)]
+pub struct DiffFileStat {
+    pub path: String,
+    pub insertions: usize,
+    pub deletions: usize,
+    pub binary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffClassification {
+    pub tier: DiffTier,
+    pub reasons: Vec<String>,
+    pub review_required: String,
+    pub pr_mode: String,
+    pub merge_authority: String,
+    pub changed_files: usize,
+    pub insertions: usize,
+    pub deletions: usize,
+}
+
+/// パス境界と変更量だけで判定する。取得失敗は呼び出し側で扱う。
+pub fn classify_diff(files: &[DiffFileStat]) -> Option<DiffClassification> {
+    if files.is_empty() {
+        return None;
+    }
+    let mut reasons: Vec<String> = files
+        .iter()
+        .filter_map(|f| risky_diff_path(&f.path).map(|reason| format!("{reason} ({})", f.path)))
+        .collect();
+    let implementation: Vec<_> = files
+        .iter()
+        .filter(|f| !is_diff_support_file(&f.path))
+        .collect();
+    let impl_lines: usize = implementation
+        .iter()
+        .map(|f| f.insertions + f.deletions)
+        .sum();
+    if implementation.len() >= 6 || impl_lines > 300 {
+        reasons.push(format!(
+            "大規模な実装変更 ({} impl files, {} lines)",
+            implementation.len(),
+            impl_lines
+        ));
+    }
+    let tier = if !reasons.is_empty() {
+        DiffTier::C
+    } else if implementation.is_empty() {
+        reasons.push("ドキュメント・テスト専用ファイルのみ".into());
+        DiffTier::A
+    } else if implementation.len() == 1 && impl_lines <= 80 && !implementation[0].binary {
+        reasons.push(format!(
+            "単一実装ファイルの局所変更 (1 impl file, +{}/-{} lines)",
+            implementation[0].insertions, implementation[0].deletions
+        ));
+        DiffTier::A
+    } else {
+        reasons.push(format!(
+            "複数実装ファイル・大きな変更・行数不明の binary ({} impl files, {} lines)",
+            implementation.len(),
+            impl_lines
+        ));
+        DiffTier::B
+    };
+    let (review, pr, authority) = match tier {
+        DiffTier::A => ("none", "ready", "lead"),
+        DiffTier::B => ("moody-blues", "ready", "lead"),
+        DiffTier::C => ("santa", "draft", "user"),
+    };
+    Some(DiffClassification {
+        tier,
+        reasons,
+        review_required: review.into(),
+        pr_mode: pr.into(),
+        merge_authority: authority.into(),
+        changed_files: files.len(),
+        insertions: files.iter().map(|f| f.insertions).sum(),
+        deletions: files.iter().map(|f| f.deletions).sum(),
+    })
+}
+
+fn risky_diff_path(path: &str) -> Option<&'static str> {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    if path.starts_with("crates/vantage-point/src/daemon/") {
+        Some("daemon lifecycle に触れている")
+    } else if path.starts_with("crates/vantage-point/src/protocol/")
+        || matches!(
+            path,
+            "crates/vp-app/src/daemon_wire.rs"
+                | "crates/vantage-point/src/capability/wiremsg_store.rs"
+        )
+    {
+        Some("protocol / wire の形に触れている")
+    } else if path.starts_with("vendor/") || path == "Cargo.toml" {
+        Some("共有依存・複数 repo の境界に触れている")
+    } else if path.starts_with(".mise/tasks/app/swap")
+        || path.starts_with(".mise/tasks/release/")
+        || path.starts_with(".github/workflows/")
+        || matches!(name, "AGENTS.md" | "CLAUDE.md")
+    {
+        Some("安全装置・出荷パイプライン・エージェント規約に触れている")
+    } else if matches!(
+        path,
+        "crates/vantage-point/src/lane/session_registry.rs"
+            | "crates/vantage-point/src/settings_file.rs"
+    ) {
+        Some("永続化スキーマ・設定正本に触れている")
+    } else if matches!(
+        path,
+        "crates/vantage-point/src/roto_setup_sync.rs"
+            | "crates/vantage-point/src/commands/midi.rs"
+            | "crates/vantage-point/src/commands/roto_control.rs"
+            | "crates/vantage-point/src/roto_midi.rs"
+            | "crates/vantage-point/src/midi.rs"
+            | "crates/vantage-point/src/devices.rs"
+    ) {
+        Some("実機への書き込み経路に触れている")
+    } else {
+        None
+    }
+}
+
+fn is_diff_support_file(path: &str) -> bool {
+    path.starts_with("docs/")
+        || path.ends_with(".md")
+        || path.ends_with(".test.ts")
+        || path.ends_with(".test.tsx")
+        || path
+            .split('/')
+            .any(|p| matches!(p, "tests" | "testdata" | "fixtures"))
+}
+
+#[cfg(test)]
+#[path = "flow/diff_tests.rs"]
+mod diff_tests;
+
 /// dev-flow の 6 state FSM。 sub 単体の current state を表す。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

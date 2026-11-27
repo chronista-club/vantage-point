@@ -1,5 +1,5 @@
 import { createEffect, createSignal, For, Show } from 'solid-js'
-import { Portal } from 'solid-js/web'
+import { Portal } from '@solidjs/web'
 import type { CodexRuntime } from './src/generated/CodexRuntime'
 import type { CodexPermissionChoice } from './src/generated/CodexPermissionChoice'
 
@@ -20,9 +20,9 @@ export function CodexPermissionMenu(props: {
   const [loaded, setLoaded] = createSignal(false)
   const [position, setPosition] = createSignal({left:'16px',bottom:'48px'})
   let anchor: HTMLButtonElement | undefined
-  createEffect(() => {
-    if (!props.connected) { setOpen(false); setConfirmFull(false); setLoaded(false) }
-    else if (open() && !props.busy && props.choices) setLoaded(true)
+  createEffect(() => ({ connected: props.connected, open: open(), busy: props.busy, choices: props.choices }), ({ connected, open, busy, choices }) => {
+    if (!connected) { setOpen(false); setConfirmFull(false); setLoaded(false) }
+    else if (open && !busy && choices) setLoaded(true)
   })
   const label = () => props.runtime ? labels[props.runtime.preset ?? ''] ?? 'カスタム' : '権限未確認'
   const choose = (id: string, confirmed = false) => {
@@ -37,7 +37,7 @@ export function CodexPermissionMenu(props: {
   }}>
     <button ref={anchor} type="button" class="conversation-model-select" aria-label="Codex permissions"
       title={props.busy ? '応答と待機入力が完了すると変更できます。' : 'この会話の権限を選択します。'}
-      aria-expanded={open()} disabled={props.busy || !props.connected || !props.runtime}
+      aria-expanded={String(open()) as 'true' | 'false'} disabled={props.busy || !props.connected || !props.runtime}
       onClick={() => {
         if (open()) { setOpen(false); setConfirmFull(false); return }
         setLoaded(false)
@@ -60,7 +60,7 @@ export function CodexPermissionMenu(props: {
             <button type="button" onClick={() => setConfirmFull(false)}>戻る</button>
           </>}>
             <For each={props.choices}>{choice => <button type="button" class="codex-permission-choice"
-              aria-pressed={props.runtime?.preset === choice.id || choice.id === `profile:${props.runtime?.profile}`}
+              aria-pressed={String(props.runtime?.preset === choice.id || choice.id === `profile:${props.runtime?.profile}`) as 'true' | 'false'}
               disabled={props.busy || !props.connected || !!choice.disabled_reason}
               onClick={() => choose(choice.id)}>
               <strong>{choice.label}</strong><span>{choice.description}</span>

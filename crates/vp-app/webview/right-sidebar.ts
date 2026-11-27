@@ -91,7 +91,8 @@ export interface RightSidebarDeps {
 	sections: HTMLElement[];
 	/** Lane 節の中身（住人の付け替え先）。 */
 	laneBody: HTMLElement;
-	/** rail の住人（+ New host / しまった pane host / board 取っ手）。並びは rail の上から。 */
+	/** 付け替える rail の住人（+ New host / しまった pane host / board 取っ手）。並びは rail の上から。
+	 *  顔ぶれは edge-residents.ts の表が決める（`relocatedResidentHostIds`、doc 87 §8.2）。 */
 	residents: HTMLElement[];
 	/** PR 節の中身（Solid の mount 先）。 */
 	prsBody: HTMLElement;

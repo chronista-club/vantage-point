@@ -1,10 +1,11 @@
+import { testPath } from './test-utils/paths'
 /** mem_1CfvxBJqJvVjZk5FEqZ98b — Editor の MIDI タブ（LPD8 ピンの色・未選択の明るさ）。保存先は session（IPC）。 */
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window } from 'happy-dom'
 import { afterEach, beforeAll, expect, it } from 'vitest'
-import { createRoot } from 'solid-js'
+import { createRoot, flush } from 'solid-js'
 import { DEFAULT_PIN_COLORS, defaultPins, withDimGain } from './midi-pins'
 import { createMidiSettings } from './editor/midi-settings'
 
@@ -13,14 +14,14 @@ type Win = Window & { vpEditorHost: any; dispose(): void; sent: { t: string; set
 const windows: Win[] = []
 beforeAll(async () => {
   const result = await build({ stdin: { contents: `
-    import { render } from 'solid-js/web';
+    import { render } from '@solidjs/web';
     import { createComponent } from 'solid-js';
     import { VpEditor } from './editor/VpEditor';
     window.dispose = render(() => createComponent(VpEditor, {}), document.getElementById('editor-root'));
-  `, loader: 'tsx', resolveDir: fileURLToPath(new URL('.', import.meta.url)) }, bundle: true, write: false, format: 'iife', platform: 'browser', preserveSymlinks: true, plugins: [solidPlugin()], define: { 'process.env.NODE_ENV': '"production"' } })
+  `, loader: 'tsx', resolveDir: testPath(import.meta.url) }, bundle: true, write: false, format: 'iife', platform: 'browser', preserveSymlinks: true, plugins: [solidPlugin()], define: { 'process.env.NODE_ENV': '"production"' } })
   bundle = result.outputFiles[0].text
 })
-afterEach(async () => { for (const win of windows.splice(0)) { win.dispose?.(); await win.happyDOM.abort() } })
+afterEach(async () => { for (const win of windows.splice(0)) { callDom(win, () => win.dispose?.()); await win.happyDOM.abort() } })
 
 const a = { path: '/vp', address: 'vp/root' }
 function fixture(native?: unknown) {
@@ -31,28 +32,28 @@ function fixture(native?: unknown) {
   if (native !== undefined) (win as any).__vpMidiSettings = native
   win.document.documentElement.dataset.theme = 'contrast-dark'
   win.document.body.innerHTML = '<div id="editor-root"></div>'
-  win.eval(bundle)
-  win.vpEditorHost.enable()
+  evalDom(win, bundle)
+  callDom(win, () => win.vpEditorHost.enable())
   return win
 }
 const tick = () => new Promise(resolve => setTimeout(resolve, 0))
 const q = (win: Window, sel: string) => win.document.querySelector(sel) as any
 function openMidi(win: Window) {
   const tab = Array.from(win.document.querySelectorAll('[role=tab]')).find(el => el.textContent === 'MIDI')!
-  tab.dispatchEvent(new win.MouseEvent('click', { bubbles: true }))
+  dispatchDom(tab, new win.MouseEvent('click', { bubbles: true }))
 }
 function input(win: Window, el: any, value: string) {
   el.value = value
-  el.dispatchEvent(new win.Event('input', { bubbles: true }))
+  dispatchDom(el, new win.Event('input', { bubbles: true }))
 }
-const native = (win: Window, detail: unknown) => win.dispatchEvent(new win.CustomEvent('vp:midi-settings', { detail: detail as object | null }))
+const native = (win: Window, detail: unknown) => dispatchDom(win, new win.CustomEvent('vp:midi-settings', { detail: detail as object | null }))
 const lastSaved = (win: Win) => JSON.parse(win.sent.filter(m => m.t === 'midi:navigation').at(-1)!.settings!)
 
 it('shows 8 pin colors and the unselected brightness without a selection, restoring an old 4-pin session', async () => {
   const win = fixture({ slots: [a, null, null, null], colors: ['#112233', '#445566', '#778899', '#aabbcc'] })
   await tick()
   openMidi(win)
-  expect(win.vpEditorHost.selection()).toBeNull()
+  expect(callDom(win, () => win.vpEditorHost.selection())).toBeNull()
   for (let i = 0; i < 8; i++) {
     expect(q(win, `[data-midi-field="pin.${i + 1}.color"] input[type=text]`).value)
       .toBe(['#112233', '#445566', '#778899', '#aabbcc', ...DEFAULT_PIN_COLORS.slice(4)][i])
@@ -97,10 +98,10 @@ it('sends the brightness as dimGain and resets each item to its default', async 
   input(win, q(win, '[data-midi-field="dim"] input[type=number]'), '40')
   expect(lastSaved(win).dimGain).toBe(0.4)
   expect(reset().disabled).toBe(false)
-  reset().dispatchEvent(new win.MouseEvent('click', { bubbles: true }))
+  dispatchDom(reset(), new win.MouseEvent('click', { bubbles: true }))
   expect(lastSaved(win).dimGain).toBe(0.25)
   input(win, q(win, '[data-midi-field="pin.1.color"] input[type=text]'), '#000000')
-  q(win, '[data-midi-field="pin.1.color"] .vp-editor-reset').dispatchEvent(new win.MouseEvent('click', { bubbles: true }))
+  dispatchDom(q(win, '[data-midi-field="pin.1.color"] .vp-editor-reset'), new win.MouseEvent('click', { bubbles: true }))
   expect(lastSaved(win).colors[0]).toBe(DEFAULT_PIN_COLORS[0])
 })
 
@@ -131,14 +132,23 @@ it('follows changes made in the sidebar, and ignores a late echo of an older Edi
 it('the store itself refuses to write until settings arrive, even if a control slips through', () => {
   const sent: string[] = []
   const win = Object.assign(new EventTarget(), { ipc: { postMessage: (m: string) => sent.push(m) } }) as any
-  createRoot(dispose => {
-    const midi = createMidiSettings(win)
+  const { midi, dispose } = createRoot(dispose => ({ midi: createMidiSettings(win), dispose }))
+  try {
     midi.update(withDimGain(defaultPins(), 0.9))
     expect(sent).toEqual([])
     expect(midi.settings().dimGain).toBe(0.25)
     win.dispatchEvent(new CustomEvent('vp:midi-settings', { detail: null }))
+    flush()
     midi.update(withDimGain(midi.settings(), 0.9))
     expect(JSON.parse(JSON.parse(sent[0]).settings).dimGain).toBe(0.9)
-    dispose()
-  })
+  } finally { dispose() }
+})
+
+it('adopts settings already delivered before the editor mounts', () => {
+  const win = Object.assign(new EventTarget(), { __vpMidiSettings: withDimGain(defaultPins(), 0.6) }) as any
+  const { midi, dispose } = createRoot(dispose => ({ midi: createMidiSettings(win), dispose }))
+  try {
+    expect(midi.ready()).toBe(true)
+    expect(midi.settings().dimGain).toBe(0.6)
+  } finally { dispose() }
 })

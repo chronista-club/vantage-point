@@ -55,7 +55,7 @@
 //! - actions: spawn / stdout→translate→broadcast / in-flight tail 更新 / cc_session 記録 /
 //!   stdin 書き込み（user message・initialize handshake・control_response）
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
@@ -445,6 +445,25 @@ impl ClaudeHost {
             }
         });
 
+        // stderr はログと末尾 5 行を保持する。空行は除外し、非空行の空白は原文のまま。
+        let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
+        let drain_tail = stderr_tail.clone();
+        let lane_err = config.lane.clone();
+        let stderr_handle = tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                tracing::warn!("headless claude stderr (lane={lane_err}): {line}");
+                let mut tail = drain_tail.lock().expect("stderr_tail lock");
+                if tail.len() >= 5 {
+                    tail.pop_front();
+                }
+                tail.push_back(line);
+            }
+        });
+
         // stdout ポンプ: 行 → (control frame なら分岐) → translate → in-flight tail 更新 → broadcast
         //（+ SessionInit で cc_session 記録）。
         let tx = event_tx.clone();
@@ -505,27 +524,26 @@ impl ClaudeHost {
                 }
             }
             tracing::debug!("ClaudeHost stdout ポンプ終了（repo={repo}, lane={lane}）");
-            // stream 途絶（engine crash / stop）を GUI に可視化する。stdout close =
-            // engine プロセス終了だが、従来は debug log に落ちるだけで購読者（chatview）に
-            // 届かず「止まった?」が見えなかった（tui は PTY 切断が xterm に即見える）。
-            // 既存 Error 経路に相乗りして chatview に途絶を出す。
-            // （stop/crash の区別・EngineExited 専用 variant・再起動ボタンは後続 PR）
-            // engine が死んだ = tail の続きも pending 質問への応答先ももう無い。 掃除する。
+            // stream 途絶（engine crash / stop）を GUI に可視化する。
             pump_in_flight.lock().expect("in_flight lock").reset();
             pump_pending.lock().expect("pending lock").clear();
-            let _ = tx.send(ConversationEvent::EngineExited {
-                message: "エンジンが休眠しました（メッセージ送信で再開します）".to_string(),
-            });
-        });
-
-        // stderr はログのみ。
-        let lane_err = config.lane.clone();
-        tokio::spawn(async move {
-            let reader = BufReader::new(stderr);
-            let mut lines = reader.lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                tracing::warn!("headless claude stderr (lane={lane_err}): {line}");
+            // stdout EOF と stderr の最終行の race を避ける。stderr が開いたままでも
+            // 通知を止めないよう 100ms で打ち切る（drain task は終了までログを読み続ける）。
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_millis(100), stderr_handle).await;
+            let tail = stderr_tail
+                .lock()
+                .expect("stderr_tail lock")
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut message = "エンジンが休眠しました（メッセージ送信で再開します）".to_string();
+            if !tail.is_empty() {
+                message.push('\n');
+                message.push_str(&tail);
             }
+            let _ = tx.send(ConversationEvent::EngineExited { message });
         });
 
         let pid = child.id();
@@ -1268,6 +1286,95 @@ mod tests {
         assert_eq!(f["request_id"], INIT_REQUEST_ID);
         assert_eq!(f["request"]["subtype"], "initialize");
         assert!(f["request"]["hooks"].is_null());
+    }
+
+    // mem_1CdBXjqNinebVr7dgfab9x: 実際の pipe を通して stderr と EOF の順序を検証する。
+    #[cfg(unix)]
+    async fn exit_message_from_script(body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = tmp.path().join("fake-claude");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in *--input-format*) ;; *) exit 0 ;; esac\n\
+                 IFS= read -r handshake\nIFS= read -r message\n{body}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut host = ClaudeHost::spawn(ClaudeHostConfig {
+            cwd: tmp.path().to_string_lossy().to_string(),
+            repo: "vp-test".to_string(),
+            lane: "stderr-tail".to_string(),
+            lane_label: "stderr-tail".to_string(),
+            session_key: 1,
+            resume_session_id: None,
+            settings: Default::default(),
+            claude_cli_path: Some(script.to_string_lossy().to_string()),
+        })
+        .expect("spawn");
+        let mut rx = host.subscribe();
+        host.submit("exit").await.expect("submit");
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
+        host.stop().await.expect("stop");
+        match event
+            .expect("EngineExited must not wait indefinitely for stderr")
+            .expect("event")
+        {
+            ConversationEvent::EngineExited { message } => message,
+            other => panic!("expected EngineExited, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_exit_includes_last_five_nonempty_stderr_lines() {
+        let message = exit_message_from_script(
+            "printf 'one\\ntwo\\n  three  \\n\\n \\t\\nfour\\nfive\\nsix\\nseven' >&2",
+        )
+        .await;
+        assert_eq!(
+            message,
+            "エンジンが休眠しました（メッセージ送信で再開します）\n  three  \nfour\nfive\nsix\nseven"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_exit_without_stderr_preserves_message() {
+        for body in ["exit 0", "printf '\\n \\t\\n' >&2"] {
+            assert_eq!(
+                exit_message_from_script(body).await,
+                "エンジンが休眠しました（メッセージ送信で再開します）"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_exit_drains_stderr_after_stdout_eof() {
+        // 外部 sleep の起動・復帰時間を drain の期限に含めず、pipe を閉じる順序を検証する。
+        let message = exit_message_from_script("exec 1>&-\nprintf 'late diagnostic\\n' >&2").await;
+        assert_eq!(
+            message,
+            "エンジンが休眠しました（メッセージ送信で再開します）\nlate diagnostic"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_exit_does_not_wait_for_open_stderr() {
+        let message = exit_message_from_script(
+            "printf 'diagnostic before EOF\\n' >&2\nexec 1>&-\nIFS= read -r hold_stderr_open",
+        )
+        .await;
+        assert_eq!(
+            message,
+            "エンジンが休眠しました（メッセージ送信で再開します）\ndiagnostic before EOF"
+        );
     }
 
     /// 中断 turn の継続 env が gui engine に焼かれる（2026-09-23）。偽 claude が自分の env を

@@ -9,7 +9,7 @@
  *   cd crates/vp-app/webview && bun run build
  * 出力: ../assets/sidebar.bundle.js (vp-app の Rust 側で include_bytes!)
  */
-import { render } from 'solid-js/web'
+import { render } from '@solidjs/web'
 import './src/sidebar/midi-navigation'
 // creo-ui 基盤 (doc 58 2b): tokens (CSS 変数のみ) + components (.creo-* class のみ) を
 // 文字列 import (build.mjs の `.css: text` loader)。どちらも body/html への直接スタイルを
@@ -17,6 +17,8 @@ import './src/sidebar/midi-navigation'
 // editor-host bundle は creo CSS を持たない (実測 --spacing- 2 hit のみ) ので二重注入もない。
 import creoTokensCss from '@chronista-club/creo-ui/tokens.css'
 import creoComponentsCss from '@chronista-club/creo-ui/components.css'
+// 左 edge の Rail（CURail、doc 87）の CSS。shells の JS は自分の CSS を import しないので、ここで入れる。
+import creoShellsCss from '@chronista-club/creo-ui/shells/index.css'
 import { Shell, SHELL_CSS } from './src/sidebar/Shell'
 import { installIpcBridge } from './src/sidebar/ipc'
 import { openSidebarDispatch } from './src/sidebar/dispatch'
@@ -74,9 +76,9 @@ try {
   document.documentElement.setAttribute('data-theme', 'mint-dark')
 
   // CSS 注入順 = cascade の下ごしらえ: creo tokens (変数) → creo components (.creo-* class)
-  // → SHELL_CSS (VP 固有)。同 specificity なら後勝ちなので、VP の override が常に効く。
+  // → creo shells (CURail 等) → SHELL_CSS (VP 固有)。同 specificity なら後勝ちなので、VP の override が常に効く。
   const style = document.createElement('style')
-  style.textContent = `${creoTokensCss}\n${creoComponentsCss}\n${SHELL_CSS}`
+  style.textContent = `${creoTokensCss}\n${creoComponentsCss}\n${creoShellsCss}\n${SHELL_CSS}`
   document.head.appendChild(style)
 
   const root = document.getElementById('sidebar-root')

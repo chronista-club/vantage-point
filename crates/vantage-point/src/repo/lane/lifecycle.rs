@@ -615,13 +615,13 @@ pub(crate) async fn create_sub_orchestrated(
     // 委ねる — 旧「未設定なら Opus 強制」は撤去）。CLI (persist_lane_model) と同じ既定規則を
     // 共有し、tui/gui 両方に効く（model は per-lane 単一真実源）。
     //
-    // ⚠️ doc 59 P4: **この lane の agent が model を受け付ける時だけ**既定を当てる。
+    // ⚠️ doc 59 P4: **この lane の agent が既定 agent と一致し、かつ model を受け付ける時だけ**既定を当てる。
     // 旧実装は agent を見ずに `default-lane-model` を返してから agent と組にしていたため、
-    // `default-agent "codex"` + `default-lane-model "claude-opus-5"` のような
-    // **意味のない組み合わせ**が registry に載った（silent no-op で気づけない）。
-    let default_model = crate::settings_file::default_lane_pair()
-        .1
-        .filter(|_| crate::settings_file::agent_accepts_model(&agent));
+    // `default-agent "claude"` + `default-lane-model "opus"` の下で別 agent（`agy` や `vpcode`）の
+    // lane を作ったときにも `"opus"` が載り得た。
+    let (default_agent, default_model) = crate::settings_file::default_lane_pair();
+    let default_model = default_model
+        .filter(|_| agent == default_agent && crate::settings_file::agent_accepts_model(&agent));
     if let Some(model) =
         crate::lane::engine_model::resolve_default(req.model.as_deref(), default_model.as_deref())
     {
@@ -1145,7 +1145,10 @@ async fn converge_lane(
             };
             if is_chat {
                 let mut pool = state.lane_pool.write().await;
-                if let Err(e) = pool.ensure_chat_engine(&addr, None, &state.topic_router) {
+                if let Err(e) = pool
+                    .ensure_chat_engine_reported(&addr, None, &state.topic_router)
+                    .await
+                {
                     tracing::warn!(
                         "restart_lane: chat engine eager spawn 失敗（次 submit で再試行）: {e}"
                     );
@@ -1196,6 +1199,40 @@ mod core_tests {
     //! helpers の test とは別 mod で配線。
 
     use super::*;
+
+    // mem_1CeKURXkyMrGuvGzkzzfzE: restart の収束成功でも host 起動の失敗理由は届ける。
+    #[tokio::test]
+    async fn spawn_failure_after_restart_reaches_the_conversation_topic() {
+        use crate::conversation::ConversationEvent;
+        use crate::lane::session_registry::SessionMode;
+        use crate::protocol::RepoMessage;
+
+        let isolated = crate::test_env::state_dir_async().await;
+        let state = crate::repo::state::build_test_app_state().await;
+        let addr =
+            crate::repo::state::insert_test_lane(&state, "spawn-restart", SessionMode::Gui).await;
+        {
+            let mut pool = state.lane_pool.write().await;
+            let mut lane = pool.get(&addr).unwrap().clone();
+            lane.cwd = isolated
+                .path()
+                .join("missing-cwd")
+                .to_string_lossy()
+                .into_owned();
+            pool.insert(lane);
+        }
+        let (_, mut rx) = state
+            .topic_router
+            .subscribe("repo/conversation/data/spawn-restart~lane~lead/event")
+            .await;
+        converge_lane(&state, addr.clone()).await.unwrap();
+        assert!(
+            matches!(rx.try_recv(), Ok((_, RepoMessage::ConversationEvent {
+            lane, session: 1, event: ConversationEvent::Error { message },
+        })) if lane == addr.canonical() && !message.is_empty())
+        );
+        assert!(rx.try_recv().is_err());
+    }
 
     /// テスト用の最小 `CreateLaneReq` builder（validation だけ叩く時に使う）。
     fn req(name: &str) -> CreateLaneReq {

@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import { build } from 'esbuild'
-import { solidPlugin } from 'esbuild-plugin-solid'
+import { solidTestPlugin as solidPlugin, callDom, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window, type HTMLButtonElement } from 'happy-dom'
 
 it('Codex Console の切替は確認まで送らず、キャンセルと他の session を区別する', async () => {
@@ -20,50 +20,50 @@ it('Codex Console の切替は確認まで送らず、キャンセルと他の s
   `,resolveDir:process.cwd(),loader:'tsx'},bundle:true,write:false,format:'iife',conditions:['browser'],preserveSymlinks:true,plugins:[solidPlugin()]})
   const window = new Window()
   try {
-    window.eval(result.outputFiles[0].text)
+    evalDom(window, result.outputFiles[0].text)
     const app=window as unknown as {requests:unknown[];switchMode:(lane:string,session:number,mode:string)=>void;output:(lane:string,session:number,bytes:Uint8Array,live:boolean)=>void}
-    app.switchMode('handoff/main',1,'gui')
+    callDom(app, () => app.switchMode('handoff/main',1,'gui'))
     expect(app.requests).toHaveLength(0)
     const dialog=window.document.querySelector('dialog')!
     expect(dialog).not.toBeNull()
     expect(dialog.textContent).toContain('中断')
-    dialog.querySelector<HTMLButtonElement>('[data-handoff-cancel]')!.click()
+    clickDom(dialog.querySelector<HTMLButtonElement>('[data-handoff-cancel]')!)
     expect(app.requests).toHaveLength(0)
     expect(window.document.querySelector('dialog')).toBeNull()
-    app.switchMode('handoff/main',1,'gui')
-    app.switchMode('handoff/main',1,'gui')
+    callDom(app, () => app.switchMode('handoff/main',1,'gui'))
+    callDom(app, () => app.switchMode('handoff/main',1,'gui'))
     expect(window.document.querySelectorAll('dialog')).toHaveLength(1)
-    window.document.querySelector<HTMLButtonElement>('[data-handoff-confirm]')!.click()
+    clickDom(window.document.querySelector<HTMLButtonElement>('[data-handoff-confirm]')!)
     expect(app.requests).toEqual([{lane:'handoff/main',session:1,target:'gui'}])
-    app.switchMode('handoff/main',2,'gui')
-    app.switchMode('handoff/main',3,'tui')
+    callDom(app, () => app.switchMode('handoff/main',2,'gui'))
+    callDom(app, () => app.switchMode('handoff/main',3,'tui'))
     expect(app.requests).toHaveLength(3)
     expect(window.document.querySelector('dialog')).toBeNull()
-    app.switchMode('handoff/main',1,'gui')
-    window.document.querySelector<HTMLButtonElement>('[data-handoff-wait]')!.click()
+    callDom(app, () => app.switchMode('handoff/main',1,'gui'))
+    clickDom(window.document.querySelector<HTMLButtonElement>('[data-handoff-wait]')!)
     expect(window.document.body.textContent).toContain('応答完了を待っています')
     const bytes=(s:string)=>new TextEncoder().encode(s)
-    app.output('handoff/main',1,bytes('\x1b]9;old\x07'),false)
-    app.output('handoff/main',2,bytes('\x1b]9;other session\x07'),true)
-    app.output('other/main',1,bytes('\x1b]9;other lane\x07'),true)
+    callDom(app, () => app.output('handoff/main',1,bytes('\x1b]9;old\x07'),false))
+    callDom(app, () => app.output('handoff/main',2,bytes('\x1b]9;other session\x07'),true))
+    callDom(app, () => app.output('other/main',1,bytes('\x1b]9;other lane\x07'),true))
     expect(app.requests).toHaveLength(3)
-    app.output('handoff/main',1,bytes('\x1b]'),true)
-    app.output('handoff/main',1,bytes('9;complete'),true)
+    callDom(app, () => app.output('handoff/main',1,bytes('\x1b]'),true))
+    callDom(app, () => app.output('handoff/main',1,bytes('9;complete'),true))
     expect(app.requests).toHaveLength(3)
-    app.output('handoff/main',1,bytes('\x07'),true)
+    callDom(app, () => app.output('handoff/main',1,bytes('\x07'),true))
     expect(app.requests).toHaveLength(4)
     expect(window.document.querySelector('dialog')).toBeNull()
-    app.switchMode('handoff/main',1,'gui')
-    window.document.querySelector<HTMLButtonElement>('[data-handoff-wait]')!.click()
-    window.document.querySelector<HTMLButtonElement>('[data-handoff-cancel]')!.click()
-    app.output('handoff/main',1,bytes('\x1b]9;late\x07'),true)
+    callDom(app, () => app.switchMode('handoff/main',1,'gui'))
+    clickDom(window.document.querySelector<HTMLButtonElement>('[data-handoff-wait]')!)
+    clickDom(window.document.querySelector<HTMLButtonElement>('[data-handoff-cancel]')!)
+    callDom(app, () => app.output('handoff/main',1,bytes('\x1b]9;late\x07'),true))
     expect(app.requests).toHaveLength(4)
-    app.switchMode('handoff/main',1,'gui')
-    window.document.querySelector<HTMLButtonElement>('[data-handoff-wait]')!.click()
-    window.document.dispatchEvent(new window.CustomEvent('vp:conversation-sessions',{detail:{lane:'handoff/main',focused:1,sessions:[
+    callDom(app, () => app.switchMode('handoff/main',1,'gui'))
+    clickDom(window.document.querySelector<HTMLButtonElement>('[data-handoff-wait]')!)
+    dispatchDom(window.document, new window.CustomEvent('vp:conversation-sessions',{detail:{lane:'handoff/main',focused:1,sessions:[
       {key:1,agent:'codex',mode:'tui',engine_session_id:'different-thread',root:true}
     ]}}))
-    app.output('handoff/main',1,bytes('\x1b]9;stale\x1b\\'),true)
+    callDom(app, () => app.output('handoff/main',1,bytes('\x1b]9;stale\x1b\\'),true))
     expect(app.requests).toHaveLength(4)
     expect(window.document.querySelector('dialog')).toBeNull()
   } finally {await window.happyDOM.close()}

@@ -1,6 +1,7 @@
+import { testPath } from './test-utils/paths'
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { build } from 'esbuild';
-import { solidPlugin } from 'esbuild-plugin-solid';
+import { solidTestPlugin as solidPlugin, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window } from 'happy-dom';
 import { fileURLToPath } from 'node:url';
 
@@ -11,7 +12,7 @@ beforeAll(async () => {
     import './src/sidebar/midi-navigation';
     import { setPinColor } from './src/sidebar/midi-pin-store';
     window.setPinColor = setPinColor;
-    import { render } from 'solid-js/web';
+    import { render } from '@solidjs/web';
     import { MidiPins, MIDI_PINS_CSS } from './src/sidebar/MidiPins';
     window.MIDI_PINS_CSS = MIDI_PINS_CSS;
     window.renderPins = () => { const el = document.createElement('div'); document.body.append(el); render(MidiPins, el); return el; };
@@ -28,7 +29,7 @@ beforeAll(async () => {
     applySidebarState({...emptyState(), processes:[{path:'/vp',name:'vp',state:'running',expanded:false}],
       lanes_by_repo:{'/vp':[lane('root'),lane('sub')]}, active_lane_address:'vp/root'});
     window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:true}));
-  `, resolveDir: fileURLToPath(new URL('.', import.meta.url)) }, bundle:true, write:false,
+  `, resolveDir: testPath(import.meta.url) }, bundle:true, write:false,
     preserveSymlinks:true,plugins:[solidPlugin()], format:'iife', platform:'browser', define:{'process.env.NODE_ENV':'"production"'} });
   bundle = result.outputFiles[0].text;
 });
@@ -37,9 +38,9 @@ afterEach(async () => { vi.useRealTimers(); for (const w of windows.splice(0)) a
 it('selects collapsed lanes through real sidebar IPC and consumes the gesture before gallery', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: unknown[]};
   windows.push(w);
-  w.eval('document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
-  w.eval(bundle);
-  const send = (index:number,value:number) => w.dispatchEvent(new w.CustomEvent('vp:midi-navigation', {
+  evalDom(w, 'document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
+  evalDom(w, bundle);
+  const send = (index:number,value:number) => dispatchDom(w, new w.CustomEvent('vp:midi-navigation', {
     cancelable:true, detail:{port_name:'LPD8 mk2',event:{type:'knob',index,value}},
   }));
   expect(send(0,1)).toBe(false);
@@ -52,14 +53,14 @@ it('selects collapsed lanes through real sidebar IPC and consumes the gesture be
 it('restores shared pins, selects on release, and registers empty pads through IPC', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: unknown[]};
   windows.push(w);
-  w.eval('document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
-  w.eval(bundle);
+  evalDom(w, 'document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
+  evalDom(w, bundle);
   // 旧 4 ピンの session — #1〜#4 は pad 1〜4 に載る
-  w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:{
+  dispatchDom(w, new w.CustomEvent('vp:midi-settings', {detail:{
     slots:[{path:'/vp',address:'vp/sub'},null,null,{path:'/gone',address:'gone/root'}],
     colors:['#112233','#445566','#778899','#aabbcc'],
   }}));
-  const send = (index:number,velocity:number) => w.dispatchEvent(new w.CustomEvent('vp:midi-navigation', {
+  const send = (index:number,velocity:number) => dispatchDom(w, new w.CustomEvent('vp:midi-navigation', {
     cancelable:true, detail:{port_name:'LPD8 mk2',event:{type:'pad',index,velocity}},
   }));
   expect(send(0,127)).toBe(false);
@@ -82,15 +83,15 @@ it('restores shared pins, selects on release, and registers empty pads through I
 it('registered pad N and ⌘N go to the same lane; missing lanes do nothing', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: unknown[]};
   windows.push(w);
-  w.eval('document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
-  w.eval(bundle);
+  evalDom(w, 'document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
+  evalDom(w, bundle);
   const slots = [{path:'/vp',address:'vp/root'},{path:'/vp',address:'vp/sub'},null,{path:'/gone',address:'gone/root'},null,null,null,null];
-  w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:{slots,colors:Array(8).fill('#123456'),dimGain:0.25}}));
-  const pad = (index:number,velocity:number) => w.dispatchEvent(new w.CustomEvent('vp:midi-navigation', {
+  dispatchDom(w, new w.CustomEvent('vp:midi-settings', {detail:{slots,colors:Array(8).fill('#123456'),dimGain:0.25}}));
+  const pad = (index:number,velocity:number) => dispatchDom(w, new w.CustomEvent('vp:midi-navigation', {
     cancelable:true, detail:{port_name:'LPD8 mk2',event:{type:'pad',index,velocity}},
   }));
   const viaPad = (n:number) => { w.sent.length = 0; pad(n - 1, 127); pad(n - 1, 0); return [...w.sent]; };
-  const viaCmd = (n:number) => { w.sent.length = 0; w.eval(`window.selectLaneByNumber(${n})`); return [...w.sent]; };
+  const viaCmd = (n:number) => { w.sent.length = 0; evalDom(w, `window.selectLaneByNumber(${n})`); return [...w.sent]; };
   for (const n of [1,2,4]) expect(viaPad(n)).toEqual(viaCmd(n));
   expect(viaCmd(2)).toEqual([{t:'process:toggle',path:'/vp',expanded:true},{t:'lane:select',path:'/vp',address:'vp/sub'}]);
   expect(viaCmd(3)).toEqual([]); // 未登録
@@ -100,25 +101,25 @@ it('registered pad N and ⌘N go to the same lane; missing lanes do nothing', ()
 it('the strip registers the selected lane on an empty pin and unregisters with the hover ✕', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: {t:string;settings?:string}[]};
   windows.push(w);
-  w.eval('document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
-  w.eval(bundle);
-  w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:null}));
-  const root = w.eval('window.renderPins()') as HTMLElement;
+  evalDom(w, 'document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
+  evalDom(w, bundle);
+  dispatchDom(w, new w.CustomEvent('vp:midi-settings', {detail:null}));
+  const root = evalDom(w, 'window.renderPins()') as HTMLElement;
   const pinButton = (n:number) => Array.from(root.querySelectorAll('.vp-midi-pin')).find(el => el.querySelector('button > span')?.textContent === `#${n}`)!;
   expect(pinButton(3).querySelector('.vp-midi-unpin')).toBeNull();
-  (pinButton(3).querySelector('button') as HTMLButtonElement).click(); // active = vp/root
+  clickDom((pinButton(3).querySelector('button') as HTMLButtonElement)); // active = vp/root
   expect(JSON.parse(w.sent.at(-1)!.settings!).slots[2]).toEqual({path:'/vp',address:'vp/root'});
   expect(pinButton(3).querySelector('.vp-midi-pin-label')!.textContent).toBe('vp');
   // 登録済みの枠の空いた所を押す = ⌘3 と同じ（Center がその lane に切り替わる）。✕ は別の button。
   w.sent.length = 0;
-  (pinButton(3).querySelector('button') as HTMLButtonElement).click();
+  clickDom((pinButton(3).querySelector('button') as HTMLButtonElement));
   expect(w.sent).toEqual([{t:'process:toggle',path:'/vp',expanded:true},{t:'lane:select',path:'/vp',address:'vp/root'}]);
   // ✕ は chip の装飾（幅 100% / 下線 / padding）を継がない — 右上の小さな角だけ（mako 2026-11-06「バツのエリアが右端で」）。
   // CSS の selector を 1 つずつ ✕ に当て、✕ 自身の rule 以外が当たっていたら漏れ。
   const unpin = pinButton(3).querySelector('.vp-midi-unpin') as HTMLButtonElement;
-  const selectors = (w.eval('window.MIDI_PINS_CSS') as string).split('}').map(r => r.split('{')[0]).flatMap(s => s.split(',')).map(s => s.trim()).filter(Boolean);
+  const selectors = (evalDom(w, 'window.MIDI_PINS_CSS') as string).split('}').map(r => r.split('{')[0]).flatMap(s => s.split(',')).map(s => s.trim()).filter(Boolean);
   expect(selectors.filter(s => !s.includes('vp-midi-unpin') && unpin.matches(s))).toEqual([]);
-  unpin.click();
+  clickDom(unpin);
   expect(JSON.parse(w.sent.at(-1)!.settings!).slots[2]).toBeNull();
   expect(pinButton(3).querySelector('.vp-midi-unpin')).toBeNull();
 });
@@ -126,29 +127,29 @@ it('the strip registers the selected lane on an empty pin and unregisters with t
 it('the sidebar pin strip and LED feedback follow settings re-broadcast from native', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}});
   windows.push(w);
-  w.eval('document.documentElement.dataset.midiTarget="true"');
-  w.eval('document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
-  w.eval(bundle);
+  evalDom(w, 'document.documentElement.dataset.midiTarget="true"');
+  evalDom(w, 'document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
+  evalDom(w, bundle);
   const slots = [{path:'/vp',address:'vp/root'},{path:'/vp',address:'vp/sub'},null,null,null,null,null,null];
   const colors = ['#ff0000','#00ff00','#0000ff','#ffffff','#ffffff','#ffffff','#ffffff','#ffffff'];
-  w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:{slots,colors,dimGain:0.5}}));
-  const pads = () => w.eval('window.__vpMidiPads') as {enabled:boolean;pads:{index:number;color:number[]}[]};
+  dispatchDom(w, new w.CustomEvent('vp:midi-settings', {detail:{slots,colors,dimGain:0.5}}));
+  const pads = () => evalDom(w, 'window.__vpMidiPads') as {enabled:boolean;pads:{index:number;color:number[]}[]};
   expect(pads().enabled).toBe(true);
   expect(pads().pads[0].color).toEqual([255,0,0]); // active = vp/root
   expect(pads().pads[1].color).toEqual([0,128,0]); // 未選択 = dimGain 0.5
   // Editor が変えた値が Rust 経由で戻ってくる — 同じ経路で LED が追随する
-  w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:{slots,colors,dimGain:0.1}}));
+  dispatchDom(w, new w.CustomEvent('vp:midi-settings', {detail:{slots,colors,dimGain:0.1}}));
   expect(pads().pads[1].color).toEqual([0,26,0]);
 });
 
 it('changing a color from the sidebar keeps the brightness chosen in the Editor', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: {t:string;settings?:string}[]};
   windows.push(w);
-  w.eval('document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
-  w.eval(bundle);
+  evalDom(w, 'document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
+  evalDom(w, bundle);
   const settings = {slots:Array(8).fill(null),colors:Array(8).fill('#123456'),dimGain:0.6};
-  w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:settings}));
-  w.eval('window.setPinColor(7,"#abcdef")');
+  dispatchDom(w, new w.CustomEvent('vp:midi-settings', {detail:settings}));
+  evalDom(w, 'window.setPinColor(7,"#abcdef")');
   const saved = JSON.parse(w.sent.at(-1)!.settings!);
   expect(saved).toEqual({...settings,colors:[...settings.colors.slice(0,7),'#abcdef']});
 });
@@ -156,30 +157,30 @@ it('changing a color from the sidebar keeps the brightness chosen in the Editor'
 it('initializes new windows when native settings arrive before the sidebar bundle', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}});
   windows.push(w);
-  w.eval('window.__vpMidiSettings=null;document.documentElement.dataset.midiTarget="true"');
-  w.eval('document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
-  w.eval(bundle);
-  expect(w.eval('window.__vpMidiPads.enabled')).toBe(true);
+  evalDom(w, 'window.__vpMidiSettings=null;document.documentElement.dataset.midiTarget="true"');
+  evalDom(w, 'document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
+  evalDom(w, bundle);
+  expect(evalDom(w, 'window.__vpMidiPads.enabled')).toBe(true);
 });
 
 it('the pin strip shows 8 pins in two rows: #1–#4 above #5–#8 (mako 2026-11-06「上から 1〜4、二段目 5〜8」)', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}});
   windows.push(w);
-  w.eval('document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
-  w.eval(bundle);
-  w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:null}));
-  const labels = w.eval(`Array.from(window.renderPins().querySelectorAll('.vp-midi-pin button > span:first-child')).map(s => s.textContent).join(',')`);
+  evalDom(w, 'document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
+  evalDom(w, bundle);
+  dispatchDom(w, new w.CustomEvent('vp:midi-settings', {detail:null}));
+  const labels = evalDom(w, `Array.from(window.renderPins().querySelectorAll('.vp-midi-pin button > span:first-child')).map(s => s.textContent).join(',')`);
   expect(labels).toBe('#1,#2,#3,#4,#5,#6,#7,#8');
 });
 
 
 it('ROTO buttons 1–8 select pins once per press and never start voice', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: unknown[]};
-  windows.push(w);w.eval(bundle);
-  w.dispatchEvent(new w.CustomEvent('vp:midi-settings',{detail:{slots:[{path:'/vp',address:'vp/sub'},null,null,null,null,null,null,{path:'/vp',address:'vp/root'}],colors:Array(8).fill('#123456')}}));
+  windows.push(w);evalDom(w, bundle);
+  dispatchDom(w, new w.CustomEvent('vp:midi-settings',{detail:{slots:[{path:'/vp',address:'vp/sub'},null,null,null,null,null,null,{path:'/vp',address:'vp/root'}],colors:Array(8).fill('#123456')}}));
   const ptt: boolean[]=[];
   w.addEventListener('vp:roto-ptt',e=>ptt.push((e as unknown as CustomEvent).detail.pressed));
-  const send=(type:string,index:number,pressed:boolean)=>w.dispatchEvent(new w.CustomEvent('vp:midi-navigation',{cancelable:true,detail:{port_name:'Roto-Control',event:{type,index,pressed,value:1}}}));
+  const send=(type:string,index:number,pressed:boolean)=>dispatchDom(w, new w.CustomEvent('vp:midi-navigation',{cancelable:true,detail:{port_name:'Roto-Control',event:{type,index,pressed,value:1}}}));
   send('button',0,true);send('button',0,true);send('button',0,false);
   expect(w.sent).toEqual([{t:'process:toggle',path:'/vp',expanded:true},{t:'lane:select',path:'/vp',address:'vp/sub'}]);
   w.sent.length=0;
@@ -188,22 +189,22 @@ it('ROTO buttons 1–8 select pins once per press and never start voice', () => 
   expect(w.sent).toEqual([{t:'process:toggle',path:'/vp',expanded:true},{t:'lane:select',path:'/vp',address:'vp/root'}]);
   expect(ptt).toEqual([]);
   w.sent.length=0;
-  expect(w.eval('window.__vpMidiPads.roto')).toBeUndefined();
-  w.eval("window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:false}))");
+  expect(evalDom(w, 'window.__vpMidiPads.roto')).toBeUndefined();
+  evalDom(w, "window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:false}))");
   send('button',0,true);send('button',7,true);
   expect(w.sent).toEqual([]);expect(ptt).toEqual([]);
 });
 
 it('nanoKONTROL S1–S8 select the shared pins once per press and reset on disconnect or target loss', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: unknown[]};
-  windows.push(w); w.eval(bundle);
-  w.eval(`window.applyTestState({processes:[{path:'/vp',name:'vp',state:'running',expanded:false}],
+  windows.push(w); evalDom(w, bundle);
+  evalDom(w, `window.applyTestState({processes:[{path:'/vp',name:'vp',state:'running',expanded:false}],
     lanes_by_repo:{'/vp':Array.from({length:8}, (_,i) => ({address:{repo:'vp',name:'sub'+i,key:'vp/sub'+i}}))}})`);
-  w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:{
+  dispatchDom(w, new w.CustomEvent('vp:midi-settings', {detail:{
     slots:Array.from({length:8}, (_,i) => ({path:'/vp',address:'vp/sub'+i})), colors:Array(8).fill('#123456'),
   }}));
   const port = 'Midistage/vp/nanokontrol/input';
-  const send = (index:number, pressed:boolean, type='button', port_name=port) => w.dispatchEvent(new w.CustomEvent('vp:midi-navigation', {
+  const send = (index:number, pressed:boolean, type='button', port_name=port) => dispatchDom(w, new w.CustomEvent('vp:midi-navigation', {
     cancelable:true, detail:{port_name,event:{type,index,pressed,value:0.5}},
   }));
   const selection = [{t:'process:toggle',path:'/vp',expanded:true},{t:'lane:select',path:'/vp',address:'vp/sub0'}];
@@ -219,33 +220,33 @@ it('nanoKONTROL S1–S8 select the shared pins once per press and reset on disco
   expect(send(0,true,'button','Other controller')).toBe(true);
   expect(w.sent).toEqual([]);
   send(0,true);
-  w.dispatchEvent(new w.CustomEvent('vp:midi-unavailable',{detail:{port_name:port}}));
+  dispatchDom(w, new w.CustomEvent('vp:midi-unavailable',{detail:{port_name:port}}));
   send(0,true);
   expect(w.sent).toEqual([...selection,...selection]);
   w.sent.length=0;
-  w.eval("window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:false}))");
+  evalDom(w, "window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:false}))");
   send(0,true);
   expect(w.sent).toEqual([]);
-  w.eval("window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:true}))");
+  evalDom(w, "window.dispatchEvent(new CustomEvent('vp:midi-target',{detail:true}))");
   send(0,true,'button','nanoKONTROL2 SLIDER/KNOB');
   expect(w.sent).toEqual(selection);
   w.sent.length=0;
-  w.dispatchEvent(new w.CustomEvent('vp:midi-settings',{detail:{slots:Array(8).fill(null),colors:Array(8).fill('#123456')}}));
+  dispatchDom(w, new w.CustomEvent('vp:midi-settings',{detail:{slots:Array(8).fill(null),colors:Array(8).fill('#123456')}}));
   expect(send(7,true)).toBe(false); // Empty pin still consumes S; never falls through to gallery.
   expect(w.sent).toEqual([]);
 });
 
 it('nanoKONTROL TRACK steps through CURRENTs across repos, stops at edges, and ignores repeats', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: unknown[]};
-  windows.push(w); w.eval(bundle);
-  const state = (active:string|null, empty=false) => w.eval(`window.applyTestState({
+  windows.push(w); evalDom(w, bundle);
+  const state = (active:string|null, empty=false) => evalDom(w, `window.applyTestState({
     processes:${empty ? '[]' : "[{path:'/a',name:'a',state:'running',expanded:true},{path:'/b',name:'b',state:'running',expanded:false}]"},
     currents_order:['/b','/a'],
     lanes_by_repo:{'/a':[{address:{repo:'a',name:'root',key:'a/root'}}],
       '/b':[{address:{repo:'b',name:'root',key:'b/root'}},{address:{repo:'b',name:'sub',key:'b/sub'}}]},
     active_lane_address:${JSON.stringify(active)}
   })`);
-  const send = (index:number, pressed:boolean) => w.dispatchEvent(new w.CustomEvent('vp:midi-navigation', {
+  const send = (index:number, pressed:boolean) => dispatchDom(w, new w.CustomEvent('vp:midi-navigation', {
     cancelable:true,detail:{port_name:'nanoKONTROL2 SLIDER/KNOB',event:{type:'button',index,pressed}},
   }));
   const press = (index:number) => { w.sent.length=0; expect(send(index,true)).toBe(false); send(index,true); send(index,false); };
@@ -271,11 +272,11 @@ it('holds through real IPC, shows rejection without a lane, and cancels on targe
   // Timers used inside the bundled browser module are driven by the same fake clock.
   w.setTimeout = setTimeout as unknown as typeof w.setTimeout;
   w.clearTimeout = clearTimeout as unknown as typeof w.clearTimeout;
-  w.eval('document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
-  w.eval(bundle);
+  evalDom(w, 'document.documentElement.dataset.midiTarget="true";window.__vpMidiSettings=null');
+  evalDom(w, bundle);
   const settings = {slots:[{path:'/vp',address:'vp/sub'},...Array(7).fill(null)],colors:Array(8).fill('#123456'),dimGain:0.25};
-  w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:settings}));
-  const send = (index:number,velocity:number) => w.dispatchEvent(new w.CustomEvent('vp:midi-navigation', {
+  dispatchDom(w, new w.CustomEvent('vp:midi-settings', {detail:settings}));
+  const send = (index:number,velocity:number) => dispatchDom(w, new w.CustomEvent('vp:midi-navigation', {
     cancelable:true, detail:{port_name:'LPD8 mk2',event:{type:'pad',index,velocity}},
   }));
   send(0,127);
@@ -284,27 +285,27 @@ it('holds through real IPC, shows rejection without a lane, and cancels on targe
   vi.advanceTimersByTime(1);
   expect(w.sent[0].t).toBe('midi:navigation');
   expect(JSON.parse(w.sent[0].settings!).slots[0]).toEqual({path:'/vp',address:'vp/root'});
-  expect(w.eval('window.__vpMidiPads.pads[0].color')).toEqual([18,52,86]);
+  expect(evalDom(w, 'window.__vpMidiPads.pads[0].color')).toEqual([18,52,86]);
   vi.advanceTimersByTime(150);
-  expect(w.eval('window.__vpMidiPads.pads[0].color')).toEqual([0,0,0]);
+  expect(evalDom(w, 'window.__vpMidiPads.pads[0].color')).toEqual([0,0,0]);
   send(0,0);
   expect(w.sent).toHaveLength(1);
   vi.advanceTimersByTime(450);
-  expect(w.eval('window.__vpMidiPads.pads[0].color')).toEqual([18,52,86]);
+  expect(evalDom(w, 'window.__vpMidiPads.pads[0].color')).toEqual([18,52,86]);
 
-  w.eval('window.clearActiveLane()');
+  evalDom(w, 'window.clearActiveLane()');
   send(7,127);
   expect(w.sent).toHaveLength(1);
-  expect(w.eval('window.__vpMidiPads.pads[7].color')).toEqual([255,48,48]);
+  expect(evalDom(w, 'window.__vpMidiPads.pads[7].color')).toEqual([255,48,48]);
   send(7,0);
   vi.advanceTimersByTime(600);
-  expect(w.eval('window.__vpMidiPads.pads[7].color')).toEqual([0,0,0]);
+  expect(evalDom(w, 'window.__vpMidiPads.pads[7].color')).toEqual([0,0,0]);
 
   send(0,127);
-  w.eval("window.dispatchEvent(new CustomEvent('vp:midi-target', {detail:false}))");
+  evalDom(w, "window.dispatchEvent(new CustomEvent('vp:midi-target', {detail:false}))");
   vi.advanceTimersByTime(600);
-  expect(w.eval('window.__vpMidiPads.enabled')).toBe(false);
-  w.eval("window.dispatchEvent(new CustomEvent('vp:midi-target', {detail:true}))");
+  expect(evalDom(w, 'window.__vpMidiPads.enabled')).toBe(false);
+  evalDom(w, "window.dispatchEvent(new CustomEvent('vp:midi-target', {detail:true}))");
   send(0,0);
   expect(w.sent).toHaveLength(1);
 });
@@ -312,9 +313,9 @@ it('holds through real IPC, shows rejection without a lane, and cancels on targe
 it('consumes pads while settings load without blocking unrelated gallery controls', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}}) as Window & {sent: unknown[]};
   windows.push(w);
-  w.eval('document.documentElement.dataset.midiTarget="true"');
-  w.eval(bundle);
-  const send = (type:string,index:number) => w.dispatchEvent(new w.CustomEvent('vp:midi-navigation', {
+  evalDom(w, 'document.documentElement.dataset.midiTarget="true"');
+  evalDom(w, bundle);
+  const send = (type:string,index:number) => dispatchDom(w, new w.CustomEvent('vp:midi-navigation', {
     cancelable:true, detail:{port_name:'LPD8 mk2',event:{type,index,velocity:127,value:1}},
   }));
   expect(send('pad',7)).toBe(false);
@@ -325,9 +326,9 @@ it('consumes pads while settings load without blocking unrelated gallery control
 it('makes registration visible even when the configured pin color is black', () => {
   const w = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}});
   windows.push(w);
-  w.eval('document.documentElement.dataset.midiTarget="true"');
-  w.eval(bundle);
-  w.dispatchEvent(new w.CustomEvent('vp:midi-settings', {detail:{slots:Array(8).fill(null),colors:Array(8).fill('#000000'),dimGain:0}}));
-  w.dispatchEvent(new w.CustomEvent('vp:midi-navigation', {cancelable:true,detail:{port_name:'LPD8 mk2',event:{type:'pad',index:7,velocity:127}}}));
-  expect(w.eval('window.__vpMidiPads.pads[7].color')).toEqual([255,255,255]);
+  evalDom(w, 'document.documentElement.dataset.midiTarget="true"');
+  evalDom(w, bundle);
+  dispatchDom(w, new w.CustomEvent('vp:midi-settings', {detail:{slots:Array(8).fill(null),colors:Array(8).fill('#000000'),dimGain:0}}));
+  dispatchDom(w, new w.CustomEvent('vp:midi-navigation', {cancelable:true,detail:{port_name:'LPD8 mk2',event:{type:'pad',index:7,velocity:127}}}));
+  expect(evalDom(w, 'window.__vpMidiPads.pads[7].color')).toEqual([255,255,255]);
 });

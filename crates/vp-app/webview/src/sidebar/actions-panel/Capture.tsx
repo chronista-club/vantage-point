@@ -12,8 +12,7 @@ const drafts = new Map<string, {text: string; atlas: string}>()
 let activeScope = ''
 
 export function Capture(props: { atlases: ActionAtlas[]; scope: string; settings?: unknown }) {
-  createEffect(() => {
-    const scope = props.scope
+  createEffect(() => props.scope, scope => {
     untrack(() => {
       if (scope === activeScope) return
       drafts.set(activeScope, {text: draft(), atlas: selectedAtlas()})

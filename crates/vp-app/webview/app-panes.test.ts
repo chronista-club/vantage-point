@@ -30,6 +30,7 @@ import {
 	saveAppStateFor,
 	visitAppPane,
 } from "./app-panes";
+import { APP_PANE_REGISTRY } from "./app-pane-registry";
 import { layoutEngine } from "./layout-host";
 
 const sceneById = (id: string) => {
@@ -226,6 +227,23 @@ describe("agent pane の訪問（sidebar click の一時 view — 2026-07-23 dog
 		applyAppScene("runner-focus");
 		closeAppPaneVisit();
 		expect(currentAppSceneId()).toBe("lane-focus");
+	});
+
+	it("表の pane は全部訪問でき、その pane が独占する（場の id は表の scene から引く）", () => {
+		for (const p of APP_PANE_REGISTRY) {
+			if (p.id === "empty") continue;
+			expect(visitAppPane(p.id), p.id).toBe(true);
+			expect(isAppPaneVisible(p.id), p.id).toBe(true);
+			expect(currentAppSceneId()).toBe(p.scene.id);
+		}
+	});
+
+	it("⚠️ 表に無い pane の訪問は false で、場も訪問も動かさない（✕ で出発点に戻れるまま）", () => {
+		visitAppPane("devices");
+		expect(visitAppPane("no-such-pane")).toBe(false);
+		expect(isAppPaneVisible("devices")).toBe(true);
+		closeAppPaneVisit();
+		expect(layoutEngine.resolved(APP_SCOPE).lane?.rect.w).toBeCloseTo(0.5);
 	});
 
 	it("未訪問時の ✕ は lane-focus（stale な出発点に飛ばない）", () => {

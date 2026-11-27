@@ -38,9 +38,9 @@ export function CodexInteractionCard(props: {
         <label for={`${request().request_id}-${q.id}`}>{q.question}</label>
         <Show when={q.options.length > 0}>
           <div class="conversation-prompt-options">
-            <For each={q.options}>{opt => <button type="button" class="conversation-prompt-opt"
-              aria-pressed={answers()[q.id] === opt.label}
-              classList={{ selected: answers()[q.id] === opt.label }}
+            <For each={q.options}>{opt => <button type="button" class={["conversation-prompt-opt", { selected: answers()[q.id] === opt.label }]}
+              aria-pressed={String(answers()[q.id] === opt.label) as 'true' | 'false'}
+
               onClick={() => setAnswer(q.id, opt.label)}>
               <span class="conversation-prompt-opt-label">{opt.label}</span>
               <span class="conversation-prompt-opt-desc">{opt.description}</span>

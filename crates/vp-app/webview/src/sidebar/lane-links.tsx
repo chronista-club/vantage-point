@@ -1,6 +1,6 @@
 /** 保存結果の IPC は sidebar bundle が所有する。Lane 節の host へ同じ bundle から描く。 */
 import { createMemo, createSignal } from 'solid-js'
-import { render } from 'solid-js/web'
+import { render } from '@solidjs/web'
 import { onLaneLinksView, type LaneLinksView } from '../../lane-links-bridge'
 import { LocalUrls } from './LocalUrls'
 import { sidebar } from './store'

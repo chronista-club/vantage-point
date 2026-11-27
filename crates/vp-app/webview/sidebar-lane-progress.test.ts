@@ -1,7 +1,8 @@
+import { testPath } from './test-utils/paths'
 // mem_1Cg7MpHWBdf6u9CYjyEAaf
 import { afterEach, beforeAll, expect, it } from 'vitest';
 import { build } from 'esbuild';
-import { solidPlugin } from 'esbuild-plugin-solid';
+import { solidTestPlugin as solidPlugin, flushDom, evalDom, clickDom, dispatchDom } from './test-utils/solid'
 import { Window } from 'happy-dom';
 import { fileURLToPath } from 'node:url';
 
@@ -9,7 +10,7 @@ let bundle: string;
 const windows: Window[] = [];
 beforeAll(async () => {
   const result = await build({ stdin: { contents: `
-    import { render } from 'solid-js/web';
+    import { render } from '@solidjs/web';
     import { createComponent } from 'solid-js';
     import { Shell } from './src/sidebar/Shell';
     import { applySidebarState, emptyState } from './src/sidebar/store';
@@ -49,7 +50,7 @@ beforeAll(async () => {
       {kind:'message_chunk',text:'実際の出力'});
     window.setRequesting(true);
     render(() => createComponent(Shell,{}),document.getElementById('sidebar-root'));
-  `, loader:'tsx', resolveDir:fileURLToPath(new URL('.',import.meta.url)) },
+  `, loader:'tsx', resolveDir:testPath(import.meta.url) },
     bundle:true,write:false,format:'iife',platform:'browser',preserveSymlinks:true,plugins:[solidPlugin()],
     define:{'process.env.NODE_ENV':'"production"'} });
   bundle = result.outputFiles[0].text;
@@ -58,7 +59,7 @@ function fixture() {
   const win = new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}});
   windows.push(win);
   win.document.body.innerHTML='<div id="sidebar-root"></div><div id="host"></div>';
-  win.eval(bundle);
+  evalDom(win, bundle);
   return win;
 }
 afterEach(async()=>{for(const win of windows.splice(0)) await win.happyDOM.abort();});
@@ -70,6 +71,7 @@ it('keeps a restored GUI lane waiting when only its wire connector implies work'
   expect(row.querySelector('[data-lane-state="waiting"]')).not.toBeNull();
   expect(row.querySelector('[data-lane-state="working"]')).toBeNull();
   (win as unknown as {emitLiveWork: () => void}).emitLiveWork();
+  flushDom(win);
   expect(row.querySelector('[data-lane-state="working"]')).not.toBeNull();
 });
 
@@ -104,7 +106,7 @@ it('keeps detached commit and dirty information on the branch line',()=>{
 
 it('shows a PR badge only for the branch reported by the right sidebar',()=>{
   const win=fixture();
-  const emit = (branch:string) => win.document.dispatchEvent(new win.CustomEvent('vp:lane-prs-count',{
+  const emit = (branch:string) => dispatchDom(win.document, new win.CustomEvent('vp:lane-prs-count',{
     detail:{lane:'project/lane/feature',count:1,available:true,branch,number:123},
   }));
   emit('wip/requesting');
@@ -121,6 +123,6 @@ it('opens wire history even when all messages have been read',()=>{
   const row=win.document.querySelectorAll('.vp-lane-row')[1];
   const mailbox=row.querySelector('button[title="wire inbox を開く"]');
   expect(mailbox).not.toBeNull();
-  (mailbox as unknown as {click():void}).click();
+  clickDom((mailbox as unknown as {click():void}));
   expect(opened).toEqual(['project/lane/feature']);
 });

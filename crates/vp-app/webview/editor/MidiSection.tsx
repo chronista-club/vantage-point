@@ -19,7 +19,7 @@ function PinColor(props: { slot: number; midi: MidiSettings }) {
     </div>
     <div class="vp-editor-color">
       <input type="color" aria-label={`${label()}のカラーピッカー`} disabled={!props.midi.ready()} value={value()} onInput={event => set(event.currentTarget.value)} />
-      <input id={`vp-midi-pin-${props.slot}`} type="text" disabled={!props.midi.ready()} value={value()} spellcheck={false} aria-invalid={invalid()}
+      <input id={`vp-midi-pin-${props.slot}`} type="text" disabled={!props.midi.ready()} value={value()} spellcheck={false} aria-invalid={(invalid()) ? 'true' : 'false'}
         onInput={event => set(event.currentTarget.value)} />
     </div>
     <Show when={invalid()}><small role="alert">#rrggbb の形で入力してください。</small></Show>

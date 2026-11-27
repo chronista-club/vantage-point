@@ -18,7 +18,7 @@ export function BucketList() {
     if (next) focusActionRow(next.id);
   };
   return <details class="vp-act-buckets" open>
-    <summary class="vp-act-heading"><span class="vp-act-caret">›</span><CreoIcon name="ph:tray" size={12} /><span class="vp-act-label">ACTIONs</span><span>{actions().length || ""}</span><button type="button" class="vp-act-reload" aria-label="ACTIONs を再読み込み" title="一覧と Atlas を再読み込み" disabled={actionsRefreshing()} on:click={e=>{e.preventDefault();e.stopPropagation();refreshActions()}}><span classList={{"is-refreshing":actionsRefreshing()}}><CreoIcon name="ph:arrows-clockwise" size={12}/></span></button></summary>
+    <summary class="vp-act-heading"><span class="vp-act-caret">›</span><CreoIcon name="ph:tray" size={12} /><span class="vp-act-label">ACTIONs</span><span>{actions().length || ""}</span><button type="button" class="vp-act-reload" aria-label="ACTIONs を再読み込み" title="一覧と Atlas を再読み込み" disabled={actionsRefreshing()} ref={el => el.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); refreshActions() })}><span class={{"is-refreshing":actionsRefreshing()}}><CreoIcon name="ph:arrows-clockwise" size={12}/></span></button></summary>
     <Capture atlases={sidebar.activity.actions_atlases ?? []} scope={sidebar.activity.actions_scope ?? ""} settings={sidebar.activity.actions_sidebar_settings} />
     <Show when={actionsRefreshError() || sidebar.activity.actions_error || sidebar.activity.actions_sidebar_error}><div class="vp-act-status" role="status">{actionsRefreshError() || sidebar.activity.actions_error || sidebar.activity.actions_sidebar_error}</div></Show>
     <Show when={actionMoveError()}><div class="vp-act-status" role="status">{actionMoveError()}</div></Show>
@@ -94,7 +94,7 @@ export const ACTIONS_CSS = `
   color:var(--lg-mute-2,#38525b);transition:transform .12s ease;}
 .vp-act-bucket[open] .vp-act-caret{transform:rotate(90deg);}
 .vp-act-label{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.vp-act-badge{flex:0 0 auto;padding:0 5px;border-radius:7px;background:#ffffff08;
+.vp-act-badge{flex:0 0 auto;padding:0 5px;border-radius:7px;background:var(--lg-veil-3);
   color:var(--lg-mute,#5C7A85);font-size:var(--sb-text-micro,10px);letter-spacing:0;
   font-family:var(--vp-font-mono),var(--typography-family-mono);
   font-variant-numeric:tabular-nums;}
@@ -109,7 +109,7 @@ export const ACTIONS_CSS = `
 .vp-act-row{display:grid;grid-template-columns:11px minmax(0,1fr) repeat(4,auto);align-items:start;column-gap:5px;row-gap:1px;border-radius:6px;padding:5px 6px;
   font-size:var(--sb-text-hint,12px);
   color:color-mix(in srgb,var(--lg-hot,#EAFBFF),transparent 25%);}
-.vp-act-row:hover{background:#ffffff06;}
+.vp-act-row:hover{background:var(--lg-veil-2);}
 /* 編集中の行だけ僅かに持ち上げる（選択表現は faint tint のみ、光り物は足さない）。 */
 .vp-act-row:focus-within{background:color-mix(in srgb,var(--sb-conn-auto,#FFF76B),transparent 94%);}
 
@@ -165,7 +165,7 @@ export const ACTIONS_CSS = `
   padding:3px 6px;border:none;background:transparent;cursor:pointer;text-align:left;
   color:var(--lg-mute-2,#38525b);font:inherit;font-size:var(--sb-text-meta,11px);
   border-radius:6px;transition:color .12s ease,background .12s ease;}
-.vp-act-add:hover{background:#ffffff06;color:var(--lg-mute,#5C7A85);}
+.vp-act-add:hover{background:var(--lg-veil-2);color:var(--lg-mute,#5C7A85);}
 
 @media (prefers-reduced-motion:reduce){
   .vp-act-caret,.vp-act-check,.vp-act-add,.vp-act-link,.vp-act-del{transition:none;}}

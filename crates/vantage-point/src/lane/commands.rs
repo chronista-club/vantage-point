@@ -1696,10 +1696,14 @@ pub struct SubStatus {
     /// default branch (origin/HEAD) に ancestry merge 済みで cleanup 候補か。
     /// sidebar hot path のため squash merge は含まない (`vp lane cleanup` は squash も検出)。
     pub is_merged: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_tier: Option<crate::flow::DiffTier>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tier_reasons: Vec<String>,
 }
 
-/// Sub workspace dir から status snapshot を取得 (repo API 用)。 git 関連 subprocess を
-/// 5-7 個並列に呼ぶので 1 回 ~50-100ms 程度。 多数 sub 時は repo 側で並列化検討。
+/// Sub workspace dir から status と diff 分類の snapshot を取得 (repo API 用)。
+/// git subprocess と untracked ファイルの読み込みを行う。
 pub fn sub_status(dir: &Path) -> SubStatus {
     let branch = get_branch(dir);
     let dirty_count = count_changes(dir);
@@ -1710,7 +1714,14 @@ pub fn sub_status(dir: &Path) -> SubStatus {
     // 未マージ表示になるが、 明示的な `vp lane cleanup` は squash も検出する (co-evolution #3)。
     let default_branch = resolve_default_branch(dir).unwrap_or_else(|| "main".to_string());
     let is_merged = is_branch_merged(dir, &default_branch);
+    let (diff_tier, tier_reasons) = match classify_worktree(dir) {
+        Ok(Some(c)) => (Some(c.tier), c.reasons),
+        Ok(None) => (None, vec![]),
+        Err(e) => (None, vec![format!("diff 分類を取得できません: {e}")]),
+    };
     SubStatus {
+        diff_tier,
+        tier_reasons,
         branch,
         dirty_count,
         ahead,
@@ -3195,4 +3206,183 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&tmp);
     }
+}
+
+#[cfg(test)]
+#[path = "diff_tests.rs"]
+mod diff_tests;
+
+/// merge-base から作業ツリー全体を収集。rename は旧パスの危険境界を残すため無効。
+pub fn collect_diff_stats(
+    dir: &Path,
+    base_ref: &str,
+) -> Result<Vec<crate::flow::DiffFileStat>, String> {
+    use crate::flow::DiffFileStat;
+    let base = diff_git(dir, &["merge-base", "HEAD", base_ref])?;
+    let base = std::str::from_utf8(&base)
+        .map_err(|e| e.to_string())?
+        .trim();
+    let tracked = diff_git(
+        dir,
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--numstat",
+            "-z",
+            "--no-renames",
+            "--ignore-submodules=none",
+            base,
+            "--",
+        ],
+    )?;
+    let mut files = Vec::new();
+    for record in tracked.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+        let record =
+            std::str::from_utf8(record).map_err(|e| format!("diff path is not UTF-8: {e}"))?;
+        let mut parts = record.splitn(3, '\t');
+        let added = parts.next().ok_or("numstat: missing insertions")?;
+        let removed = parts.next().ok_or("numstat: missing deletions")?;
+        let path = parts.next().ok_or("numstat: missing path")?;
+        let binary = added == "-" || removed == "-";
+        files.push(DiffFileStat {
+            path: path.into(),
+            binary,
+            insertions: if binary {
+                0
+            } else {
+                added.parse::<usize>().map_err(|e| e.to_string())?
+            },
+            deletions: if binary {
+                0
+            } else {
+                removed.parse::<usize>().map_err(|e| e.to_string())?
+            },
+        });
+    }
+    let untracked = diff_git(dir, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+    for path in untracked.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+        let path =
+            std::str::from_utf8(path).map_err(|e| format!("untracked path is not UTF-8: {e}"))?;
+        let (insertions, binary) =
+            untracked_line_count(&dir.join(path)).map_err(|e| format!("{path}: {e}"))?;
+        files.push(DiffFileStat {
+            path: path.into(),
+            insertions,
+            deletions: 0,
+            binary,
+        });
+    }
+    Ok(files)
+}
+
+/// local refs のみを使う。基準不明を empty diff にしない。
+pub fn classify_worktree(dir: &Path) -> Result<Option<crate::flow::DiffClassification>, String> {
+    let root = diff_git(dir, &["rev-parse", "--show-toplevel"])?;
+    let root = PathBuf::from(
+        std::str::from_utf8(&root)
+            .map_err(|e| e.to_string())?
+            .trim(),
+    );
+    // root/ref のプローブも収集と同じ Git 環境に揃える。別 repo の GIT_DIR を継承しない。
+    let common = diff_git(
+        &root,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let common = PathBuf::from(
+        std::str::from_utf8(&common)
+            .map_err(|e| e.to_string())?
+            .trim(),
+    );
+    let common_root = if common.file_name().is_some_and(|name| name == ".git") {
+        common.parent().unwrap_or(&root)
+    } else {
+        &root
+    };
+    let cfg = config::load_config(common_root)?;
+    let base = if let Some(base) = cfg.base_ref.filter(|b| !b.trim().is_empty()) {
+        let remote = format!("origin/{base}");
+        if diff_git(&root, &["rev-parse", "--verify", &remote]).is_ok() {
+            remote
+        } else {
+            base
+        }
+    } else {
+        let reference = diff_git(
+            &root,
+            &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        )
+        .map_err(|e| {
+            format!(
+                "分類の基準 ref がありません: base-ref または origin/HEAD を設定してください ({e})"
+            )
+        })?;
+        std::str::from_utf8(&reference)
+            .map_err(|e| e.to_string())?
+            .trim()
+            .to_string()
+    };
+    let files = collect_diff_stats(&root, &base)?;
+    Ok(crate::flow::classify_diff(&files))
+}
+
+fn diff_git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let mut command = Command::new("git");
+    command.current_dir(dir).args(args);
+    // `git rev-parse --local-env-vars` が列挙する repo-local 環境。
+    // hook 等の呼び出し元の repo / index / refs / 一時 config を持ち込まない。
+    for key in [
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_GRAFT_FILE",
+        "GIT_INDEX_FILE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_PREFIX",
+        "GIT_SHALLOW_FILE",
+        "GIT_COMMON_DIR",
+    ] {
+        command.env_remove(key);
+    }
+    let output = command.output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(output.stdout)
+}
+
+fn untracked_line_count(path: &Path) -> std::io::Result<(usize, bool)> {
+    use std::io::Read;
+    // symlink はリンク先を読まない（外部ファイル・壊れたリンクも git と同じ扱い）。
+    if fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Ok((1, false));
+    }
+    let mut file = fs::File::open(path)?;
+    let mut buffer = [0; 8192];
+    let mut lines = 0;
+    let mut last = None;
+    let mut binary = false;
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        lines += buffer[..n].iter().filter(|b| **b == b'\n').count();
+        binary |= buffer[..n].contains(&0);
+        last = Some(buffer[n - 1]);
+    }
+    if last.is_some_and(|b| b != b'\n') {
+        lines += 1;
+    }
+    Ok((if binary { 0 } else { lines }, binary))
 }
