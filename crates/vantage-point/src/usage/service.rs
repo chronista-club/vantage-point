@@ -9,12 +9,11 @@
 //!
 //! | engine | 起動時 | 定期（GUI が見ている間） | 手動 Refresh |
 //! |---|---|---|---|
-//! | claude | file を読む | 60 秒ごとに file を読む（mtime が同じなら読まない） | file を読む |
+//! | claude / muse | spawn | 10 分ごと | 30 秒以内の連打は無視 |
 //! | codex | spawn | 15 分ごと | 30 秒以内の連打は無視 |
 //! | agy | spawn | 10 分ごと | 30 秒以内の連打は無視 |
 //! | grok | **しない** | **しない** | 60 秒以内の連打は無視 |
 //!
-//! - **claude は一度も spawn しない**（[`super::probe::CliProbe`] は file を読むだけ）
 //! - grok は MCP server まで立ち上がるので、人が押した時だけ。値は state zone に保存して
 //!   daemon 再起動後も cache として出す
 //! - 定期の spawn は **購読者（vp-app）がいる間だけ**。誰も見ていないのに 15 分ごとに
@@ -34,7 +33,7 @@ use tokio::sync::watch;
 use super::model::{EngineUsage, UsageEngine, UsageSnapshot, UsageSource, UsageWindow};
 use super::probe::{InertProbe, UsageProbe};
 
-/// 周期 loop の刻み。claude の file 読みの間隔でもある。
+/// 周期 loop の刻み。各 engine の問い合わせ間隔は cadence で別に判定する。
 pub const TICK: Duration = Duration::from_secs(60);
 
 /// 定期 poll の間隔に持たせる余裕（tick の揺れの吸収、[`due_engines`]）。
@@ -64,11 +63,11 @@ struct Cadence {
 
 fn cadence(engine: UsageEngine) -> Cadence {
     match engine {
-        UsageEngine::Claude => Cadence {
+        UsageEngine::Claude | UsageEngine::Muse => Cadence {
             startup: true,
-            periodic: Some(TICK),
-            cheap: true,
-            manual_gap: Duration::ZERO,
+            periodic: Some(Duration::from_secs(10 * 60)),
+            cheap: false,
+            manual_gap: Duration::from_secs(30),
         },
         UsageEngine::Codex => Cadence {
             startup: true,
@@ -436,12 +435,35 @@ mod tests {
 
     const MIN: u64 = 60_000;
 
+    // mem_1ChUDBkLpW2eUivtimWNNM
+    #[test]
+    fn claude_and_muse_active_probes_are_debounced_and_require_a_watcher() {
+        for engine in [UsageEngine::Claude, UsageEngine::Muse] {
+            let c = cadence(engine);
+            assert!(c.startup);
+            assert_eq!(c.periodic, Some(Duration::from_secs(600)));
+            assert!(!c.cheap);
+            assert_eq!(c.manual_gap, Duration::from_secs(30));
+        }
+    }
+
+    #[test]
+    fn muse_is_in_startup_probes() {
+        let due = due_engines(Trigger::Startup, 0, &HashMap::new());
+        assert!(due.iter().any(|engine| engine.name() == "muse"));
+    }
+
     #[test]
     fn startup_probes_everything_but_grok() {
         let due = due_engines(Trigger::Startup, 0, &HashMap::new());
         assert_eq!(
             due,
-            vec![UsageEngine::Claude, UsageEngine::Codex, UsageEngine::Agy],
+            vec![
+                UsageEngine::Claude,
+                UsageEngine::Codex,
+                UsageEngine::Agy,
+                UsageEngine::Muse
+            ],
             "grok は MCP server まで立つので起動時に spawn しない"
         );
     }
@@ -453,8 +475,8 @@ mod tests {
         assert!(!watched.contains(&UsageEngine::Grok));
         assert_eq!(
             due_engines(Trigger::Periodic { watched: false }, 0, &never),
-            vec![UsageEngine::Claude],
-            "誰も見ていない間は file を読む claude だけ（spawn しない）"
+            Vec::<UsageEngine>::new(),
+            "誰も見ていない間は spawn しない"
         );
     }
 
@@ -465,11 +487,12 @@ mod tests {
             (UsageEngine::Claude, now - MIN),
             (UsageEngine::Codex, now - 14 * MIN),
             (UsageEngine::Agy, now - 10 * MIN),
+            (UsageEngine::Muse, now - 9 * MIN),
         ]);
         assert_eq!(
             due_engines(Trigger::Periodic { watched: true }, now, &recent),
-            vec![UsageEngine::Claude, UsageEngine::Agy],
-            "codex は 15 分、agy は 10 分、claude は 1 分"
+            vec![UsageEngine::Agy],
+            "codex は 15 分、claude / agy / muse は 10 分"
         );
     }
 
@@ -481,11 +504,12 @@ mod tests {
             (UsageEngine::Codex, now - 10_000),
             (UsageEngine::Agy, now - 31_000),
             (UsageEngine::Grok, now - 59_000),
+            (UsageEngine::Muse, now - 29_000),
         ]);
         assert_eq!(
             due_engines(Trigger::Manual, now, &just_now),
-            vec![UsageEngine::Claude, UsageEngine::Agy],
-            "連打は codex 30 秒 / grok 60 秒の間まとめる（claude は file なので毎回）"
+            vec![UsageEngine::Agy],
+            "連打は claude / codex / agy / muse 30 秒、grok 60 秒の間まとめる"
         );
         assert!(due_engines(Trigger::Manual, now, &HashMap::new()).contains(&UsageEngine::Grok));
     }
@@ -568,13 +592,19 @@ mod tests {
     fn periodic_tolerates_tick_jitter() {
         let now = 100 * MIN;
         let recent = last(&[
-            (UsageEngine::Claude, now - MIN + 10),
+            (UsageEngine::Claude, now - 10 * MIN + 10),
             (UsageEngine::Codex, now - 15 * MIN + 10),
             (UsageEngine::Agy, now - 10 * MIN + 10),
+            (UsageEngine::Muse, now - 10 * MIN + 10),
         ]);
         assert_eq!(
             due_engines(Trigger::Periodic { watched: true }, now, &recent),
-            vec![UsageEngine::Claude, UsageEngine::Codex, UsageEngine::Agy]
+            vec![
+                UsageEngine::Claude,
+                UsageEngine::Codex,
+                UsageEngine::Agy,
+                UsageEngine::Muse
+            ]
         );
     }
 
@@ -634,7 +664,7 @@ mod tests {
             ..usage_with(UsageEngine::Claude, 1.0, None)
         });
         let restored = restore_cached(saved, 100);
-        assert_eq!(restored.engines.len(), 4);
+        assert_eq!(restored.engines.len(), 5);
         let grok = restored.engine(UsageEngine::Grok).unwrap();
         assert_eq!(grok.source, UsageSource::Cache);
         assert_eq!(grok.error, None);
@@ -674,14 +704,14 @@ mod tests {
             let usage = snapshot.engine(engine).unwrap();
             assert_eq!(usage.windows[0].used_pct, 42.0, "{engine:?}");
         }
-        assert_eq!(probe.calls.lock().unwrap().len(), 4);
+        assert_eq!(probe.calls.lock().unwrap().len(), 5);
 
-        // すぐ押し直しても spawn する engine は問い合わせない（claude の file 読みだけ）
+        // すぐ押し直しても spawn する engine は問い合わせない
         service.refresh(Trigger::Manual).await;
         assert_eq!(
-            probe.calls.lock().unwrap()[4..],
-            [UsageEngine::Claude],
-            "連打で codex / agy / grok を起こさない"
+            probe.calls.lock().unwrap()[5..],
+            [],
+            "連打で CLI を起こさない"
         );
     }
 

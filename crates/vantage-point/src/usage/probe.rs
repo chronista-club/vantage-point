@@ -1,15 +1,16 @@
 //! 能動の取得（actions 層）— engine ごとに 1 回問い合わせて [`EngineUsage`] を返す。
 //!
 //! [`UsageProbe`] は trait にしてある。daemon は [`CliProbe`]（本物の CLI / file を触る）を、
-//! test は偽物を注入する — **test が本物の `claude` / `codex` / `agy` / `grok` を起動しない**ため
+//! test は偽物を注入する — **test が本物の `claude` / `codex` / `agy` / `grok` / `muse` を起動しない**ため
 //! （spec の副作用ガード 6）。`mise run test` はオフライン・決定論的に通る。
 //!
 //! どの経路も **turn を起こさない**（= 枠を 1 トークンも使わない）:
 //!
 //! | engine | 経路 | 1 回のコスト |
 //! |---|---|---|
-//! | claude | `~/.claude.json` を読むだけ（**spawn しない**。mtime が同じなら読まない） | file 1 枚 |
+//! | claude | hook 無効の `get_usage` → kill（失敗時 cache） | 数秒 |
 //! | codex | `codex app-server` → `initialize` → `account/rateLimits/read` → kill | 数秒 |
+//! | muse | `muse usage --json` | 数秒 |
 //! | agy | `agy -p "/usage" --output-format json`（turn を起こさない — 実測 `num_turns` 0・token 0・0 秒） | 一瞬 |
 //! | grok | `grok agent stdio` → ACP `initialize` → `_x.ai/billing` → kill | MCP server まで立つので重い |
 //!
@@ -17,7 +18,7 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -42,57 +43,44 @@ impl UsageProbe for InertProbe {
     }
 }
 
-/// codex / agy の応答待ちの上限。
+/// 軽量 CLI の応答待ちの上限。
 const QUICK_TIMEOUT: Duration = Duration::from_secs(25);
 /// grok は MCP server の起動を待つことがあるので長め。
 const GROK_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// 本物の CLI / file に当たる probe（daemon 本番用）。
 #[derive(Default)]
-pub struct CliProbe {
-    /// `~/.claude.json` の (mtime, 前回の結果)。mtime が同じなら読み直さない。
-    claude_cache: std::sync::Mutex<Option<(SystemTime, EngineUsage)>>,
-}
+pub struct CliProbe;
 
 impl CliProbe {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 
     async fn claude(&self) -> EngineUsage {
-        let path = claude_config_path();
-        let mtime = match tokio::fs::metadata(&path).await.and_then(|m| m.modified()) {
-            Ok(t) => t,
-            Err(_) => {
-                return EngineUsage::failed(
-                    UsageEngine::Claude,
-                    format!(
-                        "{} がありません（Claude Code 未ログイン）",
-                        display_path(&path)
-                    ),
-                );
-            }
-        };
-        if let Some((seen, usage)) = self.claude_cache.lock().expect("claude cache").as_ref()
-            && *seen == mtime
-        {
-            return usage.clone();
-        }
-        let usage = match tokio::fs::read(&path).await {
-            Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
-                Ok(config) => parse::claude_from_config(&config),
-                Err(e) => EngineUsage::failed(
-                    UsageEngine::Claude,
-                    format!("{} を JSON として読めません: {e}", display_path(&path)),
-                ),
-            },
-            Err(e) => EngineUsage::failed(
-                UsageEngine::Claude,
-                format!("{} を読めません: {e}", display_path(&path)),
-            ),
-        };
-        *self.claude_cache.lock().expect("claude cache") = Some((mtime, usage.clone()));
-        usage
+        let home = dirs::home_dir().unwrap_or_default();
+        let program = crate::lane::session_store::resolve_cli(
+            "claude",
+            &[
+                home.join(".local/bin/claude"),
+                home.join(".claude/local/claude"),
+                PathBuf::from("/opt/homebrew/bin/claude"),
+                PathBuf::from("/usr/local/bin/claude"),
+            ],
+        );
+        claude_with_command(
+            claude_command(&program),
+            &claude_config_path(),
+            QUICK_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn muse(&self) -> EngineUsage {
+        let program = crate::conversation::acp_host::AcpEngine::Muse.cli_path();
+        let mut cmd = base_command(&program);
+        cmd.args(["usage", "--json"]);
+        muse_with_command(cmd, QUICK_TIMEOUT).await
     }
 
     async fn agy(&self) -> EngineUsage {
@@ -210,6 +198,7 @@ impl UsageProbe for CliProbe {
             UsageEngine::Codex => self.codex().await,
             UsageEngine::Agy => self.agy().await,
             UsageEngine::Grok => self.grok().await,
+            UsageEngine::Muse => self.muse().await,
         }
     }
 }
@@ -388,15 +377,265 @@ async fn stdio_rpc(
     result
 }
 
+/// hook / session を作らず、usage の制御リクエストだけを送る設定。
+fn claude_command(program: &str) -> tokio::process::Command {
+    let mut cmd = base_command(program);
+    cmd.args([
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--no-session-persistence",
+        "--settings",
+        r#"{"disableAllHooks":true}"#,
+    ]);
+    cmd
+}
+
+async fn claude_with_command(
+    cmd: tokio::process::Command,
+    path: &std::path::Path,
+    timeout: Duration,
+) -> EngineUsage {
+    let response = claude_control_response(cmd, timeout).await;
+    // CLI 自身が cache を更新するので応答の後に読む。設定が無くても能動取得は使える。
+    let config = tokio::fs::read(path)
+        .await
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    let mut usage = match response {
+        Ok(v) => parse::claude_from_get_usage(&v, config.as_ref()),
+        Err(e) => EngineUsage::failed(UsageEngine::Claude, e),
+    };
+    if usage.error.is_some() {
+        if let Some(config) = config.as_ref() {
+            let cache = parse::claude_from_config(config);
+            if cache.error.is_none() {
+                return cache;
+            }
+            usage.plan = cache.plan.or(usage.plan);
+            usage.tier = cache.tier.or(usage.tier);
+        }
+        usage.error = usage.error.map(|e| redact_emails(&e));
+    }
+    usage
+}
+
+/// stream-json の通知・別 request の応答を飛ばし、usage の応答を受け取ったら直ちに終了する。
+async fn claude_control_response(
+    mut cmd: tokio::process::Command,
+    timeout: Duration,
+) -> Result<Value, String> {
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn().map_err(|e| spawn_error("claude", &e))?;
+    let group = GroupKill(child.id());
+    let mut stdin = child.stdin.take().ok_or("stdin が取れません")?;
+    let mut lines = BufReader::new(child.stdout.take().ok_or("stdout が取れません")?).lines();
+    let exchange = async {
+        let request = serde_json::json!({"type":"control_request","request_id":"usage-1","request":{"subtype":"get_usage","skip_behaviors":true}});
+        stdin
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .map_err(|e| format!("送信に失敗: {e}"))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|e| format!("送信に失敗: {e}"))?;
+        while let Some(raw) = lines
+            .next_line()
+            .await
+            .map_err(|e| format!("受信に失敗: {e}"))?
+        {
+            let Ok(msg) = serde_json::from_str::<Value>(&raw) else {
+                continue;
+            };
+            if msg["type"] == "control_response" && msg["response"]["request_id"] == "usage-1" {
+                return Ok(msg);
+            }
+        }
+        Err("get_usage の応答の前に終了しました".into())
+    };
+    let result = match tokio::time::timeout(timeout, exchange).await {
+        Ok(result) => result,
+        Err(_) => Err("get_usage が時間内に返りません".into()),
+    };
+    drop(group);
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    result
+}
+
+async fn muse_with_command(mut cmd: tokio::process::Command, timeout: Duration) -> EngineUsage {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return EngineUsage::failed(UsageEngine::Muse, spawn_error("muse", &e)),
+    };
+    let _group = GroupKill(child.id());
+    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => {
+            return EngineUsage::failed(UsageEngine::Muse, format!("muse の待機に失敗: {e}"));
+        }
+        Err(_) => return EngineUsage::failed(UsageEngine::Muse, "muse usage が時間内に返りません"),
+    };
+    let mut usage = match serde_json::from_slice::<Value>(&output.stdout) {
+        Ok(v) => parse::muse_from_usage(&v),
+        Err(_) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let detail = if stderr.trim().is_empty() {
+                stdout.trim()
+            } else {
+                stderr.trim()
+            };
+            EngineUsage::failed(
+                UsageEngine::Muse,
+                format!(
+                    "muse usage の出力を読めません（exit {}）: {detail}",
+                    output.status
+                ),
+            )
+        }
+    };
+    usage.error = usage.error.map(|e| redact_emails(&e));
+    usage
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    // mem_1ChUDBkLpW2eUivtimWNNM: 本物の CLI に接続しない transport の契約テスト。
+    #[test]
+    fn claude_command_disables_hooks_and_session_persistence() {
+        let cmd = claude_command("claude");
+        let args: Vec<_> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "-p",
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--no-session-persistence",
+                "--settings",
+                r#"{"disableAllHooks":true}"#
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claude_probe_matches_control_response_and_stops_without_a_turn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let request_path = tmp.path().join("request.json");
+        let mut cmd = base_command("/bin/sh");
+        cmd.args(["-c", r#"
+            IFS= read -r line
+            printf '%s' "$line" > "$1"
+            echo '{"type":"system"}'
+            echo '{"type":"control_response","response":{"request_id":"other"}}'
+            echo '{"type":"control_response","response":{"request_id":"usage-1","subtype":"success","response":{"subscription_type":"max","rate_limits":{"five_hour":{"utilization":18}}}}}'
+            sleep 30
+        "#, "test"]).arg(&request_path);
+        let started = std::time::Instant::now();
+        let usage =
+            claude_with_command(cmd, &tmp.path().join("missing"), Duration::from_secs(2)).await;
+        assert_eq!(usage.error, None);
+        assert_eq!(usage.source, super::super::model::UsageSource::Poll);
+        assert_eq!(usage.plan.as_deref(), Some("max"));
+        assert_eq!(usage.windows[0].used_pct, 18.0);
+        assert!(started.elapsed() < Duration::from_secs(3));
+        let sent: Value =
+            serde_json::from_str(&std::fs::read_to_string(request_path).unwrap()).unwrap();
+        assert_eq!(
+            sent,
+            serde_json::json!({"type":"control_request","request_id":"usage-1","request":{"subtype":"get_usage","skip_behaviors":true}})
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claude_probe_falls_back_on_spawn_timeout_and_early_exit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config.json");
+        std::fs::write(&config, r#"{"oauthAccount":{"planDisplayName":"Ultra"},"cachedUsageUtilization":{"fetchedAtMs":123,"utilization":{"seven_day":{"utilization":6}}}}"#).unwrap();
+        let mut commands = vec![base_command("/nonexistent/claude")];
+        for script in ["exit 0", "read l; sleep 30"] {
+            let mut cmd = base_command("/bin/sh");
+            cmd.args(["-c", script]);
+            commands.push(cmd);
+        }
+        for cmd in commands {
+            let usage = claude_with_command(cmd, &config, Duration::from_millis(100)).await;
+            assert_eq!(usage.error, None);
+            assert_eq!(usage.source, super::super::model::UsageSource::Cache);
+            assert_eq!(usage.fetched_at_ms, Some(123));
+            assert_eq!(usage.windows[0].used_pct, 6.0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claude_error_without_cache_is_redacted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cmd = base_command("/bin/sh");
+        cmd.args(["-c", r#"read l; echo '{"type":"control_response","response":{"request_id":"usage-1","subtype":"error","error":"login person@example.com failed"}}'"#]);
+        let usage =
+            claude_with_command(cmd, &tmp.path().join("missing"), Duration::from_secs(2)).await;
+        assert_eq!(usage.error.as_deref(), Some("login <redacted> failed"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn muse_probe_reads_json_and_redacts_diagnostics() {
+        let mut cmd = base_command("/bin/sh");
+        cmd.args([
+            "-c",
+            r#"echo '{"allowance":{"window":{"usedPercent":70}}}'"#,
+        ]);
+        let usage = muse_with_command(cmd, Duration::from_secs(2)).await;
+        assert_eq!(usage.error, None);
+        assert_eq!(usage.windows[0].used_pct, 70.0);
+        for script in [
+            "echo 'login person@example.com failed' >&2; exit 1",
+            r#"echo '{"allowance":null,"reason":"person@example.com","hint":"login"}'"#,
+        ] {
+            let mut cmd = base_command("/bin/sh");
+            cmd.args(["-c", script]);
+            let usage = muse_with_command(cmd, Duration::from_secs(2)).await;
+            let error = usage.error.unwrap();
+            assert!(error.contains("<redacted>"));
+            assert!(!error.contains("person@example.com"));
+        }
+        let mut cmd = base_command("/bin/sh");
+        cmd.args(["-c", "sleep 30"]);
+        assert!(
+            muse_with_command(cmd, Duration::from_millis(100))
+                .await
+                .error
+                .unwrap()
+                .contains("時間内")
+        );
+    }
 
     /// 本物の CLI を起動する smoke（**既定では走らない**）。手で確かめる時だけ:
     /// `VP_USAGE_REAL_PROBE=1 cargo test -p vantage-point --lib usage::probe -- --ignored --nocapture`
     ///
     /// grok は MCP server まで立ち上がるので `VP_USAGE_REAL_PROBE=grok` を足した時だけ。
-    /// claude は file を読むだけ（spawn しない）。
+    /// claude は hook 無効の制御リクエストだけを送る。
     #[tokio::test]
     #[ignore = "本物の CLI を起動する（手動の確認用）"]
     async fn real_cli_probe_smoke() {

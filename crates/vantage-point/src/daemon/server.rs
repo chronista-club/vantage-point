@@ -186,7 +186,7 @@ pub struct DaemonState {
     /// writer = `repo/http/link.rs` の接続 task（hello / fields / values …）、reader = "link" channel
     /// （MCP editor_* の着地点）と `/api/health` の `services.link`。daemon に 1 つ、外部の結線は無い。
     pub(crate) link: Arc<crate::daemon::link::LinkHub>,
-    /// engine usage meter（4 エンジンのサブスク usage、machine scope）— "daemon-usage" channel の data plane。
+    /// engine usage meter（5 エンジンのサブスク usage、machine scope）— "daemon-usage" channel の data plane。
     ///
     /// writer = `UsageService::run`（周期 loop）/ 手動 refresh / 会話 host の受動通知
     /// （`usage::passive`）、reader = "daemon-usage" channel の購読者（vp-app）。`run_daemon` が作った
@@ -2550,7 +2550,7 @@ pub(crate) async fn register_daemon_channels(server: &ProtocolServer, state: &Ar
             .await;
     }
 
-    // Daemon-Usage Channel（engine usage meter — 4 エンジンのサブスク usage を vp-app へ）
+    // Daemon-Usage Channel（engine usage meter — 5 エンジンのサブスク usage を vp-app へ）
     register_usage_channel(server, state.usage.clone()).await;
 
     // =========================================================================

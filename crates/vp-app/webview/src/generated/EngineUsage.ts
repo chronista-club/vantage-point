@@ -6,7 +6,7 @@ import type { UsageWindow } from "./UsageWindow";
  */
 export type EngineUsage = { 
 /**
- * `claude` / `codex` / `agy` / `grok`（lane の agent 名と同じ）。
+ * `claude` / `codex` / `agy` / `grok` / `muse`（lane の agent 名と同じ）。
  */
 engine: string, plan: string | null, tier: string | null, windows: Array<UsageWindow>, fetched_at_ms: number | null, 
 /**

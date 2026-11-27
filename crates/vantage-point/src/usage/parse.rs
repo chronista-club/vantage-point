@@ -52,7 +52,7 @@ fn str_field(value: &Value, key: &str) -> Option<String> {
 /// `cachedUsageUtilization.utilization` の名前付き窓（`/api/oauth/usage` の形）。
 ///
 /// field 名にはコード名のような key（`cinder_cove` 等）が大量にあるが、意味が公開されて
-/// いないので頼らない。読むのはこの表と `limits[]` の model 別枠だけ。
+/// いないので頼らない。読むのはこの表と `limits[]` の既知の全体枠・model 別枠。
 const CLAUDE_NAMED_WINDOWS: [(&str, &str, &str, Option<&str>); 4] = [
     ("five_hour", "5h", "5h", None),
     ("seven_day", "weekly", "weekly", None),
@@ -73,9 +73,8 @@ const CLAUDE_NAMED_WINDOWS: [(&str, &str, &str, Option<&str>); 4] = [
 /// `~/.claude.json`（Claude Code 自身が書く設定 file）→ Claude の usage。
 ///
 /// 使うのは `cachedUsageUtilization`（CC が usage を取るたびに書く cache、`fetchedAtMs` 付き）と
-/// `oauthAccount.planDisplayName` / `organizationRateLimitTier` だけ。**claude を spawn しない・
-/// API を叩かない**ための経路（spawn は hook が 8 本走る / OAuth token の直叩きは refresh token の
-/// 回転で CC のログインを壊しうる — spec の副作用ガード）。
+/// `oauthAccount.planDisplayName` / `organizationRateLimitTier` だけ。能動取得が失敗した時の
+/// fallback。古い時刻もそのまま返し、service 側の期限切れ判定・新旧比較を通す。
 pub fn claude_from_config(config: &Value) -> EngineUsage {
     let mut usage = EngineUsage::empty(UsageEngine::Claude);
     let account = &config["oauthAccount"];
@@ -92,43 +91,63 @@ pub fn claude_from_config(config: &Value) -> EngineUsage {
     };
     usage.source = UsageSource::Cache;
     usage.fetched_at_ms = cache["fetchedAtMs"].as_u64();
+    usage.windows = claude_windows(util);
+    usage
+}
 
+/// get_usage と cache の同じ形式を共通で読む。
+fn claude_windows(util: &Value) -> Vec<UsageWindow> {
+    let mut windows = Vec::new();
     for (key, id, label, scope) in CLAUDE_NAMED_WINDOWS {
         let w = &util[key];
         let Some(pct) = w["utilization"].as_f64() else {
             continue;
         };
         let window = UsageWindow::new(id, label, pct, iso_to_ms(&w["resets_at"]));
-        usage.windows.push(match scope {
+        windows.push(match scope {
             Some(s) => window.scoped(s),
             None => window,
         });
     }
 
-    // model 別の枠（例: Fable の週枠）。`seven_day_*` と重なる model は先に入った方を残す。
+    // 名前付き窓が無い時は limits の全体枠を補う。同じ id は先に入った方を残す。
     for limit in util["limits"].as_array().into_iter().flatten() {
-        let Some(model) = limit["scope"]["model"]["display_name"].as_str() else {
-            continue;
-        };
         let Some(pct) = limit["percent"].as_f64() else {
             continue;
         };
-        let id = format!("model:{}", model.to_lowercase());
-        if usage.windows.iter().any(|w| w.id == id) {
-            continue;
-        }
         let group = limit["group"].as_str().unwrap_or("limit");
-        usage.windows.push(
+        let reset = iso_to_ms(&limit["resets_at"]);
+        let window = if let Some(model) = limit["scope"]["model"]["display_name"].as_str() {
             UsageWindow::new(
-                id,
+                format!("model:{}", model.to_lowercase()),
                 format!("{group} · {model}"),
                 pct,
-                iso_to_ms(&limit["resets_at"]),
+                reset,
             )
-            .scoped(model),
-        );
+            .scoped(model)
+        } else if limit["scope"].is_null()
+            || limit["scope"]
+                .as_object()
+                .is_some_and(|scope| scope.values().all(Value::is_null))
+        {
+            let kind = limit["kind"].as_str().unwrap_or("");
+            let id = match (kind, group) {
+                ("weekly_all" | "seven_day", _) | (_, "weekly") => "weekly",
+                ("five_hour" | "five_hour_all" | "5h" | "session_all", _)
+                | (_, "five_hour" | "5h" | "session") => "5h",
+                _ => continue,
+            };
+            UsageWindow::new(id, id, pct, reset)
+        } else {
+            // 未知の scope を engine 全体の枠に昇格させない。
+            continue;
+        };
+        if windows.iter().any(|w| w.id == window.id) {
+            continue;
+        }
+        windows.push(window);
     }
-    usage
+    windows
 }
 
 /// stream-json の `rate_limit_event` 行 → 窓 1 つ（受動の差分）。
@@ -358,6 +377,59 @@ pub fn grok_from_billing(result: &Value) -> EngineUsage {
     usage
 }
 
+/// stream-json の control_response 全体 → Claude の usage。
+pub fn claude_from_get_usage(response: &Value, config: Option<&Value>) -> EngineUsage {
+    let mut usage = EngineUsage::empty(UsageEngine::Claude);
+    let envelope = &response["response"];
+    let body = &envelope["response"];
+    let account = config.map(|c| &c["oauthAccount"]).unwrap_or(&Value::Null);
+    usage.plan =
+        str_field(account, "planDisplayName").or_else(|| str_field(body, "subscription_type"));
+    usage.tier = str_field(account, "organizationRateLimitTier");
+    if envelope["subtype"] == "error" {
+        usage.error =
+            Some(str_field(envelope, "error").unwrap_or_else(|| "get_usage に失敗しました".into()));
+        return usage;
+    }
+    if envelope["subtype"] != "success" || !body["rate_limits"].is_object() {
+        usage.error = Some("get_usage の応答に rate_limits がありません".into());
+        return usage;
+    }
+    usage.source = UsageSource::Poll;
+    usage.windows = claude_windows(&body["rate_limits"]);
+    usage
+}
+
+/// `muse usage --json` → Muse の usage。時刻はすべて epoch ms。
+pub fn muse_from_usage(output: &Value) -> EngineUsage {
+    let mut usage = EngineUsage::empty(UsageEngine::Muse);
+    let allowance = &output["allowance"];
+    if !allowance.is_object() {
+        let details: Vec<_> = ["reason", "hint"]
+            .into_iter()
+            .filter_map(|key| str_field(output, key))
+            .collect();
+        usage.error = Some(if details.is_empty() {
+            "muse usage の応答に allowance がありません".into()
+        } else {
+            details.join(": ")
+        });
+        return usage;
+    }
+    usage.plan = str_field(allowance, "tier");
+    usage.source = UsageSource::Poll;
+    usage.fetched_at_ms = allowance["asOfMs"].as_u64();
+    for (key, id) in [("window", "5h"), ("weekly", "weekly")] {
+        let w = &allowance[key];
+        if let Some(pct) = w["usedPercent"].as_f64() {
+            usage
+                .windows
+                .push(UsageWindow::new(id, id, pct, w["resetsAtMs"].as_u64()));
+        }
+    }
+    usage
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,6 +456,82 @@ mod tests {
         for secret in secrets {
             assert!(!json.contains(secret), "{secret} が漏れている: {json}");
         }
+    }
+
+    // mem_1ChUDBkLpW2eUivtimWNNM: active probe とキャッシュが同じ窓を読む。
+    #[test]
+    fn claude_get_usage_reads_limits_and_supplements_account_metadata() {
+        let config = fixture("claude_config.json");
+        let response = serde_json::json!({"type":"control_response","response":{
+            "subtype":"success","request_id":"usage-1","response":{
+                "subscription_type":"max", "rate_limits_available":true,
+                "rate_limits": config["cachedUsageUtilization"]["utilization"].clone()
+            }
+        }});
+        let usage = claude_from_get_usage(&response, Some(&config));
+        assert_eq!(usage.source, UsageSource::Poll);
+        assert_eq!(usage.plan.as_deref(), Some("Ultra"));
+        assert_eq!(usage.tier.as_deref(), Some("default_claude_max_20x"));
+        assert_eq!(usage.windows, claude_from_config(&config).windows);
+        assert_eq!(usage.fetched_at_ms, None, "古い cache の時刻は採用しない");
+        assert_eq!(
+            claude_from_get_usage(&response, None).plan.as_deref(),
+            Some("max")
+        );
+        assert_eq!(usage.error, None);
+    }
+
+    #[test]
+    fn claude_get_usage_reports_protocol_errors_and_unavailable_limits() {
+        let response = serde_json::json!({"type":"control_response","response":{
+            "subtype":"error","error":"not logged in"
+        }});
+        assert_eq!(
+            claude_from_get_usage(&response, None).error.as_deref(),
+            Some("not logged in")
+        );
+        let unavailable = serde_json::json!({"response":{"subtype":"success","response":{
+            "subscription_type":"pro", "rate_limits_available":false
+        }}});
+        assert!(claude_from_get_usage(&unavailable, None).error.is_some());
+        assert!(claude_from_get_usage(&Value::Null, None).error.is_some());
+    }
+
+    #[test]
+    fn muse_usage_reads_percentage_and_millisecond_timestamps() {
+        let input = serde_json::json!({"schemaVersion":1,"allowance":{
+            "tier":"Muse Code Everyday Usage",
+            "window":{"usedPercent":70,"resetsAtMs":1795792190000u64},
+            "weekly":{"usedPercent":23,"resetsAtMs":1795996800000u64},
+            "asOfMs":1795775207653u64,"source":"mint"
+        },"reason":null,"hint":null,"email":"person@example.com"});
+        let usage = muse_from_usage(&input);
+        assert_eq!(usage.engine, "muse");
+        assert_eq!(usage.plan.as_deref(), Some("Muse Code Everyday Usage"));
+        assert_eq!(usage.source, UsageSource::Poll);
+        assert_eq!(usage.fetched_at_ms, Some(1795775207653));
+        assert_eq!(window(&usage, "5h").used_pct, 70.0);
+        assert_eq!(window(&usage, "5h").resets_at_ms, Some(1795792190000));
+        assert_eq!(window(&usage, "weekly").used_pct, 23.0);
+        assert_eq!(window(&usage, "weekly").resets_at_ms, Some(1795996800000));
+        assert!(usage.windows.iter().all(|w| w.scope.is_none()));
+        assert_no_pii(&usage, &["person@example.com"]);
+    }
+
+    #[test]
+    fn muse_usage_missing_allowance_reports_reason_and_hint() {
+        let usage = muse_from_usage(
+            &serde_json::json!({"allowance":null,"reason":"unauthenticated","hint":"Run muse login"}),
+        );
+        let error = usage.error.unwrap();
+        assert!(error.contains("unauthenticated"));
+        assert!(error.contains("Run muse login"));
+        assert!(muse_from_usage(&Value::Null).error.is_some());
+        let partial =
+            muse_from_usage(&serde_json::json!({"allowance":{"window":{"usedPercent":0}}}));
+        assert_eq!(partial.windows.len(), 1);
+        assert_eq!(partial.windows[0].used_pct, 0.0);
+        assert_eq!(partial.windows[0].resets_at_ms, None);
     }
 
     #[test]
@@ -432,6 +580,40 @@ mod tests {
 
         // weekly_all（scope なし）は seven_day と同じものなので二重に出さない
         assert_eq!(usage.windows.len(), 2, "{:?}", usage.windows);
+    }
+
+    // mem_1ChUDBkLpW2eUivtimWNNM
+    #[test]
+    fn claude_limits_fallback_recovers_overall_windows() {
+        let config = serde_json::json!({"cachedUsageUtilization":{"utilization":{
+            "seven_day": null, "five_hour": null,
+            "limits": [
+                {"kind":"weekly_all","group":"weekly","percent":6,"scope":null},
+                {"kind":"five_hour","group":"session","percent":18,"scope":null},
+                {"kind":"weekly_scoped","group":"weekly","percent":1,"scope":{"model":{"display_name":"Fable"}}}
+            ]
+        }}});
+        let usage = claude_from_config(&config);
+        assert_eq!(window(&usage, "weekly").used_pct, 6.0);
+        assert_eq!(window(&usage, "weekly").scope, None);
+        assert_eq!(window(&usage, "5h").used_pct, 18.0);
+        assert_eq!(
+            window(&usage, "model:fable").scope.as_deref(),
+            Some("Fable")
+        );
+    }
+
+    #[test]
+    fn claude_limits_empty_scope_is_overall_but_unknown_model_is_not() {
+        let config = serde_json::json!({"cachedUsageUtilization":{"utilization":{"limits":[
+            {"kind":"weekly_all","group":"weekly","percent":6,"scope":{"model":null,"surface":null}},
+            {"kind":"weekly_scoped","group":"weekly","percent":99,"scope":{"model":{"id":"unknown"}}},
+            {"kind":"session_scoped","group":"session","percent":99,"scope":{"surface":"chat"}}
+        ]}}});
+        let usage = claude_from_config(&config);
+        assert_eq!(usage.windows.len(), 1);
+        assert_eq!(window(&usage, "weekly").used_pct, 6.0);
+        assert_eq!(window(&usage, "weekly").scope, None);
     }
 
     #[test]

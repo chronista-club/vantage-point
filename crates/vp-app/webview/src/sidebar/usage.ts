@@ -24,7 +24,7 @@ export type UsageSeverity = "normal" | "warning" | "critical";
 export const WARNING_PCT = 80;
 export const CRITICAL_PCT = 95;
 
-/** MachineStrip のチップ・ゲージと tray の短い名前（`CC` / `Cdx` / `Gem` / `Grk`）。 */
+/** MachineStrip のチップ・ゲージと tray の短い名前（`CC` / `Cdx` / `Gem` / `Grk` / `Muse`）。 */
 export function usageShortName(engine: string): string {
 	switch (engine) {
 		case "claude":
@@ -33,6 +33,8 @@ export function usageShortName(engine: string): string {
 			return "Cdx";
 		case "agy":
 			return "Gem";
+		case "muse":
+			return "Muse";
 		case "grok":
 			return "Grk";
 		default:
@@ -131,7 +133,7 @@ export type UsageGauge = {
 	severity: UsageSeverity;
 };
 
-/** 4 エンジンのゲージ（snapshot の並び = claude / codex / agy / grok）。 */
+/** 5 エンジンのゲージ（snapshot の並び = claude / codex / agy / grok / muse）。 */
 export function usageGauges(snapshot: UsageSnapshot | null | undefined): UsageGauge[] {
 	return (snapshot?.engines ?? []).map((e) => {
 		const w = summaryWindow(e);

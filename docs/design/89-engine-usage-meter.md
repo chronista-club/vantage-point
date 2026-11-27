@@ -1,4 +1,4 @@
-# 89 — engine usage meter（4 エンジンのサブスク usage を machine scope で集約して表示する）
+# 89 — engine usage meter（5 エンジンのサブスク usage を machine scope で集約して表示する）
 
 - spec: creo `mem_1ChMLKCMUvC73JHTLjG3xg` / 実測: `mem_1ChMJqaRP2SunfbmEd6h1n`
 - 段: C（daemon に channel を足し、vp-app の GUI と tray にまたがる）
@@ -7,7 +7,7 @@
 
 mako は Claude Code / Codex / Gemini（`agy`）/ Grok のサブスクを併用し、残枠を見ながら
 どのエンジンで作業するかを決めている。毎回それぞれの `/usage` を開く手間を無くすため、
-daemon が 4 エンジンの使用率・リセット時刻・plan を**枠を消費せずに**集め、3 か所に出す:
+daemon が 5 エンジンの使用率・リセット時刻・plan を**枠を消費せずに**集め、3 か所に出す:
 
 1. sidebar 最下段の MachineStrip（`webview/src/sidebar/DaemonWidget.tsx`）
 2. sub lane 作成の engine 選択（`webview/src/sidebar/AddSub.tsx`）
@@ -40,17 +40,19 @@ event loop が window へ振り分ける前に拾い、tray と全 window の `S
 
 | engine | 能動（probe） | 受動 |
 |---|---|---|
-| claude | `~/.claude.json` の `cachedUsageUtilization` と `oauthAccount.planDisplayName` / `organizationRateLimitTier` を**読むだけ**（`CLAUDE_CONFIG_DIR` があればその下。mtime が同じなら読まない） | VP の chat（gui）の stream-json に流れる `rate_limit_event`（`conversation/host.rs` の stdout ポンプで translator の手前で覗く） |
+| claude | hook 無効の `control_request/get_usage` → kill。`~/.claude.json` の `oauthAccount` で plan / tier を補完、取得失敗時は `cachedUsageUtilization` に fallback（`CLAUDE_CONFIG_DIR` を尊重） | VP の chat（gui）の stream-json に流れる `rate_limit_event`（`conversation/host.rs` の stdout ポンプで translator の手前で覗く） |
 | codex | `codex app-server` → `initialize` → `account/rateLimits/read {excludeResetCreditDetails:true}` → kill | `account/rateLimits/updated`（`conversation/codex_host.rs` の notification 分岐。sparse なので窓 id で重ねる） |
 | agy | `agy -p "/usage" --output-format json` | — |
+| muse | `muse usage --json` の allowance（5h / weekly / tier / asOfMs） | — |
 | grok | `grok agent stdio` → ACP `initialize` → `_x.ai/billing` → kill（`subscription_tier` もこの応答に入るので、メールアドレスを含む `_x.ai/auth/check_subscription` は呼ばない） | — |
 
-- **claude は一度も spawn しない**（`claude -p` は hook が 8 本走る）。Keychain の OAuth token で
-  `/api/oauth/usage` を直接叩くこともしない（refresh token の回転で CC のログインを壊しうる）
+- Claude は `--settings '{"disableAllHooks":true}'` と `--no-session-persistence` を必須とし、
+  `get_usage` に `skip_behaviors: true` を付ける。user turn は送らない。CLI が更新する cache は利用するが、
+  Keychain の OAuth token で `/api/oauth/usage` を直接叩かない（認証の更新は CLI に任せる）
 - probe の子プロセスは cwd = temp dir（project 単位の MCP / hook を拾わない）。継承 env は、daemon が
   Claude Code の中から起動された時の `CLAUDECODE` / `CLAUDE_CODE_*` 等（host と同じ
   `inherited_agent_host_env_to_strip`）と、VP の identity env（`VP_REPO` / `VP_LANE` / `VP_SESSION_KEY`）を
-  剥がす。timeout（codex / agy 25 秒、grok 45 秒）を過ぎるか、応答を受け取ったら、unix では
+  剥がす。timeout（claude / codex / agy / muse 25 秒、grok 45 秒）を過ぎるか、応答を受け取ったら、unix では
   **process group ごと** kill する（grok が孫として立てる MCP server を孤児にしない）。Windows は直接の子だけ
 - test は本物の CLI を起動しない（probe は trait、`DaemonState` の test 用は `UsageService::inert()`）。
   本物に当てる smoke は `#[ignore]` + env gate（`usage::probe::tests::real_cli_probe_smoke`）
@@ -59,10 +61,11 @@ event loop が window へ振り分ける前に拾い、tray と全 window の `S
 
 | engine | daemon 起動時 | 定期 | 手動 Refresh |
 |---|---|---|---|
-| claude | file を読む | 60 秒ごと（file を読むだけなので誰も見ていなくても） | 毎回 |
+| claude | spawn | 10 分ごと（購読者がいる間だけ） | 30 秒以内の連打はまとめる |
 | codex | spawn | 15 分ごと（購読者がいる間だけ） | 30 秒以内の連打はまとめる |
 | agy | spawn | 10 分ごと（購読者がいる間だけ） | 30 秒以内の連打はまとめる |
 | grok | しない | しない | 60 秒以内の連打はまとめる |
+| muse | spawn | 10 分ごと（購読者がいる間だけ） | 30 秒以内の連打はまとめる |
 
 - 受動の通知が来た engine は、定期 poll の時計を進める（通知で足りている間は spawn しない）
 - 定期の間隔には 30 秒の余裕を持たせる（tick が数 ms 揺れただけで 1 tick = 60 秒遅れないように）
@@ -84,11 +87,12 @@ event loop が window へ振り分ける前に拾い、tray と全 window の `S
 
 | 入力 | 使用率 | リセット |
 |---|---|---|
-| Claude `cachedUsageUtilization` | 0–100 | ISO 8601 |
+| Claude `get_usage` / `cachedUsageUtilization` | 0–100 | ISO 8601 |
 | Claude `rate_limit_event` | **0–1** | epoch **秒** |
 | Codex `account/rateLimits/*` | 0–100 | epoch **秒** |
 | agy `/usage` | **残量**の 0–1 | ISO 8601 |
 | Grok `_x.ai/billing` | 0–100 | ISO 8601（期間の終わり） |
+| Muse `usage --json` | 0–100 | epoch ms |
 
 → model では `used_pct: f32`（0–100、小数 1 桁）と `resets_at_ms: Option<u64>`（epoch ms）に揃える。
 severity は `< 80` normal / `>= 80` warning / `>= 95` critical。
@@ -112,14 +116,20 @@ tray 用）と TS（`webview/src/sidebar/usage.ts::summaryWindow`）の 2 か所
 
 | 面 | 畳んだ / 一目 | 詳細 |
 |---|---|---|
-| MachineStrip | サマリ行の右端に最も逼迫しているエンジン（`Cdx 95%`、severity で色） | 展開すると 4 エンジンのゲージ、窓ごとの % とリセットまでの時間、取得失敗の理由、「更新」ボタン |
+| MachineStrip | サマリ行の右端に最も逼迫しているエンジン（`Cdx 95%`、severity で色） | 展開すると 5 エンジンのゲージ、窓ごとの % とリセットまでの時間、取得失敗の理由、「更新」ボタン |
 | engine 選択 | `claude (88%)`。未取得の engine は名前だけ（fail-open） | option の tooltip に「weekly 88% 使用 · あと 1d 18h でリセット」 |
-| tray | menu bar に最も逼迫しているエンジン（`Cdx 95%`。未取得なら icon だけ） | メニューに 4 行（`Codex — 95% weekly · resets 11/30 06:10`）と `Refresh Usage` |
+| tray | menu bar に最も逼迫しているエンジン（`Cdx 95%`。未取得なら icon だけ） | メニューに 5 行（`Codex — 95% weekly · resets 11/30 06:10`）と `Refresh Usage` |
 
 ## 未確認・後回し
 
 - Grok の値を稼働中の ACP session から相乗りで取る経路（`vendor/agent-chat` の `AcpClientHost` に拡張
   method の口が要る = 2 repo にまたがる）
-- Claude の `cachedUsageUtilization` が CC によってどれくらいの頻度で書き直されるか（未計測）
 - `daemon-control` に `usage/get` を足して CLI / MCP から読む口（今は GUI だけ）
 - Swift の `apple/VantagePointAgent` への表示（出荷物ではないので対象外）
+
+## Status log
+
+- 2026-11-28: `mem_1ChUDBkLpW2eUivtimWNNM`。通常の会話では cache が更新されず、期限切れ後に
+  Claude の窓が消える問題に対応。hook 無効の `get_usage` を主経路とし、cache は fallback に変更。
+  `limits[]` の scope なし全体枠も拾い、名前付き窓との重複を避ける。Muse を同じ snapshot に加え、
+  Tray / MachineStrip / AddSub の表示対象にする。実アプリへの反映・目視確認は lead 側で行う。

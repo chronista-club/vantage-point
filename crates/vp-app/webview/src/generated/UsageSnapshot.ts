@@ -2,7 +2,7 @@
 import type { EngineUsage } from "./EngineUsage";
 
 /**
- * daemon が配る全体像（`engines` は claude / codex / agy / grok の固定順）。
+ * daemon が配る全体像（`engines` は claude / codex / agy / grok / muse の固定順）。
  */
 export type UsageSnapshot = { engines: Array<EngineUsage>, 
 /**

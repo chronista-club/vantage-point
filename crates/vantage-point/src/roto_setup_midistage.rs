@@ -124,8 +124,7 @@ mod tests {
             serde_json::to_vec(&pins).unwrap(),
         )
         .unwrap();
-        let binary = std::env::var_os("LNX_TEST_SERVER")
-            .expect("fixed-revision gear_fixture path");
+        let binary = std::env::var_os("LNX_TEST_SERVER").expect("fixed-revision gear_fixture path");
         let mut server = tokio::process::Command::new(binary)
             .arg(dir.path())
             .kill_on_drop(true)
@@ -264,9 +263,6 @@ mod tests {
         assert!(content.knobs.is_empty());
         assert_eq!(content.switches.len(), 8);
         assert_eq!(content.switches[7].name, "lane-7");
-        assert_eq!(
-            content.switches[7].action,
-            lnx_client::SwitchAction::Push
-        );
+        assert_eq!(content.switches[7].action, lnx_client::SwitchAction::Push);
     }
 }
