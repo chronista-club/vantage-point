@@ -87,6 +87,11 @@ export {
 } from './chat-model'
 
 
+/** turn の最中に送った発話をすぐ engine へ届けられる（steer）agent。chat の turn 中の送信 2 択
+ *  （今伝える / 次に実行する）を出す。agy / grok は backend の `AcpEngine` の steer
+ *  （acp_host.rs の `host_options`）と対で、片方だけ足すと「今伝える」が turn の終わりまで待たされる。 */
+const STEER_AGENTS: ReadonlySet<string> = new Set(['claude', 'agy', 'grok'])
+
 /**
  * 会話 store は **(lane, session) 単位**（doc 50 §4.3 #1）。
  *
@@ -1713,15 +1718,20 @@ function SessionChatView(props: { lane: string; session: number }) {
   const nowLine = () => deriveNowLine(state())
   const codexInputBusy = () => !!state().codexInput
   const codexTurnActive = () => rosterEntry()?.agent === 'codex' && (state().streaming || !!state().codexQueue?.turn_id)
-  /** Claude の turn 中か。この間の送信は 2 択になる（Codex の「今伝える / 次に実行する」と同じ顔）:
-   *  - 今伝える（既定 = Enter）: 即 stdin に送る。headless claude は次の tool の区切りで今の turn に
-   *    差し込む（2026-09-23 実測: tool 実行中に送った指示が同じ turn の返事に反映、result は 1 つ）。
-   *    区切りの無い turn（文章を書いているだけ）では、今の turn の直後に次の turn として走る
-   *    （同日実測: result が 2 つ、2 つ目が指示を反映）。どちらでも取りこぼしは無い
-   *  - 次に実行する: 従来の type-ahead（pending に貯め、turn が閉じてから送る — doc 35 §5.1） */
-  const claudeTurnActive = () => rosterEntry()?.agent === 'claude' && state().streaming
-  /** 次に実行する（Claude）: pending に積む。走行中の複数送信は改行で連結し、turn 閉時に 1 turn で flush。 */
-  const queueClaudeDraft = (text: string) => {
+  /** Claude / agy / grok の turn 中か。この間の送信は 2 択になる（Codex の「今伝える / 次に実行する」と同じ顔）:
+   *  - 今伝える（既定 = Enter）: 即 backend へ送り、今の turn に差し込む（steer）。
+   *    - claude: 即 stdin に送る。headless claude は次の tool の区切りで今の turn に差し込む
+   *      （2026-09-23 実測: tool 実行中に送った指示が同じ turn の返事に反映、result は 1 つ）。
+   *      区切りの無い turn（文章を書いているだけ）では、今の turn の直後に次の turn として走る
+   *      （同日実測: result が 2 つ、2 つ目が指示を反映）。どちらでも取りこぼしは無い
+   *    - agy / grok: 共有 ACP host が turn の終わりを待たずに 2 本目の session/prompt を送る
+   *      （`HostOptions::steer`、doc 88 §10）。agy は同じ turn に取り込み、grok は 1 本目の答えの後に
+   *      続けて答える。turn の終わり（turn_completed）は最後の 1 回だけ
+   *  - 次に実行する: 従来の type-ahead（pending に貯め、turn が閉じてから送る — doc 35 §5.1）
+   *  それ以外の engine（opencode / muse 等）は turn 中の Enter も pending に貯める（steer は未測定）。 */
+  const steerTurnActive = () => STEER_AGENTS.has(rosterEntry()?.agent ?? '') && state().streaming
+  /** 次に実行する（Claude / agy / grok）: pending に積む。走行中の複数送信は改行で連結し、turn 閉時に 1 turn で flush。 */
+  const queuePendingDraft = (text: string) => {
     lc.set(s => { s['pending'] = ((p) => (p ? `${p}\n${text}` : text))(s['pending']) })
   }
   const sendCodexInput = (action: Record<string, unknown>, text = '', images: Submission['images'] = []) =>
@@ -1729,9 +1739,9 @@ function SessionChatView(props: { lane: string; session: number }) {
   const queueDraft = () => {
     const text = draft().trim()
     if (!text) return
-    if (claudeTurnActive()) {
-      // Claude の type-ahead は画像を運ばない（従来どおり）— 添付は composer に残す
-      queueClaudeDraft(text)
+    if (steerTurnActive()) {
+      // type-ahead は画像を運ばない（従来どおり）— 添付は composer に残す
+      queuePendingDraft(text)
       setDraft('')
       if (inputRef) autosize(inputRef)
       return
@@ -1753,9 +1763,9 @@ function SessionChatView(props: { lane: string; session: number }) {
       if (inputRef) autosize(inputRef)
       return
     }
-    // Claude は実行中の turn へ即送信する。他 engine の type-ahead は pending に残す。
-    if (lc.state.streaming && !claudeTurnActive()) {
-      queueClaudeDraft(text)
+    // Claude / agy / grok は実行中の turn へ即送信する（steer）。他 engine の type-ahead は pending に残す。
+    if (lc.state.streaming && !steerTurnActive()) {
+      queuePendingDraft(text)
       setDraft('')
       if (inputRef) autosize(inputRef)
       return
@@ -2422,12 +2432,12 @@ function SessionChatView(props: { lane: string; session: number }) {
                 <CreoIcon name="ph:stop" size={11} /> 停止
               </button>
             </Show>
-            {/* turn 中の送信 2 択。Claude は「今伝える」（既定 = Enter、強調）を足し、送信ボタンは
-                「次に実行する」になる（mako 2026-09-23）。Codex は従来の並び（送信ボタン = 今伝える）。 */}
-            <Show when={claudeTurnActive()}>
+            {/* turn 中の送信 2 択。Claude / agy / grok は「今伝える」（既定 = Enter、強調）を足し、送信ボタンは
+                「次に実行する」になる（mako 2026-09-23、agy / grok は 2026-11-28）。Codex は従来の並び（送信ボタン = 今伝える）。 */}
+            <Show when={steerTurnActive()}>
               <button class="conversation-send" onClick={submit}
                 disabled={!draft().trim() || !!state().submission}
-                title="今の応答に差し込む（次の tool の区切りで効く、Enter）">
+                title="今の応答に差し込む（Enter）">
                 <CreoIcon name="ph:paper-plane-right" size={12} /> 今伝える
               </button>
             </Show>
@@ -2438,7 +2448,7 @@ function SessionChatView(props: { lane: string; session: number }) {
                 次に実行する
               </button>
             </Show>
-            <Show when={claudeTurnActive()} fallback={
+            <Show when={steerTurnActive()} fallback={
               <button class="conversation-send" onClick={submit} disabled={!draft().trim() || !!state().submission || codexInputBusy()
                 || (codexTurnActive() && (!state().codexQueue?.ready || !state().codexQueue?.turn_id))}
                 title={codexTurnActive() ? '今の応答に差し込む' : undefined}>

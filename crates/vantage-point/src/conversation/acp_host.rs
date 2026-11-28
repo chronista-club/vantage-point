@@ -201,6 +201,11 @@ fn host_options(config: &AcpHostConfig) -> HostOptions {
         on_load_failed: LoadFallback::NewSession,
         config_intent: config.config_intent.clone(),
         permission: Arc::new(auto_allow),
+        // turn の最中の発話を待たずに送る（GUI の「今伝える」）。走っている turn への prompt を
+        // 実機で確かめた engine だけ（2026-11-28 の lead の実測）: agy 1.5.18 は前の prompt を
+        // `end_turn` で先に返して同じ turn に取り込む、grok 1.0.92 は受理して 1 本目 → 2 本目の
+        // 順に答える。opencode / muse は測っていないので従来どおり turn の終わりを待つ。
+        steer: matches!(engine, AcpEngine::Agy | AcpEngine::Grok),
         // stderr は daemon の log に 1 行ずつ出す（auth の失効の前触れ、provider の接続失敗など、
         // engine が生きたまま書く警告を拾う）。末尾は共有 host が持ち、終了の文に付く。
         on_stderr: Arc::new(move |line| tracing::warn!("{} stderr: {line}", engine.name())),
@@ -860,6 +865,130 @@ mod tests {
             ]),
             "Grok へ text と image の両方を渡す"
         );
+    }
+
+    /// steer を受け付ける engine（agy / grok）だけ、turn の最中の発話を待たずに送る。
+    /// 落ちるべき壊し方: `host_options` で `steer` を立て忘れる（GUI の「今伝える」が engine に
+    /// 届かず、turn の終わりまで待たされる）/ 全 engine に立てる（未測定の opencode / muse に
+    /// 同時の `session/prompt` が流れる）。
+    #[test]
+    fn steer_is_enabled_only_for_engines_that_accept_it() {
+        for (engine, steer) in [
+            (AcpEngine::Agy, true),
+            (AcpEngine::Grok, true),
+            (AcpEngine::OpenCode, false),
+            (AcpEngine::Muse, false),
+        ] {
+            assert_eq!(host_options(&config(engine)).steer, steer, "{engine:?}");
+        }
+    }
+
+    /// 次の `TurnCompleted` までの event を集める（来なければ `within` で打ち切る）。
+    async fn events_until_turn_end(
+        rx: &mut broadcast::Receiver<ConversationEvent>,
+        within: std::time::Duration,
+    ) -> (Vec<ConversationEvent>, bool) {
+        let mut out = Vec::new();
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Err(_) => return (out, false),
+                Ok(Ok(event)) => {
+                    let done = matches!(event, ConversationEvent::TurnCompleted { .. });
+                    out.push(event);
+                    if done {
+                        return (out, true);
+                    }
+                }
+                Ok(Err(e)) => panic!("recv: {e}"),
+            }
+        }
+    }
+
+    /// agy / grok の turn の最中に送った発話は、すぐ 2 本目の `session/prompt` になる（steer）。
+    /// 1 本目の応答（agy の Superseded / grok の 1 本目の終わり）では turn を閉じず、2 本目の
+    /// 応答で `TurnCompleted` を 1 回だけ出す。opencode は従来どおり、turn の終わりまで待つ。
+    #[tokio::test]
+    async fn steer_engines_send_mid_turn_prompt_and_close_the_turn_once() {
+        let _state = crate::test_env::state_dir_async().await;
+        let short = std::time::Duration::from_millis(200);
+        for engine in [AcpEngine::Agy, AcpEngine::Grok] {
+            let (agent, connector) = FakeAgent::new(Script::default());
+            let mut host =
+                AcpAgentHost::spawn_with(fake_config(engine, "vptest-acp-steer", None), connector)
+                    .expect("起動");
+            let mut rx = host.subscribe();
+            host.submit("first").await.expect("送信");
+            agent.wait_for("session/prompt").await;
+            agent.update(agent_text("1"));
+            host.submit("second").await.expect("送信");
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            while agent
+                .methods()
+                .iter()
+                .filter(|m| *m == "session/prompt")
+                .count()
+                < 2
+            {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "{engine:?}: 2 本目の session/prompt が turn の最中に届かない"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            // 1 本目の応答: turn はまだ続く。
+            agent.end_turn();
+            let (events, closed) = events_until_turn_end(&mut rx, short).await;
+            assert!(!closed, "{engine:?}: 1 本目の応答で閉じた: {events:?}");
+            agent.update(agent_text("2"));
+            agent.end_turn();
+            let (events, closed) =
+                events_until_turn_end(&mut rx, std::time::Duration::from_secs(5)).await;
+            assert!(closed, "{engine:?}: 2 本目の応答で閉じない: {events:?}");
+            let (events, closed) = events_until_turn_end(&mut rx, short).await;
+            assert!(!closed, "{engine:?}: turn の終わりが 2 回出た: {events:?}");
+            host.stop();
+        }
+
+        // steer を名乗らない engine は、turn の最中に 2 本目を送らない。
+        let (agent, connector) = FakeAgent::new(Script::default());
+        let mut host = AcpAgentHost::spawn_with(
+            fake_config(AcpEngine::OpenCode, "vptest-acp-steer", None),
+            connector,
+        )
+        .expect("起動");
+        let mut rx = host.subscribe();
+        host.submit("first").await.expect("送信");
+        agent.wait_for("session/prompt").await;
+        host.submit("second").await.expect("送信");
+        tokio::time::sleep(short).await;
+        assert_eq!(
+            agent
+                .methods()
+                .iter()
+                .filter(|m| *m == "session/prompt")
+                .count(),
+            1,
+            "opencode は turn の終わりまで待つ"
+        );
+        agent.end_turn();
+        let (_, closed) = events_until_turn_end(&mut rx, std::time::Duration::from_secs(5)).await;
+        assert!(closed);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while agent
+            .methods()
+            .iter()
+            .filter(|m| *m == "session/prompt")
+            .count()
+            < 2
+        {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "turn の終わりの後に 2 本目が送られない"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        host.stop();
     }
 
     /// agy / grok の構造化質問（ACP `elicitation/create`）が PromptCard のレールに乗る:
