@@ -515,8 +515,10 @@ impl ChatHost {
             // vpcode は無政策 engine（VCP §8）— 毎 tool の permission_request にここで答える。
             // 既存 PromptCard / conversation_respond 経路がそのまま使える（handoff の要点）。
             ChatHost::Vpcode(h) => h.respond_permission(request_id, decision).await,
-            ChatHost::Grok(_) | ChatHost::OpenCode(_) | ChatHost::Agy(_) | ChatHost::Muse(_) => {
-                anyhow::bail!("このエンジンは対話承認/permission mode を持ちません")
+            // ACP engine は構造化質問（`elicitation/create` → Question）への回答だけを運ぶ。
+            // tool の承認は host の政策（`auto_allow`）が答えるので、PromptCard には来ない。
+            ChatHost::Grok(h) | ChatHost::OpenCode(h) | ChatHost::Agy(h) | ChatHost::Muse(h) => {
+                h.respond_permission(request_id, decision).await
             }
         }
     }
