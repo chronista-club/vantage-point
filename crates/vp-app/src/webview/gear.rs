@@ -77,7 +77,7 @@ pub fn read_asset(root: &Path, request: &str) -> Option<(Vec<u8>, &'static str)>
 pub fn gear_root() -> Option<std::path::PathBuf> {
     Some(
         dirs::data_dir()?
-            .join("club.chronista.lnx-server")
+            .join("tech.anycreative.lnx-server")
             .join("gear"),
     )
 }

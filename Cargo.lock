@@ -4797,8 +4797,8 @@ checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
 name = "lnx-client"
-version = "0.2.0"
-source = "git+https://github.com/chronista-club/lnx.git?tag=v0.2.0#3403f89526910d11bf1b081d97e5e992802882af"
+version = "0.3.0"
+source = "git+https://github.com/chronista-club/lnx.git?tag=v0.3.0#7feeaf9f20f5455863ab37abec66fad8f53e4c81"
 dependencies = [
  "anyhow",
  "club-unison",
@@ -4811,8 +4811,8 @@ dependencies = [
 
 [[package]]
 name = "lnx-gear"
-version = "0.2.0"
-source = "git+https://github.com/chronista-club/lnx.git?tag=v0.2.0#3403f89526910d11bf1b081d97e5e992802882af"
+version = "0.3.0"
+source = "git+https://github.com/chronista-club/lnx.git?tag=v0.3.0#7feeaf9f20f5455863ab37abec66fad8f53e4c81"
 dependencies = [
  "serde",
  "sha1 0.11.0",
@@ -4820,8 +4820,8 @@ dependencies = [
 
 [[package]]
 name = "lnx-protocol"
-version = "0.2.0"
-source = "git+https://github.com/chronista-club/lnx.git?tag=v0.2.0#3403f89526910d11bf1b081d97e5e992802882af"
+version = "0.3.0"
+source = "git+https://github.com/chronista-club/lnx.git?tag=v0.3.0#7feeaf9f20f5455863ab37abec66fad8f53e4c81"
 dependencies = [
  "serde",
  "serde_json",
@@ -9640,7 +9640,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.6",
  "windows-sys 0.61.2",
