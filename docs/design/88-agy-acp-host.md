@@ -446,7 +446,7 @@ grok = model / reasoning_effort、opencode = model / mode（`opencode/big-pickle
 ## 9. Status log — 構造化質問・初回 command・SDK 5.6.1（2026-11-28）
 
 Spec `mem_1ChUb85e8Zxt8vYkyUonFe` / Todo `mem_1ChUb9syhgm8EsWKkcr5c8`。共有 crate は agent-chat #12
-（`e42a9ba`）と follow-up #13（`8e9235c`）・#14（`c7ea200`）、設計の正本は agent-chat の `docs/design/01-acp-client-host.md`。ここには VP 側の接続だけを書く。
+（`e42a9ba`）と follow-up #13（`8e9235c`）・#14（`c7ea200`）・#15（`075d98c`）、設計の正本は agent-chat の `docs/design/01-acp-client-host.md`。ここには VP 側の接続だけを書く。
 
 - **構造化質問（elicitation）**: engine の `elicitation/create`（`mode: "form"`）を共有 host が
   `ConversationEvent::Question` に写す。GUI は claude の AskUserQuestion と同じ PromptCard で描き、回答は
@@ -459,15 +459,19 @@ Spec `mem_1ChUb85e8Zxt8vYkyUonFe` / Todo `mem_1ChUb9syhgm8EsWKkcr5c8`。共有 c
   - URL mode と未対応の型は共有 host が invalid_params で断る。質問は履歴に残さない（制御面）
   - tool の承認（`session/request_permission`）は従来どおり host の政策 `auto_allow` が答え、PromptCard
     には来ない。`set_permission_mode` は ACP engine では引き続き Err
-  - **答える前に打ち切られた質問**: 共有 host は中断・turn の終わり・立て直しで、残っている質問に
-    `cancel` を返す。中断・turn の終わりでは id ごとに `PermissionCancelled` も出し（agent-chat #14）、
-    GUI（`chat-model.ts`）はその id のカードを「回答の前に打ち切られました」として閉じる。立て直し・
-    停止では出ないので、`engine_exited` で未回答のカードを全部閉じる（process が終われば、どの engine
-    でも答え先が無い）。
-    ⚠️ turn の終わり（`turn_completed` / `error`）だけでは閉じない — claude は turn をまたいで承認を
-    待つ（background subagent の `can_use_tool`）ので、閉じると答えられなくなる（santa round 2 で
-    一律に閉じる案を退けた）。Question / PermissionRequest は replay log に保存されないので、復元で過去の
-    カードを偽って閉じることも無い。
+  - **答える前に打ち切られた質問**: 共有 host は中断・turn の終わり・接続を畳む時（停止・立て直し・
+    engine の終了）に、残っている質問へ `cancel` を返し、id ごとに `PermissionCancelled` を出す
+    （agent-chat #14 / #15）。GUI（`chat-model.ts`）はその id のカードを「回答の前に打ち切られました」
+    として閉じる。`engine_exited` でも未回答のカードを全部閉じる（process が終われば答え先が無い）。
+    - ⚠️ VP が engine を畳む時（`ChatEngineSlot` の Drop = console への切替・購読者のいない idle
+      sweep）は `host.stop()` の直後に pump を abort するので、この event は GUI に届かない。カードは
+      次に会話を開いて replay で描き直すまで残る（claude のカードも同じ、以前からの挙動）
+    - ⚠️ turn の終わり（`turn_completed` / `error`）だけでは閉じない。VP の claude host は承認待ちを
+      turn の終わりで捨てず、stdout の EOF でだけ空にする（`conversation/host.rs:529`）ので、turn を
+      またいで答えを待つ承認がありうる（background subagent の承認。CLI の挙動としては実測していない）。
+      santa round 2 で「turn の終わりで一律に閉じる」案を退けた理由
+    - Question / PermissionRequest は保存されない（claude は replay log の `tap_event`、ACP は host の
+      控えに入れない）ので、復元で過去のカードを偽って閉じることも無い
     それでも届かなかった回答（Err）では、`respond_permission_chat` が**自分で立てた** `turn_active` だけを
     下ろす（立てたままだと idle sweep から外れる。元が true なら、pump が turn の終わりで下ろした値を
     上書きしないよう触らない）

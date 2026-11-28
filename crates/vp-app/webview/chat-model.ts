@@ -322,14 +322,16 @@ export type LaneChat = {
  *
  * 閉じる合図は 2 つだけ:
  * - `permission_cancelled`（id 指定）: 閉じた側が知らせる。今これを出すのは ACP の host（中断・turn の
- *   終わりで engine へ cancel を返した質問）。共有 crate は claude の `control_cancel_request` も同じ
- *   event に写す（`control_events`）が、VP の claude host はまだそれを通していない
+ *   終わり・接続を畳む時に engine へ cancel を返した質問。VP が engine を畳む時は pump を先に止めるので
+ *   届かない — doc 88 §9）。共有 crate は claude の `control_cancel_request` も同じ event に写す
+ *   （`control_events`）が、VP の claude host はまだそれを通していない
  * - `engine_exited`（全部）: process が終わった。どの engine でも答え先が無い
  *
- * ⚠️ turn の終わり（`turn_completed` / `error`）では閉じない — claude は turn をまたいで承認を待つ
- * （background subagent の `can_use_tool`）ので、閉じると答えられなくなる（santa round 2）。
- * Question / PermissionRequest は replay log に保存されない（conversation_pump の persist）ので、
- * replay で過去のカードを偽って閉じることは無い。
+ * ⚠️ turn の終わり（`turn_completed` / `error`）では閉じない — VP の claude host は承認待ちを turn の
+ * 終わりで捨てない（stdout の EOF でだけ空にする）ので、turn をまたいで答えを待つ承認がありうる
+ * （background subagent の `can_use_tool`。CLI の挙動は実測していない）。閉じると答えられなくなる。
+ * Question / PermissionRequest は保存されない（claude は replay log の `tap_event`、ACP は host の
+ * 控えに入れない）ので、replay で過去のカードを偽って閉じることは無い。
  */
 function expireOpenPrompts(s: ChatState, requestId?: string): void {
   for (const item of s.items) {
