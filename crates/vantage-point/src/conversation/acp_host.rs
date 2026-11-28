@@ -1085,7 +1085,8 @@ mod tests {
     }
 
     /// agy の選択式の質問 `q1` と自由記述の受け口 `q1_other`（実機 agy acp の形）は、PromptCard では
-    /// 1 つの質問になる。Other に書いた回答は `q1_other` に、選んだ回答は oneOf の const で返る。
+    /// 1 つの質問になる。Other に書いた回答は `q1_other` に、選んだ回答は oneOf の const で返る
+    /// （agy の const は "1" / "2" の番号なので、Other に "1" と書かれても選択肢にしない）。
     #[tokio::test]
     async fn agy_other_pair_is_one_question_and_write_in_returns_to_other_key() {
         use super::super::host::PermissionDecision as Decision;
@@ -1093,6 +1094,8 @@ mod tests {
         for (answer, expected) in [
             ("Blue", serde_json::json!({"q1": "2"})),
             ("Green", serde_json::json!({"q1_other": "Green"})),
+            // Other に const と同じ文字列を書いても、選択肢ではなく自由記述として返る。
+            ("1", serde_json::json!({"q1_other": "1"})),
         ] {
             let (agent, connector) = FakeAgent::new(Script::default());
             let adapter = AcpAgentHost::spawn_with(
