@@ -1185,10 +1185,14 @@ function PromptCard(props: {
         when={!props.item.answered}
         fallback={
           <div class="conversation-prompt-answered">
-            {/* キャンセル済みは回答行を出さない（答えていないので空欄が並ぶだけになる）。 */}
+            {/* キャンセル済み・打ち切りは回答行を出さない（答えていないので空欄が並ぶだけになる）。 */}
             <Show
-              when={props.item.decision !== 'deny'}
-              fallback={<div class="conversation-prompt-cancelled">キャンセルしました</div>}
+              when={props.item.decision !== 'deny' && !props.item.expired}
+              fallback={
+                <div class="conversation-prompt-cancelled">
+                  {props.item.expired ? '回答の前に打ち切られました' : 'キャンセルしました'}
+                </div>
+              }
             >
               <For each={props.item.questions}>
                 {(q) => (
@@ -1294,7 +1298,11 @@ function PermissionCard(props: {
           <div class="conversation-prompt-answered">
             <span class="conversation-prompt-ahead">{perm().toolName}</span>
             <span class="conversation-prompt-aval">
-              {props.item.decision === 'deny' ? '✗ 却下' : '✓ 許可'}
+              {props.item.expired
+                ? '回答の前に打ち切られました'
+                : props.item.decision === 'deny'
+                  ? '✗ 却下'
+                  : '✓ 許可'}
             </span>
           </div>
         }
@@ -1346,7 +1354,11 @@ function PlanCard(props: {
           <div class="conversation-prompt-answered">
             <span class="conversation-prompt-ahead">plan</span>
             <span class="conversation-prompt-aval">
-              {props.item.decision === 'deny' ? '✗ 却下' : '✓ 承認'}
+              {props.item.expired
+                ? '回答の前に打ち切られました'
+                : props.item.decision === 'deny'
+                  ? '✗ 却下'
+                  : '✓ 承認'}
             </span>
           </div>
         }

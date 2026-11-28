@@ -413,6 +413,51 @@ describe('foldInto — ConversationEvent → ChatState 畳み込み (doc 33 C2)'
     expect(s.streaming).toBe(true)
   })
 
+  // 答え先が無くなったカードは閉じる。ただし閉じる合図は「閉じた側（host）が id で知らせる」
+  // permission_cancelled と、process が終わった engine_exited だけ。turn の終わりで一律に閉じると、
+  // turn をまたいで承認を待つ claude（background subagent の can_use_tool）のカードまで閉じてしまう。
+  const askBoth: ConversationEvent[] = [
+    { kind: 'question', request_id: 'q1', questions: [{ question: 'Q?', header: 'H', options: [{ label: 'A', description: '' }], multi_select: false }] },
+    { kind: 'permission_request', request_id: 'p1', tool_name: 'Bash', input: { command: 'ls' } },
+  ]
+  const promptOf = (s: ReturnType<typeof fold>, id: string) =>
+    s.items.find((i) => i.kind === 'prompt' && i.requestId === id) as Extract<(typeof s.items)[number], { kind: 'prompt' }>
+
+  it('permission_cancelled はその id のカードだけを打ち切りとして閉じる', () => {
+    const s = fold([...askBoth, { kind: 'permission_cancelled', request_id: 'q1' }])
+    expect(promptOf(s, 'q1').answered).toBe(true)
+    expect(promptOf(s, 'q1').expired).toBe(true)
+    expect(promptOf(s, 'q1').decision).toBeUndefined()
+    expect(promptOf(s, 'p1').answered).toBe(false)
+  })
+
+  for (const end of [{ kind: 'turn_completed' }, { kind: 'error', message: 'boom' }] as ConversationEvent[]) {
+    it(`${end.kind} だけでは未回答のカードを閉じない（turn をまたいで待つ engine がある）`, () => {
+      const s = fold([...askBoth, end])
+      expect(promptOf(s, 'q1').answered).toBe(false)
+      expect(promptOf(s, 'p1').answered).toBe(false)
+    })
+  }
+
+  it('engine_exited は未回答のカードを全部打ち切りとして閉じる', () => {
+    const s = fold([...askBoth, { kind: 'engine_exited', message: '切断しました' }])
+    for (const id of ['q1', 'p1']) {
+      expect(promptOf(s, id).answered).toBe(true)
+      expect(promptOf(s, id).expired).toBe(true)
+    }
+    expect(deriveStatus(s).label).not.toBe('質問待ち')
+  })
+
+  it('回答済みのカードは打ち切りにしない', () => {
+    const s = fold([askBoth[0]])
+    const p = promptOf(s, 'q1')
+    p.answered = true
+    p.answers = { 'Q?': 'A' }
+    foldInto(s, { kind: 'permission_cancelled', request_id: 'q1' } as ConversationEvent)
+    foldInto(s, { kind: 'engine_exited', message: 'x' } as ConversationEvent)
+    expect(p.expired).toBeUndefined()
+  })
+
   it('permission_request が allow/deny 用 permission prompt を積む（doc 35 PR3）', () => {
     const s = fold([
       { kind: 'message_chunk', text: 'Bash 実行前' },

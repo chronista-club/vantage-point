@@ -441,6 +441,27 @@ impl AcpAgentHost {
         Ok(())
     }
 
+    /// engine の構造化質問（ACP `elicitation/create` の form）に答える。
+    ///
+    /// 質問は共有 host が `ConversationEvent::Question` として出し、PromptCard の回答がここへ戻る
+    /// （claude の AskUserQuestion と同じレール）。`Allow { answers }` は `accept` + content、
+    /// `Deny` は `cancel`（ACP の elicitation に拒否理由を運ぶ欄は無いので `message` は捨てる）。
+    /// 未知・使用済みの `request_id` と、engine が終了した後は Err。
+    pub async fn respond_permission(
+        &self,
+        request_id: &str,
+        decision: super::host::PermissionDecision,
+    ) -> anyhow::Result<()> {
+        let (answers, cancel) = match decision {
+            super::host::PermissionDecision::Allow { answers } => (answers, false),
+            super::host::PermissionDecision::Deny { .. } => (None, true),
+        };
+        self.host
+            .respond_permission(request_id, answers, cancel)
+            .await
+            .map_err(|e| anyhow::anyhow!("{} の質問に答えられません: {e}", self.engine.name()))
+    }
+
     /// 明示 teardown（[`super::engine::ChatEngineSlot`] Drop から呼ぶ）。会話の確定や設定の当て直しを
     /// 待っている最中でも、すぐに process を止める。先に積んであった発話は送らない。
     pub fn stop(&mut self) {
@@ -839,6 +860,99 @@ mod tests {
             ]),
             "Grok へ text と image の両方を渡す"
         );
+    }
+
+    /// agy / grok の構造化質問（ACP `elicitation/create`）が PromptCard のレールに乗る:
+    /// engine の form → `Question` → ChatHost::respond_permission → `CreateElicitationResponse`
+    /// （Allow = accept + content / Deny = cancel）→ turn が完了する。ChatHost の分岐を通すので、
+    /// engine.rs の ACP 枝が bail のままだと落ちる。
+    #[tokio::test]
+    async fn elicitation_reaches_question_and_answer_returns_to_engine() {
+        use super::super::host::PermissionDecision as Decision;
+        let _state = crate::test_env::state_dir_async().await;
+        for (engine, deny) in [(AcpEngine::Agy, false), (AcpEngine::Grok, true)] {
+            let (agent, connector) = FakeAgent::new(Script::default());
+            let adapter = AcpAgentHost::spawn_with(
+                fake_config(engine, &format!("vptest-elicit-{}", engine.name()), None),
+                connector,
+            )
+            .expect("起動");
+            let mut events = adapter.subscribe();
+            let mut host = match engine {
+                AcpEngine::Agy => super::super::ChatHost::Agy(adapter),
+                _ => super::super::ChatHost::Grok(adapter),
+            };
+            host.submit("ask").await.expect("送信");
+            agent.wait_for("session/prompt").await;
+            agent.elicit(serde_json::json!({
+                "mode": "form",
+                "message": "Choose",
+                "requestedSchema": {"type": "object", "properties": {
+                    "color": {"type": "string", "enum": ["red", "blue"]}
+                }}
+            }));
+            let (request_id, question) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        if let ConversationEvent::Question {
+                            request_id,
+                            questions,
+                        } = events.recv().await.expect("event")
+                        {
+                            return (request_id, questions[0].question.clone());
+                        }
+                    }
+                })
+                .await
+                .expect("Question が出る");
+
+            let decision = if deny {
+                Decision::Deny {
+                    message: "やめる".into(),
+                }
+            } else {
+                Decision::Allow {
+                    answers: Some(serde_json::json!({ question: "blue" })),
+                }
+            };
+            host.respond_permission(&request_id, decision)
+                .await
+                .expect("回答を返せる");
+            agent.wait_for("elicitation/response").await;
+            let response = agent
+                .log
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(method, _)| method == "elicitation/response")
+                .expect("応答")
+                .1["result"]
+                .clone();
+            if deny {
+                assert_eq!(response["action"], "cancel", "Deny は cancel: {response}");
+                assert!(response.get("content").is_none());
+            } else {
+                assert_eq!(response["action"], "accept", "Allow は accept: {response}");
+                assert_eq!(response["content"], serde_json::json!({"color": "blue"}));
+            }
+
+            agent.end_turn();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !matches!(
+                    events.recv().await.expect("event"),
+                    ConversationEvent::TurnCompleted { .. }
+                ) {}
+            })
+            .await
+            .expect("turn が完了する");
+            assert!(
+                host.respond_permission(&request_id, Decision::Allow { answers: None })
+                    .await
+                    .is_err(),
+                "使用済みの request_id は Err"
+            );
+            host.stop();
+        }
     }
 
     #[tokio::test]

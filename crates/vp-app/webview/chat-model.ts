@@ -57,6 +57,8 @@ export type ChatItem =
       // PR3: permission（tool 承認）。存在すれば allow/deny UI を描く。
       permission?: { toolName: string; input: unknown }
       decision?: 'allow' | 'deny'
+      /** 答える前に打ち切られた（permission_cancelled / engine_exited）。答え先はもう無い。 */
+      expired?: boolean
     }
 
 /**
@@ -313,6 +315,31 @@ export type Submission = {
 export type LaneChat = {
   state: ChatState
   set: StoreSetter<ChatState>
+}
+
+/**
+ * 答え先の無くなった未回答の prompt を「打ち切り」として閉じる。`requestId` 省略 = 全部。
+ *
+ * 閉じる合図は 2 つだけ:
+ * - `permission_cancelled`（id 指定）: 閉じた側が知らせる。今これを出すのは ACP の host（中断・turn の
+ *   終わり・接続を畳む時に engine へ cancel を返した質問。VP が engine を畳む時は pump を先に止めるので
+ *   届かない — doc 88 §9）。共有 crate は claude の `control_cancel_request` も同じ event に写す
+ *   （`control_events`）が、VP の claude host はまだそれを通していない
+ * - `engine_exited`（全部）: process が終わった。どの engine でも答え先が無い
+ *
+ * ⚠️ turn の終わり（`turn_completed` / `error`）では閉じない — VP の claude host は承認待ちを turn の
+ * 終わりで捨てない（stdout の EOF でだけ空にする）ので、turn をまたいで答えを待つ承認がありうる
+ * （background subagent の `can_use_tool`。CLI の挙動は実測していない）。閉じると答えられなくなる。
+ * Question / PermissionRequest は保存されない（claude は replay log の `tap_event`、ACP は host の
+ * 控えに入れない）ので、replay で過去のカードを偽って閉じることは無い。
+ */
+function expireOpenPrompts(s: ChatState, requestId?: string): void {
+  for (const item of s.items) {
+    if (item.kind === 'prompt' && !item.answered && (requestId === undefined || item.requestId === requestId)) {
+      item.answered = true
+      item.expired = true
+    }
+  }
 }
 
 /** 閉じる操作は会話・他の知らせに触れない。再度届けば改めて表示する。 */
@@ -600,6 +627,7 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       s.replaying = false
       // replay_end 未達でも、終了した engine の区間を次の接続へ持ち越さない。
       s.noticeReplayActive = false
+      expireOpenPrompts(s)
       sealLastAssistant(s) // 復活後の chunk と前 turn を融合させない（§5.1）
       // 停止を押した turn が engine の終了で閉じた（停止の時に engine が居なかったので repo が流した /
       // 中断の待ちの間に engine が終了した）。turn は止まったので turn_completed と同じく 1 行出し、
@@ -624,6 +652,10 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
         questions: ev.questions,
         answered: false,
       })
+      break
+    case 'permission_cancelled':
+      // host が答えを待つのをやめた（今は ACP の中断・turn の終わり・接続を畳む時）
+      expireOpenPrompts(s, ev.request_id)
       break
     case 'permission_request':
       // engine が turn を pause して tool 承認を待つ（HITL）。カーソル点滅を止める。

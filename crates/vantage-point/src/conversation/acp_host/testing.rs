@@ -21,7 +21,13 @@ pub(crate) enum Step {
     Close,
     /// 待たせている `session/set_config_option` に応答する（[`Script::hold_config`]）。
     ReleaseConfig,
+    /// agent から `elicitation/create`（構造化質問）を送る。`sessionId` は偽の agent が埋める。
+    /// client の応答は log に `elicitation/response` として残る。
+    Elicit(Value),
 }
+
+/// 偽の agent が送る `elicitation/create` の JSON-RPC id。
+const ELICIT_ID: &str = "elicit-1";
 
 /// 接続の台本。
 #[derive(Clone, Default)]
@@ -84,6 +90,10 @@ impl FakeAgent {
 
     pub(crate) fn release_config(&self) {
         self.steps.send(Step::ReleaseConfig).expect("偽の agent");
+    }
+
+    pub(crate) fn elicit(&self, form: Value) {
+        self.steps.send(Step::Elicit(form)).expect("偽の agent");
     }
 
     /// `method` の要求か通知が届くまで待つ（turn が始まる前に update を流さないため）。
@@ -195,6 +205,16 @@ async fn run(
                         }
                     }
                     Step::Update(update) => send_update(&peer, &session, &update),
+                    Step::Elicit(mut form) => {
+                        form["sessionId"] = json!(session);
+                        let request = RawJsonRpcMessage::request(
+                            "elicitation/create".to_owned(),
+                            form,
+                            ELICIT_ID.to_string(),
+                        )
+                        .expect("elicitation");
+                        send(&peer, request);
+                    }
                     Step::EndTurn => {
                         if let Some(id) = pending_prompt.take() {
                             send(
@@ -279,7 +299,16 @@ async fn run(
                     );
                 }
             }
-            RawJsonRpcMessage::Response(_) => {}
+            RawJsonRpcMessage::Response(response) => {
+                // 偽の agent が client へ送る要求は今は elicitation だけだが、名札は id で決める
+                // （別の要求を足した時に、テストが他の応答を拾わないように）。
+                let value = serde_json::to_value(&response).unwrap_or_default();
+                if value["id"] == ELICIT_ID {
+                    log.lock()
+                        .unwrap()
+                        .push(("elicitation/response".to_string(), value));
+                }
+            }
         }
     }
 }
