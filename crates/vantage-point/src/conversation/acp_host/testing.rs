@@ -26,6 +26,9 @@ pub(crate) enum Step {
     Elicit(Value),
 }
 
+/// 偽の agent が送る `elicitation/create` の JSON-RPC id。
+const ELICIT_ID: &str = "elicit-1";
+
 /// 接続の台本。
 #[derive(Clone, Default)]
 pub(crate) struct Script {
@@ -207,7 +210,7 @@ async fn run(
                         let request = RawJsonRpcMessage::request(
                             "elicitation/create".to_owned(),
                             form,
-                            "elicit-1".to_string(),
+                            ELICIT_ID.to_string(),
                         )
                         .expect("elicitation");
                         send(&peer, request);
@@ -297,10 +300,14 @@ async fn run(
                 }
             }
             RawJsonRpcMessage::Response(response) => {
+                // 偽の agent が client へ送る要求は今は elicitation だけだが、名札は id で決める
+                // （別の要求を足した時に、テストが他の応答を拾わないように）。
                 let value = serde_json::to_value(&response).unwrap_or_default();
-                log.lock()
-                    .unwrap()
-                    .push(("elicitation/response".to_string(), value));
+                if value["id"] == ELICIT_ID {
+                    log.lock()
+                        .unwrap()
+                        .push(("elicitation/response".to_string(), value));
+                }
             }
         }
     }

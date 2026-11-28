@@ -413,6 +413,41 @@ describe('foldInto — ConversationEvent → ChatState 畳み込み (doc 33 C2)'
     expect(s.streaming).toBe(true)
   })
 
+  // ACP の elicitation は host が中断・turn の終わり・再起動で engine へ cancel を返す。答え先が
+  // 無くなったカードを「質問待ち」のまま残すと、後から答えて Err になり turn が立ったまま固まる。
+  for (const end of [
+    { kind: 'turn_completed' },
+    { kind: 'error', message: 'boom' },
+    { kind: 'engine_exited', message: '切断しました' },
+  ] as ConversationEvent[]) {
+    it(`${end.kind} で未回答の prompt を打ち切りとして閉じる`, () => {
+      const s = fold([
+        { kind: 'question', request_id: 'q1', questions: [{ question: 'Q?', header: 'H', options: [{ label: 'A', description: '' }], multi_select: false }] },
+        { kind: 'permission_request', request_id: 'p1', tool_name: 'Bash', input: { command: 'ls' } },
+        end,
+      ])
+      const prompts = s.items.filter((i) => i.kind === 'prompt')
+      expect(prompts).toHaveLength(2)
+      for (const p of prompts) {
+        if (p.kind !== 'prompt') continue
+        expect(p.answered).toBe(true)
+        expect(p.expired).toBe(true)
+        expect(p.decision).toBeUndefined()
+      }
+      expect(deriveStatus(s).label).not.toBe('質問待ち')
+    })
+  }
+
+  it('回答済みの prompt は turn の終わりで打ち切りにしない', () => {
+    const s = fold([
+      { kind: 'question', request_id: 'q1', questions: [{ question: 'Q?', header: 'H', options: [{ label: 'A', description: '' }], multi_select: false }] },
+    ])
+    const p = s.items[0]
+    if (p.kind === 'prompt') { p.answered = true; p.answers = { 'Q?': 'A' } }
+    foldInto(s, { kind: 'turn_completed' } as ConversationEvent)
+    if (p.kind === 'prompt') expect(p.expired).toBeUndefined()
+  })
+
   it('permission_request が allow/deny 用 permission prompt を積む（doc 35 PR3）', () => {
     const s = fold([
       { kind: 'message_chunk', text: 'Bash 実行前' },

@@ -446,7 +446,7 @@ grok = model / reasoning_effort、opencode = model / mode（`opencode/big-pickle
 ## 9. Status log — 構造化質問・初回 command・SDK 5.6.1（2026-11-28）
 
 Spec `mem_1ChUb85e8Zxt8vYkyUonFe` / Todo `mem_1ChUb9syhgm8EsWKkcr5c8`。共有 crate は agent-chat #12
-（`e42a9ba`）、設計の正本は agent-chat の `docs/design/01-acp-client-host.md`。ここには VP 側の接続だけを書く。
+（`e42a9ba`）と follow-up #13（`8e9235c`）、設計の正本は agent-chat の `docs/design/01-acp-client-host.md`。ここには VP 側の接続だけを書く。
 
 - **構造化質問（elicitation）**: engine の `elicitation/create`（`mode: "form"`）を共有 host が
   `ConversationEvent::Question` に写す。GUI は claude の AskUserQuestion と同じ PromptCard で描き、回答は
@@ -459,6 +459,12 @@ Spec `mem_1ChUb85e8Zxt8vYkyUonFe` / Todo `mem_1ChUb9syhgm8EsWKkcr5c8`。共有 c
   - URL mode と未対応の型は共有 host が invalid_params で断る。質問は履歴に残さない（制御面）
   - tool の承認（`session/request_permission`）は従来どおり host の政策 `auto_allow` が答え、PromptCard
     には来ない。`set_permission_mode` は ACP engine では引き続き Err
+  - **答える前に turn が閉じた質問**: 共有 host は中断・turn の終わり・再起動で、残っている質問に
+    `cancel` を返す。GUI（`chat-model.ts`）は `turn_completed` / `error` / `engine_exited` で未回答の
+    カードを「回答の前に打ち切られました」として閉じる（claude の質問・tool 承認のカードも同じ扱い。
+    turn が閉じた時点で答え先が無いのは engine を問わない）。Question / PermissionRequest は replay log に
+    保存されないので、復元で過去のカードを偽って閉じることは無い。それでも届かなかった回答（Err）では、
+    `respond_permission_chat` が立てた `turn_active` を元に戻す（立てたままだと idle sweep から外れる）
 - **初回 slash command**: `initialize` / `session/new` / `session/load` の応答（`_meta.availableCommands`
   を含む）と、`session/new` 直後の `available_commands_update` を、最初の `SessionInit.slash_commands`
   に載せる（新規 session で command がまだ無ければ合計 50 ms まで待つ）。§6.3 の「turn の終わりに
@@ -466,14 +472,17 @@ Spec `mem_1ChUb85e8Zxt8vYkyUonFe` / Todo `mem_1ChUb9syhgm8EsWKkcr5c8`。共有 c
 - **SDK 5.6.1**: `agent-client-protocol` 5.3 → 5.6.1。`initialize` で client_info と capabilities
   （`elicitation.form` / `session.notices` / `session.compaction` / `plan`）を名乗る。`auth.terminal` は
   起動導線が無いので false。`notice` / `compaction_update` は `Notice`、`plan_update` / `plan_removed`
-  は `Plan` に写す。config の `category` を保持する
+  は `Plan` に写す。config の `category` を保持する。tool の表示名はこれまでどおり `title` が先で、
+  programmatic な `name` は `title` が無い時だけ使う（agent-chat #13。`name` を先にすると agy の now-line
+  が `ls` → `run_command` に痩せる）
 - **configId の落とし穴**: SDK の v1 型は `configOptions[*].id` 必須で、配列は `VecSkipError`。v2 形の
   `configId` / `groupId` で返す engine だと、設定の軸が**エラー無しで 0 件**になる。共有 host が応答の
   dispatch（型に通す前）で `id` / `group` を補う（`config::normalize_v1_config_options`）
 
 検証: `conversation::acp_host::tests::elicitation_reaches_question_and_answer_returns_to_engine`
 （偽の agent で agy = Allow / grok = Deny を ChatHost 経由で往復させ、turn の完了と使用済み id の Err
-まで見る）。共有 crate 側は `tests/elicitation.rs` / `stabilized.rs` / `fake_agent.rs`。
+まで見る）、`repo::lane::pool::tests::failed_respond_restores_turn_active`、`chatview.test.ts` の
+「未回答の prompt を打ち切りとして閉じる」。共有 crate 側は `tests/elicitation.rs` / `stabilized.rs` / `fake_agent.rs`。
 
 **未確認（実機）**: 実 CLI（agy / grok）が `elicitation/create` を実際に送る場面と、その時の PromptCard の
 見え方・回答後に turn が続くこと。手順: agy の lane で chat を開き、engine に選択を求める依頼

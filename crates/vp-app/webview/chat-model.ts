@@ -57,6 +57,8 @@ export type ChatItem =
       // PR3: permission（tool 承認）。存在すれば allow/deny UI を描く。
       permission?: { toolName: string; input: unknown }
       decision?: 'allow' | 'deny'
+      /** 答える前に turn が閉じた（中断・turn の終わり・engine の終了）。答え先はもう無い。 */
+      expired?: boolean
     }
 
 /**
@@ -316,6 +318,23 @@ export type LaneChat = {
 }
 
 /** 閉じる操作は会話・他の知らせに触れない。再度届けば改めて表示する。 */
+/**
+ * 未回答の prompt を「打ち切り」として閉じる（turn を閉じる event で呼ぶ）。
+ *
+ * turn が閉じた時点で、その turn の質問・承認には答え先が無い（ACP の host は中断・turn の終わり・
+ * 再起動で engine へ cancel を返す）。残すと「質問待ち」が固着し、後から答えると Err になって
+ * repo 側の turn が立ったまま残る。Question / PermissionRequest は replay log に保存されない
+ * （conversation_pump の persist）ので、replay で過去のカードを偽って閉じることは無い。
+ */
+function expireOpenPrompts(s: ChatState): void {
+  for (const item of s.items) {
+    if (item.kind === 'prompt' && !item.answered) {
+      item.answered = true
+      item.expired = true
+    }
+  }
+}
+
 export function dismissNotice(s: ChatState, message: string): void {
   s.liveNotices = s.liveNotices.filter(notice => notice !== message)
 }
@@ -578,6 +597,7 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       s.contextTokens = ev.context_tokens ?? s.contextTokens
       s.contextWindow = ev.context_window ?? s.contextWindow
       s.nowLine = null // 契約の「今」は turn より長生きしない（doc 51 §1 A3）
+      expireOpenPrompts(s)
       sealLastAssistant(s) // 次 turn の chunk と融合させない（§5.1）
       if (s.interruptRequested) {
         s.interruptRequested = false
@@ -589,6 +609,7 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       s.interruptRequested = false
       s.streaming = false
       s.replaying = false // replay window 中に error が割り込んでも再同期ローダーを固着させない（streaming と同じ防御）
+      expireOpenPrompts(s)
       sealLastAssistant(s) // error バブルを前 turn と分ける（§5.1）
       s.items.push({ kind: 'assistant', text: `\n\n⚠️ **engine error**: ${ev.message}` })
       break
@@ -600,6 +621,7 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       s.replaying = false
       // replay_end 未達でも、終了した engine の区間を次の接続へ持ち越さない。
       s.noticeReplayActive = false
+      expireOpenPrompts(s)
       sealLastAssistant(s) // 復活後の chunk と前 turn を融合させない（§5.1）
       // 停止を押した turn が engine の終了で閉じた（停止の時に engine が居なかったので repo が流した /
       // 中断の待ちの間に engine が終了した）。turn は止まったので turn_completed と同じく 1 行出し、

@@ -2118,9 +2118,17 @@ impl LanePool {
             .map_err(|e| anyhow::anyhow!("{e} — 応答先が無い"))?;
         // submit_chat と同じ理由で turn を立てる（回答も engine への**入力**なので出力を
         // 生まず、pump からは観測できない）。承認待ちで止まっていた turn がここで再開する。
-        slot.turn_active
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        slot.host.respond_permission(request_id, decision).await
+        // 届かなかった時（答え先が既に無い = host が turn の終わりで質問を cancel 済み、等）は
+        // 何も再開しないので元に戻す — 立てたままだと idle sweep から外れて engine が居座る。
+        let was_active = slot
+            .turn_active
+            .swap(true, std::sync::atomic::Ordering::Relaxed);
+        let result = slot.host.respond_permission(request_id, decision).await;
+        if result.is_err() {
+            slot.turn_active
+                .store(was_active, std::sync::atomic::Ordering::Relaxed);
+        }
+        result
     }
 
     /// 当該 session の chat engine を落とす（submit 失敗時の self-heal 用。次の ensure で再 spawn）。
@@ -4066,6 +4074,63 @@ mod tests {
         assert!(
             pool.drop_idle_chat_engines(&addr, now).is_empty(),
             "投入直後の engine は活動時刻が古くても落とさない"
+        );
+    }
+
+    /// **届かなかった回答は turn を立てたままにしない**（santa の moody-blues 指摘、2026-11-28）。
+    ///
+    /// 回答の前に `turn_active` を立てるのは、回答が engine を再開させる入力だから。だが答え先が
+    /// もう無い（ACP の host が turn の終わりで質問を cancel 済み = 未知の request_id）時は、
+    /// 何も再開しないので、立てたままだと idle sweep から外れて engine が居座る。
+    #[tokio::test]
+    async fn failed_respond_restores_turn_active() {
+        use std::sync::atomic::Ordering;
+        let _state = crate::test_env::state_dir_async().await;
+        let addr = LaneAddress::root("vp");
+        let mut pool = LanePool::new();
+        insert_chat_lane(&mut pool, &addr);
+        let (_agent, connector) = crate::conversation::acp_host::testing::FakeAgent::new(
+            crate::conversation::acp_host::testing::Script::default(),
+        );
+        let host = crate::conversation::AcpAgentHost::spawn_with(
+            crate::conversation::AcpHostConfig {
+                engine: crate::conversation::AcpEngine::Agy,
+                cwd: std::env::temp_dir().to_string_lossy().to_string(),
+                repo: addr.repo.clone(),
+                lane: "fake-engine".into(),
+                lane_label: "fake-engine".into(),
+                session_key: 1,
+                session_id: None,
+                config_intent: Vec::new(),
+            },
+            connector,
+        )
+        .expect("偽の agy");
+        pool.chat_engines.entry(addr.clone()).or_default().insert(
+            1,
+            crate::conversation::ChatEngineSlot {
+                host: crate::conversation::ChatHost::Agy(host),
+                pump: tokio::spawn(async {}),
+                last_event_at: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                turn_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            },
+        );
+
+        let result = pool
+            .respond_permission_chat(
+                &addr,
+                Some(1),
+                "acp-elicit-unknown",
+                crate::conversation::PermissionDecision::Allow { answers: None },
+            )
+            .await;
+
+        assert!(result.is_err(), "未知の request_id は Err");
+        assert!(
+            !pool.chat_engines[&addr][&1]
+                .turn_active
+                .load(Ordering::Relaxed),
+            "届かなかった回答で turn_active を立てたままにしない"
         );
     }
 
