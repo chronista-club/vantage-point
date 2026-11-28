@@ -1084,6 +1084,80 @@ mod tests {
         }
     }
 
+    /// agy の選択式の質問 `q1` と自由記述の受け口 `q1_other`（実機 agy acp の形）は、PromptCard では
+    /// 1 つの質問になる。Other に書いた回答は `q1_other` に、選んだ回答は oneOf の const で返る。
+    #[tokio::test]
+    async fn agy_other_pair_is_one_question_and_write_in_returns_to_other_key() {
+        use super::super::host::PermissionDecision as Decision;
+        let _state = crate::test_env::state_dir_async().await;
+        for (answer, expected) in [
+            ("Blue", serde_json::json!({"q1": "2"})),
+            ("Green", serde_json::json!({"q1_other": "Green"})),
+        ] {
+            let (agent, connector) = FakeAgent::new(Script::default());
+            let adapter = AcpAgentHost::spawn_with(
+                fake_config(AcpEngine::Agy, "vptest-elicit-other-pair", None),
+                connector,
+            )
+            .expect("起動");
+            let mut events = adapter.subscribe();
+            let mut host = super::super::ChatHost::Agy(adapter);
+            host.submit("ask").await.expect("送信");
+            agent.wait_for("session/prompt").await;
+            agent.elicit(serde_json::json!({
+                "mode": "form",
+                "message": "The agent has a question.",
+                "requestedSchema": {"type": "object", "properties": {
+                    "q1": {"type": "string", "title": "Red or Blue?", "oneOf": [
+                        {"const": "1", "title": "Red"},
+                        {"const": "2", "title": "Blue"}
+                    ]},
+                    "q1_other": {"type": "string", "title": "Other",
+                        "description": "Optional free-form answer to: Red or Blue?"}
+                }}
+            }));
+            let (request_id, questions) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        if let ConversationEvent::Question {
+                            request_id,
+                            questions,
+                        } = events.recv().await.expect("event")
+                        {
+                            return (request_id, questions);
+                        }
+                    }
+                })
+                .await
+                .expect("Question が出る");
+            assert_eq!(questions.len(), 1, "q1_other は別の質問にしない");
+            assert_eq!(questions[0].question, "Red or Blue?");
+            let question = questions[0].question.clone();
+
+            host.respond_permission(
+                &request_id,
+                Decision::Allow {
+                    answers: Some(serde_json::json!({ question: answer })),
+                },
+            )
+            .await
+            .expect("回答を返せる");
+            agent.wait_for("elicitation/response").await;
+            let response = agent
+                .log
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(method, _)| method == "elicitation/response")
+                .expect("応答")
+                .1["result"]
+                .clone();
+            assert_eq!(response["action"], "accept", "{response}");
+            assert_eq!(response["content"], expected, "回答 {answer}");
+            host.stop();
+        }
+    }
+
     #[tokio::test]
     async fn muse_chat_host_sends_image_content_block() {
         let _state = crate::test_env::state_dir_async().await;
