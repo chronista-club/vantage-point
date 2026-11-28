@@ -498,3 +498,54 @@ Spec `mem_1ChUb85e8Zxt8vYkyUonFe` / Todo `mem_1ChUb9syhgm8EsWKkcr5c8`。共有 c
 見え方・回答後に turn が続くこと。手順: agy の lane で chat を開き、engine に選択を求める依頼
 （例「赤と青のどちらで作るか私に聞いてから進めて」）を送る → PromptCard が出るか → 選んで turn が続くか。
 engine が elicitation を使わず本文で聞き返すだけなら、この経路はまだ通らない。
+
+## 10. Status log — turn 中の送信 2 択（Steer / Queue）（2026-11-28）
+
+Spec `mem_1ChV1bW7aVhKf6j5fVqd52` / Todo `mem_1ChV1bq3MjjazR9J8LH1qG`。共有 crate は agent-chat #16（`bd4b192`）、設計の正本は
+agent-chat の `docs/design/01-acp-client-host.md`（「steer」）。ここには VP 側の接続だけを書く。
+
+mako の要望: Codex の chat と同じく、turn の最中（thinking / tool の実行中）に「今伝える」（Steer）と
+「次に実行する」（Queue）を選べて、既定（Enter）は今伝える。
+
+- **実測（2026-11-28、VP の lead）**: 1 本目の `session/prompt`（`sleep 3` の tool を実行中）の最中に
+  2 本目を送った
+  - agy 1.5.18（`agy acp --dangerously-skip-permissions`）: 2 本目を受けた瞬間に 1 本目が
+    `stopReason: end_turn` で返る（agy の中では `Lease.Superseded`）。tool は中断されずに終わり、同じ turn
+    の続きとして 2 本目の指示だけに答え、最後に 2 本目が `end_turn` で返る
+  - grok 1.0.92（`grok agent --always-approve stdio`）: エラーにせず受理する。1 本目の答え → 1 本目の
+    応答 → 2 本目の答え → 2 本目の応答、の順（engine の中で順に処理する）
+- **共有 host（`HostOptions::steer`）**: true なら turn の最中の `submit` も待たずに `session/prompt` を
+  送る。送って応答の返っていない prompt の数を数え、0 になった時だけ turn を閉じる（`TurnCompleted` は
+  最後の 1 回だけ）。中断は 1 回の `session/cancel` で、走っている prompt が全部答えた時に閉じる。
+  停止を押した後、engine が turn を閉じるまでに送った発話は steer せず、turn の終わりまで待って送る
+  （中断の期限を後の prompt に背負わせないため）。途中の応答の失敗は `Error` でなく `Notice` で出す
+  （GUI は `error` で停止ボタンを畳むので、turn が続いている間は出さない）
+- **VP の注入（`acp_host.rs` の `host_options`）**: `steer = matches!(engine, Agy | Grok)`。opencode /
+  muse は測っていないので false（従来どおり turn の終わりまで待って 1 件ずつ送る）
+- **GUI（`chatview.tsx`）**: turn の最中の 2 択（今伝える / 次に実行する）を出す agent を
+  `STEER_AGENTS = {claude, agy, grok}` にした（以前は claude だけ）。今伝える = Enter・強調ボタンで即
+  `conversation:submit`（画像も運ぶ）。次に実行する = 従来の type-ahead（`pending` に貯め、
+  `turn_completed` で送る。待っている間は「編集」で入力欄に戻せる）。backend の steer と GUI の
+  `STEER_AGENTS` は対で、片方だけ足すと「今伝える」が turn の終わりまで待たされる
+- **吹き出しの並び**: 送った時に user の吹き出しが末尾に入るので、その後に届く chunk は新しい assistant
+  の吹き出しになる。grok は 1 本目の答えを言い切ってから 2 本目に答えるので、**1 本目の答えの残りと
+  2 本目の答えが同じ吹き出しに続けて入る**（turn の途中に区切りの event が無い。turn は 1 つとして閉じる）。
+  見え方が問題になったら、途中の応答で吹き出しを区切る event を足す（今はしていない）
+
+検証: 共有 crate の `steer_sends_mid_turn_prompt_at_once_and_closes_the_turn_once`（偽の agent に agy の
+Superseded を入れた）/ `steer_interrupt_closes_the_turn_after_every_prompt_answers`（2 本とも応答を待って
+いる時の中断）/ `steer_waits_for_the_interrupted_turn_before_sending`（停止の後の発話）/
+`steer_reports_a_failed_superseded_prompt_without_ending_the_turn`（途中の失敗は `Notice`）。
+VP は `conversation::acp_host::tests::steer_is_enabled_only_for_engines_that_accept_it` /
+`steer_engines_send_mid_turn_prompt_and_close_the_turn_once`（agy / grok は turn 中に 2 本目が届き、1 本目の
+応答では閉じない。opencode は届かない）、webview の `acp-steer.test.ts`（agy / grok の Enter が即 submit、
+次に実行するが turn の終わりに送る、opencode は貯める、吹き出しの並び）。
+
+**未確認（実機）**: 実 CLI での見え方。手順: agy（と grok）の lane で chat を開き、時間のかかる依頼
+（例「`sleep 5` してから hello と答えて」）を送る → 実行中に「代わりに bye と答えて」と入力して Enter →
+すぐ送られ（入力欄が空になり user の吹き出しが出る）、agy は bye だけを答えて turn が 1 回で閉じるか。
+同じ場面で「次に実行する」を押すと、turn の終わりに送られるか。合否は「送った発話が同じ turn の中で
+扱われ、turn の終わり（停止ボタンが消える）が 1 回だけ」で見る（agy が前の依頼に触れるかどうかは問わない）。
+grok は今伝えた後に停止も押す — 2 本が走っている時に `session/cancel` 1 回で両方が答えるかは未測定で、
+答えなければ 3 秒で engine が止まり「engine が中断に答えないため止めました」が出る。実測した version
+（`agy --version` / `grok --version`）も書き添える（このマシンの agy は 2026-11-28 の 17 時に 1.5.19 へ上がった）。

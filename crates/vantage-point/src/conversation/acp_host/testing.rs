@@ -4,6 +4,7 @@
 //! JSON-RPC を返す）。違いは、turn の中身をテストが 1 手ずつ進められること（[`Step`]）—
 //! 「turn の最中に履歴を配り直す」場面で、どこまで流れた時点かをテストが決める。
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::{Channel, RawJsonRpcMessage, RawJsonRpcParams, TransportFrame};
@@ -15,7 +16,8 @@ use tokio::sync::mpsc;
 pub(crate) enum Step {
     /// `session/update` を 1 件流す。
     Update(Value),
-    /// 待たせている `session/prompt` に応答する（turn の終わり）。
+    /// 待たせている `session/prompt` のうち、いちばん古い 1 本に応答する（turn の終わり。
+    /// steer で複数が待っている時は、engine が前の prompt から返すのと同じ並び）。
     EndTurn,
     /// 接続を閉じる（engine が終了した）。
     Close,
@@ -182,7 +184,7 @@ async fn run(
     // 接続が生きている間、この接続が手を受ける（立て直しの後は次の接続が受ける）。
     let mut steps = steps.lock().await;
     let mut session = "new-1".to_string();
-    let mut pending_prompt = None;
+    let mut pending_prompts = VecDeque::new();
     let mut pending_config = None;
     loop {
         let frame = tokio::select! {
@@ -216,7 +218,7 @@ async fn run(
                         send(&peer, request);
                     }
                     Step::EndTurn => {
-                        if let Some(id) = pending_prompt.take() {
+                        if let Some(id) = pending_prompts.pop_front() {
                             send(
                                 &peer,
                                 RawJsonRpcMessage::response(id, Ok(json!({"stopReason": "end_turn"}))),
@@ -278,7 +280,7 @@ async fn run(
                     }
                     "session/prompt" => {
                         // 応答はテストの `EndTurn` まで待たせる。
-                        pending_prompt = Some(request.id.clone());
+                        pending_prompts.push_back(request.id.clone());
                         continue;
                     }
                     _ => Err(agent_client_protocol::Error::method_not_found()),
@@ -290,13 +292,13 @@ async fn run(
                     notification.method.to_string(),
                     params(notification.params.as_ref()),
                 ));
-                if &*notification.method == "session/cancel"
-                    && let Some(id) = pending_prompt.take()
-                {
-                    send(
-                        &peer,
-                        RawJsonRpcMessage::response(id, Ok(json!({"stopReason": "cancelled"}))),
-                    );
+                if &*notification.method == "session/cancel" {
+                    for id in pending_prompts.drain(..) {
+                        send(
+                            &peer,
+                            RawJsonRpcMessage::response(id, Ok(json!({"stopReason": "cancelled"}))),
+                        );
+                    }
                 }
             }
             RawJsonRpcMessage::Response(response) => {
