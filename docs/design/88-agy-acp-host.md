@@ -463,8 +463,8 @@ Spec `mem_1ChUb85e8Zxt8vYkyUonFe` / Todo `mem_1ChUb9syhgm8EsWKkcr5c8`。共有 c
     engine の終了）に、残っている質問へ `cancel` を返し、id ごとに `PermissionCancelled` を出す
     （agent-chat #14 / #15）。GUI（`chat-model.ts`）はその id のカードを「回答の前に打ち切られました」
     として閉じる。`engine_exited` でも未回答のカードを全部閉じる（process が終われば答え先が無い）。
-    - ⚠️ VP が engine を畳む時（`ChatEngineSlot` の Drop = console への切替・購読者のいない idle
-      sweep）は `host.stop()` の直後に pump を abort するので、この event は GUI に届かない。カードは
+    - ⚠️ VP が engine を畳む時（`ChatEngineSlot` の Drop。例: console への切替、購読者のいない idle
+      sweep、lane の restart、session の ✕）は `host.stop()` の直後に pump を abort するので、この event は GUI に届かない。カードは
       次に会話を開いて replay で描き直すまで残る（claude のカードも同じ、以前からの挙動）
     - ⚠️ turn の終わり（`turn_completed` / `error`）だけでは閉じない。VP の claude host は承認待ちを
       turn の終わりで捨てず、stdout の EOF でだけ空にする（`conversation/host.rs:529`）ので、turn を

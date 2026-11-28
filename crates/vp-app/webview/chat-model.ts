@@ -654,7 +654,7 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       })
       break
     case 'permission_cancelled':
-      // host が答えを待つのをやめた（今は ACP の中断・turn の終わり）
+      // host が答えを待つのをやめた（今は ACP の中断・turn の終わり・接続を畳む時）
       expireOpenPrompts(s, ev.request_id)
       break
     case 'permission_request':
