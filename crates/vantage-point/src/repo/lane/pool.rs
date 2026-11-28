@@ -2119,14 +2119,16 @@ impl LanePool {
         // submit_chat と同じ理由で turn を立てる（回答も engine への**入力**なので出力を
         // 生まず、pump からは観測できない）。承認待ちで止まっていた turn がここで再開する。
         // 届かなかった時（答え先が既に無い = host が turn の終わりで質問を cancel 済み、等）は
-        // 何も再開しないので元に戻す — 立てたままだと idle sweep から外れて engine が居座る。
+        // 何も再開しないので、**自分が立てた時だけ**下ろす — 立てたままだと idle sweep から外れて
+        // engine が居座る。元が true なら触らない: 往復の間に pump が turn の終わりで false に
+        // した値を、古い true で上書きしてしまうため（santa round 2）。
         let was_active = slot
             .turn_active
             .swap(true, std::sync::atomic::Ordering::Relaxed);
         let result = slot.host.respond_permission(request_id, decision).await;
-        if result.is_err() {
+        if result.is_err() && !was_active {
             slot.turn_active
-                .store(was_active, std::sync::atomic::Ordering::Relaxed);
+                .store(false, std::sync::atomic::Ordering::Relaxed);
         }
         result
     }

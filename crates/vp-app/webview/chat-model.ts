@@ -57,7 +57,7 @@ export type ChatItem =
       // PR3: permission（tool 承認）。存在すれば allow/deny UI を描く。
       permission?: { toolName: string; input: unknown }
       decision?: 'allow' | 'deny'
-      /** 答える前に turn が閉じた（中断・turn の終わり・engine の終了）。答え先はもう無い。 */
+      /** 答える前に打ち切られた（permission_cancelled / engine_exited）。答え先はもう無い。 */
       expired?: boolean
     }
 
@@ -317,24 +317,30 @@ export type LaneChat = {
   set: StoreSetter<ChatState>
 }
 
-/** 閉じる操作は会話・他の知らせに触れない。再度届けば改めて表示する。 */
 /**
- * 未回答の prompt を「打ち切り」として閉じる（turn を閉じる event で呼ぶ）。
+ * 答え先の無くなった未回答の prompt を「打ち切り」として閉じる。`requestId` 省略 = 全部。
  *
- * turn が閉じた時点で、その turn の質問・承認には答え先が無い（ACP の host は中断・turn の終わり・
- * 再起動で engine へ cancel を返す）。残すと「質問待ち」が固着し、後から答えると Err になって
- * repo 側の turn が立ったまま残る。Question / PermissionRequest は replay log に保存されない
- * （conversation_pump の persist）ので、replay で過去のカードを偽って閉じることは無い。
+ * 閉じる合図は 2 つだけ:
+ * - `permission_cancelled`（id 指定）: 閉じた側が知らせる。今これを出すのは ACP の host（中断・turn の
+ *   終わりで engine へ cancel を返した質問）。共有 crate は claude の `control_cancel_request` も同じ
+ *   event に写す（`control_events`）が、VP の claude host はまだそれを通していない
+ * - `engine_exited`（全部）: process が終わった。どの engine でも答え先が無い
+ *
+ * ⚠️ turn の終わり（`turn_completed` / `error`）では閉じない — claude は turn をまたいで承認を待つ
+ * （background subagent の `can_use_tool`）ので、閉じると答えられなくなる（santa round 2）。
+ * Question / PermissionRequest は replay log に保存されない（conversation_pump の persist）ので、
+ * replay で過去のカードを偽って閉じることは無い。
  */
-function expireOpenPrompts(s: ChatState): void {
+function expireOpenPrompts(s: ChatState, requestId?: string): void {
   for (const item of s.items) {
-    if (item.kind === 'prompt' && !item.answered) {
+    if (item.kind === 'prompt' && !item.answered && (requestId === undefined || item.requestId === requestId)) {
       item.answered = true
       item.expired = true
     }
   }
 }
 
+/** 閉じる操作は会話・他の知らせに触れない。再度届けば改めて表示する。 */
 export function dismissNotice(s: ChatState, message: string): void {
   s.liveNotices = s.liveNotices.filter(notice => notice !== message)
 }
@@ -597,7 +603,6 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       s.contextTokens = ev.context_tokens ?? s.contextTokens
       s.contextWindow = ev.context_window ?? s.contextWindow
       s.nowLine = null // 契約の「今」は turn より長生きしない（doc 51 §1 A3）
-      expireOpenPrompts(s)
       sealLastAssistant(s) // 次 turn の chunk と融合させない（§5.1）
       if (s.interruptRequested) {
         s.interruptRequested = false
@@ -609,7 +614,6 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
       s.interruptRequested = false
       s.streaming = false
       s.replaying = false // replay window 中に error が割り込んでも再同期ローダーを固着させない（streaming と同じ防御）
-      expireOpenPrompts(s)
       sealLastAssistant(s) // error バブルを前 turn と分ける（§5.1）
       s.items.push({ kind: 'assistant', text: `\n\n⚠️ **engine error**: ${ev.message}` })
       break
@@ -646,6 +650,10 @@ export function foldInto(s: ChatState, ev: ConversationEvent): void {
         questions: ev.questions,
         answered: false,
       })
+      break
+    case 'permission_cancelled':
+      // host が答えを待つのをやめた（今は ACP の中断・turn の終わり）
+      expireOpenPrompts(s, ev.request_id)
       break
     case 'permission_request':
       // engine が turn を pause して tool 承認を待つ（HITL）。カーソル点滅を止める。

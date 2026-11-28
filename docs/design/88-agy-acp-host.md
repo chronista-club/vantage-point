@@ -446,7 +446,7 @@ grok = model / reasoning_effort、opencode = model / mode（`opencode/big-pickle
 ## 9. Status log — 構造化質問・初回 command・SDK 5.6.1（2026-11-28）
 
 Spec `mem_1ChUb85e8Zxt8vYkyUonFe` / Todo `mem_1ChUb9syhgm8EsWKkcr5c8`。共有 crate は agent-chat #12
-（`e42a9ba`）と follow-up #13（`8e9235c`）、設計の正本は agent-chat の `docs/design/01-acp-client-host.md`。ここには VP 側の接続だけを書く。
+（`e42a9ba`）と follow-up #13（`8e9235c`）・#14（`c7ea200`）、設計の正本は agent-chat の `docs/design/01-acp-client-host.md`。ここには VP 側の接続だけを書く。
 
 - **構造化質問（elicitation）**: engine の `elicitation/create`（`mode: "form"`）を共有 host が
   `ConversationEvent::Question` に写す。GUI は claude の AskUserQuestion と同じ PromptCard で描き、回答は
@@ -459,12 +459,18 @@ Spec `mem_1ChUb85e8Zxt8vYkyUonFe` / Todo `mem_1ChUb9syhgm8EsWKkcr5c8`。共有 c
   - URL mode と未対応の型は共有 host が invalid_params で断る。質問は履歴に残さない（制御面）
   - tool の承認（`session/request_permission`）は従来どおり host の政策 `auto_allow` が答え、PromptCard
     には来ない。`set_permission_mode` は ACP engine では引き続き Err
-  - **答える前に turn が閉じた質問**: 共有 host は中断・turn の終わり・再起動で、残っている質問に
-    `cancel` を返す。GUI（`chat-model.ts`）は `turn_completed` / `error` / `engine_exited` で未回答の
-    カードを「回答の前に打ち切られました」として閉じる（claude の質問・tool 承認のカードも同じ扱い。
-    turn が閉じた時点で答え先が無いのは engine を問わない）。Question / PermissionRequest は replay log に
-    保存されないので、復元で過去のカードを偽って閉じることは無い。それでも届かなかった回答（Err）では、
-    `respond_permission_chat` が立てた `turn_active` を元に戻す（立てたままだと idle sweep から外れる）
+  - **答える前に打ち切られた質問**: 共有 host は中断・turn の終わり・立て直しで、残っている質問に
+    `cancel` を返す。中断・turn の終わりでは id ごとに `PermissionCancelled` も出し（agent-chat #14）、
+    GUI（`chat-model.ts`）はその id のカードを「回答の前に打ち切られました」として閉じる。立て直し・
+    停止では出ないので、`engine_exited` で未回答のカードを全部閉じる（process が終われば、どの engine
+    でも答え先が無い）。
+    ⚠️ turn の終わり（`turn_completed` / `error`）だけでは閉じない — claude は turn をまたいで承認を
+    待つ（background subagent の `can_use_tool`）ので、閉じると答えられなくなる（santa round 2 で
+    一律に閉じる案を退けた）。Question / PermissionRequest は replay log に保存されないので、復元で過去の
+    カードを偽って閉じることも無い。
+    それでも届かなかった回答（Err）では、`respond_permission_chat` が**自分で立てた** `turn_active` だけを
+    下ろす（立てたままだと idle sweep から外れる。元が true なら、pump が turn の終わりで下ろした値を
+    上書きしないよう触らない）
 - **初回 slash command**: `initialize` / `session/new` / `session/load` の応答（`_meta.availableCommands`
   を含む）と、`session/new` 直後の `available_commands_update` を、最初の `SessionInit.slash_commands`
   に載せる（新規 session で command がまだ無ければ合計 50 ms まで待つ）。§6.3 の「turn の終わりに
@@ -482,7 +488,7 @@ Spec `mem_1ChUb85e8Zxt8vYkyUonFe` / Todo `mem_1ChUb9syhgm8EsWKkcr5c8`。共有 c
 検証: `conversation::acp_host::tests::elicitation_reaches_question_and_answer_returns_to_engine`
 （偽の agent で agy = Allow / grok = Deny を ChatHost 経由で往復させ、turn の完了と使用済み id の Err
 まで見る）、`repo::lane::pool::tests::failed_respond_restores_turn_active`、`chatview.test.ts` の
-「未回答の prompt を打ち切りとして閉じる」。共有 crate 側は `tests/elicitation.rs` / `stabilized.rs` / `fake_agent.rs`。
+打ち切りの 5 本（`permission_cancelled` / `turn_completed` / `error` / `engine_exited` / 回答済み）。共有 crate 側は `tests/elicitation.rs` / `stabilized.rs` / `fake_agent.rs`。
 
 **未確認（実機）**: 実 CLI（agy / grok）が `elicitation/create` を実際に送る場面と、その時の PromptCard の
 見え方・回答後に turn が続くこと。手順: agy の lane で chat を開き、engine に選択を求める依頼
